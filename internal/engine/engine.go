@@ -161,7 +161,11 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return knowledge.ResultToJSON(result)
 	}
 
-	// Workflow meta-tools → delegate to workflow engine
+	// Workflow meta-tools → delegate to workflow engine.
+	// Security: LLM-provided args are filtered here before entering the workflow.
+	// Workflow steps bypass per-tool L1 checks because step definitions are hardcoded
+	// (not LLM-controlled) and each workflow has its own Confirm step for user approval.
+	// Invariant: BuildArgs functions must only reference specific named keys from wfCtx.Params.
 	if workflow.IsWorkflowTool(action) {
 		args = filterAllowedParams(action, args)
 		onStep(StepEvent{Type: StepToolCall, Action: action, Args: args})
