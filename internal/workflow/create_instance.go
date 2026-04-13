@@ -29,9 +29,9 @@ func stepQueryImages() Step {
 		Type: StepToolCall,
 		Tool: "DescribeCompShareImages",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			// DescribeCompShareImages only accepts: ImageType, Name, Author, Tag, Offset, Limit
 			return map[string]any{
-				"GpuType": wfCtx.Params["GpuType"],
-				"Zone":    paramStr(wfCtx.Params, "Zone", "cn-wlcb-a"),
+				"ImageType": "System",
 			}, nil
 		},
 	}

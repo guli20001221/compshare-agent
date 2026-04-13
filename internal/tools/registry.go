@@ -169,7 +169,11 @@ var Registry = []openai.Tool{
 				"properties": map[string]any{
 					"ImageType": map[string]any{
 						"type":        "string",
-						"description": "镜像类型：Base(官方) / Custom(自定义)，不传则返回全部",
+						"description": "镜像类型：System(平台公共镜像) / Custom(自定义镜像) / App(应用镜像)，不传则返回全部",
+					},
+					"Limit": map[string]any{
+						"type":        "integer",
+						"description": "返回数据长度，默认 20",
 					},
 				},
 				"required": []string{},
