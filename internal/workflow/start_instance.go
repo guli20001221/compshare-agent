@@ -4,7 +4,7 @@ package workflow
 // CompShare GPU instance: confirm, then start.
 func StartInstanceDef() *Definition {
 	return &Definition{
-		Name:        "开机实例",
+		Name:        "StartInstanceWorkflow",
 		Description: "确认开机 → 开机",
 		Steps: []Step{
 			stepConfirmStart(),
@@ -35,8 +35,10 @@ func stepStartInstance() Step {
 		Name: "开机",
 		Type: StepToolCall,
 		Tool: "StartCompShareInstance",
+		// Zone + UHostId required per docs/api/instance/StartCompShareInstance.md
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			return map[string]any{
+				"Zone":    paramStr(wfCtx.Params, "Zone", defaultZone),
 				"UHostId": wfCtx.Params["UHostId"],
 			}, nil
 		},

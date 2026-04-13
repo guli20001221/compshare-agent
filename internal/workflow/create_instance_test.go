@@ -12,7 +12,7 @@ import (
 func createMockExecutor() *mockExecutor {
 	return &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareImages": {"ImageSet": []any{
-			map[string]any{"ImageId": "img-001", "ImageName": "Ubuntu 22.04 CUDA 12"},
+			map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu 22.04 CUDA 12"},
 		}},
 		"CheckCompShareResourceCapacity": {"AvailableSet": []any{
 			map[string]any{"Available": true},
@@ -111,10 +111,10 @@ func TestCreateInstance_Defaults(t *testing.T) {
 		}
 	}
 	assert.NotNil(t, createArgs)
-	assert.Equal(t, "cn-wlcb-a", createArgs["Zone"])
+	assert.Equal(t, "cn-wlcb-01", createArgs["Zone"])
 	assert.Equal(t, "Dynamic", createArgs["ChargeType"])
-	assert.Equal(t, float64(1), createArgs["Gpu"])
-	assert.Equal(t, float64(16), createArgs["Cpu"])
+	assert.Equal(t, float64(1), createArgs["GPU"])
+	assert.Equal(t, float64(16), createArgs["CPU"])
 	assert.Equal(t, float64(65536), createArgs["Memory"])
 	// CompShareImageId should come from step 1
 	assert.Equal(t, "img-001", createArgs["CompShareImageId"])
@@ -149,7 +149,7 @@ func TestCreateInstance_UserOverrides(t *testing.T) {
 	assert.NotNil(t, createArgs)
 	assert.Equal(t, "A100", createArgs["GpuType"])
 	assert.Equal(t, "cn-bj2-04", createArgs["Zone"])
-	assert.Equal(t, float64(2), createArgs["Gpu"])
+	assert.Equal(t, float64(2), createArgs["GPU"])
 	assert.Equal(t, "Month", createArgs["ChargeType"])
 	assert.Equal(t, "my-gpu-server", createArgs["Name"])
 }
@@ -197,13 +197,13 @@ func TestCreateInstance_ConfirmArgsContainSummary(t *testing.T) {
 
 	// Verify summary fields are present
 	assert.Equal(t, "4090", capturedArgs["GpuType"])
-	assert.Equal(t, "Ubuntu 22.04 CUDA 12", capturedArgs["ImageName"])
-	assert.Equal(t, "创建算力实例", capturedArgs["Workflow"])
-	assert.Equal(t, "cn-wlcb-a", capturedArgs["Zone"])
+	assert.Equal(t, "Ubuntu 22.04 CUDA 12", capturedArgs["image"])
+	assert.Equal(t, "CreateInstanceWorkflow", capturedArgs["workflow"])
+	assert.Equal(t, "cn-wlcb-01", capturedArgs["Zone"])
 	assert.Equal(t, "Dynamic", capturedArgs["ChargeType"])
 
-	// PriceResult should be the full price step result
-	priceResult, ok := capturedArgs["PriceResult"].(map[string]any)
+	// price should be the full price step result
+	priceResult, ok := capturedArgs["price"].(map[string]any)
 	assert.True(t, ok)
 	assert.NotNil(t, priceResult)
 }

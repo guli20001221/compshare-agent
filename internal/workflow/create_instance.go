@@ -2,11 +2,20 @@ package workflow
 
 import "fmt"
 
+// defaultZone is the default availability zone per API docs (cn-wlcb-01, not cn-wlcb-a).
+const defaultZone = "cn-wlcb-01"
+
+// defaultDisk is the minimum required disk configuration for instance creation.
+// The system disk has a 200GB free tier on CompShare.
+var defaultDisk = []any{
+	map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 60},
+}
+
 // CreateInstanceDef returns the 6-step workflow definition for creating a
 // CompShare GPU instance.
 func CreateInstanceDef() *Definition {
 	return &Definition{
-		Name:        "创建算力实例",
+		Name:        "CreateInstanceWorkflow",
 		Description: "查询镜像 → 检查库存 → 查询价格 → 确认 → 创建实例 → 查看状态",
 		Steps: []Step{
 			stepQueryImages(),
@@ -20,7 +29,7 @@ func CreateInstanceDef() *Definition {
 }
 
 // ---------------------------------------------------------------------------
-// Step definitions
+// Step definitions (params aligned with docs/api/ specs)
 // ---------------------------------------------------------------------------
 
 func stepQueryImages() Step {
@@ -29,7 +38,7 @@ func stepQueryImages() Step {
 		Type: StepToolCall,
 		Tool: "DescribeCompShareImages",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			// DescribeCompShareImages only accepts: ImageType, Name, Author, Tag, Offset, Limit
+			// API accepts: ImageType, Name, Author, Tag, Offset, Limit (Zone optional)
 			return map[string]any{
 				"ImageType": "System",
 			}, nil
@@ -44,11 +53,15 @@ func stepCheckCapacity() Step {
 		Tool: "CheckCompShareResourceCapacity",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			imageId := pickFirstImageId(wfCtx.Result("查询镜像"))
+			// All fields below are required per docs/api/spec/CheckCompShareResourceCapacity.md
 			return map[string]any{
-				"GpuType":          wfCtx.Params["GpuType"],
-				"Zone":             paramStr(wfCtx.Params, "Zone", "cn-wlcb-a"),
-				"CompShareImageId": imageId,
-				"ChargeType":       paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
+				"Zone":               paramStr(wfCtx.Params, "Zone", defaultZone),
+				"GpuType":            wfCtx.Params["GpuType"],
+				"MachineType":        "G",
+				"MinimalCpuPlatform": "Auto",
+				"CompShareImageId":   imageId,
+				"ChargeType":         paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
+				"Disks":              defaultDisk,
 			}, nil
 		},
 	}
@@ -61,12 +74,11 @@ func stepGetPrice() Step {
 		Tool: "GetCompShareInstancePrice",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			return map[string]any{
-				"GpuType":    wfCtx.Params["GpuType"],
-				"Zone":       paramStr(wfCtx.Params, "Zone", "cn-wlcb-a"),
-				"Gpu":        paramNum(wfCtx.Params, "Gpu", 1),
-				"Cpu":        paramNum(wfCtx.Params, "Cpu", 16),
-				"Memory":     paramNum(wfCtx.Params, "Memory", 65536),
-				"ChargeType": paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
+				"Zone":    paramStr(wfCtx.Params, "Zone", defaultZone),
+				"GpuType": wfCtx.Params["GpuType"],
+				"Gpu":     paramNum(wfCtx.Params, "Gpu", 1),
+				"Cpu":     paramNum(wfCtx.Params, "Cpu", 16),
+				"Memory":  paramNum(wfCtx.Params, "Memory", 65536),
 			}, nil
 		},
 	}
@@ -77,15 +89,14 @@ func stepConfirmCreate() Step {
 		Name: "确认创建",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			imageName := pickFirstImageName(wfCtx.Result("查询镜像"))
 			return map[string]any{
-				"Workflow":   "创建算力实例",
+				"workflow":    "CreateInstanceWorkflow",
 				"GpuType":    wfCtx.Params["GpuType"],
 				"Gpu":        paramNum(wfCtx.Params, "Gpu", 1),
-				"Zone":       paramStr(wfCtx.Params, "Zone", "cn-wlcb-a"),
+				"Zone":       paramStr(wfCtx.Params, "Zone", defaultZone),
 				"ChargeType": paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
-				"ImageName":  imageName,
-				"PriceResult": wfCtx.Result("查询价格"),
+				"image":      pickFirstImageName(wfCtx.Result("查询镜像")),
+				"price":      wfCtx.Result("查询价格"),
 			}, nil
 		},
 	}
@@ -98,14 +109,16 @@ func stepCreateInstance() Step {
 		Tool: "CreateCompShareInstance",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			imageId := pickFirstImageId(wfCtx.Result("查询镜像"))
+			// Required fields per docs/api/instance/CreateCompShareInstance.md
 			args := map[string]any{
-				"GpuType":    wfCtx.Params["GpuType"],
-				"Zone":       paramStr(wfCtx.Params, "Zone", "cn-wlcb-a"),
-				"Gpu":        paramNum(wfCtx.Params, "Gpu", 1),
-				"Cpu":        paramNum(wfCtx.Params, "Cpu", 16),
-				"Memory":     paramNum(wfCtx.Params, "Memory", 65536),
-				"ChargeType": paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
+				"Zone":             paramStr(wfCtx.Params, "Zone", defaultZone),
+				"GpuType":         wfCtx.Params["GpuType"],
+				"GPU":             paramNum(wfCtx.Params, "Gpu", 1),
+				"CPU":             paramNum(wfCtx.Params, "Cpu", 16),
+				"Memory":          paramNum(wfCtx.Params, "Memory", 65536),
 				"CompShareImageId": imageId,
+				"ChargeType":      paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
+				"Disks":           defaultDisk,
 			}
 			if name, ok := wfCtx.Params["Name"]; ok {
 				args["Name"] = name
@@ -128,7 +141,6 @@ func stepDescribeInstance() Step {
 			}
 			return map[string]any{
 				"UHostIds": ids,
-				"Zone":     paramStr(wfCtx.Params, "Zone", "cn-wlcb-a"),
 			}, nil
 		},
 	}
@@ -138,7 +150,6 @@ func stepDescribeInstance() Step {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// paramStr returns params[key] as a string, or defaultVal if missing/wrong type.
 func paramStr(params map[string]any, key, defaultVal string) string {
 	if v, ok := params[key]; ok {
 		if s, ok := v.(string); ok {
@@ -148,7 +159,6 @@ func paramStr(params map[string]any, key, defaultVal string) string {
 	return defaultVal
 }
 
-// paramNum returns params[key] as a float64, or defaultVal if missing/wrong type.
 func paramNum(params map[string]any, key string, defaultVal float64) float64 {
 	if v, ok := params[key]; ok {
 		switch n := v.(type) {
@@ -161,7 +171,6 @@ func paramNum(params map[string]any, key string, defaultVal float64) float64 {
 	return defaultVal
 }
 
-// pickFirstImageId extracts the first ImageId from a DescribeCompShareImages result.
 func pickFirstImageId(result map[string]any) string {
 	if result == nil {
 		return ""
@@ -174,13 +183,13 @@ func pickFirstImageId(result map[string]any) string {
 	if !ok {
 		return ""
 	}
-	if id, ok := first["ImageId"].(string); ok {
+	// API doc field: CompShareImageId
+	if id, ok := first["CompShareImageId"].(string); ok {
 		return id
 	}
 	return ""
 }
 
-// pickFirstImageName extracts the first ImageName, returning "未知" if missing.
 func pickFirstImageName(result map[string]any) string {
 	if result == nil {
 		return "未知"
@@ -193,7 +202,7 @@ func pickFirstImageName(result map[string]any) string {
 	if !ok {
 		return "未知"
 	}
-	if name, ok := first["ImageName"].(string); ok {
+	if name, ok := first["Name"].(string); ok && name != "" {
 		return name
 	}
 	return "未知"

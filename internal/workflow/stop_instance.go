@@ -4,7 +4,7 @@ package workflow
 // CompShare GPU instance: query state, confirm shutdown, then stop.
 func StopInstanceDef() *Definition {
 	return &Definition{
-		Name:        "关机实例",
+		Name:        "StopInstanceWorkflow",
 		Description: "查询实例 → 确认关机 → 关机",
 		Steps: []Step{
 			stepQueryInstance(),
@@ -56,7 +56,9 @@ func stepStopInstance() Step {
 		Type: StepToolCall,
 		Tool: "StopCompShareInstance",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			// Zone + UHostId required per docs/api/instance/StopCompShareInstance.md
 			return map[string]any{
+				"Zone":    extractInstanceZone(wfCtx.Result("查询实例"), defaultZone),
 				"UHostId": wfCtx.Params["UHostId"],
 			}, nil
 		},
@@ -66,6 +68,25 @@ func stepStopInstance() Step {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// extractInstanceZone returns the Zone from the first UHostSet entry, or defaultVal.
+func extractInstanceZone(result map[string]any, defaultVal string) string {
+	if result == nil {
+		return defaultVal
+	}
+	hostSet, ok := result["UHostSet"].([]any)
+	if !ok || len(hostSet) == 0 {
+		return defaultVal
+	}
+	first, ok := hostSet[0].(map[string]any)
+	if !ok {
+		return defaultVal
+	}
+	if zone, ok := first["Zone"].(string); ok && zone != "" {
+		return zone
+	}
+	return defaultVal
+}
 
 // extractInstanceState returns the State field from the first entry in UHostSet,
 // or an empty string if the result is missing or malformed.
