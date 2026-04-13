@@ -3,6 +3,8 @@ package diagnosis
 var chainRegistry = map[string]func() *Chain{
 	"DiagnoseSSH":         SSHFailureChain,
 	"DiagnoseInitFailure": InitFailureChain,
+	"DiagnoseGPU":         GPUNotDetectedChain,
+	"DiagnoseBilling":     BillingAnomalyChain,
 }
 
 func IsDiagnosisTool(action string) bool {

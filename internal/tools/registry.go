@@ -321,4 +321,38 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DiagnoseGPU",
+			Description: "诊断 GPU 检测不到问题（nvidia-smi 报错）。自动执行：检查实例状态与 GPU 配置 → 检查 GPU 监控数据 → 给出结论和建议。用户反馈 nvidia-smi 报错、GPU 找不到、显卡无法识别时使用。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要诊断的实例 ID",
+					},
+				},
+				"required": []string{"UHostId"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DiagnoseBilling",
+			Description: "诊断费用异常。查询实例列表并分析各项费用明细，解释扣费原因。用户反馈为什么扣这么多钱、费用不对、扣费异常时使用。可传 UHostId 查特定实例，不传则分析所有实例。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要诊断的实例 ID（可选，不传则分析所有实例）",
+					},
+				},
+				"required": []string{},
+			},
+		},
+	},
 }
