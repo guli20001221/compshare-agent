@@ -180,6 +180,44 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DescribeCompShareSoftwarePort",
+			Description: "查询平台支持的软件及其端口映射列表（SSH、JupyterLab、FileBrowser 等）。用于诊断端口连通性问题。仅需 Region 参数（自动填充）。",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+				"required":   []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "GetCompShareInstanceMonitor",
+			Description: "获取实例监控数据（CPU/内存/GPU/显存使用率等）。必须传 UHostIds。查多实例时仅返回最近 60 秒基础指标；查单实例可传 StartTime/EndTime 获取扩展指标（网络、磁盘）。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostIds": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "实例 ID 列表（必填）",
+					},
+					"StartTime": map[string]any{
+						"type":        "integer",
+						"description": "查询起始时间（Unix 时间戳），仅单实例查询时有效",
+					},
+					"EndTime": map[string]any{
+						"type":        "integer",
+						"description": "查询结束时间（Unix 时间戳），仅单实例查询时有效",
+					},
+				},
+				"required": []string{"UHostIds"},
+			},
+		},
+	},
 	// --- Workflow Meta-Tools ---
 	{
 		Type: openai.ToolTypeFunction,
@@ -242,6 +280,41 @@ var Registry = []openai.Tool{
 					"UHostId": map[string]any{
 						"type":        "string",
 						"description": "要开机的实例 ID",
+					},
+				},
+				"required": []string{"UHostId"},
+			},
+		},
+	},
+	// --- Diagnosis Meta-Tools ---
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DiagnoseSSH",
+			Description: "诊断 SSH 连接失败。自动执行：检查实例状态 → 检查 SSH 端口 → 检查资源使用 → 给出结论和建议。用户反馈 SSH 连不上、连接超时、连接被拒时使用。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要诊断的实例 ID",
+					},
+				},
+				"required": []string{"UHostId"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DiagnoseInitFailure",
+			Description: "诊断实例初始化失败。检查实例当前状态并给出修复建议。用户反馈创建失败、初始化失败、实例异常时使用。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要诊断的实例 ID",
 					},
 				},
 				"required": []string{"UHostId"},
