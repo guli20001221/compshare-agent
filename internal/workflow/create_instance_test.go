@@ -116,8 +116,8 @@ func TestCreateInstance_Defaults(t *testing.T) {
 	assert.Equal(t, float64(1), createArgs["Gpu"])
 	assert.Equal(t, float64(16), createArgs["Cpu"])
 	assert.Equal(t, float64(65536), createArgs["Memory"])
-	// ImageId should come from step 1
-	assert.Equal(t, "img-001", createArgs["ImageId"])
+	// CompShareImageId should come from step 1
+	assert.Equal(t, "img-001", createArgs["CompShareImageId"])
 }
 
 func TestCreateInstance_UserOverrides(t *testing.T) {

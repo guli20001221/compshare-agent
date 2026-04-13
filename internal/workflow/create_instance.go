@@ -45,10 +45,10 @@ func stepCheckCapacity() Step {
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			imageId := pickFirstImageId(wfCtx.Result("查询镜像"))
 			return map[string]any{
-				"GpuType": wfCtx.Params["GpuType"],
-				"Zone":    paramStr(wfCtx.Params, "Zone", "cn-wlcb-a"),
-				"Gpu":     paramNum(wfCtx.Params, "Gpu", 1),
-				"ImageId": imageId,
+				"GpuType":          wfCtx.Params["GpuType"],
+				"Zone":             paramStr(wfCtx.Params, "Zone", "cn-wlcb-a"),
+				"CompShareImageId": imageId,
+				"ChargeType":       paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
 			}, nil
 		},
 	}
@@ -105,7 +105,7 @@ func stepCreateInstance() Step {
 				"Cpu":        paramNum(wfCtx.Params, "Cpu", 16),
 				"Memory":     paramNum(wfCtx.Params, "Memory", 65536),
 				"ChargeType": paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
-				"ImageId":    imageId,
+				"CompShareImageId": imageId,
 			}
 			if name, ok := wfCtx.Params["Name"]; ok {
 				args["Name"] = name
