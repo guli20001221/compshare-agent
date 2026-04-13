@@ -96,6 +96,16 @@ func TestTranslateState(t *testing.T) {
 	}
 }
 
+func TestBuildSystem_ContainsDiagnosis(t *testing.T) {
+	prompt := BuildSystem("test context")
+	if !strings.Contains(prompt, "DiagnoseSSH") {
+		t.Error("system prompt should contain DiagnoseSSH routing")
+	}
+	if !strings.Contains(prompt, "DiagnoseInitFailure") {
+		t.Error("system prompt should contain DiagnoseInitFailure routing")
+	}
+}
+
 func TestFormatToolResult_Truncation(t *testing.T) {
 	// Build a large result with an array field
 	items := make([]any, 100)

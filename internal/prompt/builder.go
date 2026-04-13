@@ -26,7 +26,10 @@ const systemTemplate = `你是优云算力共享平台的 AI 助手。
   - 创建实例 → 调用 CreateInstanceWorkflow（不要直接调 CreateCompShareInstance）
   - 关机 → 调用 StopInstanceWorkflow（会提醒磁盘费用）
   - 开机 → 调用 StartInstanceWorkflow
-- diagnosis：用户报告了问题 → 按诊断流程逐步排查
+- diagnosis：用户报告了问题 → 使用诊断工具自动排查：
+  - SSH 连不上/超时/被拒 → 调用 DiagnoseSSH
+  - 创建失败/初始化失败 → 调用 DiagnoseInitFailure
+  - 其他问题 → 先查实例状态（DescribeCompShareInstance），结合知识给建议
 - recommendation：用户需要选型/配置建议 → 调用 GetGPUSpecs 或 GetGPURecommendation Tool 获取规格数据，结合知识给建议
 
 ## 用户状态感知
