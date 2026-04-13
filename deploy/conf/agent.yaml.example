@@ -1,0 +1,11 @@
+agent:
+  executor: external
+  compshare_api_url: "https://api.compshare.cn/"
+  public_key: ""      # 或设置环境变量 COMPSHARE_PUBLIC_KEY
+  private_key: ""     # 或设置环境变量 COMPSHARE_PRIVATE_KEY
+  region: "cn-wlcb"
+
+  llm:
+    base_url: "https://api.modelverse.cn/v1"
+    api_key: ""       # 或设置环境变量 LLM_API_KEY
+    model: "Qwen/Qwen3-Max"

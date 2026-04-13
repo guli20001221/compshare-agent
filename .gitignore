@@ -1,0 +1,2 @@
+*.exe
+deploy/conf/agent.yaml

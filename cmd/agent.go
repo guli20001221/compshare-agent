@@ -1,0 +1,132 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/engine"
+
+	"github.com/spf13/cobra"
+)
+
+var configPath string
+
+var rootCmd = &cobra.Command{
+	Use:   "compshare-agent",
+	Short: "优云算力共享平台 AI 助手",
+}
+
+var cliCmd = &cobra.Command{
+	Use:   "cli",
+	Short: "CLI 交互模式",
+	RunE:  runCLI,
+}
+
+func init() {
+	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "deploy/conf/agent.yaml", "配置文件路径")
+	rootCmd.AddCommand(cliCmd)
+}
+
+func main() {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+// cliConfirm prompts the user to confirm an L1 operation in the terminal.
+func cliConfirm(scanner *bufio.Scanner) engine.ConfirmFunc {
+	return func(action string, args map[string]any) bool {
+		argsJSON, _ := json.MarshalIndent(args, "    ", "  ")
+		fmt.Printf("  ⚠️  即将执行变更操作: %s\n", action)
+		fmt.Printf("    参数: %s\n", string(argsJSON))
+		fmt.Print("  确认执行？(y/N) ")
+		if !scanner.Scan() {
+			return false
+		}
+		answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
+		return answer == "y" || answer == "yes"
+	}
+}
+
+func runCLI(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	ctx := context.Background()
+	scanner := bufio.NewScanner(os.Stdin)
+	eng := engine.New(cfg, cliConfirm(scanner))
+
+	fmt.Println("╭──────────────────────────────────────╮")
+	fmt.Println("│     优云算力共享 AI 助手 v0.1        │")
+	fmt.Println("╰──────────────────────────────────────╯")
+	fmt.Println()
+	fmt.Println("正在初始化，获取您的实例信息...")
+
+	suggestions, err := eng.Init(ctx)
+	if err != nil {
+		fmt.Printf("⚠ 初始化警告: %v\n", err)
+	}
+
+	if len(suggestions) > 0 {
+		fmt.Println("\n您可以试试：")
+		for i, s := range suggestions {
+			fmt.Printf("  [%d] %s\n", i+1, s.Text)
+		}
+	}
+	fmt.Println("\n输入 'quit' 或 'exit' 退出。")
+	fmt.Println()
+
+	for {
+		fmt.Print("You> ")
+		if !scanner.Scan() {
+			break
+		}
+		input := strings.TrimSpace(scanner.Text())
+		if input == "" {
+			continue
+		}
+		if input == "quit" || input == "exit" {
+			fmt.Println("再见！")
+			break
+		}
+
+		// Check if user typed a suggestion number
+		if n, err := strconv.Atoi(input); err == nil && n >= 1 && n <= len(suggestions) {
+			input = suggestions[n-1].Text
+			fmt.Printf("→ %s\n", input)
+		}
+
+		onStep := func(ev engine.StepEvent) {
+			switch ev.Type {
+			case engine.StepToolCall:
+				fmt.Printf("  🔧 调用 %s ...\n", ev.Action)
+			case engine.StepToolResult:
+				fmt.Printf("  ✅ %s %s\n", ev.Action, ev.Message)
+			case engine.StepConfirmNeeded:
+				// Confirmation prompt is handled by cliConfirm
+			case engine.StepBlocked:
+				fmt.Printf("  🚫 %s\n", ev.Message)
+			case engine.StepError:
+				fmt.Printf("  ❌ %s: %s\n", ev.Action, ev.Message)
+			}
+		}
+
+		reply, err := eng.Chat(ctx, input, onStep)
+		if err != nil {
+			fmt.Printf("错误: %v\n\n", err)
+			continue
+		}
+
+		fmt.Printf("\nAssistant> %s\n\n", reply)
+	}
+	return nil
+}
