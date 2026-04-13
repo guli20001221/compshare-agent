@@ -11,6 +11,7 @@ import (
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
+	"github.com/compshare-agent/internal/workflow"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -65,7 +66,8 @@ func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
 	userCtx := "暂无用户信息"
 	result, err := e.executor.Execute(ctx, "DescribeCompShareInstance", map[string]any{})
 	if err != nil {
-		fmt.Printf("[warn] context injection failed: %v\n", err)
+		// Context injection is best-effort; continue with default context.
+		_ = err
 	} else {
 		userCtx = prompt.FormatInstanceContext(result)
 	}
@@ -86,14 +88,15 @@ func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
 // Chat processes one user message through the ReAct loop and returns the final text reply.
 // The callback is invoked for each intermediate step (tool calls, thinking, etc.).
 func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, error) {
+	// Trim before appending to guarantee the new user message is never dropped.
+	e.trimHistory()
+
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleUser,
 		Content: userMsg,
 	})
 
 	for round := 0; round < maxReActRounds; round++ {
-		e.trimHistory()
-
 		resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{
 			Messages: e.messages,
 			Tools:    tools.Registry,
@@ -146,6 +149,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 
 	// Knowledge tools execute locally — no API call, no security check needed
 	if knowledge.IsKnowledgeTool(action) {
+		args = filterAllowedParams(action, args)
 		onStep(StepEvent{Type: StepToolCall, Action: action, Args: args})
 		result, err := knowledge.ExecuteTool(action, args)
 		if err != nil {
@@ -155,6 +159,13 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		}
 		onStep(StepEvent{Type: StepToolResult, Action: action, Message: "查询成功"})
 		return knowledge.ResultToJSON(result)
+	}
+
+	// Workflow meta-tools → delegate to workflow engine
+	if workflow.IsWorkflowTool(action) {
+		args = filterAllowedParams(action, args)
+		onStep(StepEvent{Type: StepToolCall, Action: action, Args: args})
+		return e.executeWorkflow(ctx, action, args, onStep)
 	}
 
 	// External API tools: security check
@@ -196,6 +207,52 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	formatted := prompt.FormatToolResult(result)
 	onStep(StepEvent{Type: StepToolResult, Action: action, Message: "调用成功"})
 	return formatted
+}
+
+// executeWorkflow runs a predefined workflow and returns the result as a JSON string
+// for the LLM to narrate.
+func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
+	wf, ok := workflow.GetWorkflow(action)
+	if !ok {
+		msg := fmt.Sprintf("未知的工作流: %s", action)
+		onStep(StepEvent{Type: StepError, Action: action, Message: msg})
+		return msg
+	}
+
+	var wfConfirm workflow.ConfirmFunc
+	if e.confirmFn != nil {
+		wfConfirm = workflow.ConfirmFunc(e.confirmFn)
+	}
+
+	wfEngine := workflow.NewEngine(e.executor, wfConfirm, func(ev workflow.StepEvent) {
+		eventType := StepToolCall
+		if ev.Type == workflow.StepConfirm {
+			if ev.Status == "waiting" {
+				eventType = StepConfirmNeeded
+			} else if ev.Status == "cancelled" {
+				eventType = StepBlocked
+			}
+		}
+		if ev.Status == "failed" {
+			eventType = StepError
+		}
+		onStep(StepEvent{
+			Type:    eventType,
+			Action:  ev.Tool,
+			Args:    ev.Args,
+			Message: fmt.Sprintf("[%d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status),
+		})
+	})
+
+	result, err := wfEngine.Run(ctx, wf, args)
+	if err != nil {
+		msg := fmt.Sprintf("工作流执行错误: %v", err)
+		onStep(StepEvent{Type: StepError, Action: action, Message: msg})
+		return msg
+	}
+
+	b, _ := json.Marshal(result)
+	return string(b)
 }
 
 // filterAllowedParams strips parameters not defined in the tool registry schema.

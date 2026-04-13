@@ -159,4 +159,89 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DescribeCompShareImages",
+			Description: "查询可用的算力共享镜像列表，包括官方镜像、自定义镜像等。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"ImageType": map[string]any{
+						"type":        "string",
+						"description": "镜像类型：Base(官方) / Custom(自定义)，不传则返回全部",
+					},
+				},
+				"required": []string{},
+			},
+		},
+	},
+	// --- Workflow Meta-Tools ---
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "CreateInstanceWorkflow",
+			Description: "创建实例的完整工作流。自动执行：查询镜像→检查库存→查询价格→用户确认→创建实例→查看状态。用户要求创建实例时必须使用此工具，不要直接调用 CreateCompShareInstance。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"GpuType": map[string]any{
+						"type":        "string",
+						"description": "GPU 类型：4090 / A100 / H20 / 3090 等",
+					},
+					"Gpu": map[string]any{
+						"type":        "number",
+						"description": "GPU 数量，默认 1",
+					},
+					"Zone": map[string]any{
+						"type":        "string",
+						"description": "可用区，默认 cn-wlcb-a",
+					},
+					"ChargeType": map[string]any{
+						"type":        "string",
+						"description": "计费方式：Dynamic(按量) / Month(包月) / Day(包日) / Spot(抢占式)，默认 Dynamic",
+					},
+					"Name": map[string]any{
+						"type":        "string",
+						"description": "实例名称（可选）",
+					},
+				},
+				"required": []string{"GpuType"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "StopInstanceWorkflow",
+			Description: "关机工作流。会提醒用户关机后磁盘仍然收费。用户要求关机时使用此工具。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要关机的实例 ID",
+					},
+				},
+				"required": []string{"UHostId"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "StartInstanceWorkflow",
+			Description: "开机工作流。用户要求开机时使用此工具。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要开机的实例 ID",
+					},
+				},
+				"required": []string{"UHostId"},
+			},
+		},
+	},
 }

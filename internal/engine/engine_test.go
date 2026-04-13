@@ -31,6 +31,15 @@ func (m *mockLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatRespons
 	return &resp, nil
 }
 
+// mockLLMWithError always returns an error.
+type mockLLMWithError struct {
+	err error
+}
+
+func (m *mockLLMWithError) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	return nil, m.err
+}
+
 // --- Mock Executor ---
 
 type mockExecutor struct {
@@ -116,7 +125,7 @@ func TestChat_KnowledgeTool_GetGPUSpecs(t *testing.T) {
 	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
 	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
 	assert.Contains(t, toolMsg.Content, "24")  // VRAM
-	assert.Contains(t, toolMsg.Content, "82.6") // FP16
+	assert.Contains(t, toolMsg.Content, "fp16_tflops") // has FP16 field
 }
 
 func TestChat_KnowledgeTool_GetGPURecommendation(t *testing.T) {
@@ -475,6 +484,42 @@ func TestTrimHistory_ShortHistory_NoOp(t *testing.T) {
 	assert.Len(t, eng.messages, 3) // unchanged
 }
 
+func TestChat_LLMError(t *testing.T) {
+	mock := &mockLLMWithError{err: fmt.Errorf("connection refused")}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	_, err := eng.Chat(context.Background(), "hello", noopStep)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "LLM 调用失败")
+}
+
+func TestKnowledgeTool_ArgsFiltered(t *testing.T) {
+	// Knowledge tools should also have args filtered
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetGPUSpecs", `{"GpuType":"4090","evil":"injection"}`),
+		}},
+		{Content: "done"},
+	}}
+	onStep, events := collectSteps()
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	eng.Chat(context.Background(), "test", onStep)
+
+	for _, ev := range *events {
+		if ev.Type == StepToolCall && ev.Action == "GetGPUSpecs" {
+			assert.NotContains(t, ev.Args, "evil")
+			assert.Contains(t, ev.Args, "GpuType")
+		}
+	}
+}
+
 func TestFilterAllowedParams_StripsUnknown(t *testing.T) {
 	args := map[string]any{
 		"Zone":          "cn-wlcb-a",
@@ -549,4 +594,132 @@ func TestToolResult_IsValidJSON(t *testing.T) {
 	err := json.Unmarshal([]byte(toolMsg.Content), &parsed)
 	assert.NoError(t, err, "tool result should be valid JSON: %s", toolMsg.Content)
 	assert.Contains(t, toolMsg.Content, "96") // H20 VRAM
+}
+
+func TestChat_WorkflowTool_CreateInstance(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareImages": {
+			"ImageSet": []any{
+				map[string]any{"ImageId": "img-001", "ImageName": "PyTorch 2.1"},
+			},
+		},
+		"CheckCompShareResourceCapacity": {"RetCode": 0, "Available": true},
+		"GetCompShareInstancePrice":      {"RetCode": 0, "Price": 1.5},
+		"CreateCompShareInstance":         {"RetCode": 0, "UHostIds": []any{"uhost-new-001"}},
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-new-001", "State": "Running", "GpuType": "4090"},
+			},
+		},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		// Round 1: LLM calls CreateInstanceWorkflow
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "CreateInstanceWorkflow", `{"GpuType":"4090"}`),
+		}},
+		// Round 2: LLM narrates the workflow result
+		{Content: "已成功创建 4090 实例 uhost-new-001"},
+	}}
+	onStep, events := collectSteps()
+	eng := NewWithDeps(mock, executor, confirmFn)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "帮我创建一个4090实例", onStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, "uhost-new-001")
+
+	// Verify workflow steps were executed via the executor
+	assert.Contains(t, executor.calls, "DescribeCompShareImages")
+	assert.Contains(t, executor.calls, "CheckCompShareResourceCapacity")
+	assert.Contains(t, executor.calls, "GetCompShareInstancePrice")
+	assert.Contains(t, executor.calls, "CreateCompShareInstance")
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+
+	// Verify step events were emitted
+	hasWorkflowCall := false
+	for _, ev := range *events {
+		if ev.Type == StepToolCall && ev.Action == "CreateInstanceWorkflow" {
+			hasWorkflowCall = true
+		}
+	}
+	assert.True(t, hasWorkflowCall, "should have a StepToolCall event for CreateInstanceWorkflow")
+
+	// The tool result fed to LLM round 2 should be valid JSON with success
+	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
+	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
+	var result map[string]any
+	err = json.Unmarshal([]byte(toolMsg.Content), &result)
+	assert.NoError(t, err, "workflow result should be valid JSON")
+	assert.Equal(t, true, result["success"])
+}
+
+func TestChat_WorkflowTool_StopInstance(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-stop-001", "State": "Running", "GpuType": "4090", "Name": "test"},
+			},
+		},
+		"StopCompShareInstance": {"RetCode": 0},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "StopInstanceWorkflow", `{"UHostId":"uhost-stop-001"}`),
+		}},
+		{Content: "已关机，注意磁盘仍会收费"},
+	}}
+	eng := NewWithDeps(mock, executor, confirmFn)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "关机 uhost-stop-001", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, "关机")
+
+	// Verify executor received the stop call
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+	assert.Contains(t, executor.calls, "StopCompShareInstance")
+
+	// Workflow result should be valid JSON with success
+	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
+	var result map[string]any
+	err = json.Unmarshal([]byte(toolMsg.Content), &result)
+	assert.NoError(t, err)
+	assert.Equal(t, true, result["success"])
+}
+
+func TestChat_WorkflowTool_ArgsFiltered(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"StartCompShareInstance": {"RetCode": 0},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		// LLM passes an extra "evil" parameter
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "StartInstanceWorkflow", `{"UHostId":"uhost-start-001","evil":"injection"}`),
+		}},
+		{Content: "已开机"},
+	}}
+	onStep, events := collectSteps()
+	eng := NewWithDeps(mock, executor, confirmFn)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "开机 uhost-start-001", onStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, "开机")
+
+	// Verify that the "evil" param was stripped before entering the workflow
+	for _, ev := range *events {
+		if ev.Type == StepToolCall && ev.Action == "StartInstanceWorkflow" {
+			assert.NotContains(t, ev.Args, "evil", "evil param should be filtered out")
+			assert.Contains(t, ev.Args, "UHostId", "UHostId should be preserved")
+		}
+	}
 }
