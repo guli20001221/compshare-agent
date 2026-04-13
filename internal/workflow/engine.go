@@ -7,22 +7,32 @@ import (
 	"github.com/compshare-agent/internal/tools"
 )
 
+// Engine executes workflow definitions step by step.
 type Engine struct {
 	executor  tools.ToolExecutor
 	confirmFn ConfirmFunc
 	onStep    func(StepEvent)
 }
 
+// NewEngine creates a workflow engine.
 func NewEngine(executor tools.ToolExecutor, confirmFn ConfirmFunc, onStep func(StepEvent)) *Engine {
 	return &Engine{executor: executor, confirmFn: confirmFn, onStep: onStep}
 }
 
+// Run executes a workflow definition with the given initial parameters.
+// It never returns a Go error for step failures — those are captured in Result.
 func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any) (*Result, error) {
 	wfCtx := NewContext(params)
 	total := len(def.Steps)
 	result := &Result{Steps: make([]StepSummary, 0, total)}
 
 	for i, step := range def.Steps {
+		if err := ctx.Err(); err != nil {
+			result.StoppedAt = step.Name
+			result.Message = fmt.Sprintf("工作流已取消: %v", err)
+			return result, nil
+		}
+
 		switch step.Type {
 		case StepToolCall:
 			args, err := step.BuildArgs(wfCtx)
