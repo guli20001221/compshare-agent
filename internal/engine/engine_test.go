@@ -723,3 +723,100 @@ func TestChat_WorkflowTool_ArgsFiltered(t *testing.T) {
 		}
 	}
 }
+
+func TestChat_DiagnosisTool_SSHStopped(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-diag-001", "State": "Stopped"},
+			},
+		},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseSSH", `{"UHostId":"uhost-diag-001"}`),
+		}},
+		{Content: "诊断结果：实例已关机，需要先开机"},
+	}}
+	onStep, events := collectSteps()
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "SSH连不上 uhost-diag-001", onStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, "关机")
+
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+
+	hasDiagCall := false
+	for _, ev := range *events {
+		if ev.Type == StepToolCall && ev.Action == "DiagnoseSSH" {
+			hasDiagCall = true
+		}
+	}
+	assert.True(t, hasDiagCall)
+
+	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
+	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
+	var result map[string]any
+	err = json.Unmarshal([]byte(toolMsg.Content), &result)
+	assert.NoError(t, err)
+	assert.Equal(t, true, result["success"])
+	assert.Contains(t, result["conclusion"], "关机")
+}
+
+func TestChat_DiagnosisTool_InitFailure(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-fail-001", "State": "InstallFail", "CompShareImageName": "PyTorch 2.1"},
+			},
+		},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{"UHostId":"uhost-fail-001"}`),
+		}},
+		{Content: "初始化失败，建议删除重建"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "实例初始化失败了", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, "初始化失败")
+}
+
+func TestChat_DiagnosisTool_ArgsFiltered(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-diag-002", "State": "Running"},
+			},
+		},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{"UHostId":"uhost-diag-002","evil":"injection"}`),
+		}},
+		{Content: "done"},
+	}}
+	onStep, events := collectSteps()
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	eng.Chat(context.Background(), "test", onStep)
+
+	for _, ev := range *events {
+		if ev.Type == StepToolCall && ev.Action == "DiagnoseInitFailure" {
+			assert.NotContains(t, ev.Args, "evil")
+			assert.Contains(t, ev.Args, "UHostId")
+		}
+	}
+}

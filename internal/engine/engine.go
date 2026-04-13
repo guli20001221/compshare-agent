@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/prompt"
@@ -172,6 +173,13 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return e.executeWorkflow(ctx, action, args, onStep)
 	}
 
+	// Diagnosis meta-tools → delegate to diagnosis engine.
+	if diagnosis.IsDiagnosisTool(action) {
+		args = filterAllowedParams(action, args)
+		onStep(StepEvent{Type: StepToolCall, Action: action, Args: args})
+		return e.executeDiagnosis(ctx, action, args, onStep)
+	}
+
 	// External API tools: security check
 	level, err := security.Check(action)
 	if err != nil {
@@ -251,6 +259,39 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	result, err := wfEngine.Run(ctx, wf, args)
 	if err != nil {
 		msg := fmt.Sprintf("工作流执行错误: %v", err)
+		onStep(StepEvent{Type: StepError, Action: action, Message: msg})
+		return msg
+	}
+
+	b, _ := json.Marshal(result)
+	return string(b)
+}
+
+// executeDiagnosis runs a diagnostic chain and returns the result as JSON.
+func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
+	chain, ok := diagnosis.GetChain(action)
+	if !ok {
+		msg := fmt.Sprintf("未知的诊断链: %s", action)
+		onStep(StepEvent{Type: StepError, Action: action, Message: msg})
+		return msg
+	}
+
+	diagEngine := diagnosis.NewEngine(e.executor, func(ev diagnosis.DiagEvent) {
+		eventType := StepToolCall
+		if ev.Status == "failed" {
+			eventType = StepError
+		}
+		onStep(StepEvent{
+			Type:    eventType,
+			Action:  ev.Tool,
+			Args:    ev.Args,
+			Message: fmt.Sprintf("[诊断 %d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status),
+		})
+	})
+
+	result, err := diagEngine.Run(ctx, chain, args)
+	if err != nil {
+		msg := fmt.Sprintf("诊断执行错误: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Message: msg})
 		return msg
 	}
