@@ -48,7 +48,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareInstance",
-			Description: "查询用户的算力共享实例列表及详情，包括实例状态、GPU 类型、IP 地址、计费方式等。不传 UHostIds 则查询全部实例。",
+			Description: "查询用户的算力共享实例列表及详情。返回实例状态（Running/Stopped/Install/InstallFail/Starting/Stopping/Rebooting）、GPU 类型、IP、计费等。不传 UHostIds 查全部。Limit 最大 100。State 含义：Install=初始化中, InstallFail=初始化失败。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -74,7 +74,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareInstancePrice",
-			Description: "查询创建算力共享实例的价格，返回按量/包日/包月/抢占式等多种计费方式的分项价格（实例、磁盘、镜像）。",
+			Description: "查询创建实例的价格。返回按量/包日/包月/抢占式等分项价格（实例、磁盘、镜像）。Zone 格式为 cn-wlcb-01。Memory 单位为 MB（如 65536 = 64GB）。不传 ChargeType 则返回所有计费方式的价格。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -112,7 +112,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CheckCompShareResourceCapacity",
-			Description: "检查指定 GPU 类型和配置的库存是否充足，返回各规格组合的可用性。建议在创建实例前调用。",
+			Description: "检查 GPU 库存是否充足。Zone 必须为 cn-wlcb-01 格式。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -163,7 +163,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareImages",
-			Description: "查询可用的算力共享镜像列表，包括官方镜像、自定义镜像等。",
+			Description: "查询可用的算力共享镜像列表。ImageType 枚举：System（平台公共镜像）、Custom（自定义镜像）、App（应用镜像），不传返回全部。可按 Name、Author、Tag 筛选。返回 CompShareImageId 和 Name 等字段。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
