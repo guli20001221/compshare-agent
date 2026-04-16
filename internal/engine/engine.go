@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/prompt"
+	"github.com/compshare-agent/internal/sanitizer"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
@@ -65,7 +67,7 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
 	// Auto-inject user instance context
 	userCtx := "暂无用户信息"
-	result, err := e.executor.Execute(ctx, "DescribeCompShareInstance", map[string]any{})
+	result, err := e.executor.Execute(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100})
 	if err != nil {
 		// Context injection is best-effort; continue with default context.
 		_ = err
@@ -84,6 +86,15 @@ func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
 		stage = prompt.ClassifyUser(result)
 	}
 	return prompt.GetSuggestions(stage), nil
+}
+
+// InitWithContext performs context injection with a pre-built user context string,
+// bypassing the DescribeCompShareInstance API call. Used for testing.
+func (e *Engine) InitWithContext(userCtx string) {
+	systemPrompt := prompt.BuildSystem(userCtx)
+	e.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
+	}
 }
 
 // Chat processes one user message through the ReAct loop and returns the final text reply.
@@ -123,8 +134,34 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 		}
 		e.messages = append(e.messages, assistantMsg)
 
-		for _, tc := range resp.ToolCalls {
+		for idx, tc := range resp.ToolCalls {
 			toolResult := e.executeTool(ctx, tc, onStep)
+
+			// Deterministic final reply — return directly without LLM narration
+			if finalMsg, ok := isFinalReply(toolResult); ok {
+				// Append matching tool response for this tool call
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:       openai.ChatMessageRoleTool,
+					Content:    finalMsg,
+					ToolCallID: tc.ID,
+				})
+				// Pad remaining unprocessed tool calls with synthetic responses
+				// to keep the history well-formed (every tool_call needs a tool response)
+				for _, remaining := range resp.ToolCalls[idx+1:] {
+					e.messages = append(e.messages, openai.ChatCompletionMessage{
+						Role:       openai.ChatMessageRoleTool,
+						Content:    "skipped",
+						ToolCallID: remaining.ID,
+					})
+				}
+				// Append the final assistant message
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: finalMsg,
+				})
+				return finalMsg, nil
+			}
+
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
 				Content:    toolResult,
@@ -134,6 +171,18 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	}
 
 	return "抱歉，处理轮次超限，请重新描述您的需求。", nil
+}
+
+// finalReplyPrefix marks a tool result as a deterministic final reply that
+// should be returned directly to the user without LLM narration.
+const finalReplyPrefix = "\x00FINAL:"
+
+// isFinalReply checks if a tool result is a deterministic final reply.
+func isFinalReply(result string) (string, bool) {
+	if strings.HasPrefix(result, finalReplyPrefix) {
+		return strings.TrimPrefix(result, finalReplyPrefix), true
+	}
+	return "", false
 }
 
 // executeTool handles security check + execution for one tool call.
@@ -169,14 +218,14 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	// Invariant: BuildArgs functions must only reference specific named keys from wfCtx.Params.
 	if workflow.IsWorkflowTool(action) {
 		args = filterAllowedParams(action, args)
-		onStep(StepEvent{Type: StepToolCall, Action: action, Args: args})
+		onStep(StepEvent{Type: StepToolCall, Action: action, Args: sanitizer.SanitizeArgs(action, args)})
 		return e.executeWorkflow(ctx, action, args, onStep)
 	}
 
 	// Diagnosis meta-tools → delegate to diagnosis engine.
 	if diagnosis.IsDiagnosisTool(action) {
 		args = filterAllowedParams(action, args)
-		onStep(StepEvent{Type: StepToolCall, Action: action, Args: args})
+		onStep(StepEvent{Type: StepToolCall, Action: action, Args: sanitizer.SanitizeArgs(action, args)})
 		return e.executeDiagnosis(ctx, action, args, onStep)
 	}
 
@@ -190,16 +239,16 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	if level == security.L2 {
 		msg := fmt.Sprintf("安全限制：%s 是破坏性操作（L2），已拒绝执行。请到控制台手动操作。", action)
 		onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
-		return msg
+		return finalReplyPrefix + msg
 	}
 
 	// L1: must get user confirmation before executing
 	if level == security.L1 {
-		onStep(StepEvent{Type: StepConfirmNeeded, Action: action, Args: args, Message: "此操作需要您确认"})
+		onStep(StepEvent{Type: StepConfirmNeeded, Action: action, Args: sanitizer.SanitizeArgs(action, args), Message: "此操作需要您确认"})
 		if e.confirmFn == nil || !e.confirmFn(action, args) {
 			msg := fmt.Sprintf("操作 %s 已取消（用户未确认）。", action)
 			onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
-			return msg
+			return finalReplyPrefix + msg
 		}
 	}
 
@@ -216,14 +265,35 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return errMsg
 	}
 
-	formatted := prompt.FormatToolResult(result)
-	onStep(StepEvent{Type: StepToolResult, Action: action, Message: "调用成功"})
+	// Dual-channel sanitization: extract display-only content before redacting
+	var display string
+	if action == "DescribeCompShareJupyterToken" {
+		if token := sanitizer.ExtractJupyterToken(result); token != "" {
+			display = fmt.Sprintf("Jupyter Token: %s", token)
+		}
+	}
+
+	// Sanitize before sending to LLM context
+	sanitized := sanitizer.Sanitize(action, result)
+	formatted := prompt.FormatToolResult(sanitized)
+	onStep(StepEvent{Type: StepToolResult, Action: action, Message: "调用成功", Display: display})
 	return formatted
 }
 
 // executeWorkflow runs a predefined workflow and returns the result as a JSON string
 // for the LLM to narrate.
 func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
+	// Hard guard — instance-operation workflows MUST have a non-empty UHostId.
+	// CreateInstanceWorkflow is excluded because it creates a new instance.
+	if action != "CreateInstanceWorkflow" {
+		uHostId, _ := args["UHostId"].(string)
+		if uHostId == "" {
+			msg := "请先确认要操作的实例。当有多个实例时，请列出实例列表让用户选择后再执行操作。"
+			onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
+			return fmt.Sprintf(`{"success":false,"message":%q}`, msg)
+		}
+	}
+
 	wf, ok := workflow.GetWorkflow(action)
 	if !ok {
 		msg := fmt.Sprintf("未知的工作流: %s", action)
@@ -245,13 +315,18 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 				eventType = StepBlocked
 			}
 		}
-		if ev.Status == "failed" {
+		switch ev.Status {
+		case "failed":
 			eventType = StepError
+		case "success":
+			if ev.Type == workflow.StepToolCall {
+				eventType = StepToolResult
+			}
 		}
 		onStep(StepEvent{
 			Type:    eventType,
 			Action:  ev.Tool,
-			Args:    ev.Args,
+			Args:    sanitizer.SanitizeArgs(ev.Tool, ev.Args),
 			Message: fmt.Sprintf("[%d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status),
 		})
 	})
@@ -261,6 +336,11 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		msg := fmt.Sprintf("工作流执行错误: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Message: msg})
 		return msg
+	}
+
+	// User-cancelled workflows return a deterministic reply directly
+	if !result.Success && result.Message == "用户取消了操作" {
+		return finalReplyPrefix + fmt.Sprintf("%s 已取消。", action)
 	}
 
 	b, _ := json.Marshal(result)
@@ -277,14 +357,19 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	}
 
 	diagEngine := diagnosis.NewEngine(e.executor, func(ev diagnosis.DiagEvent) {
-		eventType := StepToolCall
-		if ev.Status == "failed" {
+		var eventType StepType
+		switch ev.Status {
+		case "running":
+			eventType = StepToolCall
+		case "failed":
 			eventType = StepError
+		default: // "checked", "concluded"
+			eventType = StepToolResult
 		}
 		onStep(StepEvent{
 			Type:    eventType,
 			Action:  ev.Tool,
-			Args:    ev.Args,
+			Args:    sanitizer.SanitizeArgs(ev.Tool, ev.Args),
 			Message: fmt.Sprintf("[诊断 %d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status),
 		})
 	})
@@ -356,15 +441,45 @@ type StepEvent struct {
 	Action  string
 	Args    map[string]any
 	Message string
+	Display string // content for CLI display only (not sent to LLM), e.g. raw JupyterToken
 }
 
 // trimHistory keeps the message list under maxHistoryMessages by dropping
 // the oldest non-system messages. The system prompt (index 0) is always kept.
+// Cut point is aligned to a safe message boundary to avoid orphaned tool_calls
+// or tool responses (which would make the history malformed for the LLM).
 func (e *Engine) trimHistory() {
 	if len(e.messages) <= 1+maxHistoryMessages {
 		return
 	}
-	// Keep: messages[0] (system) + last maxHistoryMessages messages
-	keep := e.messages[len(e.messages)-maxHistoryMessages:]
+
+	// Target: keep system (index 0) + last maxHistoryMessages messages.
+	// Start from the candidate cut point and scan forward to find a safe boundary.
+	// Safe boundary = a message whose role is "user" or "assistant" without tool_calls.
+	// This ensures we never start with an orphaned tool message or leave
+	// an assistant(tool_calls) without its matching tool responses.
+	candidateStart := len(e.messages) - maxHistoryMessages
+	if candidateStart <= 1 {
+		return
+	}
+
+	safeStart := candidateStart
+	for safeStart < len(e.messages) {
+		msg := e.messages[safeStart]
+		if msg.Role == openai.ChatMessageRoleUser {
+			break // user message is always a safe boundary
+		}
+		if msg.Role == openai.ChatMessageRoleAssistant && len(msg.ToolCalls) == 0 {
+			break // plain assistant reply is safe
+		}
+		// Skip tool messages and assistant(tool_calls) to find the next safe point
+		safeStart++
+	}
+
+	if safeStart >= len(e.messages) {
+		return // no safe cut point found, don't trim
+	}
+
+	keep := e.messages[safeStart:]
 	e.messages = append([]openai.ChatCompletionMessage{e.messages[0]}, keep...)
 }
