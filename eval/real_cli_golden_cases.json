@@ -1,0 +1,214 @@
+[
+  {
+    "id": "golden_01_create",
+    "input": "帮我开一台4090",
+    "confirm": "n",
+    "expect_tool_calls": ["CreateInstanceWorkflow"],
+    "expect_first_tool": "CreateInstanceWorkflow",
+    "reply_contains": ["取消", "创建"]
+  },
+  {
+    "id": "golden_02_start",
+    "input": "把 uhost-1lbq4e0nnxg7 开机",
+    "confirm": "y",
+    "expect_tool_calls": ["StartInstanceWorkflow", "StartCompShareInstance"],
+    "expect_first_tool": "StartInstanceWorkflow",
+    "reply_contains": ["开机"]
+  },
+  {
+    "id": "golden_03_stop",
+    "input": "帮我关掉 uhost-1p1r57tl3cmw",
+    "confirm": "n",
+    "expect_tool_calls": ["StopInstanceWorkflow"],
+    "expect_first_tool": "StopInstanceWorkflow",
+    "reply_contains": ["取消", "关机"]
+  },
+  {
+    "id": "golden_04_reboot",
+    "input": "重启一下 uhost-1p1r57tl3cmw",
+    "confirm": "n",
+    "expect_tool_calls": ["RebootInstanceWorkflow"],
+    "expect_first_tool": "RebootInstanceWorkflow",
+    "reply_contains": ["取消", "重启"]
+  },
+  {
+    "id": "golden_05_jupyter_token",
+    "input": "获取 uhost-1p1r57tl3cmw 的 Jupyter Token",
+    "expect_tool_calls": ["DescribeCompShareJupyterToken"],
+    "expect_display": true,
+    "reply_contains": ["Token"],
+    "reply_not_contains": ["UCloud-CompShare-"]
+  },
+  {
+    "id": "golden_06_reset_password",
+    "input": "帮我把 uhost-1p1r57tl3cmw 的密码重置为 NewPass123!",
+    "confirm": "n",
+    "expect_tool_calls": ["ResetPasswordWorkflow"],
+    "expect_first_tool": "ResetPasswordWorkflow",
+    "reply_contains": ["取消", "密码"]
+  },
+  {
+    "id": "golden_07_ssh_diagnose",
+    "input": "SSH连不上",
+    "expect_no_tool_call": true,
+    "reply_contains": ["实例"],
+    "reply_contains_any": ["ID", "uhost-"]
+  },
+  {
+    "id": "golden_08_port_diagnose",
+    "input": "JupyterLab打不开",
+    "expect_no_tool_call": true,
+    "reply_contains": ["实例"],
+    "reply_contains_any": ["ID", "uhost-"]
+  },
+  {
+    "id": "golden_09_knowledge_nocard",
+    "input": "什么是无卡模式",
+    "expect_no_tool_call": true,
+    "reply_contains": ["无卡", "控制台"]
+  },
+  {
+    "id": "golden_10_knowledge_accelerator",
+    "input": "怎么加速github",
+    "expect_no_tool_call": true,
+    "reply_contains": ["加速", "accelerator"]
+  },
+  {
+    "id": "golden_11_security_block",
+    "input": "帮我删除这台实例",
+    "expect_no_tool_call": true,
+    "reply_contains": ["控制台"]
+  },
+  {
+    "id": "golden_12_sanitize_token",
+    "input": "获取 jupyter token",
+    "expect_no_tool_call": true,
+    "reply_contains": ["Token"],
+    "reply_contains_any": ["ID", "uhost-"]
+  },
+  {
+    "id": "golden_13_disambiguate_stop",
+    "input": "关机吧",
+    "expect_no_tool_call": true,
+    "reply_contains": ["哪", "实例"]
+  },
+  {
+    "id": "golden_14_disambiguate_reboot",
+    "input": "重启实例",
+    "expect_no_tool_call": true,
+    "reply_contains": ["哪", "实例"]
+  },
+  {
+    "id": "golden_15_explicit_reboot",
+    "input": "重启一下 uhost-1p1r57tl3cmw",
+    "confirm": "n",
+    "expect_tool_calls": ["RebootInstanceWorkflow"],
+    "expect_first_tool": "RebootInstanceWorkflow",
+    "reply_contains": ["取消", "重启"]
+  },
+  {
+    "id": "golden_16_billing_diagnosis",
+    "input": "为什么在扣费",
+    "expect_tool_calls": ["DiagnoseBilling"],
+    "reply_contains": ["费用", "关机"],
+    "reply_not_contains": ["GetCompShareInstancePrice", "DescribeCompShareInstance"]
+  },
+  {
+    "id": "golden_17_init_failure_diagnosis",
+    "input": "实例初始化失败了",
+    "expect_tool_calls": ["DiagnoseInitFailure"],
+    "reply_contains": ["初始化"]
+  },
+  {
+    "id": "golden_18_starting_not_billed",
+    "input": "实例卡在启动中",
+    "expect_tool_calls": ["DiagnoseInitFailure"],
+    "reply_contains": ["启动"]
+  },
+  {
+    "id": "golden_19_set_stop_scheduler",
+    "input": "1小时后自动关机",
+    "confirm": "n",
+    "expect_tool_calls": ["SetStopSchedulerWorkflow"],
+    "expect_first_tool": "SetStopSchedulerWorkflow",
+    "reply_contains": ["取消", "关机"]
+  },
+  {
+    "id": "golden_20_cancel_stop_scheduler",
+    "input": "取消定时关机",
+    "confirm": "n",
+    "expect_tool_calls": ["CancelStopSchedulerWorkflow"],
+    "expect_first_tool": "CancelStopSchedulerWorkflow",
+    "reply_contains": ["取消"]
+  },
+  {
+    "id": "golden_21_disambiguate_scheduler",
+    "input": "帮我设个定时关机",
+    "expect_no_tool_call": true,
+    "reply_contains": ["哪", "实例"]
+  },
+  {
+    "id": "multi_01_disambiguate_stop",
+    "steps": [
+      {
+        "input": "关机吧",
+        "expect_no_tool_call": true,
+        "reject_tool_calls": ["StopInstanceWorkflow", "StopCompShareInstance"],
+        "reply_contains": ["哪"]
+      },
+      {
+        "input": "关掉 train-a",
+        "confirm": "y",
+        "expect_tool_calls": ["StopInstanceWorkflow"],
+        "expect_first_tool": "StopInstanceWorkflow",
+        "reply_contains": ["关机"]
+      }
+    ]
+  },
+  {
+    "id": "multi_02_scheduler_two_turn",
+    "steps": [
+      {
+        "input": "帮我设个定时关机",
+        "expect_no_tool_call": true,
+        "reply_contains": ["哪"]
+      },
+      {
+        "input": "就那台 4090，1小时后关",
+        "confirm": "y",
+        "expect_tool_calls": ["SetStopSchedulerWorkflow"],
+        "expect_first_tool": "SetStopSchedulerWorkflow"
+      }
+    ]
+  },
+  {
+    "id": "multi_03_billing_followup",
+    "steps": [
+      {
+        "input": "为什么在扣费",
+        "expect_tool_calls": ["DiagnoseBilling"],
+        "reply_contains": ["费用"]
+      },
+      {
+        "input": "那关机后还有什么费",
+        "expect_no_tool_call": true,
+        "reply_contains": ["磁盘"]
+      }
+    ]
+  },
+  {
+    "id": "multi_04_diagnosis_补id",
+    "steps": [
+      {
+        "input": "SSH连不上",
+        "expect_no_tool_call": true,
+        "reply_contains_any": ["哪", "ID", "uhost-"]
+      },
+      {
+        "input": "就是 uhost-xxx 那台",
+        "expect_tool_calls": ["DiagnoseSSH"],
+        "reply_contains": ["SSH"]
+      }
+    ]
+  }
+]
