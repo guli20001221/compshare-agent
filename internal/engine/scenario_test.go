@@ -1771,3 +1771,103 @@ func TestScenario_EngineGuard_CreateInstanceBypasses(t *testing.T) {
 	// CreateInstanceWorkflow should proceed normally (no UHostId guard)
 	assert.Contains(t, exec.calls, "CreateCompShareInstance")
 }
+
+// ── Scenario: SetStopScheduler — happy path ──────────────────────────────
+func TestScenario_SetStopScheduler_Success(t *testing.T) {
+	exec := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": {
+				"TotalCount": float64(1),
+				"UHostSet": []any{
+					map[string]any{
+						"UHostId": "uhost-xxx", "Name": "my-gpu",
+						"State": "Running", "Zone": "cn-bj2-04",
+						"GpuType": "4090", "GPU": float64(1),
+						"ChargeType": "Dynamic",
+					},
+				},
+			},
+			"UpdateCompShareStopScheduler": {"RetCode": 0},
+		},
+	}
+
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{tc("SetStopSchedulerWorkflow", map[string]any{
+			"UHostId": "uhost-xxx", "AfterMinutes": float64(60),
+		})}},
+		{Content: "已为 my-gpu 设置 1 小时后自动关机。"},
+	}}
+
+	eng := NewWithDeps(mock, exec, func(a string, args map[string]any) bool { return true })
+	eng.Init(context.Background())
+
+	reply, err := eng.Chat(context.Background(), "1小时后自动关机", func(e StepEvent) {})
+	assert.NoError(t, err)
+	assert.Contains(t, reply, "关机")
+	// Reset calls after Init to isolate workflow calls
+	// (Init calls DescribeCompShareInstance for context)
+	assert.Contains(t, exec.calls, "UpdateCompShareStopScheduler")
+}
+
+// ── Scenario: CancelStopScheduler — happy path ──────────────────────────
+func TestScenario_CancelStopScheduler_Success(t *testing.T) {
+	exec := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": {
+				"TotalCount": float64(1),
+				"UHostSet": []any{
+					map[string]any{
+						"UHostId": "uhost-xxx", "Name": "my-gpu",
+						"State": "Running", "Zone": "cn-bj2-04",
+						"GpuType": "4090", "GPU": float64(1),
+						"ChargeType": "Dynamic",
+					},
+				},
+			},
+			"DeleteCompShareStopScheduler": {"RetCode": 0},
+		},
+	}
+
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{tc("CancelStopSchedulerWorkflow", map[string]any{
+			"UHostId": "uhost-xxx",
+		})}},
+		{Content: "已取消 my-gpu 的定时关机。"},
+	}}
+
+	eng := NewWithDeps(mock, exec, func(a string, args map[string]any) bool { return true })
+	eng.Init(context.Background())
+
+	reply, err := eng.Chat(context.Background(), "取消定时关机", func(e StepEvent) {})
+	assert.NoError(t, err)
+	assert.Contains(t, reply, "取消")
+	assert.Contains(t, exec.calls, "DeleteCompShareStopScheduler")
+}
+
+// ── Scenario: Scheduler disambiguation — multiple instances ──────────────
+func TestScenario_Disambiguate_SchedulerMultipleInstances(t *testing.T) {
+	exec := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": {
+				"TotalCount": float64(2),
+				"UHostSet": []any{
+					map[string]any{"UHostId": "uhost-1", "Name": "train-a", "State": "Running", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"},
+					map[string]any{"UHostId": "uhost-2", "Name": "train-b", "State": "Running", "GpuType": "A100", "GPU": float64(1), "ChargeType": "Dynamic"},
+				},
+			},
+		},
+	}
+
+	// LLM correctly asks for clarification instead of calling workflow
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "您有多台实例，请问要为哪台设置定时关机？\n1. train-a (uhost-1)\n2. train-b (uhost-2)"},
+	}}
+
+	eng := NewWithDeps(mock, exec, nil)
+	eng.Init(context.Background())
+
+	reply, err := eng.Chat(context.Background(), "帮我设个定时关机", func(e StepEvent) {})
+	assert.NoError(t, err)
+	assert.Contains(t, reply, "哪")
+	assert.NotContains(t, exec.calls, "UpdateCompShareStopScheduler")
+}
