@@ -1949,3 +1949,81 @@ func TestContainsScanAllSignal(t *testing.T) {
 		})
 	}
 }
+
+// initFailureScenarioExecutor returns a mockExecutor with a minimal
+// UHostSet so that DiagnoseInitFailure's chain can execute when allowed
+// past the guard. The host state is Install Fail so chain completion
+// has something meaningful to report in the passing tests.
+func initFailureScenarioExecutor() *mockExecutor {
+	return &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{
+					"UHostId":            "uhost-init-001",
+					"Name":               "wyptest",
+					"State":              "Install Fail",
+					"CompShareImageName": "cuda130_torch291_py312",
+				},
+			},
+		},
+	}}
+}
+
+const vagueClarifyPrefix = "请问是哪台实例出了问题？"
+
+func TestVagueCrashGuard_VagueNoTargetBlocked(t *testing.T) {
+	executor := initFailureScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{}`),
+		}},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "昨晚那台跑崩了", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, vagueClarifyPrefix,
+		"vague failure with no target must trigger Gate 1 clarification")
+	assert.NotContains(t, executor.calls, "DescribeCompShareInstance",
+		"guard must stop the chain before any API call")
+}
+
+func TestVagueCrashGuard_VagueWithTargetBlocked(t *testing.T) {
+	// P1 regression: guard must fire even when the LLM provides a target,
+	// because the user's symptom description is still vague.
+	executor := initFailureScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{"UHostId":"uhost-init-001"}`),
+		}},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "uhost-init-001 跑崩了", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, vagueClarifyPrefix,
+		"vague failure wording must trigger Gate 1 even when target is known")
+	assert.NotContains(t, executor.calls, "DescribeCompShareInstance")
+}
+
+func TestVagueCrashGuard_VagueScanAllBlocked(t *testing.T) {
+	// P2 regression: scan-all phrasing alone must NOT bypass the guard when
+	// the user has not named an init-failure symptom. "所有有问题的实例"
+	// is vague — could be SSH, GPU, billing, etc.
+	executor := initFailureScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{}`),
+		}},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "帮我扫一下所有有问题的实例", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, vagueClarifyPrefix,
+		"scan-all phrasing without init-failure signal must still be blocked")
+	assert.NotContains(t, executor.calls, "DescribeCompShareInstance")
+}

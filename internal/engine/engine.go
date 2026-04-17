@@ -399,6 +399,18 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		return msg
 	}
 
+	// Vague-failure guard — DiagnoseInitFailure only.
+	// Gate 1 (symptom specificity): the user message must contain an
+	// init-failure-specific signal. Vague fault language like "跑崩了" /
+	// "挂了" is blocked here, even if the LLM provided a target instance.
+	// This is a hard safety net behind the prompt-level vague_failure
+	// routing class — deliberately does NOT redirect to another Diagnose*.
+	if action == "DiagnoseInitFailure" && !containsInitFailureSignal(e.lastUserMsg) {
+		msg := "请问是哪台实例出了问题？能描述一下具体现象吗（例如：SSH 断了、GPU 报错、服务崩了、初始化卡住等）？"
+		onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
+		return finalReplyPrefix + msg
+	}
+
 	diagEngine := diagnosis.NewEngine(e.executor, func(ev diagnosis.DiagEvent) {
 		var eventType StepType
 		switch ev.Status {
