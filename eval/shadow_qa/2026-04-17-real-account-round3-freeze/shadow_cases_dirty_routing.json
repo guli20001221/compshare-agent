@@ -1,0 +1,131 @@
+[
+  {
+    "id": "dirtyfinal_01_gpu_colloquial_needs_clarification",
+    "steps": [
+      {
+        "hook_before": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round3-freeze\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round3-freeze\\shadow_qa_agent.yaml",
+          "start",
+          "uhost-1paxrg4g1vfw"
+        ],
+        "input": "那个 3080Ti 给我关了",
+        "expect_no_tool_call": true,
+        "reject_tool_calls": [
+          "GetGPUSpecs",
+          "StopInstanceWorkflow",
+          "StopCompShareInstance"
+        ],
+        "reply_contains_any": [
+          "哪",
+          "实例",
+          "uhost-"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "dirtyfinal_02_explicit_name_stop_routes_workflow",
+    "steps": [
+      {
+        "hook_before": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round3-freeze\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round3-freeze\\shadow_qa_agent.yaml",
+          "start",
+          "uhost-1paxrg4g1vfw"
+        ],
+        "input": "帮我关掉 qa-shadow-20260417-01",
+        "confirm": "y",
+        "expect_tool_calls": [
+          "StopInstanceWorkflow"
+        ],
+        "expect_first_tool": "StopInstanceWorkflow",
+        "reply_contains_any": [
+          "关机",
+          "已成功关机"
+        ],
+        "hook_after": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round3-freeze\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round3-freeze\\shadow_qa_agent.yaml",
+          "describe",
+          "uhost-1paxrg4g1vfw"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "dirtyfinal_03_contextual_just_now_start",
+    "steps": [
+      {
+        "hook_before": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round3-freeze\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round3-freeze\\shadow_qa_agent.yaml",
+          "start",
+          "uhost-1paxrg4g1vfw"
+        ],
+        "input": "帮我关掉 qa-shadow-20260417-01",
+        "confirm": "y",
+        "expect_tool_calls": [
+          "StopInstanceWorkflow"
+        ],
+        "expect_first_tool": "StopInstanceWorkflow",
+        "reply_contains_any": [
+          "关机",
+          "已成功关机"
+        ],
+        "hook_after": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round3-freeze\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round3-freeze\\shadow_qa_agent.yaml",
+          "describe",
+          "uhost-1paxrg4g1vfw"
+        ]
+      },
+      {
+        "input": "帮我开一下刚才那个",
+        "confirm": "y",
+        "expect_tool_calls": [
+          "StartInstanceWorkflow"
+        ],
+        "expect_first_tool": "StartInstanceWorkflow",
+        "reply_contains_any": [
+          "开机",
+          "已成功开机",
+          "启动"
+        ],
+        "hook_after": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round3-freeze\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round3-freeze\\shadow_qa_agent.yaml",
+          "describe",
+          "uhost-1paxrg4g1vfw"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "dirtyfinal_04_vague_crash_then_specific_failure",
+    "steps": [
+      {
+        "input": "昨晚那台跑崩了",
+        "expect_no_tool_call": true,
+        "reply_contains_any": [
+          "哪",
+          "实例",
+          "ID",
+          "uhost-"
+        ]
+      },
+      {
+        "input": "就是 wyptest 那台",
+        "expect_tool_calls": [
+          "DiagnoseInitFailure"
+        ],
+        "expect_first_tool": "DiagnoseInitFailure",
+        "reply_contains_any": [
+          "初始化",
+          "失败",
+          "删除"
+        ]
+      }
+    ]
+  }
+]

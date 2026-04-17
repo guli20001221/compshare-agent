@@ -35,20 +35,26 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 
 		switch step.Type {
 		case StepToolCall:
+			// Resolve tool name: ToolFunc (dynamic) takes priority over Tool (static)
+			toolName := step.Tool
+			if step.ToolFunc != nil {
+				toolName = step.ToolFunc(wfCtx)
+			}
+
 			args, err := step.BuildArgs(wfCtx)
 			if err != nil {
-				e.emit(step.Name, i, total, StepToolCall, "failed", step.Tool, nil, err.Error())
+				e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, err.Error())
 				result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: err.Error()})
 				result.StoppedAt = step.Name
 				result.Message = fmt.Sprintf("步骤「%s」参数构建失败: %v", step.Name, err)
 				return result, nil
 			}
 
-			e.emit(step.Name, i, total, StepToolCall, "running", step.Tool, args, "")
+			e.emit(step.Name, i, total, StepToolCall, "running", toolName, args, "")
 
-			apiResult, err := e.executor.Execute(ctx, step.Tool, args)
+			apiResult, err := e.executor.Execute(ctx, toolName, args)
 			if err != nil {
-				e.emit(step.Name, i, total, StepToolCall, "failed", step.Tool, nil, err.Error())
+				e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, err.Error())
 				result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: err.Error()})
 				result.StoppedAt = step.Name
 				result.Message = fmt.Sprintf("步骤「%s」执行失败: %v", step.Name, err)
@@ -58,9 +64,9 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 			wfCtx.StepResults[step.Name] = apiResult
 
 			if step.CheckResult != nil {
-				ok, msg := step.CheckResult(apiResult)
+				ok, msg := step.CheckResult(wfCtx, apiResult)
 				if !ok {
-					e.emit(step.Name, i, total, StepToolCall, "failed", step.Tool, nil, msg)
+					e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, msg)
 					result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: msg})
 					result.StoppedAt = step.Name
 					result.Message = msg
@@ -68,11 +74,18 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 				}
 			}
 
-			e.emit(step.Name, i, total, StepToolCall, "success", step.Tool, nil, "")
+			e.emit(step.Name, i, total, StepToolCall, "success", toolName, nil, "")
 			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "success"})
 
 		case StepConfirm:
-			args, _ := step.BuildArgs(wfCtx)
+			args, err := step.BuildArgs(wfCtx)
+			if err != nil {
+				e.emit(step.Name, i, total, StepConfirm, "failed", "", nil, err.Error())
+				result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: err.Error()})
+				result.StoppedAt = step.Name
+				result.Message = fmt.Sprintf("步骤「%s」参数构建失败: %v", step.Name, err)
+				return result, nil
+			}
 			e.emit(step.Name, i, total, StepConfirm, "waiting", "", args, "")
 
 			if e.confirmFn == nil || !e.confirmFn(def.Name, args) {

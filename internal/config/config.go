@@ -16,9 +16,13 @@ type AgentConfig struct {
 	Executor string    `yaml:"executor"` // "external" or "internal"
 
 	CompShareAPIURL string `yaml:"compshare_api_url"`
-	PublicKey        string `yaml:"public_key"`
-	PrivateKey       string `yaml:"private_key"`
-	Region           string `yaml:"region"`
+	PublicKey       string `yaml:"public_key"`
+	PrivateKey      string `yaml:"private_key"`
+	Region          string `yaml:"region"`
+	// ProjectId is the CompShare project ID required by some APIs
+	// (e.g. UpdateCompShareStopScheduler). Optional: if empty, the
+	// engine will attempt to discover it via GetProjectList at Init.
+	ProjectId string `yaml:"project_id"`
 }
 
 type LLMConfig struct {
@@ -40,6 +44,7 @@ func Load(path string) (*Config, error) {
 	// Environment variables override YAML values (secrets should not be in config files)
 	envOverride(&cfg.Agent.PublicKey, "COMPSHARE_PUBLIC_KEY")
 	envOverride(&cfg.Agent.PrivateKey, "COMPSHARE_PRIVATE_KEY")
+	envOverride(&cfg.Agent.ProjectId, "COMPSHARE_PROJECT_ID")
 	envOverride(&cfg.Agent.LLM.APIKey, "LLM_API_KEY")
 
 	return &cfg, nil

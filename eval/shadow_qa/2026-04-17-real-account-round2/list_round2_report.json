@@ -1,0 +1,41 @@
+[
+  {
+    "case_id": "round2_list_instances",
+    "input": "??????",
+    "steps": [
+      {
+        "step": 1,
+        "input": "??????",
+        "parsed": {
+          "tool_calls": [],
+          "display_lines": [],
+          "assistant_reply": "您好，请问您遇到了什么问题，或是需要我帮您做什么操作呢？比如查询实例、创建GPU实例、诊断故障、查询GPU规格等都可以告诉我。",
+          "errors": [],
+          "has_confirm": false,
+          "raw_output": "\nAssistant> 您好，请问您遇到了什么问题，或是需要我帮您做什么操作呢？比如查询实例、创建GPU实例、诊断故障、查询GPU规格等都可以告诉我。\n\nYou> "
+        },
+        "passed": false,
+        "failures": [
+          "expected one of ['DescribeCompShareInstance'], got []",
+          "expected display line, none found",
+          "reply missing any of ['??', '??']"
+        ]
+      }
+    ],
+    "parsed": {
+      "tool_calls": [],
+      "display_lines": [],
+      "assistant_reply": "您好，请问您遇到了什么问题，或是需要我帮您做什么操作呢？比如查询实例、创建GPU实例、诊断故障、查询GPU规格等都可以告诉我。",
+      "errors": [],
+      "has_confirm": false,
+      "raw_output": "\nAssistant> 您好，请问您遇到了什么问题，或是需要我帮您做什么操作呢？比如查询实例、创建GPU实例、诊断故障、查询GPU规格等都可以告诉我。\n\nYou> "
+    },
+    "passed": false,
+    "failures": [
+      "[step 1] expected one of ['DescribeCompShareInstance'], got []",
+      "[step 1] expected display line, none found",
+      "[step 1] reply missing any of ['??', '??']"
+    ],
+    "run_index": 1
+  }
+]

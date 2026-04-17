@@ -115,6 +115,52 @@ func TestGetGPURecommendation_UnknownScene(t *testing.T) {
 	assert.Equal(t, "4090", recs[0].GPUType)
 }
 
+func TestGetGPUSpecs_V100S_DenseNotSparsity(t *testing.T) {
+	result, err := GetGPUSpecs("V100S")
+	assert.NoError(t, err)
+	spec := result["spec"].(GPUSpec)
+	// V100S Tensor Core FP16 dense = 32.8 TFLOPS (not 130 which is with Tensor sparsity)
+	assert.Equal(t, 32.8, spec.FP16)
+}
+
+func TestGetGPUSpecs_H100_H200_NotAdvertised(t *testing.T) {
+	// H100 and H200 are NOT available on CompShare (upstream gpu.go only
+	// defines H20). Guard against accidental re-introduction of ghost GPUs
+	// that would lead the agent to recommend unbuyable hardware.
+	for _, gt := range []string{"H100", "H200"} {
+		_, err := GetGPUSpecs(gt)
+		assert.Error(t, err, "%s must not be in gpuSpecs; platform does not sell it", gt)
+	}
+}
+
+func TestGetGPURecommendation_FullTraining_NoH100(t *testing.T) {
+	// Full-training recommendation must not include H100 — the platform
+	// only sells H20 in the Hopper tier.
+	result := GetGPURecommendation("全量训练", false)
+	recs := result["recommendations"].([]GPURec)
+	for _, r := range recs {
+		assert.NotEqual(t, "H100", r.GPUType, "H100 must not appear in full-training recs")
+		assert.NotEqual(t, "H200", r.GPUType, "H200 must not appear in full-training recs")
+	}
+}
+
+func TestGetGPUSpecs_4090_ConservativeMaxCPU(t *testing.T) {
+	// Upstream has G_AMD_4090 (MaxCPU=128) and G_INTEL_4090 (MaxCPU=140).
+	// We report the AMD lower bound so users don't over-plan.
+	result, err := GetGPUSpecs("4090")
+	assert.NoError(t, err)
+	spec := result["spec"].(GPUSpec)
+	assert.Equal(t, 128, spec.MaxCPU, "4090 MaxCPU must match AMD lower bound, not Intel upper bound")
+}
+
+func TestGetGPUSpecs_5090_Estimated(t *testing.T) {
+	result, err := GetGPUSpecs("5090")
+	assert.NoError(t, err)
+	spec := result["spec"].(GPUSpec)
+	assert.Equal(t, 105.0, spec.FP16)
+	assert.Equal(t, 32, spec.VRAM)
+}
+
 func TestExecuteTool_GetGPUSpecs(t *testing.T) {
 	result, err := ExecuteTool("GetGPUSpecs", map[string]any{
 		"GpuType": "H20",
@@ -123,6 +169,7 @@ func TestExecuteTool_GetGPUSpecs(t *testing.T) {
 
 	spec := result["spec"].(GPUSpec)
 	assert.Equal(t, 96, spec.VRAM)
+	assert.Equal(t, 148.0, spec.FP16)
 }
 
 func TestExecuteTool_GetGPURecommendation(t *testing.T) {
@@ -132,6 +179,25 @@ func TestExecuteTool_GetGPURecommendation(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	assert.NotNil(t, result["recommendations"])
+}
+
+func TestGetGPURecommendation_BuildRecsInvalidGPU(t *testing.T) {
+	// buildRecs silently skips unknown GPU types — verify no panic
+	result := GetGPURecommendation("推理", false)
+	recs := result["recommendations"].([]GPURec)
+	for _, r := range recs {
+		_, err := GetGPUSpecs(r.GPUType)
+		assert.NoError(t, err, "recommended GPU %s should exist in spec table", r.GPUType)
+	}
+}
+
+func TestContainsAny_EdgeCases(t *testing.T) {
+	assert.False(t, containsAny("", "test"))
+	assert.True(t, containsAny("hello", ""))          // Go: strings.Contains(s, "") is always true
+	assert.True(t, containsAny("推理部署", "推理"))
+	assert.True(t, containsAny("lora微调", "lora"))    // caller must pre-lowercase s
+	assert.False(t, containsAny("LORA微调", "lora"))   // uppercase s won't match (caller's job)
+	assert.False(t, containsAny("training", "推理"))
 }
 
 func TestExecuteTool_Unknown(t *testing.T) {

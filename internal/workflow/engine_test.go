@@ -300,7 +300,7 @@ func TestEngine_Run_CheckResultStops(t *testing.T) {
 				BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 					return map[string]any{}, nil
 				},
-				CheckResult: func(result map[string]any) (bool, string) {
+				CheckResult: func(_ *Context, result map[string]any) (bool, string) {
 					if result["Price"] == 0 {
 						return false, "价格为零，无法继续"
 					}
@@ -372,6 +372,75 @@ func TestEngine_Run_BuildArgsError(t *testing.T) {
 
 	// Executor should never have been called
 	assert.Empty(t, executor.calls)
+}
+
+func TestEngine_Run_ToolFuncOverridesTool(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DynamicTool": {"ok": true},
+	}}
+	onStep, events := collectEvents()
+
+	def := &Definition{
+		Name: "ToolFuncTest",
+		Steps: []Step{
+			{
+				Name: "dynamic_step",
+				Type: StepToolCall,
+				Tool: "StaticTool", // should be ignored
+				ToolFunc: func(wfCtx *Context) string {
+					return "DynamicTool" // should override Tool
+				},
+				BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+					return map[string]any{"key": "value"}, nil
+				},
+			},
+		},
+	}
+
+	eng := NewEngine(executor, nil, onStep)
+	result, err := eng.Run(context.Background(), def, nil)
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+
+	// Executor should have been called with "DynamicTool", not "StaticTool"
+	assert.Len(t, executor.calls, 1)
+	assert.Equal(t, "DynamicTool", executor.calls[0].action)
+
+	// Events should reference "DynamicTool"
+	for _, ev := range *events {
+		assert.Equal(t, "DynamicTool", ev.Tool)
+	}
+}
+
+func TestEngine_Run_ToolFuncNil_UsesTool(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"StaticTool": {"ok": true},
+	}}
+	onStep, _ := collectEvents()
+
+	def := &Definition{
+		Name: "StaticTest",
+		Steps: []Step{
+			{
+				Name: "static_step",
+				Type: StepToolCall,
+				Tool: "StaticTool",
+				// ToolFunc is nil — should use Tool
+				BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+					return map[string]any{}, nil
+				},
+			},
+		},
+	}
+
+	eng := NewEngine(executor, nil, onStep)
+	result, err := eng.Run(context.Background(), def, nil)
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Len(t, executor.calls, 1)
+	assert.Equal(t, "StaticTool", executor.calls[0].action)
 }
 
 func TestEngine_Run_EventIndexAndTotal(t *testing.T) {

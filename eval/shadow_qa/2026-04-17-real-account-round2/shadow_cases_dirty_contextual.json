@@ -1,0 +1,30 @@
+[
+  {
+    "id": "dirty_05_contextual_just_now_clean",
+    "steps": [
+      {
+        "input": "???? qa-shadow-20260417-01",
+        "confirm": "y",
+        "expect_tool_calls": [
+          "StopInstanceWorkflow"
+        ],
+        "expect_first_tool": "DescribeCompShareInstance",
+        "reply_contains": [
+          "??"
+        ]
+      },
+      {
+        "input": "?????????",
+        "confirm": "y",
+        "expect_tool_calls": [
+          "StartInstanceWorkflow"
+        ],
+        "reply_contains_any": [
+          "??",
+          "??",
+          "??"
+        ]
+      }
+    ]
+  }
+]

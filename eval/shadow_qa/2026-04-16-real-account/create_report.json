@@ -1,0 +1,39 @@
+[
+  {
+    "case_id": "shadow_01_create_test_instance",
+    "input": "帮我开一台 4090，实例名 qa-shadow-20260416-01，平台 Ubuntu 系统镜像，按量",
+    "steps": [
+      {
+        "step": 1,
+        "input": "帮我开一台 4090，实例名 qa-shadow-20260416-01，平台 Ubuntu 系统镜像，按量",
+        "parsed": {
+          "tool_calls": [],
+          "display_lines": [],
+          "assistant_reply": "您即将创建以下配置的算力共享实例：\n- GPU类型：4090\n- 实例名称：qa-shadow-20260416-01\n- 计费方式：按量（Dynamic）\n- 镜像：平台Ubuntu系统镜像\n- 其他配置：CPU/内存使用平台默认值，可用区默认cn-wlcb-01\n\n请确认是否执行创建操作？",
+          "errors": [],
+          "has_confirm": false,
+          "raw_output": "\nAssistant> 您即将创建以下配置的算力共享实例：\n- GPU类型：4090\n- 实例名称：qa-shadow-20260416-01\n- 计费方式：按量（Dynamic）\n- 镜像：平台Ubuntu系统镜像\n- 其他配置：CPU/内存使用平台默认值，可用区默认cn-wlcb-01\n\n请确认是否执行创建操作？\n\nYou> "
+        },
+        "passed": false,
+        "failures": [
+          "expected one of ['CreateInstanceWorkflow'], got []",
+          "first tool = (none), want CreateInstanceWorkflow"
+        ]
+      }
+    ],
+    "parsed": {
+      "tool_calls": [],
+      "display_lines": [],
+      "assistant_reply": "您即将创建以下配置的算力共享实例：\n- GPU类型：4090\n- 实例名称：qa-shadow-20260416-01\n- 计费方式：按量（Dynamic）\n- 镜像：平台Ubuntu系统镜像\n- 其他配置：CPU/内存使用平台默认值，可用区默认cn-wlcb-01\n\n请确认是否执行创建操作？",
+      "errors": [],
+      "has_confirm": false,
+      "raw_output": "\nAssistant> 您即将创建以下配置的算力共享实例：\n- GPU类型：4090\n- 实例名称：qa-shadow-20260416-01\n- 计费方式：按量（Dynamic）\n- 镜像：平台Ubuntu系统镜像\n- 其他配置：CPU/内存使用平台默认值，可用区默认cn-wlcb-01\n\n请确认是否执行创建操作？\n\nYou> "
+    },
+    "passed": false,
+    "failures": [
+      "[step 1] expected one of ['CreateInstanceWorkflow'], got []",
+      "[step 1] first tool = (none), want CreateInstanceWorkflow"
+    ],
+    "run_index": 1
+  }
+]

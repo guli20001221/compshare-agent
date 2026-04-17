@@ -1,0 +1,31 @@
+[
+  {
+    "id": "ext_03_billing_after_external_stop_same_session",
+    "steps": [
+      {
+        "hook_before": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round2\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round2\\shadow_qa_agent.yaml",
+          "start",
+          "uhost-1paxrg4g1vfw"
+        ],
+        "input": "为什么 qa-shadow-20260417-01 在扣费",
+        "expect_tool_calls": ["DiagnoseBilling"],
+        "expect_first_tool": "DiagnoseBilling",
+        "reply_contains": ["费用"],
+        "hook_after": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round2\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round2\\shadow_qa_agent.yaml",
+          "stop",
+          "uhost-1paxrg4g1vfw"
+        ]
+      },
+      {
+        "input": "那为什么 qa-shadow-20260417-01 还在扣费",
+        "expect_tool_calls": ["DiagnoseBilling"],
+        "reply_contains": ["磁盘"],
+        "reply_contains_any": ["关机", "Stopped", "已停止"]
+      }
+    ]
+  }
+]

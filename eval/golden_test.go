@@ -377,7 +377,7 @@ var engineGoldenCases = []goldenCase{
 		Input:           "为什么扣了这么多钱",
 		UserContext:     "您有 2 个实例（1 个运行中、1 个关机）\n- train-gpu (uhost-run): GPU=4090×1, 状态=运行中, 计费=Dynamic\n- idle-gpu (uhost-off): GPU=4090×1, 状态=关机, 计费=Dynamic",
 		ExpectToolCalls: []string{"DiagnoseBilling"},
-		ReplyContains:   []string{"费用", "关机"},
+		ReplyContains:   []string{"费用", "关机", "磁盘"},
 		ReplyNotContains: []string{"GetCompShareInstancePrice", "DescribeCompShareInstance"},
 	},
 	{
@@ -386,7 +386,7 @@ var engineGoldenCases = []goldenCase{
 		Input:           "实例初始化失败了怎么办",
 		UserContext:     "您有 1 个实例（1 个初始化失败）\n- broken-gpu (uhost-fail): GPU=A100×1, 状态=初始化失败, 计费=Dynamic",
 		ExpectToolCalls: []string{"DiagnoseInitFailure"},
-		ReplyContains:   []string{"初始化失败"},
+		ReplyContains:   []string{"初始化失败", "删除"},
 	},
 	{
 		// NOTE: "不产生费用" regression is locked in TestScenario_InitFailure_Starting
@@ -396,7 +396,7 @@ var engineGoldenCases = []goldenCase{
 		Input:           "实例卡在启动中不动了",
 		UserContext:     "您有 1 个实例（1 个启动中）\n- boot-gpu (uhost-boot): GPU=4090×1, 状态=启动中, 计费=Dynamic",
 		ExpectToolCalls: []string{"DiagnoseInitFailure"},
-		ReplyContains:   []string{"启动"},
+		ReplyContains:   []string{"启动", "不"},
 	},
 	{
 		ID:              "golden_19_set_stop_scheduler",
@@ -450,7 +450,7 @@ var engineGoldenCases = []goldenCase{
 			{
 				Input:            "帮我设个定时关机",
 				ExpectNoToolCall: true,
-				ReplyContains:    []string{"哪"},
+				ReplyContains:    []string{"train-"},
 			},
 			{
 				Input:           "就那台 4090，1小时后关",

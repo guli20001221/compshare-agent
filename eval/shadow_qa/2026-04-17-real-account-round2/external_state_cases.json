@@ -1,0 +1,77 @@
+[
+  {
+    "id": "ext_01_stop_after_external_start_same_session",
+    "steps": [
+      {
+        "input": "帮我关掉 qa-shadow-20260417-01",
+        "confirm": "y",
+        "expect_tool_calls": ["StopInstanceWorkflow"],
+        "reply_contains": ["关机"],
+        "hook_after": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round2\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round2\\shadow_qa_agent.yaml",
+          "start",
+          "uhost-1paxrg4g1vfw"
+        ]
+      },
+      {
+        "input": "帮我关掉 qa-shadow-20260417-01",
+        "confirm": "y",
+        "expect_tool_calls": ["DescribeCompShareInstance", "StopInstanceWorkflow"],
+        "reply_contains": ["关机"]
+      }
+    ]
+  },
+  {
+    "id": "ext_02_scheduler_after_external_stop_same_session",
+    "steps": [
+      {
+        "input": "1小时后自动关闭 qa-shadow-20260417-01",
+        "confirm": "y",
+        "expect_tool_calls": ["SetStopSchedulerWorkflow"],
+        "expect_first_tool": "SetStopSchedulerWorkflow",
+        "reply_contains_any": ["成功", "关机"],
+        "hook_after": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round2\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round2\\shadow_qa_agent.yaml",
+          "stop",
+          "uhost-1paxrg4g1vfw"
+        ]
+      },
+      {
+        "input": "1小时后自动关闭 qa-shadow-20260417-01",
+        "expect_tool_calls": ["DescribeCompShareInstance"],
+        "reply_contains_any": ["关闭", "Stopped", "无需", "已关机"]
+      }
+    ]
+  },
+  {
+    "id": "ext_03_billing_after_external_stop_same_session",
+    "steps": [
+      {
+        "hook_before": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round2\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round2\\shadow_qa_agent.yaml",
+          "start",
+          "uhost-1paxrg4g1vfw"
+        ],
+        "input": "为什么 qa-shadow-20260417-01 在扣费",
+        "expect_tool_calls": ["DiagnoseBilling"],
+        "expect_first_tool": "DiagnoseBilling",
+        "reply_contains": ["费用"],
+        "hook_after": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round2\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round2\\shadow_qa_agent.yaml",
+          "stop",
+          "uhost-1paxrg4g1vfw"
+        ]
+      },
+      {
+        "input": "那为什么 qa-shadow-20260417-01 还在扣费",
+        "expect_tool_calls": ["DiagnoseBilling"],
+        "reply_contains": ["磁盘"],
+        "reply_contains_any": ["关机", "Stopped", "已停止"]
+      }
+    ]
+  }
+]

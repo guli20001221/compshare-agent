@@ -1,0 +1,103 @@
+[
+  {
+    "id": "dirty_01_gpu_ref_stop",
+    "input": "?? 3080Ti ????",
+    "confirm": "y",
+    "expect_tool_calls": [
+      "StopInstanceWorkflow"
+    ],
+    "expect_first_tool": "StopInstanceWorkflow",
+    "reply_contains": [
+      "??"
+    ]
+  },
+  {
+    "id": "dirty_02_crashed_last_night_followup",
+    "steps": [
+      {
+        "input": "???????",
+        "expect_no_tool_call": true,
+        "reply_contains_any": [
+          "?",
+          "??",
+          "ID",
+          "uhost-"
+        ]
+      },
+      {
+        "input": "?? wyptest ??",
+        "expect_tool_calls": [
+          "DiagnoseInitFailure"
+        ],
+        "expect_first_tool": "DiagnoseInitFailure",
+        "reply_contains": [
+          "???",
+          "??"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "dirty_03_correction_other_one",
+    "steps": [
+      {
+        "input": "???????",
+        "expect_no_tool_call": true,
+        "reply_contains_any": [
+          "?",
+          "??",
+          "ID",
+          "uhost-"
+        ]
+      },
+      {
+        "input": "?? wyptest ??",
+        "expect_tool_calls": [
+          "DiagnoseInitFailure"
+        ],
+        "expect_first_tool": "DiagnoseInitFailure",
+        "reply_contains": [
+          "???"
+        ]
+      },
+      {
+        "input": "?????? uhost-1pan4ajz9whk ??",
+        "expect_tool_calls": [
+          "DiagnoseInitFailure"
+        ],
+        "reply_contains": [
+          "???"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "dirty_04_contextual_just_now_start",
+    "steps": [
+      {
+        "input": "?? 3080Ti ????",
+        "confirm": "y",
+        "expect_tool_calls": [
+          "StopInstanceWorkflow"
+        ],
+        "expect_first_tool": "StopInstanceWorkflow",
+        "reply_contains": [
+          "??"
+        ]
+      },
+      {
+        "input": "?????????",
+        "confirm": "y",
+        "expect_tool_calls": [
+          "StartInstanceWorkflow"
+        ],
+        "expect_first_tool": "StartInstanceWorkflow",
+        "reply_contains_any": [
+          "??",
+          "??",
+          "??"
+        ]
+      }
+    ]
+  }
+]

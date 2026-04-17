@@ -4,6 +4,9 @@ agent:
   public_key: ""      # 或设置环境变量 COMPSHARE_PUBLIC_KEY
   private_key: ""     # 或设置环境变量 COMPSHARE_PRIVATE_KEY
   region: "cn-wlcb"
+  # project_id 可选。留空时启动阶段会调用 GetProjectList 自动发现。
+  # 定时关机（UpdateCompShareStopScheduler）等接口要求必填；也可设环境变量 COMPSHARE_PROJECT_ID
+  project_id: ""
 
   llm:
     base_url: "https://api.modelverse.cn/v1"

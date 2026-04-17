@@ -1,0 +1,60 @@
+[
+  {
+    "case_id": "dirty_05_contextual_just_now_clean",
+    "input": "2-step conversation",
+    "steps": [
+      {
+        "step": 1,
+        "input": "???? qa-shadow-20260417-01",
+        "parsed": {
+          "tool_calls": [
+            "DescribeCompShareInstance"
+          ],
+          "display_lines": [],
+          "assistant_reply": "**qa-shadow-20260417-01 实例详情**\n\n| 参数 | 信息 |\n|------|------|\n| 实例ID | `uhost-1paxrg4g1vfw` |\n| 状态 | **Running (运行中)** |\n| GPU | 3080Ti × 1 (12GB 显存) |\n| CPU | 12 核 (Intel/CascadeLakeR) |\n| 内存 | 32GB |\n| 系统盘 | 60GB CLOUD_SSD |\n| 计费方式 | Dynamic (按量后付费) |\n| 公网IP | 106.75.68.216 |\n| 镜像 | Ubuntu-nvidia 22.04 (系统镜像) |\n| SSH 登录 | `ssh ubuntu@106.75.68.216` |\n\n请问您需要对这台实例进行什么操作？（如开机/关机/重启/诊断/查询价格等）",
+          "errors": [],
+          "has_confirm": false,
+          "raw_output": "  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance 调用成功\n\nAssistant> **qa-shadow-20260417-01 实例详情**\n\n| 参数 | 信息 |\n|------|------|\n| 实例ID | `uhost-1paxrg4g1vfw` |\n| 状态 | **Running (运行中)** |\n| GPU | 3080Ti × 1 (12GB 显存) |\n| CPU | 12 核 (Intel/CascadeLakeR) |\n| 内存 | 32GB |\n| 系统盘 | 60GB CLOUD_SSD |\n| 计费方式 | Dynamic (按量后付费) |\n| 公网IP | 106.75.68.216 |\n| 镜像 | Ubuntu-nvidia 22.04 (系统镜像) |\n| SSH 登录 | `ssh ubuntu@106.75.68.216` |\n\n请问您需要对这台实例进行什么操作？（如开机/关机/重启/诊断/查询价格等）\n\nYou> "
+        },
+        "passed": false,
+        "failures": [
+          "expected one of ['StopInstanceWorkflow'], got ['DescribeCompShareInstance']",
+          "reply missing '??'"
+        ]
+      },
+      {
+        "step": 2,
+        "input": "?????????",
+        "parsed": {
+          "tool_calls": [],
+          "display_lines": [],
+          "assistant_reply": "请问您具体需要什么帮助呢？是需要对实例 `qa-shadow-20260417-01` 进行操作（如关机/重启/诊断等），还是有其他问题需要咨询？",
+          "errors": [],
+          "has_confirm": false,
+          "raw_output": "\nAssistant> 请问您具体需要什么帮助呢？是需要对实例 `qa-shadow-20260417-01` 进行操作（如关机/重启/诊断等），还是有其他问题需要咨询？\n\nYou> "
+        },
+        "passed": false,
+        "failures": [
+          "expected one of ['StartInstanceWorkflow'], got []",
+          "reply missing any of ['??', '??', '??']"
+        ]
+      }
+    ],
+    "parsed": {
+      "tool_calls": [],
+      "display_lines": [],
+      "assistant_reply": "请问您具体需要什么帮助呢？是需要对实例 `qa-shadow-20260417-01` 进行操作（如关机/重启/诊断等），还是有其他问题需要咨询？",
+      "errors": [],
+      "has_confirm": false,
+      "raw_output": "\nAssistant> 请问您具体需要什么帮助呢？是需要对实例 `qa-shadow-20260417-01` 进行操作（如关机/重启/诊断等），还是有其他问题需要咨询？\n\nYou> "
+    },
+    "passed": false,
+    "failures": [
+      "[step 1] expected one of ['StopInstanceWorkflow'], got ['DescribeCompShareInstance']",
+      "[step 1] reply missing '??'",
+      "[step 2] expected one of ['StartInstanceWorkflow'], got []",
+      "[step 2] reply missing any of ['??', '??', '??']"
+    ],
+    "run_index": 1
+  }
+]

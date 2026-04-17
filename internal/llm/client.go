@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/compshare-agent/internal/config"
 	openai "github.com/sashabaranov/go-openai"
@@ -21,6 +24,21 @@ type Client struct {
 func NewClient(cfg config.LLMConfig) *Client {
 	ocfg := openai.DefaultConfig(cfg.APIKey)
 	ocfg.BaseURL = cfg.BaseURL
+
+	// Bypass HTTP proxy for localhost connections (local LLM proxy).
+	if strings.Contains(cfg.BaseURL, "127.0.0.1") || strings.Contains(cfg.BaseURL, "localhost") {
+		ocfg.HTTPClient = &http.Client{
+			Timeout: 120 * time.Second,
+			Transport: &http.Transport{
+				Proxy: nil, // no proxy for localhost
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+			},
+		}
+	}
+
 	return &Client{
 		client: openai.NewClientWithConfig(ocfg),
 		model:  cfg.Model,
@@ -31,6 +49,10 @@ func NewClient(cfg config.LLMConfig) *Client {
 type ChatRequest struct {
 	Messages []openai.ChatCompletionMessage
 	Tools    []openai.Tool
+	// ToolChoice forces tool selection when non-nil. Accepts either a
+	// string ("auto"/"required"/"none") or an openai.ToolChoice struct
+	// naming a specific function. Leave nil for default auto behavior.
+	ToolChoice any
 }
 
 // ChatResponse wraps the LLM output.
@@ -49,6 +71,9 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	}
 	if len(req.Tools) > 0 {
 		ccReq.Tools = req.Tools
+	}
+	if req.ToolChoice != nil {
+		ccReq.ToolChoice = req.ToolChoice
 	}
 
 	stream, err := c.client.CreateChatCompletionStream(ctx, ccReq)

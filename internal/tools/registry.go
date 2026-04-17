@@ -48,7 +48,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareInstance",
-			Description: "查询用户的算力共享实例列表及详情。返回实例状态（Running/Stopped/Install/InstallFail/Starting/Stopping/Rebooting）、GPU 类型、IP、计费等。不传 UHostIds 查全部。Limit 最大 100。State 含义：Install=初始化中, InstallFail=初始化失败。",
+			Description: "查询用户的算力共享实例列表及详情。返回实例状态（Running/Stopped/Install/Install Fail/Starting/Stopping/Rebooting）、GPU 类型、IP、计费等。不传 UHostIds 查全部。Limit 最大 100。State 含义：Install=初始化中, Install Fail=初始化失败。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -73,6 +73,28 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
+			Name:        "DescribeAvailableCompShareInstanceTypes",
+			Description: "获取可用 GPU 机型列表及每种机型的合法 CPU/内存/GPU 组合。创建实例前调用此接口确认合法配置。注意：返回的 Memory 单位为 GB，创建实例时需转换为 MB。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"Zone": map[string]any{
+						"type":        "string",
+						"description": "可用区，如 cn-wlcb-01",
+					},
+					"MachineTypes": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "按机型名称筛选，如 [\"4090\", \"H20\"]",
+					},
+				},
+				"required": []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareInstancePrice",
 			Description: "查询创建实例的价格。返回按量/包日/包月/抢占式等分项价格（实例、磁盘、镜像）。Zone 格式为 cn-wlcb-01。Memory 单位为 MB（如 65536 = 64GB）。不传 ChargeType 则返回所有计费方式的价格。",
 			Parameters: map[string]any{
@@ -80,7 +102,7 @@ var Registry = []openai.Tool{
 				"properties": map[string]any{
 					"Zone": map[string]any{
 						"type":        "string",
-						"description": "可用区，如 cn-wlcb-a",
+						"description": "可用区，如 cn-wlcb-01",
 					},
 					"GpuType": map[string]any{
 						"type":        "string",
@@ -112,13 +134,13 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CheckCompShareResourceCapacity",
-			Description: "检查 GPU 库存是否充足。Zone 必须为 cn-wlcb-01 格式。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。",
+			Description: "查GPU库存/有没有货/还有没有/是否有货/是否售罄。检查指定GPU型号在指定区域的库存是否充足。Zone 必须为 cn-wlcb-01 格式。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"Zone": map[string]any{
 						"type":        "string",
-						"description": "可用区",
+						"description": "可用区，如 cn-wlcb-01",
 					},
 					"GpuType": map[string]any{
 						"type":        "string",
@@ -163,13 +185,17 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareImages",
-			Description: "查询可用的算力共享镜像列表。ImageType 枚举：System（平台公共镜像）、Custom（自定义镜像）、App（应用镜像），不传返回全部。可按 Name、Author、Tag 筛选。返回 CompShareImageId 和 Name 等字段。",
+			Description: "查询平台镜像列表。ImageType 枚举：System（系统镜像，裸 Ubuntu/Windows）、App（应用基础镜像，如 PyTorch/CUDA/ComfyUI/Ollama），不传返回全部。查自制镜像请用 DescribeCompShareCustomImages，查社区镜像请用 DescribeCommunityImages。不用于查库存。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"ImageType": map[string]any{
 						"type":        "string",
-						"description": "镜像类型：System(平台公共镜像) / Custom(自定义镜像) / App(应用镜像)，不传则返回全部",
+						"description": "镜像类型：System(系统镜像) / App(应用基础镜像)，不传则返回全部",
+					},
+					"Name": map[string]any{
+						"type":        "string",
+						"description": "按镜像名称筛选，如 PyTorch / Ubuntu / CUDA",
 					},
 					"Limit": map[string]any{
 						"type":        "integer",
@@ -218,12 +244,132 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
+	// --- Additional API Tools (Phase 2) ---
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DescribeCompShareCustomImages",
+			Description: "查询用户自制镜像列表（仅查询，不进入创建主链路）。返回用户自己制作的镜像，包含 CompShareImageId、Name、Status 等字段。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"CompShareImageId": map[string]any{
+						"type":        "string",
+						"description": "镜像 ID（可选，传则查特定镜像）",
+					},
+					"Offset": map[string]any{
+						"type":        "integer",
+						"description": "分页偏移，默认 0",
+					},
+					"Limit": map[string]any{
+						"type":        "integer",
+						"description": "返回数据长度，默认 20",
+					},
+				},
+				"required": []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DescribeCommunityImages",
+			Description: "查询社区镜像列表。支持按名称/作者/标签/模糊搜索筛选。返回 CompshareImageGroup 分组结构，每组含 Data 版本数组。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"Name": map[string]any{
+						"type":        "string",
+						"description": "镜像名称筛选",
+					},
+					"Author": map[string]any{
+						"type":        "string",
+						"description": "作者昵称，精确搜索",
+					},
+					"FuzzySearch": map[string]any{
+						"type":        "string",
+						"description": "模糊搜索关键词（支持镜像名和作者昵称）",
+					},
+					"Tag": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "标签筛选",
+					},
+					"Offset": map[string]any{
+						"type":        "integer",
+						"description": "分页偏移，默认 0",
+					},
+					"Limit": map[string]any{
+						"type":        "integer",
+						"description": "返回数据长度，默认 20",
+					},
+				},
+				"required": []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DescribeCompShareJupyterToken",
+			Description: "获取实例 Jupyter 访问 Token。传 UHostIds 数组但仅使用第一个元素。返回的 JupyterToken 是敏感数据，必须脱敏。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostIds": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "实例 ID 列表（仅用首元素）",
+					},
+				},
+				"required": []string{"UHostIds"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "GetCompShareInstanceUserPrice",
+			Description: "查用户折后价/实际价格。返回 PriceDetails（折后）、OriginalPriceDetails（原价）、ListPriceDetails（目录价）三组明细。计费方式用 Postpay（等同于按量 Dynamic）。参数 GPU/CPU 大写。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"Zone": map[string]any{
+						"type":        "string",
+						"description": "可用区，如 cn-wlcb-01",
+					},
+					"GpuType": map[string]any{
+						"type":        "string",
+						"description": "GPU 类型：4090 / 5090 / A100 / A800 / H20 / 3090 等",
+					},
+					"GPU": map[string]any{
+						"type":        "integer",
+						"description": "GPU 数量（注意大写）",
+					},
+					"CPU": map[string]any{
+						"type":        "integer",
+						"description": "CPU 核数（注意大写）",
+					},
+					"Memory": map[string]any{
+						"type":        "integer",
+						"description": "内存大小，单位 MB",
+					},
+					"ChargeType": map[string]any{
+						"type":        "string",
+						"description": "计费方式：Month / Day / Postpay / Spot，按量用 Postpay（不是 Dynamic）",
+						"enum":        []string{"Month", "Day", "Postpay", "Spot"},
+					},
+				},
+				"required": []string{"Zone", "GpuType", "GPU", "CPU", "Memory"},
+			},
+		},
+	},
 	// --- Workflow Meta-Tools ---
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateInstanceWorkflow",
-			Description: "创建实例的完整工作流。自动执行：查询镜像→检查库存→查询价格→用户确认→创建实例→查看状态。用户要求创建实例时必须使用此工具，不要直接调用 CreateCompShareInstance。",
+			Description: "创建实例的完整工作流。自动执行：查询镜像→检查库存→查询价格→用户确认→创建实例→查看状态。支持平台镜像和社区镜像。平台镜像默认查询公共镜像（含系统镜像和应用基础镜像如 PyTorch/CUDA 等）。传 ImageName 可按名称缩小镜像范围（平台和社区均可用）。传 ImageSource='community' 使用社区镜像创建。不支持自制/私有镜像。用户要求创建实例时必须使用此工具，不要直接调用 CreateCompShareInstance。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -237,15 +383,32 @@ var Registry = []openai.Tool{
 					},
 					"Zone": map[string]any{
 						"type":        "string",
-						"description": "可用区，默认 cn-wlcb-a",
+						"description": "可用区，默认 cn-wlcb-01",
 					},
 					"ChargeType": map[string]any{
 						"type":        "string",
 						"description": "计费方式：Dynamic(按量) / Month(包月) / Day(包日) / Spot(抢占式)，默认 Dynamic",
 					},
+					"Cpu": map[string]any{
+						"type":        "number",
+						"description": "CPU 核数（可选）。不指定时使用平台默认值。需与 Memory 一起构成合法配比，可通过 DescribeAvailableCompShareInstanceTypes 查询。",
+					},
+					"Memory": map[string]any{
+						"type":        "number",
+						"description": "内存大小，单位 MB（可选）。不指定时使用平台默认值。如 64GB = 65536。需与 Cpu 一起构成合法配比。",
+					},
 					"Name": map[string]any{
 						"type":        "string",
 						"description": "实例名称（可选）",
+					},
+					"ImageSource": map[string]any{
+						"type":        "string",
+						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）",
+						"enum":        []string{"platform", "community"},
+					},
+					"ImageName": map[string]any{
+						"type":        "string",
+						"description": "镜像名称关键词。平台镜像按 Name 精确/模糊匹配；社区镜像用于 FuzzySearch。如 PyTorch / Ubuntu / ComfyUI。",
 					},
 				},
 				"required": []string{"GpuType"},
@@ -286,6 +449,108 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "RebootInstanceWorkflow",
+			Description: "重启实例工作流。检查状态→确认→重启。仅 Running 状态可重启。会中断当前运行的任务。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要重启的实例 ID",
+					},
+				},
+				"required": []string{"UHostId"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "RenameInstanceWorkflow",
+			Description: "重命名实例工作流。确认→修改名称。名称最长63字符，支持中英文、数字、下划线等。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要改名的实例 ID",
+					},
+					"Name": map[string]any{
+						"type":        "string",
+						"description": "新的实例名称",
+					},
+				},
+				"required": []string{"UHostId", "Name"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "ResetPasswordWorkflow",
+			Description: "重置实例密码工作流。普通主机需先关机，容器实例支持在线重置。密码要求8-32字符，至少2种字符类型（大小写字母/数字/特殊字符）。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要重置密码的实例 ID",
+					},
+					"Password": map[string]any{
+						"type":        "string",
+						"description": "新密码（明文，系统会自动 base64 编码）",
+					},
+				},
+				"required": []string{"UHostId", "Password"},
+			},
+		},
+	},
+	// --- Scheduled Shutdown Workflows ---
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "SetStopSchedulerWorkflow",
+			Description: "设置定时关机工作流。为运行中的实例设置自动关机时间。支持相对时间（如30分钟后）或绝对时间。抢占式实例不支持。用户要求定时关机、自动关机、延时关机时使用此工具。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要设置定时关机的实例 ID",
+					},
+					"AfterMinutes": map[string]any{
+						"type":        "number",
+						"description": "几分钟后关机（正整数，最小 5）。与 ShutdownAt 二选一。如：60 表示 1 小时后关机。",
+					},
+					"ShutdownAt": map[string]any{
+						"type":        "string",
+						"description": "指定关机时间。支持格式：2026-04-16 23:00（按北京时间解析）或 RFC3339。与 AfterMinutes 二选一。",
+					},
+				},
+				"required": []string{"UHostId"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "CancelStopSchedulerWorkflow",
+			Description: "取消定时关机工作流。取消实例已设置的定时关机任务。用户要求取消定时关机、取消自动关机时使用此工具。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要取消定时关机的实例 ID",
+					},
+				},
+				"required": []string{"UHostId"},
+			},
+		},
+	},
 	// --- Diagnosis Meta-Tools ---
 	{
 		Type: openai.ToolTypeFunction,
@@ -308,16 +573,16 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DiagnoseInitFailure",
-			Description: "诊断实例初始化失败。检查实例当前状态并给出修复建议。用户反馈创建失败、初始化失败、实例异常时使用。",
+			Description: "诊断实例初始化失败。检查实例当前状态并给出修复建议。用户反馈创建失败、初始化失败、实例异常时使用。可传 UHostId 查特定实例，不传则扫描所有实例找出初始化失败的。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"UHostId": map[string]any{
 						"type":        "string",
-						"description": "要诊断的实例 ID",
+						"description": "要诊断的实例 ID（可选，不传则扫描所有实例）",
 					},
 				},
-				"required": []string{"UHostId"},
+				"required": []string{},
 			},
 		},
 	},
@@ -352,6 +617,44 @@ var Registry = []openai.Tool{
 					},
 				},
 				"required": []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DiagnosePortOrFirewall",
+			Description: "诊断端口/服务可达性问题。查询平台已知服务端口映射，给出排查线索。用户报告服务无法访问、端口不通、JupyterLab/SSH/FileBrowser 打不开时使用。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要诊断的实例 ID",
+					},
+					"Service": map[string]any{
+						"type":        "string",
+						"description": "目标服务名（可选，如 JupyterLab、SSH、FileBrowser，支持别名和大小写不敏感）",
+					},
+				},
+				"required": []string{"UHostId"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DiagnoseImageIssue",
+			Description: "诊断镜像问题。镜像无法使用、启动异常、环境不符、初始化失败疑似镜像原因时使用。自动检查实例状态和镜像类型，区分社区镜像与官方镜像给出建议。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要诊断的实例 ID",
+					},
+				},
+				"required": []string{"UHostId"},
 			},
 		},
 	},

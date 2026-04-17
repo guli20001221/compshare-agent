@@ -22,6 +22,7 @@ type ExternalExecutor struct {
 	publicKey  string
 	privateKey string
 	region     string
+	projectId  string
 	httpClient *http.Client
 }
 
@@ -31,8 +32,21 @@ func NewExternalExecutor(cfg config.AgentConfig) *ExternalExecutor {
 		publicKey:  cfg.PublicKey,
 		privateKey: cfg.PrivateKey,
 		region:     cfg.Region,
+		projectId:  cfg.ProjectId,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// SetProjectId updates the ProjectId to auto-inject into every request.
+// Used when the caller discovers ProjectId at runtime (e.g. via GetProjectList
+// during Init) instead of providing it via config.
+func (e *ExternalExecutor) SetProjectId(id string) {
+	e.projectId = id
+}
+
+// ProjectId returns the currently configured ProjectId, or "" if unset.
+func (e *ExternalExecutor) ProjectId() string {
+	return e.projectId
 }
 
 func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
@@ -43,6 +57,16 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 		"PublicKey": e.publicKey,
 	}
 	flattenInto(params, args, "")
+
+	// Auto-inject ProjectId if configured and caller didn't provide one.
+	// Some APIs (e.g. UpdateCompShareStopScheduler) require it; others
+	// accept it without side effects. We inject unconditionally to avoid
+	// per-action allowlisting.
+	if e.projectId != "" {
+		if _, provided := params["ProjectId"]; !provided {
+			params["ProjectId"] = e.projectId
+		}
+	}
 
 	// Sign: UCloud HMAC-SHA1 signature
 	params["Signature"] = ucloudSign(params, e.privateKey)

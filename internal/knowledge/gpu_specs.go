@@ -3,6 +3,7 @@ package knowledge
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 )
@@ -14,7 +15,7 @@ import (
 type GPUSpec struct {
 	Name        string   `json:"name"`
 	VRAM        int      `json:"vram_gb"`        // 显存 GB
-	FP16        float64  `json:"fp16_tflops"`    // FP16 算力 TFLOPS
+	FP16        float64  `json:"fp16_tflops"`    // FP16 算力 TFLOPS (Tensor Core dense, 不含 sparsity)
 	MaxGPU      int      `json:"max_gpu"`        // 最大 GPU 卡数
 	MaxCPU      int      `json:"max_cpu"`        // 最大 CPU 核数
 	MaxMemoryGB int      `json:"max_memory_gb"`  // 最大内存 GB
@@ -26,34 +27,41 @@ type GPUSpec struct {
 // gpuSpecs is the canonical GPU specification table.
 // Sync MaxCPU/MaxMemory/MaxGPU from uhost-compshare-api/internal/api/compshare/libs/gpu.go.
 // VRAM/FP16 from NVIDIA official specs.
+//
+// FP16 口径统一为 Tensor Core dense peak（不含 sparsity 2:4 加速）。
+// 消费级 GPU（无 Tensor Core 或仅 INT8 Tensor）使用 shader FP16 peak。
+// 标注 [估算] 的数值为基于架构推算，非 NVIDIA 官方确认。
 var gpuSpecs = map[string]GPUSpec{
 	"2080": {
-		Name: "RTX 2080", VRAM: 8, FP16: 20.3,
+		Name: "RTX 2080", VRAM: 8, FP16: 20.3, // Tensor Core FP16 peak
 		MaxGPU: 8, MaxCPU: 92, MaxMemoryGB: 334,
 		BestFor: []string{"轻量推理", "学习实验"}, SpotSupport: false,
 		Generation: "Turing",
 	},
 	"2080Ti": {
-		Name: "RTX 2080 Ti", VRAM: 11, FP16: 26.9,
+		Name: "RTX 2080 Ti", VRAM: 11, FP16: 26.9, // Tensor Core FP16 peak
 		MaxGPU: 8, MaxCPU: 48, MaxMemoryGB: 192,
 		BestFor: []string{"推理", "轻量微调", "学习实验"}, SpotSupport: true,
 		Generation: "Turing",
 	},
 	"3080Ti": {
-		Name: "RTX 3080 Ti", VRAM: 12, FP16: 34.1,
+		Name: "RTX 3080 Ti", VRAM: 12, FP16: 34.1, // Tensor Core FP16 peak
 		MaxGPU: 8, MaxCPU: 12, MaxMemoryGB: 125,
 		BestFor: []string{"推理", "SD绘图", "轻量微调"}, SpotSupport: true,
 		Generation: "Ampere",
 	},
 	"3090": {
-		Name: "RTX 3090", VRAM: 24, FP16: 35.6,
+		Name: "RTX 3090", VRAM: 24, FP16: 35.6, // Tensor Core FP16 peak
 		MaxGPU: 8, MaxCPU: 124, MaxMemoryGB: 450,
 		BestFor: []string{"推理", "SD/ComfyUI", "LoRA微调"}, SpotSupport: true,
 		Generation: "Ampere",
 	},
 	"4090": {
-		Name: "RTX 4090", VRAM: 24, FP16: 82.6,
-		MaxGPU: 10, MaxCPU: 140, MaxMemoryGB: 680,
+		Name: "RTX 4090", VRAM: 24, FP16: 82.6, // Tensor Core FP16 peak
+		// MaxCPU uses the conservative lower bound: upstream defines
+		// G_AMD_4090 (MaxCPU=128) and G_INTEL_4090 (MaxCPU=140). We report
+		// the AMD value so users don't plan past AMD-platform limits.
+		MaxGPU: 10, MaxCPU: 128, MaxMemoryGB: 680,
 		BestFor: []string{"推理", "LoRA微调", "SD/ComfyUI", "vLLM部署"}, SpotSupport: true,
 		Generation: "Ada Lovelace",
 	},
@@ -70,57 +78,45 @@ var gpuSpecs = map[string]GPUSpec{
 		Generation: "Ada Lovelace",
 	},
 	"5090": {
-		Name: "RTX 5090", VRAM: 32, FP16: 104.8,
+		Name: "RTX 5090", VRAM: 32, FP16: 105.0, // [估算] 基于 Blackwell 架构公开信息推算
 		MaxGPU: 8, MaxCPU: 124, MaxMemoryGB: 940,
 		BestFor: []string{"推理", "LoRA微调", "最新架构"}, SpotSupport: true,
 		Generation: "Blackwell",
 	},
 	"5090D": {
-		Name: "RTX 5090D", VRAM: 32, FP16: 104.8,
+		Name: "RTX 5090D", VRAM: 32, FP16: 105.0, // [估算] 同 5090
 		MaxGPU: 8, MaxCPU: 124, MaxMemoryGB: 940,
 		BestFor: []string{"推理", "LoRA微调"}, SpotSupport: true,
 		Generation: "Blackwell",
 	},
 	"P40": {
-		Name: "Tesla P40", VRAM: 24, FP16: 12.0,
+		Name: "Tesla P40", VRAM: 24, FP16: 12.0, // shader FP16 peak (无 FP16 Tensor Core)
 		MaxGPU: 8, MaxCPU: 48, MaxMemoryGB: 502,
 		BestFor: []string{"预算推理", "学习入门"}, SpotSupport: false,
 		Generation: "Pascal",
 	},
 	"V100S": {
-		Name: "Tesla V100S", VRAM: 32, FP16: 130.0,
+		Name: "Tesla V100S", VRAM: 32, FP16: 32.8, // Tensor Core FP16 dense (非 sparsity)
 		MaxGPU: 8, MaxCPU: 92, MaxMemoryGB: 576,
 		BestFor: []string{"训练", "推理", "科学计算"}, SpotSupport: true,
 		Generation: "Volta",
 	},
 	"A100": {
-		Name: "A100 80GB", VRAM: 80, FP16: 312.0,
+		Name: "A100 80GB", VRAM: 80, FP16: 312.0, // Tensor Core FP16 dense
 		MaxGPU: 8, MaxCPU: 124, MaxMemoryGB: 1024,
 		BestFor: []string{"全量训练", "大模型微调", "大模型推理"}, SpotSupport: true,
 		Generation: "Ampere",
 	},
 	"A800": {
-		Name: "A800 80GB", VRAM: 80, FP16: 312.0,
+		Name: "A800 80GB", VRAM: 80, FP16: 312.0, // Tensor Core FP16 dense (同 A100 算力)
 		MaxGPU: 8, MaxCPU: 124, MaxMemoryGB: 1800,
 		BestFor: []string{"全量训练", "大模型微调", "大模型推理"}, SpotSupport: false,
 		Generation: "Ampere",
 	},
 	"H20": {
-		Name: "H20 96GB", VRAM: 96, FP16: 148.0,
+		Name: "H20 96GB", VRAM: 96, FP16: 148.0, // Tensor Core FP16 dense
 		MaxGPU: 8, MaxCPU: 188, MaxMemoryGB: 1800,
 		BestFor: []string{"大模型推理", "长序列处理", "大规模训练"}, SpotSupport: false,
-		Generation: "Hopper",
-	},
-	"H100": {
-		Name: "H100 80GB", VRAM: 80, FP16: 989.0,
-		MaxGPU: 8, MaxCPU: 124, MaxMemoryGB: 1024,
-		BestFor: []string{"大规模训练", "大模型推理", "最强算力"}, SpotSupport: true,
-		Generation: "Hopper",
-	},
-	"H200": {
-		Name: "H200 141GB", VRAM: 141, FP16: 989.0,
-		MaxGPU: 8, MaxCPU: 124, MaxMemoryGB: 1024,
-		BestFor: []string{"大规模训练", "超大模型", "最强算力"}, SpotSupport: true,
 		Generation: "Hopper",
 	},
 }
@@ -187,7 +183,6 @@ func GetGPURecommendation(scene string, budgetSensitive bool) map[string]any {
 			recEntry{"A100", "80GB显存+312TFLOPS，全量训练标准选择"},
 			recEntry{"A800", "同A100算力，1800GB大内存"},
 			recEntry{"H20", "96GB显存，长序列训练优势"},
-			recEntry{"H100", "989TFLOPS最强算力，大规模训练首选"},
 		)
 
 	case containsAny(scene, "sd", "stable diffusion", "comfyui", "绘图", "画图", "图片生成"):
@@ -228,11 +223,17 @@ type recEntry struct {
 	reason  string
 }
 
-func buildRecs(_ string, budgetSensitive bool, entries ...recEntry) []GPURec {
+func buildRecs(scene string, budgetSensitive bool, entries ...recEntry) []GPURec {
 	var recs []GPURec
 	for _, e := range entries {
 		spec, ok := gpuSpecs[e.gpuType]
 		if !ok {
+			// Development-time drift guard: a recommendation entry references
+			// a GPU type not defined in gpuSpecs. This should only happen when
+			// a new entry is added without the corresponding spec. In
+			// production it's zero-frequency; we log rather than panic to
+			// avoid taking down the agent for a knowledge-layer inconsistency.
+			log.Printf("[knowledge] buildRecs(%q): recommendation entry %q missing from gpuSpecs; skipped", scene, e.gpuType)
 			continue
 		}
 		recs = append(recs, GPURec{

@@ -333,6 +333,10 @@ func TestEngine_Run_StepResultsAccumulate(t *testing.T) {
 func TestRegistry_IsDiagnosisTool(t *testing.T) {
 	assert.True(t, IsDiagnosisTool("DiagnoseSSH"))
 	assert.True(t, IsDiagnosisTool("DiagnoseInitFailure"))
+	assert.True(t, IsDiagnosisTool("DiagnoseGPU"))
+	assert.True(t, IsDiagnosisTool("DiagnoseBilling"))
+	assert.True(t, IsDiagnosisTool("DiagnosePortOrFirewall"))
+	assert.True(t, IsDiagnosisTool("DiagnoseImageIssue"))
 	assert.False(t, IsDiagnosisTool("DescribeCompShareInstance"))
 	assert.False(t, IsDiagnosisTool("NonExistent"))
 	assert.False(t, IsDiagnosisTool(""))
@@ -348,6 +352,16 @@ func TestRegistry_GetChain(t *testing.T) {
 	assert.True(t, ok2)
 	assert.NotNil(t, chain2)
 	assert.Equal(t, "DiagnoseInitFailure", chain2.Name)
+
+	chain4, ok4 := GetChain("DiagnosePortOrFirewall")
+	assert.True(t, ok4)
+	assert.NotNil(t, chain4)
+	assert.Equal(t, "DiagnosePortOrFirewall", chain4.Name)
+
+	chain5, ok5 := GetChain("DiagnoseImageIssue")
+	assert.True(t, ok5)
+	assert.NotNil(t, chain5)
+	assert.Equal(t, "DiagnoseImageIssue", chain5.Name)
 
 	chain3, ok3 := GetChain("NonExistent")
 	assert.False(t, ok3)

@@ -85,7 +85,7 @@ func TestTranslateState(t *testing.T) {
 		{"Stopped", "关机"},
 		{"Starting", "启动中"},
 		{"Install", "初始化中"},
-		{"InstallFail", "初始化失败"},
+		{"Install Fail", "初始化失败"},
 		{"UnknownState", "UnknownState"},
 	}
 	for _, tt := range tests {

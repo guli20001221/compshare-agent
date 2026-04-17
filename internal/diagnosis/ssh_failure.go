@@ -15,8 +15,8 @@ func SSHFailureChain() *Chain {
 		},
 		Fallback: Verdict{
 			Action:     Conclude,
-			Conclusion: "未发现明确的 SSH 连接问题。实例运行正常，SSH 端口已开放，资源使用正常。",
-			Suggestion: "请检查您本地的网络连接，或尝试使用 JupyterLab 网页终端作为替代方案。SSH 登录命令可在实例详情中找到。",
+			Conclusion: "未发现明确的 SSH 连接问题。实例运行正常，资源使用正常。",
+			Suggestion: "请检查：1) 实例内 SSH 服务是否已启动（systemctl status sshd）；2) 本地网络连接和防火墙设置；3) 是否使用了正确的登录命令（可在实例详情中查看）。也可使用 JupyterLab 网页终端作为替代。",
 		},
 	}
 }
@@ -26,8 +26,12 @@ func stepCheckInstanceState() Step {
 		Name: "检查实例状态",
 		Tool: "DescribeCompShareInstance",
 		BuildArgs: func(dCtx *Context) (map[string]any, error) {
+			id, err := dCtx.RequireUHostId()
+			if err != nil {
+				return nil, err
+			}
 			return map[string]any{
-				"UHostIds": []any{dCtx.Params["UHostId"]},
+				"UHostIds": []any{id},
 			}, nil
 		},
 		Evaluate: func(result map[string]any, dCtx *Context) Verdict {
@@ -36,7 +40,7 @@ func stepCheckInstanceState() Step {
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: "未找到该实例，可能已被释放或 ID 输入有误。",
-					Suggestion: "请使用 DescribeCompShareInstance 查看当前实例列表，确认实例 ID。",
+					Suggestion: "请确认实例 ID 是否正确，可以告诉我「查看我的实例」来查看当前实例列表。",
 				}
 			}
 			host, _ := hosts[0].(map[string]any)
@@ -55,7 +59,7 @@ func stepCheckInstanceState() Step {
 					Conclusion: "实例正在初始化中，尚未就绪。初始化通常需要 2-3 分钟。",
 					Suggestion: "请耐心等待初始化完成后再尝试 SSH 连接。",
 				}
-			case "InstallFail":
+			case "Install Fail":
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: "实例初始化失败，无法正常使用。",
@@ -100,18 +104,33 @@ func stepCheckSSHPort() Step {
 			return map[string]any{}, nil
 		},
 		Evaluate: func(result map[string]any, dCtx *Context) Verdict {
+			// Priority 1: Instance-level Softwares from step 1 (authoritative for
+			// running container instances with image-defined ports).
+			instanceResult := dCtx.Result("检查实例状态")
+			if found, _ := findInstanceSoftware(instanceResult, "SSH"); found {
+				return Verdict{Action: Continue}
+			}
+
+			// Priority 2: Platform-wide catalog (reference only — does NOT reflect
+			// whether SSH is actually running on this specific instance).
 			ports, _ := result["SoftwarePort"].([]any)
 			for _, p := range ports {
 				port, _ := p.(map[string]any)
 				software, _ := port["Software"].(string)
 				if software == "SSH" {
+					// Platform supports SSH but instance's Softwares list doesn't
+					// include it. Possible causes: VM instance (no Softwares field),
+					// or image without SSH pre-configured. Not conclusive — continue.
 					return Verdict{Action: Continue}
 				}
 			}
+
+			// Neither instance nor platform catalog has SSH — unusual, likely a
+			// specialized image without SSH.
 			return Verdict{
 				Action:     Conclude,
-				Conclusion: "SSH 端口未开放。平台当前软件端口列表中没有 SSH 服务。",
-				Suggestion: "请联系客服开放 SSH 端口，或使用 JupyterLab 网页终端替代。",
+				Conclusion: "该实例的应用列表中未发现 SSH 服务，平台端口目录中也未包含 SSH。",
+				Suggestion: "当前镜像可能未预装 SSH 服务。请使用 JupyterLab 网页终端替代，或选择包含 SSH 的镜像重建实例。",
 			}
 		},
 	}
@@ -122,13 +141,20 @@ func stepCheckResourceUsage() Step {
 		Name: "检查资源使用",
 		Tool: "GetCompShareInstanceMonitor",
 		BuildArgs: func(dCtx *Context) (map[string]any, error) {
+			id, err := dCtx.RequireUHostId()
+			if err != nil {
+				return nil, err
+			}
 			return map[string]any{
-				"UHostIds": []any{dCtx.Params["UHostId"]},
+				"UHostIds": []any{id},
 			}, nil
 		},
 		Evaluate: func(result map[string]any, dCtx *Context) Verdict {
 			cpuUsage, memUsage := extractLatestMetrics(result)
-			const threshold = 95.0
+			// 90% catches degradation earlier than the previous 95% cutoff,
+			// which left users at 90-94% with a contradictory "resources normal"
+			// verdict while their SSH was already timing out.
+			const threshold = 90.0
 
 			if cpuUsage >= threshold || memUsage >= threshold {
 				detail := ""

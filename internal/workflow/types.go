@@ -14,9 +14,10 @@ const (
 type Step struct {
 	Name        string
 	Type        StepType
-	Tool        string // API action name (for StepToolCall only)
+	Tool        string                                       // API action name (for StepToolCall only)
+	ToolFunc    func(wfCtx *Context) string                  // dynamic tool name (overrides Tool if set)
 	BuildArgs   func(wfCtx *Context) (map[string]any, error)
-	CheckResult func(result map[string]any) (bool, string)
+	CheckResult func(wfCtx *Context, result map[string]any) (bool, string)
 }
 
 // Definition holds a complete workflow.

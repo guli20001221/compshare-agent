@@ -1,0 +1,153 @@
+[
+  {
+    "case_id": "dirtymini_01_gpu_colloquial_needs_clarification",
+    "passed": false,
+    "failures": [
+      "[step 1] rejected tool appeared: StopInstanceWorkflow",
+      "[step 1] expected no tool call, got ['DescribeCompShareInstance', 'StopInstanceWorkflow', 'DescribeCompShareInstance']",
+      "[step 1] reply missing any of ['哪', '实例', 'uhost-']"
+    ],
+    "steps": [
+      {
+        "step": 1,
+        "input": "那个 3080Ti 给我关了",
+        "hook_before_output": "state=Starting\nstate=Running\nfinal=Running",
+        "hook_after_output": "",
+        "parsed": {
+          "tool_calls": [
+            "DescribeCompShareInstance",
+            "StopInstanceWorkflow",
+            "DescribeCompShareInstance"
+          ],
+          "assistant_reply": "StopInstanceWorkflow 已取消。",
+          "errors": [],
+          "raw_output": "  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance 调用成功\n  🔧 调用 StopInstanceWorkflow ...\n  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance [1/3] 查询实例: success\n  ⚠️  即将执行变更操作: StopInstanceWorkflow\n    参数: {\n      \"ChargeType\": \"Dynamic\",\n      \"GPU\": 1,\n      \"GpuType\": \"3080Ti\",\n      \"Name\": \"qa-shadow-20260417-01\",\n      \"State\": \"Running\",\n      \"UHostId\": \"uhost-1paxrg4g1vfw\",\n      \"warning\": \"关机后磁盘费用仍会产生，如需彻底停止计费请到控制台释放实例。\"\n    }\n  确认执行？(y/N)   🚫 [2/3] 确认关机: cancelled\n\nAssistant> StopInstanceWorkflow 已取消。\n\nYou> "
+        },
+        "failures": [
+          "rejected tool appeared: StopInstanceWorkflow",
+          "expected no tool call, got ['DescribeCompShareInstance', 'StopInstanceWorkflow', 'DescribeCompShareInstance']",
+          "reply missing any of ['哪', '实例', 'uhost-']"
+        ],
+        "passed": false
+      }
+    ]
+  },
+  {
+    "case_id": "dirtymini_02_explicit_name_stop_routes_workflow",
+    "passed": false,
+    "failures": [
+      "[step 1] first tool = DescribeCompShareInstance, want StopInstanceWorkflow"
+    ],
+    "steps": [
+      {
+        "step": 1,
+        "input": "帮我关掉 qa-shadow-20260417-01",
+        "hook_before_output": "state=Starting\nstate=Running\nfinal=Running",
+        "hook_after_output": "Stopped",
+        "parsed": {
+          "tool_calls": [
+            "DescribeCompShareInstance",
+            "StopInstanceWorkflow",
+            "DescribeCompShareInstance",
+            "StopCompShareInstance"
+          ],
+          "assistant_reply": "实例 \"qa-shadow-20260417-01\" (uhost-1paxrg4g1vfw) 已成功关机。\n\n提醒：关机后 GPU/CPU/内存停止计费，但系统盘仍会继续计费。",
+          "errors": [],
+          "raw_output": "  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance 调用成功\n  🔧 调用 StopInstanceWorkflow ...\n  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance [1/3] 查询实例: success\n  ⚠️  即将执行变更操作: StopInstanceWorkflow\n    参数: {\n      \"ChargeType\": \"Dynamic\",\n      \"GPU\": 1,\n      \"GpuType\": \"3080Ti\",\n      \"Name\": \"qa-shadow-20260417-01\",\n      \"State\": \"Running\",\n      \"UHostId\": \"uhost-1paxrg4g1vfw\",\n      \"warning\": \"关机后磁盘费用仍会产生，如需彻底停止计费请到控制台释放实例。\"\n    }\n  确认执行？(y/N)   🔧 调用  ...\n  🔧 调用 StopCompShareInstance ...\n  ✅ StopCompShareInstance [3/3] 关机: success\n\nAssistant> 实例 \"qa-shadow-20260417-01\" (uhost-1paxrg4g1vfw) 已成功关机。\n\n提醒：关机后 GPU/CPU/内存停止计费，但系统盘仍会继续计费。\n\nYou> "
+        },
+        "failures": [
+          "first tool = DescribeCompShareInstance, want StopInstanceWorkflow"
+        ],
+        "passed": false
+      }
+    ]
+  },
+  {
+    "case_id": "dirtymini_03_contextual_just_now_start_accepts_fresh_query",
+    "passed": true,
+    "failures": [],
+    "steps": [
+      {
+        "step": 1,
+        "input": "帮我关掉 qa-shadow-20260417-01",
+        "hook_before_output": "state=Starting\nstate=Running\nfinal=Running",
+        "hook_after_output": "Stopped",
+        "parsed": {
+          "tool_calls": [
+            "DescribeCompShareInstance",
+            "StopInstanceWorkflow",
+            "DescribeCompShareInstance",
+            "StopCompShareInstance"
+          ],
+          "assistant_reply": "关机操作已完成。实例 qa-shadow-20260417-01 已成功关闭。注意：关机后系统盘仍会继续计费，GPU/CPU/内存将停止计费。",
+          "errors": [],
+          "raw_output": "  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance 调用成功\n  🔧 调用 StopInstanceWorkflow ...\n  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance [1/3] 查询实例: success\n  ⚠️  即将执行变更操作: StopInstanceWorkflow\n    参数: {\n      \"ChargeType\": \"Dynamic\",\n      \"GPU\": 1,\n      \"GpuType\": \"3080Ti\",\n      \"Name\": \"qa-shadow-20260417-01\",\n      \"State\": \"Running\",\n      \"UHostId\": \"uhost-1paxrg4g1vfw\",\n      \"warning\": \"关机后磁盘费用仍会产生，如需彻底停止计费请到控制台释放实例。\"\n    }\n  确认执行？(y/N)   🔧 调用  ...\n  🔧 调用 StopCompShareInstance ...\n  ✅ StopCompShareInstance [3/3] 关机: success\n\nAssistant> 关机操作已完成。实例 qa-shadow-20260417-01 已成功关闭。注意：关机后系统盘仍会继续计费，GPU/CPU/内存将停止计费。\n\nYou> "
+        },
+        "failures": [],
+        "passed": true
+      },
+      {
+        "step": 2,
+        "input": "帮我开一下刚才那个",
+        "hook_before_output": "",
+        "hook_after_output": "Running",
+        "parsed": {
+          "tool_calls": [
+            "DescribeCompShareInstance",
+            "StartInstanceWorkflow",
+            "DescribeCompShareInstance",
+            "StartCompShareInstance"
+          ],
+          "assistant_reply": "开机操作已完成。实例 qa-shadow-20260417-01 正在启动中，预计1-2分钟后可正常使用。",
+          "errors": [],
+          "raw_output": "  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance 调用成功\n  🔧 调用 StartInstanceWorkflow ...\n  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance [1/3] 查询实例: success\n  ⚠️  即将执行变更操作: StartInstanceWorkflow\n    参数: {\n      \"ChargeType\": \"Dynamic\",\n      \"GPU\": 1,\n      \"GpuType\": \"3080Ti\",\n      \"Name\": \"qa-shadow-20260417-01\",\n      \"State\": \"Stopped\",\n      \"UHostId\": \"uhost-1paxrg4g1vfw\"\n    }\n  确认执行？(y/N)   🔧 调用  ...\n  🔧 调用 StartCompShareInstance ...\n  ✅ StartCompShareInstance [3/3] 开机: success\n\nAssistant> 开机操作已完成。实例 qa-shadow-20260417-01 正在启动中，预计1-2分钟后可正常使用。\n\nYou> "
+        },
+        "failures": [],
+        "passed": true
+      }
+    ]
+  },
+  {
+    "case_id": "dirtymini_04_vague_crash_then_specific_failure",
+    "passed": false,
+    "failures": [
+      "[step 2] expected one of ['DiagnoseInitFailure'], got []",
+      "[step 2] first tool = (none), want DiagnoseInitFailure",
+      "[step 2] reply missing any of ['初始化', '失败', '删除']"
+    ],
+    "steps": [
+      {
+        "step": 1,
+        "input": "昨晚那台跑崩了",
+        "hook_before_output": "",
+        "hook_after_output": "",
+        "parsed": {
+          "tool_calls": [],
+          "assistant_reply": "您提到的\"昨晚那台\"具体是哪台实例呢？另外麻烦描述下具体现象：是 SSH 连不上了、nvidia-smi 报错、服务崩了，还是初始化卡住了？",
+          "errors": [],
+          "raw_output": "\nAssistant> 您提到的\"昨晚那台\"具体是哪台实例呢？另外麻烦描述下具体现象：是 SSH 连不上了、nvidia-smi 报错、服务崩了，还是初始化卡住了？\n\nYou> "
+        },
+        "failures": [],
+        "passed": true
+      },
+      {
+        "step": 2,
+        "input": "就是 wyptest 那台",
+        "hook_before_output": "",
+        "hook_after_output": "",
+        "parsed": {
+          "tool_calls": [],
+          "assistant_reply": "您说的是近似实例名的「wyp-test (uhost-1pbs0r67k2am)」吗？麻烦补充描述下**具体现象**哦：\n- 是 SSH 连不上了？\n- nvidia-smi 报错/GPU 找不到？\n- 服务（比如 JupyterLab/自己部署的应用）崩了？\n- 还是其他情况？",
+          "errors": [],
+          "raw_output": "\nAssistant> 您说的是近似实例名的「wyp-test (uhost-1pbs0r67k2am)」吗？麻烦补充描述下**具体现象**哦：\n- 是 SSH 连不上了？\n- nvidia-smi 报错/GPU 找不到？\n- 服务（比如 JupyterLab/自己部署的应用）崩了？\n- 还是其他情况？\n\nYou> "
+        },
+        "failures": [
+          "expected one of ['DiagnoseInitFailure'], got []",
+          "first tool = (none), want DiagnoseInitFailure",
+          "reply missing any of ['初始化', '失败', '删除']"
+        ],
+        "passed": false
+      }
+    ]
+  }
+]

@@ -1,5 +1,7 @@
 package diagnosis
 
+import "fmt"
+
 // VerdictAction determines what happens after a diagnosis step evaluates.
 type VerdictAction int
 
@@ -45,6 +47,20 @@ func NewContext(params map[string]any) *Context {
 
 func (c *Context) Result(stepName string) map[string]any {
 	return c.StepResults[stepName]
+}
+
+// RequireUHostId extracts and validates the UHostId param.
+// Returns the ID or an error if missing/empty.
+func (c *Context) RequireUHostId() (string, error) {
+	id, ok := c.Params["UHostId"]
+	if !ok || id == nil || id == "" {
+		return "", fmt.Errorf("missing required param: UHostId")
+	}
+	s, ok := id.(string)
+	if !ok || s == "" {
+		return "", fmt.Errorf("missing required param: UHostId")
+	}
+	return s, nil
 }
 
 type DiagResult struct {

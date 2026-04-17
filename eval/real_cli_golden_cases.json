@@ -110,20 +110,20 @@
     "id": "golden_16_billing_diagnosis",
     "input": "为什么在扣费",
     "expect_tool_calls": ["DiagnoseBilling"],
-    "reply_contains": ["费用", "关机"],
+    "reply_contains": ["费用", "关机", "磁盘"],
     "reply_not_contains": ["GetCompShareInstancePrice", "DescribeCompShareInstance"]
   },
   {
     "id": "golden_17_init_failure_diagnosis",
     "input": "实例初始化失败了",
     "expect_tool_calls": ["DiagnoseInitFailure"],
-    "reply_contains": ["初始化"]
+    "reply_contains": ["初始化", "删除"]
   },
   {
     "id": "golden_18_starting_not_billed",
     "input": "实例卡在启动中",
     "expect_tool_calls": ["DiagnoseInitFailure"],
-    "reply_contains": ["启动"]
+    "reply_contains": ["启动", "不"]
   },
   {
     "id": "golden_19_set_stop_scheduler",
@@ -171,7 +171,7 @@
       {
         "input": "帮我设个定时关机",
         "expect_no_tool_call": true,
-        "reply_contains": ["哪"]
+        "reply_contains": ["实例"]
       },
       {
         "input": "就那台 4090，1小时后关",

@@ -1,0 +1,28 @@
+[
+  {
+    "case_id": "pfmini_01_start_4090_fidelity_probe",
+    "passed": true,
+    "failures": [],
+    "steps": [
+      {
+        "step": 1,
+        "input": "帮我开机 qa-shadow-20260417-4090",
+        "hook_before_output": "Stopped",
+        "hook_after_output": "Running",
+        "parsed": {
+          "tool_calls": [
+            "DescribeCompShareInstance",
+            "StartInstanceWorkflow",
+            "DescribeCompShareInstance",
+            "StartCompShareInstance"
+          ],
+          "assistant_reply": "实例已成功开机！\n\n您的实例 **qa-shadow-20260417-4090** (uhost-1payastkiw8o) 现在正在启动中，稍等片刻即可使用。",
+          "errors": [],
+          "raw_output": "  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance 调用成功\n  🔧 调用 StartInstanceWorkflow ...\n  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance [1/3] 查询实例: success\n  ⚠️  即将执行变更操作: StartInstanceWorkflow\n    参数: {\n      \"ChargeType\": \"Dynamic\",\n      \"GPU\": 1,\n      \"GpuType\": \"4090\",\n      \"Name\": \"qa-shadow-20260417-4090\",\n      \"State\": \"Stopped\",\n      \"UHostId\": \"uhost-1payastkiw8o\"\n    }\n  确认执行？(y/N)   🔧 调用  ...\n  🔧 调用 StartCompShareInstance ...\n  ✅ StartCompShareInstance [3/3] 开机: success\n\nAssistant> 实例已成功开机！\n\n您的实例 **qa-shadow-20260417-4090** (uhost-1payastkiw8o) 现在正在启动中，稍等片刻即可使用。\n\nYou> "
+        },
+        "failures": [],
+        "passed": true
+      }
+    ]
+  }
+]

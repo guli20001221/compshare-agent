@@ -23,8 +23,12 @@ func stepCheckInstanceGPU() Step {
 		Name: "检查实例状态与 GPU 配置",
 		Tool: "DescribeCompShareInstance",
 		BuildArgs: func(dCtx *Context) (map[string]any, error) {
+			id, err := dCtx.RequireUHostId()
+			if err != nil {
+				return nil, err
+			}
 			return map[string]any{
-				"UHostIds": []any{dCtx.Params["UHostId"]},
+				"UHostIds": []any{id},
 			}, nil
 		},
 		Evaluate: func(result map[string]any, dCtx *Context) Verdict {
@@ -33,7 +37,7 @@ func stepCheckInstanceGPU() Step {
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: "未找到该实例，可能已被释放或 ID 输入有误。",
-					Suggestion: "请使用 DescribeCompShareInstance 查看当前实例列表，确认实例 ID。",
+					Suggestion: "请确认实例 ID 是否正确，可以告诉我「查看我的实例」来查看当前实例列表。",
 				}
 			}
 			host, _ := hosts[0].(map[string]any)
@@ -52,7 +56,7 @@ func stepCheckInstanceGPU() Step {
 					Conclusion: "实例正在初始化中，尚未就绪。初始化通常需要 2-3 分钟。",
 					Suggestion: "请耐心等待初始化完成后再尝试使用 GPU。",
 				}
-			case "InstallFail":
+			case "Install Fail":
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: "实例初始化失败，无法正常使用。",
@@ -102,8 +106,12 @@ func stepCheckGPUMonitor() Step {
 		Name: "检查 GPU 监控数据",
 		Tool: "GetCompShareInstanceMonitor",
 		BuildArgs: func(dCtx *Context) (map[string]any, error) {
+			id, err := dCtx.RequireUHostId()
+			if err != nil {
+				return nil, err
+			}
 			return map[string]any{
-				"UHostIds": []any{dCtx.Params["UHostId"]},
+				"UHostIds": []any{id},
 			}, nil
 		},
 		Evaluate: func(result map[string]any, dCtx *Context) Verdict {

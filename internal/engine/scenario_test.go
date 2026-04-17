@@ -1158,13 +1158,15 @@ func TestScenario_AllToolsRegistered(t *testing.T) {
 	assert.True(t, diagnosis.IsDiagnosisTool("DiagnoseImageIssue"))
 	assert.False(t, diagnosis.IsDiagnosisTool("NonExistent"))
 
-	// Workflow tools (6)
+	// Workflow tools (8)
 	assert.True(t, workflow.IsWorkflowTool("CreateInstanceWorkflow"))
 	assert.True(t, workflow.IsWorkflowTool("StopInstanceWorkflow"))
 	assert.True(t, workflow.IsWorkflowTool("StartInstanceWorkflow"))
 	assert.True(t, workflow.IsWorkflowTool("RebootInstanceWorkflow"))
 	assert.True(t, workflow.IsWorkflowTool("RenameInstanceWorkflow"))
 	assert.True(t, workflow.IsWorkflowTool("ResetPasswordWorkflow"))
+	assert.True(t, workflow.IsWorkflowTool("SetStopSchedulerWorkflow"))
+	assert.True(t, workflow.IsWorkflowTool("CancelStopSchedulerWorkflow"))
 	assert.False(t, workflow.IsWorkflowTool("NonExistent"))
 }
 

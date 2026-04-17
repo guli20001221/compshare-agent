@@ -1,10 +1,12 @@
 package diagnosis
 
 var chainRegistry = map[string]func() *Chain{
-	"DiagnoseSSH":         SSHFailureChain,
-	"DiagnoseInitFailure": InitFailureChain,
-	"DiagnoseGPU":         GPUNotDetectedChain,
-	"DiagnoseBilling":     BillingAnomalyChain,
+	"DiagnoseSSH":            SSHFailureChain,
+	"DiagnoseInitFailure":    InitFailureChain,
+	"DiagnoseGPU":            GPUNotDetectedChain,
+	"DiagnoseBilling":        BillingAnomalyChain,
+	"DiagnosePortOrFirewall": PortFirewallChain,
+	"DiagnoseImageIssue":     ImageIssueChain,
 }
 
 func IsDiagnosisTool(action string) bool {

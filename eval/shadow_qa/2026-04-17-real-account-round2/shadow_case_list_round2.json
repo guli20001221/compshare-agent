@@ -1,0 +1,14 @@
+[
+  {
+    "id": "round2_list_instances",
+    "input": "??????",
+    "expect_tool_calls": [
+      "DescribeCompShareInstance"
+    ],
+    "expect_display": true,
+    "reply_contains_any": [
+      "??",
+      "??"
+    ]
+  }
+]

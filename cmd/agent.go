@@ -111,6 +111,9 @@ func runCLI(cmd *cobra.Command, args []string) error {
 				fmt.Printf("  🔧 调用 %s ...\n", ev.Action)
 			case engine.StepToolResult:
 				fmt.Printf("  ✅ %s %s\n", ev.Action, ev.Message)
+				if ev.Display != "" {
+					fmt.Printf("  🔑 %s\n", ev.Display)
+				}
 			case engine.StepConfirmNeeded:
 				// Confirmation prompt is handled by cliConfirm
 			case engine.StepBlocked:

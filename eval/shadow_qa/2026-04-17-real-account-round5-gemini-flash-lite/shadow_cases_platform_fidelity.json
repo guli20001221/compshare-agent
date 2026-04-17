@@ -1,0 +1,25 @@
+[
+  {
+    "id": "pfmini_01_start_4090_fidelity_probe",
+    "steps": [
+      {
+        "hook_before": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round4-mini-freeze\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round4-mini-freeze\\shadow_qa_agent.yaml",
+          "describe",
+          "uhost-1payastkiw8o"
+        ],
+        "input": "帮我开机 qa-shadow-20260417-4090",
+        "confirm": "y",
+        "expect_tool_calls": ["StartInstanceWorkflow"],
+        "hook_after": [
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round4-mini-freeze\\external_control.exe",
+          "F:\\compshare-agent\\eval\\shadow_qa\\2026-04-17-real-account-round4-mini-freeze\\shadow_qa_agent.yaml",
+          "describe",
+          "uhost-1payastkiw8o"
+        ]
+      }
+    ]
+  }
+]
+

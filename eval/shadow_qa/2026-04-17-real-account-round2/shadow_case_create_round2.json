@@ -1,0 +1,17 @@
+[
+  {
+    "id": "round2_create_test_instance",
+    "input": "?????3080Ti???? qa-shadow-20260417-01??? Ubuntu ???????",
+    "confirm": "y",
+    "expect_tool_calls": [
+      "CreateInstanceWorkflow"
+    ],
+    "expect_first_tool": "CreateInstanceWorkflow",
+    "reply_contains_any": [
+      "??????",
+      "?????",
+      "??",
+      "??"
+    ]
+  }
+]

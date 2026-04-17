@@ -1,0 +1,45 @@
+[
+  {
+    "case_id": "shadow_01b_create_3090_stock_probe",
+    "input": "帮我开一台 3090，实例名 qa-shadow-20260416-01b，平台 Ubuntu 系统镜像，按量",
+    "steps": [
+      {
+        "step": 1,
+        "input": "帮我开一台 3090，实例名 qa-shadow-20260416-01b，平台 Ubuntu 系统镜像，按量",
+        "parsed": {
+          "tool_calls": [
+            "CreateInstanceWorkflow",
+            "DescribeCompShareImages",
+            "DescribeAvailableCompShareInstanceTypes",
+            "CheckCompShareResourceCapacity",
+            "DescribeAvailableCompShareInstanceTypes"
+          ],
+          "display_lines": [],
+          "assistant_reply": "很抱歉，您指定的3090 GPU当前在`cn-wlcb-01`可用区已售罄，无法创建。目前该可用区尚有库存的GPU机型包括：\n1.  **4090**：24GB显存，性能评级83，支持1卡16C/64GB内存配置\n2.  **5090**：32GB显存，性能评级105，支持1卡16C/96GB内存配置\n3.  **4090_48G**：48GB显存，性能评级83，支持1卡16C/96GB内存配置\n4.  **3080Ti**：12GB显存，性能评级34，支持1卡12C/32GB内存配置\n\n请问您需要更换为以上哪一款GPU机型创建实例？实例名称仍为`qa-shadow-20260416-01b`，使用Ubuntu平台系统镜像，按量计费。",
+          "errors": [],
+          "has_confirm": false,
+          "raw_output": "  🔧 调用 CreateInstanceWorkflow ...\n  🔧 调用 DescribeCompShareImages ...\n  ✅ DescribeCompShareImages [1/7] 查询镜像: success\n  🔧 调用 DescribeAvailableCompShareInstanceTypes ...\n  ✅ DescribeAvailableCompShareInstanceTypes [2/7] 查询可用配比: success\n  🔧 调用 CheckCompShareResourceCapacity ...\n  ❌ CheckCompShareResourceCapacity: [3/7] 检查库存: failed\n  🔧 调用 DescribeAvailableCompShareInstanceTypes ...\n  ✅ DescribeAvailableCompShareInstanceTypes 调用成功\n\nAssistant> 很抱歉，您指定的3090 GPU当前在`cn-wlcb-01`可用区已售罄，无法创建。目前该可用区尚有库存的GPU机型包括：\n1.  **4090**：24GB显存，性能评级83，支持1卡16C/64GB内存配置\n2.  **5090**：32GB显存，性能评级105，支持1卡16C/96GB内存配置\n3.  **4090_48G**：48GB显存，性能评级83，支持1卡16C/96GB内存配置\n4.  **3080Ti**：12GB显存，性能评级34，支持1卡12C/32GB内存配置\n\n请问您需要更换为以上哪一款GPU机型创建实例？实例名称仍为`qa-shadow-20260416-01b`，使用Ubuntu平台系统镜像，按量计费。\n\nYou> "
+        },
+        "passed": true,
+        "failures": []
+      }
+    ],
+    "parsed": {
+      "tool_calls": [
+        "CreateInstanceWorkflow",
+        "DescribeCompShareImages",
+        "DescribeAvailableCompShareInstanceTypes",
+        "CheckCompShareResourceCapacity",
+        "DescribeAvailableCompShareInstanceTypes"
+      ],
+      "display_lines": [],
+      "assistant_reply": "很抱歉，您指定的3090 GPU当前在`cn-wlcb-01`可用区已售罄，无法创建。目前该可用区尚有库存的GPU机型包括：\n1.  **4090**：24GB显存，性能评级83，支持1卡16C/64GB内存配置\n2.  **5090**：32GB显存，性能评级105，支持1卡16C/96GB内存配置\n3.  **4090_48G**：48GB显存，性能评级83，支持1卡16C/96GB内存配置\n4.  **3080Ti**：12GB显存，性能评级34，支持1卡12C/32GB内存配置\n\n请问您需要更换为以上哪一款GPU机型创建实例？实例名称仍为`qa-shadow-20260416-01b`，使用Ubuntu平台系统镜像，按量计费。",
+      "errors": [],
+      "has_confirm": false,
+      "raw_output": "  🔧 调用 CreateInstanceWorkflow ...\n  🔧 调用 DescribeCompShareImages ...\n  ✅ DescribeCompShareImages [1/7] 查询镜像: success\n  🔧 调用 DescribeAvailableCompShareInstanceTypes ...\n  ✅ DescribeAvailableCompShareInstanceTypes [2/7] 查询可用配比: success\n  🔧 调用 CheckCompShareResourceCapacity ...\n  ❌ CheckCompShareResourceCapacity: [3/7] 检查库存: failed\n  🔧 调用 DescribeAvailableCompShareInstanceTypes ...\n  ✅ DescribeAvailableCompShareInstanceTypes 调用成功\n\nAssistant> 很抱歉，您指定的3090 GPU当前在`cn-wlcb-01`可用区已售罄，无法创建。目前该可用区尚有库存的GPU机型包括：\n1.  **4090**：24GB显存，性能评级83，支持1卡16C/64GB内存配置\n2.  **5090**：32GB显存，性能评级105，支持1卡16C/96GB内存配置\n3.  **4090_48G**：48GB显存，性能评级83，支持1卡16C/96GB内存配置\n4.  **3080Ti**：12GB显存，性能评级34，支持1卡12C/32GB内存配置\n\n请问您需要更换为以上哪一款GPU机型创建实例？实例名称仍为`qa-shadow-20260416-01b`，使用Ubuntu平台系统镜像，按量计费。\n\nYou> "
+    },
+    "passed": true,
+    "failures": [],
+    "run_index": 1
+  }
+]

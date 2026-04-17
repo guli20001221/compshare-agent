@@ -44,13 +44,13 @@ func GetSuggestions(stage UserStage) []Suggestion {
 	case ActiveUser:
 		return []Suggestion{
 			{Text: "查看实例状态"},
-			{Text: "设置定时关机"},
-			{Text: "这个月花了多少钱"},
+			{Text: "查看实例监控"},
+			{Text: "帮我看看费用"},
 		}
 	case InactiveUser:
 		return []Suggestion{
 			{Text: "开机"},
-			{Text: "查看余额"},
+			{Text: "查看实例状态"},
 			{Text: "查看 GPU 型号和价格"},
 		}
 	default:

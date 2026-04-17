@@ -60,6 +60,17 @@ func TestGetSuggestions_ActiveUser(t *testing.T) {
 	if suggestions[0].Text != "查看实例状态" {
 		t.Errorf("first suggestion = %q, unexpected", suggestions[0].Text)
 	}
+	// All suggestions must map to existing tools
+	texts := map[string]bool{}
+	for _, s := range suggestions {
+		texts[s.Text] = true
+	}
+	if texts["设置定时关机"] {
+		t.Error("should not suggest '设置定时关机' — no scheduler tool registered")
+	}
+	if texts["查看余额"] {
+		t.Error("should not suggest '查看余额' — no account-info tool registered")
+	}
 }
 
 func TestGetSuggestions_InactiveUser(t *testing.T) {
@@ -69,5 +80,10 @@ func TestGetSuggestions_InactiveUser(t *testing.T) {
 	}
 	if suggestions[0].Text != "开机" {
 		t.Errorf("first suggestion = %q, unexpected", suggestions[0].Text)
+	}
+	for _, s := range suggestions {
+		if s.Text == "查看余额" {
+			t.Error("should not suggest '查看余额' — no account-info tool registered")
+		}
 	}
 }

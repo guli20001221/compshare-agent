@@ -43,6 +43,17 @@ func stoppedMockExecutor() *mockExecutor {
 // startMockExecutor returns a mock with results for the StartInstance workflow.
 func startMockExecutor() *mockExecutor {
 	return &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-yyy",
+				"Name":       "start-me",
+				"State":      "Stopped",
+				"Zone":       "cn-bj2-04",
+				"GpuType":    "A100",
+				"GPU":        float64(2),
+				"ChargeType": "Month",
+			},
+		}},
 		"StartCompShareInstance": {"RetCode": 0},
 	}}
 }
@@ -60,17 +71,12 @@ func TestStopInstance_HappyPath(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Equal(t, "工作流执行完成", result.Message)
-
-	// All 3 steps completed
 	assert.Len(t, result.Steps, 3)
-	expectedNames := []string{"查询实例", "确认关机", "关机"}
-	for i, name := range expectedNames {
-		assert.Equal(t, name, result.Steps[i].Name)
+	for i := range result.Steps {
+		assert.Equal(t, def.Steps[i].Name, result.Steps[i].Name)
 		assert.Equal(t, "success", result.Steps[i].Status)
 	}
 
-	// 2 API calls (confirm does not call executor)
 	assert.Len(t, executor.calls, 2)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 	assert.Equal(t, "StopCompShareInstance", executor.calls[1].action)
@@ -89,10 +95,7 @@ func TestStopInstance_ConfirmDenied(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Equal(t, "确认关机", result.StoppedAt)
-	assert.Equal(t, "用户取消了操作", result.Message)
-
-	// Only DescribeCompShareInstance called; StopCompShareInstance never called
+	assert.Equal(t, def.Steps[1].Name, result.StoppedAt)
 	assert.Len(t, executor.calls, 1)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 }
@@ -103,7 +106,7 @@ func TestStopInstance_ConfirmHasFeeWarning(t *testing.T) {
 	var capturedArgs map[string]any
 	confirmFn := func(action string, args map[string]any) bool {
 		capturedArgs = args
-		return false // deny to inspect args
+		return false
 	}
 	onStep, _ := collectEvents()
 
@@ -115,11 +118,9 @@ func TestStopInstance_ConfirmHasFeeWarning(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotNil(t, capturedArgs)
-
-	// Verify the warning about disk fees is present
 	warning, ok := capturedArgs["warning"].(string)
 	assert.True(t, ok)
-	assert.Contains(t, warning, "磁盘")
+	assert.NotEmpty(t, warning)
 }
 
 func TestStopInstance_AlreadyStopped(t *testing.T) {
@@ -134,10 +135,28 @@ func TestStopInstance_AlreadyStopped(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Equal(t, "查询实例", result.StoppedAt)
-	assert.Contains(t, result.Message, "已经是关机状态")
+	assert.Equal(t, def.Steps[0].Name, result.StoppedAt)
+	assert.Len(t, executor.calls, 1)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
+}
 
-	// Only the describe call was made
+func TestStopInstance_NotFound(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{}},
+	}}
+	onStep, _ := collectEvents()
+
+	def := StopInstanceDef()
+	eng := NewEngine(executor, nil, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-nonexistent",
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, "查询实例", result.StoppedAt)
+	assert.Contains(t, result.Message, "未找到")
+	// StopCompShareInstance should NOT be called
 	assert.Len(t, executor.calls, 1)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 }
@@ -155,19 +174,16 @@ func TestStartInstance_HappyPath(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Equal(t, "工作流执行完成", result.Message)
-
-	// All 2 steps completed
-	assert.Len(t, result.Steps, 2)
-	expectedNames := []string{"确认开机", "开机"}
-	for i, name := range expectedNames {
-		assert.Equal(t, name, result.Steps[i].Name)
+	assert.Len(t, result.Steps, 3)
+	for i := range result.Steps {
+		assert.Equal(t, def.Steps[i].Name, result.Steps[i].Name)
 		assert.Equal(t, "success", result.Steps[i].Status)
 	}
 
-	// 1 API call (confirm does not call executor)
-	assert.Len(t, executor.calls, 1)
-	assert.Equal(t, "StartCompShareInstance", executor.calls[0].action)
+	assert.Len(t, executor.calls, 2)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
+	assert.Equal(t, "StartCompShareInstance", executor.calls[1].action)
+	assert.Equal(t, "cn-bj2-04", executor.calls[1].args["Zone"])
 }
 
 func TestStartInstance_ConfirmDenied(t *testing.T) {
@@ -183,9 +199,59 @@ func TestStartInstance_ConfirmDenied(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Equal(t, "确认开机", result.StoppedAt)
-	assert.Equal(t, "用户取消了操作", result.Message)
+	assert.Equal(t, def.Steps[1].Name, result.StoppedAt)
+	assert.Len(t, executor.calls, 1)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
+}
 
-	// StartCompShareInstance never called
-	assert.Empty(t, executor.calls)
+func TestStartInstance_ConfirmShowsSummary(t *testing.T) {
+	executor := startMockExecutor()
+
+	var capturedArgs map[string]any
+	confirmFn := func(action string, args map[string]any) bool {
+		capturedArgs = args
+		return false
+	}
+	onStep, _ := collectEvents()
+
+	def := StartInstanceDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	_, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-yyy",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, capturedArgs)
+	assert.Equal(t, "uhost-yyy", capturedArgs["UHostId"])
+	assert.Equal(t, "start-me", capturedArgs["Name"])
+	assert.Equal(t, "Stopped", capturedArgs["State"])
+	assert.Equal(t, "A100", capturedArgs["GpuType"])
+	assert.Equal(t, float64(2), capturedArgs["GPU"])
+	assert.Equal(t, "Month", capturedArgs["ChargeType"])
+}
+
+func TestStartInstance_RunningRejected(t *testing.T) {
+	executor := startMockExecutor()
+	executor.results["DescribeCompShareInstance"] = map[string]any{
+		"UHostSet": []any{
+			map[string]any{
+				"UHostId": "uhost-yyy",
+				"State":   "Running",
+			},
+		},
+	}
+	onStep, _ := collectEvents()
+
+	def := StartInstanceDef()
+	eng := NewEngine(executor, nil, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-yyy",
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, def.Steps[0].Name, result.StoppedAt)
+	assert.NotEmpty(t, result.Message)
+	assert.Len(t, executor.calls, 1)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 }

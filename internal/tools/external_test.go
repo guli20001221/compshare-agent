@@ -1,7 +1,14 @@
 package tools
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
+
+	"github.com/compshare-agent/internal/config"
 )
 
 func TestUcloudSign(t *testing.T) {
@@ -120,5 +127,110 @@ func TestFlattenInto_WithPrefix(t *testing.T) {
 
 	if dst["Prefix.Name"] != "test" {
 		t.Errorf("Prefix.Name = %q, want test", dst["Prefix.Name"])
+	}
+}
+
+// --- ProjectId injection ---
+
+func TestExternalExecutor_ProjectIdFromConfig(t *testing.T) {
+	ext := NewExternalExecutor(config.AgentConfig{
+		CompShareAPIURL: "http://example.invalid",
+		PublicKey:       "pk",
+		PrivateKey:      "sk",
+		Region:          "cn-wlcb",
+		ProjectId:       "org-from-cfg",
+	})
+	if got := ext.ProjectId(); got != "org-from-cfg" {
+		t.Errorf("ProjectId() = %q, want org-from-cfg", got)
+	}
+}
+
+func TestExternalExecutor_SetProjectId(t *testing.T) {
+	ext := NewExternalExecutor(config.AgentConfig{CompShareAPIURL: "http://example.invalid"})
+	if got := ext.ProjectId(); got != "" {
+		t.Errorf("initial ProjectId() = %q, want empty", got)
+	}
+	ext.SetProjectId("org-runtime")
+	if got := ext.ProjectId(); got != "org-runtime" {
+		t.Errorf("after SetProjectId, ProjectId() = %q, want org-runtime", got)
+	}
+}
+
+// captureForm starts an httptest server that records the form body of the
+// first POST request. Callers use the returned URL as CompShareAPIURL and
+// read the captured form after Execute.
+func captureForm(t *testing.T) (apiURL string, captured *url.Values, cleanup func()) {
+	t.Helper()
+	var form url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		form, _ = url.ParseQuery(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "TestResponse"}`))
+	}))
+	return srv.URL, &form, srv.Close
+}
+
+func TestExternalExecutor_AutoInjectsProjectId(t *testing.T) {
+	apiURL, form, cleanup := captureForm(t)
+	defer cleanup()
+
+	ext := NewExternalExecutor(config.AgentConfig{
+		CompShareAPIURL: apiURL,
+		PublicKey:       "pk",
+		PrivateKey:      "sk",
+		Region:          "cn-wlcb",
+		ProjectId:       "org-cfg",
+	})
+
+	if _, err := ext.Execute(context.Background(), "UpdateCompShareStopScheduler", map[string]any{
+		"UHostId": "uhost-xxx",
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if (*form).Get("ProjectId") != "org-cfg" {
+		t.Errorf("form ProjectId = %q, want org-cfg", (*form).Get("ProjectId"))
+	}
+}
+
+func TestExternalExecutor_ExplicitProjectIdOverridesConfig(t *testing.T) {
+	apiURL, form, cleanup := captureForm(t)
+	defer cleanup()
+
+	ext := NewExternalExecutor(config.AgentConfig{
+		CompShareAPIURL: apiURL,
+		PublicKey:       "pk",
+		PrivateKey:      "sk",
+		Region:          "cn-wlcb",
+		ProjectId:       "org-cfg",
+	})
+
+	if _, err := ext.Execute(context.Background(), "SomeAction", map[string]any{
+		"ProjectId": "org-explicit",
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if (*form).Get("ProjectId") != "org-explicit" {
+		t.Errorf("form ProjectId = %q, want org-explicit (explicit args must win)", (*form).Get("ProjectId"))
+	}
+}
+
+func TestExternalExecutor_NoProjectIdWhenUnset(t *testing.T) {
+	apiURL, form, cleanup := captureForm(t)
+	defer cleanup()
+
+	ext := NewExternalExecutor(config.AgentConfig{
+		CompShareAPIURL: apiURL,
+		PublicKey:       "pk",
+		PrivateKey:      "sk",
+		Region:          "cn-wlcb",
+		// ProjectId intentionally empty
+	})
+
+	if _, err := ext.Execute(context.Background(), "DescribeCompShareInstance", nil); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := (*form).Get("ProjectId"); got != "" {
+		t.Errorf("form ProjectId = %q, want empty when unset", got)
 	}
 }

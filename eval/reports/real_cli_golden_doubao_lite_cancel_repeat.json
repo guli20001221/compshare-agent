@@ -1,0 +1,116 @@
+[
+  {
+    "case_id": "golden_06_reset_password",
+    "input": "帮我把 uhost-1p1r57tl3cmw 的密码重置为 NewPass123!",
+    "parsed": {
+      "tool_calls": [
+        "ResetPasswordWorkflow",
+        "DescribeCompShareInstance",
+        "DescribeCompShareInstance"
+      ],
+      "display_lines": [],
+      "assistant_reply": "已为您取消密码重置操作，如需重置请重新发起请求。",
+      "errors": [],
+      "has_confirm": true,
+      "raw_output": "  🔧 调用 ResetPasswordWorkflow ...\n  🔧 调用 DescribeCompShareInstance ...\n  🔧 调用 DescribeCompShareInstance ...\n  ⚠️  即将执行变更操作: ResetPasswordWorkflow\n    参数: {\n      \"ChargeType\": \"Postpay\",\n      \"GPU\": 1,\n      \"GpuType\": \"4090\",\n      \"Name\": \"host\",\n      \"Password\": \"[已设置,不显示]\",\n      \"State\": \"Running\",\n      \"UHostId\": \"uhost-1p1r57tl3cmw\",\n      \"warning\": \"密码要求：8-32字符，至少包含2种字符类型（大小写字母/数字/特殊字符）。\"\n    }\n  确认执行？(y/N)   🚫 [2/4] 确认重置: cancelled\n\nAssistant> 已为您取消密码重置操作，如需重置请重新发起请求。\n\nYou> "
+    },
+    "passed": true,
+    "failures": [],
+    "run_index": 1
+  },
+  {
+    "case_id": "golden_06_reset_password",
+    "input": "帮我把 uhost-1p1r57tl3cmw 的密码重置为 NewPass123!",
+    "parsed": {
+      "tool_calls": [
+        "ResetPasswordWorkflow",
+        "DescribeCompShareInstance",
+        "DescribeCompShareInstance"
+      ],
+      "display_lines": [],
+      "assistant_reply": "已取消重置实例 `uhost-1p1r57tl3cmw` 密码的操作。如果您需要重新重置，请再次发起请求。",
+      "errors": [],
+      "has_confirm": true,
+      "raw_output": "  🔧 调用 ResetPasswordWorkflow ...\n  🔧 调用 DescribeCompShareInstance ...\n  🔧 调用 DescribeCompShareInstance ...\n  ⚠️  即将执行变更操作: ResetPasswordWorkflow\n    参数: {\n      \"ChargeType\": \"Postpay\",\n      \"GPU\": 1,\n      \"GpuType\": \"4090\",\n      \"Name\": \"host\",\n      \"Password\": \"[已设置,不显示]\",\n      \"State\": \"Running\",\n      \"UHostId\": \"uhost-1p1r57tl3cmw\",\n      \"warning\": \"密码要求：8-32字符，至少包含2种字符类型（大小写字母/数字/特殊字符）。\"\n    }\n  确认执行？(y/N)   🚫 [2/4] 确认重置: cancelled\n\nAssistant> 已取消重置实例 `uhost-1p1r57tl3cmw` 密码的操作。如果您需要重新重置，请再次发起请求。\n\nYou> "
+    },
+    "passed": true,
+    "failures": [],
+    "run_index": 2
+  },
+  {
+    "case_id": "golden_06_reset_password",
+    "input": "帮我把 uhost-1p1r57tl3cmw 的密码重置为 NewPass123!",
+    "parsed": {
+      "tool_calls": [
+        "ResetPasswordWorkflow",
+        "DescribeCompShareInstance",
+        "DescribeCompShareInstance"
+      ],
+      "display_lines": [],
+      "assistant_reply": "已取消重置密码操作，如有需要可重新发起请求。",
+      "errors": [],
+      "has_confirm": true,
+      "raw_output": "  🔧 调用 ResetPasswordWorkflow ...\n  🔧 调用 DescribeCompShareInstance ...\n  🔧 调用 DescribeCompShareInstance ...\n  ⚠️  即将执行变更操作: ResetPasswordWorkflow\n    参数: {\n      \"ChargeType\": \"Postpay\",\n      \"GPU\": 1,\n      \"GpuType\": \"4090\",\n      \"Name\": \"host\",\n      \"Password\": \"[已设置,不显示]\",\n      \"State\": \"Running\",\n      \"UHostId\": \"uhost-1p1r57tl3cmw\",\n      \"warning\": \"密码要求：8-32字符，至少包含2种字符类型（大小写字母/数字/特殊字符）。\"\n    }\n  确认执行？(y/N)   🚫 [2/4] 确认重置: cancelled\n\nAssistant> 已取消重置密码操作，如有需要可重新发起请求。\n\nYou> "
+    },
+    "passed": true,
+    "failures": [],
+    "run_index": 3
+  },
+  {
+    "case_id": "golden_15_explicit_reboot",
+    "input": "重启一下 uhost-1p1r57tl3cmw",
+    "parsed": {
+      "tool_calls": [
+        "RebootInstanceWorkflow",
+        "DescribeCompShareInstance",
+        "DescribeCompShareInstance"
+      ],
+      "display_lines": [],
+      "assistant_reply": "重启操作已取消，若您确认需要重启实例 uhost-1p1r57tl3cmw，请重新发起请求。",
+      "errors": [],
+      "has_confirm": true,
+      "raw_output": "  🔧 调用 RebootInstanceWorkflow ...\n  🔧 调用 DescribeCompShareInstance ...\n  🔧 调用 DescribeCompShareInstance ...\n  ⚠️  即将执行变更操作: RebootInstanceWorkflow\n    参数: {\n      \"ChargeType\": \"Postpay\",\n      \"GPU\": 1,\n      \"GpuType\": \"4090\",\n      \"Name\": \"host\",\n      \"State\": \"Running\",\n      \"UHostId\": \"uhost-1p1r57tl3cmw\",\n      \"warning\": \"重启会中断当前运行的任务，请确保已保存工作。\"\n    }\n  确认执行？(y/N)   🚫 [2/3] 确认重启: cancelled\n\nAssistant> 重启操作已取消，若您确认需要重启实例 uhost-1p1r57tl3cmw，请重新发起请求。\n\nYou> "
+    },
+    "passed": true,
+    "failures": [],
+    "run_index": 1
+  },
+  {
+    "case_id": "golden_15_explicit_reboot",
+    "input": "重启一下 uhost-1p1r57tl3cmw",
+    "parsed": {
+      "tool_calls": [
+        "RebootInstanceWorkflow",
+        "DescribeCompShareInstance",
+        "DescribeCompShareInstance"
+      ],
+      "display_lines": [],
+      "assistant_reply": "已取消重启操作，若您需要重启实例 `uhost-1p1r57tl3cmw`，可重新发起请求。",
+      "errors": [],
+      "has_confirm": true,
+      "raw_output": "  🔧 调用 RebootInstanceWorkflow ...\n  🔧 调用 DescribeCompShareInstance ...\n  🔧 调用 DescribeCompShareInstance ...\n  ⚠️  即将执行变更操作: RebootInstanceWorkflow\n    参数: {\n      \"ChargeType\": \"Postpay\",\n      \"GPU\": 1,\n      \"GpuType\": \"4090\",\n      \"Name\": \"host\",\n      \"State\": \"Running\",\n      \"UHostId\": \"uhost-1p1r57tl3cmw\",\n      \"warning\": \"重启会中断当前运行的任务，请确保已保存工作。\"\n    }\n  确认执行？(y/N)   🚫 [2/3] 确认重启: cancelled\n\nAssistant> 已取消重启操作，若您需要重启实例 `uhost-1p1r57tl3cmw`，可重新发起请求。\n\nYou> "
+    },
+    "passed": true,
+    "failures": [],
+    "run_index": 2
+  },
+  {
+    "case_id": "golden_15_explicit_reboot",
+    "input": "重启一下 uhost-1p1r57tl3cmw",
+    "parsed": {
+      "tool_calls": [
+        "RebootInstanceWorkflow",
+        "DescribeCompShareInstance",
+        "DescribeCompShareInstance"
+      ],
+      "display_lines": [],
+      "assistant_reply": "已取消重启操作，若需要重启可再次发起请求。",
+      "errors": [],
+      "has_confirm": true,
+      "raw_output": "  🔧 调用 RebootInstanceWorkflow ...\n  🔧 调用 DescribeCompShareInstance ...\n  🔧 调用 DescribeCompShareInstance ...\n  ⚠️  即将执行变更操作: RebootInstanceWorkflow\n    参数: {\n      \"ChargeType\": \"Postpay\",\n      \"GPU\": 1,\n      \"GpuType\": \"4090\",\n      \"Name\": \"host\",\n      \"State\": \"Running\",\n      \"UHostId\": \"uhost-1p1r57tl3cmw\",\n      \"warning\": \"重启会中断当前运行的任务，请确保已保存工作。\"\n    }\n  确认执行？(y/N)   🚫 [2/3] 确认重启: cancelled\n\nAssistant> 已取消重启操作，若需要重启可再次发起请求。\n\nYou> "
+    },
+    "passed": true,
+    "failures": [],
+    "run_index": 3
+  }
+]

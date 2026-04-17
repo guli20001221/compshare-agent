@@ -5,6 +5,11 @@ var workflowRegistry = map[string]func() *Definition{
 	"CreateInstanceWorkflow": CreateInstanceDef,
 	"StopInstanceWorkflow":   StopInstanceDef,
 	"StartInstanceWorkflow":  StartInstanceDef,
+	"RebootInstanceWorkflow": RebootInstanceDef,
+	"RenameInstanceWorkflow": RenameInstanceDef,
+	"ResetPasswordWorkflow":          ResetPasswordDef,
+	"SetStopSchedulerWorkflow":       SetStopSchedulerDef,
+	"CancelStopSchedulerWorkflow":    CancelStopSchedulerDef,
 }
 
 // IsWorkflowTool reports whether the given action name corresponds to a

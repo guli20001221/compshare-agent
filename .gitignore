@@ -1,2 +1,8 @@
 *.exe
 deploy/conf/agent.yaml
+__pycache__/
+*.pyc
+
+# Shadow QA per-round agent configs contain real API keys (UCloud + LLM).
+# Never commit these.
+eval/shadow_qa/**/shadow_qa_agent.yaml

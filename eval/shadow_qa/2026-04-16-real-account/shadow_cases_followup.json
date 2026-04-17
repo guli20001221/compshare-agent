@@ -1,0 +1,33 @@
+[
+  {
+    "id": "shadow_08_stop_two_turn_confirm",
+    "steps": [
+      {
+        "input": "帮我关掉 qa-shadow-20260416-01",
+        "expect_no_tool_call": true,
+        "reply_contains": ["确认", "qa-shadow-20260416-01"]
+      },
+      {
+        "input": "确认",
+        "confirm": "y",
+        "expect_tool_calls": ["StopInstanceWorkflow"],
+        "expect_first_tool": "StopInstanceWorkflow",
+        "reply_contains": ["关机"]
+      }
+    ]
+  },
+  {
+    "id": "shadow_09_billing_after_real_stop",
+    "input": "为什么 qa-shadow-20260416-01 关机后还有费用",
+    "expect_tool_calls": ["DiagnoseBilling"],
+    "reply_contains": ["费用", "磁盘"]
+  },
+  {
+    "id": "shadow_10_start_after_real_stop",
+    "input": "把 qa-shadow-20260416-01 开机",
+    "confirm": "y",
+    "expect_tool_calls": ["StartInstanceWorkflow"],
+    "expect_first_tool": "StartInstanceWorkflow",
+    "reply_contains": ["开机"]
+  }
+]

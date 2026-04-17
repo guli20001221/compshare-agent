@@ -1,6 +1,26 @@
 # Claude Code 项目配置：superpowers + gstack + 上下文管理
 
+## 上游 API 参考（查接口/字段/行为时的权威来源）
+
+本项目是 CompShare 平台 API 的下游 Agent。遇到"这个接口要传什么参数、字段怎么解析、
+为什么报这个错"时，按下列顺序查上游仓库（本地路径 `F:\uhost-compshare-api-master\`）：
+
+| 目的 | 路径 |
+|------|------|
+| 接口契约（必填/可选参数、示例、返回格式） | `docs/api/<domain>/<Action>.md`（domain = instance/scheduler/pricing/image/disk/team/spec/model/utils） |
+| 接口总览/审查状态 | `docs/api/API接口清单_审查稿.md`、`docs/api/fix_list.md` |
+| 真实后端实现（参数校验、错误码、业务流） | `internal/api/compshare/<action>.go`（文件名 snake_case），公共逻辑见 `base.go` |
+| 成功调用示例（含 key/project/zone 真实值） | `examples/phaseN/main.go` |
+| Block A 之前的调研与技术方案 | `docs/agent/research/`、`docs/agent/plan/AGENT_CONTEXT.md`、`docs/agent/plan/优云AI助手技术方案*.md` |
+| Block A 之前的会话日志 | `docs/agent/log/*.md` |
+
+原则：
+- 接口行为以 `internal/api/compshare/<action>.go` 的 `preDoWork` 校验为准（文档可能滞后）。
+- 需要账户级常量（如 `ProjectId`、`Region`、`Zone`）时先查 `examples/phase*/main.go` 的常量块。
+- 不确定字段名时搜 `grep -r "FieldName" F:/uhost-compshare-api-master/internal/api/compshare/`。
+
 ## 插件分工
+
 - superpowers：思考与流程（plan / brainstorm / debug / TDD / review / verify）
 - gstack：执行与外部世界（browser / QA / ship / deploy / canary / 护栏）
 

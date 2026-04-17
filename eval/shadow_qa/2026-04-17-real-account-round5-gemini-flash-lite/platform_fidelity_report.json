@@ -1,0 +1,29 @@
+[
+  {
+    "case_id": "pfmini_01_start_4090_fidelity_probe",
+    "passed": false,
+    "failures": [
+      "[step 1] expected one of ['StartInstanceWorkflow'], got ['DescribeCompShareInstance']"
+    ],
+    "steps": [
+      {
+        "step": 1,
+        "input": "帮我开机 qa-shadow-20260417-4090",
+        "hook_before_output": "Stopped",
+        "hook_after_output": "Stopped",
+        "parsed": {
+          "tool_calls": [
+            "DescribeCompShareInstance"
+          ],
+          "assistant_reply": "好的，已为您确认实例 `qa-shadow-20260417-4090` (uhost-1payastkiw8o) 当前状态为关机（Stopped）。\n\n准备为您执行开机操作。该操作执行后实例将恢复运行，并开始计算 GPU/CPU/内存费用。请问是否确认现在开机？",
+          "errors": [],
+          "raw_output": "  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance 调用成功\n\nAssistant> 好的，已为您确认实例 `qa-shadow-20260417-4090` (uhost-1payastkiw8o) 当前状态为关机（Stopped）。\n\n准备为您执行开机操作。该操作执行后实例将恢复运行，并开始计算 GPU/CPU/内存费用。请问是否确认现在开机？\n\nYou> "
+        },
+        "failures": [
+          "expected one of ['StartInstanceWorkflow'], got ['DescribeCompShareInstance']"
+        ],
+        "passed": false
+      }
+    ]
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "id": "pf_01_create_3090_no_stock_fidelity",
+    "input": "?????3090???? qa-shadow-20260417-3090??? Ubuntu ???????",
+    "confirm": "y",
+    "expect_tool_calls": [
+      "CreateInstanceWorkflow"
+    ],
+    "expect_first_tool": "CreateInstanceWorkflow",
+    "reply_contains_any": [
+      "??",
+      "??",
+      "???",
+      "????",
+      "??"
+    ],
+    "reply_not_contains": [
+      "?????",
+      "??????"
+    ]
+  }
+]

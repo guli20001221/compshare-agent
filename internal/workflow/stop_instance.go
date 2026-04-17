@@ -28,12 +28,18 @@ func stepQueryInstance() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(result map[string]any) (bool, string) {
+		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
 			state := extractInstanceState(result)
-			if state == "Stopped" {
+			switch state {
+			case "":
+				return false, "未找到该实例。"
+			case "Stopped":
 				return false, "实例已经是关机状态，无需操作。"
+			case "Running":
+				return true, ""
+			default:
+				return false, "实例当前状态为「" + state + "」，仅 Running 状态可以关机。"
 			}
-			return true, ""
 		},
 	}
 }

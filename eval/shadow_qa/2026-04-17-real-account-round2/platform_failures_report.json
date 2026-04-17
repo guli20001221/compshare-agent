@@ -1,0 +1,53 @@
+[
+  {
+    "case_id": "pf_01_create_3090_no_stock_fidelity",
+    "input": "?????3090???? qa-shadow-20260417-3090??? Ubuntu ???????",
+    "steps": [
+      {
+        "step": 1,
+        "input": "?????3090???? qa-shadow-20260417-3090??? Ubuntu ???????",
+        "parsed": {
+          "tool_calls": [
+            "CreateInstanceWorkflow",
+            "DescribeCompShareImages",
+            "DescribeAvailableCompShareInstanceTypes",
+            "CheckCompShareResourceCapacity",
+            "GetCompShareInstanceUserPrice",
+            "CreateCompShareInstance",
+            "DescribeCompShareInstance"
+          ],
+          "display_lines": [],
+          "assistant_reply": "已成功创建基于 Ubuntu 系统镜像的 3090 GPU 实例，工作流执行完成。您可以在控制台查看实例状态和连接信息。",
+          "errors": [],
+          "has_confirm": true,
+          "raw_output": "  🔧 调用 CreateInstanceWorkflow ...\n  🔧 调用 DescribeCompShareImages ...\n  ✅ DescribeCompShareImages [1/7] 查询镜像: success\n  🔧 调用 DescribeAvailableCompShareInstanceTypes ...\n  ✅ DescribeAvailableCompShareInstanceTypes [2/7] 查询可用配比: success\n  🔧 调用 CheckCompShareResourceCapacity ...\n  ✅ CheckCompShareResourceCapacity [3/7] 检查库存: success\n  🔧 调用 GetCompShareInstanceUserPrice ...\n  ✅ GetCompShareInstanceUserPrice [4/7] 查询价格: success\n  ⚠️  即将执行变更操作: CreateInstanceWorkflow\n    参数: {\n      \"CPU\": 16,\n      \"ChargeType\": \"Dynamic\",\n      \"Gpu\": 1,\n      \"GpuType\": \"3090\",\n      \"Memory\": 65536,\n      \"Zone\": \"cn-wlcb-01\",\n      \"image\": \"Ubuntu-nvidia 22.04\",\n      \"price\": {\n        \"Action\": \"GetCompShareInstanceUserPriceResponse\",\n        \"ListPriceDetails\": [\n          {\n            \"ChargeType\": \"Postpay\",\n            \"Instance\": 1.19\n          }\n        ],\n        \"OriginalPriceDetails\": [\n          {\n            \"ChargeType\": \"Postpay\",\n            \"Instance\": 1.19\n          }\n        ],\n        \"PriceDetails\": [\n          {\n            \"ChargeType\": \"Postpay\",\n            \"Instance\": 1.13\n          }\n        ],\n        \"RetCode\": 0,\n        \"request_uuid\": \"0eecd960-bdd0-42f2-aedd-292d76dabb46\"\n      },\n      \"workflow\": \"CreateInstanceWorkflow\"\n    }\n  确认执行？(y/N)   🔧 调用  ...\n  🔧 调用 CreateCompShareInstance ...\n  ✅ CreateCompShareInstance [6/7] 创建实例: success\n  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance [7/7] 查看状态: success\n\nAssistant> 已成功创建基于 Ubuntu 系统镜像的 3090 GPU 实例，工作流执行完成。您可以在控制台查看实例状态和连接信息。\n\nYou> "
+        },
+        "passed": false,
+        "failures": [
+          "reply missing any of ['??', '??', '???', '????', '??']"
+        ]
+      }
+    ],
+    "parsed": {
+      "tool_calls": [
+        "CreateInstanceWorkflow",
+        "DescribeCompShareImages",
+        "DescribeAvailableCompShareInstanceTypes",
+        "CheckCompShareResourceCapacity",
+        "GetCompShareInstanceUserPrice",
+        "CreateCompShareInstance",
+        "DescribeCompShareInstance"
+      ],
+      "display_lines": [],
+      "assistant_reply": "已成功创建基于 Ubuntu 系统镜像的 3090 GPU 实例，工作流执行完成。您可以在控制台查看实例状态和连接信息。",
+      "errors": [],
+      "has_confirm": true,
+      "raw_output": "  🔧 调用 CreateInstanceWorkflow ...\n  🔧 调用 DescribeCompShareImages ...\n  ✅ DescribeCompShareImages [1/7] 查询镜像: success\n  🔧 调用 DescribeAvailableCompShareInstanceTypes ...\n  ✅ DescribeAvailableCompShareInstanceTypes [2/7] 查询可用配比: success\n  🔧 调用 CheckCompShareResourceCapacity ...\n  ✅ CheckCompShareResourceCapacity [3/7] 检查库存: success\n  🔧 调用 GetCompShareInstanceUserPrice ...\n  ✅ GetCompShareInstanceUserPrice [4/7] 查询价格: success\n  ⚠️  即将执行变更操作: CreateInstanceWorkflow\n    参数: {\n      \"CPU\": 16,\n      \"ChargeType\": \"Dynamic\",\n      \"Gpu\": 1,\n      \"GpuType\": \"3090\",\n      \"Memory\": 65536,\n      \"Zone\": \"cn-wlcb-01\",\n      \"image\": \"Ubuntu-nvidia 22.04\",\n      \"price\": {\n        \"Action\": \"GetCompShareInstanceUserPriceResponse\",\n        \"ListPriceDetails\": [\n          {\n            \"ChargeType\": \"Postpay\",\n            \"Instance\": 1.19\n          }\n        ],\n        \"OriginalPriceDetails\": [\n          {\n            \"ChargeType\": \"Postpay\",\n            \"Instance\": 1.19\n          }\n        ],\n        \"PriceDetails\": [\n          {\n            \"ChargeType\": \"Postpay\",\n            \"Instance\": 1.13\n          }\n        ],\n        \"RetCode\": 0,\n        \"request_uuid\": \"0eecd960-bdd0-42f2-aedd-292d76dabb46\"\n      },\n      \"workflow\": \"CreateInstanceWorkflow\"\n    }\n  确认执行？(y/N)   🔧 调用  ...\n  🔧 调用 CreateCompShareInstance ...\n  ✅ CreateCompShareInstance [6/7] 创建实例: success\n  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance [7/7] 查看状态: success\n\nAssistant> 已成功创建基于 Ubuntu 系统镜像的 3090 GPU 实例，工作流执行完成。您可以在控制台查看实例状态和连接信息。\n\nYou> "
+    },
+    "passed": false,
+    "failures": [
+      "[step 1] reply missing any of ['??', '??', '???', '????', '??']"
+    ],
+    "run_index": 1
+  }
+]

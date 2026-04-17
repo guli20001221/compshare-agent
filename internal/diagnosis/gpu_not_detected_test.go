@@ -160,7 +160,7 @@ func TestGPUChain_InstallFail(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
-				map[string]any{"UHostId": "uhost-abc", "State": "InstallFail"},
+				map[string]any{"UHostId": "uhost-abc", "State": "Install Fail"},
 			},
 		},
 	}}

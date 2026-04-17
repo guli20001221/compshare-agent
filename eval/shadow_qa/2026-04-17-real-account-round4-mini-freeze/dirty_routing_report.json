@@ -1,0 +1,147 @@
+[
+  {
+    "case_id": "dirtymini_01_gpu_colloquial_needs_clarification",
+    "passed": false,
+    "failures": [
+      "[step 1] expected no tool call, got ['DescribeCompShareInstance']"
+    ],
+    "steps": [
+      {
+        "step": 1,
+        "input": "那个 3080Ti 给我关了",
+        "hook_before_output": "state=Starting\nstate=Running\nfinal=Running",
+        "hook_after_output": "",
+        "parsed": {
+          "tool_calls": [
+            "DescribeCompShareInstance"
+          ],
+          "assistant_reply": "请确认您要关闭以下实例：\n| 实例ID | 实例名称 | GPU配置 | 计费方式 |\n| ---- | ---- | ---- | ---- |\n| uhost-1paxrg4g1vfw | qa-shadow-20260417-01 | 3080Ti×1 | Dynamic |\n\n注意：关机后GPU/CPU/内存将停止计费，但额外磁盘仍会继续收费。\n是否确认执行关机操作？",
+          "errors": [],
+          "raw_output": "  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance 调用成功\n\nAssistant> 请确认您要关闭以下实例：\n| 实例ID | 实例名称 | GPU配置 | 计费方式 |\n| ---- | ---- | ---- | ---- |\n| uhost-1paxrg4g1vfw | qa-shadow-20260417-01 | 3080Ti×1 | Dynamic |\n\n注意：关机后GPU/CPU/内存将停止计费，但额外磁盘仍会继续收费。\n是否确认执行关机操作？\n\nYou> "
+        },
+        "failures": [
+          "expected no tool call, got ['DescribeCompShareInstance']"
+        ],
+        "passed": false
+      }
+    ]
+  },
+  {
+    "case_id": "dirtymini_02_explicit_name_stop_routes_workflow",
+    "passed": false,
+    "failures": [
+      "[step 1] expected one of ['StopInstanceWorkflow'], got ['DescribeCompShareInstance']",
+      "[step 1] first tool = DescribeCompShareInstance, want StopInstanceWorkflow"
+    ],
+    "steps": [
+      {
+        "step": 1,
+        "input": "帮我关掉 qa-shadow-20260417-01",
+        "hook_before_output": "state=Starting\nstate=Running\nfinal=Running",
+        "hook_after_output": "Running",
+        "parsed": {
+          "tool_calls": [
+            "DescribeCompShareInstance"
+          ],
+          "assistant_reply": "您要操作的实例 `qa-shadow-20260417-01`（UHostId: uhost-1pafu1vekpoe）当前状态已经是 **Stopped（已关机）**，无需重复执行关机操作。",
+          "errors": [],
+          "raw_output": "  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance 调用成功\n\nAssistant> 您要操作的实例 `qa-shadow-20260417-01`（UHostId: uhost-1pafu1vekpoe）当前状态已经是 **Stopped（已关机）**，无需重复执行关机操作。\n\nYou> "
+        },
+        "failures": [
+          "expected one of ['StopInstanceWorkflow'], got ['DescribeCompShareInstance']",
+          "first tool = DescribeCompShareInstance, want StopInstanceWorkflow"
+        ],
+        "passed": false
+      }
+    ]
+  },
+  {
+    "case_id": "dirtymini_03_contextual_just_now_start_accepts_fresh_query",
+    "passed": false,
+    "failures": [
+      "[step 1] expected one of ['StopInstanceWorkflow'], got ['DescribeCompShareInstance']"
+    ],
+    "steps": [
+      {
+        "step": 1,
+        "input": "帮我关掉 qa-shadow-20260417-01",
+        "hook_before_output": "state=Starting\nstate=Running\nfinal=Running",
+        "hook_after_output": "Running",
+        "parsed": {
+          "tool_calls": [
+            "DescribeCompShareInstance"
+          ],
+          "assistant_reply": "您要操作的实例`qa-shadow-20260417-01`（UHostId: uhost-1pafu1vekpoe）当前状态已经是**Stopped（已关机）**，无需执行关机操作。",
+          "errors": [],
+          "raw_output": "  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance 调用成功\n\nAssistant> 您要操作的实例`qa-shadow-20260417-01`（UHostId: uhost-1pafu1vekpoe）当前状态已经是**Stopped（已关机）**，无需执行关机操作。\n\nYou> "
+        },
+        "failures": [
+          "expected one of ['StopInstanceWorkflow'], got ['DescribeCompShareInstance']"
+        ],
+        "passed": false
+      },
+      {
+        "step": 2,
+        "input": "帮我开一下刚才那个",
+        "hook_before_output": "",
+        "hook_after_output": "Running",
+        "parsed": {
+          "tool_calls": [
+            "DescribeCompShareInstance",
+            "StartInstanceWorkflow",
+            "DescribeCompShareInstance",
+            "StartCompShareInstance"
+          ],
+          "assistant_reply": "很抱歉，开机操作失败了。错误码 `8357` 表示当前可用区（`cn-wlcb-01`）的 **RTX4090** 资源暂时售罄，无法启动该实例。\n\n您可以稍后再尝试开机，或者如果需要立即使用GPU算力，可以考虑更换其他GPU型号的实例（如3090、A100等），如需更换型号可先帮您查询对应库存~",
+          "errors": [],
+          "raw_output": "  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance 调用成功\n  🔧 调用 StartInstanceWorkflow ...\n  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance [1/3] 查询实例: success\n  ⚠️  即将执行变更操作: StartInstanceWorkflow\n    参数: {\n      \"ChargeType\": \"Postpay\",\n      \"GPU\": 1,\n      \"GpuType\": \"4090\",\n      \"Name\": \"qa-shadow-20260416-01\",\n      \"State\": \"Stopped\",\n      \"UHostId\": \"uhost-1pafu1vekpoe\"\n    }\n  确认执行？(y/N)   🔧 调用  ...\n  🔧 调用 StartCompShareInstance ...\n  ❌ StartCompShareInstance: [3/3] 开机: failed\n\nAssistant> 很抱歉，开机操作失败了。错误码 `8357` 表示当前可用区（`cn-wlcb-01`）的 **RTX4090** 资源暂时售罄，无法启动该实例。\n\n您可以稍后再尝试开机，或者如果需要立即使用GPU算力，可以考虑更换其他GPU型号的实例（如3090、A100等），如需更换型号可先帮您查询对应库存~\n\nYou> "
+        },
+        "failures": [],
+        "passed": true
+      }
+    ]
+  },
+  {
+    "case_id": "dirtymini_04_vague_crash_then_specific_failure",
+    "passed": false,
+    "failures": [
+      "[step 2] expected one of ['DiagnoseInitFailure'], got ['DescribeCompShareInstance']",
+      "[step 2] first tool = DescribeCompShareInstance, want DiagnoseInitFailure"
+    ],
+    "steps": [
+      {
+        "step": 1,
+        "input": "昨晚那台跑崩了",
+        "hook_before_output": "",
+        "hook_after_output": "",
+        "parsed": {
+          "tool_calls": [],
+          "assistant_reply": "您提到的“跑崩了”描述比较模糊，请您告知具体是哪台实例（可以提供实例ID或唯一名称），以及具体的故障现象（例如SSH连接失败、nvidia-smi报错、服务无法访问、初始化卡住等），以便我帮您排查问题。",
+          "errors": [],
+          "raw_output": "\nAssistant> 您提到的“跑崩了”描述比较模糊，请您告知具体是哪台实例（可以提供实例ID或唯一名称），以及具体的故障现象（例如SSH连接失败、nvidia-smi报错、服务无法访问、初始化卡住等），以便我帮您排查问题。\n\nYou> "
+        },
+        "failures": [],
+        "passed": true
+      },
+      {
+        "step": 2,
+        "input": "就是 wyptest 那台",
+        "hook_before_output": "",
+        "hook_after_output": "",
+        "parsed": {
+          "tool_calls": [
+            "DescribeCompShareInstance"
+          ],
+          "assistant_reply": "在当前的实例列表中未找到名称为`wyptest`的实例，请您确认实例的正确名称或提供实例ID（例如`uhost-xxx`格式），我将为您进一步排查故障。\n\n当前您的实例列表如下：\n1.  `host`（uhost-1pbqzm9ry69a）：状态=初始化失败\n2.  `host`（uhost-1payc1sapvfw）：GPU=3090×1，状态=运行中\n3.  `qa-shadow-20260417-4090`（uhost-1payastkiw8o）：GPU=4090×1，状态=运行中\n4.  `qa-shadow-20260417-01`（uhost-1paxrg4g1vfw）：GPU=3080Ti×1，状态=运行中\n5.  `勿删除`（uhost-1paieu38kerc）：GPU=4090×1，状态=运行中\n6.  `qa-shadow-20260416-01`（uhost-1pafu1vekpoe）：GPU=4090×1，状态=关机\n7.  `test-3090`（uhost-1pa8zsdq560o）：GPU=3090×1，状态=运行中\n8.  `内网ping勿删`（uhost-1ozccvmyd3ia）：GPU=0，状态=运行中\n9.  `内网ping勿删除`（uhost-1oz238rtbtim）：GPU=0，状态=运行中",
+          "errors": [],
+          "raw_output": "  🔧 调用 DescribeCompShareInstance ...\n  ✅ DescribeCompShareInstance 调用成功\n\nAssistant> 在当前的实例列表中未找到名称为`wyptest`的实例，请您确认实例的正确名称或提供实例ID（例如`uhost-xxx`格式），我将为您进一步排查故障。\n\n当前您的实例列表如下：\n1.  `host`（uhost-1pbqzm9ry69a）：状态=初始化失败\n2.  `host`（uhost-1payc1sapvfw）：GPU=3090×1，状态=运行中\n3.  `qa-shadow-20260417-4090`（uhost-1payastkiw8o）：GPU=4090×1，状态=运行中\n4.  `qa-shadow-20260417-01`（uhost-1paxrg4g1vfw）：GPU=3080Ti×1，状态=运行中\n5.  `勿删除`（uhost-1paieu38kerc）：GPU=4090×1，状态=运行中\n6.  `qa-shadow-20260416-01`（uhost-1pafu1vekpoe）：GPU=4090×1，状态=关机\n7.  `test-3090`（uhost-1pa8zsdq560o）：GPU=3090×1，状态=运行中\n8.  `内网ping勿删`（uhost-1ozccvmyd3ia）：GPU=0，状态=运行中\n9.  `内网ping勿删除`（uhost-1oz238rtbtim）：GPU=0，状态=运行中\n\nYou> "
+        },
+        "failures": [
+          "expected one of ['DiagnoseInitFailure'], got ['DescribeCompShareInstance']",
+          "first tool = DescribeCompShareInstance, want DiagnoseInitFailure"
+        ],
+        "passed": false
+      }
+    ]
+  }
+]

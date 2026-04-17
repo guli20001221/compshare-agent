@@ -1,0 +1,10 @@
+[
+  {
+    "id": "shadow_01b_create_3090_stock_probe",
+    "input": "帮我开一台 3090，实例名 qa-shadow-20260416-01b，平台 Ubuntu 系统镜像，按量",
+    "confirm": "y",
+    "expect_tool_calls": ["CreateInstanceWorkflow"],
+    "expect_first_tool": "CreateInstanceWorkflow",
+    "reply_contains": ["库存"]
+  }
+]

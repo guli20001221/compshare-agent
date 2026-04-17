@@ -1,0 +1,48 @@
+[
+  {
+    "id": "shadow_02_stop_instance",
+    "input": "帮我关掉 qa-shadow-20260416-01",
+    "confirm": "y",
+    "expect_tool_calls": ["StopInstanceWorkflow"],
+    "expect_first_tool": "StopInstanceWorkflow",
+    "reply_contains": ["关机"]
+  },
+  {
+    "id": "shadow_03_billing_after_stop",
+    "input": "为什么 qa-shadow-20260416-01 关机后还有费用",
+    "expect_tool_calls": ["DiagnoseBilling"],
+    "reply_contains": ["费用", "磁盘"]
+  },
+  {
+    "id": "shadow_04_start_instance",
+    "input": "把 qa-shadow-20260416-01 开机",
+    "confirm": "y",
+    "expect_tool_calls": ["StartInstanceWorkflow"],
+    "expect_first_tool": "StartInstanceWorkflow",
+    "reply_contains": ["开机"]
+  },
+  {
+    "id": "shadow_05_reboot_instance",
+    "input": "重启 qa-shadow-20260416-01",
+    "confirm": "y",
+    "expect_tool_calls": ["RebootInstanceWorkflow"],
+    "expect_first_tool": "RebootInstanceWorkflow",
+    "reply_contains": ["重启"]
+  },
+  {
+    "id": "shadow_06_set_scheduler",
+    "input": "1小时后自动关掉 qa-shadow-20260416-01",
+    "confirm": "y",
+    "expect_tool_calls": ["SetStopSchedulerWorkflow"],
+    "expect_first_tool": "SetStopSchedulerWorkflow",
+    "reply_contains": ["关机"]
+  },
+  {
+    "id": "shadow_07_cancel_scheduler",
+    "input": "取消 qa-shadow-20260416-01 的定时关机",
+    "confirm": "y",
+    "expect_tool_calls": ["CancelStopSchedulerWorkflow"],
+    "expect_first_tool": "CancelStopSchedulerWorkflow",
+    "reply_contains": ["取消"]
+  }
+]
