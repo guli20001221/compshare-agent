@@ -1920,3 +1920,32 @@ func TestContainsInitFailureSignal(t *testing.T) {
 		})
 	}
 }
+
+func TestContainsScanAllSignal(t *testing.T) {
+	positives := []string{
+		"帮我看看哪些实例初始化失败了",
+		"帮我扫全部",
+		"全部失败的实例都查一下",
+		"都有哪些失败的",
+		"所有实例的状态",
+		"有哪些实例挂了",
+		"扫一下失败的",
+	}
+	negatives := []string{
+		"跑崩了",
+		"昨晚那台挂了",
+		"uhost-xxx 有问题",
+		"wyptest 那台",
+		"",
+	}
+	for _, msg := range positives {
+		t.Run("positive/"+msg, func(t *testing.T) {
+			assert.True(t, containsScanAllSignal(msg), "want true for %q", msg)
+		})
+	}
+	for _, msg := range negatives {
+		t.Run("negative/"+msg, func(t *testing.T) {
+			assert.False(t, containsScanAllSignal(msg), "want false for %q", msg)
+		})
+	}
+}

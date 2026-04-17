@@ -696,6 +696,37 @@ func containsInitFailureSignal(msg string) bool {
 	return false
 }
 
+// scanAllSignalKeywords is a narrow list of phrases that indicate the user
+// explicitly wants a broad scan across all instances. Used only as Gate 2
+// of the DiagnoseInitFailure guard — consulted AFTER the symptom-specificity
+// gate passes. A scan-all phrase alone (without an init-failure signal)
+// does NOT bypass the guard.
+var scanAllSignalKeywords = []string{
+	"所有实例",
+	"全部实例",
+	"哪些实例",
+	"有哪些",
+	"帮我扫",
+	"全量",
+	"所有的",
+	"全部失败",
+	"失败的实例",
+	"扫一下失败",
+	"都有哪些",
+}
+
+// containsScanAllSignal reports whether the user message expresses an
+// explicit intent to scan across all instances.
+func containsScanAllSignal(msg string) bool {
+	n := normalizeMsg(msg)
+	for _, kw := range scanAllSignalKeywords {
+		if strings.Contains(n, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 // extractDiagnosisTargets pulls user-visible targets (instance id / name)
 // from a diagnosis tool's args. The returned slice is used for substring
 // matching against the next user message to detect topic continuity.
