@@ -411,6 +411,25 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		return finalReplyPrefix + msg
 	}
 
+	// Gate 2 (instance disambiguation): symptom is specific, but if no
+	// target was provided and the user did not ask for a scan-all, ask
+	// which instance. Avoids implicit scan-all when the user has a
+	// specific instance in mind but didn't name it.
+	//
+	// Target check is UHostId-only because filterAllowedParams upstream
+	// strips any field not in the DiagnoseInitFailure schema (which only
+	// declares UHostId). The LLM is expected to resolve names to UHostIds
+	// upstream; if it doesn't, this gate correctly falls through to
+	// clarification.
+	if action == "DiagnoseInitFailure" {
+		uid, _ := args["UHostId"].(string)
+		if uid == "" && !containsScanAllSignal(e.lastUserMsg) {
+			msg := "请问是哪台实例的初始化失败了？"
+			onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
+			return finalReplyPrefix + msg
+		}
+	}
+
 	diagEngine := diagnosis.NewEngine(e.executor, func(ev diagnosis.DiagEvent) {
 		var eventType StepType
 		switch ev.Status {

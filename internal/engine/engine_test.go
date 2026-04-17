@@ -2027,3 +2027,61 @@ func TestVagueCrashGuard_VagueScanAllBlocked(t *testing.T) {
 		"scan-all phrasing without init-failure signal must still be blocked")
 	assert.NotContains(t, executor.calls, "DescribeCompShareInstance")
 }
+
+const specificClarifyPrefix = "请问是哪台实例的初始化失败了？"
+
+func TestVagueCrashGuard_SpecificNoTargetBlocked(t *testing.T) {
+	// Gate 1 passes (has init-failure signal), Gate 2 fires (no target, no scan-all).
+	executor := initFailureScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{}`),
+		}},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "昨晚那台卡在初始化了", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, specificClarifyPrefix,
+		"init-failure signal but no target must trigger Gate 2 clarification")
+	assert.NotContains(t, executor.calls, "DescribeCompShareInstance")
+}
+
+func TestVagueCrashGuard_UHostIdTargetPasses(t *testing.T) {
+	executor := initFailureScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{"UHostId":"uhost-init-001"}`),
+		}},
+		{Content: "实例初始化失败，建议重建"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "uhost-init-001 初始化失败了", noopStep)
+	assert.NoError(t, err)
+	assert.NotContains(t, reply, specificClarifyPrefix)
+	assert.NotContains(t, reply, vagueClarifyPrefix)
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+}
+
+func TestVagueCrashGuard_ExplicitInitFailureScanAllPasses(t *testing.T) {
+	// Gate 1 passes (init-failure signal), Gate 2 passes (scan-all intent).
+	executor := initFailureScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{}`),
+		}},
+		{Content: "共发现 1 台初始化失败的实例"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "帮我看看哪些实例初始化失败了", noopStep)
+	assert.NoError(t, err)
+	assert.NotContains(t, reply, specificClarifyPrefix)
+	assert.NotContains(t, reply, vagueClarifyPrefix)
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance",
+		"scan-all must be allowed when both init-failure signal and scan-all phrasing are present")
+}
