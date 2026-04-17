@@ -1888,3 +1888,35 @@ func TestNormalizeMsg(t *testing.T) {
 		})
 	}
 }
+
+func TestContainsInitFailureSignal(t *testing.T) {
+	positives := []string{
+		"初始化失败了",
+		"Install Fail",
+		"install fail",
+		"卡在初始化",
+		"卡在启动",
+		"starting很久",
+		"一直 starting",
+		"uhost-xxx 初始化失败",
+	}
+	negatives := []string{
+		"跑崩了",
+		"挂了",
+		"有问题",
+		"帮我扫一下所有有问题的实例",
+		"uhost-xxx 崩了",
+		"昨晚那台不行了",
+		"",
+	}
+	for _, msg := range positives {
+		t.Run("positive/"+msg, func(t *testing.T) {
+			assert.True(t, containsInitFailureSignal(msg), "want true for %q", msg)
+		})
+	}
+	for _, msg := range negatives {
+		t.Run("negative/"+msg, func(t *testing.T) {
+			assert.False(t, containsInitFailureSignal(msg), "want false for %q", msg)
+		})
+	}
+}

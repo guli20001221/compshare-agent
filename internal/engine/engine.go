@@ -667,6 +667,35 @@ func normalizeMsg(s string) string {
 	return strings.TrimRight(out, " ")
 }
 
+// initFailureSignalKeywords is a narrow word list that marks a user message
+// as specifically about init-failure symptoms. Keep it tight — keywords
+// like "起不来" are too ambiguous (could be SSH / GPU / service) and must
+// NOT live here.
+var initFailureSignalKeywords = []string{
+	"初始化失败",
+	"install fail",
+	"卡在初始化",
+	"卡在启动",
+	"starting很久",
+	"starting 很久",
+	"一直starting",
+	"一直 starting",
+}
+
+// containsInitFailureSignal reports whether the user message contains an
+// init-failure-specific symptom signal. This is Gate 1 of the
+// DiagnoseInitFailure guard: vague fault language ("跑崩了", "挂了") does
+// NOT match; the user must have named the symptom type explicitly.
+func containsInitFailureSignal(msg string) bool {
+	n := normalizeMsg(msg)
+	for _, kw := range initFailureSignalKeywords {
+		if strings.Contains(n, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 // extractDiagnosisTargets pulls user-visible targets (instance id / name)
 // from a diagnosis tool's args. The returned slice is used for substring
 // matching against the next user message to detect topic continuity.
