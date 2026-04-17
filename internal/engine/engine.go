@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/diagnosis"
@@ -638,6 +639,32 @@ var billingFollowUpKeywords = []string{
 	"计费",
 	"还在",
 	"为什么还",
+}
+
+// normalizeMsg standardizes a user message for signal matching:
+// trims whitespace, collapses internal whitespace runs to a single space,
+// and lowercases ASCII letters. CJK characters are preserved as-is.
+// The returned value is used only for substring matching; the caller's
+// original string is never mutated.
+func normalizeMsg(s string) string {
+	var b strings.Builder
+	prevSpace := true // treat start as space so leading whitespace collapses
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+			continue
+		}
+		prevSpace = false
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		b.WriteRune(r)
+	}
+	out := b.String()
+	return strings.TrimRight(out, " ")
 }
 
 // extractDiagnosisTargets pulls user-visible targets (instance id / name)
