@@ -155,6 +155,72 @@ func TestSafeExecutorUsesPolicyForDisplayAndRedaction(t *testing.T) {
 	})
 }
 
+func TestSafeExecutorMonitorHistoryGuardMarksNoDataWindow(t *testing.T) {
+	inner := &spyExecutor{result: map[string]any{
+		"Data": []any{
+			map[string]any{"UHostId": "uhost-1", "MonitorSet": []any{}},
+		},
+	}}
+	safe := NewSafeToolExecutor(inner)
+
+	result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "GetCompShareInstanceMonitor",
+		Args: map[string]any{
+			"UHostIds":  []any{"uhost-1"},
+			"StartTime": float64(1777471200),
+			"EndTime":   float64(1777474800),
+		},
+		Origin: OriginDirectLLM,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "NO_DATA_IN_REQUESTED_WINDOW", result.LLMResult["MonitorDataStatus"])
+	assert.Contains(t, result.LLMResult["MonitorDataGuidance"], "requested time window")
+}
+
+func TestSafeExecutorMonitorHistoryGuardDoesNotMarkSamplesOrRealtime(t *testing.T) {
+	t.Run("historical samples", func(t *testing.T) {
+		inner := &spyExecutor{result: map[string]any{
+			"Data": []any{
+				map[string]any{
+					"UHostId": "uhost-1",
+					"Metrics": []any{
+						map[string]any{"Results": []any{map[string]any{"Values": []any{map[string]any{"Value": float64(42)}}}}},
+					},
+				},
+			},
+		}}
+		safe := NewSafeToolExecutor(inner)
+
+		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+			Action: "GetCompShareInstanceMonitor",
+			Args: map[string]any{
+				"UHostIds":  []any{"uhost-1"},
+				"StartTime": float64(1777471200),
+				"EndTime":   float64(1777474800),
+			},
+			Origin: OriginDirectLLM,
+		})
+
+		require.NoError(t, err)
+		assert.NotContains(t, result.LLMResult, "MonitorDataStatus")
+	})
+
+	t.Run("realtime snapshot", func(t *testing.T) {
+		inner := &spyExecutor{result: map[string]any{"Data": []any{}}}
+		safe := NewSafeToolExecutor(inner)
+
+		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+			Action: "GetCompShareInstanceMonitor",
+			Args:   map[string]any{"UHostIds": []any{"uhost-1", "uhost-2"}},
+			Origin: OriginDirectLLM,
+		})
+
+		require.NoError(t, err)
+		assert.NotContains(t, result.LLMResult, "MonitorDataStatus")
+	})
+}
+
 func TestSafeExecutorDirectL1RequiresConfirmation(t *testing.T) {
 	inner := &spyExecutor{}
 	safe := NewSafeToolExecutor(inner, WithConfirmFunc(func(string, map[string]any) bool { return false }))

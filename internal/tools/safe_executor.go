@@ -143,7 +143,7 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 	if err != nil {
 		return nil, err
 	}
-	guarded := applyHistoryGuard(policy, raw)
+	guarded := applyHistoryGuard(policy, args, raw)
 
 	return &SafeToolResult{
 		Action:      req.Action,
@@ -206,10 +206,46 @@ func filterSafeArgs(args map[string]any, allowed []string) map[string]any {
 	return filtered
 }
 
-func applyHistoryGuard(policy ToolExecutionPolicy, raw map[string]any) map[string]any {
-	// TODO(commit-2): migrate monitor temporal/history result guard from engine.
-	// The hook exists now so cutover review has a single connection point.
+func applyHistoryGuard(policy ToolExecutionPolicy, args map[string]any, raw map[string]any) map[string]any {
+	if !policy.HistoryMonitorGuard || !hasMonitorTimeRangeArgs(args) || raw == nil {
+		return raw
+	}
+	if monitorResultHasSamples(raw) {
+		return raw
+	}
+	raw["MonitorDataStatus"] = "NO_DATA_IN_REQUESTED_WINDOW"
+	raw["MonitorDataGuidance"] = "The requested time window returned no valid monitor samples. Do not substitute current realtime data or invent CPU, memory, GPU, or VRAM values."
 	return raw
+}
+
+func hasMonitorTimeRangeArgs(args map[string]any) bool {
+	if args == nil {
+		return false
+	}
+	_, hasStart := args["StartTime"]
+	_, hasEnd := args["EndTime"]
+	return hasStart || hasEnd
+}
+
+func monitorResultHasSamples(v any) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, val := range x {
+			if k == "Value" && val != nil {
+				return true
+			}
+			if monitorResultHasSamples(val) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range x {
+			if monitorResultHasSamples(item) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func redactForLLM(action string, policy ToolExecutionPolicy, raw map[string]any) map[string]any {
