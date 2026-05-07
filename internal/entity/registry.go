@@ -28,7 +28,9 @@ func WithClock(now func() time.Time) RegistryOption {
 
 // EntityRegistry stores the current account entity snapshot for a conversation.
 type EntityRegistry struct {
-	Instances        map[string]InstanceSnapshot
+	Instances map[string]InstanceSnapshot
+	// NameIndex maps normalizeName(instance.Name) to UHostIds. Callers should
+	// prefer ResolveByName instead of reading this normalized index directly.
 	NameIndex        map[string][]string
 	LastFullSync     time.Time
 	LastSyncEvent    string

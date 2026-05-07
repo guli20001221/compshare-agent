@@ -20,12 +20,16 @@ func TestIntegrationResolveCurrentAccountInstances(t *testing.T) {
 	if publicKey == "" || privateKey == "" {
 		t.Skip("set COMPSHARE_PUBLIC_KEY and COMPSHARE_PRIVATE_KEY")
 	}
+	region := os.Getenv("COMPSHARE_REGION")
+	if region == "" {
+		region = "cn-wlcb"
+	}
 
 	exec := tools.NewExternalExecutor(config.AgentConfig{
 		CompShareAPIURL: "https://api.compshare.cn/",
 		PublicKey:       publicKey,
 		PrivateKey:      privateKey,
-		Region:          "cn-wlcb",
+		Region:          region,
 		ProjectId:       os.Getenv("COMPSHARE_PROJECT_ID"),
 	})
 	reg := NewRegistry()
