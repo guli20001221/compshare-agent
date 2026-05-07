@@ -8,12 +8,16 @@ import (
 	"github.com/compshare-agent/internal/entity"
 )
 
+const MaxSourceSpanRunes = 50
+
 type ErrorCode string
 
 const (
 	ErrInvalidSchemaVersion        ErrorCode = "invalid_schema_version"
 	ErrInvalidIntent               ErrorCode = "invalid_intent"
 	ErrInvalidTargetRefType        ErrorCode = "invalid_target_ref_type"
+	ErrInvalidMetric               ErrorCode = "invalid_metric"
+	ErrInvalidTimeWindow           ErrorCode = "invalid_time_window"
 	ErrInvalidRequiredTool         ErrorCode = "invalid_required_tool"
 	ErrAttemptedHallucinatedEntity ErrorCode = "attempted_hallucinated_entity"
 	ErrEntityNotFound              ErrorCode = "entity_not_found"
@@ -65,10 +69,21 @@ func ValidatePlan(plan Plan, ctx ValidationContext) error {
 	if plan.Intent == IntentBillingAccountUnsupported && len(plan.RequiredTools) > 0 {
 		return validationErr(ErrInvalidRequiredTool, "required_tools", "account-level billing unsupported intent must not call tools")
 	}
+	if plan.Intent == IntentBillingAccountUnsupported && len(plan.Slots.TargetRefs) > 0 {
+		return validationErr(ErrInvalidTargetRefType, "slots.target_refs", "account-level billing unsupported intent must not carry instance target_refs")
+	}
 	for i, ref := range plan.Slots.TargetRefs {
 		if err := validateTargetRef(ref, i, ctx); err != nil {
 			return err
 		}
+	}
+	for i, metric := range plan.Slots.Metrics {
+		if !validMetric(metric) {
+			return validationErr(ErrInvalidMetric, fmt.Sprintf("slots.metrics[%d]", i), "unsupported metric enum")
+		}
+	}
+	if plan.Slots.TimeWindow != nil && !validTimeWindowType(plan.Slots.TimeWindow.Type) {
+		return validationErr(ErrInvalidTimeWindow, "slots.time_window.type", "unsupported time_window type")
 	}
 	return nil
 }
@@ -119,7 +134,7 @@ func validateProvenance(ref TargetRef, field string, ctx ValidationContext) erro
 		return validationErr(ErrAttemptedHallucinatedEntity, field+".source", "missing or invalid entity provenance source")
 	}
 	sourceSpan := strings.TrimSpace(ref.SourceSpan)
-	if sourceSpan == "" || utf8.RuneCountInString(sourceSpan) > 50 {
+	if sourceSpan == "" || utf8.RuneCountInString(sourceSpan) > MaxSourceSpanRunes {
 		return validationErr(ErrAttemptedHallucinatedEntity, field+".source_span", "missing or too long entity source_span")
 	}
 	haystack := ctx.UserText
@@ -142,6 +157,24 @@ func validIntent(intent Intent) bool {
 		}
 	}
 	return false
+}
+
+func validMetric(metric Metric) bool {
+	switch metric {
+	case MetricCPU, MetricMemory, MetricGPU, MetricVRAM:
+		return true
+	default:
+		return false
+	}
+}
+
+func validTimeWindowType(windowType TimeWindowType) bool {
+	switch windowType {
+	case TimeWindowPreset, TimeWindowRelative, TimeWindowAbsolute:
+		return true
+	default:
+		return false
+	}
 }
 
 func validRequiredTool(tool string) bool {

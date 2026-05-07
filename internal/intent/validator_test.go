@@ -65,6 +65,34 @@ func TestValidatePlan_RejectsInvalidRequiredTool(t *testing.T) {
 	requireValidationCode(t, err, ErrInvalidRequiredTool)
 }
 
+func TestValidatePlan_RejectsInvalidMetricEnum(t *testing.T) {
+	plan := validMonitorPlan()
+	plan.Slots.Metrics = []Metric{MetricCPU, Metric("disk")}
+
+	err := ValidatePlan(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
+
+	requireValidationCode(t, err, ErrInvalidMetric)
+}
+
+func TestValidatePlan_RejectsInvalidTimeWindowType(t *testing.T) {
+	plan := validMonitorPlan()
+	plan.Slots.TimeWindow.Type = TimeWindowType("made_up")
+
+	err := ValidatePlan(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
+
+	requireValidationCode(t, err, ErrInvalidTimeWindow)
+}
+
+func TestValidatePlan_RejectsAccountUnsupportedWithTargetRefs(t *testing.T) {
+	plan := validMonitorPlan()
+	plan.Intent = IntentBillingAccountUnsupported
+	plan.RequiredTools = nil
+
+	err := ValidatePlan(plan, ValidationContext{UserText: "查一下账号余额和 uhost-abc123", Registry: testRegistry(t)})
+
+	requireValidationCode(t, err, ErrInvalidTargetRefType)
+}
+
 func TestValidatePlan_EntityValidatorAcceptsUserProvidedIDWithMatchingSpan(t *testing.T) {
 	plan := Plan{
 		SchemaVersion: SchemaVersion,

@@ -23,7 +23,7 @@ func TestOfflineFixturesEval(t *testing.T) {
 		Model:   "Qwen/Qwen3-Max",
 	})
 
-	var legal, targetTotal, targetCorrect int
+	var legal, targetTotal, targetCorrect, unknownTotal, unknownCorrect int
 	for _, fx := range fixtures {
 		reg := registryFromFixture(t, fx.RegistrySnapshot)
 		result, err := planner.Plan(context.Background(), intp.PlannerInput{
@@ -39,15 +39,26 @@ func TestOfflineFixturesEval(t *testing.T) {
 				targetCorrect++
 			}
 		}
+		if fx.ExpectedPlan.Intent == intp.IntentUnknown {
+			unknownTotal++
+			if result.Plan.Intent == intp.IntentUnknown {
+				unknownCorrect++
+			}
+		}
 		assert.Equal(t, normalizeTools(fx.ExpectedPlan.RequiredTools), normalizeTools(result.Plan.RequiredTools), fx.ID)
+		if len(fx.ExpectedPlan.TargetRefs) > 0 {
+			assert.Equal(t, fx.ExpectedPlan.TargetRefs, result.Plan.Slots.TargetRefs, fx.ID)
+		}
 	}
 
 	legalRate := float64(legal) / float64(len(fixtures))
 	targetAccuracy := float64(targetCorrect) / float64(targetTotal)
-	t.Logf("intent offline eval: fixtures=%d legal_rate=%.2f target_accuracy=%.2f target_correct=%d/%d",
-		len(fixtures), legalRate, targetAccuracy, targetCorrect, targetTotal)
+	unknownAccuracy := float64(unknownCorrect) / float64(unknownTotal)
+	t.Logf("intent offline eval: fixtures=%d legal_rate=%.2f target_accuracy=%.2f target_correct=%d/%d unknown_accuracy=%.2f unknown_correct=%d/%d",
+		len(fixtures), legalRate, targetAccuracy, targetCorrect, targetTotal, unknownAccuracy, unknownCorrect, unknownTotal)
 	assert.GreaterOrEqual(t, legalRate, 0.95)
 	assert.GreaterOrEqual(t, targetAccuracy, 0.90)
+	assert.GreaterOrEqual(t, unknownAccuracy, 0.90)
 }
 
 type fixture struct {
@@ -58,8 +69,9 @@ type fixture struct {
 }
 
 type expectedPlan struct {
-	Intent        intp.Intent `json:"intent"`
-	RequiredTools []string    `json:"required_tools"`
+	Intent        intp.Intent      `json:"intent"`
+	RequiredTools []string         `json:"required_tools"`
+	TargetRefs    []intp.TargetRef `json:"target_refs,omitempty"`
 }
 
 func loadFixtures(t *testing.T, path string) []fixture {
@@ -115,6 +127,43 @@ func (h *heuristicFixtureLLM) CompleteIntentPlan(_ context.Context, req intp.Pla
 func classifyFixtureMessage(msg string) intp.Plan {
 	normalized := strings.ToLower(msg)
 	switch {
+	case isMixedOrNonTargetText(normalized):
+		return unknownFixturePlan()
+	case strings.Contains(normalized, "uhost-abc123") && isMonitorText(normalized):
+		return intp.Plan{
+			SchemaVersion: intp.SchemaVersion,
+			Intent:        intp.IntentMonitorQuery,
+			Slots: intp.Slots{
+				TargetRefs: []intp.TargetRef{{
+					Type:       intp.TargetRefUHostIDUserInput,
+					Value:      "uhost-abc123",
+					Source:     intp.SourceUserText,
+					SourceSpan: "uhost-abc123",
+				}},
+				Metrics: []intp.Metric{intp.MetricCPU, intp.MetricGPU},
+				TimeWindow: &intp.TimeWindow{
+					Type:  intp.TimeWindowPreset,
+					Value: "last_60s",
+				},
+			},
+			RequiredTools: []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"},
+			Retrieval:     intp.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		}
+	case strings.Contains(normalized, "uhost-abc123") && isBillingInstanceText(normalized):
+		return intp.Plan{
+			SchemaVersion: intp.SchemaVersion,
+			Intent:        intp.IntentBillingInstance,
+			Slots: intp.Slots{TargetRefs: []intp.TargetRef{{
+				Type:       intp.TargetRefUHostIDUserInput,
+				Value:      "uhost-abc123",
+				Source:     intp.SourceUserText,
+				SourceSpan: "uhost-abc123",
+			}}},
+			RequiredTools: []string{"DescribeCompShareInstance", "DiagnoseBilling"},
+			Retrieval:     intp.Retrieval{Enabled: false},
+			Confidence:    0.86,
+		}
 	case isAccountBillingUnsupportedText(normalized):
 		return intp.Plan{
 			SchemaVersion: intp.SchemaVersion,
@@ -155,12 +204,16 @@ func classifyFixtureMessage(msg string) intp.Plan {
 			Confidence:    0.88,
 		}
 	default:
-		return intp.Plan{
-			SchemaVersion: intp.SchemaVersion,
-			Intent:        intp.IntentUnknown,
-			Retrieval:     intp.Retrieval{Enabled: false},
-			Confidence:    0.2,
-		}
+		return unknownFixturePlan()
+	}
+}
+
+func unknownFixturePlan() intp.Plan {
+	return intp.Plan{
+		SchemaVersion: intp.SchemaVersion,
+		Intent:        intp.IntentUnknown,
+		Retrieval:     intp.Retrieval{Enabled: false},
+		Confidence:    0.2,
 	}
 }
 
@@ -207,6 +260,28 @@ func isAccountBillingUnsupportedText(s string) bool {
 		strings.Contains(s, "消费明细") ||
 		strings.Contains(s, "消费流水") ||
 		strings.Contains(s, "本月总账单")
+}
+
+func isMixedOrNonTargetText(s string) bool {
+	hasMonitor := isMonitorText(s)
+	hasBilling := isBillingInstanceText(s) ||
+		strings.Contains(s, "费用") ||
+		strings.Contains(s, "扣费")
+	hasDiagnosis := strings.Contains(s, "连不上") ||
+		strings.Contains(s, "诊断") ||
+		strings.Contains(s, "跑崩") ||
+		strings.Contains(s, "崩了")
+	hasOperation := strings.Contains(s, "重启") ||
+		strings.Contains(s, "关闭") ||
+		strings.Contains(s, "开机")
+	hasExpiry := strings.Contains(s, "到期") ||
+		strings.Contains(s, "续费") ||
+		strings.Contains(s, "自动续费")
+	return hasExpiry ||
+		hasDiagnosis ||
+		hasOperation ||
+		(hasMonitor && hasBilling) ||
+		(hasDiagnosis && hasBilling)
 }
 
 func isTargetIntent(intent intp.Intent) bool {
