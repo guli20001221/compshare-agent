@@ -105,10 +105,16 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			fmt.Printf("→ %s\n", input)
 		}
 
+		debugArgs := os.Getenv("COMPSHARE_DEBUG_ARGS") == "1"
 		onStep := func(ev engine.StepEvent) {
 			switch ev.Type {
 			case engine.StepToolCall:
 				fmt.Printf("  🔧 调用 %s ...\n", ev.Action)
+				if debugArgs && len(ev.Args) > 0 {
+					if buf, err := json.Marshal(ev.Args); err == nil {
+						fmt.Printf("  🔍 args %s\n", string(buf))
+					}
+				}
 			case engine.StepToolResult:
 				fmt.Printf("  ✅ %s %s\n", ev.Action, ev.Message)
 				if ev.Display != "" {

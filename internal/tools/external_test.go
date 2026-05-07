@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +59,29 @@ func TestUcloudSign_SortOrder(t *testing.T) {
 	sig2 := ucloudSign(params2, "key")
 	if sig1 != sig2 {
 		t.Errorf("signature should be order-independent: %q != %q", sig1, sig2)
+	}
+}
+
+func TestUcloudSignJSON_MonitorWithTimeRange(t *testing.T) {
+	params := map[string]any{
+		"Action":    "GetCompShareInstanceMonitor",
+		"Region":    "cn-wlcb",
+		"PublicKey": "pk",
+		"ProjectId": "org-cfg",
+		"UHostIds":  []any{"uhost-1", "uhost-2"},
+		// Tool-call JSON args decode numbers as float64; whole-number
+		// timestamps must sign like integer request parameters.
+		"StartTime": float64(1712563200),
+		"EndTime":   float64(1712566800),
+	}
+
+	got := ucloudSignJSON(params, "sk")
+	const want = "919a6fb333e2652a7c1671938e00c1b4dd351979"
+	if got != want {
+		t.Fatalf("ucloudSignJSON() = %q, want %q", got, want)
+	}
+	if got := jsonSignValue(float64(1712563200)); got != "1712563200" {
+		t.Fatalf("jsonSignValue(float64 timestamp) = %q, want plain integer string", got)
 	}
 }
 
@@ -232,5 +256,56 @@ func TestExternalExecutor_NoProjectIdWhenUnset(t *testing.T) {
 	}
 	if got := (*form).Get("ProjectId"); got != "" {
 		t.Errorf("form ProjectId = %q, want empty when unset", got)
+	}
+}
+
+func TestExternalExecutor_MonitorUsesJSONBodyForArrayParams(t *testing.T) {
+	var contentType string
+	var rawBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentType = r.Header.Get("Content-Type")
+		rawBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "GetCompShareInstanceMonitorResponse"}`))
+	}))
+	defer srv.Close()
+
+	ext := NewExternalExecutor(config.AgentConfig{
+		CompShareAPIURL: srv.URL,
+		PublicKey:       "pk",
+		PrivateKey:      "sk",
+		Region:          "cn-wlcb",
+		ProjectId:       "org-cfg",
+	})
+
+	if _, err := ext.Execute(context.Background(), "GetCompShareInstanceMonitor", map[string]any{
+		"UHostIds": []any{"uhost-1"},
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if contentType != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", contentType)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		t.Fatalf("request body is not JSON: %v; body=%s", err, string(rawBody))
+	}
+	ids, ok := body["UHostIds"].([]any)
+	if !ok {
+		t.Fatalf("UHostIds encoded as %T, want JSON array; body=%v", body["UHostIds"], body)
+	}
+	if len(ids) != 1 || ids[0] != "uhost-1" {
+		t.Fatalf("UHostIds = %#v, want [uhost-1]", ids)
+	}
+	if body["UHostIds.0"] != nil {
+		t.Fatalf("body should not contain flattened UHostIds.0: %v", body)
+	}
+	if body["ProjectId"] != "org-cfg" {
+		t.Fatalf("ProjectId = %v, want org-cfg", body["ProjectId"])
+	}
+	if body["Signature"] == "" {
+		t.Fatal("Signature missing from JSON body")
 	}
 }

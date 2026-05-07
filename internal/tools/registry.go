@@ -222,7 +222,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareInstanceMonitor",
-			Description: "获取实例监控数据（CPU/内存/GPU/显存使用率等）。必须传 UHostIds。查多实例时仅返回最近 60 秒基础指标；查单实例可传 StartTime/EndTime 获取扩展指标（网络、磁盘）。",
+			Description: "获取实例监控数据（CPU/内存/GPU/显存使用率等）。必须传 UHostIds。多实例查询（UHostIds>1）时后端会忽略 StartTime/EndTime，仅返回最近 60 秒基础指标快照，不要用于历史趋势；单实例查询（UHostIds=1）可传 StartTime/EndTime 查询更长时间窗并获取扩展指标（网络、磁盘）。查询历史时间点/时间窗且涉及多台实例时，必须拆成多次单实例调用，每次只传 1 个 UHostId。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

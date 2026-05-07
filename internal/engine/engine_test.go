@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/llm"
@@ -87,6 +88,15 @@ func hasStaleNote(req llm.ChatRequest) bool {
 	return false
 }
 
+func requestContainsMessageText(req llm.ChatRequest, text string) bool {
+	for _, m := range req.Messages {
+		if strings.Contains(m.Content, text) {
+			return true
+		}
+	}
+	return false
+}
+
 func collectSteps() (func(StepEvent), *[]StepEvent) {
 	var events []StepEvent
 	return func(ev StepEvent) { events = append(events, ev) }, &events
@@ -152,7 +162,7 @@ func TestChat_KnowledgeTool_GetGPUSpecs(t *testing.T) {
 	assert.Len(t, mock.calls, 2)
 	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
 	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
-	assert.Contains(t, toolMsg.Content, "24")  // VRAM
+	assert.Contains(t, toolMsg.Content, "24")          // VRAM
 	assert.Contains(t, toolMsg.Content, "fp16_tflops") // has FP16 field
 }
 
@@ -749,7 +759,7 @@ func TestChat_WorkflowTool_CreateInstance(t *testing.T) {
 		}},
 		"CheckCompShareResourceCapacity": {"RetCode": 0, "Specs": []any{map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true}}},
 		"GetCompShareInstanceUserPrice":  {"RetCode": 0, "PriceDetails": []any{map[string]any{"Price": 1.5}}},
-		"CreateCompShareInstance":         {"RetCode": 0, "UHostIds": []any{"uhost-new-001"}},
+		"CreateCompShareInstance":        {"RetCode": 0, "UHostIds": []any{"uhost-new-001"}},
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
 				map[string]any{"UHostId": "uhost-new-001", "State": "Running", "GpuType": "4090"},
@@ -1672,11 +1682,768 @@ func billingScenarioExecutor(state string) *mockExecutor {
 
 // toolChoiceForBilling returns true iff req.ToolChoice names DiagnoseBilling.
 func toolChoiceForBilling(req llm.ChatRequest) bool {
+	return toolChoiceForAction(req, "DiagnoseBilling")
+}
+
+// toolChoiceForMonitor returns true iff req.ToolChoice names GetCompShareInstanceMonitor.
+func toolChoiceForMonitor(req llm.ChatRequest) bool {
+	return toolChoiceForAction(req, "GetCompShareInstanceMonitor")
+}
+
+func toolChoiceForAction(req llm.ChatRequest, action string) bool {
 	tc, ok := req.ToolChoice.(openai.ToolChoice)
 	if !ok {
 		return false
 	}
-	return tc.Type == openai.ToolTypeFunction && tc.Function.Name == "DiagnoseBilling"
+	return tc.Type == openai.ToolTypeFunction && tc.Function.Name == action
+}
+
+func monitorScenarioExecutor() *mockExecutor {
+	return &mockExecutor{results: map[string]map[string]any{
+		"GetCompShareInstanceMonitor": {
+			"RetCode": 0,
+			"Data": map[string]any{
+				"DataSet": []any{},
+			},
+		},
+	}}
+}
+
+func TestMonitorFreshnessGuard_ForcesRefreshOnMetricFollowUp(t *testing.T) {
+	executor := monitorScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"]}`),
+		}},
+		{Content: "监控数据已返回"},
+		{Content: "没有重新查询监控"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "看看 uhost-monitor-001 的监控数据", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, executor.calls, "GetCompShareInstanceMonitor")
+
+	_, err = eng.Chat(context.Background(), "帮我判断一下有没有机器 CPU、内存、GPU 或显存占用异常高", noopStep)
+	assert.NoError(t, err)
+
+	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
+		assert.True(t, toolChoiceForMonitor(mock.calls[2]),
+			"monitor metric follow-up should force ToolChoice=GetCompShareInstanceMonitor")
+	}
+	for i := 0; i < 2; i++ {
+		assert.Nil(t, mock.calls[i].ToolChoice, "call %d should not have ToolChoice", i)
+	}
+}
+
+func TestMonitorFreshnessGuard_ExplicitReuseDoesNotTrigger(t *testing.T) {
+	executor := monitorScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"]}`),
+		}},
+		{Content: "监控数据已返回"},
+		{Content: "基于刚才的数据总结"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "看看 uhost-monitor-001 的监控数据", noopStep)
+	assert.NoError(t, err)
+
+	_, err = eng.Chat(context.Background(), "基于刚才的监控数据总结一下有没有异常", noopStep)
+	assert.NoError(t, err)
+
+	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
+		assert.Nil(t, mock.calls[2].ToolChoice,
+			"explicit reuse phrasing should let the model answer from prior monitor data")
+	}
+}
+
+func TestResourceInfoGuard_ForcesInstanceDiscoveryForExpiryRenewalQuery(t *testing.T) {
+	executor := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": {
+				"RetCode": 0,
+				"UHostSet": []any{
+					map[string]any{
+						"UHostId":    "uhost-expire-001",
+						"Name":       "包日实例",
+						"ChargeType": "Day",
+						"ExpireTime": float64(1777442400),
+						"AutoRenew":  true,
+					},
+					map[string]any{"UHostId": "uhost-expire-002", "Name": "postpay-2", "ChargeType": "Dynamic", "ExpireTime": float64(0), "AutoRenew": "Yes"},
+					map[string]any{"UHostId": "uhost-expire-003", "Name": "postpay-3", "ChargeType": "Dynamic", "ExpireTime": float64(0), "AutoRenew": "Yes"},
+					map[string]any{"UHostId": "uhost-expire-004", "Name": "postpay-4", "ChargeType": "Dynamic", "ExpireTime": float64(0), "AutoRenew": "No"},
+					map[string]any{"UHostId": "uhost-expire-005", "Name": "postpay-5", "ChargeType": "Dynamic", "ExpireTime": float64(0), "AutoRenew": "No"},
+					map[string]any{"UHostId": "uhost-expire-006", "Name": "prepaid-six", "ChargeType": "Day", "ExpireTime": float64(1777528800), "AutoRenew": "No"},
+				},
+			},
+		},
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DescribeCompShareInstance", `{"Limit":100}`),
+		}},
+		{Content: "包日实例已开启自动续费，到期时间为 2026-04-29。"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "我的机器什么时候到期，哪些开了自动续费？", noopStep)
+	assert.NoError(t, err)
+
+	if assert.Len(t, mock.calls, 2) {
+		assert.True(t, toolChoiceForAction(mock.calls[0], "DescribeCompShareInstance"))
+		assert.True(t, requestContainsMessageText(mock.calls[1], "ExpireTime"),
+			"LLM must receive ExpireTime from DescribeCompShareInstance")
+		assert.True(t, requestContainsMessageText(mock.calls[1], "AutoRenew"),
+			"LLM must receive AutoRenew from DescribeCompShareInstance")
+		assert.True(t, requestContainsMessageText(mock.calls[1], "ResourceInfoSummary"),
+			"resource info queries must add a non-array summary that survives tool-result truncation")
+		assert.True(t, requestContainsMessageText(mock.calls[1], "prepaid-six"),
+			"resource summary must include instances beyond the first five truncated UHostSet entries")
+	}
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+	assert.Contains(t, reply, "自动续费")
+}
+
+func TestExecuteTool_TreatsEmptyArgumentsAsEmptyObject(t *testing.T) {
+	executor := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": {"RetCode": 0, "UHostSet": []any{}},
+		},
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			{
+				ID:   "tc-empty",
+				Type: openai.ToolTypeFunction,
+				Function: openai.FunctionCall{
+					Name:      "DescribeCompShareInstance",
+					Arguments: "",
+				},
+			},
+		}},
+		{Content: "ok"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	onStep, events := collectSteps()
+
+	_, err := eng.Chat(context.Background(), "列一下我的机器", onStep)
+	assert.NoError(t, err)
+
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+	for _, ev := range *events {
+		assert.NotEqual(t, StepError, ev.Type, "empty tool arguments should be treated as {}")
+	}
+}
+
+func TestMonitorIntentGuard_ForcesInstanceDiscoveryForModelMonitorQuery(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "wrong route"},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "帮我看下昨天下午两点的4090监控", noopStep)
+	assert.NoError(t, err)
+
+	if assert.Len(t, mock.calls, 1) {
+		assert.True(t, toolChoiceForAction(mock.calls[0], "DescribeCompShareInstance"),
+			"monitor query scoped by GPU model should discover user instances before specs or monitor calls")
+	}
+}
+
+func TestMonitorHistoryBatchGuard_BlocksMultiInstanceHistoryFollowUp(t *testing.T) {
+	executor := monitorScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "请选择一台实例，或者全部逐台查询"},
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001","uhost-monitor-002"],"StartTime":1776492000,"EndTime":1776492060}`),
+		}},
+		{Content: "需要逐台单实例查询"},
+	}}
+	onStep, events := collectSteps()
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "帮我看下昨天下午两点的4090监控", onStep)
+	assert.NoError(t, err)
+	_, err = eng.Chat(context.Background(), "全部 4090 实例都查一下", onStep)
+	assert.NoError(t, err)
+
+	assert.NotContains(t, executor.calls, "GetCompShareInstanceMonitor",
+		"historical monitor with multiple UHostIds must be blocked before the external API")
+	hasBlocked := false
+	for _, ev := range *events {
+		if ev.Type == StepBlocked && ev.Action == "GetCompShareInstanceMonitor" {
+			hasBlocked = true
+			assert.Contains(t, ev.Message, "历史时间")
+			assert.Contains(t, ev.Message, "逐台")
+		}
+	}
+	assert.True(t, hasBlocked, "expected StepBlocked for multi-instance historical monitor query")
+}
+
+func TestMonitorHistoryBatchGuard_AllowsCurrentMultiInstanceSnapshot(t *testing.T) {
+	executor := monitorScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001","uhost-monitor-002"]}`),
+		}},
+		{Content: "最近 60 秒监控快照"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "看看所有运行中机器的监控", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, executor.calls, "GetCompShareInstanceMonitor",
+		"current multi-instance monitor snapshot should still be allowed")
+}
+
+func TestMonitorTemporalContextNote_InjectedBeforeInstanceClarification(t *testing.T) {
+	executor := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": {"RetCode": 0, "UHostSet": []any{}},
+		},
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DescribeCompShareInstance", `{"Limit":100}`),
+		}},
+		{Content: "请选择一台 4090 实例"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.nowFn = func() time.Time {
+		return time.Date(2026, 4, 30, 17, 40, 0, 0, beijingZone)
+	}
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "帮我看下昨天下午两点的4090监控", noopStep)
+	assert.NoError(t, err)
+
+	if assert.Len(t, mock.calls, 2) {
+		for _, req := range mock.calls {
+			assert.True(t, requestContainsMessageText(req, "2026-04-29 13:45"),
+				"LLM must see the resolved monitor window before any clarification text")
+			assert.True(t, requestContainsMessageText(req, "2026-04-29 14:15"),
+				"LLM must see the resolved monitor window before any clarification text")
+			assert.True(t, requestContainsMessageText(req, "StartTime=1777441500"),
+				"LLM must see the deterministic StartTime")
+			assert.True(t, requestContainsMessageText(req, "EndTime=1777443300"),
+				"LLM must see the deterministic EndTime")
+		}
+	}
+}
+
+func TestMonitorHistoricalQuery_ContinuesAfterNeedlessConfirmation(t *testing.T) {
+	executor := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": {"RetCode": 0, "UHostSet": []any{}},
+			"GetCompShareInstanceMonitor": {
+				"RetCode": 0,
+				"Data": map[string]any{
+					"DataSet": []any{},
+				},
+			},
+		},
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DescribeCompShareInstance", `{"Limit":100}`),
+		}},
+		{Content: "需要我继续逐台查询昨天下午两点的监控吗？"},
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc2", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"],"StartTime":1,"EndTime":2}`),
+		}},
+		{Content: "已查询 2026-04-29 的历史监控。"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.nowFn = func() time.Time {
+		return time.Date(2026, 4, 30, 17, 40, 0, 0, beijingZone)
+	}
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "帮我看下昨天下午两点的4090监控", noopStep)
+	assert.NoError(t, err)
+
+	assert.NotContains(t, reply, "需要我继续")
+	assert.Contains(t, executor.calls, "GetCompShareInstanceMonitor")
+	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
+		assert.True(t, toolChoiceForAction(mock.calls[2], "GetCompShareInstanceMonitor"),
+			"engine should force monitor after model stops at a needless confirmation")
+	}
+}
+
+func TestMonitorTemporalFinalReplyGuard_CorrectsWrongModelDate(t *testing.T) {
+	executor := &mockExecutor{
+		results: map[string]map[string]any{
+			"GetCompShareInstanceMonitor": {
+				"RetCode": 0,
+				"Data": map[string]any{
+					"List": []any{
+						map[string]any{
+							"UHostId": "uhost-monitor-001",
+							"Metrics": []any{
+								map[string]any{"MetricKey": "uhost_cpu_used", "Results": []any{map[string]any{"Values": []any{map[string]any{"Value": float64(1)}}}}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"],"StartTime":1,"EndTime":2}`),
+		}},
+		{Content: "昨天下午两点（2025-06-30 14:00）的历史监控不在范围内，14:00 ~ 14:30 当前实时监控如下。"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.nowFn = func() time.Time {
+		return time.Date(2026, 4, 30, 17, 40, 0, 0, beijingZone)
+	}
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "帮我看下昨天下午两点的4090监控", noopStep)
+	assert.NoError(t, err)
+
+	assert.NotContains(t, reply, "2025-06-30")
+	assert.Contains(t, reply, "2026-04-29")
+	assert.NotContains(t, reply, "当前实时监控")
+	assert.Contains(t, reply, "该历史时间窗监控")
+	assert.NotContains(t, reply, "14:00 ~ 14:30")
+	assert.Contains(t, reply, "13:45 ~ 14:15")
+}
+
+func TestMonitorHistoricalNoData_FinalReplyDoesNotInventMetrics(t *testing.T) {
+	executor := &mockExecutor{
+		results: map[string]map[string]any{
+			"GetCompShareInstanceMonitor": {
+				"RetCode": 0,
+				"Data": map[string]any{
+					"List": []any{
+						map[string]any{
+							"UHostId": "uhost-monitor-001",
+							"Metrics": []any{
+								map[string]any{"MetricKey": "uhost_cpu_used", "Results": []any{}},
+								map[string]any{"MetricKey": "cloudwatch_gpu_util", "Results": []any{}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"],"StartTime":1,"EndTime":2}`),
+		}},
+		{Content: "当前实时监控如下：CPU 99%，GPU 88%。"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.nowFn = func() time.Time {
+		return time.Date(2026, 4, 30, 17, 40, 0, 0, beijingZone)
+	}
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "帮我看下昨天 14:00-15:00 的 uhost-monitor-001 监控", noopStep)
+	assert.NoError(t, err)
+
+	assert.Contains(t, reply, "没有返回有效监控数据")
+	assert.NotContains(t, reply, "99%")
+	assert.NotContains(t, reply, "88%")
+	assert.NotContains(t, reply, "当前实时监控")
+}
+
+func TestMonitorTimeArgNormalizer_CorrectsYesterdayExplicitHourRange(t *testing.T) {
+	var gotArgs map[string]any
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			gotArgs = args
+			return map[string]any{"RetCode": 0, "Data": map[string]any{"List": []any{}}}, nil
+		},
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"],"StartTime":1,"EndTime":2}`),
+		}},
+		{Content: "昨天 14:00-15:00 监控"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.nowFn = func() time.Time {
+		return time.Date(2026, 4, 30, 17, 40, 0, 0, beijingZone)
+	}
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "帮我看下昨天 14:00-15:00 的 uhost-monitor-001 监控", noopStep)
+	assert.NoError(t, err)
+
+	assert.Equal(t, int64(1777442400), gotInt64Arg(gotArgs, "StartTime"))
+	assert.Equal(t, int64(1777446000), gotInt64Arg(gotArgs, "EndTime"))
+}
+
+func TestMonitorTimeArgNormalizer_CorrectsYesterdayAfternoonTwo(t *testing.T) {
+	var gotArgs map[string]any
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			gotArgs = args
+			return map[string]any{"RetCode": 0, "Data": map[string]any{"List": []any{}}}, nil
+		},
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"],"StartTime":1776492000,"EndTime":1776495600}`),
+		}},
+		{Content: "昨天 14:00 监控"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.nowFn = func() time.Time {
+		return time.Date(2026, 4, 30, 17, 40, 0, 0, beijingZone)
+	}
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "帮我看下昨天下午两点的 qa-shadow 监控", noopStep)
+	assert.NoError(t, err)
+
+	assert.Equal(t, int64(1777441500), gotInt64Arg(gotArgs, "StartTime"),
+		"yesterday 14:00 Beijing should normalize to 2026-04-29 13:45")
+	assert.Equal(t, int64(1777443300), gotInt64Arg(gotArgs, "EndTime"),
+		"point-time monitor should use a +/-15 minute window")
+}
+
+func TestMonitorTimeArgNormalizer_CorrectsPastThirtyMinutes(t *testing.T) {
+	var gotArgs map[string]any
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			gotArgs = args
+			return map[string]any{"RetCode": 0, "Data": map[string]any{"List": []any{}}}, nil
+		},
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"],"StartTime":1,"EndTime":2}`),
+		}},
+		{Content: "过去30分钟监控"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.nowFn = func() time.Time {
+		return time.Date(2026, 4, 30, 17, 40, 0, 0, beijingZone)
+	}
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "看一下这台机器过去 30 分钟的监控", noopStep)
+	assert.NoError(t, err)
+
+	wantEnd := time.Date(2026, 4, 30, 17, 40, 0, 0, beijingZone).Unix()
+	assert.Equal(t, wantEnd-1800, gotInt64Arg(gotArgs, "StartTime"))
+	assert.Equal(t, wantEnd, gotInt64Arg(gotArgs, "EndTime"))
+}
+
+func gotInt64Arg(args map[string]any, key string) int64 {
+	switch v := args[key].(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
+func TestShouldForceMonitorRefresh(t *testing.T) {
+	cases := []struct {
+		name        string
+		engine      *Engine
+		userMsg     string
+		wantTrigger bool
+	}{
+		{
+			name:        "positive_metric_follow_up",
+			engine:      &Engine{userTurn: 2, lastMonitorQueryTurn: 1},
+			userMsg:     "帮我判断一下有没有机器 CPU、内存、GPU 或显存占用异常高",
+			wantTrigger: true,
+		},
+		{
+			name:        "positive_gpu_idle_follow_up",
+			engine:      &Engine{userTurn: 2, lastMonitorQueryTurn: 1},
+			userMsg:     "只看刚才那台机器的 GPU 和显存监控，告诉我有没有 GPU 空闲或显存占满",
+			wantTrigger: true,
+		},
+		{
+			name:        "negative_no_prior_monitor",
+			engine:      &Engine{userTurn: 1, lastMonitorQueryTurn: -1},
+			userMsg:     "有没有 CPU 占用异常高",
+			wantTrigger: false,
+		},
+		{
+			name:        "negative_non_adjacent_turn",
+			engine:      &Engine{userTurn: 3, lastMonitorQueryTurn: 1},
+			userMsg:     "有没有 GPU 空闲或显存占满",
+			wantTrigger: false,
+		},
+		{
+			name:        "negative_explicit_reuse",
+			engine:      &Engine{userTurn: 2, lastMonitorQueryTurn: 1},
+			userMsg:     "基于刚才的监控数据总结一下有没有异常",
+			wantTrigger: false,
+		},
+		{
+			name:        "negative_account_billing_boundary",
+			engine:      &Engine{userTurn: 2, lastMonitorQueryTurn: 1},
+			userMsg:     "查一下我这个账号本月总账单、余额和消费明细",
+			wantTrigger: false,
+		},
+		{
+			name:        "negative_gpu_billing_boundary",
+			engine:      &Engine{userTurn: 2, lastMonitorQueryTurn: 1},
+			userMsg:     "这台 GPU 费用为什么这么高",
+			wantTrigger: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.wantTrigger, tc.engine.shouldForceMonitorRefresh(tc.userMsg))
+		})
+	}
+}
+
+func TestSystemMessageTimePrefix_InjectedOnInitAndRefreshedEachChat(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "ok turn 1"},
+		{Content: "ok turn 2"},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	bj := time.FixedZone("CST", 8*3600)
+	clock := []time.Time{
+		time.Date(2026, 4, 30, 14, 35, 0, 0, bj),
+		time.Date(2026, 5, 1, 9, 12, 0, 0, bj),
+	}
+	idx := 0
+	eng.nowFn = func() time.Time {
+		t := clock[idx]
+		if idx < len(clock)-1 {
+			idx++
+		}
+		return t
+	}
+	eng.InitWithContext("test user")
+
+	assert.True(t, strings.HasPrefix(eng.messages[0].Content, "当前北京时间：2026-04-30 14:35"),
+		"Init must seed messages[0] with the literal '当前北京时间：' prefix in YYYY-MM-DD HH:MM format")
+
+	_, err := eng.Chat(context.Background(), "随便问一句", noopStep)
+	assert.NoError(t, err)
+	assert.True(t, strings.HasPrefix(eng.messages[0].Content, "当前北京时间：2026-05-01 09:12"),
+		"each Chat must refresh the time prefix in place, preserving the literal prefix")
+
+	assert.Equal(t, openai.ChatMessageRoleSystem, eng.messages[0].Role,
+		"messages[0] must remain a system message after refresh")
+	assert.Contains(t, eng.messages[0].Content, "你是优云算力共享平台的 AI 助手",
+		"refresh must preserve the static system prompt body")
+}
+
+func TestAccountBillingUnsupported_MonthlySummaryHardBlocks(t *testing.T) {
+	// Account-level monthly summary phrasings (本月/当月/月度 + cost word,
+	// no instance scope) must hard-block. Empirically deepseek-v4-flash
+	// violates a prompt-only soft guidance and calls DiagnoseBilling on
+	// these, so the hard-block is required regardless of system prompt.
+	cases := []string{
+		"我账号下本月花了多少钱",
+		"我这个账户本月费用",
+		"我本月在平台总共消费了多少",
+		"当月账单是多少",
+	}
+	for _, msg := range cases {
+		t.Run(msg, func(t *testing.T) {
+			executor := &mockExecutor{}
+			mock := &mockLLM{responses: []llm.ChatResponse{
+				{Content: "should never be called"},
+			}}
+			eng := NewWithDeps(mock, executor, nil)
+			eng.InitWithContext("test user")
+
+			reply, err := eng.Chat(context.Background(), msg, noopStep)
+			assert.NoError(t, err)
+			assert.Empty(t, mock.calls, "monthly account summary must short-circuit, never reach the LLM")
+			assert.Empty(t, executor.calls, "monthly account summary must not call any external tool")
+			assert.Contains(t, reply, "财务中心")
+		})
+	}
+}
+
+func TestAccountBillingUnsupported_AccountOnlyDataIgnoresInstanceWords(t *testing.T) {
+	// 余额 / 总账单 / 消费流水 / 流水 / balance live in the financial
+	// center, never in any per-instance API. Instance words in the same
+	// sentence MUST NOT veto the hard-block, otherwise the LLM may try
+	// to fabricate or guess via DescribeCompShareInstance.
+	cases := []string{
+		"这些机器导致账号余额还剩多少",
+		"每台机器的消费流水",
+		"哪台实例占用了我账号余额",
+		"我那台 GPU 实例的 balance 还有多少",
+	}
+	for _, msg := range cases {
+		t.Run(msg, func(t *testing.T) {
+			executor := &mockExecutor{}
+			mock := &mockLLM{responses: []llm.ChatResponse{
+				{Content: "should never be called"},
+			}}
+			eng := NewWithDeps(mock, executor, nil)
+			eng.InitWithContext("test user")
+
+			reply, err := eng.Chat(context.Background(), msg, noopStep)
+			assert.NoError(t, err)
+			assert.Empty(t, mock.calls,
+				"account-only data words (余额/流水/balance) must hard-block even with instance words present")
+			assert.Empty(t, executor.calls)
+			assert.Contains(t, reply, "财务中心")
+		})
+	}
+}
+
+func TestAccountBillingUnsupported_HijackByInstanceScopeFallsThrough(t *testing.T) {
+	cases := []string{
+		"查我账号下哪台实例消费最高",
+		"我账户里这些机器的费用占比",
+		"账号下哪些主机本月扣费最多",
+	}
+	for _, msg := range cases {
+		t.Run(msg, func(t *testing.T) {
+			mock := &mockLLM{responses: []llm.ChatResponse{
+				{Content: "fall through to LLM"},
+			}}
+			eng := NewWithDeps(mock, &mockExecutor{}, nil)
+			eng.InitWithContext("test user")
+
+			_, err := eng.Chat(context.Background(), msg, noopStep)
+			assert.NoError(t, err)
+			assert.NotEmpty(t, mock.calls,
+				"messages mentioning both account and instance scope must NOT short-circuit")
+		})
+	}
+}
+
+func TestAccountBillingUnsupported_ReturnsWithoutLLMOrTools(t *testing.T) {
+	executor := &mockExecutor{}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseBilling", `{}`),
+		}},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "查一下我这个账号本月总账单、余额和消费流水明细", noopStep)
+	assert.NoError(t, err)
+
+	assert.Empty(t, mock.calls, "account-level billing must not call the LLM/tool loop")
+	assert.Empty(t, executor.calls, "account-level billing must not call external tools")
+	assert.Contains(t, reply, "不支持")
+	assert.Contains(t, reply, "财务中心")
+}
+
+func TestBillingIntentGuard_ForcesDiagnosisOnInstanceFeeFirstTurn(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "没有调用诊断"},
+	}}
+	eng := NewWithDeps(mock, billingScenarioExecutor("Running"), nil)
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "查一下我当前这些实例的费用明细，按按量/后付费、包日/包月分开列", noopStep)
+	assert.NoError(t, err)
+
+	if assert.Len(t, mock.calls, 1) {
+		assert.True(t, toolChoiceForBilling(mock.calls[0]),
+			"instance fee detail question should force ToolChoice=DiagnoseBilling")
+	}
+}
+
+func TestBillingIntentGuard_ForcesDiagnosisOnShutdownBillingFirstTurn(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "没有调用诊断"},
+	}}
+	eng := NewWithDeps(mock, billingScenarioExecutor("Stopped"), nil)
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "为什么我的机器关机后还在扣费？帮我找出哪些关机实例还可能产生费用", noopStep)
+	assert.NoError(t, err)
+
+	if assert.Len(t, mock.calls, 1) {
+		assert.True(t, toolChoiceForBilling(mock.calls[0]),
+			"shutdown billing question should force ToolChoice=DiagnoseBilling")
+	}
+}
+
+func TestMixedMonitorBillingIntent_RunsMonitorThenBilling(t *testing.T) {
+	executor := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": {
+				"RetCode": 0,
+				"UHostSet": []any{
+					map[string]any{"UHostId": "uhost-mixed-001", "Name": "mixed", "State": "Running", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"},
+				},
+			},
+			"GetCompShareInstanceMonitor": {
+				"RetCode": 0,
+				"Data": map[string]any{
+					"List": []any{
+						map[string]any{
+							"UHostId": "uhost-mixed-001",
+							"Metrics": []any{
+								map[string]any{"MetricKey": "uhost_cpu_used", "Results": []any{map[string]any{"Values": []any{map[string]any{"Value": float64(90)}}}}},
+							},
+						},
+					},
+				},
+			},
+			"GetCompShareInstancePrice": {
+				"RetCode": 0,
+				"Infos":   []any{map[string]any{"GPUType": "4090", "Price": float64(1.58)}},
+			},
+		},
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DescribeCompShareInstance", `{"Limit":100}`),
+		}},
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc2", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-mixed-001"]}`),
+		}},
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc3", "DiagnoseBilling", `{}`),
+		}},
+		{Content: "监控异常和扣费情况已分别查询。"},
+	}}
+	onStep, events := collectSteps()
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "账号里这些机器哪台监控异常，哪台扣费多？", onStep)
+	assert.NoError(t, err)
+
+	assert.Contains(t, reply, "监控")
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+	assert.Contains(t, executor.calls, "GetCompShareInstanceMonitor")
+	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
+		assert.True(t, toolChoiceForAction(mock.calls[0], "DescribeCompShareInstance"))
+		assert.True(t, toolChoiceForAction(mock.calls[1], "GetCompShareInstanceMonitor"))
+		assert.True(t, toolChoiceForAction(mock.calls[2], "DiagnoseBilling"))
+	}
+	sawBilling := false
+	for _, ev := range *events {
+		if ev.Type == StepToolCall && ev.Action == "DiagnoseBilling" {
+			sawBilling = true
+		}
+	}
+	assert.True(t, sawBilling, "mixed monitor+billing query must also run DiagnoseBilling")
 }
 
 func TestBillingStaleGuard_ForcesRediagnosisOnFollowUp(t *testing.T) {

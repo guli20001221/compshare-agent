@@ -105,6 +105,38 @@ func TestBuildSystem_ContainsDiagnosis(t *testing.T) {
 	}
 }
 
+func TestBuildSystem_ContainsMonitorWindowGuidance(t *testing.T) {
+	system := BuildSystem("test context")
+	for _, want := range []string{
+		"多实例监控",
+		"最近 60 秒",
+		"StartTime/EndTime",
+		"单实例监控",
+		"不要称为“过去5分钟趋势”",
+		"历史时间窗不能批量查",
+		"逐台单实例查询",
+		"禁止一次传多个 UHostIds 查询历史时间",
+	} {
+		if !strings.Contains(system, want) {
+			t.Errorf("system prompt should contain monitor window guidance %q", want)
+		}
+	}
+}
+
+func TestBuildSystem_ContainsExpiryRenewalGuidance(t *testing.T) {
+	system := BuildSystem("test context")
+	for _, want := range []string{
+		"到期/续费问题",
+		"DescribeCompShareInstance",
+		"ExpireTime",
+		"AutoRenew",
+	} {
+		if !strings.Contains(system, want) {
+			t.Errorf("system prompt should contain expiry/renewal guidance %q", want)
+		}
+	}
+}
+
 func TestFormatToolResult_Truncation(t *testing.T) {
 	// Build a large result with an array field
 	items := make([]any, 100)
