@@ -1,0 +1,11 @@
+capabilities:
+  - base_url: "https://fixture-router.example/v1"
+    model: "fixture-json-model"
+    supports_json_schema: false
+    supports_json_object: true
+    is_thinking_mode: false
+    supports_object_tool_choice: true
+    supports_required_tool_choice: false
+    requires_extra_body:
+      vendor_option:
+        enabled: true
