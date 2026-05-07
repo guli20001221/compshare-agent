@@ -1,39 +1,28 @@
 ---
-last_updated: 2026-04-17T16:05:00+08:00
+last_updated: 2026-05-07T00:00+08:00
 ---
 # Project Context
 
-## Current Status
-The branch `feature/vague-failure-clarification` remains the single source of truth for the vague-failure fix. Code-side regression is green. Billing stale is fully closed. Model comparison is now richer: `Doubao-Seed-Lite` remains the only credible Block A acceptance baseline among the tested candidates. `Doubao-Seed-Mini` regressed badly on real-account routing and live eval. `Gemini-3.1-Flash-Lite` on GPTGod was technically reachable but hit heavy 429 load and is not usable for full acceptance. `Doubao-Seed-Code` is stronger than Mini and far more stable than Gemini, but still clearly weaker than Lite on workflow-first routing and real-account dirty-routing behavior, so it is also not suitable as the final sign-off model.
+## 当前状态
+`main` 已冻结 Stage 2A intent planner baseline 和 Phase 0 工单清单；Plan A 实证实现保存在 `archive/stage1.5-plan-a`。当前工作在独立 worktree/分支 `codex/stage2a-t002-secret-boundary` 上推进 Phase 0 T-002 SecretBoundary，不触碰主工作区的历史本地改动。
 
-## In Progress
-- [ ] Block A freeze decision — implementation branch is complete and code-side tests are green; remaining decision is whether to freeze using Lite as the last credible sign-off baseline or spend more work on routing-quality / eval-gap issues
-- [ ] Branch integration — `feature/vague-failure-clarification` is 7 commits ahead of `master`; no remote configured yet, so push/PR is blocked until a remote is added
+## 进行中
+- [ ] T-002 SecretBoundary — 已实现占位符配置加载、LLM/trace 脱敏函数、示例配置占位符化、eval `.env.example`、本地 `.env.local` 加载脚本、版本化 pre-commit secret scan、setup 文档；真实账号 E2E 已通过，待人工 review。
 
-## Recently Completed
-- [x] `Doubao-Seed-Code` candidate evaluation — live acceptance + real-account dirty routing + platform fidelity under `eval/shadow_qa/2026-04-17-real-account-round6-doubao-code/`; better than Mini, still below Lite
-- [x] `Gemini-3.1-Flash-Lite` candidate evaluation — GPTGod route is reachable but heavily rate-limited (`429`), making it unsuitable for full acceptance
-- [x] `Doubao-Seed-Mini` candidate evaluation — code regression green, but live acceptance and real-account dirty routing regressed severely; not suitable for sign-off
-- [x] Vague-failure clarification fix on `feature/vague-failure-clarification` — prompt `vague_failure` intent + narrow `DiagnoseInitFailure` engine guard / files: `internal/engine/engine.go`, `internal/prompt/builder.go`, `internal/engine/engine_test.go` / verification: `go test ./...` PASS
-- [x] Billing stale hard guard — narrow `tool_choice=DiagnoseBilling` on adjacent billing follow-up turns; real-account `ext_03` rerun PASS
+## 最近完成
+- [x] Stage 2A baseline 文档 — `docs/agent/plan/stage2-intent-planner.md` 已提交到 `origin/main`。
+- [x] Phase 0 工单清单 — `docs/agent/plan/stage2a-phase0-tickets.md` 已提交到 `origin/main`。
+- [x] Plan A 参考实现归档 — `archive/stage1.5-plan-a` 已推到远端。
 
-## Architecture Decisions
-| Decision | Choice | Reason | Date |
+## 架构决策
+| 决策 | 选择 | 原因 | 日期 |
 | --- | --- | --- | --- |
-| ProjectId resolution | Config-first + runtime `GetProjectList` discovery | Inject `ProjectId` once in the executor instead of per workflow | 2026-04-17 |
-| Stale-state note placement | Insert immediately before the latest user message | Keeps freshness warning close to the active ask | 2026-04-17 |
-| Billing stale guard scope | Only `DiagnoseBilling`, only first ReAct round, narrow billing keyword list | Avoid hijacking same-instance restart / release / SSH turns | 2026-04-17 |
-| LLM `ToolChoice` support | Pass through `any` to go-openai | Smallest hook for named tool forcing without adding hand-written NLU | 2026-04-17 |
-| Vague-failure fix scope | Prompt `vague_failure` intent + `DiagnoseInitFailure` two-gate guard only | Fix the proven over-trigger without broad guard expansion | 2026-04-17 |
-| Acceptance model split | Golden pass and eval-threshold pass are separate gates | `TestGoldenScripts` can pass while `TestEval` still misses threshold targets | 2026-04-17 |
-| Mini test role | `Doubao-Seed-Mini` is smoke-test only, not sign-off | Round4 showed major workflow-routing and entity-resolution regressions | 2026-04-17 |
-| Gemini-on-GPTGod role | Do not use for acceptance | Heavy `429` load makes results too unstable to interpret | 2026-04-17 |
-| Doubao-Seed-Code role | Exploratory candidate only, not sign-off | Better than Mini, but still clearly below Lite on workflow-first routing and dirty routing | 2026-04-17 |
+| Stage 2A 形态 | workflow with LLM steps | 优先可预测、可审计、可回滚，不回退自由 ReAct | 2026-05-07 |
+| SecretBoundary config | YAML 只接受 `${ENV_VAR}` 占位符，真实密钥只从环境变量读取 | 防止 eval/deploy 配置将真实 key 带入 git、trace 或 LLM 上下文 | 2026-05-07 |
+| 本地真实账号 E2E key | 允许放在 gitignored `.env.local`，通过 `scripts/load_env.ps1` 注入进当前进程环境变量 | 保留“config 不含明文 secret”的契约，同时方便手工 E2E | 2026-05-07 |
+| Trace 脱敏 | secret redaction + IP mask + billing/cost SHA-256 短 hash | trace 可关联问题但不暴露账号财务/IP 明细 | 2026-05-07 |
+| ProjectId | 可空；显式配置时也必须走占位符 | 兼容启动期自动发现，同时避免账号级常量写入 YAML | 2026-05-07 |
 
-## Known Issues
-- [high] No tested candidate has surpassed or matched the Lite baseline for Block A sign-off; Lite remains the strongest tested option despite cost concerns
-- [high] `toolToIntent()` in `eval/evaluate_test.go` still classifies scheduler workflows as `simple_query`, inflating `ct_13`-`ct_16` intent failures in `TestEval`
-- [medium] Outcome-fidelity assertions remain weaker than route assertions in shadow QA, although real-account probes now show both success-fidelity and failure-fidelity examples
-- [medium] `Doubao-Seed-Code` still overuses leading `DescribeCompShareInstance` before workflows and mishandles colloquial GPU-reference shutdown requests
-- [medium] `Doubao-Seed-Code` over-applies the vague-failure clarification on turn 2 (`就是 wyptest 那台`) instead of proceeding into `DiagnoseInitFailure`
-- [medium] No remote is configured, so `feature/vague-failure-clarification` cannot be pushed or reviewed via PR yet
+## 已知问题
+- [medium] `.githooks/pre-commit` 已版本化，但本地启用仍需执行 `git config core.hooksPath .githooks`。
+- [low] `scripts/secret_scan.ps1` 是轻量防线，不替代后续接入 truffleHog/git-secrets 的完整扫描。
