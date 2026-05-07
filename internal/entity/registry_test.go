@@ -133,6 +133,23 @@ func TestSyncFromDescribeParsesJSONNumberFields(t *testing.T) {
 	assert.Equal(t, 1, reg.TotalCount)
 }
 
+func TestSyncFromDescribeParsesValidatorSnapshotFields(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.SyncFromDescribe(describeResult(map[string]any{
+		"UHostId":   "uhost-validator",
+		"Name":      "validator-host",
+		"State":     "Running",
+		"ImageType": "Custom",
+		"StartTime": float64(1778145000),
+	}), "init"))
+
+	got, res := reg.ResolveByID("uhost-validator")
+	require.Equal(t, ResolveHit, res.Status)
+	require.NotNil(t, got)
+	assert.Equal(t, "Custom", got.ImageType)
+	assert.Equal(t, int64(1778145000), got.StartTime)
+}
+
 func describeResult(hosts ...map[string]any) map[string]any {
 	set := make([]any, 0, len(hosts))
 	for _, h := range hosts {

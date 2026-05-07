@@ -15,6 +15,8 @@ type InstanceSnapshot struct {
 	OsType     string
 	GPU        int
 	GpuType    string
+	ImageType  string
+	StartTime  int64
 	CPU        int
 	Memory     int
 	Zone       string
@@ -32,6 +34,8 @@ func instanceFromMap(row map[string]any) InstanceSnapshot {
 		OsType:     stringField(row, "OsType"),
 		GPU:        intField(row, "GPU"),
 		GpuType:    stringField(row, "GpuType"),
+		ImageType:  stringField(row, "ImageType"),
+		StartTime:  int64Field(row, "StartTime"),
 		CPU:        intField(row, "CPU"),
 		Memory:     intField(row, "Memory"),
 		Zone:       stringField(row, "Zone"),
