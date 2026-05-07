@@ -1,28 +1,29 @@
 ---
-last_updated: 2026-05-07T00:00+08:00
+last_updated: 2026-05-08T00:33:00+08:00
 ---
 # Project Context
 
 ## 当前状态
-`main` 已冻结 Stage 2A intent planner baseline 和 Phase 0 工单清单；Plan A 实证实现保存在 `archive/stage1.5-plan-a`。当前工作在独立 worktree/分支 `codex/stage2a-t002-secret-boundary` 上推进 Phase 0 T-002 SecretBoundary，不触碰主工作区的历史本地改动。
+PR #2 T-002 SecretBoundary 已合入 `origin/main`。当前分支 `codex/stage2a-t003-capability-registry` 正在同步 main 后继续承载 T-003 CapabilityRegistry，用于合并 PR #3。T-003 仍保持 Phase 0 最小范围：只提供 LLM capability lookup/override，不接 planner 或 engine 主流程。
 
 ## 进行中
-- [ ] T-002 SecretBoundary — 已实现占位符配置加载、LLM/trace 脱敏函数、示例配置占位符化、eval `.env.example`、本地 `.env.local` 加载脚本、版本化 pre-commit secret scan、setup 文档；真实账号 E2E 已通过，待人工 review。
+- [ ] PR #3 T-003 CapabilityRegistry — 已同步 PR #2 后的 main，解决 `.Codex/CONTEXT.md` checkpoint 冲突；下一步验证并 merge。
 
 ## 最近完成
-- [x] Stage 2A baseline 文档 — `docs/agent/plan/stage2-intent-planner.md` 已提交到 `origin/main`。
-- [x] Phase 0 工单清单 — `docs/agent/plan/stage2a-phase0-tickets.md` 已提交到 `origin/main`。
-- [x] Plan A 参考实现归档 — `archive/stage1.5-plan-a` 已推到远端。
+- [x] PR #2 T-002 SecretBoundary — 已 merge 到 main；提供占位符 YAML、env 注入、secret scan、setup 文档和 RedactForLLM/Trace primitives。
+- [x] T-003 CapabilityRegistry — 新增 `internal/llm/capability.go`、测试、testdata fixture 和 setup 文档；已 review APPROVE。
+- [x] Stage 2A baseline docs — `docs/agent/plan/stage2-intent-planner.md` 与 `stage2a-phase0-tickets.md` 已 freeze 并推到 `origin/main`。
 
 ## 架构决策
 | 决策 | 选择 | 原因 | 日期 |
 | --- | --- | --- | --- |
-| Stage 2A 形态 | workflow with LLM steps | 优先可预测、可审计、可回滚，不回退自由 ReAct | 2026-05-07 |
-| SecretBoundary config | YAML 只接受 `${ENV_VAR}` 占位符，真实密钥只从环境变量读取 | 防止 eval/deploy 配置将真实 key 带入 git、trace 或 LLM 上下文 | 2026-05-07 |
-| 本地真实账号 E2E key | 允许放在 gitignored `.env.local`，通过 `scripts/load_env.ps1` 注入进当前进程环境变量 | 保留“config 不含明文 secret”的契约，同时方便手工 E2E | 2026-05-07 |
-| Trace 脱敏 | secret redaction + IP mask + billing/cost SHA-256 短 hash | trace 可关联问题但不暴露账号财务/IP 明细 | 2026-05-07 |
-| ProjectId | 可空；显式配置时也必须走占位符 | 兼容启动期自动发现，同时避免账号级常量写入 YAML | 2026-05-07 |
+| T-003 范围 | 只交付 lookup registry，不接 planner/engine | 保持 Phase 0 最小切片，后续 T-007a/T-001 消费能力表 | 2026-05-07 |
+| Capability key | `(normalized base_url, normalized model)` | 明确 provider/model 组合差异，覆盖 Modelverse/Doubao thinking-mode 等实证问题 | 2026-05-07 |
+| Unknown capability | 全部结构化输出和 tool-choice 能力保守 false | 避免新 provider 默认走可能 400 的能力路径 | 2026-05-07 |
+| Override | `COMPSHARE_LLM_CAPABILITY_FILE` YAML，每次 lookup 读取 | 支持开发期热更新，不需重新编译 | 2026-05-07 |
+| SecretBoundary runtime 接入 | T-002 只提供函数，T-001/T-006 接入 | 避免和现有 sanitizer / dual-channel token display 产生双重脱敏副作用 | 2026-05-07 |
 
 ## 已知问题
-- [medium] `.githooks/pre-commit` 已版本化，但本地启用仍需执行 `git config core.hooksPath .githooks`。
-- [low] `scripts/secret_scan.ps1` 是轻量防线，不替代后续接入 truffleHog/git-secrets 的完整扫描。
+- [medium] T-003 尚未接入 planner 或 engine；真正消费能力表在 T-007a/T-001。
+- [medium] CapabilityRegistry follow-up：override 文件失败时 stderr log、默认端口归一化、后续并行 tool-call 能力位。
+- [medium] T-002 follow-up：secret scan raw bearer/password/OAuth 命名扩展，留后续小修。
