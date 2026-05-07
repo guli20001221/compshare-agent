@@ -1,39 +1,31 @@
 ---
-last_updated: 2026-04-17T16:05:00+08:00
+last_updated: 2026-05-07T18:30:48+08:00
 ---
 # Project Context
 
-## Current Status
-The branch `feature/vague-failure-clarification` remains the single source of truth for the vague-failure fix. Code-side regression is green. Billing stale is fully closed. Model comparison is now richer: `Doubao-Seed-Lite` remains the only credible Block A acceptance baseline among the tested candidates. `Doubao-Seed-Mini` regressed badly on real-account routing and live eval. `Gemini-3.1-Flash-Lite` on GPTGod was technically reachable but hit heavy 429 load and is not usable for full acceptance. `Doubao-Seed-Code` is stronger than Mini and far more stable than Gemini, but still clearly weaker than Lite on workflow-first routing and real-account dirty-routing behavior, so it is also not suitable as the final sign-off model.
+## 当前状态
+Stage 2A Phase 0 设计基线已在 `origin/main`，T-002 SecretBoundary 和 T-003 CapabilityRegistry 已完成并进入 review/merge 流程。当前工作线为 T-004a EntityRegistry parser/resolver，分支 `codex/stage2a-t004a-entity-registry`，目标是在不接入 engine 主流程的前提下提供账号实例快照、ID/名称解析和基础过滤能力，供后续 T-007a IntentPlan validator 使用。
 
-## In Progress
-- [ ] Block A freeze decision — implementation branch is complete and code-side tests are green; remaining decision is whether to freeze using Lite as the last credible sign-off baseline or spend more work on routing-quality / eval-gap issues
-- [ ] Branch integration — `feature/vague-failure-clarification` is 7 commits ahead of `master`; no remote configured yet, so push/PR is blocked until a remote is added
+## 进行中
+- [ ] T-004a EntityRegistry parser/resolver — 已实现 `internal/entity` 纯逻辑模块和 gated 真实账号 integration；下一步是本地提交并交给 Claude review。
 
-## Recently Completed
-- [x] `Doubao-Seed-Code` candidate evaluation — live acceptance + real-account dirty routing + platform fidelity under `eval/shadow_qa/2026-04-17-real-account-round6-doubao-code/`; better than Mini, still below Lite
-- [x] `Gemini-3.1-Flash-Lite` candidate evaluation — GPTGod route is reachable but heavily rate-limited (`429`), making it unsuitable for full acceptance
-- [x] `Doubao-Seed-Mini` candidate evaluation — code regression green, but live acceptance and real-account dirty routing regressed severely; not suitable for sign-off
-- [x] Vague-failure clarification fix on `feature/vague-failure-clarification` — prompt `vague_failure` intent + narrow `DiagnoseInitFailure` engine guard / files: `internal/engine/engine.go`, `internal/prompt/builder.go`, `internal/engine/engine_test.go` / verification: `go test ./...` PASS
-- [x] Billing stale hard guard — narrow `tool_choice=DiagnoseBilling` on adjacent billing follow-up turns; real-account `ext_03` rerun PASS
+## 最近完成
+- [x] T-003 CapabilityRegistry — `internal/llm/capability.go` 编码 Modelverse/Qwen/Doubao/GLM 能力矩阵；记录 2026-05-07 Doubao Lite probe 与 2026-05-01 早期 400 反例；验证 `go test ./... -count=1` PASS。
+- [x] T-002 SecretBoundary — 占位符 YAML、env 注入、secret scan、setup 文档和 RedactForLLM/Trace primitives；runtime wire-up 明确留给 T-001/T-006。
+- [x] Stage 2A baseline docs — `docs/agent/plan/stage2-intent-planner.md` 与 `stage2a-phase0-tickets.md` 已 freeze 并推到 `origin/main`。
+- [x] Stage 1.5 Plan A archive — `archive/stage1.5-plan-a` 保存 resource-info guard 实证实现，作为后续迁移参考。
 
-## Architecture Decisions
-| Decision | Choice | Reason | Date |
+## 架构决策
+| 决策 | 选择 | 原因 | 日期 |
 | --- | --- | --- | --- |
-| ProjectId resolution | Config-first + runtime `GetProjectList` discovery | Inject `ProjectId` once in the executor instead of per workflow | 2026-04-17 |
-| Stale-state note placement | Insert immediately before the latest user message | Keeps freshness warning close to the active ask | 2026-04-17 |
-| Billing stale guard scope | Only `DiagnoseBilling`, only first ReAct round, narrow billing keyword list | Avoid hijacking same-instance restart / release / SSH turns | 2026-04-17 |
-| LLM `ToolChoice` support | Pass through `any` to go-openai | Smallest hook for named tool forcing without adding hand-written NLU | 2026-04-17 |
-| Vague-failure fix scope | Prompt `vague_failure` intent + `DiagnoseInitFailure` two-gate guard only | Fix the proven over-trigger without broad guard expansion | 2026-04-17 |
-| Acceptance model split | Golden pass and eval-threshold pass are separate gates | `TestGoldenScripts` can pass while `TestEval` still misses threshold targets | 2026-04-17 |
-| Mini test role | `Doubao-Seed-Mini` is smoke-test only, not sign-off | Round4 showed major workflow-routing and entity-resolution regressions | 2026-04-17 |
-| Gemini-on-GPTGod role | Do not use for acceptance | Heavy `429` load makes results too unstable to interpret | 2026-04-17 |
-| Doubao-Seed-Code role | Exploratory candidate only, not sign-off | Better than Mini, but still clearly below Lite on workflow-first routing and dirty routing | 2026-04-17 |
+| Stage 2A 形态 | workflow with LLM steps | 资源/监控/计费事实必须由 deterministic handler 和 API grounding 控制 | 2026-05-07 |
+| SecretBoundary runtime 接入 | T-002 只提供函数，T-001/T-006 接入 | 避免和现有 sanitizer / dual-channel token display 产生双重脱敏副作用 | 2026-05-07 |
+| CapabilityRegistry 范围 | 先覆盖国产/Modelverse 常用模型，国外模型暂不进入默认矩阵 | 当前验收关注国产模型权限与 thinking-mode/tool_choice 兼容性 | 2026-05-07 |
+| EntityRegistry T-004a 范围 | 纯 parser/resolver，不影响 engine 主流程 | Phase 0 先为 T-007a validator 提供稳定实体地面真值，不提前切流 | 2026-05-07 |
+| EntityResolver 名称匹配 | 精确归一化优先，模糊匹配返回 AMBIGUOUS；候选排序稳定 | 防止 LLM 自由补 ID，同时把模糊用户表达留给上层澄清 | 2026-05-07 |
 
-## Known Issues
-- [high] No tested candidate has surpassed or matched the Lite baseline for Block A sign-off; Lite remains the strongest tested option despite cost concerns
-- [high] `toolToIntent()` in `eval/evaluate_test.go` still classifies scheduler workflows as `simple_query`, inflating `ct_13`-`ct_16` intent failures in `TestEval`
-- [medium] Outcome-fidelity assertions remain weaker than route assertions in shadow QA, although real-account probes now show both success-fidelity and failure-fidelity examples
-- [medium] `Doubao-Seed-Code` still overuses leading `DescribeCompShareInstance` before workflows and mishandles colloquial GPU-reference shutdown requests
-- [medium] `Doubao-Seed-Code` over-applies the vague-failure clarification on turn 2 (`就是 wyptest 那台`) instead of proceeding into `DiagnoseInitFailure`
-- [medium] No remote is configured, so `feature/vague-failure-clarification` cannot be pushed or reviewed via PR yet
+## 已知问题
+- [high] T-001 SafeToolExecutor 尚未实现，现有 force-tool guards 和 sanitizer 仍在老 engine 路径中。
+- [medium] T-003 仍有 follow-up：capability override 文件失败时 stderr log、默认端口归一化、后续并行 tool-call 能力位。
+- [medium] EntityRegistry Phase 0 仅拉 `DescribeCompShareInstance Limit=100` 单页，账号实例数超过 100 时只设置 `Truncated`；分页留到 Phase 1 切流前。
+- [medium] 真实账号 integration 依赖本地 `.env.local` 注入，不能在普通 CI 默认开启。
