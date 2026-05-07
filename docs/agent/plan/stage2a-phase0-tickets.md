@@ -95,6 +95,7 @@ Batch C（Week 2 下半）— 依赖 Batch A+B
 - 启动时 config loader 解析占位符，未设置环境变量则启动失败 + 友好 error message
 - pre-commit hook 添加 secret 扫描（git-secrets 或 truffleHog）
 - 现有 `eval/shadow_qa/*/agent.yaml` 全部迁到占位符 + 提供 `.env.example`
+- 显式排除：runtime wire-up 不在 T-002 scope，由 T-001 SafeToolExecutor / T-006 trace writer 完成
 
 **Acceptance**：
 - [ ] `grep -rE "[A-Za-z0-9]{32,}" eval/shadow_qa/*.yaml` 0 命中（明文 key 全清）
