@@ -6,11 +6,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
-const recentlyReleasedTTL = 24 * time.Hour
+const (
+	recentlyReleasedTTL         = 24 * time.Hour
+	DefaultRegistryFreshnessTTL = 30 * time.Second
+)
+
+type SyncEvent string
+
+const (
+	SyncEventUnavailable SyncEvent = "unavailable"
+	SyncEventInit        SyncEvent = "init"
+	SyncEventSyncRefresh SyncEvent = "sync_refresh"
+	SyncEventWarmCache   SyncEvent = "warm_cache"
+	SyncEventFailed      SyncEvent = "failed"
+)
+
+type RefreshReason string
+
+const (
+	RefreshReasonInit      RefreshReason = "init"
+	RefreshReasonManual    RefreshReason = "manual"
+	RefreshReasonTTL       RefreshReason = "ttl"
+	RefreshReasonWarmCache RefreshReason = "warm_cache"
+)
 
 // Executor is the narrow dependency needed for T-004a. It is intentionally
 // compatible with tools.ToolExecutor and mock executors.
@@ -44,22 +67,26 @@ type EntityRegistry struct {
 	NameIndex        map[string][]string
 	LastFullSync     time.Time
 	LastSyncEvent    string
+	LastSyncError    string
 	TotalCount       int
 	Truncated        bool
 	recentlyReleased map[string]time.Time
 	now              func() time.Time
+	invalidated      bool
+	invalidation     string
 }
 
 // RegistrySnapshot is an immutable copy of the registry state at one point in time.
 // Mutating the returned maps must not affect the source EntityRegistry.
 type RegistrySnapshot struct {
-	SnapshotID   string
-	Instances    map[string]InstanceSnapshot
-	NameIndex    map[string][]string
-	LastFullSync time.Time
-	SyncEvent    string
-	TotalCount   int
-	Truncated    bool
+	SnapshotID    string
+	Instances     map[string]InstanceSnapshot
+	NameIndex     map[string][]string
+	LastFullSync  time.Time
+	SyncEvent     string
+	LastSyncError string
+	TotalCount    int
+	Truncated     bool
 }
 
 // RegistryTraceState is the compact entity registry block written into trace.v0.1.
@@ -73,6 +100,7 @@ func NewRegistry(opts ...RegistryOption) *EntityRegistry {
 	r := &EntityRegistry{
 		Instances:        map[string]InstanceSnapshot{},
 		NameIndex:        map[string][]string{},
+		LastSyncEvent:    string(SyncEventUnavailable),
 		recentlyReleased: map[string]time.Time{},
 		now:              time.Now,
 	}
@@ -102,20 +130,25 @@ func (r *EntityRegistry) Snapshot() RegistrySnapshot {
 		snapshotID = computeSnapshotID(instances, r.TotalCount, r.Truncated)
 	}
 	return RegistrySnapshot{
-		SnapshotID:   snapshotID,
-		Instances:    instances,
-		NameIndex:    nameIndex,
-		LastFullSync: r.LastFullSync,
-		SyncEvent:    r.LastSyncEvent,
-		TotalCount:   r.TotalCount,
-		Truncated:    r.Truncated,
+		SnapshotID:    snapshotID,
+		Instances:     instances,
+		NameIndex:     nameIndex,
+		LastFullSync:  r.LastFullSync,
+		SyncEvent:     r.LastSyncEvent,
+		LastSyncError: r.LastSyncError,
+		TotalCount:    r.TotalCount,
+		Truncated:     r.Truncated,
 	}
 }
 
 func (r *EntityRegistry) TraceState(now time.Time) RegistryTraceState {
 	snap := r.Snapshot()
 	if snap.LastFullSync.IsZero() {
-		return RegistryTraceState{SyncEvent: "unavailable"}
+		event := snap.SyncEvent
+		if event == "" {
+			event = string(SyncEventUnavailable)
+		}
+		return RegistryTraceState{SyncEvent: event}
 	}
 	age := now.Sub(snap.LastFullSync)
 	if age < 0 {
@@ -129,11 +162,62 @@ func (r *EntityRegistry) TraceState(now time.Time) RegistryTraceState {
 }
 
 func (r *EntityRegistry) Sync(ctx context.Context, exec Executor) error {
+	return r.Refresh(ctx, exec, RefreshReasonManual)
+}
+
+// Refresh synchronously reloads the registry from DescribeCompShareInstance.
+// It records a low-cardinality failed sync event on transport or parse errors
+// while preserving the last successful snapshot for best-effort reads.
+func (r *EntityRegistry) Refresh(ctx context.Context, exec Executor, reason RefreshReason) error {
 	result, err := exec.Execute(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100})
 	if err != nil {
+		r.recordRefreshFailure(err)
 		return err
 	}
-	return r.SyncFromDescribe(result, "describe_success")
+	if err := r.SyncFromDescribe(result, string(syncEventForReason(reason))); err != nil {
+		r.recordRefreshFailure(err)
+		return err
+	}
+	return nil
+}
+
+// WarmRefresh starts one caller-triggered background refresh and returns its
+// completion channel. The caller owns ctx timeout/cancellation; this method does
+// not schedule periodic refreshes or retry internally.
+func (r *EntityRegistry) WarmRefresh(ctx context.Context, exec Executor) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Refresh(ctx, exec, RefreshReasonWarmCache)
+		close(done)
+	}()
+	return done
+}
+
+// NeedsRefresh reports whether the current snapshot is missing, stale, failed,
+// or explicitly invalidated by a successful state-changing action.
+func (r *EntityRegistry) NeedsRefresh(at time.Time) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.invalidated || r.LastFullSync.IsZero() {
+		return true
+	}
+	if r.LastSyncEvent == string(SyncEventFailed) {
+		return true
+	}
+	return at.Sub(r.LastFullSync) > DefaultRegistryFreshnessTTL
+}
+
+// MarkInvalidated records that a successful action changed instance inventory
+// or state and the next registry consumer should refresh before trusting it.
+func (r *EntityRegistry) MarkInvalidated(action string) bool {
+	if !invalidatesRegistry(action) {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.invalidated = true
+	r.invalidation = action
+	return true
 }
 
 func (r *EntityRegistry) SyncFromDescribe(result map[string]any, event string) error {
@@ -175,8 +259,11 @@ func (r *EntityRegistry) SyncFromDescribe(result map[string]any, event string) e
 	r.rebuildNameIndexLocked()
 	r.LastFullSync = now
 	r.LastSyncEvent = event
+	r.LastSyncError = ""
 	r.TotalCount = intField(result, "TotalCount")
 	r.Truncated = r.TotalCount > len(next)
+	r.invalidated = false
+	r.invalidation = ""
 	return nil
 }
 
@@ -241,4 +328,66 @@ func computeSnapshotID(instances map[string]InstanceSnapshot, totalCount int, tr
 	data, _ := json.Marshal(payload)
 	sum := sha256.Sum256(data)
 	return fmt.Sprintf("sha256:%x", sum[:8])
+}
+
+func (r *EntityRegistry) recordRefreshFailure(err error) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.LastSyncEvent = string(SyncEventFailed)
+	if err != nil {
+		r.LastSyncError = refreshErrorClass(err)
+	}
+}
+
+func syncEventForReason(reason RefreshReason) SyncEvent {
+	switch reason {
+	case RefreshReasonInit:
+		return SyncEventInit
+	case RefreshReasonWarmCache:
+		return SyncEventWarmCache
+	default:
+		return SyncEventSyncRefresh
+	}
+}
+
+func invalidatesRegistry(action string) bool {
+	switch action {
+	case "CreateCompShareInstance",
+		"CreateInstanceWorkflow",
+		"StartCompShareInstance",
+		"StopCompShareInstance",
+		"RebootCompShareInstance",
+		"StartInstanceWorkflow",
+		"StopInstanceWorkflow",
+		"RebootInstanceWorkflow",
+		"ModifyCompShareInstanceName",
+		"RenameInstanceWorkflow",
+		"UpdateCompShareStopScheduler",
+		"DeleteCompShareStopScheduler",
+		"SetStopSchedulerWorkflow",
+		"CancelStopSchedulerWorkflow":
+		return true
+	default:
+		return false
+	}
+}
+
+func refreshErrorClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline"):
+		return "timeout"
+	case strings.Contains(msg, "network") || strings.Contains(msg, "connection") || strings.Contains(msg, "eof"):
+		return "network"
+	case strings.Contains(msg, "uhostset") || strings.Contains(msg, "parse") || strings.Contains(msg, "decode"):
+		return "parse_error"
+	default:
+		return "refresh_error"
+	}
 }
