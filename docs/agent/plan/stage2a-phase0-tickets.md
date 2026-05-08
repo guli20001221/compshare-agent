@@ -154,13 +154,14 @@ Batch C（Week 2 下半）— 依赖 Batch A+B
 ### T-004b EntityRegistry 接入 SafeToolExecutor
 
 **依赖**：T-001（SafeToolExecutor 就位）+ T-004a（registry 逻辑层就位）
-**预估**：1.5 天
+**预估**：2-3 天
 **所属 Batch**：B
 
 **Scope**：
+- 详细 runtime contract 以 `docs/agent/plan/stage2a-t004b-entity-registry-runtime.md` 为准；本节只保留摘要
 - 把 T-004a 的 executor 注入点切到 SafeToolExecutor，享受 retry / sanitizer / Policy 检查
 - registry 整合进 engine init 流程但**不强制 enforce**（handler 仍可绕过；Phase 1 切流时再强制）
-- **Phase 0 不实装的**（留 stub）：write-tool invalidate、async refresh、refresh_request 事件
+- Phase 0 只做 observable runtime：thread-safe snapshot、显式 refresh lifecycle、write-tool invalidation bookkeeping、trace 字段填充；不做 registry-based reject / arg rewrite
 - 加一组覆盖 SafeToolExecutor 路径的集成测
 
 **Acceptance**：
