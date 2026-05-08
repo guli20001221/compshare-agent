@@ -205,6 +205,8 @@ func (r *EntityRegistry) pruneRecentlyReleased(now time.Time) {
 func copyInstances(in map[string]InstanceSnapshot) map[string]InstanceSnapshot {
 	out := make(map[string]InstanceSnapshot, len(in))
 	for id, inst := range in {
+		// InstanceSnapshot is currently scalar-only. Deep-copy any reference
+		// fields here if future registry domains add slices, maps, or pointers.
 		out[id] = inst
 	}
 	return out
