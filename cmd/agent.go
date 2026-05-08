@@ -118,6 +118,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		if traceEnabled {
 			traceRecorder = newCLITraceRecorder(traceWriter, turnIndex, input, turnStart)
 			traceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
+			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)
 		}
 
 		onStep := func(ev engine.StepEvent) {
