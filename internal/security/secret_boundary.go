@@ -11,6 +11,7 @@ import (
 const redactedValue = "[REDACTED]"
 
 var separatorRE = regexp.MustCompile(`[^a-z0-9]+`)
+var bearerTokenRE = regexp.MustCompile(`(?i)\bbearer\s+([A-Za-z0-9_\-.]{20,})`)
 
 // RedactForLLM removes credentials and operational tokens before values are
 // passed into model context. It returns a deep-redacted copy and never mutates
@@ -55,6 +56,9 @@ func redactValue(v any, mode redactMode, parentKey string) any {
 		}
 		return out
 	default:
+		if s, ok := typed.(string); ok && containsBearerToken(s) {
+			return redactBearerTokens(s)
+		}
 		if mode == redactModeTrace && isIPKey(parentKey) {
 			if s, ok := typed.(string); ok {
 				return maskIPv4(s)
@@ -93,9 +97,14 @@ func isSecretKey(key string) bool {
 		strings.Contains(normalized, "accesstoken") ||
 		strings.Contains(normalized, "authtoken") ||
 		strings.Contains(normalized, "sessiontoken") ||
+		strings.Contains(normalized, "refreshtoken") ||
+		strings.Contains(normalized, "idtoken") ||
 		strings.Contains(normalized, "jupytertoken") ||
 		strings.Contains(normalized, "jupyterlabtoken") ||
 		strings.Contains(normalized, "bearertoken") ||
+		strings.Contains(normalized, "clientsecret") ||
+		strings.Contains(normalized, "webhooksecret") ||
+		strings.Contains(normalized, "credential") ||
 		strings.Contains(normalized, "sshcommand")
 }
 
@@ -122,6 +131,14 @@ func isIPKey(key string) bool {
 func normalizeKey(key string) string {
 	key = strings.ToLower(key)
 	return separatorRE.ReplaceAllString(key, "")
+}
+
+func containsBearerToken(s string) bool {
+	return bearerTokenRE.MatchString(s)
+}
+
+func redactBearerTokens(s string) string {
+	return bearerTokenRE.ReplaceAllString(s, "Bearer "+redactedValue)
 }
 
 func hashValue(v any) string {
