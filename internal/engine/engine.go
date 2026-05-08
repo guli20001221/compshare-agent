@@ -12,6 +12,7 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/diagnosis"
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
@@ -69,6 +70,7 @@ type LLMClient interface {
 type Engine struct {
 	llmClient             LLMClient
 	safeExecutor          *tools.SafeToolExecutor
+	registry              *entity.EntityRegistry
 	confirmFn             ConfirmFunc
 	messages              []openai.ChatCompletionMessage // conversation history
 	userTurn              int                            // incremented at start of each Chat() call
@@ -95,6 +97,7 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 	eng := &Engine{
 		llmClient:                llm.NewClient(cfg.Agent.LLM),
 		confirmFn:                confirmFn,
+		registry:                 entity.NewRegistry(),
 		lastInstanceQueryTurn:    -1,
 		lastMonitorTurn:          -1,
 		supportsObjectToolChoice: cap.SupportsObjectToolChoice,
@@ -111,6 +114,7 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 	eng := &Engine{
 		llmClient:                client,
 		confirmFn:                confirmFn,
+		registry:                 entity.NewRegistry(),
 		lastInstanceQueryTurn:    -1,
 		lastMonitorTurn:          -1,
 		supportsObjectToolChoice: true,
@@ -145,7 +149,7 @@ func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
 
 	// Auto-inject user instance context
 	userCtx := "暂无用户信息"
-	result, err := e.executeRawTool(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100}, tools.OriginDirectLLM)
+	result, err := e.refreshRegistry(ctx, entity.RefreshReasonInit)
 	if err != nil {
 		// Context injection is best-effort; continue with default context.
 		_ = err
@@ -164,6 +168,17 @@ func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
 		stage = prompt.ClassifyUser(result)
 	}
 	return prompt.GetSuggestions(stage), nil
+}
+
+func (e *Engine) refreshRegistry(ctx context.Context, reason entity.RefreshReason) (map[string]any, error) {
+	if e.registry == nil {
+		return e.executeRawTool(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100}, tools.OriginDirectLLM)
+	}
+	result, err := e.registry.RefreshResult(ctx, e.safeExecutor, reason)
+	if err == nil {
+		e.lastInstanceQueryTurn = e.userTurn
+	}
+	return result, err
 }
 
 // InitWithContext performs context injection with a pre-built user context string,
@@ -404,7 +419,17 @@ func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest)
 	if err == nil {
 		e.trackMonitorResult(result)
 	}
+	if err == nil && req.Origin == tools.OriginDirectLLM {
+		e.markRegistryInvalidated(req.Action)
+	}
 	return result, err
+}
+
+func (e *Engine) markRegistryInvalidated(action string) {
+	if e.registry == nil {
+		return
+	}
+	e.registry.MarkInvalidated(action)
 }
 
 func (e *Engine) toolExecutorFor(origin tools.ExecutionOrigin) tools.ToolExecutor {
@@ -645,6 +670,10 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// User-cancelled workflows return a deterministic reply directly
 	if !result.Success && result.Message == "用户取消了操作" {
 		return finalReplyPrefix + fmt.Sprintf("%s 已取消。", action)
+	}
+
+	if result.Success {
+		e.markRegistryInvalidated(action)
 	}
 
 	b, _ := json.Marshal(result)
