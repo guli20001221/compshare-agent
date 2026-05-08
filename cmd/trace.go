@@ -23,10 +23,11 @@ func traceWriterFromEnv(getenv getenvFunc) (*observability.Writer, bool, error) 
 }
 
 type cliTraceRecorder struct {
-	writer      *observability.Writer
-	record      observability.TraceRecord
-	start       time.Time
-	pendingByID map[string][]int
+	writer                *observability.Writer
+	record                observability.TraceRecord
+	start                 time.Time
+	pendingByID           map[string][]int
+	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
 }
 
 func newCLITraceRecorder(writer *observability.Writer, turnIndex int, userMsg string, start time.Time) *cliTraceRecorder {
@@ -42,6 +43,13 @@ func newCLITraceRecorder(writer *observability.Writer, turnIndex int, userMsg st
 		start:       start,
 		pendingByID: map[string][]int{},
 	}
+}
+
+func (r *cliTraceRecorder) SetRegistryTraceSupplier(supplier func(time.Time) observability.EntityRegistryTrace) {
+	if r == nil {
+		return
+	}
+	r.registryTraceSupplier = supplier
 }
 
 func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {
@@ -87,6 +95,9 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	}
 	// TODO(T-006+): use chatErr when trace.v0.1 grows outcome.error_class.
 	_ = chatErr
+	if r.registryTraceSupplier != nil {
+		r.record.EntityRegistry = r.registryTraceSupplier(end)
+	}
 	r.record.Outcome.TotalLatencyMS = end.Sub(r.start).Milliseconds()
 	for _, call := range r.record.ToolCalls {
 		if call.TurnIndex == r.record.TurnIndex && call.Action == "GetCompShareInstanceMonitor" {

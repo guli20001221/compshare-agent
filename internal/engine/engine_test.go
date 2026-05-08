@@ -1582,6 +1582,25 @@ func TestRegistryInvalidatesAfterSuccessfulMutatingTool(t *testing.T) {
 	assert.True(t, eng.registry.NeedsRefresh(now.Add(time.Second)))
 }
 
+func TestRegistryTraceStateAccessorReturnsImmutableTraceState(t *testing.T) {
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.registry = entity.NewRegistry(entity.WithClock(func() time.Time { return now }))
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"RetCode":    0,
+		"TotalCount": float64(1),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-trace", "Name": "trace-host", "State": "Running"},
+		},
+	}, string(entity.SyncEventInit)))
+
+	state := eng.RegistryTraceState(now.Add(12 * time.Second))
+
+	assert.NotEmpty(t, state.SnapshotID)
+	assert.Equal(t, int64(12), state.AgeSeconds)
+	assert.Equal(t, string(entity.SyncEventInit), state.SyncEvent)
+}
+
 func TestEnsureProjectId_UsesConfigWhenSet(t *testing.T) {
 	// Pre-configured ProjectId → GetProjectList must NOT be called.
 	eng, h, cleanup := newEngineWithServer(t, &mockLLM{}, "org-cfg-value", "")

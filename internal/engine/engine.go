@@ -181,6 +181,20 @@ func (e *Engine) refreshRegistry(ctx context.Context, reason entity.RefreshReaso
 	return result, err
 }
 
+// RegistryTraceState returns the immutable registry fields reserved by trace.v0.1.
+// It does not expose the registry object, maps, or lock to callers.
+func (e *Engine) RegistryTraceState(now time.Time) observability.EntityRegistryTrace {
+	if e == nil || e.registry == nil {
+		return observability.EntityRegistryTrace{SyncEvent: "unavailable"}
+	}
+	state := e.registry.TraceState(now)
+	return observability.EntityRegistryTrace{
+		SnapshotID: state.SnapshotID,
+		AgeSeconds: state.AgeSeconds,
+		SyncEvent:  state.SyncEvent,
+	}
+}
+
 // InitWithContext performs context injection with a pre-built user context string,
 // bypassing the DescribeCompShareInstance API call. Used for testing.
 func (e *Engine) InitWithContext(userCtx string) {
