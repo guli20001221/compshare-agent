@@ -1,7 +1,9 @@
 package entity
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -237,6 +239,167 @@ func TestConcurrentResolveAndSyncFromDescribeNoRace(t *testing.T) {
 
 	close(start)
 	wg.Wait()
+}
+
+func TestTraceStateInitialUnavailable(t *testing.T) {
+	reg := NewRegistry()
+
+	state := reg.TraceState(time.Date(2026, 5, 9, 10, 0, 0, 0, time.UTC))
+
+	assert.Equal(t, "", state.SnapshotID)
+	assert.Equal(t, int64(0), state.AgeSeconds)
+	assert.Equal(t, string(SyncEventUnavailable), state.SyncEvent)
+	assert.True(t, reg.NeedsRefresh(time.Now()))
+}
+
+func TestRefreshRecordsSyncEvents(t *testing.T) {
+	ctx := context.Background()
+	exec := &registryRefreshExecutor{result: describeResult(
+		host("uhost-a", "train-a", "Running", "4090", 1),
+	)}
+
+	reg := NewRegistry()
+	require.NoError(t, reg.Refresh(ctx, exec, RefreshReasonInit))
+	assert.Equal(t, string(SyncEventInit), reg.Snapshot().SyncEvent)
+	assert.NotEmpty(t, reg.Snapshot().SnapshotID)
+
+	require.NoError(t, reg.Refresh(ctx, exec, RefreshReasonManual))
+	assert.Equal(t, string(SyncEventSyncRefresh), reg.Snapshot().SyncEvent)
+
+	require.NoError(t, reg.Refresh(ctx, exec, RefreshReasonTTL))
+	assert.Equal(t, string(SyncEventSyncRefresh), reg.Snapshot().SyncEvent)
+}
+
+func TestWarmRefreshRecordsWarmCache(t *testing.T) {
+	reg := NewRegistry()
+	errCh := reg.WarmRefresh(context.Background(), &registryRefreshExecutor{result: describeResult(
+		host("uhost-warm", "warm-cache", "Running", "H20", 1),
+	)})
+
+	require.NoError(t, <-errCh)
+	assert.Equal(t, string(SyncEventWarmCache), reg.Snapshot().SyncEvent)
+}
+
+func TestRefreshFailurePreservesPreviousSnapshot(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry()
+	require.NoError(t, reg.Refresh(ctx, &registryRefreshExecutor{result: describeResult(
+		host("uhost-a", "train-a", "Running", "4090", 1),
+	)}, RefreshReasonInit))
+	before := reg.Snapshot()
+
+	err := reg.Refresh(ctx, &registryRefreshExecutor{err: errors.New("platform timeout")}, RefreshReasonManual)
+
+	require.Error(t, err)
+	after := reg.Snapshot()
+	assert.Equal(t, before.SnapshotID, after.SnapshotID)
+	assert.Equal(t, string(SyncEventFailed), after.SyncEvent)
+	assert.Equal(t, "timeout", after.LastSyncError)
+	assert.True(t, reg.NeedsRefresh(time.Now()), "failed refresh must not be suppressed by a still-fresh previous snapshot")
+	got, res := reg.ResolveByID("uhost-a")
+	require.Equal(t, ResolveHit, res.Status)
+	require.NotNil(t, got)
+}
+
+func TestRefreshFailureWithoutPreviousSnapshot(t *testing.T) {
+	reg := NewRegistry()
+
+	err := reg.Refresh(context.Background(), &registryRefreshExecutor{err: errors.New("network down")}, RefreshReasonInit)
+
+	require.Error(t, err)
+	snap := reg.Snapshot()
+	assert.Equal(t, "", snap.SnapshotID)
+	assert.Equal(t, string(SyncEventFailed), snap.SyncEvent)
+	assert.Equal(t, "network", snap.LastSyncError)
+}
+
+func TestRefreshParseFailureRecordsFailed(t *testing.T) {
+	reg := NewRegistry()
+
+	err := reg.Refresh(context.Background(), &registryRefreshExecutor{result: map[string]any{
+		"TotalCount": 0,
+	}}, RefreshReasonInit)
+
+	require.Error(t, err)
+	snap := reg.Snapshot()
+	assert.Equal(t, "", snap.SnapshotID)
+	assert.Equal(t, string(SyncEventFailed), snap.SyncEvent)
+	assert.Equal(t, "parse_error", snap.LastSyncError)
+	assert.True(t, reg.NeedsRefresh(time.Now()))
+}
+
+func TestNeedsRefreshAndInvalidationWhitelist(t *testing.T) {
+	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.UTC)
+	reg := NewRegistry(WithClock(func() time.Time { return now }))
+	require.NoError(t, reg.Refresh(context.Background(), &registryRefreshExecutor{result: describeResult(
+		host("uhost-a", "train-a", "Running", "4090", 1),
+	)}, RefreshReasonInit))
+
+	assert.False(t, reg.NeedsRefresh(now.Add(29*time.Second)))
+	assert.True(t, reg.NeedsRefresh(now.Add(31*time.Second)))
+
+	invalidateActions := []string{
+		"CreateCompShareInstance",
+		"CreateInstanceWorkflow",
+		"StartCompShareInstance",
+		"StopCompShareInstance",
+		"RebootCompShareInstance",
+		"StartInstanceWorkflow",
+		"StopInstanceWorkflow",
+		"RebootInstanceWorkflow",
+		"ModifyCompShareInstanceName",
+		"RenameInstanceWorkflow",
+		"UpdateCompShareStopScheduler",
+		"DeleteCompShareStopScheduler",
+		"SetStopSchedulerWorkflow",
+		"CancelStopSchedulerWorkflow",
+	}
+	for _, action := range invalidateActions {
+		t.Run(action, func(t *testing.T) {
+			reg := NewRegistry(WithClock(func() time.Time { return now }))
+			require.NoError(t, reg.Refresh(context.Background(), &registryRefreshExecutor{result: describeResult(
+				host("uhost-a", "train-a", "Running", "4090", 1),
+			)}, RefreshReasonInit))
+			assert.True(t, reg.MarkInvalidated(action))
+			assert.True(t, reg.NeedsRefresh(now.Add(time.Second)))
+		})
+	}
+
+	nonInvalidatingActions := []string{
+		"TerminateCompShareInstance",
+		"ResetCompShareInstancePassword",
+		"ResetPasswordWorkflow",
+		"CreateCompShareCustomImage",
+		"UpdateCompShareTeam",
+	}
+	for _, action := range nonInvalidatingActions {
+		t.Run(action, func(t *testing.T) {
+			reg := NewRegistry(WithClock(func() time.Time { return now }))
+			require.NoError(t, reg.Refresh(context.Background(), &registryRefreshExecutor{result: describeResult(
+				host("uhost-a", "train-a", "Running", "4090", 1),
+			)}, RefreshReasonInit))
+			assert.False(t, reg.MarkInvalidated(action))
+			assert.False(t, reg.NeedsRefresh(now.Add(time.Second)))
+		})
+	}
+}
+
+type registryRefreshExecutor struct {
+	result map[string]any
+	err    error
+}
+
+func (e *registryRefreshExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
+	if e.err != nil {
+		return nil, e.err
+	}
+	if action != "DescribeCompShareInstance" {
+		return nil, errors.New("unexpected action")
+	}
+	if args["Limit"] != 100 {
+		return nil, errors.New("unexpected limit")
+	}
+	return e.result, nil
 }
 
 func describeResult(hosts ...map[string]any) map[string]any {
