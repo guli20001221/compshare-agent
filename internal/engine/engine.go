@@ -51,6 +51,7 @@ type Engine struct {
 	messages              []openai.ChatCompletionMessage // conversation history
 	userTurn              int                            // incremented at start of each Chat() call
 	lastInstanceQueryTurn int                            // set to userTurn on successful DescribeCompShareInstance
+	lastMonitorTurn       int                            // set to userTurn on successful GetCompShareInstanceMonitor
 	currentMonitorTargets []string                       // historical monitor targets queried in the current turn
 	currentMonitorNoData  []string                       // current-turn historical monitor targets with no data samples
 	currentMonitorStart   int64                          // start of the current historical monitor window, if any
@@ -73,6 +74,7 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 		llmClient:             llm.NewClient(cfg.Agent.LLM),
 		confirmFn:             confirmFn,
 		lastInstanceQueryTurn: -1,
+		lastMonitorTurn:       -1,
 		lastDiagnosisTurn:     -1,
 	}
 	eng.safeExecutor = newSafeToolExecutor(tools.NewExternalExecutor(cfg.Agent), confirmFn)
@@ -85,6 +87,7 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 		llmClient:             client,
 		confirmFn:             confirmFn,
 		lastInstanceQueryTurn: -1,
+		lastMonitorTurn:       -1,
 		lastDiagnosisTurn:     -1,
 	}
 	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn)
@@ -160,6 +163,7 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	})
 
 	forceBilling := e.shouldForceBillingDiagnosis(userMsg)
+	forceMonitorRecall := e.shouldForceMonitorRecall(userMsg)
 
 	for round := 0; round < maxReActRounds; round++ {
 		req := llm.ChatRequest{
@@ -174,6 +178,11 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 			req.ToolChoice = openai.ToolChoice{
 				Type:     openai.ToolTypeFunction,
 				Function: openai.ToolFunction{Name: "DiagnoseBilling"},
+			}
+		} else if round == 0 && forceMonitorRecall {
+			req.ToolChoice = openai.ToolChoice{
+				Type:     openai.ToolTypeFunction,
+				Function: openai.ToolFunction{Name: "GetCompShareInstanceMonitor"},
 			}
 		}
 		resp, err := e.llmClient.Chat(ctx, req)
@@ -349,6 +358,9 @@ func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest)
 	result, err := e.safeExecutor.ExecuteSafe(ctx, req)
 	if err == nil && req.Action == "DescribeCompShareInstance" {
 		e.lastInstanceQueryTurn = e.userTurn
+	}
+	if err == nil && req.Action == "GetCompShareInstanceMonitor" {
+		e.lastMonitorTurn = e.userTurn
 	}
 	if err == nil {
 		e.trackMonitorResult(result)
@@ -819,6 +831,29 @@ var billingFollowUpKeywords = []string{
 	"为什么还",
 }
 
+var monitorRecallKeywords = []string{
+	"刚才",
+	"刚刚",
+	"继续",
+	"那台",
+	"那几台",
+	"再看",
+	"还有",
+	"异常",
+	"只看",
+}
+
+var monitorMetricKeywords = []string{
+	"监控",
+	"cpu",
+	"gpu",
+	"显存",
+	"内存",
+	"利用率",
+	"vram",
+	"memory",
+}
+
 // normalizeMsg standardizes a user message for signal matching:
 // trims whitespace, collapses internal whitespace runs to a single space,
 // and lowercases ASCII letters. CJK characters are preserved as-is.
@@ -944,6 +979,33 @@ func (e *Engine) shouldForceBillingDiagnosis(userMsg string) bool {
 	}
 	for _, kw := range billingFollowUpKeywords {
 		if strings.Contains(userMsg, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldForceMonitorRecall reports whether the current turn is an adjacent
+// monitor follow-up that should force a fresh GetCompShareInstanceMonitor call
+// instead of letting the LLM reuse prior monitor numbers. Conditions (all must
+// hold):
+//   - the immediately previous user turn completed GetCompShareInstanceMonitor
+//   - the current message contains a curated follow-up keyword
+//   - the current message also contains a monitor metric keyword
+//
+// This is a narrow engine-layer bridge until IntentPlan shadow routing owns
+// monitor follow-up classification.
+func (e *Engine) shouldForceMonitorRecall(userMsg string) bool {
+	if e.lastMonitorTurn < 0 || e.userTurn != e.lastMonitorTurn+1 {
+		return false
+	}
+	n := normalizeMsg(userMsg)
+	return containsAnyKeyword(n, monitorRecallKeywords) && containsAnyKeyword(n, monitorMetricKeywords)
+}
+
+func containsAnyKeyword(normalized string, keywords []string) bool {
+	for _, kw := range keywords {
+		if strings.Contains(normalized, kw) {
 			return true
 		}
 	}
