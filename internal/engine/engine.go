@@ -32,8 +32,14 @@ const (
 // Force-tool / hard-block priority chain (highest first):
 //
 //  1. isAccountBillingUnsupported -> canned reply, no LLM call (hard-block)
-//  2. shouldForceMonitorRecall    -> tool_choice=GetCompShareInstanceMonitor (BRIDGE T-001.f1)
+//  2. shouldForceMonitorRecall    -> tool_choice=GetCompShareInstanceMonitor
+//                                    (BRIDGE T-001.f1, capability-gated)
 //  3. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
+//
+// Capability gating: force-tool paths that emit object tool_choice MUST
+// short-circuit when supportsObjectToolChoice=false. ds v4 flash in thinking
+// mode 400s on object tool_choice; emitting it would break the request entirely
+// rather than degrade to soft routing.
 //
 // shouldForceBillingDiagnosis was removed 2026-05-08: ds v4 flash returns 400
 // on object tool_choice in thinking mode, and auto-routing achieves the same
@@ -72,6 +78,11 @@ type Engine struct {
 	currentMonitorStart   int64                          // start of the current historical monitor window, if any
 	currentMonitorEnd     int64                          // end of the current historical monitor window, if any
 	currentMonitorWindow  bool                           // true when currentMonitorStart/End are known
+	// supportsObjectToolChoice gates force-tool guards (e.g. shouldForceMonitorRecall)
+	// from sending object tool_choice on models that don't support it (notably
+	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
+	// run their detection logic but fall through to LLM auto routing.
+	supportsObjectToolChoice bool
 	// Raw user message for the current turn. Set at the start of Chat().
 	// Read by executeDiagnosis guards for signal matching. Never mutated
 	// mid-turn.
@@ -79,26 +90,39 @@ type Engine struct {
 }
 
 func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
+	cap := llm.LookupCapability(cfg.Agent.LLM.BaseURL, cfg.Agent.LLM.Model)
 	eng := &Engine{
-		llmClient:             llm.NewClient(cfg.Agent.LLM),
-		confirmFn:             confirmFn,
-		lastInstanceQueryTurn: -1,
-		lastMonitorTurn:       -1,
+		llmClient:                llm.NewClient(cfg.Agent.LLM),
+		confirmFn:                confirmFn,
+		lastInstanceQueryTurn:    -1,
+		lastMonitorTurn:          -1,
+		supportsObjectToolChoice: cap.SupportsObjectToolChoice,
 	}
 	eng.safeExecutor = newSafeToolExecutor(tools.NewExternalExecutor(cfg.Agent), confirmFn)
 	return eng
 }
 
 // NewWithDeps creates an Engine with injected dependencies (for testing).
+// Defaults supportsObjectToolChoice to true so existing tests that exercise
+// force-tool guards continue to assert the forced ToolChoice. Tests that
+// need the capability-gated path can flip the field via setter.
 func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn ConfirmFunc) *Engine {
 	eng := &Engine{
-		llmClient:             client,
-		confirmFn:             confirmFn,
-		lastInstanceQueryTurn: -1,
-		lastMonitorTurn:       -1,
+		llmClient:                client,
+		confirmFn:                confirmFn,
+		lastInstanceQueryTurn:    -1,
+		lastMonitorTurn:          -1,
+		supportsObjectToolChoice: true,
 	}
 	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn)
 	return eng
+}
+
+// setSupportsObjectToolChoice is an internal helper for tests that need to
+// exercise capability-gated force-tool behavior. Production code sets this
+// via LookupCapability in New().
+func (e *Engine) setSupportsObjectToolChoice(v bool) {
+	e.supportsObjectToolChoice = v
 }
 
 func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc) *tools.SafeToolExecutor {
@@ -187,8 +211,13 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 		}
 		// BRIDGE T-001.f1: adjacent monitor follow-up must re-call
 		// GetCompShareInstanceMonitor instead of reusing prior numbers.
-		// Scope: first LLM call of this turn only.
-		if round == 0 && forceMonitorRecall {
+		// Scope: first LLM call of this turn only. Capability-gated:
+		// models without object tool_choice support (e.g. deepseek-v4-flash
+		// in thinking mode) fall through to LLM auto routing instead of
+		// 400ing on a forced ToolChoice. Stale-reuse is then unmitigated
+		// on those models — see eval/capability/2026-05-08-ds-v4-flash-
+		// tool-choice-probe.md and the pending monitor stale-reuse probe.
+		if round == 0 && forceMonitorRecall && e.supportsObjectToolChoice {
 			req.ToolChoice = openai.ToolChoice{
 				Type:     openai.ToolTypeFunction,
 				Function: openai.ToolFunction{Name: "GetCompShareInstanceMonitor"},

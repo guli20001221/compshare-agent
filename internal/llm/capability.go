@@ -45,6 +45,7 @@ var builtinCapabilities = []capabilityEntry{
 		Model:   "deepseek-v4-flash",
 		Capability: Capability{
 			SupportsJSONObject:         true,
+			IsThinkingMode:             true,
 			SupportsObjectToolChoice:   false,
 			SupportsRequiredToolChoice: true,
 		},

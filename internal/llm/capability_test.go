@@ -28,6 +28,7 @@ func TestLookupCapability_BuiltinMatrix(t *testing.T) {
 			baseURL:                "https://api.modelverse.cn/v1",
 			model:                  "deepseek-v4-flash",
 			wantJSONObject:         true,
+			wantThinking:           true,
 			wantObjectToolChoice:   false,
 			wantRequiredToolChoice: true,
 		},

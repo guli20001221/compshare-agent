@@ -1813,6 +1813,34 @@ func TestMonitorRecallGuard_FirstTurnDoesNotTrigger(t *testing.T) {
 	}
 }
 
+// When the active LLM does not support object tool_choice (e.g. ds v4 flash
+// in thinking mode), the monitor recall guard must fall through to LLM auto
+// routing instead of emitting a forced ToolChoice that would 400.
+func TestMonitorRecallGuard_FallsThroughWhenObjectToolChoiceUnsupported(t *testing.T) {
+	executor := monitorScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"]}`),
+		}},
+		{Content: "监控已查询"},
+		{Content: "auto routed"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.setSupportsObjectToolChoice(false)
+
+	_, err := eng.Chat(context.Background(), "看看这台机器的监控", noopStep)
+	assert.NoError(t, err)
+
+	_, err = eng.Chat(context.Background(), "只看刚才那台机器的 GPU 和显存监控", noopStep)
+	assert.NoError(t, err)
+
+	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
+		assert.Nil(t, mock.calls[2].ToolChoice,
+			"capability-gated guard must not force ToolChoice when object tool_choice is unsupported")
+	}
+}
+
 func TestNormalizeMsg(t *testing.T) {
 	cases := []struct {
 		name string
