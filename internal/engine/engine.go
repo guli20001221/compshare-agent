@@ -29,6 +29,17 @@ const (
 	maxHistoryMessages = 40
 )
 
+// Force-tool / hard-block priority chain (highest first):
+//
+//  1. isAccountBillingUnsupported -> canned reply, no LLM call (hard-block)
+//  2. shouldForceBillingDiagnosis -> tool_choice=DiagnoseBilling
+//  3. shouldForceMonitorRecall    -> tool_choice=GetCompShareInstanceMonitor (BRIDGE T-001.f1)
+//  4. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
+//
+// Each force step is short-circuited by a higher one. When adding a new
+// force-tool path, update this comment and extract a single pickForcedTool()
+// decision point when the priority chain grows beyond this narrow bridge set.
+
 var (
 	beijingZone  = time.FixedZone("CST", 8*3600)
 	isoDateRE    = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
@@ -148,11 +159,6 @@ func (e *Engine) InitWithContext(userCtx string) {
 func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, error) {
 	e.userTurn++
 	e.lastUserMsg = userMsg
-	e.currentMonitorTargets = nil
-	e.currentMonitorNoData = nil
-	e.currentMonitorStart = 0
-	e.currentMonitorEnd = 0
-	e.currentMonitorWindow = false
 
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
@@ -161,6 +167,20 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 		Role:    openai.ChatMessageRoleUser,
 		Content: userMsg,
 	})
+
+	if isAccountBillingUnsupported(userMsg) {
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: accountBillingUnsupportedReply,
+		})
+		return accountBillingUnsupportedReply, nil
+	}
+
+	e.currentMonitorTargets = nil
+	e.currentMonitorNoData = nil
+	e.currentMonitorStart = 0
+	e.currentMonitorEnd = 0
+	e.currentMonitorWindow = false
 
 	forceBilling := e.shouldForceBillingDiagnosis(userMsg)
 	forceMonitorRecall := e.shouldForceMonitorRecall(userMsg)
@@ -831,6 +851,55 @@ var billingFollowUpKeywords = []string{
 	"为什么还",
 }
 
+const accountBillingUnsupportedReply = "这类账号级账单、余额和消费流水信息当前不支持由助手查询。请到控制台的财务中心查看：账户总览看余额，账单管理看月度账单，消费记录看扣费流水。"
+
+var monthlyBillKeywords = []string{
+	"\u672c\u6708", // 本月
+	"\u6708\u5ea6", // 月度
+	"\u5f53\u6708", // 当月
+}
+
+// accountOnlyDataKeywords are signals that ONLY the account financial
+// center can satisfy. Their presence triggers the hard-block regardless
+// of instance words elsewhere in the message.
+var accountOnlyDataKeywords = []string{
+	"\u4f59\u989d",             // 余额
+	"\u603b\u8d26\u5355",       // 总账单
+	"\u6d88\u8d39\u6d41\u6c34", // 消费流水
+	"\u6d41\u6c34",             // 流水
+	"balance",
+}
+
+// monthlyAccountCostKeywords are cost-related words that, when paired
+// with a monthly time word, indicate an account-level monthly summary
+// question (which is unsupported). Kept separate from the broader
+// instance-side billing vocabulary so we don't over-trigger.
+var monthlyAccountCostKeywords = []string{
+	"\u8d39\u7528",       // 费用
+	"\u82b1\u4e86",       // 花了
+	"\u82b1\u8d39",       // 花费
+	"\u6d88\u8d39",       // 消费
+	"\u8d26\u5355",       // 账单
+	"\u6263\u8d39",       // 扣费
+	"\u6263\u4e86",       // 扣了
+	"\u591a\u5c11\u94b1", // 多少钱
+	"\u591a\u5c11",       // 多少
+}
+
+// accountInstanceScopeKeywords vetoes the monthly-summary branch ONLY.
+// The unambiguous account-data branch above is NOT vetoed by these.
+var accountInstanceScopeKeywords = []string{
+	"\u5b9e\u4f8b", // 实例
+	"\u673a\u5668", // 机器
+	"\u4e3b\u673a", // 主机
+	"\u54ea\u53f0", // 哪台
+	"\u6bcf\u53f0", // 每台
+	"\u8fd9\u4e9b", // 这些
+	"\u54ea\u4e9b", // 哪些
+	"\u8fd9\u53f0", // 这台
+	"uhost-",
+}
+
 var monitorRecallKeywords = []string{
 	"刚才",
 	"刚刚",
@@ -954,6 +1023,49 @@ func extractDiagnosisTargets(args map[string]any) []string {
 	return targets
 }
 
+// isAccountBillingUnsupported is a permanent product capability boundary.
+// Per docs/agent/plan/stage2-intent-planner.md §3.9.3, account-level
+// billing/balance/transaction queries are out of scope for the agent
+// regardless of IntentPlan classification. Planner may emit
+// intent=billing_account_unsupported as a hint, but engine independently
+// enforces this hard-block. DO NOT delete when IntentPlan ships.
+func isAccountBillingUnsupported(userMsg string) bool {
+	return isAccountBillingUnsupportedNormalized(normalizeMsg(userMsg))
+}
+
+// isAccountBillingUnsupportedNormalized hard-blocks two disjoint classes
+// of account-level requests the agent cannot satisfy:
+//
+//  1. Unambiguous account-financial-center data: 余额 / 总账单 /
+//     消费流水 / 流水 / balance. These live in the user's billing
+//     center, not in any per-instance API. Even when the message also
+//     names instances (e.g. "这些机器导致账号余额还剩多少"), the answer
+//     still has to come from the billing center — hard-block ALWAYS,
+//     no instance-scope veto.
+//
+//  2. Account-level monthly summary phrasings (本月/当月/月度 + 费用/
+//     花了/消费/账单/扣费) when the user does NOT name a specific
+//     instance. Empirically, deepseek-v4-flash violates a prompt-only
+//     soft guidance and calls DiagnoseBilling on these, so we keep
+//     this as a hard-block. When instance-scope words co-occur, fall
+//     through to the normal LLM/tool loop so instance-scoped billing
+//     questions remain answerable.
+//
+// For other ambiguous mixed-scope phrasing (e.g. "查我账号下哪台实例
+// 消费最高"), neither branch fires and the request falls through to
+// the LLM, steered by the "## 计费问题口径" system-prompt rule.
+func isAccountBillingUnsupportedNormalized(n string) bool {
+	if containsNormalizedKeyword(n, accountOnlyDataKeywords) {
+		return true
+	}
+	if containsNormalizedKeyword(n, monthlyBillKeywords) &&
+		containsNormalizedKeyword(n, monthlyAccountCostKeywords) &&
+		!containsNormalizedKeyword(n, accountInstanceScopeKeywords) {
+		return true
+	}
+	return false
+}
+
 // shouldForceBillingDiagnosis reports whether the current turn is a
 // billing-diagnosis follow-up that should force a re-invocation of
 // DiagnoseBilling via tool_choice. Conditions (all must hold):
@@ -1010,6 +1122,10 @@ func containsAnyKeyword(normalized string, keywords []string) bool {
 		}
 	}
 	return false
+}
+
+func containsNormalizedKeyword(normalized string, keywords []string) bool {
+	return containsAnyKeyword(normalized, keywords)
 }
 
 // pickProjectId extracts a ProjectId from a GetProjectList response.
