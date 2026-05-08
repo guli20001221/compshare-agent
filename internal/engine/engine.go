@@ -473,6 +473,9 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 
 func (e *Engine) allowMutatingTool(action string) (governance.Decision, bool) {
 	policy, ok := e.safeExecutor.PolicyForAction(action)
+	// Read classes are not rate-limited by T-005. Destructive L2 actions are
+	// blocked by SafeToolExecutor before execution and do not consume quota.
+	// Only ActionClassMutating uses the mutating-tool budget.
 	if !ok || policy.Class != tools.ActionClassMutating {
 		return governance.Decision{Allowed: true, Class: governance.ClassMutatingTool, Action: action}, true
 	}
