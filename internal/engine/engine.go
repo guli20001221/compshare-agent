@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/compshare-agent/internal/config"
@@ -27,6 +29,12 @@ const (
 	maxHistoryMessages = 40
 )
 
+var (
+	beijingZone  = time.FixedZone("CST", 8*3600)
+	isoDateRE    = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
+	clockRangeRE = regexp.MustCompile(`\b\d{1,2}:\d{2}\s*(?:~|-|到|至)\s*\d{1,2}:\d{2}\b`)
+)
+
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
 type ConfirmFunc func(action string, args map[string]any) bool
 
@@ -43,6 +51,11 @@ type Engine struct {
 	messages              []openai.ChatCompletionMessage // conversation history
 	userTurn              int                            // incremented at start of each Chat() call
 	lastInstanceQueryTurn int                            // set to userTurn on successful DescribeCompShareInstance
+	currentMonitorTargets []string                       // historical monitor targets queried in the current turn
+	currentMonitorNoData  []string                       // current-turn historical monitor targets with no data samples
+	currentMonitorStart   int64                          // start of the current historical monitor window, if any
+	currentMonitorEnd     int64                          // end of the current historical monitor window, if any
+	currentMonitorWindow  bool                           // true when currentMonitorStart/End are known
 	// Diagnosis follow-up tracking (narrow, only DiagnoseBilling for now).
 	// Updated after a successful executeDiagnosis run; read at the start of
 	// the next Chat() to decide whether to force DiagnoseBilling via tool_choice.
@@ -132,6 +145,11 @@ func (e *Engine) InitWithContext(userCtx string) {
 func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, error) {
 	e.userTurn++
 	e.lastUserMsg = userMsg
+	e.currentMonitorTargets = nil
+	e.currentMonitorNoData = nil
+	e.currentMonitorStart = 0
+	e.currentMonitorEnd = 0
+	e.currentMonitorWindow = false
 
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
@@ -165,11 +183,12 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
+			content := e.guardMonitorTemporalFinalReply(resp.Content)
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
-				Content: resp.Content,
+				Content: content,
 			})
-			return resp.Content, nil
+			return content, nil
 		}
 
 		// Has tool calls → execute each and feed results back
@@ -331,6 +350,9 @@ func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest)
 	if err == nil && req.Action == "DescribeCompShareInstance" {
 		e.lastInstanceQueryTurn = e.userTurn
 	}
+	if err == nil {
+		e.trackMonitorResult(result)
+	}
 	return result, err
 }
 
@@ -345,6 +367,165 @@ type engineToolExecutor struct {
 
 func (x engineToolExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
 	return x.engine.executeRawTool(ctx, action, args, x.origin)
+}
+
+func (e *Engine) guardMonitorTemporalFinalReply(content string) string {
+	if !e.currentMonitorWindow || content == "" {
+		return content
+	}
+	if e.allCurrentHistoricalMonitorResultsNoData() {
+		return formatHistoricalMonitorNoDataReply(e.currentMonitorStart, e.currentMonitorEnd, e.currentMonitorNoData)
+	}
+
+	startAt := time.Unix(e.currentMonitorStart, 0).In(beijingZone)
+	endAt := time.Unix(e.currentMonitorEnd, 0).In(beijingZone)
+	targetDate := startAt.Format("2006-01-02")
+	targetTimeRange := fmt.Sprintf("%s ~ %s", startAt.Format("15:04"), endAt.Format("15:04"))
+	corrected := isoDateRE.ReplaceAllStringFunc(content, func(date string) string {
+		if date == targetDate {
+			return date
+		}
+		return targetDate
+	})
+	corrected = clockRangeRE.ReplaceAllString(corrected, targetTimeRange)
+	replacements := map[string]string{
+		"当前实时监控":  "该历史时间窗监控",
+		"当前监控":    "该历史时间窗监控",
+		"当前实时":    "该历史时间窗",
+		"当前值":     "该时间窗值",
+		"最近较短时间内": "指定历史时间窗内",
+	}
+	for old, repl := range replacements {
+		corrected = strings.ReplaceAll(corrected, old, repl)
+	}
+	return corrected
+}
+
+func (e *Engine) trackMonitorResult(result *tools.SafeToolResult) {
+	if result == nil || result.Action != "GetCompShareInstanceMonitor" || !hasMonitorTimeRangeArgs(result.Args) {
+		return
+	}
+	targets := extractMonitorTargets(result.Args)
+	e.currentMonitorTargets = append(e.currentMonitorTargets, targets...)
+	if start, end, ok := monitorTimeWindow(result.Args); ok {
+		if !e.currentMonitorWindow {
+			e.currentMonitorStart = start
+			e.currentMonitorEnd = end
+			e.currentMonitorWindow = true
+		} else {
+			if start < e.currentMonitorStart {
+				e.currentMonitorStart = start
+			}
+			if end > e.currentMonitorEnd {
+				e.currentMonitorEnd = end
+			}
+		}
+	}
+	if status, _ := result.LLMResult["MonitorDataStatus"].(string); status == "NO_DATA_IN_REQUESTED_WINDOW" {
+		e.currentMonitorNoData = append(e.currentMonitorNoData, targets...)
+	}
+}
+
+func (e *Engine) allCurrentHistoricalMonitorResultsNoData() bool {
+	if len(e.currentMonitorTargets) == 0 {
+		return false
+	}
+	noData := make(map[string]bool, len(e.currentMonitorNoData))
+	for _, target := range e.currentMonitorNoData {
+		noData[target] = true
+	}
+	for _, target := range e.currentMonitorTargets {
+		if !noData[target] {
+			return false
+		}
+	}
+	return true
+}
+
+func formatHistoricalMonitorNoDataReply(start, end int64, targets []string) string {
+	startText := time.Unix(start, 0).In(beijingZone).Format("2006-01-02 15:04")
+	endText := time.Unix(end, 0).In(beijingZone).Format("2006-01-02 15:04")
+	targetText := strings.Join(uniqueStrings(targets), "、")
+	if targetText == "" {
+		targetText = "所查实例"
+	}
+	return fmt.Sprintf("北京时间 %s ~ %s，%s 没有返回有效监控数据。不能判断该时间窗内的 CPU、内存、GPU 或显存占用，也不会用其他时间的数据替代。", startText, endText, targetText)
+}
+
+func hasMonitorTimeRangeArgs(args map[string]any) bool {
+	if args == nil {
+		return false
+	}
+	_, hasStart := args["StartTime"]
+	_, hasEnd := args["EndTime"]
+	return hasStart || hasEnd
+}
+
+func monitorTimeWindow(args map[string]any) (int64, int64, bool) {
+	start, okStart := int64Arg(args["StartTime"])
+	end, okEnd := int64Arg(args["EndTime"])
+	if !okStart || !okEnd {
+		return 0, 0, false
+	}
+	if end < start {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+func int64Arg(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int:
+		return int64(x), true
+	case int64:
+		return x, true
+	case float64:
+		return int64(x), true
+	case json.Number:
+		n, err := x.Int64()
+		return n, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func extractMonitorTargets(args map[string]any) []string {
+	if args == nil {
+		return nil
+	}
+	var targets []string
+	switch v := args["UHostIds"].(type) {
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				targets = append(targets, s)
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if s != "" {
+				targets = append(targets, s)
+			}
+		}
+	case string:
+		if v != "" {
+			targets = append(targets, v)
+		}
+	}
+	return targets
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	var out []string
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 // executeWorkflow runs a predefined workflow and returns the result as a JSON string

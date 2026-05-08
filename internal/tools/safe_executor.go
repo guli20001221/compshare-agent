@@ -249,7 +249,7 @@ func applyHistoryGuard(policy ToolExecutionPolicy, args map[string]any, raw map[
 		return raw
 	}
 	raw["MonitorDataStatus"] = "NO_DATA_IN_REQUESTED_WINDOW"
-	raw["MonitorDataGuidance"] = "The requested time window returned no valid monitor samples. Do not substitute current realtime data or invent CPU, memory, GPU, or VRAM values."
+	raw["MonitorDataGuidance"] = "该请求时间窗没有返回有效监控采样点；不要使用当前实时数据替代，也不要编造 CPU/内存/GPU 数值。"
 	return raw
 }
 

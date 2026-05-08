@@ -175,7 +175,7 @@ func TestSafeExecutorMonitorHistoryGuardMarksNoDataWindow(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "NO_DATA_IN_REQUESTED_WINDOW", result.LLMResult["MonitorDataStatus"])
-	assert.Contains(t, result.LLMResult["MonitorDataGuidance"], "requested time window")
+	assert.Contains(t, result.LLMResult["MonitorDataGuidance"], "不要编造 CPU/内存/GPU 数值")
 }
 
 func TestSafeExecutorMonitorHistoryGuardDoesNotMarkSamplesOrRealtime(t *testing.T) {

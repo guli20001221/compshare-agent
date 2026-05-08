@@ -236,6 +236,78 @@ func TestChat_ExternalToolReadRetriesTransientError(t *testing.T) {
 	assert.NotContains(t, toolMsg.Content, "API")
 }
 
+func TestChat_HistoricalMonitorNoDataFinalReplyAndTurnReset(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"GetCompShareInstanceMonitor": {
+			"RetCode": 0,
+			"Data": []any{
+				map[string]any{"UHostId": "uhost-1", "MonitorSet": []any{}},
+			},
+		},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-1"],"StartTime":1777442400,"EndTime":1777444200}`),
+		}},
+		{Content: "当前实时监控显示 CPU 99%，GPU 88%。"},
+		{Content: "第二轮普通回复 CPU 99%。"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "看 2026-04-29 14:00 的监控", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, "北京时间 2026-04-29 14:00 ~ 2026-04-29 14:30")
+	assert.Contains(t, reply, "uhost-1")
+	assert.Contains(t, reply, "没有返回有效监控数据")
+	assert.NotContains(t, reply, "CPU 99")
+	assert.NotContains(t, reply, "GPU 88")
+
+	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
+	assert.Contains(t, toolMsg.Content, "MonitorDataStatus")
+
+	reply, err = eng.Chat(context.Background(), "这轮不查工具", noopStep)
+	assert.NoError(t, err)
+	assert.Equal(t, "第二轮普通回复 CPU 99%。", reply)
+}
+
+func TestChat_HistoricalMonitorFinalReplyCorrectsWindowWording(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"GetCompShareInstanceMonitor": {
+			"RetCode": 0,
+			"Data": []any{
+				map[string]any{
+					"UHostId": "uhost-1",
+					"Metrics": []any{
+						map[string]any{"Results": []any{map[string]any{"Values": []any{map[string]any{"Value": float64(42)}}}}},
+					},
+				},
+			},
+		},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-1"],"StartTime":1777442400,"EndTime":1777444200}`),
+		}},
+		{Content: "当前实时监控显示 2025-06-30 13:00 ~ 13:30 CPU 42%。"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "看 2026-04-29 14:00 的监控", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, "该历史时间窗监控")
+	assert.Contains(t, reply, "2026-04-29")
+	assert.Contains(t, reply, "14:00 ~ 14:30")
+	assert.Contains(t, reply, "CPU 42")
+	assert.NotContains(t, reply, "2025-06-30")
+	assert.NotContains(t, reply, "当前实时监控")
+}
+
 func TestChat_ExternalTool_L2Blocked(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
