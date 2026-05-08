@@ -197,22 +197,23 @@ Batch C（Week 2 下半）— 依赖 Batch A+B
 
 ### T-006 Trace / Audit skeleton
 
-**依赖**：T-001 (SafeToolExecutor 提供 tool latency / args hash)、T-002（SecretBoundary 提供 RedactForTrace）
+**依赖**：T-001（SafeToolExecutor 提供 `TraceResult` / retry attempts / engine step hooks）、T-002（SecretBoundary 提供 `RedactForTrace`）
 **预估**：2 天
 **所属 Batch**：B
 
 **Scope**：
-- 新建 `internal/observability/trace.go`
-- 实现 §3.10 trace schema 的所有字段
-- 输出格式：JSON Lines，写文件（`logs/agent-trace-YYYY-MM-DD.jsonl`），按日轮转
-- 30 天自动清理（cron / 进程内 ticker 二选一，先做后者）
-- Trace ACL：文件权限 0640，仅 ops user 可读（Linux/Mac；Windows 现有部署忽略此项）
+- 按 `docs/agent/plan/stage2a-t006-trace-skeleton.md` 实现 trace skeleton。
+- 新建 `internal/observability/trace.go`，提供 versioned JSONL writer 和 30 天清理逻辑。
+- Trace 默认关闭，通过 `COMPSHARE_TRACE_ENABLED=1` 开启；`COMPSHARE_TRACE_DIR` 可覆盖输出目录。
+- trace schema 必须预留 PR #13 monitor freshness 字段：`freshness.monitor_call_in_current_turn`、`renderer.input_tool_call_ids[]`、`renderer.input_tool_args_hashes[]`。
+- T-006 不接 planner、不接 dashboard、不改变 engine 路由；planner block 在本阶段可为空 / disabled。
 
 **Acceptance**：
-- [ ] 每轮 Chat() 后输出一条完整 trace 行
-- [ ] 单测：trace 字段完整 + RedactForTrace 已应用（grep secret 0 命中）
-- [ ] 30 天清理逻辑单测（fake clock）
-- [ ] 真实账号跑一次 10-step E2E，确认 10 行 trace 写入
+- [ ] 启用 trace 后，每轮 Chat() 后输出一条 `schema_version="trace.v0.1"` 的 JSONL trace 行。
+- [ ] 单测：trace 字段完整 + `RedactForTrace` 已应用（grep secret 0 命中）。
+- [ ] 单测：args/result hash 对 map key 顺序稳定。
+- [ ] 单测：30 天清理逻辑（fake clock / injected now）。
+- [ ] 真实账号跑一次 10-step E2E，确认 trace 行数与用户 turn 数一致，且没有 raw key/token/password/IP/billing amount。
 
 ---
 
