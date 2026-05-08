@@ -257,7 +257,8 @@ Batch C（Week 2 下半）— 依赖 Batch A+B
 - [ ] 影子模式跑 phase0_smoke.json 10 个样本，全部输出合法 plan 且与现有 guard 决策一致率 ≥ 80%
 - [ ] dashboard 脚本能从 trace 文件生成 markdown 报告
 - [ ] 影子模式打开 / 关闭通过环境变量切换，关闭时 planner 不发起任何 LLM 调用（验证开关有效）
-- [ ] Monitor freshness acceptance 按 `docs/agent/plan/stage2a-t007b-monitor-acceptance.md` 执行：PR #12 的 3 个 monitor follow-up case 必须进入 shadow trace / Phase 1 handler promotion gate，mixed monitor+billing/diagnosis/operation scope 必须有可测边界。
+- [ ] T-007b shadow acceptance 按 `docs/agent/plan/stage2a-t007b-monitor-acceptance.md` 执行：PR #12 的 3 个 monitor follow-up case 必须进入 shadow trace，mixed monitor+billing/diagnosis/operation scope 必须有可测边界。
+- [ ] Phase 1 monitor handler promotion gate 按 `docs/agent/plan/stage2a-t007b-monitor-acceptance.md` 跟踪：切换 `monitor_query` / `monitor_history` 前，PR #12 的 3 个 follow-up case 必须在 trace 中出现 current-turn `GetCompShareInstanceMonitor`。
 
 **风险**：
 - 线上一致率可能初期低于 80%（特别是 monitor 多步链路），需准备好 prompt + few-shot 的迭代窗口

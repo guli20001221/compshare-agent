@@ -40,6 +40,8 @@ For every user turn, the trace record must include enough information to evaluat
 | `tool_calls[].turn_index` | Current user turn index. |
 | `tool_calls[].source` | T-007b values: `main_react`, `workflow_internal`, `diagnosis_internal`, or `shadow_only`. Phase 1 monitor handler adds `planner_handler`. |
 | `tool_calls[].args_hash` | Redacted/hash form of tool args for correlation. |
+| `renderer.input_tool_call_ids[]` | Tool call ids whose results are passed to the final renderer. Required once the renderer path is instrumented in Phase 1. |
+| `renderer.input_tool_args_hashes[]` | Args hashes corresponding to renderer-consumed tool results. Required once the renderer path is instrumented in Phase 1. |
 | `freshness.monitor_call_in_current_turn` | Boolean derived by trace writer: true iff this user turn contains `GetCompShareInstanceMonitor`. |
 
 ### Shadow Assertions
@@ -68,7 +70,7 @@ For every monitor handler test case:
   - `turn_index == current_user_turn`
   - `tool_calls[].action == "GetCompShareInstanceMonitor"`
   - `tool_calls[].source == "planner_handler"`
-- The final renderer input references the current-turn monitor result id / args hash, not only a prior-turn result.
+- `renderer.input_tool_call_ids[]` or `renderer.input_tool_args_hashes[]` references the current-turn monitor result, not only a prior-turn result.
 - The final answer may mention previous values for comparison only if the current-turn monitor call succeeded or returned an explicit no-data status.
 
 ### PR #12 Regression Fixtures
@@ -81,7 +83,7 @@ The following cases from PR #12 must be converted into regression fixtures. Do n
 | `monitor_followup_explicit_refresh` | same as above | `重新查一下刚才那台机器现在的 GPU 利用率和显存，不要复用上一轮` | Turn 2 trace contains current-turn `GetCompShareInstanceMonitor`. |
 | `monitor_followup_pronoun_now` | same as above | `它现在 GPU 和显存是多少？` | Turn 2 trace contains current-turn `GetCompShareInstanceMonitor`. |
 
-The fixture target must be resolved through `EntityRegistry`; the test must not hard-code a real account UHostId.
+The fixture target must be resolved through `EntityRegistry`; the test must not hard-code a real account UHostId. Regression fixtures should reuse the same mock registry snapshot pattern as `eval/intent/fixtures.jsonl` monitor cases: `<target>` is a stable fixture alias that resolves to a synthetic instance id/name in the registry snapshot.
 
 ## Mixed Scope Boundaries
 
