@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/observability"
 )
 
@@ -50,6 +51,34 @@ func (r *cliTraceRecorder) SetRegistryTraceSupplier(supplier func(time.Time) obs
 		return
 	}
 	r.registryTraceSupplier = supplier
+}
+
+func (r *cliTraceRecorder) SetRateLimitDecision(decision governance.Decision) {
+	if r == nil {
+		return
+	}
+	trace := observability.RateLimitTrace{
+		Checked:      true,
+		Allowed:      decision.Allowed,
+		Class:        string(decision.Class),
+		Action:       decision.Action,
+		Reason:       string(decision.Reason),
+		SubjectHash:  decision.SubjectHash,
+		RetryAfterMS: decision.RetryAfter.Milliseconds(),
+	}
+	current := r.record.RateLimit
+	if !current.Checked {
+		r.record.RateLimit = trace
+		return
+	}
+	if !current.Allowed {
+		return
+	}
+	if !trace.Allowed {
+		r.record.RateLimit = trace
+		return
+	}
+	r.record.RateLimit = trace
 }
 
 func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {

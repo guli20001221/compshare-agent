@@ -12,6 +12,7 @@ import (
 
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/observability"
 )
 
@@ -266,6 +267,167 @@ func TestCLITraceRecorderWritesFailedRegistryStateWithoutRawError(t *testing.T) 
 	record := readSingleTraceRecord(t, writer, start)
 	if record.EntityRegistry.SyncEvent != "failed" {
 		t.Fatalf("sync_event = %q, want failed", record.EntityRegistry.SyncEvent)
+	}
+}
+
+func TestCLITraceRecorderWritesRateLimitDenial(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	rawPublicKey := "public-key-that-must-not-appear"
+	subjectHash, ok := governance.SubjectKeyFromPublicKey(rawPublicKey)
+	if !ok {
+		t.Fatal("SubjectKeyFromPublicKey returned ok=false")
+	}
+	recorder := newCLITraceRecorder(writer, 7, "rate limited", start)
+	recorder.SetRateLimitDecision(governance.Decision{
+		Allowed:     false,
+		Class:       governance.ClassLLM,
+		Action:      "shadow_planner",
+		Reason:      governance.ReasonQPSExceeded,
+		SubjectHash: subjectHash,
+		RetryAfter:  200 * time.Millisecond,
+		Err:         governance.ErrRateLimited,
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	tracePath := filepath.Join(writer.Dir(), "agent-trace-2026-05-08.jsonl")
+	data, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read trace file: %v", err)
+	}
+	line := strings.TrimSpace(string(data))
+	if strings.Contains(line, rawPublicKey) {
+		t.Fatalf("trace leaked raw public key: %s", line)
+	}
+	record := readSingleTraceRecord(t, writer, start)
+	got := record.RateLimit
+	if !got.Checked || got.Allowed || got.Class != string(governance.ClassLLM) ||
+		got.Action != "shadow_planner" || got.Reason != string(governance.ReasonQPSExceeded) ||
+		got.SubjectHash != subjectHash || got.RetryAfterMS != 200 {
+		t.Fatalf("rate_limit trace = %#v", got)
+	}
+}
+
+func TestCLITraceRecorderRateLimitDecisionAggregation(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 8, "multi decision", start)
+
+	recorder.SetRateLimitDecision(governance.Decision{
+		Allowed:     true,
+		Class:       governance.ClassLLM,
+		Action:      "main_react_chat",
+		SubjectHash: "sha256:first",
+	})
+	recorder.SetRateLimitDecision(governance.Decision{
+		Allowed:     false,
+		Class:       governance.ClassLLM,
+		Action:      "shadow_planner",
+		Reason:      governance.ReasonDailyExceeded,
+		SubjectHash: "sha256:denied",
+		RetryAfter:  time.Minute,
+		Err:         governance.ErrRateLimited,
+	})
+	recorder.SetRateLimitDecision(governance.Decision{
+		Allowed:     true,
+		Class:       governance.ClassMutatingTool,
+		Action:      "StartCompShareInstance",
+		SubjectHash: "sha256:last-allow",
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	record := readSingleTraceRecord(t, writer, start)
+	if record.RateLimit.Allowed || record.RateLimit.Action != "shadow_planner" ||
+		record.RateLimit.Reason != string(governance.ReasonDailyExceeded) {
+		t.Fatalf("first denial should win, got %#v", record.RateLimit)
+	}
+}
+
+func TestCLITraceRecorderRateLimitLastAllowWinsWhenNoDenial(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 9, "multi allow", start)
+	recorder.SetRateLimitDecision(governance.Decision{
+		Allowed:     true,
+		Class:       governance.ClassLLM,
+		Action:      "main_react_chat",
+		SubjectHash: "sha256:first",
+	})
+	recorder.SetRateLimitDecision(governance.Decision{
+		Allowed:     true,
+		Class:       governance.ClassLLM,
+		Action:      "shadow_planner",
+		SubjectHash: "sha256:last",
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	record := readSingleTraceRecord(t, writer, start)
+	if !record.RateLimit.Allowed || record.RateLimit.Action != "shadow_planner" || record.RateLimit.SubjectHash != "sha256:last" {
+		t.Fatalf("last allow should win, got %#v", record.RateLimit)
+	}
+}
+
+func TestCLITraceRecorderTraceWriteFailureDoesNotChangeRateLimitDecision(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: dir,
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove trace dir: %v", err)
+	}
+	if err := os.WriteFile(dir, []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("replace trace dir with file: %v", err)
+	}
+	decision := governance.Decision{
+		Allowed:     false,
+		Class:       governance.ClassLLM,
+		Action:      "shadow_planner",
+		Reason:      governance.ReasonQPSExceeded,
+		SubjectHash: "sha256:subject",
+		RetryAfter:  200 * time.Millisecond,
+		Err:         governance.ErrRateLimited,
+	}
+	recorder := newCLITraceRecorder(writer, 10, "write failure", start)
+	recorder.SetRateLimitDecision(decision)
+
+	if err := recorder.Finish(nil, start); err == nil {
+		t.Fatal("Finish should fail when trace path is not a directory")
+	}
+	if decision.Allowed || decision.Reason != governance.ReasonQPSExceeded || decision.SubjectHash != "sha256:subject" {
+		t.Fatalf("trace write failure mutated original decision: %#v", decision)
+	}
+	if !recorder.record.RateLimit.Checked || recorder.record.RateLimit.Allowed {
+		t.Fatalf("trace write failure changed recorder decision: %#v", recorder.record.RateLimit)
 	}
 }
 
