@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
@@ -29,6 +31,11 @@ const (
 	// With ~7K system prompt tokens and ~1K per message pair, 40 messages ≈ 27K tokens
 	// which fits well within a 32K context window.
 	maxHistoryMessages = 40
+)
+
+const (
+	rateLimitQPSMessage   = "请求过于频繁，请稍后再试。"
+	rateLimitDailyMessage = "今日额度已用完，请明天再试。"
 )
 
 // Force-tool / hard-block priority chain (highest first):
@@ -71,6 +78,9 @@ type Engine struct {
 	llmClient             LLMClient
 	safeExecutor          *tools.SafeToolExecutor
 	registry              *entity.EntityRegistry
+	rateLimiter           governance.RateLimiter
+	rateLimitSubject      string
+	rateLimitObserver     func(governance.Decision)
 	confirmFn             ConfirmFunc
 	messages              []openai.ChatCompletionMessage // conversation history
 	userTurn              int                            // incremented at start of each Chat() call
@@ -94,10 +104,16 @@ type Engine struct {
 
 func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 	cap := llm.LookupCapability(cfg.Agent.LLM.BaseURL, cfg.Agent.LLM.Model)
+	subject, ok := governance.SubjectKeyFromPublicKey(cfg.Agent.PublicKey)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "warning: rate limiter using anonymous subject (public key missing)")
+	}
 	eng := &Engine{
 		llmClient:                llm.NewClient(cfg.Agent.LLM),
 		confirmFn:                confirmFn,
 		registry:                 entity.NewRegistry(),
+		rateLimiter:              governance.NewMemoryLimiter(cfg.Agent.RateLimit.Limits()),
+		rateLimitSubject:         subject,
 		lastInstanceQueryTurn:    -1,
 		lastMonitorTurn:          -1,
 		supportsObjectToolChoice: cap.SupportsObjectToolChoice,
@@ -128,6 +144,10 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 // via LookupCapability in New().
 func (e *Engine) setSupportsObjectToolChoice(v bool) {
 	e.supportsObjectToolChoice = v
+}
+
+func (e *Engine) SetRateLimitObserver(observer func(governance.Decision)) {
+	e.rateLimitObserver = observer
 }
 
 func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc) *tools.SafeToolExecutor {
@@ -253,6 +273,14 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 				Function: openai.ToolFunction{Name: "GetCompShareInstanceMonitor"},
 			}
 		}
+		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
+			content := rateLimitMessage(decision.Reason)
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: content,
+			})
+			return content, nil
+		}
 		resp, err := e.llmClient.Chat(ctx, req)
 		if err != nil {
 			return "", fmt.Errorf("LLM 调用失败: %w", err)
@@ -313,6 +341,33 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	}
 
 	return "抱歉，处理轮次超限，请重新描述您的需求。", nil
+}
+
+func (e *Engine) allowRateLimited(class governance.Class, action string) (governance.Decision, bool) {
+	if e.rateLimiter == nil {
+		return governance.Decision{Allowed: true, Class: class, Action: action}, true
+	}
+	subject := e.rateLimitSubject
+	if subject == "" {
+		subject = governance.AnonymousSubjectKey
+	}
+	decision := e.rateLimiter.Allow(governance.Request{
+		SubjectKey: subject,
+		Class:      class,
+		Action:     action,
+		Now:        time.Now(),
+	})
+	if e.rateLimitObserver != nil {
+		e.rateLimitObserver(decision)
+	}
+	return decision, decision.Allowed
+}
+
+func rateLimitMessage(reason governance.Reason) string {
+	if reason == governance.ReasonDailyExceeded {
+		return rateLimitDailyMessage
+	}
+	return rateLimitQPSMessage
 }
 
 // finalReplyPrefix marks a tool result as a deterministic final reply that

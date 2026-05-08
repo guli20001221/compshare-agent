@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/tools"
@@ -49,6 +51,35 @@ type mockLLMWithError struct {
 
 func (m *mockLLMWithError) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
 	return nil, m.err
+}
+
+type scriptedRateLimiter struct {
+	decisions []governance.Decision
+	requests  []governance.Request
+}
+
+func (l *scriptedRateLimiter) Allow(req governance.Request) governance.Decision {
+	l.requests = append(l.requests, req)
+	if len(l.decisions) == 0 {
+		return governance.Decision{
+			Allowed:     true,
+			Class:       req.Class,
+			Action:      req.Action,
+			SubjectHash: req.SubjectKey,
+		}
+	}
+	decision := l.decisions[0]
+	l.decisions = l.decisions[1:]
+	if decision.Class == "" {
+		decision.Class = req.Class
+	}
+	if decision.Action == "" {
+		decision.Action = req.Action
+	}
+	if decision.SubjectHash == "" {
+		decision.SubjectHash = req.SubjectKey
+	}
+	return decision
 }
 
 // --- Mock Executor ---
@@ -94,6 +125,24 @@ func hasStaleNote(req llm.ChatRequest) bool {
 func collectSteps() (func(StepEvent), *[]StepEvent) {
 	var events []StepEvent
 	return func(ev StepEvent) { events = append(events, ev) }, &events
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+	defer func() {
+		os.Stderr = old
+	}()
+
+	fn()
+
+	require.NoError(t, w.Close())
+	data, err := io.ReadAll(r)
+	require.NoError(t, err)
+	return string(data)
 }
 
 func toolCall(id, name, argsJSON string) openai.ToolCall {
@@ -786,6 +835,142 @@ func TestChat_LLMError(t *testing.T) {
 	_, err := eng.Chat(context.Background(), "hello", noopStep)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "LLM 调用失败")
+}
+
+func TestChat_LLMRateLimitDenialSkipsLLM(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	limiter := &scriptedRateLimiter{decisions: []governance.Decision{{
+		Allowed:     false,
+		Reason:      governance.ReasonQPSExceeded,
+		SubjectHash: "sha256:subject",
+		Err:         governance.ErrRateLimited,
+	}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.rateLimiter = limiter
+	eng.rateLimitSubject = "sha256:subject"
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+
+	reply, err := eng.Chat(context.Background(), "hello", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "请求过于频繁，请稍后再试。", reply)
+	assert.Empty(t, mock.calls, "denied LLM request must not call LLM")
+	require.Len(t, limiter.requests, 1)
+	assert.Equal(t, governance.ClassLLM, limiter.requests[0].Class)
+	assert.Equal(t, "main_react_chat", limiter.requests[0].Action)
+}
+
+func TestChat_LLMRateLimitDailyDenialUsesDailyMessage(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.rateLimiter = &scriptedRateLimiter{decisions: []governance.Decision{{
+		Allowed:     false,
+		Reason:      governance.ReasonDailyExceeded,
+		SubjectHash: "sha256:subject",
+		Err:         governance.ErrRateLimited,
+	}}}
+	eng.rateLimitSubject = "sha256:subject"
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+
+	reply, err := eng.Chat(context.Background(), "hello", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "今日额度已用完，请明天再试。", reply)
+	assert.Empty(t, mock.calls)
+}
+
+func TestChat_LLMRateLimitAllowPreservesBehavior(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.rateLimiter = &scriptedRateLimiter{decisions: []governance.Decision{{
+		Allowed:     true,
+		SubjectHash: "sha256:subject",
+	}}}
+	eng.rateLimitSubject = "sha256:subject"
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+
+	reply, err := eng.Chat(context.Background(), "hello", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "ok", reply)
+	assert.Len(t, mock.calls, 1)
+}
+
+func TestChat_LLMRateLimitDecisionObserverReceivesHashedSubject(t *testing.T) {
+	rawPublicKey := "public-key-that-must-not-appear"
+	subjectHash, ok := governance.SubjectKeyFromPublicKey(rawPublicKey)
+	require.True(t, ok)
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.rateLimiter = &scriptedRateLimiter{decisions: []governance.Decision{{
+		Allowed:     false,
+		Reason:      governance.ReasonQPSExceeded,
+		SubjectHash: subjectHash,
+		Err:         governance.ErrRateLimited,
+	}}}
+	eng.rateLimitSubject = subjectHash
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+	var observed []governance.Decision
+	eng.SetRateLimitObserver(func(decision governance.Decision) {
+		observed = append(observed, decision)
+	})
+
+	_, err := eng.Chat(context.Background(), "hello", noopStep)
+
+	require.NoError(t, err)
+	require.Len(t, observed, 1)
+	assert.Equal(t, subjectHash, observed[0].SubjectHash)
+	assert.NotContains(t, fmt.Sprintf("%+v", observed[0]), rawPublicKey)
+}
+
+func TestNewConstructsRateLimiterFromConfig(t *testing.T) {
+	cfg := &config.Config{Agent: config.AgentConfig{
+		PublicKey: "public-key-for-subject",
+		LLM: config.LLMConfig{
+			BaseURL: "https://api.modelverse.cn/v1",
+			APIKey:  "llm-key",
+			Model:   "deepseek-v4-flash",
+		},
+		RateLimit: config.RateLimitConfig{
+			LLMQPS:        1,
+			LLMDaily:      10,
+			MutatingQPS:   1,
+			MutatingDaily: 5,
+		},
+	}}
+
+	eng := New(cfg, nil)
+
+	require.NotNil(t, eng.rateLimiter)
+	wantSubject, ok := governance.SubjectKeyFromPublicKey("public-key-for-subject")
+	require.True(t, ok)
+	assert.Equal(t, wantSubject, eng.rateLimitSubject)
+	assert.NotContains(t, eng.rateLimitSubject, "public-key-for-subject")
+}
+
+func TestNewWarnsWhenPublicKeyMissingForRateLimiter(t *testing.T) {
+	cfg := &config.Config{Agent: config.AgentConfig{
+		LLM: config.LLMConfig{
+			BaseURL: "https://api.modelverse.cn/v1",
+			APIKey:  "llm-key",
+			Model:   "deepseek-v4-flash",
+		},
+		RateLimit: config.RateLimitConfig{
+			LLMQPS:        1,
+			LLMDaily:      10,
+			MutatingQPS:   1,
+			MutatingDaily: 5,
+		},
+	}}
+
+	var eng *Engine
+	stderr := captureStderr(t, func() {
+		eng = New(cfg, nil)
+	})
+
+	require.NotNil(t, eng)
+	assert.Equal(t, governance.AnonymousSubjectKey, eng.rateLimitSubject)
+	assert.Contains(t, stderr, "rate limiter using anonymous subject")
 }
 
 func TestKnowledgeTool_ArgsFiltered(t *testing.T) {
