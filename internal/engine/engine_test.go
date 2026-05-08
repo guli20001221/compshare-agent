@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -124,6 +125,24 @@ func hasStaleNote(req llm.ChatRequest) bool {
 func collectSteps() (func(StepEvent), *[]StepEvent) {
 	var events []StepEvent
 	return func(ev StepEvent) { events = append(events, ev) }, &events
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+	defer func() {
+		os.Stderr = old
+	}()
+
+	fn()
+
+	require.NoError(t, w.Close())
+	data, err := io.ReadAll(r)
+	require.NoError(t, err)
+	return string(data)
 }
 
 func toolCall(id, name, argsJSON string) openai.ToolCall {
@@ -927,6 +946,31 @@ func TestNewConstructsRateLimiterFromConfig(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, wantSubject, eng.rateLimitSubject)
 	assert.NotContains(t, eng.rateLimitSubject, "public-key-for-subject")
+}
+
+func TestNewWarnsWhenPublicKeyMissingForRateLimiter(t *testing.T) {
+	cfg := &config.Config{Agent: config.AgentConfig{
+		LLM: config.LLMConfig{
+			BaseURL: "https://api.modelverse.cn/v1",
+			APIKey:  "llm-key",
+			Model:   "deepseek-v4-flash",
+		},
+		RateLimit: config.RateLimitConfig{
+			LLMQPS:        1,
+			LLMDaily:      10,
+			MutatingQPS:   1,
+			MutatingDaily: 5,
+		},
+	}}
+
+	var eng *Engine
+	stderr := captureStderr(t, func() {
+		eng = New(cfg, nil)
+	})
+
+	require.NotNil(t, eng)
+	assert.Equal(t, governance.AnonymousSubjectKey, eng.rateLimitSubject)
+	assert.Contains(t, stderr, "rate limiter using anonymous subject")
 }
 
 func TestKnowledgeTool_ArgsFiltered(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -103,7 +104,10 @@ type Engine struct {
 
 func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 	cap := llm.LookupCapability(cfg.Agent.LLM.BaseURL, cfg.Agent.LLM.Model)
-	subject, _ := governance.SubjectKeyFromPublicKey(cfg.Agent.PublicKey)
+	subject, ok := governance.SubjectKeyFromPublicKey(cfg.Agent.PublicKey)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "warning: rate limiter using anonymous subject (public key missing)")
+	}
 	eng := &Engine{
 		llmClient:                llm.NewClient(cfg.Agent.LLM),
 		confirmFn:                confirmFn,
