@@ -40,6 +40,8 @@ Open dependency:
 
 T-007b implementation that performs live planner LLM calls must not be enabled in real-account runs until T-005 is merged or the call path has an equivalent explicit quota hook. Unit tests and offline smoke may use mock planner clients before T-005.
 
+For this ticket, "equivalent explicit quota hook" means a planner-client wrapper or engine-level hook that checks and records planner LLM quota before `CompleteIntentPlan` is called. A denied quota check must skip the planner LLM call and write a disabled or invalid planner trace state; it must not fall through to an unmetered call. The concrete quota store and quota policy remain owned by T-005.
+
 ## Core Decisions
 
 ### 1. Shadow-Only Boundary
@@ -91,7 +93,30 @@ Rules:
 
 - `metrics` are enum values and may be written plainly.
 - `target_refs[].value`, `target_refs[].source_span`, and user-provided IDs must be hashed before trace.
-- `time_window.value` must be hashed unless it is one of a small canonical enum set such as `now`, `today`, `yesterday`, or `last_1h`.
+- `value_hash`, `source_span_hash`, and `time_window.value_hash` use full SHA-256 hex with the `sha256:` prefix, matching the trace.v0.1 `args_hash` / `result_hash` convention.
+- `time_window.value` must be hashed unless it is one of the complete trace.v0.1 canonical allowlist values: `now`, `today`, `yesterday`, `last_1h`, `last_24h`, `last_7d`.
+- Canonical allowlist time windows keep a plain `value` field instead of `value_hash`:
+
+```json
+{
+  "time_window": {
+    "type": "preset",
+    "value": "today"
+  }
+}
+```
+
+- Non-allowlisted time windows use `value_hash`:
+
+```json
+{
+  "time_window": {
+    "type": "absolute",
+    "value_hash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  }
+}
+```
+
 - The trace projection may include `type` and `source` plainly.
 - The projection must be deterministic for equal plans.
 - The projection must not include raw entity names, UHostIds, user text spans, IP addresses, keys, or billing values.
@@ -128,6 +153,11 @@ Add an observability-only signal for `isAccountBillingUnsupported`:
 }
 ```
 
+The only v0.1 category values are:
+
+- `""` when `hit=false`
+- `account_billing_unsupported` when the permanent account-billing canned reply is used
+
 Constraints:
 
 - Do not change the canned reply.
@@ -136,9 +166,13 @@ Constraints:
 - Do not make planner output participate in the hard-block decision.
 - When no hard-block occurs, write `hit=false` and `category=""`.
 
+Implementation hint: add a hard-block setter on the trace recorder, called from `Engine.Chat` before returning the canned reply. This follows the registry/planner supplier pattern established by T-006 commit 2, but must not surface as a user-visible `StepEvent`.
+
+If shadow mode is enabled and quota permits, the planner should still run for hard-block turns so dashboard reports can compare planner hints against deterministic hard-blocks. The hard-block decision must be computed first and remains authoritative; planner output is trace-only.
+
 ### 5. Registry Snapshot Input
 
-The shadow planner receives the current `*entity.EntityRegistry` or an immutable snapshot via an engine-owned read-only accessor.
+The shadow planner receives an immutable `entity.RegistrySnapshot` via an engine-owned read-only accessor.
 
 Rules:
 
@@ -275,6 +309,7 @@ Scope:
 - Aggregate planner intent counts, schema-valid rate, fallback/invalid count, engine hard-block count, monitor freshness misses, and mixed-boundary outcomes.
 - Generate a markdown report.
 - Do not require raw transcripts or raw tool payloads.
+- Use Python for this dashboard script because JSONL aggregation and markdown table generation are compact and dependency-free with the standard library. Do not add third-party Python packages. If the repo later standardizes script runners, this script can be ported without changing trace semantics.
 
 Acceptance:
 
@@ -282,6 +317,7 @@ Acceptance:
 - Report includes total turns, planner-enabled turns, intent distribution, schema-valid rate, account hard-block agreement, and monitor freshness miss count.
 - Report flags `monitor_freshness_miss` for trace records where planner intent is monitor and no current-turn monitor tool call exists.
 - Script handles missing planner block / disabled planner records without crashing.
+- Testdata trace records must be synthetic; no real UHostIds, keys, IPs, raw user text, raw tool args, or raw tool results.
 
 ### Commit 6: Real-Account Shadow Smoke Artifact
 
