@@ -31,6 +31,10 @@ const (
 	// With ~7K system prompt tokens and ~1K per message pair, 40 messages ≈ 27K tokens
 	// which fits well within a 32K context window.
 	maxHistoryMessages = 40
+	// maxPlannerPriorMessages bounds the user/assistant history copied into
+	// shadow-planner input. Tool and system messages are intentionally omitted.
+	maxPlannerPriorMessages  = 8
+	maxPlannerPriorTextRunes = 2000
 )
 
 const (
@@ -81,6 +85,7 @@ type Engine struct {
 	rateLimiter           governance.RateLimiter
 	rateLimitSubject      string
 	rateLimitObserver     func(governance.Decision)
+	hardBlockObserver     func(observability.EngineHardBlockTrace)
 	confirmFn             ConfirmFunc
 	messages              []openai.ChatCompletionMessage // conversation history
 	userTurn              int                            // incremented at start of each Chat() call
@@ -150,6 +155,19 @@ func (e *Engine) SetRateLimitObserver(observer func(governance.Decision)) {
 	e.rateLimitObserver = observer
 }
 
+func (e *Engine) RateLimitSubjectKey() string {
+	return e.rateLimitSubject
+}
+
+func (e *Engine) RateLimitDecision(req governance.Request) governance.Decision {
+	decision, _ := e.allowRateLimited(req.Class, req.Action)
+	return decision
+}
+
+func (e *Engine) SetHardBlockObserver(observer func(observability.EngineHardBlockTrace)) {
+	e.hardBlockObserver = observer
+}
+
 func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc) *tools.SafeToolExecutor {
 	var safeConfirm tools.ConfirmFunc
 	if confirmFn != nil {
@@ -215,6 +233,52 @@ func (e *Engine) RegistryTraceState(now time.Time) observability.EntityRegistryT
 	}
 }
 
+// PlannerPriorTextSnapshot returns a bounded, read-only text projection of
+// prior user/assistant turns for shadow-planner provenance checks. It excludes
+// system prompts and tool-result JSON so shadow mode does not expand the data
+// surface beyond conversational text.
+func (e *Engine) PlannerPriorTextSnapshot() string {
+	if e == nil || len(e.messages) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, maxPlannerPriorMessages)
+	for i := len(e.messages) - 1; i >= 0 && len(lines) < maxPlannerPriorMessages; i-- {
+		msg := e.messages[i]
+		role := ""
+		switch msg.Role {
+		case openai.ChatMessageRoleUser:
+			role = "user"
+		case openai.ChatMessageRoleAssistant:
+			role = "assistant"
+		default:
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if content == "" {
+			continue
+		}
+		lines = append(lines, role+": "+content+"\n")
+	}
+	var b strings.Builder
+	included := make([]string, 0, len(lines))
+	budget := maxPlannerPriorTextRunes
+	for _, line := range lines {
+		runes := []rune(line)
+		if len(runes) > budget {
+			if len(included) == 0 && budget > 0 {
+				included = append(included, string(runes[:budget]))
+			}
+			break
+		}
+		included = append(included, line)
+		budget -= len(runes)
+	}
+	for i := len(included) - 1; i >= 0; i-- {
+		b.WriteString(included[i])
+	}
+	return strings.TrimSpace(b.String())
+}
+
 // InitWithContext performs context injection with a pre-built user context string,
 // bypassing the DescribeCompShareInstance API call. Used for testing.
 func (e *Engine) InitWithContext(userCtx string) {
@@ -239,6 +303,12 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	})
 
 	if isAccountBillingUnsupported(userMsg) {
+		if e.hardBlockObserver != nil {
+			e.hardBlockObserver(observability.EngineHardBlockTrace{
+				Hit:      true,
+				Category: "account_billing_unsupported",
+			})
+		}
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: accountBillingUnsupportedReply,

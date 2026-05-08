@@ -52,6 +52,134 @@ func TestTraceWriterFromEnvEnabled(t *testing.T) {
 	}
 }
 
+func TestIntentPlannerShadowModeFromEnv(t *testing.T) {
+	if intentPlannerShadowEnabled(func(string) string { return "" }) {
+		t.Fatal("unset USE_INTENT_PLANNER must not enable shadow planner")
+	}
+	if !intentPlannerShadowEnabled(func(key string) string {
+		if key == "USE_INTENT_PLANNER" {
+			return "shadow"
+		}
+		return ""
+	}) {
+		t.Fatal("USE_INTENT_PLANNER=shadow should enable shadow planner")
+	}
+	if intentPlannerShadowEnabled(func(key string) string {
+		if key == "USE_INTENT_PLANNER" {
+			return "auto"
+		}
+		return ""
+	}) {
+		t.Fatal("only explicit shadow mode should enable shadow planner")
+	}
+}
+
+func TestCLITraceRecorderWritesPlannerTrace(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 1, "planner trace", start)
+	recorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
+		return observability.PlannerTrace{
+			Enabled:     true,
+			Model:       "deepseek-v4-flash",
+			SchemaValid: true,
+			Intent:      "monitor_query",
+			Slots: observability.PlannerSlots{
+				Metrics: []string{"gpu"},
+			},
+			Confidence: 0.8,
+		}
+	})
+	recorder.OnStep(engine.StepEvent{
+		Type:   engine.StepToolCall,
+		Action: "DescribeCompShareInstance",
+		Source: observability.ToolSourceMainReAct,
+		Args:   map[string]any{"Limit": 10},
+	})
+	recorder.OnStep(engine.StepEvent{
+		Type:        engine.StepToolResult,
+		Action:      "DescribeCompShareInstance",
+		Source:      observability.ToolSourceMainReAct,
+		TraceResult: map[string]any{"RetCode": 0},
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	record := readSingleTraceRecord(t, writer, start)
+	if !record.Planner.Enabled || !record.Planner.SchemaValid ||
+		record.Planner.Model != "deepseek-v4-flash" || record.Planner.Intent != "monitor_query" {
+		t.Fatalf("planner trace = %#v", record.Planner)
+	}
+	if len(record.ToolCalls) != 1 || record.ToolCalls[0].Action != "DescribeCompShareInstance" {
+		t.Fatalf("tool calls changed by planner trace supplier: %#v", record.ToolCalls)
+	}
+}
+
+func TestCLITraceRecorderWritesEngineHardBlockWithoutToolStep(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 2, "hard block", start)
+	recorder.SetEngineHardBlock(observability.EngineHardBlockTrace{
+		Hit:      true,
+		Category: "account_billing_unsupported",
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	record := readSingleTraceRecord(t, writer, start)
+	if !record.EngineHardBlock.Hit || record.EngineHardBlock.Category != "account_billing_unsupported" {
+		t.Fatalf("engine_hard_block = %#v", record.EngineHardBlock)
+	}
+	if len(record.ToolCalls) != 0 {
+		t.Fatalf("hard block signal must not add tool calls: %#v", record.ToolCalls)
+	}
+}
+
+func TestCLITraceRecorderPlannerInvalidTraceStillWritesLine(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 3, "planner failure", start)
+	recorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
+		return observability.PlannerTrace{
+			Enabled:     true,
+			Model:       "deepseek-v4-flash",
+			SchemaValid: false,
+			Intent:      "unknown",
+		}
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	record := readSingleTraceRecord(t, writer, start)
+	if !record.Planner.Enabled || record.Planner.SchemaValid || record.Planner.Intent != "unknown" {
+		t.Fatalf("planner failure trace = %#v", record.Planner)
+	}
+}
+
 func TestCLITraceRecorderWritesOneRedactedTraceLine(t *testing.T) {
 	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	end := start.Add(1500 * time.Millisecond)

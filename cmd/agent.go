@@ -12,7 +12,11 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/spf13/cobra"
 )
 
@@ -70,6 +74,10 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: trace disabled: %v\n", traceErr)
 		traceEnabled = false
 	}
+	var shadowRunner *intent.ShadowRunner
+	if traceEnabled && intentPlannerShadowEnabled(os.Getenv) {
+		shadowRunner = newCLIShadowRunner(cfg, eng)
+	}
 
 	fmt.Println("╭──────────────────────────────────────╮")
 	fmt.Println("│     优云算力共享 AI 助手 v0.1        │")
@@ -119,6 +127,17 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			traceRecorder = newCLITraceRecorder(traceWriter, turnIndex, input, turnStart)
 			traceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)
+			eng.SetHardBlockObserver(traceRecorder.SetEngineHardBlock)
+			if shadowRunner != nil {
+				plannerInput := input
+				plannerPriorText := eng.PlannerPriorTextSnapshot()
+				traceRecorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
+					return shadowRunner.Run(ctx, intent.PlannerInput{
+						UserText:  plannerInput,
+						PriorText: plannerPriorText,
+					})
+				})
+			}
 		}
 
 		onStep := func(ev engine.StepEvent) {
@@ -156,4 +175,38 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\nAssistant> %s\n\n", reply)
 	}
 	return nil
+}
+
+type cliPlannerLLM struct {
+	client *llm.Client
+}
+
+func (c cliPlannerLLM) CompleteIntentPlan(ctx context.Context, req intent.PlannerLLMRequest) (string, error) {
+	// Planner requests intentionally provide no tools. Omitting ToolChoice here
+	// avoids provider-specific validation for tool_choice without tools while
+	// still preventing planner-side tool calls.
+	resp, err := c.client.Chat(ctx, llm.ChatRequest{
+		Messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt},
+			{Role: openai.ChatMessageRoleUser, Content: req.UserPrompt},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
+}
+
+func newCLIShadowRunner(cfg *config.Config, eng *engine.Engine) *intent.ShadowRunner {
+	plannerClient := cliPlannerLLM{client: llm.NewClient(cfg.Agent.LLM)}
+	planner := intent.NewPlanner(plannerClient, intent.PlannerOptions{
+		BaseURL: cfg.Agent.LLM.BaseURL,
+		Model:   cfg.Agent.LLM.Model,
+	})
+	return intent.NewShadowRunner(planner, intent.ShadowRunnerOptions{
+		Enabled:      true,
+		Model:        cfg.Agent.LLM.Model,
+		QuotaSubject: eng.RateLimitSubjectKey(),
+		QuotaHook:    eng.RateLimitDecision,
+	})
 }

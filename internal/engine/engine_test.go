@@ -1937,6 +1937,45 @@ func TestRegistryTraceStateAccessorReturnsImmutableTraceState(t *testing.T) {
 	assert.Equal(t, string(entity.SyncEventInit), state.SyncEvent)
 }
 
+func TestPlannerPriorTextSnapshotOmitsSystemAndToolMessages(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "system prompt"},
+		{Role: openai.ChatMessageRoleUser, Content: "看一下 A 机器"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "A 机器正在运行"},
+		{Role: openai.ChatMessageRoleTool, Content: `{"UHostId":"uhost-a","PrivateIP":"10.0.0.1"}`},
+	}
+
+	prior := eng.PlannerPriorTextSnapshot()
+
+	assert.Contains(t, prior, "user: 看一下 A 机器")
+	assert.Contains(t, prior, "assistant: A 机器正在运行")
+	assert.NotContains(t, prior, "system prompt")
+	assert.NotContains(t, prior, "uhost-a")
+	assert.NotContains(t, prior, "10.0.0.1")
+}
+
+func TestPlannerPriorTextSnapshotKeepsNewestMessagesWithinRuneBudget(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "system prompt"},
+	}
+	for i := 1; i <= 12; i++ {
+		eng.messages = append(eng.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleUser,
+			Content: fmt.Sprintf("msg-%02d %s", i, strings.Repeat("中", 450)),
+		})
+	}
+
+	prior := eng.PlannerPriorTextSnapshot()
+
+	assert.LessOrEqual(t, len([]rune(prior)), maxPlannerPriorTextRunes)
+	assert.Contains(t, prior, "msg-12")
+	assert.Contains(t, prior, "msg-09")
+	assert.NotContains(t, prior, "msg-08")
+	assert.NotContains(t, prior, "msg-01")
+}
+
 func TestEnsureProjectId_UsesConfigWhenSet(t *testing.T) {
 	// Pre-configured ProjectId → GetProjectList must NOT be called.
 	eng, h, cleanup := newEngineWithServer(t, &mockLLM{}, "org-cfg-value", "")
@@ -2195,6 +2234,28 @@ func TestAccountBillingHardBlock_DoesNotResetTurnScopedMonitorState(t *testing.T
 	assert.Equal(t, []string{"uhost-monitor-001"}, eng.currentMonitorNoData)
 	assert.Equal(t, int64(100), eng.currentMonitorStart)
 	assert.Equal(t, int64(200), eng.currentMonitorEnd)
+}
+
+func TestAccountBillingHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T) {
+	executor := billingScenarioExecutor("Running")
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+		hardBlocks = append(hardBlocks, trace)
+	})
+	onStep, events := collectSteps()
+
+	reply, err := eng.Chat(context.Background(), "账号余额还剩多少", onStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, accountBillingUnsupportedReply, reply)
+	assert.Empty(t, mock.calls)
+	assert.Empty(t, *events, "hard-block trace signal must not surface as a CLI step")
+	require.Len(t, hardBlocks, 1)
+	assert.True(t, hardBlocks[0].Hit)
+	assert.Equal(t, "account_billing_unsupported", hardBlocks[0].Category)
 }
 
 // toolChoiceForMonitor returns true iff req.ToolChoice names GetCompShareInstanceMonitor.
