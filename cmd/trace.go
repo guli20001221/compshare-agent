@@ -57,6 +57,8 @@ func (r *cliTraceRecorder) SetRateLimitDecision(decision governance.Decision) {
 	if r == nil {
 		return
 	}
+	// Decision.SubjectHash is expected to be pre-hashed by governance callers.
+	// The recorder copies it verbatim and never accepts raw key material.
 	trace := observability.RateLimitTrace{
 		Checked:      true,
 		Allowed:      decision.Allowed,
@@ -71,6 +73,8 @@ func (r *cliTraceRecorder) SetRateLimitDecision(decision governance.Decision) {
 		r.record.RateLimit = trace
 		return
 	}
+	// Aggregation rule from T-005 trace semantics:
+	// first denial wins; if no denial occurs, record the latest allow.
 	if !current.Allowed {
 		return
 	}
