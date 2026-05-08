@@ -1716,7 +1716,7 @@ func TestShouldForceBillingDiagnosis(t *testing.T) {
 				e.lastDiagnosisTargets = []string{"uhost-x"}
 				return e
 			},
-			userMsg:     "那为什么 uhost-x 还在扣费",
+			userMsg:     "那为什么还在扣费",
 			wantTrigger: false,
 		},
 		{
@@ -1785,6 +1785,106 @@ func toolChoiceForBilling(req llm.ChatRequest) bool {
 		return false
 	}
 	return tc.Type == openai.ToolTypeFunction && tc.Function.Name == "DiagnoseBilling"
+}
+
+type hardBlockMatrixCase struct {
+	name        string
+	msg         string
+	wantBlocked bool
+	wantBilling bool
+}
+
+func runHardBlockMatrixCase(t *testing.T, tc hardBlockMatrixCase) {
+	t.Helper()
+	if tc.wantBlocked && tc.wantBilling {
+		t.Fatalf("%s: hard-block and force-billing expectations must be mutually exclusive", tc.name)
+	}
+
+	executor := billingScenarioExecutor("Running")
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "fall through"}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), tc.msg, noopStep)
+	assert.NoError(t, err)
+
+	if tc.wantBlocked {
+		assert.Empty(t, mock.calls, "hard-block must not call LLM")
+		assert.Empty(t, executor.calls, "hard-block must not call tools")
+		assert.Contains(t, reply, "财务中心")
+		return
+	}
+
+	if assert.Len(t, mock.calls, 1, "non-blocked cases should enter exactly one LLM round") {
+		if tc.wantBilling {
+			assert.True(t, toolChoiceForBilling(mock.calls[0]), "instance billing should force DiagnoseBilling")
+		} else {
+			assert.Nil(t, mock.calls[0].ToolChoice, "unrelated cases must not force a billing tool")
+		}
+	}
+}
+
+func TestAccountBillingHardBlock_Matrix(t *testing.T) {
+	cases := []hardBlockMatrixCase{
+		// Branch 1: account-only data always hard-blocks. Instance words
+		// must NOT veto balance / total-bill / transaction-flow queries.
+		{name: "branch1_refuses_monthly_total_bill", msg: "查本月总账单", wantBlocked: true},
+		{name: "branch1_refuses_account_balance", msg: "账号余额还剩多少", wantBlocked: true},
+		{name: "branch1_refuses_transaction_flow", msg: "给我消费流水", wantBlocked: true},
+		{name: "branch1_refuses_english_balance", msg: "balance 多少", wantBlocked: true},
+		{name: "branch1_balance_not_vetoed_by_instance_words", msg: "这些机器导致账号余额还剩多少", wantBlocked: true},
+		{name: "branch1_transaction_flow_not_vetoed_by_instance_words", msg: "每台机器的消费流水", wantBlocked: true},
+
+		// Branch 2: monthly account summaries hard-block only when no
+		// instance-scope words are present.
+		{name: "branch2_refuses_monthly_account_total", msg: "本月总共扣了多少钱", wantBlocked: true},
+		{name: "branch2_refuses_monthly_spend", msg: "当月花费多少", wantBlocked: true},
+		{name: "branch2_refuses_monthly_bill", msg: "月度账单", wantBlocked: true},
+		{name: "branch2_vetoed_by_instance_scope_allows_llm", msg: "本月哪台实例消费最高"},
+		{name: "branch2_vetoed_by_specific_instance_word_allows_llm", msg: "当月这台机器扣了多少"},
+
+		// Instance-level billing must pass through the hard-block. It stays
+		// on the normal LLM/tool loop because forced object tool_choice is not
+		// supported reliably by the ds v4 flash baseline for DiagnoseBilling.
+		{name: "instance_top_spender_allows_llm", msg: "我账号下哪台实例消费最高"},
+		{name: "instance_cost_breakdown_allows_llm", msg: "当前这些实例费用明细"},
+		{name: "stopped_instance_still_charging_allows_llm", msg: "那台机器为什么关机后还在扣费"},
+		{name: "named_instance_billing_allows_llm", msg: "uhost-abc123 这台为什么扣费这么多"},
+		{name: "instance_cost_ratio_allows_llm", msg: "实例费用占比"},
+
+		// Non-billing turns must neither hard-block nor force billing.
+		{name: "monitor_query_no_force_billing", msg: "看监控", wantBlocked: false, wantBilling: false},
+		{name: "off_topic_no_force_billing", msg: "今天天气", wantBlocked: false, wantBilling: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runHardBlockMatrixCase(t, tc)
+		})
+	}
+}
+
+func TestAccountBillingHardBlock_DoesNotResetTurnScopedMonitorState(t *testing.T) {
+	executor := billingScenarioExecutor("Running")
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.currentMonitorWindow = true
+	eng.currentMonitorTargets = []string{"uhost-monitor-001"}
+	eng.currentMonitorNoData = []string{"uhost-monitor-001"}
+	eng.currentMonitorStart = 100
+	eng.currentMonitorEnd = 200
+
+	reply, err := eng.Chat(context.Background(), "查一下我这个账号本月总账单、余额和消费流水明细", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, "财务中心")
+	assert.Empty(t, mock.calls)
+	assert.Empty(t, executor.calls)
+	assert.True(t, eng.currentMonitorWindow)
+	assert.Equal(t, []string{"uhost-monitor-001"}, eng.currentMonitorTargets)
+	assert.Equal(t, []string{"uhost-monitor-001"}, eng.currentMonitorNoData)
+	assert.Equal(t, int64(100), eng.currentMonitorStart)
+	assert.Equal(t, int64(200), eng.currentMonitorEnd)
 }
 
 // toolChoiceForMonitor returns true iff req.ToolChoice names GetCompShareInstanceMonitor.
@@ -2038,7 +2138,7 @@ func TestBillingStaleGuard_NonAdjacentTurnDoesNotTrigger(t *testing.T) {
 	assert.NoError(t, err)
 	_, err = eng.Chat(context.Background(), "4090 显存多大", noopStep)
 	assert.NoError(t, err)
-	_, err = eng.Chat(context.Background(), "那为什么 uhost-bill-001 还在扣费", noopStep)
+	_, err = eng.Chat(context.Background(), "那为什么还在扣费", noopStep)
 	assert.NoError(t, err)
 
 	if assert.GreaterOrEqual(t, len(mock.calls), 4) {
