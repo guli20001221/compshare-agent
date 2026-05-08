@@ -36,12 +36,16 @@ type capabilityFile struct {
 }
 
 var builtinCapabilities = []capabilityEntry{
+	// Probed 2026-05-08 with production request shape (27 tools, full system
+	// prompt, multi-turn history): object tool_choice returns 400 in thinking
+	// mode. Required and auto both 5/6 PASS. See eval/capability/2026-05-08-
+	// ds-v4-flash-tool-choice-probe.md for raw traces.
 	{
 		BaseURL: "https://api.modelverse.cn/v1",
 		Model:   "deepseek-v4-flash",
 		Capability: Capability{
 			SupportsJSONObject:         true,
-			SupportsObjectToolChoice:   true,
+			SupportsObjectToolChoice:   false,
 			SupportsRequiredToolChoice: true,
 		},
 	},
