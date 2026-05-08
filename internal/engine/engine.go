@@ -32,9 +32,19 @@ const (
 // Force-tool / hard-block priority chain (highest first):
 //
 //  1. isAccountBillingUnsupported -> canned reply, no LLM call (hard-block)
-//  2. shouldForceBillingDiagnosis -> tool_choice=DiagnoseBilling
-//  3. shouldForceMonitorRecall    -> tool_choice=GetCompShareInstanceMonitor (BRIDGE T-001.f1)
-//  4. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
+//  2. shouldForceMonitorRecall    -> tool_choice=GetCompShareInstanceMonitor
+//                                    (BRIDGE T-001.f1, capability-gated)
+//  3. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
+//
+// Capability gating: force-tool paths that emit object tool_choice MUST
+// short-circuit when supportsObjectToolChoice=false. ds v4 flash in thinking
+// mode 400s on object tool_choice; emitting it would break the request entirely
+// rather than degrade to soft routing.
+//
+// shouldForceBillingDiagnosis was removed 2026-05-08: ds v4 flash returns 400
+// on object tool_choice in thinking mode, and auto-routing achieves the same
+// success rate as required (5/6). See eval/capability/2026-05-08-ds-v4-flash-
+// tool-choice-probe.md.
 //
 // Each force step is short-circuited by a higher one. When adding a new
 // force-tool path, update this comment and extract a single pickForcedTool()
@@ -68,12 +78,11 @@ type Engine struct {
 	currentMonitorStart   int64                          // start of the current historical monitor window, if any
 	currentMonitorEnd     int64                          // end of the current historical monitor window, if any
 	currentMonitorWindow  bool                           // true when currentMonitorStart/End are known
-	// Diagnosis follow-up tracking (narrow, only DiagnoseBilling for now).
-	// Updated after a successful executeDiagnosis run; read at the start of
-	// the next Chat() to decide whether to force DiagnoseBilling via tool_choice.
-	lastDiagnosisTool    string   // empty until a tracked diagnosis completes
-	lastDiagnosisTurn    int      // init -1; set to userTurn when tracked diagnosis runs
-	lastDiagnosisTargets []string // target strings extracted from diagnosis args (UHostId, Name)
+	// supportsObjectToolChoice gates force-tool guards (e.g. shouldForceMonitorRecall)
+	// from sending object tool_choice on models that don't support it (notably
+	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
+	// run their detection logic but fall through to LLM auto routing.
+	supportsObjectToolChoice bool
 	// Raw user message for the current turn. Set at the start of Chat().
 	// Read by executeDiagnosis guards for signal matching. Never mutated
 	// mid-turn.
@@ -81,28 +90,39 @@ type Engine struct {
 }
 
 func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
+	cap := llm.LookupCapability(cfg.Agent.LLM.BaseURL, cfg.Agent.LLM.Model)
 	eng := &Engine{
-		llmClient:             llm.NewClient(cfg.Agent.LLM),
-		confirmFn:             confirmFn,
-		lastInstanceQueryTurn: -1,
-		lastMonitorTurn:       -1,
-		lastDiagnosisTurn:     -1,
+		llmClient:                llm.NewClient(cfg.Agent.LLM),
+		confirmFn:                confirmFn,
+		lastInstanceQueryTurn:    -1,
+		lastMonitorTurn:          -1,
+		supportsObjectToolChoice: cap.SupportsObjectToolChoice,
 	}
 	eng.safeExecutor = newSafeToolExecutor(tools.NewExternalExecutor(cfg.Agent), confirmFn)
 	return eng
 }
 
 // NewWithDeps creates an Engine with injected dependencies (for testing).
+// Defaults supportsObjectToolChoice to true so existing tests that exercise
+// force-tool guards continue to assert the forced ToolChoice. Tests that
+// need the capability-gated path can flip the field via setter.
 func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn ConfirmFunc) *Engine {
 	eng := &Engine{
-		llmClient:             client,
-		confirmFn:             confirmFn,
-		lastInstanceQueryTurn: -1,
-		lastMonitorTurn:       -1,
-		lastDiagnosisTurn:     -1,
+		llmClient:                client,
+		confirmFn:                confirmFn,
+		lastInstanceQueryTurn:    -1,
+		lastMonitorTurn:          -1,
+		supportsObjectToolChoice: true,
 	}
 	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn)
 	return eng
+}
+
+// setSupportsObjectToolChoice is an internal helper for tests that need to
+// exercise capability-gated force-tool behavior. Production code sets this
+// via LookupCapability in New().
+func (e *Engine) setSupportsObjectToolChoice(v bool) {
+	e.supportsObjectToolChoice = v
 }
 
 func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc) *tools.SafeToolExecutor {
@@ -182,7 +202,6 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	e.currentMonitorEnd = 0
 	e.currentMonitorWindow = false
 
-	forceBilling := e.shouldForceBillingDiagnosis(userMsg)
 	forceMonitorRecall := e.shouldForceMonitorRecall(userMsg)
 
 	for round := 0; round < maxReActRounds; round++ {
@@ -190,16 +209,15 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 			Messages: e.buildMessagesForLLM(),
 			Tools:    tools.Registry,
 		}
-		// Hard guard: billing-diagnosis follow-up in the immediately next turn
-		// must re-run DiagnoseBilling instead of reusing the prior conclusion.
-		// Scope: first LLM call of this turn only; subsequent ReAct rounds
-		// narrate the fresh tool result freely.
-		if round == 0 && forceBilling {
-			req.ToolChoice = openai.ToolChoice{
-				Type:     openai.ToolTypeFunction,
-				Function: openai.ToolFunction{Name: "DiagnoseBilling"},
-			}
-		} else if round == 0 && forceMonitorRecall {
+		// BRIDGE T-001.f1: adjacent monitor follow-up must re-call
+		// GetCompShareInstanceMonitor instead of reusing prior numbers.
+		// Scope: first LLM call of this turn only. Capability-gated:
+		// models without object tool_choice support (e.g. deepseek-v4-flash
+		// in thinking mode) fall through to LLM auto routing instead of
+		// 400ing on a forced ToolChoice. Stale-reuse is then unmitigated
+		// on those models — see eval/capability/2026-05-08-ds-v4-flash-
+		// tool-choice-probe.md and the pending monitor stale-reuse probe.
+		if round == 0 && forceMonitorRecall && e.supportsObjectToolChoice {
 			req.ToolChoice = openai.ToolChoice{
 				Type:     openai.ToolTypeFunction,
 				Function: openai.ToolFunction{Name: "GetCompShareInstanceMonitor"},
@@ -696,15 +714,6 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		return msg
 	}
 
-	// Narrow tracking: record DiagnoseBilling completion for next-turn stale
-	// follow-up detection. Other Diagnose* chains are not tracked yet — extend
-	// deliberately once this guard proves out on billing.
-	if action == "DiagnoseBilling" {
-		e.lastDiagnosisTool = action
-		e.lastDiagnosisTurn = e.userTurn
-		e.lastDiagnosisTargets = extractDiagnosisTargets(args)
-	}
-
 	b, _ := json.Marshal(result)
 	return string(b)
 }
@@ -838,17 +847,6 @@ func (e *Engine) externalExecutor() *tools.ExternalExecutor {
 		return nil
 	}
 	return e.safeExecutor.ExternalExecutor()
-}
-
-// billingFollowUpKeywords is a narrow, single-domain keyword list used only
-// to detect billing-diagnosis follow-up phrasing when the user did not
-// repeat the instance name/id. Do not widen to general-purpose intent NLU.
-var billingFollowUpKeywords = []string{
-	"扣费",
-	"费用",
-	"计费",
-	"还在",
-	"为什么还",
 }
 
 const accountBillingUnsupportedReply = "这类账号级账单、余额和消费流水信息当前不支持由助手查询。请到控制台的财务中心查看：账户总览看余额，账单管理看月度账单，消费记录看扣费流水。"
@@ -1009,20 +1007,6 @@ func containsScanAllSignal(msg string) bool {
 	return false
 }
 
-// extractDiagnosisTargets pulls user-visible targets (instance id / name)
-// from a diagnosis tool's args. The returned slice is used for substring
-// matching against the next user message to detect topic continuity.
-func extractDiagnosisTargets(args map[string]any) []string {
-	var targets []string
-	if v, ok := args["UHostId"].(string); ok && v != "" {
-		targets = append(targets, v)
-	}
-	if v, ok := args["Name"].(string); ok && v != "" {
-		targets = append(targets, v)
-	}
-	return targets
-}
-
 // isAccountBillingUnsupported is a permanent product capability boundary.
 // Per docs/agent/plan/stage2-intent-planner.md §3.9.3, account-level
 // billing/balance/transaction queries are out of scope for the agent
@@ -1062,37 +1046,6 @@ func isAccountBillingUnsupportedNormalized(n string) bool {
 		containsNormalizedKeyword(n, monthlyAccountCostKeywords) &&
 		!containsNormalizedKeyword(n, accountInstanceScopeKeywords) {
 		return true
-	}
-	return false
-}
-
-// shouldForceBillingDiagnosis reports whether the current turn is a
-// billing-diagnosis follow-up that should force a re-invocation of
-// DiagnoseBilling via tool_choice. Conditions (all must hold):
-//   - prior tracked diagnosis was DiagnoseBilling
-//   - current turn is immediately adjacent (lastDiagnosisTurn + 1)
-//   - userMsg matches a billing follow-up keyword (extremely narrow word list)
-//
-// Note on target tracking: lastDiagnosisTargets is retained for future use
-// (e.g. stricter matching or telemetry) but is NOT a gate here. A bare
-// instance-name match without a billing keyword is ambiguous — the same
-// instance name can appear in restart / release / SSH intents that are
-// unrelated to billing. Requiring a billing keyword prevents the guard
-// from hijacking adjacent same-instance turns with different intents.
-//
-// This is intentionally single-domain. Do not extend to other Diagnose*
-// tools without re-evaluating against real-account regression.
-func (e *Engine) shouldForceBillingDiagnosis(userMsg string) bool {
-	if e.lastDiagnosisTool != "DiagnoseBilling" {
-		return false
-	}
-	if e.userTurn != e.lastDiagnosisTurn+1 {
-		return false
-	}
-	for _, kw := range billingFollowUpKeywords {
-		if strings.Contains(userMsg, kw) {
-			return true
-		}
 	}
 	return false
 }

@@ -269,7 +269,7 @@ Batch C（Week 2 下半）— 依赖 Batch A+B
 - 若 `deepseek-v4-flash` 的真实生产 request shape 与 CapabilityRegistry 矩阵或历史 probe 结论冲突，以真实生产 request shape probe 为准，并在代码或 artifact 中记录 traceability comment（日期 / base_url / model / request shape / response status / response body 摘要）。
 - 涉及 force-tool / `response_format` / thinking-mode 的工单，必须包含 `deepseek-v4-flash` 验证；无法验证时必须写明原因，且仅以下三类成立：① 测试 key 无该模型权限；② 工单测试的是 `deepseek-v4-flash` 明确不支持的 model-specific 特性；③ 预算或 rate-limit 已超出。
 - Capability probe 必须使用 engine 实际生产 request shape，不能只用 isolated minimal request。至少包括完整 tools list、真实 system prompt、以及与目标场景一致的最近多轮 chat history 形状；probe artifact 必须保留足够信息用于复现。历史上已出现过 minimal probe 通过但 production CLI 失败的情况。
-- **绝不**在 Phase 0 移除任何现有 force-tool guard 或 isAccountBillingUnsupported 等 hard-block。Phase 1 切意图时再删。
+- Phase 0 默认不移除现有 force-tool guard；若 `deepseek-v4-flash` 的真实生产 request shape probe 证明某 guard 会稳定触发 400，且 auto routing 不劣于 forced routing，允许通过独立 probe artifact + traceability comment 移除或 capability-gate。此例外必须在 PR body 引用本条约束、probe artifact 路径和决策理由。永久 hard-block（如 `isAccountBillingUnsupported`）不在此例外内，Phase 1 切意图时也不得误删。
 - **绝不**让 IntentPlan 在影子模式下决定主流程行为。即便 planner 给出更"对"的决策，也只能写 trace。
 - 新模块所有外部依赖通过 interface 注入，便于单测 mock。
 
