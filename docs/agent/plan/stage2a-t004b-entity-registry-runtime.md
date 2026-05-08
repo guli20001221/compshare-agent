@@ -74,6 +74,7 @@ Reasons:
 - Keeps Phase 0 non-binding: the executor can call `DescribeCompShareInstance` safely, but does not consume registry state for policy decisions.
 - Keeps T-007b simple: the shadow runner reads immutable snapshots from Engine/registry and writes trace fields, without changing the executor contract.
 - Keeps tests mockable: `entity.Executor` remains the narrow seam.
+- T-007b accesses registry state through a read-only Engine accessor that returns an immutable snapshot. The exact accessor signature is deferred to the T-007b implementation ticket, but it must not expose mutable maps or the registry lock.
 
 ### 3. Snapshot Identity
 
@@ -97,6 +98,8 @@ Hash input must exclude:
 - transient errors
 
 Rationale: if two refreshes observe the same account state, they should have the same `snapshot_id` even across turns or process restarts. Freshness is represented separately by `age_seconds` and `sync_event`.
+
+`snapshot_id` intentionally uses the first 16 hex chars for trace readability. Unlike `args_hash` / `result_hash`, it correlates one account's instance inventory snapshots rather than arbitrary high-cardinality payloads; collision risk is acceptable at the expected per-account instance scale. If registry scope expands beyond instance inventory, revisit this length before promotion.
 
 ### 4. Thread Safety
 
@@ -155,6 +158,8 @@ Cold-start refresh happens in `Engine.Init(ctx)`:
 3. On success, registry event is `init`.
 4. On failure, registry event is `failed`; existing `Init()` behavior must remain compatible with current tests and user flow.
 
+`Engine.InitWithContext(string)` remains a test/helper bypass and must not perform network refresh. Tests that use it either accept `sync_event="unavailable"` or inject registry state explicitly through test-only seams. T-004b must not change this method's public behavior.
+
 Timeout/retry rules:
 
 - Blocking refresh uses the caller-provided `ctx`.
@@ -188,6 +193,8 @@ Write-tool invalidate whitelist:
 Invalidate means: set an internal invalidated flag/reason. It does **not** mean immediate blocking refresh, and it does **not** mean blocking later tool calls.
 
 Workflow invalidation happens after the workflow returns a successful final result, not after each intermediate read step. Direct external action invalidation happens after `SafeToolExecutor` returns success for that action.
+
+Hook location is Engine-owned, not SafeToolExecutor-owned. Direct external actions call `e.registry.MarkInvalidated(action)` in the existing post-success `executeSafeTool` / `executeTool` path. Workflow actions call it after `executeWorkflow` returns a successful workflow result. `SafeToolExecutor` must remain unaware of registry state.
 
 ### 8. Trace Contract
 
