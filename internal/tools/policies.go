@@ -63,6 +63,9 @@ func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		}
 		policies[action] = policyForAction(action)
 	}
+	if _, ok := policies["GetProjectList"]; !ok {
+		policies["GetProjectList"] = policyForAction("GetProjectList")
+	}
 
 	return policies
 }

@@ -152,7 +152,7 @@ func TestChat_KnowledgeTool_GetGPUSpecs(t *testing.T) {
 	assert.Len(t, mock.calls, 2)
 	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
 	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
-	assert.Contains(t, toolMsg.Content, "24")  // VRAM
+	assert.Contains(t, toolMsg.Content, "24")          // VRAM
 	assert.Contains(t, toolMsg.Content, "fp16_tflops") // has FP16 field
 }
 
@@ -198,6 +198,42 @@ func TestChat_ExternalTool_L0(t *testing.T) {
 
 	// Executor should have been called
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+}
+
+func TestChat_ExternalToolReadRetriesTransientError(t *testing.T) {
+	attempts := 0
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			if action != "DescribeCompShareInstance" {
+				return map[string]any{"RetCode": 0}, nil
+			}
+			attempts++
+			if attempts == 1 {
+				return nil, io.ErrUnexpectedEOF
+			}
+			return map[string]any{"RetCode": 0, "UHostSet": []any{}}, nil
+		},
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DescribeCompShareInstance", `{}`),
+		}},
+		{Content: "retry succeeded"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "list instances", noopStep)
+	assert.NoError(t, err)
+	assert.Equal(t, "retry succeeded", reply)
+	assert.Equal(t, 2, attempts, "direct external read tools should be retried through SafeToolExecutor")
+
+	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
+	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
+	assert.Contains(t, toolMsg.Content, "UHostSet")
+	assert.NotContains(t, toolMsg.Content, "API")
 }
 
 func TestChat_ExternalTool_L2Blocked(t *testing.T) {
@@ -664,7 +700,7 @@ func TestFilterAllowedParams_StripsUnknown(t *testing.T) {
 		"injected_evil": "drop table",
 		"__proto__":     "bad",
 	}
-	filtered := filterAllowedParams("GetCompShareInstancePrice", args)
+	filtered := tools.NewSafeToolExecutor(&mockExecutor{}).FilterArgs("GetCompShareInstancePrice", args)
 
 	assert.Contains(t, filtered, "Zone")
 	assert.Contains(t, filtered, "GpuType")
@@ -674,7 +710,7 @@ func TestFilterAllowedParams_StripsUnknown(t *testing.T) {
 
 func TestFilterAllowedParams_PassesThroughUnknownTool(t *testing.T) {
 	args := map[string]any{"foo": "bar"}
-	filtered := filterAllowedParams("NonexistentTool", args)
+	filtered := tools.NewSafeToolExecutor(&mockExecutor{}).FilterArgs("NonexistentTool", args)
 	assert.Equal(t, args, filtered) // unchanged
 }
 
@@ -749,7 +785,7 @@ func TestChat_WorkflowTool_CreateInstance(t *testing.T) {
 		}},
 		"CheckCompShareResourceCapacity": {"RetCode": 0, "Specs": []any{map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true}}},
 		"GetCompShareInstanceUserPrice":  {"RetCode": 0, "PriceDetails": []any{map[string]any{"Price": 1.5}}},
-		"CreateCompShareInstance":         {"RetCode": 0, "UHostIds": []any{"uhost-new-001"}},
+		"CreateCompShareInstance":        {"RetCode": 0, "UHostIds": []any{"uhost-new-001"}},
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
 				map[string]any{"UHostId": "uhost-new-001", "State": "Running", "GpuType": "4090"},
@@ -1342,7 +1378,7 @@ func TestEnsureProjectId_UsesConfigWhenSet(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify the underlying executor still carries the config value.
-	ext := unwrapExternalExecutor(eng.executor)
+	ext := eng.externalExecutor()
 	assert.NotNil(t, ext)
 	assert.Equal(t, "org-cfg-value", ext.ProjectId())
 
@@ -1369,7 +1405,7 @@ func TestEnsureProjectId_FetchesWhenUnset_PicksDefault(t *testing.T) {
 	_, err := eng.Init(context.Background())
 	assert.NoError(t, err)
 
-	ext := unwrapExternalExecutor(eng.executor)
+	ext := eng.externalExecutor()
 	assert.NotNil(t, ext)
 	assert.Equal(t, "org-default", ext.ProjectId(),
 		"IsDefault=true entry must win over first entry")
@@ -1400,7 +1436,7 @@ func TestEnsureProjectId_FallsBackToFirstWhenNoDefault(t *testing.T) {
 	_, err := eng.Init(context.Background())
 	assert.NoError(t, err)
 
-	ext := unwrapExternalExecutor(eng.executor)
+	ext := eng.externalExecutor()
 	assert.Equal(t, "org-first", ext.ProjectId())
 }
 
@@ -1413,7 +1449,7 @@ func TestEnsureProjectId_SilentOnMalformed(t *testing.T) {
 	_, err := eng.Init(context.Background())
 	assert.NoError(t, err, "Init must not fail when GetProjectList returns empty set")
 
-	ext := unwrapExternalExecutor(eng.executor)
+	ext := eng.externalExecutor()
 	assert.Equal(t, "", ext.ProjectId())
 }
 

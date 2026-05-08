@@ -34,6 +34,12 @@ type SafeToolRequest struct {
 	Action string
 	Args   map[string]any
 	Origin ExecutionOrigin
+	Hooks  SafeToolHooks
+}
+
+type SafeToolHooks struct {
+	OnConfirmNeeded func(action string, args map[string]any)
+	OnBeforeCall    func(action string, args map[string]any)
 }
 
 type SafeToolResult struct {
@@ -99,6 +105,28 @@ func (s *SafeToolExecutor) AsToolExecutor(origin ExecutionOrigin) ToolExecutor {
 	return originExecutor{safe: s, origin: origin}
 }
 
+func (s *SafeToolExecutor) ExternalExecutor() *ExternalExecutor {
+	if ext, ok := s.inner.(*ExternalExecutor); ok {
+		return ext
+	}
+	if provider, ok := s.inner.(interface{ ExternalExecutor() *ExternalExecutor }); ok {
+		return provider.ExternalExecutor()
+	}
+	return nil
+}
+
+func (s *SafeToolExecutor) FilterArgs(action string, args map[string]any) map[string]any {
+	policy, ok := s.policies[action]
+	if !ok {
+		return copyMap(args)
+	}
+	return filterSafeArgs(args, policy.AllowedParams)
+}
+
+func (s *SafeToolExecutor) RedactArgs(action string, args map[string]any) map[string]any {
+	return sanitizer.SanitizeArgs(action, args)
+}
+
 type originExecutor struct {
 	safe   *SafeToolExecutor
 	origin ExecutionOrigin
@@ -134,9 +162,16 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 
 	args := filterSafeArgs(req.Args, policy.AllowedParams)
 	if shouldConfirm(policy, req.Origin) {
+		if req.Hooks.OnConfirmNeeded != nil {
+			req.Hooks.OnConfirmNeeded(req.Action, args)
+		}
 		if s.confirm == nil || !s.confirm(req.Action, args) {
 			return nil, fmt.Errorf("%w: %s", ErrUserDeclined, req.Action)
 		}
+	}
+
+	if req.Hooks.OnBeforeCall != nil {
+		req.Hooks.OnBeforeCall(req.Action, args)
 	}
 
 	raw, attempts, err := s.executeWithRetry(ctx, policy, req.Action, args)
