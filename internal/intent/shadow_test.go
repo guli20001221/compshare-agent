@@ -2,10 +2,12 @@ package intent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/governance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,6 +115,95 @@ func TestShadowRunner_FallbackResultReturnsInvalidTrace(t *testing.T) {
 	assert.Equal(t, string(IntentUnknown), trace.Intent)
 	assert.Zero(t, trace.Confidence)
 	assert.True(t, trace.HardBlockHint)
+}
+
+func TestShadowRunner_QuotaDenialSkipsPlannerAndReturnsInvalidTrace(t *testing.T) {
+	planner := &mockShadowPlanner{}
+	// Production callers pass a hashed subject. This intentionally raw test
+	// value verifies quota metadata cannot leak through PlannerTrace.
+	rawSubject := "raw-public-key-must-not-appear"
+	var requests []governance.Request
+	runner := NewShadowRunner(planner, ShadowRunnerOptions{
+		Enabled:      true,
+		Model:        "deepseek-v4-flash",
+		QuotaSubject: rawSubject,
+		QuotaHook: func(req governance.Request) governance.Decision {
+			requests = append(requests, req)
+			return governance.Decision{
+				Allowed:     false,
+				Class:       req.Class,
+				Action:      req.Action,
+				Reason:      governance.ReasonQPSExceeded,
+				SubjectHash: req.SubjectKey,
+				Err:         governance.ErrRateLimited,
+			}
+		},
+	})
+
+	trace := runner.Run(context.Background(), PlannerInput{UserText: "monitor"})
+
+	require.Len(t, requests, 1)
+	assert.Equal(t, governance.ClassLLM, requests[0].Class)
+	assert.Equal(t, "shadow_planner", requests[0].Action)
+	assert.Equal(t, rawSubject, requests[0].SubjectKey)
+	assert.Zero(t, planner.calls, "quota denial must skip planner LLM call")
+	assert.True(t, trace.Enabled)
+	assert.False(t, trace.SchemaValid)
+	assert.Equal(t, string(IntentUnknown), trace.Intent)
+	assert.Zero(t, trace.Confidence)
+	data, err := json.Marshal(trace)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), rawSubject)
+}
+
+func TestShadowRunner_QuotaAllowCallsPlannerOnce(t *testing.T) {
+	planner := &mockShadowPlanner{
+		result: PlannerResult{
+			Plan: Plan{
+				SchemaVersion: SchemaVersion,
+				Intent:        IntentMonitorQuery,
+				Slots:         Slots{Metrics: []Metric{MetricGPU}},
+				Confidence:    0.8,
+			},
+		},
+	}
+	var requests []governance.Request
+	runner := NewShadowRunner(planner, ShadowRunnerOptions{
+		Enabled: true,
+		Model:   "deepseek-v4-flash",
+		QuotaHook: func(req governance.Request) governance.Decision {
+			requests = append(requests, req)
+			return governance.Decision{Allowed: true, Class: req.Class, Action: req.Action, SubjectHash: req.SubjectKey}
+		},
+	})
+
+	trace := runner.Run(context.Background(), PlannerInput{UserText: "monitor"})
+
+	require.Len(t, requests, 1)
+	assert.Equal(t, governance.ClassLLM, requests[0].Class)
+	assert.Equal(t, "shadow_planner", requests[0].Action)
+	assert.Equal(t, 1, planner.calls)
+	assert.True(t, trace.SchemaValid)
+	assert.Equal(t, string(IntentMonitorQuery), trace.Intent)
+}
+
+func TestShadowRunner_DisabledDoesNotCallQuotaHook(t *testing.T) {
+	planner := &mockShadowPlanner{}
+	quotaCalls := 0
+	runner := NewShadowRunner(planner, ShadowRunnerOptions{
+		Enabled: false,
+		Model:   "deepseek-v4-flash",
+		QuotaHook: func(req governance.Request) governance.Decision {
+			quotaCalls++
+			return governance.Decision{Allowed: true}
+		},
+	})
+
+	trace := runner.Run(context.Background(), PlannerInput{UserText: "monitor"})
+
+	assert.False(t, trace.Enabled)
+	assert.Zero(t, quotaCalls)
+	assert.Zero(t, planner.calls)
 }
 
 type mockShadowPlanner struct {
