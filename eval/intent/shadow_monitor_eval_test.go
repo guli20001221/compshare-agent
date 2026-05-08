@@ -31,7 +31,7 @@ func TestShadowMonitorFixturesEval(t *testing.T) {
 			result, err := planner.Plan(context.Background(), intp.PlannerInput{
 				UserText:  current,
 				PriorText: shadowPriorText(fx.Turns[:len(fx.Turns)-1]),
-				Registry:  reg,
+				Resolver:  reg.Snapshot(),
 			})
 			require.NoError(t, err)
 			require.False(t, result.Fallback)

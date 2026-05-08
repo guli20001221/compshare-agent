@@ -129,13 +129,9 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)
 			eng.SetHardBlockObserver(traceRecorder.SetEngineHardBlock)
 			if shadowRunner != nil {
-				plannerInput := input
-				plannerPriorText := eng.PlannerPriorTextSnapshot()
+				plannerInput := cliShadowPlannerInput(eng, input)
 				traceRecorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
-					return shadowRunner.Run(ctx, intent.PlannerInput{
-						UserText:  plannerInput,
-						PriorText: plannerPriorText,
-					})
+					return shadowRunner.Run(ctx, plannerInput)
 				})
 			}
 		}
@@ -175,6 +171,16 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\nAssistant> %s\n\n", reply)
 	}
 	return nil
+}
+
+func cliShadowPlannerInput(eng *engine.Engine, userText string) intent.PlannerInput {
+	input := intent.PlannerInput{UserText: userText}
+	if eng == nil {
+		return input
+	}
+	input.PriorText = eng.PlannerPriorTextSnapshot()
+	input.Resolver = eng.RegistrySnapshot()
+	return input
 }
 
 type cliPlannerLLM struct {

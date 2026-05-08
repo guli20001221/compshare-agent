@@ -182,6 +182,30 @@ func TestSnapshotReturnsDeepCopies(t *testing.T) {
 	require.NotNil(t, got)
 }
 
+func TestRegistrySnapshotResolvesIDsAndNames(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.SyncFromDescribe(describeResult(
+		host("uhost-a", "train-a", "Running", "4090", 1),
+		host("uhost-b", "train-b", "Stopped", "A100", 1),
+	), "init"))
+
+	snap := reg.Snapshot()
+
+	got, res := snap.ResolveByID("uhost-a")
+	require.Equal(t, ResolveHit, res.Status)
+	require.NotNil(t, got)
+	assert.Equal(t, "uhost-a", got.UHostId)
+
+	matches, res := snap.ResolveByName("train-a")
+	require.Equal(t, ResolveHit, res.Status)
+	require.Len(t, matches, 1)
+	assert.Equal(t, "uhost-a", matches[0].UHostId)
+
+	missing, res := snap.ResolveByID("uhost-missing")
+	assert.Nil(t, missing)
+	assert.Equal(t, ResolveNotFoundInAccount, res.Status)
+}
+
 func TestSnapshotIDStableAcrossInputOrder(t *testing.T) {
 	regA := NewRegistry()
 	require.NoError(t, regA.SyncFromDescribe(describeResult(
