@@ -26,6 +26,7 @@ Scope:
 
 - Ran one real-account CLI smoke with two resource-basic user turns plus `exit`.
 - The run exercised the startup `Engine.Init` registry refresh path and wrote one trace line per user turn.
+- No user-turn tool calls were required for this T-004b check. The acceptance target is the registry state populated by startup refresh and exposed in each turn trace.
 - Raw CLI transcript, raw JSONL trace, temporary `agent.yaml`, and `.env.local` were kept in a local temp directory and are not committed.
 
 Trace checks:
@@ -54,5 +55,5 @@ Trace checks:
 Notes:
 
 - The smoke intentionally records only aggregate trace properties and sanitized command shape, not raw trace lines, raw tool arguments, raw tool results, raw user text, instance identifiers, IP addresses, or credentials.
-- No user-turn tool calls were needed for this T-004b check. The acceptance target is the registry state populated from the startup refresh and exposed in each turn trace.
+- This happy-path smoke only exercised `sync_event="init"`. Other sync events (`unavailable`, `sync_refresh`, `warm_cache`, `failed`) are covered by unit tests in `internal/entity/registry_test.go::TestRefreshRecordsSyncEvents`, `TestWarmRefreshRecordsWarmCache`, `TestRefreshFailurePreservesPreviousSnapshot`, `TestRefreshFailureWithoutPreviousSnapshot`, and `TestRefreshParseFailureRecordsFailed`.
 - The stable `snapshot_id` plus increasing `age_seconds` confirms that freshness is represented separately from inventory identity, as required by the T-004b ticket.
