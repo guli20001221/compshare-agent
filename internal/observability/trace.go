@@ -22,8 +22,11 @@ const (
 	ToolSourceInitContext       = "init_context"
 	ToolSourceShadowOnly        = "shadow_only"
 	ToolSourcePlannerHandler    = "planner_handler"
-	ToolStatusSuccess           = "success"
-	ToolStatusError             = "error"
+)
+
+const (
+	ToolStatusSuccess = "success"
+	ToolStatusError   = "error"
 )
 
 const DefaultTraceDir = "logs"

@@ -73,6 +73,7 @@ func TestHashTracePayloadIsStableAcrossMapOrder(t *testing.T) {
 func TestHashTracePayloadRedactsBeforeHashing(t *testing.T) {
 	payload := readJSONMap(t, filepath.Join("testdata", "secret_payload.json"))
 	payload["Authorization"] = "Bearer " + strings.Repeat("a", 25)
+	payload["Nested"] = map[string]any{"Authorization": "Bearer " + strings.Repeat("c", 25)}
 
 	canonical, err := canonicalTraceJSON(payload)
 	if err != nil {
@@ -83,6 +84,7 @@ func TestHashTracePayloadRedactsBeforeHashing(t *testing.T) {
 		"pk",
 		"sk",
 		strings.Repeat("a", 25),
+		strings.Repeat("c", 25),
 		"pw",
 		"npw",
 		"123.45",
@@ -90,6 +92,14 @@ func TestHashTracePayloadRedactsBeforeHashing(t *testing.T) {
 	} {
 		if strings.Contains(canonicalText, secret) {
 			t.Fatalf("canonical trace JSON leaked %q: %s", secret, canonicalText)
+		}
+	}
+	for _, public := range []string{
+		`"Action":"DescribeCompShareInstance"`,
+		`"Limit":10`,
+	} {
+		if !strings.Contains(canonicalText, public) {
+			t.Fatalf("canonical trace JSON over-redacted public field %q: %s", public, canonicalText)
 		}
 	}
 
