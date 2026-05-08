@@ -60,6 +60,11 @@ Each user turn writes exactly one JSON object when tracing is enabled. The objec
     "output_tokens": 0,
     "schema_valid": false,
     "intent": "",
+    "slots": {
+      "target_refs": [],
+      "metrics": [],
+      "time_window": null
+    },
     "confidence": 0,
     "hard_block_hint": false
   },
@@ -116,10 +121,13 @@ Each user turn writes exactly one JSON object when tracing is enabled. The objec
 - `user_msg_hash` must be a hash, not raw user text.
 - `tool_calls[].args_hash` must be computed from canonical JSON after `RedactForTrace`.
 - `tool_calls[].result_hash` must be computed from canonical JSON after `RedactForTrace`.
+- `planner.slots.target_refs`, `planner.slots.metrics`, and `planner.slots.time_window` must exist in the schema. T-006 writes empty values because the planner is disabled; T-007b populates them without changing `trace.v0.1`.
+- `entity_registry.sync_event` values for T-006: `""` when registry tracing is not wired, or `"unavailable"` when the trace writer explicitly checked and no registry snapshot was available. T-004b/T-007b may add `init`, `sync_refresh`, `warm_cache`, or `failed`.
 - `tool_calls[].source` values for T-006: `main_react`, `workflow_internal`, `diagnosis_internal`, `knowledge_local`, `init_context`.
 - T-007b may add `shadow_only`; Phase 1 monitor handlers may add `planner_handler`.
 - `freshness.monitor_call_in_current_turn` is derived from `tool_calls[].action == "GetCompShareInstanceMonitor"` for the current `turn_index`.
 - `renderer.input_tool_call_ids` and `renderer.input_tool_args_hashes` must exist in the schema. T-006 may write empty arrays because the current ReAct path has no separate renderer instrumentation. Phase 1 monitor handler promotion must populate them before using the PR #13 renderer-consumption assertion.
+- `outcome.attempted_hallucinated_count`, `outcome.escaped_hallucinated_count`, and `outcome.kb_conflict_count` are reserved counters. T-006 always writes `0`; future hallucination / KB conflict evaluation work populates non-zero values.
 - Unknown future fields must be additive. Do not rename V0.1 fields without introducing a new `schema_version`.
 
 ## Implementation Plan
@@ -138,6 +146,7 @@ Scope:
 - Implement daily JSONL path: `agent-trace-YYYY-MM-DD.jsonl`.
 - Implement file creation with `0600` or stricter. Do not block Windows if POSIX mode semantics are unavailable.
 - Implement deterministic hashing helper over canonical JSON.
+- Keep canonical-hash test fixtures under `internal/observability/testdata/`; do not scatter schema fixtures under `eval/`.
 - Apply `security.RedactForTrace` before hashing any args/result payload.
 
 Tests:
@@ -217,6 +226,7 @@ Use `deepseek-v4-flash` as the primary baseline unless the run cannot be verifie
 - [ ] Every enabled `Engine.Chat` turn writes exactly one trace line through the CLI path.
 - [ ] Trace lines contain no raw secrets and use `RedactForTrace` before hashing args/results.
 - [ ] `tool_calls[].source` distinguishes at least `main_react`, `workflow_internal`, `diagnosis_internal`, `knowledge_local`, and `init_context`.
+- [ ] `planner.slots.target_refs`, `planner.slots.metrics`, and `planner.slots.time_window` exist as schema fields, even when planner is disabled.
 - [ ] `freshness.monitor_call_in_current_turn` is computed from current-turn tool calls.
 - [ ] `renderer.input_tool_call_ids[]` and `renderer.input_tool_args_hashes[]` exist as schema fields, even if empty in T-006.
 - [ ] 30-day cleanup is unit-tested with a fake clock / injected `now`.
