@@ -426,6 +426,12 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return e.executeDiagnosis(ctx, action, args, onStep)
 	}
 
+	if decision, ok := e.allowMutatingTool(action); !ok {
+		msg := rateLimitMessage(decision.Reason)
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+		return finalReplyPrefix + msg
+	}
+
 	result, err := e.executeSafeTool(ctx, tools.SafeToolRequest{
 		Action: action,
 		Args:   args,
@@ -463,6 +469,17 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	formatted := prompt.FormatToolResult(result.LLMResult)
 	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "调用成功", Display: display, TraceResult: result.TraceResult, Attempts: result.Attempts})
 	return formatted
+}
+
+func (e *Engine) allowMutatingTool(action string) (governance.Decision, bool) {
+	policy, ok := e.safeExecutor.PolicyForAction(action)
+	// Read classes are not rate-limited by T-005. Destructive L2 actions are
+	// blocked by SafeToolExecutor before execution and do not consume quota.
+	// Only ActionClassMutating uses the mutating-tool budget.
+	if !ok || policy.Class != tools.ActionClassMutating {
+		return governance.Decision{Allowed: true, Class: governance.ClassMutatingTool, Action: action}, true
+	}
+	return e.allowRateLimited(governance.ClassMutatingTool, action)
 }
 
 func (e *Engine) executeRawTool(ctx context.Context, action string, args map[string]any, origin tools.ExecutionOrigin) (map[string]any, error) {
@@ -696,6 +713,12 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		msg := fmt.Sprintf("未知的工作流: %s", action)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
+	}
+
+	if decision, ok := e.allowMutatingTool(action); !ok {
+		msg := rateLimitMessage(decision.Reason)
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+		return finalReplyPrefix + msg
 	}
 
 	var wfConfirm workflow.ConfirmFunc
