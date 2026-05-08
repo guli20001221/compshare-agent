@@ -1937,6 +1937,24 @@ func TestRegistryTraceStateAccessorReturnsImmutableTraceState(t *testing.T) {
 	assert.Equal(t, string(entity.SyncEventInit), state.SyncEvent)
 }
 
+func TestPlannerPriorTextSnapshotOmitsSystemAndToolMessages(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "system prompt"},
+		{Role: openai.ChatMessageRoleUser, Content: "看一下 A 机器"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "A 机器正在运行"},
+		{Role: openai.ChatMessageRoleTool, Content: `{"UHostId":"uhost-a","PrivateIP":"10.0.0.1"}`},
+	}
+
+	prior := eng.PlannerPriorTextSnapshot()
+
+	assert.Contains(t, prior, "user: 看一下 A 机器")
+	assert.Contains(t, prior, "assistant: A 机器正在运行")
+	assert.NotContains(t, prior, "system prompt")
+	assert.NotContains(t, prior, "uhost-a")
+	assert.NotContains(t, prior, "10.0.0.1")
+}
+
 func TestEnsureProjectId_UsesConfigWhenSet(t *testing.T) {
 	// Pre-configured ProjectId → GetProjectList must NOT be called.
 	eng, h, cleanup := newEngineWithServer(t, &mockLLM{}, "org-cfg-value", "")

@@ -31,6 +31,10 @@ const (
 	// With ~7K system prompt tokens and ~1K per message pair, 40 messages ≈ 27K tokens
 	// which fits well within a 32K context window.
 	maxHistoryMessages = 40
+	// maxPlannerPriorMessages bounds the user/assistant history copied into
+	// shadow-planner input. Tool and system messages are intentionally omitted.
+	maxPlannerPriorMessages  = 8
+	maxPlannerPriorTextRunes = 2000
 )
 
 const (
@@ -227,6 +231,61 @@ func (e *Engine) RegistryTraceState(now time.Time) observability.EntityRegistryT
 		AgeSeconds: state.AgeSeconds,
 		SyncEvent:  state.SyncEvent,
 	}
+}
+
+// PlannerPriorTextSnapshot returns a bounded, read-only text projection of
+// prior user/assistant turns for shadow-planner provenance checks. It excludes
+// system prompts and tool-result JSON so shadow mode does not expand the data
+// surface beyond conversational text.
+func (e *Engine) PlannerPriorTextSnapshot() string {
+	if e == nil || len(e.messages) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, maxPlannerPriorMessages)
+	for i := len(e.messages) - 1; i >= 0 && len(lines) < maxPlannerPriorMessages; i-- {
+		msg := e.messages[i]
+		role := ""
+		switch msg.Role {
+		case openai.ChatMessageRoleUser:
+			role = "user"
+		case openai.ChatMessageRoleAssistant:
+			role = "assistant"
+		default:
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if content == "" {
+			continue
+		}
+		lines = append(lines, role+": "+content+"\n")
+	}
+	var b strings.Builder
+	for i := len(lines) - 1; i >= 0; i-- {
+		appendBoundedPlannerLine(&b, lines[i])
+		if plannerPriorRuneCount(&b) >= maxPlannerPriorTextRunes {
+			break
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func appendBoundedPlannerLine(b *strings.Builder, line string) {
+	current := plannerPriorRuneCount(b)
+	if current >= maxPlannerPriorTextRunes {
+		return
+	}
+	remaining := maxPlannerPriorTextRunes - current
+	runes := []rune(line)
+	if len(runes) <= remaining {
+		b.WriteString(line)
+		return
+	}
+	runes = runes[:remaining]
+	b.WriteString(string(runes))
+}
+
+func plannerPriorRuneCount(b *strings.Builder) int {
+	return len([]rune(b.String()))
 }
 
 // InitWithContext performs context injection with a pre-built user context string,

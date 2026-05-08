@@ -130,8 +130,12 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			eng.SetHardBlockObserver(traceRecorder.SetEngineHardBlock)
 			if shadowRunner != nil {
 				plannerInput := input
+				plannerPriorText := eng.PlannerPriorTextSnapshot()
 				traceRecorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
-					return shadowRunner.Run(ctx, intent.PlannerInput{UserText: plannerInput})
+					return shadowRunner.Run(ctx, intent.PlannerInput{
+						UserText:  plannerInput,
+						PriorText: plannerPriorText,
+					})
 				})
 			}
 		}
