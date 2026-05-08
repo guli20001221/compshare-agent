@@ -57,3 +57,36 @@ func TestRedactForTrace_HashesBillingAndMasksIP(t *testing.T) {
 	assert.Equal(t, "[REDACTED]", redacted["Password"])
 	assert.Equal(t, "pagination-cursor", redacted["next_token"])
 }
+
+func TestRedactForLLM_RedactsBearerTokensInStringValues(t *testing.T) {
+	token := "eyJhbGciOiJIUzI1NiIs" + "InR5cCI6IkpXVCJ9.foo.bar"
+	input := map[string]any{
+		"Header":      "Authorization: " + "Bearer " + token,
+		"Description": "Bearer-Class GPU image is a normal product label",
+	}
+
+	redacted := RedactForLLM(input).(map[string]any)
+
+	assert.Equal(t, "Authorization: Bearer [REDACTED]", redacted["Header"])
+	assert.Equal(t, "Bearer-Class GPU image is a normal product label", redacted["Description"])
+}
+
+func TestRedactForLLM_RedactsOAuthStyleSecretKeys(t *testing.T) {
+	input := map[string]any{
+		"RefreshToken":  "refresh-token-value",
+		"IDToken":       "id-token-value",
+		"ClientSecret":  "client-secret-value",
+		"WebhookSecret": "webhook-secret-value",
+		"Credential":    "credential-value",
+		"next_token":    "pagination-cursor",
+	}
+
+	redacted := RedactForLLM(input).(map[string]any)
+
+	assert.Equal(t, "[REDACTED]", redacted["RefreshToken"])
+	assert.Equal(t, "[REDACTED]", redacted["IDToken"])
+	assert.Equal(t, "[REDACTED]", redacted["ClientSecret"])
+	assert.Equal(t, "[REDACTED]", redacted["WebhookSecret"])
+	assert.Equal(t, "[REDACTED]", redacted["Credential"])
+	assert.Equal(t, "pagination-cursor", redacted["next_token"])
+}

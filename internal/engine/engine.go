@@ -3,8 +3,11 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/compshare-agent/internal/config"
@@ -12,8 +15,6 @@ import (
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/prompt"
-	"github.com/compshare-agent/internal/sanitizer"
-	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 
@@ -28,6 +29,12 @@ const (
 	maxHistoryMessages = 40
 )
 
+var (
+	beijingZone  = time.FixedZone("CST", 8*3600)
+	isoDateRE    = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
+	clockRangeRE = regexp.MustCompile(`\b\d{1,2}:\d{2}\s*(?:~|-|到|至)\s*\d{1,2}:\d{2}\b`)
+)
+
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
 type ConfirmFunc func(action string, args map[string]any) bool
 
@@ -39,11 +46,16 @@ type LLMClient interface {
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
 type Engine struct {
 	llmClient             LLMClient
-	executor              tools.ToolExecutor
+	safeExecutor          *tools.SafeToolExecutor
 	confirmFn             ConfirmFunc
 	messages              []openai.ChatCompletionMessage // conversation history
 	userTurn              int                            // incremented at start of each Chat() call
 	lastInstanceQueryTurn int                            // set to userTurn on successful DescribeCompShareInstance
+	currentMonitorTargets []string                       // historical monitor targets queried in the current turn
+	currentMonitorNoData  []string                       // current-turn historical monitor targets with no data samples
+	currentMonitorStart   int64                          // start of the current historical monitor window, if any
+	currentMonitorEnd     int64                          // end of the current historical monitor window, if any
+	currentMonitorWindow  bool                           // true when currentMonitorStart/End are known
 	// Diagnosis follow-up tracking (narrow, only DiagnoseBilling for now).
 	// Updated after a successful executeDiagnosis run; read at the start of
 	// the next Chat() to decide whether to force DiagnoseBilling via tool_choice.
@@ -63,7 +75,7 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 		lastInstanceQueryTurn: -1,
 		lastDiagnosisTurn:     -1,
 	}
-	eng.executor = &freshnessTracker{inner: tools.NewExternalExecutor(cfg.Agent), engine: eng}
+	eng.safeExecutor = newSafeToolExecutor(tools.NewExternalExecutor(cfg.Agent), confirmFn)
 	return eng
 }
 
@@ -75,8 +87,16 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 		lastInstanceQueryTurn: -1,
 		lastDiagnosisTurn:     -1,
 	}
-	eng.executor = &freshnessTracker{inner: executor, engine: eng}
+	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn)
 	return eng
+}
+
+func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc) *tools.SafeToolExecutor {
+	var safeConfirm tools.ConfirmFunc
+	if confirmFn != nil {
+		safeConfirm = tools.ConfirmFunc(confirmFn)
+	}
+	return tools.NewSafeToolExecutor(executor, tools.WithConfirmFunc(safeConfirm))
 }
 
 // Init performs first-turn context injection:
@@ -90,7 +110,7 @@ func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
 
 	// Auto-inject user instance context
 	userCtx := "暂无用户信息"
-	result, err := e.executor.Execute(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100})
+	result, err := e.executeRawTool(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100}, tools.OriginDirectLLM)
 	if err != nil {
 		// Context injection is best-effort; continue with default context.
 		_ = err
@@ -125,6 +145,11 @@ func (e *Engine) InitWithContext(userCtx string) {
 func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, error) {
 	e.userTurn++
 	e.lastUserMsg = userMsg
+	e.currentMonitorTargets = nil
+	e.currentMonitorNoData = nil
+	e.currentMonitorStart = 0
+	e.currentMonitorEnd = 0
+	e.currentMonitorWindow = false
 
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
@@ -158,11 +183,12 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
+			content := e.guardMonitorTemporalFinalReply(resp.Content)
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
-				Content: resp.Content,
+				Content: content,
 			})
-			return resp.Content, nil
+			return content, nil
 		}
 
 		// Has tool calls → execute each and feed results back
@@ -238,7 +264,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 
 	// Knowledge tools execute locally — no API call, no security check needed
 	if knowledge.IsKnowledgeTool(action) {
-		args = filterAllowedParams(action, args)
+		args = e.safeExecutor.FilterArgs(action, args)
 		onStep(StepEvent{Type: StepToolCall, Action: action, Args: args})
 		result, err := knowledge.ExecuteTool(action, args)
 		if err != nil {
@@ -256,67 +282,250 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	// (not LLM-controlled) and each workflow has its own Confirm step for user approval.
 	// Invariant: BuildArgs functions must only reference specific named keys from wfCtx.Params.
 	if workflow.IsWorkflowTool(action) {
-		args = filterAllowedParams(action, args)
-		onStep(StepEvent{Type: StepToolCall, Action: action, Args: sanitizer.SanitizeArgs(action, args)})
+		args = e.safeExecutor.FilterArgs(action, args)
+		onStep(StepEvent{Type: StepToolCall, Action: action, Args: e.safeExecutor.RedactArgs(action, args)})
 		return e.executeWorkflow(ctx, action, args, onStep)
 	}
 
 	// Diagnosis meta-tools → delegate to diagnosis engine.
 	if diagnosis.IsDiagnosisTool(action) {
-		args = filterAllowedParams(action, args)
-		onStep(StepEvent{Type: StepToolCall, Action: action, Args: sanitizer.SanitizeArgs(action, args)})
+		args = e.safeExecutor.FilterArgs(action, args)
+		onStep(StepEvent{Type: StepToolCall, Action: action, Args: e.safeExecutor.RedactArgs(action, args)})
 		return e.executeDiagnosis(ctx, action, args, onStep)
 	}
 
-	// External API tools: security check
-	level, err := security.Check(action)
+	result, err := e.executeSafeTool(ctx, tools.SafeToolRequest{
+		Action: action,
+		Args:   args,
+		Origin: tools.OriginDirectLLM,
+		Hooks: tools.SafeToolHooks{
+			OnConfirmNeeded: func(action string, args map[string]any) {
+				onStep(StepEvent{Type: StepConfirmNeeded, Action: action, Args: e.safeExecutor.RedactArgs(action, args), Message: "此操作需要您确认"})
+			},
+			OnBeforeCall: func(action string, args map[string]any) {
+				onStep(StepEvent{Type: StepToolCall, Action: action, Args: args})
+			},
+		},
+	})
 	if err != nil {
-		onStep(StepEvent{Type: StepError, Action: action, Message: err.Error()})
-		return fmt.Sprintf("错误: %s", err.Error())
-	}
-
-	if level == security.L2 {
-		msg := fmt.Sprintf("安全限制：%s 是破坏性操作（L2），已拒绝执行。请到控制台手动操作。", action)
-		onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
-		return finalReplyPrefix + msg
-	}
-
-	// L1: must get user confirmation before executing
-	if level == security.L1 {
-		onStep(StepEvent{Type: StepConfirmNeeded, Action: action, Args: sanitizer.SanitizeArgs(action, args), Message: "此操作需要您确认"})
-		if e.confirmFn == nil || !e.confirmFn(action, args) {
+		if errors.Is(err, tools.ErrDestructiveAction) {
+			msg := fmt.Sprintf("安全限制：%s 是破坏性操作（L2），已拒绝执行。请到控制台手动操作。", action)
+			onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
+			return finalReplyPrefix + msg
+		}
+		if errors.Is(err, tools.ErrUserDeclined) {
 			msg := fmt.Sprintf("操作 %s 已取消（用户未确认）。", action)
 			onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
 			return finalReplyPrefix + msg
 		}
-	}
-
-	// Strip parameters not in the tool schema to prevent LLM injection
-	args = filterAllowedParams(action, args)
-
-	onStep(StepEvent{Type: StepToolCall, Action: action, Args: args})
-
-	// Execute external API
-	result, err := e.executor.Execute(ctx, action, args)
-	if err != nil {
 		errMsg := fmt.Sprintf("API 调用失败: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Message: errMsg})
 		return errMsg
 	}
 
-	// Dual-channel sanitization: extract display-only content before redacting
 	var display string
-	if action == "DescribeCompShareJupyterToken" {
-		if token := sanitizer.ExtractJupyterToken(result); token != "" {
-			display = fmt.Sprintf("Jupyter Token: %s", token)
-		}
+	if result.Display.Kind == "JupyterToken" && result.Display.Value != "" {
+		display = fmt.Sprintf("Jupyter Token: %s", result.Display.Value)
 	}
 
-	// Sanitize before sending to LLM context
-	sanitized := sanitizer.Sanitize(action, result)
-	formatted := prompt.FormatToolResult(sanitized)
+	formatted := prompt.FormatToolResult(result.LLMResult)
 	onStep(StepEvent{Type: StepToolResult, Action: action, Message: "调用成功", Display: display})
 	return formatted
+}
+
+func (e *Engine) executeRawTool(ctx context.Context, action string, args map[string]any, origin tools.ExecutionOrigin) (map[string]any, error) {
+	result, err := e.executeSafeTool(ctx, tools.SafeToolRequest{
+		Action: action,
+		Args:   args,
+		Origin: origin,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.RawResult, nil
+}
+
+func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest) (*tools.SafeToolResult, error) {
+	result, err := e.safeExecutor.ExecuteSafe(ctx, req)
+	if err == nil && req.Action == "DescribeCompShareInstance" {
+		e.lastInstanceQueryTurn = e.userTurn
+	}
+	if err == nil {
+		e.trackMonitorResult(result)
+	}
+	return result, err
+}
+
+func (e *Engine) toolExecutorFor(origin tools.ExecutionOrigin) tools.ToolExecutor {
+	return engineToolExecutor{engine: e, origin: origin}
+}
+
+type engineToolExecutor struct {
+	engine *Engine
+	origin tools.ExecutionOrigin
+}
+
+func (x engineToolExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	return x.engine.executeRawTool(ctx, action, args, x.origin)
+}
+
+func (e *Engine) guardMonitorTemporalFinalReply(content string) string {
+	if !e.currentMonitorWindow || content == "" {
+		return content
+	}
+	if e.allCurrentHistoricalMonitorResultsNoData() {
+		return formatHistoricalMonitorNoDataReply(e.currentMonitorStart, e.currentMonitorEnd, e.currentMonitorNoData)
+	}
+
+	startAt := time.Unix(e.currentMonitorStart, 0).In(beijingZone)
+	endAt := time.Unix(e.currentMonitorEnd, 0).In(beijingZone)
+	targetDate := startAt.Format("2006-01-02")
+	targetTimeRange := fmt.Sprintf("%s ~ %s", startAt.Format("15:04"), endAt.Format("15:04"))
+	corrected := isoDateRE.ReplaceAllStringFunc(content, func(date string) string {
+		if date == targetDate {
+			return date
+		}
+		return targetDate
+	})
+	corrected = clockRangeRE.ReplaceAllString(corrected, targetTimeRange)
+	replacements := map[string]string{
+		"当前实时监控":  "该历史时间窗监控",
+		"当前监控":    "该历史时间窗监控",
+		"当前实时":    "该历史时间窗",
+		"当前值":     "该时间窗值",
+		"最近较短时间内": "指定历史时间窗内",
+	}
+	for old, repl := range replacements {
+		corrected = strings.ReplaceAll(corrected, old, repl)
+	}
+	return corrected
+}
+
+func (e *Engine) trackMonitorResult(result *tools.SafeToolResult) {
+	if result == nil || result.Action != "GetCompShareInstanceMonitor" || !hasMonitorTimeRangeArgs(result.Args) {
+		return
+	}
+	targets := extractMonitorTargets(result.Args)
+	e.currentMonitorTargets = append(e.currentMonitorTargets, targets...)
+	if start, end, ok := monitorTimeWindow(result.Args); ok {
+		if !e.currentMonitorWindow {
+			e.currentMonitorStart = start
+			e.currentMonitorEnd = end
+			e.currentMonitorWindow = true
+		} else {
+			if start < e.currentMonitorStart {
+				e.currentMonitorStart = start
+			}
+			if end > e.currentMonitorEnd {
+				e.currentMonitorEnd = end
+			}
+		}
+	}
+	if status, _ := result.LLMResult["MonitorDataStatus"].(string); status == "NO_DATA_IN_REQUESTED_WINDOW" {
+		e.currentMonitorNoData = append(e.currentMonitorNoData, targets...)
+	}
+}
+
+func (e *Engine) allCurrentHistoricalMonitorResultsNoData() bool {
+	if len(e.currentMonitorTargets) == 0 {
+		return false
+	}
+	noData := make(map[string]bool, len(e.currentMonitorNoData))
+	for _, target := range e.currentMonitorNoData {
+		noData[target] = true
+	}
+	for _, target := range e.currentMonitorTargets {
+		if !noData[target] {
+			return false
+		}
+	}
+	return true
+}
+
+func formatHistoricalMonitorNoDataReply(start, end int64, targets []string) string {
+	startText := time.Unix(start, 0).In(beijingZone).Format("2006-01-02 15:04")
+	endText := time.Unix(end, 0).In(beijingZone).Format("2006-01-02 15:04")
+	targetText := strings.Join(uniqueStrings(targets), "、")
+	if targetText == "" {
+		targetText = "所查实例"
+	}
+	return fmt.Sprintf("北京时间 %s ~ %s，%s 没有返回有效监控数据。不能判断该时间窗内的 CPU、内存、GPU 或显存占用，也不会用其他时间的数据替代。", startText, endText, targetText)
+}
+
+func hasMonitorTimeRangeArgs(args map[string]any) bool {
+	if args == nil {
+		return false
+	}
+	_, hasStart := args["StartTime"]
+	_, hasEnd := args["EndTime"]
+	return hasStart || hasEnd
+}
+
+func monitorTimeWindow(args map[string]any) (int64, int64, bool) {
+	start, okStart := int64Arg(args["StartTime"])
+	end, okEnd := int64Arg(args["EndTime"])
+	if !okStart || !okEnd {
+		return 0, 0, false
+	}
+	if end < start {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+func int64Arg(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int:
+		return int64(x), true
+	case int64:
+		return x, true
+	case float64:
+		return int64(x), true
+	case json.Number:
+		n, err := x.Int64()
+		return n, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func extractMonitorTargets(args map[string]any) []string {
+	if args == nil {
+		return nil
+	}
+	var targets []string
+	switch v := args["UHostIds"].(type) {
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				targets = append(targets, s)
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if s != "" {
+				targets = append(targets, s)
+			}
+		}
+	case string:
+		if v != "" {
+			targets = append(targets, v)
+		}
+	}
+	return targets
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	var out []string
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 // executeWorkflow runs a predefined workflow and returns the result as a JSON string
@@ -349,7 +558,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		wfConfirm = workflow.ConfirmFunc(e.confirmFn)
 	}
 
-	wfEngine := workflow.NewEngine(e.executor, wfConfirm, func(ev workflow.StepEvent) {
+	wfEngine := workflow.NewEngine(e.toolExecutorFor(tools.OriginWorkflowInternal), wfConfirm, func(ev workflow.StepEvent) {
 		eventType := StepToolCall
 		if ev.Type == workflow.StepConfirm {
 			if ev.Status == "waiting" {
@@ -369,7 +578,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		onStep(StepEvent{
 			Type:    eventType,
 			Action:  ev.Tool,
-			Args:    sanitizer.SanitizeArgs(ev.Tool, ev.Args),
+			Args:    e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
 			Message: fmt.Sprintf("[%d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status),
 		})
 	})
@@ -416,7 +625,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	// which instance. Avoids implicit scan-all when the user has a
 	// specific instance in mind but didn't name it.
 	//
-	// Target check is UHostId-only because filterAllowedParams upstream
+	// Target check is UHostId-only because SafeToolExecutor filters upstream
 	// strips any field not in the DiagnoseInitFailure schema (which only
 	// declares UHostId). The LLM is expected to resolve names to UHostIds
 	// upstream; if it doesn't, this gate correctly falls through to
@@ -430,7 +639,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		}
 	}
 
-	diagEngine := diagnosis.NewEngine(e.executor, func(ev diagnosis.DiagEvent) {
+	diagEngine := diagnosis.NewEngine(e.toolExecutorFor(tools.OriginDiagnosisInternal), func(ev diagnosis.DiagEvent) {
 		var eventType StepType
 		switch ev.Status {
 		case "running":
@@ -443,7 +652,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		onStep(StepEvent{
 			Type:    eventType,
 			Action:  ev.Tool,
-			Args:    sanitizer.SanitizeArgs(ev.Tool, ev.Args),
+			Args:    e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
 			Message: fmt.Sprintf("[诊断 %d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status),
 		})
 	})
@@ -466,45 +675,6 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 
 	b, _ := json.Marshal(result)
 	return string(b)
-}
-
-// filterAllowedParams strips parameters not defined in the tool registry schema.
-// This prevents the LLM from injecting extra fields into API calls.
-func filterAllowedParams(action string, args map[string]any) map[string]any {
-	allowed := getAllowedParams(action)
-	if allowed == nil {
-		return args // unknown tool, pass through (will be caught by security check)
-	}
-	filtered := make(map[string]any, len(allowed))
-	for _, key := range allowed {
-		if v, ok := args[key]; ok {
-			filtered[key] = v
-		}
-	}
-	return filtered
-}
-
-// getAllowedParams extracts parameter names from the tool registry.
-func getAllowedParams(action string) []string {
-	for _, tool := range tools.Registry {
-		if tool.Function == nil || tool.Function.Name != action {
-			continue
-		}
-		params, ok := tool.Function.Parameters.(map[string]any)
-		if !ok {
-			return nil
-		}
-		props, ok := params["properties"].(map[string]any)
-		if !ok {
-			return nil
-		}
-		keys := make([]string, 0, len(props))
-		for k := range props {
-			keys = append(keys, k)
-		}
-		return keys
-	}
-	return nil
 }
 
 // StepType identifies what kind of intermediate event occurred.
@@ -607,23 +777,6 @@ func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
 	return msgs
 }
 
-// freshnessTracker wraps a ToolExecutor to track when instance state was last
-// successfully queried. When DescribeCompShareInstance returns without error,
-// it updates the engine's lastInstanceQueryTurn. This works uniformly across
-// direct API calls, workflow internals, and diagnosis internals.
-type freshnessTracker struct {
-	inner  tools.ToolExecutor
-	engine *Engine
-}
-
-func (t *freshnessTracker) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
-	result, err := t.inner.Execute(ctx, action, args)
-	if err == nil && action == "DescribeCompShareInstance" {
-		t.engine.lastInstanceQueryTurn = t.engine.userTurn
-	}
-	return result, err
-}
-
 // ensureProjectId makes sure the underlying ExternalExecutor has a ProjectId.
 // If config already supplied one, it's a no-op. Otherwise it calls
 // GetProjectList and picks the IsDefault project (or the first one available).
@@ -632,14 +785,14 @@ func (t *freshnessTracker) Execute(ctx context.Context, action string, args map[
 // APIs will then fail with a clear platform-level error that the caller
 // can see in the agent reply.
 func (e *Engine) ensureProjectId(ctx context.Context) {
-	ext := unwrapExternalExecutor(e.executor)
+	ext := e.externalExecutor()
 	if ext == nil {
 		return // test executor or other non-external implementation
 	}
 	if ext.ProjectId() != "" {
 		return
 	}
-	resp, err := e.executor.Execute(ctx, "GetProjectList", nil)
+	resp, err := e.executeRawTool(ctx, "GetProjectList", nil, tools.OriginDirectLLM)
 	if err != nil {
 		return
 	}
@@ -648,17 +801,11 @@ func (e *Engine) ensureProjectId(ctx context.Context) {
 	}
 }
 
-// unwrapExternalExecutor peels off wrapper layers (e.g. freshnessTracker) to
-// find the underlying *tools.ExternalExecutor. Returns nil if the chain
-// doesn't terminate in an ExternalExecutor (e.g. tests with mock executors).
-func unwrapExternalExecutor(exec tools.ToolExecutor) *tools.ExternalExecutor {
-	if t, ok := exec.(*freshnessTracker); ok {
-		return unwrapExternalExecutor(t.inner)
+func (e *Engine) externalExecutor() *tools.ExternalExecutor {
+	if e.safeExecutor == nil {
+		return nil
 	}
-	if ext, ok := exec.(*tools.ExternalExecutor); ok {
-		return ext
-	}
-	return nil
+	return e.safeExecutor.ExternalExecutor()
 }
 
 // billingFollowUpKeywords is a narrow, single-domain keyword list used only

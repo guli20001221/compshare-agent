@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -232,5 +233,55 @@ func TestExternalExecutor_NoProjectIdWhenUnset(t *testing.T) {
 	}
 	if got := (*form).Get("ProjectId"); got != "" {
 		t.Errorf("form ProjectId = %q, want empty when unset", got)
+	}
+}
+
+func TestExternalExecutor_MonitorUsesJSONBodyForUHostIds(t *testing.T) {
+	var contentType string
+	var rawBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentType = r.Header.Get("Content-Type")
+		rawBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "GetCompShareInstanceMonitorResponse"}`))
+	}))
+	defer srv.Close()
+
+	ext := NewExternalExecutor(config.AgentConfig{
+		CompShareAPIURL: srv.URL,
+		PublicKey:       "pk",
+		PrivateKey:      "sk",
+		Region:          "cn-wlcb",
+		ProjectId:       "org-cfg",
+	})
+
+	if _, err := ext.Execute(context.Background(), "GetCompShareInstanceMonitor", map[string]any{
+		"UHostIds":  []any{"uhost-1"},
+		"StartTime": 1777442400,
+		"EndTime":   1777444200,
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if contentType != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json; body=%s", contentType, string(rawBody))
+	}
+	if form, err := url.ParseQuery(string(rawBody)); err == nil && form.Get("UHostIds.0") != "" {
+		t.Fatalf("monitor request used form-style UHostIds.0=%q; body=%s", form.Get("UHostIds.0"), string(rawBody))
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		t.Fatalf("monitor request body is not JSON: %v; body=%s", err, string(rawBody))
+	}
+	ids, ok := body["UHostIds"].([]any)
+	if !ok || len(ids) != 1 || ids[0] != "uhost-1" {
+		t.Fatalf("UHostIds = %#v, want [uhost-1]", body["UHostIds"])
+	}
+	if body["ProjectId"] != "org-cfg" {
+		t.Fatalf("ProjectId = %#v, want org-cfg", body["ProjectId"])
+	}
+	if body["Signature"] == "" {
+		t.Fatal("Signature is empty")
 	}
 }

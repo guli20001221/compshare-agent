@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +51,10 @@ func (e *ExternalExecutor) ProjectId() string {
 }
 
 func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	if usesJSONBody(action) {
+		return e.executeJSON(ctx, action, args)
+	}
+
 	// Build params: Action + Region + args + PublicKey
 	params := map[string]string{
 		"Action":    action,
@@ -109,6 +114,63 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 	return result, nil
 }
 
+func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	body := map[string]any{
+		"Action":    action,
+		"Region":    e.region,
+		"PublicKey": e.publicKey,
+	}
+	for k, v := range args {
+		body[k] = v
+	}
+
+	if e.projectId != "" {
+		if _, provided := body["ProjectId"]; !provided {
+			body["ProjectId"] = e.projectId
+		}
+	}
+
+	body["Signature"] = ucloudSignJSON(body, e.privateKey)
+
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", e.apiURL, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("api call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	const maxResponseSize = 1 << 20 // 1MB
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+
+	if retCode, ok := result["RetCode"].(float64); ok && retCode != 0 {
+		msg, _ := result["Message"].(string)
+		return nil, fmt.Errorf("API error (RetCode=%d): %s", int(retCode), msg)
+	}
+
+	return result, nil
+}
+
+func usesJSONBody(action string) bool {
+	return action == "GetCompShareInstanceMonitor"
+}
+
 // ucloudSign computes the UCloud API signature.
 // Algorithm: SHA1( sorted_params_concatenation + private_key )
 func ucloudSign(params map[string]string, privateKey string) string {
@@ -128,6 +190,72 @@ func ucloudSign(params map[string]string, privateKey string) string {
 	h := sha1.New()
 	h.Write([]byte(buf.String()))
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func ucloudSignJSON(params map[string]any, privateKey string) string {
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		if k == "Signature" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var buf strings.Builder
+	for _, k := range keys {
+		buf.WriteString(k)
+		buf.WriteString(jsonSignValue(params[k]))
+	}
+	buf.WriteString(privateKey)
+
+	h := sha1.New()
+	h.Write([]byte(buf.String()))
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func jsonSignValue(v any) string {
+	switch val := v.(type) {
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	case string:
+		return val
+	case int:
+		return fmt.Sprintf("%d", val)
+	case int64:
+		return fmt.Sprintf("%d", val)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case []any:
+		var buf strings.Builder
+		for _, item := range val {
+			buf.WriteString(jsonSignValue(item))
+		}
+		return buf.String()
+	case []string:
+		var buf strings.Builder
+		for _, item := range val {
+			buf.WriteString(item)
+		}
+		return buf.String()
+	case map[string]any:
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var buf strings.Builder
+		for _, k := range keys {
+			buf.WriteString(k)
+			buf.WriteString(jsonSignValue(val[k]))
+		}
+		return buf.String()
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }
 
 // flattenInto converts nested args to flat "Key.N.SubKey" form for UCloud API.

@@ -20,7 +20,9 @@ $secretPatterns = @(
     'api_key:\s*["''][^"$][^"'']{16,}["'']',
     'public_key:\s*["''][^"$][^"'']{16,}["'']',
     'private_key:\s*["''][^"$][^"'']{16,}["'']',
-    '(?i)(access|secret|api|auth|session|jupyter|bearer|compshare|mverse|modelverse|ucloud|ark|volc|llm|hf).{0,24}(key|token)\s*[:=]\s*["'']?[A-Za-z0-9_\-]{24,}'
+    '(?i)(access|secret|api|auth|session|jupyter|bearer|compshare|mverse|modelverse|ucloud|ark|volc|llm|hf).{0,24}(key|token)\s*[:=]\s*["'']?[A-Za-z0-9_\-]{24,}',
+    '(?i)(password|client_secret|webhook_secret|credential)\s*[:=]\s*["'']?[A-Za-z0-9_\-/+=.]{8,}',
+    '(?i)\bbearer\s+[A-Za-z0-9_\-.]{20,}'
 )
 
 function Fail($message) {
