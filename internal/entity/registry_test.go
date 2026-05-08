@@ -2,6 +2,7 @@ package entity
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -100,8 +101,9 @@ func TestSyncMetadataAndAge(t *testing.T) {
 		host("uhost-a", "train-a", "Running", "4090", 1),
 	), "init"))
 
-	assert.Equal(t, "init", reg.LastSyncEvent)
-	assert.Equal(t, now, reg.LastFullSync)
+	snap := reg.Snapshot()
+	assert.Equal(t, "init", snap.SyncEvent)
+	assert.Equal(t, now, snap.LastFullSync)
 	now = now.Add(90 * time.Second)
 	assert.Equal(t, 90*time.Second, reg.Age())
 }
@@ -130,7 +132,7 @@ func TestSyncFromDescribeParsesJSONNumberFields(t *testing.T) {
 	assert.Equal(t, 32, got.CPU)
 	assert.Equal(t, 131072, got.Memory)
 	assert.Equal(t, int64(1778148600), got.ExpireTime)
-	assert.Equal(t, 1, reg.TotalCount)
+	assert.Equal(t, 1, reg.Snapshot().TotalCount)
 }
 
 func TestSyncFromDescribeParsesValidatorSnapshotFields(t *testing.T) {
@@ -148,6 +150,93 @@ func TestSyncFromDescribeParsesValidatorSnapshotFields(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, "Custom", got.ImageType)
 	assert.Equal(t, int64(1778145000), got.StartTime)
+}
+
+func TestSnapshotReturnsDeepCopies(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.SyncFromDescribe(describeResult(
+		host("uhost-a", "train-a", "Running", "4090", 1),
+		host("uhost-b", "train-b", "Stopped", "A100", 1),
+	), "init"))
+
+	snap := reg.Snapshot()
+	require.NotEmpty(t, snap.SnapshotID)
+	snap.Instances["uhost-a"] = InstanceSnapshot{UHostId: "uhost-a", Name: "mutated"}
+	snap.NameIndex[normalizeName("train-a")][0] = "uhost-mutated"
+	delete(snap.Instances, "uhost-b")
+
+	got, res := reg.ResolveByID("uhost-a")
+	require.Equal(t, ResolveHit, res.Status)
+	require.NotNil(t, got)
+	assert.Equal(t, "train-a", got.Name)
+
+	matches, res := reg.ResolveByName("train-a")
+	require.Equal(t, ResolveHit, res.Status)
+	require.Len(t, matches, 1)
+	assert.Equal(t, "uhost-a", matches[0].UHostId)
+
+	got, res = reg.ResolveByID("uhost-b")
+	require.Equal(t, ResolveHit, res.Status)
+	require.NotNil(t, got)
+}
+
+func TestSnapshotIDStableAcrossInputOrder(t *testing.T) {
+	regA := NewRegistry()
+	require.NoError(t, regA.SyncFromDescribe(describeResult(
+		host("uhost-a", "train-a", "Running", "4090", 1),
+		host("uhost-b", "train-b", "Stopped", "A100", 1),
+	), "init"))
+
+	regB := NewRegistry()
+	require.NoError(t, regB.SyncFromDescribe(describeResult(
+		host("uhost-b", "train-b", "Stopped", "A100", 1),
+		host("uhost-a", "train-a", "Running", "4090", 1),
+	), "init"))
+
+	assert.Equal(t, regA.Snapshot().SnapshotID, regB.Snapshot().SnapshotID)
+}
+
+func TestConcurrentResolveAndSyncFromDescribeNoRace(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.SyncFromDescribe(describeResult(
+		host("uhost-a", "train-a", "Running", "4090", 1),
+		host("uhost-b", "train-b", "Stopped", "A100", 1),
+	), "init"))
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < 200; j++ {
+				_, _ = reg.ResolveByID("uhost-a")
+				_, _ = reg.ResolveByName("train")
+				_ = reg.Filter(FilterSpec{GPUType: "4090"})
+				_ = reg.Snapshot()
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for j := 0; j < 80; j++ {
+			hosts := []map[string]any{
+				host("uhost-a", "train-a", "Running", "4090", 1),
+				host("uhost-b", "train-b", "Stopped", "A100", 1),
+			}
+			if j%2 == 0 {
+				hosts = append(hosts, host("uhost-c", "train-c", "Running", "H20", 1))
+			}
+			require.NoError(t, reg.SyncFromDescribe(describeResult(hosts...), "sync_refresh"))
+		}
+	}()
+
+	close(start)
+	wg.Wait()
 }
 
 func describeResult(hosts ...map[string]any) map[string]any {
