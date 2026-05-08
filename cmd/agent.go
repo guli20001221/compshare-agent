@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
@@ -64,6 +65,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	scanner := bufio.NewScanner(os.Stdin)
 	eng := engine.New(cfg, cliConfirm(scanner))
+	traceWriter, traceEnabled, traceErr := traceWriterFromEnv(os.Getenv)
+	if traceErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: trace disabled: %v\n", traceErr)
+		traceEnabled = false
+	}
 
 	fmt.Println("╭──────────────────────────────────────╮")
 	fmt.Println("│     优云算力共享 AI 助手 v0.1        │")
@@ -85,6 +91,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	fmt.Println("\n输入 'quit' 或 'exit' 退出。")
 	fmt.Println()
 
+	turnIndex := 0
 	for {
 		fmt.Print("You> ")
 		if !scanner.Scan() {
@@ -105,7 +112,17 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			fmt.Printf("→ %s\n", input)
 		}
 
+		turnIndex++
+		turnStart := time.Now()
+		var traceRecorder *cliTraceRecorder
+		if traceEnabled {
+			traceRecorder = newCLITraceRecorder(traceWriter, turnIndex, input, turnStart)
+		}
+
 		onStep := func(ev engine.StepEvent) {
+			if traceRecorder != nil {
+				traceRecorder.OnStep(ev)
+			}
 			switch ev.Type {
 			case engine.StepToolCall:
 				fmt.Printf("  🔧 调用 %s ...\n", ev.Action)
@@ -124,6 +141,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		}
 
 		reply, err := eng.Chat(ctx, input, onStep)
+		if traceRecorder != nil {
+			if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: trace write failed: %v\n", traceErr)
+			}
+		}
 		if err != nil {
 			fmt.Printf("错误: %v\n\n", err)
 			continue
