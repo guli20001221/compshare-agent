@@ -59,6 +59,7 @@ type TraceRecord struct {
 	ToolCalls       []ToolCallTrace      `json:"tool_calls"`
 	Renderer        RendererTrace        `json:"renderer"`
 	Freshness       FreshnessTrace       `json:"freshness"`
+	RateLimit       RateLimitTrace       `json:"rate_limit"`
 	Retrieval       RetrievalTrace       `json:"retrieval"`
 	Outcome         OutcomeTrace         `json:"outcome"`
 }
@@ -116,6 +117,16 @@ type RendererTrace struct {
 
 type FreshnessTrace struct {
 	MonitorCallInCurrentTurn bool `json:"monitor_call_in_current_turn"`
+}
+
+type RateLimitTrace struct {
+	Checked      bool   `json:"checked"`
+	Allowed      bool   `json:"allowed"`
+	Class        string `json:"class"`
+	Action       string `json:"action"`
+	Reason       string `json:"reason"`
+	SubjectHash  string `json:"subject_hash"`
+	RetryAfterMS int64  `json:"retry_after_ms"`
 }
 
 type RetrievalTrace struct {

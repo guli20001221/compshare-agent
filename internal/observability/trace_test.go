@@ -45,6 +45,12 @@ func TestWriterAppendWritesOneJSONLinePerRecord(t *testing.T) {
 	if first.Renderer.InputToolCallIDs == nil || first.Renderer.InputToolArgHashes == nil {
 		t.Fatalf("renderer input arrays must be present as empty arrays, got %#v", first.Renderer)
 	}
+	if !strings.Contains(lines[0], `"rate_limit":`) {
+		t.Fatalf("trace line should include zero-value rate_limit block: %s", lines[0])
+	}
+	if first.RateLimit.Checked || first.RateLimit.Allowed || first.RateLimit.Class != "" || first.RateLimit.RetryAfterMS != 0 {
+		t.Fatalf("default rate limit trace = %#v, want zero values", first.RateLimit)
+	}
 }
 
 func TestHashTracePayloadIsStableAcrossMapOrder(t *testing.T) {
