@@ -923,6 +923,157 @@ func TestChat_LLMRateLimitDecisionObserverReceivesHashedSubject(t *testing.T) {
 	assert.NotContains(t, fmt.Sprintf("%+v", observed[0]), rawPublicKey)
 }
 
+func TestChat_MutatingRateLimitDenialSkipsConfirmAndExecutor(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "StopCompShareInstance", `{"UHostId":"uhost-xxx"}`),
+		}},
+		{Content: "should not be used"},
+	}}
+	executor := &mockExecutor{}
+	confirmCalls := 0
+	eng := NewWithDeps(mock, executor, func(action string, args map[string]any) bool {
+		confirmCalls++
+		return true
+	})
+	eng.rateLimiter = &scriptedRateLimiter{decisions: []governance.Decision{
+		{Allowed: true, SubjectHash: "sha256:subject"},
+		{Allowed: false, Reason: governance.ReasonQPSExceeded, SubjectHash: "sha256:subject", Err: governance.ErrRateLimited},
+	}}
+	eng.rateLimitSubject = "sha256:subject"
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+	onStep, events := collectSteps()
+
+	reply, err := eng.Chat(context.Background(), "stop it", onStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, rateLimitQPSMessage, reply)
+	assert.Equal(t, 0, confirmCalls, "quota denial must happen before L1 confirmation")
+	assert.Empty(t, executor.calls, "quota denial must happen before API execution")
+	assert.Len(t, mock.calls, 1, "quota denial should stop the turn without another LLM round")
+	require.Len(t, eng.rateLimiter.(*scriptedRateLimiter).requests, 2)
+	assert.Equal(t, governance.ClassLLM, eng.rateLimiter.(*scriptedRateLimiter).requests[0].Class)
+	assert.Equal(t, governance.ClassMutatingTool, eng.rateLimiter.(*scriptedRateLimiter).requests[1].Class)
+	assert.Equal(t, "StopCompShareInstance", eng.rateLimiter.(*scriptedRateLimiter).requests[1].Action)
+	for _, ev := range *events {
+		assert.NotEqual(t, StepConfirmNeeded, ev.Type, "quota denial must not ask for confirmation")
+	}
+}
+
+func TestChat_MutatingRateLimitDailyDenialUsesDailyMessage(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "StartCompShareInstance", `{"UHostId":"uhost-xxx"}`),
+		}},
+	}}
+	executor := &mockExecutor{}
+	confirmCalls := 0
+	eng := NewWithDeps(mock, executor, func(action string, args map[string]any) bool {
+		confirmCalls++
+		return true
+	})
+	eng.rateLimiter = &scriptedRateLimiter{decisions: []governance.Decision{
+		{Allowed: true, SubjectHash: "sha256:subject"},
+		{Allowed: false, Reason: governance.ReasonDailyExceeded, SubjectHash: "sha256:subject", Err: governance.ErrRateLimited},
+	}}
+	eng.rateLimitSubject = "sha256:subject"
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+
+	reply, err := eng.Chat(context.Background(), "start it", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, rateLimitDailyMessage, reply)
+	assert.Equal(t, 0, confirmCalls)
+	assert.Empty(t, executor.calls)
+}
+
+func TestChat_MutatingRateLimitAllowsWorkflowWithoutCountingInternalSteps(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-stop-001", "State": "Running", "GpuType": "4090", "Name": "test"},
+			},
+		},
+		"StopCompShareInstance": {"RetCode": 0},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "StopInstanceWorkflow", `{"UHostId":"uhost-stop-001"}`),
+		}},
+		{Content: "stopped"},
+	}}
+	eng := NewWithDeps(mock, executor, func(action string, args map[string]any) bool {
+		return true
+	})
+	limiter := &scriptedRateLimiter{decisions: []governance.Decision{
+		{Allowed: true, SubjectHash: "sha256:subject"},
+		{Allowed: true, SubjectHash: "sha256:subject"},
+	}}
+	eng.rateLimiter = limiter
+	eng.rateLimitSubject = "sha256:subject"
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+
+	reply, err := eng.Chat(context.Background(), "stop workflow", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "stopped", reply)
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+	assert.Contains(t, executor.calls, "StopCompShareInstance")
+	var mutating []governance.Request
+	for _, req := range limiter.requests {
+		if req.Class == governance.ClassMutatingTool {
+			mutating = append(mutating, req)
+		}
+	}
+	require.Len(t, mutating, 1, "workflow should consume one mutating quota for the top-level workflow only")
+	assert.Equal(t, "StopInstanceWorkflow", mutating[0].Action)
+}
+
+func TestChat_ReadOnlyToolDoesNotConsumeMutatingQuota(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{}},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DescribeCompShareInstance", `{"Limit":10}`),
+		}},
+		{Content: "listed"},
+	}}
+	limiter := &scriptedRateLimiter{decisions: []governance.Decision{{Allowed: true, SubjectHash: "sha256:subject"}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.rateLimiter = limiter
+	eng.rateLimitSubject = "sha256:subject"
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+
+	reply, err := eng.Chat(context.Background(), "list", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "listed", reply)
+	require.Len(t, limiter.requests, 2)
+	for _, req := range limiter.requests {
+		assert.NotEqual(t, governance.ClassMutatingTool, req.Class)
+	}
+}
+
+func TestChat_L2BlockedToolDoesNotConsumeMutatingQuota(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "TerminateCompShareInstance", `{"UHostId":"uhost-xxx"}`),
+		}},
+	}}
+	limiter := &scriptedRateLimiter{decisions: []governance.Decision{{Allowed: true, SubjectHash: "sha256:subject"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.rateLimiter = limiter
+	eng.rateLimitSubject = "sha256:subject"
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+
+	_, err := eng.Chat(context.Background(), "terminate", noopStep)
+
+	require.NoError(t, err)
+	require.Len(t, limiter.requests, 1)
+	assert.Equal(t, governance.ClassLLM, limiter.requests[0].Class)
+}
+
 func TestNewConstructsRateLimiterFromConfig(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		PublicKey: "public-key-for-subject",

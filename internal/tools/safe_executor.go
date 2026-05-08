@@ -127,6 +127,11 @@ func (s *SafeToolExecutor) RedactArgs(action string, args map[string]any) map[st
 	return sanitizer.SanitizeArgs(action, args)
 }
 
+func (s *SafeToolExecutor) PolicyForAction(action string) (ToolExecutionPolicy, bool) {
+	policy, ok := s.policies[action]
+	return policy, ok
+}
+
 type originExecutor struct {
 	safe   *SafeToolExecutor
 	origin ExecutionOrigin
