@@ -81,6 +81,7 @@ type Engine struct {
 	rateLimiter           governance.RateLimiter
 	rateLimitSubject      string
 	rateLimitObserver     func(governance.Decision)
+	hardBlockObserver     func(observability.EngineHardBlockTrace)
 	confirmFn             ConfirmFunc
 	messages              []openai.ChatCompletionMessage // conversation history
 	userTurn              int                            // incremented at start of each Chat() call
@@ -148,6 +149,19 @@ func (e *Engine) setSupportsObjectToolChoice(v bool) {
 
 func (e *Engine) SetRateLimitObserver(observer func(governance.Decision)) {
 	e.rateLimitObserver = observer
+}
+
+func (e *Engine) RateLimitSubjectKey() string {
+	return e.rateLimitSubject
+}
+
+func (e *Engine) RateLimitDecision(req governance.Request) governance.Decision {
+	decision, _ := e.allowRateLimited(req.Class, req.Action)
+	return decision
+}
+
+func (e *Engine) SetHardBlockObserver(observer func(observability.EngineHardBlockTrace)) {
+	e.hardBlockObserver = observer
 }
 
 func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc) *tools.SafeToolExecutor {
@@ -239,6 +253,12 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	})
 
 	if isAccountBillingUnsupported(userMsg) {
+		if e.hardBlockObserver != nil {
+			e.hardBlockObserver(observability.EngineHardBlockTrace{
+				Hit:      true,
+				Category: "account_billing_unsupported",
+			})
+		}
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: accountBillingUnsupportedReply,

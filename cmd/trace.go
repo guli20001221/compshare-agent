@@ -23,12 +23,17 @@ func traceWriterFromEnv(getenv getenvFunc) (*observability.Writer, bool, error) 
 	return writer, true, nil
 }
 
+func intentPlannerShadowEnabled(getenv getenvFunc) bool {
+	return getenv("USE_INTENT_PLANNER") == "shadow"
+}
+
 type cliTraceRecorder struct {
 	writer                *observability.Writer
 	record                observability.TraceRecord
 	start                 time.Time
 	pendingByID           map[string][]int
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
+	plannerTraceSupplier  func() observability.PlannerTrace
 }
 
 func newCLITraceRecorder(writer *observability.Writer, turnIndex int, userMsg string, start time.Time) *cliTraceRecorder {
@@ -51,6 +56,20 @@ func (r *cliTraceRecorder) SetRegistryTraceSupplier(supplier func(time.Time) obs
 		return
 	}
 	r.registryTraceSupplier = supplier
+}
+
+func (r *cliTraceRecorder) SetPlannerTraceSupplier(supplier func() observability.PlannerTrace) {
+	if r == nil {
+		return
+	}
+	r.plannerTraceSupplier = supplier
+}
+
+func (r *cliTraceRecorder) SetEngineHardBlock(trace observability.EngineHardBlockTrace) {
+	if r == nil {
+		return
+	}
+	r.record.EngineHardBlock = trace
 }
 
 func (r *cliTraceRecorder) SetRateLimitDecision(decision governance.Decision) {
@@ -130,6 +149,9 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	_ = chatErr
 	if r.registryTraceSupplier != nil {
 		r.record.EntityRegistry = r.registryTraceSupplier(end)
+	}
+	if r.plannerTraceSupplier != nil {
+		r.record.Planner = r.plannerTraceSupplier()
 	}
 	r.record.Outcome.TotalLatencyMS = end.Sub(r.start).Milliseconds()
 	for _, call := range r.record.ToolCalls {

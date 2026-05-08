@@ -2197,6 +2197,28 @@ func TestAccountBillingHardBlock_DoesNotResetTurnScopedMonitorState(t *testing.T
 	assert.Equal(t, int64(200), eng.currentMonitorEnd)
 }
 
+func TestAccountBillingHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T) {
+	executor := billingScenarioExecutor("Running")
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+		hardBlocks = append(hardBlocks, trace)
+	})
+	onStep, events := collectSteps()
+
+	reply, err := eng.Chat(context.Background(), "账号余额还剩多少", onStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, accountBillingUnsupportedReply, reply)
+	assert.Empty(t, mock.calls)
+	assert.Empty(t, *events, "hard-block trace signal must not surface as a CLI step")
+	require.Len(t, hardBlocks, 1)
+	assert.True(t, hardBlocks[0].Hit)
+	assert.Equal(t, "account_billing_unsupported", hardBlocks[0].Category)
+}
+
 // toolChoiceForMonitor returns true iff req.ToolChoice names GetCompShareInstanceMonitor.
 func toolChoiceForMonitor(req llm.ChatRequest) bool {
 	tc, ok := req.ToolChoice.(openai.ToolChoice)
