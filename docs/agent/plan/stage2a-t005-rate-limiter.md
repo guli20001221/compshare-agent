@@ -35,6 +35,17 @@ Already satisfied:
 
 ## Core Decisions
 
+### 0. Ownership and Injection
+
+Choose Engine-owned limiter with narrow hook injection.
+
+- `Engine.New()` constructs a process-local `governance.RateLimiter` from resolved config and stores it on `Engine`.
+- `SafeToolExecutor` receives the limiter through a constructor option, such as `tools.WithRateLimiter(limiter)`, and never reaches back into `Engine`.
+- `ShadowRunner` receives a quota hook through `ShadowRunnerOptions`, for example `QuotaHook func(governance.Request) governance.Decision`. If package boundaries make importing `internal/governance` from `internal/intent` undesirable, use an equivalent narrow interface in `intent` plus an adapter in engine/CLI wiring.
+- CLI code should not create a separate limiter. It passes config to `Engine.New()` and observes decisions through trace recorder setters.
+
+This keeps one process-local quota state per Engine instance and avoids package-level singletons.
+
 ### 1. Subject Key
 
 Use the current CompShare public key as the Phase 0 subject identity.
@@ -84,7 +95,8 @@ Decision rules:
 - The caller translates `ErrRateLimited` into a friendly user-visible message where applicable.
 - Shadow planner denial must not fail the user request; it writes a disabled or invalid planner trace state and skips the planner LLM call.
 - Main ReAct LLM denial may return a friendly assistant message because no safe answer can be generated.
-- Mutating tool denial must return before calling the mutating API, before user confirmation is requested when possible.
+- Mutating tool denial must return before calling the mutating API.
+- For L1 actions, quota check must happen before the confirmation prompt. Denied requests return the canned quota message and must not ask the user to confirm.
 
 ### 4. Token Bucket + Daily Counter
 
@@ -109,9 +121,16 @@ Ordering:
 
 This avoids consuming a QPS token for a request that is already over daily quota.
 
+`retry_after_ms`:
+
+- For `qps_exceeded`, use the time until the next token would be available.
+- For `daily_exceeded`, use the time until the next local-date boundary in the injected clock location.
+
 ### 5. Configuration
 
 Default limits come from baseline §3.9.4:
+
+> Per-API-key limits: LLM QPS 5, daily LLM calls 5000, mutating tool QPS 1, daily mutating calls 50.
 
 ```yaml
 rate_limit:
@@ -147,6 +166,7 @@ T-006 trace.v0.1 has no dedicated `rate_limit` object. T-005 may add an additive
 Rules:
 
 - The block is optional and defaults to zero values when no limit was checked.
+- Phase 0 does not add a top-level turn subject identity. Subject identity is observable only through this rate-limit block when a check occurs. A future trace schema may add top-level `subject_hash` if cross-turn subject analysis becomes necessary.
 - The subject field is a hash only.
 - `reason` enum values: `""`, `qps_exceeded`, `daily_exceeded`.
 - For multiple checks in one user turn, record the first denial if any; otherwise record the last allow decision. T-007b dashboard only needs to know whether quota blocked the planner call.
@@ -173,10 +193,10 @@ Mutating tools:
 
 Use fixed, canned messages:
 
-- LLM quota:
+- QPS quota:
   - `请求过于频繁，请稍后再试。`
-- Mutating tool quota:
-  - `操作请求过于频繁，请稍后再试。`
+- Daily quota:
+  - `今日额度已用完，请明天再试。`
 
 Do not include quota numbers, subject hashes, API keys, or provider error bodies in the user-facing message.
 
@@ -191,12 +211,15 @@ Files:
 
 Scope:
 
+- Define `RateLimiter` as an interface with `Allow(Request) Decision`.
+- Implement `MemoryLimiter` as the Phase 0 in-memory implementation.
 - Implement quota classes, request/decision types, `ErrRateLimited`, defaults, token bucket, daily counter, and fake-clock friendly options.
 - Implement subject-key hashing helper.
 - No engine/CLI/trace integration.
 
 Acceptance:
 
+- Compile-time assertion: `var _ RateLimiter = (*MemoryLimiter)(nil)`.
 - Unit test: QPS limit allows first `N` calls and denies `N+1` at same timestamp.
 - Unit test: QPS bucket refills with fake clock.
 - Unit test: daily quota denies after configured daily limit.
@@ -249,6 +272,7 @@ Acceptance:
 - Unit test: denied decision writes `checked=true`, `allowed=false`, class/action/reason/retry_after_ms.
 - Unit test: trace line does not contain raw public key.
 - Unit test: when multiple decisions occur, first denial wins; if no denial, last allow wins.
+- Unit test: simulated trace write failure does not change allow/deny behavior.
 
 ### Commit 4: Engine LLM Hook
 
@@ -271,6 +295,7 @@ Acceptance:
 
 - Unit test: denied LLM request does not call mock LLM.
 - Unit test: denied LLM request returns friendly canned message.
+- Unit test: daily denial returns the daily canned message, not the QPS canned message.
 - Unit test: allowed LLM request preserves existing behavior.
 - Unit test: trace records rate-limit denial without raw subject.
 - `go test ./internal/engine ./cmd -count=1` passes.
@@ -292,6 +317,7 @@ Scope:
 Acceptance:
 
 - Unit test: denied mutating action does not call inner executor.
+- Unit test: denied L1 action does not invoke the confirm callback.
 - Unit test: workflow internal steps are not double-counted.
 - Unit test: read-only actions are not rate-limited.
 - Unit test: L2 blocked actions do not consume quota.
@@ -350,4 +376,5 @@ Acceptance:
 ## Follow-Up After T-005
 
 - T-007b commit 3 may wire live shadow planner calls only through the quota-protected runner.
+- Phase 0 daily counters reset on process restart, so frequent restarts can bypass the daily cap. This is an accepted single-instance limitation until Stage 3 persistence.
 - Stage 3 may replace the in-memory limiter with Redis-backed distributed quotas.
