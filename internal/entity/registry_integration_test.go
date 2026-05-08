@@ -37,9 +37,10 @@ func TestIntegrationResolveCurrentAccountInstances(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	require.NoError(t, reg.Sync(ctx, exec))
-	require.NotEmpty(t, reg.Instances, "real account should return current instances for this gated probe")
+	snap := reg.Snapshot()
+	require.NotEmpty(t, snap.Instances, "real account should return current instances for this gated probe")
 
-	for id := range reg.Instances {
+	for id := range snap.Instances {
 		got, res := reg.ResolveByID(id)
 		require.Equal(t, ResolveHit, res.Status, "id %s", id)
 		require.NotNil(t, got)

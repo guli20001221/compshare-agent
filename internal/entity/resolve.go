@@ -28,6 +28,8 @@ type FilterSpec struct {
 
 func (r *EntityRegistry) ResolveByID(id string) (*InstanceSnapshot, ResolveResult) {
 	query := strings.TrimSpace(id)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if inst, ok := r.Instances[query]; ok {
 		copy := inst
 		return &copy, ResolveResult{Status: ResolveHit, Query: query, Candidates: []string{query}}
@@ -45,22 +47,27 @@ func (r *EntityRegistry) ResolveByName(name string) ([]*InstanceSnapshot, Resolv
 		return nil, ResolveResult{Status: ResolveNotFoundInAccount, Query: query}
 	}
 
-	if ids := r.NameIndex[normalized]; len(ids) > 0 {
-		matches := r.instancesForIDs(ids)
+	r.mu.RLock()
+	if ids := append([]string(nil), r.NameIndex[normalized]...); len(ids) > 0 {
+		matches := r.instancesForIDsLocked(ids)
+		r.mu.RUnlock()
 		status := ResolveHit
 		if len(matches) > 1 {
 			status = ResolveAmbiguous
 		}
 		return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
 	}
+	r.mu.RUnlock()
 
 	scored := make([]scoredInstance, 0)
 	terms := normalizeTerms(query)
+	r.mu.RLock()
 	for _, inst := range r.Instances {
 		if score := fuzzyScore(normalized, terms, normalizeName(inst.Name)); score > 0 {
 			scored = append(scored, scoredInstance{snapshot: inst, score: score})
 		}
 	}
+	r.mu.RUnlock()
 	sort.Slice(scored, func(i, j int) bool {
 		if scored[i].score != scored[j].score {
 			return scored[i].score > scored[j].score
@@ -90,6 +97,8 @@ func (r *EntityRegistry) Filter(spec FilterSpec) []*InstanceSnapshot {
 	state := strings.ToLower(strings.TrimSpace(spec.State))
 	gpuType := strings.ToLower(strings.TrimSpace(spec.GPUType))
 	matches := make([]*InstanceSnapshot, 0)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for _, inst := range r.Instances {
 		if state != "" && strings.ToLower(inst.State) != state {
 			continue
@@ -106,7 +115,7 @@ func (r *EntityRegistry) Filter(spec FilterSpec) []*InstanceSnapshot {
 	return matches
 }
 
-func (r *EntityRegistry) instancesForIDs(ids []string) []*InstanceSnapshot {
+func (r *EntityRegistry) instancesForIDsLocked(ids []string) []*InstanceSnapshot {
 	matches := make([]*InstanceSnapshot, 0, len(ids))
 	for _, id := range ids {
 		if inst, ok := r.Instances[id]; ok {
