@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -82,6 +84,25 @@ func TestMemoryLimiterQPSRefillWithFakeClock(t *testing.T) {
 	assertAllowed(t, limiter.Allow(req))
 }
 
+func TestMemoryLimiterWithClockUsedWhenRequestNowIsZero(t *testing.T) {
+	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
+	limiter := NewMemoryLimiter(Limits{
+		LLMQPS:        1,
+		LLMDaily:      100,
+		MutatingQPS:   1,
+		MutatingDaily: 50,
+	}, WithClock(func() time.Time {
+		return now
+	}))
+
+	req := Request{SubjectKey: "sha256:subject", Class: ClassLLM, Action: "main_react_chat"}
+	assertAllowed(t, limiter.Allow(req))
+	assertDenied(t, limiter.Allow(req), ReasonQPSExceeded)
+
+	now = now.Add(time.Second)
+	assertAllowed(t, limiter.Allow(req))
+}
+
 func TestMemoryLimiterDailyQuota(t *testing.T) {
 	now := time.Date(2026, 5, 9, 23, 30, 0, 0, time.FixedZone("CST", 8*3600))
 	limiter := NewMemoryLimiter(Limits{
@@ -149,6 +170,44 @@ func TestMemoryLimiterDoesNotLeakRawPublicKey(t *testing.T) {
 	rendered := fmt.Sprintf("%+v %v", denied, denied.Err)
 	if strings.Contains(rendered, rawPublicKey) {
 		t.Fatalf("decision/error leaked raw public key: %s", rendered)
+	}
+}
+
+func TestConcurrentAllowNoRace(t *testing.T) {
+	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
+	limiter := NewMemoryLimiter(Limits{
+		LLMQPS:        10,
+		LLMDaily:      100,
+		MutatingQPS:   1,
+		MutatingDaily: 50,
+	})
+
+	const goroutines = 64
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var allowed atomic.Int64
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			decision := limiter.Allow(Request{
+				SubjectKey: "sha256:subject",
+				Class:      ClassLLM,
+				Action:     "main_react_chat",
+				Now:        now,
+			})
+			if decision.Allowed {
+				allowed.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := allowed.Load(); got != 10 {
+		t.Fatalf("allowed count = %d, want 10", got)
 	}
 }
 

@@ -40,6 +40,8 @@ type RateLimiter interface {
 }
 
 type Request struct {
+	// SubjectKey must be pre-hashed with SubjectKeyFromPublicKey before it
+	// reaches the limiter. Allow does not validate or hash raw key material.
 	SubjectKey string
 	Class      Class
 	Action     string
@@ -204,7 +206,12 @@ func (l Limits) forClass(class Class) (qps int, daily int) {
 	switch class {
 	case ClassMutatingTool:
 		return l.MutatingQPS, l.MutatingDaily
+	case ClassLLM:
+		return l.LLMQPS, l.LLMDaily
 	default:
+		// Phase 0 defines only LLM and mutating-tool quota classes. Unknown
+		// future classes fall back to the LLM budget until config validation
+		// grows an explicit class registry.
 		return l.LLMQPS, l.LLMDaily
 	}
 }
