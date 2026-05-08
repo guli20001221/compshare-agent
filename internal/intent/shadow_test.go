@@ -187,6 +187,30 @@ func TestShadowRunner_QuotaAllowCallsPlannerOnce(t *testing.T) {
 	assert.Equal(t, string(IntentMonitorQuery), trace.Intent)
 }
 
+func TestShadowRunner_NilQuotaHookCallsPlannerNormally(t *testing.T) {
+	planner := &mockShadowPlanner{
+		result: PlannerResult{
+			Plan: Plan{
+				SchemaVersion: SchemaVersion,
+				Intent:        IntentMonitorQuery,
+				Slots:         Slots{Metrics: []Metric{MetricGPU}},
+				Confidence:    0.8,
+			},
+		},
+	}
+	runner := NewShadowRunner(planner, ShadowRunnerOptions{
+		Enabled: true,
+		Model:   "deepseek-v4-flash",
+	})
+
+	trace := runner.Run(context.Background(), PlannerInput{UserText: "monitor"})
+
+	assert.Equal(t, 1, planner.calls)
+	assert.True(t, trace.Enabled)
+	assert.True(t, trace.SchemaValid)
+	assert.Equal(t, string(IntentMonitorQuery), trace.Intent)
+}
+
 func TestShadowRunner_DisabledDoesNotCallQuotaHook(t *testing.T) {
 	planner := &mockShadowPlanner{}
 	quotaCalls := 0
