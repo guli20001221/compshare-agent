@@ -1955,6 +1955,27 @@ func TestPlannerPriorTextSnapshotOmitsSystemAndToolMessages(t *testing.T) {
 	assert.NotContains(t, prior, "10.0.0.1")
 }
 
+func TestPlannerPriorTextSnapshotKeepsNewestMessagesWithinRuneBudget(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "system prompt"},
+	}
+	for i := 1; i <= 12; i++ {
+		eng.messages = append(eng.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleUser,
+			Content: fmt.Sprintf("msg-%02d %s", i, strings.Repeat("中", 450)),
+		})
+	}
+
+	prior := eng.PlannerPriorTextSnapshot()
+
+	assert.LessOrEqual(t, len([]rune(prior)), maxPlannerPriorTextRunes)
+	assert.Contains(t, prior, "msg-12")
+	assert.Contains(t, prior, "msg-09")
+	assert.NotContains(t, prior, "msg-08")
+	assert.NotContains(t, prior, "msg-01")
+}
+
 func TestEnsureProjectId_UsesConfigWhenSet(t *testing.T) {
 	// Pre-configured ProjectId → GetProjectList must NOT be called.
 	eng, h, cleanup := newEngineWithServer(t, &mockLLM{}, "org-cfg-value", "")

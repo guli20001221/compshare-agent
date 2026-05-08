@@ -260,32 +260,23 @@ func (e *Engine) PlannerPriorTextSnapshot() string {
 		lines = append(lines, role+": "+content+"\n")
 	}
 	var b strings.Builder
-	for i := len(lines) - 1; i >= 0; i-- {
-		appendBoundedPlannerLine(&b, lines[i])
-		if plannerPriorRuneCount(&b) >= maxPlannerPriorTextRunes {
+	included := make([]string, 0, len(lines))
+	budget := maxPlannerPriorTextRunes
+	for _, line := range lines {
+		runes := []rune(line)
+		if len(runes) > budget {
+			if len(included) == 0 && budget > 0 {
+				included = append(included, string(runes[:budget]))
+			}
 			break
 		}
+		included = append(included, line)
+		budget -= len(runes)
+	}
+	for i := len(included) - 1; i >= 0; i-- {
+		b.WriteString(included[i])
 	}
 	return strings.TrimSpace(b.String())
-}
-
-func appendBoundedPlannerLine(b *strings.Builder, line string) {
-	current := plannerPriorRuneCount(b)
-	if current >= maxPlannerPriorTextRunes {
-		return
-	}
-	remaining := maxPlannerPriorTextRunes - current
-	runes := []rune(line)
-	if len(runes) <= remaining {
-		b.WriteString(line)
-		return
-	}
-	runes = runes[:remaining]
-	b.WriteString(string(runes))
-}
-
-func plannerPriorRuneCount(b *strings.Builder) int {
-	return len([]rune(b.String()))
 }
 
 // InitWithContext performs context injection with a pre-built user context string,
