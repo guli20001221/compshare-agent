@@ -75,11 +75,11 @@ Per-turn trace summary:
 
 PR #12 monitor follow-up representation:
 
-| Case | Second-turn planner intent | Second-turn current monitor call | Dashboard classification |
-| --- | --- | --- | --- |
-| `adjacent_same_metric` | `monitor_query` | true | represented; no freshness miss on follow-up |
-| `adjacent_explicit_refresh` | `monitor_query` | true | represented; no freshness miss on follow-up |
-| `adjacent_pronoun_now` | `monitor_query` | true | represented; no freshness miss on follow-up |
+| Case | Per-turn rows | Second-turn planner intent | Second-turn current monitor call | Dashboard classification |
+| --- | --- | --- | --- | --- |
+| `adjacent_same_metric` | 1, 2 | `monitor_query` | true | represented; no freshness miss on follow-up |
+| `adjacent_explicit_refresh` | 3, 4 | `monitor_query` | true | represented; no freshness miss on follow-up |
+| `adjacent_pronoun_now` | 5, 6 | `monitor_query` | true | represented; no freshness miss on follow-up |
 
 Dashboard summary excerpt:
 
@@ -115,4 +115,5 @@ Notes:
 - The dashboard reported one `monitor_freshness_miss` on the first turn of the explicit-refresh session, not on any of the three PR #12 second-turn follow-ups. This is acceptable for T-007b because the dashboard is observability-only and correctly marks the missing current-turn monitor call.
 - Planner slots did not include explicit metric values in this smoke even when the planner classified `monitor_query`. This is a shadow-quality signal for later planner prompt/schema tuning; it did not affect the current ReAct user path.
 - The account-level billing hard-block was engine-only in this smoke: the deterministic hard-block fired, while the shadow planner emitted `unknown`. This is trace-visible and should be monitored by the planner-vs-runtime dashboard.
+- Follow-up before Phase 1 promotion: review row 3 as a monitor first-turn routing/planner-quality signal, and tune the planner prompt/few-shots so account-level billing questions recall `billing_account_unsupported` instead of `unknown`.
 - This artifact intentionally records only aggregate trace properties and sanitized tool names, not raw trace lines, raw tool arguments, raw tool results, raw user text, instance identifiers, IP addresses, transcripts, or credentials.
