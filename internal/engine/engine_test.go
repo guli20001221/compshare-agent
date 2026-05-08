@@ -1787,6 +1787,137 @@ func toolChoiceForBilling(req llm.ChatRequest) bool {
 	return tc.Type == openai.ToolTypeFunction && tc.Function.Name == "DiagnoseBilling"
 }
 
+// toolChoiceForMonitor returns true iff req.ToolChoice names GetCompShareInstanceMonitor.
+func toolChoiceForMonitor(req llm.ChatRequest) bool {
+	tc, ok := req.ToolChoice.(openai.ToolChoice)
+	if !ok {
+		return false
+	}
+	return tc.Type == openai.ToolTypeFunction && tc.Function.Name == "GetCompShareInstanceMonitor"
+}
+
+func monitorScenarioExecutor() *mockExecutor {
+	return &mockExecutor{results: map[string]map[string]any{
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{"List": []any{
+				map[string]any{
+					"UHostId": "uhost-monitor-001",
+					"Metrics": []any{
+						map[string]any{"Name": "CPUUsageRate", "Value": 12},
+					},
+				},
+			}},
+		},
+	}}
+}
+
+func TestMonitorRecallGuard_ForcesMonitorOnAdjacentFollowUp(t *testing.T) {
+	executor := monitorScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"]}`),
+		}},
+		{Content: "监控已查询"},
+		{Content: "fresh monitor"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "看看这台机器的监控", noopStep)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, eng.lastMonitorTurn)
+
+	_, err = eng.Chat(context.Background(), "只看刚才那台机器的 GPU 和显存监控", noopStep)
+	assert.NoError(t, err)
+
+	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
+		assert.True(t, toolChoiceForMonitor(mock.calls[2]),
+			"adjacent monitor follow-up should force GetCompShareInstanceMonitor")
+	}
+}
+
+func TestMonitorRecallGuard_NonAdjacentTurnDoesNotTrigger(t *testing.T) {
+	executor := monitorScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"]}`),
+		}},
+		{Content: "监控已查询"},
+		{Content: "中间一轮普通回答"},
+		{Content: "should not force"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "看看这台机器的监控", noopStep)
+	assert.NoError(t, err)
+	_, err = eng.Chat(context.Background(), "4090 显存多大", noopStep)
+	assert.NoError(t, err)
+	_, err = eng.Chat(context.Background(), "只看刚才那台机器的 GPU 和显存监控", noopStep)
+	assert.NoError(t, err)
+
+	if assert.GreaterOrEqual(t, len(mock.calls), 4) {
+		assert.Nil(t, mock.calls[3].ToolChoice,
+			"non-adjacent monitor follow-up must not force monitor")
+	}
+}
+
+func TestMonitorRecallGuard_NoFollowUpKeywordDoesNotTrigger(t *testing.T) {
+	executor := monitorScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"]}`),
+		}},
+		{Content: "监控已查询"},
+		{Content: "not forced"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "看看这台机器的监控", noopStep)
+	assert.NoError(t, err)
+	_, err = eng.Chat(context.Background(), "今天天气如何", noopStep)
+	assert.NoError(t, err)
+
+	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
+		assert.Nil(t, mock.calls[2].ToolChoice,
+			"adjacent turn without monitor follow-up keywords must not force monitor")
+	}
+}
+
+func TestMonitorRecallGuard_FirstTurnDoesNotTrigger(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "not forced"}}}
+	eng := NewWithDeps(mock, monitorScenarioExecutor(), nil)
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "帮我判断 CPU 和 GPU 占用异常吗", noopStep)
+	assert.NoError(t, err)
+
+	if assert.Len(t, mock.calls, 1) {
+		assert.Nil(t, mock.calls[0].ToolChoice,
+			"first-turn monitor wording must not force monitor recall without prior monitor call")
+	}
+}
+
+func TestMonitorRecallGuard_DoesNotOverrideBillingGuard(t *testing.T) {
+	executor := billingScenarioExecutor("Running")
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "billing wins"}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.userTurn = 1
+	eng.lastMonitorTurn = 1
+	eng.lastDiagnosisTool = "DiagnoseBilling"
+	eng.lastDiagnosisTurn = 1
+
+	_, err := eng.Chat(context.Background(), "那台 GPU 异常为什么还在扣费", noopStep)
+	assert.NoError(t, err)
+
+	if assert.Len(t, mock.calls, 1) {
+		assert.True(t, toolChoiceForBilling(mock.calls[0]),
+			"billing stale guard should keep priority over monitor recall")
+	}
+}
+
 func TestBillingStaleGuard_ForcesRediagnosisOnFollowUp(t *testing.T) {
 	executor := billingScenarioExecutor("Running")
 	mock := &mockLLM{responses: []llm.ChatResponse{
