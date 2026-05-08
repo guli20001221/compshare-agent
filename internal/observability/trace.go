@@ -263,5 +263,8 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	if r.Renderer.InputToolArgHashes == nil {
 		r.Renderer.InputToolArgHashes = []string{}
 	}
+	if r.EntityRegistry.SyncEvent == "" {
+		r.EntityRegistry.SyncEvent = "unavailable"
+	}
 	return r
 }

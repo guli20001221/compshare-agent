@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
 )
 
@@ -127,6 +130,9 @@ func TestCLITraceRecorderWritesOneRedactedTraceLine(t *testing.T) {
 	if call.ArgsHash == "" || call.ResultHash == "" {
 		t.Fatalf("args/result hash must be populated: %#v", call)
 	}
+	if record.EntityRegistry.SyncEvent != "unavailable" {
+		t.Fatalf("entity_registry.sync_event = %q, want unavailable", record.EntityRegistry.SyncEvent)
+	}
 }
 
 func TestCLITraceRecorderPairsRepeatedActionFIFO(t *testing.T) {
@@ -183,6 +189,86 @@ func TestCLITraceRecorderPairsRepeatedActionFIFO(t *testing.T) {
 	}
 }
 
+func TestCLITraceRecorderWritesCurrentRegistryStateFromSupplier(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 5, "registry state", start)
+	state := observability.EntityRegistryTrace{
+		SnapshotID: "sha256:old",
+		AgeSeconds: 1,
+		SyncEvent:  "init",
+	}
+	recorder.SetRegistryTraceSupplier(func(time.Time) observability.EntityRegistryTrace {
+		return state
+	})
+
+	state = observability.EntityRegistryTrace{
+		SnapshotID: "sha256:0123456789abcdef",
+		AgeSeconds: 12,
+		SyncEvent:  "init",
+	}
+	if err := recorder.Finish(nil, start.Add(12*time.Second)); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	record := readSingleTraceRecord(t, writer, start)
+	if record.EntityRegistry.SnapshotID != "sha256:0123456789abcdef" ||
+		record.EntityRegistry.AgeSeconds != 12 ||
+		record.EntityRegistry.SyncEvent != "init" {
+		t.Fatalf("entity registry trace = %#v", record.EntityRegistry)
+	}
+}
+
+func TestCLITraceRecorderWritesFailedRegistryStateWithoutRawError(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	rawBearer := "Bearer " + strings.Repeat("z", 25)
+	reg := entity.NewRegistry()
+	_ = reg.Refresh(context.Background(), entityExecutorFunc(func(context.Context, string, map[string]any) (map[string]any, error) {
+		return nil, errors.New("network down " + rawBearer)
+	}), entity.RefreshReasonInit)
+
+	recorder := newCLITraceRecorder(writer, 6, "registry failed", start)
+	recorder.SetRegistryTraceSupplier(func(now time.Time) observability.EntityRegistryTrace {
+		state := reg.TraceState(now)
+		return observability.EntityRegistryTrace{
+			SnapshotID: state.SnapshotID,
+			AgeSeconds: state.AgeSeconds,
+			SyncEvent:  state.SyncEvent,
+		}
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	tracePath := filepath.Join(writer.Dir(), "agent-trace-2026-05-08.jsonl")
+	data, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read trace file: %v", err)
+	}
+	line := strings.TrimSpace(string(data))
+	if strings.Contains(line, rawBearer) || strings.Contains(line, strings.Repeat("z", 25)) {
+		t.Fatalf("trace leaked raw registry refresh error: %s", line)
+	}
+	record := readSingleTraceRecord(t, writer, start)
+	if record.EntityRegistry.SyncEvent != "failed" {
+		t.Fatalf("sync_event = %q, want failed", record.EntityRegistry.SyncEvent)
+	}
+}
+
 func TestCLITraceRecorderPreservesNonMainSources(t *testing.T) {
 	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	writer, err := observability.NewWriter(observability.WriterOptions{
@@ -232,6 +318,12 @@ func TestCLITraceRecorderPreservesNonMainSources(t *testing.T) {
 	if record.ToolCalls[1].Status != observability.ToolStatusError || record.ToolCalls[1].ErrorClass == "" {
 		t.Fatalf("second status/error = %q/%q, want error with class", record.ToolCalls[1].Status, record.ToolCalls[1].ErrorClass)
 	}
+}
+
+type entityExecutorFunc func(context.Context, string, map[string]any) (map[string]any, error)
+
+func (f entityExecutorFunc) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	return f(ctx, action, args)
 }
 
 func readSingleTraceRecord(t *testing.T, writer *observability.Writer, now time.Time) observability.TraceRecord {
