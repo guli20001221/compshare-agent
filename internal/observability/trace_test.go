@@ -162,6 +162,47 @@ func TestWriterAppendDoesNotLeakSecretsInTraceLine(t *testing.T) {
 	}
 }
 
+func TestCleanupDeletesOnlyExpiredTraceFiles(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(dir, "agent-trace-2026-04-07.jsonl")) // 31 days old: delete
+	writeFile(t, filepath.Join(dir, "agent-trace-2026-04-08.jsonl")) // exactly 30 days: keep
+	writeFile(t, filepath.Join(dir, "agent-trace-2026-05-08.jsonl")) // current: keep
+	writeFile(t, filepath.Join(dir, "agent-trace-2026-04-01.txt"))   // wrong suffix: keep
+	writeFile(t, filepath.Join(dir, "not-agent-trace-2026-04-01.jsonl"))
+	if err := os.Mkdir(filepath.Join(dir, "agent-trace-2026-01-01.jsonl"), 0o700); err != nil {
+		t.Fatalf("mkdir trace-like dir: %v", err)
+	}
+
+	if err := Cleanup(dir, 30, now); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+
+	assertPathMissing(t, filepath.Join(dir, "agent-trace-2026-04-07.jsonl"))
+	for _, name := range []string{
+		"agent-trace-2026-04-08.jsonl",
+		"agent-trace-2026-05-08.jsonl",
+		"agent-trace-2026-04-01.txt",
+		"not-agent-trace-2026-04-01.jsonl",
+		"agent-trace-2026-01-01.jsonl",
+	} {
+		assertPathExists(t, filepath.Join(dir, name))
+	}
+}
+
+func TestCleanupUsesDefaultRetentionForNonPositiveDays(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
+	writeFile(t, filepath.Join(dir, "agent-trace-2026-04-07.jsonl"))
+
+	if err := Cleanup(dir, 0, now); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+
+	assertPathMissing(t, filepath.Join(dir, "agent-trace-2026-04-07.jsonl"))
+}
+
 func readLines(t *testing.T, path string) []string {
 	t.Helper()
 	f, err := os.Open(path)
@@ -179,6 +220,29 @@ func readLines(t *testing.T, path string) []string {
 		t.Fatalf("scan trace file: %v", err)
 	}
 	return lines
+}
+
+func writeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func assertPathExists(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected %s to exist: %v", path, err)
+	}
+}
+
+func assertPathMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("expected %s to be deleted", path)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat %s: %v", path, err)
+	}
 }
 
 func readJSONMap(t *testing.T, path string) map[string]any {

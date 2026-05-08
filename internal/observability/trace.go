@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/compshare-agent/internal/security"
@@ -32,6 +33,8 @@ const (
 const DefaultTraceDir = "logs"
 
 const DefaultTraceFilePerm os.FileMode = 0o600
+
+const DefaultTraceRetentionDays = 30
 
 type WriterOptions struct {
 	Dir string
@@ -187,6 +190,55 @@ func canonicalTraceJSON(v any) ([]byte, error) {
 
 func traceFileName(t time.Time) string {
 	return "agent-trace-" + t.Format("2006-01-02") + ".jsonl"
+}
+
+func Cleanup(dir string, retentionDays int, now time.Time) error {
+	if dir == "" {
+		dir = DefaultTraceDir
+	}
+	if retentionDays <= 0 {
+		retentionDays = DefaultTraceRetentionDays
+	}
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read trace dir: %w", err)
+	}
+	cutoff := dateOnly(now).AddDate(0, 0, -retentionDays)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		traceDate, ok := traceFileDate(entry.Name())
+		if !ok || !traceDate.Before(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+			return fmt.Errorf("remove expired trace file %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
+func traceFileDate(name string) (time.Time, bool) {
+	const prefix = "agent-trace-"
+	const suffix = ".jsonl"
+	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+		return time.Time{}, false
+	}
+	dateText := strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix)
+	traceDate, err := time.Parse("2006-01-02", dateText)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return traceDate, true
+}
+
+func dateOnly(t time.Time) time.Time {
+	year, month, day := t.Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, t.Location())
 }
 
 func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
