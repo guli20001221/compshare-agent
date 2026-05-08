@@ -64,6 +64,7 @@ func TestProjectPlannerTrace_HashesTargetRefsAndNonAllowlistedTimeWindow(t *test
 	const rawName = "prod-gpu-01"
 	const sourceSpan = "用户显式输入 uhost-abc123"
 	const rawWindow = "2026-05-09T01:00:00+08:00/2026-05-09T02:00:00+08:00"
+	const rawReasoning = "secret reasoning mentions uhost-abc123 and prod-gpu-01"
 
 	trace := ProjectPlannerTrace(PlannerResult{
 		Plan: Plan{
@@ -81,6 +82,7 @@ func TestProjectPlannerTrace_HashesTargetRefsAndNonAllowlistedTimeWindow(t *test
 				},
 			},
 			Confidence: 0.7,
+			Reasoning:  rawReasoning,
 		},
 	}, PlannerTraceOptions{Enabled: true, Model: "deepseek-v4-flash"})
 
@@ -97,6 +99,7 @@ func TestProjectPlannerTrace_HashesTargetRefsAndNonAllowlistedTimeWindow(t *test
 	assert.Equal(t, string(TargetRefName), second.Type)
 	assert.Equal(t, string(SourcePriorTurn), second.Source)
 	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, second.ValueHash)
+	assert.Empty(t, second.SourceSpanHash)
 
 	window, ok := trace.Slots.TimeWindow.(PlannerTraceTimeWindow)
 	require.True(t, ok)
@@ -111,6 +114,35 @@ func TestProjectPlannerTrace_HashesTargetRefsAndNonAllowlistedTimeWindow(t *test
 	assert.NotContains(t, raw, rawName)
 	assert.NotContains(t, raw, sourceSpan)
 	assert.NotContains(t, raw, rawWindow)
+	assert.NotContains(t, raw, rawReasoning)
+}
+
+func TestProjectPlannerTrace_FallbackPreservesExplicitHardBlockHint(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		hardBlockHint bool
+	}{
+		{name: "hint_true", hardBlockHint: true},
+		{name: "hint_false", hardBlockHint: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			trace := ProjectPlannerTrace(PlannerResult{
+				Fallback: true,
+				Plan: Plan{
+					SchemaVersion: SchemaVersion,
+					Intent:        IntentBillingAccountUnsupported,
+					HardBlockHint: tc.hardBlockHint,
+					Confidence:    0.91,
+				},
+			}, PlannerTraceOptions{Enabled: true, Model: "deepseek-v4-flash"})
+
+			assert.True(t, trace.Enabled)
+			assert.False(t, trace.SchemaValid)
+			assert.Equal(t, string(IntentUnknown), trace.Intent)
+			assert.Zero(t, trace.Confidence)
+			assert.Equal(t, tc.hardBlockHint, trace.HardBlockHint)
+		})
+	}
 }
 
 func TestProjectPlannerTrace_StableHashesForEqualPlans(t *testing.T) {

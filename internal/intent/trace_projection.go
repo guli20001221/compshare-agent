@@ -47,7 +47,9 @@ func ProjectPlannerTrace(result PlannerResult, opts PlannerTraceOptions) observa
 	if !trace.SchemaValid {
 		trace.Intent = string(IntentUnknown)
 		trace.Confidence = 0
-		trace.HardBlockHint = false
+		if !result.Fallback {
+			trace.HardBlockHint = false
+		}
 	}
 	return trace
 }
