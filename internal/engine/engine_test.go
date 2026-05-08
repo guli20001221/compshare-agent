@@ -11,12 +11,15 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -953,6 +956,7 @@ func TestChat_WorkflowTool_CreateInstance(t *testing.T) {
 }
 
 func TestChat_WorkflowTool_StopInstance(t *testing.T) {
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
@@ -969,6 +973,15 @@ func TestChat_WorkflowTool_StopInstance(t *testing.T) {
 		{Content: "已关机，注意磁盘仍会收费"},
 	}}
 	eng := NewWithDeps(mock, executor, confirmFn)
+	eng.registry = entity.NewRegistry(entity.WithClock(func() time.Time { return now }))
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"RetCode":    0,
+		"TotalCount": float64(1),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-stop-001", "Name": "test", "State": "Running"},
+		},
+	}, string(entity.SyncEventInit)))
+	require.False(t, eng.registry.NeedsRefresh(now.Add(time.Second)))
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
 	}
@@ -987,6 +1000,7 @@ func TestChat_WorkflowTool_StopInstance(t *testing.T) {
 	err = json.Unmarshal([]byte(toolMsg.Content), &result)
 	assert.NoError(t, err)
 	assert.Equal(t, true, result["success"])
+	assert.True(t, eng.registry.NeedsRefresh(now.Add(time.Second)))
 }
 
 func TestChat_WorkflowTool_ArgsFiltered(t *testing.T) {
@@ -1483,6 +1497,89 @@ func newEngineWithServer(t *testing.T, mock *mockLLM, projectIdInCfg string, bod
 	})
 	eng := NewWithDeps(mock, ext, nil)
 	return eng, h, srv.Close
+}
+
+func TestNewDoesNotRefreshEntityRegistry(t *testing.T) {
+	h := &projectListHandler{}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	eng := New(&config.Config{Agent: config.AgentConfig{
+		LLM: config.LLMConfig{
+			BaseURL: "https://api.modelverse.cn/v1",
+			Model:   "deepseek-v4-flash",
+		},
+		CompShareAPIURL: srv.URL,
+		PublicKey:       "pk",
+		PrivateKey:      "sk",
+		Region:          "cn-wlcb",
+		ProjectId:       "org-cfg-value",
+	}}, nil)
+
+	assert.NotNil(t, eng.registry)
+	assert.Empty(t, h.actions(), "Engine.New must not perform network refresh")
+	assert.Equal(t, string(entity.SyncEventUnavailable), eng.registry.TraceState(time.Now()).SyncEvent)
+}
+
+func TestInitRefreshesEntityRegistryThroughSafeExecutor(t *testing.T) {
+	attempts := 0
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action != "DescribeCompShareInstance" {
+			return map[string]any{"Action": action, "RetCode": 0}, nil
+		}
+		attempts++
+		assert.Equal(t, 100, args["Limit"])
+		if attempts == 1 {
+			return nil, io.EOF
+		}
+		return map[string]any{
+			"RetCode":    0,
+			"TotalCount": float64(1),
+			"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-init", "Name": "init-host", "State": "Running"},
+			},
+		}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+
+	_, err := eng.Init(context.Background())
+
+	assert.NoError(t, err)
+	assert.Equal(t, 2, attempts, "init refresh must go through SafeToolExecutor read retry")
+	snap := eng.registry.Snapshot()
+	assert.Equal(t, string(entity.SyncEventInit), snap.SyncEvent)
+	assert.NotEmpty(t, snap.SnapshotID)
+	assert.Contains(t, snap.Instances, "uhost-init")
+}
+
+func TestRegistryInvalidatesAfterSuccessfulMutatingTool(t *testing.T) {
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"StartCompShareInstance": {"RetCode": 0},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "StartCompShareInstance", `{"UHostId":"uhost-a"}`),
+		}},
+		{Content: "started"},
+	}}
+	eng := NewWithDeps(mock, executor, func(string, map[string]any) bool { return true })
+	eng.registry = entity.NewRegistry(entity.WithClock(func() time.Time { return now }))
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"RetCode":    0,
+		"TotalCount": float64(1),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "a", "State": "Stopped"},
+		},
+	}, string(entity.SyncEventInit)))
+	require.False(t, eng.registry.NeedsRefresh(now.Add(time.Second)))
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+
+	reply, err := eng.Chat(context.Background(), "start uhost-a", noopStep)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "started", reply)
+	assert.True(t, eng.registry.NeedsRefresh(now.Add(time.Second)))
 }
 
 func TestEnsureProjectId_UsesConfigWhenSet(t *testing.T) {

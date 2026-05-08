@@ -162,23 +162,32 @@ func (r *EntityRegistry) TraceState(now time.Time) RegistryTraceState {
 }
 
 func (r *EntityRegistry) Sync(ctx context.Context, exec Executor) error {
-	return r.Refresh(ctx, exec, RefreshReasonManual)
+	_, err := r.RefreshResult(ctx, exec, RefreshReasonManual)
+	return err
 }
 
 // Refresh synchronously reloads the registry from DescribeCompShareInstance.
 // It records a low-cardinality failed sync event on transport or parse errors
 // while preserving the last successful snapshot for best-effort reads.
 func (r *EntityRegistry) Refresh(ctx context.Context, exec Executor, reason RefreshReason) error {
+	_, err := r.RefreshResult(ctx, exec, reason)
+	return err
+}
+
+// RefreshResult is Refresh plus the raw DescribeCompShareInstance result.
+// Engine.Init uses the raw result for its existing prompt context while the
+// registry records the same call as an observable Phase 0 snapshot.
+func (r *EntityRegistry) RefreshResult(ctx context.Context, exec Executor, reason RefreshReason) (map[string]any, error) {
 	result, err := exec.Execute(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100})
 	if err != nil {
 		r.recordRefreshFailure(err)
-		return err
+		return nil, err
 	}
 	if err := r.SyncFromDescribe(result, string(syncEventForReason(reason))); err != nil {
 		r.recordRefreshFailure(err)
-		return err
+		return nil, err
 	}
-	return nil
+	return result, nil
 }
 
 // WarmRefresh starts one caller-triggered background refresh and returns its
