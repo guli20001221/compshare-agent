@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 
+	// RateLimitConfig.Limits returns the governance type directly so engine
+	// wiring does not duplicate field mapping.
 	"github.com/compshare-agent/internal/governance"
 	"gopkg.in/yaml.v3"
 )
@@ -82,16 +84,16 @@ func Load(path string) (*Config, error) {
 func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 	defaults := governance.DefaultLimits()
 	if rateLimit.LLMQPS < 0 {
-		return fmt.Errorf("agent.rate_limit.llm_qps must be non-negative")
+		return negativeRateLimitError("agent.rate_limit.llm_qps")
 	}
 	if rateLimit.LLMDaily < 0 {
-		return fmt.Errorf("agent.rate_limit.llm_daily must be non-negative")
+		return negativeRateLimitError("agent.rate_limit.llm_daily")
 	}
 	if rateLimit.MutatingQPS < 0 {
-		return fmt.Errorf("agent.rate_limit.mutating_qps must be non-negative")
+		return negativeRateLimitError("agent.rate_limit.mutating_qps")
 	}
 	if rateLimit.MutatingDaily < 0 {
-		return fmt.Errorf("agent.rate_limit.mutating_daily must be non-negative")
+		return negativeRateLimitError("agent.rate_limit.mutating_daily")
 	}
 	if rateLimit.LLMQPS == 0 {
 		rateLimit.LLMQPS = defaults.LLMQPS
@@ -106,6 +108,10 @@ func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 		rateLimit.MutatingDaily = defaults.MutatingDaily
 	}
 	return nil
+}
+
+func negativeRateLimitError(yamlPath string) error {
+	return fmt.Errorf("%s must be non-negative (0 or omit to use default)", yamlPath)
 }
 
 func resolveRequiredSecret(field *string, yamlPath, envKey string) error {

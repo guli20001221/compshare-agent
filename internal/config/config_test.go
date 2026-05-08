@@ -200,6 +200,7 @@ func TestLoad_RejectsNegativeRateLimitValues(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
 			assert.Contains(t, err.Error(), "must be non-negative")
+			assert.Contains(t, err.Error(), "0 or omit to use default")
 		})
 	}
 }
