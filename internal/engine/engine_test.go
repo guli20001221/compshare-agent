@@ -14,6 +14,7 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/assert"
 
@@ -198,6 +199,49 @@ func TestChat_ExternalTool_L0(t *testing.T) {
 
 	// Executor should have been called
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+}
+
+func TestChat_ExternalToolEventsCarryTraceMetadata(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{map[string]any{"UHostId": "uhost-1"}}, "RetCode": 0},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DescribeCompShareInstance", `{"Limit":1}`),
+		}},
+		{Content: "ok"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+	onStep, events := collectSteps()
+
+	reply, err := eng.Chat(context.Background(), "查实例", onStep)
+	assert.NoError(t, err)
+	assert.Equal(t, "ok", reply)
+
+	var callEvent, resultEvent *StepEvent
+	for i := range *events {
+		ev := &(*events)[i]
+		if ev.Action != "DescribeCompShareInstance" {
+			continue
+		}
+		switch ev.Type {
+		case StepToolCall:
+			callEvent = ev
+		case StepToolResult:
+			resultEvent = ev
+		}
+	}
+	if assert.NotNil(t, callEvent) {
+		assert.Equal(t, observability.ToolSourceMainReAct, callEvent.Source)
+		assert.Equal(t, map[string]any{"Limit": float64(1)}, callEvent.Args)
+	}
+	if assert.NotNil(t, resultEvent) {
+		assert.Equal(t, observability.ToolSourceMainReAct, resultEvent.Source)
+		assert.Equal(t, 1, resultEvent.Attempts)
+		assert.NotNil(t, resultEvent.TraceResult)
+		assert.Contains(t, resultEvent.TraceResult, "UHostSet")
+	}
 }
 
 func TestChat_ExternalToolReadRetriesTransientError(t *testing.T) {

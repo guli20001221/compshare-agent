@@ -14,6 +14,7 @@ import (
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
@@ -305,21 +306,21 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	var args map[string]any
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		errMsg := fmt.Sprintf("parameter parse error: %v", err)
-		onStep(StepEvent{Type: StepError, Action: action, Message: errMsg})
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errMsg})
 		return errMsg
 	}
 
 	// Knowledge tools execute locally — no API call, no security check needed
 	if knowledge.IsKnowledgeTool(action) {
 		args = e.safeExecutor.FilterArgs(action, args)
-		onStep(StepEvent{Type: StepToolCall, Action: action, Args: args})
+		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceKnowledgeLocal, Args: args})
 		result, err := knowledge.ExecuteTool(action, args)
 		if err != nil {
 			errMsg := fmt.Sprintf("知识查询失败: %v", err)
-			onStep(StepEvent{Type: StepError, Action: action, Message: errMsg})
+			onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceKnowledgeLocal, Message: errMsg})
 			return errMsg
 		}
-		onStep(StepEvent{Type: StepToolResult, Action: action, Message: "查询成功"})
+		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceKnowledgeLocal, Message: "查询成功", TraceResult: result})
 		return knowledge.ResultToJSON(result)
 	}
 
@@ -330,14 +331,14 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	// Invariant: BuildArgs functions must only reference specific named keys from wfCtx.Params.
 	if workflow.IsWorkflowTool(action) {
 		args = e.safeExecutor.FilterArgs(action, args)
-		onStep(StepEvent{Type: StepToolCall, Action: action, Args: e.safeExecutor.RedactArgs(action, args)})
+		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: e.safeExecutor.RedactArgs(action, args)})
 		return e.executeWorkflow(ctx, action, args, onStep)
 	}
 
 	// Diagnosis meta-tools → delegate to diagnosis engine.
 	if diagnosis.IsDiagnosisTool(action) {
 		args = e.safeExecutor.FilterArgs(action, args)
-		onStep(StepEvent{Type: StepToolCall, Action: action, Args: e.safeExecutor.RedactArgs(action, args)})
+		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: e.safeExecutor.RedactArgs(action, args)})
 		return e.executeDiagnosis(ctx, action, args, onStep)
 	}
 
@@ -347,26 +348,26 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		Origin: tools.OriginDirectLLM,
 		Hooks: tools.SafeToolHooks{
 			OnConfirmNeeded: func(action string, args map[string]any) {
-				onStep(StepEvent{Type: StepConfirmNeeded, Action: action, Args: e.safeExecutor.RedactArgs(action, args), Message: "此操作需要您确认"})
+				onStep(StepEvent{Type: StepConfirmNeeded, Action: action, Source: observability.ToolSourceMainReAct, Args: e.safeExecutor.RedactArgs(action, args), Message: "此操作需要您确认"})
 			},
 			OnBeforeCall: func(action string, args map[string]any) {
-				onStep(StepEvent{Type: StepToolCall, Action: action, Args: args})
+				onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: args})
 			},
 		},
 	})
 	if err != nil {
 		if errors.Is(err, tools.ErrDestructiveAction) {
 			msg := fmt.Sprintf("安全限制：%s 是破坏性操作（L2），已拒绝执行。请到控制台手动操作。", action)
-			onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			return finalReplyPrefix + msg
 		}
 		if errors.Is(err, tools.ErrUserDeclined) {
 			msg := fmt.Sprintf("操作 %s 已取消（用户未确认）。", action)
-			onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			return finalReplyPrefix + msg
 		}
 		errMsg := fmt.Sprintf("API 调用失败: %v", err)
-		onStep(StepEvent{Type: StepError, Action: action, Message: errMsg})
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errMsg})
 		return errMsg
 	}
 
@@ -376,7 +377,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	}
 
 	formatted := prompt.FormatToolResult(result.LLMResult)
-	onStep(StepEvent{Type: StepToolResult, Action: action, Message: "调用成功", Display: display})
+	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "调用成功", Display: display, TraceResult: result.TraceResult, Attempts: result.Attempts})
 	return formatted
 }
 
@@ -589,7 +590,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		uHostId, _ := args["UHostId"].(string)
 		if uHostId == "" {
 			msg := "请先确认要操作的实例。当有多个实例时，请列出实例列表让用户选择后再执行操作。"
-			onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			guardResult := map[string]any{"success": false, "message": msg}
 			b, _ := json.Marshal(guardResult)
 			return string(b)
@@ -599,7 +600,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	wf, ok := workflow.GetWorkflow(action)
 	if !ok {
 		msg := fmt.Sprintf("未知的工作流: %s", action)
-		onStep(StepEvent{Type: StepError, Action: action, Message: msg})
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
 
@@ -628,6 +629,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		onStep(StepEvent{
 			Type:    eventType,
 			Action:  ev.Tool,
+			Source:  observability.ToolSourceWorkflowInternal,
 			Args:    e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
 			Message: fmt.Sprintf("[%d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status),
 		})
@@ -636,7 +638,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	result, err := wfEngine.Run(ctx, wf, args)
 	if err != nil {
 		msg := fmt.Sprintf("工作流执行错误: %v", err)
-		onStep(StepEvent{Type: StepError, Action: action, Message: msg})
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
 
@@ -654,7 +656,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	chain, ok := diagnosis.GetChain(action)
 	if !ok {
 		msg := fmt.Sprintf("未知的诊断链: %s", action)
-		onStep(StepEvent{Type: StepError, Action: action, Message: msg})
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
 
@@ -666,7 +668,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	// routing class — deliberately does NOT redirect to another Diagnose*.
 	if action == "DiagnoseInitFailure" && !containsInitFailureSignal(e.lastUserMsg) {
 		msg := "请问是哪台实例出了问题？能描述一下具体现象吗（例如：SSH 断了、GPU 报错、服务崩了、初始化卡住等）？"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return finalReplyPrefix + msg
 	}
 
@@ -684,7 +686,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		uid, _ := args["UHostId"].(string)
 		if uid == "" && !containsScanAllSignal(e.lastUserMsg) {
 			msg := "请问是哪台实例的初始化失败了？"
-			onStep(StepEvent{Type: StepBlocked, Action: action, Message: msg})
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			return finalReplyPrefix + msg
 		}
 	}
@@ -702,6 +704,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		onStep(StepEvent{
 			Type:    eventType,
 			Action:  ev.Tool,
+			Source:  observability.ToolSourceDiagnosisInternal,
 			Args:    e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
 			Message: fmt.Sprintf("[诊断 %d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status),
 		})
@@ -710,7 +713,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	result, err := diagEngine.Run(ctx, chain, args)
 	if err != nil {
 		msg := fmt.Sprintf("诊断执行错误: %v", err)
-		onStep(StepEvent{Type: StepError, Action: action, Message: msg})
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
 
@@ -731,11 +734,14 @@ const (
 
 // StepEvent is an intermediate event during the ReAct loop.
 type StepEvent struct {
-	Type    StepType
-	Action  string
-	Args    map[string]any
-	Message string
-	Display string // content for CLI display only (not sent to LLM), e.g. raw JupyterToken
+	Type        StepType
+	Action      string
+	Source      string
+	Args        map[string]any
+	Message     string
+	Display     string         // content for CLI display only (not sent to LLM), e.g. raw JupyterToken
+	TraceResult map[string]any // redacted result payload for trace hashing only
+	Attempts    int
 }
 
 // trimHistory keeps the message list under maxHistoryMessages by dropping
