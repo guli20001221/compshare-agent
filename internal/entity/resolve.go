@@ -115,6 +115,77 @@ func (r *EntityRegistry) Filter(spec FilterSpec) []*InstanceSnapshot {
 	return matches
 }
 
+func (s RegistrySnapshot) ResolveByID(id string) (*InstanceSnapshot, ResolveResult) {
+	query := strings.TrimSpace(id)
+	if inst, ok := s.Instances[query]; ok {
+		copy := inst
+		return &copy, ResolveResult{Status: ResolveHit, Query: query, Candidates: []string{query}}
+	}
+	return nil, ResolveResult{Status: ResolveNotFoundInAccount, Query: query}
+}
+
+func (s RegistrySnapshot) ResolveByName(name string) ([]*InstanceSnapshot, ResolveResult) {
+	query := strings.TrimSpace(name)
+	normalized := normalizeName(query)
+	if normalized == "" {
+		return nil, ResolveResult{Status: ResolveNotFoundInAccount, Query: query}
+	}
+
+	if ids := append([]string(nil), s.NameIndex[normalized]...); len(ids) > 0 {
+		matches := s.instancesForIDs(ids)
+		status := ResolveHit
+		if len(matches) > 1 {
+			status = ResolveAmbiguous
+		}
+		return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
+	}
+
+	scored := make([]scoredInstance, 0)
+	terms := normalizeTerms(query)
+	for _, inst := range s.Instances {
+		if score := fuzzyScore(normalized, terms, normalizeName(inst.Name)); score > 0 {
+			scored = append(scored, scoredInstance{snapshot: inst, score: score})
+		}
+	}
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		if scored[i].snapshot.Name != scored[j].snapshot.Name {
+			return scored[i].snapshot.Name < scored[j].snapshot.Name
+		}
+		return scored[i].snapshot.UHostId < scored[j].snapshot.UHostId
+	})
+
+	matches := make([]*InstanceSnapshot, 0, len(scored))
+	for _, item := range scored {
+		copy := item.snapshot
+		matches = append(matches, &copy)
+	}
+	if len(matches) == 0 {
+		return nil, ResolveResult{Status: ResolveNotFoundInAccount, Query: query}
+	}
+	status := ResolveHit
+	if len(matches) > 1 {
+		status = ResolveAmbiguous
+	}
+	return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
+}
+
+func (s RegistrySnapshot) instancesForIDs(ids []string) []*InstanceSnapshot {
+	matches := make([]*InstanceSnapshot, 0, len(ids))
+	for _, id := range ids {
+		if inst, ok := s.Instances[id]; ok {
+			copy := inst
+			matches = append(matches, &copy)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].UHostId < matches[j].UHostId
+	})
+	return matches
+}
+
 func (r *EntityRegistry) instancesForIDsLocked(ids []string) []*InstanceSnapshot {
 	matches := make([]*InstanceSnapshot, 0, len(ids))
 	for _, id := range ids {

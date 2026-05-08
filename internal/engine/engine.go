@@ -233,6 +233,15 @@ func (e *Engine) RegistryTraceState(now time.Time) observability.EntityRegistryT
 	}
 }
 
+// RegistrySnapshot returns an immutable entity snapshot for shadow planner
+// validation. It does not expose the registry object, maps, or lock to callers.
+func (e *Engine) RegistrySnapshot() entity.RegistrySnapshot {
+	if e == nil || e.registry == nil {
+		return entity.RegistrySnapshot{SyncEvent: string(entity.SyncEventUnavailable)}
+	}
+	return e.registry.Snapshot()
+}
+
 // PlannerPriorTextSnapshot returns a bounded, read-only text projection of
 // prior user/assistant turns for shadow-planner provenance checks. It excludes
 // system prompts and tool-result JSON so shadow mode does not expand the data

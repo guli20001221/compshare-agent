@@ -38,7 +38,10 @@ type PlannerOptions struct {
 type PlannerInput struct {
 	UserText  string
 	PriorText string
-	Registry  *entity.EntityRegistry
+	Resolver  EntityResolver
+	// Deprecated: use Resolver so production shadow mode can pass immutable
+	// registry snapshots without exposing EntityRegistry internals.
+	Registry *entity.EntityRegistry
 }
 
 type PlannerResult struct {
@@ -115,6 +118,7 @@ func (p *Planner) Plan(ctx context.Context, input PlannerInput) (PlannerResult, 
 			err = ValidatePlan(plan, ValidationContext{
 				UserText:  input.UserText,
 				PriorText: input.PriorText,
+				Resolver:  input.entityResolver(),
 				Registry:  input.Registry,
 			})
 			if err == nil {
@@ -133,6 +137,16 @@ func (p *Planner) Plan(ctx context.Context, input PlannerInput) (PlannerResult, 
 		userPrompt = buildUserPrompt(input, "上一轮输出不是合法 IntentPlan JSON，必须只返回符合 schema v1.0 的 JSON 对象。")
 	}
 	return result, nil
+}
+
+func (input PlannerInput) entityResolver() EntityResolver {
+	if input.Resolver != nil {
+		return input.Resolver
+	}
+	if input.Registry != nil {
+		return input.Registry
+	}
+	return nil
 }
 
 func parsePlanJSON(raw string) (Plan, error) {

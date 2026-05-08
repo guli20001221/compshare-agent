@@ -13,6 +13,7 @@ import (
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 )
 
@@ -71,6 +72,22 @@ func TestIntentPlannerShadowModeFromEnv(t *testing.T) {
 		return ""
 	}) {
 		t.Fatal("only explicit shadow mode should enable shadow planner")
+	}
+}
+
+func TestCLIShadowPlannerInputUsesRegistrySnapshot(t *testing.T) {
+	eng := engine.NewWithDeps(cmdMockLLM{}, cmdRegistryExecutor{}, nil)
+	if _, err := eng.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	input := cliShadowPlannerInput(eng, "check uhost-cli monitor")
+	if input.Resolver == nil {
+		t.Fatal("shadow planner input must include immutable registry resolver")
+	}
+	got, res := input.Resolver.ResolveByID("uhost-cli")
+	if res.Status != entity.ResolveHit || got == nil || got.Name != "cli-host" {
+		t.Fatalf("resolver ResolveByID = (%#v, %#v), want uhost-cli hit", got, res)
 	}
 }
 
@@ -614,6 +631,31 @@ type entityExecutorFunc func(context.Context, string, map[string]any) (map[strin
 
 func (f entityExecutorFunc) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
 	return f(ctx, action, args)
+}
+
+type cmdMockLLM struct{}
+
+func (cmdMockLLM) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	return &llm.ChatResponse{Content: "ok"}, nil
+}
+
+type cmdRegistryExecutor struct{}
+
+func (cmdRegistryExecutor) Execute(_ context.Context, action string, _ map[string]any) (map[string]any, error) {
+	if action != "DescribeCompShareInstance" {
+		return map[string]any{"RetCode": 0}, nil
+	}
+	return map[string]any{
+		"RetCode":    0,
+		"TotalCount": float64(1),
+		"UHostSet": []any{
+			map[string]any{
+				"UHostId": "uhost-cli",
+				"Name":    "cli-host",
+				"State":   "Running",
+			},
+		},
+	}, nil
 }
 
 func readSingleTraceRecord(t *testing.T, writer *observability.Writer, now time.Time) observability.TraceRecord {

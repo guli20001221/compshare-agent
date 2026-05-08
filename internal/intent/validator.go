@@ -45,7 +45,15 @@ func (e *ValidationError) Error() string {
 type ValidationContext struct {
 	UserText  string
 	PriorText string
-	Registry  *entity.EntityRegistry
+	Resolver  EntityResolver
+	// Deprecated: use Resolver so shadow mode can validate against immutable
+	// registry snapshots instead of the mutable EntityRegistry object.
+	Registry *entity.EntityRegistry
+}
+
+type EntityResolver interface {
+	ResolveByID(id string) (*entity.InstanceSnapshot, entity.ResolveResult)
+	ResolveByName(name string) ([]*entity.InstanceSnapshot, entity.ResolveResult)
 }
 
 func ValidatePlan(plan Plan, ctx ValidationContext) error {
@@ -90,6 +98,7 @@ func ValidatePlan(plan Plan, ctx ValidationContext) error {
 
 func validateTargetRef(ref TargetRef, idx int, ctx ValidationContext) error {
 	field := fmt.Sprintf("slots.target_refs[%d]", idx)
+	resolver := ctx.entityResolver()
 	switch ref.Type {
 	case TargetRefFilter:
 		if !validFilterRef(ref.Value) {
@@ -108,8 +117,8 @@ func validateTargetRef(ref TargetRef, idx int, ctx ValidationContext) error {
 		if err := validateProvenance(ref, field, ctx); err != nil {
 			return err
 		}
-		if ctx.Registry != nil {
-			if matches, res := ctx.Registry.ResolveByName(ref.Value); res.Status == entity.ResolveNotFoundInAccount || len(matches) == 0 {
+		if resolver != nil {
+			if matches, res := resolver.ResolveByName(ref.Value); res.Status == entity.ResolveNotFoundInAccount || len(matches) == 0 {
 				return validationErr(ErrEntityNotFound, field+".value", "name target_ref does not resolve in registry")
 			}
 		}
@@ -118,8 +127,8 @@ func validateTargetRef(ref TargetRef, idx int, ctx ValidationContext) error {
 		if err := validateProvenance(ref, field, ctx); err != nil {
 			return err
 		}
-		if ctx.Registry != nil {
-			if _, res := ctx.Registry.ResolveByID(ref.Value); res.Status != entity.ResolveHit {
+		if resolver != nil {
+			if _, res := resolver.ResolveByID(ref.Value); res.Status != entity.ResolveHit {
 				return validationErr(ErrEntityNotFound, field+".value", "uhost_id target_ref is not in registry")
 			}
 		}
@@ -127,6 +136,16 @@ func validateTargetRef(ref TargetRef, idx int, ctx ValidationContext) error {
 	default:
 		return validationErr(ErrInvalidTargetRefType, field+".type", "unsupported target_ref type")
 	}
+}
+
+func (ctx ValidationContext) entityResolver() EntityResolver {
+	if ctx.Resolver != nil {
+		return ctx.Resolver
+	}
+	if ctx.Registry != nil {
+		return ctx.Registry
+	}
+	return nil
 }
 
 func validateProvenance(ref TargetRef, field string, ctx ValidationContext) error {

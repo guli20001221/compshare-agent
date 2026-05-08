@@ -1937,6 +1937,26 @@ func TestRegistryTraceStateAccessorReturnsImmutableTraceState(t *testing.T) {
 	assert.Equal(t, string(entity.SyncEventInit), state.SyncEvent)
 }
 
+func TestRegistrySnapshotAccessorReturnsImmutableSnapshot(t *testing.T) {
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.registry = entity.NewRegistry(entity.WithClock(func() time.Time { return now }))
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"RetCode":    0,
+		"TotalCount": float64(1),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-trace", "Name": "trace-host", "State": "Running"},
+		},
+	}, string(entity.SyncEventInit)))
+
+	snap := eng.RegistrySnapshot()
+	require.NotEmpty(t, snap.SnapshotID)
+	snap.Instances["uhost-trace"] = entity.InstanceSnapshot{UHostId: "uhost-trace", Name: "mutated"}
+
+	fresh := eng.RegistrySnapshot()
+	assert.Equal(t, "trace-host", fresh.Instances["uhost-trace"].Name)
+}
+
 func TestPlannerPriorTextSnapshotOmitsSystemAndToolMessages(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.messages = []openai.ChatCompletionMessage{

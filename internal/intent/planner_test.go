@@ -42,6 +42,27 @@ func TestPlanner_ReturnsValidPlanFromMockLLM(t *testing.T) {
 	assert.Contains(t, mock.requests[0].SystemPrompt, "monitor_query")
 }
 
+func TestPlanner_ValidatesAgainstImmutableResolverSnapshot(t *testing.T) {
+	reg := testRegistry(t)
+	snap := reg.Snapshot()
+	require.NoError(t, reg.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(0),
+		"UHostSet":   []any{},
+	}, "test"))
+
+	mock := &mockPlannerLLM{responses: []string{mustPlanJSON(t, validMonitorPlan())}}
+	planner := NewPlanner(mock, PlannerOptions{})
+
+	result, err := planner.Plan(context.Background(), PlannerInput{
+		UserText: "check uhost-abc123 monitor",
+		Resolver: snap,
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Fallback)
+	assert.Equal(t, IntentMonitorQuery, result.Plan.Intent)
+}
+
 func TestPlanner_RetriesInvalidJSONThenReturnsValidPlan(t *testing.T) {
 	mock := &mockPlannerLLM{responses: []string{
 		`{"schema_version":`,
