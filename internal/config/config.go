@@ -5,6 +5,9 @@ import (
 	"os"
 	"strings"
 
+	// RateLimitConfig.Limits returns the governance type directly so engine
+	// wiring does not duplicate field mapping.
+	"github.com/compshare-agent/internal/governance"
 	"gopkg.in/yaml.v3"
 )
 
@@ -13,8 +16,9 @@ type Config struct {
 }
 
 type AgentConfig struct {
-	LLM      LLMConfig `yaml:"llm"`
-	Executor string    `yaml:"executor"` // "external" or "internal"
+	LLM       LLMConfig       `yaml:"llm"`
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
+	Executor  string          `yaml:"executor"` // "external" or "internal"
 
 	CompShareAPIURL string `yaml:"compshare_api_url"`
 	PublicKey       string `yaml:"public_key"`
@@ -30,6 +34,22 @@ type LLMConfig struct {
 	BaseURL string `yaml:"base_url"`
 	APIKey  string `yaml:"api_key"`
 	Model   string `yaml:"model"`
+}
+
+type RateLimitConfig struct {
+	LLMQPS        int `yaml:"llm_qps"`
+	LLMDaily      int `yaml:"llm_daily"`
+	MutatingQPS   int `yaml:"mutating_qps"`
+	MutatingDaily int `yaml:"mutating_daily"`
+}
+
+func (c RateLimitConfig) Limits() governance.Limits {
+	return governance.Limits{
+		LLMQPS:        c.LLMQPS,
+		LLMDaily:      c.LLMDaily,
+		MutatingQPS:   c.MutatingQPS,
+		MutatingDaily: c.MutatingDaily,
+	}
 }
 
 func Load(path string) (*Config, error) {
@@ -54,8 +74,44 @@ func Load(path string) (*Config, error) {
 	if err := resolveOptionalPlaceholder(&cfg.Agent.ProjectId, "agent.project_id"); err != nil {
 		return nil, err
 	}
+	if err := applyRateLimitDefaults(&cfg.Agent.RateLimit); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
+}
+
+func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
+	defaults := governance.DefaultLimits()
+	if rateLimit.LLMQPS < 0 {
+		return negativeRateLimitError("agent.rate_limit.llm_qps")
+	}
+	if rateLimit.LLMDaily < 0 {
+		return negativeRateLimitError("agent.rate_limit.llm_daily")
+	}
+	if rateLimit.MutatingQPS < 0 {
+		return negativeRateLimitError("agent.rate_limit.mutating_qps")
+	}
+	if rateLimit.MutatingDaily < 0 {
+		return negativeRateLimitError("agent.rate_limit.mutating_daily")
+	}
+	if rateLimit.LLMQPS == 0 {
+		rateLimit.LLMQPS = defaults.LLMQPS
+	}
+	if rateLimit.LLMDaily == 0 {
+		rateLimit.LLMDaily = defaults.LLMDaily
+	}
+	if rateLimit.MutatingQPS == 0 {
+		rateLimit.MutatingQPS = defaults.MutatingQPS
+	}
+	if rateLimit.MutatingDaily == 0 {
+		rateLimit.MutatingDaily = defaults.MutatingDaily
+	}
+	return nil
+}
+
+func negativeRateLimitError(yamlPath string) error {
+	return fmt.Errorf("%s must be non-negative (0 or omit to use default)", yamlPath)
 }
 
 func resolveRequiredSecret(field *string, yamlPath, envKey string) error {
