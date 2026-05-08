@@ -69,3 +69,7 @@ scripts/secret_scan.ps1 PASS
 ## Secret Hygiene
 
 This artifact intentionally excludes raw public/private keys, LLM API keys, ProjectId values, UHostIds, IP addresses, raw user prompts, provider responses, raw trace JSONL, and raw tool payloads.
+
+## Deferred Real-Account Validation
+
+Real-account rate-limit verification is intentionally deferred. T-007b real-account shadow smoke should exercise the LLM quota path on the primary `deepseek-v4-flash` baseline without dedicated T-005 re-runs. That run should also watch for `rate_limit.reason="qps_exceeded"` under baseline defaults (LLM 5 QPS / 5000 daily, mutating 1 QPS / 50 daily), because ReAct multi-round bursts may approach the 5 QPS bucket.
