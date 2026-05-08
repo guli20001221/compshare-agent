@@ -1589,173 +1589,6 @@ func TestPickProjectId(t *testing.T) {
 	}
 }
 
-// ==========================================================================
-// Billing stale-state hard guard
-// ==========================================================================
-
-func TestExtractDiagnosisTargets(t *testing.T) {
-	cases := []struct {
-		name string
-		args map[string]any
-		want []string
-	}{
-		{"uhost_only", map[string]any{"UHostId": "uhost-1paxrg4g1vfw"}, []string{"uhost-1paxrg4g1vfw"}},
-		{"name_only", map[string]any{"Name": "qa-shadow-20260417-01"}, []string{"qa-shadow-20260417-01"}},
-		{"both", map[string]any{"UHostId": "uhost-1paxrg4g1vfw", "Name": "qa-shadow-20260417-01"}, []string{"uhost-1paxrg4g1vfw", "qa-shadow-20260417-01"}},
-		{"empty_map", map[string]any{}, nil},
-		{"empty_strings", map[string]any{"UHostId": "", "Name": ""}, nil},
-		{"non_string", map[string]any{"UHostId": 123, "Name": true}, nil},
-		{"mixed_one_valid", map[string]any{"UHostId": "uhost-x", "Name": ""}, []string{"uhost-x"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, extractDiagnosisTargets(tc.args))
-		})
-	}
-}
-
-func TestShouldForceBillingDiagnosis(t *testing.T) {
-	cases := []struct {
-		name        string
-		engine      func() *Engine
-		userMsg     string
-		wantTrigger bool
-	}{
-		{
-			name: "positive_target_plus_keyword",
-			engine: func() *Engine {
-				e := &Engine{userTurn: 2, lastDiagnosisTool: "DiagnoseBilling", lastDiagnosisTurn: 1}
-				e.lastDiagnosisTargets = []string{"uhost-1paxrg4g1vfw"}
-				return e
-			},
-			userMsg:     "那为什么 uhost-1paxrg4g1vfw 还在扣费",
-			wantTrigger: true,
-		},
-		{
-			// P1 fix: target alone must NOT trigger the billing guard.
-			// Same instance name can appear in restart/release/SSH intents
-			// that are unrelated to billing.
-			name: "negative_target_only_restart_intent",
-			engine: func() *Engine {
-				e := &Engine{userTurn: 2, lastDiagnosisTool: "DiagnoseBilling", lastDiagnosisTurn: 1}
-				e.lastDiagnosisTargets = []string{"qa-shadow-20260417-01"}
-				return e
-			},
-			userMsg:     "帮我重启 qa-shadow-20260417-01",
-			wantTrigger: false,
-		},
-		{
-			name: "negative_target_only_release_intent",
-			engine: func() *Engine {
-				e := &Engine{userTurn: 2, lastDiagnosisTool: "DiagnoseBilling", lastDiagnosisTurn: 1}
-				e.lastDiagnosisTargets = []string{"qa-shadow-20260417-01"}
-				return e
-			},
-			userMsg:     "qa-shadow-20260417-01 怎么释放？",
-			wantTrigger: false,
-		},
-		{
-			name: "negative_target_only_ssh_intent",
-			engine: func() *Engine {
-				e := &Engine{userTurn: 2, lastDiagnosisTool: "DiagnoseBilling", lastDiagnosisTurn: 1}
-				e.lastDiagnosisTargets = []string{"qa-shadow-20260417-01"}
-				return e
-			},
-			userMsg:     "SSH 连不上 qa-shadow-20260417-01",
-			wantTrigger: false,
-		},
-		{
-			// Same instance AND billing keyword — legitimate billing follow-up.
-			name: "positive_target_plus_billing_keyword_mixed",
-			engine: func() *Engine {
-				e := &Engine{userTurn: 2, lastDiagnosisTool: "DiagnoseBilling", lastDiagnosisTurn: 1}
-				e.lastDiagnosisTargets = []string{"uhost-A"}
-				return e
-			},
-			userMsg:     "uhost-A 的费用为什么这么高",
-			wantTrigger: true,
-		},
-		{
-			name: "positive_billing_keyword_no_target",
-			engine: func() *Engine {
-				e := &Engine{userTurn: 2, lastDiagnosisTool: "DiagnoseBilling", lastDiagnosisTurn: 1}
-				e.lastDiagnosisTargets = []string{"uhost-xxx"}
-				return e
-			},
-			userMsg:     "那为什么还在扣费",
-			wantTrigger: true,
-		},
-		{
-			name: "positive_费用_keyword",
-			engine: func() *Engine {
-				return &Engine{userTurn: 2, lastDiagnosisTool: "DiagnoseBilling", lastDiagnosisTurn: 1}
-			},
-			userMsg:     "这个费用怎么计算的",
-			wantTrigger: true,
-		},
-		{
-			name: "negative_no_prior_diagnosis",
-			engine: func() *Engine {
-				return &Engine{userTurn: 1, lastDiagnosisTool: "", lastDiagnosisTurn: -1}
-			},
-			userMsg:     "为什么还在扣费",
-			wantTrigger: false,
-		},
-		{
-			name: "negative_prior_was_ssh_not_billing",
-			engine: func() *Engine {
-				return &Engine{userTurn: 2, lastDiagnosisTool: "DiagnoseSSH", lastDiagnosisTurn: 1}
-			},
-			userMsg:     "那为什么还在扣费",
-			wantTrigger: false,
-		},
-		{
-			name: "negative_non_adjacent_turn",
-			engine: func() *Engine {
-				e := &Engine{userTurn: 3, lastDiagnosisTool: "DiagnoseBilling", lastDiagnosisTurn: 1}
-				e.lastDiagnosisTargets = []string{"uhost-x"}
-				return e
-			},
-			userMsg:     "那为什么还在扣费",
-			wantTrigger: false,
-		},
-		{
-			name: "negative_no_target_no_keyword",
-			engine: func() *Engine {
-				e := &Engine{userTurn: 2, lastDiagnosisTool: "DiagnoseBilling", lastDiagnosisTurn: 1}
-				e.lastDiagnosisTargets = []string{"uhost-x"}
-				return e
-			},
-			userMsg:     "怎么释放实例？",
-			wantTrigger: false,
-		},
-		{
-			name: "negative_faq_question",
-			engine: func() *Engine {
-				e := &Engine{userTurn: 2, lastDiagnosisTool: "DiagnoseBilling", lastDiagnosisTurn: 1}
-				e.lastDiagnosisTargets = []string{"uhost-x"}
-				return e
-			},
-			userMsg:     "4090 的显存有多大",
-			wantTrigger: false,
-		},
-		{
-			name: "positive_empty_targets_billing_keyword_fires",
-			engine: func() *Engine {
-				return &Engine{userTurn: 2, lastDiagnosisTool: "DiagnoseBilling", lastDiagnosisTurn: 1}
-			},
-			userMsg:     "计费是怎么算的",
-			wantTrigger: true,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			e := tc.engine()
-			assert.Equal(t, tc.wantTrigger, e.shouldForceBillingDiagnosis(tc.userMsg))
-		})
-	}
-}
-
 // billingScenarioExecutor returns a mockExecutor configured with the
 // DescribeCompShareInstance result needed for DiagnoseBilling to complete
 // its two-step chain.
@@ -1778,27 +1611,14 @@ func billingScenarioExecutor(state string) *mockExecutor {
 	}}
 }
 
-// toolChoiceForBilling returns true iff req.ToolChoice names DiagnoseBilling.
-func toolChoiceForBilling(req llm.ChatRequest) bool {
-	tc, ok := req.ToolChoice.(openai.ToolChoice)
-	if !ok {
-		return false
-	}
-	return tc.Type == openai.ToolTypeFunction && tc.Function.Name == "DiagnoseBilling"
-}
-
 type hardBlockMatrixCase struct {
 	name        string
 	msg         string
 	wantBlocked bool
-	wantBilling bool
 }
 
 func runHardBlockMatrixCase(t *testing.T, tc hardBlockMatrixCase) {
 	t.Helper()
-	if tc.wantBlocked && tc.wantBilling {
-		t.Fatalf("%s: hard-block and force-billing expectations must be mutually exclusive", tc.name)
-	}
 
 	executor := billingScenarioExecutor("Running")
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "fall through"}}}
@@ -1815,13 +1635,7 @@ func runHardBlockMatrixCase(t *testing.T, tc hardBlockMatrixCase) {
 		return
 	}
 
-	if assert.Len(t, mock.calls, 1, "non-blocked cases should enter exactly one LLM round") {
-		if tc.wantBilling {
-			assert.True(t, toolChoiceForBilling(mock.calls[0]), "instance billing should force DiagnoseBilling")
-		} else {
-			assert.Nil(t, mock.calls[0].ToolChoice, "unrelated cases must not force a billing tool")
-		}
-	}
+	assert.Len(t, mock.calls, 1, "non-blocked cases should enter exactly one LLM round")
 }
 
 func TestAccountBillingHardBlock_Matrix(t *testing.T) {
@@ -1852,9 +1666,9 @@ func TestAccountBillingHardBlock_Matrix(t *testing.T) {
 		{name: "named_instance_billing_allows_llm", msg: "uhost-abc123 这台为什么扣费这么多"},
 		{name: "instance_cost_ratio_allows_llm", msg: "实例费用占比"},
 
-		// Non-billing turns must neither hard-block nor force billing.
-		{name: "monitor_query_no_force_billing", msg: "看监控", wantBlocked: false, wantBilling: false},
-		{name: "off_topic_no_force_billing", msg: "今天天气", wantBlocked: false, wantBilling: false},
+		// Non-billing turns must not hard-block.
+		{name: "monitor_query_passes_through", msg: "看监控"},
+		{name: "off_topic_passes_through", msg: "今天天气"},
 	}
 
 	for _, tc := range cases {
@@ -1996,214 +1810,6 @@ func TestMonitorRecallGuard_FirstTurnDoesNotTrigger(t *testing.T) {
 	if assert.Len(t, mock.calls, 1) {
 		assert.Nil(t, mock.calls[0].ToolChoice,
 			"first-turn monitor wording must not force monitor recall without prior monitor call")
-	}
-}
-
-func TestMonitorRecallGuard_DoesNotOverrideBillingGuard(t *testing.T) {
-	executor := billingScenarioExecutor("Running")
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "billing wins"}}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-	eng.userTurn = 1
-	eng.lastMonitorTurn = 1
-	eng.lastDiagnosisTool = "DiagnoseBilling"
-	eng.lastDiagnosisTurn = 1
-
-	_, err := eng.Chat(context.Background(), "那台 GPU 异常为什么还在扣费", noopStep)
-	assert.NoError(t, err)
-
-	if assert.Len(t, mock.calls, 1) {
-		assert.True(t, toolChoiceForBilling(mock.calls[0]),
-			"billing stale guard should keep priority over monitor recall")
-	}
-}
-
-func TestBillingStaleGuard_ForcesRediagnosisOnFollowUp(t *testing.T) {
-	executor := billingScenarioExecutor("Running")
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`),
-		}},
-		{Content: "实例 Running，按量 0.70/h"},
-		{Content: "重新诊断后状态已变化"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	_, err := eng.Chat(context.Background(), "为什么 uhost-bill-001 在扣费", noopStep)
-	assert.NoError(t, err)
-
-	assert.Equal(t, "DiagnoseBilling", eng.lastDiagnosisTool)
-	assert.Equal(t, 1, eng.lastDiagnosisTurn)
-	assert.Contains(t, eng.lastDiagnosisTargets, "uhost-bill-001")
-
-	_, err = eng.Chat(context.Background(), "那为什么 uhost-bill-001 还在扣费", noopStep)
-	assert.NoError(t, err)
-
-	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
-		assert.True(t, toolChoiceForBilling(mock.calls[2]),
-			"turn 2 round 1 should force ToolChoice=DiagnoseBilling")
-	}
-	for i := 0; i < 2; i++ {
-		assert.Nil(t, mock.calls[i].ToolChoice, "call %d should not have ToolChoice", i)
-	}
-}
-
-func TestBillingStaleGuard_BillingKeywordWithoutTargetAlsoFires(t *testing.T) {
-	executor := billingScenarioExecutor("Running")
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`),
-		}},
-		{Content: "实例 Running，按量 0.70/h"},
-		{Content: "重新诊断后..."},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	_, err := eng.Chat(context.Background(), "为什么 uhost-bill-001 在扣费", noopStep)
-	assert.NoError(t, err)
-
-	_, err = eng.Chat(context.Background(), "那为什么还在扣费", noopStep)
-	assert.NoError(t, err)
-
-	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
-		assert.True(t, toolChoiceForBilling(mock.calls[2]),
-			"billing keyword follow-up without instance name should still force DiagnoseBilling")
-	}
-}
-
-func TestBillingStaleGuard_UnrelatedFollowUpDoesNotTrigger(t *testing.T) {
-	executor := billingScenarioExecutor("Running")
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`),
-		}},
-		{Content: "实例 Running，按量 0.70/h"},
-		{Content: "释放实例请到控制台..."},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	_, err := eng.Chat(context.Background(), "为什么 uhost-bill-001 在扣费", noopStep)
-	assert.NoError(t, err)
-
-	_, err = eng.Chat(context.Background(), "怎么释放实例？", noopStep)
-	assert.NoError(t, err)
-
-	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
-		assert.Nil(t, mock.calls[2].ToolChoice,
-			"cross-domain follow-up must not trigger DiagnoseBilling hard guard")
-	}
-}
-
-func TestBillingStaleGuard_FAQFollowUpDoesNotTrigger(t *testing.T) {
-	executor := billingScenarioExecutor("Running")
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`),
-		}},
-		{Content: "实例 Running，按量 0.70/h"},
-		{Content: "4090 的显存是 24GB"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	_, err := eng.Chat(context.Background(), "为什么 uhost-bill-001 在扣费", noopStep)
-	assert.NoError(t, err)
-
-	_, err = eng.Chat(context.Background(), "4090 的显存有多大", noopStep)
-	assert.NoError(t, err)
-
-	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
-		assert.Nil(t, mock.calls[2].ToolChoice,
-			"FAQ follow-up must not trigger DiagnoseBilling hard guard")
-	}
-}
-
-func TestBillingStaleGuard_NonAdjacentTurnDoesNotTrigger(t *testing.T) {
-	executor := billingScenarioExecutor("Running")
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`),
-		}},
-		{Content: "实例 Running，按量 0.70/h"},
-		{Content: "4090 显存 24GB"},
-		{Content: "billing has not changed"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	_, err := eng.Chat(context.Background(), "为什么 uhost-bill-001 在扣费", noopStep)
-	assert.NoError(t, err)
-	_, err = eng.Chat(context.Background(), "4090 显存多大", noopStep)
-	assert.NoError(t, err)
-	_, err = eng.Chat(context.Background(), "那为什么还在扣费", noopStep)
-	assert.NoError(t, err)
-
-	if assert.GreaterOrEqual(t, len(mock.calls), 4) {
-		assert.Nil(t, mock.calls[3].ToolChoice,
-			"turn 3 is non-adjacent to turn 1's DiagnoseBilling — must not trigger")
-	}
-}
-
-// P1 regression: same-instance follow-up with a non-billing intent
-// (restart/release/SSH) must not be hijacked into DiagnoseBilling.
-func TestBillingStaleGuard_SameInstanceRestartDoesNotTrigger(t *testing.T) {
-	executor := billingScenarioExecutor("Running")
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`),
-		}},
-		{Content: "实例 Running，按量 0.70/h"},
-		// Turn 2: restart the same instance. Model chooses freely.
-		{Content: "已准备重启 uhost-bill-001..."},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	_, err := eng.Chat(context.Background(), "为什么 uhost-bill-001 在扣费", noopStep)
-	assert.NoError(t, err)
-
-	// Follow-up mentions the same instance but the intent is restart, not billing.
-	_, err = eng.Chat(context.Background(), "帮我重启 uhost-bill-001", noopStep)
-	assert.NoError(t, err)
-
-	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
-		assert.Nil(t, mock.calls[2].ToolChoice,
-			"restart intent on the same instance must not trigger DiagnoseBilling hard guard")
-	}
-}
-
-func TestBillingStaleGuard_OtherDiagnosisDoesNotTrigger(t *testing.T) {
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": {
-			"UHostSet": []any{
-				map[string]any{"UHostId": "uhost-ssh-001", "State": "Stopped"},
-			},
-		},
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DiagnoseSSH", `{"UHostId":"uhost-ssh-001"}`),
-		}},
-		{Content: "SSH 连不上，实例已关机"},
-		{Content: "not my job"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	_, err := eng.Chat(context.Background(), "SSH 连不上 uhost-ssh-001", noopStep)
-	assert.NoError(t, err)
-
-	assert.Equal(t, "", eng.lastDiagnosisTool)
-
-	_, err = eng.Chat(context.Background(), "那为什么还在扣费", noopStep)
-	assert.NoError(t, err)
-
-	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
-		assert.Nil(t, mock.calls[2].ToolChoice,
-			"prior DiagnoseSSH must not trigger DiagnoseBilling hard guard")
 	}
 }
 
