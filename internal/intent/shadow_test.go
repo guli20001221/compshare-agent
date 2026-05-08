@@ -73,6 +73,21 @@ func TestShadowRunner_PlannerErrorReturnsInvalidTrace(t *testing.T) {
 	assert.False(t, trace.HardBlockHint)
 }
 
+func TestShadowRunner_NilPlannerReturnsFallbackTrace(t *testing.T) {
+	runner := NewShadowRunner(nil, ShadowRunnerOptions{
+		Enabled: true,
+		Model:   "deepseek-v4-flash",
+	})
+
+	trace := runner.Run(context.Background(), PlannerInput{UserText: "monitor"})
+
+	assert.True(t, trace.Enabled)
+	assert.False(t, trace.SchemaValid)
+	assert.Equal(t, string(IntentUnknown), trace.Intent)
+	assert.Zero(t, trace.Confidence)
+	assert.False(t, trace.HardBlockHint)
+}
+
 func TestShadowRunner_FallbackResultReturnsInvalidTrace(t *testing.T) {
 	planner := &mockShadowPlanner{
 		result: PlannerResult{

@@ -14,7 +14,9 @@ type ShadowPlanner interface {
 type ShadowRunnerOptions struct {
 	Enabled bool
 	Model   string
-	Now     func() time.Time
+	// BaseURL is intentionally omitted because trace.v0.1 PlannerTrace has no
+	// BaseURL field. Add it only if a future trace schema includes it.
+	Now func() time.Time
 }
 
 type ShadowRunner struct {
