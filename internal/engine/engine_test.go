@@ -18,6 +18,7 @@ import (
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/tools"
@@ -100,6 +101,29 @@ func (p *scriptedIntentPlanner) Plan(_ context.Context, input intent.PlannerInpu
 	result := p.results[0]
 	p.results = p.results[1:]
 	return result, nil
+}
+
+type scriptedKnowledgeRetriever struct {
+	results []knowledge.RetrievalResult
+	calls   []knowledgeRetrievalCall
+}
+
+type knowledgeRetrievalCall struct {
+	question    string
+	productArea string
+}
+
+func (r *scriptedKnowledgeRetriever) Retrieve(question, productArea string) knowledge.RetrievalResult {
+	r.calls = append(r.calls, knowledgeRetrievalCall{
+		question:    question,
+		productArea: productArea,
+	})
+	if len(r.results) == 0 {
+		return knowledge.RetrievalResult{Enabled: true, Empty: true}
+	}
+	result := r.results[0]
+	r.results = r.results[1:]
+	return result
 }
 
 // --- Mock Executor ---
@@ -2488,6 +2512,16 @@ func phase1MonitorPlan() intent.Plan {
 	}
 }
 
+func knowledgeQAPlan(retrievalEnabled bool) intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentKnowledgeQA,
+		Slots:         intent.Slots{},
+		Retrieval:     intent.Retrieval{Enabled: retrievalEnabled},
+		Confidence:    0.9,
+	}
+}
+
 func unknownEngineTestPlan() intent.Plan {
 	return intent.Plan{
 		SchemaVersion: intent.SchemaVersion,
@@ -2495,6 +2529,259 @@ func unknownEngineTestPlan() intent.Plan {
 		Retrieval:     intent.Retrieval{Enabled: false},
 		Confidence:    0,
 	}
+}
+
+func TestStage2BRetrievalHitBypassesReActAndTools(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Hits: []knowledge.KBChunk{{
+			ChunkID:     "faq-billing-001",
+			KBVersion:   "kb.v1",
+			SourceType:  "faq",
+			ProductArea: "billing",
+			ACL:         "customer_safe",
+			Confidence:  "high",
+			Title:       "Billing after stop",
+			Content:     "Stopped on-demand instances still charge for disks.",
+			SourceURL:   "https://example.test/billing",
+		}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	var plannerTraces []observability.PlannerTrace
+	var retrievalTraces []observability.RetrievalTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		plannerTraces = append(plannerTraces, trace)
+	})
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		retrievalTraces = append(retrievalTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "Stopped on-demand instances still charge for disks.")
+	assert.Empty(t, mock.calls, "knowledge retrieval hit must bypass ReAct")
+	assert.Empty(t, executor.calls, "knowledge retrieval must not call CompShare API tools")
+	require.Len(t, planner.calls, 1)
+	require.Len(t, retriever.calls, 1)
+	assert.Equal(t, "why do stopped instances still bill", retriever.calls[0].question)
+	assert.Equal(t, "billing", retriever.calls[0].productArea, "engine must infer product area without relying on planner Scope")
+	require.Len(t, plannerTraces, 1)
+	assert.Equal(t, string(intent.CutoverStatusDispatchedRetrieval), plannerTraces[0].CutoverStatus)
+	require.Len(t, retrievalTraces, 1)
+	assert.True(t, retrievalTraces[0].Enabled)
+	assert.Equal(t, "kb.v1", retrievalTraces[0].KBVersion)
+	assert.Equal(t, 1, retrievalTraces[0].Hits)
+}
+
+func TestStage2BRetrievalMissReturnsFixedReply(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Empty:     true,
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var plannerTraces []observability.PlannerTrace
+	var retrievalTraces []observability.RetrievalTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		plannerTraces = append(plannerTraces, trace)
+	})
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		retrievalTraces = append(retrievalTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "does the platform support imaginary feature", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, knowledge.KnowledgeMissReply, reply)
+	assert.Empty(t, mock.calls, "knowledge retrieval miss is handled by fixed reply, not ReAct")
+	require.Len(t, plannerTraces, 1)
+	assert.Equal(t, string(intent.CutoverStatusFallbackRetrievalMiss), plannerTraces[0].CutoverStatus)
+	require.Len(t, retrievalTraces, 1)
+	assert.True(t, retrievalTraces[0].Enabled)
+	assert.Equal(t, "kb.v1", retrievalTraces[0].KBVersion)
+	assert.Equal(t, 0, retrievalTraces[0].Hits)
+}
+
+func TestStage2BRetrievalIgnoresPlannerRetrievalFlag(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(true)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Hits: []knowledge.KBChunk{{
+			ChunkID:     "faq-image-001",
+			KBVersion:   "kb.v1",
+			SourceType:  "faq",
+			ProductArea: "image",
+			ACL:         "customer_safe",
+			Confidence:  "high",
+			Title:       "Images",
+			Content:     "The platform provides platform, community, shared, and private images.",
+		}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var plannerTraces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		plannerTraces = append(plannerTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "what image types are available", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "community")
+	assert.Empty(t, mock.calls)
+	require.Len(t, retriever.calls, 1)
+	assert.Equal(t, "image", retriever.calls[0].productArea)
+	require.Len(t, plannerTraces, 1)
+	assert.Equal(t, string(intent.CutoverStatusDispatchedRetrieval), plannerTraces[0].CutoverStatus)
+}
+
+func TestStage2BRetrievalDisabledFallsBackToReAct(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(true)}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var plannerTraces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		plannerTraces = append(plannerTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "what images are available", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "react fallback", reply)
+	assert.Len(t, mock.calls, 1)
+	require.Len(t, plannerTraces, 1)
+	assert.Equal(t, string(intent.CutoverStatusFallbackRetrievalDisabled), plannerTraces[0].CutoverStatus)
+}
+
+func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T) {
+	cases := []struct {
+		name       string
+		mutatePlan func(*intent.Plan)
+		wantStatus intent.CutoverStatus
+	}{
+		{
+			name: "hard block hint",
+			mutatePlan: func(plan *intent.Plan) {
+				plan.HardBlockHint = true
+			},
+			wantStatus: intent.CutoverStatusFallbackHardBlockHint,
+		},
+		{
+			name: "low confidence",
+			mutatePlan: func(plan *intent.Plan) {
+				plan.Confidence = 0.3
+			},
+			wantStatus: intent.CutoverStatusFallbackLowConfidence,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := knowledgeQAPlan(false)
+			tc.mutatePlan(&plan)
+			planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
+			retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+				Enabled:   true,
+				KBVersion: "kb.v1",
+				Empty:     true,
+			}}}
+			mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback"}}}
+			eng := NewWithDeps(mock, &mockExecutor{}, nil)
+			eng.InitWithContext("test user")
+			var plannerTraces []observability.PlannerTrace
+			eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+				plannerTraces = append(plannerTraces, trace)
+			})
+			eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+			eng.SetKnowledgeRetriever(retriever)
+
+			reply, err := eng.Chat(context.Background(), "billing FAQ", noopStep)
+
+			require.NoError(t, err)
+			assert.Equal(t, "react fallback", reply)
+			assert.Empty(t, retriever.calls)
+			require.Len(t, plannerTraces, 1)
+			assert.Equal(t, string(tc.wantStatus), plannerTraces[0].CutoverStatus)
+		})
+	}
+}
+
+func TestStage2BRetrievalHardBlockPrecedesPlanner(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Empty:     true,
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "\u8d26\u53f7\u4f59\u989d\u8fd8\u5269\u591a\u5c11", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, accountBillingUnsupportedReply, reply)
+	assert.Empty(t, planner.calls, "permanent hard-block must run before Stage 2B planner")
+	assert.Empty(t, retriever.calls)
+	assert.Empty(t, mock.calls)
+}
+
+func TestStage2BAndPhase1CutoverShareSinglePlannerCall(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Empty:     true,
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
+	}}
+	limiter := &scriptedRateLimiter{decisions: []governance.Decision{{Allowed: true}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.rateLimiter = limiter
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo, intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "show phase1-demo resource", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "uhost-phase1-001")
+	require.Len(t, planner.calls, 1)
+	assert.Empty(t, retriever.calls, "resource cutover must not also run retrieval")
+	require.Len(t, limiter.requests, 1)
+	assert.Equal(t, "intent_planner", limiter.requests[0].Action)
+	// CLI passes plannerDispatchEnabled into useSeparateShadowRunner, so adding
+	// USE_INTENT_PLANNER=shadow on top of Phase 1 + Stage 2B still leaves Engine
+	// as the single planner-call owner for this turn.
 }
 
 func TestPhase1CutoverGateUnsetDoesNotCallPlanner(t *testing.T) {

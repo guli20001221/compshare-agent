@@ -82,6 +82,10 @@ type IntentPlanner interface {
 	Plan(ctx context.Context, input intent.PlannerInput) (intent.PlannerResult, error)
 }
 
+type KnowledgeRetriever interface {
+	Retrieve(question, productArea string) knowledge.RetrievalResult
+}
+
 type IntentPlannerOptions struct {
 	EnabledIntents []intent.Intent
 	Model          string
@@ -89,27 +93,29 @@ type IntentPlannerOptions struct {
 
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
 type Engine struct {
-	llmClient             LLMClient
-	safeExecutor          *tools.SafeToolExecutor
-	registry              *entity.EntityRegistry
-	intentPlanner         IntentPlanner
-	intentPlannerModel    string
-	intentCutoverIntents  map[intent.Intent]struct{}
-	plannerTraceObserver  func(observability.PlannerTrace)
-	rateLimiter           governance.RateLimiter
-	rateLimitSubject      string
-	rateLimitObserver     func(governance.Decision)
-	hardBlockObserver     func(observability.EngineHardBlockTrace)
-	confirmFn             ConfirmFunc
-	messages              []openai.ChatCompletionMessage // conversation history
-	userTurn              int                            // incremented at start of each Chat() call
-	lastInstanceQueryTurn int                            // set to userTurn on successful DescribeCompShareInstance
-	lastMonitorTurn       int                            // set to userTurn on successful GetCompShareInstanceMonitor
-	currentMonitorTargets []string                       // historical monitor targets queried in the current turn
-	currentMonitorNoData  []string                       // current-turn historical monitor targets with no data samples
-	currentMonitorStart   int64                          // start of the current historical monitor window, if any
-	currentMonitorEnd     int64                          // end of the current historical monitor window, if any
-	currentMonitorWindow  bool                           // true when currentMonitorStart/End are known
+	llmClient              LLMClient
+	safeExecutor           *tools.SafeToolExecutor
+	registry               *entity.EntityRegistry
+	intentPlanner          IntentPlanner
+	intentPlannerModel     string
+	intentCutoverIntents   map[intent.Intent]struct{}
+	knowledgeRetriever     KnowledgeRetriever
+	plannerTraceObserver   func(observability.PlannerTrace)
+	retrievalTraceObserver func(observability.RetrievalTrace)
+	rateLimiter            governance.RateLimiter
+	rateLimitSubject       string
+	rateLimitObserver      func(governance.Decision)
+	hardBlockObserver      func(observability.EngineHardBlockTrace)
+	confirmFn              ConfirmFunc
+	messages               []openai.ChatCompletionMessage // conversation history
+	userTurn               int                            // incremented at start of each Chat() call
+	lastInstanceQueryTurn  int                            // set to userTurn on successful DescribeCompShareInstance
+	lastMonitorTurn        int                            // set to userTurn on successful GetCompShareInstanceMonitor
+	currentMonitorTargets  []string                       // historical monitor targets queried in the current turn
+	currentMonitorNoData   []string                       // current-turn historical monitor targets with no data samples
+	currentMonitorStart    int64                          // start of the current historical monitor window, if any
+	currentMonitorEnd      int64                          // end of the current historical monitor window, if any
+	currentMonitorWindow   bool                           // true when currentMonitorStart/End are known
 	// supportsObjectToolChoice gates force-tool guards (e.g. shouldForceMonitorRecall)
 	// from sending object tool_choice on models that don't support it (notably
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
@@ -179,6 +185,17 @@ func (e *Engine) SetIntentPlanner(planner IntentPlanner, opts IntentPlannerOptio
 
 func (e *Engine) SetPlannerTraceObserver(observer func(observability.PlannerTrace)) {
 	e.plannerTraceObserver = observer
+}
+
+func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
+	// Engine treats a non-nil retriever as the Stage 2B retrieval gate. CLI
+	// code owns env parsing and only calls this after USE_KNOWLEDGE_RETRIEVAL
+	// and corpus loading succeed.
+	e.knowledgeRetriever = retriever
+}
+
+func (e *Engine) SetRetrievalTraceObserver(observer func(observability.RetrievalTrace)) {
+	e.retrievalTraceObserver = observer
 }
 
 func (e *Engine) SetRateLimitObserver(observer func(governance.Decision)) {
@@ -363,7 +380,7 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	e.currentMonitorWindow = false
 
 	forceMonitorRecall := e.shouldForceMonitorRecall(userMsg)
-	if reply, handled := e.tryIntentCutover(ctx, userMsg, priorText, onStep); handled {
+	if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep); handled {
 		return reply, nil
 	}
 
@@ -456,11 +473,43 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	return "抱歉，处理轮次超限，请重新描述您的需求。", nil
 }
 
-func (e *Engine) tryIntentCutover(ctx context.Context, userMsg, priorText string, onStep func(StepEvent)) (string, bool) {
-	if e == nil || e.intentPlanner == nil || len(e.intentCutoverIntents) == 0 {
+type plannerDispatchResult struct {
+	result   intent.PlannerResult
+	latency  time.Duration
+	snapshot entity.RegistrySnapshot
+}
+
+func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText string, onStep func(StepEvent)) (string, bool) {
+	if !e.plannerDispatchEnabled() {
 		return "", false
 	}
 
+	dispatch := e.callPlannerOnce(ctx, userMsg, priorText)
+	if status, ok := e.commonPlannerCandidateStatus(dispatch.result); !ok {
+		e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
+		return "", false
+	}
+
+	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery {
+		return e.tryPhase1Cutover(ctx, dispatch, onStep)
+	}
+	if reply, handled := e.tryStage2BRetrieval(dispatch, userMsg); handled {
+		return reply, true
+	}
+	if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
+		return "", false
+	}
+
+	e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
+	return "", false
+}
+
+func (e *Engine) plannerDispatchEnabled() bool {
+	return e != nil && e.intentPlanner != nil &&
+		(len(e.intentCutoverIntents) > 0 || e.knowledgeRetriever != nil)
+}
+
+func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string) plannerDispatchResult {
 	start := time.Now()
 	result := engineFallbackPlannerResult()
 	snapshot := e.RegistrySnapshot()
@@ -480,15 +529,23 @@ func (e *Engine) tryIntentCutover(ctx context.Context, userMsg, priorText string
 	}
 	latency := time.Since(start)
 
-	if status, ok := e.cutoverCandidateStatus(result); !ok {
-		e.emitPlannerTrace(result, status, latency)
+	return plannerDispatchResult{result: result, latency: latency, snapshot: snapshot}
+}
+
+func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchResult, onStep func(StepEvent)) (string, bool) {
+	result := dispatch.result
+	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery {
+		return "", false
+	}
+	if status, ok := e.phase1CutoverCandidateStatus(result); !ok {
+		e.emitPlannerTrace(result, status, dispatch.latency)
 		return "", false
 	}
 
 	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
 	req := intent.HandlerRequest{
 		Plan:     result.Plan,
-		Resolver: snapshot,
+		Resolver: dispatch.snapshot,
 	}
 	var handled intent.HandlerResult
 	switch result.Plan.Intent {
@@ -497,11 +554,11 @@ func (e *Engine) tryIntentCutover(ctx context.Context, userMsg, priorText string
 	case intent.IntentMonitorQuery:
 		handled = handler.HandleMonitorQuery(ctx, req)
 	default:
-		e.emitPlannerTrace(result, intent.CutoverStatusFallbackIneligible, latency)
+		e.emitPlannerTrace(result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
 		return "", false
 	}
 
-	e.emitPlannerTrace(result, handled.CutoverStatus, latency)
+	e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
 	if handled.Status == intent.HandlerStatusFallbackBeforeTool {
 		return "", false
 	}
@@ -513,7 +570,42 @@ func (e *Engine) tryIntentCutover(ctx context.Context, userMsg, priorText string
 	return handled.Reply, true
 }
 
-func (e *Engine) cutoverCandidateStatus(result intent.PlannerResult) (intent.CutoverStatus, bool) {
+func (e *Engine) tryStage2BRetrieval(dispatch plannerDispatchResult, userMsg string) (string, bool) {
+	result := dispatch.result
+	if result.Plan.Intent != intent.IntentKnowledgeQA {
+		return "", false
+	}
+	if e.knowledgeRetriever == nil {
+		e.emitRetrievalTrace(observability.RetrievalTrace{})
+		e.emitPlannerTrace(result, intent.CutoverStatusFallbackRetrievalDisabled, dispatch.latency)
+		return "", false
+	}
+
+	retrieved := e.knowledgeRetriever.Retrieve(userMsg, inferKnowledgeProductArea(userMsg))
+	e.emitRetrievalTrace(observability.RetrievalTrace{
+		Enabled:   retrieved.Enabled,
+		KBVersion: retrieved.KBVersion,
+		Hits:      len(retrieved.Hits),
+	})
+	if retrieved.Empty || len(retrieved.Hits) == 0 {
+		e.emitPlannerTrace(result, intent.CutoverStatusFallbackRetrievalMiss, dispatch.latency)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: knowledge.KnowledgeMissReply,
+		})
+		return knowledge.KnowledgeMissReply, true
+	}
+
+	reply := knowledge.RenderKnowledgeAnswer(retrieved)
+	e.emitPlannerTrace(result, intent.CutoverStatusDispatchedRetrieval, dispatch.latency)
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: reply,
+	})
+	return reply, true
+}
+
+func (e *Engine) commonPlannerCandidateStatus(result intent.PlannerResult) (intent.CutoverStatus, bool) {
 	if result.Fallback || result.LastValidationCode != "" ||
 		result.Plan.SchemaVersion != intent.SchemaVersion || result.Plan.Intent == "" {
 		return intent.CutoverStatusFallbackInvalid, false
@@ -524,6 +616,10 @@ func (e *Engine) cutoverCandidateStatus(result intent.PlannerResult) (intent.Cut
 	if result.Plan.Confidence < 0.60 {
 		return intent.CutoverStatusFallbackLowConfidence, false
 	}
+	return intent.CutoverStatusDispatched, true
+}
+
+func (e *Engine) phase1CutoverCandidateStatus(result intent.PlannerResult) (intent.CutoverStatus, bool) {
 	if result.Plan.Retrieval.Enabled {
 		return intent.CutoverStatusFallbackIneligible, false
 	}
@@ -547,6 +643,13 @@ func (e *Engine) emitPlannerTrace(result intent.PlannerResult, status intent.Cut
 	})
 	trace.CutoverStatus = string(status)
 	e.plannerTraceObserver(trace)
+}
+
+func (e *Engine) emitRetrievalTrace(trace observability.RetrievalTrace) {
+	if e.retrievalTraceObserver == nil {
+		return
+	}
+	e.retrievalTraceObserver(trace)
 }
 
 func engineFallbackPlannerResult() intent.PlannerResult {
@@ -1321,6 +1424,29 @@ var monitorMetricKeywords = []string{
 	"memory",
 }
 
+var knowledgeBillingKeywords = []string{
+	"billing", "bill", "charge", "cost", "fee", "price", "balance",
+	"\u8ba1\u8d39", "\u6263\u8d39", "\u6536\u8d39", "\u8d26\u5355", "\u4f59\u989d", "\u8d39\u7528", "\u4ef7\u683c",
+}
+
+var knowledgeImageKeywords = []string{
+	"image", "images", "\u955c\u50cf",
+}
+
+var knowledgeLoginKeywords = []string{
+	"login", "ssh", "jupyter", "jupyterlab", "token", "password",
+	"\u767b\u5f55", "\u8fde\u63a5", "\u5bc6\u7801", "\u53e3\u4ee4",
+}
+
+var knowledgeNetworkKeywords = []string{
+	"port", "ports", "firewall", "network", "\u8bbf\u95ee", "\u7aef\u53e3", "\u9632\u706b\u5899", "\u7f51\u7edc",
+}
+
+var knowledgeModelSuiteKeywords = []string{
+	"model", "models", "claude", "anthropic", "credit", "credits",
+	"\u6a21\u578b", "\u5957\u9910", "\u79ef\u5206",
+}
+
 // normalizeMsg standardizes a user message for signal matching:
 // trims whitespace, collapses internal whitespace runs to a single space,
 // and lowercases ASCII letters. CJK characters are preserved as-is.
@@ -1479,6 +1605,24 @@ func containsAnyKeyword(normalized string, keywords []string) bool {
 
 func containsNormalizedKeyword(normalized string, keywords []string) bool {
 	return containsAnyKeyword(normalized, keywords)
+}
+
+func inferKnowledgeProductArea(userMsg string) string {
+	n := normalizeMsg(userMsg)
+	switch {
+	case containsAnyKeyword(n, knowledgeBillingKeywords):
+		return "billing"
+	case containsAnyKeyword(n, knowledgeImageKeywords):
+		return "image"
+	case containsAnyKeyword(n, knowledgeLoginKeywords):
+		return "login"
+	case containsAnyKeyword(n, knowledgeNetworkKeywords):
+		return "network"
+	case containsAnyKeyword(n, knowledgeModelSuiteKeywords):
+		return "model_suite"
+	default:
+		return ""
+	}
 }
 
 // pickProjectId extracts a ProjectId from a GetProjectList response.

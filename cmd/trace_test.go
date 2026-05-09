@@ -15,6 +15,7 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTraceWriterFromEnvDisabledByDefault(t *testing.T) {
@@ -105,6 +106,90 @@ func TestSeparateShadowRunnerDisabledWhenCutoverEnabled(t *testing.T) {
 	}
 	if useSeparateShadowRunner(true, false, false) {
 		t.Fatal("shadow disabled must not create a shadow runner")
+	}
+}
+
+func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
+	enabled, unknown := knowledgeRetrievalModeFromEnv(func(string) string { return "" })
+	if enabled || unknown != "" {
+		t.Fatalf("unset knowledge retrieval = %v/%q, want disabled", enabled, unknown)
+	}
+	enabled, unknown = knowledgeRetrievalModeFromEnv(func(key string) string {
+		if key == "USE_KNOWLEDGE_RETRIEVAL" {
+			return " curated "
+		}
+		return ""
+	})
+	if !enabled || unknown != "" {
+		t.Fatalf("curated mode = %v/%q, want enabled", enabled, unknown)
+	}
+	enabled, unknown = knowledgeRetrievalModeFromEnv(func(key string) string {
+		if key == "USE_KNOWLEDGE_RETRIEVAL" {
+			return "raw-chat"
+		}
+		return ""
+	})
+	if enabled || unknown != "raw-chat" {
+		t.Fatalf("unknown mode = %v/%q, want disabled raw-chat", enabled, unknown)
+	}
+}
+
+func TestKnowledgeCorpusPathFromEnv(t *testing.T) {
+	if got := knowledgeCorpusPathFromEnv(func(string) string { return "" }); got != defaultKnowledgeCorpusPath {
+		t.Fatalf("default corpus path = %q, want %q", got, defaultKnowledgeCorpusPath)
+	}
+	got := knowledgeCorpusPathFromEnv(func(key string) string {
+		if key == "COMPSHARE_KNOWLEDGE_CORPUS" {
+			return " custom.jsonl "
+		}
+		return ""
+	})
+	if got != "custom.jsonl" {
+		t.Fatalf("custom corpus path = %q", got)
+	}
+}
+
+func TestKnowledgeRetrieverFromEnvLoadsCorpus(t *testing.T) {
+	corpusPath := filepath.Join(t.TempDir(), "curated.jsonl")
+	line := `{"chunk_id":"faq-001","kb_version":"kb.v1","source_type":"faq","product_area":"billing","acl":"customer_safe","valid_from":"2026-01-01","confidence":"high","title":"Billing","question_patterns":["billing"],"content":"Billing answer."}` + "\n"
+	require.NoError(t, os.WriteFile(corpusPath, []byte(line), 0o600))
+
+	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
+		switch key {
+		case "USE_KNOWLEDGE_RETRIEVAL":
+			return "curated"
+		case "COMPSHARE_KNOWLEDGE_CORPUS":
+			return corpusPath
+		default:
+			return ""
+		}
+	})
+
+	require.NoError(t, err)
+	require.True(t, enabled)
+	require.NotNil(t, retriever)
+	result := retriever.Retrieve("billing", "billing")
+	if result.Empty || len(result.Hits) != 1 || result.KBVersion != "kb.v1" {
+		t.Fatalf("retrieval result = %#v", result)
+	}
+}
+
+func TestKnowledgeRetrieverFromEnvMissingCorpusDisablesWithError(t *testing.T) {
+	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
+		switch key {
+		case "USE_KNOWLEDGE_RETRIEVAL":
+			return "curated"
+		case "COMPSHARE_KNOWLEDGE_CORPUS":
+			return filepath.Join(t.TempDir(), "missing.jsonl")
+		default:
+			return ""
+		}
+	})
+	if err == nil {
+		t.Fatal("missing corpus should return an error")
+	}
+	if enabled || retriever != nil {
+		t.Fatalf("missing corpus = enabled %v retriever %#v, want disabled nil", enabled, retriever)
 	}
 }
 
@@ -200,6 +285,32 @@ func TestCLITraceRecorderAcceptsEnginePlannerTrace(t *testing.T) {
 	if !record.Planner.Enabled || record.Planner.Intent != "resource_info" ||
 		record.Planner.CutoverStatus != "dispatched" {
 		t.Fatalf("planner trace = %#v", record.Planner)
+	}
+}
+
+func TestCLITraceRecorderAcceptsRetrievalTrace(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 1, "knowledge trace", start)
+	recorder.SetRetrievalTrace(observability.RetrievalTrace{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Hits:      2,
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	record := readSingleTraceRecord(t, writer, start)
+	if !record.Retrieval.Enabled || record.Retrieval.KBVersion != "kb.v1" || record.Retrieval.Hits != 2 {
+		t.Fatalf("retrieval trace = %#v", record.Retrieval)
 	}
 }
 

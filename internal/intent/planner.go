@@ -170,10 +170,13 @@ func buildSystemPrompt() string {
 		"You are the IntentPlan planner for the CompShare console agent.",
 		"Return exactly one JSON object. Do not output Markdown, prose, or tool calls.",
 		"Required top-level fields: schema_version, intent, slots, required_tools, retrieval, hard_block_hint, confidence.",
-		"schema_version must be \"1.0\". confidence must be a number in [0,1]. retrieval.enabled must be false for Stage 2A.",
+		"schema_version must be \"1.0\". confidence must be a number in [0,1]. retrieval.enabled must be false for the current demo slice.",
 		"Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, recommendation, knowledge_qa, mixed_diagnosis_kb, mixed_billing_kb, unknown.",
 		"Phase 1 demo focus: classify clear resource inventory questions as resource_info and clear current monitoring questions as monitor_query.",
-		"Use unknown when the user asks general knowledge, diagnosis, operations, or anything outside the demo focus.",
+		"Stage 2B retrieval focus: classify clear platform usage / FAQ questions as knowledge_qa.",
+		"For diagnosis questions that also reference platform FAQ or usage docs, emit mixed_diagnosis_kb for observability; runtime may still fall back to existing diagnosis routing.",
+		"For billing-specific FAQ plus instance facts, emit mixed_billing_kb for observability; unsupported account totals still use billing_account_unsupported.",
+		"Use unknown when the user asks unsupported general knowledge, operations, or anything outside the demo focus.",
 		"slots must contain target_refs, metrics, and time_window. Use [] for missing target_refs or metrics, and null for missing time_window.",
 		"For a user-written instance name, output target_refs item {\"type\":\"name\",\"value\":\"<exact name>\",\"source\":\"user_text\",\"source_span\":\"<exact substring>\"}.",
 		"For a user-written UHostId, output target_refs item {\"type\":\"uhost_id_user_input\",\"value\":\"<exact id>\",\"source\":\"user_text\",\"source_span\":\"<exact substring>\"}.",
@@ -187,6 +190,8 @@ func buildSystemPrompt() string {
 		"{\"schema_version\":\"1.0\",\"intent\":\"monitor_query\",\"slots\":{\"target_refs\":[{\"type\":\"name\",\"value\":\"my-test-agent\",\"source\":\"user_text\",\"source_span\":\"my-test-agent\"}],\"metrics\":[\"cpu\",\"gpu\"],\"time_window\":{\"type\":\"preset\",\"value\":\"now\"}},\"required_tools\":[\"GetCompShareInstanceMonitor\"],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
 		"User question: account balance",
 		"{\"schema_version\":\"1.0\",\"intent\":\"billing_account_unsupported\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":true,\"confidence\":0.9}",
+		"User question: what image types does the platform provide",
+		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
 	}, "\n")
 }
 
