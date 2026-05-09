@@ -250,6 +250,11 @@ Known Phase 0 smoke observations:
 - account-level billing questions can be hard-blocked by the engine while the
   planner emits `unknown`;
 - schema-valid rate was 87.50% in the first real-account smoke.
+- The 2026-05-09 Phase 1 smoke observed `deepseek-v4-flash` repeating the
+  prompt example confidence value (`0.82`) for both dispatched demo turns.
+  Treat the `0.60` threshold as an eligibility guard for the first demo, not as
+  calibrated confidence. Post-demo prompt work should diversify or remove
+  example confidence values before using confidence as a quality metric.
 
 Demo policy:
 

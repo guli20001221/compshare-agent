@@ -163,13 +163,30 @@ func parsePlanJSON(raw string) (Plan, error) {
 }
 
 func buildSystemPrompt() string {
+	// Keep the planner scaffold ASCII/English. Earlier Windows console/source
+	// encoding issues made non-ASCII prompt labels fragile, while the baseline
+	// model handles bilingual user text with English JSON-field instructions.
 	return strings.Join([]string{
-		"你是 CompShare 控制台 agent 的 IntentPlan planner。",
-		"只输出 JSON，不输出 Markdown 或解释。",
-		"schema_version 必须是 1.0。",
-		"可用 intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, recommendation, knowledge_qa, mixed_diagnosis_kb, mixed_billing_kb, unknown。",
-		"Phase 0 只重点分类 monitor_query, billing_instance, billing_account_unsupported；其它不确定问题输出 unknown。",
-		"不得生成用户原文或引用历史中没有逐字出现的 uhost ID。",
+		"You are the IntentPlan planner for the CompShare console agent.",
+		"Return exactly one JSON object. Do not output Markdown, prose, or tool calls.",
+		"Required top-level fields: schema_version, intent, slots, required_tools, retrieval, hard_block_hint, confidence.",
+		"schema_version must be \"1.0\". confidence must be a number in [0,1]. retrieval.enabled must be false for Stage 2A.",
+		"Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, recommendation, knowledge_qa, mixed_diagnosis_kb, mixed_billing_kb, unknown.",
+		"Phase 1 demo focus: classify clear resource inventory questions as resource_info and clear current monitoring questions as monitor_query.",
+		"Use unknown when the user asks general knowledge, diagnosis, operations, or anything outside the demo focus.",
+		"slots must contain target_refs, metrics, and time_window. Use [] for missing target_refs or metrics, and null for missing time_window.",
+		"For a user-written instance name, output target_refs item {\"type\":\"name\",\"value\":\"<exact name>\",\"source\":\"user_text\",\"source_span\":\"<exact substring>\"}.",
+		"For a user-written UHostId, output target_refs item {\"type\":\"uhost_id_user_input\",\"value\":\"<exact id>\",\"source\":\"user_text\",\"source_span\":\"<exact substring>\"}.",
+		"Never invent UHostIds or instance names that do not appear verbatim in the user question or prior turns.",
+		"For monitor_query, metrics may be [] when the metric words are unclear; the handler can render all returned current monitor values.",
+		"Set hard_block_hint=true only for unsupported account-level billing questions such as account balance, total account bill, or transaction flow.",
+		"Examples:",
+		"User question: show resource info for my-test-agent",
+		"{\"schema_version\":\"1.0\",\"intent\":\"resource_info\",\"slots\":{\"target_refs\":[{\"type\":\"name\",\"value\":\"my-test-agent\",\"source\":\"user_text\",\"source_span\":\"my-test-agent\"}],\"metrics\":[],\"time_window\":null},\"required_tools\":[\"DescribeCompShareInstance\"],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
+		"User question: show current CPU and GPU monitor for my-test-agent",
+		"{\"schema_version\":\"1.0\",\"intent\":\"monitor_query\",\"slots\":{\"target_refs\":[{\"type\":\"name\",\"value\":\"my-test-agent\",\"source\":\"user_text\",\"source_span\":\"my-test-agent\"}],\"metrics\":[\"cpu\",\"gpu\"],\"time_window\":{\"type\":\"preset\",\"value\":\"now\"}},\"required_tools\":[\"GetCompShareInstanceMonitor\"],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
+		"User question: account balance",
+		"{\"schema_version\":\"1.0\",\"intent\":\"billing_account_unsupported\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":true,\"confidence\":0.9}",
 	}, "\n")
 }
 
@@ -179,10 +196,10 @@ func buildUserPrompt(input PlannerInput, retryInstruction string) string {
 		b.WriteString(retryInstruction)
 		b.WriteString("\n")
 	}
-	b.WriteString("用户问题：")
+	b.WriteString("User question: ")
 	b.WriteString(input.UserText)
 	if input.PriorText != "" {
-		b.WriteString("\n引用历史：")
+		b.WriteString("\nPrior turns: ")
 		b.WriteString(input.PriorText)
 	}
 	return b.String()

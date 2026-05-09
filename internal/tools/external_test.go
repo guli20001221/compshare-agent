@@ -121,6 +121,24 @@ func TestFlattenInto_Array(t *testing.T) {
 	}
 }
 
+func TestFlattenInto_StringArray(t *testing.T) {
+	dst := make(map[string]string)
+	src := map[string]any{
+		"UHostIds": []string{"uhost-a", "uhost-b"},
+	}
+	flattenInto(dst, src, "")
+
+	if dst["UHostIds"] != "" {
+		t.Errorf("UHostIds = %q, want empty top-level slice encoding", dst["UHostIds"])
+	}
+	if dst["UHostIds.0"] != "uhost-a" {
+		t.Errorf("UHostIds.0 = %q, want uhost-a", dst["UHostIds.0"])
+	}
+	if dst["UHostIds.1"] != "uhost-b" {
+		t.Errorf("UHostIds.1 = %q, want uhost-b", dst["UHostIds.1"])
+	}
+}
+
 func TestFlattenInto_WithPrefix(t *testing.T) {
 	dst := make(map[string]string)
 	src := map[string]any{"Name": "test"}
