@@ -2473,7 +2473,7 @@ func phase1KnownInstanceDescribeResult() map[string]any {
 				"GPU":       float64(1),
 				"GpuType":   "4090",
 				"CPU":       float64(8),
-				"Memory":    float64(32),
+				"Memory":    float64(32768),
 				"ImageType": "Ubuntu",
 			},
 		},
@@ -2881,7 +2881,8 @@ func TestPhase1CutoverMonitorPlanBypassesReAct(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "show phase1-demo cpu monitor", onStep)
 
 	require.NoError(t, err)
-	assert.Contains(t, reply, "CPUUsageRate")
+	assert.Contains(t, reply, "CPU")
+	assert.Contains(t, reply, "12%")
 	assert.Empty(t, mock.calls, "handled monitor plan must bypass ReAct")
 	assert.Equal(t, []string{"GetCompShareInstanceMonitor"}, executor.calls)
 	require.Len(t, *events, 2)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/compshare-agent/internal/entity"
@@ -345,8 +346,12 @@ const (
 	resourceLabelCPU        = "CPU"
 	resourceLabelMemory     = "\u5185\u5b58"
 	resourceLabelImageType  = "\u955c\u50cf\u7c7b\u578b"
-	resourceLabelStartTime  = "\u542f\u52a8\u65f6\u95f4"
-	resourceLabelExpireTime = "\u5230\u671f\u65f6\u95f4"
+	resourceLabelChargeType = "\u8ba1\u8d39\u65b9\u5f0f"
+
+	monitorLabelCPU    = "CPU \u4f7f\u7528\u7387"
+	monitorLabelMemory = "\u5185\u5b58\u4f7f\u7528\u7387(Memory)"
+	monitorLabelGPU    = "GPU \u4f7f\u7528\u7387"
+	monitorLabelVRAM   = "\u663e\u5b58\u4f7f\u7528\u7387(VRAM)"
 
 	noInstancesReply              = "\u672a\u627e\u5230\u5b9e\u4f8b\u3002"
 	noMonitorValuesReply          = "\u672a\u8fd4\u56de\u76d1\u63a7\u6570\u636e\u3002"
@@ -364,22 +369,19 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot) string {
 	lines := make([]string, 0, len(copied))
 	for _, inst := range copied {
 		parts := []string{
-			resourceLabelInstanceID + "=" + safeValue(inst.UHostId),
-			resourceLabelName + "=" + safeValue(inst.Name),
-			resourceLabelState + "=" + safeValue(inst.State),
-			resourceLabelGPUType + "=" + safeValue(inst.GpuType),
-			fmt.Sprintf("%s=%d", resourceLabelGPU, inst.GPU),
-			fmt.Sprintf("%s=%d", resourceLabelCPU, inst.CPU),
-			fmt.Sprintf("%s=%d", resourceLabelMemory, inst.Memory),
+			resourceLabelInstanceID + ": " + safeValue(inst.UHostId),
+			resourceLabelName + ": " + safeValue(inst.Name),
+			resourceLabelState + ": " + formatState(inst.State),
+			resourceLabelGPUType + ": " + safeValue(inst.GpuType),
+			fmt.Sprintf("%s: %d", resourceLabelGPU, inst.GPU),
+			fmt.Sprintf("%s: %d", resourceLabelCPU, inst.CPU),
+			resourceLabelMemory + ": " + formatMemory(inst.Memory),
 		}
 		if inst.ImageType != "" {
-			parts = append(parts, resourceLabelImageType+"="+safeValue(inst.ImageType))
+			parts = append(parts, resourceLabelImageType+": "+safeValue(inst.ImageType))
 		}
-		if inst.StartTime != 0 {
-			parts = append(parts, fmt.Sprintf("%s=%d", resourceLabelStartTime, inst.StartTime))
-		}
-		if inst.ExpireTime != 0 {
-			parts = append(parts, fmt.Sprintf("%s=%d", resourceLabelExpireTime, inst.ExpireTime))
+		if inst.ChargeType != "" {
+			parts = append(parts, resourceLabelChargeType+": "+formatChargeType(inst.ChargeType))
 		}
 		lines = append(lines, strings.Join(parts, ", "))
 	}
@@ -388,68 +390,238 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot) string {
 
 func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {
 	redacted, _ := security.RedactForLLM(payload).(map[string]any)
-	flat := map[string]string{}
-	flattenScalars("", redacted, flat)
-	if len(flat) == 0 {
+	values := extractMonitorValues(redacted)
+	if len(values) == 0 {
+		values = extractSimpleMonitorValues(redacted)
+	}
+	if len(values) == 0 {
 		return noMonitorValuesReply
 	}
 
-	keys := make([]string, 0, len(flat))
-	for key := range flat {
-		if len(metrics) == 0 || matchesRequestedMetric(key, metrics) {
-			keys = append(keys, key)
+	requested := requestedMetricSet(metrics)
+	filtered := make([]monitorValue, 0, len(values))
+	for _, value := range values {
+		if len(requested) == 0 || requested[value.Metric] {
+			filtered = append(filtered, value)
 		}
 	}
-	sort.Strings(keys)
-	if len(keys) == 0 {
+	if len(filtered) == 0 {
 		return noRequestedMonitorValuesReply
 	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].Order != filtered[j].Order {
+			return filtered[i].Order < filtered[j].Order
+		}
+		if filtered[i].Label != filtered[j].Label {
+			return filtered[i].Label < filtered[j].Label
+		}
+		return filtered[i].Value < filtered[j].Value
+	})
 
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		parts = append(parts, key+"="+flat[key])
+	parts := make([]string, 0, len(filtered))
+	for _, value := range filtered {
+		parts = append(parts, value.Label+": "+value.Value)
 	}
-	return strings.Join(parts, "; ")
+	return strings.Join(parts, "\n")
 }
 
-func flattenScalars(prefix string, v any, out map[string]string) {
+type monitorValue struct {
+	Metric Metric
+	Label  string
+	Value  string
+	Order  int
+}
+
+type monitorMetricSpec struct {
+	Metric Metric
+	Label  string
+	Order  int
+}
+
+var monitorMetricSpecs = map[string]monitorMetricSpec{
+	"uhost_cpu_used":                 {Metric: MetricCPU, Label: monitorLabelCPU, Order: 1},
+	"cpuusagerate":                   {Metric: MetricCPU, Label: monitorLabelCPU, Order: 1},
+	"cloudwatch_memory_usage":        {Metric: MetricMemory, Label: monitorLabelMemory, Order: 2},
+	"cloudwatch_gpu_util":            {Metric: MetricGPU, Label: monitorLabelGPU, Order: 3},
+	"gpuusagerate":                   {Metric: MetricGPU, Label: monitorLabelGPU, Order: 3},
+	"cloudwatch_gpu_memory_usage":    {Metric: MetricVRAM, Label: monitorLabelVRAM, Order: 4},
+	"cloudwatch_gpu_memory_used_per": {Metric: MetricVRAM, Label: monitorLabelVRAM, Order: 4},
+}
+
+func extractMonitorValues(v any) []monitorValue {
+	// Phase 1 monitor cutover currently calls the monitor API for one resolved
+	// target at a time. If multi-instance monitor cutover is enabled later, this
+	// renderer must add instance correlation instead of emitting duplicate labels.
+	values := []monitorValue{}
 	switch typed := v.(type) {
 	case map[string]any:
+		if metricKey, ok := monitorMetricKey(typed); ok {
+			if spec, ok := monitorMetricSpecs[strings.ToLower(metricKey)]; ok {
+				if rendered, ok := latestMetricValue(typed); ok {
+					values = append(values, monitorValue{
+						Metric: spec.Metric,
+						Label:  spec.Label,
+						Value:  formatPercentValue(rendered),
+						Order:  spec.Order,
+					})
+				}
+			}
+		}
 		keys := make([]string, 0, len(typed))
 		for key := range typed {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			next := key
-			if prefix != "" {
-				next = prefix + "." + key
-			}
-			flattenScalars(next, typed[key], out)
+			values = append(values, extractMonitorValues(typed[key])...)
 		}
 	case []any:
-		for i, item := range typed {
-			next := fmt.Sprintf("%s[%d]", prefix, i)
-			flattenScalars(next, item, out)
+		for _, item := range typed {
+			values = append(values, extractMonitorValues(item)...)
 		}
+	}
+	return values
+}
+
+func monitorMetricKey(metric map[string]any) (string, bool) {
+	for _, key := range []string{"MetricKey", "Name"} {
+		if value, ok := metric[key].(string); ok && strings.TrimSpace(value) != "" {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func latestMetricValue(metric map[string]any) (any, bool) {
+	if value, ok := metric["Value"]; ok && value != nil {
+		return value, true
+	}
+	results, ok := metric["Results"].([]any)
+	if !ok {
+		return nil, false
+	}
+	for i := len(results) - 1; i >= 0; i-- {
+		result, ok := results[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		if value, ok := result["Value"]; ok && value != nil {
+			return value, true
+		}
+		values, ok := result["Values"].([]any)
+		if !ok {
+			continue
+		}
+		for j := len(values) - 1; j >= 0; j-- {
+			point, ok := values[j].(map[string]any)
+			if !ok {
+				continue
+			}
+			if value, ok := point["Value"]; ok && value != nil {
+				return value, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func extractSimpleMonitorValues(payload map[string]any) []monitorValue {
+	specs := []struct {
+		key    string
+		metric Metric
+		label  string
+		order  int
+	}{
+		{key: "CPU", metric: MetricCPU, label: monitorLabelCPU, order: 1},
+		{key: "Memory", metric: MetricMemory, label: monitorLabelMemory, order: 2},
+		{key: "GPU", metric: MetricGPU, label: monitorLabelGPU, order: 3},
+		{key: "VRAM", metric: MetricVRAM, label: monitorLabelVRAM, order: 4},
+	}
+	out := make([]monitorValue, 0, len(specs))
+	for _, spec := range specs {
+		value, ok := payload[spec.key]
+		if !ok || value == nil {
+			continue
+		}
+		out = append(out, monitorValue{
+			Metric: spec.metric,
+			Label:  spec.label,
+			Value:  formatPercentValue(value),
+			Order:  spec.order,
+		})
+	}
+	return out
+}
+
+func requestedMetricSet(metrics []Metric) map[Metric]bool {
+	out := make(map[Metric]bool, len(metrics))
+	for _, metric := range metrics {
+		out[metric] = true
+	}
+	return out
+}
+
+func formatPercentValue(v any) string {
+	switch typed := v.(type) {
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64) + "%"
+	case float32:
+		return strconv.FormatFloat(float64(typed), 'f', -1, 32) + "%"
+	case int:
+		return fmt.Sprintf("%d%%", typed)
+	case int64:
+		return fmt.Sprintf("%d%%", typed)
+	case string:
+		return safeValue(typed)
 	default:
-		if prefix != "" {
-			out[prefix] = safeValue(typed)
-		}
+		return safeValue(typed)
 	}
 }
 
-func matchesRequestedMetric(key string, metrics []Metric) bool {
-	key = strings.ToLower(key)
-	for _, metric := range metrics {
-		// Demo cutover intentionally uses substring matching over the rendered
-		// monitor field paths. Narrow this only if real smoke traces show noisy
-		// API metadata in user-visible replies.
-		if strings.Contains(key, string(metric)) {
-			return true
-		}
+func formatMemory(memory int) string {
+	if memory <= 0 {
+		return "0 MB"
 	}
-	return false
+	if memory >= 1024 {
+		gb := float64(memory) / 1024
+		if memory%1024 == 0 {
+			return fmt.Sprintf("%d GB", memory/1024)
+		}
+		return strconv.FormatFloat(gb, 'f', 1, 64) + " GB"
+	}
+	return fmt.Sprintf("%d MB", memory)
+}
+
+func formatChargeType(chargeType string) string {
+	switch strings.ToLower(strings.TrimSpace(chargeType)) {
+	// Canonical CompShare values observed in GT/API traces.
+	case "dynamic", "hour", "hourly":
+		return "\u6309\u65f6"
+	case "day", "daily":
+		return "\u6309\u5929"
+	case "month", "monthly":
+		return "\u5305\u6708"
+	case "year", "yearly":
+		return "\u5305\u5e74"
+	// Defensive aliases for provider-style billing enums.
+	case "postpay", "postpaid":
+		return "\u6309\u91cf"
+	case "prepay", "prepaid":
+		return "\u9884\u4ed8\u8d39"
+	default:
+		return safeValue(chargeType)
+	}
+}
+
+func formatState(state string) string {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "running":
+		return "\u8fd0\u884c\u4e2d(Running)"
+	case "stopped":
+		return "\u5173\u673a(Stopped)"
+	default:
+		return safeValue(state)
+	}
 }
 
 func safeValue(v any) string {
