@@ -21,6 +21,8 @@ type Client struct {
 	model  string
 }
 
+const maxChatAttempts = 2
+
 func NewClient(cfg config.LLMConfig) *Client {
 	ocfg := openai.DefaultConfig(cfg.APIKey)
 	ocfg.BaseURL = cfg.BaseURL
@@ -64,6 +66,21 @@ type ChatResponse struct {
 // Chat sends a streaming request and assembles the full response.
 // Streaming is required because the proxy drops content in non-streaming mode.
 func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxChatAttempts; attempt++ {
+		resp, err := c.chatOnce(ctx, req)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if !isTransientChatError(ctx, err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func (c *Client) chatOnce(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	ccReq := openai.ChatCompletionRequest{
 		Model:    c.model,
 		Messages: req.Messages,
@@ -145,4 +162,28 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		Content:   contentBuf.String(),
 		ToolCalls: toolCalls,
 	}, nil
+}
+
+func isTransientChatError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "tls handshake timeout") ||
+		strings.Contains(msg, "timeout")
 }
