@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/security"
 )
 
@@ -53,6 +54,10 @@ type HandlerResult struct {
 	CutoverStatus  CutoverStatus
 	ToolAction     string
 	ToolArgs       map[string]any
+	// RendererInputToolArgHashes records tool args consumed by deterministic
+	// handler renderers before engine-level tool call ids exist. Phase 1 demo
+	// populates this for monitor handler results only.
+	RendererInputToolArgHashes []string
 }
 
 type HandlerExecutor interface {
@@ -128,6 +133,39 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 	result := HandledResult(RenderResourceSummary(instances))
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
+	return result
+}
+
+func (h *DemoHandler) HandleMonitorQuery(ctx context.Context, req HandlerRequest) HandlerResult {
+	const action = "GetCompShareInstanceMonitor"
+	if fallback := RequireAllowedHandlerAction(req.Plan.Intent, action); fallback != nil {
+		return *fallback
+	}
+	if h == nil || h.executor == nil {
+		// Defensive only: production wiring must construct the handler with a
+		// SafeToolExecutor adapter before enabling demo cutover.
+		return FallbackBeforeTool(FallbackValidation)
+	}
+	if !isCurrentMonitorTimeWindow(req.Plan.Slots.TimeWindow) {
+		return FallbackBeforeTool(FallbackTimeWindow)
+	}
+	if len(req.Plan.Slots.TargetRefs) == 0 {
+		return FallbackBeforeTool(FallbackMissingTarget)
+	}
+
+	ids, fallback := resolveResourceTargets(req.Plan.Slots.TargetRefs, req.Resolver)
+	if fallback != nil {
+		return *fallback
+	}
+	args := map[string]any{"UHostIds": append([]string(nil), ids...)}
+	raw, err := h.executor.Execute(ctx, action, args)
+	if err != nil {
+		return failureAfterToolWithTrace(action, args, "monitor_query")
+	}
+	result := HandledResult(RenderMonitorSummary(req.Plan.Slots.Metrics, raw))
+	result.ToolAction = action
+	result.ToolArgs = copyArgs(args)
+	result.RendererInputToolArgHashes = hashArgsForRenderer(args)
 	return result
 }
 
@@ -217,6 +255,21 @@ func failureAfterToolWithTrace(action string, args map[string]any, label string)
 	return result
 }
 
+func isCurrentMonitorTimeWindow(window *TimeWindow) bool {
+	if window == nil {
+		return true
+	}
+	if window.Type != TimeWindowPreset {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(window.Value)) {
+	case "now", "current", "realtime", "today":
+		return true
+	default:
+		return false
+	}
+}
+
 func describeResourceArgs(ids []string) map[string]any {
 	if len(ids) == 0 {
 		return map[string]any{"Limit": 100}
@@ -272,6 +325,14 @@ func dedupeStrings(values []string) []string {
 	return out
 }
 
+func hashArgsForRenderer(args map[string]any) []string {
+	hash, err := observability.HashTracePayload(args)
+	if err != nil {
+		panic(fmt.Sprintf("hash monitor handler args: %v", err))
+	}
+	return []string{hash}
+}
+
 const (
 	resourceLabelInstanceID = "\u5b9e\u4f8bID"
 	resourceLabelName       = "\u540d\u79f0"
@@ -325,8 +386,6 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot) string {
 func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {
 	redacted, _ := security.RedactForLLM(payload).(map[string]any)
 	flat := map[string]string{}
-	// Commit 3 must restrict this flattening to the real monitor response field
-	// set before the handler is wired into engine cutover.
 	flattenScalars("", redacted, flat)
 	if len(flat) == 0 {
 		return noMonitorValuesReply
@@ -380,8 +439,9 @@ func flattenScalars(prefix string, v any, out map[string]string) {
 func matchesRequestedMetric(key string, metrics []Metric) bool {
 	key = strings.ToLower(key)
 	for _, metric := range metrics {
-		// Demo skeleton intentionally uses substring matching; Commit 3 must
-		// narrow this to known monitor response paths before production cutover.
+		// Demo cutover intentionally uses substring matching over the rendered
+		// monitor field paths. Narrow this only if real smoke traces show noisy
+		// API metadata in user-visible replies.
 		if strings.Contains(key, string(metric)) {
 			return true
 		}
