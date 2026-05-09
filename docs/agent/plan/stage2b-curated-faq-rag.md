@@ -206,11 +206,15 @@ Required behavior:
 - filter out chunks where `acl != customer_safe`;
 - filter out chunks outside `valid_from` / `valid_to`;
 - rank by deterministic weighted keyword overlap:
-  - question pattern match = 4 points;
+  - question pattern match = 4 points, capped once per chunk;
   - title match = 3 points;
   - product area match = 2 points;
   - content match = 1 point;
   - `confidence=high` wins ties over `medium`.
+- matching in the first slice is exact substring matching in either direction,
+  not semantic embedding search; chunk authors must enumerate common user
+  phrasings in `question_patterns`, and the smoke artifact should disclose any
+  paraphrase misses.
 - return at most 3 chunks;
 - default threshold is 2 points, supplied through constructor options and not an
   environment variable in the first slice;
