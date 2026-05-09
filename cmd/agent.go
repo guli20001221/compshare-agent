@@ -74,7 +74,19 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_INTENT_PLANNER_FOR value %q\n", value)
 	}
 	cutoverEnabled := len(cutoverIntents) > 0
-	if cutoverEnabled {
+	knowledgeRetrievalRequested, unknownKnowledgeRetrieval := knowledgeRetrievalModeFromEnv(os.Getenv)
+	if unknownKnowledgeRetrieval != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q\n", unknownKnowledgeRetrieval)
+	}
+	knowledgeRetriever, knowledgeRetrievalEnabled, knowledgeErr := knowledgeRetrieverFromEnv(os.Getenv)
+	if knowledgeRetrievalRequested && knowledgeErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: knowledge retrieval disabled: %v\n", knowledgeErr)
+	}
+	if knowledgeRetrievalEnabled {
+		eng.SetKnowledgeRetriever(knowledgeRetriever)
+	}
+	plannerDispatchEnabled := cutoverEnabled || knowledgeRetrievalEnabled
+	if plannerDispatchEnabled {
 		eng.SetIntentPlanner(newCLIPlanner(cfg), engine.IntentPlannerOptions{
 			EnabledIntents: cutoverIntents,
 			Model:          cfg.Agent.LLM.Model,
@@ -86,7 +98,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		traceEnabled = false
 	}
 	var shadowRunner *intent.ShadowRunner
-	if useSeparateShadowRunner(traceEnabled, intentPlannerShadowEnabled(os.Getenv), cutoverEnabled) {
+	if useSeparateShadowRunner(traceEnabled, intentPlannerShadowEnabled(os.Getenv), plannerDispatchEnabled) {
 		shadowRunner = newCLIShadowRunner(cfg, eng)
 	}
 
@@ -137,16 +149,21 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		// Reset each turn so a previous trace recorder is never retained
 		// when the next turn creates a fresh recorder.
 		eng.SetPlannerTraceObserver(nil)
+		eng.SetRetrievalTraceObserver(nil)
 		if traceEnabled {
 			traceRecorder = newCLITraceRecorder(traceWriter, turnIndex, input, turnStart)
 			traceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)
 			eng.SetHardBlockObserver(traceRecorder.SetEngineHardBlock)
-			if cutoverEnabled {
-				// When cutover is enabled, Engine owns the single planner call
-				// for this turn and writes that same result into trace.planner.
+			if plannerDispatchEnabled {
+				// When Phase 1 cutover or Stage 2B retrieval is enabled, Engine
+				// owns the single planner call for this turn and writes that same
+				// result into trace.planner.
 				traceRecorder.SetPlannerTraceSupplier(nil)
 				eng.SetPlannerTraceObserver(traceRecorder.SetPlannerTrace)
+				if knowledgeRetrievalEnabled {
+					eng.SetRetrievalTraceObserver(traceRecorder.SetRetrievalTrace)
+				}
 			} else if shadowRunner != nil {
 				// By construction, shadowRunner is only created for the
 				// trace+shadow+no-cutover case.

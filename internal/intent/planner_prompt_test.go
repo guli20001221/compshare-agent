@@ -15,6 +15,9 @@ func TestBuildSystemPromptIncludesPhase1CutoverSchemaFields(t *testing.T) {
 		"source_span",
 		"hard_block_hint",
 		"retrieval",
+		"knowledge_qa",
+		"mixed_diagnosis_kb",
+		"mixed_billing_kb",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
@@ -30,8 +33,8 @@ func TestBuildSystemPromptIncludesPhase1CutoverSchemaFields(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	if len(examples) != 3 {
-		t.Fatalf("prompt examples count = %d, want 3; examples=%v", len(examples), examples)
+	if len(examples) != 4 {
+		t.Fatalf("prompt examples count = %d, want 4; examples=%v", len(examples), examples)
 	}
 	for _, example := range examples {
 		plan, err := parsePlanJSON(example)
@@ -49,6 +52,23 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 		}
 		if plan.Retrieval.Enabled {
 			t.Fatalf("prompt example unexpectedly enables retrieval: %s", example)
+		}
+	}
+}
+
+func TestBuildSystemPromptIncludesKnowledgeQARules(t *testing.T) {
+	prompt := buildSystemPrompt()
+	required := []string{
+		"clear platform usage / FAQ questions",
+		"knowledge_qa",
+		"diagnosis questions that also reference platform FAQ",
+		"mixed_diagnosis_kb",
+		"billing-specific FAQ plus instance facts",
+		"mixed_billing_kb",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt missing knowledge QA rule %q:\n%s", fragment, prompt)
 		}
 	}
 }

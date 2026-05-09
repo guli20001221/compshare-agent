@@ -8,6 +8,7 @@ import (
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/observability"
 )
 
@@ -27,6 +28,40 @@ func traceWriterFromEnv(getenv getenvFunc) (*observability.Writer, bool, error) 
 
 func intentPlannerShadowEnabled(getenv getenvFunc) bool {
 	return getenv("USE_INTENT_PLANNER") == "shadow"
+}
+
+const defaultKnowledgeCorpusPath = "deploy/kb/curated_faq.jsonl"
+
+func knowledgeRetrievalModeFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.ToLower(strings.TrimSpace(getenv("USE_KNOWLEDGE_RETRIEVAL")))
+	switch raw {
+	case "":
+		return false, ""
+	case "curated":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
+func knowledgeCorpusPathFromEnv(getenv getenvFunc) string {
+	path := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_CORPUS"))
+	if path == "" {
+		return defaultKnowledgeCorpusPath
+	}
+	return path
+}
+
+func knowledgeRetrieverFromEnv(getenv getenvFunc) (*knowledge.Retriever, bool, error) {
+	enabled, unknown := knowledgeRetrievalModeFromEnv(getenv)
+	if unknown != "" || !enabled {
+		return nil, false, nil
+	}
+	corpus, err := knowledge.LoadCorpus(knowledgeCorpusPathFromEnv(getenv))
+	if err != nil {
+		return nil, false, err
+	}
+	return knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{}), true, nil
 }
 
 func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []string) {
@@ -109,6 +144,13 @@ func (r *cliTraceRecorder) SetPlannerTrace(trace observability.PlannerTrace) {
 	}
 	r.record.Planner = trace
 	r.plannerTraceSupplier = nil
+}
+
+func (r *cliTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Retrieval = trace
 }
 
 func (r *cliTraceRecorder) SetEngineHardBlock(trace observability.EngineHardBlockTrace) {

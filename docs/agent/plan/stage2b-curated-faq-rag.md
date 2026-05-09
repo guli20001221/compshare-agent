@@ -118,6 +118,13 @@ Rules:
 - the gate must not enable raw chat retrieval;
 - the gate must not change account hard-block behavior.
 
+Corpus path resolution:
+
+- `COMPSHARE_KNOWLEDGE_CORPUS` overrides the corpus path when set;
+- otherwise the CLI loads the bundled `deploy/kb/curated_faq.jsonl`;
+- missing or invalid corpus files disable retrieval with a warning and must not
+  block the ReAct fallback path.
+
 When both planner cutover and curated retrieval are enabled, the engine must use
 the same planner call that already feeds Phase 1 cutover. Do not add a second
 planner call solely for knowledge retrieval.
@@ -187,7 +194,9 @@ Inputs:
 - user question;
 - planner intent;
 - optional product area inferred by the engine from the question and matched
-  chunk metadata; do not grow the `Plan.Retrieval` schema in the first slice;
+  chunk metadata; the first engine implementation uses a narrow curated
+  keyword map for the bundled product areas and does not consume planner
+  `scope`; do not grow the `Plan.Retrieval` schema in the first slice;
 - current time for validity filtering.
 
 Outputs:
@@ -240,7 +249,8 @@ Rationale:
 
 Contract:
 
-- `Plan.Retrieval.Enabled` remains a planner hint and may stay false.
+- `Plan.Retrieval.Enabled` must stay false until a reviewed Stage 2B+ change
+  relaxes validator semantics.
 - `trace.retrieval.enabled` records whether the engine actually called the
   retriever.
 - Prompt updates must teach:

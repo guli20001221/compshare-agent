@@ -36,15 +36,18 @@ const (
 type CutoverStatus string
 
 const (
-	CutoverStatusNone                     CutoverStatus = ""
-	CutoverStatusDispatched               CutoverStatus = "dispatched"
-	CutoverStatusFallbackInvalid          CutoverStatus = "fallback_invalid"
-	CutoverStatusFallbackLowConfidence    CutoverStatus = "fallback_low_confidence"
-	CutoverStatusFallbackHardBlockHint    CutoverStatus = "fallback_hard_block_hint"
-	CutoverStatusFallbackIneligible       CutoverStatus = "fallback_ineligible"
-	CutoverStatusFallbackUnresolvedTarget CutoverStatus = "fallback_unresolved_target"
-	CutoverStatusFallbackTimeWindow       CutoverStatus = "fallback_time_window"
-	CutoverStatusFailureAfterTool         CutoverStatus = "failure_after_tool"
+	CutoverStatusNone                      CutoverStatus = ""
+	CutoverStatusDispatched                CutoverStatus = "dispatched"
+	CutoverStatusFallbackInvalid           CutoverStatus = "fallback_invalid"
+	CutoverStatusFallbackLowConfidence     CutoverStatus = "fallback_low_confidence"
+	CutoverStatusFallbackHardBlockHint     CutoverStatus = "fallback_hard_block_hint"
+	CutoverStatusFallbackIneligible        CutoverStatus = "fallback_ineligible"
+	CutoverStatusFallbackUnresolvedTarget  CutoverStatus = "fallback_unresolved_target"
+	CutoverStatusFallbackTimeWindow        CutoverStatus = "fallback_time_window"
+	CutoverStatusFailureAfterTool          CutoverStatus = "failure_after_tool"
+	CutoverStatusDispatchedRetrieval       CutoverStatus = "dispatched_retrieval"
+	CutoverStatusFallbackRetrievalMiss     CutoverStatus = "fallback_retrieval_miss"
+	CutoverStatusFallbackRetrievalDisabled CutoverStatus = "fallback_retrieval_disabled"
 )
 
 type HandlerResult struct {
