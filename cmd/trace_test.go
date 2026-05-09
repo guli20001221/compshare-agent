@@ -140,6 +140,40 @@ func TestCLITraceRecorderWritesPlannerTrace(t *testing.T) {
 	}
 }
 
+func TestCLITraceRecorderWritesRendererInputToolArgHashes(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 1, "monitor", start)
+	recorder.OnStep(engine.StepEvent{
+		Type:   engine.StepToolCall,
+		Action: "GetCompShareInstanceMonitor",
+		Source: observability.ToolSourcePlannerHandler,
+		Args:   map[string]any{"UHostIds": []string{"uhost-a"}},
+	})
+	recorder.OnStep(engine.StepEvent{
+		Type:                       engine.StepToolResult,
+		Action:                     "GetCompShareInstanceMonitor",
+		Source:                     observability.ToolSourcePlannerHandler,
+		TraceResult:                map[string]any{"RetCode": 0},
+		RendererInputToolArgHashes: []string{"sha256:monitor-args"},
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	record := readSingleTraceRecord(t, writer, start)
+	if got := record.Renderer.InputToolArgHashes; len(got) != 1 || got[0] != "sha256:monitor-args" {
+		t.Fatalf("renderer.input_tool_args_hashes = %#v", got)
+	}
+}
+
 func TestCLITraceRecorderWritesEngineHardBlockWithoutToolStep(t *testing.T) {
 	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	writer, err := observability.NewWriter(observability.WriterOptions{

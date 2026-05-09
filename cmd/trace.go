@@ -130,6 +130,9 @@ func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {
 		r.record.ToolCalls[idx].Status = observability.ToolStatusSuccess
 		r.record.ToolCalls[idx].ResultHash = resultHash
 		r.record.ToolCalls[idx].Attempts = ev.Attempts
+		if len(ev.RendererInputToolArgHashes) > 0 {
+			r.record.Renderer.InputToolArgHashes = append(r.record.Renderer.InputToolArgHashes, ev.RendererInputToolArgHashes...)
+		}
 	case engine.StepError:
 		idx := r.matchPending(key, ev.Action, source)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusError

@@ -15,6 +15,7 @@ import (
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
@@ -77,11 +78,24 @@ type LLMClient interface {
 	Chat(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error)
 }
 
+type IntentPlanner interface {
+	Plan(ctx context.Context, input intent.PlannerInput) (intent.PlannerResult, error)
+}
+
+type IntentPlannerOptions struct {
+	EnabledIntents []intent.Intent
+	Model          string
+}
+
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
 type Engine struct {
 	llmClient             LLMClient
 	safeExecutor          *tools.SafeToolExecutor
 	registry              *entity.EntityRegistry
+	intentPlanner         IntentPlanner
+	intentPlannerModel    string
+	intentCutoverIntents  map[intent.Intent]struct{}
+	plannerTraceObserver  func(observability.PlannerTrace)
 	rateLimiter           governance.RateLimiter
 	rateLimitSubject      string
 	rateLimitObserver     func(governance.Decision)
@@ -149,6 +163,22 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 // via LookupCapability in New().
 func (e *Engine) setSupportsObjectToolChoice(v bool) {
 	e.supportsObjectToolChoice = v
+}
+
+func (e *Engine) SetIntentPlanner(planner IntentPlanner, opts IntentPlannerOptions) {
+	e.intentPlanner = planner
+	e.intentPlannerModel = opts.Model
+	e.intentCutoverIntents = map[intent.Intent]struct{}{}
+	for _, enabled := range opts.EnabledIntents {
+		switch enabled {
+		case intent.IntentResourceInfo, intent.IntentMonitorQuery:
+			e.intentCutoverIntents[enabled] = struct{}{}
+		}
+	}
+}
+
+func (e *Engine) SetPlannerTraceObserver(observer func(observability.PlannerTrace)) {
+	e.plannerTraceObserver = observer
 }
 
 func (e *Engine) SetRateLimitObserver(observer func(governance.Decision)) {
@@ -305,6 +335,7 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
+	priorText := e.PlannerPriorTextSnapshot()
 
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleUser,
@@ -332,6 +363,9 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	e.currentMonitorWindow = false
 
 	forceMonitorRecall := e.shouldForceMonitorRecall(userMsg)
+	if reply, handled := e.tryIntentCutover(ctx, userMsg, priorText, onStep); handled {
+		return reply, nil
+	}
 
 	for round := 0; round < maxReActRounds; round++ {
 		req := llm.ChatRequest{
@@ -420,6 +454,165 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	}
 
 	return "抱歉，处理轮次超限，请重新描述您的需求。", nil
+}
+
+func (e *Engine) tryIntentCutover(ctx context.Context, userMsg, priorText string, onStep func(StepEvent)) (string, bool) {
+	if e == nil || e.intentPlanner == nil || len(e.intentCutoverIntents) == 0 {
+		return "", false
+	}
+
+	start := time.Now()
+	result := engineFallbackPlannerResult()
+	snapshot := e.RegistrySnapshot()
+	if _, ok := e.allowRateLimited(governance.ClassLLM, "intent_planner"); ok {
+		planned, err := e.intentPlanner.Plan(ctx, intent.PlannerInput{
+			UserText:  userMsg,
+			PriorText: priorText,
+			Resolver:  snapshot,
+		})
+		if err == nil {
+			result = planned
+		}
+	} else {
+		// Planner quota denial is observable through trace.rate_limit. The
+		// cutover status intentionally collapses this into fallback_invalid
+		// because trace.v0.1 has no dedicated planner-denied enum.
+	}
+	latency := time.Since(start)
+
+	if status, ok := e.cutoverCandidateStatus(result); !ok {
+		e.emitPlannerTrace(result, status, latency)
+		return "", false
+	}
+
+	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
+	req := intent.HandlerRequest{
+		Plan:     result.Plan,
+		Resolver: snapshot,
+	}
+	var handled intent.HandlerResult
+	switch result.Plan.Intent {
+	case intent.IntentResourceInfo:
+		handled = handler.HandleResourceInfo(ctx, req)
+	case intent.IntentMonitorQuery:
+		handled = handler.HandleMonitorQuery(ctx, req)
+	default:
+		e.emitPlannerTrace(result, intent.CutoverStatusFallbackIneligible, latency)
+		return "", false
+	}
+
+	e.emitPlannerTrace(result, handled.CutoverStatus, latency)
+	if handled.Status == intent.HandlerStatusFallbackBeforeTool {
+		return "", false
+	}
+
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: handled.Reply,
+	})
+	return handled.Reply, true
+}
+
+func (e *Engine) cutoverCandidateStatus(result intent.PlannerResult) (intent.CutoverStatus, bool) {
+	if result.Fallback || result.LastValidationCode != "" ||
+		result.Plan.SchemaVersion != intent.SchemaVersion || result.Plan.Intent == "" {
+		return intent.CutoverStatusFallbackInvalid, false
+	}
+	if result.Plan.HardBlockHint {
+		return intent.CutoverStatusFallbackHardBlockHint, false
+	}
+	if result.Plan.Confidence < 0.60 {
+		return intent.CutoverStatusFallbackLowConfidence, false
+	}
+	if result.Plan.Retrieval.Enabled {
+		return intent.CutoverStatusFallbackIneligible, false
+	}
+	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery {
+		return intent.CutoverStatusFallbackIneligible, false
+	}
+	if _, ok := e.intentCutoverIntents[result.Plan.Intent]; !ok {
+		return intent.CutoverStatusFallbackIneligible, false
+	}
+	return intent.CutoverStatusDispatched, true
+}
+
+func (e *Engine) emitPlannerTrace(result intent.PlannerResult, status intent.CutoverStatus, latency time.Duration) {
+	if e.plannerTraceObserver == nil {
+		return
+	}
+	trace := intent.ProjectPlannerTrace(result, intent.PlannerTraceOptions{
+		Enabled: true,
+		Model:   e.intentPlannerModel,
+		Latency: latency,
+	})
+	trace.CutoverStatus = string(status)
+	e.plannerTraceObserver(trace)
+}
+
+func engineFallbackPlannerResult() intent.PlannerResult {
+	return intent.PlannerResult{
+		Fallback: true,
+		Plan: intent.Plan{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentUnknown,
+			Retrieval:     intent.Retrieval{Enabled: false},
+		},
+	}
+}
+
+type plannerHandlerExecutor struct {
+	engine *Engine
+	onStep func(StepEvent)
+}
+
+func (x plannerHandlerExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	if x.engine == nil {
+		return nil, fmt.Errorf("planner handler engine is nil")
+	}
+	result, err := x.engine.executeSafeTool(ctx, tools.SafeToolRequest{
+		Action: action,
+		Args:   args,
+		Origin: tools.OriginDirectLLM,
+		Hooks: tools.SafeToolHooks{
+			OnConfirmNeeded: func(action string, args map[string]any) {
+				x.emit(StepEvent{Type: StepConfirmNeeded, Action: action, Source: observability.ToolSourcePlannerHandler, Args: x.engine.safeExecutor.RedactArgs(action, args), Message: "此操作需要您确认"})
+			},
+			OnBeforeCall: func(action string, args map[string]any) {
+				x.emit(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourcePlannerHandler, Args: args})
+			},
+		},
+	})
+	if err != nil {
+		x.emit(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourcePlannerHandler, Message: fmt.Sprintf("API 调用失败: %v", err)})
+		return nil, err
+	}
+	event := StepEvent{
+		Type:        StepToolResult,
+		Action:      action,
+		Source:      observability.ToolSourcePlannerHandler,
+		Message:     "调用成功",
+		TraceResult: result.TraceResult,
+		Attempts:    result.Attempts,
+	}
+	if action == "GetCompShareInstanceMonitor" {
+		event.RendererInputToolArgHashes = hashPlannerHandlerArgs(args)
+	}
+	x.emit(event)
+	return result.RawResult, nil
+}
+
+func (x plannerHandlerExecutor) emit(ev StepEvent) {
+	if x.onStep != nil {
+		x.onStep(ev)
+	}
+}
+
+func hashPlannerHandlerArgs(args map[string]any) []string {
+	hash, err := observability.HashTracePayload(args)
+	if err != nil {
+		return nil
+	}
+	return []string{hash}
 }
 
 func (e *Engine) allowRateLimited(class governance.Class, action string) (governance.Decision, bool) {
@@ -934,14 +1127,15 @@ const (
 
 // StepEvent is an intermediate event during the ReAct loop.
 type StepEvent struct {
-	Type        StepType
-	Action      string
-	Source      string
-	Args        map[string]any
-	Message     string
-	Display     string         // content for CLI display only (not sent to LLM), e.g. raw JupyterToken
-	TraceResult map[string]any // redacted result payload for trace hashing only
-	Attempts    int
+	Type                       StepType
+	Action                     string
+	Source                     string
+	Args                       map[string]any
+	Message                    string
+	Display                    string         // content for CLI display only (not sent to LLM), e.g. raw JupyterToken
+	TraceResult                map[string]any // redacted result payload for trace hashing only
+	Attempts                   int
+	RendererInputToolArgHashes []string
 }
 
 // trimHistory keeps the message list under maxHistoryMessages by dropping
