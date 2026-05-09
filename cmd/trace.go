@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
 )
 
@@ -25,6 +27,42 @@ func traceWriterFromEnv(getenv getenvFunc) (*observability.Writer, bool, error) 
 
 func intentPlannerShadowEnabled(getenv getenvFunc) bool {
 	return getenv("USE_INTENT_PLANNER") == "shadow"
+}
+
+func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []string) {
+	raw := getenv("USE_INTENT_PLANNER_FOR")
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	seen := map[intent.Intent]struct{}{}
+	intents := []intent.Intent{}
+	unknown := []string{}
+	for _, part := range strings.Split(raw, ",") {
+		value := strings.ToLower(strings.TrimSpace(part))
+		if value == "" {
+			continue
+		}
+		var enabled intent.Intent
+		switch value {
+		case "resource":
+			enabled = intent.IntentResourceInfo
+		case "monitor":
+			enabled = intent.IntentMonitorQuery
+		default:
+			unknown = append(unknown, value)
+			continue
+		}
+		if _, ok := seen[enabled]; ok {
+			continue
+		}
+		seen[enabled] = struct{}{}
+		intents = append(intents, enabled)
+	}
+	return intents, unknown
+}
+
+func useSeparateShadowRunner(traceEnabled, shadowEnabled, cutoverEnabled bool) bool {
+	return traceEnabled && shadowEnabled && !cutoverEnabled
 }
 
 type cliTraceRecorder struct {
@@ -63,6 +101,14 @@ func (r *cliTraceRecorder) SetPlannerTraceSupplier(supplier func() observability
 		return
 	}
 	r.plannerTraceSupplier = supplier
+}
+
+func (r *cliTraceRecorder) SetPlannerTrace(trace observability.PlannerTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Planner = trace
+	r.plannerTraceSupplier = nil
 }
 
 func (r *cliTraceRecorder) SetEngineHardBlock(trace observability.EngineHardBlockTrace) {

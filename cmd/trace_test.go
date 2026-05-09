@@ -75,6 +75,39 @@ func TestIntentPlannerShadowModeFromEnv(t *testing.T) {
 	}
 }
 
+func TestIntentPlannerCutoverIntentsFromEnv(t *testing.T) {
+	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		if key == "USE_INTENT_PLANNER_FOR" {
+			return "resource, monitor, billing, ,RESOURCE"
+		}
+		return ""
+	})
+	if len(unknown) != 1 || unknown[0] != "billing" {
+		t.Fatalf("unknown values = %#v, want billing", unknown)
+	}
+	if len(intents) != 2 {
+		t.Fatalf("enabled intents = %#v, want resource and monitor", intents)
+	}
+	if intents[0] != "resource_info" || intents[1] != "monitor_query" {
+		t.Fatalf("enabled intents = %#v", intents)
+	}
+}
+
+func TestSeparateShadowRunnerDisabledWhenCutoverEnabled(t *testing.T) {
+	if !useSeparateShadowRunner(true, true, false) {
+		t.Fatal("shadow-only tracing should use the existing shadow runner")
+	}
+	if useSeparateShadowRunner(true, true, true) {
+		t.Fatal("shadow + cutover must not create a second planner runner")
+	}
+	if useSeparateShadowRunner(false, true, false) {
+		t.Fatal("trace disabled must not create a shadow runner")
+	}
+	if useSeparateShadowRunner(true, false, false) {
+		t.Fatal("shadow disabled must not create a shadow runner")
+	}
+}
+
 func TestCLIShadowPlannerInputUsesRegistrySnapshot(t *testing.T) {
 	eng := engine.NewWithDeps(cmdMockLLM{}, cmdRegistryExecutor{}, nil)
 	if _, err := eng.Init(context.Background()); err != nil {
@@ -137,6 +170,36 @@ func TestCLITraceRecorderWritesPlannerTrace(t *testing.T) {
 	}
 	if len(record.ToolCalls) != 1 || record.ToolCalls[0].Action != "DescribeCompShareInstance" {
 		t.Fatalf("tool calls changed by planner trace supplier: %#v", record.ToolCalls)
+	}
+}
+
+func TestCLITraceRecorderAcceptsEnginePlannerTrace(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 1, "cutover trace", start)
+	recorder.SetPlannerTrace(observability.PlannerTrace{
+		Enabled:       true,
+		Model:         "deepseek-v4-flash",
+		SchemaValid:   true,
+		Intent:        "resource_info",
+		Confidence:    0.9,
+		CutoverStatus: "dispatched",
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	record := readSingleTraceRecord(t, writer, start)
+	if !record.Planner.Enabled || record.Planner.Intent != "resource_info" ||
+		record.Planner.CutoverStatus != "dispatched" {
+		t.Fatalf("planner trace = %#v", record.Planner)
 	}
 }
 

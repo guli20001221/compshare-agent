@@ -69,13 +69,24 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	scanner := bufio.NewScanner(os.Stdin)
 	eng := engine.New(cfg, cliConfirm(scanner))
+	cutoverIntents, unknownCutoverValues := intentPlannerCutoverIntentsFromEnv(os.Getenv)
+	for _, value := range unknownCutoverValues {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_INTENT_PLANNER_FOR value %q\n", value)
+	}
+	cutoverEnabled := len(cutoverIntents) > 0
+	if cutoverEnabled {
+		eng.SetIntentPlanner(newCLIPlanner(cfg), engine.IntentPlannerOptions{
+			EnabledIntents: cutoverIntents,
+			Model:          cfg.Agent.LLM.Model,
+		})
+	}
 	traceWriter, traceEnabled, traceErr := traceWriterFromEnv(os.Getenv)
 	if traceErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: trace disabled: %v\n", traceErr)
 		traceEnabled = false
 	}
 	var shadowRunner *intent.ShadowRunner
-	if traceEnabled && intentPlannerShadowEnabled(os.Getenv) {
+	if useSeparateShadowRunner(traceEnabled, intentPlannerShadowEnabled(os.Getenv), cutoverEnabled) {
 		shadowRunner = newCLIShadowRunner(cfg, eng)
 	}
 
@@ -123,12 +134,22 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		turnIndex++
 		turnStart := time.Now()
 		var traceRecorder *cliTraceRecorder
+		// Reset each turn so a previous trace recorder is never retained
+		// when the next turn creates a fresh recorder.
+		eng.SetPlannerTraceObserver(nil)
 		if traceEnabled {
 			traceRecorder = newCLITraceRecorder(traceWriter, turnIndex, input, turnStart)
 			traceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)
 			eng.SetHardBlockObserver(traceRecorder.SetEngineHardBlock)
-			if shadowRunner != nil {
+			if cutoverEnabled {
+				// When cutover is enabled, Engine owns the single planner call
+				// for this turn and writes that same result into trace.planner.
+				traceRecorder.SetPlannerTraceSupplier(nil)
+				eng.SetPlannerTraceObserver(traceRecorder.SetPlannerTrace)
+			} else if shadowRunner != nil {
+				// By construction, shadowRunner is only created for the
+				// trace+shadow+no-cutover case.
 				plannerInput := cliShadowPlannerInput(eng, input)
 				traceRecorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
 					return shadowRunner.Run(ctx, plannerInput)
@@ -203,12 +224,16 @@ func (c cliPlannerLLM) CompleteIntentPlan(ctx context.Context, req intent.Planne
 	return resp.Content, nil
 }
 
-func newCLIShadowRunner(cfg *config.Config, eng *engine.Engine) *intent.ShadowRunner {
+func newCLIPlanner(cfg *config.Config) *intent.Planner {
 	plannerClient := cliPlannerLLM{client: llm.NewClient(cfg.Agent.LLM)}
-	planner := intent.NewPlanner(plannerClient, intent.PlannerOptions{
+	return intent.NewPlanner(plannerClient, intent.PlannerOptions{
 		BaseURL: cfg.Agent.LLM.BaseURL,
 		Model:   cfg.Agent.LLM.Model,
 	})
+}
+
+func newCLIShadowRunner(cfg *config.Config, eng *engine.Engine) *intent.ShadowRunner {
+	planner := newCLIPlanner(cfg)
 	return intent.NewShadowRunner(planner, intent.ShadowRunnerOptions{
 		Enabled:      true,
 		Model:        cfg.Agent.LLM.Model,
