@@ -1,0 +1,155 @@
+package knowledge
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestLoadCorpusLoadsCustomerSafeJSONL(t *testing.T) {
+	corpus, err := LoadCorpus(filepath.Join("testdata", "curated_faq.jsonl"))
+	require.NoError(t, err)
+
+	require.Len(t, corpus.Chunks, 2)
+	assert.Equal(t, "kb-curated-test", corpus.KBVersion)
+	assert.Equal(t, "faq-image-001", corpus.Chunks[0].ChunkID)
+	assert.Equal(t, "customer_safe", corpus.Chunks[0].ACL)
+	assert.Equal(t, []string{"平台镜像有哪些", "社区镜像和平台镜像区别"}, corpus.Chunks[0].QuestionPatterns)
+}
+
+func TestLoadCorpusRejectsInvalidJSONWithRowNumber(t *testing.T) {
+	path := writeCorpusFile(t, `{"chunk_id":"ok","kb_version":"kb","source_type":"faq","product_area":"billing","acl":"customer_safe","confidence":"high","title":"ok","content":"ok"}
+{bad json}
+`)
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "row 2")
+}
+
+func TestLoadCorpusRejectsMissingRequiredField(t *testing.T) {
+	path := writeCorpusFile(t, `{"chunk_id":"faq-missing-title","kb_version":"kb","source_type":"faq","product_area":"billing","acl":"customer_safe","confidence":"high","content":"ok"}`)
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "title")
+}
+
+func TestLoadCorpusRejectsNonCustomerSafeACL(t *testing.T) {
+	path := writeCorpusFile(t, `{"chunk_id":"faq-internal","kb_version":"kb","source_type":"faq","product_area":"billing","acl":"internal_ops","confidence":"high","title":"internal","content":"ok"}`)
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "customer_safe")
+}
+
+func TestLoadCorpusRejectsOpsChatSourceType(t *testing.T) {
+	path := writeCorpusFile(t, `{"chunk_id":"faq-ops-chat","kb_version":"kb","source_type":"ops_chat","product_area":"billing","acl":"customer_safe","confidence":"high","title":"ops","content":"ok"}`)
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "source_type")
+}
+
+func TestLoadCorpusRejectsOversizedQuestionPatterns(t *testing.T) {
+	patterns := make([]string, 21)
+	for i := range patterns {
+		patterns[i] = "pattern"
+	}
+	path := writeCorpusFile(t, validChunkWithPatterns(t, patterns))
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "question_patterns")
+}
+
+func TestLoadCorpusRejectsOversizedQuestionPatternEntry(t *testing.T) {
+	path := writeCorpusFile(t, validChunkWithPatterns(t, []string{strings.Repeat("字", 201)}))
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "question_patterns[0]")
+}
+
+func TestLoadCorpusRejectsOversizedContent(t *testing.T) {
+	path := writeCorpusFile(t, strings.Replace(validChunkWithPatterns(t, []string{"ok"}), `"content":"ok"`, `"content":"`+strings.Repeat("字", 4001)+`"`, 1))
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "content")
+}
+
+func TestLoadCorpusRejectsInvalidConfidence(t *testing.T) {
+	path := writeCorpusFile(t, strings.Replace(validChunkWithPatterns(t, []string{"ok"}), `"confidence":"high"`, `"confidence":"extreme"`, 1))
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "confidence")
+}
+
+func TestLoadCorpusRejectsInvalidDates(t *testing.T) {
+	path := writeCorpusFile(t, strings.Replace(validChunkWithPatterns(t, []string{"ok"}), `"content":"ok"`, `"valid_from":"not-a-date","valid_to":"2026-99-99","content":"ok"`, 1))
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "valid_from")
+}
+
+func TestLoadCorpusRejectsDuplicateChunkID(t *testing.T) {
+	line := validChunkWithPatterns(t, []string{"ok"})
+	path := writeCorpusFile(t, line+"\n"+line)
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate chunk_id")
+}
+
+func TestLoadCorpusRejectsMixedKBVersions(t *testing.T) {
+	first := validChunkWithPatterns(t, []string{"ok"})
+	second := strings.Replace(validChunkWithPatterns(t, []string{"ok"}), `"chunk_id":"faq-valid"`, `"chunk_id":"faq-valid-2"`, 1)
+	second = strings.Replace(second, `"kb_version":"kb"`, `"kb_version":"kb-other"`, 1)
+	path := writeCorpusFile(t, first+"\n"+second)
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "row 2")
+	assert.Contains(t, err.Error(), "kb_version")
+}
+
+func TestLoadCorpusRejectsEmptyCorpus(t *testing.T) {
+	path := writeCorpusFile(t, "\n\n")
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty corpus")
+}
+
+func writeCorpusFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "corpus.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
+func validChunkWithPatterns(t *testing.T, patterns []string) string {
+	t.Helper()
+	chunk := map[string]any{
+		"chunk_id":          "faq-valid",
+		"kb_version":        "kb",
+		"source_type":       "faq",
+		"product_area":      "billing",
+		"acl":               "customer_safe",
+		"confidence":        "high",
+		"title":             "valid",
+		"question_patterns": patterns,
+		"content":           "ok",
+	}
+	data, err := json.Marshal(chunk)
+	require.NoError(t, err)
+	return string(data)
+}
