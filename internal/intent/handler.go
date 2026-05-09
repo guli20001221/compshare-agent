@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/security"
 )
 
@@ -53,6 +54,9 @@ type HandlerResult struct {
 	CutoverStatus  CutoverStatus
 	ToolAction     string
 	ToolArgs       map[string]any
+	// RendererInputToolArgHashes records tool args consumed by deterministic
+	// handler renderers before engine-level tool call ids exist.
+	RendererInputToolArgHashes []string
 }
 
 type HandlerExecutor interface {
@@ -128,6 +132,42 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 	result := HandledResult(RenderResourceSummary(instances))
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
+	return result
+}
+
+func (h *DemoHandler) HandleMonitorQuery(ctx context.Context, req HandlerRequest) HandlerResult {
+	const action = "GetCompShareInstanceMonitor"
+	if fallback := RequireAllowedHandlerAction(req.Plan.Intent, action); fallback != nil {
+		return *fallback
+	}
+	if h == nil || h.executor == nil {
+		// Defensive only: production wiring must construct the handler with a
+		// SafeToolExecutor adapter before enabling demo cutover.
+		return FallbackBeforeTool(FallbackValidation)
+	}
+	if !isCurrentMonitorTimeWindow(req.Plan.Slots.TimeWindow) {
+		return FallbackBeforeTool(FallbackTimeWindow)
+	}
+	if len(req.Plan.Slots.TargetRefs) == 0 {
+		return FallbackBeforeTool(FallbackMissingTarget)
+	}
+
+	ids, fallback := resolveResourceTargets(req.Plan.Slots.TargetRefs, req.Resolver)
+	if fallback != nil {
+		return *fallback
+	}
+	if len(ids) == 0 {
+		return FallbackBeforeTool(FallbackMissingTarget)
+	}
+	args := map[string]any{"UHostIds": append([]string(nil), ids...)}
+	raw, err := h.executor.Execute(ctx, action, args)
+	if err != nil {
+		return failureAfterToolWithTrace(action, args, "monitor_query")
+	}
+	result := HandledResult(RenderMonitorSummary(req.Plan.Slots.Metrics, raw))
+	result.ToolAction = action
+	result.ToolArgs = copyArgs(args)
+	result.RendererInputToolArgHashes = hashArgsForRenderer(args)
 	return result
 }
 
@@ -217,6 +257,21 @@ func failureAfterToolWithTrace(action string, args map[string]any, label string)
 	return result
 }
 
+func isCurrentMonitorTimeWindow(window *TimeWindow) bool {
+	if window == nil {
+		return true
+	}
+	if window.Type != TimeWindowPreset {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(window.Value)) {
+	case "now", "current", "realtime", "today":
+		return true
+	default:
+		return false
+	}
+}
+
 func describeResourceArgs(ids []string) map[string]any {
 	if len(ids) == 0 {
 		return map[string]any{"Limit": 100}
@@ -270,6 +325,14 @@ func dedupeStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func hashArgsForRenderer(args map[string]any) []string {
+	hash, err := observability.HashTracePayload(args)
+	if err != nil {
+		return nil
+	}
+	return []string{hash}
 }
 
 const (
