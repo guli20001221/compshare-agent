@@ -17,6 +17,7 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/tools"
@@ -80,6 +81,25 @@ func (l *scriptedRateLimiter) Allow(req governance.Request) governance.Decision 
 		decision.SubjectHash = req.SubjectKey
 	}
 	return decision
+}
+
+type scriptedIntentPlanner struct {
+	results []intent.PlannerResult
+	calls   []intent.PlannerInput
+	err     error
+}
+
+func (p *scriptedIntentPlanner) Plan(_ context.Context, input intent.PlannerInput) (intent.PlannerResult, error) {
+	p.calls = append(p.calls, input)
+	if p.err != nil {
+		return intent.PlannerResult{}, p.err
+	}
+	if len(p.results) == 0 {
+		return intent.PlannerResult{Fallback: true, Plan: unknownEngineTestPlan()}, nil
+	}
+	result := p.results[0]
+	p.results = p.results[1:]
+	return result, nil
 }
 
 // --- Mock Executor ---
@@ -2416,6 +2436,325 @@ func TestMonitorRecallGuard_FallsThroughWhenObjectToolChoiceUnsupported(t *testi
 		assert.Nil(t, mock.calls[2].ToolChoice,
 			"capability-gated guard must not force ToolChoice when object tool_choice is unsupported")
 	}
+}
+
+func phase1KnownInstanceDescribeResult() map[string]any {
+	return map[string]any{
+		"TotalCount": 1,
+		"UHostSet": []any{
+			map[string]any{
+				"UHostId":   "uhost-phase1-001",
+				"Name":      "phase1-demo",
+				"State":     "Running",
+				"GPU":       float64(1),
+				"GpuType":   "4090",
+				"CPU":       float64(8),
+				"Memory":    float64(32),
+				"ImageType": "Ubuntu",
+			},
+		},
+	}
+}
+
+func phase1ResourcePlan() intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentResourceInfo,
+		Slots: intent.Slots{TargetRefs: []intent.TargetRef{{
+			Type:       intent.TargetRefName,
+			Value:      "phase1-demo",
+			Source:     intent.SourceUserText,
+			SourceSpan: "phase1-demo",
+		}}},
+		Retrieval:  intent.Retrieval{Enabled: false},
+		Confidence: 0.9,
+	}
+}
+
+func phase1MonitorPlan() intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentMonitorQuery,
+		Slots: intent.Slots{
+			TargetRefs: []intent.TargetRef{{
+				Type:       intent.TargetRefName,
+				Value:      "phase1-demo",
+				Source:     intent.SourceUserText,
+				SourceSpan: "phase1-demo",
+			}},
+		},
+		Retrieval:  intent.Retrieval{Enabled: false},
+		Confidence: 0.9,
+	}
+}
+
+func unknownEngineTestPlan() intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentUnknown,
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    0,
+	}
+}
+
+func TestPhase1CutoverGateUnsetDoesNotCallPlanner(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		Model: "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "phase1-demo status", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "react path", reply)
+	assert.Empty(t, planner.calls, "planner must not run when no demo intent is enabled")
+	assert.Len(t, mock.calls, 1)
+}
+
+func TestPhase1CutoverHardBlockPrecedesPlanner(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "\u8d26\u53f7\u4f59\u989d\u8fd8\u5269\u591a\u5c11", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, accountBillingUnsupportedReply, reply)
+	assert.Empty(t, planner.calls, "permanent hard-block must run before planner")
+	assert.Empty(t, mock.calls)
+}
+
+func TestPhase1CutoverResourcePlanBypassesReAct(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	var plannerTraces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		plannerTraces = append(plannerTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+	onStep, events := collectSteps()
+
+	reply, err := eng.Chat(context.Background(), "show phase1-demo resource", onStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "uhost-phase1-001")
+	assert.Empty(t, mock.calls, "handled resource plan must bypass ReAct")
+	assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
+	require.Len(t, planner.calls, 1)
+	assert.NotNil(t, planner.calls[0].Resolver)
+	require.Len(t, plannerTraces, 1)
+	assert.Equal(t, string(intent.CutoverStatusDispatched), plannerTraces[0].CutoverStatus)
+	require.Len(t, *events, 2)
+	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[0].Source)
+	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[1].Source)
+}
+
+func TestPhase1CutoverMonitorPlanBypassesReAct(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{"List": []any{
+				map[string]any{
+					"UHostId": "uhost-phase1-001",
+					"Metrics": []any{
+						map[string]any{"Name": "CPUUsageRate", "Value": 12},
+						map[string]any{"Name": "GPUUsageRate", "Value": 34},
+					},
+				},
+			}},
+		},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	onStep, events := collectSteps()
+
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+	reply, err := eng.Chat(context.Background(), "show phase1-demo cpu monitor", onStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "CPUUsageRate")
+	assert.Empty(t, mock.calls, "handled monitor plan must bypass ReAct")
+	assert.Equal(t, []string{"GetCompShareInstanceMonitor"}, executor.calls)
+	require.Len(t, *events, 2)
+	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[0].Source)
+	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[1].Source)
+	assert.NotEmpty(t, (*events)[1].RendererInputToolArgHashes)
+}
+
+func TestPhase1CutoverInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
+	cases := []struct {
+		name       string
+		result     intent.PlannerResult
+		wantStatus intent.CutoverStatus
+	}{
+		{
+			name:       "fallback result",
+			result:     intent.PlannerResult{Fallback: true, Plan: unknownEngineTestPlan()},
+			wantStatus: intent.CutoverStatusFallbackInvalid,
+		},
+		{
+			name: "hard block hint",
+			result: intent.PlannerResult{Plan: intent.Plan{
+				SchemaVersion: intent.SchemaVersion,
+				Intent:        intent.IntentBillingAccountUnsupported,
+				HardBlockHint: true,
+				Retrieval:     intent.Retrieval{Enabled: false},
+				Confidence:    0.9,
+			}},
+			wantStatus: intent.CutoverStatusFallbackHardBlockHint,
+		},
+		{
+			name: "low confidence",
+			result: intent.PlannerResult{Plan: intent.Plan{
+				SchemaVersion: intent.SchemaVersion,
+				Intent:        intent.IntentResourceInfo,
+				Retrieval:     intent.Retrieval{Enabled: false},
+				Confidence:    0.3,
+			}},
+			wantStatus: intent.CutoverStatusFallbackLowConfidence,
+		},
+		{
+			name: "not enabled",
+			result: intent.PlannerResult{Plan: intent.Plan{
+				SchemaVersion: intent.SchemaVersion,
+				Intent:        intent.IntentBillingInstance,
+				Retrieval:     intent.Retrieval{Enabled: false},
+				Confidence:    0.9,
+			}},
+			wantStatus: intent.CutoverStatusFallbackIneligible,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			planner := &scriptedIntentPlanner{results: []intent.PlannerResult{tc.result}}
+			mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback"}}}
+			eng := NewWithDeps(mock, &mockExecutor{}, nil)
+			eng.InitWithContext("test user")
+			var traces []observability.PlannerTrace
+			eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+				traces = append(traces, trace)
+			})
+			eng.SetIntentPlanner(planner, IntentPlannerOptions{
+				EnabledIntents: []intent.Intent{intent.IntentResourceInfo, intent.IntentMonitorQuery},
+				Model:          "deepseek-v4-flash",
+			})
+
+			reply, err := eng.Chat(context.Background(), "phase1 fallback", noopStep)
+
+			require.NoError(t, err)
+			assert.Equal(t, "react fallback", reply)
+			assert.Len(t, mock.calls, 1)
+			require.Len(t, traces, 1)
+			assert.Equal(t, string(tc.wantStatus), traces[0].CutoverStatus)
+		})
+	}
+}
+
+func TestPhase1CutoverFailureAfterToolDoesNotFallBackToReAct(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			return nil, fmt.Errorf("upstream unavailable")
+		},
+	}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	var traces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		traces = append(traces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "show phase1-demo resource", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, intent.FriendlyToolFailureReply)
+	assert.Empty(t, mock.calls, "tool failure after handler dispatch must not fall back to ReAct")
+	require.Len(t, traces, 1)
+	assert.Equal(t, string(intent.CutoverStatusFailureAfterTool), traces[0].CutoverStatus)
+}
+
+func TestPhase1CutoverFallbackPreservesMonitorRecallForceTool(t *testing.T) {
+	executor := monitorScenarioExecutor()
+	planner := &scriptedIntentPlanner{
+		results: []intent.PlannerResult{{Fallback: true, Plan: unknownEngineTestPlan()}},
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"]}`),
+		}},
+		{Content: "monitor done"},
+		{Content: "react fallback"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	_, err := eng.Chat(context.Background(), "show monitor", noopStep)
+	require.NoError(t, err)
+	assert.Equal(t, 1, eng.lastMonitorTurn)
+
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo, intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+	_, err = eng.Chat(context.Background(), "只看刚才那台机器的 GPU 和显存监控", noopStep)
+
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(mock.calls), 3)
+	assert.True(t, toolChoiceForMonitor(mock.calls[2]),
+		"fallback-before-tool path must preserve existing monitor recall force-tool behavior")
+}
+
+func TestPhase1CutoverChecksPlannerQuotaOnce(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
+	}}
+	limiter := &scriptedRateLimiter{decisions: []governance.Decision{{Allowed: true}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.rateLimiter = limiter
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+
+	_, err := eng.Chat(context.Background(), "show phase1-demo resource", noopStep)
+
+	require.NoError(t, err)
+	require.Len(t, planner.calls, 1)
+	require.Len(t, limiter.requests, 1)
+	assert.Equal(t, governance.ClassLLM, limiter.requests[0].Class)
+	assert.Equal(t, "intent_planner", limiter.requests[0].Action)
 }
 
 func TestNormalizeMsg(t *testing.T) {

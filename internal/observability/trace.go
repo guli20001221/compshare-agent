@@ -75,6 +75,7 @@ type PlannerTrace struct {
 	Slots         PlannerSlots `json:"slots"`
 	Confidence    float64      `json:"confidence"`
 	HardBlockHint bool         `json:"hard_block_hint"`
+	CutoverStatus string       `json:"cutover_status"`
 }
 
 type PlannerSlots struct {
