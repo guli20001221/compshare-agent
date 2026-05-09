@@ -1,6 +1,7 @@
 package intent
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -50,6 +51,25 @@ type HandlerResult struct {
 	Reply          string
 	FallbackReason FallbackReason
 	CutoverStatus  CutoverStatus
+	ToolAction     string
+	ToolArgs       map[string]any
+}
+
+type HandlerExecutor interface {
+	Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error)
+}
+
+type HandlerRequest struct {
+	Plan     Plan
+	Resolver EntityResolver
+}
+
+type DemoHandler struct {
+	executor HandlerExecutor
+}
+
+func NewDemoHandler(executor HandlerExecutor) *DemoHandler {
+	return &DemoHandler{executor: executor}
 }
 
 func HandledResult(reply string) HandlerResult {
@@ -79,6 +99,34 @@ func FailureAfterTool(label string) HandlerResult {
 		Reply:         reply,
 		CutoverStatus: CutoverStatusFailureAfterTool,
 	}
+}
+
+func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest) HandlerResult {
+	const action = "DescribeCompShareInstance"
+	if fallback := RequireAllowedHandlerAction(req.Plan.Intent, action); fallback != nil {
+		return *fallback
+	}
+	if h == nil || h.executor == nil {
+		return FallbackBeforeTool(FallbackValidation)
+	}
+
+	ids, fallback := resolveResourceTargets(req.Plan.Slots.TargetRefs, req.Resolver)
+	if fallback != nil {
+		return *fallback
+	}
+	args := describeResourceArgs(ids)
+	raw, err := h.executor.Execute(ctx, action, args)
+	if err != nil {
+		return FailureAfterTool("resource_info")
+	}
+	instances, err := instancesFromDescribeResult(raw)
+	if err != nil {
+		return FailureAfterTool("resource_info")
+	}
+	result := HandledResult(RenderResourceSummary(instances))
+	result.ToolAction = action
+	result.ToolArgs = copyArgs(args)
+	return result
 }
 
 func cutoverStatusForFallback(reason FallbackReason) CutoverStatus {
@@ -118,6 +166,84 @@ func RequireAllowedHandlerAction(intent Intent, action string) *HandlerResult {
 	}
 	result := FallbackBeforeTool(FallbackActionNotAllowed)
 	return &result
+}
+
+func resolveResourceTargets(refs []TargetRef, resolver EntityResolver) ([]string, *HandlerResult) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	if resolver == nil {
+		result := FallbackBeforeTool(FallbackUnresolvedTarget)
+		return nil, &result
+	}
+
+	ids := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		switch ref.Type {
+		case TargetRefUHostIDUserInput:
+			inst, res := resolver.ResolveByID(ref.Value)
+			if res.Status != entity.ResolveHit || inst == nil {
+				result := FallbackBeforeTool(FallbackUnresolvedTarget)
+				return nil, &result
+			}
+			ids = append(ids, inst.UHostId)
+		case TargetRefName:
+			matches, res := resolver.ResolveByName(ref.Value)
+			if res.Status == entity.ResolveAmbiguous || len(matches) > 1 {
+				result := FallbackBeforeTool(FallbackAmbiguousTarget)
+				return nil, &result
+			}
+			if res.Status != entity.ResolveHit || len(matches) == 0 || matches[0] == nil {
+				result := FallbackBeforeTool(FallbackUnresolvedTarget)
+				return nil, &result
+			}
+			ids = append(ids, matches[0].UHostId)
+		default:
+			result := FallbackBeforeTool(FallbackUnresolvedTarget)
+			return nil, &result
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+func describeResourceArgs(ids []string) map[string]any {
+	if len(ids) == 0 {
+		return map[string]any{"Limit": 100}
+	}
+	return map[string]any{"UHostIds": append([]string(nil), ids...)}
+}
+
+func instancesFromDescribeResult(raw map[string]any) ([]entity.InstanceSnapshot, error) {
+	reg := entity.NewRegistry()
+	if err := reg.SyncFromDescribe(raw, "handler_resource"); err != nil {
+		return nil, err
+	}
+	snap := reg.Snapshot()
+	instances := make([]entity.InstanceSnapshot, 0, len(snap.Instances))
+	for _, inst := range snap.Instances {
+		instances = append(instances, inst)
+	}
+	sort.Slice(instances, func(i, j int) bool {
+		return instances[i].UHostId < instances[j].UHostId
+	})
+	return instances, nil
+}
+
+func copyArgs(args map[string]any) map[string]any {
+	if args == nil {
+		return nil
+	}
+	out := make(map[string]any, len(args))
+	for key, value := range args {
+		switch typed := value.(type) {
+		case []string:
+			out[key] = append([]string(nil), typed...)
+		default:
+			out[key] = typed
+		}
+	}
+	return out
 }
 
 const (
