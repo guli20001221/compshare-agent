@@ -53,23 +53,30 @@ func TestMonitorQueryHandler_MissingTargetFallsBackBeforeTool(t *testing.T) {
 }
 
 func TestMonitorQueryHandler_NonCurrentTimeWindowFallsBackBeforeTool(t *testing.T) {
-	exec := &mockHandlerExecutor{}
-	handler := NewDemoHandler(exec)
+	for _, window := range []*TimeWindow{
+		{Type: TimeWindowRelative, Value: "yesterday"},
+		{Type: TimeWindowAbsolute, Value: "2026-05-08T01:00:00+08:00/2026-05-08T02:00:00+08:00"},
+	} {
+		t.Run(string(window.Type), func(t *testing.T) {
+			exec := &mockHandlerExecutor{}
+			handler := NewDemoHandler(exec)
 
-	result := handler.HandleMonitorQuery(context.Background(), HandlerRequest{
-		Plan: monitorQueryPlan([]TargetRef{{
-			Type:       TargetRefName,
-			Value:      "train-a",
-			Source:     SourceUserText,
-			SourceSpan: "train-a",
-		}}, nil, &TimeWindow{Type: TimeWindowRelative, Value: "yesterday"}),
-		Resolver: resourceTestSnapshot(t),
-	})
+			result := handler.HandleMonitorQuery(context.Background(), HandlerRequest{
+				Plan: monitorQueryPlan([]TargetRef{{
+					Type:       TargetRefName,
+					Value:      "train-a",
+					Source:     SourceUserText,
+					SourceSpan: "train-a",
+				}}, nil, window),
+				Resolver: resourceTestSnapshot(t),
+			})
 
-	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
-	assert.Equal(t, FallbackTimeWindow, result.FallbackReason)
-	assert.Equal(t, CutoverStatusFallbackTimeWindow, result.CutoverStatus)
-	assert.Empty(t, exec.calls)
+			assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
+			assert.Equal(t, FallbackTimeWindow, result.FallbackReason)
+			assert.Equal(t, CutoverStatusFallbackTimeWindow, result.CutoverStatus)
+			assert.Empty(t, exec.calls)
+		})
+	}
 }
 
 func TestMonitorQueryHandler_CurrentPresetTimeWindowIsAllowed(t *testing.T) {
@@ -135,4 +142,3 @@ func monitorResult() map[string]any {
 		"VRAM": "20GB",
 	}
 }
-

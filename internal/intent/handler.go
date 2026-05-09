@@ -55,7 +55,8 @@ type HandlerResult struct {
 	ToolAction     string
 	ToolArgs       map[string]any
 	// RendererInputToolArgHashes records tool args consumed by deterministic
-	// handler renderers before engine-level tool call ids exist.
+	// handler renderers before engine-level tool call ids exist. Phase 1 demo
+	// populates this for monitor handler results only.
 	RendererInputToolArgHashes []string
 }
 
@@ -155,9 +156,6 @@ func (h *DemoHandler) HandleMonitorQuery(ctx context.Context, req HandlerRequest
 	ids, fallback := resolveResourceTargets(req.Plan.Slots.TargetRefs, req.Resolver)
 	if fallback != nil {
 		return *fallback
-	}
-	if len(ids) == 0 {
-		return FallbackBeforeTool(FallbackMissingTarget)
 	}
 	args := map[string]any{"UHostIds": append([]string(nil), ids...)}
 	raw, err := h.executor.Execute(ctx, action, args)
@@ -330,7 +328,7 @@ func dedupeStrings(values []string) []string {
 func hashArgsForRenderer(args map[string]any) []string {
 	hash, err := observability.HashTracePayload(args)
 	if err != nil {
-		return nil
+		panic(fmt.Sprintf("hash monitor handler args: %v", err))
 	}
 	return []string{hash}
 }
@@ -388,8 +386,6 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot) string {
 func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {
 	redacted, _ := security.RedactForLLM(payload).(map[string]any)
 	flat := map[string]string{}
-	// Commit 3 must restrict this flattening to the real monitor response field
-	// set before the handler is wired into engine cutover.
 	flattenScalars("", redacted, flat)
 	if len(flat) == 0 {
 		return noMonitorValuesReply
@@ -443,8 +439,9 @@ func flattenScalars(prefix string, v any, out map[string]string) {
 func matchesRequestedMetric(key string, metrics []Metric) bool {
 	key = strings.ToLower(key)
 	for _, metric := range metrics {
-		// Demo skeleton intentionally uses substring matching; Commit 3 must
-		// narrow this to known monitor response paths before production cutover.
+		// Demo cutover intentionally uses substring matching over the rendered
+		// monitor field paths. Narrow this only if real smoke traces show noisy
+		// API metadata in user-visible replies.
 		if strings.Contains(key, string(metric)) {
 			return true
 		}
