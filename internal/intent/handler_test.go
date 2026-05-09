@@ -12,7 +12,7 @@ import (
 func TestHandlerResultStatesAreDistinct(t *testing.T) {
 	handled := HandledResult("ok")
 	fallback := FallbackBeforeTool(FallbackUnresolvedTarget)
-	failure := FailureAfterTool("monitor", assert.AnError)
+	failure := FailureAfterTool("monitor")
 
 	assert.Equal(t, HandlerStatusHandled, handled.Status)
 	assert.Equal(t, HandlerStatusFallbackBeforeTool, fallback.Status)
@@ -21,6 +21,7 @@ func TestHandlerResultStatesAreDistinct(t *testing.T) {
 	assert.Equal(t, CutoverStatusFailureAfterTool, failure.CutoverStatus)
 	assert.Contains(t, failure.Reply, FriendlyToolFailureReply)
 	assert.NotContains(t, failure.Reply, assert.AnError.Error())
+	assert.Equal(t, CutoverStatusFallbackTimeWindow, FallbackBeforeTool(FallbackTimeWindow).CutoverStatus)
 }
 
 func TestResourceSummaryRendererIsDeterministicAndRedactsSensitiveFields(t *testing.T) {
@@ -58,6 +59,10 @@ func TestResourceSummaryRendererIsDeterministicAndRedactsSensitiveFields(t *test
 	assert.Contains(t, first, "train-a")
 	assert.Contains(t, first, "Running")
 	assert.Contains(t, first, "A100")
+	assert.Contains(t, first, resourceLabelInstanceID)
+	assert.Contains(t, first, resourceLabelName)
+	assert.NotContains(t, first, "Name=")
+	assert.NotContains(t, first, "State=")
 	assert.NotContains(t, first, strings.Repeat("b", 25))
 	assert.Contains(t, first, "Bearer [REDACTED]")
 }
@@ -105,10 +110,11 @@ func TestHandlerActionWhitelist(t *testing.T) {
 	assert.False(t, IsAllowedHandlerAction(IntentResourceInfo, "GetCompShareInstanceMonitor"))
 	assert.True(t, IsAllowedHandlerAction(IntentMonitorQuery, "GetCompShareInstanceMonitor"))
 	assert.False(t, IsAllowedHandlerAction(IntentMonitorQuery, "StopCompShareInstance"))
+	assert.Nil(t, RequireAllowedHandlerAction(IntentMonitorQuery, "GetCompShareInstanceMonitor"))
 
 	result := RequireAllowedHandlerAction(IntentMonitorQuery, "StopCompShareInstance")
+	require.NotNil(t, result)
 	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
 	assert.Equal(t, FallbackActionNotAllowed, result.FallbackReason)
 	assert.Equal(t, CutoverStatusFallbackIneligible, result.CutoverStatus)
 }
-

@@ -23,7 +23,11 @@ type FallbackReason string
 
 const (
 	FallbackNone             FallbackReason = ""
+	FallbackMissingTarget    FallbackReason = "missing_target"
 	FallbackUnresolvedTarget FallbackReason = "unresolved_target"
+	FallbackAmbiguousTarget  FallbackReason = "ambiguous_target"
+	FallbackTimeWindow       FallbackReason = "time_window"
+	FallbackValidation       FallbackReason = "validation"
 	FallbackActionNotAllowed FallbackReason = "action_not_allowed"
 )
 
@@ -64,7 +68,7 @@ func FallbackBeforeTool(reason FallbackReason) HandlerResult {
 	}
 }
 
-func FailureAfterTool(label string, _ error) HandlerResult {
+func FailureAfterTool(label string) HandlerResult {
 	reply := FriendlyToolFailureReply
 	label = strings.TrimSpace(label)
 	if label != "" {
@@ -79,8 +83,10 @@ func FailureAfterTool(label string, _ error) HandlerResult {
 
 func cutoverStatusForFallback(reason FallbackReason) CutoverStatus {
 	switch reason {
-	case FallbackUnresolvedTarget:
+	case FallbackMissingTarget, FallbackUnresolvedTarget, FallbackAmbiguousTarget:
 		return CutoverStatusFallbackUnresolvedTarget
+	case FallbackTimeWindow:
+		return CutoverStatusFallbackTimeWindow
 	case FallbackActionNotAllowed:
 		return CutoverStatusFallbackIneligible
 	default:
@@ -106,12 +112,30 @@ func IsAllowedHandlerAction(intent Intent, action string) bool {
 	return ok
 }
 
-func RequireAllowedHandlerAction(intent Intent, action string) HandlerResult {
+func RequireAllowedHandlerAction(intent Intent, action string) *HandlerResult {
 	if IsAllowedHandlerAction(intent, action) {
-		return HandledResult("")
+		return nil
 	}
-	return FallbackBeforeTool(FallbackActionNotAllowed)
+	result := FallbackBeforeTool(FallbackActionNotAllowed)
+	return &result
 }
+
+const (
+	resourceLabelInstanceID = "\u5b9e\u4f8bID"
+	resourceLabelName       = "\u540d\u79f0"
+	resourceLabelState      = "\u72b6\u6001"
+	resourceLabelGPUType    = "GPU\u578b\u53f7"
+	resourceLabelGPU        = "GPU\u6570\u91cf"
+	resourceLabelCPU        = "CPU"
+	resourceLabelMemory     = "\u5185\u5b58"
+	resourceLabelImageType  = "\u955c\u50cf\u7c7b\u578b"
+	resourceLabelStartTime  = "\u542f\u52a8\u65f6\u95f4"
+	resourceLabelExpireTime = "\u5230\u671f\u65f6\u95f4"
+
+	noInstancesReply              = "\u672a\u627e\u5230\u5b9e\u4f8b\u3002"
+	noMonitorValuesReply          = "\u672a\u8fd4\u56de\u76d1\u63a7\u6570\u636e\u3002"
+	noRequestedMonitorValuesReply = "\u672a\u8fd4\u56de\u8bf7\u6c42\u7684\u76d1\u63a7\u6307\u6807\u3002"
+)
 
 func RenderResourceSummary(instances []entity.InstanceSnapshot) string {
 	copied := append([]entity.InstanceSnapshot(nil), instances...)
@@ -119,27 +143,27 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot) string {
 		return copied[i].UHostId < copied[j].UHostId
 	})
 	if len(copied) == 0 {
-		return "No instances found."
+		return noInstancesReply
 	}
 	lines := make([]string, 0, len(copied))
 	for _, inst := range copied {
 		parts := []string{
-			"UHostId=" + safeValue(inst.UHostId),
-			"Name=" + safeValue(inst.Name),
-			"State=" + safeValue(inst.State),
-			"GpuType=" + safeValue(inst.GpuType),
-			fmt.Sprintf("GPU=%d", inst.GPU),
-			fmt.Sprintf("CPU=%d", inst.CPU),
-			fmt.Sprintf("Memory=%d", inst.Memory),
+			resourceLabelInstanceID + "=" + safeValue(inst.UHostId),
+			resourceLabelName + "=" + safeValue(inst.Name),
+			resourceLabelState + "=" + safeValue(inst.State),
+			resourceLabelGPUType + "=" + safeValue(inst.GpuType),
+			fmt.Sprintf("%s=%d", resourceLabelGPU, inst.GPU),
+			fmt.Sprintf("%s=%d", resourceLabelCPU, inst.CPU),
+			fmt.Sprintf("%s=%d", resourceLabelMemory, inst.Memory),
 		}
 		if inst.ImageType != "" {
-			parts = append(parts, "ImageType="+safeValue(inst.ImageType))
+			parts = append(parts, resourceLabelImageType+"="+safeValue(inst.ImageType))
 		}
 		if inst.StartTime != 0 {
-			parts = append(parts, fmt.Sprintf("StartTime=%d", inst.StartTime))
+			parts = append(parts, fmt.Sprintf("%s=%d", resourceLabelStartTime, inst.StartTime))
 		}
 		if inst.ExpireTime != 0 {
-			parts = append(parts, fmt.Sprintf("ExpireTime=%d", inst.ExpireTime))
+			parts = append(parts, fmt.Sprintf("%s=%d", resourceLabelExpireTime, inst.ExpireTime))
 		}
 		lines = append(lines, strings.Join(parts, ", "))
 	}
@@ -149,9 +173,11 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot) string {
 func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {
 	redacted, _ := security.RedactForLLM(payload).(map[string]any)
 	flat := map[string]string{}
+	// Commit 3 must restrict this flattening to the real monitor response field
+	// set before the handler is wired into engine cutover.
 	flattenScalars("", redacted, flat)
 	if len(flat) == 0 {
-		return "No monitor values returned."
+		return noMonitorValuesReply
 	}
 
 	keys := make([]string, 0, len(flat))
@@ -162,7 +188,7 @@ func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {
 	}
 	sort.Strings(keys)
 	if len(keys) == 0 {
-		return "No requested monitor values returned."
+		return noRequestedMonitorValuesReply
 	}
 
 	parts := make([]string, 0, len(keys))
@@ -202,6 +228,8 @@ func flattenScalars(prefix string, v any, out map[string]string) {
 func matchesRequestedMetric(key string, metrics []Metric) bool {
 	key = strings.ToLower(key)
 	for _, metric := range metrics {
+		// Demo skeleton intentionally uses substring matching; Commit 3 must
+		// narrow this to known monitor response paths before production cutover.
 		if strings.Contains(key, string(metric)) {
 			return true
 		}
@@ -212,4 +240,3 @@ func matchesRequestedMetric(key string, metrics []Metric) bool {
 func safeValue(v any) string {
 	return fmt.Sprint(security.RedactForLLM(v))
 }
-
