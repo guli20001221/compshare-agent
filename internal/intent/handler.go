@@ -107,6 +107,8 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 		return *fallback
 	}
 	if h == nil || h.executor == nil {
+		// Defensive only: production wiring must construct the handler with a
+		// SafeToolExecutor adapter before enabling demo cutover.
 		return FallbackBeforeTool(FallbackValidation)
 	}
 
@@ -117,11 +119,11 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 	args := describeResourceArgs(ids)
 	raw, err := h.executor.Execute(ctx, action, args)
 	if err != nil {
-		return FailureAfterTool("resource_info")
+		return failureAfterToolWithTrace(action, args, "resource_info")
 	}
 	instances, err := instancesFromDescribeResult(raw)
 	if err != nil {
-		return FailureAfterTool("resource_info")
+		return failureAfterToolWithTrace(action, args, "resource_info")
 	}
 	result := HandledResult(RenderResourceSummary(instances))
 	result.ToolAction = action
@@ -199,12 +201,20 @@ func resolveResourceTargets(refs []TargetRef, resolver EntityResolver) ([]string
 			}
 			ids = append(ids, matches[0].UHostId)
 		default:
-			result := FallbackBeforeTool(FallbackUnresolvedTarget)
+			result := FallbackBeforeTool(FallbackValidation)
 			return nil, &result
 		}
 	}
+	ids = dedupeStrings(ids)
 	sort.Strings(ids)
 	return ids, nil
+}
+
+func failureAfterToolWithTrace(action string, args map[string]any, label string) HandlerResult {
+	result := FailureAfterTool(label)
+	result.ToolAction = action
+	result.ToolArgs = copyArgs(args)
+	return result
 }
 
 func describeResourceArgs(ids []string) map[string]any {
@@ -242,6 +252,22 @@ func copyArgs(args map[string]any) map[string]any {
 		default:
 			out[key] = typed
 		}
+	}
+	return out
+}
+
+func dedupeStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
 	}
 	return out
 }

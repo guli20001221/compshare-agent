@@ -58,6 +58,26 @@ func TestResourceInfoHandler_TargetByUserIDCallsDescribe(t *testing.T) {
 	assert.Contains(t, result.Reply, "train-b")
 }
 
+func TestResourceInfoHandler_UnresolvedUserIDFallsBackBeforeTool(t *testing.T) {
+	resolver := resourceTestSnapshot(t)
+	exec := &mockHandlerExecutor{}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleResourceInfo(context.Background(), HandlerRequest{
+		Plan: resourceInfoPlan([]TargetRef{{
+			Type:       TargetRefUHostIDUserInput,
+			Value:      "uhost-missing",
+			Source:     SourceUserText,
+			SourceSpan: "uhost-missing",
+		}}),
+		Resolver: resolver,
+	})
+
+	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, FallbackUnresolvedTarget, result.FallbackReason)
+	assert.Empty(t, exec.calls)
+}
+
 func TestResourceInfoHandler_NoTargetListsInstances(t *testing.T) {
 	exec := &mockHandlerExecutor{result: map[string]any{
 		"TotalCount": float64(2),
@@ -78,6 +98,24 @@ func TestResourceInfoHandler_NoTargetListsInstances(t *testing.T) {
 	assert.Contains(t, result.Reply, "train-a")
 	assert.Contains(t, result.Reply, "train-b")
 	assert.Less(t, indexOf(t, result.Reply, "uhost-a"), indexOf(t, result.Reply, "uhost-b"))
+}
+
+func TestResourceInfoHandler_DedupesResolvedTargets(t *testing.T) {
+	resolver := resourceTestSnapshot(t)
+	exec := &mockHandlerExecutor{result: describeResult("uhost-a", "train-a")}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleResourceInfo(context.Background(), HandlerRequest{
+		Plan: resourceInfoPlan([]TargetRef{
+			{Type: TargetRefUHostIDUserInput, Value: "uhost-a", Source: SourceUserText, SourceSpan: "uhost-a"},
+			{Type: TargetRefName, Value: "train-a", Source: SourceUserText, SourceSpan: "train-a"},
+		}),
+		Resolver: resolver,
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, []string{"uhost-a"}, exec.calls[0].args["UHostIds"])
 }
 
 func TestResourceInfoHandler_AmbiguousNameFallsBackBeforeTool(t *testing.T) {
@@ -108,6 +146,24 @@ func TestResourceInfoHandler_AmbiguousNameFallsBackBeforeTool(t *testing.T) {
 	assert.Empty(t, exec.calls)
 }
 
+func TestResourceInfoHandler_UnsupportedTargetRefFallsBackAsInvalid(t *testing.T) {
+	exec := &mockHandlerExecutor{}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleResourceInfo(context.Background(), HandlerRequest{
+		Plan: resourceInfoPlan([]TargetRef{{
+			Type:  TargetRefFilter,
+			Value: "all_running",
+		}}),
+		Resolver: resourceTestSnapshot(t),
+	})
+
+	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, FallbackValidation, result.FallbackReason)
+	assert.Equal(t, CutoverStatusFallbackInvalid, result.CutoverStatus)
+	assert.Empty(t, exec.calls)
+}
+
 func TestResourceInfoHandler_APIFailureReturnsFriendlyFailure(t *testing.T) {
 	exec := &mockHandlerExecutor{err: errors.New("raw provider secret error")}
 	handler := NewDemoHandler(exec)
@@ -122,6 +178,24 @@ func TestResourceInfoHandler_APIFailureReturnsFriendlyFailure(t *testing.T) {
 	assert.NotContains(t, result.Reply, "raw provider secret error")
 	require.Len(t, exec.calls, 1)
 	assert.Equal(t, "DescribeCompShareInstance", exec.calls[0].action)
+	assert.Equal(t, "DescribeCompShareInstance", result.ToolAction)
+	assert.Equal(t, 100, result.ToolArgs["Limit"])
+}
+
+func TestResourceInfoHandler_ParseFailureReturnsFriendlyFailure(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{"InvalidShape": true}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleResourceInfo(context.Background(), HandlerRequest{
+		Plan: resourceInfoPlan(nil),
+	})
+
+	assert.Equal(t, HandlerStatusFailureAfterTool, result.Status)
+	assert.Equal(t, CutoverStatusFailureAfterTool, result.CutoverStatus)
+	assert.Contains(t, result.Reply, FriendlyToolFailureReply)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, "DescribeCompShareInstance", result.ToolAction)
+	assert.Equal(t, 100, result.ToolArgs["Limit"])
 }
 
 type mockHandlerExecutor struct {
