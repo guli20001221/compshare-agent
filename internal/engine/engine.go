@@ -277,7 +277,7 @@ func (e *Engine) refreshRegistry(ctx context.Context, reason entity.RefreshReaso
 	return result, err
 }
 
-// RegistryTraceState returns the immutable registry fields reserved by trace.v0.1.
+// RegistryTraceState returns the immutable registry fields reserved by trace.
 // It does not expose the registry object, maps, or lock to callers.
 func (e *Engine) RegistryTraceState(now time.Time) observability.EntityRegistryTrace {
 	if e == nil || e.registry == nil {
@@ -537,7 +537,7 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 	} else {
 		// Planner quota denial is observable through trace.rate_limit. The
 		// cutover status intentionally collapses this into fallback_invalid
-		// because trace.v0.1 has no dedicated planner-denied enum.
+		// because trace currently has no dedicated planner-denied enum.
 	}
 	latency := time.Since(start)
 
@@ -699,7 +699,7 @@ func (x plannerHandlerExecutor) Execute(ctx context.Context, action string, args
 	})
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
-			x.emit(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourcePlannerHandler, Message: msg})
+			x.emit(blockedStepEvent(action, observability.ToolSourcePlannerHandler, args, msg, err))
 			return nil, friendlyEngineError{cause: err, message: msg}
 		}
 		x.emit(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourcePlannerHandler, Message: fmt.Sprintf("API 调用失败: %v", err)})
@@ -821,6 +821,35 @@ func friendlyMessageFromText(text string) (string, bool) {
 	return "", false
 }
 
+func cappedTraceForFriendlyError(err error, message string) (string, string) {
+	if errors.Is(err, governance.ErrRateLimited) ||
+		strings.Contains(message, rateLimitQPSMessage) ||
+		strings.Contains(message, rateLimitDailyMessage) ||
+		strings.Contains(message, readExpensiveTurnBudgetMessage) {
+		return observability.ToolCappedRateLimit, message
+	}
+	if errors.Is(err, tools.ErrHistoryWindowExceeded) || strings.Contains(message, historyWindowExceededMessage) {
+		return observability.ToolCappedWindow, message
+	}
+	if errors.Is(err, tools.ErrToolCapExceeded) || strings.Contains(message, toolCapExceededMessage) {
+		return observability.ToolCappedTargets, message
+	}
+	return "", ""
+}
+
+func blockedStepEvent(action, source string, args map[string]any, message string, err error) StepEvent {
+	capped, reason := cappedTraceForFriendlyError(err, message)
+	return StepEvent{
+		Type:      StepBlocked,
+		Action:    action,
+		Source:    source,
+		Args:      args,
+		Message:   message,
+		Capped:    capped,
+		CapReason: reason,
+	}
+}
+
 // finalReplyPrefix marks a tool result as a deterministic final reply that
 // should be returned directly to the user without LLM narration.
 const finalReplyPrefix = "\x00FINAL:"
@@ -879,7 +908,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 
 	if decision, ok := e.allowMutatingTool(action); !ok {
 		msg := rateLimitMessage(decision.Reason)
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, args, msg, governance.ErrRateLimited))
 		return finalReplyPrefix + msg
 	}
 
@@ -898,7 +927,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	})
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, args, msg, err))
 			return friendlyToolResultJSON(msg)
 		}
 		if errors.Is(err, tools.ErrDestructiveAction) {
@@ -1205,7 +1234,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	if decision, ok := e.allowMutatingTool(action); !ok {
 		msg := rateLimitMessage(decision.Reason)
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, args, msg, governance.ErrRateLimited))
 		return finalReplyPrefix + msg
 	}
 
@@ -1220,6 +1249,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		if ev.Message != "" {
 			message = message + ": " + ev.Message
 		}
+		capped, capReason := cappedTraceForFriendlyError(nil, ev.Message)
 		if ev.Type == workflow.StepConfirm {
 			if ev.Status == "waiting" {
 				eventType = StepConfirmNeeded
@@ -1239,18 +1269,20 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 			}
 		}
 		onStep(StepEvent{
-			Type:    eventType,
-			Action:  ev.Tool,
-			Source:  observability.ToolSourceWorkflowInternal,
-			Args:    e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
-			Message: message,
+			Type:      eventType,
+			Action:    ev.Tool,
+			Source:    observability.ToolSourceWorkflowInternal,
+			Args:      e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
+			Message:   message,
+			Capped:    capped,
+			CapReason: capReason,
 		})
 	})
 
 	result, err := wfEngine.Run(ctx, wf, args)
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, err))
 			return finalReplyPrefix + msg
 		}
 		msg := fmt.Sprintf("工作流执行错误: %v", err)
@@ -1259,7 +1291,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	}
 	if !result.Success {
 		if msg, ok := friendlyMessageFromText(result.Message); ok {
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
 			return finalReplyPrefix + msg
 		}
 	}
@@ -1323,6 +1355,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		if ev.Message != "" {
 			message = message + ": " + ev.Message
 		}
+		capped, capReason := cappedTraceForFriendlyError(nil, ev.Message)
 		switch ev.Status {
 		case "running":
 			eventType = StepToolCall
@@ -1335,18 +1368,20 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 			eventType = StepToolResult
 		}
 		onStep(StepEvent{
-			Type:    eventType,
-			Action:  ev.Tool,
-			Source:  observability.ToolSourceDiagnosisInternal,
-			Args:    e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
-			Message: message,
+			Type:      eventType,
+			Action:    ev.Tool,
+			Source:    observability.ToolSourceDiagnosisInternal,
+			Args:      e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
+			Message:   message,
+			Capped:    capped,
+			CapReason: capReason,
 		})
 	})
 
 	result, err := diagEngine.Run(ctx, chain, args)
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, err))
 			return finalReplyPrefix + msg
 		}
 		msg := fmt.Sprintf("诊断执行错误: %v", err)
@@ -1355,7 +1390,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	}
 	if !result.Success {
 		if msg, ok := friendlyMessageFromText(result.Conclusion); ok {
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
 			return finalReplyPrefix + msg
 		}
 	}
@@ -1386,6 +1421,11 @@ type StepEvent struct {
 	TraceResult                map[string]any // redacted result payload for trace hashing only
 	Attempts                   int
 	RendererInputToolArgHashes []string
+	Capped                     string
+	CapReason                  string
+	RequestedTargets           int
+	ExecutedTargets            int
+	WindowSeconds              int
 }
 
 // trimHistory keeps the message list under maxHistoryMessages by dropping

@@ -1018,9 +1018,46 @@ func TestChat_MutatingRateLimitDenialSkipsConfirmAndExecutor(t *testing.T) {
 	assert.Equal(t, governance.ClassLLM, eng.rateLimiter.(*scriptedRateLimiter).requests[0].Class)
 	assert.Equal(t, governance.ClassMutatingTool, eng.rateLimiter.(*scriptedRateLimiter).requests[1].Class)
 	assert.Equal(t, "StopCompShareInstance", eng.rateLimiter.(*scriptedRateLimiter).requests[1].Action)
+	assertStepWithType(t, *events, StepBlocked, "StopCompShareInstance", rateLimitQPSMessage)
 	for _, ev := range *events {
 		assert.NotEqual(t, StepConfirmNeeded, ev.Type, "quota denial must not ask for confirmation")
+		if ev.Type == StepBlocked && ev.Action == "StopCompShareInstance" {
+			assert.Equal(t, observability.ToolCappedRateLimit, ev.Capped)
+			assert.Equal(t, rateLimitQPSMessage, ev.CapReason)
+		}
 	}
+}
+
+func TestChat_WorkflowMutatingRateLimitDenialMarksRateLimitCap(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "StopInstanceWorkflow", `{"UHostId":"uhost-xxx"}`),
+		}},
+	}}
+	executor := &mockExecutor{}
+	eng := NewWithDeps(mock, executor, func(action string, args map[string]any) bool { return true })
+	eng.rateLimiter = &scriptedRateLimiter{decisions: []governance.Decision{
+		{Allowed: true, SubjectHash: "sha256:subject"},
+		{Allowed: false, Reason: governance.ReasonQPSExceeded, SubjectHash: "sha256:subject", Err: governance.ErrRateLimited},
+	}}
+	eng.rateLimitSubject = "sha256:subject"
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+	onStep, events := collectSteps()
+
+	reply, err := eng.Chat(context.Background(), "stop workflow", onStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, rateLimitQPSMessage, reply)
+	assert.Empty(t, executor.calls)
+	found := false
+	for _, ev := range *events {
+		if ev.Type == StepBlocked && ev.Action == "StopInstanceWorkflow" {
+			found = true
+			assert.Equal(t, observability.ToolCappedRateLimit, ev.Capped)
+			assert.Equal(t, rateLimitQPSMessage, ev.CapReason)
+		}
+	}
+	assert.True(t, found, "missing workflow quota StepBlocked event")
 }
 
 func TestChat_MutatingRateLimitDailyDenialUsesDailyMessage(t *testing.T) {

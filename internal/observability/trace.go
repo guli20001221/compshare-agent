@@ -13,7 +13,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.1"
+const SchemaVersion = "trace.v0.2"
 
 const (
 	ToolSourceMainReAct         = "main_react"
@@ -28,6 +28,12 @@ const (
 const (
 	ToolStatusSuccess = "success"
 	ToolStatusError   = "error"
+)
+
+const (
+	ToolCappedTargets   = "targets"
+	ToolCappedWindow    = "window"
+	ToolCappedRateLimit = "rate_limit"
 )
 
 const DefaultTraceDir = "logs"
@@ -53,6 +59,7 @@ type TraceRecord struct {
 	TurnIndex       int                  `json:"turn_index"`
 	Timestamp       string               `json:"timestamp"`
 	UserMsgHash     string               `json:"user_msg_hash"`
+	Runtime         RuntimeTrace         `json:"runtime"`
 	Planner         PlannerTrace         `json:"planner"`
 	EngineHardBlock EngineHardBlockTrace `json:"engine_hard_block"`
 	EntityRegistry  EntityRegistryTrace  `json:"entity_registry"`
@@ -62,6 +69,11 @@ type TraceRecord struct {
 	RateLimit       RateLimitTrace       `json:"rate_limit"`
 	Retrieval       RetrievalTrace       `json:"retrieval"`
 	Outcome         OutcomeTrace         `json:"outcome"`
+}
+
+type RuntimeTrace struct {
+	PlannerMode    string   `json:"planner_mode"`
+	CutoverIntents []string `json:"cutover_intents"`
 }
 
 type PlannerTrace struct {
@@ -96,16 +108,21 @@ type EntityRegistryTrace struct {
 }
 
 type ToolCallTrace struct {
-	ID         string `json:"id"`
-	TurnIndex  int    `json:"turn_index"`
-	Action     string `json:"action"`
-	Source     string `json:"source"`
-	ArgsHash   string `json:"args_hash"`
-	LatencyMS  int64  `json:"latency_ms"`
-	Attempts   int    `json:"attempts"`
-	Status     string `json:"status"`
-	ErrorClass string `json:"error_class"`
-	ResultHash string `json:"result_hash"`
+	ID               string `json:"id"`
+	TurnIndex        int    `json:"turn_index"`
+	Action           string `json:"action"`
+	Source           string `json:"source"`
+	ArgsHash         string `json:"args_hash"`
+	LatencyMS        int64  `json:"latency_ms"`
+	Attempts         int    `json:"attempts"`
+	Status           string `json:"status"`
+	ErrorClass       string `json:"error_class"`
+	ResultHash       string `json:"result_hash"`
+	Capped           string `json:"capped"`
+	CapReason        string `json:"cap_reason"`
+	RequestedTargets int    `json:"requested_targets"`
+	ExecutedTargets  int    `json:"executed_targets"`
+	WindowSeconds    int    `json:"window_seconds"`
 }
 
 type RendererTrace struct {
@@ -259,6 +276,9 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	}
 	if r.Timestamp == "" {
 		r.Timestamp = now.Format(time.RFC3339)
+	}
+	if r.Runtime.CutoverIntents == nil {
+		r.Runtime.CutoverIntents = []string{}
 	}
 	if r.Planner.Slots.TargetRefs == nil {
 		r.Planner.Slots.TargetRefs = []any{}

@@ -154,6 +154,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		eng.SetRetrievalTraceObserver(nil)
 		if traceEnabled {
 			traceRecorder = newCLITraceRecorder(traceWriter, turnIndex, input, turnStart)
+			traceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, cutoverIntents))
 			traceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)
 			eng.SetHardBlockObserver(traceRecorder.SetEngineHardBlock)

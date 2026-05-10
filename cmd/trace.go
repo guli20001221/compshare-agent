@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,9 +41,28 @@ func plannerRuntimeModeLine(shadowEnabled bool, cutoverIntents []intent.Intent) 
 	return fmt.Sprintf("planner_mode=%s cutover_intents=%s", mode, formatCutoverIntents(cutoverIntents))
 }
 
+func plannerRuntimeTrace(shadowEnabled bool, cutoverIntents []intent.Intent) observability.RuntimeTrace {
+	mode := "off"
+	if shadowEnabled {
+		mode = "shadow"
+	}
+	return observability.RuntimeTrace{
+		PlannerMode:    mode,
+		CutoverIntents: cutoverIntentLabels(cutoverIntents),
+	}
+}
+
 func formatCutoverIntents(cutoverIntents []intent.Intent) string {
-	if len(cutoverIntents) == 0 {
+	labels := cutoverIntentLabels(cutoverIntents)
+	if len(labels) == 0 {
 		return "[]"
+	}
+	return "[" + strings.Join(labels, ",") + "]"
+}
+
+func cutoverIntentLabels(cutoverIntents []intent.Intent) []string {
+	if len(cutoverIntents) == 0 {
+		return nil
 	}
 	labels := make([]string, 0, len(cutoverIntents))
 	for _, enabled := range cutoverIntents {
@@ -53,7 +75,7 @@ func formatCutoverIntents(cutoverIntents []intent.Intent) string {
 			labels = append(labels, string(enabled))
 		}
 	}
-	return "[" + strings.Join(labels, ",") + "]"
+	return labels
 }
 
 const defaultKnowledgeCorpusPath = "deploy/kb/curated_faq.jsonl"
@@ -157,6 +179,13 @@ func (r *cliTraceRecorder) SetRegistryTraceSupplier(supplier func(time.Time) obs
 	r.registryTraceSupplier = supplier
 }
 
+func (r *cliTraceRecorder) SetRuntimeTrace(trace observability.RuntimeTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Runtime = trace
+}
+
 func (r *cliTraceRecorder) SetPlannerTraceSupplier(supplier func() observability.PlannerTrace) {
 	if r == nil {
 		return
@@ -230,12 +259,22 @@ func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {
 	switch ev.Type {
 	case engine.StepToolCall:
 		argsHash, _ := observability.HashTracePayload(ev.Args)
+		requestedTargets := ev.RequestedTargets
+		if requestedTargets == 0 {
+			requestedTargets = traceRequestedTargets(ev.Args)
+		}
+		windowSeconds := ev.WindowSeconds
+		if windowSeconds == 0 {
+			windowSeconds = traceWindowSeconds(ev.Args)
+		}
 		r.record.ToolCalls = append(r.record.ToolCalls, observability.ToolCallTrace{
-			ID:        fmt.Sprintf("tool-%d", len(r.record.ToolCalls)+1),
-			TurnIndex: r.record.TurnIndex,
-			Action:    ev.Action,
-			Source:    source,
-			ArgsHash:  argsHash,
+			ID:               fmt.Sprintf("tool-%d", len(r.record.ToolCalls)+1),
+			TurnIndex:        r.record.TurnIndex,
+			Action:           ev.Action,
+			Source:           source,
+			ArgsHash:         argsHash,
+			RequestedTargets: requestedTargets,
+			WindowSeconds:    windowSeconds,
 		})
 		r.pendingByID[key] = append(r.pendingByID[key], len(r.record.ToolCalls)-1)
 	case engine.StepToolResult:
@@ -244,6 +283,9 @@ func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {
 		r.record.ToolCalls[idx].Status = observability.ToolStatusSuccess
 		r.record.ToolCalls[idx].ResultHash = resultHash
 		r.record.ToolCalls[idx].Attempts = ev.Attempts
+		if r.record.ToolCalls[idx].RequestedTargets > 0 && r.record.ToolCalls[idx].ExecutedTargets == 0 {
+			r.record.ToolCalls[idx].ExecutedTargets = r.record.ToolCalls[idx].RequestedTargets
+		}
 		if len(ev.RendererInputToolArgHashes) > 0 {
 			r.record.Renderer.InputToolArgHashes = append(r.record.Renderer.InputToolArgHashes, ev.RendererInputToolArgHashes...)
 		}
@@ -255,6 +297,7 @@ func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {
 		idx := r.matchPending(key, ev.Action, source)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusError
 		r.record.ToolCalls[idx].ErrorClass = "blocked"
+		r.applyCapFields(idx, ev)
 	}
 }
 
@@ -262,7 +305,7 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	if r == nil || r.writer == nil {
 		return nil
 	}
-	// TODO(T-006+): use chatErr when trace.v0.1 grows outcome.error_class.
+	// TODO(T-006+): use chatErr when trace schema grows outcome.error_class.
 	_ = chatErr
 	if r.registryTraceSupplier != nil {
 		r.record.EntityRegistry = r.registryTraceSupplier(end)
@@ -278,6 +321,26 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 		}
 	}
 	return r.writer.Append(r.record)
+}
+
+func (r *cliTraceRecorder) applyCapFields(idx int, ev engine.StepEvent) {
+	call := &r.record.ToolCalls[idx]
+	if call.ArgsHash == "" && ev.Args != nil {
+		call.ArgsHash, _ = observability.HashTracePayload(ev.Args)
+	}
+	if call.RequestedTargets == 0 {
+		call.RequestedTargets = traceRequestedTargets(ev.Args)
+	}
+	if call.WindowSeconds == 0 {
+		call.WindowSeconds = traceWindowSeconds(ev.Args)
+	}
+	call.ExecutedTargets = 0
+	if ev.Capped != "" {
+		call.Capped = ev.Capped
+	}
+	if ev.CapReason != "" {
+		call.CapReason = ev.CapReason
+	}
 }
 
 func (r *cliTraceRecorder) matchPending(key, action, source string) int {
@@ -297,4 +360,76 @@ func (r *cliTraceRecorder) matchPending(key, action, source string) int {
 		Source:    source,
 	})
 	return len(r.record.ToolCalls) - 1
+}
+
+func traceRequestedTargets(args map[string]any) int {
+	if args == nil {
+		return 0
+	}
+	if count := traceTargetValueCount(args["UHostIds"]); count > 0 {
+		return count
+	}
+	if value, ok := args["UHostId"].(string); ok && strings.TrimSpace(value) != "" {
+		return 1
+	}
+	return 0
+}
+
+func traceTargetValueCount(value any) int {
+	switch typed := value.(type) {
+	case []string:
+		return len(typed)
+	case []any:
+		return len(typed)
+	default:
+		return 0
+	}
+}
+
+func traceWindowSeconds(args map[string]any) int {
+	if args == nil {
+		return 0
+	}
+	start, okStart := traceInt64(args["StartTime"])
+	end, okEnd := traceInt64(args["EndTime"])
+	if !okStart || !okEnd || start < 0 || end < 0 || end <= start {
+		return 0
+	}
+	return int(end - start)
+}
+
+func traceInt64(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), true
+	case int32:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) || typed < math.MinInt64 || typed > math.MaxInt64 {
+			return 0, false
+		}
+		if typed != float64(int64(typed)) {
+			return 0, false
+		}
+		return int64(typed), true
+	case float32:
+		f := float64(typed)
+		if math.IsNaN(f) || math.IsInf(f, 0) || f < math.MinInt64 || f > math.MaxInt64 {
+			return 0, false
+		}
+		if f != float64(int64(f)) {
+			return 0, false
+		}
+		return int64(f), true
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		return n, err == nil
+	case json.Number:
+		n, err := typed.Int64()
+		return n, err == nil
+	default:
+		return 0, false
+	}
 }

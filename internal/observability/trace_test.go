@@ -36,6 +36,9 @@ func TestWriterAppendWritesOneJSONLinePerRecord(t *testing.T) {
 	if first.SchemaVersion != SchemaVersion {
 		t.Fatalf("schema version = %q, want %q", first.SchemaVersion, SchemaVersion)
 	}
+	if first.Runtime.CutoverIntents == nil {
+		t.Fatalf("runtime.cutover_intents must default to empty array, got %#v", first.Runtime)
+	}
 	if first.Timestamp != now.Format(time.RFC3339) {
 		t.Fatalf("timestamp = %q, want %q", first.Timestamp, now.Format(time.RFC3339))
 	}
@@ -50,6 +53,43 @@ func TestWriterAppendWritesOneJSONLinePerRecord(t *testing.T) {
 	}
 	if first.RateLimit.Checked || first.RateLimit.Allowed || first.RateLimit.Class != "" || first.RateLimit.RetryAfterMS != 0 {
 		t.Fatalf("default rate limit trace = %#v, want zero values", first.RateLimit)
+	}
+}
+
+func TestTraceV01FixtureStillReadable(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "trace_v0_1_minimal.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var record TraceRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatalf("unmarshal v0.1 fixture: %v", err)
+	}
+	if record.SchemaVersion != "trace.v0.1" || record.ToolCalls[0].Action != "DescribeCompShareInstance" {
+		t.Fatalf("v0.1 fixture read as %#v", record)
+	}
+	if record.ToolCalls[0].Capped != "" || record.ToolCalls[0].RequestedTargets != 0 {
+		t.Fatalf("missing v0.2 cap fields should read as zero values: %#v", record.ToolCalls[0])
+	}
+}
+
+func TestTraceV02FixtureIncludesRuntimeAndCapFields(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "trace_v0_2_cap_fields.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var record TraceRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatalf("unmarshal v0.2 fixture: %v", err)
+	}
+	if record.SchemaVersion != "trace.v0.2" || record.Runtime.PlannerMode != "shadow" ||
+		len(record.Runtime.CutoverIntents) != 1 || record.Runtime.CutoverIntents[0] != "monitor" {
+		t.Fatalf("runtime fixture = %#v schema=%q", record.Runtime, record.SchemaVersion)
+	}
+	call := record.ToolCalls[0]
+	if call.Capped != ToolCappedTargets || call.RequestedTargets != 21 || call.ExecutedTargets != 0 ||
+		call.WindowSeconds != 3600 || call.CapReason == "" {
+		t.Fatalf("cap fields = %#v", call)
 	}
 }
 
