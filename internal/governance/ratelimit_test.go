@@ -65,6 +65,13 @@ func TestMemoryLimiterUsesDefaultLimits(t *testing.T) {
 		assertAllowed(t, limiter.Allow(req))
 	}
 	assertDenied(t, limiter.Allow(req), ReasonQPSExceeded)
+
+	req.Class = ClassReadExpensiveTool
+	req.Action = "GetCompShareInstanceMonitor"
+	for i := 0; i < DefaultReadExpensiveQPS; i++ {
+		assertAllowed(t, limiter.Allow(req))
+	}
+	assertDenied(t, limiter.Allow(req), ReasonQPSExceeded)
 }
 
 func TestMemoryLimiterQPSRefillWithFakeClock(t *testing.T) {
@@ -146,6 +153,28 @@ func TestMemoryLimiterSubjectsAndClassesAreIndependent(t *testing.T) {
 	req.Class = ClassMutatingTool
 	req.Action = "StartCompShareInstance"
 	assertAllowed(t, limiter.Allow(req))
+
+	req.SubjectKey = "sha256:subject-a"
+	req.Class = ClassReadExpensiveTool
+	req.Action = "GetCompShareInstanceMonitor"
+	assertAllowed(t, limiter.Allow(req))
+}
+
+func TestMemoryLimiterReadExpensiveUsesSeparateBucket(t *testing.T) {
+	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
+	limiter := NewMemoryLimiter(Limits{
+		LLMQPS:             1,
+		LLMDaily:           1,
+		MutatingQPS:        1,
+		MutatingDaily:      1,
+		ReadExpensiveQPS:   2,
+		ReadExpensiveDaily: 2,
+	})
+
+	req := Request{SubjectKey: "sha256:subject", Class: ClassReadExpensiveTool, Action: "GetCompShareInstanceMonitor", Now: now}
+	assertAllowed(t, limiter.Allow(req))
+	assertAllowed(t, limiter.Allow(req))
+	assertDenied(t, limiter.Allow(req), ReasonDailyExceeded)
 }
 
 func TestMemoryLimiterDoesNotLeakRawPublicKey(t *testing.T) {

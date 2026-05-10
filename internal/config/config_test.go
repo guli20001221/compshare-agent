@@ -124,6 +124,8 @@ func TestLoad_OmittedRateLimitUsesDefaults(t *testing.T) {
 	assert.Equal(t, governance.DefaultLLMDaily, cfg.Agent.RateLimit.LLMDaily)
 	assert.Equal(t, governance.DefaultMutatingQPS, cfg.Agent.RateLimit.MutatingQPS)
 	assert.Equal(t, governance.DefaultMutatingDaily, cfg.Agent.RateLimit.MutatingDaily)
+	assert.Equal(t, governance.DefaultReadExpensiveQPS, cfg.Agent.RateLimit.ReadExpensiveQPS)
+	assert.Equal(t, governance.DefaultReadExpensiveDaily, cfg.Agent.RateLimit.ReadExpensiveDaily)
 	assert.Equal(t, governance.DefaultLimits(), cfg.Agent.RateLimit.Limits())
 }
 
@@ -133,6 +135,7 @@ func TestLoad_RateLimitPartialOverridesMergeWithDefaults(t *testing.T) {
   rate_limit:
     llm_qps: 9
     mutating_daily: 7
+    read_expensive_qps: 2
 `))
 
 	cfg, err := Load(path)
@@ -142,11 +145,15 @@ func TestLoad_RateLimitPartialOverridesMergeWithDefaults(t *testing.T) {
 	assert.Equal(t, governance.DefaultLLMDaily, cfg.Agent.RateLimit.LLMDaily)
 	assert.Equal(t, governance.DefaultMutatingQPS, cfg.Agent.RateLimit.MutatingQPS)
 	assert.Equal(t, 7, cfg.Agent.RateLimit.MutatingDaily)
+	assert.Equal(t, 2, cfg.Agent.RateLimit.ReadExpensiveQPS)
+	assert.Equal(t, governance.DefaultReadExpensiveDaily, cfg.Agent.RateLimit.ReadExpensiveDaily)
 	assert.Equal(t, governance.Limits{
-		LLMQPS:        9,
-		LLMDaily:      governance.DefaultLLMDaily,
-		MutatingQPS:   governance.DefaultMutatingQPS,
-		MutatingDaily: 7,
+		LLMQPS:             9,
+		LLMDaily:           governance.DefaultLLMDaily,
+		MutatingQPS:        governance.DefaultMutatingQPS,
+		MutatingDaily:      7,
+		ReadExpensiveQPS:   2,
+		ReadExpensiveDaily: governance.DefaultReadExpensiveDaily,
 	}, cfg.Agent.RateLimit.Limits())
 }
 
@@ -187,6 +194,22 @@ func TestLoad_RejectsNegativeRateLimitValues(t *testing.T) {
     mutating_daily: -1
 `,
 			wantErr: "agent.rate_limit.mutating_daily",
+		},
+		{
+			name: "read expensive qps",
+			yaml: `
+  rate_limit:
+    read_expensive_qps: -1
+`,
+			wantErr: "agent.rate_limit.read_expensive_qps",
+		},
+		{
+			name: "read expensive daily",
+			yaml: `
+  rate_limit:
+    read_expensive_daily: -1
+`,
+			wantErr: "agent.rate_limit.read_expensive_daily",
 		},
 	}
 

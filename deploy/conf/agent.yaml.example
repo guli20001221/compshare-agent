@@ -13,3 +13,12 @@ agent:
     base_url: "https://api.modelverse.cn/v1"
     api_key: "${LLM_API_KEY}"
     model: "Qwen/Qwen3-Max"
+
+  # 0 or omitted uses the built-in defaults.
+  rate_limit:
+    llm_qps: 5
+    llm_daily: 5000
+    mutating_qps: 1
+    mutating_daily: 50
+    read_expensive_qps: 3
+    read_expensive_daily: 500

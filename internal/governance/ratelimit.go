@@ -12,17 +12,20 @@ import (
 const (
 	AnonymousSubjectKey = "anonymous"
 
-	DefaultLLMQPS        = 5
-	DefaultLLMDaily      = 5000
-	DefaultMutatingQPS   = 1
-	DefaultMutatingDaily = 50
+	DefaultLLMQPS             = 5
+	DefaultLLMDaily           = 5000
+	DefaultMutatingQPS        = 1
+	DefaultMutatingDaily      = 50
+	DefaultReadExpensiveQPS   = 3
+	DefaultReadExpensiveDaily = 500
 )
 
 type Class string
 
 const (
-	ClassLLM          Class = "llm"
-	ClassMutatingTool Class = "mutating_tool"
+	ClassLLM               Class = "llm"
+	ClassMutatingTool      Class = "mutating_tool"
+	ClassReadExpensiveTool Class = "read_expensive_tool"
 )
 
 type Reason string
@@ -59,18 +62,22 @@ type Decision struct {
 }
 
 type Limits struct {
-	LLMQPS        int
-	LLMDaily      int
-	MutatingQPS   int
-	MutatingDaily int
+	LLMQPS             int
+	LLMDaily           int
+	MutatingQPS        int
+	MutatingDaily      int
+	ReadExpensiveQPS   int
+	ReadExpensiveDaily int
 }
 
 func DefaultLimits() Limits {
 	return Limits{
-		LLMQPS:        DefaultLLMQPS,
-		LLMDaily:      DefaultLLMDaily,
-		MutatingQPS:   DefaultMutatingQPS,
-		MutatingDaily: DefaultMutatingDaily,
+		LLMQPS:             DefaultLLMQPS,
+		LLMDaily:           DefaultLLMDaily,
+		MutatingQPS:        DefaultMutatingQPS,
+		MutatingDaily:      DefaultMutatingDaily,
+		ReadExpensiveQPS:   DefaultReadExpensiveQPS,
+		ReadExpensiveDaily: DefaultReadExpensiveDaily,
 	}
 }
 
@@ -206,10 +213,13 @@ func (l Limits) forClass(class Class) (qps int, daily int) {
 	switch class {
 	case ClassMutatingTool:
 		return l.MutatingQPS, l.MutatingDaily
+	case ClassReadExpensiveTool:
+		return l.ReadExpensiveQPS, l.ReadExpensiveDaily
 	case ClassLLM:
 		return l.LLMQPS, l.LLMDaily
 	default:
-		// Phase 0 defines only LLM and mutating-tool quota classes. Unknown
+		// Phase 1 hardening defines LLM, mutating-tool, and read-expensive
+		// quota classes. Unknown
 		// future classes fall back to the LLM budget until config validation
 		// grows an explicit class registry.
 		return l.LLMQPS, l.LLMDaily
@@ -229,6 +239,12 @@ func normalizeLimits(l Limits) Limits {
 	}
 	if l.MutatingDaily <= 0 {
 		l.MutatingDaily = defaults.MutatingDaily
+	}
+	if l.ReadExpensiveQPS <= 0 {
+		l.ReadExpensiveQPS = defaults.ReadExpensiveQPS
+	}
+	if l.ReadExpensiveDaily <= 0 {
+		l.ReadExpensiveDaily = defaults.ReadExpensiveDaily
 	}
 	return l
 }
