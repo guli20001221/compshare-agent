@@ -171,6 +171,25 @@ func collectSteps() (func(StepEvent), *[]StepEvent) {
 	return func(ev StepEvent) { events = append(events, ev) }, &events
 }
 
+func assertStepWithType(t *testing.T, events []StepEvent, typ StepType, action, contains string) {
+	t.Helper()
+	for _, ev := range events {
+		if ev.Type == typ && ev.Action == action && strings.Contains(ev.Message, contains) {
+			return
+		}
+	}
+	t.Fatalf("missing step type=%v action=%s containing %q in %#v", typ, action, contains, events)
+}
+
+func assertNoStepTypeForAction(t *testing.T, events []StepEvent, typ StepType, action string) {
+	t.Helper()
+	for _, ev := range events {
+		if ev.Type == typ && ev.Action == action {
+			t.Fatalf("unexpected step type=%v action=%s: %#v", typ, action, ev)
+		}
+	}
+}
+
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stderr
@@ -1073,6 +1092,191 @@ func TestChat_MutatingRateLimitAllowsWorkflowWithoutCountingInternalSteps(t *tes
 	assert.Equal(t, "StopInstanceWorkflow", mutating[0].Action)
 }
 
+func TestChat_ReadExpensiveRateLimitDenialBecomesToolResult(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{}},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DescribeCompShareInstance", `{"Limit":10}`),
+		}},
+		{Content: "please narrow"},
+	}}
+	limiter := &scriptedRateLimiter{decisions: []governance.Decision{
+		{Allowed: true, SubjectHash: "sha256:subject"},
+		{Allowed: false, Reason: governance.ReasonQPSExceeded, SubjectHash: "sha256:subject", Err: governance.ErrRateLimited},
+		{Allowed: true, SubjectHash: "sha256:subject"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.rateLimiter = limiter
+	eng.rateLimitSubject = "sha256:subject"
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+	onStep, events := collectSteps()
+
+	reply, err := eng.Chat(context.Background(), "list", onStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "please narrow", reply)
+	assert.Empty(t, executor.calls, "read-expensive quota denial must happen before API execution")
+	require.Len(t, limiter.requests, 3)
+	assert.Equal(t, governance.ClassLLM, limiter.requests[0].Class)
+	assert.Equal(t, governance.ClassReadExpensiveTool, limiter.requests[1].Class)
+	assert.Equal(t, "DescribeCompShareInstance", limiter.requests[1].Action)
+	assert.Equal(t, governance.ClassLLM, limiter.requests[2].Class)
+	assert.Len(t, mock.calls, 2, "quota denial should be returned as a tool result for LLM narration")
+	assertStepWithType(t, *events, StepBlocked, "DescribeCompShareInstance", rateLimitQPSMessage)
+	assertNoStepTypeForAction(t, *events, StepError, "DescribeCompShareInstance")
+}
+
+func TestChat_ReadExpensiveTargetCapBecomesToolResult(t *testing.T) {
+	ids := make([]string, 21)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("uhost-%02d", i)
+	}
+	rawArgs, err := json.Marshal(map[string]any{"UHostIds": ids})
+	require.NoError(t, err)
+	executor := &mockExecutor{}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", string(rawArgs)),
+		}},
+		{Content: "scope narrowed"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+	onStep, events := collectSteps()
+
+	reply, err := eng.Chat(context.Background(), "monitor all", onStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "scope narrowed", reply)
+	assert.Empty(t, executor.calls)
+	assert.Len(t, mock.calls, 2)
+	assertStepWithType(t, *events, StepBlocked, "GetCompShareInstanceMonitor", toolCapExceededMessage)
+	assertNoStepTypeForAction(t, *events, StepError, "GetCompShareInstanceMonitor")
+}
+
+func TestWorkflowInternalReadExpensiveConsumesSubjectQuotaButSkipsTurnBudget(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{"UHostId": "uhost-stop-001", "State": "Running", "Zone": "cn-wlcb-01"}},
+		},
+		"StopCompShareInstance": {"RetCode": 0},
+	}}
+	limiter := &scriptedRateLimiter{}
+	eng := NewWithDeps(&mockLLM{}, executor, func(string, map[string]any) bool { return true })
+	eng.rateLimiter = limiter
+	eng.rateLimitSubject = "sha256:subject"
+	eng.readExpensiveCallsThisTurn = maxReadExpensiveCallsPerTurn
+
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-stop-001"}, noopStep)
+
+	assert.Contains(t, reply, `"success":true`)
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+	assert.Contains(t, executor.calls, "StopCompShareInstance")
+	var readExpensive []governance.Request
+	for _, req := range limiter.requests {
+		if req.Class == governance.ClassReadExpensiveTool {
+			readExpensive = append(readExpensive, req)
+		}
+	}
+	require.Len(t, readExpensive, 1)
+	assert.Equal(t, "DescribeCompShareInstance", readExpensive[0].Action)
+}
+
+func TestWorkflowInternalReadExpensiveQuotaDenialReturnsFriendlyMessage(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{"UHostId": "uhost-stop-001", "State": "Running", "Zone": "cn-wlcb-01"}},
+		},
+	}}
+	limiter := &scriptedRateLimiter{decisions: []governance.Decision{
+		{Allowed: true, SubjectHash: "sha256:subject"},
+		{Allowed: false, Reason: governance.ReasonQPSExceeded, SubjectHash: "sha256:subject", Err: governance.ErrRateLimited},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, func(string, map[string]any) bool { return true })
+	eng.rateLimiter = limiter
+	eng.rateLimitSubject = "sha256:subject"
+	onStep, events := collectSteps()
+
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-stop-001"}, onStep)
+
+	assert.Equal(t, finalReplyPrefix+rateLimitQPSMessage, reply)
+	assert.Empty(t, executor.calls, "workflow internal quota denial must stop before API execution")
+	require.Len(t, limiter.requests, 2)
+	assert.Equal(t, governance.ClassMutatingTool, limiter.requests[0].Class)
+	assert.Equal(t, governance.ClassReadExpensiveTool, limiter.requests[1].Class)
+	assertStepWithType(t, *events, StepBlocked, "DescribeCompShareInstance", rateLimitQPSMessage)
+	assertStepWithType(t, *events, StepBlocked, "StopInstanceWorkflow", rateLimitQPSMessage)
+	assertNoStepTypeForAction(t, *events, StepError, "DescribeCompShareInstance")
+}
+
+func TestDiagnosisInternalReadExpensiveCountsTurnBudget(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{map[string]any{"UHostId": "uhost-diag-001", "State": "Running"}}},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.rateLimiter = &scriptedRateLimiter{}
+	eng.rateLimitSubject = "sha256:subject"
+	eng.userTurn = 1
+	eng.readExpensiveCallsThisTurn = maxReadExpensiveCallsPerTurn
+	onStep, events := collectSteps()
+
+	reply := eng.executeDiagnosis(context.Background(), "DiagnoseSSH", map[string]any{"UHostId": "uhost-diag-001"}, onStep)
+
+	assert.Equal(t, finalReplyPrefix+readExpensiveTurnBudgetMessage, reply)
+	assert.Empty(t, executor.calls, "diagnosis internal read-expensive calls must stop when turn budget is exhausted")
+	assertStepWithType(t, *events, StepBlocked, "DescribeCompShareInstance", readExpensiveTurnBudgetMessage)
+	assertStepWithType(t, *events, StepBlocked, "DiagnoseSSH", readExpensiveTurnBudgetMessage)
+	assertNoStepTypeForAction(t, *events, StepError, "DescribeCompShareInstance")
+}
+
+func TestDiagnoseBillingConsumesMultipleReadExpensiveQuotaUnits(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-bill-001", "State": "Running", "ChargeType": "Dynamic",
+				"InstancePrice": float64(1), "DiskPrice": float64(0.1),
+			}},
+		},
+	}}
+	limiter := &scriptedRateLimiter{}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.rateLimiter = limiter
+	eng.rateLimitSubject = "sha256:subject"
+
+	reply := eng.executeDiagnosis(context.Background(), "DiagnoseBilling", map[string]any{}, noopStep)
+
+	assert.Contains(t, reply, "uhost-bill-001")
+	var readExpensive []governance.Request
+	for _, req := range limiter.requests {
+		if req.Class == governance.ClassReadExpensiveTool {
+			readExpensive = append(readExpensive, req)
+		}
+	}
+	require.Len(t, readExpensive, 2, "DiagnoseBilling intentionally consumes quota for both list and price-detail Describe calls")
+	assert.Equal(t, "DescribeCompShareInstance", readExpensive[0].Action)
+	assert.Equal(t, "DescribeCompShareInstance", readExpensive[1].Action)
+}
+
+func TestInitReadExpensiveQuotaDenialDoesNotFailStartup(t *testing.T) {
+	mock := &mockLLM{}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.rateLimiter = &scriptedRateLimiter{decisions: []governance.Decision{{
+		Allowed: false, Reason: governance.ReasonDailyExceeded, SubjectHash: "sha256:subject", Err: governance.ErrRateLimited,
+	}}}
+	eng.rateLimitSubject = "sha256:subject"
+
+	stderr := captureStderr(t, func() {
+		suggestions, err := eng.Init(context.Background())
+		require.NoError(t, err)
+		assert.NotEmpty(t, suggestions)
+	})
+
+	assert.Contains(t, stderr, rateLimitDailyMessage)
+	assert.Equal(t, string(entity.SyncEventFailed), eng.registry.TraceState(time.Now()).SyncEvent)
+}
+
 func TestChat_ReadOnlyToolDoesNotConsumeMutatingQuota(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{}},
@@ -1093,10 +1297,11 @@ func TestChat_ReadOnlyToolDoesNotConsumeMutatingQuota(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "listed", reply)
-	require.Len(t, limiter.requests, 2)
+	require.Len(t, limiter.requests, 3)
 	for _, req := range limiter.requests {
 		assert.NotEqual(t, governance.ClassMutatingTool, req.Class)
 	}
+	assert.Equal(t, governance.ClassReadExpensiveTool, limiter.requests[1].Class)
 }
 
 func TestChat_L2BlockedToolDoesNotConsumeMutatingQuota(t *testing.T) {
@@ -2777,8 +2982,10 @@ func TestStage2BAndPhase1CutoverShareSinglePlannerCall(t *testing.T) {
 	assert.Contains(t, reply, "uhost-phase1-001")
 	require.Len(t, planner.calls, 1)
 	assert.Empty(t, retriever.calls, "resource cutover must not also run retrieval")
-	require.Len(t, limiter.requests, 1)
+	require.Len(t, limiter.requests, 2)
 	assert.Equal(t, "intent_planner", limiter.requests[0].Action)
+	assert.Equal(t, governance.ClassReadExpensiveTool, limiter.requests[1].Class)
+	assert.Equal(t, "DescribeCompShareInstance", limiter.requests[1].Action)
 	// CLI passes plannerDispatchEnabled into useSeparateShadowRunner, so adding
 	// USE_INTENT_PLANNER=shadow on top of Phase 1 + Stage 2B still leaves Engine
 	// as the single planner-call owner for this turn.
@@ -2988,6 +3195,34 @@ func TestPhase1CutoverFailureAfterToolDoesNotFallBackToReAct(t *testing.T) {
 	assert.Equal(t, string(intent.CutoverStatusFailureAfterTool), traces[0].CutoverStatus)
 }
 
+func TestPhase1CutoverReadExpensiveQuotaDenialUsesFriendlyMessage(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
+	}}
+	limiter := &scriptedRateLimiter{decisions: []governance.Decision{
+		{Allowed: true, SubjectHash: "sha256:subject"},
+		{Allowed: false, Reason: governance.ReasonQPSExceeded, SubjectHash: "sha256:subject", Err: governance.ErrRateLimited},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.rateLimiter = limiter
+	eng.rateLimitSubject = "sha256:subject"
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "show phase1-demo resource", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, rateLimitQPSMessage, reply)
+	assert.Empty(t, mock.calls, "quota denial after planner dispatch must not fall back to ReAct")
+	assert.Empty(t, executor.calls)
+}
+
 func TestPhase1CutoverFallbackPreservesMonitorRecallForceTool(t *testing.T) {
 	executor := monitorScenarioExecutor()
 	planner := &scriptedIntentPlanner{
@@ -3039,9 +3274,11 @@ func TestPhase1CutoverChecksPlannerQuotaOnce(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, planner.calls, 1)
-	require.Len(t, limiter.requests, 1)
+	require.Len(t, limiter.requests, 2)
 	assert.Equal(t, governance.ClassLLM, limiter.requests[0].Class)
 	assert.Equal(t, "intent_planner", limiter.requests[0].Action)
+	assert.Equal(t, governance.ClassReadExpensiveTool, limiter.requests[1].Class)
+	assert.Equal(t, "DescribeCompShareInstance", limiter.requests[1].Action)
 }
 
 func TestNormalizeMsg(t *testing.T) {

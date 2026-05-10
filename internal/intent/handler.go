@@ -2,6 +2,7 @@ package intent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -127,7 +128,7 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 	args := describeResourceArgs(ids)
 	raw, err := h.executor.Execute(ctx, action, args)
 	if err != nil {
-		return failureAfterToolWithTrace(action, args, "resource_info")
+		return failureAfterToolForError(action, args, "resource_info", err)
 	}
 	instances, err := instancesFromDescribeResult(raw)
 	if err != nil {
@@ -163,7 +164,7 @@ func (h *DemoHandler) HandleMonitorQuery(ctx context.Context, req HandlerRequest
 	args := map[string]any{"UHostIds": append([]string(nil), ids...)}
 	raw, err := h.executor.Execute(ctx, action, args)
 	if err != nil {
-		return failureAfterToolWithTrace(action, args, "monitor_query")
+		return failureAfterToolForError(action, args, "monitor_query", err)
 	}
 	result := HandledResult(RenderMonitorSummary(req.Plan.Slots.Metrics, raw))
 	result.ToolAction = action
@@ -256,6 +257,25 @@ func failureAfterToolWithTrace(action string, args map[string]any, label string)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
 	return result
+}
+
+type userFacingError interface {
+	UserMessage() string
+}
+
+func failureAfterToolForError(action string, args map[string]any, label string, err error) HandlerResult {
+	var friendly userFacingError
+	if errors.As(err, &friendly) {
+		result := HandlerResult{
+			Status:        HandlerStatusFailureAfterTool,
+			Reply:         friendly.UserMessage(),
+			CutoverStatus: CutoverStatusFailureAfterTool,
+			ToolAction:    action,
+			ToolArgs:      copyArgs(args),
+		}
+		return result
+	}
+	return failureAfterToolWithTrace(action, args, label)
 }
 
 func isCurrentMonitorTimeWindow(window *TimeWindow) bool {
