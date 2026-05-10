@@ -63,6 +63,16 @@ Account inventory GT summary:
 | `all_instance_billing` | One question: "所有实例分别怎么计费？哪些停机还会计费？" | `billing_instance`, ReAct fallback, `DescribeCompShareInstance` success twice | Correctly grouped by Postpay/Dynamic/Day, identified Day/prepaid stopped instances as still billing | PASS WITH NOTE |
 | `account_billing_hardblock` | One question: account monthly bill/balance/transaction flow | No tool calls | Returned the expected account-level hard-block canned reply guiding user to Finance Center | PASS |
 
+## Additional Running Billing Coverage
+
+The first matrix covered stopped + Day/prepaid. A follow-up smoke added the two
+main running billing modes:
+
+| Case | GT | Trace result | User-visible result | Verdict |
+| --- | --- | --- | --- | --- |
+| `running_dynamic_single_billing` | `qa-shadow-20260417-4090`: Running, 4090 x1, CPU 16, 64 GB, `Dynamic` | `mixed_billing_kb`, ReAct fallback, `DescribeCompShareInstance` + `GetCompShareInstanceUserPrice` success | Correctly answered Dynamic/hourly, 1.58 yuan/hour, running charges GPU/CPU/memory, stopped compute stops while storage/image may continue | PASS WITH NOTE |
+| `running_postpay_single_billing` | `无卡重装-cqc`: Running, 4090 x2, CPU 32, 192 GB, `Postpay` | `mixed_billing_kb`, ReAct fallback, `DescribeCompShareInstance` success | Correctly answered Postpay/hourly, running charges GPU/CPU/memory, stopped compute stops while extra storage may continue | PASS WITH NOTE |
+
 ## Notes
 
 - The first resource/basic-info question includes billing wording, so the
