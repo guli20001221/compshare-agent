@@ -30,6 +30,32 @@ func intentPlannerShadowEnabled(getenv getenvFunc) bool {
 	return getenv("USE_INTENT_PLANNER") == "shadow"
 }
 
+func plannerRuntimeModeLine(shadowEnabled bool, cutoverIntents []intent.Intent) string {
+	mode := "off"
+	if shadowEnabled {
+		mode = "shadow"
+	}
+	return fmt.Sprintf("planner_mode=%s cutover_intents=%s", mode, formatCutoverIntents(cutoverIntents))
+}
+
+func formatCutoverIntents(cutoverIntents []intent.Intent) string {
+	if len(cutoverIntents) == 0 {
+		return "[]"
+	}
+	labels := make([]string, 0, len(cutoverIntents))
+	for _, enabled := range cutoverIntents {
+		switch enabled {
+		case intent.IntentResourceInfo:
+			labels = append(labels, "resource")
+		case intent.IntentMonitorQuery:
+			labels = append(labels, "monitor")
+		default:
+			labels = append(labels, string(enabled))
+		}
+	}
+	return "[" + strings.Join(labels, ",") + "]"
+}
+
 const defaultKnowledgeCorpusPath = "deploy/kb/curated_faq.jsonl"
 
 func knowledgeRetrievalModeFromEnv(getenv getenvFunc) (bool, string) {

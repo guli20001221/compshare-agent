@@ -74,6 +74,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_INTENT_PLANNER_FOR value %q\n", value)
 	}
 	cutoverEnabled := len(cutoverIntents) > 0
+	shadowEnabled := intentPlannerShadowEnabled(os.Getenv)
 	knowledgeRetrievalRequested, unknownKnowledgeRetrieval := knowledgeRetrievalModeFromEnv(os.Getenv)
 	if unknownKnowledgeRetrieval != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q\n", unknownKnowledgeRetrieval)
@@ -98,13 +99,14 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		traceEnabled = false
 	}
 	var shadowRunner *intent.ShadowRunner
-	if useSeparateShadowRunner(traceEnabled, intentPlannerShadowEnabled(os.Getenv), plannerDispatchEnabled) {
+	if useSeparateShadowRunner(traceEnabled, shadowEnabled, plannerDispatchEnabled) {
 		shadowRunner = newCLIShadowRunner(cfg, eng)
 	}
 
 	fmt.Println("╭──────────────────────────────────────╮")
 	fmt.Println("│     优云算力共享 AI 助手 v0.1        │")
 	fmt.Println("╰──────────────────────────────────────╯")
+	fmt.Printf("runtime: %s\n", plannerRuntimeModeLine(shadowEnabled, cutoverIntents))
 	fmt.Println()
 	fmt.Println("正在初始化，获取您的实例信息...")
 

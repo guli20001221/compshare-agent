@@ -109,6 +109,22 @@ func TestSeparateShadowRunnerDisabledWhenCutoverEnabled(t *testing.T) {
 	}
 }
 
+func TestPlannerRuntimeModeLine(t *testing.T) {
+	cutoverIntents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		if key == "USE_INTENT_PLANNER_FOR" {
+			return "resource,monitor"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+
+	line := plannerRuntimeModeLine(true, cutoverIntents)
+	require.Equal(t, "planner_mode=shadow cutover_intents=[resource,monitor]", line)
+
+	line = plannerRuntimeModeLine(false, nil)
+	require.Equal(t, "planner_mode=off cutover_intents=[]", line)
+}
+
 func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
 	enabled, unknown := knowledgeRetrievalModeFromEnv(func(string) string { return "" })
 	if enabled || unknown != "" {
