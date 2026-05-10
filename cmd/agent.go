@@ -110,7 +110,20 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Println("正在初始化，获取您的实例信息...")
 
+	var initTraceRecorder *cliTraceRecorder
+	initStart := time.Now()
+	if traceEnabled {
+		initTraceRecorder = newCLITraceRecorder(traceWriter, 0, "init_context", initStart)
+		initTraceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, cutoverIntents))
+		initTraceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
+		eng.SetRateLimitObserver(initTraceRecorder.SetRateLimitDecision)
+	}
 	suggestions, err := eng.Init(ctx)
+	if initTraceRecorder != nil && initTraceRecorder.HasRateLimitDenial() {
+		if traceErr := initTraceRecorder.Finish(err, time.Now()); traceErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: init trace write failed: %v\n", traceErr)
+		}
+	}
 	if err != nil {
 		fmt.Printf("⚠ 初始化警告: %v\n", err)
 	}

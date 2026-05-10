@@ -16,7 +16,7 @@ const (
 	DefaultLLMDaily           = 5000
 	DefaultMutatingQPS        = 1
 	DefaultMutatingDaily      = 50
-	DefaultReadExpensiveQPS   = 3
+	DefaultReadExpensiveQPS   = 6
 	DefaultReadExpensiveDaily = 500
 )
 

@@ -20,5 +20,5 @@ agent:
     llm_daily: 5000
     mutating_qps: 1
     mutating_daily: 50
-    read_expensive_qps: 3
+    read_expensive_qps: 6
     read_expensive_daily: 500

@@ -827,6 +827,39 @@ func TestCLITraceRecorderWritesRateLimitDenial(t *testing.T) {
 	}
 }
 
+func TestCLITraceRecorderWritesInitRateLimitDenial(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 0, "init_context", start)
+	recorder.SetRuntimeTrace(observability.RuntimeTrace{PlannerMode: "shadow"})
+	recorder.SetRateLimitDecision(governance.Decision{
+		Allowed:     false,
+		Class:       governance.ClassReadExpensiveTool,
+		Action:      "DescribeCompShareInstance",
+		Reason:      governance.ReasonDailyExceeded,
+		SubjectHash: "sha256:subject",
+		Err:         governance.ErrRateLimited,
+	})
+
+	require.True(t, recorder.HasRateLimitDenial())
+	require.NoError(t, recorder.Finish(nil, start))
+
+	record := readSingleTraceRecord(t, writer, start)
+	require.Equal(t, 0, record.TurnIndex)
+	require.Equal(t, "shadow", record.Runtime.PlannerMode)
+	require.True(t, record.RateLimit.Checked)
+	require.False(t, record.RateLimit.Allowed)
+	require.Equal(t, string(governance.ClassReadExpensiveTool), record.RateLimit.Class)
+	require.Equal(t, "DescribeCompShareInstance", record.RateLimit.Action)
+	require.Equal(t, string(governance.ReasonDailyExceeded), record.RateLimit.Reason)
+}
+
 func TestCLITraceRecorderRateLimitDecisionAggregation(t *testing.T) {
 	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	writer, err := observability.NewWriter(observability.WriterOptions{

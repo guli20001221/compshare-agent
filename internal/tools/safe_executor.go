@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/sanitizer"
 	"github.com/compshare-agent/internal/security"
 )
@@ -465,7 +466,9 @@ func copyMap(in map[string]any) map[string]any {
 }
 
 func shouldRetry(err error, retryOn []ErrorClass) bool {
-	if errors.Is(err, ErrToolCapExceeded) || errors.Is(err, ErrHistoryWindowExceeded) {
+	if errors.Is(err, ErrToolCapExceeded) ||
+		errors.Is(err, ErrHistoryWindowExceeded) ||
+		errors.Is(err, governance.ErrRateLimited) {
 		return false
 	}
 	if len(retryOn) == 0 {

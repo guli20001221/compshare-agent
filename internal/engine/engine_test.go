@@ -1544,6 +1544,10 @@ func TestChat_WorkflowTool_CreateInstance(t *testing.T) {
 	}}
 	onStep, events := collectSteps()
 	eng := NewWithDeps(mock, executor, confirmFn)
+	eng.rateLimiter = governance.NewMemoryLimiter(governance.DefaultLimits(), governance.WithClock(func() time.Time {
+		return time.Date(2026, 5, 11, 10, 0, 0, 0, time.UTC)
+	}))
+	eng.rateLimitSubject = "sha256:create-workflow"
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
 	}

@@ -145,6 +145,9 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 		llmClient:                llm.NewClient(cfg.Agent.LLM),
 		confirmFn:                confirmFn,
 		registry:                 entity.NewRegistry(),
+		// MemoryLimiter is process-local and suitable for local demo or
+		// single-instance deployment only. Multi-replica production needs a
+		// centralized limiter such as Redis or an API gateway.
 		rateLimiter:              governance.NewMemoryLimiter(cfg.Agent.RateLimit.Limits()),
 		rateLimitSubject:         subject,
 		lastInstanceQueryTurn:    -1,

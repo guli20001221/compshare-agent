@@ -9,6 +9,7 @@ import (
 	"net"
 	"testing"
 
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/security"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -188,21 +189,32 @@ func mustUnmarshalArgs(t *testing.T, raw string) map[string]any {
 }
 
 func TestSafeExecutorDoesNotRetryCapErrors(t *testing.T) {
-	inner := &spyExecutor{errs: []error{ErrToolCapExceeded, nil}}
-	policies := DefaultToolExecutionPolicies()
-	policy := policies["DescribeCompShareInstance"]
-	policy.MaxTargetsPerCall = 1
-	policies["DescribeCompShareInstance"] = policy
-	safe := NewSafeToolExecutor(inner, WithPolicies(policies))
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "tool cap", err: ErrToolCapExceeded},
+		{name: "rate limit", err: governance.ErrRateLimited},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := &spyExecutor{errs: []error{tc.err, nil}}
+			policies := DefaultToolExecutionPolicies()
+			policy := policies["DescribeCompShareInstance"]
+			policy.MaxTargetsPerCall = 1
+			policies["DescribeCompShareInstance"] = policy
+			safe := NewSafeToolExecutor(inner, WithPolicies(policies))
 
-	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
-		Action: "DescribeCompShareInstance",
-		Args:   map[string]any{"UHostIds": []any{"uhost-1"}},
-		Origin: OriginDirectLLM,
-	})
+			_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+				Action: "DescribeCompShareInstance",
+				Args:   map[string]any{"UHostIds": []any{"uhost-1"}},
+				Origin: OriginDirectLLM,
+			})
 
-	require.ErrorIs(t, err, ErrToolCapExceeded)
-	assert.Equal(t, 1, inner.calls)
+			require.ErrorIs(t, err, tc.err)
+			assert.Equal(t, 1, inner.calls)
+		})
+	}
 }
 
 func TestSafeExecutorFiltersArgsAndRedactsResult(t *testing.T) {

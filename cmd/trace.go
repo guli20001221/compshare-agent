@@ -247,6 +247,10 @@ func (r *cliTraceRecorder) SetRateLimitDecision(decision governance.Decision) {
 	r.record.RateLimit = trace
 }
 
+func (r *cliTraceRecorder) HasRateLimitDenial() bool {
+	return r != nil && r.record.RateLimit.Checked && !r.record.RateLimit.Allowed
+}
+
 func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {
 	if r == nil || r.writer == nil || ev.Action == "" {
 		return
