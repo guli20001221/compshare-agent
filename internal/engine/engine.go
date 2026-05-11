@@ -408,6 +408,10 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	e.currentMonitorEnd = 0
 	e.currentMonitorWindow = false
 
+	if reply, handled := e.tryResumeResourceSelection(ctx, userMsg, onStep); handled {
+		return reply, nil
+	}
+
 	forceMonitorRecall := e.shouldForceMonitorRecall(userMsg)
 	if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep); handled {
 		return reply, nil
@@ -639,6 +643,58 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
 		reply = e.renderGroundedHandlerResult(ctx, handled)
+	}
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: reply,
+	})
+	return reply, true
+}
+
+func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
+	pending := e.pendingResourceSelection
+	if pending == nil {
+		return "", false
+	}
+	if isResourceSelectionExpired(e.userTurn, *pending) {
+		e.pendingResourceSelection = nil
+		return "", false
+	}
+
+	match := matchResourceSelection(userMsg, *pending)
+	if !match.ok {
+		if e.userTurn >= pending.createdTurn+2 {
+			e.pendingResourceSelection = nil
+			return "", false
+		}
+		pending.invalidAttempts++
+		reply := renderResourceSelectionPrompt(*pending)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: reply,
+		})
+		return reply, true
+	}
+
+	e.pendingResourceSelection = nil
+	if pending.plan.Intent != intent.IntentMonitorQuery {
+		return "", false
+	}
+
+	resumedPlan := planWithSelectedResource(pending.plan, match.instance.UHostId)
+	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
+	handled := handler.HandleMonitorQuery(ctx, intent.HandlerRequest{
+		Plan:     resumedPlan,
+		Resolver: pending.snapshot,
+	})
+	e.emitPlannerTrace(intent.PlannerResult{Plan: resumedPlan}, handled.CutoverStatus, 0)
+
+	reply := handled.Reply
+	if handled.Status == intent.HandlerStatusHandled {
+		reply = e.renderGroundedHandlerResult(ctx, handled)
+	}
+	if reply == "" {
+		reply = intent.FriendlyToolFailureReply
 	}
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,

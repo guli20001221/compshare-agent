@@ -3685,6 +3685,205 @@ func TestPhase1ResourceInfoNoTargetStillListsInstancesWithoutPendingSelection(t 
 	assert.Empty(t, mock.calls)
 }
 
+func TestResourceSelectionContinuationOrdinalRunsOriginalMonitorQuery(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	var monitorArgs map[string]any
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			switch action {
+			case "DescribeCompShareInstance":
+				return phase1MultipleInstanceDescribeResult(), nil
+			case "GetCompShareInstanceMonitor":
+				monitorArgs = args
+				return map[string]any{"CPU": float64(12.5), "GPU": float64(8), "VRAM": "1GB"}, nil
+			default:
+				return nil, fmt.Errorf("unexpected action %s", action)
+			}
+		},
+	}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	firstReply, err := eng.Chat(context.Background(), "CPU 高怎么办", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, firstReply, "uhost-select-001")
+	assert.Contains(t, firstReply, "uhost-select-002")
+
+	secondReply, err := eng.Chat(context.Background(), "选第二台", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, secondReply, "CPU")
+	assert.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, executor.calls)
+	assert.Equal(t, []string{"uhost-select-002"}, monitorArgs["UHostIds"])
+	assert.Empty(t, mock.calls, "selection continuation must not fall back to ReAct")
+	assert.Nil(t, eng.pendingResourceSelection)
+	assert.Len(t, planner.calls, 1, "selection reply should reuse the stored plan instead of calling the planner again")
+}
+
+func TestResourceSelectionContinuationExactIDRunsMonitorQuery(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	var monitorArgs map[string]any
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			switch action {
+			case "DescribeCompShareInstance":
+				return phase1MultipleInstanceDescribeResult(), nil
+			case "GetCompShareInstanceMonitor":
+				monitorArgs = args
+				return map[string]any{"CPU": float64(7), "GPU": float64(3), "VRAM": "1GB"}, nil
+			default:
+				return nil, fmt.Errorf("unexpected action %s", action)
+			}
+		},
+	}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	_, err := eng.Chat(context.Background(), "CPU 高怎么办", noopStep)
+	require.NoError(t, err)
+	reply, err := eng.Chat(context.Background(), "uhost-select-001", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "CPU")
+	assert.Equal(t, []string{"uhost-select-001"}, monitorArgs["UHostIds"])
+	assert.Empty(t, mock.calls)
+	assert.Nil(t, eng.pendingResourceSelection)
+}
+
+func TestResourceSelectionContinuationExactNameUsesGroundedRendererAndPlannerSource(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			switch action {
+			case "DescribeCompShareInstance":
+				return phase1MultipleInstanceDescribeResult(), nil
+			case "GetCompShareInstanceMonitor":
+				return map[string]any{"CPU": float64(9), "GPU": float64(1), "VRAM": "1GB"}, nil
+			default:
+				return nil, fmt.Errorf("unexpected action %s", action)
+			}
+		},
+	}
+	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+		Text: "grounded monitor summary",
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+	onStep, events := collectSteps()
+
+	_, err := eng.Chat(context.Background(), "CPU 高怎么办", onStep)
+	require.NoError(t, err)
+	reply, err := eng.Chat(context.Background(), "select-a", onStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "grounded monitor summary", reply)
+	require.Len(t, groundedRenderer.requests, 1)
+	assert.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, executor.calls)
+	require.Len(t, *events, 2)
+	assert.Equal(t, StepToolCall, (*events)[0].Type)
+	assert.Equal(t, StepToolResult, (*events)[1].Type)
+	assert.Equal(t, "GetCompShareInstanceMonitor", (*events)[0].Action)
+	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[0].Source)
+	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[1].Source)
+	assert.NotEmpty(t, (*events)[1].RendererInputToolArgHashes)
+	assert.Empty(t, mock.calls)
+	assert.Nil(t, eng.pendingResourceSelection)
+}
+
+func TestResourceSelectionContinuationDuplicateNameRepeatsPrompt(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanForName("dup")}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{"List": []any{}},
+		},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1AmbiguousInstanceDescribeResult(), "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	_, err := eng.Chat(context.Background(), "show dup cpu monitor", noopStep)
+	require.NoError(t, err)
+	reply, err := eng.Chat(context.Background(), "dup", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "uhost-dup-001")
+	assert.Contains(t, reply, "uhost-dup-002")
+	assert.Empty(t, executor.calls, "ambiguous follow-up must not call monitor")
+	assert.Empty(t, mock.calls)
+	require.NotNil(t, eng.pendingResourceSelection)
+	assert.Equal(t, 1, eng.pendingResourceSelection.invalidAttempts)
+}
+
+func TestResourceSelectionContinuationInvalidOnceRepeatsPrompt(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	_, err := eng.Chat(context.Background(), "CPU 高怎么办", noopStep)
+	require.NoError(t, err)
+	reply, err := eng.Chat(context.Background(), "随便看看", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "uhost-select-001")
+	assert.Contains(t, reply, "uhost-select-002")
+	assert.Empty(t, mock.calls)
+	require.NotNil(t, eng.pendingResourceSelection)
+	assert.Equal(t, 1, eng.pendingResourceSelection.invalidAttempts)
+}
+
+func TestResourceSelectionContinuationStaleInvalidClearsAndFallsBack(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	_, err := eng.Chat(context.Background(), "CPU 高怎么办", noopStep)
+	require.NoError(t, err)
+	_, err = eng.Chat(context.Background(), "随便看看", noopStep)
+	require.NoError(t, err)
+	reply, err := eng.Chat(context.Background(), "还是不知道", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "react fallback", reply)
+	assert.Nil(t, eng.pendingResourceSelection)
+	assert.Len(t, mock.calls, 1, "second invalid selection should clear pending and resume normal routing")
+}
+
 func TestPhase1CutoverInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 	cases := []struct {
 		name       string
