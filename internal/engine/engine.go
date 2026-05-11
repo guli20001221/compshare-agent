@@ -672,6 +672,11 @@ func (x plannerHandlerExecutor) Execute(ctx context.Context, action string, args
 	if x.engine == nil {
 		return nil, fmt.Errorf("planner handler engine is nil")
 	}
+	if decision, ok := x.engine.allowToolQuota(action); !ok {
+		msg := rateLimitMessage(decision.Reason)
+		x.emit(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourcePlannerHandler, Message: msg})
+		return nil, quotaDeniedError{message: msg, cause: decisionError(decision)}
+	}
 	result, err := x.engine.executeSafeTool(ctx, tools.SafeToolRequest{
 		Action: action,
 		Args:   args,
@@ -801,7 +806,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return e.executeDiagnosis(ctx, action, args, onStep)
 	}
 
-	if decision, ok := e.allowMutatingTool(action); !ok {
+	if decision, ok := e.allowToolQuota(action); !ok {
 		msg := rateLimitMessage(decision.Reason)
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return finalReplyPrefix + msg
@@ -846,18 +851,56 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	return formatted
 }
 
-func (e *Engine) allowMutatingTool(action string) (governance.Decision, bool) {
+func (e *Engine) allowToolQuota(action string) (governance.Decision, bool) {
 	policy, ok := e.safeExecutor.PolicyForAction(action)
-	// Read classes are not rate-limited by T-005. Destructive L2 actions are
-	// blocked by SafeToolExecutor before execution and do not consume quota.
-	// Only ActionClassMutating uses the mutating-tool budget.
-	if !ok || policy.Class != tools.ActionClassMutating {
-		return governance.Decision{Allowed: true, Class: governance.ClassMutatingTool, Action: action}, true
+	if !ok {
+		return governance.Decision{Allowed: true, Action: action}, true
 	}
-	return e.allowRateLimited(governance.ClassMutatingTool, action)
+	switch policy.Class {
+	case tools.ActionClassMutating:
+		return e.allowRateLimited(governance.ClassMutatingTool, action)
+	case tools.ActionClassReadExpensiveDefault, tools.ActionClassReadExpensivePerTarget:
+		return e.allowRateLimited(governance.ClassReadExpensiveTool, action)
+	default:
+		// Cheap reads and destructive L2 actions do not consume quota here.
+		// Destructive actions are blocked by SafeToolExecutor before execution.
+		return governance.Decision{Allowed: true, Action: action}, true
+	}
+}
+
+func decisionError(decision governance.Decision) error {
+	if decision.Err != nil {
+		return decision.Err
+	}
+	return governance.ErrRateLimited
+}
+
+type quotaDeniedError struct {
+	message string
+	cause   error
+}
+
+func (e quotaDeniedError) Error() string {
+	if e.message != "" {
+		return e.message
+	}
+	if e.cause != nil {
+		return e.cause.Error()
+	}
+	return governance.ErrRateLimited.Error()
+}
+
+func (e quotaDeniedError) Unwrap() error {
+	return e.cause
 }
 
 func (e *Engine) executeRawTool(ctx context.Context, action string, args map[string]any, origin tools.ExecutionOrigin) (map[string]any, error) {
+	if decision, ok := e.allowInternalToolQuota(action); !ok {
+		return nil, quotaDeniedError{
+			message: rateLimitMessage(decision.Reason),
+			cause:   decisionError(decision),
+		}
+	}
 	result, err := e.executeSafeTool(ctx, tools.SafeToolRequest{
 		Action: action,
 		Args:   args,
@@ -867,6 +910,14 @@ func (e *Engine) executeRawTool(ctx context.Context, action string, args map[str
 		return nil, err
 	}
 	return result.RawResult, nil
+}
+
+func (e *Engine) allowInternalToolQuota(action string) (governance.Decision, bool) {
+	policy, ok := e.safeExecutor.PolicyForAction(action)
+	if !ok || (policy.Class != tools.ActionClassReadExpensiveDefault && policy.Class != tools.ActionClassReadExpensivePerTarget) {
+		return governance.Decision{Allowed: true, Action: action}, true
+	}
+	return e.allowRateLimited(governance.ClassReadExpensiveTool, action)
 }
 
 func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest) (*tools.SafeToolResult, error) {
@@ -1090,7 +1141,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		return msg
 	}
 
-	if decision, ok := e.allowMutatingTool(action); !ok {
+	if decision, ok := e.allowToolQuota(action); !ok {
 		msg := rateLimitMessage(decision.Reason)
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return finalReplyPrefix + msg
@@ -1187,6 +1238,12 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		}
 	}
 
+	if decision, ok := e.allowToolQuota(action); !ok {
+		msg := rateLimitMessage(decision.Reason)
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+		return finalReplyPrefix + msg
+	}
+
 	diagEngine := diagnosis.NewEngine(e.toolExecutorFor(tools.OriginDiagnosisInternal), func(ev diagnosis.DiagEvent) {
 		var eventType StepType
 		switch ev.Status {
@@ -1197,12 +1254,16 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		default: // "checked", "concluded"
 			eventType = StepToolResult
 		}
+		message := fmt.Sprintf("[诊断 %d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status)
+		if strings.TrimSpace(ev.Message) != "" {
+			message += ": " + ev.Message
+		}
 		onStep(StepEvent{
 			Type:    eventType,
 			Action:  ev.Tool,
 			Source:  observability.ToolSourceDiagnosisInternal,
 			Args:    e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
-			Message: fmt.Sprintf("[诊断 %d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status),
+			Message: message,
 		})
 	})
 

@@ -144,11 +144,31 @@ func classForAction(action string, level security.Level) ActionClass {
 		return ActionClassReadExpensivePerTarget
 	case strings.HasPrefix(action, "Diagnose"):
 		return ActionClassReadExpensiveDefault
-	case strings.Contains(strings.ToLower(action), "price"):
+	case readExpensiveDefaultActions[action]:
 		return ActionClassReadExpensiveDefault
 	default:
 		return ActionClassReadCheap
 	}
+}
+
+var readExpensiveDefaultActions = map[string]bool{
+	"DescribeCompShareInstance":               true,
+	"DescribeCompShareImages":                 true,
+	"DescribeCompShareCustomImages":           true,
+	"DescribeCompShareSharingImages":          true,
+	"DescribeFavoriteImages":                  true,
+	"DescribeCommunityImages":                 true,
+	"DescribeSelfCommunityImages":             true,
+	"DescribeUserCommunityImages":             true,
+	"DescribeAvailableCompShareInstanceTypes": true,
+	"DescribeCompShareMachineTypeFamilies":    true,
+	"DescribeCompShareSupportZone":            true,
+	"CheckCompShareResourceCapacity":          true,
+	"GetCompShareInstancePrice":               true,
+	"GetCompShareInstanceUserPrice":           true,
+	"GetCompShareInstanceUpgradePrice":        true,
+	"GetCompShareAttachedDiskUpgradePrice":    true,
+	"GetCompShareRefundPrice":                 true,
 }
 
 func registryAllowedParams() map[string][]string {

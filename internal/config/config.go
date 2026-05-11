@@ -37,18 +37,22 @@ type LLMConfig struct {
 }
 
 type RateLimitConfig struct {
-	LLMQPS        int `yaml:"llm_qps"`
-	LLMDaily      int `yaml:"llm_daily"`
-	MutatingQPS   int `yaml:"mutating_qps"`
-	MutatingDaily int `yaml:"mutating_daily"`
+	LLMQPS             int `yaml:"llm_qps"`
+	LLMDaily           int `yaml:"llm_daily"`
+	MutatingQPS        int `yaml:"mutating_qps"`
+	MutatingDaily      int `yaml:"mutating_daily"`
+	ReadExpensiveQPS   int `yaml:"read_expensive_qps"`
+	ReadExpensiveDaily int `yaml:"read_expensive_daily"`
 }
 
 func (c RateLimitConfig) Limits() governance.Limits {
 	return governance.Limits{
-		LLMQPS:        c.LLMQPS,
-		LLMDaily:      c.LLMDaily,
-		MutatingQPS:   c.MutatingQPS,
-		MutatingDaily: c.MutatingDaily,
+		LLMQPS:             c.LLMQPS,
+		LLMDaily:           c.LLMDaily,
+		MutatingQPS:        c.MutatingQPS,
+		MutatingDaily:      c.MutatingDaily,
+		ReadExpensiveQPS:   c.ReadExpensiveQPS,
+		ReadExpensiveDaily: c.ReadExpensiveDaily,
 	}
 }
 
@@ -95,6 +99,12 @@ func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 	if rateLimit.MutatingDaily < 0 {
 		return negativeRateLimitError("agent.rate_limit.mutating_daily")
 	}
+	if rateLimit.ReadExpensiveQPS < 0 {
+		return negativeRateLimitError("agent.rate_limit.read_expensive_qps")
+	}
+	if rateLimit.ReadExpensiveDaily < 0 {
+		return negativeRateLimitError("agent.rate_limit.read_expensive_daily")
+	}
 	if rateLimit.LLMQPS == 0 {
 		rateLimit.LLMQPS = defaults.LLMQPS
 	}
@@ -106,6 +116,12 @@ func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 	}
 	if rateLimit.MutatingDaily == 0 {
 		rateLimit.MutatingDaily = defaults.MutatingDaily
+	}
+	if rateLimit.ReadExpensiveQPS == 0 {
+		rateLimit.ReadExpensiveQPS = defaults.ReadExpensiveQPS
+	}
+	if rateLimit.ReadExpensiveDaily == 0 {
+		rateLimit.ReadExpensiveDaily = defaults.ReadExpensiveDaily
 	}
 	return nil
 }

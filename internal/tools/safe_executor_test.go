@@ -53,6 +53,34 @@ func TestDefaultPoliciesCoverRegistryAndSecurityActions(t *testing.T) {
 	}
 }
 
+func TestDefaultPoliciesClassifyReadExpensiveToolsExplicitly(t *testing.T) {
+	policies := DefaultToolExecutionPolicies()
+
+	readExpensiveDefault := []string{
+		"DescribeCompShareInstance",
+		"DescribeCompShareImages",
+		"DescribeCompShareCustomImages",
+		"DescribeCompShareSharingImages",
+		"DescribeFavoriteImages",
+		"DescribeCommunityImages",
+		"DescribeSelfCommunityImages",
+		"DescribeUserCommunityImages",
+		"DescribeAvailableCompShareInstanceTypes",
+		"DescribeCompShareMachineTypeFamilies",
+		"DescribeCompShareSupportZone",
+		"CheckCompShareResourceCapacity",
+		"GetCompShareInstancePrice",
+		"GetCompShareInstanceUserPrice",
+		"GetCompShareInstanceUpgradePrice",
+		"GetCompShareAttachedDiskUpgradePrice",
+		"GetCompShareRefundPrice",
+	}
+	for _, action := range readExpensiveDefault {
+		assert.Equal(t, ActionClassReadExpensiveDefault, policies[action].Class, action)
+	}
+	assert.Equal(t, ActionClassReadExpensivePerTarget, policies["GetCompShareInstanceMonitor"].Class)
+}
+
 func TestSafeExecutorRejectsMissingPolicy(t *testing.T) {
 	inner := &spyExecutor{}
 	safe := NewSafeToolExecutor(inner, WithPolicies(map[string]ToolExecutionPolicy{}))

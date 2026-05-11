@@ -2,12 +2,14 @@ package intent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/security"
 )
@@ -128,11 +130,11 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 	args := describeResourceArgs(ids)
 	raw, err := h.executor.Execute(ctx, action, args)
 	if err != nil {
-		return failureAfterToolWithTrace(action, args, "resource_info")
+		return failureAfterToolWithTrace(action, args, "resource_info", err)
 	}
 	instances, err := instancesFromDescribeResult(raw)
 	if err != nil {
-		return failureAfterToolWithTrace(action, args, "resource_info")
+		return failureAfterToolWithTrace(action, args, "resource_info", err)
 	}
 	result := HandledResult(RenderResourceSummary(instances))
 	result.ToolAction = action
@@ -164,7 +166,7 @@ func (h *DemoHandler) HandleMonitorQuery(ctx context.Context, req HandlerRequest
 	args := map[string]any{"UHostIds": append([]string(nil), ids...)}
 	raw, err := h.executor.Execute(ctx, action, args)
 	if err != nil {
-		return failureAfterToolWithTrace(action, args, "monitor_query")
+		return failureAfterToolWithTrace(action, args, "monitor_query", err)
 	}
 	result := HandledResult(RenderMonitorSummary(req.Plan.Slots.Metrics, raw))
 	result.ToolAction = action
@@ -252,8 +254,13 @@ func resolveResourceTargets(refs []TargetRef, resolver EntityResolver) ([]string
 	return ids, nil
 }
 
-func failureAfterToolWithTrace(action string, args map[string]any, label string) HandlerResult {
+func failureAfterToolWithTrace(action string, args map[string]any, label string, err error) HandlerResult {
 	result := FailureAfterTool(label)
+	if errors.Is(err, governance.ErrRateLimited) {
+		if msg := strings.TrimSpace(err.Error()); msg != "" {
+			result.Reply = msg
+		}
+	}
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
 	return result

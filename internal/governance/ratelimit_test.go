@@ -148,6 +148,56 @@ func TestMemoryLimiterSubjectsAndClassesAreIndependent(t *testing.T) {
 	assertAllowed(t, limiter.Allow(req))
 }
 
+func TestMemoryLimiterReadExpensiveClassUsesIndependentBudget(t *testing.T) {
+	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
+	limiter := NewMemoryLimiter(Limits{
+		LLMQPS:             10,
+		LLMDaily:           100,
+		MutatingQPS:        10,
+		MutatingDaily:      100,
+		ReadExpensiveQPS:   1,
+		ReadExpensiveDaily: 1,
+	})
+
+	readReq := Request{
+		SubjectKey: "sha256:subject",
+		Class:      ClassReadExpensiveTool,
+		Action:     "GetCompShareInstanceMonitor",
+		Now:        now,
+	}
+	assertAllowed(t, limiter.Allow(readReq))
+	assertDenied(t, limiter.Allow(readReq), ReasonDailyExceeded)
+
+	llmReq := Request{
+		SubjectKey: "sha256:subject",
+		Class:      ClassLLM,
+		Action:     "main_react_chat",
+		Now:        now,
+	}
+	assertAllowed(t, limiter.Allow(llmReq))
+}
+
+func TestDefaultReadExpensiveBudgetAllowsNormalWorkflowBurst(t *testing.T) {
+	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
+	limiter := NewMemoryLimiter(DefaultLimits())
+	actions := []string{
+		"DescribeCompShareImages",
+		"DescribeAvailableCompShareInstanceTypes",
+		"CheckCompShareResourceCapacity",
+		"GetCompShareInstanceUserPrice",
+		"DescribeCompShareInstance",
+	}
+
+	for _, action := range actions {
+		assertAllowed(t, limiter.Allow(Request{
+			SubjectKey: "sha256:subject",
+			Class:      ClassReadExpensiveTool,
+			Action:     action,
+			Now:        now,
+		}))
+	}
+}
+
 func TestMemoryLimiterDoesNotLeakRawPublicKey(t *testing.T) {
 	rawPublicKey := "public-key-that-must-not-appear"
 	subject, ok := SubjectKeyFromPublicKey(rawPublicKey)
