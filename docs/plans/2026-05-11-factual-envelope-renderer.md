@@ -185,7 +185,9 @@ Tests:
 - Renderer rejects obvious unknown instance names when they are not in `AllowedNames(env)`. Keep the rule conservative: only reject names matching known instance-name-like tokens in tests, not arbitrary Chinese nouns.
 - Renderer rejects account-level bill/balance/transaction claims when `DoNotAnswerAccountBill=true`.
 - Renderer rejects numeric percent claims for monitor envelopes with no metric facts.
-- Renderer returns a typed fallback reason when LLM call or validation fails.
+- Renderer rejects monitor percentage claims that do not appear in envelope monitor facts.
+- Renderer treats empty/whitespace LLM output as validation failure.
+- Renderer returns a typed fallback reason when LLM call or validation fails. It does not retry validation failures in this first slice; deterministic fallback is the safety behavior.
 
 Run:
 
@@ -249,7 +251,7 @@ Minimum validation:
 - Find `uhost-[A-Za-z0-9_-]+` tokens; every token must exist in `env.Subjects`.
 - For resource/monitor envelopes, reject clearly instance-like names from the output when they are neither an allowed envelope name nor a generic label. Tests must cover one invented English/ASCII instance name.
 - If `DoNotAnswerAccountBill`, reject account balance / monthly total / transaction flow claims.
-- If `KindMonitorQuery` and envelope has no metric facts, reject percent claims like `12%`.
+- If `KindMonitorQuery`, reject percent claims like `12%` unless the normalized percent value appears in the envelope facts.
 - Keep validation conservative; false positive falls back to deterministic reply.
 
 **Step 5: Verify**
