@@ -389,6 +389,7 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	})
 
 	if isAccountBillingUnsupported(userMsg) {
+		e.pendingResourceSelection = nil
 		if e.hardBlockObserver != nil {
 			e.hardBlockObserver(observability.EngineHardBlockTrace{
 				Hit:      true,

@@ -3884,6 +3884,35 @@ func TestResourceSelectionContinuationStaleInvalidClearsAndFallsBack(t *testing.
 	assert.Len(t, mock.calls, 1, "second invalid selection should clear pending and resume normal routing")
 }
 
+func TestResourceSelectionContinuationHardBlockClearsPending(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "normal fallback"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	_, err := eng.Chat(context.Background(), "CPU 高怎么办", noopStep)
+	require.NoError(t, err)
+	require.NotNil(t, eng.pendingResourceSelection)
+
+	reply, err := eng.Chat(context.Background(), "账号余额还有多少", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, accountBillingUnsupportedReply)
+	assert.Nil(t, eng.pendingResourceSelection)
+
+	reply, err = eng.Chat(context.Background(), "2", noopStep)
+	require.NoError(t, err)
+	assert.Equal(t, "normal fallback", reply)
+	assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
+	assert.Len(t, mock.calls, 1, "numeric input after hard-block must not resume stale selection")
+}
+
 func TestPhase1CutoverInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 	cases := []struct {
 		name       string
