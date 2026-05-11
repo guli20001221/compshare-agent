@@ -31,9 +31,9 @@ func TestResourceSelectionPromptRendersCandidateDetails(t *testing.T) {
 		"\u5185\u5b58=65536 MB",
 		"cn-wlcb-01",
 		"charge=Dynamic",
-		"\u5e8f\u53f7",
+		"1/2/3",
 		"ID",
-		"\u540d\u79f0",
+		"\u5b8c\u6574\u5b9e\u4f8b\u540d\u79f0",
 	}
 	for _, part := range wantParts {
 		if !strings.Contains(got, part) {

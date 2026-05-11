@@ -128,6 +128,7 @@ type Engine struct {
 	currentMonitorStart        int64                          // start of the current historical monitor window, if any
 	currentMonitorEnd          int64                          // end of the current historical monitor window, if any
 	currentMonitorWindow       bool                           // true when currentMonitorStart/End are known
+	pendingResourceSelection   *pendingResourceSelection
 	// supportsObjectToolChoice gates force-tool guards (e.g. shouldForceMonitorRecall)
 	// from sending object tool_choice on models that don't support it (notably
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
@@ -586,11 +587,55 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 		return "", false
 	}
 
-	e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
 	if handled.Status == intent.HandlerStatusFallbackBeforeTool {
+		if isResourceSelectionFallbackReason(handled.FallbackReason) {
+			if selection, ok, err := e.buildResourceSelectionForPlan(ctx, result, dispatch.snapshot, onStep); err != nil {
+				reply := intent.FriendlyToolFailureReply
+				if msg, friendly := friendlyToolErrorMessage(err); friendly {
+					reply = msg
+				}
+				e.pendingResourceSelection = nil
+				e.emitPlannerTrace(result, intent.CutoverStatusFailureAfterTool, dispatch.latency)
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: reply,
+				})
+				return reply, true
+			} else if ok {
+				if len(selection.candidates) == 1 {
+					resumed := result
+					resumed.Plan = planWithSelectedResource(result.Plan, selection.candidates[0].UHostId)
+					req := intent.HandlerRequest{
+						Plan:     resumed.Plan,
+						Resolver: selection.snapshot,
+					}
+					handled = handler.HandleMonitorQuery(ctx, req)
+					e.emitPlannerTrace(resumed, handled.CutoverStatus, dispatch.latency)
+					reply := handled.Reply
+					if handled.Status == intent.HandlerStatusHandled {
+						reply = e.renderGroundedHandlerResult(ctx, handled)
+					}
+					e.messages = append(e.messages, openai.ChatCompletionMessage{
+						Role:    openai.ChatMessageRoleAssistant,
+						Content: reply,
+					})
+					return reply, true
+				}
+				e.pendingResourceSelection = selection
+				reply := renderResourceSelectionPrompt(*selection)
+				e.emitPlannerTrace(result, intent.CutoverStatusSelectionRequired, dispatch.latency)
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: reply,
+				})
+				return reply, true
+			}
+		}
+		e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
 		return "", false
 	}
 
+	e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
 		reply = e.renderGroundedHandlerResult(ctx, handled)

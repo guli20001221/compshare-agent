@@ -2738,6 +2738,87 @@ func phase1KnownInstanceDescribeResult() map[string]any {
 	}
 }
 
+func phase1MultipleInstanceDescribeResult() map[string]any {
+	return map[string]any{
+		"TotalCount": 2,
+		"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-select-002",
+				"Name":       "select-b",
+				"State":      "Running",
+				"GPU":        float64(1),
+				"GpuType":    "4090",
+				"CPU":        float64(16),
+				"Memory":     float64(65536),
+				"Zone":       "cn-wlcb-01",
+				"ChargeType": "Postpay",
+			},
+			map[string]any{
+				"UHostId":    "uhost-select-001",
+				"Name":       "select-a",
+				"State":      "Running",
+				"GPU":        float64(1),
+				"GpuType":    "4090",
+				"CPU":        float64(8),
+				"Memory":     float64(32768),
+				"Zone":       "cn-wlcb-01",
+				"ChargeType": "Postpay",
+			},
+		},
+	}
+}
+
+func phase1ManyInstanceDescribeResult(count int) map[string]any {
+	hosts := make([]any, 0, count)
+	for i := 1; i <= count; i++ {
+		hosts = append(hosts, map[string]any{
+			"UHostId":    fmt.Sprintf("uhost-select-%03d", i),
+			"Name":       fmt.Sprintf("select-%03d", i),
+			"State":      "Running",
+			"GPU":        float64(1),
+			"GpuType":    "4090",
+			"CPU":        float64(8),
+			"Memory":     float64(32768),
+			"Zone":       "cn-wlcb-01",
+			"ChargeType": "Postpay",
+		})
+	}
+	return map[string]any{
+		"TotalCount": count,
+		"UHostSet":   hosts,
+	}
+}
+
+func phase1AmbiguousInstanceDescribeResult() map[string]any {
+	return map[string]any{
+		"TotalCount": 2,
+		"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-dup-002",
+				"Name":       "dup",
+				"State":      "Running",
+				"GPU":        float64(1),
+				"GpuType":    "4090",
+				"CPU":        float64(16),
+				"Memory":     float64(65536),
+				"Zone":       "cn-wlcb-01",
+				"ChargeType": "Postpay",
+			},
+			map[string]any{
+				"UHostId":    "uhost-dup-001",
+				"Name":       "dup",
+				"State":      "Running",
+				"GPU":        float64(1),
+				"GpuType":    "4090",
+				"CPU":        float64(8),
+				"Memory":     float64(32768),
+				"Zone":       "cn-wlcb-01",
+				"ChargeType": "Postpay",
+			},
+		},
+	}
+}
+
 func phase1ResourcePlan() intent.Plan {
 	return intent.Plan{
 		SchemaVersion: intent.SchemaVersion,
@@ -2750,6 +2831,16 @@ func phase1ResourcePlan() intent.Plan {
 		}}},
 		Retrieval:  intent.Retrieval{Enabled: false},
 		Confidence: 0.9,
+	}
+}
+
+func phase1ResourcePlanWithoutTarget() intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentResourceInfo,
+		Slots:         intent.Slots{},
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    0.9,
 	}
 }
 
@@ -2789,6 +2880,36 @@ func phase1MonitorPlan() intent.Plan {
 				Source:     intent.SourceUserText,
 				SourceSpan: "phase1-demo",
 			}},
+		},
+		Retrieval:  intent.Retrieval{Enabled: false},
+		Confidence: 0.9,
+	}
+}
+
+func phase1MonitorPlanWithoutTarget() intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentMonitorQuery,
+		Slots: intent.Slots{
+			Metrics: []intent.Metric{intent.MetricCPU},
+		},
+		Retrieval:  intent.Retrieval{Enabled: false},
+		Confidence: 0.9,
+	}
+}
+
+func phase1MonitorPlanForName(name string) intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentMonitorQuery,
+		Slots: intent.Slots{
+			TargetRefs: []intent.TargetRef{{
+				Type:       intent.TargetRefName,
+				Value:      name,
+				Source:     intent.SourceUserText,
+				SourceSpan: name,
+			}},
+			Metrics: []intent.Metric{intent.MetricCPU},
 		},
 		Retrieval:  intent.Retrieval{Enabled: false},
 		Confidence: 0.9,
@@ -3334,6 +3455,234 @@ func TestPhase1CutoverMonitorPlanBypassesReAct(t *testing.T) {
 	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[0].Source)
 	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[1].Source)
 	assert.NotEmpty(t, (*events)[1].RendererInputToolArgHashes)
+}
+
+func TestPhase1CutoverMonitorMissingTargetReturnsResourceSelection(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{"List": []any{}},
+		},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	var traces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		traces = append(traces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "show cpu monitor", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "请选择一个")
+	assert.Contains(t, reply, "uhost-select-001")
+	assert.Contains(t, reply, "uhost-select-002")
+	assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
+	assert.Empty(t, mock.calls, "selection prompt must not fall back to ReAct")
+	require.NotNil(t, eng.pendingResourceSelection)
+	assert.Len(t, eng.pendingResourceSelection.candidates, 2)
+	require.Len(t, traces, 1)
+	assert.Equal(t, string(intent.CutoverStatusSelectionRequired), traces[0].CutoverStatus)
+}
+
+func TestPhase1CutoverMonitorSelectionPromptStatesWhenCandidatesTruncated(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1ManyInstanceDescribeResult(21),
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "show cpu monitor", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "前 20")
+	assert.Contains(t, reply, "名称")
+	assert.Contains(t, reply, "ID")
+	assert.Contains(t, reply, "uhost-select-020")
+	assert.NotContains(t, reply, "uhost-select-021")
+	require.NotNil(t, eng.pendingResourceSelection)
+	assert.Len(t, eng.pendingResourceSelection.candidates, 20)
+}
+
+func TestPhase1CutoverMonitorEmptyFreshSnapshotRefreshesBeforeSelection(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			require.Equal(t, "DescribeCompShareInstance", action)
+			return phase1MultipleInstanceDescribeResult(), nil
+		},
+	}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": 0,
+		"UHostSet":   []any{},
+	}, "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "show cpu monitor", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "uhost-select-001")
+	assert.Contains(t, reply, "uhost-select-002")
+	assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
+	require.NotNil(t, eng.pendingResourceSelection)
+	assert.Len(t, eng.pendingResourceSelection.candidates, 2)
+}
+
+func TestPhase1CutoverMonitorCandidateRefreshFailureDoesNotFallBackToReAct(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			require.Equal(t, "DescribeCompShareInstance", action)
+			return nil, fmt.Errorf("upstream unavailable")
+		},
+	}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	var traces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		traces = append(traces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "show cpu monitor", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, intent.FriendlyToolFailureReply)
+	assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
+	assert.Empty(t, mock.calls, "candidate refresh failure must not fall back to ReAct")
+	assert.Nil(t, eng.pendingResourceSelection)
+	require.Len(t, traces, 1)
+	assert.Equal(t, string(intent.CutoverStatusFailureAfterTool), traces[0].CutoverStatus)
+}
+
+func TestPhase1CutoverMonitorSelectionPromptDoesNotUseGroundedRenderer(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
+	}}
+	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+		Text: "renderer should not be used",
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+
+	reply, err := eng.Chat(context.Background(), "show cpu monitor", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "uhost-select-001")
+	assert.Empty(t, groundedRenderer.requests)
+	assert.Empty(t, mock.calls)
+	require.NotNil(t, eng.pendingResourceSelection)
+}
+
+func TestPhase1CutoverMonitorAmbiguousNameReturnsMatchingResourceSelection(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanForName("dup")}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{"List": []any{}},
+		},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1AmbiguousInstanceDescribeResult(), "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "show dup cpu monitor", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "uhost-dup-001")
+	assert.Contains(t, reply, "uhost-dup-002")
+	assert.Empty(t, executor.calls, "ambiguous selection must not call monitor")
+	assert.Empty(t, mock.calls, "selection prompt must not fall back to ReAct")
+	require.NotNil(t, eng.pendingResourceSelection)
+	assert.Len(t, eng.pendingResourceSelection.candidates, 2)
+}
+
+func TestPhase1CutoverMonitorSingleCandidateContinuesDirectly(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{"List": []any{
+				map[string]any{
+					"UHostId": "uhost-phase1-001",
+					"Metrics": []any{
+						map[string]any{"Name": "CPUUsageRate", "Value": 12},
+					},
+				},
+			}},
+		},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "show cpu monitor", noopStep)
+
+	require.NoError(t, err)
+	assert.NotContains(t, reply, "请选择一个")
+	assert.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, executor.calls)
+	assert.Nil(t, eng.pendingResourceSelection)
+	assert.Empty(t, mock.calls, "single-candidate continuation must bypass ReAct")
+}
+
+func TestPhase1ResourceInfoNoTargetStillListsInstancesWithoutPendingSelection(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo, intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "list my resources", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "uhost-select-001")
+	assert.Contains(t, reply, "uhost-select-002")
+	assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
+	assert.Nil(t, eng.pendingResourceSelection)
+	assert.Empty(t, mock.calls)
 }
 
 func TestPhase1CutoverInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {

@@ -1,20 +1,26 @@
 package engine
 
 import (
+	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
 )
 
+const maxResourceSelectionCandidates = 20
+
 type pendingResourceSelection struct {
 	originalUserMsg string
 	plan            intent.Plan
 	snapshot        entity.RegistrySnapshot
 	candidates      []entity.InstanceSnapshot
+	truncated       bool
 	createdTurn     int
 	invalidAttempts int
 }
@@ -44,7 +50,10 @@ func renderResourceSelectionPrompt(p pendingResourceSelection) string {
 			sanitizeResourceSelectionPromptField(inst.ChargeType),
 		)
 	}
-	b.WriteString("\n\u4f60\u53ef\u4ee5\u56de\u590d\u5e8f\u53f7\u3001\u5b9e\u4f8b ID \u6216\u5b9e\u4f8b\u540d\u79f0\u3002")
+	if p.truncated {
+		b.WriteString("\n这里只显示按实例 ID 排序后的前 20 个候选。你可以回复更具体的实例名称或实例 ID 来缩小范围。\n")
+	}
+	b.WriteString("\n\u4f60\u53ef\u4ee5\u56de\u590d 1/2/3\u3001\u5b9e\u4f8b ID \u6216\u5b8c\u6574\u5b9e\u4f8b\u540d\u79f0\u3002")
 	return b.String()
 }
 
@@ -84,6 +93,142 @@ func matchResourceSelection(input string, p pendingResourceSelection) resourceSe
 
 func isResourceSelectionExpired(currentTurn int, p pendingResourceSelection) bool {
 	return currentTurn > p.createdTurn+2
+}
+
+func isResourceSelectionFallbackReason(reason intent.FallbackReason) bool {
+	switch reason {
+	case intent.FallbackMissingTarget, intent.FallbackUnresolvedTarget, intent.FallbackAmbiguousTarget:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *Engine) buildResourceSelectionForPlan(ctx context.Context, result intent.PlannerResult, snapshot entity.RegistrySnapshot, _ func(StepEvent)) (*pendingResourceSelection, bool, error) {
+	if result.Plan.Intent != intent.IntentMonitorQuery {
+		return nil, false, nil
+	}
+	candidates, refreshedSnapshot, truncated, ok, err := e.candidateInstancesForSelection(ctx, result.Plan, snapshot, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok || len(candidates) == 0 {
+		return nil, false, nil
+	}
+	return &pendingResourceSelection{
+		originalUserMsg: e.lastUserMsg,
+		plan:            result.Plan,
+		snapshot:        refreshedSnapshot,
+		candidates:      candidates,
+		truncated:       truncated,
+		createdTurn:     e.userTurn,
+	}, true, nil
+}
+
+func (e *Engine) candidateInstancesForSelection(ctx context.Context, plan intent.Plan, snapshot entity.RegistrySnapshot, _ func(StepEvent)) ([]entity.InstanceSnapshot, entity.RegistrySnapshot, bool, bool, error) {
+	snapshot, ok, err := e.freshResourceSelectionSnapshot(ctx, snapshot)
+	if err != nil {
+		return nil, entity.RegistrySnapshot{}, false, false, err
+	}
+	if !ok {
+		return nil, entity.RegistrySnapshot{}, false, false, nil
+	}
+
+	var candidates []entity.InstanceSnapshot
+	if len(plan.Slots.TargetRefs) == 0 {
+		candidates = instancesFromSelectionSnapshot(snapshot)
+	} else {
+		candidates = matchingSelectionCandidates(plan, snapshot)
+		if len(candidates) == 0 {
+			candidates = instancesFromSelectionSnapshot(snapshot)
+		}
+	}
+	candidates, truncated := sortAndLimitResourceSelectionCandidates(candidates)
+	return candidates, snapshot, truncated, len(candidates) > 0, nil
+}
+
+func (e *Engine) freshResourceSelectionSnapshot(ctx context.Context, snapshot entity.RegistrySnapshot) (entity.RegistrySnapshot, bool, error) {
+	if e == nil || e.registry == nil {
+		return snapshot, len(snapshot.Instances) > 0 && !snapshot.LastFullSync.IsZero(), nil
+	}
+	if e.registry.NeedsRefresh(time.Now()) || len(snapshot.Instances) == 0 {
+		if _, err := e.refreshRegistry(ctx, entity.RefreshReasonTTL); err != nil {
+			return entity.RegistrySnapshot{}, false, err
+		}
+		return e.RegistrySnapshot(), true, nil
+	}
+	if snapshot.LastFullSync.IsZero() || len(snapshot.Instances) == 0 {
+		snapshot = e.RegistrySnapshot()
+	}
+	return snapshot, !snapshot.LastFullSync.IsZero() && len(snapshot.Instances) > 0, nil
+}
+
+func matchingSelectionCandidates(plan intent.Plan, snapshot entity.RegistrySnapshot) []entity.InstanceSnapshot {
+	var candidates []entity.InstanceSnapshot
+	for _, ref := range plan.Slots.TargetRefs {
+		switch ref.Type {
+		case intent.TargetRefName:
+			matches, res := snapshot.ResolveByName(ref.Value)
+			if res.Status != entity.ResolveHit && res.Status != entity.ResolveAmbiguous {
+				continue
+			}
+			for _, match := range matches {
+				if match != nil {
+					candidates = append(candidates, *match)
+				}
+			}
+		case intent.TargetRefUHostIDUserInput:
+			if inst, res := snapshot.ResolveByID(ref.Value); res.Status == entity.ResolveHit && inst != nil {
+				candidates = append(candidates, *inst)
+			}
+		}
+	}
+	return dedupeResourceSelectionCandidates(candidates)
+}
+
+func instancesFromSelectionSnapshot(snapshot entity.RegistrySnapshot) []entity.InstanceSnapshot {
+	candidates := make([]entity.InstanceSnapshot, 0, len(snapshot.Instances))
+	for _, inst := range snapshot.Instances {
+		candidates = append(candidates, inst)
+	}
+	return candidates
+}
+
+func sortAndLimitResourceSelectionCandidates(candidates []entity.InstanceSnapshot) ([]entity.InstanceSnapshot, bool) {
+	candidates = dedupeResourceSelectionCandidates(candidates)
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].UHostId < candidates[j].UHostId
+	})
+	if len(candidates) > maxResourceSelectionCandidates {
+		return candidates[:maxResourceSelectionCandidates], true
+	}
+	return candidates, false
+}
+
+func dedupeResourceSelectionCandidates(candidates []entity.InstanceSnapshot) []entity.InstanceSnapshot {
+	if len(candidates) < 2 {
+		return candidates
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	out := make([]entity.InstanceSnapshot, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate.UHostId]; ok {
+			continue
+		}
+		seen[candidate.UHostId] = struct{}{}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func planWithSelectedResource(plan intent.Plan, uhostID string) intent.Plan {
+	plan.Slots.TargetRefs = []intent.TargetRef{{
+		Type:       intent.TargetRefUHostIDUserInput,
+		Value:      uhostID,
+		Source:     intent.SourcePriorTurn,
+		SourceSpan: uhostID,
+	}}
+	return plan
 }
 
 func sanitizeResourceSelectionPromptField(value string) string {
