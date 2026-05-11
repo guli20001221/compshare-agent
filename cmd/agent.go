@@ -15,6 +15,7 @@ import (
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/renderer"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -161,9 +162,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			break
 		}
 
-		// Check if user typed a suggestion number
-		if n, err := strconv.Atoi(input); err == nil && n >= 1 && n <= len(suggestions) {
-			input = suggestions[n-1].Text
+		// Check if user typed a startup suggestion number. This is intentionally
+		// limited to the first user turn so later resource-selection replies such
+		// as "2" are passed to the engine unchanged.
+		if rewritten, ok := applyStartupSuggestion(input, suggestions, turnIndex); ok {
+			input = rewritten
 			fmt.Printf("→ %s\n", input)
 		}
 
@@ -198,8 +201,8 @@ func runCLI(cmd *cobra.Command, args []string) error {
 				traceRecorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
 					return shadowRunner.Run(ctx, plannerInput)
 				})
-			}
-		}
+	}
+}
 
 		onStep := func(ev engine.StepEvent) {
 			if traceRecorder != nil {
@@ -236,6 +239,17 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\nAssistant> %s\n\n", reply)
 	}
 	return nil
+}
+
+func applyStartupSuggestion(input string, suggestions []prompt.Suggestion, turnIndex int) (string, bool) {
+	if turnIndex != 0 {
+		return input, false
+	}
+	n, err := strconv.Atoi(input)
+	if err != nil || n < 1 || n > len(suggestions) {
+		return input, false
+	}
+	return suggestions[n-1].Text, true
 }
 
 func cliShadowPlannerInput(eng *engine.Engine, userText string) intent.PlannerInput {

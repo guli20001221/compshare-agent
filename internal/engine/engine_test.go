@@ -3714,7 +3714,7 @@ func TestResourceSelectionContinuationOrdinalRunsOriginalMonitorQuery(t *testing
 	assert.Contains(t, firstReply, "uhost-select-001")
 	assert.Contains(t, firstReply, "uhost-select-002")
 
-	secondReply, err := eng.Chat(context.Background(), "选第二台", noopStep)
+	secondReply, err := eng.Chat(context.Background(), "2", noopStep)
 	require.NoError(t, err)
 	assert.Contains(t, secondReply, "CPU")
 	assert.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, executor.calls)
