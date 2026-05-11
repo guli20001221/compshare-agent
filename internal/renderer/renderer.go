@@ -78,7 +78,6 @@ func (r *GroundedRenderer) Render(ctx context.Context, req RenderRequest) Render
 			{Role: openai.ChatMessageRoleSystem, Content: groundedSystemPrompt},
 			{Role: openai.ChatMessageRoleUser, Content: string(payload)},
 		},
-		ToolChoice: "none",
 	})
 	result.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil || resp == nil {

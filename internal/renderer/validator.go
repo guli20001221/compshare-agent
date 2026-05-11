@@ -11,11 +11,12 @@ import (
 )
 
 var (
-	uhostTokenPattern        = regexp.MustCompile(`uhost-[A-Za-z0-9_-]+`)
-	instanceLikeTokenPattern = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)+\b`)
-	percentClaimPattern      = regexp.MustCompile(`\d+(?:\.\d+)?\s*[%％]|百分之\s*\d+(?:\.\d+)?`)
-	accountBillClaimPatterns = []*regexp.Regexp{
+	uhostTokenPattern         = regexp.MustCompile(`uhost-[A-Za-z0-9_-]+`)
+	instanceLikeTokenPattern  = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)+\b`)
+	monitorNumberClaimPattern = regexp.MustCompile(`百分之\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*[%％]?`)
+	accountBillClaimPatterns  = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(账号|账户).{0,10}(余额|总账单|账单|流水|交易|消费|费用|扣费|花费)`),
+		regexp.MustCompile(`(?i)(账号|账户).{0,12}(还剩|还有|用了|用掉|花了|花费|消费|扣费|多少钱|多少元|多少)`),
 		regexp.MustCompile(`(?i)(余额|balance|account balance|monthly bill|transaction flow|transactions)`),
 		regexp.MustCompile(`(?i)(本月|当月|月度).{0,12}(总账单|账单|消费|费用|扣费|扣了|花费|花了|多少钱|多少)`),
 		regexp.MustCompile(`(?i)(总账单|消费流水|交易流水|账户流水|账号流水)`),
@@ -48,21 +49,8 @@ func ValidateRenderedText(env envelope.Envelope, text string) error {
 			}
 		}
 	}
-	if env.Kind == envelope.KindMonitorQuery {
-		allowed := allowedMonitorPercents(env)
-		previousClaimEnd := 0
-		for _, span := range percentClaimPattern.FindAllStringIndex(text, -1) {
-			claim := text[span[0]:span[1]]
-			normalized := normalizePercent(claim)
-			if _, ok := allowed.Values[normalized]; !ok {
-				return fmt.Errorf("rendered text contains ungrounded monitor percent %q", claim)
-			}
-			contextStart := monitorMetricContextStart(text, previousClaimEnd, span[0])
-			if !monitorClaimHasGroundedMetric(text, contextStart, span[0], claim, allowed) {
-				return fmt.Errorf("rendered text contains monitor percent bound to wrong metric %q", claim)
-			}
-			previousClaimEnd = span[1]
-		}
+	if err := validateMonitorClaims(env, text); err != nil {
+		return err
 	}
 	return nil
 }
@@ -99,6 +87,80 @@ func allowedInstanceLikeTokens(env envelope.Envelope) map[string]struct{} {
 		}
 	}
 	return allowed
+}
+
+func validateMonitorClaims(env envelope.Envelope, text string) error {
+	allowed := allowedMonitorPercents(env)
+	previousClaimEnd := 0
+	for _, span := range monitorNumberClaimPattern.FindAllStringIndex(text, -1) {
+		claim := text[span[0]:span[1]]
+		contextStart := monitorMetricContextStart(text, previousClaimEnd, span[0])
+		if !isMonitorNumericClaim(env, text, contextStart, span[0], claim) {
+			continue
+		}
+		normalized := normalizePercent(claim)
+		if _, ok := allowed.Values[normalized]; !ok {
+			return fmt.Errorf("rendered text contains ungrounded monitor percent %q", claim)
+		}
+		if !monitorClaimHasGroundedMetric(text, contextStart, span[0], claim, allowed) {
+			return fmt.Errorf("rendered text contains monitor percent bound to wrong metric %q", claim)
+		}
+		previousClaimEnd = span[1]
+	}
+	return nil
+}
+
+func isMonitorNumericClaim(env envelope.Envelope, text string, contextStart, claimStart int, claim string) bool {
+	if contextStart < 0 || claimStart < contextStart || claimStart > len(text) {
+		return false
+	}
+	window := strings.ToLower(text[contextStart:claimStart])
+	if env.Kind == envelope.KindMonitorQuery && hasPercentSyntax(claim) {
+		return true
+	}
+	if !windowMentionsMonitorMetric(window) {
+		return false
+	}
+	if hasPercentSyntax(claim) {
+		return true
+	}
+	return windowMentionsMonitorUsage(window)
+}
+
+func hasPercentSyntax(claim string) bool {
+	return strings.Contains(claim, "%") ||
+		strings.Contains(claim, "％") ||
+		strings.Contains(claim, "百分之")
+}
+
+func windowMentionsMonitorMetric(window string) bool {
+	for _, aliases := range monitorMetricAliases {
+		for _, alias := range aliases {
+			if strings.Contains(window, alias) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func windowMentionsMonitorUsage(window string) bool {
+	for _, token := range []string{
+		"使用率",
+		"利用率",
+		"占用",
+		"占比",
+		"负载",
+		"usage",
+		"utilization",
+		"utilisation",
+		"load",
+	} {
+		if strings.Contains(window, token) {
+			return true
+		}
+	}
+	return false
 }
 
 type monitorPercentAllowance struct {

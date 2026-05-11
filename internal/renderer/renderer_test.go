@@ -30,7 +30,7 @@ func TestGroundedRendererSendsOnlyEnvelopeAndNoTools(t *testing.T) {
 	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, result.EnvelopeHash)
 	require.Len(t, mock.requests, 1)
 	assert.Empty(t, mock.requests[0].Tools)
-	assert.Equal(t, "none", mock.requests[0].ToolChoice)
+	assert.Empty(t, mock.requests[0].ToolChoice)
 	require.Len(t, mock.requests[0].Messages, 2)
 	wantEnvelope, err := json.Marshal(testResourceEnvelope())
 	require.NoError(t, err)

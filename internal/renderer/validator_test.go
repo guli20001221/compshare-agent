@@ -17,6 +17,9 @@ func TestValidateRenderedTextRejectsAccountBillingClaims(t *testing.T) {
 		"本月总账单是 100 元",
 		"账号总账单是 100 元",
 		"余额是 10 元",
+		"账号还剩 100 元",
+		"账户还有多少钱",
+		"账号用了多少钱",
 		"balance is 10",
 		"本月消费是 100 元",
 		"本月扣费是 100 元",
@@ -44,6 +47,13 @@ func TestValidateRenderedTextRejectsPercentWithoutMonitorFacts(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestValidateRenderedTextRejectsMonitorClaimsOutsideMonitorEnvelope(t *testing.T) {
+	env := testResourceEnvelope()
+	assert.Error(t, ValidateRenderedText(env, "CPU 使用率是 90%"))
+	assert.Error(t, ValidateRenderedText(env, "GPU 使用率是 90"))
+	assert.NoError(t, ValidateRenderedText(env, "CPU 是 2 核，内存是 4 GB"))
+}
+
 func TestValidateRenderedTextRejectsUngroundedMonitorPercent(t *testing.T) {
 	env := envelope.Envelope{
 		Kind: envelope.KindMonitorQuery,
@@ -56,7 +66,9 @@ func TestValidateRenderedTextRejectsUngroundedMonitorPercent(t *testing.T) {
 	}
 
 	assert.NoError(t, ValidateRenderedText(env, "GPU 是 87%"))
+	assert.NoError(t, ValidateRenderedText(env, "GPU 使用率是 87"))
 	assert.Error(t, ValidateRenderedText(env, "GPU 是 99%"))
+	assert.Error(t, ValidateRenderedText(env, "GPU 使用率是 99"))
 	assert.NoError(t, ValidateRenderedText(env, "GPU 是 87％"))
 	assert.Error(t, ValidateRenderedText(env, "GPU 是 99％"))
 	assert.NoError(t, ValidateRenderedText(env, "GPU 是百分之87"))
