@@ -14,7 +14,11 @@ var (
 	uhostTokenPattern         = regexp.MustCompile(`uhost-[A-Za-z0-9_-]+`)
 	instanceLikeTokenPattern  = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)+\b`)
 	monitorNumberClaimPattern = regexp.MustCompile(`百分之\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*[%％]?`)
-	accountBillClaimPatterns  = []*regexp.Regexp{
+	resourceCountPatterns     = []*regexp.Regexp{
+		regexp.MustCompile(`共\s*(\d+)\s*(?:个|台)?(?:实例|机器)`),
+		regexp.MustCompile(`(\d+)\s*个[^，。\n]{0,24}(?:实例|机器)`),
+	}
+	accountBillClaimPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(账号|账户).{0,10}(余额|总账单|账单|流水|交易|消费|费用|扣费|花费)`),
 		regexp.MustCompile(`(?i)(账号|账户).{0,12}(还剩|还有|用了|用掉|花了|花费|消费|扣费|多少钱|多少元|多少)`),
 		regexp.MustCompile(`(?i)(余额|balance|account balance|monthly bill|transaction flow|transactions)`),
@@ -42,6 +46,9 @@ func ValidateRenderedText(env envelope.Envelope, text string) error {
 	if err := validateKnownNames(env, text); err != nil {
 		return err
 	}
+	if err := validateResourceInfoClaims(env, text); err != nil {
+		return err
+	}
 	if env.Constraints.DoNotAnswerAccountBill {
 		for _, pattern := range accountBillClaimPatterns {
 			if pattern.MatchString(text) {
@@ -53,6 +60,68 @@ func ValidateRenderedText(env envelope.Envelope, text string) error {
 		return err
 	}
 	return nil
+}
+
+func validateResourceInfoClaims(env envelope.Envelope, text string) error {
+	if env.Kind != envelope.KindResourceInfo {
+		return nil
+	}
+	if len(env.Subjects) > 1 {
+		for _, subject := range env.Subjects {
+			if subject.ID == "" {
+				continue
+			}
+			if !strings.Contains(text, subject.ID) {
+				return fmt.Errorf("resource_info rendered text omitted instance id %q", subject.ID)
+			}
+		}
+	}
+	expected, ok := resourceExpectedListCount(env)
+	if !ok {
+		return nil
+	}
+	for _, pattern := range resourceCountPatterns {
+		for _, match := range pattern.FindAllStringSubmatch(text, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			actual, err := strconv.Atoi(match[1])
+			if err != nil {
+				continue
+			}
+			if actual != expected {
+				return fmt.Errorf("resource_info rendered count %d does not match envelope count %d", actual, expected)
+			}
+		}
+	}
+	return nil
+}
+
+func resourceExpectedListCount(env envelope.Envelope) (int, bool) {
+	if matched, ok := computedInt(env, "matched_count"); ok {
+		return matched, true
+	}
+	return computedInt(env, "total_count")
+}
+
+func computedInt(env envelope.Envelope, key string) (int, bool) {
+	for _, fact := range env.Computed {
+		if fact.Key != key {
+			continue
+		}
+		switch typed := fact.Value.(type) {
+		case int:
+			return typed, true
+		case int64:
+			return int(typed), true
+		case float64:
+			return int(typed), true
+		case string:
+			value, err := strconv.Atoi(strings.TrimSpace(typed))
+			return value, err == nil
+		}
+	}
+	return 0, false
 }
 
 func validateKnownNames(env envelope.Envelope, text string) error {

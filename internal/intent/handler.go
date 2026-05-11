@@ -124,23 +124,45 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 		return FallbackBeforeTool(FallbackValidation)
 	}
 
-	ids, fallback := resolveResourceTargets(req.Plan.Slots.TargetRefs, req.Resolver)
-	if fallback != nil {
-		return *fallback
+	var ids []string
+	var filters ResourceFilterSet
+	hasFilters := containsFilterRef(req.Plan.Slots.TargetRefs)
+	if hasFilters {
+		parsed, err := ParseResourceFilters(req.Plan.Slots.TargetRefs)
+		if err != nil {
+			return FallbackBeforeTool(FallbackValidation)
+		}
+		filters = parsed
+	} else {
+		resolvedIDs, fallback := resolveResourceTargets(req.Plan.Slots.TargetRefs, req.Resolver)
+		if fallback != nil {
+			return *fallback
+		}
+		ids = resolvedIDs
 	}
 	args := describeResourceArgs(ids)
 	raw, err := h.executor.Execute(ctx, action, args)
 	if err != nil {
 		return failureAfterToolForError(action, args, "resource_info", err)
 	}
-	instances, err := instancesFromDescribeResult(raw)
+	describeData, err := instancesFromDescribeResult(raw)
 	if err != nil {
 		return failureAfterToolWithTrace(action, args, "resource_info")
+	}
+	instances := describeData.Instances
+	totalCount := describeData.TotalCount
+	if hasFilters {
+		instances = applyResourceFilters(instances, filters)
 	}
 	result := HandledResult(RenderResourceSummary(instances))
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
-	env := BuildResourceEnvelope(instances)
+	envMeta := ResourceEnvelopeMeta{TotalCount: totalCount}
+	if hasFilters && !filters.IsZero() {
+		envMeta.FilterApplied = filters.String()
+		envMeta.MatchedCount = len(instances)
+	}
+	env := BuildResourceEnvelopeWithMeta(instances, envMeta)
 	result.Envelope = &env
 	result.RendererInputEnvelopeHashes = hashEnvelopeForRenderer(env)
 	return result
@@ -328,10 +350,16 @@ func describeResourceArgs(ids []string) map[string]any {
 	return map[string]any{"UHostIds": append([]string(nil), ids...)}
 }
 
-func instancesFromDescribeResult(raw map[string]any) ([]entity.InstanceSnapshot, error) {
+type resourceDescribeData struct {
+	Instances  []entity.InstanceSnapshot
+	TotalCount int
+	Truncated  bool
+}
+
+func instancesFromDescribeResult(raw map[string]any) (resourceDescribeData, error) {
 	reg := entity.NewRegistry()
 	if err := reg.SyncFromDescribe(raw, "handler_resource"); err != nil {
-		return nil, err
+		return resourceDescribeData{}, err
 	}
 	snap := reg.Snapshot()
 	instances := make([]entity.InstanceSnapshot, 0, len(snap.Instances))
@@ -341,7 +369,15 @@ func instancesFromDescribeResult(raw map[string]any) ([]entity.InstanceSnapshot,
 	sort.Slice(instances, func(i, j int) bool {
 		return instances[i].UHostId < instances[j].UHostId
 	})
-	return instances, nil
+	totalCount := snap.TotalCount
+	if totalCount == 0 && len(instances) > 0 {
+		totalCount = len(instances)
+	}
+	return resourceDescribeData{
+		Instances:  instances,
+		TotalCount: totalCount,
+		Truncated:  snap.Truncated,
+	}, nil
 }
 
 func copyArgs(args map[string]any) map[string]any {

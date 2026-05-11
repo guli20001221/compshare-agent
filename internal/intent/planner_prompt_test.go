@@ -33,8 +33,8 @@ func TestBuildSystemPromptIncludesPhase1CutoverSchemaFields(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	if len(examples) != 4 {
-		t.Fatalf("prompt examples count = %d, want 4; examples=%v", len(examples), examples)
+	if len(examples) != 6 {
+		t.Fatalf("prompt examples count = %d, want 6; examples=%v", len(examples), examples)
 	}
 	for _, example := range examples {
 		plan, err := parsePlanJSON(example)

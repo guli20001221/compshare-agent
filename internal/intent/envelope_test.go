@@ -71,6 +71,40 @@ func TestBuildResourceEnvelopeIsStableAndCustomerSafe(t *testing.T) {
 	assert.NotContains(t, hash, strings.Repeat("b", 25))
 }
 
+func TestBuildResourceEnvelopeWithFilterMeta(t *testing.T) {
+	instances := []entity.InstanceSnapshot{{
+		UHostId: "uhost-a",
+		Name:    "run-a",
+		State:   "Running",
+	}}
+
+	env := BuildResourceEnvelopeWithMeta(instances, ResourceEnvelopeMeta{
+		FilterApplied: "state=running",
+		MatchedCount:  1,
+		TotalCount:    3,
+	})
+
+	require.Len(t, env.Subjects, 1)
+	assert.Equal(t, "uhost-a", env.Subjects[0].ID)
+	assertEnvelopeComputedFact(t, env, "filter_applied", "state=running")
+	assertEnvelopeComputedFact(t, env, "matched_count", "1")
+	assertEnvelopeComputedFact(t, env, "total_count", "3")
+}
+
+func TestBuildResourceEnvelopeWithTotalCountMeta(t *testing.T) {
+	instances := []entity.InstanceSnapshot{{
+		UHostId: "uhost-a",
+		Name:    "run-a",
+		State:   "Running",
+	}}
+
+	env := BuildResourceEnvelopeWithMeta(instances, ResourceEnvelopeMeta{TotalCount: 16})
+
+	assertEnvelopeComputedFact(t, env, "total_count", "16")
+	assertNoEnvelopeComputedFact(t, env, "matched_count")
+	assertNoEnvelopeComputedFact(t, env, "filter_applied")
+}
+
 func TestBuildMonitorEnvelopeUsesResolvedSubjectsAndFiltersMetrics(t *testing.T) {
 	subjects := []entity.InstanceSnapshot{{
 		UHostId: "uhost-a",
@@ -261,6 +295,27 @@ func assertNoEnvelopeFact(t *testing.T, env envelope.Envelope, subjectID, key st
 	for _, fact := range env.Facts {
 		if fact.SubjectID == subjectID && fact.Key == key {
 			t.Fatalf("unexpected fact subject=%s key=%s in %#v", subjectID, key, env.Facts)
+		}
+	}
+}
+
+func assertEnvelopeComputedFact(t *testing.T, env envelope.Envelope, key string, value any) {
+	t.Helper()
+	for _, fact := range env.Computed {
+		if fact.Key == key {
+			assert.Equal(t, value, fact.Value)
+			assert.Equal(t, envelope.FactSourceComputed, fact.Source)
+			return
+		}
+	}
+	t.Fatalf("missing computed fact key=%s in %#v", key, env.Computed)
+}
+
+func assertNoEnvelopeComputedFact(t *testing.T, env envelope.Envelope, key string) {
+	t.Helper()
+	for _, fact := range env.Computed {
+		if fact.Key == key {
+			t.Fatalf("unexpected computed fact key=%s in %#v", key, env.Computed)
 		}
 	}
 }

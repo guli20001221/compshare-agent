@@ -122,3 +122,19 @@ func TestValidateRenderedTextAllowsKnownFacts(t *testing.T) {
 	err := ValidateRenderedText(testResourceEnvelope(), "train-a 当前状态是 Running")
 	assert.NoError(t, err)
 }
+
+func TestValidateRenderedTextResourceInfoRequiresAllIDsForMultiSubject(t *testing.T) {
+	env := testMultiResourceEnvelope()
+
+	assert.NoError(t, ValidateRenderedText(env, "共 2 个实例：uhost-a train-a；uhost-b train-b"))
+	assert.Error(t, ValidateRenderedText(env, "共 2 个实例：train-a 和 train-b 都在运行"))
+	assert.Error(t, ValidateRenderedText(env, "当前 GPU 数量最多为 2，没有实例拥有 3 台或更多 GPU"))
+}
+
+func TestValidateRenderedTextResourceInfoRejectsWrongTotalCount(t *testing.T) {
+	env := testMultiResourceEnvelope()
+
+	assert.NoError(t, ValidateRenderedText(env, "共 2 个实例：uhost-a；uhost-b"))
+	assert.Error(t, ValidateRenderedText(env, "共 15 个实例：uhost-a；uhost-b"))
+	assert.Error(t, ValidateRenderedText(env, "当前的15个运行中实例包括：uhost-a；uhost-b"))
+}

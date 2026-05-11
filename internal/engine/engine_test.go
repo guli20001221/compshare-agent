@@ -16,6 +16,7 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
@@ -2752,6 +2753,31 @@ func phase1ResourcePlan() intent.Plan {
 	}
 }
 
+func assertEngineComputedFact(t *testing.T, env envelope.Envelope, key string, want any) {
+	t.Helper()
+	for _, fact := range env.Computed {
+		if fact.Key == key {
+			assert.Equal(t, want, fact.Value)
+			assert.Equal(t, envelope.FactSourceComputed, fact.Source)
+			return
+		}
+	}
+	t.Fatalf("missing computed fact key=%s in %#v", key, env.Computed)
+}
+
+func phase1ResourceFilterPlan() intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentResourceInfo,
+		Slots: intent.Slots{TargetRefs: []intent.TargetRef{
+			{Type: intent.TargetRefFilter, Value: "state=running"},
+			{Type: intent.TargetRefFilter, Value: "gpu_type=4090"},
+		}},
+		Retrieval:  intent.Retrieval{Enabled: false},
+		Confidence: 0.9,
+	}
+}
+
 func phase1MonitorPlan() intent.Plan {
 	return intent.Plan{
 		SchemaVersion: intent.SchemaVersion,
@@ -3151,6 +3177,48 @@ func TestPhase1CutoverResourcePlanUsesGroundedRenderer(t *testing.T) {
 	assert.Equal(t, "resource_info", rendererTraces[0].EnvelopeKind)
 	require.Len(t, rendererTraces[0].InputEnvelopeHashes, 1)
 	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, rendererTraces[0].InputEnvelopeHashes[0])
+}
+
+func TestPhase1CutoverResourceFilterPlanSendsFilteredEnvelopeToRenderer(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourceFilterPlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"TotalCount": 3,
+			"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-running-4090", "Name": "run-4090", "State": "Running", "GpuType": "4090", "GPU": float64(1), "CPU": float64(8), "Memory": float64(64)},
+				map[string]any{"UHostId": "uhost-running-v100", "Name": "run-v100", "State": "Running", "GpuType": "V100S", "GPU": float64(1), "CPU": float64(10), "Memory": float64(64)},
+				map[string]any{"UHostId": "uhost-stopped-4090", "Name": "stop-4090", "State": "Stopped", "GpuType": "4090", "GPU": float64(1), "CPU": float64(8), "Memory": float64(64)},
+			},
+		},
+	}}
+	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+		Text:            "renderer says one running 4090 instance",
+		Model:           "deepseek-v4-flash",
+		AttributionMode: grounded.AttributionEnvelope,
+		EnvelopeHash:    "sha256:renderer-envelope",
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+
+	reply, err := eng.Chat(context.Background(), "show running 4090 instances", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "renderer says one running 4090 instance", reply)
+	assert.Empty(t, mock.calls)
+	assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
+	require.Len(t, groundedRenderer.requests, 1)
+	env := groundedRenderer.requests[0].Envelope
+	require.Len(t, env.Subjects, 1)
+	assert.Equal(t, "uhost-running-4090", env.Subjects[0].ID)
+	assertEngineComputedFact(t, env, "filter_applied", "state=running,gpu_type=4090")
+	assertEngineComputedFact(t, env, "matched_count", "1")
+	assertEngineComputedFact(t, env, "total_count", "3")
 }
 
 func TestPhase1CutoverGroundedRendererFallbackUsesDeterministicReply(t *testing.T) {

@@ -127,6 +127,8 @@ func (h *heuristicFixtureLLM) CompleteIntentPlan(_ context.Context, req intp.Pla
 func classifyFixtureMessage(msg string) intp.Plan {
 	normalized := strings.ToLower(msg)
 	switch {
+	case isResourceFilterText(normalized):
+		return resourceFilterFixturePlan(normalized)
 	case isMixedOrNonTargetText(normalized):
 		return unknownFixturePlan()
 	case strings.Contains(normalized, "uhost-abc123") && isMonitorText(normalized):
@@ -208,6 +210,31 @@ func classifyFixtureMessage(msg string) intp.Plan {
 	}
 }
 
+func resourceFilterFixturePlan(normalized string) intp.Plan {
+	refs := []intp.TargetRef{}
+	if strings.Contains(normalized, "在跑") ||
+		strings.Contains(normalized, "运行") ||
+		strings.Contains(normalized, "running") {
+		refs = append(refs, intp.TargetRef{Type: intp.TargetRefFilter, Value: "state=running"})
+	}
+	if strings.Contains(normalized, "关机") ||
+		strings.Contains(normalized, "停止") ||
+		strings.Contains(normalized, "stopped") {
+		refs = append(refs, intp.TargetRef{Type: intp.TargetRefFilter, Value: "state=stopped"})
+	}
+	if strings.Contains(normalized, "4090") {
+		refs = append(refs, intp.TargetRef{Type: intp.TargetRefFilter, Value: "gpu_type=4090"})
+	}
+	return intp.Plan{
+		SchemaVersion: intp.SchemaVersion,
+		Intent:        intp.IntentResourceInfo,
+		Slots:         intp.Slots{TargetRefs: refs},
+		RequiredTools: []string{"DescribeCompShareInstance"},
+		Retrieval:     intp.Retrieval{Enabled: false},
+		Confidence:    0.86,
+	}
+}
+
 func unknownFixturePlan() intp.Plan {
 	return intp.Plan{
 		SchemaVersion: intp.SchemaVersion,
@@ -228,6 +255,17 @@ func extractUserMessage(prompt string) string {
 		msg = msg[:next]
 	}
 	return msg
+}
+
+func isResourceFilterText(s string) bool {
+	return strings.Contains(s, "哪些机器") ||
+		strings.Contains(s, "哪些是") ||
+		strings.Contains(s, "有哪些机器") ||
+		(strings.Contains(s, "机器") && strings.Contains(s, "4090")) ||
+		strings.Contains(s, "在跑") ||
+		strings.Contains(s, "已经关机") ||
+		strings.Contains(s, "running instances") ||
+		strings.Contains(s, "stopped instances")
 }
 
 func isMonitorText(s string) bool {
@@ -286,6 +324,7 @@ func isMixedOrNonTargetText(s string) bool {
 
 func isTargetIntent(intent intp.Intent) bool {
 	return intent == intp.IntentMonitorQuery ||
+		intent == intp.IntentResourceInfo ||
 		intent == intp.IntentBillingInstance ||
 		intent == intp.IntentBillingAccountUnsupported
 }
