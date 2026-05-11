@@ -459,27 +459,30 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot) string {
 }
 
 func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {
-	redacted, _ := security.RedactForLLM(payload).(map[string]any)
-	flat := map[string]string{}
-	flattenScalars("", redacted, flat)
-	if len(flat) == 0 {
+	allFacts := monitorScalarFacts(nil, payload)
+	if len(allFacts) == 0 {
 		return noMonitorValuesReply
 	}
 
-	keys := make([]string, 0, len(flat))
-	for key := range flat {
-		if len(metrics) == 0 || matchesRequestedMetric(key, metrics) {
-			keys = append(keys, key)
-		}
+	facts := allFacts
+	if len(metrics) > 0 {
+		facts = monitorScalarFacts(metrics, payload)
 	}
-	sort.Strings(keys)
-	if len(keys) == 0 {
+	if len(facts) == 0 {
 		return noRequestedMonitorValuesReply
 	}
 
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		parts = append(parts, key+"="+flat[key])
+	parts := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		value := fact.Value
+		if fact.Unit != "" {
+			value += fact.Unit
+		}
+		label := fact.Label
+		if label == "" {
+			label = fact.Key
+		}
+		parts = append(parts, label+"="+value)
 	}
 	return strings.Join(parts, "; ")
 }

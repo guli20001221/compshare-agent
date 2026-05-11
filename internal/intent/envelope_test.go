@@ -1,6 +1,7 @@
 package intent
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -104,6 +105,94 @@ func TestBuildMonitorEnvelopeUsesResolvedSubjectsAndFiltersMetrics(t *testing.T)
 	assert.NotContains(t, env.Facts[0].Value, strings.Repeat("c", 25))
 }
 
+func TestBuildMonitorEnvelopeExtractsSemanticMonitorFacts(t *testing.T) {
+	subjects := []entity.InstanceSnapshot{{
+		UHostId: "uhost-a",
+		Name:    "train-a",
+		State:   "Running",
+	}}
+
+	env := BuildMonitorEnvelope(subjects, []Metric{MetricCPU, MetricGPU}, monitorAPIResult())
+
+	require.Len(t, env.Facts, 2)
+	assertEnvelopeFact(t, env, "uhost-a", "cpu_usage", "12.5")
+	assertEnvelopeFact(t, env, "uhost-a", "gpu_usage", "87")
+	assertNoEnvelopeFact(t, env, "uhost-a", "system_disk_usage")
+	assertNoEnvelopeFact(t, env, "uhost-a", "data_disk_usage")
+	assertNoEnvelopeFact(t, env, "uhost-a", "memory_usage")
+	assertNoEnvelopeFact(t, env, "uhost-a", "vram_usage")
+	for _, fact := range env.Facts {
+		assert.Equal(t, "%", fact.Unit)
+		assert.Equal(t, "latest", fact.Period)
+		assert.Equal(t, "latest", fact.Aggregation)
+		assert.NotContains(t, fact.Key, "TagMap")
+		assert.NotContains(t, fact.Key, "00:03.0")
+	}
+}
+
+func TestBuildMonitorEnvelopeUsesOrdinalLabelsForMultiGPUFacts(t *testing.T) {
+	subjects := []entity.InstanceSnapshot{{UHostId: "uhost-a", Name: "train-a"}}
+	payload := map[string]any{
+		"Data": map[string]any{
+			"List": []any{
+				map[string]any{
+					"UHostId": "uhost-a",
+					"Metrics": []any{
+						map[string]any{
+							"MetricKey": "cloudwatch_gpu_util",
+							"Results": []any{
+								map[string]any{"TagMap": map[string]any{"gpu_bus_id": "00:03.0"}, "Values": []any{map[string]any{"Value": float64(11)}}},
+								map[string]any{"TagMap": map[string]any{"gpu_bus_id": "00:04.0"}, "Values": []any{map[string]any{"Value": float64(22)}}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	env := BuildMonitorEnvelope(subjects, []Metric{MetricGPU}, payload)
+
+	assertEnvelopeFact(t, env, "uhost-a", "gpu_usage.GPU 1", "11")
+	assertEnvelopeFact(t, env, "uhost-a", "gpu_usage.GPU 2", "22")
+	for _, fact := range env.Facts {
+		assert.NotContains(t, fact.Label, "00:")
+		assert.NotContains(t, fact.Key, "00:")
+	}
+}
+
+func TestBuildMonitorEnvelopeRecognizedAPIShapeDoesNotFallbackToRawMetadata(t *testing.T) {
+	subjects := []entity.InstanceSnapshot{{UHostId: "uhost-a", Name: "train-a"}}
+	payload := map[string]any{
+		"Data": map[string]any{
+			"List": []any{
+				map[string]any{
+					"UHostId": "uhost-a",
+					"Metrics": []any{
+						map[string]any{
+							"MetricKey": "cloudwatch_gpu_util",
+							"Results": []any{
+								map[string]any{
+									"TagMap": map[string]any{"gpu_bus_id": "00:03.0"},
+									"Values": []any{},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	env := BuildMonitorEnvelope(subjects, []Metric{MetricGPU}, payload)
+
+	assert.Empty(t, env.Facts)
+	raw, err := json.Marshal(env)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "gpu_bus_id")
+	assert.NotContains(t, string(raw), "00:03.0")
+}
+
 func TestBuildMonitorEnvelopeHashIsStable(t *testing.T) {
 	subjects := []entity.InstanceSnapshot{{UHostId: "uhost-a", Name: "train-a"}}
 	left := BuildMonitorEnvelope(subjects, nil, map[string]any{"GPU": 87, "CPU": 1})
@@ -115,6 +204,44 @@ func TestBuildMonitorEnvelopeHashIsStable(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, leftHash, rightHash)
+}
+
+func monitorAPIResult() map[string]any {
+	return map[string]any{
+		"Data": map[string]any{
+			"List": []any{
+				map[string]any{
+					"UHostId": "uhost-a",
+					"Metrics": []any{
+						monitorMetric("uhost_cpu_used", nil, 7, 12.5),
+						monitorMetric("cloudwatch_memory_usage", nil, 4),
+						monitorMetric("cloudwatch_sys_disk_used_per", map[string]any{"mount": "/dev/vda1"}, 45),
+						monitorMetric("cloudwatch_data_disk_used_per", map[string]any{"mount": "/data"}, 55),
+						monitorMetric("cloudwatch_gpu_util", map[string]any{"gpu_bus_id": "00:03.0"}, 0, 87),
+						monitorMetric("cloudwatch_gpu_memory_usage", map[string]any{"gpu_bus_id": "00:03.0"}, 72),
+					},
+				},
+			},
+		},
+	}
+}
+
+func monitorMetric(key string, tags map[string]any, values ...float64) map[string]any {
+	points := make([]any, 0, len(values))
+	for i, value := range values {
+		points = append(points, map[string]any{
+			"Timestamp": float64(1778420000 + i),
+			"Value":     value,
+		})
+	}
+	result := map[string]any{"Values": points}
+	if tags != nil {
+		result["TagMap"] = tags
+	}
+	return map[string]any{
+		"MetricKey": key,
+		"Results":   []any{result},
+	}
 }
 
 func assertEnvelopeFact(t *testing.T, env envelope.Envelope, subjectID, key string, value any) {
