@@ -80,6 +80,11 @@ func ValidatePlan(plan Plan, ctx ValidationContext) error {
 	if plan.Intent == IntentBillingAccountUnsupported && len(plan.Slots.TargetRefs) > 0 {
 		return validationErr(ErrInvalidTargetRefType, "slots.target_refs", "account-level billing unsupported intent must not carry instance target_refs")
 	}
+	if containsFilterRef(plan.Slots.TargetRefs) {
+		if _, err := ParseResourceFilters(plan.Slots.TargetRefs); err != nil {
+			return validationErr(ErrInvalidTargetRefType, "slots.target_refs", err.Error())
+		}
+	}
 	for i, ref := range plan.Slots.TargetRefs {
 		if err := validateTargetRef(ref, i, ctx); err != nil {
 			return err
@@ -210,11 +215,17 @@ func validRequiredTool(tool string) bool {
 }
 
 func validFilterRef(value string) bool {
-	value = strings.TrimSpace(value)
-	return value == "all" ||
-		value == "all_running" ||
-		value == "all_stopped" ||
-		strings.HasPrefix(value, "gpu_type=")
+	_, err := ParseResourceFilter(value)
+	return err == nil
+}
+
+func containsFilterRef(refs []TargetRef) bool {
+	for _, ref := range refs {
+		if ref.Type == TargetRefFilter {
+			return true
+		}
+	}
+	return false
 }
 
 func validSlotPosition(value string) bool {

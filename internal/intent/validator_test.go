@@ -93,6 +93,39 @@ func TestValidatePlan_RejectsAccountUnsupportedWithTargetRefs(t *testing.T) {
 	requireValidationCode(t, err, ErrInvalidTargetRefType)
 }
 
+func TestValidatePlan_AcceptsResourceFilterSlots(t *testing.T) {
+	plan := Plan{
+		SchemaVersion: SchemaVersion,
+		Intent:        IntentResourceInfo,
+		Slots: Slots{TargetRefs: []TargetRef{
+			{Type: TargetRefFilter, Value: "state=running"},
+			{Type: TargetRefFilter, Value: "gpu_type=4090"},
+		}},
+		RequiredTools: []string{"DescribeCompShareInstance"},
+		Retrieval:     Retrieval{Enabled: false},
+		Confidence:    0.8,
+	}
+
+	err := ValidatePlan(plan, ValidationContext{UserText: "running 4090 instances", Registry: testRegistry(t)})
+
+	require.NoError(t, err)
+}
+
+func TestValidatePlan_RejectsInvalidResourceFilterSlot(t *testing.T) {
+	plan := Plan{
+		SchemaVersion: SchemaVersion,
+		Intent:        IntentResourceInfo,
+		Slots:         Slots{TargetRefs: []TargetRef{{Type: TargetRefFilter, Value: "state=deleted"}}},
+		RequiredTools: []string{"DescribeCompShareInstance"},
+		Retrieval:     Retrieval{Enabled: false},
+		Confidence:    0.8,
+	}
+
+	err := ValidatePlan(plan, ValidationContext{UserText: "deleted instances", Registry: testRegistry(t)})
+
+	requireValidationCode(t, err, ErrInvalidTargetRefType)
+}
+
 func TestValidatePlan_EntityValidatorAcceptsUserProvidedIDWithMatchingSpan(t *testing.T) {
 	plan := Plan{
 		SchemaVersion: SchemaVersion,

@@ -9,7 +9,17 @@ import (
 	"github.com/compshare-agent/internal/envelope"
 )
 
+type ResourceEnvelopeMeta struct {
+	FilterApplied string
+	MatchedCount  int
+	TotalCount    int
+}
+
 func BuildResourceEnvelope(instances []entity.InstanceSnapshot) envelope.Envelope {
+	return BuildResourceEnvelopeWithMeta(instances, ResourceEnvelopeMeta{})
+}
+
+func BuildResourceEnvelopeWithMeta(instances []entity.InstanceSnapshot, meta ResourceEnvelopeMeta) envelope.Envelope {
 	copied := append([]entity.InstanceSnapshot(nil), instances...)
 	sort.Slice(copied, func(i, j int) bool {
 		return copied[i].UHostId < copied[j].UHostId
@@ -57,7 +67,27 @@ func BuildResourceEnvelope(instances []entity.InstanceSnapshot) envelope.Envelop
 		addPositiveInt64Fact(addInstanceFact, "expire_time", resourceLabelExpireTime, inst.ExpireTime)
 		addStringFact(addInstanceFact, "auto_renew", "AutoRenew", inst.AutoRenew)
 	}
+	addComputedResourceMeta(&env, meta)
 	return env
+}
+
+func addComputedResourceMeta(env *envelope.Envelope, meta ResourceEnvelopeMeta) {
+	addComputed := func(key, label, value string) {
+		if value == "" {
+			return
+		}
+		env.Computed = append(env.Computed, envelope.Fact{
+			Key:    key,
+			Label:  label,
+			Value:  value,
+			Source: envelope.FactSourceComputed,
+		})
+	}
+	addComputed("filter_applied", "Filter applied", meta.FilterApplied)
+	if meta.FilterApplied != "" {
+		addComputed("matched_count", "Matched count", strconv.Itoa(meta.MatchedCount))
+		addComputed("total_count", "Total count", strconv.Itoa(meta.TotalCount))
+	}
 }
 
 func BuildMonitorEnvelope(subjects []entity.InstanceSnapshot, metrics []Metric, payload map[string]any) envelope.Envelope {

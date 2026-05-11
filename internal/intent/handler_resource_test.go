@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -146,22 +147,148 @@ func TestResourceInfoHandler_AmbiguousNameFallsBackBeforeTool(t *testing.T) {
 	assert.Empty(t, exec.calls)
 }
 
-func TestResourceInfoHandler_UnsupportedTargetRefFallsBackAsInvalid(t *testing.T) {
-	exec := &mockHandlerExecutor{}
+func TestResourceInfoHandler_FilterByRunningState(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"TotalCount": float64(150),
+		"UHostSet": []any{
+			instanceRowWith("uhost-running-a", "run-a", "Running", "4090"),
+			instanceRowWith("uhost-stopped", "stop-a", "Stopped", "4090"),
+			instanceRowWith("uhost-running-b", "run-b", "Running", "V100S"),
+		},
+	}}
 	handler := NewDemoHandler(exec)
 
 	result := handler.HandleResourceInfo(context.Background(), HandlerRequest{
 		Plan: resourceInfoPlan([]TargetRef{{
 			Type:  TargetRefFilter,
-			Value: "all_running",
+			Value: "state=running",
 		}}),
 		Resolver: resourceTestSnapshot(t),
 	})
 
-	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
-	assert.Equal(t, FallbackValidation, result.FallbackReason)
-	assert.Equal(t, CutoverStatusFallbackInvalid, result.CutoverStatus)
-	assert.Empty(t, exec.calls)
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, 100, exec.calls[0].args["Limit"])
+	assert.Contains(t, result.Reply, "run-a")
+	assert.Contains(t, result.Reply, "run-b")
+	assert.NotContains(t, result.Reply, "stop-a")
+	require.NotNil(t, result.Envelope)
+	require.Len(t, result.Envelope.Subjects, 2)
+	assert.Equal(t, "uhost-running-a", result.Envelope.Subjects[0].ID)
+	assert.Equal(t, "uhost-running-b", result.Envelope.Subjects[1].ID)
+	assertComputedFact(t, *result.Envelope, "filter_applied", "state=running")
+	assertComputedFact(t, *result.Envelope, "matched_count", "2")
+	assertComputedFact(t, *result.Envelope, "total_count", "150")
+}
+
+func TestResourceInfoHandler_FilterByStoppedStateAlias(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			instanceRowWith("uhost-running", "run-a", "Running", "4090"),
+			instanceRowWith("uhost-stopped", "stop-a", "Stopped", "4090"),
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleResourceInfo(context.Background(), HandlerRequest{
+		Plan: resourceInfoPlan([]TargetRef{{
+			Type:  TargetRefFilter,
+			Value: "all_stopped",
+		}}),
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "stop-a")
+	assert.NotContains(t, result.Reply, "run-a")
+	assertComputedFact(t, *result.Envelope, "filter_applied", "state=stopped")
+}
+
+func TestResourceInfoHandler_FilterByStateAndGPUTypeUsesAND(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"TotalCount": float64(3),
+		"UHostSet": []any{
+			instanceRowWith("uhost-a", "running-4090", "Running", "4090"),
+			instanceRowWith("uhost-b", "running-v100", "Running", "V100S"),
+			instanceRowWith("uhost-c", "stopped-4090", "Stopped", "4090"),
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleResourceInfo(context.Background(), HandlerRequest{
+		Plan: resourceInfoPlan([]TargetRef{
+			{Type: TargetRefFilter, Value: "state=running"},
+			{Type: TargetRefFilter, Value: "gpu_type=4090"},
+		}),
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "running-4090")
+	assert.NotContains(t, result.Reply, "running-v100")
+	assert.NotContains(t, result.Reply, "stopped-4090")
+	assertComputedFact(t, *result.Envelope, "filter_applied", "state=running,gpu_type=4090")
+	assertComputedFact(t, *result.Envelope, "matched_count", "1")
+}
+
+func TestResourceInfoHandler_FilterKeepsDuplicateNamesByID(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"TotalCount": float64(3),
+		"UHostSet": []any{
+			instanceRowWith("uhost-a", "same-name", "Running", "4090"),
+			instanceRowWith("uhost-b", "same-name", "Running", "4090"),
+			instanceRowWith("uhost-c", "same-name", "Stopped", "4090"),
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleResourceInfo(context.Background(), HandlerRequest{
+		Plan: resourceInfoPlan([]TargetRef{{Type: TargetRefFilter, Value: "state=running"}}),
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.NotNil(t, result.Envelope)
+	require.Len(t, result.Envelope.Subjects, 2)
+	assert.Equal(t, "uhost-a", result.Envelope.Subjects[0].ID)
+	assert.Equal(t, "uhost-b", result.Envelope.Subjects[1].ID)
+	assertComputedFact(t, *result.Envelope, "matched_count", "2")
+}
+
+func TestResourceInfoHandler_InvalidOrMixedFilterFallsBackBeforeTool(t *testing.T) {
+	cases := []struct {
+		name string
+		refs []TargetRef
+	}{
+		{
+			name: "conflicting filters",
+			refs: []TargetRef{
+				{Type: TargetRefFilter, Value: "state=running"},
+				{Type: TargetRefFilter, Value: "state=stopped"},
+			},
+		},
+		{
+			name: "filter with explicit target",
+			refs: []TargetRef{
+				{Type: TargetRefFilter, Value: "state=running"},
+				{Type: TargetRefName, Value: "train-a", Source: SourceUserText, SourceSpan: "train-a"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := &mockHandlerExecutor{}
+			handler := NewDemoHandler(exec)
+
+			result := handler.HandleResourceInfo(context.Background(), HandlerRequest{
+				Plan:     resourceInfoPlan(tc.refs),
+				Resolver: resourceTestSnapshot(t),
+			})
+
+			assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
+			assert.Equal(t, FallbackValidation, result.FallbackReason)
+			assert.Empty(t, exec.calls)
+		})
+	}
 }
 
 func TestResourceInfoHandler_APIFailureReturnsFriendlyFailure(t *testing.T) {
@@ -248,16 +375,32 @@ func describeResult(id, name string) map[string]any {
 }
 
 func instanceRow(id, name string) map[string]any {
+	return instanceRowWith(id, name, "Running", "4090")
+}
+
+func instanceRowWith(id, name, state, gpuType string) map[string]any {
 	return map[string]any{
 		"UHostId":   id,
 		"Name":      name,
-		"State":     "Running",
-		"GpuType":   "4090",
+		"State":     state,
+		"GpuType":   gpuType,
 		"GPU":       float64(1),
 		"CPU":       float64(8),
 		"Memory":    float64(64),
 		"ImageType": "Ubuntu",
 	}
+}
+
+func assertComputedFact(t *testing.T, env envelope.Envelope, key string, want any) {
+	t.Helper()
+	for _, fact := range env.Computed {
+		if fact.Key == key {
+			assert.Equal(t, want, fact.Value)
+			assert.Equal(t, envelope.FactSourceComputed, fact.Source)
+			return
+		}
+	}
+	t.Fatalf("missing computed fact key=%s in %#v", key, env.Computed)
 }
 
 func indexOf(t *testing.T, s, substr string) int {
