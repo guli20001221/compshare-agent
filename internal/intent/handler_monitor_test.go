@@ -33,6 +33,12 @@ func TestMonitorQueryHandler_ValidTargetCallsMonitorAndReturnsTraceMetadata(t *t
 	assert.Equal(t, []string{"uhost-a"}, result.ToolArgs["UHostIds"])
 	require.Len(t, result.RendererInputToolArgHashes, 1)
 	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, result.RendererInputToolArgHashes[0])
+	require.NotNil(t, result.Envelope)
+	require.Len(t, result.Envelope.Subjects, 1)
+	assert.Equal(t, "uhost-a", result.Envelope.Subjects[0].ID)
+	assert.Equal(t, "train-a", result.Envelope.Subjects[0].Name)
+	require.Len(t, result.RendererInputEnvelopeHashes, 1)
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, result.RendererInputEnvelopeHashes[0])
 	assert.Contains(t, result.Reply, "GPU")
 	assert.Contains(t, result.Reply, "VRAM")
 }
