@@ -117,81 +117,39 @@ func stepBillingQueryPrices() Step {
 }
 
 func buildBillingSummary(hosts []any) (conclusion, suggestion string) {
-	var (
-		hourlyCost      float64 // only Dynamic/Postpay/Spot
-		runningCount    int
-		stoppedCount    int
-		otherCount      int
-		stoppedKeepCost float64 // disk + image cost for stopped instances
-		hasDynamic      bool
-		hasPrepaid      bool
-		lines           []string
-	)
+	facts := BuildBillingFacts(hosts)
 
-	for _, h := range hosts {
-		host, ok := h.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		state, _ := host["State"].(string)
-		instancePrice, _ := host["InstancePrice"].(float64)
-		diskPrice, _ := host["DiskPrice"].(float64)
-		imagePrice, _ := host["CompShareImagePrice"].(float64)
-
-		switch state {
-		case "Running":
-			runningCount++
-		case "Stopped":
-			stoppedCount++
-			stoppedKeepCost += diskPrice + imagePrice
-		default:
-			otherCount++
-		}
-
-		chargeType, _ := host["ChargeType"].(string)
-		switch chargeType {
-		case "Dynamic", "Postpay", "Spot":
-			hasDynamic = true
-			hourlyCost += actualInstanceCost(state, chargeType, instancePrice) + diskPrice + imagePrice
-		case "Month", "Day":
-			hasPrepaid = true
-		}
-
-		lines = append(lines, formatInstanceCost(host))
-	}
-
-	total := len(lines)
+	total := len(facts.Instances)
 	conclusion = fmt.Sprintf("您当前有 %d 个实例，费用明细如下：\n", total)
-	for _, line := range lines {
-		conclusion += line + "\n"
+	for _, fact := range facts.Instances {
+		conclusion += formatInstanceFactCost(fact) + "\n"
 	}
-	if hasDynamic {
-		conclusion += fmt.Sprintf("按量/抢占式实例合计: ¥%.2f/时", hourlyCost)
+	if facts.HasDynamic {
+		conclusion += fmt.Sprintf("按量/抢占式实例合计: ¥%.2f/时", facts.HourlyTotal)
 	}
-	if hasPrepaid {
-		if hasDynamic {
+	if facts.HasPrepaid {
+		if facts.HasDynamic {
 			conclusion += "\n"
 		}
 		conclusion += "包月/包日实例按预付费计费，具体金额以订单为准。"
 	}
 
-	if stoppedCount > 0 && stoppedKeepCost > 0 {
+	if facts.StoppedCount > 0 && facts.StoppedRetainedTotal > 0 {
 		costLabel := "磁盘保留费用"
-		if hasStoppedImage(hosts) {
+		if facts.HasStoppedImageCost() {
 			costLabel = "磁盘和镜像保留费用"
 		}
-		conclusion += fmt.Sprintf("\n\n注意：关机实例（%d 个）仍在产生%s，合计 ¥%.2f/时。", stoppedCount, costLabel, stoppedKeepCost)
+		conclusion += fmt.Sprintf("\n\n注意：关机实例（%d 个）仍在产生%s，合计 ¥%.2f/时。", facts.StoppedCount, costLabel, facts.StoppedRetainedTotal)
 	}
 
 	switch {
-	case stoppedCount > 0 && stoppedKeepCost > 0:
+	case facts.StoppedCount > 0 && facts.StoppedRetainedTotal > 0:
 		releaseLabel := "磁盘保留计费"
-		if hasStoppedImage(hosts) {
+		if facts.HasStoppedImageCost() {
 			releaseLabel = "磁盘和镜像保留计费"
 		}
 		suggestion = fmt.Sprintf("建议释放不再使用的关机实例以停止%s，或使用定时关机功能避免空跑。", releaseLabel)
-	case hasDynamic && runningCount > 0:
+	case facts.HasDynamic && facts.RunningCount > 0:
 		suggestion = "按量实例建议在不使用时关机。如长期使用，包月计费更划算，可在控制台查看包月价格对比。"
 	default:
 		suggestion = "如有疑问，请查看控制台费用明细页面了解详细扣费记录。"
@@ -200,20 +158,100 @@ func buildBillingSummary(hosts []any) (conclusion, suggestion string) {
 	return conclusion, suggestion
 }
 
-// hasStoppedImage returns true if any stopped instance has a non-zero image cost.
-func hasStoppedImage(hosts []any) bool {
+type BillingInstanceFact struct {
+	UHostID               string
+	Name                  string
+	State                 string
+	ChargeType            string
+	GpuType               string
+	GPU                   int
+	InstancePrice         float64
+	DiskPrice             float64
+	ImagePrice            float64
+	ActualComputeCharge   float64
+	RetainedStoppedCharge float64
+	Period                string
+}
+
+type BillingFactsSummary struct {
+	Instances            []BillingInstanceFact
+	HourlyTotal          float64
+	StoppedRetainedTotal float64
+	RunningCount         int
+	StoppedCount         int
+	HasDynamic           bool
+	HasPrepaid           bool
+}
+
+func BuildBillingFacts(hosts []any) BillingFactsSummary {
+	var summary BillingFactsSummary
 	for _, h := range hosts {
 		host, ok := h.(map[string]any)
 		if !ok {
 			continue
 		}
-		state, _ := host["State"].(string)
-		imgPrice, _ := host["CompShareImagePrice"].(float64)
-		if state == "Stopped" && imgPrice > 0 {
+
+		fact := billingInstanceFact(host)
+		switch fact.State {
+		case "Running":
+			summary.RunningCount++
+		case "Stopped":
+			summary.StoppedCount++
+		}
+
+		switch fact.ChargeType {
+		case "Dynamic", "Postpay", "Spot":
+			summary.HasDynamic = true
+			summary.HourlyTotal += fact.ActualComputeCharge + fact.DiskPrice + fact.ImagePrice
+		case "Month", "Day":
+			summary.HasPrepaid = true
+		}
+		summary.StoppedRetainedTotal += fact.RetainedStoppedCharge
+		summary.Instances = append(summary.Instances, fact)
+	}
+	return summary
+}
+
+func billingInstanceFact(host map[string]any) BillingInstanceFact {
+	id, _ := host["UHostId"].(string)
+	name, _ := host["Name"].(string)
+	state, _ := host["State"].(string)
+	gpuType, _ := host["GpuType"].(string)
+	gpu, _ := host["GPU"].(float64)
+	chargeType, _ := host["ChargeType"].(string)
+	instancePrice, _ := host["InstancePrice"].(float64)
+	diskPrice, _ := host["DiskPrice"].(float64)
+	imagePrice, _ := host["CompShareImagePrice"].(float64)
+	return BillingInstanceFact{
+		UHostID:               id,
+		Name:                  name,
+		State:                 state,
+		ChargeType:            chargeType,
+		GpuType:               gpuType,
+		GPU:                   int(gpu),
+		InstancePrice:         instancePrice,
+		DiskPrice:             diskPrice,
+		ImagePrice:            imagePrice,
+		ActualComputeCharge:   actualInstanceCost(state, chargeType, instancePrice),
+		RetainedStoppedCharge: retainedStoppedCharge(state, diskPrice, imagePrice),
+		Period:                billingPeriod(chargeType),
+	}
+}
+
+func (s BillingFactsSummary) HasStoppedImageCost() bool {
+	for _, fact := range s.Instances {
+		if fact.State == "Stopped" && fact.ImagePrice > 0 {
 			return true
 		}
 	}
 	return false
+}
+
+func retainedStoppedCharge(state string, diskPrice, imagePrice float64) float64 {
+	if state != "Stopped" {
+		return 0
+	}
+	return diskPrice + imagePrice
 }
 
 // actualInstanceCost returns the real billing amount for the instance portion.
@@ -227,30 +265,24 @@ func actualInstanceCost(state, chargeType string, price float64) float64 {
 }
 
 func formatInstanceCost(host map[string]any) string {
-	id, _ := host["UHostId"].(string)
-	name, _ := host["Name"].(string)
-	gpuType, _ := host["GpuType"].(string)
-	gpu, _ := host["GPU"].(float64)
-	state, _ := host["State"].(string)
-	chargeType, _ := host["ChargeType"].(string)
-	instancePrice, _ := host["InstancePrice"].(float64)
-	diskPrice, _ := host["DiskPrice"].(float64)
-	imagePrice, _ := host["CompShareImagePrice"].(float64)
+	return formatInstanceFactCost(billingInstanceFact(host))
+}
 
-	billing := chargeTypeLabel(chargeType)
-	actual := actualInstanceCost(state, chargeType, instancePrice)
+func formatInstanceFactCost(fact BillingInstanceFact) string {
+	billing := chargeTypeLabel(fact.ChargeType)
+	actual := fact.ActualComputeCharge
 
 	// Build the cost breakdown: instance + disk + image (if non-zero)
-	costParts := fmt.Sprintf("实例费 ¥%.2f + 磁盘费 ¥%.2f", actual, diskPrice)
-	if state == "Stopped" && actual == 0 && instancePrice > 0 {
-		costParts = fmt.Sprintf("实例费 ¥0（已关机停计） + 磁盘费 ¥%.2f", diskPrice)
+	costParts := fmt.Sprintf("实例费 ¥%.2f + 磁盘费 ¥%.2f", actual, fact.DiskPrice)
+	if fact.State == "Stopped" && actual == 0 && fact.InstancePrice > 0 {
+		costParts = fmt.Sprintf("实例费 ¥0（已关机停计） + 磁盘费 ¥%.2f", fact.DiskPrice)
 	}
-	if imagePrice > 0 {
-		costParts += fmt.Sprintf(" + 镜像费 ¥%.2f", imagePrice)
+	if fact.ImagePrice > 0 {
+		costParts += fmt.Sprintf(" + 镜像费 ¥%.2f", fact.ImagePrice)
 	}
 
 	return fmt.Sprintf("- %s (%s, %s×%.0f, %s, %s): %s",
-		id, name, gpuType, gpu, state, billing, costParts)
+		fact.UHostID, fact.Name, fact.GpuType, float64(fact.GPU), fact.State, billing, costParts)
 }
 
 // chargeTypeLabel returns a human-readable billing label with unit.
@@ -266,5 +298,20 @@ func chargeTypeLabel(chargeType string) string {
 		return "抢占式/时"
 	default:
 		return chargeType
+	}
+}
+
+func billingPeriod(chargeType string) string {
+	switch chargeType {
+	case "Dynamic", "Postpay", "Spot":
+		return "hour"
+	case "Day":
+		return "day"
+	case "Month":
+		return "month"
+	case "Year":
+		return "year"
+	default:
+		return "unknown"
 	}
 }

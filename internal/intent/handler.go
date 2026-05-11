@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/security"
 )
@@ -58,10 +59,12 @@ type HandlerResult struct {
 	CutoverStatus  CutoverStatus
 	ToolAction     string
 	ToolArgs       map[string]any
+	Envelope       *envelope.Envelope
 	// RendererInputToolArgHashes records tool args consumed by deterministic
 	// handler renderers before engine-level tool call ids exist. Phase 1 demo
 	// populates this for monitor handler results only.
-	RendererInputToolArgHashes []string
+	RendererInputToolArgHashes  []string
+	RendererInputEnvelopeHashes []string
 }
 
 type HandlerExecutor interface {
@@ -137,6 +140,9 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 	result := HandledResult(RenderResourceSummary(instances))
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
+	env := BuildResourceEnvelope(instances)
+	result.Envelope = &env
+	result.RendererInputEnvelopeHashes = hashEnvelopeForRenderer(env)
 	return result
 }
 
@@ -157,7 +163,7 @@ func (h *DemoHandler) HandleMonitorQuery(ctx context.Context, req HandlerRequest
 		return FallbackBeforeTool(FallbackMissingTarget)
 	}
 
-	ids, fallback := resolveResourceTargets(req.Plan.Slots.TargetRefs, req.Resolver)
+	instances, ids, fallback := resolveResourceTargetSnapshots(req.Plan.Slots.TargetRefs, req.Resolver)
 	if fallback != nil {
 		return *fallback
 	}
@@ -170,6 +176,9 @@ func (h *DemoHandler) HandleMonitorQuery(ctx context.Context, req HandlerRequest
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
 	result.RendererInputToolArgHashes = hashArgsForRenderer(args)
+	env := BuildMonitorEnvelope(instances, req.Plan.Slots.Metrics, raw)
+	result.Envelope = &env
+	result.RendererInputEnvelopeHashes = hashEnvelopeForRenderer(env)
 	return result
 }
 
@@ -213,43 +222,62 @@ func RequireAllowedHandlerAction(intent Intent, action string) *HandlerResult {
 }
 
 func resolveResourceTargets(refs []TargetRef, resolver EntityResolver) ([]string, *HandlerResult) {
+	instances, ids, result := resolveResourceTargetSnapshots(refs, resolver)
+	if result != nil {
+		return nil, result
+	}
+	_ = instances
+	return ids, nil
+}
+
+func resolveResourceTargetSnapshots(refs []TargetRef, resolver EntityResolver) ([]entity.InstanceSnapshot, []string, *HandlerResult) {
 	if len(refs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if resolver == nil {
 		result := FallbackBeforeTool(FallbackUnresolvedTarget)
-		return nil, &result
+		return nil, nil, &result
 	}
 
 	ids := make([]string, 0, len(refs))
+	instances := make([]entity.InstanceSnapshot, 0, len(refs))
 	for _, ref := range refs {
 		switch ref.Type {
 		case TargetRefUHostIDUserInput:
 			inst, res := resolver.ResolveByID(ref.Value)
 			if res.Status != entity.ResolveHit || inst == nil {
 				result := FallbackBeforeTool(FallbackUnresolvedTarget)
-				return nil, &result
+				return nil, nil, &result
 			}
 			ids = append(ids, inst.UHostId)
+			instances = append(instances, *inst)
 		case TargetRefName:
 			matches, res := resolver.ResolveByName(ref.Value)
 			if res.Status == entity.ResolveAmbiguous || len(matches) > 1 {
 				result := FallbackBeforeTool(FallbackAmbiguousTarget)
-				return nil, &result
+				return nil, nil, &result
 			}
 			if res.Status != entity.ResolveHit || len(matches) == 0 || matches[0] == nil {
 				result := FallbackBeforeTool(FallbackUnresolvedTarget)
-				return nil, &result
+				return nil, nil, &result
 			}
 			ids = append(ids, matches[0].UHostId)
+			instances = append(instances, *matches[0])
 		default:
 			result := FallbackBeforeTool(FallbackValidation)
-			return nil, &result
+			return nil, nil, &result
 		}
 	}
-	ids = dedupeStrings(ids)
+	instances = dedupeInstanceSnapshots(instances)
+	ids = make([]string, 0, len(instances))
+	for _, inst := range instances {
+		ids = append(ids, inst.UHostId)
+	}
 	sort.Strings(ids)
-	return ids, nil
+	sort.Slice(instances, func(i, j int) bool {
+		return instances[i].UHostId < instances[j].UHostId
+	})
+	return instances, ids, nil
 }
 
 func failureAfterToolWithTrace(action string, args map[string]any, label string) HandlerResult {
@@ -356,6 +384,30 @@ func hashArgsForRenderer(args map[string]any) []string {
 	return []string{hash}
 }
 
+func hashEnvelopeForRenderer(env envelope.Envelope) []string {
+	hash, err := envelope.Hash(env)
+	if err != nil {
+		panic(fmt.Sprintf("hash renderer envelope: %v", err))
+	}
+	return []string{hash}
+}
+
+func dedupeInstanceSnapshots(values []entity.InstanceSnapshot) []entity.InstanceSnapshot {
+	if len(values) < 2 {
+		return values
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]entity.InstanceSnapshot, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value.UHostId]; ok {
+			continue
+		}
+		seen[value.UHostId] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 const (
 	resourceLabelInstanceID = "\u5b9e\u4f8bID"
 	resourceLabelName       = "\u540d\u79f0"
@@ -407,27 +459,30 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot) string {
 }
 
 func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {
-	redacted, _ := security.RedactForLLM(payload).(map[string]any)
-	flat := map[string]string{}
-	flattenScalars("", redacted, flat)
-	if len(flat) == 0 {
+	allFacts := monitorScalarFacts(nil, payload)
+	if len(allFacts) == 0 {
 		return noMonitorValuesReply
 	}
 
-	keys := make([]string, 0, len(flat))
-	for key := range flat {
-		if len(metrics) == 0 || matchesRequestedMetric(key, metrics) {
-			keys = append(keys, key)
-		}
+	facts := allFacts
+	if len(metrics) > 0 {
+		facts = monitorScalarFacts(metrics, payload)
 	}
-	sort.Strings(keys)
-	if len(keys) == 0 {
+	if len(facts) == 0 {
 		return noRequestedMonitorValuesReply
 	}
 
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		parts = append(parts, key+"="+flat[key])
+	parts := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		value := fact.Value
+		if fact.Unit != "" {
+			value += fact.Unit
+		}
+		label := fact.Label
+		if label == "" {
+			label = fact.Key
+		}
+		parts = append(parts, label+"="+value)
 	}
 	return strings.Join(parts, "; ")
 }
@@ -474,4 +529,11 @@ func matchesRequestedMetric(key string, metrics []Metric) bool {
 
 func safeValue(v any) string {
 	return fmt.Sprint(security.RedactForLLM(v))
+}
+
+func safeValueMap(v map[string]any) map[string]any {
+	if redacted, ok := security.RedactForLLM(v).(map[string]any); ok {
+		return redacted
+	}
+	return map[string]any{}
 }

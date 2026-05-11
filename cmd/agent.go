@@ -15,6 +15,7 @@ import (
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/renderer"
 
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/spf13/cobra"
@@ -86,6 +87,13 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	if knowledgeRetrievalEnabled {
 		eng.SetKnowledgeRetriever(knowledgeRetriever)
 	}
+	groundedRendererMode, unknownGroundedRendererMode := groundedRendererModeFromEnv(os.Getenv)
+	if unknownGroundedRendererMode != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_GROUNDED_RENDERER value %q\n", unknownGroundedRendererMode)
+	}
+	if groundedRendererMode == "llm" {
+		eng.SetGroundedRenderer(renderer.NewGroundedRenderer(llm.NewClient(cfg.Agent.LLM)), cfg.Agent.LLM.Model)
+	}
 	plannerDispatchEnabled := cutoverEnabled || knowledgeRetrievalEnabled
 	if plannerDispatchEnabled {
 		eng.SetIntentPlanner(newCLIPlanner(cfg), engine.IntentPlannerOptions{
@@ -107,6 +115,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	fmt.Println("│     优云算力共享 AI 助手 v0.1        │")
 	fmt.Println("╰──────────────────────────────────────╯")
 	fmt.Printf("runtime: %s\n", plannerRuntimeModeLine(shadowEnabled, cutoverIntents))
+	fmt.Printf("renderer: %s\n", groundedRendererRuntimeLine(groundedRendererMode))
 	fmt.Println()
 	fmt.Println("正在初始化，获取您的实例信息...")
 
@@ -165,6 +174,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		// when the next turn creates a fresh recorder.
 		eng.SetPlannerTraceObserver(nil)
 		eng.SetRetrievalTraceObserver(nil)
+		eng.SetRendererTraceObserver(nil)
 		if traceEnabled {
 			traceRecorder = newCLITraceRecorder(traceWriter, turnIndex, input, turnStart)
 			traceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, cutoverIntents))
@@ -180,6 +190,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 				if knowledgeRetrievalEnabled {
 					eng.SetRetrievalTraceObserver(traceRecorder.SetRetrievalTrace)
 				}
+				eng.SetRendererTraceObserver(traceRecorder.SetRendererTrace)
 			} else if shadowRunner != nil {
 				// By construction, shadowRunner is only created for the
 				// trace+shadow+no-cutover case.

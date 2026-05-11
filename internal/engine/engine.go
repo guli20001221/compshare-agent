@@ -20,6 +20,7 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/prompt"
+	grounded "github.com/compshare-agent/internal/renderer"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 
@@ -107,6 +108,9 @@ type Engine struct {
 	intentPlannerModel         string
 	intentCutoverIntents       map[intent.Intent]struct{}
 	knowledgeRetriever         KnowledgeRetriever
+	groundedRenderer           grounded.Renderer
+	groundedRendererModel      string
+	rendererTraceObserver      func(observability.RendererTrace)
 	plannerTraceObserver       func(observability.PlannerTrace)
 	retrievalTraceObserver     func(observability.RetrievalTrace)
 	rateLimiter                governance.RateLimiter
@@ -142,9 +146,9 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 		fmt.Fprintln(os.Stderr, "warning: rate limiter using anonymous subject (public key missing)")
 	}
 	eng := &Engine{
-		llmClient:                llm.NewClient(cfg.Agent.LLM),
-		confirmFn:                confirmFn,
-		registry:                 entity.NewRegistry(),
+		llmClient: llm.NewClient(cfg.Agent.LLM),
+		confirmFn: confirmFn,
+		registry:  entity.NewRegistry(),
 		// MemoryLimiter is process-local and suitable for local demo or
 		// single-instance deployment only. Multi-replica production needs a
 		// centralized limiter such as Redis or an API gateway.
@@ -203,6 +207,15 @@ func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
 	// code owns env parsing and only calls this after USE_KNOWLEDGE_RETRIEVAL
 	// and corpus loading succeed.
 	e.knowledgeRetriever = retriever
+}
+
+func (e *Engine) SetGroundedRenderer(r grounded.Renderer, model string) {
+	e.groundedRenderer = r
+	e.groundedRendererModel = model
+}
+
+func (e *Engine) SetRendererTraceObserver(observer func(observability.RendererTrace)) {
+	e.rendererTraceObserver = observer
 }
 
 func (e *Engine) SetRetrievalTraceObserver(observer func(observability.RetrievalTrace)) {
@@ -578,11 +591,56 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 		return "", false
 	}
 
+	reply := handled.Reply
+	if handled.Status == intent.HandlerStatusHandled {
+		reply = e.renderGroundedHandlerResult(ctx, handled)
+	}
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
-		Content: handled.Reply,
+		Content: reply,
 	})
-	return handled.Reply, true
+	return reply, true
+}
+
+func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent.HandlerResult) string {
+	if e.groundedRenderer == nil || handled.Envelope == nil {
+		return handled.Reply
+	}
+	trace := observability.RendererTrace{
+		Enabled:             true,
+		Status:              "fallback",
+		EnvelopeKind:        string(handled.Envelope.Kind),
+		InputEnvelopeHashes: append([]string(nil), handled.RendererInputEnvelopeHashes...),
+		InputToolArgHashes:  append([]string(nil), handled.RendererInputToolArgHashes...),
+		FallbackUsed:        true,
+		FallbackReason:      grounded.FallbackRateLimited,
+		Model:               e.groundedRendererModel,
+		AttributionMode:     grounded.AttributionEnvelope,
+	}
+	if _, ok := e.allowRateLimited(governance.ClassLLM, "grounded_renderer"); !ok {
+		e.emitRendererTrace(trace)
+		return handled.Reply
+	}
+	result := e.groundedRenderer.Render(ctx, grounded.RenderRequest{
+		Envelope: *handled.Envelope,
+		Fallback: handled.Reply,
+		Model:    e.groundedRendererModel,
+	})
+	status := "fallback"
+	if !result.FallbackUsed {
+		status = "rendered"
+	}
+	trace.Status = status
+	trace.FallbackUsed = result.FallbackUsed
+	trace.FallbackReason = result.FallbackReason
+	trace.Model = result.Model
+	trace.LatencyMS = result.LatencyMS
+	trace.AttributionMode = result.AttributionMode
+	if len(trace.InputEnvelopeHashes) == 0 && result.EnvelopeHash != "" {
+		trace.InputEnvelopeHashes = []string{result.EnvelopeHash}
+	}
+	e.emitRendererTrace(trace)
+	return result.Text
 }
 
 func (e *Engine) tryStage2BRetrieval(dispatch plannerDispatchResult, userMsg string) (string, bool) {
@@ -665,6 +723,13 @@ func (e *Engine) emitRetrievalTrace(trace observability.RetrievalTrace) {
 		return
 	}
 	e.retrievalTraceObserver(trace)
+}
+
+func (e *Engine) emitRendererTrace(trace observability.RendererTrace) {
+	if e.rendererTraceObserver == nil {
+		return
+	}
+	e.rendererTraceObserver(trace)
 }
 
 func engineFallbackPlannerResult() intent.PlannerResult {

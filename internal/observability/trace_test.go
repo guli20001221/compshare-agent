@@ -48,6 +48,9 @@ func TestWriterAppendWritesOneJSONLinePerRecord(t *testing.T) {
 	if first.Renderer.InputToolCallIDs == nil || first.Renderer.InputToolArgHashes == nil {
 		t.Fatalf("renderer input arrays must be present as empty arrays, got %#v", first.Renderer)
 	}
+	if first.Renderer.InputEnvelopeHashes == nil {
+		t.Fatalf("renderer input envelope hashes must be present as empty array, got %#v", first.Renderer)
+	}
 	if !strings.Contains(lines[0], `"rate_limit":`) {
 		t.Fatalf("trace line should include zero-value rate_limit block: %s", lines[0])
 	}

@@ -33,6 +33,12 @@ func TestMonitorQueryHandler_ValidTargetCallsMonitorAndReturnsTraceMetadata(t *t
 	assert.Equal(t, []string{"uhost-a"}, result.ToolArgs["UHostIds"])
 	require.Len(t, result.RendererInputToolArgHashes, 1)
 	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, result.RendererInputToolArgHashes[0])
+	require.NotNil(t, result.Envelope)
+	require.Len(t, result.Envelope.Subjects, 1)
+	assert.Equal(t, "uhost-a", result.Envelope.Subjects[0].ID)
+	assert.Equal(t, "train-a", result.Envelope.Subjects[0].Name)
+	require.Len(t, result.RendererInputEnvelopeHashes, 1)
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, result.RendererInputEnvelopeHashes[0])
 	assert.Contains(t, result.Reply, "GPU")
 	assert.Contains(t, result.Reply, "VRAM")
 }
@@ -97,6 +103,46 @@ func TestMonitorQueryHandler_CurrentPresetTimeWindowIsAllowed(t *testing.T) {
 	require.Len(t, exec.calls, 1)
 	assert.Contains(t, result.Reply, "GPU")
 	assert.NotContains(t, result.Reply, "CPU")
+}
+
+func TestMonitorSummaryRendererExtractsSemanticAPIShape(t *testing.T) {
+	summary := RenderMonitorSummary([]Metric{MetricCPU, MetricGPU}, monitorAPIResult())
+
+	assert.Contains(t, summary, "CPU 使用率=12.5%")
+	assert.Contains(t, summary, "GPU 使用率=87%")
+	assert.NotContains(t, summary, "gpu_bus_id")
+	assert.NotContains(t, summary, "00:03.0")
+	assert.NotContains(t, summary, "系统盘")
+	assert.NotContains(t, summary, "数据盘")
+	assert.NotContains(t, summary, "显存")
+	assert.NotContains(t, summary, "内存")
+}
+
+func TestMonitorSummaryRendererRecognizedAPIShapeWithEmptyValuesDoesNotLeakMetadata(t *testing.T) {
+	summary := RenderMonitorSummary([]Metric{MetricGPU}, map[string]any{
+		"Data": map[string]any{
+			"List": []any{
+				map[string]any{
+					"UHostId": "uhost-a",
+					"Metrics": []any{
+						map[string]any{
+							"MetricKey": "cloudwatch_gpu_util",
+							"Results": []any{
+								map[string]any{
+									"TagMap": map[string]any{"gpu_bus_id": "00:03.0"},
+									"Values": []any{},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	assert.Equal(t, noMonitorValuesReply, summary)
+	assert.NotContains(t, summary, "gpu_bus_id")
+	assert.NotContains(t, summary, "00:03.0")
 }
 
 func TestMonitorQueryHandler_APIFailureReturnsFriendlyFailureWithTraceMetadata(t *testing.T) {

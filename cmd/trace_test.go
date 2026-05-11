@@ -143,6 +143,24 @@ func TestPlannerRuntimeTrace(t *testing.T) {
 	require.Empty(t, trace.CutoverIntents)
 }
 
+func TestGroundedRendererModeFromEnv(t *testing.T) {
+	mode, unknown := groundedRendererModeFromEnv(func(key string) string {
+		if key == "USE_GROUNDED_RENDERER" {
+			return " llm "
+		}
+		return ""
+	})
+	require.Equal(t, "llm", mode)
+	require.Empty(t, unknown)
+
+	mode, unknown = groundedRendererModeFromEnv(func(string) string { return "weird" })
+	require.Empty(t, mode)
+	require.Equal(t, "weird", unknown)
+
+	require.Equal(t, "grounded_renderer=llm", groundedRendererRuntimeLine("llm"))
+	require.Equal(t, "grounded_renderer=off", groundedRendererRuntimeLine(""))
+}
+
 func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
 	enabled, unknown := knowledgeRetrievalModeFromEnv(func(string) string { return "" })
 	if enabled || unknown != "" {
@@ -403,6 +421,42 @@ func TestCLITraceRecorderWritesRendererInputToolArgHashes(t *testing.T) {
 	record := readSingleTraceRecord(t, writer, start)
 	if got := record.Renderer.InputToolArgHashes; len(got) != 1 || got[0] != "sha256:monitor-args" {
 		t.Fatalf("renderer.input_tool_args_hashes = %#v", got)
+	}
+}
+
+func TestCLITraceRecorderWritesRendererTrace(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 1, "resource", start)
+	recorder.SetRendererTrace(observability.RendererTrace{
+		Enabled:             true,
+		Status:              "fallback",
+		EnvelopeKind:        "resource_info",
+		InputEnvelopeHashes: []string{"sha256:env"},
+		FallbackUsed:        true,
+		FallbackReason:      "rate_limited",
+		Model:               "deepseek-v4-flash",
+		LatencyMS:           12,
+		AttributionMode:     "envelope",
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	record := readSingleTraceRecord(t, writer, start)
+	if !record.Renderer.Enabled || record.Renderer.Status != "fallback" ||
+		record.Renderer.EnvelopeKind != "resource_info" || record.Renderer.FallbackReason != "rate_limited" {
+		t.Fatalf("renderer trace = %#v", record.Renderer)
+	}
+	if got := record.Renderer.InputEnvelopeHashes; len(got) != 1 || got[0] != "sha256:env" {
+		t.Fatalf("renderer.input_envelope_hashes = %#v", got)
 	}
 }
 

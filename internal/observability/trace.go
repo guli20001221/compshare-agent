@@ -126,11 +126,17 @@ type ToolCallTrace struct {
 }
 
 type RendererTrace struct {
-	Model              string   `json:"model"`
-	LatencyMS          int64    `json:"latency_ms"`
-	AttributionMode    string   `json:"attribution_mode"`
-	InputToolCallIDs   []string `json:"input_tool_call_ids"`
-	InputToolArgHashes []string `json:"input_tool_args_hashes"`
+	Enabled             bool     `json:"enabled"`
+	Status              string   `json:"status"`
+	EnvelopeKind        string   `json:"envelope_kind"`
+	InputEnvelopeHashes []string `json:"input_envelope_hashes"`
+	FallbackUsed        bool     `json:"fallback_used"`
+	FallbackReason      string   `json:"fallback_reason"`
+	Model               string   `json:"model"`
+	LatencyMS           int64    `json:"latency_ms"`
+	AttributionMode     string   `json:"attribution_mode"`
+	InputToolCallIDs    []string `json:"input_tool_call_ids"`
+	InputToolArgHashes  []string `json:"input_tool_args_hashes"`
 }
 
 type FreshnessTrace struct {
@@ -294,6 +300,9 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	}
 	if r.Renderer.InputToolArgHashes == nil {
 		r.Renderer.InputToolArgHashes = []string{}
+	}
+	if r.Renderer.InputEnvelopeHashes == nil {
+		r.Renderer.InputEnvelopeHashes = []string{}
 	}
 	if r.EntityRegistry.SyncEvent == "" {
 		r.EntityRegistry.SyncEvent = "unavailable"
