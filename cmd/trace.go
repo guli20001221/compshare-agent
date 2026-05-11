@@ -41,6 +41,13 @@ func plannerRuntimeModeLine(shadowEnabled bool, cutoverIntents []intent.Intent) 
 	return fmt.Sprintf("planner_mode=%s cutover_intents=%s", mode, formatCutoverIntents(cutoverIntents))
 }
 
+func groundedRendererRuntimeLine(mode string) string {
+	if mode == "" {
+		mode = "off"
+	}
+	return fmt.Sprintf("grounded_renderer=%s", mode)
+}
+
 func plannerRuntimeTrace(shadowEnabled bool, cutoverIntents []intent.Intent) observability.RuntimeTrace {
 	mode := "off"
 	if shadowEnabled {
@@ -206,6 +213,25 @@ func (r *cliTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace)
 		return
 	}
 	r.record.Retrieval = trace
+}
+
+func groundedRendererModeFromEnv(getenv getenvFunc) (string, string) {
+	raw := strings.ToLower(strings.TrimSpace(getenv("USE_GROUNDED_RENDERER")))
+	switch raw {
+	case "":
+		return "", ""
+	case "llm":
+		return "llm", ""
+	default:
+		return "", raw
+	}
+}
+
+func (r *cliTraceRecorder) SetRendererTrace(trace observability.RendererTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Renderer = trace
 }
 
 func (r *cliTraceRecorder) SetEngineHardBlock(trace observability.EngineHardBlockTrace) {

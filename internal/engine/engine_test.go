@@ -21,6 +21,7 @@ import (
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
+	grounded "github.com/compshare-agent/internal/renderer"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -124,6 +125,16 @@ func (r *scriptedKnowledgeRetriever) Retrieve(question, productArea string) know
 	result := r.results[0]
 	r.results = r.results[1:]
 	return result
+}
+
+type mockGroundedRenderer struct {
+	result   grounded.RenderResult
+	requests []grounded.RenderRequest
+}
+
+func (r *mockGroundedRenderer) Render(_ context.Context, req grounded.RenderRequest) grounded.RenderResult {
+	r.requests = append(r.requests, req)
+	return r.result
 }
 
 // --- Mock Executor ---
@@ -3099,6 +3110,125 @@ func TestPhase1CutoverResourcePlanBypassesReAct(t *testing.T) {
 	require.Len(t, *events, 2)
 	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[0].Source)
 	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[1].Source)
+}
+
+func TestPhase1CutoverResourcePlanUsesGroundedRenderer(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
+	}}
+	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+		Text:            "renderer says phase1-demo is running",
+		Model:           "deepseek-v4-flash",
+		AttributionMode: grounded.AttributionEnvelope,
+		EnvelopeHash:    "sha256:renderer-envelope",
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	var rendererTraces []observability.RendererTrace
+	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
+		rendererTraces = append(rendererTraces, trace)
+	})
+
+	reply, err := eng.Chat(context.Background(), "show phase1-demo resource", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "renderer says phase1-demo is running", reply)
+	assert.Empty(t, mock.calls, "grounded renderer must not re-enter ReAct")
+	require.Len(t, groundedRenderer.requests, 1)
+	assert.Contains(t, groundedRenderer.requests[0].Fallback, "uhost-phase1-001")
+	assert.Equal(t, "resource_info", string(groundedRenderer.requests[0].Envelope.Kind))
+	require.Len(t, rendererTraces, 1)
+	assert.True(t, rendererTraces[0].Enabled)
+	assert.Equal(t, "rendered", rendererTraces[0].Status)
+	assert.Equal(t, "resource_info", rendererTraces[0].EnvelopeKind)
+	require.Len(t, rendererTraces[0].InputEnvelopeHashes, 1)
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, rendererTraces[0].InputEnvelopeHashes[0])
+}
+
+func TestPhase1CutoverGroundedRendererFallbackUsesDeterministicReply(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
+	}}
+	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+		Text:            "fallback from deterministic handler",
+		Model:           "deepseek-v4-flash",
+		AttributionMode: grounded.AttributionEnvelope,
+		EnvelopeHash:    "sha256:renderer-envelope",
+		FallbackUsed:    true,
+		FallbackReason:  grounded.FallbackValidationFailed,
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	var rendererTraces []observability.RendererTrace
+	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
+		rendererTraces = append(rendererTraces, trace)
+	})
+
+	reply, err := eng.Chat(context.Background(), "show phase1-demo resource", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "fallback from deterministic handler", reply)
+	assert.Empty(t, mock.calls, "renderer fallback must not fall through to ReAct")
+	require.Len(t, rendererTraces, 1)
+	assert.True(t, rendererTraces[0].FallbackUsed)
+	assert.Equal(t, grounded.FallbackValidationFailed, rendererTraces[0].FallbackReason)
+}
+
+func TestPhase1CutoverGroundedRendererRateLimitDenialUsesDeterministicReply(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
+	}}
+	limiter := &scriptedRateLimiter{decisions: []governance.Decision{
+		{Allowed: true, SubjectHash: "sha256:subject"},
+		{Allowed: true, SubjectHash: "sha256:subject"},
+		{Allowed: false, Reason: governance.ReasonQPSExceeded, SubjectHash: "sha256:subject", Err: governance.ErrRateLimited},
+	}}
+	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+		Text: "should not be used",
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.rateLimiter = limiter
+	eng.rateLimitSubject = "sha256:subject"
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	var rendererTraces []observability.RendererTrace
+	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
+		rendererTraces = append(rendererTraces, trace)
+	})
+
+	reply, err := eng.Chat(context.Background(), "show phase1-demo resource", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "uhost-phase1-001")
+	assert.Empty(t, groundedRenderer.requests, "renderer quota denial must skip renderer LLM call")
+	require.Len(t, limiter.requests, 3)
+	assert.Equal(t, "grounded_renderer", limiter.requests[2].Action)
+	require.Len(t, rendererTraces, 1)
+	assert.True(t, rendererTraces[0].FallbackUsed)
+	assert.Equal(t, grounded.FallbackRateLimited, rendererTraces[0].FallbackReason)
 }
 
 func TestPhase1CutoverMonitorPlanBypassesReAct(t *testing.T) {
