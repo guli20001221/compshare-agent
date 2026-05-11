@@ -25,17 +25,19 @@ const (
 )
 
 type ToolExecutionPolicy struct {
-	Action              string
-	Route               ActionRoute
-	Class               ActionClass
-	SecurityLevel       security.Level
-	NeedsConfirm        bool
-	AllowedParams       []string
-	RedactInResult      []string
-	DualChannelDisplay  bool
-	HistoryMonitorGuard bool
-	MaxRetries          int
-	RetryOn             []ErrorClass
+	Action                  string
+	Route                   ActionRoute
+	Class                   ActionClass
+	SecurityLevel           security.Level
+	NeedsConfirm            bool
+	AllowedParams           []string
+	RedactInResult          []string
+	DualChannelDisplay      bool
+	HistoryMonitorGuard     bool
+	MaxTargetsPerCall       int
+	MaxHistoryWindowSeconds int
+	MaxRetries              int
+	RetryOn                 []ErrorClass
 }
 
 type ActionRoute string
@@ -104,6 +106,11 @@ func policyForAction(action string) ToolExecutionPolicy {
 	}
 	if action == "GetCompShareInstanceMonitor" {
 		policy.HistoryMonitorGuard = true
+		policy.MaxTargetsPerCall = 20
+		policy.MaxHistoryWindowSeconds = 86400
+	}
+	if action == "GetCompShareInstancePrice" || action == "GetCompShareInstanceUserPrice" {
+		policy.MaxTargetsPerCall = 20
 	}
 
 	return policy
@@ -144,11 +151,19 @@ func classForAction(action string, level security.Level) ActionClass {
 		return ActionClassReadExpensivePerTarget
 	case strings.HasPrefix(action, "Diagnose"):
 		return ActionClassReadExpensiveDefault
-	case strings.Contains(strings.ToLower(action), "price"):
+	case readExpensiveDefaultActions[action]:
 		return ActionClassReadExpensiveDefault
 	default:
 		return ActionClassReadCheap
 	}
+}
+
+var readExpensiveDefaultActions = map[string]bool{
+	"DescribeCompShareInstance":               true,
+	"GetCompShareInstancePrice":               true,
+	"GetCompShareInstanceUserPrice":           true,
+	"DescribeAvailableCompShareInstanceTypes": true,
+	"CheckCompShareResourceCapacity":          true,
 }
 
 func registryAllowedParams() map[string][]string {

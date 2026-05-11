@@ -114,7 +114,7 @@ Default limits:
 | --- | ---: | ---: |
 | `llm` | existing default | existing default |
 | `mutating_tool` | existing default | existing default |
-| `read_expensive_tool` | 3 | 500 |
+| `read_expensive_tool` | 6 | 500 |
 
 The exact defaults may be tuned later from real-account traces, but this ticket must introduce the class and wiring.
 
@@ -123,7 +123,7 @@ Config keys:
 ```yaml
 agent:
   rate_limit:
-    read_expensive_qps: 3
+    read_expensive_qps: 6
     read_expensive_daily: 500
 ```
 
@@ -390,7 +390,7 @@ Files:
 Acceptance:
 
 - Add `ClassReadExpensiveTool`.
-- Add default read-expensive limits: QPS `3`, daily `500`.
+- Add default read-expensive limits: QPS `6`, daily `500`.
 - Add optional config fields `agent.rate_limit.read_expensive_qps` and `agent.rate_limit.read_expensive_daily`.
 - Missing config keeps defaults.
 - Negative config values fail fast.

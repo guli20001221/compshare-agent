@@ -15,7 +15,7 @@ type ShadowPlanner interface {
 type ShadowRunnerOptions struct {
 	Enabled bool
 	Model   string
-	// BaseURL is intentionally omitted because trace.v0.1 PlannerTrace has no
+	// BaseURL is intentionally omitted because PlannerTrace has no
 	// BaseURL field. Add it only if a future trace schema includes it.
 	Now func() time.Time
 	// QuotaSubject must be a non-secret subject key, such as the hashed value

@@ -89,7 +89,7 @@ type RegistrySnapshot struct {
 	Truncated     bool
 }
 
-// RegistryTraceState is the compact entity registry block written into trace.v0.1.
+// RegistryTraceState is the compact entity registry block written into trace.
 type RegistryTraceState struct {
 	SnapshotID string
 	AgeSeconds int64

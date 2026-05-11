@@ -74,6 +74,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_INTENT_PLANNER_FOR value %q\n", value)
 	}
 	cutoverEnabled := len(cutoverIntents) > 0
+	shadowEnabled := intentPlannerShadowEnabled(os.Getenv)
 	knowledgeRetrievalRequested, unknownKnowledgeRetrieval := knowledgeRetrievalModeFromEnv(os.Getenv)
 	if unknownKnowledgeRetrieval != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q\n", unknownKnowledgeRetrieval)
@@ -98,17 +99,31 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		traceEnabled = false
 	}
 	var shadowRunner *intent.ShadowRunner
-	if useSeparateShadowRunner(traceEnabled, intentPlannerShadowEnabled(os.Getenv), plannerDispatchEnabled) {
+	if useSeparateShadowRunner(traceEnabled, shadowEnabled, plannerDispatchEnabled) {
 		shadowRunner = newCLIShadowRunner(cfg, eng)
 	}
 
 	fmt.Println("╭──────────────────────────────────────╮")
 	fmt.Println("│     优云算力共享 AI 助手 v0.1        │")
 	fmt.Println("╰──────────────────────────────────────╯")
+	fmt.Printf("runtime: %s\n", plannerRuntimeModeLine(shadowEnabled, cutoverIntents))
 	fmt.Println()
 	fmt.Println("正在初始化，获取您的实例信息...")
 
+	var initTraceRecorder *cliTraceRecorder
+	initStart := time.Now()
+	if traceEnabled {
+		initTraceRecorder = newCLITraceRecorder(traceWriter, 0, "init_context", initStart)
+		initTraceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, cutoverIntents))
+		initTraceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
+		eng.SetRateLimitObserver(initTraceRecorder.SetRateLimitDecision)
+	}
 	suggestions, err := eng.Init(ctx)
+	if initTraceRecorder != nil && initTraceRecorder.HasRateLimitDenial() {
+		if traceErr := initTraceRecorder.Finish(err, time.Now()); traceErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: init trace write failed: %v\n", traceErr)
+		}
+	}
 	if err != nil {
 		fmt.Printf("⚠ 初始化警告: %v\n", err)
 	}
@@ -152,6 +167,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		eng.SetRetrievalTraceObserver(nil)
 		if traceEnabled {
 			traceRecorder = newCLITraceRecorder(traceWriter, turnIndex, input, turnStart)
+			traceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, cutoverIntents))
 			traceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)
 			eng.SetHardBlockObserver(traceRecorder.SetEngineHardBlock)

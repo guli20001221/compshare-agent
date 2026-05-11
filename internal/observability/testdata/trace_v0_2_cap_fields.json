@@ -1,0 +1,26 @@
+{
+  "schema_version": "trace.v0.2",
+  "trace_id": "trace-v02",
+  "turn_id": "turn-2",
+  "turn_index": 2,
+  "runtime": {
+    "planner_mode": "shadow",
+    "cutover_intents": ["monitor"]
+  },
+  "tool_calls": [
+    {
+      "id": "tool-1",
+      "turn_index": 2,
+      "action": "GetCompShareInstanceMonitor",
+      "source": "main_react",
+      "args_hash": "sha256:args",
+      "status": "error",
+      "error_class": "blocked",
+      "capped": "targets",
+      "cap_reason": "too many targets",
+      "requested_targets": 21,
+      "executed_targets": 0,
+      "window_seconds": 3600
+    }
+  ]
+}

@@ -2,12 +2,14 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"testing"
 
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/security"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -53,6 +55,42 @@ func TestDefaultPoliciesCoverRegistryAndSecurityActions(t *testing.T) {
 	}
 }
 
+func TestDefaultPoliciesClassifyReadExpensiveActionsExplicitly(t *testing.T) {
+	policies := DefaultToolExecutionPolicies()
+
+	cases := []struct {
+		action string
+		class  ActionClass
+	}{
+		{"DescribeCompShareInstance", ActionClassReadExpensiveDefault},
+		{"GetCompShareInstanceMonitor", ActionClassReadExpensivePerTarget},
+		{"GetCompShareInstancePrice", ActionClassReadExpensiveDefault},
+		{"GetCompShareInstanceUserPrice", ActionClassReadExpensiveDefault},
+		{"DescribeAvailableCompShareInstanceTypes", ActionClassReadExpensiveDefault},
+		{"CheckCompShareResourceCapacity", ActionClassReadExpensiveDefault},
+		{"DiagnoseBilling", ActionClassReadExpensiveDefault},
+	}
+	for _, tc := range cases {
+		t.Run(tc.action, func(t *testing.T) {
+			require.Contains(t, policies, tc.action)
+			assert.Equal(t, tc.class, policies[tc.action].Class)
+		})
+	}
+
+	policy := policyForAction("GetAccountPriceAdjustmentPreview")
+	assert.Equal(t, ActionClassReadCheap, policy.Class, "unregistered price-looking actions must not become read-expensive by substring")
+}
+
+func TestDefaultPoliciesAttachMonitorCaps(t *testing.T) {
+	policies := DefaultToolExecutionPolicies()
+	policy := policies["GetCompShareInstanceMonitor"]
+
+	assert.Equal(t, 20, policy.MaxTargetsPerCall)
+	assert.Equal(t, 86400, policy.MaxHistoryWindowSeconds)
+	assert.Equal(t, 20, policies["GetCompShareInstancePrice"].MaxTargetsPerCall)
+	assert.Equal(t, 20, policies["GetCompShareInstanceUserPrice"].MaxTargetsPerCall)
+}
+
 func TestSafeExecutorRejectsMissingPolicy(t *testing.T) {
 	inner := &spyExecutor{}
 	safe := NewSafeToolExecutor(inner, WithPolicies(map[string]ToolExecutionPolicy{}))
@@ -77,6 +115,104 @@ func TestSafeExecutorDoesNotSendMetaToolsToInnerExecutor(t *testing.T) {
 
 			require.ErrorIs(t, err, ErrNonExternalAction)
 			assert.Equal(t, 0, inner.calls)
+		})
+	}
+}
+
+func TestSafeExecutorRejectsMonitorTargetCapBeforeCallingInner(t *testing.T) {
+	inner := &spyExecutor{}
+	safe := NewSafeToolExecutor(inner)
+	ids := make([]any, 21)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("uhost-%02d", i)
+	}
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "GetCompShareInstanceMonitor",
+		Args:   map[string]any{"UHostIds": ids},
+		Origin: OriginDirectLLM,
+	})
+
+	require.ErrorIs(t, err, ErrToolCapExceeded)
+	assert.Equal(t, 0, inner.calls)
+}
+
+func TestSafeExecutorRejectsMonitorHistoryWindowCapBeforeCallingInner(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]any
+	}{
+		{
+			name: "over 24h json number window",
+			args: map[string]any{
+				"UHostIds":  []any{"uhost-1"},
+				"StartTime": json.Number("1777471200"),
+				"EndTime":   json.Number("1777557601"),
+			},
+		},
+		{
+			name: "extreme parseable int64 timestamps cannot overflow around cap",
+			args: map[string]any{
+				"UHostIds":  []any{"uhost-1"},
+				"StartTime": json.Number("-9223372036854775808"),
+				"EndTime":   json.Number("9223372036854775807"),
+			},
+		},
+		{
+			name: "production json float64 timestamps cannot overflow around cap",
+			args: mustUnmarshalArgs(t, `{"UHostIds":["uhost-1"],"StartTime":0,"EndTime":1e20}`),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := &spyExecutor{}
+			safe := NewSafeToolExecutor(inner)
+
+			_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+				Action: "GetCompShareInstanceMonitor",
+				Args:   tc.args,
+				Origin: OriginDirectLLM,
+			})
+
+			require.ErrorIs(t, err, ErrHistoryWindowExceeded)
+			assert.Equal(t, 0, inner.calls)
+		})
+	}
+}
+
+func mustUnmarshalArgs(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var out map[string]any
+	require.NoError(t, json.Unmarshal([]byte(raw), &out))
+	return out
+}
+
+func TestSafeExecutorDoesNotRetryCapErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "tool cap", err: ErrToolCapExceeded},
+		{name: "rate limit", err: governance.ErrRateLimited},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := &spyExecutor{errs: []error{tc.err, nil}}
+			policies := DefaultToolExecutionPolicies()
+			policy := policies["DescribeCompShareInstance"]
+			policy.MaxTargetsPerCall = 1
+			policies["DescribeCompShareInstance"] = policy
+			safe := NewSafeToolExecutor(inner, WithPolicies(policies))
+
+			_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+				Action: "DescribeCompShareInstance",
+				Args:   map[string]any{"UHostIds": []any{"uhost-1"}},
+				Origin: OriginDirectLLM,
+			})
+
+			require.ErrorIs(t, err, tc.err)
+			assert.Equal(t, 1, inner.calls)
 		})
 	}
 }

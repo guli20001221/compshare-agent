@@ -1,0 +1,17 @@
+{
+  "schema_version": "trace.v0.1",
+  "trace_id": "trace-v01",
+  "turn_id": "turn-1",
+  "turn_index": 1,
+  "tool_calls": [
+    {
+      "id": "tool-1",
+      "turn_index": 1,
+      "action": "DescribeCompShareInstance",
+      "source": "main_react",
+      "args_hash": "sha256:args",
+      "status": "success",
+      "result_hash": "sha256:result"
+    }
+  ]
+}

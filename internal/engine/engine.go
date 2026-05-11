@@ -34,13 +34,20 @@ const (
 	maxHistoryMessages = 40
 	// maxPlannerPriorMessages bounds the user/assistant history copied into
 	// shadow-planner input. Tool and system messages are intentionally omitted.
-	maxPlannerPriorMessages  = 8
-	maxPlannerPriorTextRunes = 2000
+	maxPlannerPriorMessages      = 8
+	maxPlannerPriorTextRunes     = 2000
+	maxReadExpensiveCallsPerTurn = 20
 )
 
 const (
 	rateLimitQPSMessage   = "请求过于频繁，请稍后再试。"
 	rateLimitDailyMessage = "今日额度已用完，请明天再试。"
+)
+
+const (
+	toolCapExceededMessage         = "本次最多支持查询 20 台实例，请缩小范围后重试。"
+	historyWindowExceededMessage   = "历史监控时间窗最多支持 24 小时，请缩短时间范围后重试。"
+	readExpensiveTurnBudgetMessage = "本轮读取类查询次数已达上限，请缩小问题范围后重试。"
 )
 
 // Force-tool / hard-block priority chain (highest first):
@@ -93,29 +100,30 @@ type IntentPlannerOptions struct {
 
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
 type Engine struct {
-	llmClient              LLMClient
-	safeExecutor           *tools.SafeToolExecutor
-	registry               *entity.EntityRegistry
-	intentPlanner          IntentPlanner
-	intentPlannerModel     string
-	intentCutoverIntents   map[intent.Intent]struct{}
-	knowledgeRetriever     KnowledgeRetriever
-	plannerTraceObserver   func(observability.PlannerTrace)
-	retrievalTraceObserver func(observability.RetrievalTrace)
-	rateLimiter            governance.RateLimiter
-	rateLimitSubject       string
-	rateLimitObserver      func(governance.Decision)
-	hardBlockObserver      func(observability.EngineHardBlockTrace)
-	confirmFn              ConfirmFunc
-	messages               []openai.ChatCompletionMessage // conversation history
-	userTurn               int                            // incremented at start of each Chat() call
-	lastInstanceQueryTurn  int                            // set to userTurn on successful DescribeCompShareInstance
-	lastMonitorTurn        int                            // set to userTurn on successful GetCompShareInstanceMonitor
-	currentMonitorTargets  []string                       // historical monitor targets queried in the current turn
-	currentMonitorNoData   []string                       // current-turn historical monitor targets with no data samples
-	currentMonitorStart    int64                          // start of the current historical monitor window, if any
-	currentMonitorEnd      int64                          // end of the current historical monitor window, if any
-	currentMonitorWindow   bool                           // true when currentMonitorStart/End are known
+	llmClient                  LLMClient
+	safeExecutor               *tools.SafeToolExecutor
+	registry                   *entity.EntityRegistry
+	intentPlanner              IntentPlanner
+	intentPlannerModel         string
+	intentCutoverIntents       map[intent.Intent]struct{}
+	knowledgeRetriever         KnowledgeRetriever
+	plannerTraceObserver       func(observability.PlannerTrace)
+	retrievalTraceObserver     func(observability.RetrievalTrace)
+	rateLimiter                governance.RateLimiter
+	rateLimitSubject           string
+	rateLimitObserver          func(governance.Decision)
+	readExpensiveCallsThisTurn int
+	hardBlockObserver          func(observability.EngineHardBlockTrace)
+	confirmFn                  ConfirmFunc
+	messages                   []openai.ChatCompletionMessage // conversation history
+	userTurn                   int                            // incremented at start of each Chat() call
+	lastInstanceQueryTurn      int                            // set to userTurn on successful DescribeCompShareInstance
+	lastMonitorTurn            int                            // set to userTurn on successful GetCompShareInstanceMonitor
+	currentMonitorTargets      []string                       // historical monitor targets queried in the current turn
+	currentMonitorNoData       []string                       // current-turn historical monitor targets with no data samples
+	currentMonitorStart        int64                          // start of the current historical monitor window, if any
+	currentMonitorEnd          int64                          // end of the current historical monitor window, if any
+	currentMonitorWindow       bool                           // true when currentMonitorStart/End are known
 	// supportsObjectToolChoice gates force-tool guards (e.g. shouldForceMonitorRecall)
 	// from sending object tool_choice on models that don't support it (notably
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
@@ -137,6 +145,9 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 		llmClient:                llm.NewClient(cfg.Agent.LLM),
 		confirmFn:                confirmFn,
 		registry:                 entity.NewRegistry(),
+		// MemoryLimiter is process-local and suitable for local demo or
+		// single-instance deployment only. Multi-replica production needs a
+		// centralized limiter such as Redis or an API gateway.
 		rateLimiter:              governance.NewMemoryLimiter(cfg.Agent.RateLimit.Limits()),
 		rateLimitSubject:         subject,
 		lastInstanceQueryTurn:    -1,
@@ -236,6 +247,9 @@ func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
 	userCtx := "暂无用户信息"
 	result, err := e.refreshRegistry(ctx, entity.RefreshReasonInit)
 	if err != nil {
+		if msg, ok := friendlyToolErrorMessage(err); ok {
+			fmt.Fprintln(os.Stderr, msg)
+		}
 		// Context injection is best-effort; continue with default context.
 		_ = err
 	} else {
@@ -259,14 +273,14 @@ func (e *Engine) refreshRegistry(ctx context.Context, reason entity.RefreshReaso
 	if e.registry == nil {
 		return e.executeRawTool(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100}, tools.OriginDirectLLM)
 	}
-	result, err := e.registry.RefreshResult(ctx, e.safeExecutor, reason)
+	result, err := e.registry.RefreshResult(ctx, e.toolExecutorFor(tools.OriginDirectLLM), reason)
 	if err == nil {
 		e.lastInstanceQueryTurn = e.userTurn
 	}
 	return result, err
 }
 
-// RegistryTraceState returns the immutable registry fields reserved by trace.v0.1.
+// RegistryTraceState returns the immutable registry fields reserved by trace.
 // It does not expose the registry object, maps, or lock to callers.
 func (e *Engine) RegistryTraceState(now time.Time) observability.EntityRegistryTrace {
 	if e == nil || e.registry == nil {
@@ -349,6 +363,7 @@ func (e *Engine) InitWithContext(userCtx string) {
 func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, error) {
 	e.userTurn++
 	e.lastUserMsg = userMsg
+	e.readExpensiveCallsThisTurn = 0
 
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
@@ -525,7 +540,7 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 	} else {
 		// Planner quota denial is observable through trace.rate_limit. The
 		// cutover status intentionally collapses this into fallback_invalid
-		// because trace.v0.1 has no dedicated planner-denied enum.
+		// because trace currently has no dedicated planner-denied enum.
 	}
 	latency := time.Since(start)
 
@@ -686,6 +701,10 @@ func (x plannerHandlerExecutor) Execute(ctx context.Context, action string, args
 		},
 	})
 	if err != nil {
+		if msg, ok := friendlyToolErrorMessage(err); ok {
+			x.emit(blockedStepEvent(action, observability.ToolSourcePlannerHandler, args, msg, err))
+			return nil, friendlyEngineError{cause: err, message: msg}
+		}
 		x.emit(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourcePlannerHandler, Message: fmt.Sprintf("API 调用失败: %v", err)})
 		return nil, err
 	}
@@ -743,6 +762,95 @@ func rateLimitMessage(reason governance.Reason) string {
 		return rateLimitDailyMessage
 	}
 	return rateLimitQPSMessage
+}
+
+type friendlyEngineError struct {
+	cause   error
+	message string
+}
+
+func (e friendlyEngineError) Error() string {
+	return e.message
+}
+
+func (e friendlyEngineError) Unwrap() error {
+	return e.cause
+}
+
+func (e friendlyEngineError) UserMessage() string {
+	return e.message
+}
+
+func friendlyToolErrorMessage(err error) (string, bool) {
+	var friendly friendlyEngineError
+	if errors.As(err, &friendly) {
+		return friendly.message, true
+	}
+	switch {
+	case errors.Is(err, tools.ErrHistoryWindowExceeded):
+		return historyWindowExceededMessage, true
+	case errors.Is(err, tools.ErrToolCapExceeded):
+		return toolCapExceededMessage, true
+	case errors.Is(err, governance.ErrRateLimited):
+		return rateLimitQPSMessage, true
+	default:
+		return "", false
+	}
+}
+
+func friendlyToolResultJSON(message string) string {
+	raw, err := json.Marshal(map[string]any{
+		"success": false,
+		"message": message,
+	})
+	if err != nil {
+		return message
+	}
+	return string(raw)
+}
+
+func friendlyMessageFromText(text string) (string, bool) {
+	for _, message := range []string{
+		rateLimitQPSMessage,
+		rateLimitDailyMessage,
+		toolCapExceededMessage,
+		historyWindowExceededMessage,
+		readExpensiveTurnBudgetMessage,
+	} {
+		if message != "" && strings.Contains(text, message) {
+			return message, true
+		}
+	}
+	return "", false
+}
+
+func cappedTraceForFriendlyError(err error, message string) (string, string) {
+	if errors.Is(err, governance.ErrRateLimited) ||
+		strings.Contains(message, rateLimitQPSMessage) ||
+		strings.Contains(message, rateLimitDailyMessage) ||
+		strings.Contains(message, readExpensiveTurnBudgetMessage) {
+		return observability.ToolCappedRateLimit, message
+	}
+	if errors.Is(err, tools.ErrHistoryWindowExceeded) || strings.Contains(message, historyWindowExceededMessage) {
+		return observability.ToolCappedWindow, message
+	}
+	if errors.Is(err, tools.ErrToolCapExceeded) || strings.Contains(message, toolCapExceededMessage) {
+		return observability.ToolCappedTargets, message
+	}
+	return "", ""
+}
+
+func blockedStepEvent(action, source string, args map[string]any, message string, err error) StepEvent {
+	capped, reason := cappedTraceForFriendlyError(err, message)
+	return StepEvent{
+		Type:      StepBlocked,
+		Action:    action,
+		Source:    source,
+		Args:      args,
+		Message:   message,
+		Capped:    capped,
+		CapReason: reason,
+	}
 }
 
 // finalReplyPrefix marks a tool result as a deterministic final reply that
@@ -803,7 +911,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 
 	if decision, ok := e.allowMutatingTool(action); !ok {
 		msg := rateLimitMessage(decision.Reason)
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, args, msg, governance.ErrRateLimited))
 		return finalReplyPrefix + msg
 	}
 
@@ -821,6 +929,10 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		},
 	})
 	if err != nil {
+		if msg, ok := friendlyToolErrorMessage(err); ok {
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, args, msg, err))
+			return friendlyToolResultJSON(msg)
+		}
 		if errors.Is(err, tools.ErrDestructiveAction) {
 			msg := fmt.Sprintf("安全限制：%s 是破坏性操作（L2），已拒绝执行。请到控制台手动操作。", action)
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
@@ -848,13 +960,43 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 
 func (e *Engine) allowMutatingTool(action string) (governance.Decision, bool) {
 	policy, ok := e.safeExecutor.PolicyForAction(action)
-	// Read classes are not rate-limited by T-005. Destructive L2 actions are
-	// blocked by SafeToolExecutor before execution and do not consume quota.
-	// Only ActionClassMutating uses the mutating-tool budget.
+	// Read-expensive classes use their own budget in checkReadExpensiveBudget.
+	// Destructive L2 actions are blocked by SafeToolExecutor before execution
+	// and do not consume quota. Only ActionClassMutating uses this budget.
 	if !ok || policy.Class != tools.ActionClassMutating {
 		return governance.Decision{Allowed: true, Class: governance.ClassMutatingTool, Action: action}, true
 	}
 	return e.allowRateLimited(governance.ClassMutatingTool, action)
+}
+
+func (e *Engine) checkReadExpensiveBudget(action string, origin tools.ExecutionOrigin) error {
+	policy, ok := e.safeExecutor.PolicyForAction(action)
+	if !ok || !isReadExpensiveClass(policy.Class) {
+		return nil
+	}
+	if e.countsReadExpensiveTurnBudget(origin) {
+		if e.readExpensiveCallsThisTurn >= maxReadExpensiveCallsPerTurn {
+			return friendlyEngineError{cause: tools.ErrToolCapExceeded, message: readExpensiveTurnBudgetMessage}
+		}
+	}
+	if decision, ok := e.allowRateLimited(governance.ClassReadExpensiveTool, action); !ok {
+		return friendlyEngineError{cause: governance.ErrRateLimited, message: rateLimitMessage(decision.Reason)}
+	}
+	if e.countsReadExpensiveTurnBudget(origin) {
+		e.readExpensiveCallsThisTurn++
+	}
+	return nil
+}
+
+func isReadExpensiveClass(class tools.ActionClass) bool {
+	return class == tools.ActionClassReadExpensiveDefault || class == tools.ActionClassReadExpensivePerTarget
+}
+
+func (e *Engine) countsReadExpensiveTurnBudget(origin tools.ExecutionOrigin) bool {
+	if e.userTurn == 0 {
+		return false
+	}
+	return origin != tools.OriginWorkflowInternal
 }
 
 func (e *Engine) executeRawTool(ctx context.Context, action string, args map[string]any, origin tools.ExecutionOrigin) (map[string]any, error) {
@@ -870,6 +1012,9 @@ func (e *Engine) executeRawTool(ctx context.Context, action string, args map[str
 }
 
 func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest) (*tools.SafeToolResult, error) {
+	if err := e.checkReadExpensiveBudget(req.Action, req.Origin); err != nil {
+		return nil, err
+	}
 	result, err := e.safeExecutor.ExecuteSafe(ctx, req)
 	if err == nil && req.Action == "DescribeCompShareInstance" {
 		e.lastInstanceQueryTurn = e.userTurn
@@ -1092,7 +1237,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	if decision, ok := e.allowMutatingTool(action); !ok {
 		msg := rateLimitMessage(decision.Reason)
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, args, msg, governance.ErrRateLimited))
 		return finalReplyPrefix + msg
 	}
 
@@ -1103,6 +1248,11 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	wfEngine := workflow.NewEngine(e.toolExecutorFor(tools.OriginWorkflowInternal), wfConfirm, func(ev workflow.StepEvent) {
 		eventType := StepToolCall
+		message := fmt.Sprintf("[%d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status)
+		if ev.Message != "" {
+			message = message + ": " + ev.Message
+		}
+		capped, capReason := cappedTraceForFriendlyError(nil, ev.Message)
 		if ev.Type == workflow.StepConfirm {
 			if ev.Status == "waiting" {
 				eventType = StepConfirmNeeded
@@ -1113,25 +1263,40 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		switch ev.Status {
 		case "failed":
 			eventType = StepError
+			if _, ok := friendlyMessageFromText(ev.Message); ok {
+				eventType = StepBlocked
+			}
 		case "success":
 			if ev.Type == workflow.StepToolCall {
 				eventType = StepToolResult
 			}
 		}
 		onStep(StepEvent{
-			Type:    eventType,
-			Action:  ev.Tool,
-			Source:  observability.ToolSourceWorkflowInternal,
-			Args:    e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
-			Message: fmt.Sprintf("[%d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status),
+			Type:      eventType,
+			Action:    ev.Tool,
+			Source:    observability.ToolSourceWorkflowInternal,
+			Args:      e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
+			Message:   message,
+			Capped:    capped,
+			CapReason: capReason,
 		})
 	})
 
 	result, err := wfEngine.Run(ctx, wf, args)
 	if err != nil {
+		if msg, ok := friendlyToolErrorMessage(err); ok {
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, err))
+			return finalReplyPrefix + msg
+		}
 		msg := fmt.Sprintf("工作流执行错误: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
+	}
+	if !result.Success {
+		if msg, ok := friendlyMessageFromText(result.Message); ok {
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
+			return finalReplyPrefix + msg
+		}
 	}
 
 	// User-cancelled workflows return a deterministic reply directly
@@ -1189,28 +1354,48 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 
 	diagEngine := diagnosis.NewEngine(e.toolExecutorFor(tools.OriginDiagnosisInternal), func(ev diagnosis.DiagEvent) {
 		var eventType StepType
+		message := fmt.Sprintf("[诊断 %d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status)
+		if ev.Message != "" {
+			message = message + ": " + ev.Message
+		}
+		capped, capReason := cappedTraceForFriendlyError(nil, ev.Message)
 		switch ev.Status {
 		case "running":
 			eventType = StepToolCall
 		case "failed":
 			eventType = StepError
+			if _, ok := friendlyMessageFromText(ev.Message); ok {
+				eventType = StepBlocked
+			}
 		default: // "checked", "concluded"
 			eventType = StepToolResult
 		}
 		onStep(StepEvent{
-			Type:    eventType,
-			Action:  ev.Tool,
-			Source:  observability.ToolSourceDiagnosisInternal,
-			Args:    e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
-			Message: fmt.Sprintf("[诊断 %d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status),
+			Type:      eventType,
+			Action:    ev.Tool,
+			Source:    observability.ToolSourceDiagnosisInternal,
+			Args:      e.safeExecutor.RedactArgs(ev.Tool, ev.Args),
+			Message:   message,
+			Capped:    capped,
+			CapReason: capReason,
 		})
 	})
 
 	result, err := diagEngine.Run(ctx, chain, args)
 	if err != nil {
+		if msg, ok := friendlyToolErrorMessage(err); ok {
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, err))
+			return finalReplyPrefix + msg
+		}
 		msg := fmt.Sprintf("诊断执行错误: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
+	}
+	if !result.Success {
+		if msg, ok := friendlyMessageFromText(result.Conclusion); ok {
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
+			return finalReplyPrefix + msg
+		}
 	}
 
 	b, _ := json.Marshal(result)
@@ -1239,6 +1424,11 @@ type StepEvent struct {
 	TraceResult                map[string]any // redacted result payload for trace hashing only
 	Attempts                   int
 	RendererInputToolArgHashes []string
+	Capped                     string
+	CapReason                  string
+	RequestedTargets           int
+	ExecutedTargets            int
+	WindowSeconds              int
 }
 
 // trimHistory keeps the message list under maxHistoryMessages by dropping

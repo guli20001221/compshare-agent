@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate trace.v0.1 planner-vs-runtime signals into a Markdown report."""
+"""Aggregate trace.v0.x planner-vs-runtime signals into a Markdown report."""
 
 from __future__ import annotations
 

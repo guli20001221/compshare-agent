@@ -109,6 +109,40 @@ func TestSeparateShadowRunnerDisabledWhenCutoverEnabled(t *testing.T) {
 	}
 }
 
+func TestPlannerRuntimeModeLine(t *testing.T) {
+	cutoverIntents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		if key == "USE_INTENT_PLANNER_FOR" {
+			return "resource,monitor"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+
+	line := plannerRuntimeModeLine(true, cutoverIntents)
+	require.Equal(t, "planner_mode=shadow cutover_intents=[resource,monitor]", line)
+
+	line = plannerRuntimeModeLine(false, nil)
+	require.Equal(t, "planner_mode=off cutover_intents=[]", line)
+}
+
+func TestPlannerRuntimeTrace(t *testing.T) {
+	cutoverIntents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		if key == "USE_INTENT_PLANNER_FOR" {
+			return "resource,monitor"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+
+	trace := plannerRuntimeTrace(true, cutoverIntents)
+	require.Equal(t, "shadow", trace.PlannerMode)
+	require.Equal(t, []string{"resource", "monitor"}, trace.CutoverIntents)
+
+	trace = plannerRuntimeTrace(false, nil)
+	require.Equal(t, "off", trace.PlannerMode)
+	require.Empty(t, trace.CutoverIntents)
+}
+
 func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
 	enabled, unknown := knowledgeRetrievalModeFromEnv(func(string) string { return "" })
 	if enabled || unknown != "" {
@@ -256,6 +290,30 @@ func TestCLITraceRecorderWritesPlannerTrace(t *testing.T) {
 	if len(record.ToolCalls) != 1 || record.ToolCalls[0].Action != "DescribeCompShareInstance" {
 		t.Fatalf("tool calls changed by planner trace supplier: %#v", record.ToolCalls)
 	}
+}
+
+func TestCLITraceRecorderWritesRuntimeTrace(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 1, "runtime", start)
+	recorder.SetRuntimeTrace(observability.RuntimeTrace{
+		PlannerMode:    "shadow",
+		CutoverIntents: []string{"resource", "monitor"},
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	record := readSingleTraceRecord(t, writer, start)
+	require.Equal(t, "shadow", record.Runtime.PlannerMode)
+	require.Equal(t, []string{"resource", "monitor"}, record.Runtime.CutoverIntents)
 }
 
 func TestCLITraceRecorderAcceptsEnginePlannerTrace(t *testing.T) {
@@ -489,6 +547,105 @@ func TestCLITraceRecorderWritesOneRedactedTraceLine(t *testing.T) {
 	}
 }
 
+func TestCLITraceRecorderWritesToolTargetAndWindowFields(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	require.NoError(t, err)
+	recorder := newCLITraceRecorder(writer, 2, "monitor success", start)
+	recorder.OnStep(engine.StepEvent{
+		Type:   engine.StepToolCall,
+		Action: "GetCompShareInstanceMonitor",
+		Source: observability.ToolSourceMainReAct,
+		Args: map[string]any{
+			"UHostIds":  []any{"uhost-a", "uhost-b"},
+			"StartTime": int64(1000),
+			"EndTime":   int64(4600),
+		},
+	})
+	recorder.OnStep(engine.StepEvent{
+		Type:        engine.StepToolResult,
+		Action:      "GetCompShareInstanceMonitor",
+		Source:      observability.ToolSourceMainReAct,
+		TraceResult: map[string]any{"RetCode": 0},
+	})
+
+	require.NoError(t, recorder.Finish(nil, start))
+
+	record := readSingleTraceRecord(t, writer, start)
+	require.Len(t, record.ToolCalls, 1)
+	call := record.ToolCalls[0]
+	require.Equal(t, 2, call.RequestedTargets)
+	require.Equal(t, 2, call.ExecutedTargets)
+	require.Equal(t, 3600, call.WindowSeconds)
+	require.Empty(t, call.Capped)
+}
+
+func TestTraceWindowSecondsAcceptsSafeExecutorNumericShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]any
+		want int
+	}{
+		{
+			name: "json number and string",
+			args: map[string]any{"StartTime": json.Number("1000"), "EndTime": "4600"},
+			want: 3600,
+		},
+		{
+			name: "int32 and float32",
+			args: map[string]any{"StartTime": int32(1000), "EndTime": float32(4600)},
+			want: 3600,
+		},
+		{
+			name: "unsafe float",
+			args: map[string]any{"StartTime": float64(0), "EndTime": 1e20},
+			want: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, traceWindowSeconds(tt.args))
+		})
+	}
+}
+
+func TestCLITraceRecorderWritesBlockedCapFields(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	require.NoError(t, err)
+	ids := make([]any, 21)
+	for i := range ids {
+		ids[i] = "uhost-redacted"
+	}
+	recorder := newCLITraceRecorder(writer, 3, "monitor cap", start)
+	recorder.OnStep(engine.StepEvent{
+		Type:      engine.StepBlocked,
+		Action:    "GetCompShareInstanceMonitor",
+		Source:    observability.ToolSourceMainReAct,
+		Args:      map[string]any{"UHostIds": ids, "StartTime": int64(1000), "EndTime": int64(4600)},
+		Message:   "too many",
+		Capped:    observability.ToolCappedTargets,
+		CapReason: "too many targets",
+	})
+
+	require.NoError(t, recorder.Finish(nil, start))
+
+	record := readSingleTraceRecord(t, writer, start)
+	require.Len(t, record.ToolCalls, 1)
+	call := record.ToolCalls[0]
+	require.Equal(t, observability.ToolCappedTargets, call.Capped)
+	require.Equal(t, "too many targets", call.CapReason)
+	require.Equal(t, 21, call.RequestedTargets)
+	require.Equal(t, 0, call.ExecutedTargets)
+	require.Equal(t, 3600, call.WindowSeconds)
+}
+
 func TestCLITraceRecorderPairsRepeatedActionFIFO(t *testing.T) {
 	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	writer, err := observability.NewWriter(observability.WriterOptions{
@@ -668,6 +825,39 @@ func TestCLITraceRecorderWritesRateLimitDenial(t *testing.T) {
 		got.SubjectHash != subjectHash || got.RetryAfterMS != 200 {
 		t.Fatalf("rate_limit trace = %#v", got)
 	}
+}
+
+func TestCLITraceRecorderWritesInitRateLimitDenial(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 0, "init_context", start)
+	recorder.SetRuntimeTrace(observability.RuntimeTrace{PlannerMode: "shadow"})
+	recorder.SetRateLimitDecision(governance.Decision{
+		Allowed:     false,
+		Class:       governance.ClassReadExpensiveTool,
+		Action:      "DescribeCompShareInstance",
+		Reason:      governance.ReasonDailyExceeded,
+		SubjectHash: "sha256:subject",
+		Err:         governance.ErrRateLimited,
+	})
+
+	require.True(t, recorder.HasRateLimitDenial())
+	require.NoError(t, recorder.Finish(nil, start))
+
+	record := readSingleTraceRecord(t, writer, start)
+	require.Equal(t, 0, record.TurnIndex)
+	require.Equal(t, "shadow", record.Runtime.PlannerMode)
+	require.True(t, record.RateLimit.Checked)
+	require.False(t, record.RateLimit.Allowed)
+	require.Equal(t, string(governance.ClassReadExpensiveTool), record.RateLimit.Class)
+	require.Equal(t, "DescribeCompShareInstance", record.RateLimit.Action)
+	require.Equal(t, string(governance.ReasonDailyExceeded), record.RateLimit.Reason)
 }
 
 func TestCLITraceRecorderRateLimitDecisionAggregation(t *testing.T) {

@@ -2,22 +2,28 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/sanitizer"
 	"github.com/compshare-agent/internal/security"
 )
 
 var (
-	ErrPolicyMissing     = errors.New("tool execution policy missing")
-	ErrDestructiveAction = errors.New("destructive action refused")
-	ErrUserDeclined      = errors.New("user declined confirmation")
-	ErrNonExternalAction = errors.New("non-external action cannot be executed by API executor")
+	ErrPolicyMissing         = errors.New("tool execution policy missing")
+	ErrDestructiveAction     = errors.New("destructive action refused")
+	ErrUserDeclined          = errors.New("user declined confirmation")
+	ErrNonExternalAction     = errors.New("non-external action cannot be executed by API executor")
+	ErrToolCapExceeded       = errors.New("tool cap exceeded")
+	ErrHistoryWindowExceeded = errors.New("history window exceeded")
 )
 
 type ExecutionOrigin string
@@ -166,6 +172,9 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 	}
 
 	args := filterSafeArgs(req.Args, policy.AllowedParams)
+	if err := checkPolicyCaps(policy, args); err != nil {
+		return nil, err
+	}
 	if shouldConfirm(policy, req.Origin) {
 		if req.Hooks.OnConfirmNeeded != nil {
 			req.Hooks.OnConfirmNeeded(req.Action, args)
@@ -216,6 +225,120 @@ func (s *SafeToolExecutor) executeWithRetry(ctx context.Context, policy ToolExec
 		}
 	}
 	return nil, attempts, lastErr
+}
+
+func checkPolicyCaps(policy ToolExecutionPolicy, args map[string]any) error {
+	if policy.MaxTargetsPerCall > 0 {
+		targets := countRequestedTargets(args)
+		if targets > policy.MaxTargetsPerCall {
+			return fmt.Errorf("%w: requested %d targets exceeds max %d", ErrToolCapExceeded, targets, policy.MaxTargetsPerCall)
+		}
+	}
+	if policy.MaxHistoryWindowSeconds > 0 {
+		window, ok := requestedHistoryWindowSeconds(args)
+		if ok && window > int64(policy.MaxHistoryWindowSeconds) {
+			return fmt.Errorf("%w: requested %d seconds exceeds max %d", ErrHistoryWindowExceeded, window, policy.MaxHistoryWindowSeconds)
+		}
+	}
+	return nil
+}
+
+func countRequestedTargets(args map[string]any) int {
+	if args == nil {
+		return 0
+	}
+	if ids, ok := args["UHostIds"]; ok {
+		return valueLen(ids)
+	}
+	if id, ok := args["UHostId"]; ok && id != nil {
+		return 1
+	}
+	return 0
+}
+
+func valueLen(v any) int {
+	switch x := v.(type) {
+	case []any:
+		return len(x)
+	case []string:
+		return len(x)
+	case []int:
+		return len(x)
+	case []float64:
+		return len(x)
+	default:
+		return 0
+	}
+}
+
+func requestedHistoryWindowSeconds(args map[string]any) (int64, bool) {
+	if args == nil {
+		return 0, false
+	}
+	startValue, hasStart := args["StartTime"]
+	endValue, hasEnd := args["EndTime"]
+	if !hasStart || !hasEnd {
+		return 0, false
+	}
+	start, okStart := secondsArg(startValue)
+	end, okEnd := secondsArg(endValue)
+	if !okStart || !okEnd {
+		return maxInt64, true
+	}
+	if start < 0 || end < 0 {
+		return maxInt64, true
+	}
+	if end <= start {
+		return 0, false
+	}
+	if end > maxInt64-start {
+		return maxInt64, true
+	}
+	return end - start, true
+}
+
+const maxInt64 = int64(1<<63 - 1)
+const (
+	minInt64Float          = -9223372036854775808.0
+	maxInt64ExclusiveFloat = 9223372036854775808.0
+)
+
+func secondsArg(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int:
+		return int64(x), true
+	case int64:
+		return x, true
+	case int32:
+		return int64(x), true
+	case float64:
+		if !isSafeIntegerFloat64(x) {
+			return 0, false
+		}
+		return int64(x), true
+	case float32:
+		f := float64(x)
+		if !isSafeIntegerFloat64(f) {
+			return 0, false
+		}
+		return int64(f), true
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(x), 10, 64)
+		return n, err == nil
+	case json.Number:
+		n, err := x.Int64()
+		return n, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func isSafeIntegerFloat64(v float64) bool {
+	return !math.IsNaN(v) &&
+		!math.IsInf(v, 0) &&
+		v >= minInt64Float &&
+		v < maxInt64ExclusiveFloat &&
+		math.Trunc(v) == v
 }
 
 func shouldConfirm(policy ToolExecutionPolicy, origin ExecutionOrigin) bool {
@@ -343,6 +466,11 @@ func copyMap(in map[string]any) map[string]any {
 }
 
 func shouldRetry(err error, retryOn []ErrorClass) bool {
+	if errors.Is(err, ErrToolCapExceeded) ||
+		errors.Is(err, ErrHistoryWindowExceeded) ||
+		errors.Is(err, governance.ErrRateLimited) {
+		return false
+	}
 	if len(retryOn) == 0 {
 		return false
 	}
