@@ -77,3 +77,12 @@ func TestParseResourceFilterRejectsUnsupportedValues(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchesGPUTypeFilterUsesNarrowFamilyRules(t *testing.T) {
+	assert.True(t, matchesGPUTypeFilter("4090_48G", "4090"))
+	assert.True(t, matchesGPUTypeFilter("RTX4090", "4090"))
+	assert.True(t, matchesGPUTypeFilter("4090_48G", "4090_48G"))
+	assert.False(t, matchesGPUTypeFilter("4090", "4090_48G"))
+	assert.False(t, matchesGPUTypeFilter("A100", "A10"))
+	assert.False(t, matchesGPUTypeFilter("P400", "P40"))
+}

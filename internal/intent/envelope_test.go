@@ -91,6 +91,20 @@ func TestBuildResourceEnvelopeWithFilterMeta(t *testing.T) {
 	assertEnvelopeComputedFact(t, env, "total_count", "3")
 }
 
+func TestBuildResourceEnvelopeWithTotalCountMeta(t *testing.T) {
+	instances := []entity.InstanceSnapshot{{
+		UHostId: "uhost-a",
+		Name:    "run-a",
+		State:   "Running",
+	}}
+
+	env := BuildResourceEnvelopeWithMeta(instances, ResourceEnvelopeMeta{TotalCount: 16})
+
+	assertEnvelopeComputedFact(t, env, "total_count", "16")
+	assertNoEnvelopeComputedFact(t, env, "matched_count")
+	assertNoEnvelopeComputedFact(t, env, "filter_applied")
+}
+
 func TestBuildMonitorEnvelopeUsesResolvedSubjectsAndFiltersMetrics(t *testing.T) {
 	subjects := []entity.InstanceSnapshot{{
 		UHostId: "uhost-a",
@@ -295,4 +309,13 @@ func assertEnvelopeComputedFact(t *testing.T, env envelope.Envelope, key string,
 		}
 	}
 	t.Fatalf("missing computed fact key=%s in %#v", key, env.Computed)
+}
+
+func assertNoEnvelopeComputedFact(t *testing.T, env envelope.Envelope, key string) {
+	t.Helper()
+	for _, fact := range env.Computed {
+		if fact.Key == key {
+			t.Fatalf("unexpected computed fact key=%s in %#v", key, env.Computed)
+		}
+	}
 }

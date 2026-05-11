@@ -117,10 +117,28 @@ func applyResourceFilters(instances []entity.InstanceSnapshot, filters ResourceF
 		if filters.State != "" && !strings.EqualFold(inst.State, filters.State) {
 			continue
 		}
-		if filters.GPUType != "" && !strings.EqualFold(inst.GpuType, filters.GPUType) {
+		if filters.GPUType != "" && !matchesGPUTypeFilter(inst.GpuType, filters.GPUType) {
 			continue
 		}
 		out = append(out, inst)
 	}
 	return out
+}
+
+func matchesGPUTypeFilter(actual, filter string) bool {
+	actual = normalizeGPUType(actual)
+	filter = normalizeGPUType(filter)
+	if filter == "" {
+		return false
+	}
+	if filter == "4090" {
+		return strings.Contains(actual, filter)
+	}
+	return actual == filter
+}
+
+func normalizeGPUType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	replacer := strings.NewReplacer("_", "", "-", "", ".", "", " ", "")
+	return replacer.Replace(value)
 }

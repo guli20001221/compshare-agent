@@ -81,7 +81,7 @@ func TestResourceInfoHandler_UnresolvedUserIDFallsBackBeforeTool(t *testing.T) {
 
 func TestResourceInfoHandler_NoTargetListsInstances(t *testing.T) {
 	exec := &mockHandlerExecutor{result: map[string]any{
-		"TotalCount": float64(2),
+		"TotalCount": float64(16),
 		"UHostSet": []any{
 			instanceRow("uhost-b", "train-b"),
 			instanceRow("uhost-a", "train-a"),
@@ -99,6 +99,8 @@ func TestResourceInfoHandler_NoTargetListsInstances(t *testing.T) {
 	assert.Contains(t, result.Reply, "train-a")
 	assert.Contains(t, result.Reply, "train-b")
 	assert.Less(t, indexOf(t, result.Reply, "uhost-a"), indexOf(t, result.Reply, "uhost-b"))
+	require.NotNil(t, result.Envelope)
+	assertComputedFact(t, *result.Envelope, "total_count", "16")
 }
 
 func TestResourceInfoHandler_DedupesResolvedTargets(t *testing.T) {
@@ -206,11 +208,12 @@ func TestResourceInfoHandler_FilterByStoppedStateAlias(t *testing.T) {
 
 func TestResourceInfoHandler_FilterByStateAndGPUTypeUsesAND(t *testing.T) {
 	exec := &mockHandlerExecutor{result: map[string]any{
-		"TotalCount": float64(3),
+		"TotalCount": float64(4),
 		"UHostSet": []any{
 			instanceRowWith("uhost-a", "running-4090", "Running", "4090"),
-			instanceRowWith("uhost-b", "running-v100", "Running", "V100S"),
-			instanceRowWith("uhost-c", "stopped-4090", "Stopped", "4090"),
+			instanceRowWith("uhost-b", "running-4090-48g", "Running", "4090_48G"),
+			instanceRowWith("uhost-c", "running-v100", "Running", "V100S"),
+			instanceRowWith("uhost-d", "stopped-4090", "Stopped", "4090"),
 		},
 	}}
 	handler := NewDemoHandler(exec)
@@ -224,10 +227,11 @@ func TestResourceInfoHandler_FilterByStateAndGPUTypeUsesAND(t *testing.T) {
 
 	require.Equal(t, HandlerStatusHandled, result.Status)
 	assert.Contains(t, result.Reply, "running-4090")
+	assert.Contains(t, result.Reply, "running-4090-48g")
 	assert.NotContains(t, result.Reply, "running-v100")
 	assert.NotContains(t, result.Reply, "stopped-4090")
 	assertComputedFact(t, *result.Envelope, "filter_applied", "state=running,gpu_type=4090")
-	assertComputedFact(t, *result.Envelope, "matched_count", "1")
+	assertComputedFact(t, *result.Envelope, "matched_count", "2")
 }
 
 func TestResourceInfoHandler_FilterKeepsDuplicateNamesByID(t *testing.T) {

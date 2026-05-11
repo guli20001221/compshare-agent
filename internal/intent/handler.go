@@ -157,11 +157,10 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 	result := HandledResult(RenderResourceSummary(instances))
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
-	envMeta := ResourceEnvelopeMeta{}
+	envMeta := ResourceEnvelopeMeta{TotalCount: totalCount}
 	if hasFilters && !filters.IsZero() {
 		envMeta.FilterApplied = filters.String()
 		envMeta.MatchedCount = len(instances)
-		envMeta.TotalCount = totalCount
 	}
 	env := BuildResourceEnvelopeWithMeta(instances, envMeta)
 	result.Envelope = &env

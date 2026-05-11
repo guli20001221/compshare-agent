@@ -140,7 +140,7 @@ Renderer safety:
    - separates filter refs from name/id refs.
    - this slice rejects mixing filters with explicit name/id refs as `FallbackValidation` to avoid ambiguous semantics.
 3. Implement `applyResourceFilters(instances, filterSet)`:
-   - field comparisons are case-insensitive for `state`, exact case-insensitive for `gpu_type`.
+   - field comparisons are case-insensitive for `state`; `gpu_type` uses normalized family matching so `4090` includes `4090_48G` / `RTX4090` style values, while `4090_48G` remains narrower.
    - multiple fields are ANDed.
    - sort output by `UHostId` after filtering.
 4. Preserve existing name/id target behavior.
@@ -161,6 +161,7 @@ Renderer safety:
    - filtered resource envelope has `filter_applied`.
    - filtered resource envelope has `matched_count`.
    - filtered resource envelope has `total_count`.
+   - unfiltered resource envelope also has API `total_count`, so the renderer must not count rows itself.
    - `Subjects` contains only matched instances.
 2. Change `BuildResourceEnvelope` signature or add `BuildFilteredResourceEnvelope` to avoid breaking monitor code:
    - preferred minimal option: add `BuildResourceEnvelopeWithMeta(instances, ResourceEnvelopeMeta)`.

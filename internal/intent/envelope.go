@@ -84,9 +84,11 @@ func addComputedResourceMeta(env *envelope.Envelope, meta ResourceEnvelopeMeta) 
 		})
 	}
 	addComputed("filter_applied", "Filter applied", meta.FilterApplied)
+	if meta.TotalCount > 0 {
+		addComputed("total_count", "Total count", strconv.Itoa(meta.TotalCount))
+	}
 	if meta.FilterApplied != "" {
 		addComputed("matched_count", "Matched count", strconv.Itoa(meta.MatchedCount))
-		addComputed("total_count", "Total count", strconv.Itoa(meta.TotalCount))
 	}
 }
 

@@ -118,6 +118,21 @@ func TestGroundedRendererPromptIncludesNoInventInstruction(t *testing.T) {
 	assert.Contains(t, mock.requests[0].Messages[0].Content, "envelope")
 }
 
+func TestGroundedRendererPromptIncludesResourceListRules(t *testing.T) {
+	mock := &mockRendererLLM{response: "train-a"}
+	r := NewGroundedRenderer(mock)
+
+	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
+
+	require.Len(t, mock.requests, 1)
+	prompt := mock.requests[0].Messages[0].Content
+	assert.Contains(t, prompt, "resource_info")
+	assert.Contains(t, prompt, "ALL subjects")
+	assert.Contains(t, prompt, "computed.total_count")
+	assert.Contains(t, prompt, "duplicate names")
+	assert.Contains(t, prompt, "Do not rank")
+}
+
 type mockRendererLLM struct {
 	response string
 	err      error
@@ -153,4 +168,23 @@ func testResourceEnvelope() envelope.Envelope {
 			DoNotAnswerAccountBill: true,
 		},
 	}
+}
+
+func testMultiResourceEnvelope() envelope.Envelope {
+	env := testResourceEnvelope()
+	env.Subjects = []envelope.Subject{
+		{ID: "uhost-a", Name: "train-a", Type: envelope.SubjectInstance},
+		{ID: "uhost-b", Name: "train-b", Type: envelope.SubjectInstance},
+	}
+	env.Facts = []envelope.Fact{
+		{SubjectID: "uhost-a", Key: "state", Label: "状态", Value: "Running", Source: envelope.FactSourceAPI},
+		{SubjectID: "uhost-b", Key: "state", Label: "状态", Value: "Running", Source: envelope.FactSourceAPI},
+	}
+	env.Computed = []envelope.Fact{{
+		Key:    "total_count",
+		Label:  "Total count",
+		Value:  "2",
+		Source: envelope.FactSourceComputed,
+	}}
+	return env
 }
