@@ -148,6 +148,20 @@ func TestGroundedRendererPromptIncludesTroubleshootingRules(t *testing.T) {
 	assert.Contains(t, prompt, "instance-internal root cause")
 }
 
+func TestGroundedRendererPromptIncludesLoadAssessmentRules(t *testing.T) {
+	mock := &mockRendererLLM{response: "train-a"}
+	r := NewGroundedRenderer(mock)
+
+	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
+
+	require.Len(t, mock.requests, 1)
+	prompt := mock.requests[0].Messages[0].Content
+	assert.Contains(t, prompt, "load_assessment")
+	assert.Contains(t, prompt, "currently not busy")
+	assert.Contains(t, prompt, "single current sample")
+	assert.Contains(t, prompt, "historical trend")
+}
+
 func TestGroundedRendererPromptKeepsPlainMonitorQueriesFactOnly(t *testing.T) {
 	mock := &mockRendererLLM{response: "train-a"}
 	r := NewGroundedRenderer(mock)

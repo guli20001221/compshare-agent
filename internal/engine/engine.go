@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -43,7 +44,7 @@ const (
 )
 
 const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
-const monitorHistoryUnsupportedReply = "当前暂不稳定支持指定历史时间段的监控查询。请先在控制台监控页选择明确日期和时间范围查看；我目前只支持实时监控查询。"
+const monitorHistoryUnsupportedReply = "当前暂不支持指定历史时间段的监控查询。我可以先帮你查看实时监控；如需历史趋势，请在控制台监控页选择对应日期和时间范围查看。"
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
 
 const (
@@ -83,6 +84,7 @@ var (
 	isoDateRE            = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
 	clockRangeRE         = regexp.MustCompile(`(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)`)
 	historicalDurationRE = regexp.MustCompile(`(?i)(?:过去|近|最近|last|past|previous|recent)\s*(?:\d+\s*)?(?:分钟|小时|天|周|月|hour|hours|day|days|week|weeks|month|months|h|d)`)
+	percentValueRE       = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*%`)
 )
 
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
@@ -809,31 +811,44 @@ func (e *Engine) annotateHandlerResultForUserQuestion(result *intent.HandlerResu
 	if result == nil || result.Envelope == nil || plan.Intent != intent.IntentMonitorQuery {
 		return
 	}
-	if !isMonitorTroubleshootingQuestion(userMsg) {
+	if isMonitorTroubleshootingQuestion(userMsg) {
+		result.Envelope.Computed = append(result.Envelope.Computed, envelope.Fact{
+			Key:    "answer_mode",
+			Label:  "Answer mode",
+			Value:  "troubleshooting",
+			Source: envelope.FactSourceComputed,
+		})
+		for _, metric := range plan.Slots.Metrics {
+			if metric == intent.MetricCPU {
+				result.Envelope.Computed = append(result.Envelope.Computed, envelope.Fact{
+					Key:    "issue_metric",
+					Label:  "Issue metric",
+					Value:  "cpu",
+					Source: envelope.FactSourceComputed,
+				})
+				result.Reply = monitorTroubleshootingFallbackReply(result.Reply)
+				if hash, err := envelope.Hash(*result.Envelope); err == nil {
+					result.RendererInputEnvelopeHashes = []string{hash}
+				}
+				return
+			}
+		}
+		result.Reply = monitorTroubleshootingFallbackReply(result.Reply)
+		if hash, err := envelope.Hash(*result.Envelope); err == nil {
+			result.RendererInputEnvelopeHashes = []string{hash}
+		}
+		return
+	}
+	if !isMonitorLoadAssessmentQuestion(userMsg) {
 		return
 	}
 	result.Envelope.Computed = append(result.Envelope.Computed, envelope.Fact{
 		Key:    "answer_mode",
 		Label:  "Answer mode",
-		Value:  "troubleshooting",
+		Value:  "load_assessment",
 		Source: envelope.FactSourceComputed,
 	})
-	for _, metric := range plan.Slots.Metrics {
-		if metric == intent.MetricCPU {
-			result.Envelope.Computed = append(result.Envelope.Computed, envelope.Fact{
-				Key:    "issue_metric",
-				Label:  "Issue metric",
-				Value:  "cpu",
-				Source: envelope.FactSourceComputed,
-			})
-			result.Reply = monitorTroubleshootingFallbackReply(result.Reply)
-			if hash, err := envelope.Hash(*result.Envelope); err == nil {
-				result.RendererInputEnvelopeHashes = []string{hash}
-			}
-			return
-		}
-	}
-	result.Reply = monitorTroubleshootingFallbackReply(result.Reply)
+	result.Reply = monitorLoadAssessmentFallbackReply(result.Reply)
 	if hash, err := envelope.Hash(*result.Envelope); err == nil {
 		result.RendererInputEnvelopeHashes = []string{hash}
 	}
@@ -845,6 +860,53 @@ func monitorTroubleshootingFallbackReply(summary string) string {
 		summary = "当前云侧监控没有返回可用指标。"
 	}
 	return summary + "\n\n当前这一次采样只能说明当前时刻的云侧监控状态，不能排除之前或间歇性的历史波动。建议在控制台查看该实例最近一段时间的对应指标趋势，并同时对照 CPU、内存、GPU 和系统负载等监控指标。"
+}
+
+func monitorLoadAssessmentFallbackReply(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return "当前云侧监控没有返回可用指标，暂时无法判断这台实例是否忙。"
+	}
+	if monitorSummaryLooksLowLoad(summary) {
+		return "从当前实时采样看，这台实例现在不算忙：" + summary + "。这只代表当前时刻，不能说明过去一段时间是否有过高峰。"
+	}
+	return "当前实时采样如下：" + summary + "。是否忙需要结合业务预期和历史趋势判断；我目前只能基于当前采样给出判断。"
+}
+
+func monitorSummaryLooksLowLoad(summary string) bool {
+	parts := strings.FieldsFunc(summary, func(r rune) bool {
+		return r == ';' || r == '；' || r == '\n' || r == '|' || r == ','
+	})
+	seenLoadMetric := false
+	for _, part := range parts {
+		if !isLoadAssessmentMetric(part) {
+			continue
+		}
+		match := percentValueRE.FindStringSubmatch(part)
+		if len(match) < 2 {
+			continue
+		}
+		seenLoadMetric = true
+		value, err := strconv.ParseFloat(match[1], 64)
+		if err == nil && value > 10 {
+			return false
+		}
+	}
+	return seenLoadMetric
+}
+
+func isLoadAssessmentMetric(text string) bool {
+	normalized := strings.ToLower(text)
+	if strings.Contains(normalized, "磁盘") || strings.Contains(normalized, "系统盘") ||
+		strings.Contains(normalized, "数据盘") || strings.Contains(normalized, "disk") {
+		return false
+	}
+	return strings.Contains(normalized, "cpu") ||
+		strings.Contains(normalized, "gpu") ||
+		strings.Contains(normalized, "内存") ||
+		strings.Contains(normalized, "显存") ||
+		strings.Contains(normalized, "vram") ||
+		strings.Contains(normalized, "memory")
 }
 
 func isMonitorTroubleshootingQuestion(userMsg string) bool {
@@ -865,6 +927,21 @@ func isMonitorTroubleshootingQuestion(userMsg string) bool {
 	}
 	for _, phrase := range cpuIssuePhrases {
 		if strings.Contains(compact, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func isMonitorLoadAssessmentQuestion(userMsg string) bool {
+	normalized := strings.ToLower(userMsg)
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(normalized)
+	phrases := []string{
+		"忙不忙", "空闲吗", "空不空闲", "闲置吗", "闲不闲", "负载怎么样", "负载如何",
+		"gpu忙吗", "gpu忙不忙", "显卡忙吗", "显卡忙不忙",
+	}
+	for _, phrase := range phrases {
+		if strings.Contains(compact, strings.ToLower(phrase)) {
 			return true
 		}
 	}

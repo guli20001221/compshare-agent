@@ -206,7 +206,7 @@ func buildSystemPrompt() string {
 		"Stage 2B retrieval focus: classify clear platform usage / FAQ questions as knowledge_qa.",
 		"For diagnosis questions that also reference platform FAQ or usage docs should still emit diagnosis.",
 		"For billing-specific FAQ plus instance facts should emit billing_instance; unsupported account totals still use billing_account_unsupported.",
-		"finance policy/how-to questions like invoice issuance, refund rules, arrears handling, billing mode differences, or package expiry should emit knowledge_qa.",
+		"finance policy/how-to questions like invoice issuance, refund rules, arrears handling, why am I still charged after shutdown, billing mode differences, or package expiry should emit knowledge_qa.",
 		"account realtime finance/status questions like invoice status, refund progress, arrears amount, payable bills, balance, total bills, transaction records, charge records, package expiry time, or recharge amount should emit billing_account_unsupported.",
 		"If a single question mixes finance FAQ with account realtime finance/status data, emit billing_account_unsupported for the whole turn.",
 		"instance-scoped billing questions should emit billing_instance, but do not promise account ledger amounts or transaction exports.",

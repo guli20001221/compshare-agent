@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -18,6 +19,17 @@ func TestRetrieverFindsBillingChunk(t *testing.T) {
 	require.Len(t, result.Hits, 1)
 	assert.Equal(t, "kb-curated-test", result.KBVersion)
 	assert.Equal(t, "faq-billing-001", result.Hits[0].ChunkID)
+}
+
+func TestRetrieverFindsStoppedBillingNaturalWhyQuestionFromBundledCorpus(t *testing.T) {
+	corpus, err := LoadCorpus(filepath.Join("..", "..", "deploy", "kb", "curated_faq.jsonl"))
+	require.NoError(t, err)
+
+	result := NewRetriever(corpus, RetrieverOptions{Now: fixedRetrieverNow}).Retrieve("关机后为什么还扣费", "billing")
+
+	require.False(t, result.Empty)
+	require.NotEmpty(t, result.Hits)
+	assert.Equal(t, "faq-billing-stopped-instance-001", result.Hits[0].ChunkID)
 }
 
 func TestRetrieverFindsFinanceRuleChunks(t *testing.T) {
