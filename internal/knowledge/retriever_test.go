@@ -20,6 +20,32 @@ func TestRetrieverFindsBillingChunk(t *testing.T) {
 	assert.Equal(t, "faq-billing-001", result.Hits[0].ChunkID)
 }
 
+func TestRetrieverFindsFinanceRuleChunks(t *testing.T) {
+	corpus, err := LoadCorpus("testdata/curated_faq.jsonl")
+	require.NoError(t, err)
+
+	cases := []struct {
+		name        string
+		question    string
+		wantChunkID string
+	}{
+		{name: "invoice howto", question: "\u600e\u4e48\u5f00\u53d1\u7968", wantChunkID: "faq-billing-invoice-001"},
+		{name: "arrears handling", question: "\u6b20\u8d39\u600e\u4e48\u529e", wantChunkID: "faq-billing-arrears-001"},
+		{name: "billing mode difference", question: "\u6309\u91cf\u548c\u5305\u65e5\u6709\u4ec0\u4e48\u533a\u522b", wantChunkID: "faq-billing-mode-001"},
+		{name: "refund rules", question: "\u9000\u6b3e\u89c4\u5219\u662f\u4ec0\u4e48", wantChunkID: "faq-billing-refund-001"},
+		{name: "expiry renewal", question: "\u5957\u9910\u5230\u671f\u600e\u4e48\u529e", wantChunkID: "faq-billing-expiry-renewal-001"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := NewRetriever(corpus, RetrieverOptions{Now: fixedRetrieverNow}).Retrieve(tc.question, "billing")
+
+			require.False(t, result.Empty)
+			require.NotEmpty(t, result.Hits)
+			assert.Equal(t, tc.wantChunkID, result.Hits[0].ChunkID)
+		})
+	}
+}
+
 func TestRetrieverFindsImageChunk(t *testing.T) {
 	corpus, err := LoadCorpus("testdata/curated_faq.jsonl")
 	require.NoError(t, err)
@@ -162,6 +188,20 @@ func TestRetrieverFiltersSubThresholdMatches(t *testing.T) {
 	result := NewRetriever(corpus, RetrieverOptions{Now: fixedRetrieverNow}).Retrieve("关机后还收费吗", "")
 
 	assert.True(t, result.Empty)
+}
+
+func TestRetrieverDoesNotMatchOnProductAreaAlone(t *testing.T) {
+	corpus := Corpus{
+		KBVersion: "kb-test",
+		Chunks: []KBChunk{
+			testChunk("billing-only", "billing", "high", "退款规则", "退款规则是什么", "退款规则说明", "", nil),
+		},
+	}
+
+	result := NewRetriever(corpus, RetrieverOptions{Now: fixedRetrieverNow}).Retrieve("怎么开发票", "billing")
+
+	assert.True(t, result.Empty)
+	assert.Empty(t, result.Hits)
 }
 
 func fixedRetrieverNow() time.Time {

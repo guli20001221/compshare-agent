@@ -40,8 +40,8 @@ func TestBuildSystemPromptDoesNotEmitMixedIntents(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	if len(examples) != 7 {
-		t.Fatalf("prompt examples count = %d, want 7; examples=%v", len(examples), examples)
+	if len(examples) != 9 {
+		t.Fatalf("prompt examples count = %d, want 9; examples=%v", len(examples), examples)
 	}
 	for _, example := range examples {
 		plan, err := parsePlanJSON(example)
@@ -59,6 +59,24 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 		}
 		if plan.Retrieval.Enabled {
 			t.Fatalf("prompt example unexpectedly enables retrieval: %s", example)
+		}
+	}
+}
+
+func TestBuildSystemPromptDistinguishesFinanceFAQAndRealtimeAccountData(t *testing.T) {
+	prompt := buildSystemPrompt()
+	required := []string{
+		"finance policy/how-to questions like invoice issuance, refund rules, arrears handling, billing mode differences, or package expiry should emit knowledge_qa",
+		"account realtime finance/status questions like invoice status, refund progress, arrears amount, payable bills, balance, total bills, transaction records, or charge records should emit billing_account_unsupported",
+		"instance-scoped billing questions should emit billing_instance",
+		"how do I issue an invoice",
+		"what is my invoice status",
+		"refund rules",
+		"refund progress",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt missing finance routing rule %q:\n%s", fragment, prompt)
 		}
 	}
 }

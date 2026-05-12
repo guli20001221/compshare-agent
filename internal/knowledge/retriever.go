@@ -95,20 +95,27 @@ func scoreChunk(question, productArea string, chunk KBChunk) int {
 	question = strings.TrimSpace(strings.ToLower(question))
 	productArea = strings.TrimSpace(strings.ToLower(productArea))
 	score := 0
+	textMatched := false
 	for _, pattern := range chunk.QuestionPatterns {
 		if textMatches(question, pattern) {
 			score += 4
+			textMatched = true
 			break
 		}
 	}
 	if textMatches(question, chunk.Title) {
 		score += 3
-	}
-	if productArea != "" && strings.EqualFold(productArea, chunk.ProductArea) {
-		score += 2
+		textMatched = true
 	}
 	if textMatches(question, chunk.Content) {
 		score++
+		textMatched = true
+	}
+	if !textMatched {
+		return 0
+	}
+	if productArea != "" && strings.EqualFold(productArea, chunk.ProductArea) {
+		score += 2
 	}
 	return score
 }

@@ -15,11 +15,30 @@ func TestLoadCorpusLoadsCustomerSafeJSONL(t *testing.T) {
 	corpus, err := LoadCorpus(filepath.Join("testdata", "curated_faq.jsonl"))
 	require.NoError(t, err)
 
-	require.Len(t, corpus.Chunks, 2)
+	require.Len(t, corpus.Chunks, 7)
 	assert.Equal(t, "kb-curated-test", corpus.KBVersion)
 	assert.Equal(t, "faq-image-001", corpus.Chunks[0].ChunkID)
 	assert.Equal(t, "customer_safe", corpus.Chunks[0].ACL)
 	assert.Equal(t, []string{"平台镜像有哪些", "社区镜像和平台镜像区别"}, corpus.Chunks[0].QuestionPatterns)
+}
+
+func TestLoadDeployCuratedFAQIncludesFinanceRules(t *testing.T) {
+	corpus, err := LoadCorpus(filepath.Join("..", "..", "deploy", "kb", "curated_faq.jsonl"))
+	require.NoError(t, err)
+
+	ids := map[string]bool{}
+	for _, chunk := range corpus.Chunks {
+		ids[chunk.ChunkID] = true
+	}
+	for _, id := range []string{
+		"faq-billing-invoice-001",
+		"faq-billing-arrears-001",
+		"faq-billing-mode-001",
+		"faq-billing-refund-001",
+		"faq-billing-expiry-renewal-001",
+	} {
+		assert.True(t, ids[id], "deploy FAQ missing %s", id)
+	}
 }
 
 func TestLoadCorpusRejectsInvalidJSONWithRowNumber(t *testing.T) {

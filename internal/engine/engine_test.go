@@ -2714,6 +2714,37 @@ func TestAccountBillingHardBlock_Matrix(t *testing.T) {
 	}
 }
 
+func TestAccountBillingHardBlock_FinanceRealtimeVsRules(t *testing.T) {
+	cases := []hardBlockMatrixCase{
+		{name: "refuses_invoice_status", msg: "\u6211\u7684\u53d1\u7968\u72b6\u6001\u600e\u4e48\u6837", wantBlocked: true},
+		{name: "refuses_invoice_application_approved", msg: "\u5f00\u7968\u7533\u8bf7\u901a\u8fc7\u4e86\u5417", wantBlocked: true},
+		{name: "refuses_invoice_review_approved", msg: "\u53d1\u7968\u5ba1\u6838\u901a\u8fc7\u4e86\u5417", wantBlocked: true},
+		{name: "refuses_refund_progress", msg: "\u9000\u6b3e\u8fdb\u5ea6\u5230\u54ea\u4e86", wantBlocked: true},
+		{name: "refuses_refund_success", msg: "\u9000\u6b3e\u6210\u529f\u4e86\u5417", wantBlocked: true},
+		{name: "refuses_refunded_yet", msg: "\u9000\u6b3e\u4e86\u5417", wantBlocked: true},
+		{name: "refuses_arrears_amount", msg: "\u6b20\u8d39\u91d1\u989d\u591a\u5c11", wantBlocked: true},
+		{name: "refuses_pending_payable_bill", msg: "\u5f85\u652f\u4ed8\u8d26\u5355\u7ed9\u6211\u770b\u4e00\u4e0b", wantBlocked: true},
+		{name: "refuses_invoice_delivery", msg: "\u53d1\u7968\u5bc4\u9001\u5230\u54ea\u4e86", wantBlocked: true},
+		{name: "refuses_charge_record", msg: "\u6263\u8d39\u8bb0\u5f55\u67e5\u4e00\u4e0b", wantBlocked: true},
+		{name: "refuses_transaction_record", msg: "\u4ea4\u6613\u8bb0\u5f55\u67e5\u4e00\u4e0b", wantBlocked: true},
+		{name: "mixed_invoice_rule_and_status_refuses", msg: "\u600e\u4e48\u5f00\u53d1\u7968\uff0c\u6211\u7684\u53d1\u7968\u72b6\u6001\u600e\u4e48\u6837", wantBlocked: true},
+		{name: "mixed_refund_rule_and_progress_refuses", msg: "\u9000\u6b3e\u89c4\u5219\u662f\u4ec0\u4e48\uff0c\u6211\u7684\u9000\u6b3e\u8fdb\u5ea6\u5230\u54ea\u4e86", wantBlocked: true},
+		{name: "instance_transaction_flow_still_refuses", msg: "\u6bcf\u53f0\u5b9e\u4f8b\u7684\u6d88\u8d39\u6d41\u6c34", wantBlocked: true},
+		{name: "invoice_howto_allows_knowledge", msg: "\u600e\u4e48\u5f00\u53d1\u7968"},
+		{name: "invoice_application_flow_allows_knowledge", msg: "\u53d1\u7968\u7533\u8bf7\u6d41\u7a0b"},
+		{name: "refund_rule_allows_knowledge", msg: "\u9000\u6b3e\u89c4\u5219\u662f\u4ec0\u4e48"},
+		{name: "arrears_howto_allows_knowledge", msg: "\u6b20\u8d39\u600e\u4e48\u529e"},
+		{name: "billing_mode_difference_allows_knowledge", msg: "\u6309\u91cf\u548c\u5305\u65e5\u6709\u4ec0\u4e48\u533a\u522b"},
+		{name: "package_expiry_rule_allows_knowledge", msg: "\u5957\u9910\u5230\u671f\u600e\u4e48\u529e"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runHardBlockMatrixCase(t, tc)
+		})
+	}
+}
+
 func TestAccountBillingHardBlock_DoesNotResetTurnScopedMonitorState(t *testing.T) {
 	executor := billingScenarioExecutor("Running")
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
@@ -3378,6 +3409,68 @@ func TestStage2BRetrievalHardBlockPrecedesPlanner(t *testing.T) {
 	assert.Empty(t, planner.calls, "permanent hard-block must run before Stage 2B planner")
 	assert.Empty(t, retriever.calls)
 	assert.Empty(t, mock.calls)
+}
+
+func TestStage2BFinanceFAQRetrievalUsesBillingArea(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Hits: []knowledge.KBChunk{{
+			ChunkID:     "faq-billing-invoice-001",
+			KBVersion:   "kb.v1",
+			SourceType:  "faq",
+			ProductArea: "billing",
+			ACL:         "customer_safe",
+			Confidence:  "high",
+			Title:       "\u5982\u4f55\u5f00\u53d1\u7968",
+			Content:     "\u53d1\u7968\u901a\u5e38\u5728\u63a7\u5236\u53f0\u8d22\u52a1\u4e2d\u5fc3\u7684\u53d1\u7968\u7ba1\u7406\u4e2d\u7533\u8bf7\u3002",
+		}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "\u600e\u4e48\u5f00\u53d1\u7968", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "\u53d1\u7968\u7ba1\u7406")
+	assert.Empty(t, mock.calls)
+	require.Len(t, retriever.calls, 1)
+	assert.Equal(t, "billing", retriever.calls[0].productArea)
+}
+
+func TestStage2BFinanceRealtimeHardBlockPrecedesPlanner(t *testing.T) {
+	cases := []string{
+		"\u6211\u7684\u53d1\u7968\u72b6\u6001\u600e\u4e48\u6837",
+		"\u9000\u6b3e\u8fdb\u5ea6\u5230\u54ea\u4e86",
+		"\u6b20\u8d39\u91d1\u989d\u591a\u5c11",
+	}
+	for _, msg := range cases {
+		t.Run(msg, func(t *testing.T) {
+			planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+			retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+				Enabled:   true,
+				KBVersion: "kb.v1",
+				Empty:     true,
+			}}}
+			mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+			eng := NewWithDeps(mock, &mockExecutor{}, nil)
+			eng.InitWithContext("test user")
+			eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+			eng.SetKnowledgeRetriever(retriever)
+
+			reply, err := eng.Chat(context.Background(), msg, noopStep)
+
+			require.NoError(t, err)
+			assert.Equal(t, accountBillingUnsupportedReply, reply)
+			assert.Empty(t, planner.calls)
+			assert.Empty(t, retriever.calls)
+			assert.Empty(t, mock.calls)
+		})
+	}
 }
 
 func TestStage2BAndPhase1CutoverShareSinglePlannerCall(t *testing.T) {
