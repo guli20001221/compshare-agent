@@ -147,6 +147,19 @@ func TestGroundedRendererPromptIncludesTroubleshootingRules(t *testing.T) {
 	assert.Contains(t, prompt, "instance-internal root cause")
 }
 
+func TestGroundedRendererPromptKeepsPlainMonitorQueriesFactOnly(t *testing.T) {
+	mock := &mockRendererLLM{response: "train-a"}
+	r := NewGroundedRenderer(mock)
+
+	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
+
+	require.Len(t, mock.requests, 1)
+	prompt := mock.requests[0].Messages[0].Content
+	assert.Contains(t, prompt, "without computed.answer_mode")
+	assert.Contains(t, prompt, "only report current metric values")
+	assert.Contains(t, prompt, "Do not add troubleshooting advice")
+}
+
 type mockRendererLLM struct {
 	response string
 	err      error
