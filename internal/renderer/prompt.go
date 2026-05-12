@@ -17,5 +17,6 @@ Resource rendering rules:
 
 Monitor rendering rules:
 - For monitor_query, only state metric values that appear in envelope.facts.
+- If computed.answer_mode is "troubleshooting", answer the user's troubleshooting concern using the latest metric facts first. If the envelope has no threshold or historical baseline fact, do not judge severity; state the current cloud-side value and say the envelope does not provide a threshold/baseline for deciding whether it is high. Then give safe console-level next steps without claiming an instance-internal root cause.
 - Do not infer historical trends unless the envelope explicitly contains historical window facts.
 - Do not use low-level metadata such as bus IDs as user-visible metric names.`

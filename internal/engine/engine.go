@@ -14,6 +14,7 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
@@ -616,6 +617,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 					}
 					handled = handler.HandleMonitorQuery(ctx, req)
 					e.emitPlannerTrace(resumed, handled.CutoverStatus, dispatch.latency)
+					e.annotateHandlerResultForUserQuestion(&handled, resumed.Plan, e.lastUserMsg)
 					reply := handled.Reply
 					if handled.Status == intent.HandlerStatusHandled {
 						reply = e.renderGroundedHandlerResult(ctx, handled)
@@ -641,6 +643,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 	}
 
 	e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
+	e.annotateHandlerResultForUserQuestion(&handled, result.Plan, e.lastUserMsg)
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
 		reply = e.renderGroundedHandlerResult(ctx, handled)
@@ -689,6 +692,7 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		Resolver: pending.snapshot,
 	})
 	e.emitPlannerTrace(intent.PlannerResult{Plan: resumedPlan}, handled.CutoverStatus, 0)
+	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, pending.originalUserMsg)
 
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
@@ -743,6 +747,62 @@ func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent
 	}
 	e.emitRendererTrace(trace)
 	return result.Text
+}
+
+func (e *Engine) annotateHandlerResultForUserQuestion(result *intent.HandlerResult, plan intent.Plan, userMsg string) {
+	if result == nil || result.Envelope == nil || plan.Intent != intent.IntentMonitorQuery {
+		return
+	}
+	if !isMonitorTroubleshootingQuestion(userMsg) {
+		return
+	}
+	result.Envelope.Computed = append(result.Envelope.Computed, envelope.Fact{
+		Key:    "answer_mode",
+		Label:  "Answer mode",
+		Value:  "troubleshooting",
+		Source: envelope.FactSourceComputed,
+	})
+	for _, metric := range plan.Slots.Metrics {
+		if metric == intent.MetricCPU {
+			result.Envelope.Computed = append(result.Envelope.Computed, envelope.Fact{
+				Key:    "issue_metric",
+				Label:  "Issue metric",
+				Value:  "cpu",
+				Source: envelope.FactSourceComputed,
+			})
+			if hash, err := envelope.Hash(*result.Envelope); err == nil {
+				result.RendererInputEnvelopeHashes = []string{hash}
+			}
+			return
+		}
+	}
+	if hash, err := envelope.Hash(*result.Envelope); err == nil {
+		result.RendererInputEnvelopeHashes = []string{hash}
+	}
+}
+
+func isMonitorTroubleshootingQuestion(userMsg string) bool {
+	normalized := strings.ToLower(userMsg)
+	explicitTroubleshooting := []string{
+		"怎么办", "怎么处理", "如何处理", "怎么解决", "如何解决", "排查", "异常",
+		"卡顿", "很卡", "太卡", "卡住", "卡死", "无响应", "变慢", "很慢",
+	}
+	for _, word := range explicitTroubleshooting {
+		if strings.Contains(normalized, strings.ToLower(word)) {
+			return true
+		}
+	}
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(normalized)
+	cpuIssuePhrases := []string{
+		"cpu高", "cpu过高", "cpu太高", "cpu很高", "cpu负载高", "cpu占用高", "cpu使用率高",
+		"cpu飙高", "cpu打满", "cpu满了", "highcpu",
+	}
+	for _, phrase := range cpuIssuePhrases {
+		if strings.Contains(compact, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) tryStage2BRetrieval(dispatch plannerDispatchResult, userMsg string) (string, bool) {

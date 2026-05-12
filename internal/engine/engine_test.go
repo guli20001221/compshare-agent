@@ -3793,6 +3793,8 @@ func TestResourceSelectionContinuationExactNameUsesGroundedRendererAndPlannerSou
 	require.NoError(t, err)
 	assert.Equal(t, "grounded monitor summary", reply)
 	require.Len(t, groundedRenderer.requests, 1)
+	assertEngineComputedFact(t, groundedRenderer.requests[0].Envelope, "answer_mode", "troubleshooting")
+	assertEngineComputedFact(t, groundedRenderer.requests[0].Envelope, "issue_metric", "cpu")
 	assert.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, executor.calls)
 	require.Len(t, *events, 2)
 	assert.Equal(t, StepToolCall, (*events)[0].Type)
@@ -3803,6 +3805,14 @@ func TestResourceSelectionContinuationExactNameUsesGroundedRendererAndPlannerSou
 	assert.NotEmpty(t, (*events)[1].RendererInputToolArgHashes)
 	assert.Empty(t, mock.calls)
 	assert.Nil(t, eng.pendingResourceSelection)
+}
+
+func TestMonitorTroubleshootingQuestionDoesNotMatchNormalGPUCardQuery(t *testing.T) {
+	assert.False(t, isMonitorTroubleshootingQuestion("看一下显卡利用率"))
+	assert.False(t, isMonitorTroubleshootingQuestion("highmem 机器现在 GPU 使用率是多少"))
+
+	assert.True(t, isMonitorTroubleshootingQuestion("CPU 高怎么办"))
+	assert.True(t, isMonitorTroubleshootingQuestion("这台机器有点卡顿，帮我排查"))
 }
 
 func TestResourceSelectionContinuationDuplicateNameRepeatsPrompt(t *testing.T) {

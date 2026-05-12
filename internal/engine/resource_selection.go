@@ -53,7 +53,11 @@ func renderResourceSelectionPrompt(p pendingResourceSelection) string {
 	if p.truncated {
 		b.WriteString("\n这里只显示按实例 ID 排序后的前 20 个候选。你可以回复更具体的实例名称或实例 ID 来缩小范围。\n")
 	}
-	b.WriteString("\n\u4f60\u53ef\u4ee5\u56de\u590d 1/2/3\u3001\u5b9e\u4f8b ID \u6216\u5b8c\u6574\u5b9e\u4f8b\u540d\u79f0\u3002")
+	if len(p.candidates) == 1 {
+		b.WriteString("\n你可以回复 1、实例 ID 或完整实例名称。")
+	} else {
+		fmt.Fprintf(&b, "\n你可以回复序号（1-%d）、实例 ID 或完整实例名称。", len(p.candidates))
+	}
 	return b.String()
 }
 

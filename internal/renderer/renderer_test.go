@@ -133,6 +133,20 @@ func TestGroundedRendererPromptIncludesResourceListRules(t *testing.T) {
 	assert.Contains(t, prompt, "Do not rank")
 }
 
+func TestGroundedRendererPromptIncludesTroubleshootingRules(t *testing.T) {
+	mock := &mockRendererLLM{response: "train-a"}
+	r := NewGroundedRenderer(mock)
+
+	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
+
+	require.Len(t, mock.requests, 1)
+	prompt := mock.requests[0].Messages[0].Content
+	assert.Contains(t, prompt, "computed.answer_mode")
+	assert.Contains(t, prompt, "troubleshooting")
+	assert.Contains(t, prompt, "threshold/baseline")
+	assert.Contains(t, prompt, "instance-internal root cause")
+}
+
 type mockRendererLLM struct {
 	response string
 	err      error

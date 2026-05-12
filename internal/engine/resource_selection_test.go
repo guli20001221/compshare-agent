@@ -31,7 +31,7 @@ func TestResourceSelectionPromptRendersCandidateDetails(t *testing.T) {
 		"\u5185\u5b58=65536 MB",
 		"cn-wlcb-01",
 		"charge=Dynamic",
-		"1/2/3",
+		"1-2",
 		"ID",
 		"\u5b8c\u6574\u5b9e\u4f8b\u540d\u79f0",
 	}
@@ -74,6 +74,9 @@ func TestResourceSelectionPromptSanitizesCandidateFields(t *testing.T) {
 	}
 	if strings.Count(got, "\n2.") != 1 {
 		t.Fatalf("prompt should contain only the real second candidate line, got:\n%s", got)
+	}
+	if strings.Contains(got, "1/2/3") {
+		t.Fatalf("prompt should not suggest only 1/2/3 when candidates may have a wider range, got:\n%s", got)
 	}
 }
 
