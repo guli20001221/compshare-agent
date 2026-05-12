@@ -106,3 +106,20 @@ func AllIntents() []Intent {
 		IntentUnknown,
 	}
 }
+
+func RuntimeIntents() []Intent {
+	return []Intent{
+		IntentMonitorQuery,
+		IntentMonitorHistory,
+		IntentResourceInfo,
+		IntentBillingInstance,
+		IntentBillingAccountUnsupported,
+		IntentExpiryRenewal,
+		IntentDiagnosis,
+		IntentVagueFailure,
+		IntentOperationLifecycle,
+		IntentRecommendation,
+		IntentKnowledgeQA,
+		IntentUnknown,
+	}
+}

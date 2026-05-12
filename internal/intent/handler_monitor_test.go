@@ -61,6 +61,7 @@ func TestMonitorQueryHandler_MissingTargetFallsBackBeforeTool(t *testing.T) {
 func TestMonitorQueryHandler_NonCurrentTimeWindowFallsBackBeforeTool(t *testing.T) {
 	for _, window := range []*TimeWindow{
 		{Type: TimeWindowRelative, Value: "yesterday"},
+		{Type: TimeWindowPreset, Value: "today"},
 		{Type: TimeWindowAbsolute, Value: "2026-05-08T01:00:00+08:00/2026-05-08T02:00:00+08:00"},
 	} {
 		t.Run(string(window.Type), func(t *testing.T) {

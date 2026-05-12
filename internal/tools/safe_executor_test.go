@@ -162,6 +162,22 @@ func TestSafeExecutorRejectsMonitorHistoryWindowCapBeforeCallingInner(t *testing
 			name: "production json float64 timestamps cannot overflow around cap",
 			args: mustUnmarshalArgs(t, `{"UHostIds":["uhost-1"],"StartTime":0,"EndTime":1e20}`),
 		},
+		{
+			name: "historical window is single target only",
+			args: mustUnmarshalArgs(t, `{"UHostIds":["uhost-1","uhost-2"],"StartTime":1777471200,"EndTime":1777474800}`),
+		},
+		{
+			name: "start time without end time is still historical monitor",
+			args: mustUnmarshalArgs(t, `{"UHostIds":["uhost-1"],"StartTime":1777471200}`),
+		},
+		{
+			name: "end time without start time is still historical monitor",
+			args: mustUnmarshalArgs(t, `{"UHostIds":["uhost-1"],"EndTime":1777474800}`),
+		},
+		{
+			name: "invalid end before start is still historical monitor",
+			args: mustUnmarshalArgs(t, `{"UHostIds":["uhost-1"],"StartTime":1777474800,"EndTime":1777471200}`),
+		},
 	}
 
 	for _, tc := range cases {
@@ -175,7 +191,7 @@ func TestSafeExecutorRejectsMonitorHistoryWindowCapBeforeCallingInner(t *testing
 				Origin: OriginDirectLLM,
 			})
 
-			require.ErrorIs(t, err, ErrHistoryWindowExceeded)
+			require.ErrorIs(t, err, ErrHistoricalMonitorUnsupported)
 			assert.Equal(t, 0, inner.calls)
 		})
 	}
@@ -194,6 +210,8 @@ func TestSafeExecutorDoesNotRetryCapErrors(t *testing.T) {
 		err  error
 	}{
 		{name: "tool cap", err: ErrToolCapExceeded},
+		{name: "history window cap", err: ErrHistoryWindowExceeded},
+		{name: "historical monitor unsupported", err: ErrHistoricalMonitorUnsupported},
 		{name: "rate limit", err: governance.ErrRateLimited},
 	}
 	for _, tc := range cases {
@@ -291,32 +309,26 @@ func TestSafeExecutorUsesPolicyForDisplayAndRedaction(t *testing.T) {
 	})
 }
 
-func TestSafeExecutorMonitorHistoryGuardMarksNoDataWindow(t *testing.T) {
-	inner := &spyExecutor{result: map[string]any{
+func TestMonitorHistoryGuardMarksNoDataWindow(t *testing.T) {
+	raw := map[string]any{
 		"Data": []any{
 			map[string]any{"UHostId": "uhost-1", "MonitorSet": []any{}},
 		},
-	}}
-	safe := NewSafeToolExecutor(inner)
+	}
 
-	result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
-		Action: "GetCompShareInstanceMonitor",
-		Args: map[string]any{
-			"UHostIds":  []any{"uhost-1"},
-			"StartTime": float64(1777471200),
-			"EndTime":   float64(1777474800),
-		},
-		Origin: OriginDirectLLM,
-	})
+	result := applyHistoryGuard(DefaultToolExecutionPolicies()["GetCompShareInstanceMonitor"], map[string]any{
+		"UHostIds":  []any{"uhost-1"},
+		"StartTime": float64(1777471200),
+		"EndTime":   float64(1777474800),
+	}, raw)
 
-	require.NoError(t, err)
-	assert.Equal(t, "NO_DATA_IN_REQUESTED_WINDOW", result.LLMResult["MonitorDataStatus"])
-	assert.Contains(t, result.LLMResult["MonitorDataGuidance"], "不要编造 CPU/内存/GPU 数值")
+	assert.Equal(t, "NO_DATA_IN_REQUESTED_WINDOW", result["MonitorDataStatus"])
+	assert.NotEmpty(t, result["MonitorDataGuidance"])
 }
 
-func TestSafeExecutorMonitorHistoryGuardDoesNotMarkSamplesOrRealtime(t *testing.T) {
+func TestMonitorHistoryGuardDoesNotMarkSamplesOrRealtime(t *testing.T) {
 	t.Run("historical samples", func(t *testing.T) {
-		inner := &spyExecutor{result: map[string]any{
+		raw := map[string]any{
 			"Data": []any{
 				map[string]any{
 					"UHostId": "uhost-1",
@@ -325,35 +337,23 @@ func TestSafeExecutorMonitorHistoryGuardDoesNotMarkSamplesOrRealtime(t *testing.
 					},
 				},
 			},
-		}}
-		safe := NewSafeToolExecutor(inner)
+		}
 
-		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
-			Action: "GetCompShareInstanceMonitor",
-			Args: map[string]any{
-				"UHostIds":  []any{"uhost-1"},
-				"StartTime": float64(1777471200),
-				"EndTime":   float64(1777474800),
-			},
-			Origin: OriginDirectLLM,
-		})
+		result := applyHistoryGuard(DefaultToolExecutionPolicies()["GetCompShareInstanceMonitor"], map[string]any{
+			"UHostIds":  []any{"uhost-1"},
+			"StartTime": float64(1777471200),
+			"EndTime":   float64(1777474800),
+		}, raw)
 
-		require.NoError(t, err)
-		assert.NotContains(t, result.LLMResult, "MonitorDataStatus")
+		assert.NotContains(t, result, "MonitorDataStatus")
 	})
 
 	t.Run("realtime snapshot", func(t *testing.T) {
-		inner := &spyExecutor{result: map[string]any{"Data": []any{}}}
-		safe := NewSafeToolExecutor(inner)
+		result := applyHistoryGuard(DefaultToolExecutionPolicies()["GetCompShareInstanceMonitor"], map[string]any{
+			"UHostIds": []any{"uhost-1", "uhost-2"},
+		}, map[string]any{"Data": []any{}})
 
-		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
-			Action: "GetCompShareInstanceMonitor",
-			Args:   map[string]any{"UHostIds": []any{"uhost-1", "uhost-2"}},
-			Origin: OriginDirectLLM,
-		})
-
-		require.NoError(t, err)
-		assert.NotContains(t, result.LLMResult, "MonitorDataStatus")
+		assert.NotContains(t, result, "MonitorDataStatus")
 	})
 }
 

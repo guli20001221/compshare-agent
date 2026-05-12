@@ -175,7 +175,7 @@ func validateProvenance(ref TargetRef, field string, ctx ValidationContext) erro
 }
 
 func validIntent(intent Intent) bool {
-	for _, allowed := range AllIntents() {
+	for _, allowed := range RuntimeIntents() {
 		if intent == allowed {
 			return true
 		}

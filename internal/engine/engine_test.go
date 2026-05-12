@@ -407,7 +407,9 @@ func TestChat_ExternalToolReadRetriesTransientError(t *testing.T) {
 	assert.NotContains(t, toolMsg.Content, "API")
 }
 
-func TestChat_HistoricalMonitorNoDataFinalReplyAndTurnReset(t *testing.T) {
+// Reference-only legacy scenario kept for future historical-monitor re-enable.
+// It is intentionally not a Test* while this stage rejects history windows.
+func legacyChat_HistoricalMonitorNoDataFinalReplyAndTurnReset(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"GetCompShareInstanceMonitor": {
 			"RetCode": 0,
@@ -444,7 +446,9 @@ func TestChat_HistoricalMonitorNoDataFinalReplyAndTurnReset(t *testing.T) {
 	assert.Equal(t, "第二轮普通回复 CPU 99%。", reply)
 }
 
-func TestChat_HistoricalMonitorFinalReplyCorrectsWindowWording(t *testing.T) {
+// Reference-only legacy scenario kept for future historical-monitor re-enable.
+// It is intentionally not a Test* while this stage rejects history windows.
+func legacyChat_HistoricalMonitorFinalReplyCorrectsWindowWording(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"GetCompShareInstanceMonitor": {
 			"RetCode": 0,
@@ -477,6 +481,97 @@ func TestChat_HistoricalMonitorFinalReplyCorrectsWindowWording(t *testing.T) {
 	assert.Contains(t, reply, "CPU 42")
 	assert.NotContains(t, reply, "2025-06-30")
 	assert.NotContains(t, reply, "当前实时监控")
+}
+
+func TestChat_HistoricalMonitorToolCallBlockedBeforeExecution(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{
+		ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-1"],"StartTime":1777442400,"EndTime":1777444200}`),
+		},
+	}}}
+	executor := &mockExecutor{}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "show monitor data", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, monitorHistoryUnsupportedReply, reply)
+	assert.Empty(t, executor.calls, "historical monitor tool call must be blocked before API execution")
+}
+
+func TestGuardMonitorTemporalFinalReplyCorrectsWindowWording(t *testing.T) {
+	eng := NewWithDeps(nil, nil, nil)
+	eng.currentMonitorWindow = true
+	eng.currentMonitorStart = 1777442400
+	eng.currentMonitorEnd = 1777444200
+
+	reply := eng.guardMonitorTemporalFinalReply("historical monitor shows 2025-06-30 13:00 ~ 13:30 CPU 42%")
+
+	assert.Contains(t, reply, "2026-04-29")
+	assert.Contains(t, reply, "14:00 ~ 14:30")
+	assert.Contains(t, reply, "CPU 42")
+	assert.NotContains(t, reply, "2025-06-30")
+}
+
+func TestGuardMonitorTemporalFinalReplyCorrectsChineseClockRangeWording(t *testing.T) {
+	eng := NewWithDeps(nil, nil, nil)
+	eng.currentMonitorWindow = true
+	eng.currentMonitorStart = 1777442400
+	eng.currentMonitorEnd = 1777444200
+
+	reply := eng.guardMonitorTemporalFinalReply("\u5386\u53f2\u76d1\u63a7\u663e\u793a 2025-06-30 8\u70b9\u523010\u70b9 CPU 42\u3002")
+
+	assert.Contains(t, reply, "14:00 ~ 14:30")
+	assert.Contains(t, reply, "CPU 42")
+	assert.NotContains(t, reply, "8\u70b9\u523010\u70b9")
+	assert.NotContains(t, reply, "2025-06-30")
+}
+
+func TestChat_ClearHistoricalMonitorQuestionBlockedBeforeReAct(t *testing.T) {
+	cases := []string{
+		"\u770b\u6628\u5929 8\u70b9\u523010\u70b9 CPU \u76d1\u63a7",
+		"\u8fc7\u53bb\u4e00\u5c0f\u65f6 CPU \u76d1\u63a7",
+		"\u8fd1 24 \u5c0f\u65f6\u663e\u5b58",
+		"\u4e0a\u5468 GPU \u5229\u7528\u7387",
+		"2026-05-08 \u7684\u76d1\u63a7",
+		"show yesterday cpu monitor",
+		"last night GPU monitor",
+		"last 24 hours CPU",
+		"\u6628\u665a\u8fd9\u53f0\u673a\u5668\u5fd9\u4e0d\u5fd9",
+		"was it idle last night",
+	}
+	for _, msg := range cases {
+		t.Run(msg, func(t *testing.T) {
+			mock := &mockLLM{responses: []llm.ChatResponse{{
+				ToolCalls: []openai.ToolCall{
+					toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-1"],"StartTime":1777442400,"EndTime":1777444200}`),
+				},
+			}}}
+			executor := &mockExecutor{}
+			eng := NewWithDeps(mock, executor, nil)
+			eng.InitWithContext("test user")
+
+			reply, err := eng.Chat(context.Background(), msg, noopStep)
+
+			require.NoError(t, err)
+			assert.Equal(t, monitorHistoryUnsupportedReply, reply)
+			assert.Empty(t, mock.calls, "clear historical monitor question must not enter ReAct")
+			assert.Empty(t, executor.calls)
+		})
+	}
+}
+
+func TestChat_CurrentMonitorQuestionNotBlockedByHistoricalGuard(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react current monitor"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "\u73b0\u5728 CPU \u76d1\u63a7\u600e\u4e48\u6837", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "react current monitor", reply)
+	assert.Len(t, mock.calls, 1)
 }
 
 func TestChat_ExternalTool_L2Blocked(t *testing.T) {
@@ -2886,6 +2981,19 @@ func phase1MonitorPlan() intent.Plan {
 	}
 }
 
+func phase1MonitorHistoryPlan() intent.Plan {
+	plan := phase1MonitorPlan()
+	plan.Intent = intent.IntentMonitorHistory
+	plan.Slots.TimeWindow = &intent.TimeWindow{Type: intent.TimeWindowRelative, Value: "yesterday"}
+	return plan
+}
+
+func phase1MonitorTodayPlan() intent.Plan {
+	plan := phase1MonitorPlan()
+	plan.Slots.TimeWindow = &intent.TimeWindow{Type: intent.TimeWindowPreset, Value: "today"}
+	return plan
+}
+
 func phase1MonitorPlanWithoutTarget() intent.Plan {
 	return intent.Plan{
 		SchemaVersion: intent.SchemaVersion,
@@ -2983,6 +3091,41 @@ func TestStage2BRetrievalHitBypassesReActAndTools(t *testing.T) {
 	assert.True(t, retrievalTraces[0].Enabled)
 	assert.Equal(t, "kb.v1", retrievalTraces[0].KBVersion)
 	assert.Equal(t, 1, retrievalTraces[0].Hits)
+}
+
+func TestStage2BRetrievalHitClipsStoredAssistantHistory(t *testing.T) {
+	longContent := strings.Repeat("A", maxKnowledgeHistoryRunes+512)
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Hits: []knowledge.KBChunk{{
+			ChunkID:     "faq-long-001",
+			KBVersion:   "kb.v1",
+			SourceType:  "faq",
+			ProductArea: "billing",
+			ACL:         "customer_safe",
+			Confidence:  "high",
+			Title:       "Long billing answer",
+			Content:     longContent,
+		}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "explain billing in detail", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, longContent, "user-facing retrieval answer must remain complete")
+	require.NotEmpty(t, eng.messages)
+	stored := eng.messages[len(eng.messages)-1]
+	assert.Equal(t, "assistant", stored.Role)
+	assert.Less(t, len([]rune(stored.Content)), len([]rune(reply)), "stored history should be clipped")
+	assert.Contains(t, stored.Content, knowledgeHistoryClipMarker)
+	assert.Empty(t, mock.calls, "knowledge retrieval hit must still bypass ReAct")
 }
 
 func TestStage2BRetrievalMissReturnsFixedReply(t *testing.T) {
@@ -3455,6 +3598,57 @@ func TestPhase1CutoverMonitorPlanBypassesReAct(t *testing.T) {
 	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[0].Source)
 	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[1].Source)
 	assert.NotEmpty(t, (*events)[1].RendererInputToolArgHashes)
+}
+
+func TestPhase1CutoverMonitorTodayWindowReturnsFixedReplyWithoutReAct(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorTodayPlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	var traces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		traces = append(traces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "show today's cpu monitor", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, monitorHistoryUnsupportedReply, reply)
+	assert.Empty(t, mock.calls, "non-current monitor window must not fall back to ReAct")
+	assert.Empty(t, executor.calls, "non-current monitor window must not call monitor as current data")
+	require.Len(t, traces, 1)
+	assert.Equal(t, string(intent.CutoverStatusFallbackTimeWindow), traces[0].CutoverStatus)
+}
+
+func TestPlannerMonitorHistoryReturnsFixedReplyWithoutReAct(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorHistoryPlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	var traces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		traces = append(traces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "historical cpu monitor", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, monitorHistoryUnsupportedReply, reply)
+	assert.Empty(t, mock.calls, "historical monitor planner output must not fall back to ReAct")
+	assert.Empty(t, executor.calls)
+	require.Len(t, traces, 1)
+	assert.Equal(t, string(intent.CutoverStatusFallbackTimeWindow), traces[0].CutoverStatus)
 }
 
 func TestPhase1CutoverMonitorMissingTargetReturnsResourceSelection(t *testing.T) {
