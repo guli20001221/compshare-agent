@@ -337,7 +337,7 @@ func isCurrentMonitorTimeWindow(window *TimeWindow) bool {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(window.Value)) {
-	case "now", "current", "realtime", "today":
+	case "now", "current", "realtime":
 		return true
 	default:
 		return false

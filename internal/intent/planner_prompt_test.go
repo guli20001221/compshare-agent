@@ -16,8 +16,6 @@ func TestBuildSystemPromptIncludesPhase1CutoverSchemaFields(t *testing.T) {
 		"hard_block_hint",
 		"retrieval",
 		"knowledge_qa",
-		"mixed_diagnosis_kb",
-		"mixed_billing_kb",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
@@ -27,6 +25,15 @@ func TestBuildSystemPromptIncludesPhase1CutoverSchemaFields(t *testing.T) {
 	for _, staleLabel := range staleNonASCIIPlannerLabels() {
 		if strings.Contains(prompt, staleLabel) {
 			t.Fatalf("system prompt contains stale non-ASCII label %q:\n%s", staleLabel, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptDoesNotEmitMixedIntents(t *testing.T) {
+	prompt := buildSystemPrompt()
+	for _, legacy := range []string{"mixed_diagnosis_kb", "mixed_billing_kb"} {
+		if strings.Contains(prompt, legacy) {
+			t.Fatalf("system prompt should not ask planner to emit legacy mixed intent %q:\n%s", legacy, prompt)
 		}
 	}
 }
@@ -61,10 +68,8 @@ func TestBuildSystemPromptIncludesKnowledgeQARules(t *testing.T) {
 	required := []string{
 		"clear platform usage / FAQ questions",
 		"knowledge_qa",
-		"diagnosis questions that also reference platform FAQ",
-		"mixed_diagnosis_kb",
-		"billing-specific FAQ plus instance facts",
-		"mixed_billing_kb",
+		"diagnosis questions that also reference platform FAQ or usage docs should still emit diagnosis",
+		"billing-specific FAQ plus instance facts should emit billing_instance",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
@@ -85,6 +90,22 @@ func TestBuildSystemPromptClassifiesPerformanceQuestionsAsMonitor(t *testing.T) 
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("system prompt missing performance monitor rule %q:\n%s", fragment, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptTreatsClockRangesAsHistoricalMonitor(t *testing.T) {
+	prompt := buildSystemPrompt()
+	required := []string{
+		"Historical monitor phrases",
+		"yesterday",
+		"today morning",
+		"X点到Y点",
+		"never preset now/today",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt missing historical monitor rule %q:\n%s", fragment, prompt)
 		}
 	}
 }

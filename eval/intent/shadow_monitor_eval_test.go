@@ -176,7 +176,7 @@ func classifyShadowMonitorFixture(prompt string) intp.Plan {
 	case strings.Contains(normalized, "instance charge"):
 		return shadowFixturePlan(intp.IntentBillingInstance, nil)
 	case strings.Contains(normalized, "ssh"):
-		return shadowFixturePlan(intp.IntentMixedDiagnosisKB, nil)
+		return shadowFixturePlan(intp.IntentDiagnosis, nil)
 	case strings.Contains(normalized, "shutdown"):
 		return shadowFixturePlan(intp.IntentOperationLifecycle, nil)
 	case strings.Contains(normalized, "4090 vram size"):

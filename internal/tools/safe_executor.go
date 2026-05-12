@@ -18,12 +18,13 @@ import (
 )
 
 var (
-	ErrPolicyMissing         = errors.New("tool execution policy missing")
-	ErrDestructiveAction     = errors.New("destructive action refused")
-	ErrUserDeclined          = errors.New("user declined confirmation")
-	ErrNonExternalAction     = errors.New("non-external action cannot be executed by API executor")
-	ErrToolCapExceeded       = errors.New("tool cap exceeded")
-	ErrHistoryWindowExceeded = errors.New("history window exceeded")
+	ErrPolicyMissing                = errors.New("tool execution policy missing")
+	ErrDestructiveAction            = errors.New("destructive action refused")
+	ErrUserDeclined                 = errors.New("user declined confirmation")
+	ErrNonExternalAction            = errors.New("non-external action cannot be executed by API executor")
+	ErrToolCapExceeded              = errors.New("tool cap exceeded")
+	ErrHistoryWindowExceeded        = errors.New("history window exceeded")
+	ErrHistoricalMonitorUnsupported = errors.New("historical monitor unsupported")
 )
 
 type ExecutionOrigin string
@@ -171,6 +172,10 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 		return nil, fmt.Errorf("%w: %s", ErrDestructiveAction, req.Action)
 	}
 
+	if policy.Action == "GetCompShareInstanceMonitor" && hasMonitorTimeRangeArgs(req.Args) {
+		return nil, fmt.Errorf("%w: monitor history window is not enabled in this stage", ErrHistoricalMonitorUnsupported)
+	}
+
 	args := filterSafeArgs(req.Args, policy.AllowedParams)
 	if err := checkPolicyCaps(policy, args); err != nil {
 		return nil, err
@@ -236,6 +241,9 @@ func checkPolicyCaps(policy ToolExecutionPolicy, args map[string]any) error {
 	}
 	if policy.MaxHistoryWindowSeconds > 0 {
 		window, ok := requestedHistoryWindowSeconds(args)
+		if ok && countRequestedTargets(args) > 1 {
+			return fmt.Errorf("%w: requested historical monitor for %d targets; max 1", ErrHistoryWindowExceeded, countRequestedTargets(args))
+		}
 		if ok && window > int64(policy.MaxHistoryWindowSeconds) {
 			return fmt.Errorf("%w: requested %d seconds exceeds max %d", ErrHistoryWindowExceeded, window, policy.MaxHistoryWindowSeconds)
 		}
@@ -369,6 +377,9 @@ func filterSafeArgs(args map[string]any, allowed []string) map[string]any {
 	return filtered
 }
 
+// applyHistoryGuard is retained for the future historical-monitor stage.
+// Current user-facing monitor calls with time-window arguments are rejected
+// before API execution by ErrHistoricalMonitorUnsupported.
 func applyHistoryGuard(policy ToolExecutionPolicy, args map[string]any, raw map[string]any) map[string]any {
 	if !policy.HistoryMonitorGuard || !hasMonitorTimeRangeArgs(args) || raw == nil {
 		return raw
@@ -468,6 +479,7 @@ func copyMap(in map[string]any) map[string]any {
 func shouldRetry(err error, retryOn []ErrorClass) bool {
 	if errors.Is(err, ErrToolCapExceeded) ||
 		errors.Is(err, ErrHistoryWindowExceeded) ||
+		errors.Is(err, ErrHistoricalMonitorUnsupported) ||
 		errors.Is(err, governance.ErrRateLimited) {
 		return false
 	}

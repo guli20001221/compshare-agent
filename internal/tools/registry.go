@@ -222,7 +222,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareInstanceMonitor",
-			Description: "获取实例监控数据（CPU/内存/GPU/显存使用率等）。必须传 UHostIds。查多实例时仅返回最近 60 秒基础指标；查单实例可传 StartTime/EndTime 获取扩展指标（网络、磁盘）。",
+			Description: "Get current instance monitor data such as CPU, memory, GPU, and VRAM utilization. Pass UHostIds only. Do not pass historical time-window fields; historical monitor windows are not enabled in this stage.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -230,14 +230,6 @@ var Registry = []openai.Tool{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
 						"description": "实例 ID 列表（必填）",
-					},
-					"StartTime": map[string]any{
-						"type":        "integer",
-						"description": "查询起始时间（Unix 时间戳），仅单实例查询时有效",
-					},
-					"EndTime": map[string]any{
-						"type":        "integer",
-						"description": "查询结束时间（Unix 时间戳），仅单实例查询时有效",
 					},
 				},
 				"required": []string{"UHostIds"},

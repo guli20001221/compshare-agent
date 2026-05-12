@@ -12,12 +12,22 @@ from typing import Any, Iterable
 
 MONITOR_INTENTS = {"monitor_query", "monitor_history"}
 ACCOUNT_HARDBLOCK_INTENT = "billing_account_unsupported"
-MIXED_BOUNDARY_INTENTS = {
+BOUNDARY_INTENTS = {
     "billing_instance",
-    "mixed_diagnosis_kb",
-    "mixed_billing_kb",
+    "diagnosis",
     "operation_lifecycle",
     "knowledge_qa",
+    # Legacy trace compatibility: new planner prompts no longer emit mixed_*,
+    # but existing trace files and dashboards may still contain these labels.
+    "mixed_diagnosis_kb",
+    "mixed_billing_kb",
+}
+LEGACY_MIXED_BOUNDARY_INTENTS = {"mixed_diagnosis_kb", "mixed_billing_kb"}
+MIXED_BOUNDARY_COMPAT_INTENTS = {
+    "billing_instance",
+    "operation_lifecycle",
+    "knowledge_qa",
+    *LEGACY_MIXED_BOUNDARY_INTENTS,
 }
 MONITOR_ACTION = "GetCompShareInstanceMonitor"
 
@@ -43,10 +53,15 @@ def summarize(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     intent_counts = Counter(_planner(r).get("intent") or "(empty)" for r in planner_enabled)
     monitor_misses = [r for r in planner_enabled if _monitor_freshness_miss(r)]
     hardblock = _account_hardblock_summary(planner_enabled)
-    mixed = Counter(
+    boundary = Counter(
         _planner(r).get("intent")
         for r in planner_enabled
-        if _planner(r).get("intent") in MIXED_BOUNDARY_INTENTS
+        if _planner(r).get("intent") in BOUNDARY_INTENTS
+    )
+    legacy_mixed_boundary = Counter(
+        _planner(r).get("intent")
+        for r in planner_enabled
+        if _planner(r).get("intent") in MIXED_BOUNDARY_COMPAT_INTENTS
     )
     return {
         "total_turns": len(rows),
@@ -59,7 +74,10 @@ def summarize(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "monitor_freshness_miss_count": len(monitor_misses),
         "monitor_freshness_misses": [_record_id(r) for r in monitor_misses],
         "intent_counts": dict(sorted(intent_counts.items())),
-        "mixed_boundary_counts": dict(sorted(mixed.items())),
+        "boundary_counts": dict(sorted(boundary.items())),
+        # Backward-compatible alias for older consumers that still read the
+        # pre-cleanup mixed boundary metric.
+        "mixed_boundary_counts": dict(sorted(legacy_mixed_boundary.items())),
     }
 
 
@@ -113,13 +131,13 @@ def render_markdown(summary: dict[str, Any], source: Path | str) -> str:
     lines.extend(
         [
             "",
-            "## Mixed Boundary Outcomes",
+            "## Boundary Outcomes",
             "",
             "| Intent | Count |",
             "| --- | ---: |",
         ]
     )
-    lines.extend(_count_rows(summary["mixed_boundary_counts"]))
+    lines.extend(_count_rows(summary["boundary_counts"]))
     lines.append("")
     return "\n".join(lines)
 

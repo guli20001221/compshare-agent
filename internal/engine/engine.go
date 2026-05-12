@@ -38,8 +38,12 @@ const (
 	// shadow-planner input. Tool and system messages are intentionally omitted.
 	maxPlannerPriorMessages      = 8
 	maxPlannerPriorTextRunes     = 2000
+	maxKnowledgeHistoryRunes     = 4000
 	maxReadExpensiveCallsPerTurn = 20
 )
+
+const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
+const monitorHistoryUnsupportedReply = "当前暂不稳定支持指定历史时间段的监控查询。请先在控制台监控页选择明确日期和时间范围查看；我目前只支持实时监控查询。"
 
 const (
 	rateLimitQPSMessage   = "请求过于频繁，请稍后再试。"
@@ -74,9 +78,10 @@ const (
 // decision point when the priority chain grows beyond this narrow bridge set.
 
 var (
-	beijingZone  = time.FixedZone("CST", 8*3600)
-	isoDateRE    = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
-	clockRangeRE = regexp.MustCompile(`\b\d{1,2}:\d{2}\s*(?:~|-|到|至)\s*\d{1,2}:\d{2}\b`)
+	beijingZone          = time.FixedZone("CST", 8*3600)
+	isoDateRE            = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
+	clockRangeRE         = regexp.MustCompile(`(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)`)
+	historicalDurationRE = regexp.MustCompile(`(?i)(?:过去|近|最近|last|past|previous|recent)\s*(?:\d+\s*)?(?:分钟|小时|天|周|月|hour|hours|day|days|week|weeks|month|months|h|d)`)
 )
 
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
@@ -404,6 +409,15 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 		return accountBillingUnsupportedReply, nil
 	}
 
+	if isUnsupportedHistoricalMonitorQuestion(userMsg) {
+		e.pendingResourceSelection = nil
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: monitorHistoryUnsupportedReply,
+		})
+		return monitorHistoryUnsupportedReply, nil
+	}
+
 	e.currentMonitorTargets = nil
 	e.currentMonitorNoData = nil
 	e.currentMonitorStart = 0
@@ -525,6 +539,14 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		return "", false
 	}
 
+	if dispatch.result.Plan.Intent == intent.IntentMonitorHistory {
+		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackTimeWindow, dispatch.latency)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: monitorHistoryUnsupportedReply,
+		})
+		return monitorHistoryUnsupportedReply, true
+	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery {
 		return e.tryPhase1Cutover(ctx, dispatch, onStep)
 	}
@@ -637,6 +659,14 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 				})
 				return reply, true
 			}
+		}
+		if handled.FallbackReason == intent.FallbackTimeWindow {
+			e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: monitorHistoryUnsupportedReply,
+			})
+			return monitorHistoryUnsupportedReply, true
 		}
 		e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
 		return "", false
@@ -845,9 +875,17 @@ func (e *Engine) tryStage2BRetrieval(dispatch plannerDispatchResult, userMsg str
 	e.emitPlannerTrace(result, intent.CutoverStatusDispatchedRetrieval, dispatch.latency)
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
-		Content: reply,
+		Content: clipKnowledgeHistoryContent(reply),
 	})
 	return reply, true
+}
+
+func clipKnowledgeHistoryContent(content string) string {
+	runes := []rune(content)
+	if len(runes) <= maxKnowledgeHistoryRunes {
+		return content
+	}
+	return string(runes[:maxKnowledgeHistoryRunes]) + knowledgeHistoryClipMarker
 }
 
 func (e *Engine) commonPlannerCandidateStatus(result intent.PlannerResult) (intent.CutoverStatus, bool) {
@@ -1024,6 +1062,8 @@ func friendlyToolErrorMessage(err error) (string, bool) {
 		return friendly.message, true
 	}
 	switch {
+	case errors.Is(err, tools.ErrHistoricalMonitorUnsupported):
+		return monitorHistoryUnsupportedReply, true
 	case errors.Is(err, tools.ErrHistoryWindowExceeded):
 		return historyWindowExceededMessage, true
 	case errors.Is(err, tools.ErrToolCapExceeded):
@@ -1166,6 +1206,11 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		},
 	})
 	if err != nil {
+		if errors.Is(err, tools.ErrHistoricalMonitorUnsupported) {
+			msg := monitorHistoryUnsupportedReply
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, args, msg, err))
+			return finalReplyPrefix + msg
+		}
 		if msg, ok := friendlyToolErrorMessage(err); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, args, msg, err))
 			return friendlyToolResultJSON(msg)
@@ -1288,6 +1333,9 @@ func (x engineToolExecutor) Execute(ctx context.Context, action string, args map
 	return x.engine.executeRawTool(ctx, action, args, x.origin)
 }
 
+// guardMonitorTemporalFinalReply is retained for the future historical-monitor
+// stage. It is unreachable for new monitor history calls while
+// ErrHistoricalMonitorUnsupported blocks StartTime/EndTime tool arguments.
 func (e *Engine) guardMonitorTemporalFinalReply(content string) string {
 	if !e.currentMonitorWindow || content == "" {
 		return content
@@ -1320,6 +1368,9 @@ func (e *Engine) guardMonitorTemporalFinalReply(content string) string {
 	return corrected
 }
 
+// trackMonitorResult is retained for the future historical-monitor stage.
+// Current user-facing paths reject history-window monitor calls before API
+// execution, so this only protects legacy/internal test seams.
 func (e *Engine) trackMonitorResult(result *tools.SafeToolResult) {
 	if result == nil || result.Action != "GetCompShareInstanceMonitor" || !hasMonitorTimeRangeArgs(result.Args) {
 		return
@@ -1851,6 +1902,45 @@ var monitorMetricKeywords = []string{
 	"memory",
 }
 
+var historicalMonitorTimeKeywords = []string{
+	"\u6628\u5929",             // 昨天
+	"\u6628\u665a",             // 昨晚
+	"\u524d\u5929",             // 前天
+	"\u4eca\u65e9",             // 今早
+	"\u4eca\u5929\u65e9\u4e0a", // 今天早上
+	"\u4eca\u5929\u4e0a\u5348", // 今天上午
+	"\u4eca\u5929\u4e0b\u5348", // 今天下午
+	"\u4eca\u5929\u665a\u4e0a", // 今天晚上
+	"\u4eca\u5929\u51cc\u6668", // 今天凌晨
+	"\u4e0a\u5468",             // 上周
+	"\u4e0a\u4e2a\u6708",       // 上个月
+	"\u4e0a\u6708",             // 上月
+	"\u672c\u5468",             // 本周
+	"\u672c\u6708",             // 本月
+	"\u534a\u4e2a\u6708",       // 半个月
+	"\u8fc7\u53bb",             // 过去
+	"\u6700\u8fd1",             // 最近
+	"yesterday",
+	"last night",
+	"today morning",
+	"this morning",
+	"last week",
+	"last month",
+	"past",
+	"previous",
+}
+
+var historicalMonitorSignalKeywords = []string{
+	"monitor", "cpu", "gpu", "vram", "memory", "idle", "busy", "load",
+	"\u76d1\u63a7",       // 监控
+	"\u663e\u5b58",       // 显存
+	"\u5185\u5b58",       // 内存
+	"\u5229\u7528\u7387", // 利用率
+	"\u8d1f\u8f7d",       // 负载
+	"\u7a7a\u95f2",       // 空闲
+	"\u5fd9",             // 忙
+}
+
 var knowledgeBillingKeywords = []string{
 	"billing", "bill", "charge", "cost", "fee", "price", "balance",
 	"\u8ba1\u8d39", "\u6263\u8d39", "\u6536\u8d39", "\u8d26\u5355", "\u4f59\u989d", "\u8d39\u7528", "\u4ef7\u683c",
@@ -2019,6 +2109,19 @@ func (e *Engine) shouldForceMonitorRecall(userMsg string) bool {
 	}
 	n := normalizeMsg(userMsg)
 	return containsAnyKeyword(n, monitorRecallKeywords) && containsAnyKeyword(n, monitorMetricKeywords)
+}
+
+func isUnsupportedHistoricalMonitorQuestion(userMsg string) bool {
+	n := normalizeMsg(userMsg)
+	if !containsAnyKeyword(n, historicalMonitorSignalKeywords) {
+		return false
+	}
+	if containsAnyKeyword(n, historicalMonitorTimeKeywords) {
+		return true
+	}
+	return clockRangeRE.MatchString(userMsg) ||
+		isoDateRE.MatchString(userMsg) ||
+		historicalDurationRE.MatchString(userMsg)
 }
 
 func containsAnyKeyword(normalized string, keywords []string) bool {

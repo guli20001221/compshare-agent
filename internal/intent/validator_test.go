@@ -38,6 +38,19 @@ func TestValidatePlan_RejectsInvalidIntentEnum(t *testing.T) {
 	requireValidationCode(t, err, ErrInvalidIntent)
 }
 
+func TestValidatePlan_RejectsLegacyMixedIntentEnums(t *testing.T) {
+	for _, legacy := range []Intent{IntentMixedDiagnosisKB, IntentMixedBillingKB} {
+		t.Run(string(legacy), func(t *testing.T) {
+			plan := validMonitorPlan()
+			plan.Intent = legacy
+
+			err := ValidatePlan(plan, ValidationContext{UserText: "monitor uhost-abc123", Registry: testRegistry(t)})
+
+			requireValidationCode(t, err, ErrInvalidIntent)
+		})
+	}
+}
+
 func TestValidatePlan_RejectsInvalidSlotType(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.Slots.TargetRefs[0].Type = TargetRefType("uhost_id_planner_generated")
@@ -188,6 +201,11 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentMixedBillingKB,
 		IntentUnknown,
 	}, AllIntents())
+}
+
+func TestRuntimeIntentsExcludeLegacyMixedIntents(t *testing.T) {
+	assert.NotContains(t, RuntimeIntents(), IntentMixedDiagnosisKB)
+	assert.NotContains(t, RuntimeIntents(), IntentMixedBillingKB)
 }
 
 func validMonitorPlan() Plan {

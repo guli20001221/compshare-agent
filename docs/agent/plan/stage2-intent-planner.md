@@ -111,6 +111,11 @@ operation_lifecycle | recommendation | knowledge_qa | mixed_diagnosis_kb |
 mixed_billing_kb | unknown
 ```
 
+Note: `mixed_diagnosis_kb` and `mixed_billing_kb` are retained only as legacy
+trace labels for old reports. New planner output must use `diagnosis`,
+`billing_instance`, or `knowledge_qa`; `intent.ValidatePlan` rejects new
+`mixed_*` plans until a reviewed mixed handler exists.
+
 **slot.target_refs 的 type 枚举**：
 - `filter`：`all` / `all_running` / `all_stopped` / `gpu_type=4090`
 - `name`：实例名（engine 在 registry 模糊匹配）

@@ -32,7 +32,7 @@ class PlannerVsGuardDiffTests(unittest.TestCase):
         self.assertEqual(summary["monitor_freshness_miss_count"], 1)
         self.assertEqual(summary["intent_counts"]["monitor_query"], 2)
         self.assertEqual(summary["intent_counts"]["billing_account_unsupported"], 2)
-        self.assertEqual(summary["mixed_boundary_counts"]["mixed_diagnosis_kb"], 1)
+        self.assertEqual(summary["boundary_counts"]["diagnosis"], 1)
 
     def test_markdown_report_contains_required_sections(self):
         mod = load_module()
@@ -47,8 +47,46 @@ class PlannerVsGuardDiffTests(unittest.TestCase):
         self.assertIn("Monitor freshness misses | 1", report)
         self.assertIn("| billing_account_unsupported | 2 |", report)
         self.assertIn("Account Hard-Block Agreement", report)
-        self.assertIn("Mixed Boundary Outcomes", report)
-        self.assertIn("| mixed_diagnosis_kb | 1 |", report)
+        self.assertIn("Boundary Outcomes", report)
+        self.assertIn("| diagnosis | 1 |", report)
+
+    def test_summary_keeps_legacy_mixed_boundary_compatibility(self):
+        mod = load_module()
+
+        summary = mod.summarize([
+            {
+                "trace_id": "legacy",
+                "turn_index": 1,
+                "planner": {
+                    "enabled": True,
+                    "schema_valid": True,
+                    "intent": "mixed_diagnosis_kb",
+                },
+            },
+            {
+                "trace_id": "legacy-billing",
+                "turn_index": 2,
+                "planner": {
+                    "enabled": True,
+                    "schema_valid": True,
+                    "intent": "billing_instance",
+                },
+            },
+            {
+                "trace_id": "new-diagnosis",
+                "turn_index": 3,
+                "planner": {
+                    "enabled": True,
+                    "schema_valid": True,
+                    "intent": "diagnosis",
+                },
+            },
+        ])
+
+        self.assertEqual(summary["boundary_counts"]["mixed_diagnosis_kb"], 1)
+        self.assertEqual(summary["mixed_boundary_counts"]["mixed_diagnosis_kb"], 1)
+        self.assertEqual(summary["mixed_boundary_counts"]["billing_instance"], 1)
+        self.assertNotIn("diagnosis", summary["mixed_boundary_counts"])
 
     def test_cli_writes_markdown_report(self):
         mod = load_module()

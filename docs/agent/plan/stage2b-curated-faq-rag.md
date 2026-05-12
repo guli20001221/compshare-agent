@@ -66,8 +66,7 @@ path has smoke evidence.
 | Intent | Stage 2B behavior |
 | --- | --- |
 | `knowledge_qa` | Retrieve curated FAQ/runbook chunks and answer from those chunks only. |
-| `mixed_diagnosis_kb` | Keep runtime path on existing ReAct/diagnosis in this ticket; only make retrieval contract ready. |
-| `mixed_billing_kb` | Keep runtime path on existing ReAct/diagnosis in this ticket; only make retrieval contract ready. |
+| `mixed_diagnosis_kb` / `mixed_billing_kb` | Legacy trace labels only. New planner output must not emit these labels; use `diagnosis`, `billing_instance`, or `knowledge_qa` and let the runtime path stay on ReAct/diagnosis until a reviewed mixed handler exists. |
 
 The first implementation should cut over only `knowledge_qa`. Mixed intents
 need API + KB conflict handling and are a later Stage 2B follow-up.
@@ -256,10 +255,10 @@ Contract:
 - Prompt updates must teach:
   - clear platform usage / FAQ questions -> `knowledge_qa`;
   - API-grounded resource or monitor questions -> existing API intents;
-  - diagnosis + FAQ questions -> `mixed_diagnosis_kb` for observability, but no
-    Stage 2B runtime handler yet;
-  - billing-specific FAQ + instance facts -> `mixed_billing_kb` for
-    observability, but no Stage 2B runtime handler yet;
+  - diagnosis + FAQ questions -> `diagnosis`; do not emit the legacy
+    `mixed_diagnosis_kb` trace label from new planner output;
+  - billing-specific FAQ + instance facts -> `billing_instance`; do not emit the
+    legacy `mixed_billing_kb` trace label from new planner output;
   - account totals / balances / ledgers -> `billing_account_unsupported` and
     engine hard-block remains authoritative.
 
