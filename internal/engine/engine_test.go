@@ -3807,6 +3807,43 @@ func TestResourceSelectionContinuationExactNameUsesGroundedRendererAndPlannerSou
 	assert.Nil(t, eng.pendingResourceSelection)
 }
 
+func TestResourceSelectionContinuationTroubleshootingFallbackAddsSafeContext(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			switch action {
+			case "DescribeCompShareInstance":
+				return phase1MultipleInstanceDescribeResult(), nil
+			case "GetCompShareInstanceMonitor":
+				return map[string]any{"CPU": float64(0)}, nil
+			default:
+				return nil, fmt.Errorf("unexpected action %s", action)
+			}
+		},
+	}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	_, err := eng.Chat(context.Background(), "CPU 高怎么办", noopStep)
+	require.NoError(t, err)
+	reply, err := eng.Chat(context.Background(), "select-a", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "CPU")
+	assert.Contains(t, reply, "0")
+	assert.Contains(t, reply, "阈值")
+	assert.Contains(t, reply, "历史")
+	assert.Contains(t, reply, "控制台")
+	assert.NotContains(t, reply, "驱动")
+	assert.NotContains(t, reply, "日志")
+	assert.NotContains(t, reply, "SSH")
+}
+
 func TestMonitorTroubleshootingQuestionDoesNotMatchNormalGPUCardQuery(t *testing.T) {
 	assert.False(t, isMonitorTroubleshootingQuestion("看一下显卡利用率"))
 	assert.False(t, isMonitorTroubleshootingQuestion("highmem 机器现在 GPU 使用率是多少"))

@@ -770,15 +770,25 @@ func (e *Engine) annotateHandlerResultForUserQuestion(result *intent.HandlerResu
 				Value:  "cpu",
 				Source: envelope.FactSourceComputed,
 			})
+			result.Reply = monitorTroubleshootingFallbackReply(result.Reply)
 			if hash, err := envelope.Hash(*result.Envelope); err == nil {
 				result.RendererInputEnvelopeHashes = []string{hash}
 			}
 			return
 		}
 	}
+	result.Reply = monitorTroubleshootingFallbackReply(result.Reply)
 	if hash, err := envelope.Hash(*result.Envelope); err == nil {
 		result.RendererInputEnvelopeHashes = []string{hash}
 	}
+}
+
+func monitorTroubleshootingFallbackReply(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		summary = "当前云侧监控没有返回可用指标。"
+	}
+	return summary + "\n\n当前只拿到了云侧最新监控值，未包含阈值或历史基线，因此不能仅凭这一条数据判断是否异常偏高。建议在控制台查看该实例最近一段时间的对应指标趋势，并同时对照 CPU、内存、GPU 和系统负载等监控指标。"
 }
 
 func isMonitorTroubleshootingQuestion(userMsg string) bool {
