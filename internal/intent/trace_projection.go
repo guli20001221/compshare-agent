@@ -39,6 +39,8 @@ func ProjectPlannerTrace(result PlannerResult, opts PlannerTraceOptions) observa
 	trace.Enabled = true
 	trace.Model = opts.Model
 	trace.LatencyMS = opts.Latency.Milliseconds()
+	trace.InputTokens = result.Usage.PromptTokens
+	trace.OutputTokens = result.Usage.CompletionTokens
 	trace.SchemaValid = !result.Fallback && result.Plan.SchemaVersion == SchemaVersion && result.Plan.Intent != ""
 	trace.Intent = string(result.Plan.Intent)
 	trace.Slots = projectPlannerSlots(result.Plan.Slots)

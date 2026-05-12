@@ -1576,6 +1576,32 @@ func TestExecuteSafeToolReadOnlyBlocksDirectMutatingAction(t *testing.T) {
 	assert.Empty(t, executor.calls)
 }
 
+func TestChatStepToolCallRedactsArgsBeforeTrace(t *testing.T) {
+	llmMock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("call-1", "ResetCompShareInstancePassword", `{"UHostId":"uhost-1","Password":"Secret123!"}`),
+		}},
+		{Content: "done"},
+	}}
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"ResetCompShareInstancePassword": {"RetCode": 0},
+	}}
+	eng := NewWithDeps(llmMock, exec, func(string, map[string]any) bool { return true })
+
+	var callEvent *StepEvent
+	reply, err := eng.Chat(context.Background(), "reset password", func(ev StepEvent) {
+		if ev.Type == StepToolCall && ev.Action == "ResetCompShareInstancePassword" {
+			copy := ev
+			callEvent = &copy
+		}
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "done", reply)
+	require.NotNil(t, callEvent)
+	assert.Equal(t, "[REDACTED]", callEvent.Args["Password"])
+}
+
 func TestNewWarnsWhenPublicKeyMissingForRateLimiter(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		LLM: config.LLMConfig{

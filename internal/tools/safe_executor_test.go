@@ -348,6 +348,7 @@ func TestSafeExecutorUsesPolicyForDisplayAndRedaction(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Equal(t, "[REDACTED]", result.LLMResult["OneTimeCode"])
+		assert.Equal(t, "[REDACTED]", result.TraceResult["OneTimeCode"])
 	})
 }
 

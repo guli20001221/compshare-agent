@@ -54,6 +54,19 @@ func TestTraceWriterFromEnvEnabled(t *testing.T) {
 	}
 }
 
+func TestCleanupTraceWriterDeletesExpiredFiles(t *testing.T) {
+	dir := t.TempDir()
+	writer, err := observability.NewWriter(observability.WriterOptions{Dir: dir})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent-trace-2026-04-07.jsonl"), []byte("{}\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent-trace-2026-04-08.jsonl"), []byte("{}\n"), 0o600))
+
+	err = cleanupTraceWriter(writer, time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	require.NoFileExists(t, filepath.Join(dir, "agent-trace-2026-04-07.jsonl"))
+	require.FileExists(t, filepath.Join(dir, "agent-trace-2026-04-08.jsonl"))
+}
+
 func TestIntentPlannerShadowModeFromEnv(t *testing.T) {
 	if intentPlannerShadowEnabled(func(string) string { return "" }) {
 		t.Fatal("unset USE_INTENT_PLANNER must not enable shadow planner")
@@ -622,8 +635,35 @@ func TestCLITraceRecorderWritesOneRedactedTraceLine(t *testing.T) {
 	if call.ArgsHash == "" || call.ResultHash == "" {
 		t.Fatalf("args/result hash must be populated: %#v", call)
 	}
-	if record.EntityRegistry.SyncEvent != "unavailable" {
-		t.Fatalf("entity_registry.sync_event = %q, want unavailable", record.EntityRegistry.SyncEvent)
+	if strings.Contains(line, `"entity_registry":`) {
+		t.Fatalf("empty entity_registry block should be omitted: %s", line)
+	}
+}
+
+func TestCLITraceRecorderWritesActualTotalTokens(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 1, "tokens", start)
+	recorder.AddTokenUsage(llm.TokenUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10})
+	recorder.SetPlannerTrace(observability.PlannerTrace{
+		Enabled:      true,
+		InputTokens:  11,
+		OutputTokens: 5,
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	record := readSingleTraceRecord(t, writer, start)
+	if record.Outcome.TotalTokens != 26 {
+		t.Fatalf("outcome.total_tokens = %d, want 26", record.Outcome.TotalTokens)
 	}
 }
 

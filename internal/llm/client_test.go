@@ -2,9 +2,12 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -127,6 +130,134 @@ func TestClientChatDoesNotRetryProviderStatusError(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&attempts); got != 1 {
 		t.Fatalf("attempts = %d, want 1", got)
+	}
+}
+
+func TestClientChatCapturesStreamingUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("parse request: %v", err)
+		}
+		streamOptions, ok := req["stream_options"].(map[string]any)
+		if !ok || streamOptions["include_usage"] != true {
+			t.Fatalf("stream_options = %#v, want include_usage=true", req["stream_options"])
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.LLMConfig{
+		BaseURL: srv.URL + "/v1",
+		APIKey:  "test-key",
+		Model:   "test-model",
+	})
+
+	resp, err := client.Chat(context.Background(), ChatRequest{
+		Messages: []openai.ChatCompletionMessage{{
+			Role:    openai.ChatMessageRoleUser,
+			Content: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if resp.Content != "ok" || resp.Usage.TotalTokens != 18 ||
+		resp.Usage.PromptTokens != 11 || resp.Usage.CompletionTokens != 7 {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestClientChatFallsBackWhenStreamingUsageUnsupported(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&attempts, 1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if attempt == 1 {
+			if !strings.Contains(string(body), "stream_options") {
+				t.Fatalf("first request should ask for usage: %s", string(body))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Invalid param: stream_options include_usage not support","type":"invalid_request_error"}}`))
+			return
+		}
+		if strings.Contains(string(body), "stream_options") {
+			t.Fatalf("fallback request should omit stream_options: %s", string(body))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"fallback ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.LLMConfig{
+		BaseURL: srv.URL + "/v1",
+		APIKey:  "test-key",
+		Model:   "test-model",
+	})
+
+	resp, err := client.Chat(context.Background(), ChatRequest{
+		Messages: []openai.ChatCompletionMessage{{
+			Role:    openai.ChatMessageRoleUser,
+			Content: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
+	}
+	if resp.Content != "fallback ok" || resp.Usage.TotalTokens != 0 {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestUsageUnsupportedFallbackRequiresExplicitUnsupportedSignal(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "not support",
+			err:  errors.New("Invalid param: stream_options include_usage not support"),
+			want: true,
+		},
+		{
+			name: "unknown parameter",
+			err:  errors.New("unknown parameter: stream_options.include_usage"),
+			want: true,
+		},
+		{
+			name: "invalid but not unsupported",
+			err:  errors.New("Invalid param: stream_options include_usage must be a boolean"),
+			want: false,
+		},
+		{
+			name: "unrelated unsupported",
+			err:  errors.New("tool_choice unsupported"),
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isUsageUnsupportedChatError(tc.err); got != tc.want {
+				t.Fatalf("isUsageUnsupportedChatError(%q) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 

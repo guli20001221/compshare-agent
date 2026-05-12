@@ -61,14 +61,29 @@ type ChatRequest struct {
 type ChatResponse struct {
 	Content   string
 	ToolCalls []openai.ToolCall
+	Usage     TokenUsage
+}
+
+type TokenUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }
 
 // Chat sends a streaming request and assembles the full response.
 // Streaming is required because the proxy drops content in non-streaming mode.
 func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	resp, err := c.chat(ctx, req, true)
+	if err != nil && isUsageUnsupportedChatError(err) {
+		return c.chat(ctx, req, false)
+	}
+	return resp, err
+}
+
+func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool) (*ChatResponse, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxChatAttempts; attempt++ {
-		resp, err := c.chatOnce(ctx, req)
+		resp, err := c.chatOnce(ctx, req, includeUsage)
 		if err == nil {
 			return resp, nil
 		}
@@ -80,11 +95,14 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	return nil, lastErr
 }
 
-func (c *Client) chatOnce(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage bool) (*ChatResponse, error) {
 	ccReq := openai.ChatCompletionRequest{
 		Model:    c.model,
 		Messages: req.Messages,
 		Stream:   true,
+	}
+	if includeUsage {
+		ccReq.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
 	}
 	if len(req.Tools) > 0 {
 		ccReq.Tools = req.Tools
@@ -100,6 +118,7 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest) (*ChatResponse, 
 	defer stream.Close()
 
 	var contentBuf strings.Builder
+	var usage TokenUsage
 	toolCallMap := make(map[int]*openai.ToolCall) // index → accumulated tool call
 
 	for {
@@ -109,6 +128,14 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest) (*ChatResponse, 
 		}
 		if err != nil {
 			return nil, fmt.Errorf("llm stream recv: %w", err)
+		}
+
+		if chunk.Usage != nil {
+			usage = TokenUsage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:      chunk.Usage.TotalTokens,
+			}
 		}
 
 		if len(chunk.Choices) == 0 {
@@ -161,7 +188,26 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest) (*ChatResponse, 
 	return &ChatResponse{
 		Content:   contentBuf.String(),
 		ToolCalls: toolCalls,
+		Usage:     usage,
 	}, nil
+}
+
+func isUsageUnsupportedChatError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "stream_options") || strings.Contains(msg, "include_usage") {
+		return strings.Contains(msg, "not support") ||
+			strings.Contains(msg, "unsupported") ||
+			strings.Contains(msg, "does not support") ||
+			strings.Contains(msg, "not allowed") ||
+			strings.Contains(msg, "not permitted") ||
+			strings.Contains(msg, "unrecognized") ||
+			strings.Contains(msg, "not recognized") ||
+			strings.Contains(msg, "unknown parameter")
+	}
+	return false
 }
 
 func isTransientChatError(ctx context.Context, err error) bool {

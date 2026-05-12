@@ -71,6 +71,67 @@ type TraceRecord struct {
 	Outcome         OutcomeTrace         `json:"outcome"`
 }
 
+type traceRecordJSON struct {
+	SchemaVersion   string                `json:"schema_version"`
+	TraceID         string                `json:"trace_id"`
+	TurnID          string                `json:"turn_id"`
+	TurnIndex       int                   `json:"turn_index"`
+	Timestamp       string                `json:"timestamp"`
+	UserMsgHash     string                `json:"user_msg_hash"`
+	Runtime         *RuntimeTrace         `json:"runtime,omitempty"`
+	Planner         *PlannerTrace         `json:"planner,omitempty"`
+	EngineHardBlock *EngineHardBlockTrace `json:"engine_hard_block,omitempty"`
+	EntityRegistry  *EntityRegistryTrace  `json:"entity_registry,omitempty"`
+	ToolCalls       []ToolCallTrace       `json:"tool_calls,omitempty"`
+	Renderer        *RendererTrace        `json:"renderer,omitempty"`
+	Freshness       *FreshnessTrace       `json:"freshness,omitempty"`
+	RateLimit       *RateLimitTrace       `json:"rate_limit,omitempty"`
+	Retrieval       *RetrievalTrace       `json:"retrieval,omitempty"`
+	Outcome         *OutcomeTrace         `json:"outcome,omitempty"`
+}
+
+func (r TraceRecord) MarshalJSON() ([]byte, error) {
+	out := traceRecordJSON{
+		SchemaVersion: r.SchemaVersion,
+		TraceID:       r.TraceID,
+		TurnID:        r.TurnID,
+		TurnIndex:     r.TurnIndex,
+		Timestamp:     r.Timestamp,
+		UserMsgHash:   r.UserMsgHash,
+	}
+	if traceRuntimeObserved(r.Runtime) {
+		out.Runtime = &r.Runtime
+	}
+	if tracePlannerObserved(r.Planner) {
+		out.Planner = &r.Planner
+	}
+	if traceEngineHardBlockObserved(r.EngineHardBlock) {
+		out.EngineHardBlock = &r.EngineHardBlock
+	}
+	if traceEntityRegistryObserved(r.EntityRegistry) {
+		out.EntityRegistry = &r.EntityRegistry
+	}
+	if len(r.ToolCalls) > 0 {
+		out.ToolCalls = r.ToolCalls
+	}
+	if traceRendererObserved(r.Renderer) {
+		out.Renderer = &r.Renderer
+	}
+	if r.Freshness.MonitorCallInCurrentTurn {
+		out.Freshness = &r.Freshness
+	}
+	if traceRateLimitObserved(r.RateLimit) {
+		out.RateLimit = &r.RateLimit
+	}
+	if traceRetrievalObserved(r.Retrieval) {
+		out.Retrieval = &r.Retrieval
+	}
+	if traceOutcomeObserved(r.Outcome) {
+		out.Outcome = &r.Outcome
+	}
+	return json.Marshal(out)
+}
+
 type RuntimeTrace struct {
 	PlannerMode    string   `json:"planner_mode"`
 	CutoverIntents []string `json:"cutover_intents"`
@@ -160,11 +221,11 @@ type RetrievalTrace struct {
 }
 
 type OutcomeTrace struct {
-	TotalLatencyMS             int64 `json:"total_latency_ms"`
-	TotalTokens                int   `json:"total_tokens"`
-	AttemptedHallucinatedCount int   `json:"attempted_hallucinated_count"`
-	EscapedHallucinatedCount   int   `json:"escaped_hallucinated_count"`
-	KBConflictCount            int   `json:"kb_conflict_count"`
+	TotalLatencyMS             int64 `json:"total_latency_ms,omitempty"`
+	TotalTokens                int   `json:"total_tokens,omitempty"`
+	AttemptedHallucinatedCount int   `json:"attempted_hallucinated_count,omitempty"`
+	EscapedHallucinatedCount   int   `json:"escaped_hallucinated_count,omitempty"`
+	KBConflictCount            int   `json:"kb_conflict_count,omitempty"`
 }
 
 func NewWriter(opts WriterOptions) (*Writer, error) {
@@ -274,6 +335,72 @@ func traceFileDate(name string) (time.Time, bool) {
 func dateOnly(t time.Time) time.Time {
 	year, month, day := t.Date()
 	return time.Date(year, month, day, 0, 0, 0, 0, t.Location())
+}
+
+func traceRuntimeObserved(trace RuntimeTrace) bool {
+	return trace.PlannerMode != "" || len(trace.CutoverIntents) > 0
+}
+
+func tracePlannerObserved(trace PlannerTrace) bool {
+	return trace.Enabled ||
+		trace.Model != "" ||
+		trace.LatencyMS != 0 ||
+		trace.InputTokens != 0 ||
+		trace.OutputTokens != 0 ||
+		trace.SchemaValid ||
+		trace.Intent != "" ||
+		len(trace.Slots.TargetRefs) > 0 ||
+		len(trace.Slots.Metrics) > 0 ||
+		trace.Slots.TimeWindow != nil ||
+		trace.Confidence != 0 ||
+		trace.HardBlockHint ||
+		trace.CutoverStatus != ""
+}
+
+func traceEngineHardBlockObserved(trace EngineHardBlockTrace) bool {
+	return trace.Hit || trace.Category != ""
+}
+
+func traceEntityRegistryObserved(trace EntityRegistryTrace) bool {
+	return trace.SnapshotID != "" ||
+		trace.AgeSeconds != 0 ||
+		(trace.SyncEvent != "" && trace.SyncEvent != "unavailable")
+}
+
+func traceRendererObserved(trace RendererTrace) bool {
+	return trace.Enabled ||
+		trace.Status != "" ||
+		trace.EnvelopeKind != "" ||
+		len(trace.InputEnvelopeHashes) > 0 ||
+		trace.FallbackUsed ||
+		trace.FallbackReason != "" ||
+		trace.Model != "" ||
+		trace.LatencyMS != 0 ||
+		trace.AttributionMode != "" ||
+		len(trace.InputToolCallIDs) > 0 ||
+		len(trace.InputToolArgHashes) > 0
+}
+
+func traceRateLimitObserved(trace RateLimitTrace) bool {
+	return trace.Checked ||
+		trace.Allowed ||
+		trace.Class != "" ||
+		trace.Action != "" ||
+		trace.Reason != "" ||
+		trace.SubjectHash != "" ||
+		trace.RetryAfterMS != 0
+}
+
+func traceRetrievalObserved(trace RetrievalTrace) bool {
+	return trace.Enabled || trace.KBVersion != "" || trace.Hits != 0
+}
+
+func traceOutcomeObserved(trace OutcomeTrace) bool {
+	return trace.TotalLatencyMS != 0 ||
+		trace.TotalTokens != 0 ||
+		trace.AttemptedHallucinatedCount != 0 ||
+		trace.EscapedHallucinatedCount != 0 ||
+		trace.KBConflictCount != 0
 }
 
 func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
