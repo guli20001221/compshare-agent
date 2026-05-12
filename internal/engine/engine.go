@@ -1862,7 +1862,7 @@ func (e *Engine) externalExecutor() *tools.ExternalExecutor {
 	return e.safeExecutor.ExternalExecutor()
 }
 
-const accountBillingUnsupportedReply = "这类账号级账单、余额和消费流水信息当前不支持由助手查询。请到控制台的财务中心查看：账户总览看余额，账单管理看月度账单，消费记录看扣费流水。"
+const accountBillingUnsupportedReply = "这类账号级财务信息当前不支持由助手查询。请到控制台的财务中心查看：账号总览看余额，账单管理看月度账单，消费记录看扣费流水，发票管理看开票和寄送状态，退款或欠费信息以订单/财务中心页面为准。"
 
 var monthlyBillKeywords = []string{
 	"\u672c\u6708", // 本月
@@ -1874,11 +1874,20 @@ var monthlyBillKeywords = []string{
 // center can satisfy. Their presence triggers the hard-block regardless
 // of instance words elsewhere in the message.
 var accountOnlyDataKeywords = []string{
-	"\u4f59\u989d",             // 余额
-	"\u603b\u8d26\u5355",       // 总账单
-	"\u6d88\u8d39\u6d41\u6c34", // 消费流水
-	"\u6d41\u6c34",             // 流水
+	"\u4f59\u989d",                   // 余额
+	"\u603b\u8d26\u5355",             // 总账单
+	"\u6d88\u8d39\u6d41\u6c34",       // 消费流水
+	"\u6d41\u6c34",                   // 流水
+	"\u8d26\u5355\u660e\u7ec6",       // 账单明细
+	"\u6263\u8d39\u8bb0\u5f55",       // 扣费记录
+	"\u4ea4\u6613\u8bb0\u5f55",       // 交易记录
+	"\u5f85\u652f\u4ed8\u8d26\u5355", // 待支付账单
+	"\u8ba2\u5355\u72b6\u6001",       // 订单状态
 	"balance",
+	"transaction record",
+	"charge record",
+	"payable bill",
+	"order status",
 }
 
 // monthlyAccountCostKeywords are cost-related words that, when paired
@@ -1909,6 +1918,109 @@ var accountInstanceScopeKeywords = []string{
 	"\u54ea\u4e9b", // 哪些
 	"\u8fd9\u53f0", // 这台
 	"uhost-",
+}
+
+var invoiceSubjectKeywords = []string{
+	"\u53d1\u7968", // 发票
+	"\u5f00\u7968", // 开票
+	"invoice",
+}
+
+var invoiceRealtimeKeywords = []string{
+	"\u72b6\u6001",       // 状态
+	"\u8fdb\u5ea6",       // 进度
+	"\u5bc4\u9001",       // 寄送
+	"\u7269\u6d41",       // 物流
+	"\u5230\u54ea",       // 到哪
+	"\u5f00\u597d",       // 开好
+	"\u5f00\u51fa\u6765", // 开出来
+	"\u4e0b\u8f7d",       // 下载
+	"\u901a\u8fc7",
+	"\u5ba1\u6838",
+	"\u6210\u529f",
+	"\u4e86\u5417",
+	"\u597d\u4e86\u5417",
+	"status",
+	"progress",
+	"delivery",
+	"approved",
+	"review",
+}
+
+var refundSubjectKeywords = []string{
+	"\u9000\u6b3e", // 退款
+	"refund",
+}
+
+var refundRealtimeKeywords = []string{
+	"\u8fdb\u5ea6",                   // 进度
+	"\u5230\u8d26",                   // 到账
+	"\u72b6\u6001",                   // 状态
+	"\u5230\u54ea",                   // 到哪
+	"\u4ec0\u4e48\u65f6\u5019\u5230", // 什么时候到
+	"\u51e0\u65f6\u5230",             // 几时到
+	"\u6ca1\u5230\u8d26",             // 没到账
+	"\u91d1\u989d",                   // 金额
+	"\u6210\u529f",
+	"\u4e86\u5417",
+	"\u597d\u4e86\u5417",
+	"progress",
+	"status",
+	"received",
+	"success",
+}
+
+var arrearsSubjectKeywords = []string{
+	"\u6b20\u8d39", // 欠费
+	"arrears",
+	"overdue",
+}
+
+var arrearsRealtimeKeywords = []string{
+	"\u91d1\u989d",       // 金额
+	"\u591a\u5c11",       // 多少
+	"\u4e86\u5417",       // 了吗
+	"\u662f\u5426",       // 是否
+	"\u72b6\u6001",       // 状态
+	"\u8ba2\u5355",       // 订单
+	"\u8d26\u5355",       // 账单
+	"\u5f85\u652f\u4ed8", // 待支付
+	"amount",
+	"status",
+	"payable",
+}
+
+var packageSubjectKeywords = []string{
+	"\u5957\u9910", // 套餐
+	"package",
+}
+
+var packageRealtimeKeywords = []string{
+	"\u4ec0\u4e48\u65f6\u5019", // 什么时候
+	"\u5230\u671f\u65f6\u95f4", // 到期时间
+	"\u5230\u671f\u4e86\u5417", // 到期了吗
+	"\u8fd8\u5269\u591a\u4e45", // 还剩多久
+	"when",
+	"expire time",
+}
+
+var rechargeSubjectKeywords = []string{
+	"\u5145\u503c", // 充值
+	"recharge",
+	"top up",
+}
+
+var rechargeRealtimeKeywords = []string{
+	"\u591a\u5c11",       // 多少
+	"\u591a\u5c11\u94b1", // 多少钱
+	"\u91d1\u989d",       // 金额
+	"\u8bb0\u5f55",       // 记录
+	"\u72b6\u6001",       // 状态
+	"\u6210\u529f",       // 成功
+	"\u5230\u8d26",       // 到账
+	"amount",
+	"record",
+	"status",
 }
 
 var monitorRecallKeywords = []string{
@@ -1976,6 +2088,8 @@ var historicalMonitorSignalKeywords = []string{
 var knowledgeBillingKeywords = []string{
 	"billing", "bill", "charge", "cost", "fee", "price", "balance",
 	"\u8ba1\u8d39", "\u6263\u8d39", "\u6536\u8d39", "\u8d26\u5355", "\u4f59\u989d", "\u8d39\u7528", "\u4ef7\u683c",
+	"invoice", "refund", "arrears", "renewal", "expire",
+	"\u53d1\u7968", "\u5f00\u7968", "\u9000\u6b3e", "\u6b20\u8d39", "\u7eed\u8d39", "\u5230\u671f", "\u5305\u65e5", "\u5305\u65f6", "\u5305\u6708", "\u6309\u91cf",
 }
 
 var knowledgeImageKeywords = []string{
@@ -2092,6 +2206,26 @@ func isAccountBillingUnsupported(userMsg string) bool {
 	return isAccountBillingUnsupportedNormalized(normalizeMsg(userMsg))
 }
 
+func containsInvoiceRealtimeQuestion(n string) bool {
+	return containsAnyKeyword(n, invoiceSubjectKeywords) && containsAnyKeyword(n, invoiceRealtimeKeywords)
+}
+
+func containsRefundRealtimeQuestion(n string) bool {
+	return containsAnyKeyword(n, refundSubjectKeywords) && containsAnyKeyword(n, refundRealtimeKeywords)
+}
+
+func containsArrearsRealtimeQuestion(n string) bool {
+	return containsAnyKeyword(n, arrearsSubjectKeywords) && containsAnyKeyword(n, arrearsRealtimeKeywords)
+}
+
+func containsPackageRealtimeQuestion(n string) bool {
+	return containsAnyKeyword(n, packageSubjectKeywords) && containsAnyKeyword(n, packageRealtimeKeywords)
+}
+
+func containsRechargeRealtimeQuestion(n string) bool {
+	return containsAnyKeyword(n, rechargeSubjectKeywords) && containsAnyKeyword(n, rechargeRealtimeKeywords)
+}
+
 // isAccountBillingUnsupportedNormalized hard-blocks two disjoint classes
 // of account-level requests the agent cannot satisfy:
 //
@@ -2114,7 +2248,12 @@ func isAccountBillingUnsupported(userMsg string) bool {
 // 消费最高"), neither branch fires and the request falls through to
 // the LLM, steered by the "## 计费问题口径" system-prompt rule.
 func isAccountBillingUnsupportedNormalized(n string) bool {
-	if containsNormalizedKeyword(n, accountOnlyDataKeywords) {
+	if containsNormalizedKeyword(n, accountOnlyDataKeywords) ||
+		containsInvoiceRealtimeQuestion(n) ||
+		containsRefundRealtimeQuestion(n) ||
+		containsArrearsRealtimeQuestion(n) ||
+		containsPackageRealtimeQuestion(n) ||
+		containsRechargeRealtimeQuestion(n) {
 		return true
 	}
 	if containsNormalizedKeyword(n, monthlyBillKeywords) &&
