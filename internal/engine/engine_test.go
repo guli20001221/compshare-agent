@@ -2727,6 +2727,8 @@ func TestAccountBillingHardBlock_FinanceRealtimeVsRules(t *testing.T) {
 		{name: "refuses_invoice_delivery", msg: "\u53d1\u7968\u5bc4\u9001\u5230\u54ea\u4e86", wantBlocked: true},
 		{name: "refuses_charge_record", msg: "\u6263\u8d39\u8bb0\u5f55\u67e5\u4e00\u4e0b", wantBlocked: true},
 		{name: "refuses_transaction_record", msg: "\u4ea4\u6613\u8bb0\u5f55\u67e5\u4e00\u4e0b", wantBlocked: true},
+		{name: "refuses_my_package_expiry_time", msg: "\u6211\u7684\u5957\u9910\u4ec0\u4e48\u65f6\u5019\u5230\u671f", wantBlocked: true},
+		{name: "refuses_my_recharge_amount", msg: "\u6211\u5145\u503c\u4e86\u591a\u5c11\u94b1", wantBlocked: true},
 		{name: "mixed_invoice_rule_and_status_refuses", msg: "\u600e\u4e48\u5f00\u53d1\u7968\uff0c\u6211\u7684\u53d1\u7968\u72b6\u6001\u600e\u4e48\u6837", wantBlocked: true},
 		{name: "mixed_refund_rule_and_progress_refuses", msg: "\u9000\u6b3e\u89c4\u5219\u662f\u4ec0\u4e48\uff0c\u6211\u7684\u9000\u6b3e\u8fdb\u5ea6\u5230\u54ea\u4e86", wantBlocked: true},
 		{name: "instance_transaction_flow_still_refuses", msg: "\u6bcf\u53f0\u5b9e\u4f8b\u7684\u6d88\u8d39\u6d41\u6c34", wantBlocked: true},

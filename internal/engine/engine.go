@@ -1862,7 +1862,7 @@ func (e *Engine) externalExecutor() *tools.ExternalExecutor {
 	return e.safeExecutor.ExternalExecutor()
 }
 
-const accountBillingUnsupportedReply = "\u8fd9\u7c7b\u8d26\u53f7\u7ea7\u8d22\u52a1\u4fe1\u606f\u5f53\u524d\u4e0d\u652f\u6301\u7531\u52a9\u624b\u67e5\u8be2\u3002\u8bf7\u5230\u63a7\u5236\u53f0\u7684\u8d22\u52a1\u4e2d\u5fc3\u67e5\u770b\uff1a\u8d26\u53f7\u603b\u89c8\u770b\u4f59\u989d\uff0c\u8d26\u5355\u7ba1\u7406\u770b\u6708\u5ea6\u8d26\u5355\uff0c\u6d88\u8d39\u8bb0\u5f55\u770b\u6263\u8d39\u6d41\u6c34\uff0c\u53d1\u7968\u7ba1\u7406\u770b\u5f00\u7968\u548c\u5bc4\u9001\u72b6\u6001\uff0c\u9000\u6b3e\u6216\u6b20\u8d39\u4fe1\u606f\u4ee5\u8ba2\u5355/\u8d22\u52a1\u4e2d\u5fc3\u9875\u9762\u4e3a\u51c6\u3002"
+const accountBillingUnsupportedReply = "这类账号级财务信息当前不支持由助手查询。请到控制台的财务中心查看：账号总览看余额，账单管理看月度账单，消费记录看扣费流水，发票管理看开票和寄送状态，退款或欠费信息以订单/财务中心页面为准。"
 
 var monthlyBillKeywords = []string{
 	"\u672c\u6708", // 本月
@@ -1988,6 +1988,39 @@ var arrearsRealtimeKeywords = []string{
 	"amount",
 	"status",
 	"payable",
+}
+
+var packageSubjectKeywords = []string{
+	"\u5957\u9910", // 套餐
+	"package",
+}
+
+var packageRealtimeKeywords = []string{
+	"\u4ec0\u4e48\u65f6\u5019", // 什么时候
+	"\u5230\u671f\u65f6\u95f4", // 到期时间
+	"\u5230\u671f\u4e86\u5417", // 到期了吗
+	"\u8fd8\u5269\u591a\u4e45", // 还剩多久
+	"when",
+	"expire time",
+}
+
+var rechargeSubjectKeywords = []string{
+	"\u5145\u503c", // 充值
+	"recharge",
+	"top up",
+}
+
+var rechargeRealtimeKeywords = []string{
+	"\u591a\u5c11",       // 多少
+	"\u591a\u5c11\u94b1", // 多少钱
+	"\u91d1\u989d",       // 金额
+	"\u8bb0\u5f55",       // 记录
+	"\u72b6\u6001",       // 状态
+	"\u6210\u529f",       // 成功
+	"\u5230\u8d26",       // 到账
+	"amount",
+	"record",
+	"status",
 }
 
 var monitorRecallKeywords = []string{
@@ -2185,6 +2218,14 @@ func containsArrearsRealtimeQuestion(n string) bool {
 	return containsAnyKeyword(n, arrearsSubjectKeywords) && containsAnyKeyword(n, arrearsRealtimeKeywords)
 }
 
+func containsPackageRealtimeQuestion(n string) bool {
+	return containsAnyKeyword(n, packageSubjectKeywords) && containsAnyKeyword(n, packageRealtimeKeywords)
+}
+
+func containsRechargeRealtimeQuestion(n string) bool {
+	return containsAnyKeyword(n, rechargeSubjectKeywords) && containsAnyKeyword(n, rechargeRealtimeKeywords)
+}
+
 // isAccountBillingUnsupportedNormalized hard-blocks two disjoint classes
 // of account-level requests the agent cannot satisfy:
 //
@@ -2210,7 +2251,9 @@ func isAccountBillingUnsupportedNormalized(n string) bool {
 	if containsNormalizedKeyword(n, accountOnlyDataKeywords) ||
 		containsInvoiceRealtimeQuestion(n) ||
 		containsRefundRealtimeQuestion(n) ||
-		containsArrearsRealtimeQuestion(n) {
+		containsArrearsRealtimeQuestion(n) ||
+		containsPackageRealtimeQuestion(n) ||
+		containsRechargeRealtimeQuestion(n) {
 		return true
 	}
 	if containsNormalizedKeyword(n, monthlyBillKeywords) &&
