@@ -14,6 +14,7 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
@@ -128,6 +129,7 @@ type Engine struct {
 	currentMonitorStart        int64                          // start of the current historical monitor window, if any
 	currentMonitorEnd          int64                          // end of the current historical monitor window, if any
 	currentMonitorWindow       bool                           // true when currentMonitorStart/End are known
+	pendingResourceSelection   *pendingResourceSelection
 	// supportsObjectToolChoice gates force-tool guards (e.g. shouldForceMonitorRecall)
 	// from sending object tool_choice on models that don't support it (notably
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
@@ -388,6 +390,7 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	})
 
 	if isAccountBillingUnsupported(userMsg) {
+		e.pendingResourceSelection = nil
 		if e.hardBlockObserver != nil {
 			e.hardBlockObserver(observability.EngineHardBlockTrace{
 				Hit:      true,
@@ -406,6 +409,10 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	e.currentMonitorStart = 0
 	e.currentMonitorEnd = 0
 	e.currentMonitorWindow = false
+
+	if reply, handled := e.tryResumeResourceSelection(ctx, userMsg, onStep); handled {
+		return reply, nil
+	}
 
 	forceMonitorRecall := e.shouldForceMonitorRecall(userMsg)
 	if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep); handled {
@@ -586,14 +593,113 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 		return "", false
 	}
 
-	e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
 	if handled.Status == intent.HandlerStatusFallbackBeforeTool {
+		if isResourceSelectionFallbackReason(handled.FallbackReason) {
+			if selection, ok, err := e.buildResourceSelectionForPlan(ctx, result, dispatch.snapshot, onStep); err != nil {
+				reply := intent.FriendlyToolFailureReply
+				if msg, friendly := friendlyToolErrorMessage(err); friendly {
+					reply = msg
+				}
+				e.pendingResourceSelection = nil
+				e.emitPlannerTrace(result, intent.CutoverStatusFailureAfterTool, dispatch.latency)
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: reply,
+				})
+				return reply, true
+			} else if ok {
+				if len(selection.candidates) == 1 {
+					resumed := result
+					resumed.Plan = planWithSelectedResource(result.Plan, selection.candidates[0].UHostId)
+					req := intent.HandlerRequest{
+						Plan:     resumed.Plan,
+						Resolver: selection.snapshot,
+					}
+					handled = handler.HandleMonitorQuery(ctx, req)
+					e.emitPlannerTrace(resumed, handled.CutoverStatus, dispatch.latency)
+					e.annotateHandlerResultForUserQuestion(&handled, resumed.Plan, e.lastUserMsg)
+					reply := handled.Reply
+					if handled.Status == intent.HandlerStatusHandled {
+						reply = e.renderGroundedHandlerResult(ctx, handled)
+					}
+					e.messages = append(e.messages, openai.ChatCompletionMessage{
+						Role:    openai.ChatMessageRoleAssistant,
+						Content: reply,
+					})
+					return reply, true
+				}
+				e.pendingResourceSelection = selection
+				reply := renderResourceSelectionPrompt(*selection)
+				e.emitPlannerTrace(result, intent.CutoverStatusSelectionRequired, dispatch.latency)
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: reply,
+				})
+				return reply, true
+			}
+		}
+		e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
 		return "", false
 	}
+
+	e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
+	e.annotateHandlerResultForUserQuestion(&handled, result.Plan, e.lastUserMsg)
+	reply := handled.Reply
+	if handled.Status == intent.HandlerStatusHandled {
+		reply = e.renderGroundedHandlerResult(ctx, handled)
+	}
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: reply,
+	})
+	return reply, true
+}
+
+func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
+	pending := e.pendingResourceSelection
+	if pending == nil {
+		return "", false
+	}
+	if isResourceSelectionExpired(e.userTurn, *pending) {
+		e.pendingResourceSelection = nil
+		return "", false
+	}
+
+	match := matchResourceSelection(userMsg, *pending)
+	if !match.ok {
+		if e.userTurn >= pending.createdTurn+2 {
+			e.pendingResourceSelection = nil
+			return "", false
+		}
+		pending.invalidAttempts++
+		reply := renderResourceSelectionPrompt(*pending)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: reply,
+		})
+		return reply, true
+	}
+
+	e.pendingResourceSelection = nil
+	if pending.plan.Intent != intent.IntentMonitorQuery {
+		return "", false
+	}
+
+	resumedPlan := planWithSelectedResource(pending.plan, match.instance.UHostId)
+	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
+	handled := handler.HandleMonitorQuery(ctx, intent.HandlerRequest{
+		Plan:     resumedPlan,
+		Resolver: pending.snapshot,
+	})
+	e.emitPlannerTrace(intent.PlannerResult{Plan: resumedPlan}, handled.CutoverStatus, 0)
+	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, pending.originalUserMsg)
 
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
 		reply = e.renderGroundedHandlerResult(ctx, handled)
+	}
+	if reply == "" {
+		reply = intent.FriendlyToolFailureReply
 	}
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
@@ -641,6 +747,72 @@ func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent
 	}
 	e.emitRendererTrace(trace)
 	return result.Text
+}
+
+func (e *Engine) annotateHandlerResultForUserQuestion(result *intent.HandlerResult, plan intent.Plan, userMsg string) {
+	if result == nil || result.Envelope == nil || plan.Intent != intent.IntentMonitorQuery {
+		return
+	}
+	if !isMonitorTroubleshootingQuestion(userMsg) {
+		return
+	}
+	result.Envelope.Computed = append(result.Envelope.Computed, envelope.Fact{
+		Key:    "answer_mode",
+		Label:  "Answer mode",
+		Value:  "troubleshooting",
+		Source: envelope.FactSourceComputed,
+	})
+	for _, metric := range plan.Slots.Metrics {
+		if metric == intent.MetricCPU {
+			result.Envelope.Computed = append(result.Envelope.Computed, envelope.Fact{
+				Key:    "issue_metric",
+				Label:  "Issue metric",
+				Value:  "cpu",
+				Source: envelope.FactSourceComputed,
+			})
+			result.Reply = monitorTroubleshootingFallbackReply(result.Reply)
+			if hash, err := envelope.Hash(*result.Envelope); err == nil {
+				result.RendererInputEnvelopeHashes = []string{hash}
+			}
+			return
+		}
+	}
+	result.Reply = monitorTroubleshootingFallbackReply(result.Reply)
+	if hash, err := envelope.Hash(*result.Envelope); err == nil {
+		result.RendererInputEnvelopeHashes = []string{hash}
+	}
+}
+
+func monitorTroubleshootingFallbackReply(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		summary = "当前云侧监控没有返回可用指标。"
+	}
+	return summary + "\n\n当前这一次采样只能说明当前时刻的云侧监控状态，不能排除之前或间歇性的历史波动。建议在控制台查看该实例最近一段时间的对应指标趋势，并同时对照 CPU、内存、GPU 和系统负载等监控指标。"
+}
+
+func isMonitorTroubleshootingQuestion(userMsg string) bool {
+	normalized := strings.ToLower(userMsg)
+	explicitTroubleshooting := []string{
+		"怎么办", "怎么处理", "如何处理", "怎么解决", "如何解决", "排查", "异常",
+		"卡顿", "很卡", "太卡", "卡住", "卡死", "无响应", "变慢", "很慢",
+	}
+	for _, word := range explicitTroubleshooting {
+		if strings.Contains(normalized, strings.ToLower(word)) {
+			return true
+		}
+	}
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(normalized)
+	cpuIssuePhrases := []string{
+		"cpu高", "cpu过高", "cpu太高", "cpu很高", "cpu负载高", "cpu占用高", "cpu使用率高",
+		"cpu飙高", "cpu打满", "cpu满了", "highcpu",
+	}
+	for _, phrase := range cpuIssuePhrases {
+		if strings.Contains(compact, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) tryStage2BRetrieval(dispatch plannerDispatchResult, userMsg string) (string, bool) {

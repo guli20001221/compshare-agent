@@ -133,6 +133,48 @@ func TestGroundedRendererPromptIncludesResourceListRules(t *testing.T) {
 	assert.Contains(t, prompt, "Do not rank")
 }
 
+func TestGroundedRendererPromptIncludesTroubleshootingRules(t *testing.T) {
+	mock := &mockRendererLLM{response: "train-a"}
+	r := NewGroundedRenderer(mock)
+
+	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
+
+	require.Len(t, mock.requests, 1)
+	prompt := mock.requests[0].Messages[0].Content
+	assert.Contains(t, prompt, "computed.answer_mode")
+	assert.Contains(t, prompt, "troubleshooting")
+	assert.Contains(t, prompt, "single current sample")
+	assert.Contains(t, prompt, "intermittent spikes")
+	assert.Contains(t, prompt, "instance-internal root cause")
+}
+
+func TestGroundedRendererPromptKeepsPlainMonitorQueriesFactOnly(t *testing.T) {
+	mock := &mockRendererLLM{response: "train-a"}
+	r := NewGroundedRenderer(mock)
+
+	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
+
+	require.Len(t, mock.requests, 1)
+	prompt := mock.requests[0].Messages[0].Content
+	assert.Contains(t, prompt, "without computed.answer_mode")
+	assert.Contains(t, prompt, "only report current metric values")
+	assert.Contains(t, prompt, "Do not add troubleshooting advice")
+}
+
+func TestGroundedRendererPromptForbidsInternalEnvelopeWording(t *testing.T) {
+	mock := &mockRendererLLM{response: "train-a"}
+	r := NewGroundedRenderer(mock)
+
+	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
+
+	require.Len(t, mock.requests, 1)
+	prompt := mock.requests[0].Messages[0].Content
+	assert.Contains(t, prompt, "Never mention")
+	assert.Contains(t, prompt, "envelope")
+	assert.Contains(t, prompt, "信封")
+	assert.Contains(t, prompt, "本次返回的数据")
+}
+
 type mockRendererLLM struct {
 	response string
 	err      error

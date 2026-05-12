@@ -50,6 +50,7 @@ const (
 	CutoverStatusDispatchedRetrieval       CutoverStatus = "dispatched_retrieval"
 	CutoverStatusFallbackRetrievalMiss     CutoverStatus = "fallback_retrieval_miss"
 	CutoverStatusFallbackRetrievalDisabled CutoverStatus = "fallback_retrieval_disabled"
+	CutoverStatusSelectionRequired         CutoverStatus = "selection_required"
 )
 
 type HandlerResult struct {

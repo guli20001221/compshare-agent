@@ -33,8 +33,8 @@ func TestBuildSystemPromptIncludesPhase1CutoverSchemaFields(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	if len(examples) != 6 {
-		t.Fatalf("prompt examples count = %d, want 6; examples=%v", len(examples), examples)
+	if len(examples) != 7 {
+		t.Fatalf("prompt examples count = %d, want 7; examples=%v", len(examples), examples)
 	}
 	for _, example := range examples {
 		plan, err := parsePlanJSON(example)
@@ -69,6 +69,22 @@ func TestBuildSystemPromptIncludesKnowledgeQARules(t *testing.T) {
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("system prompt missing knowledge QA rule %q:\n%s", fragment, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptClassifiesPerformanceQuestionsAsMonitor(t *testing.T) {
+	prompt := buildSystemPrompt()
+	required := []string{
+		"CPU high",
+		"GPU busy/idle",
+		"machine is idle",
+		"monitor_query first",
+		"CPU is high, what should I do",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt missing performance monitor rule %q:\n%s", fragment, prompt)
 		}
 	}
 }

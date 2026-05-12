@@ -1,33 +1,33 @@
 ---
-last_updated: 2026-05-08T18:20:00+08:00
+last_updated: 2026-05-12T02:20:00+08:00
 ---
 # Project Context
 
 ## 当前状态
-Stage 2A Phase 0 已合并 T-002 SecretBoundary、T-003 CapabilityRegistry、T-004a EntityRegistry、T-007a offline IntentPlan、T-001 SafeToolExecutor、T-001.f1 monitor recall、T-001.f2 account billing hard-block、T-003.f1 ds v4 flash tool-choice decision，以及 PR #12 monitor stale-reuse probe。当前进行中是 T-007b monitor acceptance 文档 PR：把 PR #12 的 stale-reuse 证据转成 shadow trace / Phase 1 monitor handler promotion gate。
+`origin/main` 已到 `fb1fd1b`（PR #61 resource query structured filter / factual envelope / grounded renderer hardening 已合并）。当前分支 `codex/phase1-resource-selection-clarification` 在 `F:\compshare-agent-worktrees\resource-selection-clarification`，实现资源选择/澄清层：监控类问题缺少唯一实例时先列候选，用户回复数字、实例 ID 或完整名称后继续查当前监控。
 
 ## 进行中
-- [ ] T-007b monitor acceptance doc — `docs/agent/plan/stage2a-t007b-monitor-acceptance.md`，要求 PR #12 的 3 个 monitor follow-up case 进入 T-007b trace 与 Phase 1 handler 验收，覆盖 mixed monitor+billing/diagnosis/operation 边界。
+- [ ] PR: Phase 1 resource selection clarification — implementation complete, subagent review APPROVE, verification PASS，待 push/open PR。
 
 ## 最近完成
-- [x] PR #12 monitor stale-reuse probe — merged `d9e0ee6`，证明 ds v4 flash auto routing 在 2/3 adjacent monitor follow-up 场景复用上一轮监控数值。
-- [x] PR #11 T-003.f1 Step 3 — merged `b146305`，标记 ds v4 flash `SupportsObjectToolChoice=false` + `IsThinkingMode=true`，删除 `shouldForceBillingDiagnosis`，monitor recall 改为 capability-gated。
-- [x] PR #10 ds v4 flash tool-choice probe — merged `59a4344`，production request shape 下 object tool_choice 0/6 PASS，required/auto 5/6 PASS。
-- [x] PR #8 T-001.f2 account billing hard-block — merged `5d54230`，账号级月度账单/余额/消费流水 hard-block 为永久产品边界。
-- [x] PR #6 T-001 SafeToolExecutor — merged `ef94aca`，tool execution security/filter/sanitize/retry/monitor guard 迁入 SafeToolExecutor。
-- [x] PR #5 T-007a offline IntentPlan — merged，提供 intent schema/validator/offline fixtures。
+- [x] Resource query filter PR #61 — merged `fb1fd1b`，修复 running/stopped/gpu/AND filters 与 grounded renderer 计数/ID。
+- [x] Resource selection plan — `docs/plans/2026-05-12-resource-selection-clarification.md`。
+- [x] Resource selection helpers — pending state / matching / prompt rendering / sanitization。
+- [x] Monitor candidate selection — `selection_required`，候选 refresh 失败不回落 ReAct。
+- [x] Selection continuation — 数字 / UHostId / 完整名称续接原 monitor plan，同一 registry snapshot。
+- [x] CLI startup suggestion fix — 首页推荐编号只在第一轮生效，避免和选择数字冲突。
+- [x] Real-account smoke — `eval/shadow_qa/2026-05-12-resource-selection-smoke/README.md`，ds v4 flash 验证选择链路 + resource_info 回归。
 
 ## 架构决策
 | 决策 | 选择 | 原因 | 日期 |
 | --- | --- | --- | --- |
-| T-007b 形态 | shadow planner + trace + dashboard，不改主流程 | Phase 0 只观测，不切业务意图 | 2026-05-08 |
-| Monitor freshness promotion gate | `monitor_query` / `monitor_history` handler 当前 turn 必须调用 `GetCompShareInstanceMonitor` | PR #12 证明 auto routing 会复用上一轮监控数值 | 2026-05-08 |
-| Mixed monitor scope | monitor freshness 不覆盖 account hard-block / diagnosis / operation 边界 | 避免单一 monitor handler 抢占更高优先级或混合意图 | 2026-05-08 |
-| `shouldForceMonitorRecall` 生命周期 | 保留到 planner-driven monitor handler 通过 promotion gate 后再删 | 对支持 object tool_choice 的模型仍有效；ds v4 flash 走 capability-gated auto | 2026-05-08 |
-| Account billing hard-block | 永久保留 | 账号级财务数据是产品能力边界，不随 IntentPlan 切流删除 | 2026-05-08 |
+| 资源选择层位置 | Engine pending state，位于 hard-block 后、planner/ReAct 前 | 不让模型猜实例；同时保留 account hard-block 优先级 | 2026-05-12 |
+| 选择输入 | 支持数字、UHostId、完整实例名；重复名要求更具体 | 贴近控制台选择资源体验，避免误选 | 2026-05-12 |
+| 选择续接 | 复用原 IntentPlan + 同一 RegistrySnapshot，只替换目标 | 保证用户看到的候选和后续查询一致 | 2026-05-12 |
+| 性能问题分类 | CPU/GPU/内存/显存高低/空闲先走 monitor_query | “CPU 高怎么办”第一步应查监控，而不是直接诊断/自由回答 | 2026-05-12 |
+| CLI 数字推荐 | 启动推荐编号仅第一轮生效 | 后续数字要留给资源选择等对话动作 | 2026-05-12 |
 
 ## 已知问题
-- [high] ds v4 flash monitor follow-up auto routing 存在 stale-reuse：2/3 adjacent follow-up 未重新调用 `GetCompShareInstanceMonitor` 却输出上一轮数值。已通过 T-007b acceptance 文档纳入后续验收。
-- [medium] Billing stale follow-up auto probe 还未做；`shouldForceBillingDiagnosis` 已删除，需事后验证 auto 在真实续问场景是否足够。
-- [medium] T-005 RateLimiter、T-006 Trace skeleton、T-004b EntityRegistry refresh/mutex 仍未开工。
-- [medium] T-003 follow-up：capability override 文件 silent fail log、默认端口归一化待补。
+- [medium] 选择候选目前面向 `monitor_query` 单实例澄清；资源查询仍按 #61 结构化筛选，不做多实例选择。
+- [medium] `CPU 高怎么办` 现在可进入监控选择，但后续“诊断建议”仍只基于当前监控事实总结；不做 SSH/远程命令/实例内部排查。
+- [medium] 历史监控、图表、全账户异常扫描、IP 反查、RAG/FAQ 均不在本 slice。

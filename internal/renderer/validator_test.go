@@ -36,6 +36,20 @@ func TestValidateRenderedTextRejectsAccountBillingClaims(t *testing.T) {
 	}
 }
 
+func TestValidateRenderedTextRejectsInternalEnvelopeWording(t *testing.T) {
+	for _, text := range []string{
+		"由于信封中未包含历史基线信息。",
+		"the envelope does not contain enough facts",
+		"envelope missing threshold data",
+		"fact envelope is missing threshold data",
+	} {
+		t.Run(text, func(t *testing.T) {
+			err := ValidateRenderedText(testResourceEnvelope(), text)
+			assert.Error(t, err)
+		})
+	}
+}
+
 func TestValidateRenderedTextRejectsPercentWithoutMonitorFacts(t *testing.T) {
 	env := envelope.Envelope{
 		Kind: envelope.KindMonitorQuery,

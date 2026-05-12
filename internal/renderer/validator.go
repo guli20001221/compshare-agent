@@ -38,6 +38,9 @@ func ValidateRenderedText(env envelope.Envelope, text string) error {
 	if strings.TrimSpace(text) == "" {
 		return fmt.Errorf("rendered text is empty")
 	}
+	if containsInternalEnvelopeWording(text) {
+		return fmt.Errorf("rendered text contains internal envelope wording")
+	}
 	for _, token := range uhostTokenPattern.FindAllString(text, -1) {
 		if _, ok := envelope.AllowedIDs(env)[token]; !ok {
 			return fmt.Errorf("rendered text contains unknown instance id %q", token)
@@ -60,6 +63,19 @@ func ValidateRenderedText(env envelope.Envelope, text string) error {
 		return err
 	}
 	return nil
+}
+
+func containsInternalEnvelopeWording(text string) bool {
+	lower := strings.ToLower(text)
+	if strings.Contains(text, "信封") {
+		return true
+	}
+	for _, term := range []string{"envelope", "computed.answer_mode"} {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateResourceInfoClaims(env envelope.Envelope, text string) error {
