@@ -112,6 +112,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: trace disabled: %v\n", traceErr)
 		traceEnabled = false
 	}
+	if traceEnabled {
+		if err := cleanupTraceWriter(traceWriter, time.Now()); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: trace cleanup failed: %v\n", err)
+		}
+	}
 	var shadowRunner *intent.ShadowRunner
 	if useSeparateShadowRunner(traceEnabled, shadowEnabled, plannerDispatchEnabled) {
 		shadowRunner = newCLIShadowRunner(cfg, eng)
@@ -184,12 +189,14 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		eng.SetPlannerTraceObserver(nil)
 		eng.SetRetrievalTraceObserver(nil)
 		eng.SetRendererTraceObserver(nil)
+		eng.SetTokenUsageObserver(nil)
 		if traceEnabled {
 			traceRecorder = newCLITraceRecorder(traceWriter, turnIndex, input, turnStart)
 			traceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, cutoverIntents))
 			traceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)
 			eng.SetHardBlockObserver(traceRecorder.SetEngineHardBlock)
+			eng.SetTokenUsageObserver(traceRecorder.AddTokenUsage)
 			if plannerDispatchEnabled {
 				// When Phase 1 cutover or Stage 2B retrieval is enabled, Engine
 				// owns the single planner call for this turn and writes that same
@@ -273,6 +280,11 @@ type cliPlannerLLM struct {
 }
 
 func (c cliPlannerLLM) CompleteIntentPlan(ctx context.Context, req intent.PlannerLLMRequest) (string, error) {
+	resp, err := c.CompleteIntentPlanWithUsage(ctx, req)
+	return resp.Content, err
+}
+
+func (c cliPlannerLLM) CompleteIntentPlanWithUsage(ctx context.Context, req intent.PlannerLLMRequest) (intent.PlannerLLMResponse, error) {
 	// Planner requests intentionally provide no tools. Omitting ToolChoice here
 	// avoids provider-specific validation for tool_choice without tools while
 	// still preventing planner-side tool calls.
@@ -283,9 +295,9 @@ func (c cliPlannerLLM) CompleteIntentPlan(ctx context.Context, req intent.Planne
 		},
 	})
 	if err != nil {
-		return "", err
+		return intent.PlannerLLMResponse{}, err
 	}
-	return resp.Content, nil
+	return intent.PlannerLLMResponse{Content: resp.Content, Usage: resp.Usage}, nil
 }
 
 func newCLIPlanner(cfg *config.Config) *intent.Planner {

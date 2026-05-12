@@ -43,6 +43,7 @@ type RenderResult struct {
 	EnvelopeHash    string
 	FallbackUsed    bool
 	FallbackReason  string
+	Usage           llm.TokenUsage
 }
 
 type GroundedRenderer struct {
@@ -87,10 +88,12 @@ func (r *GroundedRenderer) Render(ctx context.Context, req RenderRequest) Render
 		return result
 	}
 	if err := ValidateRenderedText(req.Envelope, resp.Content); err != nil {
+		result.Usage = resp.Usage
 		result.FallbackReason = FallbackValidationFailed
 		return result
 	}
 	result.Text = resp.Content
+	result.Usage = resp.Usage
 	result.FallbackUsed = false
 	result.FallbackReason = FallbackNone
 	return result

@@ -36,26 +36,64 @@ func TestWriterAppendWritesOneJSONLinePerRecord(t *testing.T) {
 	if first.SchemaVersion != SchemaVersion {
 		t.Fatalf("schema version = %q, want %q", first.SchemaVersion, SchemaVersion)
 	}
-	if first.Runtime.CutoverIntents == nil {
-		t.Fatalf("runtime.cutover_intents must default to empty array, got %#v", first.Runtime)
-	}
 	if first.Timestamp != now.Format(time.RFC3339) {
 		t.Fatalf("timestamp = %q, want %q", first.Timestamp, now.Format(time.RFC3339))
 	}
-	if first.Planner.Slots.TargetRefs == nil || first.Planner.Slots.Metrics == nil {
-		t.Fatalf("planner slots arrays must be present as empty arrays, got %#v", first.Planner.Slots)
-	}
-	if first.Renderer.InputToolCallIDs == nil || first.Renderer.InputToolArgHashes == nil {
-		t.Fatalf("renderer input arrays must be present as empty arrays, got %#v", first.Renderer)
-	}
-	if first.Renderer.InputEnvelopeHashes == nil {
-		t.Fatalf("renderer input envelope hashes must be present as empty array, got %#v", first.Renderer)
-	}
-	if !strings.Contains(lines[0], `"rate_limit":`) {
-		t.Fatalf("trace line should include zero-value rate_limit block: %s", lines[0])
+	for _, emptyBlock := range []string{`"planner":`, `"rate_limit":`, `"retrieval":`, `"renderer":`, `"outcome":`} {
+		if strings.Contains(lines[0], emptyBlock) {
+			t.Fatalf("minimal trace line should omit empty optional block %s: %s", emptyBlock, lines[0])
+		}
 	}
 	if first.RateLimit.Checked || first.RateLimit.Allowed || first.RateLimit.Class != "" || first.RateLimit.RetryAfterMS != 0 {
 		t.Fatalf("default rate limit trace = %#v, want zero values", first.RateLimit)
+	}
+}
+
+func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
+	data := []byte(`{"schema_version":"trace.v0.2","trace_id":"trace-sparse","turn_id":"turn-1","turn_index":1,"timestamp":"2026-05-08T12:00:00Z","user_msg_hash":"sha256:user"}`)
+	var record TraceRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatalf("unmarshal sparse v0.2 trace: %v", err)
+	}
+	if record.SchemaVersion != "trace.v0.2" || record.TraceID != "trace-sparse" {
+		t.Fatalf("sparse trace identity = %#v", record)
+	}
+	if record.Planner.Enabled || record.RateLimit.Checked || record.Retrieval.Enabled || record.Outcome.TotalTokens != 0 {
+		t.Fatalf("sparse optional fields should read as zero values: planner=%#v rate=%#v retrieval=%#v outcome=%#v", record.Planner, record.RateLimit, record.Retrieval, record.Outcome)
+	}
+}
+
+func TestOutcomeTraceOmitsUnavailableCounters(t *testing.T) {
+	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := NewWriter(WriterOptions{Dir: t.TempDir(), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := writer.Append(TraceRecord{
+		TraceID:     "trace-outcome",
+		TurnID:      "turn-1",
+		TurnIndex:   1,
+		UserMsgHash: "sha256:user",
+		Outcome: OutcomeTrace{
+			TotalLatencyMS: 123,
+		},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	line := readLines(t, filepath.Join(writer.Dir(), "agent-trace-2026-05-08.jsonl"))[0]
+	if !strings.Contains(line, `"outcome":{"total_latency_ms":123}`) {
+		t.Fatalf("outcome latency missing from trace line: %s", line)
+	}
+	for _, unavailable := range []string{
+		`"total_tokens":`,
+		`"attempted_hallucinated_count":`,
+		`"escaped_hallucinated_count":`,
+		`"kb_conflict_count":`,
+	} {
+		if strings.Contains(line, unavailable) {
+			t.Fatalf("trace line should omit unavailable outcome field %s: %s", unavailable, line)
+		}
 	}
 }
 

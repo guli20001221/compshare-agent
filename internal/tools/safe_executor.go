@@ -220,7 +220,7 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 		Args:        args,
 		RawResult:   guarded,
 		LLMResult:   redactForLLM(req.Action, policy, guarded),
-		TraceResult: mapFromAny(security.RedactForTrace(guarded)),
+		TraceResult: redactForTrace(req.Action, policy, guarded),
 		Display:     extractDisplay(policy, guarded),
 		Attempts:    attempts,
 		Policy:      policy,
@@ -440,6 +440,14 @@ func monitorResultHasSamples(v any) bool {
 
 func redactForLLM(action string, policy ToolExecutionPolicy, raw map[string]any) map[string]any {
 	redacted := mapFromAny(security.RedactForLLM(raw))
+	for _, field := range policy.RedactInResult {
+		redactFieldByName(redacted, field)
+	}
+	return sanitizer.Sanitize(action, redacted)
+}
+
+func redactForTrace(action string, policy ToolExecutionPolicy, raw map[string]any) map[string]any {
+	redacted := mapFromAny(security.RedactForTrace(raw))
 	for _, field := range policy.RedactInResult {
 		redactFieldByName(redacted, field)
 	}

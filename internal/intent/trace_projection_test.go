@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/llm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,6 +39,11 @@ func TestProjectPlannerTrace_ValidMonitorPlan(t *testing.T) {
 			Confidence: 0.87,
 		},
 		Attempts: 1,
+		Usage: llm.TokenUsage{
+			PromptTokens:     31,
+			CompletionTokens: 17,
+			TotalTokens:      48,
+		},
 	}, PlannerTraceOptions{
 		Enabled: true,
 		Model:   "deepseek-v4-flash",
@@ -47,6 +53,8 @@ func TestProjectPlannerTrace_ValidMonitorPlan(t *testing.T) {
 	assert.True(t, trace.Enabled)
 	assert.Equal(t, "deepseek-v4-flash", trace.Model)
 	assert.Equal(t, int64(123), trace.LatencyMS)
+	assert.Equal(t, 31, trace.InputTokens)
+	assert.Equal(t, 17, trace.OutputTokens)
 	assert.True(t, trace.SchemaValid)
 	assert.Equal(t, string(IntentMonitorQuery), trace.Intent)
 	assert.Equal(t, []string{"gpu", "vram"}, trace.Slots.Metrics)

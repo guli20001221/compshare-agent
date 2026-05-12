@@ -12,6 +12,7 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
+	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 )
 
@@ -27,6 +28,13 @@ func traceWriterFromEnv(getenv getenvFunc) (*observability.Writer, bool, error) 
 		return nil, false, err
 	}
 	return writer, true, nil
+}
+
+func cleanupTraceWriter(writer *observability.Writer, now time.Time) error {
+	if writer == nil {
+		return nil
+	}
+	return observability.Cleanup(writer.Dir(), observability.DefaultTraceRetentionDays, now)
 }
 
 func intentPlannerShadowEnabled(getenv getenvFunc) bool {
@@ -178,6 +186,7 @@ type cliTraceRecorder struct {
 	writer                *observability.Writer
 	record                observability.TraceRecord
 	start                 time.Time
+	totalTokens           int
 	pendingByID           map[string][]int
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
 	plannerTraceSupplier  func() observability.PlannerTrace
@@ -224,6 +233,7 @@ func (r *cliTraceRecorder) SetPlannerTrace(trace observability.PlannerTrace) {
 		return
 	}
 	r.record.Planner = trace
+	r.addPlannerTokens(trace)
 	r.plannerTraceSupplier = nil
 }
 
@@ -296,6 +306,13 @@ func (r *cliTraceRecorder) HasRateLimitDenial() bool {
 	return r != nil && r.record.RateLimit.Checked && !r.record.RateLimit.Allowed
 }
 
+func (r *cliTraceRecorder) AddTokenUsage(usage llm.TokenUsage) {
+	if r == nil {
+		return
+	}
+	r.totalTokens += llmTokenUsageTotal(usage)
+}
+
 func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {
 	if r == nil || r.writer == nil || ev.Action == "" {
 		return
@@ -361,8 +378,10 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	}
 	if r.plannerTraceSupplier != nil {
 		r.record.Planner = r.plannerTraceSupplier()
+		r.addPlannerTokens(r.record.Planner)
 	}
 	r.record.Outcome.TotalLatencyMS = end.Sub(r.start).Milliseconds()
+	r.record.Outcome.TotalTokens = r.totalTokens
 	for _, call := range r.record.ToolCalls {
 		if call.TurnIndex == r.record.TurnIndex && call.Action == "GetCompShareInstanceMonitor" {
 			r.record.Freshness.MonitorCallInCurrentTurn = true
@@ -370,6 +389,17 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 		}
 	}
 	return r.writer.Append(r.record)
+}
+
+func (r *cliTraceRecorder) addPlannerTokens(trace observability.PlannerTrace) {
+	r.totalTokens += trace.InputTokens + trace.OutputTokens
+}
+
+func llmTokenUsageTotal(usage llm.TokenUsage) int {
+	if usage.TotalTokens > 0 {
+		return usage.TotalTokens
+	}
+	return usage.PromptTokens + usage.CompletionTokens
 }
 
 func (r *cliTraceRecorder) applyCapFields(idx int, ev engine.StepEvent) {

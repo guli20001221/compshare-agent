@@ -120,6 +120,7 @@ type Engine struct {
 	rendererTraceObserver      func(observability.RendererTrace)
 	plannerTraceObserver       func(observability.PlannerTrace)
 	retrievalTraceObserver     func(observability.RetrievalTrace)
+	tokenUsageObserver         func(llm.TokenUsage)
 	rateLimiter                governance.RateLimiter
 	rateLimitSubject           string
 	rateLimitObserver          func(governance.Decision)
@@ -245,6 +246,10 @@ func (e *Engine) SetRendererTraceObserver(observer func(observability.RendererTr
 
 func (e *Engine) SetRetrievalTraceObserver(observer func(observability.RetrievalTrace)) {
 	e.retrievalTraceObserver = observer
+}
+
+func (e *Engine) SetTokenUsageObserver(observer func(llm.TokenUsage)) {
+	e.tokenUsageObserver = observer
 }
 
 func (e *Engine) SetRateLimitObserver(observer func(governance.Decision)) {
@@ -482,6 +487,8 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 		if err != nil {
 			return "", fmt.Errorf("LLM 调用失败: %w", err)
 		}
+
+		e.emitTokenUsage(resp.Usage)
 
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
@@ -780,6 +787,7 @@ func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent
 		Fallback: handled.Reply,
 		Model:    e.groundedRendererModel,
 	})
+	e.emitTokenUsage(result.Usage)
 	status := "fallback"
 	if !result.FallbackUsed {
 		status = "rendered"
@@ -953,6 +961,20 @@ func (e *Engine) emitRetrievalTrace(trace observability.RetrievalTrace) {
 	e.retrievalTraceObserver(trace)
 }
 
+func (e *Engine) emitTokenUsage(usage llm.TokenUsage) {
+	if e.tokenUsageObserver == nil || tokenUsageTotal(usage) == 0 {
+		return
+	}
+	e.tokenUsageObserver(usage)
+}
+
+func tokenUsageTotal(usage llm.TokenUsage) int {
+	if usage.TotalTokens > 0 {
+		return usage.TotalTokens
+	}
+	return usage.PromptTokens + usage.CompletionTokens
+}
+
 func (e *Engine) emitRendererTrace(trace observability.RendererTrace) {
 	if e.rendererTraceObserver == nil {
 		return
@@ -989,13 +1011,13 @@ func (x plannerHandlerExecutor) Execute(ctx context.Context, action string, args
 				x.emit(StepEvent{Type: StepConfirmNeeded, Action: action, Source: observability.ToolSourcePlannerHandler, Args: x.engine.safeExecutor.RedactArgs(action, args), Message: "此操作需要您确认"})
 			},
 			OnBeforeCall: func(action string, args map[string]any) {
-				x.emit(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourcePlannerHandler, Args: args})
+				x.emit(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourcePlannerHandler, Args: x.engine.safeExecutor.RedactArgs(action, args)})
 			},
 		},
 	})
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
-			x.emit(blockedStepEvent(action, observability.ToolSourcePlannerHandler, args, msg, err))
+			x.emit(blockedStepEvent(action, observability.ToolSourcePlannerHandler, x.engine.safeExecutor.RedactArgs(action, args), msg, err))
 			return nil, friendlyEngineError{cause: err, message: msg}
 		}
 		x.emit(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourcePlannerHandler, Message: fmt.Sprintf("API 调用失败: %v", err)})
@@ -1215,7 +1237,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 
 	if decision, ok := e.allowMutatingTool(action); !ok {
 		msg := rateLimitMessage(decision.Reason)
-		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, args, msg, governance.ErrRateLimited))
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, governance.ErrRateLimited))
 		return finalReplyPrefix + msg
 	}
 
@@ -1228,18 +1250,18 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 				onStep(StepEvent{Type: StepConfirmNeeded, Action: action, Source: observability.ToolSourceMainReAct, Args: e.safeExecutor.RedactArgs(action, args), Message: "此操作需要您确认"})
 			},
 			OnBeforeCall: func(action string, args map[string]any) {
-				onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: args})
+				onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: e.safeExecutor.RedactArgs(action, args)})
 			},
 		},
 	})
 	if err != nil {
 		if errors.Is(err, tools.ErrHistoricalMonitorUnsupported) {
 			msg := monitorHistoryUnsupportedReply
-			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, args, msg, err))
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, err))
 			return finalReplyPrefix + msg
 		}
 		if msg, ok := friendlyToolErrorMessage(err); ok {
-			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, args, msg, err))
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, err))
 			return friendlyToolResultJSON(msg)
 		}
 		if errors.Is(err, tools.ErrDestructiveAction) {
@@ -1557,7 +1579,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	if decision, ok := e.allowMutatingTool(action); !ok {
 		msg := rateLimitMessage(decision.Reason)
-		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, args, msg, governance.ErrRateLimited))
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, governance.ErrRateLimited))
 		return finalReplyPrefix + msg
 	}
 

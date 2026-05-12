@@ -22,6 +22,15 @@ type PlannerLLM interface {
 	CompleteIntentPlan(ctx context.Context, req PlannerLLMRequest) (string, error)
 }
 
+type PlannerLLMWithUsage interface {
+	CompleteIntentPlanWithUsage(ctx context.Context, req PlannerLLMRequest) (PlannerLLMResponse, error)
+}
+
+type PlannerLLMResponse struct {
+	Content string
+	Usage   llm.TokenUsage
+}
+
 type PlannerLLMRequest struct {
 	Mode         OutputMode
 	SystemPrompt string
@@ -50,6 +59,7 @@ type PlannerResult struct {
 	Attempts           int
 	Fallback           bool
 	LastValidationCode ErrorCode
+	Usage              llm.TokenUsage
 }
 
 type Planner struct {
@@ -104,7 +114,7 @@ func (p *Planner) Plan(ctx context.Context, input PlannerInput) (PlannerResult, 
 	attempts := p.maxRetries + 1
 	for attempt := 1; attempt <= attempts; attempt++ {
 		result.Attempts = attempt
-		raw, err := p.llm.CompleteIntentPlan(ctx, PlannerLLMRequest{
+		raw, usage, err := p.completeIntentPlan(ctx, PlannerLLMRequest{
 			Mode:         mode,
 			SystemPrompt: systemPrompt,
 			UserPrompt:   userPrompt,
@@ -112,6 +122,7 @@ func (p *Planner) Plan(ctx context.Context, input PlannerInput) (PlannerResult, 
 		if err != nil {
 			return result, err
 		}
+		result.Usage = addTokenUsage(result.Usage, usage)
 
 		plan, parseErr := parsePlanJSON(raw)
 		if parseErr == nil {
@@ -126,6 +137,7 @@ func (p *Planner) Plan(ctx context.Context, input PlannerInput) (PlannerResult, 
 					Plan:     plan,
 					Mode:     mode,
 					Attempts: attempt,
+					Usage:    result.Usage,
 				}, nil
 			}
 			var validationErr *ValidationError
@@ -137,6 +149,22 @@ func (p *Planner) Plan(ctx context.Context, input PlannerInput) (PlannerResult, 
 		userPrompt = buildUserPrompt(input, "上一轮输出不是合法 IntentPlan JSON，必须只返回符合 schema v1.0 的 JSON 对象。")
 	}
 	return result, nil
+}
+
+func (p *Planner) completeIntentPlan(ctx context.Context, req PlannerLLMRequest) (string, llm.TokenUsage, error) {
+	if withUsage, ok := p.llm.(PlannerLLMWithUsage); ok {
+		resp, err := withUsage.CompleteIntentPlanWithUsage(ctx, req)
+		return resp.Content, resp.Usage, err
+	}
+	raw, err := p.llm.CompleteIntentPlan(ctx, req)
+	return raw, llm.TokenUsage{}, err
+}
+
+func addTokenUsage(left, right llm.TokenUsage) llm.TokenUsage {
+	left.PromptTokens += right.PromptTokens
+	left.CompletionTokens += right.CompletionTokens
+	left.TotalTokens += right.TotalTokens
+	return left
 }
 
 func (input PlannerInput) entityResolver() EntityResolver {
