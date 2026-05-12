@@ -3470,6 +3470,37 @@ func TestStage2BFinanceFAQRetrievalUsesBillingArea(t *testing.T) {
 	assert.Equal(t, "billing", retriever.calls[0].productArea)
 }
 
+func TestStage2BStoppedBillingFAQUsesKnowledgeRetrieval(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Hits: []knowledge.KBChunk{{
+			ChunkID:     "faq-billing-stopped-instance-001",
+			KBVersion:   "kb.v1",
+			SourceType:  "faq",
+			ProductArea: "billing",
+			ACL:         "customer_safe",
+			Confidence:  "high",
+			Title:       "关机后为什么还会产生费用",
+			Content:     "关机后是否继续计费取决于实例计费方式。",
+		}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "关机后为什么还扣费", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "关机后是否继续计费")
+	assert.Empty(t, mock.calls)
+	require.Len(t, retriever.calls, 1)
+	assert.Equal(t, "billing", retriever.calls[0].productArea)
+}
+
 func TestStage2BFinanceRealtimeHardBlockPrecedesPlanner(t *testing.T) {
 	cases := []string{
 		"\u6211\u7684\u53d1\u7968\u72b6\u6001\u600e\u4e48\u6837",
@@ -4245,12 +4276,75 @@ func TestResourceSelectionContinuationTroubleshootingFallbackAddsSafeContext(t *
 	assert.NotContains(t, reply, "SSH")
 }
 
+func TestResourceSelectionContinuationLoadAssessmentUsesGroundedRendererMode(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			switch action {
+			case "DescribeCompShareInstance":
+				return phase1MultipleInstanceDescribeResult(), nil
+			case "GetCompShareInstanceMonitor":
+				return map[string]any{"CPU": "7%", "GPU": "0%"}, nil
+			default:
+				return nil, fmt.Errorf("unexpected action %s", action)
+			}
+		},
+	}
+	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+		Text:            "从当前采样看，这台实例现在不算忙。",
+		Model:           "deepseek-v4-flash",
+		AttributionMode: grounded.AttributionEnvelope,
+		EnvelopeHash:    "sha256:renderer-envelope",
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	_, err := eng.Chat(context.Background(), "这台机器现在忙不忙", noopStep)
+	require.NoError(t, err)
+	reply, err := eng.Chat(context.Background(), "select-a", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "从当前采样看，这台实例现在不算忙。", reply)
+	require.Len(t, groundedRenderer.requests, 1)
+	assertEngineComputedFact(t, groundedRenderer.requests[0].Envelope, "answer_mode", "load_assessment")
+	assert.Empty(t, mock.calls)
+}
+
 func TestMonitorTroubleshootingQuestionDoesNotMatchNormalGPUCardQuery(t *testing.T) {
 	assert.False(t, isMonitorTroubleshootingQuestion("看一下显卡利用率"))
 	assert.False(t, isMonitorTroubleshootingQuestion("highmem 机器现在 GPU 使用率是多少"))
 
 	assert.True(t, isMonitorTroubleshootingQuestion("CPU 高怎么办"))
 	assert.True(t, isMonitorTroubleshootingQuestion("这台机器有点卡顿，帮我排查"))
+}
+
+func TestMonitorLoadAssessmentQuestionIsNarrow(t *testing.T) {
+	assert.True(t, isMonitorLoadAssessmentQuestion("qa-shadow 现在忙不忙？"))
+	assert.True(t, isMonitorLoadAssessmentQuestion("这台机器空闲吗"))
+	assert.True(t, isMonitorLoadAssessmentQuestion("GPU 忙不忙"))
+	assert.True(t, isMonitorLoadAssessmentQuestion("负载怎么样"))
+
+	assert.False(t, isMonitorLoadAssessmentQuestion("看一下显卡利用率"))
+	assert.False(t, isMonitorLoadAssessmentQuestion("highmem 机器现在 GPU 使用率是多少"))
+}
+
+func TestMonitorLoadAssessmentFallbackIgnoresDiskPercentages(t *testing.T) {
+	reply := monitorLoadAssessmentFallbackReply("CPU 使用率=7%; GPU 使用率=0%; 系统盘使用率=55%; 数据盘使用率=80%")
+
+	assert.Contains(t, reply, "不算忙")
+	assert.Contains(t, reply, "系统盘使用率=55%")
+}
+
+func TestMonitorHistoryUnsupportedReplyUsesCurrentScopeWording(t *testing.T) {
+	assert.Contains(t, monitorHistoryUnsupportedReply, "当前暂不支持指定历史时间段的监控查询")
+	assert.Contains(t, monitorHistoryUnsupportedReply, "实时监控")
+	assert.NotContains(t, monitorHistoryUnsupportedReply, "暂不稳定支持")
 }
 
 func TestResourceSelectionContinuationDuplicateNameRepeatsPrompt(t *testing.T) {
