@@ -651,3 +651,25 @@ var Registry = []openai.Tool{
 		},
 	},
 }
+
+// VisibleRegistry returns the tool list exposed to the LLM for the current
+// runtime mode. Read-only mode hides mutating workflow tools while keeping
+// query, knowledge, and cloud-side diagnosis tools available.
+func VisibleRegistry(mutatingEnabled bool) []openai.Tool {
+	if mutatingEnabled {
+		return Registry
+	}
+	policies := DefaultToolExecutionPolicies()
+	visible := make([]openai.Tool, 0, len(Registry))
+	for _, tool := range Registry {
+		if tool.Function == nil {
+			continue
+		}
+		policy, ok := policies[tool.Function.Name]
+		if ok && (policy.Route == ActionRouteWorkflow || policy.Class == ActionClassMutating) {
+			continue
+		}
+		visible = append(visible, tool)
+	}
+	return visible
+}

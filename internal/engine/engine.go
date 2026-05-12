@@ -44,6 +44,7 @@ const (
 
 const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
 const monitorHistoryUnsupportedReply = "当前暂不稳定支持指定历史时间段的监控查询。请先在控制台监控页选择明确日期和时间范围查看；我目前只支持实时监控查询。"
+const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
 
 const (
 	rateLimitQPSMessage   = "请求过于频繁，请稍后再试。"
@@ -140,6 +141,10 @@ type Engine struct {
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
 	// run their detection logic but fall through to LLM auto routing.
 	supportsObjectToolChoice bool
+	// mutatingToolsEnabled controls whether instance-changing workflows and
+	// L1 mutating API actions are exposed and executable. Production defaults
+	// to read-only until these operations are product-ready.
+	mutatingToolsEnabled bool
 	// Raw user message for the current turn. Set at the start of Chat().
 	// Read by executeDiagnosis guards for signal matching. Never mutated
 	// mid-turn.
@@ -164,8 +169,10 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 		lastInstanceQueryTurn:    -1,
 		lastMonitorTurn:          -1,
 		supportsObjectToolChoice: cap.SupportsObjectToolChoice,
+		mutatingToolsEnabled:     false,
 	}
 	eng.safeExecutor = newSafeToolExecutor(tools.NewExternalExecutor(cfg.Agent), confirmFn)
+	eng.safeExecutor.SetMutatingToolsEnabled(eng.mutatingToolsEnabled)
 	return eng
 }
 
@@ -181,6 +188,7 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 		lastInstanceQueryTurn:    -1,
 		lastMonitorTurn:          -1,
 		supportsObjectToolChoice: true,
+		mutatingToolsEnabled:     true,
 	}
 	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn)
 	return eng
@@ -191,6 +199,16 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 // via LookupCapability in New().
 func (e *Engine) setSupportsObjectToolChoice(v bool) {
 	e.supportsObjectToolChoice = v
+}
+
+// SetMutatingToolsEnabled explicitly enables or disables instance-changing
+// workflows and L1 mutating API actions. The CLI leaves this disabled unless
+// COMPSHARE_ENABLE_MUTATING_TOOLS=1 is set.
+func (e *Engine) SetMutatingToolsEnabled(v bool) {
+	e.mutatingToolsEnabled = v
+	if e.safeExecutor != nil {
+		e.safeExecutor.SetMutatingToolsEnabled(v)
+	}
 }
 
 func (e *Engine) SetIntentPlanner(planner IntentPlanner, opts IntentPlannerOptions) {
@@ -276,7 +294,7 @@ func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
 		userCtx = prompt.FormatInstanceContext(result)
 	}
 
-	systemPrompt := prompt.BuildSystem(userCtx)
+	systemPrompt := prompt.BuildSystemWithOptions(userCtx, prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
 	e.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 	}
@@ -372,7 +390,7 @@ func (e *Engine) PlannerPriorTextSnapshot() string {
 // InitWithContext performs context injection with a pre-built user context string,
 // bypassing the DescribeCompShareInstance API call. Used for testing.
 func (e *Engine) InitWithContext(userCtx string) {
-	systemPrompt := prompt.BuildSystem(userCtx)
+	systemPrompt := prompt.BuildSystemWithOptions(userCtx, prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
 	e.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 	}
@@ -436,7 +454,7 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	for round := 0; round < maxReActRounds; round++ {
 		req := llm.ChatRequest{
 			Messages: e.buildMessagesForLLM(),
-			Tools:    tools.Registry,
+			Tools:    tools.VisibleRegistry(e.mutatingToolsEnabled),
 		}
 		// BRIDGE T-001.f1: adjacent monitor follow-up must re-call
 		// GetCompShareInstanceMonitor instead of reusing prior numbers.
@@ -1070,6 +1088,8 @@ func friendlyToolErrorMessage(err error) (string, bool) {
 		return toolCapExceededMessage, true
 	case errors.Is(err, governance.ErrRateLimited):
 		return rateLimitQPSMessage, true
+	case errors.Is(err, tools.ErrMutatingActionDisabled):
+		return mutatingToolsDisabledMessage, true
 	default:
 		return "", false
 	}
@@ -1093,6 +1113,7 @@ func friendlyMessageFromText(text string) (string, bool) {
 		toolCapExceededMessage,
 		historyWindowExceededMessage,
 		readExpensiveTurnBudgetMessage,
+		mutatingToolsDisabledMessage,
 	} {
 		if message != "" && strings.Contains(text, message) {
 			return message, true
@@ -1174,6 +1195,12 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	// (not LLM-controlled) and each workflow has its own Confirm step for user approval.
 	// Invariant: BuildArgs functions must only reference specific named keys from wfCtx.Params.
 	if workflow.IsWorkflowTool(action) {
+		if !e.mutatingToolsEnabled {
+			args = e.safeExecutor.FilterArgs(action, args)
+			msg := mutatingToolsDisabledMessage
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, tools.ErrMutatingActionDisabled))
+			return friendlyToolResultJSON(msg)
+		}
 		args = e.safeExecutor.FilterArgs(action, args)
 		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: e.safeExecutor.RedactArgs(action, args)})
 		return e.executeWorkflow(ctx, action, args, onStep)
@@ -1501,6 +1528,11 @@ func uniqueStrings(values []string) []string {
 // executeWorkflow runs a predefined workflow and returns the result as a JSON string
 // for the LLM to narrate.
 func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
+	if !e.mutatingToolsEnabled {
+		msg := mutatingToolsDisabledMessage
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, tools.ErrMutatingActionDisabled))
+		return finalReplyPrefix + msg
+	}
 	// Hard guard — instance-operation workflows MUST have a non-empty UHostId.
 	// CreateInstanceWorkflow is excluded because it creates a new instance.
 	// NOTE: If you add a workflow that does not target an existing instance,

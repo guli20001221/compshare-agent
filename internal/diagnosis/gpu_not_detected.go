@@ -48,7 +48,7 @@ func stepCheckInstanceGPU() Step {
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: "实例当前处于关机状态，无法检测 GPU。",
-					Suggestion: "需要先开机才能使用 GPU。可以使用 StartInstanceWorkflow 开机。",
+					Suggestion: "需要先在控制台开机后才能使用 GPU。",
 				}
 			case "Install":
 				return Verdict{
@@ -72,7 +72,7 @@ func stepCheckInstanceGPU() Step {
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: "实例正在关机中，无法检测 GPU。",
-					Suggestion: "请等待关机完成后，再使用 StartInstanceWorkflow 重新开机。",
+					Suggestion: "请等待关机完成后，再到控制台开机。",
 				}
 			case "Rebooting":
 				return Verdict{
@@ -120,7 +120,7 @@ func stepCheckGPUMonitor() Step {
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: "GPU 硬件工作正常（监控显示有 GPU 活动）。nvidia-smi 报错可能是容器内驱动版本不匹配。",
-					Suggestion: "尝试在终端执行 `ldconfig` 或重启实例。如使用自定义镜像，请确认镜像内 CUDA 驱动与宿主机兼容。",
+					Suggestion: "云侧监控显示 GPU 有活动。请在控制台核对镜像和驱动环境；如仍异常，请联系技术支持并提供实例 ID。",
 				}
 			}
 			return Verdict{Action: Continue}

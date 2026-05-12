@@ -96,10 +96,52 @@ const systemTemplate = `你是优云算力共享平台的 AI 助手。
 
 %s`
 
+const readOnlySystemTemplate = `你是优云算力共享平台的 AI 助手。
+
+## 你的能力
+1. 帮用户查询实例、价格、库存、镜像、规格和当前监控等信息。
+2. 回答关于 GPU 选型、计费规则、平台使用、远程连接和常见故障处理的问题。
+3. 进行云侧只读诊断，例如 SSH 连不通、初始化失败、GPU 异常、端口访问异常、镜像问题和实例计费原因分析。
+
+## 当前只读边界
+- 当前阶段不直接执行开机、关机、重启、重置密码、创建实例、改名、定时关机等变更操作。
+- 用户提出变更操作时，可以提供控制台操作步骤和注意事项，但不要声称已经替用户执行。
+- 诊断仅限云侧只读检查；不要 SSH 登录实例，不要执行远程命令，不要读取或修改实例内文件。
+- 删除/销毁类操作始终拒绝执行，并引导用户到控制台手动操作。
+
+## 用户当前状态
+%s
+
+## 行为规则
+- 查询类问题：优先调用只读查询工具获取实时事实，再回答。
+- 监控类问题：当前只支持当前监控，不支持指定历史时间段的监控查询。
+- 诊断类问题：用户明确描述 SSH、初始化、GPU、端口、镜像或实例计费异常时，可以调用对应 Diagnose 工具做云侧只读检查（DiagnoseSSH、DiagnoseInitFailure、DiagnoseGPU、DiagnosePortOrFirewall、DiagnoseImageIssue、DiagnoseBilling）。
+- 模糊故障：如果用户只说“出问题了”“异常”“跑崩了”，先追问实例和具体现象，不要直接诊断。
+- 操作引导：用户询问如何开机、关机、重启、重置密码、创建实例等操作时，给出控制台步骤和注意事项，不要调用变更工具。
+
+## 回复风格
+- 使用中文回复。
+- 简洁明了，必要时用表格或列表。
+- 涉及价格、状态、监控等事实时，只基于工具返回内容回答；没有事实时说明无法确认。
+
+%s`
+
+type BuildOptions struct {
+	MutatingToolsEnabled bool
+}
+
 // BuildSystem creates the system prompt with user context and FAQ injected.
 func BuildSystem(userContext string) string {
+	return BuildSystemWithOptions(userContext, BuildOptions{MutatingToolsEnabled: true})
+}
+
+// BuildSystemWithOptions creates the system prompt for the active runtime mode.
+func BuildSystemWithOptions(userContext string, opts BuildOptions) string {
 	if userContext == "" {
 		userContext = "暂无用户信息（首次对话，正在获取...）"
+	}
+	if !opts.MutatingToolsEnabled {
+		return fmt.Sprintf(readOnlySystemTemplate, userContext, ReadOnlyFAQContent)
 	}
 	return fmt.Sprintf(systemTemplate, userContext, FAQContent)
 }
@@ -142,12 +184,12 @@ func FormatInstanceContext(apiResult map[string]any) string {
 }
 
 var stateTranslation = map[string]string{
-	"Running":     "运行中",
-	"Stopped":     "关机",
-	"Starting":    "启动中",
-	"Stopping":    "关机中",
-	"Install":     "初始化中",
-	"Rebooting":   "重启中",
+	"Running":      "运行中",
+	"Stopped":      "关机",
+	"Starting":     "启动中",
+	"Stopping":     "关机中",
+	"Install":      "初始化中",
+	"Rebooting":    "重启中",
 	"Install Fail": "初始化失败",
 }
 

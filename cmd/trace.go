@@ -48,6 +48,25 @@ func groundedRendererRuntimeLine(mode string) string {
 	return fmt.Sprintf("grounded_renderer=%s", mode)
 }
 
+func mutatingToolsEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	value := strings.TrimSpace(getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"))
+	switch value {
+	case "":
+		return false, ""
+	case "1":
+		return true, ""
+	default:
+		return false, value
+	}
+}
+
+func mutatingToolsRuntimeLine(enabled bool) string {
+	if enabled {
+		return "mutating=enabled"
+	}
+	return "mutating=disabled (read-only mode)"
+}
+
 func plannerRuntimeTrace(shadowEnabled bool, cutoverIntents []intent.Intent) observability.RuntimeTrace {
 	mode := "off"
 	if shadowEnabled {

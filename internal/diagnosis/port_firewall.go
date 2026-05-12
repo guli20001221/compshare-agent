@@ -24,8 +24,8 @@ func PortFirewallChain() *Chain {
 		},
 		Fallback: Verdict{
 			Action:     Conclude,
-			Conclusion: "平台端口映射正常。服务可能未在实例内启动。",
-			Suggestion: "请检查 /start.d/ 自启动脚本或手动启动服务。如果是自定义服务端口，请确认服务进程已运行且监听了正确端口。",
+			Conclusion: "平台端口映射正常。服务可能未就绪。",
+			Suggestion: "云侧只能确认平台端口映射。请在控制台核对服务配置、镜像和安全组；具体服务状态需通过控制台指引或技术支持进一步确认。",
 		},
 	}
 }
@@ -63,7 +63,7 @@ func stepPortCheckState() Step {
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: "实例当前状态为「" + state + "」，未运行。",
-					Suggestion: "需要先开机才能访问服务。可以使用 StartInstanceWorkflow 开机。",
+					Suggestion: "需要先在控制台开机后才能访问服务。",
 				}
 			}
 			return Verdict{Action: Continue}
@@ -99,7 +99,7 @@ func stepCheckServicePort() Step {
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: conclusion,
-					Suggestion: "如果仍无法访问，请检查实例内该服务是否已启动，或检查本地网络连接。",
+					Suggestion: "如果仍无法访问，请在控制台核对服务入口、安全组和本地网络连通性。",
 				}
 			}
 
@@ -113,7 +113,7 @@ func stepCheckServicePort() Step {
 					return Verdict{
 						Action:     Conclude,
 						Conclusion: "该实例的应用列表中未发现「" + normalized + "」，但平台端口目录显示此服务的默认端口为 " + formatPort(portNum) + "。",
-						Suggestion: "当前实例可能未安装或未启动该服务。请检查 /start.d/ 自启动脚本，或手动启动服务并确认监听端口 " + formatPort(portNum) + "。如需预装此服务，可选择包含该应用的社区镜像重新创建实例。",
+						Suggestion: "当前实例可能未配置该服务。请在控制台核对镜像、应用配置和安全组；如需预装此服务，可选择包含该应用的社区镜像重新创建实例。",
 					}
 				}
 			}
@@ -121,7 +121,7 @@ func stepCheckServicePort() Step {
 			return Verdict{
 				Action:     Conclude,
 				Conclusion: "平台服务端口列表中未找到「" + targetService + "」对应的服务。",
-				Suggestion: "该服务可能是自定义部署的。请确认服务进程已运行且监听了正确端口。自启动脚本可放在 /start.d/ 目录下。",
+				Suggestion: "该服务可能是自定义部署的。云侧无法确认该自定义服务状态，请在控制台核对网络、安全组和服务配置。",
 			}
 		},
 	}
@@ -164,7 +164,7 @@ var serviceAliases = map[string]string{
 	"terminal":     "SSH",
 	"filebrowser":  "FileBrowser",
 	"file browser": "FileBrowser",
-	"文件管理":        "FileBrowser",
+	"文件管理":         "FileBrowser",
 }
 
 // normalizeServiceName maps user input to the canonical platform service name.
