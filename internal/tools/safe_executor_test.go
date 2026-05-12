@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/governance"
@@ -79,6 +80,47 @@ func TestDefaultPoliciesClassifyReadExpensiveActionsExplicitly(t *testing.T) {
 
 	policy := policyForAction("GetAccountPriceAdjustmentPreview")
 	assert.Equal(t, ActionClassReadCheap, policy.Class, "unregistered price-looking actions must not become read-expensive by substring")
+}
+
+func TestVisibleRegistryFiltersMutatingWorkflowsByDefault(t *testing.T) {
+	visible := VisibleRegistry(false)
+	names := map[string]bool{}
+	for _, tool := range visible {
+		require.NotNil(t, tool.Function)
+		names[tool.Function.Name] = true
+		assert.False(t, strings.HasSuffix(tool.Function.Name, "Workflow"), "workflow tool %s must not be visible in read-only mode", tool.Function.Name)
+	}
+
+	for _, name := range []string{
+		"DescribeCompShareInstance",
+		"GetCompShareInstanceMonitor",
+		"DiagnoseSSH",
+		"DiagnoseBilling",
+		"GetGPUSpecs",
+	} {
+		assert.True(t, names[name], "read-only/diagnosis tool %s should remain visible", name)
+	}
+	for _, name := range []string{
+		"CreateInstanceWorkflow",
+		"StopInstanceWorkflow",
+		"StartInstanceWorkflow",
+		"RebootInstanceWorkflow",
+		"RenameInstanceWorkflow",
+		"ResetPasswordWorkflow",
+		"SetStopSchedulerWorkflow",
+		"CancelStopSchedulerWorkflow",
+	} {
+		assert.False(t, names[name], "mutating workflow %s should be hidden by default", name)
+	}
+
+	all := VisibleRegistry(true)
+	allNames := map[string]bool{}
+	for _, tool := range all {
+		require.NotNil(t, tool.Function)
+		allNames[tool.Function.Name] = true
+	}
+	assert.True(t, allNames["StopInstanceWorkflow"])
+	assert.Equal(t, len(Registry), len(all))
 }
 
 func TestDefaultPoliciesAttachMonitorCaps(t *testing.T) {
@@ -437,6 +479,20 @@ func TestSafeExecutorRejectsDestructiveActions(t *testing.T) {
 	})
 
 	require.ErrorIs(t, err, ErrDestructiveAction)
+	assert.Equal(t, 0, inner.calls)
+}
+
+func TestSafeExecutorCanDisableMutatingActions(t *testing.T) {
+	inner := &spyExecutor{}
+	safe := NewSafeToolExecutor(inner, WithMutatingToolsEnabled(false))
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "StartCompShareInstance",
+		Args:   map[string]any{"UHostId": "uhost-1"},
+		Origin: OriginDirectLLM,
+	})
+
+	require.ErrorIs(t, err, ErrMutatingActionDisabled)
 	assert.Equal(t, 0, inner.calls)
 }
 

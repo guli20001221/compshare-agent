@@ -23,6 +23,7 @@ func TestPortFirewall_NotRunning(t *testing.T) {
 	assert.True(t, result.Success)
 	assert.Contains(t, result.Conclusion, "未运行")
 	assert.Contains(t, result.Suggestion, "开机")
+	assertReadOnlyDiagnosisSuggestion(t, result.Suggestion)
 	assert.Len(t, executor.calls, 1)
 }
 
@@ -105,7 +106,8 @@ func TestPortFirewall_NoInstanceSoftwares_FallbackToCatalog(t *testing.T) {
 	assert.Contains(t, result.Conclusion, "未发现")
 	assert.Contains(t, result.Conclusion, "平台端口目录")
 	assert.Contains(t, result.Conclusion, "8888")
-	assert.Contains(t, result.Suggestion, "未安装或未启动")
+	assert.Contains(t, result.Suggestion, "控制台")
+	assertReadOnlyDiagnosisSuggestion(t, result.Suggestion)
 }
 
 func TestPortFirewall_ServiceNotFound(t *testing.T) {
@@ -130,7 +132,8 @@ func TestPortFirewall_ServiceNotFound(t *testing.T) {
 	assert.True(t, result.Success)
 	assert.Contains(t, result.Conclusion, "未找到")
 	assert.Contains(t, result.Conclusion, "redis")
-	assert.Contains(t, result.Suggestion, "/start.d/")
+	assert.Contains(t, result.Suggestion, "控制台")
+	assertReadOnlyDiagnosisSuggestion(t, result.Suggestion)
 }
 
 func TestPortFirewall_NoService_Fallback(t *testing.T) {
@@ -153,7 +156,8 @@ func TestPortFirewall_NoService_Fallback(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.Contains(t, result.Conclusion, "平台端口映射正常")
-	assert.Contains(t, result.Suggestion, "/start.d/")
+	assert.Contains(t, result.Suggestion, "控制台")
+	assertReadOnlyDiagnosisSuggestion(t, result.Suggestion)
 }
 
 func TestPortFirewall_ServiceAliasNormalization(t *testing.T) {

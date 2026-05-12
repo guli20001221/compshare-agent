@@ -231,6 +231,16 @@ func toolCall(id, name, argsJSON string) openai.ToolCall {
 	}
 }
 
+func toolNames(registry []openai.Tool) []string {
+	names := make([]string, 0, len(registry))
+	for _, tool := range registry {
+		if tool.Function != nil {
+			names = append(names, tool.Function.Name)
+		}
+	}
+	return names
+}
+
 // --- Tests ---
 
 func TestChat_DirectReply(t *testing.T) {
@@ -1490,6 +1500,80 @@ func TestNewConstructsRateLimiterFromConfig(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, wantSubject, eng.rateLimitSubject)
 	assert.NotContains(t, eng.rateLimitSubject, "public-key-for-subject")
+}
+
+func TestNewDefaultsToReadOnlyMutatingToolsDisabled(t *testing.T) {
+	cfg := &config.Config{Agent: config.AgentConfig{
+		PublicKey: "public-key-for-subject",
+		LLM: config.LLMConfig{
+			BaseURL: "https://api.modelverse.cn/v1",
+			APIKey:  "llm-key",
+			Model:   "deepseek-v4-flash",
+		},
+	}}
+
+	eng := New(cfg, nil)
+	require.False(t, eng.mutatingToolsEnabled)
+
+	eng.InitWithContext("test user")
+	require.NotEmpty(t, eng.messages)
+	system := eng.messages[0].Content
+	assert.NotContains(t, system, "StopInstanceWorkflow")
+	assert.Contains(t, system, "当前阶段不直接执行")
+}
+
+func TestChatReadOnlyHidesWorkflowToolsFromLLM(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.SetMutatingToolsEnabled(false)
+	eng.InitWithContext("test user")
+
+	reply, err := eng.Chat(context.Background(), "帮我关机", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "ok", reply)
+	require.Len(t, mock.calls, 1)
+	names := toolNames(mock.calls[0].Tools)
+	assert.NotContains(t, names, "StopInstanceWorkflow")
+	assert.NotContains(t, names, "CreateInstanceWorkflow")
+	assert.Contains(t, names, "DescribeCompShareInstance")
+	assert.Contains(t, names, "DiagnoseSSH")
+}
+
+func TestChatReadOnlyBlocksWorkflowToolCall(t *testing.T) {
+	executor := &mockExecutor{}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "StopInstanceWorkflow", `{"UHostId":"uhost-stop-001"}`),
+		}},
+		{Content: "blocked"},
+	}}
+	eng := NewWithDeps(mock, executor, func(string, map[string]any) bool { return true })
+	eng.SetMutatingToolsEnabled(false)
+	eng.InitWithContext("test user")
+	onStep, events := collectSteps()
+
+	reply, err := eng.Chat(context.Background(), "帮我关机", onStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "blocked", reply)
+	assert.Empty(t, executor.calls)
+	assertStepWithType(t, *events, StepBlocked, "StopInstanceWorkflow", "当前阶段不直接执行")
+}
+
+func TestExecuteSafeToolReadOnlyBlocksDirectMutatingAction(t *testing.T) {
+	executor := &mockExecutor{}
+	eng := NewWithDeps(&mockLLM{}, executor, func(string, map[string]any) bool { return true })
+	eng.SetMutatingToolsEnabled(false)
+
+	_, err := eng.executeSafeTool(context.Background(), tools.SafeToolRequest{
+		Action: "StartCompShareInstance",
+		Args:   map[string]any{"UHostId": "uhost-start-001"},
+		Origin: tools.OriginDirectLLM,
+	})
+
+	require.ErrorIs(t, err, tools.ErrMutatingActionDisabled)
+	assert.Empty(t, executor.calls)
 }
 
 func TestNewWarnsWhenPublicKeyMissingForRateLimiter(t *testing.T) {

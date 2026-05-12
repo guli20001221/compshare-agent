@@ -16,7 +16,7 @@ func SSHFailureChain() *Chain {
 		Fallback: Verdict{
 			Action:     Conclude,
 			Conclusion: "未发现明确的 SSH 连接问题。实例运行正常，资源使用正常。",
-			Suggestion: "请检查：1) 实例内 SSH 服务是否已启动（systemctl status sshd）；2) 本地网络连接和防火墙设置；3) 是否使用了正确的登录命令（可在实例详情中查看）。也可使用 JupyterLab 网页终端作为替代。",
+			Suggestion: "云侧检查未发现明确异常。请在控制台核对实例登录入口、安全组和网络连通性；如仍无法连接，请联系技术支持并提供实例 ID。",
 		},
 	}
 }
@@ -51,7 +51,7 @@ func stepCheckInstanceState() Step {
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: "实例当前处于关机状态，无法进行 SSH 连接。",
-					Suggestion: "需要先开机才能 SSH 连接。可以使用 StartInstanceWorkflow 开机。",
+					Suggestion: "需要先在控制台开机后才能 SSH 连接。",
 				}
 			case "Install":
 				return Verdict{
@@ -75,7 +75,7 @@ func stepCheckInstanceState() Step {
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: "实例正在关机中，无法 SSH 连接。",
-					Suggestion: "请等待关机完成后，再使用 StartInstanceWorkflow 重新开机。",
+					Suggestion: "请等待关机完成后，再到控制台开机。",
 				}
 			case "Rebooting":
 				return Verdict{

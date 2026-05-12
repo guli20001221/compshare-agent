@@ -83,3 +83,69 @@ GitHub/HuggingFace 学术加速功能已上线：
 - 密码登录：控制台 → 账户管理页面设置。
 - 发票：控制台 → 财务中心 → 发票管理。
 - 团队管理：支持成员管理和金额分配，面向企业/高校客户定向开通，需联系官方运营。文档：https://www.compshare.cn/docs/uaccount/team`
+
+// ReadOnlyFAQContent is the safe subset injected when mutating tools are
+// disabled. It keeps product rules and console navigation, but intentionally
+// omits shell commands, startup scripts, and instance-internal procedures.
+const ReadOnlyFAQContent = `## 平台常见问题（只读模式）
+
+### 1. 镜像选择
+控制台镜像入口主要分为平台镜像和社区镜像：
+- 平台镜像包含共享镜像、私有镜像、基础镜像、系统镜像、第三方镜像。
+- 社区镜像由社区作者发布，控制台内会区分付费镜像和免费镜像。
+- DescribeCompShareImages 查询平台公共镜像；DescribeCompShareCustomImages 查询自制/私有镜像。
+注意：社区镜像不可二次发布到社区；共享/私有镜像能否用于创建实例，以控制台当前可选项为准。
+
+### 2. 连接实例
+常见入口包括 SSH、VS Code Remote-SSH、JupyterLab 和 Windows RDP。当前助手只提供云侧信息和控制台路径，不登录实例、不执行远程命令。
+登录教程：https://www.compshare.cn/docs/operation/logininstance
+
+### 3. 防火墙/端口
+- 实例分配公网固定 IP，可对外提供服务。带宽 1.5Gb 共享（单 IP 上限 300Mbps）。
+- 平台已知服务端口映射可通过 DescribeCompShareSoftwarePort 查询。
+- 运行中的容器实例可通过 DescribeCompShareInstance 返回的 Softwares 字段查看已安装应用及访问地址（系统镜像实例或非 Running 状态下该字段可能为空）。
+
+### 4. 云硬盘
+- 系统盘有免费额度，具体容量以控制台创建页为准。
+- 额外数据盘通过控制台添加。
+- 关机后按量模式下额外磁盘仍计费（GPU/CPU/内存停止计费）。
+- 自制镜像最大支持 1000GB。
+
+### 5. 公共模型库
+主流大模型已预下载至公共模型库，直接挂载使用，无需自行下载。
+文档：https://www.compshare.cn/docs/bestpractices/sharemodel
+
+### 6. 网络加速
+GitHub/HuggingFace 学术加速功能可在控制台开通：
+https://console.compshare.cn/light-gpu/console/accelerator
+社区镜像默认已配置加速；虚机和基础镜像是否生效以控制台和文档为准。
+
+### 7. 无卡模式
+关机后以无卡模式启动，不挂载 GPU，仅收取基础实例费（具体以控制台为准）。适合编写代码、上传下载数据等非 GPU 任务。
+- 限制：同一账号仅允许 1 台无卡实例。
+- 支持机型：4090、4090-48G、3090、5090、A800、H20。
+- 无卡模式下不能制作镜像。
+
+### 8. 计费/回收规则
+四种计费模式：
+- 按量：按小时后付费。关机后 GPU/CPU/内存停止计费，但额外磁盘继续收费。
+- 包时：按小时预付费，关机仍计费。
+- 包日：按天预付费，关机仍计费。
+- 包月：按月预付费，关机仍计费。
+常见计费问题：
+- 初始化是否收费：启动中（Starting）状态不收费；卡初始化超过 5 分钟产生的扣费问题联系客服处理。
+- 按量转包月：需联系客户经理申请，变更后不可再次改回。
+- 欠费回收：账号下存在欠费订单时可能阻塞操作，需先到财务中心处理。
+常见错误码：8357=资源售罄、8095=配额不足、8429=过期欠费。
+价格以 GetCompShareInstanceUserPrice（折后价）或 GetCompShareInstancePrice（目录价）实时查询为准。
+
+### 9. 模型套餐
+平台提供 API 模型调用服务，支持 DeepSeek、Qwen、GLM、Kimi、GPT、Claude、MiniMax 等模型。套餐外模型按使用量直接扣费，请仔细检查模型名称避免误调。
+
+### 10. 实践部署
+Docker、Ollama、JupyterLab 等环境部署请以控制台文档和镜像说明为准。当前助手不提供实例内命令执行或文件修改，只能说明云侧资源、镜像和监控事实。
+
+### 11. 账号管理
+- 密码登录：控制台 → 账户管理页面设置。
+- 发票：控制台 → 财务中心 → 发票管理。
+- 团队管理：支持成员管理和金额分配，面向企业/高校客户定向开通，需联系官方运营。文档：https://www.compshare.cn/docs/uaccount/team`

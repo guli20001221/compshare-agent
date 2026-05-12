@@ -71,6 +71,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	scanner := bufio.NewScanner(os.Stdin)
 	eng := engine.New(cfg, cliConfirm(scanner))
+	mutatingToolsEnabled, unknownMutatingTools := mutatingToolsEnabledFromEnv(os.Getenv)
+	if unknownMutatingTools != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_ENABLE_MUTATING_TOOLS value %q\n", unknownMutatingTools)
+	}
+	eng.SetMutatingToolsEnabled(mutatingToolsEnabled)
 	cutoverIntents, unknownCutoverValues := intentPlannerCutoverIntentsFromEnv(os.Getenv)
 	for _, value := range unknownCutoverValues {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_INTENT_PLANNER_FOR value %q\n", value)
@@ -117,6 +122,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	fmt.Println("╰──────────────────────────────────────╯")
 	fmt.Printf("runtime: %s\n", plannerRuntimeModeLine(shadowEnabled, cutoverIntents))
 	fmt.Printf("renderer: %s\n", groundedRendererRuntimeLine(groundedRendererMode))
+	fmt.Printf("tools: %s\n", mutatingToolsRuntimeLine(mutatingToolsEnabled))
 	fmt.Println()
 	fmt.Println("正在初始化，获取您的实例信息...")
 
@@ -201,8 +207,8 @@ func runCLI(cmd *cobra.Command, args []string) error {
 				traceRecorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
 					return shadowRunner.Run(ctx, plannerInput)
 				})
-	}
-}
+			}
+		}
 
 		onStep := func(ev engine.StepEvent) {
 			if traceRecorder != nil {

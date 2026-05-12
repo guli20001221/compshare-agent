@@ -25,6 +25,7 @@ func TestSSHChain_Stopped(t *testing.T) {
 	assert.True(t, result.Success)
 	assert.Contains(t, result.Conclusion, "关机")
 	assert.Contains(t, result.Suggestion, "开机")
+	assertReadOnlyDiagnosisSuggestion(t, result.Suggestion)
 	assert.Equal(t, "检查实例状态", result.StoppedAt)
 	assert.Len(t, executor.calls, 1) // only DescribeCompShareInstance called
 }
@@ -311,7 +312,8 @@ func TestSSHChain_Running_AllNormal_Fallback(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.Contains(t, result.Conclusion, "未发现")
-	assert.Contains(t, result.Suggestion, "JupyterLab")
+	assert.Contains(t, result.Suggestion, "控制台")
+	assertReadOnlyDiagnosisSuggestion(t, result.Suggestion)
 	assert.NotContains(t, result.Conclusion, "SSH 端口已开放", "fallback should not claim SSH port is open")
 	assert.Len(t, executor.calls, 3) // all 3 steps checked
 	assert.Len(t, result.Steps, 3)
@@ -335,4 +337,21 @@ func TestSSHChain_InstanceNotFound(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.Contains(t, result.Conclusion, "未找到")
+}
+
+func assertReadOnlyDiagnosisSuggestion(t *testing.T, suggestion string) {
+	t.Helper()
+	for _, forbidden := range []string{
+		"StartInstanceWorkflow",
+		"StopInstanceWorkflow",
+		"ResetPasswordWorkflow",
+		"systemctl",
+		"ldconfig",
+		"/start.d/",
+		"终端执行",
+		"手动启动",
+		"登录命令",
+	} {
+		assert.NotContains(t, suggestion, forbidden)
+	}
 }

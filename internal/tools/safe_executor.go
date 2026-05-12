@@ -25,6 +25,7 @@ var (
 	ErrToolCapExceeded              = errors.New("tool cap exceeded")
 	ErrHistoryWindowExceeded        = errors.New("history window exceeded")
 	ErrHistoricalMonitorUnsupported = errors.New("historical monitor unsupported")
+	ErrMutatingActionDisabled       = errors.New("mutating action disabled")
 )
 
 type ExecutionOrigin string
@@ -66,17 +67,19 @@ type SafeDisplay struct {
 }
 
 type SafeToolExecutor struct {
-	inner    ToolExecutor
-	policies map[string]ToolExecutionPolicy
-	confirm  ConfirmFunc
+	inner                ToolExecutor
+	policies             map[string]ToolExecutionPolicy
+	confirm              ConfirmFunc
+	mutatingToolsEnabled bool
 }
 
 type SafeOption func(*SafeToolExecutor)
 
 func NewSafeToolExecutor(inner ToolExecutor, opts ...SafeOption) *SafeToolExecutor {
 	s := &SafeToolExecutor{
-		inner:    inner,
-		policies: DefaultToolExecutionPolicies(),
+		inner:                inner,
+		policies:             DefaultToolExecutionPolicies(),
+		mutatingToolsEnabled: true,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -94,6 +97,16 @@ func WithConfirmFunc(confirm ConfirmFunc) SafeOption {
 	return func(s *SafeToolExecutor) {
 		s.confirm = confirm
 	}
+}
+
+func WithMutatingToolsEnabled(enabled bool) SafeOption {
+	return func(s *SafeToolExecutor) {
+		s.mutatingToolsEnabled = enabled
+	}
+}
+
+func (s *SafeToolExecutor) SetMutatingToolsEnabled(enabled bool) {
+	s.mutatingToolsEnabled = enabled
 }
 
 func (s *SafeToolExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
@@ -170,6 +183,9 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 	}
 	if policy.SecurityLevel == security.L2 || policy.Class == ActionClassDestructive {
 		return nil, fmt.Errorf("%w: %s", ErrDestructiveAction, req.Action)
+	}
+	if !s.mutatingToolsEnabled && policy.Class == ActionClassMutating {
+		return nil, fmt.Errorf("%w: %s", ErrMutatingActionDisabled, req.Action)
 	}
 
 	if policy.Action == "GetCompShareInstanceMonitor" && hasMonitorTimeRangeArgs(req.Args) {

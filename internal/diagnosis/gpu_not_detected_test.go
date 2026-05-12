@@ -99,7 +99,8 @@ func TestGPUChain_Running_GPUWorking(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.Contains(t, result.Conclusion, "GPU 硬件工作正常")
-	assert.Contains(t, result.Suggestion, "ldconfig")
+	assert.Contains(t, result.Suggestion, "控制台")
+	assertReadOnlyDiagnosisSuggestion(t, result.Suggestion)
 	assert.Equal(t, "检查 GPU 监控数据", result.StoppedAt)
 	assert.Len(t, executor.calls, 2)
 }

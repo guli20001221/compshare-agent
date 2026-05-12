@@ -105,6 +105,80 @@ func TestBuildSystem_ContainsDiagnosis(t *testing.T) {
 	}
 }
 
+func TestBuildSystemWithOptions_ReadOnlyHidesMutatingWorkflowGuidance(t *testing.T) {
+	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false})
+	for _, text := range []string{
+		"CreateInstanceWorkflow",
+		"StopInstanceWorkflow",
+		"StartInstanceWorkflow",
+		"RebootInstanceWorkflow",
+		"RenameInstanceWorkflow",
+		"ResetPasswordWorkflow",
+		"SetStopSchedulerWorkflow",
+		"CancelStopSchedulerWorkflow",
+		"必须使用 CreateInstanceWorkflow",
+		"使用工作流 Tool",
+		"变更类操作必须展示参数让用户确认后再执行",
+		"/start.d/",
+		"sudo apt",
+		"ollama serve",
+		"systemctl",
+		"ldconfig",
+	} {
+		if strings.Contains(prompt, text) {
+			t.Fatalf("read-only prompt should not contain mutating guidance %q", text)
+		}
+	}
+	for _, text := range []string{
+		"当前阶段不直接执行开机、关机、重启",
+		"可以提供控制台操作步骤",
+		"诊断仅限云侧只读检查",
+		"DiagnoseSSH",
+	} {
+		if !strings.Contains(prompt, text) {
+			t.Fatalf("read-only prompt should contain %q", text)
+		}
+	}
+}
+
+func TestReadOnlyFAQContentOmitsInstanceInternalCommands(t *testing.T) {
+	for _, text := range []string{
+		"/start.d/",
+		"sudo apt",
+		"ollama serve",
+		"systemctl",
+		"ldconfig",
+		"StartInstanceWorkflow",
+	} {
+		if strings.Contains(ReadOnlyFAQContent, text) {
+			t.Fatalf("read-only FAQ should not contain %q", text)
+		}
+	}
+	for _, text := range []string{
+		"计费/回收规则",
+		"连接实例",
+		"控制台",
+		"不登录实例、不执行远程命令",
+	} {
+		if !strings.Contains(ReadOnlyFAQContent, text) {
+			t.Fatalf("read-only FAQ should contain %q", text)
+		}
+	}
+}
+
+func TestBuildSystemWithOptions_MutatingModeKeepsWorkflowGuidance(t *testing.T) {
+	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
+	for _, text := range []string{
+		"CreateInstanceWorkflow",
+		"StopInstanceWorkflow",
+		"ResetPasswordWorkflow",
+	} {
+		if !strings.Contains(prompt, text) {
+			t.Fatalf("mutating-enabled prompt should contain %q", text)
+		}
+	}
+}
+
 func TestFormatToolResult_Truncation(t *testing.T) {
 	// Build a large result with an array field
 	items := make([]any, 100)
