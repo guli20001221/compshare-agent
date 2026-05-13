@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -20,10 +21,16 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_KB_VERSION = "kb.stage2b.w0.2026-05-13"
 DEFAULT_VALID_FROM = "2026-05-13"
+LOGGER = logging.getLogger(__name__)
+# Must stay in sync with internal/knowledge/loader.go MaxKnowledgeContentRunes.
+MAX_CHUNK_CONTENT_RUNES = 4000
+ASSET_NOTE_MAX_CHARS = 300
 ASSET_NOTE_RE = re.compile(r"<!--\s*asset_note:\s*(\{.*?\})\s*-->", re.DOTALL)
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 REDACTION_MARKER_RE = re.compile(r"\[(?:PERSON|RESOURCE_ID|LINK|SECRET|PRIVATE_PROCESS|PRIVATE_SYSTEM)_REDACTED\]")
+PROCEDURE_LINE_RE = re.compile(r"^(?:\d+[.、]\s+|步骤\s*\d+|第\s*[一二三四五六七八九十0-9]+\s*步)")
+ASSET_NOTE_EXCLUDED_TYPES = {"logo", "decorative", "qr_code"}
 
 
 def chunk_documents(
@@ -37,7 +44,7 @@ def chunk_documents(
     asset_notes_path: Path | str | None = None,
     link_manifest_path: Path | str | None = None,
     require_complete_inputs: bool = True,
-    max_chars: int = 300,
+    max_chars: int = 2000,
 ) -> dict[str, int]:
     if require_complete_inputs:
         _validate_ready_for_chunking(asset_notes_path, link_manifest_path)
@@ -46,7 +53,15 @@ def chunk_documents(
 
     chunks: list[dict[str, Any]] = []
     for doc_path in sorted(Path(cleaned_dir).glob("*.md")):
-        chunks.extend(_chunks_for_doc(doc_path, kb_version=kb_version, valid_from=valid_from, max_chars=max_chars))
+        chunks.extend(
+            _chunks_for_doc(
+                doc_path,
+                kb_version=kb_version,
+                valid_from=valid_from,
+                max_chars=max_chars,
+                strict_asset_notes=require_complete_inputs,
+            )
+        )
 
     case_chunk_count = 0
     if cases_path:
@@ -64,7 +79,7 @@ def chunk_documents(
     return {"chunk_count": len(chunks), "case_chunk_count": case_chunk_count}
 
 
-def _chunks_for_doc(doc_path: Path, *, kb_version: str, valid_from: str, max_chars: int) -> list[dict[str, Any]]:
+def _chunks_for_doc(doc_path: Path, *, kb_version: str, valid_from: str, max_chars: int, strict_asset_notes: bool) -> list[dict[str, Any]]:
     text = doc_path.read_text(encoding="utf-8", errors="replace")
     body = _body_without_front_matter(text)
     source_ref = doc_path.stem
@@ -75,8 +90,8 @@ def _chunks_for_doc(doc_path: Path, *, kb_version: str, valid_from: str, max_cha
         content = section["content"]
         if not content.strip():
             continue
-        asset_refs = _asset_refs(content)
-        content = _clean_chunk_content(content)
+        asset_refs = _asset_refs(content, strict_asset_notes=strict_asset_notes)
+        content = _clean_chunk_content(content, strict_asset_notes=strict_asset_notes)
         for part_index, part in enumerate(_split_long_text(content, max_chars=max_chars), start=1):
             if len(part.strip()) < 20:
                 continue
@@ -249,6 +264,17 @@ def _split_long_text(text: str, *, max_chars: int) -> list[str]:
     current: list[str] = []
     current_len = 0
     for paragraph in paragraphs or [text.strip()]:
+        if _is_procedural_block(paragraph):
+            if len(paragraph) > MAX_CHUNK_CONTENT_RUNES:
+                raise ValueError(f"procedure block {paragraph[:80]!r} exceeds MAX_CHUNK_CONTENT_RUNES; add ## subheading to split upstream")
+            if len(paragraph) > max_chars:
+                if current:
+                    parts.append("\n\n".join(current))
+                    current = []
+                    current_len = 0
+                LOGGER.info("procedure block exceeds max_chars but within loader cap, kept intact: %s...", paragraph[:40])
+                parts.append(paragraph)
+                continue
         if current and current_len + len(paragraph) + 2 > max_chars:
             parts.append("\n\n".join(current))
             current = []
@@ -273,16 +299,32 @@ def _split_oversized_paragraph(paragraph: str) -> list[str]:
     lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
     if len(lines) > 1:
         return lines
+    if len(paragraph) > MAX_CHUNK_CONTENT_RUNES:
+        raise ValueError(f"paragraph {paragraph[:80]!r} exceeds MAX_CHUNK_CONTENT_RUNES; add ## subheading to split upstream")
+    if not re.search(r"[。！？!?；;]", paragraph):
+        raise ValueError(f"paragraph {paragraph[:80]!r} exceeds max_chars; add ## subheading to split upstream")
     sentences = [item.strip() for item in re.split(r"(?<=[。.!?？])\s+", paragraph) if item.strip()]
     return sentences or [paragraph.strip()]
 
 
-def _asset_refs(text: str) -> list[str]:
+def _is_procedural_block(paragraph: str) -> bool:
+    lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
+    streak = 0
+    for line in lines:
+        if PROCEDURE_LINE_RE.match(line):
+            streak += 1
+            if streak >= 2:
+                return True
+            continue
+        streak = 0
+    return False
+
+
+def _asset_refs(text: str, *, strict_asset_notes: bool) -> list[str]:
     refs: list[str] = []
     for match in ASSET_NOTE_RE.finditer(text):
-        try:
-            payload = json.loads(match.group(1))
-        except json.JSONDecodeError:
+        payload = _parse_asset_note_payload(match, strict=strict_asset_notes)
+        if payload is None or not _should_include_asset_note(payload):
             continue
         asset_id = payload.get("asset_id")
         if asset_id and asset_id not in refs:
@@ -290,11 +332,69 @@ def _asset_refs(text: str) -> list[str]:
     return refs
 
 
-def _clean_chunk_content(text: str) -> str:
-    text = ASSET_NOTE_RE.sub("", text)
+def _clean_chunk_content(text: str, *, strict_asset_notes: bool) -> str:
+    text = ASSET_NOTE_RE.sub(lambda match: _render_asset_note_match(match, strict=strict_asset_notes), text)
     text = HTML_COMMENT_RE.sub("", text)
     lines = [line.rstrip() for line in text.splitlines()]
     return "\n".join(line for line in lines if line.strip()).strip()
+
+
+def _render_asset_note_match(match: re.Match[str], *, strict: bool) -> str:
+    payload = _parse_asset_note_payload(match, strict=strict)
+    if payload is None or not _should_include_asset_note(payload):
+        return ""
+    return _render_asset_note_text(payload)
+
+
+def _parse_asset_note_payload(match: re.Match[str], *, strict: bool) -> dict[str, Any] | None:
+    try:
+        value = json.loads(match.group(1))
+    except json.JSONDecodeError as exc:
+        message = f"invalid asset_note JSON near {match.group(0)[:120]!r}"
+        if strict:
+            raise ValueError(message) from exc
+        LOGGER.warning(message)
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _should_include_asset_note(payload: dict[str, Any]) -> bool:
+    if payload.get("include_in_rag") is not True:
+        return False
+    if payload.get("visual_type") in ASSET_NOTE_EXCLUDED_TYPES:
+        return False
+    return True
+
+
+def _render_asset_note_text(payload: dict[str, Any]) -> str:
+    description = _nonempty(payload.get("description"))
+    if not description:
+        return ""
+    parts = [f"[图说] {_sentence_text(description)}"]
+    highlighted_ui = _nonempty(payload.get("highlighted_ui"))
+    if highlighted_ui:
+        parts.append(f"重点：{_sentence_text(highlighted_ui)}")
+    user_action = _nonempty(payload.get("user_action"))
+    if user_action:
+        parts.append(f"操作：{_sentence_text(user_action)}")
+    next_step = _nonempty(payload.get("next_step"))
+    if next_step:
+        parts.append(f"下一步：{_sentence_text(next_step)}")
+    caveats = _nonempty(payload.get("caveats"))
+    if caveats:
+        parts.append(f"注意：{_sentence_text(caveats)}")
+    rendered = "".join(parts)
+    if len(rendered) > ASSET_NOTE_MAX_CHARS:
+        return rendered[:280].rstrip() + "..."
+    return rendered
+
+
+def _nonempty(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _sentence_text(value: str) -> str:
+    return value if value.endswith(("。", "！", "？", ".", "!", "?", "；", ";")) else value + "。"
 
 
 def _infer_source_type(source_ref: str, product_area: str) -> str:
@@ -402,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--asset-notes", type=Path)
     parser.add_argument("--links", type=Path)
     parser.add_argument("--allow-incomplete-inputs", action="store_true", help="Allow dry-run chunking before VL/link processing is complete.")
-    parser.add_argument("--max-chars", type=int, default=300)
+    parser.add_argument("--max-chars", type=int, default=2000)
     args = parser.parse_args(argv)
     chunk_documents(
         args.cleaned_dir,
