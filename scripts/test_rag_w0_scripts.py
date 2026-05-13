@@ -19,6 +19,7 @@ from rag_w0 import generate_eval_questions
 from rag_w0 import mine_internal_cases
 from rag_w0 import model_smoke
 from rag_w0 import normalize_docs
+from rag_w0 import select_w0_sources
 from rag_w0 import snapshot_links
 from rag_w0 import validate_case_approvals
 from rag_w0 import validate_chunks
@@ -74,6 +75,28 @@ class RagW0ScriptTests(unittest.TestCase):
                 **kwargs,
             )
             return [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+
+    def _write_normalized_doc(self, root: Path, name: str, *, source_id: str, include_status: str, source_path: str, body: str = "# Doc\nCustomer-facing guidance.\n") -> Path:
+        normalized = root / "normalized"
+        normalized.mkdir(exist_ok=True)
+        path = normalized / name
+        path.write_text(
+            "\n".join(
+                [
+                    "---",
+                    f"source_id: {source_id}",
+                    "source_type: gitlab_clone_subset" if source_id == "gitlab-compshare-docs" else "source_type: feishu_docx_raw",
+                    "safety_state: mixed" if source_id == "gitlab-compshare-docs" else "safety_state: needs_cleaning",
+                    f"include_status: {include_status}",
+                    f"source_path: {source_path}",
+                    "---",
+                    "",
+                    body,
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return normalized
 
     def test_build_source_manifest_validates_paths_and_spt_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,6 +185,232 @@ class RagW0ScriptTests(unittest.TestCase):
             path.write_text(json.dumps(broken), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "include_status"):
                 validate_source.validate_source_manifest(path)
+
+    def test_select_w0_sources_uses_explicit_allowlist_for_gitlab_docs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normalized = self._write_normalized_doc(
+                root,
+                "feishu-usage__faq.md",
+                source_id="feishu-usage-faq-latest",
+                include_status="include_after_cleaning",
+                source_path="F:/bundle/feishu/faq.md",
+                body="# Feishu FAQ\nExisting customer FAQ stays in scope.\n",
+            )
+            self._write_normalized_doc(
+                root,
+                "gitlab-compshare-docs__logininstance.md",
+                source_id="gitlab-compshare-docs",
+                include_status="include_with_directory_policy",
+                source_path="F:/bundle/gitlab-compshare-docs/pages/operation/gpu/logininstance.md",
+                body="# Login\nSSH and Jupyter login guidance.\n",
+            )
+            self._write_normalized_doc(
+                root,
+                "gitlab-compshare-docs__event0.md",
+                source_id="gitlab-compshare-docs",
+                include_status="include_with_directory_policy",
+                source_path="F:/bundle/gitlab-compshare-docs/pages/overview/specialevent/event0.md",
+                body="# Event\nMarketing content should not enter W0.\n",
+            )
+            allowlist = root / "allowlist.json"
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "rag_w0_gitlab_source_allowlist.v1",
+                        "sources": [
+                            {
+                                "source_id": "gitlab-compshare-docs",
+                                "doc_path": "pages/operation/gpu/logininstance.md",
+                                "product_area": "login",
+                                "reason": "SSH and Jupyter login guidance",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            out = root / "selected"
+
+            summary = select_w0_sources.select_w0_sources(normalized, allowlist, out)
+
+            selected_names = sorted(path.name for path in out.glob("*.md"))
+            self.assertEqual(selected_names, ["feishu-usage__faq.md", "gitlab-compshare-docs__logininstance.md"])
+            gitlab_text = (out / "gitlab-compshare-docs__logininstance.md").read_text(encoding="utf-8")
+            self.assertIn("include_status: include_after_cleaning", gitlab_text)
+            self.assertIn("source_selection_product_area: login", gitlab_text)
+            self.assertEqual(summary["copied_existing_count"], 1)
+            self.assertEqual(summary["selected_gitlab_count"], 1)
+            self.assertEqual(summary["skipped_gitlab_count"], 1)
+            self.assertEqual(summary["product_area_counts"], {"login": 1})
+            self.assertEqual(
+                sorted(summary["selected_source_paths"]),
+                [
+                    "F:/bundle/feishu/faq.md",
+                    "F:/bundle/gitlab-compshare-docs/pages/operation/gpu/logininstance.md",
+                ],
+            )
+
+    def test_select_w0_sources_can_filter_assets_and_links_to_selected_docs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normalized = self._write_normalized_doc(
+                root,
+                "gitlab-compshare-docs__logininstance.md",
+                source_id="gitlab-compshare-docs",
+                include_status="include_with_directory_policy",
+                source_path="F:/bundle/gitlab-compshare-docs/pages/operation/gpu/logininstance.md",
+                body="# Login\n![login](login.png)\n",
+            )
+            self._write_normalized_doc(
+                root,
+                "gitlab-compshare-docs__us3fileoperation.md",
+                source_id="gitlab-compshare-docs",
+                include_status="include_with_directory_policy",
+                source_path="F:/bundle/gitlab-compshare-docs/pages/gpus/data/us3fileoperation.md",
+                body="# US3\n[external](https://docs.ucloud.cn/ufile/tools/us3cli/prepare)\n",
+            )
+            allowlist = root / "allowlist.json"
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "rag_w0_gitlab_source_allowlist.v1",
+                        "sources": [
+                            {
+                                "source_id": "gitlab-compshare-docs",
+                                "doc_path": "pages/operation/gpu/logininstance.md",
+                                "product_area": "login",
+                                "reason": "required for W0",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            links = root / "links.json"
+            links.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "rag_w0.links.v1",
+                        "links": [
+                            {
+                                "link_id": "keep",
+                                "source_id": "gitlab-compshare-docs",
+                                "source_path": "F:/bundle/gitlab-compshare-docs/pages/operation/gpu/logininstance.md",
+                                "final_state": "local_source_resolved",
+                            },
+                            {
+                                "link_id": "drop",
+                                "source_id": "gitlab-compshare-docs",
+                                "source_path": "F:/bundle/gitlab-compshare-docs/pages/gpus/data/us3fileoperation.md",
+                                "final_state": "review_required",
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            assets = root / "assets.json"
+            assets.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "rag_w0.assets.v1",
+                        "assets": [
+                            {
+                                "asset_id": "asset-keep",
+                                "source_id": "gitlab-compshare-docs",
+                                "source_doc_id": "F:/bundle/gitlab-compshare-docs/pages/operation/gpu/logininstance.md",
+                            },
+                            {
+                                "asset_id": "asset-drop",
+                                "source_id": "gitlab-compshare-docs",
+                                "source_doc_id": "F:/bundle/gitlab-compshare-docs/pages/gpus/data/us3fileoperation.md",
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            select_w0_sources.select_w0_sources(
+                normalized,
+                allowlist,
+                root / "selected",
+                links_path=links,
+                links_out_path=root / "selected_links.json",
+                assets_path=assets,
+                assets_out_path=root / "selected_assets.json",
+            )
+
+            selected_links = json.loads((root / "selected_links.json").read_text(encoding="utf-8"))
+            selected_assets = json.loads((root / "selected_assets.json").read_text(encoding="utf-8"))
+            self.assertEqual([link["link_id"] for link in selected_links["links"]], ["keep"])
+            self.assertEqual(selected_links["link_count"], 1)
+            self.assertEqual([asset["asset_id"] for asset in selected_assets["assets"]], ["asset-keep"])
+            self.assertEqual(selected_assets["asset_count"], 1)
+
+    def test_select_w0_sources_fails_when_allowlisted_doc_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normalized = self._write_normalized_doc(
+                root,
+                "gitlab-compshare-docs__other.md",
+                source_id="gitlab-compshare-docs",
+                include_status="include_with_directory_policy",
+                source_path="F:/bundle/gitlab-compshare-docs/pages/operation/gpu/other.md",
+            )
+            allowlist = root / "allowlist.json"
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "rag_w0_gitlab_source_allowlist.v1",
+                        "sources": [
+                            {
+                                "source_id": "gitlab-compshare-docs",
+                                "doc_path": "pages/operation/gpu/logininstance.md",
+                                "product_area": "login",
+                                "reason": "required for W0",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "allowlisted docs were not found"):
+                select_w0_sources.select_w0_sources(normalized, allowlist, root / "selected")
+
+    def test_select_w0_sources_validates_allowlist_product_area(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normalized = root / "normalized"
+            normalized.mkdir()
+            allowlist = root / "allowlist.json"
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "rag_w0_gitlab_source_allowlist.v1",
+                        "sources": [
+                            {
+                                "source_id": "gitlab-compshare-docs",
+                                "doc_path": "pages/operation/gpu/logininstance.md",
+                                "product_area": "marketing",
+                                "reason": "bad area",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "invalid product_area"):
+                select_w0_sources.select_w0_sources(normalized, allowlist, root / "selected")
 
     def test_extract_assets_finds_markdown_images_links_and_marks_final_states(self):
         with tempfile.TemporaryDirectory() as tmp:
