@@ -164,6 +164,12 @@ Image note fields:
 - `include_in_rag`: `true | false`
 - `exclusion_reason`
 
+PR-RAG-2 deliberately emits deterministic image notes only. It records the full
+image-note schema and sets `model_metadata.vl_executed=false` / `vl_status` so
+the later OCR/VL pass can replace or approve the note before chunk promotion.
+This keeps W0 source governance moving without claiming visual facts that were
+not actually read by a VL model.
+
 Rules:
 
 - every image reference must receive one final state before chunking:
@@ -733,17 +739,17 @@ Acceptance:
 
 1. Start from all images in `asset_manifest.json`.
 2. Exclude low-value images by deterministic rule where possible.
-3. Select included W0 operation/error/console screenshots for OCR/VL.
-4. Run OCR/VL for selected images.
-5. Produce structured operation notes, not generic captions.
+3. Select included W0 operation/error/console screenshots for OCR/VL follow-up.
+4. For PR-RAG-2, emit deterministic nearby-text notes with `vl_executed=false`.
+5. Produce structured operation-note drafts, not generic captions.
 6. Mark every image with a final inclusion/exclusion state.
 7. Keep model metadata and confidence.
 
 Acceptance:
 
-- Operation screenshots include user action, highlighted UI, expected input, and caveats.
+- Operation screenshot drafts include user action, highlighted UI, expected input, and caveats when nearby text supports them.
 - QR codes and decorative images are excluded.
-- No image note claims information not visible in image or nearby text.
+- No image note claims information not visible in nearby text until the OCR/VL follow-up runs.
 - All images are accounted for; only a subset needs expensive VL.
 
 ### Task 4: Link Classification And Snapshot Policy

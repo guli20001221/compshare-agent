@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -8,10 +9,18 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from rag_w0 import build_source_manifest
+from rag_w0 import clean_docs
 from rag_w0 import classify_links
-from rag_w0 import validate_source
+from rag_w0 import common
+from rag_w0 import describe_images
 from rag_w0 import extract_assets
+from rag_w0 import mine_internal_cases
+from rag_w0 import normalize_docs
+from rag_w0 import snapshot_links
+from rag_w0 import validate_case_approvals
 from rag_w0 import validate_chunks
+from rag_w0 import validate_cleaned_docs
+from rag_w0 import validate_source
 
 
 class RagW0ScriptTests(unittest.TestCase):
@@ -147,6 +156,8 @@ class RagW0ScriptTests(unittest.TestCase):
                 {"link_id": "2", "url": "https://gitlab.example.com/group/project"},
                 {"link_id": "3", "url": "https://www.compshare.cn/docs/gpus/login"},
                 {"link_id": "4", "url": "https://example.com/download?token=abc"},
+                {"link_id": "5", "url": "mailto:support@example.com"},
+                {"link_id": "6", "url": "#section"},
             ]
         }
 
@@ -161,6 +172,296 @@ class RagW0ScriptTests(unittest.TestCase):
         self.assertEqual(by_id["3"]["final_state"], "review_required")
         self.assertEqual(by_id["4"]["link_type"], "temporary_download")
         self.assertEqual(by_id["4"]["final_state"], "excluded")
+        self.assertEqual(by_id["5"]["link_type"], "non_http_scheme")
+        self.assertEqual(by_id["5"]["final_state"], "excluded")
+        self.assertEqual(by_id["6"]["link_type"], "local_source_candidate")
+        self.assertEqual(by_id["6"]["final_state"], "local_source_resolved")
+
+    def test_surface_url_policy_aligns_runtime_contract(self):
+        self.assertIsNone(common.surface_url_rejection_reason("https://console.compshare.cn:443/instances"))
+        self.assertEqual(common.surface_url_rejection_reason("https://"), "invalid_url")
+        self.assertEqual(common.surface_url_rejection_reason("https://tmp.example.com/file"), "temporary_download")
+        self.assertEqual(common.surface_url_rejection_reason("https://temporary.example.com/file"), "temporary_download")
+        self.assertEqual(common.surface_url_rejection_reason("https://download.example.com/file?x=1"), "temporary_download")
+        self.assertEqual(common.surface_url_rejection_reason("https://files.download:8080/file?x=1"), "temporary_download")
+        self.assertEqual(common.surface_url_rejection_reason("https://attempt.example.com/docs/page"), "host_not_in_allowlist")
+
+    def test_describe_images_accounts_for_every_asset(self):
+        asset_manifest = {
+            "assets": [
+                {
+                    "asset_id": "asset-1",
+                    "source_id": "guide",
+                    "source_doc_id": "guide.md",
+                    "image_ref": "step.png",
+                    "image_path": "step.png",
+                    "heading_path": ["Login"],
+                    "nearby_text": "Click the console login button, then enter the password.",
+                    "final_state": "included_with_ocr_note",
+                    "include_in_rag": True,
+                    "exclusion_reason": "",
+                },
+                {
+                    "asset_id": "asset-2",
+                    "source_id": "guide",
+                    "source_doc_id": "guide.md",
+                    "image_ref": "logo.png",
+                    "image_path": "logo.png",
+                    "heading_path": [],
+                    "nearby_text": "",
+                    "final_state": "excluded_low_value",
+                    "include_in_rag": False,
+                    "exclusion_reason": "low_value",
+                },
+            ]
+        }
+
+        notes = describe_images.describe_asset_notes(asset_manifest)
+        by_id = {note["asset_id"]: note for note in notes}
+
+        self.assertEqual(set(by_id), {"asset-1", "asset-2"})
+        for note in notes:
+            self.assertIn("source_doc_id", note)
+            self.assertIn("heading_path", note)
+            self.assertIn("nearby_text", note)
+            self.assertIn("exclusion_reason", note)
+            self.assertIn(
+                note["visual_type"],
+                {"operation_screenshot", "error_screenshot", "console_state", "diagram", "logo", "qr_code", "decorative", "unknown"},
+            )
+            self.assertFalse(note["model_metadata"]["vl_executed"])
+        self.assertEqual(by_id["asset-1"]["note_type"], "operation_note")
+        self.assertEqual(by_id["asset-1"]["user_action"], "Click the console login button, then enter the password.")
+        self.assertTrue(by_id["asset-1"]["requires_review"])
+        self.assertEqual(by_id["asset-1"]["model_metadata"]["method"], "deterministic_nearby_text")
+        self.assertEqual(by_id["asset-2"]["note_type"], "excluded")
+        self.assertEqual(by_id["asset-2"]["visual_type"], "logo")
+        self.assertFalse(by_id["asset-2"]["include_in_rag"])
+
+    def test_snapshot_links_records_success_and_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            link_manifest = {
+                "links": [
+                    {
+                        "link_id": "ok",
+                        "url": "https://www.compshare.cn/docs/gpus/login",
+                        "link_type": "public_official_docs",
+                        "final_state": "review_required",
+                    },
+                    {
+                        "link_id": "bad",
+                        "url": "https://example.com/missing",
+                        "link_type": "unknown_external",
+                        "final_state": "review_required",
+                    },
+                    {
+                        "link_id": "nav",
+                        "url": "https://console.compshare.cn/instances",
+                        "link_type": "official_console_route",
+                        "final_state": "navigation_only",
+                    },
+                ]
+            }
+
+            def fetcher(url):
+                if url.endswith("/login"):
+                    return b"<html>login docs</html>", "text/html"
+                raise RuntimeError("network blocked")
+
+            out = snapshot_links.snapshot_link_manifest(link_manifest, root, fetcher=fetcher)
+            by_id = {link["link_id"]: link for link in out["links"]}
+
+            self.assertEqual(by_id["ok"]["final_state"], "snapshotted")
+            self.assertEqual(by_id["ok"]["snapshot_status"], "success")
+            self.assertTrue((root / by_id["ok"]["snapshot_path"]).exists())
+            self.assertRegex(by_id["ok"]["snapshot_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual(by_id["bad"]["final_state"], "review_required")
+            self.assertEqual(by_id["bad"]["snapshot_status"], "failed")
+            self.assertEqual(by_id["bad"]["snapshot_failure_reason"], "network blocked")
+            self.assertNotIn("snapshot_status", by_id["nav"])
+
+    def test_normalize_docs_inserts_asset_notes_and_front_matter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = root / "guide.md"
+            image = root / "step.png"
+            image.write_bytes(b"image")
+            doc.write_text("---\nnode_token: secret\n---\n# Login\nBefore\n![step](step.png)\nAfter\n", encoding="utf-8")
+            source_manifest = {
+                "sources": [
+                    {
+                        "id": "guide",
+                        "type": "feishu_docx_raw",
+                        "customer_safe": "needs_cleaning",
+                        "include_status": "include_after_cleaning",
+                        "paths": {"path": str(doc)},
+                    }
+                ]
+            }
+            asset_manifest, link_manifest = extract_assets.extract_assets_and_links(source_manifest)
+            notes = describe_images.describe_asset_notes(asset_manifest)
+            out_dir = root / "normalized"
+
+            result = normalize_docs.normalize_documents(source_manifest, asset_manifest, {"links": []}, notes, out_dir)
+
+            self.assertEqual(result["normalized_count"], 1)
+            normalized = next(out_dir.glob("*.md"))
+            text = normalized.read_text(encoding="utf-8")
+            self.assertIn("source_id: guide", text)
+            self.assertIn("safety_state: needs_cleaning", text)
+            self.assertIn("<!-- asset_note:", text)
+            self.assertIn("After", text)
+            self.assertEqual(link_manifest["link_count"], 0)
+
+    def test_clean_docs_redacts_internal_content_and_skips_non_whitelisted_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normalized = root / "normalized"
+            normalized.mkdir()
+            public_doc = normalized / "guide.md"
+            public_doc.write_text(
+                "---\nsource_id: guide\nsource_type: faq\nsafety_state: needs_cleaning\ninclude_status: include_after_cleaning\n---\n"
+                "---\nnode_token: abc123\n---\n"
+                "Contact \u5f20\u6167 and \u5f20\u96e8\u6b23, instance uhost-abc123, password=secret, "
+                "Bearer abc, api_key=abc, \u5bc6\u7801\uff1acompshare123, \u53e3\u4ee4\uff1ademo123, see https://gitlab.example.com/a, "
+                "use /cloud/xxx/snapshotter/snapshots/3/fs, \u975e\u6807\u6302\u76d8, SPT\u5de5\u5177, \u7f57\u76d8, "
+                "\u8054\u7cfbSRE, \u8054\u7cfb\u7814\u53d1, \u8054\u7cfb\u8fd0\u8425(\u5f20\u6167/\u5f20\u96e8\u6b23), @\u4f18\u4e91\u667a\u7b97QA\u5c0f\u52a9\u624b.\n",
+                encoding="utf-8",
+            )
+            internal_doc = normalized / "case.md"
+            internal_doc.write_text(
+                "---\nsource_id: case-doc\nsource_type: converted_pdf_or_internal_runbook_zip\nsafety_state: needs_cleaning\ninclude_status: internal_reference_only_needs_customer_safe_split\n---\nraw\n",
+                encoding="utf-8",
+            )
+            out_dir = root / "cleaned"
+
+            result = clean_docs.clean_documents(normalized, out_dir)
+
+            self.assertEqual(result["cleaned_count"], 1)
+            self.assertEqual(result["skipped_count"], 1)
+            cleaned_text = (out_dir / "guide.md").read_text(encoding="utf-8")
+            for forbidden in [
+                "uhost-abc123",
+                "password=secret",
+                "node_token",
+                "Bearer abc",
+                "api_key=abc",
+                "\u5bc6\u7801\uff1acompshare123",
+                "\u53e3\u4ee4\uff1ademo123",
+                "gitlab.example.com",
+                "/cloud/xxx",
+                "\u5f20\u6167",
+                "\u5f20\u96e8\u6b23",
+                "\u975e\u6807",
+                "SPT\u5de5\u5177",
+                "\u7f57\u76d8",
+                "\u8054\u7cfbSRE",
+                "\u8054\u7cfb\u7814\u53d1",
+                "@\u4f18\u4e91\u667a\u7b97QA\u5c0f\u52a9\u624b",
+            ]:
+                self.assertNotIn(forbidden, cleaned_text)
+            self.assertNotIn("source_id: guide", cleaned_text)
+            self.assertIn("source_trace_hash:", cleaned_text)
+            self.assertFalse((out_dir / "case.md").exists())
+            self.assertEqual(validate_cleaned_docs.validate_cleaned_docs(out_dir), {"checked_count": 1})
+
+    def test_validate_cleaned_docs_fails_on_customer_unsafe_patterns(self):
+        patterns = [
+            "uhost-abc123",
+            "bsi-0ddf786952\u4e91\u76d8\u6269\u5bb9",
+            "_uhost_uhost-1oxs60xxkbeg",
+            "node_token: abc",
+            "\u5bc6\u7801\uff1acompshare123",
+            "\u53e3\u4ee4\uff1ademo123",
+            "Bearer abc",
+            "api_key=abc",
+            "https://gitlab.example.com/a",
+            "/cloud/xxx/snapshotter/snapshots/3/fs",
+            "\u5f20\u6167",
+            "(qi.li)",
+            "@\u5f20\u6167",
+            "\u975e\u6807\u6302\u76d8",
+            "SPT\u5de5\u5177",
+            "\u7f57\u76d8",
+            "\u8054\u7cfbSRE",
+            "\u8054\u7cfb\u7814\u53d1",
+            "@\u4f18\u4e91\u667a\u7b97QA\u5c0f\u52a9\u624b",
+        ]
+        for pattern in patterns:
+            with self.subTest(pattern=pattern), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                doc = root / "dirty.md"
+                doc.write_text(f"---\nsafety_state: customer_safe_cleaned\n---\n{pattern}\n", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "unsafe cleaned doc"):
+                    validate_cleaned_docs.validate_cleaned_docs(root)
+
+    def test_secret_redaction_does_not_cross_line_boundaries(self):
+        cleaned, _ = clean_docs.clean_text("\u5bc6\u7801\uff1a\n\u4e0b\u4e00\u6bb5\u516c\u5f00\u8bf4\u660e\n")
+
+        self.assertIn("\u4e0b\u4e00\u6bb5\u516c\u5f00\u8bf4\u660e", cleaned)
+
+    def test_mine_internal_cases_redacts_and_validates_approvals(self):
+        raw = "\n".join(
+            [
+                "2026-05-13 10:00 \u5ba2\u6237A: instance uhost-abc123 init failed, password=secret, link https://console.compshare.cn/workorder/1",
+                "\u5f20\u6167 4-28 15:49 @\u5434\u5bb6\u6b22(jiahuan.wu) bsi-0ddf786952\u4e91\u76d8\u6269\u5bb9 _uhost_uhost-1oxs60xxkbeg \u5bc6\u7801\uff1acompshare123 \u5f3a\u54e5 \u8054\u7cfb\u8fd0\u8425(\u5f20\u6167/\u5f20\u96e8\u6b23), node_token: abc, \u975e\u6807\u6302\u76d8, SPT\u5de5\u5177, \u7f57\u76d8, @\u4f18\u4e91\u667a\u7b97QA\u5c0f\u52a9\u624b",
+                "",
+                "2026-05-13 11:00 \u5ba2\u6237B: how to buy resource package?",
+                "2026-05-13 11:01 engineer (qi.li): guide user to console resource purchase page.",
+            ]
+        )
+
+        cases = mine_internal_cases.mine_cases(raw, source_id="wxwork-spt-record-2026-05")
+
+        self.assertEqual(len(cases), 2)
+        for case in cases:
+            for field in ("redacted_text", "issue_pattern", "resolution", "user_safe_answer_candidate"):
+                value = case.get(field) or ""
+                self.assertNotRegex(value, r"\([A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)+\)")
+                self.assertNotIn("uhost-abc123", value)
+                self.assertNotIn("bsi-0ddf786952", value)
+                self.assertNotIn("uhost-1oxs60xxkbeg", value)
+                self.assertNotIn("password=secret", value)
+                self.assertNotIn("\u5bc6\u7801\uff1acompshare123", value)
+                self.assertNotIn("workorder", value)
+                self.assertNotIn("node_token", value)
+                self.assertNotIn("\u5f20\u6167", value)
+                self.assertNotIn("\u5f20\u96e8\u6b23", value)
+                self.assertNotIn("\u5f3a\u54e5", value)
+                self.assertNotIn("@", value)
+                self.assertNotIn("SPT\u5de5\u5177", value)
+        self.assertIn(cases[0]["label"], {"eval_only", "internal_only"})
+        self.assertEqual(cases[1]["label"], "faq_candidate")
+
+        templates = mine_internal_cases.approval_templates(cases)
+        self.assertEqual(len(templates), 1)
+        required = {
+            "case_id",
+            "source_hash",
+            "redaction_status",
+            "rewrite_path",
+            "approved_by",
+            "approved_at",
+            "allowed_product_area",
+            "blocked_phrases_checked",
+            "final_runtime_chunk_id",
+        }
+        self.assertTrue(required.issubset(templates[0]))
+        self.assertEqual(templates[0]["source_hash"], cases[1]["redacted_case_hash"])
+        self.assertNotIn("redacted_text", templates[0])
+
+        approvals = [mine_internal_cases.approval_record(cases[1], reviewer="reviewer", product_area="resource_purchase")]
+        self.assertEqual(validate_case_approvals.validate_case_approvals(cases, approvals), {"approved_count": 1})
+
+        broken = [dict(approvals[0], source_hash="bad")]
+        with self.assertRaisesRegex(ValueError, "unknown source_hash"):
+            validate_case_approvals.validate_case_approvals(cases, broken)
+
+        missing = [dict(approvals[0])]
+        del missing[0]["blocked_phrases_checked"]
+        with self.assertRaisesRegex(ValueError, "missing blocked_phrases_checked"):
+            validate_case_approvals.validate_case_approvals(cases, missing)
 
     def test_validate_chunks_enforces_reserved_fields_and_surface_url_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -172,8 +473,8 @@ class RagW0ScriptTests(unittest.TestCase):
                 "product_area": "init_failure",
                 "acl": "customer_safe",
                 "title": "Init failure",
-                "question_patterns": ["初始化失败怎么办"],
-                "content": "先查看控制台状态，再联系平台客服确认。",
+                "question_patterns": ["init failed"],
+                "content": "Check console status first, then contact platform support if needed.",
                 "source_refs": ["guide"],
                 "asset_refs": [],
                 "confidence": "high",
