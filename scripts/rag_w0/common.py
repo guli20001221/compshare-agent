@@ -148,7 +148,7 @@ def has_signed_query(parsed) -> bool:
 
 
 def is_temporary_download(parsed) -> bool:
-    host = parsed.netloc.lower()
+    host = (parsed.hostname or parsed.netloc).lower()
     host_segments = [part for part in host.split(".") if part]
     query_keys = {key.lower() for key in parse_qs(parsed.query, keep_blank_values=True)}
     return (
@@ -164,7 +164,9 @@ def surface_url_rejection_reason(raw_url: str | None) -> str | None:
     if not isinstance(raw_url, str) or raw_url.strip() == "":
         return "surface_url_empty"
     parsed = urlparse(raw_url)
-    host = parsed.netloc.lower()
+    if not parsed.netloc:
+        return "invalid_url"
+    host = (parsed.hostname or parsed.netloc).lower()
     path = parsed.path or "/"
     if parsed.scheme != "https":
         return "scheme_not_https"

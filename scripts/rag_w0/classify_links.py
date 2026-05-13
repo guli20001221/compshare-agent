@@ -44,6 +44,12 @@ def classify_url(url: str) -> dict[str, str]:
     parsed = urlparse(url)
     host = parsed.netloc.lower()
     path = parsed.path or "/"
+    if parsed.scheme and parsed.scheme not in {"http", "https"}:
+        return {
+            "link_type": "non_http_scheme",
+            "final_state": "excluded",
+            "policy_reason": "non_http_scheme",
+        }
     if parsed.scheme not in {"http", "https"}:
         return {
             "link_type": "local_source_candidate",
