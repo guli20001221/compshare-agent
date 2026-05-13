@@ -20,6 +20,7 @@ from rag_w0 import mine_internal_cases
 from rag_w0 import model_smoke
 from rag_w0 import normalize_docs
 from rag_w0 import select_w0_sources
+from rag_w0 import snapshot_assets
 from rag_w0 import snapshot_links
 from rag_w0 import validate_case_approvals
 from rag_w0 import validate_chunks
@@ -581,6 +582,50 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertEqual(by_id["bad"]["snapshot_failure_reason"], "network blocked")
             self.assertNotIn("snapshot_status", by_id["nav"])
 
+    def test_snapshot_assets_downloads_external_images_for_vl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema_version": "rag_w0.assets.v1",
+                "assets": [
+                    {
+                        "asset_id": "external-a",
+                        "source_id": "gitlab-compshare-docs",
+                        "source_doc_id": "F:/bundle/gitlab-compshare-docs/pages/operation/gpu/logininstance.md",
+                        "image_ref": "https://www-s.ucloud.cn/path/login.png",
+                        "image_path": None,
+                        "final_state": "external_asset_snapshot_required",
+                        "include_in_rag": False,
+                    },
+                    {
+                        "asset_id": "local-b",
+                        "source_id": "runbook",
+                        "source_doc_id": "F:/bundle/runbook.md",
+                        "image_ref": "images/local.png",
+                        "image_path": "F:/bundle/images/local.png",
+                        "final_state": "included_with_ocr_note",
+                        "include_in_rag": True,
+                    },
+                ],
+            }
+
+            def fetcher(url: str) -> tuple[bytes, str]:
+                self.assertEqual(url, "https://www-s.ucloud.cn/path/login.png")
+                return b"\x89PNG\r\n\x1a\nfake", "image/png"
+
+            updated = snapshot_assets.snapshot_external_assets(manifest, root / "asset_snapshots", fetcher=fetcher)
+
+            external = updated["assets"][0]
+            self.assertEqual(external["final_state"], "included_with_ocr_note")
+            self.assertTrue(external["include_in_rag"])
+            self.assertEqual(external["snapshot_status"], "success")
+            self.assertEqual(external["snapshot_content_type"], "image/png")
+            self.assertTrue(Path(external["image_path"]).exists())
+            self.assertEqual(Path(external["image_path"]).suffix, ".png")
+            self.assertEqual(updated["snapshot_success_count"], 1)
+            self.assertEqual(updated["snapshot_failure_count"], 0)
+            self.assertEqual(updated["assets"][1]["image_path"], "F:/bundle/images/local.png")
+
     def test_normalize_docs_inserts_asset_notes_and_front_matter(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -727,6 +772,22 @@ class RagW0ScriptTests(unittest.TestCase):
                 doc.write_text(f"---\nsafety_state: customer_safe_cleaned\n---\n{pattern}\n", encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "unsafe cleaned doc"):
                     validate_cleaned_docs.validate_cleaned_docs(root)
+
+    def test_clean_docs_redacts_asset_note_values_without_breaking_json(self):
+        body = (
+            'Before <!-- asset_note: {"asset_id":"asset-1","description":"密码: *****",'
+            '"include_in_rag":true,"visual_type":"console_state","user_action":"输入 uhost-abc123"} --> after\n'
+        )
+
+        cleaned, needs_review = clean_docs.clean_text(body)
+
+        self.assertFalse(needs_review)
+        match = re.search(r"<!--\s*asset_note:\s*(\{.*?\})\s*-->", cleaned, flags=re.DOTALL)
+        self.assertIsNotNone(match)
+        payload = json.loads(match.group(1))
+        self.assertEqual(payload["asset_id"], "asset-1")
+        self.assertEqual(payload["description"], "[SECRET_REDACTED]")
+        self.assertEqual(payload["user_action"], "输入 [RESOURCE_ID_REDACTED]")
 
     def test_secret_redaction_does_not_cross_line_boundaries(self):
         cleaned, _ = clean_docs.clean_text("\u5bc6\u7801\uff1a\n\u4e0b\u4e00\u6bb5\u516c\u5f00\u8bf4\u660e\n")
@@ -1173,12 +1234,23 @@ class RagW0ScriptTests(unittest.TestCase):
                 },
                 {
                     "asset_id": "asset-driver",
+                    "sha256": "same-image",
                     "source_id": "public-guide",
                     "image_path": "driver.png",
                     "final_state": "included_with_ocr_note",
                     "include_in_rag": True,
                     "heading_path": ["NVIDIA 驱动安装"],
                     "nearby_text": "点击驱动下载",
+                },
+                {
+                    "asset_id": "asset-driver-repeat",
+                    "source_id": "public-guide",
+                    "image_path": "driver-repeat.png",
+                    "final_state": "included_with_ocr_note",
+                    "include_in_rag": True,
+                    "heading_path": ["NVIDIA driver install"],
+                    "nearby_text": "Click driver download",
+                    "sha256": "same-image",
                 },
                 {
                     "asset_id": "asset-public-unknown",
@@ -1219,7 +1291,7 @@ class RagW0ScriptTests(unittest.TestCase):
 
         selected = model_smoke._select_full_vl_assets(manifest, source_manifest=source_manifest)
 
-        self.assertEqual([item["asset"]["asset_id"] for item in selected], ["asset-console", "asset-driver", "asset-public-unknown"])
+        self.assertEqual([item["asset"]["asset_id"] for item in selected], ["asset-console", "asset-driver", "asset-driver-repeat", "asset-public-unknown"])
         self.assertEqual({item["visual_type"] for item in selected}, {"console_state", "operation_screenshot", "unknown"})
 
     def test_model_smoke_asset_note_writer_skips_failed_vl_results(self):
@@ -1247,6 +1319,127 @@ class RagW0ScriptTests(unittest.TestCase):
 
             rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
             self.assertEqual([row["asset_id"] for row in rows], ["asset-ok"])
+
+    def test_model_smoke_asset_note_writer_keeps_core_valid_keyword_miss(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "asset_notes.jsonl"
+            results = [
+                {
+                    "sample_id": "keyword-miss",
+                    "asset": {"asset_id": "asset-ok", "image_path": "ok.png"},
+                    "visual_type": "console_state",
+                    "vl_response": {
+                        "description": "Valid UI description",
+                        "highlighted_ui": "primary button",
+                        "user_action": "click the primary button",
+                        "no_hallucination": True,
+                    },
+                    "checks": {
+                        "json": True,
+                        "user_action": True,
+                        "highlighted_ui": True,
+                        "expected_keyword": False,
+                        "no_hallucination": True,
+                    },
+                    "pass": False,
+                }
+            ]
+
+            model_smoke._write_vl_asset_notes(out, results, model="qwen3-vl-flash", prompt_version="smoke_v1", smoke_run_id="run-1")
+
+            rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([row["asset_id"] for row in rows], ["asset-ok"])
+            self.assertEqual(rows[0]["confidence"], "medium")
+
+    def test_model_smoke_full_vl_summary_treats_core_valid_keyword_miss_as_usable(self):
+        results = [
+            {
+                "sample_id": "keyword-miss",
+                "checks": {
+                    "json": True,
+                    "user_action": True,
+                    "highlighted_ui": True,
+                    "expected_keyword": False,
+                    "no_hallucination": True,
+                },
+                "pass": False,
+            }
+        ]
+
+        summary = model_smoke._summarize_full_vl(results)
+
+        self.assertTrue(summary["pass"])
+        self.assertEqual(summary["usable"], 1)
+        self.assertEqual(summary["failed_ids"], [])
+        self.assertEqual(summary["keyword_failed_ids"], ["keyword-miss"])
+
+    def test_model_smoke_asset_note_count_uses_usable_results(self):
+        results = [
+            {"pass": True, "checks": {"json": True, "user_action": True, "highlighted_ui": True, "no_hallucination": True}},
+            {
+                "pass": False,
+                "checks": {
+                    "json": True,
+                    "user_action": True,
+                    "highlighted_ui": True,
+                    "expected_keyword": False,
+                    "no_hallucination": True,
+                },
+            },
+            {"pass": False, "checks": {"json": False, "user_action": False}},
+        ]
+
+        self.assertEqual(model_smoke._vl_asset_note_count(results), 2)
+
+    def test_model_smoke_records_vl_errors_and_continues_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_a = root / "a.png"
+            image_b = root / "b.png"
+            image_a.write_bytes(b"\x89PNG\r\n\x1a\na")
+            image_b.write_bytes(b"\x89PNG\r\n\x1a\nb")
+            selected = [
+                {
+                    "sample_id": "first",
+                    "asset": {"asset_id": "a", "image_path": str(image_a), "heading_path": []},
+                    "visual_type": "console_state",
+                    "expected_keywords": ["ok"],
+                },
+                {
+                    "sample_id": "second",
+                    "asset": {"asset_id": "b", "image_path": str(image_b), "heading_path": []},
+                    "visual_type": "console_state",
+                    "expected_keywords": ["ok"],
+                },
+            ]
+
+            class FakeClient:
+                def __init__(self):
+                    self.calls = 0
+
+                def chat(self, **kwargs):
+                    self.calls += 1
+                    if self.calls == 1:
+                        raise TimeoutError("slow model")
+                    return json.dumps(
+                        {
+                            "visible_text": ["ok"],
+                            "description": "ok",
+                            "highlighted_ui": "ok button",
+                            "user_action": "click ok",
+                            "expected_input": "",
+                            "next_step": "continue",
+                            "no_hallucination": True,
+                        }
+                    )
+
+            results = model_smoke._run_vl_samples(FakeClient(), "qwen-test", selected)
+
+            self.assertEqual(len(results), 2)
+            self.assertFalse(results[0]["pass"])
+            self.assertEqual(results[0]["error"], "slow model")
+            self.assertTrue(results[1]["pass"])
 
     def test_chunk_docs_requires_case_approval_before_case_chunks(self):
         with tempfile.TemporaryDirectory() as tmp:
