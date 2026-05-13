@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from datetime import datetime, timezone
 import json
 import mimetypes
 import os
@@ -23,6 +24,7 @@ except ImportError:  # pragma: no cover
 DEFAULT_BASE_URL = "https://api.modelverse.cn/v1"
 DEFAULT_QWEN_VL_MODEL = "qwen3-vl-flash"
 DEFAULT_DS_MODEL = "deepseek-v4-pro"
+DEFAULT_SMOKE_PROMPT_VERSION = "smoke_v1"
 EXPECTED_BEHAVIORS = {"answer", "refuse", "hard_block", "escalate"}
 
 
@@ -33,6 +35,7 @@ def run_smoke(
     out_path: Path,
     env_path: Path = Path(".env.local"),
     max_vl: int = 5,
+    emit_asset_notes_path: Path | None = None,
 ) -> dict[str, Any]:
     env = _load_env(env_path)
     client = ModelVerseClient(
@@ -42,13 +45,22 @@ def run_smoke(
     qwen_model = env.get("MODELVERSE_QWEN_VL_MODEL", DEFAULT_QWEN_VL_MODEL)
     ds_model = env.get("MODELVERSE_DS_V4_PRO_MODEL", DEFAULT_DS_MODEL)
     vl_results = _run_vl_smoke(client, qwen_model, asset_manifest, max_vl=max_vl)
+    if emit_asset_notes_path:
+        _write_vl_asset_notes(
+            emit_asset_notes_path,
+            vl_results,
+            model=qwen_model,
+            prompt_version=DEFAULT_SMOKE_PROMPT_VERSION,
+            smoke_run_id=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        )
+    public_vl_results = [_public_vl_result(result) for result in vl_results]
     ds_results = _run_ds_smoke(client, ds_model, cases_path)
     summary = {
         "qwen_vl_model": qwen_model,
         "ds_v4_pro_model": ds_model,
-        "vl": _summarize_vl(vl_results),
+        "vl": _summarize_vl(public_vl_results),
         "ds": _summarize_ds(ds_results),
-        "vl_samples": vl_results,
+        "vl_samples": public_vl_results,
         "ds_samples": ds_results,
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,10 +146,12 @@ def _run_vl_smoke(client: ModelVerseClient, model: str, asset_manifest: Path, *,
             {
                 "sample_id": sample["sample_id"],
                 "asset_id": asset.get("asset_id"),
+                "asset": asset,
                 "visual_type": sample.get("visual_type") or visual_types.get(str(asset.get("asset_id")), "unknown"),
                 "heading_path": asset.get("heading_path") or [],
                 "checks": checks,
                 "pass": all(checks.values()),
+                "vl_response": parsed,
                 "visible_text_count": len(parsed.get("visible_text") or []),
                 "user_action": str(parsed.get("user_action") or "")[:240],
                 "highlighted_ui": str(parsed.get("highlighted_ui") or "")[:240],
@@ -145,6 +159,55 @@ def _run_vl_smoke(client: ModelVerseClient, model: str, asset_manifest: Path, *,
             }
         )
     return results
+
+
+def _public_vl_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in result.items() if key not in {"asset", "vl_response"}}
+
+
+def _write_vl_asset_notes(path: Path | str, results: list[dict[str, Any]], *, model: str, prompt_version: str, smoke_run_id: str) -> None:
+    rows: list[dict[str, Any]] = []
+    for index, result in enumerate(results, start=1):
+        parsed = result.get("vl_response") or {}
+        asset = result.get("asset") or {}
+        if not parsed or not asset:
+            continue
+        rows.append(_vl_result_to_asset_note(result, model=model, prompt_version=prompt_version, smoke_run_id=smoke_run_id, index=index))
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _vl_result_to_asset_note(result: dict[str, Any], *, model: str, prompt_version: str, smoke_run_id: str, index: int) -> dict[str, Any]:
+    parsed = result.get("vl_response") or {}
+    asset = result.get("asset") or {}
+    return {
+        "asset_id": asset.get("asset_id") or result.get("asset_id"),
+        "source_doc_id": asset.get("source_doc_id") or asset.get("source_id") or "",
+        "heading_path": asset.get("heading_path") or [],
+        "image_path": asset.get("image_path") or "",
+        "nearby_text": asset.get("nearby_text") or "",
+        "visual_type": result.get("visual_type") or "unknown",
+        "description": str(parsed.get("description") or "").strip(),
+        "highlighted_ui": str(parsed.get("highlighted_ui") or "").strip(),
+        "user_action": str(parsed.get("user_action") or "").strip(),
+        "expected_input": str(parsed.get("expected_input") or "").strip(),
+        "next_step": str(parsed.get("next_step") or "").strip(),
+        "caveats": str(parsed.get("caveats") or parsed.get("uncertainty") or "").strip(),
+        "confidence": "high" if result.get("pass") else "medium",
+        "final_state": "included_with_vl_note",
+        "include_in_rag": True,
+        "requires_review": False,
+        "model_metadata": {
+            "model": model,
+            "prompt_version": prompt_version,
+            "vl_executed": True,
+            "smoke_run_id": smoke_run_id,
+            "smoke_image_index": index,
+        },
+    }
 
 
 def _run_ds_smoke(client: ModelVerseClient, model: str, cases_path: Path) -> list[dict[str, Any]]:
@@ -504,8 +567,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--env", type=Path, default=Path(".env.local"))
     parser.add_argument("--max-vl", type=int, default=5)
+    parser.add_argument("--emit-asset-notes", type=Path, default=None)
     args = parser.parse_args(argv)
-    run_smoke(asset_manifest=args.asset_manifest, cases_path=args.cases, out_path=args.out, env_path=args.env, max_vl=args.max_vl)
+    run_smoke(
+        asset_manifest=args.asset_manifest,
+        cases_path=args.cases,
+        out_path=args.out,
+        env_path=args.env,
+        max_vl=args.max_vl,
+        emit_asset_notes_path=args.emit_asset_notes,
+    )
     return 0
 
 

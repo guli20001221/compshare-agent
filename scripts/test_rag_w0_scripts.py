@@ -17,6 +17,7 @@ from rag_w0 import describe_images
 from rag_w0 import extract_assets
 from rag_w0 import generate_eval_questions
 from rag_w0 import mine_internal_cases
+from rag_w0 import model_smoke
 from rag_w0 import normalize_docs
 from rag_w0 import snapshot_links
 from rag_w0 import validate_case_approvals
@@ -26,6 +27,54 @@ from rag_w0 import validate_source
 
 
 class RagW0ScriptTests(unittest.TestCase):
+    def _write_cleaned_doc(self, root: Path, body: str, name: str = "usage-faq.md") -> Path:
+        cleaned = root / "cleaned"
+        cleaned.mkdir(exist_ok=True)
+        path = cleaned / name
+        path.write_text(
+            "---\nsource_trace_hash: abc\nsafety_state: customer_safe_cleaned\ninclude_status: include_after_cleaning\n---\n"
+            + body,
+            encoding="utf-8",
+        )
+        return cleaned
+
+    def _chunk_text(self, body: str, *, require_complete_inputs: bool = False, max_chars: int = 2000) -> list[dict]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(root, body)
+            out = root / "chunks.jsonl"
+            kwargs = {}
+            if require_complete_inputs:
+                asset_notes = root / "asset_notes.jsonl"
+                asset_notes.write_text(
+                    json.dumps(
+                        {
+                            "asset_id": "asset-1",
+                            "include_in_rag": True,
+                            "final_state": "included_with_vl_note",
+                            "requires_review": False,
+                            "description": "VL description",
+                            "model_metadata": {"vl_executed": True},
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                links = root / "links.json"
+                links.write_text(json.dumps({"links": []}, ensure_ascii=False), encoding="utf-8")
+                kwargs.update(asset_notes_path=asset_notes, link_manifest_path=links)
+            chunk_docs.chunk_documents(
+                cleaned,
+                out,
+                kb_version="kb.test",
+                valid_from="2026-05-13",
+                require_complete_inputs=require_complete_inputs,
+                max_chars=max_chars,
+                **kwargs,
+            )
+            return [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+
     def test_build_source_manifest_validates_paths_and_spt_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -316,6 +365,38 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertIn("After", text)
             self.assertEqual(link_manifest["link_count"], 0)
 
+    def test_normalize_docs_includes_new_asset_note_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = root / "guide.md"
+            image = root / "step.png"
+            image.write_bytes(b"image")
+            doc.write_text("# Login\nBefore\n![step](step.png)\nAfter\n", encoding="utf-8")
+            source_manifest = {
+                "sources": [
+                    {
+                        "id": "guide",
+                        "type": "feishu_docx_raw",
+                        "customer_safe": "needs_cleaning",
+                        "include_status": "include_after_cleaning",
+                        "paths": {"path": str(doc)},
+                    }
+                ]
+            }
+            asset_manifest, _ = extract_assets.extract_assets_and_links(source_manifest)
+            notes = describe_images.describe_asset_notes(asset_manifest)
+            out_dir = root / "normalized"
+
+            normalize_docs.normalize_documents(source_manifest, asset_manifest, {"links": []}, notes, out_dir)
+
+            text = next(out_dir.glob("*.md")).read_text(encoding="utf-8")
+            match = re.search(r"<!--\s*asset_note:\s*(\{.*?\})\s*-->", text)
+            self.assertIsNotNone(match)
+            payload = json.loads(match.group(1))
+            self.assertIs(payload["include_in_rag"], True)
+            self.assertIn(payload["visual_type"], describe_images.VISUAL_TYPES)
+            self.assertIn("highlighted_ui", payload)
+
     def test_clean_docs_redacts_internal_content_and_skips_non_whitelisted_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -553,7 +634,7 @@ class RagW0ScriptTests(unittest.TestCase):
             doc.write_text(
                 "---\nsource_trace_hash: abc\nsafety_state: customer_safe_cleaned\ninclude_status: include_after_cleaning\n---\n"
                 "# Login guidance\n"
-                "Use SSH or Jupyter from the console. <!-- asset_note: {\"asset_id\":\"asset-1\"} -->\n\n"
+                "Use SSH or Jupyter from the console. <!-- asset_note: {\"asset_id\":\"asset-1\",\"include_in_rag\":true,\"visual_type\":\"operation_screenshot\",\"description\":\"Console SSH entry\",\"user_action\":\"Click SSH\",\"next_step\":\"Connect\"} -->\n\n"
                 "## Windows RDP\n"
                 "Open Windows remote desktop from the console and use the instance public IP.\n",
                 encoding="utf-8",
@@ -567,6 +648,174 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertTrue(all(chunk["source_type"] in {"faq", "runbook"} for chunk in chunks))
             self.assertTrue(any("asset-1" in chunk["asset_refs"] for chunk in chunks))
             self.assertEqual(validate_chunks.validate_chunks(out)["chunk_count"], len(chunks))
+
+    def test_asset_note_rendered_to_chunk_content(self):
+        chunks = self._chunk_text(
+            "# Login\n"
+            "Use the console. <!-- asset_note: {\"asset_id\":\"asset-1\",\"include_in_rag\":true,\"visual_type\":\"operation_screenshot\",\"description\":\"X 按钮\",\"user_action\":\"点击\",\"next_step\":\"完成\"} -->\n"
+        )
+
+        joined = "\n".join(chunk["content"] for chunk in chunks)
+        self.assertIn("[图说] X 按钮。操作：点击。下一步：完成。", joined)
+        self.assertTrue(any("asset-1" in chunk["asset_refs"] for chunk in chunks))
+
+    def test_asset_note_excluded_when_include_in_rag_false(self):
+        chunks = self._chunk_text(
+            "# Login\n"
+            "Use the console to continue connecting from this workflow. <!-- asset_note: {\"asset_id\":\"asset-1\",\"include_in_rag\":false,\"visual_type\":\"operation_screenshot\",\"description\":\"hidden\"} -->\n"
+        )
+
+        joined = "\n".join(chunk["content"] for chunk in chunks)
+        self.assertNotIn("[图说]", joined)
+        self.assertFalse(any("asset-1" in chunk["asset_refs"] for chunk in chunks))
+
+    def test_asset_note_skips_empty_fields(self):
+        chunks = self._chunk_text(
+            "# Login\n"
+            "Use the console. <!-- asset_note: {\"asset_id\":\"asset-1\",\"include_in_rag\":true,\"visual_type\":\"operation_screenshot\",\"description\":\"A\",\"user_action\":\"\",\"next_step\":\"C\"} -->\n"
+        )
+
+        joined = "\n".join(chunk["content"] for chunk in chunks)
+        self.assertIn("[图说] A。下一步：C。", joined)
+        self.assertNotIn("操作：。", joined)
+
+    def test_asset_note_with_highlighted_ui(self):
+        chunks = self._chunk_text(
+            "# Login\n"
+            "Use the console. <!-- asset_note: {\"asset_id\":\"asset-1\",\"include_in_rag\":true,\"visual_type\":\"operation_screenshot\",\"description\":\"X\",\"highlighted_ui\":\"红框\",\"user_action\":\"点击\"} -->\n"
+        )
+
+        self.assertIn("重点：红框。", "\n".join(chunk["content"] for chunk in chunks))
+
+    def test_asset_note_with_caveats(self):
+        chunks = self._chunk_text(
+            "# Login\n"
+            "Use the console. <!-- asset_note: {\"asset_id\":\"asset-1\",\"include_in_rag\":true,\"visual_type\":\"operation_screenshot\",\"description\":\"X\",\"caveats\":\"不要复制密码\"} -->\n"
+        )
+
+        self.assertIn("注意：不要复制密码。", "\n".join(chunk["content"] for chunk in chunks))
+
+    def test_asset_note_truncated_when_too_long(self):
+        payload = {
+            "asset_id": "asset-1",
+            "include_in_rag": True,
+            "visual_type": "operation_screenshot",
+            "description": "A" * 500,
+            "user_action": "点击",
+        }
+
+        rendered = chunk_docs._render_asset_note_text(payload)
+
+        self.assertEqual(len(rendered), 283)
+        self.assertTrue(rendered.endswith("..."))
+
+    def test_chunk_split_preserves_numbered_list(self):
+        numbered = "\n".join(f"{idx}. 执行第 {idx} 步并保持上下文" for idx in range(1, 12))
+        chunks = self._chunk_text("# Procedure\n" + numbered + "\n", max_chars=80)
+
+        joined = "\n\n".join(chunk["content"] for chunk in chunks)
+        self.assertIn(numbered, joined)
+
+    def test_chunk_split_fails_loud_when_oversize(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(root, "# Long\n" + ("A" * 3000) + "\n")
+            with self.assertRaisesRegex(ValueError, "add ## subheading"):
+                chunk_docs.chunk_documents(cleaned, root / "chunks.jsonl", require_complete_inputs=False, max_chars=2000)
+
+            oversized_steps = "\n".join(f"{idx}. " + ("步骤" * 500) for idx in range(1, 5))
+            cleaned = self._write_cleaned_doc(root, "# Procedure\n" + oversized_steps + "\n", name="procedure.md")
+            with self.assertRaisesRegex(ValueError, "MAX_CHUNK_CONTENT_RUNES"):
+                chunk_docs.chunk_documents(cleaned, root / "chunks2.jsonl", require_complete_inputs=False, max_chars=2000)
+
+    def test_chunk_docs_default_max_chars_is_2000(self):
+        paragraph = "This sentence stays in one default-sized chunk. " * 20
+        chunks = self._chunk_text("# Default size\n" + paragraph + "\n")
+
+        self.assertEqual(len(chunks), 1)
+        self.assertGreater(len(chunks[0]["content"]), 300)
+
+    def test_render_asset_note_hard_fails_on_bad_json_in_production(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(root, '# Bad\nThis paragraph remains long enough for dry-run chunk validation. <!-- asset_note: {"asset_id":"asset-1", bad} -->\n')
+            asset_notes = root / "asset_notes.jsonl"
+            asset_notes.write_text(
+                json.dumps(
+                    {
+                        "asset_id": "asset-1",
+                        "include_in_rag": True,
+                        "final_state": "included_with_vl_note",
+                        "requires_review": False,
+                        "description": "VL description",
+                        "model_metadata": {"vl_executed": True},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            links = root / "links.json"
+            links.write_text(json.dumps({"links": []}, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "invalid asset_note JSON"):
+                chunk_docs.chunk_documents(
+                    cleaned,
+                    root / "chunks.jsonl",
+                    asset_notes_path=asset_notes,
+                    link_manifest_path=links,
+                    require_complete_inputs=True,
+                )
+
+    def test_render_asset_note_soft_warns_on_bad_json_in_dry_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(root, '# Bad\nThis paragraph remains long enough for dry-run chunk validation. <!-- asset_note: {"asset_id":"asset-1", bad} -->\n')
+
+            with self.assertLogs(chunk_docs.LOGGER, level="WARNING") as logs:
+                summary = chunk_docs.chunk_documents(cleaned, root / "chunks.jsonl", require_complete_inputs=False)
+
+            self.assertEqual(summary["chunk_count"], 1)
+            self.assertIn("invalid asset_note JSON", "\n".join(logs.output))
+
+    def test_model_smoke_emit_asset_notes_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "asset_notes.jsonl"
+            results = [
+                {
+                    "sample_id": "visual-console_state",
+                    "asset_id": "asset-1",
+                    "visual_type": "console_state",
+                    "asset": {
+                        "asset_id": "asset-1",
+                        "source_doc_id": "doc-1",
+                        "heading_path": ["Login"],
+                        "image_path": "step.png",
+                        "nearby_text": "Click connect",
+                    },
+                    "vl_response": {
+                        "description": "RDP dialog",
+                        "highlighted_ui": "计算机输入框",
+                        "user_action": "填写公网 IP",
+                        "expected_input": "公网 IP",
+                        "next_step": "点击连接",
+                        "uncertainty": "仅描述可见控件",
+                    },
+                    "pass": True,
+                }
+            ]
+
+            model_smoke._write_vl_asset_notes(out, results, model="qwen3-vl-flash", prompt_version="smoke_v1", smoke_run_id="run-1")
+
+            rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["asset_id"], "asset-1")
+            self.assertEqual(row["final_state"], "included_with_vl_note")
+            self.assertIs(row["include_in_rag"], True)
+            self.assertIs(row["model_metadata"]["vl_executed"], True)
+            self.assertEqual(row["caveats"], "仅描述可见控件")
 
     def test_chunk_docs_requires_case_approval_before_case_chunks(self):
         with tempfile.TemporaryDirectory() as tmp:
