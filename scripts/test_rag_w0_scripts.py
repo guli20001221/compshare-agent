@@ -716,6 +716,21 @@ class RagW0ScriptTests(unittest.TestCase):
         joined = "\n\n".join(chunk["content"] for chunk in chunks)
         self.assertIn(numbered, joined)
 
+    def test_chunk_split_does_not_treat_mixed_faq_as_single_procedure(self):
+        faq_lines = [f"Question {idx}: answer with enough surrounding context for chunking." for idx in range(80)]
+        mixed = "\n".join(faq_lines[:40] + ["1. Open the console.", "2. Click connect."] + faq_lines[40:])
+
+        chunks = self._chunk_text("# FAQ\n" + mixed + "\n", max_chars=500)
+
+        self.assertGreater(len(chunks), 1)
+
+    def test_chunk_docs_keeps_redacted_safe_placeholders(self):
+        chunks = self._chunk_text("# FAQ\nUse account [PERSON_REDACTED] after [SECRET_REDACTED] has been removed.\n")
+
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("[PERSON_REDACTED]", chunks[0]["content"])
+        self.assertEqual(chunks[0]["confidence"], "medium")
+
     def test_chunk_split_fails_loud_when_oversize(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -816,6 +831,95 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertIs(row["include_in_rag"], True)
             self.assertIs(row["model_metadata"]["vl_executed"], True)
             self.assertEqual(row["caveats"], "仅描述可见控件")
+
+    def test_model_smoke_full_batch_selects_only_customer_facing_targets(self):
+        manifest = {
+            "assets": [
+                {
+                    "asset_id": "asset-console",
+                    "source_id": "public-guide",
+                    "image_path": "console.png",
+                    "final_state": "included_with_ocr_note",
+                    "include_in_rag": True,
+                    "heading_path": ["Windows"],
+                    "nearby_text": "远程桌面登录",
+                },
+                {
+                    "asset_id": "asset-driver",
+                    "source_id": "public-guide",
+                    "image_path": "driver.png",
+                    "final_state": "included_with_ocr_note",
+                    "include_in_rag": True,
+                    "heading_path": ["NVIDIA 驱动安装"],
+                    "nearby_text": "点击驱动下载",
+                },
+                {
+                    "asset_id": "asset-public-unknown",
+                    "source_id": "public-guide",
+                    "image_path": "unknown-public.png",
+                    "final_state": "included_with_ocr_note",
+                    "include_in_rag": True,
+                    "heading_path": ["FAQ screenshot"],
+                    "nearby_text": "",
+                },
+                {
+                    "asset_id": "asset-internal-unknown",
+                    "source_id": "internal-guide",
+                    "image_path": "unknown.png",
+                    "final_state": "included_with_ocr_note",
+                    "include_in_rag": True,
+                    "heading_path": ["内部 case"],
+                    "nearby_text": "",
+                },
+                {
+                    "asset_id": "asset-logo",
+                    "source_id": "public-guide",
+                    "image_path": "logo.png",
+                    "final_state": "excluded_low_value",
+                    "include_in_rag": False,
+                    "heading_path": [],
+                    "nearby_text": "",
+                    "exclusion_reason": "low_value",
+                },
+            ]
+        }
+        source_manifest = {
+            "sources": [
+                {"id": "public-guide", "include_status": "include_after_cleaning", "customer_safe": True, "type": "feishu_docx_raw"},
+                {"id": "internal-guide", "include_status": "internal_reference_only_needs_customer_safe_split", "customer_safe": False, "type": "internal_case_chat_export"},
+            ]
+        }
+
+        selected = model_smoke._select_full_vl_assets(manifest, source_manifest=source_manifest)
+
+        self.assertEqual([item["asset"]["asset_id"] for item in selected], ["asset-console", "asset-driver", "asset-public-unknown"])
+        self.assertEqual({item["visual_type"] for item in selected}, {"console_state", "operation_screenshot", "unknown"})
+
+    def test_model_smoke_asset_note_writer_skips_failed_vl_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "asset_notes.jsonl"
+            results = [
+                {
+                    "sample_id": "ok",
+                    "asset": {"asset_id": "asset-ok", "image_path": "ok.png"},
+                    "visual_type": "console_state",
+                    "vl_response": {"description": "OK", "user_action": "Click", "no_hallucination": True},
+                    "pass": True,
+                },
+                {
+                    "sample_id": "bad",
+                    "asset": {"asset_id": "asset-bad", "image_path": "bad.png"},
+                    "visual_type": "console_state",
+                    "vl_response": {"description": "Bad"},
+                    "pass": False,
+                },
+            ]
+
+            model_smoke._write_vl_asset_notes(out, results, model="qwen3-vl-flash", prompt_version="smoke_v1", smoke_run_id="run-1")
+
+            rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([row["asset_id"] for row in rows], ["asset-ok"])
 
     def test_chunk_docs_requires_case_approval_before_case_chunks(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -961,6 +1065,61 @@ class RagW0ScriptTests(unittest.TestCase):
             )
 
             self.assertEqual(summary["chunk_count"], 1)
+
+    def test_chunk_docs_checks_unresolved_links_only_for_cleaned_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = root / "cleaned"
+            cleaned.mkdir()
+            (cleaned / "included-source__guide.md").write_text(
+                "---\nsource_trace_hash: abc\nsafety_state: customer_safe_cleaned\ninclude_status: include_after_cleaning\n---\n# Login\nUse SSH from the console.\n",
+                encoding="utf-8",
+            )
+            asset_notes = root / "asset_notes.jsonl"
+            asset_notes.write_text("", encoding="utf-8")
+            links = root / "link_manifest.json"
+            links.write_text(
+                json.dumps(
+                    {
+                        "links": [
+                            {"link_id": "skipped-link", "source_id": "skipped-source", "final_state": "review_required"},
+                            {"link_id": "included-link", "source_id": "included-source", "final_state": "snapshotted"},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            summary = chunk_docs.chunk_documents(
+                cleaned,
+                root / "chunks.jsonl",
+                asset_notes_path=asset_notes,
+                link_manifest_path=links,
+                require_complete_inputs=True,
+            )
+
+            self.assertEqual(summary["chunk_count"], 1)
+
+            links.write_text(
+                json.dumps(
+                    {
+                        "links": [
+                            {"link_id": "included-link", "source_id": "included-source", "final_state": "review_required"},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "included-link: unresolved before chunking"):
+                chunk_docs.chunk_documents(
+                    cleaned,
+                    root / "chunks2.jsonl",
+                    asset_notes_path=asset_notes,
+                    link_manifest_path=links,
+                    require_complete_inputs=True,
+                )
 
     def test_generate_eval_questions_emits_fixed_behavior_mix(self):
         with tempfile.TemporaryDirectory() as tmp:

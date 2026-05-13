@@ -26,6 +26,7 @@ DEFAULT_QWEN_VL_MODEL = "qwen3-vl-flash"
 DEFAULT_DS_MODEL = "deepseek-v4-pro"
 DEFAULT_SMOKE_PROMPT_VERSION = "smoke_v1"
 EXPECTED_BEHAVIORS = {"answer", "refuse", "hard_block", "escalate"}
+FULL_BATCH_VISUAL_TYPES = {"operation_screenshot", "error_screenshot", "console_state"}
 
 
 def run_smoke(
@@ -72,6 +73,48 @@ def run_smoke(
     return summary
 
 
+def run_full_vl_batch(
+    *,
+    asset_manifest: Path,
+    out_path: Path,
+    asset_notes_path: Path,
+    source_manifest: Path | None = None,
+    env_path: Path = Path(".env.local"),
+) -> dict[str, Any]:
+    env = _load_env(env_path)
+    client = ModelVerseClient(
+        base_url=env.get("MODELVERSE_BASE_URL", DEFAULT_BASE_URL),
+        api_key=env["MODELVERSE_API_KEY"],
+    )
+    qwen_model = env.get("MODELVERSE_QWEN_VL_MODEL", DEFAULT_QWEN_VL_MODEL)
+    manifest = json.loads(asset_manifest.read_text(encoding="utf-8"))
+    source_data = json.loads(source_manifest.read_text(encoding="utf-8")) if source_manifest else None
+    samples = _select_full_vl_assets(manifest, source_manifest=source_data)
+    vl_results = _run_vl_samples(client, qwen_model, samples)
+    smoke_run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    _write_vl_asset_notes(
+        asset_notes_path,
+        vl_results,
+        model=qwen_model,
+        prompt_version=DEFAULT_SMOKE_PROMPT_VERSION,
+        smoke_run_id=smoke_run_id,
+    )
+    public_vl_results = [_public_vl_result(result) for result in vl_results]
+    summary = {
+        "qwen_vl_model": qwen_model,
+        "prompt_version": DEFAULT_SMOKE_PROMPT_VERSION,
+        "target_count": len(samples),
+        "asset_note_count": sum(1 for result in vl_results if result.get("pass")),
+        "vl": _summarize_full_vl(public_vl_results),
+        "vl_samples": public_vl_results,
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if not summary["vl"]["pass"]:
+        raise RuntimeError(f"Qwen full VL batch failed: {summary['vl']}")
+    return summary
+
+
 class ModelVerseClient:
     def __init__(self, *, base_url: str, api_key: str):
         self.base_url = base_url.rstrip("/")
@@ -109,6 +152,10 @@ def _run_vl_smoke(client: ModelVerseClient, model: str, asset_manifest: Path, *,
     notes = describe_asset_notes(manifest)
     visual_types = {str(note.get("asset_id")): str(note.get("visual_type") or "unknown") for note in notes}
     selected = _select_vl_assets(assets, visual_types=visual_types, max_vl=max_vl)
+    return _run_vl_samples(client, model, selected)
+
+
+def _run_vl_samples(client: ModelVerseClient, model: str, selected: list[dict[str, Any]]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for sample in selected:
         asset = sample["asset"]
@@ -161,6 +208,54 @@ def _run_vl_smoke(client: ModelVerseClient, model: str, asset_manifest: Path, *,
     return results
 
 
+def _select_full_vl_assets(manifest: dict[str, Any], *, source_manifest: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    notes = {str(note.get("asset_id")): note for note in describe_asset_notes(manifest)}
+    eligible_source_ids = _eligible_full_vl_source_ids(source_manifest) if source_manifest is not None else None
+    selected: list[dict[str, Any]] = []
+    seen_hashes: set[str] = set()
+    for asset in manifest.get("assets") or []:
+        asset_id = str(asset.get("asset_id") or "")
+        note = notes.get(asset_id) or {}
+        visual_type = str(note.get("visual_type") or "unknown")
+        source_id = str(asset.get("source_id") or "")
+        if not note.get("include_in_rag"):
+            continue
+        if eligible_source_ids is None:
+            if visual_type not in FULL_BATCH_VISUAL_TYPES:
+                continue
+        elif source_id not in eligible_source_ids:
+            continue
+        sha256 = str(asset.get("sha256") or "")
+        if sha256 and sha256 in seen_hashes:
+            continue
+        if sha256:
+            seen_hashes.add(sha256)
+        selected.append(
+            {
+                "sample_id": f"full-vl-{len(selected)+1:03d}-{visual_type}",
+                "asset": asset,
+                "visual_type": visual_type,
+                "expected_keywords": _expected_keywords_for_asset(asset, visual_type),
+            }
+        )
+    return selected
+
+
+def _eligible_full_vl_source_ids(source_manifest: dict[str, Any] | None) -> set[str]:
+    if not source_manifest:
+        return set()
+    out: set[str] = set()
+    for source in source_manifest.get("sources") or []:
+        source_id = str(source.get("id") or "")
+        if not source_id:
+            continue
+        if source.get("type") == "internal_case_chat_export" or str(source.get("customer_safe")).lower() == "false":
+            continue
+        if source.get("include_status") == "include_after_cleaning":
+            out.add(source_id)
+    return out
+
+
 def _public_vl_result(result: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in result.items() if key not in {"asset", "vl_response"}}
 
@@ -170,7 +265,7 @@ def _write_vl_asset_notes(path: Path | str, results: list[dict[str, Any]], *, mo
     for index, result in enumerate(results, start=1):
         parsed = result.get("vl_response") or {}
         asset = result.get("asset") or {}
-        if not parsed or not asset:
+        if not parsed or not asset or not result.get("pass"):
             continue
         rows.append(_vl_result_to_asset_note(result, model=model, prompt_version=prompt_version, smoke_run_id=smoke_run_id, index=index))
     out = Path(path)
@@ -377,7 +472,7 @@ def _expected_keywords_for_asset(asset: dict[str, Any], visual_type: str) -> lis
         return [str(asset.get("image_ref") or "image")]
     if visual_type == "operation_screenshot":
         return ["点击", "选择", "确定", "安装", "download"]
-    return ["控制台", "Windows", "登录", "NVIDIA", "连接"]
+    return ["控制台", "Windows", "登录", "NVIDIA", "连接", "IE", "Internet Explorer", "Chrome", "关闭", "确定"]
 
 
 def _ds_samples(cases: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -521,6 +616,16 @@ def _summarize_vl(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _summarize_full_vl(results: list[dict[str, Any]]) -> dict[str, Any]:
+    passed = sum(1 for item in results if item.get("pass"))
+    return {
+        "sample_count": len(results),
+        "passed": passed,
+        "pass": len(results) > 0 and passed == len(results),
+        "failed_ids": [item["sample_id"] for item in results if not item.get("pass")],
+    }
+
+
 def _summarize_ds(results: list[dict[str, Any]]) -> dict[str, Any]:
     negatives = [item for item in results if item["sample_id"].startswith("negative-")]
     positives = [item for item in results if item["sample_id"].startswith("positive-")]
@@ -563,12 +668,27 @@ def _load_env(path: Path) -> dict[str, str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--asset-manifest", type=Path, required=True)
-    parser.add_argument("--cases", type=Path, required=True)
+    parser.add_argument("--source-manifest", type=Path)
+    parser.add_argument("--cases", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--env", type=Path, default=Path(".env.local"))
     parser.add_argument("--max-vl", type=int, default=5)
     parser.add_argument("--emit-asset-notes", type=Path, default=None)
+    parser.add_argument("--full-vl-batch", action="store_true", help="Run every customer-facing VL target instead of the bounded smoke sample.")
     args = parser.parse_args(argv)
+    if args.full_vl_batch:
+        if not args.emit_asset_notes:
+            parser.error("--full-vl-batch requires --emit-asset-notes")
+        run_full_vl_batch(
+            asset_manifest=args.asset_manifest,
+            out_path=args.out,
+            asset_notes_path=args.emit_asset_notes,
+            source_manifest=args.source_manifest,
+            env_path=args.env,
+        )
+        return 0
+    if not args.cases:
+        parser.error("--cases is required unless --full-vl-batch is set")
     run_smoke(
         asset_manifest=args.asset_manifest,
         cases_path=args.cases,
