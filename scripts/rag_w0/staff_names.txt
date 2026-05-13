@@ -1,0 +1,20 @@
+# Staff names that must not appear in customer-facing W0 artifacts.
+# Keep this file line-oriented so PR-RAG-3+ reviews can update it without code changes.
+张慧
+张雨欣
+吴家欢
+李奇
+杨永利
+张毅
+孙家磊
+蒋先龙
+蒙宇铖
+段仁坤
+袁鑫
+周皓
+宋航宇
+刘磊
+戈佳宁
+李梁财
+强哥
+杨思源
