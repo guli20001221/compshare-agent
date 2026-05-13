@@ -47,7 +47,7 @@ def chunk_documents(
     max_chars: int = 2000,
 ) -> dict[str, int]:
     if require_complete_inputs:
-        _validate_ready_for_chunking(asset_notes_path, link_manifest_path)
+        _validate_ready_for_chunking(asset_notes_path, link_manifest_path, Path(cleaned_dir))
 
     _validate_output_target(out_path, require_complete_inputs=require_complete_inputs)
 
@@ -94,8 +94,6 @@ def _chunks_for_doc(doc_path: Path, *, kb_version: str, valid_from: str, max_cha
         content = _clean_chunk_content(content, strict_asset_notes=strict_asset_notes)
         for part_index, part in enumerate(_split_long_text(content, max_chars=max_chars), start=1):
             if len(part.strip()) < 20:
-                continue
-            if REDACTION_MARKER_RE.search(part):
                 continue
             chunk_title = title if part_index == 1 else f"{title} ({part_index})"
             product_area = _infer_product_area(f"{source_ref} {chunk_title} {part}")
@@ -154,7 +152,7 @@ def _chunks_for_approved_cases(
     return chunks
 
 
-def _validate_ready_for_chunking(asset_notes_path: Path | str | None, link_manifest_path: Path | str | None) -> None:
+def _validate_ready_for_chunking(asset_notes_path: Path | str | None, link_manifest_path: Path | str | None, cleaned_dir: Path | str) -> None:
     if not asset_notes_path:
         raise ValueError("asset notes are required before chunking")
     if not link_manifest_path:
@@ -175,13 +173,33 @@ def _validate_ready_for_chunking(asset_notes_path: Path | str | None, link_manif
         if not str(note.get("description") or "").strip():
             raise ValueError(f"asset {asset_id}: missing VL description")
 
+    cleaned_source_ids = _cleaned_source_ids(cleaned_dir)
     links = _read_json(link_manifest_path)
     pending = {"unknown", "review_required"}
     for idx, link in enumerate(links.get("links") or [], start=1):
         state = link.get("final_state")
-        if state in pending:
+        if state in pending and _link_applies_to_cleaned_sources(link, cleaned_source_ids):
             link_id = link.get("link_id") or f"row {idx}"
             raise ValueError(f"link {link_id}: unresolved before chunking")
+
+
+def _cleaned_source_ids(cleaned_dir: Path | str) -> set[str]:
+    source_ids: set[str] = set()
+    for doc_path in Path(cleaned_dir).glob("*.md"):
+        stem = doc_path.stem
+        source_id = stem.split("__", 1)[0] if "__" in stem else stem
+        if source_id:
+            source_ids.add(source_id)
+    return source_ids
+
+
+def _link_applies_to_cleaned_sources(link: dict[str, Any], cleaned_source_ids: set[str]) -> bool:
+    source_id = str(link.get("source_id") or "").strip()
+    if not source_id:
+        return True
+    if not cleaned_source_ids:
+        return True
+    return source_id in cleaned_source_ids
 
 
 def _validate_output_target(out_path: Path | str, *, require_complete_inputs: bool) -> None:
@@ -310,14 +328,16 @@ def _split_oversized_paragraph(paragraph: str) -> list[str]:
 def _is_procedural_block(paragraph: str) -> bool:
     lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
     streak = 0
+    max_streak = 0
+    matched = 0
     for line in lines:
         if PROCEDURE_LINE_RE.match(line):
             streak += 1
-            if streak >= 2:
-                return True
+            max_streak = max(max_streak, streak)
+            matched += 1
             continue
         streak = 0
-    return False
+    return max_streak >= 2 and matched / max(len(lines), 1) >= 0.4
 
 
 def _asset_refs(text: str, *, strict_asset_notes: bool) -> list[str]:

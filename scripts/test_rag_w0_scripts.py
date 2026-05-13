@@ -735,6 +735,99 @@ class RagW0ScriptTests(unittest.TestCase):
         self.assertEqual(len(chunks), 1)
         self.assertGreater(len(chunks[0]["content"]), 300)
 
+    def test_chunk_docs_keeps_redacted_placeholders_with_medium_confidence(self):
+        chunks = self._chunk_text("# Redacted\nUse account [PERSON_REDACTED] after [SECRET_REDACTED] has been removed.\n")
+
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("[PERSON_REDACTED]", chunks[0]["content"])
+        self.assertIn("[SECRET_REDACTED]", chunks[0]["content"])
+        self.assertEqual(chunks[0]["confidence"], "medium")
+
+    def test_chunk_docs_redacted_and_clean_sections_keep_separate_confidence(self):
+        chunks = self._chunk_text(
+            "# Clean\nUse SSH from the console after the instance is running.\n\n"
+            "# Redacted\nUse [PRIVATE_PROCESS_REDACTED] only after the private detail was removed.\n"
+        )
+        by_title = {chunk["title"]: chunk for chunk in chunks}
+
+        self.assertEqual(by_title["Clean"]["confidence"], "high")
+        self.assertEqual(by_title["Redacted"]["confidence"], "medium")
+
+    def test_chunk_docs_keeps_doc_with_only_redacted_placeholder_text(self):
+        chunks = self._chunk_text("# Only redacted\n[RESOURCE_ID_REDACTED] has been removed before publishing this safe guidance.\n")
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0]["confidence"], "medium")
+
+    def test_is_procedural_block_requires_consecutive_and_dense_steps(self):
+        dense = "\n".join(
+            [
+                "1. Open the console.",
+                "2. Select the instance.",
+                "Use the visible button.",
+                "Confirm the action.",
+                "Return to the list.",
+            ]
+        )
+        sparse = "\n".join(
+            [
+                "This FAQ explains a long scenario.",
+                "1. Open the console.",
+                "2. Select the instance.",
+                "The rest is background.",
+                "More context.",
+                "More context.",
+                "More context.",
+                "More context.",
+                "More context.",
+                "More context.",
+            ]
+        )
+        separated = "\n".join(
+            [
+                "1. Open the console.",
+                "Background text.",
+                "2. Select the instance.",
+                "More text.",
+                "3. Confirm the action.",
+            ]
+        )
+
+        self.assertTrue(chunk_docs._is_procedural_block(dense))
+        self.assertFalse(chunk_docs._is_procedural_block(sparse))
+        self.assertFalse(chunk_docs._is_procedural_block(separated))
+        self.assertFalse(chunk_docs._is_procedural_block(""))
+
+    def test_is_procedural_block_accepts_exact_density_boundary(self):
+        paragraph = "\n".join(
+            [
+                "1. Open the console.",
+                "2. Select the instance.",
+                "Background text.",
+                "More background.",
+                "Final note.",
+            ]
+        )
+
+        self.assertTrue(chunk_docs._is_procedural_block(paragraph))
+
+    def test_chunk_docs_splits_long_faq_with_sparse_numbered_lines(self):
+        lines = [f"FAQ background line {idx} explains the scenario in ordinary prose." for idx in range(1, 70)]
+        lines.insert(10, "1. This numbered line is only an example in a long FAQ.")
+        lines.insert(11, "2. This second example line should not make the whole FAQ procedural.")
+
+        chunks = self._chunk_text("# Sparse FAQ\n" + "\n".join(lines) + "\n", max_chars=500)
+
+        self.assertGreater(len(chunks), 1)
+
+    def test_chunk_docs_keeps_long_dense_procedure_intact_within_loader_cap(self):
+        lines = [f"{idx}. Complete action {idx} and keep this procedure together." for idx in range(1, 35)]
+
+        chunks = self._chunk_text("# Procedure\n" + "\n".join(lines) + "\n", max_chars=500)
+
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("34. Complete action 34", chunks[0]["content"])
+
     def test_render_asset_note_hard_fails_on_bad_json_in_production(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -961,6 +1054,98 @@ class RagW0ScriptTests(unittest.TestCase):
             )
 
             self.assertEqual(summary["chunk_count"], 1)
+
+    def test_chunk_docs_checks_unresolved_links_only_for_cleaned_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(root, "# Login\nUse SSH from the console.\n", name="included-source__guide.md")
+            asset_notes = root / "asset_notes.jsonl"
+            asset_notes.write_text("", encoding="utf-8")
+            links = root / "link_manifest.json"
+            links.write_text(
+                json.dumps(
+                    {
+                        "links": [
+                            {"link_id": "skipped-1", "source_id": "skipped-source", "final_state": "review_required"},
+                            {"link_id": "included-1", "source_id": "included-source", "final_state": "snapshotted"},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            summary = chunk_docs.chunk_documents(
+                cleaned,
+                root / "chunks.jsonl",
+                asset_notes_path=asset_notes,
+                link_manifest_path=links,
+                require_complete_inputs=True,
+            )
+
+            self.assertEqual(summary["chunk_count"], 1)
+
+            links.write_text(
+                json.dumps(
+                    {"links": [{"link_id": "included-2", "source_id": "included-source", "final_state": "unknown"}]},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "included-2: unresolved before chunking"):
+                chunk_docs.chunk_documents(
+                    cleaned,
+                    root / "chunks2.jsonl",
+                    asset_notes_path=asset_notes,
+                    link_manifest_path=links,
+                    require_complete_inputs=True,
+                )
+
+    def test_chunk_docs_blocks_unresolved_links_without_source_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(root, "# Login\nUse SSH from the console.\n")
+            asset_notes = root / "asset_notes.jsonl"
+            asset_notes.write_text("", encoding="utf-8")
+            links = root / "link_manifest.json"
+            links.write_text(
+                json.dumps({"links": [{"link_id": "link-1", "final_state": "review_required"}]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "link-1: unresolved before chunking"):
+                chunk_docs.chunk_documents(
+                    cleaned,
+                    root / "chunks.jsonl",
+                    asset_notes_path=asset_notes,
+                    link_manifest_path=links,
+                    require_complete_inputs=True,
+                )
+
+    def test_chunk_docs_blocks_unresolved_links_when_cleaned_source_set_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = root / "cleaned"
+            cleaned.mkdir()
+            asset_notes = root / "asset_notes.jsonl"
+            asset_notes.write_text("", encoding="utf-8")
+            links = root / "link_manifest.json"
+            links.write_text(
+                json.dumps(
+                    {"links": [{"link_id": "link-1", "source_id": "skipped-source", "final_state": "unknown"}]},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "link-1: unresolved before chunking"):
+                chunk_docs.chunk_documents(
+                    cleaned,
+                    root / "chunks.jsonl",
+                    asset_notes_path=asset_notes,
+                    link_manifest_path=links,
+                    require_complete_inputs=True,
+                )
 
     def test_generate_eval_questions_emits_fixed_behavior_mix(self):
         with tempfile.TemporaryDirectory() as tmp:
