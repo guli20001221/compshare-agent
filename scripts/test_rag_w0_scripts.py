@@ -10,10 +10,12 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from rag_w0 import build_source_manifest
 from rag_w0 import clean_docs
+from rag_w0 import chunk_docs
 from rag_w0 import classify_links
 from rag_w0 import common
 from rag_w0 import describe_images
 from rag_w0 import extract_assets
+from rag_w0 import generate_eval_questions
 from rag_w0 import mine_internal_cases
 from rag_w0 import normalize_docs
 from rag_w0 import snapshot_links
@@ -401,6 +403,11 @@ class RagW0ScriptTests(unittest.TestCase):
 
         self.assertIn("\u4e0b\u4e00\u6bb5\u516c\u5f00\u8bf4\u660e", cleaned)
 
+    def test_staff_name_sidecar_redacts_review_followup_name(self):
+        cleaned, _ = clean_docs.clean_text("\u5ba2\u6237\u7ecf\u7406\uff1a\u6768\u601d\u6e90 siyuan.yang")
+
+        self.assertNotIn("\u6768\u601d\u6e90", cleaned)
+
     def test_mine_internal_cases_redacts_and_validates_approvals(self):
         raw = "\n".join(
             [
@@ -536,6 +543,245 @@ class RagW0ScriptTests(unittest.TestCase):
             )
             path.write_text(json.dumps(future_case_with_approval, ensure_ascii=False) + "\n", encoding="utf-8")
             self.assertEqual(validate_chunks.validate_chunks(path)["chunk_count"], 1)
+
+    def test_chunk_docs_emits_valid_chunks_and_preserves_asset_refs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = root / "cleaned"
+            cleaned.mkdir()
+            doc = cleaned / "usage-faq.md"
+            doc.write_text(
+                "---\nsource_trace_hash: abc\nsafety_state: customer_safe_cleaned\ninclude_status: include_after_cleaning\n---\n"
+                "# Login guidance\n"
+                "Use SSH or Jupyter from the console. <!-- asset_note: {\"asset_id\":\"asset-1\"} -->\n\n"
+                "## Windows RDP\n"
+                "Open Windows remote desktop from the console and use the instance public IP.\n",
+                encoding="utf-8",
+            )
+            out = root / "chunks.jsonl"
+
+            summary = chunk_docs.chunk_documents(cleaned, out, kb_version="kb.test", valid_from="2026-05-13", require_complete_inputs=False)
+
+            self.assertGreaterEqual(summary["chunk_count"], 2)
+            chunks = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+            self.assertTrue(all(chunk["source_type"] in {"faq", "runbook"} for chunk in chunks))
+            self.assertTrue(any("asset-1" in chunk["asset_refs"] for chunk in chunks))
+            self.assertEqual(validate_chunks.validate_chunks(out)["chunk_count"], len(chunks))
+
+    def test_chunk_docs_requires_case_approval_before_case_chunks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = root / "cleaned"
+            cleaned.mkdir()
+            (cleaned / "faq.md").write_text(
+                "---\nsource_trace_hash: abc\nsafety_state: customer_safe_cleaned\ninclude_status: include_after_cleaning\n---\n# Billing\nShutdown billing follows the billing mode.\n",
+                encoding="utf-8",
+            )
+            cases_path = root / "cases.jsonl"
+            case = {
+                "case_id": "wxwork-spt-record-2026-05:case-0001",
+                "label": "faq_candidate",
+                "issue_pattern": "How do I buy a resource package?",
+                "resolution": "Guide the user to the console resource package page.",
+                "user_safe_answer_candidate": "Open the console resource purchase page and choose the package.",
+                "redacted_case_hash": "hash-1",
+            }
+            cases_path.write_text(json.dumps(case, ensure_ascii=False) + "\n", encoding="utf-8")
+            no_approval_out = root / "chunks-no-approval.jsonl"
+
+            no_approval_summary = chunk_docs.chunk_documents(
+                cleaned,
+                no_approval_out,
+                kb_version="kb.test",
+                valid_from="2026-05-13",
+                cases_path=cases_path,
+                require_complete_inputs=False,
+            )
+            no_approval_chunks = [json.loads(line) for line in no_approval_out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(no_approval_summary["case_chunk_count"], 0)
+            self.assertFalse(any(ref.startswith("wxwork-spt-record-") for chunk in no_approval_chunks for ref in chunk["source_refs"]))
+
+            approval = mine_internal_cases.approval_record(case, reviewer="reviewer", product_area="resource_purchase")
+            approvals_path = root / "approvals.jsonl"
+            approvals_path.write_text(json.dumps(approval, ensure_ascii=False) + "\n", encoding="utf-8")
+            approved_out = root / "chunks-approved.jsonl"
+
+            approved_summary = chunk_docs.chunk_documents(
+                cleaned,
+                approved_out,
+                kb_version="kb.test",
+                valid_from="2026-05-13",
+                cases_path=cases_path,
+                approvals_path=approvals_path,
+                require_complete_inputs=False,
+            )
+
+            approved_chunks = [json.loads(line) for line in approved_out.read_text(encoding="utf-8").splitlines()]
+            case_chunks = [chunk for chunk in approved_chunks if chunk["source_refs"] == [case["case_id"]]]
+            self.assertEqual(approved_summary["case_chunk_count"], 1)
+            self.assertEqual(len(case_chunks), 1)
+            self.assertIn("approval_record_hash", case_chunks[0])
+            self.assertEqual(validate_chunks.validate_chunks(approved_out)["chunk_count"], len(approved_chunks))
+
+    def test_chunk_docs_dry_run_refuses_deploy_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = root / "cleaned"
+            cleaned.mkdir()
+            (cleaned / "faq.md").write_text(
+                "---\nsource_trace_hash: abc\nsafety_state: customer_safe_cleaned\ninclude_status: include_after_cleaning\n---\n# FAQ\nUse SSH from the console.\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "dry-run chunking"):
+                chunk_docs.chunk_documents(cleaned, root / "deploy" / "kb" / "stage2b_w0.jsonl", require_complete_inputs=False)
+
+            with self.assertRaisesRegex(ValueError, "dry-run chunking"):
+                chunk_docs.chunk_documents(cleaned, root / "chunks" / "stage2b_w0.jsonl", require_complete_inputs=False)
+
+    def test_chunk_docs_refuses_incomplete_asset_and_link_processing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = root / "cleaned"
+            cleaned.mkdir()
+            (cleaned / "faq.md").write_text(
+                "---\nsource_trace_hash: abc\nsafety_state: customer_safe_cleaned\ninclude_status: include_after_cleaning\n---\n# Login\nUse SSH from the console.\n",
+                encoding="utf-8",
+            )
+            asset_notes = root / "asset_notes.jsonl"
+            asset_notes.write_text(
+                json.dumps(
+                    {
+                        "asset_id": "asset-1",
+                        "include_in_rag": True,
+                        "final_state": "included_with_ocr_note",
+                        "requires_review": True,
+                        "description": "nearby text only",
+                        "model_metadata": {"vl_executed": False},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            links = root / "link_manifest.json"
+            links.write_text(json.dumps({"links": []}, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "not VL-ready"):
+                chunk_docs.chunk_documents(
+                    cleaned,
+                    root / "chunks.jsonl",
+                    asset_notes_path=asset_notes,
+                    link_manifest_path=links,
+                    require_complete_inputs=True,
+                )
+
+            asset_notes.write_text(
+                json.dumps(
+                    {
+                        "asset_id": "asset-1",
+                        "include_in_rag": True,
+                        "final_state": "included_with_vl_note",
+                        "requires_review": False,
+                        "description": "The image shows the console SSH entry.",
+                        "model_metadata": {"vl_executed": True},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            links.write_text(json.dumps({"links": [{"link_id": "link-1", "final_state": "review_required"}]}, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "unresolved before chunking"):
+                chunk_docs.chunk_documents(
+                    cleaned,
+                    root / "chunks.jsonl",
+                    asset_notes_path=asset_notes,
+                    link_manifest_path=links,
+                    require_complete_inputs=True,
+                )
+
+            links.write_text(json.dumps({"links": [{"link_id": "link-1", "final_state": "snapshotted"}]}, ensure_ascii=False), encoding="utf-8")
+            summary = chunk_docs.chunk_documents(
+                cleaned,
+                root / "chunks.jsonl",
+                asset_notes_path=asset_notes,
+                link_manifest_path=links,
+                require_complete_inputs=True,
+            )
+
+            self.assertEqual(summary["chunk_count"], 1)
+
+    def test_generate_eval_questions_emits_fixed_behavior_mix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            chunks = [
+                {
+                    "chunk_id": "w0-login-001",
+                    "kb_version": "kb.test",
+                    "source_type": "faq",
+                    "product_area": "login",
+                    "acl": "customer_safe",
+                    "title": "Login guidance",
+                    "question_patterns": ["How do I login?"],
+                    "content": "Use SSH or Jupyter from the console.",
+                    "source_refs": ["usage-faq"],
+                    "asset_refs": [],
+                    "confidence": "high",
+                    "valid_from": "2026-05-13",
+                    "evidence_kind": "knowledge",
+                    "surface_url": None,
+                    "retrieval_score_hint": None,
+                },
+                {
+                    "chunk_id": "w0-billing-001",
+                    "kb_version": "kb.test",
+                    "source_type": "faq",
+                    "product_area": "billing_rule",
+                    "acl": "customer_safe",
+                    "title": "Shutdown billing",
+                    "question_patterns": ["Will shutdown still bill?"],
+                    "content": "Shutdown billing follows the billing mode.",
+                    "source_refs": ["billing-faq"],
+                    "asset_refs": [],
+                    "confidence": "high",
+                    "valid_from": "2026-05-13",
+                    "evidence_kind": "knowledge",
+                    "surface_url": None,
+                    "retrieval_score_hint": None,
+                },
+            ]
+            chunks_path.write_text("".join(json.dumps(chunk, ensure_ascii=False) + "\n" for chunk in chunks), encoding="utf-8")
+            cases_path = root / "cases.jsonl"
+            cases_path.write_text(
+                json.dumps(
+                    {
+                        "case_id": "wxwork-spt-record-2026-05:case-0001",
+                        "label": "eval_only",
+                        "issue_pattern": "[PERSON_REDACTED] 3-1 17:06",
+                        "redacted_text": "资源id：[RESOURCE_ID_REDACTED] 客户问题：[图片]初始化失败",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            out = root / "golden_questions.jsonl"
+
+            summary = generate_eval_questions.generate_eval_questions(chunks_path, out, min_questions=50, cases_path=cases_path)
+
+            questions = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+            behaviors = {item["expected_behavior"] for item in questions}
+            self.assertGreaterEqual(summary["question_count"], 50)
+            self.assertTrue({"answer", "refuse", "hard_block", "escalate"}.issubset(behaviors))
+            self.assertTrue(all(item["expected_behavior"] in {"answer", "refuse", "hard_block", "escalate"} for item in questions))
+            self.assertTrue(any(item["expected_chunk_ids"] == ["w0-login-001"] for item in questions))
+            mined = [item for item in questions if item["source_refs"] == ["wxwork-spt-record-2026-05:case-0001"]]
+            self.assertEqual(len(mined), 1)
+            self.assertEqual(mined[0]["question"], "实例初始化失败时应该怎么处理？")
+            self.assertNotIn("PERSON_REDACTED", mined[0]["question"])
 
 
 if __name__ == "__main__":
