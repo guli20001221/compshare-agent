@@ -361,7 +361,10 @@ def _parse_asset_note_payload(match: re.Match[str], *, strict: bool) -> dict[str
 def _should_include_asset_note(payload: dict[str, Any]) -> bool:
     if payload.get("include_in_rag") is not True:
         return False
-    if payload.get("visual_type") in ASSET_NOTE_EXCLUDED_TYPES:
+    visual_type = payload.get("visual_type")
+    if not visual_type:
+        LOGGER.info("asset_note %s has no visual_type; rendering by default", payload.get("asset_id") or "<unknown>")
+    if visual_type in ASSET_NOTE_EXCLUDED_TYPES:
         return False
     return True
 
