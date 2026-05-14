@@ -20,6 +20,8 @@ from rag_w0 import label_sections
 from rag_w0 import mine_internal_cases
 from rag_w0 import model_smoke
 from rag_w0 import normalize_docs
+from rag_w0 import parse_sections
+from rag_w0 import chunk_plan
 from rag_w0 import select_w0_sources
 from rag_w0 import snapshot_assets
 from rag_w0 import snapshot_links
@@ -27,6 +29,8 @@ from rag_w0 import validate_case_approvals
 from rag_w0 import validate_chunks
 from rag_w0 import validate_cleaned_docs
 from rag_w0 import validate_source
+from rag_w0 import verify_chunk_plan_anchors
+from rag_w0 import verify_section_lists
 from rag_w0 import verify_pinned_sections
 
 
@@ -1087,6 +1091,529 @@ class RagW0ScriptTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "asset_refs count 2 does not match caption count 1"):
                 validate_chunks.validate_chunks(path)
+
+    def test_parse_sections_normalizes_no_space_heading(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(
+                root,
+                "# Windows audio\nStep one.\n##步骤二:\nContinue with audio settings.\n",
+                name="windows-audio__guide.md",
+            )
+            out = root / "sections.jsonl"
+
+            summary = parse_sections.parse_cleaned_docs(cleaned, out)
+
+            rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(summary["doc_count"], 1)
+            self.assertEqual([row["heading_text"] for row in rows], ["Windows audio", "步骤二:"])
+            self.assertIn("heading_normalized_no_space", rows[1]["risk_flags"])
+
+    def test_parse_sections_rejects_truly_invalid_heading(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(root, "# Good\nBody.\n####### Bad\nBroken.\n")
+
+            with self.assertRaisesRegex(ValueError, "invalid heading"):
+                parse_sections.parse_cleaned_docs(cleaned, root / "sections.jsonl")
+
+    def test_parse_sections_treats_empty_heading_marker_as_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(root, "# Guide\nBefore.\n#\nAfter.\n")
+
+            parse_sections.parse_cleaned_docs(cleaned, root / "sections.jsonl")
+
+            rows = [json.loads(line) for line in (root / "sections.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(rows), 1)
+            self.assertIn("#", rows[0]["content"])
+            self.assertIn("empty_heading_marker_as_content", rows[0]["risk_flags"])
+
+    def test_chunk_plan_empty_classifier_falls_back_to_mixed_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(root, "# FAQ\nQuestion\nAnswer.\n")
+            sections = root / "sections.jsonl"
+            parse_sections.parse_cleaned_docs(cleaned, sections)
+            calls = {"count": 0}
+
+            def empty_classifier(payload):
+                calls["count"] += 1
+                return {}
+
+            summary = chunk_plan.plan_chunks(
+                cleaned,
+                sections,
+                root / "chunk_plans.jsonl",
+                classifier=empty_classifier,
+                model="fake-model",
+            )
+
+            rows = [json.loads(line) for line in (root / "chunk_plans.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(calls["count"], 2)
+            self.assertEqual(summary["mixed_needs_review"], 1)
+            self.assertEqual(rows[0]["strategy"], "mixed_needs_review")
+            self.assertEqual(rows[0]["chunk_plan_error"], "classifier_returned_empty")
+
+    def test_chunk_plan_uses_bootstrap_plan_before_classifier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(root, "# FAQ\nQuestion\nAnswer.\n", name="guide__faq.md")
+            sections = root / "sections.jsonl"
+            parse_sections.parse_cleaned_docs(cleaned, sections)
+            bootstrap = root / "bootstrap.jsonl"
+            bootstrap.write_text(
+                json.dumps(
+                    {
+                        "source_doc_id": "guide",
+                        "strategy": "single_topic_reference",
+                        "rationale": "Opus bootstrap",
+                        "chunks": [
+                            {
+                                "chunk_index": 0,
+                                "section_index_range": [0, 0],
+                                "title": "Guide FAQ",
+                                "product_area": "login",
+                                "question_patterns": ["How do I use the guide?"],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            def should_not_call(_payload):
+                raise AssertionError("classifier should not run for bootstrap-covered docs")
+
+            summary = chunk_plan.plan_chunks(
+                cleaned,
+                sections,
+                root / "chunk_plans.jsonl",
+                classifier=should_not_call,
+                bootstrap_plans_path=bootstrap,
+                model="fake-model",
+            )
+
+            rows = [json.loads(line) for line in (root / "chunk_plans.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(summary["chunk_count"], 1)
+            self.assertEqual(rows[0]["strategy"], "single_topic_reference")
+            self.assertEqual(rows[0]["chunks"][0]["question_patterns"], ["How do I use the guide?"])
+
+    def test_chunk_plan_preserves_bootstrap_source_doc_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(root, "# Billing\nPay monthly.\n", name="gitlab-compshare-docs__bill.md")
+            sections = root / "sections.jsonl"
+            parse_sections.parse_cleaned_docs(cleaned, sections)
+            bootstrap = root / "bootstrap.jsonl"
+            bootstrap.write_text(
+                json.dumps(
+                    {
+                        "source_doc_id": "gitlab-compshare-docs__bill",
+                        "strategy": "single_topic_reference",
+                        "chunks": [
+                            {
+                                "chunk_index": 0,
+                                "section_index_range": [0, 0],
+                                "title": "Billing",
+                                "product_area": "billing_rule",
+                                "question_patterns": ["How is billing calculated?"],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            chunk_plan.plan_chunks(
+                cleaned,
+                sections,
+                root / "chunk_plans.jsonl",
+                classifier=lambda _payload: {},
+                bootstrap_plans_path=bootstrap,
+                model="fake-model",
+            )
+
+            rows = [json.loads(line) for line in (root / "chunk_plans.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(rows[0]["source_doc_id"], "gitlab-compshare-docs__bill")
+
+    def test_chunk_plan_derives_section_range_from_included_headings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(
+                root,
+                "# Billing\nOverview.\n## Hourly\nPay hourly.\n## Monthly\nPay monthly.\n",
+                name="billing__guide.md",
+            )
+            sections = root / "sections.jsonl"
+            parse_sections.parse_cleaned_docs(cleaned, sections)
+            bootstrap = root / "bootstrap.jsonl"
+            bootstrap.write_text(
+                json.dumps(
+                    {
+                        "source_doc_id": "billing",
+                        "strategy": "single_topic_reference",
+                        "chunks": [
+                            {
+                                "chunk_index": 0,
+                                "section_headings_included": ["Billing", "Hourly", "Monthly"],
+                                "title": "Billing complete guide",
+                                "product_area": "billing_rule",
+                                "question_patterns": ["How does billing work?"],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            summary = chunk_plan.plan_chunks(
+                cleaned,
+                sections,
+                root / "chunk_plans.jsonl",
+                classifier=lambda _payload: {},
+                bootstrap_plans_path=bootstrap,
+                model="fake-model",
+            )
+
+            rows = [json.loads(line) for line in (root / "chunk_plans.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(summary["chunk_count"], 1)
+            self.assertEqual(rows[0]["chunks"][0]["section_index_range"], [0, 2])
+
+    def test_chunk_plan_derives_repeated_headings_in_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(
+                root,
+                "# Monitor\nIntro.\n## Linux\nLinux setup.\n### Notes\nLinux notes.\n## Windows\nWindows setup.\n### Notes\nWindows notes.\n",
+                name="monitor__guide.md",
+            )
+            sections = root / "sections.jsonl"
+            parse_sections.parse_cleaned_docs(cleaned, sections)
+            bootstrap = root / "bootstrap.jsonl"
+            bootstrap.write_text(
+                json.dumps(
+                    {
+                        "source_doc_id": "monitor",
+                        "strategy": "multi_topic_faq",
+                        "chunks": [
+                            {
+                                "chunk_index": 0,
+                                "section_headings_included": ["Linux", "Notes"],
+                                "title": "Linux monitor",
+                                "product_area": "monitor",
+                                "question_patterns": ["Linux monitor setup"],
+                            },
+                            {
+                                "chunk_index": 1,
+                                "section_headings_included": ["Windows", "Notes"],
+                                "title": "Windows monitor",
+                                "product_area": "monitor",
+                                "question_patterns": ["Windows monitor setup"],
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            chunk_plan.plan_chunks(
+                cleaned,
+                sections,
+                root / "chunk_plans.jsonl",
+                classifier=lambda _payload: {},
+                bootstrap_plans_path=bootstrap,
+                model="fake-model",
+            )
+
+            rows = [json.loads(line) for line in (root / "chunk_plans.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(rows[0]["chunks"][0]["section_index_range"], [1, 2])
+            self.assertEqual(rows[0]["chunks"][1]["section_index_range"], [3, 4])
+
+    def test_chunk_plan_expands_section_ranges_to_cover_nested_children(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(
+                root,
+                "# Publish image\nIntro.\n## Step one\nDo one.\n### Detail A\nMore A.\n### Detail B\nMore B.\n## Step two\nDo two.\n",
+                name="image__guide.md",
+            )
+            sections = root / "sections.jsonl"
+            parse_sections.parse_cleaned_docs(cleaned, sections)
+            bootstrap = root / "bootstrap.jsonl"
+            bootstrap.write_text(
+                json.dumps(
+                    {
+                        "source_doc_id": "image",
+                        "strategy": "staged_long_procedure",
+                        "chunks": [
+                            {
+                                "chunk_index": 0,
+                                "section_headings_included": ["Publish image", "Step one"],
+                                "title": "Publish image setup",
+                                "product_area": "image",
+                                "question_patterns": ["How do I start publishing an image?"],
+                            },
+                            {
+                                "chunk_index": 1,
+                                "section_headings_included": ["Step two"],
+                                "title": "Publish image final step",
+                                "product_area": "image",
+                                "question_patterns": ["How do I finish publishing an image?"],
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            chunk_plan.plan_chunks(
+                cleaned,
+                sections,
+                root / "chunk_plans.jsonl",
+                classifier=lambda _payload: {},
+                bootstrap_plans_path=bootstrap,
+                model="fake-model",
+            )
+
+            rows = [json.loads(line) for line in (root / "chunk_plans.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(rows[0]["chunks"][0]["section_index_range"], [0, 3])
+            self.assertEqual(rows[0]["chunks"][1]["section_index_range"], [4, 4])
+
+    def test_chunk_docs_uses_chunk_plan_to_keep_single_topic_doc_intact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(
+                root,
+                "# Windows audio\nRun gpedit.\n##步骤二:\nEnable audio redirection.\n## Step three\nRestart audio service.\n",
+                name="windows-audio__guide.md",
+            )
+            sections = root / "sections.jsonl"
+            parse_sections.parse_cleaned_docs(cleaned, sections)
+            plans = root / "chunk_plans.jsonl"
+            plan = {
+                "source_doc_id": "windows-audio",
+                "source_ref": "windows-audio__guide",
+                "strategy": "single_topic_procedure",
+                "chunks": [
+                    {
+                        "chunk_index": 0,
+                        "section_index_range": [0, 2],
+                        "title": "Windows audio complete flow",
+                        "product_area": "windows",
+                        "question_patterns": ["Windows remote desktop has no audio"],
+                    }
+                ],
+            }
+            plans.write_text(json.dumps(plan, ensure_ascii=False) + "\n", encoding="utf-8")
+            out = root / "chunks.jsonl"
+
+            summary = chunk_docs.chunk_documents(
+                cleaned,
+                out,
+                kb_version="kb.test",
+                valid_from="2026-05-13",
+                sections_path=sections,
+                chunk_plans_path=plans,
+                require_complete_inputs=False,
+            )
+
+            chunks = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(summary["chunk_count"], 1)
+            self.assertEqual(chunks[0]["title"], "Windows audio complete flow")
+            self.assertEqual(chunks[0]["question_patterns"], ["Windows remote desktop has no audio"])
+            self.assertEqual(chunks[0]["section_index_range"], [0, 2])
+
+    def test_chunk_docs_anchor_boundaries_tolerate_quote_variants(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = self._write_cleaned_doc(
+                root,
+                "ssh无法连接\nSSH help.\n关于“无卡启动模式”的使用和限制\nNo-card help.\n创建的实例，在jupyterLab运行代码后\nJupyter help.\n",
+                name="usage__faq.md",
+            )
+            sections = root / "sections.jsonl"
+            parse_sections.parse_cleaned_docs(cleaned, sections)
+            plans = root / "chunk_plans.jsonl"
+            plans.write_text(
+                json.dumps(
+                    {
+                        "source_doc_id": "usage",
+                        "source_ref": "usage__faq",
+                        "strategy": "multi_topic_faq",
+                        "chunks": [
+                            {
+                                "chunk_index": 0,
+                                "section_anchor_text_start": '关于"无卡启动模式"',
+                                "section_anchor_text_end": "创建的实例，在jupyterLab",
+                                "title": "No-card mode",
+                                "product_area": "login",
+                                "question_patterns": ["无卡启动怎么用"],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            chunk_docs.chunk_documents(
+                cleaned,
+                root / "chunks.jsonl",
+                kb_version="kb.test",
+                valid_from="2026-05-13",
+                sections_path=sections,
+                chunk_plans_path=plans,
+                require_complete_inputs=False,
+            )
+
+            chunk = json.loads((root / "chunks.jsonl").read_text(encoding="utf-8").strip())
+            self.assertIn("关于“无卡启动模式”", chunk["content"])
+            self.assertNotIn("创建的实例", chunk["content"])
+
+    def test_validate_chunks_rejects_section_overlap_and_gap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            sections_path = root / "sections.jsonl"
+            section_rows = [
+                {"source_ref": "guide", "source_doc_id": "guide", "section_index": index}
+                for index in range(3)
+            ]
+            sections_path.write_text("".join(json.dumps(row) + "\n" for row in section_rows), encoding="utf-8")
+
+            def chunk(chunk_id, section_range):
+                return {
+                    "chunk_id": chunk_id,
+                    "kb_version": "kb.test",
+                    "source_type": "faq",
+                    "product_area": "login",
+                    "acl": "customer_safe",
+                    "title": chunk_id,
+                    "content": "Use SSH.",
+                    "source_refs": ["guide"],
+                    "asset_refs": [],
+                    "confidence": "high",
+                    "valid_from": "2026-05-13",
+                    "evidence_kind": "knowledge",
+                    "surface_url": None,
+                    "retrieval_score_hint": None,
+                    "section_index_range": section_range,
+                }
+
+            chunks_path.write_text(
+                json.dumps(chunk("w0-login-a", [0, 1]), ensure_ascii=False)
+                + "\n"
+                + json.dumps(chunk("w0-login-b", [1, 2]), ensure_ascii=False)
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "covered by multiple chunks"):
+                validate_chunks.validate_chunks(chunks_path, sections_path=sections_path)
+
+            chunks_path.write_text(
+                json.dumps(chunk("w0-login-a", [0, 0]), ensure_ascii=False)
+                + "\n"
+                + json.dumps(chunk("w0-login-b", [2, 2]), ensure_ascii=False)
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "not covered"):
+                validate_chunks.validate_chunks(chunks_path, sections_path=sections_path)
+
+    def test_verify_chunk_plan_anchors_detects_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plans = root / "plans.jsonl"
+            pinned = root / "pinned.json"
+            plans.write_text(
+                json.dumps(
+                    {
+                        "source_doc_id": "guide",
+                        "strategy": "single_topic_procedure",
+                        "chunks": [{"product_area": "windows"}],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            pinned.write_text(
+                json.dumps(
+                    {
+                        "anchors": [
+                            {
+                                "source_doc_id": "guide",
+                                "expected_strategy": "multi_topic_faq",
+                                "expected_chunk_count": 1,
+                                "expected_product_areas": ["windows"],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "strategy mismatch"):
+                verify_chunk_plan_anchors.verify_chunk_plan_anchors(plans, pinned)
+
+    def test_verify_section_lists_detects_heading_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sections = root / "sections.jsonl"
+            pinned = root / "pinned_sections.json"
+            sections.write_text(
+                json.dumps(
+                    {
+                        "source_ref": "guide",
+                        "source_doc_id": "guide",
+                        "section_index": 0,
+                        "heading_text": "Actual heading",
+                        "heading_path": ["Actual heading"],
+                        "risk_flags": [],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            pinned.write_text(
+                json.dumps(
+                    {
+                        "sources": [
+                            {
+                                "source_ref": "guide",
+                                "expected_section_count": 1,
+                                "sections": [
+                                    {
+                                        "section_index": 0,
+                                        "heading_text": "Expected heading",
+                                        "heading_path": ["Expected heading"],
+                                        "risk_flags": [],
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "heading mismatch"):
+                verify_section_lists.verify_section_lists(sections, pinned)
 
     def test_chunk_docs_emits_valid_chunks_and_preserves_asset_refs(self):
         with tempfile.TemporaryDirectory() as tmp:

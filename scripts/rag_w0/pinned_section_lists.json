@@ -1,0 +1,1149 @@
+{
+  "schema_version": "pinned_section_lists.v1",
+  "generated_at": "2026-05-14",
+  "generated_from": "F:/compshare-agent-runs/rag-w0-pr-rag-4i-20260514-codex/sections.live.jsonl",
+  "sources": [
+    {
+      "source_ref": "NVIDIA驱动安装和CUDA安装-20260511182117__NVIDIA驱动安装和CUDA安装",
+      "source_doc_id": "NVIDIA驱动安装和CUDA安装-20260511182117",
+      "expected_section_count": 20,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "NVIDIA驱动安装和CUDA安装",
+          "heading_path": [
+            "NVIDIA驱动安装和CUDA安装"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 1,
+          "heading_text": "一、驱动安装",
+          "heading_path": [
+            "一、驱动安装"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 2,
+          "heading_text": "Linux",
+          "heading_path": [
+            "Linux"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 3,
+          "heading_text": "手动驱动搜索",
+          "heading_path": [
+            "手动驱动搜索"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 4,
+          "heading_text": "Linux 64-bit",
+          "heading_path": [
+            "Linux 64-bit"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 5,
+          "heading_text": "点击查看",
+          "heading_path": [
+            "点击查看"
+          ],
+          "risk_flags": [
+            "empty_heading_marker_as_content"
+          ]
+        },
+        {
+          "section_index": 6,
+          "heading_text": "2. 安装驱动",
+          "heading_path": [
+            "2. 安装驱动"
+          ],
+          "risk_flags": [
+            "empty_heading_marker_as_content"
+          ]
+        },
+        {
+          "section_index": 7,
+          "heading_text": "3. 安装完成校验",
+          "heading_path": [
+            "3. 安装完成校验"
+          ],
+          "risk_flags": [
+            "empty_heading_marker_as_content"
+          ]
+        },
+        {
+          "section_index": 8,
+          "heading_text": "Windows",
+          "heading_path": [
+            "Windows"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 9,
+          "heading_text": "NVIDIA 驱动程序下载",
+          "heading_path": [
+            "NVIDIA 驱动程序下载"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 10,
+          "heading_text": "二、Cuda安装",
+          "heading_path": [
+            "二、Cuda安装"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 11,
+          "heading_text": "sudo vim /etc/profile 编辑文件,",
+          "heading_path": [
+            "sudo vim /etc/profile 编辑文件,"
+          ],
+          "risk_flags": [
+            "empty_heading_marker_as_content",
+            "heading_normalized_no_space"
+          ]
+        },
+        {
+          "section_index": 12,
+          "heading_text": "添加软链接",
+          "heading_path": [
+            "添加软链接"
+          ],
+          "risk_flags": [
+            "heading_normalized_no_space"
+          ]
+        },
+        {
+          "section_index": 13,
+          "heading_text": "reboot",
+          "heading_path": [
+            "reboot"
+          ],
+          "risk_flags": [
+            "heading_normalized_no_space"
+          ]
+        },
+        {
+          "section_index": 14,
+          "heading_text": "nvcc -V",
+          "heading_path": [
+            "nvcc -V"
+          ],
+          "risk_flags": [
+            "heading_normalized_no_space"
+          ]
+        },
+        {
+          "section_index": 15,
+          "heading_text": "三、QA",
+          "heading_path": [
+            "nvcc -V",
+            "三、QA"
+          ],
+          "risk_flags": [
+            "empty_heading_marker_as_content"
+          ]
+        },
+        {
+          "section_index": 16,
+          "heading_text": "Centos",
+          "heading_path": [
+            "Centos"
+          ],
+          "risk_flags": [
+            "empty_heading_marker_as_content",
+            "heading_normalized_no_space"
+          ]
+        },
+        {
+          "section_index": 17,
+          "heading_text": "kernel-devel",
+          "heading_path": [
+            "kernel-devel"
+          ],
+          "risk_flags": [
+            "heading_normalized_no_space"
+          ]
+        },
+        {
+          "section_index": 18,
+          "heading_text": "Ubuntu",
+          "heading_path": [
+            "Ubuntu"
+          ],
+          "risk_flags": [
+            "heading_normalized_no_space"
+          ]
+        },
+        {
+          "section_index": 19,
+          "heading_text": "Reboot",
+          "heading_path": [
+            "Reboot"
+          ],
+          "risk_flags": [
+            "heading_normalized_no_space"
+          ]
+        }
+      ]
+    },
+    {
+      "source_ref": "Windows服务器远程登录操作手册-20260511182111__Windows服务器远程登录操作手册",
+      "source_doc_id": "Windows服务器远程登录操作手册-20260511182111",
+      "expected_section_count": 7,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "L登录并配置云主机",
+          "heading_path": [
+            "L登录并配置云主机"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 1,
+          "heading_text": "1. 远程桌面登录",
+          "heading_path": [
+            "1. 远程桌面登录"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 2,
+          "heading_text": "2. 关闭 IE 增强设置",
+          "heading_path": [
+            "2. 关闭 IE 增强设置"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 3,
+          "heading_text": "3.IE 安全性等级设置",
+          "heading_path": [
+            "2. 关闭 IE 增强设置",
+            "3.IE 安全性等级设置"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 4,
+          "heading_text": "其他服务器设置",
+          "heading_path": [
+            "其他服务器设置"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 5,
+          "heading_text": "2. 本地文件上传设置",
+          "heading_path": [
+            "2. 本地文件上传设置"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 6,
+          "heading_text": "3)【勾选】需要云主机中需要访问的本地磁盘，点击【确定】。",
+          "heading_path": [
+            "3)【勾选】需要云主机中需要访问的本地磁盘，点击【确定】。"
+          ],
+          "risk_flags": []
+        }
+      ]
+    },
+    {
+      "source_ref": "feishu-model-package-faq-latest__feishu-model-package-faq-latest",
+      "source_doc_id": "feishu-model-package-faq-latest",
+      "expected_section_count": 1,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "优云智算模型套餐FAQ 副本",
+          "heading_path": [
+            "优云智算模型套餐FAQ 副本"
+          ],
+          "risk_flags": []
+        }
+      ]
+    },
+    {
+      "source_ref": "feishu-usage-faq-latest__feishu-usage-faq-latest",
+      "source_doc_id": "feishu-usage-faq-latest",
+      "expected_section_count": 1,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "优云智算使用问题FAQ 副本",
+          "heading_path": [
+            "优云智算使用问题FAQ 副本"
+          ],
+          "risk_flags": []
+        }
+      ]
+    },
+    {
+      "source_ref": "gitlab-compshare-docs__bill",
+      "source_doc_id": "gitlab-compshare-docs",
+      "expected_section_count": 6,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "计费概览",
+          "heading_path": [
+            "计费概览"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 1,
+          "heading_text": "实例资源计费",
+          "heading_path": [
+            "计费概览",
+            "实例资源计费"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 2,
+          "heading_text": "云盘资源计费",
+          "heading_path": [
+            "计费概览",
+            "云盘资源计费"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 3,
+          "heading_text": "自制镜像存储计费",
+          "heading_path": [
+            "计费概览",
+            "自制镜像存储计费"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 4,
+          "heading_text": "云存储计费",
+          "heading_path": [
+            "计费概览",
+            "云存储计费"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 5,
+          "heading_text": "社区镜像计费",
+          "heading_path": [
+            "计费概览",
+            "社区镜像计费"
+          ],
+          "risk_flags": []
+        }
+      ]
+    },
+    {
+      "source_ref": "gitlab-compshare-docs__billdescribe",
+      "source_doc_id": "gitlab-compshare-docs",
+      "expected_section_count": 6,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "计费方式说明",
+          "heading_path": [
+            "计费方式说明"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 1,
+          "heading_text": "后付费-按量计费",
+          "heading_path": [
+            "计费方式说明",
+            "后付费-按量计费"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 2,
+          "heading_text": "预付费 - 包时、包日、包月计费",
+          "heading_path": [
+            "计费方式说明",
+            "预付费 - 包时、包日、包月计费"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 3,
+          "heading_text": "包时（仅云硬盘支持）",
+          "heading_path": [
+            "计费方式说明",
+            "预付费 - 包时、包日、包月计费",
+            "包时（仅云硬盘支持）"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 4,
+          "heading_text": "包日",
+          "heading_path": [
+            "计费方式说明",
+            "预付费 - 包时、包日、包月计费",
+            "包日"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 5,
+          "heading_text": "包月",
+          "heading_path": [
+            "计费方式说明",
+            "预付费 - 包时、包日、包月计费",
+            "包月"
+          ],
+          "risk_flags": []
+        }
+      ]
+    },
+    {
+      "source_ref": "gitlab-compshare-docs__compshareerrorcode",
+      "source_doc_id": "gitlab-compshare-docs",
+      "expected_section_count": 1,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "| 错误码 | 中文提示 | 英文提示 |",
+          "heading_path": [
+            "| 错误码 | 中文提示 | 英文提示 |"
+          ],
+          "risk_flags": []
+        }
+      ]
+    },
+    {
+      "source_ref": "gitlab-compshare-docs__createresources",
+      "source_doc_id": "gitlab-compshare-docs",
+      "expected_section_count": 3,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "创建GPU实例",
+          "heading_path": [
+            "创建GPU实例"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 1,
+          "heading_text": "通过平台镜像创建实例",
+          "heading_path": [
+            "创建GPU实例",
+            "通过平台镜像创建实例"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 2,
+          "heading_text": "通过社区镜像创建实例",
+          "heading_path": [
+            "创建GPU实例",
+            "通过社区镜像创建实例"
+          ],
+          "risk_flags": []
+        }
+      ]
+    },
+    {
+      "source_ref": "gitlab-compshare-docs__imagecommunity",
+      "source_doc_id": "gitlab-compshare-docs",
+      "expected_section_count": 14,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "如何发布社区镜像",
+          "heading_path": [
+            "如何发布社区镜像"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 1,
+          "heading_text": "操作说明",
+          "heading_path": [
+            "如何发布社区镜像",
+            "操作说明"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 2,
+          "heading_text": "操作须知",
+          "heading_path": [
+            "如何发布社区镜像",
+            "操作须知"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 3,
+          "heading_text": "步骤详解",
+          "heading_path": [
+            "如何发布社区镜像",
+            "步骤详解"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 4,
+          "heading_text": "第一步：设置平台昵称",
+          "heading_path": [
+            "如何发布社区镜像",
+            "步骤详解",
+            "第一步：设置平台昵称"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 5,
+          "heading_text": "第二步：部署GPU实例",
+          "heading_path": [
+            "如何发布社区镜像",
+            "步骤详解",
+            "第二步：部署GPU实例"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 6,
+          "heading_text": "第三步：进入控制台",
+          "heading_path": [
+            "如何发布社区镜像",
+            "步骤详解",
+            "第三步：进入控制台"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 7,
+          "heading_text": "启动实例",
+          "heading_path": [
+            "如何发布社区镜像",
+            "步骤详解",
+            "第三步：进入控制台",
+            "启动实例"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 8,
+          "heading_text": "优化和清理",
+          "heading_path": [
+            "如何发布社区镜像",
+            "步骤详解",
+            "第三步：进入控制台",
+            "优化和清理"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 9,
+          "heading_text": "第四步：保存成私有镜像",
+          "heading_path": [
+            "如何发布社区镜像",
+            "步骤详解",
+            "第四步：保存成私有镜像"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 10,
+          "heading_text": "第五步：私有镜像可行性验证",
+          "heading_path": [
+            "如何发布社区镜像",
+            "步骤详解",
+            "第五步：私有镜像可行性验证"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 11,
+          "heading_text": "第六步：公开镜像发布至社区",
+          "heading_path": [
+            "如何发布社区镜像",
+            "步骤详解",
+            "第六步：公开镜像发布至社区"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 12,
+          "heading_text": "在页面顶部找到“发布社区镜像”按钮，点击进入",
+          "heading_path": [
+            "如何发布社区镜像",
+            "步骤详解",
+            "第六步：公开镜像发布至社区",
+            "在页面顶部找到“发布社区镜像”按钮，点击进入"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 13,
+          "heading_text": "*注意事项*",
+          "heading_path": [
+            "如何发布社区镜像",
+            "步骤详解",
+            "*注意事项*"
+          ],
+          "risk_flags": []
+        }
+      ]
+    },
+    {
+      "source_ref": "gitlab-compshare-docs__logic",
+      "source_doc_id": "gitlab-compshare-docs",
+      "expected_section_count": 9,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "套餐计费逻辑",
+          "heading_path": [
+            "套餐计费逻辑"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 1,
+          "heading_text": "1. 计量方式",
+          "heading_path": [
+            "套餐计费逻辑",
+            "1. 计量方式"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 2,
+          "heading_text": "2. 额度重置机制：滚动 5 小时窗口",
+          "heading_path": [
+            "套餐计费逻辑",
+            "2. 额度重置机制：滚动 5 小时窗口"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 3,
+          "heading_text": "窗口示例",
+          "heading_path": [
+            "套餐计费逻辑",
+            "2. 额度重置机制：滚动 5 小时窗口",
+            "窗口示例"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 4,
+          "heading_text": "3. 三重额度约束",
+          "heading_path": [
+            "套餐计费逻辑",
+            "3. 三重额度约束"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 5,
+          "heading_text": "4. 续费规则",
+          "heading_path": [
+            "套餐计费逻辑",
+            "4. 续费规则"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 6,
+          "heading_text": "5. 升级规则：Lite → Pro（差价折算）",
+          "heading_path": [
+            "套餐计费逻辑",
+            "5. 升级规则：Lite → Pro（差价折算）"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 7,
+          "heading_text": "6. 额度耗尽处理",
+          "heading_path": [
+            "套餐计费逻辑",
+            "6. 额度耗尽处理"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 8,
+          "heading_text": "7. 补充说明",
+          "heading_path": [
+            "套餐计费逻辑",
+            "7. 补充说明"
+          ],
+          "risk_flags": []
+        }
+      ]
+    },
+    {
+      "source_ref": "gitlab-compshare-docs__logininstance",
+      "source_doc_id": "gitlab-compshare-docs",
+      "expected_section_count": 7,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "登录GPU实例",
+          "heading_path": [
+            "登录GPU实例"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 1,
+          "heading_text": "Jupyter登录",
+          "heading_path": [
+            "登录GPU实例",
+            "Jupyter登录"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 2,
+          "heading_text": "网页端SSH登录",
+          "heading_path": [
+            "登录GPU实例",
+            "网页端SSH登录"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 3,
+          "heading_text": "网页端VNC登录",
+          "heading_path": [
+            "登录GPU实例",
+            "网页端VNC登录"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 4,
+          "heading_text": "FinalShell SSH登录",
+          "heading_path": [
+            "登录GPU实例",
+            "FinalShell SSH登录"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 5,
+          "heading_text": "VSCode 连接",
+          "heading_path": [
+            "登录GPU实例",
+            "VSCode 连接"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 6,
+          "heading_text": "Windows系统远程登录",
+          "heading_path": [
+            "登录GPU实例",
+            "Windows系统远程登录"
+          ],
+          "risk_flags": []
+        }
+      ]
+    },
+    {
+      "source_ref": "gitlab-compshare-docs__package",
+      "source_doc_id": "gitlab-compshare-docs",
+      "expected_section_count": 7,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "套餐包快速上手",
+          "heading_path": [
+            "套餐包快速上手"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 1,
+          "heading_text": "1. 进入「套餐订阅」页面",
+          "heading_path": [
+            "套餐包快速上手",
+            "1. 进入「套餐订阅」页面"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 2,
+          "heading_text": "2. 先看「适用模型说明」",
+          "heading_path": [
+            "套餐包快速上手",
+            "2. 先看「适用模型说明」"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 3,
+          "heading_text": "3. 套餐类型说明",
+          "heading_path": [
+            "套餐包快速上手",
+            "3. 套餐类型说明"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 4,
+          "heading_text": "套餐优势",
+          "heading_path": [
+            "套餐包快速上手",
+            "3. 套餐类型说明",
+            "套餐优势"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 5,
+          "heading_text": "套餐对比",
+          "heading_path": [
+            "套餐包快速上手",
+            "3. 套餐类型说明",
+            "套餐对比"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 6,
+          "heading_text": "4. 购买与查看",
+          "heading_path": [
+            "套餐包快速上手",
+            "4. 购买与查看"
+          ],
+          "risk_flags": []
+        }
+      ]
+    },
+    {
+      "source_ref": "gitlab-compshare-docs__resourcemonitoring",
+      "source_doc_id": "gitlab-compshare-docs",
+      "expected_section_count": 24,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "虚机手动挂载和卸载监控(UBoltAgent)",
+          "heading_path": [
+            "虚机手动挂载和卸载监控(UBoltAgent)"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 1,
+          "heading_text": "Linux 安装手册",
+          "heading_path": [
+            "虚机手动挂载和卸载监控(UBoltAgent)",
+            "Linux 安装手册"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 2,
+          "heading_text": "安装前须知",
+          "heading_path": [
+            "虚机手动挂载和卸载监控(UBoltAgent)",
+            "Linux 安装手册",
+            "安装前须知"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 3,
+          "heading_text": "Linux 安装步骤",
+          "heading_path": [
+            "虚机手动挂载和卸载监控(UBoltAgent)",
+            "Linux 安装手册",
+            "Linux 安装步骤"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 4,
+          "heading_text": "1. 以 root 用户登录云主机",
+          "heading_path": [
+            "虚机手动挂载和卸载监控(UBoltAgent)",
+            "Linux 安装手册",
+            "Linux 安装步骤",
+            "1. 以 root 用户登录云主机"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 5,
+          "heading_text": "2. 下载监控组件（以 wget 命令为例）",
+          "heading_path": [
+            "虚机手动挂载和卸载监控(UBoltAgent)",
+            "Linux 安装手册",
+            "Linux 安装步骤",
+            "2. 下载监控组件（以 wget 命令为例）"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 6,
+          "heading_text": "3. 安装监控组件",
+          "heading_path": [
+            "虚机手动挂载和卸载监控(UBoltAgent)",
+            "Linux 安装手册",
+            "Linux 安装步骤",
+            "3. 安装监控组件"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 7,
+          "heading_text": "4. 验证安装状态",
+          "heading_path": [
+            "虚机手动挂载和卸载监控(UBoltAgent)",
+            "Linux 安装手册",
+            "Linux 安装步骤",
+            "4. 验证安装状态"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 8,
+          "heading_text": "或者",
+          "heading_path": [
+            "或者"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 9,
+          "heading_text": "Linux卸载",
+          "heading_path": [
+            "或者",
+            "Linux卸载"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 10,
+          "heading_text": "1. 执行以下命令进行卸载：",
+          "heading_path": [
+            "或者",
+            "Linux卸载",
+            "1. 执行以下命令进行卸载："
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 11,
+          "heading_text": "2. 执行以下命令确认进程是否停止：",
+          "heading_path": [
+            "或者",
+            "Linux卸载",
+            "2. 执行以下命令确认进程是否停止："
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 12,
+          "heading_text": "注意事项",
+          "heading_path": [
+            "或者",
+            "注意事项"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 13,
+          "heading_text": "Windows 安装手册",
+          "heading_path": [
+            "或者",
+            "Windows 安装手册"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 14,
+          "heading_text": "windows安装",
+          "heading_path": [
+            "或者",
+            "Windows 安装手册",
+            "windows安装"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 15,
+          "heading_text": "安装步骤",
+          "heading_path": [
+            "或者",
+            "Windows 安装手册",
+            "windows安装",
+            "安装步骤"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 16,
+          "heading_text": "登录云主机",
+          "heading_path": [
+            "或者",
+            "Windows 安装手册",
+            "windows安装",
+            "安装步骤",
+            "登录云主机"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 17,
+          "heading_text": "执行安装",
+          "heading_path": [
+            "或者",
+            "Windows 安装手册",
+            "windows安装",
+            "安装步骤",
+            "执行安装"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 18,
+          "heading_text": "确认安装状态",
+          "heading_path": [
+            "或者",
+            "Windows 安装手册",
+            "windows安装",
+            "安装步骤",
+            "确认安装状态"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 19,
+          "heading_text": "方法一：使用服务管理器",
+          "heading_path": [
+            "或者",
+            "Windows 安装手册",
+            "windows安装",
+            "安装步骤",
+            "确认安装状态",
+            "方法一：使用服务管理器"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 20,
+          "heading_text": "方法二：查看日志文件",
+          "heading_path": [
+            "或者",
+            "Windows 安装手册",
+            "windows安装",
+            "安装步骤",
+            "确认安装状态",
+            "方法二：查看日志文件"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 21,
+          "heading_text": "方法三：查看云监控状态",
+          "heading_path": [
+            "或者",
+            "Windows 安装手册",
+            "windows安装",
+            "安装步骤",
+            "确认安装状态",
+            "方法三：查看云监控状态"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 22,
+          "heading_text": "windows卸载",
+          "heading_path": [
+            "或者",
+            "Windows 安装手册",
+            "windows卸载"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 23,
+          "heading_text": "注意事项",
+          "heading_path": [
+            "或者",
+            "Windows 安装手册",
+            "注意事项"
+          ],
+          "risk_flags": []
+        }
+      ]
+    },
+    {
+      "source_ref": "远程windows云服务器开启声音-20260511182054__远程windows云服务器开启声音",
+      "source_doc_id": "远程windows云服务器开启声音-20260511182054",
+      "expected_section_count": 5,
+      "sections": [
+        {
+          "section_index": 0,
+          "heading_text": "远程windows云服务器开启声音",
+          "heading_path": [
+            "远程windows云服务器开启声音"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 1,
+          "heading_text": "步骤一:",
+          "heading_path": [
+            "步骤一:"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 2,
+          "heading_text": "步骤二:",
+          "heading_path": [
+            "步骤二:"
+          ],
+          "risk_flags": [
+            "heading_normalized_no_space"
+          ]
+        },
+        {
+          "section_index": 3,
+          "heading_text": "步骤三:",
+          "heading_path": [
+            "步骤三:"
+          ],
+          "risk_flags": []
+        },
+        {
+          "section_index": 4,
+          "heading_text": "步骤四:",
+          "heading_path": [
+            "步骤四:"
+          ],
+          "risk_flags": [
+            "heading_normalized_no_space"
+          ]
+        }
+      ]
+    }
+  ]
+}

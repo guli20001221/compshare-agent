@@ -13,10 +13,14 @@ from typing import Any
 
 try:
     from .common import ALLOWED_PRODUCT_AREAS
+    from .chunk_plan import normalize_product_area
+    from .parse_sections import load_sections
     from .validate_case_approvals import validate_case_approvals
     from .validate_chunks import validate_chunks
 except ImportError:  # pragma: no cover
     from common import ALLOWED_PRODUCT_AREAS
+    from chunk_plan import normalize_product_area
+    from parse_sections import load_sections
     from validate_case_approvals import validate_case_approvals
     from validate_chunks import validate_chunks
 
@@ -52,6 +56,8 @@ def chunk_documents(
     link_manifest_path: Path | str | None = None,
     chunk_labels_path: Path | str | None = None,
     section_labels_path: Path | str | None = None,
+    sections_path: Path | str | None = None,
+    chunk_plans_path: Path | str | None = None,
     require_complete_inputs: bool = True,
     max_chars: int = 2000,
 ) -> dict[str, int]:
@@ -60,19 +66,33 @@ def chunk_documents(
 
     _validate_output_target(out_path, require_complete_inputs=require_complete_inputs)
     section_labels = _read_section_label_index(section_labels_path or chunk_labels_path)
+    parsed_sections = load_sections(sections_path) if sections_path else {}
+    chunk_plans = _read_chunk_plan_index(chunk_plans_path) if chunk_plans_path else {}
 
     chunks: list[dict[str, Any]] = []
     for doc_path in sorted(Path(cleaned_dir).glob("*.md")):
-        chunks.extend(
-            _chunks_for_doc(
-                doc_path,
-                kb_version=kb_version,
-                valid_from=valid_from,
-                max_chars=max_chars,
-                strict_asset_notes=require_complete_inputs,
-                section_labels=section_labels,
+        if chunk_plans_path:
+            chunks.extend(
+                _chunks_for_doc_with_plan(
+                    doc_path,
+                    chunk_plans=chunk_plans,
+                    parsed_sections=parsed_sections,
+                    kb_version=kb_version,
+                    valid_from=valid_from,
+                    strict_asset_notes=require_complete_inputs,
+                )
             )
-        )
+        else:
+            chunks.extend(
+                _chunks_for_doc(
+                    doc_path,
+                    kb_version=kb_version,
+                    valid_from=valid_from,
+                    max_chars=max_chars,
+                    strict_asset_notes=require_complete_inputs,
+                    section_labels=section_labels,
+                )
+            )
 
     case_chunk_count = 0
     if cases_path:
@@ -86,8 +106,137 @@ def chunk_documents(
     with out.open("w", encoding="utf-8") as fh:
         for chunk in chunks:
             fh.write(json.dumps(chunk, ensure_ascii=False, sort_keys=True) + "\n")
-    validate_chunks(out)
+    validate_chunks(out, sections_path=sections_path if chunk_plans_path else None)
     return {"chunk_count": len(chunks), "case_chunk_count": case_chunk_count}
+
+
+def _chunks_for_doc_with_plan(
+    doc_path: Path,
+    *,
+    chunk_plans: dict[str, dict[str, Any]],
+    parsed_sections: dict[str, list[dict[str, Any]]],
+    kb_version: str,
+    valid_from: str,
+    strict_asset_notes: bool,
+) -> list[dict[str, Any]]:
+    text = doc_path.read_text(encoding="utf-8", errors="replace")
+    body = _body_without_front_matter(text)
+    source_ref = doc_path.stem
+    source_doc_id = _source_doc_id(source_ref)
+    plan = chunk_plans.get(source_ref) or chunk_plans.get(source_doc_id)
+    if not plan:
+        raise ValueError(f"{source_ref}: missing chunk plan")
+    if plan.get("strategy") == "mixed_needs_review":
+        LOGGER.info("chunk plan requested review; skipping source=%s", source_ref)
+        return []
+    sections = parsed_sections.get(source_ref) or []
+    if not sections:
+        raise ValueError(f"{source_ref}: missing parsed sections")
+
+    chunks: list[dict[str, Any]] = []
+    for plan_chunk in plan.get("chunks") or []:
+        raw_content = _content_for_plan_chunk(source_ref, body, sections, plan_chunk)
+        asset_refs = _asset_refs(raw_content, strict_asset_notes=strict_asset_notes)
+        content = _clean_chunk_content(raw_content, strict_asset_notes=strict_asset_notes)
+        if not content.strip():
+            continue
+        if len(content) > MAX_CHUNK_CONTENT_RUNES:
+            raise ValueError(f"{source_ref}: planned chunk {plan_chunk.get('chunk_index')} exceeds MAX_CHUNK_CONTENT_RUNES")
+        product_area = normalize_product_area(plan_chunk.get("product_area"))
+        if product_area not in ALLOWED_PRODUCT_AREAS:
+            raise ValueError(f"{source_ref}: invalid planned product_area {plan_chunk.get('product_area')!r}")
+        chunk_index = int(plan_chunk.get("chunk_index", len(chunks)))
+        chunk_id = _chunk_id(product_area, source_ref, chunk_index + 1, 1)
+        _ensure_no_raw_image(content, chunk_id)
+        chunk = _base_chunk(
+            chunk_id=chunk_id,
+            kb_version=kb_version,
+            source_type=_infer_source_type(source_ref, product_area),
+            product_area=product_area,
+            title=str(plan_chunk.get("title") or _fallback_title(body, source_ref)),
+            content=content,
+            source_refs=[source_ref],
+            asset_refs=asset_refs,
+            confidence="medium" if "REDACTED" in content else "high",
+            valid_from=valid_from,
+            question_patterns=_question_patterns_from_plan(plan_chunk, product_area),
+        )
+        if plan_chunk.get("section_index_range") is not None:
+            chunk["section_index_range"] = [int(plan_chunk["section_index_range"][0]), int(plan_chunk["section_index_range"][1])]
+        if plan_chunk.get("section_anchor_text_start"):
+            chunk["section_anchor_text_start"] = str(plan_chunk.get("section_anchor_text_start"))
+            chunk["section_anchor_text_end"] = str(plan_chunk.get("section_anchor_text_end") or "")
+        chunk["chunk_plan_strategy"] = str(plan.get("strategy") or "")
+        chunks.append(chunk)
+    return chunks
+
+
+def _content_for_plan_chunk(source_ref: str, body: str, sections: list[dict[str, Any]], plan_chunk: dict[str, Any]) -> str:
+    section_range = plan_chunk.get("section_index_range")
+    if section_range is not None:
+        start, end = int(section_range[0]), int(section_range[1])
+        if start < 0 or end >= len(sections) or start > end:
+            raise ValueError(f"{source_ref}: invalid section_index_range {section_range!r}")
+        return "\n\n".join(str(section.get("content") or "").strip() for section in sections[start : end + 1]).strip()
+    start_text = str(plan_chunk.get("section_anchor_text_start") or "")
+    end_text = str(plan_chunk.get("section_anchor_text_end") or "")
+    if not start_text:
+        raise ValueError(f"{source_ref}: planned chunk lacks section boundary")
+    start = _find_anchor(body, start_text, start_at=0)
+    if start < 0:
+        raise ValueError(f"{source_ref}: anchor start not found: {start_text!r}")
+    if end_text:
+        end = _find_anchor(body, end_text, start_at=start + 1)
+        if end < 0:
+            raise ValueError(f"{source_ref}: anchor end not found: {end_text!r}")
+    else:
+        end = len(body)
+    return body[start:end].strip()
+
+
+def _find_anchor(body: str, needle: str, *, start_at: int) -> int:
+    exact = body.find(needle, start_at)
+    if exact >= 0:
+        return exact
+    normalized_body, index_map = _anchor_normalize_with_map(body)
+    normalized_needle, _ = _anchor_normalize_with_map(needle)
+    if not normalized_needle:
+        return -1
+    normalized_start = 0
+    while normalized_start < len(index_map) and index_map[normalized_start] < start_at:
+        normalized_start += 1
+    found = normalized_body.find(normalized_needle, normalized_start)
+    if found < 0:
+        return -1
+    return index_map[found]
+
+
+def _anchor_normalize_with_map(text: str) -> tuple[str, list[int]]:
+    chars: list[str] = []
+    index_map: list[int] = []
+    quote_map = {
+        "“": '"',
+        "”": '"',
+        "＂": '"',
+        "‘": "'",
+        "’": "'",
+        "＇": "'",
+    }
+    for index, char in enumerate(text):
+        if char.isspace():
+            continue
+        chars.append(quote_map.get(char, char).lower())
+        index_map.append(index)
+    return "".join(chars), index_map
+
+
+def _question_patterns_from_plan(plan_chunk: dict[str, Any], product_area: str) -> list[str]:
+    patterns = plan_chunk.get("question_patterns")
+    if isinstance(patterns, list):
+        out = [str(item).strip() for item in patterns if str(item).strip()]
+        if out:
+            return out
+    return _question_patterns(str(plan_chunk.get("title") or ""), product_area)
 
 
 def _chunks_for_doc(
@@ -319,6 +468,7 @@ def _base_chunk(
     asset_refs: list[str],
     confidence: str,
     valid_from: str,
+    question_patterns: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "chunk_id": chunk_id,
@@ -327,7 +477,7 @@ def _base_chunk(
         "product_area": product_area,
         "acl": "customer_safe",
         "title": title.strip()[:180],
-        "question_patterns": _question_patterns(title, product_area),
+        "question_patterns": question_patterns or _question_patterns(title, product_area),
         "content": content.strip(),
         "source_refs": source_refs,
         "asset_refs": asset_refs,
@@ -698,6 +848,20 @@ def _read_jsonl(path: Path | str | None) -> list[dict[str, Any]]:
     return rows
 
 
+def _read_chunk_plan_index(path: Path | str | None) -> dict[str, dict[str, Any]]:
+    if not path:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for row in _read_jsonl(path):
+        source_ref = str(row.get("source_ref") or "")
+        source_doc_id = str(row.get("source_doc_id") or "")
+        if source_ref:
+            out[source_ref] = row
+        if source_doc_id:
+            out[source_doc_id] = row
+    return out
+
+
 def _read_json(path: Path | str) -> dict[str, Any]:
     with Path(path).open("r", encoding="utf-8-sig") as fh:
         data = json.load(fh)
@@ -722,6 +886,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--asset-notes", type=Path)
     parser.add_argument("--links", type=Path)
     parser.add_argument("--section-labels", type=Path)
+    parser.add_argument("--sections", type=Path)
+    parser.add_argument("--chunk-plans", type=Path)
     parser.add_argument("--chunk-labels", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--allow-incomplete-inputs", action="store_true", help="Allow dry-run chunking before VL/link processing is complete.")
     parser.add_argument("--max-chars", type=int, default=2000)
@@ -737,6 +903,8 @@ def main(argv: list[str] | None = None) -> int:
         link_manifest_path=args.links,
         chunk_labels_path=args.chunk_labels,
         section_labels_path=args.section_labels,
+        sections_path=args.sections,
+        chunk_plans_path=args.chunk_plans,
         require_complete_inputs=not args.allow_incomplete_inputs,
         max_chars=args.max_chars,
     )

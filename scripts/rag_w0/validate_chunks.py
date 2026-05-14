@@ -54,7 +54,7 @@ INTERNAL_CASE_SOURCE_PREFIXES = (
 ASSET_CAPTION_MARKER = "[\u56fe\u8bf4]"
 
 
-def validate_chunks(path: Path | str) -> dict[str, Any]:
+def validate_chunks(path: Path | str, *, sections_path: Path | str | None = None) -> dict[str, Any]:
     chunks = _load_jsonl(path)
     if not chunks:
         raise ValueError("chunks file is empty")
@@ -70,6 +70,8 @@ def validate_chunks(path: Path | str) -> dict[str, Any]:
             kb_version = chunk["kb_version"]
         elif kb_version != chunk["kb_version"]:
             raise ValueError(f"row {row}: mixed kb_version")
+    if sections_path:
+        _validate_section_coverage(chunks, sections_path)
     return {"chunk_count": len(chunks), "kb_version": kb_version}
 
 
@@ -147,11 +149,52 @@ def _validate_asset_ref_caption_alignment(row: int, chunk: dict[str, Any]) -> No
         raise ValueError(f"row {row}: chunk {chunk_id} asset_refs count {ref_count} does not match caption count {caption_count}")
 
 
+def _validate_section_coverage(chunks: list[tuple[int, dict[str, Any]]], sections_path: Path | str) -> None:
+    sections_by_ref: dict[str, set[int]] = {}
+    for _, section in _load_jsonl(sections_path):
+        source_ref = str(section.get("source_ref") or section.get("source_doc_id") or "")
+        if not source_ref:
+            continue
+        sections_by_ref.setdefault(source_ref, set()).add(int(section["section_index"]))
+
+    coverage: dict[str, dict[int, str]] = {source_ref: {} for source_ref in sections_by_ref}
+    anchor_sources: set[str] = set()
+    for row, chunk in chunks:
+        refs = chunk.get("source_refs") or []
+        if not refs:
+            continue
+        source_ref = str(refs[0])
+        if source_ref not in sections_by_ref:
+            continue
+        if chunk.get("section_anchor_text_start"):
+            anchor_sources.add(source_ref)
+            continue
+        section_range = chunk.get("section_index_range")
+        if section_range is None:
+            continue
+        if not isinstance(section_range, list) or len(section_range) != 2:
+            raise ValueError(f"row {row}: section_index_range must be [start, end]")
+        start, end = int(section_range[0]), int(section_range[1])
+        for section_index in range(start, end + 1):
+            if section_index in coverage[source_ref]:
+                raise ValueError(f"{source_ref}: section {section_index} covered by multiple chunks")
+            coverage[source_ref][section_index] = str(chunk.get("chunk_id") or f"row {row}")
+
+    for source_ref, expected in sections_by_ref.items():
+        if source_ref in anchor_sources:
+            continue
+        covered = set(coverage[source_ref])
+        missing = sorted(expected - covered)
+        if missing:
+            raise ValueError(f"{source_ref}: sections {missing} not covered by any chunk")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--chunks", type=Path, required=True)
+    parser.add_argument("--sections", type=Path)
     args = parser.parse_args(argv)
-    validate_chunks(args.chunks)
+    validate_chunks(args.chunks, sections_path=args.sections)
     return 0
 
 
