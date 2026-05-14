@@ -99,6 +99,27 @@ class RagW0ScriptTests(unittest.TestCase):
             )
             return [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
 
+    def _valid_chunk(self, **overrides) -> dict:
+        chunk = {
+            "chunk_id": "w0-login-doc-001",
+            "kb_version": "kb.test",
+            "source_type": "faq",
+            "product_area": "login",
+            "acl": "customer_safe",
+            "title": "Login",
+            "question_patterns": ["How to login"],
+            "content": "Open the console and connect to the instance.",
+            "source_refs": ["doc"],
+            "asset_refs": [],
+            "confidence": "high",
+            "valid_from": "2026-05-13",
+            "evidence_kind": "knowledge",
+            "surface_url": None,
+            "retrieval_score_hint": None,
+        }
+        chunk.update(overrides)
+        return chunk
+
     def _write_normalized_doc(self, root: Path, name: str, *, source_id: str, include_status: str, source_path: str, body: str = "# Doc\nCustomer-facing guidance.\n") -> Path:
         normalized = root / "normalized"
         normalized.mkdir(exist_ok=True)
@@ -1091,6 +1112,32 @@ class RagW0ScriptTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "asset_refs count 2 does not match caption count 1"):
                 validate_chunks.validate_chunks(path)
+
+    def test_validate_chunks_rejects_mid_asset_note_split(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "chunks.jsonl"
+            chunk = self._valid_chunk(content="Step one.\n<!-- asset_note: {\"asset_id\": \"asset-1\"")
+            path.write_text(json.dumps(chunk, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "asset_note"):
+                validate_chunks.validate_chunks(path)
+
+    def test_validate_chunks_rejects_oversize(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "chunks.jsonl"
+            chunk = self._valid_chunk(content="A" * (validate_chunks.MAX_CHUNK_CONTENT_RUNES + 1))
+            path.write_text(json.dumps(chunk, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "MAX_CHUNK_CONTENT_RUNES"):
+                validate_chunks.validate_chunks(path)
+
+    def test_validate_chunks_accepts_exactly_max(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "chunks.jsonl"
+            chunk = self._valid_chunk(content="A" * validate_chunks.MAX_CHUNK_CONTENT_RUNES)
+            path.write_text(json.dumps(chunk, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            self.assertEqual(validate_chunks.validate_chunks(path)["chunk_count"], 1)
 
     def test_parse_sections_normalizes_no_space_heading(self):
         with tempfile.TemporaryDirectory() as tmp:

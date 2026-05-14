@@ -52,6 +52,9 @@ INTERNAL_CASE_SOURCE_PREFIXES = (
     "internal_case/",
 )
 ASSET_CAPTION_MARKER = "[\u56fe\u8bf4]"
+ASSET_NOTE_OPEN_MARKER = "<!-- asset_note:"
+ASSET_NOTE_CLOSE_MARKER = "-->"
+MAX_CHUNK_CONTENT_RUNES = 4000
 
 
 def validate_chunks(path: Path | str, *, sections_path: Path | str | None = None) -> dict[str, Any]:
@@ -114,6 +117,8 @@ def _validate_chunk(row: int, chunk: dict[str, Any]) -> None:
     if not isinstance(chunk["asset_refs"], list):
         raise ValueError(f"row {row}: asset_refs must be a list")
     _validate_asset_ref_caption_alignment(row, chunk)
+    _validate_asset_note_markers(row, chunk)
+    _validate_chunk_content_size(row, chunk)
     if "question_patterns" in chunk and not isinstance(chunk["question_patterns"], list):
         raise ValueError(f"row {row}: question_patterns must be a list")
     if chunk["retrieval_score_hint"] is not None and not isinstance(chunk["retrieval_score_hint"], (int, float)):
@@ -147,6 +152,22 @@ def _validate_asset_ref_caption_alignment(row: int, chunk: dict[str, Any]) -> No
     if ref_count != caption_count:
         chunk_id = chunk.get("chunk_id") or f"row {row}"
         raise ValueError(f"row {row}: chunk {chunk_id} asset_refs count {ref_count} does not match caption count {caption_count}")
+
+
+def _validate_asset_note_markers(row: int, chunk: dict[str, Any]) -> None:
+    content = str(chunk.get("content") or "")
+    open_count = content.count(ASSET_NOTE_OPEN_MARKER)
+    close_count = content.count(ASSET_NOTE_CLOSE_MARKER)
+    if open_count != close_count:
+        chunk_id = chunk.get("chunk_id") or f"row {row}"
+        raise ValueError(f"row {row}: chunk {chunk_id} has split asset_note markers: {open_count} opens, {close_count} closes")
+
+
+def _validate_chunk_content_size(row: int, chunk: dict[str, Any]) -> None:
+    content = str(chunk.get("content") or "")
+    if len(content) > MAX_CHUNK_CONTENT_RUNES:
+        chunk_id = chunk.get("chunk_id") or f"row {row}"
+        raise ValueError(f"row {row}: chunk {chunk_id} content length {len(content)} exceeds MAX_CHUNK_CONTENT_RUNES={MAX_CHUNK_CONTENT_RUNES}")
 
 
 def _validate_section_coverage(chunks: list[tuple[int, dict[str, Any]]], sections_path: Path | str) -> None:
