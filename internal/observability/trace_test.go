@@ -63,6 +63,143 @@ func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
 	}
 }
 
+func TestSchemaVersionIsV03(t *testing.T) {
+	if SchemaVersion != "trace.v0.3" {
+		t.Fatalf("SchemaVersion = %q, want trace.v0.3", SchemaVersion)
+	}
+}
+
+func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
+	trace := RetrievalTrace{
+		Enabled:         true,
+		KBVersion:       "kb.stage2b.w0.2026-05-14",
+		QueryRaw:        "实例一直卡初始化怎么办",
+		QueryNormalized: "实例 初始化失败",
+		QueryExpansions: []string{"实例启动失败", "卡初始化"},
+		Hits:            2,
+		HitItems: []RetrievalHit{
+			{ChunkID: "w0-init_failure-error-code-a1b2c3d4", Score: 0.78, Kept: true},
+			{ChunkID: "w0-billing_rule-arrears-aabbccdd", Score: 0.41, Kept: false},
+		},
+		RefusedReason: "weak_evidence",
+		WeakEvidence:  true,
+	}
+
+	data, err := json.Marshal(trace)
+	if err != nil {
+		t.Fatalf("marshal RetrievalTrace: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`"enabled":true`,
+		`"kb_version":"kb.stage2b.w0.2026-05-14"`,
+		`"query_raw":"实例一直卡初始化怎么办"`,
+		`"query_normalized":"实例 初始化失败"`,
+		`"query_expansions":["实例启动失败","卡初始化"]`,
+		`"hits":2`,
+		`"hit_items":[{"chunk_id":"w0-init_failure-error-code-a1b2c3d4","score":0.78,"kept":true},{"chunk_id":"w0-billing_rule-arrears-aabbccdd","score":0.41,"kept":false}]`,
+		`"refused_reason":"weak_evidence"`,
+		`"weak_evidence":true`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("retrieval trace JSON missing %s: %s", want, text)
+		}
+	}
+}
+
+func TestRetrievalHitScoreZeroMarshalsAsZero(t *testing.T) {
+	hit := RetrievalHit{
+		ChunkID: "w0-init_failure-error-code-a1b2c3d4",
+		Score:   0,
+		Kept:    true,
+	}
+
+	data, err := json.Marshal(hit)
+	if err != nil {
+		t.Fatalf("marshal RetrievalHit: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`"chunk_id":"w0-init_failure-error-code-a1b2c3d4"`,
+		`"score":0`,
+		`"kept":true`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("retrieval hit JSON missing %s: %s", want, text)
+		}
+	}
+}
+
+func TestRetrievalTraceNewFieldsMarkBlockObserved(t *testing.T) {
+	cases := []struct {
+		name  string
+		trace RetrievalTrace
+	}{
+		{name: "query raw", trace: RetrievalTrace{QueryRaw: "怎么收费"}},
+		{name: "query normalized", trace: RetrievalTrace{QueryNormalized: "计费 规则"}},
+		{name: "query expansions", trace: RetrievalTrace{QueryExpansions: []string{"扣费规则"}}},
+		{name: "hit items", trace: RetrievalTrace{HitItems: []RetrievalHit{{ChunkID: "w0-billing_rule-aabbccdd", Score: 0.67, Kept: true}}}},
+		{name: "refused reason", trace: RetrievalTrace{RefusedReason: "no_evidence"}},
+		{name: "weak evidence", trace: RetrievalTrace{WeakEvidence: true}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !traceRetrievalObserved(tc.trace) {
+				t.Fatalf("traceRetrievalObserved(%#v) = false, want true", tc.trace)
+			}
+			data, err := json.Marshal(TraceRecord{
+				SchemaVersion: SchemaVersion,
+				TraceID:       "trace-1",
+				TurnID:        "turn-1",
+				TurnIndex:     1,
+				Timestamp:     "2026-05-14T00:00:00Z",
+				UserMsgHash:   "sha256:user",
+				Retrieval:     tc.trace,
+			})
+			if err != nil {
+				t.Fatalf("marshal TraceRecord: %v", err)
+			}
+			if !strings.Contains(string(data), `"retrieval":`) {
+				t.Fatalf("trace record should include retrieval for %s: %s", tc.name, data)
+			}
+		})
+	}
+}
+
+func TestRetrievalTraceDefaultsKeepSlicesIterable(t *testing.T) {
+	record := TraceRecord{}.withDefaults(time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC))
+	if record.Retrieval.QueryExpansions == nil {
+		t.Fatalf("QueryExpansions default = nil, want empty slice")
+	}
+	if record.Retrieval.HitItems == nil {
+		t.Fatalf("HitItems default = nil, want empty slice")
+	}
+	if len(record.Retrieval.QueryExpansions) != 0 || len(record.Retrieval.HitItems) != 0 {
+		t.Fatalf("retrieval defaults should be empty: %#v", record.Retrieval)
+	}
+}
+
+func TestRetrievalTraceHashingStableUnderNilVsEmpty(t *testing.T) {
+	nilSlices := RetrievalTrace{}
+	emptySlices := RetrievalTrace{
+		QueryExpansions: []string{},
+		HitItems:        []RetrievalHit{},
+	}
+
+	leftHash, err := HashTracePayload(nilSlices)
+	if err != nil {
+		t.Fatalf("HashTracePayload(nilSlices): %v", err)
+	}
+	rightHash, err := HashTracePayload(emptySlices)
+	if err != nil {
+		t.Fatalf("HashTracePayload(emptySlices): %v", err)
+	}
+	if leftHash != rightHash {
+		t.Fatalf("nil and empty retrieval slices should hash the same: %s vs %s", leftHash, rightHash)
+	}
+}
+
 func TestOutcomeTraceOmitsUnavailableCounters(t *testing.T) {
 	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	writer, err := NewWriter(WriterOptions{Dir: t.TempDir(), Now: func() time.Time { return now }})

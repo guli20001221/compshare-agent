@@ -13,7 +13,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.2"
+const SchemaVersion = "trace.v0.3"
 
 const (
 	ToolSourceMainReAct         = "main_react"
@@ -215,9 +215,21 @@ type RateLimitTrace struct {
 }
 
 type RetrievalTrace struct {
-	Enabled   bool   `json:"enabled"`
-	KBVersion string `json:"kb_version"`
-	Hits      int    `json:"hits"`
+	Enabled         bool           `json:"enabled"`
+	KBVersion       string         `json:"kb_version"`
+	QueryRaw        string         `json:"query_raw,omitempty"`
+	QueryNormalized string         `json:"query_normalized,omitempty"`
+	QueryExpansions []string       `json:"query_expansions,omitempty"`
+	Hits            int            `json:"hits"`
+	HitItems        []RetrievalHit `json:"hit_items,omitempty"`
+	RefusedReason   string         `json:"refused_reason,omitempty"`
+	WeakEvidence    bool           `json:"weak_evidence,omitempty"`
+}
+
+type RetrievalHit struct {
+	ChunkID string  `json:"chunk_id"`
+	Score   float64 `json:"score"`
+	Kept    bool    `json:"kept"`
 }
 
 type OutcomeTrace struct {
@@ -392,7 +404,15 @@ func traceRateLimitObserved(trace RateLimitTrace) bool {
 }
 
 func traceRetrievalObserved(trace RetrievalTrace) bool {
-	return trace.Enabled || trace.KBVersion != "" || trace.Hits != 0
+	return trace.Enabled ||
+		trace.KBVersion != "" ||
+		trace.QueryRaw != "" ||
+		trace.QueryNormalized != "" ||
+		len(trace.QueryExpansions) > 0 ||
+		trace.Hits != 0 ||
+		len(trace.HitItems) > 0 ||
+		trace.RefusedReason != "" ||
+		trace.WeakEvidence
 }
 
 func traceOutcomeObserved(trace OutcomeTrace) bool {
@@ -430,6 +450,12 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	}
 	if r.Renderer.InputEnvelopeHashes == nil {
 		r.Renderer.InputEnvelopeHashes = []string{}
+	}
+	if r.Retrieval.QueryExpansions == nil {
+		r.Retrieval.QueryExpansions = []string{}
+	}
+	if r.Retrieval.HitItems == nil {
+		r.Retrieval.HitItems = []RetrievalHit{}
 	}
 	if r.EntityRegistry.SyncEvent == "" {
 		r.EntityRegistry.SyncEvent = "unavailable"
