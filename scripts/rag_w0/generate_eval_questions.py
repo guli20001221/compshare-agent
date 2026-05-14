@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Generate deterministic W0 golden question candidates."""
+"""Generate W0 golden questions with natural-language paraphrases."""
 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 import json
 from pathlib import Path
 from typing import Any
 
 try:
+    from .model_smoke import DEFAULT_BASE_URL, DEFAULT_DS_MODEL, ModelVerseClient, _extract_json, _load_env
     from .validate_chunks import validate_chunks
 except ImportError:  # pragma: no cover
+    from model_smoke import DEFAULT_BASE_URL, DEFAULT_DS_MODEL, ModelVerseClient, _extract_json, _load_env
     from validate_chunks import validate_chunks
 
 
@@ -28,6 +31,8 @@ EXPECTED_GROUP_ORDER = (
     "refuse_instance_internal_operation",
 )
 EXPECTED_GROUPS = set(EXPECTED_GROUP_ORDER)
+DEFAULT_PARAPHRASE_PROMPT_VERSION = "eval_paraphrase_v1"
+DEFAULT_ANSWER_QUESTIONS_PER_CHUNK = 2
 
 GROUP_COVERAGE_QUESTIONS = {
     "remote_login_ssh_jupyter": ("How do I log in with SSH or Jupyter?", "login"),
@@ -63,6 +68,8 @@ ESCALATE_QUESTIONS = [
     ("unknown-internal-ticket", "上次工单里研发怎么处理的？", "refuse_instance_internal_operation"),
 ]
 
+Paraphraser = Callable[[dict[str, Any], bool], list[str]]
+
 
 def generate_eval_questions(
     chunks_path: Path | str,
@@ -71,12 +78,31 @@ def generate_eval_questions(
     min_questions: int = 50,
     cases_path: Path | str | None = None,
     max_case_questions: int = 12,
+    anchor_questions_path: Path | str | None = None,
+    paraphraser: Paraphraser | None = None,
+    paraphrase_log_path: Path | str | None = None,
+    env_path: Path = Path(".env.local"),
+    model: str = DEFAULT_DS_MODEL,
+    answer_questions_per_chunk: int = DEFAULT_ANSWER_QUESTIONS_PER_CHUNK,
 ) -> dict[str, int]:
     validate_chunks(chunks_path)
     chunks = _read_jsonl(chunks_path)
+    chunk_by_id = {str(chunk.get("chunk_id") or ""): chunk for chunk in chunks}
+    paraphraser = paraphraser or _modelverse_paraphraser(env_path=env_path, model=model)
     questions: list[dict[str, Any]] = []
+    paraphrase_logs: list[dict[str, Any]] = []
+
+    if anchor_questions_path:
+        questions.extend(_anchor_records(anchor_questions_path, chunk_by_id))
+
     for chunk in chunks:
-        for question in _answer_questions_for_chunk(chunk):
+        generated, log_record = _answer_questions_for_chunk(
+            chunk,
+            paraphraser=paraphraser,
+            max_questions=answer_questions_per_chunk,
+        )
+        paraphrase_logs.append(log_record)
+        for question in generated:
             questions.append(
                 _record(
                     question=question,
@@ -85,6 +111,10 @@ def generate_eval_questions(
                     expected_chunk_ids=[chunk["chunk_id"]],
                     source_refs=chunk["source_refs"],
                     group=_group_for_chunk(chunk),
+                    extra={
+                        "paraphrase_source": f"{model}_{DEFAULT_PARAPHRASE_PROMPT_VERSION}",
+                        "is_anchor": False,
+                    },
                 )
             )
     if cases_path:
@@ -127,21 +157,116 @@ def generate_eval_questions(
     with out.open("w", encoding="utf-8") as fh:
         for item in questions:
             fh.write(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n")
+    if paraphrase_log_path:
+        _write_jsonl(paraphrase_log_path, paraphrase_logs)
     return {"question_count": len(questions)}
 
 
-def _answer_questions_for_chunk(chunk: dict[str, Any]) -> list[str]:
-    out: list[str] = []
-    for pattern in chunk.get("question_patterns") or []:
-        value = str(pattern).strip()
-        if value and value not in out:
-            out.append(value)
-    if out:
-        return out[:1]
+def _answer_questions_for_chunk(
+    chunk: dict[str, Any],
+    *,
+    paraphraser: Paraphraser,
+    max_questions: int = DEFAULT_ANSWER_QUESTIONS_PER_CHUNK,
+) -> tuple[list[str], dict[str, Any]]:
+    patterns = [str(pattern).strip() for pattern in chunk.get("question_patterns") or [] if str(pattern).strip()]
     title = str(chunk.get("title") or "").strip()
-    if title:
-        out.append(f"{title} 怎么处理？")
-    return out[:1]
+    attempts: list[list[str]] = []
+    accepted: list[str] = []
+    for retry in (False, True):
+        generated = paraphraser(chunk, retry)
+        attempts.append(generated)
+        accepted = _accepted_paraphrases(generated, patterns=patterns, title=title, limit=max_questions)
+        if accepted:
+            break
+    return accepted, {
+        "chunk_id": str(chunk.get("chunk_id") or ""),
+        "patterns_seen": patterns,
+        "paraphrases_generated": attempts,
+        "retries": max(0, len(attempts) - 1),
+        "final_accepted": accepted,
+    }
+
+
+def _accepted_paraphrases(candidates: list[str], *, patterns: list[str], title: str, limit: int) -> list[str]:
+    accepted: list[str] = []
+    for candidate in candidates:
+        value = " ".join(str(candidate or "").split())
+        if not value:
+            continue
+        if value in patterns or value == title:
+            continue
+        if value in accepted:
+            continue
+        accepted.append(value)
+        if len(accepted) >= limit:
+            break
+    return accepted
+
+
+def _modelverse_paraphraser(*, env_path: Path, model: str) -> Paraphraser:
+    env = _load_env(env_path)
+    client = ModelVerseClient(
+        base_url=env.get("MODELVERSE_BASE_URL", DEFAULT_BASE_URL),
+        api_key=env["MODELVERSE_API_KEY"],
+    )
+    selected_model = env.get("MODELVERSE_DS_V4_PRO_MODEL", model)
+
+    def paraphrase(chunk: dict[str, Any], retry: bool) -> list[str]:
+        prompt = _build_paraphrase_prompt(chunk, retry=retry)
+        content = client.chat(model=selected_model, messages=[{"role": "user", "content": prompt}], max_tokens=500, json_mode=True)
+        parsed = _extract_json(content)
+        questions = parsed.get("questions") or []
+        if not isinstance(questions, list):
+            return []
+        return [str(question) for question in questions]
+
+    return paraphrase
+
+
+def _build_paraphrase_prompt(chunk: dict[str, Any], *, retry: bool) -> str:
+    patterns = [str(pattern) for pattern in chunk.get("question_patterns") or []][:4]
+    pattern_lines = "\n".join(f"- {pattern}" for pattern in patterns)
+    retry_text = ""
+    if retry:
+        retry_text = "\nIMPORTANT: your previous output reused the index patterns. Use natural everyday wording and do not copy any pattern verbatim."
+    return (
+        "你在为 CompShare GPU 云平台构造 RAG 评估问题。"
+        "请根据下面的知识片段，生成 2 个真实用户可能会问的自然中文问题。"
+        "不要复用已有索引 patterns 的原句，也不要直接使用标题。"
+        "只返回 JSON: {\"questions\": [\"...\", \"...\"]}。\n\n"
+        f"标题: {chunk.get('title')}\n"
+        f"产品分类: {chunk.get('product_area')}\n"
+        f"内容摘要: {str(chunk.get('content') or '')[:600]}\n"
+        f"已有索引 patterns:\n{pattern_lines}\n"
+        "\n示例: 如果 pattern 是“Windows 远程桌面没声音怎么办”，可以改写为“远程连到 Windows 机器后听不到声音该怎么处理”。"
+        f"{retry_text}"
+    )
+
+
+def _anchor_records(path: Path | str, chunk_by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = _read_jsonl(path)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        expected_ids = [str(item) for item in row.get("expected_chunk_ids") or []]
+        product_area = str(row.get("product_area") or "")
+        source_refs: list[str] = []
+        if expected_ids:
+            chunk = chunk_by_id.get(expected_ids[0])
+            if chunk:
+                product_area = product_area or str(chunk.get("product_area") or "")
+                source_refs = list(chunk.get("source_refs") or [])
+        out.append(
+            _record(
+                question=str(row["question"]),
+                product_area=product_area,
+                expected_behavior=str(row.get("expected_behavior") or "answer"),
+                expected_chunk_ids=expected_ids,
+                source_refs=source_refs,
+                group=str(row.get("group") or None),
+                extra={"is_anchor": True},
+            )
+        )
+    return out
 
 
 def _record(
@@ -152,13 +277,14 @@ def _record(
     expected_chunk_ids: list[str] | None = None,
     source_refs: list[str] | None = None,
     group: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if expected_behavior not in EXPECTED_BEHAVIORS:
         raise ValueError(f"invalid expected_behavior {expected_behavior!r}")
     group = group or _infer_group(product_area, expected_behavior, question)
     if group not in EXPECTED_GROUPS:
         raise ValueError(f"invalid group {group!r}")
-    return {
+    record = {
         "question_id": "",
         "question": question,
         "group": group,
@@ -167,6 +293,9 @@ def _record(
         "expected_chunk_ids": expected_chunk_ids or [],
         "source_refs": source_refs or [],
     }
+    if extra:
+        record.update(extra)
+    return record
 
 
 def _ensure_group_coverage(rows: list[dict[str, Any]], chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -191,6 +320,7 @@ def _coverage_record(group: str, chunks: list[dict[str, Any]]) -> dict[str, Any]
             expected_chunk_ids=[str(matching_chunk.get("chunk_id") or "")],
             source_refs=list(matching_chunk.get("source_refs") or []),
             group=group,
+            extra={"paraphrase_source": "coverage_fallback", "is_anchor": False},
         )
     behavior = "hard_block" if group == "hard_block_account_finance" else "refuse" if group == "refuse_instance_internal_operation" else "escalate"
     return _record(question=question, product_area=product_area, expected_behavior=behavior, group=group)
@@ -310,6 +440,7 @@ def _pad_questions(rows: list[dict[str, Any]], chunks: list[dict[str, Any]], min
                 expected_chunk_ids=[chunk["chunk_id"]] if chunk.get("chunk_id") else [],
                 source_refs=list(chunk.get("source_refs") or []),
                 group=_group_for_chunk(chunk),
+                extra={"paraphrase_source": "coverage_padding", "is_anchor": False},
             )
         )
         rows = _dedupe_questions(rows)
@@ -326,6 +457,14 @@ def _read_jsonl(path: Path | str) -> list[dict[str, Any]]:
     return rows
 
 
+def _write_jsonl(path: Path | str, rows: list[dict[str, Any]]) -> None:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--chunks", type=Path, required=True)
@@ -333,8 +472,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-questions", type=int, default=50)
     parser.add_argument("--cases", type=Path)
     parser.add_argument("--max-case-questions", type=int, default=12)
+    parser.add_argument("--anchor-questions", type=Path, default=Path(__file__).with_name("anchor_eval_questions.jsonl"))
+    parser.add_argument("--paraphrase-log", type=Path)
+    parser.add_argument("--env", type=Path, default=Path(".env.local"))
+    parser.add_argument("--model", default=DEFAULT_DS_MODEL)
+    parser.add_argument("--answer-questions-per-chunk", type=int, default=DEFAULT_ANSWER_QUESTIONS_PER_CHUNK)
     args = parser.parse_args(argv)
-    generate_eval_questions(args.chunks, args.out, min_questions=args.min_questions, cases_path=args.cases, max_case_questions=args.max_case_questions)
+    generate_eval_questions(
+        args.chunks,
+        args.out,
+        min_questions=args.min_questions,
+        cases_path=args.cases,
+        max_case_questions=args.max_case_questions,
+        anchor_questions_path=args.anchor_questions if args.anchor_questions.exists() else None,
+        paraphrase_log_path=args.paraphrase_log,
+        env_path=args.env,
+        model=args.model,
+        answer_questions_per_chunk=args.answer_questions_per_chunk,
+    )
     return 0
 
 
