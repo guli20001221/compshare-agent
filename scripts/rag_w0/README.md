@@ -4,10 +4,10 @@ This directory contains the offline guardrail and corpus preparation scripts for
 Stage 2B RAG W0.
 
 The production pipeline scripts are deterministic and use only the Python
-standard library. `model_smoke.py` is the only script that calls an LLM, and it is
-only used as a bounded provider gate before running the later batch steps. Link
-snapshotting does not fetch remote content unless `snapshot_links.py
---allow-network` is passed explicitly.
+standard library except for `model_smoke.py`, which calls an LLM first as a
+bounded provider gate and then, when explicitly requested, as the full VL batch
+for customer-facing screenshots. Link snapshotting does not fetch remote content
+unless `snapshot_links.py --allow-network` is passed explicitly.
 
 Typical order:
 
@@ -24,6 +24,7 @@ python scripts/rag_w0/clean_docs.py --normalized-dir F:\compshare-agent-runs\rag
 python scripts/rag_w0/validate_cleaned_docs.py --dir F:\compshare-agent-runs\rag-w0-current\cleaned_docs
 python scripts/rag_w0/mine_internal_cases.py --source F:\compshare-agent-runs\rag-source-bundle-20260512\internal_cases\spt-record.txt --source-id wxwork-spt-record-2026-05 --out F:\compshare-agent-runs\rag-w0-current\internal_case_mining\cases.jsonl --approval-template-out F:\compshare-agent-runs\rag-w0-current\internal_case_mining\approval_templates.jsonl
 python scripts/rag_w0/model_smoke.py --asset-manifest F:\compshare-agent-runs\rag-w0-current\asset_manifest.json --cases F:\compshare-agent-runs\rag-w0-current\internal_case_mining\cases.jsonl --out F:\compshare-agent-runs\rag-w0-current\model_smoke_summary.json --emit-asset-notes F:\compshare-agent-runs\rag-w0-current\asset_notes.smoke.jsonl
+python scripts/rag_w0/model_smoke.py --full-vl-batch --source-manifest F:\compshare-agent-runs\rag-w0-current\source_manifest.json --asset-manifest F:\compshare-agent-runs\rag-w0-current\asset_manifest.json --out F:\compshare-agent-runs\rag-w0-current\full_vl_summary.json --emit-asset-notes F:\compshare-agent-runs\rag-w0-current\asset_notes.jsonl
 python scripts/rag_w0/chunk_docs.py --cleaned-dir F:\compshare-agent-runs\rag-w0-current\cleaned_docs --asset-notes F:\compshare-agent-runs\rag-w0-current\asset_notes.jsonl --links F:\compshare-agent-runs\rag-w0-current\link_manifest.json --cases F:\compshare-agent-runs\rag-w0-current\internal_case_mining\cases.jsonl --out F:\compshare-agent-runs\rag-w0-current\chunks\chunks_w0.candidate.jsonl
 python scripts/rag_w0/validate_chunks.py --chunks F:\compshare-agent-runs\rag-w0-current\chunks\chunks_w0.candidate.jsonl
 python scripts/rag_w0/generate_eval_questions.py --chunks F:\compshare-agent-runs\rag-w0-current\chunks\chunks_w0.candidate.jsonl --cases F:\compshare-agent-runs\rag-w0-current\internal_case_mining\cases.jsonl --out F:\compshare-agent-runs\rag-w0-current\golden_questions.jsonl
