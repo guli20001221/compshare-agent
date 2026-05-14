@@ -1,0 +1,27 @@
+[
+  {
+    "source_doc_id": "feishu-usage-faq-latest",
+    "section_title_substring": "实例卡初始化或卡启动中",
+    "expected_product_area": "init_failure"
+  },
+  {
+    "source_doc_id": "feishu-usage-faq-latest",
+    "section_title_substring": "2.2 关于“卡初始化和启动中”的实例问题",
+    "expected_product_area": "init_failure"
+  },
+  {
+    "source_doc_id": "feishu-usage-faq-latest",
+    "section_title_substring": "2.1 实例计费模式说明",
+    "expected_product_area": "billing_rule"
+  },
+  {
+    "source_doc_id": "feishu-usage-faq-latest",
+    "section_title_substring": "ssh无法连接、xshell无法连接、vscode无法连接",
+    "expected_product_area": "login"
+  },
+  {
+    "source_doc_id": "feishu-usage-faq-latest",
+    "section_title_substring": "自制镜像容量限制",
+    "expected_product_area": "image"
+  }
+]

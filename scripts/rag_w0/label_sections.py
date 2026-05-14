@@ -23,6 +23,21 @@ PROMPT_VERSION = "label_v1"
 AUTO_ACCEPT_CONFIDENCE = 0.85
 REVIEW_MIN_CONFIDENCE = 0.70
 DEFAULT_MULTI_TOPIC_SOURCES = Path(__file__).with_name("multi_topic_sources.json")
+CONTENT_EMPTY_LABEL_REASONS = frozenset(
+    {
+        "out_of_scope",
+        "mixed_topic",
+        "too_short",
+        "unclear",
+        "unsafe",
+    }
+)
+EMPTY_LABEL_REASONS = CONTENT_EMPTY_LABEL_REASONS | frozenset(
+    {
+        "classifier_returned_empty",
+        "classifier_error",
+    }
+)
 Classifier = Callable[[dict[str, Any]], dict[str, Any]]
 
 
@@ -105,18 +120,85 @@ def _label_one_section(
 ) -> dict[str, Any]:
     try:
         classified = classifier(target)
-    except Exception as exc:  # pragma: no cover - exercised with injected classifier
-        classified = {
-            "selected_area": "",
-            "confidence": 0,
-            "reasoning": f"classifier_error: {type(exc).__name__}",
-            "needs_review": True,
-        }
+    except Exception as exc:
+        return _label_row(
+            target,
+            classified={
+                "selected_area": "",
+                "confidence": 0,
+                "empty_label_reason": "classifier_error",
+                "reasoning": f"classifier_error: {type(exc).__name__}: {exc}",
+                "needs_review": True,
+            },
+            model=model,
+            prompt_version=prompt_version,
+            smoke_run_id=smoke_run_id,
+            attempts=1,
+        )
+
+    if _needs_empty_label_retry(classified):
+        try:
+            classified = classifier(target)
+            attempts = 2
+        except Exception as exc:
+            return _label_row(
+                target,
+                classified={
+                    "selected_area": "",
+                    "confidence": 0,
+                    "empty_label_reason": "classifier_error",
+                    "reasoning": f"classifier_error: {type(exc).__name__}: {exc}",
+                    "needs_review": True,
+                },
+                model=model,
+                prompt_version=prompt_version,
+                smoke_run_id=smoke_run_id,
+                attempts=2,
+            )
+        if _needs_empty_label_retry(classified):
+            classified = {
+                **classified,
+                "selected_area": "",
+                "empty_label_reason": "classifier_returned_empty",
+                "reasoning": str(classified)[:200],
+                "needs_review": True,
+            }
+    else:
+        attempts = 1
+
+    return _label_row(
+        target,
+        classified=classified,
+        model=model,
+        prompt_version=prompt_version,
+        smoke_run_id=smoke_run_id,
+        attempts=attempts,
+    )
+
+
+def _needs_empty_label_retry(classified: dict[str, Any]) -> bool:
+    area = str(classified.get("selected_area") or classified.get("product_area") or "").strip()
+    if area in ALLOWED_PRODUCT_AREAS:
+        return False
+    reason = str(classified.get("empty_label_reason") or "").strip()
+    return reason not in CONTENT_EMPTY_LABEL_REASONS
+
+
+def _label_row(
+    target: dict[str, Any],
+    *,
+    classified: dict[str, Any],
+    model: str | None,
+    prompt_version: str,
+    smoke_run_id: str | None,
+    attempts: int,
+) -> dict[str, Any]:
 
     area = str(classified.get("selected_area") or classified.get("product_area") or "").strip()
     confidence = _confidence(classified.get("confidence"))
     needs_split = classified.get("needs_split") is True
     selected_area = area if area in ALLOWED_PRODUCT_AREAS else ""
+    empty_label_reason = "" if selected_area else _empty_label_reason(classified.get("empty_label_reason"))
     needs_review = (
         bool(classified.get("needs_review"))
         or needs_split
@@ -129,16 +211,25 @@ def _label_one_section(
         "source_ref": target["source_ref"],
         "section_title": target["section_title"],
         "selected_area": selected_area,
+        "empty_label_reason": empty_label_reason,
         "confidence": confidence,
         "reasoning": str(classified.get("reasoning") or "")[:500],
         "alternates": classified.get("alternates") if isinstance(classified.get("alternates"), list) else [],
         "needs_split": needs_split,
         "needs_review": needs_review,
+        "status": "needs_review" if needs_review else "accepted",
         "model": str(classified.get("model") or model or DEFAULT_DS_MODEL),
         "prompt_version": prompt_version,
         "labeled_at": datetime.now(timezone.utc).isoformat(),
         "smoke_run_id": smoke_run_id or "",
+        "attempts": attempts,
+        "content_preview": target["content"][:500],
     }
+
+
+def _empty_label_reason(value: Any) -> str:
+    reason = str(value or "").strip()
+    return reason if reason in EMPTY_LABEL_REASONS else "classifier_returned_empty"
 
 
 def _load_multi_topic_source_ids(path: Path | str) -> set[str]:
@@ -179,6 +270,7 @@ def _modelverse_classifier(*, env_path: Path, model: str | None) -> Classifier:
 
 def _classification_prompt(target: dict[str, Any]) -> str:
     areas = ", ".join(sorted(ALLOWED_PRODUCT_AREAS))
+    empty_reasons = ", ".join(sorted(CONTENT_EMPTY_LABEL_REASONS))
     return (
         "You are labeling one cleaned CompShare RAG section. Return only a JSON object.\n"
         f"selected_area must be one of: {areas}.\n"
@@ -194,7 +286,10 @@ def _classification_prompt(target: dict[str, Any]) -> str:
         "- init_failure: instance stuck initializing, startup failure, GPU unavailable during startup, image load failure.\n"
         "- resource_purchase: GPU spec, inventory, purchase flow or resource package.\n"
         "If the section is clearly mixed and should be split before labeling, set needs_split=true.\n"
-        "Otherwise return selected_area, confidence from 0 to 1, one-sentence reasoning, and up to two alternates.\n\n"
+        "If the section cannot be assigned to exactly one product area, leave selected_area empty and set empty_label_reason "
+        f"to one of: {empty_reasons}.\n"
+        "Never return an empty selected_area with an empty empty_label_reason.\n"
+        "Always include reasoning as a short free-text explanation. Return confidence from 0 to 1 and up to two alternates.\n\n"
         f"source_ref: {target['source_ref']}\n"
         f"section_title: {target['section_title']}\n"
         f"content:\n{target['content'][:3000]}\n"
@@ -217,7 +312,22 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def _write_review_queues(out_dir: Path, rows: list[dict[str, Any]]) -> None:
     _write_jsonl(out_dir / "needs_review.jsonl", [row for row in rows if row.get("needs_review") is True])
-    _write_jsonl(out_dir / "needs_split.jsonl", [row for row in rows if row.get("needs_split") is True])
+    _write_jsonl(out_dir / "needs_split.jsonl", [_needs_split_row(row) for row in rows if row.get("needs_split") is True])
+
+
+def _needs_split_row(row: dict[str, Any]) -> dict[str, Any]:
+    key = row.get("key") if isinstance(row.get("key"), dict) else {}
+    source_doc_id = str(key.get("source_doc_id") or "")
+    section_index = key.get("section_index")
+    return {
+        "section_id": f"{source_doc_id}::{section_index}",
+        "source_doc_id": source_doc_id,
+        "section_title": str(row.get("section_title") or ""),
+        "current_label_attempt": str(row.get("selected_area") or ""),
+        "current_confidence": _confidence(row.get("confidence")),
+        "preview_text": str(row.get("content_preview") or row.get("reasoning") or row.get("section_title") or "")[:500],
+        "flagged_at": str(row.get("labeled_at") or ""),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -29,6 +29,7 @@ MAX_CHUNK_CONTENT_RUNES = 4000
 ASSET_NOTE_MAX_CHARS = 300
 AUTO_ACCEPT_SECTION_LABEL_CONFIDENCE = 0.85
 REVIEW_SECTION_LABEL_CONFIDENCE = 0.70
+SHA256_PREFIX_LEN = 16
 ASSET_NOTE_RE = re.compile(r"<!--\s*asset_note:\s*(\{.*?\})\s*-->", re.DOTALL)
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -124,6 +125,19 @@ def _chunks_for_doc(
                 continue
             chunk_title = title if part_index == 1 else f"{title} ({part_index})"
             product_area = label_area or selected_area or _infer_product_area(f"{source_ref} {chunk_title} {part}")
+            if label_area:
+                labeled_via = "section-sidecar"
+            elif selected_area:
+                labeled_via = "doc-psa"
+            else:
+                labeled_via = "keyword"
+            LOGGER.debug(
+                "section_id=%s::%s via=%s product_area=%s",
+                _source_doc_id(source_ref),
+                section_index - 1,
+                labeled_via,
+                product_area,
+            )
             chunk = _base_chunk(
                 chunk_id=_chunk_id(product_area, source_ref, section_index, part_index),
                 kb_version=kb_version,
@@ -575,7 +589,7 @@ def _infer_product_area(text: str) -> str:
 
 def _content_hash(content: str) -> str:
     normalized = re.sub(r"\s+", " ", content).strip()
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:SHA256_PREFIX_LEN]
 
 
 def _source_doc_id(source_ref: str) -> str:
@@ -600,11 +614,7 @@ def _section_label_key_from_row(row: dict[str, Any]) -> str:
             key.get("section_index"),
             str(key.get("content_sha256_prefix") or ""),
         )
-    return _section_label_key(
-        str(row.get("source_doc_id") or row.get("source_ref") or ""),
-        row.get("section_index"),
-        str(row.get("content_hash") or row.get("content_sha256_prefix") or ""),
-    )
+    return ""
 
 
 def _question_patterns(title: str, product_area: str) -> list[str]:

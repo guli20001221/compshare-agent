@@ -27,6 +27,7 @@ from rag_w0 import validate_case_approvals
 from rag_w0 import validate_chunks
 from rag_w0 import validate_cleaned_docs
 from rag_w0 import validate_source
+from rag_w0 import verify_pinned_sections
 
 
 class RagW0ScriptTests(unittest.TestCase):
@@ -1156,6 +1157,248 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertTrue(any("实例卡初始化或卡启动中" in chunk["title"] for chunk in init_chunks))
             self.assertTrue(any("欠费订单" in chunk["content"] for chunk in billing_chunks))
             self.assertFalse(any("欠费订单" in chunk["content"] for chunk in init_chunks))
+
+    def test_stable_key_product_area_independent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = root / "cleaned"
+            cleaned.mkdir()
+            (cleaned / "faq.md").write_text(
+                "---\nsource_trace_hash: abc\nsafety_state: customer_safe_cleaned\ninclude_status: include_after_cleaning\n---\n"
+                "# FAQ\n同一段内容用于验证标签变化不会改变稳定键。\n",
+                encoding="utf-8",
+            )
+            config = root / "multi_topic_sources.json"
+            config.write_text(json.dumps({"schema_version": "multi_topic_sources.v1", "sources": [{"source_id": "faq"}]}), encoding="utf-8")
+            first = root / "first.jsonl"
+            second = root / "second.jsonl"
+
+            label_sections.label_sections(
+                cleaned,
+                config,
+                first,
+                classifier=lambda target: {"selected_area": "init_failure", "confidence": 0.95, "reasoning": "first"},
+            )
+            label_sections.label_sections(
+                cleaned,
+                config,
+                second,
+                classifier=lambda target: {"selected_area": "billing_rule", "confidence": 0.95, "reasoning": "second"},
+            )
+
+            first_row = json.loads(first.read_text(encoding="utf-8").splitlines()[0])
+            second_row = json.loads(second.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(first_row["key"], second_row["key"])
+            self.assertNotEqual(first_row["selected_area"], second_row["selected_area"])
+
+    def test_stable_key_invalidates_on_content_edit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = root / "cleaned"
+            cleaned.mkdir()
+            doc = cleaned / "faq.md"
+            doc.write_text(
+                "---\nsource_trace_hash: abc\nsafety_state: customer_safe_cleaned\ninclude_status: include_after_cleaning\n---\n"
+                "# Billing\nThis billing invoice refund guide keeps keyword fallback when sidecar is stale.\n",
+                encoding="utf-8",
+            )
+            config = root / "multi_topic_sources.json"
+            config.write_text(json.dumps({"schema_version": "multi_topic_sources.v1", "sources": [{"source_id": "faq"}]}), encoding="utf-8")
+            labels = root / "labels.jsonl"
+            label_sections.label_sections(
+                cleaned,
+                config,
+                labels,
+                classifier=lambda target: {"selected_area": "init_failure", "confidence": 0.95, "reasoning": "old label"},
+            )
+            old_key = json.loads(labels.read_text(encoding="utf-8").splitlines()[0])["key"]
+
+            doc.write_text(
+                "---\nsource_trace_hash: abc\nsafety_state: customer_safe_cleaned\ninclude_status: include_after_cleaning\n---\n"
+                "# Billing\nThis billing invoice refund guide keeps keyword fallback when sidecar is stale. Edited.\n",
+                encoding="utf-8",
+            )
+            new_target = label_sections.iter_label_targets(cleaned, multi_topic_ids={"faq"})[0]
+            self.assertNotEqual(old_key["content_sha256_prefix"], new_target["key"]["content_sha256_prefix"])
+
+            out = root / "chunks.jsonl"
+            chunk_docs.chunk_documents(cleaned, out, section_labels_path=labels, require_complete_inputs=False)
+            chunks = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual({chunk["product_area"] for chunk in chunks}, {"billing_rule"})
+
+    def test_audit_fields_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = root / "cleaned"
+            cleaned.mkdir()
+            (cleaned / "faq.md").write_text(
+                "---\nsource_trace_hash: abc\nsafety_state: customer_safe_cleaned\ninclude_status: include_after_cleaning\n---\n"
+                "# FAQ\nThis section cannot be assigned confidently.\n",
+                encoding="utf-8",
+            )
+            config = root / "multi_topic_sources.json"
+            config.write_text(json.dumps({"schema_version": "multi_topic_sources.v1", "sources": [{"source_id": "faq"}]}), encoding="utf-8")
+            labels = root / "labels.jsonl"
+            label_sections.label_sections(
+                cleaned,
+                config,
+                labels,
+                classifier=lambda target: {
+                    "selected_area": "",
+                    "empty_label_reason": "unclear",
+                    "confidence": 0.20,
+                    "reasoning": "not enough signal",
+                },
+                smoke_run_id="test-run",
+            )
+            row = json.loads(labels.read_text(encoding="utf-8").splitlines()[0])
+            for field in ("model", "prompt_version", "labeled_at", "smoke_run_id", "confidence", "attempts"):
+                self.assertIn(field, row)
+            self.assertEqual(bool(row["selected_area"]) + bool(row["empty_label_reason"]), 1)
+            self.assertEqual(row["empty_label_reason"], "unclear")
+            self.assertEqual(row["smoke_run_id"], "test-run")
+
+    def test_label_one_section_exception_fallback(self):
+        target = {
+            "key": {"source_doc_id": "faq", "section_index": 0, "content_sha256_prefix": "abc"},
+            "source_ref": "faq",
+            "section_title": "FAQ",
+            "content": "A section that triggers a classifier exception.",
+        }
+
+        row = label_sections._label_one_section(
+            target,
+            classifier=lambda target: (_ for _ in ()).throw(RuntimeError("boom")),
+            model="test-model",
+            prompt_version="label_test",
+            smoke_run_id="test-run",
+        )
+
+        self.assertEqual(row["selected_area"], "")
+        self.assertEqual(row["empty_label_reason"], "classifier_error")
+        self.assertEqual(row["status"], "needs_review")
+        self.assertIn("RuntimeError", row["reasoning"])
+        self.assertIn("boom", row["reasoning"])
+        self.assertEqual(row["attempts"], 1)
+
+    def test_empty_selection_retry_and_fallback(self):
+        calls: list[dict] = []
+
+        def classifier(target: dict) -> dict:
+            calls.append(target)
+            return {"selected_area": "", "empty_label_reason": "", "confidence": 0, "reasoning": ""}
+
+        target = {
+            "key": {"source_doc_id": "faq", "section_index": 0, "content_sha256_prefix": "abc"},
+            "source_ref": "faq",
+            "section_title": "FAQ",
+            "content": "A section where the classifier returns an invalid empty label twice.",
+        }
+
+        row = label_sections._label_one_section(
+            target,
+            classifier=classifier,
+            model="test-model",
+            prompt_version="label_test",
+            smoke_run_id="test-run",
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(row["selected_area"], "")
+        self.assertEqual(row["empty_label_reason"], "classifier_returned_empty")
+        self.assertEqual(row["attempts"], 2)
+        self.assertEqual(row["status"], "needs_review")
+
+    def test_verify_pinned_sections_acceptance_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pinned = root / "pinned.json"
+            labels = root / "labels.jsonl"
+            needs_split = root / "needs_split.jsonl"
+            chunks = root / "chunks.jsonl"
+            pinned_rows = [
+                {"source_doc_id": "faq", "section_title_substring": "Init", "expected_product_area": "init_failure"},
+                {"source_doc_id": "faq", "section_title_substring": "Billing", "expected_product_area": "billing_rule"},
+                {"source_doc_id": "faq", "section_title_substring": "Login", "expected_product_area": "login"},
+                {"source_doc_id": "faq", "section_title_substring": "Image", "expected_product_area": "image"},
+                {"source_doc_id": "faq", "section_title_substring": "Model", "expected_product_area": "modelverse"},
+            ]
+            label_rows = [
+                {
+                    "key": {"source_doc_id": "faq", "section_index": index, "content_sha256_prefix": f"hash{index}"},
+                    "section_title": title,
+                    "selected_area": area,
+                    "empty_label_reason": "",
+                    "confidence": 0.95,
+                }
+                for index, (title, area) in enumerate(
+                    [
+                        ("Init startup", "init_failure"),
+                        ("Billing rules", "billing_rule"),
+                        ("Login SSH", "login"),
+                        ("Image guide", "image"),
+                        ("Model package", "modelverse"),
+                    ]
+                )
+            ]
+            label_rows.append(
+                {
+                    "key": {"source_doc_id": "faq", "section_index": 99, "content_sha256_prefix": "empty"},
+                    "section_title": "Unclear",
+                    "selected_area": "",
+                    "empty_label_reason": "unclear",
+                    "confidence": 0,
+                }
+            )
+            needs_split_rows = [
+                {
+                    "section_id": f"faq::{i}",
+                    "source_doc_id": "faq",
+                    "section_title": f"Mixed {i}",
+                    "current_label_attempt": "",
+                    "current_confidence": 0.5,
+                    "preview_text": "This preview is intentionally long enough for the review queue contract.",
+                    "flagged_at": "2026-05-14T00:00:00Z",
+                }
+                for i in range(6)
+            ]
+            areas = ["init_failure", "billing_rule", "login", "image", "modelverse", "windows"]
+            chunk_rows = []
+            for index in range(100):
+                area = areas[index % len(areas)]
+                chunk_rows.append(
+                    {
+                        "chunk_id": f"w0-{area}-{index}",
+                        "product_area": area,
+                    }
+                )
+
+            pinned.write_text(json.dumps(pinned_rows, ensure_ascii=False), encoding="utf-8")
+            labels.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in label_rows) + "\n", encoding="utf-8")
+            needs_split.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in needs_split_rows) + "\n", encoding="utf-8")
+            chunks.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in chunk_rows) + "\n", encoding="utf-8")
+
+            summary = verify_pinned_sections.verify_acceptance(
+                pinned_path=pinned,
+                labels_path=labels,
+                needs_split_path=needs_split,
+                chunks_path=chunks,
+            )
+
+            self.assertEqual(summary["pinned_count"], 5)
+            self.assertTrue(summary["needs_split_warning"])
+            self.assertEqual(summary["chunk_count"], 100)
+
+            bad_rows = list(label_rows)
+            bad_rows[-1] = dict(bad_rows[-1], empty_label_reason="")
+            labels.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in bad_rows) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "empty_label_reason"):
+                verify_pinned_sections.verify_acceptance(
+                    pinned_path=pinned,
+                    labels_path=labels,
+                    needs_split_path=needs_split,
+                    chunks_path=chunks,
+                )
 
     def test_plain_faq_heading_detection_does_not_treat_answer_sentence_as_heading(self):
         sections = chunk_docs._split_sections(
