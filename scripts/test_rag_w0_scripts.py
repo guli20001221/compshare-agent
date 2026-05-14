@@ -644,6 +644,66 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertEqual(updated["snapshot_failure_count"], 0)
             self.assertEqual(updated["assets"][1]["image_path"], "F:/bundle/images/local.png")
 
+    def test_extract_and_normalize_handle_multiline_external_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = root / "guide.md"
+            doc.write_text(
+                "# Image guide\n"
+                "Before\n"
+                "![deploy](\n"
+                "https://www-s.ucloud.cn/path/deploy.png)\n"
+                "After\n",
+                encoding="utf-8",
+            )
+            source_manifest = {
+                "sources": [
+                    {
+                        "id": "guide",
+                        "type": "gitlab_clone_subset",
+                        "customer_safe": "mixed",
+                        "include_status": "include_after_cleaning",
+                        "paths": {"path": str(doc)},
+                    }
+                ]
+            }
+
+            asset_manifest, _ = extract_assets.extract_assets_and_links(source_manifest)
+
+            self.assertEqual(asset_manifest["asset_count"], 1)
+            asset = asset_manifest["assets"][0]
+            self.assertEqual(asset["final_state"], "external_asset_snapshot_required")
+            self.assertEqual(asset["line"], 3)
+            self.assertEqual(asset["image_ref"], "https://www-s.ucloud.cn/path/deploy.png")
+
+            asset["final_state"] = "included_with_vl_note"
+            asset["include_in_rag"] = True
+            asset["image_path"] = str(root / "deploy.png")
+            notes = [
+                {
+                    "asset_id": asset["asset_id"],
+                    "include_in_rag": True,
+                    "visual_type": "operation_screenshot",
+                    "description": "Deploy button screenshot",
+                    "highlighted_ui": "Deploy",
+                    "user_action": "Click deploy",
+                    "next_step": "Wait for instance",
+                    "confidence": "high",
+                    "final_state": "included_with_vl_note",
+                    "requires_review": False,
+                    "model_metadata": {"vl_executed": True},
+                }
+            ]
+            out_dir = root / "normalized"
+
+            normalize_docs.normalize_documents(source_manifest, asset_manifest, {"links": []}, notes, out_dir)
+
+            text = next(out_dir.glob("*.md")).read_text(encoding="utf-8")
+            self.assertIn("<!-- asset_note:", text)
+            self.assertIn("Before", text)
+            self.assertIn("After", text)
+            self.assertNotIn("![deploy]", text)
+
     def test_normalize_docs_inserts_asset_notes_and_front_matter(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1002,6 +1062,32 @@ class RagW0ScriptTests(unittest.TestCase):
             path.write_text(json.dumps(future_case_with_approval, ensure_ascii=False) + "\n", encoding="utf-8")
             self.assertEqual(validate_chunks.validate_chunks(path)["chunk_count"], 1)
 
+    def test_validate_chunks_rejects_asset_refs_caption_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "chunks.jsonl"
+            chunk = {
+                "chunk_id": "w0-login-doc-001",
+                "kb_version": "kb.test",
+                "source_type": "faq",
+                "product_area": "login",
+                "acl": "customer_safe",
+                "title": "Login",
+                "question_patterns": ["How to login"],
+                "content": "Step one.\n[\u56fe\u8bf4] Login screenshot.",
+                "source_refs": ["doc"],
+                "asset_refs": ["asset-1", "asset-2"],
+                "confidence": "high",
+                "valid_from": "2026-05-13",
+                "evidence_kind": "knowledge",
+                "surface_url": None,
+                "retrieval_score_hint": None,
+            }
+            path.write_text(json.dumps(chunk, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "asset_refs count 2 does not match caption count 1"):
+                validate_chunks.validate_chunks(path)
+
     def test_chunk_docs_emits_valid_chunks_and_preserves_asset_refs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1025,6 +1111,46 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertTrue(all(chunk["source_type"] in {"faq", "runbook"} for chunk in chunks))
             self.assertTrue(any("asset-1" in chunk["asset_refs"] for chunk in chunks))
             self.assertEqual(validate_chunks.validate_chunks(out)["chunk_count"], len(chunks))
+
+    def test_chunk_docs_assigns_asset_refs_to_matching_split_part(self):
+        note1 = json.dumps(
+            {
+                "asset_id": "asset-1",
+                "include_in_rag": True,
+                "visual_type": "operation_screenshot",
+                "description": "First screenshot",
+            },
+            ensure_ascii=False,
+        )
+        note2 = json.dumps(
+            {
+                "asset_id": "asset-2",
+                "include_in_rag": True,
+                "visual_type": "operation_screenshot",
+                "description": "Second screenshot",
+            },
+            ensure_ascii=False,
+        )
+        chunks = self._chunk_text(
+            "# Login\n"
+            f"First paragraph with enough text for chunking. <!-- asset_note: {note1} -->\n\n"
+            f"Second paragraph with enough text for chunking. <!-- asset_note: {note2} -->\n",
+            max_chars=90,
+        )
+
+        chunks_with_assets = [chunk for chunk in chunks if chunk["asset_refs"]]
+        self.assertEqual([chunk["asset_refs"] for chunk in chunks_with_assets], [["asset-1"], ["asset-2"]])
+        for chunk in chunks_with_assets:
+            self.assertEqual(len(chunk["asset_refs"]), chunk["content"].count("[\u56fe\u8bf4]"))
+
+    def test_chunk_docs_rejects_raw_markdown_image(self):
+        with self.assertRaisesRegex(ValueError, "raw markdown image"):
+            self._chunk_text(
+                "# Image\n"
+                "This paragraph keeps a raw image and must fail before promotion.\n"
+                "![deploy](\n"
+                "https://www-s.ucloud.cn/path/deploy.png)\n",
+            )
 
     def test_chunk_docs_uses_front_matter_product_area_for_error_codes(self):
         chunks = self._chunk_cleaned_doc(

@@ -31,6 +31,8 @@ AUTO_ACCEPT_SECTION_LABEL_CONFIDENCE = 0.85
 REVIEW_SECTION_LABEL_CONFIDENCE = 0.70
 SHA256_PREFIX_LEN = 16
 ASSET_NOTE_RE = re.compile(r"<!--\s*asset_note:\s*(\{.*?\})\s*-->", re.DOTALL)
+RAW_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(\s*[^)]+\)", re.DOTALL)
+ASSET_CAPTION_MARKER = "[\u56fe\u8bf4]"
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 REDACTION_MARKER_RE = re.compile(r"\[(?:PERSON|RESOURCE_ID|LINK|SECRET|PRIVATE_PROCESS|PRIVATE_SYSTEM)_REDACTED\]")
@@ -120,6 +122,7 @@ def _chunks_for_doc(
         if needs_split:
             LOGGER.info("section label requested split; skipping source=%s section=%s title=%s", source_ref, section_index, title)
             continue
+        asset_ref_offset = 0
         for part_index, part in enumerate(_split_long_text(content, max_chars=max_chars), start=1):
             if len(part.strip()) < 20:
                 continue
@@ -138,15 +141,20 @@ def _chunks_for_doc(
                 labeled_via,
                 product_area,
             )
+            caption_count = _asset_caption_count(part)
+            part_asset_refs = asset_refs[asset_ref_offset : asset_ref_offset + caption_count]
+            asset_ref_offset += caption_count
+            chunk_id = _chunk_id(product_area, source_ref, section_index, part_index)
+            _ensure_no_raw_image(part, chunk_id)
             chunk = _base_chunk(
-                chunk_id=_chunk_id(product_area, source_ref, section_index, part_index),
+                chunk_id=chunk_id,
                 kb_version=kb_version,
                 source_type=_infer_source_type(source_ref, product_area),
                 product_area=product_area,
                 title=chunk_title,
                 content=part,
                 source_refs=[source_ref],
-                asset_refs=asset_refs,
+                asset_refs=part_asset_refs,
                 confidence="medium" if "REDACTED" in part else "high",
                 valid_from=valid_from,
             )
@@ -487,10 +495,28 @@ def _asset_refs(text: str, *, strict_asset_notes: bool) -> list[str]:
         payload = _parse_asset_note_payload(match, strict=strict_asset_notes)
         if payload is None or not _should_include_asset_note(payload):
             continue
+        if not _render_asset_note_text(payload):
+            continue
         asset_id = payload.get("asset_id")
         if asset_id and asset_id not in refs:
             refs.append(str(asset_id))
     return refs
+
+
+def _asset_caption_count(text: str) -> int:
+    return text.count(ASSET_CAPTION_MARKER)
+
+
+def _ensure_no_raw_image(content: str, chunk_id: str) -> None:
+    matches = RAW_IMAGE_RE.findall(content)
+    if not matches:
+        return
+    first = " ".join(matches[0].split())
+    raise ValueError(
+        f"chunk {chunk_id} contains {len(matches)} raw markdown image(s); "
+        "upstream extract_assets / snapshot_assets / normalize_docs must convert all images "
+        f"to asset_note blocks before chunking. First offender: {first!r}"
+    )
 
 
 def _clean_chunk_content(text: str, *, strict_asset_notes: bool) -> str:

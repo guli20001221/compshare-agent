@@ -57,7 +57,7 @@ IMAGE_EXTENSIONS = {
 }
 MARKDOWN_EXTENSIONS = {".md", ".mdx"}
 
-IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(\s*([^\)\s]+)(?:\s+\"[^\"]*\")?\s*\)", re.DOTALL)
 LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 

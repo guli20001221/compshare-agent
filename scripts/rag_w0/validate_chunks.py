@@ -51,6 +51,7 @@ INTERNAL_CASE_SOURCE_PREFIXES = (
     "internal_case:",
     "internal_case/",
 )
+ASSET_CAPTION_MARKER = "[\u56fe\u8bf4]"
 
 
 def validate_chunks(path: Path | str) -> dict[str, Any]:
@@ -110,6 +111,7 @@ def _validate_chunk(row: int, chunk: dict[str, Any]) -> None:
         raise ValueError(f"row {row}: source_refs must be a list")
     if not isinstance(chunk["asset_refs"], list):
         raise ValueError(f"row {row}: asset_refs must be a list")
+    _validate_asset_ref_caption_alignment(row, chunk)
     if "question_patterns" in chunk and not isinstance(chunk["question_patterns"], list):
         raise ValueError(f"row {row}: question_patterns must be a list")
     if chunk["retrieval_score_hint"] is not None and not isinstance(chunk["retrieval_score_hint"], (int, float)):
@@ -135,6 +137,14 @@ def _has_internal_case_source_ref(source_refs: list[Any]) -> bool:
         if any(ref.startswith(prefix) for prefix in INTERNAL_CASE_SOURCE_PREFIXES):
             return True
     return False
+
+
+def _validate_asset_ref_caption_alignment(row: int, chunk: dict[str, Any]) -> None:
+    ref_count = len(chunk.get("asset_refs") or [])
+    caption_count = str(chunk.get("content") or "").count(ASSET_CAPTION_MARKER)
+    if ref_count != caption_count:
+        chunk_id = chunk.get("chunk_id") or f"row {row}"
+        raise ValueError(f"row {row}: chunk {chunk_id} asset_refs count {ref_count} does not match caption count {caption_count}")
 
 
 def main(argv: list[str] | None = None) -> int:
