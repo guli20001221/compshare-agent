@@ -129,16 +129,16 @@ def _safe_front_matter(meta: dict[str, str]) -> str:
         ]
     )
     source_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    return "\n".join(
-        [
-            "---",
-            f"source_trace_hash: {source_hash}",
-            "safety_state: customer_safe_cleaned",
-            f"include_status: {meta.get('include_status', '')}",
-            "---",
-            "",
-        ]
-    )
+    lines = [
+        "---",
+        f"source_trace_hash: {source_hash}",
+        "safety_state: customer_safe_cleaned",
+        f"include_status: {meta.get('include_status', '')}",
+    ]
+    if meta.get("source_selection_product_area"):
+        lines.append(f"source_selection_product_area: {meta['source_selection_product_area']}")
+    lines.extend(["---", ""])
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
