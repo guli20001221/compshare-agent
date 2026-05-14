@@ -1,0 +1,59 @@
+{
+  "schema_version": "rag_w0_gitlab_source_allowlist.v1",
+  "sources": [
+    {
+      "source_id": "gitlab-compshare-docs",
+      "doc_path": "pages/operation/gpu/logininstance.md",
+      "product_area": "login",
+      "reason": "SSH, Jupyter, web SSH, VNC, FinalShell, and VSCode login guidance"
+    },
+    {
+      "source_id": "gitlab-compshare-docs",
+      "doc_path": "pages/operation/gpu/createresources.md",
+      "product_area": "resource_purchase",
+      "reason": "GPU resource creation and purchase flow basics"
+    },
+    {
+      "source_id": "gitlab-compshare-docs",
+      "doc_path": "pages/gpus/compshareerrorcode.md",
+      "product_area": "init_failure",
+      "reason": "Customer-facing error codes for arrears, expiry, unsupported image/GPU, and insufficient resources"
+    },
+    {
+      "source_id": "gitlab-compshare-docs",
+      "doc_path": "pages/operation/gpu/resourcemonitoring.md",
+      "product_area": "monitor",
+      "reason": "Resource monitoring UI and terminology"
+    },
+    {
+      "source_id": "gitlab-compshare-docs",
+      "doc_path": "pages/operation/image/imagecommunity.md",
+      "product_area": "image",
+      "reason": "Community image concepts"
+    },
+    {
+      "source_id": "gitlab-compshare-docs",
+      "doc_path": "pages/operation/charge/bill.md",
+      "product_area": "billing_rule",
+      "reason": "Billing rules and bill guidance"
+    },
+    {
+      "source_id": "gitlab-compshare-docs",
+      "doc_path": "pages/operation/charge/billdescribe.md",
+      "product_area": "billing_rule",
+      "reason": "Billing mode explanation"
+    },
+    {
+      "source_id": "gitlab-compshare-docs",
+      "doc_path": "pages/modelverse/package_plan/package.md",
+      "product_area": "modelverse",
+      "reason": "ModelVerse package purchase and usage"
+    },
+    {
+      "source_id": "gitlab-compshare-docs",
+      "doc_path": "pages/modelverse/package_plan/logic.md",
+      "product_area": "modelverse",
+      "reason": "ModelVerse package rules"
+    }
+  ]
+}

@@ -104,7 +104,7 @@ def run_full_vl_batch(
         "qwen_vl_model": qwen_model,
         "prompt_version": DEFAULT_SMOKE_PROMPT_VERSION,
         "target_count": len(samples),
-        "asset_note_count": sum(1 for result in vl_results if result.get("pass")),
+        "asset_note_count": _vl_asset_note_count(vl_results),
         "vl": _summarize_full_vl(public_vl_results),
         "vl_samples": public_vl_results,
     }
@@ -180,7 +180,33 @@ def _run_vl_samples(client: ModelVerseClient, model: str, selected: list[dict[st
                 ],
             }
         ]
-        parsed = _extract_json(client.chat(model=model, messages=messages, max_tokens=1200, json_mode=False))
+        try:
+            parsed = _extract_json(client.chat(model=model, messages=messages, max_tokens=1200, json_mode=False))
+        except Exception as exc:
+            results.append(
+                {
+                    "sample_id": sample["sample_id"],
+                    "asset_id": asset.get("asset_id"),
+                    "asset": asset,
+                    "visual_type": sample.get("visual_type") or visual_types.get(str(asset.get("asset_id")), "unknown"),
+                    "heading_path": asset.get("heading_path") or [],
+                    "checks": {
+                        "json": False,
+                        "user_action": False,
+                        "highlighted_ui": False,
+                        "expected_keyword": False,
+                        "no_hallucination": False,
+                    },
+                    "pass": False,
+                    "vl_response": {},
+                    "visible_text_count": 0,
+                    "user_action": "",
+                    "highlighted_ui": "",
+                    "description": "",
+                    "error": str(exc),
+                }
+            )
+            continue
         text_blob = json.dumps(parsed, ensure_ascii=False)
         checks = {
             "json": bool(parsed),
@@ -212,7 +238,6 @@ def _select_full_vl_assets(manifest: dict[str, Any], *, source_manifest: dict[st
     notes = {str(note.get("asset_id")): note for note in describe_asset_notes(manifest)}
     eligible_source_ids = _eligible_full_vl_source_ids(source_manifest) if source_manifest is not None else None
     selected: list[dict[str, Any]] = []
-    seen_hashes: set[str] = set()
     for asset in manifest.get("assets") or []:
         asset_id = str(asset.get("asset_id") or "")
         note = notes.get(asset_id) or {}
@@ -225,11 +250,6 @@ def _select_full_vl_assets(manifest: dict[str, Any], *, source_manifest: dict[st
                 continue
         elif source_id not in eligible_source_ids:
             continue
-        sha256 = str(asset.get("sha256") or "")
-        if sha256 and sha256 in seen_hashes:
-            continue
-        if sha256:
-            seen_hashes.add(sha256)
         selected.append(
             {
                 "sample_id": f"full-vl-{len(selected)+1:03d}-{visual_type}",
@@ -265,7 +285,7 @@ def _write_vl_asset_notes(path: Path | str, results: list[dict[str, Any]], *, mo
     for index, result in enumerate(results, start=1):
         parsed = result.get("vl_response") or {}
         asset = result.get("asset") or {}
-        if not parsed or not asset or not result.get("pass"):
+        if not parsed or not asset or not _vl_result_usable(result):
             continue
         rows.append(_vl_result_to_asset_note(result, model=model, prompt_version=prompt_version, smoke_run_id=smoke_run_id, index=index))
     out = Path(path)
@@ -618,12 +638,34 @@ def _summarize_vl(results: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _summarize_full_vl(results: list[dict[str, Any]]) -> dict[str, Any]:
     passed = sum(1 for item in results if item.get("pass"))
+    usable = sum(1 for item in results if _vl_result_usable(item))
     return {
         "sample_count": len(results),
         "passed": passed,
-        "pass": len(results) > 0 and passed == len(results),
-        "failed_ids": [item["sample_id"] for item in results if not item.get("pass")],
+        "usable": usable,
+        "pass": len(results) > 0 and usable == len(results),
+        "failed_ids": [item["sample_id"] for item in results if not _vl_result_usable(item)],
+        "keyword_failed_ids": [item["sample_id"] for item in results if _vl_result_usable(item) and not item.get("pass")],
     }
+
+
+def _vl_result_usable(result: dict[str, Any]) -> bool:
+    if result.get("pass"):
+        return True
+    checks = result.get("checks") or {}
+    return all(
+        checks.get(name) is True
+        for name in (
+            "json",
+            "user_action",
+            "highlighted_ui",
+            "no_hallucination",
+        )
+    )
+
+
+def _vl_asset_note_count(results: list[dict[str, Any]]) -> int:
+    return sum(1 for result in results if _vl_result_usable(result))
 
 
 def _summarize_ds(results: list[dict[str, Any]]) -> dict[str, Any]:

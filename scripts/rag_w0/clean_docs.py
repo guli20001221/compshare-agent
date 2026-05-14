@@ -5,12 +5,18 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 from pathlib import Path
+import re
+from typing import Any
 
 try:
     from .safety_patterns import redact_customer_text, unsafe_cleaned_matches
 except ImportError:  # pragma: no cover
     from safety_patterns import redact_customer_text, unsafe_cleaned_matches
+
+ASSET_NOTE_RE = re.compile(r"<!--\s*asset_note:\s*(\{.*?\})\s*-->", re.DOTALL)
+ASSET_NOTE_PLACEHOLDER = "RAGW0ASSETNOTEPLACEHOLDER{index}TOKEN"
 
 
 def clean_documents(normalized_dir: Path | str, out_dir: Path | str) -> dict[str, int]:
@@ -37,12 +43,51 @@ def clean_documents(normalized_dir: Path | str, out_dir: Path | str) -> dict[str
 
 
 def clean_text(text: str) -> tuple[str, bool]:
-    cleaned = redact_customer_text(text)
+    protected, asset_notes = _protect_asset_notes(text)
+    cleaned = redact_customer_text(protected)
+    cleaned = _restore_asset_notes(cleaned, asset_notes)
     remaining = unsafe_cleaned_matches(cleaned)
     needs_review = bool(remaining)
     if needs_review:
         cleaned = cleaned.rstrip() + "\n\n<!-- review_required: unsafe_pattern_remaining -->\n"
     return cleaned, needs_review
+
+
+def _protect_asset_notes(text: str) -> tuple[str, list[str]]:
+    blocks: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        index = len(blocks)
+        blocks.append(_clean_asset_note_block(match.group(1)))
+        return ASSET_NOTE_PLACEHOLDER.format(index=index)
+
+    return ASSET_NOTE_RE.sub(replace, text), blocks
+
+
+def _restore_asset_notes(text: str, blocks: list[str]) -> str:
+    restored = text
+    for index, block in enumerate(blocks):
+        restored = restored.replace(ASSET_NOTE_PLACEHOLDER.format(index=index), block)
+    return restored
+
+
+def _clean_asset_note_block(raw_json: str) -> str:
+    try:
+        payload = json.loads(raw_json)
+    except json.JSONDecodeError:
+        return f"<!-- asset_note: {raw_json} -->"
+    cleaned = _redact_json_strings(payload)
+    return f"<!-- asset_note: {json.dumps(cleaned, ensure_ascii=False, sort_keys=True)} -->"
+
+
+def _redact_json_strings(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_customer_text(value)
+    if isinstance(value, list):
+        return [_redact_json_strings(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_json_strings(item) for key, item in value.items()}
+    return value
 
 
 def _front_matter_values(text: str) -> dict[str, str]:
