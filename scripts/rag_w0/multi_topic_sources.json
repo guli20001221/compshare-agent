@@ -1,0 +1,14 @@
+{
+  "schema_version": "multi_topic_sources.v1",
+  "source_corpus_version": "rag-source-bundle-20260512",
+  "sources": [
+    {
+      "source_id": "feishu-usage-faq-latest",
+      "reason": "Feishu usage FAQ spans instance startup, login, billing, image, Windows, and practice topics."
+    },
+    {
+      "source_id": "feishu-model-package-faq-latest",
+      "reason": "Feishu model package FAQ spans ModelVerse package rules and billing-related model usage questions."
+    }
+  ]
+}

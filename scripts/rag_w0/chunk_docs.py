@@ -27,6 +27,9 @@ LOGGER = logging.getLogger(__name__)
 # Must stay in sync with internal/knowledge/loader.go MaxKnowledgeContentRunes.
 MAX_CHUNK_CONTENT_RUNES = 4000
 ASSET_NOTE_MAX_CHARS = 300
+AUTO_ACCEPT_SECTION_LABEL_CONFIDENCE = 0.85
+REVIEW_SECTION_LABEL_CONFIDENCE = 0.70
+SHA256_PREFIX_LEN = 16
 ASSET_NOTE_RE = re.compile(r"<!--\s*asset_note:\s*(\{.*?\})\s*-->", re.DOTALL)
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -45,6 +48,8 @@ def chunk_documents(
     approvals_path: Path | str | None = None,
     asset_notes_path: Path | str | None = None,
     link_manifest_path: Path | str | None = None,
+    chunk_labels_path: Path | str | None = None,
+    section_labels_path: Path | str | None = None,
     require_complete_inputs: bool = True,
     max_chars: int = 2000,
 ) -> dict[str, int]:
@@ -52,6 +57,7 @@ def chunk_documents(
         _validate_ready_for_chunking(asset_notes_path, link_manifest_path, Path(cleaned_dir))
 
     _validate_output_target(out_path, require_complete_inputs=require_complete_inputs)
+    section_labels = _read_section_label_index(section_labels_path or chunk_labels_path)
 
     chunks: list[dict[str, Any]] = []
     for doc_path in sorted(Path(cleaned_dir).glob("*.md")):
@@ -62,6 +68,7 @@ def chunk_documents(
                 valid_from=valid_from,
                 max_chars=max_chars,
                 strict_asset_notes=require_complete_inputs,
+                section_labels=section_labels,
             )
         )
 
@@ -81,7 +88,15 @@ def chunk_documents(
     return {"chunk_count": len(chunks), "case_chunk_count": case_chunk_count}
 
 
-def _chunks_for_doc(doc_path: Path, *, kb_version: str, valid_from: str, max_chars: int, strict_asset_notes: bool) -> list[dict[str, Any]]:
+def _chunks_for_doc(
+    doc_path: Path,
+    *,
+    kb_version: str,
+    valid_from: str,
+    max_chars: int,
+    strict_asset_notes: bool,
+    section_labels: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     text = doc_path.read_text(encoding="utf-8", errors="replace")
     meta = _front_matter_values(text)
     body = _body_without_front_matter(text)
@@ -96,11 +111,33 @@ def _chunks_for_doc(doc_path: Path, *, kb_version: str, valid_from: str, max_cha
             continue
         asset_refs = _asset_refs(content, strict_asset_notes=strict_asset_notes)
         content = _clean_chunk_content(content, strict_asset_notes=strict_asset_notes)
+        label_area, low_confidence_label, needs_split = _section_label_decision(
+            section_labels,
+            _source_doc_id(source_ref),
+            section_index - 1,
+            content,
+        )
+        if needs_split:
+            LOGGER.info("section label requested split; skipping source=%s section=%s title=%s", source_ref, section_index, title)
+            continue
         for part_index, part in enumerate(_split_long_text(content, max_chars=max_chars), start=1):
             if len(part.strip()) < 20:
                 continue
             chunk_title = title if part_index == 1 else f"{title} ({part_index})"
-            product_area = selected_area or _infer_product_area(f"{source_ref} {chunk_title} {part}")
+            product_area = label_area or selected_area or _infer_product_area(f"{source_ref} {chunk_title} {part}")
+            if label_area:
+                labeled_via = "section-sidecar"
+            elif selected_area:
+                labeled_via = "doc-psa"
+            else:
+                labeled_via = "keyword"
+            LOGGER.debug(
+                "section_id=%s::%s via=%s product_area=%s",
+                _source_doc_id(source_ref),
+                section_index - 1,
+                labeled_via,
+                product_area,
+            )
             chunk = _base_chunk(
                 chunk_id=_chunk_id(product_area, source_ref, section_index, part_index),
                 kb_version=kb_version,
@@ -113,6 +150,8 @@ def _chunks_for_doc(doc_path: Path, *, kb_version: str, valid_from: str, max_cha
                 confidence="medium" if "REDACTED" in part else "high",
                 valid_from=valid_from,
             )
+            if low_confidence_label:
+                chunk["low_confidence_label"] = True
             chunks.append(chunk)
     return chunks
 
@@ -120,6 +159,45 @@ def _chunks_for_doc(doc_path: Path, *, kb_version: str, valid_from: str, max_cha
 def _selected_product_area(meta: dict[str, str]) -> str:
     area = str(meta.get("source_selection_product_area") or "").strip()
     return area if area in ALLOWED_PRODUCT_AREAS else ""
+
+
+def _read_section_label_index(path: Path | str | None) -> dict[str, dict[str, Any]]:
+    if not path:
+        return {}
+    labels: dict[str, dict[str, Any]] = {}
+    for row in _read_jsonl(path):
+        key = _section_label_key_from_row(row)
+        if key:
+            labels[key] = row
+    return labels
+
+
+def _section_label_decision(
+    labels: dict[str, dict[str, Any]] | None,
+    source_doc_id: str,
+    section_index: int,
+    content: str,
+) -> tuple[str, bool, bool]:
+    if not labels:
+        return "", False, False
+    key = _section_label_key(source_doc_id, section_index, _content_hash(content))
+    row = labels.get(key)
+    if not row:
+        return "", False, False
+    if row.get("needs_split") is True:
+        return "", False, True
+    area = str(row.get("selected_area") or row.get("product_area") or "")
+    confidence = _label_confidence(row.get("confidence"))
+    if area not in ALLOWED_PRODUCT_AREAS or confidence < REVIEW_SECTION_LABEL_CONFIDENCE:
+        return "", False, False
+    return area, confidence < AUTO_ACCEPT_SECTION_LABEL_CONFIDENCE, False
+
+
+def _label_confidence(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _chunks_for_approved_cases(
@@ -286,16 +364,57 @@ def _split_sections(body: str, *, fallback_title: str) -> list[dict[str, str]]:
     buf: list[str] = []
     for line in body.splitlines():
         match = HEADING_RE.match(line)
-        if match:
+        if match or _looks_like_plain_faq_heading(line):
             if buf:
                 sections.append({"title": title, "content": "\n".join(buf).strip()})
-            title = match.group(2).strip()
+            title = match.group(2).strip() if match else line.strip()
             buf = []
             continue
         buf.append(line)
     if buf:
         sections.append({"title": title, "content": "\n".join(buf).strip()})
     return sections
+
+
+def _looks_like_plain_faq_heading(line: str) -> bool:
+    value = line.strip()
+    if not value or len(value) > 100:
+        return False
+    lowered = value.lower()
+    if lowered.startswith(("http://", "https://")):
+        return False
+    if re.search(r"\.(?:png|jpg|jpeg|gif|webp|pdf)$", lowered):
+        return False
+    if value.startswith(("-", "*", ">", "|", "```", "![", "[")):
+        return False
+    if any(mark in value for mark in ("，", ",", "；", ";", "：", ":")):
+        return False
+    if value.endswith(("。", "、")):
+        return False
+    if value.startswith(("请", "可以", "由于", "可能", "支持", "当前", "每个", "简单", "基本", "如果", "若", "需要", "会", "断链")):
+        return False
+    if " -- " in value or re.match(r"^\d+(?:\.\d+)+\s+", value):
+        return True
+    title_signals = (
+        "相关",
+        "问题",
+        "说明",
+        "模式",
+        "限制",
+        "操作",
+        "使用",
+        "登录",
+        "连接",
+        "启动中",
+        "启动失败",
+        "初始化",
+        "检测不到",
+        "无法",
+        "报错",
+        "吗？",
+        "吗?",
+    )
+    return any(signal in value for signal in title_signals)
 
 
 def _split_long_text(text: str, *, max_chars: int) -> list[str]:
@@ -468,6 +587,36 @@ def _infer_product_area(text: str) -> str:
     return "resource_purchase"
 
 
+def _content_hash(content: str) -> str:
+    normalized = re.sub(r"\s+", " ", content).strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:SHA256_PREFIX_LEN]
+
+
+def _source_doc_id(source_ref: str) -> str:
+    return str(source_ref).split("__", 1)[0]
+
+
+def _section_label_key(source_doc_id: str, section_index: Any, content_hash: str) -> str:
+    try:
+        section = int(section_index)
+    except (TypeError, ValueError):
+        return ""
+    if not source_doc_id or not content_hash:
+        return ""
+    return f"{source_doc_id}#{section}:{content_hash}"
+
+
+def _section_label_key_from_row(row: dict[str, Any]) -> str:
+    key = row.get("key")
+    if isinstance(key, dict):
+        return _section_label_key(
+            str(key.get("source_doc_id") or ""),
+            key.get("section_index"),
+            str(key.get("content_sha256_prefix") or ""),
+        )
+    return ""
+
+
 def _question_patterns(title: str, product_area: str) -> list[str]:
     clean_title = re.sub(r"\s+", " ", title).strip()
     if not clean_title:
@@ -546,6 +695,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--approvals", type=Path)
     parser.add_argument("--asset-notes", type=Path)
     parser.add_argument("--links", type=Path)
+    parser.add_argument("--section-labels", type=Path)
+    parser.add_argument("--chunk-labels", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--allow-incomplete-inputs", action="store_true", help="Allow dry-run chunking before VL/link processing is complete.")
     parser.add_argument("--max-chars", type=int, default=2000)
     args = parser.parse_args(argv)
@@ -558,6 +709,8 @@ def main(argv: list[str] | None = None) -> int:
         approvals_path=args.approvals,
         asset_notes_path=args.asset_notes,
         link_manifest_path=args.links,
+        chunk_labels_path=args.chunk_labels,
+        section_labels_path=args.section_labels,
         require_complete_inputs=not args.allow_incomplete_inputs,
         max_chars=args.max_chars,
     )
