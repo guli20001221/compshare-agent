@@ -12,9 +12,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .common import ALLOWED_PRODUCT_AREAS
     from .validate_case_approvals import validate_case_approvals
     from .validate_chunks import validate_chunks
 except ImportError:  # pragma: no cover
+    from common import ALLOWED_PRODUCT_AREAS
     from validate_case_approvals import validate_case_approvals
     from validate_chunks import validate_chunks
 
@@ -81,7 +83,9 @@ def chunk_documents(
 
 def _chunks_for_doc(doc_path: Path, *, kb_version: str, valid_from: str, max_chars: int, strict_asset_notes: bool) -> list[dict[str, Any]]:
     text = doc_path.read_text(encoding="utf-8", errors="replace")
+    meta = _front_matter_values(text)
     body = _body_without_front_matter(text)
+    selected_area = _selected_product_area(meta)
     source_ref = doc_path.stem
     sections = _split_sections(body, fallback_title=_fallback_title(body, doc_path.stem))
     chunks: list[dict[str, Any]] = []
@@ -96,7 +100,7 @@ def _chunks_for_doc(doc_path: Path, *, kb_version: str, valid_from: str, max_cha
             if len(part.strip()) < 20:
                 continue
             chunk_title = title if part_index == 1 else f"{title} ({part_index})"
-            product_area = _infer_product_area(f"{source_ref} {chunk_title} {part}")
+            product_area = selected_area or _infer_product_area(f"{source_ref} {chunk_title} {part}")
             chunk = _base_chunk(
                 chunk_id=_chunk_id(product_area, source_ref, section_index, part_index),
                 kb_version=kb_version,
@@ -111,6 +115,11 @@ def _chunks_for_doc(doc_path: Path, *, kb_version: str, valid_from: str, max_cha
             )
             chunks.append(chunk)
     return chunks
+
+
+def _selected_product_area(meta: dict[str, str]) -> str:
+    area = str(meta.get("source_selection_product_area") or "").strip()
+    return area if area in ALLOWED_PRODUCT_AREAS else ""
 
 
 def _chunks_for_approved_cases(
@@ -251,6 +260,19 @@ def _front_matter_end(lines: list[str]) -> int:
         if line.strip() == "---":
             return idx + 1
     return 0
+
+
+def _front_matter_values(text: str) -> dict[str, str]:
+    lines = text.splitlines()
+    end = _front_matter_end(lines)
+    if not end:
+        return {}
+    out: dict[str, str] = {}
+    for line in lines[1 : end - 1]:
+        if ":" in line:
+            key, value = line.split(":", 1)
+            out[key.strip()] = value.strip()
+    return out
 
 
 def _body_without_front_matter(text: str) -> str:

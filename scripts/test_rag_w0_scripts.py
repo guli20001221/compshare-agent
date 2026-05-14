@@ -77,6 +77,22 @@ class RagW0ScriptTests(unittest.TestCase):
             )
             return [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
 
+    def _chunk_cleaned_doc(self, front_matter: list[str], body: str, *, name: str = "guide.md") -> list[dict]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cleaned = root / "cleaned"
+            cleaned.mkdir()
+            (cleaned / name).write_text("---\n" + "\n".join(front_matter) + "\n---\n" + body, encoding="utf-8")
+            out = root / "chunks.jsonl"
+            chunk_docs.chunk_documents(
+                cleaned,
+                out,
+                kb_version="kb.test",
+                valid_from="2026-05-13",
+                require_complete_inputs=False,
+            )
+            return [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+
     def _write_normalized_doc(self, root: Path, name: str, *, source_id: str, include_status: str, source_path: str, body: str = "# Doc\nCustomer-facing guidance.\n") -> Path:
         normalized = root / "normalized"
         normalized.mkdir(exist_ok=True)
@@ -789,6 +805,55 @@ class RagW0ScriptTests(unittest.TestCase):
         self.assertEqual(payload["description"], "[SECRET_REDACTED]")
         self.assertEqual(payload["user_action"], "输入 [RESOURCE_ID_REDACTED]")
 
+    def test_clean_docs_preserves_selected_product_area(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normalized = root / "normalized"
+            normalized.mkdir()
+            (normalized / "error-code.md").write_text(
+                "---\n"
+                "source_id: gitlab-compshare-docs\n"
+                "source_type: gitlab_clone_subset\n"
+                "safety_state: mixed\n"
+                "include_status: include_after_cleaning\n"
+                "source_path: F:/bundle/pages/gpus/compshareerrorcode.md\n"
+                "source_selection_product_area: init_failure\n"
+                "---\n"
+                "# Error codes\n"
+                "Instance init failed after arrears were resolved.\n",
+                encoding="utf-8",
+            )
+            out = root / "cleaned"
+
+            clean_docs.clean_documents(normalized, out)
+
+            cleaned = (out / "error-code.md").read_text(encoding="utf-8")
+            self.assertIn("source_selection_product_area: init_failure", cleaned)
+
+    def test_clean_docs_omits_missing_selected_product_area(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normalized = root / "normalized"
+            normalized.mkdir()
+            (normalized / "guide.md").write_text(
+                "---\n"
+                "source_id: guide\n"
+                "source_type: faq\n"
+                "safety_state: mixed\n"
+                "include_status: include_after_cleaning\n"
+                "source_path: F:/bundle/guide.md\n"
+                "---\n"
+                "# Guide\n"
+                "Use SSH from the console.\n",
+                encoding="utf-8",
+            )
+            out = root / "cleaned"
+
+            clean_docs.clean_documents(normalized, out)
+
+            cleaned = (out / "guide.md").read_text(encoding="utf-8")
+            self.assertNotIn("source_selection_product_area:", cleaned)
+
     def test_secret_redaction_does_not_cross_line_boundaries(self):
         cleaned, _ = clean_docs.clean_text("\u5bc6\u7801\uff1a\n\u4e0b\u4e00\u6bb5\u516c\u5f00\u8bf4\u660e\n")
 
@@ -958,6 +1023,82 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertTrue(all(chunk["source_type"] in {"faq", "runbook"} for chunk in chunks))
             self.assertTrue(any("asset-1" in chunk["asset_refs"] for chunk in chunks))
             self.assertEqual(validate_chunks.validate_chunks(out)["chunk_count"], len(chunks))
+
+    def test_chunk_docs_uses_front_matter_product_area_for_error_codes(self):
+        chunks = self._chunk_cleaned_doc(
+            [
+                "source_trace_hash: abc",
+                "safety_state: customer_safe_cleaned",
+                "include_status: include_after_cleaning",
+                "source_selection_product_area: init_failure",
+            ],
+            "# Error codes\n"
+            "Error 226601 says the instance is in arrears and billing payment is required.\n"
+            "Error 226604 says initialization failed because resources are not enough.\n",
+            name="gitlab-compshare-docs__compshareerrorcode.md",
+        )
+
+        self.assertEqual({chunk["product_area"] for chunk in chunks}, {"init_failure"})
+
+    def test_chunk_docs_uses_front_matter_product_area_for_resource_creation(self):
+        chunks = self._chunk_cleaned_doc(
+            [
+                "source_trace_hash: abc",
+                "safety_state: customer_safe_cleaned",
+                "include_status: include_after_cleaning",
+                "source_selection_product_area: resource_purchase",
+            ],
+            "# Create GPU instance\n"
+            "Choose an image, GPU type, billing mode, and price option, then click deploy to purchase resources.\n",
+            name="gitlab-compshare-docs__createresources.md",
+        )
+
+        self.assertEqual({chunk["product_area"] for chunk in chunks}, {"resource_purchase"})
+
+    def test_chunk_docs_falls_back_when_front_matter_product_area_missing_empty_or_invalid(self):
+        cases = [
+            ([], "billing_rule"),
+            (["source_selection_product_area:"], "billing_rule"),
+            (["source_selection_product_area: not_a_real_area"], "billing_rule"),
+        ]
+        for extra_front_matter, expected_area in cases:
+            with self.subTest(extra_front_matter=extra_front_matter):
+                chunks = self._chunk_cleaned_doc(
+                    [
+                        "source_trace_hash: abc",
+                        "safety_state: customer_safe_cleaned",
+                        "include_status: include_after_cleaning",
+                        *extra_front_matter,
+                    ],
+                    "# Billing fallback\nThis billing invoice refund guide should keep using keyword inference.\n",
+                )
+
+                self.assertEqual({chunk["product_area"] for chunk in chunks}, {expected_area})
+
+    def test_chunk_id_changes_with_front_matter_product_area(self):
+        body = "# Error codes\nInstance init failed after arrears were resolved and billing was paid.\n"
+        without_area = self._chunk_cleaned_doc(
+            [
+                "source_trace_hash: abc",
+                "safety_state: customer_safe_cleaned",
+                "include_status: include_after_cleaning",
+            ],
+            body,
+            name="gitlab-compshare-docs__compshareerrorcode.md",
+        )[0]
+        with_area = self._chunk_cleaned_doc(
+            [
+                "source_trace_hash: abc",
+                "safety_state: customer_safe_cleaned",
+                "include_status: include_after_cleaning",
+                "source_selection_product_area: init_failure",
+            ],
+            body,
+            name="gitlab-compshare-docs__compshareerrorcode.md",
+        )[0]
+
+        self.assertNotEqual(without_area["chunk_id"], with_area["chunk_id"])
+        self.assertTrue(with_area["chunk_id"].startswith("w0-init_failure-"))
 
     def test_asset_note_rendered_to_chunk_content(self):
         chunks = self._chunk_text(
