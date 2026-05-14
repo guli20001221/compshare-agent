@@ -103,18 +103,17 @@ def _extract_from_markdown(
     assets: list[dict[str, Any]] = []
     links: list[dict[str, Any]] = []
     headings: list[str] = []
-    lines = doc_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    raw_text = doc_path.read_text(encoding="utf-8", errors="replace")
+    lines = raw_text.splitlines()
+    headings_by_line: dict[int, list[str]] = {}
     for line_no, line in enumerate(lines, start=1):
         heading = HEADING_RE.match(line)
         if heading:
             level = len(heading.group(1))
             headings = headings[: level - 1] + [heading.group(2).strip()]
-        for match in IMAGE_RE.finditer(line):
-            alt, ref = match.groups()
-            ref = strip_angle_brackets(ref)
-            assets.append(_asset_from_markdown_ref(source_id, doc_path, line_no, headings, line, alt, ref, seen_hashes))
+        headings_by_line[line_no] = headings[:]
         for match in LINK_RE.finditer(line):
-            text, url = match.groups()
+            link_text, url = match.groups()
             url = strip_angle_brackets(url)
             links.append(
                 {
@@ -123,12 +122,29 @@ def _extract_from_markdown(
                     "source_path": str(doc_path),
                     "line": line_no,
                     "heading_path": headings[:],
-                    "text": text,
+                    "text": link_text,
                     "url": url,
                     "link_type": "unknown",
                     "final_state": "unknown",
                 }
             )
+    for match in IMAGE_RE.finditer(raw_text):
+        alt, ref = match.groups()
+        ref = strip_angle_brackets(ref)
+        line_no = raw_text.count("\n", 0, match.start()) + 1
+        line = " ".join(match.group(0).split())
+        assets.append(
+            _asset_from_markdown_ref(
+                source_id,
+                doc_path,
+                line_no,
+                headings_by_line.get(line_no, []),
+                line,
+                alt,
+                ref,
+                seen_hashes,
+            )
+        )
     return assets, links
 
 

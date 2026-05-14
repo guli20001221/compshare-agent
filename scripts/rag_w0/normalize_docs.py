@@ -79,14 +79,32 @@ def _normalize_markdown_doc(
 ) -> str:
     lines = doc_path.read_text(encoding="utf-8", errors="replace").splitlines()
     output: list[str] = [_front_matter(source, doc_path)]
-    for line_no, line in enumerate(lines, start=1):
+    idx = 0
+    while idx < len(lines):
+        line_no = idx + 1
+        line = lines[idx]
         assets = assets_by_doc_line.get((str(doc_path), line_no), [])
-        if assets and IMAGE_RE.search(line):
+        image_block = _markdown_image_block(lines, idx) if assets else None
+        if assets and image_block and IMAGE_RE.search(image_block[0]):
             for asset in assets:
                 output.append(_asset_note_block(asset))
+            idx = image_block[1]
             continue
         output.append(line.rstrip())
+        idx += 1
     return "\n".join(output).rstrip() + "\n"
+
+
+def _markdown_image_block(lines: list[str], start: int) -> tuple[str, int] | None:
+    if "![" not in lines[start]:
+        return None
+    buf: list[str] = []
+    for idx in range(start, min(start + 6, len(lines))):
+        buf.append(lines[idx])
+        text = "\n".join(buf)
+        if IMAGE_RE.search(text):
+            return text, idx + 1
+    return None
 
 
 def _standalone_asset_doc(source: dict[str, Any], assets: list[dict[str, Any]]) -> str:
