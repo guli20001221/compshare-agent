@@ -1,0 +1,104 @@
+{
+  "schema_version": "bootstrap_anchors.v2",
+  "generated_at": "2026-05-14",
+  "generated_by": "claude-opus-4-7",
+  "input": "F:/compshare-agent-runs/rag-w0-pr-rag-4h-20260514-codex/cleaned_docs_with_vl/",
+  "strategy_enum": [
+    "single_topic_procedure",
+    "single_topic_reference",
+    "staged_long_procedure",
+    "multi_topic_faq",
+    "errorcode_table",
+    "mixed_needs_review"
+  ],
+  "verification_completeness": "all 14 docs opus_full_read (no partial / no inferred)",
+  "anchors": [
+    {
+      "source_doc_id": "gitlab-compshare-docs__compshareerrorcode",
+      "expected_strategy": "errorcode_table",
+      "expected_chunk_count": 1,
+      "expected_product_areas": ["init_failure"]
+    },
+    {
+      "source_doc_id": "gitlab-compshare-docs__billdescribe",
+      "expected_strategy": "single_topic_reference",
+      "expected_chunk_count": 1,
+      "expected_product_areas": ["billing_rule"]
+    },
+    {
+      "source_doc_id": "gitlab-compshare-docs__logic",
+      "expected_strategy": "multi_topic_faq",
+      "expected_chunk_count": 7,
+      "expected_product_areas": ["modelverse"]
+    },
+    {
+      "source_doc_id": "gitlab-compshare-docs__bill",
+      "expected_strategy": "multi_topic_faq",
+      "expected_chunk_count": 5,
+      "expected_product_areas": ["billing_rule"]
+    },
+    {
+      "source_doc_id": "gitlab-compshare-docs__package",
+      "expected_strategy": "single_topic_procedure",
+      "expected_chunk_count": 1,
+      "expected_product_areas": ["modelverse"]
+    },
+    {
+      "source_doc_id": "feishu-model-package-faq-latest",
+      "expected_strategy": "multi_topic_faq",
+      "expected_chunk_count": 12,
+      "expected_product_areas": ["modelverse"],
+      "pipeline_hint": "source lacks markdown headings; pipeline must use anchor_text boundaries from bootstrap chunk_plans.jsonl"
+    },
+    {
+      "source_doc_id": "远程windows云服务器开启声音-20260511182054",
+      "expected_strategy": "single_topic_procedure",
+      "expected_chunk_count": 1,
+      "expected_product_areas": ["windows"]
+    },
+    {
+      "source_doc_id": "feishu-usage-faq-latest",
+      "expected_strategy": "multi_topic_faq",
+      "expected_chunk_count": 15,
+      "expected_product_areas_set": ["init_failure", "image_types_gpu_specs", "remote_login_ssh_jupyter", "cuda_nvidia_driver", "billing_rule", "invoice_refund_arrears"],
+      "pipeline_hint": "source lacks markdown headings; pipeline must use anchor_text boundaries from bootstrap chunk_plans.jsonl"
+    },
+    {
+      "source_doc_id": "gitlab-compshare-docs__createresources",
+      "expected_strategy": "multi_topic_faq",
+      "expected_chunk_count": 2,
+      "expected_product_areas": ["image_types_gpu_specs"],
+      "psa_remap_warning": "PSA `resource_purchase` may not be in ALLOWED_PRODUCT_AREAS enum; chunker should remap to `image_types_gpu_specs`"
+    },
+    {
+      "source_doc_id": "gitlab-compshare-docs__imagecommunity",
+      "expected_strategy": "staged_long_procedure",
+      "expected_chunk_count": 2,
+      "expected_product_areas": ["image_types_gpu_specs"]
+    },
+    {
+      "source_doc_id": "NVIDIA驱动安装和CUDA安装-20260511182117",
+      "expected_strategy": "staged_long_procedure",
+      "expected_chunk_count": 4,
+      "expected_product_areas": ["cuda_nvidia_driver"]
+    },
+    {
+      "source_doc_id": "Windows服务器远程登录操作手册-20260511182111",
+      "expected_strategy": "multi_topic_faq",
+      "expected_chunk_count": 4,
+      "expected_product_areas": ["windows"]
+    },
+    {
+      "source_doc_id": "gitlab-compshare-docs__logininstance",
+      "expected_strategy": "multi_topic_faq",
+      "expected_chunk_count": 5,
+      "expected_product_areas": ["remote_login_ssh_jupyter"]
+    },
+    {
+      "source_doc_id": "gitlab-compshare-docs__resourcemonitoring",
+      "expected_strategy": "multi_topic_faq",
+      "expected_chunk_count": 2,
+      "expected_product_areas": ["monitor"]
+    }
+  ]
+}
