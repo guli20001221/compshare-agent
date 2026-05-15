@@ -1,6 +1,10 @@
 import json
+import contextlib
+import io
+import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -10,10 +14,13 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from rag_w0 import build_source_manifest
 from rag_w0 import clean_docs
+from rag_w0 import check_internal_leakage
 from rag_w0 import chunk_docs
 from rag_w0 import classify_links
 from rag_w0 import common
 from rag_w0 import describe_images
+from rag_w0 import evaluate_answers
+from rag_w0 import evaluate_retrieval
 from rag_w0 import extract_assets
 from rag_w0 import generate_eval_questions
 from rag_w0 import label_sections
@@ -21,6 +28,7 @@ from rag_w0 import mine_internal_cases
 from rag_w0 import model_smoke
 from rag_w0 import normalize_docs
 from rag_w0 import parse_sections
+from rag_w0 import retrieval_scoring
 from rag_w0 import chunk_plan
 from rag_w0 import select_w0_sources
 from rag_w0 import snapshot_assets
@@ -30,8 +38,10 @@ from rag_w0 import validate_chunks
 from rag_w0 import validate_cleaned_docs
 from rag_w0 import validate_source
 from rag_w0 import verify_chunk_plan_anchors
+from rag_w0 import verify_eval_questions
 from rag_w0 import verify_section_lists
 from rag_w0 import verify_pinned_sections
+from rag_w0 import write_eval_report
 
 
 class RagW0ScriptTests(unittest.TestCase):
@@ -2984,7 +2994,7 @@ class RagW0ScriptTests(unittest.TestCase):
                         "case_id": "wxwork-spt-record-2026-05:case-0001",
                         "label": "eval_only",
                         "issue_pattern": "[PERSON_REDACTED] 3-1 17:06",
-                        "redacted_text": "资源id：[RESOURCE_ID_REDACTED] 客户问题：[图片]初始化失败",
+                        "redacted_text": "资源 id: [RESOURCE_ID_REDACTED] 客户问题: [图片] 初始化失败",
                     },
                     ensure_ascii=False,
                 )
@@ -2993,7 +3003,24 @@ class RagW0ScriptTests(unittest.TestCase):
             )
             out = root / "golden_questions.jsonl"
 
-            summary = generate_eval_questions.generate_eval_questions(chunks_path, out, min_questions=50, cases_path=cases_path)
+            def paraphraser(chunk: dict, retry: bool = False) -> list[str]:
+                if chunk["chunk_id"] == "w0-login-001":
+                    return [
+                        "How can I connect to the instance from the console?",
+                        "What should I use for SSH or Jupyter access?",
+                    ]
+                return [
+                    "Does a stopped instance keep charging?",
+                    "How is shutdown billing handled?",
+                ]
+
+            summary = generate_eval_questions.generate_eval_questions(
+                chunks_path,
+                out,
+                min_questions=50,
+                cases_path=cases_path,
+                paraphraser=paraphraser,
+            )
 
             questions = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
             behaviors = {item["expected_behavior"] for item in questions}
@@ -3004,10 +3031,1257 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertTrue(all(item["group"] in generate_eval_questions.EXPECTED_GROUPS for item in questions))
             self.assertTrue(generate_eval_questions.EXPECTED_GROUPS.issubset(groups))
             self.assertTrue(any(item["expected_chunk_ids"] == ["w0-login-001"] for item in questions))
+            answer_questions = [item for item in questions if item["expected_behavior"] == "answer"]
+            self.assertTrue(any(item["question"] == "How can I connect to the instance from the console?" for item in answer_questions))
+            self.assertFalse(any(item["question"] == "How do I login?" for item in answer_questions))
+            self.assertTrue(any(str(item.get("paraphrase_source") or "").endswith("eval_paraphrase_v1") for item in answer_questions))
             mined = [item for item in questions if item["source_refs"] == ["wxwork-spt-record-2026-05:case-0001"]]
             self.assertEqual(len(mined), 1)
             self.assertEqual(mined[0]["question"], "实例初始化失败时应该怎么处理？")
             self.assertNotIn("PERSON_REDACTED", mined[0]["question"])
+
+    def test_generate_eval_questions_retries_byte_equal_paraphrases(self):
+        chunk = {
+            "chunk_id": "w0-login-001",
+            "title": "Login guidance",
+            "question_patterns": ["How do I login?"],
+        }
+        calls: list[bool] = []
+
+        def paraphraser(_chunk: dict, retry: bool = False) -> list[str]:
+            calls.append(retry)
+            if retry:
+                return ["How can I connect from the console?"]
+            return ["How do I login?"]
+
+        questions, log_record = generate_eval_questions._answer_questions_for_chunk(chunk, paraphraser=paraphraser)
+
+        self.assertEqual(calls, [False, True])
+        self.assertEqual(questions, ["How can I connect from the console?"])
+        self.assertEqual(log_record["final_accepted"], ["How can I connect from the console?"])
+
+    def test_generate_eval_questions_rejects_repeated_byte_equal_paraphrases(self):
+        chunk = {
+            "chunk_id": "w0-login-001",
+            "title": "Login guidance",
+            "question_patterns": ["How do I login?"],
+        }
+
+        def paraphraser(_chunk: dict, retry: bool = False) -> list[str]:
+            return ["How do I login?", "Login guidance"]
+
+        questions, log_record = generate_eval_questions._answer_questions_for_chunk(chunk, paraphraser=paraphraser)
+
+        self.assertEqual(questions, [])
+        self.assertEqual(len(log_record["paraphrases_generated"]), 2)
+        self.assertEqual(log_record["final_accepted"], [])
+
+    def test_verify_eval_questions_rejects_tautological_questions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            chunk = self._retrieval_eval_chunk(
+                chunk_id="w0-login-ssh-a1b2c3d4",
+                product_area="login",
+                title="SSH login",
+                content="Use SSH from the console.",
+                question_patterns=["How do I use SSH?"],
+            )
+            self._write_jsonl(chunks_path, [chunk])
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "How do I use SSH?",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-login-ssh-a1b2c3d4"],
+                    },
+                    {
+                        "question_id": "q2",
+                        "question": "SSH login",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-login-ssh-a1b2c3d4"],
+                    },
+                ],
+            )
+
+            with self.assertRaisesRegex(ValueError, "PILLAR 0 FAIL"):
+                verify_eval_questions.verify_eval_questions(questions_path, chunks_path)
+
+    def test_verify_eval_questions_accepts_natural_paraphrase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            chunk = self._retrieval_eval_chunk(
+                chunk_id="w0-login-ssh-a1b2c3d4",
+                product_area="login",
+                title="SSH login",
+                content="Use SSH from the console.",
+                question_patterns=["How do I use SSH?"],
+            )
+            self._write_jsonl(chunks_path, [chunk])
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "What should I do to connect from my IDE?",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-login-ssh-a1b2c3d4"],
+                    }
+                ],
+            )
+
+            summary = verify_eval_questions.verify_eval_questions(questions_path, chunks_path)
+
+            self.assertEqual(summary["violations"], 0)
+
+    def test_check_internal_leakage_flags_staff_name_and_internal_case(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            staff_name = next(iter(check_internal_leakage._load_staff_names()))
+            clean_chunk = self._retrieval_eval_chunk(
+                chunk_id="w0-login-clean-a1b2c3d4",
+                product_area="login",
+                title="Clean login",
+                content="Use the console to connect.",
+                question_patterns=["How do I connect?"],
+            )
+            staff_chunk = self._retrieval_eval_chunk(
+                chunk_id="w0-login-staff-a1b2c3d4",
+                product_area="login",
+                title="Staff leak",
+                content=f"Contact {staff_name} for this issue.",
+                question_patterns=["Who handles this?"],
+            )
+            internal_case_chunk = self._retrieval_eval_chunk(
+                chunk_id="w0-login-spt-a1b2c3d4",
+                product_area="login",
+                title="SPT leak",
+                content="Customer-safe looking text.",
+                question_patterns=["How do I connect?"],
+            )
+            internal_case_chunk["source_refs"] = ["wxwork-spt-record-2026-05:case-1"]
+            self._write_jsonl(chunks_path, [clean_chunk, staff_chunk, internal_case_chunk])
+
+            summary = check_internal_leakage.check_internal_leakage(chunks_path)
+
+            self.assertEqual(summary["chunk_count"], 3)
+            self.assertEqual(summary["flagged_count"], 2)
+            findings = [finding for row in summary["flagged"] for finding in row["findings"]]
+            self.assertTrue(any(finding.startswith("staff_name:") for finding in findings))
+            self.assertTrue(any(finding.startswith("internal_case:") for finding in findings))
+
+    def test_check_internal_leakage_cli_report_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            chunk = self._retrieval_eval_chunk(
+                chunk_id="w0-login-spt-a1b2c3d4",
+                product_area="login",
+                title="SPT leak",
+                content="spt-12345 should never appear in deployed chunks.",
+                question_patterns=["How do I connect?"],
+            )
+            self._write_jsonl(chunks_path, [chunk])
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(check_internal_leakage.main(["--chunks", str(chunks_path), "--report-only"]), 0)
+                self.assertEqual(check_internal_leakage.main(["--chunks", str(chunks_path)]), 1)
+
+    def test_retrieval_scoring_tokenizes_nfkc_and_multiset_ngrams(self):
+        tokens = retrieval_scoring.tokenize_text("  ＡＢＣ！ 远程桌面没声音？远程桌面  ")
+
+        self.assertIn("abc", tokens)
+        self.assertIn("远程", tokens)
+        self.assertIn("远程桌", tokens)
+        self.assertNotIn("！", tokens)
+        self.assertEqual(tokens.count("远程"), 2)
+
+    def test_retrieval_scoring_treats_cjk_extensions_like_runtime(self):
+        ext_a = chr(0x3402)
+        ext_b = chr(0x2000B)
+        tokens = retrieval_scoring.tokenize_text(f"{ext_a}{ext_b}开机")
+
+        self.assertIn(f"{ext_a}{ext_b}", tokens)
+        self.assertIn(f"{ext_b}开", tokens)
+        self.assertNotIn("é", retrieval_scoring.tokenize_text("é abc"))
+        self.assertNotIn("か", retrieval_scoring.tokenize_text("かな"))
+        self.assertNotIn("한", retrieval_scoring.tokenize_text("한글"))
+
+    def test_evaluate_retrieval_matches_natural_chinese_paraphrase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            out_path = root / "retrieval_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-windows-audio-a1b2c3d4",
+                        product_area="windows",
+                        title="远程 Windows 开启声音",
+                        content="通过组策略启用远程桌面音频重定向，然后将 Windows Audio 服务设为自动并重启。",
+                        question_patterns=["Windows 远程桌面没声音怎么办"],
+                    ),
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-driver_cuda-install-a1b2c3d4",
+                        product_area="driver_cuda",
+                        title="CUDA 安装",
+                        content="先安装 NVIDIA 驱动，再安装 CUDA Toolkit。",
+                        question_patterns=["怎么安装 NVIDIA 驱动"],
+                    ),
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "我远程连上 Windows 云服务器后没有声音",
+                        "group": "windows_rdp_sound",
+                        "product_area": "windows",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-windows-audio-a1b2c3d4"],
+                        "source_refs": ["windows-audio"],
+                    }
+                ],
+            )
+
+            summary = evaluate_retrieval.evaluate_retrieval(chunks_path, questions_path, out_path)
+
+            self.assertEqual(summary["top_3_hit_rate"], 1.0)
+            self.assertEqual(summary["trace_records"][0]["hit_items"][0]["chunk_id"], "w0-windows-audio-a1b2c3d4")
+
+    def test_retriever_go_python_parity_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            go_out_path = root / "go_top3.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-windows-audio-a1b2c3d4",
+                        product_area="windows",
+                        title="远程 Windows 开启声音",
+                        content="通过组策略启用远程桌面音频重定向，然后将 Windows Audio 服务设为自动并重启。",
+                        question_patterns=["Windows 远程桌面没声音怎么办"],
+                    ),
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-driver_cuda-install-a1b2c3d4",
+                        product_area="driver_cuda",
+                        title="CUDA 安装",
+                        content="先安装 NVIDIA 驱动，再安装 CUDA Toolkit。",
+                        question_patterns=["怎么安装 NVIDIA 驱动"],
+                    ),
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "我远程连上 Windows 云服务器后没有声音",
+                        "group": "windows_rdp_sound",
+                        "product_area": "windows",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-windows-audio-a1b2c3d4"],
+                    },
+                    {
+                        "question_id": "q2",
+                        "question": "CUDA 装不上要先检查什么",
+                        "group": "cuda_nvidia_driver",
+                        "product_area": "driver_cuda",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-driver_cuda-install-a1b2c3d4"],
+                    },
+                ],
+            )
+            python_summary = evaluate_retrieval.evaluate_retrieval(chunks_path, questions_path, retrieval_path)
+            python_top3 = {
+                row["question_id"]: [item["chunk_id"] for item in row["hit_items"]]
+                for row in python_summary["trace_records"]
+            }
+            env = dict(os.environ)
+            env.update(
+                {
+                    "RAG_RETRIEVER_PARITY_CHUNKS": str(chunks_path),
+                    "RAG_RETRIEVER_PARITY_QUESTIONS": str(questions_path),
+                    "RAG_RETRIEVER_PARITY_OUT": str(go_out_path),
+                }
+            )
+            completed = subprocess.run(
+                ["go", "test", "./internal/knowledge", "-run", "TestRetrieverParityFixture", "-count=1"],
+                cwd=SCRIPTS_DIR.parent,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            go_top3 = json.loads(go_out_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(go_top3, python_top3)
+
+    def test_retriever_go_python_parity_fixture_with_cjk_extension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            go_out_path = root / "go_top3.json"
+            ext_a = chr(0x3402)
+            ext_b = chr(0x2000B)
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-init_failure-rare-cjk-a1b2c3d4",
+                        product_area="init_failure",
+                        title=f"{ext_a}{ext_b} GPU 启动失败",
+                        content=f"{ext_a}{ext_b} 卡型启动失败时，请检查镜像兼容性。",
+                        question_patterns=[f"{ext_a}{ext_b} 卡启动失败怎么处理"],
+                    ),
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-billing_rule-normal-a1b2c3d4",
+                        product_area="billing_rule",
+                        title="计费规则",
+                        content="按量计费会根据资源使用情况扣费。",
+                        question_patterns=["计费怎么算"],
+                    ),
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": f"{ext_a}{ext_b} 这张卡启动失败了怎么办",
+                        "group": "monitor_init_failure",
+                        "product_area": "init_failure",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-init_failure-rare-cjk-a1b2c3d4"],
+                    }
+                ],
+            )
+            python_summary = evaluate_retrieval.evaluate_retrieval(chunks_path, questions_path, retrieval_path)
+            python_top3 = {
+                row["question_id"]: [item["chunk_id"] for item in row["hit_items"]]
+                for row in python_summary["trace_records"]
+            }
+            env = dict(os.environ)
+            env.update(
+                {
+                    "RAG_RETRIEVER_PARITY_CHUNKS": str(chunks_path),
+                    "RAG_RETRIEVER_PARITY_QUESTIONS": str(questions_path),
+                    "RAG_RETRIEVER_PARITY_OUT": str(go_out_path),
+                }
+            )
+            completed = subprocess.run(
+                ["go", "test", "./internal/knowledge", "-run", "TestRetrieverParityFixture", "-count=1"],
+                cwd=SCRIPTS_DIR.parent,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            go_top3 = json.loads(go_out_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(go_top3, python_top3)
+
+    def test_evaluate_retrieval_perfect_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            out_path = root / "retrieval_eval.json"
+            chunk = self._retrieval_eval_chunk(
+                chunk_id="w0-billing_rule-shutdown-a1b2c3d4",
+                product_area="billing_rule",
+                title="Shutdown billing",
+                content="Shutdown billing follows the selected billing mode.",
+                question_patterns=["Will shutdown still bill?"],
+            )
+            self._write_jsonl(chunks_path, [chunk])
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "Will shutdown still bill?",
+                        "group": "billing_mode_shutdown",
+                        "product_area": "billing_rule",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-billing_rule-shutdown-a1b2c3d4"],
+                        "source_refs": ["billing-faq"],
+                    }
+                ],
+            )
+
+            summary = evaluate_retrieval.evaluate_retrieval(chunks_path, questions_path, out_path)
+
+            self.assertEqual(summary["questions_evaluated"], 1)
+            self.assertEqual(summary["questions_excluded_non_answer_behavior"], 0)
+            self.assertEqual(summary["top_3_hit_rate"], 1.0)
+            self.assertEqual(summary["failed_questions"], [])
+
+    def test_evaluate_retrieval_excludes_hard_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            out_path = root / "retrieval_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-billing_rule-shutdown-a1b2c3d4",
+                        product_area="billing_rule",
+                        title="Shutdown billing",
+                        content="Shutdown billing follows the selected billing mode.",
+                        question_patterns=["Will shutdown still bill?"],
+                    )
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "Can you check my real-time account balance?",
+                        "group": "hard_block_account_finance",
+                        "product_area": "billing_rule",
+                        "expected_behavior": "hard_block",
+                        "expected_chunk_ids": [],
+                        "source_refs": [],
+                    }
+                ],
+            )
+
+            summary = evaluate_retrieval.evaluate_retrieval(chunks_path, questions_path, out_path)
+
+            self.assertEqual(summary["questions_evaluated"], 0)
+            self.assertEqual(summary["questions_excluded_non_answer_behavior"], 1)
+            self.assertIsNone(summary["top_3_hit_rate"])
+
+    def test_evaluate_retrieval_emits_trace_v03_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            out_path = root / "retrieval_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-init_failure-error-code-a1b2c3d4",
+                        product_area="init_failure",
+                        title="Error code table",
+                        content="Init failure can be caused by unsupported image or insufficient resources.",
+                        question_patterns=["instance init failure"],
+                    )
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "instance init failure",
+                        "group": "monitor_init_failure",
+                        "product_area": "init_failure",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-init_failure-error-code-a1b2c3d4"],
+                        "source_refs": ["gitlab-compshare-docs__compshareerrorcode"],
+                    }
+                ],
+            )
+
+            summary = evaluate_retrieval.evaluate_retrieval(chunks_path, questions_path, out_path)
+            trace = summary["trace_records"][0]
+
+            self.assertEqual(trace["query_raw"], "instance init failure")
+            self.assertEqual(trace["query_normalized"], "instance init failure")
+            self.assertEqual(trace["query_expansions"], [])
+            self.assertEqual(trace["hits"], 1)
+            self.assertEqual(trace["hit_items"][0]["chunk_id"], "w0-init_failure-error-code-a1b2c3d4")
+            self.assertIsInstance(trace["hit_items"][0]["score"], float)
+            self.assertTrue(trace["hit_items"][0]["kept"])
+
+    def test_evaluate_answers_safety_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            out_path = root / "answer_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-login-ssh-a1b2c3d4",
+                        product_area="login",
+                        title="SSH login",
+                        content="Use the console connection information to log in with SSH.",
+                        question_patterns=["How do I log in with SSH?"],
+                    )
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "How do I log in with SSH?",
+                        "group": "remote_login_ssh_jupyter",
+                        "product_area": "login",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-login-ssh-a1b2c3d4"],
+                        "source_refs": ["login-faq"],
+                    }
+                ],
+            )
+            retrieval_path.write_text(
+                json.dumps(
+                    {
+                        "trace_records": [
+                            {
+                                "question_id": "q1",
+                                "hit_items": [{"chunk_id": "w0-login-ssh-a1b2c3d4", "score": 6.0, "kept": True}],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            summary = evaluate_answers.evaluate_answers(
+                chunks_path,
+                questions_path,
+                retrieval_path,
+                out_path,
+                answerer=lambda question, chunks: "Use SSH from the console. [1]",
+                judge=lambda question, answer, chunks: {"grounded": True, "cited": True, "fabricated": False},
+            )
+
+            self.assertEqual(summary["safety_failures"], 0)
+            self.assertEqual(summary["internal_leakage"], 0)
+            self.assertEqual(summary["answer_questions_evaluated"], 1)
+
+    def test_evaluate_answers_counts_internal_leakage_from_chunks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            out_path = root / "answer_eval.json"
+            chunk = self._retrieval_eval_chunk(
+                chunk_id="w0-login-spt-a1b2c3d4",
+                product_area="login",
+                title="SPT leak",
+                content="Use SSH from the console.",
+                question_patterns=["How do I log in?"],
+            )
+            chunk["source_refs"] = ["wxwork-spt-record-2026-05:case-1"]
+            self._write_jsonl(chunks_path, [chunk])
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "How do I log in with SSH?",
+                        "group": "remote_login_ssh_jupyter",
+                        "product_area": "login",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-login-spt-a1b2c3d4"],
+                        "source_refs": ["login-faq"],
+                    }
+                ],
+            )
+            retrieval_path.write_text(
+                json.dumps(
+                    {
+                        "trace_records": [
+                            {
+                                "question_id": "q1",
+                                "hit_items": [{"chunk_id": "w0-login-spt-a1b2c3d4", "score": 6.0, "kept": True}],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            summary = evaluate_answers.evaluate_answers(
+                chunks_path,
+                questions_path,
+                retrieval_path,
+                out_path,
+                answerer=lambda question, chunks: "Use SSH from the console. [1]",
+                judge=lambda question, answer, chunks: {"grounded": True, "cited": True, "fabricated": False},
+            )
+
+            self.assertEqual(summary["safety_failures"], 0)
+            self.assertEqual(summary["internal_leakage"], 1)
+
+    def test_evaluate_answers_safety_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            out_path = root / "answer_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-login-unsafe-a1b2c3d4",
+                        product_area="login",
+                        title="Unsafe login",
+                        content="Use password: compshare123 to log in.",
+                        question_patterns=["How do I log in?"],
+                    )
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "How do I log in?",
+                        "group": "remote_login_ssh_jupyter",
+                        "product_area": "login",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-login-unsafe-a1b2c3d4"],
+                        "source_refs": ["login-faq"],
+                    }
+                ],
+            )
+            retrieval_path.write_text(
+                json.dumps(
+                    {
+                        "trace_records": [
+                            {
+                                "question_id": "q1",
+                                "hit_items": [{"chunk_id": "w0-login-unsafe-a1b2c3d4", "score": 6.0, "kept": True}],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            summary = evaluate_answers.evaluate_answers(
+                chunks_path,
+                questions_path,
+                retrieval_path,
+                out_path,
+                answerer=lambda question, chunks: "Use the password. [1]",
+                judge=lambda question, answer, chunks: {"grounded": True, "cited": True, "fabricated": False},
+            )
+
+            self.assertGreater(summary["safety_failures"], 0)
+            self.assertTrue(summary["failed_answers"])
+
+    def test_evaluate_answers_judge_mock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            out_path = root / "answer_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-driver_cuda-install-a1b2c3d4",
+                        product_area="driver_cuda",
+                        title="CUDA install",
+                        content="Install the NVIDIA driver before CUDA.",
+                        question_patterns=["How do I install CUDA?"],
+                    )
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "How do I install CUDA?",
+                        "group": "cuda_nvidia_driver",
+                        "product_area": "driver_cuda",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-driver_cuda-install-a1b2c3d4"],
+                        "source_refs": ["cuda-runbook"],
+                    }
+                ],
+            )
+            retrieval_path.write_text(
+                json.dumps(
+                    {
+                        "trace_records": [
+                            {
+                                "question_id": "q1",
+                                "hit_items": [{"chunk_id": "w0-driver_cuda-install-a1b2c3d4", "score": 6.0, "kept": True}],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            summary = evaluate_answers.evaluate_answers(
+                chunks_path,
+                questions_path,
+                retrieval_path,
+                out_path,
+                answerer=lambda question, chunks: "Install the NVIDIA driver before CUDA. [1]",
+                judge=lambda question, answer, chunks: {"grounded": True, "cited": True, "fabricated": False},
+            )
+
+            self.assertEqual(summary["grounded_rate"], 1.0)
+            self.assertEqual(summary["cited_rate"], 1.0)
+            self.assertEqual(summary["fabricated_rate"], 0.0)
+
+    def test_evaluate_answers_retries_non_refusal_without_citation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            out_path = root / "answer_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-driver_cuda-install-a1b2c3d4",
+                        product_area="driver_cuda",
+                        title="CUDA install",
+                        content="Install the NVIDIA driver before CUDA.",
+                        question_patterns=["How do I install CUDA?"],
+                    )
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "How do I install CUDA?",
+                        "group": "cuda_nvidia_driver",
+                        "product_area": "driver_cuda",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-driver_cuda-install-a1b2c3d4"],
+                    }
+                ],
+            )
+            retrieval_path.write_text(
+                json.dumps(
+                    {
+                        "trace_records": [
+                            {
+                                "question_id": "q1",
+                                "hit_items": [{"chunk_id": "w0-driver_cuda-install-a1b2c3d4", "score": 6.0, "kept": True}],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            calls: list[str] = []
+
+            def answerer(question: str, chunks: list[dict]) -> str:
+                calls.append(question)
+                if len(calls) == 1:
+                    return "Install the NVIDIA driver before CUDA."
+                return "Install the NVIDIA driver before CUDA. [1]"
+
+            summary = evaluate_answers.evaluate_answers(
+                chunks_path,
+                questions_path,
+                retrieval_path,
+                out_path,
+                answerer=answerer,
+                judge=lambda question, answer, chunks: {"grounded": True, "cited": True, "fabricated": False},
+            )
+
+            self.assertEqual(len(calls), 2)
+            self.assertIn("引用编号", calls[1])
+            self.assertEqual(summary["cited_rate"], 1.0)
+            self.assertEqual(summary["answer_questions_non_refused"], 1)
+            self.assertTrue(summary["answers"][0]["citation_retry"])
+
+    def test_evaluate_answers_excludes_refusal_from_citation_denominator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            out_path = root / "answer_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-login-ssh-a1b2c3d4",
+                        product_area="login",
+                        title="SSH login",
+                        content="Use SSH from the console.",
+                        question_patterns=["How do I use SSH?"],
+                    )
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "How do I resize a private disk?",
+                        "group": "remote_login_ssh_jupyter",
+                        "product_area": "login",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-login-ssh-a1b2c3d4"],
+                    }
+                ],
+            )
+            retrieval_path.write_text(
+                json.dumps(
+                    {
+                        "trace_records": [
+                            {"question_id": "q1", "hit_items": [{"chunk_id": "w0-login-ssh-a1b2c3d4", "score": 6.0, "kept": True}]}
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            summary = evaluate_answers.evaluate_answers(
+                chunks_path,
+                questions_path,
+                retrieval_path,
+                out_path,
+                answerer=lambda question, chunks: "知识库未覆盖这个问题。",
+                judge=lambda question, answer, chunks: {"grounded": True, "cited": False, "fabricated": False},
+            )
+
+            self.assertEqual(summary["answer_questions_refused"], 1)
+            self.assertEqual(summary["answer_questions_non_refused"], 0)
+            self.assertIsNone(summary["cited_rate"])
+            self.assertEqual(summary["failed_answers"], [])
+
+    def test_evaluate_answers_treats_partial_coverage_without_citation_as_refusal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            out_path = root / "answer_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-modelverse-package-a1b2c3d4",
+                        product_area="modelverse",
+                        title="Coding Plan quota",
+                        content="Coding Plan has a fixed quota window.",
+                        question_patterns=["Coding Plan quota"],
+                    )
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "How does Coding Plan quota work?",
+                        "group": "modelverse_package_credit",
+                        "product_area": "modelverse",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-modelverse-package-a1b2c3d4"],
+                    }
+                ],
+            )
+            retrieval_path.write_text(
+                json.dumps(
+                    {
+                        "trace_records": [
+                            {"question_id": "q1", "hit_items": [{"chunk_id": "w0-modelverse-package-a1b2c3d4", "score": 6.0, "kept": True}]}
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            calls: list[str] = []
+
+            def answerer(question: str, chunks: list[dict]) -> str:
+                calls.append(question)
+                return "当前知识库只收录了以下信息：Coding Plan 有固定额度窗口。"
+
+            summary = evaluate_answers.evaluate_answers(
+                chunks_path,
+                questions_path,
+                retrieval_path,
+                out_path,
+                answerer=answerer,
+                judge=lambda question, answer, chunks: {"grounded": True, "cited": False, "fabricated": False},
+            )
+
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(summary["answer_questions_refused"], 1)
+            self.assertEqual(summary["answer_questions_non_refused"], 0)
+            self.assertIsNone(summary["cited_rate"])
+            self.assertEqual(summary["failed_answers"], [])
+
+    def test_evaluate_answers_marks_retry_still_missing_citation_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            out_path = root / "answer_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-billing_rule-4090-a1b2c3d4",
+                        product_area="billing_rule",
+                        title="4090 pricing",
+                        content="4090 is billed hourly according to the selected billing mode.",
+                        question_patterns=["4090 pricing"],
+                    )
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "How much is 4090 hourly?",
+                        "group": "billing_mode_shutdown",
+                        "product_area": "billing_rule",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-billing_rule-4090-a1b2c3d4"],
+                    }
+                ],
+            )
+            retrieval_path.write_text(
+                json.dumps(
+                    {
+                        "trace_records": [
+                            {"question_id": "q1", "hit_items": [{"chunk_id": "w0-billing_rule-4090-a1b2c3d4", "score": 6.0, "kept": True}]}
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            answers = [
+                "4090 大概 8 元一小时,按量计费支持转包月。",
+                "4090 价格每小时约 8 元,可以买包月。",
+            ]
+
+            def answerer(question: str, chunks: list[dict]) -> str:
+                return answers.pop(0)
+
+            summary = evaluate_answers.evaluate_answers(
+                chunks_path,
+                questions_path,
+                retrieval_path,
+                out_path,
+                answerer=answerer,
+                judge=lambda question, answer, chunks: {"grounded": True, "cited": True, "fabricated": False},
+            )
+
+            self.assertEqual(summary["answer_questions_non_refused"], 1)
+            self.assertEqual(summary["cited_rate"], 0.0)
+            self.assertEqual(summary["failed_answers"][0]["reason"], "judge_flagged")
+            self.assertFalse(summary["answers"][0]["judge"]["cited"])
+            self.assertTrue(summary["answers"][0]["citation_retry"])
+
+    def test_evaluate_answers_resumes_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            out_path = root / "answer_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-login-ssh-a1b2c3d4",
+                        product_area="login",
+                        title="SSH login",
+                        content="Use SSH from the console.",
+                        question_patterns=["How do I use SSH?"],
+                    ),
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-driver_cuda-install-a1b2c3d4",
+                        product_area="driver_cuda",
+                        title="CUDA install",
+                        content="Install the NVIDIA driver before CUDA.",
+                        question_patterns=["How do I install CUDA?"],
+                    ),
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "How do I use SSH?",
+                        "group": "remote_login_ssh_jupyter",
+                        "product_area": "login",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-login-ssh-a1b2c3d4"],
+                        "source_refs": ["login-faq"],
+                    },
+                    {
+                        "question_id": "q2",
+                        "question": "How do I install CUDA?",
+                        "group": "cuda_nvidia_driver",
+                        "product_area": "driver_cuda",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-driver_cuda-install-a1b2c3d4"],
+                        "source_refs": ["cuda-runbook"],
+                    },
+                ],
+            )
+            retrieval_path.write_text(
+                json.dumps(
+                    {
+                        "trace_records": [
+                            {"question_id": "q1", "hit_items": [{"chunk_id": "w0-login-ssh-a1b2c3d4", "score": 6.0, "kept": True}]},
+                            {"question_id": "q2", "hit_items": [{"chunk_id": "w0-driver_cuda-install-a1b2c3d4", "score": 6.0, "kept": True}]},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            out_path.write_text(
+                json.dumps(
+                    {
+                        "answer_questions_evaluated": 1,
+                        "grounded_rate": 1.0,
+                        "cited_rate": 1.0,
+                        "fabricated_rate": 0.0,
+                        "safety_failures": 0,
+                        "internal_leakage": 0,
+                        "failed_answers": [{"question_id": "q2", "reason": "model_call_error", "error": "transient"}],
+                        "answer_model": "deepseek-v4-pro",
+                        "judge_model": "claude-opus-4-7",
+                        "answers": [
+                            {
+                                "question_id": "q1",
+                                "answer": "Use SSH from the console. [1]",
+                                "chunk_ids": ["w0-login-ssh-a1b2c3d4"],
+                                "judge": {"grounded": True, "cited": True, "fabricated": False},
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            calls: list[str] = []
+
+            summary = evaluate_answers.evaluate_answers(
+                chunks_path,
+                questions_path,
+                retrieval_path,
+                out_path,
+                answerer=lambda question, chunks: calls.append(question) or "Install CUDA. [1]",
+                judge=lambda question, answer, chunks: {"grounded": True, "cited": True, "fabricated": False},
+            )
+
+            self.assertEqual(calls, ["How do I install CUDA?"])
+            self.assertEqual(summary["answer_questions_evaluated"], 2)
+            self.assertEqual(len(summary["answers"]), 2)
+            self.assertEqual(summary["failed_answers"], [])
+
+    def test_write_eval_report_promotes_only_when_gates_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            answer_path = root / "answer_eval.json"
+            report_path = root / "eval_report.md"
+            deploy_path = root / "deploy" / "kb" / "stage2b_w0.jsonl"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-login-ssh-a1b2c3d4",
+                        product_area="login",
+                        title="SSH login",
+                        content="Use SSH from the console.",
+                        question_patterns=["How do I use SSH?"],
+                    )
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q1",
+                        "question": "How can I connect with SSH from the console?",
+                        "group": "remote_login_ssh_jupyter",
+                        "product_area": "login",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-login-ssh-a1b2c3d4"],
+                        "source_refs": ["login-faq"],
+                        "is_anchor": True,
+                    }
+                ],
+            )
+            retrieval_path.write_text(
+                json.dumps(
+                    {
+                        "questions_evaluated": 1,
+                        "questions_excluded_non_answer_behavior": 0,
+                        "top_3_hit_rate": 1.0,
+                        "per_group_hit_rate": {"remote_login_ssh_jupyter": 1.0},
+                        "failed_questions": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            answer_path.write_text(
+                json.dumps(
+                    {
+                        "answer_questions_evaluated": 1,
+                        "grounded_rate": 1.0,
+                        "cited_rate": 1.0,
+                        "fabricated_rate": 0.0,
+                        "safety_failures": 0,
+                        "internal_leakage": 0,
+                        "failed_answers": [],
+                        "answer_model": "deepseek-v4-pro",
+                        "judge_model": "claude-opus-4-7",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            summary = write_eval_report.write_eval_report(
+                chunks_path=chunks_path,
+                questions_path=questions_path,
+                retrieval_eval_path=retrieval_path,
+                answer_eval_path=answer_path,
+                report_path=report_path,
+                deploy_path=deploy_path,
+            )
+
+            self.assertTrue(summary["passed"])
+            self.assertTrue(deploy_path.exists())
+            self.assertIn("Verdict: **PASS**", report_path.read_text(encoding="utf-8"))
+
+            answer_path.write_text(
+                json.dumps(
+                    {
+                        "answer_questions_evaluated": 1,
+                        "grounded_rate": 1.0,
+                        "cited_rate": 0.0,
+                        "fabricated_rate": 0.0,
+                        "safety_failures": 0,
+                        "internal_leakage": 0,
+                        "failed_answers": [{"question_id": "q1", "reason": "missing_citation"}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            summary = write_eval_report.write_eval_report(
+                chunks_path=chunks_path,
+                questions_path=questions_path,
+                retrieval_eval_path=retrieval_path,
+                answer_eval_path=answer_path,
+                report_path=report_path,
+                deploy_path=deploy_path,
+            )
+
+            self.assertFalse(summary["passed"])
+            self.assertFalse(deploy_path.exists())
+            self.assertFalse(summary["gates"]["cited"])
+
+            answer_path.write_text(
+                json.dumps(
+                    {
+                        "answer_questions_evaluated": 1,
+                        "grounded_rate": 1.0,
+                        "cited_rate": 1.0,
+                        "fabricated_rate": 0.0,
+                        "safety_failures": 1,
+                        "internal_leakage": 0,
+                        "failed_answers": [{"question_id": "q1", "reason": "safety_failure"}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            summary = write_eval_report.write_eval_report(
+                chunks_path=chunks_path,
+                questions_path=questions_path,
+                retrieval_eval_path=retrieval_path,
+                answer_eval_path=answer_path,
+                report_path=report_path,
+                deploy_path=deploy_path,
+            )
+
+            self.assertFalse(summary["passed"])
+            self.assertFalse(deploy_path.exists())
+            self.assertIn("Verdict: **FAIL**", report_path.read_text(encoding="utf-8"))
+
+    def _retrieval_eval_chunk(
+        self,
+        *,
+        chunk_id: str,
+        product_area: str,
+        title: str,
+        content: str,
+        question_patterns: list[str],
+    ) -> dict:
+        return {
+            "chunk_id": chunk_id,
+            "kb_version": "kb.test",
+            "source_type": "faq",
+            "product_area": product_area,
+            "acl": "customer_safe",
+            "title": title,
+            "question_patterns": question_patterns,
+            "content": content,
+            "source_refs": ["test-source"],
+            "asset_refs": [],
+            "confidence": "high",
+            "valid_from": "2026-05-13",
+            "evidence_kind": "knowledge",
+            "surface_url": None,
+            "retrieval_score_hint": None,
+        }
+
+    def _write_jsonl(self, path: Path, rows: list[dict]) -> None:
+        path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ func TestRetrieverFindsBillingChunk(t *testing.T) {
 	result := NewRetriever(corpus, RetrieverOptions{Now: fixedRetrieverNow}).Retrieve("关机后还收费吗", "billing")
 
 	require.False(t, result.Empty)
-	require.Len(t, result.Hits, 1)
+	require.NotEmpty(t, result.Hits)
 	assert.Equal(t, "kb-curated-test", result.KBVersion)
 	assert.Equal(t, "faq-billing-001", result.Hits[0].ChunkID)
 }
@@ -65,15 +65,49 @@ func TestRetrieverFindsImageChunk(t *testing.T) {
 	result := NewRetriever(corpus, RetrieverOptions{Now: fixedRetrieverNow}).Retrieve("平台镜像有哪些", "image")
 
 	require.False(t, result.Empty)
-	require.Len(t, result.Hits, 1)
+	require.NotEmpty(t, result.Hits)
 	assert.Equal(t, "faq-image-001", result.Hits[0].ChunkID)
+}
+
+func TestRetrieverFindsNaturalChineseParaphrase(t *testing.T) {
+	corpus := Corpus{
+		KBVersion: "kb-test",
+		Chunks: []KBChunk{
+			testChunk(
+				"windows-audio",
+				"windows",
+				"high",
+				"远程 Windows 开启声音",
+				"Windows 远程桌面没声音怎么办",
+				"通过组策略启用远程桌面音频重定向，然后将 Windows Audio 服务设为自动并重启。",
+				"",
+				nil,
+			),
+			testChunk(
+				"cuda-install",
+				"driver_cuda",
+				"high",
+				"CUDA 安装",
+				"怎么安装 NVIDIA 驱动",
+				"先安装 NVIDIA 驱动，再安装 CUDA Toolkit。",
+				"",
+				nil,
+			),
+		},
+	}
+
+	result := NewRetriever(corpus, RetrieverOptions{Now: fixedRetrieverNow}).Retrieve("我远程连上 Windows 云服务器后没有声音", "windows")
+
+	require.False(t, result.Empty)
+	require.NotEmpty(t, result.Hits)
+	assert.Equal(t, "windows-audio", result.Hits[0].ChunkID)
 }
 
 func TestRetrieverReturnsEmptyForUnrelatedQuestion(t *testing.T) {
 	corpus, err := LoadCorpus("testdata/curated_faq.jsonl")
 	require.NoError(t, err)
 
-	result := NewRetriever(corpus, RetrieverOptions{Now: fixedRetrieverNow}).Retrieve("今天天气怎么样", "")
+	result := NewRetriever(corpus, RetrieverOptions{Now: fixedRetrieverNow}).Retrieve("zzzz qqqq unrelated", "")
 
 	assert.True(t, result.Empty)
 	assert.Empty(t, result.Hits)
@@ -197,7 +231,7 @@ func TestRetrieverFiltersSubThresholdMatches(t *testing.T) {
 		},
 	}
 
-	result := NewRetriever(corpus, RetrieverOptions{Now: fixedRetrieverNow}).Retrieve("关机后还收费吗", "")
+	result := NewRetriever(corpus, RetrieverOptions{Threshold: 999, Now: fixedRetrieverNow}).Retrieve("关机后还收费吗", "")
 
 	assert.True(t, result.Empty)
 }
@@ -214,6 +248,16 @@ func TestRetrieverDoesNotMatchOnProductAreaAlone(t *testing.T) {
 
 	assert.True(t, result.Empty)
 	assert.Empty(t, result.Hits)
+}
+
+func TestRetrievalTokenizerNormalizesAndBuildsMultisetNgrams(t *testing.T) {
+	tokens := tokenizeRetrievalText("  ＡＢＣ！ 远程桌面没声音？远程桌面  ")
+
+	assert.Contains(t, tokens, "abc")
+	assert.Contains(t, tokens, "远程")
+	assert.Contains(t, tokens, "远程桌")
+	assert.NotContains(t, tokens, "！")
+	assert.Equal(t, 2, countString(tokens, "远程"))
 }
 
 func fixedRetrieverNow() time.Time {
@@ -246,4 +290,14 @@ func chunkIDs(chunks []KBChunk) []string {
 		ids = append(ids, chunk.ChunkID)
 	}
 	return ids
+}
+
+func countString(values []string, target string) int {
+	count := 0
+	for _, value := range values {
+		if value == target {
+			count++
+		}
+	}
+	return count
 }

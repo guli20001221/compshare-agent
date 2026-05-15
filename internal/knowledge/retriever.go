@@ -8,14 +8,14 @@ import (
 
 const (
 	defaultRetrieverTopK      = 3
-	defaultRetrieverThreshold = 2
+	defaultRetrieverThreshold = 0.5
 )
 
 var beijingLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 type RetrieverOptions struct {
 	TopK      int
-	Threshold int
+	Threshold float64
 	Now       func() time.Time
 }
 
@@ -29,8 +29,9 @@ type RetrievalResult struct {
 type Retriever struct {
 	corpus    Corpus
 	topK      int
-	threshold int
+	threshold float64
 	now       func() time.Time
+	bm25      retrievalBM25Index
 }
 
 func NewRetriever(corpus Corpus, opts RetrieverOptions) *Retriever {
@@ -46,16 +47,18 @@ func NewRetriever(corpus Corpus, opts RetrieverOptions) *Retriever {
 	if now == nil {
 		now = time.Now
 	}
-	return &Retriever{corpus: corpus, topK: topK, threshold: threshold, now: now}
+	return &Retriever{corpus: corpus, topK: topK, threshold: threshold, now: now, bm25: newRetrievalBM25Index(corpus.Chunks)}
 }
 
 func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
+	queryTokens := tokenizeRetrievalText(question)
+	productArea = strings.TrimSpace(strings.ToLower(productArea))
 	candidates := make([]scoredChunk, 0, len(r.corpus.Chunks))
-	for _, chunk := range r.corpus.Chunks {
+	for index, chunk := range r.corpus.Chunks {
 		if !chunkActiveAt(chunk, r.now()) || chunk.Confidence == confidenceLow {
 			continue
 		}
-		score := scoreChunk(question, productArea, chunk)
+		score := r.scoreChunk(queryTokens, productArea, index, chunk)
 		if score < r.threshold {
 			continue
 		}
@@ -88,44 +91,23 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 
 type scoredChunk struct {
 	chunk KBChunk
-	score int
+	score float64
 }
 
-func scoreChunk(question, productArea string, chunk KBChunk) int {
-	question = strings.TrimSpace(strings.ToLower(question))
-	productArea = strings.TrimSpace(strings.ToLower(productArea))
-	score := 0
-	textMatched := false
-	for _, pattern := range chunk.QuestionPatterns {
-		if textMatches(question, pattern) {
-			score += 4
-			textMatched = true
-			break
-		}
+func (r *Retriever) scoreChunk(queryTokens []string, productArea string, chunkIndex int, chunk KBChunk) float64 {
+	if len(queryTokens) == 0 {
+		return 0
 	}
-	if textMatches(question, chunk.Title) {
-		score += 3
-		textMatched = true
-	}
-	if textMatches(question, chunk.Content) {
-		score++
-		textMatched = true
-	}
-	if !textMatched {
+	score := patternsFieldWeight*r.bm25.patterns.score(chunkIndex, queryTokens) +
+		titleFieldWeight*r.bm25.titles.score(chunkIndex, queryTokens) +
+		contentFieldWeight*r.bm25.contents.score(chunkIndex, queryTokens)
+	if score <= 0 {
 		return 0
 	}
 	if productArea != "" && strings.EqualFold(productArea, chunk.ProductArea) {
 		score += 2
 	}
 	return score
-}
-
-func textMatches(question, field string) bool {
-	field = strings.TrimSpace(strings.ToLower(field))
-	if question == "" || field == "" {
-		return false
-	}
-	return strings.Contains(question, field) || strings.Contains(field, question)
 }
 
 func chunkActiveAt(chunk KBChunk, now time.Time) bool {
