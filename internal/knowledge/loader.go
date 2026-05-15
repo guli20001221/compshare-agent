@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/compshare-agent/internal/envelope"
 )
 
 const (
@@ -20,6 +22,8 @@ const (
 	confidenceLow              = "low"
 	sourceTypeFAQ              = "faq"
 	sourceTypeRunbook          = "runbook"
+	sourceOriginOfficial       = "official"
+	sourceOriginSupportCurated = "support_curated"
 	defaultCorpusScannerBuffer = 64 * 1024
 )
 
@@ -78,6 +82,7 @@ func validateChunk(chunk KBChunk) error {
 		{"chunk_id", chunk.ChunkID},
 		{"kb_version", chunk.KBVersion},
 		{"source_type", chunk.SourceType},
+		{"source_origin", chunk.SourceOrigin},
 		{"product_area", chunk.ProductArea},
 		{"acl", chunk.ACL},
 		{"confidence", chunk.Confidence},
@@ -97,6 +102,11 @@ func validateChunk(chunk KBChunk) error {
 	default:
 		return fmt.Errorf("source_type must be faq or runbook")
 	}
+	switch chunk.SourceOrigin {
+	case sourceOriginOfficial, sourceOriginSupportCurated:
+	default:
+		return fmt.Errorf("source_origin must be official or support_curated")
+	}
 	switch chunk.Confidence {
 	case confidenceHigh, confidenceMedium, confidenceLow:
 	default:
@@ -108,6 +118,12 @@ func validateChunk(chunk KBChunk) error {
 	if chunk.ValidTo != nil {
 		if err := validateOptionalDate("valid_to", *chunk.ValidTo); err != nil {
 			return err
+		}
+	}
+	if chunk.SurfaceURL != nil {
+		decision := envelope.IsAllowedSurfaceURL(strings.TrimSpace(*chunk.SurfaceURL))
+		if !decision.Allowed {
+			return fmt.Errorf("surface_url rejected by policy: %s", decision.Reason)
 		}
 	}
 	if len(chunk.QuestionPatterns) > MaxQuestionPatterns {
