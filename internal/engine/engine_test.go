@@ -3316,6 +3316,12 @@ func TestPlannerRoutingControlsStage2BRAGPath(t *testing.T) {
 			expectRAGPath: false,
 		},
 		{
+			name:          "own account gpu instances stay resource path",
+			userMsg:       "\u6211\u8d26\u53f7\u4e0b\u6709\u54ea\u4e9b 4090 \u5b9e\u4f8b",
+			plan:          phase1ResourcePlan(),
+			expectRAGPath: false,
+		},
+		{
 			name:          "platform stock availability does not route to RAG",
 			userMsg:       "\u4e0a\u6d77\u673a\u623f\u8fd8\u5269\u6ca1\u5269 H100 \u5e93\u5b58",
 			plan:          unknownEngineTestPlan(),
@@ -5127,6 +5133,7 @@ func TestContainsInitFailureSignal(t *testing.T) {
 		"启动不了",
 		"开机失败",
 		"stop 后启动失败",
+		"stop后启动失败",
 		"starting很久",
 		"一直 starting",
 		"uhost-xxx 初始化失败",

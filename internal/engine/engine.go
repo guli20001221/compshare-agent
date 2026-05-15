@@ -2423,6 +2423,7 @@ var initFailureSignalKeywords = []string{
 	"启动不了",
 	"开机失败",
 	"stop 后启动失败",
+	"stop后启动失败",
 	"starting很久",
 	"starting 很久",
 	"一直starting",
