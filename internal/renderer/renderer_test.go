@@ -129,6 +129,7 @@ func TestGroundedRendererPromptIncludesResourceListRules(t *testing.T) {
 	assert.Contains(t, prompt, "resource_info")
 	assert.Contains(t, prompt, "ALL subjects")
 	assert.Contains(t, prompt, "computed.total_count")
+	assert.Contains(t, prompt, "answer the count in the first sentence")
 	assert.Contains(t, prompt, "duplicate names")
 	assert.Contains(t, prompt, "Do not rank")
 }

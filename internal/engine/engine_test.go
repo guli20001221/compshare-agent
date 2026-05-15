@@ -3289,6 +3289,7 @@ func TestPlannerRoutingControlsStage2BRAGPath(t *testing.T) {
 		userMsg       string
 		plan          intent.Plan
 		expectRAGPath bool
+		expectTool    string
 	}{
 		{
 			name:          "remote desktop audio how-to routes to RAG",
@@ -3313,6 +3314,19 @@ func TestPlannerRoutingControlsStage2BRAGPath(t *testing.T) {
 			userMsg:       "\u6211\u73b0\u5728\u6709\u591a\u5c11\u673a\u5668",
 			plan:          phase1ResourcePlan(),
 			expectRAGPath: false,
+		},
+		{
+			name:          "own account gpu instances stay resource path",
+			userMsg:       "\u6211\u8d26\u53f7\u4e0b\u6709\u54ea\u4e9b 4090 \u5b9e\u4f8b",
+			plan:          phase1ResourcePlan(),
+			expectRAGPath: false,
+		},
+		{
+			name:          "platform stock availability does not route to RAG",
+			userMsg:       "\u4e0a\u6d77\u673a\u623f\u8fd8\u5269\u6ca1\u5269 H100 \u5e93\u5b58",
+			plan:          unknownEngineTestPlan(),
+			expectRAGPath: false,
+			expectTool:    "DescribeAvailableCompShareInstanceTypes",
 		},
 		{
 			name:          "specific instance diagnosis does not route to RAG",
@@ -3356,6 +3370,10 @@ func TestPlannerRoutingControlsStage2BRAGPath(t *testing.T) {
 			}
 			assert.Equal(t, "react path", reply, "non-RAG planner output should fall back to the normal LLM path in this test")
 			assert.Empty(t, retriever.calls, "non-knowledge planner output must not call knowledge retriever")
+			if tc.expectTool != "" {
+				require.NotEmpty(t, mock.calls, "non-RAG fallback should expose tools")
+				assert.Contains(t, toolNames(mock.calls[0].Tools), tc.expectTool)
+			}
 		})
 	}
 }
@@ -5109,6 +5127,13 @@ func TestContainsInitFailureSignal(t *testing.T) {
 		"install fail",
 		"卡在初始化",
 		"卡在启动",
+		"开不了机",
+		"启动失败",
+		"无法启动",
+		"启动不了",
+		"开机失败",
+		"stop 后启动失败",
+		"stop后启动失败",
 		"starting很久",
 		"一直 starting",
 		"uhost-xxx 初始化失败",
@@ -5120,6 +5145,11 @@ func TestContainsInitFailureSignal(t *testing.T) {
 		"帮我扫一下所有有问题的实例",
 		"uhost-xxx 崩了",
 		"昨晚那台不行了",
+		"SSH 起不来",
+		"服务起不来",
+		"Jupyter 起不来",
+		"起不来",
+		"起不了",
 		"",
 	}
 	for _, msg := range positives {
