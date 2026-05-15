@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/policy"
 	"github.com/compshare-agent/internal/security"
 )
 
@@ -215,21 +216,33 @@ type RateLimitTrace struct {
 }
 
 type RetrievalTrace struct {
-	Enabled         bool           `json:"enabled"`
-	KBVersion       string         `json:"kb_version"`
-	QueryRaw        string         `json:"query_raw,omitempty"`
-	QueryNormalized string         `json:"query_normalized,omitempty"`
-	QueryExpansions []string       `json:"query_expansions,omitempty"`
-	Hits            int            `json:"hits"`
-	HitItems        []RetrievalHit `json:"hit_items,omitempty"`
-	RefusedReason   string         `json:"refused_reason,omitempty"`
-	WeakEvidence    bool           `json:"weak_evidence,omitempty"`
+	Enabled               bool           `json:"enabled"`
+	KBVersion             string         `json:"kb_version"`
+	QueryRaw              string         `json:"query_raw,omitempty"`
+	QueryNormalized       string         `json:"query_normalized,omitempty"`
+	QueryExpansions       []string       `json:"query_expansions,omitempty"`
+	Hits                  int            `json:"hits"`
+	HitItems              []RetrievalHit `json:"hit_items,omitempty"`
+	RefusedReason         string         `json:"refused_reason,omitempty"`
+	WeakEvidence          bool           `json:"weak_evidence,omitempty"`
+	RankingErrorCandidate bool           `json:"ranking_error_candidate,omitempty"`
 }
 
 type RetrievalHit struct {
 	ChunkID string  `json:"chunk_id"`
 	Score   float64 `json:"score"`
 	Kept    bool    `json:"kept"`
+}
+
+func RedactQueryDerivedFields(trace *RetrievalTrace) {
+	if trace == nil {
+		return
+	}
+	trace.QueryRaw = policy.RedactQueryDerivedValue(trace.QueryRaw)
+	trace.QueryNormalized = policy.RedactQueryDerivedValue(trace.QueryNormalized)
+	for i, expansion := range trace.QueryExpansions {
+		trace.QueryExpansions[i] = policy.RedactQueryDerivedValue(expansion)
+	}
 }
 
 type OutcomeTrace struct {
@@ -262,6 +275,7 @@ func (w *Writer) Dir() string {
 func (w *Writer) Append(record TraceRecord) error {
 	now := w.now()
 	record = record.withDefaults(now)
+	RedactQueryDerivedFields(&record.Retrieval)
 	data, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("marshal trace record: %w", err)
@@ -274,6 +288,28 @@ func (w *Writer) Append(record TraceRecord) error {
 	defer f.Close()
 	if _, err := f.Write(append(data, '\n')); err != nil {
 		return fmt.Errorf("write trace line: %w", err)
+	}
+	if record.Retrieval.RankingErrorCandidate {
+		if err := w.appendRankingErrorCandidate(now, data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *Writer) appendRankingErrorCandidate(now time.Time, data []byte) error {
+	dir := filepath.Join(w.dir, now.Format("2006-01-02"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create ranking-error trace dir: %w", err)
+	}
+	path := filepath.Join(dir, "ranking-error-candidates.jsonl")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, DefaultTraceFilePerm)
+	if err != nil {
+		return fmt.Errorf("open ranking-error trace file: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("write ranking-error trace line: %w", err)
 	}
 	return nil
 }
@@ -412,7 +448,8 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.Hits != 0 ||
 		len(trace.HitItems) > 0 ||
 		trace.RefusedReason != "" ||
-		trace.WeakEvidence
+		trace.WeakEvidence ||
+		trace.RankingErrorCandidate
 }
 
 func traceOutcomeObserved(trace OutcomeTrace) bool {

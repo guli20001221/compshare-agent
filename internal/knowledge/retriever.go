@@ -20,10 +20,18 @@ type RetrieverOptions struct {
 }
 
 type RetrievalResult struct {
-	Enabled   bool
-	KBVersion string
-	Hits      []KBChunk
-	Empty     bool
+	Enabled         bool
+	KBVersion       string
+	QueryNormalized string
+	Hits            []KBChunk
+	HitItems        []RetrievalHit
+	Empty           bool
+}
+
+type RetrievalHit struct {
+	Chunk KBChunk
+	Score float64
+	Kept  bool
 }
 
 type Retriever struct {
@@ -52,6 +60,7 @@ func NewRetriever(corpus Corpus, opts RetrieverOptions) *Retriever {
 
 func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 	queryTokens := tokenizeRetrievalText(question)
+	queryNormalized := NormalizeQuery(question)
 	productArea = strings.TrimSpace(strings.ToLower(productArea))
 	candidates := make([]scoredChunk, 0, len(r.corpus.Chunks))
 	for index, chunk := range r.corpus.Chunks {
@@ -78,14 +87,22 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 		candidates = candidates[:r.topK]
 	}
 	hits := make([]KBChunk, 0, len(candidates))
+	hitItems := make([]RetrievalHit, 0, len(candidates))
 	for _, candidate := range candidates {
 		hits = append(hits, candidate.chunk)
+		hitItems = append(hitItems, RetrievalHit{
+			Chunk: candidate.chunk,
+			Score: candidate.score,
+			Kept:  true,
+		})
 	}
 	return RetrievalResult{
-		Enabled:   true,
-		KBVersion: r.corpus.KBVersion,
-		Hits:      hits,
-		Empty:     len(hits) == 0,
+		Enabled:         true,
+		KBVersion:       r.corpus.KBVersion,
+		QueryNormalized: queryNormalized,
+		Hits:            hits,
+		HitItems:        hitItems,
+		Empty:           len(hits) == 0,
 	}
 }
 

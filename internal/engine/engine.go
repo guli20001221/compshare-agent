@@ -122,6 +122,7 @@ type Engine struct {
 	rendererTraceObserver      func(observability.RendererTrace)
 	plannerTraceObserver       func(observability.PlannerTrace)
 	retrievalTraceObserver     func(observability.RetrievalTrace)
+	outcomeTraceObserver       func(observability.OutcomeTrace)
 	tokenUsageObserver         func(llm.TokenUsage)
 	rateLimiter                governance.RateLimiter
 	rateLimitSubject           string
@@ -248,6 +249,10 @@ func (e *Engine) SetRendererTraceObserver(observer func(observability.RendererTr
 
 func (e *Engine) SetRetrievalTraceObserver(observer func(observability.RetrievalTrace)) {
 	e.retrievalTraceObserver = observer
+}
+
+func (e *Engine) SetOutcomeTraceObserver(observer func(observability.OutcomeTrace)) {
+	e.outcomeTraceObserver = observer
 }
 
 func (e *Engine) SetTokenUsageObserver(observer func(llm.TokenUsage)) {
@@ -577,7 +582,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery {
 		return e.tryPhase1Cutover(ctx, dispatch, onStep)
 	}
-	if reply, handled := e.tryStage2BRetrieval(dispatch, userMsg); handled {
+	if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg); handled {
 		return reply, true
 	}
 	if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
@@ -948,7 +953,7 @@ func isMonitorLoadAssessmentQuestion(userMsg string) bool {
 	return false
 }
 
-func (e *Engine) tryStage2BRetrieval(dispatch plannerDispatchResult, userMsg string) (string, bool) {
+func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispatchResult, userMsg string) (string, bool) {
 	result := dispatch.result
 	if result.Plan.Intent != intent.IntentKnowledgeQA {
 		return "", false
@@ -960,27 +965,182 @@ func (e *Engine) tryStage2BRetrieval(dispatch plannerDispatchResult, userMsg str
 	}
 
 	retrieved := e.knowledgeRetriever.Retrieve(userMsg, inferKnowledgeProductArea(userMsg))
-	e.emitRetrievalTrace(observability.RetrievalTrace{
-		Enabled:   retrieved.Enabled,
-		KBVersion: retrieved.KBVersion,
-		Hits:      len(retrieved.Hits),
-	})
-	if retrieved.Empty || len(retrieved.Hits) == 0 {
+	hitItems := retrieved.HitItems
+	trace := observability.RetrievalTrace{
+		Enabled:         retrieved.Enabled,
+		KBVersion:       retrieved.KBVersion,
+		QueryRaw:        userMsg,
+		QueryNormalized: retrieved.QueryNormalized,
+		QueryExpansions: []string{},
+		Hits:            len(retrieved.Hits),
+	}
+	if trace.QueryNormalized == "" {
+		trace.QueryNormalized = knowledge.NormalizeQuery(userMsg)
+	}
+	evidences, evidenceErr := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
+	trace.HitItems = projectEvidenceTraceHits(evidences, hitItems)
+	if retrieved.Empty || len(retrieved.Hits) == 0 || len(evidences) == 0 || evidenceErr != nil {
+		trace.RefusedReason = "no_evidence"
+		trace.RankingErrorCandidate = true
+		e.emitRetrievalTrace(trace)
 		e.emitPlannerTrace(result, intent.CutoverStatusFallbackRetrievalMiss, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
-			Content: knowledge.KnowledgeMissReply,
+			Content: ragNoEvidenceReply,
 		})
-		return knowledge.KnowledgeMissReply, true
+		return ragNoEvidenceReply, true
 	}
 
-	reply := knowledge.RenderKnowledgeAnswer(retrieved)
+	weak := isWeakEvidence(hitItems)
+	if weak {
+		trace.WeakEvidence = true
+	}
+	if weak || isRankingAmbiguous(hitItems) {
+		trace.RankingErrorCandidate = true
+	}
+	reply, outcome, refusedReason, rankingCandidate, err := e.answerWithRetrievedEvidence(ctx, userMsg, evidences, weak)
+	if err != nil {
+		trace.RefusedReason = "llm_error"
+		trace.RankingErrorCandidate = true
+		e.emitRetrievalTrace(trace)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: ragNoEvidenceReply,
+		})
+		return ragNoEvidenceReply, true
+	}
+	if refusedReason != "" {
+		trace.RefusedReason = refusedReason
+	}
+	if rankingCandidate {
+		trace.RankingErrorCandidate = true
+	}
+	e.emitRetrievalTrace(trace)
+	e.emitOutcomeTrace(outcome)
 	e.emitPlannerTrace(result, intent.CutoverStatusDispatchedRetrieval, dispatch.latency)
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
 		Content: clipKnowledgeHistoryContent(reply),
 	})
 	return reply, true
+}
+
+func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string, evidences []envelope.Evidence, weak bool) (string, observability.OutcomeTrace, string, bool, error) {
+	outcome := observability.OutcomeTrace{}
+	req := llm.ChatRequest{
+		Messages: prompt.BuildRAGMessages(userMsg, ragReferencesFromEvidence(evidences), weak, false),
+	}
+	resp, err := e.llmClient.Chat(ctx, req)
+	if err != nil {
+		return "", outcome, "", false, fmt.Errorf("LLM 调用失败: %w", err)
+	}
+	e.emitTokenUsage(resp.Usage)
+	answer := strings.TrimSpace(resp.Content)
+	if isKnowledgeRefusal(answer) {
+		return answer, outcome, refusedReasonForRefusal(weak), false, nil
+	}
+	if hasNumberedCitation(answer) {
+		return answer, outcome, "", false, nil
+	}
+
+	outcome.AttemptedHallucinatedCount = 1
+	retryReq := llm.ChatRequest{
+		Messages: prompt.BuildRAGMessages(userMsg, ragReferencesFromEvidence(evidences), weak, true),
+	}
+	retryResp, err := e.llmClient.Chat(ctx, retryReq)
+	if err != nil {
+		return "", outcome, "", false, fmt.Errorf("LLM 调用失败: %w", err)
+	}
+	e.emitTokenUsage(retryResp.Usage)
+	retryAnswer := strings.TrimSpace(retryResp.Content)
+	if isKnowledgeRefusal(retryAnswer) {
+		return retryAnswer, outcome, refusedReasonForRefusal(weak), false, nil
+	}
+	if hasNumberedCitation(retryAnswer) {
+		return retryAnswer, outcome, "", false, nil
+	}
+	outcome.EscapedHallucinatedCount = 1
+	return ragNoEvidenceReply, outcome, "retry_no_cite", true, nil
+}
+
+func refusedReasonForRefusal(weak bool) string {
+	if weak {
+		return "weak_evidence"
+	}
+	return "refusal"
+}
+
+func evidencesFromRetrievalHits(items []knowledge.RetrievalHit, queryNormalized string) ([]envelope.Evidence, error) {
+	evidences := make([]envelope.Evidence, 0, len(items))
+	producedAt := time.Now().UTC()
+	for _, item := range items {
+		score := item.Score
+		var surfaceURL *string
+		if strings.TrimSpace(item.Chunk.SourceURL) != "" {
+			url := strings.TrimSpace(item.Chunk.SourceURL)
+			surfaceURL = &url
+		}
+		evidence, err := envelope.NewEvidence(envelope.EvidenceInput{
+			SourceTitle:     item.Chunk.Title,
+			Snippet:         item.Chunk.Content,
+			SurfaceURL:      surfaceURL,
+			EvidenceKind:    envelope.EvidenceKindKnowledge,
+			ChunkID:         item.Chunk.ChunkID,
+			KBVersion:       item.Chunk.KBVersion,
+			RetrievalScore:  &score,
+			QueryNormalized: queryNormalized,
+			ProducedAt:      producedAt,
+		})
+		if err != nil {
+			return nil, err
+		}
+		evidences = append(evidences, evidence)
+	}
+	return evidences, nil
+}
+
+func projectEvidenceTraceHits(evidences []envelope.Evidence, items []knowledge.RetrievalHit) []observability.RetrievalHit {
+	hits := make([]observability.RetrievalHit, 0, len(evidences))
+	for index, evidence := range evidences {
+		view := evidence.ForTrace()
+		kept := true
+		if index < len(items) {
+			kept = items[index].Kept
+		}
+		hits = append(hits, observability.RetrievalHit{
+			ChunkID: view.ChunkID,
+			Score:   view.RetrievalScore,
+			Kept:    kept,
+		})
+	}
+	return hits
+}
+
+func ragReferencesFromEvidence(evidences []envelope.Evidence) []prompt.RAGReference {
+	refs := make([]prompt.RAGReference, 0, len(evidences))
+	for i, evidence := range evidences {
+		view := evidence.ForLLM()
+		refs = append(refs, prompt.RAGReference{
+			Number:  i + 1,
+			Title:   view.SourceTitle,
+			Content: view.Snippet,
+		})
+	}
+	return refs
+}
+
+func isWeakEvidence(items []knowledge.RetrievalHit) bool {
+	if len(items) == 0 {
+		return false
+	}
+	return items[0].Score < ragWeakEvidenceThreshold
+}
+
+func isRankingAmbiguous(items []knowledge.RetrievalHit) bool {
+	if len(items) < 2 {
+		return false
+	}
+	return items[0].Score-items[1].Score < 5.0
 }
 
 func clipKnowledgeHistoryContent(content string) string {
@@ -1036,6 +1196,19 @@ func (e *Engine) emitRetrievalTrace(trace observability.RetrievalTrace) {
 		return
 	}
 	e.retrievalTraceObserver(trace)
+}
+
+func (e *Engine) emitOutcomeTrace(trace observability.OutcomeTrace) {
+	if e.outcomeTraceObserver == nil || !traceOutcomeObserved(trace) {
+		return
+	}
+	e.outcomeTraceObserver(trace)
+}
+
+func traceOutcomeObserved(trace observability.OutcomeTrace) bool {
+	return trace.AttemptedHallucinatedCount != 0 ||
+		trace.EscapedHallucinatedCount != 0 ||
+		trace.KBConflictCount != 0
 }
 
 func (e *Engine) emitTokenUsage(usage llm.TokenUsage) {

@@ -112,7 +112,7 @@ func cutoverIntentLabels(cutoverIntents []intent.Intent) []string {
 	return labels
 }
 
-const defaultKnowledgeCorpusPath = "deploy/kb/curated_faq.jsonl"
+const defaultKnowledgeCorpusPath = "deploy/kb/stage2b_w0.jsonl"
 
 func knowledgeRetrievalModeFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.ToLower(strings.TrimSpace(getenv("USE_KNOWLEDGE_RETRIEVAL")))
@@ -139,7 +139,7 @@ func knowledgeRetrieverFromEnv(getenv getenvFunc) (*knowledge.Retriever, bool, e
 	if unknown != "" || !enabled {
 		return nil, false, nil
 	}
-	corpus, err := knowledge.LoadCorpus(knowledgeCorpusPathFromEnv(getenv))
+	corpus, err := knowledge.LoadPinnedCorpus(knowledgeCorpusPathFromEnv(getenv))
 	if err != nil {
 		return nil, false, err
 	}
@@ -242,6 +242,15 @@ func (r *cliTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace)
 		return
 	}
 	r.record.Retrieval = trace
+}
+
+func (r *cliTraceRecorder) SetOutcomeTrace(trace observability.OutcomeTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Outcome.AttemptedHallucinatedCount = trace.AttemptedHallucinatedCount
+	r.record.Outcome.EscapedHallucinatedCount = trace.EscapedHallucinatedCount
+	r.record.Outcome.KBConflictCount = trace.KBConflictCount
 }
 
 func groundedRendererModeFromEnv(getenv getenvFunc) (string, string) {

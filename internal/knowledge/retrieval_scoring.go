@@ -105,7 +105,7 @@ func (field bm25FieldIndex) score(chunkIndex int, queryTokens []string) float64 
 }
 
 func tokenizeRetrievalText(value string) []string {
-	normalized := normalizeRetrievalText(value)
+	normalized := NormalizeQuery(value)
 	if normalized == "" {
 		return nil
 	}
@@ -131,7 +131,9 @@ func tokenizeRetrievalText(value string) []string {
 	return tokens
 }
 
-func normalizeRetrievalText(value string) string {
+// NormalizeQuery is shared by the runtime retriever and eval parity tests; keep
+// its preprocessing semantics aligned with the BM25 scorer in this file.
+func NormalizeQuery(value string) string {
 	value = strings.ToLower(norm.NFKC.String(value))
 	var builder strings.Builder
 	lastWasSpace := true

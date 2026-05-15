@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/prompt"
@@ -23,6 +25,7 @@ import (
 )
 
 var configPath string
+var startupFatalf = log.Fatalf
 
 var rootCmd = &cobra.Command{
 	Use:   "compshare-agent",
@@ -87,12 +90,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q\n", unknownKnowledgeRetrieval)
 	}
 	knowledgeRetriever, knowledgeRetrievalEnabled, knowledgeErr := knowledgeRetrieverFromEnv(os.Getenv)
-	if knowledgeRetrievalRequested && knowledgeErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: knowledge retrieval disabled: %v\n", knowledgeErr)
-	}
-	if knowledgeRetrievalEnabled {
-		eng.SetKnowledgeRetriever(knowledgeRetriever)
-	}
+	applyKnowledgeRetrieverStartup(eng, knowledgeRetrievalRequested, knowledgeRetriever, knowledgeRetrievalEnabled, knowledgeErr)
 	groundedRendererMode, unknownGroundedRendererMode := groundedRendererModeFromEnv(os.Getenv)
 	if unknownGroundedRendererMode != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_GROUNDED_RENDERER value %q\n", unknownGroundedRendererMode)
@@ -188,6 +186,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		// when the next turn creates a fresh recorder.
 		eng.SetPlannerTraceObserver(nil)
 		eng.SetRetrievalTraceObserver(nil)
+		eng.SetOutcomeTraceObserver(nil)
 		eng.SetRendererTraceObserver(nil)
 		eng.SetTokenUsageObserver(nil)
 		if traceEnabled {
@@ -205,6 +204,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 				eng.SetPlannerTraceObserver(traceRecorder.SetPlannerTrace)
 				if knowledgeRetrievalEnabled {
 					eng.SetRetrievalTraceObserver(traceRecorder.SetRetrievalTrace)
+					eng.SetOutcomeTraceObserver(traceRecorder.SetOutcomeTrace)
 				}
 				eng.SetRendererTraceObserver(traceRecorder.SetRendererTrace)
 			} else if shadowRunner != nil {
@@ -252,6 +252,16 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\nAssistant> %s\n\n", reply)
 	}
 	return nil
+}
+
+func applyKnowledgeRetrieverStartup(eng *engine.Engine, requested bool, retriever *knowledge.Retriever, enabled bool, err error) {
+	if requested && err != nil {
+		startupFatalf("RAG enabled but corpus digest mismatch (refusing to start): %v", err)
+		return
+	}
+	if enabled && eng != nil {
+		eng.SetKnowledgeRetriever(retriever)
+	}
 }
 
 func applyStartupSuggestion(input string, suggestions []prompt.Suggestion, turnIndex int) (string, bool) {
