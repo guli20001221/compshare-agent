@@ -41,6 +41,39 @@ func TestLoadDeployCuratedFAQIncludesFinanceRules(t *testing.T) {
 	}
 }
 
+func TestCorpusDigestExpectedMatchesStage2BW0(t *testing.T) {
+	got, err := ComputeCorpusFileDigest(filepath.Join("..", "..", "deploy", "kb", "stage2b_w0.jsonl"))
+	require.NoError(t, err)
+
+	assert.Equal(t, CorpusDigestExpected, got)
+}
+
+func TestCorpusDigestIgnoresLineEndingDifferences(t *testing.T) {
+	lf, err := ComputeCorpusDigest(strings.NewReader("a\nb\n"))
+	require.NoError(t, err)
+	crlf, err := ComputeCorpusDigest(strings.NewReader("a\r\nb\r\n"))
+	require.NoError(t, err)
+
+	assert.Equal(t, lf, crlf)
+}
+
+func TestLoadPinnedCorpusLoadsStage2BW0(t *testing.T) {
+	corpus, err := LoadPinnedCorpus(filepath.Join("..", "..", "deploy", "kb", "stage2b_w0.jsonl"))
+	require.NoError(t, err)
+
+	assert.Equal(t, "kb.stage2b.w0.2026-05-13", corpus.KBVersion)
+	assert.Len(t, corpus.Chunks, 62)
+}
+
+func TestLoadPinnedCorpusRejectsDigestMismatch(t *testing.T) {
+	path := writeCorpusFile(t, validChunkWithPatterns(t, []string{"ok"}))
+
+	_, err := LoadPinnedCorpus(path)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "corpus digest mismatch")
+}
+
 func TestLoadCorpusRejectsInvalidJSONWithRowNumber(t *testing.T) {
 	path := writeCorpusFile(t, `{"chunk_id":"ok","kb_version":"kb","source_type":"faq","product_area":"billing","acl":"customer_safe","confidence":"high","title":"ok","content":"ok"}
 {bad json}

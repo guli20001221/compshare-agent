@@ -103,6 +103,34 @@ func TestRetrieverFindsNaturalChineseParaphrase(t *testing.T) {
 	assert.Equal(t, "windows-audio", result.Hits[0].ChunkID)
 }
 
+func TestRetrieverReturnsScoresAndNormalizedQuery(t *testing.T) {
+	corpus := Corpus{
+		KBVersion: "kb-test",
+		Chunks: []KBChunk{
+			testChunk(
+				"windows-audio",
+				"windows",
+				"high",
+				"Windows audio",
+				"RDP audio",
+				"Enable Remote Desktop audio redirection.",
+				"",
+				nil,
+			),
+		},
+	}
+
+	result := NewRetriever(corpus, RetrieverOptions{Now: fixedRetrieverNow}).Retrieve("  RDP!!! Audio???  ", "windows")
+
+	require.False(t, result.Empty)
+	assert.Equal(t, "rdp audio", result.QueryNormalized)
+	require.Len(t, result.HitItems, 1)
+	assert.Equal(t, "windows-audio", result.HitItems[0].Chunk.ChunkID)
+	assert.Equal(t, result.Hits[0], result.HitItems[0].Chunk)
+	assert.True(t, result.HitItems[0].Kept)
+	assert.Greater(t, result.HitItems[0].Score, 0.0)
+}
+
 func TestRetrieverReturnsEmptyForUnrelatedQuestion(t *testing.T) {
 	corpus, err := LoadCorpus("testdata/curated_faq.jsonl")
 	require.NoError(t, err)

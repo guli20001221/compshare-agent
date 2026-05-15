@@ -141,6 +141,7 @@ func TestRetrievalTraceNewFieldsMarkBlockObserved(t *testing.T) {
 		{name: "hit items", trace: RetrievalTrace{HitItems: []RetrievalHit{{ChunkID: "w0-billing_rule-aabbccdd", Score: 0.67, Kept: true}}}},
 		{name: "refused reason", trace: RetrievalTrace{RefusedReason: "no_evidence"}},
 		{name: "weak evidence", trace: RetrievalTrace{WeakEvidence: true}},
+		{name: "ranking error candidate", trace: RetrievalTrace{RankingErrorCandidate: true}},
 	}
 
 	for _, tc := range cases {
@@ -180,6 +181,34 @@ func TestRetrievalTraceDefaultsKeepSlicesIterable(t *testing.T) {
 	}
 }
 
+func TestWriterMirrorsRankingErrorCandidates(t *testing.T) {
+	now := time.Date(2026, 5, 15, 8, 0, 0, 0, time.UTC)
+	writer, err := NewWriter(WriterOptions{Dir: t.TempDir(), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	err = writer.Append(TraceRecord{
+		TraceID:     "trace-ranking",
+		TurnID:      "turn-1",
+		TurnIndex:   1,
+		UserMsgHash: "sha256:user",
+		Retrieval: RetrievalTrace{
+			Enabled:               true,
+			RankingErrorCandidate: true,
+			RefusedReason:         "retry_no_cite",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	line := readLines(t, filepath.Join(writer.Dir(), "2026-05-15", "ranking-error-candidates.jsonl"))[0]
+	if !strings.Contains(line, `"ranking_error_candidate":true`) || !strings.Contains(line, `"retry_no_cite"`) {
+		t.Fatalf("ranking-error mirror line = %s", line)
+	}
+}
+
 func TestRetrievalTraceHashingStableUnderNilVsEmpty(t *testing.T) {
 	nilSlices := RetrievalTrace{}
 	emptySlices := RetrievalTrace{
@@ -197,6 +226,23 @@ func TestRetrievalTraceHashingStableUnderNilVsEmpty(t *testing.T) {
 	}
 	if leftHash != rightHash {
 		t.Fatalf("nil and empty retrieval slices should hash the same: %s vs %s", leftHash, rightHash)
+	}
+}
+
+func TestRedactQueryDerivedFieldsRedactsStaffNames(t *testing.T) {
+	trace := RetrievalTrace{
+		QueryRaw:        "请张慧帮我看一下实例启动失败",
+		QueryNormalized: "张慧 实例 启动失败",
+		QueryExpansions: []string{"实例启动失败", "找张慧处理"},
+	}
+
+	RedactQueryDerivedFields(&trace)
+
+	if trace.QueryRaw != "[REDACTED]" || trace.QueryNormalized != "[REDACTED]" {
+		t.Fatalf("query fields not redacted: %#v", trace)
+	}
+	if got := strings.Join(trace.QueryExpansions, "|"); got != "实例启动失败|[REDACTED]" {
+		t.Fatalf("query expansions = %q", got)
 	}
 }
 

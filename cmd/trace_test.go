@@ -229,6 +229,9 @@ func TestKnowledgeCorpusPathFromEnv(t *testing.T) {
 	if got := knowledgeCorpusPathFromEnv(func(string) string { return "" }); got != defaultKnowledgeCorpusPath {
 		t.Fatalf("default corpus path = %q, want %q", got, defaultKnowledgeCorpusPath)
 	}
+	if got := defaultKnowledgeCorpusPath; got != "deploy/kb/stage2b_w0.jsonl" {
+		t.Fatalf("default corpus path = %q, want stage2b W0 corpus", got)
+	}
 	got := knowledgeCorpusPathFromEnv(func(key string) string {
 		if key == "COMPSHARE_KNOWLEDGE_CORPUS" {
 			return " custom.jsonl "
@@ -241,16 +244,12 @@ func TestKnowledgeCorpusPathFromEnv(t *testing.T) {
 }
 
 func TestKnowledgeRetrieverFromEnvLoadsCorpus(t *testing.T) {
-	corpusPath := filepath.Join(t.TempDir(), "curated.jsonl")
-	line := `{"chunk_id":"faq-001","kb_version":"kb.v1","source_type":"faq","product_area":"billing","acl":"customer_safe","valid_from":"2026-01-01","confidence":"high","title":"Billing","question_patterns":["billing"],"content":"Billing answer."}` + "\n"
-	require.NoError(t, os.WriteFile(corpusPath, []byte(line), 0o600))
-
 	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
 		switch key {
 		case "USE_KNOWLEDGE_RETRIEVAL":
 			return "curated"
 		case "COMPSHARE_KNOWLEDGE_CORPUS":
-			return corpusPath
+			return filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
 		default:
 			return ""
 		}
@@ -259,8 +258,8 @@ func TestKnowledgeRetrieverFromEnvLoadsCorpus(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, enabled)
 	require.NotNil(t, retriever)
-	result := retriever.Retrieve("billing", "billing")
-	if result.Empty || len(result.Hits) != 1 || result.KBVersion != "kb.v1" {
+	result := retriever.Retrieve("Windows 远程登录", "windows")
+	if result.Empty || len(result.Hits) == 0 || result.KBVersion != "kb.stage2b.w0.2026-05-13" {
 		t.Fatalf("retrieval result = %#v", result)
 	}
 }
@@ -426,6 +425,31 @@ func TestCLITraceRecorderAcceptsRetrievalTrace(t *testing.T) {
 	record := readSingleTraceRecord(t, writer, start)
 	if !record.Retrieval.Enabled || record.Retrieval.KBVersion != "kb.v1" || record.Retrieval.Hits != 2 {
 		t.Fatalf("retrieval trace = %#v", record.Retrieval)
+	}
+}
+
+func TestCLITraceRecorderAcceptsOutcomeTrace(t *testing.T) {
+	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	writer, err := observability.NewWriter(observability.WriterOptions{
+		Dir: t.TempDir(),
+		Now: func() time.Time { return start },
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	recorder := newCLITraceRecorder(writer, 1, "knowledge trace", start)
+	recorder.SetOutcomeTrace(observability.OutcomeTrace{
+		AttemptedHallucinatedCount: 1,
+		EscapedHallucinatedCount:   1,
+	})
+
+	if err := recorder.Finish(nil, start); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	record := readSingleTraceRecord(t, writer, start)
+	if record.Outcome.AttemptedHallucinatedCount != 1 || record.Outcome.EscapedHallucinatedCount != 1 {
+		t.Fatalf("outcome trace = %#v", record.Outcome)
 	}
 }
 

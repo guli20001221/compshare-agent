@@ -125,6 +125,12 @@ func (r *scriptedKnowledgeRetriever) Retrieve(question, productArea string) know
 	}
 	result := r.results[0]
 	r.results = r.results[1:]
+	if len(result.HitItems) == 0 && len(result.Hits) > 0 {
+		result.HitItems = make([]knowledge.RetrievalHit, 0, len(result.Hits))
+		for _, chunk := range result.Hits {
+			result.HitItems = append(result.HitItems, knowledge.RetrievalHit{Chunk: chunk, Score: 80, Kept: true})
+		}
+	}
 	return result
 }
 
@@ -2798,7 +2804,7 @@ func TestAccountBillingHardBlock_DoesNotResetTurnScopedMonitorState(t *testing.T
 
 func TestAccountBillingHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T) {
 	executor := billingScenarioExecutor("Running")
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Stopped on-demand instances still charge for disks. [1]"}}}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
 	var hardBlocks []observability.EngineHardBlockTrace
@@ -3186,24 +3192,26 @@ func unknownEngineTestPlan() intent.Plan {
 	}
 }
 
-func TestStage2BRetrievalHitBypassesReActAndTools(t *testing.T) {
+func TestStage2BRetrievalHitUsesLLMWithoutTools(t *testing.T) {
+	chunk := knowledge.KBChunk{
+		ChunkID:     "faq-billing-001",
+		KBVersion:   "kb.v1",
+		SourceType:  "faq",
+		ProductArea: "billing",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "Billing after stop",
+		Content:     "Stopped on-demand instances still charge for disks.",
+		SourceURL:   "https://example.test/billing",
+	}
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
-		Hits: []knowledge.KBChunk{{
-			ChunkID:     "faq-billing-001",
-			KBVersion:   "kb.v1",
-			SourceType:  "faq",
-			ProductArea: "billing",
-			ACL:         "customer_safe",
-			Confidence:  "high",
-			Title:       "Billing after stop",
-			Content:     "Stopped on-demand instances still charge for disks.",
-			SourceURL:   "https://example.test/billing",
-		}},
+		Hits:      []knowledge.KBChunk{chunk},
+		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 80, Kept: true}},
 	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Stopped on-demand instances still charge for disks. [1]"}}}
 	executor := &mockExecutor{}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
@@ -3222,7 +3230,8 @@ func TestStage2BRetrievalHitBypassesReActAndTools(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Contains(t, reply, "Stopped on-demand instances still charge for disks.")
-	assert.Empty(t, mock.calls, "knowledge retrieval hit must bypass ReAct")
+	require.Len(t, mock.calls, 1)
+	assert.Empty(t, mock.calls[0].Tools, "knowledge retrieval must not expose CompShare API tools")
 	assert.Empty(t, executor.calls, "knowledge retrieval must not call CompShare API tools")
 	require.Len(t, planner.calls, 1)
 	require.Len(t, retriever.calls, 1)
@@ -3234,26 +3243,338 @@ func TestStage2BRetrievalHitBypassesReActAndTools(t *testing.T) {
 	assert.True(t, retrievalTraces[0].Enabled)
 	assert.Equal(t, "kb.v1", retrievalTraces[0].KBVersion)
 	assert.Equal(t, 1, retrievalTraces[0].Hits)
+	require.Len(t, retrievalTraces[0].HitItems, 1)
+	assert.Equal(t, "faq-billing-001", retrievalTraces[0].HitItems[0].ChunkID)
+}
+
+func TestStage2BRetrievalHitCallsLLMWithNumberedEvidence(t *testing.T) {
+	chunk := knowledge.KBChunk{
+		ChunkID:     "w0-billing_rule-stopped-a1b2c3d4",
+		KBVersion:   "kb.v1",
+		SourceType:  "faq",
+		ProductArea: "billing_rule",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "Stopped instance billing",
+		Content:     "Stopped on-demand instances still charge for disks.",
+		SourceURL:   "https://www.compshare.cn/docs/billing",
+	}
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:         true,
+		KBVersion:       "kb.v1",
+		QueryNormalized: "stopped instances bill",
+		Hits:            []knowledge.KBChunk{chunk},
+		HitItems:        []knowledge.RetrievalHit{{Chunk: chunk, Score: 80, Kept: true}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Stopped instances still charge for disks. [1]"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var retrievalTraces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		retrievalTraces = append(retrievalTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-pro"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "Stopped instances still charge for disks. [1]", reply)
+	require.Len(t, mock.calls, 1)
+	requestText := requestContent(mock.calls[0])
+	assert.Contains(t, requestText, "[1] Stopped instance billing")
+	assert.Contains(t, requestText, "Stopped on-demand instances still charge for disks.")
+	assert.NotContains(t, requestText, "w0-billing_rule-stopped-a1b2c3d4", "chunk IDs must stay out of LLM context")
+	require.Len(t, retrievalTraces, 1)
+	assert.Equal(t, "why do stopped instances still bill", retrievalTraces[0].QueryRaw)
+	assert.Equal(t, "stopped instances bill", retrievalTraces[0].QueryNormalized)
+	assert.Equal(t, 1, retrievalTraces[0].Hits)
+	require.Len(t, retrievalTraces[0].HitItems, 1)
+	assert.Equal(t, "w0-billing_rule-stopped-a1b2c3d4", retrievalTraces[0].HitItems[0].ChunkID)
+	assert.Equal(t, 80.0, retrievalTraces[0].HitItems[0].Score)
+	assert.False(t, retrievalTraces[0].WeakEvidence)
+}
+
+func TestStage2BRetrievalAmbiguousTopHitsMarksRankingErrorCandidate(t *testing.T) {
+	chunkA := knowledge.KBChunk{
+		ChunkID:     "w0-billing_rule-stopped-a1b2c3d4",
+		KBVersion:   "kb.v1",
+		SourceType:  "faq",
+		ProductArea: "billing_rule",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "Stopped instance billing",
+		Content:     "Stopped on-demand instances still charge for disks.",
+	}
+	chunkB := knowledge.KBChunk{
+		ChunkID:     "w0-billing_rule-storage-e5f6a7b8",
+		KBVersion:   "kb.v1",
+		SourceType:  "faq",
+		ProductArea: "billing_rule",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "Storage billing",
+		Content:     "Disks keep billing while attached storage exists.",
+	}
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:         true,
+		KBVersion:       "kb.v1",
+		QueryNormalized: "stopped instances bill",
+		Hits:            []knowledge.KBChunk{chunkA, chunkB},
+		HitItems: []knowledge.RetrievalHit{
+			{Chunk: chunkA, Score: 80, Kept: true},
+			{Chunk: chunkB, Score: 76, Kept: true},
+		},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Stopped instances still charge for disks. [1]"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var retrievalTraces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		retrievalTraces = append(retrievalTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-pro"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "Stopped instances still charge for disks. [1]", reply)
+	require.Len(t, retrievalTraces, 1)
+	assert.False(t, retrievalTraces[0].WeakEvidence)
+	assert.Empty(t, retrievalTraces[0].RefusedReason)
+	assert.True(t, retrievalTraces[0].RankingErrorCandidate)
+	require.Len(t, retrievalTraces[0].HitItems, 2)
+}
+
+func TestStage2BRetrievalNormalRefusalSetsRefusedReason(t *testing.T) {
+	chunk := knowledge.KBChunk{
+		ChunkID:     "w0-billing_rule-stopped-a1b2c3d4",
+		KBVersion:   "kb.v1",
+		SourceType:  "faq",
+		ProductArea: "billing_rule",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "Stopped instance billing",
+		Content:     "Stopped on-demand instances still charge for disks.",
+	}
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:         true,
+		KBVersion:       "kb.v1",
+		QueryNormalized: "stopped instances bill",
+		Hits:            []knowledge.KBChunk{chunk},
+		HitItems:        []knowledge.RetrievalHit{{Chunk: chunk, Score: 80, Kept: true}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: ragNoEvidenceReply}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var retrievalTraces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		retrievalTraces = append(retrievalTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-pro"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, ragNoEvidenceReply, reply)
+	require.Len(t, retrievalTraces, 1)
+	assert.False(t, retrievalTraces[0].WeakEvidence)
+	assert.Equal(t, "refusal", retrievalTraces[0].RefusedReason)
+	assert.False(t, retrievalTraces[0].RankingErrorCandidate)
+}
+
+func TestStage2BRetrievalMissReturnsNewNoEvidenceReplyAndTrace(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:         true,
+		KBVersion:       "kb.v1",
+		QueryNormalized: "imaginary feature",
+		Empty:           true,
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var retrievalTraces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		retrievalTraces = append(retrievalTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-pro"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "does the platform support imaginary feature", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, ragNoEvidenceReply, reply)
+	assert.Empty(t, mock.calls)
+	require.Len(t, retrievalTraces, 1)
+	assert.Equal(t, "no_evidence", retrievalTraces[0].RefusedReason)
+	assert.True(t, retrievalTraces[0].RankingErrorCandidate)
+}
+
+func TestStage2BRetrievalWeakEvidenceMarksTraceAndAddsPromptHint(t *testing.T) {
+	chunk := knowledge.KBChunk{
+		ChunkID:     "w0-modelverse-package-a1b2c3d4",
+		KBVersion:   "kb.v1",
+		SourceType:  "faq",
+		ProductArea: "modelverse",
+		ACL:         "customer_safe",
+		Confidence:  "medium",
+		Title:       "ModelVerse package",
+		Content:     "Coding Plan has a quota window.",
+	}
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:         true,
+		KBVersion:       "kb.v1",
+		QueryNormalized: "coding quota",
+		Hits:            []knowledge.KBChunk{chunk},
+		HitItems:        []knowledge.RetrievalHit{{Chunk: chunk, Score: 54.9, Kept: true}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: ragNoEvidenceReply}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var retrievalTraces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		retrievalTraces = append(retrievalTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-pro"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "coding quota details", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, ragNoEvidenceReply, reply)
+	require.Len(t, mock.calls, 1)
+	assert.Contains(t, requestContent(mock.calls[0]), "资料相关性较低")
+	require.Len(t, retrievalTraces, 1)
+	assert.True(t, retrievalTraces[0].WeakEvidence)
+	assert.Equal(t, "weak_evidence", retrievalTraces[0].RefusedReason)
+	assert.True(t, retrievalTraces[0].RankingErrorCandidate)
+}
+
+func TestStage2BRetrievalWeakEvidenceCitedAnswerHasNoRefusedReason(t *testing.T) {
+	chunk := knowledge.KBChunk{
+		ChunkID:     "w0-modelverse-package-a1b2c3d4",
+		KBVersion:   "kb.v1",
+		SourceType:  "faq",
+		ProductArea: "modelverse",
+		ACL:         "customer_safe",
+		Confidence:  "medium",
+		Title:       "ModelVerse package",
+		Content:     "Coding Plan has a quota window.",
+	}
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:         true,
+		KBVersion:       "kb.v1",
+		QueryNormalized: "coding quota",
+		Hits:            []knowledge.KBChunk{chunk},
+		HitItems:        []knowledge.RetrievalHit{{Chunk: chunk, Score: 54.9, Kept: true}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Coding Plan has a quota window. [1]"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var retrievalTraces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		retrievalTraces = append(retrievalTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-pro"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "coding quota details", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "Coding Plan has a quota window. [1]", reply)
+	require.Len(t, retrievalTraces, 1)
+	assert.True(t, retrievalTraces[0].WeakEvidence)
+	assert.Empty(t, retrievalTraces[0].RefusedReason)
+	assert.True(t, retrievalTraces[0].RankingErrorCandidate)
+}
+
+func TestStage2BRetrievalRetryNoCitationFallsBackToNoEvidence(t *testing.T) {
+	chunk := knowledge.KBChunk{
+		ChunkID:     "w0-billing_rule-4090-a1b2c3d4",
+		KBVersion:   "kb.v1",
+		SourceType:  "faq",
+		ProductArea: "billing_rule",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "4090 pricing",
+		Content:     "4090 is billed hourly.",
+	}
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:         true,
+		KBVersion:       "kb.v1",
+		QueryNormalized: "4090 hourly price",
+		Hits:            []knowledge.KBChunk{chunk},
+		HitItems:        []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "4090 is billed hourly."},
+		{Content: "4090 hourly billing applies."},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var retrievalTraces []observability.RetrievalTrace
+	var outcomeTraces []observability.OutcomeTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		retrievalTraces = append(retrievalTraces, trace)
+	})
+	eng.SetOutcomeTraceObserver(func(trace observability.OutcomeTrace) {
+		outcomeTraces = append(outcomeTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-pro"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "4090 hourly price", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, ragNoEvidenceReply, reply)
+	require.Len(t, mock.calls, 2)
+	assert.Contains(t, requestContent(mock.calls[1]), "必须带 [1]")
+	require.Len(t, retrievalTraces, 1)
+	assert.Equal(t, "retry_no_cite", retrievalTraces[0].RefusedReason)
+	assert.True(t, retrievalTraces[0].RankingErrorCandidate)
+	require.Len(t, outcomeTraces, 1)
+	assert.Equal(t, 1, outcomeTraces[0].AttemptedHallucinatedCount)
+	assert.Equal(t, 1, outcomeTraces[0].EscapedHallucinatedCount)
+}
+
+func requestContent(req llm.ChatRequest) string {
+	var b strings.Builder
+	for _, msg := range req.Messages {
+		b.WriteString(msg.Content)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func TestStage2BRetrievalHitClipsStoredAssistantHistory(t *testing.T) {
 	longContent := strings.Repeat("A", maxKnowledgeHistoryRunes+512)
+	chunk := knowledge.KBChunk{
+		ChunkID:     "faq-long-001",
+		KBVersion:   "kb.v1",
+		SourceType:  "faq",
+		ProductArea: "billing",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "Long billing answer",
+		Content:     longContent,
+	}
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
-		Hits: []knowledge.KBChunk{{
-			ChunkID:     "faq-long-001",
-			KBVersion:   "kb.v1",
-			SourceType:  "faq",
-			ProductArea: "billing",
-			ACL:         "customer_safe",
-			Confidence:  "high",
-			Title:       "Long billing answer",
-			Content:     longContent,
-		}},
+		Hits:      []knowledge.KBChunk{chunk},
+		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 80, Kept: true}},
 	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: longContent + " [1]"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
@@ -3268,7 +3589,8 @@ func TestStage2BRetrievalHitClipsStoredAssistantHistory(t *testing.T) {
 	assert.Equal(t, "assistant", stored.Role)
 	assert.Less(t, len([]rune(stored.Content)), len([]rune(reply)), "stored history should be clipped")
 	assert.Contains(t, stored.Content, knowledgeHistoryClipMarker)
-	assert.Empty(t, mock.calls, "knowledge retrieval hit must still bypass ReAct")
+	require.Len(t, mock.calls, 1)
+	assert.Empty(t, mock.calls[0].Tools, "knowledge retrieval hit must still bypass API tools")
 }
 
 func TestStage2BRetrievalMissReturnsFixedReply(t *testing.T) {
@@ -3295,7 +3617,7 @@ func TestStage2BRetrievalMissReturnsFixedReply(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "does the platform support imaginary feature", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, knowledge.KnowledgeMissReply, reply)
+	assert.Equal(t, ragNoEvidenceReply, reply)
 	assert.Empty(t, mock.calls, "knowledge retrieval miss is handled by fixed reply, not ReAct")
 	require.Len(t, plannerTraces, 1)
 	assert.Equal(t, string(intent.CutoverStatusFallbackRetrievalMiss), plannerTraces[0].CutoverStatus)
@@ -3303,25 +3625,29 @@ func TestStage2BRetrievalMissReturnsFixedReply(t *testing.T) {
 	assert.True(t, retrievalTraces[0].Enabled)
 	assert.Equal(t, "kb.v1", retrievalTraces[0].KBVersion)
 	assert.Equal(t, 0, retrievalTraces[0].Hits)
+	assert.Equal(t, "no_evidence", retrievalTraces[0].RefusedReason)
+	assert.True(t, retrievalTraces[0].RankingErrorCandidate)
 }
 
 func TestStage2BRetrievalIgnoresPlannerRetrievalFlag(t *testing.T) {
+	chunk := knowledge.KBChunk{
+		ChunkID:     "faq-image-001",
+		KBVersion:   "kb.v1",
+		SourceType:  "faq",
+		ProductArea: "image",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "Images",
+		Content:     "The platform provides platform, community, shared, and private images.",
+	}
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(true)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
-		Hits: []knowledge.KBChunk{{
-			ChunkID:     "faq-image-001",
-			KBVersion:   "kb.v1",
-			SourceType:  "faq",
-			ProductArea: "image",
-			ACL:         "customer_safe",
-			Confidence:  "high",
-			Title:       "Images",
-			Content:     "The platform provides platform, community, shared, and private images.",
-		}},
+		Hits:      []knowledge.KBChunk{chunk},
+		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 80, Kept: true}},
 	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "The platform provides community images. [1]"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
 	var plannerTraces []observability.PlannerTrace
@@ -3335,7 +3661,8 @@ func TestStage2BRetrievalIgnoresPlannerRetrievalFlag(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Contains(t, reply, "community")
-	assert.Empty(t, mock.calls)
+	require.Len(t, mock.calls, 1)
+	assert.Empty(t, mock.calls[0].Tools)
 	require.Len(t, retriever.calls, 1)
 	assert.Equal(t, "image", retriever.calls[0].productArea)
 	require.Len(t, plannerTraces, 1)
@@ -3455,7 +3782,7 @@ func TestStage2BFinanceFAQRetrievalUsesBillingArea(t *testing.T) {
 			Content:     "\u53d1\u7968\u901a\u5e38\u5728\u63a7\u5236\u53f0\u8d22\u52a1\u4e2d\u5fc3\u7684\u53d1\u7968\u7ba1\u7406\u4e2d\u7533\u8bf7\u3002",
 		}},
 	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: retriever.results[0].Hits[0].Content + " [1]"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
@@ -3464,8 +3791,9 @@ func TestStage2BFinanceFAQRetrievalUsesBillingArea(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "\u600e\u4e48\u5f00\u53d1\u7968", noopStep)
 
 	require.NoError(t, err)
-	assert.Contains(t, reply, "\u53d1\u7968\u7ba1\u7406")
-	assert.Empty(t, mock.calls)
+	assert.Contains(t, reply, "发票管理")
+	require.Len(t, mock.calls, 1)
+	assert.Empty(t, mock.calls[0].Tools)
 	require.Len(t, retriever.calls, 1)
 	assert.Equal(t, "billing", retriever.calls[0].productArea)
 }
@@ -3486,7 +3814,7 @@ func TestStage2BStoppedBillingFAQUsesKnowledgeRetrieval(t *testing.T) {
 			Content:     "关机后是否继续计费取决于实例计费方式。",
 		}},
 	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: retriever.results[0].Hits[0].Content + " [1]"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
@@ -3496,7 +3824,8 @@ func TestStage2BStoppedBillingFAQUsesKnowledgeRetrieval(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Contains(t, reply, "关机后是否继续计费")
-	assert.Empty(t, mock.calls)
+	require.Len(t, mock.calls, 1)
+	assert.Empty(t, mock.calls[0].Tools)
 	require.Len(t, retriever.calls, 1)
 	assert.Equal(t, "billing", retriever.calls[0].productArea)
 }

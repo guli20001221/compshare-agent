@@ -1,0 +1,48 @@
+package prompt
+
+import (
+	"fmt"
+	"strings"
+
+	openai "github.com/sashabaranov/go-openai"
+)
+
+type RAGReference struct {
+	Number  int
+	Title   string
+	Content string
+}
+
+func BuildRAGMessages(question string, refs []RAGReference, weak bool, retry bool) []openai.ChatCompletionMessage {
+	system := `你是 CompShare 平台知识库问答助手。
+只能根据给定资料回答，不要补充资料中没有的事实。
+如果资料没有覆盖用户问题，请回复：当前知识库未覆盖该问题,我无法回答。
+如果资料只覆盖一部分，请说明：当前知识库只收录了以下信息。
+回答中的每个事实必须带引用编号，例如 [1]。`
+	if weak {
+		system += "\n资料相关性较低；只有在资料确实能回答时才回答，否则拒答。"
+	}
+	if retry {
+		system += "\n上一次回答缺少引用。必须带 [1]、[2] 这样的引用编号；如果无法引用，直接拒答。"
+	}
+
+	var user strings.Builder
+	user.WriteString("用户问题：\n")
+	user.WriteString(strings.TrimSpace(question))
+	user.WriteString("\n\n资料：\n")
+	for _, ref := range refs {
+		number := ref.Number
+		if number <= 0 {
+			number = 1
+		}
+		user.WriteString(fmt.Sprintf("[%d] %s\n", number, strings.TrimSpace(ref.Title)))
+		user.WriteString(strings.TrimSpace(ref.Content))
+		user.WriteString("\n\n")
+	}
+	user.WriteString("请基于以上资料回答。")
+
+	return []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: system},
+		{Role: openai.ChatMessageRoleUser, Content: user.String()},
+	}
+}
