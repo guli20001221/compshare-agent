@@ -205,6 +205,8 @@ func buildSystemPrompt() string {
 		"Historical monitor phrases like yesterday, last night, today morning, or X点到Y点 must use monitor_history or a non-current time_window, never preset now/today.",
 		"Stage 2B retrieval focus: classify clear platform usage / FAQ questions as knowledge_qa.",
 		"For diagnosis questions that also reference platform FAQ or usage docs should still emit diagnosis.",
+		"Platform how-to/config/error-code questions like how to configure remote desktop audio, how to install drivers, what does error code 226601 mean, how to publish a community image, or how to set BaseURL should emit knowledge_qa, even if phrased as a problem.",
+		"The distinction is: 'how do I do X on the platform' = knowledge_qa; 'my specific instance has problem X' with target_refs = diagnosis. Without a concrete instance target, default to knowledge_qa for usage/config/error-code questions.",
 		"For billing-specific FAQ plus instance facts should emit billing_instance; unsupported account totals still use billing_account_unsupported.",
 		"finance policy/how-to questions like invoice issuance, refund rules, arrears handling, why am I still charged after shutdown, billing mode differences, or package expiry should emit knowledge_qa.",
 		"account realtime finance/status questions like invoice status, refund progress, arrears amount, payable bills, balance, total bills, transaction records, charge records, package expiry time, or recharge amount should emit billing_account_unsupported.",
@@ -238,6 +240,18 @@ func buildSystemPrompt() string {
 		"{\"schema_version\":\"1.0\",\"intent\":\"billing_account_unsupported\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":true,\"confidence\":0.9}",
 		"User question: what image types does the platform provide",
 		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
+		"User question: \u8fdc\u7a0b\u684c\u9762\u6ca1\u58f0\u97f3\u8be5\u600e\u4e48\u5904\u7406",
+		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
+		"User question: \u9519\u8bef\u7801 226601 \u662f\u4ec0\u4e48\u610f\u601d",
+		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
+		"User question: Linux \u600e\u4e48\u88c5 NVIDIA \u9a71\u52a8",
+		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
+		"User question: Coding Plan \u7684 BaseURL \u5e94\u8be5\u586b\u4ec0\u4e48",
+		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
+		"User question: \u600e\u4e48\u5728 VSCode \u91cc\u8fde GPU \u5b9e\u4f8b",
+		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
+		"User question: uhost-abc123 \u8fd9\u53f0\u542f\u52a8\u5931\u8d25\u4e86\u5e2e\u6211\u67e5",
+		"{\"schema_version\":\"1.0\",\"intent\":\"diagnosis\",\"slots\":{\"target_refs\":[{\"type\":\"uhost_id_user_input\",\"value\":\"uhost-abc123\",\"source\":\"user_text\",\"source_span\":\"uhost-abc123\"}],\"metrics\":[],\"time_window\":null},\"required_tools\":[\"DescribeCompShareInstance\"],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
 	}, "\n")
 }
 

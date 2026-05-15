@@ -3183,6 +3183,24 @@ func knowledgeQAPlan(retrievalEnabled bool) intent.Plan {
 	}
 }
 
+func diagnosisPlanForUHost(uhostID string) intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentDiagnosis,
+		Slots: intent.Slots{
+			TargetRefs: []intent.TargetRef{{
+				Type:       intent.TargetRefUHostIDUserInput,
+				Value:      uhostID,
+				Source:     intent.SourceUserText,
+				SourceSpan: uhostID,
+			}},
+		},
+		RequiredTools: []string{"DescribeCompShareInstance"},
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    0.9,
+	}
+}
+
 func unknownEngineTestPlan() intent.Plan {
 	return intent.Plan{
 		SchemaVersion: intent.SchemaVersion,
@@ -3245,6 +3263,101 @@ func TestStage2BRetrievalHitUsesLLMWithoutTools(t *testing.T) {
 	assert.Equal(t, 1, retrievalTraces[0].Hits)
 	require.Len(t, retrievalTraces[0].HitItems, 1)
 	assert.Equal(t, "faq-billing-001", retrievalTraces[0].HitItems[0].ChunkID)
+}
+
+func TestPlannerRoutingControlsStage2BRAGPath(t *testing.T) {
+	knowledgeChunk := knowledge.KBChunk{
+		ChunkID:     "w0-windows-rdp-audio-a1b2c3d4",
+		KBVersion:   "stage2b.w0",
+		SourceType:  "runbook",
+		ProductArea: "windows",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "Windows RDP audio",
+		Content:     "Configure remote desktop audio redirection and Windows Audio before reconnecting.",
+		SourceURL:   "https://www.compshare.cn/docs/windows-rdp-audio",
+	}
+	knowledgeResult := knowledge.RetrievalResult{
+		Enabled:   true,
+		KBVersion: "stage2b.w0",
+		Hits:      []knowledge.KBChunk{knowledgeChunk},
+		HitItems:  []knowledge.RetrievalHit{{Chunk: knowledgeChunk, Score: 80, Kept: true}},
+	}
+
+	cases := []struct {
+		name          string
+		userMsg       string
+		plan          intent.Plan
+		expectRAGPath bool
+	}{
+		{
+			name:          "remote desktop audio how-to routes to RAG",
+			userMsg:       "\u8fdc\u7a0b\u684c\u9762\u6ca1\u58f0\u97f3\u8be5\u600e\u4e48\u5904\u7406",
+			plan:          knowledgeQAPlan(false),
+			expectRAGPath: true,
+		},
+		{
+			name:          "error code explanation routes to RAG",
+			userMsg:       "\u9519\u8bef\u7801 226601 \u662f\u4ec0\u4e48\u610f\u601d",
+			plan:          knowledgeQAPlan(false),
+			expectRAGPath: true,
+		},
+		{
+			name:          "BaseURL config routes to RAG",
+			userMsg:       "Coding Plan BaseURL \u600e\u4e48\u586b",
+			plan:          knowledgeQAPlan(false),
+			expectRAGPath: true,
+		},
+		{
+			name:          "resource inventory does not route to RAG",
+			userMsg:       "\u6211\u73b0\u5728\u6709\u591a\u5c11\u673a\u5668",
+			plan:          phase1ResourcePlan(),
+			expectRAGPath: false,
+		},
+		{
+			name:          "specific instance diagnosis does not route to RAG",
+			userMsg:       "uhost-abc123 \u542f\u52a8\u5931\u8d25",
+			plan:          diagnosisPlanForUHost("uhost-abc123"),
+			expectRAGPath: false,
+		},
+		{
+			name:          "monitor query does not route to RAG",
+			userMsg:       "\u6211\u7684 GPU \u5229\u7528\u7387\u591a\u5c11",
+			plan:          phase1MonitorPlanWithoutTarget(),
+			expectRAGPath: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: tc.plan}}}
+			retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{knowledgeResult}}
+			mockReply := "react path"
+			if tc.expectRAGPath {
+				mockReply = "RAG answer. [1]"
+			}
+			mock := &mockLLM{responses: []llm.ChatResponse{{Content: mockReply}}}
+			eng := NewWithDeps(mock, &mockExecutor{}, nil)
+			eng.InitWithContext("test user")
+			eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+			eng.SetKnowledgeRetriever(retriever)
+
+			reply, err := eng.Chat(context.Background(), tc.userMsg, noopStep)
+
+			require.NoError(t, err)
+			require.Len(t, planner.calls, 1)
+			if tc.expectRAGPath {
+				assert.True(t, hasNumberedCitation(reply), "RAG path must return cited answer, got %q", reply)
+				require.Len(t, retriever.calls, 1)
+				assert.Equal(t, tc.userMsg, retriever.calls[0].question)
+				require.Len(t, mock.calls, 1)
+				assert.Empty(t, mock.calls[0].Tools, "knowledge retrieval must not expose API tools")
+				return
+			}
+			assert.Equal(t, "react path", reply, "non-RAG planner output should fall back to the normal LLM path in this test")
+			assert.Empty(t, retriever.calls, "non-knowledge planner output must not call knowledge retriever")
+		})
+	}
 }
 
 func TestStage2BRetrievalHitCallsLLMWithNumberedEvidence(t *testing.T) {
