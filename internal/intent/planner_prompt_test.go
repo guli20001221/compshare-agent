@@ -40,8 +40,8 @@ func TestBuildSystemPromptDoesNotEmitMixedIntents(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	if len(examples) != 15 {
-		t.Fatalf("prompt examples count = %d, want 15; examples=%v", len(examples), examples)
+	if len(examples) != 18 {
+		t.Fatalf("prompt examples count = %d, want 18; examples=%v", len(examples), examples)
 	}
 	for _, example := range examples {
 		plan, err := parsePlanJSON(example)
@@ -59,6 +59,24 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 		}
 		if plan.Retrieval.Enabled {
 			t.Fatalf("prompt example unexpectedly enables retrieval: %s", example)
+		}
+	}
+}
+
+func TestBuildSystemPromptKeepsInventoryAvailabilityOutOfResourceInfo(t *testing.T) {
+	prompt := buildSystemPrompt()
+	required := []string{
+		"Inventory availability questions",
+		"are not resource_info",
+		"resource_info is only for the user's own CompShare instances",
+		"Platform stock questions should emit unknown",
+		"\u4e0a\u6d77\u673a\u623f\u8fd8\u5269\u6ca1\u5269 H100 \u5e93\u5b58",
+		"4090 \u8fd8\u6709\u6ca1\u6709\u8d27",
+		"\u6211\u8d26\u53f7\u4e0b\u6709\u54ea\u4e9b 4090 \u5b9e\u4f8b",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt missing inventory boundary fragment %q:\n%s", fragment, prompt)
 		}
 	}
 }

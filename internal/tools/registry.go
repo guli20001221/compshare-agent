@@ -48,7 +48,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareInstance",
-			Description: "查询用户的算力共享实例列表及详情。返回实例状态（Running/Stopped/Install/Install Fail/Starting/Stopping/Rebooting）、GPU 类型、IP、计费等。不传 UHostIds 查全部。Limit 最大 100。State 含义：Install=初始化中, Install Fail=初始化失败。",
+			Description: "查询用户自己账号下的算力共享实例列表及详情，不用于查询机房库存或平台是否还有 GPU 可售。返回实例状态（Running/Stopped/Install/Install Fail/Starting/Stopping/Rebooting）、GPU 类型、IP、计费等。不传 UHostIds 查全部。Limit 最大 100。State 含义：Install=初始化中, Install Fail=初始化失败。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -74,7 +74,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeAvailableCompShareInstanceTypes",
-			Description: "获取可用 GPU 机型列表及每种机型的合法 CPU/内存/GPU 组合。创建实例前调用此接口确认合法配置。注意：返回的 Memory 单位为 GB，创建实例时需转换为 MB。",
+			Description: "获取可用 GPU 机型列表及每种机型的合法 CPU/内存/GPU 组合。可用于回答 GPU 机型是否可售、是否有货、是否售罄；返回 Status（Normal/SoldOut），不返回精确剩余数量。创建实例前也可调用此接口确认合法配置。注意：返回的 Memory 单位为 GB，创建实例时需转换为 MB。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -134,7 +134,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CheckCompShareResourceCapacity",
-			Description: "查GPU库存/有没有货/还有没有/是否有货/是否售罄。检查指定GPU型号在指定区域的库存是否充足。Zone 必须为 cn-wlcb-01 格式。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。",
+			Description: "预检某个具体创建实例配置是否有足够资源，适合在用户已给出 GPU/CPU/内存/镜像/计费方式等创建参数时使用；不适合回答“4090 还有没有库存”这类泛问。Zone 必须为 cn-wlcb-01 格式。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
