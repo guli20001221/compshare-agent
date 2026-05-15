@@ -40,8 +40,8 @@ func TestBuildSystemPromptDoesNotEmitMixedIntents(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	if len(examples) != 9 {
-		t.Fatalf("prompt examples count = %d, want 9; examples=%v", len(examples), examples)
+	if len(examples) != 15 {
+		t.Fatalf("prompt examples count = %d, want 15; examples=%v", len(examples), examples)
 	}
 	for _, example := range examples {
 		plan, err := parsePlanJSON(example)
@@ -93,6 +93,40 @@ func TestBuildSystemPromptIncludesKnowledgeQARules(t *testing.T) {
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("system prompt missing knowledge QA rule %q:\n%s", fragment, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptIncludesKnowledgeQABoundaryRules(t *testing.T) {
+	prompt := buildSystemPrompt()
+	required := []string{
+		"Platform how-to/config/error-code questions",
+		"how to configure remote desktop audio",
+		"what does error code 226601 mean",
+		"how do I do X on the platform' = knowledge_qa",
+		"my specific instance has problem X",
+		"Without a concrete instance target, default to knowledge_qa",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt missing knowledge_qa boundary fragment %q:\n%s", fragment, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptIncludesHowToExamples(t *testing.T) {
+	prompt := buildSystemPrompt()
+	requiredExamples := []string{
+		"\u8fdc\u7a0b\u684c\u9762\u6ca1\u58f0\u97f3\u8be5\u600e\u4e48\u5904\u7406",
+		"\u9519\u8bef\u7801 226601 \u662f\u4ec0\u4e48\u610f\u601d",
+		"Linux \u600e\u4e48\u88c5 NVIDIA \u9a71\u52a8",
+		"Coding Plan \u7684 BaseURL \u5e94\u8be5\u586b\u4ec0\u4e48",
+		"\u600e\u4e48\u5728 VSCode \u91cc\u8fde GPU \u5b9e\u4f8b",
+		"uhost-abc123 \u8fd9\u53f0\u542f\u52a8\u5931\u8d25\u4e86\u5e2e\u6211\u67e5",
+	}
+	for _, example := range requiredExamples {
+		if !strings.Contains(prompt, example) {
+			t.Fatalf("system prompt missing example %q:\n%s", example, prompt)
 		}
 	}
 }
