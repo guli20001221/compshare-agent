@@ -474,6 +474,7 @@ def _base_chunk(
         "chunk_id": chunk_id,
         "kb_version": kb_version,
         "source_type": source_type,
+        "source_origin": "official",
         "product_area": product_area,
         "acl": "customer_safe",
         "title": title.strip()[:180],
