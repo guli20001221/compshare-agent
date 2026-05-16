@@ -1,27 +1,28 @@
 ---
-last_updated: 2026-05-16T23:50+08:00
+last_updated: 2026-05-12T17:40:00+08:00
 ---
 # Project Context
-
 ## 当前状态
-当前分支 `codex/pr-rag-11a-1` 位于 `F:\compshare-agent-worktrees\rag-11a-1`。RAG-11a.1 Phase 2 已完成：在 #87 schema 合并后的 main 上扩入第一批 21 篇净新官方文档，4 篇已覆盖文档保持跳过；正式知识库从 62 条扩到 121 条，评估报告 PASS，等待提交、推送和开 PR。
+当前分支 `codex/pre-rag-trace-closure` 位于 `F:\compshare-agent-worktrees\pre-rag-trace-closure`，基于 PR #65 合并后的 `origin/main`。PR-C trace 收口已实现并通过本地验证，待提交/开 PR。
 
 ## 进行中
-- [x] RAG-11a.1 Phase 2 — 已完成图片说明、chunk 生成、评估、部署文件和 digest 更新；下一步是提交并创建 PR。
+- [x] PR-C trace 收口 — trace 输出瘦身、真实 token 统计、启动清理接入、trace 脱敏补强。
 
 ## 最近完成
-- [x] PR #87 schema 合并 — `KBChunk.source_origin` / `surface_url` 已落 main，digest 机制保持 LF-normalized。
-- [x] RAG-11a.1 语料生成 — 21 篇 active 文档生成 59 条新 chunk；4 篇 skipped 文档未重复生成。
-- [x] RAG-11a.1 评估 — 269 题，anchor 15/15，Top-3 79.8%，引用 100%，安全泄漏 0，编造 0，忠实度 98.4%。
-- [x] 安全规则修正 — 公开 API 文档里的 `Bearer api_key` / `Bearer <YOUR_API_KEY>` 等占位写法不再被误判为密钥；真实 `Bearer abc` / `api_key=abc` 仍会拦截。
+- [x] trace.v0.2 输出瘦身 — 通过 marshal-time projection 省略空的 runtime/planner/renderer/retrieval/outcome 等块。
+- [x] token 统计 — LLM streaming usage、planner usage、grounded renderer usage 汇总到 `outcome.total_tokens`；没有 provider usage 时不写 token 字段。
+- [x] trace 清理 — CLI 启动时调用 30 天 retention cleanup，失败只告警不阻塞。
+- [x] trace 脱敏 — OnBeforeCall 先做参数脱敏；SafeToolExecutor 的 TraceResult 与 LLMResult 使用同一套 result redaction。
+- [x] 子 agent review — plan review 和 code review 均完成；阻塞项是 outcome 误写 0，已修复并复审通过。
 
 ## 架构决策
 | 决策 | 选择 | 原因 | 日期 |
 | --- | --- | --- | --- |
-| RAG-11a.1 skipped 文档 | `package` / `logic` / `bill` / `billdescribe` 不重复入库 | 这 4 篇已在 bootstrap 14 的旧 62 条里覆盖，避免重复 chunk | 2026-05-16 |
-| RAG-11a.1 kb_version | `kb.stage2b.w0.2026-05-16.rag-11a-1` | 标识本次语料扩容后的可部署快照 | 2026-05-16 |
-| API 文档占位密钥 | 允许明确占位写法，继续拦真实密钥形态 | 防止 ModelVerse 接入文档被安全规则误杀，同时保留泄漏门槛 | 2026-05-16 |
+| trace 空块处理 | 使用 MarshalJSON 投影，不改变读模型 | 兼容旧 trace，同时让新 trace 更干净 | 2026-05-12 |
+| token 统计 | 只记录 provider 明确返回的 usage；不估算 | 避免把猜测数字写进审计数据 | 2026-05-12 |
+| hallucination 指标 | 当前不输出 0；等检测器存在后再填 | 不为 dashboard 造假数据 | 2026-05-12 |
+| include_usage fallback | 只在 provider 明确不支持该字段时重试 | 避免吞掉其他真实 400 错误 | 2026-05-12 |
 
 ## 已知问题
-- [low] `eval_report.md` 中 4 个 judge_flagged 都是安全拒答类提示，不阻塞 gate；后续可优化 judge 对拒答的解释口径。
-- [medium] RAG-11a.2 的后续批次仍需等用户审定清单后再启动。
+- [medium] 完整 RAG 语料仍未接入，后续从 GitLab/飞书知识库开始 Stage 2B P0-P4。
+- [low] trace.v0.2 仍只记录汇总 token，不拆分每个 LLM 调用的 token 明细。
