@@ -902,6 +902,10 @@ class RagW0ScriptTests(unittest.TestCase):
             with self.subTest(unsafe=unsafe):
                 self.assertIn("secret", safety_patterns.unsafe_cleaned_matches(unsafe))
 
+    def test_safety_patterns_do_not_treat_capacity_ranges_as_wechat_handles(self):
+        self.assertNotIn("wechat_handle", safety_patterns.unsafe_cleaned_matches("数据盘容量(10G-1500G)"))
+        self.assertIn("wechat_handle", safety_patterns.unsafe_cleaned_matches("请联系(qi.li)处理"))
+
     def test_clean_docs_redacts_asset_note_values_without_breaking_json(self):
         body = (
             'Before <!-- asset_note: {"asset_id":"asset-1","description":"密码: *****",'
@@ -4028,6 +4032,22 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertEqual(summary["failed_answers"][0]["reason"], "judge_flagged")
             self.assertFalse(summary["answers"][0]["judge"]["cited"])
             self.assertTrue(summary["answers"][0]["citation_retry"])
+
+    def test_evaluate_answers_prompt_preserves_conflict_and_condition_rules(self):
+        prompt = evaluate_answers._answer_prompt(
+            "Coding Plan 的用量周期是怎么计算的",
+            [
+                {
+                    "title": "额度重置机制：滚动 5 小时窗口",
+                    "content": "Coding Plan 采用固定 5 小时窗口刷新额度。",
+                }
+            ],
+        )
+
+        self.assertIn("标题和正文存在冲突", prompt)
+        self.assertIn("以正文中的明确陈述为准", prompt)
+        self.assertIn("保留知识片段里的原始条件", prompt)
+        self.assertIn("不要把示例改写成通用规则", prompt)
 
     def test_evaluate_answers_resumes_existing_output(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -9,7 +9,7 @@ import (
 	"os"
 )
 
-const CorpusDigestExpected = "bb52d0465dc96327ccdc8cb9efc06f69c20ce968a13bd21aaa90df1a031e4c4e"
+const CorpusDigestExpected = "3f868bc7201f1ac2979f65a648b5c16d35b8b83734e855c356e44cb8735ada3b"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.
