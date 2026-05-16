@@ -19,6 +19,7 @@ func TestLoadCorpusLoadsCustomerSafeJSONL(t *testing.T) {
 	assert.Equal(t, "kb-curated-test", corpus.KBVersion)
 	assert.Equal(t, "faq-image-001", corpus.Chunks[0].ChunkID)
 	assert.Equal(t, "customer_safe", corpus.Chunks[0].ACL)
+	assert.Equal(t, "official", corpus.Chunks[0].SourceOrigin)
 	assert.Equal(t, []string{"平台镜像有哪些", "社区镜像和平台镜像区别"}, corpus.Chunks[0].QuestionPatterns)
 }
 
@@ -61,8 +62,12 @@ func TestLoadPinnedCorpusLoadsStage2BW0(t *testing.T) {
 	corpus, err := LoadPinnedCorpus(filepath.Join("..", "..", "deploy", "kb", "stage2b_w0.jsonl"))
 	require.NoError(t, err)
 
-	assert.Equal(t, "kb.stage2b.w0.2026-05-13", corpus.KBVersion)
+	assert.Equal(t, "kb.stage2b.w0.2026-05-16.schema1", corpus.KBVersion)
 	assert.Len(t, corpus.Chunks, 62)
+	for _, chunk := range corpus.Chunks {
+		assert.Equal(t, "official", chunk.SourceOrigin)
+		assert.Nil(t, chunk.SurfaceURL)
+	}
 }
 
 func TestLoadPinnedCorpusRejectsDigestMismatch(t *testing.T) {
@@ -75,7 +80,7 @@ func TestLoadPinnedCorpusRejectsDigestMismatch(t *testing.T) {
 }
 
 func TestLoadCorpusRejectsInvalidJSONWithRowNumber(t *testing.T) {
-	path := writeCorpusFile(t, `{"chunk_id":"ok","kb_version":"kb","source_type":"faq","product_area":"billing","acl":"customer_safe","confidence":"high","title":"ok","content":"ok"}
+	path := writeCorpusFile(t, `{"chunk_id":"ok","kb_version":"kb","source_type":"faq","source_origin":"official","product_area":"billing","acl":"customer_safe","confidence":"high","title":"ok","content":"ok"}
 {bad json}
 `)
 
@@ -85,7 +90,7 @@ func TestLoadCorpusRejectsInvalidJSONWithRowNumber(t *testing.T) {
 }
 
 func TestLoadCorpusRejectsMissingRequiredField(t *testing.T) {
-	path := writeCorpusFile(t, `{"chunk_id":"faq-missing-title","kb_version":"kb","source_type":"faq","product_area":"billing","acl":"customer_safe","confidence":"high","content":"ok"}`)
+	path := writeCorpusFile(t, `{"chunk_id":"faq-missing-title","kb_version":"kb","source_type":"faq","source_origin":"official","product_area":"billing","acl":"customer_safe","confidence":"high","content":"ok"}`)
 
 	_, err := LoadCorpus(path)
 	require.Error(t, err)
@@ -93,7 +98,7 @@ func TestLoadCorpusRejectsMissingRequiredField(t *testing.T) {
 }
 
 func TestLoadCorpusRejectsNonCustomerSafeACL(t *testing.T) {
-	path := writeCorpusFile(t, `{"chunk_id":"faq-internal","kb_version":"kb","source_type":"faq","product_area":"billing","acl":"internal_ops","confidence":"high","title":"internal","content":"ok"}`)
+	path := writeCorpusFile(t, `{"chunk_id":"faq-internal","kb_version":"kb","source_type":"faq","source_origin":"official","product_area":"billing","acl":"internal_ops","confidence":"high","title":"internal","content":"ok"}`)
 
 	_, err := LoadCorpus(path)
 	require.Error(t, err)
@@ -101,11 +106,77 @@ func TestLoadCorpusRejectsNonCustomerSafeACL(t *testing.T) {
 }
 
 func TestLoadCorpusRejectsOpsChatSourceType(t *testing.T) {
-	path := writeCorpusFile(t, `{"chunk_id":"faq-ops-chat","kb_version":"kb","source_type":"ops_chat","product_area":"billing","acl":"customer_safe","confidence":"high","title":"ops","content":"ok"}`)
+	path := writeCorpusFile(t, `{"chunk_id":"faq-ops-chat","kb_version":"kb","source_type":"ops_chat","source_origin":"official","product_area":"billing","acl":"customer_safe","confidence":"high","title":"ops","content":"ok"}`)
 
 	_, err := LoadCorpus(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "source_type")
+}
+
+func TestLoadCorpusRejectsMissingSourceOrigin(t *testing.T) {
+	path := writeCorpusFile(t, `{"chunk_id":"faq-missing-origin","kb_version":"kb","source_type":"faq","product_area":"billing","acl":"customer_safe","confidence":"high","title":"ok","content":"ok"}`)
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "source_origin")
+}
+
+func TestLoadCorpusRejectsInvalidSourceOrigin(t *testing.T) {
+	path := writeCorpusFile(t, strings.Replace(validChunkWithPatterns(t, []string{"ok"}), `"source_origin":"official"`, `"source_origin":"invalid"`, 1))
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "source_origin")
+	assert.Contains(t, err.Error(), "official or support_curated")
+}
+
+func TestLoadCorpusAcceptsValidSourceOrigins(t *testing.T) {
+	for _, origin := range []string{"official", "support_curated"} {
+		t.Run(origin, func(t *testing.T) {
+			path := writeCorpusFile(t, strings.Replace(validChunkWithPatterns(t, []string{"ok"}), `"source_origin":"official"`, `"source_origin":"`+origin+`"`, 1))
+
+			corpus, err := LoadCorpus(path)
+			require.NoError(t, err)
+			require.Len(t, corpus.Chunks, 1)
+			assert.Equal(t, origin, corpus.Chunks[0].SourceOrigin)
+		})
+	}
+}
+
+func TestLoadCorpusAcceptsNilSurfaceURL(t *testing.T) {
+	path := writeCorpusFile(t, strings.Replace(validChunkWithPatterns(t, []string{"ok"}), `"content":"ok"`, `"surface_url":null,"content":"ok"`, 1))
+
+	corpus, err := LoadCorpus(path)
+	require.NoError(t, err)
+	require.Len(t, corpus.Chunks, 1)
+	assert.Nil(t, corpus.Chunks[0].SurfaceURL)
+}
+
+func TestLoadCorpusAcceptsAllowedSurfaceURLConsole(t *testing.T) {
+	path := writeCorpusFile(t, strings.Replace(validChunkWithPatterns(t, []string{"ok"}), `"content":"ok"`, `"surface_url":"https://console.compshare.cn/instance/list","content":"ok"`, 1))
+
+	corpus, err := LoadCorpus(path)
+	require.NoError(t, err)
+	require.NotNil(t, corpus.Chunks[0].SurfaceURL)
+	assert.Equal(t, "https://console.compshare.cn/instance/list", *corpus.Chunks[0].SurfaceURL)
+}
+
+func TestLoadCorpusAcceptsAllowedSurfaceURLDocs(t *testing.T) {
+	path := writeCorpusFile(t, strings.Replace(validChunkWithPatterns(t, []string{"ok"}), `"content":"ok"`, `"surface_url":"https://www.compshare.cn/docs/intro","content":"ok"`, 1))
+
+	corpus, err := LoadCorpus(path)
+	require.NoError(t, err)
+	require.NotNil(t, corpus.Chunks[0].SurfaceURL)
+	assert.Equal(t, "https://www.compshare.cn/docs/intro", *corpus.Chunks[0].SurfaceURL)
+}
+
+func TestLoadCorpusRejectsSurfaceURLByPolicyDelegation(t *testing.T) {
+	path := writeCorpusFile(t, strings.Replace(validChunkWithPatterns(t, []string{"ok"}), `"content":"ok"`, `"surface_url":"http://compshare.cn/docs","content":"ok"`, 1))
+
+	_, err := LoadCorpus(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "surface_url rejected by policy")
+	assert.Contains(t, err.Error(), "scheme_not_https")
 }
 
 func TestLoadCorpusRejectsOversizedQuestionPatterns(t *testing.T) {
@@ -194,6 +265,7 @@ func validChunkWithPatterns(t *testing.T, patterns []string) string {
 		"chunk_id":          "faq-valid",
 		"kb_version":        "kb",
 		"source_type":       "faq",
+		"source_origin":     "official",
 		"product_area":      "billing",
 		"acl":               "customer_safe",
 		"confidence":        "high",
