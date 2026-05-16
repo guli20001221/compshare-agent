@@ -1,0 +1,187 @@
+{
+  "schema_version": "rag_11a_2.source_manifest.v1",
+  "sources": [
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\modelverse\\models\\common\\error-code.md",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_models_common_error-code",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__modelverse_models_common_error-code.md",
+      "has_images": false,
+      "image_count": 0
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\modelverse\\models\\qa.md",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_models_qa",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__modelverse_models_qa.md",
+      "has_images": true,
+      "image_count": 2
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\modelverse\\package_plan\\openclaw.md",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_package_plan_openclaw",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__modelverse_package_plan_openclaw.md",
+      "has_images": false,
+      "image_count": 0
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\gpu\\cardlessmode.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_gpu_cardlessmode",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_gpu_cardlessmode.md",
+      "has_images": true,
+      "image_count": 2
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\gpu\\selfstart.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_gpu_selfstart",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_gpu_selfstart.md",
+      "has_images": false,
+      "image_count": 0
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\introduce\\quickstart.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_introduce_quickstart",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_introduce_quickstart.md",
+      "has_images": true,
+      "image_count": 61
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\bestpractices\\windows.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_bestpractices_windows",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_bestpractices_windows.md",
+      "has_images": true,
+      "image_count": 14
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\gpu\\firewall.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_gpu_firewall",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_gpu_firewall.md",
+      "has_images": true,
+      "image_count": 2
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\gpu\\disk.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_gpu_disk",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_gpu_disk.md",
+      "has_images": true,
+      "image_count": 22
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\gpu\\filebrowser.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_gpu_filebrowser",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_gpu_filebrowser.md",
+      "has_images": true,
+      "image_count": 13
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\gpu\\s3describe.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_gpu_s3describe",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_gpu_s3describe.md",
+      "has_images": true,
+      "image_count": 1
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\gpu\\upfsmount.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_gpu_upfsmount",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_gpu_upfsmount.md",
+      "has_images": false,
+      "image_count": 0
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\gpu\\uploaddata.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_gpu_uploaddata",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_gpu_uploaddata.md",
+      "has_images": true,
+      "image_count": 13
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\gpu\\usepublicmodel.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_gpu_usepublicmodel",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_gpu_usepublicmodel.md",
+      "has_images": true,
+      "image_count": 6
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\gpu\\community.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_gpu_community",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_gpu_community.md",
+      "has_images": true,
+      "image_count": 4
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\gpu\\releasecommunity.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_gpu_releasecommunity",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_gpu_releasecommunity.md",
+      "has_images": true,
+      "image_count": 2
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\image\\versionmanagement.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_image_versionmanagement",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__operation_image_versionmanagement.md",
+      "has_images": true,
+      "image_count": 7
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\uaccount\\account\\cancelaccount.md",
+      "source_doc_id": "gitlab-compshare-docs__uaccount_account_cancelaccount",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__uaccount_account_cancelaccount.md",
+      "has_images": true,
+      "image_count": 3
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\uaccount\\account\\register.md",
+      "source_doc_id": "gitlab-compshare-docs__uaccount_account_register",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__uaccount_account_register.md",
+      "has_images": true,
+      "image_count": 4
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\uaccount\\identity\\authentication.md",
+      "source_doc_id": "gitlab-compshare-docs__uaccount_identity_authentication",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__uaccount_identity_authentication.md",
+      "has_images": true,
+      "image_count": 1
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\uaccount\\identity\\company.md",
+      "source_doc_id": "gitlab-compshare-docs__uaccount_identity_company",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__uaccount_identity_company.md",
+      "has_images": true,
+      "image_count": 11
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\uaccount\\identity\\edu.md",
+      "source_doc_id": "gitlab-compshare-docs__uaccount_identity_edu",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__uaccount_identity_edu.md",
+      "has_images": true,
+      "image_count": 4
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\uaccount\\identity\\personal.md",
+      "source_doc_id": "gitlab-compshare-docs__uaccount_identity_personal",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__uaccount_identity_personal.md",
+      "has_images": true,
+      "image_count": 2
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\uaccount\\team\\team.md",
+      "source_doc_id": "gitlab-compshare-docs__uaccount_team_team",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__uaccount_team_team.md",
+      "has_images": false,
+      "image_count": 0
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\uaccount\\team\\teambulider.md",
+      "source_doc_id": "gitlab-compshare-docs__uaccount_team_teambulider",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__uaccount_team_teambulider.md",
+      "has_images": true,
+      "image_count": 12
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\uaccount\\team\\teammember.md",
+      "source_doc_id": "gitlab-compshare-docs__uaccount_team_teammember",
+      "normalized_doc_path": "normalized_docs/gitlab-compshare-docs__uaccount_team_teammember.md",
+      "has_images": true,
+      "image_count": 4
+    }
+  ]
+}

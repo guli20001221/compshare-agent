@@ -23,7 +23,7 @@ INTERNAL_URL_RE = re.compile(
     re.IGNORECASE,
 )
 ANY_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
-WECHAT_HANDLE_RE = re.compile(r"\([A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)+\)")
+WECHAT_HANDLE_RE = re.compile(r"\([A-Za-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)+\)")
 PERSON_HANDLE_RE = re.compile(r"[\u4e00-\u9fff]{2,4}\([A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)+\)")
 AT_MENTION_RE = re.compile(r"@[A-Za-z0-9_.\-\u4e00-\u9fff]+(?:\([^)]+\))?")
 SPEAKER_NAME_RE = re.compile(r"(?m)^([\u4e00-\u9fff]{2,4})(?=\s+\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2})")
