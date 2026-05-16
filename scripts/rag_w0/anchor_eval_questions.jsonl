@@ -8,3 +8,8 @@
 {"question":"Linux 机器上怎么装 NVIDIA 驱动并确认成功","expected_behavior":"answer","expected_chunk_ids":["w0-driver_cuda-nvidia-cuda-20260511182117-nvidi-f1d3d007"],"group":"cuda_nvidia_driver","product_area":"driver_cuda"}
 {"question":"拿到 Windows 云主机以后怎么远程进去","expected_behavior":"answer","expected_chunk_ids":["w0-windows-windows-20260511182111-windows-8521db93"],"group":"windows_rdp_sound","product_area":"windows"}
 {"question":"Cursor 接入 Coding Plan 时配置应该怎么填","expected_behavior":"answer","expected_chunk_ids":["w0-modelverse-feishu-model-package-faq-latest--508bec9d"],"group":"modelverse_package_credit","product_area":"modelverse"}
+{"question":"Claude Code 里 API 地址和模型名该怎么配置","expected_behavior":"answer","expected_chunk_ids":["w0-modelverse-gitlab-compshare-docs-claudecode-d6d72d28"],"group":"modelverse_package_credit","product_area":"modelverse"}
+{"question":"Codex CLI 接入你们模型服务要改哪个配置文件","expected_behavior":"answer","expected_chunk_ids":["w0-modelverse-gitlab-compshare-docs-codex-02a95d87"],"group":"modelverse_package_credit","product_area":"modelverse"}
+{"question":"用 OpenAI SDK 调 ModelVerse 时 endpoint 和流式示例怎么看","expected_behavior":"answer","expected_chunk_ids":["w0-modelverse-gitlab-compshare-docs-openai-com-1e2cf542"],"group":"modelverse_package_credit","product_area":"modelverse"}
+{"question":"Qwen3 VL Flash 和 Plus 的 API 调用价格是多少","expected_behavior":"answer","expected_chunk_ids":["w0-modelverse-gitlab-compshare-docs-price-6820aa12"],"group":"modelverse_package_credit","product_area":"modelverse"}
+{"question":"按量实例连续关机多久会被自动释放","expected_behavior":"answer","expected_chunk_ids":["w0-billing_rule-gitlab-compshare-docs-recycle-f0fb825c"],"group":"billing_mode_shutdown","product_area":"billing_rule"}

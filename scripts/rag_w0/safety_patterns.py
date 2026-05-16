@@ -5,8 +5,16 @@ import re
 
 
 RESOURCE_ID_RE = re.compile(r"(?<![A-Za-z0-9])(?:uhost|uimage|bsi|udisk|eip)-[A-Za-z0-9-]+", re.IGNORECASE)
+BEARER_PLACEHOLDER_RE = (
+    r"(?:(?:api[_-]?key|access[_-]?key|token|secret|max[_-]?tokens)\b|"
+    r"your[_-]?(?:api[_-]?key|token|secret)\b|"
+    r"[\$<{][A-Za-z0-9_./:-]+[>}]|"
+    r"怎么传|怎么写|如何传|如何写|必填吗)"
+)
 SECRET_RE = re.compile(
-    r"(?i)(?:bearer[ \t]+\S+|(?:[\w-]*[_-])?"
+    r"(?i)(?:bearer[ \t]+(?!"
+    + BEARER_PLACEHOLDER_RE
+    + r")(?![\u4e00-\u9fff])\S+|(?:[\w-]*[_-])?"
     r"(?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|\u5bc6\u7801|\u53e3\u4ee4)"
     r"[ \t]*[:=\uff1a][ \t]*\S+)"
 )

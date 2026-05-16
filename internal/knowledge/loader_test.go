@@ -62,8 +62,8 @@ func TestLoadPinnedCorpusLoadsStage2BW0(t *testing.T) {
 	corpus, err := LoadPinnedCorpus(filepath.Join("..", "..", "deploy", "kb", "stage2b_w0.jsonl"))
 	require.NoError(t, err)
 
-	assert.Equal(t, "kb.stage2b.w0.2026-05-16.schema1", corpus.KBVersion)
-	assert.Len(t, corpus.Chunks, 62)
+	assert.Equal(t, "kb.stage2b.w0.2026-05-16.rag-11a-1", corpus.KBVersion)
+	assert.Len(t, corpus.Chunks, 121)
 	for _, chunk := range corpus.Chunks {
 		assert.Equal(t, "official", chunk.SourceOrigin)
 		assert.Nil(t, chunk.SurfaceURL)

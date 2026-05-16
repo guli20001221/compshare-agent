@@ -29,6 +29,7 @@ from rag_w0 import model_smoke
 from rag_w0 import normalize_docs
 from rag_w0 import parse_sections
 from rag_w0 import retrieval_scoring
+from rag_w0 import safety_patterns
 from rag_w0 import chunk_plan
 from rag_w0 import select_w0_sources
 from rag_w0 import snapshot_assets
@@ -885,6 +886,21 @@ class RagW0ScriptTests(unittest.TestCase):
                 doc.write_text(f"---\nsafety_state: customer_safe_cleaned\n---\n{pattern}\n", encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "unsafe cleaned doc"):
                     validate_cleaned_docs.validate_cleaned_docs(root)
+
+    def test_safety_patterns_allow_documented_bearer_placeholders(self):
+        safe_examples = [
+            "Authorization Bearer api_key 怎么传",
+            "Authorization Bearer 怎么传",
+            "Authorization Bearer max_tokens 必填吗",
+            "Authorization Bearer <YOUR_API_KEY>",
+        ]
+        for example in safe_examples:
+            with self.subTest(example=example):
+                self.assertNotIn("secret", safety_patterns.unsafe_cleaned_matches(example))
+
+        for unsafe in ["Bearer abc", "Bearer tokenabc", "api_key=abc"]:
+            with self.subTest(unsafe=unsafe):
+                self.assertIn("secret", safety_patterns.unsafe_cleaned_matches(unsafe))
 
     def test_clean_docs_redacts_asset_note_values_without_breaking_json(self):
         body = (
@@ -4266,6 +4282,7 @@ class RagW0ScriptTests(unittest.TestCase):
             "chunk_id": chunk_id,
             "kb_version": "kb.test",
             "source_type": "faq",
+            "source_origin": "official",
             "product_area": product_area,
             "acl": "customer_safe",
             "title": title,
