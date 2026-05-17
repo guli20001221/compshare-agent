@@ -153,6 +153,36 @@ func TestRetrieverHybridFallsBackOnEmptyQueryEmbedding(t *testing.T) {
 	assert.Equal(t, "hybrid-a", got.Hits[0].ChunkID, "empty embedding should fall back to BM25 top-3 ordering")
 }
 
+// Sidecar missing a chunk_id mid-rerank must drop that single candidate
+// rather than crash. LoadPinnedCorpusWithEmbeddings's bijection guarantee
+// should make this unreachable in production, but defensive code is still
+// tested per brief §B.5 step 6 + reviewer area 3(d).
+func TestRetrieverHybridDropsCandidateWithMissingSidecarVector(t *testing.T) {
+	corpus, sidecar := hybridSetup(t)
+	// Delete one vector from sidecar so the rerank loop hits the "ok=false"
+	// branch in retriever.go (logged warning + skip).
+	delete(sidecar.Vectors, "hybrid-b")
+	embedder := &fakeEmbedder{queryVecs: map[string][]float32{
+		"a 主题问法": {1, 0, 0}, // aligns with hybrid-a
+	}}
+	r := NewRetriever(corpus, RetrieverOptions{
+		Now:              fixedRetrieverNow,
+		EmbeddingSidecar: sidecar,
+		Embedder:         embedder,
+	})
+	got := r.Retrieve("a 主题问法", "billing")
+	// hybrid-b must be dropped from results; hybrid-a + hybrid-c survive.
+	ids := chunkIDs(got.Hits)
+	for _, id := range ids {
+		if id == "hybrid-b" {
+			t.Fatalf("chunk with missing sidecar vector should be dropped: got %v", ids)
+		}
+	}
+	if len(ids) == 0 {
+		t.Fatal("expected at least one hit even after dropping hybrid-b")
+	}
+}
+
 // cosineSimilarity in retriever.go must give the same numeric result as
 // embedding.Cosine. Light spot check (the parity contract is enforced by
 // the 377-Q hybrid eval, which exercises the full BM25-pool + rerank path).

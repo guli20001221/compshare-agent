@@ -322,6 +322,12 @@ class _QueryEmbedder:
         q_sha = hashlib.sha256(question.encode("utf-8")).hexdigest()
         existing = self.cache.get(question_id)
         if existing and str(existing.get("question_sha256")) == q_sha:
+            # Backfill the question text on cache hit so retriever_parity_test
+            # can do text-keyed lookups even when this cache was created by an
+            # older script version that did not persist the field.
+            if existing.get("question") != question:
+                existing["question"] = question
+                self._dirty = True
             return [float(x) for x in existing.get("vector") or []]
         vec = self._call(question)
         self.cache[question_id] = {
