@@ -11,6 +11,12 @@ import (
 
 const CorpusDigestExpected = "dbb90c9e3de4a295e23e4abd630ec6efc09d6ee704cc1f60fc42303b10a853c5"
 
+// EmbeddingDigestExpected pins the hybrid retrieval embedding sidecar produced by
+// scripts/rag_w0/build_corpus_embeddings.py over the CorpusDigestExpected corpus
+// with text-embedding-3-large (3072-dim). Mismatch indicates the sidecar is
+// stale relative to the deployed corpus and RAG hybrid path must refuse to load.
+const EmbeddingDigestExpected = "0866516c02a17a4dbd6abc346fd53e02743fc7f3fe56a086adac725e22c1fd1d"
+
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.
 func ComputeCorpusDigest(reader io.Reader) (string, error) {
@@ -29,6 +35,17 @@ func ComputeCorpusFileDigest(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("open corpus for digest: %w", err)
+	}
+	defer file.Close()
+	return ComputeCorpusDigest(file)
+}
+
+// ComputeEmbeddingFileDigest mirrors ComputeCorpusFileDigest semantics so the
+// embedding sidecar pin is byte-stable across CRLF/LF checkouts.
+func ComputeEmbeddingFileDigest(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open embedding sidecar for digest: %w", err)
 	}
 	defer file.Close()
 	return ComputeCorpusDigest(file)
