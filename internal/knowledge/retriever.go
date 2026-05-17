@@ -81,7 +81,9 @@ func NewRetriever(corpus Corpus, opts RetrieverOptions) *Retriever {
 	}
 	hybridTimeout := opts.HybridContextTimeout
 	if hybridTimeout <= 0 {
-		hybridTimeout = time.Second
+		// Matches internal/embedding default; see embedding/client.go for
+		// the p99 measurement rationale.
+		hybridTimeout = 5 * time.Second
 	}
 	return &Retriever{
 		corpus:           corpus,

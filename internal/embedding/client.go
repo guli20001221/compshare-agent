@@ -55,7 +55,11 @@ func NewClient(opts ClientOptions) (*Client, error) {
 	if httpClient == nil {
 		timeout := opts.Timeout
 		if timeout <= 0 {
-			timeout = 1 * time.Second
+			// CLI smoke against production ModelVerse (2026-05-17) showed
+			// embedding p99 well above 1s; settled on 5s as a default that
+			// keeps fallback rare in steady state but still bounds tail
+			// latency. Override via ClientOptions.Timeout when calling.
+			timeout = 5 * time.Second
 		}
 		httpClient = &http.Client{Timeout: timeout}
 	}
