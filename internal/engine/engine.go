@@ -500,6 +500,24 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
 			content := e.guardMonitorTemporalFinalReply(resp.Content)
+			// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): cited contract invariant.
+			// When knowledge retrieval is enabled but the planner routed the
+			// question away from tryStage2BRetrieval (e.g. billing_instance /
+			// diagnosis), the generic ReAct path will silently emit substantive
+			// text without [n] citations and break the cited 100% hard contract.
+			// Guard: pure-LLM single-call answer (round 0 + no tools used) with
+			// RAG enabled and not a recognised refusal/citation -> coerce to
+			// ragNoEvidenceReply.
+			if round == 0 && e.knowledgeRetriever != nil &&
+				!isKnowledgeRefusal(content) && !hasNumberedCitation(content) {
+				if e.hardBlockObserver != nil {
+					e.hardBlockObserver(observability.EngineHardBlockTrace{
+						Hit:      true,
+						Category: "cited_contract_violation",
+					})
+				}
+				content = ragNoEvidenceReply
+			}
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: content,

@@ -3346,7 +3346,14 @@ func TestPlannerRoutingControlsStage2BRAGPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: tc.plan}}}
 			retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{knowledgeResult}}
-			mockReply := "react path"
+			// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): non-RAG fallback path
+			// is now guarded by the cited-contract invariant — plain text would
+			// be coerced to ragNoEvidenceReply. This test focuses on routing
+			// behaviour (does the planner intent reach RAG vs ReAct?), so we
+			// pre-add a [1] citation to the non-RAG mock reply to bypass the
+			// invariant. The invariant itself is covered by the
+			// TestRAGCitedContractInvariant* tests below.
+			mockReply := "react path [1]"
 			if tc.expectRAGPath {
 				mockReply = "RAG answer. [1]"
 			}
@@ -3368,7 +3375,7 @@ func TestPlannerRoutingControlsStage2BRAGPath(t *testing.T) {
 				assert.Empty(t, mock.calls[0].Tools, "knowledge retrieval must not expose API tools")
 				return
 			}
-			assert.Equal(t, "react path", reply, "non-RAG planner output should fall back to the normal LLM path in this test")
+			assert.Equal(t, "react path [1]", reply, "non-RAG planner output should fall back to the normal LLM path in this test")
 			assert.Empty(t, retriever.calls, "non-knowledge planner output must not call knowledge retriever")
 			if tc.expectTool != "" {
 				require.NotEmpty(t, mock.calls, "non-RAG fallback should expose tools")
@@ -3861,18 +3868,116 @@ func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T
 			eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
 				plannerTraces = append(plannerTraces, trace)
 			})
+			var hardBlocks []observability.EngineHardBlockTrace
+			eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+				hardBlocks = append(hardBlocks, trace)
+			})
 			eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 			eng.SetKnowledgeRetriever(retriever)
 
 			reply, err := eng.Chat(context.Background(), "billing FAQ", noopStep)
 
 			require.NoError(t, err)
-			assert.Equal(t, "react fallback", reply)
+			// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): with RAG enabled, the
+			// fallback ReAct path's plain "react fallback" text would silently
+			// break the cited 100% contract (no [n], not a refusal template).
+			// The engine invariant coerces it to ragNoEvidenceReply and emits a
+			// cited_contract_violation hard-block trace.
+			assert.Equal(t, ragNoEvidenceReply, reply)
 			assert.Empty(t, retriever.calls)
 			require.Len(t, plannerTraces, 1)
 			assert.Equal(t, string(tc.wantStatus), plannerTraces[0].CutoverStatus)
+			require.Len(t, hardBlocks, 1)
+			assert.Equal(t, "cited_contract_violation", hardBlocks[0].Category)
+			assert.True(t, hardBlocks[0].Hit)
 		})
 	}
+}
+
+func TestRAGCitedContractInvariantSkipsWhenAnswerAlreadyCited(t *testing.T) {
+	// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): positive case — when the
+	// fallback ReAct path happens to emit a properly cited answer (a
+	// well-behaved LLM that adds [n] on its own), the invariant must NOT
+	// fire and the reply must pass through unchanged.
+	plan := knowledgeQAPlan(false)
+	plan.HardBlockHint = true // force fallback to ReAct path
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Empty:     true,
+	}}}
+	citedAnswer := "Cited answer body [1]."
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: citedAnswer}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+		hardBlocks = append(hardBlocks, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "billing nav", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, citedAnswer, reply, "cited fallback answer should pass through unchanged")
+	assert.Empty(t, hardBlocks, "invariant must not fire when [n] citation present")
+}
+
+func TestRAGCitedContractInvariantSkipsWhenAnswerIsKnowledgeRefusal(t *testing.T) {
+	// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): negative-cited case — when the
+	// fallback ReAct path emits a refusal phrase (no [n] needed), the invariant
+	// must recognise the refusal and let it pass through unchanged.
+	plan := knowledgeQAPlan(false)
+	plan.Confidence = 0.3 // force fallback via low confidence
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Empty:     true,
+	}}}
+	refusalAnswer := "知识库未覆盖这个问题。"
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: refusalAnswer}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+		hardBlocks = append(hardBlocks, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "billing nav", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, refusalAnswer, reply, "refusal answer should pass through unchanged")
+	assert.Empty(t, hardBlocks, "invariant must not fire on recognised refusal template")
+}
+
+func TestRAGCitedContractInvariantSkipsWhenRetrieverDisabled(t *testing.T) {
+	// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): when knowledge retrieval is
+	// not enabled at all (legacy/non-RAG deployment), the invariant must NOT
+	// fire — a free-form chat answer is expected and the cited contract does
+	// not apply.
+	plan := knowledgeQAPlan(false)
+	plan.HardBlockHint = true
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback without RAG"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+		hardBlocks = append(hardBlocks, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	// NOTE: no retriever set — knowledgeRetriever is nil, invariant must be inert.
+
+	reply, err := eng.Chat(context.Background(), "billing nav", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "react fallback without RAG", reply, "RAG-disabled deployments must not be affected")
+	assert.Empty(t, hardBlocks)
 }
 
 func TestStage2BRetrievalHardBlockPrecedesPlanner(t *testing.T) {

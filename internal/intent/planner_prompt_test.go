@@ -40,8 +40,12 @@ func TestBuildSystemPromptDoesNotEmitMixedIntents(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	if len(examples) != 18 {
-		t.Fatalf("prompt examples count = %d, want 18; examples=%v", len(examples), examples)
+	// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): added 2 billing-navigation
+	// examples ("怎么查我这个月的账单" + "哪里可以看发票发起记录") so the planner
+	// routes navigation-style finance questions to knowledge_qa instead of
+	// billing_instance — see Phase D4 cli_cited_contract_investigation.md.
+	if len(examples) != 20 {
+		t.Fatalf("prompt examples count = %d, want 20; examples=%v", len(examples), examples)
 	}
 	for _, example := range examples {
 		plan, err := parsePlanJSON(example)
