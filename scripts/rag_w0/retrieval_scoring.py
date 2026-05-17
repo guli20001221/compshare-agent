@@ -133,6 +133,27 @@ def _is_cjk(char: str) -> bool:
     return any(start <= codepoint <= end for start, end in _CJK_RANGES)
 
 
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Plain cosine over float vectors.
+
+    Accumulates in Python float (float64) and divides once at the end so the
+    runtime Go helper internal/embedding/cosine.go produces byte-equivalent
+    rankings on the same inputs. Returns 0.0 on empty / zero-norm inputs.
+    """
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (math.sqrt(na) * math.sqrt(nb))
+
+
 _ASCII_SEGMENT_RE = re.compile(r"[a-z0-9]+")
 _CJK_RANGES = (
     (0x3400, 0x4DBF),
