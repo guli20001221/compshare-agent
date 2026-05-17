@@ -1,0 +1,60 @@
+{
+  "schema_version": "rag_ocr_fix.source_manifest.v1",
+  "batch_id": "ocr-fix",
+  "purpose": "Replace OCR-corrupted source NVIDIA驱动安装和CUDA安装-20260511182117 (4 chunks: f1d3d007 / 22ebf181 / ee979754 / ce1379e9) with 2 clean GitLab docs.",
+  "old_source_refs_removed": [
+    "NVIDIA驱动安装和CUDA安装-20260511182117__NVIDIA驱动安装和CUDA安装"
+  ],
+  "old_chunk_ids_removed": [
+    "w0-driver_cuda-nvidia-cuda-20260511182117-nvidi-f1d3d007",
+    "w0-driver_cuda-nvidia-cuda-20260511182117-nvidi-22ebf181",
+    "w0-driver_cuda-nvidia-cuda-20260511182117-nvidi-ee979754",
+    "w0-driver_cuda-nvidia-cuda-20260511182117-nvidi-ce1379e9"
+  ],
+  "info_loss_accepted": [
+    "Old chunk 22ebf181 (Windows driver) contained 'wlanapi.dll missing → 添加无线 LAN 服务' workaround (OCR rendered it as 'wIanapi.dll'). New GitLab installcuda.md does not include this workaround. Per OCR-fix brief §3, info loss accepted (rare edge case + new official docs are authoritative)."
+  ],
+  "sources": [
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\bestpractices\\installlinux.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_bestpractices_installlinux",
+      "normalized_doc_path": "normalized_raw/gitlab-compshare-docs__operation_bestpractices_installlinux.md",
+      "cleaned_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__operation_bestpractices_installlinux.md",
+      "has_images": true,
+      "image_count": 12,
+      "psa": "driver_cuda",
+      "chunk_count": 3
+    },
+    {
+      "original_path": "F:\\compshare-agent-runs\\rag-source-bundle-20260512\\gitlab-compshare-docs\\pages\\operation\\bestpractices\\installcuda.md",
+      "source_doc_id": "gitlab-compshare-docs__operation_bestpractices_installcuda",
+      "normalized_doc_path": "normalized_raw/gitlab-compshare-docs__operation_bestpractices_installcuda.md",
+      "cleaned_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__operation_bestpractices_installcuda.md",
+      "has_images": true,
+      "image_count": 13,
+      "psa": "driver_cuda",
+      "chunk_count": 2
+    }
+  ],
+  "summary": {
+    "documents": 2,
+    "total_images": 25,
+    "new_chunks": 5,
+    "deleted_chunks": 4,
+    "corpus_total_before": 181,
+    "corpus_total_after": 182,
+    "kb_version_before": "kb.stage2b.w0.2026-05-16.rag-11a-2",
+    "kb_version_after": "kb.stage2b.w0.2026-05-17.ocr-fix",
+    "digest_before": "3f868bc7201f1ac2979f65a648b5c16d35b8b83734e855c356e44cb8735ada3b",
+    "digest_after": "dbb90c9e3de4a295e23e4abd630ec6efc09d6ee704cc1f60fc42303b10a853c5"
+  },
+  "vl": {
+    "model": "qwen3-vl-flash",
+    "prompt_version": "ocr_fix_v1",
+    "smoke_run_id": "20260517T033251Z",
+    "images_total": 25,
+    "images_failed": 0
+  },
+  "phase1_model": "claude-opus-4-7",
+  "phase1_completed_at": "2026-05-17"
+}
