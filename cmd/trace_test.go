@@ -13,6 +13,7 @@ import (
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/stretchr/testify/require"
@@ -281,6 +282,125 @@ func TestKnowledgeRetrieverFromEnvMissingCorpusDisablesWithError(t *testing.T) {
 	if enabled || retriever != nil {
 		t.Fatalf("missing corpus = enabled %v retriever %#v, want disabled nil", enabled, retriever)
 	}
+}
+
+func TestHybridEnabledFromEnv(t *testing.T) {
+	cases := map[string]bool{
+		"":      false,
+		"0":     false,
+		"false": false,
+		"1":     true,
+		"true":  true,
+		"TRUE":  true,
+		"yes":   true,
+		"no":    false,
+	}
+	for raw, want := range cases {
+		raw, want := raw, want
+		t.Run(raw, func(t *testing.T) {
+			got := hybridEnabledFromEnv(func(key string) string {
+				if key == "RAG_HYBRID_ENABLED" {
+					return raw
+				}
+				return ""
+			})
+			if got != want {
+				t.Fatalf("hybridEnabledFromEnv(%q) = %v, want %v", raw, got, want)
+			}
+		})
+	}
+}
+
+func TestHybridEmbeddingsPathFromEnv(t *testing.T) {
+	getenv := func(_ string) string { return "" }
+	corpus := filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
+	got := hybridEmbeddingsPathFromEnv(getenv, corpus)
+	wantSuffix := "embeddings_" + knowledge.CorpusDigestExpected + ".jsonl"
+	if !strings.HasSuffix(got, wantSuffix) {
+		t.Fatalf("default sidecar path %q lacks suffix %q", got, wantSuffix)
+	}
+}
+
+func TestHybridEmbeddingsPathFromEnvOverride(t *testing.T) {
+	override := filepath.Join(t.TempDir(), "custom.jsonl")
+	got := hybridEmbeddingsPathFromEnv(func(key string) string {
+		if key == "COMPSHARE_KNOWLEDGE_EMBEDDINGS" {
+			return override
+		}
+		return ""
+	}, "ignored.jsonl")
+	if got != override {
+		t.Fatalf("override = %q, want %q", got, override)
+	}
+}
+
+func TestEmbeddingClientFromEnvRequiresKey(t *testing.T) {
+	_, err := embeddingClientFromEnv(func(_ string) string { return "" })
+	if err == nil {
+		t.Fatal("expected error when MODELVERSE_API_KEY missing")
+	}
+}
+
+func TestEmbeddingClientFromEnvDefaults(t *testing.T) {
+	client, err := embeddingClientFromEnv(func(key string) string {
+		if key == "MODELVERSE_API_KEY" {
+			return "key-stub"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected client when key is present")
+	}
+}
+
+func TestKnowledgeRetrieverFromEnvHybridMissingSidecarErrors(t *testing.T) {
+	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
+		switch key {
+		case "USE_KNOWLEDGE_RETRIEVAL":
+			return "curated"
+		case "COMPSHARE_KNOWLEDGE_CORPUS":
+			return filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
+		case "RAG_HYBRID_ENABLED":
+			return "1"
+		case "COMPSHARE_KNOWLEDGE_EMBEDDINGS":
+			return filepath.Join(t.TempDir(), "no-such-sidecar.jsonl")
+		case "MODELVERSE_API_KEY":
+			return "key-stub"
+		default:
+			return ""
+		}
+	})
+	if err == nil {
+		t.Fatal("missing sidecar should return an error in hybrid mode")
+	}
+	if enabled || retriever != nil {
+		t.Fatalf("missing sidecar = enabled %v retriever %#v, want disabled nil", enabled, retriever)
+	}
+}
+
+func TestKnowledgeRetrieverFromEnvHybridLoadsSidecar(t *testing.T) {
+	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
+		switch key {
+		case "USE_KNOWLEDGE_RETRIEVAL":
+			return "curated"
+		case "COMPSHARE_KNOWLEDGE_CORPUS":
+			return filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
+		case "RAG_HYBRID_ENABLED":
+			return "1"
+		case "MODELVERSE_API_KEY":
+			return "key-stub"
+		default:
+			return ""
+		}
+	})
+	require.NoError(t, err)
+	require.True(t, enabled)
+	require.NotNil(t, retriever)
+	// Don't actually call Retrieve here — it would hit the embedding endpoint
+	// with the stub key. Just verify the retriever was constructed.
 }
 
 func TestCLIShadowPlannerInputUsesRegistrySnapshot(t *testing.T) {

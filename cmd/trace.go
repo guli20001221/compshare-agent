@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/embedding"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
@@ -139,11 +141,67 @@ func knowledgeRetrieverFromEnv(getenv getenvFunc) (*knowledge.Retriever, bool, e
 	if unknown != "" || !enabled {
 		return nil, false, nil
 	}
-	corpus, err := knowledge.LoadPinnedCorpus(knowledgeCorpusPathFromEnv(getenv))
-	if err != nil {
-		return nil, false, err
+	corpusPath := knowledgeCorpusPathFromEnv(getenv)
+	if !hybridEnabledFromEnv(getenv) {
+		corpus, err := knowledge.LoadPinnedCorpus(corpusPath)
+		if err != nil {
+			return nil, false, err
+		}
+		return knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{}), true, nil
 	}
-	return knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{}), true, nil
+	// Hybrid path: corpus + embedding sidecar must both load and pass their
+	// pinned-digest checks. Failure is fatal (the runtime must never serve a
+	// hybrid result against a stale or mismatched index — see CONTEXT.md
+	// "Corpus 加载约束" + memory feedback_constraints_anchor_to_validated_artifact).
+	embeddingsPath := hybridEmbeddingsPathFromEnv(getenv, corpusPath)
+	corpus, sidecar, err := knowledge.LoadPinnedCorpusWithEmbeddings(corpusPath, embeddingsPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("rag hybrid load: %w", err)
+	}
+	client, err := embeddingClientFromEnv(getenv)
+	if err != nil {
+		return nil, false, fmt.Errorf("rag hybrid embedding client: %w", err)
+	}
+	return knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{
+		EmbeddingSidecar: &sidecar,
+		Embedder:         client,
+	}), true, nil
+}
+
+func hybridEnabledFromEnv(getenv getenvFunc) bool {
+	switch strings.ToLower(strings.TrimSpace(getenv("RAG_HYBRID_ENABLED"))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func hybridEmbeddingsPathFromEnv(getenv getenvFunc, corpusPath string) string {
+	if override := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_EMBEDDINGS")); override != "" {
+		return override
+	}
+	return filepath.Join(filepath.Dir(corpusPath), "embeddings_"+knowledge.CorpusDigestExpected+".jsonl")
+}
+
+func embeddingClientFromEnv(getenv getenvFunc) (*embedding.Client, error) {
+	apiKey := strings.TrimSpace(getenv("MODELVERSE_API_KEY"))
+	if apiKey == "" {
+		return nil, fmt.Errorf("MODELVERSE_API_KEY is required for hybrid retrieval")
+	}
+	baseURL := strings.TrimSpace(getenv("MODELVERSE_BASE_URL"))
+	if baseURL == "" {
+		baseURL = "https://api.modelverse.cn/v1"
+	}
+	model := strings.TrimSpace(getenv("MODELVERSE_EMBED_MODEL"))
+	if model == "" {
+		model = "text-embedding-3-large"
+	}
+	return embedding.NewClient(embedding.ClientOptions{
+		BaseURL: baseURL,
+		APIKey:  apiKey,
+		Model:   model,
+	})
 }
 
 func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []string) {
