@@ -4210,6 +4210,29 @@ class RagW0ScriptTests(unittest.TestCase):
         # Rule 3: no hit -> pure refusal template
         self.assertIn("知识库未覆盖", prompt)
 
+    def test_evaluate_answers_prompt_encodes_anti_fabrication_anchors(self):
+        """Step 6b (2026-05-17): eval prompt must mirror internal/prompt/rag.go
+        BuildRAGMessages and carry 6 anti-fabrication anchor bullets. Step 5
+        controlled eval flagged 4 real fab cases under ds-v4-flash + BM25 and
+        PR #94 hybrid eval flagged 2 more under ds-v4-pro + hybrid; the eval
+        prompt must elicit the same anti-fab behavior as runtime or the
+        post-fix fab metric will diverge from production
+        (memory feedback_eval_target_must_match_runtime_path)."""
+        prompt = evaluate_answers._answer_prompt(
+            "test q",
+            [{"title": "t", "content": "c"}],
+        )
+        anchors = {
+            "code/import literal copy (0170 token corruption)": "字符级、按行原样复制知识片段",
+            "enum/status-code literal copy (0267 token corruption)": "枚举值、常量名、错误码、HTTP 状态码必须按知识片段字面拷贝",
+            "numeric literal copy (defensive against 0100)": "字面值复制(含小数点位数)",
+            "no evidence-external suggestions (0259 extrapolate)": "故障排除建议、操作步骤、联系方式或下一步行动",
+            "direction-word fidelity (0300 direction misread)": "方向性词汇时,必须按知识片段原始方向陈述",
+            "field/list-title binding (0020 endpoint, 0028 deprecated list)": "字段或列表标题旁的具体值",
+        }
+        for purpose, phrase in anchors.items():
+            self.assertIn(phrase, prompt, msg=f"anti-fab anchor for {purpose} missing")
+
     def test_evaluate_answers_resumes_existing_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

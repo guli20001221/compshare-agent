@@ -491,9 +491,9 @@ def _answer_prompt(question: str, chunks: list[dict[str, Any]]) -> str:
         for index, chunk in enumerate(chunks[:3], start=1)
     )
     # PR-RAG-Prompt-Disclaimer-Fix (2026-05-17): three-tier disclaimer strategy.
-    # MUST stay in sync with internal/prompt/rag.go BuildRAGMessages — runtime
-    # and eval prompts have to elicit identical behavior or eval mis-measures
-    # runtime (memory feedback_eval_target_must_match_runtime_path).
+    # Step 6b (2026-05-17): six anti-fabrication anchor bullets appended to
+    # 【事实约束】 — mirrors internal/prompt/rag.go BuildRAGMessages exactly
+    # (memory feedback_eval_target_must_match_runtime_path).
     return (
         "你是 CompShare 平台知识库答复助手。只能使用下面的知识片段回答,不要补充片段外的事实。\n\n"
         "【回答规则 — 按资料覆盖度三选一】\n"
@@ -504,7 +504,13 @@ def _answer_prompt(question: str, chunks: list[dict[str, Any]]) -> str:
         "- 标题和正文存在冲突时,以正文中的明确陈述为准,并说明资料表述不一致。\n"
         "- 涉及时间、金额、窗口、条件判断时,必须保留知识片段里的原始条件,不要把示例改写成通用规则。\n"
         "- 多个片段给出不同价格或规则时,只使用与用户问题直接相关的片段,不要混合无关片段推断。\n"
-        "- 所有非拒答的事实句都必须带 [1]、[2] 这样的引用编号;没有引用编号的答案会被判为失败。\n\n"
+        "- 所有非拒答的事实句都必须带 [1]、[2] 这样的引用编号;没有引用编号的答案会被判为失败。\n"
+        "- 代码、import 语句、函数签名、命令行、配置文件片段必须字符级、按行原样复制知识片段中的内容;不要补全省略号、不要拼接多段、不要修改大小写或下划线。\n"
+        "- 枚举值、常量名、错误码、HTTP 状态码必须按知识片段字面拷贝;不要拼接、重复、改变下划线或连字符。\n"
+        "- 涉及数字、金额、百分比、精度位时,必须按知识片段给出的字面值复制(含小数点位数),不要四舍五入或换算单位。\n"
+        "- 回答不允许包含知识片段没有写的故障排除建议、操作步骤、联系方式或下一步行动;只有当知识片段里自身出现 \"建议...\"、\"请...\" 等表述时才能复述。\n"
+        "- 涉及推荐 / 禁止 / 支持 / 不支持 / 启用 / 禁用 / 包含 / 排除 等方向性词汇时,必须按知识片段原始方向陈述;不要因为用户问题方向相反就翻转知识片段含义。\n"
+        "- 同一份知识片段中如出现多个字段名或列表标题(如官网链接 / API 端点 / 请求地址 / 服务地址 / 文档地址 / 支持列表 / 已下架列表 等),必须按对应字段或列表标题旁的具体值回答,不要把一项的内容套用到另一个标题上。\n\n"
         f"用户问题:\n{question}\n\n知识片段:\n{chunk_text}"
     )
 
