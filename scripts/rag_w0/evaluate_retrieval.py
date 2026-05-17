@@ -326,6 +326,7 @@ class _QueryEmbedder:
         vec = self._call(question)
         self.cache[question_id] = {
             "question_id": question_id,
+            "question": question,  # consumed by Go retriever_parity_test fixture
             "question_sha256": q_sha,
             "vector": vec,
         }
