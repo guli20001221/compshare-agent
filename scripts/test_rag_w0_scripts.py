@@ -4185,6 +4185,31 @@ class RagW0ScriptTests(unittest.TestCase):
         self.assertIn("保留知识片段里的原始条件", prompt)
         self.assertIn("不要把示例改写成通用规则", prompt)
 
+    def test_evaluate_answers_prompt_encodes_three_tier_disclaimer_strategy(self):
+        """PR-RAG-Prompt-Disclaimer-Fix (2026-05-17): eval prompt must stay in
+        sync with internal/prompt/rag.go and encode the same 3-tier rules.
+        Pre-fix the eval prompt told the LLM to add 当前知识库只收录 whenever
+        coverage was partial; the rule split here is what makes the new
+        evaluate_answers metric (RAG-13) measurable against runtime behavior
+        (memory feedback_eval_target_must_match_runtime_path)."""
+        prompt = evaluate_answers._answer_prompt(
+            "test q",
+            [{"title": "t", "content": "c"}],
+        )
+        # Rule 1: complete hit -> strip disclaimer
+        self.assertIn("完整回答", prompt)
+        self.assertIn("直接给答案", prompt)
+        self.assertIn("不要加", prompt)
+        self.assertIn("当前知识库只收录", prompt)  # named in forbidden list
+        self.assertIn("知识库暂未收录", prompt)  # both phrases forbidden
+        # Rule 2: partial hit -> specific-gap natural wording
+        self.assertIn("部分回答", prompt)
+        self.assertIn("具体的限定词", prompt)
+        self.assertIn("禁止", prompt)
+        self.assertIn("无信息", prompt)
+        # Rule 3: no hit -> pure refusal template
+        self.assertIn("知识库未覆盖", prompt)
+
     def test_evaluate_answers_resumes_existing_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

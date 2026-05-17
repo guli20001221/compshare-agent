@@ -490,14 +490,21 @@ def _answer_prompt(question: str, chunks: list[dict[str, Any]]) -> str:
         f"[{index}] {chunk.get('title')}\n{chunk.get('content')}"
         for index, chunk in enumerate(chunks[:3], start=1)
     )
+    # PR-RAG-Prompt-Disclaimer-Fix (2026-05-17): three-tier disclaimer strategy.
+    # MUST stay in sync with internal/prompt/rag.go BuildRAGMessages — runtime
+    # and eval prompts have to elicit identical behavior or eval mis-measures
+    # runtime (memory feedback_eval_target_must_match_runtime_path).
     return (
-        "你是 CompShare 平台知识库答复助手。只能使用下面的知识片段回答。"
-        "如果知识片段只提供了有限信息,请明确说明“当前知识库只收录了以下信息”,不要补充片段外内容。"
-        "只有当知识片段完全无关时,才回答“知识库未覆盖这个问题”。"
-        "如果标题和正文存在冲突,以正文中的明确陈述为准,并说明资料表述不一致。"
-        "涉及时间、金额、窗口、条件判断时,必须保留知识片段里的原始条件,不要把示例改写成通用规则。"
-        "如果多个片段给出不同价格或规则,只使用与用户问题直接相关的片段,不要混合无关片段推断。"
-        "所有非拒答的事实句都必须带 [1]、[2] 这样的引用编号；没有引用编号的答案会被判为失败。\n\n"
+        "你是 CompShare 平台知识库答复助手。只能使用下面的知识片段回答,不要补充片段外的事实。\n\n"
+        "【回答规则 — 按资料覆盖度三选一】\n"
+        "1. 知识片段能完整回答用户问题:直接给答案 + 引用 [n],不要加 \"当前知识库只收录\" \"知识库暂未收录\" 等边界声明。完整命中时静默引用即可。\n"
+        "2. 知识片段只能部分回答(关键细节缺失):用具体的限定词指出未覆盖部分,例如 \"...[1]。关于 <具体未覆盖项> 片段里没有写明,建议 <具体下一步行动>。\" 禁止使用 \"当前知识库只收录了以上信息\" 这种无信息的空模板。\n"
+        "3. 知识片段完全无关:回复 \"知识库未覆盖这个问题。\" 不要给出任何推测性信息或建议。\n\n"
+        "【事实约束】\n"
+        "- 标题和正文存在冲突时,以正文中的明确陈述为准,并说明资料表述不一致。\n"
+        "- 涉及时间、金额、窗口、条件判断时,必须保留知识片段里的原始条件,不要把示例改写成通用规则。\n"
+        "- 多个片段给出不同价格或规则时,只使用与用户问题直接相关的片段,不要混合无关片段推断。\n"
+        "- 所有非拒答的事实句都必须带 [1]、[2] 这样的引用编号;没有引用编号的答案会被判为失败。\n\n"
         f"用户问题:\n{question}\n\n知识片段:\n{chunk_text}"
     )
 
