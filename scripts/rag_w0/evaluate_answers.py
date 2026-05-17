@@ -23,7 +23,21 @@ except ImportError:  # pragma: no cover
 DEFAULT_JUDGE_MODEL = "claude-opus-4-7"
 DEFAULT_ANSWER_MODEL = "deepseek-v4-pro"
 CITATION_RE = re.compile(r"\[[1-9]\d*\]")
+# DEPRECATED post-RAG-13 (2026-05-17): kept for backward compatibility.
+# Conflates hard refusal templates with soft boundary-disclosure (disclaimer).
+# Use HARD_REFUSAL_RE + SOFT_DISCLAIMER_RE below for correct metric split.
 REFUSAL_RE = re.compile(r"(知识库未覆盖|当前知识库只收录|没有找到可靠资料|知识库暂未收录|无法根据知识库回答)")
+# Hard refusal: template that declines to answer. Combined with no-citation +
+# short-length guards in _is_hard_refusal so a long grounded answer that merely
+# mentions "知识库未覆盖" inside its body is not misclassified.
+HARD_REFUSAL_RE = re.compile(r"(知识库未覆盖|无法根据知识库回答|没有找到可靠资料)")
+# Soft disclaimer: boundary-disclosure phrases tacked onto substantive answers.
+# A grounded answer with [n] citations can also contain a disclaimer; that is
+# distinct from a pure refusal.
+SOFT_DISCLAIMER_RE = re.compile(r"(当前知识库只收录|知识库暂未收录|当前知识库只|当前知识库未)")
+# Pure refusal template must be short — long answers that happen to include
+# the refusal phrase are likely partial answers with disclaimers, not refusals.
+HARD_REFUSAL_MAX_CHARS = 100
 Answerer = Callable[[str, list[dict[str, Any]]], str]
 Judge = Callable[[str, str, list[dict[str, Any]]], dict[str, Any]]
 
@@ -106,8 +120,8 @@ def evaluate_answers(
                 progress=progress,
             )
             citation_retry = False
-            refusal = _is_refusal_answer(answer)
-            if not refusal and not _has_citation(answer):
+            pure_refusal = _is_hard_refusal(answer)
+            if not pure_refusal and not _has_citation(answer):
                 citation_retry = True
                 answer = _call_with_retries(
                     lambda: answerer(_citation_retry_question(str(question.get("question") or "")), hit_chunks),
@@ -115,14 +129,14 @@ def evaluate_answers(
                     attempts=1,
                     progress=progress,
                 )
-                refusal = _is_refusal_answer(answer)
+                pure_refusal = _is_hard_refusal(answer)
             citation_present = _has_citation(answer)
             judge_result = _call_with_retries(
                 lambda: judge(str(question.get("question") or ""), answer, hit_chunks),
                 label=f"judge:{question_id}",
                 progress=progress,
             )
-            if not refusal:
+            if not pure_refusal:
                 judge_result["cited"] = citation_present
         except Exception as exc:  # pragma: no cover - exercised through integration runs
             failed_answers.append({"question_id": question_id, "reason": "model_call_error", "error": str(exc)[:500]})
@@ -145,7 +159,7 @@ def evaluate_answers(
                 print(f"evaluated {evaluated} answer questions; model error at {question_id}", flush=True)
             completed_question_ids.add(question_id)
             continue
-        missing_citation = not refusal and not citation_present
+        missing_citation = not pure_refusal and not citation_present
         if judge_result.get("grounded") is not True or missing_citation or judge_result.get("fabricated") is True:
             failed_answers.append({"question_id": question_id, "reason": "judge_flagged", "judge": judge_result})
         answer_results.append(
@@ -154,7 +168,10 @@ def evaluate_answers(
                 "answer": answer,
                 "chunk_ids": [str(chunk.get("chunk_id") or "") for chunk in hit_chunks],
                 "judge": judge_result,
-                "refusal": refusal,
+                # `refusal` kept for backward compat; equals `pure_refusal` post-RAG-13.
+                "refusal": pure_refusal,
+                "pure_refusal": pure_refusal,
+                "soft_disclaimer": _has_soft_disclaimer(answer),
                 "citation_present": citation_present,
                 "citation_retry": citation_retry,
             }
@@ -211,13 +228,22 @@ def _answer_summary(
     grounded = counts["grounded"]
     cited = counts["cited"]
     fabricated = counts["fabricated"]
-    refused = counts["refused"]
+    pure_refused = counts["pure_refused"]
+    with_disclaimer = counts["with_disclaimer"]
     non_refused = counts["non_refused"]
+    answered_subset = with_disclaimer + non_refused
     return {
         "answer_questions_evaluated": evaluated,
         "answer_generation_failures": 0,
         "grounded_rate": _rate(grounded, evaluated),
-        "cited_rate": _rate(cited, non_refused),
+        # RAG-13 split (2026-05-17): pure refusal and disclaimer are now distinct.
+        "pure_refusal_rate": _rate(pure_refused, evaluated),
+        "disclaimer_rate": _rate(with_disclaimer, evaluated),
+        # cited_rate denom changed to the answered subset (with_disclaimer + non_refused).
+        # Before RAG-13 it was non_refused (post-RAG-13 nomenclature). Disclaimer answers
+        # routinely carry [n] citations, so this denom shift typically grows the numerator
+        # alongside the denominator and keeps the 100% cited-contract target attainable.
+        "cited_rate": _rate(cited, answered_subset),
         "fabricated_rate": _rate(fabricated, evaluated),
         "safety_failures": safety_failures,
         "internal_leakage": internal_leakage,
@@ -225,18 +251,28 @@ def _answer_summary(
         "answer_model": answer_model,
         "judge_model": judge_model,
         "judge_sampled_count": evaluated,
-        "answer_questions_refused": refused,
+        # NEW post-RAG-13 counts.
+        "answer_questions_pure_refused": pure_refused,
+        "answer_questions_with_disclaimer": with_disclaimer,
         "answer_questions_non_refused": non_refused,
-        "citation_denominator": non_refused,
+        # Backward-compat alias: pre-RAG-13 callers expect `answer_questions_refused`.
+        # Now equals pure_refused only (disclaimers excluded). Historical numbers
+        # (PRs #88 / #89) are not directly comparable — re-run via this script.
+        "answer_questions_refused": pure_refused,
+        "citation_denominator": answered_subset,
         "answers": answer_results,
     }
 
 
 def _answer_counts(answer_results: list[dict[str, Any]]) -> dict[str, int]:
+    """RAG-13: split refusal into hard refusal (pure_refused) and soft disclaimer
+    (with_disclaimer). cited_rate denom changes to the answered subset
+    (with_disclaimer + non_refused)."""
     grounded = 0
     cited = 0
     fabricated = 0
-    refused = 0
+    pure_refused = 0
+    with_disclaimer = 0
     non_refused = 0
     for item in answer_results:
         judge = item.get("judge") or {}
@@ -245,12 +281,24 @@ def _answer_counts(answer_results: list[dict[str, Any]]) -> dict[str, int]:
         if judge.get("fabricated") is True:
             fabricated += 1
         answer = str(item.get("answer") or "")
-        refusal = _is_refusal_answer(answer)
-        item["refusal"] = refusal
-        if refusal:
-            refused += 1
+
+        if _is_hard_refusal(answer):
+            pure_refused += 1
+            item["pure_refusal"] = True
+            item["soft_disclaimer"] = False
+            item["refusal"] = True  # backward-compat alias
+            item.setdefault("citation_present", _has_citation(answer))
             continue
-        non_refused += 1
+
+        # Not a hard refusal — the model produced substantive content.
+        item["pure_refusal"] = False
+        item["refusal"] = False  # backward-compat alias
+        has_disclaimer = _has_soft_disclaimer(answer)
+        item["soft_disclaimer"] = has_disclaimer
+        if has_disclaimer:
+            with_disclaimer += 1
+        else:
+            non_refused += 1
         citation_present = _has_citation(answer)
         item["citation_present"] = citation_present
         if citation_present:
@@ -259,7 +307,8 @@ def _answer_counts(answer_results: list[dict[str, Any]]) -> dict[str, int]:
         "grounded": grounded,
         "cited": cited,
         "fabricated": fabricated,
-        "refused": refused,
+        "pure_refused": pure_refused,
+        "with_disclaimer": with_disclaimer,
         "non_refused": non_refused,
     }
 
@@ -268,12 +317,14 @@ def _failed_answer_flags(answer_results: list[dict[str, Any]]) -> list[dict[str,
     failed: list[dict[str, Any]] = []
     for item in answer_results:
         answer = str(item.get("answer") or "")
-        refusal = _is_refusal_answer(answer)
+        pure_refusal = _is_hard_refusal(answer)
         citation_present = _has_citation(answer)
-        item["refusal"] = refusal
+        item["pure_refusal"] = pure_refusal
+        item["soft_disclaimer"] = _has_soft_disclaimer(answer)
+        item["refusal"] = pure_refusal  # backward-compat alias
         item["citation_present"] = citation_present
         judge = item.get("judge") or {}
-        if judge.get("grounded") is not True or (not refusal and not citation_present) or judge.get("fabricated") is True:
+        if judge.get("grounded") is not True or (not pure_refusal and not citation_present) or judge.get("fabricated") is True:
             failed.append(
                 {
                     "question_id": str(item.get("question_id") or ""),
@@ -334,8 +385,42 @@ def _has_citation(answer: str) -> bool:
     return bool(CITATION_RE.search(answer))
 
 
+def _is_hard_refusal(answer: str) -> bool:
+    """True only when the answer is a pure refusal template with no substantive content.
+
+    Requires ALL three to hold:
+    - HARD_REFUSAL_RE matches (refusal phrase present)
+    - No [n] citation present (grounded answers that mention 知识库未覆盖 in body are excluded)
+    - Length < HARD_REFUSAL_MAX_CHARS (long answers that happen to include the phrase
+      are partial answers / disclaimers, not refusals)
+
+    Length-only is insufficient: a 54-char grounded answer like
+    "错误码 226601 表示初始化失败 [1]。当前知识库只收录此一条。"
+    is short but is NOT a refusal — it carries a citation and the model returned a
+    grounded answer, not a template.
+    """
+    if not HARD_REFUSAL_RE.search(answer):
+        return False
+    if CITATION_RE.search(answer):
+        return False
+    return len(answer.strip()) < HARD_REFUSAL_MAX_CHARS
+
+
+def _has_soft_disclaimer(answer: str) -> bool:
+    """True if the answer contains a boundary-disclosure phrase such as
+    '当前知识库只收录' or '知识库暂未收录'. A grounded answer may still carry a
+    disclaimer; that is tracked separately from pure refusal."""
+    return bool(SOFT_DISCLAIMER_RE.search(answer))
+
+
 def _is_refusal_answer(answer: str) -> bool:
-    return bool(REFUSAL_RE.search(answer))
+    """DEPRECATED post-RAG-13 (2026-05-17). Returns True only for hard refusal
+    templates — the previous behavior (which also matched disclaimers) is preserved
+    via the alias `answer_questions_refused == pure_refused` in the output schema.
+
+    Callers should migrate to `_is_hard_refusal` + `_has_soft_disclaimer`.
+    """
+    return _is_hard_refusal(answer)
 
 
 def _citation_retry_question(question: str) -> str:

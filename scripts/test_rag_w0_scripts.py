@@ -3903,7 +3903,14 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertIsNone(summary["cited_rate"])
             self.assertEqual(summary["failed_answers"], [])
 
-    def test_evaluate_answers_treats_partial_coverage_without_citation_as_refusal(self):
+    def test_evaluate_answers_treats_partial_coverage_disclaimer_as_disclaimer_not_refusal(self):
+        """RAG-13 (2026-05-17): an answer like '当前知识库只收录了以下信息：...' is a
+        soft disclaimer, NOT a hard refusal. It triggers a citation retry (because
+        no [n] is present), and is counted under `with_disclaimer`, not `pure_refused`.
+
+        Pre-RAG-13 this answer was lumped into `refused` and skipped citation retry —
+        which inflated the refusal metric and masked the underlying citation gap.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             chunks_path = root / "chunks.jsonl"
@@ -3961,11 +3968,140 @@ class RagW0ScriptTests(unittest.TestCase):
                 judge=lambda question, answer, chunks: {"grounded": True, "cited": False, "fabricated": False},
             )
 
-            self.assertEqual(len(calls), 1)
-            self.assertEqual(summary["answer_questions_refused"], 1)
+            # Disclaimer + no [n] → citation retry is triggered (RAG-13 new behavior).
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(summary["answer_questions_pure_refused"], 0)
+            self.assertEqual(summary["answer_questions_with_disclaimer"], 1)
             self.assertEqual(summary["answer_questions_non_refused"], 0)
-            self.assertIsNone(summary["cited_rate"])
-            self.assertEqual(summary["failed_answers"], [])
+            # cited_rate denom = with_disclaimer + non_refused = 1; numerator 0 → 0.0.
+            self.assertEqual(summary["cited_rate"], 0.0)
+            self.assertEqual(summary["pure_refusal_rate"], 0.0)
+            self.assertEqual(summary["disclaimer_rate"], 1.0)
+            # Backward-compat alias: pre-RAG-13 callers saw 1; post-RAG-13 sees 0.
+            self.assertEqual(summary["answer_questions_refused"], 0)
+            # `missing_citation` flag should fire (judge_flagged failure).
+            self.assertEqual(len(summary["failed_answers"]), 1)
+            self.assertEqual(summary["failed_answers"][0]["reason"], "judge_flagged")
+
+    # ------------------------------------------------------------------
+    # RAG-13 metric split — 4 locked example cases (do not rely on length<100 alone)
+    # ------------------------------------------------------------------
+
+    def test_is_hard_refusal_matches_pure_refusal_template(self):
+        """LOCKED CASE #1: pure refusal template.
+
+        Short (<100 chars) + matches HARD_REFUSAL_RE phrase + no [n] citation.
+        Three conditions must ALL hold; this case satisfies all three."""
+        self.assertTrue(evaluate_answers._is_hard_refusal("知识库未覆盖这个问题。"))
+        self.assertTrue(evaluate_answers._is_hard_refusal("当前知识库未覆盖该问题，我无法回答。"))
+        self.assertTrue(evaluate_answers._is_hard_refusal("无法根据知识库回答这个问题。"))
+        self.assertTrue(evaluate_answers._is_hard_refusal("没有找到可靠资料。"))
+
+    def test_is_hard_refusal_excludes_short_answer_with_citation_and_disclaimer(self):
+        """LOCKED CASE #2: short (~54 chars) substantive answer with [n] + disclaimer.
+
+        Even though length<100, the presence of [n] proves the model returned a
+        grounded answer — must NOT be classified as hard refusal. This is the
+        user-caveat case ("错误码 226601") that pure-length rule would mis-classify."""
+        answer = "错误码 226601 表示初始化失败 [1]。当前知识库只收录此一条。"
+        self.assertLess(len(answer), 100)  # short enough to fool a length-only rule
+        self.assertFalse(evaluate_answers._is_hard_refusal(answer))
+        self.assertTrue(evaluate_answers._has_soft_disclaimer(answer))
+
+    def test_is_hard_refusal_excludes_long_answer_with_disclaimer(self):
+        """LOCKED CASE #3: long substantive answer + [n] + tail disclaimer.
+
+        Length guard prevents matching even if the answer mentions a refusal phrase
+        inside its body. Disclaimer counter should fire instead."""
+        answer = (
+            "根据资料，Ubuntu 系统下 SSH 端口为 22，社区镜像默认端口为 23。"
+            "您可以在控制台查看实例详情中的端口信息。"
+            "具体登录命令：ssh -p 22 ubuntu@<your-ip> [1][2]。"
+            "若密码错误，请从控制台复制最新密码。"
+            "当前知识库只收录了以上端口/账号信息，更多排错请联系工单。"
+        )
+        self.assertGreater(len(answer), 100)
+        self.assertFalse(evaluate_answers._is_hard_refusal(answer))
+        self.assertTrue(evaluate_answers._has_soft_disclaimer(answer))
+
+    def test_is_hard_refusal_excludes_substantive_no_citation_no_refusal_phrase(self):
+        """LOCKED CASE #4: long answer, no [n], no refusal/disclaimer phrase.
+
+        Treated as "non_refused" — neither hard refusal nor disclaimer. The
+        citation-retry loop will fire because [n] is absent, and (post-retry) the
+        judge_flagged failure will record a `missing_citation` reason."""
+        answer = (
+            "您可以登录控制台查看实例状态。"
+            "依次进入：1. 实例管理 2. 实例列表 3. 选择目标实例 4. 查看详情。"
+            "如有疑问可联系客服。"
+        )
+        self.assertGreater(len(answer), 50)
+        self.assertFalse(evaluate_answers._is_hard_refusal(answer))
+        self.assertFalse(evaluate_answers._has_soft_disclaimer(answer))
+
+    def test_has_soft_disclaimer_matches_boundary_phrases(self):
+        """SOFT_DISCLAIMER_RE covers the four common boundary-disclosure variants."""
+        self.assertTrue(evaluate_answers._has_soft_disclaimer("...答案 [1]。当前知识库只收录了以上信息。"))
+        self.assertTrue(evaluate_answers._has_soft_disclaimer("...答案 [1]。知识库暂未收录其他细节。"))
+        self.assertTrue(evaluate_answers._has_soft_disclaimer("当前知识库只覆盖这一项。"))
+        self.assertTrue(evaluate_answers._has_soft_disclaimer("当前知识库未提供其他细节。"))
+        # Non-disclaimer answer should not match.
+        self.assertFalse(evaluate_answers._has_soft_disclaimer("...完整答案 [1]。"))
+        # Pure hard refusal phrase alone is NOT a disclaimer.
+        self.assertFalse(evaluate_answers._has_soft_disclaimer("知识库未覆盖这个问题。"))
+
+    def test_answer_counts_separates_pure_refusal_disclaimer_non_refused(self):
+        """_answer_counts must produce 3 distinct buckets, with cited only counted
+        on the answered subset (disclaimer + non_refused), not on hard refusal."""
+        items = [
+            {"answer": "知识库未覆盖这个问题。", "judge": {"grounded": False}},
+            {"answer": "Ubuntu 端口是 22 [1]。当前知识库只收录了以上信息。", "judge": {"grounded": True}},
+            {"answer": "Ubuntu 端口是 22 [1]。完整答案。", "judge": {"grounded": True}},
+        ]
+        counts = evaluate_answers._answer_counts(items)
+        self.assertEqual(counts["pure_refused"], 1)
+        self.assertEqual(counts["with_disclaimer"], 1)
+        self.assertEqual(counts["non_refused"], 1)
+        # cited count covers disclaimer + non_refused — both have [1].
+        self.assertEqual(counts["cited"], 2)
+        # In-place mutation tags each item with pure_refusal + soft_disclaimer.
+        self.assertTrue(items[0]["pure_refusal"])
+        self.assertFalse(items[0]["soft_disclaimer"])
+        self.assertFalse(items[1]["pure_refusal"])
+        self.assertTrue(items[1]["soft_disclaimer"])
+        self.assertFalse(items[2]["pure_refusal"])
+        self.assertFalse(items[2]["soft_disclaimer"])
+
+    def test_answer_summary_outputs_split_rates(self):
+        """_answer_summary must emit new pure_refusal_rate + disclaimer_rate +
+        explicit pure_refused / with_disclaimer / non_refused counts. cited_rate
+        denominator now includes disclaimer answers (answered subset)."""
+        summary = evaluate_answers._answer_summary(
+            evaluated=3,
+            grounded=2,
+            cited=2,
+            fabricated=0,
+            safety_failures=0,
+            internal_leakage=0,
+            failed_answers=[],
+            answer_model="x",
+            judge_model="y",
+            answer_results=[
+                {"answer": "知识库未覆盖这个问题。", "judge": {"grounded": False}},
+                {"answer": "答案 [1]。当前知识库只收录了以上信息。", "judge": {"grounded": True}},
+                {"answer": "答案 [1]。", "judge": {"grounded": True}},
+            ],
+        )
+        self.assertAlmostEqual(summary["pure_refusal_rate"], 1 / 3)
+        self.assertAlmostEqual(summary["disclaimer_rate"], 1 / 3)
+        self.assertEqual(summary["answer_questions_pure_refused"], 1)
+        self.assertEqual(summary["answer_questions_with_disclaimer"], 1)
+        self.assertEqual(summary["answer_questions_non_refused"], 1)
+        # cited_rate denom = with_disclaimer + non_refused = 2; both cited → 1.0.
+        self.assertEqual(summary["cited_rate"], 1.0)
+        self.assertEqual(summary["citation_denominator"], 2)
+        # Backward-compat alias: equals pure_refused (NOT pre-RAG-13 hard+soft).
+        self.assertEqual(summary["answer_questions_refused"], 1)
 
     def test_evaluate_answers_marks_retry_still_missing_citation_false(self):
         with tempfile.TemporaryDirectory() as tmp:
