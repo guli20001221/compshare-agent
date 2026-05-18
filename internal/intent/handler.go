@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
@@ -218,17 +219,47 @@ func cutoverStatusForFallback(reason FallbackReason) CutoverStatus {
 	}
 }
 
-var handlerActionWhitelist = map[Intent]map[string]struct{}{
-	IntentResourceInfo: {
-		"DescribeCompShareInstance": {},
-	},
-	IntentMonitorQuery: {
-		"GetCompShareInstanceMonitor": {},
-	},
+// handlerActionWhitelist gates which (Intent, action) pairs are allowed at the
+// SafeToolExecutor boundary. Legacy entries (resource/monitor) are hardcoded;
+// capability entries are derived from capabilityRegistry so the registry table
+// is the single source of truth (test TestHandlerActionWhitelist_DerivesFromRegistry
+// enforces drift prevention).
+//
+// Computed lazily via sync.Once to break the package-init cycle that would
+// otherwise form through:
+//
+//	var whitelist = derive(capabilityRegistry)  -> takes pointers to handlers ->
+//	  handlers call RequireAllowedHandlerAction -> which reads `whitelist`.
+//
+// Function-call indirection sidesteps Go's init-time cycle check.
+var (
+	handlerActionWhitelistOnce  sync.Once
+	handlerActionWhitelistCache map[Intent]map[string]struct{}
+)
+
+func handlerActionWhitelist() map[Intent]map[string]struct{} {
+	handlerActionWhitelistOnce.Do(func() {
+		m := map[Intent]map[string]struct{}{
+			IntentResourceInfo: {
+				"DescribeCompShareInstance": {},
+			},
+			IntentMonitorQuery: {
+				"GetCompShareInstanceMonitor": {},
+			},
+		}
+		for _, e := range capabilityRegistry {
+			if _, ok := m[e.intent]; !ok {
+				m[e.intent] = map[string]struct{}{}
+			}
+			m[e.intent][e.requiredTool] = struct{}{}
+		}
+		handlerActionWhitelistCache = m
+	})
+	return handlerActionWhitelistCache
 }
 
 func IsAllowedHandlerAction(intent Intent, action string) bool {
-	allowed, ok := handlerActionWhitelist[intent]
+	allowed, ok := handlerActionWhitelist()[intent]
 	if !ok {
 		return false
 	}

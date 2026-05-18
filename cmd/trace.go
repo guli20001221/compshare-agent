@@ -107,6 +107,16 @@ func cutoverIntentLabels(cutoverIntents []intent.Intent) []string {
 			labels = append(labels, "resource")
 		case intent.IntentMonitorQuery:
 			labels = append(labels, "monitor")
+		case intent.IntentGPUSpecsQuery:
+			labels = append(labels, "gpu_specs")
+		case intent.IntentStockAvailability:
+			labels = append(labels, "stock")
+		case intent.IntentPlatformImageList:
+			labels = append(labels, "platform_image")
+		case intent.IntentCustomImageList:
+			labels = append(labels, "custom_image")
+		case intent.IntentCommunityImageList:
+			labels = append(labels, "community_image")
 		default:
 			labels = append(labels, string(enabled))
 		}
@@ -223,6 +233,16 @@ func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []s
 			enabled = intent.IntentResourceInfo
 		case "monitor":
 			enabled = intent.IntentMonitorQuery
+		case "gpu_specs":
+			enabled = intent.IntentGPUSpecsQuery
+		case "stock":
+			enabled = intent.IntentStockAvailability
+		case "platform_image":
+			enabled = intent.IntentPlatformImageList
+		case "custom_image":
+			enabled = intent.IntentCustomImageList
+		case "community_image":
+			enabled = intent.IntentCommunityImageList
 		default:
 			unknown = append(unknown, value)
 			continue

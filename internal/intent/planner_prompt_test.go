@@ -16,6 +16,13 @@ func TestBuildSystemPromptIncludesPhase1CutoverSchemaFields(t *testing.T) {
 		"hard_block_hint",
 		"retrieval",
 		"knowledge_qa",
+		// Capability Registry v1 enum labels (PR A 2026-05-18) must appear in
+		// the system prompt enum line so the LLM can emit them as intents.
+		"gpu_specs_query",
+		"stock_availability",
+		"platform_image_list",
+		"custom_image_list",
+		"community_image_list",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
@@ -40,12 +47,12 @@ func TestBuildSystemPromptDoesNotEmitMixedIntents(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): added 2 billing-navigation
-	// examples ("怎么查我这个月的账单" + "哪里可以看发票发起记录") so the planner
-	// routes navigation-style finance questions to knowledge_qa instead of
-	// billing_instance — see Phase D4 cli_cited_contract_investigation.md.
-	if len(examples) != 20 {
-		t.Fatalf("prompt examples count = %d, want 20; examples=%v", len(examples), examples)
+	// 20 legacy examples (PR-RAG-PLANNER-INTENT-AUDIT 2026-05-17 added 2
+	// billing-navigation ones) + 5 capability one-shots (PR A Registry v1,
+	// 2026-05-18) appended by CapabilityPromptFragments. New capabilities here
+	// should bump this number; the regression value is `20 + len(capabilityRegistry)`.
+	if got, want := len(examples), 20+len(capabilityRegistry); got != want {
+		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
 		plan, err := parsePlanJSON(example)
