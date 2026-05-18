@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"errors"
 	"log"
 	"math"
 	"sort"
@@ -47,6 +48,18 @@ type RetrievalResult struct {
 	Hits            []KBChunk
 	HitItems        []RetrievalHit
 	Empty           bool
+	// HybridMode reports which retrieval path produced Hits. One of:
+	//   "bm25_only"      — sidecar or embedder absent; BM25 top-K directly.
+	//   "hybrid_cosine"  — BM25 top-20 → query-embedding cosine rerank → top-K.
+	//   "bm25_fallback"  — hybrid path was taken but the embedding step failed
+	//                      and the retriever fell back to BM25 top-K from the
+	//                      same pool. HybridFallbackReason then carries why.
+	// Empty string is reserved for the retrieval-disabled case (no retriever
+	// configured); see internal/engine/engine.go's early-return branch.
+	HybridMode string
+	// HybridFallbackReason is non-empty only when HybridMode == "bm25_fallback".
+	// One of "embedding_timeout" | "embedding_error" | "embedding_empty".
+	HybridFallbackReason string
 }
 
 type RetrievalHit struct {
@@ -117,8 +130,29 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 	}
 
 	finalCandidates := bm25Candidates
-	if r.hybridEnabled() && len(bm25Candidates) > 0 {
-		finalCandidates = r.rerankByEmbedding(question, bm25Candidates)
+	// hybridMode tracks which retrieval path produced the final candidates.
+	// Default to bm25_only; switched to hybrid_cosine when hybrid is enabled
+	// and the rerank step ran successfully (or BM25 pool was empty so we
+	// never needed to call the embedder). Switched to bm25_fallback when the
+	// embedder failed and we returned the BM25 pool unchanged.
+	hybridMode := "bm25_only"
+	hybridFallbackReason := ""
+	if r.hybridEnabled() {
+		if len(bm25Candidates) > 0 {
+			reranked, fallbackReason := r.rerankByEmbedding(question, bm25Candidates)
+			finalCandidates = reranked
+			if fallbackReason != "" {
+				hybridMode = "bm25_fallback"
+				hybridFallbackReason = fallbackReason
+			} else {
+				hybridMode = "hybrid_cosine"
+			}
+		} else {
+			// BM25 pool empty: embedder was never invoked, but the configured
+			// path is hybrid. Report hybrid_cosine with no fallback so ops
+			// dashboards don't see this as a "BM25-only retriever".
+			hybridMode = "hybrid_cosine"
+		}
 	}
 
 	if len(finalCandidates) > r.topK {
@@ -136,12 +170,14 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 		})
 	}
 	return RetrievalResult{
-		Enabled:         true,
-		KBVersion:       r.corpus.KBVersion,
-		QueryNormalized: queryNormalized,
-		Hits:            hits,
-		HitItems:        hitItems,
-		Empty:           len(hits) == 0,
+		Enabled:              true,
+		KBVersion:            r.corpus.KBVersion,
+		QueryNormalized:      queryNormalized,
+		Hits:                 hits,
+		HitItems:             hitItems,
+		Empty:                len(hits) == 0,
+		HybridMode:           hybridMode,
+		HybridFallbackReason: hybridFallbackReason,
 	}
 }
 
@@ -185,17 +221,27 @@ func (r *Retriever) collectBM25Candidates(question, productArea string) []scored
 // The Python eval pipeline (scripts/rag_w0/evaluate_retrieval.py --mode
 // hybrid) must produce the same final top-K chunk_id sets on the same
 // inputs for the 377-Q parity contract to hold.
-func (r *Retriever) rerankByEmbedding(question string, bm25Pool []scoredChunk) []scoredChunk {
+// Returns (reranked candidates, fallbackReason). fallbackReason is "" on
+// success (cosine path taken) and one of "embedding_timeout" |
+// "embedding_error" | "embedding_empty" when the function returns the
+// BM25 pool unchanged. Callers use fallbackReason to populate
+// RetrievalResult.HybridMode + HybridFallbackReason for trace plumbing
+// (see internal/observability/trace.RetrievalTrace.HybridMode).
+func (r *Retriever) rerankByEmbedding(question string, bm25Pool []scoredChunk) ([]scoredChunk, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), r.hybridTimeout)
 	defer cancel()
 	queryVec, err := r.embedder.Embed(ctx, question)
 	if err != nil {
 		log.Printf("rag.hybrid: query embedding failed, falling back to BM25 top-%d: %v", r.topK, err)
-		return bm25Pool
+		reason := "embedding_error"
+		if errors.Is(err, context.DeadlineExceeded) {
+			reason = "embedding_timeout"
+		}
+		return bm25Pool, reason
 	}
 	if len(queryVec) == 0 {
 		log.Printf("rag.hybrid: query embedding empty, falling back to BM25 top-%d", r.topK)
-		return bm25Pool
+		return bm25Pool, "embedding_empty"
 	}
 	reranked := make([]scoredChunk, 0, len(bm25Pool))
 	for _, c := range bm25Pool {
@@ -204,6 +250,8 @@ func (r *Retriever) rerankByEmbedding(question string, bm25Pool []scoredChunk) [
 			// Sidecar/corpus drift past LoadPinnedCorpusWithEmbeddings's bijection
 			// guarantee should be impossible; log and skip this candidate so the
 			// hybrid path stays safe even when the invariant is somehow violated.
+			// This is NOT counted as a fallback (we still produce cosine-ranked
+			// results from the surviving candidates).
 			log.Printf("rag.hybrid: sidecar missing vector for chunk %q, dropping from rerank", c.chunk.ChunkID)
 			continue
 		}
@@ -222,7 +270,7 @@ func (r *Retriever) rerankByEmbedding(question string, bm25Pool []scoredChunk) [
 		}
 		return left.chunk.ChunkID < right.chunk.ChunkID
 	})
-	return reranked
+	return reranked, ""
 }
 
 type scoredChunk struct {

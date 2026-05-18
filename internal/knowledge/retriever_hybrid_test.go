@@ -78,6 +78,8 @@ func TestRetrieverHybridReordersByEmbeddingScore(t *testing.T) {
 	// Scores carried back to the trace should be cosine (in [-1,1]), not BM25 (which would be > 0.5).
 	assert.LessOrEqual(t, got.HitItems[0].Score, 1.0)
 	assert.GreaterOrEqual(t, got.HitItems[0].Score, -1.0)
+	assert.Equal(t, "hybrid_cosine", got.HybridMode, "successful hybrid rerank should report HybridMode=hybrid_cosine")
+	assert.Equal(t, "", got.HybridFallbackReason, "no fallback reason on successful rerank")
 }
 
 // Embedder error must fall back to BM25 top-K without panicking. The
@@ -94,6 +96,8 @@ func TestRetrieverHybridFallsBackToBM25OnEmbedError(t *testing.T) {
 	require.NotEmpty(t, got.Hits)
 	assert.Equal(t, "hybrid-a", got.Hits[0].ChunkID, "BM25 should rank hybrid-a first because the query contains 'a 主题问法'")
 	assert.Equal(t, 1, embedder.calls, "fallback path still invoked embedder exactly once before deciding to fall back")
+	assert.Equal(t, "bm25_fallback", got.HybridMode, "embedder error must surface as HybridMode=bm25_fallback")
+	assert.Equal(t, "embedding_error", got.HybridFallbackReason, "generic non-timeout error should classify as embedding_error")
 }
 
 // When BM25 returns zero candidates, the retriever must not invoke the
@@ -109,6 +113,11 @@ func TestRetrieverHybridSkipsEmbedderOnEmptyBM25Pool(t *testing.T) {
 	got := r.Retrieve("zzzzzzzzzz qqqqqq", "billing")
 	assert.True(t, got.Empty)
 	assert.Equal(t, 0, embedder.calls, "no embedding call when BM25 pool is empty")
+	// Configured path is hybrid even though BM25 returned nothing; reporting
+	// bm25_only here would mislead ops dashboards into thinking the retriever
+	// was misconfigured. The empty-result signal is carried by Empty=true.
+	assert.Equal(t, "hybrid_cosine", got.HybridMode, "empty BM25 pool under hybrid configuration still reports HybridMode=hybrid_cosine")
+	assert.Equal(t, "", got.HybridFallbackReason)
 }
 
 // Without an embedder or sidecar, the retriever takes the BM25-only path —
@@ -123,6 +132,8 @@ func TestRetrieverHybridOptOutPreservesBM25Behavior(t *testing.T) {
 
 	q := "a 主题问法"
 	want := rBoth.Retrieve(q, "billing")
+	assert.Equal(t, "bm25_only", want.HybridMode, "no sidecar + no embedder should report HybridMode=bm25_only")
+	assert.Equal(t, "", want.HybridFallbackReason)
 	for _, name := range []string{"only-sidecar", "only-embedder"} {
 		t.Run(name, func(t *testing.T) {
 			var got RetrievalResult
@@ -132,6 +143,8 @@ func TestRetrieverHybridOptOutPreservesBM25Behavior(t *testing.T) {
 				got = rOnlyEmbedder.Retrieve(q, "billing")
 			}
 			assert.Equal(t, chunkIDs(want.Hits), chunkIDs(got.Hits), "BM25-only path should be identical when only one of sidecar/embedder is set")
+			assert.Equal(t, "bm25_only", got.HybridMode, "exactly one of sidecar/embedder set still means hybrid is disabled")
+			assert.Equal(t, "", got.HybridFallbackReason)
 		})
 	}
 	assert.Equal(t, 0, embedder.calls, "embedder must not be invoked when sidecar is nil")
@@ -151,6 +164,8 @@ func TestRetrieverHybridFallsBackOnEmptyQueryEmbedding(t *testing.T) {
 	got := r.Retrieve("a 主题问法", "billing")
 	require.NotEmpty(t, got.Hits)
 	assert.Equal(t, "hybrid-a", got.Hits[0].ChunkID, "empty embedding should fall back to BM25 top-3 ordering")
+	assert.Equal(t, "bm25_fallback", got.HybridMode)
+	assert.Equal(t, "embedding_empty", got.HybridFallbackReason)
 }
 
 // Sidecar missing a chunk_id mid-rerank must drop that single candidate
@@ -181,6 +196,44 @@ func TestRetrieverHybridDropsCandidateWithMissingSidecarVector(t *testing.T) {
 	if len(ids) == 0 {
 		t.Fatal("expected at least one hit even after dropping hybrid-b")
 	}
+}
+
+// Explicit context.DeadlineExceeded must classify as embedding_timeout (not
+// the generic embedding_error). This is the only case where ops needs to
+// distinguish "model API was slow" from "model API returned an error" —
+// it determines whether a hybridTimeout knob tweak would fix the situation
+// or whether the upstream model is genuinely failing.
+func TestRetrieverHybridContextDeadlineSetsTimeoutReason(t *testing.T) {
+	corpus, sidecar := hybridSetup(t)
+	embedder := &fakeEmbedder{err: context.DeadlineExceeded}
+	r := NewRetriever(corpus, RetrieverOptions{
+		Now:              fixedRetrieverNow,
+		EmbeddingSidecar: sidecar,
+		Embedder:         embedder,
+	})
+	got := r.Retrieve("a 主题问法", "billing")
+	require.NotEmpty(t, got.Hits, "must still return BM25 top-K on timeout")
+	assert.Equal(t, "bm25_fallback", got.HybridMode)
+	assert.Equal(t, "embedding_timeout", got.HybridFallbackReason,
+		"context.DeadlineExceeded must classify as embedding_timeout, not embedding_error")
+}
+
+// Wrapped context.DeadlineExceeded must still classify as embedding_timeout
+// via errors.Is. Production embedder clients commonly wrap the underlying
+// transport error with an annotation like "modelverse: %w".
+func TestRetrieverHybridWrappedDeadlineSetsTimeoutReason(t *testing.T) {
+	corpus, sidecar := hybridSetup(t)
+	embedder := &fakeEmbedder{err: errors.Join(errors.New("modelverse client"), context.DeadlineExceeded)}
+	r := NewRetriever(corpus, RetrieverOptions{
+		Now:              fixedRetrieverNow,
+		EmbeddingSidecar: sidecar,
+		Embedder:         embedder,
+	})
+	got := r.Retrieve("a 主题问法", "billing")
+	require.NotEmpty(t, got.Hits)
+	assert.Equal(t, "bm25_fallback", got.HybridMode)
+	assert.Equal(t, "embedding_timeout", got.HybridFallbackReason,
+		"errors.Is unwrap must still detect DeadlineExceeded inside a wrapped error chain")
 }
 
 // cosineSimilarity in retriever.go must give the same numeric result as
