@@ -81,8 +81,10 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 			{ChunkID: "w0-init_failure-error-code-a1b2c3d4", Score: 0.78, Kept: true},
 			{ChunkID: "w0-billing_rule-arrears-aabbccdd", Score: 0.41, Kept: false},
 		},
-		RefusedReason: "weak_evidence",
-		WeakEvidence:  true,
+		RefusedReason:        "weak_evidence",
+		WeakEvidence:         true,
+		HybridMode:           "bm25_fallback",
+		HybridFallbackReason: "embedding_timeout",
 	}
 
 	data, err := json.Marshal(trace)
@@ -100,11 +102,55 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 		`"hit_items":[{"chunk_id":"w0-init_failure-error-code-a1b2c3d4","score":0.78,"kept":true},{"chunk_id":"w0-billing_rule-arrears-aabbccdd","score":0.41,"kept":false}]`,
 		`"refused_reason":"weak_evidence"`,
 		`"weak_evidence":true`,
+		`"hybrid_mode":"bm25_fallback"`,
+		`"hybrid_fallback_reason":"embedding_timeout"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("retrieval trace JSON missing %s: %s", want, text)
 		}
 	}
+}
+
+// HybridMode and HybridFallbackReason must omit from JSON when empty so old
+// traces and the retrieval-disabled path don't suddenly grow new keys.
+func TestRetrievalTraceHybridFieldsOmitEmpty(t *testing.T) {
+	trace := RetrievalTrace{
+		Enabled:   true,
+		KBVersion: "kb.stage2b.w0.2026-05-14",
+		Hits:      0,
+	}
+	data, err := json.Marshal(trace)
+	if err != nil {
+		t.Fatalf("marshal RetrievalTrace: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "hybrid_mode") {
+		t.Fatalf("empty HybridMode must omit from JSON: %s", text)
+	}
+	if strings.Contains(text, "hybrid_fallback_reason") {
+		t.Fatalf("empty HybridFallbackReason must omit from JSON: %s", text)
+	}
+}
+
+// HybridMode alone must be enough to mark the retrieval block as observed —
+// otherwise a bm25_only retriever's trace would be silently dropped from the
+// trace record (and ops would lose visibility into "retriever ran but had
+// nothing to surface").
+func TestRetrievalTraceObservedByHybridModeAlone(t *testing.T) {
+	for _, mode := range []string{"bm25_only", "hybrid_cosine", "bm25_fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			trace := RetrievalTrace{HybridMode: mode}
+			if !traceRetrievalObserved(trace) {
+				t.Fatalf("traceRetrievalObserved(HybridMode=%q only) = false, want true", mode)
+			}
+		})
+	}
+	t.Run("fallback_reason_only", func(t *testing.T) {
+		trace := RetrievalTrace{HybridFallbackReason: "embedding_timeout"}
+		if !traceRetrievalObserved(trace) {
+			t.Fatal("traceRetrievalObserved(HybridFallbackReason only) = false, want true")
+		}
+	})
 }
 
 func TestRetrievalHitScoreZeroMarshalsAsZero(t *testing.T) {

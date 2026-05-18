@@ -1001,12 +1001,14 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 	retrieved := e.knowledgeRetriever.Retrieve(userMsg, inferKnowledgeProductArea(userMsg))
 	hitItems := retrieved.HitItems
 	trace := observability.RetrievalTrace{
-		Enabled:         retrieved.Enabled,
-		KBVersion:       retrieved.KBVersion,
-		QueryRaw:        userMsg,
-		QueryNormalized: retrieved.QueryNormalized,
-		QueryExpansions: []string{},
-		Hits:            len(retrieved.Hits),
+		Enabled:              retrieved.Enabled,
+		KBVersion:            retrieved.KBVersion,
+		QueryRaw:             userMsg,
+		QueryNormalized:      retrieved.QueryNormalized,
+		QueryExpansions:      []string{},
+		Hits:                 len(retrieved.Hits),
+		HybridMode:           retrieved.HybridMode,
+		HybridFallbackReason: retrieved.HybridFallbackReason,
 	}
 	if trace.QueryNormalized == "" {
 		trace.QueryNormalized = knowledge.NormalizeQuery(userMsg)

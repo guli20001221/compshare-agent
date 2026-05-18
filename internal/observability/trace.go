@@ -226,6 +226,13 @@ type RetrievalTrace struct {
 	RefusedReason         string         `json:"refused_reason,omitempty"`
 	WeakEvidence          bool           `json:"weak_evidence,omitempty"`
 	RankingErrorCandidate bool           `json:"ranking_error_candidate,omitempty"`
+	// HybridMode mirrors internal/knowledge/retriever.RetrievalResult.HybridMode.
+	// One of "bm25_only" | "hybrid_cosine" | "bm25_fallback". Empty when
+	// retrieval is disabled (no retriever configured).
+	HybridMode string `json:"hybrid_mode,omitempty"`
+	// HybridFallbackReason is non-empty only when HybridMode == "bm25_fallback".
+	// One of "embedding_timeout" | "embedding_error" | "embedding_empty".
+	HybridFallbackReason string `json:"hybrid_fallback_reason,omitempty"`
 }
 
 type RetrievalHit struct {
@@ -449,7 +456,9 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		len(trace.HitItems) > 0 ||
 		trace.RefusedReason != "" ||
 		trace.WeakEvidence ||
-		trace.RankingErrorCandidate
+		trace.RankingErrorCandidate ||
+		trace.HybridMode != "" ||
+		trace.HybridFallbackReason != ""
 }
 
 func traceOutcomeObserved(trace OutcomeTrace) bool {
