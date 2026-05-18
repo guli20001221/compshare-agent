@@ -2,18 +2,27 @@
 """Build corpus embedding sidecar for hybrid retrieval.
 
 Reads a pinned corpus JSONL, computes LF-normalized sha256 (matching
-internal/knowledge/corpus_digest.go), embeds each chunk with ModelVerse
-text-embedding-3-large, and writes deploy/kb/embeddings_<corpus_digest>.jsonl
-with one row per chunk plus a leading _meta header.
+internal/knowledge/corpus_digest.go), embeds each chunk with the configured
+ModelVerse embedding model, and writes one of:
+  deploy/kb/embeddings_<corpus_digest>.jsonl                     (default model)
+  deploy/kb/embeddings_<corpus_digest>_<embed-model>.jsonl       (non-default)
 
-The sidecar layout is keyed by chunk_id so the Go loader can do dict lookups
-regardless of corpus row order.
+with one row per chunk plus a leading _meta header. The sidecar layout is
+keyed by chunk_id so the Go loader can do dict lookups regardless of corpus
+row order.
 
 Run:
     python -m scripts.rag_w0.build_corpus_embeddings \
         --corpus deploy/kb/stage2b_w0.jsonl \
         --out-dir deploy/kb \
         --env F:/compshare-agent/.env.local
+
+    # Lane B qwen3 stack:
+    python -m scripts.rag_w0.build_corpus_embeddings \
+        --corpus deploy/kb/stage2b_w0.jsonl \
+        --out-dir deploy/kb \
+        --env F:/compshare-agent/.env.local \
+        --embed-model qwen3-embedding-8b
 """
 from __future__ import annotations
 
@@ -30,7 +39,6 @@ from typing import Any
 
 DEFAULT_BASE_URL = "https://api.modelverse.cn/v1"
 DEFAULT_EMBED_MODEL = "text-embedding-3-large"
-EMBED_DIM = 3072
 BATCH_SIZE = 32
 MAX_CONTENT_RUNES_FOR_EMB = 1800  # mirror run_hybrid_eval.py chunk_repr cap
 
@@ -84,8 +92,17 @@ def embed_batch(
     base_url: str,
     api_key: str,
     model: str,
-) -> list[list[float]]:
+) -> tuple[list[list[float]], int]:
+    """Embed all texts in BATCH_SIZE chunks. Returns (vectors, dim).
+
+    Dim is derived from the first batch's response and then enforced as an
+    invariant across every subsequent batch — same-run inconsistency is a
+    fatal error, but no global dim constant is required so the same script
+    works for text-embedding-3-large (3072), qwen3-embedding-8b (4096 default
+    or 1024 quantized), or any future OpenAI-compatible embedding model.
+    """
     out: list[list[float] | None] = [None] * len(texts)
+    dim = 0
     for start in range(0, len(texts), BATCH_SIZE):
         chunk = list(enumerate(texts[start : start + BATCH_SIZE], start=start))
         body = json.dumps({"model": model, "input": [t for _, t in chunk]}, ensure_ascii=False).encode("utf-8")
@@ -128,11 +145,18 @@ def embed_batch(
             raise RuntimeError(f"batch size mismatch: got {len(vectors)} expected {len(chunk)}")
         for (i, _), v in zip(chunk, vectors):
             emb = v["embedding"]
-            if len(emb) != EMBED_DIM:
-                raise RuntimeError(f"unexpected embedding dim: got {len(emb)} expected {EMBED_DIM}")
+            if dim == 0:
+                dim = len(emb)
+                if dim == 0:
+                    raise RuntimeError("first embedding has zero dim")
+            elif len(emb) != dim:
+                raise RuntimeError(
+                    f"inconsistent embedding dim within run: got {len(emb)} expected {dim} "
+                    f"(model={model} batch index={i})"
+                )
             out[i] = emb
     assert all(o is not None for o in out)
-    return out  # type: ignore
+    return out, dim  # type: ignore
 
 
 def write_sidecar(
@@ -140,6 +164,7 @@ def write_sidecar(
     *,
     corpus_digest: str,
     embed_model: str,
+    dim: int,
     rows: list[tuple[str, list[float]]],
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -148,7 +173,7 @@ def write_sidecar(
             "_meta": {
                 "corpus_digest": corpus_digest,
                 "embed_model": embed_model,
-                "dim": EMBED_DIM,
+                "dim": dim,
                 "rows": len(rows),
             }
         }
@@ -159,6 +184,17 @@ def write_sidecar(
             )
 
 
+def sidecar_filename(corpus_digest: str, embed_model: str) -> str:
+    """Default model writes embeddings_<digest>.jsonl (unchanged, backward
+    compatible with existing pin in corpus_digest.go). Non-default models
+    append a model suffix so multiple sidecars can coexist on disk and the
+    Go loader (B.3) can pick the right one by mode.
+    """
+    if embed_model == DEFAULT_EMBED_MODEL:
+        return f"embeddings_{corpus_digest}.jsonl"
+    return f"embeddings_{corpus_digest}_{embed_model}.jsonl"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, required=True, help="Path to corpus JSONL")
@@ -166,12 +202,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env", type=Path, default=Path(".env.local"))
     parser.add_argument("--expected-corpus-digest", type=str, default=None,
                         help="If provided, fail if computed corpus digest does not match")
+    parser.add_argument("--embed-model", type=str, default=None,
+                        help=f"Override embedding model (default: ${{MODELVERSE_EMBED_MODEL}} "
+                             f"or '{DEFAULT_EMBED_MODEL}'). Non-default models append "
+                             f"a _<model> suffix to the sidecar filename.")
     args = parser.parse_args(argv)
 
     env = load_env(args.env)
     base_url = env.get("MODELVERSE_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     api_key = env["MODELVERSE_API_KEY"]
-    model = env.get("MODELVERSE_EMBED_MODEL", DEFAULT_EMBED_MODEL)
+    model = args.embed_model or env.get("MODELVERSE_EMBED_MODEL", DEFAULT_EMBED_MODEL)
 
     corpus_digest = compute_lf_sha256(args.corpus)
     if args.expected_corpus_digest and corpus_digest != args.expected_corpus_digest:
@@ -181,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    out_path = args.out_dir / f"embeddings_{corpus_digest}.jsonl"
+    out_path = args.out_dir / sidecar_filename(corpus_digest, model)
     if out_path.exists():
         existing_digest = compute_lf_sha256(out_path)
         print(f"[build-embeddings] cache hit: {out_path} already exists (digest {existing_digest[:16]}...), skipping",
@@ -191,11 +231,12 @@ def main(argv: list[str] | None = None) -> int:
 
     chunks = read_jsonl(args.corpus)
     print(f"[build-embeddings] corpus={len(chunks)} chunks, digest={corpus_digest}", file=sys.stderr)
-    print(f"[build-embeddings] model={model} dim={EMBED_DIM}", file=sys.stderr)
+    print(f"[build-embeddings] model={model}", file=sys.stderr)
     print(f"[build-embeddings] embedding {len(chunks)} chunks via {base_url} ...", file=sys.stderr)
 
     texts = [chunk_repr(c) for c in chunks]
-    vectors = embed_batch(texts, base_url=base_url, api_key=api_key, model=model)
+    vectors, dim = embed_batch(texts, base_url=base_url, api_key=api_key, model=model)
+    print(f"[build-embeddings] dim={dim} (derived from first batch response)", file=sys.stderr)
     rows = [(str(c.get("chunk_id") or ""), v) for c, v in zip(chunks, vectors)]
 
     # sanity: chunk_ids unique
@@ -205,10 +246,10 @@ def main(argv: list[str] | None = None) -> int:
     if any(not i for i in ids):
         raise RuntimeError("corpus contains chunk with empty chunk_id")
 
-    write_sidecar(out_path, corpus_digest=corpus_digest, embed_model=model, rows=rows)
+    write_sidecar(out_path, corpus_digest=corpus_digest, embed_model=model, dim=dim, rows=rows)
     sidecar_digest = compute_lf_sha256(out_path)
     print(
-        f"[build-embeddings] wrote {out_path} rows={len(rows)} sidecar_digest={sidecar_digest}",
+        f"[build-embeddings] wrote {out_path} rows={len(rows)} dim={dim} sidecar_digest={sidecar_digest}",
         file=sys.stderr,
     )
     print(out_path)
