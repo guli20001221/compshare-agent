@@ -210,17 +210,19 @@ func CapabilityPromptFragments() ([]string, []string) {
 // ---- Handler implementations ------------------------------------------------
 
 func executeCapabilityAction(ctx context.Context, h *DemoHandler, intentValue Intent, action string, args map[string]any) (map[string]any, *HandlerResult) {
-	// The (intent, action) binding is a compile-time fact: each handler hardcodes
-	// its action const and is registered against its intent in capabilityRegistry.
-	// SafeToolExecutor.PolicyForAction is the runtime gate at the boundary. We
-	// deliberately do NOT call RequireAllowedHandlerAction here because doing so
-	// would form a package-init cycle:
-	//   capabilityRegistry (var) -> handleX (function pointer) ->
-	//   executeCapabilityAction -> RequireAllowedHandlerAction ->
-	//   handlerActionWhitelist -> capabilityRegistry.
-	// (Go's cycle detector traces function bodies even when the var only takes
-	// function pointers, so any reachable read of capabilityRegistry from a
-	// handler's call graph triggers the cycle.)
+	// Design choice: capability handlers use two-layer defense rather than the
+	// three-layer pattern of legacy handlers (HandleResourceInfo etc.):
+	//   layer 1: compile-time `const action` binding inside each capability handler
+	//   layer 2: SafeToolExecutor.PolicyForAction gate at the runtime boundary
+	// We deliberately skip layer 3 (RequireAllowedHandlerAction reading
+	// handlerActionWhitelist) because the registry table IS the binding spec —
+	// calling it here would be redundant. As a downstream consequence, adding
+	// it would also form a package-init cycle
+	//   capabilityRegistry -> handleX -> RequireAllowedHandlerAction ->
+	//   handlerActionWhitelist -> capabilityRegistry
+	// so the two-layer choice is consistent with what Go's init-cycle detector
+	// allows. Drift between registry and whitelist is caught by
+	// TestHandlerActionWhitelist_DerivesFromRegistry.
 	if h == nil || h.executor == nil {
 		// Defensive: production wiring must construct the handler with a
 		// SafeToolExecutor adapter before enabling capability cutover.
