@@ -76,6 +76,12 @@ type HandlerExecutor interface {
 type HandlerRequest struct {
 	Plan     Plan
 	Resolver EntityResolver
+	// UserText is the raw user question. Used by capability handlers'
+	// deterministic NL filter (e.g. "4090 显存多大" -> filter Name=="4090" out
+	// of the API response). Set by engine.go when dispatching to handlers via
+	// tryPhase1Cutover / tryResumeResourceSelection. Legacy handlers
+	// (HandleResourceInfo / HandleMonitorQuery) ignore this field.
+	UserText string
 }
 
 type DemoHandler struct {

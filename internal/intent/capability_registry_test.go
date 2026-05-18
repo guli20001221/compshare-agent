@@ -167,6 +167,257 @@ func TestCapabilityMetadata_LoadedAtBuild(t *testing.T) {
 	}
 }
 
+// ----- L0 deterministic NL filter tests (PR A round 2) ----------------------
+
+func TestExtractUserTokens_StripsStopwordsAndShortRunes(t *testing.T) {
+	cases := []struct {
+		text string
+		want []string
+	}{
+		// Pure-numeric tokens ("4090", "12", "2022") are intentionally dropped
+		// here — extractUserTokens is used by image renderers (substring match
+		// against image names), where short numerics would produce false
+		// positives like "Debian 12" -> "py312". GPU/stock paths use
+		// matchUserTokensToAPINames on the raw user text instead.
+		{"4090 显存多大", nil},
+		{"A100 支持几张卡", []string{"a100"}},
+		{"查询平台镜像列表", nil},
+		{"Ubuntu 22.04 镜像有吗", []string{"ubuntu", "22.04"}},
+		{"Debian 12 镜像有吗", []string{"debian"}},
+		{"Windows 2022", []string{"windows"}},
+		{"", nil},
+	}
+	for _, c := range cases {
+		got := extractUserTokens(c.text)
+		if len(got) == 0 && len(c.want) == 0 {
+			continue
+		}
+		if len(got) != len(c.want) {
+			t.Errorf("extractUserTokens(%q) = %v, want %v", c.text, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("extractUserTokens(%q)[%d] = %q, want %q", c.text, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
+func TestDetectKnownUnavailableGPUs(t *testing.T) {
+	cases := []struct {
+		text string
+		want []string
+	}{
+		{"上海机房 H100 库存", []string{"H100"}},
+		{"h100 显存多大", []string{"H100"}}, // case-insensitive
+		{"H200 有货吗", []string{"H200"}},
+		{"4090 显存", nil},  // 4090 is available, not in the "known unavailable" list
+		{"5090 显存", nil},
+		{"", nil},
+	}
+	for _, c := range cases {
+		got := detectKnownUnavailableGPUs(c.text)
+		if len(got) != len(c.want) {
+			t.Errorf("detectKnownUnavailableGPUs(%q) = %v, want %v", c.text, got, c.want)
+		}
+	}
+}
+
+func TestMatchUserTokensToAPINames_Subset(t *testing.T) {
+	// The API drives the matching vocabulary — no hand-maintained GPU dictionary.
+	apiNames := []string{"4090", "4090_48G", "5090", "A100", "A800", "V100S"}
+	cases := []struct {
+		text string
+		want []string
+	}{
+		{"4090 显存多大", []string{"4090"}}, // user mentioned "4090" -> exact; "4090_48G" is a different model
+		{"a100 几张卡", []string{"A100"}},               // case-insensitive
+		{"v100s 配置", []string{"V100S"}},
+		{"H100 库存", nil}, // H100 not in API set — caller handles via known-unavailable
+		{"未指定", nil},
+	}
+	for _, c := range cases {
+		got := matchUserTokensToAPINames(c.text, apiNames)
+		if len(got) != len(c.want) {
+			t.Errorf("matchUserTokensToAPINames(%q) = %v, want %v", c.text, got, c.want)
+		}
+	}
+}
+
+func TestUserMentionedGPULikeToken(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"4090 显存多大", true},
+		{"A100 几张卡", true},
+		{"H100 库存", true},
+		{"5070 有货吗", true}, // not in API but GPU-shaped
+		{"查询社区镜像", false},
+		{"查询自制镜像", false},
+		{"Ubuntu 镜像有吗", false}, // no digit-heavy GPU shape (Ubuntu alone)
+	}
+	for _, c := range cases {
+		got := userMentionedGPULikeToken(c.text)
+		if got != c.want {
+			t.Errorf("userMentionedGPULikeToken(%q) = %v, want %v", c.text, got, c.want)
+		}
+	}
+}
+
+func TestRenderGPUSpecs_FilterToMentionedModel(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name":           "4090",
+				"GraphicsMemory": map[string]any{"Value": 24},
+				"Status":         "Normal",
+			},
+			map[string]any{
+				"Name":           "A100",
+				"GraphicsMemory": map[string]any{"Value": 80},
+				"Status":         "Normal",
+			},
+		},
+	}
+	reply := renderGPUSpecsReply(raw, "A100 支持几张卡")
+	if strings.Contains(reply, "机型=4090") {
+		t.Errorf("filter should exclude 4090 when user asked A100; got: %s", reply)
+	}
+	if !strings.Contains(reply, "机型=A100") {
+		t.Errorf("filter should keep A100 when user asked A100; got: %s", reply)
+	}
+}
+
+func TestRenderGPUSpecs_KnownUnavailableFallback(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "GraphicsMemory": map[string]any{"Value": 24}},
+		},
+	}
+	reply := renderGPUSpecsReply(raw, "上海机房 H100 库存")
+	if !strings.Contains(reply, "H100") {
+		t.Errorf("known-unavailable reply should mention H100; got: %s", reply)
+	}
+	if !strings.Contains(reply, "未在 CompShare 平台提供") {
+		t.Errorf("known-unavailable reply should explain not provided; got: %s", reply)
+	}
+}
+
+func TestRenderGPUSpecs_GPULikeButNoMatchFallback(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "GraphicsMemory": map[string]any{"Value": 24}},
+		},
+	}
+	reply := renderGPUSpecsReply(raw, "5070 显存多大") // 5070 doesn't exist + not in known-unavailable
+	if !strings.Contains(reply, "未在当前可售机型里找到") {
+		t.Errorf("not-found fallback should explain; got: %s", reply)
+	}
+	if !strings.Contains(reply, "机型=4090") {
+		t.Errorf("not-found fallback should still show available list; got: %s", reply)
+	}
+}
+
+func TestRenderStock_FilterAndDedupe(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "Status": "Normal"},
+			map[string]any{"Name": "4090", "Status": "Normal"}, // duplicate across zones
+			map[string]any{"Name": "A100", "Status": "Normal"},
+		},
+	}
+	reply := renderStockReply(raw, "4090 有货吗")
+	if strings.Contains(reply, "A100") {
+		t.Errorf("stock filter should exclude A100; got: %s", reply)
+	}
+	if c := strings.Count(reply, "机型=4090"); c != 1 {
+		t.Errorf("stock filter should dedupe 4090 to 1 line, got %d in: %s", c, reply)
+	}
+}
+
+func TestRenderImageList_KeywordFilter(t *testing.T) {
+	raw := map[string]any{
+		"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-1", "ImageName": "Ubuntu 22.04 LTS", "ImageType": "System"},
+			map[string]any{"CompShareImageId": "img-2", "ImageName": "PyTorch 2.1", "ImageType": "App"},
+			map[string]any{"CompShareImageId": "img-3", "ImageName": "CentOS 7", "ImageType": "System"},
+		},
+	}
+	reply := renderImageListReply(raw, "ImageSet",
+		[]string{"CompShareImageId", "ImageName", "ImageType"},
+		"Ubuntu 22.04 镜像有吗")
+	if strings.Contains(reply, "CentOS") || strings.Contains(reply, "PyTorch") {
+		t.Errorf("image filter should exclude non-Ubuntu; got: %s", reply)
+	}
+	if !strings.Contains(reply, "Ubuntu 22.04 LTS") {
+		t.Errorf("image filter should keep Ubuntu match; got: %s", reply)
+	}
+}
+
+func TestRenderImageList_NoMatchFallback(t *testing.T) {
+	raw := map[string]any{
+		"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-1", "ImageName": "Ubuntu 22.04 LTS"},
+		},
+	}
+	reply := renderImageListReply(raw, "ImageSet",
+		[]string{"CompShareImageId", "ImageName"},
+		"Debian 12 镜像有吗")
+	if !strings.Contains(reply, "未找到匹配的镜像") {
+		t.Errorf("no-match should produce explicit not-found reply; got: %s", reply)
+	}
+}
+
+func TestRenderImageList_StopwordsOnlyShowsAll(t *testing.T) {
+	raw := map[string]any{
+		"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-1", "ImageName": "Ubuntu 22.04 LTS"},
+			map[string]any{"CompShareImageId": "img-2", "ImageName": "PyTorch 2.1"},
+		},
+	}
+	reply := renderImageListReply(raw, "ImageSet",
+		[]string{"CompShareImageId", "ImageName"},
+		"查询平台镜像列表") // all tokens are stopwords -> no filter
+	if !strings.Contains(reply, "Ubuntu") || !strings.Contains(reply, "PyTorch") {
+		t.Errorf("stopwords-only query should show all images; got: %s", reply)
+	}
+}
+
+func TestRenderCommunityImage_DataExpansionAndCap(t *testing.T) {
+	// One group with 5 versions: cap should keep first 3 + "... 共 5 个版本" hint.
+	group := map[string]any{
+		"Name":   "ComfyUI 镜像",
+		"Author": "alice",
+		"Data": []any{
+			map[string]any{"CompShareImageId": "g1v1", "Name": "v0.3.66"},
+			map[string]any{"CompShareImageId": "g1v2", "Name": "v0.3.65"},
+			map[string]any{"CompShareImageId": "g1v3", "Name": "v0.3.64"},
+			map[string]any{"CompShareImageId": "g1v4", "Name": "v0.3.63"},
+			map[string]any{"CompShareImageId": "g1v5", "Name": "v0.3.62"},
+		},
+	}
+	raw := map[string]any{"CompshareImageGroup": []any{group}}
+	reply := renderCommunityImageReply(raw, "查询社区镜像")
+	if !strings.Contains(reply, "名称=ComfyUI 镜像") {
+		t.Errorf("community renderer should show group header; got: %s", reply)
+	}
+	for _, want := range []string{"v0.3.66", "v0.3.65", "v0.3.64"} {
+		if !strings.Contains(reply, want) {
+			t.Errorf("community renderer should show first 3 versions; missing %s in: %s", want, reply)
+		}
+	}
+	if strings.Contains(reply, "v0.3.62") {
+		t.Errorf("community renderer should cap at 3 versions per group; got: %s", reply)
+	}
+	if !strings.Contains(reply, "共 5 个版本") {
+		t.Errorf("community renderer should add 'remaining N' hint when capped; got: %s", reply)
+	}
+}
+
+// ----- end L0 NL filter tests -----------------------------------------------
+
 // TestRegistry_FutureProof_AcceptanceNumberEight is the §5 #8 acceptance test:
 // adding a capability must NOT require any change to engine.go. We simulate
 // this by exercising the registry surface that engine.go depends on

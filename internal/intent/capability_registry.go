@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -246,7 +247,7 @@ func handleGPUSpecsQuery(ctx context.Context, h *DemoHandler, req HandlerRequest
 	if fb != nil {
 		return *fb
 	}
-	reply := renderGPUSpecsReply(raw)
+	reply := renderGPUSpecsReply(raw, req.UserText)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
@@ -259,7 +260,7 @@ func handleStockAvailability(ctx context.Context, h *DemoHandler, req HandlerReq
 	if fb != nil {
 		return *fb
 	}
-	reply := renderStockReply(raw)
+	reply := renderStockReply(raw, req.UserText)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
@@ -272,7 +273,7 @@ func handlePlatformImageList(ctx context.Context, h *DemoHandler, req HandlerReq
 	if fb != nil {
 		return *fb
 	}
-	reply := renderImageListReply(raw, "ImageSet", []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"})
+	reply := renderImageListReply(raw, "ImageSet", []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"}, req.UserText)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
@@ -285,7 +286,7 @@ func handleCustomImageList(ctx context.Context, h *DemoHandler, req HandlerReque
 	if fb != nil {
 		return *fb
 	}
-	reply := renderImageListReply(raw, "ImageSet", []string{"CompShareImageId", "Name", "ImageName", "Status"})
+	reply := renderImageListReply(raw, "ImageSet", []string{"CompShareImageId", "Name", "ImageName", "Status"}, req.UserText)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
@@ -298,7 +299,7 @@ func handleCommunityImageList(ctx context.Context, h *DemoHandler, req HandlerRe
 	if fb != nil {
 		return *fb
 	}
-	reply := renderCommunityImageReply(raw)
+	reply := renderCommunityImageReply(raw, req.UserText)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
@@ -306,22 +307,170 @@ func handleCommunityImageList(ctx context.Context, h *DemoHandler, req HandlerRe
 }
 
 // ---- Renderers --------------------------------------------------------------
+//
+// L0 deterministic NL filter (PR A round 2, 2026-05-18):
+//
+// Capability replies do NOT pass through an LLM (engine.go's groundedRenderer
+// short-circuits when Envelope == nil, which is the case for all capability
+// HandlerResults). To make replies "answer the question" rather than "dump the
+// full API response", each renderer applies a deterministic filter using
+// req.UserText:
+//
+//   1. Tokenize UserText (ASCII + CJK), drop stopwords + single-char noise.
+//   2. For GPU paths: match user tokens against the API-returned Name set
+//      (the API drives the vocabulary; no hand-maintained GPU dictionary).
+//   3. For image paths: match user tokens against entry.Name / ImageName /
+//      CompShareImageName / Author (substring, case-insensitive).
+//   4. Fallback rules:
+//      - user mentioned a known-unavailable GPU (H100/H200) -> explicit "not
+//        provided" prefix + show available list
+//      - user provided keywords but none matched API result -> "not found"
+//        prefix + show available list
+//      - user provided no effective keywords -> show all (current behavior)
+//   5. Community renderer expands Data[] inside each CompshareImageGroup to
+//      include the top 3 version names, with a global 20-line cap.
 
 const (
-	noGPUSpecsReply    = "未获取到 GPU 机型规格数据。"
-	noStockReply       = "未获取到机型库存数据。"
-	noImageListReply   = "未获取到镜像列表。"
-	noCommunityReply   = "未获取到社区镜像数据。"
-	soldOutDisclaimer  = "（CompShare 平台不公开精确剩余数量，仅 Normal/SoldOut 两态。）"
-	unsoldGPUWhitelist = "H100、H200 等非在售机型在 CompShare 平台未提供，平台不接受为这类机型推荐配置。"
+	noGPUSpecsReply           = "未获取到 GPU 机型规格数据。"
+	noStockReply              = "未获取到机型库存数据。"
+	noImageListReply          = "未获取到镜像列表。"
+	noImageListNoMatchReply   = "未找到匹配的镜像。"
+	noCommunityReply          = "未获取到社区镜像数据。"
+	soldOutDisclaimer         = "（CompShare 平台不公开精确剩余数量，仅 Normal/SoldOut 两态。）"
+	communityImageGroupLimit  = 20 // upper bound on community renderer output lines
+	communityVersionPerGroup  = 3  // versions to show per CompshareImageGroup
 )
 
-func renderGPUSpecsReply(raw map[string]any) string {
-	items := mapSliceAt(raw, "AvailableInstanceTypes")
-	if len(items) == 0 {
-		return noGPUSpecsReply
+// knownUnavailableGPUNames is a minimal list of GPU models confirmed to NOT be
+// offered by CompShare. Used to produce explicit "not provided" replies. Keep
+// this list intentionally small (no maintenance burden); the primary matching
+// vocabulary comes from the API response itself. Expand only when a business
+// owner confirms a new model belongs here.
+var knownUnavailableGPUNames = []string{"H100", "H200"}
+
+// cjkStopwords are multi-character CJK runs commonly seen in capability queries
+// that should not become matchable keywords. We strip these from the user text
+// BEFORE tokenizing, since Go regexp + RE2 cannot segment Chinese without a
+// dictionary. After stripping, remaining CJK runs (proper nouns, image names)
+// survive as tokens.
+var cjkStopwords = []string{
+	// query verbs / structural words
+	"查询", "平台", "镜像", "列表", "有吗", "支持", "系统", "自制", "社区",
+	"官方", "什么", "哪些", "请问", "是否", "我的", "我自己", "上面", "下面",
+	"我有", "我账", "账下", "可以", "可不可以",
+	// zone / region / locale words (capability handlers don't yet take Zone)
+	"机房", "地域", "可用区",
+	// common GPU question phrasing (multi-char, would otherwise survive
+	// tokenization as a single CJK run and match nothing — but the test
+	// surface expects them stripped so the remaining token set is clean)
+	"显存", "多大", "多少", "几张", "几张卡", "张卡", "几个", "配比", "配置",
+	"库存", "售罄", "价格", "价钱", "收费", "扣费", "还有", "没货",
+	// common image-list question filler
+	"哪种", "用过", "用什么", "好用",
+}
+
+// asciiStopwords applies to ASCII tokens (post-tokenization, post-lowercase).
+var asciiStopwords = map[string]struct{}{
+	"list": {}, "image": {}, "images": {}, "of": {}, "the": {}, "a": {},
+	"an": {}, "what": {}, "any": {}, "is": {}, "are": {}, "have": {}, "has": {},
+	"do": {}, "does": {}, "show": {}, "me": {}, "my": {}, "for": {}, "to": {},
+}
+
+var tokenSplitRegex = regexp.MustCompile(`[A-Za-z0-9_.]+|\p{Han}+`)
+
+// pureNumericTokenRegex matches ASCII tokens consisting only of digits (no dot,
+// no letters). These are too generic to use for image-name substring matching
+// (e.g. "Debian 12" -> "12" silently matches "py312", "vLLM v0.12.0"). Version
+// strings with dots like "22.04" are NOT pure-numeric (the dot makes them
+// version-shaped) and remain useful as filter keywords.
+var pureNumericTokenRegex = regexp.MustCompile(`^\d+$`)
+
+// extractUserTokens tokenizes the user text and drops stopwords + 1-char noise.
+// Returns case-normalized lowercase tokens for downstream matching. Multi-char
+// CJK stopwords are removed by literal substring stripping before tokenization
+// (RE2 lacks Chinese segmentation, so dictionary lookup would be the next step
+// — kept out of L0 scope).
+func extractUserTokens(userText string) []string {
+	if strings.TrimSpace(userText) == "" {
+		return nil
 	}
-	lines := make([]string, 0, len(items))
+	cleaned := userText
+	for _, sw := range cjkStopwords {
+		cleaned = strings.ReplaceAll(cleaned, sw, " ")
+	}
+	raw := tokenSplitRegex.FindAllString(cleaned, -1)
+	out := make([]string, 0, len(raw))
+	seen := map[string]struct{}{}
+	for _, tok := range raw {
+		if len([]rune(tok)) < 2 {
+			continue
+		}
+		lower := strings.ToLower(tok)
+		if _, ok := asciiStopwords[lower]; ok {
+			continue
+		}
+		// Drop pure-numeric tokens (e.g. "12", "2022") — they substring-match
+		// too many image names ("py312", "vLLM v0.12.0", "Windows 2022 64位").
+		// Version-shaped tokens like "22.04" survive because the dot makes
+		// them non-pure-numeric.
+		if pureNumericTokenRegex.MatchString(lower) {
+			continue
+		}
+		if _, ok := seen[lower]; ok {
+			continue
+		}
+		seen[lower] = struct{}{}
+		out = append(out, lower)
+	}
+	return out
+}
+
+// detectKnownUnavailableGPUs returns names from knownUnavailableGPUNames that
+// appear (case-insensitively) in the user text.
+func detectKnownUnavailableGPUs(userText string) []string {
+	if userText == "" {
+		return nil
+	}
+	upper := strings.ToUpper(userText)
+	out := []string{}
+	for _, name := range knownUnavailableGPUNames {
+		if strings.Contains(upper, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// matchUserTokensToAPINames returns the subset of API Names (preserving case)
+// that the user mentioned anywhere in their question. The API name set is the
+// matching vocabulary — no hand-maintained GPU dictionary required.
+func matchUserTokensToAPINames(userText string, apiNames []string) []string {
+	if userText == "" || len(apiNames) == 0 {
+		return nil
+	}
+	upper := strings.ToUpper(userText)
+	matched := []string{}
+	seen := map[string]struct{}{}
+	for _, name := range apiNames {
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		if strings.Contains(upper, strings.ToUpper(name)) {
+			matched = append(matched, name)
+			seen[name] = struct{}{}
+		}
+	}
+	return matched
+}
+
+// collectAPINamesFromInstanceTypes returns the deduped set of "Name" fields
+// from a DescribeAvailableCompShareInstanceTypes response.
+func collectAPINamesFromInstanceTypes(items []any) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
 	for _, item := range items {
 		entry, ok := item.(map[string]any)
 		if !ok {
@@ -331,6 +480,83 @@ func renderGPUSpecsReply(raw map[string]any) string {
 		if name == "" {
 			continue
 		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+// userMentionedGPULikeToken returns true when the user text contains a token
+// shaped like a GPU model (letter prefix + digits, or 4-digit number with
+// optional GB suffix). Used to distinguish "user asked about a GPU but none
+// matched" from "user did not ask about a specific GPU".
+var gpuLikeTokenRegex = regexp.MustCompile(`(?i)\b([a-z]{1,3}\d{2,4}[a-z0-9_]*|\d{4}(?:_\d+g)?)\b`)
+
+func userMentionedGPULikeToken(userText string) bool {
+	if userText == "" {
+		return false
+	}
+	return gpuLikeTokenRegex.MatchString(userText)
+}
+
+func renderGPUSpecsReply(raw map[string]any, userText string) string {
+	items := mapSliceAt(raw, "AvailableInstanceTypes")
+	if len(items) == 0 {
+		return noGPUSpecsReply
+	}
+	apiNames := collectAPINamesFromInstanceTypes(items)
+	matched := matchUserTokensToAPINames(userText, apiNames)
+	unavailable := detectKnownUnavailableGPUs(userText)
+
+	var prefix string
+	filterTo := map[string]struct{}{}
+	if len(unavailable) > 0 {
+		prefix = strings.Join(unavailable, "、") + " 当前未在 CompShare 平台提供。以下是当前可售机型规格：\n"
+	}
+	if len(matched) > 0 {
+		for _, m := range matched {
+			filterTo[m] = struct{}{}
+		}
+	} else if len(unavailable) == 0 && userMentionedGPULikeToken(userText) {
+		prefix = "未在当前可售机型里找到您提到的型号。以下是当前可售机型规格：\n"
+	}
+
+	lines := buildGPUSpecLines(items, filterTo)
+	if len(lines) == 0 {
+		if prefix != "" {
+			return strings.TrimRight(prefix, "\n")
+		}
+		return noGPUSpecsReply
+	}
+	return prefix + strings.Join(lines, "\n")
+}
+
+func buildGPUSpecLines(items []any, filterTo map[string]struct{}) []string {
+	lines := make([]string, 0, len(items))
+	seenNames := map[string]struct{}{}
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := safeString(entry, "Name")
+		if name == "" {
+			continue
+		}
+		if len(filterTo) > 0 {
+			if _, ok := filterTo[name]; !ok {
+				continue
+			}
+		}
+		// Dedupe by Name (API returns duplicates across zones with identical
+		// MachineSizes for the same model in this account/region).
+		if _, ok := seenNames[name]; ok {
+			continue
+		}
+		seenNames[name] = struct{}{}
 		parts := []string{"机型=" + name}
 		// Performance + GraphicsMemory are nested {Rate, Value} maps in the API
 		// response; we display the Value (the scalar the user actually wants).
@@ -348,10 +574,7 @@ func renderGPUSpecsReply(raw map[string]any) string {
 		}
 		lines = append(lines, strings.Join(parts, ", "))
 	}
-	if len(lines) == 0 {
-		return noGPUSpecsReply
-	}
-	return strings.Join(lines, "\n")
+	return lines
 }
 
 // nestedValue extracts the "Value" field from a nested map response shape like
@@ -370,54 +593,116 @@ func nestedValue(m map[string]any, key string) string {
 	return safeValue(v)
 }
 
-func renderStockReply(raw map[string]any) string {
+func renderStockReply(raw map[string]any, userText string) string {
 	items := mapSliceAt(raw, "AvailableInstanceTypes")
 	if len(items) == 0 {
 		return noStockReply
 	}
+	apiNames := collectAPINamesFromInstanceTypes(items)
+	matched := matchUserTokensToAPINames(userText, apiNames)
+	unavailable := detectKnownUnavailableGPUs(userText)
+
+	var prefix string
+	filterTo := map[string]struct{}{}
+	if len(unavailable) > 0 {
+		prefix = strings.Join(unavailable, "、") + " 当前未在 CompShare 平台提供。以下是当前可售机型库存：\n"
+	}
+	if len(matched) > 0 {
+		for _, m := range matched {
+			filterTo[m] = struct{}{}
+		}
+	} else if len(unavailable) == 0 && userMentionedGPULikeToken(userText) {
+		prefix = "未在当前可售机型里找到您提到的型号。以下是当前可售机型库存：\n"
+	}
+
 	lines := make([]string, 0, len(items))
-	hasSoldOut := false
+	seenNames := map[string]struct{}{}
 	for _, item := range items {
 		entry, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
 		name := safeString(entry, "Name")
-		status := safeString(entry, "Status")
 		if name == "" {
 			continue
 		}
-		if status == "" {
-			// Mock test fixtures and some prod responses omit Status; assume Normal
-			// when the type is in the available list at all. Stock semantics:
-			// SoldOut entries are typically dropped, so "in list" ≈ "available".
-			status = "Normal"
+		if len(filterTo) > 0 {
+			if _, ok := filterTo[name]; !ok {
+				continue
+			}
 		}
-		if status == "SoldOut" {
-			hasSoldOut = true
+		if _, ok := seenNames[name]; ok {
+			continue // dedupe API duplicates across zones
+		}
+		seenNames[name] = struct{}{}
+		status := safeString(entry, "Status")
+		if status == "" {
+			// Some prod responses omit Status; "appears in available list" ≈ available.
+			status = "Normal"
 		}
 		lines = append(lines, fmt.Sprintf("机型=%s, 状态=%s", name, status))
 	}
 	if len(lines) == 0 {
+		if prefix != "" {
+			return strings.TrimRight(prefix, "\n") + "\n" + soldOutDisclaimer
+		}
 		return noStockReply
 	}
-	if hasSoldOut {
-		return strings.Join(lines, "\n") + "\n" + soldOutDisclaimer
-	}
-	return strings.Join(lines, "\n") + "\n" + soldOutDisclaimer
+	return prefix + strings.Join(lines, "\n") + "\n" + soldOutDisclaimer
 }
 
-func renderImageListReply(raw map[string]any, listKey string, fieldOrder []string) string {
+// entryMatchesAnyKeyword returns true when any of the user keywords appears
+// (substring, case-insensitive) in any of the named entry fields.
+func entryMatchesAnyKeyword(entry map[string]any, keywords []string, fields []string) bool {
+	for _, k := range keywords {
+		for _, f := range fields {
+			v, ok := entry[f].(string)
+			if !ok || v == "" {
+				continue
+			}
+			if strings.Contains(strings.ToLower(v), k) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func renderImageListReply(raw map[string]any, listKey string, fieldOrder []string, userText string) string {
 	items := mapSliceAt(raw, listKey)
 	if len(items) == 0 {
 		return noImageListReply
 	}
-	lines := make([]string, 0, len(items))
+	keywords := extractUserTokens(userText)
+	// Match keywords against name-like fields only (not status/id/type).
+	matchFields := []string{}
+	for _, f := range fieldOrder {
+		switch f {
+		case "Name", "ImageName", "CompShareImageName", "Author":
+			matchFields = append(matchFields, f)
+		}
+	}
+
+	filtered := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		entry, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
+		if len(keywords) > 0 && len(matchFields) > 0 {
+			if !entryMatchesAnyKeyword(entry, keywords, matchFields) {
+				continue
+			}
+		}
+		filtered = append(filtered, entry)
+	}
+	// "keywords > 0 + 0 matches" -> explicit not-found, do not silently fall
+	// through to the full list (that's what confused users in round 1 smoke).
+	if len(keywords) > 0 && len(filtered) == 0 {
+		return noImageListNoMatchReply
+	}
+	lines := make([]string, 0, len(filtered))
+	for _, entry := range filtered {
 		parts := make([]string, 0, len(fieldOrder))
 		for _, key := range fieldOrder {
 			if v := safeString(entry, key); v != "" {
@@ -435,38 +720,116 @@ func renderImageListReply(raw map[string]any, listKey string, fieldOrder []strin
 	return strings.Join(lines, "\n")
 }
 
-func renderCommunityImageReply(raw map[string]any) string {
+func renderCommunityImageReply(raw map[string]any, userText string) string {
 	groups := mapSliceAt(raw, "CompshareImageGroup")
 	if len(groups) == 0 {
-		// Some responses use a flat list, fall back to ImageSet
-		return renderImageListReply(raw, "ImageSet", []string{"Name", "Author", "CompShareImageId"})
+		// Fallback: some responses use a flat ImageSet shape.
+		return renderImageListReply(raw, "ImageSet",
+			[]string{"Name", "Author", "CompShareImageId"}, userText)
 	}
-	lines := make([]string, 0, len(groups))
+	keywords := extractUserTokens(userText)
+	matchFields := []string{"Name", "Author"}
+
+	filtered := make([]map[string]any, 0, len(groups))
 	for _, item := range groups {
 		entry, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		parts := []string{}
-		if v := safeString(entry, "Name"); v != "" {
-			parts = append(parts, "名称="+v)
+		if len(keywords) > 0 {
+			// Match keywords against group-level Name/Author or any version's Name/Author.
+			if !entryMatchesAnyKeyword(entry, keywords, matchFields) &&
+				!anyVersionMatches(mapSliceAt(entry, "Data"), keywords, matchFields) {
+				continue
+			}
 		}
-		if v := safeString(entry, "Author"); v != "" {
-			parts = append(parts, "作者="+v)
+		filtered = append(filtered, entry)
+	}
+	if len(keywords) > 0 && len(filtered) == 0 {
+		return noImageListNoMatchReply
+	}
+
+	lines := make([]string, 0, communityImageGroupLimit)
+	lineBudget := communityImageGroupLimit
+	for _, entry := range filtered {
+		if lineBudget <= 0 {
+			break
 		}
-		versions := mapSliceAt(entry, "Data")
-		if len(versions) > 0 {
-			parts = append(parts, fmt.Sprintf("版本数=%d", len(versions)))
-		}
-		if len(parts) == 0 {
+		header := buildCommunityGroupHeader(entry)
+		if header == "" {
 			continue
 		}
-		lines = append(lines, strings.Join(parts, ", "))
+		lines = append(lines, header)
+		lineBudget--
+
+		versions := mapSliceAt(entry, "Data")
+		shown := 0
+		for _, v := range versions {
+			if lineBudget <= 0 {
+				break
+			}
+			if shown >= communityVersionPerGroup {
+				if len(versions) > shown {
+					lines = append(lines, fmt.Sprintf("  ... 共 %d 个版本", len(versions)))
+					lineBudget--
+				}
+				break
+			}
+			ver, ok := v.(map[string]any)
+			if !ok {
+				continue
+			}
+			versionLine := buildCommunityVersionLine(ver)
+			if versionLine == "" {
+				continue
+			}
+			lines = append(lines, "  "+versionLine)
+			lineBudget--
+			shown++
+		}
 	}
 	if len(lines) == 0 {
 		return noCommunityReply
 	}
 	return strings.Join(lines, "\n")
+}
+
+func buildCommunityGroupHeader(entry map[string]any) string {
+	parts := []string{}
+	if v := safeString(entry, "Name"); v != "" {
+		parts = append(parts, "名称="+v)
+	}
+	if v := safeString(entry, "Author"); v != "" {
+		parts = append(parts, "作者="+v)
+	}
+	versions := mapSliceAt(entry, "Data")
+	if len(versions) > 0 {
+		parts = append(parts, fmt.Sprintf("版本数=%d", len(versions)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func buildCommunityVersionLine(ver map[string]any) string {
+	parts := []string{}
+	for _, key := range []string{"CompShareImageId", "Name", "VersionName", "Version"} {
+		if v := safeString(ver, key); v != "" {
+			parts = append(parts, key+"="+v)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func anyVersionMatches(versions []any, keywords []string, fields []string) bool {
+	for _, v := range versions {
+		ver, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if entryMatchesAnyKeyword(ver, keywords, fields) {
+			return true
+		}
+	}
+	return false
 }
 
 func summarizeMachineSizes(entry map[string]any) string {
