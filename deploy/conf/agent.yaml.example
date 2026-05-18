@@ -12,7 +12,10 @@ agent:
   llm:
     base_url: "https://api.modelverse.cn/v1"
     api_key: "${LLM_API_KEY}"
-    model: "Qwen/Qwen3-Max"
+    # ds-v4-flash is the W0+ baseline answerer (post-PR-#95 prompt fix passed
+    # 5 hard contracts; ~5-10x faster + cheaper than ds-v4-pro). Ops should
+    # monitor ~1.86% empty-return rate on hybrid path (P3 watch-list).
+    model: "deepseek-v4-flash"
 
   # 0 or omitted uses the built-in defaults.
   rate_limit:
