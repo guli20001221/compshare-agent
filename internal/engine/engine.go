@@ -2179,6 +2179,33 @@ var monthlyBillKeywords = []string{
 	"\u5f53\u6708", // 当月
 }
 
+// thirdPartyServiceForeignBalanceContexts are prefixes that indicate the
+// query is about a *third-party service's* account state, not CompShare's.
+// When any of these substrings appear in a normalized user message, the
+// account-billing hard-block must NOT fire — the question is RAG-answerable
+// from corpus docs covering that service (e.g. ModelVerse 18 chunks in
+// w0 corpus, OpenAI client docs, etc.).
+//
+// CONSTRAINT (per skill phase prereq doc; see .claude/CONTEXT.md "Skill 化
+// prereq" section): this list is intentionally small and bounded. Do NOT
+// grow it as a way to handle new false-positive cases; instead, surface
+// those cases as input to skill scope schema design. Long-term home is
+// the skill manifest's disambiguating_prefixes field, NOT this engine var.
+//
+// All entries are stored in normalized form (ASCII lowercased; CJK as-is)
+// to match normalizeMsg output without re-normalizing per call.
+var thirdPartyServiceForeignBalanceContexts = []string{
+	"modelverse",
+	"openai",
+	"open ai",
+	"anthropic",
+	"deepseek",
+	"deep seek",
+	"volcano",
+	"火山",   // 火山(火山方舟 / 火山引擎)
+	"豆包",   // 豆包
+}
+
 // accountOnlyDataKeywords are signals that ONLY the account financial
 // center can satisfy. Their presence triggers the hard-block regardless
 // of instance words elsewhere in the message.
@@ -2564,6 +2591,21 @@ func containsRechargeRealtimeQuestion(n string) bool {
 // 消费最高"), neither branch fires and the request falls through to
 // the LLM, steered by the "## 计费问题口径" system-prompt rule.
 func isAccountBillingUnsupportedNormalized(n string) bool {
+	// False-positive scoping (#34b, 2026-05-18): if the query mentions a
+	// third-party service by name, the question is about THAT service's
+	// account/billing state, not CompShare's. P32 v1 captured r16 "ModelVerse
+	// 的余额怎么查" being wrongly hard-blocked by the bare 余额 keyword. The
+	// corpus covers these third-party services (modelverse 18 chunks etc.),
+	// so the planner should run and route to knowledge_qa instead.
+	//
+	// This check is intentionally whole-message-level (not window-based)
+	// because user phrasing varies ("ModelVerse 的余额" / "在哪里看
+	// modelverse 余额" / "怎么充 modelverse 余额"). The cost of letting the
+	// planner handle a mixed-scope question is far lower than the cost of
+	// silently hard-blocking a third-party-service docs query.
+	if containsNormalizedKeyword(n, thirdPartyServiceForeignBalanceContexts) {
+		return false
+	}
 	if containsNormalizedKeyword(n, accountOnlyDataKeywords) ||
 		containsInvoiceRealtimeQuestion(n) ||
 		containsRefundRealtimeQuestion(n) ||
