@@ -1,0 +1,175 @@
+{
+  "schema_version": "rag_11a_3.source_manifest.v1",
+  "sources": [
+    {
+      "chunk_count": 7,
+      "has_images": true,
+      "image_count": 9,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__modelverse_best_practice_comfyui.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\modelverse\\best_practice\\comfyui.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_best_practice_comfyui",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 4,
+      "has_images": true,
+      "image_count": 1,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__modelverse_best_practice_mcp_MCPClient.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\modelverse\\best_practice\\mcp\\MCPClient.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_best_practice_mcp_MCPClient",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 1,
+      "has_images": true,
+      "image_count": 1,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__modelverse_best_practice_mcp_mcpgeneral.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\modelverse\\best_practice\\mcp\\mcpgeneral.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_best_practice_mcp_mcpgeneral",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 8,
+      "has_images": true,
+      "image_count": 19,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__modelverse_best_practice_mcp_MCPServer.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\modelverse\\best_practice\\mcp\\MCPServer.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_best_practice_mcp_MCPServer",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 1,
+      "has_images": true,
+      "image_count": 4,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__modelverse_best_practice_usecases_anythingllm.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\modelverse\\best_practice\\usecases\\anythingllm.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_best_practice_usecases_anythingllm",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 1,
+      "has_images": true,
+      "image_count": 4,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__modelverse_best_practice_usecases_chatbox.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\modelverse\\best_practice\\usecases\\chatbox.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_best_practice_usecases_chatbox",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 1,
+      "has_images": true,
+      "image_count": 5,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__modelverse_best_practice_usecases_cherrystudio.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\modelverse\\best_practice\\usecases\\cherrystudio.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_best_practice_usecases_cherrystudio",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 2,
+      "has_images": true,
+      "image_count": 6,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__modelverse_best_practice_usecases_dify.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\modelverse\\best_practice\\usecases\\dify.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_best_practice_usecases_dify",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 5,
+      "has_images": true,
+      "image_count": 16,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__modelverse_best_practice_usecases_n8n.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\modelverse\\best_practice\\usecases\\n8n.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_best_practice_usecases_n8n",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 1,
+      "has_images": true,
+      "image_count": 3,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__modelverse_best_practice_usecases_openwebui.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\modelverse\\best_practice\\usecases\\openwebui.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_best_practice_usecases_openwebui",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 1,
+      "has_images": true,
+      "image_count": 4,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__modelverse_best_practice_usecases_ragflow.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\modelverse\\best_practice\\usecases\\ragflow.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__modelverse_best_practice_usecases_ragflow",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 7,
+      "has_images": true,
+      "image_count": 11,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__operation_bestpractices_createVNC.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\operation\\bestpractices\\createVNC.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__operation_bestpractices_createVNC",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 1,
+      "has_images": false,
+      "image_count": 0,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__operation_bestpractices_installdify.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\operation\\bestpractices\\installdify.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__operation_bestpractices_installdify",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 2,
+      "has_images": false,
+      "image_count": 0,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__operation_bestpractices_installdocker.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\operation\\bestpractices\\installdocker.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__operation_bestpractices_installdocker",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 7,
+      "has_images": true,
+      "image_count": 12,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__operation_bestpractices_installlangbot.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\operation\\bestpractices\\installlangbot.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__operation_bestpractices_installlangbot",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 5,
+      "has_images": true,
+      "image_count": 12,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__operation_bestpractices_isaac.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\operation\\bestpractices\\isaac.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__operation_bestpractices_isaac",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    },
+    {
+      "chunk_count": 4,
+      "has_images": true,
+      "image_count": 3,
+      "normalized_doc_path": "cleaned_docs_with_vl/gitlab-compshare-docs__operation_gpu_uaaa.md",
+      "original_path": "F:\\compshare-agent-runs\\review-compshare-docs-20260512\\pages\\operation\\gpu\\uaaa.md",
+      "source_commit_time": "2026-05-11T14:25:11+08:00",
+      "source_doc_id": "gitlab-compshare-docs__operation_gpu_uaaa",
+      "source_revision": "7a506d3a70dce8c47224b11861acf660b776bc71"
+    }
+  ]
+}
