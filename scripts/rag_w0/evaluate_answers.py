@@ -23,6 +23,13 @@ except ImportError:  # pragma: no cover
 DEFAULT_JUDGE_MODEL = "claude-opus-4-7"
 DEFAULT_ANSWER_MODEL = "deepseek-v4-pro"
 CITATION_RE = re.compile(r"\[[1-9]\d*\]")
+# Mirror runtime engine.go:1081 (cited_guard.go:9 const ragNoEvidenceReply).
+# When the citation-retry still yields no [n] (including empty content), the
+# runtime returns this canned string and classifies the turn as no-evidence
+# refusal. Eval must mirror that classification or it will measure a stricter
+# behavior than production actually exhibits (memory
+# feedback_eval_target_must_match_runtime_path + feedback_eval_must_reflect_runtime_no_coercion).
+RAG_NO_EVIDENCE_REPLY = "当前知识库未覆盖该问题,我无法回答。"
 # DEPRECATED post-RAG-13 (2026-05-17): kept for backward compatibility.
 # Conflates hard refusal templates with soft boundary-disclosure (disclaimer).
 # Use HARD_REFUSAL_RE + SOFT_DISCLAIMER_RE below for correct metric split.
@@ -130,6 +137,22 @@ def evaluate_answers(
                     progress=progress,
                 )
                 pure_refusal = _is_hard_refusal(answer)
+            # Runtime-parity coercion (engine.go:1074-1081 cited_guard): if the
+            # citation retry was triggered AND the retry result is neither a
+            # refusal template nor a cited answer (including empty content),
+            # production substitutes ragNoEvidenceReply and treats the turn as
+            # no-evidence refusal. Eval mirrors that so cited_rate measures what
+            # users actually receive (memory feedback_eval_target_must_match_runtime_path).
+            retry_no_cite = False
+            empty_after_retry = False
+            raw_retry_answer = None
+            if citation_retry and not pure_refusal and not _has_citation(answer):
+                retry_no_cite = True
+                if not answer.strip():
+                    empty_after_retry = True
+                raw_retry_answer = answer
+                answer = RAG_NO_EVIDENCE_REPLY
+                pure_refusal = True
             citation_present = _has_citation(answer)
             judge_result = _call_with_retries(
                 lambda: judge(str(question.get("question") or ""), answer, hit_chunks),
@@ -174,6 +197,15 @@ def evaluate_answers(
                 "soft_disclaimer": _has_soft_disclaimer(answer),
                 "citation_present": citation_present,
                 "citation_retry": citation_retry,
+                # Step 6b runtime-parity diagnostics: count cases where the
+                # citation-retry produced neither a refusal template nor a
+                # citation (substituted to ragNoEvidenceReply per engine.go:1081).
+                # empty_after_retry is a subset of retry_no_cite where the model
+                # returned an empty string after the retry (ds-v4-flash + hybrid
+                # has a low-rate empty-return mode).
+                "retry_no_cite": retry_no_cite,
+                "empty_after_retry": empty_after_retry,
+                "raw_retry_answer": raw_retry_answer,
             }
         )
         _write_json(
@@ -232,6 +264,10 @@ def _answer_summary(
     with_disclaimer = counts["with_disclaimer"]
     non_refused = counts["non_refused"]
     answered_subset = with_disclaimer + non_refused
+    # Step 6b diagnostics: track retry-no-cite coercion frequency. These are
+    # subsets of pure_refused — counted for visibility, not gate calculation.
+    retry_no_cite_count = sum(1 for item in answer_results if item.get("retry_no_cite") is True)
+    empty_after_retry_count = sum(1 for item in answer_results if item.get("empty_after_retry") is True)
     return {
         "answer_questions_evaluated": evaluated,
         "answer_generation_failures": 0,
@@ -260,6 +296,12 @@ def _answer_summary(
         # (PRs #88 / #89) are not directly comparable — re-run via this script.
         "answer_questions_refused": pure_refused,
         "citation_denominator": answered_subset,
+        # Step 6b diagnostics — not gate fields, surfaced so judge / API noise
+        # is visible. retry_no_cite_count = pure_refused subset where the model
+        # never cited; empty_after_retry_count = subset of that with empty body
+        # (ds-v4-flash + hybrid produces this at ~2% rate per 2026-05-18 data).
+        "retry_no_cite_count": retry_no_cite_count,
+        "empty_answer_after_retry_count": empty_after_retry_count,
         "answers": answer_results,
     }
 

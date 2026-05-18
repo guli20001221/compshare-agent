@@ -3903,13 +3903,24 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertIsNone(summary["cited_rate"])
             self.assertEqual(summary["failed_answers"], [])
 
-    def test_evaluate_answers_treats_partial_coverage_disclaimer_as_disclaimer_not_refusal(self):
-        """RAG-13 (2026-05-17): an answer like '当前知识库只收录了以下信息：...' is a
-        soft disclaimer, NOT a hard refusal. It triggers a citation retry (because
-        no [n] is present), and is counted under `with_disclaimer`, not `pure_refused`.
+    def test_evaluate_answers_coerces_disclaimer_without_citation_to_refusal(self):
+        """Step 6b runtime-parity update (2026-05-18) supersedes the RAG-13
+        soft-disclaimer routing for the no-citation case.
 
-        Pre-RAG-13 this answer was lumped into `refused` and skipped citation retry —
-        which inflated the refusal metric and masked the underlying citation gap.
+        Original RAG-13 intent (2026-05-17): a disclaimer like
+        '当前知识库只收录了以下信息：...' is a soft disclaimer, NOT a hard refusal,
+        and is counted under `with_disclaimer`.
+
+        Step 6b discovery: runtime engine.go:1074-1081 actually substitutes
+        ragNoEvidenceReply when the citation retry produces neither a refusal
+        template nor a [n] citation — including disclaimer-shaped text. The
+        prior eval logic kept the disclaimer answer visible while runtime hid
+        it, which made the eval STRICTER than production. Eval now mirrors
+        runtime: disclaimer + retry-still-no-cite → coerced to pure refusal
+        (memory feedback_eval_target_must_match_runtime_path).
+
+        Disclaimers WITH citation are still counted under `with_disclaimer`
+        (only the no-cite case is coerced).
         """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -3968,20 +3979,26 @@ class RagW0ScriptTests(unittest.TestCase):
                 judge=lambda question, answer, chunks: {"grounded": True, "cited": False, "fabricated": False},
             )
 
-            # Disclaimer + no [n] → citation retry is triggered (RAG-13 new behavior).
+            # Disclaimer + no [n] still triggers citation retry. Retry produces
+            # the same disclaimer-no-cite content → coerced to ragNoEvidenceReply
+            # per Step 6b runtime-parity update.
             self.assertEqual(len(calls), 2)
-            self.assertEqual(summary["answer_questions_pure_refused"], 0)
-            self.assertEqual(summary["answer_questions_with_disclaimer"], 1)
+            ans0 = summary["answers"][0]
+            self.assertTrue(ans0["pure_refusal"])
+            self.assertEqual(ans0["answer"], evaluate_answers.RAG_NO_EVIDENCE_REPLY)
+            self.assertTrue(ans0["retry_no_cite"])
+            self.assertEqual(summary["answer_questions_pure_refused"], 1)
+            self.assertEqual(summary["answer_questions_with_disclaimer"], 0)
             self.assertEqual(summary["answer_questions_non_refused"], 0)
-            # cited_rate denom = with_disclaimer + non_refused = 1; numerator 0 → 0.0.
-            self.assertEqual(summary["cited_rate"], 0.0)
-            self.assertEqual(summary["pure_refusal_rate"], 0.0)
-            self.assertEqual(summary["disclaimer_rate"], 1.0)
-            # Backward-compat alias: pre-RAG-13 callers saw 1; post-RAG-13 sees 0.
-            self.assertEqual(summary["answer_questions_refused"], 0)
-            # `missing_citation` flag should fire (judge_flagged failure).
-            self.assertEqual(len(summary["failed_answers"]), 1)
-            self.assertEqual(summary["failed_answers"][0]["reason"], "judge_flagged")
+            self.assertEqual(summary["retry_no_cite_count"], 1)
+            self.assertEqual(summary["empty_answer_after_retry_count"], 0)
+            # cited_rate denom = with_disclaimer + non_refused = 0; _rate(0,0) is None.
+            self.assertIsNone(summary["cited_rate"])
+            self.assertEqual(summary["pure_refusal_rate"], 1.0)
+            self.assertEqual(summary["disclaimer_rate"], 0.0)
+            self.assertEqual(summary["answer_questions_refused"], 1)
+            # pure_refusal=True + judge grounded=True → no judge_flagged.
+            self.assertEqual(summary.get("failed_answers"), [])
 
     # ------------------------------------------------------------------
     # RAG-13 metric split — 4 locked example cases (do not rely on length<100 alone)
@@ -4163,11 +4180,186 @@ class RagW0ScriptTests(unittest.TestCase):
                 judge=lambda question, answer, chunks: {"grounded": True, "cited": True, "fabricated": False},
             )
 
+            # Step 6b runtime-parity update (2026-05-18): retry-still-no-cite now
+            # mirrors engine.go:1081 — coerce to ragNoEvidenceReply and classify
+            # as pure refusal. Previously the answer was kept and counted as
+            # non_refused-but-uncited which made eval STRICTER than runtime
+            # (memory feedback_eval_target_must_match_runtime_path).
+            ans0 = summary["answers"][0]
+            self.assertTrue(ans0["pure_refusal"])
+            self.assertEqual(ans0["answer"], evaluate_answers.RAG_NO_EVIDENCE_REPLY)
+            self.assertTrue(ans0["retry_no_cite"])
+            self.assertFalse(ans0["empty_after_retry"])
+            self.assertEqual(ans0["raw_retry_answer"], "4090 价格每小时约 8 元,可以买包月。")
+            self.assertTrue(ans0["citation_retry"])
+            self.assertEqual(summary["answer_questions_non_refused"], 0)
+            self.assertEqual(summary["answer_questions_pure_refused"], 1)
+            self.assertEqual(summary["retry_no_cite_count"], 1)
+            self.assertEqual(summary["empty_answer_after_retry_count"], 0)
+            # cited_rate denom (with_disclaimer + non_refused) is 0; _rate returns None.
+            self.assertIsNone(summary["cited_rate"])
+            # No judge-flagged entry: pure_refusal=True suppresses missing_citation flag
+            # and the mock judge returns grounded=True with no fab.
+            self.assertEqual(summary.get("failed_answers"), [])
+
+    def test_evaluate_answers_coerces_empty_retry_to_refusal_and_counts_empty(self):
+        """Step 6b runtime-parity (2026-05-18): when ds-v4-flash retry returns
+        an empty string (observed at ~2% rate against ModelVerse on hybrid path),
+        runtime engine.go:1081 still substitutes ragNoEvidenceReply. Eval must
+        do the same AND surface the empty-return rate via
+        empty_answer_after_retry_count so the API noise stays visible without
+        polluting the cited_rate hard contract
+        (memory feedback_eval_target_must_match_runtime_path)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            out_path = root / "answer_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-billing_rule-4090-a1b2c3d4",
+                        product_area="billing_rule",
+                        title="4090 pricing",
+                        content="4090 hourly billing per selected mode.",
+                        question_patterns=["4090 pricing"],
+                    )
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q-empty",
+                        "question": "4090 多少钱",
+                        "group": "billing_mode_shutdown",
+                        "product_area": "billing_rule",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-billing_rule-4090-a1b2c3d4"],
+                    }
+                ],
+            )
+            retrieval_path.write_text(
+                json.dumps(
+                    {
+                        "trace_records": [
+                            {
+                                "question_id": "q-empty",
+                                "hit_items": [
+                                    {"chunk_id": "w0-billing_rule-4090-a1b2c3d4", "score": 6.0, "kept": True}
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            # First answer: substantive but no [n]. Retry: empty (ds-v4-flash failure mode).
+            answers = ["4090 是按小时计费的", ""]
+
+            def answerer(question: str, chunks: list[dict]) -> str:
+                return answers.pop(0)
+
+            summary = evaluate_answers.evaluate_answers(
+                chunks_path,
+                questions_path,
+                retrieval_path,
+                out_path,
+                answerer=answerer,
+                judge=lambda question, answer, chunks: {"grounded": True, "cited": True, "fabricated": False},
+            )
+
+            ans0 = summary["answers"][0]
+            self.assertTrue(ans0["pure_refusal"])
+            self.assertEqual(ans0["answer"], evaluate_answers.RAG_NO_EVIDENCE_REPLY)
+            self.assertTrue(ans0["retry_no_cite"])
+            self.assertTrue(ans0["empty_after_retry"])
+            self.assertEqual(ans0["raw_retry_answer"], "")
+            self.assertEqual(summary["answer_questions_pure_refused"], 1)
+            self.assertEqual(summary["retry_no_cite_count"], 1)
+            self.assertEqual(summary["empty_answer_after_retry_count"], 1)
+
+    def test_evaluate_answers_retry_recovers_with_citation_no_coercion(self):
+        """Step 6b runtime-parity (2026-05-18): when the citation retry yields
+        a properly cited answer, the original answerer text is replaced with
+        the retry result (existing behavior preserved) and NO ragNoEvidenceReply
+        coercion happens. retry_no_cite stays False."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunks_path = root / "chunks.jsonl"
+            questions_path = root / "questions.jsonl"
+            retrieval_path = root / "retrieval_eval.json"
+            out_path = root / "answer_eval.json"
+            self._write_jsonl(
+                chunks_path,
+                [
+                    self._retrieval_eval_chunk(
+                        chunk_id="w0-billing_rule-4090-a1b2c3d4",
+                        product_area="billing_rule",
+                        title="4090 pricing",
+                        content="4090 hourly billing per selected mode.",
+                        question_patterns=["4090 pricing"],
+                    )
+                ],
+            )
+            self._write_jsonl(
+                questions_path,
+                [
+                    {
+                        "question_id": "q-recover",
+                        "question": "4090 多少钱",
+                        "group": "billing_mode_shutdown",
+                        "product_area": "billing_rule",
+                        "expected_behavior": "answer",
+                        "expected_chunk_ids": ["w0-billing_rule-4090-a1b2c3d4"],
+                    }
+                ],
+            )
+            retrieval_path.write_text(
+                json.dumps(
+                    {
+                        "trace_records": [
+                            {
+                                "question_id": "q-recover",
+                                "hit_items": [
+                                    {"chunk_id": "w0-billing_rule-4090-a1b2c3d4", "score": 6.0, "kept": True}
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            # First answer: no [n]. Retry: cited.
+            answers = ["4090 是按小时计费的", "4090 按小时计费 [1]。"]
+
+            def answerer(question: str, chunks: list[dict]) -> str:
+                return answers.pop(0)
+
+            summary = evaluate_answers.evaluate_answers(
+                chunks_path,
+                questions_path,
+                retrieval_path,
+                out_path,
+                answerer=answerer,
+                judge=lambda question, answer, chunks: {"grounded": True, "cited": True, "fabricated": False},
+            )
+
+            ans0 = summary["answers"][0]
+            self.assertFalse(ans0["pure_refusal"])
+            self.assertEqual(ans0["answer"], "4090 按小时计费 [1]。")
+            self.assertTrue(ans0["citation_retry"])
+            self.assertFalse(ans0["retry_no_cite"])
+            self.assertFalse(ans0["empty_after_retry"])
+            self.assertIsNone(ans0["raw_retry_answer"])
             self.assertEqual(summary["answer_questions_non_refused"], 1)
-            self.assertEqual(summary["cited_rate"], 0.0)
-            self.assertEqual(summary["failed_answers"][0]["reason"], "judge_flagged")
-            self.assertFalse(summary["answers"][0]["judge"]["cited"])
-            self.assertTrue(summary["answers"][0]["citation_retry"])
+            self.assertEqual(summary["cited_rate"], 1.0)
+            self.assertEqual(summary["retry_no_cite_count"], 0)
+            self.assertEqual(summary["empty_answer_after_retry_count"], 0)
 
     def test_evaluate_answers_prompt_preserves_conflict_and_condition_rules(self):
         prompt = evaluate_answers._answer_prompt(
