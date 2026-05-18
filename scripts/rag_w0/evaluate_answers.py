@@ -23,6 +23,13 @@ except ImportError:  # pragma: no cover
 DEFAULT_JUDGE_MODEL = "claude-opus-4-7"
 DEFAULT_ANSWER_MODEL = "deepseek-v4-pro"
 CITATION_RE = re.compile(r"\[[1-9]\d*\]")
+# Mirror runtime engine.go:1081 (cited_guard.go:9 const ragNoEvidenceReply).
+# When the citation-retry still yields no [n] (including empty content), the
+# runtime returns this canned string and classifies the turn as no-evidence
+# refusal. Eval must mirror that classification or it will measure a stricter
+# behavior than production actually exhibits (memory
+# feedback_eval_target_must_match_runtime_path + feedback_eval_must_reflect_runtime_no_coercion).
+RAG_NO_EVIDENCE_REPLY = "当前知识库未覆盖该问题,我无法回答。"
 # DEPRECATED post-RAG-13 (2026-05-17): kept for backward compatibility.
 # Conflates hard refusal templates with soft boundary-disclosure (disclaimer).
 # Use HARD_REFUSAL_RE + SOFT_DISCLAIMER_RE below for correct metric split.
@@ -130,6 +137,22 @@ def evaluate_answers(
                     progress=progress,
                 )
                 pure_refusal = _is_hard_refusal(answer)
+            # Runtime-parity coercion (engine.go:1074-1081 cited_guard): if the
+            # citation retry was triggered AND the retry result is neither a
+            # refusal template nor a cited answer (including empty content),
+            # production substitutes ragNoEvidenceReply and treats the turn as
+            # no-evidence refusal. Eval mirrors that so cited_rate measures what
+            # users actually receive (memory feedback_eval_target_must_match_runtime_path).
+            retry_no_cite = False
+            empty_after_retry = False
+            raw_retry_answer = None
+            if citation_retry and not pure_refusal and not _has_citation(answer):
+                retry_no_cite = True
+                if not answer.strip():
+                    empty_after_retry = True
+                raw_retry_answer = answer
+                answer = RAG_NO_EVIDENCE_REPLY
+                pure_refusal = True
             citation_present = _has_citation(answer)
             judge_result = _call_with_retries(
                 lambda: judge(str(question.get("question") or ""), answer, hit_chunks),
@@ -174,6 +197,18 @@ def evaluate_answers(
                 "soft_disclaimer": _has_soft_disclaimer(answer),
                 "citation_present": citation_present,
                 "citation_retry": citation_retry,
+                # Step 6b runtime-parity diagnostics: count cases where the
+                # citation-retry produced neither a refusal template nor a
+                # citation (substituted to ragNoEvidenceReply per engine.go:1081).
+                # empty_after_retry is a subset of retry_no_cite where the model
+                # returned an empty string after the retry (ds-v4-flash + hybrid
+                # has a low-rate empty-return mode). raw_retry_answer preserves
+                # the pre-substitution text per-row only (not aggregated into
+                # the summary); future summary readers do not need to PII-scrub
+                # the headline metrics, only the per-question answer_results.
+                "retry_no_cite": retry_no_cite,
+                "empty_after_retry": empty_after_retry,
+                "raw_retry_answer": raw_retry_answer,
             }
         )
         _write_json(
@@ -232,6 +267,10 @@ def _answer_summary(
     with_disclaimer = counts["with_disclaimer"]
     non_refused = counts["non_refused"]
     answered_subset = with_disclaimer + non_refused
+    # Step 6b diagnostics: track retry-no-cite coercion frequency. These are
+    # subsets of pure_refused — counted for visibility, not gate calculation.
+    retry_no_cite_count = sum(1 for item in answer_results if item.get("retry_no_cite") is True)
+    empty_after_retry_count = sum(1 for item in answer_results if item.get("empty_after_retry") is True)
     return {
         "answer_questions_evaluated": evaluated,
         "answer_generation_failures": 0,
@@ -260,6 +299,12 @@ def _answer_summary(
         # (PRs #88 / #89) are not directly comparable — re-run via this script.
         "answer_questions_refused": pure_refused,
         "citation_denominator": answered_subset,
+        # Step 6b diagnostics — not gate fields, surfaced so judge / API noise
+        # is visible. retry_no_cite_count = pure_refused subset where the model
+        # never cited; empty_after_retry_count = subset of that with empty body
+        # (ds-v4-flash + hybrid produces this at ~2% rate per 2026-05-18 data).
+        "retry_no_cite_count": retry_no_cite_count,
+        "empty_answer_after_retry_count": empty_after_retry_count,
         "answers": answer_results,
     }
 
@@ -491,9 +536,9 @@ def _answer_prompt(question: str, chunks: list[dict[str, Any]]) -> str:
         for index, chunk in enumerate(chunks[:3], start=1)
     )
     # PR-RAG-Prompt-Disclaimer-Fix (2026-05-17): three-tier disclaimer strategy.
-    # MUST stay in sync with internal/prompt/rag.go BuildRAGMessages — runtime
-    # and eval prompts have to elicit identical behavior or eval mis-measures
-    # runtime (memory feedback_eval_target_must_match_runtime_path).
+    # Step 6b (2026-05-17): six anti-fabrication anchor bullets appended to
+    # 【事实约束】 — mirrors internal/prompt/rag.go BuildRAGMessages exactly
+    # (memory feedback_eval_target_must_match_runtime_path).
     return (
         "你是 CompShare 平台知识库答复助手。只能使用下面的知识片段回答,不要补充片段外的事实。\n\n"
         "【回答规则 — 按资料覆盖度三选一】\n"
@@ -504,7 +549,13 @@ def _answer_prompt(question: str, chunks: list[dict[str, Any]]) -> str:
         "- 标题和正文存在冲突时,以正文中的明确陈述为准,并说明资料表述不一致。\n"
         "- 涉及时间、金额、窗口、条件判断时,必须保留知识片段里的原始条件,不要把示例改写成通用规则。\n"
         "- 多个片段给出不同价格或规则时,只使用与用户问题直接相关的片段,不要混合无关片段推断。\n"
-        "- 所有非拒答的事实句都必须带 [1]、[2] 这样的引用编号;没有引用编号的答案会被判为失败。\n\n"
+        "- 所有非拒答的事实句都必须带 [1]、[2] 这样的引用编号;没有引用编号的答案会被判为失败。\n"
+        "- 代码、import 语句、函数签名、命令行、配置文件片段必须字符级、按行原样复制知识片段中的内容;不要补全省略号、不要拼接多段、不要修改大小写或下划线。\n"
+        "- 枚举值、常量名、错误码、HTTP 状态码必须按知识片段字面拷贝;不要拼接、重复、改变下划线或连字符。\n"
+        "- 涉及数字、金额、百分比、精度位时,必须按知识片段给出的字面值复制(含小数点位数),不要四舍五入或换算单位。\n"
+        "- 回答不允许包含知识片段没有写的故障排除建议、操作步骤、联系方式或下一步行动;只有当知识片段里自身出现 \"建议...\"、\"请...\" 等表述时才能复述。\n"
+        "- 涉及推荐 / 禁止 / 支持 / 不支持 / 启用 / 禁用 / 包含 / 排除 等方向性词汇时,必须按知识片段原始方向陈述;不要因为用户问题方向相反就翻转知识片段含义。\n"
+        "- 同一份知识片段中如出现多个字段名或列表标题(如官网链接 / API 端点 / 请求地址 / 服务地址 / 文档地址 / 支持列表 / 已下架列表 等),必须按对应字段或列表标题旁的具体值回答,不要把一项的内容套用到另一个标题上。\n\n"
         f"用户问题:\n{question}\n\n知识片段:\n{chunk_text}"
     )
 
