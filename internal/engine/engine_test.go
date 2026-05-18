@@ -3398,6 +3398,7 @@ func TestStage2BRetrievalHitCallsLLMWithNumberedEvidence(t *testing.T) {
 		SourceURL:   "https://www.compshare.cn/docs/billing",
 	}
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	latency := int64(4987)
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:              true,
 		KBVersion:            "kb.v1",
@@ -3406,6 +3407,7 @@ func TestStage2BRetrievalHitCallsLLMWithNumberedEvidence(t *testing.T) {
 		HitItems:             []knowledge.RetrievalHit{{Chunk: chunk, Score: 80, Kept: true}},
 		HybridMode:           "bm25_fallback",
 		HybridFallbackReason: "embedding_timeout",
+		EmbeddingLatencyMS:   &latency,
 	}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Stopped instances still charge for disks. [1]"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
@@ -3434,10 +3436,13 @@ func TestStage2BRetrievalHitCallsLLMWithNumberedEvidence(t *testing.T) {
 	assert.Equal(t, "w0-billing_rule-stopped-a1b2c3d4", retrievalTraces[0].HitItems[0].ChunkID)
 	assert.Equal(t, 80.0, retrievalTraces[0].HitItems[0].Score)
 	assert.False(t, retrievalTraces[0].WeakEvidence)
-	// HybridMode + HybridFallbackReason must propagate from RetrievalResult
-	// into the emitted trace so ops can aggregate fallback rate across runs.
+	// HybridMode + HybridFallbackReason + EmbeddingLatencyMS must propagate
+	// from RetrievalResult into the emitted trace so ops can aggregate
+	// fallback rate AND latency distribution across runs.
 	assert.Equal(t, "bm25_fallback", retrievalTraces[0].HybridMode)
 	assert.Equal(t, "embedding_timeout", retrievalTraces[0].HybridFallbackReason)
+	require.NotNil(t, retrievalTraces[0].EmbeddingLatencyMS)
+	assert.Equal(t, int64(4987), *retrievalTraces[0].EmbeddingLatencyMS)
 }
 
 func TestStage2BRetrievalAmbiguousTopHitsMarksRankingErrorCandidate(t *testing.T) {

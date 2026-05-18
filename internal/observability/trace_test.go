@@ -85,6 +85,7 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 		WeakEvidence:         true,
 		HybridMode:           "bm25_fallback",
 		HybridFallbackReason: "embedding_timeout",
+		EmbeddingLatencyMS:   int64Ptr(4987),
 	}
 
 	data, err := json.Marshal(trace)
@@ -104,6 +105,7 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 		`"weak_evidence":true`,
 		`"hybrid_mode":"bm25_fallback"`,
 		`"hybrid_fallback_reason":"embedding_timeout"`,
+		`"embedding_latency_ms":4987`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("retrieval trace JSON missing %s: %s", want, text)
@@ -113,6 +115,9 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 
 // HybridMode and HybridFallbackReason must omit from JSON when empty so old
 // traces and the retrieval-disabled path don't suddenly grow new keys.
+// EmbeddingLatencyMS (*int64) must omit when nil so bm25_only / empty-pool
+// paths stay clean. A *0 (real 0ms) would still emit — that's the whole
+// point of using *int64 instead of int64+omitempty.
 func TestRetrievalTraceHybridFieldsOmitEmpty(t *testing.T) {
 	trace := RetrievalTrace{
 		Enabled:   true,
@@ -130,7 +135,32 @@ func TestRetrievalTraceHybridFieldsOmitEmpty(t *testing.T) {
 	if strings.Contains(text, "hybrid_fallback_reason") {
 		t.Fatalf("empty HybridFallbackReason must omit from JSON: %s", text)
 	}
+	if strings.Contains(text, "embedding_latency_ms") {
+		t.Fatalf("nil EmbeddingLatencyMS must omit from JSON: %s", text)
+	}
 }
+
+// A pointer to 0 (real 0ms round-trip — reserved for future client-side
+// cache hits) must NOT be omitted. Distinguishing nil ("never invoked")
+// from *0 ("invoked, <1ms") is the load-bearing reason this field is
+// *int64 instead of int64+omitempty.
+func TestRetrievalTraceEmbeddingLatencyZeroIsNotOmitted(t *testing.T) {
+	trace := RetrievalTrace{
+		Enabled:            true,
+		KBVersion:          "kb.test",
+		EmbeddingLatencyMS: int64Ptr(0),
+	}
+	data, err := json.Marshal(trace)
+	if err != nil {
+		t.Fatalf("marshal RetrievalTrace: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"embedding_latency_ms":0`) {
+		t.Fatalf("*0 EmbeddingLatencyMS must serialize as 0, got: %s", text)
+	}
+}
+
+func int64Ptr(v int64) *int64 { return &v }
 
 // HybridMode alone must be enough to mark the retrieval block as observed —
 // otherwise a bm25_only retriever's trace would be silently dropped from the
@@ -149,6 +179,21 @@ func TestRetrievalTraceObservedByHybridModeAlone(t *testing.T) {
 		trace := RetrievalTrace{HybridFallbackReason: "embedding_timeout"}
 		if !traceRetrievalObserved(trace) {
 			t.Fatal("traceRetrievalObserved(HybridFallbackReason only) = false, want true")
+		}
+	})
+	t.Run("embedding_latency_only", func(t *testing.T) {
+		trace := RetrievalTrace{EmbeddingLatencyMS: int64Ptr(1234)}
+		if !traceRetrievalObserved(trace) {
+			t.Fatal("traceRetrievalObserved(EmbeddingLatencyMS only) = false, want true")
+		}
+	})
+	t.Run("embedding_latency_pointer_to_zero", func(t *testing.T) {
+		// *0 (invoked but <1ms) must still mark the block as observed,
+		// otherwise future client-cache hits would silently lose the
+		// retrieval trace.
+		trace := RetrievalTrace{EmbeddingLatencyMS: int64Ptr(0)}
+		if !traceRetrievalObserved(trace) {
+			t.Fatal("traceRetrievalObserved(EmbeddingLatencyMS=*0) = false, want true")
 		}
 	})
 }

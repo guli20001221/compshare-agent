@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,6 +28,24 @@ func (f *fakeEmbedder) Embed(_ context.Context, text string) ([]float32, error) 
 		return []float32{0, 0, 0}, nil
 	}
 	return vec, nil
+}
+
+// sleepingEmbedder simulates a slow embedding API. It honors ctx
+// cancellation so retriever.hybridTimeout can fire (the actual
+// EmbeddingLatencyMS measured will be ≈ hybridTimeout, not sleep).
+type sleepingEmbedder struct {
+	sleep time.Duration
+	calls int
+}
+
+func (s *sleepingEmbedder) Embed(ctx context.Context, _ string) ([]float32, error) {
+	s.calls++
+	select {
+	case <-time.After(s.sleep):
+		return []float32{1, 0, 0}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func hybridSetup(t *testing.T) (Corpus, *EmbeddingSidecar) {
@@ -80,6 +99,8 @@ func TestRetrieverHybridReordersByEmbeddingScore(t *testing.T) {
 	assert.GreaterOrEqual(t, got.HitItems[0].Score, -1.0)
 	assert.Equal(t, "hybrid_cosine", got.HybridMode, "successful hybrid rerank should report HybridMode=hybrid_cosine")
 	assert.Equal(t, "", got.HybridFallbackReason, "no fallback reason on successful rerank")
+	require.NotNil(t, got.EmbeddingLatencyMS, "successful rerank invoked embedder, EmbeddingLatencyMS must be non-nil")
+	assert.GreaterOrEqual(t, *got.EmbeddingLatencyMS, int64(0), "latency must be non-negative")
 }
 
 // Embedder error must fall back to BM25 top-K without panicking. The
@@ -98,6 +119,8 @@ func TestRetrieverHybridFallsBackToBM25OnEmbedError(t *testing.T) {
 	assert.Equal(t, 1, embedder.calls, "fallback path still invoked embedder exactly once before deciding to fall back")
 	assert.Equal(t, "bm25_fallback", got.HybridMode, "embedder error must surface as HybridMode=bm25_fallback")
 	assert.Equal(t, "embedding_error", got.HybridFallbackReason, "generic non-timeout error should classify as embedding_error")
+	require.NotNil(t, got.EmbeddingLatencyMS, "embedder was invoked, latency must be recorded even on error")
+	assert.GreaterOrEqual(t, *got.EmbeddingLatencyMS, int64(0))
 }
 
 // When BM25 returns zero candidates, the retriever must not invoke the
@@ -118,6 +141,9 @@ func TestRetrieverHybridSkipsEmbedderOnEmptyBM25Pool(t *testing.T) {
 	// was misconfigured. The empty-result signal is carried by Empty=true.
 	assert.Equal(t, "hybrid_cosine", got.HybridMode, "empty BM25 pool under hybrid configuration still reports HybridMode=hybrid_cosine")
 	assert.Equal(t, "", got.HybridFallbackReason)
+	// Embedder was never invoked → latency must be nil (distinguishing
+	// "skipped" from a real 0ms round-trip is the whole point of *int64).
+	assert.Nil(t, got.EmbeddingLatencyMS, "empty BM25 pool means embedder not invoked, latency must be nil")
 }
 
 // Without an embedder or sidecar, the retriever takes the BM25-only path —
@@ -134,6 +160,7 @@ func TestRetrieverHybridOptOutPreservesBM25Behavior(t *testing.T) {
 	want := rBoth.Retrieve(q, "billing")
 	assert.Equal(t, "bm25_only", want.HybridMode, "no sidecar + no embedder should report HybridMode=bm25_only")
 	assert.Equal(t, "", want.HybridFallbackReason)
+	assert.Nil(t, want.EmbeddingLatencyMS, "bm25_only never invoked embedder, latency must be nil")
 	for _, name := range []string{"only-sidecar", "only-embedder"} {
 		t.Run(name, func(t *testing.T) {
 			var got RetrievalResult
@@ -145,6 +172,7 @@ func TestRetrieverHybridOptOutPreservesBM25Behavior(t *testing.T) {
 			assert.Equal(t, chunkIDs(want.Hits), chunkIDs(got.Hits), "BM25-only path should be identical when only one of sidecar/embedder is set")
 			assert.Equal(t, "bm25_only", got.HybridMode, "exactly one of sidecar/embedder set still means hybrid is disabled")
 			assert.Equal(t, "", got.HybridFallbackReason)
+			assert.Nil(t, got.EmbeddingLatencyMS)
 		})
 	}
 	assert.Equal(t, 0, embedder.calls, "embedder must not be invoked when sidecar is nil")
@@ -166,6 +194,8 @@ func TestRetrieverHybridFallsBackOnEmptyQueryEmbedding(t *testing.T) {
 	assert.Equal(t, "hybrid-a", got.Hits[0].ChunkID, "empty embedding should fall back to BM25 top-3 ordering")
 	assert.Equal(t, "bm25_fallback", got.HybridMode)
 	assert.Equal(t, "embedding_empty", got.HybridFallbackReason)
+	require.NotNil(t, got.EmbeddingLatencyMS, "embedder was invoked, latency recorded even when vec is empty")
+	assert.GreaterOrEqual(t, *got.EmbeddingLatencyMS, int64(0))
 }
 
 // Sidecar missing a chunk_id mid-rerank must drop that single candidate
@@ -216,6 +246,32 @@ func TestRetrieverHybridContextDeadlineSetsTimeoutReason(t *testing.T) {
 	assert.Equal(t, "bm25_fallback", got.HybridMode)
 	assert.Equal(t, "embedding_timeout", got.HybridFallbackReason,
 		"context.DeadlineExceeded must classify as embedding_timeout, not embedding_error")
+}
+
+// Real ctx-cancel timeout: hybridTimeout fires before sleepingEmbedder
+// returns. EmbeddingLatencyMS must approximate the configured timeout
+// (the ctx-cancel cost), giving ops a knob-tweak signal. We assert a
+// generous range to avoid CI scheduler flake — the key invariant is
+// that latency is meaningful (not 0, not absurdly large), not exact.
+func TestRetrieverHybridLatencyApproximatesTimeoutOnRealCancel(t *testing.T) {
+	corpus, sidecar := hybridSetup(t)
+	embedder := &sleepingEmbedder{sleep: 500 * time.Millisecond}
+	r := NewRetriever(corpus, RetrieverOptions{
+		Now:                  fixedRetrieverNow,
+		EmbeddingSidecar:     sidecar,
+		Embedder:             embedder,
+		HybridContextTimeout: 50 * time.Millisecond,
+	})
+	got := r.Retrieve("a 主题问法", "billing")
+	assert.Equal(t, "bm25_fallback", got.HybridMode)
+	assert.Equal(t, "embedding_timeout", got.HybridFallbackReason)
+	require.NotNil(t, got.EmbeddingLatencyMS)
+	// Latency should be roughly the timeout (50ms) — at least 40ms,
+	// at most 250ms (CI scheduler / context cancel propagation slack).
+	assert.GreaterOrEqual(t, *got.EmbeddingLatencyMS, int64(40),
+		"latency should approximate the configured timeout, got %dms", *got.EmbeddingLatencyMS)
+	assert.LessOrEqual(t, *got.EmbeddingLatencyMS, int64(250),
+		"latency should not significantly exceed the timeout, got %dms", *got.EmbeddingLatencyMS)
 }
 
 // Wrapped context.DeadlineExceeded must still classify as embedding_timeout

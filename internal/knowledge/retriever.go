@@ -35,9 +35,11 @@ type RetrieverOptions struct {
 	// retriever_test.go expectations).
 	EmbeddingSidecar *EmbeddingSidecar
 	Embedder         VectorEmbedder
-	// HybridContextTimeout bounds each query embedding call. Defaults to 1s
-	// when zero. The retriever swallows embedding errors and falls back to
-	// BM25 top-3 from its top-20 pool — see retrieveHybrid for the contract.
+	// HybridContextTimeout bounds each query embedding call. Defaults to
+	// 5s (matches internal/embedding p99 measurement) when zero or
+	// negative. The retriever swallows embedding errors and falls back
+	// to BM25 top-3 from its top-20 pool. Override in production via the
+	// RAG_HYBRID_TIMEOUT_MS env var (parsed in cmd/trace.go).
 	HybridContextTimeout time.Duration
 }
 
@@ -60,6 +62,19 @@ type RetrievalResult struct {
 	// HybridFallbackReason is non-empty only when HybridMode == "bm25_fallback".
 	// One of "embedding_timeout" | "embedding_error" | "embedding_empty".
 	HybridFallbackReason string
+	// EmbeddingLatencyMS is the wall-clock time spent in r.embedder.Embed,
+	// in milliseconds. Pointer is intentional to distinguish three states:
+	//   - nil:    embedder was not invoked (HybridMode == "bm25_only", or
+	//             hybrid configured but BM25 pool was empty so the embed
+	//             call was skipped). Distinguishing "skipped" from a real
+	//             "0ms" round-trip is why this is *int64, not int64+omitempty.
+	//   - *0:     embedder returned in < 1ms (currently unreachable in
+	//             production but reserved for future client-side cache hits).
+	//   - *>0:    actual round-trip. On embedding_timeout this approximates
+	//             the configured HybridContextTimeout (ctx-cancel latency).
+	// Ops uses this to compute production p95/p99 latency distribution and
+	// pick a principled HybridContextTimeout instead of blind tuning.
+	EmbeddingLatencyMS *int64
 }
 
 type RetrievalHit struct {
@@ -135,12 +150,17 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 	// and the rerank step ran successfully (or BM25 pool was empty so we
 	// never needed to call the embedder). Switched to bm25_fallback when the
 	// embedder failed and we returned the BM25 pool unchanged.
+	// embeddingLatencyMs is nil unless the embedder was actually invoked,
+	// preserving the three-state distinction documented on
+	// RetrievalResult.EmbeddingLatencyMS.
 	hybridMode := "bm25_only"
 	hybridFallbackReason := ""
+	var embeddingLatencyMs *int64
 	if r.hybridEnabled() {
 		if len(bm25Candidates) > 0 {
-			reranked, fallbackReason := r.rerankByEmbedding(question, bm25Candidates)
+			reranked, fallbackReason, latencyMs := r.rerankByEmbedding(question, bm25Candidates)
 			finalCandidates = reranked
+			embeddingLatencyMs = &latencyMs
 			if fallbackReason != "" {
 				hybridMode = "bm25_fallback"
 				hybridFallbackReason = fallbackReason
@@ -151,6 +171,7 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 			// BM25 pool empty: embedder was never invoked, but the configured
 			// path is hybrid. Report hybrid_cosine with no fallback so ops
 			// dashboards don't see this as a "BM25-only retriever".
+			// EmbeddingLatencyMS stays nil since the embedder was not called.
 			hybridMode = "hybrid_cosine"
 		}
 	}
@@ -178,6 +199,7 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 		Empty:                len(hits) == 0,
 		HybridMode:           hybridMode,
 		HybridFallbackReason: hybridFallbackReason,
+		EmbeddingLatencyMS:   embeddingLatencyMs,
 	}
 }
 
@@ -214,34 +236,38 @@ func (r *Retriever) collectBM25Candidates(question, productArea string) []scored
 // pinned corpus sidecar. The returned candidates carry the *cosine* score
 // in scoredChunk.score so trace records reflect the actual ranking signal.
 //
-// If the embedding call fails the function logs a structured warning and
-// returns the BM25 pool unchanged (caller will then take top-K from that
-// pool). Per user 2026-05-17 spec: "embedding 失败时降级 BM25".
+// Returns (reranked, fallbackReason, latencyMs):
+//   - On success: reranked candidates, "", actual embed round-trip ms
+//   - On embedding error: bm25Pool unchanged, reason, time-to-error ms
+//     (reason "embedding_timeout" via errors.Is(err, ctx.DeadlineExceeded),
+//     else "embedding_error"; per user 2026-05-17 spec
+//     "embedding 失败时降级 BM25", no retry)
+//   - On empty query vector: bm25Pool unchanged, "embedding_empty", ms
+//
+// latencyMs is always measured (success or failure) and the caller wraps
+// it into RetrievalResult.EmbeddingLatencyMS (*int64) so ops can compute
+// production p95/p99 from the trace JSONL and pick a principled timeout.
 //
 // The Python eval pipeline (scripts/rag_w0/evaluate_retrieval.py --mode
 // hybrid) must produce the same final top-K chunk_id sets on the same
 // inputs for the 377-Q parity contract to hold.
-// Returns (reranked candidates, fallbackReason). fallbackReason is "" on
-// success (cosine path taken) and one of "embedding_timeout" |
-// "embedding_error" | "embedding_empty" when the function returns the
-// BM25 pool unchanged. Callers use fallbackReason to populate
-// RetrievalResult.HybridMode + HybridFallbackReason for trace plumbing
-// (see internal/observability/trace.RetrievalTrace.HybridMode).
-func (r *Retriever) rerankByEmbedding(question string, bm25Pool []scoredChunk) ([]scoredChunk, string) {
+func (r *Retriever) rerankByEmbedding(question string, bm25Pool []scoredChunk) ([]scoredChunk, string, int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), r.hybridTimeout)
 	defer cancel()
+	start := time.Now()
 	queryVec, err := r.embedder.Embed(ctx, question)
+	latencyMs := time.Since(start).Milliseconds()
 	if err != nil {
-		log.Printf("rag.hybrid: query embedding failed, falling back to BM25 top-%d: %v", r.topK, err)
+		log.Printf("rag.hybrid: query embedding failed in %dms, falling back to BM25 top-%d: %v", latencyMs, r.topK, err)
 		reason := "embedding_error"
 		if errors.Is(err, context.DeadlineExceeded) {
 			reason = "embedding_timeout"
 		}
-		return bm25Pool, reason
+		return bm25Pool, reason, latencyMs
 	}
 	if len(queryVec) == 0 {
-		log.Printf("rag.hybrid: query embedding empty, falling back to BM25 top-%d", r.topK)
-		return bm25Pool, "embedding_empty"
+		log.Printf("rag.hybrid: query embedding empty in %dms, falling back to BM25 top-%d", latencyMs, r.topK)
+		return bm25Pool, "embedding_empty", latencyMs
 	}
 	reranked := make([]scoredChunk, 0, len(bm25Pool))
 	for _, c := range bm25Pool {
@@ -270,7 +296,7 @@ func (r *Retriever) rerankByEmbedding(question string, bm25Pool []scoredChunk) (
 		}
 		return left.chunk.ChunkID < right.chunk.ChunkID
 	})
-	return reranked, ""
+	return reranked, "", latencyMs
 }
 
 type scoredChunk struct {

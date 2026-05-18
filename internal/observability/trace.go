@@ -233,6 +233,12 @@ type RetrievalTrace struct {
 	// HybridFallbackReason is non-empty only when HybridMode == "bm25_fallback".
 	// One of "embedding_timeout" | "embedding_error" | "embedding_empty".
 	HybridFallbackReason string `json:"hybrid_fallback_reason,omitempty"`
+	// EmbeddingLatencyMS mirrors internal/knowledge/retriever.RetrievalResult.EmbeddingLatencyMS.
+	// Pointer to distinguish three states: nil = embedder not invoked
+	// (bm25_only or empty BM25 pool); *0 = real <1ms (reserved for future
+	// client-side cache); *>0 = actual round-trip. Use to compute p95/p99
+	// production embedding latency for principled hybridTimeout tuning.
+	EmbeddingLatencyMS *int64 `json:"embedding_latency_ms,omitempty"`
 }
 
 type RetrievalHit struct {
@@ -458,7 +464,8 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.WeakEvidence ||
 		trace.RankingErrorCandidate ||
 		trace.HybridMode != "" ||
-		trace.HybridFallbackReason != ""
+		trace.HybridFallbackReason != "" ||
+		trace.EmbeddingLatencyMS != nil
 }
 
 func traceOutcomeObserved(trace OutcomeTrace) bool {
