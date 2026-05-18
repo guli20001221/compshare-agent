@@ -202,7 +202,10 @@ def evaluate_answers(
                 # citation (substituted to ragNoEvidenceReply per engine.go:1081).
                 # empty_after_retry is a subset of retry_no_cite where the model
                 # returned an empty string after the retry (ds-v4-flash + hybrid
-                # has a low-rate empty-return mode).
+                # has a low-rate empty-return mode). raw_retry_answer preserves
+                # the pre-substitution text per-row only (not aggregated into
+                # the summary); future summary readers do not need to PII-scrub
+                # the headline metrics, only the per-question answer_results.
                 "retry_no_cite": retry_no_cite,
                 "empty_after_retry": empty_after_retry,
                 "raw_retry_answer": raw_retry_answer,
