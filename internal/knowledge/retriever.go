@@ -14,6 +14,31 @@ const (
 	defaultRetrieverTopK      = 3
 	defaultRetrieverThreshold = 0.5
 	hybridBM25PoolSize        = 20
+	// rerankerPoolSize bounds the cosine-stage output handed to the reranker.
+	// Larger pool = more recall headroom but more reranker latency / tokens.
+	// 10 chosen so top-K=3 has cross-encoder reorder headroom without burning
+	// extra tokens. B.0 probe confirmed 50-doc single batch works, so this is
+	// well under server capacity.
+	rerankerPoolSize = 10
+)
+
+// Retrieval modes select which retrieval pipeline the Retriever runs. The
+// modes are env-driven via RAG_RETRIEVAL_MODE (parsed in cmd/trace.go);
+// unset env falls back to legacy RAG_HYBRID_ENABLED behavior.
+//
+//	RetrievalModeBM25Only     — BM25 top-K, no embedding/reranker stage.
+//	RetrievalModeHybridCosine — BM25 top-20 → cosine top-K. (legacy hybrid_on)
+//	RetrievalModeHybridRerank — BM25 top-20 → cosine top-10 → reranker top-K.
+//	                            Uses the text-embedding-3-large sidecar +
+//	                            qwen3-reranker-8b cross-encoder.
+//	RetrievalModeQwen3Full    — BM25 top-20 → cosine top-10 → reranker top-K.
+//	                            Uses the qwen3-embedding-8b sidecar + the
+//	                            qwen3-reranker-8b cross-encoder.
+const (
+	RetrievalModeBM25Only     = "bm25_only"
+	RetrievalModeHybridCosine = "hybrid_cosine"
+	RetrievalModeHybridRerank = "hybrid_rerank"
+	RetrievalModeQwen3Full    = "qwen3_full"
 )
 
 // VectorEmbedder is satisfied by *internal/embedding.Client and by test
@@ -21,6 +46,22 @@ const (
 // the embedding package import dependency.
 type VectorEmbedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
+}
+
+// RerankerClient is satisfied by internal/reranker.Client. Same
+// dependency-isolation pattern as VectorEmbedder: a local interface
+// keeps the knowledge package free of the reranker package import.
+type RerankerClient interface {
+	Rerank(ctx context.Context, query string, docs []string, topN int) ([]RerankerResult, error)
+}
+
+// RerankerResult mirrors internal/reranker.Result so the knowledge package
+// stays free of the reranker package import. Reranker implementations
+// adapt their native result type via a thin wrapper (see
+// cmd/trace.go rerankerClientFromEnv).
+type RerankerResult struct {
+	Index int
+	Score float64
 }
 
 var beijingLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
@@ -35,12 +76,30 @@ type RetrieverOptions struct {
 	// retriever_test.go expectations).
 	EmbeddingSidecar *EmbeddingSidecar
 	Embedder         VectorEmbedder
+	// EmbeddingModel labels the embedder for trace observability (passed
+	// through to RetrievalResult.EmbeddingModel). Examples:
+	// "text-embedding-3-large", "qwen3-embedding-8b". Empty when no
+	// embedder is configured.
+	EmbeddingModel string
 	// HybridContextTimeout bounds each query embedding call. Defaults to
 	// 5s (matches internal/embedding p99 measurement) when zero or
 	// negative. The retriever swallows embedding errors and falls back
 	// to BM25 top-3 from its top-20 pool. Override in production via the
 	// RAG_HYBRID_TIMEOUT_MS env var (parsed in cmd/trace.go).
 	HybridContextTimeout time.Duration
+	// Reranker, when non-nil, engages the cross-encoder rerank stage after
+	// the cosine stage. Mode must be HybridRerank or Qwen3Full for the
+	// stage to actually run. RerankerModel labels it for trace.
+	Reranker      RerankerClient
+	RerankerModel string
+	// RerankerContextTimeout bounds each reranker call. Defaults to 5s
+	// (B.0 probe measured ~3.8s for 50-doc single batch). Override in
+	// production via RAG_RERANKER_TIMEOUT_MS.
+	RerankerContextTimeout time.Duration
+	// Mode selects the retrieval pipeline. Empty defaults to bm25_only when
+	// no embedder is supplied, hybrid_cosine when an embedder+sidecar are.
+	// Values other than the RetrievalMode* constants treated as defaults.
+	Mode string
 }
 
 type RetrievalResult struct {
@@ -75,6 +134,28 @@ type RetrievalResult struct {
 	// Ops uses this to compute production p95/p99 latency distribution and
 	// pick a principled HybridContextTimeout instead of blind tuning.
 	EmbeddingLatencyMS *int64
+	// EmbeddingModel labels which embedder produced the cosine scores.
+	// Examples: "text-embedding-3-large", "qwen3-embedding-8b". Empty
+	// when no embedder was invoked (bm25_only path).
+	EmbeddingModel string
+	// RerankerMode labels which reranker model produced the final ranking.
+	// Empty when the reranker stage was not engaged. Non-empty examples:
+	// "qwen3-reranker-8b". Distinguishes "reranker not configured for this
+	// mode" (empty) from "reranker invoked" (model name).
+	RerankerMode string
+	// RerankerLatencyMS mirrors EmbeddingLatencyMS three-state semantics
+	// for the reranker stage:
+	//   - nil:    reranker was not invoked (mode != hybrid_rerank/qwen3_full,
+	//             or pool empty so reranker call was skipped).
+	//   - *0:     reranker returned in < 1ms (reserved).
+	//   - *>0:    actual round-trip. On reranker_timeout approximates the
+	//             configured RerankerContextTimeout.
+	RerankerLatencyMS *int64
+	// RerankerFallbackReason is non-empty only when the reranker stage was
+	// attempted but failed and the retriever returned the prior stage's
+	// top-K instead. One of "reranker_timeout" | "reranker_error" |
+	// "reranker_empty". Empty when reranker succeeded or was not engaged.
+	RerankerFallbackReason string
 }
 
 type RetrievalHit struct {
@@ -91,7 +172,12 @@ type Retriever struct {
 	bm25             retrievalBM25Index
 	embeddingSidecar *EmbeddingSidecar
 	embedder         VectorEmbedder
+	embeddingModel   string
 	hybridTimeout    time.Duration
+	reranker         RerankerClient
+	rerankerModel    string
+	rerankerTimeout  time.Duration
+	mode             string
 }
 
 func NewRetriever(corpus Corpus, opts RetrieverOptions) *Retriever {
@@ -113,6 +199,26 @@ func NewRetriever(corpus Corpus, opts RetrieverOptions) *Retriever {
 		// the p99 measurement rationale.
 		hybridTimeout = 5 * time.Second
 	}
+	rerankerTimeout := opts.RerankerContextTimeout
+	if rerankerTimeout <= 0 {
+		// B.0 probe measured ~3.8s for 50-doc single batch; 5s default
+		// matches the embedding timeout for symmetric latency budgeting.
+		rerankerTimeout = 5 * time.Second
+	}
+	// Mode defaulting: empty mode falls back based on what's wired. This
+	// preserves all pre-B.3 callers — they don't set Mode and get the same
+	// behavior as before. Explicit Mode value wins.
+	mode := opts.Mode
+	if mode == "" {
+		switch {
+		case opts.Reranker != nil && opts.EmbeddingSidecar != nil && opts.Embedder != nil:
+			mode = RetrievalModeHybridRerank
+		case opts.EmbeddingSidecar != nil && opts.Embedder != nil:
+			mode = RetrievalModeHybridCosine
+		default:
+			mode = RetrievalModeBM25Only
+		}
+	}
 	return &Retriever{
 		corpus:           corpus,
 		topK:             topK,
@@ -121,14 +227,40 @@ func NewRetriever(corpus Corpus, opts RetrieverOptions) *Retriever {
 		bm25:             newRetrievalBM25Index(corpus.Chunks),
 		embeddingSidecar: opts.EmbeddingSidecar,
 		embedder:         opts.Embedder,
+		embeddingModel:   opts.EmbeddingModel,
 		hybridTimeout:    hybridTimeout,
+		reranker:         opts.Reranker,
+		rerankerModel:    opts.RerankerModel,
+		rerankerTimeout:  rerankerTimeout,
+		mode:             mode,
 	}
 }
 
 // hybridEnabled reports whether the retriever should take the BM25-top-20
-// then embedding-rerank path.
+// then embedding-rerank path. True when the configured mode includes a
+// cosine stage AND the embedder+sidecar are wired.
 func (r *Retriever) hybridEnabled() bool {
-	return r.embeddingSidecar != nil && r.embedder != nil
+	if r.embeddingSidecar == nil || r.embedder == nil {
+		return false
+	}
+	switch r.mode {
+	case RetrievalModeHybridCosine, RetrievalModeHybridRerank, RetrievalModeQwen3Full:
+		return true
+	}
+	return false
+}
+
+// rerankerEnabled reports whether the configured mode includes the
+// cross-encoder rerank stage AND a reranker client is wired.
+func (r *Retriever) rerankerEnabled() bool {
+	if r.reranker == nil {
+		return false
+	}
+	switch r.mode {
+	case RetrievalModeHybridRerank, RetrievalModeQwen3Full:
+		return true
+	}
+	return false
 }
 
 func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
@@ -147,25 +279,63 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 	finalCandidates := bm25Candidates
 	// hybridMode tracks which retrieval path produced the final candidates.
 	// Default to bm25_only; switched to hybrid_cosine when hybrid is enabled
-	// and the rerank step ran successfully (or BM25 pool was empty so we
+	// and the cosine step ran successfully (or BM25 pool was empty so we
 	// never needed to call the embedder). Switched to bm25_fallback when the
 	// embedder failed and we returned the BM25 pool unchanged.
 	// embeddingLatencyMs is nil unless the embedder was actually invoked,
 	// preserving the three-state distinction documented on
-	// RetrievalResult.EmbeddingLatencyMS.
+	// RetrievalResult.EmbeddingLatencyMS. The reranker stage layers on top
+	// of cosine: when it runs, hybridMode is upgraded to hybrid_rerank or
+	// qwen3_full; on reranker failure, hybridMode stays hybrid_cosine and
+	// rerankerFallbackReason carries the cause.
 	hybridMode := "bm25_only"
 	hybridFallbackReason := ""
 	var embeddingLatencyMs *int64
+	embeddingModel := ""
+	rerankerMode := ""
+	var rerankerLatencyMs *int64
+	rerankerFallbackReason := ""
 	if r.hybridEnabled() {
 		if len(bm25Candidates) > 0 {
 			reranked, fallbackReason, latencyMs := r.rerankByEmbedding(question, bm25Candidates)
 			finalCandidates = reranked
 			embeddingLatencyMs = &latencyMs
 			if fallbackReason != "" {
+				// Cosine stage failed: BM25 pool returned unchanged, mark
+				// bm25_fallback, leave embeddingModel empty (no valid cosine
+				// signal was produced), and skip reranker entirely.
 				hybridMode = "bm25_fallback"
 				hybridFallbackReason = fallbackReason
 			} else {
 				hybridMode = "hybrid_cosine"
+				embeddingModel = r.embeddingModel
+				// Cosine succeeded; if reranker is configured, layer it on
+				// top of cosine top-N pool. Reranker failure does NOT
+				// downgrade to bm25_fallback — we still have valid cosine
+				// scores, so the trace records hybrid_cosine + a reranker
+				// fallback reason instead.
+				if r.rerankerEnabled() {
+					rerankerPool := finalCandidates
+					if len(rerankerPool) > rerankerPoolSize {
+						rerankerPool = rerankerPool[:rerankerPoolSize]
+					}
+					rerankedByRerank, rerankFallbackReason, rerankLatencyMs := r.rerankByReranker(question, rerankerPool)
+					rerankerLatencyMs = &rerankLatencyMs
+					if rerankFallbackReason != "" {
+						rerankerFallbackReason = rerankFallbackReason
+						// Keep finalCandidates = cosine ranking (the prior
+						// stage's order). hybridMode stays hybrid_cosine.
+					} else {
+						finalCandidates = rerankedByRerank
+						rerankerMode = r.rerankerModel
+						switch r.mode {
+						case RetrievalModeQwen3Full:
+							hybridMode = "qwen3_full"
+						case RetrievalModeHybridRerank:
+							hybridMode = "hybrid_rerank"
+						}
+					}
+				}
 			}
 		} else {
 			// BM25 pool empty: embedder was never invoked, but the configured
@@ -191,15 +361,19 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 		})
 	}
 	return RetrievalResult{
-		Enabled:              true,
-		KBVersion:            r.corpus.KBVersion,
-		QueryNormalized:      queryNormalized,
-		Hits:                 hits,
-		HitItems:             hitItems,
-		Empty:                len(hits) == 0,
-		HybridMode:           hybridMode,
-		HybridFallbackReason: hybridFallbackReason,
-		EmbeddingLatencyMS:   embeddingLatencyMs,
+		Enabled:                true,
+		KBVersion:              r.corpus.KBVersion,
+		QueryNormalized:        queryNormalized,
+		Hits:                   hits,
+		HitItems:               hitItems,
+		Empty:                  len(hits) == 0,
+		HybridMode:             hybridMode,
+		HybridFallbackReason:   hybridFallbackReason,
+		EmbeddingLatencyMS:     embeddingLatencyMs,
+		EmbeddingModel:         embeddingModel,
+		RerankerMode:           rerankerMode,
+		RerankerLatencyMS:      rerankerLatencyMs,
+		RerankerFallbackReason: rerankerFallbackReason,
 	}
 }
 
@@ -297,6 +471,91 @@ func (r *Retriever) rerankByEmbedding(question string, bm25Pool []scoredChunk) (
 		return left.chunk.ChunkID < right.chunk.ChunkID
 	})
 	return reranked, "", latencyMs
+}
+
+// rerankByReranker takes the cosine-stage output and reorders it using the
+// configured cross-encoder reranker. The pool is already cosine-ranked, so
+// reranker failure can fall back to the cosine ranking cleanly without
+// re-running anything.
+//
+// Returns (reranked, fallbackReason, latencyMs):
+//   - On success: reranker-scored candidates (scoredChunk.score becomes the
+//     relevance_score), "", actual call round-trip ms
+//   - On reranker error: cosinePool unchanged (caller stays on cosine
+//     ranking), reason ∈ {reranker_timeout, reranker_error}, time-to-error
+//   - On empty results from server: cosinePool unchanged, "reranker_empty"
+//
+// latencyMs is always measured. Caller wraps into
+// RetrievalResult.RerankerLatencyMS so ops can tune RAG_RERANKER_TIMEOUT_MS
+// from production p95/p99.
+func (r *Retriever) rerankByReranker(question string, cosinePool []scoredChunk) ([]scoredChunk, string, int64) {
+	if len(cosinePool) == 0 {
+		// Caller guards against this but defend defensively.
+		return cosinePool, "", 0
+	}
+	docs := make([]string, len(cosinePool))
+	for i, c := range cosinePool {
+		// Mirror scripts/rag_w0/build_corpus_embeddings.py chunk_repr:
+		// title + question_patterns + truncated content. The reranker
+		// scores (query, doc-text) pairs, so passing the same chunk
+		// representation the embedder saw keeps the two ranking signals
+		// comparable.
+		docs[i] = chunkReprForRerank(c.chunk)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), r.rerankerTimeout)
+	defer cancel()
+	start := time.Now()
+	results, err := r.reranker.Rerank(ctx, question, docs, r.topK)
+	latencyMs := time.Since(start).Milliseconds()
+	if err != nil {
+		log.Printf("rag.reranker: rerank failed in %dms, falling back to cosine top-%d: %v", latencyMs, r.topK, err)
+		reason := "reranker_error"
+		if errors.Is(err, context.DeadlineExceeded) {
+			reason = "reranker_timeout"
+		}
+		return cosinePool, reason, latencyMs
+	}
+	if len(results) == 0 {
+		log.Printf("rag.reranker: empty results in %dms, falling back to cosine top-%d", latencyMs, r.topK)
+		return cosinePool, "reranker_empty", latencyMs
+	}
+	reranked := make([]scoredChunk, 0, len(results))
+	for _, res := range results {
+		if res.Index < 0 || res.Index >= len(cosinePool) {
+			log.Printf("rag.reranker: out-of-range index %d (pool=%d), skipping", res.Index, len(cosinePool))
+			continue
+		}
+		reranked = append(reranked, scoredChunk{
+			chunk: cosinePool[res.Index].chunk,
+			score: res.Score,
+		})
+	}
+	if len(reranked) == 0 {
+		// All indexes out of range — treat as empty.
+		log.Printf("rag.reranker: all results invalid, falling back to cosine top-%d", r.topK)
+		return cosinePool, "reranker_empty", latencyMs
+	}
+	// Server returns desc-sorted (and reranker.Client re-sorts defensively),
+	// so cosinePool[res.Index] is already in the right order. No re-sort
+	// here; preserve the reranker's relevance ordering verbatim.
+	return reranked, "", latencyMs
+}
+
+// chunkReprForRerank produces the text the reranker sees per chunk. Must
+// stay byte-equivalent to scripts/rag_w0/build_corpus_embeddings.py
+// chunk_repr (no TrimSpace on title, no strip elsewhere) — both ranking
+// signals (cosine + cross-encoder) score the same chunk representation
+// so their scores remain comparable.
+func chunkReprForRerank(c KBChunk) string {
+	title := c.Title
+	patterns := strings.Join(c.QuestionPatterns, " | ")
+	content := c.Content
+	const maxContentRunes = 1800 // mirror build_corpus_embeddings.py:MAX_CONTENT_RUNES_FOR_EMB
+	runes := []rune(content)
+	if len(runes) > maxContentRunes {
+		content = string(runes[:maxContentRunes])
+	}
+	return "标题: " + title + "\n常见问法: " + patterns + "\n正文: " + content
 }
 
 type scoredChunk struct {

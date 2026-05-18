@@ -106,12 +106,27 @@ func LoadEmbeddingSidecar(path string) (EmbeddingSidecar, error) {
 	return sidecar, nil
 }
 
-// LoadPinnedCorpusWithEmbeddings loads the corpus + embedding sidecar and
-// verifies both against their pinned digests. It also checks that every
-// corpus chunk has a matching embedding vector and vice-versa. Any failure
-// returns an error; the cmd-layer caller is expected to log.Fatalf on hybrid
-// paths so the runtime never serves with a drifted index.
+// LoadPinnedCorpusWithEmbeddings loads the corpus + text-embedding-3-large
+// sidecar (pinned via EmbeddingDigestExpected). Thin wrapper preserved for
+// callers that don't need to select between sidecar models.
 func LoadPinnedCorpusWithEmbeddings(corpusPath, embeddingsPath string) (Corpus, EmbeddingSidecar, error) {
+	return LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, EmbeddingDigestExpected)
+}
+
+// LoadPinnedCorpusWithEmbeddingsDigest loads the corpus + embedding sidecar
+// and verifies both against their pinned digests (corpus against
+// CorpusDigestExpected, sidecar against the caller-supplied expectedDigest).
+// It also checks that every corpus chunk has a matching embedding vector
+// and vice-versa. Any failure returns an error; the cmd-layer caller is
+// expected to log.Fatalf on hybrid paths so the runtime never serves with
+// a drifted index.
+//
+// expectedDigest is parameterized so the same loader supports multiple
+// sidecar models (text-embedding-3-large via EmbeddingDigestExpected,
+// qwen3-embedding-8b via EmbeddingDigestExpectedQwen3, future via new
+// constants). The pin is enforced at load time — a sidecar produced by a
+// different model with a different digest will fail this check.
+func LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, expectedDigest string) (Corpus, EmbeddingSidecar, error) {
 	corpus, err := LoadPinnedCorpus(corpusPath)
 	if err != nil {
 		return Corpus{}, EmbeddingSidecar{}, err
@@ -120,8 +135,8 @@ func LoadPinnedCorpusWithEmbeddings(corpusPath, embeddingsPath string) (Corpus, 
 	if err != nil {
 		return Corpus{}, EmbeddingSidecar{}, err
 	}
-	if digest != EmbeddingDigestExpected {
-		return Corpus{}, EmbeddingSidecar{}, fmt.Errorf("embedding sidecar digest mismatch: got %s want %s", digest, EmbeddingDigestExpected)
+	if digest != expectedDigest {
+		return Corpus{}, EmbeddingSidecar{}, fmt.Errorf("embedding sidecar digest mismatch: got %s want %s", digest, expectedDigest)
 	}
 	sidecar, err := LoadEmbeddingSidecar(embeddingsPath)
 	if err != nil {
