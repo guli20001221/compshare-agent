@@ -12,8 +12,10 @@ import (
 	"time"
 )
 
-// Embedder is implemented by anything that returns a 3072-dim float32 vector
-// for a single text input. The hybrid retriever depends only on this interface
+// Embedder is implemented by anything that returns a model-defined float32
+// vector for a single text input. Dim is whatever the configured model
+// returns (e.g. 3072 for text-embedding-3-large, 4096 or 1024 for
+// qwen3-embedding-8b). The hybrid retriever depends only on this interface
 // so unit tests can inject deterministic vectors without an HTTP server.
 type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
@@ -71,9 +73,10 @@ func NewClient(opts ClientOptions) (*Client, error) {
 	}, nil
 }
 
-// Embed returns the 3072-dim vector for text. On transient failures (timeout,
-// 429, 5xx, 308) it retries once with a fixed 100ms backoff then surfaces the
-// error so the caller (retriever hybrid branch) can fall back to BM25 top-3.
+// Embed returns the model-defined vector for text. On transient failures
+// (timeout, 429, 5xx, 308) it retries once with a fixed 100ms backoff then
+// surfaces the error so the caller (retriever hybrid branch) can fall back
+// to BM25 top-3.
 func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
 	const maxAttempts = 2
 	const retryBackoff = 100 * time.Millisecond

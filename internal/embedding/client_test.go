@@ -191,3 +191,54 @@ func TestTransientErrorUnwrap(t *testing.T) {
 		t.Fatal("transientError must wrap its inner err")
 	}
 }
+
+// Dim compatibility: the client must surface whatever vector length the
+// server returns. This is the contract qwen3-embedding-8b (4096-dim default
+// or 1024-dim quantized) depends on for Lane B sidecar swaps without code
+// changes. The Embed contract is "model-defined dim", not "3072-dim".
+func TestClientEmbedReturnsServerProvidedDim(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		dim  int
+	}{
+		{"qwen3-8b-default-4096", 4096},
+		{"qwen3-8b-quantized-1024", 1024},
+		{"text-embedding-3-large-3072", 3072},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			vec := make([]float32, tc.dim)
+			for i := range vec {
+				vec[i] = float32(i) * 1e-4
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"data": []map[string]any{{"index": 0, "embedding": vec}},
+				})
+			}))
+			defer srv.Close()
+
+			client, err := NewClient(ClientOptions{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			got, err := client.Embed(context.Background(), "probe")
+			if err != nil {
+				t.Fatalf("Embed: %v", err)
+			}
+			if len(got) != tc.dim {
+				t.Fatalf("dim mismatch: want %d, got %d", tc.dim, len(got))
+			}
+			// Sanity: first and last elements survived the round-trip so we
+			// know we're not truncating to a hardcoded length somewhere.
+			if got[0] != vec[0] || got[tc.dim-1] != vec[tc.dim-1] {
+				t.Fatalf("boundary value mismatch: first=%v/%v last=%v/%v",
+					got[0], vec[0], got[tc.dim-1], vec[tc.dim-1])
+			}
+		})
+	}
+}
