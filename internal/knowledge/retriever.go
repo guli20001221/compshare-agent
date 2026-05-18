@@ -301,10 +301,11 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 			finalCandidates = reranked
 			embeddingLatencyMs = &latencyMs
 			if fallbackReason != "" {
+				// Cosine stage failed: BM25 pool returned unchanged, mark
+				// bm25_fallback, leave embeddingModel empty (no valid cosine
+				// signal was produced), and skip reranker entirely.
 				hybridMode = "bm25_fallback"
 				hybridFallbackReason = fallbackReason
-				// Cosine failed → reranker stage not attempted; embeddingModel
-				// stays empty so trace can't claim a cosine signal was used.
 			} else {
 				hybridMode = "hybrid_cosine"
 				embeddingModel = r.embeddingModel
@@ -542,10 +543,11 @@ func (r *Retriever) rerankByReranker(question string, cosinePool []scoredChunk) 
 
 // chunkReprForRerank produces the text the reranker sees per chunk. Must
 // stay byte-equivalent to scripts/rag_w0/build_corpus_embeddings.py
-// chunk_repr — both ranking signals (cosine + cross-encoder) score the
-// same chunk representation so their scores remain comparable.
+// chunk_repr (no TrimSpace on title, no strip elsewhere) — both ranking
+// signals (cosine + cross-encoder) score the same chunk representation
+// so their scores remain comparable.
 func chunkReprForRerank(c KBChunk) string {
-	title := strings.TrimSpace(c.Title)
+	title := c.Title
 	patterns := strings.Join(c.QuestionPatterns, " | ")
 	content := c.Content
 	const maxContentRunes = 1800 // mirror build_corpus_embeddings.py:MAX_CONTENT_RUNES_FOR_EMB
