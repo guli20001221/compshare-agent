@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
 """Evaluate deterministic W0 retrieval quality.
 
-Two modes:
+Four modes (mirror internal/knowledge/retriever.go retrieval pipelines):
 
-  baseline (default): BM25 char 2/3-gram top-3, matches the production
-    runtime when RAG_HYBRID_ENABLED is unset/disabled.
+  baseline (default): BM25 char 2/3-gram top-3. Matches the production
+    runtime when RAG_RETRIEVAL_MODE=bm25_only or unset+RAG_HYBRID_ENABLED
+    unset.
 
-  hybrid: BM25 top-20 -> query-embedding cosine rerank -> top-3, matches
-    the production runtime when RAG_HYBRID_ENABLED=1. Requires an
-    embedding sidecar produced by build_corpus_embeddings.py and either an
-    in-process ModelVerse client (reads .env.local) or a precomputed
-    query-embedding cache.
+  hybrid: BM25 top-20 -> text-embedding-3-large cosine rerank -> top-3.
+    Matches RAG_RETRIEVAL_MODE=hybrid_cosine. Requires the text-emb-3
+    sidecar from build_corpus_embeddings.py (default --embed-model).
+
+  hybrid_rerank: BM25 top-20 -> text-emb-3 cosine top-10 ->
+    qwen3-reranker-8b cross-encoder -> top-3. Matches
+    RAG_RETRIEVAL_MODE=hybrid_rerank.
+
+  qwen3_full: BM25 top-20 -> qwen3-embedding-8b cosine top-10 ->
+    qwen3-reranker-8b cross-encoder -> top-3. Matches
+    RAG_RETRIEVAL_MODE=qwen3_full. Requires the qwen3 sidecar from
+    build_corpus_embeddings.py --embed-model qwen3-embedding-8b.
+
+Eval fails loud on embedding/reranker API errors so regressions are
+visible (the runtime swallows these for latency safety; eval must not
+silently mask them — see memory feedback_eval_must_reflect_runtime_no_coercion).
 """
 
 from __future__ import annotations
@@ -47,10 +59,24 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_TOP_K = 3
 HYBRID_BM25_POOL = 20
+# Mirror internal/knowledge/retriever.go:rerankerPoolSize. The reranker
+# stage scores this many cosine-top candidates and the final top-K is
+# drawn from the reranker's ordering. Larger pool = more recall headroom
+# but higher reranker latency / tokens.
+RERANKER_POOL_SIZE = 10
+# Mirror internal/knowledge/retriever.go:chunkReprForRerank max content.
+RERANKER_MAX_CONTENT_RUNES = 1800
 ANSWER_BEHAVIOR = "answer"
 CONFIDENCE_RANK = {"high": 2, "medium": 1, "low": 0}
 DEFAULT_EMBED_MODEL = "text-embedding-3-large"
+DEFAULT_QWEN3_EMBED_MODEL = "qwen3-embedding-8b"
+DEFAULT_RERANKER_MODEL = "qwen3-reranker-8b"
 DEFAULT_BASE_URL = "https://api.modelverse.cn/v1"
+
+# Modes that require an embedding sidecar + query embedder.
+_EMBED_MODES = {"hybrid", "hybrid_rerank", "qwen3_full"}
+# Modes that require a reranker client.
+_RERANK_MODES = {"hybrid_rerank", "qwen3_full"}
 
 
 def evaluate_retrieval(
@@ -63,6 +89,9 @@ def evaluate_retrieval(
     mode: str = "baseline",
     embeddings_path: Path | str | None = None,
     query_embedding_cache_path: Path | str | None = None,
+    reranker_cache_path: Path | str | None = None,
+    embed_model: str | None = None,
+    reranker_model: str | None = None,
     env_path: Path | str | None = None,
 ) -> dict[str, Any]:
     validate_chunks(chunks_path)
@@ -72,13 +101,22 @@ def evaluate_retrieval(
 
     chunk_embeddings: dict[str, list[float]] | None = None
     query_embedder: _QueryEmbedder | None = None
-    if mode == "hybrid":
+    reranker: _Reranker | None = None
+    if mode in _EMBED_MODES:
         if embeddings_path is None:
-            raise ValueError("--embeddings-path required when --mode hybrid")
+            raise ValueError(f"--embeddings-path required when --mode {mode}")
         chunk_embeddings = _load_chunk_embedding_sidecar(embeddings_path)
+        resolved_embed_model = embed_model or _default_embed_model_for_mode(mode)
         query_embedder = _QueryEmbedder(
             cache_path=Path(query_embedding_cache_path) if query_embedding_cache_path else None,
             env_path=Path(env_path) if env_path else Path(".env.local"),
+            model_override=resolved_embed_model,
+        )
+    if mode in _RERANK_MODES:
+        reranker = _Reranker(
+            cache_path=Path(reranker_cache_path) if reranker_cache_path else None,
+            env_path=Path(env_path) if env_path else Path(".env.local"),
+            model=reranker_model or DEFAULT_RERANKER_MODEL,
         )
 
     trace_records: list[dict[str, Any]] = []
@@ -93,7 +131,22 @@ def evaluate_retrieval(
             excluded += 1
             continue
         evaluated += 1
-        if mode == "hybrid":
+        if mode in _RERANK_MODES:
+            assert query_embedder is not None and chunk_embeddings is not None and reranker is not None
+            scored = _retrieve_hybrid_rerank(
+                question=str(question.get("question") or ""),
+                question_id=str(question.get("question_id") or ""),
+                product_area=str(question.get("product_area") or ""),
+                chunks=chunks,
+                index=index,
+                top_k=top_k,
+                threshold=threshold,
+                chunk_embeddings=chunk_embeddings,
+                query_embedder=query_embedder,
+                reranker=reranker,
+                mode=mode,
+            )
+        elif mode in _EMBED_MODES:
             assert query_embedder is not None and chunk_embeddings is not None
             scored = _retrieve_hybrid(
                 question=str(question.get("question") or ""),
@@ -151,6 +204,8 @@ def evaluate_retrieval(
 
     if query_embedder is not None:
         query_embedder.flush()
+    if reranker is not None:
+        reranker.flush()
     top_3_hit_rate = None if evaluated == 0 else (evaluated - len(failed_questions)) / evaluated
     summary = {
         "mode": mode,
@@ -263,6 +318,104 @@ def _retrieve_hybrid(
     return reranked[:top_k]
 
 
+def _default_embed_model_for_mode(mode: str) -> str:
+    """Pick the embedder model that matches the retrieval mode.
+
+    qwen3_full pairs with qwen3-embedding-8b (and the qwen3 sidecar);
+    other hybrid modes use text-embedding-3-large. Callers may override
+    via --embed-model, but the default here makes the script self-consistent
+    when only --mode is set.
+    """
+    if mode == "qwen3_full":
+        return DEFAULT_QWEN3_EMBED_MODEL
+    return DEFAULT_EMBED_MODEL
+
+
+def _chunk_repr_for_rerank(chunk: dict[str, Any]) -> str:
+    """Build the per-chunk text the reranker scores.
+
+    Must stay byte-equivalent to internal/knowledge/retriever.go
+    chunkReprForRerank and scripts/rag_w0/build_corpus_embeddings.py
+    chunk_repr — all three score the same chunk representation so cosine
+    and cross-encoder signals remain comparable.
+    """
+    title = str(chunk.get("title") or "")
+    patterns = " | ".join(str(p) for p in (chunk.get("question_patterns") or []))
+    content = str(chunk.get("content") or "")
+    # Python str slicing is by code point, matching Go's []rune slicing.
+    if len(content) > RERANKER_MAX_CONTENT_RUNES:
+        content = content[:RERANKER_MAX_CONTENT_RUNES]
+    return f"标题: {title}\n常见问法: {patterns}\n正文: {content}"
+
+
+def _retrieve_hybrid_rerank(
+    *,
+    question: str,
+    question_id: str,
+    product_area: str,
+    chunks: list[dict[str, Any]],
+    index: "BM25Index",
+    top_k: int,
+    threshold: float,
+    chunk_embeddings: dict[str, list[float]],
+    query_embedder: "_QueryEmbedder",
+    reranker: "_Reranker",
+    mode: str,
+) -> list[tuple[dict[str, Any], float]]:
+    """BM25 top-20 -> cosine top-RERANKER_POOL_SIZE -> reranker top-K.
+
+    Must stay byte-equivalent to internal/knowledge/retriever.go Retrieve
+    when r.mode is hybrid_rerank or qwen3_full. Eval fails loud on
+    reranker errors (same convention as the hybrid embedding path); the
+    runtime keeps a cosine fallback for latency safety but eval must
+    surface regressions, not mask them.
+    """
+    cosine_pool = _retrieve_hybrid(
+        question=question,
+        question_id=question_id,
+        product_area=product_area,
+        chunks=chunks,
+        index=index,
+        top_k=RERANKER_POOL_SIZE,
+        threshold=threshold,
+        chunk_embeddings=chunk_embeddings,
+        query_embedder=query_embedder,
+    )
+    if not cosine_pool:
+        return []
+    docs = [_chunk_repr_for_rerank(chunk) for chunk, _ in cosine_pool]
+    results = reranker.rerank(
+        question_id=question_id,
+        question=question,
+        docs=docs,
+        top_n=top_k,
+        mode=mode,
+    )
+    reranked: list[tuple[dict[str, Any], float]] = []
+    for idx, score in results:
+        if idx < 0 or idx >= len(cosine_pool):
+            # Server returned an out-of-range index. Skip with a warning;
+            # this is the same defensive guard as Go retriever.go.
+            print(
+                f"  rerank: skipping out-of-range index {idx} (pool={len(cosine_pool)})",
+                flush=True,
+            )
+            continue
+        chunk, _ = cosine_pool[idx]
+        reranked.append((chunk, float(score)))
+    if not reranked:
+        # All indices were out of range or results was empty. Surface as
+        # an error per the fail-loud eval convention.
+        raise RuntimeError(
+            f"reranker returned no usable results for question_id={question_id!r} "
+            f"(pool_size={len(cosine_pool)}, server_results={len(results)})"
+        )
+    # Reranker returns desc-sorted but we sort defensively, same as Go
+    # client's safety re-sort.
+    reranked.sort(key=lambda item: -item[1])
+    return reranked[:top_k]
+
+
 def _load_chunk_embedding_sidecar(path: Path | str) -> dict[str, list[float]]:
     """Read embeddings_<digest>.jsonl into {chunk_id: vector}. First line is _meta."""
     out: dict[str, list[float]] = {}
@@ -300,14 +453,16 @@ class _QueryEmbedder:
     binds to a different question across runs.
     """
 
-    def __init__(self, *, cache_path: Path | None, env_path: Path) -> None:
+    def __init__(self, *, cache_path: Path | None, env_path: Path, model_override: str | None = None) -> None:
         self.cache_path = cache_path
         self.cache: dict[str, dict[str, Any]] = {}
         self._dirty = False
         env = _load_env(env_path)
         self.base_url = env.get("MODELVERSE_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
         self.api_key = env["MODELVERSE_API_KEY"]
-        self.model = env.get("MODELVERSE_EMBED_MODEL", DEFAULT_EMBED_MODEL)
+        # model_override wins so callers can pin per-mode (qwen3_full uses
+        # qwen3-embedding-8b even if the env says text-embedding-3-large).
+        self.model = model_override or env.get("MODELVERSE_EMBED_MODEL") or DEFAULT_EMBED_MODEL
         if cache_path is not None and cache_path.exists():
             for line in cache_path.read_text(encoding="utf-8").splitlines():
                 if not line.strip():
@@ -384,6 +539,112 @@ class _QueryEmbedder:
         self._dirty = False
 
 
+class _Reranker:
+    """Calls ModelVerse /v1/rerank with optional on-disk cache.
+
+    Cache schema (jsonl): {"question_id","mode","docs_sha256","results":
+    [{"index","score"}, ...]}. docs_sha256 lets us detect cache poisoning
+    if the cosine top-N composition shifts (different mode or sidecar
+    drift). Mirrors _QueryEmbedder design.
+    """
+
+    def __init__(self, *, cache_path: Path | None, env_path: Path, model: str) -> None:
+        self.cache_path = cache_path
+        self.cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._dirty = False
+        env = _load_env(env_path)
+        self.base_url = env.get("MODELVERSE_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+        self.api_key = env["MODELVERSE_API_KEY"]
+        self.model = model
+        if cache_path is not None and cache_path.exists():
+            for line in cache_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                qid = str(row.get("question_id") or "")
+                mode = str(row.get("mode") or "")
+                if qid and mode:
+                    self.cache[(qid, mode)] = row
+
+    def rerank(
+        self,
+        *,
+        question_id: str,
+        question: str,
+        docs: list[str],
+        top_n: int,
+        mode: str,
+    ) -> list[tuple[int, float]]:
+        import hashlib
+        docs_sha = hashlib.sha256(
+            ("".join(docs)).encode("utf-8")
+        ).hexdigest()
+        existing = self.cache.get((question_id, mode))
+        if existing and str(existing.get("docs_sha256")) == docs_sha:
+            cached = existing.get("results") or []
+            return [(int(r["index"]), float(r["score"])) for r in cached]
+        results = self._call(question, docs, top_n)
+        self.cache[(question_id, mode)] = {
+            "question_id": question_id,
+            "mode": mode,
+            "docs_sha256": docs_sha,
+            "results": [{"index": idx, "score": score} for idx, score in results],
+        }
+        self._dirty = True
+        return results
+
+    def _call(self, query: str, docs: list[str], top_n: int) -> list[tuple[int, float]]:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "query": query,
+            "documents": docs,
+        }
+        if top_n > 0:
+            payload["top_n"] = top_n
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        url = f"{self.base_url}/rerank"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        backoff = 1.0
+        for attempt in range(5):
+            try:
+                req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                results = data.get("results") or []
+                if not results:
+                    raise RuntimeError("empty reranker response")
+                return [
+                    (int(r.get("index", -1)), float(r.get("relevance_score", 0.0)))
+                    for r in results
+                ]
+            except urllib.error.HTTPError as exc:
+                msg = exc.read().decode("utf-8", errors="replace")
+                if exc.code in (308, 429, 500, 502, 503, 504) and attempt < 4:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                raise RuntimeError(f"reranker HTTP {exc.code}: {msg[:400]}") from exc
+            except (urllib.error.URLError, TimeoutError, ConnectionError):
+                if attempt < 4:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                raise
+        raise RuntimeError("reranker call retry exhausted")
+
+    def flush(self) -> None:
+        if not (self._dirty and self.cache_path is not None):
+            return
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.cache_path.open("w", encoding="utf-8", newline="\n") as fh:
+            for key in sorted(self.cache.keys()):
+                fh.write(json.dumps(self.cache[key], ensure_ascii=False) + "\n")
+        self._dirty = False
+
+
 def _load_env(path: Path) -> dict[str, str]:
     env = dict(os.environ)
     if path.exists():
@@ -435,13 +696,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--chunks", type=Path, required=True)
     parser.add_argument("--questions", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--mode", choices=("baseline", "hybrid"), default="baseline")
+    parser.add_argument(
+        "--mode",
+        choices=("baseline", "hybrid", "hybrid_rerank", "qwen3_full"),
+        default="baseline",
+        help="Retrieval pipeline. See module docstring for stage breakdown.",
+    )
     parser.add_argument("--embeddings-path", type=Path, default=None,
-                        help="Required when --mode hybrid: corpus embedding sidecar from build_corpus_embeddings.py")
+                        help="Required for --mode hybrid/hybrid_rerank/qwen3_full: "
+                             "corpus embedding sidecar from build_corpus_embeddings.py. "
+                             "qwen3_full expects the qwen3-embedding-8b sidecar.")
     parser.add_argument("--query-embedding-cache", type=Path, default=None,
                         help="Optional jsonl cache for query embeddings keyed by question_id; speeds up re-runs")
+    parser.add_argument("--reranker-cache", type=Path, default=None,
+                        help="Optional jsonl cache for reranker results keyed by (question_id, mode); "
+                             "speeds up re-runs of --mode hybrid_rerank/qwen3_full")
+    parser.add_argument("--embed-model", type=str, default=None,
+                        help="Override embedder model. Defaults: text-embedding-3-large for "
+                             "hybrid/hybrid_rerank, qwen3-embedding-8b for qwen3_full.")
+    parser.add_argument("--reranker-model", type=str, default=None,
+                        help="Override reranker model. Default: qwen3-reranker-8b.")
     parser.add_argument("--env", type=Path, default=None,
-                        help="Path to .env.local (defaults to .env.local in CWD); only read in --mode hybrid")
+                        help="Path to .env.local (defaults to .env.local in CWD); read for any mode that hits an API")
     args = parser.parse_args(argv)
     verify_psa_propagation(args.chunks)
     evaluate_retrieval(
@@ -451,6 +727,9 @@ def main(argv: list[str] | None = None) -> int:
         mode=args.mode,
         embeddings_path=args.embeddings_path,
         query_embedding_cache_path=args.query_embedding_cache,
+        reranker_cache_path=args.reranker_cache,
+        embed_model=args.embed_model,
+        reranker_model=args.reranker_model,
         env_path=args.env,
     )
     return 0
