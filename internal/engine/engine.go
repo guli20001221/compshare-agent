@@ -1009,6 +1009,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 		Hits:                 len(retrieved.Hits),
 		HybridMode:           retrieved.HybridMode,
 		HybridFallbackReason: retrieved.HybridFallbackReason,
+		EmbeddingLatencyMS:   retrieved.EmbeddingLatencyMS,
 	}
 	if trace.QueryNormalized == "" {
 		trace.QueryNormalized = knowledge.NormalizeQuery(userMsg)

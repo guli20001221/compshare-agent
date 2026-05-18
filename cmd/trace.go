@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"path/filepath"
 	"strconv"
@@ -173,8 +174,9 @@ func knowledgeRetrieverFromEnv(getenv getenvFunc) (*knowledge.Retriever, bool, e
 		return nil, false, fmt.Errorf("rag hybrid embedding client: %w", err)
 	}
 	return knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{
-		EmbeddingSidecar: &sidecar,
-		Embedder:         client,
+		EmbeddingSidecar:     &sidecar,
+		Embedder:             client,
+		HybridContextTimeout: hybridTimeoutFromEnv(getenv),
 	}), true, nil
 }
 
@@ -192,6 +194,25 @@ func hybridEmbeddingsPathFromEnv(getenv getenvFunc, corpusPath string) string {
 		return override
 	}
 	return filepath.Join(filepath.Dir(corpusPath), "embeddings_"+knowledge.CorpusDigestExpected+".jsonl")
+}
+
+// hybridTimeoutFromEnv reads RAG_HYBRID_TIMEOUT_MS and returns a duration.
+// Zero return means "use retriever default" — knowledge.NewRetriever
+// substitutes 5s when HybridContextTimeout <= 0, preserving baseline
+// behavior when the env var is unset or invalid. Set this env var in
+// production to override; the value must be a positive integer in
+// milliseconds (e.g. "8000" for 8s).
+func hybridTimeoutFromEnv(getenv getenvFunc) time.Duration {
+	raw := strings.TrimSpace(getenv("RAG_HYBRID_TIMEOUT_MS"))
+	if raw == "" {
+		return 0
+	}
+	ms, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || ms <= 0 {
+		log.Printf("rag.hybrid: invalid RAG_HYBRID_TIMEOUT_MS=%q, falling back to retriever default", raw)
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func embeddingClientFromEnv(getenv getenvFunc) (*embedding.Client, error) {
