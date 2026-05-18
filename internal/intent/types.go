@@ -19,6 +19,14 @@ const (
 	IntentMixedDiagnosisKB          Intent = "mixed_diagnosis_kb"
 	IntentMixedBillingKB            Intent = "mixed_billing_kb"
 	IntentUnknown                   Intent = "unknown"
+	// Capability Registry v1 (PR A, 2026-05-18) — declarative routing for static
+	// platform queries. See internal/intent/capabilities/*.md and
+	// capability_registry.go for the data-driven dispatch table.
+	IntentGPUSpecsQuery      Intent = "gpu_specs_query"
+	IntentStockAvailability  Intent = "stock_availability"
+	IntentPlatformImageList  Intent = "platform_image_list"
+	IntentCustomImageList    Intent = "custom_image_list"
+	IntentCommunityImageList Intent = "community_image_list"
 )
 
 type TargetRefType string
@@ -103,6 +111,11 @@ func AllIntents() []Intent {
 		IntentKnowledgeQA,
 		IntentMixedDiagnosisKB,
 		IntentMixedBillingKB,
+		IntentGPUSpecsQuery,
+		IntentStockAvailability,
+		IntentPlatformImageList,
+		IntentCustomImageList,
+		IntentCommunityImageList,
 		IntentUnknown,
 	}
 }
@@ -120,6 +133,11 @@ func RuntimeIntents() []Intent {
 		IntentOperationLifecycle,
 		IntentRecommendation,
 		IntentKnowledgeQA,
+		IntentGPUSpecsQuery,
+		IntentStockAvailability,
+		IntentPlatformImageList,
+		IntentCustomImageList,
+		IntentCommunityImageList,
 		IntentUnknown,
 	}
 }

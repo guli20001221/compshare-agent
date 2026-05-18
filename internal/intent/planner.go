@@ -194,12 +194,12 @@ func buildSystemPrompt() string {
 	// Keep the planner scaffold ASCII/English. Earlier Windows console/source
 	// encoding issues made non-ASCII prompt labels fragile, while the baseline
 	// model handles bilingual user text with English JSON-field instructions.
-	return strings.Join([]string{
+	base := strings.Join([]string{
 		"You are the IntentPlan planner for the CompShare console agent.",
 		"Return exactly one JSON object. Do not output Markdown, prose, or tool calls.",
 		"Required top-level fields: schema_version, intent, slots, required_tools, retrieval, hard_block_hint, confidence.",
 		"schema_version must be \"1.0\". confidence must be a number in [0,1]. retrieval.enabled must be false for the current demo slice.",
-		"Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, recommendation, knowledge_qa, unknown.",
+		"Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, recommendation, knowledge_qa, gpu_specs_query, stock_availability, platform_image_list, custom_image_list, community_image_list, unknown.",
 		"Phase 1 demo focus: classify clear resource inventory questions as resource_info and clear current monitoring questions as monitor_query.",
 		"Treat performance questions like CPU high, GPU busy/idle, memory high, VRAM high, or whether a machine is idle as monitor_query first, unless the user states a concrete SSH, init, billing, lifecycle, or instance-internal operation problem.",
 		"Historical monitor phrases like yesterday, last night, today morning, or X点到Y点 must use monitor_history or a non-current time_window, never preset now/today.",
@@ -265,6 +265,17 @@ func buildSystemPrompt() string {
 		"User question: uhost-abc123 \u8fd9\u53f0\u542f\u52a8\u5931\u8d25\u4e86\u5e2e\u6211\u67e5",
 		"{\"schema_version\":\"1.0\",\"intent\":\"diagnosis\",\"slots\":{\"target_refs\":[{\"type\":\"uhost_id_user_input\",\"value\":\"uhost-abc123\",\"source\":\"user_text\",\"source_span\":\"uhost-abc123\"}],\"metrics\":[],\"time_window\":null},\"required_tools\":[\"DescribeCompShareInstance\"],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
 	}, "\n")
+	// Capability Registry v1 (PR A, 2026-05-18): append directives + one-shot
+	// examples that come from internal/intent/capabilities/*.md frontmatter
+	// metadata. Engine.go has a single generic dispatch hook; planner-side
+	// directives + examples are the only place that "knows about" new
+	// capabilities, so adding a capability stays data-only.
+	directives, examples := CapabilityPromptFragments()
+	parts := make([]string, 0, 1+len(directives)+len(examples))
+	parts = append(parts, base)
+	parts = append(parts, directives...)
+	parts = append(parts, examples...)
+	return strings.Join(parts, "\n")
 }
 
 func buildUserPrompt(input PlannerInput, retryInstruction string) string {

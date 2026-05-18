@@ -223,6 +223,12 @@ func (e *Engine) SetIntentPlanner(planner IntentPlanner, opts IntentPlannerOptio
 		switch enabled {
 		case intent.IntentResourceInfo, intent.IntentMonitorQuery:
 			e.intentCutoverIntents[enabled] = struct{}{}
+		default:
+			// Capability Registry v1: any registered capability intent is
+			// admissible to the cutover set without per-case wiring here.
+			if intent.IsCapabilityIntent(enabled) {
+				e.intentCutoverIntents[enabled] = struct{}{}
+			}
 		}
 	}
 }
@@ -597,8 +603,8 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		})
 		return monitorHistoryUnsupportedReply, true
 	}
-	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery {
-		return e.tryPhase1Cutover(ctx, dispatch, onStep)
+	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || intent.IsCapabilityIntent(dispatch.result.Plan.Intent) {
+		return e.tryPhase1Cutover(ctx, dispatch, userMsg, onStep)
 	}
 	if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg); handled {
 		return reply, true
@@ -639,9 +645,9 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 	return plannerDispatchResult{result: result, latency: latency, snapshot: snapshot}
 }
 
-func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchResult, onStep func(StepEvent)) (string, bool) {
+func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
 	result := dispatch.result
-	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery {
+	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsCapabilityIntent(result.Plan.Intent) {
 		return "", false
 	}
 	if status, ok := e.phase1CutoverCandidateStatus(result); !ok {
@@ -653,6 +659,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 	req := intent.HandlerRequest{
 		Plan:     result.Plan,
 		Resolver: dispatch.snapshot,
+		UserText: userMsg,
 	}
 	var handled intent.HandlerResult
 	switch result.Plan.Intent {
@@ -661,8 +668,15 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 	case intent.IntentMonitorQuery:
 		handled = handler.HandleMonitorQuery(ctx, req)
 	default:
-		e.emitPlannerTrace(result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
-		return "", false
+		// Capability Registry v1: any registered capability intent dispatches
+		// through the registry. Engine.go does not need per-case wiring as new
+		// capabilities are added — see internal/intent/capability_registry.go.
+		if intent.IsCapabilityIntent(result.Plan.Intent) {
+			handled = handler.DispatchCapability(ctx, req)
+		} else {
+			e.emitPlannerTrace(result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
+			return "", false
+		}
 	}
 
 	if handled.Status == intent.HandlerStatusFallbackBeforeTool {
@@ -686,6 +700,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 					req := intent.HandlerRequest{
 						Plan:     resumed.Plan,
 						Resolver: selection.snapshot,
+						UserText: userMsg,
 					}
 					handled = handler.HandleMonitorQuery(ctx, req)
 					e.emitPlannerTrace(resumed, handled.CutoverStatus, dispatch.latency)
@@ -770,6 +785,7 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 	handled := handler.HandleMonitorQuery(ctx, intent.HandlerRequest{
 		Plan:     resumedPlan,
 		Resolver: pending.snapshot,
+		UserText: pending.originalUserMsg,
 	})
 	e.emitPlannerTrace(intent.PlannerResult{Plan: resumedPlan}, handled.CutoverStatus, 0)
 	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, pending.originalUserMsg)
@@ -1187,7 +1203,7 @@ func (e *Engine) phase1CutoverCandidateStatus(result intent.PlannerResult) (inte
 	if result.Plan.Retrieval.Enabled {
 		return intent.CutoverStatusFallbackIneligible, false
 	}
-	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery {
+	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsCapabilityIntent(result.Plan.Intent) {
 		return intent.CutoverStatusFallbackIneligible, false
 	}
 	if _, ok := e.intentCutoverIntents[result.Plan.Intent]; !ok {

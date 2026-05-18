@@ -207,7 +207,13 @@ func validRequiredTool(tool string) bool {
 		"GetCompShareInstanceMonitor",
 		"DiagnoseBilling",
 		"GetCompShareInstancePrice",
-		"GetCompShareInstanceUserPrice":
+		"GetCompShareInstanceUserPrice",
+		// Capability Registry v1 (PR A, 2026-05-18). Keep the legacy list above
+		// untouched and accept the 4 capability-bound platform-query tools.
+		"DescribeAvailableCompShareInstanceTypes",
+		"DescribeCompShareImages",
+		"DescribeCompShareCustomImages",
+		"DescribeCommunityImages":
 		return true
 	default:
 		return false

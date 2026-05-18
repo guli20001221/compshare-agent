@@ -199,6 +199,12 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentKnowledgeQA,
 		IntentMixedDiagnosisKB,
 		IntentMixedBillingKB,
+		// Capability Registry v1 (PR A, 2026-05-18) — see capability_registry.go.
+		IntentGPUSpecsQuery,
+		IntentStockAvailability,
+		IntentPlatformImageList,
+		IntentCustomImageList,
+		IntentCommunityImageList,
 		IntentUnknown,
 	}, AllIntents())
 }
