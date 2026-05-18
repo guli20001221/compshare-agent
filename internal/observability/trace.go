@@ -227,8 +227,8 @@ type RetrievalTrace struct {
 	WeakEvidence          bool           `json:"weak_evidence,omitempty"`
 	RankingErrorCandidate bool           `json:"ranking_error_candidate,omitempty"`
 	// HybridMode mirrors internal/knowledge/retriever.RetrievalResult.HybridMode.
-	// One of "bm25_only" | "hybrid_cosine" | "bm25_fallback". Empty when
-	// retrieval is disabled (no retriever configured).
+	// One of "bm25_only" | "hybrid_cosine" | "hybrid_rerank" | "qwen3_full"
+	// | "bm25_fallback". Empty when retrieval is disabled.
 	HybridMode string `json:"hybrid_mode,omitempty"`
 	// HybridFallbackReason is non-empty only when HybridMode == "bm25_fallback".
 	// One of "embedding_timeout" | "embedding_error" | "embedding_empty".
@@ -239,6 +239,24 @@ type RetrievalTrace struct {
 	// client-side cache); *>0 = actual round-trip. Use to compute p95/p99
 	// production embedding latency for principled hybridTimeout tuning.
 	EmbeddingLatencyMS *int64 `json:"embedding_latency_ms,omitempty"`
+	// EmbeddingModel labels which embedder produced the cosine signal.
+	// Examples: "text-embedding-3-large", "qwen3-embedding-8b". Empty
+	// when no embedder was invoked (bm25_only or bm25_fallback path).
+	EmbeddingModel string `json:"embedding_model,omitempty"`
+	// RerankerMode labels which reranker model produced the final ranking.
+	// Empty when the reranker stage was not engaged (legacy hybrid_cosine,
+	// bm25_only, or reranker fallback to cosine). Non-empty example:
+	// "qwen3-reranker-8b". Distinguishes "reranker not configured for this
+	// mode" (empty) from "reranker invoked" (model name).
+	RerankerMode string `json:"reranker_mode,omitempty"`
+	// RerankerLatencyMS mirrors EmbeddingLatencyMS three-state semantics
+	// for the reranker stage: nil = reranker not invoked; *0 = reserved
+	// for future client-side cache; *>0 = actual call round-trip ms.
+	RerankerLatencyMS *int64 `json:"reranker_latency_ms,omitempty"`
+	// RerankerFallbackReason is non-empty only when the reranker stage was
+	// attempted but failed and the retriever fell back to the cosine top-K.
+	// One of "reranker_timeout" | "reranker_error" | "reranker_empty".
+	RerankerFallbackReason string `json:"reranker_fallback_reason,omitempty"`
 }
 
 type RetrievalHit struct {
@@ -465,7 +483,11 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.RankingErrorCandidate ||
 		trace.HybridMode != "" ||
 		trace.HybridFallbackReason != "" ||
-		trace.EmbeddingLatencyMS != nil
+		trace.EmbeddingLatencyMS != nil ||
+		trace.EmbeddingModel != "" ||
+		trace.RerankerMode != "" ||
+		trace.RerankerLatencyMS != nil ||
+		trace.RerankerFallbackReason != ""
 }
 
 func traceOutcomeObserved(trace OutcomeTrace) bool {

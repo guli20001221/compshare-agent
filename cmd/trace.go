@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/reranker"
 )
 
 type getenvFunc func(string) string
@@ -153,31 +155,104 @@ func knowledgeRetrieverFromEnv(getenv getenvFunc) (*knowledge.Retriever, bool, e
 		return nil, false, nil
 	}
 	corpusPath := knowledgeCorpusPathFromEnv(getenv)
-	if !hybridEnabledFromEnv(getenv) {
+	mode := ragRetrievalModeFromEnv(getenv)
+	if mode == knowledge.RetrievalModeBM25Only {
 		corpus, err := knowledge.LoadPinnedCorpus(corpusPath)
 		if err != nil {
 			return nil, false, err
 		}
-		return knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{}), true, nil
+		return knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{
+			Mode: knowledge.RetrievalModeBM25Only,
+		}), true, nil
 	}
-	// Hybrid path: corpus + embedding sidecar must both load and pass their
-	// pinned-digest checks. Failure is fatal (the runtime must never serve a
-	// hybrid result against a stale or mismatched index — see CONTEXT.md
-	// "Corpus 加载约束" + memory feedback_constraints_anchor_to_validated_artifact).
-	embeddingsPath := hybridEmbeddingsPathFromEnv(getenv, corpusPath)
-	corpus, sidecar, err := knowledge.LoadPinnedCorpusWithEmbeddings(corpusPath, embeddingsPath)
+	// Hybrid-or-better path: corpus + embedding sidecar must both load and
+	// pass their pinned-digest checks. Failure is fatal — the runtime must
+	// never serve a hybrid result against a stale or mismatched index (see
+	// memory feedback_constraints_anchor_to_validated_artifact).
+	embedModel := embedModelForMode(mode, getenv)
+	expectedDigest := embeddingDigestForMode(mode)
+	embeddingsPath := hybridEmbeddingsPathFromEnv(getenv, corpusPath, embedModel)
+	corpus, sidecar, err := knowledge.LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, expectedDigest)
 	if err != nil {
-		return nil, false, fmt.Errorf("rag hybrid load: %w", err)
+		return nil, false, fmt.Errorf("rag hybrid load (mode=%s): %w", mode, err)
 	}
-	client, err := embeddingClientFromEnv(getenv)
+	embedClient, err := embeddingClientFromEnvWithModel(getenv, embedModel)
 	if err != nil {
 		return nil, false, fmt.Errorf("rag hybrid embedding client: %w", err)
 	}
-	return knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{
+	opts := knowledge.RetrieverOptions{
 		EmbeddingSidecar:     &sidecar,
-		Embedder:             client,
+		Embedder:             embedClient,
+		EmbeddingModel:       embedModel,
 		HybridContextTimeout: hybridTimeoutFromEnv(getenv),
-	}), true, nil
+		Mode:                 mode,
+	}
+	if mode == knowledge.RetrievalModeHybridRerank || mode == knowledge.RetrievalModeQwen3Full {
+		rerankerModel := strings.TrimSpace(getenv("MODELVERSE_RERANKER_MODEL"))
+		if rerankerModel == "" {
+			rerankerModel = "qwen3-reranker-8b"
+		}
+		rerankerClient, err := rerankerClientFromEnv(getenv, rerankerModel)
+		if err != nil {
+			return nil, false, fmt.Errorf("rag reranker client: %w", err)
+		}
+		opts.Reranker = rerankerClient
+		opts.RerankerModel = rerankerModel
+		opts.RerankerContextTimeout = rerankerTimeoutFromEnv(getenv)
+	}
+	return knowledge.NewRetriever(corpus, opts), true, nil
+}
+
+// ragRetrievalModeFromEnv resolves the effective retrieval mode with this
+// precedence: explicit RAG_RETRIEVAL_MODE > legacy RAG_HYBRID_ENABLED.
+// Unset and unrecognized values yield bm25_only so production runtime stays
+// at its safest path when configuration is missing or malformed.
+func ragRetrievalModeFromEnv(getenv getenvFunc) string {
+	mode := strings.ToLower(strings.TrimSpace(getenv("RAG_RETRIEVAL_MODE")))
+	switch mode {
+	case knowledge.RetrievalModeBM25Only,
+		knowledge.RetrievalModeHybridCosine,
+		knowledge.RetrievalModeHybridRerank,
+		knowledge.RetrievalModeQwen3Full:
+		return mode
+	case "":
+		if hybridEnabledFromEnv(getenv) {
+			return knowledge.RetrievalModeHybridCosine
+		}
+		return knowledge.RetrievalModeBM25Only
+	default:
+		log.Printf("rag: unrecognized RAG_RETRIEVAL_MODE=%q, falling back to legacy RAG_HYBRID_ENABLED check", mode)
+		if hybridEnabledFromEnv(getenv) {
+			return knowledge.RetrievalModeHybridCosine
+		}
+		return knowledge.RetrievalModeBM25Only
+	}
+}
+
+// embedModelForMode returns the embedding model that goes with the chosen
+// retrieval mode. qwen3_full uses qwen3-embedding-8b (and the corresponding
+// sidecar); other hybrid modes use text-embedding-3-large.
+func embedModelForMode(mode string, getenv getenvFunc) string {
+	if mode == knowledge.RetrievalModeQwen3Full {
+		if explicit := strings.TrimSpace(getenv("MODELVERSE_EMBED_MODEL")); explicit != "" {
+			return explicit
+		}
+		return "qwen3-embedding-8b"
+	}
+	if explicit := strings.TrimSpace(getenv("MODELVERSE_EMBED_MODEL")); explicit != "" {
+		return explicit
+	}
+	return "text-embedding-3-large"
+}
+
+// embeddingDigestForMode returns the pinned sidecar digest that goes with
+// the chosen retrieval mode. qwen3_full pins the qwen3-embedding-8b
+// sidecar; other hybrid modes pin the text-embedding-3-large sidecar.
+func embeddingDigestForMode(mode string) string {
+	if mode == knowledge.RetrievalModeQwen3Full {
+		return knowledge.EmbeddingDigestExpectedQwen3
+	}
+	return knowledge.EmbeddingDigestExpected
 }
 
 func hybridEnabledFromEnv(getenv getenvFunc) bool {
@@ -189,11 +264,22 @@ func hybridEnabledFromEnv(getenv getenvFunc) bool {
 	}
 }
 
-func hybridEmbeddingsPathFromEnv(getenv getenvFunc, corpusPath string) string {
+// hybridEmbeddingsPathFromEnv picks the sidecar file. When the embed model
+// is the default text-embedding-3-large the path matches the legacy
+// embeddings_<digest>.jsonl (no model suffix) so existing deployments are
+// untouched; non-default models get the _<model> suffix per B.2.
+//
+// COMPSHARE_KNOWLEDGE_EMBEDDINGS overrides the computed path so tests +
+// staged sidecar files can be wired without renaming.
+func hybridEmbeddingsPathFromEnv(getenv getenvFunc, corpusPath, embedModel string) string {
 	if override := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_EMBEDDINGS")); override != "" {
 		return override
 	}
-	return filepath.Join(filepath.Dir(corpusPath), "embeddings_"+knowledge.CorpusDigestExpected+".jsonl")
+	dir := filepath.Dir(corpusPath)
+	if embedModel == "" || embedModel == "text-embedding-3-large" {
+		return filepath.Join(dir, "embeddings_"+knowledge.CorpusDigestExpected+".jsonl")
+	}
+	return filepath.Join(dir, "embeddings_"+knowledge.CorpusDigestExpected+"_"+embedModel+".jsonl")
 }
 
 // hybridTimeoutFromEnv reads RAG_HYBRID_TIMEOUT_MS and returns a duration.
@@ -216,6 +302,19 @@ func hybridTimeoutFromEnv(getenv getenvFunc) time.Duration {
 }
 
 func embeddingClientFromEnv(getenv getenvFunc) (*embedding.Client, error) {
+	model := strings.TrimSpace(getenv("MODELVERSE_EMBED_MODEL"))
+	if model == "" {
+		model = "text-embedding-3-large"
+	}
+	return embeddingClientFromEnvWithModel(getenv, model)
+}
+
+// embeddingClientFromEnvWithModel builds an embedding client with an
+// explicit model override. Used by knowledgeRetrieverFromEnv to honor the
+// mode-driven model selection (qwen3-embedding-8b for qwen3_full,
+// text-embedding-3-large for hybrid_cosine / hybrid_rerank) without
+// requiring callers to also set MODELVERSE_EMBED_MODEL.
+func embeddingClientFromEnvWithModel(getenv getenvFunc, model string) (*embedding.Client, error) {
 	apiKey := strings.TrimSpace(getenv("MODELVERSE_API_KEY"))
 	if apiKey == "" {
 		return nil, fmt.Errorf("MODELVERSE_API_KEY is required for hybrid retrieval")
@@ -224,8 +323,7 @@ func embeddingClientFromEnv(getenv getenvFunc) (*embedding.Client, error) {
 	if baseURL == "" {
 		baseURL = "https://api.modelverse.cn/v1"
 	}
-	model := strings.TrimSpace(getenv("MODELVERSE_EMBED_MODEL"))
-	if model == "" {
+	if strings.TrimSpace(model) == "" {
 		model = "text-embedding-3-large"
 	}
 	return embedding.NewClient(embedding.ClientOptions{
@@ -233,6 +331,65 @@ func embeddingClientFromEnv(getenv getenvFunc) (*embedding.Client, error) {
 		APIKey:  apiKey,
 		Model:   model,
 	})
+}
+
+// rerankerClientAdapter wraps reranker.Client (which returns
+// []reranker.Result) into knowledge.RerankerClient (which returns
+// []knowledge.RerankerResult). The knowledge package stays free of the
+// reranker package import — same pattern as VectorEmbedder.
+type rerankerClientAdapter struct {
+	client reranker.Client
+}
+
+func (a rerankerClientAdapter) Rerank(ctx context.Context, query string, docs []string, topN int) ([]knowledge.RerankerResult, error) {
+	results, err := a.client.Rerank(ctx, query, docs, topN)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]knowledge.RerankerResult, 0, len(results))
+	for _, r := range results {
+		out = append(out, knowledge.RerankerResult{Index: r.Index, Score: r.Score})
+	}
+	return out, nil
+}
+
+func rerankerClientFromEnv(getenv getenvFunc, model string) (knowledge.RerankerClient, error) {
+	apiKey := strings.TrimSpace(getenv("MODELVERSE_API_KEY"))
+	if apiKey == "" {
+		return nil, fmt.Errorf("MODELVERSE_API_KEY is required for reranker")
+	}
+	baseURL := strings.TrimSpace(getenv("MODELVERSE_BASE_URL"))
+	if baseURL == "" {
+		baseURL = "https://api.modelverse.cn/v1"
+	}
+	if strings.TrimSpace(model) == "" {
+		model = "qwen3-reranker-8b"
+	}
+	client, err := reranker.NewModelverseClient(reranker.ClientOptions{
+		BaseURL: baseURL,
+		APIKey:  apiKey,
+		Model:   model,
+		Timeout: rerankerTimeoutFromEnv(getenv),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return rerankerClientAdapter{client: client}, nil
+}
+
+// rerankerTimeoutFromEnv parses RAG_RERANKER_TIMEOUT_MS. Zero return means
+// "use reranker package default" (5s, matches B.0 probe sizing).
+func rerankerTimeoutFromEnv(getenv getenvFunc) time.Duration {
+	raw := strings.TrimSpace(getenv("RAG_RERANKER_TIMEOUT_MS"))
+	if raw == "" {
+		return 0
+	}
+	ms, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || ms <= 0 {
+		log.Printf("rag.reranker: invalid RAG_RERANKER_TIMEOUT_MS=%q, falling back to reranker default", raw)
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []string) {

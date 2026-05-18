@@ -314,10 +314,28 @@ func TestHybridEnabledFromEnv(t *testing.T) {
 func TestHybridEmbeddingsPathFromEnv(t *testing.T) {
 	getenv := func(_ string) string { return "" }
 	corpus := filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
-	got := hybridEmbeddingsPathFromEnv(getenv, corpus)
+	// Default embed model (text-embedding-3-large) keeps the legacy
+	// no-suffix filename for backward compatibility with the pinned
+	// EmbeddingDigestExpected sidecar.
+	got := hybridEmbeddingsPathFromEnv(getenv, corpus, "text-embedding-3-large")
 	wantSuffix := "embeddings_" + knowledge.CorpusDigestExpected + ".jsonl"
 	if !strings.HasSuffix(got, wantSuffix) {
 		t.Fatalf("default sidecar path %q lacks suffix %q", got, wantSuffix)
+	}
+	// Empty model also returns the legacy filename — same default as
+	// text-embedding-3-large per hybridEmbeddingsPathFromEnv contract.
+	if empty := hybridEmbeddingsPathFromEnv(getenv, corpus, ""); !strings.HasSuffix(empty, wantSuffix) {
+		t.Fatalf("empty-model sidecar path %q lacks suffix %q", empty, wantSuffix)
+	}
+}
+
+func TestHybridEmbeddingsPathFromEnvNonDefaultModelAppendsSuffix(t *testing.T) {
+	getenv := func(_ string) string { return "" }
+	corpus := filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
+	got := hybridEmbeddingsPathFromEnv(getenv, corpus, "qwen3-embedding-8b")
+	wantSuffix := "embeddings_" + knowledge.CorpusDigestExpected + "_qwen3-embedding-8b.jsonl"
+	if !strings.HasSuffix(got, wantSuffix) {
+		t.Fatalf("qwen3 sidecar path %q lacks suffix %q", got, wantSuffix)
 	}
 }
 
@@ -328,7 +346,7 @@ func TestHybridEmbeddingsPathFromEnvOverride(t *testing.T) {
 			return override
 		}
 		return ""
-	}, "ignored.jsonl")
+	}, "ignored.jsonl", "text-embedding-3-large")
 	if got != override {
 		t.Fatalf("override = %q, want %q", got, override)
 	}
