@@ -1032,11 +1032,11 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 		return ragNoEvidenceReply, true
 	}
 
-	weak := isWeakEvidence(hitItems)
+	weak := isWeakEvidence(hitItems, retrieved.HybridMode)
 	if weak {
 		trace.WeakEvidence = true
 	}
-	if weak || isRankingAmbiguous(hitItems) {
+	if weak || isRankingAmbiguous(hitItems, retrieved.HybridMode) {
 		trace.RankingErrorCandidate = true
 	}
 	reply, outcome, refusedReason, rankingCandidate, err := e.answerWithRetrievedEvidence(ctx, userMsg, evidences, weak)
@@ -1170,18 +1170,55 @@ func ragReferencesFromEvidence(evidences []envelope.Evidence) []prompt.RAGRefere
 	return refs
 }
 
-func isWeakEvidence(items []knowledge.RetrievalHit) bool {
+// isWeakEvidence reports whether the top hit's score is below the weak-evidence
+// threshold for the retrieval path that produced it. hybridMode comes from
+// knowledge.RetrievalResult.HybridMode and tracks the actual scoring path used
+// (including bm25_fallback when a hybrid mode degraded to BM25 mid-flight),
+// not the user-configured RAG_RETRIEVAL_MODE. Treat unknown / empty values as
+// BM25 — that preserves pre-mode-aware test fixtures whose mock RetrievalResult
+// leaves HybridMode unset.
+func isWeakEvidence(items []knowledge.RetrievalHit, hybridMode string) bool {
 	if len(items) == 0 {
 		return false
 	}
-	return items[0].Score < ragWeakEvidenceThreshold
+	return items[0].Score < weakEvidenceThresholdFor(hybridMode)
 }
 
-func isRankingAmbiguous(items []knowledge.RetrievalHit) bool {
+// isRankingAmbiguous reports whether the top two hits are close enough on the
+// scoring scale that ranking is essentially a tie. Only feeds telemetry
+// (trace.RankingErrorCandidate); does NOT influence the RAG prompt or refusal
+// path. Mode-aware so the spread threshold matches the score scale in use.
+func isRankingAmbiguous(items []knowledge.RetrievalHit, hybridMode string) bool {
 	if len(items) < 2 {
 		return false
 	}
-	return items[0].Score-items[1].Score < 5.0
+	return items[0].Score-items[1].Score < rankingAmbiguousSpreadFor(hybridMode)
+}
+
+// weakEvidenceThresholdFor maps a knowledge.RetrievalResult.HybridMode value to
+// the appropriate weak-evidence floor. See cited_guard.go for the rationale
+// behind each scale. The empty string and any unrecognized value default to
+// the BM25 threshold so existing tests with mock RetrievalResult{} keep their
+// fixture-pinned behavior.
+func weakEvidenceThresholdFor(hybridMode string) float64 {
+	switch hybridMode {
+	case "hybrid_cosine", "hybrid_rerank", "qwen3_full":
+		return weakEvidenceSemanticThreshold
+	default:
+		// "bm25_only", "bm25_fallback", "", or any unrecognized value.
+		return weakEvidenceBM25Threshold
+	}
+}
+
+// rankingAmbiguousSpreadFor maps HybridMode to the spread threshold under which
+// the top two hits are considered tied. Same default-to-BM25 rule as above.
+func rankingAmbiguousSpreadFor(hybridMode string) float64 {
+	switch hybridMode {
+	case "hybrid_cosine", "hybrid_rerank", "qwen3_full":
+		return rankingAmbiguousSemanticSpread
+	default:
+		return rankingAmbiguousBM25Spread
+	}
 }
 
 func clipKnowledgeHistoryContent(content string) string {
