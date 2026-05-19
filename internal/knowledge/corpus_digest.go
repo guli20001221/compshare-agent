@@ -9,13 +9,13 @@ import (
 	"os"
 )
 
-const CorpusDigestExpected = "02497c9ef6bb168bf7521b93d0748198a18e4c464353877060a868b843eb4f89"
+const CorpusDigestExpected = "fbc4578917c9fa36952caf89e3dc2f1db3a1cccbc2186ec865278a557628e2a3"
 
 // EmbeddingDigestExpected pins the hybrid retrieval embedding sidecar produced by
 // scripts/rag_w0/build_corpus_embeddings.py over the CorpusDigestExpected corpus
 // with text-embedding-3-large (3072-dim). Mismatch indicates the sidecar is
 // stale relative to the deployed corpus and RAG hybrid path must refuse to load.
-const EmbeddingDigestExpected = "9e9c67a1e5f7afc081c3c9026cf5551f7d2aa1edb12fa405e6da1ffe7de14654"
+const EmbeddingDigestExpected = "94b99488a76274407c61f973c1e0eea4c4e16b3080e73618741f0d8b086fda93"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.
