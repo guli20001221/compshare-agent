@@ -4425,6 +4425,131 @@ class RagW0ScriptTests(unittest.TestCase):
         for purpose, phrase in anchors.items():
             self.assertIn(phrase, prompt, msg=f"anti-fab anchor for {purpose} missing")
 
+    def test_evaluate_answers_prompt_encodes_a1_anti_misfire_patterns(self):
+        """Stage 5 (2026-05-19): A1 disclaimer-misfire fix. Mirrors
+        internal/prompt/rag_test.go TestBuildRAGMessagesPromptEncodesA1Anti
+        MisfirePatterns. Lane B.5c + post-#107 delta judged 12 4-mode-
+        persistent A1 qids (r02/r03/r08/r09/r10/r12/r13/r33/r57/m04/m05/
+        m08) where retrieval.hit_items was non-empty (score 0.93-0.98)
+        but ds-v4-flash returned the Tier-3 template anyway. Stage 5
+        widens Tier 1 to "knowledge chunk concerns the question topic
+        (need not be byte-exact)" and explicitly forbids Tier-3
+        bail-out on topic-relevant evidence. eval prompt must mirror
+        runtime exactly (memory feedback_eval_target_must_match_runtime_
+        path)."""
+        prompt = evaluate_answers._answer_prompt(
+            "test q",
+            [{"title": "t", "content": "c"}],
+        )
+        for phrase in [
+            "知识片段涉及问题主题",
+            "即使不是逐字对应",
+            "怎么配置",
+            "怎么对接",
+            "支持 X 吗",
+            "禁止:片段明显涉及问题主题时使用",
+            "拒答模板",
+            "禁止:遇到部分覆盖时直接走规则 3 全拒",
+            "完全不涉及问题主题",
+            "topic 不相干",
+            "用户问 A",
+        ]:
+            self.assertIn(
+                phrase, prompt, msg=f"A1 anti-misfire pattern {phrase!r} missing"
+            )
+
+    def test_evaluate_answers_prompt_encodes_burden_reversed_citation(self):
+        """Stage 5 (2026-05-19): Citation burden inverted. Previous rule
+        "所有非拒答的事实句都必须带引用编号;没有引用编号的答案会被判为失败"
+        plus the strict Tier-1 trigger let the model bail to Tier 3 whenever
+        any single fact couldn't be cited. Stage 5 requires all material-
+        derived facts to cite, with three explicitly-named non-fact escape
+        hatches (transition phrases / question restatement / meta-statements
+        about source limits). Paired with an explicit ban on fabricating
+        uncited facts to keep release-refusal from becoming release-
+        fabrication (user 2026-05-19 callout in brief §1). Mirrors
+        runtime burden-reversal test."""
+        prompt = evaluate_answers._answer_prompt(
+            "test q",
+            [{"title": "t", "content": "c"}],
+        )
+        for phrase in [
+            "所有来自片段的事实",
+            "必须带引用编号",
+            "三类非事实表达可不带引用",
+            "过渡语",
+            "用户问题复述",
+            "元陈述",
+            "无法对每个事实精确逐字引用",
+            "优先按规则 2 部分答",
+            "禁止用规则 3 全拒兜底",
+            "禁止:为了避免拒答而编造未引用的事实陈述",
+        ]:
+            self.assertIn(
+                phrase, prompt, msg=f"burden-reversed citation rule {phrase!r} missing"
+            )
+
+        # Negative assertion: the old "没有引用编号的答案会被判为失败" tail
+        # was the bail-out hook; it must be replaced by the burden-reversed
+        # rule, not retained alongside.
+        self.assertNotIn(
+            "没有引用编号的答案会被判为失败",
+            prompt,
+            msg="legacy bail-out tail must be removed",
+        )
+
+    def test_evaluate_answers_prompt_allows_non_byte_exact_topic_match(self):
+        """Stage 5 round 2 (2026-05-19): mirror of runtime test. The 23-Q
+        subset smoke showed ds-v4-flash refused r33/r57/m04/m05 despite
+        topic-relevant hits because the model insisted on byte-exact
+        question/evidence alignment. Round 2 adds an explicit clause
+        lifting the byte-exact requirement and forbidding the bail-out
+        on "片段不是为这个具体问题写的"."""
+        prompt = evaluate_answers._answer_prompt(
+            "test q",
+            [{"title": "t", "content": "c"}],
+        )
+        for phrase in [
+            "不要求片段逐字复现用户问题",
+            "同一主题下的规则 / 步骤 / 限制 / 入口",
+            "先回答片段能确认的部分",
+            "禁止以 \"片段不是为这个具体问题写的\" 为由拒答",
+        ]:
+            self.assertIn(
+                phrase, prompt, msg=f"non-byte-exact clause {phrase!r} missing"
+            )
+
+    def test_evaluate_answers_prompt_encodes_third_party_tool_integration_pattern(self):
+        """Stage 5 round 2 (2026-05-19): mirror of runtime test. The 23-Q
+        subset smoke showed ds-v4-flash refused r02 MCP / r10 LangBot /
+        r12 RAGFlow / m08 ComfyUI despite high-score modelverse hits.
+        Round 2 carves out the third-party-tool-integration sub-pattern:
+        answer platform-side facts (protocol / Base URL / API Key /
+        endpoint), disclose tool-side gap, emit tool-side claims only as
+        conditionals. Must NOT weaken anti-fab anchor #4."""
+        prompt = evaluate_answers._answer_prompt(
+            "test q",
+            [{"title": "t", "content": "c"}],
+        )
+        for phrase in [
+            "第三方工具接入场景",
+            "Dify / RAGFlow / LangBot / AnythingLLM / MCP / ComfyUI / n8n",
+            "片段能确认的平台侧配置",
+            "OpenAI / Anthropic / Gemini 兼容协议",
+            "API Key 获取入口",
+            "模型列表 endpoint",
+            "片段未覆盖该工具内部的按钮路径或字段名称",
+            "工具侧只能用条件句",
+            "OpenAI-compatible / 自定义 OpenAI 接口配置",
+            "禁止断言",
+            "该工具一定支持 OpenAI 兼容",
+            "该工具通常支持",
+            "禁止编造该工具的具体 UI 步骤",
+        ]:
+            self.assertIn(
+                phrase, prompt, msg=f"third-party-tool pattern {phrase!r} missing"
+            )
+
     def test_evaluate_answers_resumes_existing_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
