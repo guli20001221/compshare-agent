@@ -97,17 +97,71 @@ func TestBuildSystemPromptDistinguishesFinanceFAQAndRealtimeAccountData(t *testi
 	prompt := buildSystemPrompt()
 	required := []string{
 		"finance policy/how-to questions like invoice issuance, refund rules, arrears handling, why am I still charged after shutdown, billing mode differences, or package expiry should emit knowledge_qa",
-		"account realtime finance/status questions like invoice status, refund progress, arrears amount, payable bills, balance, total bills, transaction records, charge records, package expiry time, or recharge amount should emit billing_account_unsupported",
+		"account realtime finance/status questions about THE USER'S OWN ACCOUNT data",
 		"instance-scoped billing questions should emit billing_instance",
 		"why am I still charged after shutdown",
 		"how do I issue an invoice",
 		"what is my invoice status",
 		"refund rules",
-		"refund progress",
+		"my refund progress",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("system prompt missing finance routing rule %q:\n%s", fragment, prompt)
+		}
+	}
+}
+
+// TestBuildSystemPromptPR52FAQProcessVsPersonalStatus locks the #52
+// rules added to disambiguate FAQ/process questions from personal-status
+// queries. Lane B.5c surfaced two 4-mode hard-block false positives:
+// h03 ("我的发票什么时候开") and mq05 ("下载速度突然变慢 是欠费了吗 还是
+// 网络高峰"). The engine guard fix alone (isFinanceFAQProcessQuestion)
+// is not sufficient when the question reaches the planner; the planner
+// prompt must also disambiguate or it falls back to billing_account_
+// unsupported under the previous wording.
+//
+// Lock the four new rule fragments and the ambiguity tie-breaker so a
+// future planner prompt edit cannot silently revert them.
+func TestBuildSystemPromptPR52FAQProcessVsPersonalStatus(t *testing.T) {
+	prompt := buildSystemPrompt()
+	required := []string{
+		// Rule 1: personal account data explicitly enumerated with
+		// 我的 X / 我账单 patterns so the LLM keys on the personal pronoun.
+		"我的发票开好了吗",
+		"我账单还剩多少",
+		// Rule 2: FAQ/process schedule questions emit knowledge_qa
+		// explicitly contrasted with billing_account_unsupported.
+		"FAQ/process questions about HOW the system works",
+		"什么时候开发票",
+		"欠费几天回收",
+		"emit knowledge_qa, not billing_account_unsupported",
+		// Rule 3: ambiguity tie-breaker for h03-style "我的 X 什么时候 Y".
+		"When ambiguous between process-question and personal-status",
+		"我的发票什么时候开",
+		"default to knowledge_qa unless the user explicitly asks for the realtime state",
+		// Rule 4: diagnostic phrasing (mq05) — finance topic paired with
+		// non-finance symptom must route to knowledge_qa, not be tricked
+		// by the bare 欠费 keyword.
+		"Diagnostic phrasings that pair a finance topic with non-finance symptoms",
+		"下载速度突然变慢 是欠费了吗 还是网络高峰",
+		"the user is asking for root-cause checklist, not their own balance amount",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt missing PR-52 finance disambiguation rule %q:\n%s", fragment, prompt)
+		}
+	}
+	// Negative: the legacy "invoice status, refund progress, arrears amount, ..."
+	// blanket rule was the root cause of h03 misrouting (any 'invoice' word
+	// triggered the unsupported intent). It MUST be replaced by the more
+	// specific personal-account version.
+	forbidden := []string{
+		"account realtime finance/status questions like invoice status, refund progress, arrears amount, payable bills, balance, total bills, transaction records, charge records, package expiry time, or recharge amount should emit billing_account_unsupported",
+	}
+	for _, fragment := range forbidden {
+		if strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt still contains pre-PR-52 blanket rule %q which causes h03-style misrouting:\n%s", fragment, prompt)
 		}
 	}
 }

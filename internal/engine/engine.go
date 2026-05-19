@@ -2647,6 +2647,26 @@ func isAccountBillingUnsupportedNormalized(n string) bool {
 	if containsNormalizedKeyword(n, thirdPartyServiceForeignBalanceContexts) {
 		return false
 	}
+	// #52 (2026-05-19): finance FAQ / process-question scope-out.
+	// h03 ("我的发票什么时候开") + mq05 ("下载速度突然变慢 是欠费了吗 还是
+	// 网络高峰") were 4-mode hard-blocked despite being process/diagnostic
+	// questions a FAQ corpus can answer. The exemption fires ONLY when all
+	// three conditions hold simultaneously (per brief; user 2026-05-19
+	// tightening to prevent over-exemption like "账户余额怎么查"):
+	//   (1) hits a finance-FAQ topic word (开票/发票/退款/欠费/到期/续费/
+	//       包月规则);
+	//   (2) hits a process / diagnostic marker (怎么/什么时候/几天/流程/
+	//       是不是/还是/会影响/恢复 etc.);
+	//   (3) does NOT hit a realtime-account-data marker (我的/账上/还剩/
+	//       开好了吗/进度 — these signal "my specific personal data" and
+	//       must keep the hard-block path).
+	// `余额` is intentionally classified as account-data (NOT a finance-FAQ
+	// topic) so "账户余额怎么查" still hard-blocks under the existing
+	// accountOnlyDataKeywords check below. See engine_hardblock_scoping_test.go
+	// for the full case table.
+	if isFinanceFAQProcessQuestion(n) {
+		return false
+	}
 	if containsNormalizedKeyword(n, accountOnlyDataKeywords) ||
 		containsInvoiceRealtimeQuestion(n) ||
 		containsRefundRealtimeQuestion(n) ||
@@ -2661,6 +2681,83 @@ func isAccountBillingUnsupportedNormalized(n string) bool {
 		return true
 	}
 	return false
+}
+
+// financeFAQTopicWords are finance-related TOPICS that admit FAQ/process
+// answers (invoice issuance schedule, refund process flow, arrears policy,
+// expiry rules). Distinct from accountOnlyDataKeywords — `余额` lives there
+// because it's account-balance data, not a process topic.
+//
+// CONSTRAINT (#52, memory `feedback_l0_stop_grow_dictionary`): keep this
+// list bounded. The long-term home is a finance-policy guard skill manifest;
+// this var is the bridge until that skill ships. Growing it to handle a new
+// false-positive case is the wrong fix — surface it as skill schema input.
+var financeFAQTopicWords = []string{
+	"开票",                   // 开票
+	"发票",                   // 发票
+	"退款",                   // 退款
+	"欠费",                   // 欠费
+	"到期",                   // 到期
+	"续费",                   // 续费
+	"包月规则",       // 包月规则
+}
+
+// financeProcessMarkerWords are phrasing markers that indicate the user is
+// asking about a process / rule / time-window / diagnostic — i.e. content
+// a FAQ corpus can answer — rather than asking for the realtime state of
+// their own personal record.
+var financeProcessMarkerWords = []string{
+	"怎么",       // 怎么
+	"如何",       // 如何
+	"什么时候", // 什么时候
+	"多久",       // 多久
+	"几天",       // 几天
+	"流程",       // 流程
+	"规则",       // 规则
+	"是不是", // 是不是
+	"还是",       // 还是
+	"会影响", // 会影响
+	"影响",       // 影响
+	"恢复",       // 恢复
+}
+
+// financeRealtimeAccountMarkers are signals the user is asking about their
+// own specific record (status / progress / amount remaining). Their presence
+// vetoes the financeFAQ exemption — the question goes back through the
+// existing account-data check, which routes to hard-block as before.
+//
+// Note: this is intentionally a "veto list" not an "expand-the-block list".
+// Pure account-data words like 余额 / 流水 / 账单明细 don't appear here
+// because they already trigger accountOnlyDataKeywords below; this veto
+// only handles the personal-status phrasing layer.
+var financeRealtimeAccountMarkers = []string{
+	"我的",             // 我的
+	"我账户",       // 我账户
+	"账上",             // 账上
+	"我现在",       // 我现在
+	"当前状态", // 当前状态
+	"开好了吗", // 开好了吗
+	"寄了吗",       // 寄了吗
+	"进度",             // 进度
+	"还剩",             // 还剩
+	"剩多少",       // 剩多少
+}
+
+// isFinanceFAQProcessQuestion implements the #52 3-condition AND scope-out
+// per brief: topic + marker + NOT realtime → exempt from hard-block, letting
+// the planner route to knowledge_qa / RAG. See the comment block above
+// the call site in isAccountBillingUnsupportedNormalized for context.
+func isFinanceFAQProcessQuestion(normalized string) bool {
+	if !containsNormalizedKeyword(normalized, financeFAQTopicWords) {
+		return false
+	}
+	if !containsNormalizedKeyword(normalized, financeProcessMarkerWords) {
+		return false
+	}
+	if containsNormalizedKeyword(normalized, financeRealtimeAccountMarkers) {
+		return false
+	}
+	return true
 }
 
 // shouldForceMonitorRecall reports whether the current turn is an adjacent
