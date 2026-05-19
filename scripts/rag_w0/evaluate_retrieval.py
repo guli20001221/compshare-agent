@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+import hashlib
 import json
 import os
 import time
@@ -473,7 +474,6 @@ class _QueryEmbedder:
                     self.cache[qid] = row
 
     def embed(self, question_id: str, question: str) -> list[float]:
-        import hashlib
         q_sha = hashlib.sha256(question.encode("utf-8")).hexdigest()
         existing = self.cache.get(question_id)
         if existing and str(existing.get("question_sha256")) == q_sha:
@@ -575,14 +575,20 @@ class _Reranker:
         top_n: int,
         mode: str,
     ) -> list[tuple[int, float]]:
-        import hashlib
+        # chr(0) separator prevents collisions between docs lists that share
+        # string-prefix boundaries (e.g. ["AB","C"] vs ["A","BC"]). NUL won't
+        # appear in normal chunk text so the separator is unambiguous.
         docs_sha = hashlib.sha256(
-            ("".join(docs)).encode("utf-8")
+            (chr(0).join(docs)).encode("utf-8")
         ).hexdigest()
         existing = self.cache.get((question_id, mode))
         if existing and str(existing.get("docs_sha256")) == docs_sha:
             cached = existing.get("results") or []
-            return [(int(r["index"]), float(r["score"])) for r in cached]
+            # Defensive desc sort matches live-path safety re-sort below.
+            # Protects against manual cache edits or older script versions.
+            cached_results = [(int(r["index"]), float(r["score"])) for r in cached]
+            cached_results.sort(key=lambda item: -item[1])
+            return cached_results
         results = self._call(question, docs, top_n)
         self.cache[(question_id, mode)] = {
             "question_id": question_id,
