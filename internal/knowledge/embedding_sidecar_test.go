@@ -237,7 +237,7 @@ func TestLoadPinnedCorpusWithEmbeddingsRealData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load with pinned digests: %v", err)
 	}
-	if len(c.Chunks) != 182 || sc.Dim != 3072 || len(sc.Vectors) != 182 {
+	if len(c.Chunks) != 170 || sc.Dim != 3072 || len(sc.Vectors) != 170 {
 		t.Fatalf("unexpected loaded state: chunks=%d dim=%d vectors=%d", len(c.Chunks), sc.Dim, len(sc.Vectors))
 	}
 }

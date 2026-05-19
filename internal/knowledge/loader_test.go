@@ -63,7 +63,7 @@ func TestLoadPinnedCorpusLoadsStage2BW0(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "kb.stage2b.w0.2026-05-19.package-policy", corpus.KBVersion)
-	assert.Len(t, corpus.Chunks, 182)
+	assert.Len(t, corpus.Chunks, 170)
 	for _, chunk := range corpus.Chunks {
 		assert.Equal(t, "official", chunk.SourceOrigin)
 		assert.Nil(t, chunk.SurfaceURL)
