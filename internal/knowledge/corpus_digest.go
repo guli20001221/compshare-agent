@@ -9,13 +9,13 @@ import (
 	"os"
 )
 
-const CorpusDigestExpected = "d6eeda5183bb4327a97dffb41ff8f8787ebd693fee0200045317212906c81f5b"
+const CorpusDigestExpected = "d27508ad36103fa9901568e63e427150f02cd97bdf14aba8bbec66546dbef3d4"
 
 // EmbeddingDigestExpected pins the hybrid retrieval embedding sidecar produced by
 // scripts/rag_w0/build_corpus_embeddings.py over the CorpusDigestExpected corpus
 // with text-embedding-3-large (3072-dim). Mismatch indicates the sidecar is
 // stale relative to the deployed corpus and RAG hybrid path must refuse to load.
-const EmbeddingDigestExpected = "eff1543f56518bb9ea351aad449d43d0c7422d3b6118f8ea55fd3b46f9dc2341"
+const EmbeddingDigestExpected = "1cc4231f03f9498b6d16669e6d6913342bb700ff250fdb81d7938e6680970d8f"
 
 // EmbeddingDigestExpectedQwen3 pins the qwen3-embedding-8b sidecar produced by
 // the same script over the CorpusDigestExpected corpus (--embed-model
@@ -23,7 +23,7 @@ const EmbeddingDigestExpected = "eff1543f56518bb9ea351aad449d43d0c7422d3b6118f8e
 // RAG_RETRIEVAL_MODE=qwen3_full; the text-emb-3 sidecar above remains the
 // default for hybrid_cosine / hybrid_rerank modes. Same mismatch semantics
 // as EmbeddingDigestExpected: stale sidecar = hybrid path refuses to load.
-const EmbeddingDigestExpectedQwen3 = "e38e03779b5f5cf53ab835b9244b35fc52afccaf5533c04b7c770fb0b89c54a2"
+const EmbeddingDigestExpectedQwen3 = "1732e4c196f102d8a714bf40e76100cf7f6d499a22549ffda7ec1ea0b0e1230e"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.
