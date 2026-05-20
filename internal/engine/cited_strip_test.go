@@ -124,3 +124,61 @@ func TestStripCitationMarkersEmptyAndNoCitation(t *testing.T) {
 		t.Fatalf("refusal reply mutated: got=%q", got)
 	}
 }
+
+// TestStripCitationMarkersTwoDigitCitations pins the regex
+// `\[[1-9][0-9]*\]` so it keeps matching multi-digit citations like [10]
+// and [42]. Reviewer flagged that future regex tightening could silently
+// drop these; the test catches that.
+func TestStripCitationMarkersTwoDigitCitations(t *testing.T) {
+	in := "Step 1 [1]. Step 10 [10]. Step 42 [42]."
+	want := "Step 1. Step 10. Step 42."
+	got := stripCitationMarkers(in)
+	if got != want {
+		t.Fatalf("multi-digit strip failed: got=%q, want=%q", got, want)
+	}
+	if hasNumberedCitation(got) {
+		t.Fatalf("multi-digit markers leaked through: got=%q", got)
+	}
+}
+
+// TestStripCitationMarkersCJKEnumerationComma covers PR #125 reviewer's
+// concrete repro: LLM produces "方案A [1]、方案B [2]、方案C [3]。" which
+// in the pre-fix version left orphan spaces before each 、 (U+3001 CJK
+// enumeration comma). 、 ！ ？ are common in Chinese LLM output and
+// must be in the strip cleanup list alongside ， 。 ； ：.
+func TestStripCitationMarkersCJKEnumerationComma(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "enumeration comma",
+			in:   "方案A [1]、方案B [2]、方案C [3]。",
+			want: "方案A、方案B、方案C。",
+		},
+		{
+			name: "fullwidth exclamation",
+			in:   "很重要 [1]！请注意。",
+			want: "很重要！请注意。",
+		},
+		{
+			name: "fullwidth question",
+			in:   "这样对吗 [2]？",
+			want: "这样对吗？",
+		},
+		{
+			name: "ascii exclamation",
+			in:   "Note [1]! Then continue.",
+			want: "Note! Then continue.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripCitationMarkers(tc.in)
+			if got != tc.want {
+				t.Fatalf("got=%q, want=%q", got, tc.want)
+			}
+		})
+	}
+}

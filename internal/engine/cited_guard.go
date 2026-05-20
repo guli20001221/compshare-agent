@@ -129,15 +129,22 @@ func stripCitationMarkers(answer string) string {
 	out := numberedCitationRE.ReplaceAllString(answer, "")
 	// Tidy up CJK + ASCII punctuation that immediately preceded a stripped
 	// marker. Order matters: collapse spaces last so combined " [1]." -> "."
-	// rather than "  ." -> " .".
+	// rather than "  ." -> " .". The CJK enumeration comma 、 (U+3001) and
+	// fullwidth ! ? are common in LLM Chinese output — "方案A [1]、方案B [2]"
+	// would otherwise leave orphan spaces before 、 (caught in PR #125 review).
 	out = strings.ReplaceAll(out, " ，", "，")
 	out = strings.ReplaceAll(out, " 。", "。")
 	out = strings.ReplaceAll(out, " ；", "；")
 	out = strings.ReplaceAll(out, " ：", "：")
+	out = strings.ReplaceAll(out, " 、", "、")
+	out = strings.ReplaceAll(out, " ！", "！")
+	out = strings.ReplaceAll(out, " ？", "？")
 	out = strings.ReplaceAll(out, " ,", ",")
 	out = strings.ReplaceAll(out, " .", ".")
 	out = strings.ReplaceAll(out, " ;", ";")
 	out = strings.ReplaceAll(out, " :", ":")
+	out = strings.ReplaceAll(out, " !", "!")
+	out = strings.ReplaceAll(out, " ?", "?")
 	// Collapse runs of spaces to a single space; do NOT touch newlines so
 	// markdown structure (lists, tables) survives.
 	for strings.Contains(out, "  ") {
