@@ -3537,6 +3537,76 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertIsInstance(trace["hit_items"][0]["score"], float)
             self.assertTrue(trace["hit_items"][0]["kept"])
 
+    def test_qwen3_rrf_constants_match_go_side(self):
+        """Lock RRF tuning constants to the Go-side values. Drift here
+        would silently desynchronize Python eval ranking from production
+        retrieval — exactly the breakage memory
+        feedback_eval_must_reflect_runtime_no_coercion warns about.
+        """
+        self.assertEqual(evaluate_retrieval.RRF_K, 60)
+        self.assertEqual(evaluate_retrieval.RRF_BM25_POOL, 50)
+        self.assertEqual(evaluate_retrieval.RRF_DENSE_POOL, 50)
+        self.assertIn("qwen3_rrf", evaluate_retrieval._EMBED_MODES)
+        self.assertIn("qwen3_rrf", evaluate_retrieval._RERANK_MODES)
+        self.assertEqual(
+            evaluate_retrieval._default_embed_model_for_mode("qwen3_rrf"),
+            evaluate_retrieval.DEFAULT_QWEN3_EMBED_MODEL,
+        )
+
+    def test_qwen3_rrf_fusion_recovers_bm25_zero_hit(self):
+        """Direct unit test for _retrieve_qwen3_rrf: when BM25 returns
+        zero candidates, the dense leg must still surface chunks via
+        cosine. Mirrors the Go-side
+        TestRetrieveQwen3RRFBM25ZeroHitStillCallsDense.
+        """
+        from rag_w0.retrieval_scoring import BM25Index
+
+        chunks = [
+            self._retrieval_eval_chunk(
+                chunk_id="w0-rrf-semantic-match-a1b2c3d4",
+                product_area="billing",
+                title="topic A",
+                content="topic A content semantically related",
+                question_patterns=["topic A 怎么处理"],
+            ),
+        ]
+        index = BM25Index(chunks)
+        chunk_embeddings = {
+            "w0-rrf-semantic-match-a1b2c3d4": [0.9, 0.0, 0.0],
+        }
+
+        class _StubEmbedder:
+            calls = 0
+
+            def embed(self, question_id: str, question: str) -> list[float]:
+                _StubEmbedder.calls += 1
+                # Query vector aligned with the chunk vector → high cosine.
+                return [1.0, 0.0, 0.0]
+
+        class _StubReranker:
+            def rerank(self, *, question_id, question, docs, top_n, mode):
+                # Trivial reranker: preserve fused order.
+                return [(i, 1.0 - 0.01 * i) for i in range(len(docs))]
+
+        stub_embedder = _StubEmbedder()
+        stub_reranker = _StubReranker()
+
+        result = evaluate_retrieval._retrieve_qwen3_rrf(
+            question="完全无 关键词 匹配的 查询",  # BM25 misses this
+            question_id="q-zero-hit",
+            product_area="",
+            chunks=chunks,
+            index=index,
+            top_k=3,
+            threshold=evaluate_retrieval.DEFAULT_THRESHOLD if hasattr(evaluate_retrieval, 'DEFAULT_THRESHOLD') else 0.5,
+            chunk_embeddings=chunk_embeddings,
+            query_embedder=stub_embedder,
+            reranker=stub_reranker,
+        )
+        self.assertGreaterEqual(_StubEmbedder.calls, 1, "embedder MUST be called even when BM25 is empty")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][0]["chunk_id"], "w0-rrf-semantic-match-a1b2c3d4")
+
     def test_evaluate_answers_safety_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

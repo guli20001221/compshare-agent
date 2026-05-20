@@ -1186,13 +1186,22 @@ func projectEvidenceTraceHits(evidences []envelope.Evidence, items []knowledge.R
 	for index, evidence := range evidences {
 		view := evidence.ForTrace()
 		kept := true
+		var item knowledge.RetrievalHit
 		if index < len(items) {
-			kept = items[index].Kept
+			item = items[index]
+			kept = item.Kept
 		}
 		hits = append(hits, observability.RetrievalHit{
 			ChunkID: view.ChunkID,
 			Score:   view.RetrievalScore,
 			Kept:    kept,
+			// RRF trace fields. Zero values omitted via json omitempty
+			// for non-qwen3_rrf modes; populated when knowledge.Retriever
+			// ran the qwen3_rrf branch.
+			BM25Rank:    item.BM25Rank,
+			DenseRank:   item.DenseRank,
+			FusionRank:  item.FusionRank,
+			FusionScore: item.FusionScore,
 		})
 	}
 	return hits
@@ -1243,7 +1252,12 @@ func isRankingAmbiguous(items []knowledge.RetrievalHit, hybridMode string) bool 
 // fixture-pinned behavior.
 func weakEvidenceThresholdFor(hybridMode string) float64 {
 	switch hybridMode {
-	case "hybrid_cosine", "hybrid_rerank", "qwen3_full":
+	case "hybrid_cosine", "hybrid_rerank", "qwen3_full", "qwen3_rrf":
+		// qwen3_rrf's final Score is qwen3-reranker-8b relevance score
+		// (same reranker as qwen3_full), so same [0,1] semantic threshold
+		// applies. Without this case the default branch would pick the
+		// BM25 threshold (designed for 0..N BM25 raw scores) and
+		// false-refuse on perfectly cited cross-encoder evidence.
 		return weakEvidenceSemanticThreshold
 	default:
 		// "bm25_only", "bm25_fallback", "", or any unrecognized value.
@@ -1255,7 +1269,7 @@ func weakEvidenceThresholdFor(hybridMode string) float64 {
 // the top two hits are considered tied. Same default-to-BM25 rule as above.
 func rankingAmbiguousSpreadFor(hybridMode string) float64 {
 	switch hybridMode {
-	case "hybrid_cosine", "hybrid_rerank", "qwen3_full":
+	case "hybrid_cosine", "hybrid_rerank", "qwen3_full", "qwen3_rrf":
 		return rankingAmbiguousSemanticSpread
 	default:
 		return rankingAmbiguousBM25Spread

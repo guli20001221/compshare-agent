@@ -20,6 +20,16 @@ const (
 	// extra tokens. B.0 probe confirmed 50-doc single batch works, so this is
 	// well under server capacity.
 	rerankerPoolSize = 10
+	// RRF (qwen3_rrf mode) constants. Pool sizes widened to 50 for both
+	// retrieval signals; rank-level fusion benefits from a deeper window than
+	// the cascade path's 20-pool (Elastic + OpenSearch + Azure recommend
+	// 50-100). rrfK=60 is the canonical smoothing constant from Cormack et al.
+	// 2009 SIGIR and the default across Azure Cognitive Search, Elastic 8.8+
+	// (rank_constant), OpenSearch 2.19+ score-ranker, Vespa, and LlamaIndex
+	// QueryFusionRetriever. Do NOT tune without strong empirical justification.
+	rrfBM25PoolSize  = 50
+	rrfDensePoolSize = 50
+	rrfK             = 60
 )
 
 // Retrieval modes select which retrieval pipeline the Retriever runs. The
@@ -34,11 +44,19 @@ const (
 //	RetrievalModeQwen3Full    — BM25 top-20 → cosine top-10 → reranker top-K.
 //	                            Uses the qwen3-embedding-8b sidecar + the
 //	                            qwen3-reranker-8b cross-encoder.
+//	RetrievalModeQwen3RRF     — BM25 top-50 ⊕ dense-full-corpus top-50, fused
+//	                            via Reciprocal Rank Fusion (k=60), reranker
+//	                            top-K. Uses the same qwen3-embedding-8b
+//	                            sidecar + qwen3-reranker-8b cross-encoder as
+//	                            Qwen3Full but recovers BM25-zero-hit queries
+//	                            via the dense leg (the cascade path skips
+//	                            embedding entirely when BM25 returns nothing).
 const (
 	RetrievalModeBM25Only     = "bm25_only"
 	RetrievalModeHybridCosine = "hybrid_cosine"
 	RetrievalModeHybridRerank = "hybrid_rerank"
 	RetrievalModeQwen3Full    = "qwen3_full"
+	RetrievalModeQwen3RRF     = "qwen3_rrf"
 )
 
 // VectorEmbedder is satisfied by *internal/embedding.Client and by test
@@ -162,6 +180,18 @@ type RetrievalHit struct {
 	Chunk KBChunk
 	Score float64
 	Kept  bool
+	// RRF-only trace diagnostics. Populated only when the retrieval mode
+	// was qwen3_rrf; zero values for all other modes. Ranks are 1-indexed
+	// (0 = absent from that ranked list, matching rrfRankInfo).
+	//
+	// FusionScore is preserved separately from Score because a downstream
+	// reranker overwrites scoredChunk.score with the relevance score; when
+	// debugging "this chunk had high RRF score but reranker demoted it",
+	// the pre-rerank fusion score is the only reliable signal.
+	BM25Rank    int
+	DenseRank   int
+	FusionRank  int
+	FusionScore float64
 }
 
 type Retriever struct {
@@ -244,7 +274,8 @@ func (r *Retriever) hybridEnabled() bool {
 		return false
 	}
 	switch r.mode {
-	case RetrievalModeHybridCosine, RetrievalModeHybridRerank, RetrievalModeQwen3Full:
+	case RetrievalModeHybridCosine, RetrievalModeHybridRerank,
+		RetrievalModeQwen3Full, RetrievalModeQwen3RRF:
 		return true
 	}
 	return false
@@ -257,7 +288,7 @@ func (r *Retriever) rerankerEnabled() bool {
 		return false
 	}
 	switch r.mode {
-	case RetrievalModeHybridRerank, RetrievalModeQwen3Full:
+	case RetrievalModeHybridRerank, RetrievalModeQwen3Full, RetrievalModeQwen3RRF:
 		return true
 	}
 	return false
@@ -268,9 +299,18 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 	productArea = strings.TrimSpace(strings.ToLower(productArea))
 
 	bm25Candidates := r.collectBM25Candidates(question, productArea)
+	// Pool sizing is mode-aware: the cascade path (hybrid_cosine /
+	// hybrid_rerank / qwen3_full) uses hybridBM25PoolSize=20 because it
+	// only reranks within the BM25 top window. qwen3_rrf widens this to
+	// rrfBM25PoolSize=50 to give the rank-level fusion a deeper signal
+	// (Elastic + OpenSearch + Azure recommend 50-100 for RRF inputs).
 	limit := r.topK
 	if r.hybridEnabled() {
-		limit = hybridBM25PoolSize
+		if r.mode == RetrievalModeQwen3RRF {
+			limit = rrfBM25PoolSize
+		} else {
+			limit = hybridBM25PoolSize
+		}
 	}
 	if len(bm25Candidates) > limit {
 		bm25Candidates = bm25Candidates[:limit]
@@ -278,16 +318,17 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 
 	finalCandidates := bm25Candidates
 	// hybridMode tracks which retrieval path produced the final candidates.
-	// Default to bm25_only; switched to hybrid_cosine when hybrid is enabled
-	// and the cosine step ran successfully (or BM25 pool was empty so we
-	// never needed to call the embedder). Switched to bm25_fallback when the
-	// embedder failed and we returned the BM25 pool unchanged.
-	// embeddingLatencyMs is nil unless the embedder was actually invoked,
-	// preserving the three-state distinction documented on
+	// Default to bm25_only; switched to hybrid_cosine / hybrid_rerank /
+	// qwen3_full / qwen3_rrf when the corresponding mode ran successfully.
+	// Switched to bm25_fallback when the embedder failed (cascade) or the
+	// dense leg failed (qwen3_rrf) and the retriever returned BM25 pool
+	// unchanged. embeddingLatencyMs is nil unless the embedder was actually
+	// invoked, preserving the three-state distinction documented on
 	// RetrievalResult.EmbeddingLatencyMS. The reranker stage layers on top
-	// of cosine: when it runs, hybridMode is upgraded to hybrid_rerank or
-	// qwen3_full; on reranker failure, hybridMode stays hybrid_cosine and
-	// rerankerFallbackReason carries the cause.
+	// of the prior stage: when it runs, hybridMode stays at the prior label
+	// + rerankerMode/rerankerLatencyMs are populated; on reranker failure,
+	// hybridMode stays at the pre-reranker label and rerankerFallbackReason
+	// carries the cause.
 	hybridMode := "bm25_only"
 	hybridFallbackReason := ""
 	var embeddingLatencyMs *int64
@@ -295,7 +336,58 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 	rerankerMode := ""
 	var rerankerLatencyMs *int64
 	rerankerFallbackReason := ""
-	if r.hybridEnabled() {
+	rrfInfo := map[string]rrfRankInfo(nil)
+	if r.mode == RetrievalModeQwen3RRF {
+		// CRITICAL: do NOT gate on len(bm25Candidates) > 0. The entire
+		// value of RRF is recovering BM25-zero-hit queries via the dense
+		// leg. The cascade path skips the embedder when BM25 is empty
+		// (because cosine over a 0-doc pool is degenerate) — RRF must
+		// NOT inherit that behavior.
+		denseTopN, denseFallbackReason, denseLatencyMs := r.denseFullSearch(question, rrfDensePoolSize)
+		embeddingLatencyMs = &denseLatencyMs
+		if denseFallbackReason != "" {
+			// Dense leg failed — degrade to bm25-only (same semantics as
+			// cascade's embedding_error fallback). BM25 may itself be
+			// empty (legitimate "nothing matches"); that case still
+			// returns no hits.
+			finalCandidates = bm25Candidates
+			hybridMode = "bm25_fallback"
+			hybridFallbackReason = denseFallbackReason
+		} else {
+			embeddingModel = r.embeddingModel
+			// Fusion window: when reranker is on, cap fused output at
+			// rerankerPoolSize=10 (matches cascade's pre-reranker pool);
+			// otherwise cap at topK so we don't carry candidates past
+			// the topK truncation below.
+			fuseTopN := r.topK
+			if r.rerankerEnabled() {
+				fuseTopN = rerankerPoolSize
+			}
+			fused, info := rrfFusion(bm25Candidates, denseTopN, fuseTopN)
+			finalCandidates = fused
+			rrfInfo = info
+			hybridMode = "qwen3_rrf"
+
+			if r.rerankerEnabled() && len(finalCandidates) > 0 {
+				rerankedByRerank, rerankFallbackReason, rerankLatencyMs := r.rerankByReranker(question, finalCandidates)
+				rerankerLatencyMs = &rerankLatencyMs
+				if rerankFallbackReason != "" {
+					rerankerFallbackReason = rerankFallbackReason
+					// finalCandidates stays at RRF ranking; rrfInfo
+					// already populated so trace fields are correct.
+				} else {
+					finalCandidates = rerankedByRerank
+					rerankerMode = r.rerankerModel
+					// hybridMode stays "qwen3_rrf" — reranker is a layer
+					// on top, not a different retrieval mode. The reranker
+					// overwrites scoredChunk.score (with relevance_score),
+					// but rrfInfo[cid].FusionScore is preserved separately
+					// so trace consumers can still recover the pre-rerank
+					// fusion score.
+				}
+			}
+		}
+	} else if r.hybridEnabled() {
 		if len(bm25Candidates) > 0 {
 			reranked, fallbackReason, latencyMs := r.rerankByEmbedding(question, bm25Candidates)
 			finalCandidates = reranked
@@ -354,11 +446,18 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 	hitItems := make([]RetrievalHit, 0, len(finalCandidates))
 	for _, candidate := range finalCandidates {
 		hits = append(hits, candidate.chunk)
-		hitItems = append(hitItems, RetrievalHit{
+		hit := RetrievalHit{
 			Chunk: candidate.chunk,
 			Score: candidate.score,
 			Kept:  true,
-		})
+		}
+		if info, ok := rrfInfo[candidate.chunk.ChunkID]; ok {
+			hit.BM25Rank = info.BM25Rank
+			hit.DenseRank = info.DenseRank
+			hit.FusionRank = info.FusionRank
+			hit.FusionScore = info.FusionScore
+		}
+		hitItems = append(hitItems, hit)
 	}
 	return RetrievalResult{
 		Enabled:                true,
@@ -471,6 +570,86 @@ func (r *Retriever) rerankByEmbedding(question string, bm25Pool []scoredChunk) (
 		return left.chunk.ChunkID < right.chunk.ChunkID
 	})
 	return reranked, "", latencyMs
+}
+
+// denseFullSearch ranks ALL active corpus chunks by cosine similarity to
+// the query embedding and returns the top-N. Used by the qwen3_rrf path
+// as one of the two ranked lists fed to rrfFusion.
+//
+// CRITICAL invariant: iterate r.corpus.Chunks (the active set produced by
+// LoadPinnedCorpusWithEmbeddings, post any corpus-level filtering) NOT
+// r.embeddingSidecar.Vectors (the raw chunk_id→vector map). The sidecar's
+// keyset is a superset of the active corpus when chunks are excluded at
+// load time (e.g. via valid_from / valid_to / confidence filters); using
+// the sidecar map directly would resurrect dropped chunks. Tested in
+// TestDenseFullSearchIteratesCorpusNotSidecar.
+//
+// Returns (topN, fallbackReason, latencyMs):
+//   - On success: top-N cosine-ranked candidates, "", actual round-trip ms
+//   - On embedder error: nil, "embedding_error" (or "embedding_timeout"
+//     when err Is context.DeadlineExceeded), time-to-error ms
+//   - On empty query vector: nil, "embedding_empty", ms
+//
+// Complexity O(|corpus| × dim) per query. At 228 chunks × 4096 dim this
+// is ~1M float-mul-add → ~5-10ms on modern CPU; full-corpus linear scan
+// is fine until corpus size exceeds ~1k chunks. Revisit ANN (HNSW) above
+// that scale.
+func (r *Retriever) denseFullSearch(question string, topN int) ([]scoredChunk, string, int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), r.hybridTimeout)
+	defer cancel()
+	start := time.Now()
+	queryVec, err := r.embedder.Embed(ctx, question)
+	latencyMs := time.Since(start).Milliseconds()
+	if err != nil {
+		log.Printf("rag.rrf: dense embedding failed in %dms: %v", latencyMs, err)
+		reason := "embedding_error"
+		if errors.Is(err, context.DeadlineExceeded) {
+			reason = "embedding_timeout"
+		}
+		return nil, reason, latencyMs
+	}
+	if len(queryVec) == 0 {
+		log.Printf("rag.rrf: dense embedding empty in %dms", latencyMs)
+		return nil, "embedding_empty", latencyMs
+	}
+
+	now := r.now()
+	candidates := make([]scoredChunk, 0, len(r.corpus.Chunks))
+	for _, chunk := range r.corpus.Chunks {
+		// Active-set guard parallels collectBM25Candidates: chunks that
+		// failed the valid_from/valid_to gate or were dropped for low
+		// confidence must NOT surface here, even if the sidecar happens
+		// to still hold their vector.
+		if !chunkActiveAt(chunk, now) || chunk.Confidence == confidenceLow {
+			continue
+		}
+		vec, ok := r.embeddingSidecar.Vectors[chunk.ChunkID]
+		if !ok {
+			// LoadPinnedCorpusWithEmbeddings's bijection check should make
+			// this impossible; defensive skip so dense ranking still
+			// produces a result if the invariant is ever violated.
+			log.Printf("rag.rrf: sidecar missing vector for chunk %q, skipping in dense scan", chunk.ChunkID)
+			continue
+		}
+		candidates = append(candidates, scoredChunk{
+			chunk: chunk,
+			score: cosineSimilarity(queryVec, vec),
+		})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		left, right := candidates[i], candidates[j]
+		if left.score != right.score {
+			return left.score > right.score
+		}
+		if confidenceRank(left.chunk.Confidence) != confidenceRank(right.chunk.Confidence) {
+			return confidenceRank(left.chunk.Confidence) > confidenceRank(right.chunk.Confidence)
+		}
+		return left.chunk.ChunkID < right.chunk.ChunkID
+	})
+	if topN > 0 && len(candidates) > topN {
+		candidates = candidates[:topN]
+	}
+	return candidates, "", latencyMs
 }
 
 // rerankByReranker takes the cosine-stage output and reorders it using the
@@ -610,6 +789,89 @@ func confidenceRank(confidence string) int {
 func dateOnlyBeijing(t time.Time) time.Time {
 	year, month, day := t.In(beijingLocation).Date()
 	return time.Date(year, month, day, 0, 0, 0, 0, beijingLocation)
+}
+
+// rrfRankInfo carries per-chunk diagnostics from a Reciprocal Rank Fusion
+// pass. Used by the qwen3_rrf retrieval path to populate RetrievalHit's
+// debug fields so trace consumers can attribute "why did this chunk rise
+// to the top": was it BM25-driven, dense-driven, or fused from both?
+//
+// All ranks are 1-indexed. Zero means "absent from that input list".
+// FusionScore is preserved separately because a downstream reranker may
+// overwrite RetrievalHit.Score, and we still want to debug "high RRF
+// score but reranker demoted it" cases from trace alone.
+type rrfRankInfo struct {
+	BM25Rank    int
+	DenseRank   int
+	FusionRank  int
+	FusionScore float64
+}
+
+// rrfFusion combines two ranked lists via Reciprocal Rank Fusion with the
+// canonical k=60 smoothing constant (rrfK). Chunks present in only one
+// input list still appear in the output (the absent-list contribution is
+// zero). Ties break on chunk_id ascending for cross-run determinism.
+//
+// Returns (fused, info):
+//   - fused: scoredChunks ranked desc by RRF score, truncated to topN
+//   - info:  map keyed by chunk_id with bm25/dense/fusion rank + the
+//     pre-reranker fusion score (see rrfRankInfo doc for why it's
+//     preserved alongside the score in scoredChunk.score)
+//
+// Industry references for k=60 + rank-based fusion:
+//   - Cormack, Clarke, Buettcher 2009. "Reciprocal Rank Fusion outperforms
+//     Condorcet and individual Rank Learning Methods." SIGIR.
+//   - Microsoft Azure Cognitive Search hybrid ranking docs.
+//   - Elastic 8.8+ rank_constant default + OpenSearch 2.19+ score-ranker.
+//   - Vespa phased ranking + LlamaIndex QueryFusionRetriever.
+func rrfFusion(bm25List, denseList []scoredChunk, topN int) ([]scoredChunk, map[string]rrfRankInfo) {
+	scores := make(map[string]float64, len(bm25List)+len(denseList))
+	chunks := make(map[string]KBChunk, len(bm25List)+len(denseList))
+	ranks := make(map[string]rrfRankInfo, len(bm25List)+len(denseList))
+
+	for i, c := range bm25List {
+		cid := c.chunk.ChunkID
+		scores[cid] += 1.0 / float64(rrfK+i+1)
+		chunks[cid] = c.chunk
+		info := ranks[cid]
+		info.BM25Rank = i + 1
+		ranks[cid] = info
+	}
+	for i, c := range denseList {
+		cid := c.chunk.ChunkID
+		scores[cid] += 1.0 / float64(rrfK+i+1)
+		chunks[cid] = c.chunk
+		info := ranks[cid]
+		info.DenseRank = i + 1
+		ranks[cid] = info
+	}
+
+	fused := make([]scoredChunk, 0, len(scores))
+	for cid, score := range scores {
+		fused = append(fused, scoredChunk{
+			chunk: chunks[cid],
+			score: score,
+		})
+		info := ranks[cid]
+		info.FusionScore = score
+		ranks[cid] = info
+	}
+	sort.SliceStable(fused, func(i, j int) bool {
+		if fused[i].score != fused[j].score {
+			return fused[i].score > fused[j].score
+		}
+		return fused[i].chunk.ChunkID < fused[j].chunk.ChunkID
+	})
+	for i := range fused {
+		cid := fused[i].chunk.ChunkID
+		info := ranks[cid]
+		info.FusionRank = i + 1
+		ranks[cid] = info
+	}
+	if topN > 0 && len(fused) > topN {
+		fused = fused[:topN]
+	}
+	return fused, ranks
 }
 
 // cosineSimilarity must stay byte-equivalent to internal/embedding.Cosine and
