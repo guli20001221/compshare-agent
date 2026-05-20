@@ -355,6 +355,32 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 			},
 		},
 		{
+			// Personal billing complaint with vague cause — N=5 jitter check on
+			// 2026-05-20 showed planner randomly routed "充值 10 块就被扣完了 我啥
+			// 也没干啊" to billing_account_unsupported (3/5) or knowledge_qa
+			// (2/5); both wrong (account_unsupported is hard-block, knowledge_qa
+			// has no chunks for personal complaints). billing_instance is the
+			// correct route — the existing system-prompt directive at line ~410
+			// already declares "instance-scoped billing questions should emit
+			// billing_instance" but planner had no one-shot example anchoring
+			// the colloquial personal-complaint phrasing. Trace evidence:
+			// F:/compshare-agent-runs/q04-jitter-20260520-165129.
+			Intent: IntentBillingInstance,
+			Source: "Stable routing for personal billing complaints with vague cause (2026-05-20 N=5 jitter check)",
+			Examples: []plannerPromptExample{
+				{
+					Question: "充值 10 块就被扣完了 我啥也没干啊",
+					PlanJSON: `{"schema_version":"1.0","intent":"billing_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance","DiagnoseBilling"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Colloquial personal billing complaint — diagnose own instances",
+				},
+				{
+					Question: "我账单怎么这么高",
+					PlanJSON: `{"schema_version":"1.0","intent":"billing_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance","DiagnoseBilling"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+					Source:   "Personal billing complaint — high bill diagnostic",
+				},
+			},
+		},
+		{
 			Intent: IntentDiagnosis,
 			Source: "Stage 2B diagnosis-vs-knowledge boundary",
 			Examples: []plannerPromptExample{
@@ -408,6 +434,7 @@ func buildSystemPrompt() string {
 		"Diagnostic phrasings that pair a finance topic with non-finance symptoms (e.g. 下载速度突然变慢 是欠费了吗 还是网络高峰) emit knowledge_qa — the user is asking for root-cause checklist, not their own balance amount.",
 		"If a single question mixes finance FAQ with account realtime personal-status data, emit billing_account_unsupported for the whole turn.",
 		"instance-scoped billing questions should emit billing_instance, but do not promise account ledger amounts or transaction exports.",
+		"Personal billing complaints with vague cause — 充值 10 块就被扣完了 / 我账单怎么这么高 / 钱怎么扣这么快 / 我啥也没干怎么就扣费了 — emit billing_instance (NOT billing_account_unsupported, which is reserved for explicit balance / total-bill / transaction-record queries; and NOT knowledge_qa, because the user wants a personal diagnostic, not a process FAQ).",
 		"Billing navigation questions like where do I find / how do I view / how to check / from which page can I see my bills, invoices, expense, balance, charges, or recharge history should emit knowledge_qa - they ask for a UI navigation path, not actual finance numbers, and the docs cover the path.",
 		"Use unknown when the user asks unsupported general knowledge, operations, or anything outside the demo focus.",
 		"slots must contain target_refs, metrics, and time_window. Use [] for missing target_refs or metrics, and null for missing time_window.",
