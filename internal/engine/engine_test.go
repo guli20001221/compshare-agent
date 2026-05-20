@@ -711,7 +711,7 @@ func TestChat_MaxRoundsExceeded(t *testing.T) {
 	assert.Contains(t, reply, "轮次超限")
 }
 
-func TestInit_InjectsContextAndFAQ(t *testing.T) {
+func TestInit_InjectsContextAndKnowledgeBoundary(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
@@ -729,12 +729,14 @@ func TestInit_InjectsContextAndFAQ(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, suggestions)
 
-	// System prompt should contain user context + FAQ
+	// System prompt should contain user context + knowledge-source boundaries.
 	systemMsg := eng.messages[0]
 	assert.Equal(t, openai.ChatMessageRoleSystem, systemMsg.Role)
 	assert.Contains(t, systemMsg.Content, "uhost-abc")
-	assert.Contains(t, systemMsg.Content, "平台常见问题") // FAQ injected
-	assert.Contains(t, systemMsg.Content, "计费/回收规则")
+	assert.Contains(t, systemMsg.Content, "平台知识类问题必须通过知识库/RAG资料回答")
+	assert.Contains(t, systemMsg.Content, "不要凭内置 FAQ 或模型记忆补全平台规则")
+	assert.NotContains(t, systemMsg.Content, "平台常见问题")
+	assert.NotContains(t, systemMsg.Content, "计费/回收规则")
 }
 
 func TestInit_FailedContextInjection(t *testing.T) {
@@ -745,8 +747,9 @@ func TestInit_FailedContextInjection(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotEmpty(t, suggestions)
-	// Should still have system prompt with FAQ
-	assert.Contains(t, eng.messages[0].Content, "平台常见问题")
+	// Should still have system prompt with knowledge-source boundaries.
+	assert.Contains(t, eng.messages[0].Content, "平台知识类问题必须通过知识库/RAG资料回答")
+	assert.NotContains(t, eng.messages[0].Content, "平台常见问题")
 }
 
 func TestKnowledgeTool_DoesNotCallExecutor(t *testing.T) {
@@ -2185,10 +2188,10 @@ func TestStaleState_NeverQueriedNoNote(t *testing.T) {
 		"no prior instance query → no stale note")
 }
 
-func TestStaleState_FAQNotDerailed(t *testing.T) {
+func TestStaleState_KnowledgeQuestionDoesNotForceInstanceRefresh(t *testing.T) {
 	// Turn 1: DescribeCompShareInstance queried → freshness set.
-	// Turn 2: User asks FAQ. Stale note IS injected, but the model
-	// should still be free to return a text-only FAQ answer.
+	// Turn 2: User asks a knowledge question. Stale note IS injected, but it
+	// should not force an unrelated DescribeCompShareInstance refresh.
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{}, "RetCode": 0},
 	}}
@@ -2196,7 +2199,7 @@ func TestStaleState_FAQNotDerailed(t *testing.T) {
 		// Turn 1: tool call + text
 		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DescribeCompShareInstance", `{}`)}},
 		{Content: "没有实例"},
-		// Turn 2: FAQ → text only, no tool call
+		// Turn 2: knowledge answer → text only, no instance refresh
 		{Content: "关机后按量模式下，GPU/CPU/内存停止计费，但额外磁盘继续收费。"},
 	}}
 	eng := NewWithDeps(mock, executor, nil)
@@ -2207,7 +2210,7 @@ func TestStaleState_FAQNotDerailed(t *testing.T) {
 	// Turn 1
 	eng.Chat(context.Background(), "查看实例", noopStep)
 
-	// Turn 2: FAQ
+	// Turn 2: knowledge question
 	reply, err := eng.Chat(context.Background(), "关机后还收费吗", noopStep)
 	assert.NoError(t, err)
 	assert.Contains(t, reply, "磁盘")
@@ -2225,7 +2228,7 @@ func TestStaleState_FAQNotDerailed(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, descCalls,
-		"FAQ turn should not force an extra DescribeCompShareInstance call")
+		"knowledge turn should not force an extra DescribeCompShareInstance call")
 }
 
 func TestStaleState_ExternalStateChangeRegression(t *testing.T) {

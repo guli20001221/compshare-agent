@@ -3,6 +3,11 @@ name: gpu_specs_query
 intent_label: gpu_specs_query
 required_tool: DescribeAvailableCompShareInstanceTypes
 required_citation: false
+planner_directives:
+  - 'GPU model spec questions like "4090 显存多大" or "A100 supports how many GPUs" should emit gpu_specs_query.'
+planner_examples:
+  - question: "4090 显存多大"
+    confidence: 0.85
 ---
 
 # gpu_specs_query

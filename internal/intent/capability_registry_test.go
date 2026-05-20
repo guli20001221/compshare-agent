@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/compshare-agent/internal/entity"
 )
@@ -108,6 +109,122 @@ func TestCapabilityPromptFragments_ContainsAllIntents(t *testing.T) {
 	for _, e := range capabilityRegistry {
 		if !strings.Contains(combined, string(e.intent)) {
 			t.Errorf("capability fragments missing intent label %q (planner won't know to emit it)", e.intent)
+		}
+	}
+}
+
+func TestCapabilityPromptFragments_DeriveFromMarkdownFrontmatter(t *testing.T) {
+	directives, examples := CapabilityPromptFragments()
+	combinedDirectives := strings.Join(directives, "\n")
+	combinedExamples := strings.Join(examples, "\n")
+	for _, meta := range capabilityMetadata {
+		if len(meta.PlannerDirectives) == 0 {
+			t.Fatalf("capability %q must declare planner_directives in markdown frontmatter", meta.Name)
+		}
+		if len(meta.PlannerExamples) == 0 {
+			t.Fatalf("capability %q must declare planner_examples in markdown frontmatter", meta.Name)
+		}
+		for _, directive := range meta.PlannerDirectives {
+			if !strings.Contains(combinedDirectives, directive) {
+				t.Fatalf("planner directive for %q not emitted from metadata: %q", meta.Name, directive)
+			}
+		}
+		for _, example := range meta.PlannerExamples {
+			if !strings.Contains(combinedExamples, example.Question) {
+				t.Fatalf("planner example question for %q not emitted from metadata: %q", meta.Name, example.Question)
+			}
+			if !strings.Contains(combinedExamples, meta.IntentLabel) {
+				t.Fatalf("planner examples missing metadata intent %q", meta.IntentLabel)
+			}
+			if !strings.Contains(combinedExamples, meta.RequiredTool) {
+				t.Fatalf("planner examples missing metadata required tool %q", meta.RequiredTool)
+			}
+		}
+	}
+}
+
+func TestCapabilityMetadata_RequiresPromptFragments(t *testing.T) {
+	_, err := loadCapabilityMetadata(fstest.MapFS{
+		"capabilities/demo.md": {
+			Data: []byte(`---
+name: demo
+intent_label: gpu_specs_query
+required_tool: DescribeAvailableCompShareInstanceTypes
+required_citation: false
+---
+
+# demo
+`),
+		},
+	})
+	if err == nil {
+		t.Fatal("loadCapabilityMetadata should reject capabilities without planner prompt fragments")
+	}
+	if !strings.Contains(err.Error(), "planner_directives") || !strings.Contains(err.Error(), "planner_examples") {
+		t.Fatalf("error should mention missing planner fragments, got: %v", err)
+	}
+}
+
+func TestCapabilityMetadata_RejectsEmptyPromptFragments(t *testing.T) {
+	_, err := loadCapabilityMetadata(fstest.MapFS{
+		"capabilities/demo.md": {
+			Data: []byte(`---
+name: demo
+intent_label: gpu_specs_query
+required_tool: DescribeAvailableCompShareInstanceTypes
+required_citation: false
+planner_directives:
+  - "   "
+planner_examples:
+  - question: ""
+    confidence: 0
+---
+
+# demo
+`),
+		},
+	})
+	if err == nil {
+		t.Fatal("loadCapabilityMetadata should reject empty planner prompt fragments")
+	}
+}
+
+func TestCapabilityMetadata_RejectsUnknownFrontmatterFields(t *testing.T) {
+	_, err := loadCapabilityMetadata(fstest.MapFS{
+		"capabilities/demo.md": {
+			Data: []byte(`---
+name: demo
+intent_label: gpu_specs_query
+required_tool: DescribeAvailableCompShareInstanceTypes
+required_citation: false
+planner_directive:
+  - typo should fail
+planner_examples:
+  - question: "4090 显存多大"
+    confidence: 0.85
+---
+
+# demo
+`),
+		},
+	})
+	if err == nil {
+		t.Fatal("loadCapabilityMetadata should reject unknown frontmatter fields")
+	}
+}
+
+func TestCapabilityMetadataRequiredToolsMatchRegistry(t *testing.T) {
+	byIntent := map[Intent]CapabilityMetadata{}
+	for _, meta := range capabilityMetadata {
+		byIntent[Intent(meta.IntentLabel)] = meta
+	}
+	for _, entry := range capabilityRegistry {
+		meta, ok := byIntent[entry.intent]
+		if !ok {
+			t.Fatalf("missing metadata for capability intent %q", entry.intent)
+		}
+		if meta.RequiredTool != entry.requiredTool {
+			t.Fatalf("metadata required_tool for %q = %q, registry has %q", entry.intent, meta.RequiredTool, entry.requiredTool)
 		}
 	}
 }
