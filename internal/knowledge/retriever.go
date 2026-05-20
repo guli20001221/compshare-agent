@@ -631,6 +631,89 @@ func dateOnlyBeijing(t time.Time) time.Time {
 	return time.Date(year, month, day, 0, 0, 0, 0, beijingLocation)
 }
 
+// rrfRankInfo carries per-chunk diagnostics from a Reciprocal Rank Fusion
+// pass. Used by the qwen3_rrf retrieval path to populate RetrievalHit's
+// debug fields so trace consumers can attribute "why did this chunk rise
+// to the top": was it BM25-driven, dense-driven, or fused from both?
+//
+// All ranks are 1-indexed. Zero means "absent from that input list".
+// FusionScore is preserved separately because a downstream reranker may
+// overwrite RetrievalHit.Score, and we still want to debug "high RRF
+// score but reranker demoted it" cases from trace alone.
+type rrfRankInfo struct {
+	BM25Rank    int
+	DenseRank   int
+	FusionRank  int
+	FusionScore float64
+}
+
+// rrfFusion combines two ranked lists via Reciprocal Rank Fusion with the
+// canonical k=60 smoothing constant (rrfK). Chunks present in only one
+// input list still appear in the output (the absent-list contribution is
+// zero). Ties break on chunk_id ascending for cross-run determinism.
+//
+// Returns (fused, info):
+//   - fused: scoredChunks ranked desc by RRF score, truncated to topN
+//   - info:  map keyed by chunk_id with bm25/dense/fusion rank + the
+//     pre-reranker fusion score (see rrfRankInfo doc for why it's
+//     preserved alongside the score in scoredChunk.score)
+//
+// Industry references for k=60 + rank-based fusion:
+//   - Cormack, Clarke, Buettcher 2009. "Reciprocal Rank Fusion outperforms
+//     Condorcet and individual Rank Learning Methods." SIGIR.
+//   - Microsoft Azure Cognitive Search hybrid ranking docs.
+//   - Elastic 8.8+ rank_constant default + OpenSearch 2.19+ score-ranker.
+//   - Vespa phased ranking + LlamaIndex QueryFusionRetriever.
+func rrfFusion(bm25List, denseList []scoredChunk, topN int) ([]scoredChunk, map[string]rrfRankInfo) {
+	scores := make(map[string]float64, len(bm25List)+len(denseList))
+	chunks := make(map[string]KBChunk, len(bm25List)+len(denseList))
+	ranks := make(map[string]rrfRankInfo, len(bm25List)+len(denseList))
+
+	for i, c := range bm25List {
+		cid := c.chunk.ChunkID
+		scores[cid] += 1.0 / float64(rrfK+i+1)
+		chunks[cid] = c.chunk
+		info := ranks[cid]
+		info.BM25Rank = i + 1
+		ranks[cid] = info
+	}
+	for i, c := range denseList {
+		cid := c.chunk.ChunkID
+		scores[cid] += 1.0 / float64(rrfK+i+1)
+		chunks[cid] = c.chunk
+		info := ranks[cid]
+		info.DenseRank = i + 1
+		ranks[cid] = info
+	}
+
+	fused := make([]scoredChunk, 0, len(scores))
+	for cid, score := range scores {
+		fused = append(fused, scoredChunk{
+			chunk: chunks[cid],
+			score: score,
+		})
+		info := ranks[cid]
+		info.FusionScore = score
+		ranks[cid] = info
+	}
+	sort.SliceStable(fused, func(i, j int) bool {
+		if fused[i].score != fused[j].score {
+			return fused[i].score > fused[j].score
+		}
+		return fused[i].chunk.ChunkID < fused[j].chunk.ChunkID
+	})
+	for i := range fused {
+		cid := fused[i].chunk.ChunkID
+		info := ranks[cid]
+		info.FusionRank = i + 1
+		ranks[cid] = info
+	}
+	if topN > 0 && len(fused) > topN {
+		fused = fused[:topN]
+	}
+	return fused, ranks
+}
+
 // cosineSimilarity must stay byte-equivalent to internal/embedding.Cosine and
 // to scripts/rag_w0/retrieval_scoring.cosine_similarity. We re-implement it
 // here (instead of importing internal/embedding) so the knowledge package
