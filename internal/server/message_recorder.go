@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"time"
 
@@ -251,7 +250,3 @@ func defaultLogger(l *log.Logger) *log.Logger {
 	return log.Default()
 }
 
-// _ ensures the io import is referenced for tests that build a discard
-// logger; unused at the production call site but the test file shares
-// the package import.
-var _ io.Writer = io.Discard

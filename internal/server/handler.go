@@ -231,9 +231,17 @@ func (s *Server) runChatTurn(
 		finalTrace = recorder.finish(err)
 	}
 
-	// Persist the chat turn into agent_messages. Status mirrors the
-	// trace's terminal state via DeriveStatus so dashboards joining
-	// agent_messages.status to agent_traces.status return the same row.
+	// Persist the chat turn into agent_messages. Status comes from
+	// DeriveStatus, which carries the caller's chatErr through to the
+	// "error" enum value.
+	//
+	// CROSS-TABLE DIVERGENCE (documented, intentional):
+	// agent_traces.status is computed by observability.statusFromTrace
+	// which has no chatErr channel; when chatErr != nil the trace
+	// recorder maps it to EngineHardBlock{Hit:true, Category:"chat_error"}
+	// so the trace row reports "blocked", not "error". Dashboards that
+	// need the "error" distinction MUST query agent_messages; the
+	// success / rate-limit / hard-block paths still join cleanly.
 	if s.msgRecorder != nil {
 		_ = s.msgRecorder.Record(MessageEntry{
 			RequestUUID:      msg.RequestUUID,

@@ -65,6 +65,18 @@ func TestDeriveStatus_Priority(t *testing.T) {
 			trace:   observability.TraceRecord{},
 			want:    "error",
 		},
+		{
+			// Explicit priority 1 > 3: a chatErr AND an engine hard-block
+			// firing in the same turn must surface as "error" (the
+			// caller's error wins). Encodes WHY: dashboards filtering
+			// status="error" must include all turns where Engine.Chat
+			// returned an error even when the engine also tripped a
+			// hard-block guard along the way.
+			name:    "chatErr beats hard-block",
+			chatErr: errors.New("upstream stall"),
+			trace:   observability.TraceRecord{EngineHardBlock: observability.EngineHardBlockTrace{Hit: true, Category: "account_billing"}},
+			want:    "error",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
