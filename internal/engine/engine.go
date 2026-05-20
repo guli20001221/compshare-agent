@@ -1186,13 +1186,22 @@ func projectEvidenceTraceHits(evidences []envelope.Evidence, items []knowledge.R
 	for index, evidence := range evidences {
 		view := evidence.ForTrace()
 		kept := true
+		var item knowledge.RetrievalHit
 		if index < len(items) {
-			kept = items[index].Kept
+			item = items[index]
+			kept = item.Kept
 		}
 		hits = append(hits, observability.RetrievalHit{
 			ChunkID: view.ChunkID,
 			Score:   view.RetrievalScore,
 			Kept:    kept,
+			// RRF trace fields. Zero values omitted via json omitempty
+			// for non-qwen3_rrf modes; populated when knowledge.Retriever
+			// ran the qwen3_rrf branch.
+			BM25Rank:    item.BM25Rank,
+			DenseRank:   item.DenseRank,
+			FusionRank:  item.FusionRank,
+			FusionScore: item.FusionScore,
 		})
 	}
 	return hits

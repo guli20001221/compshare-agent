@@ -263,6 +263,16 @@ type RetrievalHit struct {
 	ChunkID string  `json:"chunk_id"`
 	Score   float64 `json:"score"`
 	Kept    bool    `json:"kept"`
+	// RRF-only trace diagnostics. Populated only when the producing
+	// retrieval mode was qwen3_rrf; omitted from JSONL for all other
+	// modes via omitempty. Ranks are 1-indexed (0 = absent from that
+	// input list). FusionScore is the pre-rerank RRF score, preserved
+	// separately from Score because the reranker overwrites Score with
+	// its relevance signal.
+	BM25Rank    int     `json:"bm25_rank,omitempty"`
+	DenseRank   int     `json:"dense_rank,omitempty"`
+	FusionRank  int     `json:"fusion_rank,omitempty"`
+	FusionScore float64 `json:"fusion_score,omitempty"`
 }
 
 func RedactQueryDerivedFields(trace *RetrievalTrace) {

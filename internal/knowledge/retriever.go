@@ -180,6 +180,18 @@ type RetrievalHit struct {
 	Chunk KBChunk
 	Score float64
 	Kept  bool
+	// RRF-only trace diagnostics. Populated only when the retrieval mode
+	// was qwen3_rrf; zero values for all other modes. Ranks are 1-indexed
+	// (0 = absent from that ranked list, matching rrfRankInfo).
+	//
+	// FusionScore is preserved separately from Score because a downstream
+	// reranker overwrites scoredChunk.score with the relevance score; when
+	// debugging "this chunk had high RRF score but reranker demoted it",
+	// the pre-rerank fusion score is the only reliable signal.
+	BM25Rank    int
+	DenseRank   int
+	FusionRank  int
+	FusionScore float64
 }
 
 type Retriever struct {
@@ -425,7 +437,6 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 			hybridMode = "hybrid_cosine"
 		}
 	}
-	_ = rrfInfo // commit 5 plumbs rrfInfo[cid] into RetrievalHit trace fields
 
 	if len(finalCandidates) > r.topK {
 		finalCandidates = finalCandidates[:r.topK]
@@ -435,11 +446,18 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 	hitItems := make([]RetrievalHit, 0, len(finalCandidates))
 	for _, candidate := range finalCandidates {
 		hits = append(hits, candidate.chunk)
-		hitItems = append(hitItems, RetrievalHit{
+		hit := RetrievalHit{
 			Chunk: candidate.chunk,
 			Score: candidate.score,
 			Kept:  true,
-		})
+		}
+		if info, ok := rrfInfo[candidate.chunk.ChunkID]; ok {
+			hit.BM25Rank = info.BM25Rank
+			hit.DenseRank = info.DenseRank
+			hit.FusionRank = info.FusionRank
+			hit.FusionScore = info.FusionScore
+		}
+		hitItems = append(hitItems, hit)
 	}
 	return RetrievalResult{
 		Enabled:                true,
