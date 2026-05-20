@@ -47,14 +47,15 @@ func TestBuildSystemPromptDoesNotEmitMixedIntents(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	// 25 legacy examples (20 + 3 added by #34a 2026-05-18 for comparison /
+	// 26 legacy examples (20 + 3 added by #34a 2026-05-18 for comparison /
 	// yes-no feasibility / procedure-description knowledge_qa coverage +
 	// 2 added by #60 2026-05-20 for concept-Q-with-monitor-trigger-word and
+	// 1 runtime price-to-ReAct boundary example;
 	// third-party-tool-config-jargon knowledge_qa coverage) +
 	// N capability one-shots (PR A Registry v1) appended by CapabilityPromptFragments.
 	// New capabilities here should bump this number; the regression value is
-	// `25 + len(capabilityRegistry)`.
-	if got, want := len(examples), 25+len(capabilityRegistry); got != want {
+	// `26 + len(capabilityRegistry)`.
+	if got, want := len(examples), 26+len(capabilityRegistry); got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -110,6 +111,22 @@ func TestBuildSystemPromptDistinguishesFinanceFAQAndRealtimeAccountData(t *testi
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("system prompt missing finance routing rule %q:\n%s", fragment, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptKeepsRuntimePriceQueriesOutOfKnowledgeQA(t *testing.T) {
+	prompt := buildSystemPrompt()
+	required := []string{
+		"Direct runtime/list/user price questions",
+		"should emit unknown with no required_tools",
+		"normal tool loop can choose price tools",
+		"4090 \u591a\u5c11\u94b1",
+		"H20 \u6309\u6708\u5305\u591a\u5c11\u94b1",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt missing price boundary fragment %q:\n%s", fragment, prompt)
 		}
 	}
 }

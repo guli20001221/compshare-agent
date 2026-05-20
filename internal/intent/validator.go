@@ -73,6 +73,9 @@ func ValidatePlan(plan Plan, ctx ValidationContext) error {
 		if !validRequiredTool(tool) {
 			return validationErr(ErrInvalidRequiredTool, fmt.Sprintf("required_tools[%d]", i), "unsupported required tool")
 		}
+		if !validRequiredToolForIntent(plan.Intent, tool) {
+			return validationErr(ErrInvalidRequiredTool, fmt.Sprintf("required_tools[%d]", i), "required tool is not allowed for intent")
+		}
 	}
 	if plan.Intent == IntentBillingAccountUnsupported && len(plan.RequiredTools) > 0 {
 		return validationErr(ErrInvalidRequiredTool, "required_tools", "account-level billing unsupported intent must not call tools")
@@ -219,6 +222,41 @@ func validRequiredTool(tool string) bool {
 	default:
 		return false
 	}
+}
+
+func validRequiredToolForIntent(intent Intent, tool string) bool {
+	allowed := requiredToolsForIntent(intent)
+	_, ok := allowed[tool]
+	return ok
+}
+
+func requiredToolsForIntent(intent Intent) map[string]struct{} {
+	allowed := map[string]struct{}{}
+	add := func(actions ...string) {
+		for _, action := range actions {
+			allowed[action] = struct{}{}
+		}
+	}
+
+	switch intent {
+	case IntentResourceInfo:
+		add("DescribeCompShareInstance")
+	case IntentMonitorQuery:
+		add("DescribeCompShareInstance", "GetCompShareInstanceMonitor")
+	case IntentBillingInstance:
+		add("DescribeCompShareInstance", "DiagnoseBilling")
+	case IntentDiagnosis:
+		add("DescribeCompShareInstance")
+	}
+
+	if required, ok := capabilityRequiredTool(intent); ok {
+		add(required)
+		for _, action := range extraHandlerActions()[intent] {
+			add(action)
+		}
+	}
+
+	return allowed
 }
 
 func validFilterRef(value string) bool {

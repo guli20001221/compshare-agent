@@ -110,36 +110,38 @@ type IntentPlannerOptions struct {
 
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
 type Engine struct {
-	llmClient                  LLMClient
-	safeExecutor               *tools.SafeToolExecutor
-	registry                   *entity.EntityRegistry
-	intentPlanner              IntentPlanner
-	intentPlannerModel         string
-	intentCutoverIntents       map[intent.Intent]struct{}
-	knowledgeRetriever         KnowledgeRetriever
-	groundedRenderer           grounded.Renderer
-	groundedRendererModel      string
-	rendererTraceObserver      func(observability.RendererTrace)
-	plannerTraceObserver       func(observability.PlannerTrace)
-	retrievalTraceObserver     func(observability.RetrievalTrace)
-	outcomeTraceObserver       func(observability.OutcomeTrace)
-	tokenUsageObserver         func(llm.TokenUsage)
-	rateLimiter                governance.RateLimiter
-	rateLimitSubject           string
-	rateLimitObserver          func(governance.Decision)
-	readExpensiveCallsThisTurn int
-	hardBlockObserver          func(observability.EngineHardBlockTrace)
-	confirmFn                  ConfirmFunc
-	messages                   []openai.ChatCompletionMessage // conversation history
-	userTurn                   int                            // incremented at start of each Chat() call
-	lastInstanceQueryTurn      int                            // set to userTurn on successful DescribeCompShareInstance
-	lastMonitorTurn            int                            // set to userTurn on successful GetCompShareInstanceMonitor
-	currentMonitorTargets      []string                       // historical monitor targets queried in the current turn
-	currentMonitorNoData       []string                       // current-turn historical monitor targets with no data samples
-	currentMonitorStart        int64                          // start of the current historical monitor window, if any
-	currentMonitorEnd          int64                          // end of the current historical monitor window, if any
-	currentMonitorWindow       bool                           // true when currentMonitorStart/End are known
-	pendingResourceSelection   *pendingResourceSelection
+	llmClient                        LLMClient
+	safeExecutor                     *tools.SafeToolExecutor
+	registry                         *entity.EntityRegistry
+	intentPlanner                    IntentPlanner
+	intentPlannerModel               string
+	intentPlannerEnabledIntents      map[intent.Intent]struct{}
+	intentCutoverIntents             map[intent.Intent]struct{}
+	knowledgeRetriever               KnowledgeRetriever
+	groundedRenderer                 grounded.Renderer
+	groundedRendererModel            string
+	rendererTraceObserver            func(observability.RendererTrace)
+	plannerTraceObserver             func(observability.PlannerTrace)
+	retrievalTraceObserver           func(observability.RetrievalTrace)
+	outcomeTraceObserver             func(observability.OutcomeTrace)
+	tokenUsageObserver               func(llm.TokenUsage)
+	rateLimiter                      governance.RateLimiter
+	rateLimitSubject                 string
+	rateLimitObserver                func(governance.Decision)
+	readExpensiveCallsThisTurn       int
+	requireKnowledgeCitationThisTurn bool
+	hardBlockObserver                func(observability.EngineHardBlockTrace)
+	confirmFn                        ConfirmFunc
+	messages                         []openai.ChatCompletionMessage // conversation history
+	userTurn                         int                            // incremented at start of each Chat() call
+	lastInstanceQueryTurn            int                            // set to userTurn on successful DescribeCompShareInstance
+	lastMonitorTurn                  int                            // set to userTurn on successful GetCompShareInstanceMonitor
+	currentMonitorTargets            []string                       // historical monitor targets queried in the current turn
+	currentMonitorNoData             []string                       // current-turn historical monitor targets with no data samples
+	currentMonitorStart              int64                          // start of the current historical monitor window, if any
+	currentMonitorEnd                int64                          // end of the current historical monitor window, if any
+	currentMonitorWindow             bool                           // true when currentMonitorStart/End are known
+	pendingResourceSelection         *pendingResourceSelection
 	// supportsObjectToolChoice gates force-tool guards (e.g. shouldForceMonitorRecall)
 	// from sending object tool_choice on models that don't support it (notably
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
@@ -218,8 +220,16 @@ func (e *Engine) SetMutatingToolsEnabled(v bool) {
 func (e *Engine) SetIntentPlanner(planner IntentPlanner, opts IntentPlannerOptions) {
 	e.intentPlanner = planner
 	e.intentPlannerModel = opts.Model
+	e.intentPlannerEnabledIntents = map[intent.Intent]struct{}{}
 	e.intentCutoverIntents = map[intent.Intent]struct{}{}
 	for _, enabled := range opts.EnabledIntents {
+		if enabled == intent.IntentResourceInfo ||
+			enabled == intent.IntentMonitorQuery ||
+			enabled == intent.IntentDiagnosis ||
+			enabled == intent.IntentVagueFailure ||
+			intent.IsCapabilityIntent(enabled) {
+			e.intentPlannerEnabledIntents[enabled] = struct{}{}
+		}
 		switch enabled {
 		case intent.IntentResourceInfo, intent.IntentMonitorQuery:
 			e.intentCutoverIntents[enabled] = struct{}{}
@@ -420,6 +430,7 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	e.userTurn++
 	e.lastUserMsg = userMsg
 	e.readExpensiveCallsThisTurn = 0
+	e.requireKnowledgeCitationThisTurn = false
 
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
@@ -507,14 +518,10 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 		if len(resp.ToolCalls) == 0 {
 			content := e.guardMonitorTemporalFinalReply(resp.Content)
 			// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): cited contract invariant.
-			// When knowledge retrieval is enabled but the planner routed the
-			// question away from tryStage2BRetrieval (e.g. billing_instance /
-			// diagnosis), the generic ReAct path will silently emit substantive
-			// text without [n] citations and break the cited 100% hard contract.
-			// Guard: pure-LLM single-call answer (round 0 + no tools used) with
-			// RAG enabled and not a recognised refusal/citation -> coerce to
-			// ragNoEvidenceReply.
-			if round == 0 && e.knowledgeRetriever != nil &&
+			// Keep the hard gate for planner-classified knowledge questions that
+			// fall back to a pure LLM answer, but do not apply it to diagnosis,
+			// price/tool, or other non-knowledge intents.
+			if round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil &&
 				!isKnowledgeRefusal(content) && !hasNumberedCitation(content) {
 				if e.hardBlockObserver != nil {
 					e.hardBlockObserver(observability.EngineHardBlockTrace{
@@ -591,6 +598,9 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 
 	dispatch := e.callPlannerOnce(ctx, userMsg, priorText)
 	if status, ok := e.commonPlannerCandidateStatus(dispatch.result); !ok {
+		if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
+			e.requireKnowledgeCitationThisTurn = true
+		}
 		e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
 		return "", false
 	}
@@ -603,6 +613,9 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		})
 		return monitorHistoryUnsupportedReply, true
 	}
+	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
+		return reply, true
+	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || intent.IsCapabilityIntent(dispatch.result.Plan.Intent) {
 		return e.tryPhase1Cutover(ctx, dispatch, userMsg, onStep)
 	}
@@ -610,6 +623,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		return reply, true
 	}
 	if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
+		e.requireKnowledgeCitationThisTurn = true
 		return "", false
 	}
 
@@ -617,9 +631,46 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	return "", false
 }
 
+func (e *Engine) tryPlannerDiagnosisClarification(dispatch plannerDispatchResult) (string, bool) {
+	if !e.plannerIntentEnabled(dispatch.result.Plan.Intent) {
+		return "", false
+	}
+	switch dispatch.result.Plan.Intent {
+	case intent.IntentVagueFailure:
+		reply := diagnosisVagueFailureClarificationReply
+		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackUnresolvedTarget, dispatch.latency)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: reply,
+		})
+		return reply, true
+	case intent.IntentDiagnosis:
+		if len(dispatch.result.Plan.Slots.TargetRefs) > 0 || countPlannerSnapshotInstances(dispatch.snapshot) <= 1 {
+			return "", false
+		}
+		reply := diagnosisMissingTargetClarificationReply
+		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackUnresolvedTarget, dispatch.latency)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: reply,
+		})
+		return reply, true
+	default:
+		return "", false
+	}
+}
+
 func (e *Engine) plannerDispatchEnabled() bool {
 	return e != nil && e.intentPlanner != nil &&
-		(len(e.intentCutoverIntents) > 0 || e.knowledgeRetriever != nil)
+		(len(e.intentPlannerEnabledIntents) > 0 || e.knowledgeRetriever != nil)
+}
+
+func (e *Engine) plannerIntentEnabled(intentValue intent.Intent) bool {
+	if e == nil || e.intentPlannerEnabledIntents == nil {
+		return false
+	}
+	_, ok := e.intentPlannerEnabledIntents[intentValue]
+	return ok
 }
 
 func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string) plannerDispatchResult {
@@ -1295,6 +1346,18 @@ func (e *Engine) phase1CutoverCandidateStatus(result intent.PlannerResult) (inte
 		return intent.CutoverStatusFallbackIneligible, false
 	}
 	return intent.CutoverStatusDispatched, true
+}
+
+const (
+	diagnosisMissingTargetClarificationReply = "请问是哪台实例出了问题？请提供实例 ID 或实例名称后我再继续排查。"
+	diagnosisVagueFailureClarificationReply  = "请问是哪台实例出了问题？也请描述一下具体是什么现象，例如 SSH 断了、GPU 报错、服务崩了或初始化卡住。"
+)
+
+func countPlannerSnapshotInstances(snapshot entity.RegistrySnapshot) int {
+	if snapshot.TotalCount > 0 {
+		return snapshot.TotalCount
+	}
+	return len(snapshot.Instances)
 }
 
 func (e *Engine) emitPlannerTrace(result intent.PlannerResult, status intent.CutoverStatus, latency time.Duration) {

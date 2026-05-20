@@ -92,6 +92,122 @@ func TestValidatePlan_AcceptsStockCapacityPrecheckTool(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidatePlan_CapabilityRegistryToolsStayAllowed(t *testing.T) {
+	for _, entry := range capabilityRegistry {
+		tools := []string{entry.requiredTool}
+		tools = append(tools, extraHandlerActions()[entry.intent]...)
+
+		plan := Plan{
+			SchemaVersion: SchemaVersion,
+			Intent:        entry.intent,
+			RequiredTools: tools,
+			Retrieval:     Retrieval{Enabled: false},
+			Confidence:    0.8,
+		}
+
+		err := ValidatePlan(plan, ValidationContext{UserText: "capability query", Registry: testRegistry(t)})
+
+		require.NoError(t, err, "capability intent %q tools %v must stay allowed", entry.intent, tools)
+	}
+}
+
+func TestValidatePlan_RejectsRequiredToolOutsideIntentAllowlist(t *testing.T) {
+	tests := []struct {
+		name string
+		plan Plan
+	}{
+		{
+			name: "knowledge qa cannot declare api tools",
+			plan: Plan{
+				SchemaVersion: SchemaVersion,
+				Intent:        IntentKnowledgeQA,
+				RequiredTools: []string{"DescribeCompShareInstance"},
+				Retrieval:     Retrieval{Enabled: false},
+				Confidence:    0.8,
+			},
+		},
+		{
+			name: "resource info cannot declare monitor tools",
+			plan: Plan{
+				SchemaVersion: SchemaVersion,
+				Intent:        IntentResourceInfo,
+				RequiredTools: []string{"GetCompShareInstanceMonitor"},
+				Retrieval:     Retrieval{Enabled: false},
+				Confidence:    0.8,
+			},
+		},
+		{
+			name: "capability cannot declare another capability tool",
+			plan: Plan{
+				SchemaVersion: SchemaVersion,
+				Intent:        IntentPlatformImageList,
+				RequiredTools: []string{"DescribeCompShareCustomImages"},
+				Retrieval:     Retrieval{Enabled: false},
+				Confidence:    0.8,
+			},
+		},
+		{
+			name: "unknown cannot declare tools",
+			plan: Plan{
+				SchemaVersion: SchemaVersion,
+				Intent:        IntentUnknown,
+				RequiredTools: []string{"GetCompShareInstancePrice"},
+				Retrieval:     Retrieval{Enabled: false},
+				Confidence:    0.8,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidatePlan(tt.plan, ValidationContext{UserText: "test", Registry: testRegistry(t)})
+
+			requireValidationCode(t, err, ErrInvalidRequiredTool)
+		})
+	}
+}
+
+func TestValidatePlan_AcceptsRequiredToolsForIntentAllowlist(t *testing.T) {
+	tests := []Plan{
+		{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentResourceInfo,
+			RequiredTools: []string{"DescribeCompShareInstance"},
+			Retrieval:     Retrieval{Enabled: false},
+			Confidence:    0.8,
+		},
+		{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentMonitorQuery,
+			RequiredTools: []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"},
+			Retrieval:     Retrieval{Enabled: false},
+			Confidence:    0.8,
+		},
+		{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentBillingInstance,
+			RequiredTools: []string{"DescribeCompShareInstance", "DiagnoseBilling"},
+			Retrieval:     Retrieval{Enabled: false},
+			Confidence:    0.8,
+		},
+		{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentKnowledgeQA,
+			RequiredTools: []string{},
+			Retrieval:     Retrieval{Enabled: false},
+			Confidence:    0.8,
+		},
+	}
+
+	for _, plan := range tests {
+		t.Run(string(plan.Intent), func(t *testing.T) {
+			err := ValidatePlan(plan, ValidationContext{UserText: "test", Registry: testRegistry(t)})
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestValidatePlan_RejectsInvalidMetricEnum(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.Slots.Metrics = []Metric{MetricCPU, Metric("disk")}
