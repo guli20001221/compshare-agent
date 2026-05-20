@@ -384,6 +384,11 @@ func TestDetectKnownUnavailableGPUs(t *testing.T) {
 		{"H200 有货吗", []string{"H200"}},
 		{"4090 显存", nil}, // 4090 is available, not in the "known unavailable" list
 		{"5090 显存", nil},
+		// Word-boundary symmetry: "H10" or "H20" as user text should NOT match
+		// "H100"/"H200" if those entries were ever shortened — guard against the
+		// same substring trap matchUserTokensToAPINames fixed.
+		{"H10 是什么", nil},
+		{"H20 库存", nil},
 		{"", nil},
 	}
 	for _, c := range cases {
@@ -396,7 +401,7 @@ func TestDetectKnownUnavailableGPUs(t *testing.T) {
 
 func TestMatchUserTokensToAPINames_Subset(t *testing.T) {
 	// The API drives the matching vocabulary — no hand-maintained GPU dictionary.
-	apiNames := []string{"4090", "4090_48G", "5090", "A100", "A800", "V100S"}
+	apiNames := []string{"4090", "4090_48G", "5090", "A100", "A800", "V100S", "H20"}
 	cases := []struct {
 		text string
 		want []string
@@ -405,12 +410,85 @@ func TestMatchUserTokensToAPINames_Subset(t *testing.T) {
 		{"a100 几张卡", []string{"A100"}},  // case-insensitive
 		{"v100s 配置", []string{"V100S"}},
 		{"H100 库存", nil}, // H100 not in API set — caller handles via known-unavailable
+		// Word-boundary regression: "H20" must NOT substring-match inside "H200".
+		{"你们有 H200 96G 这种规格吗", nil},
+		{"H200 还有货吗", nil},
+		// "H20" as a standalone token still matches.
+		{"H20 还有货吗", []string{"H20"}},
+		// "4090_48G" requires the exact suffix in user text (underscore is a word char).
+		{"4090_48G 多少钱", []string{"4090_48G"}},
 		{"未指定", nil},
 	}
 	for _, c := range cases {
 		got := matchUserTokensToAPINames(c.text, apiNames)
 		if len(got) != len(c.want) {
 			t.Errorf("matchUserTokensToAPINames(%q) = %v, want %v", c.text, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("matchUserTokensToAPINames(%q)[%d] = %q, want %q", c.text, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
+func TestMatchUserTextToInstanceTypeNames_FailsClosedForUnknownGPU(t *testing.T) {
+	// Regression for the H200→H20 confusion: "H200 96G" must NOT fall back to
+	// memory-only matching when no API name matched. Otherwise the caller
+	// surfaces H20_96G (or similar same-memory variant) as a confident answer.
+	items := []any{
+		map[string]any{"Name": "H20", "GraphicsMemory": "96"},
+		map[string]any{"Name": "4090", "GraphicsMemory": "24"},
+		map[string]any{"Name": "4090_48G", "GraphicsMemory": "48"},
+	}
+	cases := []struct {
+		text                       string
+		includeFamilyMemoryVariant bool
+		want                       []string
+	}{
+		{"你们有 H200 96G 这种规格吗", false, nil},
+		{"你们有 H200 96G 这种规格吗", true, nil},
+		{"H200 还有货吗", false, nil},
+		// Legitimate 4090 + 48G expansion still works.
+		{"4090 48G 多少钱", true, []string{"4090_48G"}},
+	}
+	for _, c := range cases {
+		got := matchUserTextToInstanceTypeNames(c.text, items, c.includeFamilyMemoryVariant)
+		if len(got) != len(c.want) {
+			t.Errorf("matchUserTextToInstanceTypeNames(%q, includeFamily=%v) = %v, want %v", c.text, c.includeFamilyMemoryVariant, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("matchUserTextToInstanceTypeNames(%q)[%d] = %q, want %q", c.text, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
+func TestContainsAsWord_BoundaryCases(t *testing.T) {
+	cases := []struct {
+		hay, needle string
+		want        bool
+	}{
+		{"H200", "H20", false},
+		{"H200 96G", "H20", false},
+		{"你们有 H20 还有货吗", "H20", true},
+		{"H20 96G", "H20", true},
+		// Underscore is a word char → boundary fails inside.
+		{"4090_48G", "4090", false},
+		{"4090 48G", "4090", true},
+		{"我想要 4090_48G", "4090_48G", true},
+		{"H20", "H20", true},
+		{"H20 ", "H20", true},
+		{" H20", "H20", true},
+		{"anything", "", false},
+	}
+	for _, c := range cases {
+		got := containsAsWord(c.hay, c.needle)
+		if got != c.want {
+			t.Errorf("containsAsWord(%q, %q) = %v, want %v", c.hay, c.needle, got, c.want)
 		}
 	}
 }

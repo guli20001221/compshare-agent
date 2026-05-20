@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/entity"
 
@@ -511,7 +512,10 @@ func extractUserTokens(userText string) []string {
 }
 
 // detectKnownUnavailableGPUs returns names from knownUnavailableGPUNames that
-// appear (case-insensitively) in the user text.
+// appear (case-insensitively, word-bounded) in the user text. Word boundaries
+// avoid the same substring trap as matchUserTokensToAPINames — keeps the
+// behaviour consistent if knownUnavailableGPUNames ever gains a shorter
+// entry that could prefix another known name.
 func detectKnownUnavailableGPUs(userText string) []string {
 	if userText == "" {
 		return nil
@@ -519,7 +523,7 @@ func detectKnownUnavailableGPUs(userText string) []string {
 	upper := strings.ToUpper(userText)
 	out := []string{}
 	for _, name := range knownUnavailableGPUNames {
-		if strings.Contains(upper, name) {
+		if containsAsWord(upper, name) {
 			out = append(out, name)
 		}
 	}
@@ -529,6 +533,11 @@ func detectKnownUnavailableGPUs(userText string) []string {
 // matchUserTokensToAPINames returns the subset of API Names (preserving case)
 // that the user mentioned anywhere in their question. The API name set is the
 // matching vocabulary — no hand-maintained GPU dictionary required.
+//
+// Word boundaries are required on both sides so a shorter model name does not
+// substring-match a longer one — e.g. "H20" must not match "H200 96G". Word
+// chars are [0-9A-Za-z_]; CJK and space are non-word, so a name surrounded by
+// space/Chinese matches as expected.
 func matchUserTokensToAPINames(userText string, apiNames []string) []string {
 	if userText == "" || len(apiNames) == 0 {
 		return nil
@@ -543,12 +552,55 @@ func matchUserTokensToAPINames(userText string, apiNames []string) []string {
 		if _, ok := seen[name]; ok {
 			continue
 		}
-		if strings.Contains(upper, strings.ToUpper(name)) {
+		if containsAsWord(upper, strings.ToUpper(name)) {
 			matched = append(matched, name)
 			seen[name] = struct{}{}
 		}
 	}
 	return matched
+}
+
+// containsAsWord reports whether needle appears in haystack with word
+// boundaries on both sides. A word char is [0-9A-Za-z_]; any other rune
+// (including CJK, space, punctuation, start/end of string) counts as a
+// boundary. Substring matches like "H20" inside "H200" return false.
+func containsAsWord(haystack, needle string) bool {
+	if needle == "" {
+		return false
+	}
+	from := 0
+	for from <= len(haystack)-len(needle) {
+		idx := strings.Index(haystack[from:], needle)
+		if idx < 0 {
+			return false
+		}
+		abs := from + idx
+		if !isWordCharBefore(haystack, abs) && !isWordCharAfter(haystack, abs+len(needle)) {
+			return true
+		}
+		from = abs + 1
+	}
+	return false
+}
+
+func isWordCharBefore(s string, pos int) bool {
+	if pos <= 0 {
+		return false
+	}
+	r, _ := utf8.DecodeLastRuneInString(s[:pos])
+	return isWordRune(r)
+}
+
+func isWordCharAfter(s string, pos int) bool {
+	if pos >= len(s) {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(s[pos:])
+	return isWordRune(r)
+}
+
+func isWordRune(r rune) bool {
+	return r == '_' || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
 }
 
 var gpuMemoryHintRegex = regexp.MustCompile(`(?i)\b(\d{2,3})\s*(?:gb|g)\b`)
@@ -559,6 +611,14 @@ func matchUserTextToInstanceTypeNames(userText string, items []any, includeFamil
 	matched := matchUserTokensToAPINames(userText, apiNames)
 	hints := extractGPUMemoryHints(userText)
 	if len(hints) > 0 {
+		// Fail-closed: if the user named a GPU-shaped token but none of them
+		// matched a known API name, do NOT fall back to memory-only matching
+		// (that would surface a different GPU model with the same VRAM, e.g.
+		// "H200 96G" → H20_96G). The caller's renderStockReply path will then
+		// apply the known-unavailable prefix when appropriate.
+		if len(matched) == 0 && userMentionedGPULikeToken(userText) {
+			return nil
+		}
 		if memoryMatched := matchMemoryHintedInstanceTypeNames(hints, items, matched); len(memoryMatched) > 0 {
 			return memoryMatched
 		}
