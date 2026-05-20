@@ -3,6 +3,11 @@ name: community_image_list
 intent_label: community_image_list
 required_tool: DescribeCommunityImages
 required_citation: false
+planner_directives:
+  - 'Community image list questions like "查询社区镜像" should emit community_image_list.'
+planner_examples:
+  - question: "查询社区镜像"
+    confidence: 0.85
 ---
 
 # community_image_list

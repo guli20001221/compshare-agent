@@ -47,15 +47,19 @@ func TestBuildSystemPromptDoesNotEmitMixedIntents(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	// 26 legacy examples (20 + 3 added by #34a 2026-05-18 for comparison /
-	// yes-no feasibility / procedure-description knowledge_qa coverage +
-	// 2 added by #60 2026-05-20 for concept-Q-with-monitor-trigger-word and
-	// 1 runtime price-to-ReAct boundary example;
-	// third-party-tool-config-jargon knowledge_qa coverage) +
+	// 27 grouped base examples (20 legacy + 3 added by #34a 2026-05-18 for
+	// comparison / yes-no feasibility / procedure-description knowledge_qa
+	// coverage + 2 added by #60 2026-05-20 for concept-Q-with-monitor-trigger-
+	// word and third-party-tool-config-jargon knowledge_qa coverage; two old
+	// stock-to-unknown examples were replaced when stock_availability became
+	// a capability + 2 added 2026-05-20 for personal billing complaint
+	// (billing_instance) stable routing — see Q04 N=5 jitter check) +
 	// N capability one-shots (PR A Registry v1) appended by CapabilityPromptFragments.
+	// PR #121 adds the "Direct runtime/list/user price questions" directive
+	// but does NOT add a prompt example, so the count stays 27.
 	// New capabilities here should bump this number; the regression value is
-	// `26 + len(capabilityRegistry)`.
-	if got, want := len(examples), 26+len(capabilityRegistry); got != want {
+	// `27 + len(capabilityRegistry)`.
+	if got, want := len(examples), 27+len(capabilityRegistry); got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -78,21 +82,142 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptKeepsInventoryAvailabilityOutOfResourceInfo(t *testing.T) {
+func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
+	groups := plannerPromptExampleGroups()
+	if len(groups) < 5 {
+		t.Fatalf("expected planner examples to be split into intent groups, got %d groups", len(groups))
+	}
+	total := 0
+	seen := map[Intent]bool{}
+	counts := map[Intent]int{}
+	expectedTools := map[Intent][]string{
+		IntentResourceInfo:              []string{"DescribeCompShareInstance"},
+		IntentUnknown:                   []string{},
+		IntentMonitorQuery:              []string{"GetCompShareInstanceMonitor"},
+		IntentKnowledgeQA:               []string{},
+		IntentBillingAccountUnsupported: []string{},
+		IntentBillingInstance:           []string{"DescribeCompShareInstance", "DiagnoseBilling"},
+		IntentDiagnosis:                 []string{"DescribeCompShareInstance"},
+	}
+	expectedHardBlock := map[Intent]bool{
+		IntentResourceInfo:              false,
+		IntentUnknown:                   false,
+		IntentMonitorQuery:              false,
+		IntentKnowledgeQA:               false,
+		IntentBillingAccountUnsupported: true,
+		IntentBillingInstance:           false,
+		IntentDiagnosis:                 false,
+	}
+	for _, group := range groups {
+		if group.Intent == "" {
+			t.Fatalf("planner example group missing intent: %+v", group)
+		}
+		if strings.TrimSpace(group.Source) == "" {
+			t.Fatalf("planner example group %q missing PR/source note", group.Intent)
+		}
+		if len(group.Examples) == 0 {
+			t.Fatalf("planner example group %q has no examples", group.Intent)
+		}
+		seen[group.Intent] = true
+		counts[group.Intent] = len(group.Examples)
+		total += len(group.Examples)
+		for _, example := range group.Examples {
+			if strings.TrimSpace(example.Source) == "" {
+				t.Fatalf("planner example %q in group %q missing source note", example.Question, group.Intent)
+			}
+			plan, err := parsePlanJSON(example.PlanJSON)
+			if err != nil {
+				t.Fatalf("planner example %q does not parse: %v", example.Question, err)
+			}
+			if plan.Intent != group.Intent {
+				t.Fatalf("planner example %q is in group %q but JSON intent is %q", example.Question, group.Intent, plan.Intent)
+			}
+			if got, want := strings.Join(plan.RequiredTools, ","), strings.Join(expectedTools[group.Intent], ","); got != want {
+				t.Fatalf("planner example %q required_tools = %v, want %v", example.Question, plan.RequiredTools, expectedTools[group.Intent])
+			}
+			if want := expectedHardBlock[group.Intent]; plan.HardBlockHint != want {
+				t.Fatalf("planner example %q hard_block_hint = %v, want %v", example.Question, plan.HardBlockHint, want)
+			}
+		}
+	}
+	for _, intent := range []Intent{
+		IntentResourceInfo,
+		IntentMonitorQuery,
+		IntentKnowledgeQA,
+		IntentBillingAccountUnsupported,
+		IntentBillingInstance,
+		IntentDiagnosis,
+		IntentUnknown,
+	} {
+		if !seen[intent] {
+			t.Fatalf("planner examples missing group for intent %q", intent)
+		}
+	}
+	if total != 27 {
+		t.Fatalf("legacy planner example count = %d, want 27", total)
+	}
+	expectedCounts := map[Intent]int{
+		IntentResourceInfo:              4,
+		IntentUnknown:                   2,
+		IntentMonitorQuery:              2,
+		IntentKnowledgeQA:               14,
+		IntentBillingAccountUnsupported: 2,
+		IntentBillingInstance:           2,
+		IntentDiagnosis:                 1,
+	}
+	for intent, want := range expectedCounts {
+		if got := counts[intent]; got != want {
+			t.Fatalf("planner example count for %q = %d, want %d", intent, got, want)
+		}
+	}
+	rendered := strings.Join(renderPlannerPromptExampleGroups(groups), "\n")
+	if got := len(promptExampleJSONLines(rendered)); got != total {
+		t.Fatalf("rendered example JSON count = %d, want %d", got, total)
+	}
+}
+
+// TestBuildSystemPromptIncludesBillingInstanceDiagnosticGuard locks the
+// system-prompt directive that makes "充值 10 块就被扣完了 我啥也没干啊"-class
+// personal billing complaints route to billing_instance instead of jittering
+// between billing_account_unsupported and knowledge_qa. The N=5 jitter check
+// on 2026-05-20 showed 3/5 went to billing_account_unsupported (correct hard
+// block, but engine ReAct fallthrough that was a lucky path) and 2/5 went to
+// knowledge_qa (refusal because corpus has no chunks for personal billing
+// complaints). Trace: F:/compshare-agent-runs/q04-jitter-20260520-165129.
+func TestBuildSystemPromptIncludesBillingInstanceDiagnosticGuard(t *testing.T) {
+	prompt := buildSystemPrompt()
+	required := []string{
+		"Personal billing complaints with vague cause",
+		"emit billing_instance",
+		"NOT billing_account_unsupported",
+		"NOT knowledge_qa",
+		"充值 10 块就被扣完了", // 充值 10 块就被扣完了
+		"我账单怎么这么高",   // 我账单怎么这么高
+	}
+	for _, fragment := range required {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt missing billing_instance diagnostic guard fragment %q:\n%s", fragment, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptRoutesInventoryAvailabilityToCapability(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
 		"Inventory availability questions",
 		"are not resource_info",
 		"resource_info is only for the user's own CompShare instances",
-		"Platform stock questions should emit unknown",
-		"\u4e0a\u6d77\u673a\u623f\u8fd8\u5269\u6ca1\u5269 H100 \u5e93\u5b58",
-		"4090 \u8fd8\u6709\u6ca1\u6709\u8d27",
+		"Platform stock questions should emit stock_availability",
+		"4090 现在有没有货",
 		"\u6211\u8d26\u53f7\u4e0b\u6709\u54ea\u4e9b 4090 \u5b9e\u4f8b",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("system prompt missing inventory boundary fragment %q:\n%s", fragment, prompt)
 		}
+	}
+	if strings.Contains(prompt, "Platform stock questions should emit unknown") {
+		t.Fatalf("system prompt still contains stale stock-to-unknown routing:\n%s", prompt)
 	}
 }
 

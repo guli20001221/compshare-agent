@@ -711,7 +711,7 @@ func TestChat_MaxRoundsExceeded(t *testing.T) {
 	assert.Contains(t, reply, "轮次超限")
 }
 
-func TestInit_InjectsContextAndFAQ(t *testing.T) {
+func TestInit_InjectsContextAndKnowledgeBoundary(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
@@ -729,12 +729,14 @@ func TestInit_InjectsContextAndFAQ(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, suggestions)
 
-	// System prompt should contain user context + FAQ
+	// System prompt should contain user context + knowledge-source boundaries.
 	systemMsg := eng.messages[0]
 	assert.Equal(t, openai.ChatMessageRoleSystem, systemMsg.Role)
 	assert.Contains(t, systemMsg.Content, "uhost-abc")
-	assert.Contains(t, systemMsg.Content, "平台常见问题") // FAQ injected
-	assert.Contains(t, systemMsg.Content, "计费/回收规则")
+	assert.Contains(t, systemMsg.Content, "平台知识类问题必须通过知识库/RAG资料回答")
+	assert.Contains(t, systemMsg.Content, "不要凭内置 FAQ 或模型记忆补全平台规则")
+	assert.NotContains(t, systemMsg.Content, "平台常见问题")
+	assert.NotContains(t, systemMsg.Content, "计费/回收规则")
 }
 
 func TestInit_FailedContextInjection(t *testing.T) {
@@ -745,8 +747,9 @@ func TestInit_FailedContextInjection(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotEmpty(t, suggestions)
-	// Should still have system prompt with FAQ
-	assert.Contains(t, eng.messages[0].Content, "平台常见问题")
+	// Should still have system prompt with knowledge-source boundaries.
+	assert.Contains(t, eng.messages[0].Content, "平台知识类问题必须通过知识库/RAG资料回答")
+	assert.NotContains(t, eng.messages[0].Content, "平台常见问题")
 }
 
 func TestKnowledgeTool_DoesNotCallExecutor(t *testing.T) {
@@ -2185,10 +2188,10 @@ func TestStaleState_NeverQueriedNoNote(t *testing.T) {
 		"no prior instance query → no stale note")
 }
 
-func TestStaleState_FAQNotDerailed(t *testing.T) {
+func TestStaleState_KnowledgeQuestionDoesNotForceInstanceRefresh(t *testing.T) {
 	// Turn 1: DescribeCompShareInstance queried → freshness set.
-	// Turn 2: User asks FAQ. Stale note IS injected, but the model
-	// should still be free to return a text-only FAQ answer.
+	// Turn 2: User asks a knowledge question. Stale note IS injected, but it
+	// should not force an unrelated DescribeCompShareInstance refresh.
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{}, "RetCode": 0},
 	}}
@@ -2196,7 +2199,7 @@ func TestStaleState_FAQNotDerailed(t *testing.T) {
 		// Turn 1: tool call + text
 		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DescribeCompShareInstance", `{}`)}},
 		{Content: "没有实例"},
-		// Turn 2: FAQ → text only, no tool call
+		// Turn 2: knowledge answer → text only, no instance refresh
 		{Content: "关机后按量模式下，GPU/CPU/内存停止计费，但额外磁盘继续收费。"},
 	}}
 	eng := NewWithDeps(mock, executor, nil)
@@ -2207,7 +2210,7 @@ func TestStaleState_FAQNotDerailed(t *testing.T) {
 	// Turn 1
 	eng.Chat(context.Background(), "查看实例", noopStep)
 
-	// Turn 2: FAQ
+	// Turn 2: knowledge question
 	reply, err := eng.Chat(context.Background(), "关机后还收费吗", noopStep)
 	assert.NoError(t, err)
 	assert.Contains(t, reply, "磁盘")
@@ -2225,7 +2228,7 @@ func TestStaleState_FAQNotDerailed(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, descCalls,
-		"FAQ turn should not force an extra DescribeCompShareInstance call")
+		"knowledge turn should not force an extra DescribeCompShareInstance call")
 }
 
 func TestStaleState_ExternalStateChangeRegression(t *testing.T) {
@@ -3524,7 +3527,11 @@ func TestPlannerRoutingControlsStage2BRAGPath(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, planner.calls, 1)
 			if tc.expectRAGPath {
-				assert.True(t, hasNumberedCitation(reply), "RAG path must return cited answer, got %q", reply)
+				// The RAG path now strips [n] markers from the user-facing reply.
+				// "RAG path was taken" is proven by retriever.calls + mock.calls;
+				// citations live in trace.CitedChunkIDs which isn't observed in
+				// this test (the routing assertion only needs the dispatch fact).
+				assert.False(t, hasNumberedCitation(reply), "RAG path must strip [n] markers from user-facing reply, got %q", reply)
 				require.Len(t, retriever.calls, 1)
 				assert.Equal(t, tc.userMsg, retriever.calls[0].question)
 				require.Len(t, mock.calls, 1)
@@ -3578,7 +3585,9 @@ func TestStage2BRetrievalHitCallsLLMWithNumberedEvidence(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, "Stopped instances still charge for disks. [1]", reply)
+	// User-facing reply has [n] markers stripped; the cited chunk_ids survive
+	// in retrievalTraces[0].CitedChunkIDs for MySQL audit ingest.
+	assert.Equal(t, "Stopped instances still charge for disks.", reply)
 	require.Len(t, mock.calls, 1)
 	requestText := requestContent(mock.calls[0])
 	assert.Contains(t, requestText, "[1] Stopped instance billing")
@@ -3592,6 +3601,8 @@ func TestStage2BRetrievalHitCallsLLMWithNumberedEvidence(t *testing.T) {
 	assert.Equal(t, "w0-billing_rule-stopped-a1b2c3d4", retrievalTraces[0].HitItems[0].ChunkID)
 	assert.Equal(t, 80.0, retrievalTraces[0].HitItems[0].Score)
 	assert.False(t, retrievalTraces[0].WeakEvidence)
+	// Cited chunk_ids survive into trace even though [1] is stripped from reply.
+	assert.Equal(t, []string{"w0-billing_rule-stopped-a1b2c3d4"}, retrievalTraces[0].CitedChunkIDs)
 	// HybridMode + HybridFallbackReason + EmbeddingLatencyMS must propagate
 	// from RetrievalResult into the emitted trace so ops can aggregate
 	// fallback rate AND latency distribution across runs.
@@ -3646,12 +3657,14 @@ func TestStage2BRetrievalAmbiguousTopHitsMarksRankingErrorCandidate(t *testing.T
 	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, "Stopped instances still charge for disks. [1]", reply)
+	// User-facing reply has [n] stripped; CitedChunkIDs preserves the mapping.
+	assert.Equal(t, "Stopped instances still charge for disks.", reply)
 	require.Len(t, retrievalTraces, 1)
 	assert.False(t, retrievalTraces[0].WeakEvidence)
 	assert.Empty(t, retrievalTraces[0].RefusedReason)
 	assert.True(t, retrievalTraces[0].RankingErrorCandidate)
 	require.Len(t, retrievalTraces[0].HitItems, 2)
+	assert.Equal(t, []string{"w0-billing_rule-stopped-a1b2c3d4"}, retrievalTraces[0].CitedChunkIDs)
 }
 
 func TestStage2BRetrievalNormalRefusalSetsRefusedReason(t *testing.T) {
@@ -3794,11 +3807,13 @@ func TestStage2BRetrievalWeakEvidenceCitedAnswerHasNoRefusedReason(t *testing.T)
 	reply, err := eng.Chat(context.Background(), "coding quota details", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, "Coding Plan has a quota window. [1]", reply)
+	// User-facing reply has [n] stripped; CitedChunkIDs preserves the mapping.
+	assert.Equal(t, "Coding Plan has a quota window.", reply)
 	require.Len(t, retrievalTraces, 1)
 	assert.True(t, retrievalTraces[0].WeakEvidence)
 	assert.Empty(t, retrievalTraces[0].RefusedReason)
 	assert.True(t, retrievalTraces[0].RankingErrorCandidate)
+	assert.Equal(t, []string{"w0-modelverse-package-a1b2c3d4"}, retrievalTraces[0].CitedChunkIDs)
 }
 
 func TestStage2BRetrievalRetryNoCitationFallsBackToNoEvidence(t *testing.T) {
@@ -5661,6 +5676,72 @@ func TestVagueCrashGuard_UHostIdTargetPasses(t *testing.T) {
 	eng.InitWithContext("test user")
 
 	reply, err := eng.Chat(context.Background(), "uhost-init-001 初始化失败了", noopStep)
+	assert.NoError(t, err)
+	assert.NotContains(t, reply, specificClarifyPrefix)
+	assert.NotContains(t, reply, vagueClarifyPrefix)
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+}
+
+func TestVagueCrashGuard_FollowupUHostIdAfterSpecificClarificationPasses(t *testing.T) {
+	executor := initFailureScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{"UHostId":"uhost-init-001"}`),
+		}},
+		{Content: "实例初始化失败，建议重建"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: specificClarifyPrefix,
+	})
+
+	reply, err := eng.Chat(context.Background(), "uhost-init-001", noopStep)
+	assert.NoError(t, err)
+	assert.NotContains(t, reply, specificClarifyPrefix)
+	assert.NotContains(t, reply, vagueClarifyPrefix)
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance",
+		"follow-up target replies after an init-failure clarification must continue the diagnosis")
+}
+
+func TestVagueCrashGuard_FollowupUHostIdAfterGenericClarificationStillBlocked(t *testing.T) {
+	executor := initFailureScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{"UHostId":"uhost-init-001"}`),
+		}},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: "请问是哪台实例出了问题？能描述一下具体现象吗（例如：SSH 断了、GPU 报错、服务崩了、初始化卡住等）？",
+	})
+
+	reply, err := eng.Chat(context.Background(), "uhost-init-001", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, vagueClarifyPrefix,
+		"generic symptom clarification must not let a target-only reply run init diagnosis")
+	assert.NotContains(t, executor.calls, "DescribeCompShareInstance")
+}
+
+func TestVagueCrashGuard_FollowupUHostIdAfterInitStatusClarificationPasses(t *testing.T) {
+	executor := initFailureScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{"UHostId":"uhost-init-001"}`),
+		}},
+		{Content: "实例初始化失败，建议重建"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: "我看到有 3 台实例处于初始化中。请告诉我具体是哪台实例连不上。",
+	})
+
+	reply, err := eng.Chat(context.Background(), "uhost-init-001", noopStep)
 	assert.NoError(t, err)
 	assert.NotContains(t, reply, specificClarifyPrefix)
 	assert.NotContains(t, reply, vagueClarifyPrefix)

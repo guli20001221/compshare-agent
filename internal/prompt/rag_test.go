@@ -5,6 +5,90 @@ import (
 	"testing"
 )
 
+func TestRAGSystemPromptComposesNamedSegments(t *testing.T) {
+	segments := ragSystemSegments()
+	required := []string{
+		"base_system",
+		"coverage_rules",
+		"third_party_tool_addendum",
+		"fact_constraints",
+		"anti_fabrication_anchors",
+	}
+	for _, name := range required {
+		if strings.TrimSpace(segments[name]) == "" {
+			t.Fatalf("RAG system segment %q must be independently available", name)
+		}
+	}
+	if strings.Contains(segments["coverage_rules"], "第三方工具接入场景") {
+		t.Fatalf("third-party addendum should not be embedded in coverage rules:\n%s", segments["coverage_rules"])
+	}
+	if !strings.Contains(segments["third_party_tool_addendum"], "第三方工具接入场景") {
+		t.Fatalf("third-party addendum should own third-party tool integration rules")
+	}
+	if !strings.Contains(segments["anti_fabrication_anchors"], "字符级、按行原样复制资料") {
+		t.Fatalf("anti-fabrication anchors should be independently testable")
+	}
+
+	system := buildRAGSystemPrompt(false, false)
+	ordered := []string{
+		"你是 CompShare 平台知识库问答助手",
+		"【回答规则",
+		"【第三方工具接入补充】",
+		"【事实约束】",
+		"【反编造锚点】",
+	}
+	last := -1
+	for _, marker := range ordered {
+		pos := strings.Index(system, marker)
+		if pos < 0 {
+			t.Fatalf("composed RAG system prompt missing marker %q:\n%s", marker, system)
+		}
+		if pos <= last {
+			t.Fatalf("marker %q appears out of order in composed RAG system prompt", marker)
+		}
+		last = pos
+	}
+}
+
+func TestRAGSystemPromptUsesSharedSegmentOrderFile(t *testing.T) {
+	order := ragSystemSegmentNames()
+	want := []string{
+		"base_system",
+		"coverage_rules",
+		"third_party_tool_addendum",
+		"fact_constraints",
+		"anti_fabrication_anchors",
+	}
+	if len(order) != len(want) {
+		t.Fatalf("shared RAG segment order length = %d, want %d: %v", len(order), len(want), order)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("shared RAG segment order[%d] = %q, want %q", i, order[i], want[i])
+		}
+	}
+}
+
+func TestRAGSystemPromptBranchesAreAppendOnly(t *testing.T) {
+	base := buildRAGSystemPrompt(false, false)
+	weak := buildRAGSystemPrompt(true, false)
+	retry := buildRAGSystemPrompt(false, true)
+	both := buildRAGSystemPrompt(true, true)
+
+	if strings.Contains(base, "资料相关性较低") || strings.Contains(base, "上一次回答缺少引用") {
+		t.Fatalf("base RAG system prompt should not include weak/retry branches:\n%s", base)
+	}
+	if !strings.HasPrefix(weak, base) || !strings.Contains(weak, "资料相关性较低") {
+		t.Fatalf("weak branch should append to base prompt")
+	}
+	if !strings.HasPrefix(retry, base) || !strings.Contains(retry, "上一次回答缺少引用") {
+		t.Fatalf("retry branch should append to base prompt")
+	}
+	if !strings.HasPrefix(both, base) || !strings.Contains(both, "资料相关性较低") || !strings.Contains(both, "上一次回答缺少引用") {
+		t.Fatalf("weak+retry prompt should append both branches")
+	}
+}
+
 func TestBuildRAGMessagesPreservesConflictAndConditionRules(t *testing.T) {
 	messages := BuildRAGMessages("Coding Plan 的用量周期是怎么计算的", []RAGReference{
 		{

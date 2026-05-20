@@ -155,28 +155,33 @@ func TestBuildSystemWithOptions_ReadOnlyHidesMutatingWorkflowGuidance(t *testing
 	}
 }
 
-func TestReadOnlyFAQContentAllowsReadOnlySelfCheckButOmitsMutatingCommands(t *testing.T) {
-	for _, text := range []string{
-		"/start.d/",
-		"sudo apt",
-		"ollama serve",
-		"ldconfig",
-		"StartInstanceWorkflow",
-	} {
-		if strings.Contains(ReadOnlyFAQContent, text) {
-			t.Fatalf("read-only FAQ should not contain %q", text)
-		}
+func TestBuildSystemWithOptions_DoesNotInjectStaticFAQContent(t *testing.T) {
+	cases := map[string]string{
+		"mutating":  BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true}),
+		"read_only": BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false}),
 	}
-	for _, text := range []string{
-		"计费/回收规则",
-		"连接实例",
-		"控制台",
-		"只读自查命令",
-		"nvidia-smi",
-	} {
-		if !strings.Contains(ReadOnlyFAQContent, text) {
-			t.Fatalf("read-only FAQ should contain %q", text)
-		}
+	for name, system := range cases {
+		t.Run(name, func(t *testing.T) {
+			for _, text := range []string{
+				"平台常见问题",
+				"### 7. 无卡模式",
+				"关机后以无卡模式启动",
+				"四种计费模式",
+				"主流大模型已预下载",
+			} {
+				if strings.Contains(system, text) {
+					t.Fatalf("system prompt should not inject static FAQ content %q:\n%s", text, system)
+				}
+			}
+			for _, text := range []string{
+				"平台知识类问题必须通过知识库/RAG资料回答",
+				"不要凭内置 FAQ 或模型记忆补全平台规则",
+			} {
+				if !strings.Contains(system, text) {
+					t.Fatalf("system prompt should contain knowledge-source boundary %q:\n%s", text, system)
+				}
+			}
+		})
 	}
 }
 

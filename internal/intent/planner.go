@@ -190,6 +190,223 @@ func parsePlanJSON(raw string) (Plan, error) {
 	return plan, nil
 }
 
+type plannerPromptExample struct {
+	Question string
+	PlanJSON string
+	Source   string
+}
+
+type plannerPromptExampleGroup struct {
+	Intent   Intent
+	Source   string
+	Examples []plannerPromptExample
+}
+
+func plannerPromptExampleGroups() []plannerPromptExampleGroup {
+	return []plannerPromptExampleGroup{
+		{
+			Intent: IntentResourceInfo,
+			Source: "Phase 1 baseline resource inventory cutover",
+			Examples: []plannerPromptExample{
+				{
+					Question: "show resource info for my-test-agent",
+					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"name","value":"my-test-agent","source":"user_text","source_span":"my-test-agent"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Phase 1 baseline: named instance resource lookup",
+				},
+				{
+					Question: "which machines are running",
+					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"filter","value":"state=running"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Phase 1 baseline: state filter",
+				},
+				{
+					Question: "which 4090 machines are stopped",
+					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"filter","value":"state=stopped"},{"type":"filter","value":"gpu_type=4090"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Phase 1 baseline: compound inventory filters",
+				},
+				{
+					Question: "我账号下有哪些 4090 实例",
+					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"filter","value":"gpu_type=4090"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Phase 1 baseline: account inventory filter",
+				},
+			},
+		},
+		{
+			Intent: IntentUnknown,
+			Source: "Phase 1 demo boundary: unsupported non-platform requests",
+			Examples: []plannerPromptExample{
+				{
+					Question: "今天北京天气怎么样",
+					PlanJSON: `{"schema_version":"1.0","intent":"unknown","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.7}`,
+					Source:   "Phase 1 boundary: unsupported general knowledge",
+				},
+				{
+					Question: "帮我写一首和平台无关的诗",
+					PlanJSON: `{"schema_version":"1.0","intent":"unknown","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.7}`,
+					Source:   "Phase 1 boundary: unrelated creative request",
+				},
+			},
+		},
+		{
+			Intent: IntentMonitorQuery,
+			Source: "Phase 1 baseline monitor cutover",
+			Examples: []plannerPromptExample{
+				{
+					Question: "show current CPU and GPU monitor for my-test-agent",
+					PlanJSON: `{"schema_version":"1.0","intent":"monitor_query","slots":{"target_refs":[{"type":"name","value":"my-test-agent","source":"user_text","source_span":"my-test-agent"}],"metrics":["cpu","gpu"],"time_window":{"type":"preset","value":"now"}},"required_tools":["GetCompShareInstanceMonitor"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Phase 1 baseline: current monitor query",
+				},
+				{
+					Question: "CPU is high, what should I do",
+					PlanJSON: `{"schema_version":"1.0","intent":"monitor_query","slots":{"target_refs":[],"metrics":["cpu"],"time_window":{"type":"preset","value":"now"}},"required_tools":["GetCompShareInstanceMonitor"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Phase 1 baseline: performance symptom maps to current monitor",
+				},
+			},
+		},
+		{
+			Intent: IntentKnowledgeQA,
+			Source: "Stage 2B + PR #34a/#52/#60 knowledge_qa routing regressions",
+			Examples: []plannerPromptExample{
+				{
+					Question: "为啥显卡内存满了 GPU 占用才 10%",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "PR #60: concept question with monitor-trigger words",
+				},
+				{
+					Question: "how do I issue an invoice",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "PR #52: finance process question, not personal status",
+				},
+				{
+					Question: "what image types does the platform provide",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Stage 2B: platform concept question",
+				},
+				{
+					Question: "远程桌面没声音该怎么处理",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "Stage 2B: platform how-to/config boundary",
+				},
+				{
+					Question: "错误码 226601 是什么意思",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "Stage 2B: error-code knowledge question",
+				},
+				{
+					Question: "Linux 怎么装 NVIDIA 驱动",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "Stage 2B: platform how-to/config boundary",
+				},
+				{
+					Question: "Coding Plan 的 BaseURL 应该填什么",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "Stage 2B: model API configuration",
+				},
+				{
+					Question: "怎么在 VSCode 里连 GPU 实例",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "Stage 2B: connection how-to",
+				},
+				{
+					Question: "在 CLINE 里加 mcp-server-sqlite 那段 json 该怎么写",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "PR #60: third-party tool configuration jargon",
+				},
+				{
+					Question: "怎么查我这个月的账单",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "PR #52: billing navigation question",
+				},
+				{
+					Question: "哪里可以看发票发起记录",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "PR #52: invoice navigation question",
+				},
+				{
+					Question: "包月和按量哪个划算",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "PR #34a: platform comparison question",
+				},
+				{
+					Question: "实例磁盘可以扩容吗",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "PR #34a: platform feasibility question",
+				},
+				{
+					Question: "退款流程是怎样的",
+					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "PR #34a: platform procedure question",
+				},
+			},
+		},
+		{
+			Intent: IntentBillingAccountUnsupported,
+			Source: "PR #52 finance process vs personal-status hard-block split",
+			Examples: []plannerPromptExample{
+				{
+					Question: "account balance",
+					PlanJSON: `{"schema_version":"1.0","intent":"billing_account_unsupported","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":true,"confidence":0.9}`,
+					Source:   "PR #52: personal realtime account data hard block",
+				},
+				{
+					Question: "what is my invoice status",
+					PlanJSON: `{"schema_version":"1.0","intent":"billing_account_unsupported","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":true,"confidence":0.9}`,
+					Source:   "PR #52: personal invoice status hard block",
+				},
+			},
+		},
+		{
+			// Personal billing complaint with vague cause — N=5 jitter check on
+			// 2026-05-20 showed planner randomly routed "充值 10 块就被扣完了 我啥
+			// 也没干啊" to billing_account_unsupported (3/5) or knowledge_qa
+			// (2/5); both wrong (account_unsupported is hard-block, knowledge_qa
+			// has no chunks for personal complaints). billing_instance is the
+			// correct route — the existing system-prompt directive at line ~410
+			// already declares "instance-scoped billing questions should emit
+			// billing_instance" but planner had no one-shot example anchoring
+			// the colloquial personal-complaint phrasing. Trace evidence:
+			// F:/compshare-agent-runs/q04-jitter-20260520-165129.
+			Intent: IntentBillingInstance,
+			Source: "Stable routing for personal billing complaints with vague cause (2026-05-20 N=5 jitter check)",
+			Examples: []plannerPromptExample{
+				{
+					Question: "充值 10 块就被扣完了 我啥也没干啊",
+					PlanJSON: `{"schema_version":"1.0","intent":"billing_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance","DiagnoseBilling"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Colloquial personal billing complaint — diagnose own instances",
+				},
+				{
+					Question: "我账单怎么这么高",
+					PlanJSON: `{"schema_version":"1.0","intent":"billing_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance","DiagnoseBilling"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+					Source:   "Personal billing complaint — high bill diagnostic",
+				},
+			},
+		},
+		{
+			Intent: IntentDiagnosis,
+			Source: "Stage 2B diagnosis-vs-knowledge boundary",
+			Examples: []plannerPromptExample{
+				{
+					Question: "uhost-abc123 这台启动失败了帮我查",
+					PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-abc123","source":"user_text","source_span":"uhost-abc123"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "Stage 2B: concrete instance target stays diagnosis",
+				},
+			},
+		},
+	}
+}
+
+func renderPlannerPromptExampleGroups(groups []plannerPromptExampleGroup) []string {
+	lines := []string{}
+	for _, group := range groups {
+		lines = append(lines, fmt.Sprintf("Example group: %s (source: %s)", group.Intent, group.Source))
+		for _, example := range group.Examples {
+			lines = append(lines, "Example source: "+example.Source)
+			lines = append(lines, "User question: "+example.Question)
+			lines = append(lines, example.PlanJSON)
+		}
+	}
+	return lines
+}
+
 func buildSystemPrompt() string {
 	// Keep the planner scaffold ASCII/English. Earlier Windows console/source
 	// encoding issues made non-ASCII prompt labels fragile, while the baseline
@@ -209,7 +426,7 @@ func buildSystemPrompt() string {
 		"The distinction is: 'how do I do X on the platform' = knowledge_qa; 'my specific instance has problem X' with target_refs = diagnosis. Without a concrete instance target, default to knowledge_qa for usage/config/error-code questions.",
 		"Direct runtime/list/user price questions like 4090 多少钱, H20 按月包多少钱, 折后价多少, or actual purchase price should emit unknown with no required_tools so the normal tool loop can choose price tools.",
 		"Comparison questions ('X 和 Y 哪个划算' / 'X vs Y'), yes-no feasibility questions ('X 可以 Y 吗' / 'can I X'), and procedure-description questions ('X 流程是怎样的' / 'how does X work') about platform usage, pricing rules, image, instance, or billing should emit knowledge_qa unless they reference a specific instance target.",
-		"Inventory availability questions like whether a GPU model has stock, is available, is sold out, or has data-center inventory are not resource_info. resource_info is only for the user's own CompShare instances. Platform stock questions should emit unknown so the normal tool loop can choose inventory tools.",
+		"Inventory availability questions like whether a GPU model has stock, is available, is sold out, or has data-center inventory are not resource_info. resource_info is only for the user's own CompShare instances. Platform stock questions should emit stock_availability.",
 		"For billing-specific FAQ plus instance facts should emit billing_instance; unsupported account totals still use billing_account_unsupported.",
 		"finance policy/how-to questions like invoice issuance, refund rules, arrears handling, why am I still charged after shutdown, billing mode differences, or package expiry should emit knowledge_qa.",
 		"account realtime finance/status questions about THE USER'S OWN ACCOUNT data — balance, total bills, transaction records, charge records, payable bills, my invoice status (e.g. 我的发票开好了吗 / 我账单还剩多少), my refund progress, recharge amount on my account — emit billing_account_unsupported.",
@@ -218,6 +435,7 @@ func buildSystemPrompt() string {
 		"Diagnostic phrasings that pair a finance topic with non-finance symptoms (e.g. 下载速度突然变慢 是欠费了吗 还是网络高峰) emit knowledge_qa — the user is asking for root-cause checklist, not their own balance amount.",
 		"If a single question mixes finance FAQ with account realtime personal-status data, emit billing_account_unsupported for the whole turn.",
 		"instance-scoped billing questions should emit billing_instance, but do not promise account ledger amounts or transaction exports.",
+		"Personal billing complaints with vague cause — 充值 10 块就被扣完了 / 我账单怎么这么高 / 钱怎么扣这么快 / 我啥也没干怎么就扣费了 — emit billing_instance (NOT billing_account_unsupported, which is reserved for explicit balance / total-bill / transaction-record queries; and NOT knowledge_qa, because the user wants a personal diagnostic, not a process FAQ).",
 		"Billing navigation questions like where do I find / how do I view / how to check / from which page can I see my bills, invoices, expense, balance, charges, or recharge history should emit knowledge_qa - they ask for a UI navigation path, not actual finance numbers, and the docs cover the path.",
 		"Use unknown when the user asks unsupported general knowledge, operations, or anything outside the demo focus.",
 		"slots must contain target_refs, metrics, and time_window. Use [] for missing target_refs or metrics, and null for missing time_window.",
@@ -229,58 +447,6 @@ func buildSystemPrompt() string {
 		"For monitor_query, metrics may be [] when the metric words are unclear; the handler can render all returned current monitor values.",
 		"Set hard_block_hint=true only for unsupported account-level billing questions such as account balance, total account bill, or transaction flow.",
 		"Examples:",
-		"User question: show resource info for my-test-agent",
-		"{\"schema_version\":\"1.0\",\"intent\":\"resource_info\",\"slots\":{\"target_refs\":[{\"type\":\"name\",\"value\":\"my-test-agent\",\"source\":\"user_text\",\"source_span\":\"my-test-agent\"}],\"metrics\":[],\"time_window\":null},\"required_tools\":[\"DescribeCompShareInstance\"],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
-		"User question: which machines are running",
-		"{\"schema_version\":\"1.0\",\"intent\":\"resource_info\",\"slots\":{\"target_refs\":[{\"type\":\"filter\",\"value\":\"state=running\"}],\"metrics\":[],\"time_window\":null},\"required_tools\":[\"DescribeCompShareInstance\"],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
-		"User question: which 4090 machines are stopped",
-		"{\"schema_version\":\"1.0\",\"intent\":\"resource_info\",\"slots\":{\"target_refs\":[{\"type\":\"filter\",\"value\":\"state=stopped\"},{\"type\":\"filter\",\"value\":\"gpu_type=4090\"}],\"metrics\":[],\"time_window\":null},\"required_tools\":[\"DescribeCompShareInstance\"],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
-		"User question: \u6211\u8d26\u53f7\u4e0b\u6709\u54ea\u4e9b 4090 \u5b9e\u4f8b",
-		"{\"schema_version\":\"1.0\",\"intent\":\"resource_info\",\"slots\":{\"target_refs\":[{\"type\":\"filter\",\"value\":\"gpu_type=4090\"}],\"metrics\":[],\"time_window\":null},\"required_tools\":[\"DescribeCompShareInstance\"],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
-		"User question: \u4e0a\u6d77\u673a\u623f\u8fd8\u5269\u6ca1\u5269 H100 \u5e93\u5b58",
-		"{\"schema_version\":\"1.0\",\"intent\":\"unknown\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.7}",
-		"User question: 4090 \u8fd8\u6709\u6ca1\u6709\u8d27",
-		"{\"schema_version\":\"1.0\",\"intent\":\"unknown\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.7}",
-		"User question: 4090 \u591a\u5c11\u94b1",
-		"{\"schema_version\":\"1.0\",\"intent\":\"unknown\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.7}",
-		"User question: show current CPU and GPU monitor for my-test-agent",
-		"{\"schema_version\":\"1.0\",\"intent\":\"monitor_query\",\"slots\":{\"target_refs\":[{\"type\":\"name\",\"value\":\"my-test-agent\",\"source\":\"user_text\",\"source_span\":\"my-test-agent\"}],\"metrics\":[\"cpu\",\"gpu\"],\"time_window\":{\"type\":\"preset\",\"value\":\"now\"}},\"required_tools\":[\"GetCompShareInstanceMonitor\"],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
-		"User question: CPU is high, what should I do",
-		"{\"schema_version\":\"1.0\",\"intent\":\"monitor_query\",\"slots\":{\"target_refs\":[],\"metrics\":[\"cpu\"],\"time_window\":{\"type\":\"preset\",\"value\":\"now\"}},\"required_tools\":[\"GetCompShareInstanceMonitor\"],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
-		"User question: 为啥显卡内存满了 GPU 占用才 10%",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
-		"User question: account balance",
-		"{\"schema_version\":\"1.0\",\"intent\":\"billing_account_unsupported\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":true,\"confidence\":0.9}",
-		"User question: how do I issue an invoice",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
-		"User question: what is my invoice status",
-		"{\"schema_version\":\"1.0\",\"intent\":\"billing_account_unsupported\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":true,\"confidence\":0.9}",
-		"User question: what image types does the platform provide",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.82}",
-		"User question: \u8fdc\u7a0b\u684c\u9762\u6ca1\u58f0\u97f3\u8be5\u600e\u4e48\u5904\u7406",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
-		"User question: \u9519\u8bef\u7801 226601 \u662f\u4ec0\u4e48\u610f\u601d",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
-		"User question: Linux \u600e\u4e48\u88c5 NVIDIA \u9a71\u52a8",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
-		"User question: Coding Plan \u7684 BaseURL \u5e94\u8be5\u586b\u4ec0\u4e48",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
-		"User question: \u600e\u4e48\u5728 VSCode \u91cc\u8fde GPU \u5b9e\u4f8b",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
-		"User question: \u5728 CLINE \u91cc\u52a0 mcp-server-sqlite \u90a3\u6bb5 json \u8be5\u600e\u4e48\u5199",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
-		"User question: \u600e\u4e48\u67e5\u6211\u8fd9\u4e2a\u6708\u7684\u8d26\u5355",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
-		"User question: \u54ea\u91cc\u53ef\u4ee5\u770b\u53d1\u7968\u53d1\u8d77\u8bb0\u5f55",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
-		"User question: \u5305\u6708\u548c\u6309\u91cf\u54ea\u4e2a\u5212\u7b97",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
-		"User question: \u5b9e\u4f8b\u78c1\u76d8\u53ef\u4ee5\u6269\u5bb9\u5417",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
-		"User question: \u9000\u6b3e\u6d41\u7a0b\u662f\u600e\u6837\u7684",
-		"{\"schema_version\":\"1.0\",\"intent\":\"knowledge_qa\",\"slots\":{\"target_refs\":[],\"metrics\":[],\"time_window\":null},\"required_tools\":[],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
-		"User question: uhost-abc123 \u8fd9\u53f0\u542f\u52a8\u5931\u8d25\u4e86\u5e2e\u6211\u67e5",
-		"{\"schema_version\":\"1.0\",\"intent\":\"diagnosis\",\"slots\":{\"target_refs\":[{\"type\":\"uhost_id_user_input\",\"value\":\"uhost-abc123\",\"source\":\"user_text\",\"source_span\":\"uhost-abc123\"}],\"metrics\":[],\"time_window\":null},\"required_tools\":[\"DescribeCompShareInstance\"],\"retrieval\":{\"enabled\":false},\"hard_block_hint\":false,\"confidence\":0.85}",
 	}, "\n")
 	// Capability Registry v1 (PR A, 2026-05-18): append directives + one-shot
 	// examples that come from internal/intent/capabilities/*.md frontmatter
@@ -288,8 +454,10 @@ func buildSystemPrompt() string {
 	// directives + examples are the only place that "knows about" new
 	// capabilities, so adding a capability stays data-only.
 	directives, examples := CapabilityPromptFragments()
-	parts := make([]string, 0, 1+len(directives)+len(examples))
+	plannerExamples := renderPlannerPromptExampleGroups(plannerPromptExampleGroups())
+	parts := make([]string, 0, 1+len(plannerExamples)+len(directives)+len(examples))
 	parts = append(parts, base)
+	parts = append(parts, plannerExamples...)
 	parts = append(parts, directives...)
 	parts = append(parts, examples...)
 	return strings.Join(parts, "\n")

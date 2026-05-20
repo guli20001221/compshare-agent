@@ -257,12 +257,33 @@ type RetrievalTrace struct {
 	// attempted but failed and the retriever fell back to the cosine top-K.
 	// One of "reranker_timeout" | "reranker_error" | "reranker_empty".
 	RerankerFallbackReason string `json:"reranker_fallback_reason,omitempty"`
+	// CitedChunkIDs records the chunk_ids the LLM actually cited via [n]
+	// markers in its final reply, in citation order (1-indexed → hit_items
+	// position n-1). Populated only when the RAG path returned a cited
+	// answer. Out-of-range markers (e.g. [9] when only 3 hits) are dropped.
+	// Distinct from hit_items (full retrieved set with ranks/scores) — this
+	// is the post-strip audit trail enabling downstream MySQL ingest to
+	// reconstruct "this answer cited chunks X/Y/Z" without re-running the
+	// retrieval. Citation markers are stripped from the user-facing reply
+	// so the user only sees prose; this field is the only place [n] → chunk
+	// mapping survives.
+	CitedChunkIDs []string `json:"cited_chunk_ids,omitempty"`
 }
 
 type RetrievalHit struct {
 	ChunkID string  `json:"chunk_id"`
 	Score   float64 `json:"score"`
 	Kept    bool    `json:"kept"`
+	// RRF-only trace diagnostics. Populated only when the producing
+	// retrieval mode was qwen3_rrf; omitted from JSONL for all other
+	// modes via omitempty. Ranks are 1-indexed (0 = absent from that
+	// input list). FusionScore is the pre-rerank RRF score, preserved
+	// separately from Score because the reranker overwrites Score with
+	// its relevance signal.
+	BM25Rank    int     `json:"bm25_rank,omitempty"`
+	DenseRank   int     `json:"dense_rank,omitempty"`
+	FusionRank  int     `json:"fusion_rank,omitempty"`
+	FusionScore float64 `json:"fusion_score,omitempty"`
 }
 
 func RedactQueryDerivedFields(trace *RetrievalTrace) {

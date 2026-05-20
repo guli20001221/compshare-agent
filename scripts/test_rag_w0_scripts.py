@@ -3537,6 +3537,76 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertIsInstance(trace["hit_items"][0]["score"], float)
             self.assertTrue(trace["hit_items"][0]["kept"])
 
+    def test_qwen3_rrf_constants_match_go_side(self):
+        """Lock RRF tuning constants to the Go-side values. Drift here
+        would silently desynchronize Python eval ranking from production
+        retrieval — exactly the breakage memory
+        feedback_eval_must_reflect_runtime_no_coercion warns about.
+        """
+        self.assertEqual(evaluate_retrieval.RRF_K, 60)
+        self.assertEqual(evaluate_retrieval.RRF_BM25_POOL, 50)
+        self.assertEqual(evaluate_retrieval.RRF_DENSE_POOL, 50)
+        self.assertIn("qwen3_rrf", evaluate_retrieval._EMBED_MODES)
+        self.assertIn("qwen3_rrf", evaluate_retrieval._RERANK_MODES)
+        self.assertEqual(
+            evaluate_retrieval._default_embed_model_for_mode("qwen3_rrf"),
+            evaluate_retrieval.DEFAULT_QWEN3_EMBED_MODEL,
+        )
+
+    def test_qwen3_rrf_fusion_recovers_bm25_zero_hit(self):
+        """Direct unit test for _retrieve_qwen3_rrf: when BM25 returns
+        zero candidates, the dense leg must still surface chunks via
+        cosine. Mirrors the Go-side
+        TestRetrieveQwen3RRFBM25ZeroHitStillCallsDense.
+        """
+        from rag_w0.retrieval_scoring import BM25Index
+
+        chunks = [
+            self._retrieval_eval_chunk(
+                chunk_id="w0-rrf-semantic-match-a1b2c3d4",
+                product_area="billing",
+                title="topic A",
+                content="topic A content semantically related",
+                question_patterns=["topic A 怎么处理"],
+            ),
+        ]
+        index = BM25Index(chunks)
+        chunk_embeddings = {
+            "w0-rrf-semantic-match-a1b2c3d4": [0.9, 0.0, 0.0],
+        }
+
+        class _StubEmbedder:
+            calls = 0
+
+            def embed(self, question_id: str, question: str) -> list[float]:
+                _StubEmbedder.calls += 1
+                # Query vector aligned with the chunk vector → high cosine.
+                return [1.0, 0.0, 0.0]
+
+        class _StubReranker:
+            def rerank(self, *, question_id, question, docs, top_n, mode):
+                # Trivial reranker: preserve fused order.
+                return [(i, 1.0 - 0.01 * i) for i in range(len(docs))]
+
+        stub_embedder = _StubEmbedder()
+        stub_reranker = _StubReranker()
+
+        result = evaluate_retrieval._retrieve_qwen3_rrf(
+            question="完全无 关键词 匹配的 查询",  # BM25 misses this
+            question_id="q-zero-hit",
+            product_area="",
+            chunks=chunks,
+            index=index,
+            top_k=3,
+            threshold=evaluate_retrieval.DEFAULT_THRESHOLD if hasattr(evaluate_retrieval, 'DEFAULT_THRESHOLD') else 0.5,
+            chunk_embeddings=chunk_embeddings,
+            query_embedder=stub_embedder,
+            reranker=stub_reranker,
+        )
+        self.assertGreaterEqual(_StubEmbedder.calls, 1, "embedder MUST be called even when BM25 is empty")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][0]["chunk_id"], "w0-rrf-semantic-match-a1b2c3d4")
+
     def test_evaluate_answers_safety_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -4374,8 +4444,34 @@ class RagW0ScriptTests(unittest.TestCase):
 
         self.assertIn("标题和正文存在冲突", prompt)
         self.assertIn("以正文中的明确陈述为准", prompt)
-        self.assertIn("保留知识片段里的原始条件", prompt)
+        self.assertIn("保留资料里的原始条件", prompt)
         self.assertIn("不要把示例改写成通用规则", prompt)
+
+    def test_evaluate_answers_prompt_uses_shared_runtime_template(self):
+        system = evaluate_answers._shared_rag_system_prompt()
+        prompt = evaluate_answers._answer_prompt(
+            "test q",
+            [{"title": "t", "content": "c"}],
+        )
+
+        self.assertIn("【第三方工具接入补充】", system)
+        self.assertIn("【反编造锚点】", system)
+        self.assertIn(system, prompt)
+
+    def test_evaluate_answers_prompt_uses_shared_segment_order_and_retry_branch(self):
+        names = evaluate_answers._shared_rag_system_segment_names()
+        self.assertEqual(
+            names,
+            [
+                "base_system",
+                "coverage_rules",
+                "third_party_tool_addendum",
+                "fact_constraints",
+                "anti_fabrication_anchors",
+            ],
+        )
+        retry_question = evaluate_answers._citation_retry_question("test q")
+        self.assertIn(evaluate_answers._shared_rag_branch("retry_branch"), retry_question)
 
     def test_evaluate_answers_prompt_encodes_three_tier_disclaimer_strategy(self):
         """PR-RAG-Prompt-Disclaimer-Fix (2026-05-17): eval prompt must stay in
@@ -4415,11 +4511,11 @@ class RagW0ScriptTests(unittest.TestCase):
             [{"title": "t", "content": "c"}],
         )
         anchors = {
-            "code/import literal copy (0170 token corruption)": "字符级、按行原样复制知识片段",
-            "enum/status-code literal copy (0267 token corruption)": "枚举值、常量名、错误码、HTTP 状态码必须按知识片段字面拷贝",
-            "numeric literal copy (defensive against 0100)": "字面值复制(含小数点位数)",
+            "code/import literal copy (0170 token corruption)": "字符级、按行原样复制资料",
+            "enum/status-code literal copy (0267 token corruption)": "枚举值、常量名、错误码、HTTP 状态码必须按资料字面拷贝",
+            "numeric literal copy (defensive against 0100)": "字面值复制（含小数点位数）",
             "no evidence-external suggestions (0259 extrapolate)": "故障排除建议、操作步骤、联系方式或下一步行动",
-            "direction-word fidelity (0300 direction misread)": "方向性词汇时,必须按知识片段原始方向陈述",
+            "direction-word fidelity (0300 direction misread)": "方向性词汇时，必须按资料原始方向陈述",
             "field/list-title binding (0020 endpoint, 0028 deprecated list)": "字段或列表标题旁的具体值",
         }
         for purpose, phrase in anchors.items():
@@ -4442,14 +4538,14 @@ class RagW0ScriptTests(unittest.TestCase):
             [{"title": "t", "content": "c"}],
         )
         for phrase in [
-            "知识片段涉及问题主题",
+            "资料涉及问题主题",
             "即使不是逐字对应",
             "怎么配置",
             "怎么对接",
             "支持 X 吗",
-            "禁止:片段明显涉及问题主题时使用",
+            "禁止：资料明显涉及问题主题时使用",
             "拒答模板",
-            "禁止:遇到部分覆盖时直接走规则 3 全拒",
+            "禁止：遇到部分覆盖时直接走规则 3 全拒",
             "完全不涉及问题主题",
             "topic 不相干",
             "用户问 A",
@@ -4474,7 +4570,7 @@ class RagW0ScriptTests(unittest.TestCase):
             [{"title": "t", "content": "c"}],
         )
         for phrase in [
-            "所有来自片段的事实",
+            "所有来自资料的事实",
             "必须带引用编号",
             "三类非事实表达可不带引用",
             "过渡语",
@@ -4483,7 +4579,7 @@ class RagW0ScriptTests(unittest.TestCase):
             "无法对每个事实精确逐字引用",
             "优先按规则 2 部分答",
             "禁止用规则 3 全拒兜底",
-            "禁止:为了避免拒答而编造未引用的事实陈述",
+            "禁止：为了避免拒答而编造未引用的事实陈述",
         ]:
             self.assertIn(
                 phrase, prompt, msg=f"burden-reversed citation rule {phrase!r} missing"
@@ -4504,16 +4600,16 @@ class RagW0ScriptTests(unittest.TestCase):
         topic-relevant hits because the model insisted on byte-exact
         question/evidence alignment. Round 2 adds an explicit clause
         lifting the byte-exact requirement and forbidding the bail-out
-        on "片段不是为这个具体问题写的"."""
+        on "资料不是为这个具体问题写的"."""
         prompt = evaluate_answers._answer_prompt(
             "test q",
             [{"title": "t", "content": "c"}],
         )
         for phrase in [
-            "不要求片段逐字复现用户问题",
+            "不要求资料逐字复现用户问题",
             "同一主题下的规则 / 步骤 / 限制 / 入口",
-            "先回答片段能确认的部分",
-            "禁止以 \"片段不是为这个具体问题写的\" 为由拒答",
+            "先回答资料能确认的部分",
+            "禁止以 \"资料不是为这个具体问题写的\" 为由拒答",
         ]:
             self.assertIn(
                 phrase, prompt, msg=f"non-byte-exact clause {phrase!r} missing"
@@ -4534,11 +4630,11 @@ class RagW0ScriptTests(unittest.TestCase):
         for phrase in [
             "第三方工具接入场景",
             "Dify / RAGFlow / LangBot / AnythingLLM / MCP / ComfyUI / n8n",
-            "片段能确认的平台侧配置",
+            "资料能确认的平台侧配置",
             "OpenAI / Anthropic / Gemini 兼容协议",
             "API Key 获取入口",
             "模型列表 endpoint",
-            "片段未覆盖该工具内部的按钮路径或字段名称",
+            "资料未覆盖该工具内部的按钮路径或字段名称",
             "工具侧只能用条件句",
             "OpenAI-compatible / 自定义 OpenAI 接口配置",
             "禁止断言",

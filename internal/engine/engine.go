@@ -1148,14 +1148,21 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 	if rankingCandidate {
 		trace.RankingErrorCandidate = true
 	}
+	// Record the chunk_ids the LLM cited (via [n] -> hits[n-1] mapping) for
+	// audit, then strip the [n] markers from the user-facing reply. The
+	// extract MUST happen before the strip so the marker tokens still exist.
+	// Refusal replies and retry-no-cite coerce paths return strings without
+	// [n], so the extract returns nil and the strip is a no-op for them.
+	trace.CitedChunkIDs = extractCitedChunkIDs(reply, hitItems)
+	displayReply := stripCitationMarkers(reply)
 	e.emitRetrievalTrace(trace)
 	e.emitOutcomeTrace(outcome)
 	e.emitPlannerTrace(result, intent.CutoverStatusDispatchedRetrieval, dispatch.latency)
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
-		Content: clipKnowledgeHistoryContent(reply),
+		Content: clipKnowledgeHistoryContent(displayReply),
 	})
-	return reply, true
+	return displayReply, true
 }
 
 func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string, evidences []envelope.Evidence, weak bool) (string, observability.OutcomeTrace, string, bool, error) {
@@ -1237,13 +1244,22 @@ func projectEvidenceTraceHits(evidences []envelope.Evidence, items []knowledge.R
 	for index, evidence := range evidences {
 		view := evidence.ForTrace()
 		kept := true
+		var item knowledge.RetrievalHit
 		if index < len(items) {
-			kept = items[index].Kept
+			item = items[index]
+			kept = item.Kept
 		}
 		hits = append(hits, observability.RetrievalHit{
 			ChunkID: view.ChunkID,
 			Score:   view.RetrievalScore,
 			Kept:    kept,
+			// RRF trace fields. Zero values omitted via json omitempty
+			// for non-qwen3_rrf modes; populated when knowledge.Retriever
+			// ran the qwen3_rrf branch.
+			BM25Rank:    item.BM25Rank,
+			DenseRank:   item.DenseRank,
+			FusionRank:  item.FusionRank,
+			FusionScore: item.FusionScore,
 		})
 	}
 	return hits
@@ -1294,7 +1310,12 @@ func isRankingAmbiguous(items []knowledge.RetrievalHit, hybridMode string) bool 
 // fixture-pinned behavior.
 func weakEvidenceThresholdFor(hybridMode string) float64 {
 	switch hybridMode {
-	case "hybrid_cosine", "hybrid_rerank", "qwen3_full":
+	case "hybrid_cosine", "hybrid_rerank", "qwen3_full", "qwen3_rrf":
+		// qwen3_rrf's final Score is qwen3-reranker-8b relevance score
+		// (same reranker as qwen3_full), so same [0,1] semantic threshold
+		// applies. Without this case the default branch would pick the
+		// BM25 threshold (designed for 0..N BM25 raw scores) and
+		// false-refuse on perfectly cited cross-encoder evidence.
 		return weakEvidenceSemanticThreshold
 	default:
 		// "bm25_only", "bm25_fallback", "", or any unrecognized value.
@@ -1306,7 +1327,7 @@ func weakEvidenceThresholdFor(hybridMode string) float64 {
 // the top two hits are considered tied. Same default-to-BM25 rule as above.
 func rankingAmbiguousSpreadFor(hybridMode string) float64 {
 	switch hybridMode {
-	case "hybrid_cosine", "hybrid_rerank", "qwen3_full":
+	case "hybrid_cosine", "hybrid_rerank", "qwen3_full", "qwen3_rrf":
 		return rankingAmbiguousSemanticSpread
 	default:
 		return rankingAmbiguousBM25Spread
@@ -2094,6 +2115,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
+	uid, _ := args["UHostId"].(string)
 
 	// Vague-failure guard — DiagnoseInitFailure only.
 	// Gate 1 (symptom specificity): the user message must contain an
@@ -2101,7 +2123,8 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	// "挂了" is blocked here, even if the LLM provided a target instance.
 	// This is a hard safety net behind the prompt-level vague_failure
 	// routing class — deliberately does NOT redirect to another Diagnose*.
-	if action == "DiagnoseInitFailure" && !containsInitFailureSignal(e.lastUserMsg) {
+	if action == "DiagnoseInitFailure" && !containsInitFailureSignal(e.lastUserMsg) &&
+		!(uid != "" && e.previousAssistantAskedInitFailureTarget()) {
 		msg := "请问是哪台实例出了问题？能描述一下具体现象吗（例如：SSH 断了、GPU 报错、服务崩了、初始化卡住等）？"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return finalReplyPrefix + msg
@@ -2118,7 +2141,6 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	// upstream; if it doesn't, this gate correctly falls through to
 	// clarification.
 	if action == "DiagnoseInitFailure" {
-		uid, _ := args["UHostId"].(string)
 		if uid == "" && !containsScanAllSignal(e.lastUserMsg) {
 			msg := "请问是哪台实例的初始化失败了？"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
@@ -2615,6 +2637,32 @@ func normalizeMsg(s string) string {
 	}
 	out := b.String()
 	return strings.TrimRight(out, " ")
+}
+
+func (e *Engine) previousAssistantAskedInitFailureTarget() bool {
+	if e == nil {
+		return false
+	}
+	for i := len(e.messages) - 1; i >= 0; i-- {
+		msg := e.messages[i]
+		if msg.Role != openai.ChatMessageRoleAssistant {
+			continue
+		}
+		if len(msg.ToolCalls) > 0 {
+			continue
+		}
+		n := normalizeMsg(msg.Content)
+		if n == "" {
+			continue
+		}
+		if strings.Contains(n, "具体现象") ||
+			strings.Contains(n, "例如") {
+			return false
+		}
+		return strings.Contains(n, "初始化") &&
+			(strings.Contains(n, "哪台") || strings.Contains(n, "哪一台") || strings.Contains(n, "具体"))
+	}
+	return false
 }
 
 // initFailureSignalKeywords is a narrow word list that marks a user message

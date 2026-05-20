@@ -3,6 +3,11 @@ name: custom_image_list
 intent_label: custom_image_list
 required_tool: DescribeCompShareCustomImages
 required_citation: false
+planner_directives:
+  - 'User-owned custom image list questions like "查询自制镜像" should emit custom_image_list.'
+planner_examples:
+  - question: "查询自制镜像"
+    confidence: 0.85
 ---
 
 # custom_image_list
