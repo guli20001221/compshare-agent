@@ -3213,12 +3213,159 @@ func diagnosisPlanForUHost(uhostID string) intent.Plan {
 	}
 }
 
+func diagnosisPlanWithoutTarget() intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentDiagnosis,
+		Slots:         intent.Slots{},
+		RequiredTools: []string{"DescribeCompShareInstance"},
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    0.9,
+	}
+}
+
+func vagueFailurePlan() intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentVagueFailure,
+		Slots:         intent.Slots{},
+		RequiredTools: []string{},
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    0.85,
+	}
+}
+
 func unknownEngineTestPlan() intent.Plan {
 	return intent.Plan{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentUnknown,
 		Retrieval:     intent.Retrieval{Enabled: false},
 		Confidence:    0,
+	}
+}
+
+func TestPlannerDiagnosisMissingTargetWithMultipleInstancesAsksWhichInstance(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var plannerTraces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		plannerTraces = append(plannerTraces, trace)
+	})
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "train-a", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
+		},
+	}, "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentDiagnosis},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "\u6211\u7684\u673a\u5668 SSH \u8fde\u4e0d\u4e0a\u4e86", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "\u54ea\u53f0\u5b9e\u4f8b")
+	assert.Empty(t, mock.calls, "diagnosis clarification should not enter ReAct")
+	require.Len(t, planner.calls, 1)
+	require.Len(t, plannerTraces, 1)
+	assert.Equal(t, string(intent.CutoverStatusFallbackUnresolvedTarget), plannerTraces[0].CutoverStatus)
+}
+
+func TestPlannerVagueFailureAsksForInstanceAndSymptom(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: vagueFailurePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentVagueFailure},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "\u6628\u665a\u90a3\u53f0\u8dd1\u5d29\u4e86\u5e2e\u6211\u8bca\u65ad", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "\u54ea\u53f0\u5b9e\u4f8b")
+	assert.Contains(t, reply, "\u5177\u4f53")
+	assert.Empty(t, mock.calls, "vague failure clarification should not enter ReAct")
+	require.Len(t, planner.calls, 1)
+}
+
+func TestPlannerDiagnosisMissingTargetWithSingleInstanceFallsBackToReAct(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(1),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "train-a", "State": "Running"},
+		},
+	}, "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentDiagnosis},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "\u6211\u7684\u673a\u5668 SSH \u8fde\u4e0d\u4e0a\u4e86", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "react path", reply)
+	require.Len(t, mock.calls, 1)
+	require.Len(t, planner.calls, 1)
+}
+
+func TestPlannerDiagnosisClarificationRequiresEnabledIntent(t *testing.T) {
+	cases := []struct {
+		name string
+		plan intent.Plan
+		msg  string
+	}{
+		{
+			name: "diagnosis disabled",
+			plan: diagnosisPlanWithoutTarget(),
+			msg:  "\u6211\u7684\u673a\u5668 SSH \u8fde\u4e0d\u4e0a\u4e86",
+		},
+		{
+			name: "vague failure disabled",
+			plan: vagueFailurePlan(),
+			msg:  "\u6628\u665a\u90a3\u53f0\u8dd1\u5d29\u4e86\u5e2e\u6211\u8bca\u65ad",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: tc.plan}}}
+			mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
+			eng := NewWithDeps(mock, &mockExecutor{}, nil)
+			eng.InitWithContext("test user")
+			require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+				"TotalCount": float64(2),
+				"UHostSet": []any{
+					map[string]any{"UHostId": "uhost-a", "Name": "train-a", "State": "Running"},
+					map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
+				},
+			}, "test"))
+			var plannerTraces []observability.PlannerTrace
+			eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+				plannerTraces = append(plannerTraces, trace)
+			})
+			eng.SetIntentPlanner(planner, IntentPlannerOptions{
+				EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+				Model:          "deepseek-v4-flash",
+			})
+
+			reply, err := eng.Chat(context.Background(), tc.msg, noopStep)
+
+			require.NoError(t, err)
+			assert.Equal(t, "react path", reply)
+			require.Len(t, mock.calls, 1)
+			require.Len(t, planner.calls, 1)
+			require.Len(t, plannerTraces, 1)
+			assert.Equal(t, string(intent.CutoverStatusFallbackIneligible), plannerTraces[0].CutoverStatus)
+		})
 	}
 }
 
@@ -4013,6 +4160,92 @@ func TestRAGCitedContractInvariantSkipsWhenRetrieverDisabled(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "react fallback without RAG", reply, "RAG-disabled deployments must not be affected")
 	assert.Empty(t, hardBlocks)
+}
+
+func TestRAGCitedContractInvariantSkipsUnknownPlannerFallback(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: unknownEngineTestPlan()}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Empty:     true,
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+		hardBlocks = append(hardBlocks, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "4090 多少钱", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "react fallback", reply)
+	assert.Empty(t, retriever.calls)
+	assert.Empty(t, hardBlocks, "non-knowledge planner fallback must not trigger the cited contract gate")
+}
+
+func TestRAGCitedContractInvariantSkipsDiagnosisPlannerFallback(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanForUHost("uhost-abc123")}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Empty:     true,
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+		hardBlocks = append(hardBlocks, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "uhost-abc123 启动失败", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "react fallback", reply)
+	assert.Empty(t, retriever.calls)
+	assert.Empty(t, hardBlocks, "diagnosis planner fallback must not trigger the cited contract gate")
+}
+
+func TestRAGCitedContractInvariantResetsKnowledgeFallbackFlagEachTurn(t *testing.T) {
+	knowledgePlan := knowledgeQAPlan(false)
+	knowledgePlan.HardBlockHint = true
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{
+		{Plan: knowledgePlan},
+		{Plan: unknownEngineTestPlan()},
+	}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Empty:     true,
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "first fallback"},
+		{Content: "second fallback"},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+		hardBlocks = append(hardBlocks, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	firstReply, err := eng.Chat(context.Background(), "billing FAQ", noopStep)
+	require.NoError(t, err)
+	assert.Equal(t, ragNoEvidenceReply, firstReply)
+	require.Len(t, hardBlocks, 1)
+
+	secondReply, err := eng.Chat(context.Background(), "4090 多少钱", noopStep)
+	require.NoError(t, err)
+	assert.Equal(t, "second fallback", secondReply)
+	require.Len(t, hardBlocks, 1, "knowledge-path citation flag must be cleared at the start of each turn")
 }
 
 func TestStage2BRetrievalHardBlockPrecedesPlanner(t *testing.T) {

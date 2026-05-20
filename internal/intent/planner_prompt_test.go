@@ -55,6 +55,8 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	// a capability + 2 added 2026-05-20 for personal billing complaint
 	// (billing_instance) stable routing — see Q04 N=5 jitter check) +
 	// N capability one-shots (PR A Registry v1) appended by CapabilityPromptFragments.
+	// PR #121 adds the "Direct runtime/list/user price questions" directive
+	// but does NOT add a prompt example, so the count stays 27.
 	// New capabilities here should bump this number; the regression value is
 	// `27 + len(capabilityRegistry)`.
 	if got, want := len(examples), 27+len(capabilityRegistry); got != want {
@@ -234,6 +236,22 @@ func TestBuildSystemPromptDistinguishesFinanceFAQAndRealtimeAccountData(t *testi
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("system prompt missing finance routing rule %q:\n%s", fragment, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptKeepsRuntimePriceQueriesOutOfKnowledgeQA(t *testing.T) {
+	prompt := buildSystemPrompt()
+	required := []string{
+		"Direct runtime/list/user price questions",
+		"should emit unknown with no required_tools",
+		"normal tool loop can choose price tools",
+		"4090 \u591a\u5c11\u94b1",
+		"H20 \u6309\u6708\u5305\u591a\u5c11\u94b1",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt missing price boundary fragment %q:\n%s", fragment, prompt)
 		}
 	}
 }

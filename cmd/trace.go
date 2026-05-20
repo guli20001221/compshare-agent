@@ -120,6 +120,10 @@ func cutoverIntentLabels(cutoverIntents []intent.Intent) []string {
 			labels = append(labels, "custom_image")
 		case intent.IntentCommunityImageList:
 			labels = append(labels, "community_image")
+		case intent.IntentDiagnosis:
+			labels = append(labels, "diagnosis")
+		case intent.IntentVagueFailure:
+			labels = append(labels, "vague_failure")
 		default:
 			labels = append(labels, string(enabled))
 		}
@@ -425,6 +429,10 @@ func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []s
 			enabled = intent.IntentCustomImageList
 		case "community_image":
 			enabled = intent.IntentCommunityImageList
+		case "diagnosis":
+			enabled = intent.IntentDiagnosis
+		case "vague_failure":
+			enabled = intent.IntentVagueFailure
 		default:
 			unknown = append(unknown, value)
 			continue

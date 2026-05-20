@@ -93,17 +93,18 @@ func TestIntentPlannerShadowModeFromEnv(t *testing.T) {
 func TestIntentPlannerCutoverIntentsFromEnv(t *testing.T) {
 	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
 		if key == "USE_INTENT_PLANNER_FOR" {
-			return "resource, monitor, billing, ,RESOURCE"
+			return "resource, monitor, diagnosis, vague_failure, billing, ,RESOURCE"
 		}
 		return ""
 	})
 	if len(unknown) != 1 || unknown[0] != "billing" {
 		t.Fatalf("unknown values = %#v, want billing", unknown)
 	}
-	if len(intents) != 2 {
-		t.Fatalf("enabled intents = %#v, want resource and monitor", intents)
+	if len(intents) != 4 {
+		t.Fatalf("enabled intents = %#v, want resource, monitor, diagnosis, vague_failure", intents)
 	}
-	if intents[0] != "resource_info" || intents[1] != "monitor_query" {
+	if intents[0] != "resource_info" || intents[1] != "monitor_query" ||
+		intents[2] != "diagnosis" || intents[3] != "vague_failure" {
 		t.Fatalf("enabled intents = %#v", intents)
 	}
 }

@@ -61,6 +61,12 @@ func TestOfflineFixturesEval(t *testing.T) {
 	assert.GreaterOrEqual(t, unknownAccuracy, 0.90)
 }
 
+func TestExtractUserMessageUsesPlannerPromptLabel(t *testing.T) {
+	prompt := "User question: SSH cannot connect\nPrior turns: assistant: prior answer\n"
+
+	assert.Equal(t, "SSH cannot connect", extractUserMessage(prompt))
+}
+
 type fixture struct {
 	ID               string                    `json:"id"`
 	UserMsg          string                    `json:"user_msg"`
@@ -186,6 +192,10 @@ func classifyFixtureMessage(msg string) intp.Plan {
 			Retrieval:     intp.Retrieval{Enabled: false},
 			Confidence:    0.86,
 		}
+	case isVagueFailureText(normalized):
+		return vagueFailureFixturePlan()
+	case isDiagnosisText(normalized):
+		return diagnosisFixturePlan()
 	case isMonitorText(normalized):
 		return intp.Plan{
 			SchemaVersion: intp.SchemaVersion,
@@ -244,17 +254,41 @@ func unknownFixturePlan() intp.Plan {
 	}
 }
 
+func diagnosisFixturePlan() intp.Plan {
+	return intp.Plan{
+		SchemaVersion: intp.SchemaVersion,
+		Intent:        intp.IntentDiagnosis,
+		Slots:         intp.Slots{},
+		RequiredTools: []string{"DescribeCompShareInstance"},
+		Retrieval:     intp.Retrieval{Enabled: false},
+		Confidence:    0.84,
+	}
+}
+
+func vagueFailureFixturePlan() intp.Plan {
+	return intp.Plan{
+		SchemaVersion: intp.SchemaVersion,
+		Intent:        intp.IntentVagueFailure,
+		Slots:         intp.Slots{},
+		RequiredTools: []string{},
+		Retrieval:     intp.Retrieval{Enabled: false},
+		Confidence:    0.78,
+	}
+}
+
 func extractUserMessage(prompt string) string {
-	const marker = "用户问题："
-	idx := strings.Index(prompt, marker)
-	if idx < 0 {
-		return prompt
+	for _, marker := range []string{"User question:", "用户问题："} {
+		idx := strings.Index(prompt, marker)
+		if idx < 0 {
+			continue
+		}
+		msg := prompt[idx+len(marker):]
+		if next := strings.Index(msg, "\n"); next >= 0 {
+			msg = msg[:next]
+		}
+		return strings.TrimSpace(msg)
 	}
-	msg := prompt[idx+len(marker):]
-	if next := strings.Index(msg, "\n"); next >= 0 {
-		msg = msg[:next]
-	}
-	return msg
+	return prompt
 }
 
 func isResourceFilterText(s string) bool {
@@ -300,6 +334,17 @@ func isAccountBillingUnsupportedText(s string) bool {
 		strings.Contains(s, "本月总账单")
 }
 
+func isDiagnosisText(s string) bool {
+	return strings.Contains(s, "ssh") ||
+		strings.Contains(s, "连不上")
+}
+
+func isVagueFailureText(s string) bool {
+	return strings.Contains(s, "跑崩") ||
+		strings.Contains(s, "崩了") ||
+		strings.Contains(s, "挂了")
+}
+
 func isMixedOrNonTargetText(s string) bool {
 	hasMonitor := isMonitorText(s)
 	hasBilling := isBillingInstanceText(s) ||
@@ -316,7 +361,6 @@ func isMixedOrNonTargetText(s string) bool {
 		strings.Contains(s, "续费") ||
 		strings.Contains(s, "自动续费")
 	return hasExpiry ||
-		hasDiagnosis ||
 		hasOperation ||
 		(hasMonitor && hasBilling) ||
 		(hasDiagnosis && hasBilling)
@@ -326,7 +370,9 @@ func isTargetIntent(intent intp.Intent) bool {
 	return intent == intp.IntentMonitorQuery ||
 		intent == intp.IntentResourceInfo ||
 		intent == intp.IntentBillingInstance ||
-		intent == intp.IntentBillingAccountUnsupported
+		intent == intp.IntentBillingAccountUnsupported ||
+		intent == intp.IntentDiagnosis ||
+		intent == intp.IntentVagueFailure
 }
 
 func normalizeTools(tools []string) []string {
