@@ -460,6 +460,60 @@ func TestRenderGPUSpecs_FilterToMentionedModel(t *testing.T) {
 	}
 }
 
+func TestRenderGPUSpecs_IncludesMemoryVariantForFamilyQuestion(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "GraphicsMemory": map[string]any{"Value": 24}, "Status": "Normal"},
+			map[string]any{"Name": "4090_48G", "GraphicsMemory": map[string]any{"Value": 48}, "Status": "Normal"},
+			map[string]any{"Name": "A100", "GraphicsMemory": map[string]any{"Value": 80}, "Status": "Normal"},
+		},
+	}
+
+	reply := renderGPUSpecsReply(raw, "4090有哪些规格")
+
+	if !strings.Contains(reply, "机型=4090,") {
+		t.Errorf("family question should include base 4090; got: %s", reply)
+	}
+	if !strings.Contains(reply, "机型=4090_48G") {
+		t.Errorf("family question should include 4090_48G variant; got: %s", reply)
+	}
+	if strings.Contains(reply, "机型=A100") {
+		t.Errorf("family question should not include unrelated models; got: %s", reply)
+	}
+}
+
+func TestRenderGPUSpecs_MemoryHintMatchesMemoryVariant(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "GraphicsMemory": map[string]any{"Value": 24}, "Status": "Normal"},
+			map[string]any{"Name": "4090_48G", "GraphicsMemory": map[string]any{"Value": 48}, "Status": "Normal"},
+		},
+	}
+
+	reply := renderGPUSpecsReply(raw, "是否有48G的4090")
+
+	if strings.Contains(reply, "机型=4090,") {
+		t.Errorf("48G question should not answer with plain 4090; got: %s", reply)
+	}
+	if !strings.Contains(reply, "机型=4090_48G") {
+		t.Errorf("48G question should include 4090_48G; got: %s", reply)
+	}
+}
+
+func TestRenderGPUSpecs_MemoryHintWithoutMatchDoesNotFallBackToBase(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "GraphicsMemory": map[string]any{"Value": 24}, "Status": "Normal"},
+		},
+	}
+
+	reply := renderGPUSpecsReply(raw, "有没有128G的4090")
+
+	if !strings.Contains(reply, "未在当前可售机型里找到") {
+		t.Errorf("unavailable memory variant should be reported as not found; got: %s", reply)
+	}
+}
+
 func TestRenderGPUSpecs_KnownUnavailableFallback(t *testing.T) {
 	raw := map[string]any{
 		"AvailableInstanceTypes": []any{
@@ -504,6 +558,24 @@ func TestRenderStock_FilterAndDedupe(t *testing.T) {
 	}
 	if c := strings.Count(reply, "机型=4090"); c != 1 {
 		t.Errorf("stock filter should dedupe 4090 to 1 line, got %d in: %s", c, reply)
+	}
+}
+
+func TestRenderStock_MemoryHintMatchesMemoryVariant(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "GraphicsMemory": map[string]any{"Value": 24}, "Status": "Normal"},
+			map[string]any{"Name": "4090_48G", "GraphicsMemory": map[string]any{"Value": 48}, "Status": "Normal"},
+		},
+	}
+
+	reply := renderStockReply(raw, "是否有48G的4090")
+
+	if strings.Contains(reply, "机型=4090,") {
+		t.Errorf("48G stock question should not answer with plain 4090; got: %s", reply)
+	}
+	if !strings.Contains(reply, "机型=4090_48G") {
+		t.Errorf("48G stock question should include 4090_48G; got: %s", reply)
 	}
 }
 
