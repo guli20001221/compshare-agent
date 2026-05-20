@@ -447,7 +447,7 @@ func TestCLITraceRecorderWritesPlannerTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",1, "planner trace", start)
+	recorder := newCLITraceRecorder(writer, "", 1, "planner trace", start)
 	recorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
 		return observability.PlannerTrace{
 			Enabled:     true,
@@ -496,7 +496,7 @@ func TestCLITraceRecorderWritesRuntimeTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",1, "runtime", start)
+	recorder := newCLITraceRecorder(writer, "", 1, "runtime", start)
 	recorder.SetRuntimeTrace(observability.RuntimeTrace{
 		PlannerMode:    "shadow",
 		CutoverIntents: []string{"resource", "monitor"},
@@ -520,7 +520,7 @@ func TestCLITraceRecorderAcceptsEnginePlannerTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",1, "cutover trace", start)
+	recorder := newCLITraceRecorder(writer, "", 1, "cutover trace", start)
 	recorder.SetPlannerTrace(observability.PlannerTrace{
 		Enabled:       true,
 		Model:         "deepseek-v4-flash",
@@ -550,7 +550,7 @@ func TestCLITraceRecorderAcceptsRetrievalTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",1, "knowledge trace", start)
+	recorder := newCLITraceRecorder(writer, "", 1, "knowledge trace", start)
 	recorder.SetRetrievalTrace(observability.RetrievalTrace{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -576,7 +576,7 @@ func TestCLITraceRecorderAcceptsOutcomeTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",1, "knowledge trace", start)
+	recorder := newCLITraceRecorder(writer, "", 1, "knowledge trace", start)
 	recorder.SetOutcomeTrace(observability.OutcomeTrace{
 		AttemptedHallucinatedCount: 1,
 		EscapedHallucinatedCount:   1,
@@ -601,7 +601,7 @@ func TestCLITraceRecorderWritesRendererInputToolArgHashes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",1, "monitor", start)
+	recorder := newCLITraceRecorder(writer, "", 1, "monitor", start)
 	recorder.OnStep(engine.StepEvent{
 		Type:   engine.StepToolCall,
 		Action: "GetCompShareInstanceMonitor",
@@ -635,7 +635,7 @@ func TestCLITraceRecorderWritesRendererTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",1, "resource", start)
+	recorder := newCLITraceRecorder(writer, "", 1, "resource", start)
 	recorder.SetRendererTrace(observability.RendererTrace{
 		Enabled:             true,
 		Status:              "fallback",
@@ -671,7 +671,7 @@ func TestCLITraceRecorderWritesEngineHardBlockWithoutToolStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",2, "hard block", start)
+	recorder := newCLITraceRecorder(writer, "", 2, "hard block", start)
 	recorder.SetEngineHardBlock(observability.EngineHardBlockTrace{
 		Hit:      true,
 		Category: "account_billing_unsupported",
@@ -699,7 +699,7 @@ func TestCLITraceRecorderPlannerInvalidTraceStillWritesLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",3, "planner failure", start)
+	recorder := newCLITraceRecorder(writer, "", 3, "planner failure", start)
 	recorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
 		return observability.PlannerTrace{
 			Enabled:     true,
@@ -730,7 +730,7 @@ func TestCLITraceRecorderWritesOneRedactedTraceLine(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	userMsg := "查监控 Bearer " + strings.Repeat("a", 25)
-	recorder := newCLITraceRecorder(writer, "",2, userMsg, start)
+	recorder := newCLITraceRecorder(writer, "", 2, userMsg, start)
 
 	recorder.OnStep(engine.StepEvent{
 		Type:   engine.StepToolCall,
@@ -812,7 +812,7 @@ func TestCLITraceRecorderWritesActualTotalTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",1, "tokens", start)
+	recorder := newCLITraceRecorder(writer, "", 1, "tokens", start)
 	recorder.AddTokenUsage(llm.TokenUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10})
 	recorder.SetPlannerTrace(observability.PlannerTrace{
 		Enabled:      true,
@@ -837,7 +837,7 @@ func TestCLITraceRecorderWritesToolTargetAndWindowFields(t *testing.T) {
 		Now: func() time.Time { return start },
 	})
 	require.NoError(t, err)
-	recorder := newCLITraceRecorder(writer, "",2, "monitor success", start)
+	recorder := newCLITraceRecorder(writer, "", 2, "monitor success", start)
 	recorder.OnStep(engine.StepEvent{
 		Type:   engine.StepToolCall,
 		Action: "GetCompShareInstanceMonitor",
@@ -906,7 +906,7 @@ func TestCLITraceRecorderWritesBlockedCapFields(t *testing.T) {
 	for i := range ids {
 		ids[i] = "uhost-redacted"
 	}
-	recorder := newCLITraceRecorder(writer, "",3, "monitor cap", start)
+	recorder := newCLITraceRecorder(writer, "", 3, "monitor cap", start)
 	recorder.OnStep(engine.StepEvent{
 		Type:      engine.StepBlocked,
 		Action:    "GetCompShareInstanceMonitor",
@@ -938,7 +938,7 @@ func TestCLITraceRecorderPairsRepeatedActionFIFO(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",3, "repeat action", start)
+	recorder := newCLITraceRecorder(writer, "", 3, "repeat action", start)
 
 	for i := 0; i < 2; i++ {
 		recorder.OnStep(engine.StepEvent{
@@ -992,7 +992,7 @@ func TestCLITraceRecorderWritesCurrentRegistryStateFromSupplier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",5, "registry state", start)
+	recorder := newCLITraceRecorder(writer, "", 5, "registry state", start)
 	state := observability.EntityRegistryTrace{
 		SnapshotID: "sha256:old",
 		AgeSeconds: 1,
@@ -1034,7 +1034,7 @@ func TestCLITraceRecorderWritesFailedRegistryStateWithoutRawError(t *testing.T) 
 		return nil, errors.New("network down " + rawBearer)
 	}), entity.RefreshReasonInit)
 
-	recorder := newCLITraceRecorder(writer, "",6, "registry failed", start)
+	recorder := newCLITraceRecorder(writer, "", 6, "registry failed", start)
 	recorder.SetRegistryTraceSupplier(func(now time.Time) observability.EntityRegistryTrace {
 		state := reg.TraceState(now)
 		return observability.EntityRegistryTrace{
@@ -1077,7 +1077,7 @@ func TestCLITraceRecorderWritesRateLimitDenial(t *testing.T) {
 	if !ok {
 		t.Fatal("SubjectKeyFromPublicKey returned ok=false")
 	}
-	recorder := newCLITraceRecorder(writer, "",7, "rate limited", start)
+	recorder := newCLITraceRecorder(writer, "", 7, "rate limited", start)
 	recorder.SetRateLimitDecision(governance.Decision{
 		Allowed:     false,
 		Class:       governance.ClassLLM,
@@ -1119,7 +1119,7 @@ func TestCLITraceRecorderWritesInitRateLimitDenial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",0, "init_context", start)
+	recorder := newCLITraceRecorder(writer, "", 0, "init_context", start)
 	recorder.SetRuntimeTrace(observability.RuntimeTrace{PlannerMode: "shadow"})
 	recorder.SetRateLimitDecision(governance.Decision{
 		Allowed:     false,
@@ -1152,7 +1152,7 @@ func TestCLITraceRecorderRateLimitDecisionAggregation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",8, "multi decision", start)
+	recorder := newCLITraceRecorder(writer, "", 8, "multi decision", start)
 
 	recorder.SetRateLimitDecision(governance.Decision{
 		Allowed:     true,
@@ -1195,7 +1195,7 @@ func TestCLITraceRecorderRateLimitLastAllowWinsWhenNoDenial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",9, "multi allow", start)
+	recorder := newCLITraceRecorder(writer, "", 9, "multi allow", start)
 	recorder.SetRateLimitDecision(governance.Decision{
 		Allowed:     true,
 		Class:       governance.ClassLLM,
@@ -1243,7 +1243,7 @@ func TestCLITraceRecorderTraceWriteFailureDoesNotChangeRateLimitDecision(t *test
 		RetryAfter:  200 * time.Millisecond,
 		Err:         governance.ErrRateLimited,
 	}
-	recorder := newCLITraceRecorder(writer, "",10, "write failure", start)
+	recorder := newCLITraceRecorder(writer, "", 10, "write failure", start)
 	recorder.SetRateLimitDecision(decision)
 
 	if err := recorder.Finish(nil, start); err == nil {
@@ -1266,7 +1266,7 @@ func TestCLITraceRecorderPreservesNonMainSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	recorder := newCLITraceRecorder(writer, "",4, "workflow and diagnosis", start)
+	recorder := newCLITraceRecorder(writer, "", 4, "workflow and diagnosis", start)
 
 	recorder.OnStep(engine.StepEvent{
 		Type:   engine.StepToolCall,
