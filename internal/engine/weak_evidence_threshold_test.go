@@ -52,6 +52,16 @@ func TestIsWeakEvidenceByHybridMode(t *testing.T) {
 		{"qwen3_full at boundary 0.5", "qwen3_full", 0.5, false},
 		{"qwen3_full just below 0.5", "qwen3_full", 0.49, true},
 
+		// qwen3_rrf: same qwen3-reranker-8b cross-encoder produces final
+		// Score (the RRF fusion happens BEFORE the reranker, which then
+		// overwrites Score with relevance_score). Same 0..1 threshold as
+		// qwen3_full. Without this case isWeakEvidence would default to
+		// the BM25 threshold (54.9) and false-refuse on a 0..1 cross-
+		// encoder score — the e03 regression caught by CLI judge.
+		{"qwen3_rrf strong 0.93", "qwen3_rrf", 0.93, false},
+		{"qwen3_rrf at boundary 0.5", "qwen3_rrf", 0.5, false},
+		{"qwen3_rrf just below 0.5", "qwen3_rrf", 0.49, true},
+
 		// Empty / unknown HybridMode defaults to BM25 — protects existing
 		// engine_test.go mocks that don't set HybridMode explicitly.
 		{"empty mode defaults to BM25 80", "", 80.0, false},
@@ -105,6 +115,11 @@ func TestIsRankingAmbiguousByHybridMode(t *testing.T) {
 		{"qwen3_full just above 0.05 spread", "qwen3_full", 0.93, 0.87, false},
 		{"qwen3_full just below 0.05 spread", "qwen3_full", 0.93, 0.89, true},
 		{"hybrid_cosine tied", "hybrid_cosine", 0.93, 0.93, true},
+
+		// qwen3_rrf uses the same cross-encoder Score scale as qwen3_full
+		// (reranker overwrites the fused score), so same spread threshold.
+		{"qwen3_rrf wide spread 0.93 vs 0.50", "qwen3_rrf", 0.93, 0.50, false},
+		{"qwen3_rrf just below 0.05 spread", "qwen3_rrf", 0.93, 0.89, true},
 
 		// Empty defaults to BM25 spread (consistent with weak threshold default).
 		{"empty mode defaults to BM25 spread", "", 80.0, 70.0, false},
