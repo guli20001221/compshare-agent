@@ -22,6 +22,7 @@ type Server struct {
 	addr           string
 	deps           *engine.SharedDeps
 	traceSink      observability.Writer
+	msgRecorder    *MessageRecorder
 	model          string
 	tenantSource   TenantSource
 	allowedOrigins []string
@@ -37,11 +38,13 @@ type Server struct {
 
 // Options configures Server. Addr / Deps are required; TraceSink is the
 // optional MySQL/file/multi writer the per-session Engine pipes traces
-// into; AllowedOrigins MUST be set in production to defeat WS-CSRF.
+// into; MsgRecorder is the optional agent_messages writer (A5); AllowedOrigins
+// MUST be set in production to defeat WS-CSRF.
 type Options struct {
 	Addr           string
 	Deps           *engine.SharedDeps
 	TraceSink      observability.Writer
+	MsgRecorder    *MessageRecorder
 	Model          string
 	TenantSource   TenantSource
 	AllowedOrigins []string
@@ -64,6 +67,7 @@ func New(opts Options) (*Server, error) {
 		addr:           opts.Addr,
 		deps:           opts.Deps,
 		traceSink:      opts.TraceSink,
+		msgRecorder:    opts.MsgRecorder,
 		model:          opts.Model,
 		tenantSource:   src,
 		allowedOrigins: opts.AllowedOrigins,

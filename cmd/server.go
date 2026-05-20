@@ -56,9 +56,29 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("trace sink: %w", err)
 	}
+
+	// Optional agent_messages recorder (A5). Reuses MYSQL_DSN; nil when
+	// MYSQL_DSN is unset or trace_sink is file-only (chat messages still
+	// flow through the WS to the client; persistence is opt-in via DSN).
+	var msgRecorder *server.MessageRecorder
+	if dsn := os.Getenv("MYSQL_DSN"); dsn != "" {
+		msgRecorder, err = server.NewMessageRecorder(dsn, server.MessageRecorderOptions{})
+		if err != nil {
+			if traceSink != nil {
+				_ = traceSink.Close(context.Background())
+			}
+			if mysqlDB != nil {
+				_ = mysqlDB.Close()
+			}
+			return fmt.Errorf("message recorder: %w", err)
+		}
+	}
 	defer func() {
 		if traceSink != nil {
 			_ = traceSink.Close(context.Background())
+		}
+		if msgRecorder != nil {
+			_ = msgRecorder.Close(context.Background())
 		}
 		if mysqlDB != nil {
 			_ = mysqlDB.Close()
@@ -74,6 +94,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Addr:           addr,
 		Deps:           deps,
 		TraceSink:      traceSink,
+		MsgRecorder:    msgRecorder,
 		Model:          cfg.Agent.LLM.Model,
 		TenantSource:   server.TenantSource(os.Getenv("COMPSHARE_TENANT_SOURCE")),
 		AllowedOrigins: splitCSV(os.Getenv("COMPSHARE_WS_ORIGINS")),
