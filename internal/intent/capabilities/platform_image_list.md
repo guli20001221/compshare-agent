@@ -3,6 +3,12 @@ name: platform_image_list
 intent_label: platform_image_list
 required_tool: DescribeCompShareImages
 required_citation: false
+planner_directives:
+  - 'Platform image list questions like "查询平台镜像列表" or "Ubuntu 22.04 镜像有吗" should emit platform_image_list.'
+  - 'Concept questions like "系统镜像和基础镜像有什么区别" or how-to questions like "怎么发布社区镜像" stay in knowledge_qa, NOT image-list capabilities.'
+planner_examples:
+  - question: "查询平台镜像列表"
+    confidence: 0.85
 ---
 
 # platform_image_list

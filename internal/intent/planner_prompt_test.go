@@ -47,10 +47,11 @@ func TestBuildSystemPromptDoesNotEmitMixedIntents(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	// 25 legacy examples (20 + 3 added by #34a 2026-05-18 for comparison /
+	// 25 grouped base examples (20 legacy + 3 added by #34a 2026-05-18 for comparison /
 	// yes-no feasibility / procedure-description knowledge_qa coverage +
 	// 2 added by #60 2026-05-20 for concept-Q-with-monitor-trigger-word and
-	// third-party-tool-config-jargon knowledge_qa coverage) +
+	// third-party-tool-config-jargon knowledge_qa coverage; two old stock-to-unknown
+	// examples were replaced when stock_availability became a capability) +
 	// N capability one-shots (PR A Registry v1) appended by CapabilityPromptFragments.
 	// New capabilities here should bump this number; the regression value is
 	// `25 + len(capabilityRegistry)`.
@@ -77,21 +78,113 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptKeepsInventoryAvailabilityOutOfResourceInfo(t *testing.T) {
+func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
+	groups := plannerPromptExampleGroups()
+	if len(groups) < 5 {
+		t.Fatalf("expected planner examples to be split into intent groups, got %d groups", len(groups))
+	}
+	total := 0
+	seen := map[Intent]bool{}
+	counts := map[Intent]int{}
+	expectedTools := map[Intent][]string{
+		IntentResourceInfo:              []string{"DescribeCompShareInstance"},
+		IntentUnknown:                   []string{},
+		IntentMonitorQuery:              []string{"GetCompShareInstanceMonitor"},
+		IntentKnowledgeQA:               []string{},
+		IntentBillingAccountUnsupported: []string{},
+		IntentDiagnosis:                 []string{"DescribeCompShareInstance"},
+	}
+	expectedHardBlock := map[Intent]bool{
+		IntentResourceInfo:              false,
+		IntentUnknown:                   false,
+		IntentMonitorQuery:              false,
+		IntentKnowledgeQA:               false,
+		IntentBillingAccountUnsupported: true,
+		IntentDiagnosis:                 false,
+	}
+	for _, group := range groups {
+		if group.Intent == "" {
+			t.Fatalf("planner example group missing intent: %+v", group)
+		}
+		if strings.TrimSpace(group.Source) == "" {
+			t.Fatalf("planner example group %q missing PR/source note", group.Intent)
+		}
+		if len(group.Examples) == 0 {
+			t.Fatalf("planner example group %q has no examples", group.Intent)
+		}
+		seen[group.Intent] = true
+		counts[group.Intent] = len(group.Examples)
+		total += len(group.Examples)
+		for _, example := range group.Examples {
+			if strings.TrimSpace(example.Source) == "" {
+				t.Fatalf("planner example %q in group %q missing source note", example.Question, group.Intent)
+			}
+			plan, err := parsePlanJSON(example.PlanJSON)
+			if err != nil {
+				t.Fatalf("planner example %q does not parse: %v", example.Question, err)
+			}
+			if plan.Intent != group.Intent {
+				t.Fatalf("planner example %q is in group %q but JSON intent is %q", example.Question, group.Intent, plan.Intent)
+			}
+			if got, want := strings.Join(plan.RequiredTools, ","), strings.Join(expectedTools[group.Intent], ","); got != want {
+				t.Fatalf("planner example %q required_tools = %v, want %v", example.Question, plan.RequiredTools, expectedTools[group.Intent])
+			}
+			if want := expectedHardBlock[group.Intent]; plan.HardBlockHint != want {
+				t.Fatalf("planner example %q hard_block_hint = %v, want %v", example.Question, plan.HardBlockHint, want)
+			}
+		}
+	}
+	for _, intent := range []Intent{
+		IntentResourceInfo,
+		IntentMonitorQuery,
+		IntentKnowledgeQA,
+		IntentBillingAccountUnsupported,
+		IntentDiagnosis,
+		IntentUnknown,
+	} {
+		if !seen[intent] {
+			t.Fatalf("planner examples missing group for intent %q", intent)
+		}
+	}
+	if total != 25 {
+		t.Fatalf("legacy planner example count = %d, want 25", total)
+	}
+	expectedCounts := map[Intent]int{
+		IntentResourceInfo:              4,
+		IntentUnknown:                   2,
+		IntentMonitorQuery:              2,
+		IntentKnowledgeQA:               14,
+		IntentBillingAccountUnsupported: 2,
+		IntentDiagnosis:                 1,
+	}
+	for intent, want := range expectedCounts {
+		if got := counts[intent]; got != want {
+			t.Fatalf("planner example count for %q = %d, want %d", intent, got, want)
+		}
+	}
+	rendered := strings.Join(renderPlannerPromptExampleGroups(groups), "\n")
+	if got := len(promptExampleJSONLines(rendered)); got != total {
+		t.Fatalf("rendered example JSON count = %d, want %d", got, total)
+	}
+}
+
+func TestBuildSystemPromptRoutesInventoryAvailabilityToCapability(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
 		"Inventory availability questions",
 		"are not resource_info",
 		"resource_info is only for the user's own CompShare instances",
-		"Platform stock questions should emit unknown",
-		"\u4e0a\u6d77\u673a\u623f\u8fd8\u5269\u6ca1\u5269 H100 \u5e93\u5b58",
-		"4090 \u8fd8\u6709\u6ca1\u6709\u8d27",
+		"Platform stock questions should emit stock_availability",
+		"4090 现在有没有货",
 		"\u6211\u8d26\u53f7\u4e0b\u6709\u54ea\u4e9b 4090 \u5b9e\u4f8b",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("system prompt missing inventory boundary fragment %q:\n%s", fragment, prompt)
 		}
+	}
+	if strings.Contains(prompt, "Platform stock questions should emit unknown") {
+		t.Fatalf("system prompt still contains stale stock-to-unknown routing:\n%s", prompt)
 	}
 }
 

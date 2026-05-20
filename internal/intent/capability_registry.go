@@ -1,8 +1,10 @@
 package intent
 
 import (
+	"bytes"
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"regexp"
@@ -91,11 +93,18 @@ var capabilitiesFS embed.FS
 // Stored only for planner prompt construction; runtime dispatch uses the
 // hardcoded registry table above (single source of truth).
 type CapabilityMetadata struct {
-	Name             string `yaml:"name"`
-	IntentLabel      string `yaml:"intent_label"`
-	RequiredTool     string `yaml:"required_tool"`
-	RequiredCitation bool   `yaml:"required_citation"`
-	Body             string `yaml:"-"`
+	Name              string                     `yaml:"name"`
+	IntentLabel       string                     `yaml:"intent_label"`
+	RequiredTool      string                     `yaml:"required_tool"`
+	RequiredCitation  bool                       `yaml:"required_citation"`
+	PlannerDirectives []string                   `yaml:"planner_directives"`
+	PlannerExamples   []CapabilityPlannerExample `yaml:"planner_examples"`
+	Body              string                     `yaml:"-"`
+}
+
+type CapabilityPlannerExample struct {
+	Question   string  `yaml:"question"`
+	Confidence float64 `yaml:"confidence"`
 }
 
 var capabilityMetadata = mustLoadCapabilityMetadata()
@@ -112,8 +121,11 @@ func mustLoadCapabilityMetadata() []CapabilityMetadata {
 		regSet[e.intent] = struct{}{}
 	}
 	metaSet := map[Intent]struct{}{}
+	metaByIntent := map[Intent]CapabilityMetadata{}
 	for _, m := range loaded {
-		metaSet[Intent(m.IntentLabel)] = struct{}{}
+		intentValue := Intent(m.IntentLabel)
+		metaSet[intentValue] = struct{}{}
+		metaByIntent[intentValue] = m
 	}
 	for intentValue := range regSet {
 		if _, ok := metaSet[intentValue]; !ok {
@@ -125,7 +137,15 @@ func mustLoadCapabilityMetadata() []CapabilityMetadata {
 			panic(fmt.Sprintf("intent: capabilities/*.md frontmatter %q has no matching registry entry", intentValue))
 		}
 	}
-	return loaded
+	ordered := make([]CapabilityMetadata, 0, len(capabilityRegistry))
+	for _, e := range capabilityRegistry {
+		meta := metaByIntent[e.intent]
+		if meta.RequiredTool != e.requiredTool {
+			panic(fmt.Sprintf("intent: capability %q required_tool=%q does not match registry tool %q", e.intent, meta.RequiredTool, e.requiredTool))
+		}
+		ordered = append(ordered, meta)
+	}
+	return ordered
 }
 
 func loadCapabilityMetadata(efs fs.FS) ([]CapabilityMetadata, error) {
@@ -158,6 +178,22 @@ func loadCapabilityMetadata(efs fs.FS) ([]CapabilityMetadata, error) {
 		if meta.Name == "" || meta.IntentLabel == "" || meta.RequiredTool == "" {
 			return nil, fmt.Errorf("parse %s: name/intent_label/required_tool must be non-empty", name)
 		}
+		if len(meta.PlannerDirectives) == 0 || len(meta.PlannerExamples) == 0 {
+			return nil, fmt.Errorf("parse %s: planner_directives and planner_examples must be non-empty", name)
+		}
+		for i, directive := range meta.PlannerDirectives {
+			if strings.TrimSpace(directive) == "" {
+				return nil, fmt.Errorf("parse %s: planner_directives[%d] must be non-empty", name, i)
+			}
+		}
+		for i, example := range meta.PlannerExamples {
+			if strings.TrimSpace(example.Question) == "" {
+				return nil, fmt.Errorf("parse %s: planner_examples[%d].question must be non-empty", name, i)
+			}
+			if example.Confidence <= 0 || example.Confidence > 1 {
+				return nil, fmt.Errorf("parse %s: planner_examples[%d].confidence must be in (0,1]", name, i)
+			}
+		}
 		out = append(out, meta)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -184,39 +220,69 @@ func parseCapabilityFrontmatter(data []byte) (CapabilityMetadata, error) {
 	body := rest[closer+len("\n---"):]
 	body = strings.TrimLeft(body, "\r\n")
 	var meta CapabilityMetadata
-	if err := yaml.Unmarshal([]byte(frontmatter), &meta); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader([]byte(frontmatter)))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&meta); err != nil {
 		return CapabilityMetadata{}, fmt.Errorf("yaml unmarshal: %w", err)
 	}
 	meta.Body = body
 	return meta, nil
 }
 
-// CapabilityPromptFragments returns one-line planner-prompt directives + 5
-// one-shot examples for each registered capability. Called once at planner build
-// time and appended to the system prompt.
+// CapabilityPromptFragments returns planner-prompt directives + one-shot
+// examples derived from internal/intent/capabilities/*.md frontmatter.
 func CapabilityPromptFragments() ([]string, []string) {
-	directives := []string{
-		"Stage 2C capability routing: classify clear platform GPU spec / stock / image-list questions to the matching capability intent.",
-		"GPU model spec questions like \"4090 显存多大\" or \"A100 supports how many GPUs\" should emit gpu_specs_query.",
-		"GPU stock availability questions like \"4090 有没有货\" or \"H100 库存\" should emit stock_availability — these are NOT resource_info (which is only for the user's own instances) and NOT unknown.",
-		"Platform image list questions like \"查询平台镜像列表\" or \"Ubuntu 22.04 镜像有吗\" should emit platform_image_list.",
-		"User-owned custom image list questions like \"查询自制镜像\" should emit custom_image_list.",
-		"Community image list questions like \"查询社区镜像\" should emit community_image_list.",
-		"Concept questions like \"系统镜像和基础镜像有什么区别\" or how-to questions like \"怎么发布社区镜像\" stay in knowledge_qa, NOT image-list capabilities.",
+	names := make([]string, 0, len(capabilityMetadata))
+	for _, m := range capabilityMetadata {
+		names = append(names, m.Name)
 	}
-	examples := []string{
-		`User question: 4090 显存多大`,
-		`{"schema_version":"1.0","intent":"gpu_specs_query","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeAvailableCompShareInstanceTypes"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-		`User question: 4090 现在有没有货`,
-		`{"schema_version":"1.0","intent":"stock_availability","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeAvailableCompShareInstanceTypes"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-		`User question: 查询平台镜像列表`,
-		`{"schema_version":"1.0","intent":"platform_image_list","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-		`User question: 查询自制镜像`,
-		`{"schema_version":"1.0","intent":"custom_image_list","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareCustomImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-		`User question: 查询社区镜像`,
-		`{"schema_version":"1.0","intent":"community_image_list","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCommunityImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+	directives := []string{
+		fmt.Sprintf("Stage 2C capability routing: classify clear platform %s questions to the matching capability intent.", strings.Join(names, " / ")),
+	}
+	examples := []string{}
+	for _, m := range capabilityMetadata {
+		directives = append(directives, m.PlannerDirectives...)
+		for _, example := range m.PlannerExamples {
+			examples = append(examples, "User question: "+example.Question)
+			examples = append(examples, capabilityPromptExampleJSON(m, example))
+		}
 	}
 	return directives, examples
+}
+
+func capabilityPromptExampleJSON(meta CapabilityMetadata, example CapabilityPlannerExample) string {
+	type promptSlots struct {
+		TargetRefs []TargetRef `json:"target_refs"`
+		Metrics    []Metric    `json:"metrics"`
+		TimeWindow *TimeWindow `json:"time_window"`
+	}
+	type promptPlan struct {
+		SchemaVersion string      `json:"schema_version"`
+		Intent        Intent      `json:"intent"`
+		Slots         promptSlots `json:"slots"`
+		RequiredTools []string    `json:"required_tools"`
+		Retrieval     Retrieval   `json:"retrieval"`
+		HardBlockHint bool        `json:"hard_block_hint"`
+		Confidence    float64     `json:"confidence"`
+	}
+	plan := promptPlan{
+		SchemaVersion: SchemaVersion,
+		Intent:        Intent(meta.IntentLabel),
+		Slots: promptSlots{
+			TargetRefs: []TargetRef{},
+			Metrics:    []Metric{},
+			TimeWindow: nil,
+		},
+		RequiredTools: []string{meta.RequiredTool},
+		Retrieval:     Retrieval{Enabled: false},
+		HardBlockHint: false,
+		Confidence:    example.Confidence,
+	}
+	data, err := json.Marshal(plan)
+	if err != nil {
+		panic(fmt.Sprintf("intent: marshal capability planner example %q: %v", meta.Name, err))
+	}
+	return string(data)
 }
 
 // ---- Handler implementations ------------------------------------------------

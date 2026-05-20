@@ -3,6 +3,11 @@ name: stock_availability
 intent_label: stock_availability
 required_tool: DescribeAvailableCompShareInstanceTypes
 required_citation: false
+planner_directives:
+  - 'GPU stock availability questions like "4090 有没有货" or "H100 库存" should emit stock_availability — these are NOT resource_info (which is only for the user''s own instances) and NOT unknown.'
+planner_examples:
+  - question: "4090 现在有没有货"
+    confidence: 0.85
 ---
 
 # stock_availability
