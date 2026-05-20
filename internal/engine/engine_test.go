@@ -3374,7 +3374,7 @@ func TestStage2BRetrievalHitUsesLLMWithoutTools(t *testing.T) {
 		ChunkID:     "faq-billing-001",
 		KBVersion:   "kb.v1",
 		SourceType:  "faq",
-		ProductArea: "billing",
+		ProductArea: "billing_rule",
 		ACL:         "customer_safe",
 		Confidence:  "high",
 		Title:       "Billing after stop",
@@ -3413,7 +3413,7 @@ func TestStage2BRetrievalHitUsesLLMWithoutTools(t *testing.T) {
 	require.Len(t, planner.calls, 1)
 	require.Len(t, retriever.calls, 1)
 	assert.Equal(t, "why do stopped instances still bill", retriever.calls[0].question)
-	assert.Equal(t, "billing", retriever.calls[0].productArea, "engine must infer product area without relying on planner Scope")
+	assert.Equal(t, "billing_rule", retriever.calls[0].productArea, "engine must infer product area without relying on planner Scope")
 	require.Len(t, plannerTraces, 1)
 	assert.Equal(t, string(intent.CutoverStatusDispatchedRetrieval), plannerTraces[0].CutoverStatus)
 	require.Len(t, retrievalTraces, 1)
@@ -3881,7 +3881,7 @@ func TestStage2BRetrievalHitClipsStoredAssistantHistory(t *testing.T) {
 		ChunkID:     "faq-long-001",
 		KBVersion:   "kb.v1",
 		SourceType:  "faq",
-		ProductArea: "billing",
+		ProductArea: "billing_rule",
 		ACL:         "customer_safe",
 		Confidence:  "high",
 		Title:       "Long billing answer",
@@ -4279,7 +4279,7 @@ func TestStage2BFinanceFAQRetrievalUsesBillingArea(t *testing.T) {
 			ChunkID:     "faq-billing-invoice-001",
 			KBVersion:   "kb.v1",
 			SourceType:  "faq",
-			ProductArea: "billing",
+			ProductArea: "billing_rule",
 			ACL:         "customer_safe",
 			Confidence:  "high",
 			Title:       "\u5982\u4f55\u5f00\u53d1\u7968",
@@ -4299,7 +4299,7 @@ func TestStage2BFinanceFAQRetrievalUsesBillingArea(t *testing.T) {
 	require.Len(t, mock.calls, 1)
 	assert.Empty(t, mock.calls[0].Tools)
 	require.Len(t, retriever.calls, 1)
-	assert.Equal(t, "billing", retriever.calls[0].productArea)
+	assert.Equal(t, "billing_rule", retriever.calls[0].productArea)
 }
 
 func TestStage2BStoppedBillingFAQUsesKnowledgeRetrieval(t *testing.T) {
@@ -4311,7 +4311,7 @@ func TestStage2BStoppedBillingFAQUsesKnowledgeRetrieval(t *testing.T) {
 			ChunkID:     "faq-billing-stopped-instance-001",
 			KBVersion:   "kb.v1",
 			SourceType:  "faq",
-			ProductArea: "billing",
+			ProductArea: "billing_rule",
 			ACL:         "customer_safe",
 			Confidence:  "high",
 			Title:       "关机后为什么还会产生费用",
@@ -4331,7 +4331,7 @@ func TestStage2BStoppedBillingFAQUsesKnowledgeRetrieval(t *testing.T) {
 	require.Len(t, mock.calls, 1)
 	assert.Empty(t, mock.calls[0].Tools)
 	require.Len(t, retriever.calls, 1)
-	assert.Equal(t, "billing", retriever.calls[0].productArea)
+	assert.Equal(t, "billing_rule", retriever.calls[0].productArea)
 }
 
 func TestStage2BFinanceRealtimeHardBlockPrecedesPlanner(t *testing.T) {

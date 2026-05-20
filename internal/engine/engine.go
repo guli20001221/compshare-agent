@@ -2588,7 +2588,14 @@ var historicalMonitorSignalKeywords = []string{
 	"\u5fd9",             // 忙
 }
 
-var knowledgeBillingKeywords = []string{
+// Keyword sets feed inferKnowledgeProductArea below. Each set MUST emit a
+// product_area string that matches a label in deploy/kb/stage2b_w0.jsonl \u2014
+// otherwise the +2 BM25 productArea boost in Retriever.scoreChunk is a no-op.
+// Corpus labels (228 chunks as of 2026-05-20):
+//
+//	modelverse(97) login(35) resource_purchase(28) image(26)
+//	billing_rule(24) driver_cuda(6) init_failure(5) windows(5) monitor(2)
+var knowledgeBillingRuleKeywords = []string{
 	"billing", "bill", "charge", "cost", "fee", "price", "balance",
 	"\u8ba1\u8d39", "\u6263\u8d39", "\u6536\u8d39", "\u8d26\u5355", "\u4f59\u989d", "\u8d39\u7528", "\u4ef7\u683c",
 	"invoice", "refund", "arrears", "renewal", "expire",
@@ -2604,13 +2611,42 @@ var knowledgeLoginKeywords = []string{
 	"\u767b\u5f55", "\u8fde\u63a5", "\u5bc6\u7801", "\u53e3\u4ee4",
 }
 
-var knowledgeNetworkKeywords = []string{
-	"port", "ports", "firewall", "network", "\u8bbf\u95ee", "\u7aef\u53e3", "\u9632\u706b\u5899", "\u7f51\u7edc",
+var knowledgeModelverseKeywords = []string{
+	"model", "models", "claude", "anthropic", "credit", "credits",
+	"modelverse",
+	"\u6a21\u578b", "\u5957\u9910", "\u79ef\u5206",
 }
 
-var knowledgeModelSuiteKeywords = []string{
-	"model", "models", "claude", "anthropic", "credit", "credits",
-	"\u6a21\u578b", "\u5957\u9910", "\u79ef\u5206",
+var knowledgeResourcePurchaseKeywords = []string{
+	"\u8d2d\u4e70",       // \u8d2d\u4e70
+	"\u89c4\u683c",       // \u89c4\u683c
+	"\u62a2\u5360\u5f0f", // \u62a2\u5360\u5f0f
+	"\u72ec\u5360\u5f0f", // \u72ec\u5360\u5f0f
+}
+
+var knowledgeDriverCudaKeywords = []string{
+	"nvidia", "cuda", "nvidia-smi", "driver",
+	"\u9a71\u52a8",             // \u9a71\u52a8
+	"\u663e\u5361\u9a71\u52a8", // \u663e\u5361\u9a71\u52a8
+}
+
+var knowledgeInitFailureKeywords = []string{
+	"initializing", "init fail", "install fail",
+	"\u521d\u59cb\u5316\u5931\u8d25", // \u521d\u59cb\u5316\u5931\u8d25
+	"\u521d\u59cb\u5316\u5361\u4f4f", // \u521d\u59cb\u5316\u5361\u4f4f
+	"\u542f\u52a8\u5931\u8d25",       // \u542f\u52a8\u5931\u8d25
+}
+
+var knowledgeWindowsKeywords = []string{
+	"windows", "rdp", "remote desktop",
+	"\u8fdc\u7a0b\u684c\u9762", // \u8fdc\u7a0b\u684c\u9762
+}
+
+var knowledgeMonitorKeywords = []string{
+	"\u76d1\u63a7\u6307\u6807", // \u76d1\u63a7\u6307\u6807
+	"\u663e\u5b58\u5360\u7528", // \u663e\u5b58\u5360\u7528
+	"cpu \u5360\u7528",         // cpu \u5360\u7528
+	"gpu \u5360\u7528",         // gpu \u5360\u7528
 }
 
 // normalizeMsg standardizes a user message for signal matching:
@@ -2956,19 +2992,33 @@ func containsNormalizedKeyword(normalized string, keywords []string) bool {
 	return containsAnyKeyword(normalized, keywords)
 }
 
+// inferKnowledgeProductArea returns a product_area label matching one of the
+// deploy/kb/stage2b_w0.jsonl product_area values. The match flows into
+// Retriever.scoreChunk where chunks with the same productArea get +2 BM25.
+// Order matters: more-specific labels (init_failure / windows / driver_cuda)
+// are checked before broader ones (image / modelverse / billing_rule) to avoid
+// the broader keyword sets shadowing the niche groups.
 func inferKnowledgeProductArea(userMsg string) string {
 	n := normalizeMsg(userMsg)
 	switch {
-	case containsAnyKeyword(n, knowledgeBillingKeywords):
-		return "billing"
+	case containsAnyKeyword(n, knowledgeInitFailureKeywords):
+		return "init_failure"
+	case containsAnyKeyword(n, knowledgeWindowsKeywords):
+		return "windows"
+	case containsAnyKeyword(n, knowledgeDriverCudaKeywords):
+		return "driver_cuda"
+	case containsAnyKeyword(n, knowledgeMonitorKeywords):
+		return "monitor"
 	case containsAnyKeyword(n, knowledgeImageKeywords):
 		return "image"
 	case containsAnyKeyword(n, knowledgeLoginKeywords):
 		return "login"
-	case containsAnyKeyword(n, knowledgeNetworkKeywords):
-		return "network"
-	case containsAnyKeyword(n, knowledgeModelSuiteKeywords):
-		return "model_suite"
+	case containsAnyKeyword(n, knowledgeResourcePurchaseKeywords):
+		return "resource_purchase"
+	case containsAnyKeyword(n, knowledgeBillingRuleKeywords):
+		return "billing_rule"
+	case containsAnyKeyword(n, knowledgeModelverseKeywords):
+		return "modelverse"
 	default:
 		return ""
 	}
