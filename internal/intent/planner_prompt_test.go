@@ -47,12 +47,14 @@ func TestBuildSystemPromptDoesNotEmitMixedIntents(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	// 23 legacy examples (20 + 3 added by #34a 2026-05-18 for comparison /
-	// yes-no feasibility / procedure-description knowledge_qa coverage) +
+	// 25 legacy examples (20 + 3 added by #34a 2026-05-18 for comparison /
+	// yes-no feasibility / procedure-description knowledge_qa coverage +
+	// 2 added by #60 2026-05-20 for concept-Q-with-monitor-trigger-word and
+	// third-party-tool-config-jargon knowledge_qa coverage) +
 	// N capability one-shots (PR A Registry v1) appended by CapabilityPromptFragments.
 	// New capabilities here should bump this number; the regression value is
-	// `23 + len(capabilityRegistry)`.
-	if got, want := len(examples), 23+len(capabilityRegistry); got != want {
+	// `25 + len(capabilityRegistry)`.
+	if got, want := len(examples), 25+len(capabilityRegistry); got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
