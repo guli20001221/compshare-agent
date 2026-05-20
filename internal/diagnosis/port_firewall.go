@@ -24,8 +24,8 @@ func PortFirewallChain() *Chain {
 		},
 		Fallback: Verdict{
 			Action:     Conclude,
-			Conclusion: "平台端口映射正常。服务可能未就绪。",
-			Suggestion: "云侧只能确认平台端口映射。请在控制台核对服务配置、镜像和安全组；具体服务状态需通过控制台指引或技术支持进一步确认。",
+			Conclusion: "未指定具体服务，无法判断具体端口是否正常。",
+			Suggestion: "请说明要检查的服务名，例如 JupyterLab、FileBrowser、SSH 或自定义服务名。云侧可核对控制台应用入口；自定义服务需结合实例内只读命令进一步判断。",
 		},
 	}
 }
@@ -87,9 +87,13 @@ func stepCheckServicePort() Step {
 
 			normalized := normalizeServiceName(targetService)
 
+			instanceResult := dCtx.Result("检查实例状态")
+			if normalized == "SSH" {
+				return evaluateSSHServicePort(instanceResult)
+			}
+
 			// Priority 1: Check instance-level Softwares from step 1
 			// (populated only for Running container instances with image-defined ports)
-			instanceResult := dCtx.Result("检查实例状态")
 			if found, url := findInstanceSoftware(instanceResult, normalized); found {
 				conclusion := "该实例已配置「" + normalized + "」服务"
 				if url != "" {
@@ -105,6 +109,13 @@ func stepCheckServicePort() Step {
 
 			// Priority 2: Fall back to platform-wide catalog (reference only)
 			ports, _ := result["SoftwarePort"].([]any)
+			if len(ports) == 0 {
+				return Verdict{
+					Action:     Conclude,
+					Conclusion: "平台端口目录未返回数据，无法确认「" + targetService + "」的默认端口。",
+					Suggestion: "请先在控制台查看实例应用入口和安全组。若是自定义服务，可在实例内用只读命令自查监听端口：`ss -lntp`。",
+				}
+			}
 			for _, p := range ports {
 				port, _ := p.(map[string]any)
 				software, _ := port["Software"].(string)
@@ -181,4 +192,34 @@ func formatPort(port float64) string {
 		return "未知"
 	}
 	return fmt.Sprintf("%.0f", port)
+}
+
+func evaluateSSHServicePort(instanceResult map[string]any) Verdict {
+	host, ok := firstHostFromResult(instanceResult)
+	if !ok {
+		return Verdict{
+			Action:     Conclude,
+			Conclusion: "未找到实例，无法确认 SSH 登录入口。",
+			Suggestion: "请确认实例 ID 是否正确。",
+		}
+	}
+	if isWindowsHost(host) {
+		return Verdict{
+			Action:     Conclude,
+			Conclusion: "这是 Windows 实例，不适用 Linux SSH 登录方式。",
+			Suggestion: "请使用控制台提供的 Windows RDP 入口，或本地打开 mstsc 进行远程桌面连接。",
+		}
+	}
+	if cmd := sshLoginCommandFromHost(host); cmd != "" {
+		return Verdict{
+			Action:     Conclude,
+			Conclusion: "该实例已返回 SSH 登录入口：" + cmd + "。",
+			Suggestion: "如果仍连不上，请继续使用 DiagnoseSSH 做资源和登录入口诊断；若能进入 JupyterLab，可用只读命令自查：`ss -lntp | grep ':22'`。",
+		}
+	}
+	return Verdict{
+		Action:     Conclude,
+		Conclusion: "云侧未返回 SSH 登录命令，无法确认该实例已有可用 SSH 登录入口。",
+		Suggestion: "请先在控制台核对登录入口和公网 IP。若能进入 JupyterLab，可用只读命令自查：`systemctl status ssh --no-pager`、`ss -lntp | grep ':22'`。",
+	}
 }

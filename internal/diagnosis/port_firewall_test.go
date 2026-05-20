@@ -116,7 +116,7 @@ func TestPortFirewall_ServiceNotFound(t *testing.T) {
 			map[string]any{"UHostId": "uhost-abc", "State": "Running"},
 		}},
 		"DescribeCompShareSoftwarePort": {"SoftwarePort": []any{
-			map[string]any{"Software": "SSH", "Port": float64(22)},
+			map[string]any{"Software": "JupyterLab", "Port": float64(8888)},
 		}},
 	}}
 	onStep, _ := collectEvents()
@@ -155,9 +155,63 @@ func TestPortFirewall_NoService_Fallback(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Contains(t, result.Conclusion, "平台端口映射正常")
-	assert.Contains(t, result.Suggestion, "控制台")
+	assert.Contains(t, result.Conclusion, "未指定具体服务")
+	assert.Contains(t, result.Suggestion, "JupyterLab")
 	assertReadOnlyDiagnosisSuggestion(t, result.Suggestion)
+}
+
+func TestPortFirewall_EmptyCatalogIsInconclusive(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-abc", "State": "Running"},
+		}},
+		"DescribeCompShareSoftwarePort": {"SoftwarePort": []any{}},
+	}}
+	onStep, _ := collectEvents()
+
+	chain := PortFirewallChain()
+	eng := NewEngine(executor, onStep)
+	result, err := eng.Run(context.Background(), chain, map[string]any{
+		"UHostId": "uhost-abc",
+		"Service": "redis",
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Contains(t, result.Conclusion, "端口目录未返回数据")
+	assert.NotContains(t, result.Conclusion, "未找到")
+	assert.Contains(t, result.Suggestion, "ss -lntp")
+	assertReadOnlyDiagnosisSuggestion(t, result.Suggestion)
+}
+
+func TestPortFirewall_SSHUsesInstanceLoginCommand(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{
+			map[string]any{
+				"UHostId":         "uhost-abc",
+				"State":           "Running",
+				"OsType":          "Linux",
+				"SshLoginCommand": "ssh -p 23 root@1.2.3.4",
+			},
+		}},
+		"DescribeCompShareSoftwarePort": {"SoftwarePort": []any{
+			map[string]any{"Software": "JupyterLab", "Port": float64(8888)},
+		}},
+	}}
+	onStep, _ := collectEvents()
+
+	chain := PortFirewallChain()
+	eng := NewEngine(executor, onStep)
+	result, err := eng.Run(context.Background(), chain, map[string]any{
+		"UHostId": "uhost-abc",
+		"Service": "ssh",
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Contains(t, result.Conclusion, "已返回 SSH 登录入口")
+	assert.Contains(t, result.Conclusion, "ssh -p 23")
+	assert.Contains(t, result.Suggestion, "DiagnoseSSH")
 }
 
 func TestPortFirewall_ServiceAliasNormalization(t *testing.T) {

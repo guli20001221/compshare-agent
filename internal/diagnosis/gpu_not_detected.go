@@ -4,7 +4,7 @@ package diagnosis
 // Flow: check instance state & GPU config -> check GPU monitor metrics -> fallback.
 func GPUNotDetectedChain() *Chain {
 	return &Chain{
-		Name:        "DiagnoseGPUNotDetected",
+		Name:        "DiagnoseGPU",
 		Description: "诊断 GPU 检测不到：检查实例状态与 GPU 配置 → 检查 GPU 监控数据 → 兜底建议",
 		Steps: []Step{
 			stepCheckInstanceGPU(),
@@ -12,8 +12,8 @@ func GPUNotDetectedChain() *Chain {
 		},
 		Fallback: Verdict{
 			Action:     Conclude,
-			Conclusion: "实例已分配 GPU 但无法确认 GPU 工作状态。可能是驱动未正确加载。",
-			Suggestion: "建议通过控制台重启实例。如问题持续，请尝试换用官方系统镜像重新创建实例。",
+			Conclusion: "实例已分配 GPU，但云侧监控暂未看到 GPU 活动。这不等于硬件或驱动一定异常。",
+			Suggestion: "请在实例内用只读命令自查：`nvidia-smi`。如命令报错，再通过控制台重启实例；若重启后仍异常，请联系技术支持并提供实例 ID。",
 		},
 	}
 }
@@ -115,12 +115,19 @@ func stepCheckGPUMonitor() Step {
 			}, nil
 		},
 		Evaluate: func(result map[string]any, dCtx *Context) Verdict {
-			gpuUtil, gpuMem := extractGPUMetrics(result)
+			gpuUtil, gpuMem, gpuUtilOK, gpuMemOK := extractGPUMetrics(result)
 			if gpuUtil > 0 || gpuMem > 0 {
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: "GPU 硬件工作正常（监控显示有 GPU 活动）。nvidia-smi 报错可能是容器内驱动版本不匹配。",
 					Suggestion: "云侧监控显示 GPU 有活动。请在控制台核对镜像和驱动环境；如仍异常，请联系技术支持并提供实例 ID。",
+				}
+			}
+			if !gpuUtilOK && !gpuMemOK {
+				return Verdict{
+					Action:     Conclude,
+					Conclusion: "监控未返回 GPU 数据，无法确认 GPU 工作状态。",
+					Suggestion: "请在实例内用只读命令自查：`nvidia-smi`。如果命令报错，再通过控制台重启实例；若重启后仍异常，请联系技术支持并提供实例 ID。",
 				}
 			}
 			return Verdict{Action: Continue}
@@ -129,14 +136,14 @@ func stepCheckGPUMonitor() Step {
 }
 
 // extractGPUMetrics gets the latest GPU utilization and GPU memory usage from monitor data.
-func extractGPUMetrics(result map[string]any) (gpuUtil, gpuMem float64) {
+func extractGPUMetrics(result map[string]any) (gpuUtil, gpuMem float64, gpuUtilOK, gpuMemOK bool) {
 	data, _ := result["Data"].(map[string]any)
 	if data == nil {
-		return 0, 0
+		return 0, 0, false, false
 	}
 	list, _ := data["List"].([]any)
 	if len(list) == 0 {
-		return 0, 0
+		return 0, 0, false, false
 	}
 	instance, _ := list[0].(map[string]any)
 	metrics, _ := instance["Metrics"].([]any)
@@ -144,13 +151,18 @@ func extractGPUMetrics(result map[string]any) (gpuUtil, gpuMem float64) {
 	for _, m := range metrics {
 		metric, _ := m.(map[string]any)
 		key, _ := metric["MetricKey"].(string)
-		val := latestValue(metric)
+		val, ok := latestValue(metric)
+		if !ok {
+			continue
+		}
 		switch key {
 		case "cloudwatch_gpu_util":
 			gpuUtil = val
+			gpuUtilOK = true
 		case "cloudwatch_gpu_memory_usage":
 			gpuMem = val
+			gpuMemOK = true
 		}
 	}
-	return gpuUtil, gpuMem
+	return gpuUtil, gpuMem, gpuUtilOK, gpuMemOK
 }

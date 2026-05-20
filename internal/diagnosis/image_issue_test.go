@@ -89,10 +89,10 @@ func TestImageIssue_CommunityImage(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{
-				"UHostId":             "uhost-abc",
-				"State":               "Running",
-				"CompShareImageType":  "Community",
-				"CompShareImageName":  "SD WebUI v1.9",
+				"UHostId":            "uhost-abc",
+				"State":              "Running",
+				"CompShareImageType": "Community",
+				"CompShareImageName": "SD WebUI v1.9",
 			},
 		}},
 	}}
@@ -114,10 +114,10 @@ func TestImageIssue_OfficialImage_Normal(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{
-				"UHostId":             "uhost-abc",
-				"State":               "Running",
-				"CompShareImageType":  "System",
-				"CompShareImageName":  "Ubuntu 22.04 CUDA 12",
+				"UHostId":            "uhost-abc",
+				"State":              "Running",
+				"CompShareImageType": "System",
+				"CompShareImageName": "Ubuntu 22.04 CUDA 12",
 			},
 		}},
 	}}
@@ -129,8 +129,9 @@ func TestImageIssue_OfficialImage_Normal(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Contains(t, result.Conclusion, "镜像加载正常")
+	assert.Contains(t, result.Conclusion, "云侧实例已运行")
 	assert.Contains(t, result.Conclusion, "System")
+	assert.NotContains(t, result.Conclusion, "镜像加载正常")
 }
 
 func TestImageIssue_NotRunning(t *testing.T) {

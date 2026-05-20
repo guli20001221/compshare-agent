@@ -1,22 +1,24 @@
 package diagnosis
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
-// SSHFailureChain returns the 3-step diagnostic chain for SSH connection failures.
-// Flow: check instance state -> check SSH port -> check resource usage -> fallback.
+// SSHFailureChain returns the diagnostic chain for SSH connection failures.
+// Flow: check instance state/login command -> check resource usage -> fallback.
 func SSHFailureChain() *Chain {
 	return &Chain{
 		Name:        "DiagnoseSSH",
-		Description: "诊断 SSH 连接失败：检查实例状态 → 检查 SSH 端口 → 检查资源使用 → 兜底建议",
+		Description: "诊断 SSH 连接失败：检查实例状态与 SSH 登录入口 → 检查资源使用 → 兜底建议",
 		Steps: []Step{
 			stepCheckInstanceState(),
-			stepCheckSSHPort(),
 			stepCheckResourceUsage(),
 		},
 		Fallback: Verdict{
 			Action:     Conclude,
-			Conclusion: "未发现明确的 SSH 连接问题。实例运行正常，资源使用正常。",
-			Suggestion: "云侧检查未发现明确异常。请在控制台核对实例登录入口、安全组和网络连通性；如仍无法连接，请联系技术支持并提供实例 ID。",
+			Conclusion: "云侧未发现明确的 SSH 连接问题。实例运行中，已返回 SSH 登录入口，CPU/内存监控未见高压。",
+			Suggestion: "请先使用控制台展示的 SSH 登录命令重试。若能通过 JupyterLab 进入终端，可用只读命令自查：`systemctl status ssh --no-pager`、`ss -lntp | grep ':22'`。如仍无法连接，请联系技术支持并提供实例 ID。",
 		},
 	}
 }
@@ -84,6 +86,20 @@ func stepCheckInstanceState() Step {
 					Suggestion: "重启通常需要 1-2 分钟，完成后即可 SSH 连接。",
 				}
 			case "Running":
+				if isWindowsHost(host) {
+					return Verdict{
+						Action:     Conclude,
+						Conclusion: "这是 Windows 实例，不适用 Linux SSH 登录方式。",
+						Suggestion: "请使用控制台提供的 Windows RDP 入口，或本地打开 mstsc 进行远程桌面连接。",
+					}
+				}
+				if sshLoginCommandFromHost(host) == "" {
+					return Verdict{
+						Action:     Conclude,
+						Conclusion: "云侧未返回 SSH 登录命令，无法确认该实例已有可用 SSH 登录入口。",
+						Suggestion: "请先在控制台核对实例登录入口和公网 IP。若能通过 JupyterLab 进入终端，可用只读命令自查：`systemctl status ssh --no-pager`、`ss -lntp | grep ':22'`。安装或启动 SSH 服务属于会修改实例环境的可选修复，请确认后再执行。",
+					}
+				}
 				return Verdict{Action: Continue}
 			default:
 				return Verdict{
@@ -91,46 +107,6 @@ func stepCheckInstanceState() Step {
 					Conclusion: "实例当前状态为「" + state + "」，可能处于异常状态。",
 					Suggestion: "请到控制台查看实例详情或联系客服。",
 				}
-			}
-		},
-	}
-}
-
-func stepCheckSSHPort() Step {
-	return Step{
-		Name: "检查 SSH 端口",
-		Tool: "DescribeCompShareSoftwarePort",
-		BuildArgs: func(dCtx *Context) (map[string]any, error) {
-			return map[string]any{}, nil
-		},
-		Evaluate: func(result map[string]any, dCtx *Context) Verdict {
-			// Priority 1: Instance-level Softwares from step 1 (authoritative for
-			// running container instances with image-defined ports).
-			instanceResult := dCtx.Result("检查实例状态")
-			if found, _ := findInstanceSoftware(instanceResult, "SSH"); found {
-				return Verdict{Action: Continue}
-			}
-
-			// Priority 2: Platform-wide catalog (reference only — does NOT reflect
-			// whether SSH is actually running on this specific instance).
-			ports, _ := result["SoftwarePort"].([]any)
-			for _, p := range ports {
-				port, _ := p.(map[string]any)
-				software, _ := port["Software"].(string)
-				if software == "SSH" {
-					// Platform supports SSH but instance's Softwares list doesn't
-					// include it. Possible causes: VM instance (no Softwares field),
-					// or image without SSH pre-configured. Not conclusive — continue.
-					return Verdict{Action: Continue}
-				}
-			}
-
-			// Neither instance nor platform catalog has SSH — unusual, likely a
-			// specialized image without SSH.
-			return Verdict{
-				Action:     Conclude,
-				Conclusion: "该实例的应用列表中未发现 SSH 服务，平台端口目录中也未包含 SSH。",
-				Suggestion: "当前镜像可能未预装 SSH 服务。请使用 JupyterLab 网页终端替代，或选择包含 SSH 的镜像重建实例。",
 			}
 		},
 	}
@@ -150,7 +126,7 @@ func stepCheckResourceUsage() Step {
 			}, nil
 		},
 		Evaluate: func(result map[string]any, dCtx *Context) Verdict {
-			cpuUsage, memUsage := extractLatestMetrics(result)
+			cpuUsage, memUsage, cpuOK, memOK := extractLatestMetrics(result)
 			// 90% catches degradation earlier than the previous 95% cutoff,
 			// which left users at 90-94% with a contradictory "resources normal"
 			// verdict while their SSH was already timing out.
@@ -173,20 +149,27 @@ func stepCheckResourceUsage() Step {
 					Suggestion: "建议通过控制台重启实例释放资源，或升级到更高配置。",
 				}
 			}
+			if !cpuOK || !memOK {
+				return Verdict{
+					Action:     Conclude,
+					Conclusion: "监控未返回 CPU/内存数据，无法确认资源是否耗尽。",
+					Suggestion: "云侧已确认实例运行并返回 SSH 登录入口，但监控数据不完整。若能通过 JupyterLab 进入终端，可用只读命令自查：`free -h`、`uptime`、`top -b -n 1 | head`。如仍无法登录，请联系技术支持并提供实例 ID。",
+				}
+			}
 			return Verdict{Action: Continue}
 		},
 	}
 }
 
 // extractLatestMetrics gets the latest CPU and memory usage from monitor data.
-func extractLatestMetrics(result map[string]any) (cpu, mem float64) {
+func extractLatestMetrics(result map[string]any) (cpu, mem float64, cpuOK, memOK bool) {
 	data, _ := result["Data"].(map[string]any)
 	if data == nil {
-		return 0, 0
+		return 0, 0, false, false
 	}
 	list, _ := data["List"].([]any)
 	if len(list) == 0 {
-		return 0, 0
+		return 0, 0, false, false
 	}
 	instance, _ := list[0].(map[string]any)
 	metrics, _ := instance["Metrics"].([]any)
@@ -194,29 +177,53 @@ func extractLatestMetrics(result map[string]any) (cpu, mem float64) {
 	for _, m := range metrics {
 		metric, _ := m.(map[string]any)
 		key, _ := metric["MetricKey"].(string)
-		val := latestValue(metric)
+		val, ok := latestValue(metric)
+		if !ok {
+			continue
+		}
 		switch key {
 		case "uhost_cpu_used":
 			cpu = val
+			cpuOK = true
 		case "cloudwatch_memory_usage":
 			mem = val
+			memOK = true
 		}
 	}
-	return cpu, mem
+	return cpu, mem, cpuOK, memOK
 }
 
 // latestValue extracts the most recent value from a metric's Results.
-func latestValue(metric map[string]any) float64 {
+func latestValue(metric map[string]any) (float64, bool) {
 	results, _ := metric["Results"].([]any)
 	if len(results) == 0 {
-		return 0
+		return 0, false
 	}
 	first, _ := results[0].(map[string]any)
 	values, _ := first["Values"].([]any)
 	if len(values) == 0 {
-		return 0
+		return 0, false
 	}
 	last, _ := values[len(values)-1].(map[string]any)
 	val, _ := last["Value"].(float64)
-	return val
+	return val, true
+}
+
+func firstHostFromResult(instanceResult map[string]any) (map[string]any, bool) {
+	hosts, _ := instanceResult["UHostSet"].([]any)
+	if len(hosts) == 0 {
+		return nil, false
+	}
+	host, ok := hosts[0].(map[string]any)
+	return host, ok
+}
+
+func sshLoginCommandFromHost(host map[string]any) string {
+	cmd, _ := host["SshLoginCommand"].(string)
+	return strings.TrimSpace(cmd)
+}
+
+func isWindowsHost(host map[string]any) bool {
+	osType, _ := host["OsType"].(string)
+	return strings.EqualFold(strings.TrimSpace(osType), "Windows")
 }

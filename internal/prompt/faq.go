@@ -85,8 +85,9 @@ GitHub/HuggingFace 学术加速功能已上线：
 - 团队管理：支持成员管理和金额分配，面向企业/高校客户定向开通，需联系官方运营。文档：https://www.compshare.cn/docs/uaccount/team`
 
 // ReadOnlyFAQContent is the safe subset injected when mutating tools are
-// disabled. It keeps product rules and console navigation, but intentionally
-// omits shell commands, startup scripts, and instance-internal procedures.
+// disabled. It keeps product rules, console navigation, and read-only
+// self-check commands, but intentionally omits startup scripts and mutating
+// instance-internal procedures.
 const ReadOnlyFAQContent = `## 平台常见问题（只读模式）
 
 ### 1. 镜像选择
@@ -97,7 +98,7 @@ const ReadOnlyFAQContent = `## 平台常见问题（只读模式）
 注意：社区镜像不可二次发布到社区；共享/私有镜像能否用于创建实例，以控制台当前可选项为准。
 
 ### 2. 连接实例
-常见入口包括 SSH、VS Code Remote-SSH、JupyterLab 和 Windows RDP。当前助手只提供云侧信息和控制台路径，不登录实例、不执行远程命令。
+常见入口包括 SSH、VS Code Remote-SSH、JupyterLab 和 Windows RDP。当前助手只提供云侧信息、控制台路径和用户可自行执行的只读自查命令，不登录实例、不替用户执行远程命令。
 登录教程：https://www.compshare.cn/docs/operation/logininstance
 
 ### 3. 防火墙/端口
@@ -143,7 +144,7 @@ https://console.compshare.cn/light-gpu/console/accelerator
 平台提供 API 模型调用服务，支持 DeepSeek、Qwen、GLM、Kimi、GPT、Claude、MiniMax 等模型。套餐外模型按使用量直接扣费，请仔细检查模型名称避免误调。
 
 ### 10. 实践部署
-Docker、Ollama、JupyterLab 等环境部署请以控制台文档和镜像说明为准。当前助手不提供实例内命令执行或文件修改，只能说明云侧资源、镜像和监控事实。
+Docker、Ollama、JupyterLab 等环境部署请以控制台文档和镜像说明为准。当前助手不会替用户执行实例内命令或文件修改；诊断时可以给用户只读自查命令，例如 nvidia-smi、ss -lntp、free -h、df -h。安装软件、重启服务、写配置文件等会改变实例环境的命令只能作为可选修复说明。
 
 ### 11. 账号管理
 - 密码登录：控制台 → 账户管理页面设置。

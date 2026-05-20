@@ -81,12 +81,7 @@ func TestScenario_SSH_ResourceExhausted(t *testing.T) {
 			"DescribeCompShareInstance": {
 				"TotalCount": float64(1),
 				"UHostSet": []any{
-					map[string]any{"UHostId": "uhost-1", "State": "Running", "Tag": "4090", "GPU": float64(1), "Name": "gpu"},
-				},
-			},
-			"DescribeCompShareSoftwarePort": {
-				"SoftwarePort": []any{
-					map[string]any{"Software": "SSH", "Port": float64(22)},
+					map[string]any{"UHostId": "uhost-1", "State": "Running", "Tag": "4090", "GPU": float64(1), "Name": "gpu", "OsType": "Linux", "SshLoginCommand": "ssh -p 23 root@1.2.3.4"},
 				},
 			},
 			"GetCompShareInstanceMonitor": {
@@ -124,8 +119,9 @@ func TestScenario_SSH_ResourceExhausted(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, reply, "99.5")
 
-	// All 3 steps should execute: state → port → monitor
-	assert.Contains(t, exec.calls, "DescribeCompShareSoftwarePort")
+	// SSH diagnosis uses DescribeCompShareInstance.SshLoginCommand, not the
+	// platform software-port catalog.
+	assert.NotContains(t, exec.calls, "DescribeCompShareSoftwarePort")
 	assert.Contains(t, exec.calls, "GetCompShareInstanceMonitor")
 }
 
@@ -136,10 +132,7 @@ func TestScenario_SSH_AllNormal_Fallback(t *testing.T) {
 		results: map[string]map[string]any{
 			"DescribeCompShareInstance": {
 				"TotalCount": float64(1),
-				"UHostSet":   []any{map[string]any{"UHostId": "uhost-1", "State": "Running", "Tag": "4090", "GPU": float64(1), "Name": "ok"}},
-			},
-			"DescribeCompShareSoftwarePort": {
-				"SoftwarePort": []any{map[string]any{"Software": "SSH", "Port": float64(22)}},
+				"UHostSet":   []any{map[string]any{"UHostId": "uhost-1", "State": "Running", "Tag": "4090", "GPU": float64(1), "Name": "ok", "OsType": "Linux", "SshLoginCommand": "ssh -p 23 root@1.2.3.4"}},
 			},
 			"GetCompShareInstanceMonitor": {
 				"Data": map[string]any{
@@ -169,7 +162,6 @@ func TestScenario_SSH_AllNormal_Fallback(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "SSH连接超时", func(e StepEvent) {})
 	assert.NoError(t, err)
 	assert.Contains(t, reply, "JupyterLab")
-	// All 3 steps ran
 	assert.Contains(t, exec.calls, "GetCompShareInstanceMonitor")
 }
 
@@ -264,8 +256,8 @@ func TestScenario_CreateInstance(t *testing.T) {
 	confirmCalled := 0
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
-			"DescribeCompShareInstance":      {"TotalCount": float64(0), "UHostSet": []any{}},
-			"DescribeCompShareImages":        {"ImageSet": []any{map[string]any{"CompShareImageId": "img-pt", "CompShareImageName": "PyTorch 2.1"}}},
+			"DescribeCompShareInstance": {"TotalCount": float64(0), "UHostSet": []any{}},
+			"DescribeCompShareImages":   {"ImageSet": []any{map[string]any{"CompShareImageId": "img-pt", "CompShareImageName": "PyTorch 2.1"}}},
 			"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
 				map[string]any{"Name": "4090", "MachineSizes": []any{
 					map[string]any{"Gpu": float64(1), "Collection": []any{
@@ -274,7 +266,7 @@ func TestScenario_CreateInstance(t *testing.T) {
 				}},
 			}},
 			"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true}}},
-			"GetCompShareInstanceUserPrice":      {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": float64(1.58)}}},
+			"GetCompShareInstanceUserPrice":  {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": float64(1.58)}}},
 			"CreateCompShareInstance":        {"UHostIds": []any{"uhost-new1"}},
 		},
 	}
@@ -705,7 +697,7 @@ func TestScenario_WorkflowCapacityInsufficient(t *testing.T) {
 	exec := &mockExecutorWithErrors{
 		results: map[string]map[string]any{
 			"DescribeCompShareInstance": {"TotalCount": float64(0), "UHostSet": []any{}},
-			"DescribeCompShareImages":  {"ImageSet": []any{map[string]any{"CompShareImageId": "img-pt", "CompShareImageName": "PyTorch 2.1"}}},
+			"DescribeCompShareImages":   {"ImageSet": []any{map[string]any{"CompShareImageId": "img-pt", "CompShareImageName": "PyTorch 2.1"}}},
 		},
 		errors: map[string]error{
 			"CheckCompShareResourceCapacity": fmt.Errorf("ResourceNotEnough: H20 库存不足"),
@@ -737,10 +729,10 @@ func TestScenario_WorkflowCapacityInsufficient(t *testing.T) {
 func TestScenario_WorkflowConfirmCancelled(t *testing.T) {
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
-			"DescribeCompShareInstance": {"TotalCount": float64(0), "UHostSet": []any{}},
-			"DescribeCompShareImages":  {"ImageSet": []any{map[string]any{"CompShareImageId": "img-pt", "CompShareImageName": "PyTorch"}}},
+			"DescribeCompShareInstance":      {"TotalCount": float64(0), "UHostSet": []any{}},
+			"DescribeCompShareImages":        {"ImageSet": []any{map[string]any{"CompShareImageId": "img-pt", "CompShareImageName": "PyTorch"}}},
 			"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{"Gpu": float64(1), "ResourceEnough": true}}},
-			"GetCompShareInstanceUserPrice":      {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": float64(1.58)}}},
+			"GetCompShareInstanceUserPrice":  {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": float64(1.58)}}},
 		},
 	}
 
@@ -767,21 +759,15 @@ func TestScenario_WorkflowConfirmCancelled(t *testing.T) {
 	}
 }
 
-// ── Scenario 17: SSH diagnosis — port not open → early exit at step 2 ─────
+// ── Scenario 17: SSH diagnosis — no login command → early exit ────────────
 
-func TestScenario_SSH_PortNotOpen(t *testing.T) {
+func TestScenario_SSH_LoginCommandMissing(t *testing.T) {
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
 			"DescribeCompShareInstance": {
 				"TotalCount": float64(1),
 				"UHostSet": []any{
-					map[string]any{"UHostId": "uhost-1", "State": "Running", "Tag": "4090", "GPU": float64(1), "Name": "gpu"},
-				},
-			},
-			"DescribeCompShareSoftwarePort": {
-				"SoftwarePort": []any{
-					// SSH port missing — only JupyterLab listed
-					map[string]any{"Software": "JupyterLab", "Port": float64(8888)},
+					map[string]any{"UHostId": "uhost-1", "State": "Running", "Tag": "4090", "GPU": float64(1), "Name": "gpu", "OsType": "Linux"},
 				},
 			},
 		},
@@ -790,7 +776,7 @@ func TestScenario_SSH_PortNotOpen(t *testing.T) {
 	mock := &mockLLM{
 		responses: []llm.ChatResponse{
 			{ToolCalls: []openai.ToolCall{tc("DiagnoseSSH", map[string]any{"UHostId": "uhost-1"})}},
-			{Content: "该实例未发现 SSH 服务，建议使用 JupyterLab 替代或选择包含 SSH 的镜像。"},
+			{Content: "云侧未返回 SSH 登录命令，请先到控制台核对登录入口；若能进 JupyterLab，可做实例内只读自查。"},
 		},
 	}
 
@@ -801,10 +787,9 @@ func TestScenario_SSH_PortNotOpen(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, reply, "SSH")
 
-	// Should stop at step 2 (port check), NOT reach monitor
 	callStr := strings.Join(exec.calls, ",")
-	assert.Contains(t, callStr, "DescribeCompShareSoftwarePort")
-	assert.NotContains(t, callStr, "GetCompShareInstanceMonitor", "should not reach monitor when port is not open")
+	assert.NotContains(t, callStr, "DescribeCompShareSoftwarePort")
+	assert.NotContains(t, callStr, "GetCompShareInstanceMonitor", "should not reach monitor when login command is missing")
 }
 
 // ── Scenario 18: Multi-turn context — query then operate ──────────────────
@@ -959,7 +944,7 @@ func TestScenario_WorkflowCreateAPIError(t *testing.T) {
 			"DescribeCompShareInstance":      {"TotalCount": float64(0), "UHostSet": []any{}},
 			"DescribeCompShareImages":        {"ImageSet": []any{map[string]any{"CompShareImageId": "img-pt", "CompShareImageName": "PyTorch"}}},
 			"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{"Gpu": float64(1), "ResourceEnough": true}}},
-			"GetCompShareInstanceUserPrice":      {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": float64(1.58)}}},
+			"GetCompShareInstanceUserPrice":  {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": float64(1.58)}}},
 		},
 		errors: map[string]error{
 			"CreateCompShareInstance": fmt.Errorf("insufficient balance"),
@@ -1224,7 +1209,7 @@ func TestScenario_RebootInstance_NotRunning(t *testing.T) {
 func TestScenario_RenameInstance(t *testing.T) {
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
-			"DescribeCompShareInstance":     {"UHostSet": []any{map[string]any{"UHostId": "uhost-rn1", "State": "Running", "Name": "old-name", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"}}},
+			"DescribeCompShareInstance":   {"UHostSet": []any{map[string]any{"UHostId": "uhost-rn1", "State": "Running", "Name": "old-name", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"}}},
 			"ModifyCompShareInstanceName": {"UHostId": "uhost-rn1", "RetCode": 0},
 		},
 	}
@@ -1246,7 +1231,7 @@ func TestScenario_RenameInstance(t *testing.T) {
 func TestScenario_ResetPassword(t *testing.T) {
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
-			"DescribeCompShareInstance":          {"UHostSet": []any{map[string]any{"UHostId": "uhost-pw1", "State": "Stopped", "InstanceType": "Normal", "Name": "vm-1", "GpuType": "A100", "GPU": float64(1), "ChargeType": "Month"}}},
+			"DescribeCompShareInstance":      {"UHostSet": []any{map[string]any{"UHostId": "uhost-pw1", "State": "Stopped", "InstanceType": "Normal", "Name": "vm-1", "GpuType": "A100", "GPU": float64(1), "ChargeType": "Month"}}},
 			"ResetCompShareInstancePassword": {"UHostId": "uhost-pw1", "RetCode": 0},
 		},
 	}
@@ -1286,7 +1271,7 @@ func TestScenario_ResetPassword(t *testing.T) {
 func TestScenario_CreateInstance_CommunityImage(t *testing.T) {
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
-			"DescribeCommunityImages":          {"CompshareImageGroup": []any{map[string]any{"ImageName": "ComfyUI", "Data": []any{map[string]any{"CompShareImageId": "cimg-001", "Name": "ComfyUI v1.0"}}}}},
+			"DescribeCommunityImages": {"CompshareImageGroup": []any{map[string]any{"ImageName": "ComfyUI", "Data": []any{map[string]any{"CompShareImageId": "cimg-001", "Name": "ComfyUI v1.0"}}}}},
 			"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
 				map[string]any{"Name": "4090", "MachineSizes": []any{
 					map[string]any{"Gpu": float64(1), "Collection": []any{
@@ -1295,7 +1280,7 @@ func TestScenario_CreateInstance_CommunityImage(t *testing.T) {
 				}},
 			}},
 			"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true}}},
-			"GetCompShareInstanceUserPrice":      {"PriceDetails": []any{map[string]any{"Price": 1.58}}},
+			"GetCompShareInstanceUserPrice":  {"PriceDetails": []any{map[string]any{"Price": 1.58}}},
 			"CreateCompShareInstance":        {"UHostIds": []any{"uhost-new"}},
 			"DescribeCompShareInstance":      {"UHostSet": []any{map[string]any{"UHostId": "uhost-new", "State": "Running"}}},
 		},
@@ -1331,8 +1316,8 @@ func TestScenario_CreateInstance_PlatformAppImage(t *testing.T) {
 				}},
 			}},
 			"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true}}},
-			"GetCompShareInstanceUserPrice":            {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": float64(1.58)}}},
-			"CreateCompShareInstance":                  {"UHostIds": []any{"uhost-pt1"}},
+			"GetCompShareInstanceUserPrice":  {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": float64(1.58)}}},
+			"CreateCompShareInstance":        {"UHostIds": []any{"uhost-pt1"}},
 		},
 	}
 
@@ -1381,7 +1366,7 @@ func TestScenario_PortFirewall_ServiceNotFound(t *testing.T) {
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
 			"DescribeCompShareInstance":     {"UHostSet": []any{map[string]any{"UHostId": "uhost-pf1", "State": "Running"}}},
-			"DescribeCompShareSoftwarePort": {"SoftwarePort": []any{map[string]any{"Software": "SSH", "Port": float64(22)}}},
+			"DescribeCompShareSoftwarePort": {"SoftwarePort": []any{map[string]any{"Software": "JupyterLab", "Port": float64(8888)}}},
 		},
 	}
 	mock := &mockLLM{responses: []llm.ChatResponse{
@@ -1533,7 +1518,7 @@ func TestScenario_Sanitize_JupyterToken(t *testing.T) {
 func TestScenario_Sanitize_Password(t *testing.T) {
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
-			"DescribeCompShareInstance":          {"UHostSet": []any{map[string]any{"UHostId": "uhost-pw2", "State": "Stopped", "InstanceType": "Normal", "Name": "vm-2", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"}}},
+			"DescribeCompShareInstance":      {"UHostSet": []any{map[string]any{"UHostId": "uhost-pw2", "State": "Stopped", "InstanceType": "Normal", "Name": "vm-2", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"}}},
 			"ResetCompShareInstancePassword": {"UHostId": "uhost-pw2", "RetCode": 0},
 		},
 	}
