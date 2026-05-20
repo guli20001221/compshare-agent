@@ -90,8 +90,8 @@ func stepCheckImageAndState() Step {
 				}
 				return Verdict{
 					Action:     Conclude,
-					Conclusion: "镜像加载正常，当前镜像类型为「" + imageType + "」。",
-					Suggestion: "如果仍有问题，请检查应用配置或联系客服。",
+					Conclusion: "云侧实例已运行，当前镜像类型为「" + imageType + "」。这只能说明实例状态正常，不能单独证明镜像内应用或环境完全正常。",
+					Suggestion: "如果仍有问题，请根据具体应用现象继续诊断；可在实例内使用只读命令查看版本或服务状态，涉及安装、重启服务、修改文件的命令应作为可选修复处理。",
 				}
 			default:
 				return Verdict{

@@ -105,6 +105,18 @@ func TestBuildSystem_ContainsDiagnosis(t *testing.T) {
 	}
 }
 
+func TestBuildSystem_ContainsDiagnosisCommandBoundary(t *testing.T) {
+	prompt := BuildSystem("test context")
+	for _, text := range []string{
+		"实例内只读自查命令",
+		"修改实例环境的命令必须标为可选修复",
+	} {
+		if !strings.Contains(prompt, text) {
+			t.Fatalf("system prompt should contain diagnosis command boundary %q", text)
+		}
+	}
+}
+
 func TestBuildSystemWithOptions_ReadOnlyHidesMutatingWorkflowGuidance(t *testing.T) {
 	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false})
 	for _, text := range []string{
@@ -122,7 +134,6 @@ func TestBuildSystemWithOptions_ReadOnlyHidesMutatingWorkflowGuidance(t *testing
 		"/start.d/",
 		"sudo apt",
 		"ollama serve",
-		"systemctl",
 		"ldconfig",
 	} {
 		if strings.Contains(prompt, text) {
@@ -132,7 +143,10 @@ func TestBuildSystemWithOptions_ReadOnlyHidesMutatingWorkflowGuidance(t *testing
 	for _, text := range []string{
 		"当前阶段不直接执行开机、关机、重启",
 		"可以提供控制台操作步骤",
-		"诊断仅限云侧只读检查",
+		"诊断工具本身仅做云侧只读检查",
+		"可以给用户实例内只读自查命令",
+		"systemctl status",
+		"修改实例环境的命令必须标为可选修复",
 		"DiagnoseSSH",
 	} {
 		if !strings.Contains(prompt, text) {
@@ -141,12 +155,11 @@ func TestBuildSystemWithOptions_ReadOnlyHidesMutatingWorkflowGuidance(t *testing
 	}
 }
 
-func TestReadOnlyFAQContentOmitsInstanceInternalCommands(t *testing.T) {
+func TestReadOnlyFAQContentAllowsReadOnlySelfCheckButOmitsMutatingCommands(t *testing.T) {
 	for _, text := range []string{
 		"/start.d/",
 		"sudo apt",
 		"ollama serve",
-		"systemctl",
 		"ldconfig",
 		"StartInstanceWorkflow",
 	} {
@@ -158,7 +171,8 @@ func TestReadOnlyFAQContentOmitsInstanceInternalCommands(t *testing.T) {
 		"计费/回收规则",
 		"连接实例",
 		"控制台",
-		"不登录实例、不执行远程命令",
+		"只读自查命令",
+		"nvidia-smi",
 	} {
 		if !strings.Contains(ReadOnlyFAQContent, text) {
 			t.Fatalf("read-only FAQ should contain %q", text)

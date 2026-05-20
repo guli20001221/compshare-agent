@@ -548,7 +548,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DiagnoseSSH",
-			Description: "诊断 SSH 连接失败。自动执行：检查实例状态 → 检查 SSH 端口 → 检查资源使用 → 给出结论和建议。用户反馈 SSH 连不上、连接超时、连接被拒时使用。",
+			Description: "诊断 SSH 连接失败。自动执行：检查实例状态与 DescribeCompShareInstance 返回的 SshLoginCommand → 检查资源使用 → 给出结论、只读自查命令和建议。用户反馈 SSH 连不上、连接超时、连接被拒时使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -616,7 +616,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DiagnosePortOrFirewall",
-			Description: "诊断端口/服务可达性问题。查询平台已知服务端口映射，给出排查线索。用户报告服务无法访问、端口不通、JupyterLab/SSH/FileBrowser 打不开时使用。",
+			Description: "诊断端口/服务可达性问题。先查实例应用入口，再查询平台已知应用端口映射，给出排查线索；SSH 以实例 SshLoginCommand 为准，不以平台应用端口目录为准。用户报告服务无法访问、端口不通、JupyterLab/SSH/FileBrowser 打不开时使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
