@@ -20,6 +20,12 @@ Four modes (mirror internal/knowledge/retriever.go retrieval pipelines):
     RAG_RETRIEVAL_MODE=qwen3_full. Requires the qwen3 sidecar from
     build_corpus_embeddings.py --embed-model qwen3-embedding-8b.
 
+  qwen3_rrf: BM25 top-50 fused with qwen3-embedding-8b dense-full-corpus
+    top-50 via Reciprocal Rank Fusion (k=60) -> top-10 -> qwen3-reranker-8b
+    cross-encoder -> top-3. Matches RAG_RETRIEVAL_MODE=qwen3_rrf. Reuses
+    the same qwen3 sidecar as qwen3_full; recovers BM25-zero-hit queries
+    via the dense leg (cascade path skips embedder when BM25 returns 0).
+
 Eval fails loud on embedding/reranker API errors so regressions are
 visible (the runtime swallows these for latency safety; eval must not
 silently mask them — see memory feedback_eval_must_reflect_runtime_no_coercion).
@@ -65,6 +71,13 @@ HYBRID_BM25_POOL = 20
 # drawn from the reranker's ordering. Larger pool = more recall headroom
 # but higher reranker latency / tokens.
 RERANKER_POOL_SIZE = 10
+# Mirror internal/knowledge/retriever.go:rrfBM25PoolSize / rrfDensePoolSize /
+# rrfK. RRF fusion uses a wider BM25/dense window than cascade modes
+# (Elastic + OpenSearch + Azure recommend 50-100). k=60 is the canonical
+# smoothing constant from Cormack et al. 2009 SIGIR.
+RRF_BM25_POOL = 50
+RRF_DENSE_POOL = 50
+RRF_K = 60
 # Mirror internal/knowledge/retriever.go:chunkReprForRerank max content.
 RERANKER_MAX_CONTENT_RUNES = 1800
 ANSWER_BEHAVIOR = "answer"
@@ -75,9 +88,9 @@ DEFAULT_RERANKER_MODEL = "qwen3-reranker-8b"
 DEFAULT_BASE_URL = "https://api.modelverse.cn/v1"
 
 # Modes that require an embedding sidecar + query embedder.
-_EMBED_MODES = {"hybrid", "hybrid_rerank", "qwen3_full"}
+_EMBED_MODES = {"hybrid", "hybrid_rerank", "qwen3_full", "qwen3_rrf"}
 # Modes that require a reranker client.
-_RERANK_MODES = {"hybrid_rerank", "qwen3_full"}
+_RERANK_MODES = {"hybrid_rerank", "qwen3_full", "qwen3_rrf"}
 
 
 def evaluate_retrieval(
@@ -132,7 +145,21 @@ def evaluate_retrieval(
             excluded += 1
             continue
         evaluated += 1
-        if mode in _RERANK_MODES:
+        if mode == "qwen3_rrf":
+            assert query_embedder is not None and chunk_embeddings is not None and reranker is not None
+            scored = _retrieve_qwen3_rrf(
+                question=str(question.get("question") or ""),
+                question_id=str(question.get("question_id") or ""),
+                product_area=str(question.get("product_area") or ""),
+                chunks=chunks,
+                index=index,
+                top_k=top_k,
+                threshold=threshold,
+                chunk_embeddings=chunk_embeddings,
+                query_embedder=query_embedder,
+                reranker=reranker,
+            )
+        elif mode in _RERANK_MODES:
             assert query_embedder is not None and chunk_embeddings is not None and reranker is not None
             scored = _retrieve_hybrid_rerank(
                 question=str(question.get("question") or ""),
@@ -322,12 +349,12 @@ def _retrieve_hybrid(
 def _default_embed_model_for_mode(mode: str) -> str:
     """Pick the embedder model that matches the retrieval mode.
 
-    qwen3_full pairs with qwen3-embedding-8b (and the qwen3 sidecar);
-    other hybrid modes use text-embedding-3-large. Callers may override
-    via --embed-model, but the default here makes the script self-consistent
-    when only --mode is set.
+    qwen3_full and qwen3_rrf both pair with qwen3-embedding-8b (and the
+    qwen3 sidecar); other hybrid modes use text-embedding-3-large.
+    Callers may override via --embed-model, but the default here makes
+    the script self-consistent when only --mode is set.
     """
-    if mode == "qwen3_full":
+    if mode in {"qwen3_full", "qwen3_rrf"}:
         return DEFAULT_QWEN3_EMBED_MODEL
     return DEFAULT_EMBED_MODEL
 
@@ -413,6 +440,110 @@ def _retrieve_hybrid_rerank(
         )
     # Reranker returns desc-sorted but we sort defensively, same as Go
     # client's safety re-sort.
+    reranked.sort(key=lambda item: -item[1])
+    return reranked[:top_k]
+
+
+def _retrieve_qwen3_rrf(
+    *,
+    question: str,
+    question_id: str,
+    product_area: str,
+    chunks: list[dict[str, Any]],
+    index: "BM25Index",
+    top_k: int,
+    threshold: float,
+    chunk_embeddings: dict[str, list[float]],
+    query_embedder: "_QueryEmbedder",
+    reranker: "_Reranker",
+) -> list[tuple[dict[str, Any], float]]:
+    """BM25 top-50 + dense-full-corpus top-50 -> RRF fusion -> top-10
+    -> qwen3-reranker-8b -> top-K.
+
+    Must stay byte-equivalent to internal/knowledge/retriever.go Retrieve
+    when r.mode is qwen3_rrf. The dense leg iterates the ACTIVE chunk set
+    (post-confidence/validity filtering) just like the Go side, NOT the
+    raw sidecar map.
+
+    Eval is fail-loud on embedder + reranker errors (same convention as
+    _retrieve_hybrid_rerank); the runtime keeps fallbacks for latency
+    safety but eval must surface regressions.
+    """
+    bm25_pool = _retrieve(
+        question=question,
+        product_area=product_area,
+        chunks=chunks,
+        index=index,
+        top_k=RRF_BM25_POOL,
+        threshold=threshold,
+    )
+    # Dense full-corpus scan. CRITICAL: iterate `chunks` (active set after
+    # confidence filter) not `chunk_embeddings.keys()` (raw sidecar) so
+    # filtered chunks don't leak back in via dense — mirrors Go's
+    # denseFullSearch invariant from rrf_test.go::TestDenseFullSearchIteratesCorpusNotSidecar.
+    query_vec = query_embedder.embed(question_id, question)
+    dense_scored: list[tuple[dict[str, Any], float]] = []
+    for chunk in chunks:
+        if chunk.get("confidence") == "low":
+            continue
+        chunk_id = str(chunk.get("chunk_id") or "")
+        cvec = chunk_embeddings.get(chunk_id)
+        if cvec is None:
+            # Sidecar bijection violation (LoadPinnedCorpusWithEmbeddings
+            # is supposed to guarantee this); defensive skip.
+            continue
+        dense_scored.append((chunk, cosine_similarity(query_vec, cvec)))
+    dense_scored.sort(
+        key=lambda item: (
+            -item[1],
+            -CONFIDENCE_RANK.get(str(item[0].get("confidence") or ""), 0),
+            str(item[0].get("chunk_id") or ""),
+        )
+    )
+    dense_pool = dense_scored[:RRF_DENSE_POOL]
+
+    # Reciprocal Rank Fusion with k=60.
+    rrf_scores: dict[str, float] = {}
+    rrf_chunk: dict[str, dict[str, Any]] = {}
+    for rank, (chunk, _score) in enumerate(bm25_pool):
+        cid = str(chunk.get("chunk_id") or "")
+        rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (RRF_K + rank + 1)
+        rrf_chunk[cid] = chunk
+    for rank, (chunk, _score) in enumerate(dense_pool):
+        cid = str(chunk.get("chunk_id") or "")
+        rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (RRF_K + rank + 1)
+        rrf_chunk[cid] = chunk
+    fused = [
+        (rrf_chunk[cid], score) for cid, score in rrf_scores.items()
+    ]
+    fused.sort(key=lambda item: (-item[1], str(item[0].get("chunk_id") or "")))
+    fused = fused[:RERANKER_POOL_SIZE]
+    if not fused:
+        return []
+
+    docs = [_chunk_repr_for_rerank(chunk) for chunk, _ in fused]
+    results = reranker.rerank(
+        question_id=question_id,
+        question=question,
+        docs=docs,
+        top_n=top_k,
+        mode="qwen3_rrf",
+    )
+    reranked: list[tuple[dict[str, Any], float]] = []
+    for idx, score in results:
+        if idx < 0 or idx >= len(fused):
+            print(
+                f"  rerank: skipping out-of-range index {idx} (pool={len(fused)})",
+                flush=True,
+            )
+            continue
+        chunk, _ = fused[idx]
+        reranked.append((chunk, float(score)))
+    if not reranked:
+        raise RuntimeError(
+            f"reranker returned no usable results for question_id={question_id!r} "
+            f"(pool_size={len(fused)}, server_results={len(results)})"
+        )
     reranked.sort(key=lambda item: -item[1])
     return reranked[:top_k]
 
@@ -704,22 +835,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--mode",
-        choices=("baseline", "hybrid", "hybrid_rerank", "qwen3_full"),
+        choices=("baseline", "hybrid", "hybrid_rerank", "qwen3_full", "qwen3_rrf"),
         default="baseline",
         help="Retrieval pipeline. See module docstring for stage breakdown.",
     )
     parser.add_argument("--embeddings-path", type=Path, default=None,
-                        help="Required for --mode hybrid/hybrid_rerank/qwen3_full: "
+                        help="Required for --mode hybrid/hybrid_rerank/qwen3_full/qwen3_rrf: "
                              "corpus embedding sidecar from build_corpus_embeddings.py. "
-                             "qwen3_full expects the qwen3-embedding-8b sidecar.")
+                             "qwen3_full and qwen3_rrf both expect the qwen3-embedding-8b sidecar.")
     parser.add_argument("--query-embedding-cache", type=Path, default=None,
                         help="Optional jsonl cache for query embeddings keyed by question_id; speeds up re-runs")
     parser.add_argument("--reranker-cache", type=Path, default=None,
                         help="Optional jsonl cache for reranker results keyed by (question_id, mode); "
-                             "speeds up re-runs of --mode hybrid_rerank/qwen3_full")
+                             "speeds up re-runs of --mode hybrid_rerank/qwen3_full/qwen3_rrf")
     parser.add_argument("--embed-model", type=str, default=None,
                         help="Override embedder model. Defaults: text-embedding-3-large for "
-                             "hybrid/hybrid_rerank, qwen3-embedding-8b for qwen3_full.")
+                             "hybrid/hybrid_rerank, qwen3-embedding-8b for qwen3_full/qwen3_rrf.")
     parser.add_argument("--reranker-model", type=str, default=None,
                         help="Override reranker model. Default: qwen3-reranker-8b.")
     parser.add_argument("--env", type=Path, default=None,
