@@ -1097,14 +1097,21 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 	if rankingCandidate {
 		trace.RankingErrorCandidate = true
 	}
+	// Record the chunk_ids the LLM cited (via [n] -> hits[n-1] mapping) for
+	// audit, then strip the [n] markers from the user-facing reply. The
+	// extract MUST happen before the strip so the marker tokens still exist.
+	// Refusal replies and retry-no-cite coerce paths return strings without
+	// [n], so the extract returns nil and the strip is a no-op for them.
+	trace.CitedChunkIDs = extractCitedChunkIDs(reply, hitItems)
+	displayReply := stripCitationMarkers(reply)
 	e.emitRetrievalTrace(trace)
 	e.emitOutcomeTrace(outcome)
 	e.emitPlannerTrace(result, intent.CutoverStatusDispatchedRetrieval, dispatch.latency)
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
-		Content: clipKnowledgeHistoryContent(reply),
+		Content: clipKnowledgeHistoryContent(displayReply),
 	})
-	return reply, true
+	return displayReply, true
 }
 
 func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string, evidences []envelope.Evidence, weak bool) (string, observability.OutcomeTrace, string, bool, error) {

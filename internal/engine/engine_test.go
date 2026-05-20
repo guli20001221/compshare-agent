@@ -3380,7 +3380,11 @@ func TestPlannerRoutingControlsStage2BRAGPath(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, planner.calls, 1)
 			if tc.expectRAGPath {
-				assert.True(t, hasNumberedCitation(reply), "RAG path must return cited answer, got %q", reply)
+				// The RAG path now strips [n] markers from the user-facing reply.
+				// "RAG path was taken" is proven by retriever.calls + mock.calls;
+				// citations live in trace.CitedChunkIDs which isn't observed in
+				// this test (the routing assertion only needs the dispatch fact).
+				assert.False(t, hasNumberedCitation(reply), "RAG path must strip [n] markers from user-facing reply, got %q", reply)
 				require.Len(t, retriever.calls, 1)
 				assert.Equal(t, tc.userMsg, retriever.calls[0].question)
 				require.Len(t, mock.calls, 1)
@@ -3434,7 +3438,9 @@ func TestStage2BRetrievalHitCallsLLMWithNumberedEvidence(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, "Stopped instances still charge for disks. [1]", reply)
+	// User-facing reply has [n] markers stripped; the cited chunk_ids survive
+	// in retrievalTraces[0].CitedChunkIDs for MySQL audit ingest.
+	assert.Equal(t, "Stopped instances still charge for disks.", reply)
 	require.Len(t, mock.calls, 1)
 	requestText := requestContent(mock.calls[0])
 	assert.Contains(t, requestText, "[1] Stopped instance billing")
@@ -3448,6 +3454,8 @@ func TestStage2BRetrievalHitCallsLLMWithNumberedEvidence(t *testing.T) {
 	assert.Equal(t, "w0-billing_rule-stopped-a1b2c3d4", retrievalTraces[0].HitItems[0].ChunkID)
 	assert.Equal(t, 80.0, retrievalTraces[0].HitItems[0].Score)
 	assert.False(t, retrievalTraces[0].WeakEvidence)
+	// Cited chunk_ids survive into trace even though [1] is stripped from reply.
+	assert.Equal(t, []string{"w0-billing_rule-stopped-a1b2c3d4"}, retrievalTraces[0].CitedChunkIDs)
 	// HybridMode + HybridFallbackReason + EmbeddingLatencyMS must propagate
 	// from RetrievalResult into the emitted trace so ops can aggregate
 	// fallback rate AND latency distribution across runs.
@@ -3502,12 +3510,14 @@ func TestStage2BRetrievalAmbiguousTopHitsMarksRankingErrorCandidate(t *testing.T
 	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, "Stopped instances still charge for disks. [1]", reply)
+	// User-facing reply has [n] stripped; CitedChunkIDs preserves the mapping.
+	assert.Equal(t, "Stopped instances still charge for disks.", reply)
 	require.Len(t, retrievalTraces, 1)
 	assert.False(t, retrievalTraces[0].WeakEvidence)
 	assert.Empty(t, retrievalTraces[0].RefusedReason)
 	assert.True(t, retrievalTraces[0].RankingErrorCandidate)
 	require.Len(t, retrievalTraces[0].HitItems, 2)
+	assert.Equal(t, []string{"w0-billing_rule-stopped-a1b2c3d4"}, retrievalTraces[0].CitedChunkIDs)
 }
 
 func TestStage2BRetrievalNormalRefusalSetsRefusedReason(t *testing.T) {
@@ -3650,11 +3660,13 @@ func TestStage2BRetrievalWeakEvidenceCitedAnswerHasNoRefusedReason(t *testing.T)
 	reply, err := eng.Chat(context.Background(), "coding quota details", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, "Coding Plan has a quota window. [1]", reply)
+	// User-facing reply has [n] stripped; CitedChunkIDs preserves the mapping.
+	assert.Equal(t, "Coding Plan has a quota window.", reply)
 	require.Len(t, retrievalTraces, 1)
 	assert.True(t, retrievalTraces[0].WeakEvidence)
 	assert.Empty(t, retrievalTraces[0].RefusedReason)
 	assert.True(t, retrievalTraces[0].RankingErrorCandidate)
+	assert.Equal(t, []string{"w0-modelverse-package-a1b2c3d4"}, retrievalTraces[0].CitedChunkIDs)
 }
 
 func TestStage2BRetrievalRetryNoCitationFallsBackToNoEvidence(t *testing.T) {

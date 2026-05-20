@@ -3,6 +3,8 @@ package engine
 import (
 	"regexp"
 	"strings"
+
+	"github.com/compshare-agent/internal/knowledge"
 )
 
 const (
@@ -65,4 +67,98 @@ func isKnowledgeRefusal(answer string) bool {
 		}
 	}
 	return false
+}
+
+// extractCitedChunkIDs reads all [n] markers in the answer, dedupes while
+// preserving first-occurrence order, and maps each n (1-indexed) to the
+// corresponding hit's ChunkID. Markers that point beyond len(hits) or to
+// [0] are dropped. Returns nil when no in-range citation is found.
+//
+// Called AFTER the cited contract gate (hasNumberedCitation) has already
+// validated the answer has citations, and BEFORE stripCitationMarkers
+// removes the [n] tokens — so the answer string still contains markers.
+// The output is recorded in trace.CitedChunkIDs for MySQL audit ingestion;
+// the user-facing reply gets the stripped version.
+func extractCitedChunkIDs(answer string, hits []knowledge.RetrievalHit) []string {
+	matches := numberedCitationRE.FindAllString(answer, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[int]bool, len(matches))
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		// m is "[N]" — peel brackets.
+		raw := strings.TrimSuffix(strings.TrimPrefix(m, "["), "]")
+		n := 0
+		for _, r := range raw {
+			if r < '0' || r > '9' {
+				n = -1
+				break
+			}
+			n = n*10 + int(r-'0')
+		}
+		if n <= 0 || n > len(hits) {
+			continue
+		}
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, hits[n-1].Chunk.ChunkID)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// stripCitationMarkers removes all [n] markers from the answer text before
+// it is shown to the user. The cited-chunk mapping survives in trace.
+// CitedChunkIDs (extracted before this call). After removal we collapse
+// the two cosmetic side-effects of stripping: " ." → "." (citation right
+// before sentence end) and double spaces left by adjacent removals.
+//
+// Why not change the RAG prompt to skip [n] entirely: the [n] presence is
+// the anti-fabrication anchor that gates the cited contract — removing it
+// from the prompt would let the LLM regress to unsourced prose. We keep
+// [n] in the LLM contract, strip cosmetically at the boundary.
+func stripCitationMarkers(answer string) string {
+	if answer == "" {
+		return answer
+	}
+	out := numberedCitationRE.ReplaceAllString(answer, "")
+	// Tidy up CJK + ASCII punctuation that immediately preceded a stripped
+	// marker. Order matters: collapse spaces last so combined " [1]." -> "."
+	// rather than "  ." -> " .". The CJK enumeration comma 、 (U+3001) and
+	// fullwidth ! ? are common in LLM Chinese output — "方案A [1]、方案B [2]"
+	// would otherwise leave orphan spaces before 、 (caught in PR #125 review).
+	out = strings.ReplaceAll(out, " ，", "，")
+	out = strings.ReplaceAll(out, " 。", "。")
+	out = strings.ReplaceAll(out, " ；", "；")
+	out = strings.ReplaceAll(out, " ：", "：")
+	out = strings.ReplaceAll(out, " 、", "、")
+	out = strings.ReplaceAll(out, " ！", "！")
+	out = strings.ReplaceAll(out, " ？", "？")
+	out = strings.ReplaceAll(out, " ,", ",")
+	out = strings.ReplaceAll(out, " .", ".")
+	out = strings.ReplaceAll(out, " ;", ";")
+	out = strings.ReplaceAll(out, " :", ":")
+	out = strings.ReplaceAll(out, " !", "!")
+	out = strings.ReplaceAll(out, " ?", "?")
+	// Collapse runs of spaces to a single space; do NOT touch newlines so
+	// markdown structure (lists, tables) survives.
+	for strings.Contains(out, "  ") {
+		out = strings.ReplaceAll(out, "  ", " ")
+	}
+	// Trim trailing ASCII spaces on each line — markers right before \n or
+	// at end-of-string leave a hanging space that breaks markdown table
+	// cell padding and looks ragged in the CLI renderer.
+	if strings.Contains(out, " \n") || strings.HasSuffix(out, " ") {
+		lines := strings.Split(out, "\n")
+		for i := range lines {
+			lines[i] = strings.TrimRight(lines[i], " ")
+		}
+		out = strings.Join(lines, "\n")
+	}
+	return out
 }

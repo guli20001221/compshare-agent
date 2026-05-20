@@ -257,6 +257,17 @@ type RetrievalTrace struct {
 	// attempted but failed and the retriever fell back to the cosine top-K.
 	// One of "reranker_timeout" | "reranker_error" | "reranker_empty".
 	RerankerFallbackReason string `json:"reranker_fallback_reason,omitempty"`
+	// CitedChunkIDs records the chunk_ids the LLM actually cited via [n]
+	// markers in its final reply, in citation order (1-indexed → hit_items
+	// position n-1). Populated only when the RAG path returned a cited
+	// answer. Out-of-range markers (e.g. [9] when only 3 hits) are dropped.
+	// Distinct from hit_items (full retrieved set with ranks/scores) — this
+	// is the post-strip audit trail enabling downstream MySQL ingest to
+	// reconstruct "this answer cited chunks X/Y/Z" without re-running the
+	// retrieval. Citation markers are stripped from the user-facing reply
+	// so the user only sees prose; this field is the only place [n] → chunk
+	// mapping survives.
+	CitedChunkIDs []string `json:"cited_chunk_ids,omitempty"`
 }
 
 type RetrievalHit struct {
