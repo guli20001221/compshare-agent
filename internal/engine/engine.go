@@ -2045,6 +2045,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
+	uid, _ := args["UHostId"].(string)
 
 	// Vague-failure guard — DiagnoseInitFailure only.
 	// Gate 1 (symptom specificity): the user message must contain an
@@ -2052,7 +2053,8 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	// "挂了" is blocked here, even if the LLM provided a target instance.
 	// This is a hard safety net behind the prompt-level vague_failure
 	// routing class — deliberately does NOT redirect to another Diagnose*.
-	if action == "DiagnoseInitFailure" && !containsInitFailureSignal(e.lastUserMsg) {
+	if action == "DiagnoseInitFailure" && !containsInitFailureSignal(e.lastUserMsg) &&
+		!(uid != "" && e.previousAssistantAskedInitFailureTarget()) {
 		msg := "请问是哪台实例出了问题？能描述一下具体现象吗（例如：SSH 断了、GPU 报错、服务崩了、初始化卡住等）？"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return finalReplyPrefix + msg
@@ -2069,7 +2071,6 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	// upstream; if it doesn't, this gate correctly falls through to
 	// clarification.
 	if action == "DiagnoseInitFailure" {
-		uid, _ := args["UHostId"].(string)
 		if uid == "" && !containsScanAllSignal(e.lastUserMsg) {
 			msg := "请问是哪台实例的初始化失败了？"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
@@ -2566,6 +2567,32 @@ func normalizeMsg(s string) string {
 	}
 	out := b.String()
 	return strings.TrimRight(out, " ")
+}
+
+func (e *Engine) previousAssistantAskedInitFailureTarget() bool {
+	if e == nil {
+		return false
+	}
+	for i := len(e.messages) - 1; i >= 0; i-- {
+		msg := e.messages[i]
+		if msg.Role != openai.ChatMessageRoleAssistant {
+			continue
+		}
+		if len(msg.ToolCalls) > 0 {
+			continue
+		}
+		n := normalizeMsg(msg.Content)
+		if n == "" {
+			continue
+		}
+		if strings.Contains(n, "具体现象") ||
+			strings.Contains(n, "例如") {
+			return false
+		}
+		return strings.Contains(n, "初始化") &&
+			(strings.Contains(n, "哪台") || strings.Contains(n, "哪一台") || strings.Contains(n, "具体"))
+	}
+	return false
 }
 
 // initFailureSignalKeywords is a narrow word list that marks a user message

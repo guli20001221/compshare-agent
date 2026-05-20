@@ -5437,6 +5437,72 @@ func TestVagueCrashGuard_UHostIdTargetPasses(t *testing.T) {
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
 }
 
+func TestVagueCrashGuard_FollowupUHostIdAfterSpecificClarificationPasses(t *testing.T) {
+	executor := initFailureScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{"UHostId":"uhost-init-001"}`),
+		}},
+		{Content: "实例初始化失败，建议重建"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: specificClarifyPrefix,
+	})
+
+	reply, err := eng.Chat(context.Background(), "uhost-init-001", noopStep)
+	assert.NoError(t, err)
+	assert.NotContains(t, reply, specificClarifyPrefix)
+	assert.NotContains(t, reply, vagueClarifyPrefix)
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance",
+		"follow-up target replies after an init-failure clarification must continue the diagnosis")
+}
+
+func TestVagueCrashGuard_FollowupUHostIdAfterGenericClarificationStillBlocked(t *testing.T) {
+	executor := initFailureScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{"UHostId":"uhost-init-001"}`),
+		}},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: "请问是哪台实例出了问题？能描述一下具体现象吗（例如：SSH 断了、GPU 报错、服务崩了、初始化卡住等）？",
+	})
+
+	reply, err := eng.Chat(context.Background(), "uhost-init-001", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, vagueClarifyPrefix,
+		"generic symptom clarification must not let a target-only reply run init diagnosis")
+	assert.NotContains(t, executor.calls, "DescribeCompShareInstance")
+}
+
+func TestVagueCrashGuard_FollowupUHostIdAfterInitStatusClarificationPasses(t *testing.T) {
+	executor := initFailureScenarioExecutor()
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseInitFailure", `{"UHostId":"uhost-init-001"}`),
+		}},
+		{Content: "实例初始化失败，建议重建"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: "我看到有 3 台实例处于初始化中。请告诉我具体是哪台实例连不上。",
+	})
+
+	reply, err := eng.Chat(context.Background(), "uhost-init-001", noopStep)
+	assert.NoError(t, err)
+	assert.NotContains(t, reply, specificClarifyPrefix)
+	assert.NotContains(t, reply, vagueClarifyPrefix)
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+}
+
 func TestVagueCrashGuard_ExplicitInitFailureScanAllPasses(t *testing.T) {
 	// Gate 1 passes (init-failure signal), Gate 2 passes (scan-all intent).
 	executor := initFailureScenarioExecutor()
