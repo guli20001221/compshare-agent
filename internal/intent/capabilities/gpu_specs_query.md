@@ -25,7 +25,7 @@ required_citation: false
 
 ## 边界注意
 - H100 / H200 不在 CompShare 售卖范围（`internal/knowledge/gpu_specs_test.go:126` 明示禁推荐），tool 返回空集合或 SoldOut 时礼貌说明
-- 不返回精确库存数量（那是 stock_availability + 兜底"不公开"语义）
+- 不返回精确库存数量或可创建性（那是 stock_availability + 容量预检）
 
 ## Smoke 题
 - "4090 显存多大"

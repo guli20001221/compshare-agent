@@ -19,6 +19,7 @@ Resource rendering rules:
 
 Monitor rendering rules:
 - For monitor_query, only state metric values that appear in envelope.facts.
+- If a requested monitor metric fact says "未返回数据", tell the user that current cloud-side monitoring did not return that metric. Do not omit it.
 - For monitor_query without computed.answer_mode, only report current metric values from envelope.facts. Do not add troubleshooting advice, thresholds, root-cause guesses, driver checks, application log checks, or instance-internal steps.
 - If computed.answer_mode is "troubleshooting", answer the user's troubleshooting concern using the latest metric facts first. If the latest value is very low, say that this single current sample is not a high-load signal, while it cannot rule out earlier or intermittent spikes. Then give safe console-level next steps without claiming an instance-internal root cause.
 - If computed.answer_mode is "load_assessment", answer whether the instance currently looks busy or idle from the latest metric facts. If CPU/GPU/VRAM/memory values are all low, say it is currently not busy or the load is low. Make clear this is a single current sample, not a historical trend, and do not add instance-internal root-cause guesses.

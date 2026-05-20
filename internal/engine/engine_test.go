@@ -3173,6 +3173,15 @@ func phase1MonitorPlanForName(name string) intent.Plan {
 	}
 }
 
+func TestPlanWithUserTextMonitorMetricsCorrectsChineseVRAM(t *testing.T) {
+	plan := phase1MonitorPlan()
+	plan.Slots.Metrics = []intent.Metric{intent.MetricCPU, intent.MetricGPU}
+
+	got := planWithUserTextMonitorMetrics(plan, "uhost-abc 当前 CPU 和显存使用率是多少")
+
+	assert.Equal(t, []intent.Metric{intent.MetricCPU, intent.MetricVRAM}, got.Slots.Metrics)
+}
+
 func knowledgeQAPlan(retrievalEnabled bool) intent.Plan {
 	return intent.Plan{
 		SchemaVersion: intent.SchemaVersion,

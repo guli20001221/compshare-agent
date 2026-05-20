@@ -104,6 +104,31 @@ func TestValidateRenderedTextRejectsUngroundedMonitorPercent(t *testing.T) {
 	assert.Error(t, ValidateRenderedText(cpuEnv, "CPU 和显卡都是 87%"))
 }
 
+func TestValidateRenderedTextRequiresMissingMonitorMetricMention(t *testing.T) {
+	env := envelope.Envelope{
+		Kind: envelope.KindMonitorQuery,
+		Facts: []envelope.Fact{
+			{
+				Key:    "cpu_usage",
+				Label:  "CPU 使用率",
+				Value:  "8",
+				Unit:   "%",
+				Source: envelope.FactSourceAPI,
+			},
+			{
+				Key:    "missing_vram_usage",
+				Label:  "显存使用率",
+				Value:  "未返回数据",
+				Source: envelope.FactSourceComputed,
+			},
+		},
+		Constraints: envelope.Constraints{DoNotInventMetrics: true},
+	}
+
+	assert.NoError(t, ValidateRenderedText(env, "CPU 使用率为 8%；当前云侧监控未返回显存使用率数据。"))
+	assert.Error(t, ValidateRenderedText(env, "CPU 使用率为 8%。"))
+}
+
 func TestValidateRenderedTextRejectsUnknownInstanceLikeName(t *testing.T) {
 	err := ValidateRenderedText(testResourceEnvelope(), "prod-db-01 当前运行中")
 	assert.Error(t, err)

@@ -164,6 +164,32 @@ func TestBuildMonitorEnvelopeExtractsSemanticMonitorFacts(t *testing.T) {
 	}
 }
 
+func TestBuildMonitorEnvelopeIncludesMissingRequestedMetricFacts(t *testing.T) {
+	subjects := []entity.InstanceSnapshot{{
+		UHostId: "uhost-a",
+		Name:    "train-a",
+		State:   "Running",
+	}}
+	payload := map[string]any{
+		"Data": map[string]any{
+			"List": []any{
+				map[string]any{
+					"UHostId": "uhost-a",
+					"Metrics": []any{
+						monitorMetric("uhost_cpu_used", nil, 8),
+						monitorMetric("cloudwatch_gpu_memory_usage", map[string]any{"gpu_bus_id": "00:03.0"}),
+					},
+				},
+			},
+		},
+	}
+
+	env := BuildMonitorEnvelope(subjects, []Metric{MetricCPU, MetricVRAM}, payload)
+
+	assertEnvelopeFact(t, env, "uhost-a", "cpu_usage", "8")
+	assertEnvelopeFactWithSource(t, env, "uhost-a", "missing_vram_usage", "未返回数据", envelope.FactSourceComputed)
+}
+
 func TestBuildMonitorEnvelopeUsesOrdinalLabelsForMultiGPUFacts(t *testing.T) {
 	subjects := []entity.InstanceSnapshot{{UHostId: "uhost-a", Name: "train-a"}}
 	payload := map[string]any{
@@ -220,7 +246,7 @@ func TestBuildMonitorEnvelopeRecognizedAPIShapeDoesNotFallbackToRawMetadata(t *t
 
 	env := BuildMonitorEnvelope(subjects, []Metric{MetricGPU}, payload)
 
-	assert.Empty(t, env.Facts)
+	assertEnvelopeFactWithSource(t, env, "uhost-a", "missing_gpu_usage", "未返回数据", envelope.FactSourceComputed)
 	raw, err := json.Marshal(env)
 	require.NoError(t, err)
 	assert.NotContains(t, string(raw), "gpu_bus_id")
@@ -280,10 +306,15 @@ func monitorMetric(key string, tags map[string]any, values ...float64) map[strin
 
 func assertEnvelopeFact(t *testing.T, env envelope.Envelope, subjectID, key string, value any) {
 	t.Helper()
+	assertEnvelopeFactWithSource(t, env, subjectID, key, value, envelope.FactSourceAPI)
+}
+
+func assertEnvelopeFactWithSource(t *testing.T, env envelope.Envelope, subjectID, key string, value any, source envelope.FactSource) {
+	t.Helper()
 	for _, fact := range env.Facts {
 		if fact.SubjectID == subjectID && fact.Key == key {
 			assert.Equal(t, value, fact.Value)
-			assert.Equal(t, envelope.FactSourceAPI, fact.Source)
+			assert.Equal(t, source, fact.Source)
 			return
 		}
 	}

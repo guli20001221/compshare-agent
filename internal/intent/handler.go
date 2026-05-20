@@ -259,6 +259,14 @@ func handlerActionWhitelist() map[Intent]map[string]struct{} {
 			}
 			m[e.intent][e.requiredTool] = struct{}{}
 		}
+		for intentValue, actions := range extraHandlerActions() {
+			if _, ok := m[intentValue]; !ok {
+				m[intentValue] = map[string]struct{}{}
+			}
+			for _, action := range actions {
+				m[intentValue][action] = struct{}{}
+			}
+		}
 		handlerActionWhitelistCache = m
 	})
 	return handlerActionWhitelistCache
@@ -558,7 +566,64 @@ func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {
 		}
 		parts = append(parts, label+"="+value)
 	}
+	if len(metrics) > 0 {
+		present := presentMonitorMetrics(facts)
+		for _, metric := range uniqueMonitorMetrics(metrics) {
+			if !present[metric] {
+				parts = append(parts, monitorMetricReplyLabel(metric)+"未返回数据")
+			}
+		}
+	}
 	return strings.Join(parts, "; ")
+}
+
+func uniqueMonitorMetrics(metrics []Metric) []Metric {
+	seen := map[Metric]struct{}{}
+	out := make([]Metric, 0, len(metrics))
+	for _, metric := range metrics {
+		if metric == "" {
+			continue
+		}
+		if _, ok := seen[metric]; ok {
+			continue
+		}
+		seen[metric] = struct{}{}
+		out = append(out, metric)
+	}
+	return out
+}
+
+func presentMonitorMetrics(facts []monitorScalarFact) map[Metric]bool {
+	present := map[Metric]bool{}
+	for _, fact := range facts {
+		key := strings.ToLower(fact.Key)
+		switch {
+		case strings.Contains(key, "cpu"):
+			present[MetricCPU] = true
+		case strings.Contains(key, "vram"):
+			present[MetricVRAM] = true
+		case strings.Contains(key, "gpu"):
+			present[MetricGPU] = true
+		case strings.Contains(key, "memory"):
+			present[MetricMemory] = true
+		}
+	}
+	return present
+}
+
+func monitorMetricReplyLabel(metric Metric) string {
+	switch metric {
+	case MetricCPU:
+		return "CPU 使用率"
+	case MetricMemory:
+		return "内存使用率"
+	case MetricGPU:
+		return "GPU 使用率"
+	case MetricVRAM:
+		return "显存使用率"
+	default:
+		return string(metric)
+	}
 }
 
 func flattenScalars(prefix string, v any, out map[string]string) {

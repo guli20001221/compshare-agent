@@ -647,6 +647,7 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 
 func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
 	result := dispatch.result
+	result.Plan = planWithUserTextMonitorMetrics(result.Plan, userMsg)
 	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsCapabilityIntent(result.Plan.Intent) {
 		return "", false
 	}
@@ -781,6 +782,7 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 	}
 
 	resumedPlan := planWithSelectedResource(pending.plan, match.instance.UHostId)
+	resumedPlan = planWithUserTextMonitorMetrics(resumedPlan, pending.originalUserMsg)
 	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
 	handled := handler.HandleMonitorQuery(ctx, intent.HandlerRequest{
 		Plan:     resumedPlan,
@@ -844,6 +846,45 @@ func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent
 	}
 	e.emitRendererTrace(trace)
 	return result.Text
+}
+
+func planWithUserTextMonitorMetrics(plan intent.Plan, userText string) intent.Plan {
+	if plan.Intent != intent.IntentMonitorQuery {
+		return plan
+	}
+	lower := strings.ToLower(userText)
+	mentionsVRAM := strings.Contains(userText, "显存") ||
+		strings.Contains(lower, "vram") ||
+		strings.Contains(lower, "gpu memory")
+	if !mentionsVRAM {
+		return plan
+	}
+	mentionsGPUUtil := strings.Contains(lower, "gpu") || strings.Contains(userText, "显卡")
+	metrics := append([]intent.Metric(nil), plan.Slots.Metrics...)
+	if !mentionsGPUUtil {
+		metrics = removeMonitorMetric(metrics, intent.MetricGPU)
+	}
+	plan.Slots.Metrics = appendMonitorMetricIfMissing(metrics, intent.MetricVRAM)
+	return plan
+}
+
+func appendMonitorMetricIfMissing(metrics []intent.Metric, metric intent.Metric) []intent.Metric {
+	for _, existing := range metrics {
+		if existing == metric {
+			return metrics
+		}
+	}
+	return append(metrics, metric)
+}
+
+func removeMonitorMetric(metrics []intent.Metric, metric intent.Metric) []intent.Metric {
+	out := metrics[:0]
+	for _, existing := range metrics {
+		if existing != metric {
+			out = append(out, existing)
+		}
+	}
+	return out
 }
 
 func (e *Engine) annotateHandlerResultForUserQuestion(result *intent.HandlerResult, plan intent.Plan, userMsg string) {
@@ -2243,8 +2284,8 @@ var thirdPartyServiceForeignBalanceContexts = []string{
 	"deepseek",
 	"deep seek",
 	"volcano",
-	"火山",   // 火山(火山方舟 / 火山引擎)
-	"豆包",   // 豆包
+	"火山", // 火山(火山方舟 / 火山引擎)
+	"豆包", // 豆包
 }
 
 // accountOnlyDataKeywords are signals that ONLY the account financial
@@ -2693,13 +2734,13 @@ func isAccountBillingUnsupportedNormalized(n string) bool {
 // this var is the bridge until that skill ships. Growing it to handle a new
 // false-positive case is the wrong fix — surface it as skill schema input.
 var financeFAQTopicWords = []string{
-	"开票",                   // 开票
-	"发票",                   // 发票
-	"退款",                   // 退款
-	"欠费",                   // 欠费
-	"到期",                   // 到期
-	"续费",                   // 续费
-	"包月规则",       // 包月规则
+	"开票",   // 开票
+	"发票",   // 发票
+	"退款",   // 退款
+	"欠费",   // 欠费
+	"到期",   // 到期
+	"续费",   // 续费
+	"包月规则", // 包月规则
 }
 
 // financeProcessMarkerWords are phrasing markers that indicate the user is
@@ -2707,18 +2748,18 @@ var financeFAQTopicWords = []string{
 // a FAQ corpus can answer — rather than asking for the realtime state of
 // their own personal record.
 var financeProcessMarkerWords = []string{
-	"怎么",       // 怎么
-	"如何",       // 如何
+	"怎么",   // 怎么
+	"如何",   // 如何
 	"什么时候", // 什么时候
-	"多久",       // 多久
-	"几天",       // 几天
-	"流程",       // 流程
-	"规则",       // 规则
-	"是不是", // 是不是
-	"还是",       // 还是
-	"会影响", // 会影响
-	"影响",       // 影响
-	"恢复",       // 恢复
+	"多久",   // 多久
+	"几天",   // 几天
+	"流程",   // 流程
+	"规则",   // 规则
+	"是不是",  // 是不是
+	"还是",   // 还是
+	"会影响",  // 会影响
+	"影响",   // 影响
+	"恢复",   // 恢复
 }
 
 // financeRealtimeAccountMarkers are signals the user is asking about their
@@ -2731,16 +2772,16 @@ var financeProcessMarkerWords = []string{
 // because they already trigger accountOnlyDataKeywords below; this veto
 // only handles the personal-status phrasing layer.
 var financeRealtimeAccountMarkers = []string{
-	"我的",             // 我的
-	"我账户",       // 我账户
-	"账上",             // 账上
-	"我现在",       // 我现在
+	"我的",   // 我的
+	"我账户",  // 我账户
+	"账上",   // 账上
+	"我现在",  // 我现在
 	"当前状态", // 当前状态
 	"开好了吗", // 开好了吗
-	"寄了吗",       // 寄了吗
-	"进度",             // 进度
-	"还剩",             // 还剩
-	"剩多少",       // 剩多少
+	"寄了吗",  // 寄了吗
+	"进度",   // 进度
+	"还剩",   // 还剩
+	"剩多少",  // 剩多少
 }
 
 // isFinanceFAQProcessQuestion implements the #52 3-condition AND scope-out
