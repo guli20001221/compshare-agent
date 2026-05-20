@@ -1339,7 +1339,7 @@ func (cmdRegistryExecutor) Execute(_ context.Context, action string, _ map[strin
 	}, nil
 }
 
-func readSingleTraceRecord(t *testing.T, writer *observability.Writer, now time.Time) observability.TraceRecord {
+func readSingleTraceRecord(t *testing.T, writer *observability.FileWriter, now time.Time) observability.TraceRecord {
 	t.Helper()
 	tracePath := filepath.Join(writer.Dir(), "agent-trace-"+now.Format("2006-01-02")+".jsonl")
 	data, err := os.ReadFile(tracePath)
