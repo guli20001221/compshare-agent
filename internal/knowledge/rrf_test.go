@@ -516,48 +516,104 @@ func TestRetrieveQwen3RRFRerankerFailureKeepsFusionRanking(t *testing.T) {
 	assert.Empty(t, result.RerankerMode, "rerankerMode empty when reranker fell back")
 }
 
-// TestRetrieveQwen3RRFPoolSizeIs50 verifies that the BM25 pool fed to
-// fusion is truncated to rrfBM25PoolSize=50, not the cascade's 20.
-// We construct a corpus with 60 BM25-matching chunks and check that the
-// retriever doesn't truncate the BM25 input list to 20 (which would
-// cause certain RRF-recoverable chunks to silently disappear).
+// TestRetrieveQwen3RRFPoolSizeIs50 LOAD-BEARING test that rrfBM25PoolSize=50
+// is the actual constant used (not the cascade's 20). Construction is
+// crafted so the assertion would FAIL under a hypothetical pool=20:
+//
+// Setup:
+//   - 50 corpus chunks all BM25-matching "topic 问法" via pattern; same
+//     score, tie-broken by chunk_id asc (so chunk-35 lands at BM25
+//     rank 36).
+//   - Sidecar contains ONLY chunk-35's vector. denseFullSearch's defensive
+//     skip for missing sidecar entries means dense_pool = [chunk-35]
+//     uniquely — every other chunk gets DenseRank=0 (absent).
+//   - Reranker disabled so the final top-K comes straight from RRF
+//     fusion (no reordering noise).
+//
+// Math under pool=50:
+//   - chunk-35: bm25_rank=36, dense_rank=1 → 1/96 + 1/61 ≈ 0.02681 → fusion_rank 1
+//   - chunk-00: bm25_rank=1,  dense=absent → 1/61 + 0     ≈ 0.01639 → fusion_rank 2
+//   - chunk-01: bm25_rank=2,  dense=absent → 1/62 + 0     ≈ 0.01613 → fusion_rank 3
+//
+// Math under hypothetical pool=20 (the failure case this test catches):
+//   - chunk-35: bm25=ABSENT (truncated), dense=1 → 0 + 1/61 = 0.01639
+//   - chunk-00..chunk-19 each get 1/61..1/80 → top 3 are chunk-00..02
+//   - chunk-35 would tie chunk-00 on score but lose tie-break (chunk-00 < chunk-35)
+//   - chunk-35 ends up at fusion_rank 21, NOT in top-3
+//
+// So under pool=20 the `require.NotNil(chunk35)` would fail. Under
+// pool=50 chunk-35 dominates the top-3. This makes the test name
+// load-bearing — same setup distinguishes the two implementations.
 func TestRetrieveQwen3RRFPoolSizeIs50(t *testing.T) {
-	// Build 60 chunks that all BM25-match "topic" via title/pattern.
-	chunks := make([]KBChunk, 60)
-	vectors := map[string][]float32{}
-	for i := 0; i < 60; i++ {
-		id := "rrf-pool-" + string(rune('A'+i%26)) + "-" + string(rune('a'+(i/26)%26))
+	const n = 50
+	chunks := make([]KBChunk, n)
+	for i := 0; i < n; i++ {
+		id := "rrf-pool-" + zeroPaddedID(i)
 		chunks[i] = KBChunk{
-			ChunkID: id, Title: "topic-" + id, ProductArea: "billing",
+			ChunkID: id, Title: "topic chunk " + id, ProductArea: "billing",
 			ACL: customerSafeACL, Confidence: confidenceHigh, KBVersion: "kb-test",
 			ValidFrom:        "2025-01-01",
 			QuestionPatterns: []string{"topic 问法"},
 			Content:          "topic 内容 " + id,
 		}
-		vectors[id] = []float32{float32(i+1) * 0.01, 0, 0}
 	}
-	corpus := Corpus{KBVersion: "kb-test", Chunks: chunks}
-	sidecar := &EmbeddingSidecar{Model: "test", Dim: 3, Rows: 60, Vectors: vectors}
+	// CRITICAL: sidecar contains ONLY chunk-35's vector. denseFullSearch's
+	// defensive `if _, ok := r.embeddingSidecar.Vectors[chunk.ChunkID]; !ok { continue }`
+	// drops all other chunks from dense scoring, so dense_pool = [chunk-35].
+	target := "rrf-pool-" + zeroPaddedID(35)
+	sidecar := &EmbeddingSidecar{
+		Model: "test", Dim: 3, Rows: 1,
+		Vectors: map[string][]float32{target: {1, 0, 0}},
+	}
 	embedder := &staticEmbedder{vec: []float32{1, 0, 0}}
-	r := NewRetriever(corpus, RetrieverOptions{
+	r := NewRetriever(corpus(chunks), RetrieverOptions{
 		Now:              fixedRetrieverNow,
 		EmbeddingSidecar: sidecar,
 		Embedder:         embedder,
 		EmbeddingModel:   "qwen3-embedding-8b",
-		Mode:             RetrievalModeQwen3RRF,
-		TopK:             3,
+		// Reranker intentionally NOT supplied — keep the test focused on
+		// RRF math, no reranker reordering of the top-3.
+		Mode: RetrievalModeQwen3RRF,
+		TopK: 3,
 	})
 
-	// Call collectBM25Candidates directly via Retrieve and inspect rrfInfo
-	// indirectly: hits should come from the 50 highest BM25-scored, not
-	// the 20. Easier sanity check: when reranker not engaged, fusion
-	// width = topK only, but the BM25-input window matters for which
-	// chunks even get a chance to fuse. We assert top hit's BM25Rank is
-	// ≤50 (commit-5 trace field; for now, indirectly verify by
-	// confirming RetrievalLatency makes sense + we get results).
 	result := r.Retrieve("topic 问法", "billing")
-	require.NotEmpty(t, result.Hits)
 	assert.Equal(t, "qwen3_rrf", result.HybridMode)
+	require.Len(t, result.Hits, 3)
+
+	var chunk35 *RetrievalHit
+	for i := range result.HitItems {
+		if result.HitItems[i].Chunk.ChunkID == target {
+			chunk35 = &result.HitItems[i]
+			break
+		}
+	}
+	require.NotNil(t, chunk35,
+		"chunk-35 must appear in top-3 under qwen3_rrf with pool=50 (BM25 rank 36 + dense rank 1 → fused rank 1). Under hypothetical pool=20 it would be dropped from BM25 list and lose the tie-break against chunk-00, falling out of top-3.")
+	assert.Greater(t, chunk35.BM25Rank, 20,
+		"chunk-35 BM25 rank should be >20 (specifically 36) — direct proof the BM25 pool window is >20")
+	assert.LessOrEqual(t, chunk35.BM25Rank, 50,
+		"chunk-35 BM25 rank should be ≤50 (within rrfBM25PoolSize)")
+	assert.Equal(t, 1, chunk35.DenseRank,
+		"chunk-35 should be dense rank 1 (only chunk in sidecar)")
+	assert.Equal(t, 1, chunk35.FusionRank,
+		"chunk-35 should win fusion (bm25+dense contribution > bm25-only of others)")
+}
+
+// corpus is a tiny constructor helper to keep the pool-size test
+// readable. Plumbs the slice into a Corpus with kb-test version.
+func corpus(chunks []KBChunk) Corpus {
+	return Corpus{KBVersion: "kb-test", Chunks: chunks}
+}
+
+// zeroPaddedID produces a fixed-width index string ("00", "01", ..., "59")
+// so chunk_id ascending sort matches numerical index for the
+// pool-sizing test. Crucial because BM25 ties break on chunk_id.
+func zeroPaddedID(i int) string {
+	if i < 10 {
+		return "0" + string(rune('0'+i))
+	}
+	return string(rune('0'+i/10)) + string(rune('0'+i%10))
 }
 
 // TestRetrieveQwen3FullPoolSizeStillIs20 verifies that the cascade path
