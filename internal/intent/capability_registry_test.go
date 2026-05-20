@@ -384,6 +384,11 @@ func TestDetectKnownUnavailableGPUs(t *testing.T) {
 		{"H200 有货吗", []string{"H200"}},
 		{"4090 显存", nil}, // 4090 is available, not in the "known unavailable" list
 		{"5090 显存", nil},
+		// Word-boundary symmetry: "H10" or "H20" as user text should NOT match
+		// "H100"/"H200" if those entries were ever shortened — guard against the
+		// same substring trap matchUserTokensToAPINames fixed.
+		{"H10 是什么", nil},
+		{"H20 库存", nil},
 		{"", nil},
 	}
 	for _, c := range cases {

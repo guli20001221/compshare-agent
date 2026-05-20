@@ -512,7 +512,10 @@ func extractUserTokens(userText string) []string {
 }
 
 // detectKnownUnavailableGPUs returns names from knownUnavailableGPUNames that
-// appear (case-insensitively) in the user text.
+// appear (case-insensitively, word-bounded) in the user text. Word boundaries
+// avoid the same substring trap as matchUserTokensToAPINames — keeps the
+// behaviour consistent if knownUnavailableGPUNames ever gains a shorter
+// entry that could prefix another known name.
 func detectKnownUnavailableGPUs(userText string) []string {
 	if userText == "" {
 		return nil
@@ -520,7 +523,7 @@ func detectKnownUnavailableGPUs(userText string) []string {
 	upper := strings.ToUpper(userText)
 	out := []string{}
 	for _, name := range knownUnavailableGPUNames {
-		if strings.Contains(upper, name) {
+		if containsAsWord(upper, name) {
 			out = append(out, name)
 		}
 	}

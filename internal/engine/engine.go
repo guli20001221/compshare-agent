@@ -2645,8 +2645,14 @@ var knowledgeWindowsKeywords = []string{
 var knowledgeMonitorKeywords = []string{
 	"\u76d1\u63a7\u6307\u6807", // \u76d1\u63a7\u6307\u6807
 	"\u663e\u5b58\u5360\u7528", // \u663e\u5b58\u5360\u7528
-	"cpu \u5360\u7528",         // cpu \u5360\u7528
-	"gpu \u5360\u7528",         // gpu \u5360\u7528
+	// normalizeMsg collapses whitespace but never INJECTS a space between
+	// adjacent CJK and ASCII, so the no-space variants are the load-bearing
+	// keywords for real user input ("CPU\u5360\u7528\u7387"). Keep the spaced variants
+	// for the alt phrasing ("CPU \u5360\u7528\u7387\u9ad8\u5417").
+	"cpu\u5360\u7528", // cpu\u5360\u7528
+	"gpu\u5360\u7528", // gpu\u5360\u7528
+	"cpu \u5360\u7528", // cpu \u5360\u7528
+	"gpu \u5360\u7528", // gpu \u5360\u7528
 }
 
 // normalizeMsg standardizes a user message for signal matching:
