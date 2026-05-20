@@ -492,6 +492,86 @@ func (r *Retriever) rerankByEmbedding(question string, bm25Pool []scoredChunk) (
 	return reranked, "", latencyMs
 }
 
+// denseFullSearch ranks ALL active corpus chunks by cosine similarity to
+// the query embedding and returns the top-N. Used by the qwen3_rrf path
+// as one of the two ranked lists fed to rrfFusion.
+//
+// CRITICAL invariant: iterate r.corpus.Chunks (the active set produced by
+// LoadPinnedCorpusWithEmbeddings, post any corpus-level filtering) NOT
+// r.embeddingSidecar.Vectors (the raw chunk_id→vector map). The sidecar's
+// keyset is a superset of the active corpus when chunks are excluded at
+// load time (e.g. via valid_from / valid_to / confidence filters); using
+// the sidecar map directly would resurrect dropped chunks. Tested in
+// TestDenseFullSearchIteratesCorpusNotSidecar.
+//
+// Returns (topN, fallbackReason, latencyMs):
+//   - On success: top-N cosine-ranked candidates, "", actual round-trip ms
+//   - On embedder error: nil, "embedding_error" (or "embedding_timeout"
+//     when err Is context.DeadlineExceeded), time-to-error ms
+//   - On empty query vector: nil, "embedding_empty", ms
+//
+// Complexity O(|corpus| × dim) per query. At 228 chunks × 4096 dim this
+// is ~1M float-mul-add → ~5-10ms on modern CPU; full-corpus linear scan
+// is fine until corpus size exceeds ~1k chunks. Revisit ANN (HNSW) above
+// that scale.
+func (r *Retriever) denseFullSearch(question string, topN int) ([]scoredChunk, string, int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), r.hybridTimeout)
+	defer cancel()
+	start := time.Now()
+	queryVec, err := r.embedder.Embed(ctx, question)
+	latencyMs := time.Since(start).Milliseconds()
+	if err != nil {
+		log.Printf("rag.rrf: dense embedding failed in %dms: %v", latencyMs, err)
+		reason := "embedding_error"
+		if errors.Is(err, context.DeadlineExceeded) {
+			reason = "embedding_timeout"
+		}
+		return nil, reason, latencyMs
+	}
+	if len(queryVec) == 0 {
+		log.Printf("rag.rrf: dense embedding empty in %dms", latencyMs)
+		return nil, "embedding_empty", latencyMs
+	}
+
+	now := r.now()
+	candidates := make([]scoredChunk, 0, len(r.corpus.Chunks))
+	for _, chunk := range r.corpus.Chunks {
+		// Active-set guard parallels collectBM25Candidates: chunks that
+		// failed the valid_from/valid_to gate or were dropped for low
+		// confidence must NOT surface here, even if the sidecar happens
+		// to still hold their vector.
+		if !chunkActiveAt(chunk, now) || chunk.Confidence == confidenceLow {
+			continue
+		}
+		vec, ok := r.embeddingSidecar.Vectors[chunk.ChunkID]
+		if !ok {
+			// LoadPinnedCorpusWithEmbeddings's bijection check should make
+			// this impossible; defensive skip so dense ranking still
+			// produces a result if the invariant is ever violated.
+			log.Printf("rag.rrf: sidecar missing vector for chunk %q, skipping in dense scan", chunk.ChunkID)
+			continue
+		}
+		candidates = append(candidates, scoredChunk{
+			chunk: chunk,
+			score: cosineSimilarity(queryVec, vec),
+		})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		left, right := candidates[i], candidates[j]
+		if left.score != right.score {
+			return left.score > right.score
+		}
+		if confidenceRank(left.chunk.Confidence) != confidenceRank(right.chunk.Confidence) {
+			return confidenceRank(left.chunk.Confidence) > confidenceRank(right.chunk.Confidence)
+		}
+		return left.chunk.ChunkID < right.chunk.ChunkID
+	})
+	if topN > 0 && len(candidates) > topN {
+		candidates = candidates[:topN]
+	}
+	return candidates, "", latencyMs
+}
+
 // rerankByReranker takes the cosine-stage output and reorders it using the
 // configured cross-encoder reranker. The pool is already cosine-ranked, so
 // reranker failure can fall back to the cosine ranking cleanly without
