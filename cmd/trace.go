@@ -187,7 +187,9 @@ func knowledgeRetrieverFromEnv(getenv getenvFunc) (*knowledge.Retriever, bool, e
 		HybridContextTimeout: hybridTimeoutFromEnv(getenv),
 		Mode:                 mode,
 	}
-	if mode == knowledge.RetrievalModeHybridRerank || mode == knowledge.RetrievalModeQwen3Full {
+	if mode == knowledge.RetrievalModeHybridRerank ||
+		mode == knowledge.RetrievalModeQwen3Full ||
+		mode == knowledge.RetrievalModeQwen3RRF {
 		rerankerModel := strings.TrimSpace(getenv("MODELVERSE_RERANKER_MODEL"))
 		if rerankerModel == "" {
 			rerankerModel = "qwen3-reranker-8b"
@@ -213,7 +215,8 @@ func ragRetrievalModeFromEnv(getenv getenvFunc) string {
 	case knowledge.RetrievalModeBM25Only,
 		knowledge.RetrievalModeHybridCosine,
 		knowledge.RetrievalModeHybridRerank,
-		knowledge.RetrievalModeQwen3Full:
+		knowledge.RetrievalModeQwen3Full,
+		knowledge.RetrievalModeQwen3RRF:
 		return mode
 	case "":
 		if hybridEnabledFromEnv(getenv) {
@@ -230,10 +233,10 @@ func ragRetrievalModeFromEnv(getenv getenvFunc) string {
 }
 
 // embedModelForMode returns the embedding model that goes with the chosen
-// retrieval mode. qwen3_full uses qwen3-embedding-8b (and the corresponding
-// sidecar); other hybrid modes use text-embedding-3-large.
+// retrieval mode. qwen3_full and qwen3_rrf both use qwen3-embedding-8b
+// (and the same pinned sidecar); other hybrid modes use text-embedding-3-large.
 func embedModelForMode(mode string, getenv getenvFunc) string {
-	if mode == knowledge.RetrievalModeQwen3Full {
+	if mode == knowledge.RetrievalModeQwen3Full || mode == knowledge.RetrievalModeQwen3RRF {
 		if explicit := strings.TrimSpace(getenv("MODELVERSE_EMBED_MODEL")); explicit != "" {
 			return explicit
 		}
@@ -246,10 +249,11 @@ func embedModelForMode(mode string, getenv getenvFunc) string {
 }
 
 // embeddingDigestForMode returns the pinned sidecar digest that goes with
-// the chosen retrieval mode. qwen3_full pins the qwen3-embedding-8b
-// sidecar; other hybrid modes pin the text-embedding-3-large sidecar.
+// the chosen retrieval mode. qwen3_full and qwen3_rrf both pin the
+// qwen3-embedding-8b sidecar; other hybrid modes pin the
+// text-embedding-3-large sidecar.
 func embeddingDigestForMode(mode string) string {
-	if mode == knowledge.RetrievalModeQwen3Full {
+	if mode == knowledge.RetrievalModeQwen3Full || mode == knowledge.RetrievalModeQwen3RRF {
 		return knowledge.EmbeddingDigestExpectedQwen3
 	}
 	return knowledge.EmbeddingDigestExpected

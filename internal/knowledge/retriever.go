@@ -20,6 +20,16 @@ const (
 	// extra tokens. B.0 probe confirmed 50-doc single batch works, so this is
 	// well under server capacity.
 	rerankerPoolSize = 10
+	// RRF (qwen3_rrf mode) constants. Pool sizes widened to 50 for both
+	// retrieval signals; rank-level fusion benefits from a deeper window than
+	// the cascade path's 20-pool (Elastic + OpenSearch + Azure recommend
+	// 50-100). rrfK=60 is the canonical smoothing constant from Cormack et al.
+	// 2009 SIGIR and the default across Azure Cognitive Search, Elastic 8.8+
+	// (rank_constant), OpenSearch 2.19+ score-ranker, Vespa, and LlamaIndex
+	// QueryFusionRetriever. Do NOT tune without strong empirical justification.
+	rrfBM25PoolSize  = 50
+	rrfDensePoolSize = 50
+	rrfK             = 60
 )
 
 // Retrieval modes select which retrieval pipeline the Retriever runs. The
@@ -34,11 +44,19 @@ const (
 //	RetrievalModeQwen3Full    — BM25 top-20 → cosine top-10 → reranker top-K.
 //	                            Uses the qwen3-embedding-8b sidecar + the
 //	                            qwen3-reranker-8b cross-encoder.
+//	RetrievalModeQwen3RRF     — BM25 top-50 ⊕ dense-full-corpus top-50, fused
+//	                            via Reciprocal Rank Fusion (k=60), reranker
+//	                            top-K. Uses the same qwen3-embedding-8b
+//	                            sidecar + qwen3-reranker-8b cross-encoder as
+//	                            Qwen3Full but recovers BM25-zero-hit queries
+//	                            via the dense leg (the cascade path skips
+//	                            embedding entirely when BM25 returns nothing).
 const (
 	RetrievalModeBM25Only     = "bm25_only"
 	RetrievalModeHybridCosine = "hybrid_cosine"
 	RetrievalModeHybridRerank = "hybrid_rerank"
 	RetrievalModeQwen3Full    = "qwen3_full"
+	RetrievalModeQwen3RRF     = "qwen3_rrf"
 )
 
 // VectorEmbedder is satisfied by *internal/embedding.Client and by test
@@ -244,7 +262,8 @@ func (r *Retriever) hybridEnabled() bool {
 		return false
 	}
 	switch r.mode {
-	case RetrievalModeHybridCosine, RetrievalModeHybridRerank, RetrievalModeQwen3Full:
+	case RetrievalModeHybridCosine, RetrievalModeHybridRerank,
+		RetrievalModeQwen3Full, RetrievalModeQwen3RRF:
 		return true
 	}
 	return false
@@ -257,7 +276,7 @@ func (r *Retriever) rerankerEnabled() bool {
 		return false
 	}
 	switch r.mode {
-	case RetrievalModeHybridRerank, RetrievalModeQwen3Full:
+	case RetrievalModeHybridRerank, RetrievalModeQwen3Full, RetrievalModeQwen3RRF:
 		return true
 	}
 	return false
