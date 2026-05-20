@@ -8,7 +8,7 @@ required_citation: false
 # stock_availability
 
 平台 GPU 库存可售性查询。回答"X 现在有没有货 / X 售罄了吗 / 哪些机型能买"这类实时可售题。
-读取 `DescribeAvailableCompShareInstanceTypes` 的 `Status` 字段（Normal / SoldOut），**不返回精确剩余数量**。
+先读取 `DescribeAvailableCompShareInstanceTypes` 的 `Status` 和 `Zone` 字段；当用户明确问某个 GPU 型号且状态为 Normal 时，再用系统镜像做 `CheckCompShareResourceCapacity` 容量预检，回答当前是否真实可创建。**不返回精确剩余数量**。
 
 ## 用户怎么问（positive examples）
 - 4090 现在有没有货
@@ -23,7 +23,8 @@ required_citation: false
 - 我账下的 4090 实例 → resource_info
 
 ## 边界注意
-- 仅返回 Normal / SoldOut，**不返回精确剩余数量**（API 设计不公开）
+- `Normal` 只表示机型开售，不等于当前一定可创建；明确型号的库存问题要以容量预检结果为准
+- 仅回答是否可创建，**不返回精确剩余数量**（API 设计不公开）
 - H100 不在 CompShare 在售机型范围，明确说"暂不在售"，不要推断库存
 
 ## Smoke 题

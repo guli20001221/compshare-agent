@@ -62,6 +62,9 @@ func ValidateRenderedText(env envelope.Envelope, text string) error {
 	if err := validateMonitorClaims(env, text); err != nil {
 		return err
 	}
+	if err := validateMissingMonitorMetricClaims(env, text); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -193,6 +196,35 @@ func validateMonitorClaims(env envelope.Envelope, text string) error {
 		previousClaimEnd = span[1]
 	}
 	return nil
+}
+
+func validateMissingMonitorMetricClaims(env envelope.Envelope, text string) error {
+	if env.Kind != envelope.KindMonitorQuery {
+		return nil
+	}
+	for _, fact := range append(append([]envelope.Fact{}, env.Facts...), env.Computed...) {
+		if !isMissingMonitorMetricFact(fact) {
+			continue
+		}
+		if !strings.Contains(text, fact.Label) || !containsMissingDataWording(text) {
+			return fmt.Errorf("rendered text omitted missing monitor metric %q", fact.Label)
+		}
+	}
+	return nil
+}
+
+func isMissingMonitorMetricFact(fact envelope.Fact) bool {
+	value, ok := fact.Value.(string)
+	return ok && value == "未返回数据" && strings.HasPrefix(fact.Key, "missing_")
+}
+
+func containsMissingDataWording(text string) bool {
+	for _, token := range []string{"未返回", "没有返回", "暂无", "无数据", "未获取", "没返回"} {
+		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func isMonitorNumericClaim(env envelope.Envelope, text string, contextStart, claimStart int, claim string) bool {

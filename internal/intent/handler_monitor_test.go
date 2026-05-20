@@ -119,6 +119,25 @@ func TestMonitorSummaryRendererExtractsSemanticAPIShape(t *testing.T) {
 	assert.NotContains(t, summary, "内存")
 }
 
+func TestMonitorSummaryRendererReportsMissingRequestedVRAM(t *testing.T) {
+	summary := RenderMonitorSummary([]Metric{MetricCPU, MetricVRAM}, map[string]any{
+		"Data": map[string]any{
+			"List": []any{
+				map[string]any{
+					"UHostId": "uhost-a",
+					"Metrics": []any{
+						monitorMetric("uhost_cpu_used", nil, 8),
+						monitorMetric("cloudwatch_gpu_memory_usage", map[string]any{"gpu_bus_id": "00:03.0"}),
+					},
+				},
+			},
+		},
+	})
+
+	assert.Contains(t, summary, "CPU 使用率=8%")
+	assert.Contains(t, summary, "显存使用率未返回数据")
+}
+
 func TestMonitorSummaryRendererRecognizedAPIShapeWithEmptyValuesDoesNotLeakMetadata(t *testing.T) {
 	summary := RenderMonitorSummary([]Metric{MetricGPU}, map[string]any{
 		"Data": map[string]any{

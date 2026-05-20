@@ -211,6 +211,7 @@ func validRequiredTool(tool string) bool {
 		// Capability Registry v1 (PR A, 2026-05-18). Keep the legacy list above
 		// untouched and accept the 4 capability-bound platform-query tools.
 		"DescribeAvailableCompShareInstanceTypes",
+		"CheckCompShareResourceCapacity",
 		"DescribeCompShareImages",
 		"DescribeCompShareCustomImages",
 		"DescribeCommunityImages":

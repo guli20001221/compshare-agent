@@ -2,8 +2,11 @@ package intent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/compshare-agent/internal/entity"
 )
 
 // TestIsCapabilityIntent_KnownLabels verifies all 5 registered capability intents
@@ -118,6 +121,28 @@ func (stubFailingExecutor) Execute(ctx context.Context, action string, args map[
 	return map[string]any{}, nil
 }
 
+type capabilitySequenceExecutor struct {
+	results map[string]map[string]any
+	errs    map[string]error
+	calls   []handlerExecCall
+}
+
+func (m *capabilitySequenceExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
+	m.calls = append(m.calls, handlerExecCall{action: action, args: copyArgs(args)})
+	if m.errs != nil {
+		if err, ok := m.errs[action]; ok {
+			return nil, err
+		}
+	}
+	if m.results == nil {
+		return map[string]any{}, nil
+	}
+	if result, ok := m.results[action]; ok {
+		return result, nil
+	}
+	return map[string]any{}, nil
+}
+
 func TestDispatchCapability_RoutesToHandler(t *testing.T) {
 	h := NewDemoHandler(stubFailingExecutor{})
 	for _, e := range capabilityRegistry {
@@ -131,6 +156,34 @@ func TestDispatchCapability_RoutesToHandler(t *testing.T) {
 		if result.ToolAction != e.requiredTool {
 			t.Errorf("DispatchCapability(%q) ToolAction = %q, want %q", e.intent, result.ToolAction, e.requiredTool)
 		}
+	}
+}
+
+type stockCapacityZoneExecutor struct {
+	calls []handlerExecCall
+}
+
+func (m *stockCapacityZoneExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
+	m.calls = append(m.calls, handlerExecCall{action: action, args: copyArgs(args)})
+	switch action {
+	case "DescribeAvailableCompShareInstanceTypes":
+		return map[string]any{"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
+			map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
+		}}, nil
+	case "DescribeCompShareImages":
+		return map[string]any{"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu-nvidia 22.04", "Status": "Available", "ImageType": "System"},
+		}}, nil
+	case "CheckCompShareResourceCapacity":
+		if args["Zone"] == "cn-sh2-02" {
+			return nil, errors.New("Params [Zone] not available")
+		}
+		return map[string]any{"Specs": []any{
+			map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": false},
+		}}, nil
+	default:
+		return map[string]any{}, nil
 	}
 }
 
@@ -212,7 +265,7 @@ func TestDetectKnownUnavailableGPUs(t *testing.T) {
 		{"上海机房 H100 库存", []string{"H100"}},
 		{"h100 显存多大", []string{"H100"}}, // case-insensitive
 		{"H200 有货吗", []string{"H200"}},
-		{"4090 显存", nil},  // 4090 is available, not in the "known unavailable" list
+		{"4090 显存", nil}, // 4090 is available, not in the "known unavailable" list
 		{"5090 显存", nil},
 		{"", nil},
 	}
@@ -232,7 +285,7 @@ func TestMatchUserTokensToAPINames_Subset(t *testing.T) {
 		want []string
 	}{
 		{"4090 显存多大", []string{"4090"}}, // user mentioned "4090" -> exact; "4090_48G" is a different model
-		{"a100 几张卡", []string{"A100"}},               // case-insensitive
+		{"a100 几张卡", []string{"A100"}},  // case-insensitive
 		{"v100s 配置", []string{"V100S"}},
 		{"H100 库存", nil}, // H100 not in API set — caller handles via known-unavailable
 		{"未指定", nil},
@@ -335,6 +388,141 @@ func TestRenderStock_FilterAndDedupe(t *testing.T) {
 	if c := strings.Count(reply, "机型=4090"); c != 1 {
 		t.Errorf("stock filter should dedupe 4090 to 1 line, got %d in: %s", c, reply)
 	}
+}
+
+func TestRenderStock_NormalStatusDoesNotClaimConcreteCapacity(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "Status": "Normal"},
+		},
+	}
+
+	reply := renderStockReply(raw, "4090 现在有没有货")
+
+	if !strings.Contains(reply, "不代表当前具体配置一定可创建") {
+		t.Errorf("Normal stock reply should explain capacity caveat; got: %s", reply)
+	}
+	if !strings.Contains(reply, "容量预检") {
+		t.Errorf("Normal stock reply should point to capacity precheck; got: %s", reply)
+	}
+}
+
+func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T) {
+	exec := &capabilitySequenceExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
+			},
+		},
+		"DescribeCompShareImages": {
+			"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu-nvidia 22.04", "Status": "Available", "ImageType": "System"},
+			},
+		},
+		"CheckCompShareResourceCapacity": {
+			"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": false},
+			},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+		Plan:     Plan{Intent: IntentStockAvailability},
+		UserText: "4090 现在有没有货",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	if !strings.Contains(result.Reply, "4090 当前暂无可创建库存") {
+		t.Fatalf("reply should answer concrete creatability, got: %s", result.Reply)
+	}
+	if strings.Contains(result.Reply, "ResourceEnough") || strings.Contains(result.Reply, "容量预检口径") {
+		t.Fatalf("reply should not expose implementation details, got: %s", result.Reply)
+	}
+	if len(exec.calls) != 3 {
+		t.Fatalf("calls = %#v, want 3 calls", exec.calls)
+	}
+	if exec.calls[0].action != "DescribeAvailableCompShareInstanceTypes" ||
+		exec.calls[1].action != "DescribeCompShareImages" ||
+		exec.calls[2].action != "CheckCompShareResourceCapacity" {
+		t.Fatalf("unexpected call sequence: %#v", exec.calls)
+	}
+	args := exec.calls[2].args
+	if args["GpuType"] != "4090" {
+		t.Fatalf("capacity GpuType = %#v, want 4090", args["GpuType"])
+	}
+	if args["Zone"] != "cn-wlcb-01" {
+		t.Fatalf("capacity Zone = %#v, want cn-wlcb-01", args["Zone"])
+	}
+	if args["CompShareImageId"] != "img-ubuntu" {
+		t.Fatalf("capacity CompShareImageId = %#v, want img-ubuntu", args["CompShareImageId"])
+	}
+	if args["ChargeType"] != "Dynamic" {
+		t.Fatalf("capacity ChargeType = %#v, want Dynamic", args["ChargeType"])
+	}
+}
+
+func TestStockAvailabilityUsesFirstMatchedZoneForCapacityPrecheck(t *testing.T) {
+	exec := &stockCapacityZoneExecutor{}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+		Plan:     Plan{Intent: IntentStockAvailability},
+		UserText: "4090 现在有没有货",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	if !strings.Contains(result.Reply, "4090 当前暂无可创建库存") {
+		t.Fatalf("reply should still answer from successful capacity checks, got: %s", result.Reply)
+	}
+	if strings.Contains(result.Reply, "部分可用区容量预检未完成") {
+		t.Fatalf("reply should not expose unprobed zones, got: %s", result.Reply)
+	}
+	if len(exec.calls) != 3 {
+		t.Fatalf("calls = %#v, want 3 calls", exec.calls)
+	}
+}
+
+func TestStockAvailabilityPrefersAccountSnapshotZoneForCapacityPrecheck(t *testing.T) {
+	exec := &stockCapacityZoneExecutor{}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+		Plan:     Plan{Intent: IntentStockAvailability},
+		Resolver: stockZoneSnapshot(t, "cn-wlcb-01"),
+		UserText: "4090 现在有没有货",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	if strings.Contains(result.Reply, "部分可用区容量预检未完成") {
+		t.Fatalf("reply should not include skipped out-of-project zone failure, got: %s", result.Reply)
+	}
+	if len(exec.calls) != 3 {
+		t.Fatalf("calls = %#v, want 3 calls", exec.calls)
+	}
+	if exec.calls[2].args["Zone"] != "cn-wlcb-01" {
+		t.Fatalf("capacity Zone = %#v, want cn-wlcb-01", exec.calls[2].args["Zone"])
+	}
+}
+
+func stockZoneSnapshot(t *testing.T, zone string) entity.RegistrySnapshot {
+	t.Helper()
+	reg := entity.NewRegistry()
+	row := instanceRow("uhost-a", "train-a")
+	row["Zone"] = zone
+	if err := reg.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(1),
+		"UHostSet":   []any{row},
+	}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	return reg.Snapshot()
 }
 
 func TestRenderImageList_KeywordFilter(t *testing.T) {

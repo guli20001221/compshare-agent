@@ -139,6 +139,7 @@ func BuildMonitorEnvelope(subjects []entity.InstanceSnapshot, metrics []Metric, 
 			Aggregation: "latest",
 		})
 	}
+	addMissingRequestedMonitorFacts(&env, metrics, flat, subjectID)
 	return env
 }
 
@@ -265,6 +266,27 @@ func monitorMetricRequested(metric Metric, requested []Metric) bool {
 		}
 	}
 	return false
+}
+
+func addMissingRequestedMonitorFacts(env *envelope.Envelope, metrics []Metric, facts []monitorScalarFact, subjectID string) {
+	if env == nil || len(metrics) == 0 {
+		return
+	}
+	present := presentMonitorMetrics(facts)
+	for _, metric := range uniqueMonitorMetrics(metrics) {
+		if present[metric] {
+			continue
+		}
+		env.Facts = append(env.Facts, envelope.Fact{
+			SubjectID:   subjectID,
+			Key:         "missing_" + string(metric) + "_usage",
+			Label:       monitorMetricReplyLabel(metric),
+			Value:       "未返回数据",
+			Source:      envelope.FactSourceComputed,
+			Period:      "latest",
+			Aggregation: "latest",
+		})
+	}
 }
 
 func monitorMetricResults(metric map[string]any) []map[string]any {

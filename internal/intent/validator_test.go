@@ -78,6 +78,20 @@ func TestValidatePlan_RejectsInvalidRequiredTool(t *testing.T) {
 	requireValidationCode(t, err, ErrInvalidRequiredTool)
 }
 
+func TestValidatePlan_AcceptsStockCapacityPrecheckTool(t *testing.T) {
+	plan := Plan{
+		SchemaVersion: SchemaVersion,
+		Intent:        IntentStockAvailability,
+		RequiredTools: []string{"DescribeAvailableCompShareInstanceTypes", "CheckCompShareResourceCapacity"},
+		Retrieval:     Retrieval{Enabled: false},
+		Confidence:    0.8,
+	}
+
+	err := ValidatePlan(plan, ValidationContext{UserText: "4090 现在有没有货", Registry: testRegistry(t)})
+
+	require.NoError(t, err)
+}
+
 func TestValidatePlan_RejectsInvalidMetricEnum(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.Slots.Metrics = []Metric{MetricCPU, Metric("disk")}

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/compshare-agent/internal/entity"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,6 +30,15 @@ var capabilityRegistry = []capabilityEntry{
 	{IntentPlatformImageList, "DescribeCompShareImages", handlePlatformImageList},
 	{IntentCustomImageList, "DescribeCompShareCustomImages", handleCustomImageList},
 	{IntentCommunityImageList, "DescribeCommunityImages", handleCommunityImageList},
+}
+
+func extraHandlerActions() map[Intent][]string {
+	return map[Intent][]string{
+		IntentStockAvailability: {
+			"DescribeCompShareImages",
+			"CheckCompShareResourceCapacity",
+		},
+	}
 }
 
 // IsCapabilityIntent reports whether the intent is served by the capability
@@ -260,6 +271,14 @@ func handleStockAvailability(ctx context.Context, h *DemoHandler, req HandlerReq
 	if fb != nil {
 		return *fb
 	}
+	if reply, ok, fb := renderStockWithCapacityPrecheck(ctx, h, req, raw); fb != nil {
+		return *fb
+	} else if ok {
+		result := HandledResult(reply)
+		result.ToolAction = action
+		result.ToolArgs = copyArgs(map[string]any{})
+		return result
+	}
 	reply := renderStockReply(raw, req.UserText)
 	result := HandledResult(reply)
 	result.ToolAction = action
@@ -331,14 +350,14 @@ func handleCommunityImageList(ctx context.Context, h *DemoHandler, req HandlerRe
 //      include the top 3 version names, with a global 20-line cap.
 
 const (
-	noGPUSpecsReply           = "未获取到 GPU 机型规格数据。"
-	noStockReply              = "未获取到机型库存数据。"
-	noImageListReply          = "未获取到镜像列表。"
-	noImageListNoMatchReply   = "未找到匹配的镜像。"
-	noCommunityReply          = "未获取到社区镜像数据。"
-	soldOutDisclaimer         = "（CompShare 平台不公开精确剩余数量，仅 Normal/SoldOut 两态。）"
-	communityImageGroupLimit  = 20 // upper bound on community renderer output lines
-	communityVersionPerGroup  = 3  // versions to show per CompshareImageGroup
+	noGPUSpecsReply          = "未获取到 GPU 机型规格数据。"
+	noStockReply             = "未获取到机型库存数据。"
+	noImageListReply         = "未获取到镜像列表。"
+	noImageListNoMatchReply  = "未找到匹配的镜像。"
+	noCommunityReply         = "未获取到社区镜像数据。"
+	soldOutDisclaimer        = "（CompShare 平台不公开精确剩余数量，仅 Normal/SoldOut 两态。）"
+	communityImageGroupLimit = 20 // upper bound on community renderer output lines
+	communityVersionPerGroup = 3  // versions to show per CompshareImageGroup
 )
 
 // knownUnavailableGPUNames is a minimal list of GPU models confirmed to NOT be
@@ -640,7 +659,7 @@ func renderStockReply(raw map[string]any, userText string) string {
 			// Some prod responses omit Status; "appears in available list" ≈ available.
 			status = "Normal"
 		}
-		lines = append(lines, fmt.Sprintf("机型=%s, 状态=%s", name, status))
+		lines = append(lines, renderStockStatusLine(name, status))
 	}
 	if len(lines) == 0 {
 		if prefix != "" {
@@ -649,6 +668,307 @@ func renderStockReply(raw map[string]any, userText string) string {
 		return noStockReply
 	}
 	return prefix + strings.Join(lines, "\n") + "\n" + soldOutDisclaimer
+}
+
+func renderStockStatusLine(name, status string) string {
+	switch {
+	case strings.EqualFold(status, "Normal"):
+		return fmt.Sprintf("机型=%s, 状态=Normal（机型开售；不代表当前具体配置一定可创建，精确可创建性需做容量预检）", name)
+	case strings.EqualFold(status, "SoldOut"):
+		return fmt.Sprintf("机型=%s, 状态=SoldOut（售罄）", name)
+	default:
+		return fmt.Sprintf("机型=%s, 状态=%s", name, status)
+	}
+}
+
+type stockInstanceTypeEntry struct {
+	Name   string
+	Status string
+	Zone   string
+}
+
+type stockCapacityCheck struct {
+	Name        string
+	Zone        string
+	CheckedSpec int
+	EnoughSpecs []string
+	Failed      bool
+}
+
+func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req HandlerRequest, stockRaw map[string]any) (string, bool, *HandlerResult) {
+	entries := matchedNormalStockEntries(stockRaw, req.UserText)
+	entries = filterStockEntriesToResolverZones(entries, req.Resolver)
+	entries = firstStockEntryPerModel(entries)
+	if len(entries) == 0 {
+		return "", false, nil
+	}
+	imageRaw, fb := executeCapabilityAction(ctx, h, req.Plan.Intent, "DescribeCompShareImages", map[string]any{
+		"ImageType": "System",
+		"Limit":     20,
+	})
+	if fb != nil {
+		return "", false, fb
+	}
+	imageID := selectCapacityPrecheckImageID(imageRaw)
+	if imageID == "" {
+		return renderStockReply(stockRaw, req.UserText) + "\n容量预检未执行：未获取到可用于预检的系统镜像。", true, nil
+	}
+
+	checks := make([]stockCapacityCheck, 0, len(entries))
+	if req.Plan.Intent != IntentStockAvailability {
+		result := FallbackBeforeTool(FallbackActionNotAllowed)
+		return "", false, &result
+	}
+	for _, entry := range entries {
+		if entry.Zone == "" {
+			continue
+		}
+		args := capacityPrecheckArgs(entry, imageID)
+		capacityRaw, err := h.executor.Execute(ctx, "CheckCompShareResourceCapacity", args)
+		if err != nil {
+			checks = append(checks, stockCapacityCheck{Name: entry.Name, Zone: entry.Zone, Failed: true})
+			continue
+		}
+		checks = append(checks, summarizeStockCapacity(entry, capacityRaw))
+	}
+	if len(checks) == 0 {
+		return renderStockReply(stockRaw, req.UserText) + "\n容量预检未执行：当前接口结果缺少可用区信息。", true, nil
+	}
+	return renderStockCapacityReply(checks), true, nil
+}
+
+func matchedNormalStockEntries(raw map[string]any, userText string) []stockInstanceTypeEntry {
+	items := mapSliceAt(raw, "AvailableInstanceTypes")
+	if len(items) == 0 {
+		return nil
+	}
+	matchedNames := matchUserTokensToAPINames(userText, collectAPINamesFromInstanceTypes(items))
+	if len(matchedNames) == 0 {
+		return nil
+	}
+	wanted := map[string]struct{}{}
+	for _, name := range matchedNames {
+		wanted[name] = struct{}{}
+	}
+	out := []stockInstanceTypeEntry{}
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := safeString(entry, "Name")
+		if _, ok := wanted[name]; !ok {
+			continue
+		}
+		status := safeString(entry, "Status")
+		if status == "" {
+			status = "Normal"
+		}
+		if !strings.EqualFold(status, "Normal") {
+			continue
+		}
+		zone := safeString(entry, "Zone")
+		key := name + "\x00" + zone
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, stockInstanceTypeEntry{Name: name, Status: status, Zone: zone})
+	}
+	return out
+}
+
+func filterStockEntriesToResolverZones(entries []stockInstanceTypeEntry, resolver EntityResolver) []stockInstanceTypeEntry {
+	if len(entries) == 0 {
+		return entries
+	}
+	zones := preferredZonesFromResolver(resolver)
+	if len(zones) == 0 {
+		return entries
+	}
+	filtered := make([]stockInstanceTypeEntry, 0, len(entries))
+	for _, entry := range entries {
+		if _, ok := zones[entry.Zone]; ok {
+			filtered = append(filtered, entry)
+		}
+	}
+	if len(filtered) == 0 {
+		return entries
+	}
+	return filtered
+}
+
+func firstStockEntryPerModel(entries []stockInstanceTypeEntry) []stockInstanceTypeEntry {
+	out := make([]stockInstanceTypeEntry, 0, len(entries))
+	seen := map[string]struct{}{}
+	for _, entry := range entries {
+		if _, ok := seen[entry.Name]; ok {
+			continue
+		}
+		seen[entry.Name] = struct{}{}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func preferredZonesFromResolver(resolver EntityResolver) map[string]struct{} {
+	snapshot, ok := resolver.(entity.RegistrySnapshot)
+	if !ok {
+		return nil
+	}
+	out := map[string]struct{}{}
+	for _, inst := range snapshot.Instances {
+		if inst.Zone != "" {
+			out[inst.Zone] = struct{}{}
+		}
+	}
+	return out
+}
+
+func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string) map[string]any {
+	return map[string]any{
+		"Zone":               entry.Zone,
+		"GpuType":            entry.Name,
+		"MachineType":        "G",
+		"MinimalCpuPlatform": "Auto",
+		"CompShareImageId":   imageID,
+		"ChargeType":         "Dynamic",
+		"Disks": []any{
+			map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 60},
+		},
+	}
+}
+
+func selectCapacityPrecheckImageID(raw map[string]any) string {
+	items := mapSliceAt(raw, "ImageSet")
+	bestID := ""
+	bestScore := -1
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := safeString(entry, "CompShareImageId")
+		if id == "" {
+			continue
+		}
+		status := safeString(entry, "Status")
+		if status != "" && !strings.EqualFold(status, "Available") && !strings.EqualFold(status, "Normal") {
+			continue
+		}
+		text := strings.ToLower(strings.Join([]string{
+			safeString(entry, "Name"),
+			safeString(entry, "ImageName"),
+			safeString(entry, "CompShareImageName"),
+		}, " "))
+		score := 0
+		if strings.EqualFold(safeString(entry, "ImageType"), "System") {
+			score += 4
+		}
+		if strings.Contains(text, "ubuntu") {
+			score += 4
+		}
+		if strings.Contains(text, "nvidia") || strings.Contains(text, "cuda") {
+			score += 3
+		}
+		if status != "" {
+			score++
+		}
+		if score > bestScore {
+			bestScore = score
+			bestID = id
+		}
+	}
+	return bestID
+}
+
+func summarizeStockCapacity(entry stockInstanceTypeEntry, raw map[string]any) stockCapacityCheck {
+	check := stockCapacityCheck{Name: entry.Name, Zone: entry.Zone}
+	for _, item := range mapSliceAt(raw, "Specs") {
+		spec, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		check.CheckedSpec++
+		if resourceEnough(spec["ResourceEnough"]) {
+			if label := capacitySpecLabel(spec); label != "" {
+				check.EnoughSpecs = append(check.EnoughSpecs, label)
+			}
+		}
+	}
+	return check
+}
+
+func resourceEnough(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return false
+	}
+}
+
+func capacitySpecLabel(spec map[string]any) string {
+	gpu := fmt.Sprint(spec["Gpu"])
+	cpu := fmt.Sprint(spec["Cpu"])
+	mem := fmt.Sprint(spec["Mem"])
+	parts := []string{}
+	if gpu != "" && gpu != "<nil>" {
+		parts = append(parts, gpu+"卡")
+	}
+	if cpu != "" && cpu != "<nil>" {
+		parts = append(parts, cpu+"C")
+	}
+	if mem != "" && mem != "<nil>" {
+		parts = append(parts, mem+"G")
+	}
+	return strings.Join(parts, "/")
+}
+
+func renderStockCapacityReply(checks []stockCapacityCheck) string {
+	names := make([]string, 0, len(checks))
+	seenNames := map[string]struct{}{}
+	var enough []string
+	var failedZones []string
+	checkedSpecs := 0
+	for _, check := range checks {
+		if _, ok := seenNames[check.Name]; !ok {
+			seenNames[check.Name] = struct{}{}
+			names = append(names, check.Name)
+		}
+		if check.Failed {
+			failedZones = append(failedZones, check.Zone)
+			continue
+		}
+		checkedSpecs += check.CheckedSpec
+		for _, spec := range check.EnoughSpecs {
+			enough = append(enough, fmt.Sprintf("%s/%s/%s", check.Name, check.Zone, spec))
+		}
+	}
+	sort.Strings(names)
+	models := strings.Join(names, "、")
+	if len(enough) > 0 {
+		sort.Strings(enough)
+		reply := fmt.Sprintf("%s 当前有可创建库存，可以新建实例。", models)
+		return appendCapacityFailureNote(reply, failedZones)
+	}
+	if checkedSpecs == 0 {
+		reply := fmt.Sprintf("%s 当前暂时无法确认是否有可创建库存。", models)
+		return appendCapacityFailureNote(reply, failedZones)
+	}
+	reply := fmt.Sprintf("%s 当前暂无可创建库存，暂时不能新建实例。", models)
+	return appendCapacityFailureNote(reply, failedZones)
+}
+
+func appendCapacityFailureNote(reply string, failedZones []string) string {
+	if len(failedZones) == 0 {
+		return reply
+	}
+	sort.Strings(failedZones)
+	return reply + " 另有部分可用区暂时无法确认。"
 }
 
 // entryMatchesAnyKeyword returns true when any of the user keywords appears

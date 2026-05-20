@@ -16,7 +16,7 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustContain(t, descriptions["DescribeAvailableCompShareInstanceTypes"], "不返回精确剩余数量")
 
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "具体创建实例配置")
-	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "不适合回答“4090 还有没有库存”")
+	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "确认该机型当前是否真实可创建")
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "CompShareImageId 和 ChargeType 必填")
 }
 
