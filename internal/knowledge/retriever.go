@@ -287,9 +287,18 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 	productArea = strings.TrimSpace(strings.ToLower(productArea))
 
 	bm25Candidates := r.collectBM25Candidates(question, productArea)
+	// Pool sizing is mode-aware: the cascade path (hybrid_cosine /
+	// hybrid_rerank / qwen3_full) uses hybridBM25PoolSize=20 because it
+	// only reranks within the BM25 top window. qwen3_rrf widens this to
+	// rrfBM25PoolSize=50 to give the rank-level fusion a deeper signal
+	// (Elastic + OpenSearch + Azure recommend 50-100 for RRF inputs).
 	limit := r.topK
 	if r.hybridEnabled() {
-		limit = hybridBM25PoolSize
+		if r.mode == RetrievalModeQwen3RRF {
+			limit = rrfBM25PoolSize
+		} else {
+			limit = hybridBM25PoolSize
+		}
 	}
 	if len(bm25Candidates) > limit {
 		bm25Candidates = bm25Candidates[:limit]
@@ -297,16 +306,17 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 
 	finalCandidates := bm25Candidates
 	// hybridMode tracks which retrieval path produced the final candidates.
-	// Default to bm25_only; switched to hybrid_cosine when hybrid is enabled
-	// and the cosine step ran successfully (or BM25 pool was empty so we
-	// never needed to call the embedder). Switched to bm25_fallback when the
-	// embedder failed and we returned the BM25 pool unchanged.
-	// embeddingLatencyMs is nil unless the embedder was actually invoked,
-	// preserving the three-state distinction documented on
+	// Default to bm25_only; switched to hybrid_cosine / hybrid_rerank /
+	// qwen3_full / qwen3_rrf when the corresponding mode ran successfully.
+	// Switched to bm25_fallback when the embedder failed (cascade) or the
+	// dense leg failed (qwen3_rrf) and the retriever returned BM25 pool
+	// unchanged. embeddingLatencyMs is nil unless the embedder was actually
+	// invoked, preserving the three-state distinction documented on
 	// RetrievalResult.EmbeddingLatencyMS. The reranker stage layers on top
-	// of cosine: when it runs, hybridMode is upgraded to hybrid_rerank or
-	// qwen3_full; on reranker failure, hybridMode stays hybrid_cosine and
-	// rerankerFallbackReason carries the cause.
+	// of the prior stage: when it runs, hybridMode stays at the prior label
+	// + rerankerMode/rerankerLatencyMs are populated; on reranker failure,
+	// hybridMode stays at the pre-reranker label and rerankerFallbackReason
+	// carries the cause.
 	hybridMode := "bm25_only"
 	hybridFallbackReason := ""
 	var embeddingLatencyMs *int64
@@ -314,7 +324,58 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 	rerankerMode := ""
 	var rerankerLatencyMs *int64
 	rerankerFallbackReason := ""
-	if r.hybridEnabled() {
+	rrfInfo := map[string]rrfRankInfo(nil)
+	if r.mode == RetrievalModeQwen3RRF {
+		// CRITICAL: do NOT gate on len(bm25Candidates) > 0. The entire
+		// value of RRF is recovering BM25-zero-hit queries via the dense
+		// leg. The cascade path skips the embedder when BM25 is empty
+		// (because cosine over a 0-doc pool is degenerate) — RRF must
+		// NOT inherit that behavior.
+		denseTopN, denseFallbackReason, denseLatencyMs := r.denseFullSearch(question, rrfDensePoolSize)
+		embeddingLatencyMs = &denseLatencyMs
+		if denseFallbackReason != "" {
+			// Dense leg failed — degrade to bm25-only (same semantics as
+			// cascade's embedding_error fallback). BM25 may itself be
+			// empty (legitimate "nothing matches"); that case still
+			// returns no hits.
+			finalCandidates = bm25Candidates
+			hybridMode = "bm25_fallback"
+			hybridFallbackReason = denseFallbackReason
+		} else {
+			embeddingModel = r.embeddingModel
+			// Fusion window: when reranker is on, cap fused output at
+			// rerankerPoolSize=10 (matches cascade's pre-reranker pool);
+			// otherwise cap at topK so we don't carry candidates past
+			// the topK truncation below.
+			fuseTopN := r.topK
+			if r.rerankerEnabled() {
+				fuseTopN = rerankerPoolSize
+			}
+			fused, info := rrfFusion(bm25Candidates, denseTopN, fuseTopN)
+			finalCandidates = fused
+			rrfInfo = info
+			hybridMode = "qwen3_rrf"
+
+			if r.rerankerEnabled() && len(finalCandidates) > 0 {
+				rerankedByRerank, rerankFallbackReason, rerankLatencyMs := r.rerankByReranker(question, finalCandidates)
+				rerankerLatencyMs = &rerankLatencyMs
+				if rerankFallbackReason != "" {
+					rerankerFallbackReason = rerankFallbackReason
+					// finalCandidates stays at RRF ranking; rrfInfo
+					// already populated so trace fields are correct.
+				} else {
+					finalCandidates = rerankedByRerank
+					rerankerMode = r.rerankerModel
+					// hybridMode stays "qwen3_rrf" — reranker is a layer
+					// on top, not a different retrieval mode. The reranker
+					// overwrites scoredChunk.score (with relevance_score),
+					// but rrfInfo[cid].FusionScore is preserved separately
+					// so trace consumers can still recover the pre-rerank
+					// fusion score.
+				}
+			}
+		}
+	} else if r.hybridEnabled() {
 		if len(bm25Candidates) > 0 {
 			reranked, fallbackReason, latencyMs := r.rerankByEmbedding(question, bm25Candidates)
 			finalCandidates = reranked
@@ -364,6 +425,7 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 			hybridMode = "hybrid_cosine"
 		}
 	}
+	_ = rrfInfo // commit 5 plumbs rrfInfo[cid] into RetrievalHit trace fields
 
 	if len(finalCandidates) > r.topK {
 		finalCandidates = finalCandidates[:r.topK]
