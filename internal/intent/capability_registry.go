@@ -551,6 +551,143 @@ func matchUserTokensToAPINames(userText string, apiNames []string) []string {
 	return matched
 }
 
+var gpuMemoryHintRegex = regexp.MustCompile(`(?i)\b(\d{2,3})\s*(?:gb|g)\b`)
+var gpuMemorySuffixRegex = regexp.MustCompile(`(?i)_(\d{2,3})g$`)
+
+func matchUserTextToInstanceTypeNames(userText string, items []any, includeFamilyMemoryVariants bool) []string {
+	apiNames := collectAPINamesFromInstanceTypes(items)
+	matched := matchUserTokensToAPINames(userText, apiNames)
+	hints := extractGPUMemoryHints(userText)
+	if len(hints) > 0 {
+		if memoryMatched := matchMemoryHintedInstanceTypeNames(hints, items, matched); len(memoryMatched) > 0 {
+			return memoryMatched
+		}
+		if len(matched) > 0 || userMentionedGPULikeToken(userText) {
+			return nil
+		}
+	}
+	if includeFamilyMemoryVariants {
+		return expandMemoryVariantMatches(matched, apiNames)
+	}
+	return matched
+}
+
+func matchMemoryHintedInstanceTypeNames(hints map[string]struct{}, items []any, matchedNames []string) []string {
+	wantedBases := map[string]struct{}{}
+	for _, name := range matchedNames {
+		if name == "" {
+			continue
+		}
+		wantedBases[name] = struct{}{}
+		wantedBases[memoryVariantBaseName(name)] = struct{}{}
+	}
+
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := safeString(entry, "Name")
+		if name == "" {
+			continue
+		}
+		if len(wantedBases) > 0 {
+			base := memoryVariantBaseName(name)
+			if _, ok := wantedBases[name]; !ok {
+				if _, ok := wantedBases[base]; !ok {
+					continue
+				}
+			}
+		}
+		if !memoryHintMatchesInstanceType(hints, entry) {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func extractGPUMemoryHints(userText string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, match := range gpuMemoryHintRegex.FindAllStringSubmatch(userText, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		if normalized := normalizeMemoryGB(match[1]); normalized != "" {
+			out[normalized] = struct{}{}
+		}
+	}
+	return out
+}
+
+func memoryHintMatchesInstanceType(hints map[string]struct{}, entry map[string]any) bool {
+	memory := normalizeMemoryGB(nestedValue(entry, "GraphicsMemory"))
+	if memory == "" {
+		memory = apiNameMemoryGB(safeString(entry, "Name"))
+	}
+	if memory == "" {
+		return false
+	}
+	_, ok := hints[memory]
+	return ok
+}
+
+func normalizeMemoryGB(value string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	normalized = strings.TrimSuffix(normalized, "GB")
+	normalized = strings.TrimSuffix(normalized, "G")
+	return strings.TrimSpace(normalized)
+}
+
+func apiNameMemoryGB(name string) string {
+	match := gpuMemorySuffixRegex.FindStringSubmatch(name)
+	if len(match) < 2 {
+		return ""
+	}
+	return normalizeMemoryGB(match[1])
+}
+
+func memoryVariantBaseName(name string) string {
+	return gpuMemorySuffixRegex.ReplaceAllString(name, "")
+}
+
+func expandMemoryVariantMatches(matchedNames []string, apiNames []string) []string {
+	if len(matchedNames) == 0 {
+		return nil
+	}
+	wantedNames := map[string]struct{}{}
+	wantedBases := map[string]struct{}{}
+	for _, name := range matchedNames {
+		if name == "" {
+			continue
+		}
+		wantedNames[name] = struct{}{}
+		wantedBases[memoryVariantBaseName(name)] = struct{}{}
+	}
+
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, name := range apiNames {
+		_, exact := wantedNames[name]
+		_, variant := wantedBases[memoryVariantBaseName(name)]
+		if !exact && !(variant && apiNameMemoryGB(name) != "") {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
 // collectAPINamesFromInstanceTypes returns the deduped set of "Name" fields
 // from a DescribeAvailableCompShareInstanceTypes response.
 func collectAPINamesFromInstanceTypes(items []any) []string {
@@ -592,8 +729,7 @@ func renderGPUSpecsReply(raw map[string]any, userText string) string {
 	if len(items) == 0 {
 		return noGPUSpecsReply
 	}
-	apiNames := collectAPINamesFromInstanceTypes(items)
-	matched := matchUserTokensToAPINames(userText, apiNames)
+	matched := matchUserTextToInstanceTypeNames(userText, items, true)
 	unavailable := detectKnownUnavailableGPUs(userText)
 
 	var prefix string
@@ -683,8 +819,7 @@ func renderStockReply(raw map[string]any, userText string) string {
 	if len(items) == 0 {
 		return noStockReply
 	}
-	apiNames := collectAPINamesFromInstanceTypes(items)
-	matched := matchUserTokensToAPINames(userText, apiNames)
+	matched := matchUserTextToInstanceTypeNames(userText, items, false)
 	unavailable := detectKnownUnavailableGPUs(userText)
 
 	var prefix string
@@ -808,7 +943,7 @@ func matchedNormalStockEntries(raw map[string]any, userText string) []stockInsta
 	if len(items) == 0 {
 		return nil
 	}
-	matchedNames := matchUserTokensToAPINames(userText, collectAPINamesFromInstanceTypes(items))
+	matchedNames := matchUserTextToInstanceTypeNames(userText, items, false)
 	if len(matchedNames) == 0 {
 		return nil
 	}
