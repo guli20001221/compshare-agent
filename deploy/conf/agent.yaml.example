@@ -1,6 +1,8 @@
 agent:
   executor: external
   compshare_api_url: "https://api.compshare.cn/"
+  # Legacy direct AK/SK — only used when agent.sts is not configured.
+  # For HTTP server mode, use agent.sts instead.
   public_key: "${COMPSHARE_PUBLIC_KEY}"
   private_key: "${COMPSHARE_PRIVATE_KEY}"
   region: "cn-wlcb"

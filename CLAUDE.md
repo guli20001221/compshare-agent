@@ -21,7 +21,15 @@ go build -o agent ./cmd
 ./agent server --addr :8080
 ```
 
-The config loader (`internal/config/config.go`) only supports plain `${ENV_VAR}` substitution — no `${VAR:-default}` syntax. `COMPSHARE_PUBLIC_KEY`, `COMPSHARE_PRIVATE_KEY`, and `LLM_API_KEY` are required; `project_id` may be left empty (auto-discovered via `GetProjectList` at init).
+The config loader (`internal/config/config.go`) only supports plain `${ENV_VAR}` substitution — no `${VAR:-default}` syntax. Required env vars depend on the subcommand:
+
+- `LLM_API_KEY` — required for all subcommands.
+- `COMPSHARE_SERVICE_PUBLIC_KEY` / `COMPSHARE_SERVICE_PRIVATE_KEY` — service's own AK/SK used to call STS `AssumeRole`; required for the `server` subcommand.
+- `COMPSHARE_DEFAULT_ROLE_URN` — required for the `cli` subcommand when STS mode is used.
+- `MYSQL_DSN` — required for the `server` subcommand.
+- `COMPSHARE_PUBLIC_KEY` / `COMPSHARE_PRIVATE_KEY` — legacy direct AK/SK; only needed when `agent.sts` is not configured (e.g., local dev without STS).
+
+`project_id` may be left empty (auto-discovered via `GetProjectList` at init).
 
 ## Tests
 
@@ -60,6 +68,9 @@ Behavior is gated by env vars read in `cmd/trace.go` and `cmd/agent.go`. Default
 | `USE_GROUNDED_RENDERER` | `llm` | Routes final reply through `internal/renderer.GroundedRenderer`. |
 | `COMPSHARE_TRACE_ENABLED` | `1` | Writes per-turn JSONL traces to `COMPSHARE_TRACE_DIR`. |
 | `MYSQL_DSN` | DSN string | Required by `compshare-agent server`; ignored by `compshare-agent cli`. |
+| `COMPSHARE_SERVICE_PUBLIC_KEY` | AK string | Service long-term public key for STS `AssumeRole`. Required when `agent.sts` is configured. |
+| `COMPSHARE_SERVICE_PRIVATE_KEY` | SK string | Service long-term private key for STS `AssumeRole`. Required when `agent.sts` is configured. |
+| `COMPSHARE_DEFAULT_ROLE_URN` | URN string | Default role URN used by `cli` subcommand in STS mode. Overrides per-request `role_urn_template` derivation. |
 
 Unknown values for any of the above are logged as warnings and treated as off — do **not** silently coerce them.
 
@@ -118,6 +129,7 @@ Read-only diagnostic tools (init failure, billing anomaly, GPU not detected, ima
 - Per-session `*engine.Engine` lives in `internal/agentpool` (LRU 200 / 30min idle). HTTP path skips `engine.Init()` and rehydrates history from MySQL via `engine.RehydrateHistory`.
 - SSE stream is per-token end-to-end via `llm.ChatRequest.OnTextDelta` → `engine.ChatOptions.OnTextDelta` → `sse.Writer`. ReAct intermediate `StepEvent`s are not exposed in phase 1.
 - Persistence: MySQL 8 via `database/sql + go-sql-driver/mysql`; schema in `deploy/migrations/0001_init.sql`. `messages` is INSERTed twice per turn (user immediately, assistant placeholder before LLM call) and UPDATEd once on SSE done — never per-token. DDL is run by ops, not the binary.
+- Credentials: HTTP path uses STS AssumeRole. `top_organization_id` derives a `RoleUrn` via `agent.sts.role_urn_template`; temporary credentials are cached per-role with singleflight. Rate limiting is keyed by `(top_organization_id, organization_id)` pair, not by static public key.
 
 ## Conventions specific to this repo
 
@@ -125,3 +137,4 @@ Read-only diagnostic tools (init failure, billing anomaly, GPU not detected, ima
 - Static FAQ text was removed from the ReAct prompt — platform knowledge flows only through the RAG retriever. Do not reintroduce `FAQContent` / `ReadOnlyFAQContent` injection (`internal/prompt/builder_test.go` has reverse assertions).
 - Shadow QA per-round configs under `eval/shadow_qa/**/agent.yaml` and `.env` files are git-ignored and contain real keys — never commit anything matching those globs.
 - When adding planner examples, group by intent and record a one-line source for each example; tests in `internal/intent/planner_prompt_test.go` enforce grouping/tool/intercept consistency.
+- `SecurityToken` must be included in API signing params before computing the HMAC-SHA1 signature. See `internal/tools/README.md` §6 for the six common pitfalls.
