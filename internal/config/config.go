@@ -48,8 +48,10 @@ type HTTPConfig struct {
 }
 
 // MySQLConfig holds connection settings for the MySQL backing store.
-// DSN is resolved from ${MYSQL_DSN} placeholder if the yaml value uses that form;
-// it is optional at Load time so CLI users are not forced to set the env var.
+// DSN accepts any ${ENV_VAR} placeholder; if the env var is unset the field is
+// set to "" so the server sub-command can validate presence before starting.
+// A plain literal DSN is passed through unchanged.
+// It is optional at Load time so CLI users are not forced to set the env var.
 type MySQLConfig struct {
 	DSN             string        `yaml:"dsn"`
 	MaxOpenConns    int           `yaml:"max_open_conns"`
@@ -59,9 +61,9 @@ type MySQLConfig struct {
 
 // MetaConfig provides the static metadata returned by GetMeta.
 type MetaConfig struct {
-	Welcome          string        `yaml:"welcome"`
-	SuggestedPrompts []string      `yaml:"suggested_prompts"`
-	MaxInputLength   int           `yaml:"max_input_length"`
+	Welcome          string   `yaml:"welcome"`
+	SuggestedPrompts []string `yaml:"suggested_prompts"`
+	MaxInputLength   int      `yaml:"max_input_length"`
 }
 
 type LLMConfig struct {
@@ -117,9 +119,31 @@ func Load(path string) (*Config, error) {
 	}
 	// mysql.dsn is optional at Load time: CLI path does not require it.
 	// The "server" sub-command must validate DSN presence before starting.
-	resolveOptionalDSN(&cfg.Agent.MySQL.DSN)
+	if err := resolveOptionalDSN(&cfg.Agent.MySQL.DSN); err != nil {
+		return nil, err
+	}
+	if err := validateHTTPConfig(&cfg.Agent.HTTP); err != nil {
+		return nil, err
+	}
+	if err := validateMySQLConfig(&cfg.Agent.MySQL); err != nil {
+		return nil, err
+	}
+	if err := validateMetaConfig(&cfg.Agent.Meta); err != nil {
+		return nil, err
+	}
 	applyHTTPDefaults(&cfg.Agent.HTTP)
 	applyMySQLDefaults(&cfg.Agent.MySQL)
+
+	// Check for explicit mismatch before meta defaults are applied.
+	// meta.max_input_length == 0 means "not set"; inheritance happens below.
+	if cfg.Agent.Meta.MaxInputLength != 0 && cfg.Agent.HTTP.MaxInputLength != 0 &&
+		cfg.Agent.Meta.MaxInputLength != cfg.Agent.HTTP.MaxInputLength {
+		return nil, fmt.Errorf(
+			"agent.http.max_input_length (%d) and agent.meta.max_input_length (%d) conflict: set only one or make them equal",
+			cfg.Agent.HTTP.MaxInputLength, cfg.Agent.Meta.MaxInputLength,
+		)
+	}
+
 	applyMetaDefaults(&cfg.Agent.Meta, cfg.Agent.HTTP.MaxInputLength)
 
 	return &cfg, nil
@@ -170,6 +194,56 @@ func negativeRateLimitError(yamlPath string) error {
 	return fmt.Errorf("%s must be non-negative (0 or omit to use default)", yamlPath)
 }
 
+func negativeValueError(yamlPath string) error {
+	return fmt.Errorf("%s must be non-negative (0 or omit to use default)", yamlPath)
+}
+
+// validateHTTPConfig rejects any explicitly-set negative numeric values.
+// Zero values are allowed (meaning "use default" or intentional zero for SSE write timeout).
+func validateHTTPConfig(h *HTTPConfig) error {
+	if h.PoolCapacity < 0 {
+		return negativeValueError("agent.http.pool_capacity")
+	}
+	if h.MaxInputLength < 0 {
+		return negativeValueError("agent.http.max_input_length")
+	}
+	if h.PoolIdleTTL < 0 {
+		return negativeValueError("agent.http.pool_idle_ttl")
+	}
+	if h.ReadTimeout < 0 {
+		return negativeValueError("agent.http.read_timeout")
+	}
+	if h.WriteTimeout < 0 {
+		return negativeValueError("agent.http.write_timeout")
+	}
+	if h.SSEKeepaliveInterval < 0 {
+		return negativeValueError("agent.http.sse_keepalive_interval")
+	}
+	return nil
+}
+
+// validateMySQLConfig rejects any explicitly-set negative numeric values.
+func validateMySQLConfig(m *MySQLConfig) error {
+	if m.MaxOpenConns < 0 {
+		return negativeValueError("agent.mysql.max_open_conns")
+	}
+	if m.MaxIdleConns < 0 {
+		return negativeValueError("agent.mysql.max_idle_conns")
+	}
+	if m.ConnMaxLifetime < 0 {
+		return negativeValueError("agent.mysql.conn_max_lifetime")
+	}
+	return nil
+}
+
+// validateMetaConfig rejects any explicitly-set negative numeric values.
+func validateMetaConfig(meta *MetaConfig) error {
+	if meta.MaxInputLength < 0 {
+		return negativeValueError("agent.meta.max_input_length")
+	}
+	return nil
+}
+
 func resolveRequiredSecret(field *string, yamlPath, envKey string) error {
 	raw := strings.TrimSpace(*field)
 	if raw == "" {
@@ -210,16 +284,32 @@ func placeholder(envKey string) string {
 	return "${" + envKey + "}"
 }
 
-// resolveOptionalDSN resolves ${MYSQL_DSN} placeholder if present.
-// If the field is empty or uses some other form it is left as-is;
-// it is the server sub-command's responsibility to validate it.
-func resolveOptionalDSN(field *string) {
+// resolveOptionalDSN resolves any ${ENV_VAR} placeholder in the DSN field.
+// If the field is empty or a plain literal it is left unchanged.
+// If the field looks like a placeholder but the env var is unset, the field is
+// set to "" so server-mode validators can simply check dsn == "".
+// Returns an error only when the value starts with "$" but is not valid ${...}
+// syntax, to catch typos like "$MYSQL_DSN".
+func resolveOptionalDSN(field *string) error {
 	raw := strings.TrimSpace(*field)
-	if raw == placeholder("MYSQL_DSN") {
-		if v := os.Getenv("MYSQL_DSN"); v != "" {
-			*field = v
-		}
+	if raw == "" {
+		return nil
 	}
+	// Detect placeholder-like values that start with "$".
+	if strings.HasPrefix(raw, "$") {
+		if !strings.HasPrefix(raw, "${") || !strings.HasSuffix(raw, "}") {
+			return fmt.Errorf("agent.mysql.dsn must use ${ENV_VAR} placeholder syntax or be a plain literal DSN")
+		}
+		envKey := strings.TrimSuffix(strings.TrimPrefix(raw, "${"), "}")
+		if envKey == "" {
+			return fmt.Errorf("agent.mysql.dsn placeholder must name an environment variable")
+		}
+		// Env var unset → blank the field; server sub-command will reject it.
+		*field = os.Getenv(envKey)
+		return nil
+	}
+	// Plain literal DSN — pass through unchanged.
+	return nil
 }
 
 // applyHTTPDefaults fills zero-value fields with documented defaults.
