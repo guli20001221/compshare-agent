@@ -36,17 +36,17 @@ type MessageRecorder struct {
 	logger      *log.Logger
 }
 
-// MessageEntry is one row of agent_messages. ConnectionID + RequestUUID
-// + TurnIndex together identify a turn; RequestUUID alone is the unique
-// idempotency key (uk_request_uuid). Status mirrors the trace's
-// terminal-state enum so dashboards can join on status without
-// recomputing.
+// MessageEntry is one row of agent_messages. ConnectionID + CreatedAt
+// together identify a turn within its WS session (turns are processed
+// serially, so created_at is strictly monotonic per connection);
+// RequestUUID alone is the unique idempotency key (uk_request_uuid).
+// Status mirrors the trace's terminal-state enum so dashboards can join
+// on status without recomputing.
 type MessageEntry struct {
 	RequestUUID      string
 	TopOrgID         int64
 	OrgID            int64
 	ConnectionID     string
-	TurnIndex        int
 	CreatedAt        time.Time
 	UserMessage      string
 	AssistantMessage string
@@ -172,20 +172,19 @@ func (r *MessageRecorder) insertBatch(batch []MessageEntry) error {
 		return nil
 	}
 	const cols = "(request_uuid, top_organization_id, organization_id, connection_id, " +
-		"turn_index, created_at, user_message, assistant_message, status, model, latency_ms)"
+		"created_at, user_message, assistant_message, status, model, latency_ms)"
 	placeholders := make([]byte, 0, len(batch)*40)
-	args := make([]any, 0, len(batch)*11)
+	args := make([]any, 0, len(batch)*10)
 	for i, e := range batch {
 		if i > 0 {
 			placeholders = append(placeholders, ',')
 		}
-		placeholders = append(placeholders, "(?,?,?,?,?,?,?,?,?,?,?)"...)
+		placeholders = append(placeholders, "(?,?,?,?,?,?,?,?,?,?)"...)
 		args = append(args,
 			e.RequestUUID,
 			e.TopOrgID,
 			e.OrgID,
 			e.ConnectionID,
-			e.TurnIndex,
 			e.CreatedAt,
 			e.UserMessage,
 			e.AssistantMessage,
