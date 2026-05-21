@@ -7,7 +7,9 @@ import (
 
 	"github.com/compshare-agent/internal/agentpool"
 	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 // mockMessageStore is a minimal store.MessageStore for tests.
@@ -109,12 +111,13 @@ func TestPoolLRUEviction(t *testing.T) {
 }
 
 // TestPoolIdleTTLEviction verifies that an engine idle beyond IdleTTL is
-// removed by the gc loop and rebuilt on next Get.
+// removed by the gc loop and rebuilt on next Get. Uses require.Eventually
+// instead of a fixed sleep so the test tolerates loaded CI environments.
 func TestPoolIdleTTLEviction(t *testing.T) {
 	ms := &mockMessageStore{}
 	pool := agentpool.New(minimalConfig(), ms, agentpool.Options{
 		Capacity: 10,
-		IdleTTL:  50 * time.Millisecond, // very short TTL for testing
+		IdleTTL:  50 * time.Millisecond, // short TTL triggers 10ms gc tick
 	})
 	defer pool.Close()
 
@@ -125,12 +128,16 @@ func TestPoolIdleTTLEviction(t *testing.T) {
 		t.Fatalf("first Get: %v", err)
 	}
 
-	// Wait for gc to evict the idle entry.
-	time.Sleep(200 * time.Millisecond)
+	// Wait until the gc loop evicts the idle entry (pool size drops to 0).
+	// Total budget: 1 s; step: 10 ms.
+	require.Eventually(t, func() bool {
+		return pool.SizeForTest() == 0
+	}, 1*time.Second, 10*time.Millisecond, "idle engine was not evicted within 1s")
 
+	// A fresh Get must rebuild the engine (new pointer, new ListBySession call).
 	eng2, err := pool.Get(ctx, "sess-ttl")
 	if err != nil {
-		t.Fatalf("second Get after TTL: %v", err)
+		t.Fatalf("Get after eviction: %v", err)
 	}
 
 	if eng2 == eng1 {
@@ -139,4 +146,42 @@ func TestPoolIdleTTLEviction(t *testing.T) {
 	if ms.listCalls != 2 {
 		t.Errorf("expected ListBySession called twice, got %d", ms.listCalls)
 	}
+}
+
+// TestFilterHistoryStatusGating verifies that filterHistory only passes through
+// messages whose status is "ok". Messages with status pending / error / aborted
+// or any other value must be excluded regardless of role.
+func TestFilterHistoryStatusGating(t *testing.T) {
+	msgs := []store.Message{
+		{Role: "user", Content: "hello", Status: "ok"},
+		{Role: "assistant", Content: "hi there", Status: "ok"},
+		{Role: "user", Content: "pending msg", Status: "pending"},
+		{Role: "assistant", Content: "error reply", Status: "error"},
+		{Role: "user", Content: "aborted", Status: "aborted"},
+		{Role: "system", Content: "system ok", Status: "ok"}, // role filtered
+		{Role: "tool", Content: "tool ok", Status: "ok"},     // role filtered
+	}
+
+	got := agentpool.FilterHistoryForTest(msgs)
+
+	want := []engine.HistoryMessage{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi there"},
+	}
+
+	require.Equal(t, want, got)
+}
+
+// TestPoolCloseIdempotent verifies that calling Close twice does not panic.
+func TestPoolCloseIdempotent(t *testing.T) {
+	ms := &mockMessageStore{}
+	pool := agentpool.New(minimalConfig(), ms, agentpool.Options{
+		Capacity: 10,
+		IdleTTL:  5 * time.Minute,
+	})
+
+	require.NotPanics(t, func() {
+		pool.Close()
+		pool.Close()
+	})
 }

@@ -54,8 +54,9 @@ type Pool struct {
 	lruList *list.List               // front = most recently used
 	items   map[string]*list.Element // sessionID → list.Element(*entry)
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh    chan struct{}
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 }
 
 // New creates a Pool with the given config, MessageStore, and options.
@@ -145,12 +146,16 @@ func (p *Pool) Get(ctx context.Context, sessionID string) (*engine.Engine, error
 }
 
 // Close stops the background gc goroutine and waits for it to exit.
+// It is safe to call Close more than once; subsequent calls are no-ops.
 func (p *Pool) Close() {
-	close(p.stopCh)
+	p.closeOnce.Do(func() { close(p.stopCh) })
 	p.wg.Wait()
 }
 
 // gcLoop periodically evicts entries that have been idle longer than p.idleTTL.
+// When IdleTTL < 1 s (e.g. in tests) the tick is shortened to 10 ms so that
+// eviction completes within a tight polling budget without requiring large
+// fixed sleeps in tests.
 func (p *Pool) gcLoop(tick time.Duration) {
 	defer p.wg.Done()
 	ticker := time.NewTicker(tick)
