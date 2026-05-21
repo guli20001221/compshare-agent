@@ -15,6 +15,12 @@
 -- Run:
 --   docker exec -i agent-mysql mysql -uroot -p<pw> compshare_agent < \
 --     scripts/sql/migrations/2026-05-21-drop-messages-turn-index.sql
+--
+-- WARNING: NOT idempotent. DROP INDEX / DROP COLUMN error on re-run. Track
+-- applied migrations in your deploy tooling (or check the schema before
+-- running):
+--   SHOW COLUMNS FROM agent_messages LIKE 'turn_index';
+--   -- empty result = already migrated, skip.
 
 -- The composite index lives on (top_org, conn, turn_index); we drop it
 -- before the column so MySQL doesn't complain about leftover index
