@@ -16,3 +16,6 @@ eval/shadow_qa/shadow_qa_agent.yaml
 eval/shadow_qa/**/shadow_qa_agent.yaml
 eval/shadow_qa/.env
 eval/shadow_qa/**/.env
+.runs/
+agent.exe
+agent.exe~

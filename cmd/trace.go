@@ -23,23 +23,91 @@ import (
 
 type getenvFunc func(string) string
 
-func traceWriterFromEnv(getenv getenvFunc) (*observability.Writer, bool, error) {
+func traceWriterFromEnv(getenv getenvFunc) (observability.Writer, bool, error) {
 	if getenv("COMPSHARE_TRACE_ENABLED") != "1" {
 		return nil, false, nil
 	}
-	dir := getenv("COMPSHARE_TRACE_DIR")
-	writer, err := observability.NewWriter(observability.WriterOptions{Dir: dir})
-	if err != nil {
-		return nil, false, err
+	sink := strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_TRACE_SINK")))
+	if sink == "" {
+		sink = "file"
 	}
-	return writer, true, nil
+	dir := getenv("COMPSHARE_TRACE_DIR")
+	dsn := getenv("MYSQL_DSN")
+
+	switch sink {
+	case "file":
+		writer, err := observability.NewWriter(observability.WriterOptions{Dir: dir})
+		if err != nil {
+			return nil, false, err
+		}
+		return writer, true, nil
+	case "mysql":
+		writer, err := observability.NewMySQLWriter(dsn, observability.MySQLWriterOptions{})
+		if err != nil {
+			return nil, false, err
+		}
+		return writer, true, nil
+	case "both":
+		fileW, err := observability.NewWriter(observability.WriterOptions{Dir: dir})
+		if err != nil {
+			return nil, false, err
+		}
+		mysqlW, err := observability.NewMySQLWriter(dsn, observability.MySQLWriterOptions{})
+		if err != nil {
+			_ = fileW.Close(context.Background())
+			return nil, false, err
+		}
+		return multiTraceWriter{fileW, mysqlW}, true, nil
+	default:
+		return nil, false, fmt.Errorf("unknown COMPSHARE_TRACE_SINK value %q (want file|mysql|both)", sink)
+	}
 }
 
-func cleanupTraceWriter(writer *observability.Writer, now time.Time) error {
+// multiTraceWriter fans out a TraceRecord to multiple sinks. Used when
+// COMPSHARE_TRACE_SINK=both during cutover (run file + mysql side-by-side
+// to compare). Failures from any individual sink are logged-then-ignored
+// so one sink's downtime does not stall the other.
+type multiTraceWriter []observability.Writer
+
+func (m multiTraceWriter) Append(rec observability.TraceRecord) error {
+	for _, w := range m {
+		if err := w.Append(rec); err != nil {
+			log.Printf("trace sink append failed (sink dir=%q): %v", w.Dir(), err)
+		}
+	}
+	return nil
+}
+
+func (m multiTraceWriter) Dir() string {
+	for _, w := range m {
+		if d := w.Dir(); d != "" {
+			return d
+		}
+	}
+	return ""
+}
+
+func (m multiTraceWriter) Close(ctx context.Context) error {
+	var firstErr error
+	for _, w := range m {
+		if err := w.Close(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func cleanupTraceWriter(writer observability.Writer, now time.Time) error {
 	if writer == nil {
 		return nil
 	}
-	return observability.Cleanup(writer.Dir(), observability.DefaultTraceRetentionDays, now)
+	// MySQLWriter returns "" — Cleanup is a no-op on empty dir, which is
+	// correct (nothing to delete on disk for the db-backed sink).
+	dir := writer.Dir()
+	if dir == "" {
+		return nil
+	}
+	return observability.Cleanup(dir, observability.DefaultTraceRetentionDays, now)
 }
 
 func intentPlannerShadowEnabled(getenv getenvFunc) bool {
@@ -451,7 +519,7 @@ func useSeparateShadowRunner(traceEnabled, shadowEnabled, cutoverEnabled bool) b
 }
 
 type cliTraceRecorder struct {
-	writer                *observability.Writer
+	writer                observability.Writer
 	record                observability.TraceRecord
 	start                 time.Time
 	totalTokens           int
@@ -460,12 +528,20 @@ type cliTraceRecorder struct {
 	plannerTraceSupplier  func() observability.PlannerTrace
 }
 
-func newCLITraceRecorder(writer *observability.Writer, turnIndex int, userMsg string, start time.Time) *cliTraceRecorder {
+// newCLITraceRecorder constructs a per-turn trace recorder for the CLI path.
+// traceID, when non-empty, becomes the trace's TraceID verbatim — used by
+// server callers that already have a request_uuid (plan §10 / A7). Empty
+// traceID falls back to the legacy auto-generated form so existing CLI
+// callsites (cmd/agent.go) keep working unchanged.
+func newCLITraceRecorder(writer observability.Writer, traceID string, turnIndex int, userMsg string, start time.Time) *cliTraceRecorder {
 	userMsgHash, _ := observability.HashTracePayload(userMsg)
+	if traceID == "" {
+		traceID = fmt.Sprintf("trace-%d-%d", turnIndex, start.UnixNano())
+	}
 	return &cliTraceRecorder{
 		writer: writer,
 		record: observability.TraceRecord{
-			TraceID:     fmt.Sprintf("trace-%d-%d", turnIndex, start.UnixNano()),
+			TraceID:     traceID,
 			TurnID:      fmt.Sprintf("turn-%d", turnIndex),
 			TurnIndex:   turnIndex,
 			UserMsgHash: userMsgHash,
