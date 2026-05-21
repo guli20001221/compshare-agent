@@ -65,17 +65,13 @@ func NewExternalExecutorWithProvider(apiURL, region, projectId string, provider 
 	}
 }
 
-// SetProjectId updates the ProjectId to auto-inject into every request.
-// Used when the caller discovers ProjectId at runtime (e.g. via GetProjectList
-// during Init) instead of providing it via config.
-func (e *ExternalExecutor) SetProjectId(id string) {
-	e.projectId = id
-}
-
-// ProjectId returns the currently configured ProjectId, or "" if unset.
-func (e *ExternalExecutor) ProjectId() string {
-	return e.projectId
-}
+// SetProjectId and ProjectId getters were removed in PR9 to close a
+// cross-session leak: ExternalExecutor lives in SharedDeps process-wide
+// across sessions, so a runtime setter let session A's auto-discovered
+// project id auto-inject into session B's tool calls. ProjectId now only
+// comes from cfg at construction time. If mutating tools later need a
+// per-session ProjectId, pass it via args["ProjectId"] in the call path
+// (per-session field on Engine), NOT by re-introducing a setter here.
 
 func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
 	if usesJSONBody(action) {

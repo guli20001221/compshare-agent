@@ -153,27 +153,31 @@ func TestFlattenInto_WithPrefix(t *testing.T) {
 
 // --- ProjectId injection ---
 
+// TestExternalExecutor_ProjectIdFromConfig and the now-deleted
+// TestExternalExecutor_SetProjectId used to share coverage of two
+// ProjectId entry points. PR9 collapsed that to cfg-only: SetProjectId
+// is gone, ProjectId() getter is gone. We assert ProjectId reaches the
+// signed request body by inspecting captured forms instead of reading
+// the field back, since the field is now package-private with no
+// accessor (intentional: removes any reflection-survivable handle on
+// the mutation surface).
 func TestExternalExecutor_ProjectIdFromConfig(t *testing.T) {
+	apiURL, captured, cleanup := captureForm(t)
+	defer cleanup()
+
 	ext := NewExternalExecutor(config.AgentConfig{
-		CompShareAPIURL: "http://example.invalid",
+		CompShareAPIURL: apiURL,
 		PublicKey:       "pk",
 		PrivateKey:      "sk",
 		Region:          "cn-wlcb",
 		ProjectId:       "org-from-cfg",
 	})
-	if got := ext.ProjectId(); got != "org-from-cfg" {
-		t.Errorf("ProjectId() = %q, want org-from-cfg", got)
+	_, err := ext.Execute(context.Background(), "DescribeCompShareInstance", nil)
+	if err != nil {
+		t.Fatalf("Execute err = %v", err)
 	}
-}
-
-func TestExternalExecutor_SetProjectId(t *testing.T) {
-	ext := NewExternalExecutor(config.AgentConfig{CompShareAPIURL: "http://example.invalid"})
-	if got := ext.ProjectId(); got != "" {
-		t.Errorf("initial ProjectId() = %q, want empty", got)
-	}
-	ext.SetProjectId("org-runtime")
-	if got := ext.ProjectId(); got != "org-runtime" {
-		t.Errorf("after SetProjectId, ProjectId() = %q, want org-runtime", got)
+	if got := captured.Get("ProjectId"); got != "org-from-cfg" {
+		t.Errorf("signed form ProjectId = %q, want org-from-cfg", got)
 	}
 }
 

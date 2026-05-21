@@ -313,3 +313,47 @@ func assertDenied(t *testing.T, decision Decision, reason Reason) {
 		t.Fatalf("expected ErrRateLimited, got %v", decision.Err)
 	}
 }
+
+func TestSubjectKeyFromTenant_BothZero_ReturnsAnonymous(t *testing.T) {
+	got := SubjectKeyFromTenant(0, 0)
+	if got != AnonymousSubjectKey {
+		t.Fatalf("expected anonymous subject for zero tenant ids, got %q", got)
+	}
+	if strings.HasPrefix(got, "sha256:") {
+		t.Fatalf("zero tenant ids must not be hashed, got %q", got)
+	}
+}
+
+func TestSubjectKeyFromTenant_DifferentTenants_DifferentKeys(t *testing.T) {
+	keyA := SubjectKeyFromTenant(66391350, 151147646)
+	keyB := SubjectKeyFromTenant(66882207, 151640760)
+	if keyA == keyB {
+		t.Fatalf("different tenants must produce different subject keys, both got %q", keyA)
+	}
+	if !strings.HasPrefix(keyA, "sha256:") {
+		t.Fatalf("subject key should use sha256 prefix, got %q", keyA)
+	}
+	if strings.Contains(keyA, "66391350") || strings.Contains(keyA, "151147646") {
+		t.Fatalf("subject key leaked raw tenant ids: %q", keyA)
+	}
+}
+
+func TestSubjectKeyFromTenant_SameTenant_DeterministicKey(t *testing.T) {
+	keyA := SubjectKeyFromTenant(66391350, 151147646)
+	keyB := SubjectKeyFromTenant(66391350, 151147646)
+	if keyA != keyB {
+		t.Fatalf("same tenant must produce identical subject keys, got %q vs %q", keyA, keyB)
+	}
+}
+
+func TestSubjectKeyFromTenant_OnlyOrgID_StillHashes(t *testing.T) {
+	// 仅给 organization_id（top_organization_id 缺失）不应退化为 anonymous——
+	// 限流仍需为这部分流量分桶。
+	got := SubjectKeyFromTenant(0, 151147646)
+	if got == AnonymousSubjectKey {
+		t.Fatalf("partial tenant info must still produce a hashed subject, got anonymous")
+	}
+	if !strings.HasPrefix(got, "sha256:") {
+		t.Fatalf("expected sha256 prefix, got %q", got)
+	}
+}

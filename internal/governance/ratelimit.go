@@ -176,6 +176,24 @@ func SubjectKeyFromOrganization(topOrg, org uint32) (string, bool) {
 	return "sha256:" + hex.EncodeToString(sum[:]), true
 }
 
+// SubjectKeyFromTenant returns a hashed subject key derived from the console
+// tenant identity (top_organization_id + organization_id). Used by the WS
+// server path so each tenant gets its own rate-limit bucket; CLI path keeps
+// SubjectKeyFromPublicKey because there is only one process-level identity.
+//
+// Format: "sha256:" + hex(sha256("top=<topOrgID>;org=<orgID>"))
+// When both IDs are 0 returns AnonymousSubjectKey so MemoryLimiter still
+// applies a quota bucket (rather than passing an empty SubjectKey which
+// MemoryLimiter would normalize to AnonymousSubjectKey anyway).
+func SubjectKeyFromTenant(topOrgID, orgID int64) string {
+	if topOrgID == 0 && orgID == 0 {
+		return AnonymousSubjectKey
+	}
+	raw := fmt.Sprintf("top=%d;org=%d", topOrgID, orgID)
+	sum := sha256.Sum256([]byte(raw))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 type limitKey struct {
 	subject string
 	class   Class

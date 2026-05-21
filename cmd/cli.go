@@ -132,7 +132,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	var initTraceRecorder *cliTraceRecorder
 	initStart := time.Now()
 	if traceEnabled {
-		initTraceRecorder = newCLITraceRecorder(traceWriter, 0, "init_context", initStart)
+		initTraceRecorder = newCLITraceRecorder(traceWriter, "", 0, "init_context", initStart)
 		initTraceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, cutoverIntents))
 		initTraceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 		eng.SetRateLimitObserver(initTraceRecorder.SetRateLimitDecision)
@@ -190,7 +190,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		eng.SetRendererTraceObserver(nil)
 		eng.SetTokenUsageObserver(nil)
 		if traceEnabled {
-			traceRecorder = newCLITraceRecorder(traceWriter, turnIndex, input, turnStart)
+			traceRecorder = newCLITraceRecorder(traceWriter, "", turnIndex, input, turnStart)
 			traceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, cutoverIntents))
 			traceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)

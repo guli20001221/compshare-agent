@@ -1505,9 +1505,9 @@ func TestNewConstructsRateLimiterFromConfig(t *testing.T) {
 	eng := New(cfg, nil)
 
 	require.NotNil(t, eng.rateLimiter)
-	// New() always starts with AnonymousSubjectKey; subject is derived from
-	// request context per-turn via ChatWithOptions.
-	assert.Equal(t, governance.AnonymousSubjectKey, eng.rateLimitSubject)
+	// New() derives the subject from the public key via SubjectKeyFromPublicKey.
+	expectedSubject, _ := governance.SubjectKeyFromPublicKey("public-key-for-subject")
+	assert.Equal(t, expectedSubject, eng.rateLimitSubject)
 }
 
 func TestNewDefaultsToReadOnlyMutatingToolsDisabled(t *testing.T) {
@@ -2332,20 +2332,9 @@ func (h *projectListHandler) actions() []string {
 	return out
 }
 
-func newEngineWithServer(t *testing.T, mock *mockLLM, projectIdInCfg string, body string) (*Engine, *projectListHandler, func()) {
-	t.Helper()
-	h := &projectListHandler{projectListBody: body}
-	srv := httptest.NewServer(h)
-	ext := tools.NewExternalExecutor(config.AgentConfig{
-		CompShareAPIURL: srv.URL,
-		PublicKey:       "pk",
-		PrivateKey:      "sk",
-		Region:          "cn-wlcb",
-		ProjectId:       projectIdInCfg,
-	})
-	eng := NewWithDeps(mock, ext, nil)
-	return eng, h, srv.Close
-}
+// newEngineWithServer removed in PR9 with the TestEnsureProjectId_* family
+// it served. projectListHandler is still used by TestNewDoesNotRefreshEntityRegistry
+// below, which only checks that Engine.New doesn't trigger network refresh.
 
 func TestNewDoesNotRefreshEntityRegistry(t *testing.T) {
 	h := &projectListHandler{}
@@ -2508,153 +2497,14 @@ func TestPlannerPriorTextSnapshotKeepsNewestMessagesWithinRuneBudget(t *testing.
 	assert.NotContains(t, prior, "msg-01")
 }
 
-func TestEnsureProjectId_UsesConfigWhenSet(t *testing.T) {
-	// Pre-configured ProjectId → GetProjectList must NOT be called.
-	eng, h, cleanup := newEngineWithServer(t, &mockLLM{}, "org-cfg-value", "")
-	defer cleanup()
-
-	_, err := eng.Init(context.Background())
-	assert.NoError(t, err)
-
-	// Verify the underlying executor still carries the config value.
-	ext := eng.externalExecutor()
-	assert.NotNil(t, ext)
-	assert.Equal(t, "org-cfg-value", ext.ProjectId())
-
-	// GetProjectList should not have been called.
-	for _, a := range h.actions() {
-		assert.NotEqual(t, "GetProjectList", a,
-			"GetProjectList should not be called when config provides ProjectId")
-	}
-}
-
-func TestEnsureProjectId_FetchesWhenUnset_PicksDefault(t *testing.T) {
-	// No config value → GetProjectList called → IsDefault=true wins over first.
-	body := `{
-		"RetCode": 0,
-		"ProjectSet": [
-			{"ProjectId": "org-first", "IsDefault": false},
-			{"ProjectId": "org-default", "IsDefault": true},
-			{"ProjectId": "org-third", "IsDefault": false}
-		]
-	}`
-	eng, h, cleanup := newEngineWithServer(t, &mockLLM{}, "", body)
-	defer cleanup()
-
-	_, err := eng.Init(context.Background())
-	assert.NoError(t, err)
-
-	ext := eng.externalExecutor()
-	assert.NotNil(t, ext)
-	assert.Equal(t, "org-default", ext.ProjectId(),
-		"IsDefault=true entry must win over first entry")
-
-	// GetProjectList should appear in recorded actions.
-	actions := h.actions()
-	found := false
-	for _, a := range actions {
-		if a == "GetProjectList" {
-			found = true
-			break
-		}
-	}
-	assert.True(t, found, "GetProjectList must be called when ProjectId unset; got %v", actions)
-}
-
-func TestEnsureProjectId_FallsBackToFirstWhenNoDefault(t *testing.T) {
-	body := `{
-		"RetCode": 0,
-		"ProjectSet": [
-			{"ProjectId": "org-first"},
-			{"ProjectId": "org-second"}
-		]
-	}`
-	eng, _, cleanup := newEngineWithServer(t, &mockLLM{}, "", body)
-	defer cleanup()
-
-	_, err := eng.Init(context.Background())
-	assert.NoError(t, err)
-
-	ext := eng.externalExecutor()
-	assert.Equal(t, "org-first", ext.ProjectId())
-}
-
-func TestEnsureProjectId_SilentOnMalformed(t *testing.T) {
-	// Empty ProjectSet → no panic, ProjectId stays empty.
-	body := `{"RetCode": 0, "ProjectSet": []}`
-	eng, _, cleanup := newEngineWithServer(t, &mockLLM{}, "", body)
-	defer cleanup()
-
-	_, err := eng.Init(context.Background())
-	assert.NoError(t, err, "Init must not fail when GetProjectList returns empty set")
-
-	ext := eng.externalExecutor()
-	assert.Equal(t, "", ext.ProjectId())
-}
-
-func TestEnsureProjectId_SkipsForMockExecutor(t *testing.T) {
-	// mockExecutor is not *tools.ExternalExecutor → ensureProjectId is a no-op.
-	// This guards against tests crashing when they don't use the real executor.
-	mockExec := &mockExecutor{}
-	eng := NewWithDeps(&mockLLM{}, mockExec, nil)
-
-	_, err := eng.Init(context.Background())
-	assert.NoError(t, err)
-
-	// No GetProjectList call should be made through the mock.
-	for _, a := range mockExec.calls {
-		assert.NotEqual(t, "GetProjectList", a,
-			"non-external executor path must not call GetProjectList")
-	}
-}
-
-func TestPickProjectId(t *testing.T) {
-	cases := []struct {
-		name string
-		resp map[string]any
-		want string
-	}{
-		{"nil", nil, ""},
-		{"no ProjectSet", map[string]any{"RetCode": float64(0)}, ""},
-		{"empty set", map[string]any{"ProjectSet": []any{}}, ""},
-		{
-			"single entry",
-			map[string]any{"ProjectSet": []any{
-				map[string]any{"ProjectId": "org-only"},
-			}},
-			"org-only",
-		},
-		{
-			"default wins",
-			map[string]any{"ProjectSet": []any{
-				map[string]any{"ProjectId": "org-a"},
-				map[string]any{"ProjectId": "org-b", "IsDefault": true},
-			}},
-			"org-b",
-		},
-		{
-			"first when no default",
-			map[string]any{"ProjectSet": []any{
-				map[string]any{"ProjectId": "org-a"},
-				map[string]any{"ProjectId": "org-b"},
-			}},
-			"org-a",
-		},
-		{
-			"skips empty ProjectId",
-			map[string]any{"ProjectSet": []any{
-				map[string]any{"ProjectId": ""},
-				map[string]any{"ProjectId": "org-real"},
-			}},
-			"org-real",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, pickProjectId(tc.resp))
-		})
-	}
-}
+// PR9 removed the TestEnsureProjectId_* family and TestPickProjectId.
+// Reasoning: ensureProjectId / pickProjectId no longer exist — runtime
+// ProjectId discovery was the root cause of a cross-session leak (one
+// user's discovered id auto-injected into another user's tool calls).
+// ProjectId now flows only via cfg → NewExternalExecutor at construction.
+// TestExternalExecutor_ProjectIdFromConfig (external_test.go) still
+// covers the cfg-time wiring; TestSessionIsolation_NoProjectIdLeak
+// (engine_session_test.go) guards against the setter coming back.
 
 // billingScenarioExecutor returns a mockExecutor configured with the
 // DescribeCompShareInstance result needed for DiagnoseBilling to complete
