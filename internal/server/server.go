@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -38,22 +39,14 @@ type Server struct {
 
 	httpServer *http.Server
 
-	// activeConns tracks every accepted WS connection so graceful shutdown
-	// can actively close them with StatusGoingAway (1001). Without this,
-	// httpServer.Shutdown waits up to 30s for WS handlers to return, but
-	// the reader inside handleWS is blocked on wsjson.Read and never sees
-	// ctx cancellation — so Shutdown reliably times out and we TCP-RST.
-	// Clients then see a generic abnormal close instead of the explicit
-	// going-away signal that tells them "reconnect", not "retry hard".
-	// Lifecycle: handleWS Store on Accept, Delete on exit (registered via
-	// trackConn helper so the defer is single-line).
-	activeConns sync.Map // map[string]*websocket.Conn keyed by connectionID
+	// activeConns lets graceful shutdown actively close in-flight WS
+	// conns with 1001 (handleWS readers don't observe ctx until conn
+	// closes; without this Shutdown times out and we TCP-RST).
+	// Lifecycle: Store on Accept, Delete on exit via trackConn.
+	activeConns sync.Map // map[string]*websocket.Conn
 
-	// lbDrainDelay is how long the server waits AFTER flipping shuttingDown
-	// (so /readyz returns 503) BEFORE actively closing connections. Lets a
-	// load balancer notice the readiness flip and stop routing new traffic
-	// first. Default 1s for Run (production); RunWithListener sets it to 0
-	// because tests have no LB and 1s slows test cleanup.
+	// lbDrainDelay: wait after flipping shuttingDown so the LB sees
+	// readyz=503 before we yank live conns. 1s for Run; 0 for tests.
 	lbDrainDelay time.Duration
 }
 
@@ -96,22 +89,21 @@ func New(opts Options) (*Server, error) {
 	}, nil
 }
 
-// Run starts the HTTP server, registers WS + health routes, blocks until
-// ctx is cancelled (typically SIGTERM), then drains gracefully.
+// Run listens, registers routes, blocks until ctx cancels, then runs
+// gracefulShutdown (see helper).
 //
-// Graceful shutdown sequence:
-//  1. Flip shuttingDown → /readyz returns 503.
-//  2. Sleep lbDrainDelay (1s in prod) so the load balancer notices and
-//     stops routing new traffic before we close existing conns.
-//  3. closeAllConns with StatusGoingAway (1001) — tells WS clients to
-//     reconnect, not retry hard. Without this, httpServer.Shutdown waits
-//     ~30s and times out (handleWS readers don't honor ctx until conn
-//     closes), then we TCP-RST and clients see an opaque abnormal close.
-//  4. httpServer.Shutdown(30s) drains the now-closing handlers.
-//
-// New WS dials during drain receive 503 from the shuttingDown check at
-// the top of handleWS.
+// KNOWN ISSUE (PR12): in TenantSourceGateway mode parseTenant reads
+// tenant ids from URL query first, then headers. URL params are user-
+// controllable; without the gateway provably stripping them, a client
+// can spoof tenant identity. The backend hasn't confirmed how the
+// gateway injects identity into WS upgrade requests yet (body doesn't
+// work for empty-body GETs). Until that's pinned down, query trust
+// stays — local dev relies on it.
 func (s *Server) Run(ctx context.Context) error {
+	log.Printf("WARNING: TenantSourceGateway currently trusts URL query "+
+		"params; production deployments must ensure the gateway strips "+
+		"client-supplied query before forwarding. Tracked as PR12. "+
+		"tenant_source=%s", s.tenantSource)
 	s.lbDrainDelay = 1 * time.Second
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
@@ -175,10 +167,8 @@ func (s *Server) RunWithListener(ctx context.Context, ln net.Listener) error {
 	}
 }
 
-// gracefulShutdown runs the 4-step drain (flip → wait → close conns →
-// http Shutdown). Shared by Run / RunWithListener so the order can't
-// drift. closeTimeout caps the parallel-close phase so a few slow
-// clients can't pin shutdown for 5s each.
+// gracefulShutdown: flip readyz=503 → lbDrainDelay → parallel-close
+// active WS conns (capped by closeTimeout) → http.Shutdown(httpTimeout).
 func (s *Server) gracefulShutdown(httpTimeout, closeTimeout time.Duration) error {
 	s.shuttingDown.Store(true)
 	if s.lbDrainDelay > 0 {
@@ -190,26 +180,22 @@ func (s *Server) gracefulShutdown(httpTimeout, closeTimeout time.Duration) error
 	return s.httpServer.Shutdown(shutCtx)
 }
 
-// trackConn registers an accepted WS conn so graceful shutdown can reach
-// it, and returns the cleanup func the caller must defer to deregister
-// on every exit path (including panic). Returns a closure so the call
-// site stays a single `defer s.trackConn(id, c)()` line.
+// trackConn registers a WS conn for graceful shutdown; returns the
+// deregister closure for `defer s.trackConn(id, c)()`.
 func (s *Server) trackConn(id string, conn *websocket.Conn) func() {
 	s.activeConns.Store(id, conn)
 	return func() { s.activeConns.Delete(id) }
 }
 
-// closeAllConns closes every tracked WS conn with StatusGoingAway (1001 =
-// reconnect, not 1011 = back off) IN PARALLEL with a total cap. Serial
-// close would be O(N × 5s) because nhooyr's Conn.Close waits up to 5s for
-// the peer ack — one slow client could pin shutdown indefinitely.
+// closeAllConns sends 1001 (StatusGoingAway = reconnect, not 1011 = back
+// off) to every tracked conn IN PARALLEL with a cap. Serial close = O(N
+// × 5s) because nhooyr's Conn.Close waits 5s for peer ack. CloseNow does
+// NOT help — it blocks on the same internal mutex Close holds — so the
+// only escape from a slow peer is the cap; the leaked goroutine finishes
+// on its own at nhooyr's 5s timeout.
 //
-// After totalTimeout, any still-handshaking conn gets CloseNow (no wait,
-// TCP-level slam) so shutdown can proceed.
-//
-// Race: a conn that passed handleWS's shuttingDown check before the flip
-// but hasn't reached trackConn.Store yet won't be seen here; it drains
-// via httpServer.Shutdown afterward.
+// Race: a conn that passed shuttingDown but hasn't yet hit trackConn.Store
+// won't be seen here; it drains via httpServer.Shutdown.
 func (s *Server) closeAllConns(reason string, totalTimeout time.Duration) {
 	var wg sync.WaitGroup
 	s.activeConns.Range(func(_, value any) bool {
@@ -225,13 +211,6 @@ func (s *Server) closeAllConns(reason string, totalTimeout time.Duration) {
 		return true
 	})
 
-	// Bound how long we wait for the parallel Close handshakes here. If
-	// some conns are still mid-handshake at the cap we just return; the
-	// goroutines complete on their own at nhooyr's 5s peer-ack timeout
-	// (in parallel, so this doesn't grow with N) and httpServer.Shutdown
-	// will wait for the now-closing handlers. Note: CloseNow does NOT
-	// help here — it blocks on the same internal mutex that the in-flight
-	// Close is holding, so it would just serialize what we just parallelized.
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 	select {
