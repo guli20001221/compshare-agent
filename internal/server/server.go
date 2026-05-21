@@ -92,18 +92,17 @@ func New(opts Options) (*Server, error) {
 // Run listens, registers routes, blocks until ctx cancels, then runs
 // gracefulShutdown (see helper).
 //
-// KNOWN ISSUE (PR12): in TenantSourceGateway mode parseTenant reads
-// tenant ids from URL query first, then headers. URL params are user-
-// controllable; without the gateway provably stripping them, a client
-// can spoof tenant identity. The backend hasn't confirmed how the
-// gateway injects identity into WS upgrade requests yet (body doesn't
-// work for empty-body GETs). Until that's pinned down, query trust
-// stays — local dev relies on it.
+// Known limitation: TenantSourceGateway parseTenant trusts URL query
+// params before falling back to headers. Production use requires a
+// trusted gateway that strips client-supplied query before forwarding,
+// or a header/token-based identity path. Surfaced at startup via the
+// log.Printf below.
 func (s *Server) Run(ctx context.Context) error {
 	log.Printf("WARNING: TenantSourceGateway currently trusts URL query "+
-		"params; production deployments must ensure the gateway strips "+
-		"client-supplied query before forwarding. Tracked as PR12. "+
-		"tenant_source=%s", s.tenantSource)
+		"params for tenant identity. Production use requires a trusted "+
+		"gateway that strips client-supplied query before forwarding, or "+
+		"a header/token-based identity path. tenant_source=%s",
+		s.tenantSource)
 	s.lbDrainDelay = 1 * time.Second
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
