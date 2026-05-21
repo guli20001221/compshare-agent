@@ -730,11 +730,19 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			})
 			return content, nil
 		}
-		// Buffer text deltas per-round. We only replay them to opts.OnTextDelta
-		// on the final text branch (no tool calls). Intermediate rounds that
-		// produce tool calls discard the buffer silently.
+		// Stream text deltas live to opts.OnTextDelta unless a downstream
+		// guard might rewrite the final content this round. When a guard could
+		// fire, buffer per-round so we can either replay the raw deltas (when
+		// content == rawContent) or emit the override as a single chunk.
+		// Intermediate tool-call rounds emit no content deltas in practice, so
+		// live mode does not leak partial tool args.
+		guardMayRewrite := e.currentMonitorWindow ||
+			(round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil)
+		liveStream := opts.OnTextDelta != nil && !guardMayRewrite
 		var streamedDeltas []string
-		if opts.OnTextDelta != nil {
+		if liveStream {
+			req.OnTextDelta = opts.OnTextDelta
+		} else if opts.OnTextDelta != nil {
 			req.OnTextDelta = func(s string) {
 				streamedDeltas = append(streamedDeltas, s)
 			}
@@ -771,7 +779,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// verbatim. If an engine guard overwrote content, emit the canonical
 			// override as a single chunk so the SSE stream matches the persisted
 			// final reply — do not replay stale raw deltas in that case.
-			if opts.OnTextDelta != nil {
+			// liveStream rounds have already streamed deltas as they arrived;
+			// nothing to replay.
+			if opts.OnTextDelta != nil && !liveStream {
 				if content == rawContent {
 					for _, delta := range streamedDeltas {
 						opts.OnTextDelta(delta)
@@ -779,6 +789,13 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				} else {
 					opts.OnTextDelta(content)
 				}
+			} else if opts.OnTextDelta != nil && liveStream && content != rawContent {
+				// Live mode reached a guard rewrite (state changed mid-round,
+				// e.g. currentMonitorWindow flipped). Emit a final corrective
+				// chunk with the rewritten tail. Rare in practice; the
+				// guardMayRewrite predicate is meant to keep us out of this
+				// branch entirely.
+				opts.OnTextDelta(content)
 			}
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
