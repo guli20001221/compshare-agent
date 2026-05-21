@@ -2677,6 +2677,74 @@ func TestAccountBillingHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T) 
 	assert.Equal(t, "account_billing_unsupported", hardBlocks[0].Category)
 }
 
+func TestIsResourceShortageQuestion(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		// Positive: explicit error code
+		{"plain_226604", "226604", true},
+		{"in_context_226604", "我刚才创建实例报 226604 怎么办", true},
+		{"why_226604", "为什么会出 226604", true},
+		// Positive: upstream error message phrase
+		{"upstream_msg_paste", "当前资源不足，请稍后再试", true},
+		{"phrase_alone", "资源不足", true},
+		{"phrase_with_prefix", "提示当前资源不足是什么意思", true},
+		{"phrase_question", "为什么资源不足", true},
+		// Negative: adjacent "X 不足" senses must not collide
+		{"balance_not_enough", "账户余额不足", false},
+		{"credit_not_enough", "积分不足怎么办", false},
+		{"permission_not_enough", "权限不足开不了机", false},
+		// Negative: unrelated platform questions
+		{"general_create_q", "怎么创建实例", false},
+		{"specs_q", "4090 显存多大", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isResourceShortageQuestion(tc.msg); got != tc.want {
+				t.Errorf("isResourceShortageQuestion(%q) = %v; want %v", tc.msg, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResourceShortageHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T) {
+	executor := billingScenarioExecutor("Running")
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+		hardBlocks = append(hardBlocks, trace)
+	})
+	onStep, events := collectSteps()
+
+	reply, err := eng.Chat(context.Background(), "我的实例报 226604 怎么办", onStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, resourceShortageReply, reply)
+	assert.Empty(t, mock.calls, "short-circuit must skip the LLM call")
+	assert.Empty(t, *events, "hard-block trace signal must not surface as a CLI step")
+	require.Len(t, hardBlocks, 1)
+	assert.True(t, hardBlocks[0].Hit)
+	assert.Equal(t, "resource_shortage_226604", hardBlocks[0].Category)
+}
+
+func TestResourceShortageReply_MustContainStableSignals(t *testing.T) {
+	assert.Contains(t, resourceShortageReply, "226604")
+	assert.Contains(t, resourceShortageReply, "重试")
+	assert.Contains(t, resourceShortageReply, "包日")
+	assert.Contains(t, resourceShortageReply, "包月")
+	// negative assertions — phrasings that would defeat the fixed-reply intent
+	assert.NotContains(t, resourceShortageReply, "[1]", "fixed-reply path is outside cited contract")
+	assert.NotContains(t, resourceShortageReply, "未知")
+	// over-promise guard — drop hard guarantees about 独占 / 不会被退出
+	assert.NotContains(t, resourceShortageReply, "独占机器", "avoid hard guarantee — pre-merge review #4")
+	assert.NotContains(t, resourceShortageReply, "不会因为资源紧张")
+}
+
 // toolChoiceForMonitor returns true iff req.ToolChoice names GetCompShareInstanceMonitor.
 func toolChoiceForMonitor(req llm.ChatRequest) bool {
 	tc, ok := req.ToolChoice.(openai.ToolChoice)
