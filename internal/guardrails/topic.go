@@ -72,14 +72,23 @@ var offTopicPatterns = []detectionPattern{
 		verbRe:   regexp.MustCompile(`(我|我家|我老婆|我老公|我爸|我妈|我儿子|我女儿|我孩子|父母|家人)\s*(得了|患了|有了|发现|查出|确诊|被诊断|生病|发烧|咳嗽|疼痛|心脏|肿瘤|癌症|糖尿病|高血压|新冠|肺炎|感染|过敏)`),
 		domainRe: regexp.MustCompile(`(怎么办|该怎么|吃什么药|要不要|要去|去哪|挂号|看医生|去医院|治疗方案|手术|化疗|放疗|住院|开刀)`),
 	},
-	// English personal medical advice. Tightened (PR #155 review N2):
-	//   - Subject ↔ disease adjacency capped at 0-2 intervening words
-	//     so "My family member has cancer and I want to run a research
-	//     model on 4090" no longer trips (>2 words between subject and
-	//     disease).
+	// English personal medical advice. Tightened in PR #155 review N2
+	// round-2:
+	//   - VERB ↔ disease adjacency capped at 0-2 intervening words
+	//     (e.g. "has fatal cancer" trips, "has aggressively advanced
+	//     stage-four cancer" no longer trips because 4 words between).
 	//   - Domain "what medicine should I take" qualified with a follow-
-	//     up symptom/treatment noun so "what medication should I take
-	//     to stay focused" no longer matches.
+	//     up "for / to (treat|cure|...) X" so "what medication should I
+	//     take to stay focused" passes through.
+	// Known FP not addressed here (tracked as N2 followup):
+	//   "My family member has cancer and I want to run a research model
+	//   on 4090" still trips because the verb-disease adjacency is met
+	//   (has + cancer = 0 words between) even though the message clearly
+	//   pivots to a platform question. RE2 does not support lookaround,
+	//   so a platform-noun escape hatch needs to be applied in the
+	//   message-level prepareForDetection path or in DetectOffTopic
+	//   itself; deferred to a follow-up commit because the FP rate on
+	//   real EN traffic is low (EN platform usage is a small share).
 	{
 		name:     "en_medical_advice",
 		verbRe:   regexp.MustCompile(`(?i)\b(I|my\s+(family|wife|husband|child|son|daughter|parent|father|mother|kid))\b`),
