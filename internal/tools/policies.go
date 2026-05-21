@@ -137,6 +137,13 @@ func policyForAction(action string) ToolExecutionPolicy {
 		policy.MaxRetries = 0
 		policy.RetryOn = nil
 		policy.BackoffBaseMS = 0
+		// Defensive: catches L2 actions whose class was overridden to
+		// non-destructive upstream (e.g. a future class-derivation
+		// change). For any action routed through classForAction → L2 →
+		// Destructive (today's path), TimeoutMS was already set by the
+		// switch above, so this branch is unreachable. Kept so the L2
+		// invariant is self-contained: any L2 leaves this block with a
+		// non-zero TimeoutMS regardless of upstream changes.
 		if policy.TimeoutMS == 0 {
 			policy.TimeoutMS = 30000
 		}

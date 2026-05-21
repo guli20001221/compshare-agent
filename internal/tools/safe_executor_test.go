@@ -620,6 +620,42 @@ func TestSafeExecutor_AppliesPerAttemptTimeout(t *testing.T) {
 	assert.Equal(t, 2, inner.calls, "must hit per-attempt timeout twice (initial + 1 retry)")
 }
 
+// TestSafeExecutor_ParentDeadlineDominates verifies that a caller-
+// supplied ctx deadline shorter than policy.TimeoutMS still wins —
+// the per-attempt context.WithTimeout takes the earlier of the two
+// deadlines. Guards against future refactors that might "ignore" the
+// parent deadline by replacing instead of deriving.
+//
+// PR #153 review N2 — surfaced because the existing AppliesPerAttempt
+// test used context.Background as parent; this case is the composition
+// path engine.go relies on (chatTurnTimeout wraps the whole turn).
+func TestSafeExecutor_ParentDeadlineDominates(t *testing.T) {
+	inner := &slowExecutor{}
+	policies := DefaultToolExecutionPolicies()
+	p := policies["DescribeCompShareInstance"]
+	p.TimeoutMS = 5000 // policy budget = 5s (would otherwise dominate)
+	p.BackoffBaseMS = 0
+	policies["DescribeCompShareInstance"] = p
+	safe := NewSafeToolExecutor(inner, WithPolicies(policies))
+
+	parentCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := safe.ExecuteSafe(parentCtx, SafeToolRequest{
+		Action: "DescribeCompShareInstance",
+		Args:   map[string]any{"Limit": 1},
+		Origin: OriginDirectLLM,
+	})
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded),
+		"expected context.DeadlineExceeded, got %v", err)
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"parent's 50ms deadline must dominate policy's 5s; elapsed=%v", elapsed)
+}
+
 // TestSafeExecutor_BackoffSleepsBetweenRetries verifies the linear
 // backoff inserted between retries. spyExecutor returns a net.OpError
 // (network class — retriable) on attempt 1 then succeeds. Measures the
