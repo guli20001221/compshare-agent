@@ -4,13 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/observability"
+
+	"nhooyr.io/websocket"
 )
 
 // Server is the WebSocket entry point for console-deployed agents. One
@@ -34,6 +38,16 @@ type Server struct {
 	db *sql.DB
 
 	httpServer *http.Server
+
+	// activeConns lets graceful shutdown actively close in-flight WS
+	// conns with 1001 (handleWS readers don't observe ctx until conn
+	// closes; without this Shutdown times out and we TCP-RST).
+	// Lifecycle: Store on Accept, Delete on exit via trackConn.
+	activeConns sync.Map // map[string]*websocket.Conn
+
+	// lbDrainDelay: wait after flipping shuttingDown so the LB sees
+	// readyz=503 before we yank live conns. 1s for Run; 0 for tests.
+	lbDrainDelay time.Duration
 }
 
 // Options configures Server. Addr / Deps are required; TraceSink is the
@@ -75,14 +89,21 @@ func New(opts Options) (*Server, error) {
 	}, nil
 }
 
-// Run starts the HTTP server, registers WS + health routes, blocks until
-// ctx is cancelled (typically SIGTERM), then drains gracefully.
+// Run listens, registers routes, blocks until ctx cancels, then runs
+// gracefulShutdown (see helper).
 //
-// Graceful shutdown: when ctx cancels we (1) flip shuttingDown so
-// /readyz returns 503, (2) give load balancers up to 30s to stop sending
-// new traffic, (3) shutdown the HTTP server (which closes idle conns and
-// waits for in-flight handlers). New WS dials during drain receive a 503.
+// Known limitation: TenantSourceGateway parseTenant trusts URL query
+// params before falling back to headers. Production use requires a
+// trusted gateway that strips client-supplied query before forwarding,
+// or a header/token-based identity path. Surfaced at startup via the
+// log.Printf below.
 func (s *Server) Run(ctx context.Context) error {
+	log.Printf("WARNING: TenantSourceGateway currently trusts URL query "+
+		"params for tenant identity. Production use requires a trusted "+
+		"gateway that strips client-supplied query before forwarding, or "+
+		"a header/token-based identity path. tenant_source=%s",
+		s.tenantSource)
+	s.lbDrainDelay = 1 * time.Second
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
@@ -106,10 +127,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		s.shuttingDown.Store(true)
-		shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		return s.httpServer.Shutdown(shutCtx)
+		return s.gracefulShutdown(30*time.Second, 5*time.Second)
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
@@ -120,7 +138,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 // RunWithListener is a test hook: same as Run but listens on a caller-
 // supplied net.Listener so httptest can pick a random port and dial it.
-// Production callers use Run.
+// Production callers use Run. lbDrainDelay stays at 0 (the zero value) so
+// tests don't pay an extra 1s per shutdown.
 func (s *Server) RunWithListener(ctx context.Context, ln net.Listener) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
@@ -138,14 +157,63 @@ func (s *Server) RunWithListener(ctx context.Context, ln net.Listener) error {
 	}()
 	select {
 	case <-ctx.Done():
-		s.shuttingDown.Store(true)
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return s.httpServer.Shutdown(shutCtx)
+		return s.gracefulShutdown(5*time.Second, 2*time.Second)
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
+	}
+}
+
+// gracefulShutdown: flip readyz=503 → lbDrainDelay → parallel-close
+// active WS conns (capped by closeTimeout) → http.Shutdown(httpTimeout).
+func (s *Server) gracefulShutdown(httpTimeout, closeTimeout time.Duration) error {
+	s.shuttingDown.Store(true)
+	if s.lbDrainDelay > 0 {
+		time.Sleep(s.lbDrainDelay)
+	}
+	s.closeAllConns("server shutting down", closeTimeout)
+	shutCtx, cancel := context.WithTimeout(context.Background(), httpTimeout)
+	defer cancel()
+	return s.httpServer.Shutdown(shutCtx)
+}
+
+// trackConn registers a WS conn for graceful shutdown; returns the
+// deregister closure for `defer s.trackConn(id, c)()`.
+func (s *Server) trackConn(id string, conn *websocket.Conn) func() {
+	s.activeConns.Store(id, conn)
+	return func() { s.activeConns.Delete(id) }
+}
+
+// closeAllConns sends 1001 (StatusGoingAway = reconnect, not 1011 = back
+// off) to every tracked conn IN PARALLEL with a cap. Serial close = O(N
+// × 5s) because nhooyr's Conn.Close waits 5s for peer ack. CloseNow does
+// NOT help — it blocks on the same internal mutex Close holds — so the
+// only escape from a slow peer is the cap; the leaked goroutine finishes
+// on its own at nhooyr's 5s timeout.
+//
+// Race: a conn that passed shuttingDown but hasn't yet hit trackConn.Store
+// won't be seen here; it drains via httpServer.Shutdown.
+func (s *Server) closeAllConns(reason string, totalTimeout time.Duration) {
+	var wg sync.WaitGroup
+	s.activeConns.Range(func(_, value any) bool {
+		conn, ok := value.(*websocket.Conn)
+		if !ok {
+			return true
+		}
+		wg.Add(1)
+		go func(c *websocket.Conn) {
+			defer wg.Done()
+			_ = c.Close(websocket.StatusGoingAway, reason)
+		}(conn)
+		return true
+	})
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(totalTimeout):
 	}
 }

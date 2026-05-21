@@ -318,3 +318,200 @@ func TestServer_RejectsMissingTenant(t *testing.T) {
 
 // Ensure unused tools.ToolExecutor reference does not pull dead imports.
 var _ tools.ToolExecutor = stubExecutor{}
+
+// activeConnCount counts entries in s.activeConns. Test-only helper —
+// keeps the sync.Map walk out of production code.
+func activeConnCount(s *Server) int {
+	n := 0
+	s.activeConns.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
+
+// TestServer_TrackConn_DeregisterOnExit asserts that handleWS's deferred
+// cleanup actually deletes the connectionID from activeConns when the
+// client disconnects. Without this, a long-running process would leak
+// one map entry per ever-disconnected session and closeAllConns at
+// shutdown would walk dead conns.
+func TestServer_TrackConn_DeregisterOnExit(t *testing.T) {
+	deps, _ := newTestDeps("ignored")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv, err := New(Options{
+		Addr:           ln.Addr().String(),
+		Deps:           deps,
+		TenantSource:   TenantSourceGateway,
+		AllowedOrigins: []string{"*"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	defer srvCancel()
+	go func() { _ = srv.RunWithListener(srvCtx, ln) }()
+
+	baseURL := "ws://" + ln.Addr().String()
+	conn := dialWSWithTenant(t, baseURL, 11, 111)
+	waitForType(t, conn, ServerMsgReady, 5*time.Second)
+
+	// Connection is now registered.
+	if got := activeConnCount(srv); got != 1 {
+		t.Fatalf("after connect+ready, activeConns count = %d, want 1", got)
+	}
+
+	// Client closes — handleWS defers should drain and deregister.
+	_ = conn.Close(websocket.StatusNormalClosure, "")
+
+	// Poll for deregister with bounded wait — handleWS cleanup chain is
+	// close(turnQueue) → chatDone → close(sendChan) → writerDone, then
+	// the trackConn cleanup defer runs.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if activeConnCount(srv) == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("activeConns never drained after client close; count=%d", activeConnCount(srv))
+}
+
+// TestServer_GracefulShutdown_ClosesActiveConns — PR11 contract.
+//
+// Encodes WHY: pre-PR11 we relied on httpServer.Shutdown(30s) to drain
+// connections, but handleWS readers block on wsjson.Read and never honor
+// ctx until the conn closes. The result was Shutdown reliably timing
+// out, then TCP-RST — and clients saw an opaque "abnormal close" instead
+// of the explicit StatusGoingAway (1001) signal that means "we are
+// shutting down cleanly, reconnect, do NOT retry hard". PR11 tracks
+// every accepted WS conn in activeConns and actively closes them with
+// 1001 before Shutdown runs.
+//
+// This test starts a server, dials a WS, waits for ready, then cancels
+// the server ctx (simulating SIGTERM) and asserts the conn's next read
+// surfaces a websocket close error with StatusGoingAway. Pre-PR11 this
+// times out (or hangs until the test's shutdown wrapper kills it).
+func TestServer_GracefulShutdown_ClosesActiveConns(t *testing.T) {
+	deps, _ := newTestDeps("ignored")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv, err := New(Options{
+		Addr:           ln.Addr().String(),
+		Deps:           deps,
+		TenantSource:   TenantSourceGateway,
+		AllowedOrigins: []string{"*"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	srvDone := make(chan error, 1)
+	go func() { srvDone <- srv.RunWithListener(srvCtx, ln) }()
+
+	baseURL := "ws://" + ln.Addr().String()
+	conn := dialWSWithTenant(t, baseURL, 11, 111)
+	// Wait for ready frame so we know the conn is fully registered in
+	// activeConns (handleWS Stores before sending ready).
+	waitForType(t, conn, ServerMsgReady, 5*time.Second)
+
+	// Cancel server ctx — should trigger gracefulShutdown which calls
+	// closeAllConns with StatusGoingAway.
+	srvCancel()
+
+	// Now read on the client conn. Should return a close error with
+	// status code 1001 within 5s (no LB drain delay in RunWithListener).
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	var msg ServerMessage
+	readErr := wsjson.Read(readCtx, conn, &msg)
+	if readErr == nil {
+		t.Fatalf("expected close error after server shutdown, got msg=%+v", msg)
+	}
+	status := websocket.CloseStatus(readErr)
+	if status != websocket.StatusGoingAway {
+		t.Fatalf("expected StatusGoingAway (1001), got status=%d err=%v",
+			status, readErr)
+	}
+
+	// And RunWithListener should return cleanly within Shutdown timeout.
+	select {
+	case err := <-srvDone:
+		if err != nil {
+			t.Fatalf("RunWithListener returned err=%v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("RunWithListener did not return within 10s after ctx cancel")
+	}
+}
+
+// TestServer_GracefulShutdown_SlowClientsDoNotPinShutdown — PR11 review
+// follow-up.
+//
+// Encodes WHY: nhooyr's Conn.Close waits up to 5s for the peer to send
+// its own close frame. Serial close + N silent peers = O(N × 5s) total
+// shutdown time. We can't easily fake a no-ack peer at the WS layer
+// (the test client always honors close), so we assert the cap directly:
+// closeAllConns must return within 2 × closeTimeout even if Close blocks.
+//
+// Strategy: dial N real WS clients, immediately close their underlying
+// TCP from the client side WITHOUT sending a close frame, so the
+// server's Close sits in the 5s peer-ack wait. Measure that
+// closeAllConns(reason, 1s) actually returns in <2s.
+func TestServer_GracefulShutdown_SlowClientsDoNotPinShutdown(t *testing.T) {
+	const numConns = 5
+
+	deps, _ := newTestDeps("ignored")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv, err := New(Options{
+		Addr:           ln.Addr().String(),
+		Deps:           deps,
+		TenantSource:   TenantSourceGateway,
+		AllowedOrigins: []string{"*"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	defer srvCancel()
+	go func() { _ = srv.RunWithListener(srvCtx, ln) }()
+
+	baseURL := "ws://" + ln.Addr().String()
+	conns := make([]*websocket.Conn, 0, numConns)
+	for i := 0; i < numConns; i++ {
+		c := dialWSWithTenant(t, baseURL, int64(11+i), int64(111+i))
+		waitForType(t, c, ServerMsgReady, 5*time.Second)
+		conns = append(conns, c)
+	}
+
+	// Stop reading from any of them — they'll never ack the close frame.
+	// On the client we don't close politely either; we just abandon them
+	// so the server's Close call sits in the 5s peer-ack wait.
+
+	// Sanity: all N are registered.
+	if got := activeConnCount(srv); got != numConns {
+		t.Fatalf("expected %d registered conns, got %d", numConns, got)
+	}
+
+	// Direct call to closeAllConns with a 1s cap. Total elapsed should be
+	// well under 2s. Pre-fix (serial Close), this would take ~25s.
+	start := time.Now()
+	srv.closeAllConns("test", 1*time.Second)
+	elapsed := time.Since(start)
+	if elapsed > 2*time.Second {
+		t.Fatalf("closeAllConns took %v with %d slow clients — cap not honored", elapsed, numConns)
+	}
+
+	// Drain the test's client refs so the deferred srvCancel can complete.
+	for _, c := range conns {
+		_ = c.CloseNow()
+	}
+}
