@@ -213,13 +213,17 @@ func (s *Server) runChatTurn(
 	// so the trace row reports "blocked", not "error". Dashboards that
 	// need the "error" distinction MUST query agent_messages; the
 	// success / rate-limit / hard-block paths still join cleanly.
+	//
+	// Ordering within a connection: agent processes turns serially, so
+	// CreatedAt is strictly monotonic per connection_id. The runtime
+	// `turnIndex` counter still drives TraceRecord.TurnIndex (observability
+	// schema invariant), but no longer lives on agent_messages.
 	if s.msgRecorder != nil {
 		_ = s.msgRecorder.Record(MessageEntry{
 			RequestUUID:      msg.RequestUUID,
 			TopOrgID:         tenant.TopOrgID,
 			OrgID:            tenant.OrgID,
 			ConnectionID:     connectionID,
-			TurnIndex:        turnIndex,
 			CreatedAt:        chatStart,
 			UserMessage:      msg.Text,
 			AssistantMessage: reply,
