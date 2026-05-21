@@ -186,7 +186,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	// -----------------------------------------------------------------------
 	// 5. LLM streaming call
 	// -----------------------------------------------------------------------
-	reply, chatErr := agent.ChatWithOptions(ctx, message, nil, engine.ChatOptions{
+	reply, chatErr := agent.ChatWithOptions(ctx, message, func(engine.StepEvent) {}, engine.ChatOptions{
 		OnTextDelta: func(s string) {
 			if firstToken.IsZero() {
 				firstToken = time.Now()
