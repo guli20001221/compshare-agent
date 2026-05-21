@@ -262,82 +262,13 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 				},
 			},
 		},
-		{
-			Intent: IntentKnowledgeQA,
-			Source: "Stage 2B + PR #34a/#52/#60 knowledge_qa routing regressions",
-			Examples: []plannerPromptExample{
-				{
-					Question: "为啥显卡内存满了 GPU 占用才 10%",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #60: concept question with monitor-trigger words",
-				},
-				{
-					Question: "how do I issue an invoice",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
-					Source:   "PR #52: finance process question, not personal status",
-				},
-				{
-					Question: "what image types does the platform provide",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
-					Source:   "Stage 2B: platform concept question",
-				},
-				{
-					Question: "远程桌面没声音该怎么处理",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "Stage 2B: platform how-to/config boundary",
-				},
-				{
-					Question: "错误码 226601 是什么意思",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "Stage 2B: error-code knowledge question",
-				},
-				{
-					Question: "Linux 怎么装 NVIDIA 驱动",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "Stage 2B: platform how-to/config boundary",
-				},
-				{
-					Question: "Coding Plan 的 BaseURL 应该填什么",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "Stage 2B: model API configuration",
-				},
-				{
-					Question: "怎么在 VSCode 里连 GPU 实例",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "Stage 2B: connection how-to",
-				},
-				{
-					Question: "在 CLINE 里加 mcp-server-sqlite 那段 json 该怎么写",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #60: third-party tool configuration jargon",
-				},
-				{
-					Question: "怎么查我这个月的账单",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #52: billing navigation question",
-				},
-				{
-					Question: "哪里可以看发票发起记录",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #52: invoice navigation question",
-				},
-				{
-					Question: "包月和按量哪个划算",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #34a: platform comparison question",
-				},
-				{
-					Question: "实例磁盘可以扩容吗",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #34a: platform feasibility question",
-				},
-				{
-					Question: "退款流程是怎样的",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #34a: platform procedure question",
-				},
-			},
-		},
+		// IntentKnowledgeQA migrated to internal/intent/planner_examples/knowledge_qa.md
+		// in C5 Phase B (PR #6, 2026-05-22). Same byte-equal contract as the
+		// Phase A diagnosis migration — see TestPlannerExamples_KnowledgeQADisk
+		// LoaderEqualsLegacy + the SHA hash in TestPlannerExamples_FullSystem
+		// PromptStable. Editorial review of knowledge_qa anchors now happens
+		// in the markdown file; planner.go retains structural code only.
+		diskPlannerExampleGroups[IntentKnowledgeQA],
 		{
 			Intent: IntentBillingAccountUnsupported,
 			Source: "PR #52 finance process vs personal-status hard-block split",
