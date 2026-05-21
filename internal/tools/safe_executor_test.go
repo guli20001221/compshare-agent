@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/security"
@@ -542,4 +543,108 @@ func TestSafeExecutorDoesNotRetry4xxOrMutatingNetworkErrors(t *testing.T) {
 		assert.True(t, errors.Is(err, io.EOF))
 		assert.Equal(t, 1, inner.calls)
 	})
+}
+
+// TestPolicyDefaults_TimeoutsAndBackoffByClass locks the per-class
+// TimeoutMS + BackoffBaseMS contract introduced in PR #5. If a future
+// change shifts these defaults the test fails loudly with expected vs
+// actual values so the change is reviewed.
+func TestPolicyDefaults_TimeoutsAndBackoffByClass(t *testing.T) {
+	policies := DefaultToolExecutionPolicies()
+	cases := []struct {
+		action      string
+		wantClass   ActionClass
+		wantTimeout int
+		wantBackoff int
+		wantRetries int
+	}{
+		// read_cheap: cheap describes, gpu specs lookup.
+		{"DescribeCompShareImages", ActionClassReadCheap, 8000, 300, 1},
+		// read_expensive_default: per-instance describes, price calls.
+		{"DescribeCompShareInstance", ActionClassReadExpensiveDefault, 15000, 500, 1},
+		{"GetCompShareInstancePrice", ActionClassReadExpensiveDefault, 15000, 500, 1},
+		// read_expensive_per_target: monitor (bulk).
+		{"GetCompShareInstanceMonitor", ActionClassReadExpensivePerTarget, 30000, 500, 1},
+		// mutating: L1 lifecycle.
+		{"StartCompShareInstance", ActionClassMutating, 30000, 0, 0},
+		// destructive: L2 — terminate.
+		{"TerminateCompShareInstance", ActionClassDestructive, 30000, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.action, func(t *testing.T) {
+			p, ok := policies[tc.action]
+			require.True(t, ok, "policy missing for %s", tc.action)
+			assert.Equal(t, tc.wantClass, p.Class, "class")
+			assert.Equal(t, tc.wantTimeout, p.TimeoutMS, "TimeoutMS")
+			assert.Equal(t, tc.wantBackoff, p.BackoffBaseMS, "BackoffBaseMS")
+			assert.Equal(t, tc.wantRetries, p.MaxRetries, "MaxRetries")
+		})
+	}
+}
+
+// slowExecutor blocks until ctx is cancelled, then returns ctx.Err. Used
+// to drive the per-attempt-timeout enforcement test.
+type slowExecutor struct {
+	calls int
+}
+
+func (e *slowExecutor) Execute(ctx context.Context, _ string, _ map[string]any) (map[string]any, error) {
+	e.calls++
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestSafeExecutor_AppliesPerAttemptTimeout verifies policy.TimeoutMS is
+// enforced via context.WithTimeout per attempt — a hung backend cannot
+// outlast the policy budget. Overrides TimeoutMS to 50ms so the test
+// completes in <1s. With MaxRetries=1 + BackoffBaseMS=0, the slow
+// executor should hit ctx.DeadlineExceeded twice (initial + 1 retry).
+func TestSafeExecutor_AppliesPerAttemptTimeout(t *testing.T) {
+	inner := &slowExecutor{}
+	policies := DefaultToolExecutionPolicies()
+	p := policies["DescribeCompShareInstance"]
+	p.TimeoutMS = 50    // tight per-attempt budget
+	p.BackoffBaseMS = 0 // remove backoff for test speed
+	policies["DescribeCompShareInstance"] = p
+	safe := NewSafeToolExecutor(inner, WithPolicies(policies))
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "DescribeCompShareInstance",
+		Args:   map[string]any{"Limit": 1},
+		Origin: OriginDirectLLM,
+	})
+
+	require.Error(t, err, "expected ctx-deadline-exceeded error")
+	assert.True(t, errors.Is(err, context.DeadlineExceeded),
+		"expected wrapped context.DeadlineExceeded, got %v", err)
+	assert.Equal(t, 2, inner.calls, "must hit per-attempt timeout twice (initial + 1 retry)")
+}
+
+// TestSafeExecutor_BackoffSleepsBetweenRetries verifies the linear
+// backoff inserted between retries. spyExecutor returns a net.OpError
+// (network class — retriable) on attempt 1 then succeeds. Measures the
+// wall-clock between start and finish; must be at least BackoffBaseMS.
+func TestSafeExecutor_BackoffSleepsBetweenRetries(t *testing.T) {
+	inner := &spyExecutor{errs: []error{&net.OpError{Op: "dial", Err: errors.New("connection refused")}, nil}}
+	policies := DefaultToolExecutionPolicies()
+	p := policies["DescribeCompShareInstance"]
+	p.BackoffBaseMS = 200 // tighter than the 500ms default so the test stays fast
+	p.TimeoutMS = 0       // disable per-attempt timeout so the success path is unbounded
+	policies["DescribeCompShareInstance"] = p
+	safe := NewSafeToolExecutor(inner, WithPolicies(policies))
+
+	start := time.Now()
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "DescribeCompShareInstance",
+		Args:   map[string]any{"Limit": 1},
+		Origin: OriginDirectLLM,
+	})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err, "second attempt should succeed")
+	assert.Equal(t, 2, inner.calls)
+	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond,
+		"executor should have slept ~200ms between attempts; elapsed=%v", elapsed)
+	assert.Less(t, elapsed, 1*time.Second,
+		"backoff should not exceed ~1s for a single retry; elapsed=%v", elapsed)
 }

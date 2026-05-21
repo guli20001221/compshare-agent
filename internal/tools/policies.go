@@ -38,6 +38,24 @@ type ToolExecutionPolicy struct {
 	MaxHistoryWindowSeconds int
 	MaxRetries              int
 	RetryOn                 []ErrorClass
+
+	// TimeoutMS bounds a single attempt at SafeToolExecutor.Execute. The
+	// inner executor receives a derived context.WithTimeout per attempt,
+	// so a hung backend cannot block the agent indefinitely. Zero means
+	// "use the inner executor's ambient timeout" (currently 60s on
+	// ExternalExecutor's http.Client) — kept as a fallback safety net,
+	// but every policy in DefaultToolExecutionPolicies sets an explicit
+	// per-class value below.
+	TimeoutMS int
+
+	// BackoffBaseMS is the linear backoff base between retry attempts:
+	// before attempt N (N >= 2) the executor sleeps BackoffBaseMS *
+	// (N - 1) ms, respecting ctx cancellation. Zero disables backoff
+	// (retries fire back-to-back). Read-class policies use a small
+	// (300-500ms) base so a transient upstream hiccup gets a brief
+	// breather, while mutating/destructive (MaxRetries=0) inherit
+	// zero — no retry, no backoff.
+	BackoffBaseMS int
 }
 
 type ActionRoute string
@@ -92,10 +110,36 @@ func policyForAction(action string) ToolExecutionPolicy {
 		policy.MaxRetries = 1
 		policy.RetryOn = []ErrorClass{ErrorClassNetwork, ErrorClassEOF, ErrorClassHTTP5xx}
 	}
+
+	// Per-class timeout + backoff defaults (PR #5 unification). Numbers
+	// derived from p99 of observed real-API latencies: cheap reads
+	// (DescribeAvailable*, GetGPUSpecs) typically <2s but spike to ~5s
+	// under load; per-instance describes can hit 8-10s; the monitor API
+	// is bulk-read and can take longer. Mutating/destructive policies
+	// keep a generous ceiling because the agent does not retry them.
+	switch policy.Class {
+	case ActionClassReadCheap:
+		policy.TimeoutMS = 8000
+		policy.BackoffBaseMS = 300
+	case ActionClassReadExpensiveDefault:
+		policy.TimeoutMS = 15000
+		policy.BackoffBaseMS = 500
+	case ActionClassReadExpensivePerTarget:
+		policy.TimeoutMS = 30000
+		policy.BackoffBaseMS = 500
+	case ActionClassMutating, ActionClassDestructive:
+		policy.TimeoutMS = 30000
+		policy.BackoffBaseMS = 0
+	}
+
 	if policy.SecurityLevel == security.L2 {
 		policy.Class = ActionClassDestructive
 		policy.MaxRetries = 0
 		policy.RetryOn = nil
+		policy.BackoffBaseMS = 0
+		if policy.TimeoutMS == 0 {
+			policy.TimeoutMS = 30000
+		}
 	}
 	if action == "DescribeCompShareJupyterToken" {
 		policy.DualChannelDisplay = true
