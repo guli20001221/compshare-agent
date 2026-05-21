@@ -54,12 +54,17 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	// stock-to-unknown examples were replaced when stock_availability became
 	// a capability + 2 added 2026-05-20 for personal billing complaint
 	// (billing_instance) stable routing — see Q04 N=5 jitter check) +
-	// N capability one-shots (PR A Registry v1) appended by CapabilityPromptFragments.
-	// PR #121 adds the "Direct runtime/list/user price questions" directive
-	// but does NOT add a prompt example, so the count stays 27.
-	// New capabilities here should bump this number; the regression value is
-	// `27 + len(capabilityRegistry)`.
-	if got, want := len(examples), 27+len(capabilityRegistry); got != want {
+	// the sum of `planner_examples` across all capabilities/*.md frontmatter
+	// (PR A Registry v1 + later). A capability may declare 1+ examples — early
+	// capabilities used exactly 1; PR #3 (pricing_query) uses 2 to anchor the
+	// public-product-pricing vs personal-billing boundary against the
+	// billing_instance one-shots. The example count is computed below so adding
+	// a new capability OR extending an existing one's examples auto-updates.
+	capabilityExampleCount := 0
+	for _, m := range capabilityMetadata {
+		capabilityExampleCount += len(m.PlannerExamples)
+	}
+	if got, want := len(examples), 27+capabilityExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
