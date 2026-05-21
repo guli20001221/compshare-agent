@@ -1,6 +1,7 @@
 package intent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -171,6 +172,74 @@ func TestRenderPricingReply_HeaderUsesGB(t *testing.T) {
 		"header must use GB (Describe units), not MB")
 	assert.NotContains(t, reply, "64MB",
 		"stale MB label must not reappear (P3 fix from PR #151 review)")
+}
+
+// TestHandlePricingQuery_PassesMemoryAsMBToAPI is the args-side regression
+// guard for reviewer N1. Describe returns Collection[].Memory in GB; the
+// price API expects MB. If the * 1024 conversion at the boundary is ever
+// dropped (e.g. by a simplification pass), the header will still render
+// "64GB" but the API will be sent Memory=64 (== 64 MB), and prices will
+// come back for the wrong spec — silent regression. Lock the conversion
+// explicitly by asserting GetCompShareInstancePrice receives the MB-form.
+func TestHandlePricingQuery_PassesMemoryAsMBToAPI(t *testing.T) {
+	// One Describe entry: 4090 with 1 GPU @ (CPU=16, Memory=64GB).
+	// We return the SAME map for both Describe and GetPrice (executor stub
+	// is single-result); the test only inspects what the handler sent OUT,
+	// so the return shape only matters to keep the renderer from blanking.
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name": "4090",
+				"Zone": "cn-wlcb-01",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{
+								"Cpu":    float64(16),
+								"Memory": []any{float64(64)},
+							},
+						},
+					},
+				},
+			},
+		},
+		// Flat-shape price block so renderPricingReply succeeds.
+		"Postpay": float64(1.69),
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
+		Plan:     Plan{Intent: IntentPricingQuery},
+		UserText: "4090 多少钱一小时",
+	})
+
+	// Sanity: the handler completed (not a FallbackBeforeTool).
+	assert.Equal(t, "GetCompShareInstancePrice", result.ToolAction)
+
+	// Find the GetPrice call (Describe is first, GetPrice is second).
+	require.GreaterOrEqual(t, len(exec.calls), 2,
+		"expected at least 2 executor calls (Describe + GetPrice)")
+	var priceCall *handlerExecCall
+	for i := range exec.calls {
+		if exec.calls[i].action == "GetCompShareInstancePrice" {
+			priceCall = &exec.calls[i]
+			break
+		}
+	}
+	require.NotNil(t, priceCall, "GetCompShareInstancePrice never invoked")
+
+	// The crux of N1: Memory must be MB (65536), not GB (64).
+	memArg, ok := priceCall.args["Memory"]
+	require.True(t, ok, "Memory missing from GetCompShareInstancePrice args")
+	assert.Equal(t, 64*1024, memArg,
+		"GetCompShareInstancePrice.Memory must be MB (64GB * 1024); "+
+			"if this fails, the GB→MB boundary conversion was dropped — "+
+			"renderer would still say 64GB but API receives wrong spec")
+	assert.Equal(t, 16, priceCall.args["Cpu"], "Cpu must pass through as-is")
+	assert.Equal(t, 1, priceCall.args["Gpu"], "Gpu default is 1")
+	assert.Equal(t, "cn-wlcb-01", priceCall.args["Zone"])
+	assert.Equal(t, "4090", priceCall.args["GpuType"])
 }
 
 // TestPricingFormatNumber covers the formatter the bill-table extractor
