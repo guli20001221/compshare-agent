@@ -58,6 +58,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	handlers := httpapi.NewHandlers(cfg, sessionStore, messageStore, feedbackStore, pool)
 	router := gin.New()
+	router.Use(corsMiddleware())
 	router.Use(gin.CustomRecovery(func(c *gin.Context, recovered any) {
 		c.JSON(http.StatusInternalServerError, httpapi.Response{
 			Code:    "InternalError",
@@ -66,7 +67,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		})
 	}))
 	router.GET("/healthz", httpapi.Healthz)
-	router.POST("/api/gateway", handlers.Dispatch)
+	router.POST("/", handlers.Dispatch)
+	router.OPTIONS("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 
 	srv := &http.Server{
 		Addr:         cfg.Agent.HTTP.ListenAddr,
@@ -125,5 +127,24 @@ func serveUntilSignal(srv *http.Server) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		return srv.Shutdown(ctx)
+	}
+}
+
+// corsMiddleware allows browser clients on any origin to call the agent.
+// Permissive by design — the agent sits behind the console gateway in prod,
+// so origin enforcement lives there; locally we accept everything to keep
+// front-end dev simple.
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		if origin == "" {
+			origin = "*"
+		}
+		c.Header("Access-Control-Allow-Origin", origin)
+		c.Header("Vary", "Origin")
+		c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Accept, X-Requested-With")
+		c.Header("Access-Control-Max-Age", "600")
+		c.Next()
 	}
 }
