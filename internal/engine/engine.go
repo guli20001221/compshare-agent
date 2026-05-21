@@ -851,11 +851,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 
 	if dispatch.result.Plan.Intent == intent.IntentMonitorHistory {
 		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackTimeWindow, dispatch.latency)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: refusal.MonitorHistoryUnsupported,
-		})
-		return refusal.MonitorHistoryUnsupported, true
+		return e.emitMonitorHistoryHardBlock(), true
 	}
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
 		return reply, true
@@ -1032,11 +1028,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 		}
 		if handled.FallbackReason == intent.FallbackTimeWindow {
 			e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: refusal.MonitorHistoryUnsupported,
-			})
-			return refusal.MonitorHistoryUnsupported, true
+			return e.emitMonitorHistoryHardBlock(), true
 		}
 		e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
 		return "", false

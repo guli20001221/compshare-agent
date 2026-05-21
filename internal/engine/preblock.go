@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/refusal"
 	"github.com/compshare-agent/internal/router"
+
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // enginePreBlock is the package-level Chat()-head decision chain. Static
@@ -45,3 +48,42 @@ var enginePreBlock = router.New(
 		Reply:    refusal.MonitorHistoryUnsupported,
 	},
 )
+
+// emitMonitorHistoryHardBlock centralizes the hard-block side-effects
+// for the monitor_history category — emit the observer record and
+// append the canned reply to history — so all pre-LLM routing branches
+// produce identical trace output.
+//
+// Three call sites converge here:
+//
+//  1. Chat() head keyword match — goes through enginePreBlock.Decide(),
+//     which emits its own observer fire with category from the rule
+//     literal. That path does NOT call this helper directly; the
+//     observer payload it emits is byte-equal to what this helper
+//     emits (same category, same Hit=true).
+//  2. tryPlannerDispatch → dispatch.Plan.Intent == IntentMonitorHistory
+//     (engine.go). Without this helper, pre-PR #140-followup the
+//     planner-classified path silently emitted the same reply but no
+//     observer record — partial trace coverage. PR #140 review
+//     finding fixed by routing through here.
+//  3. tryPhase1Cutover → FallbackTimeWindow (engine.go). Same partial-
+//     trace bug as path 2; same fix.
+//
+// Post-tool error paths (executeTool / friendlyToolErrorMessage with
+// tools.ErrHistoricalMonitorUnsupported) are deliberately NOT routed
+// through this helper — they have their own outcome-trace path and
+// double-counting them as a pre-LLM hard-block would distort the
+// downstream MySQL aggregation.
+func (e *Engine) emitMonitorHistoryHardBlock() string {
+	if e.hardBlockObserver != nil {
+		e.hardBlockObserver(observability.EngineHardBlockTrace{
+			Hit:      true,
+			Category: refusal.CategoryMonitorHistory,
+		})
+	}
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: refusal.MonitorHistoryUnsupported,
+	})
+	return refusal.MonitorHistoryUnsupported
+}

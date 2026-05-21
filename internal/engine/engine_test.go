@@ -2734,6 +2734,51 @@ func TestResourceShortageHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T
 	assert.Equal(t, "resource_shortage_226604", hardBlocks[0].Category)
 }
 
+func TestPlannerMonitorHistoryHardBlock_FiresObserverEvenWhenKeywordMisses(t *testing.T) {
+	// REGRESSION GUARD (PR #140 follow-up review):
+	//
+	// Pre-fix: when the Chat() head keyword predicate
+	// isUnsupportedHistoricalMonitorQuestion DID NOT match (e.g. user
+	// phrases the question without 昨天/上周/历史 etc.) but the planner
+	// classified the request as IntentMonitorHistory, engine emitted
+	// refusal.MonitorHistoryUnsupported WITHOUT firing hardBlockObserver.
+	// That left downstream MySQL trace aggregations partial — the same
+	// reply was counted only via the keyword path, never via the planner
+	// path.
+	//
+	// Fix: engine.tryPlannerDispatch routes the IntentMonitorHistory
+	// branch through e.emitMonitorHistoryHardBlock(), which fires the
+	// observer with refusal.CategoryMonitorHistory. This test pins the
+	// invariant.
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorHistoryPlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+		hardBlocks = append(hardBlocks, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorHistory, intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	// Neutral phrasing — Chat()-head isUnsupportedHistoricalMonitorQuestion
+	// requires BOTH a historicalMonitorSignalKeyword (monitor/cpu/gpu/etc)
+	// AND a historicalMonitorTimeKeyword (昨天/上周/etc) or a clock-range /
+	// iso-date / historical-duration regex. This input deliberately has
+	// neither, so the keyword predicate returns false and the planner
+	// path is the only branch that can fire the hard-block.
+	reply, err := eng.Chat(context.Background(), "帮我看看那台", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, refusal.MonitorHistoryUnsupported, reply)
+	assert.Empty(t, mock.calls, "monitor_history hard-block must not enter ReAct")
+	require.Len(t, hardBlocks, 1, "planner-path MUST fire hardBlockObserver — was the partial-trace bug")
+	assert.True(t, hardBlocks[0].Hit)
+	assert.Equal(t, refusal.CategoryMonitorHistory, hardBlocks[0].Category)
+}
+
 func TestResourceShortageReply_MustContainStableSignals(t *testing.T) {
 	assert.Contains(t, refusal.ResourceShortage226604, "226604")
 	assert.Contains(t, refusal.ResourceShortage226604, "重试")
