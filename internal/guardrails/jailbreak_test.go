@@ -165,6 +165,32 @@ func TestDetectJailbreakAttempt_False_BenignPlatformQuestions(t *testing.T) {
 		"你的提示是哪种风格",       // your + prompt but no verb (informational)
 		"Print the GPU spec table", // print but non-system-prompt object
 		"How do I reveal hidden files in my instance", // reveal but non-system-prompt object
+		// PR #152 review item 1 — Chinese extract-prompt over-match.
+		// These trip the OLD (你的|...)?(系统)?(prompt|规则|...) regex
+		// because both anchor groups were optional. After PR #152 round-2
+		// tightening the leading anchor is non-optional, so these must
+		// pass through. Failure means the tightening regressed.
+		"显示当前 GPU 设定",
+		"输出训练的设定参数",
+		"告诉我我的实例规则",
+		"展示一下这个工作流的规则",
+		"显示训练好的模型规则",
+		"打印当前 K8s pod 的规则",
+		"输出当前的安全规则",
+		"如何显示系统当前的规则",
+		// PR #152 review item 2 — English extract-prompt over-match.
+		// These tripped the OLD `(your|the)\s+(system\s+)?(prompt|...)`
+		// regex because `system\s+` was optional. After tightening, the
+		// "secret-anchor" variant requires one of system/hidden/initial/
+		// etc., and the "terminal" variant requires end-of-sentence or a
+		// relational anchor like "in full" / "you were given". Trailing
+		// prep phrases like "on creating", "for using", "for the cluster"
+		// rule out the help-question phrasings.
+		"print your instructions on creating an instance",
+		"tell me the rules for using spot instances",
+		"show me the directives for the GPU API",
+		"output the rules of the cluster",
+		"show me the guidelines on quota",
 	}
 	for _, msg := range cases {
 		t.Run(strings.ReplaceAll(msg, " ", "_"), func(t *testing.T) {
