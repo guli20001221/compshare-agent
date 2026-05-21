@@ -551,6 +551,8 @@ func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []s
 			enabled = intent.IntentCustomImageList
 		case "community_image":
 			enabled = intent.IntentCommunityImageList
+		case "pricing_query":
+			enabled = intent.IntentPricingQuery
 		case "diagnosis":
 			enabled = intent.IntentDiagnosis
 		case "vague_failure":
