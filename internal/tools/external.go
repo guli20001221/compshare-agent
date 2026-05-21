@@ -49,7 +49,13 @@ func NewExternalExecutor(cfg config.AgentConfig) *ExternalExecutor {
 		creds:      provider,
 		region:     cfg.Region,
 		projectId:  cfg.ProjectId,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		// 60s is the last-resort safety net; per-action TimeoutMS in
+		// ToolExecutionPolicy (PR #5) is the primary deadline applied
+		// via context.WithTimeout in SafeToolExecutor.executeWithRetry.
+		// Keeping the client timeout above the largest per-action
+		// budget (monitor = 30s) means policy-level deadlines dominate
+		// in the common case, while runaway calls still cap at 60s.
+		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
