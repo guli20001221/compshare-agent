@@ -203,10 +203,13 @@ func (s *Server) trackConn(id string, conn *websocket.Conn) func() {
 // right code here: it tells the client "we're shutting down cleanly,
 // reconnect when you can", not "something broke, back off".
 //
-// Race note: sync.Map.Range documents safe concurrent use; new connections
-// that race past the Store call during Range will be caught at handleWS's
-// shuttingDown check (returns 503 before Accept) since we flip the flag
-// before this runs.
+// Race window: a conn that already passed the handleWS shuttingDown
+// check (returns 503 before Accept) but hasn't yet called trackConn.Store
+// will Store after this Range completes, so it does NOT receive the 1001
+// frame here. That conn still drains via httpServer.Shutdown's 30s wait
+// + the trackConn defer cleanup — acceptable cost for a narrow window.
+// sync.Map.Range documents safe concurrent use; a brand-new conn that
+// races into Store mid-Range may or may not be seen, same drain story.
 func (s *Server) closeAllConns(reason string) {
 	s.activeConns.Range(func(key, value any) bool {
 		if conn, ok := value.(*websocket.Conn); ok {
