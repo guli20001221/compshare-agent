@@ -22,10 +22,10 @@ import (
 //   - the server's recorder owns extra fields (tenant + connection_id)
 //     that the file-only CLI path doesn't need.
 //
-// trace_id passthrough (plan §10) lands in PR5: the recorder will accept
-// a TraceID parameter overriding the auto-generated one. For PR4 the
-// auto-generated trace_id is fine — A4 / MySQLWriter still keys on
-// request_uuid (the persisted unique key); trace_id is internal.
+// trace_id passthrough (plan §10 / A7): the recorder pins
+// TraceRecord.TraceID = ClientMessage.RequestUUID so the row's inner
+// trace_id column matches the request_uuid column exactly. Dashboard
+// joins on either column return the same record.
 type serverTraceRecorder struct {
 	sink         observability.Writer
 	tenant       TenantCtx
@@ -146,11 +146,30 @@ func (r *serverTraceRecorder) markLastTool(action, status, errMsg string) {
 }
 
 // finish stamps end-of-turn fields and writes the trace to the sink.
+// chatErr is folded into the trace via the Outcome.EscapedHallucinatedCount
+// channel only — the structured "blocked / error / success" decision lives
+// in DeriveStatus and is consumed by MessageRecorder; the trace row itself
+// does not carry a top-level status column (it sits inside trace_json).
+//
 // For MySQLWriter, the sink Enqueue path expects tenant context; we cast
 // through that helper when available so the row carries the tenant
 // columns. Other writers receive a plain Append.
-func (r *serverTraceRecorder) finish(chatErr error) {
+// finish returns the finalized TraceRecord so the caller can feed it to
+// DeriveStatus + MessageRecorder. Even when the sink is nil we still
+// return the record (the recorder was constructed by the caller's
+// choice, so they probably want the record to derive status from).
+func (r *serverTraceRecorder) finish(chatErr error) observability.TraceRecord {
 	r.record.Outcome.TotalLatencyMS = time.Since(r.start).Milliseconds()
+	if chatErr != nil {
+		// Surface engine failure as a hard-block trace entry so dashboards
+		// querying engine_hard_block.hit see the row. Category is best-effort.
+		if r.record.EngineHardBlock.Category == "" {
+			r.record.EngineHardBlock = observability.EngineHardBlockTrace{
+				Hit:      true,
+				Category: "chat_error",
+			}
+		}
+	}
 
 	// Tenant-aware write for MySQL; plain Append for file/multi.
 	if mw, ok := r.sink.(*observability.MySQLWriter); ok {
@@ -159,10 +178,10 @@ func (r *serverTraceRecorder) finish(chatErr error) {
 			OrgID:        r.tenant.OrgID,
 			ConnectionID: r.connectionID,
 		}, r.record)
-		return
+		return r.record
 	}
 	if err := r.sink.Append(r.record); err != nil {
 		log.Printf("trace sink append failed: %v", err)
 	}
-	_ = chatErr // engine error is captured via hard-block trace; explicit param kept for PR5 status helper
+	return r.record
 }

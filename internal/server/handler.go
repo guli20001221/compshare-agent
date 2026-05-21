@@ -11,6 +11,7 @@ import (
 
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/prompt"
 
 	"github.com/google/uuid"
@@ -217,10 +218,44 @@ func (s *Server) runChatTurn(
 		}
 	}
 
+	chatStart := time.Now()
 	reply, err := sess.Chat(turnCtx, msg.Text, onStep)
+	latencyMS := int(time.Since(chatStart).Milliseconds())
 
+	// Capture the finalized trace record so we can derive the
+	// agent_messages status enum without re-walking the observers.
+	// When recorder is nil (no trace sink) we get a zero-value record
+	// and DeriveStatus still produces the correct chatErr-only signal.
+	var finalTrace observability.TraceRecord
 	if recorder != nil {
-		recorder.finish(err)
+		finalTrace = recorder.finish(err)
+	}
+
+	// Persist the chat turn into agent_messages. Status comes from
+	// DeriveStatus, which carries the caller's chatErr through to the
+	// "error" enum value.
+	//
+	// CROSS-TABLE DIVERGENCE (documented, intentional):
+	// agent_traces.status is computed by observability.statusFromTrace
+	// which has no chatErr channel; when chatErr != nil the trace
+	// recorder maps it to EngineHardBlock{Hit:true, Category:"chat_error"}
+	// so the trace row reports "blocked", not "error". Dashboards that
+	// need the "error" distinction MUST query agent_messages; the
+	// success / rate-limit / hard-block paths still join cleanly.
+	if s.msgRecorder != nil {
+		_ = s.msgRecorder.Record(MessageEntry{
+			RequestUUID:      msg.RequestUUID,
+			TopOrgID:         tenant.TopOrgID,
+			OrgID:            tenant.OrgID,
+			ConnectionID:     connectionID,
+			TurnIndex:        turnIndex,
+			CreatedAt:        chatStart,
+			UserMessage:      msg.Text,
+			AssistantMessage: reply,
+			Status:           DeriveStatus(err, finalTrace),
+			Model:            s.model,
+			LatencyMS:        latencyMS,
+		})
 	}
 
 	if err != nil {
