@@ -7,6 +7,7 @@
 deploy/conf/agent.yaml
 __pycache__/
 *.pyc
+.worktrees/
 
 # Shadow QA per-round agent configs contain real API keys (UCloud + LLM).
 # Never commit these.
