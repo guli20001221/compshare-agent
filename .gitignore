@@ -20,4 +20,5 @@ eval/shadow_qa/**/.env
 .runs/
 agent.exe
 agent.exe~
-.claude/worktrees/
+.claude/
+agent
