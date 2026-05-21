@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/config"
 )
@@ -301,5 +303,207 @@ func TestExternalExecutor_MonitorUsesJSONBodyForUHostIds(t *testing.T) {
 	}
 	if body["Signature"] == "" {
 		t.Fatal("Signature is empty")
+	}
+}
+
+// --- STS / CredentialProvider integration tests ---
+
+// TestExecuteWithSTSCredentials verifies that Execute includes SecurityToken in
+// the form params and signs with the temporary AccessKeySecret.
+func TestExecuteWithSTSCredentials(t *testing.T) {
+	const (
+		tempAK    = "sts-ak-temp"
+		tempSK    = "sts-sk-temp"
+		tempToken = "sts-token-xyz"
+	)
+
+	var capturedForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedForm, _ = url.ParseQuery(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "TestResponse"}`))
+	}))
+	defer srv.Close()
+
+	provider := StaticCredentialProvider{Cred: &Credentials{
+		AccessKeyId:     tempAK,
+		AccessKeySecret: tempSK,
+		SecurityToken:   tempToken,
+		ExpireAt:        time.Now().Add(time.Hour),
+	}}
+	ext := NewExternalExecutorWithProvider(srv.URL, "cn-wlcb", "org-001", provider)
+
+	if _, err := ext.Execute(context.Background(), "DescribeCompShareInstance", map[string]any{
+		"UHostId": "uhost-test",
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	// PublicKey must be the temp AK
+	if got := capturedForm.Get("PublicKey"); got != tempAK {
+		t.Errorf("PublicKey = %q, want %q", got, tempAK)
+	}
+	// SecurityToken must be present
+	if got := capturedForm.Get("SecurityToken"); got != tempToken {
+		t.Errorf("SecurityToken = %q, want %q", got, tempToken)
+	}
+	// Signature must be computed with temp SK — recompute and compare
+	params := make(map[string]string)
+	for k, vals := range capturedForm {
+		if k == "Signature" {
+			continue
+		}
+		params[k] = vals[0]
+	}
+	expectedSig := ucloudSign(params, tempSK)
+	if got := capturedForm.Get("Signature"); got != expectedSig {
+		t.Errorf("Signature = %q, want %q (signed with temp SK)", got, expectedSig)
+	}
+}
+
+// TestExecuteJSONWithSTSCredentials verifies that executeJSON includes
+// SecurityToken in the JSON body and signs with the temporary AccessKeySecret.
+func TestExecuteJSONWithSTSCredentials(t *testing.T) {
+	const (
+		tempAK    = "sts-ak-json"
+		tempSK    = "sts-sk-json"
+		tempToken = "sts-token-json"
+	)
+
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "GetCompShareInstanceMonitorResponse"}`))
+	}))
+	defer srv.Close()
+
+	provider := StaticCredentialProvider{Cred: &Credentials{
+		AccessKeyId:     tempAK,
+		AccessKeySecret: tempSK,
+		SecurityToken:   tempToken,
+		ExpireAt:        time.Now().Add(time.Hour),
+	}}
+	ext := NewExternalExecutorWithProvider(srv.URL, "cn-wlcb", "org-001", provider)
+
+	if _, err := ext.Execute(context.Background(), "GetCompShareInstanceMonitor", map[string]any{
+		"UHostIds":  []any{"uhost-1"},
+		"StartTime": 1000,
+		"EndTime":   2000,
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	// PublicKey must be the temp AK
+	if got, _ := capturedBody["PublicKey"].(string); got != tempAK {
+		t.Errorf("PublicKey = %q, want %q", got, tempAK)
+	}
+	// SecurityToken must be in the body
+	if got, _ := capturedBody["SecurityToken"].(string); got != tempToken {
+		t.Errorf("SecurityToken = %q, want %q", got, tempToken)
+	}
+	// Signature must be non-empty
+	if sig, _ := capturedBody["Signature"].(string); sig == "" {
+		t.Error("Signature is empty")
+	}
+	// Recompute expected signature (without Signature key itself)
+	params := make(map[string]any)
+	for k, v := range capturedBody {
+		if k == "Signature" {
+			continue
+		}
+		params[k] = v
+	}
+	expectedSig := ucloudSignJSON(params, tempSK)
+	if got, _ := capturedBody["Signature"].(string); got != expectedSig {
+		t.Errorf("Signature = %q, want %q (signed with temp SK)", got, expectedSig)
+	}
+}
+
+// TestExecuteWithUserContextOverridesRegionProject verifies that region and
+// projectId from UserContext override the executor defaults.
+func TestExecuteWithUserContextOverridesRegionProject(t *testing.T) {
+	var capturedForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedForm, _ = url.ParseQuery(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "TestResponse"}`))
+	}))
+	defer srv.Close()
+
+	provider := StaticCredentialProvider{Cred: &Credentials{
+		AccessKeyId:     "ak",
+		AccessKeySecret: "sk",
+	}}
+	// Executor defaults: region=cn-wlcb, project=default-project
+	ext := NewExternalExecutorWithProvider(srv.URL, "cn-wlcb", "default-project", provider)
+
+	// UserContext overrides both
+	ctx := WithUser(context.Background(), UserContext{
+		Region:    "cn-sh2",
+		ProjectId: "override-project",
+	})
+
+	if _, err := ext.Execute(ctx, "DescribeCompShareInstance", nil); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := capturedForm.Get("Region"); got != "cn-sh2" {
+		t.Errorf("Region = %q, want cn-sh2 (UserContext override)", got)
+	}
+	if got := capturedForm.Get("ProjectId"); got != "override-project" {
+		t.Errorf("ProjectId = %q, want override-project (UserContext override)", got)
+	}
+}
+
+// TestExecuteNilProviderErrors verifies that Execute returns a meaningful error
+// when no credential provider is configured.
+func TestExecuteNilProviderErrors(t *testing.T) {
+	ext := &ExternalExecutor{
+		apiURL:     "http://example.invalid/",
+		creds:      nil,
+		region:     "cn-wlcb",
+		httpClient: &http.Client{Timeout: time.Second},
+	}
+
+	_, err := ext.Execute(context.Background(), "DescribeCompShareInstance", nil)
+	if err == nil {
+		t.Fatal("expected error when creds is nil, got nil")
+	}
+	if !strings.Contains(err.Error(), "no credential provider") {
+		t.Errorf("error = %q, want to mention 'no credential provider'", err.Error())
+	}
+}
+
+// TestExecuteStaticNoSecurityToken verifies that when using legacy static
+// credentials (no SecurityToken), SecurityToken is NOT present in the form.
+func TestExecuteStaticNoSecurityToken(t *testing.T) {
+	var capturedForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedForm, _ = url.ParseQuery(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "TestResponse"}`))
+	}))
+	defer srv.Close()
+
+	ext := NewExternalExecutor(config.AgentConfig{
+		CompShareAPIURL: srv.URL,
+		PublicKey:       "pk",
+		PrivateKey:      "sk",
+		Region:          "cn-wlcb",
+	})
+
+	if _, err := ext.Execute(context.Background(), "DescribeCompShareInstance", nil); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := capturedForm.Get("SecurityToken"); got != "" {
+		t.Errorf("SecurityToken = %q, want empty for static credentials", got)
+	}
+	if got := capturedForm.Get("PublicKey"); got != "pk" {
+		t.Errorf("PublicKey = %q, want pk", got)
 	}
 }
