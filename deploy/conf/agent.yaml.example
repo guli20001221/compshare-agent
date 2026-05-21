@@ -21,7 +21,14 @@ agent:
     # monitor ~1.86% empty-return rate on hybrid path (P3 watch-list).
     model: "deepseek-v4-flash"
 
-  # 0 or omitted uses the built-in defaults.
+  # 0 or omitted uses the built-in defaults for llm / mutating /
+  # read_expensive. The user_turn_* and max_tokens_per_turn fields are
+  # OPT-IN test-phase guardrails — 0 / omitted = no enforcement (NOT
+  # promoted to a default). All counters are in-memory per process:
+  # a pod restart resets every tenant's daily counter, and N replicas
+  # without sticky routing yield an effective cap of N × the value below.
+  # For production rollout, replace with a Redis-backed limiter before
+  # raising the replica count.
   rate_limit:
     llm_qps: 5
     llm_daily: 5000
@@ -29,3 +36,12 @@ agent:
     mutating_daily: 50
     read_expensive_qps: 6
     read_expensive_daily: 500
+    # Per-tenant cap on user-initiated chat turns (one user_message frame
+    # = 1 turn; confirm responses and pings do NOT count).
+    user_turn_qps: 0      # 0 = no QPS cap
+    user_turn_daily: 30   # 0 = no daily cap; 30 is the 2026-05-21 test-phase value
+    # Per-turn cap on total LLM tokens (prompt + completion summed across
+    # every LLM call in one user turn). 0 = no cap. 50000 covers heavy
+    # multi-tool diagnosis turns; observe trace.outcome.total_tokens and
+    # tighten once steady-state distribution is known.
+    max_tokens_per_turn: 50000

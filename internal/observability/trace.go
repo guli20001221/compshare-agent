@@ -327,8 +327,14 @@ type OutcomeTrace struct {
 	TotalLatencyMS             int64 `json:"total_latency_ms,omitempty"`
 	TotalTokens                int   `json:"total_tokens,omitempty"`
 	AttemptedHallucinatedCount int   `json:"attempted_hallucinated_count,omitempty"`
-	EscapedHallucinatedCount   int   `json:"escaped_hallucinated_count,omitempty"`
-	KBConflictCount            int   `json:"kb_conflict_count,omitempty"`
+	// EscapedHallucinatedCount counts turns where the cited-contract
+	// retry was skipped or failed. Note: turns aborted by the per-turn
+	// token budget (refused_reason="token_budget") also bump this
+	// counter — they couldn't AFFORD the coercion retry, not because
+	// the model hallucinated. Hallucination dashboards joining on this
+	// field must filter out refused_reason="token_budget" rows.
+	EscapedHallucinatedCount int `json:"escaped_hallucinated_count,omitempty"`
+	KBConflictCount          int `json:"kb_conflict_count,omitempty"`
 }
 
 // NewWriter constructs a FileWriter. Return type is the concrete *FileWriter
