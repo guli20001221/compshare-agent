@@ -9,7 +9,7 @@ import "testing"
 // services (e.g. modelverse 18 chunks in w0); the planner+RAG path should
 // answer instead of the canned account-financial-center redirect.
 func TestIsAccountBillingUnsupportedNormalized_ThirdPartyServiceExempt(t *testing.T) {
-	// Inputs here are already in normalizeMsg output form: ASCII lowercased,
+	// Inputs here are already in textutil.Normalize output form: ASCII lowercased,
 	// internal whitespace collapsed, CJK preserved.
 	cases := []string{
 		"modelverse 的余额怎么查",
@@ -128,7 +128,7 @@ func TestIsAccountBillingUnsupportedNormalized_FAQProcessExempt(t *testing.T) {
 // the financial-data hard-block contract.
 func TestIsAccountBillingUnsupportedNormalized_FAQExemptDoesNotWeakenBalanceBlock(t *testing.T) {
 	// These cases must still hard-block at the engine layer (i.e., reach
-	// accountBillingUnsupportedReply without going through the planner)
+	// refusal.AccountBillingUnsupported without going through the planner)
 	// because each one hits accountOnlyDataKeywords / invoiceRealtime /
 	// refundRealtime / arrearsRealtime / etc. The FAQ-process exemption
 	// (#52) must NOT swallow them.

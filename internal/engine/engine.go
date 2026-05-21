@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/diagnosis"
@@ -22,7 +21,9 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/prompt"
+	"github.com/compshare-agent/internal/refusal"
 	grounded "github.com/compshare-agent/internal/renderer"
+	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 
@@ -44,9 +45,11 @@ const (
 )
 
 const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
-const monitorHistoryUnsupportedReply = "当前暂不支持指定历史时间段的监控查询。我可以先帮你查看实时监控；如需历史趋势，请在控制台监控页选择对应日期和时间范围查看。"
-const resourceShortageReply = "226604（当前资源不足）是平台 GPU 资源池的实时状态，并不是您账号或操作的问题——您选择的机型当前已被其他用户占满。资源会随着其他用户关机或退订陆续流转出来，建议您稍等片刻后重试同一机型，或在控制台库存页换一个可用区或相近规格（例如 4090 紧张时可以试试 A100）。如果业务需要长期稳定使用资源，也可以考虑包日或包月付费，相比按量计费在资源稳定性上更有保障。感谢您的耐心等待。"
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
+
+// monitor_history / account_billing / resource_shortage refusal text moved
+// to internal/refusal/templates.go in the C2 hard-block 归一 refactor.
+// Call sites import refusal directly; this file no longer declares them.
 
 const (
 	rateLimitQPSMessage   = "请求过于频繁，请稍后再试。"
@@ -625,43 +628,29 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 		Content: userMsg,
 	})
 
-	if isAccountBillingUnsupported(userMsg) {
+	// Pre-LLM hard-block chain. Rules live in preblock.go (this package);
+	// dispatch + ordering in internal/router; reply text + category strings
+	// in internal/refusal. Side effects (pendingResourceSelection clear,
+	// hardBlockObserver fire, history append) stay here so engine state
+	// transitions remain in one place.
+	//
+	// Trace fix vs pre-refactor: monitor_history previously did NOT emit
+	// hardBlockObserver — now it does, with category
+	// refusal.CategoryMonitorHistory. Downstream dashboards gain
+	// observability for this category at zero behavioral cost.
+	if decision := enginePreBlock.Decide(userMsg); decision.Matched {
 		e.pendingResourceSelection = nil
 		if e.hardBlockObserver != nil {
 			e.hardBlockObserver(observability.EngineHardBlockTrace{
 				Hit:      true,
-				Category: "account_billing_unsupported",
+				Category: decision.Category,
 			})
 		}
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
-			Content: accountBillingUnsupportedReply,
+			Content: decision.Reply,
 		})
-		return accountBillingUnsupportedReply, nil
-	}
-
-	if isResourceShortageQuestion(userMsg) {
-		e.pendingResourceSelection = nil
-		if e.hardBlockObserver != nil {
-			e.hardBlockObserver(observability.EngineHardBlockTrace{
-				Hit:      true,
-				Category: "resource_shortage_226604",
-			})
-		}
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: resourceShortageReply,
-		})
-		return resourceShortageReply, nil
-	}
-
-	if isUnsupportedHistoricalMonitorQuestion(userMsg) {
-		e.pendingResourceSelection = nil
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: monitorHistoryUnsupportedReply,
-		})
-		return monitorHistoryUnsupportedReply, nil
+		return decision.Reply, nil
 	}
 
 	e.currentMonitorTargets = nil
@@ -862,11 +851,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 
 	if dispatch.result.Plan.Intent == intent.IntentMonitorHistory {
 		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackTimeWindow, dispatch.latency)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: monitorHistoryUnsupportedReply,
-		})
-		return monitorHistoryUnsupportedReply, true
+		return e.emitMonitorHistoryHardBlock(), true
 	}
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
 		return reply, true
@@ -1043,11 +1028,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 		}
 		if handled.FallbackReason == intent.FallbackTimeWindow {
 			e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: monitorHistoryUnsupportedReply,
-			})
-			return monitorHistoryUnsupportedReply, true
+			return e.emitMonitorHistoryHardBlock(), true
 		}
 		e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
 		return "", false
@@ -1898,7 +1879,7 @@ func friendlyToolErrorMessage(err error) (string, bool) {
 	}
 	switch {
 	case errors.Is(err, tools.ErrHistoricalMonitorUnsupported):
-		return monitorHistoryUnsupportedReply, true
+		return refusal.MonitorHistoryUnsupported, true
 	case errors.Is(err, tools.ErrHistoryWindowExceeded):
 		return historyWindowExceededMessage, true
 	case errors.Is(err, tools.ErrToolCapExceeded):
@@ -2051,7 +2032,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	})
 	if err != nil {
 		if errors.Is(err, tools.ErrHistoricalMonitorUnsupported) {
-			msg := monitorHistoryUnsupportedReply
+			msg := refusal.MonitorHistoryUnsupported
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, err))
 			return finalReplyPrefix + msg
 		}
@@ -2657,7 +2638,8 @@ func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
 // mutation is gone. When mutating tools that need ProjectId open up,
 // route the value through args["ProjectId"] (per-session field on Engine).
 
-const accountBillingUnsupportedReply = "这类账号级财务信息当前不支持由助手查询。请到控制台的财务中心查看：账号总览看余额，账单管理看月度账单，消费记录看扣费流水，发票管理看开票和寄送状态，退款或欠费信息以订单/财务中心页面为准。"
+// accountBillingUnsupportedReply moved to internal/refusal/templates.go
+// (refusal.AccountBillingUnsupported) in the C2 hard-block 归一 refactor.
 
 var monthlyBillKeywords = []string{
 	"\u672c\u6708", // 本月
@@ -2679,7 +2661,7 @@ var monthlyBillKeywords = []string{
 // the skill manifest's disambiguating_prefixes field, NOT this engine var.
 //
 // All entries are stored in normalized form (ASCII lowercased; CJK as-is)
-// to match normalizeMsg output without re-normalizing per call.
+// to match textutil.Normalize output without re-normalizing per call.
 var thirdPartyServiceForeignBalanceContexts = []string{
 	"modelverse",
 	"openai",
@@ -2964,7 +2946,7 @@ var knowledgeWindowsKeywords = []string{
 var knowledgeMonitorKeywords = []string{
 	"\u76d1\u63a7\u6307\u6807", // \u76d1\u63a7\u6307\u6807
 	"\u663e\u5b58\u5360\u7528", // \u663e\u5b58\u5360\u7528
-	// normalizeMsg collapses whitespace but never INJECTS a space between
+	// textutil.Normalize collapses whitespace but never INJECTS a space between
 	// adjacent CJK and ASCII, so the no-space variants are the load-bearing
 	// keywords for real user input ("CPU\u5360\u7528\u7387"). Keep the spaced variants
 	// for the alt phrasing ("CPU \u5360\u7528\u7387\u9ad8\u5417").
@@ -2974,31 +2956,10 @@ var knowledgeMonitorKeywords = []string{
 	"gpu \u5360\u7528", // gpu \u5360\u7528
 }
 
-// normalizeMsg standardizes a user message for signal matching:
-// trims whitespace, collapses internal whitespace runs to a single space,
-// and lowercases ASCII letters. CJK characters are preserved as-is.
-// The returned value is used only for substring matching; the caller's
-// original string is never mutated.
-func normalizeMsg(s string) string {
-	var b strings.Builder
-	prevSpace := true // treat start as space so leading whitespace collapses
-	for _, r := range s {
-		if unicode.IsSpace(r) {
-			if !prevSpace {
-				b.WriteByte(' ')
-				prevSpace = true
-			}
-			continue
-		}
-		prevSpace = false
-		if r >= 'A' && r <= 'Z' {
-			r += 'a' - 'A'
-		}
-		b.WriteRune(r)
-	}
-	out := b.String()
-	return strings.TrimRight(out, " ")
-}
+// normalizeMsg was moved to internal/textutil.Normalize in the C2
+// hard-block 归一 refactor. All engine call sites now invoke
+// textutil.Normalize directly. See textutil/normalize.go for the
+// canonical implementation + per-package unit tests.
 
 func (e *Engine) previousAssistantAskedInitFailureTarget() bool {
 	if e == nil {
@@ -3012,7 +2973,7 @@ func (e *Engine) previousAssistantAskedInitFailureTarget() bool {
 		if len(msg.ToolCalls) > 0 {
 			continue
 		}
-		n := normalizeMsg(msg.Content)
+		n := textutil.Normalize(msg.Content)
 		if n == "" {
 			continue
 		}
@@ -3053,7 +3014,7 @@ var initFailureSignalKeywords = []string{
 // DiagnoseInitFailure guard: vague fault language ("跑崩了", "挂了") does
 // NOT match; the user must have named the symptom type explicitly.
 func containsInitFailureSignal(msg string) bool {
-	n := normalizeMsg(msg)
+	n := textutil.Normalize(msg)
 	for _, kw := range initFailureSignalKeywords {
 		if strings.Contains(n, kw) {
 			return true
@@ -3084,7 +3045,7 @@ var scanAllSignalKeywords = []string{
 // containsScanAllSignal reports whether the user message expresses an
 // explicit intent to scan across all instances.
 func containsScanAllSignal(msg string) bool {
-	n := normalizeMsg(msg)
+	n := textutil.Normalize(msg)
 	for _, kw := range scanAllSignalKeywords {
 		if strings.Contains(n, kw) {
 			return true
@@ -3100,7 +3061,7 @@ func containsScanAllSignal(msg string) bool {
 // intent=billing_account_unsupported as a hint, but engine independently
 // enforces this hard-block. DO NOT delete when IntentPlan ships.
 func isAccountBillingUnsupported(userMsg string) bool {
-	return isAccountBillingUnsupportedNormalized(normalizeMsg(userMsg))
+	return isAccountBillingUnsupportedNormalized(textutil.Normalize(userMsg))
 }
 
 // resourceShortageSignalKeywords are the precision-first phrases that
@@ -3116,12 +3077,12 @@ var resourceShortageSignalKeywords = []string{
 // isResourceShortageQuestion reports whether the user message is asking
 // about upstream resource shortage (error code 226604). When true the
 // engine short-circuits before any LLM/planner/RAG call and returns
-// resourceShortageReply unchanged, so the response stays stable across
+// refusal.ResourceShortage226604 unchanged, so the response stays stable across
 // runs and never drifts via LLM paraphrase. Mirrors the
 // isAccountBillingUnsupported / isUnsupportedHistoricalMonitorQuestion
 // pattern.
 func isResourceShortageQuestion(userMsg string) bool {
-	n := normalizeMsg(userMsg)
+	n := textutil.Normalize(userMsg)
 	for _, kw := range resourceShortageSignalKeywords {
 		if strings.Contains(n, kw) {
 			return true
@@ -3314,12 +3275,12 @@ func (e *Engine) shouldForceMonitorRecall(userMsg string) bool {
 	if e.lastMonitorTurn < 0 || e.userTurn != e.lastMonitorTurn+1 {
 		return false
 	}
-	n := normalizeMsg(userMsg)
+	n := textutil.Normalize(userMsg)
 	return containsAnyKeyword(n, monitorRecallKeywords) && containsAnyKeyword(n, monitorMetricKeywords)
 }
 
 func isUnsupportedHistoricalMonitorQuestion(userMsg string) bool {
-	n := normalizeMsg(userMsg)
+	n := textutil.Normalize(userMsg)
 	if !containsAnyKeyword(n, historicalMonitorSignalKeywords) {
 		return false
 	}
@@ -3351,7 +3312,7 @@ func containsNormalizedKeyword(normalized string, keywords []string) bool {
 // are checked before broader ones (image / modelverse / billing_rule) to avoid
 // the broader keyword sets shadowing the niche groups.
 func inferKnowledgeProductArea(userMsg string) string {
-	n := normalizeMsg(userMsg)
+	n := textutil.Normalize(userMsg)
 	switch {
 	case containsAnyKeyword(n, knowledgeInitFailureKeywords):
 		return "init_failure"
