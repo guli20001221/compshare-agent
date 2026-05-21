@@ -1,0 +1,157 @@
+package server
+
+import (
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
+)
+
+// serverTraceRecorder buffers observer callbacks from a single Chat turn
+// into a TraceRecord and writes it to the configured sink at turn end.
+// One recorder per turn — engine observers are attached in attach() and
+// detached after finish().
+//
+// The CLI counterpart is cmd.newCLITraceRecorder (cmd/trace.go). We
+// duplicate the recorder rather than import it because:
+//   - the CLI package is in cmd/ and can't be imported from internal/
+//   - the server's recorder owns extra fields (tenant + connection_id)
+//     that the file-only CLI path doesn't need.
+//
+// trace_id passthrough (plan §10) lands in PR5: the recorder will accept
+// a TraceID parameter overriding the auto-generated one. For PR4 the
+// auto-generated trace_id is fine — A4 / MySQLWriter still keys on
+// request_uuid (the persisted unique key); trace_id is internal.
+type serverTraceRecorder struct {
+	sink         observability.Writer
+	tenant       TenantCtx
+	connectionID string
+	turnIndex    int
+	requestUUID  string
+	model        string
+	start        time.Time
+
+	record observability.TraceRecord
+}
+
+// newServerTraceRecorder constructs a recorder if a sink is configured;
+// returns nil when sink == nil so the call site can skip observer wiring
+// cheaply. Caller MUST invoke attach + finish.
+func newServerTraceRecorder(
+	sink observability.Writer,
+	tenant TenantCtx,
+	connectionID string,
+	turnIndex int,
+	msg ClientMessage,
+	model string,
+) *serverTraceRecorder {
+	if sink == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	return &serverTraceRecorder{
+		sink:         sink,
+		tenant:       tenant,
+		connectionID: connectionID,
+		turnIndex:    turnIndex,
+		requestUUID:  msg.RequestUUID,
+		model:        model,
+		start:        now,
+		record: observability.TraceRecord{
+			SchemaVersion: observability.SchemaVersion,
+			TraceID:       fmt.Sprintf("trace-%s-%d", msg.RequestUUID, turnIndex),
+			TurnID:        fmt.Sprintf("turn-%d", turnIndex),
+			TurnIndex:     turnIndex,
+			Timestamp:     now.Format(time.RFC3339Nano),
+		},
+	}
+}
+
+// attach wires the engine observers to record callback streams into the
+// in-progress TraceRecord. The Engine resets observers each turn (per the
+// CLI pattern in cmd/agent.go) so we don't need to detach explicitly —
+// finish() simply stops mutating the record after writing it out.
+func (r *serverTraceRecorder) attach(sess *engine.Engine) {
+	sess.SetPlannerTraceObserver(func(t observability.PlannerTrace) { r.record.Planner = t })
+	sess.SetRetrievalTraceObserver(func(t observability.RetrievalTrace) { r.record.Retrieval = t })
+	sess.SetRendererTraceObserver(func(t observability.RendererTrace) { r.record.Renderer = t })
+	sess.SetOutcomeTraceObserver(func(t observability.OutcomeTrace) { r.record.Outcome = t })
+	sess.SetHardBlockObserver(func(t observability.EngineHardBlockTrace) { r.record.EngineHardBlock = t })
+	sess.SetRateLimitObserver(func(d governance.Decision) {
+		r.record.RateLimit = observability.RateLimitTrace{
+			Checked:      true,
+			Allowed:      d.Allowed,
+			Class:        string(d.Class),
+			Action:       d.Action,
+			Reason:       string(d.Reason),
+			SubjectHash:  d.SubjectHash,
+			RetryAfterMS: d.RetryAfter.Milliseconds(),
+		}
+	})
+	sess.SetTokenUsageObserver(func(u llm.TokenUsage) {
+		r.record.Outcome.TotalTokens += u.PromptTokens + u.CompletionTokens
+	})
+}
+
+// OnStep records tool-call events into the trace's ToolCalls slice. Each
+// StepToolCall begins a tool entry; the matching StepToolResult /
+// StepError / StepBlocked closes it. We track by Action name + index —
+// adequate for the single-tool-call-at-a-time engine pattern; multi-tool
+// concurrency would need a per-call ID (engine.StepEvent doesn't carry
+// one today so we live with this scoping).
+func (r *serverTraceRecorder) OnStep(ev engine.StepEvent) {
+	switch ev.Type {
+	case engine.StepToolCall:
+		r.record.ToolCalls = append(r.record.ToolCalls, observability.ToolCallTrace{
+			Action: ev.Action,
+			Status: observability.ToolStatusSuccess, // optimistic; downgraded below
+			Source: observability.ToolSourceMainReAct,
+		})
+	case engine.StepToolResult:
+		r.markLastTool(ev.Action, observability.ToolStatusSuccess, "")
+	case engine.StepBlocked:
+		r.markLastTool(ev.Action, observability.ToolStatusError, ev.Message)
+	case engine.StepError:
+		r.markLastTool(ev.Action, observability.ToolStatusError, ev.Message)
+	}
+}
+
+func (r *serverTraceRecorder) markLastTool(action, status, errMsg string) {
+	for i := len(r.record.ToolCalls) - 1; i >= 0; i-- {
+		if r.record.ToolCalls[i].Action == action {
+			r.record.ToolCalls[i].Status = status
+			if errMsg != "" {
+				// ToolCallTrace exposes ErrorClass + CapReason but no free-form
+				// error text — surface the message as the ErrorClass tag.
+				r.record.ToolCalls[i].ErrorClass = errMsg
+			}
+			return
+		}
+	}
+}
+
+// finish stamps end-of-turn fields and writes the trace to the sink.
+// For MySQLWriter, the sink Enqueue path expects tenant context; we cast
+// through that helper when available so the row carries the tenant
+// columns. Other writers receive a plain Append.
+func (r *serverTraceRecorder) finish(chatErr error) {
+	r.record.Outcome.TotalLatencyMS = time.Since(r.start).Milliseconds()
+
+	// Tenant-aware write for MySQL; plain Append for file/multi.
+	if mw, ok := r.sink.(*observability.MySQLWriter); ok {
+		_ = mw.Enqueue(observability.TenantContext{
+			TopOrgID:     r.tenant.TopOrgID,
+			OrgID:        r.tenant.OrgID,
+			ConnectionID: r.connectionID,
+		}, r.record)
+		return
+	}
+	if err := r.sink.Append(r.record); err != nil {
+		log.Printf("trace sink append failed: %v", err)
+	}
+	_ = chatErr // engine error is captured via hard-block trace; explicit param kept for PR5 status helper
+}

@@ -324,14 +324,14 @@ func (e *Engine) SetMutatingToolsEnabled(v bool) {
 func (e *Engine) SetIntentPlanner(planner IntentPlanner, opts IntentPlannerOptions) {
 	e.intentPlanner = planner
 	e.intentPlannerModel = opts.Model
-	e.intentPlannerEnabledIntents, e.intentCutoverIntents = buildIntentPlannerMaps(opts.EnabledIntents)
+	e.intentPlannerEnabledIntents, e.intentCutoverIntents = BuildIntentPlannerMaps(opts.EnabledIntents)
 }
 
-// buildIntentPlannerMaps converts the configured EnabledIntents slice into the
+// BuildIntentPlannerMaps converts the configured EnabledIntents slice into the
 // two derived sets the engine consults during planning. Extracted so both
 // Engine.SetIntentPlanner (CLI path) and a future ApplySharedDepsFromEnv
 // helper (A3, server path) build the same maps.
-func buildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, cutoverMap map[intent.Intent]struct{}) {
+func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, cutoverMap map[intent.Intent]struct{}) {
 	enabledMap = map[intent.Intent]struct{}{}
 	cutoverMap = map[intent.Intent]struct{}{}
 	for _, e := range enabled {
