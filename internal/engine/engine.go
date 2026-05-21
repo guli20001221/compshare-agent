@@ -111,8 +111,11 @@ type HistoryMessage struct {
 	Content string
 }
 
-// ChatOptions carries per-call streaming callbacks for the HTTP path.
-// The CLI path uses the zero value (both nil) via the Chat() convenience wrapper.
+// ChatOptions configure optional callbacks for ChatWithOptions. Callbacks are
+// invoked synchronously on the caller's goroutine. OnTextDelta receives the
+// final assistant reply, replayed in chunk order when the LLM's raw content
+// is returned verbatim, or as a single override chunk when engine guards
+// rewrite the reply.
 type ChatOptions struct {
 	// OnTextDelta, if non-nil, is called once per text token in order, but
 	// only for the final LLM reply (not for intermediate ReAct tool-call rounds).
@@ -577,7 +580,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
-			content := e.guardMonitorTemporalFinalReply(resp.Content)
+			rawContent := resp.Content
+			content := e.guardMonitorTemporalFinalReply(rawContent)
 			// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): cited contract invariant.
 			// Keep the hard gate for planner-classified knowledge questions that
 			// fall back to a pure LLM answer, but do not apply it to diagnosis,
@@ -592,12 +596,17 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 				content = ragNoEvidenceReply
 			}
-			// Replay buffered streaming deltas to the caller now that we know
-			// this is the final text branch (no tool calls). We only do this
-			// here, not for canned replies above, per phase-1 design.
+			// Replay buffered streaming deltas when the LLM content was returned
+			// verbatim. If an engine guard overwrote content, emit the canonical
+			// override as a single chunk so the SSE stream matches the persisted
+			// final reply — do not replay stale raw deltas in that case.
 			if opts.OnTextDelta != nil {
-				for _, delta := range streamedDeltas {
-					opts.OnTextDelta(delta)
+				if content == rawContent {
+					for _, delta := range streamedDeltas {
+						opts.OnTextDelta(delta)
+					}
+				} else {
+					opts.OnTextDelta(content)
 				}
 			}
 			e.messages = append(e.messages, openai.ChatCompletionMessage{

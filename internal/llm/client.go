@@ -55,9 +55,8 @@ type ChatRequest struct {
 	// string ("auto"/"required"/"none") or an openai.ToolChoice struct
 	// naming a specific function. Leave nil for default auto behavior.
 	ToolChoice any
-	// OnTextDelta, when non-nil, is called for each non-empty text content
-	// delta as it arrives from the stream. It is NOT called for empty deltas
-	// or for tool-call-only chunks.
+	// OnTextDelta, if non-nil, is invoked synchronously for each non-empty
+	// text delta chunk received from the upstream stream.
 	OnTextDelta func(string)
 }
 
