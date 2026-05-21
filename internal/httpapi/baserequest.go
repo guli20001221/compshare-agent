@@ -18,6 +18,7 @@ type BaseRequest struct {
 	Action      string
 	RequestUUID string
 	Owner       store.Owner
+	ProjectID   string
 }
 
 // ParseBaseRequest reads the request body (POST only), resolves identity fields,
@@ -52,10 +53,13 @@ func ParseBaseRequest(c *gin.Context) (*simplejson.Json, BaseRequest, error) {
 		return nil, BaseRequest{}, ErrInvalidParam.WithMessage("missing organization_id")
 	}
 
+	projectID := raw.Get("ProjectId").MustString()
+
 	return raw, BaseRequest{
 		Action:      action,
 		RequestUUID: requestUUID,
 		Owner:       store.Owner{TopOrganizationID: topOrg, OrganizationID: org},
+		ProjectID:   projectID,
 	}, nil
 }
 

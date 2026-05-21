@@ -20,9 +20,19 @@ func TestParseBaseRequestJSONGeneratesRequestUUID(t *testing.T) {
 	assert.Equal(t, "GetMeta", base.Action)
 	assert.Equal(t, uint32(123), base.Owner.TopOrganizationID)
 	assert.Equal(t, uint32(456), base.Owner.OrganizationID)
+	assert.Empty(t, base.ProjectID)
 	assert.NotEmpty(t, base.RequestUUID)
 	got, _ := raw.Get("request_uuid").String()
 	assert.Equal(t, base.RequestUUID, got)
+}
+
+func TestParseBaseRequestPicksUpProjectID(t *testing.T) {
+	c := testContext("application/json", `{"Action":"GetMeta","top_organization_id":123,"organization_id":456,"ProjectId":"org-cwy2qk"}`)
+
+	_, base, err := ParseBaseRequest(c)
+
+	require.NoError(t, err)
+	assert.Equal(t, "org-cwy2qk", base.ProjectID)
 }
 
 func TestParseBaseRequestForm(t *testing.T) {

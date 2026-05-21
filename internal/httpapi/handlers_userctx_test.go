@@ -25,6 +25,20 @@ func TestBuildUserContext(t *testing.T) {
 	assert.Equal(t, uint32(456), u.OrganizationID)
 }
 
+func TestBuildUserContextUsesRequestProjectID(t *testing.T) {
+	h := &Handlers{cfg: &config.Config{Agent: config.AgentConfig{
+		STS:    config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		Region: "cn-wlcb",
+	}}}
+	base := BaseRequest{
+		Owner:     store.Owner{TopOrganizationID: 123, OrganizationID: 456},
+		ProjectID: "org-cwy2qk",
+	}
+	u, err := h.buildUserContext(base)
+	require.NoError(t, err)
+	assert.Equal(t, "org-cwy2qk", u.ProjectId)
+}
+
 func TestBuildUserContextZeroTopOrg(t *testing.T) {
 	h := &Handlers{cfg: &config.Config{Agent: config.AgentConfig{
 		STS:    config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},

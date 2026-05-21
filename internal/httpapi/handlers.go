@@ -58,12 +58,16 @@ func (h *Handlers) buildUserContext(base BaseRequest) (tools.UserContext, error)
 	if err != nil {
 		return tools.UserContext{}, ErrInvalidParam.WithMessage("failed to build role: %v", err)
 	}
+	projectID := base.ProjectID
+	if projectID == "" {
+		projectID = fmt.Sprintf("%d", base.Owner.OrganizationID)
+	}
 	return tools.UserContext{
 		TopOrganizationID: base.Owner.TopOrganizationID,
 		OrganizationID:    base.Owner.OrganizationID,
 		RoleUrn:           roleUrn,
 		SessionName:       fmt.Sprintf("%d-%d", base.Owner.TopOrganizationID, base.Owner.OrganizationID),
-		ProjectId:         fmt.Sprintf("%d", base.Owner.OrganizationID),
+		ProjectId:         projectID,
 		Region:            h.cfg.Agent.Region,
 	}, nil
 }
