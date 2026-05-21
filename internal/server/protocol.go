@@ -48,6 +48,19 @@ type ClientMessage struct {
 }
 
 // Server → Client message types.
+//
+// Client framing contract:
+//   - A turn STARTS with the first frame after the client's user_message.
+//   - A turn ENDS with a ServerMsgDone frame for that RequestUUID.
+//   - Frames between start and done can include any number of ServerMsgToolCall /
+//     ServerMsgToolResult / ServerMsgAnswerDelta frames, plus exactly one
+//     ServerMsgAnswerFinal OR exactly one ServerMsgError.
+//   - ServerMsgError is RESERVED for whole-turn failures (engine.Chat returned
+//     an error). When a single tool call fails mid-turn, the server emits
+//     ServerMsgToolResult with OK=false + Message, NOT ServerMsgError.
+//     Clients can use this rule: any ServerMsgError frame is followed by Done
+//     and the turn is over; ServerMsgToolResult with OK=false means the engine
+//     will keep working (retry / try another tool / answer without it).
 const (
 	ServerMsgReady           = "ready"
 	ServerMsgToolCall        = "tool_call"

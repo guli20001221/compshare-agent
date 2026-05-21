@@ -181,37 +181,8 @@ func (s *Server) runChatTurn(
 	}
 
 	onStep := func(ev engine.StepEvent) {
-		switch ev.Type {
-		case engine.StepToolCall:
-			tryEnqueue(sendChan, ServerMessage{
-				Type:        ServerMsgToolCall,
-				RequestUUID: msg.RequestUUID,
-				Action:      ev.Action,
-			})
-		case engine.StepToolResult:
-			ok := true
-			tryEnqueue(sendChan, ServerMessage{
-				Type:        ServerMsgToolResult,
-				RequestUUID: msg.RequestUUID,
-				Action:      ev.Action,
-				OK:          &ok,
-			})
-		case engine.StepBlocked:
-			ok := false
-			tryEnqueue(sendChan, ServerMessage{
-				Type:        ServerMsgToolResult,
-				RequestUUID: msg.RequestUUID,
-				Action:      ev.Action,
-				OK:          &ok,
-				Message:     ev.Message,
-			})
-		case engine.StepError:
-			tryEnqueue(sendChan, ServerMessage{
-				Type:        ServerMsgError,
-				RequestUUID: msg.RequestUUID,
-				Code:        ErrCodeInternal,
-				Message:     ev.Message,
-			})
+		if m, ok := stepEventToServerMessage(ev, msg.RequestUUID); ok {
+			tryEnqueue(sendChan, m)
 		}
 		if recorder != nil {
 			recorder.OnStep(ev)
@@ -306,6 +277,55 @@ func (s *Server) writerLoop(ctx context.Context, conn *websocket.Conn, sendChan 
 			}
 		}
 	}
+}
+
+// stepEventToServerMessage projects an engine.StepEvent into the
+// ServerMessage that should be emitted on the WS. Pure function — no
+// channel, no I/O — so the protocol mapping (specifically the per-tool-
+// error → tool_result(ok=false) rule) can be unit-tested without a
+// real Engine. Returns ok=false when the event type has no WS-visible
+// projection (defensive default; current event set is fully covered).
+//
+// SECURITY/protocol invariant: per-tool failures (StepError, StepBlocked)
+// map to ServerMsgToolResult+OK=false, NOT ServerMsgError. The top-level
+// ServerMsgError frame is reserved for whole-turn failures (engine.Chat
+// returned an error). See protocol.go ServerMsg* doc block.
+func stepEventToServerMessage(ev engine.StepEvent, requestUUID string) (ServerMessage, bool) {
+	switch ev.Type {
+	case engine.StepToolCall:
+		return ServerMessage{
+			Type:        ServerMsgToolCall,
+			RequestUUID: requestUUID,
+			Action:      ev.Action,
+		}, true
+	case engine.StepToolResult:
+		ok := true
+		return ServerMessage{
+			Type:        ServerMsgToolResult,
+			RequestUUID: requestUUID,
+			Action:      ev.Action,
+			OK:          &ok,
+		}, true
+	case engine.StepBlocked:
+		ok := false
+		return ServerMessage{
+			Type:        ServerMsgToolResult,
+			RequestUUID: requestUUID,
+			Action:      ev.Action,
+			OK:          &ok,
+			Message:     ev.Message,
+		}, true
+	case engine.StepError:
+		ok := false
+		return ServerMessage{
+			Type:        ServerMsgToolResult,
+			RequestUUID: requestUUID,
+			Action:      ev.Action,
+			OK:          &ok,
+			Message:     ev.Message,
+		}, true
+	}
+	return ServerMessage{}, false
 }
 
 // tryEnqueue pushes to sendChan with a short timeout. The buffered
