@@ -2,16 +2,19 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
+	"time"
 
 	"github.com/bitly/go-simplejson"
+	"github.com/compshare-agent/internal/store"
 	"github.com/gin-gonic/gin"
 )
 
 // createSessionData is the Data payload for a successful CreateSession response.
 type createSessionData struct {
-	SessionID string  `json:"SessionId"`
-	Title     *string `json:"Title"`
-	CreatedAt any     `json:"CreatedAt"`
+	SessionID string    `json:"SessionId"`
+	Title     *string   `json:"Title"`
+	CreatedAt time.Time `json:"CreatedAt"`
 }
 
 // getSessionData is the Data payload for a successful GetSession response.
@@ -19,8 +22,8 @@ type getSessionData struct {
 	SessionID    string       `json:"SessionId"`
 	Title        *string      `json:"Title"`
 	MessageCount int          `json:"MessageCount"`
-	CreatedAt    any          `json:"CreatedAt"`
-	UpdatedAt    any          `json:"UpdatedAt"`
+	CreatedAt    time.Time    `json:"CreatedAt"`
+	UpdatedAt    time.Time    `json:"UpdatedAt"`
 	Messages     []MessageDTO `json:"Messages"`
 	NextCursor   string       `json:"NextCursor,omitempty"`
 }
@@ -63,7 +66,12 @@ func (h *Handlers) handleGetSession(c *gin.Context, base BaseRequest, raw *simpl
 	}
 	messages, nextCursor, err := h.messages.ListBySession(c.Request.Context(), sessionID, limit, cursor)
 	if err != nil {
-		return nil, ErrInvalidParam.WithMessage("invalid Cursor")
+		// Distinguish invalid cursor (caller error) from store/DB errors.
+		var cursorErr *store.ErrInvalidCursor
+		if errors.As(err, &cursorErr) {
+			return nil, ErrInvalidParam.WithMessage("invalid Cursor")
+		}
+		return nil, err
 	}
 
 	dtos := make([]MessageDTO, 0, len(messages))

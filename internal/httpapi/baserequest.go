@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 
@@ -60,12 +61,16 @@ func ParseBaseRequest(c *gin.Context) (*simplejson.Json, BaseRequest, error) {
 
 // parseBody reads and parses the POST body into a simplejson.Json.
 // Form-encoded bodies are converted to a JSON map for uniform access.
+// Content-Type parameters (e.g. "; charset=utf-8") are stripped via
+// mime.ParseMediaType before comparison, so both
+// "application/x-www-form-urlencoded" and
+// "application/x-www-form-urlencoded; charset=utf-8" are handled correctly.
 func parseBody(r *http.Request) (*simplejson.Json, error) {
 	if r.Method != http.MethodPost {
 		return nil, ErrInvalidParam.WithMessage("only support post request")
 	}
-	contentType := r.Header.Get("Content-Type")
-	if contentType == "application/x-www-form-urlencoded" {
+	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mediaType == "application/x-www-form-urlencoded" {
 		if err := r.ParseForm(); err != nil {
 			return nil, ErrInvalidParam.WithMessage("invalid form body")
 		}

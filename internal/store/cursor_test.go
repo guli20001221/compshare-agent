@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/base64"
+	"errors"
 	"testing"
 	"time"
 
@@ -61,4 +62,36 @@ func TestDecodeCursorRejectsMissingFields(t *testing.T) {
 
 	_, _, err = DecodeCursor(cursor)
 	require.Error(t, err)
+}
+
+// TestDecodeCursorReturnsErrInvalidCursor verifies that all decode failures
+// return *ErrInvalidCursor so callers can distinguish them from store/DB errors
+// using errors.As.
+func TestDecodeCursorReturnsErrInvalidCursor(t *testing.T) {
+	cases := []struct {
+		name   string
+		cursor string
+	}{
+		{"invalid_base64", "not base64!!!"},
+		{"invalid_json", func() string {
+			return base64.StdEncoding.EncodeToString([]byte("not-json{{{"))
+		}()},
+		{"missing_fields", func() string {
+			c, _ := encodeCursorPayload(cursorPayload{ID: "msg-aaa"})
+			return c
+		}()},
+		{"bad_timestamp", func() string {
+			payload := `{"created_at":"not-a-date","id":"msg-xyz"}`
+			return base64.StdEncoding.EncodeToString([]byte(payload))
+		}()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := DecodeCursor(tc.cursor)
+			require.Error(t, err)
+			var cursorErr *ErrInvalidCursor
+			require.True(t, errors.As(err, &cursorErr),
+				"expected *ErrInvalidCursor, got %T: %v", err, err)
+		})
+	}
 }
