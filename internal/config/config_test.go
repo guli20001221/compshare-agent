@@ -594,3 +594,107 @@ func TestLoad_NoErrorWhenBothMaxInputLengthMatch(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2000, cfg.Agent.Meta.MaxInputLength)
 }
+
+// ---------------------------------------------------------------------------
+// STS config tests
+// ---------------------------------------------------------------------------
+
+func baseConfigWithSTS(stsYAML string) string {
+	return baseConfig("") + stsYAML
+}
+
+func TestLoadSTSConfigFromYAML(t *testing.T) {
+	setRequiredSecretEnv(t)
+	t.Setenv("COMPSHARE_SERVICE_PUBLIC_KEY", "svc-ak-from-env")
+	t.Setenv("COMPSHARE_SERVICE_PRIVATE_KEY", "svc-sk-from-env")
+	t.Setenv("COMPSHARE_DEFAULT_ROLE_URN", "ucs:iam::12345:role/ucs-service-role/ServiceRoleForCompshare")
+
+	path := writeConfig(t, baseConfigWithSTS(`
+  sts:
+    service_ak: "${COMPSHARE_SERVICE_PUBLIC_KEY}"
+    service_sk: "${COMPSHARE_SERVICE_PRIVATE_KEY}"
+    url: "https://api.ucloud.cn/"
+    role_urn_template: "ucs:iam::%d:role/ucs-service-role/ServiceRoleForCompshare"
+    default_role_urn: "${COMPSHARE_DEFAULT_ROLE_URN}"
+    default_session_name: "agent-cli"
+    duration_seconds: 7200
+    refresh_before: "10m"
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	s := cfg.Agent.STS
+	assert.Equal(t, "svc-ak-from-env", s.ServiceAK)
+	assert.Equal(t, "svc-sk-from-env", s.ServiceSK)
+	assert.Equal(t, "https://api.ucloud.cn/", s.URL)
+	assert.Equal(t, "ucs:iam::%d:role/ucs-service-role/ServiceRoleForCompshare", s.RoleUrnTemplate)
+	assert.Equal(t, "ucs:iam::12345:role/ucs-service-role/ServiceRoleForCompshare", s.DefaultRoleUrn)
+	assert.Equal(t, "agent-cli", s.DefaultSessionName)
+	assert.Equal(t, 7200, s.DurationSeconds)
+	assert.Equal(t, 10*time.Minute, s.RefreshBefore)
+}
+
+func TestLoadSTSConfigDefaults(t *testing.T) {
+	setRequiredSecretEnv(t)
+	// No sts section at all — defaults must be applied.
+	path := writeConfig(t, baseConfig(""))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	s := cfg.Agent.STS
+	assert.Equal(t, 3600, s.DurationSeconds)
+	assert.Equal(t, 5*time.Minute, s.RefreshBefore)
+	assert.Equal(t, "agent-default", s.DefaultSessionName)
+	assert.Equal(t, "https://api.ucloud.cn/", s.URL)
+}
+
+func TestLoadWithoutPublicPrivateKeySucceeds(t *testing.T) {
+	// Unset the public/private key env vars — Load must still succeed.
+	t.Setenv("COMPSHARE_PUBLIC_KEY", "")
+	t.Setenv("COMPSHARE_PRIVATE_KEY", "")
+	t.Setenv("LLM_API_KEY", "llm-key")
+
+	path := writeConfig(t, `
+agent:
+  executor: external
+  compshare_api_url: "https://api.compshare.cn/"
+  region: "cn-wlcb"
+  llm:
+    base_url: "https://api.modelverse.cn/v1"
+    api_key: "${LLM_API_KEY}"
+    model: "deepseek-v4-flash"
+`)
+
+	cfg, err := Load(path)
+	require.NoError(t, err, "Load must succeed without public_key/private_key")
+	assert.Equal(t, "", cfg.Agent.PublicKey)
+	assert.Equal(t, "", cfg.Agent.PrivateKey)
+}
+
+func TestValidateSTSConfigRejectsNegativeDuration(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfigWithSTS(`
+  sts:
+    duration_seconds: -1
+`))
+
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.sts.duration_seconds")
+	assert.Contains(t, err.Error(), "must be non-negative")
+}
+
+func TestValidateSTSConfigRejectsNegativeRefreshBefore(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfigWithSTS(`
+  sts:
+    refresh_before: "-1s"
+`))
+
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.sts.refresh_before")
+	assert.Contains(t, err.Error(), "must be non-negative")
+}

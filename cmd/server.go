@@ -90,6 +90,18 @@ func validateServerConfig(cfg *config.Config) error {
 	if cfg.Agent.HTTP.MaxInputLength != cfg.Agent.Meta.MaxInputLength {
 		return fmt.Errorf("agent.http.max_input_length must equal agent.meta.max_input_length")
 	}
+	if cfg.Agent.STS.ServiceAK == "" {
+		return fmt.Errorf("agent.sts.service_ak is required for server")
+	}
+	if cfg.Agent.STS.ServiceSK == "" {
+		return fmt.Errorf("agent.sts.service_sk is required for server")
+	}
+	if cfg.Agent.STS.URL == "" {
+		return fmt.Errorf("agent.sts.url is required for server")
+	}
+	if cfg.Agent.STS.RoleUrnTemplate == "" {
+		return fmt.Errorf("agent.sts.role_urn_template is required for server")
+	}
 	return nil
 }
 

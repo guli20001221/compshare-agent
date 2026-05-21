@@ -54,3 +54,17 @@ agent:
       - "4090 现在有库存吗"
       - "创建实例的操作步骤"
     max_input_length: 4000
+
+  # STS (Security Token Service) credential settings (used by: compshare-agent server).
+  # service_ak/service_sk are the long-term service credentials used to mint
+  # short-lived STS tokens for per-user API calls.
+  # default_role_urn is optional; when set it overrides the per-request role derivation.
+  sts:
+    service_ak: "${COMPSHARE_SERVICE_PUBLIC_KEY}"
+    service_sk: "${COMPSHARE_SERVICE_PRIVATE_KEY}"
+    url: "https://api.ucloud.cn/"
+    role_urn_template: "ucs:iam::%d:role/ucs-service-role/ServiceRoleForCompshare"
+    default_role_urn: "${COMPSHARE_DEFAULT_ROLE_URN}"
+    default_session_name: "agent-cli"
+    duration_seconds: 3600
+    refresh_before: "5m"

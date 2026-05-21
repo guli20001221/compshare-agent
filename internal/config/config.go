@@ -16,6 +16,20 @@ type Config struct {
 	Agent AgentConfig `yaml:"agent"`
 }
 
+// STSConfig holds settings for UCloud STS (Security Token Service) credential
+// generation. All fields are resolved as optional placeholders at Load time;
+// the server sub-command validates the required subset before starting.
+type STSConfig struct {
+	ServiceAK          string        `yaml:"service_ak"`
+	ServiceSK          string        `yaml:"service_sk"`
+	URL                string        `yaml:"url"`
+	RoleUrnTemplate    string        `yaml:"role_urn_template"`
+	DefaultRoleUrn     string        `yaml:"default_role_urn"`
+	DefaultSessionName string        `yaml:"default_session_name"`
+	DurationSeconds    int           `yaml:"duration_seconds"`
+	RefreshBefore      time.Duration `yaml:"refresh_before"`
+}
+
 type AgentConfig struct {
 	LLM       LLMConfig       `yaml:"llm"`
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
@@ -33,6 +47,7 @@ type AgentConfig struct {
 	HTTP  HTTPConfig  `yaml:"http"`
 	MySQL MySQLConfig `yaml:"mysql"`
 	Meta  MetaConfig  `yaml:"meta"`
+	STS   STSConfig   `yaml:"sts"`
 }
 
 // HTTPConfig holds settings for the HTTP server mode (compshare-agent server).
@@ -102,10 +117,10 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	if err := resolveRequiredSecret(&cfg.Agent.PublicKey, "agent.public_key", "COMPSHARE_PUBLIC_KEY"); err != nil {
+	if err := resolveOptionalPlaceholder(&cfg.Agent.PublicKey, "agent.public_key"); err != nil {
 		return nil, err
 	}
-	if err := resolveRequiredSecret(&cfg.Agent.PrivateKey, "agent.private_key", "COMPSHARE_PRIVATE_KEY"); err != nil {
+	if err := resolveOptionalPlaceholder(&cfg.Agent.PrivateKey, "agent.private_key"); err != nil {
 		return nil, err
 	}
 	if err := resolveRequiredSecret(&cfg.Agent.LLM.APIKey, "agent.llm.api_key", "LLM_API_KEY"); err != nil {
@@ -131,6 +146,20 @@ func Load(path string) (*Config, error) {
 	if err := validateMetaConfig(&cfg.Agent.Meta); err != nil {
 		return nil, err
 	}
+	// STS: resolve optional placeholders for service credentials.
+	if err := resolveOptionalCredential(&cfg.Agent.STS.ServiceAK, "agent.sts.service_ak"); err != nil {
+		return nil, err
+	}
+	if err := resolveOptionalCredential(&cfg.Agent.STS.ServiceSK, "agent.sts.service_sk"); err != nil {
+		return nil, err
+	}
+	if err := resolveOptionalCredential(&cfg.Agent.STS.DefaultRoleUrn, "agent.sts.default_role_urn"); err != nil {
+		return nil, err
+	}
+	if err := validateSTSConfig(&cfg.Agent.STS); err != nil {
+		return nil, err
+	}
+	applySTSDefaults(&cfg.Agent.STS)
 	applyHTTPDefaults(&cfg.Agent.HTTP)
 	applyMySQLDefaults(&cfg.Agent.MySQL)
 
@@ -354,5 +383,61 @@ func applyMySQLDefaults(m *MySQLConfig) {
 func applyMetaDefaults(meta *MetaConfig, httpMaxInputLength int) {
 	if meta.MaxInputLength == 0 {
 		meta.MaxInputLength = httpMaxInputLength
+	}
+}
+
+// resolveOptionalCredential resolves any ${ENV_VAR} placeholder in an
+// optional credential field (e.g. STS service_ak, service_sk).
+// If the field is empty it is left unchanged.
+// If the field looks like a ${...} placeholder but the env var is unset, the
+// field is cleared to "" so callers (server/cli sub-commands) can validate
+// presence at startup time.
+// Returns an error only when the value starts with "$" but uses invalid
+// syntax (e.g. "$COMPSHARE_SERVICE_PUBLIC_KEY" without braces).
+func resolveOptionalCredential(field *string, yamlPath string) error {
+	raw := strings.TrimSpace(*field)
+	if raw == "" {
+		return nil
+	}
+	if strings.HasPrefix(raw, "$") {
+		if !strings.HasPrefix(raw, "${") || !strings.HasSuffix(raw, "}") {
+			return fmt.Errorf("%s must use ${ENV_VAR} placeholder syntax or be a plain literal", yamlPath)
+		}
+		envKey := strings.TrimSuffix(strings.TrimPrefix(raw, "${"), "}")
+		if envKey == "" {
+			return fmt.Errorf("%s placeholder must name an environment variable", yamlPath)
+		}
+		// Env var unset → blank the field; sub-command validates before use.
+		*field = os.Getenv(envKey)
+		return nil
+	}
+	// Plain literal — pass through unchanged.
+	return nil
+}
+
+// validateSTSConfig rejects explicitly negative numeric or duration values.
+func validateSTSConfig(s *STSConfig) error {
+	if s.DurationSeconds < 0 {
+		return negativeValueError("agent.sts.duration_seconds")
+	}
+	if s.RefreshBefore < 0 {
+		return negativeValueError("agent.sts.refresh_before")
+	}
+	return nil
+}
+
+// applySTSDefaults fills zero-value STS fields with documented defaults.
+func applySTSDefaults(s *STSConfig) {
+	if s.DurationSeconds == 0 {
+		s.DurationSeconds = 3600
+	}
+	if s.RefreshBefore == 0 {
+		s.RefreshBefore = 5 * time.Minute
+	}
+	if s.DefaultSessionName == "" {
+		s.DefaultSessionName = "agent-default"
+	}
+	if s.URL == "" {
+		s.URL = "https://api.ucloud.cn/"
 	}
 }
