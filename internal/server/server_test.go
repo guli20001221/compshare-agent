@@ -450,3 +450,68 @@ func TestServer_GracefulShutdown_ClosesActiveConns(t *testing.T) {
 	}
 }
 
+// TestServer_GracefulShutdown_SlowClientsDoNotPinShutdown — PR11 review
+// follow-up.
+//
+// Encodes WHY: nhooyr's Conn.Close waits up to 5s for the peer to send
+// its own close frame. Serial close + N silent peers = O(N × 5s) total
+// shutdown time. We can't easily fake a no-ack peer at the WS layer
+// (the test client always honors close), so we assert the cap directly:
+// closeAllConns must return within 2 × closeTimeout even if Close blocks.
+//
+// Strategy: dial N real WS clients, immediately close their underlying
+// TCP from the client side WITHOUT sending a close frame, so the
+// server's Close sits in the 5s peer-ack wait. Measure that
+// closeAllConns(reason, 1s) actually returns in <2s.
+func TestServer_GracefulShutdown_SlowClientsDoNotPinShutdown(t *testing.T) {
+	const numConns = 5
+
+	deps, _ := newTestDeps("ignored")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv, err := New(Options{
+		Addr:           ln.Addr().String(),
+		Deps:           deps,
+		TenantSource:   TenantSourceGateway,
+		AllowedOrigins: []string{"*"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	defer srvCancel()
+	go func() { _ = srv.RunWithListener(srvCtx, ln) }()
+
+	baseURL := "ws://" + ln.Addr().String()
+	conns := make([]*websocket.Conn, 0, numConns)
+	for i := 0; i < numConns; i++ {
+		c := dialWSWithTenant(t, baseURL, int64(11+i), int64(111+i))
+		waitForType(t, c, ServerMsgReady, 5*time.Second)
+		conns = append(conns, c)
+	}
+
+	// Stop reading from any of them — they'll never ack the close frame.
+	// On the client we don't close politely either; we just abandon them
+	// so the server's Close call sits in the 5s peer-ack wait.
+
+	// Sanity: all N are registered.
+	if got := activeConnCount(srv); got != numConns {
+		t.Fatalf("expected %d registered conns, got %d", numConns, got)
+	}
+
+	// Direct call to closeAllConns with a 1s cap. Total elapsed should be
+	// well under 2s. Pre-fix (serial Close), this would take ~25s.
+	start := time.Now()
+	srv.closeAllConns("test", 1*time.Second)
+	elapsed := time.Since(start)
+	if elapsed > 2*time.Second {
+		t.Fatalf("closeAllConns took %v with %d slow clients — cap not honored", elapsed, numConns)
+	}
+
+	// Drain the test's client refs so the deferred srvCancel can complete.
+	for _, c := range conns {
+		_ = c.CloseNow()
+	}
+}

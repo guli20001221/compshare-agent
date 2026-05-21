@@ -136,7 +136,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		return s.gracefulShutdown(30 * time.Second)
+		return s.gracefulShutdown(30*time.Second, 5*time.Second)
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
@@ -166,7 +166,7 @@ func (s *Server) RunWithListener(ctx context.Context, ln net.Listener) error {
 	}()
 	select {
 	case <-ctx.Done():
-		return s.gracefulShutdown(5 * time.Second)
+		return s.gracefulShutdown(5*time.Second, 2*time.Second)
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
@@ -177,13 +177,14 @@ func (s *Server) RunWithListener(ctx context.Context, ln net.Listener) error {
 
 // gracefulShutdown runs the 4-step drain (flip → wait → close conns →
 // http Shutdown). Shared by Run / RunWithListener so the order can't
-// drift between the two entry points.
-func (s *Server) gracefulShutdown(httpTimeout time.Duration) error {
+// drift. closeTimeout caps the parallel-close phase so a few slow
+// clients can't pin shutdown for 5s each.
+func (s *Server) gracefulShutdown(httpTimeout, closeTimeout time.Duration) error {
 	s.shuttingDown.Store(true)
 	if s.lbDrainDelay > 0 {
 		time.Sleep(s.lbDrainDelay)
 	}
-	s.closeAllConns("server shutting down")
+	s.closeAllConns("server shutting down", closeTimeout)
 	shutCtx, cancel := context.WithTimeout(context.Background(), httpTimeout)
 	defer cancel()
 	return s.httpServer.Shutdown(shutCtx)
@@ -198,23 +199,43 @@ func (s *Server) trackConn(id string, conn *websocket.Conn) func() {
 	return func() { s.activeConns.Delete(id) }
 }
 
-// closeAllConns sends a StatusGoingAway (1001) close frame to every
-// currently-tracked WS connection. 1001 (vs 1011 InternalError) is the
-// right code here: it tells the client "we're shutting down cleanly,
-// reconnect when you can", not "something broke, back off".
+// closeAllConns closes every tracked WS conn with StatusGoingAway (1001 =
+// reconnect, not 1011 = back off) IN PARALLEL with a total cap. Serial
+// close would be O(N × 5s) because nhooyr's Conn.Close waits up to 5s for
+// the peer ack — one slow client could pin shutdown indefinitely.
 //
-// Race window: a conn that already passed the handleWS shuttingDown
-// check (returns 503 before Accept) but hasn't yet called trackConn.Store
-// will Store after this Range completes, so it does NOT receive the 1001
-// frame here. That conn still drains via httpServer.Shutdown's 30s wait
-// + the trackConn defer cleanup — acceptable cost for a narrow window.
-// sync.Map.Range documents safe concurrent use; a brand-new conn that
-// races into Store mid-Range may or may not be seen, same drain story.
-func (s *Server) closeAllConns(reason string) {
-	s.activeConns.Range(func(key, value any) bool {
-		if conn, ok := value.(*websocket.Conn); ok {
-			_ = conn.Close(websocket.StatusGoingAway, reason)
+// After totalTimeout, any still-handshaking conn gets CloseNow (no wait,
+// TCP-level slam) so shutdown can proceed.
+//
+// Race: a conn that passed handleWS's shuttingDown check before the flip
+// but hasn't reached trackConn.Store yet won't be seen here; it drains
+// via httpServer.Shutdown afterward.
+func (s *Server) closeAllConns(reason string, totalTimeout time.Duration) {
+	var wg sync.WaitGroup
+	s.activeConns.Range(func(_, value any) bool {
+		conn, ok := value.(*websocket.Conn)
+		if !ok {
+			return true
 		}
+		wg.Add(1)
+		go func(c *websocket.Conn) {
+			defer wg.Done()
+			_ = c.Close(websocket.StatusGoingAway, reason)
+		}(conn)
 		return true
 	})
+
+	// Bound how long we wait for the parallel Close handshakes here. If
+	// some conns are still mid-handshake at the cap we just return; the
+	// goroutines complete on their own at nhooyr's 5s peer-ack timeout
+	// (in parallel, so this doesn't grow with N) and httpServer.Shutdown
+	// will wait for the now-closing handlers. Note: CloseNow does NOT
+	// help here — it blocks on the same internal mutex that the in-flight
+	// Close is holding, so it would just serialize what we just parallelized.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(totalTimeout):
+	}
 }
