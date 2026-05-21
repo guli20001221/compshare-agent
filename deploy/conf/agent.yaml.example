@@ -4,8 +4,12 @@ agent:
   public_key: "${COMPSHARE_PUBLIC_KEY}"
   private_key: "${COMPSHARE_PRIVATE_KEY}"
   region: "cn-wlcb"
-  # project_id 可选。留空时启动阶段会调用 GetProjectList 自动发现；
-  # 如需固定项目，可改为 "${COMPSHARE_PROJECT_ID}"。
+  # project_id 可选。留空时所有 read-only API 调用不带 ProjectId（CompShare
+  # 服务端会回退到账号级默认行为）。如需固定项目（mutating tools 如开关机
+  # 调度器需要），改为 "${COMPSHARE_PROJECT_ID}"。
+  # 注：PR9 之前留空会触发 GetProjectList 自动发现并通过 SetProjectId 写入
+  # 共享执行器；那是一条跨 session 串数据的路径，已经移除。运行时不再有
+  # mutating setter，ProjectId 只在这里设置一次。
   # 仅支持 ${ENV_VAR} 形式，不支持 ${ENV_VAR:-default} 默认值语法。
   project_id: ""
 

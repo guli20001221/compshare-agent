@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -48,7 +49,32 @@ type WriterOptions struct {
 	Now func() time.Time
 }
 
-type Writer struct {
+// Writer is the trace sink abstraction. Implementations:
+//   - FileWriter: append JSONL files under <dir>/<date>.jsonl (CLI default,
+//     unchanged behavior).
+//   - MySQLWriter: insert rows into agent_traces (server default, A4).
+//
+// The method name "Append" (not "Write") is deliberate: it matches the
+// pre-A4 *FileWriter.Append signature so existing cmd/trace.go call sites
+// (e.g. cliTraceRecorder.writer.Append at cmd/trace.go) work unchanged
+// after the type-of-variable swap from *FileWriter to Writer.
+//
+// Dir() returns the on-disk root for file-backed implementations. Backends
+// without an on-disk dir (MySQLWriter) return "" so the existing trace-dir
+// cleanup logic can skip them.
+//
+// Close is invoked at process shutdown so MySQLWriter can drain its buffered
+// queue. FileWriter has no long-lived resources and returns nil immediately.
+type Writer interface {
+	Append(record TraceRecord) error
+	Dir() string
+	Close(ctx context.Context) error
+}
+
+// FileWriter is the JSONL-on-disk implementation of Writer. Used by the CLI
+// path and any environment that wants a local audit trail. Server path
+// typically chooses MySQLWriter; see cmd/trace.go for the env-driven choice.
+type FileWriter struct {
 	dir string
 	now func() time.Time
 }
@@ -305,7 +331,11 @@ type OutcomeTrace struct {
 	KBConflictCount            int   `json:"kb_conflict_count,omitempty"`
 }
 
-func NewWriter(opts WriterOptions) (*Writer, error) {
+// NewWriter constructs a FileWriter. Return type is the concrete *FileWriter
+// (still satisfies the Writer interface) so callers that need
+// FileWriter-specific affordances (e.g. test code reading files back from
+// disk) can keep doing so without a type assertion.
+func NewWriter(opts WriterOptions) (*FileWriter, error) {
 	dir := opts.Dir
 	if dir == "" {
 		dir = DefaultTraceDir
@@ -317,14 +347,19 @@ func NewWriter(opts WriterOptions) (*Writer, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create trace dir: %w", err)
 	}
-	return &Writer{dir: dir, now: now}, nil
+	return &FileWriter{dir: dir, now: now}, nil
 }
 
-func (w *Writer) Dir() string {
+func (w *FileWriter) Dir() string {
 	return w.dir
 }
 
-func (w *Writer) Append(record TraceRecord) error {
+// Close is a no-op for FileWriter — each Append fsync-flushes synchronously,
+// no buffered state to drain. Provided so FileWriter satisfies the Writer
+// interface alongside MySQLWriter.
+func (w *FileWriter) Close(_ context.Context) error { return nil }
+
+func (w *FileWriter) Append(record TraceRecord) error {
 	now := w.now()
 	record = record.withDefaults(now)
 	RedactQueryDerivedFields(&record.Retrieval)
@@ -349,7 +384,7 @@ func (w *Writer) Append(record TraceRecord) error {
 	return nil
 }
 
-func (w *Writer) appendRankingErrorCandidate(now time.Time, data []byte) error {
+func (w *FileWriter) appendRankingErrorCandidate(now time.Time, data []byte) error {
 	dir := filepath.Join(w.dir, now.Format("2006-01-02"))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create ranking-error trace dir: %w", err)

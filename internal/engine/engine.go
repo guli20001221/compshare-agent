@@ -157,29 +157,133 @@ type Engine struct {
 	lastUserMsg string
 }
 
-func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
+// SharedDeps groups Engine fields that are safe to share across sessions.
+// All fields here are either stateless wrappers (LLM/Planner/Renderer
+// clients), read-only data (knowledge corpus), or internally-locked state
+// (RateLimiter has its own mutex). See plan §3.1 / §5 for the full
+// classification rationale.
+//
+// IntentPlanner / KnowledgeRetriever / GroundedRenderer are exported so the
+// server bootstrap (A3) can assign them directly on a SharedDeps assembled
+// by NewSharedDeps. CLI keeps populating them via Engine.SetIntentPlanner /
+// SetKnowledgeRetriever / SetGroundedRenderer on the per-process Engine
+// returned by engine.New; that path stays valid because NewSession copies
+// these fields into the Engine and the setters then overwrite them with
+// the same instance. ApplySharedDepsFromEnv (planned for A3, see plan §5.6)
+// will unify CLI/server env-driven setup; for A2 it is deferred.
+//
+// Do NOT add a builder pattern (`WithIntentPlanner(...)`). SharedDeps is
+// frozen as soon as the first NewSession is called; later runtime mutation
+// would race against in-flight sessions reading these fields.
+type SharedDeps struct {
+	LLMClient                   LLMClient
+	IntentPlanner               IntentPlanner
+	IntentPlannerModel          string
+	IntentPlannerEnabledIntents map[intent.Intent]struct{}
+	IntentCutoverIntents        map[intent.Intent]struct{}
+	KnowledgeRetriever          KnowledgeRetriever
+	GroundedRenderer            grounded.Renderer
+	GroundedRendererModel       string
+	RateLimiter                 governance.RateLimiter
+	SupportsObjectToolChoice    bool
+	// ExternalExecutor is the underlying tool executor shared across sessions
+	// (holds AK/SK + HTTP client). Each NewSession wraps it in a fresh
+	// SafeToolExecutor so per-session confirmFn stays isolated.
+	ExternalExecutor tools.ToolExecutor
+}
+
+// SessionOptions configures a per-session Engine. Server passes a freshly
+// derived Subject + per-connection ConfirmFn; CLI passes a process-wide
+// Subject and a terminal-stdin-based ConfirmFn.
+type SessionOptions struct {
+	Subject              string
+	ConfirmFn            ConfirmFunc
+	MutatingToolsEnabled bool
+}
+
+// NewSharedDeps assembles the always-shared engine dependencies from config.
+// Call once at process startup; share the result across every NewSession.
+// Planner / KnowledgeRetriever / GroundedRenderer are NOT populated here —
+// they are env-driven and the caller assigns them on the returned struct
+// (server) or via Engine setters post-NewSession (CLI).
+func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
+	if cfg == nil {
+		return nil, errors.New("engine.NewSharedDeps: cfg is nil")
+	}
 	cap := llm.LookupCapability(cfg.Agent.LLM.BaseURL, cfg.Agent.LLM.Model)
+	return &SharedDeps{
+		LLMClient: llm.NewClient(cfg.Agent.LLM),
+		// MemoryLimiter is process-local and suitable for local demo or
+		// single-instance deployment only. Multi-replica production needs a
+		// centralized limiter such as Redis or an API gateway.
+		RateLimiter:              governance.NewMemoryLimiter(cfg.Agent.RateLimit.Limits()),
+		SupportsObjectToolChoice: cap.SupportsObjectToolChoice,
+		ExternalExecutor:         tools.NewExternalExecutor(cfg.Agent),
+	}, nil
+}
+
+// NewSession constructs a per-connection Engine from shared dependencies and
+// per-session options. Each Engine owns its own conversation history,
+// entity registry, monitor-window cursors, and turn counters; nothing
+// per-conversation is shared with sibling sessions.
+//
+// SECURITY: deps.RateLimiter is shared so cross-session quota fairness is
+// preserved (subject keys keep tenants in separate buckets — see A1).
+// Engine.messages / Engine.registry / Engine.safeExecutor are per-session
+// so user A's chat history and entity registry cannot leak to user B.
+func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
+	if deps == nil {
+		panic("engine.NewSession: deps is nil")
+	}
+	eng := &Engine{
+		// ── shared (pointer-equal across sessions) ──
+		llmClient:                   deps.LLMClient,
+		intentPlanner:               deps.IntentPlanner,
+		intentPlannerModel:          deps.IntentPlannerModel,
+		intentPlannerEnabledIntents: deps.IntentPlannerEnabledIntents,
+		intentCutoverIntents:        deps.IntentCutoverIntents,
+		knowledgeRetriever:          deps.KnowledgeRetriever,
+		groundedRenderer:            deps.GroundedRenderer,
+		groundedRendererModel:       deps.GroundedRendererModel,
+		rateLimiter:                 deps.RateLimiter,
+		supportsObjectToolChoice:    deps.SupportsObjectToolChoice,
+
+		// ── per-session (fresh instance every call) ──
+		confirmFn:             opts.ConfirmFn,
+		registry:              entity.NewRegistry(),
+		rateLimitSubject:      opts.Subject,
+		mutatingToolsEnabled:  opts.MutatingToolsEnabled,
+		lastInstanceQueryTurn: -1,
+		lastMonitorTurn:       -1,
+		// messages, userTurn, lastUserMsg, currentMonitor*, pendingResourceSelection,
+		// readExpensiveCallsThisTurn, requireKnowledgeCitationThisTurn,
+		// *Observer fields all start at zero values which is correct.
+	}
+	eng.safeExecutor = newSafeToolExecutor(deps.ExternalExecutor, opts.ConfirmFn)
+	eng.safeExecutor.SetMutatingToolsEnabled(opts.MutatingToolsEnabled)
+	return eng
+}
+
+// New is the legacy CLI constructor. It assembles SharedDeps from cfg, derives
+// the rate-limit subject from the public key (process-wide, since CLI has
+// only one identity), and returns a single Engine. Server path MUST NOT use
+// this — it must call NewSharedDeps once and NewSession per connection so
+// each tenant gets its own session.
+func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
+	deps, err := NewSharedDeps(cfg)
+	if err != nil {
+		// Preserve original New() error-free contract for CLI callers.
+		panic(fmt.Sprintf("engine.New: %v", err))
+	}
 	subject, ok := governance.SubjectKeyFromPublicKey(cfg.Agent.PublicKey)
 	if !ok {
 		fmt.Fprintln(os.Stderr, "warning: rate limiter using anonymous subject (public key missing)")
 	}
-	eng := &Engine{
-		llmClient: llm.NewClient(cfg.Agent.LLM),
-		confirmFn: confirmFn,
-		registry:  entity.NewRegistry(),
-		// MemoryLimiter is process-local and suitable for local demo or
-		// single-instance deployment only. Multi-replica production needs a
-		// centralized limiter such as Redis or an API gateway.
-		rateLimiter:              governance.NewMemoryLimiter(cfg.Agent.RateLimit.Limits()),
-		rateLimitSubject:         subject,
-		lastInstanceQueryTurn:    -1,
-		lastMonitorTurn:          -1,
-		supportsObjectToolChoice: cap.SupportsObjectToolChoice,
-		mutatingToolsEnabled:     false,
-	}
-	eng.safeExecutor = newSafeToolExecutor(tools.NewExternalExecutor(cfg.Agent), confirmFn)
-	eng.safeExecutor.SetMutatingToolsEnabled(eng.mutatingToolsEnabled)
-	return eng
+	return NewSession(deps, SessionOptions{
+		Subject:              subject,
+		ConfirmFn:            confirmFn,
+		MutatingToolsEnabled: false,
+	})
 }
 
 // NewWithDeps creates an Engine with injected dependencies (for testing).
@@ -220,27 +324,36 @@ func (e *Engine) SetMutatingToolsEnabled(v bool) {
 func (e *Engine) SetIntentPlanner(planner IntentPlanner, opts IntentPlannerOptions) {
 	e.intentPlanner = planner
 	e.intentPlannerModel = opts.Model
-	e.intentPlannerEnabledIntents = map[intent.Intent]struct{}{}
-	e.intentCutoverIntents = map[intent.Intent]struct{}{}
-	for _, enabled := range opts.EnabledIntents {
-		if enabled == intent.IntentResourceInfo ||
-			enabled == intent.IntentMonitorQuery ||
-			enabled == intent.IntentDiagnosis ||
-			enabled == intent.IntentVagueFailure ||
-			intent.IsCapabilityIntent(enabled) {
-			e.intentPlannerEnabledIntents[enabled] = struct{}{}
+	e.intentPlannerEnabledIntents, e.intentCutoverIntents = BuildIntentPlannerMaps(opts.EnabledIntents)
+}
+
+// BuildIntentPlannerMaps converts the configured EnabledIntents slice into the
+// two derived sets the engine consults during planning. Extracted so both
+// Engine.SetIntentPlanner (CLI path) and a future ApplySharedDepsFromEnv
+// helper (A3, server path) build the same maps.
+func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, cutoverMap map[intent.Intent]struct{}) {
+	enabledMap = map[intent.Intent]struct{}{}
+	cutoverMap = map[intent.Intent]struct{}{}
+	for _, e := range enabled {
+		if e == intent.IntentResourceInfo ||
+			e == intent.IntentMonitorQuery ||
+			e == intent.IntentDiagnosis ||
+			e == intent.IntentVagueFailure ||
+			intent.IsCapabilityIntent(e) {
+			enabledMap[e] = struct{}{}
 		}
-		switch enabled {
+		switch e {
 		case intent.IntentResourceInfo, intent.IntentMonitorQuery:
-			e.intentCutoverIntents[enabled] = struct{}{}
+			cutoverMap[e] = struct{}{}
 		default:
 			// Capability Registry v1: any registered capability intent is
 			// admissible to the cutover set without per-case wiring here.
-			if intent.IsCapabilityIntent(enabled) {
-				e.intentCutoverIntents[enabled] = struct{}{}
+			if intent.IsCapabilityIntent(e) {
+				cutoverMap[e] = struct{}{}
 			}
 		}
 	}
+	return enabledMap, cutoverMap
 }
 
 func (e *Engine) SetPlannerTraceObserver(observer func(observability.PlannerTrace)) {
@@ -302,6 +415,42 @@ func (e *Engine) SetHardBlockObserver(observer func(observability.EngineHardBloc
 	e.hardBlockObserver = observer
 }
 
+// ── Snapshot accessors (tests only) ──
+//
+// The following methods exist to let cross-session isolation tests assert
+// pointer identity on shared fields and pointer non-identity on per-session
+// state. Production code MUST NOT depend on them.
+
+// MessagesSnapshot returns a copy of the current conversation history. Used
+// by tests to assert per-session message isolation without exposing the
+// internal slice. Production code must read messages through Chat/Init.
+func (e *Engine) MessagesSnapshot() []openai.ChatCompletionMessage {
+	out := make([]openai.ChatCompletionMessage, len(e.messages))
+	copy(out, e.messages)
+	return out
+}
+
+// LLMClientPointer returns the underlying LLMClient interface value so
+// session-isolation tests can call require.Same to assert sessions share
+// one instance. Test-only.
+func (e *Engine) LLMClientPointer() LLMClient { return e.llmClient }
+
+// KnowledgeRetrieverPointer returns the underlying KnowledgeRetriever for
+// session-isolation tests. Test-only.
+func (e *Engine) KnowledgeRetrieverPointer() KnowledgeRetriever { return e.knowledgeRetriever }
+
+// IntentPlannerPointer returns the underlying IntentPlanner for
+// session-isolation tests. Test-only.
+func (e *Engine) IntentPlannerPointer() IntentPlanner { return e.intentPlanner }
+
+// RateLimiterPointer returns the underlying RateLimiter for
+// session-isolation tests. Test-only.
+func (e *Engine) RateLimiterPointer() governance.RateLimiter { return e.rateLimiter }
+
+// RegistryPointer returns the per-session EntityRegistry pointer so tests
+// can assert that two sessions hold DIFFERENT registries. Test-only.
+func (e *Engine) RegistryPointer() *entity.EntityRegistry { return e.registry }
+
 func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc) *tools.SafeToolExecutor {
 	var safeConfirm tools.ConfirmFunc
 	if confirmFn != nil {
@@ -314,10 +463,11 @@ func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc) *to
 // calls DescribeCompShareInstance and builds the system prompt.
 // Returns opening suggestions.
 func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
-	// Ensure ProjectId is available before any write API may need it
-	// (e.g. UpdateCompShareStopScheduler). Silent failure: if discovery
-	// fails, scheduler APIs will surface a clear platform-level error.
-	e.ensureProjectId(ctx)
+	// PR9: removed automatic ProjectId discovery (was: e.ensureProjectId(ctx)).
+	// Discovery mutated a SharedDeps singleton and leaked across sessions.
+	// ProjectId now flows from cfg → ExternalExecutor at construction only.
+	// When mutating tools that need ProjectId (e.g. UpdateCompShareStopScheduler)
+	// open up, plumb a per-session value through args, not via a setter.
 
 	// Auto-inject user instance context
 	userCtx := "暂无用户信息"
@@ -2317,36 +2467,13 @@ func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
 	return msgs
 }
 
-// ensureProjectId makes sure the underlying ExternalExecutor has a ProjectId.
-// If config already supplied one, it's a no-op. Otherwise it calls
-// GetProjectList and picks the IsDefault project (or the first one available).
-// Silent failure: on any error (non-ExternalExecutor, network, malformed
-// response), the function returns and leaves ProjectId empty — scheduler
-// APIs will then fail with a clear platform-level error that the caller
-// can see in the agent reply.
-func (e *Engine) ensureProjectId(ctx context.Context) {
-	ext := e.externalExecutor()
-	if ext == nil {
-		return // test executor or other non-external implementation
-	}
-	if ext.ProjectId() != "" {
-		return
-	}
-	resp, err := e.executeRawTool(ctx, "GetProjectList", nil, tools.OriginDirectLLM)
-	if err != nil {
-		return
-	}
-	if id := pickProjectId(resp); id != "" {
-		ext.SetProjectId(id)
-	}
-}
-
-func (e *Engine) externalExecutor() *tools.ExternalExecutor {
-	if e.safeExecutor == nil {
-		return nil
-	}
-	return e.safeExecutor.ExternalExecutor()
-}
+// PR9 removed ensureProjectId / externalExecutor / pickProjectId. The
+// auto-discovery path called ExternalExecutor.SetProjectId, which mutated
+// a SharedDeps singleton across sessions — one user's discovered project
+// id ended up auto-injected into another user's tool calls. ProjectId now
+// only flows from cfg → NewExternalExecutor at construction; runtime
+// mutation is gone. When mutating tools that need ProjectId open up,
+// route the value through args["ProjectId"] (per-session field on Engine).
 
 const accountBillingUnsupportedReply = "这类账号级财务信息当前不支持由助手查询。请到控制台的财务中心查看：账号总览看余额，账单管理看月度账单，消费记录看扣费流水，发票管理看开票和寄送状态，退款或欠费信息以订单/财务中心页面为准。"
 
@@ -3040,33 +3167,5 @@ func inferKnowledgeProductArea(userMsg string) string {
 	}
 }
 
-// pickProjectId extracts a ProjectId from a GetProjectList response.
-// Prefers the IsDefault=true entry; falls back to the first non-empty
-// ProjectId in ProjectSet.
-func pickProjectId(resp map[string]any) string {
-	if resp == nil {
-		return ""
-	}
-	set, ok := resp["ProjectSet"].([]any)
-	if !ok {
-		return ""
-	}
-	var fallback string
-	for _, item := range set {
-		p, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		id, _ := p["ProjectId"].(string)
-		if id == "" {
-			continue
-		}
-		if def, _ := p["IsDefault"].(bool); def {
-			return id
-		}
-		if fallback == "" {
-			fallback = id
-		}
-	}
-	return fallback
-}
+// pickProjectId removed in PR9 with ensureProjectId. See comment block
+// at the former ensureProjectId site (search for "PR9 removed").
