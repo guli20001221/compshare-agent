@@ -3,10 +3,8 @@ package httpapi
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"net/http"
 
-	"github.com/bitly/go-simplejson"
 	"github.com/gin-gonic/gin"
 )
 
@@ -66,10 +64,4 @@ func (h *Handlers) writeError(c *gin.Context, requestID string, err error) {
 		Message:   apiErr.Message,
 		Data:      nil,
 	})
-}
-
-// handleChat is a stub for Task 7. Until wired it returns ErrInvalidParam.
-// The real implementation will be provided in handlers_chat.go (Task 7).
-func (h *Handlers) handleChat(c *gin.Context, _ BaseRequest, _ *simplejson.Json) {
-	h.writeError(c, "", fmt.Errorf("%w", ErrInvalidParam.WithMessage("Chat handler not yet wired")))
 }
