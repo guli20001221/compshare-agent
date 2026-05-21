@@ -380,17 +380,12 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 				},
 			},
 		},
-		{
-			Intent: IntentDiagnosis,
-			Source: "Stage 2B diagnosis-vs-knowledge boundary",
-			Examples: []plannerPromptExample{
-				{
-					Question: "uhost-abc123 这台启动失败了帮我查",
-					PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-abc123","source":"user_text","source_span":"uhost-abc123"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "Stage 2B: concrete instance target stays diagnosis",
-				},
-			},
-		},
+		// IntentDiagnosis migrated to internal/intent/planner_examples/diagnosis.md
+		// in C5 Phase A (PR #86, 2026-05-21). The disk-backed loader spliced in
+		// here MUST produce byte-equal output to the prior inline literal — the
+		// byte-equal test in planner_examples_test.go pins that contract.
+		// Future Phase B/C/... migrate the remaining intents one per PR.
+		diskPlannerExampleGroups[IntentDiagnosis],
 	}
 }
 
