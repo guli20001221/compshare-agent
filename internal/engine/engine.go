@@ -283,6 +283,16 @@ func (e *Engine) RateLimitSubjectKey() string {
 	return e.rateLimitSubject
 }
 
+// SetRateLimitSubject overrides the subject derived at Engine.New so the
+// server path can swap to the per-WS-connection tenant identity right after
+// engine.NewSession (A2). Returns the previous subject for tests that need
+// to assert the swap actually happened.
+func (e *Engine) SetRateLimitSubject(subject string) string {
+	prev := e.rateLimitSubject
+	e.rateLimitSubject = subject
+	return prev
+}
+
 func (e *Engine) RateLimitDecision(req governance.Request) governance.Decision {
 	decision, _ := e.allowRateLimited(req.Class, req.Action)
 	return decision
