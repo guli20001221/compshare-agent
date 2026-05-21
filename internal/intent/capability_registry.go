@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/envelope"
 
 	"gopkg.in/yaml.v3"
 )
@@ -329,6 +330,9 @@ func handleGPUSpecsQuery(ctx context.Context, h *DemoHandler, req HandlerRequest
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
+	env := buildGPUSpecsEnvelope(raw, req.UserText)
+	result.Envelope = &env
+	result.RendererInputEnvelopeHashes = hashEnvelopeForRenderer(env)
 	return result
 }
 
@@ -934,6 +938,116 @@ func buildGPUSpecLines(items []any, filterTo map[string]struct{}, detailed bool)
 		lines = append(lines, strings.Join(parts, ", "))
 	}
 	return lines
+}
+
+func buildGPUSpecsEnvelope(raw map[string]any, userText string) envelope.Envelope {
+	items := mapSliceAt(raw, "AvailableInstanceTypes")
+	matched := matchUserTextToInstanceTypeNames(userText, items, true)
+	filterTo := map[string]struct{}{}
+	for _, m := range matched {
+		filterTo[m] = struct{}{}
+	}
+	detailed := fullGPUSpecsRequest(userText)
+	entries := selectGPUSpecEntries(items, filterTo, detailed)
+
+	env := envelope.Envelope{
+		Kind:          envelope.KindGPUSpecsQuery,
+		SourceActions: []string{"DescribeAvailableCompShareInstanceTypes"},
+		Subjects:      []envelope.Subject{},
+		Facts:         []envelope.Fact{},
+		Computed:      []envelope.Fact{},
+		Constraints: envelope.Constraints{
+			DoNotInventInstances:   true,
+			DoNotAnswerAccountBill: true,
+		},
+	}
+	answerMode := "overview"
+	if detailed {
+		answerMode = "full_specs"
+	}
+	env.Computed = append(env.Computed,
+		envelope.Fact{Key: "answer_mode", Label: "Answer mode", Value: answerMode, Source: envelope.FactSourceComputed},
+		envelope.Fact{Key: "requested_gpu_specs", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
+	)
+
+	seenSubjects := map[string]struct{}{}
+	for _, entry := range entries {
+		name := safeString(entry, "Name")
+		if name == "" {
+			continue
+		}
+		subjectID := "gpu_model:" + name
+		if _, ok := seenSubjects[subjectID]; !ok {
+			seenSubjects[subjectID] = struct{}{}
+			env.Subjects = append(env.Subjects, envelope.Subject{
+				ID:   subjectID,
+				Name: name,
+				Type: envelope.SubjectGPUModel,
+			})
+		}
+		addFact := func(key, label string, value any, unit string) {
+			valueString := safeValue(value)
+			if strings.TrimSpace(valueString) == "" {
+				return
+			}
+			env.Facts = append(env.Facts, envelope.Fact{
+				SubjectID: subjectID,
+				Key:       key,
+				Label:     label,
+				Value:     valueString,
+				Unit:      unit,
+				Source:    envelope.FactSourceAPI,
+			})
+		}
+		addFact("model_name", "机型", name, "")
+		if detailed {
+			addFact("zone", "可用区", safeString(entry, "Zone"), "")
+		}
+		addFact("performance", "性能", nestedValue(entry, "Performance"), "")
+		addFact("graphics_memory", "显存", nestedValue(entry, "GraphicsMemory"), "GB")
+		addFact("status", "状态", safeString(entry, "Status"), "")
+		if detailed {
+			addFact("machine_size_configs", "完整配置", expandMachineSizes(entry), "")
+		} else {
+			addFact("max_gpu_count", "最大卡数", maxGPUFromMachineSizes(entry), "卡")
+		}
+	}
+	return env
+}
+
+func selectGPUSpecEntries(items []any, filterTo map[string]struct{}, detailed bool) []map[string]any {
+	entries := make([]map[string]any, 0, len(items))
+	seenNames := map[string]struct{}{}
+	seenDetailed := map[string]struct{}{}
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := safeString(entry, "Name")
+		if name == "" {
+			continue
+		}
+		if len(filterTo) > 0 {
+			if _, ok := filterTo[name]; !ok {
+				continue
+			}
+		}
+		if detailed {
+			key := name + "\x00" + safeString(entry, "Zone") + "\x00" + expandMachineSizes(entry)
+			if _, ok := seenDetailed[key]; ok {
+				continue
+			}
+			seenDetailed[key] = struct{}{}
+		} else {
+			if _, ok := seenNames[name]; ok {
+				continue
+			}
+			seenNames[name] = struct{}{}
+		}
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 // nestedValue extracts the "Value" field from a nested map response shape like

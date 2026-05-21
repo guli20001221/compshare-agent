@@ -734,6 +734,15 @@ func TestGPUSpecsCapabilityUsesDescribeAvailableAndExpandsFullRequest(t *testing
 	if len(exec.calls[0].args) != 0 {
 		t.Fatalf("gpu specs capability should query full upstream data without narrowing args, got %#v", exec.calls[0].args)
 	}
+	if result.Envelope == nil {
+		t.Fatal("gpu specs capability should attach a renderer envelope")
+	}
+	if result.Envelope.Kind != "gpu_specs_query" {
+		t.Fatalf("envelope kind = %q, want gpu_specs_query", result.Envelope.Kind)
+	}
+	if len(result.RendererInputEnvelopeHashes) != 1 {
+		t.Fatalf("renderer envelope hashes = %#v, want one hash", result.RendererInputEnvelopeHashes)
+	}
 	for _, want := range []string{"机型=4090", "16C/64G", "16C/94G"} {
 		if !strings.Contains(result.Reply, want) {
 			t.Fatalf("full capability reply should include %q, got: %s", want, result.Reply)
