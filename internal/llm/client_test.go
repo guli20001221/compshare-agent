@@ -285,3 +285,67 @@ func TestIsTransientChatErrorDoesNotRetryContextErrors(t *testing.T) {
 		t.Fatal("context deadline exceeded classified as transient")
 	}
 }
+
+func TestOnTextDeltaCalledInOrderForNonEmptyDeltas(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// three text deltas + one tool-call-only chunk (no content)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"foo\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.LLMConfig{
+		BaseURL: srv.URL + "/v1",
+		APIKey:  "test-key",
+		Model:   "test-model",
+	})
+
+	var got []string
+	resp, err := client.Chat(context.Background(), ChatRequest{
+		Messages:    []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "hi"}},
+		OnTextDelta: func(s string) { got = append(got, s) },
+	})
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	// Delta callback must be called only for non-empty content chunks
+	if len(got) != 2 || got[0] != "你" || got[1] != "好" {
+		t.Fatalf("OnTextDelta calls = %v, want [\"你\", \"好\"]", got)
+	}
+	// Final assembled content must include both characters
+	if resp.Content != "你好" {
+		t.Fatalf("Content = %q, want \"你好\"", resp.Content)
+	}
+}
+
+func TestOnTextDeltaNotCalledForToolCallOnlyChunks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// only a tool-call chunk, no text content
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bar\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.LLMConfig{
+		BaseURL: srv.URL + "/v1",
+		APIKey:  "test-key",
+		Model:   "test-model",
+	})
+
+	called := false
+	_, err := client.Chat(context.Background(), ChatRequest{
+		Messages:    []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "use tool"}},
+		OnTextDelta: func(s string) { called = true },
+	})
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if called {
+		t.Fatal("OnTextDelta should not be called for tool-call-only chunks")
+	}
+}

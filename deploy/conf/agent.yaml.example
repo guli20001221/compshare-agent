@@ -25,3 +25,32 @@ agent:
     mutating_daily: 50
     read_expensive_qps: 6
     read_expensive_daily: 500
+
+  # HTTP service settings (used by: compshare-agent server).
+  # write_timeout must be 0 for SSE streaming connections.
+  http:
+    listen_addr: "0.0.0.0:8080"
+    read_timeout: "30s"
+    write_timeout: "0s"
+    sse_keepalive_interval: "15s"
+    max_input_length: 4000
+    pool_capacity: 200
+    pool_idle_ttl: "30m"
+
+  # MySQL backing store (used by: compshare-agent server).
+  # DSN is resolved from ${MYSQL_DSN} env var.
+  mysql:
+    dsn: "${MYSQL_DSN}"
+    max_open_conns: 20
+    max_idle_conns: 5
+    conn_max_lifetime: "1h"
+
+  # Static metadata returned by GetMeta action.
+  # max_input_length should match http.max_input_length.
+  meta:
+    welcome: "我是优云算力共享平台 AI 助手，可以问我控制台相关问题。"
+    suggested_prompts:
+      - "我有哪些实例"
+      - "4090 现在有库存吗"
+      - "创建实例的操作步骤"
+    max_input_length: 4000

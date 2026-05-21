@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/governance"
 	"github.com/stretchr/testify/assert"
@@ -226,4 +227,370 @@ func TestLoad_RejectsNegativeRateLimitValues(t *testing.T) {
 			assert.Contains(t, err.Error(), "0 or omit to use default")
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// HTTP / MySQL / Meta config tests
+// ---------------------------------------------------------------------------
+
+func baseConfigWithHTTPMySQLMeta(extra string) string {
+	return baseConfig("") + extra
+}
+
+func TestLoad_HTTPDefaultsAppliedWhenSectionOmitted(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(""))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	h := cfg.Agent.HTTP
+	assert.Equal(t, "0.0.0.0:8080", h.ListenAddr)
+	assert.Equal(t, 30*time.Second, h.ReadTimeout)
+	assert.Equal(t, time.Duration(0), h.WriteTimeout) // SSE: must stay 0
+	assert.Equal(t, 15*time.Second, h.SSEKeepaliveInterval)
+	assert.Equal(t, 4000, h.MaxInputLength)
+	assert.Equal(t, 200, h.PoolCapacity)
+	assert.Equal(t, 30*time.Minute, h.PoolIdleTTL)
+}
+
+func TestLoad_HTTPSectionFromYAML(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
+  http:
+    listen_addr: "127.0.0.1:9090"
+    read_timeout: "60s"
+    write_timeout: "0s"
+    sse_keepalive_interval: "20s"
+    max_input_length: 2000
+    pool_capacity: 100
+    pool_idle_ttl: "15m"
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	h := cfg.Agent.HTTP
+	assert.Equal(t, "127.0.0.1:9090", h.ListenAddr)
+	assert.Equal(t, 60*time.Second, h.ReadTimeout)
+	assert.Equal(t, time.Duration(0), h.WriteTimeout)
+	assert.Equal(t, 20*time.Second, h.SSEKeepaliveInterval)
+	assert.Equal(t, 2000, h.MaxInputLength)
+	assert.Equal(t, 100, h.PoolCapacity)
+	assert.Equal(t, 15*time.Minute, h.PoolIdleTTL)
+}
+
+func TestLoad_MySQLDefaultsAppliedWhenSectionOmitted(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(""))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	m := cfg.Agent.MySQL
+	assert.Equal(t, "", m.DSN) // DSN not required by Load
+	assert.Equal(t, 20, m.MaxOpenConns)
+	assert.Equal(t, 5, m.MaxIdleConns)
+	assert.Equal(t, time.Hour, m.ConnMaxLifetime)
+}
+
+func TestLoad_MySQLSectionFromYAML(t *testing.T) {
+	setRequiredSecretEnv(t)
+	t.Setenv("MYSQL_DSN", "user:pass@tcp(db:3306)/compshare_agent?parseTime=true")
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
+  mysql:
+    dsn: "${MYSQL_DSN}"
+    max_open_conns: 50
+    max_idle_conns: 10
+    conn_max_lifetime: "2h"
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	m := cfg.Agent.MySQL
+	assert.Equal(t, "user:pass@tcp(db:3306)/compshare_agent?parseTime=true", m.DSN)
+	assert.Equal(t, 50, m.MaxOpenConns)
+	assert.Equal(t, 10, m.MaxIdleConns)
+	assert.Equal(t, 2*time.Hour, m.ConnMaxLifetime)
+}
+
+func TestLoad_MissingMySQLDSNStillLoadsForCLICompatibility(t *testing.T) {
+	setRequiredSecretEnv(t)
+	// No MYSQL_DSN env var set — Load must succeed anyway.
+	path := writeConfig(t, baseConfig(""))
+
+	cfg, err := Load(path)
+
+	require.NoError(t, err, "Load must succeed without mysql.dsn for CLI compatibility")
+	assert.Equal(t, "", cfg.Agent.MySQL.DSN)
+}
+
+func TestLoad_MetaDefaultsInheritHTTPMaxInputLength(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig("")) // no meta section
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	// meta.max_input_length should default to http.max_input_length (4000)
+	assert.Equal(t, cfg.Agent.HTTP.MaxInputLength, cfg.Agent.Meta.MaxInputLength)
+	assert.Equal(t, 4000, cfg.Agent.Meta.MaxInputLength)
+}
+
+func TestLoad_MetaSectionFromYAML(t *testing.T) {
+	setRequiredSecretEnv(t)
+	// Both http and meta max_input_length must agree to avoid the mismatch error.
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
+  http:
+    max_input_length: 3000
+  meta:
+    welcome: "Hello from agent"
+    suggested_prompts:
+      - "How do I create an instance?"
+      - "Show my GPU inventory"
+    max_input_length: 3000
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	meta := cfg.Agent.Meta
+	assert.Equal(t, "Hello from agent", meta.Welcome)
+	assert.Equal(t, []string{"How do I create an instance?", "Show my GPU inventory"}, meta.SuggestedPrompts)
+	assert.Equal(t, 3000, meta.MaxInputLength)
+}
+
+// ---------------------------------------------------------------------------
+// resolveOptionalDSN — accepts any ${ENV_VAR} placeholder (item 1)
+// ---------------------------------------------------------------------------
+
+func TestLoad_DSNPlaceholderUnsetReturnsEmpty(t *testing.T) {
+	setRequiredSecretEnv(t)
+	// MYSQL_DSN is not set; DSN field must be "" after Load (no error)
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
+  mysql:
+    dsn: "${MYSQL_DSN}"
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err, "Load must succeed when ${MYSQL_DSN} is unset")
+	assert.Equal(t, "", cfg.Agent.MySQL.DSN)
+}
+
+func TestLoad_DSNLiteralPassesThrough(t *testing.T) {
+	setRequiredSecretEnv(t)
+	const literal = "literal:dsn@tcp(db:3306)/mydb?parseTime=true"
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
+  mysql:
+    dsn: "`+literal+`"
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, literal, cfg.Agent.MySQL.DSN)
+}
+
+func TestLoad_DSNArbitraryPlaceholderResolvesWhenSet(t *testing.T) {
+	setRequiredSecretEnv(t)
+	t.Setenv("DATABASE_URL", "user:pass@tcp(other:3306)/db?parseTime=true")
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
+  mysql:
+    dsn: "${DATABASE_URL}"
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "user:pass@tcp(other:3306)/db?parseTime=true", cfg.Agent.MySQL.DSN)
+}
+
+func TestLoad_DSNBadPlaceholderFormatReturnsError(t *testing.T) {
+	setRequiredSecretEnv(t)
+	// "$MYSQL_DSN" without braces must be rejected
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
+  mysql:
+    dsn: "$MYSQL_DSN"
+`))
+
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mysql.dsn")
+	assert.Contains(t, err.Error(), "${ENV_VAR}")
+}
+
+// ---------------------------------------------------------------------------
+// Negative numeric values — HTTPConfig / MySQLConfig / MetaConfig (item 3)
+// ---------------------------------------------------------------------------
+
+func TestLoad_RejectsNegativeHTTPValues(t *testing.T) {
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "pool_capacity",
+			yaml: `
+  http:
+    pool_capacity: -1
+`,
+			wantErr: "agent.http.pool_capacity",
+		},
+		{
+			name: "max_input_length",
+			yaml: `
+  http:
+    max_input_length: -1
+`,
+			wantErr: "agent.http.max_input_length",
+		},
+		{
+			name: "pool_idle_ttl",
+			yaml: `
+  http:
+    pool_idle_ttl: "-1s"
+`,
+			wantErr: "agent.http.pool_idle_ttl",
+		},
+		{
+			name: "read_timeout",
+			yaml: `
+  http:
+    read_timeout: "-1s"
+`,
+			wantErr: "agent.http.read_timeout",
+		},
+		{
+			name: "write_timeout",
+			yaml: `
+  http:
+    write_timeout: "-1s"
+`,
+			wantErr: "agent.http.write_timeout",
+		},
+		{
+			name: "sse_keepalive_interval",
+			yaml: `
+  http:
+    sse_keepalive_interval: "-1s"
+`,
+			wantErr: "agent.http.sse_keepalive_interval",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequiredSecretEnv(t)
+			path := writeConfig(t, baseConfig(tc.yaml))
+
+			_, err := Load(path)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Contains(t, err.Error(), "must be non-negative")
+		})
+	}
+}
+
+func TestLoad_RejectsNegativeMySQLValues(t *testing.T) {
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "max_open_conns",
+			yaml: `
+  mysql:
+    max_open_conns: -1
+`,
+			wantErr: "agent.mysql.max_open_conns",
+		},
+		{
+			name: "max_idle_conns",
+			yaml: `
+  mysql:
+    max_idle_conns: -1
+`,
+			wantErr: "agent.mysql.max_idle_conns",
+		},
+		{
+			name: "conn_max_lifetime",
+			yaml: `
+  mysql:
+    conn_max_lifetime: "-1s"
+`,
+			wantErr: "agent.mysql.conn_max_lifetime",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequiredSecretEnv(t)
+			path := writeConfig(t, baseConfig(tc.yaml))
+
+			_, err := Load(path)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Contains(t, err.Error(), "must be non-negative")
+		})
+	}
+}
+
+func TestLoad_RejectsNegativeMetaValues(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(`
+  meta:
+    max_input_length: -1
+`))
+
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.meta.max_input_length")
+	assert.Contains(t, err.Error(), "must be non-negative")
+}
+
+// ---------------------------------------------------------------------------
+// max_input_length mismatch between http and meta (item 4)
+// ---------------------------------------------------------------------------
+
+func TestLoad_RejectsMaxInputLengthMismatch(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(`
+  http:
+    max_input_length: 4000
+  meta:
+    max_input_length: 2000
+`))
+
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max_input_length")
+	assert.Contains(t, err.Error(), "conflict")
+}
+
+func TestLoad_NoErrorWhenMetaMaxInputLengthInheritsDefault(t *testing.T) {
+	setRequiredSecretEnv(t)
+	// meta section is absent — it inherits from http; no mismatch error expected
+	path := writeConfig(t, baseConfig(`
+  http:
+    max_input_length: 4000
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 4000, cfg.Agent.Meta.MaxInputLength)
+}
+
+func TestLoad_NoErrorWhenBothMaxInputLengthMatch(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(`
+  http:
+    max_input_length: 2000
+  meta:
+    max_input_length: 2000
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 2000, cfg.Agent.Meta.MaxInputLength)
 }

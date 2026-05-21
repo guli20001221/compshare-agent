@@ -103,6 +103,30 @@ type KnowledgeRetriever interface {
 	Retrieve(question, productArea string) knowledge.RetrievalResult
 }
 
+// HistoryMessage is a simplified turn for rehydrating a conversation from
+// persistent storage (e.g. MySQL). Only user and assistant roles are accepted;
+// all other roles and empty content are silently skipped.
+type HistoryMessage struct {
+	Role    string
+	Content string
+}
+
+// ChatOptions configure optional callbacks for ChatWithOptions. Callbacks are
+// invoked synchronously on the caller's goroutine. OnTextDelta receives the
+// final assistant reply, replayed in chunk order when the LLM's raw content
+// is returned verbatim, or as a single override chunk when engine guards
+// rewrite the reply.
+type ChatOptions struct {
+	// OnTextDelta, if non-nil, is called once per text token in order, but
+	// only for the final LLM reply (not for intermediate ReAct tool-call rounds).
+	// Canned-reply branches (account_billing_unsupported, monitor_history) skip
+	// the LLM entirely and therefore never call this.
+	OnTextDelta func(string)
+	// OnUsage, if non-nil, is called once after the final LLM call returns its
+	// usage data.
+	OnUsage func(llm.TokenUsage)
+}
+
 type IntentPlannerOptions struct {
 	EnabledIntents []intent.Intent
 	Model          string
@@ -424,9 +448,37 @@ func (e *Engine) InitWithContext(userCtx string) {
 	}
 }
 
+// RehydrateHistory rebuilds the message history from a prior session stored in
+// persistent storage. It replaces any existing history with a fresh system
+// prompt followed by the supplied user/assistant turns. Empty content and
+// non-user/non-assistant roles are silently skipped.
+func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
+	systemPrompt := prompt.BuildSystemWithOptions("", prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
+	e.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: systemPrompt}}
+	for _, msg := range msgs {
+		if msg.Content == "" {
+			continue
+		}
+		switch msg.Role {
+		case openai.ChatMessageRoleUser, openai.ChatMessageRoleAssistant:
+			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content})
+		}
+	}
+}
+
 // Chat processes one user message through the ReAct loop and returns the final text reply.
 // The callback is invoked for each intermediate step (tool calls, thinking, etc.).
+// It delegates to ChatWithOptions with empty options (no streaming callbacks).
 func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, error) {
+	return e.ChatWithOptions(ctx, userMsg, onStep, ChatOptions{})
+}
+
+// ChatWithOptions is like Chat but accepts streaming callbacks via opts.
+// OnTextDelta is buffered per-round and only replayed on the final text branch
+// (never on intermediate tool-call rounds). OnUsage is called once after the
+// final LLM reply. Canned-reply branches (account_billing_unsupported,
+// monitor_history_unsupported) skip the LLM and therefore never fire callbacks.
+func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (string, error) {
 	e.userTurn++
 	e.lastUserMsg = userMsg
 	e.readExpensiveCallsThisTurn = 0
@@ -507,16 +559,29 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 			})
 			return content, nil
 		}
+		// Buffer text deltas per-round. We only replay them to opts.OnTextDelta
+		// on the final text branch (no tool calls). Intermediate rounds that
+		// produce tool calls discard the buffer silently.
+		var streamedDeltas []string
+		if opts.OnTextDelta != nil {
+			req.OnTextDelta = func(s string) {
+				streamedDeltas = append(streamedDeltas, s)
+			}
+		}
 		resp, err := e.llmClient.Chat(ctx, req)
 		if err != nil {
 			return "", fmt.Errorf("LLM 调用失败: %w", err)
 		}
 
 		e.emitTokenUsage(resp.Usage)
+		if opts.OnUsage != nil {
+			opts.OnUsage(resp.Usage)
+		}
 
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
-			content := e.guardMonitorTemporalFinalReply(resp.Content)
+			rawContent := resp.Content
+			content := e.guardMonitorTemporalFinalReply(rawContent)
 			// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): cited contract invariant.
 			// Keep the hard gate for planner-classified knowledge questions that
 			// fall back to a pure LLM answer, but do not apply it to diagnosis,
@@ -530,6 +595,19 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 					})
 				}
 				content = ragNoEvidenceReply
+			}
+			// Replay buffered streaming deltas when the LLM content was returned
+			// verbatim. If an engine guard overwrote content, emit the canonical
+			// override as a single chunk so the SSE stream matches the persisted
+			// final reply — do not replay stale raw deltas in that case.
+			if opts.OnTextDelta != nil {
+				if content == rawContent {
+					for _, delta := range streamedDeltas {
+						opts.OnTextDelta(delta)
+					}
+				} else {
+					opts.OnTextDelta(content)
+				}
 			}
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
@@ -2649,8 +2727,8 @@ var knowledgeMonitorKeywords = []string{
 	// adjacent CJK and ASCII, so the no-space variants are the load-bearing
 	// keywords for real user input ("CPU\u5360\u7528\u7387"). Keep the spaced variants
 	// for the alt phrasing ("CPU \u5360\u7528\u7387\u9ad8\u5417").
-	"cpu\u5360\u7528", // cpu\u5360\u7528
-	"gpu\u5360\u7528", // gpu\u5360\u7528
+	"cpu\u5360\u7528",  // cpu\u5360\u7528
+	"gpu\u5360\u7528",  // gpu\u5360\u7528
 	"cpu \u5360\u7528", // cpu \u5360\u7528
 	"gpu \u5360\u7528", // gpu \u5360\u7528
 }
