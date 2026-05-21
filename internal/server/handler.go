@@ -72,6 +72,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	defer conn.CloseNow()
 
 	connectionID := uuid.NewString()
+	// PR11: register this conn so graceful shutdown can actively close it
+	// with StatusGoingAway. The cleanup closure runs on every exit path
+	// (return, panic) because of the defer.
+	defer s.trackConn(connectionID, conn)()
 	sendChan := make(chan ServerMessage, sendChanBuffer)
 	bridge := newConfirmBridge()
 
