@@ -45,6 +45,7 @@ const (
 
 const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
 const monitorHistoryUnsupportedReply = "当前暂不支持指定历史时间段的监控查询。我可以先帮你查看实时监控；如需历史趋势，请在控制台监控页选择对应日期和时间范围查看。"
+const resourceShortageReply = "226604（当前资源不足）是平台 GPU 资源池的实时状态，并不是您账号或操作的问题——您选择的机型当前已被其他用户占满。资源会随着其他用户关机或退订陆续流转出来，建议您稍等片刻后重试同一机型，或在控制台库存页换一个可用区或相近规格（例如 4090 紧张时可以试试 A100）。如果业务需要长期稳定使用资源，也可以考虑包日或包月付费，相比按量计费在资源稳定性上更有保障。感谢您的耐心等待。"
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
 
 const (
@@ -67,10 +68,12 @@ const (
 
 // Force-tool / hard-block priority chain (highest first):
 //
-//  1. isAccountBillingUnsupported -> canned reply, no LLM call (hard-block)
-//  2. shouldForceMonitorRecall    -> tool_choice=GetCompShareInstanceMonitor
-//                                    (BRIDGE T-001.f1, capability-gated)
-//  3. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
+//  1. isAccountBillingUnsupported    -> canned reply, no LLM call (hard-block)
+//  2. isResourceShortageQuestion     -> canned reply, no LLM call (hard-block; error 226604)
+//  3. isUnsupportedHistoricalMonitorQuestion -> canned reply, no LLM call
+//  4. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
+//                                       (BRIDGE T-001.f1, capability-gated)
+//  5. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
 //
 // Capability gating: force-tool paths that emit object tool_choice MUST
 // short-circuit when supportsObjectToolChoice=false. ds v4 flash in thinking
@@ -635,6 +638,21 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 			Content: accountBillingUnsupportedReply,
 		})
 		return accountBillingUnsupportedReply, nil
+	}
+
+	if isResourceShortageQuestion(userMsg) {
+		e.pendingResourceSelection = nil
+		if e.hardBlockObserver != nil {
+			e.hardBlockObserver(observability.EngineHardBlockTrace{
+				Hit:      true,
+				Category: "resource_shortage_226604",
+			})
+		}
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: resourceShortageReply,
+		})
+		return resourceShortageReply, nil
 	}
 
 	if isUnsupportedHistoricalMonitorQuestion(userMsg) {
@@ -3083,6 +3101,33 @@ func containsScanAllSignal(msg string) bool {
 // enforces this hard-block. DO NOT delete when IntentPlan ships.
 func isAccountBillingUnsupported(userMsg string) bool {
 	return isAccountBillingUnsupportedNormalized(normalizeMsg(userMsg))
+}
+
+// resourceShortageSignalKeywords are the precision-first phrases that
+// flag a user message as asking about upstream GPU pool exhaustion
+// (error code 226604: "当前资源不足，请稍后再试"). The matcher narrowly
+// targets product-specific phrases so it does not collide with adjacent
+// "X 不足" senses (余额不足 / 积分不足 / 权限不足).
+var resourceShortageSignalKeywords = []string{
+	"226604",
+	"资源不足", // 资源不足
+}
+
+// isResourceShortageQuestion reports whether the user message is asking
+// about upstream resource shortage (error code 226604). When true the
+// engine short-circuits before any LLM/planner/RAG call and returns
+// resourceShortageReply unchanged, so the response stays stable across
+// runs and never drifts via LLM paraphrase. Mirrors the
+// isAccountBillingUnsupported / isUnsupportedHistoricalMonitorQuestion
+// pattern.
+func isResourceShortageQuestion(userMsg string) bool {
+	n := normalizeMsg(userMsg)
+	for _, kw := range resourceShortageSignalKeywords {
+		if strings.Contains(n, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsInvoiceRealtimeQuestion(n string) bool {
