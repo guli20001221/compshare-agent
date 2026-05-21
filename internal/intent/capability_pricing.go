@@ -27,7 +27,15 @@ import (
 // Commercial-critical paths shouldn't depend on LLM tool-selection
 // variance.
 
-const noPricingReply = "未获取到 GPU 价格数据。"
+// noInstanceTypesReply — stage 1 returned no machine inventory at all
+// (Describe-side failure or empty platform catalog).
+// noPricingReply — stage 2 ran but the per-charge-type extraction yielded
+// nothing for any matched GPU (Get-side schema drift or empty price block).
+// Distinct strings let support diagnose which stage broke.
+const (
+	noInstanceTypesReply = "未获取到可售机型数据，请稍后重试。"
+	noPricingReply       = "未获取到 GPU 价格数据。"
+)
 
 // handlePricingQuery is the entry point. Returns a HandlerResult whose
 // reply is a markdown price table; ToolAction is always set to the
@@ -45,7 +53,7 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 	}
 	items := mapSliceAt(describe, "AvailableInstanceTypes")
 	if len(items) == 0 {
-		result := HandledResult(noPricingReply)
+		result := HandledResult(noInstanceTypesReply)
 		result.ToolAction = action
 		result.ToolArgs = copyArgs(map[string]any{})
 		return result
@@ -78,12 +86,16 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 			// an invalid price call.
 			continue
 		}
+		// spec.Memory is in GB (Describe Collection[].Memory[] schema), but
+		// GetCompShareInstancePrice expects MB. Convert here once at the
+		// boundary so the rendered header (which says "GB") and the API
+		// argument stay consistent.
 		args := map[string]any{
 			"Zone":    spec.Zone,
 			"GpuType": name,
 			"Gpu":     1,
 			"Cpu":     spec.Cpu,
-			"Memory":  spec.Memory,
+			"Memory":  spec.Memory * 1024,
 		}
 		priceRaw, fbInner := executeCapabilityAction(ctx, h, req.Plan.Intent, action, args)
 		if fbInner != nil {
@@ -235,7 +247,9 @@ func pricingClarifyReply(items []any, prefix string) string {
 func renderPricingReply(rows []gpuPriceRow, userText string) string {
 	lines := []string{}
 	for _, row := range rows {
-		header := fmt.Sprintf("### %s · %s · 1卡 / %dvCPU / %dMB",
+		// row.Memory is in GB (sourced from Describe Collection[].Memory[],
+		// which is GB; see pickDefaultPricingSpec).
+		header := fmt.Sprintf("### %s · %s · 1卡 / %dvCPU / %dGB",
 			row.Name, row.Zone, row.Cpu, row.Memory)
 		lines = append(lines, header)
 

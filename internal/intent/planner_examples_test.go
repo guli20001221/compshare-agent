@@ -109,7 +109,15 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // baseline; deterministic capability routing brings it to ~10s/6k tokens.
 // The boundary directive keeps personal-billing complaints
 // ("我账单怎么这么高") routing to billing_instance unchanged.
-const systemPromptSHA256Baseline = "4af46ff2a79216ff5a9819d090ed91551e2881620b8ff8480bc157c7a5f94368"
+//
+// PR #3 amend (2026-05-22 post-review) — second bump: reviewer caught
+// (a) the allowed-intent enum on line 414 still missing pricing_query
+// (doc correctness — observed not to block emission but kept for
+// consistency with the enum-as-contract pattern); (b) the stale
+// directive on line 422 that conflicted with the new capability example
+// ("4090 多少钱 → unknown"). Replaced with a pricing_query directive +
+// explicit personal-billing-complaints boundary preserving billing_instance.
+const systemPromptSHA256Baseline = "dc29634cb7f657c5b2a49f015afa3e3e39ee6b585ffdf46b21ce3b37a977696a"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

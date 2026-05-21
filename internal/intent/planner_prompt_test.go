@@ -245,18 +245,35 @@ func TestBuildSystemPromptDistinguishesFinanceFAQAndRealtimeAccountData(t *testi
 	}
 }
 
-func TestBuildSystemPromptKeepsRuntimePriceQueriesOutOfKnowledgeQA(t *testing.T) {
+// TestBuildSystemPromptRoutesRuntimePriceQueriesToCapability locks the
+// PR #151 directive shift: "4090 \u591a\u5c11\u94b1" used to emit unknown (free LLM
+// tool loop), now emits pricing_query (deterministic capability handler).
+// Also asserts the personal-billing boundary is preserved so complaints
+// like \u6211\u8d26\u5355\u600e\u4e48\u8fd9\u4e48\u9ad8 still stay in billing_instance, not pricing.
+func TestBuildSystemPromptRoutesRuntimePriceQueriesToCapability(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
 		"Direct runtime/list/user price questions",
-		"should emit unknown with no required_tools",
-		"normal tool loop can choose price tools",
+		"should emit pricing_query",
+		"capability handler runs DescribeAvailableCompShareInstanceTypes + GetCompShareInstancePrice deterministically",
 		"4090 \u591a\u5c11\u94b1",
 		"H20 \u6309\u6708\u5305\u591a\u5c11\u94b1",
+		"Personal-billing complaints",
+		"\u6211\u8d26\u5355\u600e\u4e48\u8fd9\u4e48\u9ad8",
+		"stay as billing_instance",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
-			t.Fatalf("system prompt missing price boundary fragment %q:\n%s", fragment, prompt)
+			t.Fatalf("system prompt missing price-capability routing fragment %q:\n%s", fragment, prompt)
+		}
+	}
+	stale := []string{
+		"4090 \u591a\u5c11\u94b1, H20 \u6309\u6708\u5305\u591a\u5c11\u94b1, \u6298\u540e\u4ef7\u591a\u5c11, or actual purchase price should emit unknown",
+		"normal tool loop can choose price tools",
+	}
+	for _, fragment := range stale {
+		if strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt still contains stale price-to-unknown routing %q:\n%s", fragment, prompt)
 		}
 	}
 }
