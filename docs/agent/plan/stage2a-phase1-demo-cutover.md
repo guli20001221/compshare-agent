@@ -305,7 +305,7 @@ Allowed `planner.cutover_status` values:
 | `dispatched` | Handler accepted the plan. |
 | `fallback_invalid` | Planner result was fallback or invalid. |
 | `fallback_low_confidence` | Confidence was below `0.60`. |
-| `fallback_hard_block_hint` | Planner emitted `hard_block_hint=true`; engine hard-block remains authoritative. |
+| ~~`fallback_hard_block_hint`~~ | **Removed PR #61 (2026-05-21)** — planner's `hard_block_hint` is advisory only and no longer participates in cutover routing. It still ships to `planner.hard_block_hint` for observability join with `engine_hard_block.triggered_by`. Deterministic refusal sources: keyword PreBlock (`triggered_by=keyword`), `IntentMonitorHistory` dispatcher (`triggered_by=planner_intent`), post-LLM cited contract (`triggered_by=post_llm`). |
 | `fallback_ineligible` | Intent is valid but not enabled for demo cutover. |
 | `fallback_unresolved_target` | Handler could not resolve a required target before a tool call. |
 | `fallback_time_window` | Monitor plan requested a non-current time window. |
