@@ -642,8 +642,9 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 		e.pendingResourceSelection = nil
 		if e.hardBlockObserver != nil {
 			e.hardBlockObserver(observability.EngineHardBlockTrace{
-				Hit:      true,
-				Category: decision.Category,
+				Hit:         true,
+				Category:    decision.Category,
+				TriggeredBy: observability.HardBlockTriggerKeyword,
 			})
 		}
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -748,8 +749,9 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 				!isKnowledgeRefusal(content) && !hasNumberedCitation(content) {
 				if e.hardBlockObserver != nil {
 					e.hardBlockObserver(observability.EngineHardBlockTrace{
-						Hit:      true,
-						Category: "cited_contract_violation",
+						Hit:         true,
+						Category:    "cited_contract_violation",
+						TriggeredBy: observability.HardBlockTriggerPostLLM,
 					})
 				}
 				content = ragNoEvidenceReply
@@ -1628,9 +1630,13 @@ func (e *Engine) commonPlannerCandidateStatus(result intent.PlannerResult) (inte
 		result.Plan.SchemaVersion != intent.SchemaVersion || result.Plan.Intent == "" {
 		return intent.CutoverStatusFallbackInvalid, false
 	}
-	if result.Plan.HardBlockHint {
-		return intent.CutoverStatusFallbackHardBlockHint, false
-	}
+	// PR #61 (2026-05-21): planner's HardBlockHint is advisory only and no
+	// longer participates in cutover routing — it ships to trace via
+	// PlannerTrace.HardBlockHint for downstream join with engine_hard_block
+	// (observability). Deterministic refusal comes from the keyword
+	// PreBlock (router.go) and the planner-classified IntentMonitorHistory
+	// path (emitMonitorHistoryHardBlock), both of which run AFTER this
+	// candidate-status check.
 	if result.Plan.Confidence < 0.60 {
 		return intent.CutoverStatusFallbackLowConfidence, false
 	}
@@ -1738,8 +1744,9 @@ func (e *Engine) tokenBudgetExceeded() bool {
 func (e *Engine) emitTokenBudgetExceededHardBlock() {
 	if e.hardBlockObserver != nil {
 		e.hardBlockObserver(observability.EngineHardBlockTrace{
-			Hit:      true,
-			Category: "token_budget_exceeded",
+			Hit:         true,
+			Category:    "token_budget_exceeded",
+			TriggeredBy: observability.HardBlockTriggerTokenBudget,
 		})
 	}
 }

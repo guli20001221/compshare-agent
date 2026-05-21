@@ -2732,6 +2732,8 @@ func TestResourceShortageHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T
 	require.Len(t, hardBlocks, 1)
 	assert.True(t, hardBlocks[0].Hit)
 	assert.Equal(t, "resource_shortage_226604", hardBlocks[0].Category)
+	// PR #61: single-source attribution — Chat()-head keyword preblock fired
+	assert.Equal(t, observability.HardBlockTriggerKeyword, hardBlocks[0].TriggeredBy)
 }
 
 func TestPlannerMonitorHistoryHardBlock_FiresObserverEvenWhenKeywordMisses(t *testing.T) {
@@ -2777,6 +2779,8 @@ func TestPlannerMonitorHistoryHardBlock_FiresObserverEvenWhenKeywordMisses(t *te
 	require.Len(t, hardBlocks, 1, "planner-path MUST fire hardBlockObserver — was the partial-trace bug")
 	assert.True(t, hardBlocks[0].Hit)
 	assert.Equal(t, refusal.CategoryMonitorHistory, hardBlocks[0].Category)
+	// PR #61: single-source attribution — planner-classified path, not keyword
+	assert.Equal(t, observability.HardBlockTriggerPlannerIntent, hardBlocks[0].TriggeredBy)
 }
 
 func TestResourceShortageReply_MustContainStableSignals(t *testing.T) {
@@ -3992,13 +3996,10 @@ func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T
 		mutatePlan func(*intent.Plan)
 		wantStatus intent.CutoverStatus
 	}{
-		{
-			name: "hard block hint",
-			mutatePlan: func(plan *intent.Plan) {
-				plan.HardBlockHint = true
-			},
-			wantStatus: intent.CutoverStatusFallbackHardBlockHint,
-		},
+		// PR #61 (2026-05-21): the "hard block hint" case was removed —
+		// HardBlockHint is now advisory only and does NOT short-circuit
+		// cutover. The remaining "low confidence" case keeps coverage of
+		// the common-predicate fallback path (retriever must not be called).
 		{
 			name: "low confidence",
 			mutatePlan: func(plan *intent.Plan) {
@@ -4046,6 +4047,8 @@ func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T
 			require.Len(t, hardBlocks, 1)
 			assert.Equal(t, "cited_contract_violation", hardBlocks[0].Category)
 			assert.True(t, hardBlocks[0].Hit)
+			// PR #61: single-source attribution — post-LLM cited-contract gate
+			assert.Equal(t, observability.HardBlockTriggerPostLLM, hardBlocks[0].TriggeredBy)
 		})
 	}
 }
@@ -4056,7 +4059,7 @@ func TestRAGCitedContractInvariantSkipsWhenAnswerAlreadyCited(t *testing.T) {
 	// well-behaved LLM that adds [n] on its own), the invariant must NOT
 	// fire and the reply must pass through unchanged.
 	plan := knowledgeQAPlan(false)
-	plan.HardBlockHint = true // force fallback to ReAct path
+	plan.Confidence = 0.3 // PR #61: HardBlockHint no longer forces fallback; use low confidence instead
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
@@ -4117,7 +4120,7 @@ func TestRAGCitedContractInvariantSkipsWhenRetrieverDisabled(t *testing.T) {
 	// fire — a free-form chat answer is expected and the cited contract does
 	// not apply.
 	plan := knowledgeQAPlan(false)
-	plan.HardBlockHint = true
+	plan.Confidence = 0.3 // PR #61: HardBlockHint no longer forces fallback; use low confidence instead
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback without RAG"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
@@ -4188,7 +4191,7 @@ func TestRAGCitedContractInvariantSkipsDiagnosisPlannerFallback(t *testing.T) {
 
 func TestRAGCitedContractInvariantResetsKnowledgeFallbackFlagEachTurn(t *testing.T) {
 	knowledgePlan := knowledgeQAPlan(false)
-	knowledgePlan.HardBlockHint = true
+	knowledgePlan.Confidence = 0.3 // PR #61: HardBlockHint no longer forces fallback; use low confidence instead
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{
 		{Plan: knowledgePlan},
 		{Plan: unknownEngineTestPlan()},
@@ -5329,17 +5332,11 @@ func TestPhase1CutoverInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 			result:     intent.PlannerResult{Fallback: true, Plan: unknownEngineTestPlan()},
 			wantStatus: intent.CutoverStatusFallbackInvalid,
 		},
-		{
-			name: "hard block hint",
-			result: intent.PlannerResult{Plan: intent.Plan{
-				SchemaVersion: intent.SchemaVersion,
-				Intent:        intent.IntentBillingAccountUnsupported,
-				HardBlockHint: true,
-				Retrieval:     intent.Retrieval{Enabled: false},
-				Confidence:    0.9,
-			}},
-			wantStatus: intent.CutoverStatusFallbackHardBlockHint,
-		},
+		// PR #61 (2026-05-21): removed "hard block hint" case — HardBlockHint
+		// is advisory only and no longer participates in cutover routing.
+		// New test TestCommonPlannerCandidateStatus_HardBlockHintAdvisoryOnly
+		// in engine_hardblock_advisory_test.go pins the new behavior
+		// (HardBlockHint=true with valid plan → CutoverStatusDispatched).
 		{
 			name: "low confidence",
 			result: intent.PlannerResult{Plan: intent.Plan{
@@ -5867,6 +5864,8 @@ func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
 	require.Len(t, hardBlockHits, 1, "expected exactly one hard-block emission")
 	assert.True(t, hardBlockHits[0].Hit)
 	assert.Equal(t, "token_budget_exceeded", hardBlockHits[0].Category)
+	// PR #61: single-source attribution — token budget is its own trigger class
+	assert.Equal(t, observability.HardBlockTriggerTokenBudget, hardBlockHits[0].TriggeredBy)
 }
 
 // TestChat_TokenBudget_DisabledByDefault — sanity check that
@@ -5948,4 +5947,6 @@ func TestChat_TokenBudget_PlannerHandledPath_GateFires(t *testing.T) {
 		"the planner itself must still run — accumulation happens after, not before")
 	require.Len(t, hardBlockHits, 1, "exactly one hard-block emission expected")
 	assert.Equal(t, "token_budget_exceeded", hardBlockHits[0].Category)
+	// PR #61: single-source attribution — token budget is its own trigger class
+	assert.Equal(t, observability.HardBlockTriggerTokenBudget, hardBlockHits[0].TriggeredBy)
 }

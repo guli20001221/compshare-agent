@@ -184,9 +184,28 @@ type PlannerSlots struct {
 	TimeWindow any      `json:"time_window"`
 }
 
+// EngineHardBlock TriggeredBy enum values. Single-source attribution
+// (no "both") — see EngineHardBlockTrace.TriggeredBy doc.
+const (
+	HardBlockTriggerKeyword       = "keyword"
+	HardBlockTriggerPlannerIntent = "planner_intent"
+	HardBlockTriggerPostLLM       = "post_llm"
+	HardBlockTriggerTokenBudget   = "token_budget"
+)
+
 type EngineHardBlockTrace struct {
 	Hit      bool   `json:"hit"`
 	Category string `json:"category"`
+	// TriggeredBy records the actually-executed stage that produced the
+	// hard-block — single-source (no "both"), since short-circuited stages
+	// are unobservable. Allowed values:
+	//   "keyword"        — Chat() head router.PreBlock keyword match
+	//   "planner_intent" — planner-classified intent (monitor_history etc.)
+	//                      routed through emitMonitorHistoryHardBlock helper
+	//   "post_llm"       — post-LLM gate (currently cited_contract_violation)
+	// Empty when Hit=false. Joins with planner.hard_block_hint downstream
+	// for cross-source analytics — the join is observability, not routing.
+	TriggeredBy string `json:"triggered_by,omitempty"`
 }
 
 type EntityRegistryTrace struct {

@@ -77,8 +77,9 @@ var enginePreBlock = router.New(
 func (e *Engine) emitMonitorHistoryHardBlock() string {
 	if e.hardBlockObserver != nil {
 		e.hardBlockObserver(observability.EngineHardBlockTrace{
-			Hit:      true,
-			Category: refusal.CategoryMonitorHistory,
+			Hit:         true,
+			Category:    refusal.CategoryMonitorHistory,
+			TriggeredBy: observability.HardBlockTriggerPlannerIntent,
 		})
 	}
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
