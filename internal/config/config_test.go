@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/governance"
 	"github.com/stretchr/testify/assert"
@@ -226,4 +227,133 @@ func TestLoad_RejectsNegativeRateLimitValues(t *testing.T) {
 			assert.Contains(t, err.Error(), "0 or omit to use default")
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// HTTP / MySQL / Meta config tests
+// ---------------------------------------------------------------------------
+
+func baseConfigWithHTTPMySQLMeta(extra string) string {
+	return baseConfig("") + extra
+}
+
+func TestLoad_HTTPDefaultsAppliedWhenSectionOmitted(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(""))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	h := cfg.Agent.HTTP
+	assert.Equal(t, "0.0.0.0:8080", h.ListenAddr)
+	assert.Equal(t, 30*time.Second, h.ReadTimeout)
+	assert.Equal(t, time.Duration(0), h.WriteTimeout) // SSE: must stay 0
+	assert.Equal(t, 15*time.Second, h.SSEKeepaliveInterval)
+	assert.Equal(t, 4000, h.MaxInputLength)
+	assert.Equal(t, 200, h.PoolCapacity)
+	assert.Equal(t, 30*time.Minute, h.PoolIdleTTL)
+}
+
+func TestLoad_HTTPSectionFromYAML(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
+  http:
+    listen_addr: "127.0.0.1:9090"
+    read_timeout: "60s"
+    write_timeout: "0s"
+    sse_keepalive_interval: "20s"
+    max_input_length: 2000
+    pool_capacity: 100
+    pool_idle_ttl: "15m"
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	h := cfg.Agent.HTTP
+	assert.Equal(t, "127.0.0.1:9090", h.ListenAddr)
+	assert.Equal(t, 60*time.Second, h.ReadTimeout)
+	assert.Equal(t, time.Duration(0), h.WriteTimeout)
+	assert.Equal(t, 20*time.Second, h.SSEKeepaliveInterval)
+	assert.Equal(t, 2000, h.MaxInputLength)
+	assert.Equal(t, 100, h.PoolCapacity)
+	assert.Equal(t, 15*time.Minute, h.PoolIdleTTL)
+}
+
+func TestLoad_MySQLDefaultsAppliedWhenSectionOmitted(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(""))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	m := cfg.Agent.MySQL
+	assert.Equal(t, "", m.DSN) // DSN not required by Load
+	assert.Equal(t, 20, m.MaxOpenConns)
+	assert.Equal(t, 5, m.MaxIdleConns)
+	assert.Equal(t, time.Hour, m.ConnMaxLifetime)
+}
+
+func TestLoad_MySQLSectionFromYAML(t *testing.T) {
+	setRequiredSecretEnv(t)
+	t.Setenv("MYSQL_DSN", "user:pass@tcp(db:3306)/compshare_agent?parseTime=true")
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
+  mysql:
+    dsn: "${MYSQL_DSN}"
+    max_open_conns: 50
+    max_idle_conns: 10
+    conn_max_lifetime: "2h"
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	m := cfg.Agent.MySQL
+	assert.Equal(t, "user:pass@tcp(db:3306)/compshare_agent?parseTime=true", m.DSN)
+	assert.Equal(t, 50, m.MaxOpenConns)
+	assert.Equal(t, 10, m.MaxIdleConns)
+	assert.Equal(t, 2*time.Hour, m.ConnMaxLifetime)
+}
+
+func TestLoad_MissingMySQLDSNStillLoadsForCLICompatibility(t *testing.T) {
+	setRequiredSecretEnv(t)
+	// No MYSQL_DSN env var set — Load must succeed anyway.
+	path := writeConfig(t, baseConfig(""))
+
+	cfg, err := Load(path)
+
+	require.NoError(t, err, "Load must succeed without mysql.dsn for CLI compatibility")
+	assert.Equal(t, "", cfg.Agent.MySQL.DSN)
+}
+
+func TestLoad_MetaDefaultsInheritHTTPMaxInputLength(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig("")) // no meta section
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	// meta.max_input_length should default to http.max_input_length (4000)
+	assert.Equal(t, cfg.Agent.HTTP.MaxInputLength, cfg.Agent.Meta.MaxInputLength)
+	assert.Equal(t, 4000, cfg.Agent.Meta.MaxInputLength)
+}
+
+func TestLoad_MetaSectionFromYAML(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
+  meta:
+    welcome: "Hello from agent"
+    suggested_prompts:
+      - "How do I create an instance?"
+      - "Show my GPU inventory"
+    max_input_length: 3000
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	meta := cfg.Agent.Meta
+	assert.Equal(t, "Hello from agent", meta.Welcome)
+	assert.Equal(t, []string{"How do I create an instance?", "Show my GPU inventory"}, meta.SuggestedPrompts)
+	assert.Equal(t, 3000, meta.MaxInputLength)
 }

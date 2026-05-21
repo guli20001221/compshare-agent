@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	// RateLimitConfig.Limits returns the governance type directly so engine
 	// wiring does not duplicate field mapping.
@@ -28,6 +29,39 @@ type AgentConfig struct {
 	// (e.g. UpdateCompShareStopScheduler). Optional: if empty, the
 	// engine will attempt to discover it via GetProjectList at Init.
 	ProjectId string `yaml:"project_id"`
+
+	HTTP  HTTPConfig  `yaml:"http"`
+	MySQL MySQLConfig `yaml:"mysql"`
+	Meta  MetaConfig  `yaml:"meta"`
+}
+
+// HTTPConfig holds settings for the HTTP server mode (compshare-agent server).
+// All duration fields accept Go duration strings (e.g. "30s", "1m").
+type HTTPConfig struct {
+	ListenAddr           string        `yaml:"listen_addr"`
+	ReadTimeout          time.Duration `yaml:"read_timeout"`
+	WriteTimeout         time.Duration `yaml:"write_timeout"`
+	SSEKeepaliveInterval time.Duration `yaml:"sse_keepalive_interval"`
+	MaxInputLength       int           `yaml:"max_input_length"`
+	PoolCapacity         int           `yaml:"pool_capacity"`
+	PoolIdleTTL          time.Duration `yaml:"pool_idle_ttl"`
+}
+
+// MySQLConfig holds connection settings for the MySQL backing store.
+// DSN is resolved from ${MYSQL_DSN} placeholder if the yaml value uses that form;
+// it is optional at Load time so CLI users are not forced to set the env var.
+type MySQLConfig struct {
+	DSN             string        `yaml:"dsn"`
+	MaxOpenConns    int           `yaml:"max_open_conns"`
+	MaxIdleConns    int           `yaml:"max_idle_conns"`
+	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
+}
+
+// MetaConfig provides the static metadata returned by GetMeta.
+type MetaConfig struct {
+	Welcome          string        `yaml:"welcome"`
+	SuggestedPrompts []string      `yaml:"suggested_prompts"`
+	MaxInputLength   int           `yaml:"max_input_length"`
 }
 
 type LLMConfig struct {
@@ -81,6 +115,12 @@ func Load(path string) (*Config, error) {
 	if err := applyRateLimitDefaults(&cfg.Agent.RateLimit); err != nil {
 		return nil, err
 	}
+	// mysql.dsn is optional at Load time: CLI path does not require it.
+	// The "server" sub-command must validate DSN presence before starting.
+	resolveOptionalDSN(&cfg.Agent.MySQL.DSN)
+	applyHTTPDefaults(&cfg.Agent.HTTP)
+	applyMySQLDefaults(&cfg.Agent.MySQL)
+	applyMetaDefaults(&cfg.Agent.Meta, cfg.Agent.HTTP.MaxInputLength)
 
 	return &cfg, nil
 }
@@ -168,4 +208,61 @@ func resolveOptionalPlaceholder(field *string, yamlPath string) error {
 
 func placeholder(envKey string) string {
 	return "${" + envKey + "}"
+}
+
+// resolveOptionalDSN resolves ${MYSQL_DSN} placeholder if present.
+// If the field is empty or uses some other form it is left as-is;
+// it is the server sub-command's responsibility to validate it.
+func resolveOptionalDSN(field *string) {
+	raw := strings.TrimSpace(*field)
+	if raw == placeholder("MYSQL_DSN") {
+		if v := os.Getenv("MYSQL_DSN"); v != "" {
+			*field = v
+		}
+	}
+}
+
+// applyHTTPDefaults fills zero-value fields with documented defaults.
+func applyHTTPDefaults(h *HTTPConfig) {
+	if h.ListenAddr == "" {
+		h.ListenAddr = "0.0.0.0:8080"
+	}
+	if h.ReadTimeout == 0 {
+		h.ReadTimeout = 30 * time.Second
+	}
+	// WriteTimeout == 0 is intentional for SSE; keep it.
+	if h.SSEKeepaliveInterval == 0 {
+		h.SSEKeepaliveInterval = 15 * time.Second
+	}
+	if h.MaxInputLength == 0 {
+		h.MaxInputLength = 4000
+	}
+	if h.PoolCapacity == 0 {
+		h.PoolCapacity = 200
+	}
+	if h.PoolIdleTTL == 0 {
+		h.PoolIdleTTL = 30 * time.Minute
+	}
+}
+
+// applyMySQLDefaults fills zero-value connection pool fields with documented defaults.
+// DSN is not defaulted here; it is optional at Load time.
+func applyMySQLDefaults(m *MySQLConfig) {
+	if m.MaxOpenConns == 0 {
+		m.MaxOpenConns = 20
+	}
+	if m.MaxIdleConns == 0 {
+		m.MaxIdleConns = 5
+	}
+	if m.ConnMaxLifetime == 0 {
+		m.ConnMaxLifetime = time.Hour
+	}
+}
+
+// applyMetaDefaults fills the meta section. MaxInputLength inherits from the
+// http section when omitted so both are always consistent.
+func applyMetaDefaults(meta *MetaConfig, httpMaxInputLength int) {
+	if meta.MaxInputLength == 0 {
+		meta.MaxInputLength = httpMaxInputLength
+	}
 }
