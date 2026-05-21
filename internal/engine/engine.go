@@ -179,14 +179,13 @@ type Engine struct {
 	// Read by executeDiagnosis guards for signal matching. Never mutated
 	// mid-turn.
 	lastUserMsg string
+	// currentCtx holds the context for the current ChatWithOptions call.
+	// Set at the start of ChatWithOptions and cleared (nil) on return.
+	currentCtx context.Context
 }
 
 func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 	cap := llm.LookupCapability(cfg.Agent.LLM.BaseURL, cfg.Agent.LLM.Model)
-	subject, ok := governance.SubjectKeyFromPublicKey(cfg.Agent.PublicKey)
-	if !ok {
-		fmt.Fprintln(os.Stderr, "warning: rate limiter using anonymous subject (public key missing)")
-	}
 	eng := &Engine{
 		llmClient: llm.NewClient(cfg.Agent.LLM),
 		confirmFn: confirmFn,
@@ -195,7 +194,7 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 		// single-instance deployment only. Multi-replica production needs a
 		// centralized limiter such as Redis or an API gateway.
 		rateLimiter:              governance.NewMemoryLimiter(cfg.Agent.RateLimit.Limits()),
-		rateLimitSubject:         subject,
+		rateLimitSubject:         governance.AnonymousSubjectKey,
 		lastInstanceQueryTurn:    -1,
 		lastMonitorTurn:          -1,
 		supportsObjectToolChoice: cap.SupportsObjectToolChoice,
@@ -215,6 +214,7 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 		llmClient:                client,
 		confirmFn:                confirmFn,
 		registry:                 entity.NewRegistry(),
+		rateLimitSubject:         governance.AnonymousSubjectKey,
 		lastInstanceQueryTurn:    -1,
 		lastMonitorTurn:          -1,
 		supportsObjectToolChoice: true,
@@ -480,6 +480,13 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 // monitor_history_unsupported) skip the LLM and therefore never fire callbacks.
 func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (string, error) {
 	e.userTurn++
+	e.currentCtx = ctx
+	defer func() { e.currentCtx = nil }()
+	if u, ok := tools.UserFrom(ctx); ok {
+		if subject, ok := governance.SubjectKeyFromOrganization(u.TopOrganizationID, u.OrganizationID); ok {
+			e.rateLimitSubject = subject
+		}
+	}
 	e.lastUserMsg = userMsg
 	e.readExpensiveCallsThisTurn = 0
 	e.requireKnowledgeCitationThisTurn = false
