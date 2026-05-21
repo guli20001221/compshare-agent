@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/refusal"
 	"github.com/compshare-agent/internal/router"
@@ -32,6 +33,19 @@ import (
 // When ≥2 post-LLM rules exist, factor them out to a sibling
 // internal/policy/postblock.go using the same router.Rule pattern.
 var enginePreBlock = router.New(
+	// Jailbreak detection runs FIRST in the chain. If a user message
+	// matches an instruction-override pattern we want to short-circuit
+	// before any other rule (or the LLM) reads the payload; later rules
+	// could otherwise eat the message ("ignore your billing rules" would
+	// look billing-shaped to a keyword matcher) and emit the wrong
+	// category. Detection itself is conservative-compound (verb + domain
+	// noun BOTH required), so the false-positive cost of running first
+	// is low.
+	router.Rule{
+		Match:    guardrails.DetectJailbreakAttempt,
+		Category: refusal.CategoryJailbreakAttempt,
+		Reply:    refusal.JailbreakAttempt,
+	},
 	router.Rule{
 		Match:    isAccountBillingUnsupported,
 		Category: refusal.CategoryAccountBilling,
