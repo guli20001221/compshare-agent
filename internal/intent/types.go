@@ -38,12 +38,13 @@ const (
 	TargetRefSlotPosition     TargetRefType = "slot_position"
 
 	// C15 Phase A additions (PR #89, 2026-05-21): platform-wide entity
-	// types that the planner may emit when the user references a zone,
+	// types for future planner output when the user references a zone,
 	// image, or GPU model directly (not their own instance). Validator
-	// accepts these as well-formed; the producer side (planner prompt
-	// directives) and consumer side (resolver → tool args) are NOT
-	// wired in Phase A — Phase B adds those after the byte-equal
-	// planner-prompt hash from C5 has been bumped intentionally.
+	// deliberately does NOT accept these in Phase A; the producer side
+	// (planner prompt directives) and consumer side (resolver → tool
+	// args) are also NOT wired. Phase B adds all three after the
+	// byte-equal planner-prompt hash from C5 has been bumped
+	// intentionally.
 	//
 	// Producer/consumer wiring lives behind feature gates so Phase A's
 	// dead-code introduction has zero runtime effect — the LLM never
