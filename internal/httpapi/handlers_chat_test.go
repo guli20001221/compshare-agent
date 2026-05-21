@@ -46,7 +46,12 @@ func (chatExecutor) Execute(_ context.Context, _ string, _ map[string]any) (map[
 // fakePool implements EnginePool and always returns the same engine.
 type fakePool struct{ eng *engine.Engine }
 
-func (p fakePool) Get(_ context.Context, _ string) (*engine.Engine, error) { return p.eng, nil }
+func (p fakePool) Lease(_ context.Context, _ store.Owner, _ string) (*engine.Engine, func(), error) {
+	return p.eng, func() {}, nil
+}
+func (p fakePool) Get(_ context.Context, _ store.Owner, _ string) (*engine.Engine, error) {
+	return p.eng, nil
+}
 
 // recordingMessages extends mockMessages to record Append and UpdateAssistant calls.
 type recordingMessages struct {

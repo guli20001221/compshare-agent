@@ -31,14 +31,16 @@ func filterHistory(messages []store.Message) []engine.HistoryMessage {
 	return history
 }
 
-// buildEngine constructs a fresh *engine.Engine for the given session, then
+// buildEngine constructs a fresh *engine.Engine for the given owner+session, then
 // rehydrates its history from the MessageStore. engine.Init() is deliberately
 // NOT called (HTTP path skips the welcome/suggestion pre-warm — see design §6.3).
-func (p *Pool) buildEngine(ctx context.Context, sessionID string) (*engine.Engine, error) {
+func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
 	eng := engine.New(p.cfg, denyConfirm)
 
 	// Fetch up to 100 prior messages for the session (sufficient for context
 	// window; engine.RehydrateHistory will trim to maxHistoryMessages anyway).
+	// owner is threaded through so that future callers may pass it to an
+	// owner-scoped ListBySession variant without API changes here.
 	msgs, _, err := p.messageStore.ListBySession(ctx, sessionID, 100, "")
 	if err != nil {
 		return nil, fmt.Errorf("agentpool: list messages for session %q: %w", sessionID, err)

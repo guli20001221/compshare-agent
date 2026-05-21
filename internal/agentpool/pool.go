@@ -33,15 +33,25 @@ const (
 	gcTickInterval  = 30 * time.Second
 )
 
+// entryKey is the composite map key used to scope engines by both owner and
+// session. Different owners with the same SessionID get independent engines.
+type entryKey struct {
+	Owner     store.Owner
+	SessionID string
+}
+
 // entry is one node in the LRU linked list.
+// mu serializes concurrent Chat calls on the same session; callers must hold
+// mu for the duration of the LLM/engine call.
 type entry struct {
-	sessionID   string
+	key         entryKey
 	eng         *engine.Engine
+	mu          sync.Mutex // serializes per-session engine access
 	lastTouched time.Time
 }
 
-// Pool is a concurrency-safe LRU cache of *engine.Engine keyed by session ID.
-// Entries are created lazily on Get misses by calling buildEngine, which
+// Pool is a concurrency-safe LRU cache of *engine.Engine keyed by (Owner, SessionID).
+// Entries are created lazily on Lease/Get misses by calling buildEngine, which
 // rehydrates history from the MessageStore. Call Close when done to stop the
 // background gc goroutine.
 type Pool struct {
@@ -51,8 +61,8 @@ type Pool struct {
 	idleTTL      time.Duration
 
 	mu      sync.Mutex
-	lruList *list.List               // front = most recently used
-	items   map[string]*list.Element // sessionID → list.Element(*entry)
+	lruList *list.List                 // front = most recently used
+	items   map[entryKey]*list.Element // (Owner,SessionID) → list.Element(*entry)
 
 	stopCh    chan struct{}
 	closeOnce sync.Once
@@ -83,7 +93,7 @@ func New(cfg *config.Config, ms store.MessageStore, opts Options) *Pool {
 		capacity:     cap,
 		idleTTL:      ttl,
 		lruList:      list.New(),
-		items:        make(map[string]*list.Element),
+		items:        make(map[entryKey]*list.Element),
 		stopCh:       make(chan struct{}),
 	}
 
@@ -92,28 +102,61 @@ func New(cfg *config.Config, ms store.MessageStore, opts Options) *Pool {
 	return p
 }
 
-// Get returns the cached *engine.Engine for sessionID, building a fresh one via
-// rehydration on a cache miss. It is safe for concurrent use.
+// Lease returns the cached *engine.Engine for (owner, sessionID) plus an unlock
+// closure. The per-entry mutex is held until the caller invokes the returned
+// release func, serializing concurrent Chat calls on the same session.
 //
-// Concurrency design: the lock is released during the potentially-slow
+//	eng, release, err := pool.Lease(ctx, owner, sessionID)
+//	if err != nil { ... }
+//	defer release()
+//	// safe to call eng.ChatWithOptions here
+//
+// Callers in the HTTP path MUST use Lease instead of Get to prevent concurrent
+// requests from interleaving ReAct history in the same engine.
+func (p *Pool) Lease(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, func(), error) {
+	e, err := p.getOrCreate(ctx, owner, sessionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	e.mu.Lock()
+	return e.eng, func() { e.mu.Unlock() }, nil
+}
+
+// Get returns the cached *engine.Engine for (owner, sessionID), building a fresh
+// one via rehydration on a cache miss. It is safe for concurrent use.
+//
+// Deprecated: HTTP-path callers should use Lease to serialize per-session engine
+// access. Get is retained for callers that do not require serialization (e.g.
+// read-only inspection, tests).
+func (p *Pool) Get(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
+	e, err := p.getOrCreate(ctx, owner, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return e.eng, nil
+}
+
+// getOrCreate finds or builds the entry for (owner, sessionID), updating LRU state.
+// Concurrency design: the pool lock is released during the potentially-slow
 // buildEngine call. After buildEngine returns we re-acquire the lock and
-// re-check whether another goroutine raced us to insert the same session; if
+// re-check whether another goroutine raced us to insert the same key; if
 // so, we discard the duplicate and return the winner already in the cache.
-func (p *Pool) Get(ctx context.Context, sessionID string) (*engine.Engine, error) {
+func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID string) (*entry, error) {
+	k := entryKey{Owner: owner, SessionID: sessionID}
+
 	// Fast path: cache hit.
 	p.mu.Lock()
-	if el, ok := p.items[sessionID]; ok {
+	if el, ok := p.items[k]; ok {
 		e := el.Value.(*entry)
 		e.lastTouched = time.Now()
 		p.lruList.MoveToFront(el)
-		eng := e.eng
 		p.mu.Unlock()
-		return eng, nil
+		return e, nil
 	}
 	p.mu.Unlock()
 
 	// Slow path: build a new engine outside the lock.
-	eng, err := p.buildEngine(ctx, sessionID)
+	eng, err := p.buildEngine(ctx, owner, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -122,12 +165,12 @@ func (p *Pool) Get(ctx context.Context, sessionID string) (*engine.Engine, error
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if el, ok := p.items[sessionID]; ok {
+	if el, ok := p.items[k]; ok {
 		// Another goroutine already inserted while we were building; use theirs.
 		e := el.Value.(*entry)
 		e.lastTouched = time.Now()
 		p.lruList.MoveToFront(el)
-		return e.eng, nil
+		return e, nil
 	}
 
 	// Evict LRU if at capacity.
@@ -136,13 +179,13 @@ func (p *Pool) Get(ctx context.Context, sessionID string) (*engine.Engine, error
 	}
 
 	e := &entry{
-		sessionID:   sessionID,
+		key:         k,
 		eng:         eng,
 		lastTouched: time.Now(),
 	}
 	el := p.lruList.PushFront(e)
-	p.items[sessionID] = el
-	return eng, nil
+	p.items[k] = el
+	return e, nil
 }
 
 // Close stops the background gc goroutine and waits for it to exit.
@@ -184,7 +227,7 @@ func (p *Pool) evictIdle() {
 		}
 		prev := el.Prev()
 		p.lruList.Remove(el)
-		delete(p.items, e.sessionID)
+		delete(p.items, e.key)
 		el = prev
 	}
 }
@@ -197,5 +240,5 @@ func (p *Pool) evictLRULocked() {
 	}
 	e := el.Value.(*entry)
 	p.lruList.Remove(el)
-	delete(p.items, e.sessionID)
+	delete(p.items, e.key)
 }

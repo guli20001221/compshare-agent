@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"strings"
@@ -52,7 +53,7 @@ type streamErrorEvent struct {
 //  1. Validates inputs and session ownership (pre-SSE, errors go via writeError).
 //  2. Persists user + assistant-placeholder rows.
 //  3. Opens the SSE stream and emits event:meta.
-//  4. Acquires an engine from the pool and calls ChatWithOptions.
+//  4. Acquires an engine from the pool (serialized via Lease) and calls ChatWithOptions.
 //  5. On completion, updates the assistant row and emits event:done or event:error.
 func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.Json) {
 	// -----------------------------------------------------------------------
@@ -87,6 +88,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	model := h.cfg.Agent.LLM.Model
 	reqUUID := base.RequestUUID
 
+	// TODO(phase2): wrap user/assistant Append + BumpUpdatedAtAndIncCount in a transaction.
 	if err := h.messages.Append(c.Request.Context(), store.Message{
 		ID:          userMsgID,
 		SessionID:   sessionID,
@@ -133,19 +135,19 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	})
 
 	// -----------------------------------------------------------------------
-	// 4. Acquire engine
+	// 4. Acquire engine (serialized per session via Lease)
 	// -----------------------------------------------------------------------
 	if h.pool == nil {
-		h.writeStreamError(c.Request.Context(), sw, base.Owner, assistantMsgID,
+		writeStreamError(sw, h.messages, base.Owner, assistantMsgID,
 			ErrInternal.WithMessage("%s", "engine pool not configured"))
 		return
 	}
-	agent, err := h.pool.Get(c.Request.Context(), sessionID)
+	agent, release, err := h.pool.Lease(c.Request.Context(), base.Owner, sessionID)
 	if err != nil {
-		h.writeStreamError(c.Request.Context(), sw, base.Owner, assistantMsgID,
-			ErrInternal.WithMessage("%s", err.Error()))
+		writeStreamError(sw, h.messages, base.Owner, assistantMsgID, AsAPIError(err))
 		return
 	}
+	defer release()
 
 	// -----------------------------------------------------------------------
 	// 5. Keepalive goroutine
@@ -238,9 +240,9 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 
 // writeStreamError updates the assistant message status to "error" and emits
 // an event:error frame after SSE has already started.
-func (h *Handlers) writeStreamError(ctx context.Context, sw *sse.Writer, owner store.Owner, msgID string, apiErr *APIError) {
+func writeStreamError(sw *sse.Writer, messages store.MessageStore, owner store.Owner, msgID string, apiErr *APIError) {
 	code := apiErr.Code
-	_ = h.messages.UpdateAssistant(context.Background(), owner, msgID,
+	_ = messages.UpdateAssistant(context.Background(), owner, msgID,
 		store.AssistantPatch{Status: "error", ErrorCode: &code})
 	_ = sw.WriteEvent("error", streamErrorEvent{Code: apiErr.Code, Message: apiErr.Message})
 }
@@ -250,5 +252,12 @@ func classifyChatError(err error) *APIError {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return ErrModelTimeout
 	}
-	return ErrModelError.WithMessage("%s", err.Error())
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	classified := AsAPIError(err)
+	if classified.Code == ErrInternal.Code {
+		return ErrModelError.WithMessage("%s", err.Error())
+	}
+	return classified
 }

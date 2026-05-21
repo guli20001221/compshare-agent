@@ -2,6 +2,8 @@ package agentpool_test
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,8 +46,10 @@ func minimalConfig() *config.Config {
 	}
 }
 
+var owner1 = store.Owner{TopOrganizationID: 1, OrganizationID: 1}
+
 // TestPoolHitReusesEngine verifies that two consecutive Get calls for the same
-// sessionID return the same *engine.Engine pointer and only call ListBySession once.
+// (owner, sessionID) return the same *engine.Engine pointer and only call ListBySession once.
 func TestPoolHitReusesEngine(t *testing.T) {
 	ms := &mockMessageStore{}
 	pool := agentpool.New(minimalConfig(), ms, agentpool.Options{
@@ -56,11 +60,11 @@ func TestPoolHitReusesEngine(t *testing.T) {
 
 	ctx := context.Background()
 
-	eng1, err := pool.Get(ctx, "sess-1")
+	eng1, err := pool.Get(ctx, owner1, "sess-1")
 	if err != nil {
 		t.Fatalf("first Get: %v", err)
 	}
-	eng2, err := pool.Get(ctx, "sess-1")
+	eng2, err := pool.Get(ctx, owner1, "sess-1")
 	if err != nil {
 		t.Fatalf("second Get: %v", err)
 	}
@@ -85,18 +89,18 @@ func TestPoolLRUEviction(t *testing.T) {
 
 	ctx := context.Background()
 
-	eng1, err := pool.Get(ctx, "sess-1")
+	eng1, err := pool.Get(ctx, owner1, "sess-1")
 	if err != nil {
 		t.Fatalf("Get sess-1: %v", err)
 	}
 
-	_, err = pool.Get(ctx, "sess-2")
+	_, err = pool.Get(ctx, owner1, "sess-2")
 	if err != nil {
 		t.Fatalf("Get sess-2: %v", err)
 	}
 
 	// sess-1 should have been evicted; re-Get rebuilds it as a new engine.
-	eng1b, err := pool.Get(ctx, "sess-1")
+	eng1b, err := pool.Get(ctx, owner1, "sess-1")
 	if err != nil {
 		t.Fatalf("second Get sess-1: %v", err)
 	}
@@ -123,7 +127,7 @@ func TestPoolIdleTTLEviction(t *testing.T) {
 
 	ctx := context.Background()
 
-	eng1, err := pool.Get(ctx, "sess-ttl")
+	eng1, err := pool.Get(ctx, owner1, "sess-ttl")
 	if err != nil {
 		t.Fatalf("first Get: %v", err)
 	}
@@ -135,7 +139,7 @@ func TestPoolIdleTTLEviction(t *testing.T) {
 	}, 1*time.Second, 10*time.Millisecond, "idle engine was not evicted within 1s")
 
 	// A fresh Get must rebuild the engine (new pointer, new ListBySession call).
-	eng2, err := pool.Get(ctx, "sess-ttl")
+	eng2, err := pool.Get(ctx, owner1, "sess-ttl")
 	if err != nil {
 		t.Fatalf("Get after eviction: %v", err)
 	}
@@ -184,4 +188,85 @@ func TestPoolCloseIdempotent(t *testing.T) {
 		pool.Close()
 		pool.Close()
 	})
+}
+
+// TestLeaseSerialization verifies that concurrent Lease calls for the same session
+// are serialized: the second caller blocks until the first releases.
+func TestLeaseSerialization(t *testing.T) {
+	ms := &mockMessageStore{}
+	pool := agentpool.New(minimalConfig(), ms, agentpool.Options{
+		Capacity: 10,
+		IdleTTL:  5 * time.Minute,
+	})
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	// First lease — hold it.
+	eng1, release1, err := pool.Lease(ctx, owner1, "sess-serial")
+	require.NoError(t, err)
+
+	var (
+		secondStarted  int32
+		secondFinished int32
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		atomic.StoreInt32(&secondStarted, 1)
+		eng2, release2, err2 := pool.Lease(ctx, owner1, "sess-serial")
+		require.NoError(t, err2)
+		defer release2()
+		// eng2 must be the same instance as eng1 (cache hit).
+		require.True(t, eng1 == eng2, "expected same engine pointer from Lease cache hit")
+		atomic.StoreInt32(&secondFinished, 1)
+	}()
+
+	// Give the goroutine time to start and block on the entry mutex.
+	require.Eventually(t, func() bool {
+		return atomic.LoadInt32(&secondStarted) == 1
+	}, time.Second, time.Millisecond, "second goroutine never started")
+
+	// Allow a brief moment for the goroutine to hit the Lease call.
+	time.Sleep(5 * time.Millisecond)
+
+	// The second caller should still be blocked.
+	require.Equal(t, int32(0), atomic.LoadInt32(&secondFinished), "second Lease should be blocked while first holds lock")
+
+	// Release first lease — now second can proceed.
+	release1()
+
+	wg.Wait()
+	require.Equal(t, int32(1), atomic.LoadInt32(&secondFinished), "second Lease should complete after first releases")
+}
+
+// TestLeaseOwnerScoping verifies that different owners with the same sessionID
+// get independent engine instances.
+func TestLeaseOwnerScoping(t *testing.T) {
+	ms := &mockMessageStore{}
+	pool := agentpool.New(minimalConfig(), ms, agentpool.Options{
+		Capacity: 10,
+		IdleTTL:  5 * time.Minute,
+	})
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	ownerA := store.Owner{TopOrganizationID: 1, OrganizationID: 10}
+	ownerB := store.Owner{TopOrganizationID: 2, OrganizationID: 20}
+	const sessID = "same-session-id"
+
+	engA, releaseA, err := pool.Lease(ctx, ownerA, sessID)
+	require.NoError(t, err)
+	releaseA()
+
+	engB, releaseB, err := pool.Lease(ctx, ownerB, sessID)
+	require.NoError(t, err)
+	releaseB()
+
+	require.True(t, engA != engB, "different owners must get different engine instances for the same sessionID")
+	require.Equal(t, 2, ms.listCalls, "expected two ListBySession calls (one per owner)")
+	require.Equal(t, 2, pool.SizeForTest(), "pool should hold two entries (one per owner)")
 }
