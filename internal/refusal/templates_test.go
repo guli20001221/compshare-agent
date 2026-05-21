@@ -63,6 +63,25 @@ func TestJailbreakAttempt_Anchors(t *testing.T) {
 	}
 }
 
+func TestOffTopic_Anchors(t *testing.T) {
+	want := []string{"算力平台", "回答范围", "专业人士", "GPU 规格"}
+	for _, anchor := range want {
+		if !strings.Contains(OffTopic, anchor) {
+			t.Errorf("OffTopic lost anchor %q", anchor)
+		}
+	}
+	// Anti-stale-hotline guard — refusal must redirect to professional
+	// channels without embedding specific phone numbers. A jurisdiction-
+	// mismatched or stale hotline number would be worse than a generic
+	// redirect. Per PR #155 review item 1.
+	forbidden := []string{"010-", "1-800", "hotline", "12320"}
+	for _, bad := range forbidden {
+		if strings.Contains(OffTopic, bad) {
+			t.Errorf("OffTopic reintroduced forbidden stale-hotline phrase %q", bad)
+		}
+	}
+}
+
 func TestCategoryStrings_NeverChange(t *testing.T) {
 	// Downstream MySQL ingest + per-category eval depend on these
 	// EXACT strings as a stable contract. Changing them would break
@@ -72,6 +91,7 @@ func TestCategoryStrings_NeverChange(t *testing.T) {
 		"CategoryMonitorHistory":   "monitor_history_unsupported",
 		"CategoryResourceShortage": "resource_shortage_226604",
 		"CategoryJailbreakAttempt": "jailbreak_attempt",
+		"CategoryOffTopic":         "off_topic_refused",
 	}
 	if CategoryAccountBilling != cases["CategoryAccountBilling"] {
 		t.Errorf("CategoryAccountBilling = %q; want %q", CategoryAccountBilling, cases["CategoryAccountBilling"])
@@ -84,5 +104,8 @@ func TestCategoryStrings_NeverChange(t *testing.T) {
 	}
 	if CategoryJailbreakAttempt != cases["CategoryJailbreakAttempt"] {
 		t.Errorf("CategoryJailbreakAttempt = %q; want %q", CategoryJailbreakAttempt, cases["CategoryJailbreakAttempt"])
+	}
+	if CategoryOffTopic != cases["CategoryOffTopic"] {
+		t.Errorf("CategoryOffTopic = %q; want %q", CategoryOffTopic, cases["CategoryOffTopic"])
 	}
 }
