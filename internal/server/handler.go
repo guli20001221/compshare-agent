@@ -98,32 +98,53 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	sendChan <- readyMsg
 
 	// Writer goroutine: drains sendChan to the WS until ctx cancels OR
-	// sendChan closes (which the reader does on exit).
+	// sendChan closes (which we do on exit, after chatLoop drains).
 	writerDone := make(chan struct{})
 	go s.writerLoop(r.Context(), conn, sendChan, writerDone)
 
-	// Reader loop: blocks on conn.Read. Exits on close, error, or
-	// shutdown. On exit it closes sendChan so the writer drains.
-	s.readerLoop(r.Context(), conn, sess, tenant, connectionID, sendChan, bridge, &currentReqUUID)
+	// PR10: split reader and chat into separate goroutines so a Chat in
+	// progress (especially one blocked in confirmFn waiting for the
+	// client's confirm_response frame) does NOT prevent the reader from
+	// processing that very frame. Pre-PR10 this caused a 30s deadlock on
+	// every confirm round-trip — the reader was stuck inside runChatTurn
+	// waiting for Chat to return while Chat was stuck inside confirmFn
+	// waiting for the reader to deliver confirm_response.
+	turnQueue := make(chan ClientMessage, 1)
+	chatDone := make(chan struct{})
+	go s.chatLoop(r.Context(), sess, tenant, connectionID, turnQueue, sendChan, &currentReqUUID, chatDone)
+
+	// Reader loop: blocks on conn.Read; dispatches user_message frames to
+	// turnQueue (so chatLoop runs them) and confirm_response frames to the
+	// bridge (so any in-flight Chat unblocks). Exits on close / error.
+	s.readerLoop(r.Context(), conn, tenant, connectionID, sendChan, bridge, turnQueue)
+
+	// Reader exited → no more frames will arrive. Tell chatLoop to drain
+	// any queued message (buffer is 1) and exit. We must wait for chatDone
+	// BEFORE closing sendChan: chatLoop writes to sendChan from runChatTurn
+	// (tool events, answer_final, done) and from the bridge's confirmFn
+	// path; closing sendChan while it's still writing would panic.
+	close(turnQueue)
+	<-chatDone
 
 	close(sendChan)
 	<-writerDone
 }
 
 // readerLoop reads frames until the connection closes. Each user_message
-// becomes one Chat round-trip; confirm_response frames are routed to the
-// bridge; ping replies pong; everything else is an error frame.
+// is dispatched to turnQueue (so chatLoop processes it serially);
+// confirm_response frames are routed directly to the bridge so any
+// in-flight Chat unblocks immediately; ping replies pong; everything
+// else is an error frame. The reader NEVER calls runChatTurn directly —
+// that's chatLoop's job — which is what unblocks the confirm round-trip.
 func (s *Server) readerLoop(
 	ctx context.Context,
 	conn *websocket.Conn,
-	sess *engine.Engine,
 	tenant TenantCtx,
 	connectionID string,
 	sendChan chan<- ServerMessage,
 	bridge *confirmBridge,
-	currentReqUUID *atomicString,
+	turnQueue chan<- ClientMessage,
 ) {
-	turnIndex := 0
 	for {
 		var msg ClientMessage
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
@@ -137,14 +158,36 @@ func (s *Server) readerLoop(
 		case ClientMsgPing:
 			tryEnqueue(sendChan, ServerMessage{Type: ServerMsgPong})
 		case ClientMsgConfirmResponse:
+			// Route directly to bridge — NOT via turnQueue. The bridge's
+			// OnClientResponse is non-blocking (select-default) and exists
+			// precisely so this frame can be delivered while chatLoop is
+			// blocked inside engine.Chat waiting for it.
 			if !bridge.OnClientResponse(msg.RequestUUID, msg.Confirmed) {
 				log.Printf("orphan confirm_response tenant=%d/%d uuid=%q",
 					tenant.TopOrgID, tenant.OrgID, msg.RequestUUID)
 			}
 		case ClientMsgUserMessage:
-			turnIndex++
-			currentReqUUID.set(msg.RequestUUID)
-			s.runChatTurn(ctx, sess, tenant, connectionID, turnIndex, msg, sendChan)
+			// Try to enqueue. turnQueue is buffer=1: chatLoop is either
+			// idle (instant enqueue) OR running the previous turn (queue
+			// holds the next one). If a second user_message arrives while
+			// the buffer is also full, the client violated the "one turn
+			// at a time" contract — surface as protocol_violation rather
+			// than silently dropping or unbounded-buffering.
+			select {
+			case turnQueue <- msg:
+			case <-ctx.Done():
+				return
+			default:
+				tryEnqueue(sendChan, ServerMessage{
+					Type:        ServerMsgError,
+					RequestUUID: msg.RequestUUID,
+					Code:        ErrCodeProtocolViolation,
+					Message:     "previous turn still in progress; wait for done before sending next user_message",
+				})
+			}
+			// Note: currentReqUUID is set by chatLoop before invoking Chat —
+			// not here — so the value matches the turn actually being
+			// processed, not one buffered in turnQueue.
 		default:
 			tryEnqueue(sendChan, ServerMessage{
 				Type:        ServerMsgError,
@@ -153,6 +196,40 @@ func (s *Server) readerLoop(
 				Message:     fmt.Sprintf("unknown client message type %q", msg.Type),
 			})
 		}
+	}
+}
+
+// chatLoop drains turnQueue and processes each user_message serially via
+// runChatTurn. It owns the turnIndex counter (so per-connection ordering
+// is preserved) AND sets currentReqUUID just before invoking Chat so the
+// bridge's confirmFn closure always sees the correct active turn. Exits
+// when turnQueue is closed (reader returned).
+//
+// PR10 lifecycle: handleWS closes turnQueue after readerLoop returns; a
+// possibly mid-flight Chat continues to completion before chatLoop exits,
+// up to chatTurnTimeout. confirmFn's own 30s timeout caps the worst case
+// when reader has died with a confirm in flight.
+func (s *Server) chatLoop(
+	ctx context.Context,
+	sess *engine.Engine,
+	tenant TenantCtx,
+	connectionID string,
+	turnQueue <-chan ClientMessage,
+	sendChan chan<- ServerMessage,
+	currentReqUUID *atomicString,
+	done chan<- struct{},
+) {
+	defer close(done)
+	turnIndex := 0
+	for msg := range turnQueue {
+		turnIndex++
+		// Set BEFORE invoking Chat — confirmFn's closure reads this to
+		// stamp confirm_required frames with the correct RequestUUID.
+		// Setting in chatLoop (rather than the reader) ensures the value
+		// reflects the turn actively being processed, not the next one
+		// already buffered.
+		currentReqUUID.set(msg.RequestUUID)
+		s.runChatTurn(ctx, sess, tenant, connectionID, turnIndex, msg, sendChan)
 	}
 }
 
