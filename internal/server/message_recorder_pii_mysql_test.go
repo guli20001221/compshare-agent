@@ -4,7 +4,7 @@
 // CI doesn't require a live MySQL. Run manually with:
 //
 //   go test -tags=mysql_integration ./internal/server/... \
-//     -run TestMessageRecorder_MySQLPersistedRowIsRedacted -count=1 -v
+//     -run TestMessageRecorder_MySQLPersistedRowIsRedacted_BothSides -count=1 -v
 //
 // Default DSN points at the local Docker MySQL used during PR #1
 // verification; override via TEST_MYSQL_DSN if you start the container
@@ -26,7 +26,7 @@ import (
 
 const defaultTestDSN = "root:devonly@tcp(127.0.0.1:3307)/compshare_agent?charset=utf8mb4&parseTime=true&loc=Asia%2FShanghai"
 
-// TestMessageRecorder_MySQLPersistedRowIsRedacted is the live-MySQL
+// TestMessageRecorder_MySQLPersistedRowIsRedacted_BothSides is the live-MySQL
 // integration test pinning the Guardrails A contract end-to-end: when
 // Record fires a PII-laden user message, the row that lands in
 // agent_messages.user_message has phone/ID/email/bank-card placeholders
@@ -39,7 +39,7 @@ const defaultTestDSN = "root:devonly@tcp(127.0.0.1:3307)/compshare_agent?charset
 // values (e.g. a future logging interceptor adding raw entry.Original
 // or a request-id mismatch overwriting the column). End-to-end SELECT
 // of the persisted row closes that gap.
-func TestMessageRecorder_MySQLPersistedRowIsRedacted(t *testing.T) {
+func TestMessageRecorder_MySQLPersistedRowIsRedacted_BothSides(t *testing.T) {
 	dsn := os.Getenv("TEST_MYSQL_DSN")
 	if dsn == "" {
 		dsn = defaultTestDSN
@@ -51,6 +51,13 @@ func TestMessageRecorder_MySQLPersistedRowIsRedacted(t *testing.T) {
 
 	requestUUID := fmt.Sprintf("pii-it-%d", time.Now().UnixNano())
 	rawMsg := "我叫张三,手机 13800138000,邮箱 user@example.com,身份证 110101199003078888,卡号 4532015112830366,实例 uhost-abc123 在 cn-wlcb-01 跑 4090"
+	rawAssistantMsg := `您的实例 uhost-abc123 已启动:
+公网 IP: 1.2.3.4
+区域: cn-wlcb-01
+GPU: 4090 (24GB)
+项目 ID: 12345678-1234-1234-1234-1234567890ab
+AccessKey="AKIAIOSFODNN7EXAMPLE"
+Jupyter token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTYifQ.signaturevalue123abc`
 	entry := MessageEntry{
 		RequestUUID:      requestUUID,
 		TopOrgID:         9001,
@@ -58,7 +65,7 @@ func TestMessageRecorder_MySQLPersistedRowIsRedacted(t *testing.T) {
 		ConnectionID:     "pii-it-conn",
 		CreatedAt:        time.Now(),
 		UserMessage:      rawMsg,
-		AssistantMessage: "ok",
+		AssistantMessage: rawAssistantMsg,
 		Status:           "success",
 		Model:            "deepseek-v4-flash",
 		LatencyMS:        100,
@@ -77,11 +84,11 @@ func TestMessageRecorder_MySQLPersistedRowIsRedacted(t *testing.T) {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	var persisted string
+	var persistedUser, persistedAssistant string
 	err = db.QueryRow(
-		"SELECT user_message FROM agent_messages WHERE request_uuid = ?",
+		"SELECT user_message, assistant_message FROM agent_messages WHERE request_uuid = ?",
 		requestUUID,
-	).Scan(&persisted)
+	).Scan(&persistedUser, &persistedAssistant)
 	if err != nil {
 		t.Fatalf("SELECT: %v", err)
 	}
@@ -89,9 +96,11 @@ func TestMessageRecorder_MySQLPersistedRowIsRedacted(t *testing.T) {
 		_, _ = db.Exec("DELETE FROM agent_messages WHERE request_uuid = ?", requestUUID)
 	})
 
-	t.Logf("persisted user_message: %s", persisted)
+	t.Logf("persisted user_message: %s", persistedUser)
+	t.Logf("persisted assistant_message: %s", persistedAssistant)
 
-	mustHave := []string{
+	// Guardrails A: user_message PII redaction.
+	userMustHave := []string{
 		"[已脱敏:手机号]",
 		"[已脱敏:邮箱]",
 		"[已脱敏:身份证]",
@@ -100,20 +109,48 @@ func TestMessageRecorder_MySQLPersistedRowIsRedacted(t *testing.T) {
 		"cn-wlcb-01",
 		"4090",
 	}
-	for _, needle := range mustHave {
-		if !strings.Contains(persisted, needle) {
-			t.Errorf("persisted user_message missing %q: %q", needle, persisted)
+	for _, needle := range userMustHave {
+		if !strings.Contains(persistedUser, needle) {
+			t.Errorf("persisted user_message missing %q: %q", needle, persistedUser)
 		}
 	}
-	mustNotHave := []string{
+	userMustNotHave := []string{
 		"13800138000",
 		"user@example.com",
 		"110101199003078888",
 		"4532015112830366",
 	}
-	for _, needle := range mustNotHave {
-		if strings.Contains(persisted, needle) {
-			t.Errorf("raw PII %q leaked into persisted user_message: %q", needle, persisted)
+	for _, needle := range userMustNotHave {
+		if strings.Contains(persistedUser, needle) {
+			t.Errorf("raw PII %q leaked into persisted user_message: %q", needle, persistedUser)
+		}
+	}
+
+	// Guardrails B: assistant_message output leak redaction.
+	assistantMustHave := []string{
+		"[已脱敏:IP]",
+		"[已脱敏:项目ID]",
+		"[已脱敏:凭据]",
+		"[已脱敏:令牌]",
+		"uhost-abc123",
+		"cn-wlcb-01",
+		"4090",
+		"24GB",
+	}
+	for _, needle := range assistantMustHave {
+		if !strings.Contains(persistedAssistant, needle) {
+			t.Errorf("persisted assistant_message missing %q: %q", needle, persistedAssistant)
+		}
+	}
+	assistantMustNotHave := []string{
+		"1.2.3.4",
+		"12345678-1234-1234-1234-1234567890ab",
+		"AKIAIOSFODNN7EXAMPLE",
+		"signaturevalue123abc",
+	}
+	for _, needle := range assistantMustNotHave {
+		if strings.Contains(persistedAssistant, needle) {
+			t.Errorf("output leak %q escaped redaction: %q", needle, persistedAssistant)
 		}
 	}
 }

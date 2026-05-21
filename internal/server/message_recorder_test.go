@@ -181,6 +181,70 @@ func TestMessageRecorder_Record_RedactsPII(t *testing.T) {
 	}
 }
 
+// TestMessageRecorder_Record_RedactsOutputLeak asserts the Guardrails B
+// contract: assistant_message has IP / project UUID / credentials /
+// tokens redacted at the same Record() boundary as user_message PII.
+// Routing-relevant tokens (instance IDs, GPU models, zone codes, prices)
+// survive — operators can still read what the agent answered without
+// seeing customer credentials.
+func TestMessageRecorder_Record_RedactsOutputLeak(t *testing.T) {
+	r := &MessageRecorder{
+		queue:  make(chan MessageEntry, 2),
+		logger: log.New(io.Discard, "", 0),
+	}
+	rawAssistant := `您的实例 uhost-abc123 已启动:
+公网 IP: 1.2.3.4
+区域: cn-wlcb-01
+GPU: 4090 (24GB)
+项目 ID: 12345678-1234-1234-1234-1234567890ab
+AccessKey="AKIAIOSFODNN7EXAMPLE"
+Jupyter token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTYifQ.signaturevalue123abc`
+
+	if err := r.Record(MessageEntry{
+		RequestUUID:      "output-leak-test",
+		AssistantMessage: rawAssistant,
+	}); err != nil {
+		t.Fatalf("Record returned err: %v", err)
+	}
+
+	var queued MessageEntry
+	select {
+	case queued = <-r.queue:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("Record did not enqueue within 100ms")
+	}
+
+	for _, leak := range []string{
+		"1.2.3.4",
+		"12345678-1234-1234-1234-1234567890ab",
+		"AKIAIOSFODNN7EXAMPLE",
+		"signaturevalue123abc",
+	} {
+		if contains(queued.AssistantMessage, leak) {
+			t.Errorf("output leak %q escaped redaction: %q", leak, queued.AssistantMessage)
+		}
+	}
+
+	for _, placeholder := range []string{
+		"[已脱敏:IP]",
+		"[已脱敏:项目ID]",
+		"[已脱敏:凭据]",
+		"[已脱敏:令牌]",
+	} {
+		if !contains(queued.AssistantMessage, placeholder) {
+			t.Errorf("placeholder %q missing from queued AssistantMessage: %q",
+				placeholder, queued.AssistantMessage)
+		}
+	}
+
+	for _, must := range []string{"uhost-abc123", "cn-wlcb-01", "4090", "24GB"} {
+		if !contains(queued.AssistantMessage, must) {
+			t.Errorf("routing/spec token %q incorrectly masked from %q",
+				must, queued.AssistantMessage)
+		}
+	}
+}
+
 // contains is a tiny helper so this test doesn't need to import strings
 // just for one assertion.
 func contains(haystack, needle string) bool {

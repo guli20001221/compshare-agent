@@ -104,16 +104,20 @@ func NewMessageRecorder(dsn string, opts MessageRecorderOptions) (*MessageRecord
 // warns on queue saturation to avoid stalling Engine.Chat on a slow DB.
 // Returns nil even on drop — drop is a documented outcome, not an error.
 //
-// PII redaction is applied to entry.UserMessage at this boundary
-// (Guardrails A): the queued row, in-flight batch, and DB-bound INSERT
-// all see the redacted form. Routing-relevant tokens (instance IDs,
-// GPU model numbers, zone codes) pass through unchanged. See
-// internal/guardrails/pii.go for the pattern set + Luhn validation.
+// Two-sided redaction:
+//   - Guardrails A (entry.UserMessage):    phone / ID / email / Luhn-card
+//   - Guardrails B (entry.AssistantMessage): IP / project UUID /
+//     credentials / bearer-or-JWT tokens
+//
+// Both redactions are routing-safe by construction — GPU model numbers,
+// instance IDs, zone codes, and prices survive on both sides. See
+// internal/guardrails/{pii,output}.go for the pattern sets.
 func (r *MessageRecorder) Record(entry MessageEntry) error {
 	if r == nil {
 		return nil // no-op when recorder not configured
 	}
 	entry.UserMessage = guardrails.RedactPII(entry.UserMessage)
+	entry.AssistantMessage = guardrails.RedactOutputLeak(entry.AssistantMessage)
 	select {
 	case r.queue <- entry:
 		return nil
