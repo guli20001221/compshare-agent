@@ -11,6 +11,33 @@
 // (uhost-/uhostid-), zone codes (cn-wlcb-01), or IPv4 segments. ID-card
 // pattern requires the YYYYMMDD birth-date substructure, ruling out
 // 18-digit hex strings.
+//
+// IN scope:
+//   - agent_messages.user_message via internal/server.MessageRecorder.Record
+//
+// NOT in scope (verify before adding callers):
+//   - agent_traces.trace_json — TraceRecord has no raw user text field
+//     (only UserMsgHash), so the column never contains the typed string.
+//   - In-process agent state (planner UserText, capability resolver,
+//     intent handler input) — agent must see the raw routing signal so
+//     "4090 多少钱" routes to pricing; redacting upstream would break
+//     routing. Redaction is a persistence boundary concern.
+//   - CLI file-trace sink (cmd/agent.go) — file traces live in the user's
+//     own workspace, not in shared MySQL; out of scope per ticket.
+//
+// Known false-positive surface (acceptable per ticket):
+//   - 17-digit Luhn-valid sequences redact as bank-card (ISO/IEC 7812
+//     allows 12-19; we floor at 16 to dodge trace IDs but 17 is in
+//     range). Operator metrics tracking redaction count should expect
+//     occasional FPs from unrelated 17-digit IDs that happen to Luhn-pass.
+//   - 18-digit numeric strings whose substring structurally parses as a
+//     19xx/20xx birth date + 01-31 day will redact as ID card (regex is
+//     a pre-filter, not a calendar validator). Real-world FP rate is
+//     low (the birth-date substructure constrains heavily) but not zero.
+//   - Full-width digit forms (e.g. "１３８００１３８０００") pass through —
+//     regex is ASCII-digit-only. Chinese mobile UIs render half-width
+//     by default; full-width is a determined leak vector left out of
+//     this PR's scope.
 package guardrails
 
 import (
