@@ -2931,6 +2931,15 @@ func phase1ResourcePlan() intent.Plan {
 	}
 }
 
+func phase1GPUSpecsPlan() intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentGPUSpecsQuery,
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    0.9,
+	}
+}
+
 func phase1ResourcePlanWithoutTarget() intent.Plan {
 	return intent.Plan{
 		SchemaVersion: intent.SchemaVersion,
@@ -4358,6 +4367,62 @@ func TestPhase1CutoverResourcePlanUsesGroundedRenderer(t *testing.T) {
 	assert.True(t, rendererTraces[0].Enabled)
 	assert.Equal(t, "rendered", rendererTraces[0].Status)
 	assert.Equal(t, "resource_info", rendererTraces[0].EnvelopeKind)
+	require.Len(t, rendererTraces[0].InputEnvelopeHashes, 1)
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, rendererTraces[0].InputEnvelopeHashes[0])
+}
+
+func TestPhase1CutoverGPUSpecsPlanUsesGroundedRenderer(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1GPUSpecsPlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{
+					"Name":           "4090",
+					"GraphicsMemory": map[string]any{"Value": 24},
+					"MachineSizes": []any{
+						map[string]any{
+							"Gpu": float64(1),
+							"Collection": []any{
+								map[string]any{"Cpu": float64(16), "Memory": []any{float64(64), float64(94)}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}}
+	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+		Text:            "renderer says 4090 has 24GB",
+		Model:           "deepseek-v4-flash",
+		AttributionMode: grounded.AttributionEnvelope,
+		EnvelopeHash:    "sha256:renderer-envelope",
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentGPUSpecsQuery},
+		Model:          "deepseek-v4-flash",
+	})
+	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	var rendererTraces []observability.RendererTrace
+	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
+		rendererTraces = append(rendererTraces, trace)
+	})
+
+	reply, err := eng.Chat(context.Background(), "4090 显存多大", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "renderer says 4090 has 24GB", reply)
+	assert.Empty(t, mock.calls, "grounded renderer must not re-enter ReAct")
+	assert.Equal(t, []string{"DescribeAvailableCompShareInstanceTypes"}, executor.calls)
+	require.Len(t, groundedRenderer.requests, 1)
+	assert.Contains(t, groundedRenderer.requests[0].Fallback, "显存=24GB")
+	assert.Equal(t, "gpu_specs_query", string(groundedRenderer.requests[0].Envelope.Kind))
+	require.Len(t, rendererTraces, 1)
+	assert.True(t, rendererTraces[0].Enabled)
+	assert.Equal(t, "rendered", rendererTraces[0].Status)
+	assert.Equal(t, "gpu_specs_query", rendererTraces[0].EnvelopeKind)
 	require.Len(t, rendererTraces[0].InputEnvelopeHashes, 1)
 	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, rendererTraces[0].InputEnvelopeHashes[0])
 }

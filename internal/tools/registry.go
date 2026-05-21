@@ -9,13 +9,13 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "GetGPUSpecs",
-			Description: "查询 GPU 型号的详细规格参数（显存、算力、最大卡数、适用场景等）。不传 GpuType 则返回所有 GPU 规格概览。",
+			Description: "查询 GPU 型号的概览规格参数（显存、算力、最大卡数、适用场景等），不展开控制台全部 CPU/内存/GPU 合法组合。用户明确要求所有/完整规格或某型号所有配置时，应使用 DescribeAvailableCompShareInstanceTypes。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"GpuType": map[string]any{
 						"type":        "string",
-						"description": "GPU 类型，如 4090 / A100 / H20 / 3090 等。不传则返回全部 GPU 规格。",
+						"description": "GPU 类型，如 4090 / A100 / H20 / 3090 等。不传则返回全部 GPU 概览规格。",
 					},
 				},
 				"required": []string{},
@@ -74,7 +74,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeAvailableCompShareInstanceTypes",
-			Description: "获取可用 GPU 机型列表及每种机型的合法 CPU/内存/GPU 组合。可用于回答 GPU 机型是否可售、是否有货、是否售罄；返回 Status（Normal/SoldOut），不返回精确剩余数量。创建实例前也可调用此接口确认合法配置。注意：返回的 Memory 单位为 GB，创建实例时需转换为 MB。",
+			Description: "获取可用 GPU 机型列表及每种机型的合法 CPU/内存/GPU 组合。用于回答所有/完整 GPU 规格、某型号所有规格、CPU/内存组合、可选配置，也可用于回答 GPU 机型是否可售/是否售罄；返回 Status（Normal/SoldOut），不返回精确剩余数量。注意：返回的 Memory 单位为 GB，创建实例时需转换为 MB。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -85,7 +85,7 @@ var Registry = []openai.Tool{
 					"MachineTypes": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
-						"description": "按机型名称筛选，如 [\"4090\", \"H20\"]",
+						"description": "按完整机型名称精确筛选，如 [\"H20\"]。用户问 4090 的所有规格、RTX40 系列、某型号家族/变体时不要传此参数，应先查全量再保留 4090、4090_48G 等相关变体，避免漏规格。",
 					},
 				},
 				"required": []string{},
