@@ -114,6 +114,88 @@ func TestMessageRecorder_RecordNonBlocking(t *testing.T) {
 	}
 }
 
+// TestMessageRecorder_Record_RedactsPII asserts the Guardrails A
+// contract: user-typed PII (phone / ID card / email / Luhn-valid bank
+// card) is redacted by the time the row leaves Record, BEFORE it
+// reaches the in-memory queue. Routing-relevant tokens (instance IDs,
+// GPU model numbers, zone codes) pass through unchanged.
+//
+// Encodes WHY: the redaction boundary must sit early enough that the
+// raw PII never exists outside the caller's stack — drop logs,
+// in-flight batches, and INSERT params all see redacted text.
+func TestMessageRecorder_Record_RedactsPII(t *testing.T) {
+	r := &MessageRecorder{
+		queue:  make(chan MessageEntry, 2),
+		logger: log.New(io.Discard, "", 0),
+	}
+	rawUserMessage := "我叫张三,手机 13800138000,邮箱 user@example.com,身份证 110101199003078888,卡号 4532015112830366,实例 uhost-abc123 在 cn-wlcb-01 跑 4090"
+	if err := r.Record(MessageEntry{
+		RequestUUID: "pii-test",
+		UserMessage: rawUserMessage,
+	}); err != nil {
+		t.Fatalf("Record returned err: %v", err)
+	}
+
+	var queued MessageEntry
+	select {
+	case queued = <-r.queue:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("Record did not enqueue within 100ms")
+	}
+
+	// Raw PII tokens must NOT survive Record.
+	for _, raw := range []string{
+		"13800138000",
+		"user@example.com",
+		"110101199003078888",
+		"4532015112830366",
+	} {
+		if contains(queued.UserMessage, raw) {
+			t.Errorf("raw PII %q leaked into queued UserMessage: %q", raw, queued.UserMessage)
+		}
+	}
+
+	// Redaction placeholders must be present (Phone / ID / Email / Bank).
+	for _, placeholder := range []string{
+		"[已脱敏:手机号]",
+		"[已脱敏:邮箱]",
+		"[已脱敏:身份证]",
+		"[已脱敏:银行卡]",
+	} {
+		if !contains(queued.UserMessage, placeholder) {
+			t.Errorf("placeholder %q missing from queued UserMessage: %q", placeholder, queued.UserMessage)
+		}
+	}
+
+	// Routing-relevant tokens MUST survive (the explicit non-mask
+	// invariant). If any of these is masked, PII redaction breaks the
+	// actual routing signal user-input carries.
+	for _, routingToken := range []string{
+		"uhost-abc123", // instance ID
+		"cn-wlcb-01",   // zone
+		"4090",         // GPU model
+	} {
+		if !contains(queued.UserMessage, routingToken) {
+			t.Errorf("routing-signal token %q was incorrectly masked from %q", routingToken, queued.UserMessage)
+		}
+	}
+}
+
+// contains is a tiny helper so this test doesn't need to import strings
+// just for one assertion.
+func contains(haystack, needle string) bool {
+	return len(needle) > 0 && len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0
+}
+
+func indexOf(haystack, needle string) int {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return i
+		}
+	}
+	return -1
+}
+
 // TestMessageRecorder_NilReceiver_Noop guards the convenience that
 // handler code can call r.Record on a nil recorder without crashing
 // (the optional-recorder pattern).

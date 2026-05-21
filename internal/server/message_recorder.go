@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/observability"
 
 	// MySQL driver registered transitively by internal/observability, but
@@ -102,10 +103,17 @@ func NewMessageRecorder(dsn string, opts MessageRecorderOptions) (*MessageRecord
 // Record buffers a row for asynchronous insert. Non-blocking: drops +
 // warns on queue saturation to avoid stalling Engine.Chat on a slow DB.
 // Returns nil even on drop — drop is a documented outcome, not an error.
+//
+// PII redaction is applied to entry.UserMessage at this boundary
+// (Guardrails A): the queued row, in-flight batch, and DB-bound INSERT
+// all see the redacted form. Routing-relevant tokens (instance IDs,
+// GPU model numbers, zone codes) pass through unchanged. See
+// internal/guardrails/pii.go for the pattern set + Luhn validation.
 func (r *MessageRecorder) Record(entry MessageEntry) error {
 	if r == nil {
 		return nil // no-op when recorder not configured
 	}
+	entry.UserMessage = guardrails.RedactPII(entry.UserMessage)
 	select {
 	case r.queue <- entry:
 		return nil
