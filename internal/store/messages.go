@@ -22,7 +22,7 @@ func (s *MySQLMessageStore) Append(ctx context.Context, m Message) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO messages (id, session_id, request_uuid, role, content, status, error_code, model, input_tokens, output_tokens, ttft_ms, latency_ms, metadata)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, m.ID, m.SessionID, m.RequestUUID, m.Role, m.Content, m.Status,
+`, m.ID, m.SessionID, nullableRequestUUID(m.RequestUUID), m.Role, m.Content, m.Status,
 		nullableStringPtr(m.ErrorCode), nullableStringPtr(m.Model),
 		nullableIntPtr(m.InputTokens), nullableIntPtr(m.OutputTokens),
 		nullableIntPtr(m.TTFTMs), nullableIntPtr(m.LatencyMs),
@@ -34,18 +34,29 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 }
 
 // UpdateAssistant patches an assistant message row after LLM response.
-func (s *MySQLMessageStore) UpdateAssistant(ctx context.Context, msgID string, patch AssistantPatch) error {
-	_, err := s.db.ExecContext(ctx, `
-UPDATE messages
-SET content = ?, status = ?, error_code = ?, input_tokens = ?, output_tokens = ?, ttft_ms = ?, latency_ms = ?
-WHERE id = ? AND role = 'assistant'
+// It JOINs sessions to enforce owner scoping. Returns sql.ErrNoRows if no row
+// was matched (message absent, wrong owner, or already deleted session).
+func (s *MySQLMessageStore) UpdateAssistant(ctx context.Context, owner Owner, msgID string, patch AssistantPatch) error {
+	res, err := s.db.ExecContext(ctx, `
+UPDATE messages m
+JOIN sessions s ON s.id = m.session_id
+SET m.content = ?, m.status = ?, m.error_code = ?, m.input_tokens = ?, m.output_tokens = ?, m.ttft_ms = ?, m.latency_ms = ?
+WHERE m.id = ? AND m.role = 'assistant'
+  AND s.top_organization_id = ? AND s.organization_id = ? AND s.deleted_at IS NULL
 `, patch.Content, patch.Status,
 		nullableStringPtr(patch.ErrorCode),
 		nullableIntPtr(patch.InputTokens), nullableIntPtr(patch.OutputTokens),
 		nullableIntPtr(patch.TTFTMs), nullableIntPtr(patch.LatencyMs),
-		msgID)
+		msgID, owner.TopOrganizationID, owner.OrganizationID)
 	if err != nil {
 		return fmt.Errorf("update assistant message: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update assistant message rows affected: %w", err)
+	}
+	if n == 0 {
+		return sql.ErrNoRows
 	}
 	return nil
 }
@@ -131,15 +142,18 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 	var messages []Message
 	for rows.Next() {
 		var m Message
-		var errorCode, model, metadata sql.NullString
+		var requestUUID, errorCode, model, metadata sql.NullString
 		var inputTokens, outputTokens, ttftMs, latencyMs sql.NullInt64
 		if err := rows.Scan(
-			&m.ID, &m.SessionID, &m.RequestUUID, &m.Role, &m.Content, &m.Status,
+			&m.ID, &m.SessionID, &requestUUID, &m.Role, &m.Content, &m.Status,
 			&errorCode, &model,
 			&inputTokens, &outputTokens, &ttftMs, &latencyMs,
 			&metadata, &m.CreatedAt,
 		); err != nil {
 			return nil, err
+		}
+		if requestUUID.Valid {
+			m.RequestUUID = &requestUUID.String
 		}
 		if errorCode.Valid {
 			m.ErrorCode = &errorCode.String
@@ -169,6 +183,14 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 		messages = append(messages, m)
 	}
 	return messages, rows.Err()
+}
+
+// nullableRequestUUID returns nil for nil pointer or empty string, otherwise the string value.
+func nullableRequestUUID(v *string) any {
+	if v == nil || *v == "" {
+		return nil
+	}
+	return *v
 }
 
 func nullableStringPtr(v *string) any {

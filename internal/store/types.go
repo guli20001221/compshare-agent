@@ -29,7 +29,7 @@ type Session struct {
 type Message struct {
 	ID           string
 	SessionID    string
-	RequestUUID  string
+	RequestUUID  *string
 	Role         string
 	Content      string
 	Status       string
@@ -58,13 +58,13 @@ type AssistantPatch struct {
 type SessionStore interface {
 	Create(ctx context.Context, owner Owner, title *string, ctxJSON json.RawMessage) (Session, error)
 	GetByID(ctx context.Context, owner Owner, sessionID string) (Session, error)
-	BumpUpdatedAtAndIncCount(ctx context.Context, sessionID string, delta int) error
+	BumpUpdatedAtAndIncCount(ctx context.Context, owner Owner, sessionID string, delta int) error
 }
 
 // MessageStore manages messages within sessions.
 type MessageStore interface {
 	Append(ctx context.Context, m Message) error
-	UpdateAssistant(ctx context.Context, msgID string, patch AssistantPatch) error
+	UpdateAssistant(ctx context.Context, owner Owner, msgID string, patch AssistantPatch) error
 	ListBySession(ctx context.Context, sessionID string, limit int, cursor string) ([]Message, string, error)
 	GetWithOwnerCheck(ctx context.Context, owner Owner, msgID string) (Message, error)
 }

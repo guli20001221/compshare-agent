@@ -65,13 +65,22 @@ WHERE id = ? AND top_organization_id = ? AND organization_id = ? AND deleted_at 
 }
 
 // BumpUpdatedAtAndIncCount increments message_count by delta and updates updated_at.
-func (s *MySQLSessionStore) BumpUpdatedAtAndIncCount(ctx context.Context, sessionID string, delta int) error {
-	_, err := s.db.ExecContext(ctx, `
+// Owner scoping is enforced via top_organization_id + organization_id + deleted_at IS NULL.
+// Returns sql.ErrNoRows when the session does not exist or does not belong to owner.
+func (s *MySQLSessionStore) BumpUpdatedAtAndIncCount(ctx context.Context, owner Owner, sessionID string, delta int) error {
+	res, err := s.db.ExecContext(ctx, `
 UPDATE sessions SET message_count = message_count + ?, updated_at = NOW(3)
-WHERE id = ? AND deleted_at IS NULL
-`, delta, sessionID)
+WHERE id = ? AND top_organization_id = ? AND organization_id = ? AND deleted_at IS NULL
+`, delta, sessionID, owner.TopOrganizationID, owner.OrganizationID)
 	if err != nil {
 		return fmt.Errorf("bump session count: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("bump session count rows affected: %w", err)
+	}
+	if n == 0 {
+		return sql.ErrNoRows
 	}
 	return nil
 }

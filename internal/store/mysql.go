@@ -3,11 +3,12 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/compshare-agent/internal/config"
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 // OpenMySQL opens a MySQL connection, configures the pool, pings the server,
@@ -16,7 +17,15 @@ func OpenMySQL(cfg config.MySQLConfig) (*sql.DB, error) {
 	if cfg.DSN == "" {
 		return nil, fmt.Errorf("mysql dsn is required")
 	}
-	db, err := sql.Open("mysql", cfg.DSN)
+	parsed, err := mysql.ParseDSN(cfg.DSN)
+	if err != nil {
+		return nil, fmt.Errorf("parse mysql dsn: %w", err)
+	}
+	parsed.ParseTime = true
+	parsed.Loc = time.UTC
+	dsn := parsed.FormatDSN()
+
+	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open mysql: %w", err)
 	}
@@ -40,9 +49,14 @@ func OpenMySQL(cfg config.MySQLConfig) (*sql.DB, error) {
 
 // VerifySchema checks that all expected tables exist by running a no-op SELECT.
 func VerifySchema(ctx context.Context, db *sql.DB) error {
-	for _, table := range []string{"sessions", "messages", "message_feedback"} {
-		query := fmt.Sprintf("SELECT 1 FROM %s LIMIT 1", table) //nolint:gosec
-		if _, err := db.ExecContext(ctx, query); err != nil {
+	queries := map[string]string{
+		"sessions":         "SELECT 1 FROM sessions LIMIT 1",
+		"messages":         "SELECT 1 FROM messages LIMIT 1",
+		"message_feedback": "SELECT 1 FROM message_feedback LIMIT 1",
+	}
+	for table, q := range queries {
+		var v int
+		if err := db.QueryRowContext(ctx, q).Scan(&v); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("verify schema table %s: %w", table, err)
 		}
 	}

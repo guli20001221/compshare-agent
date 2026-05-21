@@ -10,7 +10,7 @@ CREATE TABLE sessions (
   updated_at           DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   deleted_at           DATETIME(3)  NULL,
   KEY idx_owner_updated (top_organization_id, organization_id, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE messages (
   id            CHAR(36)     NOT NULL PRIMARY KEY,
@@ -29,7 +29,7 @@ CREATE TABLE messages (
   created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   KEY idx_session_created (session_id, created_at),
   KEY idx_request_uuid    (request_uuid)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE message_feedback (
   id          CHAR(36)    NOT NULL PRIMARY KEY,
@@ -38,4 +38,4 @@ CREATE TABLE message_feedback (
   comment     TEXT        NULL,
   created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   KEY idx_message (message_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
