@@ -27,6 +27,11 @@ const (
 	IntentPlatformImageList  Intent = "platform_image_list"
 	IntentCustomImageList    Intent = "custom_image_list"
 	IntentCommunityImageList Intent = "community_image_list"
+	// PR #3 (2026-05-22): pricing capability — deterministic route for
+	// "X 多少钱 / X 价格 / X 包月" so commercial-critical paths don't depend
+	// on LLM tool-selection variance (which produced 35s/33k-token paths
+	// on baseline).
+	IntentPricingQuery Intent = "pricing_query"
 )
 
 type TargetRefType string
@@ -132,6 +137,7 @@ func AllIntents() []Intent {
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		IntentPricingQuery,
 		IntentUnknown,
 	}
 }
@@ -154,6 +160,7 @@ func RuntimeIntents() []Intent {
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		IntentPricingQuery,
 		IntentUnknown,
 	}
 }

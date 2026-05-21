@@ -101,7 +101,15 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // origin/main + the PR #86 disk-migration of IntentDiagnosis.
 // Migration is byte-equal by construction, so the hash matches the
 // pre-migration value.
-const systemPromptSHA256Baseline = "53ae179598e18ae6fade4b463777772a62f0b816029a9fe4e7c0690af989daf1"
+//
+// PR #3 (2026-05-22) — intentional bump: pricing_query capability added
+// (intent label + 2 planner_examples + directives + boundary directive
+// vs billing_instance). Justification: high-frequency commercial path
+// "4090 多少钱" was running through main_react at ~36s/33k tokens on
+// baseline; deterministic capability routing brings it to ~10s/6k tokens.
+// The boundary directive keeps personal-billing complaints
+// ("我账单怎么这么高") routing to billing_instance unchanged.
+const systemPromptSHA256Baseline = "4af46ff2a79216ff5a9819d090ed91551e2881620b8ff8480bc157c7a5f94368"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

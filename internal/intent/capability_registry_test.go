@@ -69,6 +69,7 @@ func TestCapabilityRegistry_BindsToRealTool(t *testing.T) {
 		IntentPlatformImageList:  "DescribeCompShareImages",
 		IntentCustomImageList:    "DescribeCompShareCustomImages",
 		IntentCommunityImageList: "DescribeCommunityImages",
+		IntentPricingQuery:       "GetCompShareInstancePrice",
 	}
 	for _, e := range capabilityRegistry {
 		want, ok := expected[e.intent]

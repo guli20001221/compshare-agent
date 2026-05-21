@@ -335,6 +335,8 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		// PR #3 (2026-05-22) — pricing capability (commercial path).
+		IntentPricingQuery,
 		IntentUnknown,
 	}, AllIntents())
 }
