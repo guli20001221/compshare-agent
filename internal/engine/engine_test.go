@@ -22,7 +22,9 @@ import (
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/refusal"
 	grounded "github.com/compshare-agent/internal/renderer"
+	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -512,7 +514,7 @@ func TestChat_HistoricalMonitorToolCallBlockedBeforeExecution(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "show monitor data", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryUnsupportedReply, reply)
+	assert.Equal(t, refusal.MonitorHistoryUnsupported, reply)
 	assert.Empty(t, executor.calls, "historical monitor tool call must be blocked before API execution")
 }
 
@@ -571,7 +573,7 @@ func TestChat_ClearHistoricalMonitorQuestionBlockedBeforeReAct(t *testing.T) {
 			reply, err := eng.Chat(context.Background(), msg, noopStep)
 
 			require.NoError(t, err)
-			assert.Equal(t, monitorHistoryUnsupportedReply, reply)
+			assert.Equal(t, refusal.MonitorHistoryUnsupported, reply)
 			assert.Empty(t, mock.calls, "clear historical monitor question must not enter ReAct")
 			assert.Empty(t, executor.calls)
 		})
@@ -2669,7 +2671,7 @@ func TestAccountBillingHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T) 
 	reply, err := eng.Chat(context.Background(), "账号余额还剩多少", onStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, accountBillingUnsupportedReply, reply)
+	assert.Equal(t, refusal.AccountBillingUnsupported, reply)
 	assert.Empty(t, mock.calls)
 	assert.Empty(t, *events, "hard-block trace signal must not surface as a CLI step")
 	require.Len(t, hardBlocks, 1)
@@ -2724,7 +2726,7 @@ func TestResourceShortageHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T
 	reply, err := eng.Chat(context.Background(), "我的实例报 226604 怎么办", onStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, resourceShortageReply, reply)
+	assert.Equal(t, refusal.ResourceShortage226604, reply)
 	assert.Empty(t, mock.calls, "short-circuit must skip the LLM call")
 	assert.Empty(t, *events, "hard-block trace signal must not surface as a CLI step")
 	require.Len(t, hardBlocks, 1)
@@ -2733,16 +2735,16 @@ func TestResourceShortageHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T
 }
 
 func TestResourceShortageReply_MustContainStableSignals(t *testing.T) {
-	assert.Contains(t, resourceShortageReply, "226604")
-	assert.Contains(t, resourceShortageReply, "重试")
-	assert.Contains(t, resourceShortageReply, "包日")
-	assert.Contains(t, resourceShortageReply, "包月")
+	assert.Contains(t, refusal.ResourceShortage226604, "226604")
+	assert.Contains(t, refusal.ResourceShortage226604, "重试")
+	assert.Contains(t, refusal.ResourceShortage226604, "包日")
+	assert.Contains(t, refusal.ResourceShortage226604, "包月")
 	// negative assertions — phrasings that would defeat the fixed-reply intent
-	assert.NotContains(t, resourceShortageReply, "[1]", "fixed-reply path is outside cited contract")
-	assert.NotContains(t, resourceShortageReply, "未知")
+	assert.NotContains(t, refusal.ResourceShortage226604, "[1]", "fixed-reply path is outside cited contract")
+	assert.NotContains(t, refusal.ResourceShortage226604, "未知")
 	// over-promise guard — drop hard guarantees about 独占 / 不会被退出
-	assert.NotContains(t, resourceShortageReply, "独占机器", "avoid hard guarantee — pre-merge review #4")
-	assert.NotContains(t, resourceShortageReply, "不会因为资源紧张")
+	assert.NotContains(t, refusal.ResourceShortage226604, "独占机器", "avoid hard guarantee — pre-merge review #4")
+	assert.NotContains(t, refusal.ResourceShortage226604, "不会因为资源紧张")
 }
 
 // toolChoiceForMonitor returns true iff req.ToolChoice names GetCompShareInstanceMonitor.
@@ -4191,7 +4193,7 @@ func TestStage2BRetrievalHardBlockPrecedesPlanner(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "\u8d26\u53f7\u4f59\u989d\u8fd8\u5269\u591a\u5c11", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, accountBillingUnsupportedReply, reply)
+	assert.Equal(t, refusal.AccountBillingUnsupported, reply)
 	assert.Empty(t, planner.calls, "permanent hard-block must run before Stage 2B planner")
 	assert.Empty(t, retriever.calls)
 	assert.Empty(t, mock.calls)
@@ -4284,7 +4286,7 @@ func TestStage2BFinanceRealtimeHardBlockPrecedesPlanner(t *testing.T) {
 			reply, err := eng.Chat(context.Background(), msg, noopStep)
 
 			require.NoError(t, err)
-			assert.Equal(t, accountBillingUnsupportedReply, reply)
+			assert.Equal(t, refusal.AccountBillingUnsupported, reply)
 			assert.Empty(t, planner.calls)
 			assert.Empty(t, retriever.calls)
 			assert.Empty(t, mock.calls)
@@ -4359,7 +4361,7 @@ func TestPhase1CutoverHardBlockPrecedesPlanner(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "\u8d26\u53f7\u4f59\u989d\u8fd8\u5269\u591a\u5c11", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, accountBillingUnsupportedReply, reply)
+	assert.Equal(t, refusal.AccountBillingUnsupported, reply)
 	assert.Empty(t, planner.calls, "permanent hard-block must run before planner")
 	assert.Empty(t, mock.calls)
 }
@@ -4671,7 +4673,7 @@ func TestPhase1CutoverMonitorTodayWindowReturnsFixedReplyWithoutReAct(t *testing
 	reply, err := eng.Chat(context.Background(), "show today's cpu monitor", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryUnsupportedReply, reply)
+	assert.Equal(t, refusal.MonitorHistoryUnsupported, reply)
 	assert.Empty(t, mock.calls, "non-current monitor window must not fall back to ReAct")
 	assert.Empty(t, executor.calls, "non-current monitor window must not call monitor as current data")
 	require.Len(t, traces, 1)
@@ -4696,7 +4698,7 @@ func TestPlannerMonitorHistoryReturnsFixedReplyWithoutReAct(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "historical cpu monitor", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryUnsupportedReply, reply)
+	assert.Equal(t, refusal.MonitorHistoryUnsupported, reply)
 	assert.Empty(t, mock.calls, "historical monitor planner output must not fall back to ReAct")
 	assert.Empty(t, executor.calls)
 	require.Len(t, traces, 1)
@@ -5158,9 +5160,9 @@ func TestMonitorLoadAssessmentFallbackIgnoresDiskPercentages(t *testing.T) {
 }
 
 func TestMonitorHistoryUnsupportedReplyUsesCurrentScopeWording(t *testing.T) {
-	assert.Contains(t, monitorHistoryUnsupportedReply, "当前暂不支持指定历史时间段的监控查询")
-	assert.Contains(t, monitorHistoryUnsupportedReply, "实时监控")
-	assert.NotContains(t, monitorHistoryUnsupportedReply, "暂不稳定支持")
+	assert.Contains(t, refusal.MonitorHistoryUnsupported, "当前暂不支持指定历史时间段的监控查询")
+	assert.Contains(t, refusal.MonitorHistoryUnsupported, "实时监控")
+	assert.NotContains(t, refusal.MonitorHistoryUnsupported, "暂不稳定支持")
 }
 
 func TestResourceSelectionContinuationDuplicateNameRepeatsPrompt(t *testing.T) {
@@ -5261,7 +5263,7 @@ func TestResourceSelectionContinuationHardBlockClearsPending(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "账号余额还有多少", noopStep)
 	require.NoError(t, err)
-	assert.Contains(t, reply, accountBillingUnsupportedReply)
+	assert.Contains(t, reply, refusal.AccountBillingUnsupported)
 	assert.Nil(t, eng.pendingResourceSelection)
 
 	reply, err = eng.Chat(context.Background(), "2", noopStep)
@@ -5471,7 +5473,7 @@ func TestNormalizeMsg(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, normalizeMsg(tc.in))
+			assert.Equal(t, tc.want, textutil.Normalize(tc.in))
 		})
 	}
 }

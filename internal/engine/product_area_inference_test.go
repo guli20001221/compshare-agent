@@ -40,7 +40,7 @@ func TestInferKnowledgeProductArea_LabelsMatchCorpus(t *testing.T) {
 		{"Windows 远程桌面连不上", "windows"},
 		{"RDP 配置", "windows"},
 		// monitor (new group). Both spaced and no-space forms must hit —
-		// normalizeMsg collapses whitespace but does NOT insert a space
+		// textutil.Normalize collapses whitespace but does NOT insert a space
 		// between adjacent CJK and ASCII, so "CPU占用率" stays joined.
 		{"显存占用怎么查", "monitor"},
 		{"CPU占用率怎么看", "monitor"},
