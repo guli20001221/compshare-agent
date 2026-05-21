@@ -42,6 +42,11 @@ agent:
     max_input_length: 4000
     pool_capacity: 200
     pool_idle_ttl: "30m"
+    # Per-session question-answer pair cap. Once a session has reached this
+    # many turns (= 2 * value rows in `messages`), further Chat calls return
+    # SessionTurnLimitExceeded and the client must open a new session.
+    # Omit or 0 falls back to the built-in default (10).
+    max_session_turns: 10
 
   # MySQL backing store (used by: compshare-agent server).
   # DSN is resolved from ${MYSQL_DSN} env var.

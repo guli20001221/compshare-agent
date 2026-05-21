@@ -60,7 +60,17 @@ type HTTPConfig struct {
 	MaxInputLength       int           `yaml:"max_input_length"`
 	PoolCapacity         int           `yaml:"pool_capacity"`
 	PoolIdleTTL          time.Duration `yaml:"pool_idle_ttl"`
+	// MaxSessionTurns caps how many user-assistant question-answer pairs a
+	// single session may produce. Zero or unset falls back to
+	// DefaultMaxSessionTurns. Enforced in handleChat: once a session has
+	// reached the cap, further Chat requests return SessionTurnLimitExceeded
+	// and the caller must open a new session.
+	MaxSessionTurns int `yaml:"max_session_turns"`
 }
+
+// DefaultMaxSessionTurns is the fallback cap when agent.http.max_session_turns
+// is zero or unset. 10 question-answer pairs per session = 20 stored messages.
+const DefaultMaxSessionTurns = 10
 
 // MySQLConfig holds connection settings for the MySQL backing store.
 // DSN accepts any ${ENV_VAR} placeholder; if the env var is unset the field is
@@ -247,6 +257,9 @@ func validateHTTPConfig(h *HTTPConfig) error {
 	}
 	if h.SSEKeepaliveInterval < 0 {
 		return negativeValueError("agent.http.sse_keepalive_interval")
+	}
+	if h.MaxSessionTurns < 0 {
+		return negativeValueError("agent.http.max_session_turns")
 	}
 	return nil
 }

@@ -28,15 +28,16 @@ func (e *APIError) WithMessage(format string, args ...any) *APIError {
 }
 
 var (
-	ErrInvalidParam = &APIError{Code: "InvalidParam", Status: http.StatusBadRequest, Message: "参数缺失或非法"}
-	ErrUnauthorized = &APIError{Code: "Unauthorized", Status: http.StatusUnauthorized, Message: "未登录或 token 失效"}
-	ErrForbidden    = &APIError{Code: "Forbidden", Status: http.StatusForbidden, Message: "无权访问"}
-	ErrNotFound     = &APIError{Code: "NotFound", Status: http.StatusNotFound, Message: "资源不存在"}
-	ErrRateLimited  = &APIError{Code: "RateLimited", Status: http.StatusTooManyRequests, Message: "超出速率限制"}
-	ErrInternal     = &APIError{Code: "InternalError", Status: http.StatusInternalServerError, Message: "后端未预期错误"}
-	ErrModelTimeout = &APIError{Code: "ModelTimeout", Status: http.StatusGatewayTimeout, Message: "LLM 调用超时"}
-	ErrModelError   = &APIError{Code: "ModelError", Status: http.StatusBadGateway, Message: "LLM 上游错误"}
-	ErrAborted      = &APIError{Code: "Aborted", Status: 499, Message: "用户中断"}
+	ErrInvalidParam            = &APIError{Code: "InvalidParam", Status: http.StatusBadRequest, Message: "参数缺失或非法"}
+	ErrUnauthorized            = &APIError{Code: "Unauthorized", Status: http.StatusUnauthorized, Message: "未登录或 token 失效"}
+	ErrForbidden               = &APIError{Code: "Forbidden", Status: http.StatusForbidden, Message: "无权访问"}
+	ErrNotFound                = &APIError{Code: "NotFound", Status: http.StatusNotFound, Message: "资源不存在"}
+	ErrSessionTurnLimit        = &APIError{Code: "SessionTurnLimitExceeded", Status: http.StatusConflict, Message: "本会话轮数已达上限，请新开会话继续"}
+	ErrRateLimited             = &APIError{Code: "RateLimited", Status: http.StatusTooManyRequests, Message: "超出速率限制"}
+	ErrInternal                = &APIError{Code: "InternalError", Status: http.StatusInternalServerError, Message: "后端未预期错误"}
+	ErrModelTimeout            = &APIError{Code: "ModelTimeout", Status: http.StatusGatewayTimeout, Message: "LLM 调用超时"}
+	ErrModelError              = &APIError{Code: "ModelError", Status: http.StatusBadGateway, Message: "LLM 上游错误"}
+	ErrAborted                 = &APIError{Code: "Aborted", Status: 499, Message: "用户中断"}
 )
 
 // AsAPIError converts any error into an *APIError. Returns nil if err is nil.

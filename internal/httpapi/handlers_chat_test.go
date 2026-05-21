@@ -130,3 +130,45 @@ func TestDispatchChatStreamsMetaTokenDone(t *testing.T) {
 	assert.Equal(t, "你好", messages.patch.Content)
 	assert.Equal(t, "ok", messages.patch.Status)
 }
+
+func TestDispatchChatRejectsWhenSessionTurnLimitReached(t *testing.T) {
+	eng := engine.NewWithDeps(chatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour, MaxSessionTurns: 3},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{
+			"sess-cap": {
+				ID:                "sess-cap",
+				TopOrganizationID: 1,
+				OrganizationID:    2,
+				MessageCount:      6, // 3 user+assistant pairs = at cap
+				CreatedAt:         time.Now(),
+				UpdatedAt:         time.Now(),
+			},
+		}},
+		&recordingMessages{},
+		mockFeedback{},
+		fakePool{eng: eng},
+	)
+
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/",
+		strings.NewReader(`{"Action":"Chat","SessionId":"sess-cap","Message":"hi","request_uuid":"req-cap","top_organization_id":1,"organization_id":2}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Dispatch(c)
+
+	require.Equal(t, http.StatusConflict, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"Code":"SessionTurnLimitExceeded"`)
+}

@@ -49,6 +49,7 @@ HTTP 状态码与 `Code` 一一对应：
 | 401 | `Unauthorized` | 未登录 / token 失效 |
 | 403 | `Forbidden` | 无权访问该会话 / 资源 |
 | 404 | `NotFound` | 资源不存在（会话、消息、反馈） |
+| 409 | `SessionTurnLimitExceeded` | 本会话轮数已达上限（默认 10 问答对），需新开 session |
 | 429 | `RateLimited` | 触发限流（按 `(top_organization_id, organization_id)` 计） |
 | 500 | `InternalError` | 后端未预期错误 |
 | 502 | `ModelError` | LLM 上游错误 |
@@ -183,6 +184,8 @@ HTTP 状态码与 `Code` 一一对应：
 |---|---|---|---|
 | `SessionId` | string | **是** | 必须是当前 `(top_organization_id, organization_id)` 拥有的会话 |
 | `Message` | string | **是** | 用户输入。长度上限 = `GetMeta.MaxInputLength`（按 rune 计） |
+
+> 单个 session 默认最多 10 个问答对（由 `agent.http.max_session_turns` 配置；含中断 / 报错的轮次）。超过后此接口返回 HTTP 409 `SessionTurnLimitExceeded`，前端需提示用户开新会话（调用 `CreateSession`）。
 
 ```json
 {

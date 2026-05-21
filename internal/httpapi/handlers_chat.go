@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bitly/go-simplejson"
+	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/httpapi/sse"
 	"github.com/compshare-agent/internal/llm"
@@ -76,8 +77,22 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 		return
 	}
 
-	if _, err := h.sessions.GetByID(c.Request.Context(), base.Owner, sessionID); err != nil {
+	sess, err := h.sessions.GetByID(c.Request.Context(), base.Owner, sessionID)
+	if err != nil {
 		h.writeError(c, base.RequestUUID, err)
+		return
+	}
+
+	// Enforce per-session turn cap. Each completed Chat call persists exactly
+	// two rows (user + assistant), so message_count == max_session_turns * 2
+	// means the cap has been reached. Aborted / errored turns still count —
+	// resource-wise they consumed a slot.
+	maxTurns := h.cfg.Agent.HTTP.MaxSessionTurns
+	if maxTurns <= 0 {
+		maxTurns = config.DefaultMaxSessionTurns
+	}
+	if sess.MessageCount >= maxTurns*2 {
+		h.writeError(c, base.RequestUUID, ErrSessionTurnLimit)
 		return
 	}
 
