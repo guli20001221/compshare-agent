@@ -5,6 +5,8 @@ Environment:
 - Config: `deploy\conf\agent.yaml.example`.
 - CLI binary built from branch `codex/gpu-full-spec-output`.
 
+Note: this artifact is a concise evaluation summary, not a full verbatim CLI transcript. Text blocks are either compact reply excerpts or extracted key combinations; sections that say "Evaluation summary" are intentionally summarized.
+
 ## Capability route, renderer off
 
 Environment addition:
@@ -13,9 +15,9 @@ Environment addition:
 
 Question: `4090 显存多大`
 
-Observed:
+Evaluation summary:
 - CLI called `DescribeAvailableCompShareInstanceTypes`.
-- Reply stayed deterministic and compact:
+- Verbatim compact reply excerpt:
 
 ```text
 机型=4090, 性能=83, 显存=24GB, 状态=Normal, 最大卡数=8
@@ -24,10 +26,10 @@ Observed:
 
 Question: `4090 的所有规格`
 
-Observed:
+Evaluation summary:
 - CLI called `DescribeAvailableCompShareInstanceTypes`.
 - Reply expanded all 4090 and 4090_48G combinations returned by the upstream API.
-- Key observed combinations:
+- Extracted combinations from the reply, not the full raw answer:
 
 ```text
 4090 / cn-wlcb-01: 1卡/16C/64G, 1卡/16C/94G, 2卡/32C/128G, 2卡/32C/192G, 4卡/64C/256G, 4卡/64C/384G, 8卡/92C/940G, 8卡/124C/940G
@@ -38,13 +40,13 @@ Observed:
 
 Question: `列出所有 GPU 规格`
 
-Observed:
+Evaluation summary:
 - CLI called `DescribeAvailableCompShareInstanceTypes`.
 - Reply included all returned models and expanded their full combinations, including 4090, 5090, 4090_48G, 3080Ti, 2080Ti, 3090, 2080, A800, H20, P40, V100S, and A100.
 
 Question: `4090 支持哪些 CPU 和内存`
 
-Observed:
+Evaluation summary:
 - CLI called `DescribeAvailableCompShareInstanceTypes`.
 - Reply used full-spec mode and expanded all CPU/memory combinations for 4090 and 4090_48G.
 
@@ -56,10 +58,10 @@ Environment addition:
 
 Question: `4090 显存多大`
 
-Observed:
+Evaluation summary:
 - CLI banner showed `renderer: grounded_renderer=llm`.
 - CLI called `DescribeAvailableCompShareInstanceTypes`.
-- Reply was LLM-rendered and concise:
+- Verbatim LLM-rendered reply excerpt:
 
 ```text
 根据本次返回的数据，标准版 4090 GPU 的显存为 24 GB。
@@ -68,11 +70,11 @@ Observed:
 
 Question: `4090 的所有规格`
 
-Observed:
+Evaluation summary:
 - CLI banner showed `renderer: grounded_renderer=llm`.
 - CLI called `DescribeAvailableCompShareInstanceTypes`.
 - Reply was LLM-rendered and still preserved all full-spec combinations.
-- Key observed combinations:
+- Extracted combinations from the reply, not the full raw answer:
 
 ```text
 4090 / cn-wlcb-01: 1卡/16C/64G, 1卡/16C/94G, 2卡/32C/128G, 2卡/32C/192G, 4卡/64C/256G, 4卡/64C/384G, 8卡/92C/940G, 8卡/124C/940G
@@ -88,7 +90,7 @@ Environment addition:
 
 Question: `4090 的所有规格`
 
-Observed:
+Evaluation summary:
 - CLI called `DescribeAvailableCompShareInstanceTypes`.
 - In one smoke run it also called `GetGPUSpecs`.
 - The final answer was produced by the normal ReAct LLM tool loop, not by the grounded renderer.
