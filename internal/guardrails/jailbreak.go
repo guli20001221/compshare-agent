@@ -143,14 +143,16 @@ var jailbreakPatterns = []detectionPattern{
 // jailbreak corpus entries.
 const detectionScanLimit = 4 * 1024
 
-// DetectJailbreakAttempt returns true if the message structurally
-// matches a jailbreak / instruction-override / prompt-extraction
-// pattern. Idempotent and cheap; safe to call on every user turn.
+// prepareForDetection is the shared preprocessing pipeline used by
+// DetectJailbreakAttempt and DetectOffTopic (topic.go). Centralised so
+// both detectors apply the same trim + UTF-8 boundary fix + full-width
+// punctuation normalisation; a future detector should reuse this rather
+// than duplicate the logic.
 //
-// Returns false on empty input. Trims to first 4 KB before scanning.
-func DetectJailbreakAttempt(s string) bool {
+// Returns "" for empty input.
+func prepareForDetection(s string) string {
 	if s == "" {
-		return false
+		return s
 	}
 	if len(s) > detectionScanLimit {
 		s = s[:detectionScanLimit]
@@ -164,7 +166,7 @@ func DetectJailbreakAttempt(s string) bool {
 	// Normalise full-width punctuation that some attackers use to evade
 	// half-width keyword scans. Cheap whitelist conversion; full Unicode
 	// confusables left for a follow-up if seen in the wild.
-	s = strings.NewReplacer(
+	return strings.NewReplacer(
 		"：", ":",
 		"，", ",",
 		"。", ".",
@@ -172,6 +174,18 @@ func DetectJailbreakAttempt(s string) bool {
 		"！", "!",
 		"？", "?",
 	).Replace(s)
+}
+
+// DetectJailbreakAttempt returns true if the message structurally
+// matches a jailbreak / instruction-override / prompt-extraction
+// pattern. Idempotent and cheap; safe to call on every user turn.
+//
+// Returns false on empty input. Trims to first 4 KB before scanning.
+func DetectJailbreakAttempt(s string) bool {
+	s = prepareForDetection(s)
+	if s == "" {
+		return false
+	}
 	for _, p := range jailbreakPatterns {
 		if p.verbRe.MatchString(s) && p.domainRe.MatchString(s) {
 			return true
