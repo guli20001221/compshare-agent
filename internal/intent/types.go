@@ -36,6 +36,21 @@ const (
 	TargetRefName             TargetRefType = "name"
 	TargetRefUHostIDUserInput TargetRefType = "uhost_id_user_input"
 	TargetRefSlotPosition     TargetRefType = "slot_position"
+
+	// C15 Phase A additions (PR #89, 2026-05-21): platform-wide entity
+	// types that the planner may emit when the user references a zone,
+	// image, or GPU model directly (not their own instance). Validator
+	// accepts these as well-formed; the producer side (planner prompt
+	// directives) and consumer side (resolver → tool args) are NOT
+	// wired in Phase A — Phase B adds those after the byte-equal
+	// planner-prompt hash from C5 has been bumped intentionally.
+	//
+	// Producer/consumer wiring lives behind feature gates so Phase A's
+	// dead-code introduction has zero runtime effect — the LLM never
+	// emits these types until Phase B updates the prompt.
+	TargetRefZone     TargetRefType = "zone"
+	TargetRefImage    TargetRefType = "image"
+	TargetRefGPUModel TargetRefType = "gpu_model"
 )
 
 type TargetSource string
