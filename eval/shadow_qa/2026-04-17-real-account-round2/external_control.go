@@ -68,10 +68,13 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	ex := tools.NewExternalExecutor(cfg.Agent)
-	if ex.ProjectId() == "" {
-		ex.SetProjectId("org-cwy2qk")
+	// PR9: ExternalExecutor.SetProjectId / ProjectId() removed (cross-session
+	// leak fix). For this eval harness we inject ProjectId at cfg time before
+	// constructing the executor instead.
+	if cfg.Agent.ProjectId == "" {
+		cfg.Agent.ProjectId = "org-cwy2qk"
 	}
+	ex := tools.NewExternalExecutor(cfg.Agent)
 
 	ctx := context.Background()
 	switch action {
