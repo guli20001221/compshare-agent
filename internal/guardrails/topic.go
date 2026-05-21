@@ -72,11 +72,18 @@ var offTopicPatterns = []detectionPattern{
 		verbRe:   regexp.MustCompile(`(我|我家|我老婆|我老公|我爸|我妈|我儿子|我女儿|我孩子|父母|家人)\s*(得了|患了|有了|发现|查出|确诊|被诊断|生病|发烧|咳嗽|疼痛|心脏|肿瘤|癌症|糖尿病|高血压|新冠|肺炎|感染|过敏)`),
 		domainRe: regexp.MustCompile(`(怎么办|该怎么|吃什么药|要不要|要去|去哪|挂号|看医生|去医院|治疗方案|手术|化疗|放疗|住院|开刀)`),
 	},
-	// English personal medical advice.
+	// English personal medical advice. Tightened (PR #155 review N2):
+	//   - Subject ↔ disease adjacency capped at 0-2 intervening words
+	//     so "My family member has cancer and I want to run a research
+	//     model on 4090" no longer trips (>2 words between subject and
+	//     disease).
+	//   - Domain "what medicine should I take" qualified with a follow-
+	//     up symptom/treatment noun so "what medication should I take
+	//     to stay focused" no longer matches.
 	{
 		name:     "en_medical_advice",
 		verbRe:   regexp.MustCompile(`(?i)\b(I|my\s+(family|wife|husband|child|son|daughter|parent|father|mother|kid))\b`),
-		domainRe: regexp.MustCompile(`(?i)\b(have|has|got|am\s+sick\s+with|been\s+diagnosed|diagnosed\s+with)\s+(\w+\s+)*(cancer|tumou?r|diabetes|hypertension|covid|pneumonia|infection|allergy)\b|what\s+(medicine|medication|pill|drug)\s+should\s+I\s+take`),
+		domainRe: regexp.MustCompile(`(?i)\b(have|has|got|am\s+sick\s+with|been\s+diagnosed|diagnosed\s+with)\s+(\w+\s+){0,2}(cancer|tumou?r|diabetes|hypertension|covid|pneumonia|infection|allergy)\b|what\s+(medicine|medication|pill|drug)\s+should\s+I\s+take\s+(for|to\s+(treat|cure|relieve|manage))\s+\w+`),
 	},
 	// Chinese investment recommendation-seeking. "推荐买什么股票" → trip
 	// (allows up to 5 non-punct chars between buy-verb and finance noun
@@ -87,14 +94,16 @@ var offTopicPatterns = []detectionPattern{
 		verbRe:   regexp.MustCompile(`(推荐|建议|该不该|要不要|帮我选|挑一个|哪个好|怎么选)`),
 		domainRe: regexp.MustCompile(`(买|入手|持有|抛|卖|清仓|建仓|加仓|减仓|定投)[^。.,;!?]{0,5}(股票|基金|期货|加密货币|比特币|以太|狗狗币|理财产品|外汇|证券)|(股票|基金|币圈|加密货币)\s*(推荐|建议|怎么选|该不该|哪个好)`),
 	},
-	// English investment recommendation-seeking. domainRe accepts both
-	// "(buy|sell|...) ... stock" and "a stock to (buy|invest|...)"
-	// phrasings so both "should I buy bitcoin" and "recommend a stock to
-	// invest in" trip.
+	// English investment recommendation-seeking. domainRe accepts three
+	// shapes (PR #155 review N3 extends the third):
+	//   1. "(buy|sell|...) ... stock"      ← "should I buy bitcoin"
+	//   2. "a stock to (buy|invest|...)"  ← "recommend a stock to invest in"
+	//   3. "(hot\s+)?(pick|tip|recommendation)s? + (stocks?|crypto|...)" ←
+	//      "recommend hot pick stocks" / "give me a stock tip"
 	{
 		name:     "en_investment_advice",
-		verbRe:   regexp.MustCompile(`(?i)\b(should\s+I|recommend|advise|tip|hot\s+pick|what\s+to)\b`),
-		domainRe: regexp.MustCompile(`(?i)\b(buy|sell|short|long|hold|invest\s+in)\s+(\w+\s+)*(stocks?|crypto|bitcoin|ethereum|fund|etf|options|forex|gold|silver|bond)\b|\ba\s+(stocks?|crypto|bitcoin|ethereum|fund|etf|options|forex|bond)\s+to\s+(buy|invest|sell|hold|short|long)\b`),
+		verbRe:   regexp.MustCompile(`(?i)\b(should\s+I|recommend|advise|tip|hot\s+pick|what\s+to|give\s+me)\b`),
+		domainRe: regexp.MustCompile(`(?i)\b(buy|sell|short|long|hold|invest\s+in)\s+(\w+\s+)*(stocks?|crypto|bitcoin|ethereum|fund|etf|options|forex|gold|silver|bond)\b|\ba\s+(stocks?|crypto|bitcoin|ethereum|fund|etf|options|forex|bond)\s+to\s+(buy|invest|sell|hold|short|long)\b|\b(hot\s+)?(pick|tip|recommendation)s?\s+(for\s+)?\w*\s*(stocks?|crypto|bitcoin|ethereum|fund|etf)\b|\b(stocks?|crypto|bitcoin|ethereum|fund|etf|options|forex)\s+(pick|tip|recommendation)s?\b`),
 	},
 	// Chinese severe-emotional-distress (suicide ideation). Strong-
 	// signal words only — generic phrases like "想死" / "活不下去"
