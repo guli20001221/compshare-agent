@@ -45,18 +45,25 @@ func (stubExecutor) Execute(_ context.Context, action string, _ map[string]any) 
 
 // startTestServer brings up a Server bound to a random port on 127.0.0.1
 // for the test's lifetime. Returns the base URL + a cancel func.
-func startTestServer(t *testing.T, deps *engine.SharedDeps) (baseURL string, shutdown func()) {
+// Optional opts callbacks mutate the Options struct before New() — used
+// by C11 Phase A tests to flip AnswerDeltaEnabled on without changing
+// the default-off contract for every other test.
+func startTestServer(t *testing.T, deps *engine.SharedDeps, opts ...func(*Options)) (baseURL string, shutdown func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv, err := New(Options{
+	options := Options{
 		Addr:           ln.Addr().String(),
 		Deps:           deps,
 		TenantSource:   TenantSourceGateway,
 		AllowedOrigins: []string{"*"},
-	})
+	}
+	for _, mutate := range opts {
+		mutate(&options)
+	}
+	srv, err := New(options)
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
@@ -238,6 +245,129 @@ func TestServer_E2E_SingleUserHappyPath(t *testing.T) {
 	done := waitForType(t, conn, ServerMsgDone, 5*time.Second)
 	if done.RequestUUID != "test-uuid-1" {
 		t.Fatalf("done RequestUUID drift: %q", done.RequestUUID)
+	}
+}
+
+// TestServer_E2E_AnswerDeltaPrecedesFinal pins the C11 Phase A wire-
+// level contract when the server is started with AnswerDeltaEnabled=true:
+// server emits ≥1 answer_delta frame BEFORE the answer_final frame, and
+// the concatenation of all delta Text equals the final Text
+// byte-for-byte. Clients that ignore deltas still see the same canonical
+// answer_final; clients that read deltas can render incrementally
+// without missing or duplicating characters.
+func TestServer_E2E_AnswerDeltaPrecedesFinal_WhenEnabled(t *testing.T) {
+	// Multi-line stub so the chunker produces multiple deltas.
+	stubReply := "您可以通过控制台 -> 实例列表 查看所有实例。\n\n相关入口:\n1. 控制台首页\n2. 实例管理"
+	deps, _ := newTestDeps(stubReply)
+	baseURL, shutdown := startTestServer(t, deps, func(o *Options) {
+		o.AnswerDeltaEnabled = true
+	})
+	defer shutdown()
+
+	conn := dialWSWithTenant(t, baseURL, 12, 112)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	_ = waitForType(t, conn, ServerMsgReady, 5*time.Second)
+	if err := wsjson.Write(context.Background(), conn, ClientMessage{
+		Type:        ClientMsgUserMessage,
+		Text:        "test delta wire",
+		RequestUUID: "delta-uuid-1",
+	}); err != nil {
+		t.Fatalf("write user_message: %v", err)
+	}
+
+	// Read frames until we see answer_final. Capture all deltas in order.
+	var deltas []string
+	var final string
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		var got ServerMessage
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := wsjson.Read(ctx, conn, &got); err != nil {
+			cancel()
+			t.Fatalf("read: %v", err)
+		}
+		cancel()
+		switch got.Type {
+		case ServerMsgAnswerDelta:
+			if got.RequestUUID != "delta-uuid-1" {
+				t.Fatalf("answer_delta RequestUUID drift: %q", got.RequestUUID)
+			}
+			deltas = append(deltas, got.Text)
+		case ServerMsgAnswerFinal:
+			final = got.Text
+			goto done
+		default:
+			// Tool/step frames may interleave; ignore in this contract test.
+		}
+	}
+done:
+	if final == "" {
+		t.Fatalf("never received answer_final within deadline; deltas=%d", len(deltas))
+	}
+	if len(deltas) == 0 {
+		t.Fatalf("expected ≥1 answer_delta before answer_final; got 0")
+	}
+	if joined := strings.Join(deltas, ""); joined != final {
+		t.Fatalf("delta concat ≠ final:\n  joined: %q\n  final:  %q", joined, final)
+	}
+	if !strings.Contains(final, stubReply) {
+		t.Fatalf("final does not contain stub reply: %q", final)
+	}
+}
+
+// TestServer_E2E_AnswerDeltaSuppressed_WhenDisabled pins the default-off
+// compat contract: when AnswerDeltaEnabled is false (the default),
+// strictly NO answer_delta frame must be emitted before answer_final.
+// Legacy clients that enumerate frame types stay on the pre-PR #88
+// wire behavior.
+func TestServer_E2E_AnswerDeltaSuppressed_WhenDisabled(t *testing.T) {
+	stubReply := "您可以通过控制台 -> 实例列表 查看所有实例。\n\n相关入口:\n1. 控制台首页\n2. 实例管理"
+	deps, _ := newTestDeps(stubReply)
+	// Intentionally no opts — AnswerDeltaEnabled stays at zero value (false).
+	baseURL, shutdown := startTestServer(t, deps)
+	defer shutdown()
+
+	conn := dialWSWithTenant(t, baseURL, 13, 113)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	_ = waitForType(t, conn, ServerMsgReady, 5*time.Second)
+	if err := wsjson.Write(context.Background(), conn, ClientMessage{
+		Type:        ClientMsgUserMessage,
+		Text:        "test default-off",
+		RequestUUID: "delta-uuid-disabled",
+	}); err != nil {
+		t.Fatalf("write user_message: %v", err)
+	}
+
+	var sawDelta bool
+	var final string
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		var got ServerMessage
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := wsjson.Read(ctx, conn, &got); err != nil {
+			cancel()
+			t.Fatalf("read: %v", err)
+		}
+		cancel()
+		switch got.Type {
+		case ServerMsgAnswerDelta:
+			sawDelta = true
+		case ServerMsgAnswerFinal:
+			final = got.Text
+			goto doneDisabled
+		}
+	}
+doneDisabled:
+	if sawDelta {
+		t.Fatalf("default-off: server emitted answer_delta despite AnswerDeltaEnabled=false")
+	}
+	if final == "" {
+		t.Fatalf("never received answer_final within deadline")
+	}
+	if !strings.Contains(final, stubReply) {
+		t.Fatalf("final does not contain stub reply: %q", final)
 	}
 }
 

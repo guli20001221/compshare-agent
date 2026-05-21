@@ -377,6 +377,27 @@ func (s *Server) runChatTurn(
 			Message:     err.Error(),
 		})
 	} else {
+		// C11 Phase A: emit incremental answer_delta frames followed by
+		// the canonical answer_final. Phase A still computes the full
+		// reply synchronously (engine.Chat blocks), so the deltas don't
+		// reduce latency — they unlock the protocol slot for Phase B
+		// per-token streaming without a further breaking change.
+		//
+		// Default opt-in: gated by Server.answerDeltaEnabled (default
+		// false) so legacy clients that strictly enumerate frame types
+		// see the pre-PR #88 wire behavior. Enable per-deployment once
+		// the connected client is confirmed to tolerate the new frame
+		// (or until Phase B replaces this with client-capability
+		// negotiation).
+		if s.answerDeltaEnabled {
+			for _, chunk := range chunkReplyForDelta(reply) {
+				tryEnqueue(sendChan, ServerMessage{
+					Type:        ServerMsgAnswerDelta,
+					RequestUUID: msg.RequestUUID,
+					Text:        chunk,
+				})
+			}
+		}
 		tryEnqueue(sendChan, ServerMessage{
 			Type:        ServerMsgAnswerFinal,
 			RequestUUID: msg.RequestUUID,

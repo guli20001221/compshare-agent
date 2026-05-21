@@ -31,6 +31,14 @@ type Server struct {
 	tenantSource   TenantSource
 	allowedOrigins []string
 
+	// answerDeltaEnabled gates ServerMsgAnswerDelta emission (C11 Phase A,
+	// PR #88). Default false — clients that strictly enumerate frame
+	// types (e.g. the legacy console front-end) see the pre-PR behavior:
+	// only ServerMsgAnswerFinal + ServerMsgDone on the success path.
+	// Enable per-deployment after confirming clients tolerate the new
+	// frame (or once Phase B switches to client-capability negotiation).
+	answerDeltaEnabled bool
+
 	shuttingDown atomic.Bool
 
 	// db is used by handleReadyz to ping MySQL. nil = MySQL not configured
@@ -63,6 +71,14 @@ type Options struct {
 	TenantSource   TenantSource
 	AllowedOrigins []string
 	DB             *sql.DB
+
+	// AnswerDeltaEnabled gates the ServerMsgAnswerDelta frame (C11
+	// Phase A). See Server.answerDeltaEnabled doc. Default false;
+	// recommended to flip ON only after confirming the connected
+	// client tolerates unknown frame types (or once Phase B replaces
+	// the post-reply chunking with engine-level streaming, which will
+	// also add a client-capability negotiation handshake).
+	AnswerDeltaEnabled bool
 }
 
 // New constructs a Server. It does NOT start listening; call Run.
@@ -78,14 +94,15 @@ func New(opts Options) (*Server, error) {
 		src = TenantSourceGateway
 	}
 	return &Server{
-		addr:           opts.Addr,
-		deps:           opts.Deps,
-		traceSink:      opts.TraceSink,
-		msgRecorder:    opts.MsgRecorder,
-		model:          opts.Model,
-		tenantSource:   src,
-		allowedOrigins: opts.AllowedOrigins,
-		db:             opts.DB,
+		addr:               opts.Addr,
+		deps:               opts.Deps,
+		traceSink:          opts.TraceSink,
+		msgRecorder:        opts.MsgRecorder,
+		model:              opts.Model,
+		tenantSource:       src,
+		allowedOrigins:     opts.AllowedOrigins,
+		db:                 opts.DB,
+		answerDeltaEnabled: opts.AnswerDeltaEnabled,
 	}, nil
 }
 
