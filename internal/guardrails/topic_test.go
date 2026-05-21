@@ -133,6 +133,28 @@ func TestDetectOffTopic_False_BenignPlatform(t *testing.T) {
 	}
 }
 
+// TestDetectOffTopic_KnownFP_EnglishMedicalMixedPlatform locks the
+// behavior of mixed-intent English messages where the user mentions a
+// medical condition AND a platform topic ("research model on 4090") in
+// one turn. Current behavior: trips medical (FP). PR #155 review N2
+// flagged this — RE2 cannot do message-level platform-noun lookaround
+// so the proper fix is a separate prepareForDetection-style escape
+// hatch deferred to a follow-up commit. This test locks current
+// behavior so the fix has an explicit assertion to flip.
+func TestDetectOffTopic_KnownFP_EnglishMedicalMixedPlatform(t *testing.T) {
+	knownFP := []string{
+		"My family member has cancer and I want to run a research model on 4090",
+		"My mother has diabetes — can I use compshare to run insulin-dosing research",
+		"I have diabetes, what GPU do you recommend for ML research",
+	}
+	for _, msg := range knownFP {
+		t.Run(strings.ReplaceAll(msg[:min(len(msg), 30)], " ", "_"), func(t *testing.T) {
+			assert.True(t, DetectOffTopic(msg),
+				"KNOWN FP — when the platform-noun escape hatch lands, flip this to assert.False and remove the assertion: %q", msg)
+		})
+	}
+}
+
 // TestDetectOffTopic_FullWidthPunctuation locks normalisation against
 // full-width-punct evasion (consistent with DetectJailbreakAttempt).
 func TestDetectOffTopic_FullWidthPunctuation(t *testing.T) {
