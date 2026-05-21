@@ -463,10 +463,11 @@ func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc) *to
 // calls DescribeCompShareInstance and builds the system prompt.
 // Returns opening suggestions.
 func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
-	// Ensure ProjectId is available before any write API may need it
-	// (e.g. UpdateCompShareStopScheduler). Silent failure: if discovery
-	// fails, scheduler APIs will surface a clear platform-level error.
-	e.ensureProjectId(ctx)
+	// PR9: removed automatic ProjectId discovery (was: e.ensureProjectId(ctx)).
+	// Discovery mutated a SharedDeps singleton and leaked across sessions.
+	// ProjectId now flows from cfg → ExternalExecutor at construction only.
+	// When mutating tools that need ProjectId (e.g. UpdateCompShareStopScheduler)
+	// open up, plumb a per-session value through args, not via a setter.
 
 	// Auto-inject user instance context
 	userCtx := "暂无用户信息"
@@ -2466,36 +2467,13 @@ func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
 	return msgs
 }
 
-// ensureProjectId makes sure the underlying ExternalExecutor has a ProjectId.
-// If config already supplied one, it's a no-op. Otherwise it calls
-// GetProjectList and picks the IsDefault project (or the first one available).
-// Silent failure: on any error (non-ExternalExecutor, network, malformed
-// response), the function returns and leaves ProjectId empty — scheduler
-// APIs will then fail with a clear platform-level error that the caller
-// can see in the agent reply.
-func (e *Engine) ensureProjectId(ctx context.Context) {
-	ext := e.externalExecutor()
-	if ext == nil {
-		return // test executor or other non-external implementation
-	}
-	if ext.ProjectId() != "" {
-		return
-	}
-	resp, err := e.executeRawTool(ctx, "GetProjectList", nil, tools.OriginDirectLLM)
-	if err != nil {
-		return
-	}
-	if id := pickProjectId(resp); id != "" {
-		ext.SetProjectId(id)
-	}
-}
-
-func (e *Engine) externalExecutor() *tools.ExternalExecutor {
-	if e.safeExecutor == nil {
-		return nil
-	}
-	return e.safeExecutor.ExternalExecutor()
-}
+// PR9 removed ensureProjectId / externalExecutor / pickProjectId. The
+// auto-discovery path called ExternalExecutor.SetProjectId, which mutated
+// a SharedDeps singleton across sessions — one user's discovered project
+// id ended up auto-injected into another user's tool calls. ProjectId now
+// only flows from cfg → NewExternalExecutor at construction; runtime
+// mutation is gone. When mutating tools that need ProjectId open up,
+// route the value through args["ProjectId"] (per-session field on Engine).
 
 const accountBillingUnsupportedReply = "这类账号级财务信息当前不支持由助手查询。请到控制台的财务中心查看：账号总览看余额，账单管理看月度账单，消费记录看扣费流水，发票管理看开票和寄送状态，退款或欠费信息以订单/财务中心页面为准。"
 
@@ -3189,33 +3167,5 @@ func inferKnowledgeProductArea(userMsg string) string {
 	}
 }
 
-// pickProjectId extracts a ProjectId from a GetProjectList response.
-// Prefers the IsDefault=true entry; falls back to the first non-empty
-// ProjectId in ProjectSet.
-func pickProjectId(resp map[string]any) string {
-	if resp == nil {
-		return ""
-	}
-	set, ok := resp["ProjectSet"].([]any)
-	if !ok {
-		return ""
-	}
-	var fallback string
-	for _, item := range set {
-		p, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		id, _ := p["ProjectId"].(string)
-		if id == "" {
-			continue
-		}
-		if def, _ := p["IsDefault"].(bool); def {
-			return id
-		}
-		if fallback == "" {
-			fallback = id
-		}
-	}
-	return fallback
-}
+// pickProjectId removed in PR9 with ensureProjectId. See comment block
+// at the former ensureProjectId site (search for "PR9 removed").

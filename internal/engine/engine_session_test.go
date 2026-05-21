@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/tools"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -332,6 +333,35 @@ func TestNewSession_NilDepsPanics(t *testing.T) {
 		}
 	}()
 	_ = NewSession(nil, SessionOptions{})
+}
+
+// TestSessionIsolation_NoProjectIdLeak — PR9 guard.
+//
+// Encodes WHY: pre-PR9 the engine called ExternalExecutor.SetProjectId at
+// the start of every session's Init to auto-discover a ProjectId via
+// GetProjectList. Because SharedDeps.ExternalExecutor is a process-wide
+// singleton shared across sessions, that write let session A's discovered
+// project id auto-inject into session B's subsequent tool calls — a
+// cross-tenant leak. PR9 removed the mutation surface entirely
+// (SetProjectId, the ProjectId() getter, and ensureProjectId/pickProjectId).
+//
+// This test is a structural guard: it asserts the mutating method has
+// not silently come back via a future refactor. The reflection check
+// runs on *tools.ExternalExecutor because the leak path was through
+// methods on that concrete type — TestSessionIsolation_AllEngineFieldsClassified
+// only walks Engine struct fields and does NOT recurse into shared-dep
+// struct method sets, so it can't catch a re-introduced setter here.
+func TestSessionIsolation_NoProjectIdLeak(t *testing.T) {
+	typ := reflect.TypeOf(&tools.ExternalExecutor{})
+	for _, banned := range []string{"SetProjectId", "ProjectId"} {
+		if _, ok := typ.MethodByName(banned); ok {
+			t.Fatalf("tools.ExternalExecutor.%s reintroduced — this re-opens "+
+				"the cross-session ProjectId leak fixed in PR9. ProjectId must "+
+				"only flow from cfg → NewExternalExecutor at construction. If "+
+				"a mutating tool genuinely needs ProjectId, plumb it via args "+
+				"or a per-session Engine field, never a SharedDeps setter.", banned)
+		}
+	}
 }
 
 // TestNewSharedDeps_NilCfgErrors asserts the documented error in NewSharedDeps.
