@@ -55,6 +55,10 @@ type ChatRequest struct {
 	// string ("auto"/"required"/"none") or an openai.ToolChoice struct
 	// naming a specific function. Leave nil for default auto behavior.
 	ToolChoice any
+	// OnTextDelta, when non-nil, is called for each non-empty text content
+	// delta as it arrives from the stream. It is NOT called for empty deltas
+	// or for tool-call-only chunks.
+	OnTextDelta func(string)
 }
 
 // ChatResponse wraps the LLM output.
@@ -146,6 +150,9 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 		// Accumulate text content
 		if delta.Content != "" {
 			contentBuf.WriteString(delta.Content)
+			if req.OnTextDelta != nil {
+				req.OnTextDelta(delta.Content)
+			}
 		}
 
 		// Accumulate tool calls
