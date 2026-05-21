@@ -211,6 +211,30 @@ func TestLoad_RejectsNegativeRateLimitValues(t *testing.T) {
 `,
 			wantErr: "agent.rate_limit.read_expensive_daily",
 		},
+		{
+			name: "user turn qps",
+			yaml: `
+  rate_limit:
+    user_turn_qps: -1
+`,
+			wantErr: "agent.rate_limit.user_turn_qps",
+		},
+		{
+			name: "user turn daily",
+			yaml: `
+  rate_limit:
+    user_turn_daily: -1
+`,
+			wantErr: "agent.rate_limit.user_turn_daily",
+		},
+		{
+			name: "max tokens per turn",
+			yaml: `
+  rate_limit:
+    max_tokens_per_turn: -1
+`,
+			wantErr: "agent.rate_limit.max_tokens_per_turn",
+		},
 	}
 
 	for _, tc := range cases {

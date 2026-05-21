@@ -50,6 +50,13 @@ const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机
 const (
 	rateLimitQPSMessage   = "请求过于频繁，请稍后再试。"
 	rateLimitDailyMessage = "今日额度已用完，请明天再试。"
+	// tokenBudgetExceededMessage is returned when a single user turn
+	// consumed more LLM tokens than maxTokensPerTurn. Surfaces to the
+	// user as a normal assistant message (status="blocked" downstream);
+	// the partial reply prior to the budget hit is discarded — the loop
+	// breaks at iteration boundary, so any tool_call already issued has
+	// its tool_result on the wire before this frame.
+	tokenBudgetExceededMessage = "本次问题消耗的算力已超过单次上限，请简化问题或拆分提问。"
 )
 
 const (
@@ -130,6 +137,14 @@ type Engine struct {
 	rateLimitObserver                func(governance.Decision)
 	readExpensiveCallsThisTurn       int
 	requireKnowledgeCitationThisTurn bool
+	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
+	// user turn. 0 = disabled. Copied from SharedDeps in NewSession.
+	maxTokensPerTurn int
+	// turnTokensConsumed accumulates tokenUsageTotal(usage) across every
+	// LLM call within the current Chat() invocation. Reset at the top of
+	// Chat. Read at ReAct loop iteration boundaries to enforce
+	// maxTokensPerTurn — never mid tool_call / tool_result pair.
+	turnTokensConsumed int
 	hardBlockObserver                func(observability.EngineHardBlockTrace)
 	confirmFn                        ConfirmFunc
 	messages                         []openai.ChatCompletionMessage // conversation history
@@ -186,6 +201,9 @@ type SharedDeps struct {
 	GroundedRendererModel       string
 	RateLimiter                 governance.RateLimiter
 	SupportsObjectToolChoice    bool
+	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
+	// 0 = disabled. Process-wide constant; copied into every NewSession.
+	MaxTokensPerTurn int
 	// ExternalExecutor is the underlying tool executor shared across sessions
 	// (holds AK/SK + HTTP client). Each NewSession wraps it in a fresh
 	// SafeToolExecutor so per-session confirmFn stays isolated.
@@ -218,6 +236,7 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 		// centralized limiter such as Redis or an API gateway.
 		RateLimiter:              governance.NewMemoryLimiter(cfg.Agent.RateLimit.Limits()),
 		SupportsObjectToolChoice: cap.SupportsObjectToolChoice,
+		MaxTokensPerTurn:         cfg.Agent.RateLimit.MaxTokensPerTurn,
 		ExternalExecutor:         tools.NewExternalExecutor(cfg.Agent),
 	}, nil
 }
@@ -247,6 +266,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		groundedRendererModel:       deps.GroundedRendererModel,
 		rateLimiter:                 deps.RateLimiter,
 		supportsObjectToolChoice:    deps.SupportsObjectToolChoice,
+		maxTokensPerTurn:            deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
 		confirmFn:             opts.ConfirmFn,
@@ -591,6 +611,7 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	e.lastUserMsg = userMsg
 	e.readExpensiveCallsThisTurn = 0
 	e.requireKnowledgeCitationThisTurn = false
+	e.turnTokensConsumed = 0
 
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
@@ -641,6 +662,23 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	}
 
 	for round := 0; round < maxReActRounds; round++ {
+		// Per-turn token budget gate. Placed at the TOP of the loop so
+		// any tool_call → tool_result pair emitted in the previous
+		// iteration has already completed and been appended to history
+		// before we stop. This preserves the WS protocol invariant that
+		// every tool_call is followed by a tool_result on the wire —
+		// breaking mid-pair would leave the client with an orphan
+		// tool_call frame. First iteration (round 0) sees consumed
+		// pre-loaded with any planner LLM call (accumulateTokenUsage
+		// in callPlannerOnce) and triggers if that already blew budget.
+		if e.tokenBudgetExceeded() {
+			e.emitTokenBudgetExceededHardBlock()
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: tokenBudgetExceededMessage,
+			})
+			return tokenBudgetExceededMessage, nil
+		}
 		req := llm.ChatRequest{
 			Messages: e.buildMessagesForLLM(),
 			Tools:    tools.VisibleRegistry(e.mutatingToolsEnabled),
@@ -673,6 +711,24 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 		}
 
 		e.emitTokenUsage(resp.Usage)
+
+		// Post-call budget check: emitTokenUsage just accumulated this
+		// call's usage. If the single call already blew the cap, gate
+		// here so the user gets the canned reply instead of an answer
+		// that already exceeded budget. Without this, a one-shot 60k-
+		// token final answer would still flow through to the user
+		// despite max_tokens_per_turn=50000. Returning canned makes the
+		// cap meaningful end-to-end. (c) invariant still holds: this
+		// branch has NO tool_calls in flight — len(resp.ToolCalls)==0
+		// is the condition just below — so no orphan pair.
+		if len(resp.ToolCalls) == 0 && e.tokenBudgetExceeded() {
+			e.emitTokenBudgetExceededHardBlock()
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: tokenBudgetExceededMessage,
+			})
+			return tokenBudgetExceededMessage, nil
+		}
 
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
@@ -765,6 +821,27 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		return "", false
 	}
 
+	// Token budget gate. callPlannerOnce already added planner usage to
+	// the per-turn counter; if that alone blew the cap, return the
+	// canned reply BEFORE any further LLM call (cutover handler,
+	// answerWithRetrievedEvidence, grounded renderer). Without this
+	// every planner-handled path could spend an extra answerer call's
+	// worth of tokens past the cap — the C1 finding from 2026-05-21
+	// review. Returning handled=true short-circuits Chat() so it does
+	// NOT fall through to the ReAct loop (which would re-trip the gate
+	// but waste a frame). No tool_call/tool_result pair is in flight
+	// here (planner-handled paths don't emit ReAct tool events), so
+	// the (c) protocol invariant is naturally satisfied.
+	if e.tokenBudgetExceeded() {
+		e.emitTokenBudgetExceededHardBlock()
+		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: tokenBudgetExceededMessage,
+		})
+		return tokenBudgetExceededMessage, true
+	}
+
 	if dispatch.result.Plan.Intent == intent.IntentMonitorHistory {
 		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackTimeWindow, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -852,6 +929,15 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 		// because trace currently has no dedicated planner-denied enum.
 	}
 	latency := time.Since(start)
+
+	// Add planner LLM tokens to the per-turn budget. Planner usage is
+	// surfaced via PlannerTrace (not emitTokenUsage), so without this
+	// accumulation a knowledge-QA turn that resolves entirely through
+	// the planner-handled path would never count its planner cost
+	// against maxTokensPerTurn — defeating the "total tokens per turn"
+	// promise of the cap. Tests:
+	// TestChat_TokenBudget_PlannerHandledPath_GateFires.
+	e.accumulateTokenUsage(result.Usage)
 
 	return plannerDispatchResult{result: result, latency: latency, snapshot: snapshot}
 }
@@ -1035,6 +1121,19 @@ func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent
 	if _, ok := e.allowRateLimited(governance.ClassLLM, "grounded_renderer"); !ok {
 		e.emitRendererTrace(trace)
 		return handled.Reply
+	}
+	// Token budget gate before issuing the renderer LLM call. Returning
+	// the canned message keeps the contract consistent with the other
+	// gate sites: hard_block fires → message_recorder marks the row
+	// status="blocked" → user MUST see the budget message, not a
+	// normal-looking handled.Reply. Pre-fix this path returned
+	// handled.Reply while still firing hard_block, which made the user
+	// view ("normal answer") disagree with the DB view ("blocked") —
+	// the C3 finding from the user's 2026-05-21 self-review.
+	if e.tokenBudgetExceeded() {
+		e.emitTokenBudgetExceededHardBlock()
+		e.emitRendererTrace(trace)
+		return tokenBudgetExceededMessage
 	}
 	result := e.groundedRenderer.Render(ctx, grounded.RenderRequest{
 		Envelope: *handled.Envelope,
@@ -1335,6 +1434,20 @@ func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string
 		return "", outcome, "", false, fmt.Errorf("LLM 调用失败: %w", err)
 	}
 	e.emitTokenUsage(resp.Usage)
+
+	// Post-call budget gate. The first answerer LLM call has been
+	// accounted for; if cumulative tokens are over cap, return the
+	// canned message instead of the LLM content. WHY: pre-fix, an
+	// answer that itself blew budget was still delivered to the user
+	// — the cap stopped only FURTHER calls. That made the cap
+	// non-strict on RAG paths. EscapedHallucinatedCount stays 0 here
+	// (no hallucination was attempted — there's no answer being
+	// scored), distinct from organic retry_no_cite which sets it to 1.
+	if e.tokenBudgetExceeded() {
+		e.emitTokenBudgetExceededHardBlock()
+		return tokenBudgetExceededMessage, outcome, "token_budget", false, nil
+	}
+
 	answer := strings.TrimSpace(resp.Content)
 	if isKnowledgeRefusal(answer) {
 		return answer, outcome, refusedReasonForRefusal(weak), false, nil
@@ -1352,6 +1465,15 @@ func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string
 		return "", outcome, "", false, fmt.Errorf("LLM 调用失败: %w", err)
 	}
 	e.emitTokenUsage(retryResp.Usage)
+
+	// Post-retry budget gate. Symmetric to the post-first-call gate
+	// above. If the retry pushed us over cap, deliver canned instead
+	// of the retry's answer — even if the retry produced a cited
+	// answer, the cap is binding.
+	if e.tokenBudgetExceeded() {
+		e.emitTokenBudgetExceededHardBlock()
+		return tokenBudgetExceededMessage, outcome, "token_budget", false, nil
+	}
 	retryAnswer := strings.TrimSpace(retryResp.Content)
 	if isKnowledgeRefusal(retryAnswer) {
 		return retryAnswer, outcome, refusedReasonForRefusal(weak), false, nil
@@ -1575,10 +1697,52 @@ func traceOutcomeObserved(trace observability.OutcomeTrace) bool {
 }
 
 func (e *Engine) emitTokenUsage(usage llm.TokenUsage) {
-	if e.tokenUsageObserver == nil || tokenUsageTotal(usage) == 0 {
+	total := tokenUsageTotal(usage)
+	if total > 0 {
+		// Track regardless of observer wiring so the per-turn budget
+		// check sees every LLM call's usage, not just turns that happen
+		// to have an observer attached. Planner LLM calls are not
+		// routed through emitTokenUsage (they're observed via
+		// emitPlannerTrace) and add to the same counter via
+		// accumulateTokenUsage below.
+		e.turnTokensConsumed += total
+	}
+	if e.tokenUsageObserver == nil || total == 0 {
 		return
 	}
 	e.tokenUsageObserver(usage)
+}
+
+// accumulateTokenUsage adds usage to the per-turn budget counter without
+// going through the observer. Used for LLM calls (notably the planner)
+// whose usage is surfaced via a different trace path but still needs to
+// count against maxTokensPerTurn — otherwise a planner-handled turn
+// could bypass the cap entirely.
+func (e *Engine) accumulateTokenUsage(usage llm.TokenUsage) {
+	total := tokenUsageTotal(usage)
+	if total > 0 {
+		e.turnTokensConsumed += total
+	}
+}
+
+// tokenBudgetExceeded reports whether this turn has already consumed
+// maxTokensPerTurn or more LLM tokens. Read-only — call emitTokenBudget
+// ExceededHardBlock + append the canned assistant reply when this trips.
+func (e *Engine) tokenBudgetExceeded() bool {
+	return e.maxTokensPerTurn > 0 && e.turnTokensConsumed >= e.maxTokensPerTurn
+}
+
+// emitTokenBudgetExceededHardBlock fires the trace observer for a turn
+// that ran over budget. Separate from message-append so each call site
+// can keep its own assistant-message conventions (cutover handlers
+// already manage their history slot; the ReAct loop appends inline).
+func (e *Engine) emitTokenBudgetExceededHardBlock() {
+	if e.hardBlockObserver != nil {
+		e.hardBlockObserver(observability.EngineHardBlockTrace{
+			Hit:      true,
+			Category: "token_budget_exceeded",
+		})
+	}
 }
 
 func tokenUsageTotal(usage llm.TokenUsage) int {

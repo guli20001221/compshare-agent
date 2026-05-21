@@ -5617,3 +5617,155 @@ func TestVagueCrashGuard_ExplicitInitFailureScanAllPasses(t *testing.T) {
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance",
 		"scan-all must be allowed when both init-failure signal and scan-all phrasing are present")
 }
+
+// TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary — verifies the
+// per-turn token cap fires at the TOP of a ReAct iteration, AFTER the
+// previous iteration's tool_call/tool_result pair has fully completed.
+//
+// Setup: round 0 LLM returns one tool_call + reports 60000 tokens used,
+// which is over the 50000 cap. The engine MUST:
+//  1. Still execute that tool_call and append its tool_result (so the WS
+//     client never sees an orphan tool_call frame — protocol invariant).
+//  2. NOT make a second LLM call (round 1 budget check trips first).
+//  3. Return tokenBudgetExceededMessage with status mapped to "blocked"
+//     via the hard-block observer (Category="token_budget_exceeded").
+//
+// WHY: the (c) constraint from 2026-05-21 review — a token cap that
+// breaks mid-tool would leave the client framing broken. Encode the
+// boundary placement as a test so future refactors can't silently move
+// the check inside the tool_call inner loop.
+func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		// Round 0: emits a tool_call AND reports 60k tokens (over the
+		// 50k cap). Second response would be returned if round 1 ran.
+		{
+			ToolCalls: []openai.ToolCall{
+				toolCall("tc1", "GetGPUSpecs", `{"GpuType":"4090"}`),
+			},
+			Usage: llm.TokenUsage{TotalTokens: 60000},
+		},
+		{Content: "this must never be returned — budget should trip first"},
+	}}
+	onStep, events := collectSteps()
+	var hardBlockHits []observability.EngineHardBlockTrace
+
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.maxTokensPerTurn = 50000
+	eng.SetHardBlockObserver(func(t observability.EngineHardBlockTrace) {
+		hardBlockHits = append(hardBlockHits, t)
+	})
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "4090什么配置", onStep)
+	require.NoError(t, err)
+	assert.Equal(t, tokenBudgetExceededMessage, reply,
+		"budget exceeded should short-circuit to the canned reply, not the round-1 LLM response")
+
+	// Exactly one LLM call: round 0 happens, round 1 hits the gate.
+	assert.Len(t, mock.calls, 1,
+		"second LLM call must not happen once budget is exceeded; got %d calls", len(mock.calls))
+
+	// The tool_call from round 0 must have run to completion — the test
+	// asserts BOTH the tool_call and tool_result events fired, proving
+	// the pair stays atomic across the budget break.
+	var sawToolCall, sawToolResult bool
+	for _, ev := range *events {
+		if ev.Type == StepToolCall && ev.Action == "GetGPUSpecs" {
+			sawToolCall = true
+		}
+		if ev.Type == StepToolResult && ev.Action == "GetGPUSpecs" {
+			sawToolResult = true
+		}
+	}
+	assert.True(t, sawToolCall, "round 0 tool_call must be emitted before the budget break")
+	assert.True(t, sawToolResult, "round 0 tool_result must be emitted before the budget break (protocol invariant)")
+
+	// Hard-block observer fired with the expected category, so downstream
+	// status mapping in trace_recorder produces status="blocked".
+	require.Len(t, hardBlockHits, 1, "expected exactly one hard-block emission")
+	assert.True(t, hardBlockHits[0].Hit)
+	assert.Equal(t, "token_budget_exceeded", hardBlockHits[0].Category)
+}
+
+// TestChat_TokenBudget_DisabledByDefault — sanity check that
+// maxTokensPerTurn=0 means "no cap" (the production default). Without
+// this, a refactor that flipped the sense of the comparison would
+// silently start blocking every turn at 0 tokens.
+func TestChat_TokenBudget_DisabledByDefault(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "done", Usage: llm.TokenUsage{TotalTokens: 999999}},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	// maxTokensPerTurn left at 0 (default)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "hi", noopStep)
+	require.NoError(t, err)
+	assert.Equal(t, "done", reply,
+		"with maxTokensPerTurn=0 the LLM reply must pass through even with absurdly high usage")
+}
+
+// TestChat_TokenBudget_PlannerHandledPath_GateFires — covers the C1 gap
+// surfaced by 2026-05-21 review. A planner-handled turn (no ReAct entry)
+// previously bypassed the budget gate entirely because the gate only
+// lived at the top of the ReAct loop. After the fix, planner LLM tokens
+// are accumulated in callPlannerOnce, then a second gate fires inside
+// tryPlannerDispatch BEFORE any further dispatch. WHY: a heavy planner
+// LLM (e.g. degraded prompt + retries pushing 60k tokens) must not slip
+// past the 50k cap just because the turn happens to resolve through the
+// planner path. Without this gate, MaxTokensPerTurn=50000 means
+// "50000 tokens for ReAct-only turns, unbounded for planner-handled".
+func TestChat_TokenBudget_PlannerHandledPath_GateFires(t *testing.T) {
+	// Planner returns a candidate whose Usage alone exceeds the 50k cap.
+	// IntentResourceInfo is a planner-handled branch in tryPlannerDispatch
+	// that normally dispatches via tryPhase1Cutover. Our gate fires
+	// BEFORE that dispatch even runs, so the cutover path never executes.
+	// Choosing IntentResourceInfo over IntentMonitorHistory because the
+	// "last week monitor" phrasing trips a pre-planner short-circuit in
+	// Chat (isUnsupportedHistoricalMonitorQuestion), short-circuiting
+	// before the planner is even consulted — which masks the test.
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{
+		Plan: intent.Plan{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentResourceInfo,
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+		Usage: llm.TokenUsage{TotalTokens: 60000},
+	}}}
+	// LLM mock is only here to make ReAct fall-through visible: if the
+	// gate fails to trip, ReAct enters and this would be the response.
+	// Test asserts mock.calls==0 to prove ReAct never ran.
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path (must not be reached)"}}}
+
+	var hardBlockHits []observability.EngineHardBlockTrace
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.maxTokensPerTurn = 50000
+	eng.SetHardBlockObserver(func(t observability.EngineHardBlockTrace) {
+		hardBlockHits = append(hardBlockHits, t)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "test-planner-model",
+	})
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "查我的实例信息", noopStep)
+	require.NoError(t, err)
+
+	assert.Equal(t, tokenBudgetExceededMessage, reply,
+		"planner-handled turn should be cut short with the budget message; "+
+			"got the dispatch handler's reply or a ReAct fallthrough instead")
+	assert.Empty(t, mock.calls,
+		"once the budget is blown by the planner, no downstream LLM call (ReAct, answerer, renderer) may run")
+	require.Len(t, planner.calls, 1,
+		"the planner itself must still run — accumulation happens after, not before")
+	require.Len(t, hardBlockHits, 1, "exactly one hard-block emission expected")
+	assert.Equal(t, "token_budget_exceeded", hardBlockHits[0].Category)
+}

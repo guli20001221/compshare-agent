@@ -43,6 +43,25 @@ type RateLimitConfig struct {
 	MutatingDaily      int `yaml:"mutating_daily"`
 	ReadExpensiveQPS   int `yaml:"read_expensive_qps"`
 	ReadExpensiveDaily int `yaml:"read_expensive_daily"`
+
+	// UserTurnQPS / UserTurnDaily: per-tenant cap on user-initiated chat
+	// turns (one ClientMsgUserMessage frame = 1 turn; confirm responses
+	// and pings do NOT count). 0 = disabled. Unlike the other classes
+	// these are NOT promoted to a built-in default when zero — operator
+	// opts in by setting a positive value.
+	//
+	// Counts in-memory per process. Single-replica + non-persistent: a
+	// pod restart resets every tenant's counter, and N replicas without
+	// sticky routing yield an effective cap of N × UserTurnDaily.
+	UserTurnQPS   int `yaml:"user_turn_qps"`
+	UserTurnDaily int `yaml:"user_turn_daily"`
+
+	// MaxTokensPerTurn caps total LLM tokens (prompt + completion summed
+	// across every LLM call) used by a single user turn. 0 = disabled.
+	// Engine enforces this at ReAct iteration boundaries — never mid
+	// tool_call/tool_result pair — so the WS protocol invariant that
+	// every tool_call is followed by a tool_result stays intact.
+	MaxTokensPerTurn int `yaml:"max_tokens_per_turn"`
 }
 
 func (c RateLimitConfig) Limits() governance.Limits {
@@ -53,6 +72,8 @@ func (c RateLimitConfig) Limits() governance.Limits {
 		MutatingDaily:      c.MutatingDaily,
 		ReadExpensiveQPS:   c.ReadExpensiveQPS,
 		ReadExpensiveDaily: c.ReadExpensiveDaily,
+		UserTurnQPS:        c.UserTurnQPS,
+		UserTurnDaily:      c.UserTurnDaily,
 	}
 }
 
@@ -104,6 +125,15 @@ func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 	}
 	if rateLimit.ReadExpensiveDaily < 0 {
 		return negativeRateLimitError("agent.rate_limit.read_expensive_daily")
+	}
+	if rateLimit.UserTurnQPS < 0 {
+		return negativeRateLimitError("agent.rate_limit.user_turn_qps")
+	}
+	if rateLimit.UserTurnDaily < 0 {
+		return negativeRateLimitError("agent.rate_limit.user_turn_daily")
+	}
+	if rateLimit.MaxTokensPerTurn < 0 {
+		return negativeRateLimitError("agent.rate_limit.max_tokens_per_turn")
 	}
 	if rateLimit.LLMQPS == 0 {
 		rateLimit.LLMQPS = defaults.LLMQPS
