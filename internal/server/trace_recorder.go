@@ -41,6 +41,13 @@ type serverTraceRecorder struct {
 // newServerTraceRecorder constructs a recorder if a sink is configured;
 // returns nil when sink == nil so the call site can skip observer wiring
 // cheaply. Caller MUST invoke attach + finish.
+//
+// trace_id passthrough (plan §10 / A7): the recorder pins
+// TraceRecord.TraceID = ClientMessage.RequestUUID so the trace row's
+// inner trace_id matches the row's request_uuid column exactly. Dashboard
+// joins on either column return the same record. When RequestUUID is
+// empty (legacy clients pre-A7), the recorder falls back to an auto-
+// generated trace-{turn}-{ns} form so trace rows still get a unique key.
 func newServerTraceRecorder(
 	sink observability.Writer,
 	tenant TenantCtx,
@@ -53,6 +60,10 @@ func newServerTraceRecorder(
 		return nil
 	}
 	now := time.Now().UTC()
+	traceID := msg.RequestUUID
+	if traceID == "" {
+		traceID = fmt.Sprintf("trace-%d-%d", turnIndex, now.UnixNano())
+	}
 	return &serverTraceRecorder{
 		sink:         sink,
 		tenant:       tenant,
@@ -63,7 +74,7 @@ func newServerTraceRecorder(
 		start:        now,
 		record: observability.TraceRecord{
 			SchemaVersion: observability.SchemaVersion,
-			TraceID:       fmt.Sprintf("trace-%s-%d", msg.RequestUUID, turnIndex),
+			TraceID:       traceID,
 			TurnID:        fmt.Sprintf("turn-%d", turnIndex),
 			TurnIndex:     turnIndex,
 			Timestamp:     now.Format(time.RFC3339Nano),

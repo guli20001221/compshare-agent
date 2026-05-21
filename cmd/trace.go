@@ -528,12 +528,20 @@ type cliTraceRecorder struct {
 	plannerTraceSupplier  func() observability.PlannerTrace
 }
 
-func newCLITraceRecorder(writer observability.Writer, turnIndex int, userMsg string, start time.Time) *cliTraceRecorder {
+// newCLITraceRecorder constructs a per-turn trace recorder for the CLI path.
+// traceID, when non-empty, becomes the trace's TraceID verbatim — used by
+// server callers that already have a request_uuid (plan §10 / A7). Empty
+// traceID falls back to the legacy auto-generated form so existing CLI
+// callsites (cmd/agent.go) keep working unchanged.
+func newCLITraceRecorder(writer observability.Writer, traceID string, turnIndex int, userMsg string, start time.Time) *cliTraceRecorder {
 	userMsgHash, _ := observability.HashTracePayload(userMsg)
+	if traceID == "" {
+		traceID = fmt.Sprintf("trace-%d-%d", turnIndex, start.UnixNano())
+	}
 	return &cliTraceRecorder{
 		writer: writer,
 		record: observability.TraceRecord{
-			TraceID:     fmt.Sprintf("trace-%d-%d", turnIndex, start.UnixNano()),
+			TraceID:     traceID,
 			TurnID:      fmt.Sprintf("turn-%d", turnIndex),
 			TurnIndex:   turnIndex,
 			UserMsgHash: userMsgHash,
