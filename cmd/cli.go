@@ -19,6 +19,7 @@ import (
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/renderer"
+	"github.com/compshare-agent/internal/tools"
 
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/spf13/cobra"
@@ -58,6 +59,19 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	}
 
 	ctx := context.Background()
+
+	// Inject a CLI UserContext when DefaultRoleUrn is configured; otherwise
+	// leave ctx as-is so the engine runs with an anonymous subject.
+	if cfg.Agent.STS.DefaultRoleUrn != "" {
+		cliUser := tools.UserContext{
+			RoleUrn:     cfg.Agent.STS.DefaultRoleUrn,
+			SessionName: cfg.Agent.STS.DefaultSessionName,
+			ProjectId:   cfg.Agent.ProjectId,
+			Region:      cfg.Agent.Region,
+		}
+		ctx = tools.WithUser(ctx, cliUser)
+	}
+
 	scanner := bufio.NewScanner(os.Stdin)
 	eng := engine.New(cfg, cliConfirm(scanner))
 	mutatingToolsEnabled, unknownMutatingTools := mutatingToolsEnabledFromEnv(os.Getenv)

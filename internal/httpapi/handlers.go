@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/store"
+	"github.com/compshare-agent/internal/tools"
 )
 
 // EnginePool abstracts per-session engine lifecycle so httpapi does not depend
@@ -47,4 +49,21 @@ func NewHandlers(
 		feedback: feedback,
 		pool:     pool,
 	}
+}
+
+// buildUserContext constructs a tools.UserContext from a BaseRequest.
+// Returns ErrInvalidParam if the role URN cannot be built (e.g. TopOrganizationID is zero).
+func (h *Handlers) buildUserContext(base BaseRequest) (tools.UserContext, error) {
+	roleUrn, err := tools.RoleUrnFromTemplate(h.cfg.Agent.STS.RoleUrnTemplate, base.Owner.TopOrganizationID)
+	if err != nil {
+		return tools.UserContext{}, ErrInvalidParam.WithMessage("failed to build role: %v", err)
+	}
+	return tools.UserContext{
+		TopOrganizationID: base.Owner.TopOrganizationID,
+		OrganizationID:    base.Owner.OrganizationID,
+		RoleUrn:           roleUrn,
+		SessionName:       fmt.Sprintf("%d-%d", base.Owner.TopOrganizationID, base.Owner.OrganizationID),
+		ProjectId:         fmt.Sprintf("%d", base.Owner.OrganizationID),
+		Region:            h.cfg.Agent.Region,
+	}, nil
 }

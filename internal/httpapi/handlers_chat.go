@@ -13,6 +13,7 @@ import (
 	"github.com/compshare-agent/internal/httpapi/sse"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/store"
+	"github.com/compshare-agent/internal/tools"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -142,7 +143,17 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 			ErrInternal.WithMessage("%s", "engine pool not configured"))
 		return
 	}
-	agent, release, err := h.pool.Lease(c.Request.Context(), base.Owner, sessionID)
+
+	// Build and inject UserContext so downstream tools can perform STS calls
+	// with the correct tenant identity.
+	userCtx, ucErr := h.buildUserContext(base)
+	if ucErr != nil {
+		writeStreamError(sw, h.messages, base.Owner, assistantMsgID, AsAPIError(ucErr))
+		return
+	}
+	ctx := tools.WithUser(c.Request.Context(), userCtx)
+
+	agent, release, err := h.pool.Lease(ctx, base.Owner, sessionID)
 	if err != nil {
 		writeStreamError(sw, h.messages, base.Owner, assistantMsgID, AsAPIError(err))
 		return
@@ -175,7 +186,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	// -----------------------------------------------------------------------
 	// 5. LLM streaming call
 	// -----------------------------------------------------------------------
-	reply, chatErr := agent.ChatWithOptions(c.Request.Context(), message, nil, engine.ChatOptions{
+	reply, chatErr := agent.ChatWithOptions(ctx, message, nil, engine.ChatOptions{
 		OnTextDelta: func(s string) {
 			if firstToken.IsZero() {
 				firstToken = time.Now()
