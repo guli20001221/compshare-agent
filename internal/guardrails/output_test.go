@@ -140,8 +140,8 @@ func TestRedactOutputLeak_JWT(t *testing.T) {
 
 func TestRedactOutputLeak_BearerToken(t *testing.T) {
 	cases := []struct {
-		name     string
-		in       string
+		name string
+		in   string
 		want string
 	}{
 		{"Bearer", "Authorization: Bearer AKIAIOSFODNN7EXAMPLEbCDEF", "Authorization: Bearer " + TokenRedactedOutput},

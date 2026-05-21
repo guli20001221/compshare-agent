@@ -13,8 +13,10 @@ import (
 // Distinct from RedactPII (input side, this same package): the patterns
 // here target what the LLM might render INTO a reply (e.g. an IP it
 // learned from a tool result that internal/sanitizer didn't blank, or
-// an access-key string the model paraphrased rather than the literal
-// "AccessKey" field name).
+// a credential string the model rendered with a marker keyword like
+// "AccessKey=..."). Note: standalone credentials WITHOUT a marker
+// keyword (e.g. the LLM pasting "AKIA..." mid-sentence) pass through
+// — see Known FN below.
 //
 // Scope:
 //   - IPv4 — both private (10.*, 192.168.*) and public; ops/dev review
@@ -36,19 +38,34 @@ import (
 //   - Zone codes (cn-wlcb-01) — needed for region-specific answers.
 //   - Prices ("¥1.69/小时") — must be preserved verbatim.
 //
-// Known false-positive surface:
+// Known false-positive surface (acceptable per ticket):
 //   - Localhost / loopback (127.0.0.1) is also redacted. Acceptable
 //     — operator dashboards don't lose information by masking it.
 //   - Public IP ranges legitimately quoted in documentation snippets
 //     (e.g. example IPs in a how-to) will redact. Acceptable in the
 //     persistence boundary even though it looks odd in transcripts.
+//   - Marker-prefixed prose: `AccessKey: somelongdescription16chars+`
+//     redacts because the credential regex requires marker + sep + a
+//     16-char value but cannot distinguish prose from base64 cred.
+//     Probability LOW (the LLM is unlikely to write "AccessKey:" prose).
+//   - Bearer prefix + 20-char alpha-ish prose ("token expired_after_X")
+//     redacts. Same root cause — bearer/token regex requires the
+//     marker prefix + 20-char value but cannot validate cred entropy.
+//
+// Known false-negative surface (acceptable trade-off):
+//   - Standalone credential strings without a marker keyword
+//     (e.g. the LLM writes "AKIAIOSFODNN7EXAMPLE" mid-sentence) pass
+//     through. Lowering the marker requirement would FP heavily on
+//     prose; we accept that the agent rarely produces marker-less
+//     credentials because tool responses always come with field
+//     names that the LLM tends to echo verbatim.
 
 // Output-side placeholders. Distinct from PhoneRedacted etc. so an
 // operator scanning agent_messages can attribute redactions to the
 // right Guardrails layer ("[output]:" vs "[已脱敏:..]").
 const (
-	IPRedacted        = "[已脱敏:IP]"
-	ProjectIDRedacted = "[已脱敏:项目ID]"
+	IPRedacted               = "[已脱敏:IP]"
+	ProjectIDRedacted        = "[已脱敏:项目ID]"
 	CredentialRedactedOutput = "[已脱敏:凭据]"
 	TokenRedactedOutput      = "[已脱敏:令牌]"
 )
