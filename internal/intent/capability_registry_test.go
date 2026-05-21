@@ -538,6 +538,209 @@ func TestRenderGPUSpecs_FilterToMentionedModel(t *testing.T) {
 	}
 }
 
+func TestRenderGPUSpecs_OverviewDoesNotExpandEveryMachineSize(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name":           "4090",
+				"GraphicsMemory": map[string]any{"Value": 24},
+				"Performance":    map[string]any{"Value": 83},
+				"Status":         "Normal",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{"Cpu": float64(16), "Memory": []any{float64(64), float64(94)}},
+							map[string]any{"Cpu": float64(24), "Memory": []any{float64(96)}},
+						},
+					},
+					map[string]any{
+						"Gpu": float64(2),
+						"Collection": []any{
+							map[string]any{"Cpu": float64(32), "Memory": []any{float64(128), float64(192)}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	reply := renderGPUSpecsReply(raw, "4090 显存多大")
+
+	if !strings.Contains(reply, "机型=4090") || !strings.Contains(reply, "显存=24GB") {
+		t.Fatalf("overview should include basic GPU facts, got: %s", reply)
+	}
+	for _, notWant := range []string{"16C/64G", "16C/94G", "24C/96G", "32C/128G", "32C/192G"} {
+		if strings.Contains(reply, notWant) {
+			t.Fatalf("overview query should not expand full machine-size combos; found %q in: %s", notWant, reply)
+		}
+	}
+}
+
+func TestRenderGPUSpecs_FullModelRequestExpandsEveryMachineSize(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name":           "4090",
+				"Zone":           "cn-wlcb-01",
+				"GraphicsMemory": map[string]any{"Value": 24},
+				"Performance":    map[string]any{"Value": 83},
+				"Status":         "Normal",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{"Cpu": float64(16), "Memory": []any{float64(64), float64(94)}},
+							map[string]any{"Cpu": float64(24), "Memory": []any{float64(96)}},
+						},
+					},
+					map[string]any{
+						"Gpu": float64(2),
+						"Collection": []any{
+							map[string]any{"Cpu": float64(32), "Memory": []any{float64(128), float64(192)}},
+						},
+					},
+				},
+			},
+			map[string]any{
+				"Name":           "A100",
+				"GraphicsMemory": map[string]any{"Value": 80},
+				"Status":         "Normal",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{"Cpu": float64(20), "Memory": []any{float64(160)}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	reply := renderGPUSpecsReply(raw, "4090 的所有规格")
+
+	for _, want := range []string{"16C/64G", "16C/94G", "24C/96G", "32C/128G", "32C/192G"} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("full specs should include %q, got: %s", want, reply)
+		}
+	}
+	if strings.Contains(reply, "A100") {
+		t.Fatalf("full model request should still filter unrelated GPU models, got: %s", reply)
+	}
+}
+
+func TestRenderGPUSpecs_CPUAndMemoryQuestionExpandsEveryMachineSize(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name":           "4090",
+				"GraphicsMemory": map[string]any{"Value": 24},
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{"Cpu": float64(16), "Memory": []any{float64(64), float64(94)}},
+							map[string]any{"Cpu": float64(24), "Memory": []any{float64(96)}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	reply := renderGPUSpecsReply(raw, "4090 支持哪些 CPU 和内存")
+
+	for _, want := range []string{"16C/64G", "16C/94G", "24C/96G"} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("CPU/memory wording should expand %q, got: %s", want, reply)
+		}
+	}
+}
+
+func TestRenderGPUSpecs_FullAllRequestExpandsAllModels(t *testing.T) {
+	raw := map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name":           "4090",
+				"GraphicsMemory": map[string]any{"Value": 24},
+				"Status":         "Normal",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{"Cpu": float64(16), "Memory": []any{float64(64), float64(94)}},
+						},
+					},
+				},
+			},
+			map[string]any{
+				"Name":           "A100",
+				"GraphicsMemory": map[string]any{"Value": 80},
+				"Status":         "Normal",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{"Cpu": float64(20), "Memory": []any{float64(160)}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	reply := renderGPUSpecsReply(raw, "列出所有 GPU 规格")
+
+	for _, want := range []string{"机型=4090", "16C/64G", "16C/94G", "机型=A100", "20C/160G"} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("full all-specs request should include %q, got: %s", want, reply)
+		}
+	}
+}
+
+func TestGPUSpecsCapabilityUsesDescribeAvailableAndExpandsFullRequest(t *testing.T) {
+	exec := &capabilitySequenceExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{
+					"Name":           "4090",
+					"GraphicsMemory": map[string]any{"Value": 24},
+					"MachineSizes": []any{
+						map[string]any{
+							"Gpu": float64(1),
+							"Collection": []any{
+								map[string]any{"Cpu": float64(16), "Memory": []any{float64(64), float64(94)}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+		Plan:     Plan{Intent: IntentGPUSpecsQuery},
+		UserText: "4090 的所有规格",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].action != "DescribeAvailableCompShareInstanceTypes" {
+		t.Fatalf("calls = %#v, want one DescribeAvailableCompShareInstanceTypes call", exec.calls)
+	}
+	if len(exec.calls[0].args) != 0 {
+		t.Fatalf("gpu specs capability should query full upstream data without narrowing args, got %#v", exec.calls[0].args)
+	}
+	for _, want := range []string{"机型=4090", "16C/64G", "16C/94G"} {
+		if !strings.Contains(result.Reply, want) {
+			t.Fatalf("full capability reply should include %q, got: %s", want, result.Reply)
+		}
+	}
+}
+
 func TestRenderGPUSpecs_IncludesMemoryVariantForFamilyQuestion(t *testing.T) {
 	raw := map[string]any{
 		"AvailableInstanceTypes": []any{
