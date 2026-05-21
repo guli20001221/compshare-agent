@@ -91,14 +91,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	srv, err := server.New(server.Options{
-		Addr:           addr,
-		Deps:           deps,
-		TraceSink:      traceSink,
-		MsgRecorder:    msgRecorder,
-		Model:          cfg.Agent.LLM.Model,
-		TenantSource:   server.TenantSource(os.Getenv("COMPSHARE_TENANT_SOURCE")),
-		AllowedOrigins: splitCSV(os.Getenv("COMPSHARE_WS_ORIGINS")),
-		DB:             mysqlDB,
+		Addr:               addr,
+		Deps:               deps,
+		TraceSink:          traceSink,
+		MsgRecorder:        msgRecorder,
+		Model:              cfg.Agent.LLM.Model,
+		TenantSource:       server.TenantSource(os.Getenv("COMPSHARE_TENANT_SOURCE")),
+		AllowedOrigins:     splitCSV(os.Getenv("COMPSHARE_WS_ORIGINS")),
+		DB:                 mysqlDB,
+		AnswerDeltaEnabled: os.Getenv("COMPSHARE_WS_ANSWER_DELTA_ENABLED") == "1",
 	})
 	if err != nil {
 		return err

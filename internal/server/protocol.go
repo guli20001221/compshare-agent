@@ -106,7 +106,17 @@ type ServerMessage struct {
 	OK     *bool          `json:"ok,omitempty"`
 
 	// Text carries the assistant reply (answer_final) or a chunk
-	// (answer_delta, A8 — not implemented in v1).
+	// (answer_delta). Phase A (PR #88) optionally emits N answer_delta
+	// frames followed by a canonical answer_final; concat of all
+	// delta Text equals final Text byte-for-byte.
+	//
+	// Default behavior is OFF — answer_delta is only emitted when the
+	// server is started with AnswerDeltaEnabled=true (env
+	// COMPSHARE_WS_ANSWER_DELTA_ENABLED=1). Legacy clients that
+	// strictly enumerate frame types see the pre-PR #88 wire behavior.
+	// Phase B will replace the post-reply chunking with engine-level
+	// per-token streaming and a client-capability negotiation
+	// handshake.
 	Text string `json:"text,omitempty"`
 
 	// Code / Message populate the "error" frame.
