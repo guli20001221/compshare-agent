@@ -54,12 +54,17 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	// stock-to-unknown examples were replaced when stock_availability became
 	// a capability + 2 added 2026-05-20 for personal billing complaint
 	// (billing_instance) stable routing — see Q04 N=5 jitter check) +
-	// N capability one-shots (PR A Registry v1) appended by CapabilityPromptFragments.
-	// PR #121 adds the "Direct runtime/list/user price questions" directive
-	// but does NOT add a prompt example, so the count stays 27.
-	// New capabilities here should bump this number; the regression value is
-	// `27 + len(capabilityRegistry)`.
-	if got, want := len(examples), 27+len(capabilityRegistry); got != want {
+	// the sum of `planner_examples` across all capabilities/*.md frontmatter
+	// (PR A Registry v1 + later). A capability may declare 1+ examples — early
+	// capabilities used exactly 1; PR #3 (pricing_query) uses 2 to anchor the
+	// public-product-pricing vs personal-billing boundary against the
+	// billing_instance one-shots. The example count is computed below so adding
+	// a new capability OR extending an existing one's examples auto-updates.
+	capabilityExampleCount := 0
+	for _, m := range capabilityMetadata {
+		capabilityExampleCount += len(m.PlannerExamples)
+	}
+	if got, want := len(examples), 27+capabilityExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -240,18 +245,35 @@ func TestBuildSystemPromptDistinguishesFinanceFAQAndRealtimeAccountData(t *testi
 	}
 }
 
-func TestBuildSystemPromptKeepsRuntimePriceQueriesOutOfKnowledgeQA(t *testing.T) {
+// TestBuildSystemPromptRoutesRuntimePriceQueriesToCapability locks the
+// PR #151 directive shift: "4090 \u591a\u5c11\u94b1" used to emit unknown (free LLM
+// tool loop), now emits pricing_query (deterministic capability handler).
+// Also asserts the personal-billing boundary is preserved so complaints
+// like \u6211\u8d26\u5355\u600e\u4e48\u8fd9\u4e48\u9ad8 still stay in billing_instance, not pricing.
+func TestBuildSystemPromptRoutesRuntimePriceQueriesToCapability(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
 		"Direct runtime/list/user price questions",
-		"should emit unknown with no required_tools",
-		"normal tool loop can choose price tools",
+		"should emit pricing_query",
+		"capability handler runs DescribeAvailableCompShareInstanceTypes + GetCompShareInstancePrice deterministically",
 		"4090 \u591a\u5c11\u94b1",
 		"H20 \u6309\u6708\u5305\u591a\u5c11\u94b1",
+		"Personal-billing complaints",
+		"\u6211\u8d26\u5355\u600e\u4e48\u8fd9\u4e48\u9ad8",
+		"stay as billing_instance",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
-			t.Fatalf("system prompt missing price boundary fragment %q:\n%s", fragment, prompt)
+			t.Fatalf("system prompt missing price-capability routing fragment %q:\n%s", fragment, prompt)
+		}
+	}
+	stale := []string{
+		"4090 \u591a\u5c11\u94b1, H20 \u6309\u6708\u5305\u591a\u5c11\u94b1, \u6298\u540e\u4ef7\u591a\u5c11, or actual purchase price should emit unknown",
+		"normal tool loop can choose price tools",
+	}
+	for _, fragment := range stale {
+		if strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt still contains stale price-to-unknown routing %q:\n%s", fragment, prompt)
 		}
 	}
 }

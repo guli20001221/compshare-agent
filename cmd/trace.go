@@ -511,6 +511,7 @@ func defaultCutoverIntents() []intent.Intent {
 		intent.IntentMonitorQuery,
 		intent.IntentGPUSpecsQuery,
 		intent.IntentStockAvailability,
+		intent.IntentPricingQuery,
 		intent.IntentPlatformImageList,
 		intent.IntentCustomImageList,
 		intent.IntentCommunityImageList,
@@ -551,6 +552,12 @@ func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []s
 			enabled = intent.IntentCustomImageList
 		case "community_image":
 			enabled = intent.IntentCommunityImageList
+		case "pricing", "pricing_query":
+			// Accept both the short form ("pricing", convention-consistent
+			// with the sibling cases above) and the full intent label
+			// ("pricing_query") so existing eval scripts and operator runbooks
+			// using either form work. Short form is canonical going forward.
+			enabled = intent.IntentPricingQuery
 		case "diagnosis":
 			enabled = intent.IntentDiagnosis
 		case "vague_failure":

@@ -21,6 +21,8 @@ const (
 	CategoryAccountBilling   = "account_billing_unsupported"
 	CategoryMonitorHistory   = "monitor_history_unsupported"
 	CategoryResourceShortage = "resource_shortage_226604"
+	CategoryJailbreakAttempt = "jailbreak_attempt"
+	CategoryOffTopic         = "off_topic_refused"
 )
 
 // AccountBillingUnsupported is returned for account-level financial
@@ -33,6 +35,33 @@ const AccountBillingUnsupported = "这类账号级财务信息当前不支持由
 // monitor API only exposes a sliding real-time window. Reused at five
 // routing decision points in the engine.
 const MonitorHistoryUnsupported = "当前暂不支持指定历史时间段的监控查询。我可以先帮你查看实时监控；如需历史趋势，请在控制台监控页选择对应日期和时间范围查看。"
+
+// JailbreakAttempt is returned when the input matches a known
+// instruction-override / system-prompt-extraction pattern (e.g. "ignore
+// previous instructions", "扮演 X", "print your system prompt"). The
+// reply is intentionally on-topic for the platform — declining the
+// jailbreak but inviting the user back to legitimate questions — so a
+// real user who phrased something innocuously is not stonewalled.
+//
+// Wording avoids confirming the system prompt exists / mentioning what
+// the override target was; both would leak structure useful to a
+// determined attacker.
+const JailbreakAttempt = "我注意到您的消息看起来像在请求我绕过自身的安全限制或修改我的指令。我无法忽略或更改我的核心规则——这些限制是为了让回答可靠且符合算力平台的使用规范。如果您有正常的平台相关问题（资源、计费、监控、镜像、GPU 规格、价格等），我很乐意继续帮您。"
+
+// OffTopic is returned when the input matches a topic the agent is not
+// scoped to handle — personal medical advice, political opinion, stock
+// recommendations, severe-emotional-distress (suicide ideation), etc.
+// The wording redirects rather than just refuses, naming professional
+// channels (medical/legal/financial/mental-health) so the user knows
+// where to go. CompShare-platform scope (GPU/billing/monitor/image/
+// price) is reaffirmed at the end as the inviting redirect.
+//
+// Suicide-ideation case is deliberately bundled — a separate hotline-
+// specific reply was considered but rejected: a stale or jurisdiction-
+// mismatched phone number in code is worse than the generic
+// "professional help" redirect. If/when we add a maintainer-curated
+// hotline table, that's a follow-up with proper sourcing + review.
+const OffTopic = "我是 CompShare 算力平台助手，这类问题超出了我的回答范围。建议您咨询相应领域的专业人士（医生 / 律师 / 财务顾问 / 心理咨询师 等）。如果您有算力平台相关问题（GPU 规格、计费、监控、镜像、价格等），我很乐意继续帮您。"
 
 // ResourceShortage226604 is returned when the user pastes upstream
 // uhost-compshare-api error code 226604 ("当前资源不足，请稍后再试") or

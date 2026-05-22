@@ -511,3 +511,124 @@ func TestExecuteStaticNoSecurityToken(t *testing.T) {
 		t.Errorf("PublicKey = %q, want pk", got)
 	}
 }
+
+func TestSafeExecutorWithExternalExecutorUsesSTSWithinAttemptBudget(t *testing.T) {
+	expiration := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	var stsCalls int
+	stsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stsCalls++
+		time.Sleep(20 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(fakeSTSResponse("tmp-ak", "tmp-sk", "tmp-token", expiration))
+	}))
+	defer stsSrv.Close()
+
+	var capturedForm url.Values
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedForm, _ = url.ParseQuery(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "ImageSet": []}`))
+	}))
+	defer apiSrv.Close()
+
+	ext := NewExternalExecutor(config.AgentConfig{
+		CompShareAPIURL: apiSrv.URL,
+		Region:          "cn-wlcb",
+		STS: config.STSConfig{
+			ServiceAK: "svc-ak",
+			ServiceSK: "svc-sk",
+			URL:       stsSrv.URL,
+		},
+	})
+	policies := DefaultToolExecutionPolicies()
+	policy := policies["DescribeCompShareImages"]
+	policy.TimeoutMS = 100
+	policy.BackoffBaseMS = 0
+	policies["DescribeCompShareImages"] = policy
+	safe := NewSafeToolExecutor(ext, WithPolicies(policies))
+
+	ctx := WithUser(context.Background(), UserContext{
+		RoleUrn:     "ucs:iam::1:role/test",
+		SessionName: "tool-retry-test",
+		ProjectId:   "project-from-user",
+	})
+	result, err := safe.ExecuteSafe(ctx, SafeToolRequest{
+		Action: "DescribeCompShareImages",
+		Args:   map[string]any{"Limit": 1},
+		Origin: OriginDirectLLM,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteSafe error: %v", err)
+	}
+	if result.Attempts != 1 {
+		t.Fatalf("Attempts = %d, want 1", result.Attempts)
+	}
+	if stsCalls != 1 {
+		t.Fatalf("STS calls = %d, want 1", stsCalls)
+	}
+	if got := capturedForm.Get("PublicKey"); got != "tmp-ak" {
+		t.Fatalf("PublicKey = %q, want tmp-ak", got)
+	}
+	if got := capturedForm.Get("SecurityToken"); got != "tmp-token" {
+		t.Fatalf("SecurityToken = %q, want tmp-token", got)
+	}
+	if got := capturedForm.Get("ProjectId"); got != "project-from-user" {
+		t.Fatalf("ProjectId = %q, want project-from-user", got)
+	}
+}
+
+func TestSafeExecutorRetriesHTTP5xxStatus(t *testing.T) {
+	cases := []struct {
+		name   string
+		action string
+		args   map[string]any
+	}{
+		{name: "form", action: "DescribeCompShareImages", args: map[string]any{"Limit": 1}},
+		{name: "json", action: "GetCompShareInstanceMonitor", args: map[string]any{"UHostIds": []any{"uhost-1"}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("Content-Type", "application/json")
+				if calls == 1 {
+					w.WriteHeader(http.StatusInternalServerError)
+					_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "Ignored"}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "Success"}`))
+			}))
+			defer srv.Close()
+
+			ext := NewExternalExecutor(config.AgentConfig{
+				CompShareAPIURL: srv.URL,
+				PublicKey:       "pk",
+				PrivateKey:      "sk",
+				Region:          "cn-wlcb",
+			})
+			policies := DefaultToolExecutionPolicies()
+			policy := policies[tc.action]
+			policy.BackoffBaseMS = 0
+			policies[tc.action] = policy
+			safe := NewSafeToolExecutor(ext, WithPolicies(policies))
+
+			result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+				Action: tc.action,
+				Args:   tc.args,
+				Origin: OriginDirectLLM,
+			})
+			if err != nil {
+				t.Fatalf("ExecuteSafe error: %v", err)
+			}
+			if result.Attempts != 2 {
+				t.Fatalf("Attempts = %d, want 2", result.Attempts)
+			}
+			if calls != 2 {
+				t.Fatalf("HTTP calls = %d, want 2", calls)
+			}
+		})
+	}
+}

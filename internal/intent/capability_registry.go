@@ -34,6 +34,7 @@ var capabilityRegistry = []capabilityEntry{
 	{IntentPlatformImageList, "DescribeCompShareImages", handlePlatformImageList},
 	{IntentCustomImageList, "DescribeCompShareCustomImages", handleCustomImageList},
 	{IntentCommunityImageList, "DescribeCommunityImages", handleCommunityImageList},
+	{IntentPricingQuery, "GetCompShareInstancePrice", handlePricingQuery},
 }
 
 func extraHandlerActions() map[Intent][]string {

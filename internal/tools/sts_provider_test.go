@@ -3,9 +3,11 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -120,6 +122,60 @@ func TestSTSProviderCachesCredentials(t *testing.T) {
 
 	if n := callCount.Load(); n != 1 {
 		t.Fatalf("expected 1 STS call, got %d", n)
+	}
+}
+
+func TestSTSProviderInflightWaitHonorsContextCancellation(t *testing.T) {
+	expiration := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	var callCount atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if callCount.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(fakeSTSResponse("tmp-ak", "tmp-sk", "tmp-token", expiration))
+	}))
+	defer srv.Close()
+	defer releaseOnce.Do(func() { close(release) })
+
+	provider := NewSTSProvider("svc-ak", "svc-sk", srv.URL)
+	user := UserContext{
+		TopOrganizationID: 1,
+		OrganizationID:    2,
+		RoleUrn:           "ucs:iam::1:role/test",
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := provider.Get(WithUser(context.Background(), user))
+		firstDone <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first STS call")
+	}
+
+	waitCtx, cancel := context.WithTimeout(WithUser(context.Background(), user), 25*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := provider.Get(waitCtx)
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context deadline exceeded", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("inflight waiter ignored cancellation; elapsed=%v", elapsed)
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Get error: %v", err)
 	}
 }
 

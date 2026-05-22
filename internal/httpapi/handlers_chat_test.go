@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/refusal"
@@ -102,7 +104,35 @@ func (c *captureLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResp
 	return &llm.ChatResponse{Content: "ok"}, nil
 }
 
-// denyConfirm is the confirm callback used in tests — always denies (unused in happy path).
+// scriptedChatLLM returns a fixed response and captures the model request.
+type scriptedChatLLM struct {
+	content  string
+	messages []openai.ChatCompletionMessage
+}
+
+func (c *scriptedChatLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	c.messages = append([]openai.ChatCompletionMessage(nil), req.Messages...)
+	if req.OnTextDelta != nil {
+		req.OnTextDelta(c.content)
+	}
+	return &llm.ChatResponse{
+		Content: c.content,
+		Usage:   llm.TokenUsage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
+	}, nil
+}
+
+type streamingErrorLLM struct {
+	token string
+}
+
+func (c streamingErrorLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	if req.OnTextDelta != nil {
+		req.OnTextDelta(c.token)
+	}
+	return nil, errors.New("llm failed")
+}
+
+// denyConfirm is the confirm callback used in tests.
 func denyConfirm(_ string, _ map[string]any) bool { return false }
 
 type captureTraceWriter struct {
@@ -239,6 +269,186 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 	assert.Equal(t, int64(7), tenant.TopOrgID)
 	assert.Equal(t, int64(8), tenant.OrgID)
 	assert.Equal(t, "sess-trace", tenant.ConnectionID)
+}
+
+func TestDispatchChatRedactsUserPIIOnlyWhenPersisting(t *testing.T) {
+	llmClient := &scriptedChatLLM{content: "ok"}
+	eng := engine.NewWithDeps(llmClient, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+
+	messages := &recordingMessages{}
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{
+			"sess-pii": {
+				ID:                "sess-pii",
+				TopOrganizationID: 1,
+				OrganizationID:    2,
+				CreatedAt:         time.Now(),
+				UpdatedAt:         time.Now(),
+			},
+		}},
+		messages,
+		mockFeedback{},
+		fakePool{eng: eng},
+		nil,
+	)
+
+	const userMessage = "phone 13800138000 email user@example.com instance uhost-abc123 wants 4090 price"
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/",
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-pii","Message":"`+userMessage+`","request_uuid":"req-pii","top_organization_id":1,"organization_id":2}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Dispatch(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, messages.appended, 2)
+	persisted := messages.appended[0].Content
+	assert.Contains(t, persisted, guardrails.PhoneRedacted)
+	assert.Contains(t, persisted, guardrails.EmailRedacted)
+	assert.NotContains(t, persisted, "13800138000")
+	assert.NotContains(t, persisted, "user@example.com")
+	assert.Contains(t, persisted, "uhost-abc123")
+	assert.Contains(t, persisted, "4090")
+
+	require.NotEmpty(t, llmClient.messages)
+	rawUserSeen := false
+	for _, msg := range llmClient.messages {
+		if msg.Role == openai.ChatMessageRoleUser && msg.Content == userMessage {
+			rawUserSeen = true
+		}
+	}
+	assert.True(t, rawUserSeen, "agent routing/model input must still see raw user text")
+}
+
+func TestDispatchChatRedactsAssistantLeakOnlyWhenPersisting(t *testing.T) {
+	reply := `Instance uhost-abc123 is ready on 4090.
+Public IP: 1.2.3.4
+Project: 12345678-1234-1234-1234-1234567890ab
+AccessKey="AKIAIOSFODNN7EXAMPLE"
+token=AKIAIOSFODNN7EXAMPLEbCDEF`
+	llmClient := &scriptedChatLLM{content: reply}
+	eng := engine.NewWithDeps(llmClient, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+
+	messages := &recordingMessages{}
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{
+			"sess-output": {
+				ID:                "sess-output",
+				TopOrganizationID: 1,
+				OrganizationID:    2,
+				CreatedAt:         time.Now(),
+				UpdatedAt:         time.Now(),
+			},
+		}},
+		messages,
+		mockFeedback{},
+		fakePool{eng: eng},
+		nil,
+	)
+
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/",
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-output","Message":"hi","request_uuid":"req-output","top_organization_id":1,"organization_id":2}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Dispatch(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "event: token")
+	assert.Contains(t, body, "1.2.3.4")
+	assert.Contains(t, body, "12345678-1234-1234-1234-1234567890ab")
+	assert.Contains(t, body, "AKIAIOSFODNN7EXAMPLE")
+	assert.NotContains(t, body, guardrails.IPRedacted)
+	assert.NotContains(t, body, guardrails.ProjectIDRedacted)
+	assert.NotContains(t, body, guardrails.CredentialRedactedOutput)
+	assert.NotContains(t, body, guardrails.TokenRedactedOutput)
+
+	persisted := messages.patch.Content
+	assert.Contains(t, persisted, guardrails.IPRedacted)
+	assert.Contains(t, persisted, guardrails.ProjectIDRedacted)
+	assert.Contains(t, persisted, guardrails.CredentialRedactedOutput)
+	assert.Contains(t, persisted, guardrails.TokenRedactedOutput)
+	assert.NotContains(t, persisted, "1.2.3.4")
+	assert.NotContains(t, persisted, "12345678-1234-1234-1234-1234567890ab")
+	assert.NotContains(t, persisted, "AKIAIOSFODNN7EXAMPLE")
+	assert.Contains(t, persisted, "uhost-abc123")
+	assert.Contains(t, persisted, "4090")
+}
+
+func TestDispatchChatDoesNotPersistPartialAssistantContentOnError(t *testing.T) {
+	const leakedDelta = `partial reply Public IP: 1.2.3.4 token=AKIAIOSFODNN7EXAMPLEbCDEF`
+	eng := engine.NewWithDeps(streamingErrorLLM{token: leakedDelta}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+
+	messages := &recordingMessages{}
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{
+			"sess-error": {
+				ID:                "sess-error",
+				TopOrganizationID: 1,
+				OrganizationID:    2,
+				CreatedAt:         time.Now(),
+				UpdatedAt:         time.Now(),
+			},
+		}},
+		messages,
+		mockFeedback{},
+		fakePool{eng: eng},
+		nil,
+	)
+
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/",
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-error","Message":"hi","request_uuid":"req-error","top_organization_id":1,"organization_id":2}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Dispatch(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, leakedDelta)
+	assert.Contains(t, body, "event: error")
+
+	assert.Equal(t, "error", messages.patch.Status)
+	assert.Empty(t, messages.patch.Content)
+	assert.NotContains(t, messages.patch.Content, "1.2.3.4")
+	assert.NotContains(t, messages.patch.Content, "AKIAIOSFODNN7EXAMPLE")
 }
 
 func TestDispatchChatEmitsTokenForDirectEngineReply(t *testing.T) {

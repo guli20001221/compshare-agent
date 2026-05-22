@@ -262,82 +262,13 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 				},
 			},
 		},
-		{
-			Intent: IntentKnowledgeQA,
-			Source: "Stage 2B + PR #34a/#52/#60 knowledge_qa routing regressions",
-			Examples: []plannerPromptExample{
-				{
-					Question: "为啥显卡内存满了 GPU 占用才 10%",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #60: concept question with monitor-trigger words",
-				},
-				{
-					Question: "how do I issue an invoice",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
-					Source:   "PR #52: finance process question, not personal status",
-				},
-				{
-					Question: "what image types does the platform provide",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
-					Source:   "Stage 2B: platform concept question",
-				},
-				{
-					Question: "远程桌面没声音该怎么处理",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "Stage 2B: platform how-to/config boundary",
-				},
-				{
-					Question: "错误码 226601 是什么意思",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "Stage 2B: error-code knowledge question",
-				},
-				{
-					Question: "Linux 怎么装 NVIDIA 驱动",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "Stage 2B: platform how-to/config boundary",
-				},
-				{
-					Question: "Coding Plan 的 BaseURL 应该填什么",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "Stage 2B: model API configuration",
-				},
-				{
-					Question: "怎么在 VSCode 里连 GPU 实例",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "Stage 2B: connection how-to",
-				},
-				{
-					Question: "在 CLINE 里加 mcp-server-sqlite 那段 json 该怎么写",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #60: third-party tool configuration jargon",
-				},
-				{
-					Question: "怎么查我这个月的账单",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #52: billing navigation question",
-				},
-				{
-					Question: "哪里可以看发票发起记录",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #52: invoice navigation question",
-				},
-				{
-					Question: "包月和按量哪个划算",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #34a: platform comparison question",
-				},
-				{
-					Question: "实例磁盘可以扩容吗",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #34a: platform feasibility question",
-				},
-				{
-					Question: "退款流程是怎样的",
-					PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "PR #34a: platform procedure question",
-				},
-			},
-		},
+		// IntentKnowledgeQA migrated to internal/intent/planner_examples/knowledge_qa.md
+		// in C5 Phase B (PR #6, 2026-05-22). Same byte-equal contract as the
+		// Phase A diagnosis migration — see TestPlannerExamples_KnowledgeQADisk
+		// LoaderEqualsLegacy + the SHA hash in TestPlannerExamples_FullSystem
+		// PromptStable. Editorial review of knowledge_qa anchors now happens
+		// in the markdown file; planner.go retains structural code only.
+		diskPlannerExampleGroups[IntentKnowledgeQA],
 		{
 			Intent: IntentBillingAccountUnsupported,
 			Source: "PR #52 finance process vs personal-status hard-block split",
@@ -411,7 +342,7 @@ func buildSystemPrompt() string {
 		"Return exactly one JSON object. Do not output Markdown, prose, or tool calls.",
 		"Required top-level fields: schema_version, intent, slots, required_tools, retrieval, hard_block_hint, confidence.",
 		"schema_version must be \"1.0\". confidence must be a number in [0,1]. retrieval.enabled must be false for the current demo slice.",
-		"Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, recommendation, knowledge_qa, gpu_specs_query, stock_availability, platform_image_list, custom_image_list, community_image_list, unknown.",
+		"Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, recommendation, knowledge_qa, gpu_specs_query, stock_availability, platform_image_list, custom_image_list, community_image_list, pricing_query, unknown.",
 		"Phase 1 demo focus: classify clear resource inventory questions as resource_info and clear current monitoring questions as monitor_query.",
 		"Treat performance questions like CPU high, GPU busy/idle, memory high, VRAM high, or whether a machine is idle as monitor_query first, unless the user states a concrete SSH, init, billing, lifecycle, or instance-internal operation problem.",
 		"Historical monitor phrases like yesterday, last night, today morning, or X点到Y点 must use monitor_history or a non-current time_window, never preset now/today.",
@@ -419,7 +350,7 @@ func buildSystemPrompt() string {
 		"For diagnosis questions that also reference platform FAQ or usage docs should still emit diagnosis.",
 		"Platform how-to/config/error-code questions like how to configure remote desktop audio, how to install drivers, what does error code 226601 mean, how to publish a community image, or how to set BaseURL should emit knowledge_qa, even if phrased as a problem.",
 		"The distinction is: 'how do I do X on the platform' = knowledge_qa; 'my specific instance has problem X' with target_refs = diagnosis. Without a concrete instance target, default to knowledge_qa for usage/config/error-code questions.",
-		"Direct runtime/list/user price questions like 4090 多少钱, H20 按月包多少钱, 折后价多少, or actual purchase price should emit unknown with no required_tools so the normal tool loop can choose price tools.",
+		"Direct runtime/list/user price questions like 4090 多少钱, H20 按月包多少钱, 折后价多少, or actual purchase price should emit pricing_query — the capability handler runs DescribeAvailableCompShareInstanceTypes + GetCompShareInstancePrice deterministically. Personal-billing complaints (我账单怎么这么高 / 充值就被扣完了) stay as billing_instance.",
 		"Comparison questions ('X 和 Y 哪个划算' / 'X vs Y'), yes-no feasibility questions ('X 可以 Y 吗' / 'can I X'), and procedure-description questions ('X 流程是怎样的' / 'how does X work') about platform usage, pricing rules, image, instance, or billing should emit knowledge_qa unless they reference a specific instance target.",
 		"Inventory availability questions like whether a GPU model has stock, is available, is sold out, or has data-center inventory are not resource_info. resource_info is only for the user's own CompShare instances. Platform stock questions should emit stock_availability.",
 		"For billing-specific FAQ plus instance facts should emit billing_instance; unsupported account totals still use billing_account_unsupported.",

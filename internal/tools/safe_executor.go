@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/sanitizer"
@@ -236,13 +237,42 @@ func (s *SafeToolExecutor) executeWithRetry(ctx context.Context, policy ToolExec
 	}
 
 	for attempts = 1; attempts <= maxAttempts; attempts++ {
-		raw, err := s.inner.Execute(ctx, action, args)
+		// Apply per-attempt timeout (PR #5). The derived context is
+		// scoped to this single Execute call so a hung backend cannot
+		// outlast the policy budget. If policy.TimeoutMS is zero we
+		// pass the parent ctx through unchanged — the inner executor's
+		// ambient http.Client.Timeout still applies as the last-resort
+		// safety net.
+		attemptCtx := ctx
+		var cancel context.CancelFunc
+		if policy.TimeoutMS > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, time.Duration(policy.TimeoutMS)*time.Millisecond)
+		}
+
+		raw, err := s.inner.Execute(attemptCtx, action, args)
+		if cancel != nil {
+			cancel()
+		}
 		if err == nil {
 			return raw, attempts, nil
 		}
 		lastErr = err
 		if attempts >= maxAttempts || !shouldRetry(err, policy.RetryOn) {
 			return nil, attempts, err
+		}
+
+		// Linear backoff between retries (PR #5). Sleep BackoffBaseMS *
+		// attempt ms, but break early if the parent ctx is cancelled
+		// (caller deadline or shutdown). For read_cheap with
+		// MaxRetries=1 + BackoffBaseMS=300 this is at most one 300ms
+		// wait; mutating/destructive with MaxRetries=0 never reach here.
+		if policy.BackoffBaseMS > 0 {
+			wait := time.Duration(policy.BackoffBaseMS*attempts) * time.Millisecond
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return nil, attempts, ctx.Err()
+			}
 		}
 	}
 	return nil, attempts, lastErr
