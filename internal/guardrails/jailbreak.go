@@ -172,6 +172,9 @@ func DetectJailbreakAttempt(s string) bool {
 		"！", "!",
 		"？", "?",
 	).Replace(s)
+	if hasExplicitJailbreakSignal(s) {
+		return true
+	}
 	if isBenignPlatformJailbreakContext(s) {
 		return false
 	}
@@ -181,6 +184,30 @@ func DetectJailbreakAttempt(s string) bool {
 		}
 	}
 	return false
+}
+
+func hasExplicitJailbreakSignal(s string) bool {
+	lower := strings.ToLower(s)
+	englishVerb := containsAny(lower, []string{
+		"ignore", "disregard", "forget", "override", "bypass",
+		"print", "reveal", "show", "output", "disclose", "tell me", "leak",
+	})
+	englishDomain := containsAny(lower, []string{
+		"system prompt", "previous instructions", "prior instructions",
+		"all instructions", "hidden instructions", "secret instructions",
+	})
+	if englishVerb && englishDomain {
+		return true
+	}
+
+	chineseVerb := containsAny(s, []string{
+		"忽略", "无视", "忘记", "绕过", "打印", "显示", "告诉", "输出", "泄露", "说出",
+	})
+	chineseDomain := containsAny(s, []string{
+		"系统提示词", "你的系统提示词", "之前的所有指令", "所有指令",
+		"你的指令", "内部指令", "核心规则", "完整提示词",
+	})
+	return chineseVerb && chineseDomain
 }
 
 func isBenignPlatformJailbreakContext(s string) bool {
@@ -199,6 +226,15 @@ func isBenignPlatformJailbreakContext(s string) bool {
 			if strings.Contains(s, platformTerm) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func containsAny(s string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(s, needle) {
+			return true
 		}
 	}
 	return false
