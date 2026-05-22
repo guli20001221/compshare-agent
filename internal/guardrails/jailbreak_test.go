@@ -145,25 +145,25 @@ func TestDetectJailbreakAttempt_FullWidthPunctuation(t *testing.T) {
 // the assistant ("你能干嘛") that don't actually request override.
 func TestDetectJailbreakAttempt_False_BenignPlatformQuestions(t *testing.T) {
 	cases := []string{
-		"",                          // empty input
+		"", // empty input
 		"4090 多少钱一小时",
 		"忽略 4090 的价格，看看 5090", // verb but no instruction-domain noun
 		"忽略这个错误信息",            // verb + non-instruction noun
 		"我账单怎么这么高",
 		"推荐用什么 GPU 跑 LoRA",
 		"打印当前实例状态",            // print + non-prompt noun
-		"显示我的余额",                // show + non-prompt noun
-		"现在你是 helpful 还是 not",   // role-shaped but no override domain
-		"扮演角色对训练效果有影响吗",  // role + non-override domain
-		"告诉我 4090 显存多大",        // tell + non-prompt
+		"显示我的余额",              // show + non-prompt noun
+		"现在你是 helpful 还是 not", // role-shaped but no override domain
+		"扮演角色对训练效果有影响吗",       // role + non-override domain
+		"告诉我 4090 显存多大",       // tell + non-prompt
 		"4090 spot 价格",
 		"H20 怎么收费",
 		"我有哪些实例",
 		"我的 SSH 连不上怎么办",
 		"包月和按量哪个划算",
-		"系统提示我磁盘满了",       // system + prompt but no verb
-		"你的提示是哪种风格",       // your + prompt but no verb (informational)
-		"Print the GPU spec table", // print but non-system-prompt object
+		"系统提示我磁盘满了",                                   // system + prompt but no verb
+		"你的提示是哪种风格",                                   // your + prompt but no verb (informational)
+		"Print the GPU spec table",                    // print but non-system-prompt object
 		"How do I reveal hidden files in my instance", // reveal but non-system-prompt object
 		// PR #152 review item 1 — Chinese extract-prompt over-match.
 		// These trip the OLD (你的|...)?(系统)?(prompt|规则|...) regex
@@ -191,6 +191,10 @@ func TestDetectJailbreakAttempt_False_BenignPlatformQuestions(t *testing.T) {
 		"show me the directives for the GPU API",
 		"output the rules of the cluster",
 		"show me the guidelines on quota",
+		"告诉我系统提示资源不足是什么意思",
+		"显示系统提示 226604 当前资源不足的解决办法",
+		"忽略预算限制，推荐一张 GPU",
+		"忽略地域限制，哪个可用区有 4090",
 	}
 	for _, msg := range cases {
 		t.Run(strings.ReplaceAll(msg, " ", "_"), func(t *testing.T) {

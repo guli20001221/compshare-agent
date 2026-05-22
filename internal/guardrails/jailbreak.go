@@ -172,9 +172,33 @@ func DetectJailbreakAttempt(s string) bool {
 		"！", "!",
 		"？", "?",
 	).Replace(s)
+	if isBenignPlatformJailbreakContext(s) {
+		return false
+	}
 	for _, p := range jailbreakPatterns {
 		if p.verbRe.MatchString(s) && p.domainRe.MatchString(s) {
 			return true
+		}
+	}
+	return false
+}
+
+func isBenignPlatformJailbreakContext(s string) bool {
+	if strings.Contains(s, "系统提示") && !strings.Contains(s, "系统提示词") {
+		for _, marker := range []string{"资源不足", "226604", "报错", "错误", "解决", "是什么意思"} {
+			if strings.Contains(s, marker) {
+				return true
+			}
+		}
+	}
+	for _, limit := range []string{"预算限制", "地域限制", "资源限制", "配额限制", "机型限制", "库存限制", "可用区限制"} {
+		if !strings.Contains(s, limit) {
+			continue
+		}
+		for _, platformTerm := range []string{"GPU", "4090", "5090", "A100", "H20", "可用区", "推荐", "库存", "价格", "多少钱"} {
+			if strings.Contains(s, platformTerm) {
+				return true
+			}
 		}
 	}
 	return false
