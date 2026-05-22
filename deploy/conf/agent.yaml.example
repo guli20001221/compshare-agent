@@ -1,8 +1,8 @@
 agent:
   executor: external
   compshare_api_url: "https://api.compshare.cn/"
-  # Legacy direct AK/SK — only used when agent.sts is not configured.
-  # For HTTP server mode, use agent.sts instead.
+  # Legacy direct AK/SK. HTTP server mode uses these when STS service
+  # credentials are empty (local/demo fallback).
   public_key: "${COMPSHARE_PUBLIC_KEY}"
   private_key: "${COMPSHARE_PRIVATE_KEY}"
   region: "cn-wlcb"
@@ -84,7 +84,8 @@ agent:
 
   # STS (Security Token Service) credential settings (used by: compshare-agent server).
   # service_ak/service_sk are the long-term service credentials used to mint
-  # short-lived STS tokens for per-user API calls.
+  # short-lived STS tokens for per-user API calls. Leave them empty to use
+  # legacy direct AK/SK fallback before STS permission is granted.
   # default_role_urn is optional; when set it overrides the per-request role derivation.
   sts:
     service_ak: "${COMPSHARE_SERVICE_PUBLIC_KEY}"
