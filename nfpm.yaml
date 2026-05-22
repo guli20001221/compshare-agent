@@ -33,24 +33,32 @@ contents:
     dst: "/data/yuanpeng.wei/compshare-agent/compshare-agent"
     file_info:
       mode: 0755
+      owner: "ucloud"
+      group: "ucloud"
 
   # Knowledge corpus (mandatory for any RAG mode)
   - src: "./deploy/kb/stage2b_w0.jsonl"
     dst: "/data/yuanpeng.wei/compshare-agent/deploy/kb/stage2b_w0.jsonl"
     file_info:
       mode: 0644
+      owner: "ucloud"
+      group: "ucloud"
 
   # qwen3 embedding sidecar (mandatory for default qwen3_rrf mode)
   - src: "./deploy/kb/embeddings_d7bc9b72d02770acdf5aca5253c98fc642d3d3189e5b0c0b9b743fdc1fc5e00b_qwen3-embedding-8b.jsonl"
     dst: "/data/yuanpeng.wei/compshare-agent/deploy/kb/embeddings_d7bc9b72d02770acdf5aca5253c98fc642d3d3189e5b0c0b9b743fdc1fc5e00b_qwen3-embedding-8b.jsonl"
     file_info:
       mode: 0644
+      owner: "ucloud"
+      group: "ucloud"
 
   # Staff-name leakage guard list
   - src: "./scripts/rag_w0/staff_names.txt"
     dst: "/data/yuanpeng.wei/compshare-agent/scripts/rag_w0/staff_names.txt"
     file_info:
       mode: 0644
+      owner: "ucloud"
+      group: "ucloud"
 
   # Config template — postinstall copies it to agent.yaml on first install
   # if no agent.yaml exists yet. The .example file itself is always refreshed
@@ -59,6 +67,19 @@ contents:
     dst: "/data/yuanpeng.wei/compshare-agent/agent.yaml.example"
     file_info:
       mode: 0644
+      owner: "ucloud"
+      group: "ucloud"
+
+  # Secrets — baked in for one-click internal deploy. Source is the dev
+  # machine's gitignored `.env` (same file used by `just run`); `just rpm`
+  # fails fast if it's missing (set dotenv-required in justfile).
+  # Must include ADDR=<host:port> in addition to the runtime env vars.
+  - src: "./.env"
+    dst: "/data/yuanpeng.wei/compshare-agent/env"
+    file_info:
+      mode: 0600
+      owner: "ucloud"
+      group: "ucloud"
 
 scripts:
   postinstall: "./deploy/scripts/postinstall.sh"

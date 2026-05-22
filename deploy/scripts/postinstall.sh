@@ -1,18 +1,15 @@
 #!/bin/sh
-# Auto-register compshare-agent with ally on each install / upgrade.
+# Auto-register compshare-agent with ally on every install / upgrade.
 #
 # Layout (everything lives under /data/yuanpeng.wei/compshare-agent/):
-#   compshare-agent              binary
-#   deploy/kb/...                RAG corpus + embedding sidecar
-#   scripts/rag_w0/staff_names.txt
-#   agent.yaml.example           shipped template (always replaced on upgrade)
-#   agent.yaml                   operator-edited config (NOT shipped; copied
-#                                from the example on first install)
-#   env                          shell-format secrets file; operator-managed
-#
-# The `env` file MUST exist before this script runs ally invite. If it does
-# not, we print bootstrap instructions and exit 0 so the rpm install itself
-# still succeeds; operator runs `rpm --reinstall ...` after writing `env`.
+#   compshare-agent        binary
+#   deploy/kb/...          RAG corpus + embedding sidecar
+#   scripts/rag_w0/...     staff_names.txt
+#   agent.yaml.example     shipped template (always refreshed on upgrade)
+#   agent.yaml             operator-edited config (copied from .example on
+#                          first install; preserved across upgrades)
+#   env                    secrets (mode 0600, baked into the RPM from the
+#                          dev machine's .env)
 
 set -e
 
@@ -32,33 +29,8 @@ if ! command -v ally >/dev/null 2>&1; then
  compshare-agent files installed under $APP_DIR
  but 'ally' was not found in PATH — skipping process registration.
 
- After installing ally, re-run this step manually with:
+ After installing ally, re-run with:
    sudo rpm --reinstall <this rpm>
-================================================================================
-
-EOF
-    exit 0
-fi
-
-if [ ! -f "$ENV_FILE" ]; then
-    cat <<EOF
-
-================================================================================
- compshare-agent files installed under $APP_DIR
-
- Next step: create the secrets file, then re-run this install to register
- the process with ally.
-
-   sudo install -m 0600 /dev/stdin $ENV_FILE <<'ENV'
-   LLM_API_KEY=...
-   COMPSHARE_SERVICE_PUBLIC_KEY=...
-   COMPSHARE_SERVICE_PRIVATE_KEY=...
-   COMPSHARE_DEFAULT_ROLE_URN=ucs:iam::<top_org_id>:role/ucs-service-role/ServiceRoleForCompshare
-   MYSQL_DSN='root:<password>@tcp(<host>:<port>)/compshare_agent?parseTime=true&loc=UTC&charset=utf8mb4'
-   ADDR=10.182.45.17:10100
-   ENV
-
-   sudo rpm --reinstall <this rpm>     # re-runs ally invite
 ================================================================================
 
 EOF
