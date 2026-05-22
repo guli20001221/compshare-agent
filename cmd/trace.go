@@ -468,9 +468,33 @@ func rerankerTimeoutFromEnv(getenv getenvFunc) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+// defaultCutoverIntents returns the stable cutover set as of the 7-PR
+// stack (#149-#155 + #156). Returned in canonical declaration order so
+// the runtime banner prints deterministically. Override with env
+// USE_INTENT_PLANNER_FOR for tests / staged rollback; explicit empty
+// (USE_INTENT_PLANNER_FOR="off") disables all cutover.
+func defaultCutoverIntents() []intent.Intent {
+	return []intent.Intent{
+		intent.IntentResourceInfo,
+		intent.IntentMonitorQuery,
+		intent.IntentGPUSpecsQuery,
+		intent.IntentStockAvailability,
+		intent.IntentPlatformImageList,
+		intent.IntentCustomImageList,
+		intent.IntentCommunityImageList,
+		intent.IntentPricingQuery,
+	}
+}
+
 func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []string) {
 	raw := getenv("USE_INTENT_PLANNER_FOR")
-	if strings.TrimSpace(raw) == "" {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		// Unset → fixed defaults baked into the binary.
+		return defaultCutoverIntents(), nil
+	}
+	if strings.EqualFold(trimmed, "off") || strings.EqualFold(trimmed, "none") {
+		// Explicit disable for staged rollback / debugging.
 		return nil, nil
 	}
 	seen := map[intent.Intent]struct{}{}
@@ -603,10 +627,20 @@ func (r *cliTraceRecorder) SetOutcomeTrace(trace observability.OutcomeTrace) {
 	r.record.Outcome.KBConflictCount = trace.KBConflictCount
 }
 
+// groundedRendererModeFromEnv resolves the renderer mode from
+// USE_GROUNDED_RENDERER. As of #156 the default flipped from disabled to
+// "llm" — all production smokes / runbooks already passed `llm`
+// explicitly, and shipping the LLM grounded renderer as the baked-in
+// default removes one boilerplate env from every launcher script.
+// Use `off` / `none` to opt out (e.g. for golden-fixture diff tests
+// that want raw tool output, no LLM polish).
 func groundedRendererModeFromEnv(getenv getenvFunc) (string, string) {
 	raw := strings.ToLower(strings.TrimSpace(getenv("USE_GROUNDED_RENDERER")))
 	switch raw {
 	case "":
+		// Default flipped #156 — LLM renderer is now the baseline.
+		return "llm", ""
+	case "off", "none", "disabled":
 		return "", ""
 	case "llm":
 		return "llm", ""

@@ -109,6 +109,50 @@ func TestIntentPlannerCutoverIntentsFromEnv(t *testing.T) {
 	}
 }
 
+// TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset covers the #156
+// flip: USE_INTENT_PLANNER_FOR unset must give the baked-in stable set
+// (8 intents through the #155 rollout) rather than nil. This is the
+// "operator doesn't have to set this anymore" contract.
+func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
+	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(string) string { return "" })
+	if len(unknown) != 0 {
+		t.Fatalf("unknown = %#v, want empty for unset env", unknown)
+	}
+	want := []string{
+		"resource_info", "monitor_query", "gpu_specs_query", "stock_availability",
+		"platform_image_list", "custom_image_list", "community_image_list", "pricing_query",
+	}
+	if len(intents) != len(want) {
+		t.Fatalf("default intents len = %d, want %d (%#v)", len(intents), len(want), intents)
+	}
+	for i, w := range want {
+		if string(intents[i]) != w {
+			t.Fatalf("default intents[%d] = %s, want %s", i, intents[i], w)
+		}
+	}
+}
+
+// TestIntentPlannerCutoverIntents_OffDisablesAll covers the staged-rollback
+// escape hatch. USE_INTENT_PLANNER_FOR=off (or "none") must yield no
+// intents — this is how operators temporarily revert to pre-capability
+// LLM-driven routing if a capability handler regresses.
+func TestIntentPlannerCutoverIntents_OffDisablesAll(t *testing.T) {
+	for _, val := range []string{"off", "OFF", "none", "  off  "} {
+		intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+			if key == "USE_INTENT_PLANNER_FOR" {
+				return val
+			}
+			return ""
+		})
+		if len(intents) != 0 {
+			t.Fatalf("%q must disable all intents, got %#v", val, intents)
+		}
+		if len(unknown) != 0 {
+			t.Fatalf("%q must not report unknowns, got %#v", val, unknown)
+		}
+	}
+}
+
 func TestSeparateShadowRunnerDisabledWhenCutoverEnabled(t *testing.T) {
 	if !useSeparateShadowRunner(true, true, false) {
 		t.Fatal("shadow-only tracing should use the existing shadow runner")
@@ -159,6 +203,7 @@ func TestPlannerRuntimeTrace(t *testing.T) {
 }
 
 func TestGroundedRendererModeFromEnv(t *testing.T) {
+	// Explicit `llm` (the historical opt-in) still works.
 	mode, unknown := groundedRendererModeFromEnv(func(key string) string {
 		if key == "USE_GROUNDED_RENDERER" {
 			return " llm "
@@ -168,6 +213,19 @@ func TestGroundedRendererModeFromEnv(t *testing.T) {
 	require.Equal(t, "llm", mode)
 	require.Empty(t, unknown)
 
+	// #156 default flip: unset env now means llm (was empty).
+	mode, unknown = groundedRendererModeFromEnv(func(string) string { return "" })
+	require.Equal(t, "llm", mode, "unset env must default to llm post-#156")
+	require.Empty(t, unknown)
+
+	// Explicit opt-out paths for golden-fixture diff tests.
+	for _, val := range []string{"off", "none", "disabled"} {
+		mode, unknown = groundedRendererModeFromEnv(func(string) string { return val })
+		require.Empty(t, mode, "%q must disable grounded renderer", val)
+		require.Empty(t, unknown)
+	}
+
+	// Unknown values still surface the warning string back to the caller.
 	mode, unknown = groundedRendererModeFromEnv(func(string) string { return "weird" })
 	require.Empty(t, mode)
 	require.Equal(t, "weird", unknown)
