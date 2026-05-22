@@ -293,14 +293,54 @@ func pricingLabel(chargeType string) string {
 }
 
 // pricingBillingTable best-efforts the price-per-charge-type extract
-// from the GetCompShareInstancePrice response. Handles two shapes:
-//   { Postpay: <number>, Day: <number>, ... }
-//   { InstancePrice: { Postpay: { Price: <number> }, ... } }
+// from the GetCompShareInstancePrice response. Handles three shapes
+// observed in production:
+//   Shape 1 (flat):   { Postpay: <num>, Day: <num>, ... }
+//   Shape 2 (nested): { InstancePrice: { Postpay: { Price: <num>, OriginalPrice: <num> }, ... } }
+//   Shape 3 (array, real production form 2026-05-22):
+//     { PriceDetails: [{ ChargeType: "Postpay", Instance: 1.88 }, ...],
+//       ListPriceDetails: [{ ChargeType: "Postpay", Instance: 1.98 }, ...] }
+//
+//     PriceDetails = discounted/actual payable; ListPriceDetails = list price.
+//     When discount applied (Price < List), we render "¥discounted (原价 ¥list)";
+//     otherwise just the single number. OriginalPriceDetails is a synonym for
+//     ListPriceDetails in current API output — treated as fallback if List absent.
+//
 // Returns "¥X.XX" strings keyed by ChargeType label.
 func pricingBillingTable(raw map[string]any) map[string]string {
 	out := map[string]string{}
 	if raw == nil {
 		return out
+	}
+	// Shape 3 takes precedence — it is the actual production response shape;
+	// Shapes 1/2 remain for legacy compat / test fixtures.
+	if details, ok := raw["PriceDetails"].([]any); ok && len(details) > 0 {
+		listPrices := mapChargeTypeToInstance(raw["ListPriceDetails"])
+		if len(listPrices) == 0 {
+			listPrices = mapChargeTypeToInstance(raw["OriginalPriceDetails"])
+		}
+		actualPrices := mapChargeTypeToInstance(details)
+		for _, key := range []string{"Postpay", "Spot", "Day", "Month", "Dynamic"} {
+			act, hasAct := actualPrices[key]
+			if !hasAct {
+				continue
+			}
+			actStr := pricingFormatNumber(act)
+			if actStr == "" {
+				continue
+			}
+			if listVal, hasList := listPrices[key]; hasList {
+				listStr := pricingFormatNumber(listVal)
+				if listStr != "" && listStr != actStr {
+					out[key] = fmt.Sprintf("%s (原价 %s)", actStr, listStr)
+					continue
+				}
+			}
+			out[key] = actStr
+		}
+		if len(out) > 0 {
+			return out
+		}
 	}
 	// Shape 1: flat keys at top level.
 	for _, key := range []string{"Postpay", "Spot", "Day", "Month", "Dynamic"} {
@@ -339,6 +379,31 @@ func pricingBillingTable(raw map[string]any) map[string]string {
 			if s := pricingFormatNumber(val); s != "" {
 				out[key] = s
 			}
+		}
+	}
+	return out
+}
+
+// mapChargeTypeToInstance pulls a {ChargeType: Instance} flat map out of a
+// PriceDetails / ListPriceDetails / OriginalPriceDetails array. Returns
+// an empty map (never nil-derefs) when the input is the wrong shape.
+func mapChargeTypeToInstance(v any) map[string]any {
+	out := map[string]any{}
+	arr, ok := v.([]any)
+	if !ok {
+		return out
+	}
+	for _, entry := range arr {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		ct, _ := m["ChargeType"].(string)
+		if ct == "" {
+			continue
+		}
+		if inst, has := m["Instance"]; has {
+			out[ct] = inst
 		}
 	}
 	return out
