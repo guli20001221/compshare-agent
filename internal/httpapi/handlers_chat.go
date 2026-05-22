@@ -12,6 +12,7 @@ import (
 	"github.com/bitly/go-simplejson"
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/httpapi/sse"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/store"
@@ -156,7 +157,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 		SessionID:   sessionID,
 		RequestUUID: &reqUUID,
 		Role:        "user",
-		Content:     message,
+		Content:     guardrails.RedactPII(message),
 		Status:      "ok",
 	}); err != nil {
 		h.writeError(c, base.RequestUUID, err)
@@ -287,7 +288,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	outputTokens := usage.CompletionTokens
 	_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
 		store.AssistantPatch{
-			Content:      reply,
+			Content:      guardrails.RedactOutputLeak(reply),
 			Status:       "ok",
 			InputTokens:  &inputTokens,
 			OutputTokens: &outputTokens,
