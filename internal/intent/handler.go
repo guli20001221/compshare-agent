@@ -43,7 +43,11 @@ const (
 	CutoverStatusDispatched                CutoverStatus = "dispatched"
 	CutoverStatusFallbackInvalid           CutoverStatus = "fallback_invalid"
 	CutoverStatusFallbackLowConfidence     CutoverStatus = "fallback_low_confidence"
-	CutoverStatusFallbackHardBlockHint     CutoverStatus = "fallback_hard_block_hint"
+	// CutoverStatusFallbackHardBlockHint (removed PR #61, 2026-05-21):
+	// planner's HardBlockHint is advisory only — no longer routes. Survives
+	// in PlannerTrace.HardBlockHint for analytics join with
+	// EngineHardBlockTrace. Deterministic refusal comes from keyword
+	// PreBlock + IntentMonitorHistory dispatcher.
 	CutoverStatusFallbackIneligible        CutoverStatus = "fallback_ineligible"
 	CutoverStatusFallbackUnresolvedTarget  CutoverStatus = "fallback_unresolved_target"
 	CutoverStatusFallbackTimeWindow        CutoverStatus = "fallback_time_window"

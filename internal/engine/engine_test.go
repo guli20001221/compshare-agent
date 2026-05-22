@@ -22,7 +22,9 @@ import (
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/refusal"
 	grounded "github.com/compshare-agent/internal/renderer"
+	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -512,7 +514,7 @@ func TestChat_HistoricalMonitorToolCallBlockedBeforeExecution(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "show monitor data", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryUnsupportedReply, reply)
+	assert.Equal(t, refusal.MonitorHistoryUnsupported, reply)
 	assert.Empty(t, executor.calls, "historical monitor tool call must be blocked before API execution")
 }
 
@@ -571,7 +573,7 @@ func TestChat_ClearHistoricalMonitorQuestionBlockedBeforeReAct(t *testing.T) {
 			reply, err := eng.Chat(context.Background(), msg, noopStep)
 
 			require.NoError(t, err)
-			assert.Equal(t, monitorHistoryUnsupportedReply, reply)
+			assert.Equal(t, refusal.MonitorHistoryUnsupported, reply)
 			assert.Empty(t, mock.calls, "clear historical monitor question must not enter ReAct")
 			assert.Empty(t, executor.calls)
 		})
@@ -2665,12 +2667,129 @@ func TestAccountBillingHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T) 
 	reply, err := eng.Chat(context.Background(), "账号余额还剩多少", onStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, accountBillingUnsupportedReply, reply)
+	assert.Equal(t, refusal.AccountBillingUnsupported, reply)
 	assert.Empty(t, mock.calls)
 	assert.Empty(t, *events, "hard-block trace signal must not surface as a CLI step")
 	require.Len(t, hardBlocks, 1)
 	assert.True(t, hardBlocks[0].Hit)
 	assert.Equal(t, "account_billing_unsupported", hardBlocks[0].Category)
+}
+
+func TestIsResourceShortageQuestion(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		// Positive: explicit error code
+		{"plain_226604", "226604", true},
+		{"in_context_226604", "我刚才创建实例报 226604 怎么办", true},
+		{"why_226604", "为什么会出 226604", true},
+		// Positive: upstream error message phrase
+		{"upstream_msg_paste", "当前资源不足，请稍后再试", true},
+		{"phrase_alone", "资源不足", true},
+		{"phrase_with_prefix", "提示当前资源不足是什么意思", true},
+		{"phrase_question", "为什么资源不足", true},
+		// Negative: adjacent "X 不足" senses must not collide
+		{"balance_not_enough", "账户余额不足", false},
+		{"credit_not_enough", "积分不足怎么办", false},
+		{"permission_not_enough", "权限不足开不了机", false},
+		// Negative: unrelated platform questions
+		{"general_create_q", "怎么创建实例", false},
+		{"specs_q", "4090 显存多大", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isResourceShortageQuestion(tc.msg); got != tc.want {
+				t.Errorf("isResourceShortageQuestion(%q) = %v; want %v", tc.msg, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResourceShortageHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T) {
+	executor := billingScenarioExecutor("Running")
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+		hardBlocks = append(hardBlocks, trace)
+	})
+	onStep, events := collectSteps()
+
+	reply, err := eng.Chat(context.Background(), "我的实例报 226604 怎么办", onStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, refusal.ResourceShortage226604, reply)
+	assert.Empty(t, mock.calls, "short-circuit must skip the LLM call")
+	assert.Empty(t, *events, "hard-block trace signal must not surface as a CLI step")
+	require.Len(t, hardBlocks, 1)
+	assert.True(t, hardBlocks[0].Hit)
+	assert.Equal(t, "resource_shortage_226604", hardBlocks[0].Category)
+	// PR #61: single-source attribution — Chat()-head keyword preblock fired
+	assert.Equal(t, observability.HardBlockTriggerKeyword, hardBlocks[0].TriggeredBy)
+}
+
+func TestPlannerMonitorHistoryHardBlock_FiresObserverEvenWhenKeywordMisses(t *testing.T) {
+	// REGRESSION GUARD (PR #140 follow-up review):
+	//
+	// Pre-fix: when the Chat() head keyword predicate
+	// isUnsupportedHistoricalMonitorQuestion DID NOT match (e.g. user
+	// phrases the question without 昨天/上周/历史 etc.) but the planner
+	// classified the request as IntentMonitorHistory, engine emitted
+	// refusal.MonitorHistoryUnsupported WITHOUT firing hardBlockObserver.
+	// That left downstream MySQL trace aggregations partial — the same
+	// reply was counted only via the keyword path, never via the planner
+	// path.
+	//
+	// Fix: engine.tryPlannerDispatch routes the IntentMonitorHistory
+	// branch through e.emitMonitorHistoryHardBlock(), which fires the
+	// observer with refusal.CategoryMonitorHistory. This test pins the
+	// invariant.
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorHistoryPlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
+		hardBlocks = append(hardBlocks, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorHistory, intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	// Neutral phrasing — Chat()-head isUnsupportedHistoricalMonitorQuestion
+	// requires BOTH a historicalMonitorSignalKeyword (monitor/cpu/gpu/etc)
+	// AND a historicalMonitorTimeKeyword (昨天/上周/etc) or a clock-range /
+	// iso-date / historical-duration regex. This input deliberately has
+	// neither, so the keyword predicate returns false and the planner
+	// path is the only branch that can fire the hard-block.
+	reply, err := eng.Chat(context.Background(), "帮我看看那台", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, refusal.MonitorHistoryUnsupported, reply)
+	assert.Empty(t, mock.calls, "monitor_history hard-block must not enter ReAct")
+	require.Len(t, hardBlocks, 1, "planner-path MUST fire hardBlockObserver — was the partial-trace bug")
+	assert.True(t, hardBlocks[0].Hit)
+	assert.Equal(t, refusal.CategoryMonitorHistory, hardBlocks[0].Category)
+	// PR #61: single-source attribution — planner-classified path, not keyword
+	assert.Equal(t, observability.HardBlockTriggerPlannerIntent, hardBlocks[0].TriggeredBy)
+}
+
+func TestResourceShortageReply_MustContainStableSignals(t *testing.T) {
+	assert.Contains(t, refusal.ResourceShortage226604, "226604")
+	assert.Contains(t, refusal.ResourceShortage226604, "重试")
+	assert.Contains(t, refusal.ResourceShortage226604, "包日")
+	assert.Contains(t, refusal.ResourceShortage226604, "包月")
+	// negative assertions — phrasings that would defeat the fixed-reply intent
+	assert.NotContains(t, refusal.ResourceShortage226604, "[1]", "fixed-reply path is outside cited contract")
+	assert.NotContains(t, refusal.ResourceShortage226604, "未知")
+	// over-promise guard — drop hard guarantees about 独占 / 不会被退出
+	assert.NotContains(t, refusal.ResourceShortage226604, "独占机器", "avoid hard guarantee — pre-merge review #4")
+	assert.NotContains(t, refusal.ResourceShortage226604, "不会因为资源紧张")
 }
 
 // toolChoiceForMonitor returns true iff req.ToolChoice names GetCompShareInstanceMonitor.
@@ -2924,6 +3043,15 @@ func phase1ResourcePlan() intent.Plan {
 		}}},
 		Retrieval:  intent.Retrieval{Enabled: false},
 		Confidence: 0.9,
+	}
+}
+
+func phase1GPUSpecsPlan() intent.Plan {
+	return intent.Plan{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentGPUSpecsQuery,
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    0.9,
 	}
 }
 
@@ -3864,13 +3992,10 @@ func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T
 		mutatePlan func(*intent.Plan)
 		wantStatus intent.CutoverStatus
 	}{
-		{
-			name: "hard block hint",
-			mutatePlan: func(plan *intent.Plan) {
-				plan.HardBlockHint = true
-			},
-			wantStatus: intent.CutoverStatusFallbackHardBlockHint,
-		},
+		// PR #61 (2026-05-21): the "hard block hint" case was removed —
+		// HardBlockHint is now advisory only and does NOT short-circuit
+		// cutover. The remaining "low confidence" case keeps coverage of
+		// the common-predicate fallback path (retriever must not be called).
 		{
 			name: "low confidence",
 			mutatePlan: func(plan *intent.Plan) {
@@ -3918,6 +4043,8 @@ func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T
 			require.Len(t, hardBlocks, 1)
 			assert.Equal(t, "cited_contract_violation", hardBlocks[0].Category)
 			assert.True(t, hardBlocks[0].Hit)
+			// PR #61: single-source attribution — post-LLM cited-contract gate
+			assert.Equal(t, observability.HardBlockTriggerPostLLM, hardBlocks[0].TriggeredBy)
 		})
 	}
 }
@@ -3928,7 +4055,7 @@ func TestRAGCitedContractInvariantSkipsWhenAnswerAlreadyCited(t *testing.T) {
 	// well-behaved LLM that adds [n] on its own), the invariant must NOT
 	// fire and the reply must pass through unchanged.
 	plan := knowledgeQAPlan(false)
-	plan.HardBlockHint = true // force fallback to ReAct path
+	plan.Confidence = 0.3 // PR #61: HardBlockHint no longer forces fallback; use low confidence instead
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
@@ -3989,7 +4116,7 @@ func TestRAGCitedContractInvariantSkipsWhenRetrieverDisabled(t *testing.T) {
 	// fire — a free-form chat answer is expected and the cited contract does
 	// not apply.
 	plan := knowledgeQAPlan(false)
-	plan.HardBlockHint = true
+	plan.Confidence = 0.3 // PR #61: HardBlockHint no longer forces fallback; use low confidence instead
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback without RAG"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
@@ -4060,7 +4187,7 @@ func TestRAGCitedContractInvariantSkipsDiagnosisPlannerFallback(t *testing.T) {
 
 func TestRAGCitedContractInvariantResetsKnowledgeFallbackFlagEachTurn(t *testing.T) {
 	knowledgePlan := knowledgeQAPlan(false)
-	knowledgePlan.HardBlockHint = true
+	knowledgePlan.Confidence = 0.3 // PR #61: HardBlockHint no longer forces fallback; use low confidence instead
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{
 		{Plan: knowledgePlan},
 		{Plan: unknownEngineTestPlan()},
@@ -4110,7 +4237,7 @@ func TestStage2BRetrievalHardBlockPrecedesPlanner(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "\u8d26\u53f7\u4f59\u989d\u8fd8\u5269\u591a\u5c11", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, accountBillingUnsupportedReply, reply)
+	assert.Equal(t, refusal.AccountBillingUnsupported, reply)
 	assert.Empty(t, planner.calls, "permanent hard-block must run before Stage 2B planner")
 	assert.Empty(t, retriever.calls)
 	assert.Empty(t, mock.calls)
@@ -4203,7 +4330,7 @@ func TestStage2BFinanceRealtimeHardBlockPrecedesPlanner(t *testing.T) {
 			reply, err := eng.Chat(context.Background(), msg, noopStep)
 
 			require.NoError(t, err)
-			assert.Equal(t, accountBillingUnsupportedReply, reply)
+			assert.Equal(t, refusal.AccountBillingUnsupported, reply)
 			assert.Empty(t, planner.calls)
 			assert.Empty(t, retriever.calls)
 			assert.Empty(t, mock.calls)
@@ -4278,7 +4405,7 @@ func TestPhase1CutoverHardBlockPrecedesPlanner(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "\u8d26\u53f7\u4f59\u989d\u8fd8\u5269\u591a\u5c11", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, accountBillingUnsupportedReply, reply)
+	assert.Equal(t, refusal.AccountBillingUnsupported, reply)
 	assert.Empty(t, planner.calls, "permanent hard-block must run before planner")
 	assert.Empty(t, mock.calls)
 }
@@ -4354,6 +4481,62 @@ func TestPhase1CutoverResourcePlanUsesGroundedRenderer(t *testing.T) {
 	assert.True(t, rendererTraces[0].Enabled)
 	assert.Equal(t, "rendered", rendererTraces[0].Status)
 	assert.Equal(t, "resource_info", rendererTraces[0].EnvelopeKind)
+	require.Len(t, rendererTraces[0].InputEnvelopeHashes, 1)
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, rendererTraces[0].InputEnvelopeHashes[0])
+}
+
+func TestPhase1CutoverGPUSpecsPlanUsesGroundedRenderer(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1GPUSpecsPlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{
+					"Name":           "4090",
+					"GraphicsMemory": map[string]any{"Value": 24},
+					"MachineSizes": []any{
+						map[string]any{
+							"Gpu": float64(1),
+							"Collection": []any{
+								map[string]any{"Cpu": float64(16), "Memory": []any{float64(64), float64(94)}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}}
+	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+		Text:            "renderer says 4090 has 24GB",
+		Model:           "deepseek-v4-flash",
+		AttributionMode: grounded.AttributionEnvelope,
+		EnvelopeHash:    "sha256:renderer-envelope",
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentGPUSpecsQuery},
+		Model:          "deepseek-v4-flash",
+	})
+	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	var rendererTraces []observability.RendererTrace
+	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
+		rendererTraces = append(rendererTraces, trace)
+	})
+
+	reply, err := eng.Chat(context.Background(), "4090 显存多大", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "renderer says 4090 has 24GB", reply)
+	assert.Empty(t, mock.calls, "grounded renderer must not re-enter ReAct")
+	assert.Equal(t, []string{"DescribeAvailableCompShareInstanceTypes"}, executor.calls)
+	require.Len(t, groundedRenderer.requests, 1)
+	assert.Contains(t, groundedRenderer.requests[0].Fallback, "显存=24GB")
+	assert.Equal(t, "gpu_specs_query", string(groundedRenderer.requests[0].Envelope.Kind))
+	require.Len(t, rendererTraces, 1)
+	assert.True(t, rendererTraces[0].Enabled)
+	assert.Equal(t, "rendered", rendererTraces[0].Status)
+	assert.Equal(t, "gpu_specs_query", rendererTraces[0].EnvelopeKind)
 	require.Len(t, rendererTraces[0].InputEnvelopeHashes, 1)
 	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, rendererTraces[0].InputEnvelopeHashes[0])
 }
@@ -4534,7 +4717,7 @@ func TestPhase1CutoverMonitorTodayWindowReturnsFixedReplyWithoutReAct(t *testing
 	reply, err := eng.Chat(context.Background(), "show today's cpu monitor", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryUnsupportedReply, reply)
+	assert.Equal(t, refusal.MonitorHistoryUnsupported, reply)
 	assert.Empty(t, mock.calls, "non-current monitor window must not fall back to ReAct")
 	assert.Empty(t, executor.calls, "non-current monitor window must not call monitor as current data")
 	require.Len(t, traces, 1)
@@ -4559,7 +4742,7 @@ func TestPlannerMonitorHistoryReturnsFixedReplyWithoutReAct(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "historical cpu monitor", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryUnsupportedReply, reply)
+	assert.Equal(t, refusal.MonitorHistoryUnsupported, reply)
 	assert.Empty(t, mock.calls, "historical monitor planner output must not fall back to ReAct")
 	assert.Empty(t, executor.calls)
 	require.Len(t, traces, 1)
@@ -5021,9 +5204,9 @@ func TestMonitorLoadAssessmentFallbackIgnoresDiskPercentages(t *testing.T) {
 }
 
 func TestMonitorHistoryUnsupportedReplyUsesCurrentScopeWording(t *testing.T) {
-	assert.Contains(t, monitorHistoryUnsupportedReply, "当前暂不支持指定历史时间段的监控查询")
-	assert.Contains(t, monitorHistoryUnsupportedReply, "实时监控")
-	assert.NotContains(t, monitorHistoryUnsupportedReply, "暂不稳定支持")
+	assert.Contains(t, refusal.MonitorHistoryUnsupported, "当前暂不支持指定历史时间段的监控查询")
+	assert.Contains(t, refusal.MonitorHistoryUnsupported, "实时监控")
+	assert.NotContains(t, refusal.MonitorHistoryUnsupported, "暂不稳定支持")
 }
 
 func TestResourceSelectionContinuationDuplicateNameRepeatsPrompt(t *testing.T) {
@@ -5124,7 +5307,7 @@ func TestResourceSelectionContinuationHardBlockClearsPending(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "账号余额还有多少", noopStep)
 	require.NoError(t, err)
-	assert.Contains(t, reply, accountBillingUnsupportedReply)
+	assert.Contains(t, reply, refusal.AccountBillingUnsupported)
 	assert.Nil(t, eng.pendingResourceSelection)
 
 	reply, err = eng.Chat(context.Background(), "2", noopStep)
@@ -5145,17 +5328,11 @@ func TestPhase1CutoverInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 			result:     intent.PlannerResult{Fallback: true, Plan: unknownEngineTestPlan()},
 			wantStatus: intent.CutoverStatusFallbackInvalid,
 		},
-		{
-			name: "hard block hint",
-			result: intent.PlannerResult{Plan: intent.Plan{
-				SchemaVersion: intent.SchemaVersion,
-				Intent:        intent.IntentBillingAccountUnsupported,
-				HardBlockHint: true,
-				Retrieval:     intent.Retrieval{Enabled: false},
-				Confidence:    0.9,
-			}},
-			wantStatus: intent.CutoverStatusFallbackHardBlockHint,
-		},
+		// PR #61 (2026-05-21): removed "hard block hint" case — HardBlockHint
+		// is advisory only and no longer participates in cutover routing.
+		// New test TestCommonPlannerCandidateStatus_HardBlockHintAdvisoryOnly
+		// in engine_hardblock_advisory_test.go pins the new behavior
+		// (HardBlockHint=true with valid plan → CutoverStatusDispatched).
 		{
 			name: "low confidence",
 			result: intent.PlannerResult{Plan: intent.Plan{
@@ -5334,7 +5511,7 @@ func TestNormalizeMsg(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, normalizeMsg(tc.in))
+			assert.Equal(t, tc.want, textutil.Normalize(tc.in))
 		})
 	}
 }
@@ -5612,4 +5789,160 @@ func TestVagueCrashGuard_ExplicitInitFailureScanAllPasses(t *testing.T) {
 	assert.NotContains(t, reply, vagueClarifyPrefix)
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance",
 		"scan-all must be allowed when both init-failure signal and scan-all phrasing are present")
+}
+
+// TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary — verifies the
+// per-turn token cap fires at the TOP of a ReAct iteration, AFTER the
+// previous iteration's tool_call/tool_result pair has fully completed.
+//
+// Setup: round 0 LLM returns one tool_call + reports 60000 tokens used,
+// which is over the 50000 cap. The engine MUST:
+//  1. Still execute that tool_call and append its tool_result (so the WS
+//     client never sees an orphan tool_call frame — protocol invariant).
+//  2. NOT make a second LLM call (round 1 budget check trips first).
+//  3. Return tokenBudgetExceededMessage with status mapped to "blocked"
+//     via the hard-block observer (Category="token_budget_exceeded").
+//
+// WHY: the (c) constraint from 2026-05-21 review — a token cap that
+// breaks mid-tool would leave the client framing broken. Encode the
+// boundary placement as a test so future refactors can't silently move
+// the check inside the tool_call inner loop.
+func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		// Round 0: emits a tool_call AND reports 60k tokens (over the
+		// 50k cap). Second response would be returned if round 1 ran.
+		{
+			ToolCalls: []openai.ToolCall{
+				toolCall("tc1", "GetGPUSpecs", `{"GpuType":"4090"}`),
+			},
+			Usage: llm.TokenUsage{TotalTokens: 60000},
+		},
+		{Content: "this must never be returned — budget should trip first"},
+	}}
+	onStep, events := collectSteps()
+	var hardBlockHits []observability.EngineHardBlockTrace
+
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.maxTokensPerTurn = 50000
+	eng.SetHardBlockObserver(func(t observability.EngineHardBlockTrace) {
+		hardBlockHits = append(hardBlockHits, t)
+	})
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "4090什么配置", onStep)
+	require.NoError(t, err)
+	assert.Equal(t, tokenBudgetExceededMessage, reply,
+		"budget exceeded should short-circuit to the canned reply, not the round-1 LLM response")
+
+	// Exactly one LLM call: round 0 happens, round 1 hits the gate.
+	assert.Len(t, mock.calls, 1,
+		"second LLM call must not happen once budget is exceeded; got %d calls", len(mock.calls))
+
+	// The tool_call from round 0 must have run to completion — the test
+	// asserts BOTH the tool_call and tool_result events fired, proving
+	// the pair stays atomic across the budget break.
+	var sawToolCall, sawToolResult bool
+	for _, ev := range *events {
+		if ev.Type == StepToolCall && ev.Action == "GetGPUSpecs" {
+			sawToolCall = true
+		}
+		if ev.Type == StepToolResult && ev.Action == "GetGPUSpecs" {
+			sawToolResult = true
+		}
+	}
+	assert.True(t, sawToolCall, "round 0 tool_call must be emitted before the budget break")
+	assert.True(t, sawToolResult, "round 0 tool_result must be emitted before the budget break (protocol invariant)")
+
+	// Hard-block observer fired with the expected category, so downstream
+	// status mapping in trace_recorder produces status="blocked".
+	require.Len(t, hardBlockHits, 1, "expected exactly one hard-block emission")
+	assert.True(t, hardBlockHits[0].Hit)
+	assert.Equal(t, "token_budget_exceeded", hardBlockHits[0].Category)
+	// PR #61: single-source attribution — token budget is its own trigger class
+	assert.Equal(t, observability.HardBlockTriggerTokenBudget, hardBlockHits[0].TriggeredBy)
+}
+
+// TestChat_TokenBudget_DisabledByDefault — sanity check that
+// maxTokensPerTurn=0 means "no cap" (the production default). Without
+// this, a refactor that flipped the sense of the comparison would
+// silently start blocking every turn at 0 tokens.
+func TestChat_TokenBudget_DisabledByDefault(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "done", Usage: llm.TokenUsage{TotalTokens: 999999}},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	// maxTokensPerTurn left at 0 (default)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "hi", noopStep)
+	require.NoError(t, err)
+	assert.Equal(t, "done", reply,
+		"with maxTokensPerTurn=0 the LLM reply must pass through even with absurdly high usage")
+}
+
+// TestChat_TokenBudget_PlannerHandledPath_GateFires — covers the C1 gap
+// surfaced by 2026-05-21 review. A planner-handled turn (no ReAct entry)
+// previously bypassed the budget gate entirely because the gate only
+// lived at the top of the ReAct loop. After the fix, planner LLM tokens
+// are accumulated in callPlannerOnce, then a second gate fires inside
+// tryPlannerDispatch BEFORE any further dispatch. WHY: a heavy planner
+// LLM (e.g. degraded prompt + retries pushing 60k tokens) must not slip
+// past the 50k cap just because the turn happens to resolve through the
+// planner path. Without this gate, MaxTokensPerTurn=50000 means
+// "50000 tokens for ReAct-only turns, unbounded for planner-handled".
+func TestChat_TokenBudget_PlannerHandledPath_GateFires(t *testing.T) {
+	// Planner returns a candidate whose Usage alone exceeds the 50k cap.
+	// IntentResourceInfo is a planner-handled branch in tryPlannerDispatch
+	// that normally dispatches via tryPhase1Cutover. Our gate fires
+	// BEFORE that dispatch even runs, so the cutover path never executes.
+	// Choosing IntentResourceInfo over IntentMonitorHistory because the
+	// "last week monitor" phrasing trips a pre-planner short-circuit in
+	// Chat (isUnsupportedHistoricalMonitorQuestion), short-circuiting
+	// before the planner is even consulted — which masks the test.
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{
+		Plan: intent.Plan{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentResourceInfo,
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+		Usage: llm.TokenUsage{TotalTokens: 60000},
+	}}}
+	// LLM mock is only here to make ReAct fall-through visible: if the
+	// gate fails to trip, ReAct enters and this would be the response.
+	// Test asserts mock.calls==0 to prove ReAct never ran.
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path (must not be reached)"}}}
+
+	var hardBlockHits []observability.EngineHardBlockTrace
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.maxTokensPerTurn = 50000
+	eng.SetHardBlockObserver(func(t observability.EngineHardBlockTrace) {
+		hardBlockHits = append(hardBlockHits, t)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "test-planner-model",
+	})
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "查我的实例信息", noopStep)
+	require.NoError(t, err)
+
+	assert.Equal(t, tokenBudgetExceededMessage, reply,
+		"planner-handled turn should be cut short with the budget message; "+
+			"got the dispatch handler's reply or a ReAct fallthrough instead")
+	assert.Empty(t, mock.calls,
+		"once the budget is blown by the planner, no downstream LLM call (ReAct, answerer, renderer) may run")
+	require.Len(t, planner.calls, 1,
+		"the planner itself must still run — accumulation happens after, not before")
+	require.Len(t, hardBlockHits, 1, "exactly one hard-block emission expected")
+	assert.Equal(t, "token_budget_exceeded", hardBlockHits[0].Category)
+	// PR #61: single-source attribution — token budget is its own trigger class
+	assert.Equal(t, observability.HardBlockTriggerTokenBudget, hardBlockHits[0].TriggeredBy)
 }

@@ -142,6 +142,22 @@ func validateTargetRef(ref TargetRef, idx int, ctx ValidationContext) error {
 		}
 		return nil
 	default:
+		// C15 Phase A (PR #89, 2026-05-21): the new TargetRefZone /
+		// TargetRefImage / TargetRefGPUModel constants are declared in
+		// types.go but DELIBERATELY not accepted here. Phase A is a
+		// pure type-taxonomy addition with strict zero runtime
+		// behavior change — if the planner accidentally emits one of
+		// the new types (it can't today, the prompt doesn't reference
+		// them), this default branch rejects it just like any other
+		// unknown type and the planner-result fallback path triggers
+		// (consistent with pre-PR #89 behavior).
+		//
+		// Phase B will:
+		//   - extend planner directives so the LLM emits these types
+		//   - add Zone / Image / GPUModel resolvers in entity package
+		//   - add a switch case here mirroring TargetRefUHostIDUserInput
+		//     (provenance + resolver lookup) atomically with the
+		//     planner-prompt SHA-256 hash bump (C5 contract).
 		return validationErr(ErrInvalidTargetRefType, field+".type", "unsupported target_ref type")
 	}
 }

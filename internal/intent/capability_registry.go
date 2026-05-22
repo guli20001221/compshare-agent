@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/envelope"
 
 	"gopkg.in/yaml.v3"
 )
@@ -329,6 +330,9 @@ func handleGPUSpecsQuery(ctx context.Context, h *DemoHandler, req HandlerRequest
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
+	env := buildGPUSpecsEnvelope(raw, req.UserText)
+	result.Envelope = &env
+	result.RendererInputEnvelopeHashes = hashEnvelopeForRenderer(env)
 	return result
 }
 
@@ -784,6 +788,65 @@ func userMentionedGPULikeToken(userText string) bool {
 	return gpuLikeTokenRegex.MatchString(userText)
 }
 
+func fullGPUSpecsRequest(userText string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(userText))
+	if normalized == "" {
+		return false
+	}
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(normalized)
+	hasFullQualifier := containsAny(compact, "所有", "全部", "完整", "全量", "每种") ||
+		containsAnyEnglishWord(normalized, "all", "full", "complete", "entire", "every")
+	hasSpecsTerm := containsAny(compact, "规格", "配置", "配比") ||
+		strings.Contains(normalized, "spec") ||
+		strings.Contains(normalized, "config") ||
+		strings.Contains(normalized, "machine size")
+	if hasFullQualifier && hasSpecsTerm {
+		return true
+	}
+	return containsAny(compact,
+		"cpu/内存",
+		"cpu内存",
+		"cpu和内存",
+		"cpu与内存",
+		"cpu及内存",
+		"cpu、内存",
+		"cpu核心和内存",
+		"cpu核数和内存",
+		"内存组合",
+		"配置组合",
+		"合法配置",
+		"可选配置",
+		"可用配置",
+	) || strings.Contains(normalized, "cpu/memory") ||
+		strings.Contains(normalized, "cpu memory") ||
+		strings.Contains(normalized, "memory options") ||
+		strings.Contains(normalized, "configuration options") ||
+		strings.Contains(normalized, "machine sizes")
+}
+
+func containsAny(s string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyEnglishWord(s string, words ...string) bool {
+	fields := strings.FieldsFunc(s, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	for _, field := range fields {
+		for _, word := range words {
+			if field == word {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func renderGPUSpecsReply(raw map[string]any, userText string) string {
 	items := mapSliceAt(raw, "AvailableInstanceTypes")
 	if len(items) == 0 {
@@ -805,7 +868,8 @@ func renderGPUSpecsReply(raw map[string]any, userText string) string {
 		prefix = "未在当前可售机型里找到您提到的型号。以下是当前可售机型规格：\n"
 	}
 
-	lines := buildGPUSpecLines(items, filterTo)
+	detailed := fullGPUSpecsRequest(userText)
+	lines := buildGPUSpecLines(items, filterTo, detailed)
 	if len(lines) == 0 {
 		if prefix != "" {
 			return strings.TrimRight(prefix, "\n")
@@ -815,9 +879,10 @@ func renderGPUSpecsReply(raw map[string]any, userText string) string {
 	return prefix + strings.Join(lines, "\n")
 }
 
-func buildGPUSpecLines(items []any, filterTo map[string]struct{}) []string {
+func buildGPUSpecLines(items []any, filterTo map[string]struct{}, detailed bool) []string {
 	lines := make([]string, 0, len(items))
 	seenNames := map[string]struct{}{}
+	seenDetailed := map[string]struct{}{}
 	for _, item := range items {
 		entry, ok := item.(map[string]any)
 		if !ok {
@@ -832,13 +897,26 @@ func buildGPUSpecLines(items []any, filterTo map[string]struct{}) []string {
 				continue
 			}
 		}
-		// Dedupe by Name (API returns duplicates across zones with identical
-		// MachineSizes for the same model in this account/region).
-		if _, ok := seenNames[name]; ok {
-			continue
+		if detailed {
+			key := name + "\x00" + safeString(entry, "Zone") + "\x00" + expandMachineSizes(entry)
+			if _, ok := seenDetailed[key]; ok {
+				continue
+			}
+			seenDetailed[key] = struct{}{}
+		} else {
+			// Dedupe by Name for overview replies so a plain spec question stays
+			// concise even if the API returns the same model in multiple zones.
+			if _, ok := seenNames[name]; ok {
+				continue
+			}
+			seenNames[name] = struct{}{}
 		}
-		seenNames[name] = struct{}{}
 		parts := []string{"机型=" + name}
+		if detailed {
+			if zone := safeString(entry, "Zone"); zone != "" {
+				parts = append(parts, "可用区="+zone)
+			}
+		}
 		// Performance + GraphicsMemory are nested {Rate, Value} maps in the API
 		// response; we display the Value (the scalar the user actually wants).
 		if perf := nestedValue(entry, "Performance"); perf != "" {
@@ -850,12 +928,126 @@ func buildGPUSpecLines(items []any, filterTo map[string]struct{}) []string {
 		if status := safeString(entry, "Status"); status != "" {
 			parts = append(parts, "状态="+status)
 		}
-		if sizes := summarizeMachineSizes(entry); sizes != "" {
-			parts = append(parts, "合法配置="+sizes)
+		if detailed {
+			if sizes := expandMachineSizes(entry); sizes != "" {
+				parts = append(parts, "完整配置="+sizes)
+			}
+		} else if maxGPU := maxGPUFromMachineSizes(entry); maxGPU != "" {
+			parts = append(parts, "最大卡数="+maxGPU)
 		}
 		lines = append(lines, strings.Join(parts, ", "))
 	}
 	return lines
+}
+
+func buildGPUSpecsEnvelope(raw map[string]any, userText string) envelope.Envelope {
+	items := mapSliceAt(raw, "AvailableInstanceTypes")
+	matched := matchUserTextToInstanceTypeNames(userText, items, true)
+	filterTo := map[string]struct{}{}
+	for _, m := range matched {
+		filterTo[m] = struct{}{}
+	}
+	detailed := fullGPUSpecsRequest(userText)
+	entries := selectGPUSpecEntries(items, filterTo, detailed)
+
+	env := envelope.Envelope{
+		Kind:          envelope.KindGPUSpecsQuery,
+		SourceActions: []string{"DescribeAvailableCompShareInstanceTypes"},
+		Subjects:      []envelope.Subject{},
+		Facts:         []envelope.Fact{},
+		Computed:      []envelope.Fact{},
+		Constraints: envelope.Constraints{
+			DoNotInventInstances:   true,
+			DoNotAnswerAccountBill: true,
+		},
+	}
+	answerMode := "overview"
+	if detailed {
+		answerMode = "full_specs"
+	}
+	env.Computed = append(env.Computed,
+		envelope.Fact{Key: "answer_mode", Label: "Answer mode", Value: answerMode, Source: envelope.FactSourceComputed},
+		envelope.Fact{Key: "requested_gpu_specs", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
+	)
+
+	seenSubjects := map[string]struct{}{}
+	for _, entry := range entries {
+		name := safeString(entry, "Name")
+		if name == "" {
+			continue
+		}
+		subjectID := "gpu_model:" + name
+		if _, ok := seenSubjects[subjectID]; !ok {
+			seenSubjects[subjectID] = struct{}{}
+			env.Subjects = append(env.Subjects, envelope.Subject{
+				ID:   subjectID,
+				Name: name,
+				Type: envelope.SubjectGPUModel,
+			})
+		}
+		addFact := func(key, label string, value any, unit string) {
+			valueString := safeValue(value)
+			if strings.TrimSpace(valueString) == "" {
+				return
+			}
+			env.Facts = append(env.Facts, envelope.Fact{
+				SubjectID: subjectID,
+				Key:       key,
+				Label:     label,
+				Value:     valueString,
+				Unit:      unit,
+				Source:    envelope.FactSourceAPI,
+			})
+		}
+		addFact("model_name", "机型", name, "")
+		if detailed {
+			addFact("zone", "可用区", safeString(entry, "Zone"), "")
+		}
+		addFact("performance", "性能", nestedValue(entry, "Performance"), "")
+		addFact("graphics_memory", "显存", nestedValue(entry, "GraphicsMemory"), "GB")
+		addFact("status", "状态", safeString(entry, "Status"), "")
+		if detailed {
+			addFact("machine_size_configs", "完整配置", expandMachineSizes(entry), "")
+		} else {
+			addFact("max_gpu_count", "最大卡数", maxGPUFromMachineSizes(entry), "卡")
+		}
+	}
+	return env
+}
+
+func selectGPUSpecEntries(items []any, filterTo map[string]struct{}, detailed bool) []map[string]any {
+	entries := make([]map[string]any, 0, len(items))
+	seenNames := map[string]struct{}{}
+	seenDetailed := map[string]struct{}{}
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := safeString(entry, "Name")
+		if name == "" {
+			continue
+		}
+		if len(filterTo) > 0 {
+			if _, ok := filterTo[name]; !ok {
+				continue
+			}
+		}
+		if detailed {
+			key := name + "\x00" + safeString(entry, "Zone") + "\x00" + expandMachineSizes(entry)
+			if _, ok := seenDetailed[key]; ok {
+				continue
+			}
+			seenDetailed[key] = struct{}{}
+		} else {
+			if _, ok := seenNames[name]; ok {
+				continue
+			}
+			seenNames[name] = struct{}{}
+		}
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 // nestedValue extracts the "Value" field from a nested map response shape like
@@ -1413,12 +1605,13 @@ func anyVersionMatches(versions []any, keywords []string, fields []string) bool 
 	return false
 }
 
-func summarizeMachineSizes(entry map[string]any) string {
+func expandMachineSizes(entry map[string]any) string {
 	sizes := mapSliceAt(entry, "MachineSizes")
 	if len(sizes) == 0 {
 		return ""
 	}
 	parts := make([]string, 0, len(sizes))
+	seen := map[string]struct{}{}
 	for _, s := range sizes {
 		size, ok := s.(map[string]any)
 		if !ok {
@@ -1427,30 +1620,117 @@ func summarizeMachineSizes(entry map[string]any) string {
 		gpu := safeNumeric(size, "Gpu")
 		collection := mapSliceAt(size, "Collection")
 		if len(collection) == 0 {
-			if gpu != "" {
-				parts = append(parts, gpu+"卡")
+			appendUniqueMachineSize(&parts, seen, formatMachineSizeSegment(gpu, "", ""))
+			continue
+		}
+		for _, c := range collection {
+			combo, ok := c.(map[string]any)
+			if !ok {
+				continue
 			}
-			continue
-		}
-		// Use first collection entry's Cpu/Memory as a representative configuration.
-		first, ok := collection[0].(map[string]any)
-		if !ok {
-			continue
-		}
-		cpu := safeNumeric(first, "Cpu")
-		mems := mapSliceAt(first, "Memory")
-		memStr := ""
-		if len(mems) > 0 {
-			memStr = fmt.Sprintf("%v", mems[0])
-		}
-		segment := strings.TrimSpace(gpu + "卡/" + cpu + "C/" + memStr + "G")
-		// Trim leading slashes if fields are missing
-		segment = strings.Trim(segment, "/")
-		if segment != "" {
-			parts = append(parts, segment)
+			cpu := safeNumeric(combo, "Cpu")
+			mems := mapSliceAt(combo, "Memory")
+			if len(mems) == 0 {
+				appendUniqueMachineSize(&parts, seen, formatMachineSizeSegment(gpu, cpu, ""))
+				continue
+			}
+			for _, mem := range mems {
+				appendUniqueMachineSize(&parts, seen, formatMachineSizeSegment(gpu, cpu, fmt.Sprint(mem)))
+			}
 		}
 	}
 	return strings.Join(parts, ", ")
+}
+
+func maxGPUFromMachineSizes(entry map[string]any) string {
+	sizes := mapSliceAt(entry, "MachineSizes")
+	if len(sizes) == 0 {
+		return ""
+	}
+	maxLabel := ""
+	var maxValue float64
+	hasNumeric := false
+	for _, s := range sizes {
+		size, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		raw, ok := size["Gpu"]
+		if !ok {
+			continue
+		}
+		label := fmt.Sprint(raw)
+		value, numeric := numericValue(raw)
+		if numeric {
+			if !hasNumeric || value > maxValue {
+				maxValue = value
+				maxLabel = label
+				hasNumeric = true
+			}
+			continue
+		}
+		if maxLabel == "" {
+			maxLabel = label
+		}
+	}
+	return maxLabel
+}
+
+func numericValue(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int:
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case float32:
+		return float64(n), true
+	case float64:
+		return n, true
+	default:
+		return 0, false
+	}
+}
+
+func appendUniqueMachineSize(parts *[]string, seen map[string]struct{}, segment string) {
+	segment = strings.Trim(segment, "/")
+	if segment == "" {
+		return
+	}
+	if _, ok := seen[segment]; ok {
+		return
+	}
+	seen[segment] = struct{}{}
+	*parts = append(*parts, segment)
+}
+
+func formatMachineSizeSegment(gpu, cpu, memory string) string {
+	parts := []string{}
+	if gpu != "" {
+		parts = append(parts, gpu+"卡")
+	}
+	if cpu != "" {
+		parts = append(parts, cpu+"C")
+	}
+	if memory != "" {
+		parts = append(parts, memory+"G")
+	}
+	return strings.Join(parts, "/")
 }
 
 // mapSliceAt returns m[key].([]any) if shape matches, nil otherwise.

@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/diagnosis"
@@ -22,7 +21,9 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/prompt"
+	"github.com/compshare-agent/internal/refusal"
 	grounded "github.com/compshare-agent/internal/renderer"
+	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 
@@ -44,12 +45,22 @@ const (
 )
 
 const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
-const monitorHistoryUnsupportedReply = "当前暂不支持指定历史时间段的监控查询。我可以先帮你查看实时监控；如需历史趋势，请在控制台监控页选择对应日期和时间范围查看。"
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
+
+// monitor_history / account_billing / resource_shortage refusal text moved
+// to internal/refusal/templates.go in the C2 hard-block 归一 refactor.
+// Call sites import refusal directly; this file no longer declares them.
 
 const (
 	rateLimitQPSMessage   = "请求过于频繁，请稍后再试。"
 	rateLimitDailyMessage = "今日额度已用完，请明天再试。"
+	// tokenBudgetExceededMessage is returned when a single user turn
+	// consumed more LLM tokens than maxTokensPerTurn. Surfaces to the
+	// user as a normal assistant message (status="blocked" downstream);
+	// the partial reply prior to the budget hit is discarded — the loop
+	// breaks at iteration boundary, so any tool_call already issued has
+	// its tool_result on the wire before this frame.
+	tokenBudgetExceededMessage = "本次问题消耗的算力已超过单次上限，请简化问题或拆分提问。"
 )
 
 const (
@@ -60,10 +71,12 @@ const (
 
 // Force-tool / hard-block priority chain (highest first):
 //
-//  1. isAccountBillingUnsupported -> canned reply, no LLM call (hard-block)
-//  2. shouldForceMonitorRecall    -> tool_choice=GetCompShareInstanceMonitor
-//                                    (BRIDGE T-001.f1, capability-gated)
-//  3. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
+//  1. isAccountBillingUnsupported    -> canned reply, no LLM call (hard-block)
+//  2. isResourceShortageQuestion     -> canned reply, no LLM call (hard-block; error 226604)
+//  3. isUnsupportedHistoricalMonitorQuestion -> canned reply, no LLM call
+//  4. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
+//                                       (BRIDGE T-001.f1, capability-gated)
+//  5. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
 //
 // Capability gating: force-tool paths that emit object tool_choice MUST
 // short-circuit when supportsObjectToolChoice=false. ds v4 flash in thinking
@@ -154,6 +167,14 @@ type Engine struct {
 	rateLimitObserver                func(governance.Decision)
 	readExpensiveCallsThisTurn       int
 	requireKnowledgeCitationThisTurn bool
+	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
+	// user turn. 0 = disabled. Copied from SharedDeps in NewSession.
+	maxTokensPerTurn int
+	// turnTokensConsumed accumulates tokenUsageTotal(usage) across every
+	// LLM call within the current Chat() invocation. Reset at the top of
+	// Chat. Read at ReAct loop iteration boundaries to enforce
+	// maxTokensPerTurn — never mid tool_call / tool_result pair.
+	turnTokensConsumed int
 	hardBlockObserver                func(observability.EngineHardBlockTrace)
 	confirmFn                        ConfirmFunc
 	messages                         []openai.ChatCompletionMessage // conversation history
@@ -213,6 +234,9 @@ type SharedDeps struct {
 	GroundedRendererModel       string
 	RateLimiter                 governance.RateLimiter
 	SupportsObjectToolChoice    bool
+	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
+	// 0 = disabled. Process-wide constant; copied into every NewSession.
+	MaxTokensPerTurn int
 	// ExternalExecutor is the underlying tool executor shared across sessions
 	// (holds AK/SK + HTTP client). Each NewSession wraps it in a fresh
 	// SafeToolExecutor so per-session confirmFn stays isolated.
@@ -245,6 +269,7 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 		// centralized limiter such as Redis or an API gateway.
 		RateLimiter:              governance.NewMemoryLimiter(cfg.Agent.RateLimit.Limits()),
 		SupportsObjectToolChoice: cap.SupportsObjectToolChoice,
+		MaxTokensPerTurn:         cfg.Agent.RateLimit.MaxTokensPerTurn,
 		ExternalExecutor:         tools.NewExternalExecutor(cfg.Agent),
 	}, nil
 }
@@ -274,6 +299,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		groundedRendererModel:       deps.GroundedRendererModel,
 		rateLimiter:                 deps.RateLimiter,
 		supportsObjectToolChoice:    deps.SupportsObjectToolChoice,
+		maxTokensPerTurn:            deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
 		confirmFn:             opts.ConfirmFn,
@@ -654,6 +680,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.lastUserMsg = userMsg
 	e.readExpensiveCallsThisTurn = 0
 	e.requireKnowledgeCitationThisTurn = false
+	e.turnTokensConsumed = 0
 
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
@@ -664,28 +691,30 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		Content: userMsg,
 	})
 
-	if isAccountBillingUnsupported(userMsg) {
+	// Pre-LLM hard-block chain. Rules live in preblock.go (this package);
+	// dispatch + ordering in internal/router; reply text + category strings
+	// in internal/refusal. Side effects (pendingResourceSelection clear,
+	// hardBlockObserver fire, history append) stay here so engine state
+	// transitions remain in one place.
+	//
+	// Trace fix vs pre-refactor: monitor_history previously did NOT emit
+	// hardBlockObserver — now it does, with category
+	// refusal.CategoryMonitorHistory. Downstream dashboards gain
+	// observability for this category at zero behavioral cost.
+	if decision := enginePreBlock.Decide(userMsg); decision.Matched {
 		e.pendingResourceSelection = nil
 		if e.hardBlockObserver != nil {
 			e.hardBlockObserver(observability.EngineHardBlockTrace{
-				Hit:      true,
-				Category: "account_billing_unsupported",
+				Hit:         true,
+				Category:    decision.Category,
+				TriggeredBy: observability.HardBlockTriggerKeyword,
 			})
 		}
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
-			Content: accountBillingUnsupportedReply,
+			Content: decision.Reply,
 		})
-		return accountBillingUnsupportedReply, nil
-	}
-
-	if isUnsupportedHistoricalMonitorQuestion(userMsg) {
-		e.pendingResourceSelection = nil
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: monitorHistoryUnsupportedReply,
-		})
-		return monitorHistoryUnsupportedReply, nil
+		return decision.Reply, nil
 	}
 
 	e.currentMonitorTargets = nil
@@ -704,6 +733,23 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	}
 
 	for round := 0; round < maxReActRounds; round++ {
+		// Per-turn token budget gate. Placed at the TOP of the loop so
+		// any tool_call → tool_result pair emitted in the previous
+		// iteration has already completed and been appended to history
+		// before we stop. This preserves the WS protocol invariant that
+		// every tool_call is followed by a tool_result on the wire —
+		// breaking mid-pair would leave the client with an orphan
+		// tool_call frame. First iteration (round 0) sees consumed
+		// pre-loaded with any planner LLM call (accumulateTokenUsage
+		// in callPlannerOnce) and triggers if that already blew budget.
+		if e.tokenBudgetExceeded() {
+			e.emitTokenBudgetExceededHardBlock()
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: tokenBudgetExceededMessage,
+			})
+			return tokenBudgetExceededMessage, nil
+		}
 		req := llm.ChatRequest{
 			Messages: e.buildMessagesForLLM(),
 			Tools:    tools.VisibleRegistry(e.mutatingToolsEnabled),
@@ -757,6 +803,24 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			opts.OnUsage(resp.Usage)
 		}
 
+		// Post-call budget check: emitTokenUsage just accumulated this
+		// call's usage. If the single call already blew the cap, gate
+		// here so the user gets the canned reply instead of an answer
+		// that already exceeded budget. Without this, a one-shot 60k-
+		// token final answer would still flow through to the user
+		// despite max_tokens_per_turn=50000. Returning canned makes the
+		// cap meaningful end-to-end. (c) invariant still holds: this
+		// branch has NO tool_calls in flight — len(resp.ToolCalls)==0
+		// is the condition just below — so no orphan pair.
+		if len(resp.ToolCalls) == 0 && e.tokenBudgetExceeded() {
+			e.emitTokenBudgetExceededHardBlock()
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: tokenBudgetExceededMessage,
+			})
+			return tokenBudgetExceededMessage, nil
+		}
+
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
 			rawContent := resp.Content
@@ -769,8 +833,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				!isKnowledgeRefusal(content) && !hasNumberedCitation(content) {
 				if e.hardBlockObserver != nil {
 					e.hardBlockObserver(observability.EngineHardBlockTrace{
-						Hit:      true,
-						Category: "cited_contract_violation",
+						Hit:         true,
+						Category:    "cited_contract_violation",
+						TriggeredBy: observability.HardBlockTriggerPostLLM,
 					})
 				}
 				content = ragNoEvidenceReply
@@ -871,13 +936,30 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		return "", false
 	}
 
-	if dispatch.result.Plan.Intent == intent.IntentMonitorHistory {
-		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackTimeWindow, dispatch.latency)
+	// Token budget gate. callPlannerOnce already added planner usage to
+	// the per-turn counter; if that alone blew the cap, return the
+	// canned reply BEFORE any further LLM call (cutover handler,
+	// answerWithRetrievedEvidence, grounded renderer). Without this
+	// every planner-handled path could spend an extra answerer call's
+	// worth of tokens past the cap — the C1 finding from 2026-05-21
+	// review. Returning handled=true short-circuits Chat() so it does
+	// NOT fall through to the ReAct loop (which would re-trip the gate
+	// but waste a frame). No tool_call/tool_result pair is in flight
+	// here (planner-handled paths don't emit ReAct tool events), so
+	// the (c) protocol invariant is naturally satisfied.
+	if e.tokenBudgetExceeded() {
+		e.emitTokenBudgetExceededHardBlock()
+		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
-			Content: monitorHistoryUnsupportedReply,
+			Content: tokenBudgetExceededMessage,
 		})
-		return monitorHistoryUnsupportedReply, true
+		return tokenBudgetExceededMessage, true
+	}
+
+	if dispatch.result.Plan.Intent == intent.IntentMonitorHistory {
+		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackTimeWindow, dispatch.latency)
+		return e.emitMonitorHistoryHardBlock(), true
 	}
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
 		return reply, true
@@ -958,6 +1040,15 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 		// because trace currently has no dedicated planner-denied enum.
 	}
 	latency := time.Since(start)
+
+	// Add planner LLM tokens to the per-turn budget. Planner usage is
+	// surfaced via PlannerTrace (not emitTokenUsage), so without this
+	// accumulation a knowledge-QA turn that resolves entirely through
+	// the planner-handled path would never count its planner cost
+	// against maxTokensPerTurn — defeating the "total tokens per turn"
+	// promise of the cap. Tests:
+	// TestChat_TokenBudget_PlannerHandledPath_GateFires.
+	e.accumulateTokenUsage(result.Usage)
 
 	return plannerDispatchResult{result: result, latency: latency, snapshot: snapshot}
 }
@@ -1045,11 +1136,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 		}
 		if handled.FallbackReason == intent.FallbackTimeWindow {
 			e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: monitorHistoryUnsupportedReply,
-			})
-			return monitorHistoryUnsupportedReply, true
+			return e.emitMonitorHistoryHardBlock(), true
 		}
 		e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
 		return "", false
@@ -1141,6 +1228,19 @@ func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent
 	if _, ok := e.allowRateLimited(governance.ClassLLM, "grounded_renderer"); !ok {
 		e.emitRendererTrace(trace)
 		return handled.Reply
+	}
+	// Token budget gate before issuing the renderer LLM call. Returning
+	// the canned message keeps the contract consistent with the other
+	// gate sites: hard_block fires → message_recorder marks the row
+	// status="blocked" → user MUST see the budget message, not a
+	// normal-looking handled.Reply. Pre-fix this path returned
+	// handled.Reply while still firing hard_block, which made the user
+	// view ("normal answer") disagree with the DB view ("blocked") —
+	// the C3 finding from the user's 2026-05-21 self-review.
+	if e.tokenBudgetExceeded() {
+		e.emitTokenBudgetExceededHardBlock()
+		e.emitRendererTrace(trace)
+		return tokenBudgetExceededMessage
 	}
 	result := e.groundedRenderer.Render(ctx, grounded.RenderRequest{
 		Envelope: *handled.Envelope,
@@ -1441,6 +1541,20 @@ func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string
 		return "", outcome, "", false, fmt.Errorf("LLM 调用失败: %w", err)
 	}
 	e.emitTokenUsage(resp.Usage)
+
+	// Post-call budget gate. The first answerer LLM call has been
+	// accounted for; if cumulative tokens are over cap, return the
+	// canned message instead of the LLM content. WHY: pre-fix, an
+	// answer that itself blew budget was still delivered to the user
+	// — the cap stopped only FURTHER calls. That made the cap
+	// non-strict on RAG paths. EscapedHallucinatedCount stays 0 here
+	// (no hallucination was attempted — there's no answer being
+	// scored), distinct from organic retry_no_cite which sets it to 1.
+	if e.tokenBudgetExceeded() {
+		e.emitTokenBudgetExceededHardBlock()
+		return tokenBudgetExceededMessage, outcome, "token_budget", false, nil
+	}
+
 	answer := strings.TrimSpace(resp.Content)
 	if isKnowledgeRefusal(answer) {
 		return answer, outcome, refusedReasonForRefusal(weak), false, nil
@@ -1458,6 +1572,15 @@ func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string
 		return "", outcome, "", false, fmt.Errorf("LLM 调用失败: %w", err)
 	}
 	e.emitTokenUsage(retryResp.Usage)
+
+	// Post-retry budget gate. Symmetric to the post-first-call gate
+	// above. If the retry pushed us over cap, deliver canned instead
+	// of the retry's answer — even if the retry produced a cited
+	// answer, the cap is binding.
+	if e.tokenBudgetExceeded() {
+		e.emitTokenBudgetExceededHardBlock()
+		return tokenBudgetExceededMessage, outcome, "token_budget", false, nil
+	}
 	retryAnswer := strings.TrimSpace(retryResp.Content)
 	if isKnowledgeRefusal(retryAnswer) {
 		return retryAnswer, outcome, refusedReasonForRefusal(weak), false, nil
@@ -1613,9 +1736,13 @@ func (e *Engine) commonPlannerCandidateStatus(result intent.PlannerResult) (inte
 		result.Plan.SchemaVersion != intent.SchemaVersion || result.Plan.Intent == "" {
 		return intent.CutoverStatusFallbackInvalid, false
 	}
-	if result.Plan.HardBlockHint {
-		return intent.CutoverStatusFallbackHardBlockHint, false
-	}
+	// PR #61 (2026-05-21): planner's HardBlockHint is advisory only and no
+	// longer participates in cutover routing — it ships to trace via
+	// PlannerTrace.HardBlockHint for downstream join with engine_hard_block
+	// (observability). Deterministic refusal comes from the keyword
+	// PreBlock (router.go) and the planner-classified IntentMonitorHistory
+	// path (emitMonitorHistoryHardBlock), both of which run AFTER this
+	// candidate-status check.
 	if result.Plan.Confidence < 0.60 {
 		return intent.CutoverStatusFallbackLowConfidence, false
 	}
@@ -1681,10 +1808,53 @@ func traceOutcomeObserved(trace observability.OutcomeTrace) bool {
 }
 
 func (e *Engine) emitTokenUsage(usage llm.TokenUsage) {
-	if e.tokenUsageObserver == nil || tokenUsageTotal(usage) == 0 {
+	total := tokenUsageTotal(usage)
+	if total > 0 {
+		// Track regardless of observer wiring so the per-turn budget
+		// check sees every LLM call's usage, not just turns that happen
+		// to have an observer attached. Planner LLM calls are not
+		// routed through emitTokenUsage (they're observed via
+		// emitPlannerTrace) and add to the same counter via
+		// accumulateTokenUsage below.
+		e.turnTokensConsumed += total
+	}
+	if e.tokenUsageObserver == nil || total == 0 {
 		return
 	}
 	e.tokenUsageObserver(usage)
+}
+
+// accumulateTokenUsage adds usage to the per-turn budget counter without
+// going through the observer. Used for LLM calls (notably the planner)
+// whose usage is surfaced via a different trace path but still needs to
+// count against maxTokensPerTurn — otherwise a planner-handled turn
+// could bypass the cap entirely.
+func (e *Engine) accumulateTokenUsage(usage llm.TokenUsage) {
+	total := tokenUsageTotal(usage)
+	if total > 0 {
+		e.turnTokensConsumed += total
+	}
+}
+
+// tokenBudgetExceeded reports whether this turn has already consumed
+// maxTokensPerTurn or more LLM tokens. Read-only — call emitTokenBudget
+// ExceededHardBlock + append the canned assistant reply when this trips.
+func (e *Engine) tokenBudgetExceeded() bool {
+	return e.maxTokensPerTurn > 0 && e.turnTokensConsumed >= e.maxTokensPerTurn
+}
+
+// emitTokenBudgetExceededHardBlock fires the trace observer for a turn
+// that ran over budget. Separate from message-append so each call site
+// can keep its own assistant-message conventions (cutover handlers
+// already manage their history slot; the ReAct loop appends inline).
+func (e *Engine) emitTokenBudgetExceededHardBlock() {
+	if e.hardBlockObserver != nil {
+		e.hardBlockObserver(observability.EngineHardBlockTrace{
+			Hit:         true,
+			Category:    "token_budget_exceeded",
+			TriggeredBy: observability.HardBlockTriggerTokenBudget,
+		})
+	}
 }
 
 func tokenUsageTotal(usage llm.TokenUsage) int {
@@ -1822,7 +1992,7 @@ func friendlyToolErrorMessage(err error) (string, bool) {
 	}
 	switch {
 	case errors.Is(err, tools.ErrHistoricalMonitorUnsupported):
-		return monitorHistoryUnsupportedReply, true
+		return refusal.MonitorHistoryUnsupported, true
 	case errors.Is(err, tools.ErrHistoryWindowExceeded):
 		return historyWindowExceededMessage, true
 	case errors.Is(err, tools.ErrToolCapExceeded):
@@ -1975,7 +2145,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	})
 	if err != nil {
 		if errors.Is(err, tools.ErrHistoricalMonitorUnsupported) {
-			msg := monitorHistoryUnsupportedReply
+			msg := refusal.MonitorHistoryUnsupported
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, err))
 			return finalReplyPrefix + msg
 		}
@@ -2581,7 +2751,8 @@ func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
 // mutation is gone. When mutating tools that need ProjectId open up,
 // route the value through args["ProjectId"] (per-session field on Engine).
 
-const accountBillingUnsupportedReply = "这类账号级财务信息当前不支持由助手查询。请到控制台的财务中心查看：账号总览看余额，账单管理看月度账单，消费记录看扣费流水，发票管理看开票和寄送状态，退款或欠费信息以订单/财务中心页面为准。"
+// accountBillingUnsupportedReply moved to internal/refusal/templates.go
+// (refusal.AccountBillingUnsupported) in the C2 hard-block 归一 refactor.
 
 var monthlyBillKeywords = []string{
 	"\u672c\u6708", // 本月
@@ -2603,7 +2774,7 @@ var monthlyBillKeywords = []string{
 // the skill manifest's disambiguating_prefixes field, NOT this engine var.
 //
 // All entries are stored in normalized form (ASCII lowercased; CJK as-is)
-// to match normalizeMsg output without re-normalizing per call.
+// to match textutil.Normalize output without re-normalizing per call.
 var thirdPartyServiceForeignBalanceContexts = []string{
 	"modelverse",
 	"openai",
@@ -2888,7 +3059,7 @@ var knowledgeWindowsKeywords = []string{
 var knowledgeMonitorKeywords = []string{
 	"\u76d1\u63a7\u6307\u6807", // \u76d1\u63a7\u6307\u6807
 	"\u663e\u5b58\u5360\u7528", // \u663e\u5b58\u5360\u7528
-	// normalizeMsg collapses whitespace but never INJECTS a space between
+	// textutil.Normalize collapses whitespace but never INJECTS a space between
 	// adjacent CJK and ASCII, so the no-space variants are the load-bearing
 	// keywords for real user input ("CPU\u5360\u7528\u7387"). Keep the spaced variants
 	// for the alt phrasing ("CPU \u5360\u7528\u7387\u9ad8\u5417").
@@ -2898,31 +3069,10 @@ var knowledgeMonitorKeywords = []string{
 	"gpu \u5360\u7528", // gpu \u5360\u7528
 }
 
-// normalizeMsg standardizes a user message for signal matching:
-// trims whitespace, collapses internal whitespace runs to a single space,
-// and lowercases ASCII letters. CJK characters are preserved as-is.
-// The returned value is used only for substring matching; the caller's
-// original string is never mutated.
-func normalizeMsg(s string) string {
-	var b strings.Builder
-	prevSpace := true // treat start as space so leading whitespace collapses
-	for _, r := range s {
-		if unicode.IsSpace(r) {
-			if !prevSpace {
-				b.WriteByte(' ')
-				prevSpace = true
-			}
-			continue
-		}
-		prevSpace = false
-		if r >= 'A' && r <= 'Z' {
-			r += 'a' - 'A'
-		}
-		b.WriteRune(r)
-	}
-	out := b.String()
-	return strings.TrimRight(out, " ")
-}
+// normalizeMsg was moved to internal/textutil.Normalize in the C2
+// hard-block 归一 refactor. All engine call sites now invoke
+// textutil.Normalize directly. See textutil/normalize.go for the
+// canonical implementation + per-package unit tests.
 
 func (e *Engine) previousAssistantAskedInitFailureTarget() bool {
 	if e == nil {
@@ -2936,7 +3086,7 @@ func (e *Engine) previousAssistantAskedInitFailureTarget() bool {
 		if len(msg.ToolCalls) > 0 {
 			continue
 		}
-		n := normalizeMsg(msg.Content)
+		n := textutil.Normalize(msg.Content)
 		if n == "" {
 			continue
 		}
@@ -2977,7 +3127,7 @@ var initFailureSignalKeywords = []string{
 // DiagnoseInitFailure guard: vague fault language ("跑崩了", "挂了") does
 // NOT match; the user must have named the symptom type explicitly.
 func containsInitFailureSignal(msg string) bool {
-	n := normalizeMsg(msg)
+	n := textutil.Normalize(msg)
 	for _, kw := range initFailureSignalKeywords {
 		if strings.Contains(n, kw) {
 			return true
@@ -3008,7 +3158,7 @@ var scanAllSignalKeywords = []string{
 // containsScanAllSignal reports whether the user message expresses an
 // explicit intent to scan across all instances.
 func containsScanAllSignal(msg string) bool {
-	n := normalizeMsg(msg)
+	n := textutil.Normalize(msg)
 	for _, kw := range scanAllSignalKeywords {
 		if strings.Contains(n, kw) {
 			return true
@@ -3024,7 +3174,34 @@ func containsScanAllSignal(msg string) bool {
 // intent=billing_account_unsupported as a hint, but engine independently
 // enforces this hard-block. DO NOT delete when IntentPlan ships.
 func isAccountBillingUnsupported(userMsg string) bool {
-	return isAccountBillingUnsupportedNormalized(normalizeMsg(userMsg))
+	return isAccountBillingUnsupportedNormalized(textutil.Normalize(userMsg))
+}
+
+// resourceShortageSignalKeywords are the precision-first phrases that
+// flag a user message as asking about upstream GPU pool exhaustion
+// (error code 226604: "当前资源不足，请稍后再试"). The matcher narrowly
+// targets product-specific phrases so it does not collide with adjacent
+// "X 不足" senses (余额不足 / 积分不足 / 权限不足).
+var resourceShortageSignalKeywords = []string{
+	"226604",
+	"资源不足", // 资源不足
+}
+
+// isResourceShortageQuestion reports whether the user message is asking
+// about upstream resource shortage (error code 226604). When true the
+// engine short-circuits before any LLM/planner/RAG call and returns
+// refusal.ResourceShortage226604 unchanged, so the response stays stable across
+// runs and never drifts via LLM paraphrase. Mirrors the
+// isAccountBillingUnsupported / isUnsupportedHistoricalMonitorQuestion
+// pattern.
+func isResourceShortageQuestion(userMsg string) bool {
+	n := textutil.Normalize(userMsg)
+	for _, kw := range resourceShortageSignalKeywords {
+		if strings.Contains(n, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsInvoiceRealtimeQuestion(n string) bool {
@@ -3211,12 +3388,12 @@ func (e *Engine) shouldForceMonitorRecall(userMsg string) bool {
 	if e.lastMonitorTurn < 0 || e.userTurn != e.lastMonitorTurn+1 {
 		return false
 	}
-	n := normalizeMsg(userMsg)
+	n := textutil.Normalize(userMsg)
 	return containsAnyKeyword(n, monitorRecallKeywords) && containsAnyKeyword(n, monitorMetricKeywords)
 }
 
 func isUnsupportedHistoricalMonitorQuestion(userMsg string) bool {
-	n := normalizeMsg(userMsg)
+	n := textutil.Normalize(userMsg)
 	if !containsAnyKeyword(n, historicalMonitorSignalKeywords) {
 		return false
 	}
@@ -3248,7 +3425,7 @@ func containsNormalizedKeyword(normalized string, keywords []string) bool {
 // are checked before broader ones (image / modelverse / billing_rule) to avoid
 // the broader keyword sets shadowing the niche groups.
 func inferKnowledgeProductArea(userMsg string) string {
-	n := normalizeMsg(userMsg)
+	n := textutil.Normalize(userMsg)
 	switch {
 	case containsAnyKeyword(n, knowledgeInitFailureKeywords):
 		return "init_failure"

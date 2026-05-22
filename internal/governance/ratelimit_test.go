@@ -357,3 +357,85 @@ func TestSubjectKeyFromTenant_OnlyOrgID_StillHashes(t *testing.T) {
 		t.Fatalf("expected sha256 prefix, got %q", got)
 	}
 }
+
+// TestUserTurn_DisabledByDefault — when an operator hasn't configured
+// UserTurnQPS / UserTurnDaily, the limiter MUST short-circuit Allow with
+// Allowed=true regardless of how many requests come in. This is the
+// migration-safe default: existing deployments that don't know about the
+// new class must not see any behavior change. WHY: a "zero means default"
+// promotion (the rule for LLM / Mutating / ReadExpensive) would silently
+// gate every existing tenant on whatever the built-in default happened to
+// be, breaking the migration contract.
+func TestUserTurn_DisabledByDefault(t *testing.T) {
+	limits := DefaultLimits()
+	if limits.UserTurnQPS != 0 || limits.UserTurnDaily != 0 {
+		t.Fatalf("DefaultLimits must leave UserTurn zero (opt-in); got qps=%d daily=%d",
+			limits.UserTurnQPS, limits.UserTurnDaily)
+	}
+	limiter := NewMemoryLimiter(limits)
+	for i := 0; i < 1000; i++ {
+		req := Request{
+			SubjectKey: "tenant-a",
+			Class:      ClassUserTurn,
+			Action:     "chat_turn",
+		}
+		decision := limiter.Allow(req)
+		if !decision.Allowed {
+			t.Fatalf("request #%d denied while UserTurn class is disabled: %+v", i, decision)
+		}
+	}
+}
+
+// TestUserTurn_DailyExhaustion — daily=N, qps=0 means "no QPS check, just
+// stop at N per day". Encodes the test-phase intent of "30 messages/day":
+// QPS=0 must not block, daily must enforce, retry-after points to midnight.
+// WHY: an early draft accidentally short-circuited the daily counter when
+// QPS=0, defeating the cap entirely.
+func TestUserTurn_DailyExhaustion(t *testing.T) {
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.Local)
+	limits := DefaultLimits()
+	limits.UserTurnDaily = 3
+	// qps stays 0 — daily-only cap
+	limiter := NewMemoryLimiter(limits, WithClock(func() time.Time { return now }))
+
+	req := Request{SubjectKey: "tenant-a", Class: ClassUserTurn, Action: "chat_turn", Now: now}
+	for i := 0; i < 3; i++ {
+		decision := limiter.Allow(req)
+		if !decision.Allowed {
+			t.Fatalf("request #%d should be allowed (within daily cap), got denied: %+v", i, decision)
+		}
+	}
+	decision := limiter.Allow(req)
+	if decision.Allowed {
+		t.Fatalf("4th request should be denied (daily cap = 3), got allowed: %+v", decision)
+	}
+	if decision.Reason != ReasonDailyExceeded {
+		t.Fatalf("denial reason should be ReasonDailyExceeded, got %q", decision.Reason)
+	}
+	if decision.RetryAfter <= 0 || decision.RetryAfter > 24*time.Hour {
+		t.Fatalf("retry-after should point to next-day reset (0,24h], got %v", decision.RetryAfter)
+	}
+}
+
+// TestUserTurn_PerSubjectBucket — confirms each tenant has its own daily
+// counter. WHY: a shared bucket would let one noisy tenant exhaust the
+// cap for everyone, which is the bug this whole class is meant to prevent.
+func TestUserTurn_PerSubjectBucket(t *testing.T) {
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.Local)
+	limits := DefaultLimits()
+	limits.UserTurnDaily = 1
+	limiter := NewMemoryLimiter(limits, WithClock(func() time.Time { return now }))
+
+	reqA := Request{SubjectKey: "tenant-a", Class: ClassUserTurn, Action: "chat_turn", Now: now}
+	reqB := Request{SubjectKey: "tenant-b", Class: ClassUserTurn, Action: "chat_turn", Now: now}
+
+	if !limiter.Allow(reqA).Allowed {
+		t.Fatalf("tenant A's first request should be allowed")
+	}
+	if limiter.Allow(reqA).Allowed {
+		t.Fatalf("tenant A's second request should be denied (cap=1)")
+	}
+	if !limiter.Allow(reqB).Allowed {
+		t.Fatalf("tenant B's first request should be allowed despite A being exhausted")
+	}
+}

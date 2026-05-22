@@ -8,12 +8,14 @@ const (
 	KindResourceInfo    Kind = "resource_info"
 	KindMonitorQuery    Kind = "monitor_query"
 	KindBillingInstance Kind = "billing_instance"
+	KindGPUSpecsQuery   Kind = "gpu_specs_query"
 )
 
 type SubjectType string
 
 const (
 	SubjectInstance SubjectType = "instance"
+	SubjectGPUModel SubjectType = "gpu_model"
 )
 
 type FactSource string

@@ -27,6 +27,12 @@ const (
 	ClassLLM               Class = "llm"
 	ClassMutatingTool      Class = "mutating_tool"
 	ClassReadExpensiveTool Class = "read_expensive_tool"
+	// ClassUserTurn counts user-initiated chat turns (one
+	// ClientMsgUserMessage frame). Confirm responses and pings do not
+	// increment this counter. Unlike LLM / mutating / read-expensive, the
+	// daily/qps fields default to 0 = disabled (no enforcement) rather
+	// than to a built-in default — the operator opts in.
+	ClassUserTurn Class = "user_turn"
 )
 
 type Reason string
@@ -69,6 +75,13 @@ type Limits struct {
 	MutatingDaily      int
 	ReadExpensiveQPS   int
 	ReadExpensiveDaily int
+	// UserTurnQPS / UserTurnDaily: per-tenant cap on user-initiated chat
+	// turns. 0 = disabled (no enforcement for that dimension). Used by
+	// the WS server path (test-phase guardrail). NOT subject to the
+	// "zero means default" promotion that normalizeLimits applies to
+	// the other classes — operator opts in explicitly.
+	UserTurnQPS   int
+	UserTurnDaily int
 }
 
 func DefaultLimits() Limits {
@@ -121,6 +134,17 @@ func (l *MemoryLimiter) Allow(req Request) Decision {
 	}
 
 	qps, daily := l.limits.forClass(req.Class)
+	// Disabled class: both dimensions unset → no enforcement. Used for
+	// ClassUserTurn when operator hasn't opted in. Short-circuit before
+	// touching counterState so we don't create map entries for a noop.
+	if qps <= 0 && daily <= 0 {
+		return Decision{
+			Allowed:     true,
+			Class:       req.Class,
+			Action:      req.Action,
+			SubjectHash: req.SubjectKey,
+		}
+	}
 	key := limitKey{subject: req.SubjectKey, class: req.Class}
 
 	l.mu.Lock()
@@ -136,16 +160,20 @@ func (l *MemoryLimiter) Allow(req Request) Decision {
 		l.state[key] = st
 	}
 	st.resetDateIfNeeded(now)
-	st.refill(now, qps)
+	if qps > 0 {
+		st.refill(now, qps)
+	}
 
-	if st.dailyCount >= daily {
+	if daily > 0 && st.dailyCount >= daily {
 		return deniedDecision(req, ReasonDailyExceeded, retryAfterDaily(now))
 	}
-	if st.tokens < 1 {
+	if qps > 0 && st.tokens < 1 {
 		return deniedDecision(req, ReasonQPSExceeded, retryAfterQPS(st.tokens, qps))
 	}
 
-	st.tokens -= 1
+	if qps > 0 {
+		st.tokens -= 1
+	}
 	st.dailyCount++
 	return Decision{
 		Allowed:     true,
@@ -249,6 +277,14 @@ func (l Limits) forClass(class Class) (qps int, daily int) {
 		return l.ReadExpensiveQPS, l.ReadExpensiveDaily
 	case ClassLLM:
 		return l.LLMQPS, l.LLMDaily
+	case ClassUserTurn:
+		// Returned raw; both fields default to 0 = disabled. The
+		// "qps<=0 && daily<=0 → no enforcement" short-circuit in Allow
+		// handles the opt-in semantics. Do NOT fall through to the LLM
+		// budget here — that would silently gate every existing tenant
+		// on the LLM quota the moment they upgraded to a binary with
+		// this class.
+		return l.UserTurnQPS, l.UserTurnDaily
 	default:
 		// Phase 1 hardening defines LLM, mutating-tool, and read-expensive
 		// quota classes. Unknown

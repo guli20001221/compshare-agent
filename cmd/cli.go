@@ -27,6 +27,12 @@ import (
 
 var startupFatalf = log.Fatalf
 
+// cliTraceDrainTimeout bounds how long runCLI blocks at exit waiting for
+// async trace sinks (e.g. MySQLWriter) to drain their queues. Long enough
+// to flush a normal-sized batch on a healthy database; short enough that
+// a hung connection cannot wedge CLI shutdown.
+const cliTraceDrainTimeout = 5 * time.Second
+
 var cliCmd = &cobra.Command{
 	Use:   "cli",
 	Short: "CLI 交互模式",
@@ -114,6 +120,22 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		if err := cleanupTraceWriter(traceWriter, time.Now()); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: trace cleanup failed: %v\n", err)
 		}
+		// F1 (PR #90, 2026-05-21): drain async sinks before CLI exit.
+		// Without this, MySQL's bounded queue + background flush goroutine
+		// (see internal/observability/mysql_writer.go:136 Close) loses any
+		// record not yet committed when the subprocess returns. Symptom
+		// observed during the C2 smoke run: 8 in-process traces visible
+		// in the file sink (sync flush-on-close) but 0 reaching MySQL.
+		// FileWriter.Close is a no-op so the file-only path is unaffected;
+		// drain timeout is bounded (cliTraceDrainTimeout) so a hung MySQL
+		// connection cannot wedge CLI shutdown.
+		defer func() {
+			drainCtx, cancel := context.WithTimeout(context.Background(), cliTraceDrainTimeout)
+			defer cancel()
+			if err := traceWriter.Close(drainCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: trace writer drain failed: %v\n", err)
+			}
+		}()
 	}
 	var shadowRunner *intent.ShadowRunner
 	if useSeparateShadowRunner(traceEnabled, shadowEnabled, plannerDispatchEnabled) {

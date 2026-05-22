@@ -36,6 +36,13 @@ type serverTraceRecorder struct {
 	start        time.Time
 
 	record observability.TraceRecord
+	// totalTokens accumulates LLM tokens from BOTH the regular Chat
+	// token-usage observer AND the planner trace observer. Mirrors the
+	// CLI cliTraceRecorder.totalTokens accounting (cmd/trace.go); pre-fix
+	// the server path only added prompt+completion from emitTokenUsage
+	// and missed planner tokens entirely, so MySQL's
+	// agent_traces.total_tokens under-counted planner-handled turns.
+	totalTokens int
 }
 
 // newServerTraceRecorder constructs a recorder if a sink is configured;
@@ -87,10 +94,28 @@ func newServerTraceRecorder(
 // CLI pattern in cmd/agent.go) so we don't need to detach explicitly —
 // finish() simply stops mutating the record after writing it out.
 func (r *serverTraceRecorder) attach(sess *engine.Engine) {
-	sess.SetPlannerTraceObserver(func(t observability.PlannerTrace) { r.record.Planner = t })
+	sess.SetPlannerTraceObserver(func(t observability.PlannerTrace) {
+		r.record.Planner = t
+		// Planner LLM tokens count toward the per-turn total just like
+		// every other LLM call. Without this, agent_traces.total_tokens
+		// on planner-handled turns underreports by the planner cost —
+		// engine.turnTokensConsumed (the budget enforcer) already counts
+		// planner usage via accumulateTokenUsage in callPlannerOnce, so
+		// the trace was diverging from the gate.
+		r.totalTokens += t.InputTokens + t.OutputTokens
+		r.record.Outcome.TotalTokens = r.totalTokens
+	})
 	sess.SetRetrievalTraceObserver(func(t observability.RetrievalTrace) { r.record.Retrieval = t })
 	sess.SetRendererTraceObserver(func(t observability.RendererTrace) { r.record.Renderer = t })
-	sess.SetOutcomeTraceObserver(func(t observability.OutcomeTrace) { r.record.Outcome = t })
+	sess.SetOutcomeTraceObserver(func(t observability.OutcomeTrace) {
+		// Outcome observer fires AFTER token accumulation in some paths
+		// (e.g. tryStage2BRetrieval emits OutcomeTrace with its own
+		// counters). Merge fields without clobbering totalTokens, which
+		// is owned by this recorder via the planner + token-usage
+		// observers below.
+		t.TotalTokens = r.totalTokens
+		r.record.Outcome = t
+	})
 	sess.SetHardBlockObserver(func(t observability.EngineHardBlockTrace) { r.record.EngineHardBlock = t })
 	sess.SetRateLimitObserver(func(d governance.Decision) {
 		r.record.RateLimit = observability.RateLimitTrace{
@@ -104,8 +129,23 @@ func (r *serverTraceRecorder) attach(sess *engine.Engine) {
 		}
 	})
 	sess.SetTokenUsageObserver(func(u llm.TokenUsage) {
-		r.record.Outcome.TotalTokens += u.PromptTokens + u.CompletionTokens
+		// Use the same helper as CLI so Usage.TotalTokens-only responses
+		// (some providers omit prompt/completion split) still count.
+		r.totalTokens += llmTokenUsageTotal(u)
+		r.record.Outcome.TotalTokens = r.totalTokens
 	})
+}
+
+// llmTokenUsageTotal mirrors the CLI helper of the same name
+// (cmd/trace.go). Returns Usage.TotalTokens when set; otherwise the sum
+// of PromptTokens + CompletionTokens. Some providers (ds-v4-flash in
+// streaming mode) only report TotalTokens; falling back to the sum
+// covers the other shape.
+func llmTokenUsageTotal(usage llm.TokenUsage) int {
+	if usage.TotalTokens > 0 {
+		return usage.TotalTokens
+	}
+	return usage.PromptTokens + usage.CompletionTokens
 }
 
 // OnStep records tool-call events into the trace's ToolCalls slice. Each

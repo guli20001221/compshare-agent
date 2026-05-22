@@ -241,6 +241,14 @@ func (s *Server) chatLoop(
 // sendChan, wait for Engine.Chat, push answer_final + done. Trace writes
 // happen via observers attached for the duration of the call so the
 // recorder sees this turn's events only.
+//
+// Per-tenant turn quota (governance.ClassUserTurn) is checked here, ONCE
+// per user_message frame. Confirm responses and pings do not pass through
+// this function and therefore do not consume the daily turn budget — a
+// single mutating-tool confirmation may span multiple frames, and counting
+// them as turns would let a user exhaust their quota on confirmations
+// alone. The Allow call short-circuits when both UserTurnQPS and
+// UserTurnDaily are 0 (operator hasn't opted in).
 func (s *Server) runChatTurn(
 	ctx context.Context,
 	sess *engine.Engine,
@@ -252,6 +260,49 @@ func (s *Server) runChatTurn(
 ) {
 	turnCtx, cancel := context.WithTimeout(ctx, chatTurnTimeout)
 	defer cancel()
+
+	if dec := s.deps.RateLimiter.Allow(governance.Request{
+		SubjectKey: tenant.Subject(),
+		Class:      governance.ClassUserTurn,
+		Action:     "chat_turn",
+		Now:        time.Now(),
+	}); !dec.Allowed {
+		// Record the rejection in agent_messages so dashboards can
+		// count "users hitting the daily cap today". agent_traces is
+		// skipped — there's no ReAct trace to record. Status=blocked
+		// mirrors the in-engine rate-limit return path.
+		if s.msgRecorder != nil {
+			// LatencyMS=0 is intentional for synthetic quota-blocked rows:
+			// no engine.Chat ran, no LLM was called, so there's no real
+			// latency to record. Downstream dashboards computing P50/P95
+			// of latency MUST filter to status='success' (or status != 'blocked')
+			// to avoid the zero-latency blocked rows skewing the percentiles
+			// downward. agent_messages.status='blocked' is the safe filter.
+			_ = s.msgRecorder.Record(MessageEntry{
+				RequestUUID:      msg.RequestUUID,
+				TopOrgID:         tenant.TopOrgID,
+				OrgID:            tenant.OrgID,
+				ConnectionID:     connectionID,
+				CreatedAt:        time.Now(),
+				UserMessage:      msg.Text,
+				AssistantMessage: userTurnQuotaMessage(dec.Reason),
+				Status:           "blocked",
+				Model:            s.model,
+				LatencyMS:        0,
+			})
+		}
+		tryEnqueue(sendChan, ServerMessage{
+			Type:        ServerMsgError,
+			RequestUUID: msg.RequestUUID,
+			Code:        ErrCodeRateLimited,
+			Message:     userTurnQuotaMessage(dec.Reason),
+		})
+		tryEnqueue(sendChan, ServerMessage{
+			Type:        ServerMsgDone,
+			RequestUUID: msg.RequestUUID,
+		})
+		return
+	}
 
 	// Attach a per-turn trace recorder if a sink is configured. The
 	// recorder forwards observer callbacks into a TraceRecord and writes
@@ -326,6 +377,27 @@ func (s *Server) runChatTurn(
 			Message:     err.Error(),
 		})
 	} else {
+		// C11 Phase A: emit incremental answer_delta frames followed by
+		// the canonical answer_final. Phase A still computes the full
+		// reply synchronously (engine.Chat blocks), so the deltas don't
+		// reduce latency — they unlock the protocol slot for Phase B
+		// per-token streaming without a further breaking change.
+		//
+		// Default opt-in: gated by Server.answerDeltaEnabled (default
+		// false) so legacy clients that strictly enumerate frame types
+		// see the pre-PR #88 wire behavior. Enable per-deployment once
+		// the connected client is confirmed to tolerate the new frame
+		// (or until Phase B replaces this with client-capability
+		// negotiation).
+		if s.answerDeltaEnabled {
+			for _, chunk := range chunkReplyForDelta(reply) {
+				tryEnqueue(sendChan, ServerMessage{
+					Type:        ServerMsgAnswerDelta,
+					RequestUUID: msg.RequestUUID,
+					Text:        chunk,
+				})
+			}
+		}
 		tryEnqueue(sendChan, ServerMessage{
 			Type:        ServerMsgAnswerFinal,
 			RequestUUID: msg.RequestUUID,
@@ -460,3 +532,13 @@ type atomicString struct {
 
 func (a *atomicString) get() string { a.mu.Lock(); defer a.mu.Unlock(); return a.v }
 func (a *atomicString) set(v string) { a.mu.Lock(); a.v = v; a.mu.Unlock() }
+
+// userTurnQuotaMessage formats the user-visible reason for a turn-quota
+// denial. Daily and QPS denials read differently — a daily-exhausted user
+// should be told tomorrow, a QPS-throttled user told to try again shortly.
+func userTurnQuotaMessage(reason governance.Reason) string {
+	if reason == governance.ReasonDailyExceeded {
+		return "今日提问次数已达上限，请明日再试。"
+	}
+	return "操作过于频繁，请稍后再试。"
+}
