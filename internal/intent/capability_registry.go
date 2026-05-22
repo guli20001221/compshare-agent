@@ -1151,7 +1151,6 @@ type stockCapacityCheck struct {
 func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req HandlerRequest, stockRaw map[string]any) (string, bool, *HandlerResult) {
 	entries := matchedNormalStockEntries(stockRaw, req.UserText)
 	entries = filterStockEntriesToResolverZones(entries, req.Resolver)
-	entries = firstStockEntryPerModel(entries)
 	if len(entries) == 0 {
 		return "", false, nil
 	}
@@ -1172,17 +1171,41 @@ func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req Ha
 		result := FallbackBeforeTool(FallbackActionNotAllowed)
 		return "", false, &result
 	}
+	entriesByModel := map[string][]stockInstanceTypeEntry{}
+	modelOrder := []string{}
 	for _, entry := range entries {
-		if entry.Zone == "" {
-			continue
+		if _, ok := entriesByModel[entry.Name]; !ok {
+			modelOrder = append(modelOrder, entry.Name)
 		}
-		args := capacityPrecheckArgs(entry, imageID)
-		capacityRaw, err := h.executor.Execute(ctx, "CheckCompShareResourceCapacity", args)
-		if err != nil {
-			checks = append(checks, stockCapacityCheck{Name: entry.Name, Zone: entry.Zone, Failed: true})
-			continue
+		entriesByModel[entry.Name] = append(entriesByModel[entry.Name], entry)
+	}
+
+	for _, model := range modelOrder {
+		zoneEntries := entriesByModel[model]
+		var firstZone string
+		var success stockCapacityCheck
+		sawSuccess := false
+		for _, entry := range zoneEntries {
+			if entry.Zone == "" {
+				continue
+			}
+			if firstZone == "" {
+				firstZone = entry.Zone
+			}
+			args := capacityPrecheckArgs(entry, imageID)
+			capacityRaw, err := h.executor.Execute(ctx, "CheckCompShareResourceCapacity", args)
+			if err != nil {
+				continue
+			}
+			success = summarizeStockCapacity(entry, capacityRaw)
+			sawSuccess = true
+			break
 		}
-		checks = append(checks, summarizeStockCapacity(entry, capacityRaw))
+		if sawSuccess {
+			checks = append(checks, success)
+		} else if firstZone != "" {
+			checks = append(checks, stockCapacityCheck{Name: model, Zone: firstZone, Failed: true})
+		}
 	}
 	if len(checks) == 0 {
 		return renderStockReply(stockRaw, req.UserText) + "\n容量预检未执行：当前接口结果缺少可用区信息。", true, nil
@@ -1250,19 +1273,6 @@ func filterStockEntriesToResolverZones(entries []stockInstanceTypeEntry, resolve
 		return entries
 	}
 	return filtered
-}
-
-func firstStockEntryPerModel(entries []stockInstanceTypeEntry) []stockInstanceTypeEntry {
-	out := make([]stockInstanceTypeEntry, 0, len(entries))
-	seen := map[string]struct{}{}
-	for _, entry := range entries {
-		if _, ok := seen[entry.Name]; ok {
-			continue
-		}
-		seen[entry.Name] = struct{}{}
-		out = append(out, entry)
-	}
-	return out
 }
 
 func preferredZonesFromResolver(resolver EntityResolver) map[string]struct{} {

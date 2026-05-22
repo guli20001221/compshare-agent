@@ -116,10 +116,10 @@ func intentPlannerShadowEnabled(getenv getenvFunc) bool {
 
 func plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled bool, cutoverIntents []intent.Intent) string {
 	mode := "off"
-	if shadowEnabled {
-		mode = "shadow"
-	} else if plannerDispatchEnabled {
+	if plannerDispatchEnabled {
 		mode = "dispatch"
+	} else if shadowEnabled {
+		mode = "shadow"
 	}
 	return fmt.Sprintf("planner_mode=%s cutover_intents=%s", mode, formatCutoverIntents(cutoverIntents))
 }
@@ -152,10 +152,10 @@ func mutatingToolsRuntimeLine(enabled bool) string {
 
 func plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled bool, cutoverIntents []intent.Intent) observability.RuntimeTrace {
 	mode := "off"
-	if shadowEnabled {
-		mode = "shadow"
-	} else if plannerDispatchEnabled {
+	if plannerDispatchEnabled {
 		mode = "dispatch"
+	} else if shadowEnabled {
+		mode = "shadow"
 	}
 	return observability.RuntimeTrace{
 		PlannerMode:    mode,
@@ -480,9 +480,26 @@ func rerankerTimeoutFromEnv(getenv getenvFunc) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+func defaultCutoverIntents() []intent.Intent {
+	return []intent.Intent{
+		intent.IntentResourceInfo,
+		intent.IntentMonitorQuery,
+		intent.IntentGPUSpecsQuery,
+		intent.IntentStockAvailability,
+		intent.IntentPlatformImageList,
+		intent.IntentCustomImageList,
+		intent.IntentCommunityImageList,
+	}
+}
+
 func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []string) {
 	raw := getenv("USE_INTENT_PLANNER_FOR")
-	if strings.TrimSpace(raw) == "" {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return defaultCutoverIntents(), nil
+	}
+	switch strings.ToLower(trimmed) {
+	case "off", "none", "disabled":
 		return nil, nil
 	}
 	seen := map[intent.Intent]struct{}{}

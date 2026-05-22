@@ -304,6 +304,34 @@ func (m *stockCapacityZoneExecutor) Execute(_ context.Context, action string, ar
 	}
 }
 
+type stockCapacityFallbackExecutor struct {
+	calls []handlerExecCall
+}
+
+func (m *stockCapacityFallbackExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
+	m.calls = append(m.calls, handlerExecCall{action: action, args: copyArgs(args)})
+	switch action {
+	case "DescribeAvailableCompShareInstanceTypes":
+		return map[string]any{"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
+			map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
+		}}, nil
+	case "DescribeCompShareImages":
+		return map[string]any{"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu-nvidia 22.04", "Status": "Available", "ImageType": "System"},
+		}}, nil
+	case "CheckCompShareResourceCapacity":
+		if args["Zone"] == "cn-sh2-02" {
+			return nil, errors.New("Params [Zone] not available")
+		}
+		return map[string]any{"Specs": []any{
+			map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": false},
+		}}, nil
+	default:
+		return map[string]any{}, nil
+	}
+}
+
 // TestDispatchCapability_UnknownIntentFalls verifies that calling
 // DispatchCapability with a non-registered intent returns a FallbackBeforeTool
 // (defensive layer; engine.go gates on IsCapabilityIntent before invoking).
@@ -963,6 +991,50 @@ func TestStockAvailabilityUsesFirstMatchedZoneForCapacityPrecheck(t *testing.T) 
 	}
 	if len(exec.calls) != 3 {
 		t.Fatalf("calls = %#v, want 3 calls", exec.calls)
+	}
+}
+
+func TestStockAvailabilityFallsBackToNextZoneWhenCapacityCheckFails(t *testing.T) {
+	exec := &stockCapacityFallbackExecutor{}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+		Plan:     Plan{Intent: IntentStockAvailability},
+		UserText: "4090 鐜板湪鏈夋病鏈夎揣",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	if len(exec.calls) != 4 {
+		t.Fatalf("calls = %#v, want fallback capacity call in second zone", exec.calls)
+	}
+	if exec.calls[2].action != "CheckCompShareResourceCapacity" || exec.calls[2].args["Zone"] != "cn-sh2-02" {
+		t.Fatalf("first capacity call = %#v, want cn-sh2-02", exec.calls[2])
+	}
+	if exec.calls[3].action != "CheckCompShareResourceCapacity" || exec.calls[3].args["Zone"] != "cn-wlcb-01" {
+		t.Fatalf("fallback capacity call = %#v, want cn-wlcb-01", exec.calls[3])
+	}
+}
+
+func TestStockAvailabilityResolverZoneFailureDoesNotProbeOtherZones(t *testing.T) {
+	exec := &stockCapacityFallbackExecutor{}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+		Plan:     Plan{Intent: IntentStockAvailability},
+		Resolver: stockZoneSnapshot(t, "cn-sh2-02"),
+		UserText: "4090 鐜板湪鏈夋病鏈夎揣",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	if len(exec.calls) != 3 {
+		t.Fatalf("calls = %#v, want only resolver-zone capacity call", exec.calls)
+	}
+	if exec.calls[2].action != "CheckCompShareResourceCapacity" || exec.calls[2].args["Zone"] != "cn-sh2-02" {
+		t.Fatalf("capacity call = %#v, want resolver zone cn-sh2-02", exec.calls[2])
 	}
 }
 

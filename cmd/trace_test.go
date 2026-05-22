@@ -109,6 +109,38 @@ func TestIntentPlannerCutoverIntentsFromEnv(t *testing.T) {
 	}
 }
 
+func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
+	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(string) string { return "" })
+	require.Empty(t, unknown)
+
+	want := []string{
+		"resource_info",
+		"monitor_query",
+		"gpu_specs_query",
+		"stock_availability",
+		"platform_image_list",
+		"custom_image_list",
+		"community_image_list",
+	}
+	require.Len(t, intents, len(want))
+	for i, w := range want {
+		require.Equal(t, w, string(intents[i]))
+	}
+}
+
+func TestIntentPlannerCutoverIntents_OffDisablesAll(t *testing.T) {
+	for _, val := range []string{"off", "OFF", "none", "  off  "} {
+		intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+			if key == "USE_INTENT_PLANNER_FOR" {
+				return val
+			}
+			return ""
+		})
+		require.Empty(t, unknown)
+		require.Empty(t, intents)
+	}
+}
+
 func TestSeparateShadowRunnerDisabledWhenCutoverEnabled(t *testing.T) {
 	if !useSeparateShadowRunner(true, true, false) {
 		t.Fatal("shadow-only tracing should use the existing shadow runner")
@@ -136,6 +168,9 @@ func TestPlannerRuntimeModeLine(t *testing.T) {
 	line := plannerRuntimeModeLine(true, false, cutoverIntents)
 	require.Equal(t, "planner_mode=shadow cutover_intents=[resource,monitor]", line)
 
+	line = plannerRuntimeModeLine(true, true, cutoverIntents)
+	require.Equal(t, "planner_mode=dispatch cutover_intents=[resource,monitor]", line)
+
 	line = plannerRuntimeModeLine(false, true, nil)
 	require.Equal(t, "planner_mode=dispatch cutover_intents=[]", line)
 
@@ -154,6 +189,10 @@ func TestPlannerRuntimeTrace(t *testing.T) {
 
 	trace := plannerRuntimeTrace(true, false, cutoverIntents)
 	require.Equal(t, "shadow", trace.PlannerMode)
+	require.Equal(t, []string{"resource", "monitor"}, trace.CutoverIntents)
+
+	trace = plannerRuntimeTrace(true, true, cutoverIntents)
+	require.Equal(t, "dispatch", trace.PlannerMode)
 	require.Equal(t, []string{"resource", "monitor"}, trace.CutoverIntents)
 
 	trace = plannerRuntimeTrace(false, true, nil)
