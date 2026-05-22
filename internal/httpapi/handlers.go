@@ -6,6 +6,7 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
 )
@@ -30,7 +31,8 @@ type Handlers struct {
 	messages store.MessageStore
 	feedback store.FeedbackStore
 	// pool may be nil for Task 6; Task 7 wires a concrete EnginePool.
-	pool EnginePool
+	pool        EnginePool
+	traceWriter observability.Writer
 }
 
 // NewHandlers constructs a Handlers with all dependencies injected.
@@ -41,22 +43,32 @@ func NewHandlers(
 	messages store.MessageStore,
 	feedback store.FeedbackStore,
 	pool EnginePool,
+	traceWriter observability.Writer,
 ) *Handlers {
 	return &Handlers{
-		cfg:      cfg,
-		sessions: sessions,
-		messages: messages,
-		feedback: feedback,
-		pool:     pool,
+		cfg:         cfg,
+		sessions:    sessions,
+		messages:    messages,
+		feedback:    feedback,
+		pool:        pool,
+		traceWriter: traceWriter,
 	}
 }
 
 // buildUserContext constructs a tools.UserContext from a BaseRequest.
 // Returns ErrInvalidParam if the role URN cannot be built (e.g. TopOrganizationID is zero).
 func (h *Handlers) buildUserContext(base BaseRequest) (tools.UserContext, error) {
-	roleUrn, err := tools.RoleUrnFromTemplate(h.cfg.Agent.STS.RoleUrnTemplate, base.Owner.TopOrganizationID)
-	if err != nil {
-		return tools.UserContext{}, ErrInvalidParam.WithMessage("failed to build role: %v", err)
+	roleUrn := ""
+	if h.cfg.Agent.STS.ServiceAK != "" && h.cfg.Agent.STS.ServiceSK != "" {
+		if h.cfg.Agent.STS.DefaultRoleUrn != "" {
+			roleUrn = h.cfg.Agent.STS.DefaultRoleUrn
+		} else {
+			var err error
+			roleUrn, err = tools.RoleUrnFromTemplate(h.cfg.Agent.STS.RoleUrnTemplate, base.Owner.TopOrganizationID)
+			if err != nil {
+				return tools.UserContext{}, ErrInvalidParam.WithMessage("failed to build role: %v", err)
+			}
+		}
 	}
 	projectID := base.ProjectID
 	if projectID == "" {

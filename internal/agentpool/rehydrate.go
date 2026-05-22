@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/store"
 )
 
@@ -35,7 +36,11 @@ func filterHistory(messages []store.Message) []engine.HistoryMessage {
 // rehydrates its history from the MessageStore. engine.Init() is deliberately
 // NOT called (HTTP path skips the welcome/suggestion pre-warm — see design §6.3).
 func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
-	eng := engine.New(p.cfg, denyConfirm)
+	eng := engine.NewSession(p.deps, engine.SessionOptions{
+		Subject:              governance.AnonymousSubjectKey,
+		ConfirmFn:            denyConfirm,
+		MutatingToolsEnabled: false,
+	})
 
 	// Fetch up to 100 prior messages for the session (sufficient for context
 	// window; engine.RehydrateHistory will trim to maxHistoryMessages anyway).

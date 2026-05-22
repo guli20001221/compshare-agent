@@ -7,6 +7,7 @@ package agentpool
 import (
 	"container/list"
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -55,7 +56,7 @@ type entry struct {
 // rehydrates history from the MessageStore. Call Close when done to stop the
 // background gc goroutine.
 type Pool struct {
-	cfg          *config.Config
+	deps         *engine.SharedDeps
 	messageStore store.MessageStore
 	capacity     int
 	idleTTL      time.Duration
@@ -72,6 +73,20 @@ type Pool struct {
 // New creates a Pool with the given config, MessageStore, and options.
 // It starts the background gc goroutine; call Close() to stop it.
 func New(cfg *config.Config, ms store.MessageStore, opts Options) *Pool {
+	deps, err := engine.NewSharedDeps(cfg)
+	if err != nil {
+		panic(fmt.Sprintf("agentpool.New: %v", err))
+	}
+	return NewWithDeps(deps, ms, opts)
+}
+
+// NewWithDeps creates a Pool from process-wide shared engine dependencies.
+// HTTP server mode uses this so every session shares one LLM client, limiter,
+// configured planner/retriever/renderer, and credential provider.
+func NewWithDeps(deps *engine.SharedDeps, ms store.MessageStore, opts Options) *Pool {
+	if deps == nil {
+		panic("agentpool.NewWithDeps: deps is nil")
+	}
 	cap := opts.Capacity
 	if cap <= 0 {
 		cap = defaultCapacity
@@ -88,7 +103,7 @@ func New(cfg *config.Config, ms store.MessageStore, opts Options) *Pool {
 	}
 
 	p := &Pool{
-		cfg:          cfg,
+		deps:         deps,
 		messageStore: ms,
 		capacity:     cap,
 		idleTTL:      ttl,

@@ -4,19 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/compshare-agent/internal/agentpool"
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/httpapi"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 )
+
+const serverTraceDrainTimeout = 5 * time.Second
 
 var serverCmd = &cobra.Command{
 	Use:   "server",
@@ -30,7 +33,7 @@ func init() {
 }
 
 func runServer(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.Load(configPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
@@ -50,13 +53,34 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	sessionStore := store.NewSessionStore(db)
 	messageStore := store.NewMessageStore(db)
 	feedbackStore := store.NewFeedbackStore(db)
-	pool := agentpool.New(cfg, messageStore, agentpool.Options{
-		Capacity: cfg.Agent.HTTP.PoolCapacity,
-		IdleTTL:  cfg.Agent.HTTP.PoolIdleTTL,
-	})
+
+	serverGetenv := serverTraceGetenv(os.Getenv, cfg.Agent.MySQL.DSN)
+	if traceMySQLSinkEnabled(serverGetenv) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := store.VerifyTraceSchema(ctx, db); err != nil {
+			cancel()
+			return fmt.Errorf("%w; run deploy/migrations/0002_create_agent_traces.sql before enabling MySQL trace persistence", err)
+		}
+		cancel()
+	}
+	traceWriter, traceEnabled, traceErr := traceWriterFromEnv(serverGetenv)
+	if traceErr != nil {
+		return fmt.Errorf("trace writer setup: %w", traceErr)
+	}
+	if traceEnabled {
+		if err := cleanupTraceWriter(traceWriter, time.Now()); err != nil {
+			log.Printf("warning: trace cleanup failed: %v", err)
+		}
+		defer closeServerTraceWriter(traceWriter)
+	}
+
+	pool, err := buildHTTPServerPool(cfg, messageStore, os.Getenv)
+	if err != nil {
+		return err
+	}
 	defer pool.Close()
 
-	handlers := httpapi.NewHandlers(cfg, sessionStore, messageStore, feedbackStore, pool)
+	handlers := httpapi.NewHandlers(cfg, sessionStore, messageStore, feedbackStore, pool, traceWriter)
 	router := gin.New()
 	if !cfg.Agent.HTTP.DisableCORS {
 		router.Use(corsMiddleware())
@@ -81,6 +105,26 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	return serveUntilSignal(srv)
 }
 
+func closeServerTraceWriter(writer observability.Writer) {
+	if writer == nil {
+		return
+	}
+	drainCtx, cancel := context.WithTimeout(context.Background(), serverTraceDrainTimeout)
+	defer cancel()
+	if err := writer.Close(drainCtx); err != nil {
+		log.Printf("warning: trace writer drain failed: %v", err)
+	}
+}
+
+func serverTraceGetenv(getenv getenvFunc, mysqlDSN string) getenvFunc {
+	return func(key string) string {
+		if key == "MYSQL_DSN" {
+			return mysqlDSN
+		}
+		return getenv(key)
+	}
+}
+
 func validateServerConfig(cfg *config.Config) error {
 	if cfg.Agent.MySQL.DSN == "" {
 		return fmt.Errorf("agent.mysql.dsn is required for server")
@@ -94,17 +138,27 @@ func validateServerConfig(cfg *config.Config) error {
 	if cfg.Agent.HTTP.MaxInputLength != cfg.Agent.Meta.MaxInputLength {
 		return fmt.Errorf("agent.http.max_input_length must equal agent.meta.max_input_length")
 	}
+	stsEnabled := cfg.Agent.STS.ServiceAK != "" || cfg.Agent.STS.ServiceSK != ""
+	if !stsEnabled {
+		if cfg.Agent.PublicKey == "" {
+			return fmt.Errorf("agent.public_key is required for server when agent.sts.service_ak is empty")
+		}
+		if cfg.Agent.PrivateKey == "" {
+			return fmt.Errorf("agent.private_key is required for server when agent.sts.service_sk is empty")
+		}
+		return nil
+	}
 	if cfg.Agent.STS.ServiceAK == "" {
-		return fmt.Errorf("agent.sts.service_ak is required for server")
+		return fmt.Errorf("agent.sts.service_ak is required when agent.sts.service_sk is set")
 	}
 	if cfg.Agent.STS.ServiceSK == "" {
-		return fmt.Errorf("agent.sts.service_sk is required for server")
+		return fmt.Errorf("agent.sts.service_sk is required when agent.sts.service_ak is set")
 	}
 	if cfg.Agent.STS.URL == "" {
 		return fmt.Errorf("agent.sts.url is required for server")
 	}
-	if cfg.Agent.STS.RoleUrnTemplate == "" {
-		return fmt.Errorf("agent.sts.role_urn_template is required for server")
+	if cfg.Agent.STS.RoleUrnTemplate == "" && cfg.Agent.STS.DefaultRoleUrn == "" {
+		return fmt.Errorf("agent.sts.role_urn_template or agent.sts.default_role_urn is required for server")
 	}
 	return nil
 }

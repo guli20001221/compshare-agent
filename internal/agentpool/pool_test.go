@@ -270,3 +270,26 @@ func TestLeaseOwnerScoping(t *testing.T) {
 	require.Equal(t, 2, ms.listCalls, "expected two ListBySession calls (one per owner)")
 	require.Equal(t, 2, pool.SizeForTest(), "pool should hold two entries (one per owner)")
 }
+
+// TestPoolEnginesShareProcessWideDependencies verifies the HTTP pool does not
+// rebuild process-wide engine dependencies on every session miss. The LLM
+// client and rate limiter are shared across sessions; per-session state such as
+// the entity registry remains isolated.
+func TestPoolEnginesShareProcessWideDependencies(t *testing.T) {
+	ms := &mockMessageStore{}
+	pool := agentpool.New(minimalConfig(), ms, agentpool.Options{
+		Capacity: 10,
+		IdleTTL:  5 * time.Minute,
+	})
+	defer pool.Close()
+
+	ctx := context.Background()
+	engA, err := pool.Get(ctx, owner1, "sess-a")
+	require.NoError(t, err)
+	engB, err := pool.Get(ctx, owner1, "sess-b")
+	require.NoError(t, err)
+
+	require.Same(t, engA.LLMClientPointer(), engB.LLMClientPointer(), "LLM client should be process-wide")
+	require.Same(t, engA.RateLimiterPointer(), engB.RateLimiterPointer(), "rate limiter should be process-wide")
+	require.NotSame(t, engA.RegistryPointer(), engB.RegistryPointer(), "registries must stay per session")
+}

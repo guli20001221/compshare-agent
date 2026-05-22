@@ -63,6 +63,14 @@ func traceWriterFromEnv(getenv getenvFunc) (observability.Writer, bool, error) {
 	}
 }
 
+func traceMySQLSinkEnabled(getenv getenvFunc) bool {
+	if getenv("COMPSHARE_TRACE_ENABLED") != "1" {
+		return false
+	}
+	sink := strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_TRACE_SINK")))
+	return sink == "mysql" || sink == "both"
+}
+
 // multiTraceWriter fans out a TraceRecord to multiple sinks. Used when
 // COMPSHARE_TRACE_SINK=both during cutover (run file + mysql side-by-side
 // to compare). Failures from any individual sink are logged-then-ignored
@@ -71,6 +79,23 @@ type multiTraceWriter []observability.Writer
 
 func (m multiTraceWriter) Append(rec observability.TraceRecord) error {
 	for _, w := range m {
+		if err := w.Append(rec); err != nil {
+			log.Printf("trace sink append failed (sink dir=%q): %v", w.Dir(), err)
+		}
+	}
+	return nil
+}
+
+func (m multiTraceWriter) Enqueue(tenant observability.TenantContext, rec observability.TraceRecord) error {
+	for _, w := range m {
+		if enqueuer, ok := w.(interface {
+			Enqueue(observability.TenantContext, observability.TraceRecord) error
+		}); ok {
+			if err := enqueuer.Enqueue(tenant, rec); err != nil {
+				log.Printf("trace sink enqueue failed (sink dir=%q): %v", w.Dir(), err)
+			}
+			continue
+		}
 		if err := w.Append(rec); err != nil {
 			log.Printf("trace sink append failed (sink dir=%q): %v", w.Dir(), err)
 		}
@@ -114,9 +139,11 @@ func intentPlannerShadowEnabled(getenv getenvFunc) bool {
 	return getenv("USE_INTENT_PLANNER") == "shadow"
 }
 
-func plannerRuntimeModeLine(shadowEnabled bool, cutoverIntents []intent.Intent) string {
+func plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled bool, cutoverIntents []intent.Intent) string {
 	mode := "off"
-	if shadowEnabled {
+	if plannerDispatchEnabled {
+		mode = "dispatch"
+	} else if shadowEnabled {
 		mode = "shadow"
 	}
 	return fmt.Sprintf("planner_mode=%s cutover_intents=%s", mode, formatCutoverIntents(cutoverIntents))
@@ -148,9 +175,11 @@ func mutatingToolsRuntimeLine(enabled bool) string {
 	return "mutating=disabled (read-only mode)"
 }
 
-func plannerRuntimeTrace(shadowEnabled bool, cutoverIntents []intent.Intent) observability.RuntimeTrace {
+func plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled bool, cutoverIntents []intent.Intent) observability.RuntimeTrace {
 	mode := "off"
-	if shadowEnabled {
+	if plannerDispatchEnabled {
+		mode = "dispatch"
+	} else if shadowEnabled {
 		mode = "shadow"
 	}
 	return observability.RuntimeTrace{
@@ -204,10 +233,10 @@ const defaultKnowledgeCorpusPath = "deploy/kb/stage2b_w0.jsonl"
 func knowledgeRetrievalModeFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.ToLower(strings.TrimSpace(getenv("USE_KNOWLEDGE_RETRIEVAL")))
 	switch raw {
-	case "":
-		return false, ""
-	case "curated":
+	case "", "curated":
 		return true, ""
+	case "off", "none", "disabled", "false", "0":
+		return false, ""
 	default:
 		return false, raw
 	}
@@ -279,8 +308,9 @@ func knowledgeRetrieverFromEnv(getenv getenvFunc) (*knowledge.Retriever, bool, e
 
 // ragRetrievalModeFromEnv resolves the effective retrieval mode with this
 // precedence: explicit RAG_RETRIEVAL_MODE > legacy RAG_HYBRID_ENABLED.
-// Unset and unrecognized values yield bm25_only so production runtime stays
-// at its safest path when configuration is missing or malformed.
+// Unset and unrecognized values yield qwen3_rrf, the current default answer
+// retrieval path. Legacy RAG_HYBRID_ENABLED=1 still maps to hybrid_cosine for
+// old smoke scripts that have not moved to RAG_RETRIEVAL_MODE.
 func ragRetrievalModeFromEnv(getenv getenvFunc) string {
 	mode := strings.ToLower(strings.TrimSpace(getenv("RAG_RETRIEVAL_MODE")))
 	switch mode {
@@ -294,13 +324,13 @@ func ragRetrievalModeFromEnv(getenv getenvFunc) string {
 		if hybridEnabledFromEnv(getenv) {
 			return knowledge.RetrievalModeHybridCosine
 		}
-		return knowledge.RetrievalModeBM25Only
+		return knowledge.RetrievalModeQwen3RRF
 	default:
 		log.Printf("rag: unrecognized RAG_RETRIEVAL_MODE=%q, falling back to legacy RAG_HYBRID_ENABLED check", mode)
 		if hybridEnabledFromEnv(getenv) {
 			return knowledge.RetrievalModeHybridCosine
 		}
-		return knowledge.RetrievalModeBM25Only
+		return knowledge.RetrievalModeQwen3RRF
 	}
 }
 
@@ -391,9 +421,9 @@ func embeddingClientFromEnv(getenv getenvFunc) (*embedding.Client, error) {
 // text-embedding-3-large for hybrid_cosine / hybrid_rerank) without
 // requiring callers to also set MODELVERSE_EMBED_MODEL.
 func embeddingClientFromEnvWithModel(getenv getenvFunc, model string) (*embedding.Client, error) {
-	apiKey := strings.TrimSpace(getenv("MODELVERSE_API_KEY"))
+	apiKey := modelverseAPIKeyFromEnv(getenv)
 	if apiKey == "" {
-		return nil, fmt.Errorf("MODELVERSE_API_KEY is required for hybrid retrieval")
+		return nil, fmt.Errorf("MODELVERSE_API_KEY or LLM_API_KEY is required for hybrid retrieval")
 	}
 	baseURL := strings.TrimSpace(getenv("MODELVERSE_BASE_URL"))
 	if baseURL == "" {
@@ -430,9 +460,9 @@ func (a rerankerClientAdapter) Rerank(ctx context.Context, query string, docs []
 }
 
 func rerankerClientFromEnv(getenv getenvFunc, model string) (knowledge.RerankerClient, error) {
-	apiKey := strings.TrimSpace(getenv("MODELVERSE_API_KEY"))
+	apiKey := modelverseAPIKeyFromEnv(getenv)
 	if apiKey == "" {
-		return nil, fmt.Errorf("MODELVERSE_API_KEY is required for reranker")
+		return nil, fmt.Errorf("MODELVERSE_API_KEY or LLM_API_KEY is required for reranker")
 	}
 	baseURL := strings.TrimSpace(getenv("MODELVERSE_BASE_URL"))
 	if baseURL == "" {
@@ -453,6 +483,13 @@ func rerankerClientFromEnv(getenv getenvFunc, model string) (knowledge.RerankerC
 	return rerankerClientAdapter{client: client}, nil
 }
 
+func modelverseAPIKeyFromEnv(getenv getenvFunc) string {
+	if apiKey := strings.TrimSpace(getenv("MODELVERSE_API_KEY")); apiKey != "" {
+		return apiKey
+	}
+	return strings.TrimSpace(getenv("LLM_API_KEY"))
+}
+
 // rerankerTimeoutFromEnv parses RAG_RERANKER_TIMEOUT_MS. Zero return means
 // "use reranker package default" (5s, matches B.0 probe sizing).
 func rerankerTimeoutFromEnv(getenv getenvFunc) time.Duration {
@@ -468,9 +505,26 @@ func rerankerTimeoutFromEnv(getenv getenvFunc) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+func defaultCutoverIntents() []intent.Intent {
+	return []intent.Intent{
+		intent.IntentResourceInfo,
+		intent.IntentMonitorQuery,
+		intent.IntentGPUSpecsQuery,
+		intent.IntentStockAvailability,
+		intent.IntentPlatformImageList,
+		intent.IntentCustomImageList,
+		intent.IntentCommunityImageList,
+	}
+}
+
 func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []string) {
 	raw := getenv("USE_INTENT_PLANNER_FOR")
-	if strings.TrimSpace(raw) == "" {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return defaultCutoverIntents(), nil
+	}
+	switch strings.ToLower(trimmed) {
+	case "off", "none", "disabled":
 		return nil, nil
 	}
 	seen := map[intent.Intent]struct{}{}
@@ -600,10 +654,10 @@ func (r *cliTraceRecorder) SetOutcomeTrace(trace observability.OutcomeTrace) {
 func groundedRendererModeFromEnv(getenv getenvFunc) (string, string) {
 	raw := strings.ToLower(strings.TrimSpace(getenv("USE_GROUNDED_RENDERER")))
 	switch raw {
-	case "":
-		return "", ""
-	case "llm":
+	case "", "llm":
 		return "llm", ""
+	case "off", "none", "disabled", "false", "0":
+		return "", ""
 	default:
 		return "", raw
 	}

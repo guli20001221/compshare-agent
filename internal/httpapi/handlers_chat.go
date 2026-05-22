@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -53,9 +54,10 @@ type streamErrorEvent struct {
 
 // handleChat is the Chat SSE handler. It:
 //  1. Validates inputs and session ownership (pre-SSE, errors go via writeError).
-//  2. Persists user + assistant-placeholder rows.
-//  3. Opens the SSE stream and emits event:meta.
-//  4. Acquires an engine from the pool (serialized via Lease) and calls ChatWithOptions.
+//  2. Acquires an engine from the pool before persisting this turn, so cold
+//     rehydration only restores prior history.
+//  3. Persists user + assistant-placeholder rows.
+//  4. Opens the SSE stream and emits event:meta.
 //  5. On completion, updates the assistant row and emits event:done or event:error.
 func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.Json) {
 	// -----------------------------------------------------------------------
@@ -97,7 +99,51 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	}
 
 	// -----------------------------------------------------------------------
-	// 2. Pre-stream persistence
+	// 2. Acquire engine (serialized per session via Lease)
+	// -----------------------------------------------------------------------
+	if h.pool == nil {
+		h.writeError(c, base.RequestUUID, ErrInternal.WithMessage("%s", "engine pool not configured"))
+		return
+	}
+
+	// Build and inject UserContext so downstream tools can perform STS calls
+	// with the correct tenant identity.
+	userCtx, ucErr := h.buildUserContext(base)
+	if ucErr != nil {
+		h.writeError(c, base.RequestUUID, AsAPIError(ucErr))
+		return
+	}
+	ctx := tools.WithUser(c.Request.Context(), userCtx)
+
+	agent, release, err := h.pool.Lease(ctx, base.Owner, sessionID)
+	if err != nil {
+		h.writeError(c, base.RequestUUID, AsAPIError(err))
+		return
+	}
+	defer release()
+
+	clearChatTraceObservers(agent)
+	defer clearChatTraceObservers(agent)
+
+	start := time.Now()
+	turnIndex := sess.MessageCount/2 + 1
+	traceRecorder := newChatTraceRecorder(h.traceWriter, base, sessionID, turnIndex, message, start)
+	if traceRecorder != nil {
+		traceRecorder.SetRegistryTraceSupplier(agent.RegistryTraceState)
+		attachChatTraceObservers(agent, traceRecorder)
+	}
+	finishTrace := func(err error) {
+		if traceRecorder == nil {
+			return
+		}
+		if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
+			log.Printf("warning: HTTP trace write failed: %v", traceErr)
+		}
+		traceRecorder = nil
+	}
+
+	// -----------------------------------------------------------------------
+	// 3. Pre-stream persistence
 	// -----------------------------------------------------------------------
 	userMsgID := uuid.NewString()
 	assistantMsgID := uuid.NewString()
@@ -136,7 +182,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	}
 
 	// -----------------------------------------------------------------------
-	// 3. Open SSE response
+	// 4. Open SSE response
 	// -----------------------------------------------------------------------
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -151,35 +197,10 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	})
 
 	// -----------------------------------------------------------------------
-	// 4. Acquire engine (serialized per session via Lease)
-	// -----------------------------------------------------------------------
-	if h.pool == nil {
-		writeStreamError(sw, h.messages, base.Owner, assistantMsgID,
-			ErrInternal.WithMessage("%s", "engine pool not configured"))
-		return
-	}
-
-	// Build and inject UserContext so downstream tools can perform STS calls
-	// with the correct tenant identity.
-	userCtx, ucErr := h.buildUserContext(base)
-	if ucErr != nil {
-		writeStreamError(sw, h.messages, base.Owner, assistantMsgID, AsAPIError(ucErr))
-		return
-	}
-	ctx := tools.WithUser(c.Request.Context(), userCtx)
-
-	agent, release, err := h.pool.Lease(ctx, base.Owner, sessionID)
-	if err != nil {
-		writeStreamError(sw, h.messages, base.Owner, assistantMsgID, AsAPIError(err))
-		return
-	}
-	defer release()
-
-	// -----------------------------------------------------------------------
 	// 5. Keepalive goroutine
 	// -----------------------------------------------------------------------
-	start := time.Now()
 	var firstToken time.Time
+	tokenEmitted := false
 	var usage llm.TokenUsage
 
 	done := make(chan struct{})
@@ -201,11 +222,16 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	// -----------------------------------------------------------------------
 	// 5. LLM streaming call
 	// -----------------------------------------------------------------------
-	reply, chatErr := agent.ChatWithOptions(ctx, message, func(engine.StepEvent) {}, engine.ChatOptions{
+	reply, chatErr := agent.ChatWithOptions(ctx, message, func(ev engine.StepEvent) {
+		if traceRecorder != nil {
+			traceRecorder.OnStep(ev)
+		}
+	}, engine.ChatOptions{
 		OnTextDelta: func(s string) {
 			if firstToken.IsZero() {
 				firstToken = time.Now()
 			}
+			tokenEmitted = true
 			_ = sw.WriteEvent("token", tokenEvent{Text: s})
 		},
 		OnUsage: func(u llm.TokenUsage) { usage = u },
@@ -217,6 +243,14 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	// -----------------------------------------------------------------------
 	// 6. Post-stream branching
 	// -----------------------------------------------------------------------
+	if chatErr == nil && !tokenEmitted && reply != "" {
+		if firstToken.IsZero() {
+			firstToken = time.Now()
+		}
+		tokenEmitted = true
+		_ = sw.WriteEvent("token", tokenEvent{Text: reply})
+	}
+
 	latencyMs := int(time.Since(start).Milliseconds())
 	ttftMs := latencyMs
 	if !firstToken.IsZero() {
@@ -225,6 +259,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 
 	// Client disconnected.
 	if errors.Is(chatErr, context.Canceled) || errors.Is(c.Request.Context().Err(), context.Canceled) {
+		finishTrace(chatErr)
 		_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
 			store.AssistantPatch{Status: "aborted"})
 		return
@@ -232,6 +267,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 
 	// LLM error.
 	if chatErr != nil {
+		finishTrace(chatErr)
 		apiErr := classifyChatError(chatErr)
 		code := apiErr.Code
 		_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
@@ -246,6 +282,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	}
 
 	// Success.
+	finishTrace(nil)
 	inputTokens := usage.PromptTokens
 	outputTokens := usage.CompletionTokens
 	_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,

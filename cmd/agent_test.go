@@ -37,7 +37,7 @@ func TestApplyStartupSuggestionIgnoresInvalidInput(t *testing.T) {
 	assert.Equal(t, "2", got)
 }
 
-func TestKnowledgeRetrieverStartupFatalsWhenRequestedAndCorpusInvalid(t *testing.T) {
+func TestKnowledgeRetrieverStartupFatalsWhenRequestedAndSetupInvalid(t *testing.T) {
 	originalFatalf := startupFatalf
 	t.Cleanup(func() { startupFatalf = originalFatalf })
 	startupFatalf = func(format string, args ...any) {
@@ -46,7 +46,7 @@ func TestKnowledgeRetrieverStartupFatalsWhenRequestedAndCorpusInvalid(t *testing
 
 	err := errors.New("corpus digest mismatch: got bad want good")
 
-	assert.PanicsWithValue(t, "RAG enabled but corpus digest mismatch (refusing to start): corpus digest mismatch: got bad want good", func() {
+	assert.PanicsWithValue(t, "RAG enabled but retrieval setup failed (refusing to start): corpus digest mismatch: got bad want good", func() {
 		applyKnowledgeRetrieverStartup(nil, true, nil, false, err)
 	})
 }

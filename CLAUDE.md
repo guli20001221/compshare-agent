@@ -24,12 +24,12 @@ go build -o agent ./cmd
 The config loader (`internal/config/config.go`) only supports plain `${ENV_VAR}` substitution — no `${VAR:-default}` syntax. Required env vars depend on the subcommand:
 
 - `LLM_API_KEY` — required for all subcommands.
-- `COMPSHARE_SERVICE_PUBLIC_KEY` / `COMPSHARE_SERVICE_PRIVATE_KEY` — service's own AK/SK used to call STS `AssumeRole`; required for the `server` subcommand.
+- `COMPSHARE_SERVICE_PUBLIC_KEY` / `COMPSHARE_SERVICE_PRIVATE_KEY` — service's own AK/SK used to call STS `AssumeRole`; optional for the `server` subcommand when legacy direct AK/SK is used instead.
 - `COMPSHARE_DEFAULT_ROLE_URN` — required for the `cli` subcommand when STS mode is used.
 - `MYSQL_DSN` — required for the `server` subcommand.
 - `COMPSHARE_PUBLIC_KEY` / `COMPSHARE_PRIVATE_KEY` — legacy direct AK/SK; only needed when `agent.sts` is not configured (e.g., local dev without STS).
 
-`project_id` may be left empty (auto-discovered via `GetProjectList` at init).
+`project_id` may be left empty for read-only calls; HTTP requests can also pass `ProjectId` per request.
 
 ## Tests
 
@@ -55,17 +55,17 @@ git config core.hooksPath .githooks
 
 ## Runtime feature flags
 
-Behavior is gated by env vars read in `cmd/trace.go` and `cmd/agent.go`. Defaults are conservative.
+Behavior is gated by env vars read in `cmd/trace.go` and `cmd/agent.go`. The default answer path uses the current demo stack: ds-v4-flash, qwen3 RRF retrieval, and LLM grounded rendering.
 
 | Var | Values | Effect |
 |---|---|---|
 | `COMPSHARE_ENABLE_MUTATING_TOOLS` | `1` | Enables start/stop/reboot/reset-password/create. Default off — read-only mode. |
 | `USE_INTENT_PLANNER` | `shadow` | Runs the LLM planner alongside ReAct for trace-only comparison. |
-| `USE_INTENT_PLANNER_FOR` | comma list of `resource,monitor,gpu_specs,stock,platform_image,custom_image,community_image` | Enables Phase-1 cutover: engine owns the planner call for those intents. |
-| `USE_KNOWLEDGE_RETRIEVAL` | `curated` | Wires the RAG retriever into the engine. Combine with `RAG_RETRIEVAL_MODE`. |
-| `RAG_RETRIEVAL_MODE` | `bm25_only` (default), `hybrid_cosine`, `hybrid_rerank`, `qwen3_full`, `qwen3_rrf` | Picks the retrieval pipeline. Hybrid/qwen3 modes require `MODELVERSE_API_KEY` and the matching pinned sidecar under `deploy/kb/`. |
+| `USE_INTENT_PLANNER_FOR` | default `resource,monitor,gpu_specs,stock,platform_image,custom_image,community_image`; explicit comma list overrides; `off` disables | Enables Phase-1 cutover: engine owns the planner call for those intents. |
+| `USE_KNOWLEDGE_RETRIEVAL` | `curated` (default), `off` | Wires the RAG retriever into the engine. Combine with `RAG_RETRIEVAL_MODE`. |
+| `RAG_RETRIEVAL_MODE` | `qwen3_rrf` (default), `bm25_only`, `hybrid_cosine`, `hybrid_rerank`, `qwen3_full` | Picks the retrieval pipeline. Hybrid/qwen3 modes require `MODELVERSE_API_KEY` or `LLM_API_KEY` and the matching pinned sidecar under `deploy/kb/`. |
 | `RAG_HYBRID_ENABLED` | `1` | Legacy switch; only consulted when `RAG_RETRIEVAL_MODE` is unset. |
-| `USE_GROUNDED_RENDERER` | `llm` | Routes final reply through `internal/renderer.GroundedRenderer`. |
+| `USE_GROUNDED_RENDERER` | `llm` (default), `off` | Routes final reply through `internal/renderer.GroundedRenderer`. |
 | `COMPSHARE_TRACE_ENABLED` | `1` | Writes per-turn JSONL traces to `COMPSHARE_TRACE_DIR`. |
 | `MYSQL_DSN` | DSN string | Required by `compshare-agent server`; ignored by `compshare-agent cli`. |
 | `COMPSHARE_SERVICE_PUBLIC_KEY` | AK string | Service long-term public key for STS `AssumeRole`. Required when `agent.sts` is configured. |
@@ -91,7 +91,7 @@ The loader **refuses to start** if any pin mismatches. When the corpus changes, 
 
 ### Engine (`internal/engine/`)
 Runs a ReAct loop (`maxReActRounds=10`, `maxHistoryMessages=40`) with a tool-call budget per turn (`maxReadExpensiveCallsPerTurn=20`). Two dispatch paths coexist:
-1. **Phase-1 cutover** — if `USE_INTENT_PLANNER_FOR` includes the resolved intent, `tryPhase1Cutover` calls handlers in `internal/intent/handler*.go` directly and emits `StepEvent`s without going through ReAct.
+1. **Phase-1 cutover** — the default cutover set handles resource, monitor, GPU specs, stock, and image-list intents; `USE_INTENT_PLANNER_FOR` can override the set or disable it with `off`. `tryPhase1Cutover` calls handlers in `internal/intent/handler*.go` directly and emits `StepEvent`s without going through ReAct.
 2. **ReAct** — default; the LLM picks tools registered in `internal/tools/registry.go`. Mutating tools are blocked unless `COMPSHARE_ENABLE_MUTATING_TOOLS=1`.
 
 Force-tool / hard-block priority chain (highest first) is documented inline in `engine.go` and **must be kept in sync** when adding new force paths: account-billing-unsupported canned reply > monitor-recall force tool. Capability gating is required for any new object-`tool_choice` path: `ds-v4-flash` thinking mode 400s on object tool_choice, so callers must short-circuit when `supportsObjectToolChoice=false`.
@@ -123,13 +123,13 @@ Read-only diagnostic tools (init failure, billing anomaly, GPU not detected, ima
 
 `compshare-agent server` runs the HTTP gateway alongside the CLI; both share the engine/knowledge/planner core.
 
-- Entry: `cmd/server.go`. Routes: `POST /api/gateway` (Action-routed) + `GET /healthz`.
+- Entry: `cmd/server.go`. Routes: `POST /` (Action-routed) + `GET /healthz`.
 - Identity is taken from the request body (gateway-injected), not headers: `top_organization_id` / `organization_id` (uint32, snake_case) and `request_uuid` (string, snake_case, auto-generated if missing). Business fields stay PascalCase (`Action`, `SessionId`, `Message`).
 - Phase-1 Actions: `GetSession` / `CreateSession` / `Chat` (SSE) / `GetMeta` / `Feedback`. `SessionId` is mandatory on every session-scoped Action; the frontend persists it in localStorage.
 - Per-session `*engine.Engine` lives in `internal/agentpool` (LRU 200 / 30min idle). HTTP path skips `engine.Init()` and rehydrates history from MySQL via `engine.RehydrateHistory`.
 - SSE stream is per-token end-to-end via `llm.ChatRequest.OnTextDelta` → `engine.ChatOptions.OnTextDelta` → `sse.Writer`. ReAct intermediate `StepEvent`s are not exposed in phase 1.
 - Persistence: MySQL 8 via `database/sql + go-sql-driver/mysql`; schema in `deploy/migrations/0001_init.sql`. `messages` is INSERTed twice per turn (user immediately, assistant placeholder before LLM call) and UPDATEd once on SSE done — never per-token. DDL is run by ops, not the binary.
-- Credentials: HTTP path uses STS AssumeRole. `top_organization_id` derives a `RoleUrn` via `agent.sts.role_urn_template`; temporary credentials are cached per-role with singleflight. Rate limiting is keyed by `(top_organization_id, organization_id)` pair, not by static public key.
+- Credentials: HTTP path prefers STS AssumeRole when `agent.sts.service_ak/service_sk` are set. If they are empty, it falls back to legacy `agent.public_key/private_key` for local/demo use. Rate limiting is keyed by `(top_organization_id, organization_id)` pair, not by static public key.
 
 ## Conventions specific to this repo
 

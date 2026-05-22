@@ -1,14 +1,3 @@
--- compshare-agent trace schema for CLI smoke/evaluation runs.
---
--- HTTP/SSE conversation persistence uses deploy/migrations/0001_init.sql
--- (sessions, messages, message_feedback). The old WebSocket chat-history table
--- agent_messages has been retired with the WS entrypoint.
---
--- Apply with:
---   docker exec -i agent-mysql mysql -uroot -p<pw> compshare_agent < scripts/sql/init.sql
---
--- Charset: utf8mb4 is REQUIRED to round-trip Chinese in trace_json.
-
 SET NAMES utf8mb4;
 
 CREATE TABLE IF NOT EXISTS agent_traces (
