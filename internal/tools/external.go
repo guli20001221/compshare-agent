@@ -18,22 +18,49 @@ import (
 )
 
 // ExternalExecutor calls CompShare API via public endpoint with AK/SK signing.
+// Credentials are obtained from creds on every Execute / executeJSON call so
+// that STS temporary tokens are refreshed transparently.
 type ExternalExecutor struct {
 	apiURL     string
-	publicKey  string
-	privateKey string
+	creds      CredentialProvider
 	region     string
 	projectId  string
 	httpClient *http.Client
 }
 
+// NewExternalExecutor constructs an ExternalExecutor from AgentConfig.
+// When STS service credentials are present they take priority; otherwise the
+// legacy PublicKey/PrivateKey pair is wrapped in a StaticCredentialProvider
+// for backward compatibility.
 func NewExternalExecutor(cfg config.AgentConfig) *ExternalExecutor {
+	var provider CredentialProvider
+	if cfg.STS.ServiceAK != "" && cfg.STS.ServiceSK != "" {
+		provider = NewSTSProvider(cfg.STS.ServiceAK, cfg.STS.ServiceSK, cfg.STS.URL,
+			WithDurationSeconds(cfg.STS.DurationSeconds),
+			WithRefreshBefore(cfg.STS.RefreshBefore))
+	} else if cfg.PublicKey != "" && cfg.PrivateKey != "" {
+		provider = StaticCredentialProvider{Cred: &Credentials{
+			AccessKeyId:     cfg.PublicKey,
+			AccessKeySecret: cfg.PrivateKey,
+		}}
+	}
 	return &ExternalExecutor{
 		apiURL:     strings.TrimRight(cfg.CompShareAPIURL, "/") + "/",
-		publicKey:  cfg.PublicKey,
-		privateKey: cfg.PrivateKey,
+		creds:      provider,
 		region:     cfg.Region,
 		projectId:  cfg.ProjectId,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// NewExternalExecutorWithProvider constructs an ExternalExecutor with an
+// explicit CredentialProvider. Intended for HTTP path and tests.
+func NewExternalExecutorWithProvider(apiURL, region, projectId string, provider CredentialProvider) *ExternalExecutor {
+	return &ExternalExecutor{
+		apiURL:     strings.TrimRight(apiURL, "/") + "/",
+		creds:      provider,
+		region:     region,
+		projectId:  projectId,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -51,26 +78,50 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 		return e.executeJSON(ctx, action, args)
 	}
 
+	if e.creds == nil {
+		return nil, fmt.Errorf("ExternalExecutor: no credential provider configured")
+	}
+	cred, err := e.creds.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ExternalExecutor: get credentials: %w", err)
+	}
+
+	// Resolve region and projectId: prefer UserContext when present.
+	region, project := e.region, e.projectId
+	if u, ok := UserFrom(ctx); ok {
+		if u.Region != "" {
+			region = u.Region
+		}
+		if u.ProjectId != "" {
+			project = u.ProjectId
+		}
+	}
+
 	// Build params: Action + Region + args + PublicKey
 	params := map[string]string{
 		"Action":    action,
-		"Region":    e.region,
-		"PublicKey": e.publicKey,
+		"Region":    region,
+		"PublicKey": cred.AccessKeyId,
 	}
 	flattenInto(params, args, "")
+
+	// Include SecurityToken for STS temporary credentials (must be before signing).
+	if cred.SecurityToken != "" {
+		params["SecurityToken"] = cred.SecurityToken
+	}
 
 	// Auto-inject ProjectId if configured and caller didn't provide one.
 	// Some APIs (e.g. UpdateCompShareStopScheduler) require it; others
 	// accept it without side effects. We inject unconditionally to avoid
 	// per-action allowlisting.
-	if e.projectId != "" {
+	if project != "" {
 		if _, provided := params["ProjectId"]; !provided {
-			params["ProjectId"] = e.projectId
+			params["ProjectId"] = project
 		}
 	}
 
 	// Sign: UCloud HMAC-SHA1 signature
-	params["Signature"] = ucloudSign(params, e.privateKey)
+	params["Signature"] = ucloudSign(params, cred.AccessKeySecret)
 
 	// POST as application/x-www-form-urlencoded
 	form := url.Values{}
@@ -111,22 +162,46 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 }
 
 func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	if e.creds == nil {
+		return nil, fmt.Errorf("ExternalExecutor: no credential provider configured")
+	}
+	cred, err := e.creds.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ExternalExecutor: get credentials: %w", err)
+	}
+
+	// Resolve region and projectId: prefer UserContext when present.
+	region, project := e.region, e.projectId
+	if u, ok := UserFrom(ctx); ok {
+		if u.Region != "" {
+			region = u.Region
+		}
+		if u.ProjectId != "" {
+			project = u.ProjectId
+		}
+	}
+
 	body := map[string]any{
 		"Action":    action,
-		"Region":    e.region,
-		"PublicKey": e.publicKey,
+		"Region":    region,
+		"PublicKey": cred.AccessKeyId,
 	}
 	for k, v := range args {
 		body[k] = v
 	}
 
-	if e.projectId != "" {
+	if project != "" {
 		if _, provided := body["ProjectId"]; !provided {
-			body["ProjectId"] = e.projectId
+			body["ProjectId"] = project
 		}
 	}
 
-	body["Signature"] = ucloudSignJSON(body, e.privateKey)
+	// Include SecurityToken for STS temporary credentials (must be before signing).
+	if cred.SecurityToken != "" {
+		body["SecurityToken"] = cred.SecurityToken
+	}
+
+	body["Signature"] = ucloudSignJSON(body, cred.AccessKeySecret)
 
 	encoded, err := json.Marshal(body)
 	if err != nil {

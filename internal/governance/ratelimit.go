@@ -191,6 +191,19 @@ func SubjectKeyFromPublicKey(publicKey string) (string, bool) {
 	return "sha256:" + hex.EncodeToString(sum[:]), true
 }
 
+// SubjectKeyFromOrganization produces a stable, opaque rate-limit key from a
+// (topOrg, org) pair. The hash algorithm is intentionally identical to
+// tools.SubjectKeyFromUser so that both packages produce the same key for the
+// same inputs. Returns (AnonymousSubjectKey, false) when either ID is zero.
+func SubjectKeyFromOrganization(topOrg, org uint32) (string, bool) {
+	if topOrg == 0 || org == 0 {
+		return AnonymousSubjectKey, false
+	}
+	raw := fmt.Sprintf("%d:%d", topOrg, org)
+	sum := sha256.Sum256([]byte(raw))
+	return "sha256:" + hex.EncodeToString(sum[:]), true
+}
+
 // SubjectKeyFromTenant returns a hashed subject key derived from the console
 // tenant identity (top_organization_id + organization_id). Used by the WS
 // server path so each tenant gets its own rate-limit bucket; CLI path keeps

@@ -12,6 +12,57 @@ import (
 
 var _ RateLimiter = (*MemoryLimiter)(nil)
 
+func TestSubjectKeyFromOrganization(t *testing.T) {
+	t.Run("nonzero pair produces sha256 key", func(t *testing.T) {
+		key, ok := SubjectKeyFromOrganization(10, 20)
+		if !ok {
+			t.Fatalf("expected ok=true for valid pair")
+		}
+		if !strings.HasPrefix(key, "sha256:") {
+			t.Fatalf("expected sha256: prefix, got %q", key)
+		}
+	})
+	t.Run("zero topOrg returns anonymous", func(t *testing.T) {
+		key, ok := SubjectKeyFromOrganization(0, 20)
+		if ok {
+			t.Fatalf("expected ok=false for topOrg=0")
+		}
+		if key != AnonymousSubjectKey {
+			t.Fatalf("expected %q, got %q", AnonymousSubjectKey, key)
+		}
+	})
+	t.Run("zero org returns anonymous", func(t *testing.T) {
+		key, ok := SubjectKeyFromOrganization(10, 0)
+		if ok {
+			t.Fatalf("expected ok=false for org=0")
+		}
+		if key != AnonymousSubjectKey {
+			t.Fatalf("expected %q, got %q", AnonymousSubjectKey, key)
+		}
+	})
+	t.Run("deterministic and different pairs differ", func(t *testing.T) {
+		k1a, _ := SubjectKeyFromOrganization(1, 2)
+		k1b, _ := SubjectKeyFromOrganization(1, 2)
+		if k1a != k1b {
+			t.Fatalf("hash not deterministic: %q vs %q", k1a, k1b)
+		}
+		k2, _ := SubjectKeyFromOrganization(3, 4)
+		if k1a == k2 {
+			t.Fatalf("different pairs must produce different keys")
+		}
+	})
+	t.Run("raw key material not leaked", func(t *testing.T) {
+		key, ok := SubjectKeyFromOrganization(99999, 88888)
+		if !ok {
+			t.Fatalf("expected ok=true")
+		}
+		rendered := fmt.Sprintf("%v", key)
+		if strings.Contains(rendered, "99999") || strings.Contains(rendered, "88888") {
+			t.Fatalf("key leaked raw org IDs: %q", key)
+		}
+	})
+}
+
 func TestSubjectKeyFromPublicKey(t *testing.T) {
 	subject, ok := SubjectKeyFromPublicKey("public-key-123")
 	if !ok {

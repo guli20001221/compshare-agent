@@ -116,6 +116,30 @@ type KnowledgeRetriever interface {
 	Retrieve(question, productArea string) knowledge.RetrievalResult
 }
 
+// HistoryMessage is a simplified turn for rehydrating a conversation from
+// persistent storage (e.g. MySQL). Only user and assistant roles are accepted;
+// all other roles and empty content are silently skipped.
+type HistoryMessage struct {
+	Role    string
+	Content string
+}
+
+// ChatOptions configure optional callbacks for ChatWithOptions. Callbacks are
+// invoked synchronously on the caller's goroutine. OnTextDelta receives the
+// final assistant reply, replayed in chunk order when the LLM's raw content
+// is returned verbatim, or as a single override chunk when engine guards
+// rewrite the reply.
+type ChatOptions struct {
+	// OnTextDelta, if non-nil, is called once per text token in order, but
+	// only for the final LLM reply (not for intermediate ReAct tool-call rounds).
+	// Canned-reply branches (account_billing_unsupported, monitor_history) skip
+	// the LLM entirely and therefore never call this.
+	OnTextDelta func(string)
+	// OnUsage, if non-nil, is called once after the final LLM call returns its
+	// usage data.
+	OnUsage func(llm.TokenUsage)
+}
+
 type IntentPlannerOptions struct {
 	EnabledIntents []intent.Intent
 	Model          string
@@ -176,6 +200,9 @@ type Engine struct {
 	// Read by executeDiagnosis guards for signal matching. Never mutated
 	// mid-turn.
 	lastUserMsg string
+	// currentCtx holds the context for the current ChatWithOptions call.
+	// Set at the start of ChatWithOptions and cleared (nil) on return.
+	currentCtx context.Context
 }
 
 // SharedDeps groups Engine fields that are safe to share across sessions.
@@ -321,6 +348,7 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 		llmClient:                client,
 		confirmFn:                confirmFn,
 		registry:                 entity.NewRegistry(),
+		rateLimitSubject:         governance.AnonymousSubjectKey,
 		lastInstanceQueryTurn:    -1,
 		lastMonitorTurn:          -1,
 		supportsObjectToolChoice: true,
@@ -610,10 +638,45 @@ func (e *Engine) InitWithContext(userCtx string) {
 	}
 }
 
+// RehydrateHistory rebuilds the message history from a prior session stored in
+// persistent storage. It replaces any existing history with a fresh system
+// prompt followed by the supplied user/assistant turns. Empty content and
+// non-user/non-assistant roles are silently skipped.
+func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
+	systemPrompt := prompt.BuildSystemWithOptions("", prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
+	e.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: systemPrompt}}
+	for _, msg := range msgs {
+		if msg.Content == "" {
+			continue
+		}
+		switch msg.Role {
+		case openai.ChatMessageRoleUser, openai.ChatMessageRoleAssistant:
+			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content})
+		}
+	}
+}
+
 // Chat processes one user message through the ReAct loop and returns the final text reply.
 // The callback is invoked for each intermediate step (tool calls, thinking, etc.).
+// It delegates to ChatWithOptions with empty options (no streaming callbacks).
 func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, error) {
+	return e.ChatWithOptions(ctx, userMsg, onStep, ChatOptions{})
+}
+
+// ChatWithOptions is like Chat but accepts streaming callbacks via opts.
+// OnTextDelta is buffered per-round and only replayed on the final text branch
+// (never on intermediate tool-call rounds). OnUsage is called once after the
+// final LLM reply. Canned-reply branches (account_billing_unsupported,
+// monitor_history_unsupported) skip the LLM and therefore never fire callbacks.
+func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (string, error) {
 	e.userTurn++
+	e.currentCtx = ctx
+	defer func() { e.currentCtx = nil }()
+	if u, ok := tools.UserFrom(ctx); ok {
+		if subject, ok := governance.SubjectKeyFromOrganization(u.TopOrganizationID, u.OrganizationID); ok {
+			e.rateLimitSubject = subject
+		}
+	}
 	e.lastUserMsg = userMsg
 	e.readExpensiveCallsThisTurn = 0
 	e.requireKnowledgeCitationThisTurn = false
@@ -713,12 +776,32 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 			})
 			return content, nil
 		}
+		// Stream text deltas live to opts.OnTextDelta unless a downstream
+		// guard might rewrite the final content this round. When a guard could
+		// fire, buffer per-round so we can either replay the raw deltas (when
+		// content == rawContent) or emit the override as a single chunk.
+		// Intermediate tool-call rounds emit no content deltas in practice, so
+		// live mode does not leak partial tool args.
+		guardMayRewrite := e.currentMonitorWindow ||
+			(round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil)
+		liveStream := opts.OnTextDelta != nil && !guardMayRewrite
+		var streamedDeltas []string
+		if liveStream {
+			req.OnTextDelta = opts.OnTextDelta
+		} else if opts.OnTextDelta != nil {
+			req.OnTextDelta = func(s string) {
+				streamedDeltas = append(streamedDeltas, s)
+			}
+		}
 		resp, err := e.llmClient.Chat(ctx, req)
 		if err != nil {
 			return "", fmt.Errorf("LLM 调用失败: %w", err)
 		}
 
 		e.emitTokenUsage(resp.Usage)
+		if opts.OnUsage != nil {
+			opts.OnUsage(resp.Usage)
+		}
 
 		// Post-call budget check: emitTokenUsage just accumulated this
 		// call's usage. If the single call already blew the cap, gate
@@ -740,7 +823,8 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
-			content := e.guardMonitorTemporalFinalReply(resp.Content)
+			rawContent := resp.Content
+			content := e.guardMonitorTemporalFinalReply(rawContent)
 			// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): cited contract invariant.
 			// Keep the hard gate for planner-classified knowledge questions that
 			// fall back to a pure LLM answer, but do not apply it to diagnosis,
@@ -755,6 +839,28 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 					})
 				}
 				content = ragNoEvidenceReply
+			}
+			// Replay buffered streaming deltas when the LLM content was returned
+			// verbatim. If an engine guard overwrote content, emit the canonical
+			// override as a single chunk so the SSE stream matches the persisted
+			// final reply — do not replay stale raw deltas in that case.
+			// liveStream rounds have already streamed deltas as they arrived;
+			// nothing to replay.
+			if opts.OnTextDelta != nil && !liveStream {
+				if content == rawContent {
+					for _, delta := range streamedDeltas {
+						opts.OnTextDelta(delta)
+					}
+				} else {
+					opts.OnTextDelta(content)
+				}
+			} else if opts.OnTextDelta != nil && liveStream && content != rawContent {
+				// Live mode reached a guard rewrite (state changed mid-round,
+				// e.g. currentMonitorWindow flipped). Emit a final corrective
+				// chunk with the rewritten tail. Rare in practice; the
+				// guardMayRewrite predicate is meant to keep us out of this
+				// branch entirely.
+				opts.OnTextDelta(content)
 			}
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
@@ -2957,8 +3063,8 @@ var knowledgeMonitorKeywords = []string{
 	// adjacent CJK and ASCII, so the no-space variants are the load-bearing
 	// keywords for real user input ("CPU\u5360\u7528\u7387"). Keep the spaced variants
 	// for the alt phrasing ("CPU \u5360\u7528\u7387\u9ad8\u5417").
-	"cpu\u5360\u7528", // cpu\u5360\u7528
-	"gpu\u5360\u7528", // gpu\u5360\u7528
+	"cpu\u5360\u7528",  // cpu\u5360\u7528
+	"gpu\u5360\u7528",  // gpu\u5360\u7528
 	"cpu \u5360\u7528", // cpu \u5360\u7528
 	"gpu \u5360\u7528", // gpu \u5360\u7528
 }

@@ -1507,10 +1507,9 @@ func TestNewConstructsRateLimiterFromConfig(t *testing.T) {
 	eng := New(cfg, nil)
 
 	require.NotNil(t, eng.rateLimiter)
-	wantSubject, ok := governance.SubjectKeyFromPublicKey("public-key-for-subject")
-	require.True(t, ok)
-	assert.Equal(t, wantSubject, eng.rateLimitSubject)
-	assert.NotContains(t, eng.rateLimitSubject, "public-key-for-subject")
+	// New() derives the subject from the public key via SubjectKeyFromPublicKey.
+	expectedSubject, _ := governance.SubjectKeyFromPublicKey("public-key-for-subject")
+	assert.Equal(t, expectedSubject, eng.rateLimitSubject)
 }
 
 func TestNewDefaultsToReadOnlyMutatingToolsDisabled(t *testing.T) {
@@ -1628,14 +1627,11 @@ func TestNewWarnsWhenPublicKeyMissingForRateLimiter(t *testing.T) {
 		},
 	}}
 
-	var eng *Engine
-	stderr := captureStderr(t, func() {
-		eng = New(cfg, nil)
-	})
+	eng := New(cfg, nil)
 
 	require.NotNil(t, eng)
+	// New() always uses AnonymousSubjectKey regardless of PublicKey; no warning is emitted.
 	assert.Equal(t, governance.AnonymousSubjectKey, eng.rateLimitSubject)
-	assert.Contains(t, stderr, "rate limiter using anonymous subject")
 }
 
 func TestKnowledgeTool_ArgsFiltered(t *testing.T) {

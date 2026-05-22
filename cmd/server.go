@@ -2,208 +2,149 @@ package main
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
-	"log"
+	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
+	"time"
 
+	"github.com/compshare-agent/internal/agentpool"
 	"github.com/compshare-agent/internal/config"
-	"github.com/compshare-agent/internal/engine"
-	"github.com/compshare-agent/internal/intent"
-	"github.com/compshare-agent/internal/llm"
-	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/renderer"
-	"github.com/compshare-agent/internal/server"
-
+	"github.com/compshare-agent/internal/httpapi"
+	"github.com/compshare-agent/internal/store"
+	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 )
 
-var serveCmd = &cobra.Command{
-	Use:   "serve",
-	Short: "WebSocket server for console-deployment",
-	RunE:  runServe,
+var serverCmd = &cobra.Command{
+	Use:   "server",
+	Short: "启动 HTTP 服务",
+	RunE:  runServer,
 }
 
 func init() {
-	rootCmd.AddCommand(serveCmd)
+	serverCmd.Flags().String("addr", "", "覆盖配置的监听地址")
+	rootCmd.AddCommand(serverCmd)
 }
 
-func runServe(cmd *cobra.Command, args []string) error {
+func runServer(cmd *cobra.Command, _ []string) error {
 	cfg, err := config.Load(configPath)
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	// Assemble shared engine deps once at startup — see plan §3.1 for
-	// which fields are safe to share across sessions.
-	deps, err := engine.NewSharedDeps(cfg)
-	if err != nil {
-		return fmt.Errorf("shared deps: %w", err)
-	}
-	if err := applySharedDepsFromEnv(deps, cfg, os.Getenv); err != nil {
-		return fmt.Errorf("apply shared deps from env: %w", err)
-	}
-
-	// Trace sink + optional MySQL handle for /readyz ping. We share the
-	// MySQL connection between the trace writer and readyz so a single
-	// outage signal flips both signals consistently.
-	traceSink, mysqlDB, err := assembleTraceSink(os.Getenv)
-	if err != nil {
-		return fmt.Errorf("trace sink: %w", err)
-	}
-
-	// Optional agent_messages recorder (A5). Reuses MYSQL_DSN; nil when
-	// MYSQL_DSN is unset or trace_sink is file-only (chat messages still
-	// flow through the WS to the client; persistence is opt-in via DSN).
-	var msgRecorder *server.MessageRecorder
-	if dsn := os.Getenv("MYSQL_DSN"); dsn != "" {
-		msgRecorder, err = server.NewMessageRecorder(dsn, server.MessageRecorderOptions{})
-		if err != nil {
-			if traceSink != nil {
-				_ = traceSink.Close(context.Background())
-			}
-			if mysqlDB != nil {
-				_ = mysqlDB.Close()
-			}
-			return fmt.Errorf("message recorder: %w", err)
-		}
-	}
-	defer func() {
-		if traceSink != nil {
-			_ = traceSink.Close(context.Background())
-		}
-		if msgRecorder != nil {
-			_ = msgRecorder.Close(context.Background())
-		}
-		if mysqlDB != nil {
-			_ = mysqlDB.Close()
-		}
-	}()
-
-	addr := os.Getenv("COMPSHARE_SERVE_ADDR")
-	if addr == "" {
-		addr = ":7777"
-	}
-
-	srv, err := server.New(server.Options{
-		Addr:               addr,
-		Deps:               deps,
-		TraceSink:          traceSink,
-		MsgRecorder:        msgRecorder,
-		Model:              cfg.Agent.LLM.Model,
-		TenantSource:       server.TenantSource(os.Getenv("COMPSHARE_TENANT_SOURCE")),
-		AllowedOrigins:     splitCSV(os.Getenv("COMPSHARE_WS_ORIGINS")),
-		DB:                 mysqlDB,
-		AnswerDeltaEnabled: os.Getenv("COMPSHARE_WS_ANSWER_DELTA_ENABLED") == "1",
-	})
 	if err != nil {
 		return err
 	}
-	log.Printf("compshare-agent serve listening on %s (tenant_source=%s)", addr, os.Getenv("COMPSHARE_TENANT_SOURCE"))
-	return srv.Run(ctx)
+	if addr, _ := cmd.Flags().GetString("addr"); addr != "" {
+		cfg.Agent.HTTP.ListenAddr = addr
+	}
+	if err := validateServerConfig(cfg); err != nil {
+		return err
+	}
+
+	db, err := store.OpenMySQL(cfg.Agent.MySQL)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	sessionStore := store.NewSessionStore(db)
+	messageStore := store.NewMessageStore(db)
+	feedbackStore := store.NewFeedbackStore(db)
+	pool := agentpool.New(cfg, messageStore, agentpool.Options{
+		Capacity: cfg.Agent.HTTP.PoolCapacity,
+		IdleTTL:  cfg.Agent.HTTP.PoolIdleTTL,
+	})
+	defer pool.Close()
+
+	handlers := httpapi.NewHandlers(cfg, sessionStore, messageStore, feedbackStore, pool)
+	router := gin.New()
+	router.Use(corsMiddleware())
+	router.Use(gin.CustomRecovery(func(c *gin.Context, recovered any) {
+		c.JSON(http.StatusInternalServerError, httpapi.Response{
+			Code:    "InternalError",
+			Message: fmt.Sprint(recovered),
+			Data:    nil,
+		})
+	}))
+	router.GET("/healthz", httpapi.Healthz)
+	router.POST("/", handlers.Dispatch)
+	router.OPTIONS("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	srv := &http.Server{
+		Addr:         cfg.Agent.HTTP.ListenAddr,
+		Handler:      router,
+		ReadTimeout:  cfg.Agent.HTTP.ReadTimeout,
+		WriteTimeout: cfg.Agent.HTTP.WriteTimeout,
+	}
+	return serveUntilSignal(srv)
 }
 
-// applySharedDepsFromEnv unifies CLI + server env-driven SharedDeps setup
-// (plan §5.6). For PR4 it covers the planner / knowledge retriever /
-// grounded renderer slots; the CLI in cmd/agent.go continues to call its
-// existing setters for back-compat. A future PR can flip CLI to also call
-// this helper so both code paths sit behind one env-reading function.
-func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv func(string) string) error {
-	cutoverIntents, unknownCutover := intentPlannerCutoverIntentsFromEnv(getenv)
-	for _, value := range unknownCutover {
-		log.Printf("warning: ignoring unknown USE_INTENT_PLANNER_FOR value %q", value)
+func validateServerConfig(cfg *config.Config) error {
+	if cfg.Agent.MySQL.DSN == "" {
+		return fmt.Errorf("agent.mysql.dsn is required for server")
 	}
-
-	knowledgeRetrievalRequested, unknownKnowledge := knowledgeRetrievalModeFromEnv(getenv)
-	if unknownKnowledge != "" {
-		log.Printf("warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q", unknownKnowledge)
+	if cfg.Agent.Meta.Welcome == "" {
+		return fmt.Errorf("agent.meta.welcome is required for server")
 	}
-	retriever, knowledgeEnabled, knowledgeErr := knowledgeRetrieverFromEnv(getenv)
-	if knowledgeRetrievalRequested && knowledgeErr != nil {
-		// RAG-enabled-but-failed is a hard startup gate per the CLI
-		// applyKnowledgeRetrieverStartup helper. Server should fail the
-		// same way: refusing to start beats silently disabling RAG.
-		return fmt.Errorf("RAG enabled but corpus digest mismatch: %w", knowledgeErr)
+	if len(cfg.Agent.Meta.SuggestedPrompts) == 0 {
+		return fmt.Errorf("agent.meta.suggested_prompts is required for server")
 	}
-	if knowledgeEnabled {
-		deps.KnowledgeRetriever = retriever
+	if cfg.Agent.HTTP.MaxInputLength != cfg.Agent.Meta.MaxInputLength {
+		return fmt.Errorf("agent.http.max_input_length must equal agent.meta.max_input_length")
 	}
-
-	groundedMode, unknownGrounded := groundedRendererModeFromEnv(getenv)
-	if unknownGrounded != "" {
-		log.Printf("warning: ignoring unknown USE_GROUNDED_RENDERER value %q", unknownGrounded)
+	if cfg.Agent.STS.ServiceAK == "" {
+		return fmt.Errorf("agent.sts.service_ak is required for server")
 	}
-	if groundedMode == "llm" {
-		deps.GroundedRenderer = renderer.NewGroundedRenderer(llm.NewClient(cfg.Agent.LLM))
-		deps.GroundedRendererModel = cfg.Agent.LLM.Model
+	if cfg.Agent.STS.ServiceSK == "" {
+		return fmt.Errorf("agent.sts.service_sk is required for server")
 	}
-
-	cutoverEnabled := len(cutoverIntents) > 0
-	if cutoverEnabled || knowledgeEnabled {
-		deps.IntentPlanner = newCLIPlanner(cfg)
-		deps.IntentPlannerModel = cfg.Agent.LLM.Model
-		enabled, cutover := engine.BuildIntentPlannerMaps(cutoverIntents)
-		deps.IntentPlannerEnabledIntents = enabled
-		deps.IntentCutoverIntents = cutover
+	if cfg.Agent.STS.URL == "" {
+		return fmt.Errorf("agent.sts.url is required for server")
+	}
+	if cfg.Agent.STS.RoleUrnTemplate == "" {
+		return fmt.Errorf("agent.sts.role_urn_template is required for server")
 	}
 	return nil
 }
 
-// assembleTraceSink mirrors traceWriterFromEnv but also returns the MySQL
-// *sql.DB so /readyz can ping it. When the sink is file-only we return
-// (writer, nil, nil).
-func assembleTraceSink(getenv func(string) string) (observability.Writer, *sql.DB, error) {
-	if getenv("COMPSHARE_TRACE_ENABLED") != "1" {
-		return nil, nil, nil
-	}
-	sink := strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_TRACE_SINK")))
-	if sink == "" {
-		sink = "file"
-	}
-	switch sink {
-	case "file":
-		w, err := observability.NewWriter(observability.WriterOptions{Dir: getenv("COMPSHARE_TRACE_DIR")})
-		return w, nil, err
-	case "mysql":
-		dsn := getenv("MYSQL_DSN")
-		w, err := observability.NewMySQLWriter(dsn, observability.MySQLWriterOptions{})
-		if err != nil {
-			return nil, nil, err
+func serveUntilSignal(srv *http.Server) error {
+	errCh := make(chan error, 1)
+	go func() {
+		err := srv.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
 		}
-		db, err := sql.Open("mysql", dsn)
-		if err != nil {
-			_ = w.Close(context.Background())
-			return nil, nil, fmt.Errorf("readyz mysql handle: %w", err)
-		}
-		return w, db, nil
-	case "both":
-		// Not exposed for server-side serve until ops asks for it; serve
-		// currently picks file OR mysql, not both, to keep startup simple.
-		return nil, nil, fmt.Errorf("COMPSHARE_TRACE_SINK=both is not supported in serve mode yet")
-	default:
-		return nil, nil, fmt.Errorf("unknown COMPSHARE_TRACE_SINK %q", sink)
+		errCh <- nil
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	select {
+	case err := <-errCh:
+		return err
+	case <-sigCh:
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return srv.Shutdown(ctx)
 	}
 }
 
-func splitCSV(v string) []string {
-	if v == "" {
-		return nil
-	}
-	out := []string{}
-	for _, part := range strings.Split(v, ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			out = append(out, p)
+// corsMiddleware allows browser clients on any origin to call the agent.
+// Permissive by design — the agent sits behind the console gateway in prod,
+// so origin enforcement lives there; locally we accept everything to keep
+// front-end dev simple.
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		if origin == "" {
+			origin = "*"
 		}
+		c.Header("Access-Control-Allow-Origin", origin)
+		c.Header("Vary", "Origin")
+		c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Accept, X-Requested-With")
+		c.Header("Access-Control-Max-Age", "600")
+		c.Next()
 	}
-	return out
 }
-
-// intent.Intent is referenced indirectly through engine.BuildIntentPlannerMaps's
-// argument type. Keep this sentinel so the import stays valid even if a
-// future refactor narrows the cmd surface.
-var _ = intent.IntentResourceInfo
