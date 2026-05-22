@@ -46,6 +46,17 @@ var enginePreBlock = router.New(
 		Category: refusal.CategoryJailbreakAttempt,
 		Reply:    refusal.JailbreakAttempt,
 	},
+	// Off-topic detection runs SECOND, after jailbreak. Off-topic asks
+	// (political opinion, personal medical advice, investment
+	// recommendations, severe-emotional-distress) get a redirect-style
+	// refusal rather than going to the planner / LLM. Conservative-
+	// compound predicates same shape as jailbreak — false-positive cost
+	// kept low so benign platform questions never trip.
+	router.Rule{
+		Match:    guardrails.DetectOffTopic,
+		Category: refusal.CategoryOffTopic,
+		Reply:    refusal.OffTopic,
+	},
 	router.Rule{
 		Match:    isAccountBillingUnsupported,
 		Category: refusal.CategoryAccountBilling,
