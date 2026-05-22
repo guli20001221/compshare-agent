@@ -18,6 +18,16 @@ build:
 linux:
     GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o compshare-agent ./cmd
 
+# Package the linux binary + kb + systemd unit into an RPM.
+# Requires nfpm (https://nfpm.goreleaser.com): `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest`
+# Usage: just rpm [version="0.1.0"]
+# Output: dist/compshare-agent-<version>-1.x86_64.rpm
+rpm version="0.1.0": linux
+    @command -v nfpm >/dev/null || { echo "nfpm not found. Install: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest"; exit 1; }
+    @mkdir -p dist
+    VERSION={{version}} nfpm pkg --packager rpm --config nfpm.yaml --target dist/
+    @ls -lh dist/compshare-agent-{{version}}-1.x86_64.rpm
+
 # Run all Go tests.
 test:
     go test ./... -count=1
