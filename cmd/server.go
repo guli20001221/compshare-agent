@@ -89,7 +89,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		c.JSON(http.StatusInternalServerError, httpapi.Response{
 			Code:    "InternalError",
 			Message: fmt.Sprint(recovered),
-			Data:    nil,
 		})
 	}))
 	router.GET("/healthz", httpapi.Healthz)

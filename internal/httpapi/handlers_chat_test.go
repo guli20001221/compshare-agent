@@ -219,7 +219,7 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-trace","Message":"hi","request_uuid":"req-trace","top_organization_id":7,"organization_id":8}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-trace","Message":"hi","request_uuid":"req-trace","top_organization_id":7,"organization_id":8}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -274,7 +274,7 @@ func TestDispatchChatEmitsTokenForDirectEngineReply(t *testing.T) {
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-direct","Message":"看 2026-04-29 14:00 的监控","request_uuid":"req-direct","top_organization_id":1,"organization_id":2}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-direct","Message":"看 2026-04-29 14:00 的监控","request_uuid":"req-direct","top_organization_id":1,"organization_id":2}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -332,7 +332,7 @@ func TestDispatchChatColdSessionDoesNotRehydrateCurrentUserMessage(t *testing.T)
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-cold","Message":"`+userMessage+`","request_uuid":"req-cold","top_organization_id":1,"organization_id":2}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-cold","Message":"`+userMessage+`","request_uuid":"req-cold","top_organization_id":1,"organization_id":2}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
