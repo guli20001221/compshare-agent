@@ -158,6 +158,7 @@ func pickDefaultPricingSpec(gpuName string, items []any) pricingDefaultSpec {
 		if zone == "" {
 			zone = "cn-wlcb-01" // pricing API documents the format; default to wlcb
 		}
+		best := pricingDefaultSpec{}
 		sizes := mapSliceAt(entry, "MachineSizes")
 		for _, s := range sizes {
 			size, ok := s.(map[string]any)
@@ -183,9 +184,20 @@ func pickDefaultPricingSpec(gpuName string, items []any) pricingDefaultSpec {
 				if memory == 0 {
 					continue
 				}
-				return pricingDefaultSpec{Zone: zone, Cpu: cpu, Memory: memory}
+				for _, mem := range mems {
+					parsed := pricingNumericInt(mem)
+					if parsed != 0 && parsed < memory {
+						memory = parsed
+					}
+				}
+				candidate := pricingDefaultSpec{Zone: zone, Cpu: cpu, Memory: memory}
+				if best.Cpu == 0 || candidate.Cpu < best.Cpu ||
+					(candidate.Cpu == best.Cpu && candidate.Memory < best.Memory) {
+					best = candidate
+				}
 			}
 		}
+		return best
 	}
 	return pricingDefaultSpec{}
 }
@@ -339,6 +351,7 @@ func pricingBillingTable(raw map[string]any) map[string]string {
 			out[key] = actStr
 		}
 		if len(out) > 0 {
+			normalizePricingChargeTypes(out)
 			return out
 		}
 	}
@@ -351,6 +364,7 @@ func pricingBillingTable(raw map[string]any) map[string]string {
 		}
 	}
 	if len(out) > 0 {
+		normalizePricingChargeTypes(out)
 		return out
 	}
 	// Shape 2: nested under InstancePrice.
@@ -381,7 +395,17 @@ func pricingBillingTable(raw map[string]any) map[string]string {
 			}
 		}
 	}
+	normalizePricingChargeTypes(out)
 	return out
+}
+
+func normalizePricingChargeTypes(out map[string]string) {
+	if _, hasPostpay := out["Postpay"]; hasPostpay {
+		return
+	}
+	if dynamic := out["Dynamic"]; dynamic != "" {
+		out["Postpay"] = dynamic
+	}
 }
 
 // mapChargeTypeToInstance pulls a {ChargeType: Instance} flat map out of a

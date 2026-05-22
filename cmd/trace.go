@@ -511,6 +511,7 @@ func defaultCutoverIntents() []intent.Intent {
 		intent.IntentMonitorQuery,
 		intent.IntentGPUSpecsQuery,
 		intent.IntentStockAvailability,
+		intent.IntentPricingQuery,
 		intent.IntentPlatformImageList,
 		intent.IntentCustomImageList,
 		intent.IntentCommunityImageList,

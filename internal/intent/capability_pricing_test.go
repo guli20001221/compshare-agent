@@ -68,8 +68,12 @@ func TestPickDefaultPricingSpec_PicksSmallestCombo(t *testing.T) {
 					"Gpu": float64(1),
 					"Collection": []any{
 						map[string]any{
+							"Cpu":    float64(32),
+							"Memory": []any{float64(128), float64(256)},
+						},
+						map[string]any{
 							"Cpu":    float64(16),
-							"Memory": []any{float64(64), float64(94)},
+							"Memory": []any{float64(94), float64(64)},
 						},
 					},
 				},
@@ -145,8 +149,10 @@ func TestPricingBillingTable_NestedShape(t *testing.T) {
 
 // TestPricingBillingTable_ArrayShape covers the actual production response
 // form observed via probe on 2026-05-22 against api.compshare.cn:
-//   { PriceDetails: [{ChargeType, Instance}, ...],
-//     ListPriceDetails: [{ChargeType, Instance}, ...] }
+//
+//	{ PriceDetails: [{ChargeType, Instance}, ...],
+//	  ListPriceDetails: [{ChargeType, Instance}, ...] }
+//
 // Previously pricingBillingTable returned 0 keys against this shape, so
 // every CLI smoke produced "价格数据缺失". User-facing bug, regression
 // guard added here. (Codex review remediation 2026-05-22 follow-up.)
@@ -211,6 +217,17 @@ func TestPricingBillingTable_ArrayShape_OriginalPriceDetailsFallback(t *testing.
 	out := pricingBillingTable(raw)
 	assert.Contains(t, out["Postpay"], "¥1.88")
 	assert.Contains(t, out["Postpay"], "¥1.98", "OriginalPriceDetails fallback when List absent")
+}
+
+func TestPricingBillingTable_DynamicFallsBackToPostpay(t *testing.T) {
+	raw := map[string]any{
+		"PriceDetails": []any{
+			map[string]any{"ChargeType": "Dynamic", "Instance": float64(1.88)},
+		},
+	}
+	out := pricingBillingTable(raw)
+	assert.Equal(t, "¥1.88", out["Postpay"],
+		"Dynamic-only hourly price should render through the normal on-demand/Postpay row")
 }
 
 // TestRenderPricingReply_AllRowsBillEmpty exercises the "render succeeded
@@ -290,6 +307,8 @@ func TestHandlePricingQuery_PassesMemoryAsMBToAPI(t *testing.T) {
 	// Find the GetPrice call (Describe is first, GetPrice is second).
 	require.GreaterOrEqual(t, len(exec.calls), 2,
 		"expected at least 2 executor calls (Describe + GetPrice)")
+	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", exec.calls[0].action,
+		"pricing capability must fetch available specs before asking for price")
 	var priceCall *handlerExecCall
 	for i := range exec.calls {
 		if exec.calls[i].action == "GetCompShareInstancePrice" {
