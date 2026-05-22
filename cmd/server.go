@@ -29,7 +29,7 @@ func init() {
 }
 
 func runServer(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.Load(configPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}

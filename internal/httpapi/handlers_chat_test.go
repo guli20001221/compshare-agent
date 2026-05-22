@@ -8,12 +8,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/agentpool"
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/refusal"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/gin-gonic/gin"
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -68,6 +72,33 @@ func (m *recordingMessages) Append(_ context.Context, msg store.Message) error {
 func (m *recordingMessages) UpdateAssistant(_ context.Context, _ store.Owner, _ string, patch store.AssistantPatch) error {
 	m.patch = patch
 	return nil
+}
+
+type rehydratingMessages struct {
+	recordingMessages
+	list []store.Message
+}
+
+func (m *rehydratingMessages) Append(_ context.Context, msg store.Message) error {
+	m.appended = append(m.appended, msg)
+	m.list = append(m.list, msg)
+	return nil
+}
+
+func (m *rehydratingMessages) ListBySession(_ context.Context, _ string, _ int, _ string) ([]store.Message, string, error) {
+	return append([]store.Message(nil), m.list...), "", nil
+}
+
+type captureLLM struct {
+	messages []openai.ChatCompletionMessage
+}
+
+func (c *captureLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	c.messages = append([]openai.ChatCompletionMessage(nil), req.Messages...)
+	if req.OnTextDelta != nil {
+		req.OnTextDelta("ok")
+	}
+	return &llm.ChatResponse{Content: "ok"}, nil
 }
 
 // denyConfirm is the confirm callback used in tests — always denies (unused in happy path).
@@ -129,6 +160,111 @@ func TestDispatchChatStreamsMetaTokenDone(t *testing.T) {
 	assert.Equal(t, "assistant", messages.appended[1].Role)
 	assert.Equal(t, "你好", messages.patch.Content)
 	assert.Equal(t, "ok", messages.patch.Status)
+}
+
+func TestDispatchChatEmitsTokenForDirectEngineReply(t *testing.T) {
+	eng := engine.NewWithDeps(chatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+
+	messages := &recordingMessages{}
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{
+			"sess-direct": {
+				ID:                "sess-direct",
+				TopOrganizationID: 1,
+				OrganizationID:    2,
+				CreatedAt:         time.Now(),
+				UpdatedAt:         time.Now(),
+			},
+		}},
+		messages,
+		mockFeedback{},
+		fakePool{eng: eng},
+	)
+
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/",
+		strings.NewReader(`{"Action":"Chat","SessionId":"sess-direct","Message":"看 2026-04-29 14:00 的监控","request_uuid":"req-direct","top_organization_id":1,"organization_id":2}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Dispatch(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "event: token")
+	assert.Contains(t, body, refusal.MonitorHistoryUnsupported)
+	assert.Contains(t, body, "event: done")
+	assert.Equal(t, refusal.MonitorHistoryUnsupported, messages.patch.Content)
+}
+
+func TestDispatchChatColdSessionDoesNotRehydrateCurrentUserMessage(t *testing.T) {
+	captured := &captureLLM{}
+	messages := &rehydratingMessages{}
+	deps := &engine.SharedDeps{
+		LLMClient:                captured,
+		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		SupportsObjectToolChoice: true,
+		ExternalExecutor:         tools.ToolExecutor(chatExecutor{}),
+	}
+	pool := agentpool.NewWithDeps(deps, messages, agentpool.Options{
+		Capacity: 10,
+		IdleTTL:  time.Hour,
+	})
+	defer pool.Close()
+
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{
+			"sess-cold": {
+				ID:                "sess-cold",
+				TopOrganizationID: 1,
+				OrganizationID:    2,
+				CreatedAt:         time.Now(),
+				UpdatedAt:         time.Now(),
+			},
+		}},
+		messages,
+		mockFeedback{},
+		pool,
+	)
+
+	const userMessage = "hello current"
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/",
+		strings.NewReader(`{"Action":"Chat","SessionId":"sess-cold","Message":"`+userMessage+`","request_uuid":"req-cold","top_organization_id":1,"organization_id":2}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Dispatch(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	userCopies := 0
+	for _, msg := range captured.messages {
+		if msg.Role == openai.ChatMessageRoleUser && msg.Content == userMessage {
+			userCopies++
+		}
+	}
+	require.Equal(t, 1, userCopies, "current user message must be sent to the model exactly once on cold sessions")
 }
 
 func TestDispatchChatRejectsWhenSessionTurnLimitReached(t *testing.T) {

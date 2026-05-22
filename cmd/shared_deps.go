@@ -38,7 +38,7 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 	}
 	retriever, knowledgeEnabled, knowledgeErr := knowledgeRetrieverFromEnv(getenv)
 	if knowledgeRetrievalRequested && knowledgeErr != nil {
-		return fmt.Errorf("RAG enabled but corpus digest mismatch: %w", knowledgeErr)
+		return fmt.Errorf("RAG enabled but retrieval setup failed: %w", knowledgeErr)
 	}
 	if knowledgeEnabled {
 		deps.KnowledgeRetriever = retriever

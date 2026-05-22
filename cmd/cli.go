@@ -59,7 +59,7 @@ func cliConfirm(scanner *bufio.Scanner) engine.ConfirmFunc {
 }
 
 func runCLI(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load(configPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -145,7 +145,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	fmt.Println("╭──────────────────────────────────────╮")
 	fmt.Println("│     优云算力共享 AI 助手 v0.1        │")
 	fmt.Println("╰──────────────────────────────────────╯")
-	fmt.Printf("runtime: %s\n", plannerRuntimeModeLine(shadowEnabled, cutoverIntents))
+	fmt.Printf("runtime: %s\n", plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled, cutoverIntents))
 	fmt.Printf("renderer: %s\n", groundedRendererRuntimeLine(groundedRendererMode))
 	fmt.Printf("tools: %s\n", mutatingToolsRuntimeLine(mutatingToolsEnabled))
 	fmt.Println()
@@ -155,7 +155,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	initStart := time.Now()
 	if traceEnabled {
 		initTraceRecorder = newCLITraceRecorder(traceWriter, "", 0, "init_context", initStart)
-		initTraceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, cutoverIntents))
+		initTraceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled, cutoverIntents))
 		initTraceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 		eng.SetRateLimitObserver(initTraceRecorder.SetRateLimitDecision)
 	}
@@ -213,7 +213,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		eng.SetTokenUsageObserver(nil)
 		if traceEnabled {
 			traceRecorder = newCLITraceRecorder(traceWriter, "", turnIndex, input, turnStart)
-			traceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, cutoverIntents))
+			traceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled, cutoverIntents))
 			traceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)
 			eng.SetHardBlockObserver(traceRecorder.SetEngineHardBlock)
@@ -278,7 +278,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 
 func applyKnowledgeRetrieverStartup(eng *engine.Engine, requested bool, retriever *knowledge.Retriever, enabled bool, err error) {
 	if requested && err != nil {
-		startupFatalf("RAG enabled but corpus digest mismatch (refusing to start): %v", err)
+		startupFatalf("RAG enabled but retrieval setup failed (refusing to start): %v", err)
 		return
 	}
 	if enabled && eng != nil {

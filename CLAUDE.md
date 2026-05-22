@@ -55,17 +55,17 @@ git config core.hooksPath .githooks
 
 ## Runtime feature flags
 
-Behavior is gated by env vars read in `cmd/trace.go` and `cmd/agent.go`. Defaults are conservative.
+Behavior is gated by env vars read in `cmd/trace.go` and `cmd/agent.go`. The default answer path uses the current demo stack: ds-v4-flash, qwen3 RRF retrieval, and LLM grounded rendering.
 
 | Var | Values | Effect |
 |---|---|---|
 | `COMPSHARE_ENABLE_MUTATING_TOOLS` | `1` | Enables start/stop/reboot/reset-password/create. Default off — read-only mode. |
 | `USE_INTENT_PLANNER` | `shadow` | Runs the LLM planner alongside ReAct for trace-only comparison. |
 | `USE_INTENT_PLANNER_FOR` | comma list of `resource,monitor,gpu_specs,stock,platform_image,custom_image,community_image` | Enables Phase-1 cutover: engine owns the planner call for those intents. |
-| `USE_KNOWLEDGE_RETRIEVAL` | `curated` | Wires the RAG retriever into the engine. Combine with `RAG_RETRIEVAL_MODE`. |
-| `RAG_RETRIEVAL_MODE` | `bm25_only` (default), `hybrid_cosine`, `hybrid_rerank`, `qwen3_full`, `qwen3_rrf` | Picks the retrieval pipeline. Hybrid/qwen3 modes require `MODELVERSE_API_KEY` and the matching pinned sidecar under `deploy/kb/`. |
+| `USE_KNOWLEDGE_RETRIEVAL` | `curated` (default), `off` | Wires the RAG retriever into the engine. Combine with `RAG_RETRIEVAL_MODE`. |
+| `RAG_RETRIEVAL_MODE` | `qwen3_rrf` (default), `bm25_only`, `hybrid_cosine`, `hybrid_rerank`, `qwen3_full` | Picks the retrieval pipeline. Hybrid/qwen3 modes require `MODELVERSE_API_KEY` or `LLM_API_KEY` and the matching pinned sidecar under `deploy/kb/`. |
 | `RAG_HYBRID_ENABLED` | `1` | Legacy switch; only consulted when `RAG_RETRIEVAL_MODE` is unset. |
-| `USE_GROUNDED_RENDERER` | `llm` | Routes final reply through `internal/renderer.GroundedRenderer`. |
+| `USE_GROUNDED_RENDERER` | `llm` (default), `off` | Routes final reply through `internal/renderer.GroundedRenderer`. |
 | `COMPSHARE_TRACE_ENABLED` | `1` | Writes per-turn JSONL traces to `COMPSHARE_TRACE_DIR`. |
 | `MYSQL_DSN` | DSN string | Required by `compshare-agent server`; ignored by `compshare-agent cli`. |
 | `COMPSHARE_SERVICE_PUBLIC_KEY` | AK string | Service long-term public key for STS `AssumeRole`. Required when `agent.sts` is configured. |

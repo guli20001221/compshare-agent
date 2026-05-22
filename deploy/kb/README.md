@@ -24,11 +24,11 @@ Selected at runtime via `RAG_RETRIEVAL_MODE` env var (precedence over legacy
 
 | Mode | Embed dependency | Reranker | Use case |
 |---|---|---|---|
-| `bm25_only` | None | None | Safest default; ships when no sidecar is present |
+| `qwen3_rrf` | qwen3-embedding-8b sidecar | qwen3-reranker-8b | Runtime default for the demo answer stack. BM25 top-50 + dense-full-corpus top-50 fused via Reciprocal Rank Fusion (k=60) + reranker. |
+| `bm25_only` | None | None | Explicit fallback/debug mode when vector retrieval is unavailable |
 | `hybrid_cosine` | text-embedding-3-large sidecar | None | BM25 top-20 → cosine rerank |
 | `hybrid_rerank` | text-embedding-3-large sidecar | bge-reranker-v2-m3 | hybrid_cosine + cross-encoder rerank |
 | `qwen3_full` | qwen3-embedding-8b sidecar | qwen3-reranker-8b | Same-family qwen3 embed + rerank (Lane B) |
-| `qwen3_rrf` | qwen3-embedding-8b sidecar | qwen3-reranker-8b | BM25 top-50 ⊕ dense-full-corpus top-50 fused via Reciprocal Rank Fusion (k=60) + reranker. Experimental; recovers BM25-zero-hit queries |
 
 ### Opt-in `qwen3_full` for ModelVerse-hosted deployments
 
@@ -54,16 +54,16 @@ on disk under `deploy/kb/` and its LF-normalized SHA256 must match
 `EmbeddingDigestExpectedQwen3` — otherwise the loader refuses to start.
 
 Operational notes:
-- Empty `RAG_RETRIEVAL_MODE` falls back to legacy `RAG_HYBRID_ENABLED` check.
-- Setting a non-recognized mode logs a warning and falls back the same way.
+- Empty `RAG_RETRIEVAL_MODE` defaults to `qwen3_rrf`. Legacy `RAG_HYBRID_ENABLED=1` still maps to `hybrid_cosine` for old smoke scripts.
+- Setting a non-recognized mode logs a warning and falls back to `qwen3_rrf` unless the legacy hybrid switch is set.
 - `RAG_HYBRID_TIMEOUT_MS` / `RAG_RERANKER_TIMEOUT_MS` knob the per-call
   timeout for the embed + reranker stages respectively (defaults are
   conservative; see `internal/knowledge/retriever.go`).
 
-### Experimental: `qwen3_rrf` (Reciprocal Rank Fusion)
+### `qwen3_rrf` (Reciprocal Rank Fusion)
 
-`qwen3_rrf` is an alternative to `qwen3_full` that uses rank-level fusion
-instead of the cascade filter. Pipeline:
+`qwen3_rrf` is the default retrieval mode. It uses rank-level fusion instead
+of the `qwen3_full` cascade filter. Pipeline:
 
   BM25 top-50  ⊕  dense-full-corpus top-50   →  RRF (k=60)  →  top-10
                                               →  qwen3-reranker-8b  →  top-3
