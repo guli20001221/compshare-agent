@@ -577,3 +577,58 @@ func TestSafeExecutorWithExternalExecutorUsesSTSWithinAttemptBudget(t *testing.T
 		t.Fatalf("ProjectId = %q, want project-from-user", got)
 	}
 }
+
+func TestSafeExecutorRetriesHTTP5xxStatus(t *testing.T) {
+	cases := []struct {
+		name   string
+		action string
+		args   map[string]any
+	}{
+		{name: "form", action: "DescribeCompShareImages", args: map[string]any{"Limit": 1}},
+		{name: "json", action: "GetCompShareInstanceMonitor", args: map[string]any{"UHostIds": []any{"uhost-1"}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("Content-Type", "application/json")
+				if calls == 1 {
+					w.WriteHeader(http.StatusInternalServerError)
+					_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "Ignored"}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "Success"}`))
+			}))
+			defer srv.Close()
+
+			ext := NewExternalExecutor(config.AgentConfig{
+				CompShareAPIURL: srv.URL,
+				PublicKey:       "pk",
+				PrivateKey:      "sk",
+				Region:          "cn-wlcb",
+			})
+			policies := DefaultToolExecutionPolicies()
+			policy := policies[tc.action]
+			policy.BackoffBaseMS = 0
+			policies[tc.action] = policy
+			safe := NewSafeToolExecutor(ext, WithPolicies(policies))
+
+			result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+				Action: tc.action,
+				Args:   tc.args,
+				Origin: OriginDirectLLM,
+			})
+			if err != nil {
+				t.Fatalf("ExecuteSafe error: %v", err)
+			}
+			if result.Attempts != 2 {
+				t.Fatalf("Attempts = %d, want 2", result.Attempts)
+			}
+			if calls != 2 {
+				t.Fatalf("HTTP calls = %d, want 2", calls)
+			}
+		})
+	}
+}

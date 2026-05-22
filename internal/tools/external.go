@@ -45,10 +45,10 @@ func NewExternalExecutor(cfg config.AgentConfig) *ExternalExecutor {
 		}}
 	}
 	return &ExternalExecutor{
-		apiURL:     strings.TrimRight(cfg.CompShareAPIURL, "/") + "/",
-		creds:      provider,
-		region:     cfg.Region,
-		projectId:  cfg.ProjectId,
+		apiURL:    strings.TrimRight(cfg.CompShareAPIURL, "/") + "/",
+		creds:     provider,
+		region:    cfg.Region,
+		projectId: cfg.ProjectId,
 		// 60s is the last-resort safety net; per-action TimeoutMS in
 		// ToolExecutionPolicy (PR #5) is the primary deadline applied
 		// via context.WithTimeout in SafeToolExecutor.executeWithRetry.
@@ -152,6 +152,9 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
+	if err := httpStatusError(resp.StatusCode, body); err != nil {
+		return nil, err
+	}
 
 	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -230,6 +233,9 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
+	if err := httpStatusError(resp.StatusCode, respBody); err != nil {
+		return nil, err
+	}
 
 	var result map[string]any
 	if err := json.Unmarshal(respBody, &result); err != nil {
@@ -242,6 +248,20 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 	}
 
 	return result, nil
+}
+
+func httpStatusError(statusCode int, body []byte) error {
+	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
+		return nil
+	}
+	snippet := strings.TrimSpace(string(body))
+	if len(snippet) > 512 {
+		snippet = snippet[:512] + "..."
+	}
+	if snippet == "" {
+		return fmt.Errorf("api call status code %d", statusCode)
+	}
+	return fmt.Errorf("api call status code %d: %s", statusCode, snippet)
 }
 
 func usesJSONBody(action string) bool {
