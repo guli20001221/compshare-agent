@@ -44,6 +44,25 @@ func TestResourceShortage226604_Anchors(t *testing.T) {
 	}
 }
 
+func TestJailbreakAttempt_Anchors(t *testing.T) {
+	want := []string{"安全限制", "核心规则", "算力平台", "我无法忽略"}
+	for _, anchor := range want {
+		if !strings.Contains(JailbreakAttempt, anchor) {
+			t.Errorf("JailbreakAttempt lost anchor %q", anchor)
+		}
+	}
+	// Anti-leak guard — wording must not confirm the system prompt
+	// exists or name what the override target was; both would give a
+	// determined attacker structural confirmation. Tracked per PR #152
+	// review item 5.
+	forbidden := []string{"系统提示词", "system prompt", "你的指令是"}
+	for _, bad := range forbidden {
+		if strings.Contains(JailbreakAttempt, bad) {
+			t.Errorf("JailbreakAttempt reintroduced forbidden anti-leak phrase %q", bad)
+		}
+	}
+}
+
 func TestCategoryStrings_NeverChange(t *testing.T) {
 	// Downstream MySQL ingest + per-category eval depend on these
 	// EXACT strings as a stable contract. Changing them would break
@@ -52,6 +71,7 @@ func TestCategoryStrings_NeverChange(t *testing.T) {
 		"CategoryAccountBilling":   "account_billing_unsupported",
 		"CategoryMonitorHistory":   "monitor_history_unsupported",
 		"CategoryResourceShortage": "resource_shortage_226604",
+		"CategoryJailbreakAttempt": "jailbreak_attempt",
 	}
 	if CategoryAccountBilling != cases["CategoryAccountBilling"] {
 		t.Errorf("CategoryAccountBilling = %q; want %q", CategoryAccountBilling, cases["CategoryAccountBilling"])
@@ -61,5 +81,8 @@ func TestCategoryStrings_NeverChange(t *testing.T) {
 	}
 	if CategoryResourceShortage != cases["CategoryResourceShortage"] {
 		t.Errorf("CategoryResourceShortage = %q; want %q", CategoryResourceShortage, cases["CategoryResourceShortage"])
+	}
+	if CategoryJailbreakAttempt != cases["CategoryJailbreakAttempt"] {
+		t.Errorf("CategoryJailbreakAttempt = %q; want %q", CategoryJailbreakAttempt, cases["CategoryJailbreakAttempt"])
 	}
 }
