@@ -62,3 +62,13 @@ func VerifySchema(ctx context.Context, db *sql.DB) error {
 	}
 	return nil
 }
+
+// VerifyTraceSchema checks that the optional HTTP trace table exists when the
+// server is configured to persist traces to MySQL.
+func VerifyTraceSchema(ctx context.Context, db *sql.DB) error {
+	var v int
+	if err := db.QueryRowContext(ctx, "SELECT 1 FROM agent_traces LIMIT 1").Scan(&v); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("verify schema table agent_traces: %w", err)
+	}
+	return nil
+}

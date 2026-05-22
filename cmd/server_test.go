@@ -128,6 +128,25 @@ func TestValidateServerConfigAcceptsSTSDefaultRoleUrnWithoutTemplate(t *testing.
 	assert.NoError(t, err)
 }
 
+func TestServerTraceGetenvUsesConfiguredMySQLDSN(t *testing.T) {
+	getenv := serverTraceGetenv(func(key string) string {
+		switch key {
+		case "MYSQL_DSN":
+			return "env-dsn"
+		case "COMPSHARE_TRACE_ENABLED":
+			return "1"
+		case "COMPSHARE_TRACE_SINK":
+			return "mysql"
+		default:
+			return ""
+		}
+	}, "configured-dsn")
+
+	require.Equal(t, "configured-dsn", getenv("MYSQL_DSN"))
+	require.Equal(t, "1", getenv("COMPSHARE_TRACE_ENABLED"))
+	require.True(t, traceMySQLSinkEnabled(getenv))
+}
+
 type serverTestMessageStore struct{}
 
 func (serverTestMessageStore) Append(context.Context, store.Message) error { return nil }

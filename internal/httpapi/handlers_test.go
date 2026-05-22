@@ -110,6 +110,7 @@ func newTestHandlers() *Handlers {
 		}},
 		mockFeedback{},
 		nil,
+		nil,
 	)
 }
 

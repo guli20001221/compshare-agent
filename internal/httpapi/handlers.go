@@ -6,6 +6,7 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
 )
@@ -30,7 +31,8 @@ type Handlers struct {
 	messages store.MessageStore
 	feedback store.FeedbackStore
 	// pool may be nil for Task 6; Task 7 wires a concrete EnginePool.
-	pool EnginePool
+	pool        EnginePool
+	traceWriter observability.Writer
 }
 
 // NewHandlers constructs a Handlers with all dependencies injected.
@@ -41,13 +43,15 @@ func NewHandlers(
 	messages store.MessageStore,
 	feedback store.FeedbackStore,
 	pool EnginePool,
+	traceWriter observability.Writer,
 ) *Handlers {
 	return &Handlers{
-		cfg:      cfg,
-		sessions: sessions,
-		messages: messages,
-		feedback: feedback,
-		pool:     pool,
+		cfg:         cfg,
+		sessions:    sessions,
+		messages:    messages,
+		feedback:    feedback,
+		pool:        pool,
+		traceWriter: traceWriter,
 	}
 }
 

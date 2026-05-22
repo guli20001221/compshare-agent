@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,10 +13,13 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/httpapi"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 )
+
+const serverTraceDrainTimeout = 5 * time.Second
 
 var serverCmd = &cobra.Command{
 	Use:   "server",
@@ -49,13 +53,34 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	sessionStore := store.NewSessionStore(db)
 	messageStore := store.NewMessageStore(db)
 	feedbackStore := store.NewFeedbackStore(db)
+
+	serverGetenv := serverTraceGetenv(os.Getenv, cfg.Agent.MySQL.DSN)
+	if traceMySQLSinkEnabled(serverGetenv) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := store.VerifyTraceSchema(ctx, db); err != nil {
+			cancel()
+			return fmt.Errorf("%w; run deploy/migrations/0002_create_agent_traces.sql before enabling MySQL trace persistence", err)
+		}
+		cancel()
+	}
+	traceWriter, traceEnabled, traceErr := traceWriterFromEnv(serverGetenv)
+	if traceErr != nil {
+		return fmt.Errorf("trace writer setup: %w", traceErr)
+	}
+	if traceEnabled {
+		if err := cleanupTraceWriter(traceWriter, time.Now()); err != nil {
+			log.Printf("warning: trace cleanup failed: %v", err)
+		}
+		defer closeServerTraceWriter(traceWriter)
+	}
+
 	pool, err := buildHTTPServerPool(cfg, messageStore, os.Getenv)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 
-	handlers := httpapi.NewHandlers(cfg, sessionStore, messageStore, feedbackStore, pool)
+	handlers := httpapi.NewHandlers(cfg, sessionStore, messageStore, feedbackStore, pool, traceWriter)
 	router := gin.New()
 	router.Use(corsMiddleware())
 	router.Use(gin.CustomRecovery(func(c *gin.Context, recovered any) {
@@ -76,6 +101,26 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WriteTimeout: cfg.Agent.HTTP.WriteTimeout,
 	}
 	return serveUntilSignal(srv)
+}
+
+func closeServerTraceWriter(writer observability.Writer) {
+	if writer == nil {
+		return
+	}
+	drainCtx, cancel := context.WithTimeout(context.Background(), serverTraceDrainTimeout)
+	defer cancel()
+	if err := writer.Close(drainCtx); err != nil {
+		log.Printf("warning: trace writer drain failed: %v", err)
+	}
+}
+
+func serverTraceGetenv(getenv getenvFunc, mysqlDSN string) getenvFunc {
+	return func(key string) string {
+		if key == "MYSQL_DSN" {
+			return mysqlDSN
+		}
+		return getenv(key)
+	}
 }
 
 func validateServerConfig(cfg *config.Config) error {
