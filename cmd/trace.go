@@ -63,6 +63,14 @@ func traceWriterFromEnv(getenv getenvFunc) (observability.Writer, bool, error) {
 	}
 }
 
+func traceMySQLSinkEnabled(getenv getenvFunc) bool {
+	if getenv("COMPSHARE_TRACE_ENABLED") != "1" {
+		return false
+	}
+	sink := strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_TRACE_SINK")))
+	return sink == "mysql" || sink == "both"
+}
+
 // multiTraceWriter fans out a TraceRecord to multiple sinks. Used when
 // COMPSHARE_TRACE_SINK=both during cutover (run file + mysql side-by-side
 // to compare). Failures from any individual sink are logged-then-ignored
@@ -71,6 +79,23 @@ type multiTraceWriter []observability.Writer
 
 func (m multiTraceWriter) Append(rec observability.TraceRecord) error {
 	for _, w := range m {
+		if err := w.Append(rec); err != nil {
+			log.Printf("trace sink append failed (sink dir=%q): %v", w.Dir(), err)
+		}
+	}
+	return nil
+}
+
+func (m multiTraceWriter) Enqueue(tenant observability.TenantContext, rec observability.TraceRecord) error {
+	for _, w := range m {
+		if enqueuer, ok := w.(interface {
+			Enqueue(observability.TenantContext, observability.TraceRecord) error
+		}); ok {
+			if err := enqueuer.Enqueue(tenant, rec); err != nil {
+				log.Printf("trace sink enqueue failed (sink dir=%q): %v", w.Dir(), err)
+			}
+			continue
+		}
 		if err := w.Append(rec); err != nil {
 			log.Printf("trace sink append failed (sink dir=%q): %v", w.Dir(), err)
 		}

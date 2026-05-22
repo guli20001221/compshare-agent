@@ -19,6 +19,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type captureAppendWriter struct {
+	records []observability.TraceRecord
+}
+
+func (w *captureAppendWriter) Append(record observability.TraceRecord) error {
+	w.records = append(w.records, record)
+	return nil
+}
+
+func (w *captureAppendWriter) Dir() string { return "" }
+
+func (w *captureAppendWriter) Close(context.Context) error { return nil }
+
+type captureEnqueueWriter struct {
+	records []observability.TraceRecord
+	tenants []observability.TenantContext
+}
+
+func (w *captureEnqueueWriter) Append(record observability.TraceRecord) error {
+	w.records = append(w.records, record)
+	w.tenants = append(w.tenants, observability.TenantContext{})
+	return nil
+}
+
+func (w *captureEnqueueWriter) Enqueue(tenant observability.TenantContext, record observability.TraceRecord) error {
+	w.records = append(w.records, record)
+	w.tenants = append(w.tenants, tenant)
+	return nil
+}
+
+func (w *captureEnqueueWriter) Dir() string { return "" }
+
+func (w *captureEnqueueWriter) Close(context.Context) error { return nil }
+
 func TestTraceWriterFromEnvDisabledByDefault(t *testing.T) {
 	writer, enabled, err := traceWriterFromEnv(func(string) string { return "" })
 	if err != nil {
@@ -53,6 +87,25 @@ func TestTraceWriterFromEnvEnabled(t *testing.T) {
 	if writer == nil || writer.Dir() != traceDir {
 		t.Fatalf("writer dir = %#v, want %q", writer, traceDir)
 	}
+}
+
+func TestMultiTraceWriterEnqueuePreservesTenantForMySQLLikeSink(t *testing.T) {
+	fileSink := &captureAppendWriter{}
+	mysqlSink := &captureEnqueueWriter{}
+	writer := multiTraceWriter{fileSink, mysqlSink}
+	tenant := observability.TenantContext{
+		TopOrgID:     7,
+		OrgID:        8,
+		ConnectionID: "sess-1",
+	}
+	record := observability.TraceRecord{TraceID: "req-1"}
+
+	require.NoError(t, writer.Enqueue(tenant, record))
+
+	require.Len(t, fileSink.records, 1)
+	require.Len(t, mysqlSink.records, 1)
+	require.Len(t, mysqlSink.tenants, 1)
+	require.Equal(t, tenant, mysqlSink.tenants[0])
 }
 
 func TestCleanupTraceWriterDeletesExpiredFiles(t *testing.T) {

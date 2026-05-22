@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -121,6 +122,26 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	}
 	defer release()
 
+	clearChatTraceObservers(agent)
+	defer clearChatTraceObservers(agent)
+
+	start := time.Now()
+	turnIndex := sess.MessageCount/2 + 1
+	traceRecorder := newChatTraceRecorder(h.traceWriter, base, sessionID, turnIndex, message, start)
+	if traceRecorder != nil {
+		traceRecorder.SetRegistryTraceSupplier(agent.RegistryTraceState)
+		attachChatTraceObservers(agent, traceRecorder)
+	}
+	finishTrace := func(err error) {
+		if traceRecorder == nil {
+			return
+		}
+		if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
+			log.Printf("warning: HTTP trace write failed: %v", traceErr)
+		}
+		traceRecorder = nil
+	}
+
 	// -----------------------------------------------------------------------
 	// 3. Pre-stream persistence
 	// -----------------------------------------------------------------------
@@ -178,7 +199,6 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	// -----------------------------------------------------------------------
 	// 5. Keepalive goroutine
 	// -----------------------------------------------------------------------
-	start := time.Now()
 	var firstToken time.Time
 	tokenEmitted := false
 	var usage llm.TokenUsage
@@ -202,7 +222,11 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	// -----------------------------------------------------------------------
 	// 5. LLM streaming call
 	// -----------------------------------------------------------------------
-	reply, chatErr := agent.ChatWithOptions(ctx, message, func(engine.StepEvent) {}, engine.ChatOptions{
+	reply, chatErr := agent.ChatWithOptions(ctx, message, func(ev engine.StepEvent) {
+		if traceRecorder != nil {
+			traceRecorder.OnStep(ev)
+		}
+	}, engine.ChatOptions{
 		OnTextDelta: func(s string) {
 			if firstToken.IsZero() {
 				firstToken = time.Now()
@@ -235,6 +259,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 
 	// Client disconnected.
 	if errors.Is(chatErr, context.Canceled) || errors.Is(c.Request.Context().Err(), context.Canceled) {
+		finishTrace(chatErr)
 		_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
 			store.AssistantPatch{Status: "aborted"})
 		return
@@ -242,6 +267,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 
 	// LLM error.
 	if chatErr != nil {
+		finishTrace(chatErr)
 		apiErr := classifyChatError(chatErr)
 		code := apiErr.Code
 		_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
@@ -256,6 +282,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	}
 
 	// Success.
+	finishTrace(nil)
 	inputTokens := usage.PromptTokens
 	outputTokens := usage.CompletionTokens
 	_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,

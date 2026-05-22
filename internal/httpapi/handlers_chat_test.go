@@ -13,6 +13,7 @@ import (
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/refusal"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
@@ -104,6 +105,27 @@ func (c *captureLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResp
 // denyConfirm is the confirm callback used in tests — always denies (unused in happy path).
 func denyConfirm(_ string, _ map[string]any) bool { return false }
 
+type captureTraceWriter struct {
+	records []observability.TraceRecord
+	tenants []observability.TenantContext
+}
+
+func (w *captureTraceWriter) Append(record observability.TraceRecord) error {
+	w.records = append(w.records, record)
+	w.tenants = append(w.tenants, observability.TenantContext{})
+	return nil
+}
+
+func (w *captureTraceWriter) Enqueue(tenant observability.TenantContext, record observability.TraceRecord) error {
+	w.records = append(w.records, record)
+	w.tenants = append(w.tenants, tenant)
+	return nil
+}
+
+func (w *captureTraceWriter) Dir() string { return "" }
+
+func (w *captureTraceWriter) Close(context.Context) error { return nil }
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -133,6 +155,7 @@ func TestDispatchChatStreamsMetaTokenDone(t *testing.T) {
 		messages,
 		mockFeedback{},
 		fakePool{eng: eng},
+		nil,
 	)
 
 	gin.SetMode(gin.TestMode)
@@ -162,6 +185,62 @@ func TestDispatchChatStreamsMetaTokenDone(t *testing.T) {
 	assert.Equal(t, "ok", messages.patch.Status)
 }
 
+func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
+	eng := engine.NewWithDeps(chatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+
+	traceWriter := &captureTraceWriter{}
+	messages := &recordingMessages{}
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{
+			"sess-trace": {
+				ID:                "sess-trace",
+				TopOrganizationID: 7,
+				OrganizationID:    8,
+				CreatedAt:         time.Now(),
+				UpdatedAt:         time.Now(),
+			},
+		}},
+		messages,
+		mockFeedback{},
+		fakePool{eng: eng},
+		traceWriter,
+	)
+
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/",
+		strings.NewReader(`{"Action":"Chat","SessionId":"sess-trace","Message":"hi","request_uuid":"req-trace","top_organization_id":7,"organization_id":8}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Dispatch(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, traceWriter.records, 1)
+	require.Len(t, traceWriter.tenants, 1)
+	trace := traceWriter.records[0]
+	tenant := traceWriter.tenants[0]
+	assert.Equal(t, "req-trace", trace.TraceID)
+	assert.Equal(t, "turn-1", trace.TurnID)
+	assert.Equal(t, 1, trace.TurnIndex)
+	assert.NotEmpty(t, trace.UserMsgHash)
+	assert.Equal(t, 3, trace.Outcome.TotalTokens)
+	assert.GreaterOrEqual(t, trace.Outcome.TotalLatencyMS, int64(0))
+	assert.Equal(t, int64(7), tenant.TopOrgID)
+	assert.Equal(t, int64(8), tenant.OrgID)
+	assert.Equal(t, "sess-trace", tenant.ConnectionID)
+}
+
 func TestDispatchChatEmitsTokenForDirectEngineReply(t *testing.T) {
 	eng := engine.NewWithDeps(chatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
 	eng.RehydrateHistory(nil)
@@ -186,6 +265,7 @@ func TestDispatchChatEmitsTokenForDirectEngineReply(t *testing.T) {
 		messages,
 		mockFeedback{},
 		fakePool{eng: eng},
+		nil,
 	)
 
 	gin.SetMode(gin.TestMode)
@@ -242,6 +322,7 @@ func TestDispatchChatColdSessionDoesNotRehydrateCurrentUserMessage(t *testing.T)
 		messages,
 		mockFeedback{},
 		pool,
+		nil,
 	)
 
 	const userMessage = "hello current"
@@ -291,6 +372,7 @@ func TestDispatchChatRejectsWhenSessionTurnLimitReached(t *testing.T) {
 		&recordingMessages{},
 		mockFeedback{},
 		fakePool{eng: eng},
+		nil,
 	)
 
 	gin.SetMode(gin.TestMode)
