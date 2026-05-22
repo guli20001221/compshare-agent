@@ -27,7 +27,9 @@ import (
 //   - Access / Secret keys — credential-shaped opaque strings after a
 //     marker keyword (access_key, ak, secret_key, sk, AccessKey...).
 //   - Bearer / JWT tokens — `eyJ`-prefixed JWT shape or generic
-//     "Bearer <token>" / "token=<long-string>" form.
+//     "Bearer <token>" / "token=<long-string>" / "token: <long-string>"
+//     form. Separator may be whitespace, '=', ':' or any combination so
+//     both prose phrasing and config-file phrasing are caught.
 //
 // NOT in scope (deliberately preserved):
 //   - GPU model numbers (4090 / 5090 / A100 / H200) — pricing/spec
@@ -98,9 +100,12 @@ var (
 	// that look JWT-like.
 	jwtRegex = regexp.MustCompile(`\beyJ[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b`)
 
-	// "Bearer xxx" / "token xxx" / "Authorization: Bearer xxx" form.
+	// "Bearer xxx" / "token xxx" / "Authorization: Bearer xxx" /
+	// "token=xxx" / "token: xxx" form. Separator accepts any combination
+	// of whitespace, '=', ':' so that both prose ("Bearer abc...") and
+	// config-style ("token=eyJ..." / "token: AKIA...") shapes are caught.
 	// Captures the token-value group; the marker word itself is preserved.
-	bearerRegex = regexp.MustCompile(`(?i)\b(bearer|token)\s+([A-Za-z0-9+/=_\-\.]{20,})\b`)
+	bearerRegex = regexp.MustCompile(`(?i)\b(bearer|token)[\s:=]+([A-Za-z0-9+/=_\-\.]{20,})\b`)
 )
 
 // RedactOutputLeak returns a copy of s with output-side leak patterns

@@ -144,8 +144,16 @@ func TestRedactOutputLeak_BearerToken(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"Bearer", "Authorization: Bearer AKIAIOSFODNN7EXAMPLEbCDEF", "Authorization: Bearer " + TokenRedactedOutput},
-		{"token=lowercase", "token abc123def456ghi789jklmno", "token " + TokenRedactedOutput},
+		{"Bearer prefix", "Authorization: Bearer AKIAIOSFODNN7EXAMPLEbCDEF", "Authorization: Bearer " + TokenRedactedOutput},
+		{"token whitespace", "token abc123def456ghi789jklmno", "token " + TokenRedactedOutput},
+		// Config-style separators ("=" / ":") — common in env files,
+		// YAML, log lines. Codex review (PR #150) caught that the
+		// previous \s+ regex silently passed token=AKIA... through.
+		{"token equals", "token=AKIAIOSFODNN7EXAMPLEbCDEF", "token " + TokenRedactedOutput},
+		{"token colon", "token: AKIAIOSFODNN7EXAMPLEbCDEF", "token " + TokenRedactedOutput},
+		{"bearer equals", "bearer=AKIAIOSFODNN7EXAMPLEbCDEF", "bearer " + TokenRedactedOutput},
+		{"bearer colon", "bearer:AKIAIOSFODNN7EXAMPLEbCDEF", "bearer " + TokenRedactedOutput},
+		{"mixed separator", "Authorization: Bearer=AKIAIOSFODNN7EXAMPLEbCDEF", "Authorization: Bearer " + TokenRedactedOutput},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
