@@ -3986,6 +3986,37 @@ func TestStage2BRetrievalDisabledFallsBackToReAct(t *testing.T) {
 	assert.Equal(t, string(intent.CutoverStatusFallbackRetrievalDisabled), plannerTraces[0].CutoverStatus)
 }
 
+func TestDefaultCapabilityCutoverDoesNotSwallowKnowledgeQA(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(true)}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ordinary knowledge fallback"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	var plannerTraces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		plannerTraces = append(plannerTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{
+			intent.IntentResourceInfo,
+			intent.IntentMonitorQuery,
+			intent.IntentGPUSpecsQuery,
+			intent.IntentStockAvailability,
+			intent.IntentPlatformImageList,
+			intent.IntentCustomImageList,
+			intent.IntentCommunityImageList,
+		},
+		Model: "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "Windows 远程桌面没有声音怎么办", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "ordinary knowledge fallback", reply)
+	require.Len(t, mock.calls, 1)
+	require.Len(t, plannerTraces, 1)
+	assert.Equal(t, string(intent.CutoverStatusFallbackRetrievalDisabled), plannerTraces[0].CutoverStatus)
+}
+
 func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T) {
 	cases := []struct {
 		name       string

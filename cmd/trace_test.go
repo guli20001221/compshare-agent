@@ -109,6 +109,38 @@ func TestIntentPlannerCutoverIntentsFromEnv(t *testing.T) {
 	}
 }
 
+func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
+	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(string) string { return "" })
+	require.Empty(t, unknown)
+
+	want := []string{
+		"resource_info",
+		"monitor_query",
+		"gpu_specs_query",
+		"stock_availability",
+		"platform_image_list",
+		"custom_image_list",
+		"community_image_list",
+	}
+	require.Len(t, intents, len(want))
+	for i, w := range want {
+		require.Equal(t, w, string(intents[i]))
+	}
+}
+
+func TestIntentPlannerCutoverIntents_OffDisablesAll(t *testing.T) {
+	for _, val := range []string{"off", "OFF", "none", "  off  "} {
+		intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+			if key == "USE_INTENT_PLANNER_FOR" {
+				return val
+			}
+			return ""
+		})
+		require.Empty(t, unknown)
+		require.Empty(t, intents)
+	}
+}
+
 func TestSeparateShadowRunnerDisabledWhenCutoverEnabled(t *testing.T) {
 	if !useSeparateShadowRunner(true, true, false) {
 		t.Fatal("shadow-only tracing should use the existing shadow runner")
@@ -133,10 +165,16 @@ func TestPlannerRuntimeModeLine(t *testing.T) {
 	})
 	require.Empty(t, unknown)
 
-	line := plannerRuntimeModeLine(true, cutoverIntents)
+	line := plannerRuntimeModeLine(true, false, cutoverIntents)
 	require.Equal(t, "planner_mode=shadow cutover_intents=[resource,monitor]", line)
 
-	line = plannerRuntimeModeLine(false, nil)
+	line = plannerRuntimeModeLine(true, true, cutoverIntents)
+	require.Equal(t, "planner_mode=dispatch cutover_intents=[resource,monitor]", line)
+
+	line = plannerRuntimeModeLine(false, true, nil)
+	require.Equal(t, "planner_mode=dispatch cutover_intents=[]", line)
+
+	line = plannerRuntimeModeLine(false, false, nil)
 	require.Equal(t, "planner_mode=off cutover_intents=[]", line)
 }
 
@@ -149,17 +187,28 @@ func TestPlannerRuntimeTrace(t *testing.T) {
 	})
 	require.Empty(t, unknown)
 
-	trace := plannerRuntimeTrace(true, cutoverIntents)
+	trace := plannerRuntimeTrace(true, false, cutoverIntents)
 	require.Equal(t, "shadow", trace.PlannerMode)
 	require.Equal(t, []string{"resource", "monitor"}, trace.CutoverIntents)
 
-	trace = plannerRuntimeTrace(false, nil)
+	trace = plannerRuntimeTrace(true, true, cutoverIntents)
+	require.Equal(t, "dispatch", trace.PlannerMode)
+	require.Equal(t, []string{"resource", "monitor"}, trace.CutoverIntents)
+
+	trace = plannerRuntimeTrace(false, true, nil)
+	require.Equal(t, "dispatch", trace.PlannerMode)
+
+	trace = plannerRuntimeTrace(false, false, nil)
 	require.Equal(t, "off", trace.PlannerMode)
 	require.Empty(t, trace.CutoverIntents)
 }
 
 func TestGroundedRendererModeFromEnv(t *testing.T) {
-	mode, unknown := groundedRendererModeFromEnv(func(key string) string {
+	mode, unknown := groundedRendererModeFromEnv(func(string) string { return "" })
+	require.Equal(t, "llm", mode)
+	require.Empty(t, unknown)
+
+	mode, unknown = groundedRendererModeFromEnv(func(key string) string {
 		if key == "USE_GROUNDED_RENDERER" {
 			return " llm "
 		}
@@ -204,8 +253,8 @@ func TestMutatingToolsFromEnvAndRuntimeLine(t *testing.T) {
 
 func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
 	enabled, unknown := knowledgeRetrievalModeFromEnv(func(string) string { return "" })
-	if enabled || unknown != "" {
-		t.Fatalf("unset knowledge retrieval = %v/%q, want disabled", enabled, unknown)
+	if !enabled || unknown != "" {
+		t.Fatalf("unset knowledge retrieval = %v/%q, want curated default", enabled, unknown)
 	}
 	enabled, unknown = knowledgeRetrievalModeFromEnv(func(key string) string {
 		if key == "USE_KNOWLEDGE_RETRIEVAL" {
@@ -225,6 +274,11 @@ func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
 	if enabled || unknown != "raw-chat" {
 		t.Fatalf("unknown mode = %v/%q, want disabled raw-chat", enabled, unknown)
 	}
+}
+
+func TestRagRetrievalModeFromEnvDefaultsToQwen3RRF(t *testing.T) {
+	got := ragRetrievalModeFromEnv(func(string) string { return "" })
+	require.Equal(t, knowledge.RetrievalModeQwen3RRF, got)
 }
 
 func TestKnowledgeCorpusPathFromEnv(t *testing.T) {
@@ -252,6 +306,8 @@ func TestKnowledgeRetrieverFromEnvLoadsCorpus(t *testing.T) {
 			return "curated"
 		case "COMPSHARE_KNOWLEDGE_CORPUS":
 			return filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
+		case "RAG_RETRIEVAL_MODE":
+			return knowledge.RetrievalModeBM25Only
 		default:
 			return ""
 		}
@@ -356,7 +412,7 @@ func TestHybridEmbeddingsPathFromEnvOverride(t *testing.T) {
 func TestEmbeddingClientFromEnvRequiresKey(t *testing.T) {
 	_, err := embeddingClientFromEnv(func(_ string) string { return "" })
 	if err == nil {
-		t.Fatal("expected error when MODELVERSE_API_KEY missing")
+		t.Fatal("expected error when MODELVERSE_API_KEY and LLM_API_KEY are missing")
 	}
 }
 
@@ -373,6 +429,17 @@ func TestEmbeddingClientFromEnvDefaults(t *testing.T) {
 	if client == nil {
 		t.Fatal("expected client when key is present")
 	}
+}
+
+func TestEmbeddingClientFromEnvFallsBackToLLMAPIKey(t *testing.T) {
+	client, err := embeddingClientFromEnv(func(key string) string {
+		if key == "LLM_API_KEY" {
+			return "llm-key-stub"
+		}
+		return ""
+	})
+	require.NoError(t, err)
+	require.NotNil(t, client)
 }
 
 func TestKnowledgeRetrieverFromEnvHybridMissingSidecarErrors(t *testing.T) {

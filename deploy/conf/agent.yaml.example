@@ -23,6 +23,14 @@ agent:
     # monitor ~1.86% empty-return rate on hybrid path (P3 watch-list).
     model: "deepseek-v4-flash"
 
+  # Default answer stack is enabled by environment defaults in the binary:
+  # USE_INTENT_PLANNER_FOR defaults to
+  # resource,monitor,gpu_specs,stock,platform_image,custom_image,community_image.
+  # USE_KNOWLEDGE_RETRIEVAL=curated, RAG_RETRIEVAL_MODE=qwen3_rrf,
+  # USE_GROUNDED_RENDERER=llm. Set USE_INTENT_PLANNER_FOR=off,
+  # USE_KNOWLEDGE_RETRIEVAL=off, or USE_GROUNDED_RENDERER=off only for
+  # debugging/fallback.
+
   # 0 or omitted uses the built-in defaults for llm / mutating /
   # read_expensive. The user_turn_* and max_tokens_per_turn fields are
   # OPT-IN test-phase guardrails — 0 / omitted = no enforcement (NOT
