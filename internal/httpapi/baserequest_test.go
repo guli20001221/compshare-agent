@@ -12,12 +12,12 @@ import (
 )
 
 func TestParseBaseRequestJSONGeneratesRequestUUID(t *testing.T) {
-	c := testContext("application/json", `{"Action":"GetMeta","top_organization_id":123,"organization_id":456}`)
+	c := testContext("application/json", `{"Action":"GetCSAgentMeta","top_organization_id":123,"organization_id":456}`)
 
 	raw, base, err := ParseBaseRequest(c)
 
 	require.NoError(t, err)
-	assert.Equal(t, "GetMeta", base.Action)
+	assert.Equal(t, "GetCSAgentMeta", base.Action)
 	assert.Equal(t, uint32(123), base.Owner.TopOrganizationID)
 	assert.Equal(t, uint32(456), base.Owner.OrganizationID)
 	assert.Empty(t, base.ProjectID)
@@ -27,7 +27,7 @@ func TestParseBaseRequestJSONGeneratesRequestUUID(t *testing.T) {
 }
 
 func TestParseBaseRequestPicksUpProjectID(t *testing.T) {
-	c := testContext("application/json", `{"Action":"GetMeta","top_organization_id":123,"organization_id":456,"ProjectId":"org-cwy2qk"}`)
+	c := testContext("application/json", `{"Action":"GetCSAgentMeta","top_organization_id":123,"organization_id":456,"ProjectId":"org-cwy2qk"}`)
 
 	_, base, err := ParseBaseRequest(c)
 
@@ -36,18 +36,18 @@ func TestParseBaseRequestPicksUpProjectID(t *testing.T) {
 }
 
 func TestParseBaseRequestForm(t *testing.T) {
-	c := testContext("application/x-www-form-urlencoded", "Action=Chat&SessionId=sess-1&request_uuid=req-1&top_organization_id=123&organization_id=456")
+	c := testContext("application/x-www-form-urlencoded", "Action=SendCSAgentChat&SessionId=sess-1&request_uuid=req-1&top_organization_id=123&organization_id=456")
 
 	raw, base, err := ParseBaseRequest(c)
 
 	require.NoError(t, err)
-	assert.Equal(t, "Chat", base.Action)
+	assert.Equal(t, "SendCSAgentChat", base.Action)
 	assert.Equal(t, "req-1", base.RequestUUID)
 	assert.Equal(t, "sess-1", raw.Get("SessionId").MustString())
 }
 
 func TestParseBaseRequestRejectsMissingOrganization(t *testing.T) {
-	c := testContext("application/json", `{"Action":"GetMeta","top_organization_id":123}`)
+	c := testContext("application/json", `{"Action":"GetCSAgentMeta","top_organization_id":123}`)
 
 	_, _, err := ParseBaseRequest(c)
 
@@ -59,23 +59,23 @@ func TestParseBaseRequestRejectsMissingOrganization(t *testing.T) {
 // TestParseBaseRequestJSONWithCharset verifies that "application/json; charset=utf-8"
 // is treated as JSON (not rejected or misclassified as form data).
 func TestParseBaseRequestJSONWithCharset(t *testing.T) {
-	c := testContext("application/json; charset=utf-8", `{"Action":"GetMeta","top_organization_id":1,"organization_id":2}`)
+	c := testContext("application/json; charset=utf-8", `{"Action":"GetCSAgentMeta","top_organization_id":1,"organization_id":2}`)
 
 	_, base, err := ParseBaseRequest(c)
 
 	require.NoError(t, err)
-	assert.Equal(t, "GetMeta", base.Action)
+	assert.Equal(t, "GetCSAgentMeta", base.Action)
 }
 
 // TestParseBaseRequestFormWithCharset verifies that
 // "application/x-www-form-urlencoded; charset=utf-8" is correctly parsed as form data.
 func TestParseBaseRequestFormWithCharset(t *testing.T) {
-	c := testContext("application/x-www-form-urlencoded; charset=utf-8", "Action=Chat&SessionId=sess-x&request_uuid=req-2&top_organization_id=1&organization_id=2")
+	c := testContext("application/x-www-form-urlencoded; charset=utf-8", "Action=SendCSAgentChat&SessionId=sess-x&request_uuid=req-2&top_organization_id=1&organization_id=2")
 
 	raw, base, err := ParseBaseRequest(c)
 
 	require.NoError(t, err)
-	assert.Equal(t, "Chat", base.Action)
+	assert.Equal(t, "SendCSAgentChat", base.Action)
 	assert.Equal(t, "sess-x", raw.Get("SessionId").MustString())
 	assert.Equal(t, "req-2", base.RequestUUID)
 }

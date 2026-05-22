@@ -164,7 +164,7 @@ func TestDispatchChatStreamsMetaTokenDone(t *testing.T) {
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/api/gateway",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-1","Message":"hi","request_uuid":"req-1","top_organization_id":1,"organization_id":2}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-1","Message":"hi","request_uuid":"req-1","top_organization_id":1,"organization_id":2}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -381,7 +381,7 @@ func TestDispatchChatRejectsWhenSessionTurnLimitReached(t *testing.T) {
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-cap","Message":"hi","request_uuid":"req-cap","top_organization_id":1,"organization_id":2}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-cap","Message":"hi","request_uuid":"req-cap","top_organization_id":1,"organization_id":2}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
