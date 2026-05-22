@@ -63,6 +63,13 @@ agent:
     # SessionTurnLimitExceeded and the client must open a new session.
     # Omit or 0 falls back to the built-in default (10).
     max_session_turns: 10
+    # Skip the built-in CORS middleware. Default false = agent emits
+    # Access-Control-Allow-* headers itself (needed when the front-end dev
+    # server on localhost:3000 fetches 127.0.0.1:<port> directly per the
+    # front-back-local-debug skill). In production set this to true so the
+    # console gateway is the SOLE source of CORS headers — otherwise both
+    # agent and gateway add them and the browser rejects the duplicate.
+    disable_cors: false
 
   # MySQL backing store (used by: compshare-agent server).
   # DSN is resolved from ${MYSQL_DSN} env var.

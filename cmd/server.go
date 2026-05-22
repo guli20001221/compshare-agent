@@ -58,7 +58,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	handlers := httpapi.NewHandlers(cfg, sessionStore, messageStore, feedbackStore, pool)
 	router := gin.New()
-	router.Use(corsMiddleware())
+	if !cfg.Agent.HTTP.DisableCORS {
+		router.Use(corsMiddleware())
+	}
 	router.Use(gin.CustomRecovery(func(c *gin.Context, recovered any) {
 		c.JSON(http.StatusInternalServerError, httpapi.Response{
 			Code:    "InternalError",
@@ -133,7 +135,8 @@ func serveUntilSignal(srv *http.Server) error {
 // corsMiddleware allows browser clients on any origin to call the agent.
 // Permissive by design — the agent sits behind the console gateway in prod,
 // so origin enforcement lives there; locally we accept everything to keep
-// front-end dev simple.
+// front-end dev simple. In prod set agent.http.disable_cors: true so the
+// gateway is the sole source of Access-Control-Allow-* headers.
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")

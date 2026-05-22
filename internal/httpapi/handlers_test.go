@@ -129,7 +129,7 @@ func performGateway(h *Handlers, body string) *httptest.ResponseRecorder {
 
 func TestDispatchGetMeta(t *testing.T) {
 	h := newTestHandlers()
-	rec := performGateway(h, `{"Action":"GetMeta","top_organization_id":1,"organization_id":2}`)
+	rec := performGateway(h, `{"Action":"GetCSAgentMeta","top_organization_id":1,"organization_id":2}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"Code":"Success"`)
@@ -138,7 +138,7 @@ func TestDispatchGetMeta(t *testing.T) {
 
 func TestDispatchCreateSession(t *testing.T) {
 	h := newTestHandlers()
-	rec := performGateway(h, `{"Action":"CreateSession","Title":"hello","top_organization_id":1,"organization_id":2}`)
+	rec := performGateway(h, `{"Action":"CreateCSAgentSession","Title":"hello","top_organization_id":1,"organization_id":2}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"SessionId":"sess-new"`)
@@ -146,7 +146,7 @@ func TestDispatchCreateSession(t *testing.T) {
 
 func TestDispatchGetSessionRequiresSessionID(t *testing.T) {
 	h := newTestHandlers()
-	rec := performGateway(h, `{"Action":"GetSession","top_organization_id":1,"organization_id":2}`)
+	rec := performGateway(h, `{"Action":"GetCSAgentSession","top_organization_id":1,"organization_id":2}`)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"Code":"InvalidParam"`)
@@ -154,7 +154,7 @@ func TestDispatchGetSessionRequiresSessionID(t *testing.T) {
 
 func TestDispatchFeedback(t *testing.T) {
 	h := newTestHandlers()
-	rec := performGateway(h, `{"Action":"Feedback","MessageId":"msg-1","Rating":"Up","top_organization_id":1,"organization_id":2}`)
+	rec := performGateway(h, `{"Action":"SendCSAgentFeedback","MessageId":"msg-1","Rating":"Up","top_organization_id":1,"organization_id":2}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"FeedbackId":"fb-1"`)

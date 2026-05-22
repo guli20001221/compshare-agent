@@ -18,19 +18,19 @@ func (h *Handlers) Dispatch(c *gin.Context) {
 	}
 
 	switch base.Action {
-	case "GetMeta":
+	case "GetCSAgentMeta":
 		data, err := h.handleGetMeta(c, base, raw)
 		h.writeResult(c, base, data, err)
-	case "CreateSession":
+	case "CreateCSAgentSession":
 		data, err := h.handleCreateSession(c, base, raw)
 		h.writeResult(c, base, data, err)
-	case "GetSession":
+	case "GetCSAgentSession":
 		data, err := h.handleGetSession(c, base, raw)
 		h.writeResult(c, base, data, err)
-	case "Feedback":
+	case "SendCSAgentFeedback":
 		data, err := h.handleFeedback(c, base, raw)
 		h.writeResult(c, base, data, err)
-	case "Chat":
+	case "SendCSAgentChat":
 		h.handleChat(c, base, raw)
 	default:
 		h.writeError(c, base.RequestUUID, ErrInvalidParam.WithMessage("unsupported Action %s", base.Action))

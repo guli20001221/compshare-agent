@@ -66,6 +66,14 @@ type HTTPConfig struct {
 	// reached the cap, further Chat requests return SessionTurnLimitExceeded
 	// and the caller must open a new session.
 	MaxSessionTurns int `yaml:"max_session_turns"`
+	// DisableCORS turns off the permissive CORS middleware. Default false =
+	// CORS headers are added (needed for local front-end debug per the
+	// front-back-local-debug skill: dev server on localhost:3000 fetches
+	// 127.0.0.1:<port> directly). In production the agent sits behind a
+	// gateway that already issues CORS headers, so set this to true to
+	// avoid duplicate Access-Control-Allow-* headers (which browsers
+	// reject as malformed even when the values match).
+	DisableCORS bool `yaml:"disable_cors"`
 }
 
 // DefaultMaxSessionTurns is the fallback cap when agent.http.max_session_turns
