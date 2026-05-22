@@ -558,8 +558,9 @@ func TestPolicyDefaults_TimeoutsAndBackoffByClass(t *testing.T) {
 		wantBackoff int
 		wantRetries int
 	}{
-		// read_cheap: cheap describes, gpu specs lookup.
-		{"DescribeCompShareImages", ActionClassReadCheap, 8000, 300, 1},
+		// read_cheap: cheap describes, gpu specs lookup. The timeout still
+		// budgets for a cold STS AssumeRole before the business API call.
+		{"DescribeCompShareImages", ActionClassReadCheap, 15000, 300, 1},
 		// read_expensive_default: per-instance describes, price calls.
 		{"DescribeCompShareInstance", ActionClassReadExpensiveDefault, 15000, 500, 1},
 		{"GetCompShareInstancePrice", ActionClassReadExpensiveDefault, 15000, 500, 1},

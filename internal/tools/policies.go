@@ -112,14 +112,15 @@ func policyForAction(action string) ToolExecutionPolicy {
 	}
 
 	// Per-class timeout + backoff defaults (PR #5 unification). Numbers
-	// derived from p99 of observed real-API latencies: cheap reads
-	// (DescribeAvailable*, GetGPUSpecs) typically <2s but spike to ~5s
-	// under load; per-instance describes can hit 8-10s; the monitor API
-	// is bulk-read and can take longer. Mutating/destructive policies
-	// keep a generous ceiling because the agent does not retry them.
+	// include cold STS credential acquisition when server mode uses
+	// AssumeRole. Cheap reads are usually <2s once credentials are warm,
+	// but the first per-role call can spend up to 10s in STS before the
+	// business API call starts. Per-instance describes can hit 8-10s; the
+	// monitor API is bulk-read and can take longer. Mutating/destructive
+	// policies keep a generous ceiling because the agent does not retry them.
 	switch policy.Class {
 	case ActionClassReadCheap:
-		policy.TimeoutMS = 8000
+		policy.TimeoutMS = 15000
 		policy.BackoffBaseMS = 300
 	case ActionClassReadExpensiveDefault:
 		policy.TimeoutMS = 15000
