@@ -804,6 +804,30 @@ func fullGPUSpecsRequest(userText string) bool {
 	if hasFullQualifier && hasSpecsTerm {
 		return true
 	}
+	// Co-occurrence rule (PR #157, intent matrix smoke 2026-05-22): if the
+	// user mentions both a CPU-shaped token AND a memory-shaped token
+	// anywhere in the text, treat as a detailed request. Colloquial Chinese
+	// phrasings like "5090 几核 cpu 多大内存" / "A100 cpu 配多少 内存" /
+	// "4090 几核多少内存" don't hit any of the compound substring matches
+	// below but they're clearly asking for the Cpu+Memory breakdown that
+	// only shows in detailed mode.
+	//
+	// Known FP class (intentionally accepted; PR #157 review N2):
+	//   "我的实例 cpu 占用率高 内存也满了"  — really a monitor / diagnosis Q
+	//   "创建实例选什么 cpu 和 内存 配置"   — really a recommendation Q
+	//   "4090 cpu 推理 内存占用"             — really a perf Q
+	// These can still flip detailed=true here, but they reach this renderer
+	// only if the upstream planner already routed them to gpu_specs_query
+	// (the planner gate, not the keyword gate, is the actual scoping
+	// mechanism). If a future router change widens what reaches gpu_specs,
+	// revisit this rule. Test below locks the contained-damage assumption.
+	hasCPUToken := containsAny(compact, "cpu", "核数", "几核", "多少核", "vcpu") ||
+		containsAnyEnglishWord(normalized, "core", "cores")
+	hasMemToken := containsAny(compact, "内存", "memory", "ram", "几g内存", "多大内存", "多少内存") ||
+		containsAnyEnglishWord(normalized, "memory", "ram")
+	if hasCPUToken && hasMemToken {
+		return true
+	}
 	return containsAny(compact,
 		"cpu/内存",
 		"cpu内存",
@@ -1276,6 +1300,74 @@ func filterStockEntriesToResolverZones(entries []stockInstanceTypeEntry, resolve
 	return filtered
 }
 
+// isImageListAllIntent returns true when the user is asking for a full
+// listing rather than a specific image — phrases like "有什么/有哪些/列出/
+// 全部/我的镜像/list all". When this fires, image renderers should skip the
+// keyword filter entirely so the result set passes through rather than
+// returning the cryptic "未找到匹配的镜像" against non-empty data.
+// PR #157, intent matrix smoke 2026-05-22.
+//
+// Specific-name guard (PR #157 review N2): if the user *also* names a
+// concrete image-family / version, the user wants that filter applied
+// even though they used a list-all-shaped phrase. "我的 ubuntu 镜像" /
+// "看看 cuda 12.8 镜像" intent is "find specific", not "list everything".
+// In that case return false so the existing substring filter runs.
+func isImageListAllIntent(userText string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(userText))
+	if normalized == "" {
+		return false
+	}
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(normalized)
+	// Chinese colloquial list-all triggers.
+	hasListAllTrigger := containsAny(compact,
+		"有什么", "有哪些", "都有什么", "都有哪些",
+		"列出", "列一下", "列下", "看看", "看下",
+		"全部", "所有", "都有",
+		"我做的", "我的", "我创建", "我自己",
+	)
+	if !hasListAllTrigger {
+		// English / pinyin variants.
+		hasListAllTrigger = strings.Contains(normalized, "list all") ||
+			strings.Contains(normalized, "show all") ||
+			strings.Contains(normalized, "show me all") ||
+			strings.Contains(normalized, "what images") ||
+			strings.Contains(normalized, "available images") ||
+			strings.Contains(normalized, "my images")
+	}
+	if !hasListAllTrigger {
+		return false
+	}
+	// Specific-name guard: list-all wording + a concrete image family or
+	// version token means "find specific", not "list everything". The
+	// families list intentionally tracks platform-shipped image
+	// vocabularies (DescribeCompShareImages Name field). Stop-grow ceiling:
+	// L0 hand-list; if this needs >12 entries we should move to a fuzzy
+	// match against the actual API Name set instead.
+	return !hasSpecificImageToken(normalized)
+}
+
+// hasSpecificImageToken is the negative guard for list-all detection.
+// Returns true when the user text names a concrete image family or
+// version, in which case the substring filter must run instead of
+// bypassing.
+var imageVersionRegex = regexp.MustCompile(`(?:\bv?\d+\.\d+(?:\.\d+)?\b)`)
+
+func hasSpecificImageToken(normalized string) bool {
+	// L0 image family vocabulary — names shipped on platform as of 2026-05.
+	// Stop-grow ceiling: ≤12 entries; if it exceeds, replace with a
+	// fuzzy-match against the live DescribeCompShareImages Name field.
+	for _, fam := range []string{
+		"ubuntu", "windows", "cuda", "pytorch", "vllm",
+		"ollama", "sglang", "comfyui", "isaac", "dify",
+		"ragflow", "rocky",
+	} {
+		if strings.Contains(normalized, fam) {
+			return true
+		}
+	}
+	return imageVersionRegex.MatchString(normalized)
+}
+
 func preferredZonesFromResolver(resolver EntityResolver) map[string]struct{} {
 	snapshot, ok := resolver.(entity.RegistrySnapshot)
 	if !ok {
@@ -1458,6 +1550,15 @@ func renderImageListReply(raw map[string]any, listKey string, fieldOrder []strin
 		return noImageListReply
 	}
 	keywords := extractUserTokens(userText)
+	// PR #157 (intent matrix smoke 2026-05-22): list-all bypass. When the
+	// user explicitly asks "what's available" / "show me everything" /
+	// "my images" with no specific image name, the keyword filter strips
+	// to noise tokens and reports "未找到匹配的镜像" against 39 real images.
+	// Treat list-all intent as "no effective filter": skip the keyword
+	// match step entirely so the full result set falls through.
+	if isImageListAllIntent(userText) {
+		keywords = nil
+	}
 	// Match keywords against name-like fields only (not status/id/type).
 	matchFields := []string{}
 	for _, f := range fieldOrder {
@@ -1512,6 +1613,10 @@ func renderCommunityImageReply(raw map[string]any, userText string) string {
 			[]string{"Name", "Author", "CompShareImageId"}, userText)
 	}
 	keywords := extractUserTokens(userText)
+	// PR #157: same list-all bypass as renderImageListReply.
+	if isImageListAllIntent(userText) {
+		keywords = nil
+	}
 	matchFields := []string{"Name", "Author"}
 
 	filtered := make([]map[string]any, 0, len(groups))
