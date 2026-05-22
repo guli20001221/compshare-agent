@@ -45,11 +45,17 @@ func NewExternalExecutor(cfg config.AgentConfig) *ExternalExecutor {
 		}}
 	}
 	return &ExternalExecutor{
-		apiURL:     strings.TrimRight(cfg.CompShareAPIURL, "/") + "/",
-		creds:      provider,
-		region:     cfg.Region,
-		projectId:  cfg.ProjectId,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		apiURL:    strings.TrimRight(cfg.CompShareAPIURL, "/") + "/",
+		creds:     provider,
+		region:    cfg.Region,
+		projectId: cfg.ProjectId,
+		// 60s is the last-resort safety net; per-action TimeoutMS in
+		// ToolExecutionPolicy (PR #5) is the primary deadline applied
+		// via context.WithTimeout in SafeToolExecutor.executeWithRetry.
+		// Keeping the client timeout above the largest per-action
+		// budget (monitor = 30s) means policy-level deadlines dominate
+		// in the common case, while runaway calls still cap at 60s.
+		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -146,6 +152,9 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
+	if err := httpStatusError(resp.StatusCode, body); err != nil {
+		return nil, err
+	}
 
 	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -224,6 +233,9 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
+	if err := httpStatusError(resp.StatusCode, respBody); err != nil {
+		return nil, err
+	}
 
 	var result map[string]any
 	if err := json.Unmarshal(respBody, &result); err != nil {
@@ -236,6 +248,20 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 	}
 
 	return result, nil
+}
+
+func httpStatusError(statusCode int, body []byte) error {
+	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
+		return nil
+	}
+	snippet := strings.TrimSpace(string(body))
+	if len(snippet) > 512 {
+		snippet = snippet[:512] + "..."
+	}
+	if snippet == "" {
+		return fmt.Errorf("api call status code %d", statusCode)
+	}
+	return fmt.Errorf("api call status code %d: %s", statusCode, snippet)
 }
 
 func usesJSONBody(action string) bool {

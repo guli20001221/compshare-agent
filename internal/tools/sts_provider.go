@@ -105,7 +105,11 @@ func (p *STSProvider) Get(ctx context.Context) (*Credentials, error) {
 	}
 	if ch, inFlight := p.inflight[u.RoleUrn]; inFlight {
 		p.mu.Unlock()
-		<-ch
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		// Re-check cache after inflight completes.
 		return p.Get(ctx)
 	}

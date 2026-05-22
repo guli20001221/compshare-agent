@@ -38,6 +38,24 @@ type ToolExecutionPolicy struct {
 	MaxHistoryWindowSeconds int
 	MaxRetries              int
 	RetryOn                 []ErrorClass
+
+	// TimeoutMS bounds a single attempt at SafeToolExecutor.Execute. The
+	// inner executor receives a derived context.WithTimeout per attempt,
+	// so a hung backend cannot block the agent indefinitely. Zero means
+	// "use the inner executor's ambient timeout" (currently 60s on
+	// ExternalExecutor's http.Client) — kept as a fallback safety net,
+	// but every policy in DefaultToolExecutionPolicies sets an explicit
+	// per-class value below.
+	TimeoutMS int
+
+	// BackoffBaseMS is the linear backoff base between retry attempts:
+	// before attempt N (N >= 2) the executor sleeps BackoffBaseMS *
+	// (N - 1) ms, respecting ctx cancellation. Zero disables backoff
+	// (retries fire back-to-back). Read-class policies use a small
+	// (300-500ms) base so a transient upstream hiccup gets a brief
+	// breather, while mutating/destructive (MaxRetries=0) inherit
+	// zero — no retry, no backoff.
+	BackoffBaseMS int
 }
 
 type ActionRoute string
@@ -92,10 +110,44 @@ func policyForAction(action string) ToolExecutionPolicy {
 		policy.MaxRetries = 1
 		policy.RetryOn = []ErrorClass{ErrorClassNetwork, ErrorClassEOF, ErrorClassHTTP5xx}
 	}
+
+	// Per-class timeout + backoff defaults (PR #5 unification). Numbers
+	// include cold STS credential acquisition when server mode uses
+	// AssumeRole. Cheap reads are usually <2s once credentials are warm,
+	// but the first per-role call can spend up to 10s in STS before the
+	// business API call starts. Per-instance describes can hit 8-10s; the
+	// monitor API is bulk-read and can take longer. Mutating/destructive
+	// policies keep a generous ceiling because the agent does not retry them.
+	switch policy.Class {
+	case ActionClassReadCheap:
+		policy.TimeoutMS = 15000
+		policy.BackoffBaseMS = 300
+	case ActionClassReadExpensiveDefault:
+		policy.TimeoutMS = 15000
+		policy.BackoffBaseMS = 500
+	case ActionClassReadExpensivePerTarget:
+		policy.TimeoutMS = 30000
+		policy.BackoffBaseMS = 500
+	case ActionClassMutating, ActionClassDestructive:
+		policy.TimeoutMS = 30000
+		policy.BackoffBaseMS = 0
+	}
+
 	if policy.SecurityLevel == security.L2 {
 		policy.Class = ActionClassDestructive
 		policy.MaxRetries = 0
 		policy.RetryOn = nil
+		policy.BackoffBaseMS = 0
+		// Defensive: catches L2 actions whose class was overridden to
+		// non-destructive upstream (e.g. a future class-derivation
+		// change). For any action routed through classForAction → L2 →
+		// Destructive (today's path), TimeoutMS was already set by the
+		// switch above, so this branch is unreachable. Kept so the L2
+		// invariant is self-contained: any L2 leaves this block with a
+		// non-zero TimeoutMS regardless of upstream changes.
+		if policy.TimeoutMS == 0 {
+			policy.TimeoutMS = 30000
+		}
 	}
 	if action == "DescribeCompShareJupyterToken" {
 		policy.DualChannelDisplay = true
