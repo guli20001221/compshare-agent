@@ -168,6 +168,9 @@ func TestIsImageListAllIntent_SpecificNameGuard(t *testing.T) {
 		"我做的 pytorch 镜像",
 		"有什么 windows 镜像",
 		"看看 v0.3.66 那个",
+		"看看 SD WebUI 镜像",
+		"我的 CentOS 镜像",
+		"我的训练镜像",
 	}
 	for _, msg := range guarded {
 		if isImageListAllIntent(msg) {
@@ -205,5 +208,23 @@ func TestRenderImageListReply_SpecificNameStillFilters(t *testing.T) {
 	}
 	if strings.Contains(reply, "vLLM") {
 		t.Errorf("specific Ubuntu request must NOT bleed in vLLM; got:\n%s", reply)
+	}
+}
+
+func TestRenderImageListReply_UnknownSpecificNameStillFilters(t *testing.T) {
+	raw := map[string]any{
+		"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-1", "Name": "SD WebUI Forge", "ImageType": "Community"},
+			map[string]any{"CompShareImageId": "img-2", "Name": "ComfyUI", "ImageType": "Community"},
+		},
+	}
+	reply := renderImageListReply(raw, "ImageSet",
+		[]string{"CompShareImageId", "ImageName", "ImageType", "Name"},
+		"看看 SD WebUI 镜像")
+	if !strings.Contains(reply, "SD WebUI Forge") {
+		t.Errorf("specific unknown image request must include SD WebUI; got:\n%s", reply)
+	}
+	if strings.Contains(reply, "ComfyUI") {
+		t.Errorf("specific unknown image request must NOT list unrelated images; got:\n%s", reply)
 	}
 }

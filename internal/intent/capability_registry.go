@@ -448,7 +448,8 @@ var cjkStopwords = []string{
 	// query verbs / structural words
 	"查询", "平台", "镜像", "列表", "有吗", "支持", "系统", "自制", "社区",
 	"官方", "什么", "哪些", "请问", "是否", "我的", "我自己", "上面", "下面",
-	"我有", "我账", "账下", "可以", "可不可以",
+	"我有", "我账", "账下", "可以", "可不可以", "你们", "看下", "看看",
+	"我做的", "我创建", "列出", "所有", "全部", "都有",
 	// zone / region / locale words (capability handlers don't yet take Zone)
 	"机房", "地域", "可用区",
 	// common GPU question phrasing (multi-char, would otherwise survive
@@ -465,6 +466,7 @@ var asciiStopwords = map[string]struct{}{
 	"list": {}, "image": {}, "images": {}, "of": {}, "the": {}, "a": {},
 	"an": {}, "what": {}, "any": {}, "is": {}, "are": {}, "have": {}, "has": {},
 	"do": {}, "does": {}, "show": {}, "me": {}, "my": {}, "for": {}, "to": {},
+	"all": {}, "available": {},
 }
 
 var tokenSplitRegex = regexp.MustCompile(`[A-Za-z0-9_.]+|\p{Han}+`)
@@ -1337,13 +1339,12 @@ func isImageListAllIntent(userText string) bool {
 	if !hasListAllTrigger {
 		return false
 	}
-	// Specific-name guard: list-all wording + a concrete image family or
-	// version token means "find specific", not "list everything". The
-	// families list intentionally tracks platform-shipped image
-	// vocabularies (DescribeCompShareImages Name field). Stop-grow ceiling:
-	// L0 hand-list; if this needs >12 entries we should move to a fuzzy
-	// match against the actual API Name set instead.
-	return !hasSpecificImageToken(normalized)
+	// Specific-name guard: list-all wording + a concrete image family,
+	// version, or any remaining non-filler token means "find specific", not
+	// "list everything". The token check matters for user/custom/community
+	// image names we cannot pre-enumerate, e.g. "看看 SD WebUI 镜像" or
+	// "我的训练镜像".
+	return !hasSpecificImageToken(normalized) && len(extractUserTokens(userText)) == 0
 }
 
 // hasSpecificImageToken is the negative guard for list-all detection.
