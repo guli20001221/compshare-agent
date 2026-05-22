@@ -24,12 +24,12 @@ go build -o agent ./cmd
 The config loader (`internal/config/config.go`) only supports plain `${ENV_VAR}` substitution — no `${VAR:-default}` syntax. Required env vars depend on the subcommand:
 
 - `LLM_API_KEY` — required for all subcommands.
-- `COMPSHARE_SERVICE_PUBLIC_KEY` / `COMPSHARE_SERVICE_PRIVATE_KEY` — service's own AK/SK used to call STS `AssumeRole`; required for the `server` subcommand.
+- `COMPSHARE_SERVICE_PUBLIC_KEY` / `COMPSHARE_SERVICE_PRIVATE_KEY` — service's own AK/SK used to call STS `AssumeRole`; optional for the `server` subcommand when legacy direct AK/SK is used instead.
 - `COMPSHARE_DEFAULT_ROLE_URN` — required for the `cli` subcommand when STS mode is used.
 - `MYSQL_DSN` — required for the `server` subcommand.
 - `COMPSHARE_PUBLIC_KEY` / `COMPSHARE_PRIVATE_KEY` — legacy direct AK/SK; only needed when `agent.sts` is not configured (e.g., local dev without STS).
 
-`project_id` may be left empty (auto-discovered via `GetProjectList` at init).
+`project_id` may be left empty for read-only calls; HTTP requests can also pass `ProjectId` per request.
 
 ## Tests
 
@@ -123,13 +123,13 @@ Read-only diagnostic tools (init failure, billing anomaly, GPU not detected, ima
 
 `compshare-agent server` runs the HTTP gateway alongside the CLI; both share the engine/knowledge/planner core.
 
-- Entry: `cmd/server.go`. Routes: `POST /api/gateway` (Action-routed) + `GET /healthz`.
+- Entry: `cmd/server.go`. Routes: `POST /` (Action-routed) + `GET /healthz`.
 - Identity is taken from the request body (gateway-injected), not headers: `top_organization_id` / `organization_id` (uint32, snake_case) and `request_uuid` (string, snake_case, auto-generated if missing). Business fields stay PascalCase (`Action`, `SessionId`, `Message`).
 - Phase-1 Actions: `GetSession` / `CreateSession` / `Chat` (SSE) / `GetMeta` / `Feedback`. `SessionId` is mandatory on every session-scoped Action; the frontend persists it in localStorage.
 - Per-session `*engine.Engine` lives in `internal/agentpool` (LRU 200 / 30min idle). HTTP path skips `engine.Init()` and rehydrates history from MySQL via `engine.RehydrateHistory`.
 - SSE stream is per-token end-to-end via `llm.ChatRequest.OnTextDelta` → `engine.ChatOptions.OnTextDelta` → `sse.Writer`. ReAct intermediate `StepEvent`s are not exposed in phase 1.
 - Persistence: MySQL 8 via `database/sql + go-sql-driver/mysql`; schema in `deploy/migrations/0001_init.sql`. `messages` is INSERTed twice per turn (user immediately, assistant placeholder before LLM call) and UPDATEd once on SSE done — never per-token. DDL is run by ops, not the binary.
-- Credentials: HTTP path uses STS AssumeRole. `top_organization_id` derives a `RoleUrn` via `agent.sts.role_urn_template`; temporary credentials are cached per-role with singleflight. Rate limiting is keyed by `(top_organization_id, organization_id)` pair, not by static public key.
+- Credentials: HTTP path prefers STS AssumeRole when `agent.sts.service_ak/service_sk` are set. If they are empty, it falls back to legacy `agent.public_key/private_key` for local/demo use. Rate limiting is keyed by `(top_organization_id, organization_id)` pair, not by static public key.
 
 ## Conventions specific to this repo
 

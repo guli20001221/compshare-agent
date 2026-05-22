@@ -54,9 +54,17 @@ func NewHandlers(
 // buildUserContext constructs a tools.UserContext from a BaseRequest.
 // Returns ErrInvalidParam if the role URN cannot be built (e.g. TopOrganizationID is zero).
 func (h *Handlers) buildUserContext(base BaseRequest) (tools.UserContext, error) {
-	roleUrn, err := tools.RoleUrnFromTemplate(h.cfg.Agent.STS.RoleUrnTemplate, base.Owner.TopOrganizationID)
-	if err != nil {
-		return tools.UserContext{}, ErrInvalidParam.WithMessage("failed to build role: %v", err)
+	roleUrn := ""
+	if h.cfg.Agent.STS.ServiceAK != "" && h.cfg.Agent.STS.ServiceSK != "" {
+		if h.cfg.Agent.STS.DefaultRoleUrn != "" {
+			roleUrn = h.cfg.Agent.STS.DefaultRoleUrn
+		} else {
+			var err error
+			roleUrn, err = tools.RoleUrnFromTemplate(h.cfg.Agent.STS.RoleUrnTemplate, base.Owner.TopOrganizationID)
+			if err != nil {
+				return tools.UserContext{}, ErrInvalidParam.WithMessage("failed to build role: %v", err)
+			}
+		}
 	}
 	projectID := base.ProjectID
 	if projectID == "" {
