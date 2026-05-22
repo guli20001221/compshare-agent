@@ -143,6 +143,76 @@ func TestPricingBillingTable_NestedShape(t *testing.T) {
 	assert.Equal(t, "¥0.30", out["Spot"], "matched discount/original collapses to single number")
 }
 
+// TestPricingBillingTable_ArrayShape covers the actual production response
+// form observed via probe on 2026-05-22 against api.compshare.cn:
+//   { PriceDetails: [{ChargeType, Instance}, ...],
+//     ListPriceDetails: [{ChargeType, Instance}, ...] }
+// Previously pricingBillingTable returned 0 keys against this shape, so
+// every CLI smoke produced "价格数据缺失". User-facing bug, regression
+// guard added here. (Codex review remediation 2026-05-22 follow-up.)
+func TestPricingBillingTable_ArrayShape(t *testing.T) {
+	raw := map[string]any{
+		"PriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.88)},
+			map[string]any{"ChargeType": "Dynamic", "Instance": float64(1.88)},
+			map[string]any{"ChargeType": "Day", "Instance": float64(41.48)},
+			map[string]any{"ChargeType": "Month", "Instance": float64(1131.40)},
+			map[string]any{"ChargeType": "Spot", "Instance": float64(1.31)},
+		},
+		"ListPriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.98)},
+			map[string]any{"ChargeType": "Day", "Instance": float64(43.66)},
+			map[string]any{"ChargeType": "Month", "Instance": float64(1190.95)},
+			map[string]any{"ChargeType": "Spot", "Instance": float64(1.38)},
+		},
+	}
+	out := pricingBillingTable(raw)
+	// Postpay discounted (1.88) vs list (1.98) — must show both.
+	assert.Contains(t, out["Postpay"], "¥1.88")
+	assert.Contains(t, out["Postpay"], "¥1.98", "list price suffix when discount differs")
+	// Spot discounted (1.31) vs list (1.38) — must show both.
+	assert.Contains(t, out["Spot"], "¥1.31")
+	assert.Contains(t, out["Spot"], "¥1.38")
+	// Day/Month likewise.
+	assert.Contains(t, out["Day"], "¥41.48")
+	assert.Contains(t, out["Month"], "¥1131.40")
+}
+
+// TestPricingBillingTable_ArrayShape_NoDiscount covers the same array
+// shape but with PriceDetails == ListPriceDetails (no discount applied).
+// Output should collapse to a single number, no "(原价 ¥X)" suffix.
+func TestPricingBillingTable_ArrayShape_NoDiscount(t *testing.T) {
+	raw := map[string]any{
+		"PriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.69)},
+		},
+		"ListPriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.69)},
+		},
+	}
+	out := pricingBillingTable(raw)
+	assert.Equal(t, "¥1.69", out["Postpay"],
+		"matched list/actual collapses to single number")
+}
+
+// TestPricingBillingTable_ArrayShape_OriginalPriceDetailsFallback covers
+// the case where ListPriceDetails is missing but OriginalPriceDetails is
+// present (API alias). The function must accept OriginalPriceDetails as a
+// fallback for the list-price source.
+func TestPricingBillingTable_ArrayShape_OriginalPriceDetailsFallback(t *testing.T) {
+	raw := map[string]any{
+		"PriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.88)},
+		},
+		"OriginalPriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.98)},
+		},
+	}
+	out := pricingBillingTable(raw)
+	assert.Contains(t, out["Postpay"], "¥1.88")
+	assert.Contains(t, out["Postpay"], "¥1.98", "OriginalPriceDetails fallback when List absent")
+}
+
 // TestRenderPricingReply_AllRowsBillEmpty exercises the "render succeeded
 // but every row has missing price data" branch — must return the
 // noPricingReply sentinel rather than an empty string or partial junk.
