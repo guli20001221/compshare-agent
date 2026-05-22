@@ -194,7 +194,7 @@ func TestDispatchChatStreamsMetaTokenDone(t *testing.T) {
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/api/gateway",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-1","Message":"hi","request_uuid":"req-1","top_organization_id":1,"organization_id":2}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-1","Message":"hi","request_uuid":"req-1","top_organization_id":1,"organization_id":2}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -249,7 +249,7 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-trace","Message":"hi","request_uuid":"req-trace","top_organization_id":7,"organization_id":8}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-trace","Message":"hi","request_uuid":"req-trace","top_organization_id":7,"organization_id":8}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -306,7 +306,7 @@ func TestDispatchChatRedactsUserPIIOnlyWhenPersisting(t *testing.T) {
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-pii","Message":"`+userMessage+`","request_uuid":"req-pii","top_organization_id":1,"organization_id":2}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-pii","Message":"`+userMessage+`","request_uuid":"req-pii","top_organization_id":1,"organization_id":2}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -371,7 +371,7 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-output","Message":"hi","request_uuid":"req-output","top_organization_id":1,"organization_id":2}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-output","Message":"hi","request_uuid":"req-output","top_organization_id":1,"organization_id":2}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -434,7 +434,7 @@ func TestDispatchChatDoesNotPersistPartialAssistantContentOnError(t *testing.T) 
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-error","Message":"hi","request_uuid":"req-error","top_organization_id":1,"organization_id":2}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-error","Message":"hi","request_uuid":"req-error","top_organization_id":1,"organization_id":2}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -484,7 +484,7 @@ func TestDispatchChatEmitsTokenForDirectEngineReply(t *testing.T) {
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-direct","Message":"看 2026-04-29 14:00 的监控","request_uuid":"req-direct","top_organization_id":1,"organization_id":2}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-direct","Message":"看 2026-04-29 14:00 的监控","request_uuid":"req-direct","top_organization_id":1,"organization_id":2}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -542,7 +542,7 @@ func TestDispatchChatColdSessionDoesNotRehydrateCurrentUserMessage(t *testing.T)
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-cold","Message":"`+userMessage+`","request_uuid":"req-cold","top_organization_id":1,"organization_id":2}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-cold","Message":"`+userMessage+`","request_uuid":"req-cold","top_organization_id":1,"organization_id":2}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -591,7 +591,7 @@ func TestDispatchChatRejectsWhenSessionTurnLimitReached(t *testing.T) {
 	c.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/",
-		strings.NewReader(`{"Action":"Chat","SessionId":"sess-cap","Message":"hi","request_uuid":"req-cap","top_organization_id":1,"organization_id":2}`),
+		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-cap","Message":"hi","request_uuid":"req-cap","top_organization_id":1,"organization_id":2}`),
 	)
 	c.Request.Header.Set("Content-Type", "application/json")
 
