@@ -133,24 +133,32 @@ func TestDetectOffTopic_False_BenignPlatform(t *testing.T) {
 	}
 }
 
-// TestDetectOffTopic_KnownFP_EnglishMedicalMixedPlatform locks the
-// behavior of mixed-intent English messages where the user mentions a
-// medical condition AND a platform topic ("research model on 4090") in
-// one turn. Current behavior: trips medical (FP). PR #155 review N2
-// flagged this — RE2 cannot do message-level platform-noun lookaround
-// so the proper fix is a separate prepareForDetection-style escape
-// hatch deferred to a follow-up commit. This test locks current
-// behavior so the fix has an explicit assertion to flip.
-func TestDetectOffTopic_KnownFP_EnglishMedicalMixedPlatform(t *testing.T) {
-	knownFP := []string{
+// TestDetectOffTopic_False_EnglishMedicalMixedPlatform locks mixed-
+// intent English messages where the user mentions a medical condition
+// only as the research context, then asks a CompShare / GPU question.
+func TestDetectOffTopic_False_EnglishMedicalMixedPlatform(t *testing.T) {
+	cases := []string{
 		"My family member has cancer and I want to run a research model on 4090",
 		"My mother has diabetes — can I use compshare to run insulin-dosing research",
 		"I have diabetes, what GPU do you recommend for ML research",
 	}
-	for _, msg := range knownFP {
+	for _, msg := range cases {
+		t.Run(strings.ReplaceAll(msg[:min(len(msg), 30)], " ", "_"), func(t *testing.T) {
+			assert.False(t, DetectOffTopic(msg),
+				"mixed medical-context platform research question must not be refused: %q", msg)
+		})
+	}
+}
+
+func TestDetectOffTopic_True_EnglishMedicalAdviceEvenWithPlatformTerms(t *testing.T) {
+	cases := []string{
+		"I have cancer what medicine should I take if I run the analysis on a 4090",
+		"My mother has diabetes should she go to hospital, also what GPU should I use",
+	}
+	for _, msg := range cases {
 		t.Run(strings.ReplaceAll(msg[:min(len(msg), 30)], " ", "_"), func(t *testing.T) {
 			assert.True(t, DetectOffTopic(msg),
-				"KNOWN FP — when the platform-noun escape hatch lands, flip this to assert.False and remove the assertion: %q", msg)
+				"explicit medical advice must still be refused even with platform terms: %q", msg)
 		})
 	}
 }

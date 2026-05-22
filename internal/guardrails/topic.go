@@ -2,6 +2,7 @@ package guardrails
 
 import (
 	"regexp"
+	"strings"
 )
 
 // Topic-policy detection — recognises clearly off-topic asks at the
@@ -80,15 +81,10 @@ var offTopicPatterns = []detectionPattern{
 	//   - Domain "what medicine should I take" qualified with a follow-
 	//     up "for / to (treat|cure|...) X" so "what medication should I
 	//     take to stay focused" passes through.
-	// Known FP not addressed here (tracked as N2 followup):
-	//   "My family member has cancer and I want to run a research model
-	//   on 4090" still trips because the verb-disease adjacency is met
-	//   (has + cancer = 0 words between) even though the message clearly
-	//   pivots to a platform question. RE2 does not support lookaround,
-	//   so a platform-noun escape hatch needs to be applied in the
-	//   message-level prepareForDetection path or in DetectOffTopic
-	//   itself; deferred to a follow-up commit because the FP rate on
-	//   real EN traffic is low (EN platform usage is a small share).
+	//   - Mixed medical-context platform research questions are allowed
+	//     at the message level by isBenignEnglishMedicalPlatformResearch.
+	//     RE2 has no lookaround, so the escape hatch lives outside this
+	//     regex instead of making the pattern harder to audit.
 	{
 		name:     "en_medical_advice",
 		verbRe:   regexp.MustCompile(`(?i)\b(I|my\s+(family|wife|husband|child|son|daughter|parent|father|mother|kid))\b`),
@@ -149,8 +145,48 @@ func DetectOffTopic(s string) bool {
 	}
 	for _, p := range offTopicPatterns {
 		if p.verbRe.MatchString(s) && p.domainRe.MatchString(s) {
+			if p.name == "en_medical_advice" && isBenignEnglishMedicalPlatformResearch(s) {
+				return false
+			}
 			return true
 		}
 	}
 	return false
+}
+
+func isBenignEnglishMedicalPlatformResearch(s string) bool {
+	lower := strings.ToLower(s)
+	if containsAny(lower, []string{
+		"what medicine should i take",
+		"what medication should i take",
+		"what pill should i take",
+		"what drug should i take",
+		"should i take medicine",
+		"should i take medication",
+		"should she go to hospital",
+		"should he go to hospital",
+		"should i go to hospital",
+		"go to hospital",
+		"see a doctor",
+		"treatment plan",
+		"chemotherapy",
+		"radiation therapy",
+		"surgery",
+	}) {
+		return false
+	}
+
+	hasPlatformTerm := containsAny(lower, []string{
+		"compshare", "gpu", "4090", "5090", "a100", "h20",
+		"cuda", "vram", "cloud gpu", "instance", "modelverse",
+	})
+	if !hasPlatformTerm {
+		return false
+	}
+
+	return containsAny(lower, []string{
+		"research", "model", "ml", "machine learning", "deep learning",
+		"training", "train", "inference", "pytorch", "tensorflow", "lora",
+		"what gpu", "which gpu",
+	})
 }
