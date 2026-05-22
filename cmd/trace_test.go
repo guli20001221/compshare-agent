@@ -171,6 +171,7 @@ func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
 		"monitor_query",
 		"gpu_specs_query",
 		"stock_availability",
+		"pricing_query",
 		"platform_image_list",
 		"custom_image_list",
 		"community_image_list",

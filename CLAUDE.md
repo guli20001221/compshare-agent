@@ -61,7 +61,7 @@ Behavior is gated by env vars read in `cmd/trace.go` and `cmd/agent.go`. The def
 |---|---|---|
 | `COMPSHARE_ENABLE_MUTATING_TOOLS` | `1` | Enables start/stop/reboot/reset-password/create. Default off — read-only mode. |
 | `USE_INTENT_PLANNER` | `shadow` | Runs the LLM planner alongside ReAct for trace-only comparison. |
-| `USE_INTENT_PLANNER_FOR` | default `resource,monitor,gpu_specs,stock,platform_image,custom_image,community_image`; explicit comma list overrides; `off` disables | Enables Phase-1 cutover: engine owns the planner call for those intents. |
+| `USE_INTENT_PLANNER_FOR` | default `resource,monitor,gpu_specs,stock,pricing,platform_image,custom_image,community_image`; explicit comma list overrides; `off` disables | Enables Phase-1 cutover: engine owns the planner call for those intents. |
 | `USE_KNOWLEDGE_RETRIEVAL` | `curated` (default), `off` | Wires the RAG retriever into the engine. Combine with `RAG_RETRIEVAL_MODE`. |
 | `RAG_RETRIEVAL_MODE` | `qwen3_rrf` (default), `bm25_only`, `hybrid_cosine`, `hybrid_rerank`, `qwen3_full` | Picks the retrieval pipeline. Hybrid/qwen3 modes require `MODELVERSE_API_KEY` or `LLM_API_KEY` and the matching pinned sidecar under `deploy/kb/`. |
 | `RAG_HYBRID_ENABLED` | `1` | Legacy switch; only consulted when `RAG_RETRIEVAL_MODE` is unset. |

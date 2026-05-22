@@ -101,7 +101,23 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // origin/main + the PR #86 disk-migration of IntentDiagnosis.
 // Migration is byte-equal by construction, so the hash matches the
 // pre-migration value.
-const systemPromptSHA256Baseline = "53ae179598e18ae6fade4b463777772a62f0b816029a9fe4e7c0690af989daf1"
+//
+// PR #3 (2026-05-22) — intentional bump: pricing_query capability added
+// (intent label + 2 planner_examples + directives + boundary directive
+// vs billing_instance). Justification: high-frequency commercial path
+// "4090 多少钱" was running through main_react at ~36s/33k tokens on
+// baseline; deterministic capability routing brings it to ~10s/6k tokens.
+// The boundary directive keeps personal-billing complaints
+// ("我账单怎么这么高") routing to billing_instance unchanged.
+//
+// PR #3 amend (2026-05-22 post-review) — second bump: reviewer caught
+// (a) the allowed-intent enum on line 414 still missing pricing_query
+// (doc correctness — observed not to block emission but kept for
+// consistency with the enum-as-contract pattern); (b) the stale
+// directive on line 422 that conflicted with the new capability example
+// ("4090 多少钱 → unknown"). Replaced with a pricing_query directive +
+// explicit personal-billing-complaints boundary preserving billing_instance.
+const systemPromptSHA256Baseline = "dc29634cb7f657c5b2a49f015afa3e3e39ee6b585ffdf46b21ce3b37a977696a"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

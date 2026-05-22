@@ -25,7 +25,7 @@ agent:
 
   # Default answer stack is enabled by environment defaults in the binary:
   # USE_INTENT_PLANNER_FOR defaults to
-  # resource,monitor,gpu_specs,stock,platform_image,custom_image,community_image.
+  # resource,monitor,gpu_specs,stock,pricing,platform_image,custom_image,community_image.
   # USE_KNOWLEDGE_RETRIEVAL=curated, RAG_RETRIEVAL_MODE=qwen3_rrf,
   # USE_GROUNDED_RENDERER=llm. Set USE_INTENT_PLANNER_FOR=off,
   # USE_KNOWLEDGE_RETRIEVAL=off, or USE_GROUNDED_RENDERER=off only for

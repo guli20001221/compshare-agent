@@ -8,6 +8,7 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -209,6 +210,7 @@ func TestApplySharedDepsDefaultsToQwenRRFAndRenderer(t *testing.T) {
 	require.NotNil(t, deps.GroundedRenderer, "default runtime should enable LLM grounded renderer")
 	require.Equal(t, "deepseek-v4-flash", deps.GroundedRendererModel)
 	require.Equal(t, "deepseek-v4-flash", deps.IntentPlannerModel)
+	require.Contains(t, deps.IntentCutoverIntents, intent.IntentPricingQuery, "default runtime should cut over pricing queries")
 }
 
 func TestRootCommandDoesNotExposeWebSocketServe(t *testing.T) {
