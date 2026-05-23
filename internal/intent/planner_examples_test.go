@@ -117,7 +117,19 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // directive on line 422 that conflicted with the new capability example
 // ("4090 多少钱 → unknown"). Replaced with a pricing_query directive +
 // explicit personal-billing-complaints boundary preserving billing_instance.
-const systemPromptSHA256Baseline = "dc29634cb7f657c5b2a49f015afa3e3e39ee6b585ffdf46b21ce3b37a977696a"
+//
+// R3-A1 (2026-05-24) — third bump: 6 modelverse model-API anchors added to
+// the knowledge_qa group (Suno/Vidu/flux/gpt-image/minimax-speech/error-code).
+// Justification: R2 CLI smoke (PR #165 verification) showed 5/12 modelverse
+// model-API questions being classified as IntentUnknown — engine.go:1450
+// `tryStage2BRetrieval` short-circuits unless Plan.Intent == IntentKnowledgeQA,
+// so RAG never ran against the 46 modelverse chunks shipped in PR #165 and
+// users got "我不知道"-class fallbacks instead. Group `Source` updated to
+// flag the addition; SHA bumped by-construction. Boundary: anchors phrase
+// "X 怎么调 / 用 SDK 怎么传参 / 返回 N 是什么错误" so they don't conflict
+// with billing/stock/pricing/diagnosis intents (no $-amount, no instance ID,
+// no "我的" personal-status markers).
+const systemPromptSHA256Baseline = "81f629786cb1c337b89aa8d182e9052bbc75c61875bd0e7eb7da830001745b93"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
@@ -198,7 +210,7 @@ func TestPlannerExamples_MigratedIntentsArePresent(t *testing.T) {
 // migration. Updating this requires explicit reviewer sign-off.
 var legacyKnowledgeQAGroup = plannerPromptExampleGroup{
 	Intent: IntentKnowledgeQA,
-	Source: "Stage 2B + PR #34a/#52/#60 knowledge_qa routing regressions",
+	Source: "Stage 2B + PR #34a/#52/#60 knowledge_qa routing regressions + R3-A1 modelverse model-API coverage",
 	Examples: []plannerPromptExample{
 		{
 			Question: "为啥显卡内存满了 GPU 占用才 10%",
@@ -270,6 +282,36 @@ var legacyKnowledgeQAGroup = plannerPromptExampleGroup{
 			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
 			Source:   "PR #34a: platform procedure question",
 		},
+		{
+			Question: "Suno 怎么用 API 生成歌曲",
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			Source:   "R3-A1: modelverse music-gen API (Suno)",
+		},
+		{
+			Question: "Vidu 接口怎么传图生成视频",
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			Source:   "R3-A1: modelverse video-gen API (Vidu)",
+		},
+		{
+			Question: "flux 模型调用 API 怎么传 prompt 和图",
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			Source:   "R3-A1: modelverse image-gen API (flux)",
+		},
+		{
+			Question: "用 OpenAI SDK 调 gpt-image-1 怎么传参",
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			Source:   "R3-A1: modelverse OpenAI-compat API (gpt-image)",
+		},
+		{
+			Question: "minimax-speech 怎么生成中文语音",
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			Source:   "R3-A1: modelverse TTS API (minimax-speech)",
+		},
+		{
+			Question: "modelverse 返回 1002 是什么错误",
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			Source:   "R3-A1: modelverse error-code reference",
+		},
 	},
 }
 
@@ -303,7 +345,7 @@ func TestPlannerExamples_KnowledgeQARenderedPromptUnchanged(t *testing.T) {
 // fields. Counterpart to TestPlannerExamples_DiagnosisExampleJSONLooksValid.
 func TestPlannerExamples_KnowledgeQAExamplesJSONLookValid(t *testing.T) {
 	group := diskPlannerExampleGroups[IntentKnowledgeQA]
-	require.Len(t, group.Examples, 14, "knowledge_qa.md must have 14 examples (matches legacy literal)")
+	require.Len(t, group.Examples, 20, "knowledge_qa.md must have 20 examples (14 legacy + 6 R3-A1 modelverse model-API anchors)")
 	for i, ex := range group.Examples {
 		assert.Contains(t, ex.PlanJSON, `"intent":"knowledge_qa"`,
 			"example[%d] plan_json yaml key didn't round-trip", i)

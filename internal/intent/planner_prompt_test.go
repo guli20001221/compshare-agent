@@ -47,24 +47,28 @@ func TestBuildSystemPromptDoesNotEmitMixedIntents(t *testing.T) {
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	examples := promptExampleJSONLines(buildSystemPrompt())
-	// 27 grouped base examples (20 legacy + 3 added by #34a 2026-05-18 for
+	// 33 grouped base examples (20 legacy + 3 added by #34a 2026-05-18 for
 	// comparison / yes-no feasibility / procedure-description knowledge_qa
 	// coverage + 2 added by #60 2026-05-20 for concept-Q-with-monitor-trigger-
 	// word and third-party-tool-config-jargon knowledge_qa coverage; two old
 	// stock-to-unknown examples were replaced when stock_availability became
 	// a capability + 2 added 2026-05-20 for personal billing complaint
-	// (billing_instance) stable routing — see Q04 N=5 jitter check) +
-	// the sum of `planner_examples` across all capabilities/*.md frontmatter
-	// (PR A Registry v1 + later). A capability may declare 1+ examples — early
-	// capabilities used exactly 1; PR #3 (pricing_query) uses 2 to anchor the
-	// public-product-pricing vs personal-billing boundary against the
-	// billing_instance one-shots. The example count is computed below so adding
-	// a new capability OR extending an existing one's examples auto-updates.
+	// (billing_instance) stable routing — see Q04 N=5 jitter check + 6 added
+	// by R3-A1 2026-05-24 for modelverse model-API coverage so planner routes
+	// "Suno/Vidu/flux/gpt-image/minimax-speech API 怎么调" to knowledge_qa
+	// instead of unknown, unblocking RAG for the 46 modelverse chunks shipped
+	// in PR #165) + the sum of `planner_examples` across all capabilities/*.md
+	// frontmatter (PR A Registry v1 + later). A capability may declare 1+
+	// examples — early capabilities used exactly 1; PR #3 (pricing_query) uses
+	// 2 to anchor the public-product-pricing vs personal-billing boundary
+	// against the billing_instance one-shots. The example count is computed
+	// below so adding a new capability OR extending an existing one's examples
+	// auto-updates.
 	capabilityExampleCount := 0
 	for _, m := range capabilityMetadata {
 		capabilityExampleCount += len(m.PlannerExamples)
 	}
-	if got, want := len(examples), 27+capabilityExampleCount; got != want {
+	if got, want := len(examples), 33+capabilityExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -158,14 +162,14 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			t.Fatalf("planner examples missing group for intent %q", intent)
 		}
 	}
-	if total != 27 {
-		t.Fatalf("legacy planner example count = %d, want 27", total)
+	if total != 33 {
+		t.Fatalf("legacy planner example count = %d, want 33", total)
 	}
 	expectedCounts := map[Intent]int{
 		IntentResourceInfo:              4,
 		IntentUnknown:                   2,
 		IntentMonitorQuery:              2,
-		IntentKnowledgeQA:               14,
+		IntentKnowledgeQA:               20,
 		IntentBillingAccountUnsupported: 2,
 		IntentBillingInstance:           2,
 		IntentDiagnosis:                 1,
