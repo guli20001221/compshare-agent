@@ -306,6 +306,127 @@ func TestEngine_RoundTrip_AcrossReplicas(t *testing.T) {
 	assert.Equal(t, 1, ver)
 }
 
+// TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber is the
+// load-bearing test for the M2 version-aware merge. It pins the M1
+// forward-note (docs/agent/plan/m1-session-state-cas.md:429) — a
+// stale-or-equal-version incoming state must NOT overwrite the engine's
+// in-memory scalar fields, but its RecentFacts ARE reconciled via
+// mergeFactsByProducedAt.
+//
+// MUTATION CHECK: removing the `version <= e.sessionStateVersion` guard
+// from SetSessionState (so the function always overwrites) makes this
+// test fail at the SelectedInstance/LastIntent assertions — proven via
+// mutation experiment during commit 6.
+func TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+
+	// Initial hydrate at version=5 with one fact.
+	e.SetSessionState(SessionState{
+		SchemaVersion:        SessionStateSchemaV1,
+		SelectedInstanceID:   "uhost-A",
+		SelectedInstanceName: "train-a",
+		LastIntent:           string(intent.IntentMonitorQuery),
+		RecentFacts: []ToolFact{
+			{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 200,
+				Payload: map[string]any{"state": "Running"}},
+		},
+	}, 5)
+
+	// Simulate mid-turn writer adding a newer fact for the same subject
+	// and a fact for a different kind.
+	e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
+		Kind: FactKindMonitorSample, SubjectID: "uhost-A", ProducedAtUnix: 210,
+		Payload: map[string]any{"cpu_usage": "90"},
+	})
+
+	// Stale incoming (same version, e.g. cross-replica refetch). Scalars
+	// would clobber if the guard were missing.
+	e.SetSessionState(SessionState{
+		SchemaVersion:        SessionStateSchemaV1,
+		SelectedInstanceID:   "uhost-B-stale",  // MUST NOT clobber
+		SelectedInstanceName: "stale-name",     // MUST NOT clobber
+		LastIntent:           string(intent.IntentResourceInfo), // MUST NOT clobber
+		RecentFacts: []ToolFact{
+			{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 100,
+				Payload: map[string]any{"state": "OLDER"}}, // older — must lose
+			{Kind: FactKindInstanceState, SubjectID: "uhost-C", ProducedAtUnix: 220,
+				Payload: map[string]any{"state": "Running"}}, // unique — must merge
+		},
+	}, 5) // SAME VERSION
+
+	state, ver, hydrated := e.SessionStateSnapshot()
+	require.True(t, hydrated)
+	assert.Equal(t, 5, ver, "version stays at the in-memory value when merge fires")
+
+	// Scalars unchanged.
+	assert.Equal(t, "uhost-A", state.SelectedInstanceID,
+		"stale incoming MUST NOT clobber SelectedInstanceID — the engine's in-memory scalar is at-or-newer than the row")
+	assert.Equal(t, "train-a", state.SelectedInstanceName)
+	assert.Equal(t, string(intent.IntentMonitorQuery), state.LastIntent)
+
+	// Facts merged: uhost-A instance_state stays at 200 (local newer than
+	// stale incoming's 100); uhost-A monitor_sample stays at 210; uhost-C
+	// instance_state is new.
+	byKey := make(map[string]ToolFact, len(state.RecentFacts))
+	for _, f := range state.RecentFacts {
+		byKey[f.Kind+":"+f.SubjectID] = f
+	}
+	assert.Len(t, state.RecentFacts, 3, "expect 3 merged facts (uhost-A inst, uhost-A mon, uhost-C inst)")
+	assert.EqualValues(t, 200, byKey[FactKindInstanceState+":uhost-A"].ProducedAtUnix,
+		"local newer instance_state must NOT be downgraded by stale incoming")
+	assert.Equal(t, "Running", byKey[FactKindInstanceState+":uhost-A"].Payload["state"])
+	assert.EqualValues(t, 210, byKey[FactKindMonitorSample+":uhost-A"].ProducedAtUnix)
+	assert.EqualValues(t, 220, byKey[FactKindInstanceState+":uhost-C"].ProducedAtUnix,
+		"unique-key incoming fact must be merged in")
+}
+
+// TestSetSessionState_HigherVersionOverwrites covers the normal hydrate
+// path: when incoming version is strictly greater than in-memory, full
+// overwrite happens (the in-memory state was stale).
+func TestSetSessionState_HigherVersionOverwrites(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+
+	e.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaV1,
+		SelectedInstanceID: "uhost-stale",
+		LastIntent:         string(intent.IntentMonitorQuery),
+	}, 3)
+
+	e.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaV1,
+		SelectedInstanceID: "uhost-fresh",
+		LastIntent:         string(intent.IntentResourceInfo),
+	}, 4) // strictly higher
+
+	state, ver, _ := e.SessionStateSnapshot()
+	assert.Equal(t, "uhost-fresh", state.SelectedInstanceID,
+		"higher version must fully overwrite — the in-memory state was stale")
+	assert.Equal(t, string(intent.IntentResourceInfo), state.LastIntent)
+	assert.Equal(t, 4, ver)
+}
+
+// TestSetSessionState_NotHydratedAlwaysFullOverwrite covers the
+// single-replica path: ClearSessionState sets hydrated=false, so a
+// SetSessionState call after Clear ALWAYS takes the full-overwrite
+// branch, regardless of incoming version.
+func TestSetSessionState_NotHydratedAlwaysFullOverwrite(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	// Engine starts un-hydrated.
+	require.False(t, func() bool { _, _, h := e.SessionStateSnapshot(); return h }())
+
+	// Even with version=0 (smallest), un-hydrated engine must take the
+	// full-overwrite branch.
+	e.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaV1,
+		SelectedInstanceID: "uhost-cold-start",
+	}, 0)
+
+	state, ver, hydrated := e.SessionStateSnapshot()
+	assert.True(t, hydrated)
+	assert.Equal(t, "uhost-cold-start", state.SelectedInstanceID)
+	assert.Equal(t, 0, ver)
+}
+
 // TestEnvelope_PreservesClientContextAcrossAgentWrites guards the public
 // CreateCSAgentSession.Context API contract: client_context written by the
 // frontend must survive agent-side SessionState updates.

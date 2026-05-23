@@ -671,12 +671,39 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 // already serialized via agentpool.Lease.
 //
 // The state is treated as immutable input for the current turn; mutations
-// during the turn (M2+) produce a new state visible via SessionStateSnapshot.
+// during the turn produce a new state visible via SessionStateSnapshot.
 //
-// M1 contract: NO call site inside the engine mutates sessionState during
-// a turn — the channel is open but unused. M2 ToolFactExtractor will be
-// the first in-engine writer.
+// M2 (2026-05-24) added version-aware merge: when this engine already
+// has hydrated state with a higher-or-equal version, the incoming state
+// is treated as STALE — its RecentFacts are merged in via
+// mergeFactsByProducedAt, but the scalar fields (SelectedInstance{ID,Name},
+// LastIntent) keep the in-memory values. This is the M1 forward-note
+// (docs/agent/plan/m1-session-state-cas.md:429) implementation.
+//
+// When does the merge path fire?
+//
+//   - Cross-replica race (future multi-replica deploy): replica A wrote
+//     facts at v=N, then replica B's next-turn hydrate sees v=N from a
+//     stale read, but B's in-memory state already advanced past v=N.
+//     Without the guard, B would clobber its own newer state with the
+//     stale read.
+//   - Defense-in-depth: handlers_chat.go always calls ClearSessionState
+//     before SetSessionState, so the merge path is rarely triggered in
+//     single-replica today. But a future buggy caller skipping the clear
+//     would step exactly on the cached-Engine reuse bug M1 prevented;
+//     this guard is the secondary defense.
+//
+// Single-replica behavior unchanged: ClearSessionState resets hydrated
+// to false, so SetSessionState always takes the !hydrated branch and
+// fully overwrites — exactly the M1 contract.
 func (e *Engine) SetSessionState(state SessionState, version int) {
+	if e.sessionStateHydrated && version <= e.sessionStateVersion {
+		e.sessionState.RecentFacts = mergeFactsByProducedAt(e.sessionState.RecentFacts, state.RecentFacts)
+		// SelectedInstance{ID,Name} / LastIntent / SchemaVersion: keep
+		// the in-memory value. The local engine has not yet persisted,
+		// so its scalars are at-or-newer than the incoming row.
+		return
+	}
 	e.sessionState = state
 	e.sessionStateVersion = version
 	e.sessionStateHydrated = true
