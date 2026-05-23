@@ -7,9 +7,16 @@ sidecars for the CompShare console agent's RAG path.
 
 | File | Purpose | Bound to |
 |---|---|---|
-| `stage2b_w0.jsonl` | Customer-safe FAQ corpus (279 chunks @ 2026-05-22, kb_version `kb.stage2b.w1-r1.2026-05-22.agents-plan`) | `internal/knowledge/corpus_digest.go:CorpusDigestExpected` |
-| `embeddings_<corpus-digest>.jsonl` | `text-embedding-3-large` (3072-dim) sidecar for `hybrid_cosine` / `hybrid_rerank` modes | `internal/knowledge/corpus_digest.go:EmbeddingDigestExpected` |
-| `embeddings_<corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for `qwen3_full` / `qwen3_rrf` modes | `internal/knowledge/corpus_digest.go:EmbeddingDigestExpectedQwen3` |
+| `stage2b_w0.jsonl` | Customer-safe FAQ corpus (473 chunks @ 2026-05-23, kb_version `kb.stage2b.w1-r2.2026-05-23.r2-text-only`) | `internal/knowledge/corpus_digest.go:CorpusDigestExpected` |
+| `embeddings_<corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for `qwen3_full` / `qwen3_rrf` modes (current default) | `internal/knowledge/corpus_digest.go:EmbeddingDigestExpectedQwen3` |
+
+`text-embedding-3-large` sidecar is **no longer maintained** as of W1-R2
+(2026-05-23): `qwen3_rrf` is the runtime default and increments only rebuild
+the qwen3 sidecar. `EmbeddingDigestExpected` constant remains pinned but no
+matching file is shipped, so `hybrid_cosine` / `hybrid_rerank` modes will
+refuse to load with the current corpus. Re-enable by manually rebuilding via
+`python scripts/rag_w0/build_corpus_embeddings.py` (default model) and
+updating the constant.
 
 All three artifacts are byte-pinned by LF-normalized SHA256 digest. The Go
 loader refuses to start if any pin mismatches its on-disk content.
