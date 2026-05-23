@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/compshare-agent/internal/governance"
@@ -331,4 +332,247 @@ func TestEnvelope_PreservesClientContextAcrossAgentWrites(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "uhost-x", pcFinal.AgentSessionState.SelectedInstanceID)
 	assert.JSONEq(t, string(clientCtx), string(pcFinal.ClientContext))
+}
+
+// ---------------------------------------------------------------------------
+// M2 — RecentFacts / ToolFact round-trip + helpers
+// ---------------------------------------------------------------------------
+
+// TestSessionState_RoundTripWithRecentFacts extends the M1 byte-equal
+// envelope round-trip to include a non-empty RecentFacts slice. Any field
+// added to ToolFact whose serialization is not stable (pointer, time.Time,
+// unexported) breaks this.
+func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
+	pc1 := PersistedContext{
+		AgentSessionState: SessionState{
+			SchemaVersion:        SessionStateSchemaV1,
+			SelectedInstanceID:   "uhost-abc",
+			SelectedInstanceName: "gpu-prod",
+			LastIntent:           string(intent.IntentMonitorQuery),
+			RecentFacts: []ToolFact{
+				{
+					Kind:           FactKindInstanceState,
+					SubjectID:      "uhost-abc",
+					Payload:        map[string]any{"name": "gpu-prod", "state": "Running", "gpu": float64(2), "gpu_type": "RTX4090", "cpu": float64(16), "memory": float64(64), "zone": "cn-bj-01"},
+					ProducedAtTurn: 3,
+					ProducedAtUnix: 1716530000,
+					TTLSeconds:     factTTLSecondsInstanceState,
+				},
+				{
+					Kind:           FactKindMonitorSample,
+					SubjectID:      "uhost-abc",
+					Payload:        map[string]any{"cpu_usage": "92.5", "memory_usage": "44.0"},
+					ProducedAtTurn: 3,
+					ProducedAtUnix: 1716530002,
+					TTLSeconds:     factTTLSecondsMonitorSample,
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(pc1)
+	require.NoError(t, err)
+
+	pc2, err := ParsePersistedContext(raw)
+	require.NoError(t, err)
+	require.Equal(t, pc1.AgentSessionState.SchemaVersion, pc2.AgentSessionState.SchemaVersion)
+	require.Equal(t, pc1.AgentSessionState.SelectedInstanceID, pc2.AgentSessionState.SelectedInstanceID)
+	require.Equal(t, pc1.AgentSessionState.LastIntent, pc2.AgentSessionState.LastIntent)
+	require.Len(t, pc2.AgentSessionState.RecentFacts, 2)
+
+	raw2, err := json.Marshal(pc2)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(raw), string(raw2),
+		"byte-equal round-trip required for multi-replica preservation")
+}
+
+// TestToolFact_PayloadKeysPerKind enforces the documented payload-key set
+// per fact kind. Future writers must use exactly these keys; M3
+// ContextAssembler will read them by name. Adding a new key requires
+// updating this test deliberately.
+func TestToolFact_PayloadKeysPerKind(t *testing.T) {
+	expected := map[string]map[string]struct{}{
+		FactKindInstanceState: {
+			"name":     {},
+			"state":    {},
+			"gpu":      {},
+			"gpu_type": {},
+			"cpu":      {},
+			"memory":   {},
+			"zone":     {},
+		},
+		FactKindMonitorSample: {
+			// Renderer-derived metric keys at internal/intent/envelope.go.
+			// Multi-GPU disambiguation produces gpu_usage.GPU 1 / .GPU 2;
+			// they share the same fact via the dotted-suffix convention.
+			"cpu_usage":         {},
+			"memory_usage":      {},
+			"gpu_usage":         {},
+			"vram_usage":        {},
+			"system_disk_usage": {},
+			"data_disk_usage":   {},
+		},
+	}
+
+	// Sanity: every supported kind has a TTL constant and an entry in
+	// ttlSecondsForKind.
+	for kind := range expected {
+		ttl := ttlSecondsForKind(kind)
+		assert.Greaterf(t, ttl, 0, "kind %q must have a non-zero default TTL", kind)
+	}
+	assert.Equal(t, 0, ttlSecondsForKind("unknown_kind"),
+		"unknown kinds must default to TTL=0 so M3 assembler treats them as expired")
+}
+
+// TestAppendFactToSlice_DedupesBySubjectAndKind covers the (Kind, SubjectID)
+// dedupe contract: a second fact with the same key replaces the first when
+// its ProducedAtUnix is newer-or-equal; older facts are kept.
+func TestAppendFactToSlice_DedupesBySubjectAndKind(t *testing.T) {
+	base := []ToolFact{
+		{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 100, Payload: map[string]any{"state": "Running"}},
+		{Kind: FactKindInstanceState, SubjectID: "uhost-B", ProducedAtUnix: 110, Payload: map[string]any{"state": "Stopped"}},
+	}
+	out := appendFactToSlice(base, ToolFact{
+		Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 200,
+		Payload: map[string]any{"state": "Stopped"},
+	})
+	require.Len(t, out, 2)
+
+	// Find uhost-A — newer fact wins.
+	var uhostA *ToolFact
+	for i := range out {
+		if out[i].SubjectID == "uhost-A" {
+			uhostA = &out[i]
+		}
+	}
+	require.NotNil(t, uhostA)
+	assert.EqualValues(t, 200, uhostA.ProducedAtUnix)
+	assert.Equal(t, "Stopped", uhostA.Payload["state"])
+}
+
+// TestAppendFactToSlice_OlderFactDoesNotOverwrite covers the
+// "newer wins" rule: an append with a stale ProducedAtUnix must NOT
+// downgrade the existing fact. Required for multi-replica preservation
+// per [[project-multi-replica-interfaces]] §2.
+func TestAppendFactToSlice_OlderFactDoesNotOverwrite(t *testing.T) {
+	base := []ToolFact{
+		{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 200, Payload: map[string]any{"state": "Running"}},
+	}
+	out := appendFactToSlice(base, ToolFact{
+		Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 100,
+		Payload: map[string]any{"state": "Stopped"}, // stale
+	})
+	require.Len(t, out, 1)
+	assert.EqualValues(t, 200, out[0].ProducedAtUnix, "older ProducedAtUnix must NOT clobber newer fact")
+	assert.Equal(t, "Running", out[0].Payload["state"])
+}
+
+// TestAppendFactToSlice_RespectsCap caps RecentFacts at maxRecentFacts.
+// Oldest by ProducedAtUnix is dropped. Mutation test reference: changing
+// the cap or removing the cap branch makes this test fail.
+func TestAppendFactToSlice_RespectsCap(t *testing.T) {
+	var facts []ToolFact
+	// Insert maxRecentFacts+5 distinct subjects so dedupe never fires.
+	for i := 0; i < maxRecentFacts+5; i++ {
+		facts = appendFactToSlice(facts, ToolFact{
+			Kind:           FactKindInstanceState,
+			SubjectID:      fmt.Sprintf("uhost-%02d", i),
+			ProducedAtUnix: int64(1_000_000 + i), // monotonically newer
+		})
+	}
+	assert.Len(t, facts, maxRecentFacts, "slice must be capped at maxRecentFacts")
+
+	// Oldest entries (lowest ProducedAtUnix) are dropped; newest survive.
+	for _, f := range facts {
+		assert.GreaterOrEqual(t, f.ProducedAtUnix, int64(1_000_005),
+			"capped slice should keep the 16 newest, dropping the 5 oldest")
+	}
+}
+
+// TestMergeFactsByProducedAt_KeepsHigherTimestamp covers the multi-replica
+// reconciliation: when local and incoming both have a fact for the same
+// (Kind, SubjectID), the higher ProducedAtUnix wins. Used by version-aware
+// merge in M2 commit 5.
+func TestMergeFactsByProducedAt_KeepsHigherTimestamp(t *testing.T) {
+	local := []ToolFact{
+		{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 200},
+		{Kind: FactKindMonitorSample, SubjectID: "uhost-A", ProducedAtUnix: 210},
+	}
+	incoming := []ToolFact{
+		{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 100}, // older
+		{Kind: FactKindInstanceState, SubjectID: "uhost-B", ProducedAtUnix: 220}, // unique
+	}
+	out := mergeFactsByProducedAt(local, incoming)
+	require.Len(t, out, 3)
+
+	// Index by (kind, subject) for assertions.
+	byKey := make(map[string]ToolFact, len(out))
+	for _, f := range out {
+		byKey[f.Kind+":"+f.SubjectID] = f
+	}
+	assert.EqualValues(t, 200, byKey[FactKindInstanceState+":uhost-A"].ProducedAtUnix,
+		"local newer must win when incoming is older")
+	assert.EqualValues(t, 210, byKey[FactKindMonitorSample+":uhost-A"].ProducedAtUnix)
+	assert.EqualValues(t, 220, byKey[FactKindInstanceState+":uhost-B"].ProducedAtUnix)
+}
+
+// TestMergeFactsByProducedAt_DoesNotMutateInputs ensures the merge function
+// is pure — neither input slice is modified. Required because the engine's
+// in-memory state is one of the inputs and must not be mutated by a stale
+// hydrate side-effect.
+func TestMergeFactsByProducedAt_DoesNotMutateInputs(t *testing.T) {
+	local := []ToolFact{
+		{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 200},
+	}
+	incoming := []ToolFact{
+		{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 100},
+	}
+	localCopy := append([]ToolFact(nil), local...)
+	incomingCopy := append([]ToolFact(nil), incoming...)
+
+	_ = mergeFactsByProducedAt(local, incoming)
+
+	assert.Equal(t, localCopy, local, "local input must not be mutated")
+	assert.Equal(t, incomingCopy, incoming, "incoming input must not be mutated")
+}
+
+// TestMergeFactsByProducedAt_RespectsCap exercises the cap on the output of
+// the merge path. Same constant as appendFactToSlice; same drop-oldest
+// policy.
+func TestMergeFactsByProducedAt_RespectsCap(t *testing.T) {
+	build := func(prefix string, base int64, n int) []ToolFact {
+		out := make([]ToolFact, 0, n)
+		for i := 0; i < n; i++ {
+			out = append(out, ToolFact{
+				Kind:           FactKindInstanceState,
+				SubjectID:      fmt.Sprintf("%s-%02d", prefix, i),
+				ProducedAtUnix: base + int64(i),
+			})
+		}
+		return out
+	}
+	// 12 + 12 = 24 facts; cap=16, so 8 oldest get dropped.
+	// All R-batch (2_000_000+i) are newer than all L-batch (1_000_000+i),
+	// so survivors are 12×R + the 4 newest of L (L-11/10/09/08).
+	local := build("L", 1_000_000, 12)
+	incoming := build("R", 2_000_000, 12)
+	out := mergeFactsByProducedAt(local, incoming)
+	assert.Len(t, out, maxRecentFacts)
+
+	// Verify every R survived; verify dropped L entries are L-00..L-07.
+	survivorIDs := make(map[string]struct{}, len(out))
+	for _, f := range out {
+		survivorIDs[f.SubjectID] = struct{}{}
+	}
+	for i := 0; i < 12; i++ {
+		_, ok := survivorIDs[fmt.Sprintf("R-%02d", i)]
+		assert.Truef(t, ok, "R-%02d must survive (it's newer than every L)", i)
+	}
+	for _, expected := range []string{"L-08", "L-09", "L-10", "L-11"} {
+		_, ok := survivorIDs[expected]
+		assert.Truef(t, ok, "%s should be in survivors (top-4 of L by ProducedAtUnix)", expected)
+	}
+	for _, dropped := range []string{"L-00", "L-01", "L-02", "L-03", "L-04", "L-05", "L-06", "L-07"} {
+		_, ok := survivorIDs[dropped]
+		assert.Falsef(t, ok, "%s should have been dropped (oldest 8 of L)", dropped)
+	}
 }
