@@ -7,7 +7,7 @@ sidecars for the CompShare console agent's RAG path.
 
 | File | Purpose | Bound to |
 |---|---|---|
-| `stage2b_w0.jsonl` | Customer-safe FAQ corpus (228 chunks @ 2026-05-20, kb_version `kb.stage2b.w0.2026-05-19.package-policy`) | `internal/knowledge/corpus_digest.go:CorpusDigestExpected` |
+| `stage2b_w0.jsonl` | Customer-safe FAQ corpus (279 chunks @ 2026-05-22, kb_version `kb.stage2b.w1-r1.2026-05-22.agents-plan`) | `internal/knowledge/corpus_digest.go:CorpusDigestExpected` |
 | `embeddings_<corpus-digest>.jsonl` | `text-embedding-3-large` (3072-dim) sidecar for `hybrid_cosine` / `hybrid_rerank` modes | `internal/knowledge/corpus_digest.go:EmbeddingDigestExpected` |
 | `embeddings_<corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for `qwen3_full` / `qwen3_rrf` modes | `internal/knowledge/corpus_digest.go:EmbeddingDigestExpectedQwen3` |
 
