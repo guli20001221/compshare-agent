@@ -371,7 +371,7 @@ func TestKnowledgeRetrieverFromEnvLoadsCorpus(t *testing.T) {
 	require.True(t, enabled)
 	require.NotNil(t, retriever)
 	result := retriever.Retrieve("Windows 远程登录", "windows")
-	if result.Empty || len(result.Hits) == 0 || result.KBVersion != "kb.stage2b.w1-r1.2026-05-22.agents-plan" {
+	if result.Empty || len(result.Hits) == 0 || result.KBVersion != "kb.stage2b.w1-r2.2026-05-23.r2-text-only" {
 		t.Fatalf("retrieval result = %#v", result)
 	}
 }
@@ -522,6 +522,14 @@ func TestKnowledgeRetrieverFromEnvHybridMissingSidecarErrors(t *testing.T) {
 }
 
 func TestKnowledgeRetrieverFromEnvHybridLoadsSidecar(t *testing.T) {
+	// Skip if the text-embedding-3-large sidecar is not present in deploy/kb.
+	// W1-R2 onward, increments no longer rebuild the text-emb-3 sidecar
+	// (qwen3-embedding-8b is the default for qwen3_rrf), so hybrid_cosine /
+	// hybrid_rerank are effectively dead unless a fresh sidecar is built.
+	sidecar := filepath.Join("..", "deploy", "kb", "embeddings_"+knowledge.CorpusDigestExpected+".jsonl")
+	if _, err := os.Stat(sidecar); err != nil {
+		t.Skipf("text-emb-3 sidecar absent for current corpus digest (%v); skipping hybrid_cosine load smoke", err)
+	}
 	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
 		switch key {
 		case "USE_KNOWLEDGE_RETRIEVAL":
