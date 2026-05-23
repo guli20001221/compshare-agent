@@ -2298,8 +2298,136 @@ func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest)
 	}
 	if err == nil && req.Origin == tools.OriginDirectLLM {
 		e.markRegistryInvalidated(req.Action)
+		e.recordToolFacts(req.Action, result)
 	}
 	return result, err
+}
+
+// recordToolFacts is the M2 ToolFact writer entry point. Called only on
+// successful OriginDirectLLM tool calls — workflow-internal probing
+// (OriginWorkflowInternal) and diagnosis-internal calls
+// (OriginDiagnosisInternal) are filtered out by the caller, because
+// those are not user-driven and would pollute "刚才那台" follow-up
+// memory with intermediate state the user never asked about.
+//
+// Skip-without-effect cases (no fact written, no log noise):
+//   - Engine not hydrated (no SetSessionState called this turn — e.g. CLI path).
+//   - result is nil or RawResult is nil.
+//   - Action is not in the v1 supported set.
+//
+// v1 supported actions:
+//   - DescribeCompShareInstance → instance_state per UHostId
+//   - GetCompShareInstanceMonitor → monitor_sample per UHostId
+func (e *Engine) recordToolFacts(action string, result *tools.SafeToolResult) {
+	if !e.sessionStateHydrated {
+		return
+	}
+	if result == nil || result.RawResult == nil {
+		return
+	}
+	switch action {
+	case "DescribeCompShareInstance":
+		e.recordInstanceStateFacts(result.RawResult)
+	case "GetCompShareInstanceMonitor":
+		e.recordMonitorSampleFacts(result.RawResult)
+	}
+}
+
+// recordInstanceStateFacts extracts one instance_state fact per UHostId
+// in the DescribeCompShareInstance result. Numeric fields (cpu, gpu,
+// memory) are coerced to float64 via toFactNumeric to keep the payload
+// round-trip stable per the contract on ToolFact.
+func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
+	hosts, _ := raw["UHostSet"].([]any)
+	if len(hosts) == 0 {
+		return
+	}
+	nowUnix := time.Now().Unix()
+	for _, item := range hosts {
+		row, _ := item.(map[string]any)
+		if row == nil {
+			continue
+		}
+		snap := entity.InstanceFromMap(row)
+		if snap.UHostId == "" {
+			continue
+		}
+		payload := map[string]any{
+			"name":     snap.Name,
+			"state":    snap.State,
+			"gpu":      toFactNumeric(snap.GPU),
+			"gpu_type": snap.GpuType,
+			"cpu":      toFactNumeric(snap.CPU),
+			"memory":   toFactNumeric(snap.Memory),
+			"zone":     snap.Zone,
+		}
+		e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
+			Kind:           FactKindInstanceState,
+			SubjectID:      snap.UHostId,
+			Payload:        payload,
+			ProducedAtTurn: e.userTurn,
+			ProducedAtUnix: nowUnix,
+			TTLSeconds:     factTTLSecondsInstanceState,
+		})
+	}
+}
+
+// recordMonitorSampleFacts groups all per-metric scalars from a
+// GetCompShareInstanceMonitor result by UHostId and writes one
+// monitor_sample fact per host. Multi-GPU disambiguation suffixes
+// (gpu_usage.GPU 1 / .GPU 2) are preserved as separate Payload keys
+// inside the same per-host fact (M3 ContextAssembler reads them all).
+//
+// The empty-metrics filter in ExtractMonitorScalars defaults to "all
+// known metric keys", so a fact captures whatever the host reported,
+// not just what the user requested. This matters for follow-up Qs
+// like "GPU 怎么样" after a CPU-only monitor query.
+func (e *Engine) recordMonitorSampleFacts(raw map[string]any) {
+	scalars := intent.ExtractMonitorScalars(raw, nil)
+	if len(scalars) == 0 {
+		return
+	}
+	nowUnix := time.Now().Unix()
+	bySubject := make(map[string]map[string]any, len(scalars))
+	for _, s := range scalars {
+		if s.SubjectID == "" || s.Key == "" {
+			continue
+		}
+		if _, ok := bySubject[s.SubjectID]; !ok {
+			bySubject[s.SubjectID] = make(map[string]any)
+		}
+		bySubject[s.SubjectID][s.Key] = s.Value
+	}
+	for subjectID, payload := range bySubject {
+		if !isAllAcceptedKeys(FactKindMonitorSample, payload) {
+			continue
+		}
+		e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
+			Kind:           FactKindMonitorSample,
+			SubjectID:      subjectID,
+			Payload:        payload,
+			ProducedAtTurn: e.userTurn,
+			ProducedAtUnix: nowUnix,
+			TTLSeconds:     factTTLSecondsMonitorSample,
+		})
+	}
+}
+
+// isAllAcceptedKeys verifies every key in payload is accepted for the
+// given fact kind via isAcceptedPayloadKey. Used as a guard before
+// storing a monitor_sample fact: if the renderer ever emits a key not
+// in expectedPayloadKeysForKind (e.g. a new metric added to
+// monitorMetricDefinitions but not yet to the contract), the fact is
+// dropped instead of polluting the contract. M3 will see the gap and
+// the test TestToolFact_PayloadKeysEnforced will catch it on the
+// renderer-side first.
+func isAllAcceptedKeys(kind string, payload map[string]any) bool {
+	for k := range payload {
+		if !isAcceptedPayloadKey(kind, k) {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *Engine) markRegistryInvalidated(action string) {
