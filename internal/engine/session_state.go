@@ -78,7 +78,17 @@ type SessionState struct {
 // Round-trip contract (inherited from SessionState §1): no pointers, no
 // unexported fields, no time.Time (use unix int64). Payload is a flat
 // scalar map; concrete keys per Kind are enforced by
-// TestToolFact_PayloadKeysPerKind.
+// TestToolFact_PayloadKeysPerKind_Enforced via marshal/round-trip.
+//
+// Numeric types in Payload: writers MUST coerce ints to float64 (or
+// keep strings) at write time, because json.Unmarshal turns every JSON
+// number into float64 and downstream readers must see stable types.
+// Direct `int` storage in Payload breaks reflect.DeepEqual after
+// round-trip; the writer in commit 3 calls toFactNumeric to enforce.
+//
+// Payload empty-map vs nil: omitempty makes both serialize to no key on
+// the wire, and unmarshal always restores nil. Readers MUST use
+// `len(payload) > 0`, NOT `payload != nil`.
 //
 // TTL: a zero TTLSeconds means "use kind default at read time" — the
 // writer always populates TTLSeconds with ttlSecondsForKind(Kind) for
@@ -117,7 +127,9 @@ const maxRecentFacts = 16
 // ttlSecondsForKind returns the default TTL for known fact kinds. Unknown
 // kinds return 0, which M3 ContextAssembler must treat as "expired" — a
 // forward-rollout safety net for facts written by a future binary on a
-// kind this binary doesn't recognize.
+// kind this binary doesn't recognize. This is consulted at WRITE time by
+// the in-engine writer (commit 3); M3's read-side defensive fallback may
+// also consult it when ToolFact.TTLSeconds is zero (omitempty-stripped).
 func ttlSecondsForKind(kind string) int {
 	switch kind {
 	case FactKindInstanceState:
@@ -126,6 +138,119 @@ func ttlSecondsForKind(kind string) int {
 		return factTTLSecondsMonitorSample
 	default:
 		return 0
+	}
+}
+
+// expectedPayloadKeysForKind returns the documented payload-key set per
+// fact kind. Used by writers (commit 3) to validate output and by tests
+// to enforce the contract. Adding a new key here is a deliberate API
+// change — the test TestToolFact_PayloadKeysEnforced asserts that every
+// payload key emitted by the writer is in this set.
+//
+// monitor_sample multi-GPU keys: the renderer at internal/intent/envelope.go
+// produces gpu_usage.GPU 1 / .GPU 2 / .GPU 3 / .GPU 4 for multi-GPU hosts.
+// We treat the dotted-suffix keys as the same logical "gpu_usage" entry;
+// the test allows any key with the documented prefix.
+func expectedPayloadKeysForKind(kind string) map[string]struct{} {
+	switch kind {
+	case FactKindInstanceState:
+		return map[string]struct{}{
+			"name":     {},
+			"state":    {},
+			"gpu":      {},
+			"gpu_type": {},
+			"cpu":      {},
+			"memory":   {},
+			"zone":     {},
+		}
+	case FactKindMonitorSample:
+		return map[string]struct{}{
+			"cpu_usage":         {},
+			"memory_usage":      {},
+			"gpu_usage":         {},
+			"vram_usage":        {},
+			"system_disk_usage": {},
+			"data_disk_usage":   {},
+		}
+	default:
+		return nil
+	}
+}
+
+// isAcceptedPayloadKey returns true when key is in expectedPayloadKeysForKind
+// for the kind. For monitor_sample only, dotted-suffix keys ("gpu_usage.GPU 1")
+// are also accepted when the prefix matches an expected base key — this
+// handles the renderer's multi-GPU disambiguation (internal/intent/envelope.go).
+// Other kinds' keys must match exactly.
+func isAcceptedPayloadKey(kind, key string) bool {
+	expected := expectedPayloadKeysForKind(kind)
+	if _, ok := expected[key]; ok {
+		return true
+	}
+	if kind != FactKindMonitorSample {
+		return false
+	}
+	if dot := indexByte(key, '.'); dot > 0 {
+		base := key[:dot]
+		if _, ok := expected[base]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func indexByte(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// toFactNumeric coerces an integer scalar to float64 so JSON round-trip
+// is reflect.DeepEqual-stable. Strings, floats, bools pass through. Any
+// other type returns the empty string (writers should not store rich
+// types in Payload anyway).
+//
+// Why this exists: json.Unmarshal turns every JSON number into float64.
+// A writer storing `int(2)` in Payload produces `{"gpu":2}` on the wire
+// but unmarshal restores `float64(2)`, breaking reflect.DeepEqual on
+// the parent ToolFact. M3 ContextAssembler reads Payload values via
+// type-switch; coercing to float64 at write time keeps the reader
+// type-stable.
+func toFactNumeric(v any) any {
+	switch x := v.(type) {
+	case int:
+		return float64(x)
+	case int8:
+		return float64(x)
+	case int16:
+		return float64(x)
+	case int32:
+		return float64(x)
+	case int64:
+		return float64(x)
+	case uint:
+		return float64(x)
+	case uint8:
+		return float64(x)
+	case uint16:
+		return float64(x)
+	case uint32:
+		return float64(x)
+	case uint64:
+		return float64(x)
+	case float32:
+		return float64(x)
+	case float64:
+		return x
+	case string:
+		return x
+	case bool:
+		return x
+	default:
+		return ""
 	}
 }
 
@@ -261,36 +386,63 @@ func extractAgentSchemaVersion(probe any) (string, bool) {
 	return ver, true
 }
 
+// copyFactPayload returns a shallow-cloned map[string]any. Used by
+// appendFactToSlice and mergeFactsByProducedAt to break the alias between
+// input fact Payload and stored fact Payload — without this, mutating
+// the merged-output Payload would silently mutate the engine's
+// in-memory facts (and vice-versa).
+//
+// Values are not deep-cloned because Payload contract per ToolFact docstring
+// is "flat scalar map" — readers must not store nested structures.
+func copyFactPayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	out := make(map[string]any, len(payload))
+	for k, v := range payload {
+		out[k] = v
+	}
+	return out
+}
+
+// cloneFact returns a fact with a fresh-cloned Payload map. Used at
+// every store/insert boundary in append/merge helpers so callers cannot
+// accidentally mutate stored Payloads via aliased map references.
+func cloneFact(f ToolFact) ToolFact {
+	f.Payload = copyFactPayload(f.Payload)
+	return f
+}
+
 // appendFactToSlice inserts fact into facts, deduping by (Kind, SubjectID).
 // If a fact with the same key already exists, the newer ProducedAtUnix
-// wins; ties go to the new fact (caller intent on overwrite). Output is
-// sorted ProducedAtUnix descending and capped at maxRecentFacts (oldest
-// dropped).
+// wins; ties go to the new fact (caller intent on overwrite, ">=" semantics).
+// Output is sorted ProducedAtUnix descending and capped at maxRecentFacts
+// (oldest dropped).
 //
-// Pure function. Caller must not assume the input slice is unmodified —
-// the implementation prefers in-place compaction where safe — but the
-// returned slice is the canonical result; ignore the input slice after
-// calling.
+// Pure on inputs: input slice header is not mutated; input fact Payload
+// is shallow-cloned before storing, so subsequent mutations to the
+// caller's map do NOT affect the stored fact, and vice-versa.
 func appendFactToSlice(facts []ToolFact, fact ToolFact) []ToolFact {
+	stored := cloneFact(fact)
 	out := make([]ToolFact, 0, len(facts)+1)
 	replaced := false
 	for _, f := range facts {
-		if f.Kind == fact.Kind && f.SubjectID == fact.SubjectID {
+		if f.Kind == stored.Kind && f.SubjectID == stored.SubjectID {
 			if replaced {
 				continue
 			}
-			if fact.ProducedAtUnix >= f.ProducedAtUnix {
-				out = append(out, fact)
+			if stored.ProducedAtUnix >= f.ProducedAtUnix {
+				out = append(out, stored)
 			} else {
-				out = append(out, f)
+				out = append(out, cloneFact(f))
 			}
 			replaced = true
 			continue
 		}
-		out = append(out, f)
+		out = append(out, cloneFact(f))
 	}
 	if !replaced {
-		out = append(out, fact)
+		out = append(out, stored)
 	}
 	sortFactsByProducedAtDesc(out)
 	if len(out) > maxRecentFacts {
@@ -300,12 +452,20 @@ func appendFactToSlice(facts []ToolFact, fact ToolFact) []ToolFact {
 }
 
 // mergeFactsByProducedAt merges two fact lists, deduping by (Kind,
-// SubjectID), keeping the higher ProducedAtUnix per key. Output is sorted
+// SubjectID), keeping the higher ProducedAtUnix per key. Ties keep the
+// existing entry (local wins on tie, ">" semantics). Output is sorted
 // ProducedAtUnix descending and capped at maxRecentFacts. Used by
 // SetSessionState's version-aware merge path (see engine.go).
 //
-// Pure function. Neither input slice is mutated. The output is a fresh
-// slice — safe to assign over either input.
+// Pure on inputs: neither input slice header is mutated; per-fact Payload
+// maps are shallow-cloned before storing, so subsequent mutations to
+// caller maps do NOT affect stored facts.
+//
+// Tie-break asymmetry vs appendFactToSlice (`>=` there, `>` here) is
+// intentional: append is the in-engine write path where the writer
+// always wants its newest fact to take effect; merge is the cross-replica
+// reconcile path where local in-memory state is authoritative on ties
+// because it has not yet been persisted.
 func mergeFactsByProducedAt(local, incoming []ToolFact) []ToolFact {
 	out := make([]ToolFact, 0, len(local)+len(incoming))
 	seen := make(map[string]int, len(local)+len(incoming))
@@ -313,12 +473,12 @@ func mergeFactsByProducedAt(local, incoming []ToolFact) []ToolFact {
 		key := f.Kind + "\x00" + f.SubjectID
 		if idx, ok := seen[key]; ok {
 			if f.ProducedAtUnix > out[idx].ProducedAtUnix {
-				out[idx] = f
+				out[idx] = cloneFact(f)
 			}
 			return
 		}
 		seen[key] = len(out)
-		out = append(out, f)
+		out = append(out, cloneFact(f))
 	}
 	for _, f := range local {
 		insertOrReplace(f)

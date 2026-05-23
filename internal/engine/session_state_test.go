@@ -385,42 +385,139 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 		"byte-equal round-trip required for multi-replica preservation")
 }
 
-// TestToolFact_PayloadKeysPerKind enforces the documented payload-key set
-// per fact kind. Future writers must use exactly these keys; M3
-// ContextAssembler will read them by name. Adding a new key requires
-// updating this test deliberately.
-func TestToolFact_PayloadKeysPerKind(t *testing.T) {
-	expected := map[string]map[string]struct{}{
-		FactKindInstanceState: {
-			"name":     {},
-			"state":    {},
-			"gpu":      {},
-			"gpu_type": {},
-			"cpu":      {},
-			"memory":   {},
-			"zone":     {},
-		},
-		FactKindMonitorSample: {
-			// Renderer-derived metric keys at internal/intent/envelope.go.
-			// Multi-GPU disambiguation produces gpu_usage.GPU 1 / .GPU 2;
-			// they share the same fact via the dotted-suffix convention.
-			"cpu_usage":         {},
-			"memory_usage":      {},
-			"gpu_usage":         {},
-			"vram_usage":        {},
-			"system_disk_usage": {},
-			"data_disk_usage":   {},
-		},
-	}
-
-	// Sanity: every supported kind has a TTL constant and an entry in
-	// ttlSecondsForKind.
-	for kind := range expected {
-		ttl := ttlSecondsForKind(kind)
-		assert.Greaterf(t, ttl, 0, "kind %q must have a non-zero default TTL", kind)
-	}
+// TestToolFact_TTLDefaultsByKind verifies the per-kind default TTL constants.
+// Adding a new kind requires adding a TTL constant and the case in
+// ttlSecondsForKind. Renamed from the original TestToolFact_PayloadKeysPerKind
+// to honestly reflect what it tests; payload-key enforcement is in
+// TestToolFact_PayloadKeysEnforced below.
+func TestToolFact_TTLDefaultsByKind(t *testing.T) {
+	assert.Equal(t, factTTLSecondsInstanceState, ttlSecondsForKind(FactKindInstanceState))
+	assert.Equal(t, factTTLSecondsMonitorSample, ttlSecondsForKind(FactKindMonitorSample))
+	assert.Greater(t, ttlSecondsForKind(FactKindInstanceState), 0,
+		"instance_state TTL must be positive — zero would make M3 assembler treat it as expired")
+	assert.Greater(t, ttlSecondsForKind(FactKindMonitorSample), 0,
+		"monitor_sample TTL must be positive — same reason")
 	assert.Equal(t, 0, ttlSecondsForKind("unknown_kind"),
 		"unknown kinds must default to TTL=0 so M3 assembler treats them as expired")
+}
+
+// TestToolFact_PayloadKeysEnforced is the load-bearing key-set test. It
+// asserts that every key emitted by the writer (commit 3) for each kind
+// is in the documented set returned by expectedPayloadKeysForKind.
+//
+// Today (commit 1, no writer wired): we exercise the helper directly with
+// canonical inputs. When commit 3 lands, the writer also calls the helper
+// so this test continues to enforce the contract on real writer output.
+//
+// Mutation-test reasoning: adding a stray key like "hallucinated" to a
+// canonical payload here makes assertion fail. Adding a key to
+// expectedPayloadKeysForKind without using it in production is detected
+// by the second assertion (every documented key MUST appear in canonical
+// payload — prevents ghost keys from accumulating in the contract).
+func TestToolFact_PayloadKeysEnforced(t *testing.T) {
+	canonical := map[string]map[string]any{
+		FactKindInstanceState: {
+			"name":     "gpu-prod",
+			"state":    "Running",
+			"gpu":      float64(2),
+			"gpu_type": "RTX4090",
+			"cpu":      float64(16),
+			"memory":   float64(64),
+			"zone":     "cn-bj-01",
+		},
+		FactKindMonitorSample: {
+			"cpu_usage":         "92.5",
+			"memory_usage":      "44.0",
+			"gpu_usage":         "88.0",
+			"vram_usage":        "70.0",
+			"system_disk_usage": "12.0",
+			"data_disk_usage":   "8.0",
+		},
+	}
+	for kind, payload := range canonical {
+		expected := expectedPayloadKeysForKind(kind)
+		require.NotEmpty(t, expected, "kind %q has no expected payload keys", kind)
+
+		// Every key in the canonical payload must be accepted.
+		for k := range payload {
+			assert.Truef(t, isAcceptedPayloadKey(kind, k),
+				"kind %q: canonical key %q must be in expected set", kind, k)
+		}
+		// Every documented key must appear in the canonical payload.
+		// Prevents stale/ghost entries in expectedPayloadKeysForKind.
+		for k := range expected {
+			_, ok := payload[k]
+			assert.Truef(t, ok, "kind %q: documented key %q missing from canonical payload", kind, k)
+		}
+		// Negative: a stray key must be rejected.
+		assert.Falsef(t, isAcceptedPayloadKey(kind, "hallucinated_key"),
+			"kind %q: stray key 'hallucinated_key' must NOT be accepted", kind)
+	}
+}
+
+// TestToolFact_MonitorMultiGPUKeyAccepted covers the monitor_sample
+// renderer's multi-GPU disambiguation suffix: "gpu_usage.GPU 1" /
+// "gpu_usage.GPU 2" must pass the key check via the dotted-suffix rule.
+func TestToolFact_MonitorMultiGPUKeyAccepted(t *testing.T) {
+	for _, key := range []string{"gpu_usage.GPU 1", "gpu_usage.GPU 2", "vram_usage.GPU 1"} {
+		assert.Truef(t, isAcceptedPayloadKey(FactKindMonitorSample, key),
+			"multi-GPU key %q must be accepted via dotted-prefix rule", key)
+	}
+	// Sanity: a non-prefixed key still fails.
+	assert.False(t, isAcceptedPayloadKey(FactKindMonitorSample, "fake_metric.GPU 1"))
+	// Sanity: only monitor_sample uses dotted suffixes; instance_state must NOT.
+	assert.False(t, isAcceptedPayloadKey(FactKindInstanceState, "name.suffix"))
+}
+
+// TestToolFact_NumericPayloadRoundTrip is the load-bearing test for the
+// "writers must coerce ints to float64" contract documented on ToolFact.
+// Without coercion, json.Unmarshal turns ints into float64 and
+// reflect.DeepEqual on the parent struct fails after round-trip.
+func TestToolFact_NumericPayloadRoundTrip(t *testing.T) {
+	// Pre-coercion: int — would break DeepEqual round-trip.
+	raw := map[string]any{"gpu": 2, "cpu": 16, "memory": 64}
+	coerced := make(map[string]any, len(raw))
+	for k, v := range raw {
+		coerced[k] = toFactNumeric(v)
+	}
+	for _, v := range coerced {
+		_, isFloat := v.(float64)
+		assert.True(t, isFloat, "toFactNumeric must produce float64 from int input")
+	}
+
+	// Round-trip: facts with coerced payload must DeepEqual after JSON.
+	fact := ToolFact{
+		Kind:           FactKindInstanceState,
+		SubjectID:      "uhost-x",
+		Payload:        coerced,
+		ProducedAtUnix: 100,
+		TTLSeconds:     factTTLSecondsInstanceState,
+	}
+	jsonBytes, err := json.Marshal(fact)
+	require.NoError(t, err)
+	var got ToolFact
+	require.NoError(t, json.Unmarshal(jsonBytes, &got))
+	assert.Equal(t, fact, got,
+		"coerced numeric payload must reflect.DeepEqual after JSON round-trip")
+}
+
+// TestToolFact_NumericCoercionRoundTripMutation demonstrates the failure
+// mode: WITHOUT coercion, the int-typed payload fails DeepEqual. This
+// test pins the contract documented on ToolFact: callers who skip
+// toFactNumeric will silently produce non-round-trippable facts.
+func TestToolFact_NumericCoercionRoundTripMutation(t *testing.T) {
+	fact := ToolFact{
+		Kind:           FactKindInstanceState,
+		SubjectID:      "uhost-x",
+		Payload:        map[string]any{"gpu": 2}, // int — violates contract
+		ProducedAtUnix: 100,
+	}
+	jsonBytes, err := json.Marshal(fact)
+	require.NoError(t, err)
+	var got ToolFact
+	require.NoError(t, json.Unmarshal(jsonBytes, &got))
+	assert.NotEqual(t, fact, got,
+		"WITHOUT toFactNumeric, int payload fails DeepEqual after round-trip — this is exactly what writers must avoid")
 }
 
 // TestAppendFactToSlice_DedupesBySubjectAndKind covers the (Kind, SubjectID)
@@ -535,9 +632,47 @@ func TestMergeFactsByProducedAt_DoesNotMutateInputs(t *testing.T) {
 	assert.Equal(t, incomingCopy, incoming, "incoming input must not be mutated")
 }
 
-// TestMergeFactsByProducedAt_RespectsCap exercises the cap on the output of
-// the merge path. Same constant as appendFactToSlice; same drop-oldest
-// policy.
+// TestMergeFactsByProducedAt_PayloadIsolated exercises the
+// shallow-clone-on-store contract: mutating a Payload key on the merge
+// output must NOT affect the corresponding input fact's Payload, even
+// though both came from the same writer's map. This is required because
+// the engine's in-memory facts are one of the merge inputs; without
+// payload isolation, M3 ContextAssembler mutating output Payloads would
+// silently corrupt the engine state.
+func TestMergeFactsByProducedAt_PayloadIsolated(t *testing.T) {
+	local := []ToolFact{
+		{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 200,
+			Payload: map[string]any{"state": "Running"}},
+	}
+	out := mergeFactsByProducedAt(local, nil)
+	require.Len(t, out, 1)
+
+	out[0].Payload["state"] = "Stopped" // mutate the output
+
+	assert.Equal(t, "Running", local[0].Payload["state"],
+		"mutating merge output Payload must NOT bleed back to input — shallow-clone-on-store guards against alias")
+}
+
+// TestAppendFactToSlice_PayloadIsolated mirrors the previous test for
+// the append helper. Same contract, different code path.
+func TestAppendFactToSlice_PayloadIsolated(t *testing.T) {
+	original := map[string]any{"state": "Running"}
+	out := appendFactToSlice(nil, ToolFact{
+		Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 100,
+		Payload: original,
+	})
+	require.Len(t, out, 1)
+
+	// Mutate the writer's map after store — must not affect stored fact.
+	original["state"] = "Stopped"
+	assert.Equal(t, "Running", out[0].Payload["state"],
+		"mutating original Payload after append MUST NOT change the stored fact (shallow-clone-on-store)")
+
+	// Mutate the stored fact's Payload — must not affect the writer's map.
+	out[0].Payload["state"] = "Aborted"
+	assert.Equal(t, "Stopped", original["state"],
+		"mutating stored Payload must NOT bleed back to original — bidirectional isolation")
+}
 func TestMergeFactsByProducedAt_RespectsCap(t *testing.T) {
 	build := func(prefix string, base int64, n int) []ToolFact {
 		out := make([]ToolFact, 0, n)
