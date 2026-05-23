@@ -21,7 +21,23 @@ import (
 // Mock stores
 // ---------------------------------------------------------------------------
 
-type mockSessions struct{ byID map[string]store.Session }
+type mockSessions struct {
+	byID map[string]store.Session
+	// updateContextCalls counts every UpdateContext invocation regardless
+	// of outcome. Tests use this to assert "no persistence on parse
+	// failure" and "exactly one persist on happy path".
+	updateContextCalls int
+	// lastUpdateContext records the most recent UpdateContext payload for
+	// assertions about envelope shape / version.
+	lastUpdateContext struct {
+		sessionID       string
+		ctxJSON         json.RawMessage
+		expectedVersion int
+	}
+	// updateContextOverride, when non-nil, replaces the default CAS
+	// behavior. Tests use it to force outcomes like ErrStaleWrite.
+	updateContextOverride func(sessionID string, ctxJSON json.RawMessage, expectedVersion int) (int, error)
+}
 
 func (m *mockSessions) Create(_ context.Context, owner store.Owner, title *string, ctxJSON json.RawMessage) (store.Session, error) {
 	s := store.Session{
@@ -50,6 +66,35 @@ func (m *mockSessions) GetByID(_ context.Context, owner store.Owner, sessionID s
 
 func (m *mockSessions) BumpUpdatedAtAndIncCount(_ context.Context, _ store.Owner, _ string, _ int) error {
 	return nil
+}
+
+// UpdateContext mimics the CAS semantics of MySQLSessionStore.UpdateContext
+// against the in-memory byID map: version match → write + increment, return
+// new version; mismatch (or missing row / wrong owner) → ErrStaleWrite.
+//
+// Tests inject updateContextOverride to force specific outcomes (e.g.
+// ErrStaleWrite even when versions match). All paths increment
+// updateContextCalls so "was UpdateContext called at all?" assertions
+// work regardless of override.
+func (m *mockSessions) UpdateContext(_ context.Context, owner store.Owner, sessionID string, ctxJSON json.RawMessage, expectedVersion int) (int, error) {
+	m.updateContextCalls++
+	m.lastUpdateContext.sessionID = sessionID
+	m.lastUpdateContext.ctxJSON = append(json.RawMessage(nil), ctxJSON...)
+	m.lastUpdateContext.expectedVersion = expectedVersion
+	if m.updateContextOverride != nil {
+		return m.updateContextOverride(sessionID, ctxJSON, expectedVersion)
+	}
+	s, ok := m.byID[sessionID]
+	if !ok || s.TopOrganizationID != owner.TopOrganizationID || s.OrganizationID != owner.OrganizationID {
+		return 0, store.ErrStaleWrite
+	}
+	if s.ContextVersion != expectedVersion {
+		return 0, store.ErrStaleWrite
+	}
+	s.Context = ctxJSON
+	s.ContextVersion = expectedVersion + 1
+	m.byID[sessionID] = s
+	return s.ContextVersion, nil
 }
 
 type mockMessages struct {

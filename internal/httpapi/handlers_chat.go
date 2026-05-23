@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -122,6 +123,38 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 		return
 	}
 	defer release()
+
+	// Hydrate SessionState from the envelope persisted in sessions.context.
+	// Order matters:
+	//   (1) ClearSessionState wipes whatever the cached Engine carried from
+	//       a prior turn — agentpool reuses *engine.Engine across turns, so
+	//       without this clear a parse failure below would leave the prior
+	//       turn's hydrated=true sticky and §6.2 would persist stale state
+	//       on top of the broken row.
+	//   (2) ParsePersistedContext returns 3 outcomes: success (hydrate +
+	//       persist on done), malformed JSON (log + skip persist), unknown
+	//       schema version (log + skip persist — defends forward rollout
+	//       where a v2 binary's envelope must NOT be downgraded by an
+	//       older binary).
+	// sessionStatePersistable is the single boolean the success branch
+	// checks before calling UpdateContext. Both error paths set it to
+	// false; only a successful parse + SetSessionState sets it to true.
+	agent.ClearSessionState()
+	var clientCtxPreserve json.RawMessage
+	sessionStatePersistable := false
+	pc, parseErr := engine.ParsePersistedContext(sess.Context)
+	switch {
+	case parseErr == nil:
+		clientCtxPreserve = pc.ClientContext
+		agent.SetSessionState(pc.AgentSessionState, sess.ContextVersion)
+		sessionStatePersistable = true
+	case errors.Is(parseErr, engine.ErrUnknownSessionStateSchema):
+		log.Printf("warning: session %s has unknown SessionState schema_version (will skip persist, leaving row untouched for newer binary): %v",
+			sessionID, parseErr)
+	default:
+		log.Printf("warning: session %s context parse failed (will skip persist): %v",
+			sessionID, parseErr)
+	}
 
 	clearChatTraceObservers(agent)
 	defer clearChatTraceObservers(agent)
@@ -300,6 +333,38 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 		LatencyMs: latencyMs,
 		TtftMs:    ttftMs,
 	})
+
+	// Persist SessionState envelope AFTER the done frame so the client is
+	// not blocked on a DB write. Guarded by sessionStatePersistable, which
+	// is false on parse failure / unknown schema version (see Lease block
+	// above). Persistence failures are warning-only — the assistant reply
+	// is already delivered, the worst case is "previous instance" memory
+	// loss on the next turn.
+	if sessionStatePersistable {
+		newState, expectedVer, hydrated := agent.SessionStateSnapshot()
+		if hydrated {
+			envelope := engine.PersistedContext{
+				AgentSessionState: newState,
+				ClientContext:     clientCtxPreserve,
+			}
+			if raw, mErr := json.Marshal(envelope); mErr == nil {
+				persistCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+				_, upErr := h.sessions.UpdateContext(persistCtx, base.Owner, sessionID, raw, expectedVer)
+				cancel()
+				switch {
+				case upErr == nil:
+					// ok
+				case errors.Is(upErr, store.ErrStaleWrite):
+					log.Printf("warning: session %s stale context_version on persist (expected=%d)",
+						sessionID, expectedVer)
+				default:
+					log.Printf("warning: session %s UpdateContext failed: %v", sessionID, upErr)
+				}
+			} else {
+				log.Printf("warning: session %s marshal envelope failed: %v", sessionID, mErr)
+			}
+		}
+	}
 }
 
 // writeStreamError updates the assistant message status to "error" and emits
