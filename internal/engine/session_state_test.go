@@ -427,6 +427,80 @@ func TestSetSessionState_NotHydratedAlwaysFullOverwrite(t *testing.T) {
 	assert.Equal(t, 0, ver)
 }
 
+// TestSetSessionState_StrictlyLowerVersion_MustNotRegressVersion closes
+// the P2.1 test gap caught by the final review: previously
+// TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber used
+// version=5 for both the in-memory and the incoming state, so adding
+// `e.sessionStateVersion = version` to the merge branch was a no-op
+// assignment and invisible to tests. With a STRICTLY-LOWER incoming
+// version, that mutation would silently regress sessionStateVersion,
+// breaking the next CAS round-trip.
+//
+// MUTATION: adding `e.sessionStateVersion = version` to the merge branch
+// (engine.go:701) would make this test fail with `ver == 3` instead of
+// the expected `ver == 5`.
+func TestSetSessionState_StrictlyLowerVersion_MustNotRegressVersion(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaV1,
+		SelectedInstanceID: "uhost-A",
+		LastIntent:         string(intent.IntentMonitorQuery),
+	}, 5)
+
+	// Stale incoming with STRICTLY lower version (e.g. cross-replica lag).
+	e.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaV1,
+		SelectedInstanceID: "uhost-stale",
+		LastIntent:         string(intent.IntentResourceInfo),
+	}, 3)
+
+	state, ver, _ := e.SessionStateSnapshot()
+	assert.Equal(t, 5, ver, "version MUST NOT regress when incoming version < in-memory version (CAS round-trip invariant)")
+	assert.Equal(t, "uhost-A", state.SelectedInstanceID, "scalars MUST NOT clobber on stale-version merge")
+	assert.Equal(t, string(intent.IntentMonitorQuery), state.LastIntent)
+}
+
+// TestSetSessionState_FactTie_LocalWinsOnSameProducedAt closes the P2.2
+// test gap: previously TestSetSessionState_VersionAwareMerge had no two
+// facts sharing the same (Kind, SubjectID, ProducedAtUnix), so swapping
+// the merge call to `mergeFactsByProducedAt(state.RecentFacts,
+// e.sessionState.RecentFacts)` was invisible.
+//
+// The merge function's tie semantic is `>` (NOT `>=`), so a tie keeps
+// the first-seen value — i.e. local (which is passed first). This must
+// be pinned because the cross-replica reconcile rule documented at
+// session_state.go is "local wins on tie because it has not yet been
+// persisted".
+//
+// MUTATION: swapping arg order at engine.go:701 to
+// `mergeFactsByProducedAt(state.RecentFacts, e.sessionState.RecentFacts)`
+// makes this test fail — incoming Payload wins instead of local.
+func TestSetSessionState_FactTie_LocalWinsOnSameProducedAt(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaV1,
+		RecentFacts: []ToolFact{
+			{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 200,
+				Payload: map[string]any{"state": "LOCAL_WINS"}},
+		},
+	}, 5)
+
+	// Incoming has the same (Kind, SubjectID, ProducedAtUnix) — only the
+	// Payload differs.
+	e.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaV1,
+		RecentFacts: []ToolFact{
+			{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 200,
+				Payload: map[string]any{"state": "INCOMING_LOSES"}},
+		},
+	}, 5)
+
+	state, _, _ := e.SessionStateSnapshot()
+	require.Len(t, state.RecentFacts, 1)
+	assert.Equal(t, "LOCAL_WINS", state.RecentFacts[0].Payload["state"],
+		"on ProducedAtUnix tie, local must win — incoming arg passed second to mergeFactsByProducedAt loses ties")
+}
+
 // TestEnvelope_PreservesClientContextAcrossAgentWrites guards the public
 // CreateCSAgentSession.Context API contract: client_context written by the
 // frontend must survive agent-side SessionState updates.

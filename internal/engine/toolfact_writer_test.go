@@ -8,6 +8,7 @@ import (
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/tools"
 
 	"github.com/stretchr/testify/assert"
@@ -590,6 +591,62 @@ func TestSessionState_FieldsRoundTripWithSelectedAndIntent(t *testing.T) {
 	assert.Equal(t, "uhost-pick", roundTripped.AgentSessionState.SelectedInstanceID)
 	assert.Equal(t, "train-a", roundTripped.AgentSessionState.SelectedInstanceName)
 	assert.Equal(t, string(intent.IntentMonitorQuery), roundTripped.AgentSessionState.LastIntent)
+}
+
+// TestPhase1Cutover_Success_PopulatesSessionState is the P1 integration test
+// pinning the M2 writer wiring at engine.go:1198-1199, 1230-1231, 1284-1285.
+//
+// MUTATION-VERIFIED: deleting `e.recordSelectedInstanceFromEnvelope(...)` and
+// `e.recordLastIntentFromPlan(...)` at the cutover-success branch (engine.go
+// :1230-1231) leaves all M2 unit tests green, but breaks this test —
+// SessionStateSnapshot().SelectedInstanceID stays empty after a successful
+// cutover dispatch. Confirms the wiring is load-bearing.
+//
+// Drives:
+//   ChatWithOptions
+//     → tryPlannerDispatch
+//     → tryPhase1Cutover
+//     → HandlerStatusHandled branch (engine.go:1228-1232)
+//     → assertions on SessionStateSnapshot
+func TestPhase1Cutover_Success_PopulatesSessionState(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
+	}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+
+	// CRITICAL: hydrate the engine before Chat so the writer is allowed
+	// to touch sessionState (matches handlers_chat.go's
+	// ClearSessionState + SetSessionState path).
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 0)
+
+	_, err := eng.Chat(context.Background(), "show phase1-demo resource", noopStep)
+	require.NoError(t, err)
+
+	state, _, _ := eng.SessionStateSnapshot()
+
+	// Wiring at engine.go:1230 must have written SelectedInstance.
+	assert.Equal(t, "uhost-phase1-001", state.SelectedInstanceID,
+		"cutover success must populate SelectedInstanceID — mutation: delete recordSelectedInstanceFromEnvelope at engine.go:1230 to confirm load-bearingness")
+	assert.Equal(t, "phase1-demo", state.SelectedInstanceName)
+
+	// Wiring at engine.go:1231 must have written LastIntent.
+	assert.Equal(t, string(intent.IntentResourceInfo), state.LastIntent,
+		"cutover success must populate LastIntent — mutation: delete recordLastIntentFromPlan at engine.go:1231 to confirm load-bearingness")
+
+	// Bonus: the writer at engine.go:2299 (executeSafeTool) should have
+	// recorded an instance_state fact for the same UHostId, since the
+	// cutover handler calls DescribeCompShareInstance via OriginDirectLLM.
+	require.Len(t, state.RecentFacts, 1, "executeSafeTool must record one instance_state fact during cutover dispatch")
+	assert.Equal(t, FactKindInstanceState, state.RecentFacts[0].Kind)
+	assert.Equal(t, "uhost-phase1-001", state.RecentFacts[0].SubjectID)
 }
 
 // ---------------------------------------------------------------------------
