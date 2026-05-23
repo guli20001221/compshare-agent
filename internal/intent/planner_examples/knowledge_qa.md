@@ -1,6 +1,6 @@
 ---
 intent: knowledge_qa
-source: "Stage 2B + PR #34a/#52/#60 knowledge_qa routing regressions"
+source: "Stage 2B + PR #34a/#52/#60 knowledge_qa routing regressions + R3-A1 modelverse model-API coverage"
 examples:
   - question: "为啥显卡内存满了 GPU 占用才 10%"
     plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
@@ -44,6 +44,24 @@ examples:
   - question: "退款流程是怎样的"
     plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
     source: "PR #34a: platform procedure question"
+  - question: "Suno 怎么用 API 生成歌曲"
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    source: "R3-A1: modelverse music-gen API (Suno)"
+  - question: "Vidu 接口怎么传图生成视频"
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    source: "R3-A1: modelverse video-gen API (Vidu)"
+  - question: "flux 模型调用 API 怎么传 prompt 和图"
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    source: "R3-A1: modelverse image-gen API (flux)"
+  - question: "用 OpenAI SDK 调 gpt-image-1 怎么传参"
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    source: "R3-A1: modelverse OpenAI-compat API (gpt-image)"
+  - question: "minimax-speech 怎么生成中文语音"
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    source: "R3-A1: modelverse TTS API (minimax-speech)"
+  - question: "modelverse 返回 1002 是什么错误"
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    source: "R3-A1: modelverse error-code reference"
 ---
 
 # Planner one-shot examples: knowledge_qa intent
