@@ -29,3 +29,14 @@ func TestHTTPMigrationsCreateAgentTraces(t *testing.T) {
 	}
 	assert.False(t, strings.Contains(strings.ToLower(ddl), "agent_messages"))
 }
+
+func TestHTTPMigrationsAddSessionContextVersion(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0003_add_session_context_version.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	assert.Contains(t, ddl, "ALTER TABLE sessions")
+	assert.Contains(t, ddl, "ADD COLUMN context_version INT NOT NULL DEFAULT 0")
+	assert.Contains(t, ddl, "AFTER context")
+}
