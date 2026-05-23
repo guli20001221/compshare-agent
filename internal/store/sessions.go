@@ -38,7 +38,7 @@ func (s *MySQLSessionStore) GetByID(ctx context.Context, owner Owner, sessionID 
 	var title sql.NullString
 	var ctxRaw sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-SELECT id, top_organization_id, organization_id, title, context, message_count, pinned, created_at, updated_at
+SELECT id, top_organization_id, organization_id, title, context, context_version, message_count, pinned, created_at, updated_at
 FROM sessions
 WHERE id = ? AND top_organization_id = ? AND organization_id = ? AND deleted_at IS NULL
 `, sessionID, owner.TopOrganizationID, owner.OrganizationID).Scan(
@@ -47,6 +47,7 @@ WHERE id = ? AND top_organization_id = ? AND organization_id = ? AND deleted_at 
 		&out.OrganizationID,
 		&title,
 		&ctxRaw,
+		&out.ContextVersion,
 		&out.MessageCount,
 		&out.Pinned,
 		&out.CreatedAt,
@@ -83,6 +84,44 @@ WHERE id = ? AND top_organization_id = ? AND organization_id = ? AND deleted_at 
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// UpdateContext atomically writes ctxJSON into sessions.context and
+// increments sessions.context_version with optimistic concurrency. The
+// WHERE clause checks owner, deleted_at IS NULL, AND context_version =
+// expectedVersion — any mismatch yields 0 rows affected and is reported
+// as ErrStaleWrite. The new context_version (expectedVersion + 1) is
+// computed on success without RETURNING since MySQL 8.0 lacks it for UPDATE.
+func (s *MySQLSessionStore) UpdateContext(
+	ctx context.Context, owner Owner, sessionID string,
+	ctxJSON json.RawMessage, expectedVersion int,
+) (int, error) {
+	res, err := s.db.ExecContext(ctx, `
+UPDATE sessions
+   SET context = ?, context_version = context_version + 1
+ WHERE id = ?
+   AND top_organization_id = ?
+   AND organization_id = ?
+   AND deleted_at IS NULL
+   AND context_version = ?
+`,
+		nullableJSON(ctxJSON),
+		sessionID,
+		owner.TopOrganizationID,
+		owner.OrganizationID,
+		expectedVersion,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("update session context: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("update session context rows affected: %w", err)
+	}
+	if n == 0 {
+		return 0, ErrStaleWrite
+	}
+	return expectedVersion + 1, nil
 }
 
 // nullableJSON returns nil for empty/nil RawMessage, otherwise the string form.

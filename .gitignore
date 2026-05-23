@@ -17,6 +17,14 @@ eval/shadow_qa/shadow_qa_agent.yaml
 eval/shadow_qa/**/shadow_qa_agent.yaml
 eval/shadow_qa/.env
 eval/shadow_qa/**/.env
+
+# M1 CLI eval round (2026-05-23) — entire directory is local-only.
+# Contains real-account traces (UHostIds, IPs, prices, trace_id), GT JSON
+# dumps, and raw_results.json. Older rounds (round2 etc.) committed a
+# hand-curated subset of *.md reports; this round was run as a developer
+# regression check only, so the whole directory stays untracked. If a
+# sanitized summary is needed later, copy it out to docs/ first.
+eval/shadow_qa/2026-05-23-m1-cli-eval/
 .runs/
 agent.exe
 agent.exe~

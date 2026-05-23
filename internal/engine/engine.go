@@ -203,6 +203,15 @@ type Engine struct {
 	// currentCtx holds the context for the current ChatWithOptions call.
 	// Set at the start of ChatWithOptions and cleared (nil) on return.
 	currentCtx context.Context
+	// sessionState is the JSON-serializable per-session state injected by
+	// SetSessionState before each Chat turn and read back via
+	// SessionStateSnapshot after the turn. See session_state.go.
+	// M1 contract: this field is only mutated by SetSessionState /
+	// ClearSessionState; M2 will wire ToolFactExtractor to also update
+	// it from inside the turn.
+	sessionState         SessionState
+	sessionStateVersion  int
+	sessionStateHydrated bool
 }
 
 // SharedDeps groups Engine fields that are safe to share across sessions.
@@ -654,6 +663,48 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content})
 		}
 	}
+}
+
+// SetSessionState installs the prior persisted SessionState and the
+// context_version that was read together with it. Must be called BEFORE
+// ChatWithOptions. Safe to call once per Lease — caller (handleChat) is
+// already serialized via agentpool.Lease.
+//
+// The state is treated as immutable input for the current turn; mutations
+// during the turn (M2+) produce a new state visible via SessionStateSnapshot.
+//
+// M1 contract: NO call site inside the engine mutates sessionState during
+// a turn — the channel is open but unused. M2 ToolFactExtractor will be
+// the first in-engine writer.
+func (e *Engine) SetSessionState(state SessionState, version int) {
+	e.sessionState = state
+	e.sessionStateVersion = version
+	e.sessionStateHydrated = true
+}
+
+// ClearSessionState resets the per-turn SessionState to its zero value
+// and marks the engine as un-hydrated. Callers (handleChat) MUST invoke
+// this immediately after Lease, BEFORE attempting ParsePersistedContext +
+// SetSessionState. Reason: agentpool.Pool reuses the same *engine.Engine
+// across turns (LRU 200 / 30min), so without an explicit clear, a parse
+// failure on turn N+1 would leave hydrated=true sticky from turn N and
+// cause the persist-on-success path to overwrite the row using stale
+// state. M1 has no in-engine writer so the immediate impact is small,
+// but M2 would step directly on this — clear from the start.
+func (e *Engine) ClearSessionState() {
+	e.sessionState = SessionState{}
+	e.sessionStateVersion = 0
+	e.sessionStateHydrated = false
+}
+
+// SessionStateSnapshot returns the current SessionState plus the version
+// that should be passed back to SessionStore.UpdateContext as the CAS
+// expectedVersion, and a hydrated flag indicating whether SetSessionState
+// was successfully called this turn. Callers MUST check hydrated before
+// persisting — persisting an un-hydrated zero state would overwrite the
+// row, which is exactly the bug we want to avoid on parse-failure paths.
+func (e *Engine) SessionStateSnapshot() (state SessionState, version int, hydrated bool) {
+	return e.sessionState, e.sessionStateVersion, e.sessionStateHydrated
 }
 
 // Chat processes one user message through the ReAct loop and returns the final text reply.
