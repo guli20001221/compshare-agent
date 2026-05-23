@@ -47,17 +47,22 @@ func OpenMySQL(cfg config.MySQLConfig) (*sql.DB, error) {
 	return db, nil
 }
 
-// VerifySchema checks that all expected tables exist by running a no-op SELECT.
+// VerifySchema checks that all expected tables and columns exist by running
+// no-op SELECTs. Column-level probes ensure a new binary started against an
+// un-migrated database fails fast at boot instead of erroring on the first
+// chat-path SQL (see deploy/migrations/README.md for the migration-first
+// deploy contract).
 func VerifySchema(ctx context.Context, db *sql.DB) error {
 	queries := map[string]string{
-		"sessions":         "SELECT 1 FROM sessions LIMIT 1",
-		"messages":         "SELECT 1 FROM messages LIMIT 1",
-		"message_feedback": "SELECT 1 FROM message_feedback LIMIT 1",
+		"sessions":                 "SELECT 1 FROM sessions LIMIT 1",
+		"sessions.context_version": "SELECT context_version FROM sessions LIMIT 1",
+		"messages":                 "SELECT 1 FROM messages LIMIT 1",
+		"message_feedback":         "SELECT 1 FROM message_feedback LIMIT 1",
 	}
-	for table, q := range queries {
+	for target, q := range queries {
 		var v int
 		if err := db.QueryRowContext(ctx, q).Scan(&v); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("verify schema table %s: %w", table, err)
+			return fmt.Errorf("verify schema %s: %w", target, err)
 		}
 	}
 	return nil
