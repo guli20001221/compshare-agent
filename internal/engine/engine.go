@@ -1168,6 +1168,8 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 					reply := handled.Reply
 					if handled.Status == intent.HandlerStatusHandled {
 						reply = e.renderGroundedHandlerResult(ctx, handled)
+						e.recordSelectedInstanceFromEnvelope(handled.Envelope)
+						e.recordLastIntentFromPlan(resumed.Plan)
 					}
 					e.messages = append(e.messages, openai.ChatCompletionMessage{
 						Role:    openai.ChatMessageRoleAssistant,
@@ -1198,6 +1200,8 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
 		reply = e.renderGroundedHandlerResult(ctx, handled)
+		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
+		e.recordLastIntentFromPlan(result.Plan)
 	}
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
@@ -1250,6 +1254,8 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
 		reply = e.renderGroundedHandlerResult(ctx, handled)
+		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
+		e.recordLastIntentFromPlan(resumedPlan)
 	}
 	if reply == "" {
 		reply = intent.FriendlyToolFailureReply
@@ -2428,6 +2434,75 @@ func isAllAcceptedKeys(kind string, payload map[string]any) bool {
 		}
 	}
 	return true
+}
+
+// recordSelectedInstanceFromEnvelope sets SessionState.SelectedInstance{ID,Name}
+// when the handler envelope identifies exactly one instance subject. Called
+// only from cutover/resume success paths — see callers in tryPhase1Cutover
+// and tryResumeResourceSelection.
+//
+// Gates:
+//   - sessionStateHydrated — never mutate sessionState without an explicit
+//     SetSessionState earlier in the turn (CLI path safety, matches the
+//     fact writer's gate).
+//   - env != nil and Subjects has exactly one item of type SubjectInstance
+//     with non-empty ID.
+//
+// Why "exactly one": multi-instance results (e.g. "show all my instances")
+// give Subjects > 1 — the user has not selected anything. Zero-instance
+// results (filter matched nothing) give Subjects == 0 — same reasoning.
+// This matches the M2 design doc §3.1: write only when the user has
+// unambiguously identified a single instance.
+func (e *Engine) recordSelectedInstanceFromEnvelope(env *envelope.Envelope) {
+	if env == nil || !e.sessionStateHydrated {
+		return
+	}
+	if len(env.Subjects) != 1 {
+		return
+	}
+	s := env.Subjects[0]
+	if s.Type != envelope.SubjectInstance || s.ID == "" {
+		return
+	}
+	e.sessionState.SelectedInstanceID = s.ID
+	e.sessionState.SelectedInstanceName = s.Name
+}
+
+// recordLastIntentFromPlan sets SessionState.LastIntent from the plan's
+// classified Intent. Called only on cutover/resume success paths — i.e.
+// when the user's intent was confirmed by a fully-dispatched handler
+// reply. Refuses to write IntentUnknown / empty / non-RuntimeIntents
+// values, so the stored value is always a legal short-circuited
+// "future M3 ContextAssembler will switch on this" enum string.
+func (e *Engine) recordLastIntentFromPlan(plan intent.Plan) {
+	if !e.sessionStateHydrated {
+		return
+	}
+	if plan.Intent == "" || plan.Intent == intent.IntentUnknown {
+		return
+	}
+	if !runtimeIntentMember(plan.Intent) {
+		return
+	}
+	e.sessionState.LastIntent = string(plan.Intent)
+}
+
+// runtimeIntentSet is a one-time-built membership set over intent.RuntimeIntents.
+// Used by recordLastIntentFromPlan to refuse non-runtime values without
+// taking a hard compile-time dep on the intent vocabulary from inside
+// session_state.go (the engine package already imports intent, so this
+// is internal-only).
+var runtimeIntentSet = func() map[intent.Intent]struct{} {
+	out := make(map[intent.Intent]struct{}, len(intent.RuntimeIntents()))
+	for _, i := range intent.RuntimeIntents() {
+		out[i] = struct{}{}
+	}
+	return out
+}()
+
+func runtimeIntentMember(i intent.Intent) bool {
+	_, ok := runtimeIntentSet[i]
+	return ok
 }
 
 func (e *Engine) markRegistryInvalidated(action string) {

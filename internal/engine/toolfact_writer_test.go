@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/tools"
@@ -446,13 +447,149 @@ func mustRoundTripPersistedContext(t *testing.T, pc PersistedContext) PersistedC
 }
 
 // ---------------------------------------------------------------------------
-// LastIntent / SelectedInstance assertions guarded by RuntimeIntents — these
-// are placeholders for commit 4. RuntimeIntents() smoke check only.
+// recordSelectedInstanceFromEnvelope / recordLastIntentFromPlan unit tests
 // ---------------------------------------------------------------------------
 
-func TestRuntimeIntents_IsNonEmpty(t *testing.T) {
-	assert.NotEmpty(t, intent.RuntimeIntents(),
-		"intent.RuntimeIntents() must be non-empty for LastIntent vocabulary writers")
+// TestRecordSelectedInstanceFromEnvelope_SingleSubject is the canonical
+// case: one Subject of type Instance → write SelectedInstanceID/Name.
+func TestRecordSelectedInstanceFromEnvelope_SingleSubject(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+	env := &envelope.Envelope{
+		Kind: envelope.KindResourceInfo,
+		Subjects: []envelope.Subject{
+			{ID: "uhost-pick", Name: "train-a", Type: envelope.SubjectInstance},
+		},
+	}
+	e.recordSelectedInstanceFromEnvelope(env)
+	assert.Equal(t, "uhost-pick", e.sessionState.SelectedInstanceID)
+	assert.Equal(t, "train-a", e.sessionState.SelectedInstanceName)
+}
+
+// TestRecordSelectedInstanceFromEnvelope_NotHydratedSkips guards the CLI-
+// path safety: same as the fact writer, no mutation without explicit
+// SetSessionState.
+func TestRecordSelectedInstanceFromEnvelope_NotHydratedSkips(t *testing.T) {
+	deps := &SharedDeps{
+		LLMClient:                &mockLLM{},
+		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		SupportsObjectToolChoice: true,
+		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
+	}
+	e := NewSession(deps, SessionOptions{Subject: "cli-subject"})
+	require.False(t, e.sessionStateHydrated)
+
+	env := &envelope.Envelope{
+		Subjects: []envelope.Subject{{ID: "uhost-x", Name: "x", Type: envelope.SubjectInstance}},
+	}
+	e.recordSelectedInstanceFromEnvelope(env)
+	assert.Empty(t, e.sessionState.SelectedInstanceID)
+}
+
+// TestRecordSelectedInstanceFromEnvelope_RejectsAmbiguousOrEmpty enumerates
+// the cases where the engine MUST NOT write SelectedInstance: multiple
+// subjects (ambiguous), zero subjects, wrong type, empty ID, nil envelope.
+func TestRecordSelectedInstanceFromEnvelope_RejectsAmbiguousOrEmpty(t *testing.T) {
+	cases := []struct {
+		name string
+		env  *envelope.Envelope
+	}{
+		{name: "nil envelope", env: nil},
+		{name: "zero subjects", env: &envelope.Envelope{Subjects: []envelope.Subject{}}},
+		{name: "two subjects (ambiguous)", env: &envelope.Envelope{Subjects: []envelope.Subject{
+			{ID: "uhost-a", Type: envelope.SubjectInstance},
+			{ID: "uhost-b", Type: envelope.SubjectInstance},
+		}}},
+		{name: "non-instance subject", env: &envelope.Envelope{Subjects: []envelope.Subject{
+			{ID: "rtx-4090", Type: envelope.SubjectGPUModel},
+		}}},
+		{name: "empty ID", env: &envelope.Envelope{Subjects: []envelope.Subject{
+			{ID: "", Type: envelope.SubjectInstance},
+		}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEngineForToolFactTest(t)
+			e.recordSelectedInstanceFromEnvelope(tc.env)
+			assert.Empty(t, e.sessionState.SelectedInstanceID,
+				"input %q must NOT set SelectedInstance", tc.name)
+		})
+	}
+}
+
+// TestRecordLastIntentFromPlan_AcceptsRuntimeIntents covers the happy path:
+// any intent in RuntimeIntents() is written.
+func TestRecordLastIntentFromPlan_AcceptsRuntimeIntents(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+	for _, i := range []intent.Intent{
+		intent.IntentResourceInfo,
+		intent.IntentMonitorQuery,
+		intent.IntentGPUSpecsQuery,
+		intent.IntentPricingQuery,
+		intent.IntentStockAvailability,
+	} {
+		e.sessionState.LastIntent = ""
+		e.recordLastIntentFromPlan(intent.Plan{Intent: i})
+		assert.Equalf(t, string(i), e.sessionState.LastIntent, "intent %s must be written", i)
+	}
+}
+
+// TestRecordLastIntentFromPlan_RejectsInvalid covers the gate cases:
+// empty intent, IntentUnknown, and non-RuntimeIntents short aliases.
+func TestRecordLastIntentFromPlan_RejectsInvalid(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+	// Pre-set a sentinel so we can verify NO write happens.
+	e.sessionState.LastIntent = "_sentinel_"
+
+	for _, tc := range []struct {
+		name string
+		plan intent.Plan
+	}{
+		{name: "empty intent", plan: intent.Plan{Intent: ""}},
+		{name: "IntentUnknown", plan: intent.Plan{Intent: intent.IntentUnknown}},
+		{name: "short alias 'monitor'", plan: intent.Plan{Intent: intent.Intent("monitor")}},
+		{name: "made-up value", plan: intent.Plan{Intent: intent.Intent("hallucinated_intent")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e.recordLastIntentFromPlan(tc.plan)
+			assert.Equal(t, "_sentinel_", e.sessionState.LastIntent,
+				"invalid intent %q must NOT overwrite existing LastIntent", tc.plan.Intent)
+		})
+	}
+}
+
+// TestRecordLastIntentFromPlan_NotHydratedSkips mirrors the CLI-path
+// safety for LastIntent.
+func TestRecordLastIntentFromPlan_NotHydratedSkips(t *testing.T) {
+	deps := &SharedDeps{
+		LLMClient:                &mockLLM{},
+		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		SupportsObjectToolChoice: true,
+		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
+	}
+	e := NewSession(deps, SessionOptions{Subject: "cli-subject"})
+	require.False(t, e.sessionStateHydrated)
+
+	e.recordLastIntentFromPlan(intent.Plan{Intent: intent.IntentResourceInfo})
+	assert.Empty(t, e.sessionState.LastIntent)
+}
+
+// TestSessionState_FieldsRoundTripWithSelectedAndIntent verifies the M2
+// additions (SelectedInstance / LastIntent) survive JSON round-trip with
+// reflect.DeepEqual semantics — the multi-replica preservation contract.
+func TestSessionState_FieldsRoundTripWithSelectedAndIntent(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+	e.recordSelectedInstanceFromEnvelope(&envelope.Envelope{Subjects: []envelope.Subject{
+		{ID: "uhost-pick", Name: "train-a", Type: envelope.SubjectInstance},
+	}})
+	e.recordLastIntentFromPlan(intent.Plan{Intent: intent.IntentMonitorQuery})
+
+	state, _, _ := e.SessionStateSnapshot()
+	pc := PersistedContext{AgentSessionState: state}
+	roundTripped := mustRoundTripPersistedContext(t, pc)
+
+	assert.Equal(t, "uhost-pick", roundTripped.AgentSessionState.SelectedInstanceID)
+	assert.Equal(t, "train-a", roundTripped.AgentSessionState.SelectedInstanceName)
+	assert.Equal(t, string(intent.IntentMonitorQuery), roundTripped.AgentSessionState.LastIntent)
 }
 
 // ---------------------------------------------------------------------------
