@@ -943,7 +943,7 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	if result.Status != HandlerStatusHandled {
 		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
 	}
-	if !strings.Contains(result.Reply, "4090 当前暂无可创建库存") {
+	if !strings.Contains(result.Reply, "4090 当前可用区暂无可调度库存") {
 		t.Fatalf("reply should answer concrete creatability, got: %s", result.Reply)
 	}
 	if strings.Contains(result.Reply, "ResourceEnough") || strings.Contains(result.Reply, "容量预检口径") {
@@ -984,7 +984,7 @@ func TestStockAvailabilityUsesFirstMatchedZoneForCapacityPrecheck(t *testing.T) 
 	if result.Status != HandlerStatusHandled {
 		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
 	}
-	if !strings.Contains(result.Reply, "4090 当前暂无可创建库存") {
+	if !strings.Contains(result.Reply, "4090 当前可用区暂无可调度库存") {
 		t.Fatalf("reply should still answer from successful capacity checks, got: %s", result.Reply)
 	}
 	if strings.Contains(result.Reply, "部分可用区容量预检未完成") {
@@ -1075,6 +1075,195 @@ func stockZoneSnapshot(t *testing.T, zone string) entity.RegistrySnapshot {
 		t.Fatal(err)
 	}
 	return reg.Snapshot()
+}
+
+// TestStockAvailabilityFiltersCrossRegionZones verifies that when the
+// upstream listing API returns zones across multiple regions, the capability
+// only probes zones whose prefix matches the configured Region. The
+// production gateway rejects mismatched Region/Zone pairs with RetCode=230.
+// Discovered 2026-05-24 live API audit.
+//
+// Order matters: cross-region zone is listed FIRST so an absent filter would
+// pick it before the in-region zone and surface as a stray call here.
+func TestStockAvailabilityFiltersCrossRegionZones(t *testing.T) {
+	exec := &capabilitySequenceExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
+				map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
+			},
+		},
+		"DescribeCompShareImages": {
+			"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu-nvidia 22.04", "Status": "Available", "ImageType": "System"},
+			},
+		},
+		"CheckCompShareResourceCapacity": {
+			"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+		Plan:     Plan{Intent: IntentStockAvailability},
+		UserText: "4090 现在有没有货",
+		Region:   "cn-wlcb",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	capacityCalls := 0
+	for _, call := range exec.calls {
+		if call.action != "CheckCompShareResourceCapacity" {
+			continue
+		}
+		capacityCalls++
+		zone, _ := call.args["Zone"].(string)
+		if zone != "cn-wlcb-01" {
+			t.Errorf("cross-region zone leaked into capacity precheck: %q", zone)
+		}
+	}
+	if capacityCalls != 1 {
+		t.Fatalf("capacity calls = %d, want 1 (cross-region zone dropped)", capacityCalls)
+	}
+	if !strings.Contains(result.Reply, "4090 当前有可创建库存") {
+		t.Errorf("reply should answer creatability, got: %s", result.Reply)
+	}
+}
+
+// TestStockAvailabilityAllZonesCrossRegionReturnsOnSaleNote verifies that when
+// every zone returned by the upstream listing falls outside the configured
+// Region, the capability still surfaces an actionable on-sale-but-no-zone
+// reply instead of fanning out doomed probes or returning the noStockReply.
+func TestStockAvailabilityAllZonesCrossRegionReturnsOnSaleNote(t *testing.T) {
+	exec := &capabilitySequenceExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
+			},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+		Plan:     Plan{Intent: IntentStockAvailability},
+		UserText: "4090 现在有没有货",
+		Region:   "cn-wlcb",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	for _, call := range exec.calls {
+		if call.action == "CheckCompShareResourceCapacity" {
+			t.Fatalf("no cross-region capacity probe should fire, got call: %#v", call)
+		}
+	}
+	if !strings.Contains(result.Reply, "在售") || !strings.Contains(result.Reply, "本部署区域") {
+		t.Errorf("reply should explain on-sale-but-no-in-region-zone, got: %s", result.Reply)
+	}
+}
+
+// TestStockAvailabilitySoldOutAfterRegionFilterReportsSoldOut verifies that
+// when the only matched entries are SoldOut, the renderer reports
+// "已下架" rather than the cross-region on-sale fallback.
+func TestStockAvailabilitySoldOutAfterRegionFilterReportsSoldOut(t *testing.T) {
+	exec := &capabilitySequenceExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "SoldOut"},
+			},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+		Plan:     Plan{Intent: IntentStockAvailability},
+		UserText: "4090 现在有没有货",
+		Region:   "cn-wlcb",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	if !strings.Contains(result.Reply, "4090 当前已下架") {
+		t.Errorf("reply should report SoldOut, got: %s", result.Reply)
+	}
+}
+
+// TestStockAvailabilityMixedStatusOutOfRegionDoesNotClaimSoldOut verifies the
+// edge case where a model has SoldOut entries in some out-of-region zones AND
+// Normal entries in other out-of-region zones. The truthful answer is "on
+// sale somewhere, just not in our region", NOT "已下架". This protects
+// against a regression in matchedSoldOutStockNames discovered during PR
+// review.
+func TestStockAvailabilityMixedStatusOutOfRegionDoesNotClaimSoldOut(t *testing.T) {
+	exec := &capabilitySequenceExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "SoldOut"},
+				map[string]any{"Name": "4090", "Zone": "cn-sh2-03", "Status": "Normal"},
+			},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+		Plan:     Plan{Intent: IntentStockAvailability},
+		UserText: "4090 现在有没有货",
+		Region:   "cn-wlcb",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	if strings.Contains(result.Reply, "已下架") {
+		t.Errorf("reply must not claim SoldOut when Normal entries exist out-of-region, got: %s", result.Reply)
+	}
+	if !strings.Contains(result.Reply, "在售") || !strings.Contains(result.Reply, "本部署区域") {
+		t.Errorf("reply should explain on-sale-but-no-in-region-zone, got: %s", result.Reply)
+	}
+}
+
+// TestStockAvailabilityAllCapacityProbesFailedReportsInOnSale verifies the
+// new "机型在售, 容量预检接口暂不可用" wording when checkedSpecs == 0 (every
+// probe call errored). Previously this case said the cryptic "暂时无法确认是
+// 否有可创建库存".
+func TestStockAvailabilityAllCapacityProbesFailedReportsInOnSale(t *testing.T) {
+	exec := &capabilitySequenceExecutor{
+		results: map[string]map[string]any{
+			"DescribeAvailableCompShareInstanceTypes": {
+				"AvailableInstanceTypes": []any{
+					map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
+				},
+			},
+			"DescribeCompShareImages": {
+				"ImageSet": []any{
+					map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu-nvidia 22.04", "Status": "Available", "ImageType": "System"},
+				},
+			},
+		},
+		errs: map[string]error{
+			"CheckCompShareResourceCapacity": errors.New("upstream 8433"),
+		},
+	}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+		Plan:     Plan{Intent: IntentStockAvailability},
+		UserText: "4090 现在有没有货",
+		Region:   "cn-wlcb",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	if !strings.Contains(result.Reply, "机型在售") || !strings.Contains(result.Reply, "容量预检接口暂不可用") {
+		t.Errorf("reply should distinguish on-sale + probe-down, got: %s", result.Reply)
+	}
 }
 
 func TestRenderImageList_KeywordFilter(t *testing.T) {

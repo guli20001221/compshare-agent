@@ -148,6 +148,7 @@ var nonAuditableFields = map[string]string{
 	"MaxTokensPerTurn":            "int — no methods",
 	"ExternalExecutor":            "tools.ToolExecutor — already covered by TestSessionIsolation_NoProjectIdLeak (PR #135)",
 	"IntentPlanner":               "intent.IntentPlanner interface — concrete intent.Planner verified clean (single exported method Plan, see TODO below for promotion criteria)",
+	"DefaultRegion":               "string — deployment-wide config copy of cfg.Agent.Region, no methods",
 }
 
 // TODO(future): promote intent.Planner into sharedDepConcreteTypes IF

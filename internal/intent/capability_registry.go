@@ -1177,8 +1177,20 @@ type stockCapacityCheck struct {
 
 func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req HandlerRequest, stockRaw map[string]any) (string, bool, *HandlerResult) {
 	entries := matchedNormalStockEntries(stockRaw, req.UserText)
+	entries = filterStockEntriesToCurrentRegion(entries, req.Region)
 	entries = filterStockEntriesToResolverZones(entries, req.Resolver)
 	if len(entries) == 0 {
+		// All entries returned by DescribeAvailableCompShareInstanceTypes fall
+		// in zones that do not belong to this deployment's region (or were
+		// filtered out by the account snapshot). Report "on sale, but no
+		// in-region zone to probe" rather than the cryptic noStockReply.
+		if matchedSoldOutNames := matchedSoldOutStockNames(stockRaw, req.UserText); len(matchedSoldOutNames) > 0 {
+			return fmt.Sprintf("%s 当前已下架。", strings.Join(matchedSoldOutNames, "、")), true, nil
+		}
+		if matchedNames := matchUserTextToInstanceTypeNames(req.UserText, mapSliceAt(stockRaw, "AvailableInstanceTypes"), false); len(matchedNames) > 0 {
+			sort.Strings(matchedNames)
+			return fmt.Sprintf("%s 当前在售，但本部署区域内暂无可用区可做容量预检，请到控制台查看实时库存。", strings.Join(matchedNames, "、")), true, nil
+		}
 		return "", false, nil
 	}
 	imageRaw, fb := executeCapabilityAction(ctx, h, req.Plan.Intent, "DescribeCompShareImages", map[string]any{
@@ -1300,6 +1312,95 @@ func filterStockEntriesToResolverZones(entries []stockInstanceTypeEntry, resolve
 		return entries
 	}
 	return filtered
+}
+
+// filterStockEntriesToCurrentRegion drops entries whose Zone does not belong
+// to the deployment's configured Region. UCloud zone naming convention is
+// "<region>-<index>" (e.g. cn-wlcb-01 belongs to cn-wlcb), so the region
+// prefix check is a structural match, not a curated allowlist. Empty region
+// disables the filter (CLI without UserContext, unit tests). Unlike
+// filterStockEntriesToResolverZones, when ALL entries are out-of-region we
+// return an empty slice — the caller surfaces "on sale, no in-region zone"
+// rather than fanning out doomed cross-region capacity probes.
+//
+// Background: production gateway validates Region/Zone consistency and
+// returns RetCode=230 "Params [Zone] not available" for mismatches. The
+// upstream listing API returns zones across all regions in one response,
+// so we must filter client-side.
+func filterStockEntriesToCurrentRegion(entries []stockInstanceTypeEntry, region string) []stockInstanceTypeEntry {
+	if region == "" || len(entries) == 0 {
+		return entries
+	}
+	prefix := region + "-"
+	filtered := make([]stockInstanceTypeEntry, 0, len(entries))
+	for _, entry := range entries {
+		// Empty Zone passes through: the downstream capacity-probe loop in
+		// renderStockWithCapacityPrecheck (see `if entry.Zone == "" { continue }`)
+		// already skips empty-Zone entries before they reach the executor, so
+		// no doomed API call leaks. Tightening this to require HasPrefix
+		// would silently drop entries whose Status check we still want.
+		if entry.Zone == "" || strings.HasPrefix(entry.Zone, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+// matchedSoldOutStockNames returns the deduplicated list of GPU model names
+// the user asked about whose Status is SoldOut across EVERY listing entry.
+// A model with at least one Normal entry anywhere (even out-of-region) is
+// NOT reported as SoldOut here — its truthful state is "on sale somewhere".
+// Used by renderStockWithCapacityPrecheck when the post-filter Normal set
+// is empty to distinguish "model is sold out everywhere" from "model is on
+// sale but no in-region zone".
+func matchedSoldOutStockNames(raw map[string]any, userText string) []string {
+	items := mapSliceAt(raw, "AvailableInstanceTypes")
+	if len(items) == 0 {
+		return nil
+	}
+	matched := matchUserTextToInstanceTypeNames(userText, items, false)
+	if len(matched) == 0 {
+		return nil
+	}
+	wanted := map[string]struct{}{}
+	for _, name := range matched {
+		wanted[name] = struct{}{}
+	}
+	hasNormal := map[string]bool{}
+	hasSoldOut := map[string]bool{}
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := safeString(entry, "Name")
+		if _, ok := wanted[name]; !ok {
+			continue
+		}
+		status := safeString(entry, "Status")
+		if status == "" {
+			// Listing-API convention: missing Status implies the entry is
+			// listed as on-sale. See renderStockReply's default at the
+			// equivalent line ("Some prod responses omit Status; appears in
+			// available list ≈ available").
+			status = "Normal"
+		}
+		switch {
+		case strings.EqualFold(status, "SoldOut"):
+			hasSoldOut[name] = true
+		case strings.EqualFold(status, "Normal"):
+			hasNormal[name] = true
+		}
+	}
+	out := []string{}
+	for name := range hasSoldOut {
+		if hasNormal[name] {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // isImageListAllIntent returns true when the user is asking for a full
@@ -1513,10 +1614,17 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 		return appendCapacityFailureNote(reply, failedZones)
 	}
 	if checkedSpecs == 0 {
-		reply := fmt.Sprintf("%s 当前暂时无法确认是否有可创建库存。", models)
+		// All capacity probes for the matched zones failed (gateway 5xx,
+		// upstream Region/Zone validation rejected the pair, etc.). Platform
+		// listed the model as Status=Normal, so we know the model is on-sale —
+		// we just couldn't verify schedulable capacity.
+		reply := fmt.Sprintf("%s 机型在售，但容量预检接口暂不可用，请到控制台查看实时库存。", models)
 		return appendCapacityFailureNote(reply, failedZones)
 	}
-	reply := fmt.Sprintf("%s 当前暂无可创建库存，暂时不能新建实例。", models)
+	// At least one probe came back successfully but reported no sufficient
+	// (cpu, gpu, mem) tuple. The current zones cannot schedule a default
+	// build; the model may still be creatable in other zones.
+	reply := fmt.Sprintf("%s 当前可用区暂无可调度库存，可切换可用区或稍后重试。", models)
 	return appendCapacityFailureNote(reply, failedZones)
 }
 

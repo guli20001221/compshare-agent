@@ -212,6 +212,10 @@ type Engine struct {
 	sessionState         SessionState
 	sessionStateVersion  int
 	sessionStateHydrated bool
+	// defaultRegion is the deployment region copied from cfg.Agent.Region.
+	// It is the fallback for capability handlers when ctx carries no
+	// UserContext.Region (CLI without STS, or tests). See regionForRequest.
+	defaultRegion string
 }
 
 // SharedDeps groups Engine fields that are safe to share across sessions.
@@ -250,6 +254,11 @@ type SharedDeps struct {
 	// (holds AK/SK + HTTP client). Each NewSession wraps it in a fresh
 	// SafeToolExecutor so per-session confirmFn stays isolated.
 	ExternalExecutor tools.ToolExecutor
+	// DefaultRegion is the deployment region copied from cfg.Agent.Region.
+	// Capability handlers use it as the fallback when ctx carries no
+	// UserContext.Region (CLI without STS, dev). Shared across sessions
+	// because it is process-wide config, not per-tenant.
+	DefaultRegion string
 }
 
 // SessionOptions configures a per-session Engine. Server passes a freshly
@@ -280,6 +289,7 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 		SupportsObjectToolChoice: cap.SupportsObjectToolChoice,
 		MaxTokensPerTurn:         cfg.Agent.RateLimit.MaxTokensPerTurn,
 		ExternalExecutor:         tools.NewExternalExecutor(cfg.Agent),
+		DefaultRegion:            cfg.Agent.Region,
 	}, nil
 }
 
@@ -309,6 +319,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		rateLimiter:                 deps.RateLimiter,
 		supportsObjectToolChoice:    deps.SupportsObjectToolChoice,
 		maxTokensPerTurn:            deps.MaxTokensPerTurn,
+		defaultRegion:               deps.DefaultRegion,
 
 		// ── per-session (fresh instance every call) ──
 		confirmFn:             opts.ConfirmFn,
@@ -1147,6 +1158,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 		Plan:     result.Plan,
 		Resolver: dispatch.snapshot,
 		UserText: userMsg,
+		Region:   e.regionForRequest(ctx),
 	}
 	var handled intent.HandlerResult
 	switch result.Plan.Intent {
@@ -1188,6 +1200,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 						Plan:     resumed.Plan,
 						Resolver: selection.snapshot,
 						UserText: userMsg,
+						Region:   e.regionForRequest(ctx),
 					}
 					handled = handler.HandleMonitorQuery(ctx, req)
 					e.emitPlannerTrace(resumed, handled.CutoverStatus, dispatch.latency)
@@ -1274,6 +1287,7 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		Plan:     resumedPlan,
 		Resolver: pending.snapshot,
 		UserText: pending.originalUserMsg,
+		Region:   e.regionForRequest(ctx),
 	})
 	e.emitPlannerTrace(intent.PlannerResult{Plan: resumedPlan}, handled.CutoverStatus, 0)
 	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, pending.originalUserMsg)
@@ -1347,6 +1361,19 @@ func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent
 	}
 	e.emitRendererTrace(trace)
 	return result.Text
+}
+
+// regionForRequest resolves the region a capability handler should use for
+// its current request. Priority: UserContext.Region (HTTP gateway / CLI with
+// STS) then engine.defaultRegion (CLI legacy / dev). Returns "" only when
+// neither is set; capability handlers treat empty region as "disable
+// region filter" (preserves legacy behavior in tests built before the
+// region surface existed).
+func (e *Engine) regionForRequest(ctx context.Context) string {
+	if u, ok := tools.UserFrom(ctx); ok && u.Region != "" {
+		return u.Region
+	}
+	return e.defaultRegion
 }
 
 func planWithUserTextMonitorMetrics(plan intent.Plan, userText string) intent.Plan {

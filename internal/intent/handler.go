@@ -86,6 +86,16 @@ type HandlerRequest struct {
 	// tryPhase1Cutover / tryResumeResourceSelection. Legacy handlers
 	// (HandleResourceInfo / HandleMonitorQuery) ignore this field.
 	UserText string
+	// Region is the deployment region the agent is calling the upstream API
+	// against (`UserFrom(ctx).Region` on HTTP path, falling back to
+	// cfg.Agent.Region on CLI). Empty when neither is set.
+	//
+	// Capability handlers that fan out tool calls across zones returned by a
+	// listing API (e.g. stock capacity precheck) must filter zones to those
+	// matching this Region prefix — the production gateway rejects mismatched
+	// pairs with `RetCode=230 "Params [Zone] not available"`. Empty Region
+	// disables the filter (preserves legacy behavior in tests).
+	Region string
 }
 
 type DemoHandler struct {
