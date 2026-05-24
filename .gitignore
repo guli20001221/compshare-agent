@@ -25,8 +25,11 @@ eval/shadow_qa/**/.env
 # regression check only, so the whole directory stays untracked. If a
 # sanitized summary is needed later, copy it out to docs/ first.
 eval/shadow_qa/2026-05-23-m1-cli-eval/
-# M2 CLI eval round (2026-05-24) — same policy as M1. Real-account state
-# captured for ToolFact / SelectedInstance / LastIntent regression check.
+# M2 CLI eval round (2026-05-24) — same policy as M1. Reply / tool-call
+# regression check only. CLI path does not hydrate SessionState so the
+# eval does NOT cover M2's RecentFacts / SelectedInstance / LastIntent
+# writers; those are covered by engine unit/integration tests and the
+# HTTP fact-persist e2e test.
 eval/shadow_qa/2026-05-24-m2-cli-eval/
 .runs/
 agent.exe
