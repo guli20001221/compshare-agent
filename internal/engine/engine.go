@@ -200,6 +200,10 @@ type Engine struct {
 	// Read by executeDiagnosis guards for signal matching. Never mutated
 	// mid-turn.
 	lastUserMsg string
+	// Turn-scoped planner intent. Set by tryPlannerDispatch when the planner
+	// classifies but the handler falls back to ReAct. Consumed by the ReAct
+	// loop to scope the tool list via intent.IntentToolSubset. Reset per turn.
+	lastPlannerIntentThisTurn intent.Intent
 	// currentCtx holds the context for the current ChatWithOptions call.
 	// Set at the start of ChatWithOptions and cleared (nil) on return.
 	currentCtx context.Context
@@ -759,6 +763,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.readExpensiveCallsThisTurn = 0
 	e.requireKnowledgeCitationThisTurn = false
 	e.turnTokensConsumed = 0
+	e.lastPlannerIntentThisTurn = ""
 
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
@@ -830,7 +835,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 		req := llm.ChatRequest{
 			Messages: e.buildMessagesForLLM(),
-			Tools:    tools.VisibleRegistry(e.mutatingToolsEnabled),
+			Tools:    tools.VisibleRegistryForSubset(intent.IntentToolSubset(e.lastPlannerIntentThisTurn), e.mutatingToolsEnabled),
 		}
 		// BRIDGE T-001.f1: adjacent monitor follow-up must re-call
 		// GetCompShareInstanceMonitor instead of reusing prior numbers.
@@ -1010,9 +1015,15 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
 			e.requireKnowledgeCitationThisTurn = true
 		}
+		e.lastPlannerIntentThisTurn = dispatch.result.Plan.Intent
 		e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
 		return "", false
 	}
+
+	// Record the planner intent for all subsequent branches. If any branch
+	// falls back to ReAct (return "", false), the ReAct loop uses this to
+	// scope the tool list via intent.IntentToolSubset.
+	e.lastPlannerIntentThisTurn = dispatch.result.Plan.Intent
 
 	// Token budget gate. callPlannerOnce already added planner usage to
 	// the per-turn counter; if that alone blew the cap, return the
@@ -1147,6 +1158,9 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 		Plan:     result.Plan,
 		Resolver: dispatch.snapshot,
 		UserText: userMsg,
+	}
+	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
+		req.FallbackInstanceID = e.sessionState.SelectedInstanceID
 	}
 	var handled intent.HandlerResult
 	switch result.Plan.Intent {

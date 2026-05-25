@@ -652,6 +652,31 @@ var Registry = []openai.Tool{
 	},
 }
 
+// VisibleRegistryForSubset returns a filtered tool list scoped to the given
+// tool names. If subset is nil or empty, falls back to VisibleRegistry (full
+// read-only or mutating set). Used by the ReAct loop when the planner
+// classified an intent that has a defined tool subset (e.g. diagnosis).
+func VisibleRegistryForSubset(subset []string, mutatingEnabled bool) []openai.Tool {
+	if len(subset) == 0 {
+		return VisibleRegistry(mutatingEnabled)
+	}
+	allowed := make(map[string]struct{}, len(subset))
+	for _, name := range subset {
+		allowed[name] = struct{}{}
+	}
+	base := VisibleRegistry(mutatingEnabled)
+	visible := make([]openai.Tool, 0, len(subset))
+	for _, tool := range base {
+		if tool.Function == nil {
+			continue
+		}
+		if _, ok := allowed[tool.Function.Name]; ok {
+			visible = append(visible, tool)
+		}
+	}
+	return visible
+}
+
 // VisibleRegistry returns the tool list exposed to the LLM for the current
 // runtime mode. Read-only mode hides mutating workflow tools while keeping
 // query, knowledge, and cloud-side diagnosis tools available.

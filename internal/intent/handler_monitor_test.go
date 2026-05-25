@@ -187,6 +187,57 @@ func TestMonitorQueryHandler_APIFailureReturnsFriendlyFailureWithTraceMetadata(t
 	assert.Equal(t, []string{"uhost-a"}, result.ToolArgs["UHostIds"])
 }
 
+func TestMonitorQueryHandler_FallbackInstanceIDUsedWhenTargetRefsEmpty(t *testing.T) {
+	exec := &mockHandlerExecutor{result: monitorResult()}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleMonitorQuery(context.Background(), HandlerRequest{
+		Plan:               monitorQueryPlan(nil, nil, nil),
+		Resolver:           resourceTestSnapshot(t),
+		FallbackInstanceID: "uhost-a",
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, "GetCompShareInstanceMonitor", exec.calls[0].action)
+	assert.Equal(t, []string{"uhost-a"}, exec.calls[0].args["UHostIds"])
+}
+
+func TestMonitorQueryHandler_FallbackInstanceIDIgnoredWhenTargetRefsPresent(t *testing.T) {
+	exec := &mockHandlerExecutor{result: monitorResult()}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleMonitorQuery(context.Background(), HandlerRequest{
+		Plan: monitorQueryPlan([]TargetRef{{
+			Type:       TargetRefName,
+			Value:      "train-a",
+			Source:     SourceUserText,
+			SourceSpan: "train-a",
+		}}, nil, nil),
+		Resolver:           resourceTestSnapshot(t),
+		FallbackInstanceID: "uhost-should-not-be-used",
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, []string{"uhost-a"}, exec.calls[0].args["UHostIds"])
+}
+
+func TestMonitorQueryHandler_FallbackInstanceIDNotInSnapshotTriggersSelection(t *testing.T) {
+	exec := &mockHandlerExecutor{result: monitorResult()}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleMonitorQuery(context.Background(), HandlerRequest{
+		Plan:               monitorQueryPlan(nil, nil, nil),
+		Resolver:           resourceTestSnapshot(t),
+		FallbackInstanceID: "uhost-deleted-long-ago",
+	})
+
+	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, FallbackUnresolvedTarget, result.FallbackReason)
+	assert.Empty(t, exec.calls)
+}
+
 func monitorQueryPlan(refs []TargetRef, metrics []Metric, window *TimeWindow) Plan {
 	return Plan{
 		SchemaVersion: SchemaVersion,

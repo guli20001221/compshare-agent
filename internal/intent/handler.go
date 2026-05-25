@@ -86,6 +86,11 @@ type HandlerRequest struct {
 	// tryPhase1Cutover / tryResumeResourceSelection. Legacy handlers
 	// (HandleResourceInfo / HandleMonitorQuery) ignore this field.
 	UserText string
+	// FallbackInstanceID is the SelectedInstanceID from SessionState. When
+	// TargetRefs is empty and this is non-empty, HandleMonitorQuery uses it
+	// as a default target instead of triggering resource selection.
+	// Set by engine.go from e.sessionState at the tryPhase1Cutover call site.
+	FallbackInstanceID string
 }
 
 type DemoHandler struct {
@@ -194,7 +199,16 @@ func (h *DemoHandler) HandleMonitorQuery(ctx context.Context, req HandlerRequest
 		return FallbackBeforeTool(FallbackTimeWindow)
 	}
 	if len(req.Plan.Slots.TargetRefs) == 0 {
-		return FallbackBeforeTool(FallbackMissingTarget)
+		if req.FallbackInstanceID != "" {
+			req.Plan.Slots.TargetRefs = []TargetRef{{
+				Type:       TargetRefUHostIDUserInput,
+				Value:      req.FallbackInstanceID,
+				Source:     SourcePriorTurn,
+				SourceSpan: req.FallbackInstanceID,
+			}}
+		} else {
+			return FallbackBeforeTool(FallbackMissingTarget)
+		}
 	}
 
 	instances, ids, fallback := resolveResourceTargetSnapshots(req.Plan.Slots.TargetRefs, req.Resolver)
