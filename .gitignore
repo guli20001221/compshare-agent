@@ -31,6 +31,10 @@ eval/shadow_qa/2026-05-23-m1-cli-eval/
 # writers; those are covered by engine unit/integration tests and the
 # HTTP fact-persist e2e test.
 eval/shadow_qa/2026-05-24-m2-cli-eval/
+# PR-β multi-region CLI eval round (2026-05-25). Live AK/SK + LLM key in
+# agent.yaml; questions reference real instance UHostIds. Reply / tool-call
+# regression check only — covers cross-region mutating workflow Region wiring.
+eval/shadow_qa/2026-05-25-prb-region-cli-eval/
 .runs/
 agent.exe
 agent.exe~

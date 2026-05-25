@@ -356,13 +356,13 @@ func stepCreateInstance() Step {
 			gt, _ := wfCtx.Params["GpuType"].(string)
 			args := map[string]any{
 				"Zone":             paramStr(wfCtx.Params, "Zone", defaultZone),
-				"GpuType":         gt,
-				"GPU":             gpu,
-				"CPU":             cpu,
-				"Memory":          mem,
+				"GpuType":          gt,
+				"GPU":              gpu,
+				"CPU":              cpu,
+				"Memory":           mem,
 				"CompShareImageId": imageId,
-				"ChargeType":      paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
-				"Disks":           defaultDisk,
+				"ChargeType":       paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
+				"Disks":            defaultDisk,
 			}
 			if name, ok := wfCtx.Params["Name"]; ok {
 				args["Name"] = name

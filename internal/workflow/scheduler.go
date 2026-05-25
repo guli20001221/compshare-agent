@@ -183,8 +183,10 @@ func stepSetStopScheduler() Step {
 			if err != nil {
 				return nil, err
 			}
+			queried := wfCtx.Result("查询实例")
 			return map[string]any{
-				"Zone":              extractInstanceZone(wfCtx.Result("查询实例"), defaultZone),
+				"Region":            extractInstanceRegion(queried, defaultRegion),
+				"Zone":              extractInstanceZone(queried, defaultZone),
 				"UHostId":           wfCtx.Params["UHostId"],
 				"SchedulerStopTime": unix,
 			}, nil

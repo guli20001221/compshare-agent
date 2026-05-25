@@ -64,8 +64,10 @@ func stepStartInstance() Step {
 		Type: StepToolCall,
 		Tool: "StartCompShareInstance",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			queried := wfCtx.Result("查询实例")
 			return map[string]any{
-				"Zone":    extractInstanceZone(wfCtx.Result("查询实例"), defaultZone),
+				"Region":  extractInstanceRegion(queried, defaultRegion),
+				"Zone":    extractInstanceZone(queried, defaultZone),
 				"UHostId": wfCtx.Params["UHostId"],
 			}, nil
 		},
