@@ -12,7 +12,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 
 	"gopkg.in/yaml.v3"
@@ -1176,8 +1175,13 @@ type stockCapacityCheck struct {
 }
 
 func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req HandlerRequest, stockRaw map[string]any) (string, bool, *HandlerResult) {
+	// Stock returns ALL regions by default. Targeted-region precision
+	// (narrow to the user's anchored instance) is deferred to the M3
+	// ContextAssembler follow-up — see project-next-action #34. Filtering
+	// to "zones the user already has instances in" was previously done
+	// here but silently hid cross-region inventory in multi-region
+	// accounts, so it was removed (PR-δ0).
 	entries := matchedNormalStockEntries(stockRaw, req.UserText)
-	entries = filterStockEntriesToResolverZones(entries, req.Resolver)
 	if len(entries) == 0 {
 		return "", false, nil
 	}
@@ -1282,26 +1286,6 @@ func matchedNormalStockEntries(raw map[string]any, userText string) []stockInsta
 	return out
 }
 
-func filterStockEntriesToResolverZones(entries []stockInstanceTypeEntry, resolver EntityResolver) []stockInstanceTypeEntry {
-	if len(entries) == 0 {
-		return entries
-	}
-	zones := preferredZonesFromResolver(resolver)
-	if len(zones) == 0 {
-		return entries
-	}
-	filtered := make([]stockInstanceTypeEntry, 0, len(entries))
-	for _, entry := range entries {
-		if _, ok := zones[entry.Zone]; ok {
-			filtered = append(filtered, entry)
-		}
-	}
-	if len(filtered) == 0 {
-		return entries
-	}
-	return filtered
-}
-
 // isImageListAllIntent returns true when the user is asking for a full
 // listing rather than a specific image — phrases like "有什么/有哪些/列出/
 // 全部/我的镜像/list all". When this fires, image renderers should skip the
@@ -1367,20 +1351,6 @@ func hasSpecificImageToken(normalized string) bool {
 		}
 	}
 	return imageVersionRegex.MatchString(normalized)
-}
-
-func preferredZonesFromResolver(resolver EntityResolver) map[string]struct{} {
-	snapshot, ok := resolver.(entity.RegistrySnapshot)
-	if !ok {
-		return nil
-	}
-	out := map[string]struct{}{}
-	for _, inst := range snapshot.Instances {
-		if inst.Zone != "" {
-			out[inst.Zone] = struct{}{}
-		}
-	}
-	return out
 }
 
 func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string) map[string]any {

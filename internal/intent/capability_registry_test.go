@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
-
-	"github.com/compshare-agent/internal/entity"
 )
 
 // TestIsCapabilityIntent_KnownLabels verifies all 5 registered capability intents
@@ -1016,65 +1014,6 @@ func TestStockAvailabilityFallsBackToNextZoneWhenCapacityCheckFails(t *testing.T
 	if exec.calls[3].action != "CheckCompShareResourceCapacity" || exec.calls[3].args["Zone"] != "cn-wlcb-01" {
 		t.Fatalf("fallback capacity call = %#v, want cn-wlcb-01", exec.calls[3])
 	}
-}
-
-func TestStockAvailabilityResolverZoneFailureDoesNotProbeOtherZones(t *testing.T) {
-	exec := &stockCapacityFallbackExecutor{}
-	handler := NewDemoHandler(exec)
-
-	result := handler.DispatchCapability(context.Background(), HandlerRequest{
-		Plan:     Plan{Intent: IntentStockAvailability},
-		Resolver: stockZoneSnapshot(t, "cn-sh2-02"),
-		UserText: "4090 鐜板湪鏈夋病鏈夎揣",
-	})
-
-	if result.Status != HandlerStatusHandled {
-		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
-	}
-	if len(exec.calls) != 3 {
-		t.Fatalf("calls = %#v, want only resolver-zone capacity call", exec.calls)
-	}
-	if exec.calls[2].action != "CheckCompShareResourceCapacity" || exec.calls[2].args["Zone"] != "cn-sh2-02" {
-		t.Fatalf("capacity call = %#v, want resolver zone cn-sh2-02", exec.calls[2])
-	}
-}
-
-func TestStockAvailabilityPrefersAccountSnapshotZoneForCapacityPrecheck(t *testing.T) {
-	exec := &stockCapacityZoneExecutor{}
-	handler := NewDemoHandler(exec)
-
-	result := handler.DispatchCapability(context.Background(), HandlerRequest{
-		Plan:     Plan{Intent: IntentStockAvailability},
-		Resolver: stockZoneSnapshot(t, "cn-wlcb-01"),
-		UserText: "4090 现在有没有货",
-	})
-
-	if result.Status != HandlerStatusHandled {
-		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
-	}
-	if strings.Contains(result.Reply, "部分可用区容量预检未完成") {
-		t.Fatalf("reply should not include skipped out-of-project zone failure, got: %s", result.Reply)
-	}
-	if len(exec.calls) != 3 {
-		t.Fatalf("calls = %#v, want 3 calls", exec.calls)
-	}
-	if exec.calls[2].args["Zone"] != "cn-wlcb-01" {
-		t.Fatalf("capacity Zone = %#v, want cn-wlcb-01", exec.calls[2].args["Zone"])
-	}
-}
-
-func stockZoneSnapshot(t *testing.T, zone string) entity.RegistrySnapshot {
-	t.Helper()
-	reg := entity.NewRegistry()
-	row := instanceRow("uhost-a", "train-a")
-	row["Zone"] = zone
-	if err := reg.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(1),
-		"UHostSet":   []any{row},
-	}, "test"); err != nil {
-		t.Fatal(err)
-	}
-	return reg.Snapshot()
 }
 
 func TestRenderImageList_KeywordFilter(t *testing.T) {

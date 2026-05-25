@@ -35,6 +35,10 @@ eval/shadow_qa/2026-05-24-m2-cli-eval/
 # agent.yaml; questions reference real instance UHostIds. Reply / tool-call
 # regression check only — covers cross-region mutating workflow Region wiring.
 eval/shadow_qa/2026-05-25-prb-region-cli-eval/
+# PR-δ0 stock cross-region CLI eval round (2026-05-25). Same key/UHostId
+# policy as PR-β round. Covers stock-availability cross-region default
+# after filterStockEntriesToResolverZones deletion + PR-β regression checks.
+eval/shadow_qa/2026-05-25-prd0-stock-cli-eval/
 .runs/
 agent.exe
 agent.exe~
