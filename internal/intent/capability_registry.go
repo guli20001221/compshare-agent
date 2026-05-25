@@ -23,17 +23,28 @@ import (
 // wiring. See .claude/artifacts/pr-capability-routing-brief-2026-05-18.md §3.
 type capabilityEntry struct {
 	intent       Intent
+	// skillGroup labels the Skill this capability belongs to (e.g. "catalog").
+	// Currently consumed only by documentation (docs/design.md Skill table)
+	// and trace annotation. Phase 2.3 will use it for per-Skill prompt segment
+	// selection. See docs/plans/2026-05-25-agent-optimization-plan.md §2.3.
+	skillGroup   string
 	requiredTool string
-	handler      func(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult
+	// toolSubset lists additional tools this capability may invoke beyond
+	// requiredTool. Not populated until Phase 2.3 wires per-Skill ReAct
+	// scoping (VisibleRegistryForIntent). Until then, the live security
+	// gate for extra actions is extraHandlerActions() — do not duplicate
+	// values here to avoid dual source of truth.
+	toolSubset []string
+	handler    func(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult
 }
 
 var capabilityRegistry = []capabilityEntry{
-	{IntentGPUSpecsQuery, "DescribeAvailableCompShareInstanceTypes", handleGPUSpecsQuery},
-	{IntentStockAvailability, "DescribeAvailableCompShareInstanceTypes", handleStockAvailability},
-	{IntentPlatformImageList, "DescribeCompShareImages", handlePlatformImageList},
-	{IntentCustomImageList, "DescribeCompShareCustomImages", handleCustomImageList},
-	{IntentCommunityImageList, "DescribeCommunityImages", handleCommunityImageList},
-	{IntentPricingQuery, "GetCompShareInstancePrice", handlePricingQuery},
+	{intent: IntentGPUSpecsQuery, skillGroup: "catalog", requiredTool: "DescribeAvailableCompShareInstanceTypes", handler: handleGPUSpecsQuery},
+	{intent: IntentStockAvailability, skillGroup: "catalog", requiredTool: "DescribeAvailableCompShareInstanceTypes", handler: handleStockAvailability},
+	{intent: IntentPlatformImageList, skillGroup: "catalog", requiredTool: "DescribeCompShareImages", handler: handlePlatformImageList},
+	{intent: IntentCustomImageList, skillGroup: "catalog", requiredTool: "DescribeCompShareCustomImages", handler: handleCustomImageList},
+	{intent: IntentCommunityImageList, skillGroup: "catalog", requiredTool: "DescribeCommunityImages", handler: handleCommunityImageList},
+	{intent: IntentPricingQuery, skillGroup: "catalog", requiredTool: "GetCompShareInstancePrice", handler: handlePricingQuery},
 }
 
 func extraHandlerActions() map[Intent][]string {
@@ -97,7 +108,9 @@ var capabilitiesFS embed.FS
 type CapabilityMetadata struct {
 	Name              string                     `yaml:"name"`
 	IntentLabel       string                     `yaml:"intent_label"`
+	SkillGroup        string                     `yaml:"skill_group,omitempty"`
 	RequiredTool      string                     `yaml:"required_tool"`
+	ToolSubset        []string                   `yaml:"tool_subset,omitempty"`
 	RequiredCitation  bool                       `yaml:"required_citation"`
 	PlannerDirectives []string                   `yaml:"planner_directives"`
 	PlannerExamples   []CapabilityPlannerExample `yaml:"planner_examples"`
@@ -144,6 +157,9 @@ func mustLoadCapabilityMetadata() []CapabilityMetadata {
 		meta := metaByIntent[e.intent]
 		if meta.RequiredTool != e.requiredTool {
 			panic(fmt.Sprintf("intent: capability %q required_tool=%q does not match registry tool %q", e.intent, meta.RequiredTool, e.requiredTool))
+		}
+		if meta.SkillGroup != e.skillGroup {
+			panic(fmt.Sprintf("intent: capability %q skill_group=%q does not match registry skillGroup %q", e.intent, meta.SkillGroup, e.skillGroup))
 		}
 		ordered = append(ordered, meta)
 	}

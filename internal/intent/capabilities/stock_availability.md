@@ -1,6 +1,7 @@
 ---
 name: stock_availability
 intent_label: stock_availability
+skill_group: catalog
 required_tool: DescribeAvailableCompShareInstanceTypes
 required_citation: false
 planner_directives:

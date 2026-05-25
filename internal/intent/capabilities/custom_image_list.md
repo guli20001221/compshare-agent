@@ -1,6 +1,7 @@
 ---
 name: custom_image_list
 intent_label: custom_image_list
+skill_group: catalog
 required_tool: DescribeCompShareCustomImages
 required_citation: false
 planner_directives:

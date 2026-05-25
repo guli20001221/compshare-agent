@@ -1,6 +1,7 @@
 ---
 name: pricing_query
 intent_label: pricing_query
+skill_group: catalog
 required_tool: GetCompShareInstancePrice
 required_citation: false
 planner_directives:

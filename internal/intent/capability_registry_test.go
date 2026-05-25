@@ -8,7 +8,7 @@ import (
 	"testing/fstest"
 )
 
-// TestIsCapabilityIntent_KnownLabels verifies all 5 registered capability intents
+// TestIsCapabilityIntent_KnownLabels verifies all 6 registered capability intents
 // return true. New capabilities must be picked up by IsCapabilityIntent without
 // any code change in callers (engine.go etc.) — this is the v1 contract.
 func TestIsCapabilityIntent_KnownLabels(t *testing.T) {
@@ -18,6 +18,7 @@ func TestIsCapabilityIntent_KnownLabels(t *testing.T) {
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		IntentPricingQuery,
 	}
 	for _, intent := range wanted {
 		if !IsCapabilityIntent(intent) {

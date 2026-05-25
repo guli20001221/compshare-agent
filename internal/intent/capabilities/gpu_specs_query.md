@@ -1,6 +1,7 @@
 ---
 name: gpu_specs_query
 intent_label: gpu_specs_query
+skill_group: catalog
 required_tool: DescribeAvailableCompShareInstanceTypes
 required_citation: false
 planner_directives:

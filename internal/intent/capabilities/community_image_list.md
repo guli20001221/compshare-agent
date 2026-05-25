@@ -1,6 +1,7 @@
 ---
 name: community_image_list
 intent_label: community_image_list
+skill_group: catalog
 required_tool: DescribeCommunityImages
 required_citation: false
 planner_directives:

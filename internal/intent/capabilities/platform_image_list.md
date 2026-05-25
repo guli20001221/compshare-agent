@@ -1,6 +1,7 @@
 ---
 name: platform_image_list
 intent_label: platform_image_list
+skill_group: catalog
 required_tool: DescribeCompShareImages
 required_citation: false
 planner_directives:
