@@ -449,6 +449,12 @@ var cjkStopwords = []string{
 	"官方", "什么", "哪些", "请问", "是否", "我的", "我自己", "上面", "下面",
 	"我有", "我账", "账下", "可以", "可不可以", "你们", "看下", "看看",
 	"我做的", "我创建", "列出", "所有", "全部", "都有",
+	// image-category modifiers (Q10 root cause): without these, queries like
+	// "我的自定义镜像有哪些" tokenize to ["自定义"] (len=1, non-empty) so
+	// isImageListAllIntent's `len(extractUserTokens) == 0` guard fails and the
+	// keyword filter then rejects every custom image name. Stripping these
+	// modifiers lets list-all detection fire correctly.
+	"自定义", "私有", "公共", "共享",
 	// zone / region / locale words (capability handlers don't yet take Zone)
 	"机房", "地域", "可用区",
 	// common GPU question phrasing (multi-char, would otherwise survive
@@ -1307,7 +1313,7 @@ func isImageListAllIntent(userText string) bool {
 	// Chinese colloquial list-all triggers.
 	hasListAllTrigger := containsAny(compact,
 		"有什么", "有哪些", "都有什么", "都有哪些",
-		"列出", "列一下", "列下", "看看", "看下",
+		"列出", "列一下", "列下", "列表", "看看", "看下",
 		"全部", "所有", "都有",
 		"我做的", "我的", "我创建", "我自己",
 	)

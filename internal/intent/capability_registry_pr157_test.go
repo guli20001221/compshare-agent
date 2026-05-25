@@ -112,6 +112,15 @@ func TestIsImageListAllIntent(t *testing.T) {
 		"show me all images",
 		"what images are available",
 		"my images",
+		// Q10 modifier coverage: these should bypass the keyword filter
+		// instead of tokenizing to ["自定义"] / ["私有"] / etc. Without the
+		// modifier stop-list, the renderer was returning "未找到匹配的镜像"
+		// against non-empty custom image sets.
+		"我的自定义镜像有哪些",
+		"自定义镜像列表",
+		"私有镜像有哪些",
+		"公共镜像列表",
+		"共享镜像有哪些",
 	}
 	for _, msg := range listAll {
 		if !isImageListAllIntent(msg) {
@@ -150,6 +159,43 @@ func TestRenderImageListReply_ListAllBypass(t *testing.T) {
 	for _, want := range []string{"Ubuntu 22.04", "vLLM", "ComfyUI"} {
 		if !strings.Contains(reply, want) {
 			t.Errorf("list-all reply must include %q; got:\n%s", want, reply)
+		}
+	}
+}
+
+// TestRenderImageListReply_Q10ModifierBypass covers the Q10 end-to-end:
+// custom-image phrasings with category modifiers ("自定义", "私有", "公共",
+// "共享") must bypass the keyword filter and return the full image set, not
+// "未找到匹配的镜像". Independent of TestRenderImageListReply_ListAllBypass
+// because Q10 phrasings only fire via the modifier-stripped extractUserTokens
+// path (this test would FAIL without both halves of PR4: the cjkStopwords
+// additions AND the "列表" hasListAllTrigger addition).
+func TestRenderImageListReply_Q10ModifierBypass(t *testing.T) {
+	raw := map[string]any{
+		"CompShareImageSet": []any{
+			map[string]any{"CompShareImageId": "ci-1", "Name": "agent-image", "ImageType": "Custom"},
+			map[string]any{"CompShareImageId": "ci-2", "Name": "cqc验证镜像", "ImageType": "Custom"},
+			map[string]any{"CompShareImageId": "ci-3", "Name": "Mu-N8N-备份", "ImageType": "Custom"},
+		},
+	}
+	cases := []string{
+		"我的自定义镜像有哪些",
+		"自定义镜像列表",
+		"私有镜像有哪些",
+		"公共镜像列表",
+		"共享镜像有哪些",
+	}
+	for _, ask := range cases {
+		reply := renderImageListReply(raw, "CompShareImageSet",
+			[]string{"CompShareImageId", "Name", "ImageType"},
+			ask)
+		if strings.Contains(reply, noImageListNoMatchReply) {
+			t.Errorf("Q10 phrasing %q must bypass keyword filter; got 未找到 reply:\n%s", ask, reply)
+		}
+		for _, want := range []string{"agent-image", "cqc验证镜像", "Mu-N8N-备份"} {
+			if !strings.Contains(reply, want) {
+				t.Errorf("Q10 phrasing %q reply must include %q; got:\n%s", ask, want, reply)
+			}
 		}
 	}
 }

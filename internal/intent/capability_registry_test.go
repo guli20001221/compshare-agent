@@ -383,6 +383,16 @@ func TestExtractUserTokens_StripsStopwordsAndShortRunes(t *testing.T) {
 		{"Debian 12 镜像有吗", []string{"debian"}},
 		{"Windows 2022", []string{"windows"}},
 		{"", nil},
+		// Q10 modifier stop-list: image-category words must not survive as
+		// the sole remaining token, otherwise isImageListAllIntent's empty-
+		// token guard mis-fires and the keyword filter rejects every match.
+		// Each of these phrasings should collapse to empty tokens so that
+		// list-all detection runs and the renderer returns the full set.
+		{"我的自定义镜像有哪些", nil},
+		{"自定义镜像列表", nil},
+		{"私有镜像有哪些", nil},
+		{"公共镜像列表", nil},
+		{"共享镜像有哪些", nil},
 	}
 	for _, c := range cases {
 		got := extractUserTokens(c.text)
