@@ -62,9 +62,13 @@ func stepStopInstance() Step {
 		Type: StepToolCall,
 		Tool: "StopCompShareInstance",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			// Zone + UHostId required per docs/api/instance/StopCompShareInstance.md
+			// Zone + UHostId required per docs/api/instance/StopCompShareInstance.md.
+			// Region paired alongside Zone so multi-region tenants don't depend on
+			// the upstream gateway reverse-deriving Region from Zone.
+			queried := wfCtx.Result("查询实例")
 			return map[string]any{
-				"Zone":    extractInstanceZone(wfCtx.Result("查询实例"), defaultZone),
+				"Region":  extractInstanceRegion(queried, defaultRegion),
+				"Zone":    extractInstanceZone(queried, defaultZone),
 				"UHostId": wfCtx.Params["UHostId"],
 			}, nil
 		},

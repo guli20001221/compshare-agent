@@ -56,8 +56,10 @@ func stepRenameInstance() Step {
 		Type: StepToolCall,
 		Tool: "ModifyCompShareInstanceName",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			queried := wfCtx.Result("查询实例")
 			return map[string]any{
-				"Zone":    extractInstanceZone(wfCtx.Result("查询实例"), defaultZone),
+				"Region":  extractInstanceRegion(queried, defaultRegion),
+				"Zone":    extractInstanceZone(queried, defaultZone),
 				"UHostId": wfCtx.Params["UHostId"],
 				"Name":    wfCtx.Params["Name"],
 			}, nil

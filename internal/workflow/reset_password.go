@@ -95,8 +95,10 @@ func stepResetPassword() Step {
 					return nil, err
 				}
 			}
+			queried := wfCtx.Result("查询实例")
 			return map[string]any{
-				"Zone":     extractInstanceZone(wfCtx.Result("查询实例"), defaultZone),
+				"Region":   extractInstanceRegion(queried, defaultRegion),
+				"Zone":     extractInstanceZone(queried, defaultZone),
 				"UHostId":  wfCtx.Params["UHostId"],
 				"Password": base64.StdEncoding.EncodeToString([]byte(password)),
 			}, nil
