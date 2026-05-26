@@ -92,7 +92,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 	router.Use(gin.CustomRecovery(func(c *gin.Context, recovered any) {
 		c.JSON(http.StatusInternalServerError, httpapi.Response{
-			Code:    "InternalError",
+			RetCode: 226618,
 			Message: fmt.Sprint(recovered),
 		})
 	}))

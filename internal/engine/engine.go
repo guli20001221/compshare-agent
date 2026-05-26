@@ -1652,7 +1652,17 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 	if weak || isRankingAmbiguous(hitItems, retrieved.HybridMode) {
 		trace.RankingErrorCandidate = true
 	}
-	reply, outcome, refusedReason, rankingCandidate, err := e.answerWithRetrievedEvidence(ctx, userMsg, evidences, weak, onTextDelta)
+	// Buffer LLM deltas so we can decide whether to replay them after
+	// post-processing. answerWithRetrievedEvidence may discard the LLM
+	// output (token budget, refusal, retry-no-cite) and return a canned
+	// string instead. Replaying raw deltas in those cases would leave the
+	// SSE stream inconsistent with done.Content.
+	var bufferedDeltas []string
+	var bufferDelta func(string)
+	if onTextDelta != nil {
+		bufferDelta = func(s string) { bufferedDeltas = append(bufferedDeltas, s) }
+	}
+	reply, outcome, refusedReason, rankingCandidate, err := e.answerWithRetrievedEvidence(ctx, userMsg, evidences, weak, bufferDelta)
 	if err != nil {
 		trace.RefusedReason = "llm_error"
 		trace.RankingErrorCandidate = true
@@ -1669,13 +1679,19 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 	if rankingCandidate {
 		trace.RankingErrorCandidate = true
 	}
-	// Record the chunk_ids the LLM cited (via [n] -> hits[n-1] mapping) for
-	// audit, then strip the [n] markers from the user-facing reply. The
-	// extract MUST happen before the strip so the marker tokens still exist.
-	// Refusal replies and retry-no-cite coerce paths return strings without
-	// [n], so the extract returns nil and the strip is a no-op for them.
 	trace.CitedChunkIDs = extractCitedChunkIDs(reply, hitItems)
 	displayReply := stripCitationMarkers(reply)
+
+	// Replay buffered deltas only when the LLM's first-call output was
+	// accepted (reply == resp.Content path). Refusal / budget / retry
+	// paths return a different string, so we skip replay and let the
+	// handler's done.Content carry the final text instead.
+	if onTextDelta != nil && len(bufferedDeltas) > 0 && refusedReason == "" {
+		for _, d := range bufferedDeltas {
+			onTextDelta(d)
+		}
+	}
+
 	e.emitRetrievalTrace(trace)
 	e.emitOutcomeTrace(outcome)
 	e.emitPlannerTrace(result, intent.CutoverStatusDispatchedRetrieval, dispatch.latency)

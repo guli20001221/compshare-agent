@@ -178,7 +178,7 @@ func TestDispatchGetMeta(t *testing.T) {
 	rec := performGateway(h, `{"Action":"GetCSAgentMeta","top_organization_id":1,"organization_id":2}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), `"Code":"Success"`)
+	assert.Contains(t, rec.Body.String(), `"RetCode":0`)
 	assert.Contains(t, rec.Body.String(), `"Welcome":"welcome"`)
 }
 
@@ -195,7 +195,7 @@ func TestDispatchGetSessionRequiresSessionID(t *testing.T) {
 	rec := performGateway(h, `{"Action":"GetCSAgentSession","top_organization_id":1,"organization_id":2}`)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Contains(t, rec.Body.String(), `"Code":"InvalidParam"`)
+	assert.Contains(t, rec.Body.String(), `"RetCode":226612`)
 }
 
 func TestDispatchFeedback(t *testing.T) {
