@@ -37,9 +37,10 @@ type Handlers struct {
 	messages store.MessageStore
 	feedback store.FeedbackStore
 	// pool may be nil for Task 6; Task 7 wires a concrete EnginePool.
-	pool        EnginePool
-	traceWriter observability.Writer
-	ocrClient   OCRRecognizer
+	pool          EnginePool
+	traceWriter   observability.Writer
+	ocrClient     OCRRecognizer
+	confirmBroker *ConfirmBroker
 }
 
 // NewHandlers constructs a Handlers with all dependencies injected.
@@ -53,12 +54,13 @@ func NewHandlers(
 	traceWriter observability.Writer,
 ) *Handlers {
 	return &Handlers{
-		cfg:         cfg,
-		sessions:    sessions,
-		messages:    messages,
-		feedback:    feedback,
-		pool:        pool,
-		traceWriter: traceWriter,
+		cfg:           cfg,
+		sessions:      sessions,
+		messages:      messages,
+		feedback:      feedback,
+		pool:          pool,
+		traceWriter:   traceWriter,
+		confirmBroker: NewConfirmBroker(),
 	}
 }
 

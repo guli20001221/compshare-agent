@@ -110,6 +110,10 @@ func (s *SafeToolExecutor) SetMutatingToolsEnabled(enabled bool) {
 	s.mutatingToolsEnabled = enabled
 }
 
+func (s *SafeToolExecutor) SetConfirmFunc(fn ConfirmFunc) {
+	s.confirm = fn
+}
+
 func (s *SafeToolExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
 	result, err := s.ExecuteSafe(ctx, SafeToolRequest{
 		Action: action,

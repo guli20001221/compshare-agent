@@ -69,6 +69,18 @@ type stepEvent struct {
 	Index   int    `json:"Index"`
 }
 
+// confirmationEvent is the SSE frame that tells the frontend to show a
+// confirmation dialog. The frontend sends ConfirmCSAgentAction with the
+// ConfirmationId to resolve it.
+type confirmationEvent struct {
+	ConfirmationID string         `json:"ConfirmationId"`
+	Action         string         `json:"Action"`
+	Summary        map[string]any `json:"Summary,omitempty"`
+	TimeoutSeconds int            `json:"TimeoutSeconds"`
+}
+
+const confirmTimeoutSeconds = 60
+
 func stepTypeString(t engine.StepType) string {
 	switch t {
 	case engine.StepToolCall:
@@ -332,6 +344,22 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 			_ = sw.WriteEvent("token", tokenEvent{Text: s})
 		},
 		OnUsage: func(u llm.TokenUsage) { usage = u },
+		ConfirmFunc: func(action string, args map[string]any) bool {
+			if h.confirmBroker == nil {
+				return false
+			}
+			confirmID, ch := h.confirmBroker.Register(sessionID, base.Owner)
+			defer h.confirmBroker.Cancel(confirmID)
+			if err := sw.WriteEvent("confirmation", confirmationEvent{
+				ConfirmationID: confirmID,
+				Action:         action,
+				Summary:        sanitizeConfirmArgs(args),
+				TimeoutSeconds: confirmTimeoutSeconds,
+			}); err != nil {
+				return false
+			}
+			return WaitForConfirmation(c.Request.Context(), ch, time.Duration(confirmTimeoutSeconds)*time.Second)
+		},
 	})
 
 	// Signal keepalive goroutine to exit.
@@ -429,6 +457,23 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 			}
 		}
 	}
+}
+
+// sanitizeConfirmArgs projects workflow confirm args to a safe subset for the
+// frontend confirmation dialog. Sensitive fields (passwords, tokens) are excluded.
+func sanitizeConfirmArgs(args map[string]any) map[string]any {
+	if args == nil {
+		return nil
+	}
+	safe := make(map[string]any, len(args))
+	for k, v := range args {
+		switch k {
+		case "Password", "password", "Token", "token", "SecurityToken":
+			continue
+		}
+		safe[k] = v
+	}
+	return safe
 }
 
 const maxOCRTextRunes = 1200

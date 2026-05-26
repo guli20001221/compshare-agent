@@ -33,6 +33,9 @@ func (h *Handlers) Dispatch(c *gin.Context) {
 		h.writeResult(c, base, data, err)
 	case "SendCSAgentChat":
 		h.handleChat(c, base, raw)
+	case "ConfirmCSAgentAction":
+		data, err := h.handleConfirm(c, base, raw)
+		h.writeResult(c, base, data, err)
 	default:
 		h.writeError(c, base.Action, base.RequestUUID, ErrInvalidParam.WithMessage("unsupported Action %s", base.Action))
 	}

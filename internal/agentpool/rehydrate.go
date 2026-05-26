@@ -39,7 +39,7 @@ func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID str
 	eng := engine.NewSession(p.deps, engine.SessionOptions{
 		Subject:              governance.AnonymousSubjectKey,
 		ConfirmFn:            denyConfirm,
-		MutatingToolsEnabled: false,
+		MutatingToolsEnabled: p.mutatingToolsEnabled,
 	})
 
 	// Fetch up to 100 prior messages for the session (sufficient for context

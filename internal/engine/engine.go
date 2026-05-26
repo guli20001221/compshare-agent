@@ -143,6 +143,10 @@ type ChatOptions struct {
 	// pre-block keyword checks so screenshot UI labels (e.g. "运维监控",
 	// "最近访问") do not trigger false-positive hard blocks.
 	ImageContext string
+	// ConfirmFunc, if non-nil, overrides the engine's stored ConfirmFunc for
+	// this turn only. Used by the HTTP path to inject an SSE-backed confirm
+	// that blocks on a channel instead of stdin.
+	ConfirmFunc func(action string, args map[string]any) bool
 }
 
 type IntentPlannerOptions struct {
@@ -796,6 +800,17 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			e.rateLimitSubject = subject
 		}
 	}
+	// Per-turn ConfirmFunc override (HTTP path injects SSE-backed confirm).
+	if opts.ConfirmFunc != nil {
+		origConfirm := e.confirmFn
+		e.confirmFn = ConfirmFunc(opts.ConfirmFunc)
+		e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(opts.ConfirmFunc))
+		defer func() {
+			e.confirmFn = origConfirm
+			e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(origConfirm))
+		}()
+	}
+
 	e.lastUserMsg = userMsg
 	e.imageContextThisTurn = opts.ImageContext
 	e.readExpensiveCallsThisTurn = 0
@@ -1705,7 +1720,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string, evidences []envelope.Evidence, weak bool, onTextDelta func(string)) (string, observability.OutcomeTrace, string, bool, error) {
 	outcome := observability.OutcomeTrace{}
 	req := llm.ChatRequest{
-		Messages: prompt.BuildRAGMessages(userMsg, ragReferencesFromEvidence(evidences), weak, false),
+		Messages:    prompt.BuildRAGMessages(userMsg, ragReferencesFromEvidence(evidences), weak, false),
 		OnTextDelta: onTextDelta,
 	}
 	resp, err := e.llmClient.Chat(ctx, req)
