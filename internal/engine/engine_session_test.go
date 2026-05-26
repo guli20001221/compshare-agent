@@ -255,17 +255,18 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"sessionStateHydrated":      true,
 		"lastPlannerIntentThisTurn": true,
 		"imageContextThisTurn":      true,
+		"baseUserContext":           true,
 	}
 
 	if want, got := 11, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 32, len(perSessionFields); want != got {
+	if want, got := 33, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 43, typ.NumField(); want != got {
+	if want, got := 44, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

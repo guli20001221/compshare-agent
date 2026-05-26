@@ -47,6 +47,7 @@ type PlannerOptions struct {
 type PlannerInput struct {
 	UserText     string
 	ImageContext string
+	LastIntent   string
 	PriorText    string
 	Resolver     EntityResolver
 	// Deprecated: use Resolver so production shadow mode can pass immutable
@@ -402,6 +403,10 @@ func buildUserPrompt(input PlannerInput, retryInstruction string) string {
 	if input.ImageContext != "" {
 		b.WriteString("\nScreenshot summary: ")
 		b.WriteString(input.ImageContext)
+	}
+	if input.LastIntent != "" {
+		b.WriteString("\nLast intent: ")
+		b.WriteString(input.LastIntent)
 	}
 	if input.PriorText != "" {
 		b.WriteString("\nPrior turns: ")

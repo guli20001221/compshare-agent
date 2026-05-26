@@ -210,6 +210,7 @@ type Engine struct {
 	// loop to scope the tool list via intent.IntentToolSubset. Reset per turn.
 	lastPlannerIntentThisTurn intent.Intent
 	imageContextThisTurn      string
+	baseUserContext           string
 	// currentCtx holds the context for the current ChatWithOptions call.
 	// Set at the start of ChatWithOptions and cleared (nil) on return.
 	currentCtx context.Context
@@ -555,6 +556,7 @@ func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
 		userCtx = prompt.FormatInstanceContext(result)
 	}
 
+	e.baseUserContext = userCtx
 	systemPrompt := prompt.BuildSystemWithOptions(userCtx, prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
 	e.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
@@ -651,6 +653,7 @@ func (e *Engine) PlannerPriorTextSnapshot() string {
 // InitWithContext performs context injection with a pre-built user context string,
 // bypassing the DescribeCompShareInstance API call. Used for testing.
 func (e *Engine) InitWithContext(userCtx string) {
+	e.baseUserContext = userCtx
 	systemPrompt := prompt.BuildSystemWithOptions(userCtx, prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
 	e.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
@@ -662,6 +665,7 @@ func (e *Engine) InitWithContext(userCtx string) {
 // prompt followed by the supplied user/assistant turns. Empty content and
 // non-user/non-assistant roles are silently skipped.
 func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
+	e.baseUserContext = ""
 	systemPrompt := prompt.BuildSystemWithOptions("", prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
 	e.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: systemPrompt}}
 	for _, msg := range msgs {
@@ -744,6 +748,33 @@ func (e *Engine) SessionStateSnapshot() (state SessionState, version int, hydrat
 	return e.sessionState, e.sessionStateVersion, e.sessionStateHydrated
 }
 
+// refreshSystemPrompt rebuilds e.messages[0] with the current SessionState
+// injected into the user context section. Called per-turn at the start of
+// ChatWithOptions, AFTER SetSessionState has been called (HTTP handler
+// serializes: ClearSessionState → SetSessionState → ChatWithOptions).
+// This solves the HTTP timing issue: RehydrateHistory builds the initial
+// system prompt with empty userContext because SessionState isn't
+// available yet; refreshSystemPrompt patches it once state is hydrated.
+// CLI path (hydrated=false): rebuilds from baseUserContext without
+// appending instance info, so the result is identical to the Init prompt.
+func (e *Engine) refreshSystemPrompt() {
+	if len(e.messages) == 0 || e.messages[0].Role != openai.ChatMessageRoleSystem {
+		return
+	}
+	ctx := e.baseUserContext
+	if ctx == "" {
+		ctx = "暂无用户信息"
+	}
+	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
+		if e.sessionState.SelectedInstanceName != "" {
+			ctx += "\n\n当前会话已选实例：" + e.sessionState.SelectedInstanceName + "（" + e.sessionState.SelectedInstanceID + "）"
+		} else {
+			ctx += "\n\n当前会话已选实例：" + e.sessionState.SelectedInstanceID
+		}
+	}
+	e.messages[0].Content = prompt.BuildSystemWithOptions(ctx, prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
+}
+
 // Chat processes one user message through the ReAct loop and returns the final text reply.
 // The callback is invoked for each intermediate step (tool calls, thinking, etc.).
 // It delegates to ChatWithOptions with empty options (no streaming callbacks).
@@ -771,6 +802,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.requireKnowledgeCitationThisTurn = false
 	e.turnTokensConsumed = 0
 	e.lastPlannerIntentThisTurn = ""
+	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
@@ -1139,6 +1171,7 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 		planned, err := e.intentPlanner.Plan(ctx, intent.PlannerInput{
 			UserText:     userMsg,
 			ImageContext: e.imageContextThisTurn,
+			LastIntent:   e.sessionState.LastIntent,
 			PriorText:    priorText,
 			Resolver:     snapshot,
 		})
