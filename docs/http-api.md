@@ -23,12 +23,16 @@
 
 ### 通用响应包（非 SSE）
 
+业务字段**直接平铺**在响应根对象上，没有 `Data` 包裹层。每个响应都至少包含三个信封字段，剩下的字段因 Action 而异（见各 Action 章节）：
+
 ```json
 {
   "RequestId": "req-uuid",
   "Code": "Success",
   "Message": "",
-  "Data": { ... }
+  "Model": "...",
+  "Welcome": "...",
+  "...": "..."
 }
 ```
 
@@ -37,7 +41,7 @@
 | `RequestId` | 等于请求里的 `request_uuid`（或服务端生成的那个） |
 | `Code` | `Success` 或错误码（见下） |
 | `Message` | 错误时的简短描述；成功时为 `""` |
-| `Data` | 业务数据，结构因 Action 而异；失败时为 `null` |
+| 其它字段 | 业务数据，平铺在根对象上；错误响应**只有** `RequestId` / `Code` / `Message` 这三个字段（没有业务字段） |
 
 ### 错误码
 
@@ -71,10 +75,13 @@ HTTP 状态码与 `Code` 一一对应：
 }
 ```
 
-**响应 Data**：
+**响应**（字段与信封并列在响应根对象上，下同）：
 
 ```json
 {
+  "RequestId": "req-uuid",
+  "Code": "Success",
+  "Message": "",
   "Model": "deepseek-v4-flash",
   "Version": "0.1.0",
   "Welcome": "我是优云算力共享平台 AI 助手，可以问我控制台相关问题。",
@@ -104,10 +111,13 @@ HTTP 状态码与 `Code` 一一对应：
 }
 ```
 
-**响应 Data**：
+**响应**：
 
 ```json
 {
+  "RequestId": "req-uuid",
+  "Code": "Success",
+  "Message": "",
   "SessionId": "9348b71e-7081-492d-99d9-650a34c120ef",
   "Title": "查询我的实例",
   "CreatedAt": "2026-05-21T17:01:38.572Z"
@@ -139,10 +149,13 @@ HTTP 状态码与 `Code` 一一对应：
 }
 ```
 
-**响应 Data**：
+**响应**：
 
 ```json
 {
+  "RequestId": "req-uuid",
+  "Code": "Success",
+  "Message": "",
   "SessionId": "9348b71e-7081-492d-99d9-650a34c120ef",
   "Title": "查询我的实例",
   "MessageCount": 12,
@@ -304,10 +317,15 @@ event: error  ← 任意时刻出现，表示终止
 }
 ```
 
-**响应 Data**：
+**响应**：
 
 ```json
-{ "FeedbackId": "fb-uuid" }
+{
+  "RequestId": "req-uuid",
+  "Code": "Success",
+  "Message": "",
+  "FeedbackId": "fb-uuid"
+}
 ```
 
 > 同一 `MessageId` 可重复提交；后端会写入多条 feedback 记录而非覆盖。
@@ -330,7 +348,7 @@ if (!sessionId) {
     Action: 'CreateCSAgentSession',
     ProjectId,
   });
-  sessionId = r.Data.SessionId;
+  sessionId = r.SessionId;
   localStorage.setItem('agent.sessionId', sessionId);
 }
 

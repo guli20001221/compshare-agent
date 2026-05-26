@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -37,31 +38,54 @@ func (h *Handlers) Dispatch(c *gin.Context) {
 	}
 }
 
-// writeResult writes a successful JSON response envelope.
+// writeResult writes a successful JSON response with envelope fields
+// (RequestId / Code / Message) and the handler-supplied data flattened to
+// top-level — there is no nested Data wrapper. Envelope fields take
+// precedence over any colliding data field names.
 func (h *Handlers) writeResult(c *gin.Context, base BaseRequest, data any, err error) {
 	if err != nil {
 		h.writeError(c, base.RequestUUID, err)
 		return
 	}
-	c.JSON(http.StatusOK, Response{
-		RequestID: base.RequestUUID,
-		Code:      "Success",
-		Message:   "",
-		Data:      data,
-	})
+	body, mErr := flattenEnvelope(base.RequestUUID, "Success", "", data)
+	if mErr != nil {
+		h.writeError(c, base.RequestUUID, mErr)
+		return
+	}
+	c.JSON(http.StatusOK, body)
 }
 
 // writeError converts err to an APIError and responds with the appropriate HTTP status.
-// sql.ErrNoRows is canonicalized to ErrNotFound.
+// sql.ErrNoRows is canonicalized to ErrNotFound. Error responses carry only
+// the envelope fields (no data payload).
 func (h *Handlers) writeError(c *gin.Context, requestID string, err error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
 	}
 	apiErr := AsAPIError(err)
-	c.JSON(apiErr.Status, Response{
-		RequestID: requestID,
-		Code:      apiErr.Code,
-		Message:   apiErr.Message,
-		Data:      nil,
+	c.JSON(apiErr.Status, gin.H{
+		"RequestId": requestID,
+		"Code":      apiErr.Code,
+		"Message":   apiErr.Message,
 	})
+}
+
+// flattenEnvelope marshals data and merges its top-level JSON fields with
+// the envelope (RequestId/Code/Message). Envelope keys win on collision.
+// Returns an error only if data fails to marshal/unmarshal.
+func flattenEnvelope(requestID, code, message string, data any) (map[string]any, error) {
+	body := map[string]any{}
+	if data != nil {
+		raw, err := json.Marshal(data)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return nil, err
+		}
+	}
+	body["RequestId"] = requestID
+	body["Code"] = code
+	body["Message"] = message
+	return body, nil
 }

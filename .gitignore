@@ -50,3 +50,4 @@ agent.exe~
 .claude/
 agent
 compshare-agent
+dist/
