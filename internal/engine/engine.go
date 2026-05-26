@@ -856,7 +856,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	}
 
 	forceMonitorRecall := e.shouldForceMonitorRecall(userMsg)
-	if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep); handled {
+	if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep, opts.OnTextDelta); handled {
 		return reply, nil
 	}
 
@@ -1050,7 +1050,7 @@ type plannerDispatchResult struct {
 	snapshot entity.RegistrySnapshot
 }
 
-func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText string, onStep func(StepEvent)) (string, bool) {
+func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText string, onStep func(StepEvent), onTextDelta func(string)) (string, bool) {
 	if !e.plannerDispatchEnabled() {
 		return "", false
 	}
@@ -1109,7 +1109,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || intent.IsCapabilityIntent(dispatch.result.Plan.Intent) {
 		return e.tryPhase1Cutover(ctx, dispatch, userMsg, onStep)
 	}
-	if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg); handled {
+	if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
 		return reply, true
 	}
 	if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
@@ -1598,7 +1598,7 @@ func isMonitorLoadAssessmentQuestion(userMsg string) bool {
 	return false
 }
 
-func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispatchResult, userMsg string) (string, bool) {
+func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent), onTextDelta func(string)) (string, bool) {
 	result := dispatch.result
 	if result.Plan.Intent != intent.IntentKnowledgeQA {
 		return "", false
@@ -1609,6 +1609,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 		return "", false
 	}
 
+	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
 	retrieved := e.knowledgeRetriever.Retrieve(userMsg, inferKnowledgeProductArea(userMsg))
 	hitItems := retrieved.HitItems
 	trace := observability.RetrievalTrace{
@@ -1631,6 +1632,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 	}
 	evidences, evidenceErr := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
 	trace.HitItems = projectEvidenceTraceHits(evidences, hitItems)
+	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: "retrieval", Message: "搜索完成"})
 	if retrieved.Empty || len(retrieved.Hits) == 0 || len(evidences) == 0 || evidenceErr != nil {
 		trace.RefusedReason = "no_evidence"
 		trace.RankingErrorCandidate = true
@@ -1650,7 +1652,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 	if weak || isRankingAmbiguous(hitItems, retrieved.HybridMode) {
 		trace.RankingErrorCandidate = true
 	}
-	reply, outcome, refusedReason, rankingCandidate, err := e.answerWithRetrievedEvidence(ctx, userMsg, evidences, weak)
+	reply, outcome, refusedReason, rankingCandidate, err := e.answerWithRetrievedEvidence(ctx, userMsg, evidences, weak, onTextDelta)
 	if err != nil {
 		trace.RefusedReason = "llm_error"
 		trace.RankingErrorCandidate = true
@@ -1684,10 +1686,11 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 	return displayReply, true
 }
 
-func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string, evidences []envelope.Evidence, weak bool) (string, observability.OutcomeTrace, string, bool, error) {
+func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string, evidences []envelope.Evidence, weak bool, onTextDelta func(string)) (string, observability.OutcomeTrace, string, bool, error) {
 	outcome := observability.OutcomeTrace{}
 	req := llm.ChatRequest{
 		Messages: prompt.BuildRAGMessages(userMsg, ragReferencesFromEvidence(evidences), weak, false),
+		OnTextDelta: onTextDelta,
 	}
 	resp, err := e.llmClient.Chat(ctx, req)
 	if err != nil {

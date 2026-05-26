@@ -36,7 +36,11 @@ type tokenEvent struct {
 }
 
 // doneEvent is the final SSE frame on a successful completion.
+// Content carries the final post-processed reply text (e.g. citation markers
+// stripped). The frontend should prefer Content over accumulated token deltas
+// when present, as the two may differ due to post-processing.
 type doneEvent struct {
+	Content   string     `json:"Content,omitempty"`
 	Usage     usageEvent `json:"Usage"`
 	LatencyMs int        `json:"LatencyMs"`
 	TtftMs    int        `json:"TtftMs"`
@@ -53,6 +57,33 @@ type usageEvent struct {
 type streamErrorEvent struct {
 	Code    string `json:"Code"`
 	Message string `json:"Message"`
+}
+
+// stepEvent is the SSE projection of engine.StepEvent — only fields safe for
+// the frontend are included. Args, Display, TraceResult, and cap info are
+// intentionally omitted.
+type stepEvent struct {
+	Type    string `json:"Type"`
+	Action  string `json:"Action,omitempty"`
+	Message string `json:"Message,omitempty"`
+	Index   int    `json:"Index"`
+}
+
+func stepTypeString(t engine.StepType) string {
+	switch t {
+	case engine.StepToolCall:
+		return "tool_call"
+	case engine.StepToolResult:
+		return "tool_result"
+	case engine.StepConfirmNeeded:
+		return "confirm_needed"
+	case engine.StepBlocked:
+		return "blocked"
+	case engine.StepError:
+		return "error"
+	default:
+		return "unknown"
+	}
 }
 
 // handleChat is the Chat SSE handler. It:
@@ -279,10 +310,18 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	// -----------------------------------------------------------------------
 	// 5. LLM streaming call
 	// -----------------------------------------------------------------------
+	stepIndex := 0
 	reply, chatErr := agent.ChatWithOptions(ctx, message, func(ev engine.StepEvent) {
 		if traceRecorder != nil {
 			traceRecorder.OnStep(ev)
 		}
+		_ = sw.WriteEvent("step", stepEvent{
+			Type:    stepTypeString(ev.Type),
+			Action:  ev.Action,
+			Message: guardrails.RedactOutputLeak(guardrails.RedactPII(ev.Message)),
+			Index:   stepIndex,
+		})
+		stepIndex++
 	}, engine.ChatOptions{
 		ImageContext: ocrText,
 		OnTextDelta: func(s string) {
@@ -353,6 +392,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 			LatencyMs:    &latencyMs,
 		})
 	_ = sw.WriteEvent("done", doneEvent{
+		Content:   reply,
 		Usage:     usageEvent{InputTokens: inputTokens, OutputTokens: outputTokens},
 		LatencyMs: latencyMs,
 		TtftMs:    ttftMs,
