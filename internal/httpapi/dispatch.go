@@ -14,7 +14,7 @@ import (
 func (h *Handlers) Dispatch(c *gin.Context) {
 	raw, base, err := ParseBaseRequest(c)
 	if err != nil {
-		h.writeError(c, "", err)
+		h.writeError(c, base.Action, base.RequestUUID, err)
 		return
 	}
 
@@ -34,22 +34,22 @@ func (h *Handlers) Dispatch(c *gin.Context) {
 	case "SendCSAgentChat":
 		h.handleChat(c, base, raw)
 	default:
-		h.writeError(c, base.RequestUUID, ErrInvalidParam.WithMessage("unsupported Action %s", base.Action))
+		h.writeError(c, base.Action, base.RequestUUID, ErrInvalidParam.WithMessage("unsupported Action %s", base.Action))
 	}
 }
 
-// writeResult writes a successful JSON response with envelope fields
-// (RequestId / Code / Message) and the handler-supplied data flattened to
-// top-level — there is no nested Data wrapper. Envelope fields take
-// precedence over any colliding data field names.
+// writeResult writes a successful JSON response with UCloud-standard envelope
+// fields (Action / RetCode / Message / RequestId) and the handler-supplied
+// data flattened to top-level — there is no nested Data wrapper. Envelope
+// keys take precedence over any colliding data field names.
 func (h *Handlers) writeResult(c *gin.Context, base BaseRequest, data any, err error) {
 	if err != nil {
-		h.writeError(c, base.RequestUUID, err)
+		h.writeError(c, base.Action, base.RequestUUID, err)
 		return
 	}
-	body, mErr := flattenEnvelope(base.RequestUUID, "Success", "", data)
+	body, mErr := flattenEnvelope(base.Action, base.RequestUUID, 0, "", data)
 	if mErr != nil {
-		h.writeError(c, base.RequestUUID, mErr)
+		h.writeError(c, base.Action, base.RequestUUID, mErr)
 		return
 	}
 	c.JSON(http.StatusOK, body)
@@ -57,23 +57,29 @@ func (h *Handlers) writeResult(c *gin.Context, base BaseRequest, data any, err e
 
 // writeError converts err to an APIError and responds with the appropriate HTTP status.
 // sql.ErrNoRows is canonicalized to ErrNotFound. Error responses carry only
-// the envelope fields (no data payload).
-func (h *Handlers) writeError(c *gin.Context, requestID string, err error) {
+// the envelope fields (Action / RetCode / Message / RequestId), no data payload.
+// action may be empty when the request failed to parse before Action was known.
+func (h *Handlers) writeError(c *gin.Context, action, requestID string, err error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
 	}
 	apiErr := AsAPIError(err)
-	c.JSON(apiErr.Status, gin.H{
-		"RequestId": requestID,
-		"Code":      apiErr.Code,
+	body := gin.H{
+		"RetCode":   apiErr.RetCode,
 		"Message":   apiErr.Message,
-	})
+		"RequestId": requestID,
+	}
+	if action != "" {
+		body["Action"] = action
+	}
+	c.JSON(apiErr.Status, body)
 }
 
-// flattenEnvelope marshals data and merges its top-level JSON fields with
-// the envelope (RequestId/Code/Message). Envelope keys win on collision.
+// flattenEnvelope marshals data and merges its top-level JSON fields with the
+// UCloud-standard envelope (Action / RetCode / Message / RequestId). Envelope
+// keys win on collision. Action is omitted when empty.
 // Returns an error only if data fails to marshal/unmarshal.
-func flattenEnvelope(requestID, code, message string, data any) (map[string]any, error) {
+func flattenEnvelope(action, requestID string, retCode int, message string, data any) (map[string]any, error) {
 	body := map[string]any{}
 	if data != nil {
 		raw, err := json.Marshal(data)
@@ -84,8 +90,11 @@ func flattenEnvelope(requestID, code, message string, data any) (map[string]any,
 			return nil, err
 		}
 	}
-	body["RequestId"] = requestID
-	body["Code"] = code
+	if action != "" {
+		body["Action"] = action
+	}
+	body["RetCode"] = retCode
 	body["Message"] = message
+	body["RequestId"] = requestID
 	return body, nil
 }

@@ -598,5 +598,6 @@ func TestDispatchChatRejectsWhenSessionTurnLimitReached(t *testing.T) {
 	h.Dispatch(c)
 
 	require.Equal(t, http.StatusConflict, rec.Code)
-	assert.Contains(t, rec.Body.String(), `"Code":"SessionTurnLimitExceeded"`)
+	assert.Contains(t, rec.Body.String(), `"RetCode":226616`)
+	assert.Contains(t, rec.Body.String(), `"Action":"SendCSAgentChat"`)
 }

@@ -68,23 +68,23 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	// -----------------------------------------------------------------------
 	sessionID := raw.Get("SessionId").MustString()
 	if sessionID == "" {
-		h.writeError(c, base.RequestUUID, ErrInvalidParam.WithMessage("missing SessionId"))
+		h.writeError(c, base.Action, base.RequestUUID, ErrInvalidParam.WithMessage("missing SessionId"))
 		return
 	}
 
 	message := strings.TrimSpace(raw.Get("Message").MustString())
 	if message == "" {
-		h.writeError(c, base.RequestUUID, ErrInvalidParam.WithMessage("missing Message"))
+		h.writeError(c, base.Action, base.RequestUUID, ErrInvalidParam.WithMessage("missing Message"))
 		return
 	}
 	if len([]rune(message)) > h.cfg.Agent.HTTP.MaxInputLength {
-		h.writeError(c, base.RequestUUID, ErrInvalidParam.WithMessage("Message exceeds MaxInputLength"))
+		h.writeError(c, base.Action, base.RequestUUID, ErrInvalidParam.WithMessage("Message exceeds MaxInputLength"))
 		return
 	}
 
 	sess, err := h.sessions.GetByID(c.Request.Context(), base.Owner, sessionID)
 	if err != nil {
-		h.writeError(c, base.RequestUUID, err)
+		h.writeError(c, base.Action, base.RequestUUID, err)
 		return
 	}
 
@@ -97,7 +97,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 		maxTurns = config.DefaultMaxSessionTurns
 	}
 	if sess.MessageCount >= maxTurns*2 {
-		h.writeError(c, base.RequestUUID, ErrSessionTurnLimit)
+		h.writeError(c, base.Action, base.RequestUUID, ErrSessionTurnLimit)
 		return
 	}
 
@@ -121,7 +121,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	// 2. Acquire engine (serialized per session via Lease)
 	// -----------------------------------------------------------------------
 	if h.pool == nil {
-		h.writeError(c, base.RequestUUID, ErrInternal.WithMessage("%s", "engine pool not configured"))
+		h.writeError(c, base.Action, base.RequestUUID, ErrInternal.WithMessage("%s", "engine pool not configured"))
 		return
 	}
 
@@ -129,14 +129,14 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	// with the correct tenant identity.
 	userCtx, ucErr := h.buildUserContext(base)
 	if ucErr != nil {
-		h.writeError(c, base.RequestUUID, AsAPIError(ucErr))
+		h.writeError(c, base.Action, base.RequestUUID, AsAPIError(ucErr))
 		return
 	}
 	ctx := tools.WithUser(c.Request.Context(), userCtx)
 
 	agent, release, err := h.pool.Lease(ctx, base.Owner, sessionID)
 	if err != nil {
-		h.writeError(c, base.RequestUUID, AsAPIError(err))
+		h.writeError(c, base.Action, base.RequestUUID, AsAPIError(err))
 		return
 	}
 	defer release()
@@ -216,7 +216,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 		Content:     guardrails.RedactPII(persistContent),
 		Status:      "ok",
 	}); err != nil {
-		h.writeError(c, base.RequestUUID, err)
+		h.writeError(c, base.Action, base.RequestUUID, err)
 		return
 	}
 
@@ -229,12 +229,12 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 		Status:      "pending",
 		Model:       &model,
 	}); err != nil {
-		h.writeError(c, base.RequestUUID, err)
+		h.writeError(c, base.Action, base.RequestUUID, err)
 		return
 	}
 
 	if err := h.sessions.BumpUpdatedAtAndIncCount(c.Request.Context(), base.Owner, sessionID, 2); err != nil {
-		h.writeError(c, base.RequestUUID, err)
+		h.writeError(c, base.Action, base.RequestUUID, err)
 		return
 	}
 

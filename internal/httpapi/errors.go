@@ -6,9 +6,15 @@ import (
 	"net/http"
 )
 
-// APIError represents a structured HTTP API error with a code, status, and message.
+// APIError represents a structured HTTP API error.
+//
+// Code is the legacy string identifier (still used by SSE error frames and by
+// the persisted `messages.error_code` column). RetCode is the integer code
+// emitted in the UCloud-standard JSON envelope ({"RetCode": <int>, ...}).
+// Status is the HTTP status returned to the client.
 type APIError struct {
 	Code    string
+	RetCode int
 	Status  int
 	Message string
 }
@@ -27,17 +33,20 @@ func (e *APIError) WithMessage(format string, args ...any) *APIError {
 	return &cp
 }
 
+// RetCode integers are allocated from the platform-assigned range 226601–227000.
+// 226601–226611 are taken by upstream services; new codes start at 226612.
+// Keep these contiguous and update the range comment when the next code is claimed.
 var (
-	ErrInvalidParam            = &APIError{Code: "InvalidParam", Status: http.StatusBadRequest, Message: "参数缺失或非法"}
-	ErrUnauthorized            = &APIError{Code: "Unauthorized", Status: http.StatusUnauthorized, Message: "未登录或 token 失效"}
-	ErrForbidden               = &APIError{Code: "Forbidden", Status: http.StatusForbidden, Message: "无权访问"}
-	ErrNotFound                = &APIError{Code: "NotFound", Status: http.StatusNotFound, Message: "资源不存在"}
-	ErrSessionTurnLimit        = &APIError{Code: "SessionTurnLimitExceeded", Status: http.StatusConflict, Message: "本会话轮数已达上限，请新开会话继续"}
-	ErrRateLimited             = &APIError{Code: "RateLimited", Status: http.StatusTooManyRequests, Message: "超出速率限制"}
-	ErrInternal                = &APIError{Code: "InternalError", Status: http.StatusInternalServerError, Message: "后端未预期错误"}
-	ErrModelTimeout            = &APIError{Code: "ModelTimeout", Status: http.StatusGatewayTimeout, Message: "LLM 调用超时"}
-	ErrModelError              = &APIError{Code: "ModelError", Status: http.StatusBadGateway, Message: "LLM 上游错误"}
-	ErrAborted                 = &APIError{Code: "Aborted", Status: 499, Message: "用户中断"}
+	ErrInvalidParam     = &APIError{Code: "InvalidParam", RetCode: 226612, Status: http.StatusBadRequest, Message: "参数缺失或非法"}
+	ErrUnauthorized     = &APIError{Code: "Unauthorized", RetCode: 226613, Status: http.StatusUnauthorized, Message: "未登录或 token 失效"}
+	ErrForbidden        = &APIError{Code: "Forbidden", RetCode: 226614, Status: http.StatusForbidden, Message: "无权访问"}
+	ErrNotFound         = &APIError{Code: "NotFound", RetCode: 226615, Status: http.StatusNotFound, Message: "资源不存在"}
+	ErrSessionTurnLimit = &APIError{Code: "SessionTurnLimitExceeded", RetCode: 226616, Status: http.StatusConflict, Message: "本会话轮数已达上限，请新开会话继续"}
+	ErrRateLimited      = &APIError{Code: "RateLimited", RetCode: 226617, Status: http.StatusTooManyRequests, Message: "超出速率限制"}
+	ErrInternal         = &APIError{Code: "InternalError", RetCode: 226618, Status: http.StatusInternalServerError, Message: "后端未预期错误"}
+	ErrModelTimeout     = &APIError{Code: "ModelTimeout", RetCode: 226619, Status: http.StatusGatewayTimeout, Message: "LLM 调用超时"}
+	ErrModelError       = &APIError{Code: "ModelError", RetCode: 226620, Status: http.StatusBadGateway, Message: "LLM 上游错误"}
+	ErrAborted          = &APIError{Code: "Aborted", RetCode: 226621, Status: 499, Message: "用户中断"}
 )
 
 // AsAPIError converts any error into an *APIError. Returns nil if err is nil.
