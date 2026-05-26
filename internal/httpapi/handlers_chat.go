@@ -16,6 +16,7 @@ import (
 	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/httpapi/sse"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/ocr"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/gin-gonic/gin"
@@ -98,6 +99,22 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	if sess.MessageCount >= maxTurns*2 {
 		h.writeError(c, base.RequestUUID, ErrSessionTurnLimit)
 		return
+	}
+
+	// -----------------------------------------------------------------------
+	// 1.5 OCR image context extraction
+	// -----------------------------------------------------------------------
+	var ocrText string
+	imageDataURL := strings.TrimSpace(raw.Get("Image").MustString())
+	if imageDataURL != "" && h.ocrClient != nil {
+		text, valErr := h.processOCR(c.Request.Context(), base.RequestUUID, imageDataURL)
+		if valErr != nil {
+			h.writeError(c, base.RequestUUID, ErrInvalidParam.WithMessage("invalid Image: %v", valErr))
+			return
+		}
+		ocrText = text
+	} else if imageDataURL != "" {
+		log.Printf("warning: Image provided but OCR not configured (request %s)", base.RequestUUID)
 	}
 
 	// -----------------------------------------------------------------------
@@ -184,13 +201,19 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	model := h.cfg.Agent.LLM.Model
 	reqUUID := base.RequestUUID
 
-	// TODO(phase2): wrap user/assistant Append + BumpUpdatedAtAndIncCount in a transaction.
+	// Persist user message with OCR context included (so the DB record
+	// shows what the engine saw). PII filter covers both OCR text and
+	// the user's original message.
+	persistContent := message
+	if ocrText != "" {
+		persistContent = "用户上传了一张截图，系统自动识别到以下内容：\n" + ocrText + "\n\n" + message
+	}
 	if err := h.messages.Append(c.Request.Context(), store.Message{
 		ID:          userMsgID,
 		SessionID:   sessionID,
 		RequestUUID: &reqUUID,
 		Role:        "user",
-		Content:     guardrails.RedactPII(message),
+		Content:     guardrails.RedactPII(persistContent),
 		Status:      "ok",
 	}); err != nil {
 		h.writeError(c, base.RequestUUID, err)
@@ -261,6 +284,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 			traceRecorder.OnStep(ev)
 		}
 	}, engine.ChatOptions{
+		ImageContext: ocrText,
 		OnTextDelta: func(s string) {
 			if firstToken.IsZero() {
 				firstToken = time.Now()
@@ -365,6 +389,30 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 			}
 		}
 	}
+}
+
+const maxOCRTextRunes = 1200
+
+// processOCR validates the image, calls the OCR client, and returns
+// PII-filtered, length-capped text. Returns a validation error (caller
+// should 400) or ("", nil) on API failure (graceful degradation).
+func (h *Handlers) processOCR(ctx context.Context, requestUUID, imageDataURL string) (string, error) {
+	if _, err := ocr.ValidateImageDataURL(imageDataURL, h.cfg.Agent.OCR.MaxBytes); err != nil {
+		return "", err
+	}
+	ocrCtx, cancel := context.WithTimeout(ctx, h.cfg.Agent.OCR.Timeout)
+	defer cancel()
+	text, err := h.ocrClient.Recognize(ocrCtx, imageDataURL)
+	if err != nil {
+		log.Printf("warning: OCR failed for request %s: %v", requestUUID, err)
+		return "", nil
+	}
+	text = guardrails.RedactPII(text)
+	runes := []rune(text)
+	if len(runes) > maxOCRTextRunes {
+		text = string(runes[:maxOCRTextRunes])
+	}
+	return text, nil
 }
 
 // writeStreamError updates the assistant message status to "error" and emits

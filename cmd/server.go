@@ -14,6 +14,7 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/httpapi"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/ocr"
 	"github.com/compshare-agent/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
@@ -81,6 +82,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	defer pool.Close()
 
 	handlers := httpapi.NewHandlers(cfg, sessionStore, messageStore, feedbackStore, pool, traceWriter)
+	if cfg.Agent.OCR.Model != "" {
+		handlers.SetOCRClient(ocr.NewClient(cfg.Agent.OCR))
+		log.Printf("OCR enabled: model=%s", cfg.Agent.OCR.Model)
+	}
 	router := gin.New()
 	if !cfg.Agent.HTTP.DisableCORS {
 		router.Use(corsMiddleware())

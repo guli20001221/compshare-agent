@@ -186,6 +186,7 @@ HTTP 状态码与 `Code` 一一对应：
 |---|---|---|---|
 | `SessionId` | string | **是** | 必须是当前 `(top_organization_id, organization_id)` 拥有的会话 |
 | `Message` | string | **是** | 用户输入。长度上限 = `GetCSAgentMeta.MaxInputLength`（按 rune 计） |
+| `Image` | string | 否 | 图片 base64 data URL（`data:image/jpeg;base64,...`）。仅接受 JPEG / PNG / WebP，解码后 ≤ 10MB。需服务端配置 `agent.ocr.model` 后生效；未配置时忽略此字段。服务端会生成结构化截图摘要作为上下文，原始图片不落库。 |
 
 > 单个 session 默认最多 10 个问答对（由 `agent.http.max_session_turns` 配置；含中断 / 报错的轮次）。超过后此接口返回 HTTP 409 `SessionTurnLimitExceeded`，前端需提示用户开新会话（调用 `CreateCSAgentSession`）。
 
@@ -194,7 +195,8 @@ HTTP 状态码与 `Code` 一一对应：
   "Action": "SendCSAgentChat",
   "ProjectId": "org-cwy2qk",
   "SessionId": "9348b71e-7081-492d-99d9-650a34c120ef",
-  "Message": "帮我看下我都开了哪些实例"
+  "Message": "帮我看下我都开了哪些实例",
+  "Image": "data:image/jpeg;base64,/9j/4AAQ..."
 }
 ```
 

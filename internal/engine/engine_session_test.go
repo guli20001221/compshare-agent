@@ -250,21 +250,22 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// the JSON-serializable per-session dialog state envelope; mixing
 		// it across sessions would be exactly the cross-user leak this
 		// test was created to prevent.
-		"sessionState":               true,
-		"sessionStateVersion":        true,
-		"sessionStateHydrated":       true,
-		"lastPlannerIntentThisTurn":  true,
+		"sessionState":              true,
+		"sessionStateVersion":       true,
+		"sessionStateHydrated":      true,
+		"lastPlannerIntentThisTurn": true,
+		"imageContextThisTurn":      true,
 	}
 
 	if want, got := 11, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 31, len(perSessionFields); want != got {
+	if want, got := 32, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 42, typ.NumField(); want != got {
+	if want, got := 43, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

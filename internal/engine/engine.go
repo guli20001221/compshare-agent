@@ -138,6 +138,11 @@ type ChatOptions struct {
 	// OnUsage, if non-nil, is called once after the final LLM call returns its
 	// usage data.
 	OnUsage func(llm.TokenUsage)
+	// ImageContext, if non-empty, is a structured caption extracted from a
+	// user-uploaded image. It is added to the LLM-facing message after
+	// pre-block keyword checks so screenshot UI labels (e.g. "运维监控",
+	// "最近访问") do not trigger false-positive hard blocks.
+	ImageContext string
 }
 
 type IntentPlannerOptions struct {
@@ -174,19 +179,19 @@ type Engine struct {
 	// LLM call within the current Chat() invocation. Reset at the top of
 	// Chat. Read at ReAct loop iteration boundaries to enforce
 	// maxTokensPerTurn — never mid tool_call / tool_result pair.
-	turnTokensConsumed int
-	hardBlockObserver                func(observability.EngineHardBlockTrace)
-	confirmFn                        ConfirmFunc
-	messages                         []openai.ChatCompletionMessage // conversation history
-	userTurn                         int                            // incremented at start of each Chat() call
-	lastInstanceQueryTurn            int                            // set to userTurn on successful DescribeCompShareInstance
-	lastMonitorTurn                  int                            // set to userTurn on successful GetCompShareInstanceMonitor
-	currentMonitorTargets            []string                       // historical monitor targets queried in the current turn
-	currentMonitorNoData             []string                       // current-turn historical monitor targets with no data samples
-	currentMonitorStart              int64                          // start of the current historical monitor window, if any
-	currentMonitorEnd                int64                          // end of the current historical monitor window, if any
-	currentMonitorWindow             bool                           // true when currentMonitorStart/End are known
-	pendingResourceSelection         *pendingResourceSelection
+	turnTokensConsumed       int
+	hardBlockObserver        func(observability.EngineHardBlockTrace)
+	confirmFn                ConfirmFunc
+	messages                 []openai.ChatCompletionMessage // conversation history
+	userTurn                 int                            // incremented at start of each Chat() call
+	lastInstanceQueryTurn    int                            // set to userTurn on successful DescribeCompShareInstance
+	lastMonitorTurn          int                            // set to userTurn on successful GetCompShareInstanceMonitor
+	currentMonitorTargets    []string                       // historical monitor targets queried in the current turn
+	currentMonitorNoData     []string                       // current-turn historical monitor targets with no data samples
+	currentMonitorStart      int64                          // start of the current historical monitor window, if any
+	currentMonitorEnd        int64                          // end of the current historical monitor window, if any
+	currentMonitorWindow     bool                           // true when currentMonitorStart/End are known
+	pendingResourceSelection *pendingResourceSelection
 	// supportsObjectToolChoice gates force-tool guards (e.g. shouldForceMonitorRecall)
 	// from sending object tool_choice on models that don't support it (notably
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
@@ -204,6 +209,7 @@ type Engine struct {
 	// classifies but the handler falls back to ReAct. Consumed by the ReAct
 	// loop to scope the tool list via intent.IntentToolSubset. Reset per turn.
 	lastPlannerIntentThisTurn intent.Intent
+	imageContextThisTurn      string
 	// currentCtx holds the context for the current ChatWithOptions call.
 	// Set at the start of ChatWithOptions and cleared (nil) on return.
 	currentCtx context.Context
@@ -760,6 +766,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 	}
 	e.lastUserMsg = userMsg
+	e.imageContextThisTurn = opts.ImageContext
 	e.readExpensiveCallsThisTurn = 0
 	e.requireKnowledgeCitationThisTurn = false
 	e.turnTokensConsumed = 0
@@ -769,21 +776,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.trimHistory()
 	priorText := e.PlannerPriorTextSnapshot()
 
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleUser,
-		Content: userMsg,
-	})
-
-	// Pre-LLM hard-block chain. Rules live in preblock.go (this package);
-	// dispatch + ordering in internal/router; reply text + category strings
-	// in internal/refusal. Side effects (pendingResourceSelection clear,
-	// hardBlockObserver fire, history append) stay here so engine state
-	// transitions remain in one place.
-	//
-	// Trace fix vs pre-refactor: monitor_history previously did NOT emit
-	// hardBlockObserver — now it does, with category
-	// refusal.CategoryMonitorHistory. Downstream dashboards gain
-	// observability for this category at zero behavioral cost.
+	// Pre-LLM hard-block chain — runs on raw userMsg only, BEFORE OCR
+	// image context is prepended. This prevents screenshot UI labels
+	// (e.g. "运维监控", "最近访问") from triggering false-positive blocks.
 	if decision := enginePreBlock.Decide(userMsg); decision.Matched {
 		e.pendingResourceSelection = nil
 		if e.hardBlockObserver != nil {
@@ -794,11 +789,29 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			})
 		}
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleUser,
+			Content: userMsg,
+		})
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: decision.Reply,
 		})
 		return decision.Reply, nil
 	}
+
+	// Build LLM-facing message: raw userMsg + optional image context.
+	// userMsg stays immutable for all keyword/regex routing below;
+	// llmUserMsg carries image evidence into conversation history so the
+	// ReAct LLM can reference it.
+	llmUserMsg := userMsg
+	if opts.ImageContext != "" {
+		llmUserMsg = "用户上传了一张截图，系统自动识别到以下内容：\n" + opts.ImageContext + "\n\n" + userMsg
+	}
+
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleUser,
+		Content: llmUserMsg,
+	})
 
 	e.currentMonitorTargets = nil
 	e.currentMonitorNoData = nil
@@ -1047,6 +1060,14 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	}
 
 	if dispatch.result.Plan.Intent == intent.IntentMonitorHistory {
+		// Code-level guardrail: when image context is present, the planner
+		// may misclassify screenshot UI labels ("运维监控", "最近访问") as
+		// a historical monitor question. Only honor the refusal if the raw
+		// user message independently satisfies the keyword pattern.
+		if e.imageContextThisTurn != "" && !isUnsupportedHistoricalMonitorQuestion(userMsg) {
+			e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
+			return "", false
+		}
 		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackTimeWindow, dispatch.latency)
 		return e.emitMonitorHistoryHardBlock(), true
 	}
@@ -1116,9 +1137,10 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 	snapshot := e.RegistrySnapshot()
 	if _, ok := e.allowRateLimited(governance.ClassLLM, "intent_planner"); ok {
 		planned, err := e.intentPlanner.Plan(ctx, intent.PlannerInput{
-			UserText:  userMsg,
-			PriorText: priorText,
-			Resolver:  snapshot,
+			UserText:     userMsg,
+			ImageContext: e.imageContextThisTurn,
+			PriorText:    priorText,
+			Resolver:     snapshot,
 		})
 		if err == nil {
 			result = planned

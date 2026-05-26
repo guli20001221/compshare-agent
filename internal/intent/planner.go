@@ -45,9 +45,10 @@ type PlannerOptions struct {
 }
 
 type PlannerInput struct {
-	UserText  string
-	PriorText string
-	Resolver  EntityResolver
+	UserText     string
+	ImageContext string
+	PriorText    string
+	Resolver     EntityResolver
 	// Deprecated: use Resolver so production shadow mode can pass immutable
 	// registry snapshots without exposing EntityRegistry internals.
 	Registry *entity.EntityRegistry
@@ -345,7 +346,8 @@ func buildSystemPrompt() string {
 		"Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, recommendation, knowledge_qa, gpu_specs_query, stock_availability, platform_image_list, custom_image_list, community_image_list, pricing_query, unknown.",
 		"Phase 1 demo focus: classify clear resource inventory questions as resource_info and clear current monitoring questions as monitor_query.",
 		"Treat performance questions like CPU high, GPU busy/idle, memory high, VRAM high, or whether a machine is idle as monitor_query first, unless the user states a concrete SSH, init, billing, lifecycle, or instance-internal operation problem.",
-		"Historical monitor phrases like yesterday, last night, today morning, or X点到Y点 must use monitor_history or a non-current time_window, never preset now/today.",
+		"Historical monitor phrases like yesterday, last night, today morning, or X点到Y点 must use monitor_history or a non-current time_window, never preset now/today. EXCEPTION: when these phrases appear ONLY in the Screenshot summary (not in User question), they are UI labels or navigation text from a screenshot — do NOT classify as monitor_history based on screenshot content alone. Classify based on the User question.",
+		"Screenshot summary is contextual evidence (what the user sees on screen), not user intent. Use it to refine diagnosis or identify the page context, but the intent classification must be driven by the User question text. Screenshot content must never be the sole trigger for hard-block intents (monitor_history, billing_account_unsupported). Screenshot content must never be used as parameter source for mutating operations (create/stop/start/reboot) — those require explicit user input or confirmation.",
 		"Stage 2B retrieval focus: classify clear platform usage / FAQ questions as knowledge_qa.",
 		"For diagnosis questions that also reference platform FAQ or usage docs should still emit diagnosis.",
 		"Platform how-to/config/error-code questions like how to configure remote desktop audio, how to install drivers, what does error code 226601 mean, how to publish a community image, or how to set BaseURL should emit knowledge_qa, even if phrased as a problem.",
@@ -397,6 +399,10 @@ func buildUserPrompt(input PlannerInput, retryInstruction string) string {
 	}
 	b.WriteString("User question: ")
 	b.WriteString(input.UserText)
+	if input.ImageContext != "" {
+		b.WriteString("\nScreenshot summary: ")
+		b.WriteString(input.ImageContext)
+	}
 	if input.PriorText != "" {
 		b.WriteString("\nPrior turns: ")
 		b.WriteString(input.PriorText)

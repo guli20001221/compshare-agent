@@ -97,6 +97,18 @@ agent:
       - "创建实例的操作步骤"
     max_input_length: 4000
 
+  # OCR / 截图摘要。用于 SendCSAgentChat 携带 Image 字段时，调 VL 模型
+  # 生成结构化截图描述（页面/场景 + 可见文字 + 错误/异常）。描述作为
+  # 上下文注入对话，不替代用户问题。
+  # 留空 model 则关闭该功能——请求中的 Image 会被忽略。
+  # base_url 和 api_key 留空时继承 agent.llm 的值。
+  ocr:
+    model: ""              # recommended: "qwen3-vl-flash"
+    base_url: ""           # inherits from agent.llm.base_url
+    api_key: ""            # inherits from agent.llm.api_key
+    timeout: "15s"
+    max_bytes: 10485760    # 10MB
+
   # STS (Security Token Service) credential settings (used by: compshare-agent server).
   # service_ak/service_sk are the long-term service credentials used to mint
   # short-lived STS tokens for per-user API calls. Leave them empty to use

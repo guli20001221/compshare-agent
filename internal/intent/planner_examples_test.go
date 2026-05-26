@@ -91,9 +91,10 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // IMPORTANT: when intentionally changing the planner prompt (e.g.
 // migrating another intent's examples or adding a directive), this
 // test will fail by design. The fix is:
-//   1. Run the test, observe the new hash in the failure message.
-//   2. Update systemPromptSHA256Baseline below.
-//   3. In the commit message, justify the prompt change.
+//  1. Run the test, observe the new hash in the failure message.
+//  2. Update systemPromptSHA256Baseline below.
+//  3. In the commit message, justify the prompt change.
+//
 // Don't bypass this gate without a justification — silent prompt
 // drift has caused classification regressions in this codebase before.
 //
@@ -129,7 +130,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // "X 怎么调 / 用 SDK 怎么传参 / 返回 N 是什么错误" so they don't conflict
 // with billing/stock/pricing/diagnosis intents (no $-amount, no instance ID,
 // no "我的" personal-status markers).
-const systemPromptSHA256Baseline = "81f629786cb1c337b89aa8d182e9052bbc75c61875bd0e7eb7da830001745b93"
+const systemPromptSHA256Baseline = "95f1958ec6bef438e511030c74c9bd83258a7f3b90d9b99ca90db0dea1891097"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

@@ -371,7 +371,7 @@ trace 支持写入文件（`COMPSHARE_TRACE_DIR`）和/或 MySQL（`deploy/migra
 
 - **System prompt 模板化**：当前 `systemTemplate` / `readOnlySystemTemplate` 有 60% 重复。拆分为 base + per-skill segment，按 intent 按需组合。
 - **SessionState 消费**：`SelectedInstanceID` 注入到 handler 和 system prompt，支持多轮中 "重启它" 自动关联上一轮查询的实例。
-- **OCR 上下文**：HTTP 请求支持图片字段，通过 DeepSeek OCR（ModelVerse API）提取截图文本注入对话上下文，支持客服群场景。
+- **截图上下文**：HTTP 请求支持 `Image` 字段，通过 VL 模型（默认 `qwen3-vl-flash`）生成结构化截图摘要（页面/场景 + 可见文字 + 错误/异常），注入对话上下文辅助诊断。截图内容仅作为证据，不触发硬拦截规则，不作为写操作参数来源。
 
 ### 中期
 

@@ -24,6 +24,12 @@ type EnginePool interface {
 	Get(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error)
 }
 
+// OCRRecognizer extracts text from an image. Implemented by *ocr.Client;
+// the interface exists so handler tests can substitute a mock.
+type OCRRecognizer interface {
+	Recognize(ctx context.Context, imageDataURL string) (string, error)
+}
+
 // Handlers holds the dependencies shared by all gateway Action handlers.
 type Handlers struct {
 	cfg      *config.Config
@@ -33,6 +39,7 @@ type Handlers struct {
 	// pool may be nil for Task 6; Task 7 wires a concrete EnginePool.
 	pool        EnginePool
 	traceWriter observability.Writer
+	ocrClient   OCRRecognizer
 }
 
 // NewHandlers constructs a Handlers with all dependencies injected.
@@ -53,6 +60,12 @@ func NewHandlers(
 		pool:        pool,
 		traceWriter: traceWriter,
 	}
+}
+
+// SetOCRClient configures the OCR client for image context injection.
+// nil disables OCR; images in requests are silently ignored with a log warning.
+func (h *Handlers) SetOCRClient(c OCRRecognizer) {
+	h.ocrClient = c
 }
 
 // buildUserContext constructs a tools.UserContext from a BaseRequest.

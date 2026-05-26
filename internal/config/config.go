@@ -48,6 +48,7 @@ type AgentConfig struct {
 	MySQL MySQLConfig `yaml:"mysql"`
 	Meta  MetaConfig  `yaml:"meta"`
 	STS   STSConfig   `yaml:"sts"`
+	OCR   OCRConfig   `yaml:"ocr"`
 }
 
 // HTTPConfig holds settings for the HTTP server mode (compshare-agent server).
@@ -103,6 +104,17 @@ type LLMConfig struct {
 	BaseURL string `yaml:"base_url"`
 	APIKey  string `yaml:"api_key"`
 	Model   string `yaml:"model"`
+}
+
+// OCRConfig holds settings for the optional OCR (image text extraction)
+// feature used by the HTTP Chat handler. When Model is empty, OCR is disabled.
+// BaseURL and APIKey default to the LLM values when empty.
+type OCRConfig struct {
+	Model    string        `yaml:"model"`
+	BaseURL  string        `yaml:"base_url"`
+	APIKey   string        `yaml:"api_key"`
+	Timeout  time.Duration `yaml:"timeout"`
+	MaxBytes int           `yaml:"max_bytes"`
 }
 
 type RateLimitConfig struct {
@@ -201,6 +213,14 @@ func Load(path string) (*Config, error) {
 	applySTSDefaults(&cfg.Agent.STS)
 	applyHTTPDefaults(&cfg.Agent.HTTP)
 	applyMySQLDefaults(&cfg.Agent.MySQL)
+
+	if err := resolveOptionalCredential(&cfg.Agent.OCR.APIKey, "agent.ocr.api_key"); err != nil {
+		return nil, err
+	}
+	if err := validateOCRConfig(&cfg.Agent.OCR); err != nil {
+		return nil, err
+	}
+	applyOCRDefaults(&cfg.Agent.OCR, &cfg.Agent.LLM)
 
 	// Check for explicit mismatch before meta defaults are applied.
 	// meta.max_input_length == 0 means "not set"; inheritance happens below.
@@ -490,5 +510,30 @@ func applySTSDefaults(s *STSConfig) {
 	}
 	if s.URL == "" {
 		s.URL = "https://api.ucloud.cn/"
+	}
+}
+
+func validateOCRConfig(ocr *OCRConfig) error {
+	if ocr.Timeout < 0 {
+		return negativeValueError("agent.ocr.timeout")
+	}
+	if ocr.MaxBytes < 0 {
+		return negativeValueError("agent.ocr.max_bytes")
+	}
+	return nil
+}
+
+func applyOCRDefaults(ocr *OCRConfig, llmCfg *LLMConfig) {
+	if ocr.Timeout == 0 {
+		ocr.Timeout = 15 * time.Second
+	}
+	if ocr.MaxBytes == 0 {
+		ocr.MaxBytes = 10 * 1024 * 1024
+	}
+	if ocr.BaseURL == "" && llmCfg != nil {
+		ocr.BaseURL = llmCfg.BaseURL
+	}
+	if ocr.APIKey == "" && llmCfg != nil {
+		ocr.APIKey = llmCfg.APIKey
 	}
 }
