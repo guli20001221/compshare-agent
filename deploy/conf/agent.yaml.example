@@ -48,7 +48,7 @@ agent:
     read_expensive_daily: 500
     # Per-tenant cap on user-initiated chat turns (one user_message frame
     # = 1 turn; confirm responses and pings do NOT count).
-    user_turn_qps: 0      # 0 = no QPS cap
+    user_turn_qps: 2      # max 2 messages/sec per tenant; 0 = no QPS cap
     user_turn_daily: 30   # 0 = no daily cap; 30 is the 2026-05-21 test-phase value
     # Per-turn cap on total LLM tokens (prompt + completion summed across
     # every LLM call in one user turn). 0 = no cap. 50000 covers heavy
