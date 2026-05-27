@@ -53,7 +53,11 @@ func stepConfirmStart() Step {
 		Name: "确认开机",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			return extractInstanceSummary(wfCtx.Result("查询实例")), nil
+			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
+			if wg, ok := wfCtx.Params["WithoutGpu"]; ok && wg == true {
+				summary["mode"] = "无卡模式（不分配 GPU，仅用于数据访问/维护）"
+			}
+			return summary, nil
 		},
 	}
 }
@@ -65,11 +69,15 @@ func stepStartInstance() Step {
 		Tool: "StartCompShareInstance",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
-			return map[string]any{
+			args := map[string]any{
 				"Region":  extractInstanceRegion(queried, defaultRegion),
 				"Zone":    extractInstanceZone(queried, defaultZone),
 				"UHostId": wfCtx.Params["UHostId"],
-			}, nil
+			}
+			if wg, ok := wfCtx.Params["WithoutGpu"]; ok && wg == true {
+				args["WithoutGpu"] = true
+			}
+			return args, nil
 		},
 	}
 }

@@ -428,13 +428,17 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "StartInstanceWorkflow",
-			Description: "开机工作流。用户要求开机时使用此工具。",
+			Description: "开机工作流。用户要求开机时使用此工具。支持无卡模式（WithoutGpu=true）：不分配 GPU，仅用于数据拷贝或维护，费用更低。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"UHostId": map[string]any{
 						"type":        "string",
 						"description": "要开机的实例 ID",
+					},
+					"WithoutGpu": map[string]any{
+						"type":        "boolean",
+						"description": "无卡模式开机，不分配 GPU，仅用于数据访问/维护，费用更低。默认 false（正常带卡开机）。",
 					},
 				},
 				"required": []string{"UHostId"},

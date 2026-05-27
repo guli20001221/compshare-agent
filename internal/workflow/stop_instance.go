@@ -62,15 +62,16 @@ func stepStopInstance() Step {
 		Type: StepToolCall,
 		Tool: "StopCompShareInstance",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			// Zone + UHostId required per docs/api/instance/StopCompShareInstance.md.
-			// Region paired alongside Zone so multi-region tenants don't depend on
-			// the upstream gateway reverse-deriving Region from Zone.
 			queried := wfCtx.Result("查询实例")
-			return map[string]any{
+			args := map[string]any{
 				"Region":  extractInstanceRegion(queried, defaultRegion),
 				"Zone":    extractInstanceZone(queried, defaultZone),
 				"UHostId": wfCtx.Params["UHostId"],
-			}, nil
+			}
+			if extractChargeType(queried) == "Spot" {
+				args["Force"] = true
+			}
+			return args, nil
 		},
 	}
 }
@@ -96,6 +97,24 @@ func extractInstanceZone(result map[string]any, defaultVal string) string {
 		return zone
 	}
 	return defaultVal
+}
+
+func extractChargeType(result map[string]any) string {
+	if result == nil {
+		return ""
+	}
+	hostSet, ok := result["UHostSet"].([]any)
+	if !ok || len(hostSet) == 0 {
+		return ""
+	}
+	first, ok := hostSet[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	if ct, ok := first["ChargeType"].(string); ok {
+		return ct
+	}
+	return ""
 }
 
 // extractInstanceState returns the State field from the first entry in UHostSet,

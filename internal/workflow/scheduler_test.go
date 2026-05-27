@@ -351,11 +351,42 @@ func TestCancelStopScheduler_HappyPath(t *testing.T) {
 	assert.True(t, result.Success)
 	assert.Len(t, result.Steps, 3)
 
-	// Verify DeleteCompShareStopScheduler was called with UHostId.
+	// Verify DeleteCompShareStopScheduler was called with UHostId and Region.
 	assert.Len(t, executor.calls, 2)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 	assert.Equal(t, "DeleteCompShareStopScheduler", executor.calls[1].action)
 	assert.Equal(t, "uhost-xxx", executor.calls[1].args["UHostId"])
+	assert.Contains(t, executor.calls[1].args, "Region", "DeleteCompShareStopScheduler must include Region")
+}
+
+func TestCancelStopScheduler_UsesInstanceRegion(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-sh",
+				"Name":       "sh-gpu",
+				"State":      "Running",
+				"Zone":       "cn-sh2-02",
+				"GpuType":    "H20",
+				"GPU":        float64(1),
+				"ChargeType": "Dynamic",
+			},
+		}},
+		"DeleteCompShareStopScheduler": {"RetCode": 0},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	onStep, _ := collectEvents()
+
+	def := CancelStopSchedulerDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-sh",
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	deleteCall := executor.calls[1]
+	assert.Equal(t, "cn-sh2", deleteCall.args["Region"], "Region must be derived from instance Zone cn-sh2-02, not default")
 }
 
 func TestCancelStopScheduler_NotFound(t *testing.T) {

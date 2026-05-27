@@ -255,3 +255,88 @@ func TestStartInstance_RunningRejected(t *testing.T) {
 	assert.Len(t, executor.calls, 1)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 }
+
+func TestStopInstance_SpotInstanceSendsForce(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-spot",
+				"Name":       "spot-gpu",
+				"State":      "Running",
+				"GpuType":    "4090",
+				"GPU":        float64(1),
+				"ChargeType": "Spot",
+			},
+		}},
+		"StopCompShareInstance": {"RetCode": 0},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	onStep, _ := collectEvents()
+
+	def := StopInstanceDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-spot",
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	stopCall := executor.calls[1]
+	assert.Equal(t, "StopCompShareInstance", stopCall.action)
+	assert.Equal(t, true, stopCall.args["Force"], "Spot instance stop must include Force=true")
+}
+
+func TestStopInstance_NonSpotOmitsForce(t *testing.T) {
+	executor := stopMockExecutor()
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	onStep, _ := collectEvents()
+
+	def := StopInstanceDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	_, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-xxx",
+	})
+
+	assert.NoError(t, err)
+	stopCall := executor.calls[1]
+	_, hasForce := stopCall.args["Force"]
+	assert.False(t, hasForce, "Non-Spot instance stop must not include Force")
+}
+
+func TestStartInstance_WithoutGpuPassedToAPI(t *testing.T) {
+	executor := startMockExecutor()
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	onStep, _ := collectEvents()
+
+	def := StartInstanceDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":    "uhost-yyy",
+		"WithoutGpu": true,
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	startCall := executor.calls[1]
+	assert.Equal(t, "StartCompShareInstance", startCall.action)
+	assert.Equal(t, true, startCall.args["WithoutGpu"], "WithoutGpu=true must be passed to API")
+}
+
+func TestStartInstance_WithoutGpuShowsInConfirm(t *testing.T) {
+	executor := startMockExecutor()
+	var capturedArgs map[string]any
+	confirmFn := func(action string, args map[string]any) bool {
+		capturedArgs = args
+		return false
+	}
+	onStep, _ := collectEvents()
+
+	def := StartInstanceDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	_, _ = eng.Run(context.Background(), def, map[string]any{
+		"UHostId":    "uhost-yyy",
+		"WithoutGpu": true,
+	})
+
+	assert.Contains(t, capturedArgs, "mode", "Confirm summary must show mode when WithoutGpu=true")
+}
