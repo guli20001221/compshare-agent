@@ -174,6 +174,21 @@ func allowedInstanceLikeTokens(env envelope.Envelope) map[string]struct{} {
 			allowed[s] = struct{}{}
 		}
 	}
+	// Also allow instance-like sub-tokens extracted from existing allowed
+	// values. Image names like "Windows-nvidia 2022 64位" produce the token
+	// "Windows-nvidia" when the LLM renders them, but only the full string
+	// is in the allowed set. Expand so partial tokens are accepted too.
+	expanded := make([]string, 0)
+	for s := range allowed {
+		for _, token := range instanceLikeTokenPattern.FindAllString(s, -1) {
+			if _, ok := allowed[token]; !ok {
+				expanded = append(expanded, token)
+			}
+		}
+	}
+	for _, token := range expanded {
+		allowed[token] = struct{}{}
+	}
 	return allowed
 }
 

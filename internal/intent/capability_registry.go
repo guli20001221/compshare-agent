@@ -370,32 +370,37 @@ func handleStockAvailability(ctx context.Context, h *DemoHandler, req HandlerReq
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
+	setEnvelopeIfPopulated(&result, buildStockEnvelope(raw, req.UserText))
 	return result
 }
 
 func handlePlatformImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "DescribeCompShareImages"
+	fieldOrder := []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"}
 	raw, fb := executeCapabilityAction(ctx, h, req.Plan.Intent, action, map[string]any{})
 	if fb != nil {
 		return *fb
 	}
-	reply := renderImageListReply(raw, "ImageSet", []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"}, req.UserText)
+	reply := renderImageListReply(raw, "ImageSet", fieldOrder, req.UserText)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
+	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.UserText, action, "platform"))
 	return result
 }
 
 func handleCustomImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "DescribeCompShareCustomImages"
+	fieldOrder := []string{"CompShareImageId", "Name", "ImageName", "Status"}
 	raw, fb := executeCapabilityAction(ctx, h, req.Plan.Intent, action, map[string]any{})
 	if fb != nil {
 		return *fb
 	}
-	reply := renderImageListReply(raw, "ImageSet", []string{"CompShareImageId", "Name", "ImageName", "Status"}, req.UserText)
+	reply := renderImageListReply(raw, "ImageSet", fieldOrder, req.UserText)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
+	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.UserText, action, "custom"))
 	return result
 }
 
@@ -409,6 +414,7 @@ func handleCommunityImageList(ctx context.Context, h *DemoHandler, req HandlerRe
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
+	setEnvelopeIfPopulated(&result, buildCommunityImageEnvelope(raw, req.UserText))
 	return result
 }
 
@@ -1061,6 +1067,291 @@ func buildGPUSpecsEnvelope(raw map[string]any, userText string) envelope.Envelop
 		}
 	}
 	return env
+}
+
+func buildStockEnvelope(raw map[string]any, userText string) envelope.Envelope {
+	items := mapSliceAt(raw, "AvailableInstanceTypes")
+	matched := matchUserTextToInstanceTypeNames(userText, items, false)
+	unavailable := detectKnownUnavailableGPUs(userText)
+	filterTo := map[string]struct{}{}
+	for _, m := range matched {
+		filterTo[m] = struct{}{}
+	}
+
+	env := envelope.Envelope{
+		Kind:          envelope.KindStockAvailability,
+		SourceActions: []string{"DescribeAvailableCompShareInstanceTypes"},
+		Subjects:      []envelope.Subject{},
+		Facts:         []envelope.Fact{},
+		Computed:      []envelope.Fact{},
+		Constraints:   envelope.Constraints{DoNotInventInstances: true},
+	}
+	env.Computed = append(env.Computed,
+		envelope.Fact{Key: "user_question", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
+		envelope.Fact{Key: "disclaimer", Label: "Disclaimer", Value: soldOutDisclaimer, Source: envelope.FactSourceComputed},
+	)
+	if len(unavailable) > 0 {
+		env.Computed = append(env.Computed,
+			envelope.Fact{Key: "unavailable_models", Label: "Unavailable models", Value: strings.Join(unavailable, "、"), Source: envelope.FactSourceComputed},
+		)
+	}
+
+	seenNames := map[string]struct{}{}
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := safeString(entry, "Name")
+		if name == "" {
+			continue
+		}
+		if len(filterTo) > 0 {
+			if _, ok := filterTo[name]; !ok {
+				continue
+			}
+		}
+		if _, ok := seenNames[name]; ok {
+			continue
+		}
+		seenNames[name] = struct{}{}
+		status := safeString(entry, "Status")
+		if status == "" {
+			status = "Normal"
+		}
+		subjectID := "stock:" + name
+		env.Subjects = append(env.Subjects, envelope.Subject{
+			ID: subjectID, Name: name, Type: envelope.SubjectGPUModel,
+		})
+		env.Facts = append(env.Facts,
+			envelope.Fact{SubjectID: subjectID, Key: "model_name", Label: "机型", Value: name, Source: envelope.FactSourceAPI},
+			envelope.Fact{SubjectID: subjectID, Key: "status", Label: "状态", Value: status, Source: envelope.FactSourceAPI},
+		)
+	}
+	if len(matched) == 0 && len(unavailable) == 0 && userMentionedGPULikeToken(userText) {
+		env.Computed = append(env.Computed,
+			envelope.Fact{Key: "no_match_hint", Label: "未找到匹配", Value: "未在当前可售机型里找到您提到的型号", Source: envelope.FactSourceComputed},
+		)
+	}
+	env.Computed = append(env.Computed,
+		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(env.Subjects), Source: envelope.FactSourceComputed},
+	)
+	return env
+}
+
+func setEnvelopeIfPopulated(result *HandlerResult, env envelope.Envelope) {
+	if len(env.Subjects) == 0 {
+		return
+	}
+	result.Envelope = &env
+	result.RendererInputEnvelopeHashes = hashEnvelopeForRenderer(env)
+}
+
+func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []string, userText string, action string, category string) envelope.Envelope {
+	items := mapSliceAt(raw, listKey)
+	keywords := extractUserTokens(userText)
+	if isImageListAllIntent(userText) {
+		keywords = nil
+	}
+	matchFields := []string{}
+	for _, f := range fieldOrder {
+		switch f {
+		case "Name", "ImageName", "CompShareImageName", "Author":
+			matchFields = append(matchFields, f)
+		}
+	}
+	filtered := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if len(keywords) > 0 && len(matchFields) > 0 {
+			if !entryMatchesAnyKeyword(entry, keywords, matchFields) {
+				continue
+			}
+		}
+		filtered = append(filtered, entry)
+	}
+
+	env := envelope.Envelope{
+		Kind:          envelope.KindImageList,
+		SourceActions: []string{action},
+		Subjects:      []envelope.Subject{},
+		Facts:         []envelope.Fact{},
+		Computed:      []envelope.Fact{},
+		Constraints:   envelope.Constraints{DoNotInventInstances: true},
+	}
+	env.Computed = append(env.Computed,
+		envelope.Fact{Key: "image_category", Label: "Image category", Value: category, Source: envelope.FactSourceComputed},
+		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(filtered), Source: envelope.FactSourceComputed},
+		envelope.Fact{Key: "user_question", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
+	)
+	for i, entry := range filtered {
+		id := safeString(entry, "CompShareImageId")
+		if id == "" {
+			id = fmt.Sprintf("image_%d", i)
+		}
+		subjectID := "image:" + id
+		name := bestImageName(entry)
+		env.Subjects = append(env.Subjects, envelope.Subject{
+			ID: subjectID, Name: name, Type: envelope.SubjectImage,
+		})
+		for _, key := range fieldOrder {
+			v := safeString(entry, key)
+			if v == "" {
+				continue
+			}
+			env.Facts = append(env.Facts, envelope.Fact{
+				SubjectID: subjectID, Key: key, Label: imageFieldLabel(key), Value: v, Source: envelope.FactSourceAPI,
+			})
+		}
+	}
+	return env
+}
+
+func buildCommunityImageEnvelope(raw map[string]any, userText string) envelope.Envelope {
+	groups := mapSliceAt(raw, "CompshareImageGroup")
+	if len(groups) == 0 {
+		return buildImageListEnvelope(raw, "ImageSet",
+			[]string{"Name", "Author", "CompShareImageId"}, userText,
+			"DescribeCommunityImages", "community")
+	}
+	keywords := extractUserTokens(userText)
+	if isImageListAllIntent(userText) {
+		keywords = nil
+	}
+	matchFields := []string{"Name", "ImageName", "Author"}
+	filtered := make([]map[string]any, 0, len(groups))
+	for _, item := range groups {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if len(keywords) > 0 {
+			if !entryMatchesAnyKeyword(entry, keywords, matchFields) &&
+				!anyVersionMatches(mapSliceAt(entry, "Data"), keywords, matchFields) {
+				continue
+			}
+		}
+		filtered = append(filtered, entry)
+	}
+
+	env := envelope.Envelope{
+		Kind:          envelope.KindImageList,
+		SourceActions: []string{"DescribeCommunityImages"},
+		Subjects:      []envelope.Subject{},
+		Facts:         []envelope.Fact{},
+		Computed:      []envelope.Fact{},
+		Constraints:   envelope.Constraints{DoNotInventInstances: true},
+	}
+	env.Computed = append(env.Computed,
+		envelope.Fact{Key: "image_category", Label: "Image category", Value: "community", Source: envelope.FactSourceComputed},
+		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(filtered), Source: envelope.FactSourceComputed},
+		envelope.Fact{Key: "user_question", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
+	)
+	lineBudget := communityImageGroupLimit
+	for _, entry := range filtered {
+		if lineBudget <= 0 {
+			break
+		}
+		name := communityGroupName(entry)
+		if name == "" {
+			continue
+		}
+		subjectID := "image_group:" + name
+		env.Subjects = append(env.Subjects, envelope.Subject{
+			ID: subjectID, Name: name, Type: envelope.SubjectImageGroup,
+		})
+		env.Facts = append(env.Facts, envelope.Fact{
+			SubjectID: subjectID, Key: "group_name", Label: "名称", Value: name, Source: envelope.FactSourceAPI,
+		})
+		if author := safeString(entry, "Author"); author != "" {
+			env.Facts = append(env.Facts, envelope.Fact{
+				SubjectID: subjectID, Key: "author", Label: "作者", Value: author, Source: envelope.FactSourceAPI,
+			})
+		}
+		versions := mapSliceAt(entry, "Data")
+		env.Facts = append(env.Facts, envelope.Fact{
+			SubjectID: subjectID, Key: "version_count", Label: "版本数", Value: len(versions), Source: envelope.FactSourceAPI,
+		})
+		lineBudget--
+		shown := 0
+		for _, v := range versions {
+			if lineBudget <= 0 || shown >= communityVersionPerGroup {
+				break
+			}
+			ver, ok := v.(map[string]any)
+			if !ok {
+				continue
+			}
+			parts := []string{}
+			for _, key := range []string{"CompShareImageId", "Name", "VersionName", "Version"} {
+				if val := safeString(ver, key); val != "" {
+					parts = append(parts, imageFieldLabel(key)+"="+val)
+				}
+			}
+			if len(parts) == 0 {
+				continue
+			}
+			env.Facts = append(env.Facts, envelope.Fact{
+				SubjectID: subjectID,
+				Key:       fmt.Sprintf("version_%d", shown+1),
+				Label:     fmt.Sprintf("版本%d", shown+1),
+				Value:     strings.Join(parts, ", "),
+				Source:    envelope.FactSourceAPI,
+			})
+			lineBudget--
+			shown++
+		}
+		if len(versions) > shown {
+			env.Facts = append(env.Facts, envelope.Fact{
+				SubjectID: subjectID,
+				Key:       "versions_truncated",
+				Label:     "版本截断",
+				Value:     fmt.Sprintf("共 %d 个版本，仅展示 %d 个", len(versions), shown),
+				Source:    envelope.FactSourceComputed,
+			})
+		}
+	}
+	return env
+}
+
+func communityGroupName(entry map[string]any) string {
+	if name := safeString(entry, "ImageName"); name != "" {
+		return name
+	}
+	return safeString(entry, "Name")
+}
+
+func bestImageName(entry map[string]any) string {
+	for _, key := range []string{"Name", "CompShareImageName", "ImageName"} {
+		if v := safeString(entry, key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func imageFieldLabel(key string) string {
+	switch key {
+	case "CompShareImageId":
+		return "镜像ID"
+	case "CompShareImageName":
+		return "镜像名称"
+	case "ImageName":
+		return "镜像名"
+	case "ImageType":
+		return "镜像类型"
+	case "Name":
+		return "名称"
+	case "Status":
+		return "状态"
+	case "Author":
+		return "作者"
+	default:
+		return key
+	}
 }
 
 func selectGPUSpecEntries(items []any, filterTo map[string]struct{}, detailed bool) []map[string]any {

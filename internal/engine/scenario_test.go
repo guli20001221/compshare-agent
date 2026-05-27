@@ -1717,6 +1717,152 @@ func TestScenario_EngineGuard_MissingUHostId(t *testing.T) {
 	assert.NotEmpty(t, reply)
 }
 
+// ── Scenario 45b: Single-instance auto-fill in executeWorkflow ──────────
+func TestScenario_EngineGuard_SingleInstanceAutoFill(t *testing.T) {
+	exec := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": {
+				"TotalCount": float64(1),
+				"UHostSet": []any{
+					map[string]any{"UHostId": "uhost-only", "Name": "solo-gpu", "State": "Running", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"},
+				},
+			},
+			"StopCompShareInstance": {"RetCode": 0},
+		},
+	}
+
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{tc("StopInstanceWorkflow", map[string]any{})}},
+		{Content: "已关机。"},
+	}}
+
+	confirmCalled := false
+	eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+		confirmCalled = true
+		return true
+	})
+	eng.Init(context.Background())
+	exec.calls = nil
+
+	var events []StepEvent
+	_, err := eng.Chat(context.Background(), "关机", func(e StepEvent) {
+		events = append(events, e)
+	})
+	assert.NoError(t, err)
+
+	hasBlocked := false
+	for _, ev := range events {
+		if ev.Type == StepBlocked && ev.Action == "StopInstanceWorkflow" {
+			hasBlocked = true
+		}
+	}
+	assert.False(t, hasBlocked, "single instance should NOT be blocked")
+	assert.True(t, confirmCalled, "workflow confirm should fire with auto-filled UHostId")
+}
+
+// Single-instance auto-fill must NOT fire when registry has >1 instance.
+func TestScenario_EngineGuard_MultiInstanceStillBlocked(t *testing.T) {
+	exec := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": {
+				"TotalCount": float64(2),
+				"UHostSet": []any{
+					map[string]any{"UHostId": "uhost-1", "Name": "a", "State": "Running", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"},
+					map[string]any{"UHostId": "uhost-2", "Name": "b", "State": "Running", "GpuType": "A100", "GPU": float64(1), "ChargeType": "Dynamic"},
+				},
+			},
+		},
+	}
+
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{tc("StopInstanceWorkflow", map[string]any{})}},
+		{Content: "请选择实例。"},
+	}}
+
+	eng := NewWithDeps(mock, exec, nil)
+	eng.Init(context.Background())
+	exec.calls = nil
+
+	var events []StepEvent
+	_, err := eng.Chat(context.Background(), "关机", func(e StepEvent) {
+		events = append(events, e)
+	})
+	assert.NoError(t, err)
+
+	hasBlocked := false
+	for _, ev := range events {
+		if ev.Type == StepBlocked && ev.Action == "StopInstanceWorkflow" {
+			hasBlocked = true
+		}
+	}
+	assert.True(t, hasBlocked, "multi-instance must still block on empty UHostId")
+}
+
+// Single-instance prompt injection puts instance info in system message.
+func TestScenario_SingleInstancePromptInjection(t *testing.T) {
+	exec := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": {
+				"TotalCount": float64(1),
+				"UHostSet": []any{
+					map[string]any{"UHostId": "uhost-only", "Name": "solo-gpu", "State": "Running", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"},
+				},
+			},
+		},
+	}
+
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.Init(context.Background())
+
+	_, _ = eng.Chat(context.Background(), "hi", noopStep)
+
+	assert.NotEmpty(t, eng.messages)
+	sysPrompt := eng.messages[0].Content
+	assert.Contains(t, sysPrompt, "当前账户只有 1 个实例")
+	assert.Contains(t, sysPrompt, "uhost-only")
+	assert.Contains(t, sysPrompt, "solo-gpu")
+}
+
+// Auto-fill must NOT fire when registry is invalidated (stale).
+func TestScenario_EngineGuard_InvalidatedRegistryNoAutoFill(t *testing.T) {
+	exec := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": {
+				"TotalCount": float64(1),
+				"UHostSet": []any{
+					map[string]any{"UHostId": "uhost-only", "Name": "solo-gpu", "State": "Running", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"},
+				},
+			},
+		},
+	}
+
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{tc("StopInstanceWorkflow", map[string]any{})}},
+		{Content: "请确认实例。"},
+	}}
+
+	eng := NewWithDeps(mock, exec, nil)
+	eng.Init(context.Background())
+
+	eng.registry.MarkInvalidated("CreateCompShareInstance")
+	exec.calls = nil
+
+	var events []StepEvent
+	_, err := eng.Chat(context.Background(), "关机", func(e StepEvent) {
+		events = append(events, e)
+	})
+	assert.NoError(t, err)
+
+	hasBlocked := false
+	for _, ev := range events {
+		if ev.Type == StepBlocked && ev.Action == "StopInstanceWorkflow" {
+			hasBlocked = true
+		}
+	}
+	assert.True(t, hasBlocked, "invalidated registry should NOT auto-fill")
+}
+
 // Engine guard should NOT block CreateInstanceWorkflow (it doesn't need UHostId)
 func TestScenario_EngineGuard_CreateInstanceBypasses(t *testing.T) {
 	exec := &mockExecutor{

@@ -585,6 +585,23 @@ func (e *Engine) refreshRegistry(ctx context.Context, reason entity.RefreshReaso
 	return result, err
 }
 
+func (e *Engine) singleRegistryInstance() (id, name string) {
+	if e.registry == nil {
+		return "", ""
+	}
+	if e.registry.NeedsRefresh(time.Now()) {
+		return "", ""
+	}
+	snap := e.registry.Snapshot()
+	if snap.TotalCount != 1 || snap.Truncated || len(snap.Instances) != 1 {
+		return "", ""
+	}
+	for uid, inst := range snap.Instances {
+		return uid, inst.Name
+	}
+	return "", ""
+}
+
 // RegistryTraceState returns the immutable registry fields reserved by trace.
 // It does not expose the registry object, maps, or lock to callers.
 func (e *Engine) RegistryTraceState(now time.Time) observability.EntityRegistryTrace {
@@ -774,6 +791,13 @@ func (e *Engine) refreshSystemPrompt() {
 			ctx += "\n\n当前会话已选实例：" + e.sessionState.SelectedInstanceName + "（" + e.sessionState.SelectedInstanceID + "）"
 		} else {
 			ctx += "\n\n当前会话已选实例：" + e.sessionState.SelectedInstanceID
+		}
+	}
+	if id, name := e.singleRegistryInstance(); id != "" {
+		if name != "" {
+			ctx += "\n\n当前账户只有 1 个实例：" + name + "（" + id + "），操作时可直接使用，无需追问。"
+		} else {
+			ctx += "\n\n当前账户只有 1 个实例：" + id + "，操作时可直接使用，无需追问。"
 		}
 	}
 	e.messages[0].Content = prompt.BuildSystemWithOptions(ctx, prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
@@ -2852,6 +2876,12 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// add it to this exclusion list. The default is to block (fail-safe).
 	if action != "CreateInstanceWorkflow" {
 		uHostId, _ := args["UHostId"].(string)
+		if uHostId == "" {
+			if single, _ := e.singleRegistryInstance(); single != "" {
+				args["UHostId"] = single
+				uHostId = single
+			}
+		}
 		if uHostId == "" {
 			msg := "请先确认要操作的实例。当有多个实例时，请列出实例列表让用户选择后再执行操作。"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})

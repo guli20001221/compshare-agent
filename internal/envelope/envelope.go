@@ -5,17 +5,21 @@ import "github.com/compshare-agent/internal/observability"
 type Kind string
 
 const (
-	KindResourceInfo    Kind = "resource_info"
-	KindMonitorQuery    Kind = "monitor_query"
-	KindBillingInstance Kind = "billing_instance"
-	KindGPUSpecsQuery   Kind = "gpu_specs_query"
+	KindResourceInfo      Kind = "resource_info"
+	KindMonitorQuery      Kind = "monitor_query"
+	KindBillingInstance   Kind = "billing_instance"
+	KindGPUSpecsQuery     Kind = "gpu_specs_query"
+	KindStockAvailability Kind = "stock_availability"
+	KindImageList         Kind = "image_list"
 )
 
 type SubjectType string
 
 const (
-	SubjectInstance SubjectType = "instance"
-	SubjectGPUModel SubjectType = "gpu_model"
+	SubjectInstance   SubjectType = "instance"
+	SubjectGPUModel   SubjectType = "gpu_model"
+	SubjectImage      SubjectType = "image"
+	SubjectImageGroup SubjectType = "image_group"
 )
 
 type FactSource string
