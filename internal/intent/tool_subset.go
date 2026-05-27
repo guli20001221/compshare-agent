@@ -77,7 +77,9 @@ func IntentToolSubset(i Intent) []string {
 			"DescribeCompShareInstance",
 			"DescribeAvailableCompShareInstanceTypes",
 			"DescribeCompShareImages",
+			"DescribeCommunityImages",
 			"GetCompShareInstancePrice",
+			"GetCompShareInstanceUpgradePrice",
 			"CheckCompShareResourceCapacity",
 			"CreateInstanceWorkflow",
 			"StopInstanceWorkflow",
@@ -87,6 +89,9 @@ func IntentToolSubset(i Intent) []string {
 			"ResetPasswordWorkflow",
 			"SetStopSchedulerWorkflow",
 			"CancelStopSchedulerWorkflow",
+			"ResizeInstanceWorkflow",
+			"ReinstallInstanceWorkflow",
+			"CreateDiskWorkflow",
 		}
 	default:
 		return nil

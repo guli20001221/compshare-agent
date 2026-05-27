@@ -189,6 +189,10 @@ var Registry = []openai.Tool{
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"CompShareImageId": map[string]any{
+						"type":        "string",
+						"description": "按镜像 ID 精确查询",
+					},
 					"ImageType": map[string]any{
 						"type":        "string",
 						"description": "镜像类型：System(系统镜像) / App(应用基础镜像)，不传则返回全部",
@@ -544,6 +548,116 @@ var Registry = []openai.Tool{
 					},
 				},
 				"required": []string{"UHostId"},
+			},
+		},
+	},
+	// --- Additional Read-Only Tools ---
+	//
+	// DescribeCompShareSupportZone and CheckCompShareNetOptimizer are registered
+	// in security/levels.go (L0) but NOT exposed to the LLM. They are internal
+	// APIs called by handlers/diagnosis chains, not user-facing tools.
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "GetCompShareInstanceUpgradePrice",
+			Description: "查询实例变配（升降级 CPU/GPU/内存）的价格差额。用于变配前展示费用变化。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要变配的实例 ID",
+					},
+					"CPU": map[string]any{
+						"type":        "number",
+						"description": "目标 CPU 核数",
+					},
+					"GPU": map[string]any{
+						"type":        "number",
+						"description": "目标 GPU 数量",
+					},
+					"Memory": map[string]any{
+						"type":        "number",
+						"description": "目标内存大小（MB）",
+					},
+				},
+				"required": []string{"UHostId"},
+			},
+		},
+	},
+	// --- Additional Workflow Tools ---
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "ResizeInstanceWorkflow",
+			Description: "实例变配工作流。修改实例的 CPU/GPU/内存配置。实例必须处于关机状态。用户要求'加卡'、'升级配置'、'加内存'时使用。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要变配的实例 ID",
+					},
+					"Cpu": map[string]any{
+						"type":        "number",
+						"description": "目标 CPU 核数",
+					},
+					"Gpu": map[string]any{
+						"type":        "number",
+						"description": "目标 GPU 数量",
+					},
+					"Memory": map[string]any{
+						"type":        "number",
+						"description": "目标内存大小（MB）",
+					},
+				},
+				"required": []string{"UHostId"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "ReinstallInstanceWorkflow",
+			Description: "重装系统工作流。将实例重装为指定镜像，系统盘数据会被清除。用户要求'换镜像'、'重装系统'、'换成 Ubuntu'时使用。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要重装的实例 ID",
+					},
+					"CompShareImageId": map[string]any{
+						"type":        "string",
+						"description": "目标镜像 ID",
+					},
+					"Password": map[string]any{
+						"type":        "string",
+						"description": "新的登录密码（可选，不传则保留原密码）",
+					},
+				},
+				"required": []string{"UHostId", "CompShareImageId"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "CreateDiskWorkflow",
+			Description: "创建并挂载数据盘工作流。为实例创建一块新的云数据盘并自动挂载。用户要求'加数据盘'、'加磁盘'、'磁盘不够'时使用。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要挂载数据盘的实例 ID",
+					},
+					"Size": map[string]any{
+						"type":        "number",
+						"description": "磁盘大小（GB），如 100",
+					},
+				},
+				"required": []string{"UHostId", "Size"},
 			},
 		},
 	},

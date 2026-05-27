@@ -86,11 +86,14 @@ var ActionLevels = map[string]Level{
 	"SetCompShareTeamRelation":         L1,
 	"SetCompShareTeamAmount":           L1,
 
-	// ── L2: Destructive, always refuse (5) ──────────────────
+	// Reinstall moved to L1: destructive (erases system disk) but legitimate
+	// user operation with mandatory workflow confirmation.
+	"ReinstallCompShareInstance": L1,
+
+	// ── L2: Destructive, always refuse (4) ──────────────────
 	"TerminateCompShareInstance":    L2,
 	"TerminateCompShareCustomImage": L2,
 	"DeleteCompshareDisk":           L2,
-	"ReinstallCompShareInstance":    L2,
 	"DeleteCompShareTeam":           L2,
 }
 

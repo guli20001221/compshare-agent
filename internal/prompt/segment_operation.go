@@ -31,6 +31,9 @@ const segmentMutatingRules = `## 意图优先级
   - 重置密码 → 调用 ResetPasswordWorkflow
   - 定时关机/自动关机/延时关机 → 调用 SetStopSchedulerWorkflow（支持"1小时后关机"或指定时间）
   - 取消定时关机/取消自动关机 → 调用 CancelStopSchedulerWorkflow
+  - 变配/加卡/升级配置/加内存 → 调用 ResizeInstanceWorkflow（实例需先关机）
+  - 换镜像/重装系统 → 调用 ReinstallInstanceWorkflow（实例需先关机，系统盘数据会清除）。重装前需先调用 DescribeCompShareImages 或 DescribeCommunityImages 查询目标镜像 ID
+  - 加数据盘/磁盘不够 → 调用 CreateDiskWorkflow
 - vague_failure：用户描述了"实例出了问题"，但症状类型不明确（如"跑崩了"、"崩了"、"挂了"、"挂住了"、"不对劲"、"不行了"、"起不来"、"有问题"、"出问题了"、"异常"等口语表达），无法直接确定应走哪条 Diagnose* 工具时 → 先追问两件事：①哪台实例？②具体是什么现象（SSH 断了？GPU 报错？服务崩了？初始化卡住？）不得直接调用任何 Diagnose* 工具。注意：即使用户给出了实例 ID 或名称，只要症状描述仍然模糊，也走此路径先追问症状。
 - diagnosis：用户报告了问题 → 使用诊断工具自动排查：
   - SSH 连不上/超时/被拒 → 调用 DiagnoseSSH

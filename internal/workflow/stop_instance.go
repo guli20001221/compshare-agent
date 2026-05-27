@@ -137,6 +137,24 @@ func extractInstanceState(result map[string]any) string {
 	return ""
 }
 
+func extractInstanceName(result map[string]any) string {
+	if result == nil {
+		return ""
+	}
+	hostSet, ok := result["UHostSet"].([]any)
+	if !ok || len(hostSet) == 0 {
+		return ""
+	}
+	first, ok := hostSet[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	if name, ok := first["Name"].(string); ok {
+		return name
+	}
+	return ""
+}
+
 // extractInstanceSummary builds a summary map from the first UHostSet entry,
 // including UHostId, Name, State, GpuType, GPU, and ChargeType.
 func extractInstanceSummary(result map[string]any) map[string]any {

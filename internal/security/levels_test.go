@@ -34,6 +34,7 @@ func TestCheck_L1_NeedConfirmation(t *testing.T) {
 		"RebootCompShareInstance",
 		"ResizeCompShareInstance",
 		"ResetCompShareInstancePassword",
+		"ReinstallCompShareInstance",
 		"UpdateCompShareStopScheduler",
 		"DeleteCompShareStopScheduler",
 	}
@@ -53,7 +54,6 @@ func TestCheck_L2_Refuse(t *testing.T) {
 		"TerminateCompShareInstance",
 		"TerminateCompShareCustomImage",
 		"DeleteCompshareDisk",
-		"ReinstallCompShareInstance",
 		"DeleteCompShareTeam",
 	}
 	for _, action := range l2Actions {

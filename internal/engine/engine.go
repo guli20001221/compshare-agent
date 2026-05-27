@@ -2205,6 +2205,9 @@ var friendlyActionNames = map[string]string{
 	"ResetPasswordWorkflow":       "重置密码",
 	"SetStopSchedulerWorkflow":    "设置定时关机",
 	"CancelStopSchedulerWorkflow": "取消定时关机",
+	"ResizeInstanceWorkflow":      "变配",
+	"ReinstallInstanceWorkflow":   "重装系统",
+	"CreateDiskWorkflow":          "创建数据盘",
 }
 
 func friendlyActionName(action string) string {

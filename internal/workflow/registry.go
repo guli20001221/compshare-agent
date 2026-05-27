@@ -2,14 +2,17 @@ package workflow
 
 // workflowRegistry maps workflow action names to their factory functions.
 var workflowRegistry = map[string]func() *Definition{
-	"CreateInstanceWorkflow": CreateInstanceDef,
-	"StopInstanceWorkflow":   StopInstanceDef,
-	"StartInstanceWorkflow":  StartInstanceDef,
-	"RebootInstanceWorkflow": RebootInstanceDef,
-	"RenameInstanceWorkflow": RenameInstanceDef,
-	"ResetPasswordWorkflow":          ResetPasswordDef,
-	"SetStopSchedulerWorkflow":       SetStopSchedulerDef,
-	"CancelStopSchedulerWorkflow":    CancelStopSchedulerDef,
+	"CreateInstanceWorkflow":      CreateInstanceDef,
+	"StopInstanceWorkflow":        StopInstanceDef,
+	"StartInstanceWorkflow":       StartInstanceDef,
+	"RebootInstanceWorkflow":      RebootInstanceDef,
+	"RenameInstanceWorkflow":      RenameInstanceDef,
+	"ResetPasswordWorkflow":       ResetPasswordDef,
+	"SetStopSchedulerWorkflow":    SetStopSchedulerDef,
+	"CancelStopSchedulerWorkflow": CancelStopSchedulerDef,
+	"ResizeInstanceWorkflow":      ResizeInstanceDef,
+	"ReinstallInstanceWorkflow":   ReinstallInstanceDef,
+	"CreateDiskWorkflow":          CreateDiskDef,
 }
 
 // IsWorkflowTool reports whether the given action name corresponds to a

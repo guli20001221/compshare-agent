@@ -83,6 +83,20 @@ func TestDefaultPoliciesClassifyReadExpensiveActionsExplicitly(t *testing.T) {
 	assert.Equal(t, ActionClassReadCheap, policy.Class, "unregistered price-looking actions must not become read-expensive by substring")
 }
 
+func TestDescribeCompShareImagesAllowsImageIDFilter(t *testing.T) {
+	safe := NewSafeToolExecutor(&spyExecutor{})
+
+	filtered := safe.FilterArgs("DescribeCompShareImages", map[string]any{
+		"CompShareImageId": "img-001",
+		"Name":             "Ubuntu",
+		"Unexpected":       "drop-me",
+	})
+
+	assert.Equal(t, "img-001", filtered["CompShareImageId"])
+	assert.Equal(t, "Ubuntu", filtered["Name"])
+	assert.NotContains(t, filtered, "Unexpected")
+}
+
 func TestVisibleRegistryFiltersMutatingWorkflowsByDefault(t *testing.T) {
 	visible := VisibleRegistry(false)
 	names := map[string]bool{}
