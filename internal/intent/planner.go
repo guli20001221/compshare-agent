@@ -202,6 +202,11 @@ type plannerPromptExampleGroup struct {
 	Intent   Intent
 	Source   string
 	Examples []plannerPromptExample
+	// compact renders the group as a shared plan JSON + question list instead
+	// of repeating the full JSON per example. Use for groups where all examples
+	// share the same output structure (e.g. knowledge_qa: empty slots, empty
+	// required_tools). Saves ~1,100 tokens for the 20-example knowledge_qa group.
+	compact bool
 }
 
 func plannerPromptExampleGroups() []plannerPromptExampleGroup {
@@ -326,10 +331,19 @@ func renderPlannerPromptExampleGroups(groups []plannerPromptExampleGroup) []stri
 	lines := []string{}
 	for _, group := range groups {
 		lines = append(lines, fmt.Sprintf("Example group: %s (source: %s)", group.Intent, group.Source))
-		for _, example := range group.Examples {
-			lines = append(lines, "Example source: "+example.Source)
-			lines = append(lines, "User question: "+example.Question)
-			lines = append(lines, example.PlanJSON)
+		if group.compact && len(group.Examples) > 0 {
+			lines = append(lines, "Plan output:")
+			lines = append(lines, group.Examples[0].PlanJSON)
+			lines = append(lines, fmt.Sprintf("Classify as %s:", group.Intent))
+			for _, example := range group.Examples {
+				lines = append(lines, "- "+example.Question)
+			}
+		} else {
+			for _, example := range group.Examples {
+				lines = append(lines, "Example source: "+example.Source)
+				lines = append(lines, "User question: "+example.Question)
+				lines = append(lines, example.PlanJSON)
+			}
 		}
 	}
 	return lines

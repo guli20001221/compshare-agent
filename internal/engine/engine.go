@@ -2172,6 +2172,24 @@ func (e friendlyEngineError) UserMessage() string {
 	return e.message
 }
 
+var friendlyActionNames = map[string]string{
+	"CreateInstanceWorkflow":      "创建实例",
+	"StopInstanceWorkflow":        "关机",
+	"StartInstanceWorkflow":       "开机",
+	"RebootInstanceWorkflow":      "重启",
+	"RenameInstanceWorkflow":      "重命名",
+	"ResetPasswordWorkflow":       "重置密码",
+	"SetStopSchedulerWorkflow":    "设置定时关机",
+	"CancelStopSchedulerWorkflow": "取消定时关机",
+}
+
+func friendlyActionName(action string) string {
+	if name, ok := friendlyActionNames[action]; ok {
+		return name
+	}
+	return action
+}
+
 func friendlyToolErrorMessage(err error) (string, bool) {
 	var friendly friendlyEngineError
 	if errors.As(err, &friendly) {
@@ -2346,7 +2364,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			return finalReplyPrefix + msg
 		}
 		if errors.Is(err, tools.ErrUserDeclined) {
-			msg := fmt.Sprintf("操作 %s 已取消（用户未确认）。", action)
+			msg := fmt.Sprintf("操作已取消：%s 未执行。", friendlyActionName(action))
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			return finalReplyPrefix + msg
 		}
@@ -2916,7 +2934,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	// User-cancelled workflows return a deterministic reply directly
 	if !result.Success && result.Message == "用户取消了操作" {
-		return finalReplyPrefix + fmt.Sprintf("%s 已取消。", action)
+		return finalReplyPrefix + fmt.Sprintf("好的，已取消%s操作。", friendlyActionName(action))
 	}
 
 	if result.Success {

@@ -68,7 +68,7 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	for _, m := range capabilityMetadata {
 		capabilityExampleCount += len(m.PlannerExamples)
 	}
-	if got, want := len(examples), 33+capabilityExampleCount; got != want {
+	if got, want := len(examples), 14+capabilityExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -179,9 +179,17 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			t.Fatalf("planner example count for %q = %d, want %d", intent, got, want)
 		}
 	}
+	renderedJSONCount := 0
+	for _, group := range groups {
+		if group.compact {
+			renderedJSONCount++
+		} else {
+			renderedJSONCount += len(group.Examples)
+		}
+	}
 	rendered := strings.Join(renderPlannerPromptExampleGroups(groups), "\n")
-	if got := len(promptExampleJSONLines(rendered)); got != total {
-		t.Fatalf("rendered example JSON count = %d, want %d", got, total)
+	if got := len(promptExampleJSONLines(rendered)); got != renderedJSONCount {
+		t.Fatalf("rendered example JSON count = %d, want %d", got, renderedJSONCount)
 	}
 }
 

@@ -60,6 +60,7 @@ var plannerExamplesFS embed.FS
 type plannerExampleFile struct {
 	Intent   string                `yaml:"intent"`
 	Source   string                `yaml:"source"`
+	Compact  bool                  `yaml:"compact,omitempty"`
 	Examples []plannerExampleEntry `yaml:"examples"`
 }
 
@@ -145,8 +146,9 @@ func parsePlannerExampleFrontmatter(data []byte) (plannerPromptExampleGroup, err
 		return plannerPromptExampleGroup{}, fmt.Errorf("examples must be non-empty")
 	}
 	group := plannerPromptExampleGroup{
-		Intent: Intent(file.Intent),
-		Source: file.Source,
+		Intent:  Intent(file.Intent),
+		Source:   file.Source,
+		compact: file.Compact,
 	}
 	for i, ex := range file.Examples {
 		if strings.TrimSpace(ex.Question) == "" {

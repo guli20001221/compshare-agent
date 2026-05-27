@@ -130,7 +130,12 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // "X 怎么调 / 用 SDK 怎么传参 / 返回 N 是什么错误" so they don't conflict
 // with billing/stock/pricing/diagnosis intents (no $-amount, no instance ID,
 // no "我的" personal-status markers).
-const systemPromptSHA256Baseline = "95f1958ec6bef438e511030c74c9bd83258a7f3b90d9b99ca90db0dea1891097"
+// L2 prompt tiering (2026-05-27): knowledge_qa compact rendering — 20 examples
+// share one plan JSON template + question list instead of repeating the full
+// JSON 20 times. All 20 boundary anchor questions preserved; saves ~1,100
+// planner prompt tokens (~27% reduction). Bump justified: no examples removed,
+// only rendering format changed for the knowledge_qa group.
+const systemPromptSHA256Baseline = "69794dd6299c2af250e5906eb271be2d02f21d096074a6b14643a3f0eb720e39"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
@@ -210,8 +215,9 @@ func TestPlannerExamples_MigratedIntentsArePresent(t *testing.T) {
 // MUST match planner_examples/knowledge_qa.md byte-for-byte after the
 // migration. Updating this requires explicit reviewer sign-off.
 var legacyKnowledgeQAGroup = plannerPromptExampleGroup{
-	Intent: IntentKnowledgeQA,
-	Source: "Stage 2B + PR #34a/#52/#60 knowledge_qa routing regressions + R3-A1 modelverse model-API coverage",
+	Intent:  IntentKnowledgeQA,
+	Source:  "Stage 2B + PR #34a/#52/#60 knowledge_qa routing regressions + R3-A1 modelverse model-API coverage",
+	compact: true,
 	Examples: []plannerPromptExample{
 		{
 			Question: "为啥显卡内存满了 GPU 占用才 10%",
@@ -220,12 +226,12 @@ var legacyKnowledgeQAGroup = plannerPromptExampleGroup{
 		},
 		{
 			Question: "how do I issue an invoice",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
 			Source:   "PR #52: finance process question, not personal status",
 		},
 		{
 			Question: "what image types does the platform provide",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
 			Source:   "Stage 2B: platform concept question",
 		},
 		{

@@ -1,15 +1,16 @@
 ---
 intent: knowledge_qa
 source: "Stage 2B + PR #34a/#52/#60 knowledge_qa routing regressions + R3-A1 modelverse model-API coverage"
+compact: true
 examples:
   - question: "为啥显卡内存满了 GPU 占用才 10%"
     plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
     source: "PR #60: concept question with monitor-trigger words"
   - question: "how do I issue an invoice"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
     source: "PR #52: finance process question, not personal status"
   - question: "what image types does the platform provide"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
     source: "Stage 2B: platform concept question"
   - question: "远程桌面没声音该怎么处理"
     plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
