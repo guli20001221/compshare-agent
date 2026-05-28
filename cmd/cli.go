@@ -102,7 +102,12 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_GROUNDED_RENDERER value %q\n", unknownGroundedRendererMode)
 	}
 	if groundedRendererMode == "llm" {
-		eng.SetGroundedRenderer(renderer.NewGroundedRenderer(llm.NewClient(cfg.Agent.LLM)), cfg.Agent.LLM.Model)
+		router, err := buildLLMRouter(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: build LLM router for grounded renderer: %v\n", err)
+			os.Exit(1)
+		}
+		eng.SetGroundedRenderer(renderer.NewGroundedRenderer(router.For(llm.TierKnowledge)), router.Model(llm.TierKnowledge))
 	}
 	plannerDispatchEnabled := cutoverEnabled || knowledgeRetrievalEnabled
 	if plannerDispatchEnabled {

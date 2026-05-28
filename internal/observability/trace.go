@@ -80,12 +80,21 @@ type FileWriter struct {
 }
 
 type TraceRecord struct {
-	SchemaVersion   string               `json:"schema_version"`
-	TraceID         string               `json:"trace_id"`
-	TurnID          string               `json:"turn_id"`
-	TurnIndex       int                  `json:"turn_index"`
-	Timestamp       string               `json:"timestamp"`
-	UserMsgHash     string               `json:"user_msg_hash"`
+	SchemaVersion string `json:"schema_version"`
+	TraceID       string `json:"trace_id"`
+	TurnID        string `json:"turn_id"`
+	TurnIndex     int    `json:"turn_index"`
+	Timestamp     string `json:"timestamp"`
+	UserMsgHash   string `json:"user_msg_hash"`
+	// TaskTier is the ADR-001 task-complexity tier (fast / knowledge /
+	// agent) selected by the planner for this turn. Empty when planner is
+	// disabled or pre-ADR-002. B2-B4 will populate it from planner output;
+	// the field is added in B1 as a reserved schema slot so consumers
+	// (analytics SQL, dashboards) can start treating its presence as the
+	// signal to switch from legacy per-turn rows to tier-aware aggregation.
+	// Memory: attribution-observable-only — empty means "tier not known
+	// for this turn", never default-to-agent.
+	TaskTier        string               `json:"task_tier,omitempty"`
 	Runtime         RuntimeTrace         `json:"runtime"`
 	Planner         PlannerTrace         `json:"planner"`
 	EngineHardBlock EngineHardBlockTrace `json:"engine_hard_block"`
@@ -105,6 +114,7 @@ type traceRecordJSON struct {
 	TurnIndex       int                   `json:"turn_index"`
 	Timestamp       string                `json:"timestamp"`
 	UserMsgHash     string                `json:"user_msg_hash"`
+	TaskTier        string                `json:"task_tier,omitempty"`
 	Runtime         *RuntimeTrace         `json:"runtime,omitempty"`
 	Planner         *PlannerTrace         `json:"planner,omitempty"`
 	EngineHardBlock *EngineHardBlockTrace `json:"engine_hard_block,omitempty"`
@@ -125,6 +135,7 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 		TurnIndex:     r.TurnIndex,
 		Timestamp:     r.Timestamp,
 		UserMsgHash:   r.UserMsgHash,
+		TaskTier:      r.TaskTier,
 	}
 	if traceRuntimeObserved(r.Runtime) {
 		out.Runtime = &r.Runtime

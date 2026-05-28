@@ -722,3 +722,105 @@ func TestValidateSTSConfigRejectsNegativeRefreshBefore(t *testing.T) {
 	assert.Contains(t, err.Error(), "agent.sts.refresh_before")
 	assert.Contains(t, err.Error(), "must be non-negative")
 }
+
+// TestLoad_TierRouting_Empty_BackwardCompat verifies that legacy configs
+// without a tier_routing block continue to Load without error — the
+// backward-compat invariant called out in ADR-002 Acceptance #5.
+func TestLoad_TierRouting_Empty_BackwardCompat(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(""))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Agent.TierRouting, "TierRouting should be empty when block omitted")
+}
+
+// TestLoad_TierRouting_ValidKeys parses a full ADR-002 example tier_routing
+// block and verifies all three tier overrides land in cfg.Agent.TierRouting.
+func TestLoad_TierRouting_ValidKeys(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(`
+  tier_routing:
+    fast:
+      model: "deepseek-v4-flash"
+    knowledge:
+      model: "deepseek-v4-flash"
+    agent:
+      model: "deepseek-v4-pro"
+`))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Len(t, cfg.Agent.TierRouting, 3)
+	assert.Equal(t, "deepseek-v4-flash", cfg.Agent.TierRouting["fast"].Model)
+	assert.Equal(t, "deepseek-v4-flash", cfg.Agent.TierRouting["knowledge"].Model)
+	assert.Equal(t, "deepseek-v4-pro", cfg.Agent.TierRouting["agent"].Model)
+}
+
+// TestLoad_TierRouting_UnknownKey_FailsLoud catches the silent-typo
+// regression — "knowlege" (missing d) must reject at boot, not no-op.
+// Memory `disclaimer-misfire-3class-bucketing` + fail-loud invariant.
+func TestLoad_TierRouting_UnknownKey_FailsLoud(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(`
+  tier_routing:
+    knowlege:
+      model: "deepseek-v4-flash"
+`))
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.tier_routing.knowlege")
+	assert.Contains(t, err.Error(), "unknown tier")
+}
+
+// TestLoad_TierRouting_APIKey_PlaceholderResolved verifies that a tier
+// override api_key written as ${ENV_VAR} gets resolved from the
+// environment, matching the base agent.llm.api_key behavior. Without
+// this, operators writing tier-specific keys would carry literal env
+// var syntax into runtime LLM calls (silent breakage).
+func TestLoad_TierRouting_APIKey_PlaceholderResolved(t *testing.T) {
+	setRequiredSecretEnv(t)
+	t.Setenv("ALT_LLM_KEY", "resolved-from-env")
+	path := writeConfig(t, baseConfig(`
+  tier_routing:
+    agent:
+      model: "deepseek-v4-pro"
+      api_key: "${ALT_LLM_KEY}"
+`))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "resolved-from-env", cfg.Agent.TierRouting["agent"].APIKey)
+}
+
+// TestLoad_TierRouting_APIKey_LiteralRejected catches the security gap
+// the B1 reviewer flagged: tier override api_key MUST use ${ENV_VAR}
+// placeholder like the base path. Literal secrets in YAML are rejected
+// to match resolveRequiredSecret's contract for agent.llm.api_key.
+func TestLoad_TierRouting_APIKey_LiteralRejected(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(`
+  tier_routing:
+    agent:
+      model: "deepseek-v4-pro"
+      api_key: "sk-literal-leaked"
+`))
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.tier_routing.agent.api_key")
+}
+
+// TestLoad_TierRouting_APIKey_EmptyInheritsFromBase verifies the common
+// case where a tier override only sets model and inherits api_key from
+// the base agent.llm config (no explicit api_key in the override).
+func TestLoad_TierRouting_APIKey_EmptyInheritsFromBase(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(`
+  tier_routing:
+    agent:
+      model: "deepseek-v4-pro"
+`))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	// Override APIKey stays empty; Router merge logic falls back to base.
+	assert.Empty(t, cfg.Agent.TierRouting["agent"].APIKey)
+	// Base APIKey is still resolved.
+	assert.Equal(t, "llm-from-env", cfg.Agent.LLM.APIKey)
+}

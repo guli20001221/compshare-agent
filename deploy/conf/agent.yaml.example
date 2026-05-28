@@ -23,6 +23,28 @@ agent:
     # monitor ~1.86% empty-return rate on hybrid path (P3 watch-list).
     model: "deepseek-v4-flash"
 
+  # ADR-002 per-tier model routing (optional). Keys are ADR-001 tier names:
+  # fast (single-API queries), knowledge (RAG-backed Q&A), agent (multi-step
+  # tasks with side effects). Each value is an LLMConfig override; unspecified
+  # fields inherit from `agent.llm` above (model / base_url / api_key).
+  #
+  # When this block is empty or omitted, ALL tiers share `agent.llm.model`
+  # (backward compat with pre-ADR-002 configs). Unknown tier keys cause
+  # config load to fail loud — typos like "knowlege" do NOT silently no-op.
+  #
+  # SAFETY NOTE per ADR-002 Risks: switching planner (cli.go:344) to fast
+  # tier requires ADR-004 progressive disclosure (B4) to have landed first.
+  # Until then keep planner on ds-v4-pro by leaving the block commented or
+  # routing the planner explicitly. See ADR-002 line ~95 for rationale.
+  #
+  # tier_routing:
+  #   fast:
+  #     model: "deepseek-v4-flash"
+  #   knowledge:
+  #     model: "deepseek-v4-flash"
+  #   agent:
+  #     model: "deepseek-v4-pro"
+
   # Default answer stack is enabled by environment defaults in the binary:
   # USE_INTENT_PLANNER_FOR defaults to
   # resource,monitor,gpu_specs,stock,pricing,platform_image,custom_image,community_image.

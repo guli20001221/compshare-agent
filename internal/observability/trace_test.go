@@ -618,3 +618,41 @@ func readJSONMap(t *testing.T, path string) map[string]any {
 	}
 	return payload
 }
+
+// TaskTier (ADR-002 reserved schema slot) must serialize when populated
+// and stay absent when empty (omitempty). The "empty" branch protects
+// legacy consumers parsing pre-ADR-002 traces from seeing an unexpected
+// "task_tier":"" key. Populator is B2-B4 territory; this test only
+// covers the schema contract added in B1.
+func TestTraceRecord_TaskTier_Serialization(t *testing.T) {
+	base := TraceRecord{
+		SchemaVersion: SchemaVersion,
+		TraceID:       "trace-1",
+		TurnID:        "turn-1",
+		TurnIndex:     1,
+		Timestamp:     "2026-05-29T00:00:00Z",
+		UserMsgHash:   "sha256:user",
+	}
+
+	t.Run("empty TaskTier is omitted", func(t *testing.T) {
+		data, err := json.Marshal(base)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(data), `"task_tier"`) {
+			t.Fatalf("empty TaskTier should be omitted, got: %s", data)
+		}
+	})
+
+	t.Run("populated TaskTier appears in JSON", func(t *testing.T) {
+		rec := base
+		rec.TaskTier = "knowledge"
+		data, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(data), `"task_tier":"knowledge"`) {
+			t.Fatalf("populated TaskTier should serialize, got: %s", data)
+		}
+	})
+}

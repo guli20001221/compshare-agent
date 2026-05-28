@@ -31,9 +31,15 @@ type STSConfig struct {
 }
 
 type AgentConfig struct {
-	LLM       LLMConfig       `yaml:"llm"`
-	RateLimit RateLimitConfig `yaml:"rate_limit"`
-	Executor  string          `yaml:"executor"` // "external" or "internal"
+	LLM LLMConfig `yaml:"llm"`
+	// TierRouting overrides the LLM model (and optionally base_url / api_key)
+	// per ADR-001 task-complexity tier. Keys must be one of "fast" /
+	// "knowledge" / "agent" — unknown keys cause Load to fail. When this
+	// map is empty or missing, all tiers share agent.llm.model (backward
+	// compat with pre-ADR-002 configs). See ADR-002 §Config 形态.
+	TierRouting map[string]LLMConfig `yaml:"tier_routing"`
+	RateLimit   RateLimitConfig      `yaml:"rate_limit"`
+	Executor    string               `yaml:"executor"` // "external" or "internal"
 
 	CompShareAPIURL string `yaml:"compshare_api_url"`
 	PublicKey       string `yaml:"public_key"`
@@ -177,6 +183,12 @@ func Load(path string) (*Config, error) {
 	if err := resolveRequiredSecret(&cfg.Agent.LLM.APIKey, "agent.llm.api_key", "LLM_API_KEY"); err != nil {
 		return nil, err
 	}
+	if err := validateTierRouting(cfg.Agent.TierRouting); err != nil {
+		return nil, err
+	}
+	if err := resolveTierRoutingPlaceholders(cfg.Agent.TierRouting); err != nil {
+		return nil, err
+	}
 	if err := resolveOptionalPlaceholder(&cfg.Agent.ProjectId, "agent.project_id"); err != nil {
 		return nil, err
 	}
@@ -289,6 +301,47 @@ func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 
 func negativeRateLimitError(yamlPath string) error {
 	return fmt.Errorf("%s must be non-negative (0 or omit to use default)", yamlPath)
+}
+
+// validateTierRouting fails fast on unknown tier keys so config typos
+// (e.g. "knowlege" → no override applied, silent regression) are caught
+// at boot, not at first runtime mis-route. Keys must be one of the
+// ADR-001 tier names. An empty / nil map is valid (backward compat).
+func validateTierRouting(tr map[string]LLMConfig) error {
+	if len(tr) == 0 {
+		return nil
+	}
+	valid := map[string]bool{"fast": true, "knowledge": true, "agent": true}
+	for tier := range tr {
+		if !valid[tier] {
+			return fmt.Errorf("agent.tier_routing.%s: unknown tier (must be fast / knowledge / agent)", tier)
+		}
+	}
+	return nil
+}
+
+// resolveTierRoutingPlaceholders enforces the same "no-literal credential"
+// rule for per-tier api_key overrides that resolveRequiredSecret enforces
+// for agent.llm.api_key. If a tier override sets api_key, it MUST use the
+// ${ENV_VAR} placeholder form — otherwise reject loud. Empty api_key
+// inherits from the base agent.llm.api_key (Router merge logic in
+// internal/llm/router.go). base_url is left unresolved to match the
+// existing pattern at agent.llm.base_url (literal pass-through; no
+// placeholder support at the base path either, so adding it here would
+// drift). LLMConfig is a value type so we must write the resolved value
+// back into the map.
+func resolveTierRoutingPlaceholders(tr map[string]LLMConfig) error {
+	if len(tr) == 0 {
+		return nil
+	}
+	for tier, override := range tr {
+		yamlPath := fmt.Sprintf("agent.tier_routing.%s.api_key", tier)
+		if err := resolveOptionalPlaceholder(&override.APIKey, yamlPath); err != nil {
+			return err
+		}
+		tr[tier] = override
+	}
+	return nil
 }
 
 func negativeValueError(yamlPath string) error {

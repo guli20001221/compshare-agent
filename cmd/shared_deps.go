@@ -31,6 +31,25 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 	}), nil
 }
 
+// buildLLMRouter constructs a per-tier LLM Router from cfg. Called once at
+// process boot — cli.go and shared_deps.go each call it for their own
+// path (CLI vs HTTP). The Router is cheap (2-3 *Client structs for the
+// default 3-tier setup) so building twice in different binary entry
+// points is acceptable.
+//
+// When cfg.Agent.TierRouting is empty, all tiers fall back to
+// cfg.Agent.LLM.Model (backward compat per ADR-002 Acceptance #5).
+func buildLLMRouter(cfg *config.Config) (*llm.Router, error) {
+	var overrides map[llm.Tier]config.LLMConfig
+	if len(cfg.Agent.TierRouting) > 0 {
+		overrides = make(map[llm.Tier]config.LLMConfig, len(cfg.Agent.TierRouting))
+		for k, v := range cfg.Agent.TierRouting {
+			overrides[llm.Tier(k)] = v
+		}
+	}
+	return llm.NewRouter(cfg.Agent.LLM, overrides)
+}
+
 func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv getenvFunc) error {
 	cutoverIntents, unknownCutover := intentPlannerCutoverIntentsFromEnv(getenv)
 	for _, value := range unknownCutover {
@@ -54,8 +73,12 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 		log.Printf("warning: ignoring unknown USE_GROUNDED_RENDERER value %q", unknownGrounded)
 	}
 	if groundedMode == "llm" {
-		deps.GroundedRenderer = renderer.NewGroundedRenderer(llm.NewClient(cfg.Agent.LLM))
-		deps.GroundedRendererModel = cfg.Agent.LLM.Model
+		router, err := buildLLMRouter(cfg)
+		if err != nil {
+			return fmt.Errorf("build LLM router: %w", err)
+		}
+		deps.GroundedRenderer = renderer.NewGroundedRenderer(router.For(llm.TierKnowledge))
+		deps.GroundedRendererModel = router.Model(llm.TierKnowledge)
 	}
 
 	cutoverEnabled := len(cutoverIntents) > 0
