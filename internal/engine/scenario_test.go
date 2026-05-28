@@ -686,8 +686,12 @@ func TestScenario_FormatToolResultTruncation(t *testing.T) {
 	err = json.Unmarshal([]byte(toolMsg.Content), &parsed)
 	assert.NoError(t, err, "truncated tool result must be valid JSON: %s", toolMsg.Content[:100])
 
-	// Should contain truncation notice
-	assert.Contains(t, toolMsg.Content, "截取前")
+	// ReAct-path instance truncation must cap UHostSet to DefaultMaxInstancesPerDisplay
+	// and surface the Truncated/Shown signal so the LLM doesn't try to render all 50.
+	assert.Equal(t, true, parsed["Truncated"], "result must advertise Truncated=true")
+	assert.Equal(t, float64(10), parsed["Shown"], "result must advertise Shown=10")
+	hosts, _ := parsed["UHostSet"].([]any)
+	assert.Len(t, hosts, 10, "UHostSet must be capped to DefaultMaxInstancesPerDisplay")
 }
 
 // ── Scenario 15: Workflow step failure — capacity check fails ──────────────

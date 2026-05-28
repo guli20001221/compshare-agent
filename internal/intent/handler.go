@@ -39,10 +39,10 @@ const (
 type CutoverStatus string
 
 const (
-	CutoverStatusNone                      CutoverStatus = ""
-	CutoverStatusDispatched                CutoverStatus = "dispatched"
-	CutoverStatusFallbackInvalid           CutoverStatus = "fallback_invalid"
-	CutoverStatusFallbackLowConfidence     CutoverStatus = "fallback_low_confidence"
+	CutoverStatusNone                  CutoverStatus = ""
+	CutoverStatusDispatched            CutoverStatus = "dispatched"
+	CutoverStatusFallbackInvalid       CutoverStatus = "fallback_invalid"
+	CutoverStatusFallbackLowConfidence CutoverStatus = "fallback_low_confidence"
 	// CutoverStatusFallbackHardBlockHint (removed PR #61, 2026-05-21):
 	// planner's HardBlockHint is advisory only — no longer routes. Survives
 	// in PlannerTrace.HardBlockHint for analytics join with
@@ -171,14 +171,24 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 	if hasFilters {
 		instances = applyResourceFilters(instances, filters)
 	}
-	result := HandledResult(RenderResourceSummary(instances))
-	result.ToolAction = action
-	result.ToolArgs = copyArgs(args)
+	// Display-side truncation: cap to DefaultMaxInstancesPerDisplay when the
+	// caller didn't pin a specific UHostIds set (i.e. a "list my instances"
+	// or "list before write op" path). Instances picked by exact UHostIds
+	// are not truncated — the user already chose targets.
 	envMeta := ResourceEnvelopeMeta{TotalCount: totalCount}
 	if hasFilters && !filters.IsZero() {
 		envMeta.FilterApplied = filters.String()
 		envMeta.MatchedCount = len(instances)
 	}
+	if len(ids) == 0 {
+		truncated, shown, isTruncated := TruncateInstancesForDisplay(instances, 0)
+		instances = truncated
+		envMeta.Shown = shown
+		envMeta.Truncated = isTruncated
+	}
+	result := HandledResult(RenderResourceSummary(instances, envMeta))
+	result.ToolAction = action
+	result.ToolArgs = copyArgs(args)
 	env := BuildResourceEnvelopeWithMeta(instances, envMeta)
 	result.Envelope = &env
 	result.RendererInputEnvelopeHashes = hashEnvelopeForRenderer(env)
@@ -525,16 +535,15 @@ const (
 	noRequestedMonitorValuesReply = "\u672a\u8fd4\u56de\u8bf7\u6c42\u7684\u76d1\u63a7\u6307\u6807\u3002"
 )
 
-func RenderResourceSummary(instances []entity.InstanceSnapshot) string {
-	copied := append([]entity.InstanceSnapshot(nil), instances...)
-	sort.Slice(copied, func(i, j int) bool {
-		return copied[i].UHostId < copied[j].UHostId
-	})
-	if len(copied) == 0 {
+func RenderResourceSummary(instances []entity.InstanceSnapshot, meta ResourceEnvelopeMeta) string {
+	if len(instances) == 0 {
 		return noInstancesReply
 	}
-	lines := make([]string, 0, len(copied))
-	for _, inst := range copied {
+	// Caller is expected to have already applied SortInstancesForDisplay /
+	// TruncateInstancesForDisplay when relevant. Render in the order
+	// received so the user sees the operationally-relevant instances first.
+	lines := make([]string, 0, len(instances))
+	for _, inst := range instances {
 		parts := []string{
 			resourceLabelInstanceID + "=" + safeValue(inst.UHostId),
 			resourceLabelName + "=" + safeValue(inst.Name),
@@ -555,7 +564,15 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot) string {
 		}
 		lines = append(lines, strings.Join(parts, ", "))
 	}
-	return strings.Join(lines, "\n")
+	body := strings.Join(lines, "\n")
+	displayTotal := meta.TotalCount
+	if meta.FilterApplied != "" && meta.MatchedCount > 0 {
+		displayTotal = meta.MatchedCount
+	}
+	if meta.Truncated && meta.Shown > 0 && displayTotal > meta.Shown {
+		body += fmt.Sprintf("\n（已显示 %d/%d 台，完整列表请到控制台查看）", meta.Shown, displayTotal)
+	}
+	return body
 }
 
 func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {

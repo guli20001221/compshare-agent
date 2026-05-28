@@ -2405,6 +2405,14 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		display = fmt.Sprintf("Jupyter Token: %s", result.Display.Value)
 	}
 
+	// ReAct fallback truncation for full-account list dumps. Handler-cutover
+	// path already sorts+truncates earlier (intent.HandleResourceInfo); this
+	// catches the planner-misclassified turns that reach ReAct directly,
+	// keeping the LLM-visible list bounded regardless of routing.
+	if action == "DescribeCompShareInstance" {
+		truncateDescribeResultForReAct(args, result.LLMResult)
+	}
+
 	formatted := prompt.FormatToolResult(result.LLMResult)
 	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "调用成功", Display: display, TraceResult: result.TraceResult, Attempts: result.Attempts})
 	return formatted

@@ -51,11 +51,12 @@ func TestResourceSummaryRendererIsDeterministicAndRedactsSensitiveFields(t *test
 		},
 	}
 
-	first := RenderResourceSummary(instances)
-	second := RenderResourceSummary(instances)
+	SortInstancesForDisplay(instances)
+	first := RenderResourceSummary(instances, ResourceEnvelopeMeta{})
+	second := RenderResourceSummary(instances, ResourceEnvelopeMeta{})
 
 	require.Equal(t, first, second)
-	assert.Less(t, strings.Index(first, "uhost-a"), strings.Index(first, "uhost-b"), "summary must be sorted by UHostId")
+	assert.Less(t, strings.Index(first, "uhost-a"), strings.Index(first, "uhost-b"), "Running uhost-a should rank above Stopped uhost-b in display order")
 	assert.Contains(t, first, "train-a")
 	assert.Contains(t, first, "Running")
 	assert.Contains(t, first, "A100")

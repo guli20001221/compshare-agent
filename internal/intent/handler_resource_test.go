@@ -103,6 +103,64 @@ func TestResourceInfoHandler_NoTargetListsInstances(t *testing.T) {
 	assertComputedFact(t, *result.Envelope, "total_count", "16")
 }
 
+func TestResourceInfoHandler_TruncatesAndSurfacesShownCount(t *testing.T) {
+	hostSet := make([]any, 0, 16)
+	// 14 stopped + 2 running — sort+truncate must keep both Running ones.
+	for i := 0; i < 14; i++ {
+		hostSet = append(hostSet, instanceRowWith(
+			"uhost-stopped-"+string(rune('a'+i)), "stop-"+string(rune('a'+i)), "Stopped", "4090"))
+	}
+	hostSet = append(hostSet,
+		instanceRowWith("uhost-running-1", "run-1", "Running", "4090"),
+		instanceRowWith("uhost-running-2", "run-2", "Running", "4090"),
+	)
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"TotalCount": float64(16),
+		"UHostSet":   hostSet,
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleResourceInfo(context.Background(), HandlerRequest{
+		Plan: resourceInfoPlan(nil),
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.NotNil(t, result.Envelope)
+	assertComputedFact(t, *result.Envelope, "total_count", "16")
+	assertComputedFact(t, *result.Envelope, "shown_count", "10")
+	assertComputedFact(t, *result.Envelope, "truncated", "true")
+	// User-facing reply must announce truncation
+	assert.Contains(t, result.Reply, "已显示 10/16", "reply must surface truncation to the user")
+	// Both Running instances must be visible in the reply
+	assert.Contains(t, result.Reply, "uhost-running-1")
+	assert.Contains(t, result.Reply, "uhost-running-2")
+}
+
+func TestResourceInfoHandler_PinnedUHostIdsSkipsTruncation(t *testing.T) {
+	resolver := resourceTestSnapshot(t)
+	exec := &mockHandlerExecutor{result: describeResult("uhost-a", "train-a")}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleResourceInfo(context.Background(), HandlerRequest{
+		Plan: resourceInfoPlan([]TargetRef{{
+			Type:       TargetRefUHostIDUserInput,
+			Value:      "uhost-a",
+			Source:     SourceUserText,
+			SourceSpan: "uhost-a",
+		}}),
+		Resolver: resolver,
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.NotNil(t, result.Envelope)
+	// truncated computed fact must be absent when user pinned a specific UHostId.
+	for _, fact := range result.Envelope.Computed {
+		assert.NotEqual(t, "truncated", fact.Key, "pinned target query must not advertise truncation")
+		assert.NotEqual(t, "shown_count", fact.Key)
+	}
+	assert.NotContains(t, result.Reply, "已显示")
+}
+
 func TestResourceInfoHandler_DedupesResolvedTargets(t *testing.T) {
 	resolver := resourceTestSnapshot(t)
 	exec := &mockHandlerExecutor{result: describeResult("uhost-a", "train-a")}
@@ -181,6 +239,38 @@ func TestResourceInfoHandler_FilterByRunningState(t *testing.T) {
 	assertComputedFact(t, *result.Envelope, "filter_applied", "state=running")
 	assertComputedFact(t, *result.Envelope, "matched_count", "2")
 	assertComputedFact(t, *result.Envelope, "total_count", "150")
+}
+
+func TestResourceInfoHandler_FilterTruncatesUsingMatchedCountInReply(t *testing.T) {
+	hostSet := make([]any, 0, 15)
+	for i := 0; i < 12; i++ {
+		hostSet = append(hostSet, instanceRowWith(
+			"uhost-running-"+string(rune('a'+i)), "run-"+string(rune('a'+i)), "Running", "4090"))
+	}
+	for i := 0; i < 3; i++ {
+		hostSet = append(hostSet, instanceRowWith(
+			"uhost-stopped-"+string(rune('a'+i)), "stop-"+string(rune('a'+i)), "Stopped", "4090"))
+	}
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"TotalCount": float64(15),
+		"UHostSet":   hostSet,
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleResourceInfo(context.Background(), HandlerRequest{
+		Plan: resourceInfoPlan([]TargetRef{{Type: TargetRefFilter, Value: "state=running"}}),
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.NotNil(t, result.Envelope)
+	require.Len(t, result.Envelope.Subjects, 10)
+	assertComputedFact(t, *result.Envelope, "total_count", "15")
+	assertComputedFact(t, *result.Envelope, "matched_count", "12")
+	assertComputedFact(t, *result.Envelope, "shown_count", "10")
+	assertComputedFact(t, *result.Envelope, "truncated", "true")
+	assert.Contains(t, result.Reply, "已显示 10/12", "filtered truncation should use the matched count in the user-facing denominator")
+	assert.NotContains(t, result.Reply, "已显示 10/15")
+	assert.NotContains(t, result.Reply, "stop-")
 }
 
 func TestResourceInfoHandler_FilterByStoppedStateAlias(t *testing.T) {

@@ -13,6 +13,12 @@ type ResourceEnvelopeMeta struct {
 	FilterApplied string
 	MatchedCount  int
 	TotalCount    int
+	// Shown is the number of instances actually included in the envelope's
+	// Subjects after display-side truncation. 0 means "not truncated /
+	// not applicable". When Shown > 0 and Shown < TotalCount the
+	// envelope advertises a truncated view.
+	Shown     int
+	Truncated bool
 }
 
 func BuildResourceEnvelope(instances []entity.InstanceSnapshot) envelope.Envelope {
@@ -89,6 +95,12 @@ func addComputedResourceMeta(env *envelope.Envelope, meta ResourceEnvelopeMeta) 
 	}
 	if meta.FilterApplied != "" {
 		addComputed("matched_count", "Matched count", strconv.Itoa(meta.MatchedCount))
+	}
+	if meta.Truncated {
+		if meta.Shown > 0 {
+			addComputed("shown_count", "Shown count", strconv.Itoa(meta.Shown))
+		}
+		addComputed("truncated", "Truncated", "true")
 	}
 }
 
