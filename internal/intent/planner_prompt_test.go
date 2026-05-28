@@ -68,7 +68,7 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	for _, m := range capabilityMetadata {
 		capabilityExampleCount += len(m.PlannerExamples)
 	}
-	if got, want := len(examples), 14+capabilityExampleCount; got != want {
+	if got, want := len(examples), 19+capabilityExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -106,6 +106,7 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentKnowledgeQA:               []string{},
 		IntentBillingAccountUnsupported: []string{},
 		IntentBillingInstance:           []string{"DescribeCompShareInstance", "DiagnoseBilling"},
+		IntentOperationLifecycle:        []string{"DescribeCompShareInstance"},
 		IntentDiagnosis:                 []string{"DescribeCompShareInstance"},
 	}
 	expectedHardBlock := map[Intent]bool{
@@ -115,6 +116,7 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentKnowledgeQA:               false,
 		IntentBillingAccountUnsupported: true,
 		IntentBillingInstance:           false,
+		IntentOperationLifecycle:        false,
 		IntentDiagnosis:                 false,
 	}
 	for _, group := range groups {
@@ -155,6 +157,7 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentKnowledgeQA,
 		IntentBillingAccountUnsupported,
 		IntentBillingInstance,
+		IntentOperationLifecycle,
 		IntentDiagnosis,
 		IntentUnknown,
 	} {
@@ -162,8 +165,8 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			t.Fatalf("planner examples missing group for intent %q", intent)
 		}
 	}
-	if total != 33 {
-		t.Fatalf("legacy planner example count = %d, want 33", total)
+	if total != 38 {
+		t.Fatalf("legacy planner example count = %d, want 38", total)
 	}
 	expectedCounts := map[Intent]int{
 		IntentResourceInfo:              4,
@@ -172,6 +175,7 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentKnowledgeQA:               20,
 		IntentBillingAccountUnsupported: 2,
 		IntentBillingInstance:           2,
+		IntentOperationLifecycle:        5,
 		IntentDiagnosis:                 1,
 	}
 	for intent, want := range expectedCounts {
@@ -190,6 +194,33 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 	rendered := strings.Join(renderPlannerPromptExampleGroups(groups), "\n")
 	if got := len(promptExampleJSONLines(rendered)); got != renderedJSONCount {
 		t.Fatalf("rendered example JSON count = %d, want %d", got, renderedJSONCount)
+	}
+}
+
+// TestBuildSystemPromptIncludesOperationLifecycleAnchor locks the Batch 1
+// (2026-05-28) jitter fix: planner must classify UHostId+action-verb chats
+// (帮我关机 uhost-xxx / uhost-test 停了 / 给 uhost-xxx 加 200G 数据盘) as
+// operation_lifecycle. Pre-fix CLI trace at N=6 showed 67% drift to unknown
+// (or schema_valid=false). The directive plus the new one-shot example
+// group anchor the intent so the classifier doesn't have to infer the
+// pattern from first principles.
+func TestBuildSystemPromptIncludesOperationLifecycleAnchor(t *testing.T) {
+	prompt := buildSystemPrompt()
+	required := []string{
+		"Resource operation commands",
+		"emit operation_lifecycle",
+		"帮我关机 uhost-xxx",
+		"uhost-test 停了",
+		"启动 train-gpu",
+		"给 uhost-xxx 加 200G 数据盘",
+		// Disambiguation from resource_info — without this clause the
+		// classifier can fall back to "list-style" reading of the same words.
+		"Do NOT confuse with resource_info",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt missing operation_lifecycle anchor fragment %q:\n%s", fragment, prompt)
+		}
 	}
 }
 

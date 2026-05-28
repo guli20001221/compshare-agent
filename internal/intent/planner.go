@@ -318,6 +318,46 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 				},
 			},
 		},
+		{
+			// Batch 1 (2026-05-28) jitter fix. CLI trace at N=6 over the
+			// question "帮我关机 uhost-xxx" showed planner.intent split
+			// 33% operation_lifecycle / 67% unknown (or schema_valid=false).
+			// Root cause: operation_lifecycle had ZERO one-shot examples in
+			// the planner prompt, so the classifier had no anchor for the
+			// UHostId+action-verb pattern. Examples cover the five most
+			// common workflows the user hit in 2026-05-28 integration:
+			// 关机/启动/重启/加盘/变配, with both UHostId and Name target
+			// refs and colloquial verbs (停了/重启一下).
+			Intent: IntentOperationLifecycle,
+			Source: "Batch 1 jitter fix (2026-05-28): anchor UHostId+action-verb chats so planner stops drifting to unknown",
+			Examples: []plannerPromptExample{
+				{
+					Question: "帮我关机 uhost-1qx1qsw4b1pk",
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					Source:   "Batch 1: 关机 + UHostId — direct from 2026-05-28 jitter trace",
+				},
+				{
+					Question: "uhost-test 停了",
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-test","source":"user_text","source_span":"uhost-test"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Batch 1: 口语化 '停了' verb — anchors shutdown via colloquial speech",
+				},
+				{
+					Question: "启动 train-gpu",
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"name","value":"train-gpu","source":"user_text","source_span":"train-gpu"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Batch 1: 启动 + Name target_ref — exercises name-typed resolution",
+				},
+				{
+					Question: "把 uhost-xxx 重启一下",
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-xxx","source":"user_text","source_span":"uhost-xxx"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Batch 1: 重启 + 口语化 '一下'",
+				},
+				{
+					Question: "给 uhost-1qx1qsw4b1pk 加 200G 数据盘",
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Batch 1: 加盘 — CreateDiskWorkflow trigger, same intent as start/stop",
+				},
+			},
+		},
 		// IntentDiagnosis migrated to internal/intent/planner_examples/diagnosis.md
 		// in C5 Phase A (PR #86, 2026-05-21). The disk-backed loader spliced in
 		// here MUST produce byte-equal output to the prior inline literal — the
@@ -380,6 +420,7 @@ func buildSystemPrompt() string {
 		"instance-scoped billing questions should emit billing_instance, but do not promise account ledger amounts or transaction exports.",
 		"Personal billing complaints with vague cause — 充值 10 块就被扣完了 / 我账单怎么这么高 / 钱怎么扣这么快 / 我啥也没干怎么就扣费了 — emit billing_instance (NOT billing_account_unsupported, which is reserved for explicit balance / total-bill / transaction-record queries; and NOT knowledge_qa, because the user wants a personal diagnostic, not a process FAQ).",
 		"Billing navigation questions like where do I find / how do I view / how to check / from which page can I see my bills, invoices, expense, balance, charges, or recharge history should emit knowledge_qa - they ask for a UI navigation path, not actual finance numbers, and the docs cover the path.",
+		"Resource operation commands — phrases that pair an action verb with a specific instance reference (UHostId or instance name) emit operation_lifecycle. Action verbs include 关机 / 停机 / 停了 / 启动 / 开机 / 重启 / 加盘 / 加数据盘 / 变配 / 升级配置 / 重装 / 重置密码 / 改名. Examples: 帮我关机 uhost-xxx, uhost-test 停了, 启动 train-gpu, 把 uhost-xxx 重启一下, 给 uhost-xxx 加 200G 数据盘. Do NOT confuse with resource_info — that intent is for listing/inspecting instances, not for executing an operation on a named instance.",
 		"Use unknown when the user asks unsupported general knowledge, operations, or anything outside the demo focus.",
 		"slots must contain target_refs, metrics, and time_window. Use [] for missing target_refs or metrics, and null for missing time_window.",
 		"For a user-written instance name, output target_refs item {\"type\":\"name\",\"value\":\"<exact name>\",\"source\":\"user_text\",\"source_span\":\"<exact substring>\"}.",

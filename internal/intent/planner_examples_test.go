@@ -135,7 +135,15 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // JSON 20 times. All 20 boundary anchor questions preserved; saves ~1,100
 // planner prompt tokens (~27% reduction). Bump justified: no examples removed,
 // only rendering format changed for the knowledge_qa group.
-const systemPromptSHA256Baseline = "69794dd6299c2af250e5906eb271be2d02f21d096074a6b14643a3f0eb720e39"
+//
+// Batch 1 (2026-05-28) — operation_lifecycle jitter fix: added one new
+// example group with 5 anchors (帮我关机 uhost-xxx / uhost-test 停了 / 启动
+// train-gpu / 把 uhost-xxx 重启一下 / 给 uhost-xxx 加 200G 数据盘) plus a
+// directive sentence so the classifier stops drifting UHostId+action-verb
+// chats to unknown. Pre-fix: 67% drift at N=6 trace; post-fix anchor groups
+// match the billing_instance pattern that fixed the Q04 jitter. SHA bumped
+// by-construction.
+const systemPromptSHA256Baseline = "78f10e2d279d460dc440db5f3788f136d04db7285df48a1ff17773d05f46a472"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
