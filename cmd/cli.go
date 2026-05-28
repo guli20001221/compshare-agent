@@ -304,6 +304,14 @@ func cliShadowPlannerInput(eng *engine.Engine, userText string) intent.PlannerIn
 	}
 	input.PriorText = eng.PlannerPriorTextSnapshot()
 	input.Resolver = eng.RegistrySnapshot()
+	// PR1 hotfix Bug 2 (2026-05-28): structured prior-turn signals for the
+	// planner USER prompt. PriorText is retained above for the validator's
+	// source:prior_turn span check; buildUserPrompt no longer emits it.
+	if state, _, hydrated := eng.SessionStateSnapshot(); hydrated {
+		input.LastSelectedInstanceID = state.SelectedInstanceID
+		input.LastIntent = state.LastIntent
+	}
+	input.LastAssistantSnippet = eng.PlannerLastAssistantSnippet()
 	return input
 }
 

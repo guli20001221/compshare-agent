@@ -254,6 +254,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"sessionStateVersion":       true,
 		"sessionStateHydrated":      true,
 		"lastPlannerIntentThisTurn": true,
+		// PR1 hotfix Bug 4 (2026-05-28): per-turn lifecycle action captured
+		// from planner output, consumed by executeTool to filter the
+		// candidate instance list by State. Per-session by definition —
+		// sharing across sessions would let one user's "stop" verb mask
+		// another's "start" subset.
+		"lastPlannerActionThisTurn": true,
 		"imageContextThisTurn":      true,
 		"baseUserContext":           true,
 	}
@@ -261,12 +267,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 11, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 33, len(perSessionFields); want != got {
+	if want, got := 34, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 44, typ.NumField(); want != got {
+	if want, got := 45, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

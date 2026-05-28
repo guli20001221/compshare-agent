@@ -68,7 +68,9 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	for _, m := range capabilityMetadata {
 		capabilityExampleCount += len(m.PlannerExamples)
 	}
-	if got, want := len(examples), 19+capabilityExampleCount; got != want {
+	// PR1 hotfix Bug 1 (2026-05-28): bumped from 19 → 20 with the ZERO-target
+	// operation_lifecycle anchor for bare "帮我关机" classification.
+	if got, want := len(examples), 20+capabilityExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -165,8 +167,8 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			t.Fatalf("planner examples missing group for intent %q", intent)
 		}
 	}
-	if total != 38 {
-		t.Fatalf("legacy planner example count = %d, want 38", total)
+	if total != 39 {
+		t.Fatalf("legacy planner example count = %d, want 39", total)
 	}
 	expectedCounts := map[Intent]int{
 		IntentResourceInfo:              4,
@@ -175,8 +177,10 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentKnowledgeQA:               20,
 		IntentBillingAccountUnsupported: 2,
 		IntentBillingInstance:           2,
-		IntentOperationLifecycle:        5,
-		IntentDiagnosis:                 1,
+		// PR1 hotfix Bug 1 (2026-05-28): 6 = 5 Batch 1 anchors + new
+		// ZERO-target sample for bare "帮我关机" classification.
+		IntentOperationLifecycle: 6,
+		IntentDiagnosis:          1,
 	}
 	for intent, want := range expectedCounts {
 		if got := counts[intent]; got != want {
@@ -209,13 +213,17 @@ func TestBuildSystemPromptIncludesOperationLifecycleAnchor(t *testing.T) {
 	required := []string{
 		"Resource operation commands",
 		"emit operation_lifecycle",
-		"帮我关机 uhost-xxx",
-		"uhost-test 停了",
+		// PR1 hotfix Bug 1 (2026-05-28): bare action verb (no target) must
+		// still classify as operation_lifecycle so "帮我关机" doesn't fall
+		// to unknown.
+		"REGARDLESS of whether the user specifies a target instance",
+		"target_refs:[]",
+		// One-shot anchors that the prompt MUST keep as concrete examples.
 		"启动 train-gpu",
 		"给 uhost-xxx 加 200G 数据盘",
 		// Disambiguation from resource_info — without this clause the
 		// classifier can fall back to "list-style" reading of the same words.
-		"Do NOT confuse with resource_info",
+		"Do NOT route bare action verbs to resource_info",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
@@ -240,7 +248,7 @@ func TestBuildSystemPromptIncludesBillingInstanceDiagnosticGuard(t *testing.T) {
 		"NOT billing_account_unsupported",
 		"NOT knowledge_qa",
 		"充值 10 块就被扣完了", // 充值 10 块就被扣完了
-		"我账单怎么这么高",   // 我账单怎么这么高
+		"我账单怎么这么高",     // 我账单怎么这么高
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
@@ -458,19 +466,56 @@ func TestBuildSystemPromptTreatsClockRangesAsHistoricalMonitor(t *testing.T) {
 
 func TestBuildUserPromptUsesReadableLabels(t *testing.T) {
 	prompt := buildUserPrompt(PlannerInput{
-		UserText:  "show monitor",
-		PriorText: "assistant: prior answer",
+		UserText:               "show monitor",
+		PriorText:              "assistant: prior answer",
+		LastIntent:             "monitor_query",
+		LastSelectedInstanceID: "uhost-1qy6d8tkfrl4",
+		LastAssistantSnippet:   "Your CPU usage is 12% and GPU usage is 65% right now.",
 	}, "retry now")
 	if !strings.Contains(prompt, "User question: show monitor") {
 		t.Fatalf("user prompt missing readable user label: %q", prompt)
 	}
-	if !strings.Contains(prompt, "Prior turns: assistant: prior answer") {
-		t.Fatalf("user prompt missing readable prior label: %q", prompt)
+	// PR1 hotfix Bug 2 (2026-05-28): the planner USER prompt no longer dumps
+	// PriorText verbatim. Multi-turn input_tok growth was the schema_valid=
+	// false avalanche driver — see memory:priortext-avalanche-invalidates-
+	// planner. PriorText is still passed via PlannerInput for the validator's
+	// source:prior_turn span check, but buildUserPrompt must emit ONLY the
+	// structured signals.
+	if strings.Contains(prompt, "Prior turns:") {
+		t.Fatalf("user prompt must not include legacy Prior turns block: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Last selected instance: uhost-1qy6d8tkfrl4") {
+		t.Fatalf("user prompt missing LastSelectedInstanceID structured field: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Last assistant snippet: Your CPU usage is 12% and GPU usage is 65% right now.") {
+		t.Fatalf("user prompt missing LastAssistantSnippet structured field: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Last intent: monitor_query") {
+		t.Fatalf("user prompt missing LastIntent structured field: %q", prompt)
 	}
 	for _, staleLabel := range staleNonASCIIPlannerLabels() {
 		if strings.Contains(prompt, staleLabel) {
 			t.Fatalf("user prompt contains stale non-ASCII label %q: %q", staleLabel, prompt)
 		}
+	}
+}
+
+func TestBuildUserPrompt_SnippetTruncated(t *testing.T) {
+	// PR1 hotfix Bug 2: long assistant replies are capped at
+	// lastAssistantSnippetCap runes so cumulative prompt size stays bounded
+	// across multi-turn sessions.
+	long := strings.Repeat("我", lastAssistantSnippetCap+50)
+	prompt := buildUserPrompt(PlannerInput{
+		UserText:             "再来一次",
+		LastAssistantSnippet: long,
+	}, "")
+	idx := strings.Index(prompt, "Last assistant snippet: ")
+	if idx < 0 {
+		t.Fatalf("expected Last assistant snippet label, got %q", prompt)
+	}
+	snippet := prompt[idx+len("Last assistant snippet: "):]
+	if got := len([]rune(snippet)); got != lastAssistantSnippetCap {
+		t.Fatalf("snippet rune length = %d, want %d", got, lastAssistantSnippetCap)
 	}
 }
 

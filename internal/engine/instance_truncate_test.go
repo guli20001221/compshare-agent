@@ -93,3 +93,87 @@ func TestTruncateDescribeResultForReAct_HandlesMalformedRows(t *testing.T) {
 	assert.False(t, truncated, "3 raw entries below limit even with one bad row")
 	assert.Equal(t, 3, shown)
 }
+
+// PR1 hotfix Bug 4 (2026-05-28): action-aware deterministic filter tests.
+// Encodes WHY: the previous design fed the full mixed-state list to the LLM
+// and let it decide which subset to render; that decision was non-deterministic
+// (N=5 same prompt produced 3 different display strategies). The handler
+// path is the source of truth.
+
+func TestFilterDescribeResultByAction_StopKeepsRunningOnly(t *testing.T) {
+	rows := []any{
+		map[string]any{"UHostId": "uhost-r1", "State": "Running"},
+		map[string]any{"UHostId": "uhost-s1", "State": "Stopped"},
+		map[string]any{"UHostId": "uhost-r2", "State": "Running"},
+	}
+	result := map[string]any{"UHostSet": rows}
+
+	kept, removed, filtered := filterDescribeResultByAction(nil, result, intent.LifecycleActionStop)
+
+	assert.True(t, filtered, "stop with mixed states must filter — Stopped rows are not actionable")
+	assert.Equal(t, 2, kept)
+	assert.Equal(t, 1, removed)
+	hosts, _ := result["UHostSet"].([]any)
+	assert.Len(t, hosts, 2)
+	for _, raw := range hosts {
+		row := raw.(map[string]any)
+		assert.Equal(t, "Running", row["State"])
+	}
+	assert.NotNil(t, result["ActionFilter"], "trace breadcrumb must be present so the LLM can mention the filter")
+}
+
+func TestFilterDescribeResultByAction_StartKeepsStoppedOnly(t *testing.T) {
+	rows := []any{
+		map[string]any{"UHostId": "uhost-r1", "State": "Running"},
+		map[string]any{"UHostId": "uhost-s1", "State": "Stopped"},
+	}
+	result := map[string]any{"UHostSet": rows}
+
+	kept, removed, filtered := filterDescribeResultByAction(nil, result, intent.LifecycleActionStart)
+
+	assert.True(t, filtered)
+	assert.Equal(t, 1, kept)
+	assert.Equal(t, 1, removed)
+}
+
+func TestFilterDescribeResultByAction_CreateDiskUnfiltered(t *testing.T) {
+	// create_disk works on both states; user might add a data disk
+	// before-or-after-shutdown. Filtering would hide a legitimate option.
+	rows := []any{
+		map[string]any{"UHostId": "uhost-r1", "State": "Running"},
+		map[string]any{"UHostId": "uhost-s1", "State": "Stopped"},
+	}
+	result := map[string]any{"UHostSet": rows}
+
+	_, _, filtered := filterDescribeResultByAction(nil, result, intent.LifecycleActionCreateDisk)
+
+	assert.False(t, filtered, "verbs valid on either state must not filter")
+	hosts, _ := result["UHostSet"].([]any)
+	assert.Len(t, hosts, 2, "list should be untouched for unfiltered actions")
+}
+
+func TestFilterDescribeResultByAction_PinnedUHostIdsSkips(t *testing.T) {
+	// User already named the target; trust them — the workflow's CheckResult
+	// will reject if State is wrong, with a precise error.
+	rows := []any{
+		map[string]any{"UHostId": "uhost-s1", "State": "Stopped"},
+	}
+	result := map[string]any{"UHostSet": rows}
+	args := map[string]any{"UHostIds": []any{"uhost-s1"}}
+
+	_, _, filtered := filterDescribeResultByAction(args, result, intent.LifecycleActionStop)
+
+	assert.False(t, filtered, "pinned UHostIds must skip filter so the precise workflow error path is preserved")
+}
+
+func TestFilterDescribeResultByAction_EmptyActionNoOp(t *testing.T) {
+	rows := []any{
+		map[string]any{"UHostId": "uhost-r1", "State": "Running"},
+		map[string]any{"UHostId": "uhost-s1", "State": "Stopped"},
+	}
+	result := map[string]any{"UHostSet": rows}
+
+	_, _, filtered := filterDescribeResultByAction(nil, result, "")
+
+	assert.False(t, filtered, "empty action = no filter (planner didn't classify the verb)")
+}

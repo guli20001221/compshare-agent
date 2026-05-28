@@ -48,8 +48,22 @@ type PlannerInput struct {
 	UserText     string
 	ImageContext string
 	LastIntent   string
-	PriorText    string
-	Resolver     EntityResolver
+	// PriorText is retained as the validator's `source:prior_turn` span
+	// haystack (see ValidationContext.PriorText). The planner USER prompt
+	// no longer dumps it verbatim — PR1 hotfix Bug 2 (2026-05-28): structured
+	// signals (LastSelectedInstanceID + LastAssistantSnippet) replace it to
+	// avoid the 5k→11k input_tok avalanche that broke ds-v4-flash JSON
+	// schema reliability across turns. See memory:planner-input-only-needs-
+	// structured-signals.
+	PriorText string
+	// LastSelectedInstanceID surfaces SessionState.SelectedInstanceID so the
+	// planner can resolve "那台机" / "它" cross-turn references without seeing
+	// the full transcript.
+	LastSelectedInstanceID string
+	// LastAssistantSnippet is the prefix of the most recent assistant reply
+	// (capped at ~200 chars) used as a low-token topic continuity hint.
+	LastAssistantSnippet string
+	Resolver             EntityResolver
 	// Deprecated: use Resolver so production shadow mode can pass immutable
 	// registry snapshots without exposing EntityRegistry internals.
 	Registry *entity.EntityRegistry
@@ -328,32 +342,44 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 			// common workflows the user hit in 2026-05-28 integration:
 			// 关机/启动/重启/加盘/变配, with both UHostId and Name target
 			// refs and colloquial verbs (停了/重启一下).
+			//
+			// PR1 hotfix Bug 1 (2026-05-28): add a ZERO-target-ref anchor so
+			// "帮我关机" (no UHostId, no name) classifies as
+			// operation_lifecycle. Engine then lists the user's instances
+			// and lets the user pick — this is the dominant path when users
+			// say "关机" without specifying which one. See memory:
+			// target-ref-required-for-operation-lifecycle.
 			Intent: IntentOperationLifecycle,
-			Source: "Batch 1 jitter fix (2026-05-28): anchor UHostId+action-verb chats so planner stops drifting to unknown",
+			Source: "PR1 hotfix (2026-05-28): anchor action-verb chats including ZERO-target so 'help me shutdown' stops drifting to unknown",
 			Examples: []plannerPromptExample{
 				{
+					Question: "帮我关机",
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null,"action":"stop"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.7}`,
+					Source:   "PR1 hotfix Bug 1: ZERO target — engine lists instances and prompts for selection",
+				},
+				{
 					Question: "帮我关机 uhost-1qx1qsw4b1pk",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null,"action":"stop"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
 					Source:   "Batch 1: 关机 + UHostId — direct from 2026-05-28 jitter trace",
 				},
 				{
 					Question: "uhost-test 停了",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-test","source":"user_text","source_span":"uhost-test"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-test","source":"user_text","source_span":"uhost-test"}],"metrics":[],"time_window":null,"action":"stop"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
 					Source:   "Batch 1: 口语化 '停了' verb — anchors shutdown via colloquial speech",
 				},
 				{
 					Question: "启动 train-gpu",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"name","value":"train-gpu","source":"user_text","source_span":"train-gpu"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"name","value":"train-gpu","source":"user_text","source_span":"train-gpu"}],"metrics":[],"time_window":null,"action":"start"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
 					Source:   "Batch 1: 启动 + Name target_ref — exercises name-typed resolution",
 				},
 				{
 					Question: "把 uhost-xxx 重启一下",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-xxx","source":"user_text","source_span":"uhost-xxx"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-xxx","source":"user_text","source_span":"uhost-xxx"}],"metrics":[],"time_window":null,"action":"reboot"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
 					Source:   "Batch 1: 重启 + 口语化 '一下'",
 				},
 				{
 					Question: "给 uhost-1qx1qsw4b1pk 加 200G 数据盘",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null,"action":"create_disk"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
 					Source:   "Batch 1: 加盘 — CreateDiskWorkflow trigger, same intent as start/stop",
 				},
 			},
@@ -420,7 +446,8 @@ func buildSystemPrompt() string {
 		"instance-scoped billing questions should emit billing_instance, but do not promise account ledger amounts or transaction exports.",
 		"Personal billing complaints with vague cause — 充值 10 块就被扣完了 / 我账单怎么这么高 / 钱怎么扣这么快 / 我啥也没干怎么就扣费了 — emit billing_instance (NOT billing_account_unsupported, which is reserved for explicit balance / total-bill / transaction-record queries; and NOT knowledge_qa, because the user wants a personal diagnostic, not a process FAQ).",
 		"Billing navigation questions like where do I find / how do I view / how to check / from which page can I see my bills, invoices, expense, balance, charges, or recharge history should emit knowledge_qa - they ask for a UI navigation path, not actual finance numbers, and the docs cover the path.",
-		"Resource operation commands — phrases that pair an action verb with a specific instance reference (UHostId or instance name) emit operation_lifecycle. Action verbs include 关机 / 停机 / 停了 / 启动 / 开机 / 重启 / 加盘 / 加数据盘 / 变配 / 升级配置 / 重装 / 重置密码 / 改名. Examples: 帮我关机 uhost-xxx, uhost-test 停了, 启动 train-gpu, 把 uhost-xxx 重启一下, 给 uhost-xxx 加 200G 数据盘. Do NOT confuse with resource_info — that intent is for listing/inspecting instances, not for executing an operation on a named instance.",
+		"Resource operation commands — any phrase whose primary verb is a CompShare instance lifecycle / configuration action emits operation_lifecycle, REGARDLESS of whether the user specifies a target instance. Action verbs include 关机 / 停机 / 停了 / 启动 / 开机 / 重启 / 加盘 / 加数据盘 / 变配 / 升级配置 / 重装 / 重置密码 / 改名. When a target is given, populate target_refs (UHostId, name, or filter). When the user omits the target (e.g. 帮我关机, 启动一下, 重启那台), still emit operation_lifecycle with target_refs:[] — the engine will list the user's instances and prompt for selection. Concrete anchors: 帮我关机 uhost-xxx, uhost-test 停了, 启动 train-gpu, 把 uhost-xxx 重启一下, 给 uhost-xxx 加 200G 数据盘. Do NOT route bare action verbs to resource_info (that intent is for listing/inspecting only) or unknown (the action is on-platform).",
+		"For operation_lifecycle, also emit slots.action with the matching verb: stop (关机/停机/停了), start (启动/开机), reboot (重启), reinstall (重装), resize (变配/升级配置), reset_password (重置密码), rename (改名), create_disk (加盘/加数据盘). The engine uses slots.action to deterministically pre-filter the candidate instance list (e.g. stop only lists Running instances) so the user sees the actionable subset.",
 		"Use unknown when the user asks unsupported general knowledge, operations, or anything outside the demo focus.",
 		"slots must contain target_refs, metrics, and time_window. Use [] for missing target_refs or metrics, and null for missing time_window.",
 		"For a user-written instance name, output target_refs item {\"type\":\"name\",\"value\":\"<exact name>\",\"source\":\"user_text\",\"source_span\":\"<exact substring>\"}.",
@@ -447,6 +474,12 @@ func buildSystemPrompt() string {
 	return strings.Join(parts, "\n")
 }
 
+// lastAssistantSnippetCap is the byte cap applied to LastAssistantSnippet
+// before it is emitted into the planner user prompt. ~200 chars keeps each
+// turn's prior-signal payload under ~100 tokens while preserving enough of
+// the prior reply to disambiguate topic continuity (e.g. "刚才聊的 Suno").
+const lastAssistantSnippetCap = 200
+
 func buildUserPrompt(input PlannerInput, retryInstruction string) string {
 	var b strings.Builder
 	if retryInstruction != "" {
@@ -463,11 +496,27 @@ func buildUserPrompt(input PlannerInput, retryInstruction string) string {
 		b.WriteString("\nLast intent: ")
 		b.WriteString(input.LastIntent)
 	}
-	if input.PriorText != "" {
-		b.WriteString("\nPrior turns: ")
-		b.WriteString(input.PriorText)
+	if input.LastSelectedInstanceID != "" {
+		b.WriteString("\nLast selected instance: ")
+		b.WriteString(input.LastSelectedInstanceID)
+	}
+	if snippet := truncatePlannerSnippet(input.LastAssistantSnippet, lastAssistantSnippetCap); snippet != "" {
+		b.WriteString("\nLast assistant snippet: ")
+		b.WriteString(snippet)
 	}
 	return b.String()
+}
+
+func truncatePlannerSnippet(s string, cap int) string {
+	s = strings.TrimSpace(s)
+	if s == "" || cap <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= cap {
+		return s
+	}
+	return string(runes[:cap])
 }
 
 func unknownFallbackPlan() Plan {

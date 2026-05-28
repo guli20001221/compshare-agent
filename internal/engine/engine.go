@@ -213,6 +213,12 @@ type Engine struct {
 	// classifies but the handler falls back to ReAct. Consumed by the ReAct
 	// loop to scope the tool list via intent.IntentToolSubset. Reset per turn.
 	lastPlannerIntentThisTurn intent.Intent
+	// Turn-scoped planner lifecycle action (PR1 hotfix Bug 4, 2026-05-28).
+	// Captured from Plan.Slots.Action when the planner classified the turn
+	// as operation_lifecycle. executeTool uses it to deterministically
+	// pre-filter DescribeCompShareInstance results by State so the LLM sees
+	// only actionable rows. Reset per turn.
+	lastPlannerActionThisTurn intent.LifecycleAction
 	imageContextThisTurn      string
 	baseUserContext           string
 	// currentCtx holds the context for the current ChatWithOptions call.
@@ -625,6 +631,14 @@ func (e *Engine) RegistrySnapshot() entity.RegistrySnapshot {
 	return e.registry.Snapshot()
 }
 
+// PlannerLastAssistantSnippet returns the most recent assistant message's
+// content from the in-memory ReAct history. Used by callers that build
+// PlannerInput externally (e.g. the CLI shadow runner) to supply the
+// PR1 hotfix Bug 2 structured "Last assistant snippet" signal.
+func (e *Engine) PlannerLastAssistantSnippet() string {
+	return e.lastAssistantContent()
+}
+
 // PlannerPriorTextSnapshot returns a bounded, read-only text projection of
 // prior user/assistant turns for shadow-planner provenance checks. It excludes
 // system prompts and tool-result JSON so shadow mode does not expand the data
@@ -841,6 +855,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.requireKnowledgeCitationThisTurn = false
 	e.turnTokensConsumed = 0
 	e.lastPlannerIntentThisTurn = ""
+	e.lastPlannerActionThisTurn = ""
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
@@ -1089,6 +1104,22 @@ type plannerDispatchResult struct {
 	snapshot entity.RegistrySnapshot
 }
 
+// lastAssistantContent returns the most recent assistant message's text from
+// the in-memory ReAct history, or "" if none. Used as a low-token topic
+// continuity hint for the planner (see PlannerInput.LastAssistantSnippet).
+func (e *Engine) lastAssistantContent() string {
+	if e == nil {
+		return ""
+	}
+	for i := len(e.messages) - 1; i >= 0; i-- {
+		msg := e.messages[i]
+		if msg.Role == openai.ChatMessageRoleAssistant && msg.Content != "" {
+			return msg.Content
+		}
+	}
+	return ""
+}
+
 func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText string, onStep func(StepEvent), onTextDelta func(string)) (string, bool) {
 	if !e.plannerDispatchEnabled() {
 		return "", false
@@ -1108,6 +1139,9 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// falls back to ReAct (return "", false), the ReAct loop uses this to
 	// scope the tool list via intent.IntentToolSubset.
 	e.lastPlannerIntentThisTurn = dispatch.result.Plan.Intent
+	// PR1 hotfix Bug 4 (2026-05-28): capture slots.action so executeTool can
+	// deterministically pre-filter DescribeCompShareInstance rows by State.
+	e.lastPlannerActionThisTurn = dispatch.result.Plan.Slots.Action
 
 	// Token budget gate. callPlannerOnce already added planner usage to
 	// the per-turn counter; if that alone blew the cap, return the
@@ -1207,12 +1241,24 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 	result := engineFallbackPlannerResult()
 	snapshot := e.RegistrySnapshot()
 	if _, ok := e.allowRateLimited(governance.ClassLLM, "intent_planner"); ok {
+		// PR1 hotfix Bug 2 (2026-05-28): pass STRUCTURED prior-turn signals
+		// instead of dumping the full transcript via PriorText into the user
+		// prompt. PriorText is still passed for the validator's
+		// source:prior_turn span check, but buildUserPrompt no longer emits
+		// it — capping per-turn input growth so ds-v4-flash JSON schema
+		// remains stable across multi-turn sessions.
+		var selectedID string
+		if e.sessionStateHydrated {
+			selectedID = e.sessionState.SelectedInstanceID
+		}
 		planned, err := e.intentPlanner.Plan(ctx, intent.PlannerInput{
-			UserText:     userMsg,
-			ImageContext: e.imageContextThisTurn,
-			LastIntent:   e.sessionState.LastIntent,
-			PriorText:    priorText,
-			Resolver:     snapshot,
+			UserText:               userMsg,
+			ImageContext:           e.imageContextThisTurn,
+			LastIntent:             e.sessionState.LastIntent,
+			PriorText:              priorText,
+			LastSelectedInstanceID: selectedID,
+			LastAssistantSnippet:   e.lastAssistantContent(),
+			Resolver:               snapshot,
 		})
 		if err == nil {
 			result = planned
@@ -2410,6 +2456,13 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	// catches the planner-misclassified turns that reach ReAct directly,
 	// keeping the LLM-visible list bounded regardless of routing.
 	if action == "DescribeCompShareInstance" {
+		// PR1 hotfix Bug 4 (2026-05-28): when the planner classified this turn
+		// as operation_lifecycle with a known action, narrow the candidate
+		// list to instances in the required State BEFORE truncation. This
+		// removes the LLM's "guess which subset to show" non-determinism.
+		if e.lastPlannerIntentThisTurn == intent.IntentOperationLifecycle && e.lastPlannerActionThisTurn != "" {
+			filterDescribeResultByAction(args, result.LLMResult, e.lastPlannerActionThisTurn)
+		}
 		truncateDescribeResultForReAct(args, result.LLMResult)
 	}
 

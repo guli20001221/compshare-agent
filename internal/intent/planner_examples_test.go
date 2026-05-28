@@ -143,7 +143,23 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // chats to unknown. Pre-fix: 67% drift at N=6 trace; post-fix anchor groups
 // match the billing_instance pattern that fixed the Q04 jitter. SHA bumped
 // by-construction.
-const systemPromptSHA256Baseline = "78f10e2d279d460dc440db5f3788f136d04db7285df48a1ff17773d05f46a472"
+//
+// PR1 hotfix Bug 1 (2026-05-28): the Batch 1 anchors all carried a target_ref
+// (UHostId or name), so the bare "帮我关机" without an instance still drifted
+// to unknown. This bump adds a 6th operation_lifecycle anchor with
+// target_refs:[] and revises the directive — "action verb alone is sufficient,
+// regardless of target presence" — pointing the engine at the
+// list-and-prompt fallback when the user omits the instance reference.
+// See memory:target-ref-required-for-operation-lifecycle.
+//
+// PR1 hotfix Bug 4 (2026-05-28): introduces Slots.Action (stop/start/reboot/
+// reinstall/resize/reset_password/rename/create_disk) + directive instructing
+// the planner to emit it. Engine.executeTool uses it to deterministically
+// pre-filter DescribeCompShareInstance rows by State so stop only shows
+// Running and start only shows Stopped — replacing the LLM-side guess
+// that produced non-deterministic display in 2026-05-28 联调.
+// See memory:llm-filter-nondeterministic.
+const systemPromptSHA256Baseline = "0d9fb9f1e733ba4da1c2508afb4073f46de4fa30f0014971c815ae6c735c8563"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

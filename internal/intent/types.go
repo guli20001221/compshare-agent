@@ -99,7 +99,32 @@ type Slots struct {
 	TargetRefs []TargetRef `json:"target_refs,omitempty"`
 	Metrics    []Metric    `json:"metrics,omitempty"`
 	TimeWindow *TimeWindow `json:"time_window,omitempty"`
+	// Action carries the lifecycle/configuration verb when Intent is
+	// IntentOperationLifecycle. PR1 hotfix Bug 4 (2026-05-28): used by
+	// engine.executeTool to deterministically pre-filter the candidate
+	// instance set by State (stop/reboot → Running only, start → Stopped
+	// only) before the LLM sees the list. Empty action = no filter applied
+	// (conservative default for unknown verbs). See memory:
+	// llm-filter-nondeterministic.
+	Action LifecycleAction `json:"action,omitempty"`
 }
+
+// LifecycleAction is the verb that drives an operation_lifecycle turn. Only
+// the explicit verbs below trigger state pre-filtering; an empty / unknown
+// value leaves the candidate list untouched so the model still has the data
+// to ask a clarifying question.
+type LifecycleAction string
+
+const (
+	LifecycleActionStop       LifecycleAction = "stop"
+	LifecycleActionStart      LifecycleAction = "start"
+	LifecycleActionReboot     LifecycleAction = "reboot"
+	LifecycleActionReinstall  LifecycleAction = "reinstall"
+	LifecycleActionResize     LifecycleAction = "resize"
+	LifecycleActionResetPwd   LifecycleAction = "reset_password"
+	LifecycleActionRename     LifecycleAction = "rename"
+	LifecycleActionCreateDisk LifecycleAction = "create_disk"
+)
 
 type TargetRef struct {
 	Type       TargetRefType `json:"type"`
