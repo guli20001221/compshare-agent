@@ -143,7 +143,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("╭──────────────────────────────────────╮")
-	fmt.Println("│     优云算力共享 AI 助手 v0.1        │")
+	fmt.Println("│     Compshare Copilot v0.1           │")
 	fmt.Println("╰──────────────────────────────────────╯")
 	fmt.Printf("runtime: %s\n", plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled, cutoverIntents))
 	fmt.Printf("renderer: %s\n", groundedRendererRuntimeLine(groundedRendererMode))

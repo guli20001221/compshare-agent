@@ -15,6 +15,9 @@ func TestBuildSystem_WithContext(t *testing.T) {
 	if !strings.Contains(result, "优云算力共享平台") {
 		t.Error("BuildSystem should contain platform identity")
 	}
+	if !strings.Contains(result, "Compshare Copilot") {
+		t.Error("BuildSystem should contain product brand (Compshare Copilot)")
+	}
 }
 
 func TestBuildSystem_EmptyContext(t *testing.T) {

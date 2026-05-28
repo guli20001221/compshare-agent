@@ -18,7 +18,7 @@ const (
 
 var rootCmd = &cobra.Command{
 	Use:   "compshare-agent",
-	Short: "优云算力共享平台 AI 助手",
+	Short: "Compshare Copilot — 服务于优云算力共享平台",
 }
 
 func init() {

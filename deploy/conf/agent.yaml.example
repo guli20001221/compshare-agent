@@ -90,7 +90,7 @@ agent:
   # Static metadata returned by GetMeta action.
   # max_input_length should match http.max_input_length.
   meta:
-    welcome: "我是优云算力共享平台 AI 助手，可以问我控制台相关问题。"
+    welcome: "我是 Compshare Copilot，可以问我控制台相关问题。"
     suggested_prompts:
       - "我有哪些实例"
       - "4090 现在有库存吗"
