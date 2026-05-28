@@ -50,7 +50,7 @@ func stepConfirmStop() Step {
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
-			summary["warning"] = "关机后磁盘费用仍会产生，如需彻底停止计费请到控制台释放实例。"
+			summary["warning"] = "关机后实例和 GPU 停止计费。系统盘 100GB 免费；如挂载数据盘或系统盘扩容超出 100GB，仍会产生磁盘费用。如需彻底停止计费请到控制台释放实例。"
 			return summary, nil
 		},
 	}

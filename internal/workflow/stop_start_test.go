@@ -121,6 +121,10 @@ func TestStopInstance_ConfirmHasFeeWarning(t *testing.T) {
 	warning, ok := capturedArgs["warning"].(string)
 	assert.True(t, ok)
 	assert.NotEmpty(t, warning)
+	assert.Contains(t, warning, "系统盘 100GB 免费")
+	assert.Contains(t, warning, "挂载数据盘")
+	assert.Contains(t, warning, "系统盘扩容超出 100GB")
+	assert.NotContains(t, warning, "磁盘费用仍会产生，如需彻底停止计费")
 }
 
 func TestStopInstance_AlreadyStopped(t *testing.T) {

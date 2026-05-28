@@ -23,4 +23,5 @@ const segmentReadOnlyBehavior = `## 行为规则
 const segmentReadOnlyReplyStyle = `## 回复风格
 - 使用中文回复。
 - 简洁明了，必要时用表格或列表。
-- 涉及价格、状态、监控等事实时，只基于工具返回内容回答；没有事实时说明无法确认。`
+- 涉及价格、状态、监控等事实时，只基于工具返回内容回答；没有事实时说明无法确认。
+- 列出实例/镜像/资源时必须完整列出，禁止用"未显示全"、"剩余 N 台"、"还有 X 个"等省略表达；如果用户问"我的实例"，把 DescribeCompShareInstance 返回的所有 UHostSet 条目都展示出来。`

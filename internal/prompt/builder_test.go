@@ -198,6 +198,27 @@ func TestBuildSystemWithOptions_MutatingModeKeepsWorkflowGuidance(t *testing.T) 
 	}
 }
 
+func TestBuildSystemWithOptions_CompleteListingRuleInBothModes(t *testing.T) {
+	for name, prompt := range map[string]string{
+		"mutating":  BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true}),
+		"read_only": BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, text := range []string{
+				"未显示全",
+				"剩余 N 台",
+				"还有 X 个",
+				"DescribeCompShareInstance",
+				"UHostSet",
+			} {
+				if !strings.Contains(prompt, text) {
+					t.Fatalf("system prompt should contain complete-listing rule fragment %q", text)
+				}
+			}
+		})
+	}
+}
+
 func TestFormatToolResult_Truncation(t *testing.T) {
 	// Build a large result with an array field
 	items := make([]any, 100)
