@@ -152,14 +152,17 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // list-and-prompt fallback when the user omits the instance reference.
 // See memory:target-ref-required-for-operation-lifecycle.
 //
-// PR1 hotfix Bug 4 (2026-05-28): introduces Slots.Action (stop/start/reboot/
-// reinstall/resize/reset_password/rename/create_disk) + directive instructing
-// the planner to emit it. Engine.executeTool uses it to deterministically
-// pre-filter DescribeCompShareInstance rows by State so stop only shows
-// Running and start only shows Stopped — replacing the LLM-side guess
-// that produced non-deterministic display in 2026-05-28 联调.
-// See memory:llm-filter-nondeterministic.
-const systemPromptSHA256Baseline = "0d9fb9f1e733ba4da1c2508afb4073f46de4fa30f0014971c815ae6c735c8563"
+// PR1 hotfix Bug 4 was reverted on the planner side (2026-05-28 PM 联调):
+// adding "also emit slots.action with the matching verb" + the action field
+// in 6 examples caused ds-v4-flash to respond with 800-1800 token prose
+// instead of JSON (output_tok 805/1475/1823 vs normal 165-241 for working
+// intents), tipping every operation_lifecycle turn into schema_valid=false
+// → unknown → ReAct fallback. The Go types (Slots.Action / LifecycleAction /
+// LifecycleAction* constants) and engine-side filterDescribeResultByAction
+// remain in place as dead code so a more careful future re-introduction can
+// wire them back through a different schema or a stronger JSON-only nudge.
+// SHA accordingly returned to the Bug 1 anchor baseline.
+const systemPromptSHA256Baseline = "b9ac2d5f6906fea3f38a3f88dc15e51ab69d7978518200dbdd3d12650856202e"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

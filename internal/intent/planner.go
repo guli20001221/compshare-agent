@@ -354,32 +354,32 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 			Examples: []plannerPromptExample{
 				{
 					Question: "帮我关机",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null,"action":"stop"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.7}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.7}`,
 					Source:   "PR1 hotfix Bug 1: ZERO target — engine lists instances and prompts for selection",
 				},
 				{
 					Question: "帮我关机 uhost-1qx1qsw4b1pk",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null,"action":"stop"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
 					Source:   "Batch 1: 关机 + UHostId — direct from 2026-05-28 jitter trace",
 				},
 				{
 					Question: "uhost-test 停了",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-test","source":"user_text","source_span":"uhost-test"}],"metrics":[],"time_window":null,"action":"stop"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-test","source":"user_text","source_span":"uhost-test"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
 					Source:   "Batch 1: 口语化 '停了' verb — anchors shutdown via colloquial speech",
 				},
 				{
 					Question: "启动 train-gpu",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"name","value":"train-gpu","source":"user_text","source_span":"train-gpu"}],"metrics":[],"time_window":null,"action":"start"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"name","value":"train-gpu","source":"user_text","source_span":"train-gpu"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
 					Source:   "Batch 1: 启动 + Name target_ref — exercises name-typed resolution",
 				},
 				{
 					Question: "把 uhost-xxx 重启一下",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-xxx","source":"user_text","source_span":"uhost-xxx"}],"metrics":[],"time_window":null,"action":"reboot"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-xxx","source":"user_text","source_span":"uhost-xxx"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
 					Source:   "Batch 1: 重启 + 口语化 '一下'",
 				},
 				{
 					Question: "给 uhost-1qx1qsw4b1pk 加 200G 数据盘",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null,"action":"create_disk"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
 					Source:   "Batch 1: 加盘 — CreateDiskWorkflow trigger, same intent as start/stop",
 				},
 			},
@@ -447,7 +447,6 @@ func buildSystemPrompt() string {
 		"Personal billing complaints with vague cause — 充值 10 块就被扣完了 / 我账单怎么这么高 / 钱怎么扣这么快 / 我啥也没干怎么就扣费了 — emit billing_instance (NOT billing_account_unsupported, which is reserved for explicit balance / total-bill / transaction-record queries; and NOT knowledge_qa, because the user wants a personal diagnostic, not a process FAQ).",
 		"Billing navigation questions like where do I find / how do I view / how to check / from which page can I see my bills, invoices, expense, balance, charges, or recharge history should emit knowledge_qa - they ask for a UI navigation path, not actual finance numbers, and the docs cover the path.",
 		"Resource operation commands — any phrase whose primary verb is a CompShare instance lifecycle / configuration action emits operation_lifecycle, REGARDLESS of whether the user specifies a target instance. Action verbs include 关机 / 停机 / 停了 / 启动 / 开机 / 重启 / 加盘 / 加数据盘 / 变配 / 升级配置 / 重装 / 重置密码 / 改名. When a target is given, populate target_refs (UHostId, name, or filter). When the user omits the target (e.g. 帮我关机, 启动一下, 重启那台), still emit operation_lifecycle with target_refs:[] — the engine will list the user's instances and prompt for selection. Concrete anchors: 帮我关机 uhost-xxx, uhost-test 停了, 启动 train-gpu, 把 uhost-xxx 重启一下, 给 uhost-xxx 加 200G 数据盘. Do NOT route bare action verbs to resource_info (that intent is for listing/inspecting only) or unknown (the action is on-platform).",
-		"For operation_lifecycle, also emit slots.action with the matching verb: stop (关机/停机/停了), start (启动/开机), reboot (重启), reinstall (重装), resize (变配/升级配置), reset_password (重置密码), rename (改名), create_disk (加盘/加数据盘). The engine uses slots.action to deterministically pre-filter the candidate instance list (e.g. stop only lists Running instances) so the user sees the actionable subset.",
 		"Use unknown when the user asks unsupported general knowledge, operations, or anything outside the demo focus.",
 		"slots must contain target_refs, metrics, and time_window. Use [] for missing target_refs or metrics, and null for missing time_window.",
 		"For a user-written instance name, output target_refs item {\"type\":\"name\",\"value\":\"<exact name>\",\"source\":\"user_text\",\"source_span\":\"<exact substring>\"}.",
