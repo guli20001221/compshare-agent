@@ -70,7 +70,10 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	}
 	// PR1 hotfix Bug 1 (2026-05-28): bumped from 19 → 20 with the ZERO-target
 	// operation_lifecycle anchor for bare "帮我关机" classification.
-	if got, want := len(examples), 20+capabilityExampleCount; got != want {
+	// PR2.5 (2026-05-28): bumped from 20 → 24 with 4 Chinese resource_info
+	// anchors (我有哪些实例 / 列出我的机器 / 正在运行的实例 / 我有几台机器)
+	// to close the bare-inventory ZERO-target gap.
+	if got, want := len(examples), 24+capabilityExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -167,11 +170,11 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			t.Fatalf("planner examples missing group for intent %q", intent)
 		}
 	}
-	if total != 39 {
-		t.Fatalf("legacy planner example count = %d, want 39", total)
+	if total != 43 {
+		t.Fatalf("legacy planner example count = %d, want 43", total)
 	}
 	expectedCounts := map[Intent]int{
-		IntentResourceInfo:              4,
+		IntentResourceInfo:              8,
 		IntentUnknown:                   2,
 		IntentMonitorQuery:              2,
 		IntentKnowledgeQA:               20,

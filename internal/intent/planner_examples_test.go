@@ -162,7 +162,28 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // remain in place as dead code so a more careful future re-introduction can
 // wire them back through a different schema or a stronger JSON-only nudge.
 // SHA accordingly returned to the Bug 1 anchor baseline.
-const systemPromptSHA256Baseline = "b9ac2d5f6906fea3f38a3f88dc15e51ab69d7978518200dbdd3d12650856202e"
+//
+// PR2.5 (2026-05-28) — system prompt structural fix bump. PR2 oracle smoke
+// (ds-v4-pro N=10 on PR1 baseline) confirmed bare "帮我关机" → 5/5 unknown
+// is NOT a model bottleneck but a prompt design problem. Three coupled
+// fixes ship together:
+//  (1) line 428 "Phase 1 demo focus..." (which named only 2 intents from a
+//      pre-18-intent era) → "Primary intents — all have working handlers:
+//      [9-intent list]. Prefer the closest matching primary intent over
+//      unknown..." Removes the bias that any non-resource_info /
+//      non-monitor_query question is an exception.
+//  (2) line 450 "Use unknown when ... outside the demo focus" → "Use
+//      unknown ONLY when off-platform (other vendors / politics /
+//      weather / unrelated code / creative writing). On-platform but
+//      unclear → closest primary intent." Closes the easy escape that
+//      line 428 was funneling into.
+//  (3) resource_info group gains 4 Chinese anchors (我有哪些实例 / 列出我的
+//      机器 / 正在运行的实例 / 我有几台机器) covering bare zero-target
+//      inventory questions that previously had only English anchors.
+// See memory:planner-phase1-demo-focus-directive-obsolete and
+// memory:pr2-op-lifecycle-schema-fix-blueprint for the full root-cause
+// analysis and N=10 oracle smoke data.
+const systemPromptSHA256Baseline = "1b8ba7f66127b2045175ae9a8d69d0ed6a8f9008c999972b55e5747f909ade25"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
