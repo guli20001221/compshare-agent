@@ -5,6 +5,11 @@
 *.env.*
 !*.env.example
 deploy/conf/agent.yaml
+
+# Local-only one-shot server bootstrap script. Contains real LLM_API_KEY,
+# STS service AK/SK, and MySQL DSN — file documents this in its own
+# header comment. Never commit.
+start-server.ps1
 __pycache__/
 *.pyc
 .worktrees/
