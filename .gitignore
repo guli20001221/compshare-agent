@@ -41,7 +41,6 @@ eval/shadow_qa/2026-05-24-m2-cli-eval/
 # regression check only — covers cross-region mutating workflow Region wiring.
 eval/shadow_qa/2026-05-25-prb-region-cli-eval/
 # PR-δ0 stock cross-region CLI eval round (2026-05-25). Same key/UHostId
-<<<<<<< HEAD
 # policy as PR-β round. Covers stock-availability cross-region default
 # after filterStockEntriesToResolverZones deletion + PR-β regression checks.
 eval/shadow_qa/2026-05-25-prd0-stock-cli-eval/
@@ -49,6 +48,10 @@ eval/shadow_qa/2026-05-25-prd0-stock-cli-eval/
 # Covers custom-image modifier stop-list (自定义/私有/公共/共享) fix +
 # specific-name guard regression check.
 eval/shadow_qa/2026-05-25-pr4-q10-cli-eval/
+# Phase-1 prompt-split CLI eval round (2026-05-25). run_smoke.ps1 here carries
+# inline live LLM/STS keys (not start-server-sourced), and the round dir was
+# missing from this list — ignore the whole dir like the other shadow_qa rounds.
+eval/shadow_qa/2026-05-25-phase1-prompt-split-cli-eval/
 .runs/
 agent.exe
 agent.exe~
