@@ -175,7 +175,7 @@ func (s *SSHSandbox) Run(ctx context.Context, instanceID, cmd string) (SSHResult
 - **白名单是结构化的**,不用 regex(memory `l0-stop-grow-dictionary` 教训:hand-maintained list 必须有 stop-grow ceiling + 结构化替代)
 - **任何不在白名单的 command**,skill 引导用户自己 SSH 进去执行,agent 只观察 stdout(用户粘贴)
 
-#### V1 白名单起步 10 条(2026-05-29 定)
+#### V1 白名单起步 12 条(2026-05-29 定)
 
 每条 argv-level 结构化(**无 pipe / 无 redirect / 无 shell substitution**),sandbox 端做 post-filter,5 个 diagnose_* skill 都用得上:
 
@@ -210,7 +210,7 @@ func (s *SSHSandbox) Run(ctx context.Context, instanceID, cmd string) (SSHResult
 - 已迁 fast tier 的 `billing_instance`:纯 API 查询,不走 SSH
 
 **Risks**:
-- **白名单维护成本** → V1 起步 10 条,每加一条要 issue 评审,memo 在 ADR-006 后续 amendment;memory `l0-stop-grow-dictionary` 防止 list 无限增长
+- **白名单维护成本** → V1 起步 12 条,每加一条要 issue 评审,memo 在 ADR-006 后续 amendment;memory `l0-stop-grow-dictionary` 防止 list 无限增长
 - **systemctl / journalctl 的 name 参数白名单** → V1 走 enum 10 个 service 名白名单(防 LLM recon 探测客户实例内部跑了什么);V2 视实际使用情况扩;memory `l0-stop-grow-dictionary` 思路 — 每加一条 service 名 require explicit review
 - **平台不支持 SSM-style API** → fallback 方案是 console proxy(用户已登录控制台的 session),性能差但安全
 

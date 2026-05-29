@@ -199,9 +199,16 @@ func TestRouter_Capability_MatchesLookupCapability(t *testing.T) {
 	}
 	// Sanity: Agent override and Fast must actually differ on at least
 	// one capability dim — otherwise this test couldn't catch a Router
-	// that ignored the override.
-	if r.Capability(TierFast).SupportsObjectToolChoice == r.Capability(TierAgent).SupportsObjectToolChoice {
-		t.Error("test fixture broken: TierFast and TierAgent should differ on SupportsObjectToolChoice")
+	// that ignored the override. ds-v4-flash and Qwen/Qwen3-Max in
+	// capability.go currently differ on BOTH IsThinkingMode (true vs
+	// unset/false) and SupportsObjectToolChoice (false vs true), so this
+	// check stays green if either dim still diverges — guards against a
+	// future fixture edit that aligns one dim but not the other.
+	fastCap := r.Capability(TierFast)
+	agentCap := r.Capability(TierAgent)
+	if fastCap.SupportsObjectToolChoice == agentCap.SupportsObjectToolChoice &&
+		fastCap.IsThinkingMode == agentCap.IsThinkingMode {
+		t.Error("test fixture broken: TierFast and TierAgent must differ on at least one of {SupportsObjectToolChoice, IsThinkingMode}")
 	}
 }
 
