@@ -700,9 +700,15 @@ func TestTraceRecord_RealizedTier_Serialization(t *testing.T) {
 // continued into ReAct must read as agent (the path that actually ran), NOT
 // knowledge by status name; and a turn with no observable dispatch signal must
 // read as "" (unknown), NOT default-to-agent — otherwise hard-block/canned
-// refusals would inflate the agent traffic share. If the engine adds or renames
-// a CutoverStatus (internal/intent/handler.go:42-58), this table must be
-// revisited.
+// refusals would inflate the agent traffic share.
+//
+// NOTE: this table hardcodes the cutover_status string literals because
+// observability cannot import internal/intent (intent imports observability —
+// import cycle). It therefore tests the derivation ALGORITHM, not the binding to
+// the real enum VALUES. The value binding (which fails if a CutoverStatus
+// constant is renamed in handler.go) lives in intent.TestCutoverStatusBindsToRealizedTier,
+// which can reference the constants directly. Both must be kept in sync when the
+// enum changes (internal/intent/handler.go:42-58).
 func TestDeriveRealizedTier(t *testing.T) {
 	reactCall := []ToolCallTrace{{Source: ToolSourceMainReAct}}
 	knowledgeCall := []ToolCallTrace{{Source: ToolSourceKnowledgeLocal}}
