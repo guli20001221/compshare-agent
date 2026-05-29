@@ -32,6 +32,15 @@ const (
 	// on LLM tool-selection variance (which produced 35s/33k-token paths
 	// on baseline).
 	IntentPricingQuery Intent = "pricing_query"
+	// disk_info (2026-05-29): user-asks-about-attached-disks routing. The
+	// upstream CompShare API exposes zero disk-list actions (verified in
+	// F:/uhost-compshare-api-master/internal/api/volumn/ — only Create/
+	// Delete/Resize/Attach/Detach writes). Disk facts live on the instance
+	// response: pkg/api/describe_compshare_instance.go DiskSet[] + TotalDiskSpace.
+	// Routing this to DescribeCompShareInstance (instead of leaking into
+	// resource_info or knowledge_qa) lets the renderer foreground the
+	// DiskSet view rather than the default instance summary.
+	IntentDiskInfo Intent = "disk_info"
 )
 
 type TargetRefType string
@@ -163,6 +172,7 @@ func AllIntents() []Intent {
 		IntentCustomImageList,
 		IntentCommunityImageList,
 		IntentPricingQuery,
+		IntentDiskInfo,
 		IntentUnknown,
 	}
 }
@@ -186,6 +196,7 @@ func RuntimeIntents() []Intent {
 		IntentCustomImageList,
 		IntentCommunityImageList,
 		IntentPricingQuery,
+		IntentDiskInfo,
 		IntentUnknown,
 	}
 }

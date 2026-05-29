@@ -183,7 +183,21 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // See memory:planner-phase1-demo-focus-directive-obsolete and
 // memory:pr2-op-lifecycle-schema-fix-blueprint for the full root-cause
 // analysis and N=10 oracle smoke data.
-const systemPromptSHA256Baseline = "1b8ba7f66127b2045175ae9a8d69d0ed6a8f9008c999972b55e5747f909ade25"
+//
+// disk_info routing fix (2026-05-29) — user reported "我有哪些数据盘"
+// rendered the instance summary instead of disk facts. Upstream API audit
+// (F:/uhost-compshare-api-master/internal/api/volumn/) confirmed zero
+// disk-list actions exist; disk facts only surface via DiskSet[] in
+// DescribeCompShareInstance response. Three coupled prompt changes ship:
+//  (1) enum + primary-intents lines bumped to include disk_info;
+//  (2) one new directive disambiguating disk-listing questions from
+//      resource_info, with explicit phrasings (我有哪些数据盘 / uhost-X
+//      挂了哪些盘 / 我的磁盘列表 / 我账号下有哪些云盘);
+//  (3) new IntentDiskInfo example group with 4 anchors, all routing to
+//      DescribeCompShareInstance.
+// Engine remains routing-only — no new handler — so the change is bounded
+// to prompt + intent enum + tool subset. SHA bumped by construction.
+const systemPromptSHA256Baseline = "1f6823218faf6851528c0472d7fddb498e2df8db1f9672c8e3c8d0cdab1f864b"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
