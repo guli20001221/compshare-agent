@@ -20,7 +20,7 @@ update its status row here.
 | **B2a** | Router inject completion: `engine.NewSharedDeps` + 2 eval sites consume `Router.For(TierFast)` (build-inside, signature unchanged, byte-stable) | 002 #3 | ✅ shipped | spec `a713790`, impl `b38fe28` — `docs/plans/2026-05-29-b2-router-inject-completion.md` |
 | **B2b** | Skill/Tool directory split + codegen + **progressive disclosure** (planner prompt → metadata-only) | 003, 004 | ⏳ spec rev-3 (reviewed) — 4 open decisions + ADR-003/004 ratification pending | `docs/plans/2026-05-29-b2b-skill-tool-dir-codegen.md` (rev-3) |
 | **B3** | Fast path drops the LLM grounded renderer (handler → template + envelope constraints) | 001 | ⏳ pending | — |
-| **B4a** | Observability: derive **realized tier** from dispatch path; populate a trace field at the shared write point | 001 #4 | ⏳ pending | see "B4 decomposition" |
+| **B4a** | Observability: derive **realized tier** from dispatch path; populate `realized_tier` in the two recorders | 001 #4 | 🔵 implemented, in review | branch `feat/b4a-realized-tier` `67a6b84` |
 | **B4b** | Planner emits **predicted tier** (new output field + prompt/schema change); planner model → pro; N≥20 regression | 001 #4, 002 | ⏳ pending (gated on B2b) | see "B4 decomposition" |
 | **B5** | Diagnosis package, k8sgpt-style (Analyzer/Failure/Filter) | 005 | ⏳ pending | — |
 | **B6** | Agent path infrastructure: orchestrator + saga + multi-step HITL + SSH category sandbox | 006 | ⏳ pending | — |
@@ -43,11 +43,21 @@ gate, and that the trace field has two distinct meanings that must not collide:
   (`internal/intent/planner.go:479`) omits it.
 - The **realized** tier (which path actually ran) is independently derivable
   *today* from existing trace signals — `planner.cutover_status`
-  (`internal/observability/trace.go:189`; `dispatched`→fast, `dispatched_retrieval`→knowledge,
-  `fallback_*`/empty→agent), the `retrieval` block (`trace.go:106`, written only on
-  the knowledge-QA path), and `tool_calls[].source` (`trace.go:102`, `main_react`
-  vs `planner_handler`). These two can diverge (planner predicts fast, turn falls
-  through to ReAct = realized agent).
+  (`internal/observability/trace.go:189`), the `retrieval` block (`trace.go:106`,
+  written only on the knowledge-QA path), and `tool_calls[].source`
+  (`trace.go:102`, `main_react` vs `planner_handler`). These two can diverge
+  (planner predicts fast, turn falls through to ReAct = realized agent).
+- **Derivation is priority-ordered, NOT a `cutover_status` prefix sweep.**
+  `cutover_status` has 13 values (`internal/intent/handler.go:42-58`) and is set
+  *only* on the Phase-1 cutover path, so empty does **not** mean agent (it means
+  "not a cutover turn"). The sound mapping (implemented in B4a as
+  `TraceRecord.DeriveRealizedTier`): `dispatched_retrieval`→knowledge;
+  `dispatched`/`selection_required`→fast; else `retrieval.hits>0`→knowledge; else
+  a `main_react` tool fired→agent; else `""` (unknown). `fallback_*` and
+  `failure_after_tool` are resolved by what *actually executed* (steps 3–4), not
+  by status name. Unobservable turns (no-tool ReAct, hard-block/canned reply) stay
+  `""` rather than default-agent, so refusals don't inflate the agent share
+  (memory `attribution-observable-only`).
 - **Decision (OPEN):** realized tier must go in a **separate** field
   (e.g. `realized_tier` / `dispatch_tier`), leaving `task_tier` for B4b's planner
   output. With both fields, predicted-vs-realized divergence measures planner→
@@ -57,19 +67,33 @@ gate, and that the trace field has two distinct meanings that must not collide:
   wrong prediction, so it is not ground truth). Reusing `task_tier` for realized
   now and predicted later would break the time series.
 
-**B4a — realized-tier populator (ungated, ship now).**
-- Single shared write point: the `Append` path (`internal/observability/trace.go:400`,
-  `record.withDefaults(now)`) runs for both CLI and HTTP — derive there, *not* in
-  the two duplicated recorders (`cmd/trace.go` `cliTraceRecorder.Finish` and
-  `internal/httpapi/trace_recorder.go` `chatTraceRecorder.Finish`). Prefer a
-  dedicated `deriveDispatchTier()` step *beside* `withDefaults`, not inside it:
-  `withDefaults` only fills default zero-values, and it is exercised on an empty
-  record (`trace_test.go:263`) — folding derivation in would fire it on empty
-  signals and entangle that test.
+**B4a — realized-tier populator (ungated; implemented, in review).**
+- Branch `feat/b4a-realized-tier` (commit `67a6b84`). Adds `realized_tier`
+  (omitempty) + `TraceRecord.DeriveRealizedTier` + the two recorder wirings +
+  `SchemaVersion` v0.3→v0.4; `go test ./...` green.
+- **Correction (verified against code):** `FileWriter.Append`
+  (`trace.go:398`, runs `withDefaults`) is **not** a choke point for the server
+  path. `chatTraceRecorder.Finish` calls `MySQLWriter.Enqueue` *directly*
+  (`internal/httpapi/trace_recorder.go:246` → `mysql_writer.go:118`), and the
+  worker marshals the record as-is (`mysql_writer.go:234`) — `Append`,
+  `withDefaults`, and `RedactQueryDerivedFields` are all bypassed on MySQL. So the
+  derivation is set in the **two recorders** (`cliTraceRecorder.Finish`,
+  `chatTraceRecorder.Finish`) on the record *before* the writer call, via a shared
+  `DeriveRealizedTier` helper. That covers file, mysql, and the both-sink
+  `multiTraceWriter` (which only fans out an already-populated record). Not in
+  `Append` (misses mysql), not in `withDefaults` (empty-record test
+  `trace_test.go:263`).
 - Byte-stable for agent **answers**; **not** byte-stable for trace output (adds a
-  JSON key) → requires a `SchemaVersion` bump (B1 set the precedent).
+  JSON key when populated) → `SchemaVersion` bumped to `trace.v0.4`. (B1 added
+  `task_tier` as a never-populated reserved slot and did *not* bump — omitempty
+  kept it byte-identical; B4a bumps because it actually populates.)
 - Feeds the blueprint's open product question #1 (actual fast/knowledge/agent
   ratio), which has been waiting on exactly this data.
+- **Side-finding (NOT in this PR — pre-existing, needs its own decision):** the
+  MySQL sink bypasses `RedactQueryDerivedFields` (`trace.go:401`, its only
+  production caller) and `withDefaults`, so server traces persist query-derived
+  fields unredacted and with an empty `schema_version`. Flagged for a separate
+  fix (privacy-adjacent; memory `sanitization-covers-all-derived-fields`).
 
 **B4b — planner-emitted predicted tier (gated on B2b).**
 - New `Plan` field + planner prompt/schema change + N≥20 regression. Gated on B2b
@@ -120,8 +144,9 @@ gate, and that the trace field has two distinct meanings that must not collide:
    acceptance gate. A deterministic intent→tier code map (more stable, per memory
    `llm-filter-nondeterministic`) would be a deviation requiring an explicit
    ADR-001 amendment, not a silent reframe.
-3. **Realized-tier field name** (see B4 decomposition) — confirm `realized_tier` /
-   `dispatch_tier` vs another name before B4a ships.
+3. **Realized-tier field name** — B4a shipped as `realized_tier` (defaulted by
+   the implementer). Rename to `dispatch_tier`/other is a trivial in-review change
+   if lead prefers; flagging rather than blocking.
 
 ## Refs
 
