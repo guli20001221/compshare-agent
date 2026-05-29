@@ -18,7 +18,7 @@ update its status row here.
 |---|---|---|---|---|
 | **B1** | Safety pad: dead-code cleanup + `internal/llm/router.go` tier-aware wrapper + reserved trace `task_tier` slot | 002 | ✅ shipped | `29029c4` + `731545f` (rev2) + `db5db03` (rev3) |
 | **B2a** | Router inject completion: `engine.NewSharedDeps` + 2 eval sites consume `Router.For(TierFast)` (build-inside, signature unchanged, byte-stable) | 002 #3 | ✅ shipped | spec `a713790`, impl `b38fe28` — `docs/plans/2026-05-29-b2-router-inject-completion.md` |
-| **B2b** | Skill/Tool directory split + codegen + **progressive disclosure** (planner prompt → metadata-only) | 003, 004 | ⏳ spec drafted — review + open decisions pending | `docs/plans/2026-05-29-b2b-skill-tool-dir-codegen.md` (rev-1) |
+| **B2b** | Skill/Tool directory split + codegen + **progressive disclosure** (planner prompt → metadata-only) | 003, 004 | ⏳ spec rev-3 (reviewed) — 4 open decisions + ADR-003/004 ratification pending | `docs/plans/2026-05-29-b2b-skill-tool-dir-codegen.md` (rev-3) |
 | **B3** | Fast path drops the LLM grounded renderer (handler → template + envelope constraints) | 001 | ⏳ pending | — |
 | **B4a** | Observability: derive **realized tier** from dispatch path; populate a trace field at the shared write point | 001 #4 | ⏳ pending | see "B4 decomposition" |
 | **B4b** | Planner emits **predicted tier** (new output field + prompt/schema change); planner model → pro; N≥20 regression | 001 #4, 002 | ⏳ pending (gated on B2b) | see "B4 decomposition" |
@@ -94,7 +94,12 @@ gate, and that the trace field has two distinct meanings that must not collide:
     planner is migrated through the router, map it to a planner-appropriate tier so
     its model stays independently settable.
 - **B2b is the critical path.** ADR-004 progressive disclosure (delivered in B2b)
-  is the long pole that unblocks B4b and any planner cost-down.
+  unblocks **B4b's planner schema change unconditionally**. The **planner flash
+  cost-down** is contingent on open decision #1: under the *pro* path B2b suffices
+  (≤3k is cost-only); under the *flash* path ≤3k is an avalanche-safety threshold
+  B2b may not hit from metadata alone (the `base` classifier block dominates), so a
+  **directive-tiering follow-up may land on the flash critical path** — see B2b spec
+  §12.4. Don't read "unblocks B4b" as unconditional for the flash branch.
 - **B3 is independent** of B4 (disjoint surface: `internal/renderer` vs
   `internal/intent/planner`) and parallelizable with B2b.
 - **SharedDeps.Router field is not zero-touch.** Adding it trips
