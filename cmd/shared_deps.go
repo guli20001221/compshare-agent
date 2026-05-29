@@ -72,13 +72,17 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 	if unknownGrounded != "" {
 		log.Printf("warning: ignoring unknown USE_GROUNDED_RENDERER value %q", unknownGrounded)
 	}
-	if groundedMode == "llm" {
+	if groundedMode == "llm" || groundedMode == "fast_template" {
 		router, err := buildLLMRouter(cfg)
 		if err != nil {
 			return fmt.Errorf("build LLM router: %w", err)
 		}
+		// The LLM renderer is built in both modes — under fast_template it
+		// still serves knowledge/agent tiers; B3 only diverts fast-tier
+		// catalog envelopes to the deterministic template.
 		deps.GroundedRenderer = renderer.NewGroundedRenderer(router.For(llm.TierKnowledge))
 		deps.GroundedRendererModel = router.Model(llm.TierKnowledge)
+		deps.FastTemplateRenderer = groundedMode == "fast_template"
 	}
 
 	cutoverEnabled := len(cutoverIntents) > 0

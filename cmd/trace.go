@@ -663,6 +663,10 @@ func groundedRendererModeFromEnv(getenv getenvFunc) (string, string) {
 	switch raw {
 	case "", "llm":
 		return "llm", ""
+	case "fast_template":
+		// B3: fast-tier catalog envelopes render via deterministic template
+		// (handler Reply); knowledge/agent tiers still use the LLM renderer.
+		return "fast_template", ""
 	case "off", "none", "disabled", "false", "0":
 		return "", ""
 	default:

@@ -43,7 +43,7 @@ package engine
 //   (concrete-type guard for tools.ExternalExecutor.SetProjectId)
 // - SharedDeps doc comment + struct (engine.go:181-217) — explains the
 //   process-singleton model and why setters here are dangerous, then
-//   declares the 12 fields the audit reasons about.
+//   declares the 13 fields the audit reasons about.
 // - Memory feedback_shared_struct_setter_leaks_across_sessions
 //   (originSession c2083e21) — the principle.
 
@@ -89,10 +89,10 @@ var allowedSharedDepMethods = map[string]struct{}{}
 // interface method set, missing concrete-only setters that an unsafe
 // type-assertion could reach.
 var sharedDepConcreteTypes = []reflect.Type{
-	reflect.TypeOf((*llm.Client)(nil)),                // SharedDeps.LLMClient
-	reflect.TypeOf((*knowledge.Retriever)(nil)),       // SharedDeps.KnowledgeRetriever
-	reflect.TypeOf((*grounded.GroundedRenderer)(nil)), // SharedDeps.GroundedRenderer
-	reflect.TypeOf((*governance.MemoryLimiter)(nil)),  // SharedDeps.RateLimiter
+	reflect.TypeOf((*llm.Client)(nil)),                 // SharedDeps.LLMClient
+	reflect.TypeOf((*knowledge.Retriever)(nil)),        // SharedDeps.KnowledgeRetriever
+	reflect.TypeOf((*grounded.GroundedRenderer)(nil)),  // SharedDeps.GroundedRenderer
+	reflect.TypeOf((*governance.MemoryLimiter)(nil)),   // SharedDeps.RateLimiter
 	reflect.TypeOf((*knowledge.EmbeddingSidecar)(nil)), // injected into knowledge.Retriever
 	reflect.TypeOf((*embedding.Client)(nil)),           // upstream of knowledge.EmbeddingSidecar
 }
@@ -144,6 +144,7 @@ var nonAuditableFields = map[string]string{
 	"IntentPlannerEnabledIntents": "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
 	"IntentCutoverIntents":        "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
 	"GroundedRendererModel":       "string — no methods",
+	"FastTemplateRenderer":        "bool — no methods",
 	"SupportsObjectToolChoice":    "bool — no methods",
 	"MaxTokensPerTurn":            "int — no methods",
 	"ExternalExecutor":            "tools.ToolExecutor — already covered by TestSessionIsolation_NoProjectIdLeak (PR #135)",

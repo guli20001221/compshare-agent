@@ -101,13 +101,19 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	if unknownGroundedRendererMode != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_GROUNDED_RENDERER value %q\n", unknownGroundedRendererMode)
 	}
-	if groundedRendererMode == "llm" {
+	if groundedRendererMode == "llm" || groundedRendererMode == "fast_template" {
 		router, err := buildLLMRouter(cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: build LLM router for grounded renderer: %v\n", err)
 			os.Exit(1)
 		}
+		// LLM renderer serves knowledge/agent tiers in both modes; B3
+		// fast_template additionally diverts fast-tier catalog envelopes to
+		// the deterministic template.
 		eng.SetGroundedRenderer(renderer.NewGroundedRenderer(router.For(llm.TierKnowledge)), router.Model(llm.TierKnowledge))
+		if groundedRendererMode == "fast_template" {
+			eng.SetFastTemplate(true)
+		}
 	}
 	plannerDispatchEnabled := cutoverEnabled || knowledgeRetrievalEnabled
 	if plannerDispatchEnabled {
