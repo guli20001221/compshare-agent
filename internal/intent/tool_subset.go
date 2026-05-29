@@ -25,6 +25,10 @@ func IntentToolSubset(i Intent) []string {
 			"DescribeCompShareJupyterToken",
 			"GetCompShareInstanceUserPrice",
 		}
+	case IntentDiskInfo:
+		return []string{
+			"DescribeCompShareInstance",
+		}
 	case IntentMonitorQuery:
 		return []string{
 			"DescribeCompShareInstance",

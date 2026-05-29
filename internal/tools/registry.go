@@ -48,7 +48,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareInstance",
-			Description: "查询用户自己账号下的算力共享实例列表及详情，不用于查询机房库存或平台是否还有 GPU 可售。返回实例状态（Running/Stopped/Install/Install Fail/Starting/Stopping/Rebooting）、GPU 类型、IP、计费等。不传 UHostIds 查全部。Limit 最大 100。State 含义：Install=初始化中, Install Fail=初始化失败。",
+			Description: "查询用户自己账号下的算力共享实例列表及详情，不用于查询机房库存或平台是否还有 GPU 可售。返回实例状态（Running/Stopped/Install/Install Fail/Starting/Stopping/Rebooting）、GPU 类型、IP、计费、以及每台实例挂载的磁盘 DiskSet[]（含 DiskId/DiskShortId/Name/DiskType/Type=Boot|Data|Udisk，TotalDiskSpace 为数据盘总容量 GB）。用户问\"我有哪些数据盘 / 实例 X 挂了哪些磁盘 / 我的磁盘列表\"时也用此 tool，平台无独立 disk 查询接口。不传 UHostIds 查全部。Limit 最大 100。State 含义：Install=初始化中, Install Fail=初始化失败。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

@@ -337,6 +337,9 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentCommunityImageList,
 		// PR #3 (2026-05-22) — pricing capability (commercial path).
 		IntentPricingQuery,
+		// disk_info (2026-05-29) — disk-listing routing; reuses
+		// DescribeCompShareInstance.DiskSet since upstream has no list API.
+		IntentDiskInfo,
 		IntentUnknown,
 	}, AllIntents())
 }
