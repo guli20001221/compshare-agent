@@ -53,16 +53,46 @@ func (w *captureEnqueueWriter) Dir() string { return "" }
 
 func (w *captureEnqueueWriter) Close(context.Context) error { return nil }
 
-func TestTraceWriterFromEnvDisabledByDefault(t *testing.T) {
-	writer, enabled, err := traceWriterFromEnv(func(string) string { return "" })
+// 2026-05-29 cutover: trace defaults to ON. Empty env now produces an
+// enabled writer; only explicit "0" / "false" forces it off.
+func TestTraceWriterFromEnvEnabledByDefault(t *testing.T) {
+	traceDir := t.TempDir()
+	writer, enabled, err := traceWriterFromEnv(func(key string) string {
+		if key == "COMPSHARE_TRACE_DIR" {
+			return traceDir
+		}
+		return ""
+	})
 	if err != nil {
 		t.Fatalf("traceWriterFromEnv: %v", err)
 	}
-	if enabled {
-		t.Fatal("trace should be disabled by default")
+	if !enabled {
+		t.Fatal("trace should be enabled by default (post-2026-05-29 cutover)")
 	}
-	if writer != nil {
-		t.Fatalf("writer = %#v, want nil when disabled", writer)
+	if writer == nil {
+		t.Fatal("writer should be non-nil when enabled")
+	}
+}
+
+func TestTraceWriterFromEnvExplicitDisable(t *testing.T) {
+	for _, val := range []string{"0", "false", "FALSE"} {
+		t.Run(val, func(t *testing.T) {
+			writer, enabled, err := traceWriterFromEnv(func(key string) string {
+				if key == "COMPSHARE_TRACE_ENABLED" {
+					return val
+				}
+				return ""
+			})
+			if err != nil {
+				t.Fatalf("traceWriterFromEnv: %v", err)
+			}
+			if enabled {
+				t.Fatalf("trace should be disabled for COMPSHARE_TRACE_ENABLED=%q", val)
+			}
+			if writer != nil {
+				t.Fatalf("writer = %#v, want nil when disabled", writer)
+			}
+		})
 	}
 }
 
@@ -279,29 +309,46 @@ func TestGroundedRendererModeFromEnv(t *testing.T) {
 	require.Equal(t, "grounded_renderer=off", groundedRendererRuntimeLine(""))
 }
 
+// 2026-05-29 cutover: mutating defaults to ON. Empty env → enabled.
+// Only explicit "0" / "false" forces off; any other value defaults ON
+// and surfaces the raw value as a warning string for logging.
 func TestMutatingToolsFromEnvAndRuntimeLine(t *testing.T) {
 	enabled, unknown := mutatingToolsEnabledFromEnv(func(string) string { return "" })
-	require.False(t, enabled)
-	require.Empty(t, unknown)
-	require.Equal(t, "mutating=disabled (read-only mode)", mutatingToolsRuntimeLine(enabled))
-
-	enabled, unknown = mutatingToolsEnabledFromEnv(func(key string) string {
-		if key == "COMPSHARE_ENABLE_MUTATING_TOOLS" {
-			return "1"
-		}
-		return ""
-	})
-	require.True(t, enabled)
+	require.True(t, enabled, "empty env should default to ON (post-2026-05-29 cutover)")
 	require.Empty(t, unknown)
 	require.Equal(t, "mutating=enabled", mutatingToolsRuntimeLine(enabled))
 
+	for _, on := range []string{"1", "true", "TRUE"} {
+		enabled, unknown = mutatingToolsEnabledFromEnv(func(key string) string {
+			if key == "COMPSHARE_ENABLE_MUTATING_TOOLS" {
+				return on
+			}
+			return ""
+		})
+		require.True(t, enabled, "value %q should enable", on)
+		require.Empty(t, unknown)
+	}
+
+	for _, off := range []string{"0", "false", "FALSE"} {
+		enabled, unknown = mutatingToolsEnabledFromEnv(func(key string) string {
+			if key == "COMPSHARE_ENABLE_MUTATING_TOOLS" {
+				return off
+			}
+			return ""
+		})
+		require.False(t, enabled, "value %q should explicitly disable", off)
+		require.Empty(t, unknown)
+		require.Equal(t, "mutating=disabled (read-only mode)", mutatingToolsRuntimeLine(enabled))
+	}
+
+	// Unknown value: defaults ON + surfaces raw value for warning log.
 	enabled, unknown = mutatingToolsEnabledFromEnv(func(key string) string {
 		if key == "COMPSHARE_ENABLE_MUTATING_TOOLS" {
 			return "yes"
 		}
 		return ""
 	})
-	require.False(t, enabled)
+	require.True(t, enabled, "unknown values default to ON")
 	require.Equal(t, "yes", unknown)
 }
 

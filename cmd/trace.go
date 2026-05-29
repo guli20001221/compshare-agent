@@ -23,8 +23,18 @@ import (
 
 type getenvFunc func(string) string
 
+// traceEnabledFromEnv reports whether trace ingestion is enabled.
+// Default is ON (2026-05-29 production cutover). Set
+// COMPSHARE_TRACE_ENABLED to "0" or "false" to force trace off for
+// read-only test runs or emergency disable; any other value keeps the
+// default ON behavior.
+func traceEnabledFromEnv(getenv getenvFunc) bool {
+	v := strings.TrimSpace(strings.ToLower(getenv("COMPSHARE_TRACE_ENABLED")))
+	return v != "0" && v != "false"
+}
+
 func traceWriterFromEnv(getenv getenvFunc) (observability.Writer, bool, error) {
-	if getenv("COMPSHARE_TRACE_ENABLED") != "1" {
+	if !traceEnabledFromEnv(getenv) {
 		return nil, false, nil
 	}
 	sink := strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_TRACE_SINK")))
@@ -64,7 +74,7 @@ func traceWriterFromEnv(getenv getenvFunc) (observability.Writer, bool, error) {
 }
 
 func traceMySQLSinkEnabled(getenv getenvFunc) bool {
-	if getenv("COMPSHARE_TRACE_ENABLED") != "1" {
+	if !traceEnabledFromEnv(getenv) {
 		return false
 	}
 	sink := strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_TRACE_SINK")))
@@ -156,15 +166,21 @@ func groundedRendererRuntimeLine(mode string) string {
 	return fmt.Sprintf("grounded_renderer=%s", mode)
 }
 
+// mutatingToolsEnabledFromEnv reports whether write operations
+// (start/stop/reboot/reset-password/create) are enabled. Default is ON
+// (2026-05-29 production cutover after PR2.5). Set
+// COMPSHARE_ENABLE_MUTATING_TOOLS to "0" or "false" to force read-only
+// mode for tests or emergency disable; any other value keeps the
+// default ON behavior + surfaces the raw value for log warnings.
 func mutatingToolsEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	value := strings.TrimSpace(getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"))
+	value := strings.TrimSpace(strings.ToLower(getenv("COMPSHARE_ENABLE_MUTATING_TOOLS")))
 	switch value {
-	case "":
-		return false, ""
-	case "1":
+	case "", "1", "true":
 		return true, ""
+	case "0", "false":
+		return false, ""
 	default:
-		return false, value
+		return true, value
 	}
 }
 

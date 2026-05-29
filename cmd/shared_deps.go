@@ -20,9 +20,14 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 	if err := applySharedDepsFromEnv(deps, cfg, getenv); err != nil {
 		return nil, fmt.Errorf("apply shared deps from env: %w", err)
 	}
-	mutating := getenv("COMPSHARE_ENABLE_MUTATING_TOOLS") == "1"
+	mutating, unknownMutating := mutatingToolsEnabledFromEnv(getenv)
+	if unknownMutating != "" {
+		log.Printf("warning: unknown COMPSHARE_ENABLE_MUTATING_TOOLS value %q (defaulting to enabled)", unknownMutating)
+	}
 	if mutating {
-		log.Printf("runtime: HTTP mutating tools enabled (COMPSHARE_ENABLE_MUTATING_TOOLS=1)")
+		log.Printf("runtime: HTTP mutating tools enabled (default ON; COMPSHARE_ENABLE_MUTATING_TOOLS=%q)", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"))
+	} else {
+		log.Printf("runtime: HTTP mutating tools DISABLED (read-only mode; COMPSHARE_ENABLE_MUTATING_TOOLS=%q)", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"))
 	}
 	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
 		Capacity:             cfg.Agent.HTTP.PoolCapacity,
