@@ -18,7 +18,7 @@ update its status row here.
 |---|---|---|---|---|
 | **B1** | Safety pad: dead-code cleanup + `internal/llm/router.go` tier-aware wrapper + reserved trace `task_tier` slot | 002 | ✅ shipped | `29029c4` + `731545f` (rev2) + `db5db03` (rev3) |
 | **B2a** | Router inject completion: `engine.NewSharedDeps` + 2 eval sites consume `Router.For(TierFast)` (build-inside, signature unchanged, byte-stable) | 002 #3 | ✅ shipped | spec `a713790`, impl `b38fe28` — `docs/plans/2026-05-29-b2-router-inject-completion.md` |
-| **B2b** | Skill/Tool directory split + codegen + **progressive disclosure** (planner prompt → metadata-only) | 003, 004 | ⏳ spec to draft | outline in the B2a spec §B2b |
+| **B2b** | Skill/Tool directory split + codegen + **progressive disclosure** (planner prompt → metadata-only) | 003, 004 | ⏳ spec drafted — review + open decisions pending | `docs/plans/2026-05-29-b2b-skill-tool-dir-codegen.md` (rev-1) |
 | **B3** | Fast path drops the LLM grounded renderer (handler → template + envelope constraints) | 001 | ⏳ pending | — |
 | **B4a** | Observability: derive **realized tier** from dispatch path; populate a trace field at the shared write point | 001 #4 | ⏳ pending | see "B4 decomposition" |
 | **B4b** | Planner emits **predicted tier** (new output field + prompt/schema change); planner model → pro; N≥20 regression | 001 #4, 002 | ⏳ pending (gated on B2b) | see "B4 decomposition" |
