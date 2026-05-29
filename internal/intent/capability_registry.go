@@ -24,9 +24,8 @@ import (
 type capabilityEntry struct {
 	intent       Intent
 	// skillGroup labels the Skill this capability belongs to (e.g. "catalog").
-	// Currently consumed only by documentation (docs/design.md Skill table)
-	// and trace annotation. Phase 2.3 will use it for per-Skill prompt segment
-	// selection. See docs/plans/2026-05-25-agent-optimization-plan.md §2.3.
+	// Currently consumed only by trace annotation. Phase 2.3 will use it for
+	// per-Skill prompt segment selection. See docs/plans/2026-05-25-agent-optimization-plan.md §2.3.
 	skillGroup   string
 	requiredTool string
 	// toolSubset lists additional tools this capability may invoke beyond
