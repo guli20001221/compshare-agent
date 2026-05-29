@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CompShare Copilot 架构设计</title>
+<style>
+  :root{
+    --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --soft:#f6f8fa;
+    --border:#d1d9e0; --border-soft:#e6e9ee; --accent:#0969da; --accent-soft:#ddf4ff;
+    --code-bg:#eff1f3; --maxw:880px; --nav:300px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth; scroll-padding-top:16px}
+  body{
+    margin:0; color:var(--fg); background:var(--bg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.75; font-size:16px; -webkit-font-smoothing:antialiased;
+  }
+  .layout{display:flex; align-items:flex-start}
+
+  /* sidebar / TOC */
+  nav{
+    width:var(--nav); flex:0 0 var(--nav); position:sticky; top:0; height:100vh;
+    overflow-y:auto; border-right:1px solid var(--border-soft); padding:26px 20px 60px;
+    background:var(--soft); font-size:.86rem;
+  }
+  nav .brand{font-weight:700; font-size:1.02rem; color:var(--fg); line-height:1.4}
+  nav .brand small{display:block; font-weight:400; color:var(--muted); font-size:.78rem; margin-top:4px}
+  nav .toc{margin-top:22px; display:flex; flex-direction:column; gap:1px}
+  nav a{
+    color:var(--muted); text-decoration:none; padding:4px 10px; border-radius:6px;
+    border-left:2px solid transparent; display:block; transition:background .12s,color .12s;
+  }
+  nav a.h3{padding-left:24px; font-size:.82rem}
+  nav a:hover{background:#eaeef2; color:var(--fg)}
+  nav a.active{background:var(--accent-soft); color:var(--accent); border-left-color:var(--accent); font-weight:600}
+
+  /* content */
+  main{flex:1 1 auto; min-width:0; display:flex; justify-content:center; padding:48px 56px 120px}
+  article{width:100%; max-width:var(--maxw)}
+
+  article h1{font-size:2.05rem; line-height:1.25; margin:0 0 .2em; padding-bottom:.3em; border-bottom:2px solid var(--border)}
+  article h2{font-size:1.5rem; margin:2.6em 0 .8em; padding-bottom:.28em; border-bottom:1px solid var(--border-soft)}
+  article h3{font-size:1.18rem; margin:2em 0 .6em}
+  article p{margin:.85em 0}
+  article ul,article ol{padding-left:1.5em; margin:.7em 0}
+  article li{margin:.32em 0}
+  article li>p{margin:.3em 0}
+  article strong{font-weight:600}
+  article a{color:var(--accent); text-decoration:none}
+  article a:hover{text-decoration:underline}
+  article hr{border:none; border-top:1px solid var(--border-soft); margin:2.4em 0}
+
+  /* inline code */
+  article :not(pre)>code{
+    background:var(--code-bg); padding:.15em .42em; border-radius:5px; font-size:.86em;
+    font-family:"SFMono-Regular","Cascadia Code",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  /* code blocks (incl. ASCII diagrams) */
+  article pre{
+    background:var(--soft); border:1px solid var(--border-soft); border-radius:10px;
+    padding:16px 18px; overflow-x:auto; margin:1.1em 0; line-height:1.5;
+  }
+  article pre code{
+    background:none; padding:0; font-size:.82rem; white-space:pre;
+    font-family:"SFMono-Regular","Cascadia Code",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  /* mermaid */
+  article pre.mermaid{
+    background:#fff; border:1px solid var(--border-soft); text-align:center;
+    padding:20px; white-space:normal;
+  }
+
+  /* blockquote */
+  article blockquote{
+    margin:1.1em 0; padding:.5em 1.1em; color:var(--muted);
+    border-left:4px solid var(--border); background:var(--soft); border-radius:0 8px 8px 0;
+  }
+  article blockquote p{margin:.3em 0}
+
+  /* tables */
+  article table{border-collapse:collapse; width:100%; margin:1.3em 0; font-size:.92rem; display:block; overflow-x:auto}
+  article th,article td{border:1px solid var(--border); padding:8px 13px; text-align:left; vertical-align:top}
+  article th{background:var(--soft); font-weight:600}
+  article tbody tr:nth-child(even){background:#fafbfc}
+  article td code{white-space:nowrap}
+
+  @media (max-width:1000px){
+    nav{display:none}
+    main{padding:32px 22px 80px}
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav>
+    <div class="brand">CompShare Copilot<small>架构设计文档</small></div>
+    <div class="toc" id="toc"></div>
+  </nav>
+  <main><article id="content"></article></main>
+</div>
+
+<script type="text/markdown" id="src">
+# CompShare Copilot 架构设计
+
+> 优云算力共享平台 AI 助手。本文描述系统整体架构、各组件职责与关键设计取舍。
+
+## 1. 概述
+
+CompShare Copilot 是面向优云算力共享(GPU 云)平台用户的 AI 助手,帮用户查实例 / 价格 / 库存 / 规格、回答平台知识问题、以及完成部署和排障这类多步任务。系统是一个 Go 单二进制,支持两种接入:命令行(CLI)和 HTTP SSE 流式。
+
+用户请求的复杂度差异极大,这是整个架构的出发点:
+
+| 请求示例 | 本质 |
+|---|---|
+| "我有哪些实例" / "4090 多少钱" / "现在有货吗" | 一次 API 查询 |
+| "怎么用 SecurityToken 签名" / "Qwen 和 DeepSeek 有什么区别" | 文档问答 |
+| "帮我部署 Qwen32B" / "SSH 进去看 GPU 为什么不识别" | 多步规划 + 副作用 |
+
+用一套逻辑和一个模型档位扛这三类负载是行不通的:简单查询不该烧强模型的钱和延迟,复杂任务又扛不住弱模型的发挥不稳和缺少规划/回滚能力。所以系统按复杂度把请求分流。
+
+## 2. 核心理念
+
+**按任务复杂度分三路。** 请求分成 `fast` / `knowledge` / `agent` 三个 tier,每一路是独立的执行管线,用不同档位的模型。简单查询走确定性逻辑 + 快模型秒回;复杂任务走完整的规划—执行循环 + 强模型。
+
+**能力拆成 Skill 和 Tool 两个正交维度。** Skill 是教模型"怎么做一类任务"的 playbook(markdown);Tool 是模型实际调用的 typed function。两者都能跨 tier 复用,互不绑定。
+
+**read-only 默认。** 变更类操作(创建 / 开关机 / 重启)默认关闭,需显式开启;任何写操作都要经过人工确认。
+
+**证据驱动。** 回答基于工具返回的事实或检索到的文档,没有证据就明说,不凭记忆编造。
+
+**分层安全。** 输入守卫、工具执行管控、输出脱敏三层独立实施。
+
+## 3. 整体架构
+
+理解全部代码只需要两个正交维度:
+
+```
+                  维度 A:Task Tier(选其一,决定执行管线 + 模型档位)
+                  ┌──────────────┬───────────────────┬──────────────────────────────┐
+                  │   fast       │   knowledge       │   agent                      │
+                  │ handler+模板 │ 检索 + grounded   │ orchestrator + tool loop + HITL│
+                  │ 快模型       │ 快模型            │ 强模型                        │
+                  └──────────────┴───────────────────┴──────────────────────────────┘
+维度 B:可复用资产(三路按需引用)
+  Skills — playbook,markdown,渐进式加载        safety_warning / deploy_model / diagnose_* ...
+  Tools  — typed callable,Function Calling spec  DescribeCompShareInstance / RAGRetrieve ...
+```
+
+- **维度 A(tier)** 决定一次请求走哪条执行管线、用哪个模型。三路是三套**不同的执行模型**,不是一套代码的 if-else 分支。Tier 是路由器的一等输出,trace 按 tier 分桶,计费、限流、可观测性都按 tier 统计。
+- **维度 B(skill / tool)** 是跨 tier 复用的资产。`safety_warning` 这个 skill 可以同时被 fast 的开关机流程和 agent 的部署流程引用;`DescribeCompShareInstance` 这个 tool 可以同时被 fast 和 agent 调用。各维护一份,不重复。
+
+顶层数据流:
+
+```mermaid
+graph TD
+    CLI[CLI<br/>cmd/cli.go] --> Engine
+    HTTP[HTTP 网关<br/>cmd/server.go SSE] --> Pool[Session Pool<br/>LRU / idle 过期] --> Engine
+
+    subgraph Engine[Engine 单轮]
+        IG[输入守卫<br/>jailbreak / off-topic / 关键词拦截] -->|pass| RT
+        RT[Planner 路由<br/>语义分类 → tier + skills + slots] --> FAST
+        RT --> KNOW
+        RT --> AGENT
+        FAST[fast tier<br/>确定性 handler + 模板渲染] --> OG
+        KNOW[knowledge tier<br/>检索 + grounded 生成] --> OG
+        AGENT[agent tier<br/>orchestrator + tool loop + HITL] --> OG
+        OG[输出守卫<br/>凭证脱敏 / 引用泄漏检查]
+    end
+
+    OG --> OUT([SSE / CLI 输出])
+    RT -. 按 tier 选模型 .-> LR[(模型路由<br/>internal/llm)]
+    AGENT -. 触发后拉 body .-> SK[(Skill Loader)]
+    FAST -. 调用 .-> TL[(Tool Registry)]
+    AGENT -. 调用 .-> TL
+    KNOW -. 检索 .-> KB[(知识库<br/>deploy/kb)]
+    Engine -. per-turn .-> TR[(Trace / 可观测性)]
+    Engine -. STS / AK-SK .-> API[(平台 OpenAPI)]
+    Engine -. session .-> DB[(MySQL)]
+```
+
+## 4. 一次请求怎么走
+
+不论哪个 tier,一轮请求都走同一外层骨架。这是一条 short-circuit 链,优先级从高到低,前一层命中就直接返回:
+
+```
+1. 输入守卫            命中拦截规则 → 直接返回固定话术
+2. 资源选择恢复        有未决的实例选择 → 恢复上下文,不重新分类
+3. Planner 路由        语义分类 → {tier, agent_subtype?, skills[], slots, tool_calls?}
+4. 按 tier 分发:
+   ├─ fast      → 确定性 handler → 调 tool → envelope → 模板渲染
+   ├─ knowledge → 检索 → RRF 融合 → rerank → grounded 渲染
+   └─ agent     → orchestrator 循环(可中途暂停等用户确认,见 §8)
+5. 输出守卫            脱敏 + 引用泄漏检查
+```
+
+三路分发是 first-class 的,彼此不互相 fallback——fast 的渲染问题不会污染 agent,agent 的不稳定不会拖慢 fast。
+
+## 5. 路由层
+
+路由分两件独立的事:**走哪一路**(语义分类)和**用哪个模型**(模型路由)。
+
+### 5.1 Planner — 语义分类
+
+`internal/intent/planner.go`。输入是用户消息加上**结构化压缩的上下文信号**(上一轮意图、选中的实例、必要的短摘要,而不是把整段历史灌进去),输出一个结构化的路由决策:
+
+```jsonc
+{
+  "task_tier": "fast | knowledge | agent",      // 走哪一路
+  "agent_subtype": "mutating | diagnosis",      // 仅 agent tier
+  "skills": ["safety_warning", "deploy_model"], // 粗筛 1-3 个候选 skill
+  "slots": { ... },                             // 抽取的结构化参数
+  "tool_calls": [ ... ],                        // 标准 tool_calls 格式
+  "tier_reason": "..."                          // 分类理由,落 trace 便于复盘
+}
+```
+
+Planner 做的是分类和 slot 抽取,它的输出是建议性的;真正的分发由代码按 tier 确定性执行,不让模型直接决定控制流。
+
+三分类的边界有时会模糊,比如"我有 4090 4 卡机器吗"既可能是查询(fast),也可能是部署任务的第一步(agent)。处理办法是 Planner 只看当前这句话不带太多上下文偏向,且 fallback 倾向 `fast > knowledge > agent`——误判成 agent 是浪费算力,误判成 fast 是降级体验,前者代价更高。
+
+### 5.2 模型路由
+
+`internal/llm/router.go`。按 tier 返回对应的 LLM 客户端:
+
+```go
+router.For(llm.TierFast)      // 快模型
+router.For(llm.TierKnowledge) // 快模型
+router.For(llm.TierAgent)     // 强模型(必要时可升到更强的模型兜底)
+```
+
+档位映射写在 `agent.yaml` 的 `tier_routing` 里。这个配置为空时所有 tier 回退到同一个基础模型——这保证了在还没做精细分流前,行为是确定且可回退的。fast / knowledge 这种分类 + 组装的活快模型够用;agent 的多步规划必须上强模型,弱模型在长链路上发挥不稳。
+
+## 6. Fast tier — 确定性 handler + 模板渲染
+
+**定位**:一次 API 查询就能答的读类请求,要求低延迟、结果稳定。
+
+**管线**:
+
+```
+Planner(tier=fast, intent, slots)
+  → 确定性 Go handler(按 slots 取过滤条件 → 调 tool → 确定性过滤 / 格式化)
+  → envelope(结构化事实集)
+  → 模板渲染(逐字渲染,不经过 LLM)
+```
+
+关键点是 **fast 的渲染不走 LLM**。handler 把结果整理成一个强约束的 envelope,模板按字段逐条渲染。这样列表不会被模型擅自截断、数字和单位不会被改写、提示文案逐字可控。让 LLM 参与这一步只会引入不确定性,而这类请求的答案本就是确定的。
+
+覆盖的意图:实例列表 / 当前监控 / GPU 规格 / 库存 / 价格 / 各类镜像列表 / 计费查询等。这些都是"问一个事实、答一个事实"的场景。
+
+## 7. Knowledge tier — 检索 + grounded 生成
+
+**定位**:平台知识问答——计费规则、操作教程、概念对比、FAQ。答案在文档里,不在某个 API 里。
+
+**检索管线**(`internal/knowledge/`):
+
+```
+用户问题
+  → BM25 关键词 top-50  ⊕  qwen3-embedding-8b 向量 top-50   (hybrid 检索)
+  → Reciprocal Rank Fusion 融合 (k=60)
+  → qwen3-reranker-8b cross-encoder 精排 top-3
+  → 命中片段作为证据交给 grounded 渲染
+```
+
+- 关键词召回和向量召回各有盲区,hybrid + RRF 把两路结果融合后再用 cross-encoder 精排,比单一召回稳。embedder 和 reranker 用同族模型(都是 qwen3)比跨族混搭更可靠。
+- **grounded 渲染**(`internal/renderer/`):接收证据片段,LLM 生成带引用的中文回答,**没有证据必须拒答**,不允许凭模型知识补。引用标记是否泄漏到最终文本由输出守卫兜底检查。
+- 知识库是 `deploy/kb/stage2b_w0.jsonl` 加预计算的 embedding sidecar,三件套用 SHA256 字节锁定,对不上直接拒绝启动,保证线上跑的语料就是验证过的那份。
+
+## 8. Agent tier — orchestrator + tool loop + HITL
+
+**定位**:多步规划 + 有副作用的任务。两个典型场景:"部署 Qwen32B"(推荐 GPU → 创建实例 → 配置)、"SSH 进去排障"。这一路延迟长、有暂停点、跑强模型,是产品的核心能力所在。
+
+执行循环是自己写的 Go orchestrator,不引入外部编排框架——因为每一步的 trace、确认、回滚都要精确可控,框架的抽象层反而碍事。
+
+```mermaid
+graph TD
+    Start[进入 agent tier] --> Plan[强模型规划下一步]
+    Plan --> Trace[记录这一步:决策理由 + 工具 + 结果]
+    Trace --> Mut{写操作?}
+    Mut -->|读| Exec[执行 tool]
+    Mut -->|写| HITL[暂停等用户确认<br/>PauseToken 持久化]
+    HITL -->|同意| IdKey[附幂等键<br/>hash step+tool+args]
+    IdKey --> Exec
+    HITL -->|拒绝 / 超时| Abort[中止 + 回滚已执行的步]
+    Exec -->|失败| Saga[补偿动作回滚<br/>不可逆步标记跳过]
+    Exec -->|成功| More{还有下一步?}
+    More -->|是| Plan
+    More -->|否| Done[聚合结论返回]
+    Saga --> Done
+```
+
+这一路有几条不能省的要求:
+
+1. **步骤可见 + 可审计(step trace)** — 每一步的决策理由、调了什么工具、拿到什么结果都记下来,用户能看到进度,事后能回放。
+2. **回滚(Saga)** — 多步任务中途失败时,对已执行的步做补偿动作,best-effort 回滚。不可逆的操作(密码已重置、实例已扣费创建)在 schema 上标 `irreversible`,靠提前确认而不是事后补偿。
+3. **人工确认(HITL)** — 创建、计费、SSH 执行这些动作前必须用户确认。确认点支持暂停整个流程并持久化状态(PauseToken),Web 端可以通过单独的回调端点恢复,实现真正的 interrupt / resume。
+4. **SSH 沙箱** — 按命令**类别**而不是字面量来管控(只读检查 / 看日志 / 查进程 / 网络诊断),每类里是 typed tool + 模型填参数,写操作走确认 + 全命令审计。按类别管比维护一张命令白名单更不容易僵化。
+5. **强模型** — 这一路必须 `router.For(TierAgent)`,弱模型在长链路上不可靠。
+6. **幂等键(idempotency key)** — 每个写操作步带 `hash(step_id + tool + args)`,重试不会重复扣费。
+
+agent tier 内部分两条子路径(由 `agent_subtype` 区分):
+
+- **mutating 子路径** — 部署 / 扩容 / 重建这类闭合的、有副作用的流程,走上面整套 orchestrator + saga + 步级确认。
+- **diagnosis 子路径** — 排障这类以只读探索为主、步骤无法预先写死的开放推理。它不需要 saga(没有"撤销一次诊断"的概念),确认是命令级的。执行器藏在一个 `SubAgent` interface 后面,具体实现暂不锁死(自写 ReAct 子循环,或委派一个外部 agent 子进程),等积累足够真机故障 case 再定。诊断用到的方法论以 skill 形式沉淀(见 §9),没经过真机验证的会带 caution 标记。
+
+## 9. Skills — playbook
+
+Skill 是教模型"怎么用工具做一类任务"的 markdown playbook,**它本身不是 callable**,只是被注入到 prompt 里指导模型思考。
+
+**渐进式加载(progressive disclosure)** 是这里的核心机制:
+
+```
+启动:   扫描目录,只解析 frontmatter 建索引(每条约 80 tokens),body 不读
+路由:   Planner 的 prompt 只放 metadata 列表,几十个 skill 也就几 k tokens
+触发:   Planner 选中某些 skill → 这时才按名字 lazy 读取它们的 body 注入
+fast/knowledge: 只看 metadata 路由,从不读 body
+```
+
+如果把所有 skill 的完整内容都灌进 prompt,system prompt 会随 skill 数量线性膨胀,这是弱模型发挥不稳的一大诱因。渐进式加载把它压成"常驻一份精简索引 + 按需拉取正文"。
+
+**目录结构**:一个 skill 一个目录 `internal/skills/<name>/skill.md`(可选附带 `examples.jsonl` / `runbook.md`)。frontmatter 关键字段:
+
+- `applicable_tiers` — 声明跨 tier 复用(`safety_warning` 同时给 fast 和 agent 用)。
+- `required_tools` — 只引用工具名字,不绑定实现。
+- `verification_status` — 这份方法论的可信度(见 §12.4)。
+
+几条约束(都是为了不让 prompt 失控):
+
+- body 默认上限 100 行(约 500-800 tokens),单个 skill 可在 frontmatter 调高,硬顶 200 行,超出直接 build 失败,不静默截断。
+- name 用 snake_case,且必须和目录名一致。
+- 一次最多触发 2 个 skill(硬上限 3),所有 body 总和不超过约 2K tokens,先到先得,超了的被拒并告警。
+
+skill 索引由 codegen 从目录扫描生成,加 / 改 skill 不用手写注册代码,避免"目录"和"注册表"两份数据漂移。
+
+## 10. Tools — typed callable
+
+Tool 是模型实际调用的 typed function,格式是标准 Function Calling spec(JSON Schema)加一段自定义扩展:
+
+```jsonc
+{
+  "name": "DescribeCompShareInstance",
+  "parameters": { "type": "object", "properties": { ... } },
+  "x-compshare": {
+    "class": "read | mutating",        // 读还是写
+    "requires_acceptance": false,      // 是否要人工确认
+    "idempotent": true,                // 重试是否安全
+    "tier_eligible": ["fast", "agent"] // 哪些 tier 可以调
+  }
+}
+```
+
+把"是不是写操作、要不要确认"放在 tool spec 自己身上,而不是在 engine 里硬编码一张表——加新工具时它的安全语义跟着定义走,不会漏。tool 注册同样用 codegen 从目录生成,单一数据源。
+
+## 11. MCP 网关
+
+skill 和 tool 通过 MCP(Model Context Protocol)对外暴露,内部进程内调用和外部进程(stdio / HTTP)共用一套定义。Function Calling spec 和 MCP tool spec 字段基本同构,加一层薄薄的 adapter 就能双向转换,不构成锁定。
+
+有两件契约要提前定好:
+
+- **命名空间**:内部 Go API 保留 CamelCase(`DescribeCompShareInstance`);对外用 `provider/category/action` 风格(`compshare/instance/describe`),映射规则集中在一处。
+- **字段可见性**:`x-compshare` 里 `class` / `requires_acceptance` / `idempotent` 对外暴露(外部客户端做确认和重试要用);`tier_eligible`(内部路由概念)和底层 API action 名对外隐藏(后者暴露会扩大攻击面)。网关层做这个投影。
+
+## 12. 横切关注点
+
+### 12.1 可观测性
+`internal/observability/` 每轮写一条 trace(JSONL 和 / 或 MySQL)。除了 planner / 检索 / 渲染 / token 用量,还按 **tier 分桶**统计,agent 这一路额外记录每一步的 step trace。要确认某条路由是否真的触发,看 trace 里的字段,别靠延迟去猜。
+
+### 12.2 守卫(guardrails)
+输入侧在调 LLM 之前拦截(越狱、off-topic、账户计费、特定错误码、历史监控等,各规则关键词集不相交);输出侧做凭证脱敏(IP / UUID / AK-SK / token)、PII 过滤、引用泄漏检查。中文场景的安全正则要覆盖全角分隔符和中文关键词,不能只匹配 ASCII。
+
+### 12.3 限流
+`internal/governance/` 按租户(组织 ID 对)做 QPS + 每日额度,分 LLM / 写操作 / 重读操作三类计。agent tier 单价高,限得更紧。
+
+### 12.4 内容可信度
+skill 是给模型当方法论用的,如果一份方法论本身只是当初的设计草稿、没真机跑过,把它当事实注入会让模型把假设当结论输出。所以每个 skill 标三级状态:`production_validated`(真实流量验证过)/ `spike_validated`(故障 case 跑通过)/ `unverified`(只是设计意图)。加载 `unverified` 的 skill 时在 body 前面加一行 `[CAUTION: 方法论未验证,步骤仅供参考]`,降低模型把它当事实的风险。升级要靠真实 case + review。
+
+### 12.5 安全边界归属
+密钥 / 权限边界放在 `internal/security`;产品级的能力拦截(比如某类请求不支持)放在 `internal/policy` 或 engine,两者不混在一起。
+
+## 13. 状态与服务
+
+- **接入**:CLI 是单进程单 Engine;HTTP 是 Gin + SSE,身份从请求 body 取(组织 ID 等),不走 header。
+- **会话**:HTTP 路径用一个 LRU 池维护 per-session 的 Engine(满了 / 空闲过期淘汰),miss 时从 MySQL 重建对话历史;同一会话的并发请求串行化。
+- **持久化**:MySQL。对话历史和结构化的 SessionState(选中实例、上一轮意图、累积事实等)落库,SessionState 用版本号做乐观锁。agent 的步骤记录和 PauseToken 也持久化,支撑 Web 端的暂停 / 恢复。
+- **凭证**:生产用 STS AssumeRole 换临时 token,本地开发用静态 AK / SK 直接签名。
+
+## 14. 未来方向
+
+- **更丰富的 agent 场景** — 当前一个 agent 单线程跑;像"并行拉 Prometheus + 日志 + GPU 监控再综合分析"这种需要多个子 agent 协作的场景,以后再评估。
+- **诊断子路径定型** — `SubAgent` 接口已经在,自写循环还是委派子进程,等真机故障数据够了再拍板。
+- **检索增强** — corpus 目前自管,citation 自己写,后续可以在召回质量和引用粒度上继续打磨。
+- **更多写操作端到端** — workflow 框架已具备,逐个把生命周期操作在 Web 端跑通(SSE 确认链路)。
+
+## 附录:`internal/` 包图
+
+```
+internal/
+├── llm/            模型路由(按 tier 选客户端)
+├── intent/         Planner 语义分类 + fast tier 确定性 handler
+├── skills/         Skill bundle + 渐进式加载 loader + codegen
+│   └── <name>/skill.md  (含 5 个 diagnose_* 诊断方法论)
+├── tools/          Tool spec(Function Calling + x-compshare)+ codegen + handler
+├── knowledge/      hybrid 检索 + RRF + rerank
+├── renderer/       grounded 渲染(knowledge)+ 模板渲染(fast)
+├── engine/         外层骨架 + 三路 dispatch
+├── orchestrator/   agent 循环 + saga 回滚 + HITL 确认
+├── diagnosis/      诊断 SubAgent 接口 + registry
+├── security/       密钥边界 + SSH 沙箱(按类别)
+├── mcp/            命名映射 + 字段可见性投影
+├── workflow/       写操作 workflow 定义
+├── governance/     限流(按租户、按类别)
+├── observability/  trace(tier 分桶 + step 记录)
+├── policy/         引用泄漏 / 产品级拦截
+├── entity/         实例解析
+└── agentpool/      per-session Engine 池
+```
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+(function(){
+  var md = document.getElementById('src').textContent;
+  var content = document.getElementById('content');
+
+  // markdown -> html
+  if (window.marked && marked.setOptions) marked.setOptions({ gfm:true, breaks:false });
+  content.innerHTML = (window.marked.parse ? marked.parse(md) : marked(md));
+
+  // promote ```mermaid code blocks to <pre class="mermaid"> for mermaid to render
+  content.querySelectorAll('code.language-mermaid').forEach(function(code){
+    var pre = code.closest('pre');
+    var box = document.createElement('pre');
+    box.className = 'mermaid';
+    box.textContent = code.textContent;
+    pre.replaceWith(box);
+  });
+
+  // heading ids + table of contents
+  var toc = document.getElementById('toc');
+  var heads = content.querySelectorAll('h2, h3');
+  heads.forEach(function(h, i){
+    h.id = 'sec-' + i;
+    var a = document.createElement('a');
+    a.href = '#sec-' + i;
+    a.textContent = h.textContent;
+    a.className = h.tagName.toLowerCase();
+    a.dataset.target = 'sec-' + i;
+    toc.appendChild(a);
+  });
+
+  // render mermaid
+  if (window.mermaid) {
+    mermaid.initialize({ startOnLoad:false, theme:'neutral', securityLevel:'loose', flowchart:{ useMaxWidth:true } });
+    try { mermaid.run({ querySelector:'.mermaid' }); } catch(e){ /* offline: blocks stay as text */ }
+  }
+
+  // active-section highlight in TOC
+  var linkByID = {};
+  toc.querySelectorAll('a').forEach(function(a){ linkByID[a.dataset.target] = a; });
+  if (window.IntersectionObserver) {
+    var obs = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if (e.isIntersecting) {
+          toc.querySelectorAll('a.active').forEach(function(x){ x.classList.remove('active'); });
+          if (linkByID[e.target.id]) linkByID[e.target.id].classList.add('active');
+        }
+      });
+    }, { rootMargin:'0px 0px -82% 0px' });
+    heads.forEach(function(h){ obs.observe(h); });
+  }
+})();
+</script>
+</body>
+</html>
