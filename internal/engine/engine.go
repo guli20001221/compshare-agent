@@ -291,9 +291,33 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 	if cfg == nil {
 		return nil, errors.New("engine.NewSharedDeps: cfg is nil")
 	}
+	// B2a (ADR-002 Acceptance #3): build the main LLM client through the Router
+	// factory instead of constructing a bare client directly, so the Router is
+	// the single client-construction choke point. After this change the only
+	// non-test, non-OCR product code that still constructs a client directly is
+	// the Router factory itself (internal/llm/router.go) and the B4-deferred
+	// planner (cmd/cli.go:349). nil tier overrides → For(TierFast) is
+	// byte-identical to the base model: the main ReAct loop still handles every
+	// intent, so it stays pinned to the base model. Per-turn tier selection —
+	// and honoring tier_routing for the main loop — is B4 (ADR-002:79).
+	// The model identity for empty tier_routing is pinned by internal/llm/
+	// router_test.go::TestNewRouter_NilOverrides_AllTiersUseBaseModel; the full
+	// (BaseURL, Model, APIKey) equivalence follows from NewRouter copying
+	// `effective := base` whole-struct on the nil-override path (router.go:69).
+	//
+	// Allowed change (memory acceptance-invariant-with-allowed-change): NewRouter
+	// validates base.Model is non-empty, so a config with an empty model now
+	// fails loud here instead of at the first LLM call (the prior direct
+	// constructor tolerated it). config.Load does not itself require a model,
+	// but the shipped configs set one, so this only triggers on a model-less
+	// misconfig — and surfaces at boot rather than at the first LLM call.
+	router, err := llm.NewRouter(cfg.Agent.LLM, nil)
+	if err != nil {
+		return nil, fmt.Errorf("engine.NewSharedDeps: build LLM router: %w", err)
+	}
 	cap := llm.LookupCapability(cfg.Agent.LLM.BaseURL, cfg.Agent.LLM.Model)
 	return &SharedDeps{
-		LLMClient: llm.NewClient(cfg.Agent.LLM),
+		LLMClient: router.For(llm.TierFast),
 		// MemoryLimiter is process-local and suitable for local demo or
 		// single-instance deployment only. Multi-replica production needs a
 		// centralized limiter such as Redis or an API gateway.

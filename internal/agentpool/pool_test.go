@@ -34,13 +34,16 @@ func (m *mockMessageStore) GetWithOwnerCheck(_ context.Context, _ store.Owner, _
 }
 
 // minimalConfig returns a Config that satisfies engine.New without requiring a
-// live LLM (model is blank; we never call Chat in pool tests).
+// live LLM. Model is a non-empty placeholder: pool tests never call Chat, but
+// B2a routes SharedDeps.LLMClient through llm.NewRouter, which rejects an empty
+// base.Model (fail-loud — see internal/llm/router.go). The endpoint is never
+// dialed.
 func minimalConfig() *config.Config {
 	return &config.Config{
 		Agent: config.AgentConfig{
 			LLM: config.LLMConfig{
 				BaseURL: "http://localhost:1",
-				Model:   "",
+				Model:   "test-model",
 			},
 		},
 	}

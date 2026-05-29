@@ -681,11 +681,19 @@ func TestGoldenScripts(t *testing.T) {
 		t.Skipf("SKIP %s: no API key", m.Name)
 	}
 
-	llmClient := llm.NewClient(config.LLMConfig{
+	// B2a (ADR-002 Acceptance #3): construct the eval client through the Router
+	// factory (tier-aware) instead of llm.NewClient directly. nil overrides →
+	// For(TierFast) is byte-identical to the base model. The no-API-key skip
+	// above (t.Skipf) still fires first.
+	router, err := llm.NewRouter(config.LLMConfig{
 		BaseURL: m.BaseURL,
 		APIKey:  m.APIKey,
 		Model:   m.ModelID,
-	})
+	}, nil)
+	if err != nil {
+		t.Fatalf("build LLM router for model %s: %v", m.Name, err)
+	}
+	llmClient := router.For(llm.TierFast)
 
 	for _, gc := range engineGoldenCases {
 		t.Run(gc.ID, func(t *testing.T) {
