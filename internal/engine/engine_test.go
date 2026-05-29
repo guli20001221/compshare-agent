@@ -4572,6 +4572,110 @@ func TestPhase1CutoverGPUSpecsPlanUsesGroundedRenderer(t *testing.T) {
 	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, rendererTraces[0].InputEnvelopeHashes[0])
 }
 
+// B3: with fast_template on, a fast-tier catalog envelope (gpu_specs) must
+// bypass the LLM renderer entirely — the deterministic handler Reply is the
+// answer. WHY: the LLM reformat is the source of the list-truncation / lossy
+// wording on the fast path, and its latency+quota cost is the whole thing B3
+// removes; if this test passes while the renderer is still called, B3 is a
+// no-op. The envelope hash must still be recorded (auditability) and the trace
+// must read Status="template" with no fallback (so analytics joining
+// fallback_reason don't miscount it as a failure).
+func TestFastTemplateBypassesLLMRendererForFastTier(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1GPUSpecsPlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{
+					"Name":           "4090",
+					"GraphicsMemory": map[string]any{"Value": 24},
+					"MachineSizes": []any{
+						map[string]any{
+							"Gpu": float64(1),
+							"Collection": []any{
+								map[string]any{"Cpu": float64(16), "Memory": []any{float64(64), float64(94)}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}}
+	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+		Text:            "renderer SHOULD NOT be called under fast_template",
+		Model:           "deepseek-v4-flash",
+		AttributionMode: grounded.AttributionEnvelope,
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentGPUSpecsQuery},
+		Model:          "deepseek-v4-flash",
+	})
+	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetFastTemplate(true)
+	var rendererTraces []observability.RendererTrace
+	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
+		rendererTraces = append(rendererTraces, trace)
+	})
+
+	reply, err := eng.Chat(context.Background(), "4090 显存多大", noopStep)
+
+	require.NoError(t, err)
+	assert.Empty(t, groundedRenderer.requests, "fast_template must NOT call the LLM renderer for a fast-tier envelope")
+	assert.Contains(t, reply, "显存=24GB", "reply must be the deterministic handler template, not LLM output")
+	assert.NotEqual(t, "renderer SHOULD NOT be called under fast_template", reply)
+	require.Len(t, rendererTraces, 1)
+	assert.True(t, rendererTraces[0].Enabled)
+	assert.Equal(t, "template", rendererTraces[0].Status)
+	assert.False(t, rendererTraces[0].FallbackUsed)
+	assert.Empty(t, rendererTraces[0].FallbackReason)
+	assert.Equal(t, "gpu_specs_query", rendererTraces[0].EnvelopeKind)
+	require.Len(t, rendererTraces[0].InputEnvelopeHashes, 1, "envelope hash must survive on the template path (auditability)")
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, rendererTraces[0].InputEnvelopeHashes[0])
+}
+
+// B3: with fast_template on, a knowledge-tier envelope (resource_info) must
+// STILL use the LLM renderer. WHY: B3 only diverts the 3 catalog kinds; if
+// fast_template silently dropped the LLM reformat for resource_info too,
+// knowledge-tier answer quality (entity resolution, multi-instance prose)
+// would regress with no signal.
+func TestFastTemplateKeepsLLMRendererForKnowledgeTier(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
+	}}
+	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+		Text:            "renderer says phase1-demo is running",
+		Model:           "deepseek-v4-flash",
+		AttributionMode: grounded.AttributionEnvelope,
+		EnvelopeHash:    "sha256:renderer-envelope",
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetFastTemplate(true)
+	var rendererTraces []observability.RendererTrace
+	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
+		rendererTraces = append(rendererTraces, trace)
+	})
+
+	reply, err := eng.Chat(context.Background(), "show phase1-demo resource", noopStep)
+
+	require.NoError(t, err)
+	require.Len(t, groundedRenderer.requests, 1, "resource_info is not fast-tier-catalog; LLM renderer must still run under fast_template")
+	assert.Equal(t, "renderer says phase1-demo is running", reply)
+	require.Len(t, rendererTraces, 1)
+	assert.Equal(t, "rendered", rendererTraces[0].Status)
+	assert.Equal(t, "resource_info", rendererTraces[0].EnvelopeKind)
+}
+
 func TestPhase1CutoverResourceFilterPlanSendsFilteredEnvelopeToRenderer(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourceFilterPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}

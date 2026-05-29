@@ -271,6 +271,18 @@ func TestGroundedRendererModeFromEnv(t *testing.T) {
 	require.Equal(t, "llm", mode)
 	require.Empty(t, unknown)
 
+	mode, unknown = groundedRendererModeFromEnv(func(key string) string {
+		if key == "USE_GROUNDED_RENDERER" {
+			return "fast_template"
+		}
+		return ""
+	})
+	// B3: fast_template must be a RECOGNIZED mode, not an unknown value —
+	// an unknown value is logged-and-treated-as-off, which would silently
+	// disable the feature with no operator signal.
+	require.Equal(t, "fast_template", mode)
+	require.Empty(t, unknown)
+
 	mode, unknown = groundedRendererModeFromEnv(func(string) string { return "weird" })
 	require.Empty(t, mode)
 	require.Equal(t, "weird", unknown)

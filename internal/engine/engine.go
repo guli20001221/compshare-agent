@@ -156,16 +156,22 @@ type IntentPlannerOptions struct {
 
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
 type Engine struct {
-	llmClient                        LLMClient
-	safeExecutor                     *tools.SafeToolExecutor
-	registry                         *entity.EntityRegistry
-	intentPlanner                    IntentPlanner
-	intentPlannerModel               string
-	intentPlannerEnabledIntents      map[intent.Intent]struct{}
-	intentCutoverIntents             map[intent.Intent]struct{}
-	knowledgeRetriever               KnowledgeRetriever
-	groundedRenderer                 grounded.Renderer
-	groundedRendererModel            string
+	llmClient                   LLMClient
+	safeExecutor                *tools.SafeToolExecutor
+	registry                    *entity.EntityRegistry
+	intentPlanner               IntentPlanner
+	intentPlannerModel          string
+	intentPlannerEnabledIntents map[intent.Intent]struct{}
+	intentCutoverIntents        map[intent.Intent]struct{}
+	knowledgeRetriever          KnowledgeRetriever
+	groundedRenderer            grounded.Renderer
+	groundedRendererModel       string
+	// fastTemplate, when true, makes fast-tier catalog envelopes
+	// (gpu_specs / stock / image_list) render via the handler's
+	// deterministic Reply instead of the LLM grounded renderer (B3). The
+	// LLM renderer is still used for the other tiers. Shared (process-wide
+	// flag), copied into every session.
+	fastTemplate                     bool
 	rendererTraceObserver            func(observability.RendererTrace)
 	plannerTraceObserver             func(observability.PlannerTrace)
 	retrievalTraceObserver           func(observability.RetrievalTrace)
@@ -262,8 +268,12 @@ type SharedDeps struct {
 	KnowledgeRetriever          KnowledgeRetriever
 	GroundedRenderer            grounded.Renderer
 	GroundedRendererModel       string
-	RateLimiter                 governance.RateLimiter
-	SupportsObjectToolChoice    bool
+	// FastTemplateRenderer enables B3: fast-tier catalog envelopes render
+	// via the handler's deterministic Reply instead of the LLM grounded
+	// renderer. Default false (LLM renderer for all tiers, unchanged).
+	FastTemplateRenderer     bool
+	RateLimiter              governance.RateLimiter
+	SupportsObjectToolChoice bool
 	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
 	// 0 = disabled. Process-wide constant; copied into every NewSession.
 	MaxTokensPerTurn int
@@ -351,6 +361,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		knowledgeRetriever:          deps.KnowledgeRetriever,
 		groundedRenderer:            deps.GroundedRenderer,
 		groundedRendererModel:       deps.GroundedRendererModel,
+		fastTemplate:                deps.FastTemplateRenderer,
 		rateLimiter:                 deps.RateLimiter,
 		supportsObjectToolChoice:    deps.SupportsObjectToolChoice,
 		maxTokensPerTurn:            deps.MaxTokensPerTurn,
@@ -478,6 +489,11 @@ func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
 func (e *Engine) SetGroundedRenderer(r grounded.Renderer, model string) {
 	e.groundedRenderer = r
 	e.groundedRendererModel = model
+}
+
+// SetFastTemplate toggles B3 fast-tier template rendering (see Engine.fastTemplate).
+func (e *Engine) SetFastTemplate(v bool) {
+	e.fastTemplate = v
 }
 
 func (e *Engine) SetRendererTraceObserver(observer func(observability.RendererTrace)) {
@@ -1472,8 +1488,40 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 	return reply, true
 }
 
+// isFastTierEnvelope reports whether an envelope kind is fast-tier catalog
+// data whose handler Reply is already complete deterministic prose, so B3 can
+// skip the LLM renderer for it. resource_info / monitor_query are also fast
+// tier (ADR-001) but stay on the LLM renderer for now — their output is
+// variable (entity resolution, multi-instance, selection prompts), so
+// templating them is a deferred follow-up, NOT a tier reclassification.
+func isFastTierEnvelope(kind envelope.Kind) bool {
+	switch kind {
+	case envelope.KindGPUSpecsQuery, envelope.KindStockAvailability, envelope.KindImageList:
+		return true
+	default:
+		return false
+	}
+}
+
 func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent.HandlerResult) string {
 	if e.groundedRenderer == nil || handled.Envelope == nil {
+		return handled.Reply
+	}
+	// B3: fast-tier catalog envelopes skip the LLM renderer entirely — the
+	// handler's Reply is already complete deterministic prose, and the LLM
+	// reformat is the source of the list-truncation / lossy-wording the
+	// fast path suffers. Emit a "template" renderer trace (not a fallback —
+	// this is the primary path here) and return the deterministic Reply.
+	if e.fastTemplate && isFastTierEnvelope(handled.Envelope.Kind) {
+		e.emitRendererTrace(observability.RendererTrace{
+			Enabled:             true,
+			Status:              "template",
+			EnvelopeKind:        string(handled.Envelope.Kind),
+			InputEnvelopeHashes: append([]string(nil), handled.RendererInputEnvelopeHashes...),
+			InputToolArgHashes:  append([]string(nil), handled.RendererInputToolArgHashes...),
+			FallbackUsed:        false,
+			AttributionMode:     grounded.AttributionEnvelope,
+		})
 		return handled.Reply
 	}
 	trace := observability.RendererTrace{
