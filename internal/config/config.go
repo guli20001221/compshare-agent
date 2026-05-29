@@ -311,6 +311,11 @@ func validateTierRouting(tr map[string]LLMConfig) error {
 	if len(tr) == 0 {
 		return nil
 	}
+	// MUST stay in sync with internal/llm.AllTiers. We can't import
+	// internal/llm here because llm imports config (circular dep), so
+	// the canonical list is duplicated. If you add a tier to AllTiers,
+	// add it here too — the config_test.go TierRouting tests will not
+	// catch the drift (they only test known keys against this map).
 	valid := map[string]bool{"fast": true, "knowledge": true, "agent": true}
 	for tier := range tr {
 		if !valid[tier] {

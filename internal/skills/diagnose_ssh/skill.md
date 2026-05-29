@@ -28,7 +28,7 @@ field_refs_verified: false
    - State 走 GPU not-detected 同套 branching(Stopped / Install / Install Fail / Starting / Stopping / Rebooting → 直接 conclude)
    - `State == "Running"` 后还要检查两件事:
      - `OsType == "Windows"` → **Windows 实例不适用 SSH**,引导用户用 RDP / mstsc
-     - `SshLoginCommand` 字段为空 → 云侧未配置 SSH 入口,引导用户控制台核对登录入口和公网 IP;若用户有 JupyterLab 入口,可让用户在终端跑 `systemctl status ssh --no-pager` + `ss -lntp \| grep ':22'`
+     - `SshLoginCommand` 字段为空 → 云侧未配置 SSH 入口,引导用户控制台核对登录入口和公网 IP;若用户有 JupyterLab 入口,**user runs in JupyterLab terminal**(NOT via agent SSH sandbox — `ss -lntp` 不在 ADR-006 V1 whitelist):`systemctl status ssh --no-pager` + `ss -lntp \| grep ':22'`
      - 上述都通过 → 进步骤 2
 
 2. **查资源使用**(call `GetCompShareInstanceMonitor` with UHostId)

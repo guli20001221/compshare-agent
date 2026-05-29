@@ -32,10 +32,10 @@ agent:
   # (backward compat with pre-ADR-002 configs). Unknown tier keys cause
   # config load to fail loud — typos like "knowlege" do NOT silently no-op.
   #
-  # SAFETY NOTE per ADR-002 Risks: switching planner (cli.go:344) to fast
+  # SAFETY NOTE per ADR-002 Risks: switching planner (cli.go:349) to fast
   # tier requires ADR-004 progressive disclosure (B4) to have landed first.
   # Until then keep planner on ds-v4-pro by leaving the block commented or
-  # routing the planner explicitly. See ADR-002 line ~95 for rationale.
+  # routing the planner explicitly. See ADR-002:99 (Risks #3) for rationale.
   #
   # tier_routing:
   #   fast:

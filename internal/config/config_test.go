@@ -757,7 +757,8 @@ func TestLoad_TierRouting_ValidKeys(t *testing.T) {
 
 // TestLoad_TierRouting_UnknownKey_FailsLoud catches the silent-typo
 // regression — "knowlege" (missing d) must reject at boot, not no-op.
-// Memory `disclaimer-misfire-3class-bucketing` + fail-loud invariant.
+// Fail-loud invariant: unknown key in a routing map silently no-ops the
+// override, which masks a real misconfig until first runtime mis-route.
 func TestLoad_TierRouting_UnknownKey_FailsLoud(t *testing.T) {
 	setRequiredSecretEnv(t)
 	path := writeConfig(t, baseConfig(`

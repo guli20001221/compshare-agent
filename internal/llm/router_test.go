@@ -119,8 +119,8 @@ func TestNewRouter_FullOverride_ReplacesAllFields(t *testing.T) {
 }
 
 // Empty base.Model is a config error — must reject at boot, not silently
-// fall back. Memory `disclaimer-misfire-3class-bucketing` / surface
-// failure loud, don't paper over.
+// fall back. Fail-loud invariant: every tier needs SOME model to talk to;
+// silently defaulting would hide misconfiguration until first LLM call.
 func TestNewRouter_EmptyBaseModel_ReturnsError(t *testing.T) {
 	base := baseConfig()
 	base.Model = ""
@@ -164,19 +164,44 @@ func TestRouter_Model_UnknownTier_Panics(t *testing.T) {
 
 // Router.Capability delegates to LookupCapability with the tier's
 // effective (BaseURL, Model) tuple — proves Router is wired into the
-// existing capability matrix, not a parallel store.
+// existing capability matrix, not a parallel store. Loops every tier
+// AND verifies the Agent override (Qwen/Qwen3-Max) returns a DIFFERENT
+// capability profile than the flash base — without this, the test
+// could pass even if Router silently returned the base capability for
+// every tier.
 func TestRouter_Capability_MatchesLookupCapability(t *testing.T) {
-	r, err := NewRouter(baseConfig(), nil)
+	overrides := map[Tier]config.LLMConfig{
+		// Qwen/Qwen3-Max has SupportsObjectToolChoice=true; flash has
+		// false. The diff is what proves delegation works per-tier.
+		TierAgent: {Model: "Qwen/Qwen3-Max"},
+	}
+	r, err := NewRouter(baseConfig(), overrides)
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
 	}
-	got := r.Capability(TierFast)
-	want := LookupCapability("https://api.modelverse.cn/v1", "deepseek-v4-flash")
-	if got.IsThinkingMode != want.IsThinkingMode {
-		t.Errorf("Capability.IsThinkingMode: got %v, want %v", got.IsThinkingMode, want.IsThinkingMode)
+	cases := []struct {
+		tier  Tier
+		model string
+	}{
+		{TierFast, "deepseek-v4-flash"},
+		{TierKnowledge, "deepseek-v4-flash"},
+		{TierAgent, "Qwen/Qwen3-Max"},
 	}
-	if got.SupportsObjectToolChoice != want.SupportsObjectToolChoice {
-		t.Errorf("Capability.SupportsObjectToolChoice: got %v, want %v", got.SupportsObjectToolChoice, want.SupportsObjectToolChoice)
+	for _, tc := range cases {
+		got := r.Capability(tc.tier)
+		want := LookupCapability("https://api.modelverse.cn/v1", tc.model)
+		if got.IsThinkingMode != want.IsThinkingMode {
+			t.Errorf("tier %q Capability.IsThinkingMode: got %v, want %v", tc.tier, got.IsThinkingMode, want.IsThinkingMode)
+		}
+		if got.SupportsObjectToolChoice != want.SupportsObjectToolChoice {
+			t.Errorf("tier %q Capability.SupportsObjectToolChoice: got %v, want %v", tc.tier, got.SupportsObjectToolChoice, want.SupportsObjectToolChoice)
+		}
+	}
+	// Sanity: Agent override and Fast must actually differ on at least
+	// one capability dim — otherwise this test couldn't catch a Router
+	// that ignored the override.
+	if r.Capability(TierFast).SupportsObjectToolChoice == r.Capability(TierAgent).SupportsObjectToolChoice {
+		t.Error("test fixture broken: TierFast and TierAgent should differ on SupportsObjectToolChoice")
 	}
 }
 

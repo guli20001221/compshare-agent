@@ -6,7 +6,7 @@
 
 ## Context
 
-当前 `internal/llm/client.go:19-22` 的 `Client` 绑定单个 model(`cfg.Agent.LLM.Model`),6 个 inject 点(`cmd/cli.go:105`、`cmd/cli.go:344`、`cmd/shared_deps.go:57`、`internal/engine/engine.go:296`、`internal/ocr/client.go:27`、eval `golden_test.go:684`+`evaluate_test.go:180` 合 1)共享同一个 model。
+当前 `internal/llm/client.go:19-22` 的 `Client` 绑定单个 model(`cfg.Agent.LLM.Model`),6 个 inject 点(`cmd/cli.go:105`、`cmd/cli.go:349`、`cmd/shared_deps.go:57`、`internal/engine/engine.go:296`、`internal/ocr/client.go:27`、eval `golden_test.go:684`+`evaluate_test.go:180` 合 1)共享同一个 model。
 
 ADR-001 决定三 tier 走不同复杂度的模型:fast/knowledge=flash 类、agent=ds-v4-pro 类强模型。当前架构无法表达这个需求。
 
@@ -77,7 +77,7 @@ agent:
 |---|---|---|
 | `cmd/cli.go:105` main CLI client constructor | 单 `*Client` | CLI 启动构造 `*Router` 注入 SharedDeps |
 | `internal/engine/engine.go:296` `SharedDeps.LLMClient` | 单 `*Client` | `*Router`,Engine 内部按 step 上下文调 `router.For(tier)` |
-| `cmd/cli.go:344` planner client | 单 client | `router.For(TierFast)` — planner 一律走 fast(planner 本身是 fast 类) |
+| `cmd/cli.go:349` planner client | 单 client | `router.For(TierFast)` — planner 一律走 fast(planner 本身是 fast 类) |
 | `cmd/shared_deps.go:57` grounded renderer | 单 client | `router.For(TierKnowledge)` — grounded render 是 knowledge 路径产物 |
 | `internal/ocr/client.go:27` OCR | 单 client | 不动,OCR 不是对话 LLM,独立 model 配置 |
 | `eval/golden_test.go:684` / `evaluate_test.go:180` | 单 client | 接受 `tier` 参数,默认 fast |
@@ -112,7 +112,7 @@ agent:
 
 - [ ] `internal/llm/router.go` 新增,~100 行,含 `Router` + `Tier` + `For/Capability` 方法 + table tests
 - [ ] `deploy/conf/agent.yaml.example` 加 `tier_routing` block + 文档说明 backward compat 规则
-- [ ] 6 个 inject 点全部迁移到 Router,grep `llm.NewClient(` 在产品代码只剩 Router 内部一处。**Batch 拆分**:B1 落 Router infra + 2 个 grounded renderer 点(`cmd/cli.go:105` + `cmd/shared_deps.go:57` → `Router.For(TierKnowledge)`);B2 迁 `internal/engine/engine.go:296` + `eval/golden_test.go:684` + `evaluate_test.go:180`(engine 内部 + eval tier-aware);B4 迁 `cmd/cli.go:344` planner(需 ADR-004 progressive disclosure 先落地,见上方 Risks 第 3 项)。B1 时 grep 仍能看到 4 处 `llm.NewClient` 是预期状态,不是 acceptance 失败
+- [ ] 6 个 inject 点全部迁移到 Router,grep `llm.NewClient(` 在产品代码只剩 Router 内部一处。**Batch 拆分**:B1 落 Router infra + 2 个 grounded renderer 点(`cmd/cli.go:105` + `cmd/shared_deps.go:57` → `Router.For(TierKnowledge)`);B2 迁 `internal/engine/engine.go:296` + `eval/golden_test.go:684` + `evaluate_test.go:180`(engine 内部 + eval tier-aware);B4 迁 `cmd/cli.go:349` planner(需 ADR-004 progressive disclosure 先落地,见上方 Risks 第 3 项)。B1 时 grep `llm.NewClient(` 产品代码命中 **5 处**:B2/B4 待迁 4 处(planner / engine / 2 eval)+ `internal/ocr/client.go:27` OCR **永不迁**(独立路径,ADR-002:82),不是 acceptance 失败
 - [ ] `internal/observability` trace 加 `task_tier` + `model` 字段,server/cli 双路径都落
 - [ ] `agent_yaml.tier_routing` 为空时 N=10 backward-compat 回归确认行为跟改造前一致(注:此 N=10 是 backward-compat smoke,跟 ADR-001 Acceptance #4 的 N=20+ tier 分类回归正交;前者测旧 config 不破,后者测新 tier 分类准确,两个 metric 不可混用)
 
