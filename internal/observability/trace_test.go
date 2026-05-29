@@ -63,9 +63,9 @@ func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
 	}
 }
 
-func TestSchemaVersionIsV03(t *testing.T) {
-	if SchemaVersion != "trace.v0.3" {
-		t.Fatalf("SchemaVersion = %q, want trace.v0.3", SchemaVersion)
+func TestSchemaVersionIsV04(t *testing.T) {
+	if SchemaVersion != "trace.v0.4" {
+		t.Fatalf("SchemaVersion = %q, want trace.v0.4", SchemaVersion)
 	}
 }
 
@@ -655,4 +655,92 @@ func TestTraceRecord_TaskTier_Serialization(t *testing.T) {
 			t.Fatalf("populated TaskTier should serialize, got: %s", data)
 		}
 	})
+}
+
+// RealizedTier (B4a derived dispatch tier) must serialize when populated and
+// stay absent when empty (omitempty), same contract as TaskTier. The "empty"
+// branch protects consumers parsing pre-B4a traces from an unexpected
+// "realized_tier":"" key, and is also the on-the-wire encoding of "tier not
+// observable for this turn" (attribution-observable-only).
+func TestTraceRecord_RealizedTier_Serialization(t *testing.T) {
+	base := TraceRecord{
+		SchemaVersion: SchemaVersion,
+		TraceID:       "trace-1",
+		TurnID:        "turn-1",
+		TurnIndex:     1,
+		Timestamp:     "2026-05-29T00:00:00Z",
+		UserMsgHash:   "sha256:user",
+	}
+
+	t.Run("empty RealizedTier is omitted", func(t *testing.T) {
+		data, err := json.Marshal(base)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(data), `"realized_tier"`) {
+			t.Fatalf("empty RealizedTier should be omitted, got: %s", data)
+		}
+	})
+
+	t.Run("populated RealizedTier appears in JSON", func(t *testing.T) {
+		rec := base
+		rec.RealizedTier = RealizedTierAgent
+		data, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(data), `"realized_tier":"agent"`) {
+			t.Fatalf("populated RealizedTier should serialize, got: %s", data)
+		}
+	})
+}
+
+// TestDeriveRealizedTier pins the priority-ordered derivation. The cases that
+// matter for correctness (not just coverage): a retrieval *fallback* that
+// continued into ReAct must read as agent (the path that actually ran), NOT
+// knowledge by status name; and a turn with no observable dispatch signal must
+// read as "" (unknown), NOT default-to-agent — otherwise hard-block/canned
+// refusals would inflate the agent traffic share. If the engine adds or renames
+// a CutoverStatus (internal/intent/handler.go:42-58), this table must be
+// revisited.
+func TestDeriveRealizedTier(t *testing.T) {
+	reactCall := []ToolCallTrace{{Source: ToolSourceMainReAct}}
+	knowledgeCall := []ToolCallTrace{{Source: ToolSourceKnowledgeLocal}}
+	cases := []struct {
+		name   string
+		record TraceRecord
+		want   string
+	}{
+		{"cutover dispatched -> fast",
+			TraceRecord{Planner: PlannerTrace{CutoverStatus: "dispatched"}}, RealizedTierFast},
+		{"cutover selection_required -> fast (clarify prompt, no ReAct)",
+			TraceRecord{Planner: PlannerTrace{CutoverStatus: "selection_required"}}, RealizedTierFast},
+		{"cutover dispatched_retrieval -> knowledge",
+			TraceRecord{Planner: PlannerTrace{CutoverStatus: "dispatched_retrieval"}}, RealizedTierKnowledge},
+		{"no cutover but retrieval hits -> knowledge",
+			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}}, RealizedTierKnowledge},
+		{"main_react tool fired -> agent",
+			TraceRecord{ToolCalls: reactCall}, RealizedTierAgent},
+		{"retrieval enabled but 0 hits, ReAct ran -> agent",
+			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 0}, ToolCalls: reactCall}, RealizedTierAgent},
+		{"retrieval fallback continued into ReAct -> agent (path that ran, not status name)",
+			TraceRecord{Planner: PlannerTrace{CutoverStatus: "fallback_retrieval_miss"}, ToolCalls: reactCall}, RealizedTierAgent},
+		{"low-confidence fallback into ReAct -> agent",
+			TraceRecord{Planner: PlannerTrace{CutoverStatus: "fallback_low_confidence"}, ToolCalls: reactCall}, RealizedTierAgent},
+		{"failure_after_tool but retrieval hits present -> knowledge",
+			TraceRecord{Planner: PlannerTrace{CutoverStatus: "failure_after_tool"}, Retrieval: RetrievalTrace{Enabled: true, Hits: 1}}, RealizedTierKnowledge},
+		{"no observable signal -> unknown (not default-agent)",
+			TraceRecord{}, ""},
+		{"hard-block canned reply, no dispatch signal -> unknown",
+			TraceRecord{EngineHardBlock: EngineHardBlockTrace{Hit: true, Category: "account_billing"}}, ""},
+		{"knowledge_local tool alone (no cutover, no hits) -> unknown",
+			TraceRecord{ToolCalls: knowledgeCall}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.record.DeriveRealizedTier(); got != tc.want {
+				t.Fatalf("DeriveRealizedTier() = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }

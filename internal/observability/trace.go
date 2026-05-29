@@ -15,7 +15,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.3"
+const SchemaVersion = "trace.v0.4"
 
 const (
 	ToolSourceMainReAct         = "main_react"
@@ -94,7 +94,18 @@ type TraceRecord struct {
 	// signal to switch from legacy per-turn rows to tier-aware aggregation.
 	// Memory: attribution-observable-only — empty means "tier not known
 	// for this turn", never default-to-agent.
-	TaskTier        string               `json:"task_tier,omitempty"`
+	TaskTier string `json:"task_tier,omitempty"`
+	// RealizedTier is the task-complexity tier the turn ACTUALLY ran on
+	// (fast / knowledge / agent), DERIVED from observed dispatch signals.
+	// It is distinct from TaskTier, which is the planner's PREDICTED tier
+	// (an input): predicted and realized diverge whenever the planner picks
+	// a tier but the turn falls through to a different path, so the two are
+	// kept in separate fields to preserve both the prediction and the
+	// outcome. Set by the recorders via DeriveRealizedTier at Finish, after
+	// every signal is final. Empty when the tier is not observable for the
+	// turn (no-tool ReAct answer, hard-block / canned reply) — empty means
+	// "tier not known", never default-to-agent (attribution-observable-only).
+	RealizedTier    string               `json:"realized_tier,omitempty"`
 	Runtime         RuntimeTrace         `json:"runtime"`
 	Planner         PlannerTrace         `json:"planner"`
 	EngineHardBlock EngineHardBlockTrace `json:"engine_hard_block"`
@@ -115,6 +126,7 @@ type traceRecordJSON struct {
 	Timestamp       string                `json:"timestamp"`
 	UserMsgHash     string                `json:"user_msg_hash"`
 	TaskTier        string                `json:"task_tier,omitempty"`
+	RealizedTier    string                `json:"realized_tier,omitempty"`
 	Runtime         *RuntimeTrace         `json:"runtime,omitempty"`
 	Planner         *PlannerTrace         `json:"planner,omitempty"`
 	EngineHardBlock *EngineHardBlockTrace `json:"engine_hard_block,omitempty"`
@@ -136,6 +148,7 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 		Timestamp:     r.Timestamp,
 		UserMsgHash:   r.UserMsgHash,
 		TaskTier:      r.TaskTier,
+		RealizedTier:  r.RealizedTier,
 	}
 	if traceRuntimeObserved(r.Runtime) {
 		out.Runtime = &r.Runtime
@@ -168,6 +181,64 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 		out.Outcome = &r.Outcome
 	}
 	return json.Marshal(out)
+}
+
+// Realized-tier values for TraceRecord.RealizedTier. Mirror the ADR-001
+// task-complexity tiers (fast / knowledge / agent).
+const (
+	RealizedTierFast      = "fast"
+	RealizedTierKnowledge = "knowledge"
+	RealizedTierAgent     = "agent"
+)
+
+// DeriveRealizedTier computes the tier the turn ACTUALLY ran on from observed
+// trace signals, returning "" when the tier is not observable. It is pure
+// (depends only on the record) and is invoked by the recorders at Finish —
+// after every signal is final — so the result reflects the turn's terminal
+// state. The HTTP/MySQL sink bypasses FileWriter.Append/withDefaults, so this
+// must be called in the recorders (not in Append) to populate both sinks.
+//
+// Derivation is priority-ordered, NOT a flat prefix sweep of cutover_status
+// (which has 13 values and is set only on the Phase-1 cutover path — see
+// internal/intent/handler.go CutoverStatus*). It maps the unambiguous cutover
+// dispositions, then falls through to what actually executed:
+//
+//  1. dispatched_retrieval            -> knowledge (RAG handler ran)
+//  2. dispatched / selection_required -> fast      (deterministic handler ran;
+//                                        selection returned a clarify prompt,
+//                                        still no RAG / ReAct)
+//  3. else retrieval produced hits    -> knowledge (RAG path that never went
+//                                        through cutover)
+//  4. else a main_react tool fired    -> agent     (ReAct loop ran)
+//  5. else                            -> ""        (not observable: no-tool
+//                                        ReAct answer, or hard-block / canned
+//                                        reply)
+//
+// Cutover fallbacks (fallback_*) and failure_after_tool are deliberately NOT
+// mapped by status name: they mean the cutover attempt declined and the turn
+// continued, so the real tier is whatever steps 3-4 observe (typically agent).
+// Returning "" rather than defaulting to agent keeps the realized mix honest —
+// it under-counts no-tool agent turns instead of mis-labelling refusals as
+// agent (memory: attribution-observable-only). A future "ReAct loop ran"
+// signal (e.g. a round counter) could promote step 5 from "" to agent.
+func (r TraceRecord) DeriveRealizedTier() string {
+	// cutover_status literals mirror internal/intent/handler.go:42-58
+	// (CutoverStatus*); pinned by TestDeriveRealizedTier.
+	switch r.Planner.CutoverStatus {
+	case "dispatched_retrieval":
+		return RealizedTierKnowledge
+	case "dispatched", "selection_required":
+		return RealizedTierFast
+	}
+	if r.Retrieval.Enabled && r.Retrieval.Hits > 0 {
+		return RealizedTierKnowledge
+	}
+	for _, call := range r.ToolCalls {
+		if call.Source == ToolSourceMainReAct {
+			return RealizedTierAgent
+		}
+	}
+	return ""
 }
 
 type RuntimeTrace struct {

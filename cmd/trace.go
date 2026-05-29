@@ -802,6 +802,7 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 			break
 		}
 	}
+	r.record.RealizedTier = r.record.DeriveRealizedTier()
 	return r.writer.Append(r.record)
 }
 
