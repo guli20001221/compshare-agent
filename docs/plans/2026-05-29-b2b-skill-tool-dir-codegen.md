@@ -224,12 +224,34 @@ P2 already byte-validated the source swap (§5). **P3's dual-run validates the p
 
 ---
 
-## 12. Open decisions (need lead / ADR sign-off)
+## 12. Open decisions — **RESOLVED 2026-05-30 (gate CLOSED)**
 
-1. **Amend ADR-003 + ADR-004 schemas + ratify** (Precondition 1): widen ADR-004 frontmatter with the §3 routing block (`planner_directives`, `planner_examples`, `handler_key`, `react_tool_subset`, `intent_label`, `skill_group`, `required_citation`); **Amendment-2** adds `x-compshare.destructive` (ADR-003 enum has only `read|mutating`).
-2. **`idempotent` source**: add an `idempotent` table adjacent to `security/levels.go` (generator-validated) vs reviewer-checklist-only (then drop it from the build-fail-on-omit set, defer to B7).
-3. **`safety_warning`/agent-tier cross-tier reuse** + `Plan.Skills`/body-budget — confirm deferral to the agent-tier batch (this spec assumes deferred).
-4. **≤3k + the planner-model fork (F1):** confirm ≤3k is a reported metric (not a gate). **Connect to open decision #1:** B2b unblocks **B4b's planner schema change unconditionally** (smaller prompt + validated classification), but the **planner flash cost-down** is contingent — under the *pro* path ≤3k is cost-only and the `base`-block residual is moot; under the *flash* path ≤3k becomes an avalanche-safety threshold and B2b alone may not hit it, putting a **directive-tiering follow-up on the flash critical path**. Decide whether that follow-up is in-scope. (Reconciled in `roadmap.md` so "B2b unblocks B4b" isn't read as unconditional for the flash branch.)
+> Lead sign-off 2026-05-30. ADR-003/004 **provisionally accepted** (revert only if a
+> measured regression appears — lead's read: unlikely, current system too messy).
+> B2b may enter implementation (P1 loader+codegen); lead deferred the *start* to
+> post-compact. Items below record the resolution.
+
+1. **Schema widen + ratify** — ✅ **YES (lead-confirmed).** Widen ADR-004 frontmatter
+   with the §3 routing block (`planner_directives`, `planner_examples`, `handler_key`,
+   `react_tool_subset`, `intent_label`, `skill_group`, `required_citation`).
+   `react_tool_subset` stays **declared data, distinct from `required_tools`**
+   (Precondition 2 — must not be derived/conflated). `destructive`: **Amendment-2,
+   future-MCP mirror ONLY — no B2b runtime gate** (L2 always-refuse stays in
+   `security/levels.go` + `safe_executor.go:189`); defer the field's *consumer* to B7.
+2. **`idempotent` source** — ✅ **reviewer-checklist-only (recommended default; lead may veto).**
+   Drop it from the build-fail-on-omit set; defer a generator-validated `idempotent`
+   table to B7 (same "future-MCP field" basis as `destructive`). Keeps B2b codegen
+   scoped to the security-level mirror.
+3. **`safety_warning` / `Plan.Skills` / body-budget** — ✅ **DEFERRED to agent-tier
+   (B6–B8) (confirmed).** The 6 capabilities are fast-tier deterministic handlers; no
+   LLM body injection exists yet, so these are out of B2b by construction (§7/§9).
+4. **≤3k token** — ✅ **reported metric, NOT a gate (lead-confirmed).** Lead relaxed
+   the token-cost constraint (cheap model). Decision #1 settled the planner to **flash**
+   and showed the avalanche/jitter is prompt **content/structure**, not size — so don't
+   byte-shave to 3k. Progressive disclosure ships for clarity/maintainability; the
+   reliability lever is the prompt-structure work (imperative directives + `target_ref`
+   few-shot, tracked as a standalone planner-prompt PR). `directive-tiering` is a
+   *follow-up if ever needed*, never a B2b blocker. (Reconciled in `roadmap.md`.)
 
 ---
 
