@@ -59,14 +59,14 @@ Behavior is gated by env vars read in `cmd/trace.go` and `cmd/agent.go`. The def
 
 | Var | Values | Effect |
 |---|---|---|
-| `COMPSHARE_ENABLE_MUTATING_TOOLS` | `1` | Enables start/stop/reboot/reset-password/create. Default off — read-only mode. |
+| `COMPSHARE_ENABLE_MUTATING_TOOLS` | `0` / `false` to disable | Gates start/stop/reboot/reset-password/create. **Default ON** (2026-05-29 cutover after PR2.5 production validation). Set `"0"` or `"false"` to force read-only mode. |
 | `USE_INTENT_PLANNER` | `shadow` | Runs the LLM planner alongside ReAct for trace-only comparison. |
 | `USE_INTENT_PLANNER_FOR` | default `resource,monitor,gpu_specs,stock,pricing,platform_image,custom_image,community_image`; explicit comma list overrides; `off` disables | Enables Phase-1 cutover: engine owns the planner call for those intents. |
 | `USE_KNOWLEDGE_RETRIEVAL` | `curated` (default), `off` | Wires the RAG retriever into the engine. Combine with `RAG_RETRIEVAL_MODE`. |
 | `RAG_RETRIEVAL_MODE` | `qwen3_rrf` (default), `bm25_only`, `hybrid_cosine`, `hybrid_rerank`, `qwen3_full` | Picks the retrieval pipeline. Hybrid/qwen3 modes require `MODELVERSE_API_KEY` or `LLM_API_KEY` and the matching pinned sidecar under `deploy/kb/`. |
 | `RAG_HYBRID_ENABLED` | `1` | Legacy switch; only consulted when `RAG_RETRIEVAL_MODE` is unset. |
 | `USE_GROUNDED_RENDERER` | `llm` (default), `off` | Routes final reply through `internal/renderer.GroundedRenderer`. |
-| `COMPSHARE_TRACE_ENABLED` | `1` | Writes per-turn JSONL traces to `COMPSHARE_TRACE_DIR`. |
+| `COMPSHARE_TRACE_ENABLED` | `0` / `false` to disable | Writes per-turn JSONL traces to `COMPSHARE_TRACE_DIR`. **Default ON** (2026-05-29 cutover). Set `"0"` or `"false"` to force off for read-only test runs. |
 | `MYSQL_DSN` | DSN string | Required by `compshare-agent server`; ignored by `compshare-agent cli`. |
 | `COMPSHARE_SERVICE_PUBLIC_KEY` | AK string | Service long-term public key for STS `AssumeRole`. Required when `agent.sts` is configured. |
 | `COMPSHARE_SERVICE_PRIVATE_KEY` | SK string | Service long-term private key for STS `AssumeRole`. Required when `agent.sts` is configured. |
@@ -133,7 +133,7 @@ Read-only diagnostic tools (init failure, billing anomaly, GPU not detected, ima
 
 ## Conventions specific to this repo
 
-- The runtime is **read-only by default**. Never flip `COMPSHARE_ENABLE_MUTATING_TOOLS` in shipped configs or tests; mutating tests use the workflow registry directly.
+- The runtime ships with **mutating tools enabled by default** (2026-05-29 cutover after PR2.5 production validation). Use `COMPSHARE_ENABLE_MUTATING_TOOLS="0"` for read-only test runs or emergency disable; never delete the override path.
 - Static FAQ text was removed from the ReAct prompt — platform knowledge flows only through the RAG retriever. Do not reintroduce `FAQContent` / `ReadOnlyFAQContent` injection (`internal/prompt/builder_test.go` has reverse assertions).
 - Shadow QA per-round configs under `eval/shadow_qa/**/agent.yaml` and `.env` files are git-ignored and contain real keys — never commit anything matching those globs.
 - When adding planner examples, group by intent and record a one-line source for each example; tests in `internal/intent/planner_prompt_test.go` enforce grouping/tool/intercept consistency.
