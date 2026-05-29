@@ -19,9 +19,9 @@ update its status row here.
 | **B1** | Safety pad: dead-code cleanup + `internal/llm/router.go` tier-aware wrapper + reserved trace `task_tier` slot | 002 | ✅ shipped | `29029c4` + `731545f` (rev2) + `db5db03` (rev3) |
 | **B2a** | Router inject completion: `engine.NewSharedDeps` + 2 eval sites consume `Router.For(TierFast)` (build-inside, signature unchanged, byte-stable) | 002 #3 | ✅ shipped | spec `a713790`, impl `b38fe28` — `docs/plans/2026-05-29-b2-router-inject-completion.md` |
 | **B2b** | Skill/Tool directory split + codegen + **progressive disclosure** (planner prompt → metadata-only) | 003, 004 | ⏳ spec rev-3 (reviewed) — 4 open decisions + ADR-003/004 ratification pending | `docs/plans/2026-05-29-b2b-skill-tool-dir-codegen.md` (rev-3) |
-| **B3** | Fast path drops the LLM grounded renderer (handler → template + envelope constraints) | 001 | ⏳ pending | — |
-| **B4a** | Observability: derive **realized tier** from dispatch path; populate `realized_tier` in the two recorders | 001 #4 | 🔵 implemented, in review | branch `feat/b4a-realized-tier` `67a6b84` |
-| **B4b** | Planner emits **predicted tier** (new output field + prompt/schema change); planner model → pro; N≥20 regression | 001 #4, 002 | ⏳ pending (gated on B2b) | see "B4 decomposition" |
+| **B3** | Fast-tier catalog envelopes (gpu_specs/stock/image) render via deterministic template; opt-in `USE_GROUNDED_RENDERER=fast_template`, default-off | 001 | ✅ shipped | `a25e19e` (merge `535fc1b`) — **flip-gate** before shipped-config flip: render\*Reply polish (label `性能`, localize `状态`) + stock-template still un-exercised |
+| **B4a** | Observability: derive **realized tier** from dispatch path; populate `realized_tier` in the two recorders (NOT `Append` — MySQL bypasses it) | 001 #4 | ✅ shipped | `67a6b84` + `e092444` (merge `a87f5e1`) |
+| **B4b** | Planner emits **predicted tier** (new output field + prompt/schema change); N≥20 regression | 001 #4, 002 | ⏳ pending (gated on B2b) | see "B4 decomposition"; **planner stays on flash — Decision #1 empirically ruled out pro (worse on borderlines)** |
 | **B5** | Diagnosis package, k8sgpt-style (Analyzer/Failure/Filter) | 005 | ⏳ pending | — |
 | **B6** | Agent path infrastructure: orchestrator + saga + multi-step HITL + SSH category sandbox | 006 | ⏳ pending | — |
 | **B7** | MCP gateway (in-process + external stdio/HTTP entry) | 003 Amendment 1 | ⏳ pending | — |
@@ -108,22 +108,29 @@ gate, and that the trace field has two distinct meanings that must not collide:
   There is **no separate planner-model knob** — it is structurally tied to the base
   model. `ADR-002:99` says the planner *must* be on `ds-v4-pro` until ADR-004
   progressive disclosure lands; the shipped demo stack diverges from that today.
-  - **pro is the safe state; flash is the gated cost-down.** Moving the planner
-    *to* pro reduces avalanche risk and is **not** gated on progressive disclosure
-    (pro handles the big prompt). What is gated is moving it *down* to flash
-    cheaply (needs the ~2–3k prompt from ADR-004/B2b).
-  - Therefore routing `cmd/cli.go:349` through `For(TierFast)` (which == flash)
-    would perpetuate the risky state the blueprint's B4 ("切 ds-v4-pro") wants
-    fixed, and would couple the planner model to the fast tier permanently. If the
-    planner is migrated through the router, map it to a planner-appropriate tier so
-    its model stays independently settable.
+  - **Decision #1 (resolved 2026-05-29, jitter + pro oracle): stay on flash.**
+    The `ADR-002:99` premise "pro is the safe interim state" is **empirically
+    contradicted** for the current pre-ADR-004 prompt. A 6-question jitter check
+    (N=8 each, planner on each model) found `ds-v4-pro` *worse* than flash on
+    borderlines: pro leaks to `unknown` and raises `schema_invalid` where flash
+    holds `si=0` (`ssh-boundary`, `vague-monitor`), while the zero-target
+    `帮我关机` failure is `schema_invalid` 8/8 on **both** (a prompt/`target_ref`
+    gap, not a model gap). So the reliability lever is the **prompt** (B2b
+    progressive disclosure + directive cleanup + `target_ref` few-shot), not the
+    model. **Action: feed into ADR-002 ratification** — the "must be on pro until
+    ADR-004" clause should be revised, not rubber-stamped. Caveat: N=8, current big
+    prompt; re-test pro under B2b's smaller prompt before generalizing.
+  - Therefore do **not** route the `cmd/cli.go` planner through `For(TierFast)`
+    *or* migrate it to pro now — keep it on the base (flash) model. Revisit only if
+    a post-B2b re-test flips the result.
 - **B2b is the critical path.** ADR-004 progressive disclosure (delivered in B2b)
-  unblocks **B4b's planner schema change unconditionally**. The **planner flash
-  cost-down** is contingent on open decision #1: under the *pro* path B2b suffices
-  (≤3k is cost-only); under the *flash* path ≤3k is an avalanche-safety threshold
-  B2b may not hit from metadata alone (the `base` classifier block dominates), so a
-  **directive-tiering follow-up may land on the flash critical path** — see B2b spec
-  §12.4. Don't read "unblocks B4b" as unconditional for the flash branch.
+  unblocks **B4b's planner schema change unconditionally**. Decision #1 settled the
+  pro-vs-flash fork to **flash**, and the lead has relaxed the token-cost
+  constraint (cheap model) — so **`≤3k` is downgraded from a gate to a reported
+  metric**: progressive disclosure's value is now prompt *clarity/maintainability*
+  + the reliability **prompt-structure** work (imperative directives, `target_ref`
+  few-shot), not hitting a byte target. The avalanche evidence (Decision #1) points
+  at prompt *content/structure*, not size.
 - **B3 is independent** of B4 (disjoint surface: `internal/renderer` vs
   `internal/intent/planner`) and parallelizable with B2b.
 - **SharedDeps.Router field is not zero-touch.** Adding it trips
