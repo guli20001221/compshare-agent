@@ -1795,8 +1795,17 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 		return appendCapacityFailureNote(reply, failedZones)
 	}
 	if checkedSpecs == 0 {
-		reply := fmt.Sprintf("%s 当前暂时无法确认是否有可创建库存。", models)
-		return appendCapacityFailureNote(reply, failedZones)
+		// Every model reaching here came from matchedNormalStockEntries, so the
+		// catalog already reports Status=Normal (机型开售). checkedSpecs==0 means no
+		// zone yielded a usable capacity-precheck result — the precheck either
+		// failed to run (CLI with empty project_id → RetCode 230; HTTP missing
+		// ProjectId → RetCode 292) or ran but returned no Specs. Don't bury the
+		// known catalog truth under "无法确认是否有可创建库存" (which wrongly implies we
+		// can't even tell it is on sale). Fall back to the catalog-level 开售
+		// statement and be explicit that exact creatability was not verified this
+		// turn. (#3b graceful degradation — a precheck failure must not override
+		// the catalog answer.)
+		return fmt.Sprintf("%s 机型当前开售；本次容量预检未能确认具体配置的可创建性，精确库存请以控制台创建页为准。", models)
 	}
 	reply := fmt.Sprintf("%s 当前暂无可创建库存，暂时不能新建实例。", models)
 	return appendCapacityFailureNote(reply, failedZones)
