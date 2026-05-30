@@ -1,0 +1,39 @@
+name: Skills Loader CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/skills-ci.yml"
+      - "internal/skills/**"
+      - "cmd/skillgen/**"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+
+jobs:
+  skills:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Codegen drift gate (B2b §4): regenerating from disk must not change the
+      # committed registry_gen.go. Belt-and-suspenders alongside the in-process
+      # TestGeneratedRegistry_MatchesDisk, and additionally exercises the
+      # go:generate toolchain path.
+      - name: Verify generated skill registry is up to date
+        run: |
+          go generate ./internal/skills
+          git diff --exit-code -- internal/skills/registry_gen.go
+
+      # sync.Once body cache is the named concurrency risk (B2b §4); internal/skills
+      # joins internal/entity as a -race target.
+      - name: Run skills race tests
+        run: go test ./internal/skills -race -count=1

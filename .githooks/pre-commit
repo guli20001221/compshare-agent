@@ -1,9 +1,15 @@
 #!/bin/sh
+set -e
+
 if command -v pwsh >/dev/null 2>&1; then
-  pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/secret_scan.ps1 -Staged
+  PS="pwsh"
 elif command -v powershell >/dev/null 2>&1; then
-  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/secret_scan.ps1 -Staged
+  PS="powershell"
 else
-  echo "PowerShell is required to run scripts/secret_scan.ps1" >&2
+  echo "PowerShell is required to run the pre-commit scripts" >&2
   exit 1
 fi
+
+"$PS" -NoProfile -ExecutionPolicy Bypass -File scripts/secret_scan.ps1 -Staged
+"$PS" -NoProfile -ExecutionPolicy Bypass -File scripts/check_skill_names.ps1
+"$PS" -NoProfile -ExecutionPolicy Bypass -File scripts/check_skill_caps.ps1

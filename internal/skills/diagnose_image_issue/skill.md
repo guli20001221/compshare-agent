@@ -15,6 +15,7 @@ related_skills:
 body_cap_lines: 100
 verification_status: unverified
 field_refs_verified: false
+provenance: human_authored
 ---
 
 # Diagnose: Image Issue
