@@ -174,6 +174,57 @@ func TestMySQLWriter_AppendBeforeWorkerDoesNotBlock(t *testing.T) {
 	}
 }
 
+// TestMySQLWriter_EnqueueRedactsQueryDerivedPIIBeforePersist is the regression
+// guard for the privacy leak where redaction + withDefaults lived ONLY in
+// FileWriter.Append, so the MySQL sink persisted raw user queries (PII) into
+// trace_json with an empty schema_version. It exercises the real MySQL sink path
+// end-to-end without a DB: Enqueue prepares the record (the worker-free writer
+// lets us read the prepared persistedTrace straight off the queue), then
+// rowFromTrace projects the trace_json column the worker would INSERT.
+//
+// The fixture is a real PII query (staff name 张慧, the same input as
+// TestRedactQueryDerivedFieldsRedactsStaffNames) — NOT a pre-redacted mock — so
+// the test genuinely fails if the producer regresses (memory: schema-test-anti-mock).
+// Mirrors TestWriterAppendDoesNotLeakSecretsInTraceLine on the FileWriter side.
+func TestMySQLWriter_EnqueueRedactsQueryDerivedPIIBeforePersist(t *testing.T) {
+	w := &MySQLWriter{
+		queue:  make(chan persistedTrace, 1),
+		logger: silentLogger(t),
+	}
+	if err := w.Enqueue(TenantContext{TopOrgID: 1, OrgID: 2}, TraceRecord{
+		TraceID: "pii-leak",
+		Retrieval: RetrievalTrace{
+			QueryRaw:        "请张慧帮我看一下实例启动失败",
+			QueryNormalized: "张慧 实例 启动失败",
+			QueryExpansions: []string{"实例启动失败", "找张慧处理"},
+		},
+	}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// The worker-free writer leaves the prepared record on the queue: this is the
+	// exact persistedTrace the worker would hand to rowFromTrace.
+	row, err := rowFromTrace(<-w.queue)
+	if err != nil {
+		t.Fatalf("rowFromTrace: %v", err)
+	}
+	traceJSON, ok := row[11].([]byte)
+	if !ok {
+		t.Fatalf("col 11 (trace_json) wrong type %T", row[11])
+	}
+	blob := string(traceJSON)
+
+	if strings.Contains(blob, "张慧") {
+		t.Fatalf("MySQL trace_json leaked PII staff name 张慧: %s", blob)
+	}
+	if !strings.Contains(blob, "[REDACTED]") {
+		t.Fatalf("MySQL trace_json should carry the redaction marker; got: %s", blob)
+	}
+	if !strings.Contains(blob, `"schema_version":"`+SchemaVersion+`"`) {
+		t.Fatalf("MySQL trace_json should carry schema_version after prepareForPersist; got: %s", blob)
+	}
+}
+
 // TestNewMySQLWriter_EmptyDSNErrors guards the documented contract.
 func TestNewMySQLWriter_EmptyDSNErrors(t *testing.T) {
 	w, err := NewMySQLWriter("", MySQLWriterOptions{})

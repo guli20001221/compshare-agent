@@ -424,6 +424,27 @@ func RedactQueryDerivedFields(trace *RetrievalTrace) {
 	}
 }
 
+// prepareForPersist is the single, sink-agnostic choke point every persistence
+// sink MUST run a record through before serializing it. It fills defaults
+// (schema_version, timestamp, empty slices via withDefaults) and redacts the
+// entire query-derived tree (QueryRaw + QueryNormalized + QueryExpansions[] via
+// RedactQueryDerivedFields). Both operations are idempotent, so a record fanned
+// out to multiple sinks (cmd.multiTraceWriter) is safe to prepare more than once.
+//
+// History: redaction + withDefaults previously lived ONLY inside
+// FileWriter.Append. The MySQL sink (MySQLWriter.Enqueue → worker → rowFromTrace)
+// bypassed both, so server traces persisted raw user queries — real PII such as
+// staff names — into trace_json with an empty schema_version. Centralizing here
+// (called by FileWriter.Append AND MySQLWriter.Enqueue) means a leak is
+// impossible unless a future sink bypasses this function entirely
+// (memory: sanitization-covers-all-derived-fields — cover the whole derivation
+// tree from one choke point, never patch a single field).
+func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
+	record = record.withDefaults(now)
+	RedactQueryDerivedFields(&record.Retrieval)
+	return record
+}
+
 type OutcomeTrace struct {
 	TotalLatencyMS             int64 `json:"total_latency_ms,omitempty"`
 	TotalTokens                int   `json:"total_tokens,omitempty"`
@@ -468,8 +489,7 @@ func (w *FileWriter) Close(_ context.Context) error { return nil }
 
 func (w *FileWriter) Append(record TraceRecord) error {
 	now := w.now()
-	record = record.withDefaults(now)
-	RedactQueryDerivedFields(&record.Retrieval)
+	record = prepareForPersist(record, now)
 	data, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("marshal trace record: %w", err)
