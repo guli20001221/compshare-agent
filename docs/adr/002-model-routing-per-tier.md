@@ -96,7 +96,7 @@ agent:
 **Risks**
 - **Tier 选错**(本应 agent 的请求被 planner 误判为 fast)→ 缓解在 ADR-001(fallback 倾向 fast,降级体验而非成本飙升);Router 不做兜底,misrouting 是 planner bug 不是 router bug
 - **Per-tier model 成本差异 user 看不见** → `internal/observability` 加 `task_tier` 顶层字段 + 复用 nested `PlannerTrace.Model` / `RendererTrace.Model`,trace 落库后可 JOIN 聚合成本(具体字段位置见 Acceptance #4)
-- **Planner-on-flash 雪崩前提**:本 ADR 决定 planner 走 fast tier(ds-v4-flash),但**安全前提是 ADR-004 progressive disclosure 已落地**将 planner system prompt 从 ~5.9k 降到 ≤3k(memory `priortext-avalanche-invalidates-planner` 实测 input_tok 5k→11k 雪崩)。**在 ADR-004 (B4) 落地前 planner 必须继续跑 ds-v4-pro**(临时 `tier_routing.fast.planner_override: "deepseek-v4-pro"` 配置);B2(本 ADR 落地)与 B4 切换 planner 走 flash 必须显式同步,不可单飞
+- **Planner-on-flash 雪崩前提**:本 ADR 决定 planner 走 fast tier(ds-v4-flash)。雪崩事实仍成立——memory `priortext-avalanche-invalidates-planner` 实测 PriorText 滚雪球把 planner input_tok 从 5k 推到 11k——但缓解手段是 **prompt 结构工作**(B2b progressive disclosure + 祈使句 directive 清理 + `target_ref` few-shot),而非换 model。~~在 ADR-004 (B4) 落地前 planner 必须继续跑 ds-v4-pro~~ 此 pro-interim 要求已被 **Amendment 1(2026-05-31)RETRACTED**:N=8 jitter + pro oracle 实测 ds-v4-pro 在 borderline 上更差,planner 永久守 flash。详见本 ADR 末尾 Amendment 1
 
 ## 业界对照
 
@@ -112,7 +112,7 @@ agent:
 
 - [ ] `internal/llm/router.go` 新增,~100 行,含 `Router` + `Tier` + `For/Capability` 方法 + table tests
 - [ ] `deploy/conf/agent.yaml.example` 加 `tier_routing` block + 文档说明 backward compat 规则
-- [ ] 6 个 inject 点全部迁移到 Router,grep `llm.NewClient(` 在产品代码只剩 Router 内部一处。**Batch 拆分**:B1 落 Router infra + 2 个 grounded renderer 点(`cmd/cli.go:105` + `cmd/shared_deps.go:57` → `Router.For(TierKnowledge)`);B2 迁 `internal/engine/engine.go:296` + `eval/golden_test.go:684` + `evaluate_test.go:180`(engine 内部 + eval tier-aware);B4 迁 `cmd/cli.go:349` planner(需 ADR-004 progressive disclosure 先落地,见上方 Risks 第 3 项)。B1 时 grep `llm.NewClient(` 产品代码命中 **5 处**:B2/B4 待迁 4 处(planner / engine / 2 eval)+ `internal/ocr/client.go:27` OCR **永不迁**(独立路径,ADR-002:82),不是 acceptance 失败
+- [ ] 6 个 inject 点全部迁移到 Router,grep `llm.NewClient(` 在产品代码只剩 Router 内部一处。**Batch 拆分**:B1 落 Router infra + 2 个 grounded renderer 点(`cmd/cli.go:105` + `cmd/shared_deps.go:57` → `Router.For(TierKnowledge)`);B2 迁 `internal/engine/engine.go:296` + `eval/golden_test.go:684` + `evaluate_test.go:180`(engine 内部 + eval tier-aware);B4 迁 `cmd/cli.go:349` planner 到 `Router.For(TierFast)` = flash(**不是** pro):此迁移仅为 tier-routing 接线,不改 planner 的 model family(planner 守 flash,见上方 Risks 第 3 项 + 末尾 Amendment 1)。B1 时 grep `llm.NewClient(` 产品代码命中 **5 处**:B2/B4 待迁 4 处(planner / engine / 2 eval)+ `internal/ocr/client.go:27` OCR **永不迁**(独立路径,ADR-002:82),不是 acceptance 失败
 - [ ] `internal/observability` trace 加 `task_tier` **顶层字段**(server/cli 双路径都落)。**per-call model 复用现有 nested 字段**(`PlannerTrace.Model` / `RendererTrace.Model`)— 不加顶层 `trace.model`,跟 router.go:102-108 doc 保持一致。B1 schema 已落 `task_tier` slot,B4 接 populator 把 router.For(tier) 的 model 写进对应 nested trace
 - [ ] `agent_yaml.tier_routing` 为空时 N=10 backward-compat 回归确认行为跟改造前一致(注:此 N=10 是 backward-compat smoke,跟 ADR-001 Acceptance #4 的 N=20+ tier 分类回归正交;前者测旧 config 不破,后者测新 tier 分类准确,两个 metric 不可混用)
 
@@ -121,3 +121,15 @@ agent:
 - ADR-001: Task-Complexity Tiered Architecture
 - ADR-006: Agent path hard requirements(消费本 ADR 的 router 接口)
 - `internal/llm/capability.go`(已有多 model 能力矩阵,本 ADR 复用)
+
+## Amendment 1(2026-05-31):Planner 守 flash
+
+**决定**:planner 永久走 ds-v4-flash(fast tier),不迁 ds-v4-pro,连过渡态也不行。本 Amendment RETRACT 上方 Risks 第 3 项原 "在 ADR-004 (B4) 落地前 planner 必须继续跑 ds-v4-pro" 的 pro-interim 要求,以及 "pro 是 ADR-004 落地前安全过渡态" 的前提。
+
+**证据**:针对当前 pre-ADR-004 prompt,pro-interim 前提被实测推翻。一次 6-question jitter check(每题 N=8 跑,planner 分别跑两个 model)叠加一次 pro oracle smoke 发现 ds-v4-pro 在 borderline 上比 flash 更差:pro 漏判到 `intent=unknown` 并抬高 `schema_invalid`,而 flash 守住 `schema_invalid=0`(如 `ssh-boundary`、`vague-monitor`)。zero-target `帮我关机` 案例在两个 model 上都 `schema_invalid` 8/8 失败——这是 prompt / `target_ref` few-shot 缺口,不是 model 缺口。因此可靠性杠杆在 **prompt**(B2b progressive disclosure + 祈使句 directive 清理 + `target_ref` few-shot),不在 model。
+
+**`≤3k` 降级**:lead 已放宽 token-cost 约束(cheap model),故原 "planner system prompt ≤3k" 目标从 hard gate **降级为 reported metric**——progressive disclosure 的价值转为 prompt clarity/maintainability + reliability 的 prompt-structure 工作,不再卡字节目标。
+
+**Caveat**:jitter 证据是 N=8 跑在当前大 prompt 上;在 B2b 更小的 prompt 下需重测 pro 后才能推广该结论。
+
+**来源**:`docs/plans/roadmap.md` "Decision #1"(resolved 2026-05-29);session-memory note `ds-v4-pro-not-model-bottleneck-for-planner-prompt`。

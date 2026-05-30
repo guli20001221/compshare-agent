@@ -18,12 +18,12 @@ update its status row here.
 |---|---|---|---|---|
 | **B1** | Safety pad: dead-code cleanup + `internal/llm/router.go` tier-aware wrapper + reserved trace `task_tier` slot | 002 | ✅ shipped | `29029c4` + `731545f` (rev2) + `db5db03` (rev3) |
 | **B2a** | Router inject completion: `engine.NewSharedDeps` + 2 eval sites consume `Router.For(TierFast)` (build-inside, signature unchanged, byte-stable) | 002 #3 | ✅ shipped | spec `a713790`, impl `b38fe28` — `docs/plans/2026-05-29-b2-router-inject-completion.md` |
-| **B2b** | Skill/Tool directory split + codegen + **progressive disclosure** (planner prompt → metadata-only) | 003, 004, 008 | 🟡 spec rev-3, **§12 gate CLOSED 2026-05-30** (ADR-003/004 provisionally accepted; revert-if-regression) — impl pending, lead deferred start to post-compact | `docs/plans/2026-05-29-b2b-skill-tool-dir-codegen.md` §12 |
+| **B2b** | Skill/Tool directory split + codegen + **progressive disclosure** (planner prompt → metadata-only) | 003, 004, 008 | ✅ shipped — P1 (#177) + P2 foundation+part-2 (#178, merged `926a90d` 2026-05-31; `USE_SKILL_REGISTRY` flag default-off, byte-identical when on) | `docs/plans/2026-05-29-b2b-skill-tool-dir-codegen.md` §12 |
 | **B3** | Fast-tier catalog envelopes (gpu_specs/stock/image) render via deterministic template; opt-in `USE_GROUNDED_RENDERER=fast_template`, default-off | 001 | ✅ shipped | `a25e19e` (merge `535fc1b`) — **flip-gate** before shipped-config flip: render\*Reply polish (label `性能`, localize `状态`) + stock-template still un-exercised |
 | **B4a** | Observability: derive **realized tier** from dispatch path; populate `realized_tier` in the two recorders (NOT `Append` — MySQL bypasses it) | 001 #4 | ✅ shipped | `67a6b84` + `e092444` (merge `a87f5e1`) |
-| **B4b** | Planner emits **predicted tier** (new output field + prompt/schema change); N≥20 regression | 001 #4, 002 | ⏳ pending (gated on B2b) | see "B4 decomposition"; **planner stays on flash — Decision #1 empirically ruled out pro (worse on borderlines)** |
+| **B4b** | Planner emits **predicted tier** (new output field + prompt/schema change); N≥20 regression | 001 #4, 002 | 🟢 unblocked (B2b shipped); impl pending | see "B4 decomposition"; **planner stays on flash — Decision #1 empirically ruled out pro (worse on borderlines); now codified in ADR-002 Amendment 1 (2026-05-31)** |
 | **B5** | Diagnosis package, k8sgpt-style (Analyzer/Failure/Filter) | 005 | ⏳ pending | — |
-| **B6** | Agent path infrastructure: orchestrator + saga + multi-step HITL + SSH category sandbox | 006 | ⏳ pending | — |
+| **B6** | Agent path infrastructure: orchestrator + in-request saga + in-memory HITL + step-trace (zero-DDL; SSH deferred) | 006 | 🟢 ADR-006 **provisionally accepted** 2026-05-31 (zero-DDL slim, revert-if-regression); spec rev-6; impl pending (B6.1→B6.2→B6.6) | `docs/plans/2026-05-30-b6-agent-orchestration.md` |
 | **B7** | MCP gateway (in-process + external stdio/HTTP entry) | 003 Amendment 1 | ⏳ pending | — |
 | **B8** | First end-to-end agent skill ("deploy Qwen32B" / "SSH debug") | 006 | ⏳ pending | — |
 | **B9** | Skill self-evolution loop: revision → held-out validation (B5 verifier) → governance; identifier-sanitize + retire/merge/prune enforcement | 008 | ⏳ pending (gated on B5+B6; B2b only reserves the frontmatter fields) | ADR-008 |
@@ -143,7 +143,7 @@ gate, and that the trace field has two distinct meanings that must not collide:
 
 ## Open decisions (need lead sign-off)
 
-1. **Planner model strategy.** Move the planner to pro now (ADR-002 compliance,
+1. **Planner model strategy.** **[RESOLVED 2026-05-31 — ADR-002 Amendment 1: planner 守 flash, pro-interim premise retracted.]** Move the planner to pro now (ADR-002 compliance,
    addresses flash jitter, costs more, needs N≥20 regression + either a
    planner-model knob or the Router field) vs stay on flash until B2b makes the
    small-prompt flash path safe. Determines whether the Router field is near-term
