@@ -249,15 +249,24 @@ func parseCapabilityFrontmatter(data []byte) (CapabilityMetadata, error) {
 // CapabilityPromptFragments returns planner-prompt directives + one-shot
 // examples derived from internal/intent/capabilities/*.md frontmatter.
 func CapabilityPromptFragments() ([]string, []string) {
-	names := make([]string, 0, len(capabilityMetadata))
-	for _, m := range capabilityMetadata {
+	return capabilityPromptFragmentsFrom(capabilityMetadata)
+}
+
+// capabilityPromptFragmentsFrom is the pure builder underlying
+// CapabilityPromptFragments: it derives the directives + one-shot examples from
+// the given metadata slice (in slice order). Source-parameterized so B2b P2 can
+// feed it skill-registry-sourced metadata and assert byte-identity against the
+// legacy capabilityMetadata source without duplicating this logic.
+func capabilityPromptFragmentsFrom(meta []CapabilityMetadata) ([]string, []string) {
+	names := make([]string, 0, len(meta))
+	for _, m := range meta {
 		names = append(names, m.Name)
 	}
 	directives := []string{
 		fmt.Sprintf("Stage 2C capability routing: classify clear platform %s questions to the matching capability intent.", strings.Join(names, " / ")),
 	}
 	examples := []string{}
-	for _, m := range capabilityMetadata {
+	for _, m := range meta {
 		directives = append(directives, m.PlannerDirectives...)
 		for _, example := range m.PlannerExamples {
 			examples = append(examples, "User question: "+example.Question)

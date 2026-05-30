@@ -12,12 +12,22 @@ import (
 
 // knownHandlerKeys is the hand-maintained allow-list of handler_key values
 // codegen accepts (mirrors the registry↔frontmatter parity panic in
-// internal/intent/capability_registry.go:144-164). It is EMPTY in B2b P1: the 5
-// seeded diagnose_* skills are agent-tier playbooks with no deterministic
-// handler, so none declares handler_key. P2 populates this with the 6 capability
-// handler keys — as STRINGS, to avoid an internal/intent import cycle — when
-// those skills migrate.
-var knownHandlerKeys = map[string]bool{}
+// internal/intent/capability_registry.go:144-164). These are STRINGS, not func
+// pointers, so internal/skills stays free of an internal/intent import cycle —
+// the func binding lives in internal/intent (CapabilityHandlerForKey), and a
+// cross-package parity test asserts this set equals that binding's keys.
+//
+// B2b P2 populated this with the 6 migrated capability handlers. The 5 seeded
+// diagnose_* skills declare no handler_key (agent-tier playbooks, no
+// deterministic handler), so they are unaffected.
+var knownHandlerKeys = map[string]bool{
+	"handleGPUSpecsQuery":      true,
+	"handleStockAvailability":  true,
+	"handlePlatformImageList":  true,
+	"handleCustomImageList":    true,
+	"handleCommunityImageList": true,
+	"handlePricingQuery":       true,
+}
 
 // GeneratedSkills returns the codegen'd skill registry. B2b P1 has no runtime
 // consumer; the accessor exists so tests can assert the generated registry
