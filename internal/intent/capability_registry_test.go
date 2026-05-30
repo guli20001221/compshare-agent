@@ -981,6 +981,27 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	}
 }
 
+func TestRenderStockCapacityReply_PrecheckFailureFallsBackToCatalogOpen(t *testing.T) {
+	// #3b: every model reaching renderStockCapacityReply came from
+	// matchedNormalStockEntries, so it is catalog-Normal (机型开售) by construction.
+	// When every zone's capacity precheck fails (e.g. RetCode 230 with an empty
+	// CLI project_id, or RetCode 292 when HTTP omits ProjectId) the reply must
+	// surface that 开售 truth — NOT collapse to "无法确认是否有可创建库存", which wrongly
+	// implies we can't even tell it is on sale, and NOT claim it is sold out.
+	reply := renderStockCapacityReply([]stockCapacityCheck{
+		{Name: "V100S", Zone: "cn-wlcb-01", Failed: true},
+	})
+	if !strings.Contains(reply, "开售") {
+		t.Errorf("failed-precheck reply should surface the catalog 开售 truth; got: %s", reply)
+	}
+	if strings.Contains(reply, "无法确认是否有可创建库存") {
+		t.Errorf("failed-precheck reply must not bury the catalog truth under 无法确认; got: %s", reply)
+	}
+	if strings.Contains(reply, "暂无可创建库存") {
+		t.Errorf("a failed precheck is not the same as sold-out; got: %s", reply)
+	}
+}
+
 func TestStockAvailabilityUsesFirstMatchedZoneForCapacityPrecheck(t *testing.T) {
 	exec := &stockCapacityZoneExecutor{}
 	handler := NewDemoHandler(exec)
