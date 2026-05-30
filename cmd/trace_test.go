@@ -317,6 +317,32 @@ func TestMutatingToolsFromEnvAndRuntimeLine(t *testing.T) {
 	require.Equal(t, "yes", unknown)
 }
 
+func TestUseSkillRegistryFromEnvAndRuntimeLine(t *testing.T) {
+	enabled, unknown := useSkillRegistryFromEnv(func(string) string { return "" })
+	require.False(t, enabled)
+	require.Empty(t, unknown)
+	require.Equal(t, "capability_source=legacy", skillRegistryRuntimeLine(enabled))
+
+	enabled, unknown = useSkillRegistryFromEnv(func(key string) string {
+		if key == "USE_SKILL_REGISTRY" {
+			return "1"
+		}
+		return ""
+	})
+	require.True(t, enabled)
+	require.Empty(t, unknown)
+	require.Equal(t, "capability_source=skill_registry", skillRegistryRuntimeLine(enabled))
+
+	enabled, unknown = useSkillRegistryFromEnv(func(key string) string {
+		if key == "USE_SKILL_REGISTRY" {
+			return "on"
+		}
+		return ""
+	})
+	require.False(t, enabled)
+	require.Equal(t, "on", unknown)
+}
+
 func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
 	enabled, unknown := knowledgeRetrievalModeFromEnv(func(string) string { return "" })
 	if !enabled || unknown != "" {

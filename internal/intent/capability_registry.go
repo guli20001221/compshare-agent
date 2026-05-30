@@ -59,6 +59,9 @@ func extraHandlerActions() map[Intent][]string {
 // registry (vs. legacy IntentResourceInfo/MonitorQuery or RAG-bound knowledge_qa).
 // Engine.go uses this single predicate to gate capability dispatch.
 func IsCapabilityIntent(i Intent) bool {
+	if useSkillRegistrySource {
+		return isCapabilityIntentSkill(i)
+	}
 	for _, e := range capabilityRegistry {
 		if e.intent == i {
 			return true
@@ -90,6 +93,9 @@ func capabilityRequiredTool(i Intent) (string, bool) {
 // Returns FallbackBeforeTool(validation) if the intent is not registered — this
 // is unreachable when engine.go gates on IsCapabilityIntent first.
 func (h *DemoHandler) DispatchCapability(ctx context.Context, req HandlerRequest) HandlerResult {
+	if useSkillRegistrySource {
+		return h.dispatchCapabilitySkill(ctx, req)
+	}
 	for _, e := range capabilityRegistry {
 		if e.intent == req.Plan.Intent {
 			return e.handler(ctx, h, req)
@@ -247,17 +253,31 @@ func parseCapabilityFrontmatter(data []byte) (CapabilityMetadata, error) {
 }
 
 // CapabilityPromptFragments returns planner-prompt directives + one-shot
-// examples derived from internal/intent/capabilities/*.md frontmatter.
+// examples derived from internal/intent/capabilities/*.md frontmatter (legacy)
+// or, when USE_SKILL_REGISTRY is on, from the generated skill registry. The two
+// sources are byte-identical (TestSkillRegistryCapabilityFragments_ByteIdenticalToLegacy).
 func CapabilityPromptFragments() ([]string, []string) {
-	names := make([]string, 0, len(capabilityMetadata))
-	for _, m := range capabilityMetadata {
+	if useSkillRegistrySource {
+		return capabilityPromptFragmentsFrom(skillRegistryCapabilityMetadata())
+	}
+	return capabilityPromptFragmentsFrom(capabilityMetadata)
+}
+
+// capabilityPromptFragmentsFrom is the pure builder underlying
+// CapabilityPromptFragments: it derives the directives + one-shot examples from
+// the given metadata slice (in slice order). Source-parameterized so B2b P2 can
+// feed it skill-registry-sourced metadata and assert byte-identity against the
+// legacy capabilityMetadata source without duplicating this logic.
+func capabilityPromptFragmentsFrom(meta []CapabilityMetadata) ([]string, []string) {
+	names := make([]string, 0, len(meta))
+	for _, m := range meta {
 		names = append(names, m.Name)
 	}
 	directives := []string{
 		fmt.Sprintf("Stage 2C capability routing: classify clear platform %s questions to the matching capability intent.", strings.Join(names, " / ")),
 	}
 	examples := []string{}
-	for _, m := range capabilityMetadata {
+	for _, m := range meta {
 		directives = append(directives, m.PlannerDirectives...)
 		for _, example := range m.PlannerExamples {
 			examples = append(examples, "User question: "+example.Question)

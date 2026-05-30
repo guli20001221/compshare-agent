@@ -175,6 +175,29 @@ func mutatingToolsRuntimeLine(enabled bool) string {
 	return "mutating=disabled (read-only mode)"
 }
 
+// useSkillRegistryFromEnv reads USE_SKILL_REGISTRY (B2b §5). Mirrors the boolean
+// shape of mutatingToolsEnabledFromEnv: "1" enables, "" is off, any other value
+// is unknown → off + the raw value (the caller warns). Selects the capability
+// dispatch + planner-prompt source; flag-on is byte-identical to flag-off.
+func useSkillRegistryFromEnv(getenv getenvFunc) (bool, string) {
+	value := strings.TrimSpace(getenv("USE_SKILL_REGISTRY"))
+	switch value {
+	case "":
+		return false, ""
+	case "1":
+		return true, ""
+	default:
+		return false, value
+	}
+}
+
+func skillRegistryRuntimeLine(enabled bool) string {
+	if enabled {
+		return "capability_source=skill_registry"
+	}
+	return "capability_source=legacy"
+}
+
 func plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled bool, cutoverIntents []intent.Intent) observability.RuntimeTrace {
 	mode := "off"
 	if plannerDispatchEnabled {

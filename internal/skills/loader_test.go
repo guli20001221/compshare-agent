@@ -33,19 +33,26 @@ func writeSkill(t *testing.T, root, name, frontmatter, body string) {
 // to internal/skills, so the 5 diagnose_* bundles live under ".".
 const seededRoot = "."
 
-// TestNewLoader_LoadsSeededDiagnoseSkills checks the 5 on-disk fixtures load and
-// name==dir holds for all of them (load would fail otherwise).
-func TestNewLoader_LoadsSeededDiagnoseSkills(t *testing.T) {
+// TestNewLoader_LoadsAllSeededSkills checks every on-disk skill loads and
+// name==dir holds for all of them (load would fail otherwise). The set is the 5
+// seeded diagnose_* playbooks (P1) plus the 6 migrated catalog capabilities (P2).
+func TestNewLoader_LoadsAllSeededSkills(t *testing.T) {
 	l, err := NewLoaderWithLogger(seededRoot, silentLogger())
 	if err != nil {
 		t.Fatalf("NewLoader: %v", err)
 	}
 	want := []string{
+		"community_image_list",
+		"custom_image_list",
 		"diagnose_gpu_not_detected",
 		"diagnose_image_issue",
 		"diagnose_init_failure",
 		"diagnose_port_firewall",
 		"diagnose_ssh",
+		"gpu_specs_query",
+		"platform_image_list",
+		"pricing_query",
+		"stock_availability",
 	}
 	if l.Len() != len(want) {
 		t.Fatalf("loaded %d skills, want %d (%v)", l.Len(), len(want), l.Names())
@@ -53,6 +60,44 @@ func TestNewLoader_LoadsSeededDiagnoseSkills(t *testing.T) {
 	for _, name := range want {
 		if _, ok := l.Fetch(name); !ok {
 			t.Errorf("skill %q not loaded; got %v", name, l.Names())
+		}
+	}
+}
+
+// TestNewLoader_CapabilitySkillsCarryRoutingBlock asserts the 6 migrated
+// capabilities carry the §3 routing block (intent_label == name, a handler_key,
+// a non-empty react_tool_subset) and are production_validated — the fields the
+// P2 intent bridge depends on.
+func TestNewLoader_CapabilitySkillsCarryRoutingBlock(t *testing.T) {
+	l, err := NewLoaderWithLogger(seededRoot, silentLogger())
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	caps := map[string]string{
+		"gpu_specs_query":      "handleGPUSpecsQuery",
+		"stock_availability":   "handleStockAvailability",
+		"platform_image_list":  "handlePlatformImageList",
+		"custom_image_list":    "handleCustomImageList",
+		"community_image_list": "handleCommunityImageList",
+		"pricing_query":        "handlePricingQuery",
+	}
+	for name, wantHandler := range caps {
+		s, ok := l.Fetch(name)
+		if !ok {
+			t.Errorf("capability skill %q not loaded", name)
+			continue
+		}
+		if s.IntentLabel != name {
+			t.Errorf("%s: intent_label = %q, want %q", name, s.IntentLabel, name)
+		}
+		if s.HandlerKey != wantHandler {
+			t.Errorf("%s: handler_key = %q, want %q", name, s.HandlerKey, wantHandler)
+		}
+		if len(s.ReactToolSubset) == 0 {
+			t.Errorf("%s: react_tool_subset is empty", name)
+		}
+		if s.VerificationStatus != VerificationProductionValidated {
+			t.Errorf("%s: verification_status = %q, want production_validated", name, s.VerificationStatus)
 		}
 	}
 }
@@ -84,6 +129,49 @@ func TestSkillBody_LazyCautionInjection(t *testing.T) {
 	}
 	if strings.Contains(body, "verification_status") {
 		t.Error("frontmatter leaked into body (verification_status present)")
+	}
+}
+
+// TestGeneratedSkillBody_CWDIndependent proves the go:embed fix closed the CWD
+// trap: a skill from the generated/runtime registry (bodyFS nil → package embed
+// FS) resolves Body() even when the process CWD is NOT internal/skills — exactly
+// the failure mode a deployed binary (B8 agent tier) would have hit with the old
+// os.ReadFile(relative-path) implementation. Not parallel (mutates CWD).
+func TestGeneratedSkillBody_CWDIndependent(t *testing.T) {
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	// defer (not t.Cleanup) so CWD is restored before t.TempDir's RemoveAll
+	// cleanup runs — on Windows a directory that is the process CWD cannot be
+	// unlinked.
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var ssh *Skill
+	for _, s := range GeneratedSkills() {
+		if s.Name == "diagnose_ssh" {
+			ssh = s
+			break
+		}
+	}
+	if ssh == nil {
+		t.Fatal("diagnose_ssh missing from generated registry")
+	}
+	if ssh.bodyFS != nil {
+		t.Fatalf("generated skill must have nil bodyFS (embed-backed); got %T", ssh.bodyFS)
+	}
+	body, err := ssh.Body()
+	if err != nil {
+		t.Fatalf("Body() from a non-package CWD must succeed (embed-backed): %v", err)
+	}
+	if !strings.HasPrefix(body, CautionUnverified) {
+		t.Errorf("embed-backed body should still inject caution; got prefix %q", head(body))
+	}
+	if !strings.Contains(body, "# Diagnose: SSH Connection Failure") {
+		t.Error("embed-backed body should contain the authored markdown heading")
 	}
 }
 
