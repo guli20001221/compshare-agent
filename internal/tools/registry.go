@@ -43,6 +43,27 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "GetModelVRAMRequirement",
+			Description: "根据大模型名称(或参数量)估算推理所需显存,并给出可单卡承载的 GPU 选项;无单卡可承载时给出多卡方案。用于部署/选型,如 'Qwen32B'、'Llama3-70B'、'deepseek-67b'。仅做显存与可承载性计算;算力/场景优选请叠加 GetGPURecommendation,价格用 GetCompShareInstancePrice。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"model_name": map[string]any{
+						"type":        "string",
+						"description": "模型名称或参数量,如 'Qwen32B'、'Qwen2.5-32B-Instruct'、'Llama3-70B'、'7B'。",
+					},
+					"quantization": map[string]any{
+						"type":        "string",
+						"description": "量化精度,默认 fp16。可选 fp16 / bf16 / fp8 / int8 / int4(越低显存越省)。",
+					},
+				},
+				"required": []string{"model_name"},
+			},
+		},
+	},
 	// --- External API Tools ---
 	{
 		Type: openai.ToolTypeFunction,

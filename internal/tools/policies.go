@@ -170,7 +170,7 @@ func policyForAction(action string) ToolExecutionPolicy {
 
 func routeForAction(action string) ActionRoute {
 	switch {
-	case action == "GetGPUSpecs" || action == "GetGPURecommendation":
+	case action == "GetGPUSpecs" || action == "GetGPURecommendation" || action == "GetModelVRAMRequirement":
 		return ActionRouteKnowledge
 	case strings.HasSuffix(action, "Workflow"):
 		return ActionRouteWorkflow
