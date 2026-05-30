@@ -331,6 +331,13 @@ func (s *Skill) Body() (string, error) {
 }
 
 func (s *Skill) loadBody() (string, error) {
+	// FORWARD RISK (B2b P2): s.Path is relative to the load root, so this read
+	// depends on the process CWD being that root. There is no runtime Body()
+	// consumer today, and tests run with CWD = the package dir, so this works in
+	// tests — which means a future runtime caller (a deployed binary with CWD ≠
+	// internal/skills) would hit a file-not-found that the test suite cannot
+	// catch. Before wiring any tier to call Body(), switch this to a go:embed
+	// FS so body reads are CWD-independent (ADR-004 progressive-disclosure §loader).
 	data, err := os.ReadFile(filepath.FromSlash(s.Path))
 	if err != nil {
 		return "", fmt.Errorf("skills: read body for %q: %w", s.Name, err)

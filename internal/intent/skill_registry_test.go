@@ -2,6 +2,7 @@ package intent
 
 import (
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/compshare-agent/internal/skills"
@@ -101,6 +102,56 @@ func TestCapabilityHandlerByKey_NoStaleEntries(t *testing.T) {
 	}
 	if len(capabilityHandlerByKey) != len(declared) {
 		t.Errorf("capabilityHandlerByKey size %d != declared handler_keys %d", len(capabilityHandlerByKey), len(declared))
+	}
+}
+
+// TestCapabilityHandlerByKey_MatchesKnownHandlerKeys is the cross-package parity
+// guard codegen.go documents: the intent-side handler binding (capabilityHandlerByKey)
+// must cover EXACTLY the skills-side codegen allow-list (skills.KnownHandlerKeys()).
+// The two sets are hand-maintained in different packages — without this assertion a
+// key added to one but not the other drifts silently (codegen would accept a
+// handler_key the bridge can't bind, or the bridge would carry a key codegen rejects).
+func TestCapabilityHandlerByKey_MatchesKnownHandlerKeys(t *testing.T) {
+	bindingKeys := map[string]bool{}
+	for key := range capabilityHandlerByKey {
+		bindingKeys[key] = true
+	}
+	allowList := skills.KnownHandlerKeys()
+	if len(allowList) != len(bindingKeys) {
+		t.Fatalf("set size mismatch: skills.KnownHandlerKeys()=%d, capabilityHandlerByKey=%d (%v vs %v)",
+			len(allowList), len(bindingKeys), allowList, keysOf(bindingKeys))
+	}
+	for _, key := range allowList {
+		if !bindingKeys[key] {
+			t.Errorf("handler_key %q is in skills.KnownHandlerKeys() but not bound in capabilityHandlerByKey", key)
+		}
+	}
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestCapabilitySkills_ReactToolSubsetMatchesIntentToolSubset pins each migrated
+// capability skill's react_tool_subset to the live IntentToolSubset() value for
+// its intent. They are equal today by hand; this guard keeps them equal so that
+// when USE_SKILL_REGISTRY (P2 part 2) sources the ReAct tool window from the skill
+// registry, the planner-visible tool set stays byte-identical to the legacy
+// tool_subset.go source. Without it the two could silently diverge after the flip.
+func TestCapabilitySkills_ReactToolSubsetMatchesIntentToolSubset(t *testing.T) {
+	for _, s := range skills.GeneratedSkills() {
+		if s.IntentLabel == "" {
+			continue
+		}
+		want := IntentToolSubset(Intent(s.IntentLabel))
+		if !reflect.DeepEqual(s.ReactToolSubset, want) {
+			t.Errorf("%s: react_tool_subset=%v but IntentToolSubset(%s)=%v", s.Name, s.ReactToolSubset, s.IntentLabel, want)
+		}
 	}
 }
 
