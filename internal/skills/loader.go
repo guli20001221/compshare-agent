@@ -22,7 +22,9 @@ package skills
 
 import (
 	"bytes"
+	"embed"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -33,6 +35,16 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// skillFS embeds every internal/skills/<name>/skill.md so Body() reads are
+// CWD-independent for the generated/runtime registry. The generated literals in
+// registry_gen.go leave bodyFS nil and fall back to this embedded FS; a deployed
+// binary (the agent tier) whose CWD is not internal/skills therefore still
+// resolves skill bodies (closes the B2b P2 forward-risk in loadBody). The embed
+// key is "<name>/skill.md" — name==dir is enforced at parse, so it is stable.
+//
+//go:embed */skill.md
+var skillFS embed.FS
 
 const (
 	// DefaultBodyCapLines is the body line cap applied when a skill omits
@@ -113,6 +125,11 @@ type Skill struct {
 	// Windows and Unix checkouts (B2b §3 F4 determinism).
 	Path string
 
+	// bodyFS is the filesystem Body() reads from, keyed by "<name>/skill.md".
+	// NewLoader sets it to os.DirFS(root) (disk, CWD-independent for the root it
+	// was given). The generated registry leaves it nil → loadBody falls back to
+	// the package-embedded skillFS. Never serialized by codegen (unexported).
+	bodyFS   fs.FS
 	bodyOnce sync.Once
 	body     string
 	bodyErr  error
@@ -178,6 +195,9 @@ func NewLoaderWithLogger(root string, logger *log.Logger) (*Loader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("skills: read root %q: %w", root, err)
 	}
+	// rootFS roots Body() reads at the load root so they do not depend on the
+	// process CWD (the generated registry instead reads the package embed FS).
+	rootFS := os.DirFS(root)
 	loaded := make(map[string]*Skill)
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -196,6 +216,7 @@ func NewLoaderWithLogger(root string, logger *log.Logger) (*Loader, error) {
 		if _, dup := loaded[s.Name]; dup {
 			return nil, fmt.Errorf("skills: duplicate skill name %q", s.Name)
 		}
+		s.bodyFS = rootFS
 		loaded[s.Name] = s
 	}
 	// Dangling related_skills are forward references (e.g. safety_warning is not
@@ -331,14 +352,17 @@ func (s *Skill) Body() (string, error) {
 }
 
 func (s *Skill) loadBody() (string, error) {
-	// FORWARD RISK (B2b P2): s.Path is relative to the load root, so this read
-	// depends on the process CWD being that root. There is no runtime Body()
-	// consumer today, and tests run with CWD = the package dir, so this works in
-	// tests — which means a future runtime caller (a deployed binary with CWD ≠
-	// internal/skills) would hit a file-not-found that the test suite cannot
-	// catch. Before wiring any tier to call Body(), switch this to a go:embed
-	// FS so body reads are CWD-independent (ADR-004 progressive-disclosure §loader).
-	data, err := os.ReadFile(filepath.FromSlash(s.Path))
+	// Body reads are CWD-independent (B2b P2 forward-risk resolved). Skills loaded
+	// by NewLoader carry bodyFS = os.DirFS(root); the generated/runtime registry
+	// leaves bodyFS nil and falls back to the package-embedded skillFS. Either way
+	// the key is "<name>/skill.md" (name==dir enforced at parse), so a deployed
+	// binary with CWD ≠ internal/skills resolves the body from the embed instead
+	// of a missing relative path (ADR-004 progressive-disclosure §loader).
+	fsys := s.bodyFS
+	if fsys == nil {
+		fsys = skillFS
+	}
+	data, err := fs.ReadFile(fsys, s.Name+"/skill.md")
 	if err != nil {
 		return "", fmt.Errorf("skills: read body for %q: %w", s.Name, err)
 	}

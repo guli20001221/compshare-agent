@@ -12,10 +12,66 @@ import (
 // planner-prompt source while keeping internal/skills import-cycle-free: skills
 // stores handler_key as a STRING, and the string→func binding lives here.
 //
-// B2b P2 (this file) wires the bridge + proves byte-identity against the legacy
-// capabilityMetadata source. It does NOT yet switch the runtime: buildSystemPrompt
-// and DispatchCapability still read the legacy registry. The USE_SKILL_REGISTRY
-// flag that flips the runtime source is a separate follow-up.
+// B2b P2 wires the bridge + proves byte-identity against the legacy
+// capabilityMetadata source. The USE_SKILL_REGISTRY flag (useSkillRegistrySource
+// below, set at boot via SetCapabilitySource) selects whether IsCapabilityIntent /
+// DispatchCapability / CapabilityPromptFragments read this generated registry or
+// the legacy capabilityRegistry — default legacy, flag-on byte-identical.
+
+// useSkillRegistrySource selects whether capability dispatch + planner-prompt
+// fragments come from the generated skill registry (true) or the legacy
+// capabilityRegistry/capabilityMetadata (false, default).
+//
+// BOOT-ONLY switch: set once via SetCapabilitySource before the engine serves
+// any turn (the cmd layer reads USE_SKILL_REGISTRY at process boot — cli.go for
+// the CLI, shared_deps.go for the server, mirroring COMPSHARE_ENABLE_MUTATING_TOOLS).
+// It is then read — never written — by IsCapabilityIntent / DispatchCapability /
+// CapabilityPromptFragments, so there is no concurrent-write race with sessions.
+// Flipping it on the server requires a restart (process-global, no hot reload —
+// B2b §8a). Flag-on is byte-identical to flag-off (the prompt fragments are byte-
+// equal: TestSkillRegistryCapabilityFragments_ByteIdenticalToLegacy; dispatch
+// resolves the same func pointers: TestCapabilityHandlerByKey_MatchesRegistry),
+// so this changes no behavior — its purpose is to exercise the skill-registry
+// path in production ahead of P3 / the agent tier.
+var useSkillRegistrySource bool
+
+// SetCapabilitySource selects the capability dispatch + planner-prompt source.
+// MUST be called once at process boot, before the first Chat. Not safe to call
+// concurrently with engine turns.
+func SetCapabilitySource(useSkillRegistry bool) { useSkillRegistrySource = useSkillRegistry }
+
+// CapabilitySourceIsSkillRegistry reports the active source (for runtime-line
+// logging and tests).
+func CapabilitySourceIsSkillRegistry() bool { return useSkillRegistrySource }
+
+// isCapabilityIntentSkill is the skill-registry-sourced IsCapabilityIntent: an
+// intent is a capability iff a generated capability skill (non-empty intent_label)
+// declares it.
+func isCapabilityIntentSkill(i Intent) bool {
+	for _, s := range skills.GeneratedSkills() {
+		if s.IntentLabel != "" && Intent(s.IntentLabel) == i {
+			return true
+		}
+	}
+	return false
+}
+
+// dispatchCapabilitySkill is the skill-registry-sourced DispatchCapability: it
+// resolves the intent's capability skill, binds its handler_key to the Go handler
+// via CapabilityHandlerForKey, and invokes it. The func pointer is identical to
+// the legacy registry's (pinned by TestCapabilityHandlerByKey_MatchesRegistry).
+func (h *DemoHandler) dispatchCapabilitySkill(ctx context.Context, req HandlerRequest) HandlerResult {
+	for _, s := range skills.GeneratedSkills() {
+		if s.IntentLabel == "" || Intent(s.IntentLabel) != req.Plan.Intent {
+			continue
+		}
+		if handler := CapabilityHandlerForKey(s.HandlerKey); handler != nil {
+			return handler(ctx, h, req)
+		}
+		break
+	}
+	return FallbackBeforeTool(FallbackValidation)
+}
 
 // capabilityHandlerFunc is the capability dispatch handler signature (identical
 // to capabilityEntry.handler).

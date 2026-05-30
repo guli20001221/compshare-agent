@@ -59,6 +59,9 @@ func extraHandlerActions() map[Intent][]string {
 // registry (vs. legacy IntentResourceInfo/MonitorQuery or RAG-bound knowledge_qa).
 // Engine.go uses this single predicate to gate capability dispatch.
 func IsCapabilityIntent(i Intent) bool {
+	if useSkillRegistrySource {
+		return isCapabilityIntentSkill(i)
+	}
 	for _, e := range capabilityRegistry {
 		if e.intent == i {
 			return true
@@ -90,6 +93,9 @@ func capabilityRequiredTool(i Intent) (string, bool) {
 // Returns FallbackBeforeTool(validation) if the intent is not registered — this
 // is unreachable when engine.go gates on IsCapabilityIntent first.
 func (h *DemoHandler) DispatchCapability(ctx context.Context, req HandlerRequest) HandlerResult {
+	if useSkillRegistrySource {
+		return h.dispatchCapabilitySkill(ctx, req)
+	}
 	for _, e := range capabilityRegistry {
 		if e.intent == req.Plan.Intent {
 			return e.handler(ctx, h, req)
@@ -247,8 +253,13 @@ func parseCapabilityFrontmatter(data []byte) (CapabilityMetadata, error) {
 }
 
 // CapabilityPromptFragments returns planner-prompt directives + one-shot
-// examples derived from internal/intent/capabilities/*.md frontmatter.
+// examples derived from internal/intent/capabilities/*.md frontmatter (legacy)
+// or, when USE_SKILL_REGISTRY is on, from the generated skill registry. The two
+// sources are byte-identical (TestSkillRegistryCapabilityFragments_ByteIdenticalToLegacy).
 func CapabilityPromptFragments() ([]string, []string) {
+	if useSkillRegistrySource {
+		return capabilityPromptFragmentsFrom(skillRegistryCapabilityMetadata())
+	}
 	return capabilityPromptFragmentsFrom(capabilityMetadata)
 }
 

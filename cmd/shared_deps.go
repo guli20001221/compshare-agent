@@ -7,6 +7,7 @@ import (
 	"github.com/compshare-agent/internal/agentpool"
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/renderer"
 	"github.com/compshare-agent/internal/store"
@@ -23,6 +24,15 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 	mutating := getenv("COMPSHARE_ENABLE_MUTATING_TOOLS") == "1"
 	if mutating {
 		log.Printf("runtime: HTTP mutating tools enabled (COMPSHARE_ENABLE_MUTATING_TOOLS=1)")
+	}
+	useSkillRegistry, unknownSkillRegistry := useSkillRegistryFromEnv(getenv)
+	if unknownSkillRegistry != "" {
+		log.Printf("warning: ignoring unknown USE_SKILL_REGISTRY value %q", unknownSkillRegistry)
+	}
+	// Process-global, boot-only (B2b §8a — no hot reload; flips need a restart).
+	intent.SetCapabilitySource(useSkillRegistry)
+	if useSkillRegistry {
+		log.Printf("runtime: HTTP capability source = skill_registry (USE_SKILL_REGISTRY=1)")
 	}
 	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
 		Capacity:             cfg.Agent.HTTP.PoolCapacity,

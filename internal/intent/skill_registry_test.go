@@ -1,12 +1,77 @@
 package intent
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"reflect"
 	"sort"
 	"testing"
 
 	"github.com/compshare-agent/internal/skills"
 )
+
+// withSkillRegistrySource runs fn with useSkillRegistrySource set to v, restoring
+// the prior value afterward. The source is a boot-only package global; tests must
+// not leak it (other tests assume the legacy default).
+func withSkillRegistrySource(t *testing.T, v bool, fn func()) {
+	t.Helper()
+	prev := useSkillRegistrySource
+	useSkillRegistrySource = v
+	defer func() { useSkillRegistrySource = prev }()
+	fn()
+}
+
+// TestCapabilitySource_DefaultIsLegacy pins the zero-value default: without a
+// SetCapabilitySource call the legacy registry is the source (flag-off invariant).
+func TestCapabilitySource_DefaultIsLegacy(t *testing.T) {
+	if CapabilitySourceIsSkillRegistry() {
+		t.Fatal("default capability source must be legacy (useSkillRegistrySource=false)")
+	}
+}
+
+// TestCapabilitySource_SkillRegistryPreservesSystemPromptSHA is the §5 flag-on
+// gate: with USE_SKILL_REGISTRY on, the FULL planner system prompt is byte-for-byte
+// identical to the legacy baseline (systemPromptSHA256Baseline). The fragment-level
+// test proves the directives/examples are byte-equal; this proves buildSystemPrompt
+// composes them identically regardless of source, so flipping the flag is zero-behavior.
+func TestCapabilitySource_SkillRegistryPreservesSystemPromptSHA(t *testing.T) {
+	withSkillRegistrySource(t, true, func() {
+		sum := sha256.Sum256([]byte(buildSystemPrompt()))
+		got := hex.EncodeToString(sum[:])
+		if got != systemPromptSHA256Baseline {
+			t.Errorf("system prompt drifted under USE_SKILL_REGISTRY=on.\n"+
+				"  baseline (legacy): %s\n"+
+				"  skill-registry:    %s\n"+
+				"Flag-on must be byte-identical to flag-off (B2b §5).",
+				systemPromptSHA256Baseline, got)
+		}
+	})
+}
+
+// TestCapabilitySource_SkillRegistryRoutesIdenticalDispatch mirrors
+// TestDispatchCapability_RoutesToHandler with the skill-registry source on: every
+// legacy capability intent still dispatches to a handler that returns Handled with
+// ToolAction == requiredTool. Proves the flag-on dispatch path reaches the same
+// handlers (func-pointer identity is separately pinned by TestCapabilityHandlerByKey_MatchesRegistry).
+func TestCapabilitySource_SkillRegistryRoutesIdenticalDispatch(t *testing.T) {
+	withSkillRegistrySource(t, true, func() {
+		h := NewDemoHandler(stubFailingExecutor{})
+		for _, e := range capabilityRegistry {
+			if !IsCapabilityIntent(e.intent) {
+				t.Errorf("IsCapabilityIntent(%q) = false under skill-registry source, want true", e.intent)
+			}
+			req := HandlerRequest{Plan: Plan{Intent: e.intent}}
+			result := h.DispatchCapability(context.Background(), req)
+			if result.Status != HandlerStatusHandled {
+				t.Errorf("skill-registry DispatchCapability(%q) status = %q, want %q", e.intent, result.Status, HandlerStatusHandled)
+			}
+			if result.ToolAction != e.requiredTool {
+				t.Errorf("skill-registry DispatchCapability(%q) ToolAction = %q, want %q", e.intent, result.ToolAction, e.requiredTool)
+			}
+		}
+	})
+}
 
 // TestSkillRegistryCapabilityFragments_ByteIdenticalToLegacy is the B2b P2
 // byte-identity gate. The planner-prompt directives + examples built from the
