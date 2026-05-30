@@ -50,8 +50,9 @@ superset schema 是这条的落地产物。
 
 ### B. 现在预留进化 metadata —— 并定义空值语义
 
-在 ADR-004 已有的 `verification_status` / `field_refs_verified` twin 之上,**reserve 三个**进化字段
-(复用 verification_status 当 validation-status,不再平行加一个):
+在 ADR-004 已有的 `verification_status` / `field_refs_verified` twin 之上,**reserve 四个**进化字段
+(provenance 拆为 `provenance` + `provenance_trace_ref` 两个字段;复用 verification_status 当
+validation-status,不再平行加一个):
 
 ```yaml
 provenance: human_authored            # | distilled_from_trajectory
