@@ -132,6 +132,12 @@ func (w *MySQLWriter) Enqueue(tenant TenantContext, record TraceRecord) error {
 	}
 }
 
+// EmitStep is a no-op in B6.1 — no producer emits step traces yet. The B6.2
+// orchestrator saga runner arrives as the producer and rewires this to
+// read-modify-write the turn's trace_json.steps[] (never a per-step INSERT,
+// which would collide uk_request_uuid: one agent_traces row per turn).
+func (w *MySQLWriter) EmitStep(StepTrace) error { return nil }
+
 // Dir satisfies the Writer interface. MySQLWriter has no on-disk dir so the
 // trace-dir cleanup logic in cmd/trace.go can skip it cleanly.
 func (w *MySQLWriter) Dir() string { return "" }

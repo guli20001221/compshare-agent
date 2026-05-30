@@ -28,6 +28,8 @@ func (w *captureAppendWriter) Append(record observability.TraceRecord) error {
 	return nil
 }
 
+func (w *captureAppendWriter) EmitStep(observability.StepTrace) error { return nil }
+
 func (w *captureAppendWriter) Dir() string { return "" }
 
 func (w *captureAppendWriter) Close(context.Context) error { return nil }
@@ -48,6 +50,8 @@ func (w *captureEnqueueWriter) Enqueue(tenant observability.TenantContext, recor
 	w.tenants = append(w.tenants, tenant)
 	return nil
 }
+
+func (w *captureEnqueueWriter) EmitStep(observability.StepTrace) error { return nil }
 
 func (w *captureEnqueueWriter) Dir() string { return "" }
 

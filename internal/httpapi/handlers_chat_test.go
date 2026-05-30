@@ -152,6 +152,8 @@ func (w *captureTraceWriter) Enqueue(tenant observability.TenantContext, record 
 	return nil
 }
 
+func (w *captureTraceWriter) EmitStep(observability.StepTrace) error { return nil }
+
 func (w *captureTraceWriter) Dir() string { return "" }
 
 func (w *captureTraceWriter) Close(context.Context) error { return nil }

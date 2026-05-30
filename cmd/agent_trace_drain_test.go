@@ -29,6 +29,7 @@ import (
 //     (so we don't truncate the drain mid-batch),
 //   - be < typical user patience for CLI exit-to-prompt (so a hung
 //     connection doesn't wedge shutdown).
+//
 // 1s is too tight; 30s is too long. Today's value is 5s.
 func TestCLITraceDrainTimeout_InReasonableBand(t *testing.T) {
 	if cliTraceDrainTimeout < 1*time.Second {
@@ -65,5 +66,6 @@ func TestObservabilityWriterInterface_HasCloseMethod(t *testing.T) {
 type noopWriter struct{}
 
 func (*noopWriter) Append(observability.TraceRecord) error { return nil }
+func (*noopWriter) EmitStep(observability.StepTrace) error { return nil }
 func (*noopWriter) Dir() string                            { return "" }
 func (*noopWriter) Close(context.Context) error            { return nil }

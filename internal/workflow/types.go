@@ -1,5 +1,7 @@
 package workflow
 
+import "time"
+
 // StepType identifies the kind of workflow step.
 type StepType int
 
@@ -14,10 +16,31 @@ const (
 type Step struct {
 	Name        string
 	Type        StepType
-	Tool        string                                       // API action name (for StepToolCall only)
-	ToolFunc    func(wfCtx *Context) string                  // dynamic tool name (overrides Tool if set)
+	Tool        string                      // API action name (for StepToolCall only)
+	ToolFunc    func(wfCtx *Context) string // dynamic tool name (overrides Tool if set)
 	BuildArgs   func(wfCtx *Context) (map[string]any, error)
 	CheckResult func(wfCtx *Context, result map[string]any) (bool, string)
+	// Compensate is the compensating action run on a LATER step's failure
+	// (reverse-order rollback). nil = no side effect / nothing to roll back
+	// (read-only or idempotent setter). B6.1 declares it; only the B6.2
+	// orchestrator saga runner consumes it — workflow.Engine.Run ignores it,
+	// so existing sync flows are byte-identical. (ADR-006 §决策2)
+	Compensate *CompensateStep
+	// Timeout is the per-step cancel deadline. 0 = inherit ctx (current
+	// behavior). Consumed only by the B6.2 saga runner; ignored by
+	// workflow.Engine.Run. (ADR-006 §决策2, default 240s applied by the runner)
+	Timeout time.Duration
+}
+
+// CompensateStep is the rollback action for a side-effecting Step, run in
+// reverse order by the orchestrator saga when a later step fails (B6.2).
+type CompensateStep struct {
+	Tool      string
+	BuildArgs func(wfCtx *Context, stepResult map[string]any) (map[string]any, error)
+	// BestEffort true = a failed compensate logs and continues the rollback
+	// rather than wedging it ("partial rollback + tell user" > "rollback
+	// deadlock"). Default true is applied by the saga runner.
+	BestEffort bool
 }
 
 // Definition holds a complete workflow.

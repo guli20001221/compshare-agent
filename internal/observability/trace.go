@@ -67,6 +67,11 @@ type WriterOptions struct {
 // queue. FileWriter has no long-lived resources and returns nil immediately.
 type Writer interface {
 	Append(record TraceRecord) error
+	// EmitStep records one agent-tier saga step. B6.1: no-op everywhere (no
+	// producer yet). B6.2 wires it to read-modify-write THAT TURN's
+	// trace_json.steps[] — NEVER a per-step INSERT (a per-step INSERT would
+	// collide uk_request_uuid: one agent_traces row per turn).
+	EmitStep(step StepTrace) error
 	Dir() string
 	Close(ctx context.Context) error
 }
@@ -116,6 +121,10 @@ type TraceRecord struct {
 	RateLimit       RateLimitTrace       `json:"rate_limit"`
 	Retrieval       RetrievalTrace       `json:"retrieval"`
 	Outcome         OutcomeTrace         `json:"outcome"`
+	// Steps holds agent-tier saga step traces, populated by B6.2. Empty /
+	// omitempty for all non-agent turns, so trace output stays byte-identical
+	// until a producer exists (same reserved-slot precedent as TaskTier in B1).
+	Steps []StepTrace `json:"steps,omitempty"`
 }
 
 type traceRecordJSON struct {
@@ -137,6 +146,7 @@ type traceRecordJSON struct {
 	RateLimit       *RateLimitTrace       `json:"rate_limit,omitempty"`
 	Retrieval       *RetrievalTrace       `json:"retrieval,omitempty"`
 	Outcome         *OutcomeTrace         `json:"outcome,omitempty"`
+	Steps           []StepTrace           `json:"steps,omitempty"`
 }
 
 func (r TraceRecord) MarshalJSON() ([]byte, error) {
@@ -180,6 +190,9 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	if traceOutcomeObserved(r.Outcome) {
 		out.Outcome = &r.Outcome
 	}
+	if len(r.Steps) > 0 {
+		out.Steps = r.Steps
+	}
 	return json.Marshal(out)
 }
 
@@ -205,14 +218,14 @@ const (
 //
 //  1. dispatched_retrieval            -> knowledge (RAG handler ran)
 //  2. dispatched / selection_required -> fast      (deterministic handler ran;
-//                                        selection returned a clarify prompt,
-//                                        still no RAG / ReAct)
+//     selection returned a clarify prompt,
+//     still no RAG / ReAct)
 //  3. else retrieval produced hits    -> knowledge (RAG path that never went
-//                                        through cutover)
+//     through cutover)
 //  4. else a main_react tool fired    -> agent     (ReAct loop ran)
 //  5. else                            -> ""        (not observable: no-tool
-//                                        ReAct answer, or hard-block / canned
-//                                        reply)
+//     ReAct answer, or hard-block / canned
+//     reply)
 //
 // Cutover fallbacks (fallback_*) and failure_after_tool are deliberately NOT
 // mapped by status name: they mean the cutover attempt declined and the turn
@@ -442,6 +455,7 @@ func RedactQueryDerivedFields(trace *RetrievalTrace) {
 func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 	record = record.withDefaults(now)
 	RedactQueryDerivedFields(&record.Retrieval)
+	RedactStepDerivedFields(record.Steps)
 	return record
 }
 
@@ -486,6 +500,11 @@ func (w *FileWriter) Dir() string {
 // no buffered state to drain. Provided so FileWriter satisfies the Writer
 // interface alongside MySQLWriter.
 func (w *FileWriter) Close(_ context.Context) error { return nil }
+
+// EmitStep is a no-op in B6.1 — no producer emits step traces yet. The B6.2
+// orchestrator saga runner arrives as the producer and rewires this to fold
+// the step into the turn's trace record.
+func (w *FileWriter) EmitStep(StepTrace) error { return nil }
 
 func (w *FileWriter) Append(record TraceRecord) error {
 	now := w.now()

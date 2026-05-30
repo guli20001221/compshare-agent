@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -162,6 +163,88 @@ func TestEngine_Run_StepFailure(t *testing.T) {
 
 	// Step2 should never have been called
 	assert.Len(t, executor.calls, 1)
+}
+
+// TestEngine_Run_IgnoresCompensateAndTimeout pins the B6.1 contract:
+// Step.Compensate and Step.Timeout are DECLARED but NOT CONSUMED by the sync
+// workflow.Engine.Run. They are reserved for the B6.2 orchestrator saga runner.
+// The guard builds a 2-step workflow where the FIRST step has a non-nil
+// Compensate (and a Timeout set) and the SECOND step FAILS via CheckResult,
+// then asserts the Result is identical to the same workflow WITHOUT those
+// fields — i.e. Run never invokes Compensate (no rollback on the sync runner)
+// and never enforces Timeout. If Run silently started honoring either field,
+// the rollback would mutate the executor call log or the Result would diverge,
+// and this test would fail.
+func TestEngine_Run_IgnoresCompensateAndTimeout(t *testing.T) {
+	// First step succeeds (creates a side effect); second step fails its
+	// CheckResult, which on a saga runner would trigger step-one's Compensate.
+	def := func(withCompensate bool) *Definition {
+		first := Step{
+			Name: "create",
+			Type: StepToolCall,
+			Tool: "CreateCompShareInstance",
+			BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+				return map[string]any{"GpuType": "4090"}, nil
+			},
+		}
+		if withCompensate {
+			first.Timeout = 240 * time.Second
+			first.Compensate = &CompensateStep{
+				Tool: "DeleteCompShareInstance",
+				BuildArgs: func(_ *Context, _ map[string]any) (map[string]any, error) {
+					return map[string]any{"UHostId": "uhost-abc"}, nil
+				},
+				BestEffort: true,
+			}
+		}
+		return &Definition{
+			Name: "CreateInstance",
+			Steps: []Step{
+				first,
+				{
+					Name: "verify",
+					Type: StepToolCall,
+					Tool: "GetCompShareInstancePrice",
+					BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+						return map[string]any{}, nil
+					},
+					CheckResult: func(_ *Context, _ map[string]any) (bool, string) {
+						return false, "校验失败，触发回滚"
+					},
+				},
+			},
+		}
+	}
+
+	run := func(d *Definition) (*Result, *mockExecutor) {
+		executor := &mockExecutor{results: map[string]map[string]any{
+			"CreateCompShareInstance":   {"UHostId": "uhost-abc", "RetCode": 0},
+			"GetCompShareInstancePrice": {"Price": 3.5, "RetCode": 0},
+		}}
+		eng := NewEngine(executor, nil, nil)
+		result, err := eng.Run(context.Background(), d, nil)
+		assert.NoError(t, err)
+		return result, executor
+	}
+
+	withResult, withExec := run(def(true))
+	withoutResult, withoutExec := run(def(false))
+
+	// Both runs must be byte-identical in outcome: Compensate/Timeout are inert.
+	assert.Equal(t, withoutResult, withResult)
+
+	// The compensating tool (DeleteCompShareInstance) must NEVER have been
+	// invoked — only the two forward-direction tools ran, identically in both.
+	assert.Equal(t, withoutExec.calls, withExec.calls)
+	for _, c := range withExec.calls {
+		assert.NotEqual(t, "DeleteCompShareInstance", c.action,
+			"Engine.Run must not invoke Step.Compensate in B6.1")
+	}
+
+	// Sanity: the workflow did stop at the failing second step (so the
+	// hypothetical rollback opportunity genuinely existed).
+	assert.False(t, withResult.Success)
+	assert.Equal(t, "verify", withResult.StoppedAt)
 }
 
 func TestEngine_Run_ConfirmApproved(t *testing.T) {
