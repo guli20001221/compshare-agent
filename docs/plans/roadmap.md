@@ -1,9 +1,9 @@
-# Architecture Refactor Roadmap (B1–B8)
+# Architecture Refactor Roadmap (B1–B9)
 
 **Status of record.** This file is the version-controlled batch roadmap for the
 task-tier architecture refactor. It records *what ships in which batch, in what
 order, and what blocks what* — the sequencing layer. It does **not** restate the
-design: the canonical design lives in `docs/adr/001`–`007`. When a batch lands,
+design: the canonical design lives in `docs/adr/001`–`008`. When a batch lands,
 update its status row here.
 
 > History note: the original batch breakdown lived only in a session memory note
@@ -18,7 +18,7 @@ update its status row here.
 |---|---|---|---|---|
 | **B1** | Safety pad: dead-code cleanup + `internal/llm/router.go` tier-aware wrapper + reserved trace `task_tier` slot | 002 | ✅ shipped | `29029c4` + `731545f` (rev2) + `db5db03` (rev3) |
 | **B2a** | Router inject completion: `engine.NewSharedDeps` + 2 eval sites consume `Router.For(TierFast)` (build-inside, signature unchanged, byte-stable) | 002 #3 | ✅ shipped | spec `a713790`, impl `b38fe28` — `docs/plans/2026-05-29-b2-router-inject-completion.md` |
-| **B2b** | Skill/Tool directory split + codegen + **progressive disclosure** (planner prompt → metadata-only) | 003, 004 | 🟡 spec rev-3, **§12 gate CLOSED 2026-05-30** (ADR-003/004 provisionally accepted; revert-if-regression) — impl pending, lead deferred start to post-compact | `docs/plans/2026-05-29-b2b-skill-tool-dir-codegen.md` §12 |
+| **B2b** | Skill/Tool directory split + codegen + **progressive disclosure** (planner prompt → metadata-only) | 003, 004, 008 | 🟡 spec rev-3, **§12 gate CLOSED 2026-05-30** (ADR-003/004 provisionally accepted; revert-if-regression) — impl pending, lead deferred start to post-compact | `docs/plans/2026-05-29-b2b-skill-tool-dir-codegen.md` §12 |
 | **B3** | Fast-tier catalog envelopes (gpu_specs/stock/image) render via deterministic template; opt-in `USE_GROUNDED_RENDERER=fast_template`, default-off | 001 | ✅ shipped | `a25e19e` (merge `535fc1b`) — **flip-gate** before shipped-config flip: render\*Reply polish (label `性能`, localize `状态`) + stock-template still un-exercised |
 | **B4a** | Observability: derive **realized tier** from dispatch path; populate `realized_tier` in the two recorders (NOT `Append` — MySQL bypasses it) | 001 #4 | ✅ shipped | `67a6b84` + `e092444` (merge `a87f5e1`) |
 | **B4b** | Planner emits **predicted tier** (new output field + prompt/schema change); N≥20 regression | 001 #4, 002 | ⏳ pending (gated on B2b) | see "B4 decomposition"; **planner stays on flash — Decision #1 empirically ruled out pro (worse on borderlines)** |
@@ -26,6 +26,7 @@ update its status row here.
 | **B6** | Agent path infrastructure: orchestrator + saga + multi-step HITL + SSH category sandbox | 006 | ⏳ pending | — |
 | **B7** | MCP gateway (in-process + external stdio/HTTP entry) | 003 Amendment 1 | ⏳ pending | — |
 | **B8** | First end-to-end agent skill ("deploy Qwen32B" / "SSH debug") | 006 | ⏳ pending | — |
+| **B9** | Skill self-evolution loop: revision → held-out validation (B5 verifier) → governance; identifier-sanitize + retire/merge/prune enforcement | 008 | ⏳ pending (gated on B5+B6; B2b only reserves the frontmatter fields) | ADR-008 |
 
 Each batch ships independently with its own CLI smoke + regression budget
 (blueprint: "每批 ship 一次,哪批出问题不影响其它批次").
@@ -157,7 +158,7 @@ gate, and that the trace field has two distinct meanings that must not collide:
 
 ## Refs
 
-- Design: `docs/adr/001`–`007`
+- Design: `docs/adr/001`–`008`
 - B2a spec: `docs/plans/2026-05-29-b2-router-inject-completion.md`
 - BillingAnomaly→fast: `docs/plans/2026-05-29-billing-anomaly-to-fast-tier.md`
 - Source breakdown (memory, superseded by this file for status): `architecture-refactor-blueprint-2026-05-28`
