@@ -266,6 +266,11 @@ func ExecuteTool(name string, args map[string]any) (map[string]any, error) {
 		budget, _ := args["budget_sensitive"].(bool)
 		return GetGPURecommendation(scene, budget), nil
 
+	case "GetModelVRAMRequirement":
+		modelName, _ := args["model_name"].(string)
+		quant, _ := args["quantization"].(string)
+		return GetModelVRAMRequirement(modelName, quant), nil
+
 	default:
 		return nil, fmt.Errorf("unknown knowledge tool: %s", name)
 	}
@@ -275,7 +280,7 @@ func ExecuteTool(name string, args map[string]any) (map[string]any, error) {
 // (not an external API call).
 func IsKnowledgeTool(action string) bool {
 	switch action {
-	case "GetGPUSpecs", "GetGPURecommendation":
+	case "GetGPUSpecs", "GetGPURecommendation", "GetModelVRAMRequirement":
 		return true
 	default:
 		return false
