@@ -263,6 +263,20 @@ func requiredToolsForIntent(intent Intent) map[string]struct{} {
 		add("DescribeCompShareInstance", "DiagnoseBilling")
 	case IntentDiagnosis:
 		add("DescribeCompShareInstance")
+	case IntentOperationLifecycle:
+		// Read tool ONLY. The planner resolves/lists the target via
+		// DescribeCompShareInstance; the actual mutation runs through the
+		// workflow layer + confirm (still gated by COMPSHARE_ENABLE_MUTATING_TOOLS),
+		// never via plan.required_tools — so do NOT add *Workflow / mutating
+		// actions here even though IntentToolSubset lists them. The few-shots
+		// teach exactly this one tool (planner.go); without this case every
+		// operation_lifecycle plan failed validation → fallback_invalid → unknown.
+		add("DescribeCompShareInstance")
+	case IntentDiskInfo:
+		// Read tool ONLY. Disk facts surface solely via DiskSet[] in the
+		// DescribeCompShareInstance response (no disk-list API upstream;
+		// 2026-05-29 routing fix). Same drift as operation_lifecycle above.
+		add("DescribeCompShareInstance")
 	}
 
 	if required, ok := capabilityRequiredTool(intent); ok {
