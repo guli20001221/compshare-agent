@@ -116,6 +116,12 @@ func (w *MySQLWriter) Append(record TraceRecord) error {
 // organization_id, connection_id). Non-blocking; drops + warns if the queue
 // is full.
 func (w *MySQLWriter) Enqueue(tenant TenantContext, record TraceRecord) error {
+	// Single choke point shared with FileWriter.Append: fill defaults + redact
+	// query-derived PII BEFORE the record enters the queue, so neither an
+	// in-memory queue dump nor the worker (rowFromTrace → trace_json) ever sees
+	// raw user queries. Pre-fix this was absent → the MySQL sink persisted real
+	// PII (staff names) unredacted with an empty schema_version.
+	record = prepareForPersist(record, time.Now())
 	select {
 	case w.queue <- persistedTrace{tenant: tenant, record: record}:
 		return nil
