@@ -38,8 +38,12 @@ type StepTrace struct {
 	Result        any            `json:"result,omitempty"`
 	ErrorCategory string         `json:"error_category,omitempty"`
 	StartedAt     time.Time      `json:"started_at"`
-	EndedAt       time.Time      `json:"ended_at,omitempty"`
-	CompensateOf  string         `json:"compensate_of,omitempty"`
+	// EndedAt is a pointer so omitempty actually omits it for in-progress
+	// (running / awaiting_confirm) steps. A value time.Time is never "empty"
+	// to encoding/json — its zero marshals to "0001-01-01T00:00:00Z" — so a
+	// value field would leak a year-0001 sentinel into intermediate step traces.
+	EndedAt      *time.Time `json:"ended_at,omitempty"`
+	CompensateOf string     `json:"compensate_of,omitempty"`
 }
 
 // RedactStepDerivedFields runs each StepTrace's Args/Result through the trace

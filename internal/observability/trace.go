@@ -67,10 +67,14 @@ type WriterOptions struct {
 // queue. FileWriter has no long-lived resources and returns nil immediately.
 type Writer interface {
 	Append(record TraceRecord) error
-	// EmitStep records one agent-tier saga step. B6.1: no-op everywhere (no
-	// producer yet). B6.2 wires it to read-modify-write THAT TURN's
-	// trace_json.steps[] — NEVER a per-step INSERT (a per-step INSERT would
-	// collide uk_request_uuid: one agent_traces row per turn).
+	// EmitStep is a reserved no-op hook on the SINK. B6.2 wires agent-tier
+	// step accumulation in the per-turn RECORDER (cmd/trace.go
+	// cliTraceRecorder.EmitStep, internal/httpapi/trace_recorder.go
+	// chatTraceRecorder.EmitStep), NOT here: both sinks write the turn row
+	// ONCE at Append/Enqueue, so steps are folded into TraceRecord.Steps[] in
+	// memory and persisted with that single write (never a per-step INSERT —
+	// that would collide uk_request_uuid, one agent_traces row per turn). This
+	// method stays for a future streaming sink that wants per-step delivery.
 	EmitStep(step StepTrace) error
 	Dir() string
 	Close(ctx context.Context) error
@@ -501,9 +505,9 @@ func (w *FileWriter) Dir() string {
 // interface alongside MySQLWriter.
 func (w *FileWriter) Close(_ context.Context) error { return nil }
 
-// EmitStep is a no-op in B6.1 — no producer emits step traces yet. The B6.2
-// orchestrator saga runner arrives as the producer and rewires this to fold
-// the step into the turn's trace record.
+// EmitStep is a no-op on the file sink. Agent-tier saga steps are accumulated
+// in the per-turn recorder (cliTraceRecorder.EmitStep) and persisted with the
+// single Append at turn Finish — see the Writer.EmitStep interface doc.
 func (w *FileWriter) EmitStep(StepTrace) error { return nil }
 
 func (w *FileWriter) Append(record TraceRecord) error {

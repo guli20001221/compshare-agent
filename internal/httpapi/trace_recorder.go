@@ -219,6 +219,22 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 	}
 }
 
+// EmitStep accumulates one agent-tier saga StepTrace into THIS turn's record
+// (B6.2). The orchestrator saga runner uses the recorder as its StepSink. Steps
+// are folded into record.Steps in memory and persisted ONCE at Finish via
+// Enqueue/Append → prepareForPersist (which redacts Args/Result) — never a
+// per-step INSERT (a per-step INSERT would collide uk_request_uuid: one
+// agent_traces row per turn). This makes *chatTraceRecorder satisfy
+// orchestrator.StepSink. Per-step SSE event:step (live UI) is fanned separately
+// by the HTTP handler, reusing the existing sw.WriteEvent("step", ...) path.
+func (r *chatTraceRecorder) EmitStep(step observability.StepTrace) error {
+	if r == nil {
+		return nil
+	}
+	r.record.Steps = append(r.record.Steps, step)
+	return nil
+}
+
 func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 	if r == nil || r.writer == nil {
 		return nil

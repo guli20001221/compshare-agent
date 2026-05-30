@@ -818,6 +818,20 @@ func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {
 	}
 }
 
+// EmitStep accumulates one agent-tier saga StepTrace into THIS turn's record
+// (B6.2). The orchestrator saga runner uses the recorder as its StepSink. Steps
+// are folded into record.Steps in memory and persisted ONCE at Finish via
+// Append → prepareForPersist (which redacts Args/Result) — never a per-step
+// INSERT (a per-step INSERT would collide uk_request_uuid: one row per turn).
+// This makes *cliTraceRecorder satisfy orchestrator.StepSink.
+func (r *cliTraceRecorder) EmitStep(step observability.StepTrace) error {
+	if r == nil {
+		return nil
+	}
+	r.record.Steps = append(r.record.Steps, step)
+	return nil
+}
+
 func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	if r == nil || r.writer == nil {
 		return nil
