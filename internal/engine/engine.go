@@ -20,6 +20,7 @@ import (
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/orchestrator"
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/refusal"
 	grounded "github.com/compshare-agent/internal/renderer"
@@ -189,8 +190,12 @@ type Engine struct {
 	// LLM call within the current Chat() invocation. Reset at the top of
 	// Chat. Read at ReAct loop iteration boundaries to enforce
 	// maxTokensPerTurn — never mid tool_call / tool_result pair.
-	turnTokensConsumed       int
-	hardBlockObserver        func(observability.EngineHardBlockTrace)
+	turnTokensConsumed int
+	hardBlockObserver  func(observability.EngineHardBlockTrace)
+	// stepSink receives agent-tier saga StepTraces (B8). Set per-turn via
+	// SetStepSink to the trace recorder, which folds them into the turn's
+	// trace_json.steps[]. nil = no step observability. Consumed by RunAgentSaga.
+	stepSink                 orchestrator.StepSink
 	confirmFn                ConfirmFunc
 	messages                 []openai.ChatCompletionMessage // conversation history
 	userTurn                 int                            // incremented at start of each Chat() call
@@ -438,6 +443,36 @@ func (e *Engine) SetMutatingToolsEnabled(v bool) {
 	if e.safeExecutor != nil {
 		e.safeExecutor.SetMutatingToolsEnabled(v)
 	}
+}
+
+// SetStepSink sets the agent-tier saga step sink for the current turn (B8). The
+// CLI/HTTP recorder is passed here so RunAgentSaga's StepTraces fold into the
+// turn's trace_json.steps[]. nil disables step observability.
+func (e *Engine) SetStepSink(sink orchestrator.StepSink) {
+	e.stepSink = sink
+}
+
+// RunAgentSaga drives a workflow.Definition through the agent-tier orchestrator
+// saga (B6.2) rather than the synchronous workflow.Engine.Run. It is the engine
+// seam the B8 deploy_model dispatch arm calls: the saga emits a StepTrace per
+// transition (to e.stepSink), enforces per-step timeouts, runs the StepConfirm
+// gate through e.confirmFn (HTTP: ConfirmBroker / CLI: cliConfirm), and
+// hard-refuses any L2/destructive step. The executor is wired with
+// OriginWorkflowInternal (NewWithSafeExecutor) so the saga's StepConfirm is the
+// sole HITL gate — no double-confirm. workflow.Engine.Run is untouched; this is
+// a SEPARATE path the agent tier uses.
+func (e *Engine) RunAgentSaga(ctx context.Context, def *workflow.Definition, params map[string]any, skillID string) (*workflow.Result, error) {
+	var confirm workflow.ConfirmFunc
+	if e.confirmFn != nil {
+		confirm = workflow.ConfirmFunc(e.confirmFn)
+	}
+	saga := orchestrator.NewWithSafeExecutor(e.safeExecutor, orchestrator.Options{
+		Confirm: confirm,
+		Sink:    e.stepSink,
+		TurnID:  fmt.Sprintf("turn-%d", e.userTurn),
+		SkillID: skillID,
+	})
+	return saga.Run(ctx, def, params)
 }
 
 func (e *Engine) SetIntentPlanner(planner IntentPlanner, opts IntentPlannerOptions) {

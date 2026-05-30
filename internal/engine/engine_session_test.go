@@ -202,7 +202,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 12 shared + 34 per-session = 46 fields. Any drift
+// Whitelist totals: 12 shared + 35 per-session = 47 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -246,7 +246,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"tokenUsageObserver":               true,
 		"rateLimitObserver":                true,
 		"hardBlockObserver":                true,
-		"currentCtx":                       true,
+		// stepSink is the agent-tier saga StepTrace sink (B8), set per-turn via
+		// SetStepSink to THIS session's trace recorder. Per-session by design:
+		// sharing it would route one tenant's step traces into another tenant's
+		// recorder — exactly the cross-session leak this test guards.
+		"stepSink":   true,
+		"currentCtx": true,
 		// M1 SessionState fields — per-session by design. SessionState is
 		// the JSON-serializable per-session dialog state envelope; mixing
 		// it across sessions would be exactly the cross-user leak this
@@ -268,12 +273,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 12, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 34, len(perSessionFields); want != got {
+	if want, got := 35, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 46, typ.NumField(); want != got {
+	if want, got := 47, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}
