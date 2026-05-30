@@ -27,7 +27,7 @@
 
 ## 0. Preconditions (binary — resolve before P1)
 
-1. **Ratify ADR-003 + ADR-004 (both `Proposed`** — `003:3`, `004:3`). P1's loader hard-codes ADR-004's frontmatter keys + caution semantics (`004:81,104`) and parses with `KnownFields(true)` (`capability_registry.go:241`), so any later schema-key change is a hard-fail rewrite. P-tool builds JSON to ADR-003's enum and proposes amending it (B-2). **Gate is binary** (Rule 12): P1 MUST NOT start until ADR-003/004 + the §3 superset schema (open decisions #1/#2) are ratified. If the lead chooses to start before ratification, record it as an explicit deviation in the PR description — not an inline "or accept risk" hatch.
+1. **Ratify ADR-003 + ADR-004 + ADR-008 (all `Proposed`** — `003:3`, `004:3`, `008:3`). P1's loader hard-codes ADR-004's frontmatter keys + caution semantics (`004:81,104`) and parses with `KnownFields(true)` (`capability_registry.go:241`), so any later schema-key change is a hard-fail rewrite. **ADR-008 §B adds 4 reserved evolution fields (`provenance`/`provenance_trace_ref`/`skill_version`/`last_validated_against`) to the same struct** — they must be in the loader struct from P1 or `KnownFields(true)` rejects skills that carry them; the loader does **not** branch on them (ADR-008 half-wired guard, asserted by test). P-tool builds JSON to ADR-003's enum and proposes amending it (B-2). **Gate is binary** (Rule 12): P1 MUST NOT start until ADR-003/004 + the §3 superset schema (open decisions #1/#2) are ratified. If the lead chooses to start before ratification, record it as an explicit deviation in the PR description — not an inline "or accept risk" hatch.
 2. **Tool-binding audit (resolved 2026-05-29):** four binding sources exist, and they are not all "drift":
    - (1) `capabilityRegistry` Go literal (`capability_registry.go:40-47`, runtime dispatch source-of-truth)
    - (2) frontmatter `required_tool` (singular), reconciled to (1) by init panic (`:144-164`)
@@ -94,6 +94,11 @@ required_citation: false
 handler_key: handleGPUSpecsQuery   # name→func map entry, existence-checked at generate time
 planner_directives: ["..."]
 planner_examples: [{question: "4090 显存多大", confidence: 0.85}]
+# evolution-metadata block (reserved by ADR-008 §B; NO B2b consumer — loader MUST NOT branch on these):
+provenance: human_authored          # | distilled_from_trajectory; absent ⇒ human_authored
+provenance_trace_ref: ""            # distilled only; opaque trace id, never inlined account data
+skill_version: 1                    # loop increments; absent ⇒ 1
+last_validated_against: ""          # eval-snapshot digest; absent ⇒ never loop-validated
 ---
 <markdown body — 正例/反例/边界, ≤100 lines (frontmatter excluded from the count)>
 ```
@@ -257,7 +262,7 @@ P2 already byte-validated the source swap (§5). **P3's dual-run validates the p
 
 ## 13. Refs
 
-- ADR-003 (skill ⊥ tool + Amendment-1), ADR-004 (bundle + progressive disclosure), ADR-005 (the 5 diagnose skills' provenance)
+- ADR-003 (skill ⊥ tool + Amendment-1), ADR-004 (bundle + progressive disclosure), ADR-005 (the 5 diagnose skills' provenance), ADR-008 (skill format + evolution contract — the §3 reserved fields + decisions A/C land here)
 - B2a spec `docs/plans/2026-05-29-b2-router-inject-completion.md` §B2b (outline this expands)
 - Roadmap `docs/plans/roadmap.md` (B2b = critical path)
 - Groundwork `wf_611cd891`; adversarial review `wf_4bfd92ca` (5 lenses; rev-2 applied)
