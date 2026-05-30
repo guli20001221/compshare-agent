@@ -1,0 +1,44 @@
+[
+  {
+    "qid": "jit-control-resource",
+    "kind": "control",
+    "expect_intent": "resource",
+    "question": "我账号下现在有哪些 GPU 实例",
+    "note": "Clear in-cutover intent. Validates the harness detects a STABLE classification (distinct=1)."
+  },
+  {
+    "qid": "jit-control-pricing",
+    "kind": "control",
+    "expect_intent": "pricing",
+    "question": "4090 一小时多少钱",
+    "note": "Clear pricing_query. Second control for the no-jitter baseline."
+  },
+  {
+    "qid": "jit-zerotarget-stop",
+    "kind": "borderline",
+    "expect_intent": "operation_lifecycle|unknown",
+    "question": "帮我把实例关机",
+    "note": "Zero-target mutating ask. Memory target_ref_required_for_operation_lifecycle: drifts between operation_lifecycle and unknown."
+  },
+  {
+    "qid": "jit-modelverse-api",
+    "kind": "borderline",
+    "expect_intent": "knowledge_qa|unknown",
+    "question": "Suno 文生音乐的 API 在你们平台怎么调用",
+    "note": "Memory modelverse_planner_gap: corpus has it but planner often drops to unknown. Knowledge vs unknown drift."
+  },
+  {
+    "qid": "jit-ssh-boundary",
+    "kind": "borderline",
+    "expect_intent": "diagnosis|knowledge_qa|unknown",
+    "question": "我 SSH 连不上自己的服务器，怎么排查",
+    "note": "Memory general_tech_qa_boundary: should stay platform (diagnosis/RAG), risks drifting to a general-tech refusal."
+  },
+  {
+    "qid": "jit-vague-monitor",
+    "kind": "borderline",
+    "expect_intent": "monitor|unknown",
+    "question": "我那台机器是不是有点卡",
+    "note": "Vague/colloquial monitor ask. Tests monitor vs unknown drift on emotional/underspecified phrasing."
+  }
+]
