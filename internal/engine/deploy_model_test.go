@@ -285,10 +285,11 @@ func TestMatchDeployImage_UsesLiveGPUSet(t *testing.T) {
 			gmem := func(v int) map[string]any { return map[string]any{"Value": float64(v)} }
 			perf := func(v int) map[string]any { return map[string]any{"Value": float64(v)} }
 			sizes := []any{map[string]any{"Gpu": float64(1)}, map[string]any{"Gpu": float64(8)}}
+			z := "cn-wlcb-01" // matcher filters availability to the create-zone
 			return map[string]any{"AvailableInstanceTypes": []any{
-				map[string]any{"Name": "4090", "Status": "Normal", "GraphicsMemory": gmem(24), "Performance": perf(83), "MachineSizes": sizes},
-				map[string]any{"Name": "B200", "Status": "Normal", "GraphicsMemory": gmem(48), "Performance": perf(130), "MachineSizes": sizes},
-				map[string]any{"Name": "A100", "Status": "Normal", "GraphicsMemory": gmem(80), "Performance": perf(100), "MachineSizes": sizes},
+				map[string]any{"Name": "4090", "Zone": z, "Status": "Normal", "GraphicsMemory": gmem(24), "Performance": perf(83), "MachineSizes": sizes},
+				map[string]any{"Name": "B200", "Zone": z, "Status": "Normal", "GraphicsMemory": gmem(48), "Performance": perf(130), "MachineSizes": sizes},
+				map[string]any{"Name": "A100", "Zone": z, "Status": "Normal", "GraphicsMemory": gmem(80), "Performance": perf(100), "MachineSizes": sizes},
 			}}, nil
 		default:
 			return map[string]any{}, nil
