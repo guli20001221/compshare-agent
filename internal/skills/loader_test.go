@@ -44,6 +44,7 @@ func TestNewLoader_LoadsAllSeededSkills(t *testing.T) {
 	want := []string{
 		"community_image_list",
 		"custom_image_list",
+		"deploy_model",
 		"diagnose_gpu_not_detected",
 		"diagnose_image_issue",
 		"diagnose_init_failure",
