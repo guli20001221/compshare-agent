@@ -40,16 +40,18 @@ provenance: human_authored
 2. **定 GPU(确定性,镜像感知)**:`RecommendGPUTypeWithin` = 有模型名走显存算术(参数量×字节×1.2 buffer → 最小可承载单卡,放不下给多卡),无模型名走场景关键词;再**∩ 选中镜像 `SupportedGpuTypes`**(镜像声明的推荐机型;放不下时显存正确性优先,只告警)。→ `GpuType`。
 3. **建实例(orchestrator saga)**:复用 `CreateInstanceDef` 经 `RunAgentSaga` 传 `{GpuType, ImageSource, ImageName, CompShareImageId}`(**回传已解析的镜像 ID**,保证 saga 建的就是选型那张镜像、与 GPU 定型同源——否则平台 CJK Name 过滤失效/社区 index-0 会漂到别的镜像):查配比 → 检查库存(售罄即停)→ 查价 → **确认(StepConfirm 是唯一 HITL 门)** → `CreateCompShareInstance` → 单次 describe。
 4. **轮询(handler 内有界循环)**:`DescribeCompShareInstance` 读 `UHostSet[0].State` 直到 `"Running"`,有界 N 轮短读(**轮询耗尽≠失败**,实例已建,慢=还在起)。
-5. **回报**:实例 ID + `GpuType` + 镜像 + `SshLoginCommand`(含 IP/端口)。**永不回报 `Password`**(base64 密钥)。
+5. **取用法(成功后只读一次,按 id 回查选中镜像)**:`fetchImageUsage` 取 `SoftwarePorts`(app↔端口)+`FirewallPorts`(额外端口,如 vLLM API :8000)+`AutoStart`+`Readme`(仅社区有)。访问地址由 **镜像端口 + 实例公网 IP 自行拼** `http://ip:port`,**不直接回显实例 `Softwares[].URL`**(可能带 Jupyter `?token=` 密钥)。社区 `Readme` 去 HTML/iframe/图片 markdown 后截断节选(不喂回 LLM,非注入面)。
+6. **回报**:实例 ID + `GpuType` + 镜像 + `SshLoginCommand` + **访问地址/使用说明**。**永不回报 `Password`/`FileBrowserPassword`**(base64 密钥)。
 
 ## 关键字段(已核上游)
 
-- 列表镜像无 `Readme`;平台单查(传 `CompShareImageId`)才返 `Readme` 且 base 镜像常空;社区列表默认带 `Readme`。
+- **`Readme` 来源(2026-05-31 真机核实)**:平台镜像 `Readme` **恒空**(列表 0/68,单查 by id 也空)→ 平台用法看 `SoftwarePorts`;社区 `Readme` **有内容**(~1-2K markdown+HTML,列表/keyed-by-id 都返,仅 `ExcludeReadme=true` 时省略)→ matcher shortlist 设 `ExcludeReadme=true` 省 token,成功后按 id 单查(不设 `ExcludeReadme`)拿全文。
+- **用法字段**:`SoftwarePorts[].{Software,Port}`(app↔端口,平台 App 50/68 有,如 ComfyUI:8188/SD-WebUI:7860;社区也有)+ `FirewallPorts[]`(额外开放 TCP,vLLM API:8000/SGLang:30000)+ `AutoStart`(社区常 true)。实例 `UHostSet[].Softwares[].{Name,URL}` 给 app→完整 URL(含公网 IP),**但 URL 可能含 Jupyter `?token=` 密钥→不直接回显**,改用 端口+IP 自拼。
 - **平台镜像也含 App 类镜像**(2026-05-31 真机 recon:`ImageType` 分布 App:49/Other:10/System:9;ComfyUI/vLLM/Ollama/SGLang 都是平台 App 镜像 by Name)。`Softwares.Applications` 字段被客户面剥离,但**应用身份在 `Name`/`Description`** 上 matcher 看得到 → **不存在“平台只有框架、社区只有应用”的二分法**,按真实 Name/Framework 匹配。
 - **`SupportedGpuTypes` 在列表响应里就有**(裸 GPU key 如 `4090`/`V100S`,与 gpuSpecs key 同形;可空/可单卡如 vLLM-5090);用于 M2 的 GPU∩镜像交集。
 - **平台 server-side `Name` 模糊过滤对 CJK 规范名失效**(`comfyui`→0 命中)→ 平台取全量不做关键词过滤;社区 `FuzzySearch`(名+作者)有效 → 社区走关键词。
 - 社区响应 = `CompshareImageGroup[].{ImageName, Data[].{CompShareImageId, SupportedGpuTypes}}`;**无 `Data[]` 时镜像 ID 解析为空**,create 步骤须 fail-loud(已加 guard)。
-- 实例:`UHostSet[].{UHostId, State, GpuType, SshLoginCommand, Password, IPSet[]}`;`Memory` 单位 MB;`CreateCompShareInstance` 返回 `UHostIds []`。
+- 实例:`UHostSet[].{UHostId, State, GpuType, SshLoginCommand, Password, FileBrowserPassword, IPSet[], Softwares[]}`;`Password`/`FileBrowserPassword` 是 base64 密钥,**永不回显**;`Memory` 单位 MB;`CreateCompShareInstance` 返回 `UHostIds []`。
 
 ## Pitfalls
 

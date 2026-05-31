@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,6 +51,7 @@ func newDeployMock(cfg deployMockConfig) *mockExecutorFn {
 				"ImageType":        "App",
 				"Softwares":        map[string]any{"Framework": "PyTorch"},
 				"Description":      "PyTorch 基础镜像",
+				"SoftwarePorts":    []any{map[string]any{"Software": "JupyterLab", "Port": float64(8888)}},
 			}
 			if len(cfg.platformSupportedGPUs) > 0 {
 				arr := make([]any, len(cfg.platformSupportedGPUs))
@@ -98,6 +100,7 @@ func newDeployMock(cfg deployMockConfig) *mockExecutorFn {
 					"GpuType":         "A100",
 					"SshLoginCommand": "ssh root@1.2.3.4 -p 22",
 					"Password":        "FAKE-PW-DO-NOT-LEAK", // stands in for the (base64) instance password — must NOT leak into reply
+					"IPSet":           []any{map[string]any{"IP": "1.2.3.4", "Type": "Bgp", "Weight": float64(10)}},
 				},
 			}}, nil
 		default:
@@ -164,6 +167,27 @@ func TestTryDeployModel_HappyPath_AlreadyRunning(t *testing.T) {
 	// create step (OriginWorkflowInternal) must NOT re-prompt.
 	assert.Equal(t, 1, confirmCalls, "exactly one confirm (the StepConfirm)")
 	assert.NotEmpty(t, *events, "user-facing progress steps should be emitted")
+}
+
+// TestTryDeployModel_SurfacesUsageGuidance proves the arm fetches the deployed
+// image's usage detail post-create and renders an access endpoint, so the user
+// learns HOW to use the instance (here: JupyterLab on :8888 built from the image
+// SoftwarePorts + the instance public IP) — closing the "deployed but no guidance"
+// gap. The DescribeCompShareImages re-read (by id) must actually happen.
+func TestTryDeployModel_SurfacesUsageGuidance(t *testing.T) {
+	withFastPoll(t, 5)
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "帮我部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "访问地址", "usage block surfaced")
+	assert.Contains(t, reply, "http://1.2.3.4:8888", "endpoint built from image SoftwarePorts + instance public IP")
+	// fetchImageUsage re-reads the image by id AFTER the matcher's catalog read:
+	// matcher (1 list) + post-create detail (1 by-id) ≥ 2.
+	assert.GreaterOrEqual(t, countCalls(exec.calls, "DescribeCompShareImages"), 2,
+		"image is re-read by id post-create for usage guidance")
 }
 
 // TestTryDeployModel_PollUntilRunning proves the handler-side poll loop advances
@@ -540,25 +564,185 @@ func TestExtractJSONObject(t *testing.T) {
 }
 
 // TestBuildDeployReply_NeverLeaksPassword guards the secret-boundary invariant:
-// the reply renders access info (SSH command) but NEVER the base64 password.
+// the reply renders access info (SSH command) but NEVER the base64 password /
+// FileBrowserPassword.
 func TestBuildDeployReply_NeverLeaksPassword(t *testing.T) {
 	host := map[string]any{
-		"Name":            "deploy-x",
-		"State":           "Running",
-		"SshLoginCommand": "ssh root@9.9.9.9 -p 22",
-		"Password":        "FAKE-PW-DO-NOT-LEAK",
+		"Name":                "deploy-x",
+		"State":               "Running",
+		"SshLoginCommand":     "ssh root@9.9.9.9 -p 22",
+		"Password":            "FAKE-PW-DO-NOT-LEAK",
+		"FileBrowserPassword": "FAKE-FB-PW-DO-NOT-LEAK",
 	}
-	reply := buildDeployReply(deployPlan{ImageSource: "platform", ImageName: "PyTorch", GpuType: "A100"}, "u-9", host, "Running")
+	reply := buildDeployReply(deployPlan{ImageSource: "platform", ImageName: "PyTorch", GpuType: "A100"}, "u-9", host, "Running", imageUsage{})
 	assert.Contains(t, reply, "u-9")
 	assert.Contains(t, reply, "ssh root@9.9.9.9")
 	assert.Contains(t, reply, "A100")
 	assert.NotContains(t, reply, "FAKE-PW-DO-NOT-LEAK", "password must never be rendered")
+	assert.NotContains(t, reply, "FAKE-FB-PW-DO-NOT-LEAK", "FileBrowser password must never be rendered")
 }
 
 func TestBuildDeployReply_TransientStateGuidesUser(t *testing.T) {
-	reply := buildDeployReply(deployPlan{GpuType: "A100"}, "u-1", map[string]any{"State": "Starting"}, "Starting")
+	reply := buildDeployReply(deployPlan{GpuType: "A100"}, "u-1", map[string]any{"State": "Starting"}, "Starting", imageUsage{})
 	assert.Contains(t, reply, "初始化")
 	assert.Contains(t, reply, "查询我的实例")
+}
+
+// TestBuildDeployReply_SurfacesAccessEndpoints proves the usage block turns the
+// image's SoftwarePorts + the instance public IP into http endpoints, so the user
+// learns WHERE the deployed app lives (e.g. ComfyUI on :8188) — not just an SSH
+// command. The endpoint is constructed from ports+IP, never echoed from the
+// instance Softwares URLs (which can embed a Jupyter token).
+func TestBuildDeployReply_SurfacesAccessEndpoints(t *testing.T) {
+	host := map[string]any{
+		"State":           "Running",
+		"SshLoginCommand": "ssh root@9.9.9.9 -p 22",
+		"IPSet": []any{
+			map[string]any{"IP": "10.0.0.1", "Type": "Private", "Weight": float64(0)},
+			map[string]any{"IP": "9.9.9.9", "Type": "Bgp", "Weight": float64(10)},
+		},
+	}
+	usage := imageUsage{
+		ports:    []softwarePort{{name: "ComfyUI", port: 8188}, {name: "JupyterLab", port: 8888}},
+		firewall: []int{8000, 8188}, // 8188 dup of an app port → must be deduped out
+	}
+	reply := buildDeployReply(deployPlan{ImageSource: "platform", ImageName: "ComfyUI", GpuType: "A100"}, "u-9", host, "Running", usage)
+
+	assert.Contains(t, reply, "http://9.9.9.9:8188", "ComfyUI endpoint built from port + public (BGP) IP")
+	assert.Contains(t, reply, "http://9.9.9.9:8888", "JupyterLab endpoint")
+	assert.NotContains(t, reply, "10.0.0.1", "the private IP must not be used for the public endpoint")
+	assert.Contains(t, reply, "8000", "extra firewall port (vLLM-style API) surfaced")
+	assert.Contains(t, reply, "令牌", "Jupyter token caution shown when JupyterLab is present")
+}
+
+// TestBuildDeployReply_CommunityReadmeExcerpt proves the community author's Readme
+// is read and surfaced as a plain-text excerpt (HTML/iframe/image-markdown
+// stripped), with the auto-start hint — directly answering "after deploy, can the
+// skill guide usage". The excerpt is attributed + capped.
+func TestBuildDeployReply_CommunityReadmeExcerpt(t *testing.T) {
+	readme := "<iframe src=\"//player.bilibili.com/x\"></iframe>\n# 数字人镜像\n![cover](https://x/y.png)\n## 使用指南\n启动后访问 WebUI 即可生成视频。"
+	usage := imageUsage{
+		ports:     []softwarePort{{name: "打开WebUI", port: 7860}},
+		autoStart: true,
+		readme:    readme,
+	}
+	host := map[string]any{"State": "Running", "IPSet": []any{map[string]any{"IP": "9.9.9.9", "Type": "Bgp", "Weight": float64(1)}}}
+	reply := buildDeployReply(deployPlan{ImageSource: "community", ImageName: "数字人合集", GpuType: "5090"}, "u-9", host, "Running", usage)
+
+	assert.Contains(t, reply, "使用说明", "README excerpt section header present")
+	assert.Contains(t, reply, "使用指南", "README body text surfaced")
+	assert.Contains(t, reply, "启动后访问 WebUI", "README body text surfaced")
+	assert.NotContains(t, reply, "<iframe", "HTML tags stripped from the excerpt")
+	assert.NotContains(t, reply, "player.bilibili.com/x", "iframe src stripped")
+	assert.NotContains(t, reply, "![cover]", "markdown image stripped")
+	assert.Contains(t, reply, "自启动", "AutoStart hint shown for community auto-start images")
+}
+
+func TestPlainTextExcerpt(t *testing.T) {
+	assert.Equal(t, "", plainTextExcerpt("", 100))
+	assert.Equal(t, "", plainTextExcerpt("   \n\n  ", 100))
+
+	in := "<iframe src=\"//x\"></iframe>\n# 标题\n![img](http://a/b.png)\n正文内容"
+	got := plainTextExcerpt(in, 100)
+	assert.NotContains(t, got, "<iframe")
+	assert.NotContains(t, got, "![img]")
+	assert.Contains(t, got, "# 标题")
+	assert.Contains(t, got, "正文内容")
+
+	// Truncation adds an ellipsis past the cap.
+	long := strings.Repeat("字", 50)
+	assert.Equal(t, strings.Repeat("字", 10)+"…", plainTextExcerpt(long, 10))
+}
+
+// TestPlainTextExcerpt_SanitizesUntrustedRunes pins the review hardening: the
+// Readme is untrusted community content rendered in a terminal, so ANSI escape
+// sequences, bell/VT/FF/CR, Unicode bidi overrides (link-spoofing) and zero-width
+// chars must be stripped, and exotic Unicode whitespace folded to a plain space.
+func TestPlainTextExcerpt_SanitizesUntrustedRunes(t *testing.T) {
+	// ANSI escape (ESC=\x1b) + bell + CR + form-feed must all be removed.
+	got := plainTextExcerpt("a\x1b[31mRED\x1b[0m\x07b\rc\x0cd", 100)
+	assert.NotContains(t, got, "\x1b", "ESC (ANSI escape) must be stripped")
+	assert.NotContains(t, got, "\x07", "bell must be stripped")
+	assert.NotContains(t, got, "\r", "carriage return must be stripped")
+	assert.NotContains(t, got, "\x0c", "form-feed must be stripped")
+	assert.Contains(t, got, "RED", "visible text between escapes is preserved")
+
+	// Bidi/zero-width/BOM/NBSP expressed as Go \u escapes (ASCII source, no literal invisibles).
+	got = plainTextExcerpt("Visit \u202egro.elgoog\u202c \u200blink\ufeff", 100)
+	assert.NotContains(t, got, "\u202e", "RTL override (U+202E) must be stripped")
+	assert.NotContains(t, got, "\u202c", "pop-directional (U+202C) must be stripped")
+	assert.NotContains(t, got, "\u200b", "zero-width space (U+200B) must be stripped")
+	assert.NotContains(t, got, "\ufeff", "BOM (U+FEFF) must be stripped")
+	assert.Contains(t, got, "gro.elgoog", "visible text preserved sans override")
+
+	// Non-breaking space (U+00A0) folds to a plain space and collapses.
+	got = plainTextExcerpt("Visit \u00a0\u00a0\u00a0site", 100)
+	assert.Equal(t, "Visit site", got, "NBSP folded to space + collapsed")
+
+	// Newlines are preserved as structure.
+	assert.Equal(t, "a\nb", plainTextExcerpt("a\nb", 100))
+}
+
+func TestHostPublicIP(t *testing.T) {
+	// Prefers the non-Private highest-Weight IP.
+	host := map[string]any{"IPSet": []any{
+		map[string]any{"IP": "10.0.0.1", "Type": "Private", "Weight": float64(99)},
+		map[string]any{"IP": "1.1.1.1", "Type": "Bgp", "Weight": float64(1)},
+		map[string]any{"IP": "2.2.2.2", "Type": "Internation", "Weight": float64(5)},
+	}}
+	assert.Equal(t, "2.2.2.2", hostPublicIP(host), "highest-weight non-private IP wins")
+
+	// All private → falls back to a non-empty IP rather than returning empty.
+	onlyPriv := map[string]any{"IPSet": []any{map[string]any{"IP": "10.0.0.9", "Type": "Private", "Weight": float64(0)}}}
+	assert.Equal(t, "10.0.0.9", hostPublicIP(onlyPriv))
+
+	assert.Equal(t, "", hostPublicIP(nil))
+	assert.Equal(t, "", hostPublicIP(map[string]any{}))
+}
+
+func TestParseSoftwarePortsAndFirewall(t *testing.T) {
+	ports := parseSoftwarePorts([]any{
+		map[string]any{"Software": "ComfyUI", "Port": float64(8188)},
+		map[string]any{"Software": "Bad", "Port": float64(0)}, // skipped: no port
+		map[string]any{"Port": float64(8888)},                 // name defaulted
+	})
+	require.Len(t, ports, 2)
+	assert.Equal(t, softwarePort{name: "ComfyUI", port: 8188}, ports[0])
+	assert.Equal(t, "服务", ports[1].name)
+
+	assert.Equal(t, []int{8000, 30000}, parseFirewallPorts([]any{float64(8000), float64(30000), float64(0)}))
+	assert.Nil(t, parseFirewallPorts(nil))
+}
+
+// TestImageUsageFromResponses pins the parse of the two real response shapes
+// (platform ImageSet[] and community CompshareImageGroup[].Data[]) keyed by id.
+func TestImageUsageFromResponses(t *testing.T) {
+	platform := map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "other", "SoftwarePorts": []any{map[string]any{"Software": "X", "Port": float64(1)}}},
+		map[string]any{"CompShareImageId": "img-pt", "Readme": "", "AutoStart": false,
+			"SoftwarePorts": []any{map[string]any{"Software": "ComfyUI", "Port": float64(8188)}},
+			"FirewallPorts": []any{float64(8000)}},
+	}}
+	u := platformImageUsage(platform, "img-pt")
+	require.Len(t, u.ports, 1)
+	assert.Equal(t, 8188, u.ports[0].port, "matched by CompShareImageId, not the first entry")
+	assert.Equal(t, []int{8000}, u.firewall)
+	assert.False(t, u.autoStart)
+
+	community := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{"ImageName": "数字人", "Data": []any{
+			map[string]any{"CompShareImageId": "c-1", "Readme": "# 用法\n直接访问 WebUI", "AutoStart": true,
+				"SoftwarePorts": []any{map[string]any{"Software": "WebUI", "Port": float64(7860)}}},
+		}},
+	}}
+	cu := communityImageUsage(community, "c-1")
+	assert.True(t, cu.autoStart)
+	assert.Contains(t, cu.readme, "直接访问 WebUI")
+	require.Len(t, cu.ports, 1)
+	assert.Equal(t, 7860, cu.ports[0].port)
+
+	assert.Equal(t, imageUsage{}, platformImageUsage(nil, "x"))
+	assert.Equal(t, imageUsage{}, communityImageUsage(nil, "x"))
 }
 
 func countCalls(calls []string, action string) int {
