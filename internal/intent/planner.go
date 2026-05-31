@@ -438,6 +438,42 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 				},
 			},
 		},
+		{
+			// deploy_model (B8.3, 2026-05-31): the agent-tier "deploy a workload"
+			// skill. Anchor on WORKLOAD-FIRST phrasing — the user names a model,
+			// framework, or application and wants a suitable instance created for
+			// it (the agent picks the image + GPU). This is distinct from
+			// operation_lifecycle, which covers operations on EXISTING instances
+			// and spec-first creation (user dictates exact hardware). target_refs
+			// stays empty: the workload name is extracted by the deploy arm's
+			// matcher, not a planner slot. required_tools is the image-catalog read
+			// (the arm ignores it; it keeps ValidatePlan happy — see
+			// requiredToolsForIntent IntentDeployModel).
+			Intent: IntentDeployModel,
+			Source: "B8.3 (2026-05-31): anchor workload-first deploy phrasing (部署/跑/搭 + model/app) to deploy_model, not operation_lifecycle",
+			Examples: []plannerPromptExample{
+				{
+					Question: "帮我部署一个 Qwen2.5-32B",
+					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+					Source:   "B8.3: 部署 + 模型全称 — agent sizes GPU by VRAM and picks a framework base",
+				},
+				{
+					Question: "我想跑数字人",
+					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+					Source:   "B8.3: 跑 + 应用类 — agent matches a ready-to-run community image",
+				},
+				{
+					Question: "搞一个能跑 ComfyUI 的环境",
+					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+					Source:   "B8.3: 搭环境 + 框架/应用名 — workload-first, agent selects image",
+				},
+				{
+					Question: "部署 Llama3-70B 做推理服务",
+					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+					Source:   "B8.3: 部署 + 大模型 + 用途 — exercises multi-card VRAM sizing path",
+				},
+			},
+		},
 		// IntentDiagnosis migrated to internal/intent/planner_examples/diagnosis.md
 		// in C5 Phase A (PR #86, 2026-05-21). The disk-backed loader spliced in
 		// here MUST produce byte-equal output to the prior inline literal — the
@@ -478,8 +514,9 @@ func buildSystemPrompt() string {
 		"Return exactly one JSON object. Do not output Markdown, prose, or tool calls.",
 		"Required top-level fields: schema_version, intent, slots, required_tools, retrieval, hard_block_hint, confidence.",
 		"schema_version must be \"1.0\". confidence must be a number in [0,1]. retrieval.enabled must be false for the current demo slice.",
-		"Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, recommendation, knowledge_qa, gpu_specs_query, stock_availability, platform_image_list, custom_image_list, community_image_list, pricing_query, disk_info, unknown.",
+		"Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, recommendation, knowledge_qa, gpu_specs_query, stock_availability, platform_image_list, custom_image_list, community_image_list, pricing_query, disk_info, deploy_model, unknown.",
 		"Primary intents — all have working handlers on this platform: resource_info, monitor_query, operation_lifecycle, pricing_query, gpu_specs_query, stock_availability, billing_instance, knowledge_qa, diagnosis, disk_info. Prefer the closest matching primary intent over unknown whenever the question is about the CompShare platform, the user's own instances, or platform billing/pricing/usage.",
+		"deploy_model: the user wants to RUN or DEPLOY a specific model, framework, or application (e.g. 部署 Qwen2.5-32B / 跑数字人 / 搭一个能跑 ComfyUI 的环境 / 部署 Llama3 做推理) and wants a suitable instance created for that workload — the agent picks the image and GPU. Classify these as deploy_model with empty target_refs. Use operation_lifecycle (NOT deploy_model) for operations on an EXISTING instance (start/stop/reboot/resize/add-disk) and for spec-first creation where the user dictates exact hardware (e.g. 创建一个 4090 单卡实例).",
 		"Treat performance questions like CPU high, GPU busy/idle, memory high, VRAM high, or whether a machine is idle as monitor_query first, unless the user states a concrete SSH, init, billing, lifecycle, or instance-internal operation problem.",
 		"Historical monitor phrases like yesterday, last night, today morning, or X点到Y点 must use monitor_history or a non-current time_window, never preset now/today. EXCEPTION: when these phrases appear ONLY in the Screenshot summary (not in User question), they are UI labels or navigation text from a screenshot — do NOT classify as monitor_history based on screenshot content alone. Classify based on the User question.",
 		"Screenshot summary is contextual evidence (what the user sees on screen), not user intent. Use it to refine diagnosis or identify the page context, but the intent classification must be driven by the User question text. Screenshot content must never be the sole trigger for hard-block intents (monitor_history, billing_account_unsupported). Screenshot content must never be used as parameter source for mutating operations (create/stop/start/reboot) — those require explicit user input or confirmation.",

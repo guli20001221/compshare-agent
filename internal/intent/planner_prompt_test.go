@@ -76,7 +76,9 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	// disk_info (2026-05-29): bumped from 24 → 28 with 4 disk_info anchors
 	// (我有哪些数据盘 / 我的磁盘列表 / uhost-X 挂了哪些盘 / 我账号下有哪些云盘)
 	// — upstream API has no list-disk action, reuse DescribeCompShareInstance.DiskSet.
-	if got, want := len(examples), 28+capabilityExampleCount; got != want {
+	// deploy_model (B8.3, 2026-05-31): bumped from 28 → 32 with 4 workload-first
+	// deploy anchors (部署 Qwen2.5-32B / 跑数字人 / 搭 ComfyUI 环境 / 部署 Llama3 推理).
+	if got, want := len(examples), 32+capabilityExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -117,6 +119,7 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentOperationLifecycle:        []string{"DescribeCompShareInstance"},
 		IntentDiagnosis:                 []string{"DescribeCompShareInstance"},
 		IntentDiskInfo:                  []string{"DescribeCompShareInstance"},
+		IntentDeployModel:               []string{"DescribeCompShareImages"},
 	}
 	expectedHardBlock := map[Intent]bool{
 		IntentResourceInfo:              false,
@@ -128,6 +131,7 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentOperationLifecycle:        false,
 		IntentDiagnosis:                 false,
 		IntentDiskInfo:                  false,
+		IntentDeployModel:               false,
 	}
 	for _, group := range groups {
 		if group.Intent == "" {
@@ -170,14 +174,15 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentOperationLifecycle,
 		IntentDiagnosis,
 		IntentDiskInfo,
+		IntentDeployModel,
 		IntentUnknown,
 	} {
 		if !seen[intent] {
 			t.Fatalf("planner examples missing group for intent %q", intent)
 		}
 	}
-	if total != 47 {
-		t.Fatalf("legacy planner example count = %d, want 47", total)
+	if total != 51 {
+		t.Fatalf("legacy planner example count = %d, want 51", total)
 	}
 	expectedCounts := map[Intent]int{
 		IntentResourceInfo:              8,
@@ -193,6 +198,9 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		// disk_info (2026-05-29): 4 anchors — 我有哪些数据盘 / 我的磁盘列表 /
 		// uhost-X 挂了哪些盘 / 我账号下有哪些云盘
 		IntentDiskInfo: 4,
+		// deploy_model (B8.3, 2026-05-31): 4 workload-first anchors —
+		// 部署 Qwen2.5-32B / 跑数字人 / 搭 ComfyUI 环境 / 部署 Llama3 推理
+		IntentDeployModel: 4,
 	}
 	for intent, want := range expectedCounts {
 		if got := counts[intent]; got != want {
