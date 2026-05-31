@@ -244,6 +244,8 @@ func (r TraceRecord) DeriveRealizedTier() string {
 	switch r.Planner.CutoverStatus {
 	case "dispatched_retrieval":
 		return RealizedTierKnowledge
+	case "dispatched_agent":
+		return RealizedTierAgent
 	case "dispatched", "selection_required":
 		return RealizedTierFast
 	}

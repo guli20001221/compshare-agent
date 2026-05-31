@@ -183,6 +183,7 @@ func AllIntents() []Intent {
 		IntentCommunityImageList,
 		IntentPricingQuery,
 		IntentDiskInfo,
+		IntentDeployModel,
 		IntentUnknown,
 	}
 }
@@ -207,6 +208,11 @@ func RuntimeIntents() []Intent {
 		IntentCommunityImageList,
 		IntentPricingQuery,
 		IntentDiskInfo,
+		// deploy_model is a runtime intent: validIntent (validator.go) must accept
+		// it so the planner can emit it (B8.3 ③) and the dispatch arm fire. It has
+		// no ReAct tool subset (the arm always handles the turn, never falls
+		// through) — see tool_subset_test.go nilExpected.
+		IntentDeployModel,
 		IntentUnknown,
 	}
 }

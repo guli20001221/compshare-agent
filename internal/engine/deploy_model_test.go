@@ -22,9 +22,10 @@ func deployDispatch() plannerDispatchResult {
 
 // deployMockConfig parameterizes the fake upstream for a deploy run.
 type deployMockConfig struct {
-	capacityEnough bool     // CheckCompShareResourceCapacity ResourceEnough
-	instanceStates []string // DescribeCompShareInstance State sequence (last repeats)
-	createID       string   // UHostIds[0] returned by CreateCompShareInstance
+	capacityEnough   bool     // CheckCompShareResourceCapacity ResourceEnough
+	instanceStates   []string // DescribeCompShareInstance State sequence (last repeats)
+	createID         string   // UHostIds[0] returned by CreateCompShareInstance
+	communityImageID string   // when set, the community group carries Data[] with this id; "" = group without Data[] (halt case)
 }
 
 // newDeployMock returns a function-based executor covering every action the
@@ -52,9 +53,11 @@ func newDeployMock(cfg deployMockConfig) *mockExecutorFn {
 				},
 			}}, nil
 		case "DescribeCommunityImages":
-			return map[string]any{"CompshareImageGroup": []any{
-				map[string]any{"ImageName": "LiveTalking 数字人", "ImageDesc": "开箱即用数字人"},
-			}}, nil
+			group := map[string]any{"ImageName": "LiveTalking 数字人", "ImageDesc": "开箱即用数字人"}
+			if cfg.communityImageID != "" {
+				group["Data"] = []any{map[string]any{"CompShareImageId": cfg.communityImageID, "Name": "LiveTalking v1"}}
+			}
+			return map[string]any{"CompshareImageGroup": []any{group}}, nil
 		case "DescribeAvailableCompShareInstanceTypes":
 			gt := firstMachineType(args)
 			return map[string]any{"AvailableInstanceTypes": []any{
@@ -182,6 +185,88 @@ func TestTryDeployModel_PollExhausted(t *testing.T) {
 	assert.Contains(t, reply, "uhost-deploy-1")
 	assert.Contains(t, reply, "初始化", "exhausted poll frames as still-initializing, not failed")
 	assert.NotContains(t, reply, "运行状态")
+	// saga step-7 (1) + 2 poll rounds (withFastPoll 2) = 3; pins that the loop
+	// actually ran rather than the host==nil fallback masking a no-op poll.
+	assert.Equal(t, 3, countCalls(exec.calls, "DescribeCompShareInstance"),
+		"saga describe (1) + 2 poll rounds = 3")
+}
+
+// TestTryDeployModel_CommunityHappyPath proves the community image path end-to-end:
+// the matcher picks a community app, grounding matches it against the live catalog,
+// and the saga resolves its CompShareImageId from Data[] and creates.
+func TestTryDeployModel_CommunityHappyPath(t *testing.T) {
+	withFastPoll(t, 3)
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, communityImageID: "comm-img-9", instanceStates: []string{"Running"}})
+	matchJSON := `{"image_source":"community","image_name":"LiveTalking","model_name":"","quantization":""}`
+	eng := newDeployEngine(matchJSON, exec, func(string, map[string]any) bool { return true })
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "帮我跑一个数字人", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "运行状态")
+	assert.Contains(t, reply, "社区镜像", "community source should be reflected in the reply")
+	assert.Equal(t, 1, countCalls(exec.calls, "CreateCompShareInstance"))
+}
+
+// TestTryDeployModel_CommunityEmptyDataHalts proves the create guard: when the
+// community group has no Data[] (no resolvable CompShareImageId), the saga halts
+// at the create step rather than POSTing an empty image id.
+func TestTryDeployModel_CommunityEmptyDataHalts(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, communityImageID: ""}) // group without Data[]
+	matchJSON := `{"image_source":"community","image_name":"LiveTalking","model_name":"","quantization":""}`
+	eng := newDeployEngine(matchJSON, exec, func(string, map[string]any) bool { return true })
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "帮我跑一个数字人", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "创建未完成")
+	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "no create when image id cannot be resolved")
+}
+
+// TestTryDeployModel_CommunityGroundingFallback proves a hallucinated community
+// image name (absent from the live catalog) falls back to a platform base rather
+// than reaching the saga with an unresolvable name.
+func TestTryDeployModel_CommunityGroundingFallback(t *testing.T) {
+	withFastPoll(t, 3)
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	matchJSON := `{"image_source":"community","image_name":"TotallyMadeUpApp","model_name":"","quantization":""}`
+	eng := newDeployEngine(matchJSON, exec, func(string, map[string]any) bool { return true })
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "随便跑点啥", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "回退到平台框架镜像", "fallback note should explain the platform fallback")
+	assert.Equal(t, 1, countCalls(exec.calls, "CreateCompShareInstance"), "fallback still creates (on a platform base)")
+}
+
+// TestTryDeployModel_MatcherJSONParseFailure proves a non-JSON matcher response
+// yields a clarification reply (not a crash or a garbage create).
+func TestTryDeployModel_MatcherJSONParseFailure(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true})
+	eng := newDeployEngine("抱歉，我无法判断该用哪个镜像。", exec, func(string, map[string]any) bool { return true })
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署点东西", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "告诉我你想部署的模型", "unparseable match → clarification")
+	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"))
+}
+
+// TestMatchDeployImage_PrefersAgentClient proves the TierAgent routing split
+// (ADR-002): when agentLLMClient is set, the matcher calls IT, not the fast
+// llmClient fallback. A regression that called the wrong tier would be caught here.
+func TestMatchDeployImage_PrefersAgentClient(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true})
+	fast := &mockLLM{responses: []llm.ChatResponse{{Content: deployMatchJSON}}}
+	agent := &mockLLM{responses: []llm.ChatResponse{{Content: deployMatchJSON}}}
+	eng := NewWithDeps(fast, exec, func(string, map[string]any) bool { return true })
+	eng.agentLLMClient = agent
+
+	_, err := eng.matchDeployImage(context.Background(), "部署 Qwen2.5-7B", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, len(agent.calls), "TierAgent client must be used for image matching")
+	assert.Equal(t, 0, len(fast.calls), "fast client must NOT be used when agentLLMClient is set")
 }
 
 // TestTryDeployModel_TerminalFailState proves a terminal init-failure stops the

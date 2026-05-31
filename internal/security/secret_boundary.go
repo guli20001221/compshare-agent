@@ -105,7 +105,12 @@ func isSecretKey(key string) bool {
 		strings.Contains(normalized, "clientsecret") ||
 		strings.Contains(normalized, "webhooksecret") ||
 		strings.Contains(normalized, "credential") ||
-		strings.Contains(normalized, "sshcommand")
+		// Match any SSH access command key, not just "SSHCommand": the upstream
+		// DescribeCompShareInstance field is "SshLoginCommand" (→ "sshlogincommand"),
+		// which the literal "sshcommand" substring misses because the "login" infix
+		// breaks it. ssh+command covers SshCommand / SshLoginCommand / future
+		// variants. B8.3 deploy surfaces this field into saga StepTrace.Result.
+		(strings.Contains(normalized, "ssh") && strings.Contains(normalized, "command"))
 }
 
 func isBillingOrCostKey(key string) bool {

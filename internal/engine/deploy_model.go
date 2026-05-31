@@ -129,12 +129,14 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchRes
 	return e.deployReply(result, dispatch.latency, buildDeployReply(plan, uHostId, host, state))
 }
 
-// deployReply emits the planner trace (deploy_model handles the turn itself, so
-// the status is always "dispatched"), appends the assistant message to history,
-// and returns (reply, true). Centralizes the three return-side concerns so every
-// exit path of tryDeployModel stays consistent.
+// deployReply emits the planner trace and appends the assistant message, then
+// returns (reply, true). The status is always CutoverStatusDispatchedAgent: the
+// agent-tier deploy arm owned the turn (TierAgent match + orchestrator saga), so
+// DeriveRealizedTier labels it the agent tier — mirroring how capability dispatch
+// emits "dispatched"→fast even on refusal. Centralizes the three return-side
+// concerns so every exit path of tryDeployModel stays consistent.
 func (e *Engine) deployReply(result intent.PlannerResult, latency time.Duration, reply string) (string, bool) {
-	e.emitPlannerTrace(result, intent.CutoverStatusDispatched, latency)
+	e.emitPlannerTrace(result, intent.CutoverStatusDispatchedAgent, latency)
 	e.recordLastIntentFromPlan(result.Plan)
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
@@ -289,6 +291,12 @@ func (e *Engine) emitDeployStep(onStep func(StepEvent), typ StepType, action, ms
 // can recover that step's output map. The wrapper invokes capture(result) then
 // delegates to any original CheckResult; with none it passes the step. CreateInstanceDef
 // returns a fresh Definition each call, so mutating its steps is race-free.
+//
+// Capture fires only AFTER the tool execute succeeds (step.go calls CheckResult
+// only when execErr==nil). So a step that fails to capture means that step (or an
+// earlier one) failed → sagaResult.Success==false, which tryDeployModel checks
+// BEFORE reading createResult/describeResult. The captured vars are therefore only
+// read on the success path, where capture is guaranteed to have run.
 func captureStepResult(def *workflow.Definition, stepName string, capture func(map[string]any)) {
 	for i := range def.Steps {
 		if def.Steps[i].Name != stepName {
