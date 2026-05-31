@@ -22,10 +22,11 @@ func deployDispatch() plannerDispatchResult {
 
 // deployMockConfig parameterizes the fake upstream for a deploy run.
 type deployMockConfig struct {
-	capacityEnough   bool     // CheckCompShareResourceCapacity ResourceEnough
-	instanceStates   []string // DescribeCompShareInstance State sequence (last repeats)
-	createID         string   // UHostIds[0] returned by CreateCompShareInstance
-	communityImageID string   // when set, the community group carries Data[] with this id; "" = group without Data[] (halt case)
+	capacityEnough        bool     // CheckCompShareResourceCapacity ResourceEnough
+	instanceStates        []string // DescribeCompShareInstance State sequence (last repeats)
+	createID              string   // UHostIds[0] returned by CreateCompShareInstance
+	communityImageID      string   // when set, the community group carries Data[] with this id; "" = group without Data[] (halt case)
+	platformSupportedGPUs []string // when set, the platform image declares these SupportedGpuTypes (M2 intersection)
 }
 
 // newDeployMock returns a function-based executor covering every action the
@@ -43,15 +44,21 @@ func newDeployMock(cfg deployMockConfig) *mockExecutorFn {
 	return &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
 		case "DescribeCompShareImages":
-			return map[string]any{"ImageSet": []any{
-				map[string]any{
-					"CompShareImageId": "img-pt",
-					"Name":             "PyTorch 2.9.1 cuda128",
-					"ImageType":        "App",
-					"Softwares":        map[string]any{"Framework": "PyTorch"},
-					"Description":      "PyTorch 基础镜像",
-				},
-			}}, nil
+			img := map[string]any{
+				"CompShareImageId": "img-pt",
+				"Name":             "PyTorch 2.9.1 cuda128",
+				"ImageType":        "App",
+				"Softwares":        map[string]any{"Framework": "PyTorch"},
+				"Description":      "PyTorch 基础镜像",
+			}
+			if len(cfg.platformSupportedGPUs) > 0 {
+				arr := make([]any, len(cfg.platformSupportedGPUs))
+				for i, g := range cfg.platformSupportedGPUs {
+					arr[i] = g
+				}
+				img["SupportedGpuTypes"] = arr
+			}
+			return map[string]any{"ImageSet": []any{img}}, nil
 		case "DescribeCommunityImages":
 			group := map[string]any{"ImageName": "LiveTalking 数字人", "ImageDesc": "开箱即用数字人"}
 			if cfg.communityImageID != "" {
@@ -110,8 +117,15 @@ func firstMachineType(args map[string]any) string {
 
 const deployMatchJSON = `{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-7B","quantization":""}`
 
+// deploySearchJSON is the extractDeploySearch (call 1) response the matcher makes
+// BEFORE the image pick (call 2). Tests seed it as the first mock LLM response.
+const deploySearchJSON = `{"search":"Qwen"}`
+
 func newDeployEngine(matchJSON string, exec *mockExecutorFn, confirm func(string, map[string]any) bool) *Engine {
-	client := &mockLLM{responses: []llm.ChatResponse{{Content: matchJSON}}}
+	// matchDeployImage makes TWO TierAgent calls: (1) keyword extraction for the
+	// community FuzzySearch, then (2) the image pick. Seed both in order so the
+	// single-arg helper still drives the whole arm.
+	client := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: matchJSON}}}
 	return NewWithDeps(client, exec, confirm) // mutatingToolsEnabled=true; agentLLMClient=nil → falls back to client
 }
 
@@ -258,15 +272,129 @@ func TestTryDeployModel_MatcherJSONParseFailure(t *testing.T) {
 func TestMatchDeployImage_PrefersAgentClient(t *testing.T) {
 	exec := newDeployMock(deployMockConfig{capacityEnough: true})
 	fast := &mockLLM{responses: []llm.ChatResponse{{Content: deployMatchJSON}}}
-	agent := &mockLLM{responses: []llm.ChatResponse{{Content: deployMatchJSON}}}
+	// Both matcher calls (extract + pick) must go to the TierAgent client.
+	agent := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: deployMatchJSON}}}
 	eng := NewWithDeps(fast, exec, func(string, map[string]any) bool { return true })
 	eng.agentLLMClient = agent
 
 	_, err := eng.matchDeployImage(context.Background(), "部署 Qwen2.5-7B", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, 1, len(agent.calls), "TierAgent client must be used for image matching")
+	assert.Equal(t, 2, len(agent.calls), "TierAgent client must serve both matcher calls (extract + pick)")
 	assert.Equal(t, 0, len(fast.calls), "fast client must NOT be used when agentLLMClient is set")
+}
+
+// TestMatchDeployImage_GPUConstrainedByImageSupport proves M2: when the chosen
+// image declares a SupportedGpuTypes that excludes the VRAM-ideal card, the GPU
+// pick is constrained to a supported card that still fits. A 7B model sizes to
+// 4090 (24GB) unconstrained, but an image that only supports 5090 must yield 5090.
+func TestMatchDeployImage_GPUConstrainedByImageSupport(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, platformSupportedGPUs: []string{"5090"}})
+	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
+
+	plan, err := eng.matchDeployImage(context.Background(), "部署 Qwen2.5-7B", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "5090", plan.GpuType, "GPU must be constrained to the image's SupportedGpuTypes")
+	assert.Contains(t, plan.MatchNote, "5090", "the note should explain the image-supported pick")
+}
+
+// TestMatchDeployImage_CommunityUsesExtractedKeyword proves M3: the matcher runs a
+// keyword-extraction call first and feeds that keyword to the community FuzzySearch
+// (rather than an unfiltered sample of the ~743-group catalog).
+func TestMatchDeployImage_CommunityUsesExtractedKeyword(t *testing.T) {
+	var communityArgs []map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{}}, nil // platform empty → force community pick
+		case "DescribeCommunityImages":
+			communityArgs = append(communityArgs, args)
+			return map[string]any{"CompshareImageGroup": []any{
+				map[string]any{"ImageName": "数字人 LiveTalking", "ImageDesc": "开箱即用数字人",
+					"Data": []any{map[string]any{"CompShareImageId": "c-1"}}},
+			}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	client := &mockLLM{responses: []llm.ChatResponse{
+		{Content: `{"search":"数字人"}`},
+		{Content: `{"image_source":"community","image_name":"数字人 LiveTalking","model_name":"","quantization":""}`},
+	}}
+	eng := NewWithDeps(client, exec, func(string, map[string]any) bool { return true })
+
+	plan, err := eng.matchDeployImage(context.Background(), "我想跑一个数字人", noopStep)
+
+	require.NoError(t, err)
+	require.NotEmpty(t, communityArgs, "community must be queried")
+	assert.Equal(t, "数字人", communityArgs[0]["FuzzySearch"], "community query must use the extracted keyword")
+	assert.Equal(t, "community", plan.ImageSource)
+	assert.Equal(t, "数字人 LiveTalking", plan.ImageName)
+}
+
+// TestTryDeployModel_ThreadsCommunityImageIDToCreate proves the review fix: the
+// matcher and the saga resolve the community image through INDEPENDENT queries
+// (matcher: FuzzySearch=keyword; saga: FuzzySearch=ImageName), and the saga's
+// index-0 pick can differ from the matcher's name-matched group. The matcher's
+// resolved CompShareImageId must be THREADED to the create so the instance built is
+// the same image the GPU was sized against — not the saga's index-0 of its own query.
+func TestTryDeployModel_ThreadsCommunityImageIDToCreate(t *testing.T) {
+	withFastPoll(t, 3)
+	var createArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{}}, nil // platform empty → force community
+		case "DescribeCommunityImages":
+			if fs, _ := args["FuzzySearch"].(string); fs == "数字人" {
+				// Matcher's keyword query → the group the matcher picks + sizes GPU against.
+				return map[string]any{"CompshareImageGroup": []any{
+					map[string]any{"ImageName": "数字人 LiveTalking",
+						"Data": []any{map[string]any{"CompShareImageId": "matcher-pick", "SupportedGpuTypes": []any{"4090"}}}},
+				}}, nil
+			}
+			// Saga's FuzzySearch=ImageName query → a DIFFERENT id at index 0.
+			return map[string]any{"CompshareImageGroup": []any{
+				map[string]any{"ImageName": "数字人 LiveTalking",
+					"Data": []any{map[string]any{"CompShareImageId": "saga-index0-WRONG"}}},
+			}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			gt := firstMachineType(args)
+			return map[string]any{"AvailableInstanceTypes": []any{
+				map[string]any{"Name": gt, "MachineSizes": []any{
+					map[string]any{"Gpu": float64(1), "Collection": []any{
+						map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+					}},
+				}},
+			}}, nil
+		case "CheckCompShareResourceCapacity":
+			return map[string]any{"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			}}, nil
+		case "GetCompShareInstanceUserPrice":
+			return map[string]any{"PriceDetails": []any{}}, nil
+		case "CreateCompShareInstance":
+			createArgs = args
+			return map[string]any{"UHostIds": []any{"u-1"}}, nil
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{"UHostId": "u-1", "State": "Running"}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	client := &mockLLM{responses: []llm.ChatResponse{
+		{Content: `{"search":"数字人"}`},
+		{Content: `{"image_source":"community","image_name":"数字人 LiveTalking","model_name":"","quantization":""}`},
+	}}
+	eng := NewWithDeps(client, exec, func(string, map[string]any) bool { return true })
+
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "我想跑一个数字人", noopStep)
+
+	require.True(t, handled)
+	require.NotNil(t, createArgs, "create must run")
+	assert.Equal(t, "matcher-pick", createArgs["CompShareImageId"],
+		"create must use the matcher-resolved image id (threaded), not the saga's index-0 of its own query")
 }
 
 // TestTryDeployModel_TerminalFailState proves a terminal init-failure stops the

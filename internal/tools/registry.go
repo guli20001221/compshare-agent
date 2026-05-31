@@ -320,6 +320,10 @@ var Registry = []openai.Tool{
 						"type":        "integer",
 						"description": "返回数据长度，默认 20",
 					},
+					"ExcludeReadme": map[string]any{
+						"type":        "boolean",
+						"description": "为 true 时响应不含 Readme 富文本，仅做列表/筛选时可省流量",
+					},
 				},
 				"required": []string{},
 			},

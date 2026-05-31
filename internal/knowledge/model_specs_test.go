@@ -46,6 +46,46 @@ func TestRecommendGPUType(t *testing.T) {
 	assert.True(t, ok)
 }
 
+// TestRecommendGPUTypeWithin pins the M2 image-aware constraint: the GPU pick is
+// narrowed to the chosen image's SupportedGpuTypes, but VRAM correctness wins when
+// no supported card can hold the model (SupportedGpuTypes is a recommendation, not
+// a hard cap). The bare-string set mirrors the live API format (gpuSpecs keys).
+func TestRecommendGPUTypeWithin(t *testing.T) {
+	// Empty allowed = no constraint → identical to RecommendGPUType (7B → 4090).
+	gt, _ := RecommendGPUTypeWithin("Qwen2.5-7B", "fp16", "部署", nil)
+	assert.Equal(t, "4090", gt, "no constraint → unconstrained pick")
+
+	// Unconstrained pick already supported → kept.
+	gt, _ = RecommendGPUTypeWithin("Qwen2.5-7B", "fp16", "部署", []string{"4090", "5090"})
+	assert.Equal(t, "4090", gt, "supported unconstrained pick is kept")
+
+	// Unconstrained pick (4090) NOT supported, but a supported card fits 17GB →
+	// smallest supported card that fits = 5090 (32GB).
+	gt, note := RecommendGPUTypeWithin("Qwen2.5-7B", "fp16", "部署", []string{"5090", "A100"})
+	assert.Equal(t, "5090", gt, "smallest supported card that fits the model")
+	assert.Contains(t, note, "5090")
+
+	// Duplicates + an unknown key in the supported set are tolerated (live data
+	// has both): {"5090","5090","Frobozz"} behaves like {"5090"}.
+	gt, _ = RecommendGPUTypeWithin("Qwen2.5-7B", "fp16", "部署", []string{"5090", "5090", "Frobozz"})
+	assert.Equal(t, "5090", gt)
+
+	// ALL entries unknown → set filters to empty → no constraint applied → falls
+	// through to the unconstrained pick (not the constrained branch).
+	gt, _ = RecommendGPUTypeWithin("Qwen2.5-7B", "fp16", "部署", []string{"Frobozz", "Quux"})
+	assert.Equal(t, "4090", gt, "all-unknown allowed set must behave like no constraint")
+
+	// No supported card can hold a 72B model (173GB) → keep the correctly-sized
+	// unconstrained multi-card pick (H20) and warn, rather than force a too-small 4090.
+	gt, note = RecommendGPUTypeWithin("Qwen2.5-72B", "fp16", "部署", []string{"4090"})
+	assert.Equal(t, "H20", gt, "VRAM correctness wins when no supported card fits")
+	assert.Contains(t, note, "可能不满足")
+
+	// Scene-based (no model size) constrained to one supported card → that card.
+	gt, _ = RecommendGPUTypeWithin("", "", "推理", []string{"A100"})
+	assert.Equal(t, "A100", gt)
+}
+
 // TestGetModelVRAMRequirement_FP16SingleCard pins the headline B8 case: a 32B
 // model in FP16 needs ~77GB (32×2×1.2), which the smallest single card that
 // fits is the A100 (80GB). This is the reasoning deploy_model uses to pick GpuType.
