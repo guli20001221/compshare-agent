@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -51,13 +52,26 @@ var (
 	deployPollInterval = 20 * time.Second
 )
 
-// deployCreateZone is the zone the deploy saga creates in (it mirrors the saga's
-// defaultZone in workflow.create_instance.go — the arm passes no Zone, so the saga
-// uses that default). The matcher filters live GPU availability to THIS zone:
-// DescribeAvailableCompShareInstanceTypes returns cards across multiple zones
-// (region cn-wlcb's response includes the Shanghai cn-sh2-02 zone too), and a card
-// offered only in another zone must not be recommended for a cn-wlcb-01 create.
-const deployCreateZone = "cn-wlcb-01"
+// deployPreferredZones is the zone preference order the deploy arm tries when the
+// user did not name a zone: cn-wlcb-01 (Ulanqab) first, then cn-sh2-02 (Shanghai).
+// The arm sizes the GPU against a zone's live cards and only creates there if that
+// card has REAL stock (CheckCompShareResourceCapacity.ResourceEnough); a sold-out
+// primary zone falls back to the next BEFORE create (a pre-create selection, not an
+// ADR-006-forbidden create-retry). DescribeAvailableCompShareInstanceTypes returns
+// cards across multiple zones, so per-zone filtering is via AvailableType.Zone
+// (knowledge.ParseAvailableGPUs(result, zone)).
+//
+// STOP-GROW: keep this to the two zones the platform actually offers GPU instances
+// in. A longer list belongs in config (agent.yaml), not a hand-grown literal.
+var deployPreferredZones = []string{"cn-wlcb-01", "cn-sh2-02"}
+
+// deployPrecheckDisk mirrors workflow.defaultDisk (the system-disk spec the saga's
+// capacity check uses). The arm's pre-create per-zone stock check must pass the
+// same Disks so its ResourceEnough read matches what the saga will see. Kept local
+// (not imported) to avoid widening the workflow package's API for a read-only check.
+var deployPrecheckDisk = []any{
+	map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 60},
+}
 
 // deployReadmeExcerptRunes caps the community-author Readme excerpt surfaced in
 // the deploy reply. Live Readmes run ~1-2K runes of markdown+HTML; a short
@@ -73,32 +87,48 @@ type deployPlan struct {
 	GpuType     string // CreateInstance GpuType, e.g. "A100"
 	ModelName   string // model the user wants to run, for the reply; may be ""
 	MatchNote   string // human-readable selection rationale (GPU sizing + any fallback)
+	ChosenZone  string // resolved create-zone (preference + per-zone stock); "" → saga default
+	FallbackNote string // set when the create-zone differs from the primary (sold-out fallback / user zone)
 }
 
 // tryDeployModel handles an IntentDeployModel turn end-to-end. It ALWAYS returns
 // handled=true — deploy_model is a dedicated skill and never falls through to
 // the generic ReAct loop; failures surface as a friendly reply, not a fallback.
+//
+// Advise-first (deploy v2): the matcher runs FIRST, unconditionally, producing a
+// GPU + image + zone recommendation. In read-only mode (shipped default) the arm
+// stops there and returns that advice — so "跑X用哪个卡 / 帮我搭个能跑Y的环境" gives
+// a useful answer instead of a flat refusal. Only when writes are enabled does the
+// recommendation flow into the create saga, gated by the confirm card.
 func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
 	result := dispatch.result
 
-	// (1) Mutating gate. deploy_model creates a billable instance. When writes
-	// are disabled (shipped default = read-only) refuse up front, before the
-	// matcher LLM call + image queries — otherwise that work is wasted only for
-	// the saga's create step to be hard-refused.
-	if !e.mutatingToolsEnabled {
-		return e.deployReply(result, dispatch.latency,
-			"实例创建属于写操作，助手当前为只读模式，暂不能为你创建实例。如需开通，请联系管理员开启写操作权限后再试。")
-	}
-
-	// (2) Match an existing image + size the GPU (TierAgent judgment + deterministic
-	// VRAM arithmetic) → CreateInstanceDef params.
-	plan, err := e.matchDeployImage(ctx, userMsg, onStep)
+	// (1) Match an existing image + size the GPU + pick the create-zone (TierAgent
+	// judgment + deterministic VRAM/stock arithmetic). Runs in read-only mode too —
+	// it is all read-only queries, and its output IS the advice. A zone the user
+	// named in the request (e.g. "在上海部署") is honored strictly; GPU/image the user
+	// names are honored in PR2 via planner slots.
+	plan, err := e.matchDeployImage(ctx, userMsg, extractDeployZone(userMsg), onStep)
 	if err != nil {
+		// A deployUserError carries a specific, actionable message (e.g. "the zone
+		// you named has no suitable in-stock card") — surface it verbatim instead of
+		// masking it with the generic "tell me what to deploy" clarification.
+		var ue deployUserError
+		if errors.As(err, &ue) {
+			return e.deployReply(result, dispatch.latency, ue.Error())
+		}
 		return e.deployReply(result, dispatch.latency,
 			"抱歉，我没能确定合适的镜像和配置。可以告诉我你想部署的模型（如 Qwen2.5-32B）或应用（如 ComfyUI / 数字人）吗？")
 	}
 	e.emitDeployStep(onStep, StepToolResult, "deploy_match",
 		fmt.Sprintf("已选型：%s 镜像 %s / GPU %s。%s", sourceLabel(plan.ImageSource), plan.ImageName, plan.GpuType, plan.MatchNote))
+
+	// (2) Mutating gate. deploy_model creates a billable instance. When writes are
+	// disabled (shipped default = read-only) we DON'T refuse blankly — we return the
+	// recommendation as advice and tell the user how to proceed. No saga runs.
+	if !e.mutatingToolsEnabled {
+		return e.deployReply(result, dispatch.latency, buildAdviseReply(plan))
+	}
 
 	// (3) Drive CreateInstanceDef through the orchestrator saga. Reuse the shipped
 	// definition verbatim; inject capture hooks to recover the created instance id
@@ -121,6 +151,15 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchRes
 	// Empty ImageID → not threaded → saga uses its own resolution + fail-loud guard.
 	if plan.ImageID != "" {
 		params["CompShareImageId"] = plan.ImageID
+	}
+	// Thread the chosen zone (preference + per-zone stock) so the saga creates in the
+	// zone the arm confirmed, not its hardcoded default; and the fallback note so the
+	// confirm card can tell the user a sold-out primary zone was switched.
+	if plan.ChosenZone != "" {
+		params["Zone"] = plan.ChosenZone
+	}
+	if plan.FallbackNote != "" {
+		params["FallbackNote"] = plan.FallbackNote
 	}
 
 	sagaResult, sagaErr := e.RunAgentSaga(ctx, def, params, "deploy_model")
@@ -192,7 +231,7 @@ func (e *Engine) deployReply(result intent.PlannerResult, latency time.Duration,
 //     but its FuzzySearch (name+author) works well — so we extract a keyword first
 //     (the lead's Q1: let the model understand an imprecise request) and search
 //     with it, falling back to an unfiltered sample if the keyword finds nothing.
-func (e *Engine) matchDeployImage(ctx context.Context, userMsg string, onStep func(StepEvent)) (deployPlan, error) {
+func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string, onStep func(StepEvent)) (deployPlan, error) {
 	client := e.agentLLMClient
 	if client == nil {
 		client = e.llmClient // NewWithDeps test path / no tier_routing.agent configured
@@ -267,19 +306,174 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg string, onStep fu
 	// The static gpuSpecs table is only the offline fallback (empty live set).
 	imageID, supported := chosenImage(plan, platform, community)
 	plan.ImageID = imageID
-	// DescribeAvailableCompShareInstanceTypes takes no Zone request param (upstream
-	// has only MachineTypes/InstanceType), and its response spans MULTIPLE zones
-	// (region cn-wlcb includes the Shanghai cn-sh2-02 zone). ParseAvailableGPUs
-	// filters to the create-zone so we never recommend a card the saga can't create
-	// in that zone.
+	// (e) Size the GPU AND pick the create-zone together (interdependent: zones
+	// offer different cards, and a card must have real stock in the zone we create
+	// in). DescribeAvailableCompShareInstanceTypes takes no Zone request param and
+	// its response spans MULTIPLE zones (region cn-wlcb includes Shanghai cn-sh2-02);
+	// selectDeployZoneAndGPU filters per-zone via AvailableType.Zone, sizes against
+	// each zone's live cards, and prefers the first zone with confirmed stock.
 	availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
-	gpuType, gpuNote := knowledge.RecommendGPUTypeLive(plan.ModelName, decision.Quantization, userMsg, supported, knowledge.ParseAvailableGPUs(availResult, deployCreateZone))
+	zone, gpuType, gpuNote, fallbackNote, zerr := e.selectDeployZoneAndGPU(ctx, availResult, plan, supported, decision.Quantization, userMsg, userZone)
+	if zerr != nil {
+		// User pinned a zone we can't satisfy — surface, never silently override.
+		return deployPlan{}, zerr
+	}
 	plan.GpuType = gpuType
+	plan.ChosenZone = zone
 	plan.MatchNote = gpuNote
+	plan.FallbackNote = fallbackNote
 	if groundNote != "" {
 		plan.MatchNote = groundNote + "；" + plan.MatchNote
 	}
 	return plan, nil
+}
+
+// deployUserError is a matchDeployImage error whose message is safe + actionable
+// to show the user verbatim (vs an internal failure that gets a generic
+// clarification). Used for the user-specified-zone-unsatisfiable case.
+type deployUserError struct{ msg string }
+
+func (e deployUserError) Error() string { return e.msg }
+
+// selectDeployZoneAndGPU sizes the GPU and chooses the create-zone in one pass,
+// because the two are interdependent. A user-specified zone (userZone != "") is
+// honored STRICTLY: if no card can host the workload there, or it is sold out, it
+// returns an error rather than quietly moving the user to another zone. Otherwise
+// it tries deployPreferredZones in order, sizing against each zone's live cards
+// and selecting the first zone whose recommended card has REAL stock
+// (CheckCompShareResourceCapacity.ResourceEnough). If no zone has confirmed stock
+// it falls through to the first sizeable zone and lets the saga's capacity gate
+// have the final word (so behavior degrades to today's, never worse). An empty
+// live set (query failed) degrades to the static-table sizing on the primary zone.
+func (e *Engine) selectDeployZoneAndGPU(ctx context.Context, availResult map[string]any, plan deployPlan, supported []string, quant, userMsg, userZone string) (zone, gpuType, gpuNote, fallbackNote string, err error) {
+	candidates := deployPreferredZones
+	if strings.TrimSpace(userZone) != "" {
+		candidates = []string{strings.TrimSpace(userZone)}
+	}
+	primary := candidates[0]
+
+	var firstZone, firstGPU, firstNote string // first sizeable zone, for stock-unconfirmed fall-through
+	primarySoldOut := false
+	for i, z := range candidates {
+		cards := knowledge.ParseAvailableGPUs(availResult, z)
+		if len(cards) == 0 {
+			continue // no live cards offered in this zone
+		}
+		gt, note := knowledge.RecommendGPUTypeLive(plan.ModelName, quant, userMsg, supported, cards)
+		if gt == "" {
+			continue
+		}
+		if firstZone == "" {
+			firstZone, firstGPU, firstNote = z, gt, note
+		}
+		switch e.zoneStockState(ctx, z, gt, plan.ImageID) {
+		case zoneInStock:
+			// Only claim a "sold-out fallback" when the primary was CONFIRMED
+			// sold out (zoneSoldOut). If we reached a non-primary zone because the
+			// primary was merely unconfirmable (zoneUnknown), don't emit a note that
+			// implies the primary was checked and rejected — that would mislead.
+			fb := ""
+			if z != primary && primarySoldOut {
+				fb = fmt.Sprintf("%s 暂时售罄，已自动切换到 %s 创建。", primary, z)
+			}
+			return z, gt, note, fb, nil
+		case zoneSoldOut:
+			if i == 0 {
+				primarySoldOut = true
+			}
+		}
+	}
+
+	if strings.TrimSpace(userZone) != "" {
+		return "", "", "", "", deployUserError{msg: fmt.Sprintf("你指定的可用区 %s 当前没有可承载该工作负载且有货的机型，可换一个可用区（如 cn-wlcb-01）或换一个机型再试。", strings.TrimSpace(userZone))}
+	}
+	if firstZone != "" {
+		// Sizeable but no zone confirmed in stock → proceed on the preferred zone;
+		// the saga's capacity gate will halt gracefully if it is genuinely sold out.
+		return firstZone, firstGPU, firstNote, "", nil
+	}
+	// Availability query failed/empty → static-table sizing on the primary zone.
+	gt, note := knowledge.RecommendGPUTypeLive(plan.ModelName, quant, userMsg, supported, nil)
+	return primary, gt, note, "", nil
+}
+
+// deployZoneAliases maps explicit zone mentions in a request to a zone id. The
+// user-named zone is then honored strictly by selectDeployZoneAndGPU.
+//
+// STOP-GROW: only the two zones the platform offers GPU instances in. A broader
+// alias table belongs in config (agent.yaml), not a hand-grown literal here.
+var deployZoneAliases = []struct {
+	keys []string
+	zone string
+}{
+	{[]string{"cn-sh2-02", "cn-sh2", "上海", "sh2"}, "cn-sh2-02"},
+	{[]string{"cn-wlcb-01", "cn-wlcb", "乌兰察布", "wlcb"}, "cn-wlcb-01"},
+}
+
+// extractDeployZone returns the create-zone the user explicitly named in the
+// request, or "" if none. Deterministic (Rule 5: code answers a structured signal
+// — zone ids/aliases are exact tokens, no LLM needed). A non-empty result is
+// honored strictly downstream (error rather than silent move if unsatisfiable).
+func extractDeployZone(userMsg string) string {
+	lower := strings.ToLower(userMsg)
+	for _, a := range deployZoneAliases {
+		for _, k := range a.keys {
+			if strings.Contains(lower, strings.ToLower(k)) {
+				return a.zone
+			}
+		}
+	}
+	return ""
+}
+
+type zoneStock int
+
+const (
+	zoneUnknown zoneStock = iota // could not determine (no image id / API error / no matching spec)
+	zoneInStock                  // single-card config confirmed available
+	zoneSoldOut                  // single-card config present but ResourceEnough=false
+)
+
+// zoneStockState checks whether gpuType's single-card config has real stock in a
+// zone, the same gate the saga's stepCheckCapacity uses (Specs[].{Gpu==1,
+// ResourceEnough}). It needs the resolved CompShareImageId (capacity is image-
+// scoped); without one it returns zoneUnknown so the caller falls back to the
+// preferred zone rather than skipping it. Read-only (works in read-only mode too).
+func (e *Engine) zoneStockState(ctx context.Context, zone, gpuType, imageID string) zoneStock {
+	if imageID == "" || gpuType == "" {
+		return zoneUnknown
+	}
+	res := e.querySafeRead(ctx, "CheckCompShareResourceCapacity", map[string]any{
+		"Zone":               zone,
+		"GpuType":            gpuType,
+		"MachineType":        "G",
+		"MinimalCpuPlatform": "Auto",
+		"CompShareImageId":   imageID,
+		"ChargeType":         "Dynamic",
+		"Disks":              deployPrecheckDisk,
+	})
+	if res == nil {
+		return zoneUnknown
+	}
+	specs, _ := res["Specs"].([]any)
+	sawSingleCard := false
+	for _, s := range specs {
+		m, _ := s.(map[string]any)
+		if m == nil {
+			continue
+		}
+		if g, _ := m["Gpu"].(float64); g != 1 {
+			continue
+		}
+		sawSingleCard = true
+		if enough, _ := m["ResourceEnough"].(bool); enough {
+			return zoneInStock
+		}
+	}
+	if sawSingleCard {
+		return zoneSoldOut
+	}
+	return zoneUnknown
 }
 
 // extractDeploySearch asks the model for ONE short keyword to drive the community
@@ -505,6 +699,9 @@ func buildDeployReply(plan deployPlan, uHostId string, host map[string]any, stat
 	if plan.ImageName != "" {
 		b.WriteString(fmt.Sprintf("- 镜像：%s（%s）\n", plan.ImageName, sourceLabel(plan.ImageSource)))
 	}
+	if plan.ChosenZone != "" {
+		b.WriteString(fmt.Sprintf("- 可用区：%s\n", plan.ChosenZone))
+	}
 	if name := stringFromHost(host, "Name"); name != "" {
 		b.WriteString(fmt.Sprintf("- 名称：%s\n", name))
 	}
@@ -514,12 +711,48 @@ func buildDeployReply(plan deployPlan, uHostId string, host map[string]any, stat
 
 	writeUsageGuidance(&b, host, usage)
 
+	if plan.FallbackNote != "" {
+		b.WriteString("\nℹ️ " + plan.FallbackNote + "\n")
+	}
 	if state != "Running" && !isTerminalFailState(state) {
 		b.WriteString("\n你可以稍后用「查询我的实例」查看最新状态和登录信息。\n")
 	}
 	if plan.MatchNote != "" {
 		b.WriteString("\n（选型说明：" + plan.MatchNote + "）")
 	}
+	return b.String()
+}
+
+// buildAdviseReply renders the read-only recommendation: which GPU + image the arm
+// would deploy, and how to proceed. It runs when writes are disabled, so it NEVER
+// creates anything — it turns "跑X用哪个卡 / 帮我搭个能跑Y的环境" into a useful answer
+// instead of a blank refusal. Deterministic render of the resolved deployPlan (the
+// matcher already did the LLM judgment + live sizing/stock).
+//
+// Secret boundary: every field rendered here (GpuType / ImageName / ChosenZone /
+// MatchNote / FallbackNote) is derived from API metadata or constructed from zone
+// ids + status strings — none carries a secret. Do NOT thread instance-level
+// secrets (Password / FileBrowserPassword / Jupyter token) through deployPlan into
+// this reply.
+func buildAdviseReply(plan deployPlan) string {
+	var b strings.Builder
+	b.WriteString("根据你的需求，建议如下配置：\n")
+	if plan.GpuType != "" {
+		b.WriteString(fmt.Sprintf("- 推荐 GPU：%s\n", plan.GpuType))
+	}
+	if plan.ImageName != "" {
+		b.WriteString(fmt.Sprintf("- 推荐镜像：%s（%s）\n", plan.ImageName, sourceLabel(plan.ImageSource)))
+	}
+	if plan.ChosenZone != "" {
+		b.WriteString(fmt.Sprintf("- 可用区：%s\n", plan.ChosenZone))
+	}
+	if plan.MatchNote != "" {
+		b.WriteString("- 选型说明：" + plan.MatchNote + "\n")
+	}
+	if plan.FallbackNote != "" {
+		b.WriteString("- " + plan.FallbackNote + "\n")
+	}
+	b.WriteString("\n助手当前为只读模式，未自动为你创建实例。如需我直接部署，请联系管理员开启写操作权限后再说一次。")
 	return b.String()
 }
 

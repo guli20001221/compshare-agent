@@ -325,7 +325,7 @@ func TestMatchDeployImage_UsesLiveGPUSet(t *testing.T) {
 	}}
 	eng := NewWithDeps(client, exec, func(string, map[string]any) bool { return true })
 
-	plan, err := eng.matchDeployImage(context.Background(), "部署 Qwen2.5-16B", noopStep)
+	plan, err := eng.matchDeployImage(context.Background(), "部署 Qwen2.5-16B", "", noopStep)
 
 	require.NoError(t, err)
 	assert.Equal(t, "B200", plan.GpuType, "16B (~39GB) must size to the live 48GB card B200, which the static table does not model")
@@ -342,7 +342,7 @@ func TestMatchDeployImage_PrefersAgentClient(t *testing.T) {
 	eng := NewWithDeps(fast, exec, func(string, map[string]any) bool { return true })
 	eng.agentLLMClient = agent
 
-	_, err := eng.matchDeployImage(context.Background(), "部署 Qwen2.5-7B", noopStep)
+	_, err := eng.matchDeployImage(context.Background(), "部署 Qwen2.5-7B", "", noopStep)
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, len(agent.calls), "TierAgent client must serve both matcher calls (extract + pick)")
@@ -357,7 +357,7 @@ func TestMatchDeployImage_GPUConstrainedByImageSupport(t *testing.T) {
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, platformSupportedGPUs: []string{"5090"}})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
 
-	plan, err := eng.matchDeployImage(context.Background(), "部署 Qwen2.5-7B", noopStep)
+	plan, err := eng.matchDeployImage(context.Background(), "部署 Qwen2.5-7B", "", noopStep)
 
 	require.NoError(t, err)
 	assert.Equal(t, "5090", plan.GpuType, "GPU must be constrained to the image's SupportedGpuTypes")
@@ -389,7 +389,7 @@ func TestMatchDeployImage_CommunityUsesExtractedKeyword(t *testing.T) {
 	}}
 	eng := NewWithDeps(client, exec, func(string, map[string]any) bool { return true })
 
-	plan, err := eng.matchDeployImage(context.Background(), "我想跑一个数字人", noopStep)
+	plan, err := eng.matchDeployImage(context.Background(), "我想跑一个数字人", "", noopStep)
 
 	require.NoError(t, err)
 	require.NotEmpty(t, communityArgs, "community must be queried")
@@ -503,20 +503,234 @@ func TestTryDeployModel_ConfirmDenied(t *testing.T) {
 	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"))
 }
 
-// TestTryDeployModel_MutatingDisabled proves the read-only default refuses up
-// front: no image query, no matcher LLM call, no saga.
+// TestTryDeployModel_MutatingDisabled proves the deploy v2 read-only behavior:
+// instead of a blank refusal, the arm ADVISES — it runs the matcher (read-only
+// queries + sizing) and returns the GPU/image recommendation — but NEVER creates.
+// This is the intentional behavior change that makes "跑X用哪个卡 / 帮我搭个能跑Y的
+// 环境" useful in read-only mode while keeping create strictly write-gated.
 func TestTryDeployModel_MutatingDisabled(t *testing.T) {
 	exec := newDeployMock(deployMockConfig{capacityEnough: true})
-	client := &mockLLM{responses: []llm.ChatResponse{{Content: deployMatchJSON}}}
-	eng := NewWithDeps(client, exec, func(string, map[string]any) bool { return true })
+	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
 	eng.SetMutatingToolsEnabled(false)
 
 	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署 Qwen2.5-7B", noopStep)
 
 	require.True(t, handled)
-	assert.Contains(t, reply, "只读模式")
-	assert.Empty(t, exec.calls, "no upstream calls when writes are disabled")
-	assert.Equal(t, 0, len(client.calls), "no matcher LLM call when writes are disabled")
+	assert.Contains(t, reply, "建议", "read-only mode advises instead of refusing")
+	assert.Contains(t, reply, "只读模式", "advice notes write mode is needed to actually deploy")
+	assert.Contains(t, reply, "推荐 GPU", "advice surfaces the recommended GPU")
+	// The matcher DID run (advice is real), but NO instance was created.
+	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "read-only must never create")
+}
+
+// ── deploy v2: zone selection + advise ──
+
+func okConfirm(string, map[string]any) bool { return true }
+
+// availCardZ builds one DescribeAvailableCompShareInstanceTypes entry tagged with
+// a zone + VRAM (the matcher's per-zone ParseAvailableGPUs reads these).
+func availCardZ(name, zone string, vram int) map[string]any {
+	return map[string]any{
+		"Name": name, "Zone": zone, "Status": "Normal",
+		"GraphicsMemory": map[string]any{"Value": float64(vram)},
+		"Performance":    map[string]any{"Value": float64(vram)},
+		"MachineSizes":   []any{map[string]any{"Gpu": float64(1)}, map[string]any{"Gpu": float64(8)}},
+	}
+}
+
+// stockExec answers CheckCompShareResourceCapacity per-zone (the pre-create stock
+// gate selectDeployZoneAndGPU uses); everything else is an empty result.
+func stockExec(byZone map[string]bool) *mockExecutorFn {
+	return &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "CheckCompShareResourceCapacity" {
+			z, _ := args["Zone"].(string)
+			return map[string]any{"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": byZone[z]},
+			}}, nil
+		}
+		return map[string]any{}, nil
+	}}
+}
+
+func TestSelectDeployZoneAndGPU_PreferredFirst(t *testing.T) {
+	exec := stockExec(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": true})
+	eng := NewWithDeps(nil, exec, okConfirm)
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("4090", "cn-wlcb-01", 24), availCardZ("4090", "cn-sh2-02", 24),
+	}}
+	zone, gpu, _, fb, err := eng.selectDeployZoneAndGPU(context.Background(), avail, deployPlan{ModelName: "Qwen2.5-7B", ImageID: "img-1"}, nil, "fp16", "部署", "")
+	require.NoError(t, err)
+	assert.Equal(t, "cn-wlcb-01", zone, "primary zone wins when it has stock")
+	assert.Equal(t, "4090", gpu)
+	assert.Empty(t, fb, "no fallback note when the primary zone is used")
+}
+
+func TestSelectDeployZoneAndGPU_FallbackOnSoldOut(t *testing.T) {
+	exec := stockExec(map[string]bool{"cn-wlcb-01": false, "cn-sh2-02": true})
+	eng := NewWithDeps(nil, exec, okConfirm)
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("4090", "cn-wlcb-01", 24), availCardZ("4090", "cn-sh2-02", 24),
+	}}
+	zone, gpu, _, fb, err := eng.selectDeployZoneAndGPU(context.Background(), avail, deployPlan{ModelName: "Qwen2.5-7B", ImageID: "img-1"}, nil, "fp16", "部署", "")
+	require.NoError(t, err)
+	assert.Equal(t, "cn-sh2-02", zone, "sold-out primary falls back to the next zone")
+	assert.Equal(t, "4090", gpu)
+	assert.Contains(t, fb, "cn-wlcb-01", "fallback note names the sold-out primary")
+	assert.Contains(t, fb, "cn-sh2-02", "fallback note names the chosen zone")
+}
+
+func TestSelectDeployZoneAndGPU_UserZoneHonored(t *testing.T) {
+	exec := stockExec(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": true})
+	eng := NewWithDeps(nil, exec, okConfirm)
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("4090", "cn-wlcb-01", 24), availCardZ("4090", "cn-sh2-02", 24),
+	}}
+	zone, _, _, fb, err := eng.selectDeployZoneAndGPU(context.Background(), avail, deployPlan{ModelName: "Qwen2.5-7B", ImageID: "img-1"}, nil, "fp16", "部署", "cn-sh2-02")
+	require.NoError(t, err)
+	assert.Equal(t, "cn-sh2-02", zone, "user-specified zone is honored over the preference order")
+	assert.Empty(t, fb, "no fallback note — the user got the zone they asked for")
+}
+
+func TestSelectDeployZoneAndGPU_UserZoneUnavailable(t *testing.T) {
+	// User pins cn-sh2-02 but it is sold out → strict honor → error, never silently move.
+	exec := stockExec(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": false})
+	eng := NewWithDeps(nil, exec, okConfirm)
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("4090", "cn-wlcb-01", 24), availCardZ("4090", "cn-sh2-02", 24),
+	}}
+	_, _, _, _, err := eng.selectDeployZoneAndGPU(context.Background(), avail, deployPlan{ModelName: "Qwen2.5-7B", ImageID: "img-1"}, nil, "fp16", "部署", "cn-sh2-02")
+	require.Error(t, err, "a sold-out user-specified zone surfaces an error, not a silent fallback")
+	assert.Contains(t, err.Error(), "cn-sh2-02")
+}
+
+func TestSelectDeployZoneAndGPU_EmptyAvailFallsBackStatic(t *testing.T) {
+	// Availability query failed/empty → static-table sizing on the primary zone.
+	eng := NewWithDeps(nil, stockExec(nil), okConfirm)
+	zone, gpu, _, fb, err := eng.selectDeployZoneAndGPU(context.Background(), nil, deployPlan{ModelName: "Qwen2.5-7B", ImageID: "img-1"}, nil, "fp16", "部署", "")
+	require.NoError(t, err)
+	assert.Equal(t, "cn-wlcb-01", zone, "empty live set degrades to the primary zone")
+	assert.NotEmpty(t, gpu, "static table still sizes a GPU")
+	assert.Empty(t, fb)
+}
+
+func TestZoneStockState(t *testing.T) {
+	ctx := context.Background()
+	in := NewWithDeps(nil, stockExec(map[string]bool{"z": true}), okConfirm)
+	assert.Equal(t, zoneInStock, in.zoneStockState(ctx, "z", "4090", "img-1"))
+
+	out := NewWithDeps(nil, stockExec(map[string]bool{"z": false}), okConfirm)
+	assert.Equal(t, zoneSoldOut, out.zoneStockState(ctx, "z", "4090", "img-1"))
+
+	// No image id → can't check (capacity is image-scoped) → unknown.
+	assert.Equal(t, zoneUnknown, in.zoneStockState(ctx, "z", "4090", ""))
+
+	// Empty Specs → unknown.
+	empty := NewWithDeps(nil, &mockExecutorFn{fn: func(string, map[string]any) (map[string]any, error) { return map[string]any{}, nil }}, okConfirm)
+	assert.Equal(t, zoneUnknown, empty.zoneStockState(ctx, "z", "4090", "img-1"))
+}
+
+func TestBuildAdviseReply(t *testing.T) {
+	r := buildAdviseReply(deployPlan{ImageSource: "platform", ImageName: "ComfyUI", GpuType: "A100", ChosenZone: "cn-wlcb-01", MatchNote: "按显存推荐"})
+	assert.Contains(t, r, "推荐 GPU：A100")
+	assert.Contains(t, r, "ComfyUI")
+	assert.Contains(t, r, "cn-wlcb-01")
+	assert.Contains(t, r, "只读模式", "advice tells the user how to actually deploy")
+	assert.NotContains(t, r, "实例 ID", "advice never reports a created instance")
+}
+
+// newZoneDeployMock is a full-arm mock with per-zone availability + stock so the
+// fallback path can be exercised end-to-end. The matcher's unfiltered availability
+// query returns zone-tagged cards; the saga's MachineTypes-filtered query returns
+// the spec-shaped response resolveTargetSpec needs; capacity answers per zone.
+func newZoneDeployMock(stockByZone map[string]bool, createArgs *map[string]any) *mockExecutorFn {
+	return &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{map[string]any{
+				"CompShareImageId": "img-pt", "Name": "PyTorch", "ImageType": "App",
+				"Softwares": map[string]any{"Framework": "PyTorch"},
+			}}}, nil
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			if _, filtered := args["MachineTypes"]; filtered {
+				// Saga spec-resolution query (Zone + MachineTypes) → Collection shape.
+				return map[string]any{"AvailableInstanceTypes": []any{
+					map[string]any{"Name": "4090", "MachineSizes": []any{
+						map[string]any{"Gpu": float64(1), "Collection": []any{
+							map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+						}},
+					}},
+				}}, nil
+			}
+			// Matcher query (no filter) → zone-tagged cards.
+			return map[string]any{"AvailableInstanceTypes": []any{
+				availCardZ("4090", "cn-wlcb-01", 24), availCardZ("4090", "cn-sh2-02", 24),
+			}}, nil
+		case "CheckCompShareResourceCapacity":
+			z, _ := args["Zone"].(string)
+			return map[string]any{"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": stockByZone[z]},
+			}}, nil
+		case "GetCompShareInstanceUserPrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.5}}}, nil
+		case "CreateCompShareInstance":
+			if createArgs != nil {
+				*createArgs = args
+			}
+			return map[string]any{"UHostIds": []any{"u-fb"}}, nil
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "u-fb", "State": "Running",
+				"IPSet": []any{map[string]any{"IP": "5.6.7.8", "Type": "Bgp", "Weight": float64(10)}},
+			}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+}
+
+// TestTryDeployModel_FallbackZoneInReply proves the end-to-end zone fallback: the
+// primary zone (cn-wlcb-01) is sold out for the chosen card, so the arm creates in
+// cn-sh2-02 instead, threads that zone to the saga's create, and tells the user.
+func TestTryDeployModel_FallbackZoneInReply(t *testing.T) {
+	withFastPoll(t, 3)
+	var createArgs map[string]any
+	exec := newZoneDeployMock(map[string]bool{"cn-wlcb-01": false, "cn-sh2-02": true}, &createArgs)
+	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-7B","quantization":""}`, exec, okConfirm)
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	require.NotNil(t, createArgs, "create must run (in the fallback zone)")
+	assert.Equal(t, "cn-sh2-02", createArgs["Zone"], "create must use the fallback zone, not the sold-out primary")
+	assert.Contains(t, reply, "cn-sh2-02", "reply names the zone used")
+	assert.Contains(t, reply, "售罄", "reply tells the user the primary zone was sold out")
+}
+
+func TestExtractDeployZone(t *testing.T) {
+	assert.Equal(t, "cn-sh2-02", extractDeployZone("在上海部署 Qwen2.5-7B"))
+	assert.Equal(t, "cn-sh2-02", extractDeployZone("deploy in cn-sh2-02 please"))
+	assert.Equal(t, "cn-wlcb-01", extractDeployZone("用乌兰察布的卡跑 ComfyUI"))
+	assert.Equal(t, "cn-wlcb-01", extractDeployZone("create in CN-WLCB-01"))
+	assert.Equal(t, "", extractDeployZone("帮我部署 Qwen2.5-7B"), "no zone mentioned → empty")
+}
+
+// TestTryDeployModel_UserZoneFromMessage proves the deterministic zone extraction
+// reaches selectDeployZoneAndGPU end-to-end: a request naming 上海 (cn-sh2-02)
+// creates in that zone even though cn-wlcb-01 is the default preference.
+func TestTryDeployModel_UserZoneFromMessage(t *testing.T) {
+	withFastPoll(t, 3)
+	var createArgs map[string]any
+	// Both zones in stock; without a user zone the arm would pick cn-wlcb-01.
+	exec := newZoneDeployMock(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": true}, &createArgs)
+	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-7B","quantization":""}`, exec, okConfirm)
+
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "在上海部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	require.NotNil(t, createArgs, "create must run")
+	assert.Equal(t, "cn-sh2-02", createArgs["Zone"], "user-named zone (上海) overrides the cn-wlcb-01 preference")
 }
 
 // ── pure-helper unit tests ──

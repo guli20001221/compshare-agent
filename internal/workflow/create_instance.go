@@ -10,6 +10,10 @@ const defaultZone = "cn-wlcb-01"
 
 // defaultDisk is the minimum required disk configuration for instance creation.
 // The system disk has a 200GB free tier on CompShare.
+//
+// SYNC: this value is mirrored in engine.deployPrecheckDisk (deploy_model.go) so the
+// deploy arm's pre-create per-zone stock check passes the same Disks the saga will.
+// Keep the two in sync if this changes.
 var defaultDisk = []any{
 	map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 60},
 }
@@ -342,6 +346,12 @@ func stepConfirmCreate() Step {
 				"ChargeType": paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
 				"image":      pickImageName(wfCtx.Params, wfCtx.Result("查询镜像")),
 				"price":      wfCtx.Result("查询价格"),
+				// FallbackNote is set by the deploy_model arm when it switched the
+				// create-zone (sold-out primary). Empty for the CLI/ReAct create path.
+				// Surfaced in the confirm card so the user sees the zone switch before
+				// approving. The key is always present (value "" when unset); the
+				// renderer (cli.go printCreateConfirmCard) skips it when empty.
+				"FallbackNote": paramStr(wfCtx.Params, "FallbackNote", ""),
 			}, nil
 		},
 	}
