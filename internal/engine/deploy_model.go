@@ -49,6 +49,14 @@ var (
 	deployPollInterval = 20 * time.Second
 )
 
+// deployCreateZone is the zone the deploy saga creates in (it mirrors the saga's
+// defaultZone in workflow.create_instance.go — the arm passes no Zone, so the saga
+// uses that default). The matcher filters live GPU availability to THIS zone:
+// DescribeAvailableCompShareInstanceTypes returns cards across multiple zones
+// (region cn-wlcb's response includes the Shanghai cn-sh2-02 zone too), and a card
+// offered only in another zone must not be recommended for a cn-wlcb-01 create.
+const deployCreateZone = "cn-wlcb-01"
+
 // deployPlan is the resolved deploy specification the matcher produces and the
 // saga consumes. ImageSource/ImageName/GpuType are CreateInstanceDef params.
 type deployPlan struct {
@@ -247,11 +255,12 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg string, onStep fu
 	imageID, supported := chosenImage(plan, platform, community)
 	plan.ImageID = imageID
 	// DescribeAvailableCompShareInstanceTypes takes no Zone request param (upstream
-	// has only MachineTypes/InstanceType); empty args returns the full live catalog,
-	// which on today's single-zone platform is what the saga creates in. (If the
-	// platform ever goes multi-zone, filter the response by AvailableType.Zone here.)
+	// has only MachineTypes/InstanceType), and its response spans MULTIPLE zones
+	// (region cn-wlcb includes the Shanghai cn-sh2-02 zone). ParseAvailableGPUs
+	// filters to the create-zone so we never recommend a card the saga can't create
+	// in that zone.
 	availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
-	gpuType, gpuNote := knowledge.RecommendGPUTypeLive(plan.ModelName, decision.Quantization, userMsg, supported, knowledge.ParseAvailableGPUs(availResult))
+	gpuType, gpuNote := knowledge.RecommendGPUTypeLive(plan.ModelName, decision.Quantization, userMsg, supported, knowledge.ParseAvailableGPUs(availResult, deployCreateZone))
 	plan.GpuType = gpuType
 	plan.MatchNote = gpuNote
 	if groundNote != "" {

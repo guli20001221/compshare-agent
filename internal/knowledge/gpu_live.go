@@ -35,20 +35,31 @@ type AvailableGPU struct {
 }
 
 // ParseAvailableGPUs extracts the available GPU candidates from a
-// DescribeAvailableCompShareInstanceTypes result map. Entries without a Name or a
-// positive VRAM, or whose Status marks them unavailable, are skipped; duplicate
-// Names collapse (keeping the larger MaxGPU). Returns nil for a nil/empty result so
-// callers fall back to the static table.
-func ParseAvailableGPUs(result map[string]any) []AvailableGPU {
+// DescribeAvailableCompShareInstanceTypes result map, restricted to the given zone.
+//
+// The response spans MULTIPLE zones (verified 2026-05-31: region cn-wlcb returns
+// both cn-wlcb-01 AND the Shanghai cn-sh2-02 zone — the upstream returns every
+// zone's machine types when no ZoneID is filtered). The deploy saga creates in ONE
+// zone, so we keep only that zone's cards; otherwise a card offered solely in
+// another zone (e.g. 2080Ti only in cn-sh2-02) would be recommended and then
+// rejected by the saga's zone-scoped capacity check. zone=="" disables the filter
+// (keep all zones). Entries without a Name or positive VRAM, or whose Status marks
+// them unavailable, are skipped; duplicate Names collapse (keeping the larger
+// MaxGPU). Returns nil for a nil/empty result so callers fall back to the static table.
+func ParseAvailableGPUs(result map[string]any, zone string) []AvailableGPU {
 	if result == nil {
 		return nil
 	}
+	zone = strings.TrimSpace(zone)
 	types, _ := result["AvailableInstanceTypes"].([]any)
 	byName := map[string]AvailableGPU{}
 	var order []string
 	for _, t := range types {
 		m, _ := t.(map[string]any)
 		if m == nil {
+			continue
+		}
+		if zone != "" && !strings.EqualFold(strings.TrimSpace(stringField(m, "Zone")), zone) {
 			continue
 		}
 		name := strings.TrimSpace(stringField(m, "Name"))
