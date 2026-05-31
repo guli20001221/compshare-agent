@@ -277,6 +277,14 @@ func requiredToolsForIntent(intent Intent) map[string]struct{} {
 		// DescribeCompShareInstance response (no disk-list API upstream;
 		// 2026-05-29 routing fix). Same drift as operation_lifecycle above.
 		add("DescribeCompShareInstance")
+	case IntentDeployModel:
+		// Read tools ONLY (the image-catalog grounding reads the deploy arm uses
+		// to match a workload to an existing image). The actual mutation
+		// (CreateCompShareInstance) runs through the orchestrator saga + StepConfirm,
+		// never via plan.required_tools — same discipline as operation_lifecycle.
+		// The arm ignores plan.required_tools; this case only keeps the few-shots'
+		// declared tool accepted by ValidatePlan (B8.3 ③).
+		add("DescribeCompShareImages", "DescribeCommunityImages")
 	}
 
 	if required, ok := capabilityRequiredTool(intent); ok {

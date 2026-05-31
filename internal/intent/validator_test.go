@@ -340,6 +340,8 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		// disk_info (2026-05-29) — disk-listing routing; reuses
 		// DescribeCompShareInstance.DiskSet since upstream has no list API.
 		IntentDiskInfo,
+		// deploy_model (B8.3, 2026-05-31) — agent-tier create skill via tryDeployModel.
+		IntentDeployModel,
 		IntentUnknown,
 	}, AllIntents())
 }

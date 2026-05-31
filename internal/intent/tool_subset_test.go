@@ -117,6 +117,10 @@ func TestIntentToolSubset_AllRuntimeIntentsCovered(t *testing.T) {
 		IntentKnowledgeQA:               true,
 		IntentBillingAccountUnsupported: true,
 		IntentMonitorHistory:            true,
+		// deploy_model has no ReAct tool subset: the engine's tryDeployModel arm
+		// always handles the turn (it never falls through to the ReAct loop), so
+		// there is no fallback tool list to expose (B8.3).
+		IntentDeployModel: true,
 	}
 	for _, i := range RuntimeIntents() {
 		subset := IntentToolSubset(i)

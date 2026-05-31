@@ -202,11 +202,15 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 12 shared + 35 per-session = 47 fields. Any drift
+// Whitelist totals: 13 shared + 35 per-session = 48 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
-		"llmClient":                   true,
+		"llmClient": true,
+		// agentLLMClient is the TierAgent (strong-model) client — shared like
+		// llmClient (a stateless client wrapper, pointer-equal across sessions).
+		// Used by the B8 deploy_model image-matching arm.
+		"agentLLMClient":              true,
 		"intentPlanner":               true,
 		"intentPlannerModel":          true,
 		"intentPlannerEnabledIntents": true,
@@ -270,7 +274,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"baseUserContext":           true,
 	}
 
-	if want, got := 12, len(sharedFields); want != got {
+	if want, got := 13, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
 	if want, got := 35, len(perSessionFields); want != got {
@@ -278,7 +282,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 47, typ.NumField(); want != got {
+	if want, got := 48, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

@@ -41,6 +41,16 @@ const (
 	// resource_info or knowledge_qa) lets the renderer foreground the
 	// DiskSet view rather than the default instance summary.
 	IntentDiskInfo Intent = "disk_info"
+	// deploy_model (B8.3, 2026-05-31): the first agent-tier mutating skill —
+	// "按需求选优云已有镜像建实例并轮询到 Running". UNLIKE the read-only capability
+	// intents above, this is NOT a capability (capability handlers reach only
+	// the ToolExecutor and cannot call e.RunAgentSaga). It routes through a
+	// dedicated engine dispatch arm (tryDeployModel) that does TierAgent
+	// image-matching, drives CreateInstanceDef through the orchestrator saga,
+	// and polls the new instance to Running. Declared here so the arm compiles;
+	// the planner does NOT emit it until B8.3 ③ teaches the example + re-pins
+	// the system-prompt SHA, so this constant is zero-behavior on its own.
+	IntentDeployModel Intent = "deploy_model"
 )
 
 type TargetRefType string
@@ -173,6 +183,7 @@ func AllIntents() []Intent {
 		IntentCommunityImageList,
 		IntentPricingQuery,
 		IntentDiskInfo,
+		IntentDeployModel,
 		IntentUnknown,
 	}
 }
@@ -197,6 +208,11 @@ func RuntimeIntents() []Intent {
 		IntentCommunityImageList,
 		IntentPricingQuery,
 		IntentDiskInfo,
+		// deploy_model is a runtime intent: validIntent (validator.go) must accept
+		// it so the planner can emit it (B8.3 ③) and the dispatch arm fire. It has
+		// no ReAct tool subset (the arm always handles the turn, never falls
+		// through) — see tool_subset_test.go nilExpected.
+		IntentDeployModel,
 		IntentUnknown,
 	}
 }

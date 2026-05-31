@@ -13,6 +13,7 @@ func TestRedactForLLM_RedactsSecretsRecursively(t *testing.T) {
 		"api_key":         "llm-key-1234567890",
 		"Password":        "secret-password",
 		"SSHCommand":      "ssh root@1.2.3.4 -p 22",
+		"SshLoginCommand": "ssh root@1.2.3.4 -p 22", // real upstream field name (B8.3 deploy surfaces it into traces)
 		"JupyterLabToken": "token-abc",
 		"PublicIP":        "1.2.3.4",
 		"Nested": map[string]any{
@@ -30,6 +31,7 @@ func TestRedactForLLM_RedactsSecretsRecursively(t *testing.T) {
 	assert.Equal(t, "[REDACTED]", redacted["api_key"])
 	assert.Equal(t, "[REDACTED]", redacted["Password"])
 	assert.Equal(t, "[REDACTED]", redacted["SSHCommand"])
+	assert.Equal(t, "[REDACTED]", redacted["SshLoginCommand"], "ssh+command must catch the login-infix field name too")
 	assert.Equal(t, "[REDACTED]", redacted["JupyterLabToken"])
 	assert.Equal(t, "1.2.3.4", redacted["PublicIP"], "IP is not hidden from LLM context by default")
 	assert.Equal(t, "[REDACTED]", redacted["Nested"].(map[string]any)["access_token"])

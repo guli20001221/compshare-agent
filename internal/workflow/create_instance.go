@@ -328,7 +328,7 @@ func stepConfirmCreate() Step {
 				return nil, err
 			}
 			return map[string]any{
-				"workflow":    "CreateInstanceWorkflow",
+				"workflow":   "CreateInstanceWorkflow",
 				"GpuType":    wfCtx.Params["GpuType"],
 				"Gpu":        gpu,
 				"CPU":        cpu,
@@ -353,6 +353,14 @@ func stepCreateInstance() Step {
 				return nil, err
 			}
 			imageId := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
+			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" && imageId == "" {
+				// Fail loud rather than POST an empty CompShareImageId (which the
+				// upstream rejects cryptically). The community path is the real risk:
+				// pickFirstCommunityImageId returns "" when the group has no Data[]
+				// array (a valid API shape). Scoped to community to leave the shipped
+				// platform create path byte-identical (B8.3 review).
+				return nil, fmt.Errorf("社区镜像未返回有效的镜像 ID，无法创建实例（请确认社区镜像名称是否正确）")
+			}
 			gt, _ := wfCtx.Params["GpuType"].(string)
 			args := map[string]any{
 				"Zone":             paramStr(wfCtx.Params, "Zone", defaultZone),

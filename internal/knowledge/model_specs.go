@@ -102,6 +102,42 @@ func GetModelVRAMRequirement(modelName, quantization string) map[string]any {
 	return result
 }
 
+// RecommendGPUType picks a single CreateInstance GpuType string for a deploy
+// request, plus a short human note explaining the choice. When modelName
+// resolves to a known parameter count it sizes the GPU by VRAM (same arithmetic
+// as GetModelVRAMRequirement, smallest single card that fits, else the
+// largest-card multi-card fallback); otherwise it falls back to the
+// scene-keyword recommendation (GetGPURecommendation). It always returns a
+// non-empty GpuType. Pure / deterministic — the deploy_model arm calls this
+// instead of the map[string]any tool surface so it gets a typed value rather
+// than an unexported gpuFit hidden behind `any` (B8.3).
+func RecommendGPUType(modelName, quantization, scene string) (gpuType, note string) {
+	if paramsB, ok := resolveParamCountB(modelName); ok {
+		quant := strings.ToLower(strings.TrimSpace(quantization))
+		bpp, has := bytesPerParam[quant]
+		if !has {
+			quant = "fp16"
+			bpp = bytesPerParam[quant]
+		}
+		vramRequired := int(math.Ceil(paramsB * bpp * vramBufferFactor))
+		single, multi := fitGPUs(vramRequired)
+		if len(single) > 0 {
+			return single[0].GPUType, fmt.Sprintf("%s(约 %gB,%s)需约 %dGB 显存,选单卡 %s(%dGB)", modelName, paramsB, quant, vramRequired, single[0].Name, single[0].VRAMGB)
+		}
+		if multi != nil {
+			return multi.GPUType, fmt.Sprintf("%s(约 %gB,%s)需约 %dGB 显存,%s", modelName, paramsB, quant, vramRequired, multi.Note)
+		}
+	}
+	// No recognized parameter count — fall back to scene-keyword recommendation.
+	rec := GetGPURecommendation(scene, false)
+	if recs, ok := rec["recommendations"].([]GPURec); ok && len(recs) > 0 {
+		return recs[0].GPUType, fmt.Sprintf("按场景推荐 %s(%dGB)", recs[0].Name, recs[0].VRAM)
+	}
+	// Last-resort default — a broadly available mid-tier card. GetGPURecommendation
+	// always returns ≥1 rec today, so this only guards a future regression.
+	return "4090", "未能识别模型参数量或场景,默认推荐 4090(24GB)"
+}
+
 // resolveParamCountB derives a model's parameter count (billions) from its name,
 // preferring the canonical table for count-less / MoE names, then falling back
 // to the last "<n>b" token in the name (last wins so "qwen3-32b" → 32, not 3).

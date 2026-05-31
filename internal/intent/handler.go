@@ -39,8 +39,13 @@ const (
 type CutoverStatus string
 
 const (
-	CutoverStatusNone                  CutoverStatus = ""
-	CutoverStatusDispatched            CutoverStatus = "dispatched"
+	CutoverStatusNone       CutoverStatus = ""
+	CutoverStatusDispatched CutoverStatus = "dispatched"
+	// CutoverStatusDispatchedAgent marks a turn the agent-tier dispatch arm
+	// owned (B8.3 deploy_model). Distinct from "dispatched" (fast-tier capability
+	// dispatch) so DeriveRealizedTier maps it to the agent tier rather than fast
+	// — the deploy arm runs a TierAgent LLM match + the orchestrator saga.
+	CutoverStatusDispatchedAgent       CutoverStatus = "dispatched_agent"
 	CutoverStatusFallbackInvalid       CutoverStatus = "fallback_invalid"
 	CutoverStatusFallbackLowConfidence CutoverStatus = "fallback_low_confidence"
 	// CutoverStatusFallbackHardBlockHint (removed PR #61, 2026-05-21):

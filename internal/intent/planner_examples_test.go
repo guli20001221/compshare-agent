@@ -197,7 +197,18 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 //      DescribeCompShareInstance.
 // Engine remains routing-only — no new handler — so the change is bounded
 // to prompt + intent enum + tool subset. SHA bumped by construction.
-const systemPromptSHA256Baseline = "1f6823218faf6851528c0472d7fddb498e2df8db1f9672c8e3c8d0cdab1f864b"
+//
+// deploy_model (B8.3, 2026-05-31) — the first agent-tier skill becomes
+// planner-reachable. Three coupled prompt changes ship:
+//  (1) enum line bumped to include deploy_model (NOT primary-intents — it's a
+//      mutating intent, example-driven only so it fires on clear deploy phrasing);
+//  (2) one new directive distinguishing workload-first deploy (部署/跑/搭 +
+//      model/app) from operation_lifecycle (existing-instance ops + spec-first create);
+//  (3) new IntentDeployModel example group with 4 anchors, required_tools=
+//      [DescribeCompShareImages]. UNLIKE the routing-only intents above, this one
+//      DOES have a new engine arm (tryDeployModel) — but the planner prompt change
+//      is the same shape. SHA bumped by construction.
+const systemPromptSHA256Baseline = "a976edd59421c84ae279ba7d11f8b89f9d1894b85f38874fa99151f14fe42c59"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
