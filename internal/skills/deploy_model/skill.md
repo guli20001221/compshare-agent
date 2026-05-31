@@ -31,14 +31,14 @@ provenance: human_authored
 
 ## 何时用 / 何时不用
 
-- **用 deploy_model**:用户说"部署/跑/搭 + 某个模型/框架/应用"(部署 Qwen2.5-32B / 跑数字人 / 搭一个能跑 ComfyUI 的环境),想要一台合适的实例来承载这个工作负载。由 agent 选镜像 + 定 GPU。
+- **用 deploy_model**:用户说"部署/跑/搭 + 某个模型/框架/应用"(部署 Qwen2.5-32B / 跑数字人 / 搭一个能跑 ComfyUI 的环境),或问"跑 X 用哪个卡合适"——都先**出推荐**,写操作开时再经确认卡片建实例。由 agent 选镜像 + 定 GPU + 选可用区。
 - **不要用**:对**已有实例**的操作(关机/启动/重启/变配/加盘)走 `operation_lifecycle`;用户直接指定硬件规格的"创建一个 4090 单卡实例"(spec-first)也走 `operation_lifecycle`,不是 deploy_model。
 
 ## 编排步骤(arm 已实现,非手动)
 
 1. **选型(TierAgent,grounded,两步 LLM)**:① 先让强模型从需求里抽一个社区检索关键词(理解模糊措辞,lead Q1);② 活查平台镜像 `DescribeCompShareImages`(`Limit=100` 取全量 ~68;**平台既有框架底座也有 App 类镜像** ComfyUI/vLLM/Ollama/SGLang)+ 社区镜像 `DescribeCommunityImages`(~743 组,按关键词 `FuzzySearch` 取相关 shortlist,`ExcludeReadme` 省 token)→ 强模型从**真实候选清单**按 Name/Framework/Description 选 `image_source`+`image_name`(禁止编造,落选回退平台框架镜像)。
-2. **定 GPU(确定性,镜像感知)**:`RecommendGPUTypeWithin` = 有模型名走显存算术(参数量×字节×1.2 buffer → 最小可承载单卡,放不下给多卡),无模型名走场景关键词;再**∩ 选中镜像 `SupportedGpuTypes`**(镜像声明的推荐机型;放不下时显存正确性优先,只告警)。→ `GpuType`。
-3. **建实例(orchestrator saga)**:复用 `CreateInstanceDef` 经 `RunAgentSaga` 传 `{GpuType, ImageSource, ImageName, CompShareImageId}`(**回传已解析的镜像 ID**,保证 saga 建的就是选型那张镜像、与 GPU 定型同源——否则平台 CJK Name 过滤失效/社区 index-0 会漂到别的镜像):查配比 → 检查库存(售罄即停)→ 查价 → **确认(StepConfirm 是唯一 HITL 门)** → `CreateCompShareInstance` → 单次 describe。
+2. **定 GPU + 选区(确定性,镜像/可用区感知 `selectDeployZoneAndGPU`)**:**zone-preference-first**——按 `deployPreferredZones`(cn-wlcb-01→cn-sh2-02;用户指定 zone 则严格只用该 zone)逐区:`ParseAvailableGPUs(avail, zone)` 取该区 live 卡 → `RecommendGPUTypeLive`(显存算术×1.2 buffer，∩ 镜像 `SupportedGpuTypes`,M2)→ 该卡在该区**真实有货**(`CheckCompShareResourceCapacity` 找 `Gpu==1 & ResourceEnough`)才选定;主区售罄**自动 fallback** 下一区(create 前预选,非 ADR-006 禁的 retry),并记 `FallbackNote`。用户指定 zone 无货/无合适卡 → 报错不静默改。全区无确认库存 → 用主区 sizing 交 saga 兜底;avail 空 → 静态表兜底。
+3. **建议 or 建实例**:**只读模式**(写操作关)→ `buildAdviseReply` 只回推荐(GPU/镜像/可用区/选型说明),**不建实例**;**写操作开**→ 复用 `CreateInstanceDef` 经 `RunAgentSaga` 传 `{GpuType, ImageSource, ImageName, CompShareImageId, Zone, FallbackNote}`(**回传已解析镜像 ID + 选定 zone**,保证 saga 建的就是选型同源):查配比 → 检查库存(售罄即停)→ 查价 → **确认卡片(StepConfirm 唯一 HITL 门;args 带 GpuType/Gpu/CPU/Memory/Zone/image/price/FallbackNote,CLI 渲染成卡片、HTTP 经 confirmationEvent.Summary 给前端)** → `CreateCompShareInstance` → 单次 describe。
 4. **轮询(handler 内有界循环)**:`DescribeCompShareInstance` 读 `UHostSet[0].State` 直到 `"Running"`,有界 N 轮短读(**轮询耗尽≠失败**,实例已建,慢=还在起)。
 5. **取用法(成功后只读一次,按 id 回查选中镜像)**:`fetchImageUsage` 取 `SoftwarePorts`(app↔端口)+`FirewallPorts`(额外端口,如 vLLM API :8000)+`AutoStart`+`Readme`(仅社区有)。访问地址由 **镜像端口 + 实例公网 IP 自行拼** `http://ip:port`,**不直接回显实例 `Softwares[].URL`**(可能带 Jupyter `?token=` 密钥)。社区 `Readme` 去 HTML/iframe/图片 markdown 后截断节选(不喂回 LLM,非注入面)。
 6. **回报**:实例 ID + `GpuType` + 镜像 + `SshLoginCommand` + **访问地址/使用说明**。**永不回报 `Password`/`FileBrowserPassword`**(base64 密钥)。

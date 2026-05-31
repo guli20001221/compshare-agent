@@ -127,3 +127,24 @@ func TestSanitizeConfirmArgs_FiltersPasswords(t *testing.T) {
 func TestSanitizeConfirmArgs_NilInput(t *testing.T) {
 	assert.Nil(t, sanitizeConfirmArgs(nil))
 }
+
+// TestSanitizeConfirmArgs_KeepsDeployCardFields proves the deploy_model v2 confirm
+// card reaches the frontend: the structured create-instance fields (GPU/image/zone/
+// FallbackNote) survive sanitization into the SSE confirmation event's Summary —
+// they are not secrets and must not be filtered.
+func TestSanitizeConfirmArgs_KeepsDeployCardFields(t *testing.T) {
+	args := map[string]any{
+		"workflow":     "CreateInstanceWorkflow",
+		"GpuType":      "4090",
+		"Zone":         "cn-sh2-02",
+		"image":        "ComfyUI",
+		"FallbackNote": "cn-wlcb-01 暂时售罄，已自动切换到 cn-sh2-02 创建。",
+		"Password":     "secret123",
+	}
+	safe := sanitizeConfirmArgs(args)
+	assert.Equal(t, "4090", safe["GpuType"])
+	assert.Equal(t, "cn-sh2-02", safe["Zone"])
+	assert.Equal(t, "ComfyUI", safe["image"])
+	assert.Contains(t, safe["FallbackNote"], "cn-sh2-02", "zone fallback note must reach the frontend card")
+	assert.NotContains(t, safe, "Password", "secrets still filtered")
+}

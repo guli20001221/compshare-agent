@@ -44,17 +44,70 @@ func init() {
 }
 
 // cliConfirm prompts the user to confirm an L1 operation in the terminal.
+// Instance-create confirms (the deploy_model + ReAct create path) render as a
+// field-by-field card; other confirms keep the raw-args JSON dump. The HTTP path
+// delivers the same structured fields to the frontend via the confirmation event's
+// Summary, so both surfaces show the user GPU/image/zone/price before approving.
 func cliConfirm(scanner *bufio.Scanner) engine.ConfirmFunc {
 	return func(action string, args map[string]any) bool {
-		argsJSON, _ := json.MarshalIndent(args, "    ", "  ")
-		fmt.Printf("  ⚠️  即将执行变更操作: %s\n", action)
-		fmt.Printf("    参数: %s\n", string(argsJSON))
+		if wf, _ := args["workflow"].(string); wf == "CreateInstanceWorkflow" {
+			printCreateConfirmCard(args)
+		} else {
+			argsJSON, _ := json.MarshalIndent(args, "    ", "  ")
+			fmt.Printf("  ⚠️  即将执行变更操作: %s\n", action)
+			fmt.Printf("    参数: %s\n", string(argsJSON))
+		}
 		fmt.Print("  确认执行？(y/N) ")
 		if !scanner.Scan() {
 			return false
 		}
 		answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
 		return answer == "y" || answer == "yes"
+	}
+}
+
+// printCreateConfirmCard renders the instance-create confirm as readable fields
+// (the CLI degradation of the structured confirm card) instead of a JSON blob.
+func printCreateConfirmCard(args map[string]any) {
+	str := func(k string) string {
+		if s, ok := args[k].(string); ok {
+			return s
+		}
+		return ""
+	}
+	num := func(k string) (float64, bool) {
+		switch n := args[k].(type) {
+		case float64:
+			return n, true
+		case int:
+			return float64(n), true
+		}
+		return 0, false
+	}
+	fmt.Println("  ⚠️  即将创建实例，请确认：")
+	if gt := str("GpuType"); gt != "" {
+		if n, ok := num("Gpu"); ok {
+			fmt.Printf("    GPU：%s × %.0f\n", gt, n)
+		} else {
+			fmt.Printf("    GPU：%s\n", gt)
+		}
+	}
+	if img := str("image"); img != "" {
+		fmt.Printf("    镜像：%s\n", img)
+	}
+	cpu, hasCPU := num("CPU")
+	mem, hasMem := num("Memory")
+	if hasCPU && hasMem {
+		fmt.Printf("    配置：%.0f 核 / %.0f MB\n", cpu, mem/1024) // Memory is MB; show GB
+	}
+	if z := str("Zone"); z != "" {
+		fmt.Printf("    可用区：%s\n", z)
+	}
+	if ct := str("ChargeType"); ct != "" {
+		fmt.Printf("    计费：%s\n", ct)
+	}
+	if fb := str("FallbackNote"); fb != "" {
+		fmt.Printf("    ℹ️  %s\n", fb)
 	}
 }
 
