@@ -15,6 +15,37 @@ func recommended(t *testing.T, res map[string]any) gpuFit {
 	return r
 }
 
+// TestRecommendGPUType pins the typed accessor the deploy_model arm calls
+// (B8.3): a recognized model name sizes by VRAM (same pick as
+// GetModelVRAMRequirement); an unrecognized name falls back to the scene
+// recommendation; it always returns a non-empty, valid GpuType.
+func TestRecommendGPUType(t *testing.T) {
+	// Model-name path: Qwen32B → A100 (smallest single card ≥ 77GB), matching
+	// GetModelVRAMRequirement's recommendation.
+	gt, note := RecommendGPUType("Qwen32B", "fp16", "部署 Qwen32B")
+	assert.Equal(t, "A100", gt)
+	assert.NotEmpty(t, note)
+
+	// Quantization shrinks the footprint: 32B int4 = 32×0.5×1.2 = 19.2 → ≥24GB.
+	gt, _ = RecommendGPUType("Qwen32B", "int4", "部署")
+	if _, ok := gpuSpecs[gt]; !ok {
+		t.Errorf("int4 pick %q not a known GPU type", gt)
+	}
+	assert.GreaterOrEqual(t, gpuSpecs[gt].VRAM, 24)
+
+	// Scene fallback: no model name → GetGPURecommendation by scene keyword.
+	gt, _ = RecommendGPUType("", "", "推理部署")
+	require.NotEmpty(t, gt)
+	_, ok := gpuSpecs[gt]
+	assert.True(t, ok, "scene pick %q must be a known GPU type", gt)
+
+	// Total fallback: unrecognizable input still returns a usable GPU.
+	gt, _ = RecommendGPUType("", "", "")
+	require.NotEmpty(t, gt)
+	_, ok = gpuSpecs[gt]
+	assert.True(t, ok)
+}
+
 // TestGetModelVRAMRequirement_FP16SingleCard pins the headline B8 case: a 32B
 // model in FP16 needs ~77GB (32×2×1.2), which the smallest single card that
 // fits is the A100 (80GB). This is the reasoning deploy_model uses to pick GpuType.

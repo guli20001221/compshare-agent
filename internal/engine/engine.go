@@ -157,7 +157,14 @@ type IntentPlannerOptions struct {
 
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
 type Engine struct {
-	llmClient                   LLMClient
+	llmClient LLMClient
+	// agentLLMClient is the TierAgent (strong-model) client, used by the
+	// agent-tier dispatch arms (B8 deploy_model image-matching) for semantic
+	// judgment that warrants the strong model rather than the fast planner
+	// model (ADR-002 high-freedom + strong-guardrail). Shared across sessions
+	// like llmClient. nil on the NewWithDeps test path — callers MUST guard
+	// (the deploy arm falls back to llmClient when nil).
+	agentLLMClient              LLMClient
 	safeExecutor                *tools.SafeToolExecutor
 	registry                    *entity.EntityRegistry
 	intentPlanner               IntentPlanner
@@ -265,7 +272,12 @@ type Engine struct {
 // frozen as soon as the first NewSession is called; later runtime mutation
 // would race against in-flight sessions reading these fields.
 type SharedDeps struct {
-	LLMClient                   LLMClient
+	LLMClient LLMClient
+	// AgentLLMClient is the TierAgent (strong-model) client. NewSharedDeps
+	// keeps the router's TierAgent client instead of discarding it (the same
+	// router that yields LLMClient = For(TierFast)). Copied into every
+	// NewSession as Engine.agentLLMClient. Empty on the test path.
+	AgentLLMClient              LLMClient
 	IntentPlanner               IntentPlanner
 	IntentPlannerModel          string
 	IntentPlannerEnabledIntents map[intent.Intent]struct{}
@@ -333,6 +345,12 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 	cap := llm.LookupCapability(cfg.Agent.LLM.BaseURL, cfg.Agent.LLM.Model)
 	return &SharedDeps{
 		LLMClient: router.For(llm.TierFast),
+		// Keep the router's TierAgent client for the agent-tier dispatch arms
+		// (B8). With empty tier_routing this is byte-identical to the base
+		// model (router.go nil-override path), so it changes nothing until a
+		// config sets tier_routing.agent — at which point deploy_model
+		// image-matching uses the configured strong model.
+		AgentLLMClient: router.For(llm.TierAgent),
 		// MemoryLimiter is process-local and suitable for local demo or
 		// single-instance deployment only. Multi-replica production needs a
 		// centralized limiter such as Redis or an API gateway.
@@ -359,6 +377,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 	eng := &Engine{
 		// ── shared (pointer-equal across sessions) ──
 		llmClient:                   deps.LLMClient,
+		agentLLMClient:              deps.AgentLLMClient,
 		intentPlanner:               deps.IntentPlanner,
 		intentPlannerModel:          deps.IntentPlannerModel,
 		intentPlannerEnabledIntents: deps.IntentPlannerEnabledIntents,
@@ -1253,6 +1272,15 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	}
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
 		return reply, true
+	}
+	// B8.3 deploy_model: the agent-tier mutating skill. NOT a capability (a
+	// capability handler reaches only the ToolExecutor and cannot drive the
+	// orchestrator saga), so it gets its own dispatch arm that does TierAgent
+	// image-matching + RunAgentSaga(CreateInstanceDef) + poll-to-Running. See
+	// deploy_model.go. The planner only emits IntentDeployModel after B8.3 ③
+	// teaches it, so this branch is dormant until then.
+	if dispatch.result.Plan.Intent == intent.IntentDeployModel {
+		return e.tryDeployModel(ctx, dispatch, userMsg, onStep)
 	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || intent.IsCapabilityIntent(dispatch.result.Plan.Intent) {
 		return e.tryPhase1Cutover(ctx, dispatch, userMsg, onStep)

@@ -190,6 +190,11 @@ func TestSharedDeps_AuditCoversAllSharedDepFields(t *testing.T) {
 		switch field.Name {
 		case "LLMClient":
 			requireAudited(t, audited, "github.com/compshare-agent/internal/llm.Client", field.Name)
+		case "AgentLLMClient":
+			// Same concrete type as LLMClient (router.For(TierAgent) → *llm.Client),
+			// already audited via sharedDepConcreteTypes — the mutating-setter scan
+			// covers it once. Listed explicitly so the field stays classified.
+			requireAudited(t, audited, "github.com/compshare-agent/internal/llm.Client", field.Name)
 		case "KnowledgeRetriever":
 			requireAudited(t, audited, "github.com/compshare-agent/internal/knowledge.Retriever", field.Name)
 		case "GroundedRenderer":
