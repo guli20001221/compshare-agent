@@ -54,6 +54,7 @@ var (
 type deployPlan struct {
 	ImageSource string // "platform" | "community"
 	ImageName   string // image Name (platform) / group ImageName (community); may be "" for platform
+	ImageID     string // resolved CompShareImageId of the chosen image; threaded to the saga so it creates EXACTLY this image (may be "")
 	GpuType     string // CreateInstance GpuType, e.g. "A100"
 	ModelName   string // model the user wants to run, for the reply; may be ""
 	MatchNote   string // human-readable selection rationale (GPU sizing + any fallback)
@@ -98,6 +99,13 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchRes
 	}
 	if plan.ImageName != "" {
 		params["ImageName"] = plan.ImageName
+	}
+	// Thread the resolved image id so the saga creates EXACTLY the image the matcher
+	// chose + sized the GPU against, instead of re-resolving independently (platform's
+	// CJK Name filter and community's index-0 pick can both diverge from the choice).
+	// Empty ImageID → not threaded → saga uses its own resolution + fail-loud guard.
+	if plan.ImageID != "" {
+		params["CompShareImageId"] = plan.ImageID
 	}
 
 	sagaResult, sagaErr := e.RunAgentSaga(ctx, def, params, "deploy_model")
@@ -145,12 +153,24 @@ func (e *Engine) deployReply(result intent.PlannerResult, latency time.Duration,
 	return reply, true
 }
 
-// matchDeployImage queries the live image catalog (platform framework bases +
-// community ready-to-run apps), asks the TierAgent model to pick the best fit,
-// and sizes the GPU deterministically. The LLM does the fuzzy judgment (which
-// image, which model/quantization); knowledge.RecommendGPUType does the VRAM
-// arithmetic. The chosen image is grounded against the queried catalog so a
-// hallucinated name cannot reach the saga.
+// matchDeployImage queries the live image catalog, asks the TierAgent model to
+// pick the best fit, and sizes the GPU image-aware. The LLM does the fuzzy
+// judgment (a keyword to search + which image + which model/quantization);
+// knowledge.RecommendGPUTypeWithin does the VRAM arithmetic constrained to what
+// the chosen image supports. The chosen image is grounded against the queried
+// catalog so a hallucinated name cannot reach the saga.
+//
+// Catalog handling is asymmetric by design (verified by live recon 2026-05-31):
+//   - Platform (DescribeCompShareImages, ~68 images) is small AND its server-side
+//     Name filter does not match the CJK canonical names ("comfyui"→0 hits) — so
+//     we fetch the WHOLE catalog (Limit=100) and let the model read it. Note: the
+//     platform catalog contains BOTH framework bases AND app images (ComfyUI/vLLM/
+//     Ollama/SGLang are App-type platform images by Name) — there is NO
+//     platform=framework / community=app dichotomy.
+//   - Community (DescribeCommunityImages, ~743 groups) is too large to show whole,
+//     but its FuzzySearch (name+author) works well — so we extract a keyword first
+//     (the lead's Q1: let the model understand an imprecise request) and search
+//     with it, falling back to an unfiltered sample if the keyword finds nothing.
 func (e *Engine) matchDeployImage(ctx context.Context, userMsg string, onStep func(StepEvent)) (deployPlan, error) {
 	client := e.agentLLMClient
 	if client == nil {
@@ -159,13 +179,19 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg string, onStep fu
 	if client == nil {
 		return deployPlan{}, fmt.Errorf("deploy_model: no LLM client available for image matching")
 	}
-	e.emitDeployStep(onStep, StepToolCall, "deploy_match", "正在查询可用镜像并匹配最合适的部署方案…")
+	e.emitDeployStep(onStep, StepToolCall, "deploy_match", "正在理解你的需求并查询可用镜像…")
 
-	platform := e.queryImageCandidates(ctx, "DescribeCompShareImages", map[string]any{"Limit": 30})
-	community := e.queryImageCandidates(ctx, "DescribeCommunityImages", map[string]any{"Limit": 30, "ExcludeReadme": true})
+	// (a) Extract a community search keyword from the (possibly vague) request.
+	search := e.extractDeploySearch(ctx, client, userMsg)
+
+	// (b) Query both catalogs: platform whole (small + broken Name filter),
+	// community keyword-filtered (large + working FuzzySearch).
+	platform := e.queryImageCandidates(ctx, "DescribeCompShareImages", map[string]any{"Limit": 100})
+	community := e.queryCommunityCandidates(ctx, search)
 	platformNames := platformImageNames(platform)
 	communityNames := communityGroupNames(community)
 
+	// (c) Final pick over the real candidate lists.
 	prompt := buildImageMatchPrompt(userMsg, platform, community)
 	resp, err := client.Chat(ctx, llm.ChatRequest{Messages: prompt})
 	if err != nil {
@@ -199,8 +225,7 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg string, onStep fu
 			plan.ImageName = matched
 		} else {
 			// Hallucinated / absent community image — fall back to a platform
-			// framework base (always present), which is the safe default for a
-			// "deploy a model" request anyway.
+			// base (always present), which is a safe default for a deploy request.
 			plan.ImageSource = "platform"
 			plan.ImageName = ""
 			groundNote = "未在社区镜像中找到匹配项，已回退到平台框架镜像"
@@ -214,13 +239,125 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg string, onStep fu
 		// first base. (Empty name → first base, also fine.)
 	}
 
-	gpuType, gpuNote := knowledge.RecommendGPUType(plan.ModelName, decision.Quantization, userMsg)
+	// (d) Resolve the chosen image's id (threaded to the saga so it creates EXACTLY
+	// this image, not a re-resolved one) and size the GPU constrained to that same
+	// image's recommended cards (M2).
+	imageID, supported := chosenImage(plan, platform, community)
+	plan.ImageID = imageID
+	gpuType, gpuNote := knowledge.RecommendGPUTypeWithin(plan.ModelName, decision.Quantization, userMsg, supported)
 	plan.GpuType = gpuType
 	plan.MatchNote = gpuNote
 	if groundNote != "" {
 		plan.MatchNote = groundNote + "；" + plan.MatchNote
 	}
 	return plan, nil
+}
+
+// extractDeploySearch asks the model for ONE short keyword to drive the community
+// FuzzySearch (the lead's Q1: understand an imprecise request → a searchable term,
+// e.g. "我想跑个数字人" → "数字人"). Best-effort: any error or unparseable / empty
+// result yields "" and the caller falls back to an unfiltered community sample, so
+// a flaky extraction never blocks the deploy. Uses the same TierAgent client.
+func (e *Engine) extractDeploySearch(ctx context.Context, client LLMClient, userMsg string) string {
+	resp, err := client.Chat(ctx, llm.ChatRequest{Messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "你是优云智算部署助手的检索词提取器。用户想部署或运行某个模型/应用。请从需求中提取一个最适合用于社区镜像库模糊搜索的简短关键词（应用名/模型名/任务类型，如 \"数字人\"、\"ComfyUI\"、\"Qwen\"、\"视频生成\"、\"语音克隆\"）。只输出一个 JSON 对象：{\"search\":\"关键词\"}，无法确定时输出 {\"search\":\"\"}，不要任何额外文字。"},
+		{Role: openai.ChatMessageRoleUser, Content: "用户需求：" + strings.TrimSpace(userMsg)},
+	}})
+	if err != nil || resp == nil {
+		return ""
+	}
+	e.emitTokenUsage(resp.Usage)
+	var out struct {
+		Search string `json:"search"`
+	}
+	if err := json.Unmarshal([]byte(extractJSONObject(resp.Content)), &out); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out.Search)
+}
+
+// queryCommunityCandidates fetches community images filtered by the extracted
+// keyword (FuzzySearch matches name+author). When the keyword is empty or finds
+// nothing, it falls back to an unfiltered sample so the matcher still sees options.
+func (e *Engine) queryCommunityCandidates(ctx context.Context, search string) map[string]any {
+	if search != "" {
+		res := e.queryImageCandidates(ctx, "DescribeCommunityImages",
+			map[string]any{"Limit": 30, "ExcludeReadme": true, "FuzzySearch": search})
+		if len(communityGroupNames(res)) > 0 {
+			return res
+		}
+	}
+	return e.queryImageCandidates(ctx, "DescribeCommunityImages",
+		map[string]any{"Limit": 30, "ExcludeReadme": true})
+}
+
+// chosenImage returns BOTH the CompShareImageId AND the SupportedGpuTypes of the
+// image the matcher picked, looked up ONCE from the catalog the matcher itself
+// queried (so the id and the GPU constraint reference the SAME image). The id is
+// threaded to the saga (params["CompShareImageId"]) so the saga creates exactly
+// this image rather than re-resolving — otherwise the saga's independent re-query
+// (platform: Limit:20 + CJK-broken Name filter → imageSet[0] fallback; community:
+// index-0 of a FuzzySearch=ImageName query) can build a DIFFERENT image than the
+// one the GPU was sized against. An empty id ("" — name not found, or community
+// group without Data[]) means "let the saga resolve it", preserving the saga's own
+// fallback + the community fail-loud guard. SupportedGpuTypes is deduped, may be
+// empty (then RecommendGPUTypeWithin applies no constraint).
+func chosenImage(plan deployPlan, platform, community map[string]any) (imageID string, supportedGPUs []string) {
+	if plan.ImageName == "" {
+		return "", nil
+	}
+	if plan.ImageSource == "community" {
+		groups, _ := community["CompshareImageGroup"].([]any)
+		for _, item := range groups {
+			m, _ := item.(map[string]any)
+			if m == nil {
+				continue
+			}
+			if name, _ := m["ImageName"].(string); strings.EqualFold(name, plan.ImageName) {
+				data, ok := m["Data"].([]any)
+				if !ok || len(data) == 0 {
+					return "", nil
+				}
+				d0, _ := data[0].(map[string]any)
+				id, _ := d0["CompShareImageId"].(string)
+				return id, stringSliceFromAny(d0["SupportedGpuTypes"])
+			}
+		}
+		return "", nil
+	}
+	set, _ := platform["ImageSet"].([]any)
+	for _, item := range set {
+		m, _ := item.(map[string]any)
+		if m == nil {
+			continue
+		}
+		if name, _ := m["Name"].(string); strings.EqualFold(name, plan.ImageName) {
+			id, _ := m["CompShareImageId"].(string)
+			return id, stringSliceFromAny(m["SupportedGpuTypes"])
+		}
+	}
+	return "", nil
+}
+
+// stringSliceFromAny converts a JSON-decoded []any of strings to []string,
+// skipping non-string and duplicate entries (the live SupportedGpuTypes contains
+// duplicates, e.g. "V100S" twice).
+func stringSliceFromAny(v any) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	seen := make(map[string]bool, len(arr))
+	var out []string
+	for _, x := range arr {
+		s, ok := x.(string)
+		if !ok || s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // queryImageCandidates runs a read-only image-listing tool through the safe
@@ -501,10 +638,12 @@ func extractJSONObject(s string) string {
 func buildImageMatchPrompt(userMsg string, platform, community map[string]any) []openai.ChatCompletionMessage {
 	var sys strings.Builder
 	sys.WriteString("你是优云智算 GPU 平台的部署选型助手。用户想创建一台 GPU 实例来运行某个模型或应用。\n")
-	sys.WriteString("优云有两类现成镜像（均已预装环境，无需手动安装）：\n")
-	sys.WriteString("1. 平台镜像(platform)：框架/系统底座，如 PyTorch、CUDA、ComfyUI、Ubuntu。适合“我要自己部署某个模型”（如部署 Qwen/Llama 用 PyTorch 或带 vLLM/Ollama 的底座）。\n")
-	sys.WriteString("2. 社区镜像(community)：针对具体应用/模型打包好的开箱即用镜像，如数字人(LiveTalking/InfiniteTalk)、视频生成(LTX)等。适合“我要直接跑某个现成应用”。\n\n")
-	sys.WriteString("从下面给出的候选镜像中选最合适的一个。只能选候选清单里真实存在的镜像名，不要编造。\n")
+	sys.WriteString("下面提供两个来源的现成镜像（均已预装环境，无需手动安装）：\n")
+	sys.WriteString("- 平台镜像(platform)：由优云官方维护。既有框架/系统底座(PyTorch、CUDA、Ubuntu)，也有打包好的应用镜像(如 ComfyUI、vLLM、Ollama、SGLang)。\n")
+	sys.WriteString("- 社区镜像(community)：由社区作者发布，多为面向具体应用/模型/工作流打包好的开箱即用镜像(如数字人、视频生成、TTS、特定工作流)。\n\n")
+	sys.WriteString("注意：两个来源都可能同时含有框架底座和应用镜像，不要假设“平台只有框架、社区只有应用”。请只依据下面候选清单中每个镜像的真实名称(Name)、框架(Framework)与描述(Description)来判断，挑出与用户需求最匹配、最具体的那一个。\n")
+	sys.WriteString("优先级：若某镜像的名称/描述明确命中用户要的应用或模型 → 选它；否则选一个能承载该工作负载的合适框架底座（如部署某个 LLM 选带 vLLM/PyTorch 的镜像）。\n")
+	sys.WriteString("只能选候选清单里真实存在的镜像名，不要编造。\n")
 	sys.WriteString("严格只输出一个 JSON 对象，不要任何额外文字：\n")
 	sys.WriteString(`{"image_source":"platform|community","image_name":"候选清单中的镜像名","model_name":"用户要运行的模型全称或留空","quantization":"留空或 fp16/int8/int4"}` + "\n")
 	sys.WriteString("model_name 用于按显存推荐 GPU：用户明确提到模型(如 Qwen2.5-32B)就填，纯应用类(如数字人)留空。")

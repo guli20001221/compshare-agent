@@ -36,17 +36,19 @@ provenance: human_authored
 
 ## 编排步骤(arm 已实现,非手动)
 
-1. **选型(TierAgent,grounded)**:活查平台镜像 `DescribeCompShareImages`(框架底座:PyTorch/CUDA/ComfyUI/Ubuntu)+ 社区镜像 `DescribeCommunityImages`(开箱即用应用:数字人/视频生成,`ExcludeReadme` 省 token)→ 强模型从**真实候选清单**里选 `image_source`(platform/community)+ `image_name`(禁止编造,落选回退平台框架镜像)。
-2. **定 GPU(确定性)**:`RecommendGPUType` = 有模型名走 `GetModelVRAMRequirement`(参数量×字节×1.2 buffer → 最小可承载单卡,放不下给多卡),无模型名走 `GetGPURecommendation`(场景关键词)。→ `GpuType`。
-3. **建实例(orchestrator saga)**:复用 `CreateInstanceDef` 经 `RunAgentSaga` 传 `{GpuType, ImageSource, ImageName}`:查配比 → 检查库存(售罄即停)→ 查价 → **确认(StepConfirm 是唯一 HITL 门)** → `CreateCompShareInstance` → 单次 describe。
+1. **选型(TierAgent,grounded,两步 LLM)**:① 先让强模型从需求里抽一个社区检索关键词(理解模糊措辞,lead Q1);② 活查平台镜像 `DescribeCompShareImages`(`Limit=100` 取全量 ~68;**平台既有框架底座也有 App 类镜像** ComfyUI/vLLM/Ollama/SGLang)+ 社区镜像 `DescribeCommunityImages`(~743 组,按关键词 `FuzzySearch` 取相关 shortlist,`ExcludeReadme` 省 token)→ 强模型从**真实候选清单**按 Name/Framework/Description 选 `image_source`+`image_name`(禁止编造,落选回退平台框架镜像)。
+2. **定 GPU(确定性,镜像感知)**:`RecommendGPUTypeWithin` = 有模型名走显存算术(参数量×字节×1.2 buffer → 最小可承载单卡,放不下给多卡),无模型名走场景关键词;再**∩ 选中镜像 `SupportedGpuTypes`**(镜像声明的推荐机型;放不下时显存正确性优先,只告警)。→ `GpuType`。
+3. **建实例(orchestrator saga)**:复用 `CreateInstanceDef` 经 `RunAgentSaga` 传 `{GpuType, ImageSource, ImageName, CompShareImageId}`(**回传已解析的镜像 ID**,保证 saga 建的就是选型那张镜像、与 GPU 定型同源——否则平台 CJK Name 过滤失效/社区 index-0 会漂到别的镜像):查配比 → 检查库存(售罄即停)→ 查价 → **确认(StepConfirm 是唯一 HITL 门)** → `CreateCompShareInstance` → 单次 describe。
 4. **轮询(handler 内有界循环)**:`DescribeCompShareInstance` 读 `UHostSet[0].State` 直到 `"Running"`,有界 N 轮短读(**轮询耗尽≠失败**,实例已建,慢=还在起)。
 5. **回报**:实例 ID + `GpuType` + 镜像 + `SshLoginCommand`(含 IP/端口)。**永不回报 `Password`**(base64 密钥)。
 
 ## 关键字段(已核上游)
 
 - 列表镜像无 `Readme`;平台单查(传 `CompShareImageId`)才返 `Readme` 且 base 镜像常空;社区列表默认带 `Readme`。
-- 平台镜像 `Softwares.Applications` 被客户面剥离 → 平台只能按 `Framework` 粒度匹配,应用级靠社区镜像。
-- 社区响应 = `CompshareImageGroup[].{ImageName, Data[].CompShareImageId}`;**无 `Data[]` 时镜像 ID 解析为空**,create 步骤须 fail-loud(已加 guard)。
+- **平台镜像也含 App 类镜像**(2026-05-31 真机 recon:`ImageType` 分布 App:49/Other:10/System:9;ComfyUI/vLLM/Ollama/SGLang 都是平台 App 镜像 by Name)。`Softwares.Applications` 字段被客户面剥离,但**应用身份在 `Name`/`Description`** 上 matcher 看得到 → **不存在“平台只有框架、社区只有应用”的二分法**,按真实 Name/Framework 匹配。
+- **`SupportedGpuTypes` 在列表响应里就有**(裸 GPU key 如 `4090`/`V100S`,与 gpuSpecs key 同形;可空/可单卡如 vLLM-5090);用于 M2 的 GPU∩镜像交集。
+- **平台 server-side `Name` 模糊过滤对 CJK 规范名失效**(`comfyui`→0 命中)→ 平台取全量不做关键词过滤;社区 `FuzzySearch`(名+作者)有效 → 社区走关键词。
+- 社区响应 = `CompshareImageGroup[].{ImageName, Data[].{CompShareImageId, SupportedGpuTypes}}`;**无 `Data[]` 时镜像 ID 解析为空**,create 步骤须 fail-loud(已加 guard)。
 - 实例:`UHostSet[].{UHostId, State, GpuType, SshLoginCommand, Password, IPSet[]}`;`Memory` 单位 MB;`CreateCompShareInstance` 返回 `UHostIds []`。
 
 ## Pitfalls

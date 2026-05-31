@@ -297,9 +297,14 @@ func stepGetPrice() Step {
 				"Memory":     mem,
 				"ChargeType": userPriceChargeType(paramStr(wfCtx.Params, "ChargeType", "Dynamic")),
 			}
-			// Community images may be paid; include CompShareImageId for accurate pricing
+			// Community images may be paid; include CompShareImageId for accurate pricing.
+			// Prefer a threaded id (deploy_model arm) so price reflects the exact image
+			// the saga will create, not an independently re-resolved one.
 			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
-				imageId := pickFirstCommunityImageId(wfCtx.Result("查询镜像"))
+				imageId := paramStr(wfCtx.Params, "CompShareImageId", "")
+				if imageId == "" {
+					imageId = pickFirstCommunityImageId(wfCtx.Result("查询镜像"))
+				}
 				if imageId != "" {
 					args["CompShareImageId"] = imageId
 				}
@@ -424,15 +429,30 @@ func paramNum(params map[string]any, key string, defaultVal float64) float64 {
 }
 
 // pickImageId dispatches to the correct picker based on ImageSource.
+//
+// A caller may THREAD an already-resolved CompShareImageId in params (the
+// deploy_model arm does, so the saga creates exactly the image the matcher chose +
+// sized the GPU for, instead of re-resolving independently). CLI/ReAct callers do
+// NOT set it, so their resolution is byte-unchanged.
 func pickImageId(params map[string]any, result map[string]any) string {
+	if id := paramStr(params, "CompShareImageId", ""); id != "" {
+		return id
+	}
 	if paramStr(params, "ImageSource", "platform") == "community" {
 		return pickFirstCommunityImageId(result)
 	}
 	return pickPlatformImageId(params, result)
 }
 
-// pickImageName dispatches to the correct picker based on ImageSource.
+// pickImageName dispatches to the correct picker based on ImageSource. When an
+// image id was threaded (deploy_model arm), the threaded ImageName is the display
+// name of that exact image — use it so the confirm shows what actually gets built.
 func pickImageName(params map[string]any, result map[string]any) string {
+	if paramStr(params, "CompShareImageId", "") != "" {
+		if name := paramStr(params, "ImageName", ""); name != "" {
+			return name
+		}
+	}
 	if paramStr(params, "ImageSource", "platform") == "community" {
 		return pickFirstCommunityImageName(result)
 	}

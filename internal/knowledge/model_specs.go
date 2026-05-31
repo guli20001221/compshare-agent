@@ -138,6 +138,119 @@ func RecommendGPUType(modelName, quantization, scene string) (gpuType, note stri
 	return "4090", "未能识别模型参数量或场景,默认推荐 4090(24GB)"
 }
 
+// RecommendGPUTypeWithin is RecommendGPUType constrained to an image's declared
+// SupportedGpuTypes (B8.3 M2). The upstream DescribeCompShareImages list response
+// carries SupportedGpuTypes as the platform's recommended cards for that image,
+// in the SAME bare form as the gpuSpecs keys ("4090"/"V100S"/"A100"; verified by
+// live recon 2026-05-31). Policy:
+//   - allowed empty (image declares none, e.g. Ollama/SGLang) → identical to
+//     RecommendGPUType: no constraint to apply.
+//   - unconstrained pick already supported → keep it (the common case; most images
+//     support all cards).
+//   - otherwise re-pick within the supported set: for a sized model, the smallest
+//     supported card whose VRAM ≥ requirement (still fits). When NO supported card
+//     meets the requirement, KEEP the unconstrained (correctly sized) pick and only
+//     warn — SupportedGpuTypes is a recommendation, not a hard cap, and creating a
+//     too-small instance is worse than deviating from the suggested list.
+//   - scene-based (no model size): prefer a scene-recommended supported card, else
+//     the most capable supported card.
+//
+// It always returns a non-empty GpuType. Pure / deterministic.
+func RecommendGPUTypeWithin(modelName, quantization, scene string, allowed []string) (gpuType, note string) {
+	base, baseNote := RecommendGPUType(modelName, quantization, scene)
+	allowedSet := normalizeAllowedGPUs(allowed)
+	if len(allowedSet) == 0 || allowedSet[base] {
+		return base, baseNote
+	}
+
+	// Unconstrained pick is not in the image's supported list — re-pick within it.
+	if paramsB, ok := resolveParamCountB(modelName); ok {
+		quant := strings.ToLower(strings.TrimSpace(quantization))
+		bpp, has := bytesPerParam[quant]
+		if !has {
+			bpp = bytesPerParam["fp16"]
+		}
+		required := int(math.Ceil(paramsB * bpp * vramBufferFactor))
+		if key, spec, found := smallestAllowedFitting(allowedSet, required); found {
+			return key, fmt.Sprintf("%s 约需 %dGB 显存；该镜像支持机型 %v，据此选支持的 %s(%dGB)（原推荐 %s）",
+				modelName, required, sortedAllowedGPUs(allowedSet), spec.Name, spec.VRAM, base)
+		}
+		// No supported card fits — keep the correctly-sized pick, just inform.
+		return base, fmt.Sprintf("%s；注意该镜像声明支持的机型 %v 可能不满足该模型显存需求，已按显存需求保留 %s",
+			baseNote, sortedAllowedGPUs(allowedSet), base)
+	}
+
+	// Scene-based (no model size): prefer a scene-recommended supported card.
+	rec := GetGPURecommendation(scene, false)
+	if recs, ok := rec["recommendations"].([]GPURec); ok {
+		for _, r := range recs {
+			if allowedSet[r.GPUType] {
+				return r.GPUType, fmt.Sprintf("按场景在镜像支持机型 %v 中选 %s(%dGB)（原推荐 %s）",
+					sortedAllowedGPUs(allowedSet), gpuSpecs[r.GPUType].Name, gpuSpecs[r.GPUType].VRAM, base)
+			}
+		}
+	}
+	// No scene overlap — pick the most capable supported card (highest FP16).
+	if key, spec, found := mostCapableAllowed(allowedSet); found {
+		return key, fmt.Sprintf("镜像支持机型 %v 中选算力最高的 %s(%dGB)（原推荐 %s）",
+			sortedAllowedGPUs(allowedSet), spec.Name, spec.VRAM, base)
+	}
+	return base, baseNote
+}
+
+// normalizeAllowedGPUs dedups the allowed list and keeps only entries that are
+// known gpuSpecs keys (the live SupportedGpuTypes can contain duplicates and, in
+// principle, keys we don't model — both are dropped so callers see a clean set).
+func normalizeAllowedGPUs(allowed []string) map[string]bool {
+	set := make(map[string]bool, len(allowed))
+	for _, g := range allowed {
+		g = strings.TrimSpace(g)
+		if _, known := gpuSpecs[g]; known {
+			set[g] = true
+		}
+	}
+	return set
+}
+
+func sortedAllowedGPUs(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// smallestAllowedFitting returns the supported card with the least VRAM that still
+// meets vramRequired (ties broken by higher FP16, then lexicographically smaller
+// key for determinism).
+func smallestAllowedFitting(set map[string]bool, vramRequired int) (key string, spec GPUSpec, found bool) {
+	keys := sortedAllowedGPUs(set)
+	for _, k := range keys {
+		s := gpuSpecs[k]
+		if s.VRAM < vramRequired {
+			continue
+		}
+		if !found || s.VRAM < spec.VRAM || (s.VRAM == spec.VRAM && s.FP16 > spec.FP16) {
+			key, spec, found = k, s, true
+		}
+	}
+	return key, spec, found
+}
+
+// mostCapableAllowed returns the supported card with the highest FP16 (ties broken
+// by higher VRAM, then lexicographically smaller key).
+func mostCapableAllowed(set map[string]bool) (key string, spec GPUSpec, found bool) {
+	keys := sortedAllowedGPUs(set)
+	for _, k := range keys {
+		s := gpuSpecs[k]
+		if !found || s.FP16 > spec.FP16 || (s.FP16 == spec.FP16 && s.VRAM > spec.VRAM) {
+			key, spec, found = k, s, true
+		}
+	}
+	return key, spec, found
+}
+
 // resolveParamCountB derives a model's parameter count (billions) from its name,
 // preferring the canonical table for count-less / MoE names, then falling back
 // to the last "<n>b" token in the name (last wins so "qwen3-32b" → 32, not 3).
