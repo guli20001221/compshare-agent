@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	openai "github.com/sashabaranov/go-openai"
 
@@ -56,6 +58,11 @@ var (
 // (region cn-wlcb's response includes the Shanghai cn-sh2-02 zone too), and a card
 // offered only in another zone must not be recommended for a cn-wlcb-01 create.
 const deployCreateZone = "cn-wlcb-01"
+
+// deployReadmeExcerptRunes caps the community-author Readme excerpt surfaced in
+// the deploy reply. Live Readmes run ~1-2K runes of markdown+HTML; a short
+// excerpt + a pointer to the console image-detail page keeps the reply readable.
+const deployReadmeExcerptRunes = 400
 
 // deployPlan is the resolved deploy specification the matcher produces and the
 // saga consumes. ImageSource/ImageName/GpuType are CreateInstanceDef params.
@@ -142,7 +149,13 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchRes
 		state = stringFromHost(host, "State")
 	}
 
-	return e.deployReply(result, dispatch.latency, buildDeployReply(plan, uHostId, host, state))
+	// (5) Fetch the chosen image's usage guidance (which apps on which ports +
+	// the community author's Readme) so the reply can tell the user HOW to use
+	// the instance — an SSH command alone doesn't say "ComfyUI is on :8188".
+	// Read-only, success-path only; degrades to no-guidance on any error.
+	usage := e.fetchImageUsage(ctx, plan)
+
+	return e.deployReply(result, dispatch.latency, buildDeployReply(plan, uHostId, host, state, usage))
 }
 
 // deployReply emits the planner trace and appends the assistant message, then
@@ -468,9 +481,11 @@ func captureStepResult(def *workflow.Definition, stepName string, capture func(m
 }
 
 // buildDeployReply renders the deterministic deploy result. It NEVER echoes the
-// instance Password (a base64 secret on the describe response); SshLoginCommand
-// (which embeds the IP + port) is the access info we surface.
-func buildDeployReply(plan deployPlan, uHostId string, host map[string]any, state string) string {
+// instance Password / FileBrowserPassword (base64 secrets on the describe
+// response); SshLoginCommand (which embeds the IP + port) is the SSH access info
+// we surface. The usage block (访问地址 + 使用说明) tells the user HOW to use what
+// was deployed — an SSH command alone doesn't say "ComfyUI is on :8188".
+func buildDeployReply(plan deployPlan, uHostId string, host map[string]any, state string, usage imageUsage) string {
 	var b strings.Builder
 	switch {
 	case state == "Running":
@@ -496,6 +511,9 @@ func buildDeployReply(plan deployPlan, uHostId string, host map[string]any, stat
 	if ssh := stringFromHost(host, "SshLoginCommand"); ssh != "" {
 		b.WriteString(fmt.Sprintf("- SSH 登录：%s\n", ssh))
 	}
+
+	writeUsageGuidance(&b, host, usage)
+
 	if state != "Running" && !isTerminalFailState(state) {
 		b.WriteString("\n你可以稍后用「查询我的实例」查看最新状态和登录信息。\n")
 	}
@@ -503,6 +521,47 @@ func buildDeployReply(plan deployPlan, uHostId string, host map[string]any, stat
 		b.WriteString("\n（选型说明：" + plan.MatchNote + "）")
 	}
 	return b.String()
+}
+
+// writeUsageGuidance appends the "how to use it" section: the app→endpoint map
+// (constructed from the image's SoftwarePorts + the running instance's public IP,
+// NOT from the instance's Softwares URLs — those can embed a Jupyter ?token=,
+// which is a secret here per DescribeCompShareJupyterToken), the auto-start hint,
+// and a rune-sanitized excerpt of the (untrusted) community author's Readme. Each
+// piece is emitted only when its data is present, so a base OS image adds nothing.
+func writeUsageGuidance(b *strings.Builder, host map[string]any, usage imageUsage) {
+	ip := hostPublicIP(host)
+	hasJupyter := false
+	if len(usage.ports) > 0 {
+		b.WriteString("- 访问地址：\n")
+		for _, p := range usage.ports {
+			if strings.Contains(strings.ToLower(p.name), "jupyter") {
+				hasJupyter = true
+			}
+			switch {
+			case ip != "":
+				b.WriteString(fmt.Sprintf("    · %s：http://%s:%d\n", p.name, ip, p.port))
+			default:
+				b.WriteString(fmt.Sprintf("    · %s：端口 %d（实例就绪后用 http://<公网IP>:%d 访问）\n", p.name, p.port, p.port))
+			}
+		}
+		if hasJupyter {
+			b.WriteString("    （JupyterLab 等需要访问令牌的服务，令牌请在控制台获取，不要在此处明文传播。）\n")
+		}
+	}
+	// Extra open TCP ports not already covered by an app mapping (e.g. vLLM's
+	// OpenAI-compatible API on :8000, SGLang on :30000 — the real service ports).
+	if extra := extraFirewallPorts(usage); len(extra) > 0 {
+		b.WriteString(fmt.Sprintf("- 额外开放端口：%s（应用 API/服务端口，可用 http://<公网IP>:<端口> 访问）\n", joinInts(extra)))
+	}
+	if usage.autoStart {
+		b.WriteString("- 镜像服务已配置自启动，实例进入 Running 后稍候即可直接访问上面的地址。\n")
+	}
+	if ex := plainTextExcerpt(usage.readme, deployReadmeExcerptRunes); ex != "" {
+		b.WriteString("\n📖 使用说明（社区镜像作者提供，节选，请自行甄别）：\n")
+		b.WriteString(ex)
+		b.WriteString("\n完整使用说明见控制台「镜像详情」页。\n")
+	}
 }
 
 // deployStopReply renders a saga that stopped before success (capacity / price /
@@ -744,4 +803,293 @@ func truncateRunes(s string, n int) string {
 		return string(r)
 	}
 	return string(r[:n]) + "…"
+}
+
+// ── post-create usage guidance (B8.5: tell the user HOW to use the instance) ──
+
+// imageUsage is the chosen image's usage guidance, fetched read-only AFTER a
+// successful create. ports = app→port (the access endpoints); firewall = extra
+// open TCP ports; autoStart = services come up on their own; readme = the
+// community author's rich-text guide (platform Readme is always empty — verified
+// 2026-05-31, so only community populates it).
+type imageUsage struct {
+	ports     []softwarePort
+	firewall  []int
+	autoStart bool
+	readme    string
+}
+
+// softwarePort is one app↔port mapping from an image's SoftwarePorts.
+type softwarePort struct {
+	name string
+	port int
+}
+
+// fetchImageUsage reads the usage guidance for the deployed image, keyed by the
+// resolved CompShareImageId so it describes EXACTLY the created image. It is
+// source-aware (community carries Readme, ExcludeReadme MUST be off here; the
+// matcher's shortlist query sets ExcludeReadme=true for token thrift, but this
+// post-create read wants the Readme). Best-effort: empty id or any read error
+// yields an empty imageUsage and the reply simply omits the usage block.
+func (e *Engine) fetchImageUsage(ctx context.Context, plan deployPlan) imageUsage {
+	if plan.ImageID == "" {
+		return imageUsage{}
+	}
+	if plan.ImageSource == "community" {
+		res := e.querySafeRead(ctx, "DescribeCommunityImages", map[string]any{"CompShareImageId": plan.ImageID})
+		return communityImageUsage(res, plan.ImageID)
+	}
+	res := e.querySafeRead(ctx, "DescribeCompShareImages", map[string]any{"CompShareImageId": plan.ImageID})
+	return platformImageUsage(res, plan.ImageID)
+}
+
+// platformImageUsage extracts usage from a DescribeCompShareImages response,
+// preferring the entry whose CompShareImageId matches (falling back to the first).
+func platformImageUsage(result map[string]any, imageID string) imageUsage {
+	if result == nil {
+		return imageUsage{}
+	}
+	set, _ := result["ImageSet"].([]any)
+	m := pickByImageID(set, imageID)
+	return imageUsageFromImage(m)
+}
+
+// communityImageUsage extracts usage from a DescribeCommunityImages response by
+// scanning CompshareImageGroup[].Data[] for the matching CompShareImageId.
+func communityImageUsage(result map[string]any, imageID string) imageUsage {
+	if result == nil {
+		return imageUsage{}
+	}
+	groups, _ := result["CompshareImageGroup"].([]any)
+	for _, g := range groups {
+		gm, _ := g.(map[string]any)
+		if gm == nil {
+			continue
+		}
+		data, _ := gm["Data"].([]any)
+		if m := pickByImageID(data, imageID); m != nil {
+			return imageUsageFromImage(m)
+		}
+	}
+	// Fall back to the first version of the first group (keyed query returns one
+	// group; if the id didn't line up, the first entry is still the right image).
+	for _, g := range groups {
+		gm, _ := g.(map[string]any)
+		if gm == nil {
+			continue
+		}
+		if data, _ := gm["Data"].([]any); len(data) > 0 {
+			if m, _ := data[0].(map[string]any); m != nil {
+				return imageUsageFromImage(m)
+			}
+		}
+	}
+	return imageUsage{}
+}
+
+// pickByImageID returns the map in items whose CompShareImageId == imageID, or
+// the first map when none matches (imageID may be ""), or nil when items is empty.
+func pickByImageID(items []any, imageID string) map[string]any {
+	var first map[string]any
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if m == nil {
+			continue
+		}
+		if first == nil {
+			first = m
+		}
+		if id, _ := m["CompShareImageId"].(string); imageID != "" && id == imageID {
+			return m
+		}
+	}
+	return first
+}
+
+// imageUsageFromImage projects one image map (CompShareImage shape) into imageUsage.
+func imageUsageFromImage(m map[string]any) imageUsage {
+	if m == nil {
+		return imageUsage{}
+	}
+	auto, _ := m["AutoStart"].(bool)
+	readme, _ := m["Readme"].(string)
+	return imageUsage{
+		ports:     parseSoftwarePorts(m["SoftwarePorts"]),
+		firewall:  parseFirewallPorts(m["FirewallPorts"]),
+		autoStart: auto,
+		readme:    readme,
+	}
+}
+
+// parseSoftwarePorts converts SoftwarePorts ([]{Software,Port}) to []softwarePort,
+// skipping entries without a usable port. Port arrives as a JSON float64.
+func parseSoftwarePorts(v any) []softwarePort {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	var out []softwarePort
+	for _, it := range arr {
+		m, _ := it.(map[string]any)
+		if m == nil {
+			continue
+		}
+		port := intFromAny(m["Port"])
+		if port <= 0 {
+			continue
+		}
+		name, _ := m["Software"].(string)
+		if name == "" {
+			name = "服务"
+		}
+		out = append(out, softwarePort{name: name, port: port})
+	}
+	return out
+}
+
+// parseFirewallPorts converts FirewallPorts ([]number) to []int.
+func parseFirewallPorts(v any) []int {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	var out []int
+	for _, it := range arr {
+		if p := intFromAny(it); p > 0 {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// intFromAny coerces a JSON-decoded number (float64) or int to int; 0 otherwise.
+func intFromAny(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	}
+	return 0
+}
+
+// extraFirewallPorts returns the firewall ports not already listed as an app
+// port (those are shown under 访问地址), deduped and order-preserving.
+func extraFirewallPorts(usage imageUsage) []int {
+	seen := make(map[int]bool, len(usage.ports))
+	for _, p := range usage.ports {
+		seen[p.port] = true
+	}
+	var out []int
+	for _, fp := range usage.firewall {
+		if seen[fp] {
+			continue
+		}
+		seen[fp] = true
+		out = append(out, fp)
+	}
+	return out
+}
+
+// joinInts renders ints as a comma-separated string.
+func joinInts(xs []int) string {
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		parts[i] = fmt.Sprintf("%d", x)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// hostPublicIP returns the instance's public-facing IP from UHostSet[].IPSet,
+// preferring a non-Private entry with the highest Weight (the current 出口IP).
+// Falls back to any non-empty IP. Empty when none is assigned yet (provisioning).
+func hostPublicIP(host map[string]any) string {
+	if host == nil {
+		return ""
+	}
+	ips, _ := host["IPSet"].([]any)
+	best, bestWeight, fallback := "", -1, ""
+	for _, it := range ips {
+		m, _ := it.(map[string]any)
+		if m == nil {
+			continue
+		}
+		ip, _ := m["IP"].(string)
+		if ip == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = ip
+		}
+		if t, _ := m["Type"].(string); t == "Private" {
+			continue
+		}
+		w := intFromAny(m["Weight"])
+		if w > bestWeight {
+			best, bestWeight = ip, w
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return fallback
+}
+
+var (
+	mdImageRe      = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`) // markdown image: ![alt](url)
+	htmlTagRe      = regexp.MustCompile(`(?s)<[^>]+>`)          // any HTML tag incl. <iframe ...>
+	multiNewlineRe = regexp.MustCompile(`\n{3,}`)
+	multiSpaceRe   = regexp.MustCompile(` {2,}`)
+)
+
+// plainTextExcerpt turns a markdown+HTML Readme into a compact plain-text excerpt
+// for the CLI/chat reply: drop image embeds + HTML tags (iframes/imgs are terminal
+// noise), then rune-sanitize and collapse whitespace before truncating to maxRunes.
+//
+// The Readme is UNTRUSTED community-author content shown in a terminal, so the
+// rune pass drops control chars (ANSI ESC sequences, bell, VT/FF/CR) and Unicode
+// format/bidi chars (U+202E & friends can spoof link direction; zero-width chars
+// hide text) — only '\n' survives as structure — and folds every other Unicode
+// whitespace (tab, NBSP, …) to a plain space. It does NOT redact secrets: the
+// Readme is the author's own public content, and OUR secrets (Password /
+// FileBrowserPassword / Jupyter token) never flow into it. The excerpt IS placed
+// in the reply, which becomes an assistant turn in history, so a later-turn LLM
+// can see it — acceptable because it is public content, capped, attributed
+// ("请自行甄别"), and not used for routing; the rune pass + cap bound the blast
+// radius. Returns "" for empty/whitespace-only input.
+func plainTextExcerpt(s string, maxRunes int) string {
+	if strings.TrimSpace(s) == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = mdImageRe.ReplaceAllString(s, "")
+	s = htmlTagRe.ReplaceAllString(s, "")
+
+	var clean strings.Builder
+	clean.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n':
+			clean.WriteRune('\n')
+		case unicode.IsControl(r) || unicode.In(r, unicode.Cf):
+			// drop: ESC/bell/VT/FF/CR + bidi overrides/isolates + zero-width (Cf)
+		case unicode.IsSpace(r):
+			clean.WriteRune(' ')
+		default:
+			clean.WriteRune(r)
+		}
+	}
+	s = clean.String()
+
+	// Collapse intra-line space runs + trim line ends, then collapse blank runs.
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		lines[i] = strings.TrimRight(multiSpaceRe.ReplaceAllString(ln, " "), " ")
+	}
+	s = strings.Join(lines, "\n")
+	s = multiNewlineRe.ReplaceAllString(s, "\n\n")
+	s = strings.TrimSpace(s)
+	return truncateRunes(s, maxRunes)
 }
