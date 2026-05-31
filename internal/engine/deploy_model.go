@@ -186,7 +186,7 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg string, onStep fu
 
 	// (b) Query both catalogs: platform whole (small + broken Name filter),
 	// community keyword-filtered (large + working FuzzySearch).
-	platform := e.queryImageCandidates(ctx, "DescribeCompShareImages", map[string]any{"Limit": 100})
+	platform := e.querySafeRead(ctx, "DescribeCompShareImages", map[string]any{"Limit": 100})
 	community := e.queryCommunityCandidates(ctx, search)
 	platformNames := platformImageNames(platform)
 	communityNames := communityGroupNames(community)
@@ -241,10 +241,17 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg string, onStep fu
 
 	// (d) Resolve the chosen image's id (threaded to the saga so it creates EXACTLY
 	// this image, not a re-resolved one) and size the GPU constrained to that same
-	// image's recommended cards (M2).
+	// image's recommended cards (M2) — against the LIVE available-card set, so a
+	// stale static table can't recommend a retired/sold-out card or miss a new one.
+	// The static gpuSpecs table is only the offline fallback (empty live set).
 	imageID, supported := chosenImage(plan, platform, community)
 	plan.ImageID = imageID
-	gpuType, gpuNote := knowledge.RecommendGPUTypeWithin(plan.ModelName, decision.Quantization, userMsg, supported)
+	// DescribeAvailableCompShareInstanceTypes takes no Zone request param (upstream
+	// has only MachineTypes/InstanceType); empty args returns the full live catalog,
+	// which on today's single-zone platform is what the saga creates in. (If the
+	// platform ever goes multi-zone, filter the response by AvailableType.Zone here.)
+	availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
+	gpuType, gpuNote := knowledge.RecommendGPUTypeLive(plan.ModelName, decision.Quantization, userMsg, supported, knowledge.ParseAvailableGPUs(availResult))
 	plan.GpuType = gpuType
 	plan.MatchNote = gpuNote
 	if groundNote != "" {
@@ -281,13 +288,13 @@ func (e *Engine) extractDeploySearch(ctx context.Context, client LLMClient, user
 // nothing, it falls back to an unfiltered sample so the matcher still sees options.
 func (e *Engine) queryCommunityCandidates(ctx context.Context, search string) map[string]any {
 	if search != "" {
-		res := e.queryImageCandidates(ctx, "DescribeCommunityImages",
+		res := e.querySafeRead(ctx, "DescribeCommunityImages",
 			map[string]any{"Limit": 30, "ExcludeReadme": true, "FuzzySearch": search})
 		if len(communityGroupNames(res)) > 0 {
 			return res
 		}
 	}
-	return e.queryImageCandidates(ctx, "DescribeCommunityImages",
+	return e.querySafeRead(ctx, "DescribeCommunityImages",
 		map[string]any{"Limit": 30, "ExcludeReadme": true})
 }
 
@@ -360,11 +367,11 @@ func stringSliceFromAny(v any) []string {
 	return out
 }
 
-// queryImageCandidates runs a read-only image-listing tool through the safe
-// executor (OriginWorkflowInternal = no per-call confirm / registry churn) and
-// returns the raw result map, or nil on error (matching degrades gracefully —
-// the matcher still has the other source + the user message).
-func (e *Engine) queryImageCandidates(ctx context.Context, action string, args map[string]any) map[string]any {
+// querySafeRead runs a read-only tool through the safe executor
+// (OriginWorkflowInternal = no per-call confirm / registry churn) and returns the
+// raw result map, or nil on error (matching degrades gracefully — the matcher still
+// has the other source + the user message + the static-table GPU fallback).
+func (e *Engine) querySafeRead(ctx context.Context, action string, args map[string]any) map[string]any {
 	res, err := e.executeSafeTool(ctx, tools.SafeToolRequest{
 		Action: action,
 		Args:   args,

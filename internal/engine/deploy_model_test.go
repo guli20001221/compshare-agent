@@ -266,6 +266,46 @@ func TestTryDeployModel_MatcherJSONParseFailure(t *testing.T) {
 	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"))
 }
 
+// TestMatchDeployImage_UsesLiveGPUSet proves GPU sizing is API-driven: the matcher
+// queries DescribeAvailableCompShareInstanceTypes and sizes against the LIVE set, so
+// a card the static gpuSpecs table has never heard of ("B200") is selectable. A
+// 16B model (~39GB) sizes to the only fitting live card, B200 (48GB) — impossible
+// via the static table, proving the live path (not the static fallback) was taken.
+func TestMatchDeployImage_UsesLiveGPUSet(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-pt", "Name": "PyTorch 2.9.1 cuda128",
+					"Softwares": map[string]any{"Framework": "PyTorch"}},
+			}}, nil
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			gmem := func(v int) map[string]any { return map[string]any{"Value": float64(v)} }
+			perf := func(v int) map[string]any { return map[string]any{"Value": float64(v)} }
+			sizes := []any{map[string]any{"Gpu": float64(1)}, map[string]any{"Gpu": float64(8)}}
+			return map[string]any{"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Status": "Normal", "GraphicsMemory": gmem(24), "Performance": perf(83), "MachineSizes": sizes},
+				map[string]any{"Name": "B200", "Status": "Normal", "GraphicsMemory": gmem(48), "Performance": perf(130), "MachineSizes": sizes},
+				map[string]any{"Name": "A100", "Status": "Normal", "GraphicsMemory": gmem(80), "Performance": perf(100), "MachineSizes": sizes},
+			}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	client := &mockLLM{responses: []llm.ChatResponse{
+		{Content: deploySearchJSON},
+		{Content: `{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-16B","quantization":"fp16"}`},
+	}}
+	eng := NewWithDeps(client, exec, func(string, map[string]any) bool { return true })
+
+	plan, err := eng.matchDeployImage(context.Background(), "部署 Qwen2.5-16B", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "B200", plan.GpuType, "16B (~39GB) must size to the live 48GB card B200, which the static table does not model")
+}
+
 // TestMatchDeployImage_PrefersAgentClient proves the TierAgent routing split
 // (ADR-002): when agentLLMClient is set, the matcher calls IT, not the fast
 // llmClient fallback. A regression that called the wrong tier would be caught here.
