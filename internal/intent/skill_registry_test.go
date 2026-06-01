@@ -22,11 +22,15 @@ func withSkillRegistrySource(t *testing.T, v bool, fn func()) {
 	fn()
 }
 
-// TestCapabilitySource_DefaultIsLegacy pins the zero-value default: without a
-// SetCapabilitySource call the legacy registry is the source (flag-off invariant).
-func TestCapabilitySource_DefaultIsLegacy(t *testing.T) {
+// TestCapabilitySource_ZeroValueIsLegacy pins the in-package zero-value: before
+// SetCapabilitySource runs at boot, useSkillRegistrySource is false so a missed
+// boot call degrades to the byte-identical legacy path. NOTE: this is NOT the
+// runtime default — that flipped to the skill registry in P3a-3 and lives in cmd's
+// useSkillRegistryFromEnv (cmd.TestUseSkillRegistryFromEnvAndRuntimeLine), which
+// always calls SetCapabilitySource at boot. This guards only the zero-value.
+func TestCapabilitySource_ZeroValueIsLegacy(t *testing.T) {
 	if CapabilitySourceIsSkillRegistry() {
-		t.Fatal("default capability source must be legacy (useSkillRegistrySource=false)")
+		t.Fatal("package zero-value capability source must be legacy (useSkillRegistrySource=false)")
 	}
 }
 
