@@ -29,19 +29,19 @@ provenance: human_authored
    - State 走 GPU not-detected 同套 branching(Stopped / Install / Install Fail / Starting / Stopping / Rebooting → 直接 conclude)
    - `State == "Running"` 后还要检查两件事:
      - `OsType == "Windows"` → **Windows 实例不适用 SSH**,引导用户用 RDP / mstsc
-     - `SshLoginCommand` 字段为空 → 云侧未配置 SSH 入口,引导用户控制台核对登录入口和公网 IP;若用户有 JupyterLab 入口,**user runs in JupyterLab terminal**(根本原因:SSH 连不上时 agent SSH sandbox 本身也接不进来,见 ADR-006:208 "不需要 SSH 命令的 skill" 段;此外 `ss -lntp` 也不在 ADR-006 V1 whitelist):`systemctl status ssh --no-pager` + `ss -lntp \| grep ':22'`
+     - `SshLoginCommand` 字段为空 → 云侧未配置 SSH 入口,引导用户控制台核对登录入口和公网 IP;若用户有 JupyterLab 入口,提示用户在 JupyterLab 终端只读运行(平台侧没有 shell 工具,**不要尝试自行调用 systemctl / ss**;根本原因:SSH 连不上时 agent SSH sandbox 本身也接不进来,见 ADR-006:208 "不需要 SSH 命令的 skill" 段;`ss -lntp` 也不在 ADR-006 V1 whitelist):`systemctl status ssh --no-pager` + `ss -lntp \| grep ':22'`
      - 上述都通过 → 进步骤 2
 
 2. **查资源使用**(call `GetCompShareInstanceMonitor` with UHostId)
    - 看 `uhost_cpu_used` + `cloudwatch_memory_usage` 最新值
    - 阈值 **90%**(不是 95%,90-94% 区间已经会导致 SSH 超时,memory 教训)
    - CPU 或 Memory ≥ 90% → 资源耗尽,引导用户控制台重启实例释放资源,或建议升配
-   - CPU 跟 Memory 监控均无数据 → 输出"无法确认资源状态"(不能 fall through 到 healthy),引导用户 JupyterLab 终端 `free -h` / `uptime` / `top -b -n 1 \| head`
+   - CPU 跟 Memory 监控均无数据 → 输出"无法确认资源状态"(不能 fall through 到 healthy),提示用户在 JupyterLab 终端只读运行(平台侧没有 shell 工具,**不要尝试自行调用**)`free -h` / `uptime` / `top -b -n 1 \| head`
    - 监控数据完整但都正常 → fallback verdict
 
 ## Pitfalls
 
-- **SSH 入口来源**:`SshLoginCommand` 是 `DescribeCompShareInstance` 的字段,**不是** `DescribeCompShareSoftwarePort`(后者只返回镜像应用端口,不返回 SSH);memory `pr2_5_联调_2026_05_28` line 470 错路由教训
+- **SSH 入口来源**:`SshLoginCommand` 是 `DescribeCompShareInstance` 的字段,**不是** `DescribeCompShareSoftwarePort`(后者只返回镜像应用端口,不返回 SSH);**本 skill 不调用 `DescribeCompShareSoftwarePort`(不在本 skill 工具集),不要尝试自行调用**;memory `pr2_5_联调_2026_05_28` line 470 错路由教训
 - **Windows 实例**:必须先检查 `OsType`,Linux SSH 路径不适用 Windows
 - **阈值 90% 不是 95%**:90-94% 已经能导致 SSH timeout(原 Chain 注释明确记录),不能放松到 95%
 - **监控数据空 ≠ healthy**:memory `pr2_5_联调_2026_05_28` 0%/healthy 教训

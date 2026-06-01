@@ -43,9 +43,9 @@ provenance: human_authored
    - 其他 Running 状态 → 计数即可,不展开
 3. 总结:"X 个实例初始化失败、Y 个初始化中、Z 个启动中、其余正常"
 
-**辅助:可选查 kernel msg**(agent runs via SSH sandbox: `dmesg --since='10 minutes ago'`,仅当用户指定 UHostId 且实例 Running)
-- dmesg 含 `Out of memory:` / `Killed process` → 内存爆,引导用户升配或检查应用占用
-- dmesg 含 `EXT4-fs error` / `I/O error` → 磁盘问题,引导联系客服
+**辅助:可选引导用户自查 kernel 日志**(平台侧没有 dmesg 工具,**不要尝试自行调用 dmesg**;仅当用户指定 UHostId 且实例 Running 时,提示用户在实例内 JupyterLab 终端只读运行 `dmesg --since='10 minutes ago'` 并回报)
+- 用户回报含 `Out of memory:` / `Killed process` → 内存爆,引导用户升配或检查应用占用
+- 用户回报含 `EXT4-fs error` / `I/O error` → 磁盘问题,引导联系客服
 
 ## Pitfalls
 

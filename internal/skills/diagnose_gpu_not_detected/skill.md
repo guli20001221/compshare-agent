@@ -34,9 +34,9 @@ provenance: human_authored
    - `State == "Running"` 且 `GPU > 0` → 进步骤 2
    - 其他 state → 异常,引导控制台检查
 
-2. **查近期 kernel msg**(agent runs via SSH sandbox: `dmesg --since='5 minutes ago'`)
-   - 若 dmesg 输出含 `NVRM:` / `nvidia` 错误 → 内核日志已记录驱动问题,引导用户提供完整 dmesg 给客服
-   - 若 dmesg 无 nvidia 相关错误 → 进步骤 3
+2. **(可选,引导用户自查 kernel 日志)** —— 平台侧没有 dmesg 工具,**不要尝试自行调用 dmesg**;若步骤 1/3 未定位问题,提示用户在实例内(JupyterLab 终端)只读运行 `dmesg --since='5 minutes ago' | grep -i nvidia` 并回报结果
+   - 用户回报含 `NVRM:` / `nvidia` 错误 → 内核日志已记录驱动问题,引导用户提供完整 dmesg 给客服
+   - 用户回报无 nvidia 相关错误,或暂不自查 → 继续看步骤 3 的云侧监控
 
 3. **查 GPU 监控指标**(call `GetCompShareInstanceMonitor` with UHostId)
    - 看 `cloudwatch_gpu_util` + `cloudwatch_gpu_memory_usage` 最新值
