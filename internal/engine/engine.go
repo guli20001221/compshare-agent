@@ -3250,8 +3250,8 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	// safety net as the Go chain — running it earlier (as P2a did, when only the
 	// guard-free DiagnosePortOrFirewall was piloted) would let a piloted
 	// DiagnoseInitFailure bypass those guards. runDiagnosisSkill returns
-	// handled=false only when the skill can't load, so we degrade to the shipped
-	// chain rather than failing the turn.
+	// handled=false when the skill cannot load or cannot complete, so we degrade
+	// to the shipped chain rather than failing the turn.
 	if skillExecutorEnabled {
 		if skillName, piloted := pilotSkillForDiagnosis(action); piloted {
 			if reply, handled := e.runDiagnosisSkill(ctx, skillName, action, args, onStep); handled {
@@ -3349,9 +3349,10 @@ func pilotSkillForDiagnosis(action string) (string, bool) {
 
 // runDiagnosisSkill executes a piloted diagnosis skill through the body-driven
 // orchestrator loop: it loads the skill's Body() and lets the strong model drive
-// read-only tool calls over a private working-set. Returns (reply, true) when the
-// executor ran (success OR safe-fail); returns ("", false) only when the skill
-// cannot be loaded, so the caller falls back to the shipped Go chain.
+// read-only tool calls over a private working-set. Returns (reply, true) only
+// when the executor produced a final answer; returns ("", false) when the skill
+// cannot load or cannot complete, so the caller falls back to the shipped Go
+// chain.
 func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string, args map[string]any, onStep func(StepEvent)) (string, bool) {
 	skill, ok := findGeneratedSkill(skillName)
 	if !ok {
@@ -3395,9 +3396,10 @@ func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string
 		MaxRounds: 6,
 	})
 	if rerr != nil {
-		// Safe-fail: the loop never mutates and never falls through to ReAct.
+		// Safe fallback: the loop never mutates and never falls through to ReAct;
+		// the shipped read-only Go chain gets the turn instead.
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: rerr.Error()})
-		return finalReplyPrefix + "诊断没能完成，可以补充一下具体现象（哪个服务、什么报错）或稍后重试。", true
+		return "", false
 	}
 	return reply, true
 }

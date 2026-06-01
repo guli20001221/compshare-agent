@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,6 +66,47 @@ func TestExecuteDiagnosis_FlagOff_UsesGoChain(t *testing.T) {
 
 	assert.NotEmpty(t, reply)
 	assert.Equal(t, 0, mock.callIdx, "the Go chain path makes zero LLM calls — proves the flag-off branch")
+}
+
+func TestExecuteDiagnosis_FlagOn_SkillExecutorFailureFallsBackToGoChain(t *testing.T) {
+	prev := SkillExecutorEnabled()
+	SetSkillExecutorEnabled(true)
+	defer SetSkillExecutorEnabled(prev)
+
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":     {"UHostSet": []any{map[string]any{"UHostId": "u1", "State": "Running"}}},
+		"DescribeCompShareSoftwarePort": {"SoftwarePort": []any{map[string]any{"Software": "JupyterLab", "Port": float64(8888)}}},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: `not json`},
+		{Content: `still not json`},
+	}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.Init(context.Background())
+	exec.calls = nil
+
+	var events []StepEvent
+	reply := eng.executeDiagnosis(context.Background(), "DiagnosePortOrFirewall",
+		map[string]any{"UHostId": "u1", "Service": "JupyterLab"}, func(ev StepEvent) {
+			events = append(events, ev)
+		})
+
+	assert.Contains(t, reply, `"success":true`,
+		"skill executor unrecovered errors must fall back to the deterministic Go-chain result")
+	assert.Equal(t, []string{"DescribeCompShareInstance", "DescribeCompShareSoftwarePort"}, exec.calls,
+		"after the skill loop safe-fails, the shipped Go diagnosis chain must still run")
+	require.Equal(t, 2, mock.callIdx, "the body-driven loop should fail after its malformed retry budget")
+
+	var sawSkillExecutorError bool
+	for _, ev := range events {
+		if ev.Type == StepError &&
+			ev.Action == "DiagnosePortOrFirewall" &&
+			ev.Source == observability.ToolSourceDiagnosisInternal {
+			sawSkillExecutorError = true
+			assert.Contains(t, ev.Message, "skill executor: unrecovered")
+		}
+	}
+	assert.True(t, sawSkillExecutorError, "the failed skill loop must still be visible in trace events")
 }
 
 // TestPilotSkillForDiagnosis_MapsExactlyReadOnlyDiagnoseActions pins the P3b-1
