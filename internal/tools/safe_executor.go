@@ -57,14 +57,8 @@ type SafeToolResult struct {
 	RawResult   map[string]any
 	LLMResult   map[string]any
 	TraceResult map[string]any
-	Display     SafeDisplay
 	Attempts    int
 	Policy      ToolExecutionPolicy
-}
-
-type SafeDisplay struct {
-	Kind  string
-	Value string
 }
 
 type SafeToolExecutor struct {
@@ -226,7 +220,6 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 		RawResult:   guarded,
 		LLMResult:   redactForLLM(req.Action, policy, guarded),
 		TraceResult: redactForTrace(req.Action, policy, guarded),
-		Display:     extractDisplay(policy, guarded),
 		Attempts:    attempts,
 		Policy:      policy,
 	}, nil
@@ -494,17 +487,6 @@ func mapFromAny(v any) map[string]any {
 		return nil
 	}
 	return m
-}
-
-func extractDisplay(policy ToolExecutionPolicy, raw map[string]any) SafeDisplay {
-	if !policy.DualChannelDisplay || policy.Action != "DescribeCompShareJupyterToken" {
-		return SafeDisplay{}
-	}
-	token := sanitizer.ExtractJupyterToken(raw)
-	if token == "" {
-		return SafeDisplay{}
-	}
-	return SafeDisplay{Kind: "JupyterToken", Value: token}
 }
 
 func redactFieldByName(m map[string]any, field string) {

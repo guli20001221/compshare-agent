@@ -26,7 +26,7 @@ func (l Level) String() string {
 
 // ActionLevels maps every whitelisted Action to its security level.
 var ActionLevels = map[string]Level{
-	// ── L0: Read-only / Query (42) ──────────────────────────
+	// ── L0: Read-only / Query (41) ──────────────────────────
 	"DescribeCompShareInstance":               L0,
 	"DescribeCompShareImages":                 L0,
 	"DescribeCompShareCustomImages":           L0,
@@ -49,7 +49,6 @@ var ActionLevels = map[string]Level{
 	"DescribeCompShareImageShareAccounts":     L0,
 	"DescribeCompShareSoftwarePort":           L0,
 	"GetSoftwareUrl":                          L0,
-	"DescribeCompShareJupyterToken":           L0,
 	"CheckCompShareResizeAttachedDisk":        L0,
 	"CheckCompShareNetOptimizer":              L0,
 	"DescribeModelRepositoryModels":           L0,

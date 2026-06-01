@@ -504,7 +504,7 @@ func TestWriterAppendDoesNotLeakSecretsInTraceLine(t *testing.T) {
 		ToolCalls: []ToolCallTrace{{
 			ID:         "call-1",
 			TurnIndex:  1,
-			Action:     "DescribeCompShareJupyterToken",
+			Action:     "ResetCompShareInstancePassword",
 			Source:     ToolSourceMainReAct,
 			ArgsHash:   argsHash,
 			Status:     ToolStatusSuccess,

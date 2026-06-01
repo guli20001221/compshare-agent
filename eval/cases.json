@@ -393,16 +393,6 @@
     "tags": []
   },
   {
-    "id": "sq_11",
-    "category": "simple_query",
-    "input": "查一下 uhost-xxx 的 Jupyter Token",
-    "description": "获取JupyterToken",
-    "expected_intent": "simple_query",
-    "expected_tools": ["DescribeCompShareJupyterToken"],
-    "user_context": "您有 1 个实例（1 个运行中）\n- my-gpu (uhost-xxx): GPU=4090×1, 状态=运行中, 计费=Dynamic",
-    "tags": ["core"]
-  },
-  {
     "id": "sq_12",
     "category": "simple_query",
     "input": "4090折后价多少钱",

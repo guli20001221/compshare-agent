@@ -1471,52 +1471,6 @@ func TestScenario_SecurityBlock_L2(t *testing.T) {
 	assert.NotContains(t, exec.calls, "TerminateCompShareInstance")
 }
 
-// ── Scenario 39: Sanitize — JupyterToken ─────────────────────────────────
-
-func TestScenario_Sanitize_JupyterToken(t *testing.T) {
-	exec := &mockExecutor{
-		results: map[string]map[string]any{
-			"DescribeCompShareInstance": {
-				"UHostSet": []any{map[string]any{"UHostId": "uhost-jt1", "State": "Running", "Name": "test"}},
-			},
-			"DescribeCompShareJupyterToken": {
-				"DataSet": []any{map[string]any{"JupyterToken": "secret-jwt-token-12345"}},
-			},
-		},
-	}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{tc("DescribeCompShareJupyterToken", map[string]any{"UHostIds": []any{"uhost-jt1"}})}},
-		{Content: "已获取 Jupyter Token，请通过安全通道查看。"},
-	}}
-
-	var displayContent string
-	eng := NewWithDeps(mock, exec, nil)
-	eng.Init(context.Background())
-
-	reply, err := eng.Chat(context.Background(), "查一下jupyter token", func(e StepEvent) {
-		if e.Display != "" {
-			displayContent = e.Display
-		}
-	})
-	assert.NoError(t, err)
-
-	// LLM should NOT see the real token (sanitized in tool result fed back)
-	// The second LLM call receives the sanitized tool result
-	assert.True(t, len(mock.calls) >= 2, "should have at least 2 LLM calls")
-	lastReq := mock.calls[len(mock.calls)-1]
-	for _, msg := range lastReq.Messages {
-		if msg.Role == "tool" {
-			assert.NotContains(t, msg.Content, "secret-jwt-token-12345", "real token should be sanitized in LLM context")
-			assert.Contains(t, msg.Content, "已获取", "sanitized placeholder should be present")
-		}
-	}
-
-	// CLI Display should contain the real token
-	assert.Contains(t, displayContent, "secret-jwt-token-12345", "Display should show real token for CLI")
-
-	_ = reply
-}
-
 // ── Scenario 40: Sanitize — Password ─────────────────────────────────────
 
 func TestScenario_Sanitize_Password(t *testing.T) {

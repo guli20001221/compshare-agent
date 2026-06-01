@@ -45,7 +45,7 @@ func singleInstanceExecutor() *goldenExecutor {
 		}},
 		"DescribeCompShareImages":        {"ImageSet": []any{map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu 22.04 CUDA 12"}}},
 		"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true}}},
-		"GetCompShareInstanceUserPrice":      {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.58}}},
+		"GetCompShareInstanceUserPrice":  {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.58}}},
 		"CreateCompShareInstance":        {"UHostIds": []any{"uhost-new001"}},
 		"StopCompShareInstance":          {"RetCode": 0},
 		"StartCompShareInstance":         {"RetCode": 0},
@@ -56,7 +56,6 @@ func singleInstanceExecutor() *goldenExecutor {
 		"DeleteCompShareStopScheduler":   {"RetCode": 0},
 		"DescribeCompShareSoftwarePort":  {"SoftwarePort": []any{map[string]any{"Software": "JupyterLab", "Port": float64(8888)}, map[string]any{"Software": "SSH", "Port": float64(22)}}},
 		"GetCompShareInstanceMonitor":    {"Data": map[string]any{"List": []any{}}},
-		"DescribeCompShareJupyterToken":  {"DataSet": []any{map[string]any{"UHostId": "uhost-xxx", "JupyterToken": "eyJhbGciOiJIUzI1NiJ9.test-token"}}},
 	}}
 }
 
@@ -148,7 +147,7 @@ func multiInstanceExecutor() *goldenExecutor {
 		}},
 		"DescribeCompShareImages":        {"ImageSet": []any{map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu 22.04 CUDA 12"}}},
 		"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true}}},
-		"GetCompShareInstanceUserPrice":      {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.58}}},
+		"GetCompShareInstanceUserPrice":  {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.58}}},
 		"CreateCompShareInstance":        {"UHostIds": []any{"uhost-new001"}},
 		"StopCompShareInstance":          {"RetCode": 0},
 		"StartCompShareInstance":         {"RetCode": 0},
@@ -163,8 +162,7 @@ func multiInstanceExecutor() *goldenExecutor {
 				map[string]any{"Software": "SSH", "Port": float64(22)},
 			},
 		},
-		"GetCompShareInstanceMonitor":   {"Data": map[string]any{"List": []any{}}},
-		"DescribeCompShareJupyterToken": {"DataSet": []any{map[string]any{"UHostId": "uhost-2", "JupyterToken": "eyJhbGciOiJIUzI1NiJ9.test-token"}}},
+		"GetCompShareInstanceMonitor": {"Data": map[string]any{"List": []any{}}},
 	}}
 }
 
@@ -288,13 +286,6 @@ var engineGoldenCases = []goldenCase{
 		ExpectToolCalls: []string{"RebootInstanceWorkflow"},
 	},
 	{
-		ID:              "golden_05_jupyter_token",
-		Input:           "查一下jupyter token",
-		UserContext:     "您有 1 个实例（1 个运行中）\n- my-gpu (uhost-xxx): GPU=4090×1, 状态=运行中, 计费=Dynamic",
-		ExpectToolCalls: []string{"DescribeCompShareJupyterToken"},
-		ExpectDisplay:   true,
-	},
-	{
 		ID:              "golden_06_reset_password",
 		Input:           "帮我把 uhost-xxx 的密码重置为 NewPass123!",
 		UserContext:     "您有 1 个实例（1 个运行中）\n- my-gpu (uhost-xxx): GPU=4090×1, 状态=运行中, 计费=Dynamic",
@@ -336,13 +327,6 @@ var engineGoldenCases = []goldenCase{
 		ReplyContains:   []string{"控制台"},
 	},
 	{
-		ID:              "golden_12_sanitize_token",
-		Input:           "获取 jupyter token",
-		UserContext:     "您有 1 个实例（1 个运行中）\n- my-gpu (uhost-xxx): GPU=4090×1, 状态=运行中, 计费=Dynamic",
-		ExpectToolCalls: []string{"DescribeCompShareJupyterToken"},
-		ExpectDisplay:   true,
-	},
-	{
 		ID:               "golden_13_disambiguate_stop",
 		Executor:         multiInstanceExecutor(),
 		Input:            "关机吧",
@@ -372,12 +356,12 @@ var engineGoldenCases = []goldenCase{
 		// NOTE: "镜像费" keyword regression is locked in TestScenario_Billing_RunningAndStopped
 		// (scenario_test.go) which asserts directly on the diagnosis chain JSON.
 		// The engine golden test checks LLM reply which may rephrase, so we use broader keywords.
-		ID:              "golden_16_billing_diagnosis",
-		Executor:        billingExecutor(),
-		Input:           "为什么扣了这么多钱",
-		UserContext:     "您有 2 个实例（1 个运行中、1 个关机）\n- train-gpu (uhost-run): GPU=4090×1, 状态=运行中, 计费=Dynamic\n- idle-gpu (uhost-off): GPU=4090×1, 状态=关机, 计费=Dynamic",
-		ExpectToolCalls: []string{"DiagnoseBilling"},
-		ReplyContains:   []string{"费用", "关机", "磁盘"},
+		ID:               "golden_16_billing_diagnosis",
+		Executor:         billingExecutor(),
+		Input:            "为什么扣了这么多钱",
+		UserContext:      "您有 2 个实例（1 个运行中、1 个关机）\n- train-gpu (uhost-run): GPU=4090×1, 状态=运行中, 计费=Dynamic\n- idle-gpu (uhost-off): GPU=4090×1, 状态=关机, 计费=Dynamic",
+		ExpectToolCalls:  []string{"DiagnoseBilling"},
+		ReplyContains:    []string{"费用", "关机", "磁盘"},
 		ReplyNotContains: []string{"GetCompShareInstancePrice", "DescribeCompShareInstance"},
 	},
 	{
@@ -424,8 +408,8 @@ var engineGoldenCases = []goldenCase{
 
 	// ── Multi-turn golden cases ─────────────────────────────────────────
 	{
-		ID:       "multi_01_disambiguate_stop",
-		Executor: multiInstanceExecutor(),
+		ID:          "multi_01_disambiguate_stop",
+		Executor:    multiInstanceExecutor(),
 		UserContext: "您有 3 个实例（2 个运行中、1 个关机）\n- train-a (uhost-1): GPU=4090×1, 状态=运行中, 计费=Dynamic\n- train-b (uhost-2): GPU=A100×1, 状态=运行中, 计费=Dynamic\n- dev (uhost-3): GPU=3090×1, 状态=关机, 计费=Month",
 		Steps: []goldenStep{
 			{
@@ -443,8 +427,8 @@ var engineGoldenCases = []goldenCase{
 		},
 	},
 	{
-		ID:       "multi_02_scheduler_two_turn",
-		Executor: multiInstanceExecutor(),
+		ID:          "multi_02_scheduler_two_turn",
+		Executor:    multiInstanceExecutor(),
 		UserContext: "您有 2 个实例（2 个运行中）\n- train-a (uhost-1): GPU=4090×1, 状态=运行中, 计费=Dynamic\n- train-b (uhost-2): GPU=A100×1, 状态=运行中, 计费=Dynamic",
 		Steps: []goldenStep{
 			{
@@ -460,8 +444,8 @@ var engineGoldenCases = []goldenCase{
 		},
 	},
 	{
-		ID:       "multi_03_billing_followup",
-		Executor: billingExecutor(),
+		ID:          "multi_03_billing_followup",
+		Executor:    billingExecutor(),
 		UserContext: "您有 2 个实例（1 个运行中、1 个关机）\n- train-gpu (uhost-run): GPU=4090×1, 状态=运行中, 计费=Dynamic\n- idle-gpu (uhost-off): GPU=4090×1, 状态=关机, 计费=Dynamic",
 		Steps: []goldenStep{
 			{
@@ -477,8 +461,8 @@ var engineGoldenCases = []goldenCase{
 		},
 	},
 	{
-		ID:       "multi_04_diagnosis_supplement_id",
-		Executor: multiInstanceExecutor(),
+		ID:          "multi_04_diagnosis_supplement_id",
+		Executor:    multiInstanceExecutor(),
 		UserContext: "您有 3 个实例（2 个运行中、1 个关机）\n- train-a (uhost-1): GPU=4090×1, 状态=运行中, 计费=Dynamic\n- train-b (uhost-2): GPU=A100×1, 状态=运行中, 计费=Dynamic\n- dev (uhost-3): GPU=3090×1, 状态=关机, 计费=Month",
 		Steps: []goldenStep{
 			{
@@ -625,8 +609,8 @@ func validateGoldenCase(gc goldenCase, reply string, events []engine.StepEvent) 
 // that the golden catalogs are structurally sound and have not degraded.
 func TestGoldenCatalogIntegrity(t *testing.T) {
 	// Engine golden cases: basic structural checks
-	if len(engineGoldenCases) < 25 {
-		t.Errorf("engine golden cases = %d, want >= 25", len(engineGoldenCases))
+	if len(engineGoldenCases) < 23 {
+		t.Errorf("engine golden cases = %d, want >= 23", len(engineGoldenCases))
 	}
 	ids := map[string]bool{}
 	for _, gc := range engineGoldenCases {
@@ -644,8 +628,8 @@ func TestGoldenCatalogIntegrity(t *testing.T) {
 
 	// Real CLI golden cases: load from JSON (single source of truth)
 	cliCases := loadRealCLIGoldenCases(t)
-	if len(cliCases) < 25 {
-		t.Errorf("real CLI golden cases = %d, want >= 25", len(cliCases))
+	if len(cliCases) < 23 {
+		t.Errorf("real CLI golden cases = %d, want >= 23", len(cliCases))
 	}
 	cliIDs := map[string]bool{}
 	for _, gc := range cliCases {

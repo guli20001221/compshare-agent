@@ -4,7 +4,6 @@ import "strings"
 
 // sensitiveActions maps specific API actions to their known sensitive field names.
 var sensitiveActions = map[string][]string{
-	"DescribeCompShareJupyterToken":  {"JupyterToken"},
 	"ResetCompShareInstancePassword": {"Password"},
 	"ResetPasswordWorkflow":          {"Password"},
 }
@@ -31,7 +30,7 @@ func Sanitize(action string, result map[string]any) map[string]any {
 	// Action-specific redaction with friendly messages (overrides generic)
 	if fields, ok := sensitiveActions[action]; ok {
 		for _, field := range fields {
-			redactNested(out, field, friendlyRedaction(action, field))
+			redactNested(out, field, friendlyRedaction(field))
 		}
 	}
 
@@ -57,33 +56,9 @@ func SanitizeArgs(action string, args map[string]any) map[string]any {
 	return out
 }
 
-// ExtractJupyterToken extracts the raw JupyterToken from a
-// DescribeCompShareJupyterToken result, for safe display via CLI.
-// Returns empty string if not found.
-func ExtractJupyterToken(result map[string]any) string {
-	if result == nil {
-		return ""
-	}
-	// The token may be at top level or nested in a set
-	if token, ok := result["JupyterToken"].(string); ok {
-		return token
-	}
-	// Try DataSet[0].JupyterToken pattern
-	if dataSet, ok := result["DataSet"].([]any); ok && len(dataSet) > 0 {
-		if first, ok := dataSet[0].(map[string]any); ok {
-			if token, ok := first["JupyterToken"].(string); ok {
-				return token
-			}
-		}
-	}
-	return ""
-}
-
 // friendlyRedaction returns a user-friendly placeholder for known sensitive fields.
-func friendlyRedaction(action, field string) string {
+func friendlyRedaction(field string) string {
 	switch {
-	case action == "DescribeCompShareJupyterToken" && field == "JupyterToken":
-		return "[已获取,请通过安全通道查看]"
 	case field == "Password":
 		return "[已设置]"
 	default:

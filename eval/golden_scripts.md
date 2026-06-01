@@ -39,17 +39,6 @@
 - 确认步骤含"中断当前运行的任务"提醒
 **验证**: 事件日志出现 `RebootCompShareInstance`
 
-## 5. Jupyter Token
-
-**输入**: `查一下jupyter token`
-**预期行为**:
-- 调用 `DescribeCompShareJupyterToken`
-- LLM 回复中 **不含** 真实 token 值（脱敏为 `[已获取,请通过安全通道查看]`）
-- CLI 终端 Display 行（🔑）展示原始 token
-**验证**:
-- Assistant 回复不含 `eyJ` 或实际 token 子串
-- 终端输出含 `🔑 Jupyter Token: <实际值>`
-
 ## 6. 重置密码
 
 **输入**: `重置密码`
@@ -100,17 +89,6 @@
 - L2 操作拒绝（`TerminateCompShareInstance` 被阻止）
 - 引导用户到控制台手动操作
 **验证**: 事件日志出现 `StepBlocked`，回复含"控制台"
-
-## 12. 脱敏验证
-
-**输入**: `获取 jupyter token`
-**预期行为**:
-- 调用 `DescribeCompShareJupyterToken`
-- LLM assistant 回复 **不含** 真实 token 值
-- CLI Display 行展示原始 token
-**验证**:
-- 检查 LLM 收到的 tool result 中 JupyterToken = `[已获取,请通过安全通道查看]`
-- 检查 StepEvent.Display 含原始 token
 
 ## 13. 多实例歧义——关机
 

@@ -300,7 +300,7 @@ func TestSafeExecutorFiltersArgsAndRedactsResult(t *testing.T) {
 	safe := NewSafeToolExecutor(inner)
 
 	result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
-		Action: "DescribeCompShareJupyterToken",
+		Action: "DescribeCompShareInstance",
 		Args: map[string]any{
 			"UHostIds":       []any{"uhost-1"},
 			"InjectedParam":  "drop-me",
@@ -312,8 +312,6 @@ func TestSafeExecutorFiltersArgsAndRedactsResult(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, inner.calls)
 	assert.Equal(t, map[string]any{"UHostIds": []any{"uhost-1"}}, inner.args[0])
-	assert.Equal(t, "raw-jupyter-token", result.Display.Value)
-	assert.Equal(t, "JupyterToken", result.Display.Kind)
 
 	dataSet, ok := result.LLMResult["DataSet"].([]any)
 	require.True(t, ok)
@@ -327,26 +325,6 @@ func TestSafeExecutorFiltersArgsAndRedactsResult(t *testing.T) {
 }
 
 func TestSafeExecutorUsesPolicyForDisplayAndRedaction(t *testing.T) {
-	t.Run("display is policy controlled", func(t *testing.T) {
-		inner := &spyExecutor{result: map[string]any{
-			"DataSet": []any{map[string]any{"JupyterToken": "raw-jupyter-token"}},
-		}}
-		policies := DefaultToolExecutionPolicies()
-		policy := policies["DescribeCompShareJupyterToken"]
-		policy.DualChannelDisplay = false
-		policies["DescribeCompShareJupyterToken"] = policy
-		safe := NewSafeToolExecutor(inner, WithPolicies(policies))
-
-		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
-			Action: "DescribeCompShareJupyterToken",
-			Args:   map[string]any{"UHostIds": []any{"uhost-1"}},
-			Origin: OriginDirectLLM,
-		})
-
-		require.NoError(t, err)
-		assert.Empty(t, result.Display)
-	})
-
 	t.Run("extra redaction fields are policy controlled", func(t *testing.T) {
 		inner := &spyExecutor{result: map[string]any{"OneTimeCode": "visible-without-policy"}}
 		policies := DefaultToolExecutionPolicies()
