@@ -325,7 +325,43 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 	if groundNote != "" {
 		plan.MatchNote = groundNote + "；" + plan.MatchNote
 	}
+
+	// (f) GPU↔image compatibility gate. An image is built for a specific GPU series
+	// and only runs on the cards in its SupportedGpuTypes. CheckCompShareResourceCapacity
+	// does NOT enforce this (verified 2026-06-01: an unsupported card returns
+	// ResourceEnough=true) — so the CREATE call is what errors. Guard it here: if the
+	// image declares supported types and the sized card isn't among them, the image
+	// cannot run this workload. On the auto path this only happens when no supported
+	// card had enough VRAM (RecommendGPUType kept the VRAM-correct-but-unsupported card),
+	// so we surface that as an actionable message instead of letting the create fail.
+	if !gpuImageCompatible(plan.GpuType, supported) {
+		return deployPlan{}, deployUserError{msg: fmt.Sprintf(
+			"所选镜像「%s」支持的机型为 %s，其显存不足以运行该工作负载。建议换一个支持更大显存机型的镜像，或选择更小的模型 / 量化版本。",
+			plan.ImageName, strings.Join(supported, "、"))}
+	}
 	return plan, nil
+}
+
+// gpuImageCompatible reports whether gpuType is allowed by the image's declared
+// SupportedGpuTypes. An empty list means "no per-image constraint" → compatible.
+// This MUST be checked before create: CheckCompShareResourceCapacity does not
+// validate image↔GPU compatibility (an unsupported card returns ResourceEnough=true),
+// so an incompatible combo would otherwise only fail at CreateCompShareInstance.
+//
+// It compares against the RAW SupportedGpuTypes (not the static-table-normalized
+// subset RecommendGPUTypeWithin uses) on purpose: the create API validates against
+// the image's literal supported list, including cards the static gpuSpecs table
+// doesn't know about, so the gate must too.
+func gpuImageCompatible(gpuType string, supported []string) bool {
+	if strings.TrimSpace(gpuType) == "" || len(supported) == 0 {
+		return true
+	}
+	for _, s := range supported {
+		if strings.EqualFold(strings.TrimSpace(s), strings.TrimSpace(gpuType)) {
+			return true
+		}
+	}
+	return false
 }
 
 // deployUserError is a matchDeployImage error whose message is safe + actionable

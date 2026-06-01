@@ -364,6 +364,34 @@ func TestMatchDeployImage_GPUConstrainedByImageSupport(t *testing.T) {
 	assert.Contains(t, plan.MatchNote, "5090", "the note should explain the image-supported pick")
 }
 
+func TestGpuImageCompatible(t *testing.T) {
+	assert.True(t, gpuImageCompatible("4090", nil), "empty supported list = no constraint")
+	assert.True(t, gpuImageCompatible("4090", []string{"5090", "4090"}))
+	assert.True(t, gpuImageCompatible("a100", []string{"A100"}), "case-insensitive")
+	assert.False(t, gpuImageCompatible("V100S", []string{"5090"}), "card not in the image's supported set")
+	assert.True(t, gpuImageCompatible("", []string{"5090"}), "empty gpu = no claim")
+}
+
+// TestMatchDeployImage_IncompatibleGPUImage proves the compatibility gate: when no
+// image-supported card has enough VRAM, the sizer keeps a VRAM-correct card that the
+// image does NOT support (e.g. a 72B model on a 4090-only image), which would error
+// at create. The matcher must refuse with an actionable message instead — because
+// CheckCompShareResourceCapacity won't catch it (returns ResourceEnough=true).
+func TestMatchDeployImage_IncompatibleGPUImage(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, platformSupportedGPUs: []string{"4090"}})
+	matchJSON := `{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-72B","quantization":"fp16"}`
+	eng := newDeployEngine(matchJSON, exec, okConfirm)
+
+	_, err := eng.matchDeployImage(context.Background(), "部署 Qwen2.5-72B", "", noopStep)
+
+	require.Error(t, err, "an incompatible GPU↔image combo must be refused, not sent to a failing create")
+	var ue deployUserError
+	require.ErrorAs(t, err, &ue, "the refusal is a user-facing deployUserError")
+	assert.Contains(t, ue.Error(), "4090", "message names the image's supported cards")
+	assert.Contains(t, ue.Error(), "显存不足")
+	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "no create attempt for an incompatible combo")
+}
+
 // TestMatchDeployImage_CommunityUsesExtractedKeyword proves M3: the matcher runs a
 // keyword-extraction call first and feeds that keyword to the community FuzzySearch
 // (rather than an unfiltered sample of the ~743-group catalog).

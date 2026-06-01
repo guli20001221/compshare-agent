@@ -59,3 +59,4 @@ provenance: human_authored
 - **不可逆永不自动**:`TerminateCompShareInstance` 是 L2,saga 永不自动执行(建失败不计费、建成功是用户资源);清理由用户在控制台决定(ADR-006 §决策2 Amendment)。
 - **State 大小写敏感**:`"Running"`/`"Install Fail"` 精确匹配;含 "fail" 视为初始化失败(终止轮询),`Install`/`Starting` 是过渡态(继续轮询)。
 - **GPU 选最小可承载卡**:可能选到当前售罄的卡 → saga 在库存检查停并报"创建未完成",由用户换规格重试(非 arm 自动改卡)。
+- **GPU↔镜像兼容 capacity 不管**:`CheckCompShareResourceCapacity` **不校验**卡与镜像兼容(真机 2026-06-01:不支持的卡也返 `ResourceEnough=true`,镜像绑 GPU series 见上游 `libs/image.go GpuTypeSeriesMap`)→ 不兼容只在 `CreateCompShareInstance` 报错。故 arm 在 create 前用 `gpuImageCompatible(GpuType, 镜像 SupportedGpuTypes)` 显式闸:不兼容(目前=无 supported 卡显存够时 sizer 保留了 supported 外的卡)→ `deployUserError` 出可行动文案,不进 saga。PR2 用户指定卡会复用此闸。
