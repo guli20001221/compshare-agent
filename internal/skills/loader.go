@@ -56,6 +56,13 @@ const (
 	// body_cap_lines: 1000 from silently disabling the whole cap mechanism.
 	MaxBodyCapLines = 200
 
+	// TierFast and TierAgent are the ONLY permitted applicable_tiers values
+	// (ADR-001 two-lane model). The enum is closed: a typo like "fas" fails to
+	// load rather than silently routing a skill to no lane. fast = deterministic
+	// capability dispatch (no LLM); agent = body-driven executor / saga arm.
+	TierFast  = "fast"
+	TierAgent = "agent"
+
 	// CautionUnverified is prepended to a body whose verification_status is
 	// unverified (ADR-004 §81). CautionFieldRefs is appended when
 	// field_refs_verified is false (ADR-004 §104). Body() is the only place
@@ -266,6 +273,11 @@ func ParseSkillFile(path string) (*Skill, error) {
 	case VerificationProductionValidated, VerificationSpikeValidated, VerificationUnverified:
 	default:
 		return nil, fmt.Errorf("skill %q: verification_status %q must be one of production_validated|spike_validated|unverified (no default permitted, ADR-004 §88)", raw.Name, raw.VerificationStatus)
+	}
+	for _, tier := range raw.ApplicableTiers {
+		if tier != TierFast && tier != TierAgent {
+			return nil, fmt.Errorf("skill %q: applicable_tiers contains %q, must be one of %s|%s (ADR-001 two-lane model)", raw.Name, tier, TierFast, TierAgent)
+		}
 	}
 	if raw.FieldRefsVerified == nil {
 		return nil, fmt.Errorf("skill %q: field_refs_verified must be explicitly set (no default permitted, ADR-004 §88)", raw.Name)
