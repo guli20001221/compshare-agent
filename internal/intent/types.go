@@ -103,16 +103,31 @@ const (
 )
 
 type Plan struct {
-	SchemaVersion string    `json:"schema_version"`
-	Intent        Intent    `json:"intent"`
-	Scope         string    `json:"scope,omitempty"`
-	Slots         Slots     `json:"slots"`
-	RequiredTools []string  `json:"required_tools"`
-	Retrieval     Retrieval `json:"retrieval"`
-	HardBlockHint bool      `json:"hard_block_hint"`
-	Confidence    float64   `json:"confidence"`
-	Reasoning     string    `json:"reasoning,omitempty"`
+	SchemaVersion string `json:"schema_version"`
+	Intent        Intent `json:"intent"`
+	Scope         string `json:"scope,omitempty"`
+	// Skills is observe-only in R0: it is code-derived after planner parsing and
+	// must not participate in dispatch. Future routing-contract work may let the
+	// planner propose skill candidates behind a gate.
+	Skills        []SelectedSkill `json:"skills,omitempty"`
+	Slots         Slots           `json:"slots"`
+	RequiredTools []string        `json:"required_tools"`
+	Retrieval     Retrieval       `json:"retrieval"`
+	HardBlockHint bool            `json:"hard_block_hint"`
+	Confidence    float64         `json:"confidence"`
+	Reasoning     string          `json:"reasoning,omitempty"`
 }
+
+type SelectedSkill struct {
+	Name       string `json:"name,omitempty"`
+	Resolution string `json:"resolution"`
+}
+
+const (
+	SkillResolutionDerivedFromIntent = "derived_from_intent"
+	SkillResolutionAgentArm          = "agent_arm"
+	SkillResolutionResolvedInReAct   = "resolved_in_react"
+)
 
 type Slots struct {
 	TargetRefs []TargetRef `json:"target_refs,omitempty"`

@@ -149,6 +149,7 @@ func (p *Planner) Plan(ctx context.Context, input PlannerInput) (PlannerResult, 
 				Registry:  input.Registry,
 			})
 			if err == nil {
+				plan = withDerivedSelectedSkills(plan)
 				return PlannerResult{
 					Plan:     plan,
 					Mode:     mode,

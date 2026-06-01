@@ -67,6 +67,23 @@ func TestProjectPlannerTrace_ValidMonitorPlan(t *testing.T) {
 	assert.Empty(t, window.ValueHash)
 }
 
+func TestProjectPlannerTrace_ProjectsCodeDerivedSkills(t *testing.T) {
+	trace := ProjectPlannerTrace(PlannerResult{
+		Plan: Plan{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentDeployModel,
+			Slots:         Slots{},
+			RequiredTools: []string{"DescribeCompShareImages"},
+			Retrieval:     Retrieval{Enabled: false},
+			Confidence:    0.82,
+		},
+	}, PlannerTraceOptions{Enabled: true, Model: "deepseek-v4-flash"})
+
+	require.Len(t, trace.Skills, 1)
+	assert.Equal(t, "deploy_model", trace.Skills[0].Name)
+	assert.Equal(t, SkillResolutionAgentArm, trace.Skills[0].Resolution)
+}
+
 func TestProjectPlannerTrace_HashesTargetRefsAndNonAllowlistedTimeWindow(t *testing.T) {
 	const rawID = "uhost-abc123"
 	const rawName = "prod-gpu-01"
