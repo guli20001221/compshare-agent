@@ -322,11 +322,13 @@ func TestMutatingToolsFromEnvAndRuntimeLine(t *testing.T) {
 }
 
 func TestUseSkillRegistryFromEnvAndRuntimeLine(t *testing.T) {
+	// Default (unset) flipped ON in P3a-3: the skill registry is the source.
 	enabled, unknown := useSkillRegistryFromEnv(func(string) string { return "" })
-	require.False(t, enabled)
+	require.True(t, enabled)
 	require.Empty(t, unknown)
-	require.Equal(t, "capability_source=legacy", skillRegistryRuntimeLine(enabled))
+	require.Equal(t, "capability_source=skill_registry", skillRegistryRuntimeLine(enabled))
 
+	// "1" stays an explicit enable.
 	enabled, unknown = useSkillRegistryFromEnv(func(key string) string {
 		if key == "USE_SKILL_REGISTRY" {
 			return "1"
@@ -337,6 +339,18 @@ func TestUseSkillRegistryFromEnvAndRuntimeLine(t *testing.T) {
 	require.Empty(t, unknown)
 	require.Equal(t, "capability_source=skill_registry", skillRegistryRuntimeLine(enabled))
 
+	// "0" is the explicit revert to legacy — no warning.
+	enabled, unknown = useSkillRegistryFromEnv(func(key string) string {
+		if key == "USE_SKILL_REGISTRY" {
+			return "0"
+		}
+		return ""
+	})
+	require.False(t, enabled)
+	require.Empty(t, unknown)
+	require.Equal(t, "capability_source=legacy", skillRegistryRuntimeLine(enabled))
+
+	// Unknown value → off + the raw value (caller warns), per the CLAUDE.md rule.
 	enabled, unknown = useSkillRegistryFromEnv(func(key string) string {
 		if key == "USE_SKILL_REGISTRY" {
 			return "on"
