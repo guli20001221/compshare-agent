@@ -403,8 +403,6 @@ func (s *Skill) injectCaution(body string) string {
 }
 
 // splitFrontmatter splits a `--- ... ---` YAML preamble from the markdown body.
-// Mirrors internal/intent.parseCapabilityFrontmatter so both consumers share one
-// convention (Rule 11).
 func splitFrontmatter(data []byte) (frontmatter, body string, err error) {
 	content := string(data)
 	if !strings.HasPrefix(content, "---") {

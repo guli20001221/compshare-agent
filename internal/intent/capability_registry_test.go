@@ -3,10 +3,35 @@ package intent
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
-	"testing/fstest"
+
+	"github.com/compshare-agent/internal/skills"
 )
+
+// capabilityIntentSet returns the capability intents declared by the generated
+// skill registry (non-empty intent_label), keyed by Intent for membership checks.
+func capabilityIntentSet() map[Intent]struct{} {
+	out := map[Intent]struct{}{}
+	for _, s := range skills.GeneratedSkills() {
+		if s.IntentLabel != "" {
+			out[Intent(s.IntentLabel)] = struct{}{}
+		}
+	}
+	return out
+}
+
+// skillRequiredTool returns RequiredTools[0] for the capability skill bound to
+// the given intent, or "" if none.
+func skillRequiredTool(i Intent) string {
+	for _, s := range skills.GeneratedSkills() {
+		if s.IntentLabel == string(i) && len(s.RequiredTools) > 0 {
+			return s.RequiredTools[0]
+		}
+	}
+	return ""
+}
 
 // TestIsCapabilityIntent_KnownLabels verifies all 6 registered capability intents
 // return true. New capabilities must be picked up by IsCapabilityIntent without
@@ -47,21 +72,23 @@ func TestIsCapabilityIntent_UnknownReturnsFalse(t *testing.T) {
 	}
 }
 
-// TestCapabilityRegistry_NoDuplicateIntents ensures the registry table has no
-// shadowed entries (a duplicate would silently mask the second handler).
-func TestCapabilityRegistry_NoDuplicateIntents(t *testing.T) {
+// TestCapabilityIntentOrder_NoDuplicates ensures the byte-identity-pinned
+// capabilityIntentOrder has no shadowed entries (a duplicate would emit a
+// duplicate planner-prompt fragment).
+func TestCapabilityIntentOrder_NoDuplicates(t *testing.T) {
 	seen := map[Intent]struct{}{}
-	for _, e := range capabilityRegistry {
-		if _, ok := seen[e.intent]; ok {
-			t.Errorf("duplicate intent %q in capabilityRegistry", e.intent)
+	for _, i := range capabilityIntentOrder {
+		if _, ok := seen[i]; ok {
+			t.Errorf("duplicate intent %q in capabilityIntentOrder", i)
 		}
-		seen[e.intent] = struct{}{}
+		seen[i] = struct{}{}
 	}
 }
 
-// TestCapabilityRegistry_BindsToRealTool guards against typo'd tool names that
-// would lookup-miss in handlerActionWhitelist or fail at SafeToolExecutor.
-func TestCapabilityRegistry_BindsToRealTool(t *testing.T) {
+// TestCapabilityRequiredTool_BindsToRealTool guards against typo'd tool names that
+// would lookup-miss in handlerActionWhitelist or fail at SafeToolExecutor. The
+// required tool now comes from the generated skill registry (RequiredTools[0]).
+func TestCapabilityRequiredTool_BindsToRealTool(t *testing.T) {
 	expected := map[Intent]string{
 		IntentGPUSpecsQuery:      "DescribeAvailableCompShareInstanceTypes",
 		IntentStockAvailability:  "DescribeAvailableCompShareInstanceTypes",
@@ -70,33 +97,66 @@ func TestCapabilityRegistry_BindsToRealTool(t *testing.T) {
 		IntentCommunityImageList: "DescribeCommunityImages",
 		IntentPricingQuery:       "GetCompShareInstancePrice",
 	}
-	for _, e := range capabilityRegistry {
-		want, ok := expected[e.intent]
-		if !ok {
-			t.Errorf("unexpected intent %q in registry", e.intent)
+	for _, i := range capabilityIntentOrder {
+		want := expected[i]
+		if want == "" {
+			t.Errorf("unexpected intent %q in capabilityIntentOrder", i)
 			continue
 		}
-		if e.requiredTool != want {
-			t.Errorf("registry[%q].requiredTool = %q, want %q", e.intent, e.requiredTool, want)
+		got, ok := capabilityRequiredTool(i)
+		if !ok {
+			t.Errorf("capabilityRequiredTool(%q) = (_, false), want a tool", i)
+			continue
+		}
+		if got != want {
+			t.Errorf("capabilityRequiredTool(%q) = %q, want %q", i, got, want)
 		}
 	}
 }
 
-// TestHandlerActionWhitelist_DerivesFromRegistry enforces single-source-of-truth
-// (memory: feedback_cross_pr_contract_drift_check). If a new capability is
-// added to the registry, the whitelist must auto-include it; nothing should be
-// hardcoded twice.
-func TestHandlerActionWhitelist_DerivesFromRegistry(t *testing.T) {
+// TestHandlerActionWhitelist_DerivesFromSkillRegistry enforces single-source-of-truth
+// (memory: feedback_cross_pr_contract_drift_check). Every capability skill's
+// required tool (RequiredTools[0]) must be auto-included in the whitelist; nothing
+// should be hardcoded twice. The exact set is separately pinned by
+// TestHandlerActionWhitelist_ExactGoldenSet.
+func TestHandlerActionWhitelist_DerivesFromSkillRegistry(t *testing.T) {
 	wl := handlerActionWhitelist()
-	for _, e := range capabilityRegistry {
-		actions, ok := wl[e.intent]
-		if !ok {
-			t.Errorf("registry intent %q missing from handlerActionWhitelist (derivation bug)", e.intent)
+	for i := range capabilityIntentSet() {
+		want := skillRequiredTool(i)
+		if want == "" {
 			continue
 		}
-		if _, ok := actions[e.requiredTool]; !ok {
-			t.Errorf("registry[%q].requiredTool=%q not in whitelist[%q]", e.intent, e.requiredTool, e.intent)
+		actions, ok := wl[i]
+		if !ok {
+			t.Errorf("capability intent %q missing from handlerActionWhitelist (derivation bug)", i)
+			continue
 		}
+		if _, ok := actions[want]; !ok {
+			t.Errorf("capability %q required tool %q not in whitelist[%q]", i, want, i)
+		}
+	}
+}
+
+// TestHandlerActionWhitelist_ExactGoldenSet is the SECURITY gate against silent
+// widening of the SafeToolExecutor boundary. handlerActionWhitelist() must equal
+// EXACTLY this golden set — set-equality, no missing/extra entries. The
+// per-capability action is the required tool (RequiredTools[0]), NOT the broader
+// react_tool_subset (which would add e.g. GetGPUSpecs to gpu_specs). If any intent
+// gains or loses an action, this test fails loudly.
+func TestHandlerActionWhitelist_ExactGoldenSet(t *testing.T) {
+	golden := map[Intent]map[string]struct{}{
+		IntentResourceInfo:       {"DescribeCompShareInstance": {}},
+		IntentMonitorQuery:       {"GetCompShareInstanceMonitor": {}},
+		IntentGPUSpecsQuery:      {"DescribeAvailableCompShareInstanceTypes": {}},
+		IntentStockAvailability:  {"DescribeAvailableCompShareInstanceTypes": {}, "DescribeCompShareImages": {}, "CheckCompShareResourceCapacity": {}},
+		IntentPlatformImageList:  {"DescribeCompShareImages": {}},
+		IntentCustomImageList:    {"DescribeCompShareCustomImages": {}},
+		IntentCommunityImageList: {"DescribeCommunityImages": {}},
+		IntentPricingQuery:       {"GetCompShareInstancePrice": {}},
+	}
+	got := handlerActionWhitelist()
+	if !reflect.DeepEqual(got, golden) {
+		t.Fatalf("handlerActionWhitelist drifted from golden set (security widening guard).\n got:    %v\n golden: %v", got, golden)
 	}
 }
 
@@ -106,23 +166,23 @@ func TestHandlerActionWhitelist_DerivesFromRegistry(t *testing.T) {
 func TestCapabilityPromptFragments_ContainsAllIntents(t *testing.T) {
 	directives, examples := CapabilityPromptFragments()
 	combined := strings.Join(append(append([]string{}, directives...), examples...), "\n")
-	for _, e := range capabilityRegistry {
-		if !strings.Contains(combined, string(e.intent)) {
-			t.Errorf("capability fragments missing intent label %q (planner won't know to emit it)", e.intent)
+	for _, i := range capabilityIntentOrder {
+		if !strings.Contains(combined, string(i)) {
+			t.Errorf("capability fragments missing intent label %q (planner won't know to emit it)", i)
 		}
 	}
 }
 
-func TestCapabilityPromptFragments_DeriveFromMarkdownFrontmatter(t *testing.T) {
+func TestCapabilityPromptFragments_DeriveFromSkillRegistry(t *testing.T) {
 	directives, examples := CapabilityPromptFragments()
 	combinedDirectives := strings.Join(directives, "\n")
 	combinedExamples := strings.Join(examples, "\n")
-	for _, meta := range capabilityMetadata {
+	for _, meta := range skillRegistryCapabilityMetadata() {
 		if len(meta.PlannerDirectives) == 0 {
-			t.Fatalf("capability %q must declare planner_directives in markdown frontmatter", meta.Name)
+			t.Fatalf("capability %q must declare planner_directives in its skill", meta.Name)
 		}
 		if len(meta.PlannerExamples) == 0 {
-			t.Fatalf("capability %q must declare planner_examples in markdown frontmatter", meta.Name)
+			t.Fatalf("capability %q must declare planner_examples in its skill", meta.Name)
 		}
 		for _, directive := range meta.PlannerDirectives {
 			if !strings.Contains(combinedDirectives, directive) {
@@ -143,88 +203,19 @@ func TestCapabilityPromptFragments_DeriveFromMarkdownFrontmatter(t *testing.T) {
 	}
 }
 
-func TestCapabilityMetadata_RequiresPromptFragments(t *testing.T) {
-	_, err := loadCapabilityMetadata(fstest.MapFS{
-		"capabilities/demo.md": {
-			Data: []byte(`---
-name: demo
-intent_label: gpu_specs_query
-required_tool: DescribeAvailableCompShareInstanceTypes
-required_citation: false
----
-
-# demo
-`),
-		},
-	})
-	if err == nil {
-		t.Fatal("loadCapabilityMetadata should reject capabilities without planner prompt fragments")
-	}
-	if !strings.Contains(err.Error(), "planner_directives") || !strings.Contains(err.Error(), "planner_examples") {
-		t.Fatalf("error should mention missing planner fragments, got: %v", err)
-	}
-}
-
-func TestCapabilityMetadata_RejectsEmptyPromptFragments(t *testing.T) {
-	_, err := loadCapabilityMetadata(fstest.MapFS{
-		"capabilities/demo.md": {
-			Data: []byte(`---
-name: demo
-intent_label: gpu_specs_query
-required_tool: DescribeAvailableCompShareInstanceTypes
-required_citation: false
-planner_directives:
-  - "   "
-planner_examples:
-  - question: ""
-    confidence: 0
----
-
-# demo
-`),
-		},
-	})
-	if err == nil {
-		t.Fatal("loadCapabilityMetadata should reject empty planner prompt fragments")
-	}
-}
-
-func TestCapabilityMetadata_RejectsUnknownFrontmatterFields(t *testing.T) {
-	_, err := loadCapabilityMetadata(fstest.MapFS{
-		"capabilities/demo.md": {
-			Data: []byte(`---
-name: demo
-intent_label: gpu_specs_query
-required_tool: DescribeAvailableCompShareInstanceTypes
-required_citation: false
-planner_directive:
-  - typo should fail
-planner_examples:
-  - question: "4090 显存多大"
-    confidence: 0.85
----
-
-# demo
-`),
-		},
-	})
-	if err == nil {
-		t.Fatal("loadCapabilityMetadata should reject unknown frontmatter fields")
-	}
-}
-
-func TestCapabilityMetadataRequiredToolsMatchRegistry(t *testing.T) {
+func TestCapabilityMetadataRequiredToolsMatchSkillRegistry(t *testing.T) {
 	byIntent := map[Intent]CapabilityMetadata{}
-	for _, meta := range capabilityMetadata {
+	for _, meta := range skillRegistryCapabilityMetadata() {
 		byIntent[Intent(meta.IntentLabel)] = meta
 	}
-	for _, entry := range capabilityRegistry {
-		meta, ok := byIntent[entry.intent]
+	for _, i := range capabilityIntentOrder {
+		meta, ok := byIntent[i]
 		if !ok {
-			t.Fatalf("missing metadata for capability intent %q", entry.intent)
+			t.Fatalf("missing metadata for capability intent %q", i)
 		}
-		if meta.RequiredTool != entry.requiredTool {
-			t.Fatalf("metadata required_tool for %q = %q, registry has %q", entry.intent, meta.RequiredTool, entry.requiredTool)
+		want := skillRequiredTool(i)
+		if meta.RequiredTool != want {
+			t.Fatalf("metadata required_tool for %q = %q, skill registry has %q", i, meta.RequiredTool, want)
 		}
 	}
 }
@@ -262,16 +253,16 @@ func (m *capabilitySequenceExecutor) Execute(_ context.Context, action string, a
 
 func TestDispatchCapability_RoutesToHandler(t *testing.T) {
 	h := NewDemoHandler(stubFailingExecutor{})
-	for _, e := range capabilityRegistry {
-		req := HandlerRequest{Plan: Plan{Intent: e.intent}}
+	for i := range capabilityIntentSet() {
+		req := HandlerRequest{Plan: Plan{Intent: i}}
 		result := h.DispatchCapability(context.Background(), req)
 		// With empty mock response, handlers should return a HandledResult
 		// (their renderers produce "未获取到..." replies on empty data).
 		if result.Status != HandlerStatusHandled {
-			t.Errorf("DispatchCapability(%q) status = %q, want %q", e.intent, result.Status, HandlerStatusHandled)
+			t.Errorf("DispatchCapability(%q) status = %q, want %q", i, result.Status, HandlerStatusHandled)
 		}
-		if result.ToolAction != e.requiredTool {
-			t.Errorf("DispatchCapability(%q) ToolAction = %q, want %q", e.intent, result.ToolAction, e.requiredTool)
+		if want := skillRequiredTool(i); result.ToolAction != want {
+			t.Errorf("DispatchCapability(%q) ToolAction = %q, want %q", i, result.ToolAction, want)
 		}
 	}
 }
@@ -344,20 +335,21 @@ func TestDispatchCapability_UnknownIntentFalls(t *testing.T) {
 	}
 }
 
-// TestCapabilityMetadata_LoadedAtBuild verifies the embed.FS frontmatter parser
-// produced one entry per registry intent. Fail-fast at init() would have already
-// panicked, but this test makes the requirement visible in the test report.
-func TestCapabilityMetadata_LoadedAtBuild(t *testing.T) {
-	if got, want := len(capabilityMetadata), len(capabilityRegistry); got != want {
-		t.Fatalf("capabilityMetadata count = %d, want %d (registry size)", got, want)
+// TestCapabilityMetadata_LoadedFromSkillRegistry verifies the skill-registry
+// projection produced one metadata entry per capability intent and that none
+// declares required_citation (capabilities are NOT cited per PR A spec).
+func TestCapabilityMetadata_LoadedFromSkillRegistry(t *testing.T) {
+	meta := skillRegistryCapabilityMetadata()
+	if got, want := len(meta), len(capabilityIntentOrder); got != want {
+		t.Fatalf("skillRegistryCapabilityMetadata count = %d, want %d (capabilityIntentOrder size)", got, want)
 	}
-	regSet := map[Intent]struct{}{}
-	for _, e := range capabilityRegistry {
-		regSet[e.intent] = struct{}{}
+	order := map[Intent]struct{}{}
+	for _, i := range capabilityIntentOrder {
+		order[i] = struct{}{}
 	}
-	for _, m := range capabilityMetadata {
-		if _, ok := regSet[Intent(m.IntentLabel)]; !ok {
-			t.Errorf("capabilityMetadata has intent_label %q with no matching registry entry", m.IntentLabel)
+	for _, m := range meta {
+		if _, ok := order[Intent(m.IntentLabel)]; !ok {
+			t.Errorf("capability metadata has intent_label %q not in capabilityIntentOrder", m.IntentLabel)
 		}
 		if m.RequiredCitation {
 			t.Errorf("capability %q has required_citation=true; capabilities are NOT cited per PR A spec", m.Name)
@@ -1130,47 +1122,31 @@ func TestRenderCommunityImage_DataExpansionAndCap(t *testing.T) {
 // ----- end L0 NL filter tests -----------------------------------------------
 
 // TestRegistry_FutureProof_AcceptanceNumberEight is the §5 #8 acceptance test:
-// adding a capability must NOT require any change to engine.go. We simulate
-// this by exercising the registry surface that engine.go depends on
-// (IsCapabilityIntent + DispatchCapability), with a temporary entry, and verify
-// the surface picks it up without engine.go knowing the intent's name.
+// adding a capability must NOT require any change to engine.go. The engine.go
+// dispatch surface uses ONLY IsCapabilityIntent + DispatchCapability, both of
+// which now read the generated skill registry — so a new capability skill is
+// picked up without engine.go knowing the intent's name. We verify this over the
+// live capability set: every registry-declared capability is recognized by
+// IsCapabilityIntent and routes through DispatchCapability to a Handled result.
 //
-// This is a function-scope insertion (not a permanent registry mutation): if
-// any test runs concurrently with a real production engine, isolation is
-// preserved because the registry is a package-level slice and Go test execution
-// within one package is single-threaded by default.
+// (The legacy version injected a temporary capabilityRegistry entry; with the
+// registry generated from skills.GeneratedSkills() there is no mutable in-memory
+// table to inject into, so the contract is asserted over the generated set.)
 func TestRegistry_FutureProof_AcceptanceNumberEight(t *testing.T) {
-	const mockIntent = Intent("__test_future_proof_mock__")
-	original := capabilityRegistry
-	t.Cleanup(func() { capabilityRegistry = original })
-	called := false
-	mockHandler := func(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
-		called = true
-		return HandlerResult{
-			Status:        HandlerStatusHandled,
-			Reply:         "mock OK",
-			CutoverStatus: CutoverStatusDispatched,
-			ToolAction:    "MockTool",
-		}
-	}
-	capabilityRegistry = append(append([]capabilityEntry{}, original...), capabilityEntry{
-		intent:       mockIntent,
-		requiredTool: "MockTool",
-		handler:      mockHandler,
-	})
-
-	// The engine.go dispatch surface uses ONLY these two functions to decide
-	// "is this a capability intent? if so, hand it to the registry". Both must
-	// pick up the new entry without engine.go changing.
-	if !IsCapabilityIntent(mockIntent) {
-		t.Fatal("future-proof: IsCapabilityIntent did not pick up new registry entry")
-	}
 	h := NewDemoHandler(stubFailingExecutor{})
-	result := h.DispatchCapability(context.Background(), HandlerRequest{Plan: Plan{Intent: mockIntent}})
-	if !called {
-		t.Fatal("future-proof: DispatchCapability did not invoke mock handler")
+	saw := 0
+	for i := range capabilityIntentSet() {
+		if !IsCapabilityIntent(i) {
+			t.Errorf("future-proof: IsCapabilityIntent(%q) = false for a generated capability skill", i)
+			continue
+		}
+		result := h.DispatchCapability(context.Background(), HandlerRequest{Plan: Plan{Intent: i}})
+		if result.Status != HandlerStatusHandled {
+			t.Errorf("future-proof: DispatchCapability(%q) status = %q, want Handled", i, result.Status)
+		}
+		saw++
 	}
-	if result.Status != HandlerStatusHandled || result.Reply != "mock OK" {
-		t.Fatalf("future-proof: handler result = %+v, want handled with mock reply", result)
+	if saw == 0 {
+		t.Fatal("future-proof: no capability skills found in the generated registry")
 	}
 }

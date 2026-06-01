@@ -93,13 +93,15 @@ func TestValidatePlan_AcceptsStockCapacityPrecheckTool(t *testing.T) {
 }
 
 func TestValidatePlan_CapabilityRegistryToolsStayAllowed(t *testing.T) {
-	for _, entry := range capabilityRegistry {
-		tools := []string{entry.requiredTool}
-		tools = append(tools, extraHandlerActions()[entry.intent]...)
+	for _, intentValue := range capabilityIntentOrder {
+		requiredTool, ok := capabilityRequiredTool(intentValue)
+		require.True(t, ok, "capability intent %q must declare a required tool", intentValue)
+		tools := []string{requiredTool}
+		tools = append(tools, extraHandlerActions()[intentValue]...)
 
 		plan := Plan{
 			SchemaVersion: SchemaVersion,
-			Intent:        entry.intent,
+			Intent:        intentValue,
 			RequiredTools: tools,
 			Retrieval:     Retrieval{Enabled: false},
 			Confidence:    0.8,
@@ -107,7 +109,7 @@ func TestValidatePlan_CapabilityRegistryToolsStayAllowed(t *testing.T) {
 
 		err := ValidatePlan(plan, ValidationContext{UserText: "capability query", Registry: testRegistry(t)})
 
-		require.NoError(t, err, "capability intent %q tools %v must stay allowed", entry.intent, tools)
+		require.NoError(t, err, "capability intent %q tools %v must stay allowed", intentValue, tools)
 	}
 }
 
