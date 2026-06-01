@@ -245,6 +245,31 @@ func TestNewLoader_FieldRefsVerifiedRequired(t *testing.T) {
 	}
 }
 
+// TestNewLoader_RejectsUnknownApplicableTier closes the applicable_tiers enum
+// (ADR-001 two-lane model): a typo like "fas" fails to load rather than silently
+// routing the skill to no lane. P3a-1 fast-tier determinism guard.
+func TestNewLoader_RejectsUnknownApplicableTier(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "bad_tier",
+		"name: bad_tier\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\napplicable_tiers: [fas]",
+		"body\n")
+	if _, err := NewLoaderWithLogger(root, silentLogger()); err == nil || !strings.Contains(err.Error(), "applicable_tiers") {
+		t.Fatalf("expected applicable_tiers enum error, got %v", err)
+	}
+}
+
+// TestNewLoader_AcceptsKnownApplicableTiers confirms the enum check does not
+// reject the two valid lanes (non-vacuity guard for the test above).
+func TestNewLoader_AcceptsKnownApplicableTiers(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "good_tier",
+		"name: good_tier\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\napplicable_tiers: [fast, agent]",
+		"body\n")
+	if _, err := NewLoaderWithLogger(root, silentLogger()); err != nil {
+		t.Fatalf("fast+agent are valid tiers, load must succeed: %v", err)
+	}
+}
+
 // TestNewLoader_RejectsUnknownYAMLKey guards KnownFields(true): an unknown key
 // is a hard parse failure (so a P2 schema-key typo can't silently no-op).
 func TestNewLoader_RejectsUnknownYAMLKey(t *testing.T) {
