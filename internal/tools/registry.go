@@ -117,7 +117,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareInstancePrice",
-			Description: "查询创建实例的价格。返回按量/包日/包月/抢占式等分项价格（实例、磁盘、镜像）。Zone 格式为 cn-wlcb-01。Memory 单位为 MB（如 65536 = 64GB）。不传 ChargeType 则返回所有计费方式的价格。",
+			Description: "查询创建实例的目录价/标准价。返回按量/包日/包月/抢占式等分项价格（实例、磁盘、镜像）。Zone 格式为 cn-wlcb-01。Memory 单位为 MB（如 65536 = 64GB）。不传 ChargeType 则返回所有计费方式的价格。注意：本接口参数 Gpu/Cpu 小写、按量计费枚举为 Dynamic；用户实际折后价请用 GetCompShareInstanceUserPrice（其参数 GPU/CPU 大写、按量用 Postpay）。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -155,7 +155,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CheckCompShareResourceCapacity",
-			Description: "预检某个具体创建实例配置是否有足够资源，适合在用户已给出 GPU/CPU/内存/镜像/计费方式等创建参数时使用；也可在库存问题已识别 GPU 型号并拿到可用区后，确认该机型当前是否真实可创建。Zone 必须为 cn-wlcb-01 格式。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。",
+			Description: "预检某个具体创建实例配置是否有足够资源，适合在用户已给出 GPU/CPU/内存/镜像/计费方式等创建参数时使用；也可在库存问题已识别 GPU 型号并拿到可用区后，确认该机型当前是否真实可创建。Zone 必须为 cn-wlcb-01 格式。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。注意：仅校验容量，不校验 GPU 与镜像兼容性——不兼容组合也可能返回 ResourceEnough=true，兼容性需用镜像 SupportedGpuTypes 另行校验。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -235,7 +235,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareSoftwarePort",
-			Description: "查询平台支持的软件及其端口映射列表（SSH、JupyterLab、FileBrowser 等）。用于诊断端口连通性问题。仅需 Region 参数（自动填充）。",
+			Description: "查询平台镜像的应用端口映射目录（JupyterLab、FileBrowser 等）。用于诊断应用端口连通性问题。注意：本接口返回的是镜像应用端口，SSH 登录信息以 DescribeCompShareInstance.SshLoginCommand 为准，不以本接口为准。仅需 Region 参数（自动填充）。",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -247,7 +247,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareInstanceMonitor",
-			Description: "Get current instance monitor data such as CPU, memory, GPU, and VRAM utilization. Pass UHostIds only. Do not pass historical time-window fields; historical monitor windows are not enabled in this stage.",
+			Description: "Get current instance monitor data such as CPU, memory, GPU, and VRAM utilization. Pass UHostIds only (at most 20 per call; more are rejected). Do not pass historical time-window fields; historical monitor windows are not enabled in this stage.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -585,7 +585,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareInstanceUpgradePrice",
-			Description: "查询实例变配（升降级 CPU/GPU/内存）的价格差额。用于变配前展示费用变化。",
+			Description: "查询实例变配（升降级 CPU/GPU/内存）的价格差额。用于变配前展示费用变化。必须指定 CPU/GPU/Memory 中至少一项目标值，仅传 UHostId 无差额可算。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
