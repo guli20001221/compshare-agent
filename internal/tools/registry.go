@@ -332,24 +332,6 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
-			Name:        "DescribeCompShareJupyterToken",
-			Description: "获取实例 Jupyter 访问 Token。传 UHostIds 数组但仅使用第一个元素。返回的 JupyterToken 是敏感数据，必须脱敏。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"UHostIds": map[string]any{
-						"type":        "array",
-						"items":       map[string]any{"type": "string"},
-						"description": "实例 ID 列表（仅用首元素）",
-					},
-				},
-				"required": []string{"UHostIds"},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareInstanceUserPrice",
 			Description: "查用户折后价/实际价格。返回 PriceDetails（折后）、OriginalPriceDetails（原价）、ListPriceDetails（目录价）三组明细。计费方式用 Postpay（等同于按量 Dynamic）。参数 GPU/CPU 大写。",
 			Parameters: map[string]any{

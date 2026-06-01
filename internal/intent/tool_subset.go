@@ -22,7 +22,6 @@ func IntentToolSubset(i Intent) []string {
 			"DescribeCompShareInstance",
 			"GetCompShareInstanceMonitor",
 			"DescribeCompShareSoftwarePort",
-			"DescribeCompShareJupyterToken",
 			"GetCompShareInstanceUserPrice",
 		}
 	case IntentDiskInfo:

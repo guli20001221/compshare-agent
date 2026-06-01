@@ -2581,11 +2581,6 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return errMsg
 	}
 
-	var display string
-	if result.Display.Kind == "JupyterToken" && result.Display.Value != "" {
-		display = fmt.Sprintf("Jupyter Token: %s", result.Display.Value)
-	}
-
 	// ReAct fallback truncation for full-account list dumps. Handler-cutover
 	// path already sorts+truncates earlier (intent.HandleResourceInfo); this
 	// catches the planner-misclassified turns that reach ReAct directly,
@@ -2602,7 +2597,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	}
 
 	formatted := prompt.FormatToolResult(result.LLMResult)
-	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "调用成功", Display: display, TraceResult: result.TraceResult, Attempts: result.Attempts})
+	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "调用成功", TraceResult: result.TraceResult, Attempts: result.Attempts})
 	return formatted
 }
 
@@ -3283,7 +3278,7 @@ type StepEvent struct {
 	Source                     string
 	Args                       map[string]any
 	Message                    string
-	Display                    string         // content for CLI display only (not sent to LLM), e.g. raw JupyterToken
+	Display                    string         // content for CLI display only (not sent to LLM)
 	TraceResult                map[string]any // redacted result payload for trace hashing only
 	Attempts                   int
 	RendererInputToolArgHashes []string

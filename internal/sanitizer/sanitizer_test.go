@@ -6,39 +6,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestSanitize_JupyterToken(t *testing.T) {
-	result := map[string]any{
-		"DataSet": []any{
-			map[string]any{
-				"UHostId":      "uhost-xxx",
-				"JupyterToken": "eyJhbGciOiJIUzI1NiJ9.real-token",
-			},
-		},
-		"RetCode": float64(0),
-	}
-
-	sanitized := Sanitize("DescribeCompShareJupyterToken", result)
-
-	// Token should be replaced
-	ds := sanitized["DataSet"].([]any)
-	first := ds[0].(map[string]any)
-	assert.Equal(t, "[已获取,请通过安全通道查看]", first["JupyterToken"])
-
-	// Non-sensitive fields unchanged
-	assert.Equal(t, "uhost-xxx", first["UHostId"])
-	assert.Equal(t, float64(0), sanitized["RetCode"])
-}
-
-func TestSanitize_TopLevelJupyterToken(t *testing.T) {
-	result := map[string]any{
-		"JupyterToken": "secret-token-value",
-		"RetCode":      float64(0),
-	}
-
-	sanitized := Sanitize("DescribeCompShareJupyterToken", result)
-	assert.Equal(t, "[已获取,请通过安全通道查看]", sanitized["JupyterToken"])
-}
-
 func TestSanitize_Password(t *testing.T) {
 	result := map[string]any{
 		"UHostId":  "uhost-xxx",
@@ -102,18 +69,18 @@ func TestSanitize_DeepCopy(t *testing.T) {
 	original := map[string]any{
 		"DataSet": []any{
 			map[string]any{
-				"JupyterToken": "real-token",
-				"UHostId":      "uhost-xxx",
+				"Password": "real-secret",
+				"UHostId":  "uhost-xxx",
 			},
 		},
 	}
 
-	_ = Sanitize("DescribeCompShareJupyterToken", original)
+	_ = Sanitize("ResetCompShareInstancePassword", original)
 
 	// Original must NOT be modified
 	ds := original["DataSet"].([]any)
 	first := ds[0].(map[string]any)
-	assert.Equal(t, "real-token", first["JupyterToken"])
+	assert.Equal(t, "real-secret", first["Password"])
 }
 
 func TestSanitize_NilResult(t *testing.T) {
@@ -138,33 +105,4 @@ func TestSanitizeArgs_Password(t *testing.T) {
 
 func TestSanitizeArgs_NilArgs(t *testing.T) {
 	assert.Nil(t, SanitizeArgs("anything", nil))
-}
-
-func TestExtractJupyterToken_TopLevel(t *testing.T) {
-	result := map[string]any{
-		"JupyterToken": "token-123",
-	}
-	assert.Equal(t, "token-123", ExtractJupyterToken(result))
-}
-
-func TestExtractJupyterToken_InDataSet(t *testing.T) {
-	result := map[string]any{
-		"DataSet": []any{
-			map[string]any{
-				"JupyterToken": "token-456",
-			},
-		},
-	}
-	assert.Equal(t, "token-456", ExtractJupyterToken(result))
-}
-
-func TestExtractJupyterToken_NotFound(t *testing.T) {
-	result := map[string]any{
-		"RetCode": float64(0),
-	}
-	assert.Equal(t, "", ExtractJupyterToken(result))
-}
-
-func TestExtractJupyterToken_Nil(t *testing.T) {
-	assert.Equal(t, "", ExtractJupyterToken(nil))
 }

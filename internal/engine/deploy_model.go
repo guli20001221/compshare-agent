@@ -81,13 +81,13 @@ const deployReadmeExcerptRunes = 400
 // deployPlan is the resolved deploy specification the matcher produces and the
 // saga consumes. ImageSource/ImageName/GpuType are CreateInstanceDef params.
 type deployPlan struct {
-	ImageSource string // "platform" | "community"
-	ImageName   string // image Name (platform) / group ImageName (community); may be "" for platform
-	ImageID     string // resolved CompShareImageId of the chosen image; threaded to the saga so it creates EXACTLY this image (may be "")
-	GpuType     string // CreateInstance GpuType, e.g. "A100"
-	ModelName   string // model the user wants to run, for the reply; may be ""
-	MatchNote   string // human-readable selection rationale (GPU sizing + any fallback)
-	ChosenZone  string // resolved create-zone (preference + per-zone stock); "" → saga default
+	ImageSource  string // "platform" | "community"
+	ImageName    string // image Name (platform) / group ImageName (community); may be "" for platform
+	ImageID      string // resolved CompShareImageId of the chosen image; threaded to the saga so it creates EXACTLY this image (may be "")
+	GpuType      string // CreateInstance GpuType, e.g. "A100"
+	ModelName    string // model the user wants to run, for the reply; may be ""
+	MatchNote    string // human-readable selection rationale (GPU sizing + any fallback)
+	ChosenZone   string // resolved create-zone (preference + per-zone stock); "" → saga default
 	FallbackNote string // set when the create-zone differs from the primary (sold-out fallback / user zone)
 }
 
@@ -795,7 +795,7 @@ func buildAdviseReply(plan deployPlan) string {
 // writeUsageGuidance appends the "how to use it" section: the app→endpoint map
 // (constructed from the image's SoftwarePorts + the running instance's public IP,
 // NOT from the instance's Softwares URLs — those can embed a Jupyter ?token=,
-// which is a secret here per DescribeCompShareJupyterToken), the auto-start hint,
+// which is treated as a secret), the auto-start hint,
 // and a rune-sanitized excerpt of the (untrusted) community author's Readme. Each
 // piece is emitted only when its data is present, so a base OS image adds nothing.
 func writeUsageGuidance(b *strings.Builder, host map[string]any, usage imageUsage) {

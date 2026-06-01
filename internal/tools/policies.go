@@ -32,7 +32,6 @@ type ToolExecutionPolicy struct {
 	NeedsConfirm            bool
 	AllowedParams           []string
 	RedactInResult          []string
-	DualChannelDisplay      bool
 	HistoryMonitorGuard     bool
 	MaxTargetsPerCall       int
 	MaxHistoryWindowSeconds int
@@ -148,10 +147,6 @@ func policyForAction(action string) ToolExecutionPolicy {
 		if policy.TimeoutMS == 0 {
 			policy.TimeoutMS = 30000
 		}
-	}
-	if action == "DescribeCompShareJupyterToken" {
-		policy.DualChannelDisplay = true
-		policy.RedactInResult = []string{"JupyterToken"}
 	}
 	if action == "ResetCompShareInstancePassword" || action == "ResetPasswordWorkflow" {
 		policy.RedactInResult = append(policy.RedactInResult, "Password")

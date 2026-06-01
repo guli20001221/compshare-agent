@@ -25,11 +25,10 @@ func TestIntentToolSubset_VagueFailureSameAsDiagnosis(t *testing.T) {
 
 func TestIntentToolSubset_ResourceInfo(t *testing.T) {
 	subset := IntentToolSubset(IntentResourceInfo)
-	require.Len(t, subset, 5)
+	require.Len(t, subset, 4)
 	assert.Contains(t, subset, "DescribeCompShareInstance")
 	assert.Contains(t, subset, "GetCompShareInstanceMonitor")
 	assert.Contains(t, subset, "DescribeCompShareSoftwarePort")
-	assert.Contains(t, subset, "DescribeCompShareJupyterToken")
 	assert.Contains(t, subset, "GetCompShareInstanceUserPrice")
 	assert.NotContains(t, subset, "DiagnoseSSH")
 }

@@ -32,14 +32,6 @@
     "reply_contains": ["取消", "重启"]
   },
   {
-    "id": "golden_05_jupyter_token",
-    "input": "获取 uhost-1p1r57tl3cmw 的 Jupyter Token",
-    "expect_tool_calls": ["DescribeCompShareJupyterToken"],
-    "expect_display": true,
-    "reply_contains": ["Token"],
-    "reply_not_contains": ["UCloud-CompShare-"]
-  },
-  {
     "id": "golden_06_reset_password",
     "input": "帮我把 uhost-1p1r57tl3cmw 的密码重置为 NewPass123!",
     "confirm": "n",
@@ -78,13 +70,6 @@
     "input": "帮我删除这台实例",
     "expect_no_tool_call": true,
     "reply_contains": ["控制台"]
-  },
-  {
-    "id": "golden_12_sanitize_token",
-    "input": "获取 jupyter token",
-    "expect_no_tool_call": true,
-    "reply_contains": ["Token"],
-    "reply_contains_any": ["ID", "uhost-"]
   },
   {
     "id": "golden_13_disambiguate_stop",
