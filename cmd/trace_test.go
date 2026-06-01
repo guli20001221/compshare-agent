@@ -347,6 +347,30 @@ func TestUseSkillRegistryFromEnvAndRuntimeLine(t *testing.T) {
 	require.Equal(t, "on", unknown)
 }
 
+func TestUseSkillExecutorFromEnv(t *testing.T) {
+	enabled, unknown := useSkillExecutorFromEnv(func(string) string { return "" })
+	require.False(t, enabled, "default off")
+	require.Empty(t, unknown)
+
+	enabled, unknown = useSkillExecutorFromEnv(func(key string) string {
+		if key == "USE_SKILL_EXECUTOR" {
+			return "1"
+		}
+		return ""
+	})
+	require.True(t, enabled)
+	require.Empty(t, unknown)
+
+	enabled, unknown = useSkillExecutorFromEnv(func(key string) string {
+		if key == "USE_SKILL_EXECUTOR" {
+			return "true"
+		}
+		return ""
+	})
+	require.False(t, enabled, "unknown value treated as off")
+	require.Equal(t, "true", unknown)
+}
+
 func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
 	enabled, unknown := knowledgeRetrievalModeFromEnv(func(string) string { return "" })
 	if !enabled || unknown != "" {

@@ -201,6 +201,23 @@ func useSkillRegistryFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// useSkillExecutorFromEnv reads USE_SKILL_EXECUTOR (P2a gray-rollout). Same
+// boolean shape as useSkillRegistryFromEnv: "1" enables the body-driven skill
+// executor for piloted agent skills (currently diagnose_port_firewall), "" is
+// off, any other value is unknown → off + the raw value (caller warns). Default
+// off; boot-only, flips need a restart.
+func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
+	value := strings.TrimSpace(getenv("USE_SKILL_EXECUTOR"))
+	switch value {
+	case "":
+		return false, ""
+	case "1":
+		return true, ""
+	default:
+		return false, value
+	}
+}
+
 func skillRegistryRuntimeLine(enabled bool) string {
 	if enabled {
 		return "capability_source=skill_registry"
