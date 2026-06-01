@@ -3204,18 +3204,6 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 // executeDiagnosis runs a diagnostic chain and returns the result as JSON.
 func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
-	// P2 pilot (USE_SKILL_EXECUTOR, default off): route the piloted diagnosis
-	// skill through the body-driven orchestrator loop instead of the Go chain.
-	// runDiagnosisSkill returns handled=false only when the skill can't load, so
-	// we degrade to the shipped chain rather than failing the turn.
-	if skillExecutorEnabled {
-		if skillName, piloted := pilotSkillForDiagnosis(action); piloted {
-			if reply, handled := e.runDiagnosisSkill(ctx, skillName, action, args, onStep); handled {
-				return reply
-			}
-		}
-	}
-
 	chain, ok := diagnosis.GetChain(action)
 	if !ok {
 		msg := fmt.Sprintf("未知的诊断链: %s", action)
@@ -3252,6 +3240,23 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 			msg := "请问是哪台实例的初始化失败了？"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			return finalReplyPrefix + msg
+		}
+	}
+
+	// P2/P3b pilot (USE_SKILL_EXECUTOR, default off): route a piloted diagnosis
+	// skill through the body-driven orchestrator loop instead of the Go chain.
+	// Placed AFTER the DiagnoseInitFailure guards above on purpose: the body
+	// executor must be gated by the same vague-symptom / instance-disambiguation
+	// safety net as the Go chain — running it earlier (as P2a did, when only the
+	// guard-free DiagnosePortOrFirewall was piloted) would let a piloted
+	// DiagnoseInitFailure bypass those guards. runDiagnosisSkill returns
+	// handled=false only when the skill can't load, so we degrade to the shipped
+	// chain rather than failing the turn.
+	if skillExecutorEnabled {
+		if skillName, piloted := pilotSkillForDiagnosis(action); piloted {
+			if reply, handled := e.runDiagnosisSkill(ctx, skillName, action, args, onStep); handled {
+				return reply
+			}
 		}
 	}
 
@@ -3318,10 +3323,25 @@ func SetSkillExecutorEnabled(enabled bool) { skillExecutorEnabled = enabled }
 func SkillExecutorEnabled() bool { return skillExecutorEnabled }
 
 // pilotSkillForDiagnosis maps a diagnosis tool action to the agent-tier skill the
-// body-driven executor pilot runs in its place. Only DiagnosePortOrFirewall is
-// piloted in P2a; every other Diagnose* keeps the shipped Go chain.
+// body-driven executor pilot runs in its place. P3b-1 extends the P2a pilot (which
+// covered only DiagnosePortOrFirewall) to all FIVE read-only diagnosis actions, so
+// every read-only Diagnose* runs body-driven when USE_SKILL_EXECUTOR is on. Note
+// the action names are the registered tool names (DiagnoseGPU, not the skill's
+// diagnose_gpu_not_detected). DiagnoseBilling is deliberately excluded — it has no
+// skill and stays on the shipped Go chain. The map is pinned by
+// TestPilotSkillForDiagnosis_* so it can't silently widen to a mutating or unmapped
+// action.
 func pilotSkillForDiagnosis(action string) (string, bool) {
-	if action == "DiagnosePortOrFirewall" {
+	switch action {
+	case "DiagnoseSSH":
+		return "diagnose_ssh", true
+	case "DiagnoseInitFailure":
+		return "diagnose_init_failure", true
+	case "DiagnoseGPU":
+		return "diagnose_gpu_not_detected", true
+	case "DiagnoseImageIssue":
+		return "diagnose_image_issue", true
+	case "DiagnosePortOrFirewall":
 		return "diagnose_port_firewall", true
 	}
 	return "", false
