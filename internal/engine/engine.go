@@ -1274,14 +1274,14 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
 		return reply, true
 	}
-	// B8.3 deploy_model: the agent-tier mutating skill. NOT a capability (a
-	// capability handler reaches only the ToolExecutor and cannot drive the
-	// orchestrator saga), so it gets its own dispatch arm that does TierAgent
-	// image-matching + RunAgentSaga(CreateInstanceDef) + poll-to-Running. See
-	// deploy_model.go. The planner only emits IntentDeployModel after B8.3 ③
-	// teaches it, so this branch is dormant until then.
-	if dispatch.result.Plan.Intent == intent.IntentDeployModel {
-		return e.tryDeployModel(ctx, dispatch, userMsg, onStep)
+	// Agent-tier skills (deploy_model today) dispatch through dispatchAgentSkill —
+	// the uniform seam — not as capabilities: a capability handler reaches only the
+	// ToolExecutor and cannot drive the orchestrator saga. The seam maps the intent
+	// to its arm (agentArmSkillForIntent) and delegates; deploy_model's arm does
+	// TierAgent image-matching + RunAgentSaga(CreateInstanceDef) + poll-to-Running
+	// (see deploy_model.go). This is byte-stable wiring: the arm body is unchanged.
+	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
+		return reply, true
 	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || intent.IsCapabilityIntent(dispatch.result.Plan.Intent) {
 		return e.tryPhase1Cutover(ctx, dispatch, userMsg, onStep)
@@ -1295,6 +1295,38 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	}
 
 	e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
+	return "", false
+}
+
+// agentArmSkillForIntent maps an agent-tier intent to the skill name its dispatch
+// arm runs. deploy_model is the only agent arm today; this table is the extension
+// point future agent skills (P3b) register into — adding one is a row here plus a
+// case in dispatchAgentSkill, not a new branch in the dispatch chain. Each value is
+// a skill Name in the generated registry (skills.GeneratedSkills) AND the saga
+// skillID the arm stamps on every StepTrace; TestAgentArmSkillForIntent_* lock both
+// bindings so a rename or typo fails CI rather than shipping.
+var agentArmSkillForIntent = map[intent.Intent]string{
+	intent.IntentDeployModel: "deploy_model",
+}
+
+// dispatchAgentSkill is the uniform agent-tier dispatch seam: it routes an
+// agent-skill intent to its arm and returns (reply, true) exactly when an arm owns
+// the turn. An unmapped intent returns ("", false) so the caller falls through to
+// the Phase-1/RAG chain unchanged — identical to the per-intent branch it replaced.
+// It deliberately does NOT look the skill up in the registry at runtime: deploy_model
+// hardcodes its own saga skillID (deploy_model.go) and never consumes the *Skill, so
+// a lookup would be dead work plus a non-byte-stable fallthrough on (CI-caught)
+// registry drift. A future body-loop arm does its own findGeneratedSkill + Body()
+// inside its case, like runDiagnosisSkill, where the lookup is load-bearing.
+func (e *Engine) dispatchAgentSkill(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+	skillName, ok := agentArmSkillForIntent[dispatch.result.Plan.Intent]
+	if !ok {
+		return "", false
+	}
+	switch skillName {
+	case "deploy_model":
+		return e.tryDeployModel(ctx, dispatch, userMsg, onStep)
+	}
 	return "", false
 }
 
