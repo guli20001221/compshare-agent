@@ -41,7 +41,7 @@ provenance: human_authored
 
 ## Pitfalls
 
-- **SSH 入口来源**:`SshLoginCommand` 是 `DescribeCompShareInstance` 的字段,**不是** `DescribeCompShareSoftwarePort`(后者只返回镜像应用端口,不返回 SSH);memory `pr2_5_联调_2026_05_28` line 470 错路由教训
+- **SSH 入口来源**:`SshLoginCommand` 是 `DescribeCompShareInstance` 的字段,**不是** `DescribeCompShareSoftwarePort`(后者只返回镜像应用端口,不返回 SSH);**本 skill 不调用 `DescribeCompShareSoftwarePort`(不在本 skill 工具集),不要尝试自行调用**;memory `pr2_5_联调_2026_05_28` line 470 错路由教训
 - **Windows 实例**:必须先检查 `OsType`,Linux SSH 路径不适用 Windows
 - **阈值 90% 不是 95%**:90-94% 已经能导致 SSH timeout(原 Chain 注释明确记录),不能放松到 95%
 - **监控数据空 ≠ healthy**:memory `pr2_5_联调_2026_05_28` 0%/healthy 教训
