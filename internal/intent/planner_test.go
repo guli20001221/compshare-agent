@@ -86,6 +86,28 @@ func TestPlanner_RetriesInvalidJSONThenReturnsValidPlan(t *testing.T) {
 	assert.Contains(t, mock.requests[1].UserPrompt, "上一轮输出不是合法 IntentPlan JSON")
 }
 
+func TestPlanner_OverridesLLMSuppliedSkillsWithDerivedProjection(t *testing.T) {
+	plan := Plan{
+		SchemaVersion: SchemaVersion,
+		Intent:        IntentPricingQuery,
+		Skills: []SelectedSkill{
+			{Name: "deploy_model", Resolution: "planner_supplied"},
+		},
+		Slots:         Slots{},
+		RequiredTools: []string{"GetCompShareInstancePrice"},
+		Retrieval:     Retrieval{Enabled: false},
+		Confidence:    0.9,
+	}
+	mock := &mockPlannerLLM{responses: []string{mustPlanJSON(t, plan)}}
+	planner := NewPlanner(mock, PlannerOptions{})
+
+	result, err := planner.Plan(context.Background(), PlannerInput{UserText: "4090 多少钱"})
+
+	require.NoError(t, err)
+	require.Len(t, result.Plan.Skills, 1)
+	assert.Equal(t, SelectedSkill{Name: "pricing_query", Resolution: SkillResolutionDerivedFromIntent}, result.Plan.Skills[0])
+}
+
 func TestPlanner_FallsBackUnknownAfterInvalidPartialPlans(t *testing.T) {
 	mock := &mockPlannerLLM{responses: []string{
 		`{"intent":"monitor_query"}`,

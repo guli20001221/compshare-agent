@@ -57,6 +57,25 @@ func TestDispatchAgentSkill_UnmappedIntentFallsThrough(t *testing.T) {
 	assert.Empty(t, exec.calls, "an unmapped intent must not reach any tool")
 }
 
+func TestDispatchAgentSkill_IgnoresObserveOnlyPlanSkills(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(string, map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(nil, exec, nil)
+
+	dispatch := plannerDispatchResult{result: intent.PlannerResult{Plan: intent.Plan{
+		Intent: intent.IntentResourceInfo,
+		Skills: []intent.SelectedSkill{
+			{Name: "deploy_model", Resolution: intent.SkillResolutionAgentArm},
+		},
+	}}}
+	reply, handled := eng.dispatchAgentSkill(context.Background(), dispatch, "我有哪些实例", noopStep)
+
+	assert.False(t, handled, "Plan.Skills is observe-only and must not capture dispatch")
+	assert.Empty(t, reply)
+	assert.Empty(t, exec.calls)
+}
+
 // TestAgentArmSkillForIntent_BoundToRegistry locks every table value to a skill
 // that actually exists in the generated registry, so deleting/renaming a skill (or
 // a typo in the table) fails CI instead of falling through at runtime — critical
@@ -70,6 +89,15 @@ func TestAgentArmSkillForIntent_BoundToRegistry(t *testing.T) {
 		assert.Equalf(t, skillName, skill.Name, "registry skill Name must equal the table value for intent %q", it)
 	}
 	assert.Equal(t, "deploy_model", agentArmSkillForIntent[intent.IntentDeployModel])
+}
+
+func TestAgentArmSkillForIntent_MatchesCodeDerivedPlanSkills(t *testing.T) {
+	for it, skillName := range agentArmSkillForIntent {
+		derived := intent.DeriveSelectedSkills(intent.Plan{Intent: it})
+		require.Lenf(t, derived, 1, "intent %q should derive exactly one agent-arm skill", it)
+		assert.Equalf(t, skillName, derived[0].Name, "intent %q agent-arm skill drifted from Plan.Skills projection", it)
+		assert.Equal(t, intent.SkillResolutionAgentArm, derived[0].Resolution)
+	}
 }
 
 // TestAgentArmSkillForIntent_MatchesSagaSkillID locks the table value to the
