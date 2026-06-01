@@ -143,6 +143,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_REGISTRY value %q\n", unknownSkillRegistry)
 	}
 	intent.SetCapabilitySource(useSkillRegistry)
+	useSkillExecutor, unknownSkillExecutor := useSkillExecutorFromEnv(os.Getenv)
+	if unknownSkillExecutor != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR value %q\n", unknownSkillExecutor)
+	}
+	engine.SetSkillExecutorEnabled(useSkillExecutor)
 	cutoverIntents, unknownCutoverValues := intentPlannerCutoverIntentsFromEnv(os.Getenv)
 	for _, value := range unknownCutoverValues {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_INTENT_PLANNER_FOR value %q\n", value)

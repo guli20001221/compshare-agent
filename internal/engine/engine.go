@@ -24,6 +24,7 @@ import (
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/refusal"
 	grounded "github.com/compshare-agent/internal/renderer"
+	"github.com/compshare-agent/internal/skills"
 	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
@@ -3171,6 +3172,18 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 // executeDiagnosis runs a diagnostic chain and returns the result as JSON.
 func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
+	// P2 pilot (USE_SKILL_EXECUTOR, default off): route the piloted diagnosis
+	// skill through the body-driven orchestrator loop instead of the Go chain.
+	// runDiagnosisSkill returns handled=false only when the skill can't load, so
+	// we degrade to the shipped chain rather than failing the turn.
+	if skillExecutorEnabled {
+		if skillName, piloted := pilotSkillForDiagnosis(action); piloted {
+			if reply, handled := e.runDiagnosisSkill(ctx, skillName, action, args, onStep); handled {
+				return reply
+			}
+		}
+	}
+
 	chain, ok := diagnosis.GetChain(action)
 	if !ok {
 		msg := fmt.Sprintf("未知的诊断链: %s", action)
@@ -3258,6 +3271,93 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 
 	b, _ := json.Marshal(result)
 	return string(b)
+}
+
+// skillExecutorEnabled is the process-global, boot-only USE_SKILL_EXECUTOR gate
+// (mirrors intent.SetCapabilitySource). Default off: agent-lane diagnosis runs the
+// shipped Go chain. When on, piloted skills route through the body-driven
+// orchestrator.RunReadOnlySkill loop. Boot-only — flips need a restart.
+var skillExecutorEnabled bool
+
+// SetSkillExecutorEnabled flips the USE_SKILL_EXECUTOR gate at boot.
+func SetSkillExecutorEnabled(enabled bool) { skillExecutorEnabled = enabled }
+
+// SkillExecutorEnabled reports the current gate (runtime trace lines / tests).
+func SkillExecutorEnabled() bool { return skillExecutorEnabled }
+
+// pilotSkillForDiagnosis maps a diagnosis tool action to the agent-tier skill the
+// body-driven executor pilot runs in its place. Only DiagnosePortOrFirewall is
+// piloted in P2a; every other Diagnose* keeps the shipped Go chain.
+func pilotSkillForDiagnosis(action string) (string, bool) {
+	if action == "DiagnosePortOrFirewall" {
+		return "diagnose_port_firewall", true
+	}
+	return "", false
+}
+
+// runDiagnosisSkill executes a piloted diagnosis skill through the body-driven
+// orchestrator loop: it loads the skill's Body() and lets the strong model drive
+// read-only tool calls over a private working-set. Returns (reply, true) when the
+// executor ran (success OR safe-fail); returns ("", false) only when the skill
+// cannot be loaded, so the caller falls back to the shipped Go chain.
+func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string, args map[string]any, onStep func(StepEvent)) (string, bool) {
+	skill, ok := findGeneratedSkill(skillName)
+	if !ok {
+		return "", false
+	}
+	body, err := skill.Body()
+	if err != nil {
+		// Cap overflow / load failure is a skill-authoring bug; degrade to the
+		// shipped chain rather than failing the user's turn.
+		return "", false
+	}
+
+	client := e.agentLLMClient
+	if client == nil {
+		client = e.llmClient // NewWithDeps test path / no agent tier configured
+	}
+
+	progress := func(toolName, msg string, isResult bool) {
+		typ := StepToolCall
+		if isResult {
+			typ = StepToolResult
+		}
+		onStep(StepEvent{Type: typ, Action: toolName, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+	}
+
+	seed := map[string]any{}
+	if uid, _ := args["UHostId"].(string); uid != "" {
+		seed["UHostId"] = uid
+	}
+	if svc, _ := args["Service"].(string); svc != "" {
+		seed["Service"] = svc
+	}
+
+	reply, rerr := orchestrator.RunReadOnlySkill(ctx, e.lastUserMsg, seed, orchestrator.SkillExecOptions{
+		Body:      body,
+		Tools:     tools.VisibleRegistryForSubset(skill.RequiredTools, false),
+		Exec:      e.toolExecutorFor(tools.OriginDiagnosisInternal),
+		Client:    client,
+		Progress:  progress,
+		OnUsage:   e.emitTokenUsage,
+		MaxRounds: 6,
+	})
+	if rerr != nil {
+		// Safe-fail: the loop never mutates and never falls through to ReAct.
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: rerr.Error()})
+		return finalReplyPrefix + "诊断没能完成，可以补充一下具体现象（哪个服务、什么报错）或稍后重试。", true
+	}
+	return reply, true
+}
+
+// findGeneratedSkill looks up a skill from the embedded generated registry by name.
+func findGeneratedSkill(name string) (*skills.Skill, bool) {
+	for _, s := range skills.GeneratedSkills() {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return nil, false
 }
 
 // StepType identifies what kind of intermediate event occurred.

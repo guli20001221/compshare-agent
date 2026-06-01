@@ -34,6 +34,14 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 	if useSkillRegistry {
 		log.Printf("runtime: HTTP capability source = skill_registry (USE_SKILL_REGISTRY=1)")
 	}
+	useSkillExecutor, unknownSkillExecutor := useSkillExecutorFromEnv(getenv)
+	if unknownSkillExecutor != "" {
+		log.Printf("warning: ignoring unknown USE_SKILL_EXECUTOR value %q", unknownSkillExecutor)
+	}
+	engine.SetSkillExecutorEnabled(useSkillExecutor)
+	if useSkillExecutor {
+		log.Printf("runtime: HTTP skill executor enabled (USE_SKILL_EXECUTOR=1)")
+	}
 	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
 		Capacity:             cfg.Agent.HTTP.PoolCapacity,
 		IdleTTL:              cfg.Agent.HTTP.PoolIdleTTL,
