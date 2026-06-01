@@ -11,102 +11,48 @@ import (
 	"github.com/compshare-agent/internal/skills"
 )
 
-// withSkillRegistrySource runs fn with useSkillRegistrySource set to v, restoring
-// the prior value afterward. The source is a boot-only package global; tests must
-// not leak it (other tests assume the legacy default).
-func withSkillRegistrySource(t *testing.T, v bool, fn func()) {
-	t.Helper()
-	prev := useSkillRegistrySource
-	useSkillRegistrySource = v
-	defer func() { useSkillRegistrySource = prev }()
-	fn()
-}
-
-// TestCapabilitySource_ZeroValueIsLegacy pins the in-package zero-value: before
-// SetCapabilitySource runs at boot, useSkillRegistrySource is false so a missed
-// boot call degrades to the byte-identical legacy path. NOTE: this is NOT the
-// runtime default — that flipped to the skill registry in P3a-3 and lives in cmd's
-// useSkillRegistryFromEnv (cmd.TestUseSkillRegistryFromEnvAndRuntimeLine), which
-// always calls SetCapabilitySource at boot. This guards only the zero-value.
-func TestCapabilitySource_ZeroValueIsLegacy(t *testing.T) {
-	if CapabilitySourceIsSkillRegistry() {
-		t.Fatal("package zero-value capability source must be legacy (useSkillRegistrySource=false)")
+// TestSystemPrompt_MatchesBaselineSHA is the byte-identity guard now that the
+// generated skill registry is the sole capability source: the FULL planner system
+// prompt must hash to systemPromptSHA256Baseline. Any drift in a capability skill's
+// directive, example question, or confidence (or the fragment order) changes this
+// SHA and fails here. (Replaces the deleted flag-gated SHA test from P3a-3.)
+func TestSystemPrompt_MatchesBaselineSHA(t *testing.T) {
+	sum := sha256.Sum256([]byte(buildSystemPrompt()))
+	got := hex.EncodeToString(sum[:])
+	if got != systemPromptSHA256Baseline {
+		t.Errorf("system prompt drifted from baseline.\n"+
+			"  baseline: %s\n"+
+			"  got:      %s\n"+
+			"The skill registry is the sole capability source; a directive/example/order"+
+			" change broke the pinned SHA.",
+			systemPromptSHA256Baseline, got)
 	}
 }
 
-// TestCapabilitySource_SkillRegistryPreservesSystemPromptSHA is the §5 flag-on
-// gate: with USE_SKILL_REGISTRY on, the FULL planner system prompt is byte-for-byte
-// identical to the legacy baseline (systemPromptSHA256Baseline). The fragment-level
-// test proves the directives/examples are byte-equal; this proves buildSystemPrompt
-// composes them identically regardless of source, so flipping the flag is zero-behavior.
-func TestCapabilitySource_SkillRegistryPreservesSystemPromptSHA(t *testing.T) {
-	withSkillRegistrySource(t, true, func() {
-		sum := sha256.Sum256([]byte(buildSystemPrompt()))
-		got := hex.EncodeToString(sum[:])
-		if got != systemPromptSHA256Baseline {
-			t.Errorf("system prompt drifted under USE_SKILL_REGISTRY=on.\n"+
-				"  baseline (legacy): %s\n"+
-				"  skill-registry:    %s\n"+
-				"Flag-on must be byte-identical to flag-off (B2b §5).",
-				systemPromptSHA256Baseline, got)
-		}
-	})
-}
-
-// TestCapabilitySource_SkillRegistryRoutesIdenticalDispatch mirrors
-// TestDispatchCapability_RoutesToHandler with the skill-registry source on: every
-// legacy capability intent still dispatches to a handler that returns Handled with
-// ToolAction == requiredTool. Proves the flag-on dispatch path reaches the same
-// handlers (func-pointer identity is separately pinned by TestCapabilityHandlerByKey_MatchesRegistry).
+// TestCapabilitySource_SkillRegistryRoutesIdenticalDispatch asserts every
+// capability intent dispatches to a handler that returns Handled with
+// ToolAction == requiredTool (func-pointer identity is separately pinned by
+// TestCapabilityHandlerByKey_MatchesRegistry).
 func TestCapabilitySource_SkillRegistryRoutesIdenticalDispatch(t *testing.T) {
-	withSkillRegistrySource(t, true, func() {
-		h := NewDemoHandler(stubFailingExecutor{})
-		for _, e := range capabilityRegistry {
-			if !IsCapabilityIntent(e.intent) {
-				t.Errorf("IsCapabilityIntent(%q) = false under skill-registry source, want true", e.intent)
-			}
-			req := HandlerRequest{Plan: Plan{Intent: e.intent}}
-			result := h.DispatchCapability(context.Background(), req)
-			if result.Status != HandlerStatusHandled {
-				t.Errorf("skill-registry DispatchCapability(%q) status = %q, want %q", e.intent, result.Status, HandlerStatusHandled)
-			}
-			if result.ToolAction != e.requiredTool {
-				t.Errorf("skill-registry DispatchCapability(%q) ToolAction = %q, want %q", e.intent, result.ToolAction, e.requiredTool)
-			}
+	h := NewDemoHandler(stubFailingExecutor{})
+	for i := range capabilityIntentSet() {
+		if !IsCapabilityIntent(i) {
+			t.Errorf("IsCapabilityIntent(%q) = false, want true", i)
 		}
-	})
-}
-
-// TestSkillRegistryCapabilityFragments_ByteIdenticalToLegacy is the B2b P2
-// byte-identity gate. The planner-prompt directives + examples built from the
-// generated skill registry MUST be byte-for-byte identical to the legacy
-// capabilityMetadata source. A failure means a migrated skill.md drifted from its
-// capabilities/*.md origin (a directive string, an example question, or a
-// confidence value) — which would change the planner system prompt SHA the
-// moment USE_SKILL_REGISTRY is flipped on.
-func TestSkillRegistryCapabilityFragments_ByteIdenticalToLegacy(t *testing.T) {
-	legacyDir, legacyEx := capabilityPromptFragmentsFrom(capabilityMetadata)
-	skillDir, skillEx := capabilityPromptFragmentsFrom(skillRegistryCapabilityMetadata())
-
-	assertStringSlicesEqual(t, "directives", legacyDir, skillDir)
-	assertStringSlicesEqual(t, "examples", legacyEx, skillEx)
-}
-
-func assertStringSlicesEqual(t *testing.T, label string, want, got []string) {
-	t.Helper()
-	if len(want) != len(got) {
-		t.Fatalf("%s: length differs: legacy=%d skill=%d", label, len(want), len(got))
-	}
-	for i := range want {
-		if want[i] != got[i] {
-			t.Fatalf("%s[%d] differs:\n legacy: %q\n skill:  %q", label, i, want[i], got[i])
+		req := HandlerRequest{Plan: Plan{Intent: i}}
+		result := h.DispatchCapability(context.Background(), req)
+		if result.Status != HandlerStatusHandled {
+			t.Errorf("DispatchCapability(%q) status = %q, want %q", i, result.Status, HandlerStatusHandled)
+		}
+		if want := skillRequiredTool(i); result.ToolAction != want {
+			t.Errorf("DispatchCapability(%q) ToolAction = %q, want %q", i, result.ToolAction, want)
 		}
 	}
 }
 
 // TestCapabilityHandlerForKey_ResolvesEveryCapabilitySkill asserts every migrated
 // capability skill declares a handler_key that resolves to a non-nil handler, and
-// that the count of capability skills equals the capabilityRegistry size.
+// that the count of capability skills equals capabilityIntentOrder.
 func TestCapabilityHandlerForKey_ResolvesEveryCapabilitySkill(t *testing.T) {
 	count := 0
 	for _, s := range skills.GeneratedSkills() {
@@ -122,35 +68,47 @@ func TestCapabilityHandlerForKey_ResolvesEveryCapabilitySkill(t *testing.T) {
 			t.Errorf("skill %q handler_key %q does not resolve", s.Name, s.HandlerKey)
 		}
 	}
-	if count != len(capabilityRegistry) {
-		t.Errorf("capability skills (intent_label set) = %d, want %d (capabilityRegistry size)", count, len(capabilityRegistry))
+	if count != len(capabilityIntentOrder) {
+		t.Errorf("capability skills (intent_label set) = %d, want %d (capabilityIntentOrder size)", count, len(capabilityIntentOrder))
 	}
 }
 
-// TestCapabilityHandlerByKey_MatchesRegistry asserts the handler bound to each
-// capability skill's handler_key is the SAME func capabilityRegistry dispatches
-// for that intent (compared by func pointer). This pins the skill↔Go dispatch
-// binding so the flag-on path routes identically to legacy.
+// TestCapabilityHandlerByKey_MatchesExpectedHandlers asserts the handler bound to
+// each capability skill's handler_key is the expected per-intent Go handler func
+// (compared by func pointer). This pins the skill↔Go dispatch binding.
 func TestCapabilityHandlerByKey_MatchesRegistry(t *testing.T) {
+	expectedByIntent := map[Intent]capabilityHandlerFunc{
+		IntentGPUSpecsQuery:      handleGPUSpecsQuery,
+		IntentStockAvailability:  handleStockAvailability,
+		IntentPlatformImageList:  handlePlatformImageList,
+		IntentCustomImageList:    handleCustomImageList,
+		IntentCommunityImageList: handleCommunityImageList,
+		IntentPricingQuery:       handlePricingQuery,
+	}
 	keyByIntent := map[Intent]string{}
 	for _, s := range skills.GeneratedSkills() {
 		if s.IntentLabel != "" {
 			keyByIntent[Intent(s.IntentLabel)] = s.HandlerKey
 		}
 	}
-	for _, e := range capabilityRegistry {
-		key, ok := keyByIntent[e.intent]
+	for _, i := range capabilityIntentOrder {
+		key, ok := keyByIntent[i]
 		if !ok {
-			t.Errorf("intent %q has no capability skill", e.intent)
+			t.Errorf("intent %q has no capability skill", i)
 			continue
 		}
 		got := CapabilityHandlerForKey(key)
 		if got == nil {
-			t.Errorf("intent %q handler_key %q does not resolve", e.intent, key)
+			t.Errorf("intent %q handler_key %q does not resolve", i, key)
 			continue
 		}
-		if reflect.ValueOf(got).Pointer() != reflect.ValueOf(e.handler).Pointer() {
-			t.Errorf("intent %q: skill handler_key %q binds a different func than capabilityRegistry", e.intent, key)
+		want := expectedByIntent[i]
+		if want == nil {
+			t.Errorf("intent %q has no expected handler in the test table", i)
+			continue
+		}
+		if reflect.ValueOf(got).Pointer() != reflect.ValueOf(want).Pointer() {
+			t.Errorf("intent %q: skill handler_key %q binds a different func than expected", i, key)
 		}
 	}
 }
@@ -224,25 +182,25 @@ func TestCapabilitySkills_ReactToolSubsetMatchesIntentToolSubset(t *testing.T) {
 	}
 }
 
-// TestSkillRegistryCapabilityMetadata_MatchesLegacyShape asserts the skill-sourced
-// metadata reproduces the legacy capabilityMetadata field-for-field (same order,
-// names, required tool, citation flag) — the structural counterpart to the
-// byte-identity prompt test.
-func TestSkillRegistryCapabilityMetadata_MatchesLegacyShape(t *testing.T) {
+// TestSkillRegistryCapabilityMetadata_Shape asserts the skill-sourced metadata is
+// ordered by capabilityIntentOrder, projects each capability skill's required tool
+// (RequiredTools[0]) into RequiredTool, and never sets required_citation
+// (capabilities are NOT cited).
+func TestSkillRegistryCapabilityMetadata_Shape(t *testing.T) {
 	skillMeta := skillRegistryCapabilityMetadata()
-	if len(skillMeta) != len(capabilityMetadata) {
-		t.Fatalf("skill metadata count = %d, want %d", len(skillMeta), len(capabilityMetadata))
+	if len(skillMeta) != len(capabilityIntentOrder) {
+		t.Fatalf("skill metadata count = %d, want %d", len(skillMeta), len(capabilityIntentOrder))
 	}
-	for i, legacy := range capabilityMetadata {
+	for i, want := range capabilityIntentOrder {
 		got := skillMeta[i]
-		if got.Name != legacy.Name || got.IntentLabel != legacy.IntentLabel {
-			t.Errorf("[%d] name/intent drift: skill=%q/%q legacy=%q/%q", i, got.Name, got.IntentLabel, legacy.Name, legacy.IntentLabel)
+		if got.IntentLabel != string(want) {
+			t.Errorf("[%d] intent order drift: skill=%q want=%q", i, got.IntentLabel, want)
 		}
-		if got.RequiredTool != legacy.RequiredTool {
-			t.Errorf("[%d] %s: required_tool skill=%q legacy=%q", i, legacy.Name, got.RequiredTool, legacy.RequiredTool)
+		if wantTool := skillRequiredTool(want); got.RequiredTool != wantTool {
+			t.Errorf("[%d] %s: required_tool skill=%q want=%q", i, got.Name, got.RequiredTool, wantTool)
 		}
-		if got.RequiredCitation != legacy.RequiredCitation {
-			t.Errorf("[%d] %s: required_citation skill=%v legacy=%v", i, legacy.Name, got.RequiredCitation, legacy.RequiredCitation)
+		if got.RequiredCitation {
+			t.Errorf("[%d] %s: required_citation must be false for capabilities", i, got.Name)
 		}
 	}
 }

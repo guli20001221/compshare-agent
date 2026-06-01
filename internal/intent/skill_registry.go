@@ -6,43 +6,11 @@ import (
 	"github.com/compshare-agent/internal/skills"
 )
 
-// skill_registry.go is the B2b P2 bridge between the generated skill registry
+// skill_registry.go is the bridge between the generated skill registry
 // (internal/skills, metadata-only) and package intent (which owns the capability
-// handler funcs). It lets the skill registry serve as the capability dispatch +
-// planner-prompt source while keeping internal/skills import-cycle-free: skills
+// handler funcs). The skill registry is the sole capability dispatch +
+// planner-prompt source. It keeps internal/skills import-cycle-free: skills
 // stores handler_key as a STRING, and the string→func binding lives here.
-//
-// B2b P2 wires the bridge + proves byte-identity against the legacy
-// capabilityMetadata source. The USE_SKILL_REGISTRY flag (useSkillRegistrySource
-// below, set at boot via SetCapabilitySource) selects whether IsCapabilityIntent /
-// DispatchCapability / CapabilityPromptFragments read this generated registry or
-// the legacy capabilityRegistry — default legacy, flag-on byte-identical.
-
-// useSkillRegistrySource selects whether capability dispatch + planner-prompt
-// fragments come from the generated skill registry (true) or the legacy
-// capabilityRegistry/capabilityMetadata (false, default).
-//
-// BOOT-ONLY switch: set once via SetCapabilitySource before the engine serves
-// any turn (the cmd layer reads USE_SKILL_REGISTRY at process boot — cli.go for
-// the CLI, shared_deps.go for the server, mirroring COMPSHARE_ENABLE_MUTATING_TOOLS).
-// It is then read — never written — by IsCapabilityIntent / DispatchCapability /
-// CapabilityPromptFragments, so there is no concurrent-write race with sessions.
-// Flipping it on the server requires a restart (process-global, no hot reload —
-// B2b §8a). Flag-on is byte-identical to flag-off (the prompt fragments are byte-
-// equal: TestSkillRegistryCapabilityFragments_ByteIdenticalToLegacy; dispatch
-// resolves the same func pointers: TestCapabilityHandlerByKey_MatchesRegistry),
-// so this changes no behavior — its purpose is to exercise the skill-registry
-// path in production ahead of P3 / the agent tier.
-var useSkillRegistrySource bool
-
-// SetCapabilitySource selects the capability dispatch + planner-prompt source.
-// MUST be called once at process boot, before the first Chat. Not safe to call
-// concurrently with engine turns.
-func SetCapabilitySource(useSkillRegistry bool) { useSkillRegistrySource = useSkillRegistry }
-
-// CapabilitySourceIsSkillRegistry reports the active source (for runtime-line
-// logging and tests).
-func CapabilitySourceIsSkillRegistry() bool { return useSkillRegistrySource }
 
 // isCapabilityIntentSkill is the skill-registry-sourced IsCapabilityIntent: an
 // intent is a capability iff a generated capability skill (non-empty intent_label)
@@ -73,15 +41,14 @@ func (h *DemoHandler) dispatchCapabilitySkill(ctx context.Context, req HandlerRe
 	return FallbackBeforeTool(FallbackValidation)
 }
 
-// capabilityHandlerFunc is the capability dispatch handler signature (identical
-// to capabilityEntry.handler).
+// capabilityHandlerFunc is the capability dispatch handler signature.
 type capabilityHandlerFunc = func(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult
 
 // capabilityHandlerByKey binds each capability skill's handler_key (the string in
 // the skill.md frontmatter) to its Go handler func. internal/skills stores only
-// the string key — this map is the func-pointer side, mirroring
-// capabilityRegistry's intent→handler binding. Drift (against the registry and
-// against the skill-declared handler_keys) is caught by skill_registry_test.go.
+// the string key — this map is the func-pointer side of the intent→handler binding.
+// Drift (against the expected per-intent handlers and against the skill-declared
+// handler_keys) is caught by skill_registry_test.go.
 var capabilityHandlerByKey = map[string]capabilityHandlerFunc{
 	"handleGPUSpecsQuery":      handleGPUSpecsQuery,
 	"handleStockAvailability":  handleStockAvailability,
@@ -98,10 +65,9 @@ func CapabilityHandlerForKey(key string) capabilityHandlerFunc {
 }
 
 // skillRegistryCapabilityMetadata projects the generated skill registry into the
-// legacy []CapabilityMetadata shape, restricted to capability skills (non-empty
-// intent_label) and ORDERED by capabilityRegistry registration order so the
-// resulting planner-prompt fragments are byte-identical to the legacy
-// capabilityMetadata source.
+// []CapabilityMetadata shape, restricted to capability skills (non-empty
+// intent_label) and ORDERED by capabilityIntentOrder (via CapabilityIntents) so the
+// planner-prompt fragments stay byte-identity-pinned (systemPromptSHA256Baseline).
 func skillRegistryCapabilityMetadata() []CapabilityMetadata {
 	byIntent := make(map[Intent]*skills.Skill)
 	for _, s := range skills.GeneratedSkills() {

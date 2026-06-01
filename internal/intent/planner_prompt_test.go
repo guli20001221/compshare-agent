@@ -65,7 +65,7 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	// below so adding a new capability OR extending an existing one's examples
 	// auto-updates.
 	capabilityExampleCount := 0
-	for _, m := range capabilityMetadata {
+	for _, m := range skillRegistryCapabilityMetadata() {
 		capabilityExampleCount += len(m.PlannerExamples)
 	}
 	// PR1 hotfix Bug 1 (2026-05-28): bumped from 19 → 20 with the ZERO-target

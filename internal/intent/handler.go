@@ -12,6 +12,7 @@ import (
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/security"
+	"github.com/compshare-agent/internal/skills"
 )
 
 const FriendlyToolFailureReply = "\u67e5\u8be2\u6682\u65f6\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5\u3002"
@@ -259,18 +260,17 @@ func cutoverStatusForFallback(reason FallbackReason) CutoverStatus {
 }
 
 // handlerActionWhitelist gates which (Intent, action) pairs are allowed at the
-// SafeToolExecutor boundary. Legacy entries (resource/monitor) are hardcoded;
-// capability entries are derived from capabilityRegistry so the registry table
-// is the single source of truth (test TestHandlerActionWhitelist_DerivesFromRegistry
-// enforces drift prevention).
+// SafeToolExecutor boundary. The two legacy entries (resource/monitor) are
+// hardcoded; capability entries are derived from the generated skill registry —
+// each capability skill contributes ITS required tool (RequiredTools[0]), NOT its
+// broader react_tool_subset, so the security whitelist stays narrow. The curated
+// extraHandlerActions() map then adds the security-vetted extras (stock_availability
+// only). The exact resulting set is pinned by TestHandlerActionWhitelist_ExactGoldenSet
+// so a widening (e.g. a tool leaking from react_tool_subset) fails loudly.
 //
-// Computed lazily via sync.Once to break the package-init cycle that would
-// otherwise form through:
-//
-//	var whitelist = derive(capabilityRegistry)  -> takes pointers to handlers ->
-//	  handlers call RequireAllowedHandlerAction -> which reads `whitelist`.
-//
-// Function-call indirection sidesteps Go's init-time cycle check.
+// Computed lazily via sync.Once so the derivation runs after the skill registry's
+// package init; function-call indirection keeps it off the package-init critical
+// path.
 var (
 	handlerActionWhitelistOnce  sync.Once
 	handlerActionWhitelistCache map[Intent]map[string]struct{}
@@ -279,18 +279,18 @@ var (
 func handlerActionWhitelist() map[Intent]map[string]struct{} {
 	handlerActionWhitelistOnce.Do(func() {
 		m := map[Intent]map[string]struct{}{
-			IntentResourceInfo: {
-				"DescribeCompShareInstance": {},
-			},
-			IntentMonitorQuery: {
-				"GetCompShareInstanceMonitor": {},
-			},
+			IntentResourceInfo: {"DescribeCompShareInstance": {}},
+			IntentMonitorQuery: {"GetCompShareInstanceMonitor": {}},
 		}
-		for _, e := range capabilityRegistry {
-			if _, ok := m[e.intent]; !ok {
-				m[e.intent] = map[string]struct{}{}
+		for _, s := range skills.GeneratedSkills() {
+			if s.IntentLabel == "" || len(s.RequiredTools) == 0 {
+				continue
 			}
-			m[e.intent][e.requiredTool] = struct{}{}
+			intentValue := Intent(s.IntentLabel)
+			if _, ok := m[intentValue]; !ok {
+				m[intentValue] = map[string]struct{}{}
+			}
+			m[intentValue][s.RequiredTools[0]] = struct{}{}
 		}
 		for intentValue, actions := range extraHandlerActions() {
 			if _, ok := m[intentValue]; !ok {

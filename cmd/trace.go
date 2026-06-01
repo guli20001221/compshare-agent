@@ -185,31 +185,10 @@ func mutatingToolsRuntimeLine(enabled bool) string {
 	return "mutating=disabled (read-only mode)"
 }
 
-// useSkillRegistryFromEnv reads USE_SKILL_REGISTRY. The default flipped ON in
-// P3a-3: "" (unset) and "1" both select the generated skill registry as the
-// capability dispatch + planner-prompt source; "0" explicitly reverts to the
-// legacy capabilityRegistry; any other value is unknown → reverts to legacy + the
-// raw value (the caller warns, per the CLAUDE.md unknown-treated-as-off rule).
-// Both sources are byte-identical (TestCapabilitySource_SkillRegistryPreservesSystemPromptSHA),
-// so the flip changes nothing beyond the startup capability_source log line.
-// Boot-only; a server flip needs a restart.
-func useSkillRegistryFromEnv(getenv getenvFunc) (bool, string) {
-	value := strings.TrimSpace(getenv("USE_SKILL_REGISTRY"))
-	switch value {
-	case "", "1":
-		return true, ""
-	case "0":
-		return false, ""
-	default:
-		return false, value
-	}
-}
-
-// useSkillExecutorFromEnv reads USE_SKILL_EXECUTOR (P2a gray-rollout). Same
-// boolean shape as useSkillRegistryFromEnv: "1" enables the body-driven skill
-// executor for piloted agent skills (currently diagnose_port_firewall), "" is
-// off, any other value is unknown → off + the raw value (caller warns). Default
-// off; boot-only, flips need a restart.
+// useSkillExecutorFromEnv reads USE_SKILL_EXECUTOR (P2a gray-rollout). "1" enables
+// the body-driven skill executor for piloted agent skills (currently
+// diagnose_port_firewall), "" is off, any other value is unknown → off + the raw
+// value (caller warns). Default off; boot-only, flips need a restart.
 func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
 	value := strings.TrimSpace(getenv("USE_SKILL_EXECUTOR"))
 	switch value {
@@ -220,13 +199,6 @@ func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
 	default:
 		return false, value
 	}
-}
-
-func skillRegistryRuntimeLine(enabled bool) string {
-	if enabled {
-		return "capability_source=skill_registry"
-	}
-	return "capability_source=legacy"
 }
 
 func plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled bool, cutoverIntents []intent.Intent) observability.RuntimeTrace {

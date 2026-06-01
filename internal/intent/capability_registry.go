@@ -1,49 +1,30 @@
 package intent
 
 import (
-	"bytes"
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/envelope"
-
-	"gopkg.in/yaml.v3"
+	"github.com/compshare-agent/internal/skills"
 )
 
-// capabilityEntry binds an Intent label to one platform tool and the handler that
-// invokes that tool. Adding a capability is data-only here: engine.go has a single
-// generic IsCapabilityIntent / DispatchCapability hook and does NOT need per-case
-// wiring. See .claude/artifacts/pr-capability-routing-brief-2026-05-18.md §3.
-type capabilityEntry struct {
-	intent       Intent
-	// skillGroup labels the Skill this capability belongs to (e.g. "catalog").
-	// Currently consumed only by trace annotation. Phase 2.3 will use it for
-	// per-Skill prompt segment selection. See docs/plans/2026-05-25-agent-optimization-plan.md §2.3.
-	skillGroup   string
-	requiredTool string
-	// toolSubset lists additional tools this capability may invoke beyond
-	// requiredTool. Not populated until Phase 2.3 wires per-Skill ReAct
-	// scoping (VisibleRegistryForIntent). Until then, the live security
-	// gate for extra actions is extraHandlerActions() — do not duplicate
-	// values here to avoid dual source of truth.
-	toolSubset []string
-	handler    func(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult
-}
-
-var capabilityRegistry = []capabilityEntry{
-	{intent: IntentGPUSpecsQuery, skillGroup: "catalog", requiredTool: "DescribeAvailableCompShareInstanceTypes", handler: handleGPUSpecsQuery},
-	{intent: IntentStockAvailability, skillGroup: "catalog", requiredTool: "DescribeAvailableCompShareInstanceTypes", handler: handleStockAvailability},
-	{intent: IntentPlatformImageList, skillGroup: "catalog", requiredTool: "DescribeCompShareImages", handler: handlePlatformImageList},
-	{intent: IntentCustomImageList, skillGroup: "catalog", requiredTool: "DescribeCompShareCustomImages", handler: handleCustomImageList},
-	{intent: IntentCommunityImageList, skillGroup: "catalog", requiredTool: "DescribeCommunityImages", handler: handleCommunityImageList},
-	{intent: IntentPricingQuery, skillGroup: "catalog", requiredTool: "GetCompShareInstancePrice", handler: handlePricingQuery},
+// capabilityIntentOrder is the registration order of the 6 catalog capability
+// intents. It is the ONLY remnant of the deleted capabilityRegistry: the planner
+// prompt fragments are emitted in this order and the order is byte-identity-pinned
+// (NOT alphabetical). Handler binding, required tool, and metadata now come from
+// the generated skill registry (skills.GeneratedSkills()); only the order lives here.
+var capabilityIntentOrder = []Intent{
+	IntentGPUSpecsQuery,
+	IntentStockAvailability,
+	IntentPlatformImageList,
+	IntentCustomImageList,
+	IntentCommunityImageList,
+	IntentPricingQuery,
 }
 
 func extraHandlerActions() map[Intent][]string {
@@ -59,31 +40,19 @@ func extraHandlerActions() map[Intent][]string {
 // registry (vs. legacy IntentResourceInfo/MonitorQuery or RAG-bound knowledge_qa).
 // Engine.go uses this single predicate to gate capability dispatch.
 func IsCapabilityIntent(i Intent) bool {
-	if useSkillRegistrySource {
-		return isCapabilityIntentSkill(i)
-	}
-	for _, e := range capabilityRegistry {
-		if e.intent == i {
-			return true
-		}
-	}
-	return false
+	return isCapabilityIntentSkill(i)
 }
 
 // CapabilityIntents returns the set of capability Intents in registration order.
 // Used by planner prompt build + cmd/trace parsing.
 func CapabilityIntents() []Intent {
-	out := make([]Intent, 0, len(capabilityRegistry))
-	for _, e := range capabilityRegistry {
-		out = append(out, e.intent)
-	}
-	return out
+	return append([]Intent(nil), capabilityIntentOrder...)
 }
 
 func capabilityRequiredTool(i Intent) (string, bool) {
-	for _, e := range capabilityRegistry {
-		if e.intent == i {
-			return e.requiredTool, true
+	for _, s := range skills.GeneratedSkills() {
+		if s.IntentLabel == string(i) && len(s.RequiredTools) > 0 {
+			return s.RequiredTools[0], true
 		}
 	}
 	return "", false
@@ -93,181 +62,39 @@ func capabilityRequiredTool(i Intent) (string, bool) {
 // Returns FallbackBeforeTool(validation) if the intent is not registered — this
 // is unreachable when engine.go gates on IsCapabilityIntent first.
 func (h *DemoHandler) DispatchCapability(ctx context.Context, req HandlerRequest) HandlerResult {
-	if useSkillRegistrySource {
-		return h.dispatchCapabilitySkill(ctx, req)
-	}
-	for _, e := range capabilityRegistry {
-		if e.intent == req.Plan.Intent {
-			return e.handler(ctx, h, req)
-		}
-	}
-	return FallbackBeforeTool(FallbackValidation)
+	return h.dispatchCapabilitySkill(ctx, req)
 }
 
-//go:embed capabilities/*.md
-var capabilitiesFS embed.FS
-
-// CapabilityMetadata is the frontmatter shape parsed from each capabilities/*.md.
-// Stored only for planner prompt construction; runtime dispatch uses the
-// hardcoded registry table above (single source of truth).
+// CapabilityMetadata is the planner-prompt projection of a capability skill.
+// Stored only for planner prompt construction; runtime dispatch resolves the
+// handler via the generated skill registry (skills.GeneratedSkills()).
 type CapabilityMetadata struct {
-	Name              string                     `yaml:"name"`
-	IntentLabel       string                     `yaml:"intent_label"`
-	SkillGroup        string                     `yaml:"skill_group,omitempty"`
-	RequiredTool      string                     `yaml:"required_tool"`
-	ToolSubset        []string                   `yaml:"tool_subset,omitempty"`
-	RequiredCitation  bool                       `yaml:"required_citation"`
-	PlannerDirectives []string                   `yaml:"planner_directives"`
-	PlannerExamples   []CapabilityPlannerExample `yaml:"planner_examples"`
-	Body              string                     `yaml:"-"`
+	Name              string
+	IntentLabel       string
+	SkillGroup        string
+	RequiredTool      string
+	ToolSubset        []string
+	RequiredCitation  bool
+	PlannerDirectives []string
+	PlannerExamples   []CapabilityPlannerExample
 }
 
 type CapabilityPlannerExample struct {
-	Question   string  `yaml:"question"`
-	Confidence float64 `yaml:"confidence"`
-}
-
-var capabilityMetadata = mustLoadCapabilityMetadata()
-
-func mustLoadCapabilityMetadata() []CapabilityMetadata {
-	loaded, err := loadCapabilityMetadata(capabilitiesFS)
-	if err != nil {
-		panic(fmt.Sprintf("intent: capability metadata load failed: %v", err))
-	}
-	// Verify every registry entry has matching metadata, and every metadata
-	// entry has matching registry. Drift here is a build-time bug.
-	regSet := map[Intent]struct{}{}
-	for _, e := range capabilityRegistry {
-		regSet[e.intent] = struct{}{}
-	}
-	metaSet := map[Intent]struct{}{}
-	metaByIntent := map[Intent]CapabilityMetadata{}
-	for _, m := range loaded {
-		intentValue := Intent(m.IntentLabel)
-		metaSet[intentValue] = struct{}{}
-		metaByIntent[intentValue] = m
-	}
-	for intentValue := range regSet {
-		if _, ok := metaSet[intentValue]; !ok {
-			panic(fmt.Sprintf("intent: registry entry %q has no matching capabilities/*.md frontmatter", intentValue))
-		}
-	}
-	for intentValue := range metaSet {
-		if _, ok := regSet[intentValue]; !ok {
-			panic(fmt.Sprintf("intent: capabilities/*.md frontmatter %q has no matching registry entry", intentValue))
-		}
-	}
-	ordered := make([]CapabilityMetadata, 0, len(capabilityRegistry))
-	for _, e := range capabilityRegistry {
-		meta := metaByIntent[e.intent]
-		if meta.RequiredTool != e.requiredTool {
-			panic(fmt.Sprintf("intent: capability %q required_tool=%q does not match registry tool %q", e.intent, meta.RequiredTool, e.requiredTool))
-		}
-		if meta.SkillGroup != e.skillGroup {
-			panic(fmt.Sprintf("intent: capability %q skill_group=%q does not match registry skillGroup %q", e.intent, meta.SkillGroup, e.skillGroup))
-		}
-		ordered = append(ordered, meta)
-	}
-	return ordered
-}
-
-func loadCapabilityMetadata(efs fs.FS) ([]CapabilityMetadata, error) {
-	entries, err := fs.ReadDir(efs, "capabilities")
-	if err != nil {
-		return nil, fmt.Errorf("read capabilities dir: %w", err)
-	}
-	out := make([]CapabilityMetadata, 0, len(entries))
-	for _, ent := range entries {
-		if ent.IsDir() {
-			continue
-		}
-		name := ent.Name()
-		if strings.HasPrefix(name, "_") {
-			// Placeholder files (e.g. _general_tech_qa.md.disabled) are skipped
-			// so PR B can park its draft without affecting PR A planner prompt.
-			continue
-		}
-		if !strings.HasSuffix(name, ".md") {
-			continue
-		}
-		data, err := fs.ReadFile(efs, "capabilities/"+name)
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", name, err)
-		}
-		meta, err := parseCapabilityFrontmatter(data)
-		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", name, err)
-		}
-		if meta.Name == "" || meta.IntentLabel == "" || meta.RequiredTool == "" {
-			return nil, fmt.Errorf("parse %s: name/intent_label/required_tool must be non-empty", name)
-		}
-		if len(meta.PlannerDirectives) == 0 || len(meta.PlannerExamples) == 0 {
-			return nil, fmt.Errorf("parse %s: planner_directives and planner_examples must be non-empty", name)
-		}
-		for i, directive := range meta.PlannerDirectives {
-			if strings.TrimSpace(directive) == "" {
-				return nil, fmt.Errorf("parse %s: planner_directives[%d] must be non-empty", name, i)
-			}
-		}
-		for i, example := range meta.PlannerExamples {
-			if strings.TrimSpace(example.Question) == "" {
-				return nil, fmt.Errorf("parse %s: planner_examples[%d].question must be non-empty", name, i)
-			}
-			if example.Confidence <= 0 || example.Confidence > 1 {
-				return nil, fmt.Errorf("parse %s: planner_examples[%d].confidence must be in (0,1]", name, i)
-			}
-		}
-		out = append(out, meta)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].IntentLabel < out[j].IntentLabel
-	})
-	return out, nil
-}
-
-// parseCapabilityFrontmatter parses a `--- ... ---` YAML preamble + markdown body.
-// Required for build-time fail-fast verification that frontmatter matches the
-// registry table.
-func parseCapabilityFrontmatter(data []byte) (CapabilityMetadata, error) {
-	content := string(data)
-	if !strings.HasPrefix(content, "---") {
-		return CapabilityMetadata{}, fmt.Errorf("missing frontmatter `---` opener")
-	}
-	rest := strings.TrimPrefix(content, "---")
-	rest = strings.TrimLeft(rest, "\r\n")
-	closer := strings.Index(rest, "\n---")
-	if closer < 0 {
-		return CapabilityMetadata{}, fmt.Errorf("missing frontmatter `---` closer")
-	}
-	frontmatter := rest[:closer]
-	body := rest[closer+len("\n---"):]
-	body = strings.TrimLeft(body, "\r\n")
-	var meta CapabilityMetadata
-	decoder := yaml.NewDecoder(bytes.NewReader([]byte(frontmatter)))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&meta); err != nil {
-		return CapabilityMetadata{}, fmt.Errorf("yaml unmarshal: %w", err)
-	}
-	meta.Body = body
-	return meta, nil
+	Question   string
+	Confidence float64
 }
 
 // CapabilityPromptFragments returns planner-prompt directives + one-shot
-// examples derived from internal/intent/capabilities/*.md frontmatter (legacy)
-// or, when USE_SKILL_REGISTRY is on, from the generated skill registry. The two
-// sources are byte-identical (TestSkillRegistryCapabilityFragments_ByteIdenticalToLegacy).
+// examples derived from the generated skill registry (the sole capability
+// source). The fragment order follows capabilityIntentOrder.
 func CapabilityPromptFragments() ([]string, []string) {
-	if useSkillRegistrySource {
-		return capabilityPromptFragmentsFrom(skillRegistryCapabilityMetadata())
-	}
-	return capabilityPromptFragmentsFrom(capabilityMetadata)
+	return capabilityPromptFragmentsFrom(skillRegistryCapabilityMetadata())
 }
 
 // capabilityPromptFragmentsFrom is the pure builder underlying
 // CapabilityPromptFragments: it derives the directives + one-shot examples from
-// the given metadata slice (in slice order). Source-parameterized so B2b P2 can
-// feed it skill-registry-sourced metadata and assert byte-identity against the
-// legacy capabilityMetadata source without duplicating this logic.
+// the given metadata slice (in slice order). Kept source-parameterized so tests
+// can feed it a known metadata slice independently of the live skill registry.
 func capabilityPromptFragmentsFrom(meta []CapabilityMetadata) ([]string, []string) {
 	names := make([]string, 0, len(meta))
 	for _, m := range meta {
@@ -330,14 +157,10 @@ func executeCapabilityAction(ctx context.Context, h *DemoHandler, intentValue In
 	//   layer 1: compile-time `const action` binding inside each capability handler
 	//   layer 2: SafeToolExecutor.PolicyForAction gate at the runtime boundary
 	// We deliberately skip layer 3 (RequireAllowedHandlerAction reading
-	// handlerActionWhitelist) because the registry table IS the binding spec —
-	// calling it here would be redundant. As a downstream consequence, adding
-	// it would also form a package-init cycle
-	//   capabilityRegistry -> handleX -> RequireAllowedHandlerAction ->
-	//   handlerActionWhitelist -> capabilityRegistry
-	// so the two-layer choice is consistent with what Go's init-cycle detector
-	// allows. Drift between registry and whitelist is caught by
-	// TestHandlerActionWhitelist_DerivesFromRegistry.
+	// handlerActionWhitelist) because the generated skill registry IS the binding
+	// spec — calling it here would be redundant. The whitelist is derived from the
+	// same skill registry, and its exact contents are pinned by
+	// TestHandlerActionWhitelist_ExactGoldenSet.
 	if h == nil || h.executor == nil {
 		// Defensive: production wiring must construct the handler with a
 		// SafeToolExecutor adapter before enabling capability cutover.

@@ -3305,10 +3305,10 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	return string(b)
 }
 
-// skillExecutorEnabled is the process-global, boot-only USE_SKILL_EXECUTOR gate
-// (mirrors intent.SetCapabilitySource). Default off: agent-lane diagnosis runs the
-// shipped Go chain. When on, piloted skills route through the body-driven
-// orchestrator.RunReadOnlySkill loop. Boot-only — flips need a restart.
+// skillExecutorEnabled is the process-global, boot-only USE_SKILL_EXECUTOR gate.
+// Default off: agent-lane diagnosis runs the shipped Go chain. When on, piloted
+// skills route through the body-driven orchestrator.RunReadOnlySkill loop.
+// Boot-only — flips need a restart.
 var skillExecutorEnabled bool
 
 // SetSkillExecutorEnabled flips the USE_SKILL_EXECUTOR gate at boot.

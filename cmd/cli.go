@@ -138,11 +138,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_ENABLE_MUTATING_TOOLS value %q\n", unknownMutatingTools)
 	}
 	eng.SetMutatingToolsEnabled(mutatingToolsEnabled)
-	useSkillRegistry, unknownSkillRegistry := useSkillRegistryFromEnv(os.Getenv)
-	if unknownSkillRegistry != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_REGISTRY value %q\n", unknownSkillRegistry)
-	}
-	intent.SetCapabilitySource(useSkillRegistry)
 	useSkillExecutor, unknownSkillExecutor := useSkillExecutorFromEnv(os.Getenv)
 	if unknownSkillExecutor != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR value %q\n", unknownSkillExecutor)
@@ -222,7 +217,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	fmt.Printf("runtime: %s\n", plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled, cutoverIntents))
 	fmt.Printf("renderer: %s\n", groundedRendererRuntimeLine(groundedRendererMode))
 	fmt.Printf("tools: %s\n", mutatingToolsRuntimeLine(mutatingToolsEnabled))
-	fmt.Printf("capability: %s\n", skillRegistryRuntimeLine(useSkillRegistry))
 	fmt.Println()
 	fmt.Println("正在初始化，获取您的实例信息...")
 
