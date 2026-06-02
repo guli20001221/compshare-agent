@@ -3446,6 +3446,7 @@ func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string
 	if svc, _ := args["Service"].(string); svc != "" {
 		seed["Service"] = svc
 	}
+	e.attachDiagnosisKnowledgeEvidence(skillName, e.lastUserMsg, seed, onStep)
 
 	reply, rerr := orchestrator.RunReadOnlySkill(ctx, e.lastUserMsg, seed, orchestrator.SkillExecOptions{
 		Body:      body,
@@ -3463,6 +3464,80 @@ func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string
 		return "", false
 	}
 	return reply, true
+}
+
+func (e *Engine) attachDiagnosisKnowledgeEvidence(skillName, userMsg string, seed map[string]any, onStep func(StepEvent)) {
+	if !diagnosisSkillUsesKnowledgeEvidence(skillName) || e.knowledgeRetriever == nil {
+		return
+	}
+	query := strings.TrimSpace(userMsg)
+	if query == "" {
+		return
+	}
+
+	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
+	retrieved := e.knowledgeRetriever.Retrieve(query, inferKnowledgeProductArea(query))
+	hitItems := retrieved.HitItems
+	if len(hitItems) == 0 && len(retrieved.Hits) > 0 {
+		hitItems = make([]knowledge.RetrievalHit, 0, len(retrieved.Hits))
+		for _, chunk := range retrieved.Hits {
+			hitItems = append(hitItems, knowledge.RetrievalHit{Chunk: chunk, Kept: true})
+		}
+	}
+
+	trace := observability.RetrievalTrace{
+		Enabled:                retrieved.Enabled,
+		KBVersion:              retrieved.KBVersion,
+		QueryRaw:               query,
+		QueryNormalized:        retrieved.QueryNormalized,
+		QueryExpansions:        []string{},
+		Hits:                   len(retrieved.Hits),
+		HybridMode:             retrieved.HybridMode,
+		HybridFallbackReason:   retrieved.HybridFallbackReason,
+		EmbeddingLatencyMS:     retrieved.EmbeddingLatencyMS,
+		EmbeddingModel:         retrieved.EmbeddingModel,
+		RerankerMode:           retrieved.RerankerMode,
+		RerankerLatencyMS:      retrieved.RerankerLatencyMS,
+		RerankerFallbackReason: retrieved.RerankerFallbackReason,
+	}
+	if trace.QueryNormalized == "" {
+		trace.QueryNormalized = knowledge.NormalizeQuery(query)
+	}
+	evidences, evidenceErr := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
+	trace.HitItems = projectEvidenceTraceHits(evidences, hitItems)
+	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: "retrieval", Message: "搜索完成"})
+	if retrieved.Empty || len(retrieved.Hits) == 0 || len(evidences) == 0 || evidenceErr != nil {
+		trace.RefusedReason = "no_evidence"
+		trace.RankingErrorCandidate = true
+		e.emitRetrievalTrace(trace)
+		seed["KnowledgeEvidenceStatus"] = "no_evidence"
+		return
+	}
+	if isWeakEvidence(hitItems, retrieved.HybridMode) {
+		trace.WeakEvidence = true
+	}
+	if isRankingAmbiguous(hitItems, retrieved.HybridMode) {
+		trace.RankingErrorCandidate = true
+	}
+	e.emitRetrievalTrace(trace)
+	seed["KnowledgeEvidenceStatus"] = "available"
+	seed["KnowledgeEvidence"] = diagnosisKnowledgeEvidenceForSeed(evidences)
+}
+
+func diagnosisSkillUsesKnowledgeEvidence(skillName string) bool {
+	return skillName == "diagnose_port_firewall"
+}
+
+func diagnosisKnowledgeEvidenceForSeed(evidences []envelope.Evidence) []map[string]string {
+	refs := ragReferencesFromEvidence(evidences)
+	out := make([]map[string]string, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, map[string]string{
+			"title":   ref.Title,
+			"content": ref.Content,
+		})
+	}
+	return out
 }
 
 // findGeneratedSkill looks up a skill from the embedded generated registry by name.
