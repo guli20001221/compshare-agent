@@ -166,6 +166,18 @@ func TestIntentPlannerCutoverIntentsFromEnv(t *testing.T) {
 	}
 }
 
+func TestIntentPlannerCutoverIntentsFromEnv_NetworkAcceleratorAliases(t *testing.T) {
+	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		if key == "USE_INTENT_PLANNER_FOR" {
+			return "network_accelerator, network_accelerator_status, net_accelerator"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+	require.Len(t, intents, 1)
+	require.Equal(t, "network_accelerator_status", string(intents[0]))
+}
+
 func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
 	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(string) string { return "" })
 	require.Empty(t, unknown)
@@ -179,6 +191,7 @@ func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
 		"platform_image_list",
 		"custom_image_list",
 		"community_image_list",
+		"network_accelerator_status",
 	}
 	require.Len(t, intents, len(want))
 	for i, w := range want {

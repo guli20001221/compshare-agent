@@ -575,6 +575,7 @@ func defaultCutoverIntents() []intent.Intent {
 		intent.IntentPlatformImageList,
 		intent.IntentCustomImageList,
 		intent.IntentCommunityImageList,
+		intent.IntentNetAcceleratorStatus,
 	}
 }
 
@@ -612,6 +613,8 @@ func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []s
 			enabled = intent.IntentCustomImageList
 		case "community_image":
 			enabled = intent.IntentCommunityImageList
+		case "network_accelerator", "network_accelerator_status", "net_accelerator":
+			enabled = intent.IntentNetAcceleratorStatus
 		case "pricing", "pricing_query":
 			// Accept both the short form ("pricing", convention-consistent
 			// with the sibling cases above) and the full intent label
