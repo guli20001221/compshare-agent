@@ -159,7 +159,7 @@ func TestExecuteDiagnosis_PortFirewallRejectsRawKnowledgeLeakAndFallsBack(t *tes
 	eng.SetKnowledgeRetriever(retriever)
 	eng.Init(context.Background())
 	exec.calls = nil
-	eng.lastUserMsg = "webui 鐨勭鍙ｆ墦涓嶅紑锛屾槸涓嶆槸琚槻鐏鎸′簡"
+	eng.lastUserMsg = "webui 的端口打不开，是不是被防火墙挡了"
 
 	var events []StepEvent
 	reply := eng.executeDiagnosis(context.Background(), "DiagnosePortOrFirewall",

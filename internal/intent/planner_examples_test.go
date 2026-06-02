@@ -213,7 +213,21 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 //	    [DescribeCompShareImages]. UNLIKE the routing-only intents above, this one
 //	    DOES have a new engine arm (tryDeployModel) — but the planner prompt change
 //	    is the same shape. SHA bumped by construction.
-const systemPromptSHA256Baseline = "dba76c8635d4aef14939431964a20543596d7c86d832230d848e57cbed9571e6"
+//
+// PR #217 integrated runtime refactor (2026-06-02): SHA bumped for two
+// intentional planner-visible changes:
+//
+//	(1) custom-image saga workflow becomes planner-reachable with two anchors
+//	    for "save current environment as an image" and zero-target follow-up;
+//	(2) deterministic-route terminology is reflected in the Stage 2C routing
+//	    header, using "platform routing" instead of the old local term.
+//
+// Justification: custom-image creation is a high-demand mutating workflow and
+// must route to the confirm-gated saga rather than a raw API call. The routing
+// header change removes stale local terminology from the planner prompt without
+// changing the route examples or tool set. Internal routing tests, workflow
+// tests, and runtime-form eval pin the resulting behavior.
+const systemPromptSHA256Baseline = "28352abbedf692ed811f26675d94774b81257a62e6e1ba315d2e60037fee6ae4"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

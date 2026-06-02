@@ -2,10 +2,10 @@
 // directory under internal/skills/<name>/SKILL.md, parsed as YAML frontmatter +
 // markdown body with progressive disclosure (name/description eager, body lazy).
 //
-// B2b P1 scope: this package builds the loader + codegen machinery against the 5
-// seeded diagnose_* skills. It has NO routable consumer yet (the engine does not
-// read it), so loading it changes no runtime behavior. P2 migrates the 6 active
-// routes and switches dispatch to the generated registry behind a flag.
+// Current scope: this package owns true body-read skills, currently the 5
+// seeded diagnose_* skills. Deterministic read-only routes live under
+// internal/routing/*/route.yaml and are not loaded as skills. The engine reads
+// skill bodies only behind USE_SKILL_EXECUTOR plus the diagnosis allowlist.
 //
 // Contracts (ADR-004 + ADR-008 section B):
 //   - Strict parse: verification_status + field_refs_verified are mandatory with

@@ -102,7 +102,7 @@ func routingPromptFragmentsFrom(meta []RouteMetadata) ([]string, []string) {
 		names = append(names, m.Name)
 	}
 	directives := []string{
-		fmt.Sprintf("Stage 2C route routing: classify clear platform %s questions to the matching route intent.", strings.Join(names, " / ")),
+		fmt.Sprintf("Stage 2C platform routing: classify clear platform %s questions to the matching route intent.", strings.Join(names, " / ")),
 	}
 	examples := []string{}
 	for _, m := range meta {
