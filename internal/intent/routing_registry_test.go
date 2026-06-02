@@ -42,6 +42,7 @@ func TestIsRoutingIntent_KnownLabels(t *testing.T) {
 		IntentStockAvailability,
 		IntentNetAcceleratorStatus,
 		IntentImageTagCatalog,
+		IntentModelRepositoryBrowse,
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
@@ -92,14 +93,15 @@ func TestRouteIntentOrder_NoDuplicates(t *testing.T) {
 // required tool now comes from the generated skill registry (RequiredTools[0]).
 func TestRouteRequiredTool_BindsToRealTool(t *testing.T) {
 	expected := map[Intent]string{
-		IntentGPUSpecsQuery:        "DescribeAvailableCompShareInstanceTypes",
-		IntentStockAvailability:    "DescribeAvailableCompShareInstanceTypes",
-		IntentNetAcceleratorStatus: "CheckCompShareNetOptimizer",
-		IntentImageTagCatalog:      "DescribeCompShareImageTags",
-		IntentPlatformImageList:    "DescribeCompShareImages",
-		IntentCustomImageList:      "DescribeCompShareCustomImages",
-		IntentCommunityImageList:   "DescribeCommunityImages",
-		IntentPricingQuery:         "GetCompShareInstancePrice",
+		IntentGPUSpecsQuery:         "DescribeAvailableCompShareInstanceTypes",
+		IntentStockAvailability:     "DescribeAvailableCompShareInstanceTypes",
+		IntentNetAcceleratorStatus:  "CheckCompShareNetOptimizer",
+		IntentImageTagCatalog:       "DescribeCompShareImageTags",
+		IntentModelRepositoryBrowse: "DescribeModelRepositoryModels",
+		IntentPlatformImageList:     "DescribeCompShareImages",
+		IntentCustomImageList:       "DescribeCompShareCustomImages",
+		IntentCommunityImageList:    "DescribeCommunityImages",
+		IntentPricingQuery:          "GetCompShareInstancePrice",
 	}
 	for _, i := range routingIntentOrder {
 		want := expected[i]
@@ -149,16 +151,17 @@ func TestHandlerActionWhitelist_DerivesFromSkillRegistry(t *testing.T) {
 // gains or loses an action, this test fails loudly.
 func TestHandlerActionWhitelist_ExactGoldenSet(t *testing.T) {
 	golden := map[Intent]map[string]struct{}{
-		IntentResourceInfo:         {"DescribeCompShareInstance": {}},
-		IntentMonitorQuery:         {"GetCompShareInstanceMonitor": {}},
-		IntentGPUSpecsQuery:        {"DescribeAvailableCompShareInstanceTypes": {}},
-		IntentStockAvailability:    {"DescribeAvailableCompShareInstanceTypes": {}, "DescribeCompShareImages": {}, "CheckCompShareResourceCapacity": {}},
-		IntentNetAcceleratorStatus: {"CheckCompShareNetOptimizer": {}},
-		IntentImageTagCatalog:      {"DescribeCompShareImageTags": {}},
-		IntentPlatformImageList:    {"DescribeCompShareImages": {}},
-		IntentCustomImageList:      {"DescribeCompShareCustomImages": {}},
-		IntentCommunityImageList:   {"DescribeCommunityImages": {}},
-		IntentPricingQuery:         {"GetCompShareInstancePrice": {}},
+		IntentResourceInfo:          {"DescribeCompShareInstance": {}},
+		IntentMonitorQuery:          {"GetCompShareInstanceMonitor": {}},
+		IntentGPUSpecsQuery:         {"DescribeAvailableCompShareInstanceTypes": {}},
+		IntentStockAvailability:     {"DescribeAvailableCompShareInstanceTypes": {}, "DescribeCompShareImages": {}, "CheckCompShareResourceCapacity": {}},
+		IntentNetAcceleratorStatus:  {"CheckCompShareNetOptimizer": {}},
+		IntentImageTagCatalog:       {"DescribeCompShareImageTags": {}},
+		IntentModelRepositoryBrowse: {"DescribeModelRepositoryModels": {}, "DescribeModelRepositoryTags": {}},
+		IntentPlatformImageList:     {"DescribeCompShareImages": {}},
+		IntentCustomImageList:       {"DescribeCompShareCustomImages": {}},
+		IntentCommunityImageList:    {"DescribeCommunityImages": {}},
+		IntentPricingQuery:          {"GetCompShareInstancePrice": {}},
 	}
 	got := handlerActionWhitelist()
 	if !reflect.DeepEqual(got, golden) {
@@ -1126,6 +1129,55 @@ func TestRenderImageTagCatalog_Empty(t *testing.T) {
 	reply := renderImageTagCatalogReply(map[string]any{})
 	if !strings.Contains(reply, "未获取到镜像标签") {
 		t.Errorf("empty tag reply should be explicit not-found; got: %s", reply)
+	}
+}
+
+func TestModelRepositoryArgs_MatchesTag(t *testing.T) {
+	tagRaw := map[string]any{"Tags": []any{"LLM", "图像生成"}}
+	args := modelRepositoryArgsFromUserText("有哪些 LLM 模型", tagRaw)
+	if args["tags"] != "LLM" {
+		t.Fatalf("model repository args = %#v, want tags=LLM", args)
+	}
+	if _, ok := args["name"]; ok {
+		t.Fatalf("tag query should not also set name; got %#v", args)
+	}
+}
+
+func TestModelRepositoryArgs_MatchesModelName(t *testing.T) {
+	args := modelRepositoryArgsFromUserText("Qwen 模型仓库里有吗", map[string]any{"Tags": []any{"LLM"}})
+	if args["name"] != "qwen" {
+		t.Fatalf("model repository args = %#v, want name=qwen", args)
+	}
+}
+
+func TestRenderModelRepositoryReply_ListAll(t *testing.T) {
+	modelRaw := map[string]any{"Models": []any{
+		map[string]any{"Name": "Qwen2.5-7B", "Path": "/models/qwen", "Tag": "LLM,Qwen", "Size": "15GB", "Deleted": float64(0)},
+		map[string]any{"Name": "DeletedModel", "Path": "/models/deleted", "Tag": "LLM", "Size": "1GB", "Deleted": float64(1)},
+	}}
+	tagRaw := map[string]any{"Tags": []any{"LLM", "图像生成", "LLM"}}
+	reply := renderModelRepositoryReply(modelRaw, tagRaw, "模型仓库里有哪些模型可以用")
+	for _, want := range []string{"模型仓库标签", "LLM", "模型仓库列表", "Qwen2.5-7B", "/models/qwen"} {
+		if !strings.Contains(reply, want) {
+			t.Errorf("model repository reply missing %q: %s", want, reply)
+		}
+	}
+	if strings.Contains(reply, "LLM、图像生成、LLM") {
+		t.Errorf("model repository tags should be de-duplicated: %s", reply)
+	}
+	if strings.Contains(reply, "DeletedModel") {
+		t.Errorf("deleted model should not render: %s", reply)
+	}
+}
+
+func TestRenderModelRepositoryReply_NameFilterNoMatch(t *testing.T) {
+	modelRaw := map[string]any{"Models": []any{
+		map[string]any{"Name": "Qwen2.5-7B", "Path": "/models/qwen", "Tag": "LLM", "Size": "15GB"},
+	}}
+	tagRaw := map[string]any{"Tags": []any{"LLM"}}
+	reply := renderModelRepositoryReply(modelRaw, tagRaw, "llama 模型有吗")
+	if !strings.Contains(reply, "未找到匹配的模型") {
+		t.Errorf("name-filter no-match should be explicit; got: %s", reply)
 	}
 }
 

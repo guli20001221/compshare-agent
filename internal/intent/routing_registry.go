@@ -13,7 +13,7 @@ import (
 	"github.com/compshare-agent/internal/routing"
 )
 
-// routingIntentOrder is the registration order of the 8 catalog/status route
+// routingIntentOrder is the registration order of the 9 catalog/status route
 // intents. It is the ONLY remnant of the deleted routeRegistry: the planner
 // prompt fragments are emitted in this order and the order is byte-identity-pinned
 // (NOT alphabetical). Handler binding, required tool, and metadata now come from
@@ -23,6 +23,7 @@ var routingIntentOrder = []Intent{
 	IntentStockAvailability,
 	IntentNetAcceleratorStatus,
 	IntentImageTagCatalog,
+	IntentModelRepositoryBrowse,
 	IntentPlatformImageList,
 	IntentCustomImageList,
 	IntentCommunityImageList,
@@ -34,6 +35,9 @@ func extraHandlerActions() map[Intent][]string {
 		IntentStockAvailability: {
 			"DescribeCompShareImages",
 			"CheckCompShareResourceCapacity",
+		},
+		IntentModelRepositoryBrowse: {
+			"DescribeModelRepositoryTags",
 		},
 	}
 }
@@ -243,6 +247,25 @@ func handleImageTagCatalog(ctx context.Context, h *DemoHandler, req HandlerReque
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
+	return result
+}
+
+func handleModelRepositoryBrowse(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
+	const modelAction = "DescribeModelRepositoryModels"
+	const tagAction = "DescribeModelRepositoryTags"
+	tagRaw, fb := executeRouteAction(ctx, h, req.Plan.Intent, tagAction, map[string]any{})
+	if fb != nil {
+		return *fb
+	}
+	args := modelRepositoryArgsFromUserText(req.UserText, tagRaw)
+	modelRaw, fb := executeRouteAction(ctx, h, req.Plan.Intent, modelAction, args)
+	if fb != nil {
+		return *fb
+	}
+	reply := renderModelRepositoryReply(modelRaw, tagRaw, req.UserText)
+	result := HandledResult(reply)
+	result.ToolAction = modelAction
+	result.ToolArgs = copyArgs(args)
 	return result
 }
 
@@ -1776,6 +1799,156 @@ func renderImageTagCatalogReply(raw map[string]any) string {
 	return "镜像标签分类:\n" + strings.Join(lines, "\n")
 }
 
+func modelRepositoryArgsFromUserText(userText string, tagRaw map[string]any) map[string]any {
+	args := map[string]any{}
+	matchedTags := matchModelRepositoryTags(userText, uniqueStrings(stringSliceAt(tagRaw, "Tags")))
+	if len(matchedTags) > 0 {
+		args["tags"] = strings.Join(limitStrings(matchedTags, 3), ",")
+		return args
+	}
+	if name := modelRepositoryNameQuery(userText); name != "" {
+		args["name"] = name
+	}
+	return args
+}
+
+func matchModelRepositoryTags(userText string, tags []string) []string {
+	if strings.TrimSpace(userText) == "" || len(tags) == 0 {
+		return nil
+	}
+	lowerText := strings.ToLower(userText)
+	matched := []string{}
+	seen := map[string]struct{}{}
+	for _, tag := range tags {
+		clean := strings.TrimSpace(tag)
+		if clean == "" {
+			continue
+		}
+		if !strings.Contains(lowerText, strings.ToLower(clean)) {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		matched = append(matched, clean)
+	}
+	return matched
+}
+
+func modelRepositoryNameQuery(userText string) string {
+	for _, tok := range extractUserTokens(userText) {
+		if !containsASCIIAlpha(tok) {
+			continue
+		}
+		switch tok {
+		case "model", "models", "repo", "repository", "huggingface", "hf":
+			continue
+		}
+		return tok
+	}
+	return ""
+}
+
+func containsASCIIAlpha(value string) bool {
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+
+func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, userText string) string {
+	tags := uniqueStrings(stringSliceAt(tagRaw, "Tags"))
+	models := mapSliceAt(modelRaw, "Models")
+	filtered := filterModelRepositoryModels(models, userText)
+	sections := []string{}
+	if len(tags) > 0 {
+		sections = append(sections, "模型仓库标签: "+strings.Join(limitStrings(tags, 20), "、"))
+	}
+	if len(filtered) == 0 {
+		if len(tags) > 0 {
+			sections = append(sections, "未找到匹配的模型。")
+			return strings.Join(sections, "\n")
+		}
+		return "未获取到模型仓库数据。"
+	}
+	lines := []string{}
+	for _, entry := range filtered {
+		line := buildModelRepositoryLine(entry)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) >= 20 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		if len(tags) > 0 {
+			sections = append(sections, "未找到匹配的模型。")
+			return strings.Join(sections, "\n")
+		}
+		return "未获取到模型仓库数据。"
+	}
+	sections = append(sections, "模型仓库列表:\n"+strings.Join(lines, "\n"))
+	return strings.Join(sections, "\n")
+}
+
+func filterModelRepositoryModels(models []any, userText string) []map[string]any {
+	out := make([]map[string]any, 0, len(models))
+	for _, item := range models {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(safeString(entry, "Deleted")) == "1" {
+			continue
+		}
+		out = append(out, entry)
+	}
+	if len(out) == 0 || isModelRepositoryListAllIntent(userText) {
+		return out
+	}
+	keywords := extractUserTokens(userText)
+	if len(keywords) == 0 {
+		return out
+	}
+	filtered := make([]map[string]any, 0, len(out))
+	for _, entry := range out {
+		if entryMatchesAnyKeyword(entry, keywords, []string{"Name", "Path", "Tag"}) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func isModelRepositoryListAllIntent(userText string) bool {
+	text := strings.ToLower(strings.TrimSpace(userText))
+	if text == "" {
+		return false
+	}
+	hasModelWord := strings.Contains(text, "模型") || strings.Contains(text, "model")
+	hasCatalogWord := strings.Contains(text, "仓库") || strings.Contains(text, "库") ||
+		strings.Contains(text, "列表") || strings.Contains(text, "哪些") ||
+		strings.Contains(text, "有什么") || strings.Contains(text, "可以用") ||
+		strings.Contains(text, "标签") || strings.Contains(text, "分类") ||
+		strings.Contains(text, "repo") || strings.Contains(text, "repository")
+	return hasModelWord && hasCatalogWord
+}
+
+func buildModelRepositoryLine(entry map[string]any) string {
+	parts := []string{}
+	for _, key := range []string{"Name", "Size", "Tag", "Path"} {
+		if v := strings.TrimSpace(safeString(entry, key)); v != "" {
+			parts = append(parts, key+"="+v)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
 func renderCommunityImageReply(raw map[string]any, userText string) string {
 	groups := mapSliceAt(raw, "CompshareImageGroup")
 	if len(groups) == 0 {
@@ -2097,6 +2270,24 @@ func limitStrings(values []string, max int) []string {
 		if len(out) >= limit {
 			break
 		}
+	}
+	return out
+}
+
+func uniqueStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		clean := strings.TrimSpace(safeValue(value))
+		if clean == "" {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, clean)
 	}
 	return out
 }

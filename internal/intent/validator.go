@@ -234,6 +234,8 @@ func validRequiredTool(tool string) bool {
 		"CheckCompShareNetOptimizer",
 		"DescribeCompShareImages",
 		"DescribeCompShareImageTags",
+		"DescribeModelRepositoryModels",
+		"DescribeModelRepositoryTags",
 		"DescribeCompShareCustomImages",
 		"DescribeCommunityImages":
 		return true

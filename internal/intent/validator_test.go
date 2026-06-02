@@ -336,6 +336,7 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentStockAvailability,
 		IntentNetAcceleratorStatus,
 		IntentImageTagCatalog,
+		IntentModelRepositoryBrowse,
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,

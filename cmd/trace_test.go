@@ -190,6 +190,18 @@ func TestIntentPlannerCutoverIntentsFromEnv_ImageTagAliases(t *testing.T) {
 	require.Equal(t, "image_tag_catalog", string(intents[0]))
 }
 
+func TestIntentPlannerCutoverIntentsFromEnv_ModelRepositoryAliases(t *testing.T) {
+	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		if key == "USE_INTENT_PLANNER_FOR" {
+			return "model_repo, model_repository, model_repository_browse"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+	require.Len(t, intents, 1)
+	require.Equal(t, "model_repository_browse", string(intents[0]))
+}
+
 func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
 	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(string) string { return "" })
 	require.Empty(t, unknown)
@@ -201,6 +213,7 @@ func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
 		"stock_availability",
 		"pricing_query",
 		"image_tag_catalog",
+		"model_repository_browse",
 		"platform_image_list",
 		"custom_image_list",
 		"community_image_list",

@@ -16,6 +16,7 @@ func PlannedRuntimeFormForIntent(i Intent) RuntimeForm {
 		IntentStockAvailability,
 		IntentNetAcceleratorStatus,
 		IntentImageTagCatalog,
+		IntentModelRepositoryBrowse,
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,

@@ -246,6 +246,39 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
+			Name:        "DescribeModelRepositoryModels",
+			Description: "查询公共模型仓库中的模型列表，可按模型名称或标签筛选。用于回答模型仓库里有哪些模型、某个模型是否存在、某类标签下有哪些模型；不用于创建实例或部署模型。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "按模型名称模糊搜索，如 qwen / llama / deepseek。",
+					},
+					"tags": map[string]any{
+						"type":        "string",
+						"description": "按模型仓库标签筛选，多个标签用逗号分隔，如 LLM。",
+					},
+				},
+				"required": []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DescribeModelRepositoryTags",
+			Description: "查询公共模型仓库可用标签列表。用于回答模型仓库有哪些标签、可以按哪些模型标签筛选；不返回镜像标签。",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+				"required":   []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareSoftwarePort",
 			Description: "查询平台镜像的应用端口映射目录（JupyterLab、FileBrowser 等）。用于诊断应用端口连通性问题。注意：本接口返回的是镜像应用端口，SSH 登录信息以 DescribeCompShareInstance.SshLoginCommand 为准，不以本接口为准。仅需 Region 参数（自动填充）。",
 			Parameters: map[string]any{

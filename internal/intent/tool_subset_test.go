@@ -61,6 +61,7 @@ func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 		{IntentPricingQuery, "GetCompShareInstancePrice", 2},
 		{IntentNetAcceleratorStatus, "CheckCompShareNetOptimizer", 1},
 		{IntentImageTagCatalog, "DescribeCompShareImageTags", 1},
+		{IntentModelRepositoryBrowse, "DescribeModelRepositoryModels", 2},
 		{IntentPlatformImageList, "DescribeCompShareImages", 1},
 		{IntentCustomImageList, "DescribeCompShareCustomImages", 1},
 		{IntentCommunityImageList, "DescribeCommunityImages", 1},
@@ -70,6 +71,9 @@ func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 			subset := IntentToolSubset(tc.intent)
 			require.Len(t, subset, tc.count)
 			assert.Contains(t, subset, tc.tool)
+			if tc.intent == IntentModelRepositoryBrowse {
+				assert.Contains(t, subset, "DescribeModelRepositoryTags")
+			}
 		})
 	}
 }

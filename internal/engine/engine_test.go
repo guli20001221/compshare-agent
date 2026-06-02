@@ -4054,6 +4054,7 @@ func TestDefaultRouteCutoverDoesNotSwallowKnowledgeQA(t *testing.T) {
 			intent.IntentGPUSpecsQuery,
 			intent.IntentStockAvailability,
 			intent.IntentImageTagCatalog,
+			intent.IntentModelRepositoryBrowse,
 			intent.IntentPlatformImageList,
 			intent.IntentCustomImageList,
 			intent.IntentCommunityImageList,

@@ -253,7 +253,12 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // read-only expansion adds a planner-visible route for "镜像有哪些标签/分类".
 // Boundary remains: concrete image-list/search questions still use the
 // existing image-list routes; image concept/how-to questions stay knowledge_qa.
-const systemPromptSHA256Baseline = "41100397da48d67f19bb41fa2109f8789dc96b8eb888d9caa125ff25de954996"
+//
+// model_repository_browse route (2026-06-03): SHA bumped because the second
+// Phase 6 read-only expansion adds a planner-visible route for public model
+// repository browsing and model-tag filtering. Boundary remains: model
+// download/how-to questions stay knowledge_qa; deploy/run requests stay agent.
+const systemPromptSHA256Baseline = "e0d22dab17c2278bcec7aa378fc58d42d29ae02d9d86fcf8d96a97c3a7d96c3d"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

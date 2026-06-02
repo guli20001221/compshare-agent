@@ -64,6 +64,11 @@ func IntentToolSubset(i Intent) []string {
 		return []string{
 			"DescribeCompShareImageTags",
 		}
+	case IntentModelRepositoryBrowse:
+		return []string{
+			"DescribeModelRepositoryModels",
+			"DescribeModelRepositoryTags",
+		}
 	case IntentPlatformImageList:
 		return []string{
 			"DescribeCompShareImages",

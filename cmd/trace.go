@@ -273,6 +273,8 @@ func cutoverIntentLabels(cutoverIntents []intent.Intent) []string {
 			labels = append(labels, "stock")
 		case intent.IntentImageTagCatalog:
 			labels = append(labels, "image_tags")
+		case intent.IntentModelRepositoryBrowse:
+			labels = append(labels, "model_repo")
 		case intent.IntentPlatformImageList:
 			labels = append(labels, "platform_image")
 		case intent.IntentCustomImageList:
@@ -575,6 +577,7 @@ func defaultCutoverIntents() []intent.Intent {
 		intent.IntentStockAvailability,
 		intent.IntentPricingQuery,
 		intent.IntentImageTagCatalog,
+		intent.IntentModelRepositoryBrowse,
 		intent.IntentPlatformImageList,
 		intent.IntentCustomImageList,
 		intent.IntentCommunityImageList,
@@ -612,6 +615,8 @@ func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []s
 			enabled = intent.IntentStockAvailability
 		case "image_tags", "image_tag", "image_tag_catalog":
 			enabled = intent.IntentImageTagCatalog
+		case "model_repo", "model_repository", "model_repository_browse":
+			enabled = intent.IntentModelRepositoryBrowse
 		case "platform_image":
 			enabled = intent.IntentPlatformImageList
 		case "custom_image":

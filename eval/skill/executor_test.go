@@ -78,6 +78,13 @@ func (e *recordingExecutor) Execute(_ context.Context, action string, args map[s
 			},
 			"Tags": []any{"PyTorch", "TensorFlow", "LLM", "图像生成"},
 		}, nil
+	case "DescribeModelRepositoryTags":
+		return map[string]any{"Tags": []any{"Model", "AI", "AI"}}, nil
+	case "DescribeModelRepositoryModels":
+		return map[string]any{"Models": []any{
+			map[string]any{"Name": "Qwen2.5-7B", "Path": "/models/qwen2.5-7b", "Tag": "LLM,Qwen", "Size": "15GB"},
+			map[string]any{"Name": "Llama-3-8B", "Path": "/models/llama-3-8b", "Tag": "LLM,Meta", "Size": "16GB"},
+		}}, nil
 	case "DescribeCompShareImages":
 		return map[string]any{"ImageSet": []any{
 			map[string]any{"CompShareImageId": "img-1", "Name": "PyTorch 2.9", "ImageType": "App"},
