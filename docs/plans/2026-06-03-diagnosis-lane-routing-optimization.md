@@ -678,7 +678,9 @@ Use a real instance if available. If no suitable instance exists, create one:
 $env:COMPSHARE_PROJECT_ID="org-cwy2qk"
 $env:COMPSHARE_ENABLE_MUTATING_TOOLS="1"
 $env:COMPSHARE_TRACE_ENABLED="1"
-$env:COMPSHARE_TRACE_DIR="F:\compshare-agent-diagnosis-routing\eval\traces_create_test_instance"
+$runId = Get-Date -Format "yyyyMMdd-HHmmss"
+$env:COMPSHARE_TRACE_DIR = Join-Path $env:TEMP "compshare-create-test-instance-$runId"
+New-Item -ItemType Directory -Force $env:COMPSHARE_TRACE_DIR | Out-Null
 "帮我创建一台有库存的GPU实例用于测试`ny`nexit" | .\agent.exe cli -c .\deploy\conf\agent.yaml
 ```
 

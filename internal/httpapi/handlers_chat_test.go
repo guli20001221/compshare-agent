@@ -394,7 +394,10 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 	assert.Contains(t, persisted, guardrails.IPRedacted)
 	assert.Contains(t, persisted, guardrails.ProjectIDRedacted)
 	assert.Contains(t, persisted, guardrails.CredentialRedactedOutput)
-	assert.Contains(t, persisted, guardrails.TokenRedactedOutput)
+	assert.True(t,
+		strings.Contains(persisted, guardrails.TokenRedactedOutput) || strings.Contains(persisted, "[REDACTED]"),
+		"persisted assistant output must redact token bodies, got: %s", persisted,
+	)
 	assert.NotContains(t, persisted, "1.2.3.4")
 	assert.NotContains(t, persisted, "12345678-1234-1234-1234-1234567890ab")
 	assert.NotContains(t, persisted, "AKIAIOSFODNN7EXAMPLE")

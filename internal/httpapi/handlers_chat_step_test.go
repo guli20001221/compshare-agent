@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,6 +43,14 @@ func TestDispatchChat_EmitsStepEvents(t *testing.T) {
 
 	// Args must NOT leak into step events (they contain API parameters).
 	assert.NotContains(t, body, `"Limit"`)
+	assert.NotContains(t, body, `TraceResult`)
+	assert.NotContains(t, body, `Display`)
+
+	// Tool results must also stay out of frontend step events. The trace may
+	// hash them, but SSE should only show coarse progress.
+	assert.NotContains(t, body, "uhost-e2e")
+	assert.NotContains(t, body, "e2e-host")
+	assert.NotContains(t, body, "RTX4090")
 
 	// Message must be present for tool_result steps (engine emits "调用成功").
 	assert.Contains(t, body, `"Message":"调用成功"`)
@@ -101,4 +111,42 @@ func TestDispatchChat_StepEventsAppearBeforeDone(t *testing.T) {
 	require.Greater(t, lastStep, -1, "must have at least one step event")
 	require.Greater(t, firstDone, -1, "must have done event")
 	assert.Less(t, lastStep, firstDone, "all step events must precede done")
+}
+
+func TestDispatchChatTraceRecordsAgentRuntimeFormForToolCall(t *testing.T) {
+	llmFake := &factWritingLLM{}
+	eng := engine.NewWithDeps(llmFake, factWritingExecutor{}, denyConfirm)
+	eng.RehydrateHistory(nil)
+
+	sess := store.Session{
+		ID:                "sess-runtime-form",
+		TopOrganizationID: 1,
+		OrganizationID:    2,
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
+	}
+	sessions := &mockSessions{byID: map[string]store.Session{sess.ID: sess}}
+	traceWriter := &captureTraceWriter{}
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		sessions,
+		&recordingMessages{},
+		mockFeedback{},
+		fakePool{eng: eng},
+		traceWriter,
+	)
+
+	rec := dispatchChatTurn(t, h, sess.ID, "show instances")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, traceWriter.records, 1)
+	trace := traceWriter.records[0]
+	assert.Equal(t, observability.RuntimeFormAgent, trace.ActualRuntimeForm)
+	require.Len(t, trace.ToolCalls, 1)
+	assert.Equal(t, "DescribeCompShareInstance", trace.ToolCalls[0].Action)
 }
