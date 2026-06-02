@@ -65,6 +65,7 @@ func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 		{IntentPlatformImageList, "DescribeCompShareImages", 1},
 		{IntentCustomImageList, "DescribeCompShareCustomImages", 1},
 		{IntentCommunityImageList, "DescribeCommunityImages", 1},
+		{IntentSharedImageList, "DescribeCompShareSharingImages", 1},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.intent), func(t *testing.T) {

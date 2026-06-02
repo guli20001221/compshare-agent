@@ -13,7 +13,7 @@ import (
 	"github.com/compshare-agent/internal/routing"
 )
 
-// routingIntentOrder is the registration order of the 9 catalog/status route
+// routingIntentOrder is the registration order of the 10 catalog/status route
 // intents. It is the ONLY remnant of the deleted routeRegistry: the planner
 // prompt fragments are emitted in this order and the order is byte-identity-pinned
 // (NOT alphabetical). Handler binding, required tool, and metadata now come from
@@ -27,6 +27,7 @@ var routingIntentOrder = []Intent{
 	IntentPlatformImageList,
 	IntentCustomImageList,
 	IntentCommunityImageList,
+	IntentSharedImageList,
 	IntentPricingQuery,
 }
 
@@ -295,6 +296,20 @@ func handleCommunityImageList(ctx context.Context, h *DemoHandler, req HandlerRe
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
 	setEnvelopeIfPopulated(&result, buildCommunityImageEnvelope(raw, req.UserText))
+	return result
+}
+
+func handleSharedImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
+	const action = "DescribeCompShareSharingImages"
+	args := map[string]any{"Limit": 20}
+	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, args)
+	if fb != nil {
+		return *fb
+	}
+	reply := renderSharedImageListReply(raw, req.UserText)
+	result := HandledResult(reply)
+	result.ToolAction = action
+	result.ToolArgs = copyArgs(args)
 	return result
 }
 
@@ -2025,6 +2040,85 @@ func renderCommunityImageReply(raw map[string]any, userText string) string {
 		return noCommunityReply
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderSharedImageListReply(raw map[string]any, userText string) string {
+	items := mapSliceAt(raw, "ImageSet")
+	if len(items) == 0 {
+		return "未获取到共享给你的镜像。"
+	}
+	keywords := extractUserTokens(userText)
+	if isSharedImageListAllIntent(userText) {
+		keywords = nil
+	}
+	filtered := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if len(keywords) > 0 && !entryMatchesAnyKeyword(entry, keywords, []string{"Name", "Description", "CompShareImageId", "ImageType", "Status"}) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	if len(keywords) > 0 && len(filtered) == 0 {
+		return "未找到匹配的共享镜像。"
+	}
+	lines := []string{}
+	for _, entry := range filtered {
+		line := buildSharedImageLine(entry)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) >= 20 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return "未获取到共享给你的镜像。"
+	}
+	prefix := "共享给你的镜像"
+	if total := strings.TrimSpace(safeString(raw, "TotalCount")); total != "" && total != "0" {
+		prefix += "（共 " + total + " 个）"
+	}
+	return prefix + ":\n" + strings.Join(lines, "\n")
+}
+
+func isSharedImageListAllIntent(userText string) bool {
+	text := strings.TrimSpace(userText)
+	return strings.Contains(text, "共享") && strings.Contains(text, "镜像") &&
+		(strings.Contains(text, "给我") || strings.Contains(text, "我的") ||
+			strings.Contains(text, "别人") || strings.Contains(text, "他人") ||
+			strings.Contains(text, "收到"))
+}
+
+func buildSharedImageLine(entry map[string]any) string {
+	parts := []string{}
+	for _, key := range []string{"CompShareImageId", "Name", "ImageType", "Status", "Container"} {
+		if v := strings.TrimSpace(safeString(entry, key)); v != "" {
+			parts = append(parts, key+"="+v)
+		}
+	}
+	if owner := sharedImageOwnerDisplay(entry); owner != "" {
+		parts = append(parts, "Owner="+owner)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func sharedImageOwnerDisplay(entry map[string]any) string {
+	owner, ok := entry["Owner"].(map[string]any)
+	if !ok || owner == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(safeString(owner, "AccountName")); name != "" {
+		return name
+	}
+	if id := strings.TrimSpace(safeString(owner, "AccountId")); id != "" && id != "0" {
+		return id
+	}
+	return ""
 }
 
 func buildCommunityGroupHeader(entry map[string]any) string {

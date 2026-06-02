@@ -19,6 +19,7 @@ var knownHandlerKeys = map[string]bool{
 	"handlePlatformImageList":     true,
 	"handleCustomImageList":       true,
 	"handleCommunityImageList":    true,
+	"handleSharedImageList":       true,
 	"handlePricingQuery":          true,
 }
 

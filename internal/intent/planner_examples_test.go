@@ -258,7 +258,12 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // Phase 6 read-only expansion adds a planner-visible route for public model
 // repository browsing and model-tag filtering. Boundary remains: model
 // download/how-to questions stay knowledge_qa; deploy/run requests stay agent.
-const systemPromptSHA256Baseline = "e0d22dab17c2278bcec7aa378fc58d42d29ae02d9d86fcf8d96a97c3a7d96c3d"
+//
+// shared_image_list route (2026-06-03): SHA bumped because the third Phase 6
+// read-only expansion adds a planner-visible route for images shared to the
+// current account. Boundary remains: public/community image questions stay
+// community_image_list; sharing my own image to others is write-adjacent.
+const systemPromptSHA256Baseline = "c2ecf078927664e68de967859d7465dcc4196a7597be45d7b164896088c47d06"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

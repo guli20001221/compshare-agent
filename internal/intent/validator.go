@@ -237,6 +237,7 @@ func validRequiredTool(tool string) bool {
 		"DescribeModelRepositoryModels",
 		"DescribeModelRepositoryTags",
 		"DescribeCompShareCustomImages",
+		"DescribeCompShareSharingImages",
 		"DescribeCommunityImages":
 		return true
 	default:

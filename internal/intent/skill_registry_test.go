@@ -86,6 +86,7 @@ func TestRouteHandlerByKey_MatchesRegistry(t *testing.T) {
 		IntentPlatformImageList:     handlePlatformImageList,
 		IntentCustomImageList:       handleCustomImageList,
 		IntentCommunityImageList:    handleCommunityImageList,
+		IntentSharedImageList:       handleSharedImageList,
 		IntentPricingQuery:          handlePricingQuery,
 	}
 	keyByIntent := map[Intent]string{}

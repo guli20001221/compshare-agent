@@ -81,6 +81,10 @@ func IntentToolSubset(i Intent) []string {
 		return []string{
 			"DescribeCommunityImages",
 		}
+	case IntentSharedImageList:
+		return []string{
+			"DescribeCompShareSharingImages",
+		}
 	case IntentRecommendation:
 		return []string{
 			"GetGPURecommendation",

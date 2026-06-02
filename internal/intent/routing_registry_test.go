@@ -46,6 +46,7 @@ func TestIsRoutingIntent_KnownLabels(t *testing.T) {
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		IntentSharedImageList,
 		IntentPricingQuery,
 	}
 	for _, intent := range wanted {
@@ -101,6 +102,7 @@ func TestRouteRequiredTool_BindsToRealTool(t *testing.T) {
 		IntentPlatformImageList:     "DescribeCompShareImages",
 		IntentCustomImageList:       "DescribeCompShareCustomImages",
 		IntentCommunityImageList:    "DescribeCommunityImages",
+		IntentSharedImageList:       "DescribeCompShareSharingImages",
 		IntentPricingQuery:          "GetCompShareInstancePrice",
 	}
 	for _, i := range routingIntentOrder {
@@ -161,6 +163,7 @@ func TestHandlerActionWhitelist_ExactGoldenSet(t *testing.T) {
 		IntentPlatformImageList:     {"DescribeCompShareImages": {}},
 		IntentCustomImageList:       {"DescribeCompShareCustomImages": {}},
 		IntentCommunityImageList:    {"DescribeCommunityImages": {}},
+		IntentSharedImageList:       {"DescribeCompShareSharingImages": {}},
 		IntentPricingQuery:          {"GetCompShareInstancePrice": {}},
 	}
 	got := handlerActionWhitelist()
@@ -1209,6 +1212,43 @@ func TestRenderCommunityImage_DataExpansionAndCap(t *testing.T) {
 	}
 	if !strings.Contains(reply, "共 5 个版本") {
 		t.Errorf("community renderer should add 'remaining N' hint when capped; got: %s", reply)
+	}
+}
+
+func TestRenderSharedImageListReply_ListAll(t *testing.T) {
+	raw := map[string]any{
+		"TotalCount": float64(1),
+		"ImageSet": []any{map[string]any{
+			"CompShareImageId": "img-shared-1",
+			"Name":             "shared-env",
+			"ImageType":        "Custom",
+			"Status":           "Available",
+			"Container":        "True",
+			"Owner":            map[string]any{"AccountName": "team-a", "AccountId": float64(123)},
+		}},
+	}
+	reply := renderSharedImageListReply(raw, "别人共享给我的镜像在哪看")
+	for _, want := range []string{"共享给你的镜像", "img-shared-1", "shared-env", "Owner=team-a"} {
+		if !strings.Contains(reply, want) {
+			t.Errorf("shared image reply missing %q: %s", want, reply)
+		}
+	}
+}
+
+func TestRenderSharedImageListReply_NameFilterNoMatch(t *testing.T) {
+	raw := map[string]any{
+		"ImageSet": []any{map[string]any{"CompShareImageId": "img-shared-1", "Name": "shared-env"}},
+	}
+	reply := renderSharedImageListReply(raw, "llama 共享镜像")
+	if !strings.Contains(reply, "未找到匹配的共享镜像") {
+		t.Errorf("shared image no-match should be explicit; got: %s", reply)
+	}
+}
+
+func TestRenderSharedImageListReply_Empty(t *testing.T) {
+	reply := renderSharedImageListReply(map[string]any{}, "别人共享给我的镜像")
+	if !strings.Contains(reply, "未获取到共享给你的镜像") {
+		t.Errorf("empty shared image reply should be explicit; got: %s", reply)
 	}
 }
 

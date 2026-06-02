@@ -58,6 +58,7 @@ var routeHandlerByKey = map[string]routeHandlerFunc{
 	"handlePlatformImageList":     handlePlatformImageList,
 	"handleCustomImageList":       handleCustomImageList,
 	"handleCommunityImageList":    handleCommunityImageList,
+	"handleSharedImageList":       handleSharedImageList,
 	"handlePricingQuery":          handlePricingQuery,
 }
 

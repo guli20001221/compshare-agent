@@ -4058,6 +4058,7 @@ func TestDefaultRouteCutoverDoesNotSwallowKnowledgeQA(t *testing.T) {
 			intent.IntentPlatformImageList,
 			intent.IntentCustomImageList,
 			intent.IntentCommunityImageList,
+			intent.IntentSharedImageList,
 		},
 		Model: "deepseek-v4-flash",
 	})

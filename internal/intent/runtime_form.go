@@ -20,6 +20,7 @@ func PlannedRuntimeFormForIntent(i Intent) RuntimeForm {
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		IntentSharedImageList,
 		IntentPricingQuery:
 		return RuntimeFormRouting
 	case IntentKnowledgeQA:

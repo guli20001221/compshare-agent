@@ -93,6 +93,16 @@ func (e *recordingExecutor) Execute(_ context.Context, action string, args map[s
 		return map[string]any{"ImageSet": []any{
 			map[string]any{"CompShareImageId": "img-2", "Name": "my-image", "Status": "Available"},
 		}}, nil
+	case "DescribeCompShareSharingImages":
+		return map[string]any{"TotalCount": float64(1), "ImageSet": []any{
+			map[string]any{
+				"CompShareImageId": "img-shared-1",
+				"Name":             "shared-env",
+				"ImageType":        "Custom",
+				"Status":           "Available",
+				"Owner":            map[string]any{"AccountName": "team-a"},
+			},
+		}}, nil
 	case "DescribeCommunityImages":
 		return map[string]any{"CompshareImageGroup": []any{
 			map[string]any{"ImageName": "LiveTalking", "Data": []any{map[string]any{"CompShareImageId": "img-3"}}},

@@ -281,6 +281,8 @@ func cutoverIntentLabels(cutoverIntents []intent.Intent) []string {
 			labels = append(labels, "custom_image")
 		case intent.IntentCommunityImageList:
 			labels = append(labels, "community_image")
+		case intent.IntentSharedImageList:
+			labels = append(labels, "shared_image")
 		case intent.IntentDiagnosis:
 			labels = append(labels, "diagnosis")
 		case intent.IntentVagueFailure:
@@ -581,6 +583,7 @@ func defaultCutoverIntents() []intent.Intent {
 		intent.IntentPlatformImageList,
 		intent.IntentCustomImageList,
 		intent.IntentCommunityImageList,
+		intent.IntentSharedImageList,
 		intent.IntentNetAcceleratorStatus,
 	}
 }
@@ -623,6 +626,8 @@ func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []s
 			enabled = intent.IntentCustomImageList
 		case "community_image":
 			enabled = intent.IntentCommunityImageList
+		case "shared_image", "sharing_image", "shared_image_list":
+			enabled = intent.IntentSharedImageList
 		case "network_accelerator", "network_accelerator_status", "net_accelerator":
 			enabled = intent.IntentNetAcceleratorStatus
 		case "pricing", "pricing_query":

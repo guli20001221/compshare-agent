@@ -34,6 +34,7 @@ func TestPlannedRuntimeFormForIntent_RuntimeIntentPartition(t *testing.T) {
 			IntentPlatformImageList,
 			IntentCustomImageList,
 			IntentCommunityImageList,
+			IntentSharedImageList,
 			IntentPricingQuery,
 		},
 		RuntimeFormTerminalRAG: {
@@ -76,6 +77,7 @@ func TestPlannedRuntimeFormForIntent_RoutingWorkflowIntents(t *testing.T) {
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		IntentSharedImageList,
 		IntentPricingQuery,
 	} {
 		assert.Equal(t, RuntimeFormRouting, PlannedRuntimeFormForIntent(i), i)

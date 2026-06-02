@@ -23,6 +23,7 @@ func TestNewLoader_LoadsSeededRoutes(t *testing.T) {
 		"network_accelerator_status",
 		"platform_image_list",
 		"pricing_query",
+		"shared_image_list",
 		"stock_availability",
 	}
 	if loader.Len() != len(want) {

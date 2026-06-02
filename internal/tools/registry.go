@@ -335,6 +335,31 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
+			Name:        "DescribeCompShareSharingImages",
+			Description: "查询其他账号共享给当前账号的镜像列表。用于回答“共享给我的镜像”“别人共享给我的镜像在哪看”；不用于社区公开镜像列表，也不用于把自己的镜像共享给别人。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"CompShareImageId": map[string]any{
+						"type":        "string",
+						"description": "按共享镜像 ID 精确查询。",
+					},
+					"Limit": map[string]any{
+						"type":        "integer",
+						"description": "分页大小，默认 20。",
+					},
+					"Offset": map[string]any{
+						"type":        "integer",
+						"description": "分页偏移，默认 0。",
+					},
+				},
+				"required": []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCommunityImages",
 			Description: "查询社区镜像列表。支持按名称/作者/标签/模糊搜索筛选。返回 CompshareImageGroup 分组结构，每组含 Data 版本数组。",
 			Parameters: map[string]any{

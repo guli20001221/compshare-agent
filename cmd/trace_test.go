@@ -202,6 +202,18 @@ func TestIntentPlannerCutoverIntentsFromEnv_ModelRepositoryAliases(t *testing.T)
 	require.Equal(t, "model_repository_browse", string(intents[0]))
 }
 
+func TestIntentPlannerCutoverIntentsFromEnv_SharedImageAliases(t *testing.T) {
+	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		if key == "USE_INTENT_PLANNER_FOR" {
+			return "shared_image, sharing_image, shared_image_list"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+	require.Len(t, intents, 1)
+	require.Equal(t, "shared_image_list", string(intents[0]))
+}
+
 func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
 	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(string) string { return "" })
 	require.Empty(t, unknown)
@@ -217,6 +229,7 @@ func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
 		"platform_image_list",
 		"custom_image_list",
 		"community_image_list",
+		"shared_image_list",
 		"network_accelerator_status",
 	}
 	require.Len(t, intents, len(want))
