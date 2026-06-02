@@ -153,7 +153,7 @@ func TestNewLoader_ListsProgressiveDisclosureResources(t *testing.T) {
 
 // TestNewLoader_LoadsAllSeededSkills checks every on-disk skill loads and
 // name==dir holds for all of them (load would fail otherwise). The set is the 5
-// seeded diagnose_* playbooks (P1) plus the 6 migrated catalog capabilities (P2).
+// seeded diagnose_* playbooks (P1), deploy_model, and the fast capabilities.
 func TestNewLoader_LoadsAllSeededSkills(t *testing.T) {
 	l, err := NewLoaderWithLogger(seededRoot, silentLogger())
 	if err != nil {
@@ -169,6 +169,7 @@ func TestNewLoader_LoadsAllSeededSkills(t *testing.T) {
 		"diagnose_port_firewall",
 		"diagnose_ssh",
 		"gpu_specs_query",
+		"network_accelerator_status",
 		"platform_image_list",
 		"pricing_query",
 		"stock_availability",
@@ -183,7 +184,7 @@ func TestNewLoader_LoadsAllSeededSkills(t *testing.T) {
 	}
 }
 
-// TestNewLoader_CapabilitySkillsCarryRoutingBlock asserts the 6 migrated
+// TestNewLoader_CapabilitySkillsCarryRoutingBlock asserts migrated
 // capabilities carry the §3 routing block (intent_label == name, a handler_key,
 // a non-empty react_tool_subset) and are production_validated — the fields the
 // P2 intent bridge depends on.
@@ -193,12 +194,13 @@ func TestNewLoader_CapabilitySkillsCarryRoutingBlock(t *testing.T) {
 		t.Fatalf("NewLoader: %v", err)
 	}
 	caps := map[string]string{
-		"gpu_specs_query":      "handleGPUSpecsQuery",
-		"stock_availability":   "handleStockAvailability",
-		"platform_image_list":  "handlePlatformImageList",
-		"custom_image_list":    "handleCustomImageList",
-		"community_image_list": "handleCommunityImageList",
-		"pricing_query":        "handlePricingQuery",
+		"gpu_specs_query":            "handleGPUSpecsQuery",
+		"stock_availability":         "handleStockAvailability",
+		"network_accelerator_status": "handleNetAcceleratorStatus",
+		"platform_image_list":        "handlePlatformImageList",
+		"custom_image_list":          "handleCustomImageList",
+		"community_image_list":       "handleCommunityImageList",
+		"pricing_query":              "handlePricingQuery",
 	}
 	for name, wantHandler := range caps {
 		s, ok := l.Fetch(name)

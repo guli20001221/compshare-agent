@@ -51,6 +51,9 @@ func (s selectionPlannerLLM) CompleteIntentPlan(ctx context.Context, req intent.
 //   - diagnosis: only the lane (intent == IntentDiagnosis) is checked, because the
 //     specific diagnose_* skill is resolved inside ReAct, not at plan time. Plan-time
 //     specific-diagnosis selection is R2-v2 (needs an engine-level run).
+//   - boundary: planner intent must match expected_intent and the selected skill must
+//     not be in forbidden_skills. This catches new skills stealing nearby FAQ/how-to
+//     questions without forcing those questions through fast/agent dispatch.
 //
 // R4 trigger: the per-overlapping-group wrong-skill rate. When a confusable group
 // (e.g. the 3-way image_list) crosses a sustained threshold across N>=5 runs, that
@@ -76,6 +79,7 @@ func TestSelectionSkillEval(t *testing.T) {
 
 	var selTotal, selHit int
 	var diagTotal, diagLaneHit int
+	var boundaryTotal, boundaryHit int
 	groupTotal := map[string]int{}
 	groupWrong := map[string]int{}
 	var caseResults []selCaseResult
@@ -84,33 +88,45 @@ func TestSelectionSkillEval(t *testing.T) {
 		result, err := planner.Plan(context.Background(), intent.PlannerInput{UserText: c.Question})
 		require.NoErrorf(t, err, "planner error on %s", c.ID)
 		selected := selectedSkillName(result.Plan)
+		outcome := evaluateSelectionCase(c, result.Plan, selected)
 
 		switch c.Lane {
 		case laneFast, laneAgent:
 			selTotal++
-			hit := selected == c.ExpectedSkill
-			if hit {
+			if outcome.Hit {
 				selHit++
 			}
 			if c.OverlappingGroup != "" {
 				groupTotal[c.OverlappingGroup]++
-				if !hit {
+				if !outcome.Hit {
 					groupWrong[c.OverlappingGroup]++
 				}
 			}
-			caseResults = append(caseResults, selCaseResult{ID: c.ID, Lane: c.Lane, Question: c.Question,
-				ExpectedSkill: c.ExpectedSkill, SelectedSkill: selected, Intent: string(result.Plan.Intent),
-				OverlappingGroup: c.OverlappingGroup, Hit: hit})
-			t.Logf("[%s] %q expected=%s selected=%s hit=%v", c.ID, c.Question, c.ExpectedSkill, selected, hit)
+			caseResults = append(caseResults, outcome)
+			t.Logf("[%s] %q expected=%s selected=%s hit=%v", c.ID, c.Question, c.ExpectedSkill, selected, outcome.Hit)
 		case laneDiagnosis:
 			diagTotal++
-			laneHit := result.Plan.Intent == intent.IntentDiagnosis
-			if laneHit {
+			if outcome.DiagnosisLaneHit {
 				diagLaneHit++
 			}
-			caseResults = append(caseResults, selCaseResult{ID: c.ID, Lane: c.Lane, Question: c.Question,
-				ExpectedSkill: c.ExpectedSkill, Intent: string(result.Plan.Intent), DiagnosisLaneHit: laneHit})
+			caseResults = append(caseResults, outcome)
 			t.Logf("[%s] %q intent=%s (diagnosis lane-routing only; specific skill is R2-v2)", c.ID, c.Question, result.Plan.Intent)
+		case laneBoundary:
+			boundaryTotal++
+			if outcome.BoundaryHit {
+				boundaryHit++
+			}
+			if c.OverlappingGroup != "" {
+				groupTotal[c.OverlappingGroup]++
+				if !outcome.Hit {
+					groupWrong[c.OverlappingGroup]++
+				}
+			}
+			caseResults = append(caseResults, outcome)
+			t.Logf("[%s] %q expected_intent=%s selected=%s forbidden=%v hit=%v",
+				c.ID, c.Question, c.ExpectedIntent, selected, c.ForbiddenSkills, outcome.Hit)
+		default:
+			t.Fatalf("unknown skill-eval lane %q in case %s", c.Lane, c.ID)
 		}
 	}
 
@@ -128,6 +144,8 @@ func TestSelectionSkillEval(t *testing.T) {
 		WrongSkillRate:     1 - rate(selHit, selTotal),
 		DiagnosisLaneHit:   diagLaneHit,
 		DiagnosisLaneTotal: diagTotal,
+		BoundaryHit:        boundaryHit,
+		BoundaryTotal:      boundaryTotal,
 		OverlappingGroups:  map[string]groupRate{},
 		Cases:              caseResults,
 	}
@@ -138,6 +156,7 @@ func TestSelectionSkillEval(t *testing.T) {
 	t.Logf("=== skill-eval selection (model=%s) ===", *skillModelFlag)
 	t.Logf("plan-level skill-hit: %d/%d (%.2f)  wrong-skill: %.2f", selHit, selTotal, rate(selHit, selTotal), report.WrongSkillRate)
 	t.Logf("diagnosis lane-routing: %d/%d (%.2f)", diagLaneHit, diagTotal, rate(diagLaneHit, diagTotal))
+	t.Logf("boundary cases: %d/%d (%.2f)", boundaryHit, boundaryTotal, rate(boundaryHit, boundaryTotal))
 	for g, gr := range report.OverlappingGroups {
 		t.Logf("R4-trigger overlapping group %q wrong-skill rate: %d/%d (%.2f)", g, gr.Wrong, gr.Total, gr.WrongRate)
 	}
@@ -156,15 +175,18 @@ func TestSelectionSkillEval(t *testing.T) {
 }
 
 type selCaseResult struct {
-	ID               string `json:"id"`
-	Lane             string `json:"lane"`
-	Question         string `json:"question"`
-	ExpectedSkill    string `json:"expected_skill"`
-	SelectedSkill    string `json:"selected_skill,omitempty"`
-	Intent           string `json:"intent"`
-	OverlappingGroup string `json:"overlapping_group,omitempty"`
-	Hit              bool   `json:"hit,omitempty"`
-	DiagnosisLaneHit bool   `json:"diagnosis_lane_hit,omitempty"`
+	ID               string   `json:"id"`
+	Lane             string   `json:"lane"`
+	Question         string   `json:"question"`
+	ExpectedSkill    string   `json:"expected_skill"`
+	ExpectedIntent   string   `json:"expected_intent,omitempty"`
+	ForbiddenSkills  []string `json:"forbidden_skills,omitempty"`
+	SelectedSkill    string   `json:"selected_skill,omitempty"`
+	Intent           string   `json:"intent"`
+	OverlappingGroup string   `json:"overlapping_group,omitempty"`
+	Hit              bool     `json:"hit,omitempty"`
+	DiagnosisLaneHit bool     `json:"diagnosis_lane_hit,omitempty"`
+	BoundaryHit      bool     `json:"boundary_hit,omitempty"`
 }
 
 type groupRate struct {
@@ -181,8 +203,43 @@ type selectionReport struct {
 	WrongSkillRate     float64              `json:"wrong_skill_rate"`
 	DiagnosisLaneHit   int                  `json:"diagnosis_lane_hit"`
 	DiagnosisLaneTotal int                  `json:"diagnosis_lane_total"`
+	BoundaryHit        int                  `json:"boundary_hit"`
+	BoundaryTotal      int                  `json:"boundary_total"`
 	OverlappingGroups  map[string]groupRate `json:"overlapping_groups"`
 	Cases              []selCaseResult      `json:"cases"`
+}
+
+func evaluateSelectionCase(c SkillCase, plan intent.Plan, selected string) selCaseResult {
+	result := selCaseResult{
+		ID:               c.ID,
+		Lane:             c.Lane,
+		Question:         c.Question,
+		ExpectedSkill:    c.ExpectedSkill,
+		ExpectedIntent:   c.ExpectedIntent,
+		ForbiddenSkills:  c.ForbiddenSkills,
+		SelectedSkill:    selected,
+		Intent:           string(plan.Intent),
+		OverlappingGroup: c.OverlappingGroup,
+	}
+	switch c.Lane {
+	case laneFast, laneAgent:
+		result.Hit = selected == c.ExpectedSkill
+	case laneDiagnosis:
+		result.DiagnosisLaneHit = plan.Intent == intent.IntentDiagnosis
+		result.Hit = result.DiagnosisLaneHit
+	case laneBoundary:
+		intentOK := c.ExpectedIntent == "" || string(plan.Intent) == c.ExpectedIntent
+		forbiddenClean := true
+		for _, forbidden := range c.ForbiddenSkills {
+			if selected == forbidden {
+				forbiddenClean = false
+				break
+			}
+		}
+		result.BoundaryHit = intentOK && forbiddenClean
+		result.Hit = result.BoundaryHit
+	}
+	return result
 }
 
 // selectedSkillName returns the concrete plan-time skill for a plan, or "" when

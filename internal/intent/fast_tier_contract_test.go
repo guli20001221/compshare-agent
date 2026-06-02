@@ -31,6 +31,6 @@ func TestFastTierSkills_AreCapabilityDispatched(t *testing.T) {
 		assert.Truef(t, IsCapabilityIntent(Intent(s.IntentLabel)),
 			"fast-tier skill %q intent %q must be a capability intent (routes to DispatchCapability, never ReAct)", s.Name, s.IntentLabel)
 	}
-	require.GreaterOrEqualf(t, fast, 6,
-		"expected the 6 catalog capability skills to be fast-tier (got %d) — non-vacuity guard", fast)
+	require.GreaterOrEqualf(t, fast, 7,
+		"expected the catalog/status capability skills to be fast-tier (got %d) — non-vacuity guard", fast)
 }

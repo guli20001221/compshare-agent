@@ -50,12 +50,13 @@ type capabilityHandlerFunc = func(ctx context.Context, h *DemoHandler, req Handl
 // Drift (against the expected per-intent handlers and against the skill-declared
 // handler_keys) is caught by skill_registry_test.go.
 var capabilityHandlerByKey = map[string]capabilityHandlerFunc{
-	"handleGPUSpecsQuery":      handleGPUSpecsQuery,
-	"handleStockAvailability":  handleStockAvailability,
-	"handlePlatformImageList":  handlePlatformImageList,
-	"handleCustomImageList":    handleCustomImageList,
-	"handleCommunityImageList": handleCommunityImageList,
-	"handlePricingQuery":       handlePricingQuery,
+	"handleGPUSpecsQuery":        handleGPUSpecsQuery,
+	"handleStockAvailability":    handleStockAvailability,
+	"handleNetAcceleratorStatus": handleNetAcceleratorStatus,
+	"handlePlatformImageList":    handlePlatformImageList,
+	"handleCustomImageList":      handleCustomImageList,
+	"handleCommunityImageList":   handleCommunityImageList,
+	"handlePricingQuery":         handlePricingQuery,
 }
 
 // CapabilityHandlerForKey resolves a skill handler_key to its capability handler

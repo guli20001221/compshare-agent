@@ -59,6 +59,7 @@ func TestIntentToolSubset_CapabilityIntents(t *testing.T) {
 		{IntentGPUSpecsQuery, "DescribeAvailableCompShareInstanceTypes", 2},
 		{IntentStockAvailability, "DescribeAvailableCompShareInstanceTypes", 3},
 		{IntentPricingQuery, "GetCompShareInstancePrice", 2},
+		{IntentNetAcceleratorStatus, "CheckCompShareNetOptimizer", 1},
 		{IntentPlatformImageList, "DescribeCompShareImages", 1},
 		{IntentCustomImageList, "DescribeCompShareCustomImages", 1},
 		{IntentCommunityImageList, "DescribeCommunityImages", 1},

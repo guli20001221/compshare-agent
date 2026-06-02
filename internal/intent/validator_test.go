@@ -334,6 +334,7 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		// Capability Registry v1 (PR A, 2026-05-18) — see capability_registry.go.
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
+		IntentNetAcceleratorStatus,
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,

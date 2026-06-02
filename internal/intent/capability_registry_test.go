@@ -33,13 +33,14 @@ func skillRequiredTool(i Intent) string {
 	return ""
 }
 
-// TestIsCapabilityIntent_KnownLabels verifies all 6 registered capability intents
+// TestIsCapabilityIntent_KnownLabels verifies all registered capability intents
 // return true. New capabilities must be picked up by IsCapabilityIntent without
 // any code change in callers (engine.go etc.) — this is the v1 contract.
 func TestIsCapabilityIntent_KnownLabels(t *testing.T) {
 	wanted := []Intent{
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
+		IntentNetAcceleratorStatus,
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
@@ -90,12 +91,13 @@ func TestCapabilityIntentOrder_NoDuplicates(t *testing.T) {
 // required tool now comes from the generated skill registry (RequiredTools[0]).
 func TestCapabilityRequiredTool_BindsToRealTool(t *testing.T) {
 	expected := map[Intent]string{
-		IntentGPUSpecsQuery:      "DescribeAvailableCompShareInstanceTypes",
-		IntentStockAvailability:  "DescribeAvailableCompShareInstanceTypes",
-		IntentPlatformImageList:  "DescribeCompShareImages",
-		IntentCustomImageList:    "DescribeCompShareCustomImages",
-		IntentCommunityImageList: "DescribeCommunityImages",
-		IntentPricingQuery:       "GetCompShareInstancePrice",
+		IntentGPUSpecsQuery:        "DescribeAvailableCompShareInstanceTypes",
+		IntentStockAvailability:    "DescribeAvailableCompShareInstanceTypes",
+		IntentNetAcceleratorStatus: "CheckCompShareNetOptimizer",
+		IntentPlatformImageList:    "DescribeCompShareImages",
+		IntentCustomImageList:      "DescribeCompShareCustomImages",
+		IntentCommunityImageList:   "DescribeCommunityImages",
+		IntentPricingQuery:         "GetCompShareInstancePrice",
 	}
 	for _, i := range capabilityIntentOrder {
 		want := expected[i]
@@ -145,14 +147,15 @@ func TestHandlerActionWhitelist_DerivesFromSkillRegistry(t *testing.T) {
 // gains or loses an action, this test fails loudly.
 func TestHandlerActionWhitelist_ExactGoldenSet(t *testing.T) {
 	golden := map[Intent]map[string]struct{}{
-		IntentResourceInfo:       {"DescribeCompShareInstance": {}},
-		IntentMonitorQuery:       {"GetCompShareInstanceMonitor": {}},
-		IntentGPUSpecsQuery:      {"DescribeAvailableCompShareInstanceTypes": {}},
-		IntentStockAvailability:  {"DescribeAvailableCompShareInstanceTypes": {}, "DescribeCompShareImages": {}, "CheckCompShareResourceCapacity": {}},
-		IntentPlatformImageList:  {"DescribeCompShareImages": {}},
-		IntentCustomImageList:    {"DescribeCompShareCustomImages": {}},
-		IntentCommunityImageList: {"DescribeCommunityImages": {}},
-		IntentPricingQuery:       {"GetCompShareInstancePrice": {}},
+		IntentResourceInfo:         {"DescribeCompShareInstance": {}},
+		IntentMonitorQuery:         {"GetCompShareInstanceMonitor": {}},
+		IntentGPUSpecsQuery:        {"DescribeAvailableCompShareInstanceTypes": {}},
+		IntentStockAvailability:    {"DescribeAvailableCompShareInstanceTypes": {}, "DescribeCompShareImages": {}, "CheckCompShareResourceCapacity": {}},
+		IntentNetAcceleratorStatus: {"CheckCompShareNetOptimizer": {}},
+		IntentPlatformImageList:    {"DescribeCompShareImages": {}},
+		IntentCustomImageList:      {"DescribeCompShareCustomImages": {}},
+		IntentCommunityImageList:   {"DescribeCommunityImages": {}},
+		IntentPricingQuery:         {"GetCompShareInstancePrice": {}},
 	}
 	got := handlerActionWhitelist()
 	if !reflect.DeepEqual(got, golden) {

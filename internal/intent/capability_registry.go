@@ -13,7 +13,7 @@ import (
 	"github.com/compshare-agent/internal/skills"
 )
 
-// capabilityIntentOrder is the registration order of the 6 catalog capability
+// capabilityIntentOrder is the registration order of the 7 catalog/status capability
 // intents. It is the ONLY remnant of the deleted capabilityRegistry: the planner
 // prompt fragments are emitted in this order and the order is byte-identity-pinned
 // (NOT alphabetical). Handler binding, required tool, and metadata now come from
@@ -21,6 +21,7 @@ import (
 var capabilityIntentOrder = []Intent{
 	IntentGPUSpecsQuery,
 	IntentStockAvailability,
+	IntentNetAcceleratorStatus,
 	IntentPlatformImageList,
 	IntentCustomImageList,
 	IntentCommunityImageList,

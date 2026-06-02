@@ -20,16 +20,17 @@ import (
 // binding's key set equals KnownHandlerKeys() below; the cross-package parity
 // guard. Without it the two maps could drift silently across the package boundary.
 //
-// B2b P2 populated this with the 6 migrated capability handlers. The 5 seeded
+// B2b P2 populated this with the migrated capability handlers. The seeded
 // diagnose_* skills declare no handler_key (agent-tier playbooks, no
 // deterministic handler), so they are unaffected.
 var knownHandlerKeys = map[string]bool{
-	"handleGPUSpecsQuery":      true,
-	"handleStockAvailability":  true,
-	"handlePlatformImageList":  true,
-	"handleCustomImageList":    true,
-	"handleCommunityImageList": true,
-	"handlePricingQuery":       true,
+	"handleGPUSpecsQuery":        true,
+	"handleStockAvailability":    true,
+	"handleNetAcceleratorStatus": true,
+	"handlePlatformImageList":    true,
+	"handleCustomImageList":      true,
+	"handleCommunityImageList":   true,
+	"handlePricingQuery":         true,
 }
 
 // KnownHandlerKeys returns the sorted handler_key allow-list codegen validates
