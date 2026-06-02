@@ -13,6 +13,7 @@ var workflowRegistry = map[string]func() *Definition{
 	"ResizeInstanceWorkflow":      ResizeInstanceDef,
 	"ReinstallInstanceWorkflow":   ReinstallInstanceDef,
 	"CreateDiskWorkflow":          CreateDiskDef,
+	"CreateCustomImageWorkflow":   CreateCustomImageDef,
 }
 
 // IsWorkflowTool reports whether the given action name corresponds to a

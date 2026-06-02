@@ -78,7 +78,10 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	// — upstream API has no list-disk action, reuse DescribeCompShareInstance.DiskSet.
 	// deploy_model (B8.3, 2026-05-31): bumped from 28 → 32 with 4 workload-first
 	// deploy anchors (部署 Qwen2.5-32B / 跑数字人 / 搭 ComfyUI 环境 / 部署 Llama3 推理).
-	if got, want := len(examples), 32+capabilityExampleCount; got != want {
+	// custom-image workflow (Phase 3, 2026-06-02): bumped from 32 → 34 with
+	// 2 operation_lifecycle anchors for saving an instance/environment as a
+	// custom image.
+	if got, want := len(examples), 34+capabilityExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -181,8 +184,8 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			t.Fatalf("planner examples missing group for intent %q", intent)
 		}
 	}
-	if total != 51 {
-		t.Fatalf("legacy planner example count = %d, want 51", total)
+	if total != 53 {
+		t.Fatalf("legacy planner example count = %d, want 53", total)
 	}
 	expectedCounts := map[Intent]int{
 		IntentResourceInfo:              8,
@@ -193,7 +196,8 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentBillingInstance:           2,
 		// PR1 hotfix Bug 1 (2026-05-28): 6 = 5 Batch 1 anchors + new
 		// ZERO-target sample for bare "帮我关机" classification.
-		IntentOperationLifecycle: 6,
+		// Phase 3 (2026-06-02): +2 custom-image workflow anchors.
+		IntentOperationLifecycle: 8,
 		IntentDiagnosis:          1,
 		// disk_info (2026-05-29): 4 anchors — 我有哪些数据盘 / 我的磁盘列表 /
 		// uhost-X 挂了哪些盘 / 我账号下有哪些云盘

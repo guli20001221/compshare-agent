@@ -668,6 +668,31 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "CreateCustomImageWorkflow",
+			Description: "从已有实例创建自制镜像的确认式工作流。自动执行：DescribeCompShareInstance -> 用户确认 -> CreateCompShareCustomImage -> GetCompShareImageCreateProgress。用于用户要保存当前环境、把实例做成自定义镜像、下次复用环境。需要 UHostId 和镜像 Name；Description 可选。不用于发布社区镜像，不要直接调用原始 CreateCompShareCustomImage。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "源实例 ID",
+					},
+					"Name": map[string]any{
+						"type":        "string",
+						"description": "要创建的自制镜像名称。用户没给名称时，应先追问名称，不要编造。",
+					},
+					"Description": map[string]any{
+						"type":        "string",
+						"description": "镜像描述，可选",
+					},
+				},
+				"required": []string{"UHostId", "Name"},
+			},
+		},
+	},
 	// --- Diagnosis Meta-Tools ---
 	{
 		Type: openai.ToolTypeFunction,

@@ -2422,6 +2422,7 @@ var friendlyActionNames = map[string]string{
 	"ResizeInstanceWorkflow":      "变配",
 	"ReinstallInstanceWorkflow":   "重装系统",
 	"CreateDiskWorkflow":          "创建数据盘",
+	"CreateCustomImageWorkflow":   "创建自制镜像",
 }
 
 func friendlyActionName(action string) string {

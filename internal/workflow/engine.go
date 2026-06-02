@@ -45,6 +45,9 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 			if err != nil {
 				e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, err.Error())
 				result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: err.Error()})
+				if step.Optional {
+					continue
+				}
 				result.StoppedAt = step.Name
 				result.Message = fmt.Sprintf("步骤「%s」参数构建失败: %v", step.Name, err)
 				return result, nil
@@ -56,6 +59,9 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 			if err != nil {
 				e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, err.Error())
 				result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: err.Error()})
+				if step.Optional {
+					continue
+				}
 				result.StoppedAt = step.Name
 				result.Message = fmt.Sprintf("步骤「%s」执行失败: %v", step.Name, err)
 				return result, nil
@@ -68,6 +74,9 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 				if !ok {
 					e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, msg)
 					result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: msg})
+					if step.Optional {
+						continue
+					}
 					result.StoppedAt = step.Name
 					result.Message = msg
 					return result, nil
@@ -102,6 +111,9 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 	}
 
 	result.Success = true
+	if def.ResultData != nil {
+		result.Data = def.ResultData(wfCtx)
+	}
 	result.Message = "工作流执行完成"
 	return result, nil
 }

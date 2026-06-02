@@ -437,6 +437,16 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
 					Source:   "Batch 1: 加盘 — CreateDiskWorkflow trigger, same intent as start/stop",
 				},
+				{
+					Question: "把 uhost-1qx1qsw4b1pk 保存成镜像",
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Phase 3: create custom image from an existing instance; workflow asks for Name if missing",
+				},
+				{
+					Question: "保存训练环境，下次复用",
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.72}`,
+					Source:   "Phase 3: zero-target custom-image request; engine should ask which instance/name rather than guessing",
+				},
 			},
 		},
 		{
