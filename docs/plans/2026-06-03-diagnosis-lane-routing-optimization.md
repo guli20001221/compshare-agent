@@ -963,12 +963,15 @@ git commit -m "feat(routing): add image tag catalog route"
 - delete-class APIs remain hard-refused with zero tool calls.
 - if a test needs a UHostId, create any stocked instance with agent workflow and use that ID.
 - test-created instances do not need to be deleted after the run; record and reuse them.
+- HTTP production requests should receive `user_email` from the gateway.
+- CLI smoke can use `COMPSHARE_USER_EMAIL` as the local stand-in for that gateway field; do not commit the value.
 
 **Live instance setup if needed:**
 
 ```powershell
 . .\eval\.smoke_env.ps1
 $env:COMPSHARE_PROJECT_ID="org-cwy2qk"
+$env:COMPSHARE_USER_EMAIL="<gateway-user-email>"
 $env:COMPSHARE_ENABLE_MUTATING_TOOLS="1"
 $env:COMPSHARE_TRACE_ENABLED="1"
 $runId = Get-Date -Format "yyyyMMdd-HHmmss"
