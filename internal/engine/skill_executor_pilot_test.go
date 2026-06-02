@@ -185,6 +185,129 @@ func TestExecuteDiagnosis_PortFirewallRejectsRawKnowledgeLeakAndFallsBack(t *tes
 	assert.True(t, sawLeakError, "raw evidence leak must be visible in trace events")
 }
 
+func TestExecuteDiagnosis_GPUNotDetectedInjectsSafeKnowledgeLedgerOnly(t *testing.T) {
+	prev := SkillExecutorEnabled()
+	SetSkillExecutorEnabled(true)
+	defer SetSkillExecutorEnabled(prev)
+	prevPilots := SkillExecutorDiagnosisPilots()
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose_gpu_not_detected"})
+	defer SetSkillExecutorDiagnosisPilots(prevPilots)
+
+	chunk := knowledge.KBChunk{
+		ChunkID:     "runbook-gpu-001",
+		KBVersion:   "kb.test",
+		SourceType:  "runbook",
+		ProductArea: "driver_cuda",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "GPU runtime troubleshooting",
+		Content:     "If nvidia-smi cannot see the GPU, first confirm the cloud instance has GPU assigned.",
+	}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.test",
+		Hits:      []knowledge.KBChunk{chunk},
+		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 0.94, Kept: true}},
+	}}}
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{map[string]any{
+			"UHostId": "u1", "State": "Running", "GPU": float64(1),
+		}}},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: `{"action":"DescribeCompShareInstance","args":{"UHostIds":["u1"]}}`},
+		{Content: `{"final":"先确认实例分配了 GPU，再让用户只读执行 nvidia-smi。"}`},
+	}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.Init(context.Background())
+	exec.calls = nil
+	eng.lastUserMsg = "跑模型的时候 nvidia-smi 检测不到 GPU"
+
+	var events []StepEvent
+	reply := eng.executeDiagnosis(context.Background(), "DiagnoseGPU",
+		map[string]any{"UHostId": "u1"}, func(ev StepEvent) {
+			events = append(events, ev)
+		})
+
+	assert.NotEmpty(t, reply)
+	require.Len(t, retriever.calls, 1, "GPU diagnosis should probe KB evidence exactly once")
+	assert.Equal(t, eng.lastUserMsg, retriever.calls[0].question)
+	assert.Equal(t, []string{"DescribeCompShareInstance"}, exec.calls)
+	assertStepOrder(t, events, "SearchKnowledge", "DescribeCompShareInstance")
+	require.NotEmpty(t, mock.calls)
+	firstPrompt := joinedMessages(mock.calls[0].Messages)
+	assert.Contains(t, firstPrompt, "EvidenceLedger")
+	assert.Contains(t, firstPrompt, "runbook-gpu-001")
+	assert.Contains(t, firstPrompt, "GPU runtime troubleshooting")
+	assert.NotContains(t, firstPrompt, "If nvidia-smi cannot see the GPU",
+		"retrieved chunk content must not reach the diagnosis model")
+}
+
+func TestExecuteDiagnosis_GPUNotDetectedRejectsRawKnowledgeLeakAndFallsBack(t *testing.T) {
+	prev := SkillExecutorEnabled()
+	SetSkillExecutorEnabled(true)
+	defer SetSkillExecutorEnabled(prev)
+	prevPilots := SkillExecutorDiagnosisPilots()
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose_gpu_not_detected"})
+	defer SetSkillExecutorDiagnosisPilots(prevPilots)
+
+	rawContent := "If nvidia-smi cannot see the GPU, first confirm the cloud instance has GPU assigned."
+	chunk := knowledge.KBChunk{
+		ChunkID:     "runbook-gpu-001",
+		KBVersion:   "kb.test",
+		SourceType:  "runbook",
+		ProductArea: "driver_cuda",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "GPU runtime troubleshooting",
+		Content:     rawContent,
+	}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.test",
+		Hits:      []knowledge.KBChunk{chunk},
+		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 0.94, Kept: true}},
+	}}}
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{map[string]any{
+			"UHostId": "u1", "State": "Running", "GPU": float64(1),
+		}}},
+		"GetCompShareInstanceMonitor": {"Data": map[string]any{"List": []any{}}},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: `{"final":"` + rawContent + `"}`},
+	}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.Init(context.Background())
+	exec.calls = nil
+	eng.lastUserMsg = "nvidia-smi 检测不到显卡"
+
+	var events []StepEvent
+	reply := eng.executeDiagnosis(context.Background(), "DiagnoseGPU",
+		map[string]any{"UHostId": "u1"}, func(ev StepEvent) {
+			events = append(events, ev)
+		})
+
+	assert.Contains(t, reply, `"success":true`,
+		"raw KB leakage must safe-fail the skill and fall back to the deterministic Go chain")
+	assert.NotContains(t, reply, rawContent)
+	assert.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, exec.calls)
+	require.Equal(t, 1, mock.callIdx)
+
+	var sawLeakError bool
+	for _, ev := range events {
+		if ev.Type == StepError &&
+			ev.Action == "DiagnoseGPU" &&
+			ev.Source == observability.ToolSourceDiagnosisInternal &&
+			strings.Contains(ev.Message, "raw knowledge evidence leaked") {
+			sawLeakError = true
+		}
+	}
+	assert.True(t, sawLeakError, "raw evidence leak must be visible in trace events")
+}
+
 func TestExecuteDiagnosis_RAGAsEvidenceDoesNotApplyToSSH(t *testing.T) {
 	prev := SkillExecutorEnabled()
 	SetSkillExecutorEnabled(true)

@@ -3536,7 +3536,12 @@ func (e *Engine) recordDiagnosisKnowledgeProbe(skillName, userMsg string, onStep
 }
 
 func diagnosisSkillUsesKnowledgeEvidence(skillName string) bool {
-	return skillName == "diagnose_port_firewall"
+	switch skillName {
+	case "diagnose_port_firewall", "diagnose_gpu_not_detected":
+		return true
+	default:
+		return false
+	}
 }
 
 // findGeneratedSkill looks up a skill from the embedded generated registry by name.

@@ -92,11 +92,18 @@ func TestDiagnosisProcessEval(t *testing.T) {
 			exec := &diagnosisProcessExecutor{}
 			seed := map[string]any{"UHostId": "uhost-diag-001", "Service": "JupyterLab"}
 			var rawKnowledgeBodies []string
-			if c.ExpectedSkill == "diagnose_port_firewall" {
+			if c.ExpectedSkill == "diagnose_port_firewall" || c.ExpectedSkill == "diagnose_gpu_not_detected" {
 				raw := "For service ports, first verify the instance is Running, then compare exposed software ports."
+				title := "Service port reachability"
+				chunkID := "runbook-port-eval"
+				if c.ExpectedSkill == "diagnose_gpu_not_detected" {
+					raw = "If nvidia-smi cannot see the GPU, first confirm the cloud instance has GPU assigned."
+					title = "GPU runtime troubleshooting"
+					chunkID = "runbook-gpu-eval"
+				}
 				chunk := knowledge.KBChunk{
-					ChunkID: "runbook-port-eval",
-					Title:   "Service port reachability",
+					ChunkID: chunkID,
+					Title:   title,
 					Content: raw,
 				}
 				seed["EvidenceLedger"] = knowledge.BuildEvidenceLedger(c.Question, []knowledge.RetrievalHit{{

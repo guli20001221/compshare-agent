@@ -150,6 +150,14 @@ foreach ($case in $cases) {
         if ($SkillExec -ne "1" -and $null -ne $case.require_body_read_off) {
             $requireBodyRead = [bool]$case.require_body_read_off
         }
+        $expectedDiagnosisTool = [string]$case.expect_diagnosis_tool
+        if (-not $expectedDiagnosisTool) {
+            if ([string]$case.expect_skill -eq "diagnose_port_firewall") {
+                $expectedDiagnosisTool = "DiagnosePortOrFirewall"
+            } elseif ([string]$case.expect_skill -eq "diagnose_gpu_not_detected") {
+                $expectedDiagnosisTool = "DiagnoseGPU"
+            }
+        }
         $toolActions = @()
         $toolSources = @{}
         if ($record -and $record.tool_calls) {
@@ -188,7 +196,7 @@ foreach ($case in $cases) {
         $checks.no_diagnosis = (-not [bool]$case.forbid_diagnosis) -or ($diagnosisActions.Count -eq 0 -and [string]$record.planner.intent -ne "diagnosis")
         $checks.retrieval = (-not $expectRetrieval) -or ($retrievalEnabled -and $retrievalHits -gt 0 -or @($toolActions | Where-Object { $_ -eq "SearchKnowledge" }).Count -gt 0)
         $checks.no_unexpected_retrieval = ($expectRetrieval) -or (@($toolActions | Where-Object { $_ -eq "SearchKnowledge" }).Count -eq 0)
-        $checks.body_read = (-not $requireBodyRead) -or (@($toolActions | Where-Object { $_ -eq "SearchKnowledge" }).Count -gt 0 -and @($toolActions | Where-Object { $_ -eq "DiagnosePortOrFirewall" }).Count -gt 0)
+        $checks.body_read = (-not $requireBodyRead) -or (@($toolActions | Where-Object { $_ -eq "SearchKnowledge" }).Count -gt 0 -and @($toolActions | Where-Object { $_ -eq $expectedDiagnosisTool }).Count -gt 0)
         $checks.clarify = (-not [bool]$case.expect_clarify) -or $clarified
         $checks.no_forbidden_text = ($forbiddenHits.Count -eq 0)
 
@@ -209,6 +217,7 @@ foreach ($case in $cases) {
             retrieval_enabled = $retrievalEnabled
             retrieval_hits = $retrievalHits
             expected_tools = $expectedTools
+            expected_diagnosis_tool = $expectedDiagnosisTool
             expect_retrieval = $expectRetrieval
             require_body_read = $requireBodyRead
             mutating_actions = $mutating
