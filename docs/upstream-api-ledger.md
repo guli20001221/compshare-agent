@@ -3,7 +3,7 @@
 **Purpose:** decide which upstream CompShare APIs become read-only `tool → fast skill`s
 next, and which mutating ones go through the saga + confirm-gate write-workflow phase.
 **Scope:** deliberately NOT exhaustive (JIT). This batch is the read-only-safe expansion
-candidates that map to real user needs (`聊天记录.md`) + two mutating seeds. Source docs:
+candidates that map to real user needs (`聊天记录.md`) + high-demand mutating seeds. Source docs:
 `F:\uhost-compshare-api-master\docs\api`. Sweep: workflow `wf_74091051` (2026-06-02).
 
 > Wired-status claims ("registered L0 internal") are from a grep of `internal/tools` /
@@ -17,7 +17,6 @@ candidates that map to real user needs (`聊天记录.md`) + two mutating seeds.
 | `DescribeModelRepositoryModels` | 模型仓库有哪些模型 | `Region`; opt `name` (fuzzy), `tags` | `Models[]{Name,Path,Tag,Size,CreateTime}` | L0 in `levels.go:54`, **not a tool** | Clean. Pairs with the tags endpoint below. No paging. |
 | `DescribeModelRepositoryTags` | 模型仓库有哪些分类 | `Region` | `Tags[]string` | not registered | Flat tag list; the filter vocabulary for the models endpoint. |
 | `DescribeCompShareImageTags` | 镜像有哪些分类/标签 | `Region` | `Tags[]`, `TagsMap{cat→tags}`, `TagIndex[]` | not registered | Hierarchical (框架→[PyTorch,…]); good for an image-catalog skill. |
-| `GetOpenClawModelList` | 我有哪些模型推理服务 | `Region` | `Models[]{Id,Name}` | not registered | Account-scoped. Simple. |
 | `DescribeCompShareSupportZone` | 平台有哪些地域/可用区 | `Region` | `ZoneInfo[]{Region,RegionId,Zone,ZoneId,Describe}` | L0 internal, **not LLM-exposed** | More of an internal sub-query than a standalone user need; low priority as a user-facing skill. |
 | `GetCompShareImageCreateProgress` | 我的自制镜像做好了吗 | `CompShareImageId`,`Region`,`Zone` | `Process`,`RemainingDuration`,`TotalDuration` | not registered | Poll-friendly, but needs an image-creation context (mutating-adjacent). Later. |
 | `DescribeTeamMemberOrder` / `…UnpaidOrder` | 账单/订单查询 ("扣费规则" in 聊天记录.md) | `TeamId`,`VirtualCompanyId`,`Region` (req) + filters + paging | `Total`, `OrderInfos[]{OrderNo,Amount,…}` | not registered | Read-only but **auth-heavy**: team admin + real-name, needs `TeamId`/`VirtualCompanyId` context plumbing. Medium priority. |
@@ -29,21 +28,29 @@ candidates that map to real user needs (`聊天记录.md`) + two mutating seeds.
 (mutating). Disk state is read from `DescribeCompShareInstance.DiskSet[]` (already wired) —
 a "我的磁盘" skill needs **no new tool**, just a render over the existing instance call.
 
+**Parked / removed from this console-agent route:** `GetOpenClawModelList` is
+OpenClaw / ModelVerse-specific. It is simple, but demand is narrow and it should not
+consume an early console-agent expansion slot unless a concrete OpenClaw workflow
+resurfaces.
+
 ## Mutating seeds → write-workflow phase (saga + confirm gate, never Markdown)
 
 | Endpoint | Class | Confirm | Notes |
 |---|---|---|---|
-| `AttachCompshareDisk` | mutating | **yes** | Mount an existing disk. Only `CreateAndAttachCompshareDisk` is wired (L1). Plain attach not yet. CLOUD_RSSD only on A800. **Disk attach is the proposed first write-workflow template** (reversible via detach, low blast radius). |
-| `PublishCompShareImage` | mutating | **yes** | Publishes to community marketplace → review flow. Container images only; `VersionName` semver; ≤3 tags. Later. |
+| `AttachCompshareDisk` | mutating | **yes** | Mount an existing disk. Only `CreateAndAttachCompshareDisk` is wired (L1). Plain attach not yet. CLOUD_RSSD only on A800. **High demand; disk attach is still the proposed first write-workflow template** (reversible via detach, lower blast radius than delete/reinstall). |
+| `CreateCompShareCustomImage` | mutating | **yes** | Create a custom image from an existing instance. **High demand** for "save/upload my environment as an image" workflows. Needs instance selection, image name, confirm gate, and progress follow-up through `GetCompShareImageCreateProgress`. |
+| `PublishCompShareImage` | mutating | **yes** | Publishes a custom image to the community marketplace → review flow. **High demand but higher validation burden**: container images only; `VersionName` semver; ≤3 tags; price/cover/readme/ports need schema validation before execution. |
 
 ## First read-only tool→skill candidates (ranked)
 
 1. **`CheckCompShareNetOptimizer`** — maps to a real, documented user complaint ("网速怎么这么慢" → "开下网络加速"); read-only; already L0-internal so it only needs LLM exposure + a fast skill + an `eval/skill` case. **Recommended first.**
 2. **`DescribeModelRepositoryModels` + `DescribeModelRepositoryTags`** — model-repository browse; clean params; pairs naturally into one skill.
 3. **`DescribeCompShareImageTags`** — image catalog/tag browse.
-4. **`GetOpenClawModelList`** — "my model services".
 
 Each lands as: register tool (LLM-exposed) → fast-tier handler/skill (intent + `SKILL.md`) →
 **its `eval/skill` case** (with the now-mandatory expected-tool / no-extra-tool / arg pins).
-`DescribeTeamMemberOrder*` and the disk-attach write-workflow come after, once the read-only
-expansion pattern + team-context / saga plumbing are proven.
+
+After the first read-only expansion, the higher-value branch is likely **write-workflow
+templates**, not more narrow read-only browsing: disk attach/create first, then custom-image
+create/progress and publish. `DescribeTeamMemberOrder*` stays later because it needs
+team-context plumbing (`TeamId` / `VirtualCompanyId`, admin/real-name constraints).
