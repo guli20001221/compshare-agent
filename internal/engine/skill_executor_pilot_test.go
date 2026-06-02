@@ -56,7 +56,7 @@ func TestExecuteDiagnosis_FlagOn_RoutesThroughSkillExecutor(t *testing.T) {
 	require.GreaterOrEqual(t, mock.callIdx, 2, "the body-driven loop made its own LLM calls")
 }
 
-func TestExecuteDiagnosis_PortFirewallProbesKnowledgeButDoesNotInjectChunkContent(t *testing.T) {
+func TestExecuteDiagnosis_PortFirewallInjectsSafeKnowledgeLedgerOnly(t *testing.T) {
 	prev := SkillExecutorEnabled()
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
@@ -101,12 +101,9 @@ func TestExecuteDiagnosis_PortFirewallProbesKnowledgeButDoesNotInjectChunkConten
 			events = append(events, ev)
 		})
 
-	// Regression guard for the citation/leakage hole (#207): port diagnosis MAY
-	// probe the KB for observability (SearchKnowledge step + RetrievalTrace), and the
-	// probe runs before the live read-only tools, but it must NOT place any retrieved
-	// chunk content into the diagnosis model's prompt. A final diagnosis answer that
-	// consumed KB text would bypass the route-dependent cited-guard. When a
-	// citation-aware evidence adapter lands, update this test alongside it.
+	// Regression guard for the citation/leakage hole (#207/#126): port diagnosis
+	// may read a safe evidence ledger, but raw KB body content must never reach
+	// the body-read prompt.
 	assert.NotEmpty(t, reply, "diagnosis still produces an answer")
 	require.Len(t, retriever.calls, 1, "KB is probed exactly once (observability)")
 	assert.Equal(t, eng.lastUserMsg, retriever.calls[0].question)
@@ -115,11 +112,77 @@ func TestExecuteDiagnosis_PortFirewallProbesKnowledgeButDoesNotInjectChunkConten
 	require.NotEmpty(t, mock.calls)
 	firstPrompt := joinedMessages(mock.calls[0].Messages)
 	assert.NotContains(t, firstPrompt, "KnowledgeEvidence",
-		"retrieved evidence must not be injected into the diagnosis model prompt")
-	assert.NotContains(t, firstPrompt, "Service port reachability",
-		"retrieved chunk title must not reach the diagnosis model")
+		"legacy raw-evidence key must not be injected into the diagnosis model prompt")
+	assert.Contains(t, firstPrompt, "EvidenceLedger",
+		"diagnosis may receive the safe evidence ledger")
+	assert.Contains(t, firstPrompt, "runbook-port-001",
+		"safe ledger should carry chunk_id for auditability")
+	assert.Contains(t, firstPrompt, "Service port reachability",
+		"safe ledger may carry the chunk title")
 	assert.NotContains(t, firstPrompt, "For service ports, first verify",
 		"retrieved chunk content must not reach the diagnosis model")
+}
+
+func TestExecuteDiagnosis_PortFirewallRejectsRawKnowledgeLeakAndFallsBack(t *testing.T) {
+	prev := SkillExecutorEnabled()
+	SetSkillExecutorEnabled(true)
+	defer SetSkillExecutorEnabled(prev)
+	prevPilots := SkillExecutorDiagnosisPilots()
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose_port_firewall"})
+	defer SetSkillExecutorDiagnosisPilots(prevPilots)
+
+	rawContent := "For service ports, first verify the instance is Running, then compare exposed software ports."
+	chunk := knowledge.KBChunk{
+		ChunkID:     "runbook-port-001",
+		KBVersion:   "kb.test",
+		SourceType:  "runbook",
+		ProductArea: "network",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "Service port reachability",
+		Content:     rawContent,
+	}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.test",
+		Hits:      []knowledge.KBChunk{chunk},
+		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 0.95, Kept: true}},
+	}}}
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":     {"UHostSet": []any{map[string]any{"UHostId": "u1", "State": "Running"}}},
+		"DescribeCompShareSoftwarePort": {"SoftwarePort": []any{map[string]any{"Software": "JupyterLab", "Port": float64(8888)}}},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: `{"final":"` + rawContent + `"}`},
+	}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.Init(context.Background())
+	exec.calls = nil
+	eng.lastUserMsg = "webui 鐨勭鍙ｆ墦涓嶅紑锛屾槸涓嶆槸琚槻鐏鎸′簡"
+
+	var events []StepEvent
+	reply := eng.executeDiagnosis(context.Background(), "DiagnosePortOrFirewall",
+		map[string]any{"UHostId": "u1", "Service": "JupyterLab"}, func(ev StepEvent) {
+			events = append(events, ev)
+		})
+
+	assert.Contains(t, reply, `"success":true`,
+		"raw KB leakage must safe-fail the skill and fall back to the deterministic Go chain")
+	assert.NotContains(t, reply, rawContent)
+	assert.Equal(t, []string{"DescribeCompShareInstance", "DescribeCompShareSoftwarePort"}, exec.calls)
+	require.Equal(t, 1, mock.callIdx)
+
+	var sawLeakError bool
+	for _, ev := range events {
+		if ev.Type == StepError &&
+			ev.Action == "DiagnosePortOrFirewall" &&
+			ev.Source == observability.ToolSourceDiagnosisInternal &&
+			strings.Contains(ev.Message, "raw knowledge evidence leaked") {
+			sawLeakError = true
+		}
+	}
+	assert.True(t, sawLeakError, "raw evidence leak must be visible in trace events")
 }
 
 func TestExecuteDiagnosis_RAGAsEvidenceDoesNotApplyToSSH(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/orchestrator"
 	"github.com/compshare-agent/internal/skills"
@@ -89,9 +90,25 @@ func TestDiagnosisProcessEval(t *testing.T) {
 				`{"final":"下一步：实例状态已读取，请根据症状继续核对登录入口、端口或镜像环境。"}`,
 			}}
 			exec := &diagnosisProcessExecutor{}
+			seed := map[string]any{"UHostId": "uhost-diag-001", "Service": "JupyterLab"}
+			var rawKnowledgeBodies []string
+			if c.ExpectedSkill == "diagnose_port_firewall" {
+				raw := "For service ports, first verify the instance is Running, then compare exposed software ports."
+				chunk := knowledge.KBChunk{
+					ChunkID: "runbook-port-eval",
+					Title:   "Service port reachability",
+					Content: raw,
+				}
+				seed["EvidenceLedger"] = knowledge.BuildEvidenceLedger(c.Question, []knowledge.RetrievalHit{{
+					Chunk: chunk,
+					Score: 0.95,
+					Kept:  true,
+				}}, knowledge.DefaultEvidenceLedgerMaxItems)
+				rawKnowledgeBodies = append(rawKnowledgeBodies, raw)
+			}
 
 			reply, err := orchestrator.RunReadOnlySkill(context.Background(), c.Question,
-				map[string]any{"UHostId": "uhost-diag-001", "Service": "JupyterLab"},
+				seed,
 				orchestrator.SkillExecOptions{
 					Body:      body,
 					Tools:     tools.VisibleRegistryForSubset(skill.RequiredTools, false),
@@ -111,7 +128,7 @@ func TestDiagnosisProcessEval(t *testing.T) {
 				assert.Truef(t, allowed[action], "called tool %q is outside %s required_tools %v", action, skill.Name, skill.RequiredTools)
 				assert.Falsef(t, mutating[action], "diagnosis process called mutating/destructive tool %q", action)
 			}
-			assertNoRawRetrievalLeak(t, client.calls, reply)
+			assertNoRawRetrievalLeak(t, client.calls, reply, rawKnowledgeBodies)
 			covered[skill.Name] = true
 		})
 	}
@@ -148,7 +165,7 @@ func mutatingActionSet(policies map[string]tools.ToolExecutionPolicy) map[string
 	return out
 }
 
-func assertNoRawRetrievalLeak(t *testing.T, calls [][]openai.ChatCompletionMessage, reply string) {
+func assertNoRawRetrievalLeak(t *testing.T, calls [][]openai.ChatCompletionMessage, reply string, rawKnowledgeBodies []string) {
 	t.Helper()
 	sentinels := []string{"KnowledgeEvidence", "ChunkID", "RAW_KB_CHUNK", "retrieved chunk"}
 	for _, messages := range calls {
@@ -156,10 +173,16 @@ func assertNoRawRetrievalLeak(t *testing.T, calls [][]openai.ChatCompletionMessa
 			for _, sentinel := range sentinels {
 				assert.NotContains(t, message.Content, sentinel)
 			}
+			for _, raw := range rawKnowledgeBodies {
+				assert.NotContains(t, message.Content, raw)
+			}
 		}
 	}
 	for _, sentinel := range sentinels {
 		assert.NotContains(t, reply, sentinel)
+	}
+	for _, raw := range rawKnowledgeBodies {
+		assert.NotContains(t, reply, raw)
 	}
 }
 
