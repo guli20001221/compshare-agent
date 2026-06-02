@@ -24,10 +24,6 @@ metadata:
 
 > 来源:从原 `PortFirewallChain` Go 代码 SOP 提炼(2026-05-29),未经真机故障验证。
 
-## Knowledge evidence
-
-If the seed contains `KnowledgeEvidence`, read it first as troubleshooting evidence. Use it to decide what platform facts to verify, but do not stop at the document answer when the user reports a live service failure.
-
 ## 排查步骤
 
 1. **查实例状态 + 应用列表**(call `DescribeCompShareInstance` with UHostId)

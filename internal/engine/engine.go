@@ -3446,7 +3446,7 @@ func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string
 	if svc, _ := args["Service"].(string); svc != "" {
 		seed["Service"] = svc
 	}
-	e.attachDiagnosisKnowledgeEvidence(skillName, e.lastUserMsg, seed, onStep)
+	e.recordDiagnosisKnowledgeProbe(skillName, e.lastUserMsg, onStep)
 
 	reply, rerr := orchestrator.RunReadOnlySkill(ctx, e.lastUserMsg, seed, orchestrator.SkillExecOptions{
 		Body:      body,
@@ -3466,7 +3466,17 @@ func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string
 	return reply, true
 }
 
-func (e *Engine) attachDiagnosisKnowledgeEvidence(skillName, userMsg string, seed map[string]any, onStep func(StepEvent)) {
+// recordDiagnosisKnowledgeProbe runs an OBSERVABILITY-ONLY knowledge-base probe for
+// a piloted diagnosis skill: it records whether the platform KB would have matched
+// this query (RetrievalTrace + SearchKnowledge steps) but injects NOTHING derived
+// from retrieval into the skill seed. Handing raw chunk text to the diagnosis model
+// would let a final diagnosis answer consume KB content without passing the
+// route-dependent citation/leakage guard (the cited-guard keys on
+// round==0 && requireKnowledgeCitationThisTurn, which the body-driven diagnosis loop
+// never sets) — a silent-hallucination regression on the project's hardest contract.
+// A citation-aware evidence adapter must land before the diagnosis model is allowed
+// to read KB content.
+func (e *Engine) recordDiagnosisKnowledgeProbe(skillName, userMsg string, onStep func(StepEvent)) {
 	if !diagnosisSkillUsesKnowledgeEvidence(skillName) || e.knowledgeRetriever == nil {
 		return
 	}
@@ -3510,7 +3520,6 @@ func (e *Engine) attachDiagnosisKnowledgeEvidence(skillName, userMsg string, see
 		trace.RefusedReason = "no_evidence"
 		trace.RankingErrorCandidate = true
 		e.emitRetrievalTrace(trace)
-		seed["KnowledgeEvidenceStatus"] = "no_evidence"
 		return
 	}
 	if isWeakEvidence(hitItems, retrieved.HybridMode) {
@@ -3520,24 +3529,10 @@ func (e *Engine) attachDiagnosisKnowledgeEvidence(skillName, userMsg string, see
 		trace.RankingErrorCandidate = true
 	}
 	e.emitRetrievalTrace(trace)
-	seed["KnowledgeEvidenceStatus"] = "available"
-	seed["KnowledgeEvidence"] = diagnosisKnowledgeEvidenceForSeed(evidences)
 }
 
 func diagnosisSkillUsesKnowledgeEvidence(skillName string) bool {
 	return skillName == "diagnose_port_firewall"
-}
-
-func diagnosisKnowledgeEvidenceForSeed(evidences []envelope.Evidence) []map[string]string {
-	refs := ragReferencesFromEvidence(evidences)
-	out := make([]map[string]string, 0, len(refs))
-	for _, ref := range refs {
-		out = append(out, map[string]string{
-			"title":   ref.Title,
-			"content": ref.Content,
-		})
-	}
-	return out
 }
 
 // findGeneratedSkill looks up a skill from the embedded generated registry by name.

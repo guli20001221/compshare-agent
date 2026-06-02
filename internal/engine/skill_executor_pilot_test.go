@@ -56,7 +56,7 @@ func TestExecuteDiagnosis_FlagOn_RoutesThroughSkillExecutor(t *testing.T) {
 	require.GreaterOrEqual(t, mock.callIdx, 2, "the body-driven loop made its own LLM calls")
 }
 
-func TestExecuteDiagnosis_PortFirewallUsesRAGAsEvidenceBeforeLiveTools(t *testing.T) {
+func TestExecuteDiagnosis_PortFirewallProbesKnowledgeButDoesNotInjectChunkContent(t *testing.T) {
 	prev := SkillExecutorEnabled()
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
@@ -101,15 +101,25 @@ func TestExecuteDiagnosis_PortFirewallUsesRAGAsEvidenceBeforeLiveTools(t *testin
 			events = append(events, ev)
 		})
 
-	assert.Contains(t, reply, "知识库")
-	require.Len(t, retriever.calls, 1)
+	// Regression guard for the citation/leakage hole (#207): port diagnosis MAY
+	// probe the KB for observability (SearchKnowledge step + RetrievalTrace), and the
+	// probe runs before the live read-only tools, but it must NOT place any retrieved
+	// chunk content into the diagnosis model's prompt. A final diagnosis answer that
+	// consumed KB text would bypass the route-dependent cited-guard. When a
+	// citation-aware evidence adapter lands, update this test alongside it.
+	assert.NotEmpty(t, reply, "diagnosis still produces an answer")
+	require.Len(t, retriever.calls, 1, "KB is probed exactly once (observability)")
 	assert.Equal(t, eng.lastUserMsg, retriever.calls[0].question)
 	assert.Equal(t, []string{"DescribeCompShareInstance"}, exec.calls)
 	assertStepOrder(t, events, "SearchKnowledge", "DescribeCompShareInstance")
 	require.NotEmpty(t, mock.calls)
 	firstPrompt := joinedMessages(mock.calls[0].Messages)
-	assert.Contains(t, firstPrompt, "KnowledgeEvidence")
-	assert.Contains(t, firstPrompt, "Service port reachability")
+	assert.NotContains(t, firstPrompt, "KnowledgeEvidence",
+		"retrieved evidence must not be injected into the diagnosis model prompt")
+	assert.NotContains(t, firstPrompt, "Service port reachability",
+		"retrieved chunk title must not reach the diagnosis model")
+	assert.NotContains(t, firstPrompt, "For service ports, first verify",
+		"retrieved chunk content must not reach the diagnosis model")
 }
 
 func TestExecuteDiagnosis_RAGAsEvidenceDoesNotApplyToSSH(t *testing.T) {
