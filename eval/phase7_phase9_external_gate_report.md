@@ -66,6 +66,7 @@ Follow-up backend readiness has been added after this audit:
 - `ExternalExecutor` injects it into form and JSON upstream requests
 - context `user_email` overrides any accidental tool arg value, so the model cannot spoof this identity field
 - CLI smoke can provide the same field through `COMPSHARE_USER_EMAIL`
+- reusable smoke harness: `eval/custom_image_user_email_smoke.ps1`
 
 With this backend support, the remaining external dependency is that the production gateway must provide the correct `user_email` field in agent requests.
 
