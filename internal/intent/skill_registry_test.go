@@ -78,12 +78,13 @@ func TestCapabilityHandlerForKey_ResolvesEveryCapabilitySkill(t *testing.T) {
 // (compared by func pointer). This pins the skill↔Go dispatch binding.
 func TestCapabilityHandlerByKey_MatchesRegistry(t *testing.T) {
 	expectedByIntent := map[Intent]capabilityHandlerFunc{
-		IntentGPUSpecsQuery:      handleGPUSpecsQuery,
-		IntentStockAvailability:  handleStockAvailability,
-		IntentPlatformImageList:  handlePlatformImageList,
-		IntentCustomImageList:    handleCustomImageList,
-		IntentCommunityImageList: handleCommunityImageList,
-		IntentPricingQuery:       handlePricingQuery,
+		IntentGPUSpecsQuery:        handleGPUSpecsQuery,
+		IntentStockAvailability:    handleStockAvailability,
+		IntentNetAcceleratorStatus: handleNetAcceleratorStatus,
+		IntentPlatformImageList:    handlePlatformImageList,
+		IntentCustomImageList:      handleCustomImageList,
+		IntentCommunityImageList:   handleCommunityImageList,
+		IntentPricingQuery:         handlePricingQuery,
 	}
 	keyByIntent := map[Intent]string{}
 	for _, s := range skills.GeneratedSkills() {

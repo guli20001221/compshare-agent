@@ -208,7 +208,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 //      [DescribeCompShareImages]. UNLIKE the routing-only intents above, this one
 //      DOES have a new engine arm (tryDeployModel) — but the planner prompt change
 //      is the same shape. SHA bumped by construction.
-const systemPromptSHA256Baseline = "a976edd59421c84ae279ba7d11f8b89f9d1894b85f38874fa99151f14fe42c59"
+const systemPromptSHA256Baseline = "3dab3c3ef6a51a65f2de1adf04576bb524a214ea41220f2c429a60f41f6e9532"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

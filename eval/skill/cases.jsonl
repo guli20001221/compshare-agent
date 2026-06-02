@@ -1,6 +1,7 @@
 // R2 skill-eval cases. One JSON object per line (blank lines and // comments skipped).
 // lane=fast  -> exercised by the deterministic CI layer (TestOfflineSkillEval) AND the selection layer.
-// lane=diagnosis|agent -> exercised by the opt-in real-model selection layer only (TestSelectionSkillEval, -model).
+// lane=diagnosis|agent|boundary -> exercised by the opt-in real-model selection layer only (TestSelectionSkillEval, -model).
+// boundary cases assert expected_intent + forbidden_skills so new skills cannot steal nearby how-to / FAQ questions.
 // Questions mimic real CompShare user phrasing (colloquial, problem-driven, run-on) — calibrated against 聊天记录.md,
 // NOT engineer-template "查询X / X怎么配置". They are paraphrases, never byte-equal to a skill's triggers, so the
 // selection layer is non-tautological. The GPU model token (4090 / A100) is kept verbatim because the fast-tier
@@ -11,6 +12,8 @@
 {"id":"gpuspecs_02","question":"A100 单卡显存和配置都是啥样的","lane":"fast","expected_skill":"gpu_specs_query","expected_tools":["DescribeAvailableCompShareInstanceTypes"],"reply_should_contain":["A100"],"tags":["specs"]}
 {"id":"stock_01","question":"现在 4090 还有货吗，老是抢不到","lane":"fast","expected_skill":"stock_availability","expected_tools":["DescribeAvailableCompShareInstanceTypes","DescribeCompShareImages","CheckCompShareResourceCapacity"],"reply_should_contain":["4090"],"tags":["stock"]}
 {"id":"stock_02","question":"A100 现在能开得出来不","lane":"fast","expected_skill":"stock_availability","expected_tools":["DescribeAvailableCompShareInstanceTypes","DescribeCompShareImages","CheckCompShareResourceCapacity"],"reply_should_contain":["A100"],"tags":["stock"]}
+{"id":"netaccel_01","question":"网速怎么这么慢，帮我看看是不是没开网络加速","lane":"fast","expected_skill":"network_accelerator_status","expected_tools":["CheckCompShareNetOptimizer"],"reply_should_contain":["网络加速","未开通"],"overlapping_group":"network_accelerator_vs_tutorial","tags":["network"]}
+{"id":"netaccel_boundary_01","question":"GitHub 下载太慢了，要怎么加速啊","lane":"boundary","expected_intent":"knowledge_qa","forbidden_skills":["network_accelerator_status"],"overlapping_group":"network_accelerator_vs_tutorial","tags":["network","boundary"]}
 {"id":"platimg_01","question":"你们平台都有哪些官方镜像能直接用啊","lane":"fast","expected_skill":"platform_image_list","expected_tools":["DescribeCompShareImages"],"forbidden_tools":["DescribeCompShareCustomImages","DescribeCommunityImages"],"reply_should_contain":["镜像"],"overlapping_group":"image_list","tags":["image"]}
 {"id":"platimg_02","question":"有没有那种装好了 pytorch 的镜像，省得我自己配","lane":"fast","expected_skill":"platform_image_list","expected_tools":["DescribeCompShareImages"],"forbidden_tools":["DescribeCommunityImages"],"reply_should_contain":["PyTorch"],"overlapping_group":"image_list","tags":["image"]}
 {"id":"customimg_01","question":"我之前自己存的那个镜像在哪能看到","lane":"fast","expected_skill":"custom_image_list","expected_tools":["DescribeCompShareCustomImages"],"forbidden_tools":["DescribeCompShareImages","DescribeCommunityImages"],"reply_should_contain":["镜像"],"overlapping_group":"image_list","tags":["image"]}

@@ -22,11 +22,12 @@ const (
 	// Capability Registry v1 (PR A, 2026-05-18) — declarative routing for static
 	// platform queries. See internal/intent/capabilities/*.md and
 	// capability_registry.go for the data-driven dispatch table.
-	IntentGPUSpecsQuery      Intent = "gpu_specs_query"
-	IntentStockAvailability  Intent = "stock_availability"
-	IntentPlatformImageList  Intent = "platform_image_list"
-	IntentCustomImageList    Intent = "custom_image_list"
-	IntentCommunityImageList Intent = "community_image_list"
+	IntentGPUSpecsQuery        Intent = "gpu_specs_query"
+	IntentStockAvailability    Intent = "stock_availability"
+	IntentPlatformImageList    Intent = "platform_image_list"
+	IntentCustomImageList      Intent = "custom_image_list"
+	IntentCommunityImageList   Intent = "community_image_list"
+	IntentNetAcceleratorStatus Intent = "network_accelerator_status"
 	// PR #3 (2026-05-22): pricing capability — deterministic route for
 	// "X 多少钱 / X 价格 / X 包月" so commercial-critical paths don't depend
 	// on LLM tool-selection variance (which produced 35s/33k-token paths
@@ -196,6 +197,7 @@ func AllIntents() []Intent {
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		IntentNetAcceleratorStatus,
 		IntentPricingQuery,
 		IntentDiskInfo,
 		IntentDeployModel,
@@ -221,6 +223,7 @@ func RuntimeIntents() []Intent {
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		IntentNetAcceleratorStatus,
 		IntentPricingQuery,
 		IntentDiskInfo,
 		// deploy_model is a runtime intent: validIntent (validator.go) must accept

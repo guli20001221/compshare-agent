@@ -46,8 +46,10 @@ import (
 type SkillCase struct {
 	ID                    string   `json:"id"`
 	Question              string   `json:"question"`
-	Lane                  string   `json:"lane"` // fast | diagnosis | agent
+	Lane                  string   `json:"lane"` // fast | diagnosis | agent | boundary
 	ExpectedSkill         string   `json:"expected_skill"`
+	ExpectedIntent        string   `json:"expected_intent,omitempty"`
+	ForbiddenSkills       []string `json:"forbidden_skills,omitempty"`
 	ExpectedTools         []string `json:"expected_tools,omitempty"`
 	ForbiddenTools        []string `json:"forbidden_tools,omitempty"`
 	ReplyShouldContain    []string `json:"reply_should_contain,omitempty"`
@@ -71,6 +73,7 @@ const (
 	laneFast      = "fast"
 	laneDiagnosis = "diagnosis"
 	laneAgent     = "agent"
+	laneBoundary  = "boundary"
 )
 
 func loadSkillCases(t *testing.T) []SkillCase {

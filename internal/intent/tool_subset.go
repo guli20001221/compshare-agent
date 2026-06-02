@@ -56,6 +56,10 @@ func IntentToolSubset(i Intent) []string {
 			"GetCompShareInstancePrice",
 			"DescribeAvailableCompShareInstanceTypes",
 		}
+	case IntentNetAcceleratorStatus:
+		return []string{
+			"CheckCompShareNetOptimizer",
+		}
 	case IntentPlatformImageList:
 		return []string{
 			"DescribeCompShareImages",

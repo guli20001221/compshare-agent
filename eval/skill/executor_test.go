@@ -65,6 +65,10 @@ func (e *recordingExecutor) Execute(_ context.Context, action string, args map[s
 		}}}, nil
 	case "CheckCompShareResourceCapacity":
 		return map[string]any{"Specs": []any{map[string]any{"Gpu": float64(1), "ResourceEnough": true}}}, nil
+	case "CheckCompShareNetOptimizer":
+		return map[string]any{"Optimized": false, "Info": []any{
+			map[string]any{"Region": "cn-wlcb-01", "Optimized": false},
+		}}, nil
 	case "DescribeCompShareImages":
 		return map[string]any{"ImageSet": []any{
 			map[string]any{"CompShareImageId": "img-1", "Name": "PyTorch 2.9", "ImageType": "App"},

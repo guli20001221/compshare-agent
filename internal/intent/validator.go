@@ -231,6 +231,7 @@ func validRequiredTool(tool string) bool {
 		// untouched and accept the 4 capability-bound platform-query tools.
 		"DescribeAvailableCompShareInstanceTypes",
 		"CheckCompShareResourceCapacity",
+		"CheckCompShareNetOptimizer",
 		"DescribeCompShareImages",
 		"DescribeCompShareCustomImages",
 		"DescribeCommunityImages":

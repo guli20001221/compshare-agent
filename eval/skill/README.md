@@ -31,8 +31,10 @@ One JSON object per line (`//` comments and blank lines skipped):
  "reply_should_contain":["4090"],"overlapping_group":"pricing_vs_billing","tags":["price"]}
 ```
 
-- `lane`: `fast` (6 catalog capabilities) drives **both** layers; `diagnosis` / `agent`
-  drive only the selection layer in v1 (see Scope).
+- `lane`: `fast` drives **both** layers; `diagnosis` / `agent` drive only the
+  selection layer in v1 (see Scope). `boundary` cases drive only the selection
+  layer and assert `expected_intent` plus `forbidden_skills`, for example to prove
+  a new status skill does not steal a nearby how-to / FAQ question.
 - Questions mimic **real CompShare user phrasing** (colloquial, problem-driven; calibrated
   against `聊天记录.md`), never byte-equal to a skill's triggers, so the selection layer
   is non-tautological. The GPU token (`4090`/`A100`) is verbatim because the pricing/specs
@@ -57,10 +59,12 @@ Offline (deterministic, CI):
 
 Selection (opt-in, real model):
 6. **skill-hit / wrong-skill** — raw question → planner → `DeriveSelectedSkills`.
-7. **R4 trigger** — per `overlapping_group` wrong-skill rate. The run emits a trackable
+7. **boundary-hit** — raw question → planner must match `expected_intent` and avoid
+   every skill in `forbidden_skills`.
+8. **R4 trigger** — per `overlapping_group` wrong-skill rate. The run emits a trackable
    JSON report (`$SKILL_EVAL_REPORT`, else logged) for run-over-run comparison.
 
-> The offline `1.00` means **"the 12 read-only capabilities' wiring is correct"** —
+> The offline `1.00` means **"the fast-tier capability cases' wiring is correct"** —
 > selection, tool name **and args**, forbidden/extra tools, answer shape. It is **not** a
 > full agent-quality score. Tool-call **order**, real execution **results**, **cost/latency**,
 > **retries**, and multi-run **stability** are deliberately out of v1 (see Scope) — those are
@@ -77,7 +81,7 @@ intent enumeration is breaking down and R4 should start. Baseline (deepseek-v4-f
 
 ## Scope (v1)
 
-- Deterministic CI layer covers the **6 fast-tier skills** end-to-end via the exported
+- Deterministic CI layer covers every **fast-tier skill** end-to-end via the exported
   `intent.NewDemoHandler(...).DispatchCapability` seam (0 LLM).
 - **Diagnosis (5) + deploy (1):** cases exist and run through the selection layer, but
   their specific-skill plan-time selection is `resolved_in_react` / agent-saga and is
