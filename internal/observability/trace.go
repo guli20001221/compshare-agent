@@ -266,18 +266,19 @@ type RuntimeTrace struct {
 }
 
 type PlannerTrace struct {
-	Enabled       bool                `json:"enabled"`
-	Model         string              `json:"model"`
-	LatencyMS     int64               `json:"latency_ms"`
-	InputTokens   int                 `json:"input_tokens"`
-	OutputTokens  int                 `json:"output_tokens"`
-	SchemaValid   bool                `json:"schema_valid"`
-	Intent        string              `json:"intent"`
-	Skills        []PlannerSkillTrace `json:"skills,omitempty"`
-	Slots         PlannerSlots        `json:"slots"`
-	Confidence    float64             `json:"confidence"`
-	HardBlockHint bool                `json:"hard_block_hint"`
-	CutoverStatus string              `json:"cutover_status"`
+	Enabled            bool                `json:"enabled"`
+	Model              string              `json:"model"`
+	LatencyMS          int64               `json:"latency_ms"`
+	InputTokens        int                 `json:"input_tokens"`
+	OutputTokens       int                 `json:"output_tokens"`
+	SchemaValid        bool                `json:"schema_valid"`
+	Intent             string              `json:"intent"`
+	PlannedRuntimeForm string              `json:"planned_runtime_form,omitempty"`
+	Skills             []PlannerSkillTrace `json:"skills,omitempty"`
+	Slots              PlannerSlots        `json:"slots"`
+	Confidence         float64             `json:"confidence"`
+	HardBlockHint      bool                `json:"hard_block_hint"`
+	CutoverStatus      string              `json:"cutover_status"`
 }
 
 type PlannerSkillTrace struct {
@@ -642,6 +643,7 @@ func tracePlannerObserved(trace PlannerTrace) bool {
 		trace.OutputTokens != 0 ||
 		trace.SchemaValid ||
 		trace.Intent != "" ||
+		trace.PlannedRuntimeForm != "" ||
 		len(trace.Skills) > 0 ||
 		len(trace.Slots.TargetRefs) > 0 ||
 		len(trace.Slots.Metrics) > 0 ||

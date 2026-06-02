@@ -69,6 +69,28 @@ func TestSchemaVersionIsV04(t *testing.T) {
 	}
 }
 
+func TestPlannerTracePlannedRuntimeFormMarshals(t *testing.T) {
+	data, err := json.Marshal(TraceRecord{
+		SchemaVersion: SchemaVersion,
+		TraceID:       "trace-1",
+		TurnID:        "turn-1",
+		TurnIndex:     1,
+		Timestamp:     "2026-06-02T00:00:00Z",
+		UserMsgHash:   "sha256:user",
+		Planner: PlannerTrace{
+			Intent:             "knowledge_qa",
+			PlannedRuntimeForm: "terminal_rag",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal TraceRecord: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"planned_runtime_form":"terminal_rag"`) {
+		t.Fatalf("trace record missing planned_runtime_form: %s", text)
+	}
+}
+
 func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 	trace := RetrievalTrace{
 		Enabled:         true,
