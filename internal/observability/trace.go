@@ -305,6 +305,18 @@ func (r TraceRecord) DeriveActualRuntimeForm() string {
 	return ""
 }
 
+func (r TraceRecord) RuntimeFormMismatch() (bool, bool) {
+	planned := strings.TrimSpace(r.Planner.PlannedRuntimeForm)
+	actual := strings.TrimSpace(r.ActualRuntimeForm)
+	if actual == "" {
+		actual = strings.TrimSpace(r.DeriveActualRuntimeForm())
+	}
+	if planned == "" || actual == "" {
+		return false, false
+	}
+	return planned != actual, true
+}
+
 type RuntimeTrace struct {
 	PlannerMode    string   `json:"planner_mode"`
 	CutoverIntents []string `json:"cutover_intents"`

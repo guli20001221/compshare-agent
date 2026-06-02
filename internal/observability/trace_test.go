@@ -855,3 +855,64 @@ func TestDeriveActualRuntimeForm(t *testing.T) {
 		})
 	}
 }
+
+func TestRuntimeFormMismatch(t *testing.T) {
+	cases := []struct {
+		name         string
+		record       TraceRecord
+		wantMismatch bool
+		wantOK       bool
+	}{
+		{
+			name: "planned and actual match",
+			record: TraceRecord{
+				Planner:           PlannerTrace{PlannedRuntimeForm: RuntimeFormRouting},
+				ActualRuntimeForm: RuntimeFormRouting,
+			},
+			wantMismatch: false,
+			wantOK:       true,
+		},
+		{
+			name: "planned terminal rag actual agent mismatch",
+			record: TraceRecord{
+				Planner:           PlannerTrace{PlannedRuntimeForm: RuntimeFormTerminalRAG},
+				ActualRuntimeForm: RuntimeFormAgent,
+			},
+			wantMismatch: true,
+			wantOK:       true,
+		},
+		{
+			name: "derive actual when unset",
+			record: TraceRecord{
+				Planner:   PlannerTrace{PlannedRuntimeForm: RuntimeFormAgent},
+				ToolCalls: []ToolCallTrace{{Source: ToolSourceMainReAct}},
+			},
+			wantMismatch: false,
+			wantOK:       true,
+		},
+		{
+			name: "missing planned excluded",
+			record: TraceRecord{
+				ActualRuntimeForm: RuntimeFormAgent,
+			},
+			wantMismatch: false,
+			wantOK:       false,
+		},
+		{
+			name: "missing actual excluded",
+			record: TraceRecord{
+				Planner: PlannerTrace{PlannedRuntimeForm: RuntimeFormAgent},
+			},
+			wantMismatch: false,
+			wantOK:       false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotMismatch, gotOK := tc.record.RuntimeFormMismatch()
+			if gotMismatch != tc.wantMismatch || gotOK != tc.wantOK {
+				t.Fatalf("RuntimeFormMismatch() = (%v, %v), want (%v, %v)", gotMismatch, gotOK, tc.wantMismatch, tc.wantOK)
+			}
+		})
+	}
+}

@@ -79,3 +79,67 @@ func TestActualRuntimeFormMatrix(t *testing.T) {
 		})
 	}
 }
+
+func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
+	cases := []struct {
+		name         string
+		record       observability.TraceRecord
+		wantMismatch bool
+		wantCounted  bool
+	}{
+		{
+			name: "routing planned and routing executed",
+			record: observability.TraceRecord{
+				Planner:           observability.PlannerTrace{PlannedRuntimeForm: observability.RuntimeFormRouting},
+				ActualRuntimeForm: observability.RuntimeFormRouting,
+			},
+			wantMismatch: false,
+			wantCounted:  true,
+		},
+		{
+			name: "terminal rag planned and terminal rag executed",
+			record: observability.TraceRecord{
+				Planner:           observability.PlannerTrace{PlannedRuntimeForm: observability.RuntimeFormTerminalRAG},
+				ActualRuntimeForm: observability.RuntimeFormTerminalRAG,
+			},
+			wantMismatch: false,
+			wantCounted:  true,
+		},
+		{
+			name: "agent planned and saga executed",
+			record: observability.TraceRecord{
+				Planner:           observability.PlannerTrace{PlannedRuntimeForm: observability.RuntimeFormAgent},
+				ActualRuntimeForm: observability.RuntimeFormAgent,
+			},
+			wantMismatch: false,
+			wantCounted:  true,
+		},
+		{
+			name: "tutorial planned but diagnosis actually ran",
+			record: observability.TraceRecord{
+				Planner:           observability.PlannerTrace{PlannedRuntimeForm: observability.RuntimeFormTerminalRAG},
+				ActualRuntimeForm: observability.RuntimeFormAgent,
+			},
+			wantMismatch: true,
+			wantCounted:  true,
+		},
+		{
+			name: "hard block with no actual form is excluded",
+			record: observability.TraceRecord{
+				Planner:         observability.PlannerTrace{PlannedRuntimeForm: observability.RuntimeFormAgent},
+				EngineHardBlock: observability.EngineHardBlockTrace{Hit: true, Category: "account_billing"},
+			},
+			wantMismatch: false,
+			wantCounted:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotMismatch, gotCounted := tc.record.RuntimeFormMismatch()
+			if gotMismatch != tc.wantMismatch || gotCounted != tc.wantCounted {
+				t.Fatalf("RuntimeFormMismatch() = (%v, %v), want (%v, %v)", gotMismatch, gotCounted, tc.wantMismatch, tc.wantCounted)
+			}
+		})
+	}
+}

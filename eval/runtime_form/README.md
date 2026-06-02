@@ -16,9 +16,9 @@ runtime forms:
 | diagnosis RAG evidence stays agent | `TestActualRuntimeFormMatrix` | covered |
 | terminal RAG stays separate from RAG-as-evidence | `TestActualRuntimeFormMatrix` | covered |
 | no-signal hard-block/refusal not mislabeled as agent | `TestActualRuntimeFormMatrix` | covered |
-| planned runtime form accuracy | pending planned-runtime trace producer | pending |
-| planned/actual mismatch rate | pending planned-runtime trace producer | pending |
+| planned runtime form presence | `internal/intent` and `internal/observability` trace tests | covered |
+| planned/actual mismatch rate input | `TestPlannedActualRuntimeFormMismatchMatrix` | covered |
 
-The pending rows are intentional. They must not be faked from the actual side:
-planned-vs-actual mismatch is meaningful only after the planner-side
-`planned_runtime_form` trace exists in the same merged code path.
+Mismatch is counted only when both forms are observable. No-signal turns, such
+as hard blocks and canned refusals, are excluded instead of being defaulted to
+`agent`.
