@@ -2,14 +2,18 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/tools"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // These tests pin the P2a routing fork: with USE_SKILL_EXECUTOR on, the piloted
@@ -52,6 +56,113 @@ func TestExecuteDiagnosis_FlagOn_RoutesThroughSkillExecutor(t *testing.T) {
 	require.GreaterOrEqual(t, mock.callIdx, 2, "the body-driven loop made its own LLM calls")
 }
 
+func TestExecuteDiagnosis_PortFirewallProbesKnowledgeButDoesNotInjectChunkContent(t *testing.T) {
+	prev := SkillExecutorEnabled()
+	SetSkillExecutorEnabled(true)
+	defer SetSkillExecutorEnabled(prev)
+	prevPilots := SkillExecutorDiagnosisPilots()
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose_port_firewall"})
+	defer SetSkillExecutorDiagnosisPilots(prevPilots)
+
+	chunk := knowledge.KBChunk{
+		ChunkID:     "runbook-port-001",
+		KBVersion:   "kb.test",
+		SourceType:  "runbook",
+		ProductArea: "network",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "Service port reachability",
+		Content:     "For service ports, first verify the instance is Running, then compare exposed software ports.",
+	}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.test",
+		Hits:      []knowledge.KBChunk{chunk},
+		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 0.95, Kept: true}},
+	}}}
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{map[string]any{
+			"UHostId": "u1", "State": "Running",
+		}}},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: `{"action":"DescribeCompShareInstance","args":{"UHostIds":["u1"]}}`},
+		{Content: `{"final":"先按知识库核对实例运行状态，再看端口配置。"}`},
+	}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.Init(context.Background())
+	exec.calls = nil
+	eng.lastUserMsg = "webui 的端口打不开，是不是被防火墙挡了"
+
+	var events []StepEvent
+	reply := eng.executeDiagnosis(context.Background(), "DiagnosePortOrFirewall",
+		map[string]any{"UHostId": "u1", "Service": "webui"}, func(ev StepEvent) {
+			events = append(events, ev)
+		})
+
+	// Regression guard for the citation/leakage hole (#207): port diagnosis MAY
+	// probe the KB for observability (SearchKnowledge step + RetrievalTrace), and the
+	// probe runs before the live read-only tools, but it must NOT place any retrieved
+	// chunk content into the diagnosis model's prompt. A final diagnosis answer that
+	// consumed KB text would bypass the route-dependent cited-guard. When a
+	// citation-aware evidence adapter lands, update this test alongside it.
+	assert.NotEmpty(t, reply, "diagnosis still produces an answer")
+	require.Len(t, retriever.calls, 1, "KB is probed exactly once (observability)")
+	assert.Equal(t, eng.lastUserMsg, retriever.calls[0].question)
+	assert.Equal(t, []string{"DescribeCompShareInstance"}, exec.calls)
+	assertStepOrder(t, events, "SearchKnowledge", "DescribeCompShareInstance")
+	require.NotEmpty(t, mock.calls)
+	firstPrompt := joinedMessages(mock.calls[0].Messages)
+	assert.NotContains(t, firstPrompt, "KnowledgeEvidence",
+		"retrieved evidence must not be injected into the diagnosis model prompt")
+	assert.NotContains(t, firstPrompt, "Service port reachability",
+		"retrieved chunk title must not reach the diagnosis model")
+	assert.NotContains(t, firstPrompt, "For service ports, first verify",
+		"retrieved chunk content must not reach the diagnosis model")
+}
+
+func TestExecuteDiagnosis_RAGAsEvidenceDoesNotApplyToSSH(t *testing.T) {
+	prev := SkillExecutorEnabled()
+	SetSkillExecutorEnabled(true)
+	defer SetSkillExecutorEnabled(prev)
+	prevPilots := SkillExecutorDiagnosisPilots()
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose_ssh"})
+	defer SetSkillExecutorDiagnosisPilots(prevPilots)
+
+	chunk := knowledge.KBChunk{ChunkID: "ssh-001", KBVersion: "kb.test", Title: "SSH", Content: "SSH docs"}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled: true,
+		Hits:    []knowledge.KBChunk{chunk},
+	}}}
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{map[string]any{
+			"UHostId": "u1", "State": "Running",
+		}}},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: `{"action":"DescribeCompShareInstance","args":{"UHostIds":["u1"]}}`},
+		{Content: `{"final":"SSH 排查完成。"}`},
+	}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.Init(context.Background())
+	exec.calls = nil
+	eng.lastUserMsg = "ssh permission denied 进不去"
+
+	var events []StepEvent
+	reply := eng.executeDiagnosis(context.Background(), "DiagnoseSSH",
+		map[string]any{"UHostId": "u1"}, func(ev StepEvent) {
+			events = append(events, ev)
+		})
+
+	assert.Contains(t, reply, "SSH")
+	assert.Empty(t, retriever.calls)
+	for _, ev := range events {
+		assert.NotEqual(t, "SearchKnowledge", ev.Action)
+	}
+}
+
 func TestExecuteDiagnosis_FlagOff_UsesGoChain(t *testing.T) {
 	prev := SkillExecutorEnabled()
 	SetSkillExecutorEnabled(false)
@@ -70,6 +181,30 @@ func TestExecuteDiagnosis_FlagOff_UsesGoChain(t *testing.T) {
 
 	assert.NotEmpty(t, reply)
 	assert.Equal(t, 0, mock.callIdx, "the Go chain path makes zero LLM calls — proves the flag-off branch")
+}
+
+func assertStepOrder(t *testing.T, events []StepEvent, first, second string) {
+	t.Helper()
+	firstIdx, secondIdx := -1, -1
+	for i, ev := range events {
+		if ev.Action == first && firstIdx == -1 {
+			firstIdx = i
+		}
+		if ev.Action == second && secondIdx == -1 {
+			secondIdx = i
+		}
+	}
+	require.NotEqualf(t, -1, firstIdx, "missing step %s in %#v", first, events)
+	require.NotEqualf(t, -1, secondIdx, "missing step %s in %#v", second, events)
+	assert.Less(t, firstIdx, secondIdx, "%s must occur before %s", first, second)
+}
+
+func joinedMessages(messages []openai.ChatCompletionMessage) string {
+	var parts []string
+	for _, msg := range messages {
+		parts = append(parts, msg.Content)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func TestExecuteDiagnosis_FlagOn_SkillExecutorFailureFallsBackToGoChain(t *testing.T) {
