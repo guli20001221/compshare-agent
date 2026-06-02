@@ -1,13 +1,14 @@
-# eval/skill — R2 skill-level evaluation
+# eval/skill — R2 routing and skill evaluation
 
-Per-skill evaluation so that, before we let the model select skills more freely
-(R4, description-driven selection), we can tell **"变聪明了"** from **"变不稳了"**.
+Evaluation for deterministic routing entries and true body-read skills so that,
+before we let the model select skills more freely (R4, description-driven
+selection), we can tell **"变聪明了"** from **"变不稳了"**.
 
 One case file (`cases.jsonl`), two layers:
 
 | Layer | Test | Real model? | CI-gated? | Measures |
 |---|---|---|---|---|
-| **Offline (deterministic)** | `TestOfflineSkillEval` | no | **yes** (no key, no cloud) | the wiring contract — "选得出来但做不了" |
+| **Offline (deterministic)** | `TestOfflineSkillEval` | no | **yes** (no key, no cloud) | the routing-entry wiring contract — "选得出来但做不了" |
 | **Selection (opt-in)** | `TestSelectionSkillEval` | yes (`-skillmodel`) | no | real skill-hit / wrong-skill — "选错了没人发现" + the R4 trigger |
 
 ## Why the split
@@ -31,7 +32,7 @@ One JSON object per line (`//` comments and blank lines skipped):
  "reply_should_contain":["4090"],"overlapping_group":"pricing_vs_billing","tags":["price"]}
 ```
 
-- `lane`: `fast` drives **both** layers; `diagnosis` / `agent` drive only the
+- `lane`: `fast` means deterministic routing and drives **both** layers; `diagnosis` / `agent` drive only the
   selection layer in v1 (see Scope). `boundary` cases drive only the selection
   layer and assert `expected_intent` plus `forbidden_skills`, for example to prove
   a new status skill does not steal a nearby how-to / FAQ question.
@@ -64,7 +65,7 @@ Selection (opt-in, real model):
 8. **R4 trigger** — per `overlapping_group` wrong-skill rate. The run emits a trackable
    JSON report (`$SKILL_EVAL_REPORT`, else logged) for run-over-run comparison.
 
-> The offline `1.00` means **"the fast-tier capability cases' wiring is correct"** —
+> The offline `1.00` means **"the deterministic routing cases' wiring is correct"** —
 > selection, tool name **and args**, forbidden/extra tools, answer shape. It is **not** a
 > full agent-quality score. Tool-call **order**, real execution **results**, **cost/latency**,
 > **retries**, and multi-run **stability** are deliberately out of v1 (see Scope) — those are
@@ -81,8 +82,8 @@ intent enumeration is breaking down and R4 should start. Baseline (deepseek-v4-f
 
 ## Scope (v1)
 
-- Deterministic CI layer covers every **fast-tier skill** end-to-end via the exported
-  `intent.NewDemoHandler(...).DispatchCapability` seam (0 LLM).
+- Deterministic CI layer covers every **routing entry** end-to-end through the
+  demo handler dispatch seam (0 LLM).
 - **Diagnosis (5) + deploy (1):** cases exist and run through the selection layer, but
   their specific-skill plan-time selection is `resolved_in_react` / agent-saga and is
   **R2-v2** (needs an engine-level run). The selection layer reports diagnosis **lane**
@@ -100,9 +101,10 @@ go test ./eval/skill -run TestOfflineSkillEval
 go test ./eval/skill -run TestSelectionSkillEval -skillmodel deepseek-v4-flash -v
 ```
 
-## Adding a skill
+## Adding A Routing Entry
 
-A new fast-tier catalog skill **must** get at least one `lane:fast` case (the offline
-test fails otherwise — non-vacuity guard). Bind each case's `expected_tools` to the
-skill's real `required_tools`, and pick `reply_should_contain` keywords grounded in the
-canned executor data (`executor_test.go`), not prose words the deterministic render may omit.
+A new deterministic routing entry **must** get at least one `lane:fast` case (the
+offline test fails otherwise — non-vacuity guard). Bind each case's
+`expected_tools` to the entry's real required tools, and pick
+`reply_should_contain` keywords grounded in the canned executor data
+(`executor_test.go`), not prose words the deterministic render may omit.
