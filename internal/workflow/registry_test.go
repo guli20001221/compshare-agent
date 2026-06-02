@@ -16,6 +16,7 @@ func TestIsWorkflowTool(t *testing.T) {
 	assert.True(t, IsWorkflowTool("ResetPasswordWorkflow"))
 	assert.True(t, IsWorkflowTool("SetStopSchedulerWorkflow"))
 	assert.True(t, IsWorkflowTool("CancelStopSchedulerWorkflow"))
+	assert.True(t, IsWorkflowTool("CreateCustomImageWorkflow"))
 
 	// Non-workflow actions should return false
 	assert.False(t, IsWorkflowTool("DescribeCompShareInstance"))
@@ -70,6 +71,12 @@ func TestGetWorkflow(t *testing.T) {
 	assert.True(t, ok)
 	assert.NotNil(t, def)
 	assert.Len(t, def.Steps, 3)
+
+	// CreateCustomImageWorkflow: 4 steps
+	def, ok = GetWorkflow("CreateCustomImageWorkflow")
+	assert.True(t, ok)
+	assert.NotNil(t, def)
+	assert.Len(t, def.Steps, 4)
 
 	// Unknown workflow returns nil, false
 	def, ok = GetWorkflow("UnknownWorkflow")

@@ -124,6 +124,7 @@ func TestVisibleRegistryFiltersMutatingWorkflowsByDefault(t *testing.T) {
 		"ResetPasswordWorkflow",
 		"SetStopSchedulerWorkflow",
 		"CancelStopSchedulerWorkflow",
+		"CreateCustomImageWorkflow",
 	} {
 		assert.False(t, names[name], "mutating workflow %s should be hidden by default", name)
 	}
@@ -135,6 +136,7 @@ func TestVisibleRegistryFiltersMutatingWorkflowsByDefault(t *testing.T) {
 		allNames[tool.Function.Name] = true
 	}
 	assert.True(t, allNames["StopInstanceWorkflow"])
+	assert.True(t, allNames["CreateCustomImageWorkflow"])
 	assert.Equal(t, len(Registry), len(all))
 }
 

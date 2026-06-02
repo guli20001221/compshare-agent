@@ -20,6 +20,16 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "CompShareImageId 和 ChargeType 必填")
 }
 
+func TestCustomImageWorkflowIsUserFacingButRawImageCreateIsNot(t *testing.T) {
+	descriptions := registryDescriptions()
+
+	mustContain(t, descriptions["CreateCustomImageWorkflow"], "CreateCompShareCustomImage")
+	mustContain(t, descriptions["CreateCustomImageWorkflow"], "GetCompShareImageCreateProgress")
+	if _, ok := descriptions["CreateCompShareCustomImage"]; ok {
+		t.Fatal("raw CreateCompShareCustomImage must not be exposed as a user-facing tool")
+	}
+}
+
 func registryDescriptions() map[string]string {
 	out := make(map[string]string, len(Registry))
 	for _, tool := range Registry {
