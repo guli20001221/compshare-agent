@@ -2,14 +2,13 @@ package engine
 
 import (
 	"context"
-	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/compshare-agent/internal/intent"
-	"github.com/compshare-agent/internal/skills"
+	"github.com/compshare-agent/internal/routing"
 )
 
 // fastTierContractExecutor returns minimally-populated success data for every
@@ -58,18 +57,15 @@ func (fastTierContractExecutor) Execute(_ context.Context, action string, _ map[
 func TestFastTierSkills_HandlerEnvelopeBypassesRenderer(t *testing.T) {
 	h := intent.NewDemoHandler(fastTierContractExecutor{})
 	fast := 0
-	for _, s := range skills.GeneratedSkills() {
-		if !slices.Contains(s.ApplicableTiers, skills.TierFast) {
-			continue
-		}
+	for _, route := range routing.GeneratedRoutes() {
 		fast++
 		res := h.DispatchCapability(context.Background(),
-			intent.HandlerRequest{Plan: intent.Plan{Intent: intent.Intent(s.IntentLabel)}})
+			intent.HandlerRequest{Plan: intent.Plan{Intent: intent.Intent(route.IntentLabel)}})
 		if res.Envelope != nil {
 			assert.Truef(t, isFastTierEnvelope(res.Envelope.Kind),
-				"fast-tier skill %q produced envelope Kind %q — NOT fast-tier, would reach the LLM renderer", s.Name, res.Envelope.Kind)
+				"route %q produced envelope Kind %q - NOT routing-safe, would reach the LLM renderer", route.Name, res.Envelope.Kind)
 		}
 	}
-	require.GreaterOrEqualf(t, fast, 6,
-		"expected the 6 catalog capability skills to be fast-tier (got %d) — non-vacuity guard", fast)
+	require.GreaterOrEqualf(t, fast, 7,
+		"expected the catalog/status routes to exist (got %d) - non-vacuity guard", fast)
 }

@@ -11,8 +11,8 @@ import (
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/routing"
 	"github.com/compshare-agent/internal/security"
-	"github.com/compshare-agent/internal/skills"
 )
 
 const FriendlyToolFailureReply = "\u67e5\u8be2\u6682\u65f6\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5\u3002"
@@ -282,15 +282,15 @@ func handlerActionWhitelist() map[Intent]map[string]struct{} {
 			IntentResourceInfo: {"DescribeCompShareInstance": {}},
 			IntentMonitorQuery: {"GetCompShareInstanceMonitor": {}},
 		}
-		for _, s := range skills.GeneratedSkills() {
-			if s.IntentLabel == "" || len(s.RequiredTools) == 0 {
+		for _, route := range routing.GeneratedRoutes() {
+			if route.IntentLabel == "" || len(route.RequiredTools) == 0 {
 				continue
 			}
-			intentValue := Intent(s.IntentLabel)
+			intentValue := Intent(route.IntentLabel)
 			if _, ok := m[intentValue]; !ok {
 				m[intentValue] = map[string]struct{}{}
 			}
-			m[intentValue][s.RequiredTools[0]] = struct{}{}
+			m[intentValue][route.RequiredTools[0]] = struct{}{}
 		}
 		for intentValue, actions := range extraHandlerActions() {
 			if _, ok := m[intentValue]; !ok {

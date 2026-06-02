@@ -111,6 +111,26 @@ func TestGenerateRegistry_RejectsDistilledSkillWithoutGovernanceGate(t *testing.
 	}
 }
 
+func TestGenerateRegistry_RejectsDeterministicRoutingMetadata(t *testing.T) {
+	root := t.TempDir()
+	writeCanonicalSkill(t, root, "route_shaped",
+		"name: route_shaped\n"+
+			"description: route shaped\n"+
+			"metadata:\n"+
+			"  verification_status: production_validated\n"+
+			"  field_refs_verified: true\n"+
+			"  intent_label: route_shaped\n"+
+			"  handler_key: handleGPUSpecsQuery\n"+
+			"  react_tool_subset:\n"+
+			"    - DescribeAvailableCompShareInstanceTypes",
+		"body\n")
+
+	_, err := GenerateRegistry(root)
+	if err == nil || !strings.Contains(err.Error(), "deterministic routing metadata") {
+		t.Fatalf("expected deterministic routing metadata rejection, got %v", err)
+	}
+}
+
 func TestGenerateRegistry_AllowsReviewedSanitizedDistilledSkill(t *testing.T) {
 	root := t.TempDir()
 	writeCanonicalSkill(t, root, "distilled_candidate",

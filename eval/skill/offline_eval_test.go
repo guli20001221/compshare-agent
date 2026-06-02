@@ -29,13 +29,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"slices"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/intent"
-	"github.com/compshare-agent/internal/skills"
+	"github.com/compshare-agent/internal/routing"
 	"github.com/compshare-agent/internal/tools"
 
 	"github.com/stretchr/testify/assert"
@@ -103,15 +102,16 @@ func loadSkillCases(t *testing.T) []SkillCase {
 	return cases
 }
 
-// findSkill returns the generated skill by name, failing if it is not registered.
-func findSkill(t *testing.T, name string) *skills.Skill {
+// findRoute returns the generated deterministic route by name, failing if it is
+// not registered.
+func findRoute(t *testing.T, name string) *routing.Route {
 	t.Helper()
-	for _, s := range skills.GeneratedSkills() {
-		if s.Name == name {
-			return s
+	for _, route := range routing.GeneratedRoutes() {
+		if route.Name == name {
+			return route
 		}
 	}
-	t.Fatalf("expected_skill %q is not in the generated registry", name)
+	t.Fatalf("expected_skill %q is not in the generated route registry", name)
 	return nil
 }
 
@@ -181,16 +181,16 @@ func TestOfflineSkillEval(t *testing.T) {
 		}
 		c := c
 		t.Run(c.ID, func(t *testing.T) {
-			skill := findSkill(t, c.ExpectedSkill)
-			require.NotEmptyf(t, skill.IntentLabel, "fast-tier skill %q has no intent_label", skill.Name)
-			fastSkills[skill.Name] = true
+			route := findRoute(t, c.ExpectedSkill)
+			require.NotEmptyf(t, route.IntentLabel, "route %q has no intent_label", route.Name)
+			fastSkills[route.Name] = true
 
-			plan := intent.Plan{Intent: intent.Intent(skill.IntentLabel)}
+			plan := intent.Plan{Intent: intent.Intent(route.IntentLabel)}
 
 			// (1) routing pin: the intent derives exactly the expected skill.
 			derived := intent.DeriveSelectedSkills(plan)
 			m.cases++
-			if assert.Lenf(t, derived, 1, "intent %q should derive exactly one skill", skill.IntentLabel) &&
+			if assert.Lenf(t, derived, 1, "intent %q should derive exactly one route label", route.IntentLabel) &&
 				assert.Equal(t, c.ExpectedSkill, derived[0].Name, "intent->skill derivation drift") {
 				m.skillDerivationHits++
 			}
@@ -271,11 +271,9 @@ func TestOfflineSkillEval(t *testing.T) {
 
 	m.report(t)
 
-	// Non-vacuity: every fast-tier skill in the registry must have at least one
-	// case, so a newly added catalog skill cannot slip in uncovered.
-	for _, s := range skills.GeneratedSkills() {
-		if slices.Contains(s.ApplicableTiers, skills.TierFast) {
-			assert.Truef(t, fastSkills[s.Name], "fast-tier skill %q has no offline eval case", s.Name)
-		}
+	// Non-vacuity: every deterministic route in the registry must have at least
+	// one case, so a newly added catalog/status route cannot slip in uncovered.
+	for _, route := range routing.GeneratedRoutes() {
+		assert.Truef(t, fastSkills[route.Name], "route %q has no offline eval case", route.Name)
 	}
 }

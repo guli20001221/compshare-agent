@@ -1,6 +1,6 @@
 package intent
 
-import "github.com/compshare-agent/internal/skills"
+import "github.com/compshare-agent/internal/routing"
 
 // DeriveSelectedSkills projects today's intent-first routing contract into the
 // observe-only Plan.Skills field. It deliberately ignores any planner-supplied
@@ -25,9 +25,9 @@ func withDerivedSelectedSkills(plan Plan) Plan {
 }
 
 func capabilitySkillNameForIntent(i Intent) (string, bool) {
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel != "" && Intent(s.IntentLabel) == i {
-			return s.Name, true
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel != "" && Intent(route.IntentLabel) == i {
+			return route.Name, true
 		}
 	}
 	return "", false

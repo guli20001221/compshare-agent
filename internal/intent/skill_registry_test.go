@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/compshare-agent/internal/skills"
+	"github.com/compshare-agent/internal/routing"
 )
 
 // TestSystemPrompt_MatchesBaselineSHA is the byte-identity guard now that the
@@ -55,17 +55,17 @@ func TestCapabilitySource_SkillRegistryRoutesIdenticalDispatch(t *testing.T) {
 // that the count of capability skills equals capabilityIntentOrder.
 func TestCapabilityHandlerForKey_ResolvesEveryCapabilitySkill(t *testing.T) {
 	count := 0
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel == "" {
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel == "" {
 			continue
 		}
 		count++
-		if s.HandlerKey == "" {
-			t.Errorf("capability skill %q declares no handler_key", s.Name)
+		if route.HandlerKey == "" {
+			t.Errorf("route %q declares no handler_key", route.Name)
 			continue
 		}
-		if CapabilityHandlerForKey(s.HandlerKey) == nil {
-			t.Errorf("skill %q handler_key %q does not resolve", s.Name, s.HandlerKey)
+		if CapabilityHandlerForKey(route.HandlerKey) == nil {
+			t.Errorf("route %q handler_key %q does not resolve", route.Name, route.HandlerKey)
 		}
 	}
 	if count != len(capabilityIntentOrder) {
@@ -87,9 +87,9 @@ func TestCapabilityHandlerByKey_MatchesRegistry(t *testing.T) {
 		IntentPricingQuery:         handlePricingQuery,
 	}
 	keyByIntent := map[Intent]string{}
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel != "" {
-			keyByIntent[Intent(s.IntentLabel)] = s.HandlerKey
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel != "" {
+			keyByIntent[Intent(route.IntentLabel)] = route.HandlerKey
 		}
 	}
 	for _, i := range capabilityIntentOrder {
@@ -118,9 +118,9 @@ func TestCapabilityHandlerByKey_MatchesRegistry(t *testing.T) {
 // beyond those declared by the capability skills (no dangling binding).
 func TestCapabilityHandlerByKey_NoStaleEntries(t *testing.T) {
 	declared := map[string]bool{}
-	for _, s := range skills.GeneratedSkills() {
-		if s.HandlerKey != "" {
-			declared[s.HandlerKey] = true
+	for _, route := range routing.GeneratedRoutes() {
+		if route.HandlerKey != "" {
+			declared[route.HandlerKey] = true
 		}
 	}
 	for key := range capabilityHandlerByKey {
@@ -144,9 +144,9 @@ func TestCapabilityHandlerByKey_MatchesKnownHandlerKeys(t *testing.T) {
 	for key := range capabilityHandlerByKey {
 		bindingKeys[key] = true
 	}
-	allowList := skills.KnownHandlerKeys()
+	allowList := routing.KnownHandlerKeys()
 	if len(allowList) != len(bindingKeys) {
-		t.Fatalf("set size mismatch: skills.KnownHandlerKeys()=%d, capabilityHandlerByKey=%d (%v vs %v)",
+		t.Fatalf("set size mismatch: routing.KnownHandlerKeys()=%d, capabilityHandlerByKey=%d (%v vs %v)",
 			len(allowList), len(bindingKeys), allowList, keysOf(bindingKeys))
 	}
 	for _, key := range allowList {
@@ -172,13 +172,13 @@ func keysOf(m map[string]bool) []string {
 // registry, the planner-visible tool set stays byte-identical to the legacy
 // tool_subset.go source. Without it the two could silently diverge after the flip.
 func TestCapabilitySkills_ReactToolSubsetMatchesIntentToolSubset(t *testing.T) {
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel == "" {
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel == "" {
 			continue
 		}
-		want := IntentToolSubset(Intent(s.IntentLabel))
-		if !reflect.DeepEqual(s.ReactToolSubset, want) {
-			t.Errorf("%s: react_tool_subset=%v but IntentToolSubset(%s)=%v", s.Name, s.ReactToolSubset, s.IntentLabel, want)
+		want := IntentToolSubset(Intent(route.IntentLabel))
+		if !reflect.DeepEqual(route.ToolSubset, want) {
+			t.Errorf("%s: tool_subset=%v but IntentToolSubset(%s)=%v", route.Name, route.ToolSubset, route.IntentLabel, want)
 		}
 	}
 }

@@ -7,16 +7,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compshare-agent/internal/skills"
+	"github.com/compshare-agent/internal/routing"
 )
 
 // capabilityIntentSet returns the capability intents declared by the generated
 // skill registry (non-empty intent_label), keyed by Intent for membership checks.
 func capabilityIntentSet() map[Intent]struct{} {
 	out := map[Intent]struct{}{}
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel != "" {
-			out[Intent(s.IntentLabel)] = struct{}{}
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel != "" {
+			out[Intent(route.IntentLabel)] = struct{}{}
 		}
 	}
 	return out
@@ -25,9 +25,9 @@ func capabilityIntentSet() map[Intent]struct{} {
 // skillRequiredTool returns RequiredTools[0] for the capability skill bound to
 // the given intent, or "" if none.
 func skillRequiredTool(i Intent) string {
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel == string(i) && len(s.RequiredTools) > 0 {
-			return s.RequiredTools[0]
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel == string(i) && len(route.RequiredTools) > 0 {
+			return route.RequiredTools[0]
 		}
 	}
 	return ""
