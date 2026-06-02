@@ -31,6 +31,7 @@ func TestChatTraceRecorder_EmitStepAccumulatesSingleEnqueue(t *testing.T) {
 	require.Len(t, w.records, 1, "exactly one Enqueue per turn (no per-step INSERT)")
 	require.Len(t, w.records[0].Steps, 2)
 	assert.Equal(t, observability.StepStateSuccess, w.records[0].Steps[1].State)
+	assert.Equal(t, observability.RuntimeFormAgent, w.records[0].ActualRuntimeForm)
 	require.Len(t, w.tenants, 1)
 	assert.Equal(t, int64(1), w.tenants[0].TopOrgID, "tenant carried on the single Enqueue (Enqueue path, not Append)")
 }

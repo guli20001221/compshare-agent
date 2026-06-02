@@ -114,17 +114,21 @@ type TraceRecord struct {
 	// every signal is final. Empty when the tier is not observable for the
 	// turn (no-tool ReAct answer, hard-block / canned reply) — empty means
 	// "tier not known", never default-to-agent (attribution-observable-only).
-	RealizedTier    string               `json:"realized_tier,omitempty"`
-	Runtime         RuntimeTrace         `json:"runtime"`
-	Planner         PlannerTrace         `json:"planner"`
-	EngineHardBlock EngineHardBlockTrace `json:"engine_hard_block"`
-	EntityRegistry  EntityRegistryTrace  `json:"entity_registry"`
-	ToolCalls       []ToolCallTrace      `json:"tool_calls"`
-	Renderer        RendererTrace        `json:"renderer"`
-	Freshness       FreshnessTrace       `json:"freshness"`
-	RateLimit       RateLimitTrace       `json:"rate_limit"`
-	Retrieval       RetrievalTrace       `json:"retrieval"`
-	Outcome         OutcomeTrace         `json:"outcome"`
+	RealizedTier string `json:"realized_tier,omitempty"`
+	// ActualRuntimeForm is the coarse runtime architecture form that actually
+	// handled this turn. It is derived from observed execution signals, not from
+	// planner output: routing / terminal_rag / agent. Empty means not observable.
+	ActualRuntimeForm string               `json:"actual_runtime_form,omitempty"`
+	Runtime           RuntimeTrace         `json:"runtime"`
+	Planner           PlannerTrace         `json:"planner"`
+	EngineHardBlock   EngineHardBlockTrace `json:"engine_hard_block"`
+	EntityRegistry    EntityRegistryTrace  `json:"entity_registry"`
+	ToolCalls         []ToolCallTrace      `json:"tool_calls"`
+	Renderer          RendererTrace        `json:"renderer"`
+	Freshness         FreshnessTrace       `json:"freshness"`
+	RateLimit         RateLimitTrace       `json:"rate_limit"`
+	Retrieval         RetrievalTrace       `json:"retrieval"`
+	Outcome           OutcomeTrace         `json:"outcome"`
 	// Steps holds agent-tier saga step traces, populated by B6.2. Empty /
 	// omitempty for all non-agent turns, so trace output stays byte-identical
 	// until a producer exists (same reserved-slot precedent as TaskTier in B1).
@@ -132,37 +136,39 @@ type TraceRecord struct {
 }
 
 type traceRecordJSON struct {
-	SchemaVersion   string                `json:"schema_version"`
-	TraceID         string                `json:"trace_id"`
-	TurnID          string                `json:"turn_id"`
-	TurnIndex       int                   `json:"turn_index"`
-	Timestamp       string                `json:"timestamp"`
-	UserMsgHash     string                `json:"user_msg_hash"`
-	TaskTier        string                `json:"task_tier,omitempty"`
-	RealizedTier    string                `json:"realized_tier,omitempty"`
-	Runtime         *RuntimeTrace         `json:"runtime,omitempty"`
-	Planner         *PlannerTrace         `json:"planner,omitempty"`
-	EngineHardBlock *EngineHardBlockTrace `json:"engine_hard_block,omitempty"`
-	EntityRegistry  *EntityRegistryTrace  `json:"entity_registry,omitempty"`
-	ToolCalls       []ToolCallTrace       `json:"tool_calls,omitempty"`
-	Renderer        *RendererTrace        `json:"renderer,omitempty"`
-	Freshness       *FreshnessTrace       `json:"freshness,omitempty"`
-	RateLimit       *RateLimitTrace       `json:"rate_limit,omitempty"`
-	Retrieval       *RetrievalTrace       `json:"retrieval,omitempty"`
-	Outcome         *OutcomeTrace         `json:"outcome,omitempty"`
-	Steps           []StepTrace           `json:"steps,omitempty"`
+	SchemaVersion     string                `json:"schema_version"`
+	TraceID           string                `json:"trace_id"`
+	TurnID            string                `json:"turn_id"`
+	TurnIndex         int                   `json:"turn_index"`
+	Timestamp         string                `json:"timestamp"`
+	UserMsgHash       string                `json:"user_msg_hash"`
+	TaskTier          string                `json:"task_tier,omitempty"`
+	RealizedTier      string                `json:"realized_tier,omitempty"`
+	ActualRuntimeForm string                `json:"actual_runtime_form,omitempty"`
+	Runtime           *RuntimeTrace         `json:"runtime,omitempty"`
+	Planner           *PlannerTrace         `json:"planner,omitempty"`
+	EngineHardBlock   *EngineHardBlockTrace `json:"engine_hard_block,omitempty"`
+	EntityRegistry    *EntityRegistryTrace  `json:"entity_registry,omitempty"`
+	ToolCalls         []ToolCallTrace       `json:"tool_calls,omitempty"`
+	Renderer          *RendererTrace        `json:"renderer,omitempty"`
+	Freshness         *FreshnessTrace       `json:"freshness,omitempty"`
+	RateLimit         *RateLimitTrace       `json:"rate_limit,omitempty"`
+	Retrieval         *RetrievalTrace       `json:"retrieval,omitempty"`
+	Outcome           *OutcomeTrace         `json:"outcome,omitempty"`
+	Steps             []StepTrace           `json:"steps,omitempty"`
 }
 
 func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	out := traceRecordJSON{
-		SchemaVersion: r.SchemaVersion,
-		TraceID:       r.TraceID,
-		TurnID:        r.TurnID,
-		TurnIndex:     r.TurnIndex,
-		Timestamp:     r.Timestamp,
-		UserMsgHash:   r.UserMsgHash,
-		TaskTier:      r.TaskTier,
-		RealizedTier:  r.RealizedTier,
+		SchemaVersion:     r.SchemaVersion,
+		TraceID:           r.TraceID,
+		TurnID:            r.TurnID,
+		TurnIndex:         r.TurnIndex,
+		Timestamp:         r.Timestamp,
+		UserMsgHash:       r.UserMsgHash,
+		TaskTier:          r.TaskTier,
+		RealizedTier:      r.RealizedTier,
+		ActualRuntimeForm: r.ActualRuntimeForm,
 	}
 	if traceRuntimeObserved(r.Runtime) {
 		out.Runtime = &r.Runtime
@@ -206,6 +212,12 @@ const (
 	RealizedTierFast      = "fast"
 	RealizedTierKnowledge = "knowledge"
 	RealizedTierAgent     = "agent"
+)
+
+const (
+	RuntimeFormRouting     = "routing"
+	RuntimeFormTerminalRAG = "terminal_rag"
+	RuntimeFormAgent       = "agent"
 )
 
 // DeriveRealizedTier computes the tier the turn ACTUALLY ran on from observed
@@ -255,6 +267,39 @@ func (r TraceRecord) DeriveRealizedTier() string {
 	for _, call := range r.ToolCalls {
 		if call.Source == ToolSourceMainReAct {
 			return RealizedTierAgent
+		}
+	}
+	return ""
+}
+
+// DeriveActualRuntimeForm computes the production architecture form that
+// actually handled the turn. It is intentionally coarser than RealizedTier:
+// terminal RAG is only a final-answer retrieval workflow; retrieval used inside
+// diagnosis or another agent path remains agent.
+func (r TraceRecord) DeriveActualRuntimeForm() string {
+	switch r.Planner.CutoverStatus {
+	case "dispatched_agent":
+		return RuntimeFormAgent
+	case "dispatched_retrieval":
+		return RuntimeFormTerminalRAG
+	case "dispatched", "selection_required":
+		return RuntimeFormRouting
+	}
+	if len(r.Steps) > 0 {
+		return RuntimeFormAgent
+	}
+	for _, call := range r.ToolCalls {
+		switch call.Source {
+		case ToolSourceMainReAct, ToolSourceWorkflowInternal, ToolSourceDiagnosisInternal, ToolSourceKnowledgeLocal:
+			return RuntimeFormAgent
+		}
+	}
+	if r.Retrieval.Enabled && r.Retrieval.Hits > 0 {
+		return RuntimeFormTerminalRAG
+	}
+	for _, call := range r.ToolCalls {
+		if call.Source == ToolSourcePlannerHandler {
+			return RuntimeFormRouting
 		}
 	}
 	return ""
