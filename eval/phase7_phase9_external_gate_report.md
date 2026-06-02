@@ -59,11 +59,20 @@ Therefore the backend workflow is not waiting on instance cleanup.
 Test-created instances do not need to be deleted after the run.
 The remaining approve-leg blocker is gateway/user identity propagation for `user_email`.
 
+Follow-up backend readiness has been added after this audit:
+
+- HTTP `BaseRequest` parses `user_email`
+- `buildUserContext` carries it in `tools.UserContext`
+- `ExternalExecutor` injects it into form and JSON upstream requests
+- context `user_email` overrides any accidental tool arg value, so the model cannot spoof this identity field
+
+With this backend support, the remaining external dependency is that the production gateway must provide the correct `user_email` field in agent requests.
+
 ### Phase 7 conclusion
 
 Do not build publish/update image workflows until the gateway/user_email behavior is clarified, because those upstream requests also embed `BaseRequest` and may need the same identity field.
 
-After gateway clarification, rerun the custom-image approve smoke with mutating tools enabled and verify:
+After the gateway starts sending `user_email`, rerun the custom-image approve smoke with mutating tools enabled and verify:
 
 - confirmation appears before create
 - `CreateCompShareCustomImage` succeeds without `RetCode=210 Missing params [user_email]`

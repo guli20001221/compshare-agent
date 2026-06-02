@@ -463,6 +463,71 @@ func TestExecuteWithUserContextOverridesRegionProject(t *testing.T) {
 	}
 }
 
+func TestExecuteWithUserContextInjectsUserEmail(t *testing.T) {
+	var capturedForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedForm, _ = url.ParseQuery(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "TestResponse"}`))
+	}))
+	defer srv.Close()
+
+	provider := StaticCredentialProvider{Cred: &Credentials{
+		AccessKeyId:     "ak",
+		AccessKeySecret: "sk",
+	}}
+	ext := NewExternalExecutorWithProvider(srv.URL, "cn-wlcb", "default-project", provider)
+	ctx := WithUser(context.Background(), UserContext{
+		UserEmail: "operator@example.com",
+	})
+
+	if _, err := ext.Execute(ctx, "CreateCompShareCustomImage", map[string]any{
+		"UHostId":    "uhost-1",
+		"Name":       "snapshot",
+		"user_email": "llm-supplied@example.com",
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := capturedForm.Get("user_email"); got != "operator@example.com" {
+		t.Errorf("user_email = %q, want gateway context value", got)
+	}
+}
+
+func TestExecuteJSONWithUserContextInjectsUserEmail(t *testing.T) {
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "GetCompShareInstanceMonitorResponse"}`))
+	}))
+	defer srv.Close()
+
+	provider := StaticCredentialProvider{Cred: &Credentials{
+		AccessKeyId:     "ak",
+		AccessKeySecret: "sk",
+	}}
+	ext := NewExternalExecutorWithProvider(srv.URL, "cn-wlcb", "default-project", provider)
+	ctx := WithUser(context.Background(), UserContext{
+		UserEmail: "operator@example.com",
+	})
+
+	if _, err := ext.Execute(ctx, "GetCompShareInstanceMonitor", map[string]any{
+		"UHostIds":   []any{"uhost-1"},
+		"StartTime":  1000,
+		"EndTime":    2000,
+		"user_email": "llm-supplied@example.com",
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got, _ := capturedBody["user_email"].(string); got != "operator@example.com" {
+		t.Errorf("user_email = %q, want gateway context value", got)
+	}
+}
+
 // TestExecuteNilProviderErrors verifies that Execute returns a meaningful error
 // when no credential provider is configured.
 func TestExecuteNilProviderErrors(t *testing.T) {

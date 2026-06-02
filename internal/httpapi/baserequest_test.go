@@ -35,8 +35,17 @@ func TestParseBaseRequestPicksUpProjectID(t *testing.T) {
 	assert.Equal(t, "org-cwy2qk", base.ProjectID)
 }
 
+func TestParseBaseRequestPicksUpUserEmail(t *testing.T) {
+	c := testContext("application/json", `{"Action":"GetCSAgentMeta","top_organization_id":123,"organization_id":456,"user_email":"operator@example.com"}`)
+
+	_, base, err := ParseBaseRequest(c)
+
+	require.NoError(t, err)
+	assert.Equal(t, "operator@example.com", base.UserEmail)
+}
+
 func TestParseBaseRequestForm(t *testing.T) {
-	c := testContext("application/x-www-form-urlencoded", "Action=SendCSAgentChat&SessionId=sess-1&request_uuid=req-1&top_organization_id=123&organization_id=456")
+	c := testContext("application/x-www-form-urlencoded", "Action=SendCSAgentChat&SessionId=sess-1&request_uuid=req-1&top_organization_id=123&organization_id=456&user_email=operator%40example.com")
 
 	raw, base, err := ParseBaseRequest(c)
 
@@ -44,6 +53,7 @@ func TestParseBaseRequestForm(t *testing.T) {
 	assert.Equal(t, "SendCSAgentChat", base.Action)
 	assert.Equal(t, "req-1", base.RequestUUID)
 	assert.Equal(t, "sess-1", raw.Get("SessionId").MustString())
+	assert.Equal(t, "operator@example.com", base.UserEmail)
 }
 
 func TestParseBaseRequestRejectsMissingOrganization(t *testing.T) {

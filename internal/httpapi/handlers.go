@@ -96,5 +96,6 @@ func (h *Handlers) buildUserContext(base BaseRequest) (tools.UserContext, error)
 		SessionName:       fmt.Sprintf("%d-%d", base.Owner.TopOrganizationID, base.Owner.OrganizationID),
 		ProjectId:         projectID,
 		Region:            h.cfg.Agent.Region,
+		UserEmail:         base.UserEmail,
 	}, nil
 }
