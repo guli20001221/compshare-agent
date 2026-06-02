@@ -24,6 +24,7 @@ import (
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/refusal"
 	grounded "github.com/compshare-agent/internal/renderer"
+	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/skills"
 	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
@@ -1060,7 +1061,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// Intermediate tool-call rounds emit no content deltas in practice, so
 		// live mode does not leak partial tool args.
 		guardMayRewrite := e.currentMonitorWindow ||
-			(round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil)
+			(round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil) ||
+			e.lastPlannerIntentThisTurn == intent.IntentDiagnosis
 		liveStream := opts.OnTextDelta != nil && !guardMayRewrite
 		var streamedDeltas []string
 		if liveStream {
@@ -1102,6 +1104,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		if len(resp.ToolCalls) == 0 {
 			rawContent := resp.Content
 			content := e.guardMonitorTemporalFinalReply(rawContent)
+			content = security.RedactOperationalTokensInText(content)
 			// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): cited contract invariant.
 			// Keep the hard gate for planner-classified knowledge questions that
 			// fall back to a pure LLM answer, but do not apply it to diagnosis,
@@ -1159,6 +1162,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 
 			// Deterministic final reply — return directly without LLM narration
 			if finalMsg, ok := isFinalReply(toolResult); ok {
+				finalMsg = security.RedactOperationalTokensInText(finalMsg)
 				// Append matching tool response for this tool call
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:       openai.ChatMessageRoleTool,

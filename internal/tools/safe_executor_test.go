@@ -296,8 +296,14 @@ func TestSafeExecutorDoesNotRetryCapErrors(t *testing.T) {
 
 func TestSafeExecutorFiltersArgsAndRedactsResult(t *testing.T) {
 	inner := &spyExecutor{result: map[string]any{
-		"DataSet": []any{map[string]any{"JupyterToken": "raw-jupyter-token"}},
-		"Nested":  map[string]any{"Password": "raw-password"},
+		"DataSet": []any{map[string]any{
+			"JupyterToken": "raw-jupyter-token",
+			"Softwares": []any{map[string]any{
+				"Name": "JupyterLab",
+				"URL":  "http://1.2.3.4:8888?token=UCloud-CompShare-AbCd1234",
+			}},
+		}},
+		"Nested": map[string]any{"Password": "raw-password"},
 	}}
 	safe := NewSafeToolExecutor(inner)
 
@@ -320,6 +326,11 @@ func TestSafeExecutorFiltersArgsAndRedactsResult(t *testing.T) {
 	first, ok := dataSet[0].(map[string]any)
 	require.True(t, ok)
 	assert.NotEqual(t, "raw-jupyter-token", first["JupyterToken"])
+	softwares, ok := first["Softwares"].([]any)
+	require.True(t, ok)
+	software, ok := softwares[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "http://1.2.3.4:8888?token=[REDACTED]", software["URL"])
 
 	nested, ok := result.LLMResult["Nested"].(map[string]any)
 	require.True(t, ok)

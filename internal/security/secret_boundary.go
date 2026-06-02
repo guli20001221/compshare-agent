@@ -12,6 +12,8 @@ const redactedValue = "[REDACTED]"
 
 var separatorRE = regexp.MustCompile(`[^a-z0-9]+`)
 var bearerTokenRE = regexp.MustCompile(`(?i)\bbearer\s+([A-Za-z0-9_\-.]{20,})`)
+var tokenQueryParamRE = regexp.MustCompile(`(?i)(\btoken=)([A-Za-z0-9%._~+/=-]+)`)
+var compShareAccessTokenRE = regexp.MustCompile(`\bUCloud-CompShare-[A-Za-z0-9]+\b`)
 
 // RedactForLLM removes credentials and operational tokens before values are
 // passed into model context. It returns a deep-redacted copy and never mutates
@@ -56,8 +58,12 @@ func redactValue(v any, mode redactMode, parentKey string) any {
 		}
 		return out
 	default:
-		if s, ok := typed.(string); ok && containsBearerToken(s) {
-			return redactBearerTokens(s)
+		if s, ok := typed.(string); ok {
+			s = redactOperationalTokens(s)
+			if mode == redactModeTrace && isIPKey(parentKey) {
+				return maskIPv4(s)
+			}
+			return s
 		}
 		if mode == redactModeTrace && isIPKey(parentKey) {
 			if s, ok := typed.(string); ok {
@@ -144,6 +150,21 @@ func containsBearerToken(s string) bool {
 
 func redactBearerTokens(s string) string {
 	return bearerTokenRE.ReplaceAllString(s, "Bearer "+redactedValue)
+}
+
+// RedactOperationalTokensInText removes access tokens embedded inside otherwise
+// ordinary strings, such as JupyterLab URLs. It is safe for user-visible text.
+func RedactOperationalTokensInText(s string) string {
+	return redactOperationalTokens(s)
+}
+
+func redactOperationalTokens(s string) string {
+	if containsBearerToken(s) {
+		s = redactBearerTokens(s)
+	}
+	s = tokenQueryParamRE.ReplaceAllString(s, "${1}"+redactedValue)
+	s = compShareAccessTokenRE.ReplaceAllString(s, "UCloud-CompShare-"+redactedValue)
+	return s
 }
 
 func hashValue(v any) string {

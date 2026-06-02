@@ -59,6 +59,20 @@ func (m *mockLLMWithError) Chat(_ context.Context, _ llm.ChatRequest) (*llm.Chat
 	return nil, m.err
 }
 
+type streamingMockLLM struct {
+	response llm.ChatResponse
+	calls    []llm.ChatRequest
+}
+
+func (m *streamingMockLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	m.calls = append(m.calls, req)
+	if req.OnTextDelta != nil && m.response.Content != "" {
+		req.OnTextDelta(m.response.Content)
+	}
+	resp := m.response
+	return &resp, nil
+}
+
 type scriptedRateLimiter struct {
 	decisions []governance.Decision
 	requests  []governance.Request
@@ -3352,6 +3366,33 @@ func TestPlannerVagueFailureClarificationRequiresEnabledIntent(t *testing.T) {
 	require.Len(t, planner.calls, 1)
 	require.Len(t, plannerTraces, 1)
 	assert.Equal(t, string(intent.CutoverStatusFallbackIneligible), plannerTraces[0].CutoverStatus)
+}
+
+func TestDiagnosisFinalReplyRedactsOperationalTokensBeforeStreaming(t *testing.T) {
+	raw := "JupyterLab 地址：http://1.2.3.4:8888?token=UCloud-CompShare-AbCd1234"
+	mock := &streamingMockLLM{response: llm.ChatResponse{Content: raw}}
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanForUHost("uhost-abc123")}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+
+	var deltas []string
+	reply, err := eng.ChatWithOptions(context.Background(), "uhost-abc123 的 SSH 进不去", noopStep, ChatOptions{
+		OnTextDelta: func(delta string) {
+			deltas = append(deltas, delta)
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "token=[REDACTED]")
+	assert.NotContains(t, reply, "UCloud-CompShare-AbCd1234")
+	assert.Equal(t, []string{"JupyterLab 地址：http://1.2.3.4:8888?token=[REDACTED]"}, deltas,
+		"diagnosis final replies are buffered so streaming never leaks raw access tokens")
+	require.Len(t, mock.calls, 1)
+	assert.NotNil(t, mock.calls[0].OnTextDelta, "engine should provide a buffering callback for diagnosis final text")
 }
 
 func TestStage2BRetrievalHitUsesLLMWithoutTools(t *testing.T) {
