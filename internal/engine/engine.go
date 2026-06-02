@@ -3446,7 +3446,10 @@ func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string
 	if svc, _ := args["Service"].(string); svc != "" {
 		seed["Service"] = svc
 	}
-	e.recordDiagnosisKnowledgeProbe(skillName, e.lastUserMsg, onStep)
+	evidenceLedger, evidenceHits := e.recordDiagnosisKnowledgeProbe(skillName, e.lastUserMsg, onStep)
+	if !evidenceLedger.Empty() {
+		seed["EvidenceLedger"] = evidenceLedger
+	}
 
 	reply, rerr := orchestrator.RunReadOnlySkill(ctx, e.lastUserMsg, seed, orchestrator.SkillExecOptions{
 		Body:      body,
@@ -3463,26 +3466,25 @@ func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: rerr.Error()})
 		return "", false
 	}
+	if lerr := knowledge.ValidateNoRawEvidenceLeak(reply, evidenceHits); lerr != nil {
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: lerr.Error()})
+		return "", false
+	}
 	return reply, true
 }
 
-// recordDiagnosisKnowledgeProbe runs an OBSERVABILITY-ONLY knowledge-base probe for
-// a piloted diagnosis skill: it records whether the platform KB would have matched
-// this query (RetrievalTrace + SearchKnowledge steps) but injects NOTHING derived
-// from retrieval into the skill seed. Handing raw chunk text to the diagnosis model
-// would let a final diagnosis answer consume KB content without passing the
-// route-dependent citation/leakage guard (the cited-guard keys on
-// round==0 && requireKnowledgeCitationThisTurn, which the body-driven diagnosis loop
-// never sets) — a silent-hallucination regression on the project's hardest contract.
-// A citation-aware evidence adapter must land before the diagnosis model is allowed
-// to read KB content.
-func (e *Engine) recordDiagnosisKnowledgeProbe(skillName, userMsg string, onStep func(StepEvent)) {
+// recordDiagnosisKnowledgeProbe probes the KB for a piloted diagnosis skill and
+// returns only a safe evidence ledger for the skill seed. Raw KBChunk.Content is
+// never injected into the body-read loop; the returned hits are kept only so the
+// final answer can be checked for route-independent raw evidence leakage before
+// the skill answer is accepted.
+func (e *Engine) recordDiagnosisKnowledgeProbe(skillName, userMsg string, onStep func(StepEvent)) (knowledge.EvidenceLedger, []knowledge.RetrievalHit) {
 	if !diagnosisSkillUsesKnowledgeEvidence(skillName) || e.knowledgeRetriever == nil {
-		return
+		return knowledge.EvidenceLedger{}, nil
 	}
 	query := strings.TrimSpace(userMsg)
 	if query == "" {
-		return
+		return knowledge.EvidenceLedger{}, nil
 	}
 
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
@@ -3520,7 +3522,7 @@ func (e *Engine) recordDiagnosisKnowledgeProbe(skillName, userMsg string, onStep
 		trace.RefusedReason = "no_evidence"
 		trace.RankingErrorCandidate = true
 		e.emitRetrievalTrace(trace)
-		return
+		return knowledge.EvidenceLedger{}, hitItems
 	}
 	if isWeakEvidence(hitItems, retrieved.HybridMode) {
 		trace.WeakEvidence = true
@@ -3529,6 +3531,7 @@ func (e *Engine) recordDiagnosisKnowledgeProbe(skillName, userMsg string, onStep
 		trace.RankingErrorCandidate = true
 	}
 	e.emitRetrievalTrace(trace)
+	return knowledge.BuildEvidenceLedger(query, hitItems, knowledge.DefaultEvidenceLedgerMaxItems), hitItems
 }
 
 func diagnosisSkillUsesKnowledgeEvidence(skillName string) bool {
