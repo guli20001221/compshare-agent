@@ -7,6 +7,11 @@
 **Status**: Draft **rev-3** (2026-05-29; rev-1 adversarial review applied — 2 blockers + 8 majors fixed; rev-3 folds cross-artifact review F1-F4; see §A)
 **Depends on**: B2a shipped (`b38fe28`, on main). **Blocks**: B4b planner-tier (needs the ≤3k prompt this delivers).
 
+> **R1 update (2026-06-02):** implementation now uses canonical `SKILL.md`.
+> Top-level frontmatter is `name` + `description`; all local routing,
+> verification, provenance, and governance fields are nested under `metadata:`.
+> Older `skill.md` references in this plan are historical.
+
 > Grounded in a full current-state map (workflow `wf_611cd891`) + a 5-lens adversarial review (`wf_4bfd92ca`). Every "current" claim carries file:line, re-verified in review.
 
 ---

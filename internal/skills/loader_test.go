@@ -15,23 +15,141 @@ import (
 // test output. Tests that assert on the warning use a *bytes.Buffer logger.
 func silentLogger() *log.Logger { return log.New(io.Discard, "", 0) }
 
-// writeSkill writes a skill bundle into root/<name>/skill.md. frontmatter is the
-// YAML between the `---` fences (no fences); body is the markdown after.
+// writeSkill writes a canonical test skill bundle into root/<name>/SKILL.md.
+// Tests may pass legacy flat frontmatter for brevity; the helper folds every
+// non-standard key under metadata so fixtures exercise the R1 shape.
 func writeSkill(t *testing.T, root, name, frontmatter, body string) {
+	t.Helper()
+	writeCanonicalSkill(t, root, name, canonicalTestFrontmatter(frontmatter), body)
+}
+
+func canonicalTestFrontmatter(frontmatter string) string {
+	if strings.Contains(frontmatter, "\nmetadata:") || strings.HasPrefix(frontmatter, "metadata:") {
+		return frontmatter
+	}
+	var top []string
+	var meta []string
+	for _, line := range strings.Split(frontmatter, "\n") {
+		switch {
+		case strings.HasPrefix(line, "name:") || strings.HasPrefix(line, "description:"):
+			top = append(top, line)
+		case strings.TrimSpace(line) != "":
+			meta = append(meta, "  "+line)
+		}
+	}
+	if len(meta) > 0 {
+		top = append(top, "metadata:")
+		top = append(top, meta...)
+	}
+	return strings.Join(top, "\n")
+}
+
+func writeCanonicalSkill(t *testing.T, root, name, frontmatter, body string) {
 	t.Helper()
 	dir := filepath.Join(root, name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", dir, err)
 	}
 	content := "---\n" + frontmatter + "\n---\n\n" + body
-	if err := os.WriteFile(filepath.Join(dir, "skill.md"), []byte(content), 0o644); err != nil {
-		t.Fatalf("write skill.md: %v", err)
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
 	}
 }
 
 // seededRoot is the package directory itself; the test binary runs with cwd set
 // to internal/skills, so the 5 diagnose_* bundles live under ".".
 const seededRoot = "."
+
+func TestNewLoader_LoadsCanonicalSKILLMDWithNestedMetadata(t *testing.T) {
+	root := t.TempDir()
+	writeCanonicalSkill(t, root, "canonical_skill",
+		"name: canonical_skill\n"+
+			"description: canonical skill\n"+
+			"metadata:\n"+
+			"  verification_status: production_validated\n"+
+			"  field_refs_verified: true\n"+
+			"  required_tools:\n"+
+			"    - DescribeCompShareInstance\n"+
+			"  applicable_tiers: [agent]",
+		"body\n")
+
+	l, err := NewLoaderWithLogger(root, silentLogger())
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	s, ok := l.Fetch("canonical_skill")
+	if !ok {
+		t.Fatalf("canonical_skill not loaded; got %v", l.Names())
+	}
+	if !strings.HasSuffix(s.Path, "canonical_skill/SKILL.md") {
+		t.Fatalf("Path = %q, want canonical SKILL.md path", s.Path)
+	}
+	if !equalStrings(s.RequiredTools, []string{"DescribeCompShareInstance"}) {
+		t.Fatalf("required_tools = %v", s.RequiredTools)
+	}
+	body, err := s.Body()
+	if err != nil {
+		t.Fatalf("Body: %v", err)
+	}
+	if body != "body\n" {
+		t.Fatalf("Body = %q", body)
+	}
+}
+
+func TestNewLoader_RejectsLegacyTopLevelOperationalFieldsInSKILLMD(t *testing.T) {
+	root := t.TempDir()
+	writeCanonicalSkill(t, root, "legacy_shape",
+		"name: legacy_shape\n"+
+			"description: legacy shape\n"+
+			"verification_status: production_validated\n"+
+			"field_refs_verified: true",
+		"body\n")
+
+	_, err := NewLoaderWithLogger(root, silentLogger())
+	if err == nil || !strings.Contains(err.Error(), "verification_status") {
+		t.Fatalf("expected top-level verification_status to be rejected, got %v", err)
+	}
+}
+
+func TestNewLoader_ListsProgressiveDisclosureResources(t *testing.T) {
+	root := t.TempDir()
+	name := "resourceful_skill"
+	writeCanonicalSkill(t, root, name,
+		"name: resourceful_skill\n"+
+			"description: resourceful skill\n"+
+			"metadata:\n"+
+			"  verification_status: production_validated\n"+
+			"  field_refs_verified: true",
+		"body\n")
+	for _, rel := range []string{
+		filepath.Join("scripts", "check.ps1"),
+		filepath.Join("references", "api.md"),
+		filepath.Join("tests", "case.json"),
+	} {
+		path := filepath.Join(root, name, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir resource dir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write resource %s: %v", rel, err)
+		}
+	}
+
+	l, err := NewLoaderWithLogger(root, silentLogger())
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	s, _ := l.Fetch(name)
+	if !equalStrings(s.Resources.Scripts, []string{"scripts/check.ps1"}) {
+		t.Fatalf("scripts = %v", s.Resources.Scripts)
+	}
+	if !equalStrings(s.Resources.References, []string{"references/api.md"}) {
+		t.Fatalf("references = %v", s.Resources.References)
+	}
+	if !equalStrings(s.Resources.Tests, []string{"tests/case.json"}) {
+		t.Fatalf("tests = %v", s.Resources.Tests)
+	}
+}
 
 // TestNewLoader_LoadsAllSeededSkills checks every on-disk skill loads and
 // name==dir holds for all of them (load would fail otherwise). The set is the 5
@@ -404,8 +522,8 @@ func TestSeededSkills_DeclareProvenance(t *testing.T) {
 
 // TestNewLoader_ToleratesAbsentEvolutionFields: a minimal skill with only the
 // required fields loads, and the loader does NOT default the reserved evolution
-// fields (empty-value semantics are the future consumer's concern, not the
-// loader's — it stays zero-branch).
+// fields. Registration policy for those fields lives in codegen's
+// ValidateSkillRegistration gate.
 func TestNewLoader_ToleratesAbsentEvolutionFields(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, root, "minimal",

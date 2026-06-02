@@ -1,22 +1,23 @@
 ---
 name: diagnose_port_firewall
 description: Use this skill when user reports a CompShare instance service port unreachable (JupyterLab / FileBrowser / custom apps) — for SSH failure use diagnose_ssh instead
-triggers:
-  - "端口不通"
-  - "服务访问不到"
-  - "JupyterLab 进不去"
-  - "FileBrowser 无法访问"
-  - "应用端口被防火墙拦"
-applicable_tiers: [agent]
-required_tools:
-  - DescribeCompShareInstance
-  - DescribeCompShareSoftwarePort
-related_skills:
-  - safety_warning
-body_cap_lines: 100
-verification_status: unverified
-field_refs_verified: false
-provenance: human_authored
+metadata:
+  triggers:
+    - "端口不通"
+    - "服务访问不到"
+    - "JupyterLab 进不去"
+    - "FileBrowser 无法访问"
+    - "应用端口被防火墙拦"
+  applicable_tiers: [agent]
+  required_tools:
+    - DescribeCompShareInstance
+    - DescribeCompShareSoftwarePort
+  related_skills:
+    - safety_warning
+  body_cap_lines: 100
+  verification_status: unverified
+  field_refs_verified: false
+  provenance: human_authored
 ---
 
 # Diagnose: Port / Service Reachability

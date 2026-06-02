@@ -1,22 +1,23 @@
 ---
 name: diagnose_gpu_not_detected
 description: Use this skill when user reports nvidia-smi error / GPU not detected / CUDA unavailable on a CompShare instance and needs read-only platform-side triage
-triggers:
-  - "nvidia-smi 报错"
-  - "GPU 不识别"
-  - "CUDA 不可用"
-  - "GPU 检测不到"
-  - "nvidia-smi 找不到设备"
-applicable_tiers: [agent]
-required_tools:
-  - DescribeCompShareInstance
-  - GetCompShareInstanceMonitor
-related_skills:
-  - safety_warning
-body_cap_lines: 100
-verification_status: unverified
-field_refs_verified: false
-provenance: human_authored
+metadata:
+  triggers:
+    - "nvidia-smi 报错"
+    - "GPU 不识别"
+    - "CUDA 不可用"
+    - "GPU 检测不到"
+    - "nvidia-smi 找不到设备"
+  applicable_tiers: [agent]
+  required_tools:
+    - DescribeCompShareInstance
+    - GetCompShareInstanceMonitor
+  related_skills:
+    - safety_warning
+  body_cap_lines: 100
+  verification_status: unverified
+  field_refs_verified: false
+  provenance: human_authored
 ---
 
 # Diagnose: GPU Not Detected

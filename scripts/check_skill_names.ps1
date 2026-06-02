@@ -1,5 +1,5 @@
 # check_skill_names.ps1 — pre-commit gate (ADR-004 §69).
-# Asserts every internal/skills/<dir>/skill.md frontmatter `name` equals its
+# Asserts every internal/skills/<dir>/SKILL.md frontmatter `name` equals its
 # directory name and matches the snake_case pattern [a-z][a-z0-9_]*[a-z0-9] (1-64
 # chars). The authoritative gate is `go test ./internal/skills` (ParseSkillFile);
 # this is the fast local guard.
@@ -19,7 +19,7 @@ if (-not (Test-Path -LiteralPath $skillsDir)) {
 
 $violations = 0
 foreach ($dir in Get-ChildItem -LiteralPath $skillsDir -Directory) {
-    $skillFile = Join-Path $dir.FullName "skill.md"
+    $skillFile = Join-Path $dir.FullName "SKILL.md"
     if (-not (Test-Path -LiteralPath $skillFile)) {
         continue
     }
@@ -27,7 +27,7 @@ foreach ($dir in Get-ChildItem -LiteralPath $skillsDir -Directory) {
     $lf = ($raw -replace "`r`n", "`n") -replace "`r", "`n"
     $nameMatch = [regex]::Match($lf, '(?m)^name:\s*(.+?)\s*$')
     if (-not $nameMatch.Success) {
-        Write-Host "FAIL $($dir.Name): no `name:` field in skill.md"
+        Write-Host "FAIL $($dir.Name): no `name:` field in SKILL.md"
         $violations++
         continue
     }

@@ -1,25 +1,26 @@
 ---
 name: stock_availability
 description: 用户问某 GPU 机型现在有没有货 / 是否售罄 / 哪些机型能买等实时可售性时触发
-intent_label: stock_availability
-skill_group: catalog
-required_tools:
-  - DescribeAvailableCompShareInstanceTypes
-react_tool_subset:
-  - DescribeAvailableCompShareInstanceTypes
-  - CheckCompShareResourceCapacity
-  - DescribeCompShareImages
-required_citation: false
-applicable_tiers: [fast]
-handler_key: handleStockAvailability
-planner_directives:
-  - 'GPU stock availability questions like "4090 有没有货" or "H100 库存" should emit stock_availability — these are NOT resource_info (which is only for the user''s own instances) and NOT unknown.'
-planner_examples:
-  - question: "4090 现在有没有货"
-    confidence: 0.85
-verification_status: production_validated
-field_refs_verified: true
-provenance: human_authored
+metadata:
+  intent_label: stock_availability
+  skill_group: catalog
+  required_tools:
+    - DescribeAvailableCompShareInstanceTypes
+  react_tool_subset:
+    - DescribeAvailableCompShareInstanceTypes
+    - CheckCompShareResourceCapacity
+    - DescribeCompShareImages
+  required_citation: false
+  applicable_tiers: [fast]
+  handler_key: handleStockAvailability
+  planner_directives:
+    - 'GPU stock availability questions like "4090 有没有货" or "H100 库存" should emit stock_availability — these are NOT resource_info (which is only for the user''s own instances) and NOT unknown.'
+  planner_examples:
+    - question: "4090 现在有没有货"
+      confidence: 0.85
+  verification_status: production_validated
+  field_refs_verified: true
+  provenance: human_authored
 ---
 
 # stock_availability

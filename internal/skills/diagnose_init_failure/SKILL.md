@@ -1,21 +1,22 @@
 ---
 name: diagnose_init_failure
 description: Use this skill when user reports CompShare instance stuck in Install / Install Fail state, or instance not starting after creation, and needs read-only platform-side triage
-triggers:
-  - "实例没启动"
-  - "实例初始化失败"
-  - "Install Fail"
-  - "实例创建后没起来"
-  - "实例卡在 Install"
-applicable_tiers: [agent]
-required_tools:
-  - DescribeCompShareInstance
-related_skills:
-  - safety_warning
-body_cap_lines: 100
-verification_status: unverified
-field_refs_verified: false
-provenance: human_authored
+metadata:
+  triggers:
+    - "实例没启动"
+    - "实例初始化失败"
+    - "Install Fail"
+    - "实例创建后没起来"
+    - "实例卡在 Install"
+  applicable_tiers: [agent]
+  required_tools:
+    - DescribeCompShareInstance
+  related_skills:
+    - safety_warning
+  body_cap_lines: 100
+  verification_status: unverified
+  field_refs_verified: false
+  provenance: human_authored
 ---
 
 # Diagnose: Instance Init Failure
