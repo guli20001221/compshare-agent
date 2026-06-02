@@ -1331,11 +1331,11 @@ func (e *Engine) dispatchAgentSkill(ctx context.Context, dispatch plannerDispatc
 }
 
 func (e *Engine) tryPlannerDiagnosisClarification(dispatch plannerDispatchResult) (string, bool) {
-	if !e.plannerIntentEnabled(dispatch.result.Plan.Intent) {
-		return "", false
-	}
 	switch dispatch.result.Plan.Intent {
 	case intent.IntentVagueFailure:
+		if !e.plannerIntentEnabled(dispatch.result.Plan.Intent) {
+			return "", false
+		}
 		reply := diagnosisVagueFailureClarificationReply
 		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackUnresolvedTarget, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{

@@ -3292,55 +3292,66 @@ func TestPlannerDiagnosisMissingTargetWithSingleInstanceFallsBackToReAct(t *test
 	require.Len(t, planner.calls, 1)
 }
 
-func TestPlannerDiagnosisClarificationRequiresEnabledIntent(t *testing.T) {
-	cases := []struct {
-		name string
-		plan intent.Plan
-		msg  string
-	}{
-		{
-			name: "diagnosis disabled",
-			plan: diagnosisPlanWithoutTarget(),
-			msg:  "\u6211\u7684\u673a\u5668 SSH \u8fde\u4e0d\u4e0a\u4e86",
+func TestPlannerDiagnosisClarificationDoesNotRequireEnabledIntent(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "train-a", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
 		},
-		{
-			name: "vague failure disabled",
-			plan: vagueFailurePlan(),
-			msg:  "\u6628\u665a\u90a3\u53f0\u8dd1\u5d29\u4e86\u5e2e\u6211\u8bca\u65ad",
+	}, "test"))
+	var plannerTraces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		plannerTraces = append(plannerTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "\u6211\u7684\u673a\u5668 SSH \u8fde\u4e0d\u4e0a\u4e86", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "\u54ea\u53f0\u5b9e\u4f8b")
+	assert.Empty(t, mock.calls, "no-target diagnosis must ask before entering ReAct")
+	require.Len(t, planner.calls, 1)
+	require.Len(t, plannerTraces, 1)
+	assert.Equal(t, string(intent.CutoverStatusFallbackUnresolvedTarget), plannerTraces[0].CutoverStatus)
+}
+
+func TestPlannerVagueFailureClarificationRequiresEnabledIntent(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: vagueFailurePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "train-a", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
 		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: tc.plan}}}
-			mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
-			eng := NewWithDeps(mock, &mockExecutor{}, nil)
-			eng.InitWithContext("test user")
-			require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-				"TotalCount": float64(2),
-				"UHostSet": []any{
-					map[string]any{"UHostId": "uhost-a", "Name": "train-a", "State": "Running"},
-					map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
-				},
-			}, "test"))
-			var plannerTraces []observability.PlannerTrace
-			eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
-				plannerTraces = append(plannerTraces, trace)
-			})
-			eng.SetIntentPlanner(planner, IntentPlannerOptions{
-				EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
-				Model:          "deepseek-v4-flash",
-			})
+	}, "test"))
+	var plannerTraces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		plannerTraces = append(plannerTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
 
-			reply, err := eng.Chat(context.Background(), tc.msg, noopStep)
+	reply, err := eng.Chat(context.Background(), "\u6628\u665a\u90a3\u53f0\u8dd1\u5d29\u4e86\u5e2e\u6211\u8bca\u65ad", noopStep)
 
-			require.NoError(t, err)
-			assert.Equal(t, "react path", reply)
-			require.Len(t, mock.calls, 1)
-			require.Len(t, planner.calls, 1)
-			require.Len(t, plannerTraces, 1)
-			assert.Equal(t, string(intent.CutoverStatusFallbackIneligible), plannerTraces[0].CutoverStatus)
-		})
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "react path", reply)
+	require.Len(t, mock.calls, 1)
+	require.Len(t, planner.calls, 1)
+	require.Len(t, plannerTraces, 1)
+	assert.Equal(t, string(intent.CutoverStatusFallbackIneligible), plannerTraces[0].CutoverStatus)
 }
 
 func TestStage2BRetrievalHitUsesLLMWithoutTools(t *testing.T) {
