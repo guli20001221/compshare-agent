@@ -99,6 +99,7 @@ func IntentToolSubset(i Intent) []string {
 			"ResizeInstanceWorkflow",
 			"ReinstallInstanceWorkflow",
 			"CreateDiskWorkflow",
+			"CreateCustomImageWorkflow",
 		}
 	default:
 		return nil

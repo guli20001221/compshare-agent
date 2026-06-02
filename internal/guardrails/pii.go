@@ -18,7 +18,7 @@
 // NOT in scope (verify before adding callers):
 //   - agent_traces.trace_json — TraceRecord has no raw user text field
 //     (only UserMsgHash), so the column never contains the typed string.
-//   - In-process agent state (planner UserText, capability resolver,
+//   - In-process agent state (planner UserText, route resolver,
 //     intent handler input) — agent must see the raw routing signal so
 //     "4090 多少钱" routes to pricing; redacting upstream would break
 //     routing. Redaction is a persistence boundary concern.

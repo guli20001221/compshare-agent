@@ -437,6 +437,16 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
 					Source:   "Batch 1: 加盘 — CreateDiskWorkflow trigger, same intent as start/stop",
 				},
+				{
+					Question: "把 uhost-1qx1qsw4b1pk 保存成镜像",
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Phase 3: create custom image from an existing instance; workflow asks for Name if missing",
+				},
+				{
+					Question: "保存训练环境，下次复用",
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.72}`,
+					Source:   "Phase 3: zero-target custom-image request; engine should ask which instance/name rather than guessing",
+				},
 			},
 		},
 		{
@@ -525,7 +535,7 @@ func buildSystemPrompt() string {
 		"For diagnosis questions that also reference platform FAQ or usage docs should still emit diagnosis.",
 		"Platform how-to/config/error-code questions like how to configure remote desktop audio, how to install drivers, what does error code 226601 mean, how to publish a community image, or how to set BaseURL should emit knowledge_qa, even if phrased as a problem.",
 		"The distinction is: 'how do I do X on the platform' = knowledge_qa; 'my specific instance has problem X' with target_refs = diagnosis. Without a concrete instance target, default to knowledge_qa for usage/config/error-code questions.",
-		"Direct runtime/list/user price questions like 4090 多少钱, H20 按月包多少钱, 折后价多少, or actual purchase price should emit pricing_query — the capability handler runs DescribeAvailableCompShareInstanceTypes + GetCompShareInstancePrice deterministically. Personal-billing complaints (我账单怎么这么高 / 充值就被扣完了) stay as billing_instance.",
+		"Direct runtime/list/user price questions like 4090 多少钱, H20 按月包多少钱, 折后价多少, or actual purchase price should emit pricing_query — the route handler runs DescribeAvailableCompShareInstanceTypes + GetCompShareInstancePrice deterministically. Personal-billing complaints (我账单怎么这么高 / 充值就被扣完了) stay as billing_instance.",
 		"Comparison questions ('X 和 Y 哪个划算' / 'X vs Y'), yes-no feasibility questions ('X 可以 Y 吗' / 'can I X'), and procedure-description questions ('X 流程是怎样的' / 'how does X work') about platform usage, pricing rules, image, instance, or billing should emit knowledge_qa unless they reference a specific instance target.",
 		"Inventory availability questions like whether a GPU model has stock, is available, is sold out, or has data-center inventory are not resource_info. resource_info is only for the user's own CompShare instances. Platform stock questions should emit stock_availability.",
 		"For billing-specific FAQ plus instance facts should emit billing_instance; unsupported account totals still use billing_account_unsupported.",
@@ -550,12 +560,12 @@ func buildSystemPrompt() string {
 		"Set hard_block_hint=true only for unsupported account-level billing questions such as account balance, total account bill, or transaction flow.",
 		"Examples:",
 	}, "\n")
-	// Capability Registry v1 (PR A, 2026-05-18): append directives + one-shot
-	// examples that come from internal/intent/capabilities/*.md frontmatter
+	// Routing Registry v1 (PR A, 2026-05-18): append directives + one-shot
+	// examples that come from internal/routing/*/route.yaml
 	// metadata. Engine.go has a single generic dispatch hook; planner-side
 	// directives + examples are the only place that "knows about" new
-	// capabilities, so adding a capability stays data-only.
-	directives, examples := CapabilityPromptFragments()
+	// routes, so adding a route stays data-only.
+	directives, examples := RoutingPromptFragments()
 	plannerExamples := renderPlannerPromptExampleGroups(plannerPromptExampleGroups())
 	parts := make([]string, 0, 1+len(plannerExamples)+len(directives)+len(examples))
 	parts = append(parts, base)

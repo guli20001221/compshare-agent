@@ -2928,7 +2928,7 @@ func TestMonitorRecallGuard_FallsThroughWhenObjectToolChoiceUnsupported(t *testi
 
 	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
 		assert.Nil(t, mock.calls[2].ToolChoice,
-			"capability-gated guard must not force ToolChoice when object tool_choice is unsupported")
+			"model-feature gate must not force ToolChoice when object tool_choice is unsupported")
 	}
 }
 
@@ -3986,7 +3986,7 @@ func TestStage2BRetrievalDisabledFallsBackToReAct(t *testing.T) {
 	assert.Equal(t, string(intent.CutoverStatusFallbackRetrievalDisabled), plannerTraces[0].CutoverStatus)
 }
 
-func TestDefaultCapabilityCutoverDoesNotSwallowKnowledgeQA(t *testing.T) {
+func TestDefaultRouteCutoverDoesNotSwallowKnowledgeQA(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(true)}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ordinary knowledge fallback"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)

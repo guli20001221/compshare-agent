@@ -69,6 +69,28 @@ func TestSchemaVersionIsV04(t *testing.T) {
 	}
 }
 
+func TestPlannerTracePlannedRuntimeFormMarshals(t *testing.T) {
+	data, err := json.Marshal(TraceRecord{
+		SchemaVersion: SchemaVersion,
+		TraceID:       "trace-1",
+		TurnID:        "turn-1",
+		TurnIndex:     1,
+		Timestamp:     "2026-06-02T00:00:00Z",
+		UserMsgHash:   "sha256:user",
+		Planner: PlannerTrace{
+			Intent:             "knowledge_qa",
+			PlannedRuntimeForm: "terminal_rag",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal TraceRecord: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"planned_runtime_form":"terminal_rag"`) {
+		t.Fatalf("trace record missing planned_runtime_form: %s", text)
+	}
+}
+
 func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 	trace := RetrievalTrace{
 		Enabled:         true,
@@ -695,6 +717,39 @@ func TestTraceRecord_RealizedTier_Serialization(t *testing.T) {
 	})
 }
 
+func TestTraceRecord_ActualRuntimeForm_Serialization(t *testing.T) {
+	base := TraceRecord{
+		SchemaVersion: SchemaVersion,
+		TraceID:       "trace-1",
+		TurnID:        "turn-1",
+		TurnIndex:     1,
+		Timestamp:     "2026-06-02T00:00:00Z",
+		UserMsgHash:   "sha256:user",
+	}
+
+	t.Run("empty ActualRuntimeForm is omitted", func(t *testing.T) {
+		data, err := json.Marshal(base)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(data), `"actual_runtime_form"`) {
+			t.Fatalf("empty ActualRuntimeForm should be omitted, got: %s", data)
+		}
+	})
+
+	t.Run("populated ActualRuntimeForm appears in JSON", func(t *testing.T) {
+		rec := base
+		rec.ActualRuntimeForm = RuntimeFormAgent
+		data, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(data), `"actual_runtime_form":"agent"`) {
+			t.Fatalf("populated ActualRuntimeForm should serialize, got: %s", data)
+		}
+	})
+}
+
 // TestDeriveRealizedTier pins the priority-ordered derivation. The cases that
 // matter for correctness (not just coverage): a retrieval *fallback* that
 // continued into ReAct must read as agent (the path that actually ran), NOT
@@ -748,6 +803,115 @@ func TestDeriveRealizedTier(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.record.DeriveRealizedTier(); got != tc.want {
 				t.Fatalf("DeriveRealizedTier() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDeriveActualRuntimeForm(t *testing.T) {
+	reactCall := []ToolCallTrace{{Source: ToolSourceMainReAct}}
+	plannerCall := []ToolCallTrace{{Source: ToolSourcePlannerHandler}}
+	diagnosisCall := []ToolCallTrace{{Source: ToolSourceDiagnosisInternal}}
+	knowledgeToolCall := []ToolCallTrace{{Source: ToolSourceKnowledgeLocal}}
+	workflowCall := []ToolCallTrace{{Source: ToolSourceWorkflowInternal}}
+	sagaStep := []StepTrace{{StepID: "s0", State: StepStateSuccess}}
+	cases := []struct {
+		name   string
+		record TraceRecord
+		want   string
+	}{
+		{"cutover dispatched -> routing",
+			TraceRecord{Planner: PlannerTrace{CutoverStatus: "dispatched"}}, RuntimeFormRouting},
+		{"cutover selection_required -> routing",
+			TraceRecord{Planner: PlannerTrace{CutoverStatus: "selection_required"}}, RuntimeFormRouting},
+		{"cutover dispatched_retrieval -> terminal_rag",
+			TraceRecord{Planner: PlannerTrace{CutoverStatus: "dispatched_retrieval"}}, RuntimeFormTerminalRAG},
+		{"cutover dispatched_agent -> agent",
+			TraceRecord{Planner: PlannerTrace{CutoverStatus: "dispatched_agent"}}, RuntimeFormAgent},
+		{"saga step -> agent",
+			TraceRecord{Steps: sagaStep}, RuntimeFormAgent},
+		{"main ReAct tool -> agent",
+			TraceRecord{ToolCalls: reactCall}, RuntimeFormAgent},
+		{"workflow internal tool -> agent",
+			TraceRecord{ToolCalls: workflowCall}, RuntimeFormAgent},
+		{"diagnosis tool with retrieval hits -> agent",
+			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}, ToolCalls: diagnosisCall}, RuntimeFormAgent},
+		{"knowledge tool inside loop -> agent",
+			TraceRecord{ToolCalls: knowledgeToolCall}, RuntimeFormAgent},
+		{"retrieval hits only -> terminal_rag",
+			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}}, RuntimeFormTerminalRAG},
+		{"planner handler tool only -> routing",
+			TraceRecord{ToolCalls: plannerCall}, RuntimeFormRouting},
+		{"retrieval miss then ReAct -> agent",
+			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 0}, ToolCalls: reactCall}, RuntimeFormAgent},
+		{"no observable signal -> unknown",
+			TraceRecord{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.record.DeriveActualRuntimeForm(); got != tc.want {
+				t.Fatalf("DeriveActualRuntimeForm() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRuntimeFormMismatch(t *testing.T) {
+	cases := []struct {
+		name         string
+		record       TraceRecord
+		wantMismatch bool
+		wantOK       bool
+	}{
+		{
+			name: "planned and actual match",
+			record: TraceRecord{
+				Planner:           PlannerTrace{PlannedRuntimeForm: RuntimeFormRouting},
+				ActualRuntimeForm: RuntimeFormRouting,
+			},
+			wantMismatch: false,
+			wantOK:       true,
+		},
+		{
+			name: "planned terminal rag actual agent mismatch",
+			record: TraceRecord{
+				Planner:           PlannerTrace{PlannedRuntimeForm: RuntimeFormTerminalRAG},
+				ActualRuntimeForm: RuntimeFormAgent,
+			},
+			wantMismatch: true,
+			wantOK:       true,
+		},
+		{
+			name: "derive actual when unset",
+			record: TraceRecord{
+				Planner:   PlannerTrace{PlannedRuntimeForm: RuntimeFormAgent},
+				ToolCalls: []ToolCallTrace{{Source: ToolSourceMainReAct}},
+			},
+			wantMismatch: false,
+			wantOK:       true,
+		},
+		{
+			name: "missing planned excluded",
+			record: TraceRecord{
+				ActualRuntimeForm: RuntimeFormAgent,
+			},
+			wantMismatch: false,
+			wantOK:       false,
+		},
+		{
+			name: "missing actual excluded",
+			record: TraceRecord{
+				Planner: PlannerTrace{PlannedRuntimeForm: RuntimeFormAgent},
+			},
+			wantMismatch: false,
+			wantOK:       false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotMismatch, gotOK := tc.record.RuntimeFormMismatch()
+			if gotMismatch != tc.wantMismatch || gotOK != tc.wantOK {
+				t.Fatalf("RuntimeFormMismatch() = (%v, %v), want (%v, %v)", gotMismatch, gotOK, tc.wantMismatch, tc.wantOK)
 			}
 		})
 	}

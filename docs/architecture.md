@@ -222,14 +222,19 @@ Tool 是模型实际调用的 typed function,格式是标准 Function Calling sp
 
 把"是不是写操作、要不要确认"放在 tool spec 自己身上,而不是在 engine 里硬编码一张表——加新工具时它的安全语义跟着定义走,不会漏。tool 注册同样用 codegen 从目录生成,单一数据源。
 
-## 11. MCP 网关
+## 11. MCP server / client
 
-skill 和 tool 通过 MCP(Model Context Protocol)对外暴露,内部进程内调用和外部进程(stdio / HTTP)共用一套定义。Function Calling spec 和 MCP tool spec 字段基本同构,加一层薄薄的 adapter 就能双向转换,不构成锁定。
+MCP(Model Context Protocol)是连接协议,不是 agent 层、tool 层或 workflow 层。项目后续按方向拆成两类适配器:
+
+- **MCP server**:把本项目允许外部使用的 tools / resources / prompts 暴露出去,候选目录为 `internal/mcp/server`。
+- **MCP client**:让本项目作为 host 消费外部 MCP server 暴露的 tools / resources / prompts,候选目录为 `internal/mcp/client`。
+
+内部进程内调用仍然直接使用 Go 注册表和安全执行器,不绕一层 MCP。Function Calling spec 和 MCP tool spec 字段基本同构,加一层薄 adapter 就能转换,不构成锁定。
 
 有两件契约要提前定好:
 
 - **命名空间**:内部 Go API 保留 CamelCase(`DescribeCompShareInstance`);对外用 `provider/category/action` 风格(`compshare/instance/describe`),映射规则集中在一处。
-- **字段可见性**:`x-compshare` 里 `class` / `requires_acceptance` / `idempotent` 对外暴露(外部客户端做确认和重试要用);`tier_eligible`(内部路由概念)和底层 API action 名对外隐藏(后者暴露会扩大攻击面)。网关层做这个投影。
+- **字段可见性**:`x-compshare` 里 `class` / `requires_acceptance` / `idempotent` 对外暴露(外部客户端做确认和重试要用);`tier_eligible`(内部路由概念)和底层 API action 名对外隐藏(后者暴露会扩大攻击面)。MCP server 投影层做这个过滤。
 
 ## 12. 横切关注点
 
@@ -276,7 +281,8 @@ skill 是给模型当方法论用的,如果一份方法论本身只是当初的�
 | `orchestrator/` | agent 循环 + saga 回滚 + HITL 确认 |
 | `diagnosis/` | 诊断 SubAgent 接口 + registry |
 | `security/` | 密钥边界 + SSH 沙箱(按类别) |
-| `mcp/` | 命名映射 + 字段可见性投影 |
+| `mcp/server/` | 对外暴露 tools / resources / prompts 的 MCP server 适配器 |
+| `mcp/client/` | 消费外部 MCP server 的 MCP client 适配器 |
 | `workflow/` | 写操作 workflow 定义 |
 | `governance/` | 限流(按租户、按类别) |
 | `observability/` | trace(tier 分桶 + step 记录) |

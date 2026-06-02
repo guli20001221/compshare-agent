@@ -24,7 +24,7 @@ update its status row here.
 | **B4b** | Planner emits **predicted tier** (new output field + prompt/schema change); N≥20 regression | 001 #4, 002 | 🟢 unblocked (B2b shipped); impl pending | see "B4 decomposition"; **planner stays on flash — Decision #1 empirically ruled out pro (worse on borderlines); now codified in ADR-002 Amendment 1 (2026-05-31)** |
 | **B5** | Diagnosis package, k8sgpt-style (Analyzer/Failure/Filter) | 005 | ⏳ pending | — |
 | **B6** | Agent path infrastructure: orchestrator + in-request saga + in-memory HITL + step-trace (zero-DDL; SSH deferred) | 006 | 🟢 ADR-006 **provisionally accepted** 2026-05-31 (zero-DDL slim, revert-if-regression); spec rev-6; impl pending (B6.1→B6.2→B6.6) | `docs/plans/2026-05-30-b6-agent-orchestration.md` |
-| **B7** | MCP gateway (in-process + external stdio/HTTP entry) | 003 Amendment 1 | ⏳ pending | — |
+| **B7** | MCP server / client adapters (server exposes approved internal tools/resources/prompts; client consumes external MCP servers through allowlists) | 003 Amendment 1 | ⏳ pending | — |
 | **B8** | First end-to-end agent skill ("deploy Qwen32B" / "SSH debug") | 006 | ⏳ pending | — |
 | **B9** | Skill self-evolution loop: revision → held-out validation (B5 verifier) → governance; identifier-sanitize + retire/merge/prune enforcement | 008 | ⏳ pending (gated on B5+B6; B2b only reserves the frontmatter fields) | ADR-008 |
 

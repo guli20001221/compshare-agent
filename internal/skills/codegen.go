@@ -10,42 +10,6 @@ import (
 	"strings"
 )
 
-// knownHandlerKeys is the hand-maintained allow-list of handler_key values
-// codegen accepts (mirrors the registry/frontmatter parity panic in
-// internal/intent/capability_registry.go:144-164). These are STRINGS, not func
-// pointers, so internal/skills stays free of an internal/intent import cycle;
-// the func binding lives in internal/intent (CapabilityHandlerForKey). The two
-// hand-maintained sets are kept in lockstep by an internal/intent test
-// (TestCapabilityHandlerByKey_MatchesKnownHandlerKeys) that asserts that
-// binding's key set equals KnownHandlerKeys() below; the cross-package parity
-// guard. Without it the two maps could drift silently across the package boundary.
-//
-// B2b P2 populated this with the migrated capability handlers. The seeded
-// diagnose_* skills declare no handler_key (agent-tier playbooks, no
-// deterministic handler), so they are unaffected.
-var knownHandlerKeys = map[string]bool{
-	"handleGPUSpecsQuery":        true,
-	"handleStockAvailability":    true,
-	"handleNetAcceleratorStatus": true,
-	"handlePlatformImageList":    true,
-	"handleCustomImageList":      true,
-	"handleCommunityImageList":   true,
-	"handlePricingQuery":         true,
-}
-
-// KnownHandlerKeys returns the sorted handler_key allow-list codegen validates
-// skills against. internal/intent uses it to assert its handler-binding map
-// (capabilityHandlerByKey) covers exactly this set, so the two cross-package
-// hand-maintained sets cannot drift unnoticed.
-func KnownHandlerKeys() []string {
-	keys := make([]string, 0, len(knownHandlerKeys))
-	for k := range knownHandlerKeys {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 // GeneratedSkills returns the codegen'd skill registry. B2b P1 has no runtime
 // consumer; the accessor exists so tests can assert the generated registry
 // stays semantically in sync with the on-disk loader.
@@ -74,10 +38,8 @@ func GenerateRegistry(root string) ([]byte, error) {
 			return nil, fmt.Errorf("skillgen: parse %q: %w", path, parseErr)
 		}
 		s.bodyFS = os.DirFS(root)
-		// Generate-time existence check (B2b section 4): a declared handler_key must
-		// resolve. No-op in P1 (no diagnose_* skill declares one).
-		if s.HandlerKey != "" && !knownHandlerKeys[s.HandlerKey] {
-			return nil, fmt.Errorf("skillgen: skill %q handler_key %q not in knownHandlerKeys (add the binding before generating)", s.Name, s.HandlerKey)
+		if s.IntentLabel != "" || s.HandlerKey != "" || len(s.ReactToolSubset) > 0 {
+			return nil, fmt.Errorf("skillgen: skill %q carries deterministic routing metadata; use internal/routing/<name>/route.yaml", s.Name)
 		}
 		if gateErr := ValidateSkillRegistration(s); gateErr != nil {
 			return nil, fmt.Errorf("skillgen: %w", gateErr)

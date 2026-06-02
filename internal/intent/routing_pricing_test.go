@@ -308,7 +308,7 @@ func TestHandlePricingQuery_PassesMemoryAsMBToAPI(t *testing.T) {
 	require.GreaterOrEqual(t, len(exec.calls), 2,
 		"expected at least 2 executor calls (Describe + GetPrice)")
 	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", exec.calls[0].action,
-		"pricing capability must fetch available specs before asking for price")
+		"pricing route must fetch available specs before asking for price")
 	var priceCall *handlerExecCall
 	for i := range exec.calls {
 		if exec.calls[i].action == "GetCompShareInstancePrice" {

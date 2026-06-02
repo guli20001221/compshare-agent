@@ -20,6 +20,9 @@ type Step struct {
 	ToolFunc    func(wfCtx *Context) string // dynamic tool name (overrides Tool if set)
 	BuildArgs   func(wfCtx *Context) (map[string]any, error)
 	CheckResult func(wfCtx *Context, result map[string]any) (bool, string)
+	// Optional lets a post-success enrichment step fail without failing the
+	// whole workflow. Default false preserves existing fail-stop behavior.
+	Optional bool
 	// Compensate is the compensating action run on a LATER step's failure
 	// (reverse-order rollback). nil = no side effect / nothing to roll back
 	// (read-only or idempotent setter). B6.1 declares it; only the B6.2
@@ -48,6 +51,7 @@ type Definition struct {
 	Name        string
 	Description string
 	Steps       []Step
+	ResultData  func(wfCtx *Context) map[string]any
 }
 
 // Context accumulates state during workflow execution.
@@ -74,10 +78,11 @@ func (c *Context) Result(stepName string) map[string]any {
 
 // Result of executing a workflow.
 type Result struct {
-	Success   bool          `json:"success"`
-	StoppedAt string        `json:"stopped_at,omitempty"`
-	Message   string        `json:"message"`
-	Steps     []StepSummary `json:"steps"`
+	Success   bool           `json:"success"`
+	StoppedAt string         `json:"stopped_at,omitempty"`
+	Message   string         `json:"message"`
+	Data      map[string]any `json:"data,omitempty"`
+	Steps     []StepSummary  `json:"steps"`
 }
 
 // StepSummary records one step's outcome.

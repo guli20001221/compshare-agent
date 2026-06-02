@@ -1,5 +1,5 @@
 // Package refusal centralizes user-facing refusal templates that the
-// agent returns when a hard-block / capability boundary fires. Reply
+// agent returns when a hard-block / route boundary fires. Reply
 // text MUST be byte-stable so:
 //
 //  1. Eval scripts can byte-compare against a golden artifact.

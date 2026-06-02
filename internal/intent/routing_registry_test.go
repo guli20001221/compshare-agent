@@ -7,36 +7,36 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compshare-agent/internal/skills"
+	"github.com/compshare-agent/internal/routing"
 )
 
-// capabilityIntentSet returns the capability intents declared by the generated
+// routingIntentSet returns the route intents declared by the generated
 // skill registry (non-empty intent_label), keyed by Intent for membership checks.
-func capabilityIntentSet() map[Intent]struct{} {
+func routingIntentSet() map[Intent]struct{} {
 	out := map[Intent]struct{}{}
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel != "" {
-			out[Intent(s.IntentLabel)] = struct{}{}
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel != "" {
+			out[Intent(route.IntentLabel)] = struct{}{}
 		}
 	}
 	return out
 }
 
-// skillRequiredTool returns RequiredTools[0] for the capability skill bound to
+// skillRequiredTool returns RequiredTools[0] for the route skill bound to
 // the given intent, or "" if none.
 func skillRequiredTool(i Intent) string {
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel == string(i) && len(s.RequiredTools) > 0 {
-			return s.RequiredTools[0]
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel == string(i) && len(route.RequiredTools) > 0 {
+			return route.RequiredTools[0]
 		}
 	}
 	return ""
 }
 
-// TestIsCapabilityIntent_KnownLabels verifies all registered capability intents
-// return true. New capabilities must be picked up by IsCapabilityIntent without
+// TestIsRoutingIntent_KnownLabels verifies all registered route intents
+// return true. New routes must be picked up by IsRoutingIntent without
 // any code change in callers (engine.go etc.) — this is the v1 contract.
-func TestIsCapabilityIntent_KnownLabels(t *testing.T) {
+func TestIsRoutingIntent_KnownLabels(t *testing.T) {
 	wanted := []Intent{
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
@@ -47,16 +47,16 @@ func TestIsCapabilityIntent_KnownLabels(t *testing.T) {
 		IntentPricingQuery,
 	}
 	for _, intent := range wanted {
-		if !IsCapabilityIntent(intent) {
-			t.Errorf("IsCapabilityIntent(%q) = false, want true", intent)
+		if !IsRoutingIntent(intent) {
+			t.Errorf("IsRoutingIntent(%q) = false, want true", intent)
 		}
 	}
 }
 
-// TestIsCapabilityIntent_UnknownReturnsFalse guards against accidental "capture
+// TestIsRoutingIntent_UnknownReturnsFalse guards against accidental "capture
 // everything" predicates that would break the routing OR-list in engine.go.
-func TestIsCapabilityIntent_UnknownReturnsFalse(t *testing.T) {
-	notCapability := []Intent{
+func TestIsRoutingIntent_UnknownReturnsFalse(t *testing.T) {
+	notRoute := []Intent{
 		IntentResourceInfo,
 		IntentMonitorQuery,
 		IntentKnowledgeQA,
@@ -66,30 +66,30 @@ func TestIsCapabilityIntent_UnknownReturnsFalse(t *testing.T) {
 		IntentUnknown,
 		Intent("not_a_real_intent"),
 	}
-	for _, intent := range notCapability {
-		if IsCapabilityIntent(intent) {
-			t.Errorf("IsCapabilityIntent(%q) = true, want false", intent)
+	for _, intent := range notRoute {
+		if IsRoutingIntent(intent) {
+			t.Errorf("IsRoutingIntent(%q) = true, want false", intent)
 		}
 	}
 }
 
-// TestCapabilityIntentOrder_NoDuplicates ensures the byte-identity-pinned
-// capabilityIntentOrder has no shadowed entries (a duplicate would emit a
+// TestRouteIntentOrder_NoDuplicates ensures the byte-identity-pinned
+// routingIntentOrder has no shadowed entries (a duplicate would emit a
 // duplicate planner-prompt fragment).
-func TestCapabilityIntentOrder_NoDuplicates(t *testing.T) {
+func TestRouteIntentOrder_NoDuplicates(t *testing.T) {
 	seen := map[Intent]struct{}{}
-	for _, i := range capabilityIntentOrder {
+	for _, i := range routingIntentOrder {
 		if _, ok := seen[i]; ok {
-			t.Errorf("duplicate intent %q in capabilityIntentOrder", i)
+			t.Errorf("duplicate intent %q in routingIntentOrder", i)
 		}
 		seen[i] = struct{}{}
 	}
 }
 
-// TestCapabilityRequiredTool_BindsToRealTool guards against typo'd tool names that
+// TestRouteRequiredTool_BindsToRealTool guards against typo'd tool names that
 // would lookup-miss in handlerActionWhitelist or fail at SafeToolExecutor. The
 // required tool now comes from the generated skill registry (RequiredTools[0]).
-func TestCapabilityRequiredTool_BindsToRealTool(t *testing.T) {
+func TestRouteRequiredTool_BindsToRealTool(t *testing.T) {
 	expected := map[Intent]string{
 		IntentGPUSpecsQuery:        "DescribeAvailableCompShareInstanceTypes",
 		IntentStockAvailability:    "DescribeAvailableCompShareInstanceTypes",
@@ -99,42 +99,42 @@ func TestCapabilityRequiredTool_BindsToRealTool(t *testing.T) {
 		IntentCommunityImageList:   "DescribeCommunityImages",
 		IntentPricingQuery:         "GetCompShareInstancePrice",
 	}
-	for _, i := range capabilityIntentOrder {
+	for _, i := range routingIntentOrder {
 		want := expected[i]
 		if want == "" {
-			t.Errorf("unexpected intent %q in capabilityIntentOrder", i)
+			t.Errorf("unexpected intent %q in routingIntentOrder", i)
 			continue
 		}
-		got, ok := capabilityRequiredTool(i)
+		got, ok := routingRequiredTool(i)
 		if !ok {
-			t.Errorf("capabilityRequiredTool(%q) = (_, false), want a tool", i)
+			t.Errorf("routingRequiredTool(%q) = (_, false), want a tool", i)
 			continue
 		}
 		if got != want {
-			t.Errorf("capabilityRequiredTool(%q) = %q, want %q", i, got, want)
+			t.Errorf("routingRequiredTool(%q) = %q, want %q", i, got, want)
 		}
 	}
 }
 
 // TestHandlerActionWhitelist_DerivesFromSkillRegistry enforces single-source-of-truth
-// (memory: feedback_cross_pr_contract_drift_check). Every capability skill's
+// (memory: feedback_cross_pr_contract_drift_check). Every route skill's
 // required tool (RequiredTools[0]) must be auto-included in the whitelist; nothing
 // should be hardcoded twice. The exact set is separately pinned by
 // TestHandlerActionWhitelist_ExactGoldenSet.
 func TestHandlerActionWhitelist_DerivesFromSkillRegistry(t *testing.T) {
 	wl := handlerActionWhitelist()
-	for i := range capabilityIntentSet() {
+	for i := range routingIntentSet() {
 		want := skillRequiredTool(i)
 		if want == "" {
 			continue
 		}
 		actions, ok := wl[i]
 		if !ok {
-			t.Errorf("capability intent %q missing from handlerActionWhitelist (derivation bug)", i)
+			t.Errorf("route intent %q missing from handlerActionWhitelist (derivation bug)", i)
 			continue
 		}
 		if _, ok := actions[want]; !ok {
-			t.Errorf("capability %q required tool %q not in whitelist[%q]", i, want, i)
+			t.Errorf("route %q required tool %q not in whitelist[%q]", i, want, i)
 		}
 	}
 }
@@ -142,7 +142,7 @@ func TestHandlerActionWhitelist_DerivesFromSkillRegistry(t *testing.T) {
 // TestHandlerActionWhitelist_ExactGoldenSet is the SECURITY gate against silent
 // widening of the SafeToolExecutor boundary. handlerActionWhitelist() must equal
 // EXACTLY this golden set — set-equality, no missing/extra entries. The
-// per-capability action is the required tool (RequiredTools[0]), NOT the broader
+// per-route action is the required tool (RequiredTools[0]), NOT the broader
 // react_tool_subset (which would add e.g. GetGPUSpecs to gpu_specs). If any intent
 // gains or loses an action, this test fails loudly.
 func TestHandlerActionWhitelist_ExactGoldenSet(t *testing.T) {
@@ -163,29 +163,29 @@ func TestHandlerActionWhitelist_ExactGoldenSet(t *testing.T) {
 	}
 }
 
-// TestCapabilityPromptFragments_ContainsAllIntents ensures every registered
+// TestRoutingPromptFragments_ContainsAllIntents ensures every registered
 // intent has both a directive AND a planner one-shot example. Missing either
 // = planner LLM unaware of the intent enum → routing degrades silently.
-func TestCapabilityPromptFragments_ContainsAllIntents(t *testing.T) {
-	directives, examples := CapabilityPromptFragments()
+func TestRoutingPromptFragments_ContainsAllIntents(t *testing.T) {
+	directives, examples := RoutingPromptFragments()
 	combined := strings.Join(append(append([]string{}, directives...), examples...), "\n")
-	for _, i := range capabilityIntentOrder {
+	for _, i := range routingIntentOrder {
 		if !strings.Contains(combined, string(i)) {
-			t.Errorf("capability fragments missing intent label %q (planner won't know to emit it)", i)
+			t.Errorf("route fragments missing intent label %q (planner won't know to emit it)", i)
 		}
 	}
 }
 
-func TestCapabilityPromptFragments_DeriveFromSkillRegistry(t *testing.T) {
-	directives, examples := CapabilityPromptFragments()
+func TestRoutingPromptFragments_DeriveFromSkillRegistry(t *testing.T) {
+	directives, examples := RoutingPromptFragments()
 	combinedDirectives := strings.Join(directives, "\n")
 	combinedExamples := strings.Join(examples, "\n")
-	for _, meta := range skillRegistryCapabilityMetadata() {
+	for _, meta := range skillRegistryRouteMetadata() {
 		if len(meta.PlannerDirectives) == 0 {
-			t.Fatalf("capability %q must declare planner_directives in its skill", meta.Name)
+			t.Fatalf("route %q must declare planner_directives in its skill", meta.Name)
 		}
 		if len(meta.PlannerExamples) == 0 {
-			t.Fatalf("capability %q must declare planner_examples in its skill", meta.Name)
+			t.Fatalf("route %q must declare planner_examples in its skill", meta.Name)
 		}
 		for _, directive := range meta.PlannerDirectives {
 			if !strings.Contains(combinedDirectives, directive) {
@@ -206,15 +206,15 @@ func TestCapabilityPromptFragments_DeriveFromSkillRegistry(t *testing.T) {
 	}
 }
 
-func TestCapabilityMetadataRequiredToolsMatchSkillRegistry(t *testing.T) {
-	byIntent := map[Intent]CapabilityMetadata{}
-	for _, meta := range skillRegistryCapabilityMetadata() {
+func TestRouteMetadataRequiredToolsMatchSkillRegistry(t *testing.T) {
+	byIntent := map[Intent]RouteMetadata{}
+	for _, meta := range skillRegistryRouteMetadata() {
 		byIntent[Intent(meta.IntentLabel)] = meta
 	}
-	for _, i := range capabilityIntentOrder {
+	for _, i := range routingIntentOrder {
 		meta, ok := byIntent[i]
 		if !ok {
-			t.Fatalf("missing metadata for capability intent %q", i)
+			t.Fatalf("missing metadata for route intent %q", i)
 		}
 		want := skillRequiredTool(i)
 		if meta.RequiredTool != want {
@@ -223,8 +223,8 @@ func TestCapabilityMetadataRequiredToolsMatchSkillRegistry(t *testing.T) {
 	}
 }
 
-// TestDispatchCapability_RoutesToHandler verifies each handler is reachable via
-// DispatchCapability. Uses a stub executor that fails fast so we only check
+// TestDispatchRoute_RoutesToHandler verifies each handler is reachable via
+// DispatchRoute. Uses a stub executor that fails fast so we only check
 // handler routing, not full tool semantics.
 type stubFailingExecutor struct{}
 
@@ -232,13 +232,13 @@ func (stubFailingExecutor) Execute(ctx context.Context, action string, args map[
 	return map[string]any{}, nil
 }
 
-type capabilitySequenceExecutor struct {
+type routeSequenceExecutor struct {
 	results map[string]map[string]any
 	errs    map[string]error
 	calls   []handlerExecCall
 }
 
-func (m *capabilitySequenceExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
+func (m *routeSequenceExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
 	m.calls = append(m.calls, handlerExecCall{action: action, args: copyArgs(args)})
 	if m.errs != nil {
 		if err, ok := m.errs[action]; ok {
@@ -254,18 +254,18 @@ func (m *capabilitySequenceExecutor) Execute(_ context.Context, action string, a
 	return map[string]any{}, nil
 }
 
-func TestDispatchCapability_RoutesToHandler(t *testing.T) {
+func TestDispatchRoute_RoutesToHandler(t *testing.T) {
 	h := NewDemoHandler(stubFailingExecutor{})
-	for i := range capabilityIntentSet() {
+	for i := range routingIntentSet() {
 		req := HandlerRequest{Plan: Plan{Intent: i}}
-		result := h.DispatchCapability(context.Background(), req)
+		result := h.DispatchRoute(context.Background(), req)
 		// With empty mock response, handlers should return a HandledResult
 		// (their renderers produce "未获取到..." replies on empty data).
 		if result.Status != HandlerStatusHandled {
-			t.Errorf("DispatchCapability(%q) status = %q, want %q", i, result.Status, HandlerStatusHandled)
+			t.Errorf("DispatchRoute(%q) status = %q, want %q", i, result.Status, HandlerStatusHandled)
 		}
 		if want := skillRequiredTool(i); result.ToolAction != want {
-			t.Errorf("DispatchCapability(%q) ToolAction = %q, want %q", i, result.ToolAction, want)
+			t.Errorf("DispatchRoute(%q) ToolAction = %q, want %q", i, result.ToolAction, want)
 		}
 	}
 }
@@ -326,36 +326,36 @@ func (m *stockCapacityFallbackExecutor) Execute(_ context.Context, action string
 	}
 }
 
-// TestDispatchCapability_UnknownIntentFalls verifies that calling
-// DispatchCapability with a non-registered intent returns a FallbackBeforeTool
-// (defensive layer; engine.go gates on IsCapabilityIntent before invoking).
-func TestDispatchCapability_UnknownIntentFalls(t *testing.T) {
+// TestDispatchRoute_UnknownIntentFalls verifies that calling
+// DispatchRoute with a non-registered intent returns a FallbackBeforeTool
+// (defensive layer; engine.go gates on IsRoutingIntent before invoking).
+func TestDispatchRoute_UnknownIntentFalls(t *testing.T) {
 	h := NewDemoHandler(stubFailingExecutor{})
-	req := HandlerRequest{Plan: Plan{Intent: Intent("not_a_capability")}}
-	result := h.DispatchCapability(context.Background(), req)
+	req := HandlerRequest{Plan: Plan{Intent: Intent("not_a_route")}}
+	result := h.DispatchRoute(context.Background(), req)
 	if result.Status != HandlerStatusFallbackBeforeTool {
 		t.Errorf("unknown-intent dispatch status = %q, want %q", result.Status, HandlerStatusFallbackBeforeTool)
 	}
 }
 
-// TestCapabilityMetadata_LoadedFromSkillRegistry verifies the skill-registry
-// projection produced one metadata entry per capability intent and that none
-// declares required_citation (capabilities are NOT cited per PR A spec).
-func TestCapabilityMetadata_LoadedFromSkillRegistry(t *testing.T) {
-	meta := skillRegistryCapabilityMetadata()
-	if got, want := len(meta), len(capabilityIntentOrder); got != want {
-		t.Fatalf("skillRegistryCapabilityMetadata count = %d, want %d (capabilityIntentOrder size)", got, want)
+// TestRouteMetadata_LoadedFromSkillRegistry verifies the skill-registry
+// projection produced one metadata entry per route intent and that none
+// declares required_citation (routes are NOT cited per PR A spec).
+func TestRouteMetadata_LoadedFromSkillRegistry(t *testing.T) {
+	meta := skillRegistryRouteMetadata()
+	if got, want := len(meta), len(routingIntentOrder); got != want {
+		t.Fatalf("skillRegistryRouteMetadata count = %d, want %d (routingIntentOrder size)", got, want)
 	}
 	order := map[Intent]struct{}{}
-	for _, i := range capabilityIntentOrder {
+	for _, i := range routingIntentOrder {
 		order[i] = struct{}{}
 	}
 	for _, m := range meta {
 		if _, ok := order[Intent(m.IntentLabel)]; !ok {
-			t.Errorf("capability metadata has intent_label %q not in capabilityIntentOrder", m.IntentLabel)
+			t.Errorf("route metadata has intent_label %q not in routingIntentOrder", m.IntentLabel)
 		}
 		if m.RequiredCitation {
-			t.Errorf("capability %q has required_citation=true; capabilities are NOT cited per PR A spec", m.Name)
+			t.Errorf("route %q has required_citation=true; routes are NOT cited per PR A spec", m.Name)
 		}
 	}
 }
@@ -732,8 +732,8 @@ func TestRenderGPUSpecs_FullAllRequestExpandsAllModels(t *testing.T) {
 	}
 }
 
-func TestGPUSpecsCapabilityUsesDescribeAvailableAndExpandsFullRequest(t *testing.T) {
-	exec := &capabilitySequenceExecutor{results: map[string]map[string]any{
+func TestGPUSpecsRouteUsesDescribeAvailableAndExpandsFullRequest(t *testing.T) {
+	exec := &routeSequenceExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
 			"AvailableInstanceTypes": []any{
 				map[string]any{
@@ -753,7 +753,7 @@ func TestGPUSpecsCapabilityUsesDescribeAvailableAndExpandsFullRequest(t *testing
 	}}
 	handler := NewDemoHandler(exec)
 
-	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
 		Plan:     Plan{Intent: IntentGPUSpecsQuery},
 		UserText: "4090 的所有规格",
 	})
@@ -765,10 +765,10 @@ func TestGPUSpecsCapabilityUsesDescribeAvailableAndExpandsFullRequest(t *testing
 		t.Fatalf("calls = %#v, want one DescribeAvailableCompShareInstanceTypes call", exec.calls)
 	}
 	if len(exec.calls[0].args) != 0 {
-		t.Fatalf("gpu specs capability should query full upstream data without narrowing args, got %#v", exec.calls[0].args)
+		t.Fatalf("gpu specs route should query full upstream data without narrowing args, got %#v", exec.calls[0].args)
 	}
 	if result.Envelope == nil {
-		t.Fatal("gpu specs capability should attach a renderer envelope")
+		t.Fatal("gpu specs route should attach a renderer envelope")
 	}
 	if result.Envelope.Kind != "gpu_specs_query" {
 		t.Fatalf("envelope kind = %q, want gpu_specs_query", result.Envelope.Kind)
@@ -778,7 +778,7 @@ func TestGPUSpecsCapabilityUsesDescribeAvailableAndExpandsFullRequest(t *testing
 	}
 	for _, want := range []string{"机型=4090", "16C/64G", "16C/94G"} {
 		if !strings.Contains(result.Reply, want) {
-			t.Fatalf("full capability reply should include %q, got: %s", want, result.Reply)
+			t.Fatalf("full route reply should include %q, got: %s", want, result.Reply)
 		}
 	}
 }
@@ -920,7 +920,7 @@ func TestRenderStock_NormalStatusDoesNotClaimConcreteCapacity(t *testing.T) {
 }
 
 func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T) {
-	exec := &capabilitySequenceExecutor{results: map[string]map[string]any{
+	exec := &routeSequenceExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
 			"AvailableInstanceTypes": []any{
 				map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
@@ -939,7 +939,7 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	}}
 	handler := NewDemoHandler(exec)
 
-	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
 		Plan:     Plan{Intent: IntentStockAvailability},
 		UserText: "4090 现在有没有货",
 	})
@@ -1001,7 +1001,7 @@ func TestStockAvailabilityUsesFirstMatchedZoneForCapacityPrecheck(t *testing.T) 
 	exec := &stockCapacityZoneExecutor{}
 	handler := NewDemoHandler(exec)
 
-	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
 		Plan:     Plan{Intent: IntentStockAvailability},
 		UserText: "4090 现在有没有货",
 	})
@@ -1024,7 +1024,7 @@ func TestStockAvailabilityFallsBackToNextZoneWhenCapacityCheckFails(t *testing.T
 	exec := &stockCapacityFallbackExecutor{}
 	handler := NewDemoHandler(exec)
 
-	result := handler.DispatchCapability(context.Background(), HandlerRequest{
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
 		Plan:     Plan{Intent: IntentStockAvailability},
 		UserText: "4090 鐜板湪鏈夋病鏈夎揣",
 	})
@@ -1125,31 +1125,31 @@ func TestRenderCommunityImage_DataExpansionAndCap(t *testing.T) {
 // ----- end L0 NL filter tests -----------------------------------------------
 
 // TestRegistry_FutureProof_AcceptanceNumberEight is the §5 #8 acceptance test:
-// adding a capability must NOT require any change to engine.go. The engine.go
-// dispatch surface uses ONLY IsCapabilityIntent + DispatchCapability, both of
-// which now read the generated skill registry — so a new capability skill is
+// adding a route must NOT require any change to engine.go. The engine.go
+// dispatch surface uses ONLY IsRoutingIntent + DispatchRoute, both of
+// which now read the generated skill registry — so a new route skill is
 // picked up without engine.go knowing the intent's name. We verify this over the
-// live capability set: every registry-declared capability is recognized by
-// IsCapabilityIntent and routes through DispatchCapability to a Handled result.
+// live route set: every registry-declared route is recognized by
+// IsRoutingIntent and routes through DispatchRoute to a Handled result.
 //
-// (The legacy version injected a temporary capabilityRegistry entry; with the
+// (The legacy version injected a temporary routeRegistry entry; with the
 // registry generated from skills.GeneratedSkills() there is no mutable in-memory
 // table to inject into, so the contract is asserted over the generated set.)
 func TestRegistry_FutureProof_AcceptanceNumberEight(t *testing.T) {
 	h := NewDemoHandler(stubFailingExecutor{})
 	saw := 0
-	for i := range capabilityIntentSet() {
-		if !IsCapabilityIntent(i) {
-			t.Errorf("future-proof: IsCapabilityIntent(%q) = false for a generated capability skill", i)
+	for i := range routingIntentSet() {
+		if !IsRoutingIntent(i) {
+			t.Errorf("future-proof: IsRoutingIntent(%q) = false for a generated route skill", i)
 			continue
 		}
-		result := h.DispatchCapability(context.Background(), HandlerRequest{Plan: Plan{Intent: i}})
+		result := h.DispatchRoute(context.Background(), HandlerRequest{Plan: Plan{Intent: i}})
 		if result.Status != HandlerStatusHandled {
-			t.Errorf("future-proof: DispatchCapability(%q) status = %q, want Handled", i, result.Status)
+			t.Errorf("future-proof: DispatchRoute(%q) status = %q, want Handled", i, result.Status)
 		}
 		saw++
 	}
 	if saw == 0 {
-		t.Fatal("future-proof: no capability skills found in the generated registry")
+		t.Fatal("future-proof: no route skills found in the generated registry")
 	}
 }

@@ -50,7 +50,7 @@ func TestIntentToolSubset_BillingSameAsExpiryRenewal(t *testing.T) {
 	assert.Contains(t, subset, "DiagnoseBilling")
 }
 
-func TestIntentToolSubset_CapabilityIntents(t *testing.T) {
+func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 	cases := []struct {
 		intent Intent
 		tool   string
@@ -84,7 +84,7 @@ func TestIntentToolSubset_Recommendation(t *testing.T) {
 
 func TestIntentToolSubset_OperationLifecycle(t *testing.T) {
 	subset := IntentToolSubset(IntentOperationLifecycle)
-	require.Len(t, subset, 18)
+	require.Len(t, subset, 19)
 	assert.Contains(t, subset, "DescribeCompShareInstance")
 	assert.Contains(t, subset, "CreateInstanceWorkflow")
 	assert.Contains(t, subset, "StopInstanceWorkflow")
@@ -92,6 +92,7 @@ func TestIntentToolSubset_OperationLifecycle(t *testing.T) {
 	assert.Contains(t, subset, "ResizeInstanceWorkflow")
 	assert.Contains(t, subset, "ReinstallInstanceWorkflow")
 	assert.Contains(t, subset, "CreateDiskWorkflow")
+	assert.Contains(t, subset, "CreateCustomImageWorkflow")
 	assert.Contains(t, subset, "GetCompShareInstanceUpgradePrice")
 	assert.NotContains(t, subset, "DiagnoseSSH")
 	assert.NotContains(t, subset, "GetGPURecommendation")

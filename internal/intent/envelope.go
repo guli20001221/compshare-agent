@@ -301,7 +301,7 @@ type MonitorScalar struct {
 
 // ExtractMonitorScalars walks a GetCompShareInstanceMonitor raw result and
 // returns the per-(host, metric) latest scalar values, using the same
-// renderer vocabulary that capability handlers and the grounded renderer
+// renderer vocabulary that route handlers and the grounded renderer
 // emit. Returns nil if the payload is unrecognized or contains no
 // known-metric data; callers should treat nil as "no fact to write" (a
 // successful empty-data probe is not a fact-producing event).

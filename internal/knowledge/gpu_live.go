@@ -24,7 +24,7 @@ import (
 // used for the per-tier tiebreak in place of the static FP16), and
 // MachineSizes[].Gpu (the max card count). All survive the JSON round-trip as
 // map[string]any with the nested {Rate,Value} shape the agent already parses
-// elsewhere (capability_registry.go).
+// elsewhere (route_registry.go).
 
 // AvailableGPU is one live, currently-offered GPU model.
 type AvailableGPU struct {

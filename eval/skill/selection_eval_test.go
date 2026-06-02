@@ -21,6 +21,7 @@ import (
 //
 //	go test ./eval/skill -run TestSelectionSkillEval -skillmodel deepseek-v4-flash
 var skillModelFlag = flag.String("skillmodel", "", "planner model id for the real-model skill-selection layer (empty = skip)")
+var skillRunsFlag = flag.Int("skillruns", 1, "number of repeated real-model selection runs for stability checks")
 
 // selectionPlannerLLM adapts an llm.Client to intent.PlannerLLM, exactly like the
 // production cliPlannerLLM (cmd/cli.go): planner requests carry no tools.
@@ -84,49 +85,56 @@ func TestSelectionSkillEval(t *testing.T) {
 	groupWrong := map[string]int{}
 	var caseResults []selCaseResult
 
-	for _, c := range cases {
-		result, err := planner.Plan(context.Background(), intent.PlannerInput{UserText: c.Question})
-		require.NoErrorf(t, err, "planner error on %s", c.ID)
-		selected := selectedSkillName(result.Plan)
-		outcome := evaluateSelectionCase(c, result.Plan, selected)
+	runs := *skillRunsFlag
+	if runs < 1 {
+		runs = 1
+	}
+	for run := 1; run <= runs; run++ {
+		for _, c := range cases {
+			result, err := planner.Plan(context.Background(), intent.PlannerInput{UserText: c.Question})
+			require.NoErrorf(t, err, "planner error on %s run %d", c.ID, run)
+			selected := selectedSkillName(result.Plan)
+			outcome := evaluateSelectionCase(c, result.Plan, selected)
+			outcome.Run = run
 
-		switch c.Lane {
-		case laneFast, laneAgent:
-			selTotal++
-			if outcome.Hit {
-				selHit++
-			}
-			if c.OverlappingGroup != "" {
-				groupTotal[c.OverlappingGroup]++
-				if !outcome.Hit {
-					groupWrong[c.OverlappingGroup]++
+			switch c.Lane {
+			case laneFast, laneAgent:
+				selTotal++
+				if outcome.Hit {
+					selHit++
 				}
-			}
-			caseResults = append(caseResults, outcome)
-			t.Logf("[%s] %q expected=%s selected=%s hit=%v", c.ID, c.Question, c.ExpectedSkill, selected, outcome.Hit)
-		case laneDiagnosis:
-			diagTotal++
-			if outcome.DiagnosisLaneHit {
-				diagLaneHit++
-			}
-			caseResults = append(caseResults, outcome)
-			t.Logf("[%s] %q intent=%s (diagnosis lane-routing only; specific skill is R2-v2)", c.ID, c.Question, result.Plan.Intent)
-		case laneBoundary:
-			boundaryTotal++
-			if outcome.BoundaryHit {
-				boundaryHit++
-			}
-			if c.OverlappingGroup != "" {
-				groupTotal[c.OverlappingGroup]++
-				if !outcome.Hit {
-					groupWrong[c.OverlappingGroup]++
+				if c.OverlappingGroup != "" {
+					groupTotal[c.OverlappingGroup]++
+					if !outcome.Hit {
+						groupWrong[c.OverlappingGroup]++
+					}
 				}
+				caseResults = append(caseResults, outcome)
+				t.Logf("[run %d][%s] %q expected=%s selected=%s hit=%v", run, c.ID, c.Question, c.ExpectedSkill, selected, outcome.Hit)
+			case laneDiagnosis:
+				diagTotal++
+				if outcome.DiagnosisLaneHit {
+					diagLaneHit++
+				}
+				caseResults = append(caseResults, outcome)
+				t.Logf("[run %d][%s] %q intent=%s (diagnosis lane-routing only; specific skill is process-eval covered)", run, c.ID, c.Question, result.Plan.Intent)
+			case laneBoundary:
+				boundaryTotal++
+				if outcome.BoundaryHit {
+					boundaryHit++
+				}
+				if c.OverlappingGroup != "" {
+					groupTotal[c.OverlappingGroup]++
+					if !outcome.Hit {
+						groupWrong[c.OverlappingGroup]++
+					}
+				}
+				caseResults = append(caseResults, outcome)
+				t.Logf("[run %d][%s] %q expected_intent=%s selected=%s forbidden=%v hit=%v",
+					run, c.ID, c.Question, c.ExpectedIntent, selected, c.ForbiddenSkills, outcome.Hit)
+			default:
+				t.Fatalf("unknown skill-eval lane %q in case %s", c.Lane, c.ID)
 			}
-			caseResults = append(caseResults, outcome)
-			t.Logf("[%s] %q expected_intent=%s selected=%s forbidden=%v hit=%v",
-				c.ID, c.Question, c.ExpectedIntent, selected, c.ForbiddenSkills, outcome.Hit)
-		default:
-			t.Fatalf("unknown skill-eval lane %q in case %s", c.Lane, c.ID)
 		}
 	}
 
@@ -138,6 +146,7 @@ func TestSelectionSkillEval(t *testing.T) {
 	}
 	report := selectionReport{
 		Model:              *skillModelFlag,
+		Runs:               runs,
 		TimestampUTC:       time.Now().UTC().Format(time.RFC3339),
 		SkillHit:           selHit,
 		SkillTotal:         selTotal,
@@ -154,6 +163,7 @@ func TestSelectionSkillEval(t *testing.T) {
 	}
 
 	t.Logf("=== skill-eval selection (model=%s) ===", *skillModelFlag)
+	t.Logf("runs: %d", runs)
 	t.Logf("plan-level skill-hit: %d/%d (%.2f)  wrong-skill: %.2f", selHit, selTotal, rate(selHit, selTotal), report.WrongSkillRate)
 	t.Logf("diagnosis lane-routing: %d/%d (%.2f)", diagLaneHit, diagTotal, rate(diagLaneHit, diagTotal))
 	t.Logf("boundary cases: %d/%d (%.2f)", boundaryHit, boundaryTotal, rate(boundaryHit, boundaryTotal))
@@ -175,6 +185,7 @@ func TestSelectionSkillEval(t *testing.T) {
 }
 
 type selCaseResult struct {
+	Run              int      `json:"run"`
 	ID               string   `json:"id"`
 	Lane             string   `json:"lane"`
 	Question         string   `json:"question"`
@@ -197,6 +208,7 @@ type groupRate struct {
 
 type selectionReport struct {
 	Model              string               `json:"model"`
+	Runs               int                  `json:"runs"`
 	TimestampUTC       string               `json:"timestamp_utc"`
 	SkillHit           int                  `json:"skill_hit"`
 	SkillTotal         int                  `json:"skill_total"`

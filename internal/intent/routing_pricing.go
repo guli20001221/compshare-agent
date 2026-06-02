@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Pricing capability (PR #3, 2026-05-22).
+// Pricing route (PR #3, 2026-05-22).
 //
 // Two-stage handler: stage 1 reads DescribeAvailableCompShareInstanceTypes
 // to (a) drive the GPU-name vocabulary for user-text matching and (b)
@@ -20,7 +20,7 @@ import (
 // the MachineSizes.Collection slice. Most "X 多少钱一小时" askers want
 // the entry-level price, not the largest spec.
 //
-// Why a capability instead of LLM tool-use: baseline trace for
+// Why a route instead of LLM tool-use: baseline trace for
 // "4090 多少钱一小时" shows the LLM doing 3 tool calls (1 Describe +
 // 2 different GetPrice args) and ~36s / 33k tokens. The deterministic
 // path here is two tool calls + a renderer template = ~10s / ~6k tokens.
@@ -41,13 +41,13 @@ const (
 // reply is a markdown price table; ToolAction is always set to the
 // registry tool (GetCompShareInstancePrice) — even on early exits where
 // stage 1 fetched nothing — so the trace + handler-action-whitelist
-// plumbing stays consistent with sibling capability handlers.
+// plumbing stays consistent with sibling route handlers.
 func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "GetCompShareInstancePrice"
 
 	// Stage 1: list available GPU types (vocabulary + default spec source).
 	const describeAction = "DescribeAvailableCompShareInstanceTypes"
-	describe, fb := executeCapabilityAction(ctx, h, req.Plan.Intent, describeAction, map[string]any{})
+	describe, fb := executeRouteAction(ctx, h, req.Plan.Intent, describeAction, map[string]any{})
 	if fb != nil {
 		return *fb
 	}
@@ -97,7 +97,7 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 			"Cpu":     spec.Cpu,
 			"Memory":  spec.Memory * 1024,
 		}
-		priceRaw, fbInner := executeCapabilityAction(ctx, h, req.Plan.Intent, action, args)
+		priceRaw, fbInner := executeRouteAction(ctx, h, req.Plan.Intent, action, args)
 		if fbInner != nil {
 			// Tolerate per-GPU failure: continue with the others. A
 			// transient backend hiccup on one model shouldn't blank the
@@ -307,16 +307,17 @@ func pricingLabel(chargeType string) string {
 // pricingBillingTable best-efforts the price-per-charge-type extract
 // from the GetCompShareInstancePrice response. Handles three shapes
 // observed in production:
-//   Shape 1 (flat):   { Postpay: <num>, Day: <num>, ... }
-//   Shape 2 (nested): { InstancePrice: { Postpay: { Price: <num>, OriginalPrice: <num> }, ... } }
-//   Shape 3 (array, real production form 2026-05-22):
-//     { PriceDetails: [{ ChargeType: "Postpay", Instance: 1.88 }, ...],
-//       ListPriceDetails: [{ ChargeType: "Postpay", Instance: 1.98 }, ...] }
 //
-//     PriceDetails = discounted/actual payable; ListPriceDetails = list price.
-//     When discount applied (Price < List), we render "¥discounted (原价 ¥list)";
-//     otherwise just the single number. OriginalPriceDetails is a synonym for
-//     ListPriceDetails in current API output — treated as fallback if List absent.
+//	Shape 1 (flat):   { Postpay: <num>, Day: <num>, ... }
+//	Shape 2 (nested): { InstancePrice: { Postpay: { Price: <num>, OriginalPrice: <num> }, ... } }
+//	Shape 3 (array, real production form 2026-05-22):
+//	  { PriceDetails: [{ ChargeType: "Postpay", Instance: 1.88 }, ...],
+//	    ListPriceDetails: [{ ChargeType: "Postpay", Instance: 1.98 }, ...] }
+//
+//	  PriceDetails = discounted/actual payable; ListPriceDetails = list price.
+//	  When discount applied (Price < List), we render "¥discounted (原价 ¥list)";
+//	  otherwise just the single number. OriginalPriceDetails is a synonym for
+//	  ListPriceDetails in current API output — treated as fallback if List absent.
 //
 // Returns "¥X.XX" strings keyed by ChargeType label.
 func pricingBillingTable(raw map[string]any) map[string]string {

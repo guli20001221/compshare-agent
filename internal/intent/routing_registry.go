@@ -10,15 +10,15 @@ import (
 	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/envelope"
-	"github.com/compshare-agent/internal/skills"
+	"github.com/compshare-agent/internal/routing"
 )
 
-// capabilityIntentOrder is the registration order of the 7 catalog/status capability
-// intents. It is the ONLY remnant of the deleted capabilityRegistry: the planner
+// routingIntentOrder is the registration order of the 7 catalog/status route
+// intents. It is the ONLY remnant of the deleted routeRegistry: the planner
 // prompt fragments are emitted in this order and the order is byte-identity-pinned
 // (NOT alphabetical). Handler binding, required tool, and metadata now come from
 // the generated skill registry (skills.GeneratedSkills()); only the order lives here.
-var capabilityIntentOrder = []Intent{
+var routingIntentOrder = []Intent{
 	IntentGPUSpecsQuery,
 	IntentStockAvailability,
 	IntentNetAcceleratorStatus,
@@ -37,39 +37,39 @@ func extraHandlerActions() map[Intent][]string {
 	}
 }
 
-// IsCapabilityIntent reports whether the intent is served by the capability
+// IsRoutingIntent reports whether the intent is served by the route
 // registry (vs. legacy IntentResourceInfo/MonitorQuery or RAG-bound knowledge_qa).
-// Engine.go uses this single predicate to gate capability dispatch.
-func IsCapabilityIntent(i Intent) bool {
-	return isCapabilityIntentSkill(i)
+// Engine.go uses this single predicate to gate route dispatch.
+func IsRoutingIntent(i Intent) bool {
+	return isRoutingIntentRoute(i)
 }
 
-// CapabilityIntents returns the set of capability Intents in registration order.
+// RoutingIntents returns the set of route Intents in registration order.
 // Used by planner prompt build + cmd/trace parsing.
-func CapabilityIntents() []Intent {
-	return append([]Intent(nil), capabilityIntentOrder...)
+func RoutingIntents() []Intent {
+	return append([]Intent(nil), routingIntentOrder...)
 }
 
-func capabilityRequiredTool(i Intent) (string, bool) {
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel == string(i) && len(s.RequiredTools) > 0 {
-			return s.RequiredTools[0], true
+func routingRequiredTool(i Intent) (string, bool) {
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel == string(i) && len(route.RequiredTools) > 0 {
+			return route.RequiredTools[0], true
 		}
 	}
 	return "", false
 }
 
-// DispatchCapability resolves a capability intent to its registered handler.
+// DispatchRoute resolves a route intent to its registered handler.
 // Returns FallbackBeforeTool(validation) if the intent is not registered — this
-// is unreachable when engine.go gates on IsCapabilityIntent first.
-func (h *DemoHandler) DispatchCapability(ctx context.Context, req HandlerRequest) HandlerResult {
-	return h.dispatchCapabilitySkill(ctx, req)
+// is unreachable when engine.go gates on IsRoutingIntent first.
+func (h *DemoHandler) DispatchRoute(ctx context.Context, req HandlerRequest) HandlerResult {
+	return h.dispatchRoute(ctx, req)
 }
 
-// CapabilityMetadata is the planner-prompt projection of a capability skill.
+// RouteMetadata is the planner-prompt projection of a route skill.
 // Stored only for planner prompt construction; runtime dispatch resolves the
 // handler via the generated skill registry (skills.GeneratedSkills()).
-type CapabilityMetadata struct {
+type RouteMetadata struct {
 	Name              string
 	IntentLabel       string
 	SkillGroup        string
@@ -77,45 +77,45 @@ type CapabilityMetadata struct {
 	ToolSubset        []string
 	RequiredCitation  bool
 	PlannerDirectives []string
-	PlannerExamples   []CapabilityPlannerExample
+	PlannerExamples   []RoutePlannerExample
 }
 
-type CapabilityPlannerExample struct {
+type RoutePlannerExample struct {
 	Question   string
 	Confidence float64
 }
 
-// CapabilityPromptFragments returns planner-prompt directives + one-shot
-// examples derived from the generated skill registry (the sole capability
-// source). The fragment order follows capabilityIntentOrder.
-func CapabilityPromptFragments() ([]string, []string) {
-	return capabilityPromptFragmentsFrom(skillRegistryCapabilityMetadata())
+// RoutingPromptFragments returns planner-prompt directives + one-shot
+// examples derived from the generated skill registry (the sole route
+// source). The fragment order follows routingIntentOrder.
+func RoutingPromptFragments() ([]string, []string) {
+	return routingPromptFragmentsFrom(skillRegistryRouteMetadata())
 }
 
-// capabilityPromptFragmentsFrom is the pure builder underlying
-// CapabilityPromptFragments: it derives the directives + one-shot examples from
+// routingPromptFragmentsFrom is the pure builder underlying
+// RoutingPromptFragments: it derives the directives + one-shot examples from
 // the given metadata slice (in slice order). Kept source-parameterized so tests
 // can feed it a known metadata slice independently of the live skill registry.
-func capabilityPromptFragmentsFrom(meta []CapabilityMetadata) ([]string, []string) {
+func routingPromptFragmentsFrom(meta []RouteMetadata) ([]string, []string) {
 	names := make([]string, 0, len(meta))
 	for _, m := range meta {
 		names = append(names, m.Name)
 	}
 	directives := []string{
-		fmt.Sprintf("Stage 2C capability routing: classify clear platform %s questions to the matching capability intent.", strings.Join(names, " / ")),
+		fmt.Sprintf("Stage 2C platform routing: classify clear platform %s questions to the matching route intent.", strings.Join(names, " / ")),
 	}
 	examples := []string{}
 	for _, m := range meta {
 		directives = append(directives, m.PlannerDirectives...)
 		for _, example := range m.PlannerExamples {
 			examples = append(examples, "User question: "+example.Question)
-			examples = append(examples, capabilityPromptExampleJSON(m, example))
+			examples = append(examples, routingPromptExampleJSON(m, example))
 		}
 	}
 	return directives, examples
 }
 
-func capabilityPromptExampleJSON(meta CapabilityMetadata, example CapabilityPlannerExample) string {
+func routingPromptExampleJSON(meta RouteMetadata, example RoutePlannerExample) string {
 	type promptSlots struct {
 		TargetRefs []TargetRef `json:"target_refs"`
 		Metrics    []Metric    `json:"metrics"`
@@ -145,17 +145,17 @@ func capabilityPromptExampleJSON(meta CapabilityMetadata, example CapabilityPlan
 	}
 	data, err := json.Marshal(plan)
 	if err != nil {
-		panic(fmt.Sprintf("intent: marshal capability planner example %q: %v", meta.Name, err))
+		panic(fmt.Sprintf("intent: marshal route planner example %q: %v", meta.Name, err))
 	}
 	return string(data)
 }
 
 // ---- Handler implementations ------------------------------------------------
 
-func executeCapabilityAction(ctx context.Context, h *DemoHandler, intentValue Intent, action string, args map[string]any) (map[string]any, *HandlerResult) {
-	// Design choice: capability handlers use two-layer defense rather than the
+func executeRouteAction(ctx context.Context, h *DemoHandler, intentValue Intent, action string, args map[string]any) (map[string]any, *HandlerResult) {
+	// Design choice: route handlers use two-layer defense rather than the
 	// three-layer pattern of legacy handlers (HandleResourceInfo etc.):
-	//   layer 1: compile-time `const action` binding inside each capability handler
+	//   layer 1: compile-time `const action` binding inside each route handler
 	//   layer 2: SafeToolExecutor.PolicyForAction gate at the runtime boundary
 	// We deliberately skip layer 3 (RequireAllowedHandlerAction reading
 	// handlerActionWhitelist) because the generated skill registry IS the binding
@@ -164,7 +164,7 @@ func executeCapabilityAction(ctx context.Context, h *DemoHandler, intentValue In
 	// TestHandlerActionWhitelist_ExactGoldenSet.
 	if h == nil || h.executor == nil {
 		// Defensive: production wiring must construct the handler with a
-		// SafeToolExecutor adapter before enabling capability cutover.
+		// SafeToolExecutor adapter before enabling route cutover.
 		fb := FallbackBeforeTool(FallbackValidation)
 		return nil, &fb
 	}
@@ -181,7 +181,7 @@ func executeCapabilityAction(ctx context.Context, h *DemoHandler, intentValue In
 
 func handleGPUSpecsQuery(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "DescribeAvailableCompShareInstanceTypes"
-	raw, fb := executeCapabilityAction(ctx, h, req.Plan.Intent, action, map[string]any{})
+	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, map[string]any{})
 	if fb != nil {
 		return *fb
 	}
@@ -197,7 +197,7 @@ func handleGPUSpecsQuery(ctx context.Context, h *DemoHandler, req HandlerRequest
 
 func handleStockAvailability(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "DescribeAvailableCompShareInstanceTypes"
-	raw, fb := executeCapabilityAction(ctx, h, req.Plan.Intent, action, map[string]any{})
+	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, map[string]any{})
 	if fb != nil {
 		return *fb
 	}
@@ -220,7 +220,7 @@ func handleStockAvailability(ctx context.Context, h *DemoHandler, req HandlerReq
 func handlePlatformImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "DescribeCompShareImages"
 	fieldOrder := []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"}
-	raw, fb := executeCapabilityAction(ctx, h, req.Plan.Intent, action, map[string]any{})
+	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, map[string]any{})
 	if fb != nil {
 		return *fb
 	}
@@ -235,7 +235,7 @@ func handlePlatformImageList(ctx context.Context, h *DemoHandler, req HandlerReq
 func handleCustomImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "DescribeCompShareCustomImages"
 	fieldOrder := []string{"CompShareImageId", "Name", "ImageName", "Status"}
-	raw, fb := executeCapabilityAction(ctx, h, req.Plan.Intent, action, map[string]any{})
+	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, map[string]any{})
 	if fb != nil {
 		return *fb
 	}
@@ -249,7 +249,7 @@ func handleCustomImageList(ctx context.Context, h *DemoHandler, req HandlerReque
 
 func handleCommunityImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "DescribeCommunityImages"
-	raw, fb := executeCapabilityAction(ctx, h, req.Plan.Intent, action, map[string]any{})
+	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, map[string]any{})
 	if fb != nil {
 		return *fb
 	}
@@ -265,8 +265,8 @@ func handleCommunityImageList(ctx context.Context, h *DemoHandler, req HandlerRe
 //
 // L0 deterministic NL filter (PR A round 2, 2026-05-18):
 //
-// Capability replies do NOT pass through an LLM (engine.go's groundedRenderer
-// short-circuits when Envelope == nil, which is the case for all capability
+// Route replies do NOT pass through an LLM (engine.go's groundedRenderer
+// short-circuits when Envelope == nil, which is the case for all route
 // HandlerResults). To make replies "answer the question" rather than "dump the
 // full API response", each renderer applies a deterministic filter using
 // req.UserText:
@@ -303,7 +303,7 @@ const (
 // owner confirms a new model belongs here.
 var knownUnavailableGPUNames = []string{"H100", "H200"}
 
-// cjkStopwords are multi-character CJK runs commonly seen in capability queries
+// cjkStopwords are multi-character CJK runs commonly seen in route queries
 // that should not become matchable keywords. We strip these from the user text
 // BEFORE tokenizing, since Go regexp + RE2 cannot segment Chinese without a
 // dictionary. After stripping, remaining CJK runs (proper nouns, image names)
@@ -320,7 +320,7 @@ var cjkStopwords = []string{
 	// keyword filter then rejects every custom image name. Stripping these
 	// modifiers lets list-all detection fire correctly.
 	"自定义", "私有", "公共", "共享",
-	// zone / region / locale words (capability handlers don't yet take Zone)
+	// zone / region / locale words (route handlers don't yet take Zone)
 	"机房", "地域", "可用区",
 	// common GPU question phrasing (multi-char, would otherwise survive
 	// tokenization as a single CJK run and match nothing — but the test
@@ -1341,7 +1341,7 @@ func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req Ha
 	if len(entries) == 0 {
 		return "", false, nil
 	}
-	imageRaw, fb := executeCapabilityAction(ctx, h, req.Plan.Intent, "DescribeCompShareImages", map[string]any{
+	imageRaw, fb := executeRouteAction(ctx, h, req.Plan.Intent, "DescribeCompShareImages", map[string]any{
 		"ImageType": "System",
 		"Limit":     20,
 	})

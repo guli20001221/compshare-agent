@@ -46,6 +46,42 @@ func TestMutatingModeSmoke_L1WorkflowStopsAtConfirmWhenDenied(t *testing.T) {
 		"denied confirmation must stop before the mutating API call")
 }
 
+func TestMutatingModeSmoke_CreateCustomImageStopsAtConfirmWhenDenied(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-img-001", "State": "Running", "Name": "train-env"},
+			},
+		},
+		"CreateCompShareCustomImage":      {"CompShareImageId": "cimg-custom-001"},
+		"GetCompShareImageCreateProgress": {"Process": float64(10)},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "CreateCustomImageWorkflow", `{"UHostId":"uhost-img-001","Name":"snapshot-v1"}`),
+		}},
+		{Content: "cancelled"},
+	}}
+	confirmCalls := 0
+	eng := NewWithDeps(mock, executor, func(string, map[string]any) bool {
+		confirmCalls++
+		return false
+	})
+	eng.SetMutatingToolsEnabled(true)
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+	onStep, events := collectSteps()
+
+	reply, err := eng.Chat(context.Background(), "save uhost-img-001 as snapshot-v1", onStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "取消")
+	assert.Equal(t, 1, confirmCalls, "custom-image workflow must ask for exactly one confirmation")
+	assertStepWithType(t, *events, StepConfirmNeeded, "", "")
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+	assert.NotContains(t, executor.calls, "CreateCompShareCustomImage",
+		"denied confirmation must stop before the mutating API call")
+}
+
 func TestMutatingModeSmoke_DestructiveActionBlockedEvenWhenWritesEnabled(t *testing.T) {
 	executor := &mockExecutor{}
 	mock := &mockLLM{responses: []llm.ChatResponse{

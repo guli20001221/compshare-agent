@@ -103,11 +103,11 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // Migration is byte-equal by construction, so the hash matches the
 // pre-migration value.
 //
-// PR #3 (2026-05-22) — intentional bump: pricing_query capability added
+// PR #3 (2026-05-22) — intentional bump: pricing_query route added
 // (intent label + 2 planner_examples + directives + boundary directive
 // vs billing_instance). Justification: high-frequency commercial path
 // "4090 多少钱" was running through main_react at ~36s/33k tokens on
-// baseline; deterministic capability routing brings it to ~10s/6k tokens.
+// baseline; deterministic routing brings it to ~10s/6k tokens.
 // The boundary directive keeps personal-billing complaints
 // ("我账单怎么这么高") routing to billing_instance unchanged.
 //
@@ -115,7 +115,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // (a) the allowed-intent enum on line 414 still missing pricing_query
 // (doc correctness — observed not to block emission but kept for
 // consistency with the enum-as-contract pattern); (b) the stale
-// directive on line 422 that conflicted with the new capability example
+// directive on line 422 that conflicted with the new route example
 // ("4090 多少钱 → unknown"). Replaced with a pricing_query directive +
 // explicit personal-billing-complaints boundary preserving billing_instance.
 //
@@ -167,19 +167,21 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // (ds-v4-pro N=10 on PR1 baseline) confirmed bare "帮我关机" → 5/5 unknown
 // is NOT a model bottleneck but a prompt design problem. Three coupled
 // fixes ship together:
-//  (1) line 428 "Phase 1 demo focus..." (which named only 2 intents from a
-//      pre-18-intent era) → "Primary intents — all have working handlers:
-//      [9-intent list]. Prefer the closest matching primary intent over
-//      unknown..." Removes the bias that any non-resource_info /
-//      non-monitor_query question is an exception.
-//  (2) line 450 "Use unknown when ... outside the demo focus" → "Use
-//      unknown ONLY when off-platform (other vendors / politics /
-//      weather / unrelated code / creative writing). On-platform but
-//      unclear → closest primary intent." Closes the easy escape that
-//      line 428 was funneling into.
-//  (3) resource_info group gains 4 Chinese anchors (我有哪些实例 / 列出我的
-//      机器 / 正在运行的实例 / 我有几台机器) covering bare zero-target
-//      inventory questions that previously had only English anchors.
+//
+//	(1) line 428 "Phase 1 demo focus..." (which named only 2 intents from a
+//	    pre-18-intent era) → "Primary intents — all have working handlers:
+//	    [9-intent list]. Prefer the closest matching primary intent over
+//	    unknown..." Removes the bias that any non-resource_info /
+//	    non-monitor_query question is an exception.
+//	(2) line 450 "Use unknown when ... outside the demo focus" → "Use
+//	    unknown ONLY when off-platform (other vendors / politics /
+//	    weather / unrelated code / creative writing). On-platform but
+//	    unclear → closest primary intent." Closes the easy escape that
+//	    line 428 was funneling into.
+//	(3) resource_info group gains 4 Chinese anchors (我有哪些实例 / 列出我的
+//	    机器 / 正在运行的实例 / 我有几台机器) covering bare zero-target
+//	    inventory questions that previously had only English anchors.
+//
 // See memory:planner-phase1-demo-focus-directive-obsolete and
 // memory:pr2-op-lifecycle-schema-fix-blueprint for the full root-cause
 // analysis and N=10 oracle smoke data.
@@ -189,26 +191,43 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // (F:/uhost-compshare-api-master/internal/api/volumn/) confirmed zero
 // disk-list actions exist; disk facts only surface via DiskSet[] in
 // DescribeCompShareInstance response. Three coupled prompt changes ship:
-//  (1) enum + primary-intents lines bumped to include disk_info;
-//  (2) one new directive disambiguating disk-listing questions from
-//      resource_info, with explicit phrasings (我有哪些数据盘 / uhost-X
-//      挂了哪些盘 / 我的磁盘列表 / 我账号下有哪些云盘);
-//  (3) new IntentDiskInfo example group with 4 anchors, all routing to
-//      DescribeCompShareInstance.
+//
+//	(1) enum + primary-intents lines bumped to include disk_info;
+//	(2) one new directive disambiguating disk-listing questions from
+//	    resource_info, with explicit phrasings (我有哪些数据盘 / uhost-X
+//	    挂了哪些盘 / 我的磁盘列表 / 我账号下有哪些云盘);
+//	(3) new IntentDiskInfo example group with 4 anchors, all routing to
+//	    DescribeCompShareInstance.
+//
 // Engine remains routing-only — no new handler — so the change is bounded
 // to prompt + intent enum + tool subset. SHA bumped by construction.
 //
 // deploy_model (B8.3, 2026-05-31) — the first agent-tier skill becomes
 // planner-reachable. Three coupled prompt changes ship:
-//  (1) enum line bumped to include deploy_model (NOT primary-intents — it's a
-//      mutating intent, example-driven only so it fires on clear deploy phrasing);
-//  (2) one new directive distinguishing workload-first deploy (部署/跑/搭 +
-//      model/app) from operation_lifecycle (existing-instance ops + spec-first create);
-//  (3) new IntentDeployModel example group with 4 anchors, required_tools=
-//      [DescribeCompShareImages]. UNLIKE the routing-only intents above, this one
-//      DOES have a new engine arm (tryDeployModel) — but the planner prompt change
-//      is the same shape. SHA bumped by construction.
-const systemPromptSHA256Baseline = "3dab3c3ef6a51a65f2de1adf04576bb524a214ea41220f2c429a60f41f6e9532"
+//
+//	(1) enum line bumped to include deploy_model (NOT primary-intents — it's a
+//	    mutating intent, example-driven only so it fires on clear deploy phrasing);
+//	(2) one new directive distinguishing workload-first deploy (部署/跑/搭 +
+//	    model/app) from operation_lifecycle (existing-instance ops + spec-first create);
+//	(3) new IntentDeployModel example group with 4 anchors, required_tools=
+//	    [DescribeCompShareImages]. UNLIKE the routing-only intents above, this one
+//	    DOES have a new engine arm (tryDeployModel) — but the planner prompt change
+//	    is the same shape. SHA bumped by construction.
+//
+// PR #217 integrated runtime refactor (2026-06-02): SHA bumped for two
+// intentional planner-visible changes:
+//
+//	(1) custom-image saga workflow becomes planner-reachable with two anchors
+//	    for "save current environment as an image" and zero-target follow-up;
+//	(2) deterministic-route terminology is reflected in the Stage 2C routing
+//	    header, using "platform routing" instead of the old local term.
+//
+// Justification: custom-image creation is a high-demand mutating workflow and
+// must route to the confirm-gated saga rather than a raw API call. The routing
+// header change removes stale local terminology from the planner prompt without
+// changing the route examples or tool set. Internal routing tests, workflow
+// tests, and runtime-form eval pin the resulting behavior.
+const systemPromptSHA256Baseline = "28352abbedf692ed811f26675d94774b81257a62e6e1ba315d2e60037fee6ae4"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

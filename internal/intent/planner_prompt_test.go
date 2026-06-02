@@ -16,7 +16,7 @@ func TestBuildSystemPromptIncludesPhase1CutoverSchemaFields(t *testing.T) {
 		"hard_block_hint",
 		"retrieval",
 		"knowledge_qa",
-		// Capability Registry v1 enum labels (PR A 2026-05-18) must appear in
+		// Routing Registry v1 enum labels (PR A 2026-05-18) must appear in
 		// the system prompt enum line so the LLM can emit them as intents.
 		"gpu_specs_query",
 		"stock_availability",
@@ -52,21 +52,21 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	// coverage + 2 added by #60 2026-05-20 for concept-Q-with-monitor-trigger-
 	// word and third-party-tool-config-jargon knowledge_qa coverage; two old
 	// stock-to-unknown examples were replaced when stock_availability became
-	// a capability + 2 added 2026-05-20 for personal billing complaint
+	// a route + 2 added 2026-05-20 for personal billing complaint
 	// (billing_instance) stable routing — see Q04 N=5 jitter check + 6 added
 	// by R3-A1 2026-05-24 for modelverse model-API coverage so planner routes
 	// "Suno/Vidu/flux/gpt-image/minimax-speech API 怎么调" to knowledge_qa
 	// instead of unknown, unblocking RAG for the 46 modelverse chunks shipped
-	// in PR #165) + the sum of `planner_examples` across all capabilities/*.md
-	// frontmatter (PR A Registry v1 + later). A capability may declare 1+
-	// examples — early capabilities used exactly 1; PR #3 (pricing_query) uses
+	// in PR #165) + the sum of `planner_examples` across all routes/*.md
+	// frontmatter (PR A Registry v1 + later). A route may declare 1+
+	// examples — early routes used exactly 1; PR #3 (pricing_query) uses
 	// 2 to anchor the public-product-pricing vs personal-billing boundary
 	// against the billing_instance one-shots. The example count is computed
-	// below so adding a new capability OR extending an existing one's examples
+	// below so adding a new route OR extending an existing one's examples
 	// auto-updates.
-	capabilityExampleCount := 0
-	for _, m := range skillRegistryCapabilityMetadata() {
-		capabilityExampleCount += len(m.PlannerExamples)
+	routeExampleCount := 0
+	for _, m := range skillRegistryRouteMetadata() {
+		routeExampleCount += len(m.PlannerExamples)
 	}
 	// PR1 hotfix Bug 1 (2026-05-28): bumped from 19 → 20 with the ZERO-target
 	// operation_lifecycle anchor for bare "帮我关机" classification.
@@ -78,7 +78,10 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	// — upstream API has no list-disk action, reuse DescribeCompShareInstance.DiskSet.
 	// deploy_model (B8.3, 2026-05-31): bumped from 28 → 32 with 4 workload-first
 	// deploy anchors (部署 Qwen2.5-32B / 跑数字人 / 搭 ComfyUI 环境 / 部署 Llama3 推理).
-	if got, want := len(examples), 32+capabilityExampleCount; got != want {
+	// custom-image workflow (Phase 3, 2026-06-02): bumped from 32 → 34 with
+	// 2 operation_lifecycle anchors for saving an instance/environment as a
+	// custom image.
+	if got, want := len(examples), 34+routeExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -181,8 +184,8 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			t.Fatalf("planner examples missing group for intent %q", intent)
 		}
 	}
-	if total != 51 {
-		t.Fatalf("legacy planner example count = %d, want 51", total)
+	if total != 53 {
+		t.Fatalf("legacy planner example count = %d, want 53", total)
 	}
 	expectedCounts := map[Intent]int{
 		IntentResourceInfo:              8,
@@ -193,7 +196,8 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentBillingInstance:           2,
 		// PR1 hotfix Bug 1 (2026-05-28): 6 = 5 Batch 1 anchors + new
 		// ZERO-target sample for bare "帮我关机" classification.
-		IntentOperationLifecycle: 6,
+		// Phase 3 (2026-06-02): +2 custom-image workflow anchors.
+		IntentOperationLifecycle: 8,
 		IntentDiagnosis:          1,
 		// disk_info (2026-05-29): 4 anchors — 我有哪些数据盘 / 我的磁盘列表 /
 		// uhost-X 挂了哪些盘 / 我账号下有哪些云盘
@@ -277,7 +281,7 @@ func TestBuildSystemPromptIncludesBillingInstanceDiagnosticGuard(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptRoutesInventoryAvailabilityToCapability(t *testing.T) {
+func TestBuildSystemPromptRoutesInventoryAvailabilityToRoute(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
 		"Inventory availability questions",
@@ -316,17 +320,17 @@ func TestBuildSystemPromptDistinguishesFinanceFAQAndRealtimeAccountData(t *testi
 	}
 }
 
-// TestBuildSystemPromptRoutesRuntimePriceQueriesToCapability locks the
+// TestBuildSystemPromptRoutesRuntimePriceQueriesToRoute locks the
 // PR #151 directive shift: "4090 \u591a\u5c11\u94b1" used to emit unknown (free LLM
-// tool loop), now emits pricing_query (deterministic capability handler).
+// tool loop), now emits pricing_query (deterministic route handler).
 // Also asserts the personal-billing boundary is preserved so complaints
 // like \u6211\u8d26\u5355\u600e\u4e48\u8fd9\u4e48\u9ad8 still stay in billing_instance, not pricing.
-func TestBuildSystemPromptRoutesRuntimePriceQueriesToCapability(t *testing.T) {
+func TestBuildSystemPromptRoutesRuntimePriceQueriesToRoute(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
 		"Direct runtime/list/user price questions",
 		"should emit pricing_query",
-		"capability handler runs DescribeAvailableCompShareInstanceTypes + GetCompShareInstancePrice deterministically",
+		"route handler runs DescribeAvailableCompShareInstanceTypes + GetCompShareInstancePrice deterministically",
 		"4090 \u591a\u5c11\u94b1",
 		"H20 \u6309\u6708\u5305\u591a\u5c11\u94b1",
 		"Personal-billing complaints",
@@ -335,7 +339,7 @@ func TestBuildSystemPromptRoutesRuntimePriceQueriesToCapability(t *testing.T) {
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
-			t.Fatalf("system prompt missing price-capability routing fragment %q:\n%s", fragment, prompt)
+			t.Fatalf("system prompt missing price-route routing fragment %q:\n%s", fragment, prompt)
 		}
 	}
 	stale := []string{

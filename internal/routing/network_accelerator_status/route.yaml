@@ -1,0 +1,20 @@
+name: network_accelerator_status
+description: 用户问优云智算网络加速是否已开通 / 网速慢想确认加速状态时触发；GitHub/HuggingFace 加速教程仍走 knowledge_qa
+intent_label: network_accelerator_status
+route_group: network
+required_tools:
+  - CheckCompShareNetOptimizer
+tool_subset:
+  - CheckCompShareNetOptimizer
+required_citation: false
+handler_key: handleNetAcceleratorStatus
+planner_directives:
+  - '用户问"网络加速开了吗"、"网速慢帮我看看是不是没开网络加速"、"网络加速状态"时 emit network_accelerator_status。'
+  - '本路线只查询网络加速开通状态；不要承诺能开通、代开通或修改网络配置。'
+  - '关键边界: "怎么加速 GitHub / HuggingFace / pip / apt 下载" 是教程或配置问题，应 emit knowledge_qa，不能 emit network_accelerator_status。'
+planner_examples:
+  - question: "网速怎么这么慢，帮我看看网络加速开没开"
+    confidence: 0.86
+verification_status: production_validated
+field_refs_verified: true
+provenance: human_authored

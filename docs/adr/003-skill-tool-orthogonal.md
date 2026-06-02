@@ -61,7 +61,7 @@
 **Positive**
 - 双源数据漂移消除(codegen 单源)
 - Skill 跨 tier 复用,减少重复 prompt 工程
-- Tool spec 业界标准,可未来通过 MCP gateway 暴露(ADR 待写)
+- Tool spec 业界标准,可未来通过 MCP server 暴露;外部 MCP 也可由 MCP client 消费(ADR 待写)
 - 加新 capability 不再触碰 Go 代码(纯 markdown + JSON)
 
 **Negative**
@@ -171,7 +171,7 @@ OpenAI Function Calling spec 跟 MCP Tool spec 字段同构(`parameters` ↔ `in
 | 内部 Go API 调用 | `DescribeCompShareInstance`(保留现有 CamelCase 习惯,改名 breaking 量过大) |
 | MCP 外部暴露 | `compshare/instance/describe`(`provider/category/action`,对齐 MCP 生态惯例) |
 
-映射规则锁在 `internal/mcp/naming.go`(B7 时建,30 行;现在不需要实现,但命名转换规则锁死):
+映射规则锁在 `internal/mcp/server/naming.go`(B7 server 侧实现时建,30 行;现在不需要实现,但命名转换规则锁死):
 - `CamelCase` → `snake_case` 分词
 - 第一段 `Describe / Create / Stop / Reboot ...` → 拆出为 `action`
 - 中间段含 `Compshare` 前缀 → 拆出为 namespace `compshare`
@@ -191,7 +191,7 @@ ADR-003 决定 tool spec 用 OpenAI Function + `x-compshare` 扩展。本 amendm
 | `tier_eligible` | ❌ 隐藏 | 内部 router 概念,对外无意义,暴露反而误导 |
 | `api_action` | ❌ 隐藏 | 内部 CompShare OpenAPI action 名,暴露增加攻击面(外部攻击者拿到直接调底层 API 的字符串) |
 
-MCP gateway 层做 projection:外部 spec 只包含 ✅ 字段,内部使用时拿原始 spec。projection 函数锁在 `internal/mcp/projection.go`(B7 时建)。
+MCP server 投影层做 projection:外部 spec 只包含 ✅ 字段,内部使用时拿原始 spec。projection 函数锁在 `internal/mcp/server/projection.go`(B7 server 侧实现时建)。MCP client 侧如需消费外部 spec,放在 `internal/mcp/client` 并单独处理信任边界。
 
 ### C. 不在本 amendment 范围
 

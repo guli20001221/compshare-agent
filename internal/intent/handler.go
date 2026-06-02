@@ -11,8 +11,8 @@ import (
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/routing"
 	"github.com/compshare-agent/internal/security"
-	"github.com/compshare-agent/internal/skills"
 )
 
 const FriendlyToolFailureReply = "\u67e5\u8be2\u6682\u65f6\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5\u3002"
@@ -43,7 +43,7 @@ const (
 	CutoverStatusNone       CutoverStatus = ""
 	CutoverStatusDispatched CutoverStatus = "dispatched"
 	// CutoverStatusDispatchedAgent marks a turn the agent-tier dispatch arm
-	// owned (B8.3 deploy_model). Distinct from "dispatched" (fast-tier capability
+	// owned (B8.3 deploy_model). Distinct from "dispatched" (fast-tier route
 	// dispatch) so DeriveRealizedTier maps it to the agent tier rather than fast
 	// — the deploy arm runs a TierAgent LLM match + the orchestrator saga.
 	CutoverStatusDispatchedAgent       CutoverStatus = "dispatched_agent"
@@ -86,7 +86,7 @@ type HandlerExecutor interface {
 type HandlerRequest struct {
 	Plan     Plan
 	Resolver EntityResolver
-	// UserText is the raw user question. Used by capability handlers'
+	// UserText is the raw user question. Used by route handlers'
 	// deterministic NL filter (e.g. "4090 显存多大" -> filter Name=="4090" out
 	// of the API response). Set by engine.go when dispatching to handlers via
 	// tryPhase1Cutover / tryResumeResourceSelection. Legacy handlers
@@ -261,8 +261,8 @@ func cutoverStatusForFallback(reason FallbackReason) CutoverStatus {
 
 // handlerActionWhitelist gates which (Intent, action) pairs are allowed at the
 // SafeToolExecutor boundary. The two legacy entries (resource/monitor) are
-// hardcoded; capability entries are derived from the generated skill registry —
-// each capability skill contributes ITS required tool (RequiredTools[0]), NOT its
+// hardcoded; route entries are derived from the generated skill registry —
+// each route skill contributes ITS required tool (RequiredTools[0]), NOT its
 // broader react_tool_subset, so the security whitelist stays narrow. The curated
 // extraHandlerActions() map then adds the security-vetted extras (stock_availability
 // only). The exact resulting set is pinned by TestHandlerActionWhitelist_ExactGoldenSet
@@ -282,15 +282,15 @@ func handlerActionWhitelist() map[Intent]map[string]struct{} {
 			IntentResourceInfo: {"DescribeCompShareInstance": {}},
 			IntentMonitorQuery: {"GetCompShareInstanceMonitor": {}},
 		}
-		for _, s := range skills.GeneratedSkills() {
-			if s.IntentLabel == "" || len(s.RequiredTools) == 0 {
+		for _, route := range routing.GeneratedRoutes() {
+			if route.IntentLabel == "" || len(route.RequiredTools) == 0 {
 				continue
 			}
-			intentValue := Intent(s.IntentLabel)
+			intentValue := Intent(route.IntentLabel)
 			if _, ok := m[intentValue]; !ok {
 				m[intentValue] = map[string]struct{}{}
 			}
-			m[intentValue][s.RequiredTools[0]] = struct{}{}
+			m[intentValue][route.RequiredTools[0]] = struct{}{}
 		}
 		for intentValue, actions := range extraHandlerActions() {
 			if _, ok := m[intentValue]; !ok {
