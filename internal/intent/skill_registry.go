@@ -45,8 +45,8 @@ func (h *DemoHandler) dispatchCapabilitySkill(ctx context.Context, req HandlerRe
 type capabilityHandlerFunc = func(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult
 
 // capabilityHandlerByKey binds each capability skill's handler_key (the string in
-// the skill.md frontmatter) to its Go handler func. internal/skills stores only
-// the string key — this map is the func-pointer side of the intent→handler binding.
+// the SKILL.md frontmatter) to its Go handler func. internal/skills stores only
+// the string key; this map is the func-pointer side of the intent-to-handler binding.
 // Drift (against the expected per-intent handlers and against the skill-declared
 // handler_keys) is caught by skill_registry_test.go.
 var capabilityHandlerByKey = map[string]capabilityHandlerFunc{

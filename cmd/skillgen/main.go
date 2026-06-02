@@ -1,5 +1,5 @@
 // Command skillgen generates internal/skills/registry_gen.go from the skill
-// bundles under internal/skills/<name>/skill.md. It is a thin wrapper around
+// bundles under internal/skills/<name>/SKILL.md. It is a thin wrapper around
 // skills.GenerateRegistry so the codegen logic lives in one place that both this
 // command and the drift test exercise.
 //

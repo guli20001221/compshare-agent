@@ -3,7 +3,7 @@
 
 package skills
 
-// generatedSkills is the codegen mirror of internal/skills/*/skill.md, sorted
+// generatedSkills is the codegen mirror of internal/skills/*/SKILL.md, sorted
 // by Name for byte-stable output. B2b P1 has no runtime consumer; the drift
 // test + digest pin keep it in sync with disk.
 var generatedSkills = []*Skill{
@@ -21,7 +21,7 @@ var generatedSkills = []*Skill{
 		PlannerDirectives:  []string{"Community image list questions like \"查询社区镜像\" should emit community_image_list."},
 		PlannerExamples:    []SkillPlannerExample{{Question: "查询社区镜像", Confidence: 0.85}},
 		Provenance:         "human_authored",
-		Path:               "community_image_list/skill.md",
+		Path:               "community_image_list/SKILL.md",
 	},
 	{
 		Name:               "custom_image_list",
@@ -37,7 +37,7 @@ var generatedSkills = []*Skill{
 		PlannerDirectives:  []string{"User-owned custom image list questions like \"查询自制镜像\" should emit custom_image_list."},
 		PlannerExamples:    []SkillPlannerExample{{Question: "查询自制镜像", Confidence: 0.85}},
 		Provenance:         "human_authored",
-		Path:               "custom_image_list/skill.md",
+		Path:               "custom_image_list/SKILL.md",
 	},
 	{
 		Name:               "deploy_model",
@@ -50,7 +50,7 @@ var generatedSkills = []*Skill{
 		VerificationStatus: "unverified",
 		FieldRefsVerified:  true,
 		Provenance:         "human_authored",
-		Path:               "deploy_model/skill.md",
+		Path:               "deploy_model/SKILL.md",
 	},
 	{
 		Name:               "diagnose_gpu_not_detected",
@@ -62,7 +62,7 @@ var generatedSkills = []*Skill{
 		BodyCapLines:       100,
 		VerificationStatus: "unverified",
 		Provenance:         "human_authored",
-		Path:               "diagnose_gpu_not_detected/skill.md",
+		Path:               "diagnose_gpu_not_detected/SKILL.md",
 	},
 	{
 		Name:               "diagnose_image_issue",
@@ -74,7 +74,7 @@ var generatedSkills = []*Skill{
 		BodyCapLines:       100,
 		VerificationStatus: "unverified",
 		Provenance:         "human_authored",
-		Path:               "diagnose_image_issue/skill.md",
+		Path:               "diagnose_image_issue/SKILL.md",
 	},
 	{
 		Name:               "diagnose_init_failure",
@@ -86,7 +86,7 @@ var generatedSkills = []*Skill{
 		BodyCapLines:       100,
 		VerificationStatus: "unverified",
 		Provenance:         "human_authored",
-		Path:               "diagnose_init_failure/skill.md",
+		Path:               "diagnose_init_failure/SKILL.md",
 	},
 	{
 		Name:               "diagnose_port_firewall",
@@ -98,7 +98,7 @@ var generatedSkills = []*Skill{
 		BodyCapLines:       100,
 		VerificationStatus: "unverified",
 		Provenance:         "human_authored",
-		Path:               "diagnose_port_firewall/skill.md",
+		Path:               "diagnose_port_firewall/SKILL.md",
 	},
 	{
 		Name:               "diagnose_ssh",
@@ -110,7 +110,7 @@ var generatedSkills = []*Skill{
 		BodyCapLines:       100,
 		VerificationStatus: "unverified",
 		Provenance:         "human_authored",
-		Path:               "diagnose_ssh/skill.md",
+		Path:               "diagnose_ssh/SKILL.md",
 	},
 	{
 		Name:               "gpu_specs_query",
@@ -126,7 +126,7 @@ var generatedSkills = []*Skill{
 		PlannerDirectives:  []string{"普通 GPU 规格、显存、性能、最大卡数问题应 emit gpu_specs_query，并先输出概览。", "用户明确要求所有/全部/完整规格、某型号所有规格、CPU/内存组合、CPU 和内存、可选配置时，也应 emit gpu_specs_query；渲染层会展开 MachineSizes.Collection.Memory 的所有组合。"},
 		PlannerExamples:    []SkillPlannerExample{{Question: "4090 显存多大", Confidence: 0.85}},
 		Provenance:         "human_authored",
-		Path:               "gpu_specs_query/skill.md",
+		Path:               "gpu_specs_query/SKILL.md",
 	},
 	{
 		Name:               "platform_image_list",
@@ -142,7 +142,7 @@ var generatedSkills = []*Skill{
 		PlannerDirectives:  []string{"Platform image list questions like \"查询平台镜像列表\" or \"Ubuntu 22.04 镜像有吗\" should emit platform_image_list.", "Concept questions like \"系统镜像和基础镜像有什么区别\" or how-to questions like \"怎么发布社区镜像\" stay in knowledge_qa, NOT image-list capabilities."},
 		PlannerExamples:    []SkillPlannerExample{{Question: "查询平台镜像列表", Confidence: 0.85}},
 		Provenance:         "human_authored",
-		Path:               "platform_image_list/skill.md",
+		Path:               "platform_image_list/SKILL.md",
 	},
 	{
 		Name:               "pricing_query",
@@ -158,7 +158,7 @@ var generatedSkills = []*Skill{
 		PlannerDirectives:  []string{"GPU 价格 / 多少钱 / 几钱 / 费用 / 计费 / 包月包日多少钱类问题应 emit pricing_query。用户已给出 GPU 型号即可路由。", "\"X 多少钱一小时\" \"X 价格\" \"X 包月多少\" \"X 包日多少\" \"X spot 价\" \"X 抢占式价\" 都属本 capability。", "关键区分: 本 capability 仅回答**平台产品公开定价**(购买前调研); 用户对**自己已有账单**的怨言/不解(如\"账单怎么这么高\"/\"扣费太多\")应 emit billing_instance, 不在本 capability。"},
 		PlannerExamples:    []SkillPlannerExample{{Question: "4090 多少钱一小时", Confidence: 0.9}, {Question: "A100 包月多少钱", Confidence: 0.85}},
 		Provenance:         "human_authored",
-		Path:               "pricing_query/skill.md",
+		Path:               "pricing_query/SKILL.md",
 	},
 	{
 		Name:               "stock_availability",
@@ -174,6 +174,6 @@ var generatedSkills = []*Skill{
 		PlannerDirectives:  []string{"GPU stock availability questions like \"4090 有没有货\" or \"H100 库存\" should emit stock_availability — these are NOT resource_info (which is only for the user's own instances) and NOT unknown."},
 		PlannerExamples:    []SkillPlannerExample{{Question: "4090 现在有没有货", Confidence: 0.85}},
 		Provenance:         "human_authored",
-		Path:               "stock_availability/skill.md",
+		Path:               "stock_availability/SKILL.md",
 	},
 }

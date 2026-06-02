@@ -1,28 +1,29 @@
 ---
 name: deploy_model
 description: Use this skill when the user wants to RUN or DEPLOY a model, framework, or application on CompShare (部署/跑/搭 + a workload name) and needs a suitable GPU instance created for it — the agent picks the image and sizes the GPU
-triggers:
-  - "部署 Qwen / Llama / 模型"
-  - "我想跑数字人"
-  - "搭一个能跑 ComfyUI 的环境"
-  - "部署模型做推理服务"
-  - "帮我起一个跑 SD 的实例"
-applicable_tiers: [agent]
-required_tools:
-  - DescribeCompShareImages
-  - DescribeCommunityImages
-  - GetModelVRAMRequirement
-  - GetGPURecommendation
-  - CheckCompShareResourceCapacity
-  - GetCompShareInstanceUserPrice
-  - CreateCompShareInstance
-  - DescribeCompShareInstance
-related_skills:
-  - safety_warning
-body_cap_lines: 100
-verification_status: unverified
-field_refs_verified: true
-provenance: human_authored
+metadata:
+  triggers:
+    - "部署 Qwen / Llama / 模型"
+    - "我想跑数字人"
+    - "搭一个能跑 ComfyUI 的环境"
+    - "部署模型做推理服务"
+    - "帮我起一个跑 SD 的实例"
+  applicable_tiers: [agent]
+  required_tools:
+    - DescribeCompShareImages
+    - DescribeCommunityImages
+    - GetModelVRAMRequirement
+    - GetGPURecommendation
+    - CheckCompShareResourceCapacity
+    - GetCompShareInstanceUserPrice
+    - CreateCompShareInstance
+    - DescribeCompShareInstance
+  related_skills:
+    - safety_warning
+  body_cap_lines: 100
+  verification_status: unverified
+  field_refs_verified: true
+  provenance: human_authored
 ---
 
 # Deploy: 按工作负载选镜像建实例

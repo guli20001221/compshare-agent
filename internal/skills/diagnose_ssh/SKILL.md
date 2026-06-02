@@ -1,22 +1,23 @@
 ---
 name: diagnose_ssh
 description: Use this skill when user reports SSH connection failure / timeout / Permission denied on a CompShare instance and needs read-only platform-side triage
-triggers:
-  - "SSH 连不上"
-  - "SSH 连接超时"
-  - "Permission denied"
-  - "SSH 连接失败"
-  - "无法登录实例"
-applicable_tiers: [agent]
-required_tools:
-  - DescribeCompShareInstance
-  - GetCompShareInstanceMonitor
-related_skills:
-  - safety_warning
-body_cap_lines: 100
-verification_status: unverified
-field_refs_verified: false
-provenance: human_authored
+metadata:
+  triggers:
+    - "SSH 连不上"
+    - "SSH 连接超时"
+    - "Permission denied"
+    - "SSH 连接失败"
+    - "无法登录实例"
+  applicable_tiers: [agent]
+  required_tools:
+    - DescribeCompShareInstance
+    - GetCompShareInstanceMonitor
+  related_skills:
+    - safety_warning
+  body_cap_lines: 100
+  verification_status: unverified
+  field_refs_verified: false
+  provenance: human_authored
 ---
 
 # Diagnose: SSH Connection Failure

@@ -1,23 +1,24 @@
 ---
 name: custom_image_list
 description: 用户问自己账户下的自制/自定义镜像列表时触发
-intent_label: custom_image_list
-skill_group: catalog
-required_tools:
-  - DescribeCompShareCustomImages
-react_tool_subset:
-  - DescribeCompShareCustomImages
-required_citation: false
-applicable_tiers: [fast]
-handler_key: handleCustomImageList
-planner_directives:
-  - 'User-owned custom image list questions like "查询自制镜像" should emit custom_image_list.'
-planner_examples:
-  - question: "查询自制镜像"
-    confidence: 0.85
-verification_status: production_validated
-field_refs_verified: true
-provenance: human_authored
+metadata:
+  intent_label: custom_image_list
+  skill_group: catalog
+  required_tools:
+    - DescribeCompShareCustomImages
+  react_tool_subset:
+    - DescribeCompShareCustomImages
+  required_citation: false
+  applicable_tiers: [fast]
+  handler_key: handleCustomImageList
+  planner_directives:
+    - 'User-owned custom image list questions like "查询自制镜像" should emit custom_image_list.'
+  planner_examples:
+    - question: "查询自制镜像"
+      confidence: 0.85
+  verification_status: production_validated
+  field_refs_verified: true
+  provenance: human_authored
 ---
 
 # custom_image_list

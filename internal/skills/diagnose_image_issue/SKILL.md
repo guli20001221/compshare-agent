@@ -1,21 +1,22 @@
 ---
 name: diagnose_image_issue
 description: Use this skill when user suspects a CompShare instance image issue (image fails to install, community image misbehaving, image incompatible with application) and needs read-only platform-side triage
-triggers:
-  - "镜像问题"
-  - "镜像无法启动"
-  - "社区镜像有问题"
-  - "怀疑镜像 bug"
-  - "镜像装不上"
-applicable_tiers: [agent]
-required_tools:
-  - DescribeCompShareInstance
-related_skills:
-  - safety_warning
-body_cap_lines: 100
-verification_status: unverified
-field_refs_verified: false
-provenance: human_authored
+metadata:
+  triggers:
+    - "镜像问题"
+    - "镜像无法启动"
+    - "社区镜像有问题"
+    - "怀疑镜像 bug"
+    - "镜像装不上"
+  applicable_tiers: [agent]
+  required_tools:
+    - DescribeCompShareInstance
+  related_skills:
+    - safety_warning
+  body_cap_lines: 100
+  verification_status: unverified
+  field_refs_verified: false
+  provenance: human_authored
 ---
 
 # Diagnose: Image Issue

@@ -1,5 +1,5 @@
 # check_skill_caps.ps1 — pre-commit gate (ADR-004 §150-151).
-# Asserts every internal/skills/<dir>/skill.md body is within its line cap. The
+# Asserts every internal/skills/<dir>/SKILL.md body is within its line cap. The
 # cap is body_cap_lines (default 100, hard ceiling 200); frontmatter lines are
 # NOT counted. Build/load fails on over-cap (never silent truncation). The
 # authoritative gate is `go test ./internal/skills` (Skill.Body); this mirrors
@@ -31,7 +31,7 @@ function Get-BodyLineCount($body) {
 
 $violations = 0
 foreach ($dir in Get-ChildItem -LiteralPath $skillsDir -Directory) {
-    $skillFile = Join-Path $dir.FullName "skill.md"
+    $skillFile = Join-Path $dir.FullName "SKILL.md"
     if (-not (Test-Path -LiteralPath $skillFile)) {
         continue
     }
@@ -53,7 +53,7 @@ foreach ($dir in Get-ChildItem -LiteralPath $skillsDir -Directory) {
     $body = $afterOpen.Substring($closerIdx + 4) -replace '^[\r\n]+', ''
 
     $cap = $DefaultCap
-    $capMatch = [regex]::Match($frontmatter, '(?m)^body_cap_lines:\s*(\d+)\s*$')
+    $capMatch = [regex]::Match($frontmatter, '(?m)^\s*body_cap_lines:\s*(\d+)\s*$')
     if ($capMatch.Success) {
         $declared = [int]$capMatch.Groups[1].Value
         if ($declared -gt $MaxCap) {

@@ -3,6 +3,7 @@ package skills
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -69,9 +70,93 @@ func TestGeneratedRegistry_SemanticParityWithLoader(t *testing.T) {
 		if !equalStrings(g.RequiredTools, ls.RequiredTools) {
 			t.Errorf("skill %q required_tools drift: gen=%v disk=%v", g.Name, g.RequiredTools, ls.RequiredTools)
 		}
+		if g.VerificationStatus != ls.VerificationStatus || g.FieldRefsVerified != ls.FieldRefsVerified {
+			t.Errorf("skill %q verification drift: gen=%s/%v disk=%s/%v",
+				g.Name, g.VerificationStatus, g.FieldRefsVerified, ls.VerificationStatus, ls.FieldRefsVerified)
+		}
+		if g.HandlerKey != ls.HandlerKey || g.IntentLabel != ls.IntentLabel || g.SkillGroup != ls.SkillGroup {
+			t.Errorf("skill %q routing drift: gen=(%q,%q,%q) disk=(%q,%q,%q)",
+				g.Name, g.HandlerKey, g.IntentLabel, g.SkillGroup, ls.HandlerKey, ls.IntentLabel, ls.SkillGroup)
+		}
+		if g.Provenance != ls.Provenance || g.SkillVersion != ls.SkillVersion || g.LastValidatedAgainst != ls.LastValidatedAgainst {
+			t.Errorf("skill %q provenance drift", g.Name)
+		}
+		if !equalStrings(g.Resources.Scripts, ls.Resources.Scripts) ||
+			!equalStrings(g.Resources.References, ls.Resources.References) ||
+			!equalStrings(g.Resources.Tests, ls.Resources.Tests) {
+			t.Errorf("skill %q resource drift: gen=%+v disk=%+v", g.Name, g.Resources, ls.Resources)
+		}
 		if g.Path != ls.Path {
 			t.Errorf("skill %q path drift: gen=%q disk=%q", g.Name, g.Path, ls.Path)
 		}
+	}
+}
+
+func TestGenerateRegistry_RejectsDistilledSkillWithoutGovernanceGate(t *testing.T) {
+	root := t.TempDir()
+	writeCanonicalSkill(t, root, "distilled_candidate",
+		"name: distilled_candidate\n"+
+			"description: distilled candidate\n"+
+			"metadata:\n"+
+			"  verification_status: spike_validated\n"+
+			"  field_refs_verified: true\n"+
+			"  provenance: distilled_from_trajectory\n"+
+			"  provenance_trace_ref: trace-abc\n"+
+			"  skill_version: 2",
+		"body\n")
+
+	_, err := GenerateRegistry(root)
+	if err == nil || !strings.Contains(err.Error(), "registration gate") {
+		t.Fatalf("expected registration gate error, got %v", err)
+	}
+}
+
+func TestGenerateRegistry_AllowsReviewedSanitizedDistilledSkill(t *testing.T) {
+	root := t.TempDir()
+	writeCanonicalSkill(t, root, "distilled_candidate",
+		"name: distilled_candidate\n"+
+			"description: distilled candidate\n"+
+			"metadata:\n"+
+			"  verification_status: spike_validated\n"+
+			"  field_refs_verified: true\n"+
+			"  provenance: distilled_from_trajectory\n"+
+			"  provenance_trace_ref: trace-abc\n"+
+			"  skill_version: 2\n"+
+			"  last_validated_against: eval-sha256-abc\n"+
+			"  human_reviewed: true\n"+
+			"  sanitized: true\n"+
+			"  eval_passed: true",
+		"body\n")
+
+	src, err := GenerateRegistry(root)
+	if err != nil {
+		t.Fatalf("GenerateRegistry: %v", err)
+	}
+	if !bytes.Contains(src, []byte(`"distilled_candidate"`)) {
+		t.Fatalf("generated registry did not include distilled candidate:\n%s", src)
+	}
+}
+
+func TestGenerateRegistry_RejectsHardcodedIdentifiersInDistilledSkill(t *testing.T) {
+	root := t.TempDir()
+	writeCanonicalSkill(t, root, "distilled_candidate",
+		"name: distilled_candidate\n"+
+			"description: distilled candidate\n"+
+			"metadata:\n"+
+			"  verification_status: spike_validated\n"+
+			"  field_refs_verified: true\n"+
+			"  provenance: distilled_from_trajectory\n"+
+			"  provenance_trace_ref: trace-abc\n"+
+			"  skill_version: 2\n"+
+			"  last_validated_against: eval-sha256-abc\n"+
+			"  human_reviewed: true\n"+
+			"  sanitized: true\n"+
+			"  eval_passed: true",
+		"do not bake uhost-1qx1qsw4b1pk into a reusable skill\n")
+
+	_, err := GenerateRegistry(root)
+	if err == nil || !strings.Contains(err.Error(), "hard-coded identifier") {
+		t.Fatalf("expected hard-coded identifier rejection, got %v", err)
 	}
 }
 

@@ -3,6 +3,11 @@
 **Status**: Proposed (2026-05-29)
 **Depends on**: ADR-003(Skill ⊥ Tool 正交)
 
+**2026-06-02 amendment**: R1 adopts canonical `SKILL.md`. Only `name` and
+`description` remain top-level frontmatter fields; project-specific routing,
+verification, provenance, and governance fields live under `metadata:`. Historical
+references to `skill.md` in this ADR describe the pre-R1 form.
+
 ## Context
 
 ADR-003 决定把 playbook 拆为独立的 Skill 维度,采用 Claude Code-style markdown bundle + progressive disclosure。本 ADR 细化 Skill 的目录布局、文件契约、加载机制、body cap 策略。
