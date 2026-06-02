@@ -108,16 +108,10 @@ Checked frontend repo:
 - branch: `feature/console-ai-step-envelope`
 - head before local hardening: `06d2e4f`
 - local hardening commit: `393cc05`
+- production service restore commit: `bc9cb89`
 - tracked status: clean
 
-The current `src/Frame/AIAssistant/service.js` is explicitly marked local-only:
-
-- hardcoded gateway: `http://127.0.0.1:8080`
-- hardcoded org ids
-- hardcoded project id
-- comment says "local-only" and "forbidden for production"
-
-The frontend can consume the current backend shape for local testing:
+The frontend can consume the current backend shape:
 
 - `event: step`
 - `event: confirmation`
@@ -133,15 +127,23 @@ Additional local frontend hardening has been applied in `F:\frontend\frame` comm
 - displays `tool_result`, `confirm_needed`, `blocked`, and `error` step types using coarse labels only
 - does not render step args or tool result payloads
 
-Production integration still needs:
+The production service path was restored in `F:\frontend\frame` commit `bc9cb89`:
 
-- replace local hardcoded gateway/org/project fields with production gateway/project context
-- keep `ConfirmCSAgentAction`
-- keep `onStep`, `onConfirmation`, and `done.Content` handling
-- run a browser smoke against the real console build after the production service path is restored
+- removed hardcoded local gateway `http://127.0.0.1:8080`
+- removed hardcoded org id, top org id, and project id
+- normal JSON actions now use the console `queryService`
+- stream chat uses `CONFIG_URL.API` with browser credentials
+- stream chat sends only the action, session id, message, and a best-effort current project id
+- no `organization_id`, `top_organization_id`, or `user_email` is sent from frontend code
+
+Remaining external checks:
+
+- production gateway must inject the authoritative org/project/user identity context, including `user_email`
+- run a browser smoke against the real console build after gateway context is available
+- verify the confirmation card can deny and approve a custom-image workflow through the console UI
 
 ### Phase 9 conclusion
 
 Backend Phase 9 gates are pinned by tests.
-Frontend Phase 9 is locally hardened for the current SSE shape, but still only locally viable today.
-It should not be treated as production console integration until the production gateway path is restored and a browser smoke passes.
+Frontend Phase 9 is code-ready for the production gateway path and no longer carries local hardcoded identity fields.
+It should not be treated as fully production-validated until gateway `user_email` is available and a browser smoke passes.

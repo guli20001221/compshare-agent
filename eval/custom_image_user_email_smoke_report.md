@@ -24,6 +24,8 @@ Current local environment has no `COMPSHARE_USER_EMAIL` value configured.
 
 Because the approve leg is specifically meant to prove that upstream custom-image creation succeeds after `user_email` is present, the live approve write was not run in this environment.
 
+Test-created instances do not need to be deleted after the run. Keep their raw ids in local smoke notes only, and do not commit those ids unless they are redacted.
+
 ## How to run once the gateway/user email is available
 
 ```powershell
