@@ -5,7 +5,7 @@
 // B2b P1 scope: this package builds the loader + codegen machinery against the 5
 // seeded diagnose_* skills. It has NO routable consumer yet (the engine does not
 // read it), so loading it changes no runtime behavior. P2 migrates the 6 active
-// capabilities and switches dispatch to the generated registry behind a flag.
+// routes and switches dispatch to the generated registry behind a flag.
 //
 // Contracts (ADR-004 + ADR-008 section B):
 //   - Strict parse: verification_status + field_refs_verified are mandatory with
@@ -60,7 +60,7 @@ const (
 	// TierFast and TierAgent are the ONLY permitted applicable_tiers values
 	// (ADR-001 two-lane model). The enum is closed: a typo like "fas" fails to
 	// load rather than silently routing a skill to no lane. fast = deterministic
-	// capability dispatch (no LLM); agent = body-driven executor / saga arm.
+	// route dispatch (no LLM); agent = body-driven executor / saga arm.
 	TierFast  = "fast"
 	TierAgent = "agent"
 
@@ -90,7 +90,7 @@ const (
 var skillNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]*[a-z0-9]$`)
 
 // SkillPlannerExample is one Stage-2C routing example carried in the optional
-// routing block (capability dialect). Tagged for both YAML (on-disk) and the
+// routing block (route dialect). Tagged for both YAML (on-disk) and the
 // generated Go literal does not use the tags, but keeping them documents intent.
 type SkillPlannerExample struct {
 	Question   string  `yaml:"question"`
@@ -120,7 +120,7 @@ type Skill struct {
 	VerificationStatus string
 	FieldRefsVerified  bool
 
-	// Optional routing block (capability dialect, B2b section 3). The 5 diagnose_*
+	// Optional routing block (route dialect, B2b section 3). The 5 diagnose_*
 	// skills omit all of these; that is valid; KnownFields(true) rejects only
 	// unknown keys, not missing optional ones.
 	IntentLabel       string

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// PR #157 (intent matrix smoke 2026-05-22): three capability renderer
+// PR #157 (intent matrix smoke 2026-05-22): three route renderer
 // bugs found by real CLI test against api.compshare.cn. Each test below
 // locks the fix so the regression class can't reappear silently.
 

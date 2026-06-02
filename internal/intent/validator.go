@@ -227,8 +227,8 @@ func validRequiredTool(tool string) bool {
 		"DiagnoseBilling",
 		"GetCompShareInstancePrice",
 		"GetCompShareInstanceUserPrice",
-		// Capability Registry v1 (PR A, 2026-05-18). Keep the legacy list above
-		// untouched and accept the 4 capability-bound platform-query tools.
+		// Route Registry v1 (PR A, 2026-05-18). Keep the legacy list above
+		// untouched and accept the 4 route-bound platform-query tools.
 		"DescribeAvailableCompShareInstanceTypes",
 		"CheckCompShareResourceCapacity",
 		"CheckCompShareNetOptimizer",
@@ -288,7 +288,7 @@ func requiredToolsForIntent(intent Intent) map[string]struct{} {
 		add("DescribeCompShareImages", "DescribeCommunityImages")
 	}
 
-	if required, ok := capabilityRequiredTool(intent); ok {
+	if required, ok := routingRequiredTool(intent); ok {
 		add(required)
 		for _, action := range extraHandlerActions()[intent] {
 			add(action)

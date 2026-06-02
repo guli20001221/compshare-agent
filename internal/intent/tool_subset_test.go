@@ -50,7 +50,7 @@ func TestIntentToolSubset_BillingSameAsExpiryRenewal(t *testing.T) {
 	assert.Contains(t, subset, "DiagnoseBilling")
 }
 
-func TestIntentToolSubset_CapabilityIntents(t *testing.T) {
+func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 	cases := []struct {
 		intent Intent
 		tool   string

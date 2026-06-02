@@ -103,11 +103,11 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // Migration is byte-equal by construction, so the hash matches the
 // pre-migration value.
 //
-// PR #3 (2026-05-22) — intentional bump: pricing_query capability added
+// PR #3 (2026-05-22) — intentional bump: pricing_query route added
 // (intent label + 2 planner_examples + directives + boundary directive
 // vs billing_instance). Justification: high-frequency commercial path
 // "4090 多少钱" was running through main_react at ~36s/33k tokens on
-// baseline; deterministic capability routing brings it to ~10s/6k tokens.
+// baseline; deterministic routing brings it to ~10s/6k tokens.
 // The boundary directive keeps personal-billing complaints
 // ("我账单怎么这么高") routing to billing_instance unchanged.
 //
@@ -115,7 +115,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // (a) the allowed-intent enum on line 414 still missing pricing_query
 // (doc correctness — observed not to block emission but kept for
 // consistency with the enum-as-contract pattern); (b) the stale
-// directive on line 422 that conflicted with the new capability example
+// directive on line 422 that conflicted with the new route example
 // ("4090 多少钱 → unknown"). Replaced with a pricing_query directive +
 // explicit personal-billing-complaints boundary preserving billing_instance.
 //
@@ -213,7 +213,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 //	    [DescribeCompShareImages]. UNLIKE the routing-only intents above, this one
 //	    DOES have a new engine arm (tryDeployModel) — but the planner prompt change
 //	    is the same shape. SHA bumped by construction.
-const systemPromptSHA256Baseline = "ed15e1820b40e83955dfe938fa7da3e25dd6ba2a7aa57b890da4617cd84b8ec1"
+const systemPromptSHA256Baseline = "dba76c8635d4aef14939431964a20543596d7c86d832230d848e57cbed9571e6"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

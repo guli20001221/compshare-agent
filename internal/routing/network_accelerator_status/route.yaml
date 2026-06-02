@@ -10,7 +10,7 @@ required_citation: false
 handler_key: handleNetAcceleratorStatus
 planner_directives:
   - '用户问"网络加速开了吗"、"网速慢帮我看看是不是没开网络加速"、"网络加速状态"时 emit network_accelerator_status。'
-  - '本 capability 只查询网络加速开通状态；不要承诺能开通、代开通或修改网络配置。'
+  - '本路线只查询网络加速开通状态；不要承诺能开通、代开通或修改网络配置。'
   - '关键边界: "怎么加速 GitHub / HuggingFace / pip / apt 下载" 是教程或配置问题，应 emit knowledge_qa，不能 emit network_accelerator_status。'
 planner_examples:
   - question: "网速怎么这么慢，帮我看看网络加速开没开"

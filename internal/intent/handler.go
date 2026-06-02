@@ -43,7 +43,7 @@ const (
 	CutoverStatusNone       CutoverStatus = ""
 	CutoverStatusDispatched CutoverStatus = "dispatched"
 	// CutoverStatusDispatchedAgent marks a turn the agent-tier dispatch arm
-	// owned (B8.3 deploy_model). Distinct from "dispatched" (fast-tier capability
+	// owned (B8.3 deploy_model). Distinct from "dispatched" (fast-tier route
 	// dispatch) so DeriveRealizedTier maps it to the agent tier rather than fast
 	// — the deploy arm runs a TierAgent LLM match + the orchestrator saga.
 	CutoverStatusDispatchedAgent       CutoverStatus = "dispatched_agent"
@@ -86,7 +86,7 @@ type HandlerExecutor interface {
 type HandlerRequest struct {
 	Plan     Plan
 	Resolver EntityResolver
-	// UserText is the raw user question. Used by capability handlers'
+	// UserText is the raw user question. Used by route handlers'
 	// deterministic NL filter (e.g. "4090 显存多大" -> filter Name=="4090" out
 	// of the API response). Set by engine.go when dispatching to handlers via
 	// tryPhase1Cutover / tryResumeResourceSelection. Legacy handlers
@@ -261,8 +261,8 @@ func cutoverStatusForFallback(reason FallbackReason) CutoverStatus {
 
 // handlerActionWhitelist gates which (Intent, action) pairs are allowed at the
 // SafeToolExecutor boundary. The two legacy entries (resource/monitor) are
-// hardcoded; capability entries are derived from the generated skill registry —
-// each capability skill contributes ITS required tool (RequiredTools[0]), NOT its
+// hardcoded; route entries are derived from the generated skill registry —
+// each route skill contributes ITS required tool (RequiredTools[0]), NOT its
 // broader react_tool_subset, so the security whitelist stays narrow. The curated
 // extraHandlerActions() map then adds the security-vetted extras (stock_availability
 // only). The exact resulting set is pinned by TestHandlerActionWhitelist_ExactGoldenSet

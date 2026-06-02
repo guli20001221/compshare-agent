@@ -2,8 +2,8 @@
 // over ONE shared case file (cases.jsonl):
 //
 //   - TestOfflineSkillEval (this file) — DETERMINISTIC, runs in CI with no API key
-//     and no cloud. For every fast-tier capability skill it drives the exported
-//     handler seam intent.NewDemoHandler(...).DispatchCapability with the skill's
+//     and no cloud. For every fast-tier route skill it drives the exported
+//     handler seam intent.NewDemoHandler(...).DispatchRoute with the skill's
 //     registry intent + the case's raw question, over a recording executor that
 //     returns canned read-only data. It asserts the wiring contract: the intent
 //     derives the expected skill, the expected read-only tools are called, no
@@ -166,7 +166,7 @@ func (m *skillMetrics) report(t *testing.T) {
 }
 
 // TestOfflineSkillEval is the deterministic, CI-stable layer. It exercises every
-// fast-tier capability skill end-to-end through the exported handler seam with no
+// fast-tier route skill end-to-end through the exported handler seam with no
 // LLM and no network, asserting the per-skill wiring contract.
 func TestOfflineSkillEval(t *testing.T) {
 	cases := loadSkillCases(t)
@@ -198,7 +198,7 @@ func TestOfflineSkillEval(t *testing.T) {
 			// (2)+(3) drive the deterministic handler over a recording executor.
 			exec := &recordingExecutor{}
 			h := intent.NewDemoHandler(exec)
-			res := h.DispatchCapability(context.Background(),
+			res := h.DispatchRoute(context.Background(),
 				intent.HandlerRequest{Plan: plan, UserText: c.Question})
 
 			called := exec.actions()

@@ -19,16 +19,16 @@ const (
 	IntentMixedDiagnosisKB          Intent = "mixed_diagnosis_kb"
 	IntentMixedBillingKB            Intent = "mixed_billing_kb"
 	IntentUnknown                   Intent = "unknown"
-	// Capability Registry v1 (PR A, 2026-05-18) — declarative routing for static
-	// platform queries. See internal/intent/capabilities/*.md and
-	// capability_registry.go for the data-driven dispatch table.
+	// Route Registry v1 (PR A, 2026-05-18) — declarative routing for static
+	// platform queries. See internal/intent/routes/*.md and
+	// route_registry.go for the data-driven dispatch table.
 	IntentGPUSpecsQuery        Intent = "gpu_specs_query"
 	IntentStockAvailability    Intent = "stock_availability"
 	IntentPlatformImageList    Intent = "platform_image_list"
 	IntentCustomImageList      Intent = "custom_image_list"
 	IntentCommunityImageList   Intent = "community_image_list"
 	IntentNetAcceleratorStatus Intent = "network_accelerator_status"
-	// PR #3 (2026-05-22): pricing capability — deterministic route for
+	// PR #3 (2026-05-22): pricing route — deterministic route for
 	// "X 多少钱 / X 价格 / X 包月" so commercial-critical paths don't depend
 	// on LLM tool-selection variance (which produced 35s/33k-token paths
 	// on baseline).
@@ -43,8 +43,8 @@ const (
 	// DiskSet view rather than the default instance summary.
 	IntentDiskInfo Intent = "disk_info"
 	// deploy_model (B8.3, 2026-05-31): the first agent-tier mutating skill —
-	// "按需求选优云已有镜像建实例并轮询到 Running". UNLIKE the read-only capability
-	// intents above, this is NOT a capability (capability handlers reach only
+	// "按需求选优云已有镜像建实例并轮询到 Running". UNLIKE the read-only route
+	// intents above, this is NOT a route (route handlers reach only
 	// the ToolExecutor and cannot call e.RunAgentSaga). It routes through a
 	// dedicated engine dispatch arm (tryDeployModel) that does TierAgent
 	// image-matching, drives CreateInstanceDef through the orchestrator saga,

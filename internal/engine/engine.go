@@ -77,10 +77,10 @@ const (
 //  2. isResourceShortageQuestion     -> canned reply, no LLM call (hard-block; error 226604)
 //  3. isUnsupportedHistoricalMonitorQuestion -> canned reply, no LLM call
 //  4. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
-//                                       (BRIDGE T-001.f1, capability-gated)
+//                                       (BRIDGE T-001.f1, model-feature-gated)
 //  5. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
 //
-// Capability gating: force-tool paths that emit object tool_choice MUST
+// Model feature gating: force-tool paths that emit object tool_choice MUST
 // short-circuit when supportsObjectToolChoice=false. ds v4 flash in thinking
 // mode 400s on object tool_choice; emitting it would break the request entirely
 // rather than degrade to soft routing.
@@ -432,7 +432,7 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 // NewWithDeps creates an Engine with injected dependencies (for testing).
 // Defaults supportsObjectToolChoice to true so existing tests that exercise
 // force-tool guards continue to assert the forced ToolChoice. Tests that
-// need the capability-gated path can flip the field via setter.
+// need the model-feature-gated path can flip the field via setter.
 func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn ConfirmFunc) *Engine {
 	eng := &Engine{
 		llmClient:                client,
@@ -449,7 +449,7 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 }
 
 // setSupportsObjectToolChoice is an internal helper for tests that need to
-// exercise capability-gated force-tool behavior. Production code sets this
+// exercise model-feature-gated force-tool behavior. Production code sets this
 // via LookupCapability in New().
 func (e *Engine) setSupportsObjectToolChoice(v bool) {
 	e.supportsObjectToolChoice = v
@@ -513,16 +513,16 @@ func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, cutoverMap map
 			e == intent.IntentMonitorQuery ||
 			e == intent.IntentDiagnosis ||
 			e == intent.IntentVagueFailure ||
-			intent.IsCapabilityIntent(e) {
+			intent.IsRoutingIntent(e) {
 			enabledMap[e] = struct{}{}
 		}
 		switch e {
 		case intent.IntentResourceInfo, intent.IntentMonitorQuery:
 			cutoverMap[e] = struct{}{}
 		default:
-			// Capability Registry v1: any registered capability intent is
+			// Routing Registry v1: any registered route intent is
 			// admissible to the cutover set without per-case wiring here.
-			if intent.IsCapabilityIntent(e) {
+			if intent.IsRoutingIntent(e) {
 				cutoverMap[e] = struct{}{}
 			}
 		}
@@ -1033,7 +1033,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 		// BRIDGE T-001.f1: adjacent monitor follow-up must re-call
 		// GetCompShareInstanceMonitor instead of reusing prior numbers.
-		// Scope: first LLM call of this turn only. Capability-gated:
+		// Scope: first LLM call of this turn only. Model-feature-gated:
 		// models without object tool_choice support (e.g. deepseek-v4-flash
 		// in thinking mode) fall through to LLM auto routing instead of
 		// 400ing on a forced ToolChoice. Stale-reuse is then unmitigated
@@ -1275,7 +1275,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		return reply, true
 	}
 	// Agent-tier skills (deploy_model today) dispatch through dispatchAgentSkill —
-	// the uniform seam — not as capabilities: a capability handler reaches only the
+	// the uniform seam — not as routes: a route handler reaches only the
 	// ToolExecutor and cannot drive the orchestrator saga. The seam maps the intent
 	// to its arm (agentArmSkillForIntent) and delegates; deploy_model's arm does
 	// TierAgent image-matching + RunAgentSaga(CreateInstanceDef) + poll-to-Running
@@ -1283,7 +1283,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
-	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || intent.IsCapabilityIntent(dispatch.result.Plan.Intent) {
+	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
 		return e.tryPhase1Cutover(ctx, dispatch, userMsg, onStep)
 	}
 	if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
@@ -1421,7 +1421,7 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
 	result := dispatch.result
 	result.Plan = planWithUserTextMonitorMetrics(result.Plan, userMsg)
-	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsCapabilityIntent(result.Plan.Intent) {
+	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsRoutingIntent(result.Plan.Intent) {
 		return "", false
 	}
 	if status, ok := e.phase1CutoverCandidateStatus(result); !ok {
@@ -1445,11 +1445,11 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 	case intent.IntentMonitorQuery:
 		handled = handler.HandleMonitorQuery(ctx, req)
 	default:
-		// Capability Registry v1: any registered capability intent dispatches
+		// Routing Registry v1: any registered route intent dispatches
 		// through the registry. Engine.go does not need per-case wiring as new
-		// capabilities are added — see internal/intent/capability_registry.go.
-		if intent.IsCapabilityIntent(result.Plan.Intent) {
-			handled = handler.DispatchCapability(ctx, req)
+		// routes are added — see internal/intent/routing_registry.go.
+		if intent.IsRoutingIntent(result.Plan.Intent) {
+			handled = handler.DispatchRoute(ctx, req)
 		} else {
 			e.emitPlannerTrace(result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
 			return "", false
@@ -2178,7 +2178,7 @@ func (e *Engine) phase1CutoverCandidateStatus(result intent.PlannerResult) (inte
 	if result.Plan.Retrieval.Enabled {
 		return intent.CutoverStatusFallbackIneligible, false
 	}
-	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsCapabilityIntent(result.Plan.Intent) {
+	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsRoutingIntent(result.Plan.Intent) {
 		return intent.CutoverStatusFallbackIneligible, false
 	}
 	if _, ok := e.intentCutoverIntents[result.Plan.Intent]; !ok {
@@ -4082,7 +4082,7 @@ func containsScanAllSignal(msg string) bool {
 	return false
 }
 
-// isAccountBillingUnsupported is a permanent product capability boundary.
+// isAccountBillingUnsupported is a permanent product boundary.
 // Per docs/agent/plan/stage2-intent-planner.md §3.9.3, account-level
 // billing/balance/transaction queries are out of scope for the agent
 // regardless of IntentPlan classification. Planner may emit

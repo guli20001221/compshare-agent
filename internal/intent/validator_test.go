@@ -92,10 +92,10 @@ func TestValidatePlan_AcceptsStockCapacityPrecheckTool(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestValidatePlan_CapabilityRegistryToolsStayAllowed(t *testing.T) {
-	for _, intentValue := range capabilityIntentOrder {
-		requiredTool, ok := capabilityRequiredTool(intentValue)
-		require.True(t, ok, "capability intent %q must declare a required tool", intentValue)
+func TestValidatePlan_RouteRegistryToolsStayAllowed(t *testing.T) {
+	for _, intentValue := range routingIntentOrder {
+		requiredTool, ok := routingRequiredTool(intentValue)
+		require.True(t, ok, "route intent %q must declare a required tool", intentValue)
 		tools := []string{requiredTool}
 		tools = append(tools, extraHandlerActions()[intentValue]...)
 
@@ -107,9 +107,9 @@ func TestValidatePlan_CapabilityRegistryToolsStayAllowed(t *testing.T) {
 			Confidence:    0.8,
 		}
 
-		err := ValidatePlan(plan, ValidationContext{UserText: "capability query", Registry: testRegistry(t)})
+		err := ValidatePlan(plan, ValidationContext{UserText: "route query", Registry: testRegistry(t)})
 
-		require.NoError(t, err, "capability intent %q tools %v must stay allowed", intentValue, tools)
+		require.NoError(t, err, "route intent %q tools %v must stay allowed", intentValue, tools)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestValidatePlan_RejectsRequiredToolOutsideIntentAllowlist(t *testing.T) {
 			},
 		},
 		{
-			name: "capability cannot declare another capability tool",
+			name: "route cannot declare another route tool",
 			plan: Plan{
 				SchemaVersion: SchemaVersion,
 				Intent:        IntentPlatformImageList,
@@ -331,14 +331,14 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentKnowledgeQA,
 		IntentMixedDiagnosisKB,
 		IntentMixedBillingKB,
-		// Capability Registry v1 (PR A, 2026-05-18) — see capability_registry.go.
+		// Route Registry v1 (PR A, 2026-05-18) — see route_registry.go.
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
 		IntentNetAcceleratorStatus,
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
-		// PR #3 (2026-05-22) — pricing capability (commercial path).
+		// PR #3 (2026-05-22) — pricing route (commercial path).
 		IntentPricingQuery,
 		// disk_info (2026-05-29) — disk-listing routing; reuses
 		// DescribeCompShareInstance.DiskSet since upstream has no list API.

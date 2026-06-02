@@ -17,10 +17,10 @@ func TestRoutingRoutes_AreDeterministicallyDispatched(t *testing.T) {
 		count++
 		assert.NotEmptyf(t, route.HandlerKey,
 			"route %q must bind a handler_key", route.Name)
-		assert.Truef(t, CapabilityHandlerForKey(route.HandlerKey) != nil,
+		assert.Truef(t, RouteHandlerForKey(route.HandlerKey) != nil,
 			"route %q handler_key %q resolves to no handler", route.Name, route.HandlerKey)
 		assert.NotEmptyf(t, route.IntentLabel, "route %q must declare an intent_label", route.Name)
-		assert.Truef(t, IsCapabilityIntent(Intent(route.IntentLabel)),
+		assert.Truef(t, IsRoutingIntent(Intent(route.IntentLabel)),
 			"route %q intent %q must be deterministically dispatched", route.Name, route.IntentLabel)
 	}
 	require.GreaterOrEqualf(t, count, 7,

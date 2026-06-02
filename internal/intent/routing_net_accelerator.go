@@ -9,7 +9,7 @@ import (
 func handleNetAcceleratorStatus(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "CheckCompShareNetOptimizer"
 	args := map[string]any{}
-	raw, fb := executeCapabilityAction(ctx, h, req.Plan.Intent, action, args)
+	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, args)
 	if fb != nil {
 		return *fb
 	}

@@ -12,7 +12,7 @@ import (
 )
 
 // fastTierContractExecutor returns minimally-populated success data for every
-// capability tool so each fast-tier handler exercises its TYPED-envelope path
+// route tool so each fast-tier handler exercises its TYPED-envelope path
 // (gpu_specs→KindGPUSpecsQuery, stock→KindStockAvailability, image lists→KindImageList),
 // not just the empty→nil path. Whatever envelope results MUST be bypass-eligible.
 type fastTierContractExecutor struct{}
@@ -59,7 +59,7 @@ func TestFastTierSkills_HandlerEnvelopeBypassesRenderer(t *testing.T) {
 	fast := 0
 	for _, route := range routing.GeneratedRoutes() {
 		fast++
-		res := h.DispatchCapability(context.Background(),
+		res := h.DispatchRoute(context.Background(),
 			intent.HandlerRequest{Plan: intent.Plan{Intent: intent.Intent(route.IntentLabel)}})
 		if res.Envelope != nil {
 			assert.Truef(t, isFastTierEnvelope(res.Envelope.Kind),

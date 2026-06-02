@@ -26,9 +26,9 @@ import (
 // over SSH nor uses UserData — it MATCHES a need to an existing image, sizes the
 // GPU, and creates the instance through the orchestrator saga.
 //
-// Why a dedicated arm and not a capability: capability handlers (DispatchCapability)
+// Why a dedicated arm and not a deterministic route: route handlers (DispatchRoute)
 // reach only the ToolExecutor and cannot call e.RunAgentSaga, so routing
-// deploy_model as a capability would force a raw CreateCompShareInstance that
+// deploy_model as a deterministic route would force a raw CreateCompShareInstance that
 // bypasses the saga entirely — defeating B6.2/B8.2. This arm owns the engine, so
 // it drives the saga (step-trace + StepConfirm HITL + L2-refuse) and polls.
 //
@@ -200,7 +200,7 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchRes
 // deployReply emits the planner trace and appends the assistant message, then
 // returns (reply, true). The status is always CutoverStatusDispatchedAgent: the
 // agent-tier deploy arm owned the turn (TierAgent match + orchestrator saga), so
-// DeriveRealizedTier labels it the agent tier — mirroring how capability dispatch
+// DeriveRealizedTier labels it the agent tier — mirroring how route dispatch
 // emits "dispatched"→fast even on refusal. Centralizes the three return-side
 // concerns so every exit path of tryDeployModel stays consistent.
 func (e *Engine) deployReply(result intent.PlannerResult, latency time.Duration, reply string) (string, bool) {

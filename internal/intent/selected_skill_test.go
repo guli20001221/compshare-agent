@@ -14,7 +14,7 @@ func TestDeriveSelectedSkills_IntentBackedObserveOnly(t *testing.T) {
 		want []SelectedSkill
 	}{
 		{
-			name: "capability intent derives registry skill",
+			name: "route intent derives registry skill",
 			plan: Plan{Intent: IntentPricingQuery},
 			want: []SelectedSkill{{Name: "pricing_query", Resolution: SkillResolutionDerivedFromIntent}},
 		},
