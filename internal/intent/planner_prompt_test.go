@@ -81,7 +81,9 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	// custom-image workflow (Phase 3, 2026-06-02): bumped from 32 → 34 with
 	// 2 operation_lifecycle anchors for saving an instance/environment as a
 	// custom image.
-	if got, want := len(examples), 34+routeExampleCount; got != want {
+	// diagnosis recall fix (2026-06-03): bumped from 34 → 37 with 3 no-target
+	// symptom anchors for port unreachable, GPU not found, and SSH timeout.
+	if got, want := len(examples), 37+routeExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -184,8 +186,8 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			t.Fatalf("planner examples missing group for intent %q", intent)
 		}
 	}
-	if total != 53 {
-		t.Fatalf("legacy planner example count = %d, want 53", total)
+	if total != 56 {
+		t.Fatalf("legacy planner example count = %d, want 56", total)
 	}
 	expectedCounts := map[Intent]int{
 		IntentResourceInfo:              8,
@@ -198,7 +200,8 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		// ZERO-target sample for bare "帮我关机" classification.
 		// Phase 3 (2026-06-02): +2 custom-image workflow anchors.
 		IntentOperationLifecycle: 8,
-		IntentDiagnosis:          1,
+		// Diagnosis recall fix (2026-06-03): +3 no-target symptom anchors.
+		IntentDiagnosis: 4,
 		// disk_info (2026-05-29): 4 anchors — 我有哪些数据盘 / 我的磁盘列表 /
 		// uhost-X 挂了哪些盘 / 我账号下有哪些云盘
 		IntentDiskInfo: 4,
@@ -429,8 +432,9 @@ func TestBuildSystemPromptIncludesKnowledgeQABoundaryRules(t *testing.T) {
 		"how to configure remote desktop audio",
 		"what does error code 226601 mean",
 		"how do I do X on the platform' = knowledge_qa",
-		"my specific instance has problem X",
-		"Without a concrete instance target, default to knowledge_qa",
+		"runtime failure reports such as cannot connect/open/access",
+		"target_refs:[]. When target_refs is empty",
+		"default to knowledge_qa ONLY for pure usage/config/error-code/how-to questions",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {

@@ -51,6 +51,21 @@ var legacyDiagnosisGroup = plannerPromptExampleGroup{
 			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-abc123","source":"user_text","source_span":"uhost-abc123"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
 			Source:   "Stage 2B: concrete instance target stays diagnosis",
 		},
+		{
+			Question: "为什么我开的端口在外面访问不了",
+			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			Source:   "Stage 2B: no-target port failure report still enters diagnosis; engine asks which instance",
+		},
+		{
+			Question: "跑模型的时候说找不到GPU",
+			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			Source:   "Stage 2B: no-target GPU failure report still enters diagnosis; engine asks which instance",
+		},
+		{
+			Question: "ssh连接超时一直进不去",
+			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			Source:   "Stage 2B: no-target SSH failure report still enters diagnosis; engine asks which instance",
+		},
 	},
 }
 
@@ -227,7 +242,13 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // header change removes stale local terminology from the planner prompt without
 // changing the route examples or tool set. Internal routing tests, workflow
 // tests, and runtime-form eval pin the resulting behavior.
-const systemPromptSHA256Baseline = "28352abbedf692ed811f26675d94774b81257a62e6e1ba315d2e60037fee6ae4"
+//
+// Diagnosis recall fix (2026-06-03): SHA bumped for a narrow #123 fix.
+// Planner directive now treats runtime failure shape (port unreachable, SSH
+// timeout, GPU not found, init stuck) as diagnosis even when target_refs is
+// empty, and diagnosis.md adds 3 no-target symptom anchors. Boundary remains:
+// pure how-to/config/error-code questions stay knowledge_qa.
+const systemPromptSHA256Baseline = "87cbf3674221a3ebb1ac8d061068e461b0ec99fe0143d9e4d67a1683864dda6c"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
@@ -459,12 +480,18 @@ func TestPlannerExamples_KnowledgeQAExamplesJSONLookValid(t *testing.T) {
 // field. Catch by hand-asserting one known value.
 func TestPlannerExamples_DiagnosisExampleJSONLooksValid(t *testing.T) {
 	group := diskPlannerExampleGroups[IntentDiagnosis]
-	require.Len(t, group.Examples, 1)
+	require.Len(t, group.Examples, 4)
 	example := group.Examples[0]
 	assert.Contains(t, example.PlanJSON, `"intent":"diagnosis"`,
 		"plan_json yaml key didn't round-trip to PlanJSON struct field")
 	assert.Contains(t, example.PlanJSON, "uhost-abc123",
 		"plan_json content didn't survive yaml load")
+	for i, ex := range group.Examples[1:] {
+		assert.Contains(t, ex.PlanJSON, `"intent":"diagnosis"`,
+			"no-target example[%d] must remain diagnosis", i+1)
+		assert.Contains(t, ex.PlanJSON, `"target_refs":[]`,
+			"no-target example[%d] must keep empty target_refs", i+1)
+	}
 }
 
 // Self-test for the test harness: legacy + disk renderings produce
