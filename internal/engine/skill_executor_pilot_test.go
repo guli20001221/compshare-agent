@@ -6,6 +6,7 @@ import (
 
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/tools"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,6 +21,9 @@ func TestExecuteDiagnosis_FlagOn_RoutesThroughSkillExecutor(t *testing.T) {
 	prev := SkillExecutorEnabled()
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
+	prevPilots := SkillExecutorDiagnosisPilots()
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose_port_firewall"})
+	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	exec := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{map[string]any{
@@ -72,6 +76,9 @@ func TestExecuteDiagnosis_FlagOn_SkillExecutorFailureFallsBackToGoChain(t *testi
 	prev := SkillExecutorEnabled()
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
+	prevPilots := SkillExecutorDiagnosisPilots()
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose_port_firewall"})
+	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	exec := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance":     {"UHostSet": []any{map[string]any{"UHostId": "u1", "State": "Running"}}},
@@ -139,6 +146,47 @@ func TestPilotSkillForDiagnosis_MapsExactlyReadOnlyDiagnoseActions(t *testing.T)
 	}
 }
 
+func TestPilotedDiagnosisSkillsDeclareOnlyReadOnlyTools(t *testing.T) {
+	policies := tools.DefaultToolExecutionPolicies()
+	for _, skillName := range KnownDiagnosisSkillExecutorPilots() {
+		skill, ok := findGeneratedSkill(skillName)
+		require.Truef(t, ok, "piloted skill %q must exist in generated registry", skillName)
+		require.NotEmptyf(t, skill.RequiredTools, "piloted skill %q must declare required tools", skillName)
+		for _, toolName := range skill.RequiredTools {
+			policy, ok := policies[toolName]
+			require.Truef(t, ok, "tool %q used by %q has no execution policy", toolName, skillName)
+			assert.NotEqualf(t, tools.ActionRouteWorkflow, policy.Route,
+				"diagnosis skill %q must not expose workflow tool %q", skillName, toolName)
+			assert.NotEqualf(t, tools.ActionClassMutating, policy.Class,
+				"diagnosis skill %q must not expose mutating tool %q", skillName, toolName)
+			assert.NotEqualf(t, tools.ActionClassDestructive, policy.Class,
+				"diagnosis skill %q must not expose destructive tool %q", skillName, toolName)
+		}
+	}
+}
+
+func TestDiagnosisSkillExecutorPilotForAction_RequiresExplicitAllowlist(t *testing.T) {
+	prev := SkillExecutorEnabled()
+	SetSkillExecutorEnabled(true)
+	defer SetSkillExecutorEnabled(prev)
+	prevPilots := SkillExecutorDiagnosisPilots()
+	defer SetSkillExecutorDiagnosisPilots(prevPilots)
+
+	SetSkillExecutorDiagnosisPilots(nil)
+	got, ok := diagnosisSkillExecutorPilotForAction("DiagnosePortOrFirewall")
+	assert.False(t, ok, "global flag alone must not pilot diagnosis skills")
+	assert.Empty(t, got)
+
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose_port_firewall"})
+	got, ok = diagnosisSkillExecutorPilotForAction("DiagnosePortOrFirewall")
+	assert.True(t, ok)
+	assert.Equal(t, "diagnose_port_firewall", got)
+
+	got, ok = diagnosisSkillExecutorPilotForAction("DiagnoseSSH")
+	assert.False(t, ok, "only explicitly allowlisted diagnosis skills may pilot")
+	assert.Empty(t, got)
+}
+
 // TestExecuteDiagnosis_FlagOn_InitFailureGuardStillGates is the regression test for
 // the P3b-1 guard-ordering fix. Before the fix the pilot ran at the top of
 // executeDiagnosis, ahead of the DiagnoseInitFailure vague-symptom guard; extending
@@ -150,6 +198,9 @@ func TestExecuteDiagnosis_FlagOn_InitFailureGuardStillGates(t *testing.T) {
 	prev := SkillExecutorEnabled()
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
+	prevPilots := SkillExecutorDiagnosisPilots()
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose_init_failure"})
+	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	exec := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{map[string]any{"UHostId": "u1", "State": "Install Fail"}}},
@@ -181,6 +232,9 @@ func TestExecuteDiagnosis_FlagOn_InitFailureGuardPasses_RoutesThroughExecutor(t 
 	prev := SkillExecutorEnabled()
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
+	prevPilots := SkillExecutorDiagnosisPilots()
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose_init_failure"})
+	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	exec := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{map[string]any{"UHostId": "u1", "State": "Install Fail"}}},

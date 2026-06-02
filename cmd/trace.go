@@ -185,10 +185,11 @@ func mutatingToolsRuntimeLine(enabled bool) string {
 	return "mutating=disabled (read-only mode)"
 }
 
-// useSkillExecutorFromEnv reads USE_SKILL_EXECUTOR (P2a gray-rollout). "1" enables
-// the body-driven skill executor for piloted agent skills (currently
-// diagnose_port_firewall), "" is off, any other value is unknown → off + the raw
-// value (caller warns). Default off; boot-only, flips need a restart.
+// useSkillExecutorFromEnv reads USE_SKILL_EXECUTOR (P2a gray-rollout). "1"
+// enables the body-driven skill executor gate. Diagnosis still requires the
+// USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS allowlist. "" is off; any other value is
+// unknown and treated as off (caller warns). Default off; boot-only, flips need a
+// restart.
 func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
 	value := strings.TrimSpace(getenv("USE_SKILL_EXECUTOR"))
 	switch value {
@@ -199,6 +200,39 @@ func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
 	default:
 		return false, value
 	}
+}
+
+func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string) {
+	raw := strings.TrimSpace(getenv("USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"))
+	if raw == "" {
+		return nil, nil
+	}
+	known := map[string]struct{}{}
+	for _, name := range engine.KnownDiagnosisSkillExecutorPilots() {
+		known[name] = struct{}{}
+	}
+	seenKnown := map[string]struct{}{}
+	seenUnknown := map[string]struct{}{}
+	var pilots []string
+	var unknown []string
+	for _, part := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		if _, ok := known[name]; ok {
+			if _, seen := seenKnown[name]; !seen {
+				pilots = append(pilots, name)
+				seenKnown[name] = struct{}{}
+			}
+			continue
+		}
+		if _, seen := seenUnknown[name]; !seen {
+			unknown = append(unknown, name)
+			seenUnknown[name] = struct{}{}
+		}
+	}
+	return pilots, unknown
 }
 
 func plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled bool, cutoverIntents []intent.Intent) observability.RuntimeTrace {
