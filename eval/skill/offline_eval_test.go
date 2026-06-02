@@ -26,13 +26,16 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/skills"
+	"github.com/compshare-agent/internal/tools"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,8 +51,18 @@ type SkillCase struct {
 	ForbiddenTools        []string `json:"forbidden_tools,omitempty"`
 	ReplyShouldContain    []string `json:"reply_should_contain,omitempty"`
 	ReplyShouldNotContain []string `json:"reply_should_not_contain,omitempty"`
-	OverlappingGroup      string   `json:"overlapping_group,omitempty"`
-	Tags                  []string `json:"tags,omitempty"`
+	// AllowedExtraTools are tools that may be called in addition to ExpectedTools
+	// without counting as an extra-tool violation (escape hatch for a handler that
+	// legitimately probes more than the case cares to pin). ExpectedTools +
+	// AllowedExtraTools is the complete allowed set; anything else is an extra.
+	AllowedExtraTools []string `json:"allowed_extra_tools,omitempty"`
+	// ExpectedToolArgs pins specific arguments a tool MUST be called with, so a
+	// handler that calls the right tool with the wrong GPU / zone / charge type is
+	// caught: {action: {paramKey: expectedValue}}. Compared with fmt.Sprint so a
+	// JSON number and a Go float compare equal.
+	ExpectedToolArgs map[string]map[string]any `json:"expected_tool_args,omitempty"`
+	OverlappingGroup string                    `json:"overlapping_group,omitempty"`
+	Tags             []string                  `json:"tags,omitempty"`
 }
 
 // Lanes.
@@ -98,23 +111,20 @@ func findSkill(t *testing.T, name string) *skills.Skill {
 	return nil
 }
 
-// mutatingTools must NEVER be called by a read-only / selection skill. The
-// offline layer treats them as implicitly forbidden for every case so a handler
-// that wires a write path is caught even if the case omits it. Sourced from the
-// mutating set gated by COMPSHARE_ENABLE_MUTATING_TOOLS (internal/tools/registry.go).
-var mutatingTools = []string{
-	"CreateCompShareInstance",
-	"CreateInstanceWorkflow",
-	"StartInstanceWorkflow",
-	"StopInstanceWorkflow",
-	"RebootInstanceWorkflow",
-	"RenameInstanceWorkflow",
-	"ResetPasswordWorkflow",
-	"SetStopSchedulerWorkflow",
-	"CancelStopSchedulerWorkflow",
-	"ResizeInstanceWorkflow",
-	"ReinstallInstanceWorkflow",
-	"CreateDiskWorkflow",
+// mutatingActions is the implicitly-forbidden set for every read-only / selection
+// skill, DERIVED from the authoritative tool policy (ActionClassMutating /
+// ActionClassDestructive) rather than hand-maintained — so a newly added write
+// tool is automatically forbidden without editing this test. A read-only handler
+// that wires any of these is caught even if the case omits it.
+func mutatingActions() []string {
+	var out []string
+	for action, p := range tools.DefaultToolExecutionPolicies() {
+		if p.Class == tools.ActionClassMutating || p.Class == tools.ActionClassDestructive {
+			out = append(out, action)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // skillMetrics tallies the deterministic CI metrics across cases.
@@ -125,8 +135,11 @@ type skillMetrics struct {
 	expectedToolHits    int
 	forbiddenToolChecks int
 	forbiddenToolClean  int
+	extraToolCases      int // cases with zero unexpected tool calls
 	keywordCases        int
 	keywordPass         int
+	argChecks           int
+	argPass             int
 }
 
 func (m *skillMetrics) report(t *testing.T) {
@@ -137,11 +150,13 @@ func (m *skillMetrics) report(t *testing.T) {
 		}
 		return float64(n) / float64(d)
 	}
-	t.Logf("skill-eval offline: fast_cases=%d skill_derivation=%.2f expected_tool_hit=%.2f forbidden_tool_clean=%.2f reply_keyword_pass=%.2f",
+	t.Logf("skill-eval offline: fast_cases=%d skill_derivation=%.2f expected_tool_hit=%.2f forbidden_tool_clean=%.2f no_extra_tool=%.2f tool_arg_pass=%.2f reply_keyword_pass=%.2f",
 		m.cases,
 		pct(m.skillDerivationHits, m.cases),
 		pct(m.expectedToolHits, m.expectedToolChecks),
 		pct(m.forbiddenToolClean, m.forbiddenToolChecks),
+		pct(m.extraToolCases, m.cases),
+		pct(m.argPass, m.argChecks),
 		pct(m.keywordPass, m.keywordCases),
 	)
 }
@@ -151,6 +166,8 @@ func (m *skillMetrics) report(t *testing.T) {
 // LLM and no network, asserting the per-skill wiring contract.
 func TestOfflineSkillEval(t *testing.T) {
 	cases := loadSkillCases(t)
+	require.NotEmpty(t, mutatingActions(),
+		"mutating-tool derivation is empty — the forbidden-tool check would be vacuous")
 
 	var m skillMetrics
 	fastSkills := map[string]bool{}
@@ -180,17 +197,50 @@ func TestOfflineSkillEval(t *testing.T) {
 			res := h.DispatchCapability(context.Background(),
 				intent.HandlerRequest{Plan: plan, UserText: c.Question})
 
+			called := exec.actions()
 			for _, tool := range c.ExpectedTools {
 				m.expectedToolChecks++
-				if assert.Containsf(t, exec.calls, tool, "case %s: expected tool %q not called (called: %v)", c.ID, tool, exec.calls) {
+				if assert.Containsf(t, called, tool, "case %s: expected tool %q not called (called: %v)", c.ID, tool, called) {
 					m.expectedToolHits++
 				}
 			}
-			forbidden := append(append([]string{}, c.ForbiddenTools...), mutatingTools...)
+			forbidden := append(append([]string{}, c.ForbiddenTools...), mutatingActions()...)
 			for _, tool := range forbidden {
 				m.forbiddenToolChecks++
-				if assert.NotContainsf(t, exec.calls, tool, "case %s: forbidden tool %q was called", c.ID, tool) {
+				if assert.NotContainsf(t, called, tool, "case %s: forbidden tool %q was called", c.ID, tool) {
 					m.forbiddenToolClean++
+				}
+			}
+
+			// (extra-tool) every called tool must be in ExpectedTools ∪ AllowedExtraTools.
+			// Catches a handler that calls the right tool AND also probes unrelated ones.
+			allowed := map[string]bool{}
+			for _, tool := range append(append([]string{}, c.ExpectedTools...), c.AllowedExtraTools...) {
+				allowed[tool] = true
+			}
+			var extras []string
+			for _, tool := range called {
+				if !allowed[tool] {
+					extras = append(extras, tool)
+				}
+			}
+			if assert.Emptyf(t, extras, "case %s: unexpected tool call(s) %v (allowed: %v)", c.ID, extras, allowed) {
+				m.extraToolCases++
+			}
+
+			// (tool-args) pin specific args a tool must carry (e.g. pricing GpuType).
+			for action, wantArgs := range c.ExpectedToolArgs {
+				gotArgs, ok := exec.argsFor(action)
+				for key, want := range wantArgs {
+					m.argChecks++
+					if !ok {
+						assert.Failf(t, "missing tool call", "case %s: expected args on %q but it was not called", c.ID, action)
+						continue
+					}
+					if assert.Equalf(t, fmt.Sprint(want), fmt.Sprint(gotArgs[key]),
+						"case %s: %s arg %q = %v, want %v", c.ID, action, key, gotArgs[key], want) {
+						m.argPass++
+					}
 				}
 			}
 

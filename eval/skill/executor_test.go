@@ -2,16 +2,43 @@ package skill_eval
 
 import "context"
 
-// recordingExecutor implements intent.HandlerExecutor (Execute) with canned
-// read-only data and records the ordered list of actions it was asked to run, so
-// the offline layer can assert expected / forbidden tool calls. The data shapes
-// mirror the real API responses each fast-tier handler parses (and extend the
-// engine's fastTierContractExecutor with the CPU/Memory collection that pricing
-// needs to reach its price-table branch rather than the clarify branch).
-type recordingExecutor struct{ calls []string }
+// toolCall is one recorded tool invocation: the action name AND the args it was
+// called with. Recording args (not just the name) lets the offline layer catch a
+// handler that calls the right tool with the WRONG parameters (e.g. pricing for
+// the wrong GPU / zone / charge type) — which a name-only check would score 1.00.
+type toolCall struct {
+	Action string
+	Args   map[string]any
+}
 
-func (e *recordingExecutor) Execute(_ context.Context, action string, _ map[string]any) (map[string]any, error) {
-	e.calls = append(e.calls, action)
+// recordingExecutor implements intent.HandlerExecutor (Execute) with canned
+// read-only data and records every (action, args) it is asked to run. The data
+// shapes mirror the real API responses each fast-tier handler parses (and extend
+// the engine's fastTierContractExecutor with the CPU/Memory collection that
+// pricing needs to reach its price-table branch rather than the clarify branch).
+type recordingExecutor struct{ calls []toolCall }
+
+// actions returns the ordered action names (for expected/forbidden/extra checks).
+func (e *recordingExecutor) actions() []string {
+	out := make([]string, 0, len(e.calls))
+	for _, c := range e.calls {
+		out = append(out, c.Action)
+	}
+	return out
+}
+
+// argsFor returns the args of the first recorded call to action, or nil.
+func (e *recordingExecutor) argsFor(action string) (map[string]any, bool) {
+	for _, c := range e.calls {
+		if c.Action == action {
+			return c.Args, true
+		}
+	}
+	return nil, false
+}
+
+func (e *recordingExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
+	e.calls = append(e.calls, toolCall{Action: action, Args: args})
 	switch action {
 	case "DescribeAvailableCompShareInstanceTypes":
 		return map[string]any{"AvailableInstanceTypes": []any{

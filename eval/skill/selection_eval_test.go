@@ -2,9 +2,11 @@ package skill_eval
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/intent"
@@ -76,6 +78,7 @@ func TestSelectionSkillEval(t *testing.T) {
 	var diagTotal, diagLaneHit int
 	groupTotal := map[string]int{}
 	groupWrong := map[string]int{}
+	var caseResults []selCaseResult
 
 	for _, c := range cases {
 		result, err := planner.Plan(context.Background(), intent.PlannerInput{UserText: c.Question})
@@ -95,12 +98,18 @@ func TestSelectionSkillEval(t *testing.T) {
 					groupWrong[c.OverlappingGroup]++
 				}
 			}
+			caseResults = append(caseResults, selCaseResult{ID: c.ID, Lane: c.Lane, Question: c.Question,
+				ExpectedSkill: c.ExpectedSkill, SelectedSkill: selected, Intent: string(result.Plan.Intent),
+				OverlappingGroup: c.OverlappingGroup, Hit: hit})
 			t.Logf("[%s] %q expected=%s selected=%s hit=%v", c.ID, c.Question, c.ExpectedSkill, selected, hit)
 		case laneDiagnosis:
 			diagTotal++
-			if result.Plan.Intent == intent.IntentDiagnosis {
+			laneHit := result.Plan.Intent == intent.IntentDiagnosis
+			if laneHit {
 				diagLaneHit++
 			}
+			caseResults = append(caseResults, selCaseResult{ID: c.ID, Lane: c.Lane, Question: c.Question,
+				ExpectedSkill: c.ExpectedSkill, Intent: string(result.Plan.Intent), DiagnosisLaneHit: laneHit})
 			t.Logf("[%s] %q intent=%s (diagnosis lane-routing only; specific skill is R2-v2)", c.ID, c.Question, result.Plan.Intent)
 		}
 	}
@@ -111,12 +120,69 @@ func TestSelectionSkillEval(t *testing.T) {
 		}
 		return float64(n) / float64(d)
 	}
-	t.Logf("=== skill-eval selection (model=%s) ===", *skillModelFlag)
-	t.Logf("plan-level skill-hit: %d/%d (%.2f)  wrong-skill: %.2f", selHit, selTotal, rate(selHit, selTotal), 1-rate(selHit, selTotal))
-	t.Logf("diagnosis lane-routing: %d/%d (%.2f)", diagLaneHit, diagTotal, rate(diagLaneHit, diagTotal))
-	for g, total := range groupTotal {
-		t.Logf("R4-trigger overlapping group %q wrong-skill rate: %d/%d (%.2f)", g, groupWrong[g], total, rate(groupWrong[g], total))
+	report := selectionReport{
+		Model:              *skillModelFlag,
+		TimestampUTC:       time.Now().UTC().Format(time.RFC3339),
+		SkillHit:           selHit,
+		SkillTotal:         selTotal,
+		WrongSkillRate:     1 - rate(selHit, selTotal),
+		DiagnosisLaneHit:   diagLaneHit,
+		DiagnosisLaneTotal: diagTotal,
+		OverlappingGroups:  map[string]groupRate{},
+		Cases:              caseResults,
 	}
+	for g, total := range groupTotal {
+		report.OverlappingGroups[g] = groupRate{Wrong: groupWrong[g], Total: total, WrongRate: rate(groupWrong[g], total)}
+	}
+
+	t.Logf("=== skill-eval selection (model=%s) ===", *skillModelFlag)
+	t.Logf("plan-level skill-hit: %d/%d (%.2f)  wrong-skill: %.2f", selHit, selTotal, rate(selHit, selTotal), report.WrongSkillRate)
+	t.Logf("diagnosis lane-routing: %d/%d (%.2f)", diagLaneHit, diagTotal, rate(diagLaneHit, diagTotal))
+	for g, gr := range report.OverlappingGroups {
+		t.Logf("R4-trigger overlapping group %q wrong-skill rate: %d/%d (%.2f)", g, gr.Wrong, gr.Total, gr.WrongRate)
+	}
+
+	// Trackable JSON report: written to $SKILL_EVAL_REPORT for run-over-run
+	// comparison (the R4 trigger watches the overlapping-group wrong-skill rate),
+	// or logged inline when the env var is unset.
+	blob, err := json.MarshalIndent(report, "", "  ")
+	require.NoError(t, err)
+	if path := os.Getenv("SKILL_EVAL_REPORT"); path != "" {
+		require.NoError(t, os.WriteFile(path, blob, 0o644))
+		t.Logf("selection report written to %s", path)
+	} else {
+		t.Logf("selection report (set SKILL_EVAL_REPORT=path to persist):\n%s", blob)
+	}
+}
+
+type selCaseResult struct {
+	ID               string `json:"id"`
+	Lane             string `json:"lane"`
+	Question         string `json:"question"`
+	ExpectedSkill    string `json:"expected_skill"`
+	SelectedSkill    string `json:"selected_skill,omitempty"`
+	Intent           string `json:"intent"`
+	OverlappingGroup string `json:"overlapping_group,omitempty"`
+	Hit              bool   `json:"hit,omitempty"`
+	DiagnosisLaneHit bool   `json:"diagnosis_lane_hit,omitempty"`
+}
+
+type groupRate struct {
+	Wrong     int     `json:"wrong"`
+	Total     int     `json:"total"`
+	WrongRate float64 `json:"wrong_rate"`
+}
+
+type selectionReport struct {
+	Model              string               `json:"model"`
+	TimestampUTC       string               `json:"timestamp_utc"`
+	SkillHit           int                  `json:"skill_hit"`
+	SkillTotal         int                  `json:"skill_total"`
+	WrongSkillRate     float64              `json:"wrong_skill_rate"`
+	DiagnosisLaneHit   int                  `json:"diagnosis_lane_hit"`
+	DiagnosisLaneTotal int                  `json:"diagnosis_lane_total"`
+	OverlappingGroups  map[string]groupRate `json:"overlapping_groups"`
+	Cases              []selCaseResult      `json:"cases"`
 }
 
 // selectedSkillName returns the concrete plan-time skill for a plan, or "" when

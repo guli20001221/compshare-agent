@@ -41,11 +41,31 @@ One JSON object per line (`//` comments and blank lines skipped):
 
 ## Metrics
 
-1. **skill-hit / wrong-skill** — selection layer (raw question → planner → `DeriveSelectedSkills`).
-2. **expected-tool hit** — offline layer.
-3. **forbidden-tool misuse** — offline layer (incl. all mutating tools).
-4. **reply-keyword pass** — offline layer.
-5. **R4 trigger** — selection layer, per `overlapping_group` wrong-skill rate.
+Offline (deterministic, CI):
+1. **expected-tool hit** — every declared tool was called.
+2. **forbidden-tool clean** — no `forbidden_tools` and no mutating tool was called. The
+   mutating set is **auto-derived** from `tools.DefaultToolExecutionPolicies()`
+   (`ActionClassMutating` / `ActionClassDestructive`), not hand-listed — a newly added
+   write tool is forbidden automatically. A non-vacuity guard fails if that set is empty.
+3. **no-extra-tool** — `called ⊆ expected_tools ∪ allowed_extra_tools`; a handler that
+   also probes unrelated tools fails. This forces `expected_tools` to be the complete real
+   set (it caught `stock_availability` calling 3 tools, not the 1 I first declared).
+4. **tool-arg pass** — `expected_tool_args` pins specific arguments a tool must carry
+   (e.g. pricing `GetCompShareInstancePrice.GpuType == "4090"`), so calling the right tool
+   with the wrong GPU / zone / charge type is caught.
+5. **reply-keyword pass** — deterministic reply contains / excludes the declared keywords.
+
+Selection (opt-in, real model):
+6. **skill-hit / wrong-skill** — raw question → planner → `DeriveSelectedSkills`.
+7. **R4 trigger** — per `overlapping_group` wrong-skill rate. The run emits a trackable
+   JSON report (`$SKILL_EVAL_REPORT`, else logged) for run-over-run comparison.
+
+> The offline `1.00` means **"the 12 read-only capabilities' wiring is correct"** —
+> selection, tool name **and args**, forbidden/extra tools, answer shape. It is **not** a
+> full agent-quality score. Tool-call **order**, real execution **results**, **cost/latency**,
+> **retries**, and multi-run **stability** are deliberately out of v1 (see Scope) — those are
+> the next dimensions (cf. Anthropic process-eval, OpenAI graders name+args, Arize split
+> router/tool/param/path metrics).
 
 ## R4 trigger
 
