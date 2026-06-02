@@ -60,6 +60,7 @@ func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 		{IntentStockAvailability, "DescribeAvailableCompShareInstanceTypes", 3},
 		{IntentPricingQuery, "GetCompShareInstancePrice", 2},
 		{IntentNetAcceleratorStatus, "CheckCompShareNetOptimizer", 1},
+		{IntentImageTagCatalog, "DescribeCompShareImageTags", 1},
 		{IntentPlatformImageList, "DescribeCompShareImages", 1},
 		{IntentCustomImageList, "DescribeCompShareCustomImages", 1},
 		{IntentCommunityImageList, "DescribeCommunityImages", 1},

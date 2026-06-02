@@ -178,6 +178,18 @@ func TestIntentPlannerCutoverIntentsFromEnv_NetworkAcceleratorAliases(t *testing
 	require.Equal(t, "network_accelerator_status", string(intents[0]))
 }
 
+func TestIntentPlannerCutoverIntentsFromEnv_ImageTagAliases(t *testing.T) {
+	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		if key == "USE_INTENT_PLANNER_FOR" {
+			return "image_tags, image_tag, image_tag_catalog"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+	require.Len(t, intents, 1)
+	require.Equal(t, "image_tag_catalog", string(intents[0]))
+}
+
 func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
 	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(string) string { return "" })
 	require.Empty(t, unknown)
@@ -188,6 +200,7 @@ func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
 		"gpu_specs_query",
 		"stock_availability",
 		"pricing_query",
+		"image_tag_catalog",
 		"platform_image_list",
 		"custom_image_list",
 		"community_image_list",

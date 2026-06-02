@@ -248,7 +248,12 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // timeout, GPU not found, init stuck) as diagnosis even when target_refs is
 // empty, and diagnosis.md adds 3 no-target symptom anchors. Boundary remains:
 // pure how-to/config/error-code questions stay knowledge_qa.
-const systemPromptSHA256Baseline = "87cbf3674221a3ebb1ac8d061068e461b0ec99fe0143d9e4d67a1683864dda6c"
+//
+// image_tag_catalog route (2026-06-03): SHA bumped because the first Phase 6
+// read-only expansion adds a planner-visible route for "镜像有哪些标签/分类".
+// Boundary remains: concrete image-list/search questions still use the
+// existing image-list routes; image concept/how-to questions stay knowledge_qa.
+const systemPromptSHA256Baseline = "41100397da48d67f19bb41fa2109f8789dc96b8eb888d9caa125ff25de954996"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

@@ -69,6 +69,15 @@ func (e *recordingExecutor) Execute(_ context.Context, action string, args map[s
 		return map[string]any{"Optimized": false, "Info": []any{
 			map[string]any{"Region": "cn-wlcb-01", "Optimized": false},
 		}}, nil
+	case "DescribeCompShareImageTags":
+		return map[string]any{
+			"TagIndex": []any{"框架", "场景"},
+			"TagsMap": map[string]any{
+				"框架": []any{"PyTorch", "TensorFlow"},
+				"场景": []any{"LLM", "图像生成"},
+			},
+			"Tags": []any{"PyTorch", "TensorFlow", "LLM", "图像生成"},
+		}, nil
 	case "DescribeCompShareImages":
 		return map[string]any{"ImageSet": []any{
 			map[string]any{"CompShareImageId": "img-1", "Name": "PyTorch 2.9", "ImageType": "App"},

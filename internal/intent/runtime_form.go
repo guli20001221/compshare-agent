@@ -15,6 +15,7 @@ func PlannedRuntimeFormForIntent(i Intent) RuntimeForm {
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
 		IntentNetAcceleratorStatus,
+		IntentImageTagCatalog,
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,

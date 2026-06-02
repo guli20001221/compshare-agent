@@ -81,6 +81,7 @@ func TestRouteHandlerByKey_MatchesRegistry(t *testing.T) {
 		IntentGPUSpecsQuery:        handleGPUSpecsQuery,
 		IntentStockAvailability:    handleStockAvailability,
 		IntentNetAcceleratorStatus: handleNetAcceleratorStatus,
+		IntentImageTagCatalog:      handleImageTagCatalog,
 		IntentPlatformImageList:    handlePlatformImageList,
 		IntentCustomImageList:      handleCustomImageList,
 		IntentCommunityImageList:   handleCommunityImageList,

@@ -41,6 +41,7 @@ func TestIsRoutingIntent_KnownLabels(t *testing.T) {
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
 		IntentNetAcceleratorStatus,
+		IntentImageTagCatalog,
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
@@ -94,6 +95,7 @@ func TestRouteRequiredTool_BindsToRealTool(t *testing.T) {
 		IntentGPUSpecsQuery:        "DescribeAvailableCompShareInstanceTypes",
 		IntentStockAvailability:    "DescribeAvailableCompShareInstanceTypes",
 		IntentNetAcceleratorStatus: "CheckCompShareNetOptimizer",
+		IntentImageTagCatalog:      "DescribeCompShareImageTags",
 		IntentPlatformImageList:    "DescribeCompShareImages",
 		IntentCustomImageList:      "DescribeCompShareCustomImages",
 		IntentCommunityImageList:   "DescribeCommunityImages",
@@ -152,6 +154,7 @@ func TestHandlerActionWhitelist_ExactGoldenSet(t *testing.T) {
 		IntentGPUSpecsQuery:        {"DescribeAvailableCompShareInstanceTypes": {}},
 		IntentStockAvailability:    {"DescribeAvailableCompShareInstanceTypes": {}, "DescribeCompShareImages": {}, "CheckCompShareResourceCapacity": {}},
 		IntentNetAcceleratorStatus: {"CheckCompShareNetOptimizer": {}},
+		IntentImageTagCatalog:      {"DescribeCompShareImageTags": {}},
 		IntentPlatformImageList:    {"DescribeCompShareImages": {}},
 		IntentCustomImageList:      {"DescribeCompShareCustomImages": {}},
 		IntentCommunityImageList:   {"DescribeCommunityImages": {}},
@@ -1088,6 +1091,41 @@ func TestRenderImageList_StopwordsOnlyShowsAll(t *testing.T) {
 		"查询平台镜像列表") // all tokens are stopwords -> no filter
 	if !strings.Contains(reply, "Ubuntu") || !strings.Contains(reply, "PyTorch") {
 		t.Errorf("stopwords-only query should show all images; got: %s", reply)
+	}
+}
+
+func TestRenderImageTagCatalog_Categorized(t *testing.T) {
+	raw := map[string]any{
+		"TagIndex": []any{"框架", "场景"},
+		"TagsMap": map[string]any{
+			"框架": []any{"PyTorch", "TensorFlow"},
+			"场景": []any{"LLM", "图像生成"},
+		},
+	}
+	reply := renderImageTagCatalogReply(raw)
+	for _, want := range []string{"镜像标签分类", "框架: PyTorch、TensorFlow", "场景: LLM、图像生成"} {
+		if !strings.Contains(reply, want) {
+			t.Errorf("image tag reply missing %q: %s", want, reply)
+		}
+	}
+}
+
+func TestRenderImageTagCatalog_FlatFallback(t *testing.T) {
+	raw := map[string]any{
+		"Tags": []any{"深度学习", "ComfyUI", "Stable Diffusion"},
+	}
+	reply := renderImageTagCatalogReply(raw)
+	for _, want := range []string{"镜像标签", "深度学习", "ComfyUI"} {
+		if !strings.Contains(reply, want) {
+			t.Errorf("flat tag reply missing %q: %s", want, reply)
+		}
+	}
+}
+
+func TestRenderImageTagCatalog_Empty(t *testing.T) {
+	reply := renderImageTagCatalogReply(map[string]any{})
+	if !strings.Contains(reply, "未获取到镜像标签") {
+		t.Errorf("empty tag reply should be explicit not-found; got: %s", reply)
 	}
 }
 

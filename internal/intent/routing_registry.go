@@ -13,7 +13,7 @@ import (
 	"github.com/compshare-agent/internal/routing"
 )
 
-// routingIntentOrder is the registration order of the 7 catalog/status route
+// routingIntentOrder is the registration order of the 8 catalog/status route
 // intents. It is the ONLY remnant of the deleted routeRegistry: the planner
 // prompt fragments are emitted in this order and the order is byte-identity-pinned
 // (NOT alphabetical). Handler binding, required tool, and metadata now come from
@@ -22,6 +22,7 @@ var routingIntentOrder = []Intent{
 	IntentGPUSpecsQuery,
 	IntentStockAvailability,
 	IntentNetAcceleratorStatus,
+	IntentImageTagCatalog,
 	IntentPlatformImageList,
 	IntentCustomImageList,
 	IntentCommunityImageList,
@@ -229,6 +230,19 @@ func handlePlatformImageList(ctx context.Context, h *DemoHandler, req HandlerReq
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
 	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.UserText, action, "platform"))
+	return result
+}
+
+func handleImageTagCatalog(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
+	const action = "DescribeCompShareImageTags"
+	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, map[string]any{})
+	if fb != nil {
+		return *fb
+	}
+	reply := renderImageTagCatalogReply(raw)
+	result := HandledResult(reply)
+	result.ToolAction = action
+	result.ToolArgs = copyArgs(map[string]any{})
 	return result
 }
 
@@ -1741,6 +1755,27 @@ func renderImageListReply(raw map[string]any, listKey string, fieldOrder []strin
 	return strings.Join(lines, "\n")
 }
 
+func renderImageTagCatalogReply(raw map[string]any) string {
+	tagIndex := stringSliceAt(raw, "TagIndex")
+	tagsMap := stringSliceMapAt(raw, "TagsMap")
+	lines := []string{}
+	for _, category := range tagIndex {
+		tags := tagsMap[category]
+		if len(tags) == 0 {
+			continue
+		}
+		lines = append(lines, category+": "+strings.Join(limitStrings(tags, 12), "、"))
+	}
+	if len(lines) == 0 {
+		tags := stringSliceAt(raw, "Tags")
+		if len(tags) == 0 {
+			return "未获取到镜像标签。"
+		}
+		return "镜像标签: " + strings.Join(limitStrings(tags, 30), "、")
+	}
+	return "镜像标签分类:\n" + strings.Join(lines, "\n")
+}
+
 func renderCommunityImageReply(raw map[string]any, userText string) string {
 	groups := mapSliceAt(raw, "CompshareImageGroup")
 	if len(groups) == 0 {
@@ -1999,6 +2034,71 @@ func mapSliceAt(m map[string]any, key string) []any {
 		return nil
 	}
 	return arr
+}
+
+func stringSliceAt(m map[string]any, key string) []string {
+	if m == nil {
+		return nil
+	}
+	return stringsFromAny(m[key])
+}
+
+func stringSliceMapAt(m map[string]any, key string) map[string][]string {
+	out := map[string][]string{}
+	if m == nil {
+		return out
+	}
+	switch typed := m[key].(type) {
+	case map[string][]string:
+		for k, v := range typed {
+			out[safeValue(k)] = limitStrings(v, len(v))
+		}
+	case map[string]any:
+		for k, v := range typed {
+			out[safeValue(k)] = stringsFromAny(v)
+		}
+	}
+	return out
+}
+
+func stringsFromAny(v any) []string {
+	switch typed := v.(type) {
+	case []string:
+		return limitStrings(typed, len(typed))
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			s := strings.TrimSpace(safeValue(item))
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func limitStrings(values []string, max int) []string {
+	if max <= 0 || len(values) == 0 {
+		return nil
+	}
+	limit := max
+	if len(values) < limit {
+		limit = len(values)
+	}
+	out := make([]string, 0, limit)
+	for _, value := range values {
+		value = strings.TrimSpace(safeValue(value))
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
 }
 
 func safeString(m map[string]any, key string) string {

@@ -27,6 +27,7 @@ const (
 	IntentPlatformImageList    Intent = "platform_image_list"
 	IntentCustomImageList      Intent = "custom_image_list"
 	IntentCommunityImageList   Intent = "community_image_list"
+	IntentImageTagCatalog      Intent = "image_tag_catalog"
 	IntentNetAcceleratorStatus Intent = "network_accelerator_status"
 	// PR #3 (2026-05-22): pricing route — deterministic route for
 	// "X 多少钱 / X 价格 / X 包月" so commercial-critical paths don't depend
@@ -197,6 +198,7 @@ func AllIntents() []Intent {
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		IntentImageTagCatalog,
 		IntentNetAcceleratorStatus,
 		IntentPricingQuery,
 		IntentDiskInfo,
@@ -223,6 +225,7 @@ func RuntimeIntents() []Intent {
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		IntentImageTagCatalog,
 		IntentNetAcceleratorStatus,
 		IntentPricingQuery,
 		IntentDiskInfo,

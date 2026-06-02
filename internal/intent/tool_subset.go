@@ -60,6 +60,10 @@ func IntentToolSubset(i Intent) []string {
 		return []string{
 			"CheckCompShareNetOptimizer",
 		}
+	case IntentImageTagCatalog:
+		return []string{
+			"DescribeCompShareImageTags",
+		}
 	case IntentPlatformImageList:
 		return []string{
 			"DescribeCompShareImages",

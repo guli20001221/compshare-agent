@@ -53,6 +53,7 @@ var routeHandlerByKey = map[string]routeHandlerFunc{
 	"handleGPUSpecsQuery":        handleGPUSpecsQuery,
 	"handleStockAvailability":    handleStockAvailability,
 	"handleNetAcceleratorStatus": handleNetAcceleratorStatus,
+	"handleImageTagCatalog":      handleImageTagCatalog,
 	"handlePlatformImageList":    handlePlatformImageList,
 	"handleCustomImageList":      handleCustomImageList,
 	"handleCommunityImageList":   handleCommunityImageList,
