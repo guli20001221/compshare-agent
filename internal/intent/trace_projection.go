@@ -43,12 +43,14 @@ func ProjectPlannerTrace(result PlannerResult, opts PlannerTraceOptions) observa
 	trace.OutputTokens = result.Usage.CompletionTokens
 	trace.SchemaValid = !result.Fallback && result.Plan.SchemaVersion == SchemaVersion && result.Plan.Intent != ""
 	trace.Intent = string(result.Plan.Intent)
+	trace.PlannedRuntimeForm = string(PlannedRuntimeFormForIntent(result.Plan.Intent))
 	trace.Skills = projectPlannerSkills(DeriveSelectedSkills(result.Plan))
 	trace.Slots = projectPlannerSlots(result.Plan.Slots)
 	trace.Confidence = result.Plan.Confidence
 	trace.HardBlockHint = result.Plan.HardBlockHint
 	if !trace.SchemaValid {
 		trace.Intent = string(IntentUnknown)
+		trace.PlannedRuntimeForm = ""
 		trace.Skills = nil
 		trace.Confidence = 0
 		if !result.Fallback {
