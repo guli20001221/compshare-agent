@@ -90,7 +90,16 @@ func TestDiagnosisProcessEval(t *testing.T) {
 				`{"final":"下一步：实例状态已读取，请根据症状继续核对登录入口、端口或镜像环境。"}`,
 			}}
 			exec := &diagnosisProcessExecutor{}
-			seed := map[string]any{"UHostId": "uhost-diag-001", "Service": "JupyterLab"}
+			seed := map[string]any{
+				"SymptomType": c.ExpectedSkill,
+				"UHostId":     "uhost-diag-001",
+				"Service":     "JupyterLab",
+				"TargetInstanceSummary": map[string]any{
+					"UHostId": "uhost-diag-001",
+					"Service": "JupyterLab",
+				},
+				"NextStepExpectation": "Use read-only evidence before giving the next diagnostic step.",
+			}
 			var rawKnowledgeBodies []string
 			if c.ExpectedSkill == "diagnose_port_firewall" || c.ExpectedSkill == "diagnose_gpu_not_detected" {
 				raw := "For service ports, first verify the instance is Running, then compare exposed software ports."

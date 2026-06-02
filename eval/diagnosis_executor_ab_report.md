@@ -12,15 +12,15 @@ Purpose: decide whether `USE_SKILL_EXECUTOR` can be widened or defaulted on for 
 go build -o agent.exe ./cmd
 powershell -NoProfile -ExecutionPolicy Bypass -File .\eval\diagnosis_executor_ab.ps1 `
   -Runs 5 `
-  -Tag ab-after-final-redaction `
+  -Tag ab-after-structured-context `
   -UHostId <UHOST_ID> `
-  -ReportPath "$env:TEMP\diagnosis-executor-ab-after-final-redaction.json"
+  -ReportPath "$env:TEMP\diagnosis-executor-ab-after-structured-context.json"
 ```
 
 Trace directory:
 
 ```text
-C:\Users\23843\AppData\Local\Temp\compshare-diagnosis-ab-ab-after-final-redaction-20260603-041801
+C:\Users\23843\AppData\Local\Temp\compshare-diagnosis-ab-ab-after-structured-context-20260603-044635
 ```
 
 The committed report redacts instance IDs, IP addresses, and access tokens.
@@ -39,9 +39,9 @@ Default-on recommendation from the gate script: **yes** for a controlled allowli
 
 | Config | Runs | Intent hit | Expected action hit | Process success | Raw evidence leaks | Mutating calls | Control misroutes | No-target extra tool runs | Body-read misses | Access-token replies | Avg latency ms | Avg tokens |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `off` | 35 | 1.0000 | 1.0000 | 1.0000 | 0 | 0 | 0 | 0 | 0 | 0 | 8975 | 12453 |
-| `on_port_only` | 35 | 1.0000 | 1.0000 | 1.0000 | 0 | 0 | 0 | 0 | 0 | 0 | 9201 | 13062 |
-| `on_port_gpu` | 35 | 1.0000 | 1.0000 | 1.0000 | 0 | 0 | 0 | 0 | 0 | 0 | 9733 | 13960 |
+| `off` | 35 | 1.0000 | 1.0000 | 1.0000 | 0 | 0 | 0 | 0 | 0 | 0 | 8603 | 12779 |
+| `on_port_only` | 35 | 1.0000 | 1.0000 | 1.0000 | 0 | 0 | 0 | 0 | 0 | 0 | 8908 | 12733 |
+| `on_port_gpu` | 35 | 1.0000 | 1.0000 | 1.0000 | 0 | 0 | 0 | 0 | 0 | 0 | 10494 | 13474 |
 
 ## Per-Case Findings
 

@@ -3444,17 +3444,8 @@ func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string
 		onStep(StepEvent{Type: typ, Action: toolName, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 	}
 
-	seed := map[string]any{}
-	if uid, _ := args["UHostId"].(string); uid != "" {
-		seed["UHostId"] = uid
-	}
-	if svc, _ := args["Service"].(string); svc != "" {
-		seed["Service"] = svc
-	}
 	evidenceLedger, evidenceHits := e.recordDiagnosisKnowledgeProbe(skillName, e.lastUserMsg, onStep)
-	if !evidenceLedger.Empty() {
-		seed["EvidenceLedger"] = evidenceLedger
-	}
+	seed := buildDiagnosisSkillSeed(skillName, args, evidenceLedger)
 
 	reply, rerr := orchestrator.RunReadOnlySkill(ctx, e.lastUserMsg, seed, orchestrator.SkillExecOptions{
 		Body:      body,
