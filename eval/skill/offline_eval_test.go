@@ -11,15 +11,16 @@
 //     excludes the declared keywords. This is the "选得出来但做不了" guard.
 //
 //   - TestSelectionSkillEval (selection_eval_test.go) — the OPT-IN real-model layer
-//     (-model flag, not CI-gated). It runs the real planner on the raw question to
-//     measure skill-hit / wrong-skill rate, including the overlapping-skill subset
+//     (-skillmodel flag, not CI-gated). It runs the real planner on the raw question
+//     to measure skill-hit / wrong-skill rate, including the overlapping-skill subset
 //     that is the R4 (description-driven selection) trigger. Real model selection
 //     quality cannot be CI-stable, so it is measured on demand like TestEval.
 //
 // Why the split: the skill-hit / wrong-skill metric is inherently a classifier
 // signal. Forcing it into CI with a tuned heuristic would be tautological. So CI
-// gates the deterministic wiring (4 metrics); the real classifier quality (the
-// 5th metric, the R4 trigger) is the opt-in layer.
+// gates the deterministic wiring (the 6 offline metrics: skill-derivation,
+// expected-tool, forbidden/mutating-clean, no-extra-tool, tool-arg, reply-keyword);
+// the classifier quality (skill-hit / wrong-skill + the R4 trigger) is the opt-in layer.
 package skill_eval
 
 import (
