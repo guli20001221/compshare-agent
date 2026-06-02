@@ -29,8 +29,13 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 		log.Printf("warning: ignoring unknown USE_SKILL_EXECUTOR value %q", unknownSkillExecutor)
 	}
 	engine.SetSkillExecutorEnabled(useSkillExecutor)
+	diagnosisPilots, unknownDiagnosisPilots := skillExecutorDiagnosisPilotsFromEnv(getenv)
+	for _, value := range unknownDiagnosisPilots {
+		log.Printf("warning: ignoring unknown USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS value %q", value)
+	}
+	engine.SetSkillExecutorDiagnosisPilots(diagnosisPilots)
 	if useSkillExecutor {
-		log.Printf("runtime: HTTP skill executor enabled (USE_SKILL_EXECUTOR=1)")
+		log.Printf("runtime: HTTP skill executor enabled (USE_SKILL_EXECUTOR=1, diagnosis_pilots=%v)", diagnosisPilots)
 	}
 	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
 		Capacity:             cfg.Agent.HTTP.PoolCapacity,

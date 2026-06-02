@@ -345,6 +345,30 @@ func TestUseSkillExecutorFromEnv(t *testing.T) {
 	require.Equal(t, "true", unknown)
 }
 
+func TestSkillExecutorDiagnosisPilotsFromEnv(t *testing.T) {
+	pilots, unknown := skillExecutorDiagnosisPilotsFromEnv(func(string) string { return "" })
+	require.Empty(t, pilots)
+	require.Empty(t, unknown)
+
+	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
+		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
+			return " diagnose_port_firewall,diagnose_ssh "
+		}
+		return ""
+	})
+	require.Equal(t, []string{"diagnose_port_firewall", "diagnose_ssh"}, pilots)
+	require.Empty(t, unknown)
+
+	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
+		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
+			return "diagnose_port_firewall,typo"
+		}
+		return ""
+	})
+	require.Equal(t, []string{"diagnose_port_firewall"}, pilots)
+	require.Equal(t, []string{"typo"}, unknown)
+}
+
 func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
 	enabled, unknown := knowledgeRetrievalModeFromEnv(func(string) string { return "" })
 	if !enabled || unknown != "" {

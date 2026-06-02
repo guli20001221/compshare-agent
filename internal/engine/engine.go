@@ -3243,8 +3243,9 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		}
 	}
 
-	// P2/P3b pilot (USE_SKILL_EXECUTOR, default off): route a piloted diagnosis
-	// skill through the body-driven orchestrator loop instead of the Go chain.
+	// P2/P3b pilot (USE_SKILL_EXECUTOR, default off): route an explicitly
+	// allowlisted diagnosis skill through the body-driven orchestrator loop
+	// instead of the Go chain.
 	// Placed AFTER the DiagnoseInitFailure guards above on purpose: the body
 	// executor must be gated by the same vague-symptom / instance-disambiguation
 	// safety net as the Go chain — running it earlier (as P2a did, when only the
@@ -3252,11 +3253,9 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	// DiagnoseInitFailure bypass those guards. runDiagnosisSkill returns
 	// handled=false when the skill cannot load or cannot complete, so we degrade
 	// to the shipped chain rather than failing the turn.
-	if skillExecutorEnabled {
-		if skillName, piloted := pilotSkillForDiagnosis(action); piloted {
-			if reply, handled := e.runDiagnosisSkill(ctx, skillName, action, args, onStep); handled {
-				return reply
-			}
+	if skillName, piloted := diagnosisSkillExecutorPilotForAction(action); piloted {
+		if reply, handled := e.runDiagnosisSkill(ctx, skillName, action, args, onStep); handled {
+			return reply
 		}
 	}
 
@@ -3311,10 +3310,19 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 }
 
 // skillExecutorEnabled is the process-global, boot-only USE_SKILL_EXECUTOR gate.
-// Default off: agent-lane diagnosis runs the shipped Go chain. When on, piloted
-// skills route through the body-driven orchestrator.RunReadOnlySkill loop.
-// Boot-only — flips need a restart.
+// Default off: agent-lane diagnosis runs the shipped Go chain. When on, only
+// explicitly allowlisted diagnosis skills route through the body-driven
+// orchestrator.RunReadOnlySkill loop. Boot-only: flips need a restart.
 var skillExecutorEnabled bool
+var skillExecutorDiagnosisPilots = map[string]struct{}{}
+
+var knownDiagnosisSkillExecutorPilots = []string{
+	"diagnose_ssh",
+	"diagnose_init_failure",
+	"diagnose_gpu_not_detected",
+	"diagnose_image_issue",
+	"diagnose_port_firewall",
+}
 
 // SetSkillExecutorEnabled flips the USE_SKILL_EXECUTOR gate at boot.
 func SetSkillExecutorEnabled(enabled bool) { skillExecutorEnabled = enabled }
@@ -3322,15 +3330,68 @@ func SetSkillExecutorEnabled(enabled bool) { skillExecutorEnabled = enabled }
 // SkillExecutorEnabled reports the current gate (runtime trace lines / tests).
 func SkillExecutorEnabled() bool { return skillExecutorEnabled }
 
+// SetSkillExecutorDiagnosisPilots sets the boot-only per-skill gray list for
+// diagnosis skill execution. Unknown names are ignored; cmd env parsing reports
+// them before calling this setter.
+func SetSkillExecutorDiagnosisPilots(skillNames []string) {
+	next := map[string]struct{}{}
+	for _, name := range skillNames {
+		if isKnownDiagnosisSkillExecutorPilot(name) {
+			next[name] = struct{}{}
+		}
+	}
+	skillExecutorDiagnosisPilots = next
+}
+
+// SkillExecutorDiagnosisPilots reports the active diagnosis skill gray list in a
+// stable order.
+func SkillExecutorDiagnosisPilots() []string {
+	out := make([]string, 0, len(skillExecutorDiagnosisPilots))
+	for _, name := range knownDiagnosisSkillExecutorPilots {
+		if _, ok := skillExecutorDiagnosisPilots[name]; ok {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// KnownDiagnosisSkillExecutorPilots returns every diagnosis skill that can be
+// allowlisted for the body-driven diagnosis executor.
+func KnownDiagnosisSkillExecutorPilots() []string {
+	return append([]string(nil), knownDiagnosisSkillExecutorPilots...)
+}
+
+func isKnownDiagnosisSkillExecutorPilot(name string) bool {
+	for _, known := range knownDiagnosisSkillExecutorPilots {
+		if name == known {
+			return true
+		}
+	}
+	return false
+}
+
+func diagnosisSkillExecutorPilotForAction(action string) (string, bool) {
+	if !skillExecutorEnabled {
+		return "", false
+	}
+	skillName, piloted := pilotSkillForDiagnosis(action)
+	if !piloted {
+		return "", false
+	}
+	if _, ok := skillExecutorDiagnosisPilots[skillName]; !ok {
+		return "", false
+	}
+	return skillName, true
+}
+
 // pilotSkillForDiagnosis maps a diagnosis tool action to the agent-tier skill the
-// body-driven executor pilot runs in its place. P3b-1 extends the P2a pilot (which
-// covered only DiagnosePortOrFirewall) to all FIVE read-only diagnosis actions, so
-// every read-only Diagnose* runs body-driven when USE_SKILL_EXECUTOR is on. Note
-// the action names are the registered tool names (DiagnoseGPU, not the skill's
+// body-driven executor may run in its place. Runtime activation is separately
+// gated by USE_SKILL_EXECUTOR plus the per-skill allowlist above. The action
+// names are registered tool names (DiagnoseGPU, not the skill's
 // diagnose_gpu_not_detected). DiagnoseBilling is deliberately excluded — it has no
 // skill and stays on the shipped Go chain. The map is pinned by
-// TestPilotSkillForDiagnosis_* so it can't silently widen to a mutating or unmapped
-// action.
+// TestPilotSkillForDiagnosis_* so it cannot silently widen to a mutating or
+// unmapped action.
 func pilotSkillForDiagnosis(action string) (string, bool) {
 	switch action {
 	case "DiagnoseSSH":
