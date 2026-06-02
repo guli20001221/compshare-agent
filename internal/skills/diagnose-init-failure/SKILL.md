@@ -1,6 +1,9 @@
 ---
-name: diagnose_init_failure
+name: diagnose-init-failure
 description: Use this skill when user reports CompShare instance stuck in Install / Install Fail state, or instance not starting after creation, and needs read-only platform-side triage
+license: UNLICENSED
+compatibility: CompShare diagnosis executor; read-only CompShare API tools only; no direct SSH or shell access.
+allowed-tools: DescribeCompShareInstance
 metadata:
   triggers:
     - "实例没启动"
@@ -11,8 +14,6 @@ metadata:
   applicable_tiers: [agent]
   required_tools:
     - DescribeCompShareInstance
-  related_skills:
-    - safety_warning
   body_cap_lines: 100
   verification_status: unverified
   field_refs_verified: false

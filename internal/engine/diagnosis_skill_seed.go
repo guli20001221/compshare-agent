@@ -74,15 +74,15 @@ func stringArg(args map[string]any, key string) string {
 
 func diagnosisSymptomType(skillName string) string {
 	switch skillName {
-	case "diagnose_ssh":
+	case "diagnose-ssh":
 		return "ssh"
-	case "diagnose_init_failure":
+	case "diagnose-init-failure":
 		return "init_failure"
-	case "diagnose_gpu_not_detected":
+	case "diagnose-gpu-not-detected":
 		return "gpu_not_detected"
-	case "diagnose_image_issue":
+	case "diagnose-image-issue":
 		return "image_issue"
-	case "diagnose_port_firewall":
+	case "diagnose-port-firewall":
 		return "port_firewall"
 	default:
 		return strings.TrimSpace(skillName)
@@ -91,15 +91,15 @@ func diagnosisSymptomType(skillName string) string {
 
 func diagnosisNextStepExpectation(skillName string) string {
 	switch skillName {
-	case "diagnose_ssh":
+	case "diagnose-ssh":
 		return "Use read-only instance state and monitor evidence before explaining SSH authentication or reachability checks."
-	case "diagnose_init_failure":
+	case "diagnose-init-failure":
 		return "Use read-only instance state before explaining initialization status and next safe action."
-	case "diagnose_gpu_not_detected":
+	case "diagnose-gpu-not-detected":
 		return "Use read-only instance and monitor evidence before distinguishing cloud GPU state from in-instance CUDA or driver issues."
-	case "diagnose_image_issue":
+	case "diagnose-image-issue":
 		return "Use read-only instance image facts before explaining dependency or environment checks."
-	case "diagnose_port_firewall":
+	case "diagnose-port-firewall":
 		return "Use read-only instance and service-port evidence before explaining public reachability checks."
 	default:
 		return "Use only read-only evidence before giving the next diagnostic step."

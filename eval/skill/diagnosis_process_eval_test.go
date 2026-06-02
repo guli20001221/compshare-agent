@@ -101,11 +101,11 @@ func TestDiagnosisProcessEval(t *testing.T) {
 				"NextStepExpectation": "Use read-only evidence before giving the next diagnostic step.",
 			}
 			var rawKnowledgeBodies []string
-			if c.ExpectedSkill == "diagnose_port_firewall" || c.ExpectedSkill == "diagnose_gpu_not_detected" {
+			if c.ExpectedSkill == "diagnose-port-firewall" || c.ExpectedSkill == "diagnose-gpu-not-detected" {
 				raw := "For service ports, first verify the instance is Running, then compare exposed software ports."
 				title := "Service port reachability"
 				chunkID := "runbook-port-eval"
-				if c.ExpectedSkill == "diagnose_gpu_not_detected" {
+				if c.ExpectedSkill == "diagnose-gpu-not-detected" {
 					raw = "If nvidia-smi cannot see the GPU, first confirm the cloud instance has GPU assigned."
 					title = "GPU runtime troubleshooting"
 					chunkID = "runbook-gpu-eval"
@@ -150,11 +150,11 @@ func TestDiagnosisProcessEval(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"diagnose_ssh",
-		"diagnose_init_failure",
-		"diagnose_gpu_not_detected",
-		"diagnose_image_issue",
-		"diagnose_port_firewall",
+		"diagnose-ssh",
+		"diagnose-init-failure",
+		"diagnose-gpu-not-detected",
+		"diagnose-image-issue",
+		"diagnose-port-firewall",
 	} {
 		assert.Truef(t, covered[want], "diagnosis process eval has no case for %s", want)
 	}
@@ -209,13 +209,13 @@ func TestDiagnosisProcessEval_AllTrueSkillsAreCovered(t *testing.T) {
 	}
 	sort.Strings(names)
 	require.Equal(t, []string{
-		"diagnose_gpu_not_detected",
-		"diagnose_image_issue",
-		"diagnose_init_failure",
-		"diagnose_port_firewall",
-		"diagnose_ssh",
+		"diagnose-gpu-not-detected",
+		"diagnose-image-issue",
+		"diagnose-init-failure",
+		"diagnose-port-firewall",
+		"diagnose-ssh",
 	}, names)
 	for _, name := range names {
-		assert.True(t, strings.HasPrefix(name, "diagnose_"))
+		assert.True(t, strings.HasPrefix(name, "diagnose-"))
 	}
 }

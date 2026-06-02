@@ -44,7 +44,7 @@
 - Control cases are clean:
   - `怎么加速github下载`: knowledge_qa 5/5.
   - `下载模型特别慢怎么办`: knowledge_qa 5/5.
-- `diagnose_port_firewall` true-skill loop is implemented and gated:
+- `diagnose-port-firewall` true-skill loop is implemented and gated:
   - global gate: `USE_SKILL_EXECUTOR`
   - per-skill gate: `USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS`
   - current safe evidence adapter injects `EvidenceLedger`, not raw `KBChunk.Content`.
@@ -431,7 +431,7 @@ git commit -m "fix(planner): route no-target symptoms to diagnosis"
 
 ---
 
-## Phase 2: Prove `diagnose_port_firewall` True-Skill Loop With Live CLI
+## Phase 2: Prove `diagnose-port-firewall` True-Skill Loop With Live CLI
 
 **Purpose:** prove the body-read diagnosis path is not just implemented, but works safely on live CLI.
 
@@ -456,7 +456,7 @@ Create cases:
     "id": "port_no_target",
     "question": "为什么我开的端口在外面访问不了",
     "expect_intent": "diagnosis",
-    "expect_skill": "diagnose_port_firewall",
+    "expect_skill": "diagnose-port-firewall",
     "expect_retrieval": true,
     "expect_tools": ["SearchKnowledge", "DescribeCompShareInstance"],
     "forbid_mutating": true
@@ -465,7 +465,7 @@ Create cases:
     "id": "port_strong_symptom",
     "question": "我部署的服务外网打不开",
     "expect_intent": "diagnosis",
-    "expect_skill": "diagnose_port_firewall",
+    "expect_skill": "diagnose-port-firewall",
     "expect_retrieval": true,
     "expect_tools": ["SearchKnowledge", "DescribeCompShareInstance"],
     "forbid_mutating": true
@@ -500,7 +500,7 @@ The runner must support:
 
 - case file input.
 - `-SkillExec 1`.
-- `USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS=diagnose_port_firewall`.
+- `USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS=diagnose-port-firewall`.
 - project `org-cwy2qk`.
 - trace directory per case.
 - JSON summary output.
@@ -512,7 +512,7 @@ Required environment:
 $env:COMPSHARE_PROJECT_ID="org-cwy2qk"
 $env:COMPSHARE_ENABLE_MUTATING_TOOLS=""
 $env:USE_SKILL_EXECUTOR="1"
-$env:USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS="diagnose_port_firewall"
+$env:USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS="diagnose-port-firewall"
 $env:COMPSHARE_TRACE_ENABLED="1"
 ```
 
@@ -558,7 +558,7 @@ Then run with executor on:
 
 ```powershell
 $env:USE_SKILL_EXECUTOR="1"
-$env:USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS="diagnose_port_firewall"
+$env:USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS="diagnose-port-firewall"
 powershell -ExecutionPolicy Bypass -File .\eval\diagnosis_true_skill_live_smoke.ps1 -SkillExec 1 -Runs 3 -Tag port-firewall-on
 ```
 
@@ -596,7 +596,7 @@ Only commit the report if it is de-identified and contains no secrets or live re
 
 ---
 
-## Phase 3: Extend Safe RAG Evidence To `diagnose_gpu_not_detected`
+## Phase 3: Extend Safe RAG Evidence To `diagnose-gpu-not-detected`
 
 **Purpose:** apply the proven evidence adapter to the second highest-value diagnosis symptom: GPU not detected.
 
@@ -607,11 +607,11 @@ Only commit the report if it is de-identified and contains no secrets or live re
 - Modify: `internal/engine/skill_executor_pilot_test.go`
 - Modify: `eval/skill/diagnosis_process_eval_test.go`
 - Modify: `eval/diagnosis_true_skill_live_cases.json`
-- Possibly modify: `internal/skills/diagnose_gpu_not_detected/SKILL.md`
+- Possibly modify: `internal/skills/diagnose-gpu-not-detected/SKILL.md`
 
 **Step 1: Write failing unit test**
 
-Add a test that `diagnose_gpu_not_detected`:
+Add a test that `diagnose-gpu-not-detected`:
 
 - probes knowledge when skill executor is on and allowlisted.
 - receives `EvidenceLedger`.
@@ -638,8 +638,8 @@ func diagnosisSkillUsesKnowledgeEvidence(skillName string) bool
 so it returns true for:
 
 ```text
-diagnose_port_firewall
-diagnose_gpu_not_detected
+diagnose-port-firewall
+diagnose-gpu-not-detected
 ```
 
 Do not broaden it to all diagnosis skills yet.
@@ -688,7 +688,7 @@ Then run:
 
 ```powershell
 $env:USE_SKILL_EXECUTOR="1"
-$env:USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS="diagnose_gpu_not_detected"
+$env:USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS="diagnose-gpu-not-detected"
 $env:COMPSHARE_ENABLE_MUTATING_TOOLS=""
 "跑模型的时候说找不到GPU`nexit" | .\agent.exe cli -c .\deploy\conf\agent.yaml
 ```
@@ -780,7 +780,7 @@ First widen only the allowlist:
 
 ```text
 USE_SKILL_EXECUTOR=1
-USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS=diagnose_port_firewall,diagnose_gpu_not_detected,...
+USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS=diagnose-port-firewall,diagnose-gpu-not-detected,...
 ```
 
 Do not flip global default until a second PR proves this in live CLI.

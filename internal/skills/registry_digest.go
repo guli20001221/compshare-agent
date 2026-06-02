@@ -12,7 +12,7 @@ import (
 // constant whenever the skill set legitimately changes — regenerate via
 // `go generate ./internal/skills`, then paste the new digest (the
 // TestGeneratedRegistry_DigestPinned failure prints the computed value).
-const generatedRegistryDigestExpected = "f45ca2907501053a8a282e69a5a4c44f8944a2772d3c7a948fcc6da41e33de14"
+const generatedRegistryDigestExpected = "5a25222befd4ab7c6daec6fa175efcd7c41cd951f9d452be04188fb2ed60b5c1"
 
 // computeRegistryDigest returns the LF-normalized sha256 of the generated
 // registry source, so the pin is byte-stable across CRLF/LF checkouts (mirrors

@@ -6,7 +6,7 @@ param(
     [string]$CasesPath = "",
     [string]$ReportPath = "",
     [string]$SkillExec = "1",
-    [string]$SkillAllowlist = "diagnose_port_firewall",
+    [string]$SkillAllowlist = "diagnose-port-firewall",
     [string]$UHostId = ""
 )
 
@@ -152,9 +152,9 @@ foreach ($case in $cases) {
         }
         $expectedDiagnosisTool = [string]$case.expect_diagnosis_tool
         if (-not $expectedDiagnosisTool) {
-            if ([string]$case.expect_skill -eq "diagnose_port_firewall") {
+            if ([string]$case.expect_skill -eq "diagnose-port-firewall") {
                 $expectedDiagnosisTool = "DiagnosePortOrFirewall"
-            } elseif ([string]$case.expect_skill -eq "diagnose_gpu_not_detected") {
+            } elseif ([string]$case.expect_skill -eq "diagnose-gpu-not-detected") {
                 $expectedDiagnosisTool = "DiagnoseGPU"
             }
         }

@@ -1,8 +1,9 @@
-# check_skill_names.ps1 — pre-commit gate (ADR-004 §69).
+# check_skill_names.ps1 — pre-commit gate (Phase 8 SKILL.md standard).
 # Asserts every internal/skills/<dir>/SKILL.md frontmatter `name` equals its
-# directory name and matches the snake_case pattern [a-z][a-z0-9_]*[a-z0-9] (1-64
-# chars). The authoritative gate is `go test ./internal/skills` (ParseSkillFile);
-# this is the fast local guard.
+# directory name and matches the Agent Skills portable name pattern:
+# lowercase letters, digits, and single hyphens; no leading/trailing/consecutive
+# hyphen; 1-64 chars. The authoritative gate is `go test ./internal/skills`
+# (ParseSkillFile); this is the fast local guard.
 
 $ErrorActionPreference = "Stop"
 $root = (git rev-parse --show-toplevel).Trim()
@@ -36,8 +37,8 @@ foreach ($dir in Get-ChildItem -LiteralPath $skillsDir -Directory) {
         Write-Host "FAIL $($dir.Name): name `"$name`" != directory name"
         $violations++
     }
-    if ($name.Length -gt 64 -or ($name -notmatch '^[a-z][a-z0-9_]*[a-z0-9]$')) {
-        Write-Host "FAIL $($dir.Name): name `"$name`" is not snake_case [a-z][a-z0-9_]*[a-z0-9] (1-64)"
+    if ($name.Length -gt 64 -or ($name -notmatch '^[a-z0-9]+(-[a-z0-9]+)*$')) {
+        Write-Host "FAIL $($dir.Name): name `"$name`" must use lowercase letters, digits, and single hyphens (1-64)"
         $violations++
     }
 }

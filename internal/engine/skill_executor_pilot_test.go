@@ -26,7 +26,7 @@ func TestExecuteDiagnosis_FlagOn_RoutesThroughSkillExecutor(t *testing.T) {
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
 	prevPilots := SkillExecutorDiagnosisPilots()
-	SetSkillExecutorDiagnosisPilots([]string{"diagnose_port_firewall"})
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose-port-firewall"})
 	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	exec := &mockExecutor{results: map[string]map[string]any{
@@ -61,7 +61,7 @@ func TestExecuteDiagnosis_PortFirewallInjectsSafeKnowledgeLedgerOnly(t *testing.
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
 	prevPilots := SkillExecutorDiagnosisPilots()
-	SetSkillExecutorDiagnosisPilots([]string{"diagnose_port_firewall"})
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose-port-firewall"})
 	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	chunk := knowledge.KBChunk{
@@ -128,7 +128,7 @@ func TestExecuteDiagnosis_PortFirewallRejectsRawKnowledgeLeakAndFallsBack(t *tes
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
 	prevPilots := SkillExecutorDiagnosisPilots()
-	SetSkillExecutorDiagnosisPilots([]string{"diagnose_port_firewall"})
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose-port-firewall"})
 	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	rawContent := "For service ports, first verify the instance is Running, then compare exposed software ports."
@@ -190,7 +190,7 @@ func TestExecuteDiagnosis_GPUNotDetectedInjectsSafeKnowledgeLedgerOnly(t *testin
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
 	prevPilots := SkillExecutorDiagnosisPilots()
-	SetSkillExecutorDiagnosisPilots([]string{"diagnose_gpu_not_detected"})
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose-gpu-not-detected"})
 	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	chunk := knowledge.KBChunk{
@@ -249,7 +249,7 @@ func TestExecuteDiagnosis_GPUNotDetectedRejectsRawKnowledgeLeakAndFallsBack(t *t
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
 	prevPilots := SkillExecutorDiagnosisPilots()
-	SetSkillExecutorDiagnosisPilots([]string{"diagnose_gpu_not_detected"})
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose-gpu-not-detected"})
 	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	rawContent := "If nvidia-smi cannot see the GPU, first confirm the cloud instance has GPU assigned."
@@ -313,7 +313,7 @@ func TestExecuteDiagnosis_RAGAsEvidenceDoesNotApplyToSSH(t *testing.T) {
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
 	prevPilots := SkillExecutorDiagnosisPilots()
-	SetSkillExecutorDiagnosisPilots([]string{"diagnose_ssh"})
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose-ssh"})
 	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	chunk := knowledge.KBChunk{ChunkID: "ssh-001", KBVersion: "kb.test", Title: "SSH", Content: "SSH docs"}
@@ -398,7 +398,7 @@ func TestExecuteDiagnosis_FlagOn_SkillExecutorFailureFallsBackToGoChain(t *testi
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
 	prevPilots := SkillExecutorDiagnosisPilots()
-	SetSkillExecutorDiagnosisPilots([]string{"diagnose_port_firewall"})
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose-port-firewall"})
 	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	exec := &mockExecutor{results: map[string]map[string]any{
@@ -445,11 +445,11 @@ func TestExecuteDiagnosis_FlagOn_SkillExecutorFailureFallsBackToGoChain(t *testi
 // pilot silently widen to a mutating or unmapped action when the map is edited.
 func TestPilotSkillForDiagnosis_MapsExactlyReadOnlyDiagnoseActions(t *testing.T) {
 	want := map[string]string{
-		"DiagnoseSSH":            "diagnose_ssh",
-		"DiagnoseInitFailure":    "diagnose_init_failure",
-		"DiagnoseGPU":            "diagnose_gpu_not_detected",
-		"DiagnoseImageIssue":     "diagnose_image_issue",
-		"DiagnosePortOrFirewall": "diagnose_port_firewall",
+		"DiagnoseSSH":            "diagnose-ssh",
+		"DiagnoseInitFailure":    "diagnose-init-failure",
+		"DiagnoseGPU":            "diagnose-gpu-not-detected",
+		"DiagnoseImageIssue":     "diagnose-image-issue",
+		"DiagnosePortOrFirewall": "diagnose-port-firewall",
 	}
 	for action, skill := range want {
 		got, piloted := pilotSkillForDiagnosis(action)
@@ -498,10 +498,10 @@ func TestDiagnosisSkillExecutorPilotForAction_RequiresExplicitAllowlist(t *testi
 	assert.False(t, ok, "global flag alone must not pilot diagnosis skills")
 	assert.Empty(t, got)
 
-	SetSkillExecutorDiagnosisPilots([]string{"diagnose_port_firewall"})
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose-port-firewall"})
 	got, ok = diagnosisSkillExecutorPilotForAction("DiagnosePortOrFirewall")
 	assert.True(t, ok)
-	assert.Equal(t, "diagnose_port_firewall", got)
+	assert.Equal(t, "diagnose-port-firewall", got)
 
 	got, ok = diagnosisSkillExecutorPilotForAction("DiagnoseSSH")
 	assert.False(t, ok, "only explicitly allowlisted diagnosis skills may pilot")
@@ -520,7 +520,7 @@ func TestExecuteDiagnosis_FlagOn_InitFailureGuardStillGates(t *testing.T) {
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
 	prevPilots := SkillExecutorDiagnosisPilots()
-	SetSkillExecutorDiagnosisPilots([]string{"diagnose_init_failure"})
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose-init-failure"})
 	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	exec := &mockExecutor{results: map[string]map[string]any{
@@ -554,7 +554,7 @@ func TestExecuteDiagnosis_FlagOn_InitFailureGuardPasses_RoutesThroughExecutor(t 
 	SetSkillExecutorEnabled(true)
 	defer SetSkillExecutorEnabled(prev)
 	prevPilots := SkillExecutorDiagnosisPilots()
-	SetSkillExecutorDiagnosisPilots([]string{"diagnose_init_failure"})
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose-init-failure"})
 	defer SetSkillExecutorDiagnosisPilots(prevPilots)
 
 	exec := &mockExecutor{results: map[string]map[string]any{

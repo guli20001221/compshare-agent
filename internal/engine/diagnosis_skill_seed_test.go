@@ -22,7 +22,7 @@ func TestBuildDiagnosisSkillSeedStructuresGroundedContext(t *testing.T) {
 		Kept:  true,
 	}}, knowledge.DefaultEvidenceLedgerMaxItems)
 
-	seed := buildDiagnosisSkillSeed("diagnose_gpu_not_detected", map[string]any{
+	seed := buildDiagnosisSkillSeed("diagnose-gpu-not-detected", map[string]any{
 		"UHostId": " uhost-diag-001 ",
 		"Service": " JupyterLab ",
 	}, ledger)
@@ -48,7 +48,7 @@ func TestBuildDiagnosisSkillSeedStructuresGroundedContext(t *testing.T) {
 }
 
 func TestBuildDiagnosisSkillSeedOmitsUnknownTargetAndEmptyEvidence(t *testing.T) {
-	seed := buildDiagnosisSkillSeed("diagnose_port_firewall", nil, knowledge.EvidenceLedger{})
+	seed := buildDiagnosisSkillSeed("diagnose-port-firewall", nil, knowledge.EvidenceLedger{})
 
 	assert.Equal(t, "port_firewall", seed["SymptomType"])
 	assert.Contains(t, seed["NextStepExpectation"], "read-only")

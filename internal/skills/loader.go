@@ -3,7 +3,7 @@
 // markdown body with progressive disclosure (name/description eager, body lazy).
 //
 // Current scope: this package owns true body-read skills, currently the 5
-// seeded diagnose_* skills. Deterministic read-only routes live under
+// seeded diagnose-* skills. Deterministic read-only routes live under
 // internal/routing/*/route.yaml and are not loaded as skills. The engine reads
 // skill bodies only behind USE_SKILL_EXECUTOR plus the diagnosis allowlist.
 //
@@ -85,9 +85,10 @@ const (
 	ProvenanceAgentCreated            = "agent_created"
 )
 
-// skillNameRE enforces the ADR-004 name charset decision: snake_case, not the
-// Anthropic kebab-case, for Go-package alignment.
-var skillNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]*[a-z0-9]$`)
+// skillNameRE enforces the Anthropic SKILL.md name shape used by portable skill
+// bundles: lowercase letters, digits, and single hyphens; no leading/trailing
+// hyphen and no consecutive hyphens.
+var skillNameRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // SkillPlannerExample is one Stage-2C routing example carried in the optional
 // routing block (route dialect). Tagged for both YAML (on-disk) and the
@@ -110,6 +111,9 @@ type Skill struct {
 	// ADR-004 core frontmatter (shared by both dialects).
 	Name            string
 	Description     string
+	License         string
+	Compatibility   string
+	AllowedTools    string
 	Triggers        []string
 	ApplicableTiers []string
 	RequiredTools   []string
@@ -120,7 +124,7 @@ type Skill struct {
 	VerificationStatus string
 	FieldRefsVerified  bool
 
-	// Optional routing block (route dialect, B2b section 3). The 5 diagnose_*
+	// Optional routing block (route dialect, B2b section 3). The 5 diagnose-*
 	// skills omit all of these; that is valid; KnownFields(true) rejects only
 	// unknown keys, not missing optional ones.
 	IntentLabel       string
@@ -164,9 +168,12 @@ type Skill struct {
 // absence (nil) is distinguishable from an explicit false; both
 // verification_status and field_refs_verified are mandatory with no default.
 type skillFrontmatter struct {
-	Name        string        `yaml:"name"`
-	Description string        `yaml:"description"`
-	Metadata    skillMetadata `yaml:"metadata"`
+	Name          string        `yaml:"name"`
+	Description   string        `yaml:"description"`
+	License       string        `yaml:"license"`
+	Compatibility string        `yaml:"compatibility"`
+	AllowedTools  string        `yaml:"allowed-tools"`
+	Metadata      skillMetadata `yaml:"metadata"`
 }
 
 type skillMetadata struct {
@@ -252,8 +259,8 @@ func NewLoaderWithLogger(root string, logger *log.Logger) (*Loader, error) {
 		s.bodyFS = rootFS
 		loaded[s.Name] = s
 	}
-	// Dangling related_skills are forward references (e.g. safety_warning is not
-	// authored yet); warn, never fail (B2b section 4).
+	// Dangling related_skills are forward references; warn, never fail (B2b
+	// section 4).
 	for _, name := range sortedNames(loaded) {
 		for _, rel := range loaded[name].RelatedSkills {
 			if _, ok := loaded[rel]; !ok {
@@ -287,13 +294,19 @@ func ParseSkillFile(path string) (*Skill, error) {
 		return nil, fmt.Errorf("name must be non-empty")
 	}
 	if len(raw.Name) > 64 || !skillNameRE.MatchString(raw.Name) {
-		return nil, fmt.Errorf("name %q must match [a-z][a-z0-9_]*[a-z0-9] and be 1-64 chars", raw.Name)
+		return nil, fmt.Errorf("name %q must be 1-64 chars using lowercase letters, digits, and hyphens (no leading/trailing/consecutive hyphen)", raw.Name)
 	}
 	if dir := filepath.Base(filepath.Dir(path)); raw.Name != dir {
 		return nil, fmt.Errorf("name %q must equal directory name %q (ADR-004 section 66)", raw.Name, dir)
 	}
 	if strings.TrimSpace(raw.Description) == "" {
 		return nil, fmt.Errorf("skill %q: description must be non-empty", raw.Name)
+	}
+	if len(raw.Description) > 1024 {
+		return nil, fmt.Errorf("skill %q: description must be <= 1024 chars", raw.Name)
+	}
+	if len(raw.Compatibility) > 500 {
+		return nil, fmt.Errorf("skill %q: compatibility must be <= 500 chars", raw.Name)
 	}
 	meta := raw.Metadata
 	switch meta.VerificationStatus {
@@ -327,6 +340,9 @@ func ParseSkillFile(path string) (*Skill, error) {
 	return &Skill{
 		Name:                 raw.Name,
 		Description:          raw.Description,
+		License:              raw.License,
+		Compatibility:        raw.Compatibility,
+		AllowedTools:         raw.AllowedTools,
 		Triggers:             meta.Triggers,
 		ApplicableTiers:      meta.ApplicableTiers,
 		RequiredTools:        meta.RequiredTools,

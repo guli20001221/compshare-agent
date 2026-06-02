@@ -79,6 +79,15 @@ func writeSkillLiteral(b *strings.Builder, s *Skill) {
 	field := func(name, lit string) { fmt.Fprintf(b, "%s: %s,\n", name, lit) }
 	field("Name", strconv.Quote(s.Name))
 	field("Description", strconv.Quote(s.Description))
+	if s.License != "" {
+		field("License", strconv.Quote(s.License))
+	}
+	if s.Compatibility != "" {
+		field("Compatibility", strconv.Quote(s.Compatibility))
+	}
+	if s.AllowedTools != "" {
+		field("AllowedTools", strconv.Quote(s.AllowedTools))
+	}
 	if len(s.Triggers) > 0 {
 		field("Triggers", quoteSlice(s.Triggers))
 	}

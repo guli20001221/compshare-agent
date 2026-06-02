@@ -55,8 +55,8 @@ if ($needsUHost -and -not $UHostId) {
 
 $configs = @(
     [PSCustomObject]@{ name = "off"; skill_exec = ""; allowlist = "" },
-    [PSCustomObject]@{ name = "on_port_only"; skill_exec = "1"; allowlist = "diagnose_port_firewall" },
-    [PSCustomObject]@{ name = "on_port_gpu"; skill_exec = "1"; allowlist = "diagnose_port_firewall,diagnose_gpu_not_detected" }
+    [PSCustomObject]@{ name = "on_port_only"; skill_exec = "1"; allowlist = "diagnose-port-firewall" },
+    [PSCustomObject]@{ name = "on_port_gpu"; skill_exec = "1"; allowlist = "diagnose-port-firewall,diagnose-gpu-not-detected" }
 )
 
 $env:COMPSHARE_PROJECT_ID = "org-cwy2qk"
@@ -169,7 +169,7 @@ foreach ($cfg in $configs) {
             $searchCalls = @($toolActions | Where-Object { $_ -eq "SearchKnowledge" })
             $expectedAction = [string]$case.expect_action
             $expectedSkill = [string]$case.expect_skill
-            $expectedBodyRead = ($cfg.skill_exec -eq "1" -and (Contains-Skill $cfg.allowlist $expectedSkill) -and ($expectedSkill -eq "diagnose_port_firewall" -or $expectedSkill -eq "diagnose_gpu_not_detected"))
+            $expectedBodyRead = ($cfg.skill_exec -eq "1" -and (Contains-Skill $cfg.allowlist $expectedSkill) -and ($expectedSkill -eq "diagnose-port-firewall" -or $expectedSkill -eq "diagnose-gpu-not-detected"))
 
             $forbiddenHits = @()
             foreach ($forbidden in @($case.forbidden_text)) {

@@ -404,21 +404,30 @@ func TestSkillExecutorDiagnosisPilotsFromEnv(t *testing.T) {
 
 	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
 		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
-			return " diagnose_port_firewall,diagnose_ssh "
+			return " diagnose-port-firewall,diagnose-ssh "
 		}
 		return ""
 	})
-	require.Equal(t, []string{"diagnose_port_firewall", "diagnose_ssh"}, pilots)
+	require.Equal(t, []string{"diagnose-port-firewall", "diagnose-ssh"}, pilots)
 	require.Empty(t, unknown)
 
 	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
 		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
-			return "diagnose_port_firewall,typo"
+			return "diagnose-port-firewall,typo"
 		}
 		return ""
 	})
-	require.Equal(t, []string{"diagnose_port_firewall"}, pilots)
+	require.Equal(t, []string{"diagnose-port-firewall"}, pilots)
 	require.Equal(t, []string{"typo"}, unknown)
+
+	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
+		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
+			return "diagnose_port_firewall,diagnose_gpu_not_detected"
+		}
+		return ""
+	})
+	require.Equal(t, []string{"diagnose-port-firewall", "diagnose-gpu-not-detected"}, pilots)
+	require.Empty(t, unknown)
 }
 
 func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {

@@ -3322,11 +3322,11 @@ var skillExecutorEnabled bool
 var skillExecutorDiagnosisPilots = map[string]struct{}{}
 
 var knownDiagnosisSkillExecutorPilots = []string{
-	"diagnose_ssh",
-	"diagnose_init_failure",
-	"diagnose_gpu_not_detected",
-	"diagnose_image_issue",
-	"diagnose_port_firewall",
+	"diagnose-ssh",
+	"diagnose-init-failure",
+	"diagnose-gpu-not-detected",
+	"diagnose-image-issue",
+	"diagnose-port-firewall",
 }
 
 // SetSkillExecutorEnabled flips the USE_SKILL_EXECUTOR gate at boot.
@@ -3341,8 +3341,9 @@ func SkillExecutorEnabled() bool { return skillExecutorEnabled }
 func SetSkillExecutorDiagnosisPilots(skillNames []string) {
 	next := map[string]struct{}{}
 	for _, name := range skillNames {
-		if isKnownDiagnosisSkillExecutorPilot(name) {
-			next[name] = struct{}{}
+		canonical := canonicalDiagnosisSkillName(name)
+		if isKnownDiagnosisSkillExecutorPilot(canonical) {
+			next[canonical] = struct{}{}
 		}
 	}
 	skillExecutorDiagnosisPilots = next
@@ -3367,12 +3368,25 @@ func KnownDiagnosisSkillExecutorPilots() []string {
 }
 
 func isKnownDiagnosisSkillExecutorPilot(name string) bool {
+	name = canonicalDiagnosisSkillName(name)
 	for _, known := range knownDiagnosisSkillExecutorPilots {
 		if name == known {
 			return true
 		}
 	}
 	return false
+}
+
+// CanonicalDiagnosisSkillName maps the pre-standardization underscore spelling
+// to the Anthropic-style hyphenated skill name. This is deliberately limited to
+// the diagnosis executor allowlist surface so old deployment env vars continue
+// to work while the generated skill registry uses portable SKILL.md names.
+func CanonicalDiagnosisSkillName(name string) string {
+	return canonicalDiagnosisSkillName(name)
+}
+
+func canonicalDiagnosisSkillName(name string) string {
+	return strings.ReplaceAll(strings.TrimSpace(name), "_", "-")
 }
 
 func diagnosisSkillExecutorPilotForAction(action string) (string, bool) {
@@ -3393,22 +3407,22 @@ func diagnosisSkillExecutorPilotForAction(action string) (string, bool) {
 // body-driven executor may run in its place. Runtime activation is separately
 // gated by USE_SKILL_EXECUTOR plus the per-skill allowlist above. The action
 // names are registered tool names (DiagnoseGPU, not the skill's
-// diagnose_gpu_not_detected). DiagnoseBilling is deliberately excluded — it has no
+// diagnose-gpu-not-detected). DiagnoseBilling is deliberately excluded — it has no
 // skill and stays on the shipped Go chain. The map is pinned by
 // TestPilotSkillForDiagnosis_* so it cannot silently widen to a mutating or
 // unmapped action.
 func pilotSkillForDiagnosis(action string) (string, bool) {
 	switch action {
 	case "DiagnoseSSH":
-		return "diagnose_ssh", true
+		return "diagnose-ssh", true
 	case "DiagnoseInitFailure":
-		return "diagnose_init_failure", true
+		return "diagnose-init-failure", true
 	case "DiagnoseGPU":
-		return "diagnose_gpu_not_detected", true
+		return "diagnose-gpu-not-detected", true
 	case "DiagnoseImageIssue":
-		return "diagnose_image_issue", true
+		return "diagnose-image-issue", true
 	case "DiagnosePortOrFirewall":
-		return "diagnose_port_firewall", true
+		return "diagnose-port-firewall", true
 	}
 	return "", false
 }
@@ -3532,7 +3546,7 @@ func (e *Engine) recordDiagnosisKnowledgeProbe(skillName, userMsg string, onStep
 
 func diagnosisSkillUsesKnowledgeEvidence(skillName string) bool {
 	switch skillName {
-	case "diagnose_port_firewall", "diagnose_gpu_not_detected":
+	case "diagnose-port-firewall", "diagnose-gpu-not-detected":
 		return true
 	default:
 		return false

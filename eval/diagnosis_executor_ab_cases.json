@@ -13,7 +13,7 @@
     "question": "{{UHOST_ID}} ssh permission denied 进不去",
     "expect_intent": "diagnosis",
     "expect_action": "DiagnoseSSH",
-    "expect_skill": "diagnose_ssh",
+    "expect_skill": "diagnose-ssh",
     "quality_terms": ["SSH", "权限", "登录"],
     "forbid_mutating": true,
     "forbidden_text": ["EvidenceLedger", "KnowledgeEvidence", "KBChunk.Content"]
@@ -32,7 +32,7 @@
     "question": "{{UHOST_ID}} 的 nvidia-smi 检测不到显卡",
     "expect_intent": "diagnosis",
     "expect_action": "DiagnoseGPU",
-    "expect_skill": "diagnose_gpu_not_detected",
+    "expect_skill": "diagnose-gpu-not-detected",
     "quality_terms": ["GPU", "nvidia-smi", "显卡"],
     "forbid_mutating": true,
     "forbidden_text": ["EvidenceLedger", "KnowledgeEvidence", "KBChunk.Content"]
@@ -42,7 +42,7 @@
     "question": "{{UHOST_ID}} 创建初始化一直卡住",
     "expect_intent": "diagnosis",
     "expect_action": "DiagnoseInitFailure",
-    "expect_skill": "diagnose_init_failure",
+    "expect_skill": "diagnose-init-failure",
     "quality_terms": ["初始化", "状态", "实例"],
     "forbid_mutating": true,
     "forbidden_text": ["EvidenceLedger", "KnowledgeEvidence", "KBChunk.Content"]
@@ -52,7 +52,7 @@
     "question": "{{UHOST_ID}} 镜像依赖装不上怎么办",
     "expect_intent": "diagnosis",
     "expect_action": "DiagnoseImageIssue",
-    "expect_skill": "diagnose_image_issue",
+    "expect_skill": "diagnose-image-issue",
     "quality_terms": ["镜像", "依赖", "环境"],
     "forbid_mutating": true,
     "forbidden_text": ["EvidenceLedger", "KnowledgeEvidence", "KBChunk.Content"]

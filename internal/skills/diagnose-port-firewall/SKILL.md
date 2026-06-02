@@ -1,6 +1,9 @@
 ---
-name: diagnose_port_firewall
-description: Use this skill when user reports a CompShare instance service port unreachable (JupyterLab / FileBrowser / custom apps) — for SSH failure use diagnose_ssh instead
+name: diagnose-port-firewall
+description: Use this skill when user reports a CompShare instance service port unreachable (JupyterLab / FileBrowser / custom apps) - for SSH failure use diagnose-ssh instead
+license: UNLICENSED
+compatibility: CompShare diagnosis executor; read-only CompShare API tools only; no direct SSH or shell access.
+allowed-tools: DescribeCompShareInstance DescribeCompShareSoftwarePort
 metadata:
   triggers:
     - "端口不通"
@@ -12,8 +15,6 @@ metadata:
   required_tools:
     - DescribeCompShareInstance
     - DescribeCompShareSoftwarePort
-  related_skills:
-    - safety_warning
   body_cap_lines: 100
   verification_status: unverified
   field_refs_verified: false
@@ -30,7 +31,7 @@ metadata:
    - `State != "Running"` → 未运行,引导用户开机后访问
    - `State == "Running"` → 拿 `Softwares` 字段(实例级,只对容器镜像填充),进步骤 2
 2. **识别用户问的具体服务**
-   - `Service == "SSH"` → **本 skill 不处理 SSH**(SSH 排查方法跟端口排查不同:`SshLoginCommand` 字段不走 SoftwarePort,memory `pr2_5_联调_2026_05_28` line 470 教训)。输出说明 + 建议用户重新表述为"SSH 连不上"让 planner 重新分类到 diagnose_ssh skill。**不调用 diagnose_ssh skill**(ADR-004 未定义 skill→skill delegation 机制)
+   - `Service == "SSH"` → **本 skill 不处理 SSH**(SSH 排查方法跟端口排查不同:`SshLoginCommand` 字段不走 SoftwarePort,memory `pr2_5_联调_2026_05_28` line 470 教训)。输出说明 + 建议用户重新表述为"SSH 连不上"让 planner 重新分类到 diagnose-ssh skill。**不调用 diagnose-ssh skill**(ADR-004 未定义 skill→skill delegation 机制)
    - `Service` 是常见应用名(JupyterLab / FileBrowser 等):
      - **优先级 1**: 在步骤 1 拿到的实例级 `Softwares` 里找,有就返回 URL
      - **优先级 2**: 找不到再 call `DescribeCompShareSoftwarePort` 查平台目录,作为参考(说"该镜像默认支持但本实例未启用,建议用户控制台检查应用入口")

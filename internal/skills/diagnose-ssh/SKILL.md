@@ -1,6 +1,9 @@
 ---
-name: diagnose_ssh
+name: diagnose-ssh
 description: Use this skill when user reports SSH connection failure / timeout / Permission denied on a CompShare instance and needs read-only platform-side triage
+license: UNLICENSED
+compatibility: CompShare diagnosis executor; read-only CompShare API tools only; no direct SSH or shell access.
+allowed-tools: DescribeCompShareInstance GetCompShareInstanceMonitor
 metadata:
   triggers:
     - "SSH 连不上"
@@ -12,8 +15,6 @@ metadata:
   required_tools:
     - DescribeCompShareInstance
     - GetCompShareInstanceMonitor
-  related_skills:
-    - safety_warning
   body_cap_lines: 100
   verification_status: unverified
   field_refs_verified: false

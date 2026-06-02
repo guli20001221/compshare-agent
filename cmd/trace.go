@@ -216,10 +216,11 @@ func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string)
 	var pilots []string
 	var unknown []string
 	for _, part := range strings.Split(raw, ",") {
-		name := strings.TrimSpace(part)
-		if name == "" {
+		rawName := strings.TrimSpace(part)
+		if rawName == "" {
 			continue
 		}
+		name := engine.CanonicalDiagnosisSkillName(rawName)
 		if _, ok := known[name]; ok {
 			if _, seen := seenKnown[name]; !seen {
 				pilots = append(pilots, name)
@@ -227,9 +228,9 @@ func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string)
 			}
 			continue
 		}
-		if _, seen := seenUnknown[name]; !seen {
-			unknown = append(unknown, name)
-			seenUnknown[name] = struct{}{}
+		if _, seen := seenUnknown[rawName]; !seen {
+			unknown = append(unknown, rawName)
+			seenUnknown[rawName] = struct{}{}
 		}
 	}
 	return pilots, unknown
