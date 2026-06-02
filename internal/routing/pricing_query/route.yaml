@@ -1,0 +1,23 @@
+name: pricing_query
+description: 用户问某 GPU 机型的产品公开定价（多少钱 / 包月包日 / spot 价）时触发
+intent_label: pricing_query
+route_group: catalog
+required_tools:
+  - GetCompShareInstancePrice
+tool_subset:
+  - GetCompShareInstancePrice
+  - DescribeAvailableCompShareInstanceTypes
+required_citation: false
+handler_key: handlePricingQuery
+planner_directives:
+  - 'GPU 价格 / 多少钱 / 几钱 / 费用 / 计费 / 包月包日多少钱类问题应 emit pricing_query。用户已给出 GPU 型号即可路由。'
+  - '"X 多少钱一小时" "X 价格" "X 包月多少" "X 包日多少" "X spot 价" "X 抢占式价" 都属本 capability。'
+  - '关键区分: 本 capability 仅回答**平台产品公开定价**(购买前调研); 用户对**自己已有账单**的怨言/不解(如"账单怎么这么高"/"扣费太多")应 emit billing_instance, 不在本 capability。'
+planner_examples:
+  - question: "4090 多少钱一小时"
+    confidence: 0.9
+  - question: "A100 包月多少钱"
+    confidence: 0.85
+verification_status: production_validated
+field_refs_verified: true
+provenance: human_authored

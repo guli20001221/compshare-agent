@@ -1,0 +1,20 @@
+name: gpu_specs_query
+description: 用户问 GPU 机型的显存 / 性能 / 最大卡数 / CPU·内存组合等静态规格时触发
+intent_label: gpu_specs_query
+route_group: catalog
+required_tools:
+  - DescribeAvailableCompShareInstanceTypes
+tool_subset:
+  - DescribeAvailableCompShareInstanceTypes
+  - GetGPUSpecs
+required_citation: false
+handler_key: handleGPUSpecsQuery
+planner_directives:
+  - '普通 GPU 规格、显存、性能、最大卡数问题应 emit gpu_specs_query，并先输出概览。'
+  - '用户明确要求所有/全部/完整规格、某型号所有规格、CPU/内存组合、CPU 和内存、可选配置时，也应 emit gpu_specs_query；渲染层会展开 MachineSizes.Collection.Memory 的所有组合。'
+planner_examples:
+  - question: "4090 显存多大"
+    confidence: 0.85
+verification_status: production_validated
+field_refs_verified: true
+provenance: human_authored

@@ -3,7 +3,7 @@ package intent
 import (
 	"context"
 
-	"github.com/compshare-agent/internal/skills"
+	"github.com/compshare-agent/internal/routing"
 )
 
 // skill_registry.go is the bridge between the generated skill registry
@@ -16,8 +16,8 @@ import (
 // intent is a capability iff a generated capability skill (non-empty intent_label)
 // declares it.
 func isCapabilityIntentSkill(i Intent) bool {
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel != "" && Intent(s.IntentLabel) == i {
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel != "" && Intent(route.IntentLabel) == i {
 			return true
 		}
 	}
@@ -29,11 +29,11 @@ func isCapabilityIntentSkill(i Intent) bool {
 // via CapabilityHandlerForKey, and invokes it. The func pointer is identical to
 // the legacy registry's (pinned by TestCapabilityHandlerByKey_MatchesRegistry).
 func (h *DemoHandler) dispatchCapabilitySkill(ctx context.Context, req HandlerRequest) HandlerResult {
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel == "" || Intent(s.IntentLabel) != req.Plan.Intent {
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel == "" || Intent(route.IntentLabel) != req.Plan.Intent {
 			continue
 		}
-		if handler := CapabilityHandlerForKey(s.HandlerKey); handler != nil {
+		if handler := CapabilityHandlerForKey(route.HandlerKey); handler != nil {
 			return handler(ctx, h, req)
 		}
 		break
@@ -70,44 +70,44 @@ func CapabilityHandlerForKey(key string) capabilityHandlerFunc {
 // intent_label) and ORDERED by capabilityIntentOrder (via CapabilityIntents) so the
 // planner-prompt fragments stay byte-identity-pinned (systemPromptSHA256Baseline).
 func skillRegistryCapabilityMetadata() []CapabilityMetadata {
-	byIntent := make(map[Intent]*skills.Skill)
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel == "" {
+	byIntent := make(map[Intent]*routing.Route)
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel == "" {
 			continue
 		}
-		byIntent[Intent(s.IntentLabel)] = s
+		byIntent[Intent(route.IntentLabel)] = route
 	}
 	out := make([]CapabilityMetadata, 0, len(byIntent))
 	for _, intentValue := range CapabilityIntents() {
-		s, ok := byIntent[intentValue]
+		route, ok := byIntent[intentValue]
 		if !ok {
 			continue
 		}
-		out = append(out, skillToCapabilityMetadata(s))
+		out = append(out, routeToCapabilityMetadata(route))
 	}
 	return out
 }
 
-// skillToCapabilityMetadata maps a generated capability Skill into the legacy
-// CapabilityMetadata shape. required_tools[0] supplies the singular RequiredTool
-// the prompt builder consumes (§3: required_tool → required_tools[0]).
-func skillToCapabilityMetadata(s *skills.Skill) CapabilityMetadata {
+// routeToCapabilityMetadata maps a generated deterministic route into the
+// legacy CapabilityMetadata shape. required_tools[0] supplies the singular
+// RequiredTool the prompt builder consumes.
+func routeToCapabilityMetadata(route *routing.Route) CapabilityMetadata {
 	var requiredTool string
-	if len(s.RequiredTools) > 0 {
-		requiredTool = s.RequiredTools[0]
+	if len(route.RequiredTools) > 0 {
+		requiredTool = route.RequiredTools[0]
 	}
-	examples := make([]CapabilityPlannerExample, 0, len(s.PlannerExamples))
-	for _, ex := range s.PlannerExamples {
+	examples := make([]CapabilityPlannerExample, 0, len(route.PlannerExamples))
+	for _, ex := range route.PlannerExamples {
 		examples = append(examples, CapabilityPlannerExample{Question: ex.Question, Confidence: ex.Confidence})
 	}
 	return CapabilityMetadata{
-		Name:              s.Name,
-		IntentLabel:       s.IntentLabel,
-		SkillGroup:        s.SkillGroup,
+		Name:              route.Name,
+		IntentLabel:       route.IntentLabel,
+		SkillGroup:        route.RouteGroup,
 		RequiredTool:      requiredTool,
-		ToolSubset:        s.ReactToolSubset,
-		RequiredCitation:  s.RequiredCitation,
-		PlannerDirectives: s.PlannerDirectives,
+		ToolSubset:        route.ToolSubset,
+		RequiredCitation:  route.RequiredCitation,
+		PlannerDirectives: route.PlannerDirectives,
 		PlannerExamples:   examples,
 	}
 }

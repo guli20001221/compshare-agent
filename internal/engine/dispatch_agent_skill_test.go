@@ -14,8 +14,8 @@ import (
 // (dispatchAgentSkill + agentArmSkillForIntent) replaced the hardcoded
 // `if Intent == IntentDeployModel { tryDeployModel }` branch; these tests prove
 // it is BYTE-STABLE wiring (delegates without altering output), captures only
-// agent-tier intents, and keeps the table locked to the registry + the saga
-// skillID so the four copies of "deploy_model" can never silently drift.
+// agent-tier intents, and keeps the table locked to the saga skillID so the
+// copies of "deploy_model" can never silently drift.
 
 // TestDispatchAgentSkill_RoutesDeployModelByteStable proves the seam is pure
 // wiring: routing IntentDeployModel through dispatchAgentSkill yields the EXACT
@@ -76,17 +76,18 @@ func TestDispatchAgentSkill_IgnoresObserveOnlyPlanSkills(t *testing.T) {
 	assert.Empty(t, exec.calls)
 }
 
-// TestAgentArmSkillForIntent_BoundToRegistry locks every table value to a skill
-// that actually exists in the generated registry, so deleting/renaming a skill (or
-// a typo in the table) fails CI instead of falling through at runtime — critical
-// because IntentDeployModel has no ReAct tool subset, so a fallthrough would reach
-// a broken ReAct loop, not a graceful degrade.
-func TestAgentArmSkillForIntent_BoundToRegistry(t *testing.T) {
+// TestAgentArmSkillForIntent_BoundToDedicatedArm locks every table value to a
+// dedicated agent arm. deploy_model is a saga workflow arm, not a body-read
+// skill, so it is deliberately not looked up in the generated skill registry.
+func TestAgentArmSkillForIntent_BoundToDedicatedArm(t *testing.T) {
 	require.NotEmpty(t, agentArmSkillForIntent)
 	for it, skillName := range agentArmSkillForIntent {
-		skill, ok := findGeneratedSkill(skillName)
-		require.Truef(t, ok, "intent %q maps to skill %q which is absent from the generated registry", it, skillName)
-		assert.Equalf(t, skillName, skill.Name, "registry skill Name must equal the table value for intent %q", it)
+		switch skillName {
+		case "deploy_model":
+			assert.Equal(t, intent.IntentDeployModel, it)
+		default:
+			t.Fatalf("intent %q maps to unknown agent arm %q", it, skillName)
+		}
 	}
 	assert.Equal(t, "deploy_model", agentArmSkillForIntent[intent.IntentDeployModel])
 }

@@ -10,7 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/envelope"
-	"github.com/compshare-agent/internal/skills"
+	"github.com/compshare-agent/internal/routing"
 )
 
 // capabilityIntentOrder is the registration order of the 7 catalog/status capability
@@ -51,9 +51,9 @@ func CapabilityIntents() []Intent {
 }
 
 func capabilityRequiredTool(i Intent) (string, bool) {
-	for _, s := range skills.GeneratedSkills() {
-		if s.IntentLabel == string(i) && len(s.RequiredTools) > 0 {
-			return s.RequiredTools[0], true
+	for _, route := range routing.GeneratedRoutes() {
+		if route.IntentLabel == string(i) && len(route.RequiredTools) > 0 {
+			return route.RequiredTools[0], true
 		}
 	}
 	return "", false
