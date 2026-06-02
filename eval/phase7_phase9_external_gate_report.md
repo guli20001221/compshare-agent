@@ -95,7 +95,8 @@ Checked frontend repo:
 
 - path: `F:\frontend\frame`
 - branch: `feature/console-ai-step-envelope`
-- head: `06d2e4f`
+- head before local hardening: `06d2e4f`
+- local hardening commit: `393cc05`
 - tracked status: clean
 
 The current `src/Frame/AIAssistant/service.js` is explicitly marked local-only:
@@ -114,19 +115,22 @@ The frontend can consume the current backend shape for local testing:
 - `ConfirmCSAgentAction`
 - `done.Content`
 
-But this is not production-ready.
+Additional local frontend hardening has been applied in `F:\frontend\frame` commit `393cc05`:
+
+- removed confirmation debug logs
+- added friendly labels for new route/workflow actions
+- displays `tool_result`, `confirm_needed`, `blocked`, and `error` step types using coarse labels only
+- does not render step args or tool result payloads
 
 Production integration still needs:
 
 - replace local hardcoded gateway/org/project fields with production gateway/project context
 - keep `ConfirmCSAgentAction`
 - keep `onStep`, `onConfirmation`, and `done.Content` handling
-- remove debug console logs around confirmation events
-- add friendly labels for new actions such as `CreateCustomImageWorkflow`, `CheckCompShareNetOptimizer`, image-tag/model-repo/shared-image reads
 - run a browser smoke against the real console build after the production service path is restored
 
 ### Phase 9 conclusion
 
 Backend Phase 9 gates are pinned by tests.
-Frontend Phase 9 is only locally viable today.
+Frontend Phase 9 is locally hardened for the current SSE shape, but still only locally viable today.
 It should not be treated as production console integration until the production gateway path is restored and a browser smoke passes.
