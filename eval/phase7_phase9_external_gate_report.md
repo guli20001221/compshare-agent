@@ -105,10 +105,12 @@ go test ./internal/httpapi -count=1
 Checked frontend repo:
 
 - path: `F:\frontend\frame`
-- branch: `feature/console-ai-step-envelope`
+- MR baseline: `https://git.ucloudadmin.com/console/frame/-/merge_requests/236`
+- MR baseline branch fetched as: `codex/mr236-base`
+- integration branch: `codex/mr236-agent-integration`
+- integration head: `ac4b695`
 - head before local hardening: `06d2e4f`
 - local hardening commit: `393cc05`
-- production service restore commit: `bc9cb89`
 - tracked status: clean
 
 The frontend can consume the current backend shape:
@@ -127,23 +129,29 @@ Additional local frontend hardening has been applied in `F:\frontend\frame` comm
 - displays `tool_result`, `confirm_needed`, `blocked`, and `error` step types using coarse labels only
 - does not render step args or tool result payloads
 
-The production service path was restored in `F:\frontend\frame` commit `bc9cb89`:
+MR 236 changes the production chat transport from HTTP/SSE to the console WebSocket gateway:
 
-- removed hardcoded local gateway `http://127.0.0.1:8080`
-- removed hardcoded org id, top org id, and project id
-- normal JSON actions now use the console `queryService`
-- stream chat uses `CONFIG_URL.API` with browser credentials
-- stream chat sends only the action, session id, message, and a best-effort current project id
+- normal JSON actions use the console `queryService`
+- stream chat uses `CONFIG_URL.WS` with `Action=CreateCSAgentWS`
+- `SendCSAgentChat` is sent over the WebSocket
+- `ConfirmCSAgentAction` is sent back over the same WebSocket
+- no hardcoded local gateway, org id, top org id, or project id exists in the production service file
 - no `organization_id`, `top_organization_id`, or `user_email` is sent from frontend code
+
+The local integration commit `ac4b695` is intentionally small and based on MR 236:
+
+- keeps the MR 236 WebSocket service layer unchanged
+- adds user-facing labels for the newly added read routes and custom-image workflow
+- displays `tool_result`, `confirm_needed`, `blocked`, and `error` step types instead of only `tool_call`
 
 Remaining external checks:
 
 - production gateway must inject the authoritative org/project/user identity context, including `user_email`
-- run a browser smoke against the real console build after gateway context is available
+- run a browser smoke against the real console build from the MR 236 integration branch after gateway context is available
 - verify the confirmation card can deny and approve a custom-image workflow through the console UI
 
 ### Phase 9 conclusion
 
 Backend Phase 9 gates are pinned by tests.
-Frontend Phase 9 is code-ready for the production gateway path and no longer carries local hardcoded identity fields.
+Frontend Phase 9 should use MR 236 as the production baseline, with `ac4b695` as the current UI-safety integration patch.
 It should not be treated as fully production-validated until gateway `user_email` is available and a browser smoke passes.
