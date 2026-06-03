@@ -29,6 +29,10 @@ function Require-Env([string]$name) {
     return $value
 }
 
+function New-Utf8Text([string]$base64) {
+    return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($base64))
+}
+
 function Read-TraceRecords([string]$dir) {
     $records = @()
     Get-ChildItem $dir -Filter "*.jsonl" -Recurse -ErrorAction SilentlyContinue |
@@ -56,13 +60,38 @@ function Trace-ToolCalls($records) {
 }
 
 function Run-AgentCase([string]$name, [string]$inputText) {
+    switch ($name) {
+        "deny" {
+            $template = New-Utf8Text "5oqKIHswfSDkv53lrZjmiJDoh6rlrprkuYnplZzlg4/vvIzlkI3lrZflj6sgezF9Ck4KZXhpdA=="
+            $inputText = $template -f $UHostId, $ImageName
+        }
+        "approve" {
+            $template = New-Utf8Text "5oqKIHswfSDkv53lrZjmiJDoh6rlrprkuYnplZzlg4/vvIzlkI3lrZflj6sgezF9CnkKZXhpdA=="
+            $inputText = $template -f $UHostId, $ImageName
+        }
+        "destructive" {
+            $template = New-Utf8Text "6ZSA5q+BIHswfQp5CmV4aXQ="
+            $inputText = $template -f $UHostId
+        }
+    }
+
     $caseDir = Join-Path $script:traceRoot $name
     New-Item -ItemType Directory -Force $caseDir | Out-Null
     $env:COMPSHARE_TRACE_DIR = $caseDir
 
     $transcript = Join-Path $caseDir "transcript.txt"
-    $inputText | .\agent.exe cli -c .\deploy\conf\agent.yaml 2>&1 |
-        Tee-Object -FilePath $transcript | Out-Null
+    $oldErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $inputText | .\agent.exe cli -c .\deploy\conf\agent.yaml 2>&1 |
+            Tee-Object -FilePath $transcript | Out-Null
+        $agentExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldErrorActionPreference
+    }
+    if ($agentExitCode -ne 0) {
+        throw "agent cli exited with code $agentExitCode for case $name"
+    }
 
     $records = Read-TraceRecords $caseDir
     $toolCalls = Trace-ToolCalls $records
@@ -73,7 +102,8 @@ function Run-AgentCase([string]$name, [string]$inputText) {
         TraceDir = $caseDir
         TranscriptPath = $transcript
         ToolCalls = $toolCalls
-        MentionsMissingUserEmail = ($rawTranscript -match "Missing params \\[user_email\\]")
+        MentionsMissingUserEmail = ($rawTranscript -match "Missing params \[user_email\]")
+        MentionsCreateFailure = ($rawTranscript -match "CreateCompShareCustomImage:.*failed")
         MentionsCreate = ($toolCalls -contains "CreateCompShareCustomImage")
         MentionsTerminate = ($toolCalls -contains "TerminateCompShareInstance")
     }
@@ -92,6 +122,9 @@ function Assert-SmokeResult($result) {
             }
             if ($result.MentionsMissingUserEmail) {
                 throw "approve leg still failed with Missing params [user_email]"
+            }
+            if ($result.MentionsCreateFailure) {
+                throw "approve leg failed at CreateCompShareCustomImage"
             }
         }
         "destructive" {
@@ -113,8 +146,8 @@ function Write-Report($results, [string]$path) {
     $lines += "COMPSHARE_USER_EMAIL set: $([string]::IsNullOrWhiteSpace($env:COMPSHARE_USER_EMAIL) -eq $false)"
     $lines += "Trace root: $script:traceRoot"
     $lines += ""
-    $lines += "| case | tool calls | missing user_email | pass condition |"
-    $lines += "| --- | --- | --- | --- |"
+    $lines += "| case | tool calls | missing user_email | create failed | pass condition |"
+    $lines += "| --- | --- | --- | --- | --- |"
     foreach ($result in $results) {
         $tools = if ($result.ToolCalls.Count -gt 0) { $result.ToolCalls -join "," } else { "(none)" }
         $condition = switch ($result.Name) {
@@ -123,7 +156,7 @@ function Write-Report($results, [string]$path) {
             "destructive" { "no TerminateCompShareInstance" }
             default { "" }
         }
-        $lines += "| $($result.Name) | $tools | $($result.MentionsMissingUserEmail) | $condition |"
+        $lines += "| $($result.Name) | $tools | $($result.MentionsMissingUserEmail) | $($result.MentionsCreateFailure) | $condition |"
     }
     $lines += ""
     $lines += "Raw transcripts and trace JSONL stay local under the trace root."
