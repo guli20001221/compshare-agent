@@ -10,6 +10,13 @@ deploy/conf/agent.yaml
 # STS service AK/SK, and MySQL DSN — file documents this in its own
 # header comment. Never commit.
 start-server.ps1
+# Local-only WS 联调 orchestrator. Same real credentials as start-server.ps1.
+start-ws-liantiao.ps1
+# Local-only smoke credential source — real LLM_API_KEY + STS service AK/SK.
+# Sourced by eval/*.ps1 live smokes. Never commit (the *.env globs above do
+# NOT match this .ps1 filename).
+eval/.smoke_env.ps1
+*.smoke_env.ps1
 __pycache__/
 *.pyc
 .worktrees/
