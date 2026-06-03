@@ -80,15 +80,26 @@ func runClient(o clientOpts) {
 		dialURL = strings.TrimRight(dialURL, "/") + sep + "Action=CreateCSAgentWS"
 	}
 
+	// Only set identity headers when non-empty. Omitting them simulates a
+	// browser (which cannot set headers); a gateway/proxy in front is then
+	// responsible for injecting identity. Setting empty-string headers would
+	// otherwise look like "present but blank" and also trips PowerShell arg
+	// parsing when callers pass -company "".
 	h := http.Header{}
-	h.Set("X-Company-Id", o.company)
-	h.Set("X-Organization-Id", o.org)
-	h.Set("X-Request-Id", o.reqID)
+	if o.company != "" {
+		h.Set("X-Company-Id", o.company)
+	}
+	if o.org != "" {
+		h.Set("X-Organization-Id", o.org)
+	}
+	if o.reqID != "" {
+		h.Set("X-Request-Id", o.reqID)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	fmt.Printf("→ dialing %s\n   headers: X-Company-Id=%s X-Organization-Id=%s X-Request-Id=%s\n",
+	fmt.Printf("→ dialing %s\n   headers: X-Company-Id=%q X-Organization-Id=%q X-Request-Id=%q\n",
 		dialURL, o.company, o.org, o.reqID)
 	conn, resp, err := websocket.Dial(ctx, dialURL, &websocket.DialOptions{HTTPHeader: h})
 	if err != nil {
