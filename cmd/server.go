@@ -97,9 +97,22 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		})
 	}))
 	router.GET("/healthz", httpapi.Healthz)
+	// GET / is the WebSocket upgrade for streaming chat (gateway Action
+	// CreateCSAgentWS); POST / serves the non-streaming Actions (meta, session,
+	// feedback) the frontend still sends over HTTP. The gateway does not pass
+	// through SSE, so chat streaming moved to WS — see
+	// docs/plans/2026-06-03-websocket-transport-refactor.md.
+	router.GET("/", handlers.HandleWS)
 	router.POST("/", handlers.Dispatch)
 	router.OPTIONS("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 
+	// WriteTimeout stays 0 (the config default already enforces this): a
+	// non-zero server-level write deadline would abort a long-lived streaming
+	// connection mid-turn — true for both the former SSE path and the WS path.
+	// The per-connection context deadline (maxWSConnLifetime) bounds WS
+	// connections. ReadTimeout governs only the pre-upgrade request read; after
+	// websocket.Accept hijacks the conn it no longer applies to the read loop,
+	// so the configured value is safe to keep.
 	srv := &http.Server{
 		Addr:         cfg.Agent.HTTP.ListenAddr,
 		Handler:      router,

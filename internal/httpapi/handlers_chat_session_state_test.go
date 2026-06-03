@@ -2,9 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,7 +9,6 @@ import (
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -62,19 +58,10 @@ func newChatTestHandlers(t *testing.T, sess store.Session) (*Handlers, *mockSess
 	return h, sessions, eng
 }
 
-func dispatchChatTurn(t *testing.T, h *Handlers, sessionID, message string) *httptest.ResponseRecorder {
+func dispatchChatTurn(t *testing.T, h *Handlers, sessionID, message string) (*recordingSink, *APIError) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(
-		http.MethodPost,
-		"/api/gateway",
-		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"`+sessionID+`","Message":"`+message+`","request_uuid":"req-1","top_organization_id":1,"organization_id":2}`),
-	)
-	c.Request.Header.Set("Content-Type", "application/json")
-	h.Dispatch(c)
-	return rec
+	body := `{"Action":"SendCSAgentChat","SessionId":"` + sessionID + `","Message":"` + message + `","request_uuid":"req-1","top_organization_id":1,"organization_id":2}`
+	return runChatJSON(t, h, body)
 }
 
 // Case 1: happy path — empty Context, first chat turn writes envelope with
@@ -90,10 +77,9 @@ func TestDispatchChat_PersistsEnvelopeOnSuccess(t *testing.T) {
 		UpdatedAt: time.Now(),
 	})
 
-	rec := dispatchChatTurn(t, h, "sess-happy", "hi")
+	sink, _ := dispatchChatTurn(t, h, "sess-happy", "hi")
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), "event: done")
+	assert.True(t, sink.has("done"))
 	require.Equal(t, 1, sessions.updateContextCalls,
 		"expected exactly one UpdateContext call on successful turn")
 
@@ -120,10 +106,9 @@ func TestDispatchChat_MalformedContext_SkipsPersist(t *testing.T) {
 		UpdatedAt:         time.Now(),
 	})
 
-	rec := dispatchChatTurn(t, h, "sess-bad", "hi")
+	sink, _ := dispatchChatTurn(t, h, "sess-bad", "hi")
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), "event: done",
+	assert.True(t, sink.has("done"),
 		"chat must complete even when prior context is unparseable")
 	assert.Equal(t, 0, sessions.updateContextCalls,
 		"malformed context must NOT trigger UpdateContext — would overwrite the broken row")
@@ -146,10 +131,9 @@ func TestDispatchChat_UnknownSchemaVersion_SkipsPersist(t *testing.T) {
 		UpdatedAt:         time.Now(),
 	})
 
-	rec := dispatchChatTurn(t, h, "sess-future", "hi")
+	sink, _ := dispatchChatTurn(t, h, "sess-future", "hi")
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), "event: done")
+	assert.True(t, sink.has("done"))
 	assert.Equal(t, 0, sessions.updateContextCalls,
 		"unknown schema_version must NOT trigger UpdateContext — leave the row for the newer binary to read")
 	// Row unchanged.
@@ -171,9 +155,8 @@ func TestDispatchChat_LegacyContextUpgradedToEnvelope(t *testing.T) {
 		UpdatedAt:         time.Now(),
 	})
 
-	rec := dispatchChatTurn(t, h, "sess-legacy", "hi")
+	_, _ = dispatchChatTurn(t, h, "sess-legacy", "hi")
 
-	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, 1, sessions.updateContextCalls)
 
 	row := sessions.byID["sess-legacy"]
@@ -218,10 +201,9 @@ func TestDispatchChat_PreHydratedEngine_MalformedContext_StillSkipsPersist(t *te
 	_, _, hydrated := eng.SessionStateSnapshot()
 	require.True(t, hydrated, "test precondition: prior turn left hydrated=true")
 
-	rec := dispatchChatTurn(t, h, "sess-sticky", "hi")
+	sink, _ := dispatchChatTurn(t, h, "sess-sticky", "hi")
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), "event: done")
+	assert.True(t, sink.has("done"))
 	assert.Equal(t, 0, sessions.updateContextCalls,
 		"malformed parse must skip persist regardless of prior engine state")
 	assert.Equal(t, json.RawMessage(`{not valid`), sessions.byID["sess-sticky"].Context)
@@ -253,13 +235,11 @@ func TestDispatchChat_StaleWriteOnPersist_StillEmitsDone(t *testing.T) {
 		return 0, store.ErrStaleWrite
 	}
 
-	rec := dispatchChatTurn(t, h, "sess-stale", "hi")
+	sink, _ := dispatchChatTurn(t, h, "sess-stale", "hi")
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	body := rec.Body.String()
-	assert.Contains(t, body, "event: done",
-		"SSE must emit done even when CAS loses on persist — reply was already streamed")
-	assert.NotContains(t, body, "event: error",
+	assert.True(t, sink.has("done"),
+		"stream must emit done even when CAS loses on persist — reply was already streamed")
+	assert.False(t, sink.has("error"),
 		"ErrStaleWrite is a warning-only condition, not a stream error")
 	require.Equal(t, 1, sessions.updateContextCalls)
 }

@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"testing"
 	"time"
 
@@ -122,10 +121,9 @@ func TestSessionState_Persist_RecentFactsRoundTrip(t *testing.T) {
 	sessions := &mockSessions{byID: map[string]store.Session{sess.ID: sess}}
 	h := newChatTestHandlersWith(t, eng, sessions)
 
-	rec := dispatchChatTurn(t, h, sess.ID, "show me my instances")
+	sink, _ := dispatchChatTurn(t, h, sess.ID, "show me my instances")
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), "event: done")
+	assert.True(t, sink.has("done"))
 	require.Equal(t, 1, sessions.updateContextCalls,
 		"expected exactly one UpdateContext on a successful turn with tool call")
 

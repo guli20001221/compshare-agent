@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +18,6 @@ import (
 	"github.com/compshare-agent/internal/refusal"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
-	"github.com/gin-gonic/gin"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -190,26 +188,15 @@ func TestDispatchChatStreamsMetaTokenDone(t *testing.T) {
 		nil,
 	)
 
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(
-		http.MethodPost,
-		"/api/gateway",
-		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-1","Message":"hi","request_uuid":"req-1","top_organization_id":1,"organization_id":2}`),
-	)
-	c.Request.Header.Set("Content-Type", "application/json")
+	sink, _ := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-1","Message":"hi","request_uuid":"req-1","top_organization_id":1,"organization_id":2}`)
 
-	h.Dispatch(c)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	body := rec.Body.String()
-	assert.Contains(t, body, "event: meta")
+	body := sink.body()
+	assert.True(t, sink.has("meta"))
 	assert.Contains(t, body, `"RequestId":"req-1"`)
-	assert.Contains(t, body, "event: token")
+	assert.True(t, sink.has("token"))
 	assert.Contains(t, body, `"Text":"你"`)
 	assert.Contains(t, body, `"Text":"好"`)
-	assert.Contains(t, body, "event: done")
+	assert.True(t, sink.has("done"))
 	require.Len(t, messages.appended, 2, "expected user and assistant rows inserted")
 	assert.Equal(t, "user", messages.appended[0].Role)
 	assert.Equal(t, "assistant", messages.appended[1].Role)
@@ -245,19 +232,8 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 		traceWriter,
 	)
 
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(
-		http.MethodPost,
-		"/",
-		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-trace","Message":"hi","request_uuid":"req-trace","top_organization_id":7,"organization_id":8}`),
-	)
-	c.Request.Header.Set("Content-Type", "application/json")
+	runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-trace","Message":"hi","request_uuid":"req-trace","top_organization_id":7,"organization_id":8}`)
 
-	h.Dispatch(c)
-
-	require.Equal(t, http.StatusOK, rec.Code)
 	require.Len(t, traceWriter.records, 1)
 	require.Len(t, traceWriter.tenants, 1)
 	trace := traceWriter.records[0]
@@ -302,19 +278,8 @@ func TestDispatchChatRedactsUserPIIOnlyWhenPersisting(t *testing.T) {
 	)
 
 	const userMessage = "phone 13800138000 email user@example.com instance uhost-abc123 wants 4090 price"
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(
-		http.MethodPost,
-		"/",
-		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-pii","Message":"`+userMessage+`","request_uuid":"req-pii","top_organization_id":1,"organization_id":2}`),
-	)
-	c.Request.Header.Set("Content-Type", "application/json")
+	runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-pii","Message":"`+userMessage+`","request_uuid":"req-pii","top_organization_id":1,"organization_id":2}`)
 
-	h.Dispatch(c)
-
-	require.Equal(t, http.StatusOK, rec.Code)
 	require.Len(t, messages.appended, 2)
 	persisted := messages.appended[0].Content
 	assert.Contains(t, persisted, guardrails.PhoneRedacted)
@@ -367,21 +332,10 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 		nil,
 	)
 
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(
-		http.MethodPost,
-		"/",
-		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-output","Message":"hi","request_uuid":"req-output","top_organization_id":1,"organization_id":2}`),
-	)
-	c.Request.Header.Set("Content-Type", "application/json")
+	sink, _ := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-output","Message":"hi","request_uuid":"req-output","top_organization_id":1,"organization_id":2}`)
 
-	h.Dispatch(c)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	body := rec.Body.String()
-	assert.Contains(t, body, "event: token")
+	body := sink.body()
+	assert.True(t, sink.has("token"))
 	assert.Contains(t, body, "1.2.3.4")
 	assert.Contains(t, body, "12345678-1234-1234-1234-1234567890ab")
 	assert.Contains(t, body, "AKIAIOSFODNN7EXAMPLE")
@@ -433,22 +387,10 @@ func TestDispatchChatDoesNotPersistPartialAssistantContentOnError(t *testing.T) 
 		nil,
 	)
 
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(
-		http.MethodPost,
-		"/",
-		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-error","Message":"hi","request_uuid":"req-error","top_organization_id":1,"organization_id":2}`),
-	)
-	c.Request.Header.Set("Content-Type", "application/json")
+	sink, _ := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-error","Message":"hi","request_uuid":"req-error","top_organization_id":1,"organization_id":2}`)
 
-	h.Dispatch(c)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	body := rec.Body.String()
-	assert.Contains(t, body, leakedDelta)
-	assert.Contains(t, body, "event: error")
+	assert.Contains(t, sink.body(), leakedDelta)
+	assert.True(t, sink.has("error"))
 
 	assert.Equal(t, "error", messages.patch.Status)
 	assert.Empty(t, messages.patch.Content)
@@ -483,23 +425,11 @@ func TestDispatchChatEmitsTokenForDirectEngineReply(t *testing.T) {
 		nil,
 	)
 
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(
-		http.MethodPost,
-		"/",
-		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-direct","Message":"看 2026-04-29 14:00 的监控","request_uuid":"req-direct","top_organization_id":1,"organization_id":2}`),
-	)
-	c.Request.Header.Set("Content-Type", "application/json")
+	sink, _ := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-direct","Message":"看 2026-04-29 14:00 的监控","request_uuid":"req-direct","top_organization_id":1,"organization_id":2}`)
 
-	h.Dispatch(c)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	body := rec.Body.String()
-	assert.Contains(t, body, "event: token")
-	assert.Contains(t, body, refusal.MonitorHistoryUnsupported)
-	assert.Contains(t, body, "event: done")
+	assert.True(t, sink.has("token"))
+	assert.Contains(t, sink.body(), refusal.MonitorHistoryUnsupported)
+	assert.True(t, sink.has("done"))
 	assert.Equal(t, refusal.MonitorHistoryUnsupported, messages.patch.Content)
 }
 
@@ -541,19 +471,8 @@ func TestDispatchChatColdSessionDoesNotRehydrateCurrentUserMessage(t *testing.T)
 	)
 
 	const userMessage = "hello current"
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(
-		http.MethodPost,
-		"/",
-		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-cold","Message":"`+userMessage+`","request_uuid":"req-cold","top_organization_id":1,"organization_id":2}`),
-	)
-	c.Request.Header.Set("Content-Type", "application/json")
+	runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-cold","Message":"`+userMessage+`","request_uuid":"req-cold","top_organization_id":1,"organization_id":2}`)
 
-	h.Dispatch(c)
-
-	require.Equal(t, http.StatusOK, rec.Code)
 	userCopies := 0
 	for _, msg := range captured.messages {
 		if msg.Role == openai.ChatMessageRoleUser && msg.Content == userMessage {
@@ -590,18 +509,10 @@ func TestDispatchChatRejectsWhenSessionTurnLimitReached(t *testing.T) {
 		nil,
 	)
 
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(
-		http.MethodPost,
-		"/",
-		strings.NewReader(`{"Action":"SendCSAgentChat","SessionId":"sess-cap","Message":"hi","request_uuid":"req-cap","top_organization_id":1,"organization_id":2}`),
-	)
-	c.Request.Header.Set("Content-Type", "application/json")
+	_, apiErr := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-cap","Message":"hi","request_uuid":"req-cap","top_organization_id":1,"organization_id":2}`)
 
-	h.Dispatch(c)
-
-	require.Equal(t, http.StatusConflict, rec.Code)
-	assert.Contains(t, rec.Body.String(), `"RetCode":226616`)
+	require.NotNil(t, apiErr, "turn-limit must reject before streaming")
+	assert.Equal(t, http.StatusConflict, apiErr.Status)
+	assert.Equal(t, ErrSessionTurnLimit.RetCode, apiErr.RetCode)
+	assert.Equal(t, 226616, apiErr.RetCode)
 }

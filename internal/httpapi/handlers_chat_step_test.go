@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -31,12 +30,11 @@ func TestDispatchChat_EmitsStepEvents(t *testing.T) {
 	sessions := &mockSessions{byID: map[string]store.Session{sess.ID: sess}}
 	h := newChatTestHandlersWith(t, eng, sessions)
 
-	rec := dispatchChatTurn(t, h, sess.ID, "show instances")
+	sink, _ := dispatchChatTurn(t, h, sess.ID, "show instances")
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	body := rec.Body.String()
+	body := sink.body()
 
-	assert.Contains(t, body, "event: step", "expected at least one step event")
+	assert.True(t, sink.has("step"), "expected at least one step event")
 	assert.Contains(t, body, `"Type":"tool_call"`)
 	assert.Contains(t, body, `"Type":"tool_result"`)
 	assert.Contains(t, body, `"Action":"DescribeCompShareInstance"`)
@@ -47,7 +45,7 @@ func TestDispatchChat_EmitsStepEvents(t *testing.T) {
 	assert.NotContains(t, body, `Display`)
 
 	// Tool results must also stay out of frontend step events. The trace may
-	// hash them, but SSE should only show coarse progress.
+	// hash them, but the streamed frames should only show coarse progress.
 	assert.NotContains(t, body, "uhost-e2e")
 	assert.NotContains(t, body, "e2e-host")
 	assert.NotContains(t, body, "RTX4090")
@@ -63,9 +61,9 @@ func TestDispatchChat_EmitsStepEvents(t *testing.T) {
 	assert.Less(t, idx0, idx1, "Index 0 must appear before Index 1")
 
 	// Standard events must still be present.
-	assert.Contains(t, body, "event: meta")
-	assert.Contains(t, body, "event: token")
-	assert.Contains(t, body, "event: done")
+	assert.True(t, sink.has("meta"))
+	assert.True(t, sink.has("token"))
+	assert.True(t, sink.has("done"))
 }
 
 // TestStepTypeString covers the stepTypeString mapping.
@@ -103,11 +101,10 @@ func TestDispatchChat_StepEventsAppearBeforeDone(t *testing.T) {
 	sessions := &mockSessions{byID: map[string]store.Session{sess.ID: sess}}
 	h := newChatTestHandlersWith(t, eng, sessions)
 
-	rec := dispatchChatTurn(t, h, sess.ID, "list instances")
-	body := rec.Body.String()
+	sink, _ := dispatchChatTurn(t, h, sess.ID, "list instances")
 
-	lastStep := strings.LastIndex(body, "event: step")
-	firstDone := strings.Index(body, "event: done")
+	lastStep := sink.lastIndexOf("step")
+	firstDone := sink.firstIndexOf("done")
 	require.Greater(t, lastStep, -1, "must have at least one step event")
 	require.Greater(t, firstDone, -1, "must have done event")
 	assert.Less(t, lastStep, firstDone, "all step events must precede done")
@@ -141,9 +138,8 @@ func TestDispatchChatTraceRecordsAgentRuntimeFormForToolCall(t *testing.T) {
 		traceWriter,
 	)
 
-	rec := dispatchChatTurn(t, h, sess.ID, "show instances")
+	_, _ = dispatchChatTurn(t, h, sess.ID, "show instances")
 
-	require.Equal(t, http.StatusOK, rec.Code)
 	require.Len(t, traceWriter.records, 1)
 	trace := traceWriter.records[0]
 	assert.Equal(t, observability.RuntimeFormAgent, trace.ActualRuntimeForm)
