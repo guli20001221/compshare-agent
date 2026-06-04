@@ -53,14 +53,7 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 // When cfg.Agent.TierRouting is empty, all tiers fall back to
 // cfg.Agent.LLM.Model (backward compat per ADR-002 Acceptance #5).
 func buildLLMRouter(cfg *config.Config) (*llm.Router, error) {
-	var overrides map[llm.Tier]config.LLMConfig
-	if len(cfg.Agent.TierRouting) > 0 {
-		overrides = make(map[llm.Tier]config.LLMConfig, len(cfg.Agent.TierRouting))
-		for k, v := range cfg.Agent.TierRouting {
-			overrides[llm.Tier(k)] = v
-		}
-	}
-	return llm.NewRouter(cfg.Agent.LLM, overrides)
+	return llm.NewRouter(cfg.Agent.LLM, llm.TierOverridesFromConfig(cfg.Agent.TierRouting))
 }
 
 func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv getenvFunc) error {
@@ -122,9 +115,14 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 		deps.FastTemplateRenderer = groundedMode == "fast_template"
 	}
 
+	plannerStructuredOutput, unknownPlannerStructuredOutput := plannerStructuredOutputModeFromEnv(getenv)
+	if unknownPlannerStructuredOutput != "" {
+		log.Printf("warning: ignoring unknown PLANNER_STRUCTURED_OUTPUT value %q", unknownPlannerStructuredOutput)
+	}
+
 	cutoverEnabled := len(cutoverIntents) > 0
 	if cutoverEnabled || knowledgeEnabled {
-		deps.IntentPlanner = newCLIPlanner(cfg)
+		deps.IntentPlanner = newCLIPlannerWithStructuredOutput(cfg, plannerStructuredOutput)
 		deps.IntentPlannerModel = cfg.Agent.LLM.Model
 		enabled, cutover := engine.BuildIntentPlannerMaps(cutoverIntents)
 		deps.IntentPlannerEnabledIntents = enabled

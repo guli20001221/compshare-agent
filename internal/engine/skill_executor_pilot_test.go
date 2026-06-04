@@ -89,6 +89,7 @@ func TestExecuteDiagnosis_PortFirewallInjectsSafeKnowledgeLedgerOnly(t *testing.
 		{Content: `{"action":"DescribeCompShareInstance","args":{"UHostIds":["u1"]}}`},
 		{Content: `{"final":"先按知识库核对实例运行状态，再看端口配置。"}`},
 	}}
+	mock.responses = append([]llm.ChatResponse{{Content: `{"action":"SearchKnowledge","args":{"query":"webui port blocked"}}`}}, mock.responses...)
 	eng := NewWithDeps(mock, exec, nil)
 	eng.SetKnowledgeRetriever(retriever)
 	eng.Init(context.Background())
@@ -106,20 +107,25 @@ func TestExecuteDiagnosis_PortFirewallInjectsSafeKnowledgeLedgerOnly(t *testing.
 	// the body-read prompt.
 	assert.NotEmpty(t, reply, "diagnosis still produces an answer")
 	require.Len(t, retriever.calls, 1, "KB is probed exactly once (observability)")
-	assert.Equal(t, eng.lastUserMsg, retriever.calls[0].question)
+	assert.Equal(t, "webui port blocked", retriever.calls[0].question)
 	assert.Equal(t, []string{"DescribeCompShareInstance"}, exec.calls)
 	assertStepOrder(t, events, "SearchKnowledge", "DescribeCompShareInstance")
-	require.NotEmpty(t, mock.calls)
+	require.GreaterOrEqual(t, len(mock.calls), 2)
 	firstPrompt := joinedMessages(mock.calls[0].Messages)
 	assert.NotContains(t, firstPrompt, "KnowledgeEvidence",
 		"legacy raw-evidence key must not be injected into the diagnosis model prompt")
-	assert.Contains(t, firstPrompt, "EvidenceLedger",
-		"diagnosis may receive the safe evidence ledger")
-	assert.Contains(t, firstPrompt, "runbook-port-001",
+	assert.Contains(t, firstPrompt, "SearchKnowledge",
+		"diagnosis must see the virtual retrieval tool before the first model step")
+	assert.NotContains(t, firstPrompt, "runbook-port-001",
+		"safe evidence should be returned only after the model calls SearchKnowledge")
+	workingSetAfterSearch := joinedMessages(mock.calls[1].Messages)
+	assert.Contains(t, workingSetAfterSearch, "EvidenceLedger",
+		"diagnosis may receive the safe evidence ledger after SearchKnowledge")
+	assert.Contains(t, workingSetAfterSearch, "runbook-port-001",
 		"safe ledger should carry chunk_id for auditability")
-	assert.Contains(t, firstPrompt, "Service port reachability",
+	assert.Contains(t, workingSetAfterSearch, "Service port reachability",
 		"safe ledger may carry the chunk title")
-	assert.NotContains(t, firstPrompt, "For service ports, first verify",
+	assert.NotContains(t, workingSetAfterSearch, "For service ports, first verify",
 		"retrieved chunk content must not reach the diagnosis model")
 }
 
@@ -155,6 +161,7 @@ func TestExecuteDiagnosis_PortFirewallRejectsRawKnowledgeLeakAndFallsBack(t *tes
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{Content: `{"final":"` + rawContent + `"}`},
 	}}
+	mock.responses = append([]llm.ChatResponse{{Content: `{"action":"SearchKnowledge","args":{"query":"webui port blocked"}}`}}, mock.responses...)
 	eng := NewWithDeps(mock, exec, nil)
 	eng.SetKnowledgeRetriever(retriever)
 	eng.Init(context.Background())
@@ -171,7 +178,7 @@ func TestExecuteDiagnosis_PortFirewallRejectsRawKnowledgeLeakAndFallsBack(t *tes
 		"raw KB leakage must safe-fail the skill and fall back to the deterministic Go chain")
 	assert.NotContains(t, reply, rawContent)
 	assert.Equal(t, []string{"DescribeCompShareInstance", "DescribeCompShareSoftwarePort"}, exec.calls)
-	require.Equal(t, 1, mock.callIdx)
+	require.Equal(t, 2, mock.callIdx)
 
 	var sawLeakError bool
 	for _, ev := range events {
@@ -183,6 +190,103 @@ func TestExecuteDiagnosis_PortFirewallRejectsRawKnowledgeLeakAndFallsBack(t *tes
 		}
 	}
 	assert.True(t, sawLeakError, "raw evidence leak must be visible in trace events")
+}
+
+func TestExecuteDiagnosis_PortFirewallEmitsValidatedDiagnosisClaims(t *testing.T) {
+	prev := SkillExecutorEnabled()
+	SetSkillExecutorEnabled(true)
+	defer SetSkillExecutorEnabled(prev)
+	prevPilots := SkillExecutorDiagnosisPilots()
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose-port-firewall"})
+	defer SetSkillExecutorDiagnosisPilots(prevPilots)
+
+	chunk := knowledge.KBChunk{
+		ChunkID:   "runbook-port-001",
+		KBVersion: "kb.test",
+		Title:     "Service port reachability",
+		Content:   "For service ports, first verify the instance is Running, then compare exposed software ports.",
+	}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:  true,
+		Hits:     []knowledge.KBChunk{chunk},
+		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 0.95, Kept: true}},
+	}}}
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{map[string]any{"UHostId": "u1", "State": "Running"}}},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: `{"action":"SearchKnowledge","args":{"query":"webui port blocked"}}`},
+		{Content: `{"action":"DescribeCompShareInstance","args":{"UHostIds":["u1"]}}`},
+		{Content: `{"final":"Use runbook-port-001 and instance state.","diagnosis_claims":[{"claim":"The port runbook evidence was consulted.","status":"supported","chunk_ids":["runbook-port-001"],"reason":"SearchKnowledge returned the runbook."},{"claim":"The instance state is Running.","status":"inferred","reason":"DescribeCompShareInstance returned Running."}]}`},
+	}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.Init(context.Background())
+	exec.calls = nil
+	eng.lastUserMsg = "webui port blocked"
+	var diagnosisTraces []observability.DiagnosisTrace
+	eng.SetDiagnosisTraceObserver(func(trace observability.DiagnosisTrace) {
+		diagnosisTraces = append(diagnosisTraces, trace)
+	})
+
+	reply := eng.executeDiagnosis(context.Background(), "DiagnosePortOrFirewall",
+		map[string]any{"UHostId": "u1", "Service": "webui"}, func(StepEvent) {})
+
+	assert.Equal(t, "Use runbook-port-001 and instance state.", reply)
+	require.Len(t, diagnosisTraces, 1)
+	require.Len(t, diagnosisTraces[0].Claims, 2)
+	assert.Equal(t, "supported", diagnosisTraces[0].Claims[0].Status)
+	assert.Equal(t, []string{"runbook-port-001"}, diagnosisTraces[0].Claims[0].ChunkIDs)
+	assert.Equal(t, "inferred", diagnosisTraces[0].Claims[1].Status)
+}
+
+func TestExecuteDiagnosis_PortFirewallRejectsInvalidSupportedDiagnosisClaim(t *testing.T) {
+	prev := SkillExecutorEnabled()
+	SetSkillExecutorEnabled(true)
+	defer SetSkillExecutorEnabled(prev)
+	prevPilots := SkillExecutorDiagnosisPilots()
+	SetSkillExecutorDiagnosisPilots([]string{"diagnose-port-firewall"})
+	defer SetSkillExecutorDiagnosisPilots(prevPilots)
+
+	chunk := knowledge.KBChunk{ChunkID: "runbook-port-001", KBVersion: "kb.test", Title: "Service port reachability", Content: "safe enough content for validation"}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:  true,
+		Hits:     []knowledge.KBChunk{chunk},
+		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 0.95, Kept: true}},
+	}}}
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":     {"UHostSet": []any{map[string]any{"UHostId": "u1", "State": "Running"}}},
+		"DescribeCompShareSoftwarePort": {"SoftwarePort": []any{map[string]any{"Software": "JupyterLab", "Port": float64(8888)}}},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: `{"action":"SearchKnowledge","args":{"query":"webui port blocked"}}`},
+		{Content: `{"final":"bad claim","diagnosis_claims":[{"claim":"Unsupported claim.","status":"supported","chunk_ids":["missing"]}]}`},
+	}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.Init(context.Background())
+	exec.calls = nil
+	eng.lastUserMsg = "webui port blocked"
+
+	var events []StepEvent
+	reply := eng.executeDiagnosis(context.Background(), "DiagnosePortOrFirewall",
+		map[string]any{"UHostId": "u1", "Service": "JupyterLab"}, func(ev StepEvent) {
+			events = append(events, ev)
+		})
+
+	assert.Contains(t, reply, `"success":true`)
+	assert.NotContains(t, reply, "bad claim")
+	assert.Equal(t, []string{"DescribeCompShareInstance", "DescribeCompShareSoftwarePort"}, exec.calls)
+	var sawClaimError bool
+	for _, ev := range events {
+		if ev.Type == StepError &&
+			ev.Action == "DiagnosePortOrFirewall" &&
+			ev.Source == observability.ToolSourceDiagnosisInternal &&
+			strings.Contains(ev.Message, "diagnosis claim") {
+			sawClaimError = true
+		}
+	}
+	assert.True(t, sawClaimError, "invalid claim must be visible in trace events")
 }
 
 func TestExecuteDiagnosis_GPUNotDetectedInjectsSafeKnowledgeLedgerOnly(t *testing.T) {
@@ -218,6 +322,7 @@ func TestExecuteDiagnosis_GPUNotDetectedInjectsSafeKnowledgeLedgerOnly(t *testin
 		{Content: `{"action":"DescribeCompShareInstance","args":{"UHostIds":["u1"]}}`},
 		{Content: `{"final":"先确认实例分配了 GPU，再让用户只读执行 nvidia-smi。"}`},
 	}}
+	mock.responses = append([]llm.ChatResponse{{Content: `{"action":"SearchKnowledge","args":{"query":"nvidia-smi cannot see gpu"}}`}}, mock.responses...)
 	eng := NewWithDeps(mock, exec, nil)
 	eng.SetKnowledgeRetriever(retriever)
 	eng.Init(context.Background())
@@ -232,15 +337,18 @@ func TestExecuteDiagnosis_GPUNotDetectedInjectsSafeKnowledgeLedgerOnly(t *testin
 
 	assert.NotEmpty(t, reply)
 	require.Len(t, retriever.calls, 1, "GPU diagnosis should probe KB evidence exactly once")
-	assert.Equal(t, eng.lastUserMsg, retriever.calls[0].question)
+	assert.Equal(t, "nvidia-smi cannot see gpu", retriever.calls[0].question)
 	assert.Equal(t, []string{"DescribeCompShareInstance"}, exec.calls)
 	assertStepOrder(t, events, "SearchKnowledge", "DescribeCompShareInstance")
-	require.NotEmpty(t, mock.calls)
+	require.GreaterOrEqual(t, len(mock.calls), 2)
 	firstPrompt := joinedMessages(mock.calls[0].Messages)
-	assert.Contains(t, firstPrompt, "EvidenceLedger")
-	assert.Contains(t, firstPrompt, "runbook-gpu-001")
-	assert.Contains(t, firstPrompt, "GPU runtime troubleshooting")
-	assert.NotContains(t, firstPrompt, "If nvidia-smi cannot see the GPU",
+	assert.Contains(t, firstPrompt, "SearchKnowledge")
+	assert.NotContains(t, firstPrompt, "runbook-gpu-001")
+	workingSetAfterSearch := joinedMessages(mock.calls[1].Messages)
+	assert.Contains(t, workingSetAfterSearch, "EvidenceLedger")
+	assert.Contains(t, workingSetAfterSearch, "runbook-gpu-001")
+	assert.Contains(t, workingSetAfterSearch, "GPU runtime troubleshooting")
+	assert.NotContains(t, workingSetAfterSearch, "If nvidia-smi cannot see the GPU",
 		"retrieved chunk content must not reach the diagnosis model")
 }
 
@@ -278,6 +386,7 @@ func TestExecuteDiagnosis_GPUNotDetectedRejectsRawKnowledgeLeakAndFallsBack(t *t
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{Content: `{"final":"` + rawContent + `"}`},
 	}}
+	mock.responses = append([]llm.ChatResponse{{Content: `{"action":"SearchKnowledge","args":{"query":"nvidia-smi cannot see gpu"}}`}}, mock.responses...)
 	eng := NewWithDeps(mock, exec, nil)
 	eng.SetKnowledgeRetriever(retriever)
 	eng.Init(context.Background())
@@ -294,7 +403,7 @@ func TestExecuteDiagnosis_GPUNotDetectedRejectsRawKnowledgeLeakAndFallsBack(t *t
 		"raw KB leakage must safe-fail the skill and fall back to the deterministic Go chain")
 	assert.NotContains(t, reply, rawContent)
 	assert.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, exec.calls)
-	require.Equal(t, 1, mock.callIdx)
+	require.Equal(t, 2, mock.callIdx)
 
 	var sawLeakError bool
 	for _, ev := range events {

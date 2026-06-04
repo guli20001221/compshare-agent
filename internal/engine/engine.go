@@ -185,6 +185,8 @@ type Engine struct {
 	rendererTraceObserver            func(observability.RendererTrace)
 	plannerTraceObserver             func(observability.PlannerTrace)
 	retrievalTraceObserver           func(observability.RetrievalTrace)
+	freshnessTraceObserver           func(observability.FreshnessTrace)
+	diagnosisTraceObserver           func(observability.DiagnosisTrace)
 	outcomeTraceObserver             func(observability.OutcomeTrace)
 	tokenUsageObserver               func(llm.TokenUsage)
 	rateLimiter                      governance.RateLimiter
@@ -220,7 +222,8 @@ type Engine struct {
 	// from sending object tool_choice on models that don't support it (notably
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
 	// run their detection logic but fall through to LLM auto routing.
-	supportsObjectToolChoice bool
+	supportsObjectToolChoice   bool
+	supportsRequiredToolChoice bool
 	// mutatingToolsEnabled controls whether instance-changing workflows and
 	// L1 mutating API actions are exposed and executable. Production defaults
 	// to read-only until these operations are product-ready.
@@ -300,9 +303,10 @@ type SharedDeps struct {
 	// FastTemplateRenderer enables B3: fast-tier catalog envelopes render
 	// via the handler's deterministic Reply instead of the LLM grounded
 	// renderer. Default false (LLM renderer for all tiers, unchanged).
-	FastTemplateRenderer     bool
-	RateLimiter              governance.RateLimiter
-	SupportsObjectToolChoice bool
+	FastTemplateRenderer       bool
+	RateLimiter                governance.RateLimiter
+	SupportsObjectToolChoice   bool
+	SupportsRequiredToolChoice bool
 	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
 	// 0 = disabled. Process-wide constant; copied into every NewSession.
 	MaxTokensPerTurn int
@@ -359,11 +363,11 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 	// constructor tolerated it). config.Load does not itself require a model,
 	// but the shipped configs set one, so this only triggers on a model-less
 	// misconfig — and surfaces at boot rather than at the first LLM call.
-	router, err := llm.NewRouter(cfg.Agent.LLM, nil)
+	router, err := llm.NewRouter(cfg.Agent.LLM, llm.TierOverridesFromConfig(cfg.Agent.TierRouting))
 	if err != nil {
 		return nil, fmt.Errorf("engine.NewSharedDeps: build LLM router: %w", err)
 	}
-	cap := llm.LookupCapability(cfg.Agent.LLM.BaseURL, cfg.Agent.LLM.Model)
+	cap := router.Capability(llm.TierFast)
 	return &SharedDeps{
 		LLMClient: router.For(llm.TierFast),
 		// Keep the router's TierAgent client for the agent-tier dispatch arms
@@ -375,10 +379,11 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 		// MemoryLimiter is process-local and suitable for local demo or
 		// single-instance deployment only. Multi-replica production needs a
 		// centralized limiter such as Redis or an API gateway.
-		RateLimiter:              governance.NewMemoryLimiter(cfg.Agent.RateLimit.Limits()),
-		SupportsObjectToolChoice: cap.SupportsObjectToolChoice,
-		MaxTokensPerTurn:         cfg.Agent.RateLimit.MaxTokensPerTurn,
-		ExternalExecutor:         tools.NewExternalExecutor(cfg.Agent),
+		RateLimiter:                governance.NewMemoryLimiter(cfg.Agent.RateLimit.Limits()),
+		SupportsObjectToolChoice:   cap.SupportsObjectToolChoice,
+		SupportsRequiredToolChoice: cap.SupportsRequiredToolChoice,
+		MaxTokensPerTurn:           cfg.Agent.RateLimit.MaxTokensPerTurn,
+		ExternalExecutor:           tools.NewExternalExecutor(cfg.Agent),
 	}, nil
 }
 
@@ -409,6 +414,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		fastTemplate:                deps.FastTemplateRenderer,
 		rateLimiter:                 deps.RateLimiter,
 		supportsObjectToolChoice:    deps.SupportsObjectToolChoice,
+		supportsRequiredToolChoice:  deps.SupportsRequiredToolChoice,
 		maxTokensPerTurn:            deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
@@ -458,14 +464,15 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 // need the model-feature-gated path can flip the field via setter.
 func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn ConfirmFunc) *Engine {
 	eng := &Engine{
-		llmClient:                client,
-		confirmFn:                confirmFn,
-		registry:                 entity.NewRegistry(),
-		rateLimitSubject:         governance.AnonymousSubjectKey,
-		lastInstanceQueryTurn:    -1,
-		lastMonitorTurn:          -1,
-		supportsObjectToolChoice: true,
-		mutatingToolsEnabled:     true,
+		llmClient:                  client,
+		confirmFn:                  confirmFn,
+		registry:                   entity.NewRegistry(),
+		rateLimitSubject:           governance.AnonymousSubjectKey,
+		lastInstanceQueryTurn:      -1,
+		lastMonitorTurn:            -1,
+		supportsObjectToolChoice:   true,
+		supportsRequiredToolChoice: true,
+		mutatingToolsEnabled:       true,
 	}
 	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn)
 	return eng
@@ -595,6 +602,14 @@ func (e *Engine) SetRendererTraceObserver(observer func(observability.RendererTr
 
 func (e *Engine) SetRetrievalTraceObserver(observer func(observability.RetrievalTrace)) {
 	e.retrievalTraceObserver = observer
+}
+
+func (e *Engine) SetFreshnessTraceObserver(observer func(observability.FreshnessTrace)) {
+	e.freshnessTraceObserver = observer
+}
+
+func (e *Engine) SetDiagnosisTraceObserver(observer func(observability.DiagnosisTrace)) {
+	e.diagnosisTraceObserver = observer
 }
 
 func (e *Engine) SetOutcomeTraceObserver(observer func(observability.OutcomeTrace)) {
@@ -1070,8 +1085,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			})
 			return tokenBudgetExceededMessage, nil
 		}
+		messages := e.buildMessagesForLLM()
 		req := llm.ChatRequest{
-			Messages: e.buildMessagesForLLM(),
+			Messages: messages,
 			Tools:    tools.VisibleRegistryForSubset(intent.IntentToolSubset(e.lastPlannerIntentThisTurn), e.mutatingToolsEnabled),
 		}
 		// BRIDGE T-001.f1: adjacent monitor follow-up must re-call
@@ -1082,11 +1098,30 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// 400ing on a forced ToolChoice. Stale-reuse is then unmitigated
 		// on those models — see eval/capability/2026-05-08-ds-v4-flash-
 		// tool-choice-probe.md and the pending monitor stale-reuse probe.
-		if round == 0 && forceMonitorRecall && e.supportsObjectToolChoice {
-			req.ToolChoice = openai.ToolChoice{
-				Type:     openai.ToolTypeFunction,
-				Function: openai.ToolFunction{Name: "GetCompShareInstanceMonitor"},
+		if round == 0 && forceMonitorRecall {
+			freshness := observability.FreshnessTrace{
+				MonitorRecallForced:        true,
+				SupportsObjectToolChoice:   traceBoolPtr(e.supportsObjectToolChoice),
+				SupportsRequiredToolChoice: traceBoolPtr(e.supportsRequiredToolChoice),
 			}
+			if e.supportsObjectToolChoice {
+				req.ToolChoice = openai.ToolChoice{
+					Type:     openai.ToolTypeFunction,
+					Function: openai.ToolFunction{Name: "GetCompShareInstanceMonitor"},
+				}
+				freshness.MonitorRecallMode = "object_tool_choice"
+			} else {
+				req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, monitorRecallRequiredToolNote)
+				freshness.MonitorRecallFallbackReason = "object_tool_choice_unsupported"
+				if e.supportsRequiredToolChoice {
+					req.ToolChoice = "required"
+					freshness.MonitorRecallMode = "required_tool_choice"
+				} else {
+					freshness.MonitorRecallMode = "advisory_system_note"
+					freshness.MonitorRecallFallbackReason = "object_and_required_tool_choice_unsupported"
+				}
+			}
+			e.emitFreshnessTrace(freshness)
 		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
 			content := rateLimitMessage(decision.Reason)
@@ -2265,6 +2300,20 @@ func (e *Engine) emitRetrievalTrace(trace observability.RetrievalTrace) {
 	e.retrievalTraceObserver(trace)
 }
 
+func (e *Engine) emitFreshnessTrace(trace observability.FreshnessTrace) {
+	if e.freshnessTraceObserver == nil {
+		return
+	}
+	e.freshnessTraceObserver(trace)
+}
+
+func (e *Engine) emitDiagnosisTrace(trace observability.DiagnosisTrace) {
+	if e.diagnosisTraceObserver == nil {
+		return
+	}
+	e.diagnosisTraceObserver(trace)
+}
+
 func (e *Engine) emitOutcomeTrace(trace observability.OutcomeTrace) {
 	if e.outcomeTraceObserver == nil || !traceOutcomeObserved(trace) {
 		return
@@ -3247,10 +3296,45 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	if result.Success {
 		e.markRegistryInvalidated(action)
+		// Successful no-return-data lifecycle workflows return a deterministic
+		// final reply so the engine SKIPS the post-workflow LLM narration round.
+		// That round runs on the fast tier (ds-v4-flash thinking mode); its
+		// non-streamed reasoning phase can stall for many seconds (worst case the
+		// 120s HTTP timeout), so the user sees the workflow finish but no final
+		// reply / no `done` frame — the turn appears hung. Data-bearing workflows
+		// (create/deploy/reset-password/disk/resize/reinstall) still narrate so
+		// their IDs / passwords / next-step guidance surface.
+		if reply, ok := deterministicWorkflowReply(action, args); ok {
+			return finalReplyPrefix + reply
+		}
 	}
 
 	b, _ := json.Marshal(result)
 	return string(b)
+}
+
+// deterministicWorkflowReply returns a fixed success reply for lifecycle
+// workflows that carry no critical return data, letting executeWorkflow short-
+// circuit the LLM narration round (see the call site for why). Returns
+// ("", false) for workflows whose result must be narrated (they surface IDs,
+// passwords, or post-action guidance the user needs).
+func deterministicWorkflowReply(action string, args map[string]any) (string, bool) {
+	uhost, _ := args["UHostId"].(string)
+	switch action {
+	case "RebootInstanceWorkflow":
+		return fmt.Sprintf("✅ 已为实例 %s 执行重启。这是软重启，过程中实例状态保持 Running，通常 1–2 分钟内完成。", uhost), true
+	case "StopInstanceWorkflow":
+		return fmt.Sprintf("✅ 已为实例 %s 执行关机。注意：关机后云硬盘仍会按量计费。", uhost), true
+	case "StartInstanceWorkflow":
+		return fmt.Sprintf("✅ 已为实例 %s 执行开机，启动需要一点时间，请稍后查看。", uhost), true
+	case "RenameInstanceWorkflow":
+		if name, _ := args["Name"].(string); name != "" {
+			return fmt.Sprintf("✅ 已将实例 %s 重命名为「%s」。", uhost, name), true
+		}
+		return fmt.Sprintf("✅ 已重命名实例 %s。", uhost), true
+	default:
+		return "", false
+	}
 }
 
 // executeDiagnosis runs a diagnostic chain and returns the result as JSON.
@@ -3504,16 +3588,34 @@ func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string
 		onStep(StepEvent{Type: typ, Action: toolName, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 	}
 
-	evidenceLedger, evidenceHits := e.recordDiagnosisKnowledgeProbe(skillName, e.lastUserMsg, onStep)
-	seed := buildDiagnosisSkillSeed(skillName, args, evidenceLedger)
+	var evidenceHits []knowledge.RetrievalHit
+	var evidenceLedger knowledge.EvidenceLedger
+	var rawDiagnosisClaims []knowledge.DiagnosisClaim
+	var knowledgeSearch orchestrator.KnowledgeSearchFunc
+	maxKnowledgeSearches := 0
+	if diagnosisSkillUsesKnowledgeEvidence(skillName) && e.knowledgeRetriever != nil {
+		maxKnowledgeSearches = 1
+		knowledgeSearch = func(_ context.Context, query string) (knowledge.EvidenceLedger, []knowledge.RetrievalHit, error) {
+			ledger, hits := e.recordDiagnosisKnowledgeProbe(skillName, query, onStep)
+			evidenceLedger = knowledge.MergeEvidenceLedgers(evidenceLedger, ledger, maxKnowledgeSearches*knowledge.DefaultEvidenceLedgerMaxItems)
+			evidenceHits = append(evidenceHits, hits...)
+			return ledger, hits, nil
+		}
+	}
+	seed := buildDiagnosisSkillSeed(skillName, args, knowledge.EvidenceLedger{})
 
 	reply, rerr := orchestrator.RunReadOnlySkill(ctx, e.lastUserMsg, seed, orchestrator.SkillExecOptions{
-		Body:      body,
-		Tools:     tools.VisibleRegistryForSubset(skill.RequiredTools, false),
-		Exec:      e.toolExecutorFor(tools.OriginDiagnosisInternal),
-		Client:    client,
-		Progress:  progress,
-		OnUsage:   e.emitTokenUsage,
+		Body:                 body,
+		Tools:                tools.VisibleRegistryForSubset(skill.RequiredTools, false),
+		Exec:                 e.toolExecutorFor(tools.OriginDiagnosisInternal),
+		Client:               client,
+		Progress:             progress,
+		OnUsage:              e.emitTokenUsage,
+		KnowledgeSearch:      knowledgeSearch,
+		MaxKnowledgeSearches: maxKnowledgeSearches,
+		OnDiagnosisClaims: func(claims []knowledge.DiagnosisClaim) {
+			rawDiagnosisClaims = append([]knowledge.DiagnosisClaim(nil), claims...)
+		},
 		MaxRounds: 6,
 	})
 	if rerr != nil {
@@ -3525,6 +3627,14 @@ func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string
 	if lerr := knowledge.ValidateNoRawEvidenceLeak(reply, evidenceHits); lerr != nil {
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: lerr.Error()})
 		return "", false
+	}
+	diagnosisClaims, cerr := knowledge.ValidateDiagnosisClaims(rawDiagnosisClaims, evidenceLedger)
+	if cerr != nil {
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: cerr.Error()})
+		return "", false
+	}
+	if len(diagnosisClaims) > 0 {
+		e.emitDiagnosisTrace(diagnosisClaimsTrace(diagnosisClaims))
 	}
 	return reply, true
 }
@@ -3597,6 +3707,21 @@ func diagnosisSkillUsesKnowledgeEvidence(skillName string) bool {
 	default:
 		return false
 	}
+}
+
+func diagnosisClaimsTrace(claims []knowledge.DiagnosisClaim) observability.DiagnosisTrace {
+	out := observability.DiagnosisTrace{
+		Claims: make([]observability.DiagnosisClaimTrace, 0, len(claims)),
+	}
+	for _, claim := range claims {
+		out.Claims = append(out.Claims, observability.DiagnosisClaimTrace{
+			Claim:    claim.Claim,
+			Status:   claim.Status,
+			ChunkIDs: append([]string(nil), claim.ChunkIDs...),
+			Reason:   claim.Reason,
+		})
+	}
+	return out
 }
 
 // findGeneratedSkill looks up a skill from the embedded generated registry by name.
@@ -3687,6 +3812,8 @@ func (e *Engine) trimHistory() {
 // state may be outdated. It nudges the model to re-query before acting.
 const staleStateNote = "注意：本轮之前的对话中获取的实例状态信息可能已过时，用户可能已在控制台侧手动操作实例。\n如果本轮需要基于实例当前状态作出判断，或执行实例变更操作，必须先调用 DescribeCompShareInstance 获取最新状态后再决策。"
 
+const monitorRecallRequiredToolNote = "The previous user turn queried instance monitoring. For this follow-up, call GetCompShareInstanceMonitor again before answering and do not reuse prior monitor values."
+
 // buildMessagesForLLM returns the message slice to send to the LLM.
 // If instance state from a prior turn may be stale, a temporary system note
 // is appended. The note is NOT persisted in e.messages.
@@ -3722,6 +3849,23 @@ func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
 	msgs = append(msgs, e.messages[lastUserIdx:]...)
 	return msgs
 }
+
+func withEphemeralSystemBeforeLastUser(messages []openai.ChatCompletionMessage, content string) []openai.ChatCompletionMessage {
+	insertAt := len(messages)
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == openai.ChatMessageRoleUser {
+			insertAt = i
+			break
+		}
+	}
+	out := make([]openai.ChatCompletionMessage, 0, len(messages)+1)
+	out = append(out, messages[:insertAt]...)
+	out = append(out, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleSystem, Content: content})
+	out = append(out, messages[insertAt:]...)
+	return out
+}
+
+func traceBoolPtr(v bool) *bool { return &v }
 
 // PR9 removed ensureProjectId / externalExecutor / pickProjectId. The
 // auto-discovery path called ExternalExecutor.SetProjectId, which mutated

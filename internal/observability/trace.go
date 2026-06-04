@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -43,6 +44,11 @@ const DefaultTraceDir = "logs"
 const DefaultTraceFilePerm os.FileMode = 0o600
 
 const DefaultTraceRetentionDays = 30
+
+var (
+	diagnosisTraceUHostIDRE = regexp.MustCompile(`\buhost-[A-Za-z0-9]+\b`)
+	diagnosisTraceIPv4RE    = regexp.MustCompile(`\b(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}\b`)
+)
 
 type WriterOptions struct {
 	Dir string
@@ -128,6 +134,7 @@ type TraceRecord struct {
 	Freshness         FreshnessTrace       `json:"freshness"`
 	RateLimit         RateLimitTrace       `json:"rate_limit"`
 	Retrieval         RetrievalTrace       `json:"retrieval"`
+	Diagnosis         DiagnosisTrace       `json:"diagnosis"`
 	Outcome           OutcomeTrace         `json:"outcome"`
 	// Steps holds agent-tier saga step traces, populated by B6.2. Empty /
 	// omitempty for all non-agent turns, so trace output stays byte-identical
@@ -154,6 +161,7 @@ type traceRecordJSON struct {
 	Freshness         *FreshnessTrace       `json:"freshness,omitempty"`
 	RateLimit         *RateLimitTrace       `json:"rate_limit,omitempty"`
 	Retrieval         *RetrievalTrace       `json:"retrieval,omitempty"`
+	Diagnosis         *DiagnosisTrace       `json:"diagnosis,omitempty"`
 	Outcome           *OutcomeTrace         `json:"outcome,omitempty"`
 	Steps             []StepTrace           `json:"steps,omitempty"`
 }
@@ -188,7 +196,7 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	if traceRendererObserved(r.Renderer) {
 		out.Renderer = &r.Renderer
 	}
-	if r.Freshness.MonitorCallInCurrentTurn {
+	if traceFreshnessObserved(r.Freshness) {
 		out.Freshness = &r.Freshness
 	}
 	if traceRateLimitObserved(r.RateLimit) {
@@ -196,6 +204,9 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	}
 	if traceRetrievalObserved(r.Retrieval) {
 		out.Retrieval = &r.Retrieval
+	}
+	if traceDiagnosisObserved(r.Diagnosis) {
+		out.Diagnosis = &r.Diagnosis
 	}
 	if traceOutcomeObserved(r.Outcome) {
 		out.Outcome = &r.Outcome
@@ -413,7 +424,36 @@ type RendererTrace struct {
 }
 
 type FreshnessTrace struct {
-	MonitorCallInCurrentTurn bool `json:"monitor_call_in_current_turn"`
+	MonitorCallInCurrentTurn    bool   `json:"monitor_call_in_current_turn"`
+	MonitorRecallForced         bool   `json:"monitor_recall_forced,omitempty"`
+	MonitorRecallMode           string `json:"monitor_recall_mode,omitempty"`
+	MonitorRecallFallbackReason string `json:"monitor_recall_fallback_reason,omitempty"`
+	SupportsObjectToolChoice    *bool  `json:"supports_object_tool_choice,omitempty"`
+	SupportsRequiredToolChoice  *bool  `json:"supports_required_tool_choice,omitempty"`
+}
+
+func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
+	if next.MonitorCallInCurrentTurn {
+		current.MonitorCallInCurrentTurn = true
+	}
+	if next.MonitorRecallForced {
+		current.MonitorRecallForced = true
+	}
+	if next.MonitorRecallMode != "" {
+		current.MonitorRecallMode = next.MonitorRecallMode
+	}
+	if next.MonitorRecallFallbackReason != "" {
+		current.MonitorRecallFallbackReason = next.MonitorRecallFallbackReason
+	}
+	if next.SupportsObjectToolChoice != nil {
+		v := *next.SupportsObjectToolChoice
+		current.SupportsObjectToolChoice = &v
+	}
+	if next.SupportsRequiredToolChoice != nil {
+		v := *next.SupportsRequiredToolChoice
+		current.SupportsRequiredToolChoice = &v
+	}
+	return current
 }
 
 type RateLimitTrace struct {
@@ -497,6 +537,17 @@ type RetrievalHit struct {
 	FusionScore float64 `json:"fusion_score,omitempty"`
 }
 
+type DiagnosisTrace struct {
+	Claims []DiagnosisClaimTrace `json:"claims,omitempty"`
+}
+
+type DiagnosisClaimTrace struct {
+	Claim    string   `json:"claim"`
+	Status   string   `json:"status"`
+	ChunkIDs []string `json:"chunk_ids,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
+}
+
 func RedactQueryDerivedFields(trace *RetrievalTrace) {
 	if trace == nil {
 		return
@@ -506,6 +557,24 @@ func RedactQueryDerivedFields(trace *RetrievalTrace) {
 	for i, expansion := range trace.QueryExpansions {
 		trace.QueryExpansions[i] = policy.RedactQueryDerivedValue(expansion)
 	}
+}
+
+func RedactDiagnosisDerivedFields(trace *DiagnosisTrace) {
+	if trace == nil {
+		return
+	}
+	for i := range trace.Claims {
+		trace.Claims[i].Claim = redactDiagnosisTraceText(trace.Claims[i].Claim)
+		trace.Claims[i].Reason = redactDiagnosisTraceText(trace.Claims[i].Reason)
+	}
+}
+
+func redactDiagnosisTraceText(text string) string {
+	text = policy.RedactQueryDerivedValue(text)
+	text = security.RedactOperationalTokensInText(text)
+	text = diagnosisTraceUHostIDRE.ReplaceAllString(text, "<UHOST_ID>")
+	text = diagnosisTraceIPv4RE.ReplaceAllString(text, "$1.$2.x.x")
+	return text
 }
 
 // prepareForPersist is the single, sink-agnostic choke point every persistence
@@ -526,6 +595,7 @@ func RedactQueryDerivedFields(trace *RetrievalTrace) {
 func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 	record = record.withDefaults(now)
 	RedactQueryDerivedFields(&record.Retrieval)
+	RedactDiagnosisDerivedFields(&record.Diagnosis)
 	RedactStepDerivedFields(record.Steps)
 	return record
 }
@@ -745,6 +815,15 @@ func traceRateLimitObserved(trace RateLimitTrace) bool {
 		trace.RetryAfterMS != 0
 }
 
+func traceFreshnessObserved(trace FreshnessTrace) bool {
+	return trace.MonitorCallInCurrentTurn ||
+		trace.MonitorRecallForced ||
+		trace.MonitorRecallMode != "" ||
+		trace.MonitorRecallFallbackReason != "" ||
+		trace.SupportsObjectToolChoice != nil ||
+		trace.SupportsRequiredToolChoice != nil
+}
+
 func traceRetrievalObserved(trace RetrievalTrace) bool {
 	return trace.Enabled ||
 		trace.KBVersion != "" ||
@@ -762,7 +841,12 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.EmbeddingModel != "" ||
 		trace.RerankerMode != "" ||
 		trace.RerankerLatencyMS != nil ||
-		trace.RerankerFallbackReason != ""
+		trace.RerankerFallbackReason != "" ||
+		len(trace.CitedChunkIDs) > 0
+}
+
+func traceDiagnosisObserved(trace DiagnosisTrace) bool {
+	return len(trace.Claims) > 0
 }
 
 func traceOutcomeObserved(trace OutcomeTrace) bool {
@@ -806,6 +890,14 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	}
 	if r.Retrieval.HitItems == nil {
 		r.Retrieval.HitItems = []RetrievalHit{}
+	}
+	if r.Diagnosis.Claims == nil {
+		r.Diagnosis.Claims = []DiagnosisClaimTrace{}
+	}
+	for i := range r.Diagnosis.Claims {
+		if r.Diagnosis.Claims[i].ChunkIDs == nil {
+			r.Diagnosis.Claims[i].ChunkIDs = []string{}
+		}
 	}
 	if r.EntityRegistry.SyncEvent == "" {
 		r.EntityRegistry.SyncEvent = "unavailable"

@@ -39,13 +39,87 @@ func TestWriterAppendWritesOneJSONLinePerRecord(t *testing.T) {
 	if first.Timestamp != now.Format(time.RFC3339) {
 		t.Fatalf("timestamp = %q, want %q", first.Timestamp, now.Format(time.RFC3339))
 	}
-	for _, emptyBlock := range []string{`"planner":`, `"rate_limit":`, `"retrieval":`, `"renderer":`, `"outcome":`} {
+	for _, emptyBlock := range []string{`"planner":`, `"rate_limit":`, `"retrieval":`, `"renderer":`, `"freshness":`, `"outcome":`} {
 		if strings.Contains(lines[0], emptyBlock) {
 			t.Fatalf("minimal trace line should omit empty optional block %s: %s", emptyBlock, lines[0])
 		}
 	}
 	if first.RateLimit.Checked || first.RateLimit.Allowed || first.RateLimit.Class != "" || first.RateLimit.RetryAfterMS != 0 {
 		t.Fatalf("default rate limit trace = %#v, want zero values", first.RateLimit)
+	}
+}
+
+func TestTraceRecordDiagnosisClaimsMarshalAndRedact(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	writer, err := NewWriter(WriterOptions{Dir: t.TempDir(), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	err = writer.Append(TraceRecord{
+		TurnID:    "turn-1",
+		TurnIndex: 1,
+		Diagnosis: DiagnosisTrace{Claims: []DiagnosisClaimTrace{{
+			Claim:    "Instance uhost-secret has Jupyter evidence.",
+			Status:   "supported",
+			ChunkIDs: []string{"runbook-port-001"},
+			Reason:   "Observed IP 10.1.2.3 in diagnosis output.",
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	lines := readLines(t, filepath.Join(writer.Dir(), "agent-trace-2026-06-04.jsonl"))
+	if len(lines) != 1 {
+		t.Fatalf("trace lines = %d, want 1", len(lines))
+	}
+	text := lines[0]
+	for _, want := range []string{
+		`"diagnosis":`,
+		`"claims":`,
+		`"status":"supported"`,
+		`"chunk_ids":["runbook-port-001"]`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("diagnosis trace missing %s: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "uhost-secret") || strings.Contains(text, "10.1.2.3") {
+		t.Fatalf("diagnosis trace leaked raw identifier: %s", text)
+	}
+}
+
+func TestTraceRecordFreshnessMonitorRecallMarshal(t *testing.T) {
+	data, err := json.Marshal(TraceRecord{
+		SchemaVersion: SchemaVersion,
+		TraceID:       "trace-1",
+		TurnID:        "turn-1",
+		TurnIndex:     1,
+		Timestamp:     "2026-06-04T00:00:00Z",
+		UserMsgHash:   "sha256:user",
+		Freshness: FreshnessTrace{
+			MonitorRecallForced:         true,
+			MonitorRecallMode:           "required_tool_choice",
+			MonitorRecallFallbackReason: "object_tool_choice_unsupported",
+			SupportsObjectToolChoice:    boolPtr(false),
+			SupportsRequiredToolChoice:  boolPtr(true),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal TraceRecord: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`"freshness":`,
+		`"monitor_call_in_current_turn":false`,
+		`"monitor_recall_forced":true`,
+		`"monitor_recall_mode":"required_tool_choice"`,
+		`"monitor_recall_fallback_reason":"object_tool_choice_unsupported"`,
+		`"supports_object_tool_choice":false`,
+		`"supports_required_tool_choice":true`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("freshness trace JSON missing %s: %s", want, text)
+		}
 	}
 }
 
@@ -183,6 +257,7 @@ func TestRetrievalTraceEmbeddingLatencyZeroIsNotOmitted(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 { return &v }
+func boolPtr(v bool) *bool    { return &v }
 
 // HybridMode alone must be enough to mark the retrieval block as observed —
 // otherwise a bm25_only retriever's trace would be silently dropped from the
@@ -216,6 +291,12 @@ func TestRetrievalTraceObservedByHybridModeAlone(t *testing.T) {
 		trace := RetrievalTrace{EmbeddingLatencyMS: int64Ptr(0)}
 		if !traceRetrievalObserved(trace) {
 			t.Fatal("traceRetrievalObserved(EmbeddingLatencyMS=*0) = false, want true")
+		}
+	})
+	t.Run("cited_chunk_ids_only", func(t *testing.T) {
+		trace := RetrievalTrace{CitedChunkIDs: []string{"kb-001"}}
+		if !traceRetrievalObserved(trace) {
+			t.Fatal("traceRetrievalObserved(CitedChunkIDs only) = false, want true")
 		}
 	})
 }

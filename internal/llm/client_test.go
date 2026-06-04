@@ -176,6 +176,98 @@ func TestClientChatCapturesStreamingUsage(t *testing.T) {
 	}
 }
 
+func TestClientChatSendsResponseFormatWhenRequested(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("parse request: %v", err)
+		}
+		responseFormat, ok := req["response_format"].(map[string]any)
+		if !ok {
+			t.Fatalf("response_format = %#v, want object", req["response_format"])
+		}
+		if responseFormat["type"] != "json_object" {
+			t.Fatalf("response_format.type = %#v, want json_object", responseFormat["type"])
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{}\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.LLMConfig{
+		BaseURL: srv.URL + "/v1",
+		APIKey:  "test-key",
+		Model:   "test-model",
+	})
+
+	_, err := client.Chat(context.Background(), ChatRequest{
+		Messages: []openai.ChatCompletionMessage{{
+			Role:    openai.ChatMessageRoleUser,
+			Content: "return json",
+		}},
+		ResponseFormat: &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+}
+
+func TestClientChatOmitsResponseFormatForToolRequestsByDefault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("parse request: %v", err)
+		}
+		if _, ok := req["response_format"]; ok {
+			t.Fatalf("response_format should be omitted for ordinary tool request: %s", string(body))
+		}
+		if _, ok := req["tools"]; !ok {
+			t.Fatalf("tools should still be sent: %s", string(body))
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.LLMConfig{
+		BaseURL: srv.URL + "/v1",
+		APIKey:  "test-key",
+		Model:   "test-model",
+	})
+
+	_, err := client.Chat(context.Background(), ChatRequest{
+		Messages: []openai.ChatCompletionMessage{{
+			Role:    openai.ChatMessageRoleUser,
+			Content: "call tool if needed",
+		}},
+		Tools: []openai.Tool{{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "DescribeCompShareInstance",
+				Description: "describe instance",
+				Parameters:  map[string]any{"type": "object"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+}
+
 func TestClientChatFallsBackWhenStreamingUsageUnsupported(t *testing.T) {
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

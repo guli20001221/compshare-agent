@@ -202,7 +202,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 13 shared + 38 per-session = 51 fields. Any drift
+// Whitelist totals: 14 shared + 40 per-session = 54 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -221,6 +221,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"fastTemplate":                true,
 		"rateLimiter":                 true,
 		"supportsObjectToolChoice":    true,
+		"supportsRequiredToolChoice":  true,
 		"maxTokensPerTurn":            true,
 	}
 	perSessionFields := map[string]bool{
@@ -246,6 +247,8 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"rendererTraceObserver":            true,
 		"plannerTraceObserver":             true,
 		"retrievalTraceObserver":           true,
+		"freshnessTraceObserver":           true,
+		"diagnosisTraceObserver":           true,
 		"outcomeTraceObserver":             true,
 		"tokenUsageObserver":               true,
 		"rateLimitObserver":                true,
@@ -277,15 +280,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"baseUserContext":           true,
 	}
 
-	if want, got := 13, len(sharedFields); want != got {
+	if want, got := 14, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 38, len(perSessionFields); want != got {
+	if want, got := 40, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 51, typ.NumField(); want != got {
+	if want, got := 54, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}
@@ -316,9 +319,10 @@ func TestNewWithDeps_FieldSetMatchesNewSession(t *testing.T) {
 	withDeps := NewWithDeps(llm, exec, confirm)
 
 	session := NewSession(&SharedDeps{
-		LLMClient:                llm,
-		ExternalExecutor:         exec,
-		SupportsObjectToolChoice: true,
+		LLMClient:                  llm,
+		ExternalExecutor:           exec,
+		SupportsObjectToolChoice:   true,
+		SupportsRequiredToolChoice: true,
 	}, SessionOptions{
 		ConfirmFn:            confirm,
 		MutatingToolsEnabled: true,
@@ -330,6 +334,10 @@ func TestNewWithDeps_FieldSetMatchesNewSession(t *testing.T) {
 	if withDeps.supportsObjectToolChoice != session.supportsObjectToolChoice {
 		t.Errorf("supportsObjectToolChoice differs: NewWithDeps=%v NewSession=%v",
 			withDeps.supportsObjectToolChoice, session.supportsObjectToolChoice)
+	}
+	if withDeps.supportsRequiredToolChoice != session.supportsRequiredToolChoice {
+		t.Errorf("supportsRequiredToolChoice differs: NewWithDeps=%v NewSession=%v",
+			withDeps.supportsRequiredToolChoice, session.supportsRequiredToolChoice)
 	}
 	if withDeps.mutatingToolsEnabled != session.mutatingToolsEnabled {
 		t.Errorf("mutatingToolsEnabled differs: NewWithDeps=%v NewSession=%v",

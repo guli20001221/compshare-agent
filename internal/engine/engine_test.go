@@ -1258,7 +1258,7 @@ func TestChat_MutatingRateLimitAllowsWorkflowWithoutCountingInternalSteps(t *tes
 	reply, err := eng.Chat(context.Background(), "stop workflow", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, "stopped", reply)
+	assert.Contains(t, reply, "执行关机", "stop workflow returns a deterministic final reply (no LLM narration)")
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
 	assert.Contains(t, executor.calls, "StopCompShareInstance")
 	var mutating []governance.Request
@@ -1335,6 +1335,34 @@ func TestChat_ReadExpensiveTargetCapBecomesToolResult(t *testing.T) {
 	assertNoStepTypeForAction(t, *events, StepError, "GetCompShareInstanceMonitor")
 }
 
+func TestChat_MonitorRecallRequiredFallbackRecordsFreshnessReason(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "fresh monitor checked"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+	eng.userTurn = 1
+	eng.lastMonitorTurn = 1
+	eng.supportsObjectToolChoice = false
+	eng.supportsRequiredToolChoice = true
+	var freshness observability.FreshnessTrace
+	eng.SetFreshnessTraceObserver(func(trace observability.FreshnessTrace) {
+		freshness = trace
+	})
+
+	reply, err := eng.Chat(context.Background(), "刚才CPU使用率", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "fresh monitor checked", reply)
+	require.Len(t, mock.calls, 1)
+	assert.Equal(t, "required", mock.calls[0].ToolChoice)
+	assert.True(t, freshness.MonitorRecallForced)
+	assert.Equal(t, "required_tool_choice", freshness.MonitorRecallMode)
+	assert.Equal(t, "object_tool_choice_unsupported", freshness.MonitorRecallFallbackReason)
+	require.NotNil(t, freshness.SupportsObjectToolChoice)
+	require.NotNil(t, freshness.SupportsRequiredToolChoice)
+	assert.False(t, *freshness.SupportsObjectToolChoice)
+	assert.True(t, *freshness.SupportsRequiredToolChoice)
+}
+
 func TestWorkflowInternalReadExpensiveConsumesSubjectQuotaButSkipsTurnBudget(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
@@ -1350,7 +1378,7 @@ func TestWorkflowInternalReadExpensiveConsumesSubjectQuotaButSkipsTurnBudget(t *
 
 	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-stop-001"}, noopStep)
 
-	assert.Contains(t, reply, `"success":true`)
+	assert.Contains(t, reply, "执行关机", "successful stop returns a deterministic final reply")
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
 	assert.Contains(t, executor.calls, "StopCompShareInstance")
 	var readExpensive []governance.Request
@@ -1858,12 +1886,14 @@ func TestChat_WorkflowTool_StopInstance(t *testing.T) {
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
 	assert.Contains(t, executor.calls, "StopCompShareInstance")
 
-	// Workflow result should be valid JSON with success
-	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
-	var result map[string]any
-	err = json.Unmarshal([]byte(toolMsg.Content), &result)
-	assert.NoError(t, err)
-	assert.Equal(t, true, result["success"])
+	// Stop is a no-return-data lifecycle op: executeWorkflow returns a
+	// deterministic final reply and SKIPS the post-workflow LLM narration
+	// round (see deterministicWorkflowReply), so the engine never makes the
+	// second LLM call — this is what stops the WS turn from stalling on the
+	// fast-tier thinking-mode narration.
+	require.Len(t, mock.calls, 1, "stop workflow must short-circuit LLM narration")
+	assert.Contains(t, reply, "uhost-stop-001", "deterministic reply names the instance")
+	assert.Contains(t, reply, "计费", "stop reply keeps the disk-charge note")
 	assert.True(t, eng.registry.NeedsRefresh(now.Add(time.Second)))
 }
 
@@ -2815,6 +2845,20 @@ func toolChoiceForMonitor(req llm.ChatRequest) bool {
 	return tc.Type == openai.ToolTypeFunction && tc.Function.Name == "GetCompShareInstanceMonitor"
 }
 
+func toolChoiceRequired(req llm.ChatRequest) bool {
+	choice, ok := req.ToolChoice.(string)
+	return ok && choice == "required"
+}
+
+func hasMonitorRecallRequiredToolNote(req llm.ChatRequest) bool {
+	for _, m := range req.Messages {
+		if m.Role == openai.ChatMessageRoleSystem && strings.Contains(m.Content, monitorRecallRequiredToolNote) {
+			return true
+		}
+	}
+	return false
+}
+
 func monitorScenarioExecutor() *mockExecutor {
 	return &mockExecutor{results: map[string]map[string]any{
 		"GetCompShareInstanceMonitor": {
@@ -2919,9 +2963,10 @@ func TestMonitorRecallGuard_FirstTurnDoesNotTrigger(t *testing.T) {
 }
 
 // When the active LLM does not support object tool_choice (e.g. ds v4 flash
-// in thinking mode), the monitor recall guard must fall through to LLM auto
-// routing instead of emitting a forced ToolChoice that would 400.
-func TestMonitorRecallGuard_FallsThroughWhenObjectToolChoiceUnsupported(t *testing.T) {
+// in thinking mode), the monitor recall guard must not emit a provider-400ing
+// object ToolChoice. If required tool_choice is supported, degrade to required
+// plus an explicit monitor-refresh note instead of silently falling through.
+func TestMonitorRecallGuard_DegradesToRequiredWhenObjectToolChoiceUnsupported(t *testing.T) {
 	executor := monitorScenarioExecutor()
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
@@ -2933,6 +2978,7 @@ func TestMonitorRecallGuard_FallsThroughWhenObjectToolChoiceUnsupported(t *testi
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
 	eng.setSupportsObjectToolChoice(false)
+	eng.supportsRequiredToolChoice = true
 
 	_, err := eng.Chat(context.Background(), "看看这台机器的监控", noopStep)
 	assert.NoError(t, err)
@@ -2941,8 +2987,12 @@ func TestMonitorRecallGuard_FallsThroughWhenObjectToolChoiceUnsupported(t *testi
 	assert.NoError(t, err)
 
 	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
-		assert.Nil(t, mock.calls[2].ToolChoice,
-			"model-feature gate must not force ToolChoice when object tool_choice is unsupported")
+		assert.False(t, toolChoiceForMonitor(mock.calls[2]),
+			"model-feature gate must not force object ToolChoice when unsupported")
+		assert.True(t, toolChoiceRequired(mock.calls[2]),
+			"unsupported object ToolChoice should degrade to required when supported")
+		assert.True(t, hasMonitorRecallRequiredToolNote(mock.calls[2]),
+			"required fallback must explicitly tell the model to refresh monitor data")
 	}
 }
 
