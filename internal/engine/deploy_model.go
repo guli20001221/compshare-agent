@@ -388,6 +388,14 @@ func (e *Engine) selectDeployZoneAndGPU(ctx context.Context, availResult map[str
 	}
 	primary := candidates[0]
 
+	// A GPU the user explicitly named is honored STRICTLY (same contract as a
+	// user-named zone): deploy THAT card or surface an actionable error — never
+	// silently auto-size to a different one. Auto-sizing below only runs when the
+	// user did not pin a card.
+	if userGPU := extractDeployGPU(userMsg); userGPU != "" {
+		return e.selectPinnedGPUZone(ctx, availResult, plan, supported, candidates, userZone, userGPU)
+	}
+
 	var firstZone, firstGPU, firstNote string // first sizeable zone, for stock-unconfirmed fall-through
 	primarySoldOut := false
 	for i, z := range candidates {
@@ -433,6 +441,116 @@ func (e *Engine) selectDeployZoneAndGPU(ctx context.Context, availResult map[str
 	return primary, gt, note, "", nil
 }
 
+// selectPinnedGPUZone honors a GPU the user explicitly named. It threads that exact
+// card through the SAME per-zone stock selection as the auto path, but never sizes a
+// different one:
+//   - image↔GPU incompatible → hard stop with a pin-specific message (the auto
+//     path's gate assumes a VRAM shortfall, the wrong explanation for an explicit pin);
+//   - offered with real stock in a candidate zone → create there (prefer the primary;
+//     fall back on a sold-out primary exactly like the auto path);
+//   - offered but stock unconfirmable (e.g. no image id) → proceed on the first
+//     offering zone and let the saga's capacity gate decide;
+//   - live catalog usable but the named card is sold out / not offered in every
+//     candidate zone → grounded deployUserError (never a silent substitution);
+//   - live catalog empty/unusable → can't disprove the pin, so honor it on the
+//     primary zone and let the saga's capacity gate have the final word.
+func (e *Engine) selectPinnedGPUZone(ctx context.Context, availResult map[string]any, plan deployPlan, supported, candidates []string, userZone, userGPU string) (zone, gpuType, gpuNote, fallbackNote string, err error) {
+	primary := candidates[0]
+	note := fmt.Sprintf("按你指定的机型 %s 部署", userGPU)
+
+	if !gpuImageCompatible(userGPU, supported) {
+		img := plan.ImageName
+		if img == "" {
+			img = "所选平台镜像"
+		}
+		return "", "", "", "", deployUserError{msg: fmt.Sprintf(
+			"你指定的机型 %s 不在镜像「%s」支持的机型（%s）内，请换一个机型或换一个镜像再试。",
+			userGPU, img, strings.Join(supported, "、"))}
+	}
+
+	var firstZone string // first zone offering the card with UNCONFIRMED stock
+	primarySoldOut := false
+	confirmedSoldOut := false // the card is offered but ResourceEnough=false somewhere
+	sawAnyCard := false       // any candidate zone returned any live cards
+	for i, z := range candidates {
+		cards := knowledge.ParseAvailableGPUs(availResult, z)
+		if len(cards) > 0 {
+			sawAnyCard = true
+		}
+		if !availableContainsGPU(cards, userGPU) {
+			continue // the named card is not offered (sellable) in this zone
+		}
+		switch e.zoneStockState(ctx, z, userGPU, plan.ImageID) {
+		case zoneInStock:
+			fb := ""
+			if z != primary && primarySoldOut {
+				fb = fmt.Sprintf("%s 暂时售罄，已自动切换到 %s 创建。", primary, z)
+			}
+			return z, userGPU, note, fb, nil
+		case zoneSoldOut:
+			confirmedSoldOut = true
+			if i == 0 {
+				primarySoldOut = true
+			}
+		case zoneUnknown:
+			if firstZone == "" {
+				firstZone = z
+			}
+		}
+	}
+
+	if firstZone != "" {
+		return firstZone, userGPU, note, "", nil
+	}
+	if confirmedSoldOut {
+		return "", "", "", "", deployUserError{msg: fmt.Sprintf(
+			"你指定的机型 %s 当前暂无可用配比（可能已售罄），请稍后再试，或换一个机型。", userGPU)}
+	}
+	if !sawAnyCard {
+		// Live catalog empty/unusable → degrade to the primary zone + the named card.
+		return primary, userGPU, note, "", nil
+	}
+	where := ""
+	if strings.TrimSpace(userZone) != "" {
+		where = "在可用区 " + strings.TrimSpace(userZone) + " "
+	}
+	return "", "", "", "", deployUserError{msg: fmt.Sprintf(
+		"你指定的机型 %s 当前%s不在可部署机型内。当前可部署的机型：%s。可换一个机型再试。",
+		userGPU, where, availableGPUNames(availResult, candidates))}
+}
+
+// availableContainsGPU reports whether the named card is among a zone's live,
+// sellable cards (case-insensitive, matching the catalog's GpuType key form).
+func availableContainsGPU(cards []knowledge.AvailableGPU, gpu string) bool {
+	for _, g := range cards {
+		if strings.EqualFold(g.Name, gpu) {
+			return true
+		}
+	}
+	return false
+}
+
+// availableGPUNames lists the distinct, currently-sellable GPU names across the
+// given candidate zones, for the "your card isn't available; these are" grounded
+// error. Order-preserving across zones; deduped.
+func availableGPUNames(availResult map[string]any, zones []string) string {
+	seen := map[string]bool{}
+	var names []string
+	for _, z := range zones {
+		for _, g := range knowledge.ParseAvailableGPUs(availResult, z) {
+			if seen[g.Name] {
+				continue
+			}
+			seen[g.Name] = true
+			names = append(names, g.Name)
+		}
+	}
+	if len(names) == 0 {
+		return "（暂无可用机型）"
+	}
+	return strings.Join(names, "、")
+}
+
 // deployZoneAliases maps explicit zone mentions in a request to a zone id. The
 // user-named zone is then honored strictly by selectDeployZoneAndGPU.
 //
@@ -460,6 +578,61 @@ func extractDeployZone(userMsg string) string {
 		}
 	}
 	return ""
+}
+
+// deployGPUAliases maps a GPU the user names in the request to its canonical
+// CreateInstance GpuType (the gpuSpecs / catalog key). Each pattern is
+// boundary-anchored — (?:^|[^0-9a-z]) … (?:[^0-9a-z]|$) — so a card token only
+// matches when it is a standalone word, NOT a digit-run inside a model name
+// ("Llama100" must NOT match A100; "4090" inside "4090Pro" must NOT match the bare
+// 4090). CJK characters count as non-[0-9a-z], so "用A100部署" matches A100 while a
+// model like "Qwen2.5-72B" matches nothing. More specific variants (4090_48G /
+// 4090Pro / 5090D) precede the bare token so an equal-start tie resolves to the
+// specific card. "V100" canonicalizes to the only V100-class card the platform
+// sells, V100S (same as knowledge.CanonicalGPUType).
+//
+// STOP-GROW: keep this to the cards the platform actually offers (gpuSpecs keys).
+// A broader table belongs in config, not a hand-grown literal.
+var deployGPUAliases = []struct {
+	pattern *regexp.Regexp
+	gpu     string
+}{
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])4090[\s_-]*48g(?:[^0-9a-z]|$)`), "4090_48G"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])4090\s*pro(?:[^0-9a-z]|$)`), "4090Pro"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])4090(?:[^0-9a-z]|$)`), "4090"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])5090d(?:[^0-9a-z]|$)`), "5090D"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])5090(?:[^0-9a-z]|$)`), "5090"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])3090(?:[^0-9a-z]|$)`), "3090"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])3080\s*ti(?:[^0-9a-z]|$)`), "3080Ti"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])2080\s*ti(?:[^0-9a-z]|$)`), "2080Ti"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])2080(?:[^0-9a-z]|$)`), "2080"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])v100s?(?:[^0-9a-z]|$)`), "V100S"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])a100(?:[^0-9a-z]|$)`), "A100"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])a800(?:[^0-9a-z]|$)`), "A800"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])h20(?:[^0-9a-z]|$)`), "H20"},
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])p40(?:[^0-9a-z]|$)`), "P40"},
+}
+
+// extractDeployGPU returns the canonical GpuType the user explicitly named in the
+// request, or "" if none. Deterministic (Rule 5: code answers a structured signal —
+// GPU names are exact tokens; using the LLM here would be non-deterministic and is
+// unnecessary). When a card is named, it is honored STRICTLY downstream (the same
+// contract as extractDeployZone): deploy THAT card or surface an actionable error,
+// never silently auto-size to a different one. When two cards are named, the one
+// appearing FIRST in the text wins (so "A100 或 4090" pins A100); equal-start ties
+// resolve to the more specific token via the alias-table order.
+func extractDeployGPU(userMsg string) string {
+	best, bestStart := "", -1
+	for _, a := range deployGPUAliases {
+		loc := a.pattern.FindStringIndex(userMsg)
+		if loc == nil {
+			continue
+		}
+		if bestStart == -1 || loc[0] < bestStart {
+			best, bestStart = a.gpu, loc[0]
+		}
+	}
+	return best
 }
 
 type zoneStock int
