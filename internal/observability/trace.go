@@ -395,6 +395,7 @@ type ToolCallTrace struct {
 	RequestedTargets int    `json:"requested_targets"`
 	ExecutedTargets  int    `json:"executed_targets"`
 	WindowSeconds    int    `json:"window_seconds"`
+	Projected        bool   `json:"projected,omitempty"`
 }
 
 type RendererTrace struct {

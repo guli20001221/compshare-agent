@@ -21,6 +21,12 @@ __pycache__/
 *.pyc
 .worktrees/
 
+# trace_gate capture intermediates: capture_baseline.ps1 regenerates these on
+# every run; only the promoted context_prompt_baseline.{jsonl,labels.json} are
+# committed.
+eval/trace_gate/fixtures/*.candidate.jsonl
+eval/trace_gate/fixtures/*.candidate.labels.json
+
 # Shadow QA per-round agent configs contain real API keys (UCloud + LLM).
 # Never commit these.
 eval/shadow_qa/agent.yaml

@@ -68,6 +68,30 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 	for _, value := range unknownCutover {
 		log.Printf("warning: ignoring unknown USE_INTENT_PLANNER_FOR value %q", value)
 	}
+	sessionFactContext, unknownSessionFactContext := sessionFactContextEnabledFromEnv(getenv)
+	if unknownSessionFactContext != "" {
+		log.Printf("warning: ignoring unknown USE_SESSION_FACT_CONTEXT value %q", unknownSessionFactContext)
+	}
+	deps.SessionFactContextEnabled = sessionFactContext
+	if sessionFactContext {
+		log.Printf("runtime: HTTP session fact context enabled (USE_SESSION_FACT_CONTEXT=1)")
+	}
+	reactResultProjection, unknownReactResultProjection := reactResultProjectionEnabledFromEnv(getenv)
+	if unknownReactResultProjection != "" {
+		log.Printf("warning: ignoring unknown USE_REACT_RESULT_PROJECTION value %q", unknownReactResultProjection)
+	}
+	deps.ReactResultProjectionEnabled = reactResultProjection
+	if reactResultProjection {
+		log.Printf("runtime: HTTP ReAct result projection enabled (USE_REACT_RESULT_PROJECTION=1)")
+	}
+	reactHistoryCompaction, unknownReactHistoryCompaction := reactHistoryCompactionEnabledFromEnv(getenv)
+	if unknownReactHistoryCompaction != "" {
+		log.Printf("warning: ignoring unknown USE_REACT_HISTORY_COMPACTION value %q", unknownReactHistoryCompaction)
+	}
+	deps.ReactHistoryCompactionEnabled = reactHistoryCompaction
+	if reactHistoryCompaction {
+		log.Printf("runtime: HTTP ReAct history compaction enabled (USE_REACT_HISTORY_COMPACTION=1)")
+	}
 
 	knowledgeRetrievalRequested, unknownKnowledge := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledge != "" {

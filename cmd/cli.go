@@ -132,6 +132,16 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_ENABLE_MUTATING_TOOLS value %q\n", unknownMutatingTools)
 	}
 	eng.SetMutatingToolsEnabled(mutatingToolsEnabled)
+	reactResultProjection, unknownReactResultProjection := reactResultProjectionEnabledFromEnv(os.Getenv)
+	if unknownReactResultProjection != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_REACT_RESULT_PROJECTION value %q\n", unknownReactResultProjection)
+	}
+	eng.SetReactResultProjectionEnabled(reactResultProjection)
+	reactHistoryCompaction, unknownReactHistoryCompaction := reactHistoryCompactionEnabledFromEnv(os.Getenv)
+	if unknownReactHistoryCompaction != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_REACT_HISTORY_COMPACTION value %q\n", unknownReactHistoryCompaction)
+	}
+	eng.SetReactHistoryCompactionEnabled(reactHistoryCompaction)
 	useSkillExecutor, unknownSkillExecutor := useSkillExecutorFromEnv(os.Getenv)
 	if unknownSkillExecutor != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR value %q\n", unknownSkillExecutor)

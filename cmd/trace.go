@@ -185,6 +185,42 @@ func mutatingToolsRuntimeLine(enabled bool) string {
 	return "mutating=disabled (read-only mode)"
 }
 
+func sessionFactContextEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	value := strings.TrimSpace(getenv("USE_SESSION_FACT_CONTEXT"))
+	switch value {
+	case "", "0":
+		return false, ""
+	case "1":
+		return true, ""
+	default:
+		return false, value
+	}
+}
+
+func reactResultProjectionEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	value := strings.TrimSpace(getenv("USE_REACT_RESULT_PROJECTION"))
+	switch value {
+	case "", "0":
+		return false, ""
+	case "1":
+		return true, ""
+	default:
+		return false, value
+	}
+}
+
+func reactHistoryCompactionEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	value := strings.TrimSpace(getenv("USE_REACT_HISTORY_COMPACTION"))
+	switch value {
+	case "", "0":
+		return false, ""
+	case "1":
+		return true, ""
+	default:
+		return false, value
+	}
+}
+
 // useSkillExecutorFromEnv reads USE_SKILL_EXECUTOR (P2a gray-rollout). "1"
 // enables the body-driven skill executor gate. Diagnosis still requires the
 // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS allowlist. "" is off; any other value is
@@ -846,6 +882,7 @@ func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {
 		r.record.ToolCalls[idx].Status = observability.ToolStatusSuccess
 		r.record.ToolCalls[idx].ResultHash = resultHash
 		r.record.ToolCalls[idx].Attempts = ev.Attempts
+		r.record.ToolCalls[idx].Projected = ev.Projected
 		if r.record.ToolCalls[idx].RequestedTargets > 0 && r.record.ToolCalls[idx].ExecutedTargets == 0 {
 			r.record.ToolCalls[idx].ExecutedTargets = r.record.ToolCalls[idx].RequestedTargets
 		}

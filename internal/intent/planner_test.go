@@ -86,6 +86,30 @@ func TestPlanner_RetriesInvalidJSONThenReturnsValidPlan(t *testing.T) {
 	assert.Contains(t, mock.requests[1].UserPrompt, "上一轮输出不是合法 IntentPlan JSON")
 }
 
+func TestPlanner_RetryInstructionNamesValidationCodeAndField(t *testing.T) {
+	badPlan := validMonitorPlan()
+	badPlan.RequiredTools = []string{"DescribeCompShareImages"}
+	mock := &mockPlannerLLM{responses: []string{
+		mustPlanJSON(t, badPlan),
+		mustPlanJSON(t, validMonitorPlan()),
+	}}
+	planner := NewPlanner(mock, PlannerOptions{})
+
+	result, err := planner.Plan(context.Background(), PlannerInput{
+		UserText: "看看 uhost-abc123 的 CPU 和 GPU 监控",
+		Registry: testRegistry(t),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Fallback)
+	assert.Equal(t, 2, result.Attempts)
+	require.Len(t, mock.requests, 2)
+	assert.Contains(t, mock.requests[1].UserPrompt, string(ErrInvalidRequiredTool))
+	assert.Contains(t, mock.requests[1].UserPrompt, "required_tools[0]")
+	assert.Contains(t, mock.requests[1].UserPrompt, "required_tools 必须匹配 intent 的工具白名单")
+	assert.NotContains(t, mock.requests[1].UserPrompt, "上一轮输出不是合法 IntentPlan JSON")
+}
+
 func TestPlanner_OverridesLLMSuppliedSkillsWithDerivedProjection(t *testing.T) {
 	plan := Plan{
 		SchemaVersion: SchemaVersion,

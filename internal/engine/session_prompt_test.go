@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
@@ -159,4 +160,78 @@ func TestRefreshSystemPrompt_ClearsStaleInstance(t *testing.T) {
 		"turn 2 system prompt must NOT contain stale instance from turn 1")
 	assert.NotContains(t, eng.messages[0].Content, "stale-box",
 		"turn 2 system prompt must NOT contain stale instance name")
+}
+
+func TestRefreshSystemPrompt_FactContextFlagOffByDefault(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user context")
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaV1,
+		RecentFacts: []ToolFact{{
+			Kind:           FactKindInstanceState,
+			SubjectID:      "uhost-fact-off",
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     factTTLSecondsInstanceState,
+			Payload:        map[string]any{"name": "off-box", "state": "Running"},
+		}},
+	}, 1)
+
+	_, err := eng.ChatWithOptions(context.Background(), "hello", noopStep, ChatOptions{})
+	require.NoError(t, err)
+
+	assert.NotContains(t, eng.messages[0].Content, recentObservationPrefix)
+	assert.NotContains(t, eng.messages[0].Content, "off-box")
+}
+
+func TestRefreshSystemPrompt_FactContextFlagOn(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user context")
+	eng.SetSessionFactContextEnabled(true)
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaV1,
+		RecentFacts: []ToolFact{{
+			Kind:           FactKindInstanceState,
+			SubjectID:      "uhost-fact-on",
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     factTTLSecondsInstanceState,
+			Payload: map[string]any{
+				"name":  "on-box",
+				"state": "Running",
+			},
+		}},
+	}, 1)
+
+	_, err := eng.ChatWithOptions(context.Background(), "hello", noopStep, ChatOptions{})
+	require.NoError(t, err)
+
+	assert.Contains(t, eng.messages[0].Content, recentObservationPrefix)
+	assert.Contains(t, eng.messages[0].Content, "on-box")
+	assert.Contains(t, eng.messages[0].Content, "实时状态请重新查询")
+}
+
+func TestRefreshSystemPrompt_FactContextDoesNotAccumulate(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "turn1"}, {Content: "turn2"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user context")
+	eng.SetSessionFactContextEnabled(true)
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaV1,
+		RecentFacts: []ToolFact{{
+			Kind:           FactKindInstanceState,
+			SubjectID:      "uhost-once",
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     factTTLSecondsInstanceState,
+			Payload:        map[string]any{"name": "once-box"},
+		}},
+	}, 1)
+
+	_, err := eng.ChatWithOptions(context.Background(), "turn1", noopStep, ChatOptions{})
+	require.NoError(t, err)
+	_, err = eng.ChatWithOptions(context.Background(), "turn2", noopStep, ChatOptions{})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, strings.Count(eng.messages[0].Content, recentObservationPrefix),
+		"refreshSystemPrompt must rebuild from baseUserContext, not append repeatedly")
 }
