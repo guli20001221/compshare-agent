@@ -1,0 +1,5 @@
+[
+  {"qid": "pin_a100_sd", "question": "用A100部署一个跑Stable Diffusion的环境", "expect_gpu": "A100", "why": "user pinned A100 must win over the SD scene-default (4090)"},
+  {"qid": "control_sd", "question": "帮我部署一个跑Stable Diffusion出图的环境", "expect_gpu": "scene", "why": "no GPU named -> scene sizing (typically 4090/3090); must NOT be forced to A100"},
+  {"qid": "pin_v100", "question": "用V100部署一个PyTorch环境", "expect_gpu": "V100S", "why": "bare V100 canonicalizes to the platform card V100S"}
+]

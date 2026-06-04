@@ -754,6 +754,41 @@ func TestExtractDeployZone(t *testing.T) {
 	assert.Equal(t, "", extractDeployZone("帮我部署 Qwen2.5-7B"), "no zone mentioned → empty")
 }
 
+// TestExtractDeployGPU pins the deterministic user-named-GPU signal that R4 fixed:
+// a card the user explicitly names must be recognized (and canonicalized) so the arm
+// honors it instead of auto-sizing a different one — WHILE NOT false-matching a
+// digit-run inside a model name (the regression that would make this worse than the
+// bug). WHY each case matters is named inline.
+func TestExtractDeployGPU(t *testing.T) {
+	// Named card is recognized (the R4 trigger: scene sizing would pick 4090).
+	assert.Equal(t, "A100", extractDeployGPU("用A100部署SD"))
+	assert.Equal(t, "A100", extractDeployGPU("在A100上跑Qwen"))
+	assert.Equal(t, "4090", extractDeployGPU("帮我用4090部署 Qwen2.5-7B"))
+	assert.Equal(t, "H20", extractDeployGPU("H20 跑大模型"))
+	assert.Equal(t, "A800", extractDeployGPU("用a800训练"))
+
+	// Canonicalization: the platform sells V100S, never a bare V100.
+	assert.Equal(t, "V100S", extractDeployGPU("部署一个v100的实例"))
+	assert.Equal(t, "V100S", extractDeployGPU("用 V100S 跑推理"))
+
+	// Specific variants win over the bare token (more specific = correct card).
+	assert.Equal(t, "5090D", extractDeployGPU("用5090D部署"))
+	assert.Equal(t, "5090", extractDeployGPU("5090 包月"))
+	assert.Equal(t, "4090Pro", extractDeployGPU("帮我开个4090Pro"))
+	assert.Equal(t, "4090_48G", extractDeployGPU("用4090 48G的卡"))
+	assert.Equal(t, "2080Ti", extractDeployGPU("2080Ti 够吗"))
+
+	// Two cards named → the FIRST in the text wins (here A100 precedes 4090).
+	assert.Equal(t, "A100", extractDeployGPU("A100 或 4090 都行"))
+
+	// No false positive inside a model name / unrelated digits (the key guard).
+	assert.Equal(t, "", extractDeployGPU("帮我部署 Qwen2.5-7B"), "model name digits must not match")
+	assert.Equal(t, "", extractDeployGPU("部署 Qwen2.5-72B"), "72B must not match")
+	assert.Equal(t, "", extractDeployGPU("跑一下 Llama100 这个模型"), "a100 inside Llama100 must NOT match (boundary)")
+	assert.Equal(t, "", extractDeployGPU("帮我跑一个数字人"), "no GPU mentioned → empty")
+	assert.Equal(t, "", extractDeployGPU("部署"), "bare verb → empty")
+}
+
 // TestTryDeployModel_UserZoneFromMessage proves the deterministic zone extraction
 // reaches selectDeployZoneAndGPU end-to-end: a request naming 上海 (cn-sh2-02)
 // creates in that zone even though cn-wlcb-01 is the default preference.
@@ -769,6 +804,159 @@ func TestTryDeployModel_UserZoneFromMessage(t *testing.T) {
 	require.True(t, handled)
 	require.NotNil(t, createArgs, "create must run")
 	assert.Equal(t, "cn-sh2-02", createArgs["Zone"], "user-named zone (上海) overrides the cn-wlcb-01 preference")
+}
+
+// ── R4: user-named GPU is honored strictly (never silently auto-sized away) ──
+
+// TestSelectDeployZoneAndGPU_PinnedGPUHonored proves the core R4 fix: a card the
+// user names in the request is deployed AS-IS, overriding the scene/VRAM auto-sizer
+// (which for "用A100部署SD" would otherwise pick 4090). The pin still threads through
+// the per-zone stock gate.
+func TestSelectDeployZoneAndGPU_PinnedGPUHonored(t *testing.T) {
+	exec := stockExec(map[string]bool{"cn-wlcb-01": true})
+	eng := NewWithDeps(nil, exec, okConfirm)
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("A100", "cn-wlcb-01", 80), availCardZ("4090", "cn-wlcb-01", 24),
+	}}
+	zone, gpu, note, fb, err := eng.selectDeployZoneAndGPU(context.Background(), avail, deployPlan{ImageID: "img-1"}, nil, "", "用A100部署SD", "")
+	require.NoError(t, err)
+	assert.Equal(t, "A100", gpu, "the user-named A100 must win over the scene-default 4090")
+	assert.Equal(t, "cn-wlcb-01", zone)
+	assert.Empty(t, fb)
+	assert.Contains(t, note, "A100", "note explains the pin was honored")
+}
+
+// TestSelectDeployZoneAndGPU_PinnedGPUFallbackZone proves the pin reuses the same
+// sold-out-primary fallback as the auto path: A100 sold out in the primary but in
+// stock in the secondary → create in the secondary, with a note.
+func TestSelectDeployZoneAndGPU_PinnedGPUFallbackZone(t *testing.T) {
+	exec := stockExec(map[string]bool{"cn-wlcb-01": false, "cn-sh2-02": true})
+	eng := NewWithDeps(nil, exec, okConfirm)
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("A100", "cn-wlcb-01", 80), availCardZ("A100", "cn-sh2-02", 80),
+	}}
+	zone, gpu, _, fb, err := eng.selectDeployZoneAndGPU(context.Background(), avail, deployPlan{ImageID: "img-1"}, nil, "", "用A100部署", "")
+	require.NoError(t, err)
+	assert.Equal(t, "A100", gpu)
+	assert.Equal(t, "cn-sh2-02", zone, "sold-out primary falls back to the next zone, still on the pinned card")
+	assert.Contains(t, fb, "cn-wlcb-01")
+	assert.Contains(t, fb, "cn-sh2-02")
+}
+
+// TestSelectDeployZoneAndGPU_PinnedGPUNotOffered proves strict honoring: when the
+// named card is not in the deployable set (only 4090 is), the arm surfaces a grounded
+// error listing what IS available — it must NEVER silently substitute 4090.
+func TestSelectDeployZoneAndGPU_PinnedGPUNotOffered(t *testing.T) {
+	exec := stockExec(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": true})
+	eng := NewWithDeps(nil, exec, okConfirm)
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("4090", "cn-wlcb-01", 24), availCardZ("4090", "cn-sh2-02", 24),
+	}}
+	zone, gpu, _, _, err := eng.selectDeployZoneAndGPU(context.Background(), avail, deployPlan{ImageID: "img-1"}, nil, "", "用A100部署", "")
+	require.Error(t, err, "an unavailable pinned card surfaces an error, never a silent substitution")
+	assert.Empty(t, gpu, "no GPU returned on the error path")
+	assert.Empty(t, zone)
+	var ue deployUserError
+	require.ErrorAs(t, err, &ue)
+	assert.Contains(t, ue.Error(), "A100", "error names the card the user asked for")
+	assert.Contains(t, ue.Error(), "4090", "error lists the cards that ARE available")
+}
+
+// TestSelectDeployZoneAndGPU_PinnedGPUSoldOut proves the sold-out branch: the named
+// card IS offered but has no real stock in any candidate zone → a sold-out error
+// (distinct from "not offered"), not a silent move to another card.
+func TestSelectDeployZoneAndGPU_PinnedGPUSoldOut(t *testing.T) {
+	exec := stockExec(map[string]bool{"cn-wlcb-01": false, "cn-sh2-02": false})
+	eng := NewWithDeps(nil, exec, okConfirm)
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("4090", "cn-wlcb-01", 24), availCardZ("4090", "cn-sh2-02", 24),
+	}}
+	_, _, _, _, err := eng.selectDeployZoneAndGPU(context.Background(), avail, deployPlan{ImageID: "img-1"}, nil, "", "用4090部署", "")
+	require.Error(t, err)
+	var ue deployUserError
+	require.ErrorAs(t, err, &ue)
+	assert.Contains(t, ue.Error(), "4090")
+	assert.Contains(t, ue.Error(), "售罄")
+}
+
+// TestSelectDeployZoneAndGPU_PinnedGPUImageIncompatible proves a named card the chosen
+// image cannot run is a hard stop with a pin-specific message (names the card + the
+// image's supported set), not the auto path's "VRAM too small" explanation.
+func TestSelectDeployZoneAndGPU_PinnedGPUImageIncompatible(t *testing.T) {
+	eng := NewWithDeps(nil, stockExec(nil), okConfirm)
+	avail := map[string]any{"AvailableInstanceTypes": []any{availCardZ("V100S", "cn-wlcb-01", 32)}}
+	_, _, _, _, err := eng.selectDeployZoneAndGPU(context.Background(), avail, deployPlan{ImageID: "img-1", ImageName: "PyTorch"}, []string{"4090"}, "", "用V100S部署", "")
+	require.Error(t, err)
+	var ue deployUserError
+	require.ErrorAs(t, err, &ue)
+	assert.Contains(t, ue.Error(), "V100S", "names the user's card")
+	assert.Contains(t, ue.Error(), "4090", "names the image's supported set")
+	assert.Contains(t, ue.Error(), "PyTorch", "names the image")
+}
+
+// TestSelectDeployZoneAndGPU_PinnedGPUEmptyAvailDegrades proves graceful degradation:
+// when the live catalog is empty/unusable we cannot disprove the pin, so we honor it
+// on the primary zone and let the saga's capacity gate decide (auto-path parity).
+func TestSelectDeployZoneAndGPU_PinnedGPUEmptyAvailDegrades(t *testing.T) {
+	eng := NewWithDeps(nil, stockExec(nil), okConfirm)
+	zone, gpu, _, fb, err := eng.selectDeployZoneAndGPU(context.Background(), nil, deployPlan{ImageID: "img-1"}, nil, "", "用A100部署", "")
+	require.NoError(t, err, "empty live set must not spuriously reject a pinned card")
+	assert.Equal(t, "A100", gpu)
+	assert.Equal(t, "cn-wlcb-01", zone, "degrades to the primary zone")
+	assert.Empty(t, fb)
+}
+
+// TestTryDeployModel_HonorsUserNamedGPU is the end-to-end proof of R4: a request that
+// names A100 while describing an SD workload (whose scene-sizer picks 4090) must
+// create on A100. This exercises the full arm: matcher → pin extraction → zone/stock
+// selection → saga create, asserting the create call carries the user's card.
+func TestTryDeployModel_HonorsUserNamedGPU(t *testing.T) {
+	withFastPoll(t, 3)
+	var createArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{map[string]any{
+				"CompShareImageId": "img-pt", "Name": "PyTorch", "ImageType": "App",
+				"Softwares": map[string]any{"Framework": "PyTorch"},
+			}}}, nil
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			// Both the matcher (no filter) and the saga (Zone, no MachineTypes) read
+			// these zone-tagged cards. A100 AND the scene-default 4090 are offered, so
+			// the test proves the pin (A100) wins over scene sizing (which → 4090).
+			return map[string]any{"AvailableInstanceTypes": []any{
+				availCardZ("A100", "cn-wlcb-01", 80), availCardZ("4090", "cn-wlcb-01", 24),
+			}}, nil
+		case "CheckCompShareResourceCapacity":
+			return map[string]any{"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			}}, nil
+		case "GetCompShareInstanceUserPrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 2.5}}}, nil
+		case "CreateCompShareInstance":
+			createArgs = args
+			return map[string]any{"UHostIds": []any{"u-a100"}}, nil
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "u-a100", "State": "Running",
+				"IPSet": []any{map[string]any{"IP": "9.9.9.9", "Type": "Bgp", "Weight": float64(10)}},
+			}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	// model_name empty → the auto path would size by scene ("SD" → 4090); the user's
+	// explicit A100 must override that.
+	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"","quantization":""}`, exec, okConfirm)
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "用A100部署SD", noopStep)
+
+	require.True(t, handled)
+	require.NotNil(t, createArgs, "create must run")
+	assert.Equal(t, "A100", createArgs["GpuType"], "the user-named A100 must be honored, NOT the scene-default 4090")
+	assert.Contains(t, reply, "A100")
 }
 
 // ── pure-helper unit tests ──
