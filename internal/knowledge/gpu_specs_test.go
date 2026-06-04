@@ -123,6 +123,33 @@ func TestGetGPUSpecs_V100S_DenseNotSparsity(t *testing.T) {
 	assert.Equal(t, 32.8, spec.FP16)
 }
 
+func TestCanonicalGPUType(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"V100", "V100S"},  // the reported bug: platform sells V100S, not V100
+		{"v100", "V100S"},  // alias is case-insensitive
+		{" V100 ", "V100S"}, // trimmed
+		{"V100S", "V100S"}, // already canonical → unchanged
+		{"4090", "4090"},   // exact catalog key → unchanged
+		{"a100", "A100"},   // case-folds to canonical key
+		{"H20", "H20"},
+		{"", ""},                 // empty stays empty
+		{"NoSuchGPU", "NoSuchGPU"}, // unknown returned as-is (caller surfaces grounded error)
+	}
+	for _, c := range cases {
+		assert.Equalf(t, c.want, CanonicalGPUType(c.in), "CanonicalGPUType(%q)", c.in)
+	}
+}
+
+func TestGetGPUSpecs_V100Alias_ResolvesToV100S(t *testing.T) {
+	// A user asking about "V100" must get V100S specs, not an "unknown type"
+	// error that the LLM would otherwise narrate into a fabricated answer.
+	result, err := GetGPUSpecs("V100")
+	assert.NoError(t, err)
+	assert.Equal(t, "V100S", result["gpu_type"])
+	spec := result["spec"].(GPUSpec)
+	assert.Equal(t, "Tesla V100S", spec.Name)
+}
+
 func TestGetGPUSpecs_H100_H200_NotAdvertised(t *testing.T) {
 	// H100 and H200 are NOT available on CompShare (upstream gpu.go only
 	// defines H20). Guard against accidental re-introduction of ghost GPUs

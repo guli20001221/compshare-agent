@@ -76,10 +76,11 @@ const (
 //
 //  1. isAccountBillingUnsupported    -> canned reply, no LLM call (hard-block)
 //  2. isResourceShortageQuestion     -> canned reply, no LLM call (hard-block; error 226604)
-//  3. isUnsupportedHistoricalMonitorQuestion -> canned reply, no LLM call
-//  4. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
+//  3. isExistingDiskAttachUnsupported -> canned reply, no LLM call
+//  4. isUnsupportedHistoricalMonitorQuestion -> canned reply, no LLM call
+//  5. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
 //                                       (BRIDGE T-001.f1, model-feature-gated)
-//  5. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
+//  6. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
 //
 // Model feature gating: force-tool paths that emit object tool_choice MUST
 // short-circuit when supportsObjectToolChoice=false. ds v4 flash in thinking
@@ -2515,6 +2516,7 @@ var friendlyActionNames = map[string]string{
 	"SetStopSchedulerWorkflow":    "设置定时关机",
 	"CancelStopSchedulerWorkflow": "取消定时关机",
 	"ResizeInstanceWorkflow":      "变配",
+	"ResizeDiskWorkflow":          "扩已有盘",
 	"ReinstallInstanceWorkflow":   "重装系统",
 	"CreateDiskWorkflow":          "创建数据盘",
 	"CreateCustomImageWorkflow":   "创建自制镜像",
@@ -3272,6 +3274,17 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		})
 	})
 
+	// Normalize the GPU type to the platform's canonical catalog name before the
+	// create workflow queries availability. The planner echoes the user's literal
+	// text (e.g. "V100"), but the catalog only knows "V100S" — without this the
+	// availability query returns nothing and the failure gets narrated into a
+	// fabricated "V100 下架" reply.
+	if action == "CreateInstanceWorkflow" {
+		if gt, ok := args["GpuType"].(string); ok && gt != "" {
+			args["GpuType"] = knowledge.CanonicalGPUType(gt)
+		}
+	}
+
 	result, err := wfEngine.Run(ctx, wf, args)
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
@@ -3292,6 +3305,17 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// User-cancelled workflows return a deterministic reply directly
 	if !result.Success && result.Message == "用户取消了操作" {
 		return finalReplyPrefix + fmt.Sprintf("好的，已取消%s操作。", friendlyActionName(action))
+	}
+
+	// Create failures must NOT be handed to the LLM narration round. When given a
+	// raw failure result the fast-tier narration has fabricated availability claims
+	// ("V100 下架") and invented GPU lists. The workflow's own message is already
+	// grounded — on a no-match it lists the REAL available types, and on sold-out it
+	// names the exact spec — so return it deterministically and skip narration.
+	if !result.Success && action == "CreateInstanceWorkflow" {
+		reply := createWorkflowFailureReply(result.Message)
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
+		return finalReplyPrefix + reply
 	}
 
 	if result.Success {
@@ -3335,6 +3359,25 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 	default:
 		return "", false
 	}
+}
+
+// workflowStepPrefixRE strips the technical step wrapper the workflow engine adds
+// to BuildArgs / executor failures ("步骤「检查库存」参数构建失败: …") so the user sees
+// only the grounded reason. The inner message is what carries real information
+// (available types, sold-out spec, etc.).
+var workflowStepPrefixRE = regexp.MustCompile(`^步骤「[^」]*」(?:参数构建失败|执行失败)[：:]\s*`)
+
+// createWorkflowFailureReply turns a failed CreateInstanceWorkflow result message
+// into a deterministic, user-facing reply. It is deliberately NOT run through the
+// LLM (see the call site): the workflow message is already grounded, and narration
+// has been observed to fabricate availability/下架 claims.
+func createWorkflowFailureReply(message string) string {
+	msg := workflowStepPrefixRE.ReplaceAllString(strings.TrimSpace(message), "")
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		msg = "未能创建实例，请稍后重试或更换机型/配置。"
+	}
+	return "抱歉，创建实例没有成功：" + msg
 }
 
 // executeDiagnosis runs a diagnostic chain and returns the result as JSON.

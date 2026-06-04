@@ -121,10 +121,48 @@ var gpuSpecs = map[string]GPUSpec{
 	},
 }
 
+// gpuTypeAliases maps user-facing GPU shorthands to the platform's canonical
+// GpuType (the catalog SeriesID / ShowGpuType in uhost-compshare-api/libs/gpu.go).
+// The platform sells "V100S", never a plain "V100" — but users (and the planner
+// echoing them) routinely say "V100" meaning the V100-class card. Without this
+// map the create workflow queries MachineTypes=["V100"], the upstream returns
+// nothing, and the turn fails with an unhelpful "no such config" that the LLM
+// then narrates into a fabricated "V100 下架" reply. Keys are UPPER-cased.
+var gpuTypeAliases = map[string]string{
+	"V100": "V100S",
+}
+
+// CanonicalGPUType normalizes a user/LLM-supplied GPU type to the platform's
+// canonical name so downstream API calls (availability / capacity / price /
+// create) match the catalog. It (1) maps known aliases (e.g. "V100"->"V100S"),
+// then (2) case-folds to a known catalog key when one matches case-insensitively.
+// Unknown inputs are returned trimmed-but-otherwise-unchanged so the caller can
+// surface a grounded "not found; available types are …" error rather than
+// silently coercing to the wrong card.
+func CanonicalGPUType(s string) string {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return t
+	}
+	if canon, ok := gpuTypeAliases[strings.ToUpper(t)]; ok {
+		return canon
+	}
+	if _, ok := gpuSpecs[t]; ok {
+		return t
+	}
+	for k := range gpuSpecs {
+		if strings.EqualFold(k, t) {
+			return k
+		}
+	}
+	return t
+}
+
 // GetGPUSpecs returns specifications for the given GPU type.
 // If gpuType is empty, returns all GPU specs.
 func GetGPUSpecs(gpuType string) (map[string]any, error) {
 	if gpuType != "" {
+		gpuType = CanonicalGPUType(gpuType)
 		spec, ok := gpuSpecs[gpuType]
 		if !ok {
 			return nil, fmt.Errorf("未知的 GPU 类型: %s，支持的类型: %s", gpuType, allGPUTypes())

@@ -18,26 +18,45 @@ var defaultDisk = []any{
 	map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 60},
 }
 
-// resolveTargetSpec selects the target (gpu, cpu, memoryMB) for instance
-// creation. It collects all valid candidates from the "查询可用配比" step,
-// then narrows them using user-supplied Cpu/Memory parameters.
+// resolveTargetSpec selects the target (gpu, cpu, memoryMB, zone) for instance
+// creation. It collects all valid candidates from the "查询可用配比" step in the
+// resolved availability zone, then narrows them using user-supplied Cpu/Memory.
 //
 // Decision rules:
 //   - User gave both Cpu + Memory → must exactly match a candidate, else error.
 //   - User gave only Cpu or only Memory → filter; 1 left = use it, >1 = ambiguity error.
 //   - User gave neither → default to the first candidate (platform default).
-func resolveTargetSpec(wfCtx *Context) (gpu, cpu, memoryMB float64, err error) {
+//
+// The returned zone is the availability zone the rest of the workflow (capacity /
+// price / create / confirm) must use. It is the user-specified Zone when given,
+// otherwise the zone the requested GPU actually lives in (preferring the platform
+// default zone, then any "Normal" zone), falling back to defaultZone when the
+// catalog carries no zone info. This is what fixes cards that exist only in a
+// non-default zone (e.g. 2080Ti in cn-sh2-02) instead of failing with a hardcoded
+// cn-wlcb-01 query.
+func resolveTargetSpec(wfCtx *Context) (gpu, cpu, memoryMB float64, zone string, err error) {
 	gpuType, _ := wfCtx.Params["GpuType"].(string)
 	gpu = paramNum(wfCtx.Params, "Gpu", 1)
 
 	result := wfCtx.Result("查询可用配比")
 	if result == nil {
-		return 0, 0, 0, fmt.Errorf("无法确定目标规格（CPU/Memory），「查询可用配比」步骤未返回结果")
+		return 0, 0, 0, "", fmt.Errorf("无法确定目标规格（CPU/Memory），「查询可用配比」步骤未返回结果")
 	}
 
-	candidates := listSpecCandidates(result, gpuType, gpu)
+	zone = resolveTargetZone(result, gpuType, paramStr(wfCtx.Params, "Zone", ""))
+
+	candidates := listSpecCandidates(result, gpuType, gpu, zone)
 	if len(candidates) == 0 {
-		return 0, 0, 0, fmt.Errorf("「查询可用配比」未返回 %s × %.0f 卡的合法配比", gpuType, gpu)
+		// Grounded failure: list the GPU types the catalog actually returned so a
+		// downstream reply can state real options instead of fabricating them.
+		return 0, 0, 0, "", fmt.Errorf("未找到 %s × %.0f 卡的可用配比。当前可部署的 GPU 机型：%s。请确认机型名称与卡数是否正确。",
+			gpuType, gpu, availableTypeNames(result))
+	}
+
+	// Zone for the downstream API args. resolveTargetZone returns "" only when the
+	// catalog has no zone data (legacy/test results) and the user didn't pick one.
+	if zone == "" {
+		zone = defaultZone
 	}
 
 	_, hasCpu := wfCtx.Params["Cpu"]
@@ -45,7 +64,7 @@ func resolveTargetSpec(wfCtx *Context) (gpu, cpu, memoryMB float64, err error) {
 
 	// User gave neither — default to the first candidate.
 	if !hasCpu && !hasMem {
-		return gpu, candidates[0].CPU, candidates[0].MemoryMB, nil
+		return gpu, candidates[0].CPU, candidates[0].MemoryMB, zone, nil
 	}
 
 	userCpu := paramNum(wfCtx.Params, "Cpu", 0)
@@ -55,10 +74,10 @@ func resolveTargetSpec(wfCtx *Context) (gpu, cpu, memoryMB float64, err error) {
 		// Exact match required.
 		for _, c := range candidates {
 			if c.CPU == userCpu && c.MemoryMB == userMem {
-				return gpu, c.CPU, c.MemoryMB, nil
+				return gpu, c.CPU, c.MemoryMB, zone, nil
 			}
 		}
-		return 0, 0, 0, fmt.Errorf("%s × %.0f 卡不支持 %.0fC/%.0fMB 的配比，合法选项：%s",
+		return 0, 0, 0, "", fmt.Errorf("%s × %.0f 卡不支持 %.0fC/%.0fMB 的配比，合法选项：%s",
 			gpuType, gpu, userCpu, userMem, formatCandidates(candidates))
 	}
 
@@ -67,25 +86,94 @@ func resolveTargetSpec(wfCtx *Context) (gpu, cpu, memoryMB float64, err error) {
 	if hasCpu {
 		filtered = filterCandidates(filtered, func(c specCandidate) bool { return c.CPU == userCpu })
 		if len(filtered) == 0 {
-			return 0, 0, 0, fmt.Errorf("%s × %.0f 卡不支持 CPU=%.0f 的配比，合法选项：%s",
+			return 0, 0, 0, "", fmt.Errorf("%s × %.0f 卡不支持 CPU=%.0f 的配比，合法选项：%s",
 				gpuType, gpu, userCpu, formatCandidates(candidates))
 		}
 	}
 	if hasMem {
 		filtered = filterCandidates(filtered, func(c specCandidate) bool { return c.MemoryMB == userMem })
 		if len(filtered) == 0 {
-			return 0, 0, 0, fmt.Errorf("%s × %.0f 卡不支持 Memory=%.0fMB 的配比，合法选项：%s",
+			return 0, 0, 0, "", fmt.Errorf("%s × %.0f 卡不支持 Memory=%.0fMB 的配比，合法选项：%s",
 				gpuType, gpu, userMem, formatCandidates(candidates))
 		}
 	}
 
 	if len(filtered) == 1 {
-		return gpu, filtered[0].CPU, filtered[0].MemoryMB, nil
+		return gpu, filtered[0].CPU, filtered[0].MemoryMB, zone, nil
 	}
 
 	// Multiple candidates remain after partial filter — ask user to narrow.
-	return 0, 0, 0, fmt.Errorf("%s × %.0f 卡当前有多种合法配比：%s。请告诉我你想要哪一组 CPU/内存。",
+	return 0, 0, 0, "", fmt.Errorf("%s × %.0f 卡当前有多种合法配比：%s。请告诉我你想要哪一组 CPU/内存。",
 		gpuType, gpu, formatCandidates(filtered))
+}
+
+// resolveTargetZone returns the availability zone to create in for the given GPU
+// type. An explicit user Zone wins. Otherwise it scans the catalog for zones that
+// carry this GPU, preferring a "Normal" (sellable) zone over a sold-out one and
+// the platform default zone over others. Returns "" when the catalog has no zone
+// data for the type (legacy/test results) so the caller can fall back to defaultZone.
+func resolveTargetZone(result map[string]any, gpuType, userZone string) string {
+	if userZone != "" {
+		return userZone
+	}
+	var normalZones, allZones []string
+	types, _ := result["AvailableInstanceTypes"].([]any)
+	for _, t := range types {
+		mt, _ := t.(map[string]any)
+		if name, _ := mt["Name"].(string); name != gpuType {
+			continue
+		}
+		z, _ := mt["Zone"].(string)
+		if z == "" {
+			continue
+		}
+		allZones = append(allZones, z)
+		if status, _ := mt["Status"].(string); status == "" || status == "Normal" {
+			normalZones = append(normalZones, z)
+		}
+	}
+	if z := preferZone(normalZones); z != "" {
+		return z
+	}
+	return preferZone(allZones)
+}
+
+// preferZone picks the platform default zone if present, else the first zone.
+func preferZone(zones []string) string {
+	for _, z := range zones {
+		if z == defaultZone {
+			return z
+		}
+	}
+	if len(zones) > 0 {
+		return zones[0]
+	}
+	return ""
+}
+
+// availableTypeNames returns the distinct sellable GPU type names in the catalog
+// result, joined for display (e.g. "4090、5090、V100S"). Used to ground a
+// no-match failure reply so the user sees real options instead of a fabrication.
+func availableTypeNames(result map[string]any) string {
+	seen := map[string]bool{}
+	var names []string
+	types, _ := result["AvailableInstanceTypes"].([]any)
+	for _, t := range types {
+		mt, _ := t.(map[string]any)
+		name, _ := mt["Name"].(string)
+		if name == "" || seen[name] {
+			continue
+		}
+		if status, _ := mt["Status"].(string); status != "" && status != "Normal" {
+			continue // hide sold-out cards from the "what you can deploy" list
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return "（暂无可用机型，请稍后再试）"
+	}
+	return strings.Join(names, "、")
 }
 
 func filterCandidates(cs []specCandidate, pred func(specCandidate) bool) []specCandidate {
@@ -114,15 +202,22 @@ type specCandidate struct {
 }
 
 // listSpecCandidates enumerates all valid (CPU, MemoryMB) combinations from
-// DescribeAvailableCompShareInstanceTypes for the given GPU type and count.
-// Each Collection entry × each Memory value produces one candidate.
-func listSpecCandidates(result map[string]any, gpuType string, gpuCount float64) []specCandidate {
+// DescribeAvailableCompShareInstanceTypes for the given GPU type and count, in
+// the target zone. Each Collection entry × each Memory value produces one
+// candidate. Because the catalog query is no longer zone-filtered upstream (a
+// GPU may appear in several zones), the zone filter here keeps candidates to the
+// single resolved zone — avoiding cross-zone duplicates. An empty targetZone, or
+// an entry with no Zone field (legacy/test results), matches everything.
+func listSpecCandidates(result map[string]any, gpuType string, gpuCount float64, targetZone string) []specCandidate {
 	var candidates []specCandidate
 	types, _ := result["AvailableInstanceTypes"].([]any)
 	for _, t := range types {
 		mt, _ := t.(map[string]any)
 		name, _ := mt["Name"].(string)
 		if name != gpuType {
+			continue
+		}
+		if entryZone, _ := mt["Zone"].(string); targetZone != "" && entryZone != "" && entryZone != targetZone {
 			continue
 		}
 		sizes, _ := mt["MachineSizes"].([]any)
@@ -212,11 +307,20 @@ func stepQueryInstanceTypes() Step {
 		Type: StepToolCall,
 		Tool: "DescribeAvailableCompShareInstanceTypes",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			gt, _ := wfCtx.Params["GpuType"].(string)
-			return map[string]any{
-				"Zone":         paramStr(wfCtx.Params, "Zone", defaultZone),
-				"MachineTypes": []any{gt},
-			}, nil
+			// Query the full catalog rather than locking to a single zone +
+			// machine type. Reasons:
+			//  (1) the upstream filters by Zone, so a hardcoded cn-wlcb-01 query
+			//      silently drops cards that live only in another zone (e.g.
+			//      2080Ti is cn-sh2-02-only) — resolveTargetZone then picks the
+			//      right zone from the result;
+			//  (2) on a no-match failure we can list the REAL available types
+			//      instead of letting the narration round fabricate them.
+			// Candidate + zone selection is done in-code (resolveTargetSpec).
+			args := map[string]any{}
+			if z := paramStr(wfCtx.Params, "Zone", ""); z != "" {
+				args["Zone"] = z // honour an explicit zone (e.g. the deploy arm's ChosenZone)
+			}
+			return args, nil
 		},
 	}
 }
@@ -228,13 +332,15 @@ func stepCheckCapacity() Step {
 		Tool: "CheckCompShareResourceCapacity",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			// Resolve target spec early so ambiguity errors surface before
-			// making a pointless capacity API call.
-			if _, _, _, err := resolveTargetSpec(wfCtx); err != nil {
+			// making a pointless capacity API call. The resolved zone is where
+			// the requested GPU actually lives (not a hardcoded default).
+			_, _, _, zone, err := resolveTargetSpec(wfCtx)
+			if err != nil {
 				return nil, err
 			}
 			imageId := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
 			return map[string]any{
-				"Zone":               paramStr(wfCtx.Params, "Zone", defaultZone),
+				"Zone":               zone,
 				"GpuType":            wfCtx.Params["GpuType"],
 				"MachineType":        "G",
 				"MinimalCpuPlatform": "Auto",
@@ -249,7 +355,7 @@ func stepCheckCapacity() Step {
 				return false, "库存检查未返回任何规格信息，可能当前 GPU 型号不可用。"
 			}
 
-			gpu, cpu, memMB, err := resolveTargetSpec(wfCtx)
+			gpu, cpu, memMB, _, err := resolveTargetSpec(wfCtx)
 			if err != nil {
 				return false, err.Error()
 			}
@@ -288,13 +394,13 @@ func stepGetPrice() Step {
 		Type: StepToolCall,
 		Tool: "GetCompShareInstanceUserPrice",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			gpu, cpu, mem, err := resolveTargetSpec(wfCtx)
+			gpu, cpu, mem, zone, err := resolveTargetSpec(wfCtx)
 			if err != nil {
 				return nil, err
 			}
 			gt, _ := wfCtx.Params["GpuType"].(string)
 			args := map[string]any{
-				"Zone":       paramStr(wfCtx.Params, "Zone", defaultZone),
+				"Zone":       zone,
 				"GpuType":    gt,
 				"GPU":        gpu,
 				"CPU":        cpu,
@@ -332,7 +438,7 @@ func stepConfirmCreate() Step {
 		Name: "确认创建",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			gpu, cpu, memMB, err := resolveTargetSpec(wfCtx)
+			gpu, cpu, memMB, zone, err := resolveTargetSpec(wfCtx)
 			if err != nil {
 				return nil, err
 			}
@@ -342,7 +448,7 @@ func stepConfirmCreate() Step {
 				"Gpu":        gpu,
 				"CPU":        cpu,
 				"Memory":     memMB,
-				"Zone":       paramStr(wfCtx.Params, "Zone", defaultZone),
+				"Zone":       zone,
 				"ChargeType": paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
 				"image":      pickImageName(wfCtx.Params, wfCtx.Result("查询镜像")),
 				"price":      wfCtx.Result("查询价格"),
@@ -363,7 +469,7 @@ func stepCreateInstance() Step {
 		Type: StepToolCall,
 		Tool: "CreateCompShareInstance",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			gpu, cpu, mem, err := resolveTargetSpec(wfCtx)
+			gpu, cpu, mem, zone, err := resolveTargetSpec(wfCtx)
 			if err != nil {
 				return nil, err
 			}
@@ -378,7 +484,7 @@ func stepCreateInstance() Step {
 			}
 			gt, _ := wfCtx.Params["GpuType"].(string)
 			args := map[string]any{
-				"Zone":             paramStr(wfCtx.Params, "Zone", defaultZone),
+				"Zone":             zone,
 				"GpuType":          gt,
 				"GPU":              gpu,
 				"CPU":              cpu,

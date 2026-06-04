@@ -702,6 +702,13 @@ func TestScenario_WorkflowCapacityInsufficient(t *testing.T) {
 		results: map[string]map[string]any{
 			"DescribeCompShareInstance": {"TotalCount": float64(0), "UHostSet": []any{}},
 			"DescribeCompShareImages":   {"ImageSet": []any{map[string]any{"CompShareImageId": "img-pt", "CompShareImageName": "PyTorch 2.1"}}},
+			"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "H20", "MachineSizes": []any{
+					map[string]any{"Gpu": float64(1), "Collection": []any{
+						map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+					}},
+				}},
+			}},
 		},
 		errors: map[string]error{
 			"CheckCompShareResourceCapacity": fmt.Errorf("ResourceNotEnough: H20 库存不足"),
@@ -711,6 +718,9 @@ func TestScenario_WorkflowCapacityInsufficient(t *testing.T) {
 	mock := &mockLLM{
 		responses: []llm.ChatResponse{
 			{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{"GpuType": "H20"})}},
+			// A 2nd response is scripted but MUST NOT be consumed: create failures
+			// skip the LLM narration round (it has fabricated 下架 claims), so the
+			// reply is the deterministic, grounded one below.
 			{Content: "抱歉，H20 库存不足，建议换用 A100 或稍后再试。"},
 		},
 	}
@@ -720,7 +730,11 @@ func TestScenario_WorkflowCapacityInsufficient(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "帮我开一台H20", func(e StepEvent) {})
 	assert.NoError(t, err)
+	// Deterministic grounded reply (NOT the scripted narration): the "创建实例没有成功"
+	// prefix proves narration was skipped; the executor's real reason is surfaced.
+	assert.Contains(t, reply, "创建实例没有成功")
 	assert.Contains(t, reply, "库存不足")
+	assert.Len(t, mock.calls, 1, "narration round must be skipped on create failure")
 
 	// Should NOT have reached CreateCompShareInstance
 	for _, c := range exec.calls {
@@ -733,9 +747,16 @@ func TestScenario_WorkflowCapacityInsufficient(t *testing.T) {
 func TestScenario_WorkflowConfirmCancelled(t *testing.T) {
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
-			"DescribeCompShareInstance":      {"TotalCount": float64(0), "UHostSet": []any{}},
-			"DescribeCompShareImages":        {"ImageSet": []any{map[string]any{"CompShareImageId": "img-pt", "CompShareImageName": "PyTorch"}}},
-			"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{"Gpu": float64(1), "ResourceEnough": true}}},
+			"DescribeCompShareInstance": {"TotalCount": float64(0), "UHostSet": []any{}},
+			"DescribeCompShareImages":   {"ImageSet": []any{map[string]any{"CompShareImageId": "img-pt", "CompShareImageName": "PyTorch"}}},
+			"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "MachineSizes": []any{
+					map[string]any{"Gpu": float64(1), "Collection": []any{
+						map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+					}},
+				}},
+			}},
+			"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true}}},
 			"GetCompShareInstanceUserPrice":  {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": float64(1.58)}}},
 		},
 	}
@@ -755,7 +776,8 @@ func TestScenario_WorkflowConfirmCancelled(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "帮我创建一台4090", func(e StepEvent) {})
 	assert.NoError(t, err)
-	assert.Contains(t, reply, "取消")
+	// Deterministic cancel reply, narration skipped.
+	assert.Contains(t, reply, "已取消创建实例操作")
 
 	// Should NOT have called CreateCompShareInstance
 	for _, c := range exec.calls {
@@ -945,9 +967,16 @@ func TestScenario_DiagnosisAPIError(t *testing.T) {
 func TestScenario_WorkflowCreateAPIError(t *testing.T) {
 	exec := &mockExecutorWithErrors{
 		results: map[string]map[string]any{
-			"DescribeCompShareInstance":      {"TotalCount": float64(0), "UHostSet": []any{}},
-			"DescribeCompShareImages":        {"ImageSet": []any{map[string]any{"CompShareImageId": "img-pt", "CompShareImageName": "PyTorch"}}},
-			"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{"Gpu": float64(1), "ResourceEnough": true}}},
+			"DescribeCompShareInstance": {"TotalCount": float64(0), "UHostSet": []any{}},
+			"DescribeCompShareImages":   {"ImageSet": []any{map[string]any{"CompShareImageId": "img-pt", "CompShareImageName": "PyTorch"}}},
+			"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "MachineSizes": []any{
+					map[string]any{"Gpu": float64(1), "Collection": []any{
+						map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+					}},
+				}},
+			}},
+			"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true}}},
 			"GetCompShareInstanceUserPrice":  {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": float64(1.58)}}},
 		},
 		errors: map[string]error{
@@ -958,6 +987,8 @@ func TestScenario_WorkflowCreateAPIError(t *testing.T) {
 	mock := &mockLLM{
 		responses: []llm.ChatResponse{
 			{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{"GpuType": "4090"})}},
+			// Scripted narration that MUST NOT be consumed — create failures return
+			// a deterministic grounded reply and skip the LLM narration round.
 			{Content: "创建失败：余额不足，请充值后重试。"},
 		},
 	}
@@ -967,14 +998,81 @@ func TestScenario_WorkflowCreateAPIError(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "帮我开一台4090", func(e StepEvent) {})
 	assert.NoError(t, err)
-	assert.Contains(t, reply, "余额不足")
+	// Deterministic reply surfaces the real executor error verbatim, no fabrication,
+	// and the scripted narration is never consumed (only the tool-call round ran).
+	assert.Contains(t, reply, "创建实例没有成功")
+	assert.Contains(t, reply, "insufficient balance")
+	assert.Len(t, mock.calls, 1, "narration round must be skipped on create failure")
 
-	// Workflow result fed to LLM should indicate failure
-	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
-	var result map[string]any
-	err = json.Unmarshal([]byte(toolMsg.Content), &result)
+	// The create step must actually have been attempted (reached the API error).
+	createAttempted := false
+	for _, c := range exec.calls {
+		if c == "CreateCompShareInstance" {
+			createAttempted = true
+		}
+	}
+	assert.True(t, createAttempted, "workflow should have reached the create step")
+}
+
+// TestScenario_CreateInstance_NormalizesV100 proves the reported bug fix: a user
+// asking for "V100" (which the platform catalog does not have — it sells V100S)
+// must have the type normalized BEFORE the create runs, so the workflow succeeds
+// instead of failing with a "no such config" the LLM then narrates into a
+// fabricated "下架" reply.
+func TestScenario_CreateInstance_NormalizesV100(t *testing.T) {
+	var createGpuType string
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{map[string]any{"CompShareImageId": "img-1", "Name": "Ubuntu 22.04"}}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "V100S", "Zone": "cn-wlcb-01", "Status": "Normal", "MachineSizes": []any{
+					map[string]any{"Gpu": float64(1), "Collection": []any{
+						map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+					}},
+				}},
+			}}, nil
+		case "CheckCompShareResourceCapacity":
+			return map[string]any{"Specs": []any{map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true}}}, nil
+		case "GetCompShareInstanceUserPrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.5}}}, nil
+		case "CreateCompShareInstance":
+			createGpuType, _ = args["GpuType"].(string)
+			return map[string]any{"UHostIds": []any{"uhost-v100s-1"}}, nil
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{"UHostId": "uhost-v100s-1", "State": "Running"}}}, nil
+		}
+		return map[string]any{}, nil
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{"GpuType": "V100"})}},
+		{Content: "已为您创建实例 uhost-v100s-1。"},
+	}}
+	eng := NewWithDeps(mock, exec, func(a string, args map[string]any) bool { return true })
+	eng.Init(context.Background())
+
+	_, err := eng.Chat(context.Background(), "部署一个V100的实例", noopStep)
 	assert.NoError(t, err)
-	assert.Equal(t, false, result["success"])
+	assert.Equal(t, "V100S", createGpuType, "user 'V100' must be normalized to the platform's 'V100S' before create")
+}
+
+func TestCreateWorkflowFailureReply(t *testing.T) {
+	// BuildArgs-failure prefix stripped, grounded body preserved.
+	got := createWorkflowFailureReply("步骤「检查库存」参数构建失败: 未找到 X × 1 卡的可用配比。当前可部署的 GPU 机型：4090、V100S。")
+	assert.Contains(t, got, "抱歉，创建实例没有成功：")
+	assert.Contains(t, got, "未找到 X × 1")
+	assert.Contains(t, got, "4090、V100S")
+	assert.NotContains(t, got, "参数构建失败", "the technical step wrapper must be stripped")
+
+	// Executor-failure prefix stripped too.
+	got = createWorkflowFailureReply("步骤「创建实例」执行失败: insufficient balance")
+	assert.Contains(t, got, "insufficient balance")
+	assert.NotContains(t, got, "执行失败")
+
+	// Empty message → safe fallback.
+	got = createWorkflowFailureReply("")
+	assert.Contains(t, got, "未能创建实例")
 }
 
 // ── Scenario 23: StartInstanceWorkflow full success ──────────────────────
