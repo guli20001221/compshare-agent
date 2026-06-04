@@ -166,6 +166,54 @@ func TestIntentPlannerCutoverIntentsFromEnv(t *testing.T) {
 	}
 }
 
+func TestIntentPlannerCutoverIntentsFromEnv_NetworkAcceleratorAliases(t *testing.T) {
+	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		if key == "USE_INTENT_PLANNER_FOR" {
+			return "network_accelerator, network_accelerator_status, net_accelerator"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+	require.Len(t, intents, 1)
+	require.Equal(t, "network_accelerator_status", string(intents[0]))
+}
+
+func TestIntentPlannerCutoverIntentsFromEnv_ImageTagAliases(t *testing.T) {
+	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		if key == "USE_INTENT_PLANNER_FOR" {
+			return "image_tags, image_tag, image_tag_catalog"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+	require.Len(t, intents, 1)
+	require.Equal(t, "image_tag_catalog", string(intents[0]))
+}
+
+func TestIntentPlannerCutoverIntentsFromEnv_ModelRepositoryAliases(t *testing.T) {
+	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		if key == "USE_INTENT_PLANNER_FOR" {
+			return "model_repo, model_repository, model_repository_browse"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+	require.Len(t, intents, 1)
+	require.Equal(t, "model_repository_browse", string(intents[0]))
+}
+
+func TestIntentPlannerCutoverIntentsFromEnv_SharedImageAliases(t *testing.T) {
+	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		if key == "USE_INTENT_PLANNER_FOR" {
+			return "shared_image, sharing_image, shared_image_list"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+	require.Len(t, intents, 1)
+	require.Equal(t, "shared_image_list", string(intents[0]))
+}
+
 func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
 	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(string) string { return "" })
 	require.Empty(t, unknown)
@@ -176,9 +224,13 @@ func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
 		"gpu_specs_query",
 		"stock_availability",
 		"pricing_query",
+		"image_tag_catalog",
+		"model_repository_browse",
 		"platform_image_list",
 		"custom_image_list",
 		"community_image_list",
+		"shared_image_list",
+		"network_accelerator_status",
 	}
 	require.Len(t, intents, len(want))
 	for i, w := range want {
@@ -352,21 +404,30 @@ func TestSkillExecutorDiagnosisPilotsFromEnv(t *testing.T) {
 
 	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
 		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
-			return " diagnose_port_firewall,diagnose_ssh "
+			return " diagnose-port-firewall,diagnose-ssh "
 		}
 		return ""
 	})
-	require.Equal(t, []string{"diagnose_port_firewall", "diagnose_ssh"}, pilots)
+	require.Equal(t, []string{"diagnose-port-firewall", "diagnose-ssh"}, pilots)
 	require.Empty(t, unknown)
 
 	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
 		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
-			return "diagnose_port_firewall,typo"
+			return "diagnose-port-firewall,typo"
 		}
 		return ""
 	})
-	require.Equal(t, []string{"diagnose_port_firewall"}, pilots)
+	require.Equal(t, []string{"diagnose-port-firewall"}, pilots)
 	require.Equal(t, []string{"typo"}, unknown)
+
+	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
+		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
+			return "diagnose_port_firewall,diagnose_gpu_not_detected"
+		}
+		return ""
+	})
+	require.Equal(t, []string{"diagnose-port-firewall", "diagnose-gpu-not-detected"}, pilots)
+	require.Empty(t, unknown)
 }
 
 func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {

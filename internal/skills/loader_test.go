@@ -57,14 +57,17 @@ func writeCanonicalSkill(t *testing.T, root, name, frontmatter, body string) {
 }
 
 // seededRoot is the package directory itself; the test binary runs with cwd set
-// to internal/skills, so the 5 diagnose_* bundles live under ".".
+// to internal/skills, so the 5 diagnose-* bundles live under ".".
 const seededRoot = "."
 
 func TestNewLoader_LoadsCanonicalSKILLMDWithNestedMetadata(t *testing.T) {
 	root := t.TempDir()
-	writeCanonicalSkill(t, root, "canonical_skill",
-		"name: canonical_skill\n"+
+	writeCanonicalSkill(t, root, "canonical-skill",
+		"name: canonical-skill\n"+
 			"description: canonical skill\n"+
+			"license: UNLICENSED\n"+
+			"compatibility: CompShare diagnosis executor; read-only platform APIs only.\n"+
+			"allowed-tools: DescribeCompShareInstance\n"+
 			"metadata:\n"+
 			"  verification_status: production_validated\n"+
 			"  field_refs_verified: true\n"+
@@ -77,12 +80,21 @@ func TestNewLoader_LoadsCanonicalSKILLMDWithNestedMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLoader: %v", err)
 	}
-	s, ok := l.Fetch("canonical_skill")
+	s, ok := l.Fetch("canonical-skill")
 	if !ok {
-		t.Fatalf("canonical_skill not loaded; got %v", l.Names())
+		t.Fatalf("canonical-skill not loaded; got %v", l.Names())
 	}
-	if !strings.HasSuffix(s.Path, "canonical_skill/SKILL.md") {
+	if !strings.HasSuffix(s.Path, "canonical-skill/SKILL.md") {
 		t.Fatalf("Path = %q, want canonical SKILL.md path", s.Path)
+	}
+	if s.License != "UNLICENSED" {
+		t.Fatalf("License = %q", s.License)
+	}
+	if s.Compatibility == "" {
+		t.Fatal("Compatibility should load from standard frontmatter")
+	}
+	if s.AllowedTools != "DescribeCompShareInstance" {
+		t.Fatalf("AllowedTools = %q", s.AllowedTools)
 	}
 	if !equalStrings(s.RequiredTools, []string{"DescribeCompShareInstance"}) {
 		t.Fatalf("required_tools = %v", s.RequiredTools)
@@ -96,10 +108,52 @@ func TestNewLoader_LoadsCanonicalSKILLMDWithNestedMetadata(t *testing.T) {
 	}
 }
 
+func TestNewLoader_RejectsUnderscoreSkillNames(t *testing.T) {
+	root := t.TempDir()
+	writeCanonicalSkill(t, root, "bad_name",
+		"name: bad_name\n"+
+			"description: bad name\n"+
+			"metadata:\n"+
+			"  verification_status: production_validated\n"+
+			"  field_refs_verified: true",
+		"body\n")
+	if _, err := NewLoaderWithLogger(root, silentLogger()); err == nil || !strings.Contains(err.Error(), "lowercase letters, digits, and hyphens") {
+		t.Fatalf("expected Anthropic-style name error, got %v", err)
+	}
+}
+
+func TestNewLoader_AllowedToolsIsAdvisoryOnly(t *testing.T) {
+	root := t.TempDir()
+	writeCanonicalSkill(t, root, "advisory-tools",
+		"name: advisory-tools\n"+
+			"description: advisory tools\n"+
+			"allowed-tools: CreateCompShareCustomImage\n"+
+			"metadata:\n"+
+			"  verification_status: production_validated\n"+
+			"  field_refs_verified: true\n"+
+			"  required_tools:\n"+
+			"    - DescribeCompShareInstance",
+		"body\n")
+	l, err := NewLoaderWithLogger(root, silentLogger())
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	s, ok := l.Fetch("advisory-tools")
+	if !ok {
+		t.Fatalf("advisory-tools not loaded; got %v", l.Names())
+	}
+	if s.AllowedTools != "CreateCompShareCustomImage" {
+		t.Fatalf("AllowedTools = %q", s.AllowedTools)
+	}
+	if !equalStrings(s.RequiredTools, []string{"DescribeCompShareInstance"}) {
+		t.Fatalf("required_tools must remain the executable tool set; got %v", s.RequiredTools)
+	}
+}
+
 func TestNewLoader_RejectsLegacyTopLevelOperationalFieldsInSKILLMD(t *testing.T) {
 	root := t.TempDir()
-	writeCanonicalSkill(t, root, "legacy_shape",
-		"name: legacy_shape\n"+
+	writeCanonicalSkill(t, root, "legacy-shape",
+		"name: legacy-shape\n"+
 			"description: legacy shape\n"+
 			"verification_status: production_validated\n"+
 			"field_refs_verified: true",
@@ -113,9 +167,9 @@ func TestNewLoader_RejectsLegacyTopLevelOperationalFieldsInSKILLMD(t *testing.T)
 
 func TestNewLoader_ListsProgressiveDisclosureResources(t *testing.T) {
 	root := t.TempDir()
-	name := "resourceful_skill"
+	name := "resourceful-skill"
 	writeCanonicalSkill(t, root, name,
-		"name: resourceful_skill\n"+
+		"name: resourceful-skill\n"+
 			"description: resourceful skill\n"+
 			"metadata:\n"+
 			"  verification_status: production_validated\n"+
@@ -161,11 +215,11 @@ func TestNewLoader_LoadsAllSeededSkills(t *testing.T) {
 		t.Fatalf("NewLoader: %v", err)
 	}
 	want := []string{
-		"diagnose_gpu_not_detected",
-		"diagnose_image_issue",
-		"diagnose_init_failure",
-		"diagnose_port_firewall",
-		"diagnose_ssh",
+		"diagnose-gpu-not-detected",
+		"diagnose-image-issue",
+		"diagnose-init-failure",
+		"diagnose-port-firewall",
+		"diagnose-ssh",
 	}
 	if l.Len() != len(want) {
 		t.Fatalf("loaded %d skills, want %d (%v)", l.Len(), len(want), l.Names())
@@ -205,9 +259,9 @@ func TestSkillBody_LazyCautionInjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLoader: %v", err)
 	}
-	s, ok := l.Fetch("diagnose_ssh")
+	s, ok := l.Fetch("diagnose-ssh")
 	if !ok {
-		t.Fatal("diagnose_ssh not loaded")
+		t.Fatal("diagnose-ssh not loaded")
 	}
 	body, err := s.Body()
 	if err != nil {
@@ -247,13 +301,13 @@ func TestGeneratedSkillBody_CWDIndependent(t *testing.T) {
 
 	var ssh *Skill
 	for _, s := range GeneratedSkills() {
-		if s.Name == "diagnose_ssh" {
+		if s.Name == "diagnose-ssh" {
 			ssh = s
 			break
 		}
 	}
 	if ssh == nil {
-		t.Fatal("diagnose_ssh missing from generated registry")
+		t.Fatal("diagnose-ssh missing from generated registry")
 	}
 	if ssh.bodyFS != nil {
 		t.Fatalf("generated skill must have nil bodyFS (embed-backed); got %T", ssh.bodyFS)
@@ -275,14 +329,14 @@ func TestGeneratedSkillBody_CWDIndependent(t *testing.T) {
 // unread).
 func TestSkillBody_OverCapFailsNotTruncate(t *testing.T) {
 	root := t.TempDir()
-	writeSkill(t, root, "over_cap",
-		"name: over_cap\ndescription: cap test\nverification_status: production_validated\nfield_refs_verified: true\nbody_cap_lines: 5",
+	writeSkill(t, root, "over-cap",
+		"name: over-cap\ndescription: cap test\nverification_status: production_validated\nfield_refs_verified: true\nbody_cap_lines: 5",
 		strings.Repeat("a body line\n", 10))
 	l, err := NewLoaderWithLogger(root, silentLogger())
 	if err != nil {
 		t.Fatalf("NewLoader should not fail (body unread): %v", err)
 	}
-	s, _ := l.Fetch("over_cap")
+	s, _ := l.Fetch("over-cap")
 	body, err := s.Body()
 	if err == nil {
 		t.Fatalf("Body should fail for over-cap skill; got body %q", body)
@@ -299,8 +353,8 @@ func TestSkillBody_OverCapFailsNotTruncate(t *testing.T) {
 // fails at load, so a skill can't disable the cap with body_cap_lines: 1000.
 func TestNewLoader_BodyCapCeilingRejected(t *testing.T) {
 	root := t.TempDir()
-	writeSkill(t, root, "huge_cap",
-		"name: huge_cap\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\nbody_cap_lines: 201",
+	writeSkill(t, root, "huge-cap",
+		"name: huge-cap\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\nbody_cap_lines: 201",
 		"body\n")
 	if _, err := NewLoaderWithLogger(root, silentLogger()); err == nil || !strings.Contains(err.Error(), "hard ceiling") {
 		t.Fatalf("expected hard-ceiling error, got %v", err)
@@ -318,7 +372,7 @@ func TestNewLoader_StrictVerificationStatus(t *testing.T) {
 	for label, fmTail := range cases {
 		t.Run(label, func(t *testing.T) {
 			root := t.TempDir()
-			name := "vs_" + label
+			name := "vs-" + label
 			writeSkill(t, root, name, "name: "+name+"\n"+fmTail, "body\n")
 			if _, err := NewLoaderWithLogger(root, silentLogger()); err == nil || !strings.Contains(err.Error(), "verification_status") {
 				t.Fatalf("expected verification_status error, got %v", err)
@@ -331,8 +385,8 @@ func TestNewLoader_StrictVerificationStatus(t *testing.T) {
 // (the *bool distinguishes absent from explicit false).
 func TestNewLoader_FieldRefsVerifiedRequired(t *testing.T) {
 	root := t.TempDir()
-	writeSkill(t, root, "fr_missing",
-		"name: fr_missing\ndescription: x\nverification_status: production_validated",
+	writeSkill(t, root, "fr-missing",
+		"name: fr-missing\ndescription: x\nverification_status: production_validated",
 		"body\n")
 	if _, err := NewLoaderWithLogger(root, silentLogger()); err == nil || !strings.Contains(err.Error(), "field_refs_verified") {
 		t.Fatalf("expected field_refs_verified error, got %v", err)
@@ -344,8 +398,8 @@ func TestNewLoader_FieldRefsVerifiedRequired(t *testing.T) {
 // routing the skill to no lane. P3a-1 fast-tier determinism guard.
 func TestNewLoader_RejectsUnknownApplicableTier(t *testing.T) {
 	root := t.TempDir()
-	writeSkill(t, root, "bad_tier",
-		"name: bad_tier\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\napplicable_tiers: [fas]",
+	writeSkill(t, root, "bad-tier",
+		"name: bad-tier\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\napplicable_tiers: [fas]",
 		"body\n")
 	if _, err := NewLoaderWithLogger(root, silentLogger()); err == nil || !strings.Contains(err.Error(), "applicable_tiers") {
 		t.Fatalf("expected applicable_tiers enum error, got %v", err)
@@ -356,8 +410,8 @@ func TestNewLoader_RejectsUnknownApplicableTier(t *testing.T) {
 // reject the two valid lanes (non-vacuity guard for the test above).
 func TestNewLoader_AcceptsKnownApplicableTiers(t *testing.T) {
 	root := t.TempDir()
-	writeSkill(t, root, "good_tier",
-		"name: good_tier\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\napplicable_tiers: [fast, agent]",
+	writeSkill(t, root, "good-tier",
+		"name: good-tier\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\napplicable_tiers: [fast, agent]",
 		"body\n")
 	if _, err := NewLoaderWithLogger(root, silentLogger()); err != nil {
 		t.Fatalf("fast+agent are valid tiers, load must succeed: %v", err)
@@ -368,8 +422,8 @@ func TestNewLoader_AcceptsKnownApplicableTiers(t *testing.T) {
 // is a hard parse failure (so a P2 schema-key typo can't silently no-op).
 func TestNewLoader_RejectsUnknownYAMLKey(t *testing.T) {
 	root := t.TempDir()
-	writeSkill(t, root, "unknown_key",
-		"name: unknown_key\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\nnot_a_real_field: 1",
+	writeSkill(t, root, "unknown-key",
+		"name: unknown-key\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\nnot_a_real_field: 1",
 		"body\n")
 	if _, err := NewLoaderWithLogger(root, silentLogger()); err == nil || !strings.Contains(err.Error(), "not_a_real_field") {
 		t.Fatalf("expected unknown-field error, got %v", err)
@@ -380,26 +434,29 @@ func TestNewLoader_RejectsUnknownYAMLKey(t *testing.T) {
 // name fails (ADR-004 §66 — prevents directory/name drift).
 func TestNewLoader_NameMustMatchDir(t *testing.T) {
 	root := t.TempDir()
-	writeSkill(t, root, "dir_name",
-		"name: other_name\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true",
+	writeSkill(t, root, "dir-name",
+		"name: other-name\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true",
 		"body\n")
 	if _, err := NewLoaderWithLogger(root, silentLogger()); err == nil || !strings.Contains(err.Error(), "directory name") {
 		t.Fatalf("expected name!=dir error, got %v", err)
 	}
 }
 
-// TestNewLoader_DanglingRelatedSkillsWarnsNotFails: the seeded skills reference
-// safety_warning (not authored yet). That is a forward reference — warn, never
-// fail.
+// TestNewLoader_DanglingRelatedSkillsWarnsNotFails: forward references are
+// warned, never failed.
 func TestNewLoader_DanglingRelatedSkillsWarnsNotFails(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "has-forward-ref",
+		"name: has-forward-ref\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\nrelated_skills: [future-safety-warning]",
+		"body\n")
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	if _, err := NewLoaderWithLogger(seededRoot, logger); err != nil {
+	if _, err := NewLoaderWithLogger(root, logger); err != nil {
 		t.Fatalf("dangling related_skills must not fail the load: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "dangling forward reference") || !strings.Contains(out, "safety_warning") {
-		t.Errorf("expected a dangling-related_skills warning mentioning safety_warning; got %q", out)
+	if !strings.Contains(out, "dangling forward reference") || !strings.Contains(out, "future-safety-warning") {
+		t.Errorf("expected a dangling-related_skills warning mentioning future-safety-warning; got %q", out)
 	}
 }
 
@@ -410,7 +467,7 @@ func TestSkillBody_ConcurrentFetchRace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLoader: %v", err)
 	}
-	s, _ := l.Fetch("diagnose_ssh")
+	s, _ := l.Fetch("diagnose-ssh")
 	const n = 24
 	var wg sync.WaitGroup
 	results := make([]string, n)
@@ -444,14 +501,14 @@ func TestLoaderCautionIgnoresEvolutionFields(t *testing.T) {
 	evolution := "provenance: distilled_from_trajectory\nprovenance_trace_ref: trace-xyz\nskill_version: 7\nlast_validated_against: snap-abc"
 
 	root := t.TempDir()
-	writeSkill(t, root, "evo_clean",
-		"name: evo_clean\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\n"+evolution,
+	writeSkill(t, root, "evo-clean",
+		"name: evo-clean\ndescription: x\nverification_status: production_validated\nfield_refs_verified: true\n"+evolution,
 		"clean body\n")
 	l, err := NewLoaderWithLogger(root, silentLogger())
 	if err != nil {
 		t.Fatalf("NewLoader: %v", err)
 	}
-	s, _ := l.Fetch("evo_clean")
+	s, _ := l.Fetch("evo-clean")
 	body, err := s.Body()
 	if err != nil {
 		t.Fatalf("Body: %v", err)
@@ -463,14 +520,14 @@ func TestLoaderCautionIgnoresEvolutionFields(t *testing.T) {
 	// Same evolution fields, only verification_status flipped → caution returns,
 	// proving the driver is verification_status, not the evolution metadata.
 	root2 := t.TempDir()
-	writeSkill(t, root2, "evo_unverified",
-		"name: evo_unverified\ndescription: x\nverification_status: unverified\nfield_refs_verified: true\n"+evolution,
+	writeSkill(t, root2, "evo-unverified",
+		"name: evo-unverified\ndescription: x\nverification_status: unverified\nfield_refs_verified: true\n"+evolution,
 		"unverified body\n")
 	l2, err := NewLoaderWithLogger(root2, silentLogger())
 	if err != nil {
 		t.Fatalf("NewLoader: %v", err)
 	}
-	s2, _ := l2.Fetch("evo_unverified")
+	s2, _ := l2.Fetch("evo-unverified")
 	body2, err := s2.Body()
 	if err != nil {
 		t.Fatalf("Body: %v", err)

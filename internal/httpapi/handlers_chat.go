@@ -6,24 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"net/http"
-	"strings"
 	"time"
 
-	"github.com/bitly/go-simplejson"
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/guardrails"
-	"github.com/compshare-agent/internal/httpapi/sse"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/ocr"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
-	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
-// metaEvent is the first SSE frame emitted after SSE headers are sent.
+// metaEvent is the first frame emitted when a chat turn starts streaming.
 type metaEvent struct {
 	RequestID string `json:"RequestId"`
 	SessionID string `json:"SessionId"`
@@ -35,7 +30,7 @@ type tokenEvent struct {
 	Text string `json:"Text"`
 }
 
-// doneEvent is the final SSE frame on a successful completion.
+// doneEvent is the final frame on a successful completion.
 // Content carries the final post-processed reply text (e.g. citation markers
 // stripped). The frontend should prefer Content over accumulated token deltas
 // when present, as the two may differ due to post-processing.
@@ -52,15 +47,15 @@ type usageEvent struct {
 	OutputTokens int `json:"OutputTokens"`
 }
 
-// streamErrorEvent is the SSE error frame emitted when the LLM call fails
-// after SSE has already started (so writeError can no longer be used).
+// streamErrorEvent is the error frame emitted when the LLM call fails after
+// streaming has started (so a normal JSON error response is no longer possible).
 type streamErrorEvent struct {
 	Code    string `json:"Code"`
 	Message string `json:"Message"`
 }
 
-// stepEvent is the SSE projection of engine.StepEvent — only fields safe for
-// the frontend are included. Args, Display, TraceResult, and cap info are
+// stepEvent is the streamed projection of engine.StepEvent — only fields safe
+// for the frontend are included. Args, Display, TraceResult, and cap info are
 // intentionally omitted.
 type stepEvent struct {
 	Type    string `json:"Type"`
@@ -69,9 +64,9 @@ type stepEvent struct {
 	Index   int    `json:"Index"`
 }
 
-// confirmationEvent is the SSE frame that tells the frontend to show a
-// confirmation dialog. The frontend sends ConfirmCSAgentAction with the
-// ConfirmationId to resolve it.
+// confirmationEvent is the frame that tells the frontend to show a confirmation
+// dialog. The frontend sends ConfirmCSAgentAction with the ConfirmationId to
+// resolve it (over the same WebSocket).
 type confirmationEvent struct {
 	ConfirmationID string         `json:"ConfirmationId"`
 	Action         string         `json:"Action"`
@@ -80,6 +75,14 @@ type confirmationEvent struct {
 }
 
 const confirmTimeoutSeconds = 60
+
+// streamWriter is the transport-agnostic sink for Chat streaming frames. The
+// production ws.Writer satisfies it, as does the test recordingSink, so the
+// streaming core in chatStream is written once and is independent of transport.
+type streamWriter interface {
+	WriteEvent(event string, data any) error
+	WriteKeepalive() error
+}
 
 func stepTypeString(t engine.StepType) string {
 	switch t {
@@ -98,37 +101,49 @@ func stepTypeString(t engine.StepType) string {
 	}
 }
 
-// handleChat is the Chat SSE handler. It:
-//  1. Validates inputs and session ownership (pre-SSE, errors go via writeError).
-//  2. Acquires an engine from the pool before persisting this turn, so cold
-//     rehydration only restores prior history.
-//  3. Persists user + assistant-placeholder rows.
-//  4. Opens the SSE stream and emits event:meta.
-//  5. On completion, updates the assistant row and emits event:done or event:error.
-func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.Json) {
+// chatPrep carries the validated, persisted, engine-leased state from
+// prepareChat into chatStream. release MUST be called by the caller (it returns
+// the engine lease).
+type chatPrep struct {
+	sessionID      string
+	message        string
+	ocrText        string
+	agent          *engine.Engine
+	release        func()
+	assistantMsgID string
+	owner          store.Owner
+	requestUUID    string
+	action         string
+
+	traceRecorder           *chatTraceRecorder
+	clientCtxPreserve       json.RawMessage
+	sessionStatePersistable bool
+	start                   time.Time
+}
+
+// prepareChat performs all pre-stream work shared by the SSE and WS paths:
+// input validation, OCR extraction, engine lease, session-state hydration, and
+// the user + assistant-placeholder row inserts. It returns either a ready
+// chatPrep (caller must defer prep.release()) or an *APIError to surface before
+// any stream framing. The returned context for streaming is the caller's;
+// prepareChat uses ctx only for its own pre-stream DB/engine work.
+func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID, message, imageDataURL string) (*chatPrep, *APIError) {
 	// -----------------------------------------------------------------------
 	// 1. Input validation
 	// -----------------------------------------------------------------------
-	sessionID := raw.Get("SessionId").MustString()
 	if sessionID == "" {
-		h.writeError(c, base.Action, base.RequestUUID, ErrInvalidParam.WithMessage("missing SessionId"))
-		return
+		return nil, ErrInvalidParam.WithMessage("missing SessionId")
 	}
-
-	message := strings.TrimSpace(raw.Get("Message").MustString())
 	if message == "" {
-		h.writeError(c, base.Action, base.RequestUUID, ErrInvalidParam.WithMessage("missing Message"))
-		return
+		return nil, ErrInvalidParam.WithMessage("missing Message")
 	}
 	if len([]rune(message)) > h.cfg.Agent.HTTP.MaxInputLength {
-		h.writeError(c, base.Action, base.RequestUUID, ErrInvalidParam.WithMessage("Message exceeds MaxInputLength"))
-		return
+		return nil, ErrInvalidParam.WithMessage("Message exceeds MaxInputLength")
 	}
 
-	sess, err := h.sessions.GetByID(c.Request.Context(), base.Owner, sessionID)
+	sess, err := h.sessions.GetByID(ctx, base.Owner, sessionID)
 	if err != nil {
-		h.writeError(c, base.Action, base.RequestUUID, err)
-		return
+		return nil, AsAPIError(err)
 	}
 
 	// Enforce per-session turn cap. Each completed Chat call persists exactly
@@ -140,20 +155,17 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 		maxTurns = config.DefaultMaxSessionTurns
 	}
 	if sess.MessageCount >= maxTurns*2 {
-		h.writeError(c, base.Action, base.RequestUUID, ErrSessionTurnLimit)
-		return
+		return nil, ErrSessionTurnLimit
 	}
 
 	// -----------------------------------------------------------------------
 	// 1.5 OCR image context extraction
 	// -----------------------------------------------------------------------
 	var ocrText string
-	imageDataURL := strings.TrimSpace(raw.Get("Image").MustString())
 	if imageDataURL != "" && h.ocrClient != nil {
-		text, valErr := h.processOCR(c.Request.Context(), base.RequestUUID, imageDataURL)
+		text, valErr := h.processOCR(ctx, base.RequestUUID, imageDataURL)
 		if valErr != nil {
-			h.writeError(c, base.Action, base.RequestUUID, ErrInvalidParam.WithMessage("invalid Image: %v", valErr))
-			return
+			return nil, ErrInvalidParam.WithMessage("invalid Image: %v", valErr)
 		}
 		ocrText = text
 	} else if imageDataURL != "" {
@@ -164,25 +176,21 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	// 2. Acquire engine (serialized per session via Lease)
 	// -----------------------------------------------------------------------
 	if h.pool == nil {
-		h.writeError(c, base.Action, base.RequestUUID, ErrInternal.WithMessage("%s", "engine pool not configured"))
-		return
+		return nil, ErrInternal.WithMessage("%s", "engine pool not configured")
 	}
 
 	// Build and inject UserContext so downstream tools can perform STS calls
 	// with the correct tenant identity.
 	userCtx, ucErr := h.buildUserContext(base)
 	if ucErr != nil {
-		h.writeError(c, base.Action, base.RequestUUID, AsAPIError(ucErr))
-		return
+		return nil, AsAPIError(ucErr)
 	}
-	ctx := tools.WithUser(c.Request.Context(), userCtx)
+	leaseCtx := tools.WithUser(ctx, userCtx)
 
-	agent, release, err := h.pool.Lease(ctx, base.Owner, sessionID)
+	agent, release, err := h.pool.Lease(leaseCtx, base.Owner, sessionID)
 	if err != nil {
-		h.writeError(c, base.Action, base.RequestUUID, AsAPIError(err))
-		return
+		return nil, AsAPIError(err)
 	}
-	defer release()
 
 	// Hydrate SessionState from the envelope persisted in sessions.context.
 	// Order matters:
@@ -217,7 +225,6 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	}
 
 	clearChatTraceObservers(agent)
-	defer clearChatTraceObservers(agent)
 
 	start := time.Now()
 	turnIndex := sess.MessageCount/2 + 1
@@ -225,15 +232,6 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	if traceRecorder != nil {
 		traceRecorder.SetRegistryTraceSupplier(agent.RegistryTraceState)
 		attachChatTraceObservers(agent, traceRecorder)
-	}
-	finishTrace := func(err error) {
-		if traceRecorder == nil {
-			return
-		}
-		if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
-			log.Printf("warning: HTTP trace write failed: %v", traceErr)
-		}
-		traceRecorder = nil
 	}
 
 	// -----------------------------------------------------------------------
@@ -251,7 +249,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	if ocrText != "" {
 		persistContent = "用户上传了一张截图，系统自动识别到以下内容：\n" + ocrText + "\n\n" + message
 	}
-	if err := h.messages.Append(c.Request.Context(), store.Message{
+	if err := h.messages.Append(ctx, store.Message{
 		ID:          userMsgID,
 		SessionID:   sessionID,
 		RequestUUID: &reqUUID,
@@ -259,11 +257,12 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 		Content:     guardrails.RedactPII(persistContent),
 		Status:      "ok",
 	}); err != nil {
-		h.writeError(c, base.Action, base.RequestUUID, err)
-		return
+		clearChatTraceObservers(agent)
+		release()
+		return nil, AsAPIError(err)
 	}
 
-	if err := h.messages.Append(c.Request.Context(), store.Message{
+	if err := h.messages.Append(ctx, store.Message{
 		ID:          assistantMsgID,
 		SessionID:   sessionID,
 		RequestUUID: &reqUUID,
@@ -272,24 +271,60 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 		Status:      "pending",
 		Model:       &model,
 	}); err != nil {
-		h.writeError(c, base.Action, base.RequestUUID, err)
-		return
+		clearChatTraceObservers(agent)
+		release()
+		return nil, AsAPIError(err)
 	}
 
-	if err := h.sessions.BumpUpdatedAtAndIncCount(c.Request.Context(), base.Owner, sessionID, 2); err != nil {
-		h.writeError(c, base.Action, base.RequestUUID, err)
-		return
+	if err := h.sessions.BumpUpdatedAtAndIncCount(ctx, base.Owner, sessionID, 2); err != nil {
+		clearChatTraceObservers(agent)
+		release()
+		return nil, AsAPIError(err)
 	}
 
-	// -----------------------------------------------------------------------
-	// 4. Open SSE response
-	// -----------------------------------------------------------------------
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("X-Accel-Buffering", "no")
-	c.Status(http.StatusOK)
+	return &chatPrep{
+		sessionID:               sessionID,
+		message:                 message,
+		ocrText:                 ocrText,
+		agent:                   agent,
+		release:                 release,
+		assistantMsgID:          assistantMsgID,
+		owner:                   base.Owner,
+		requestUUID:             base.RequestUUID,
+		action:                  base.Action,
+		traceRecorder:           traceRecorder,
+		clientCtxPreserve:       clientCtxPreserve,
+		sessionStatePersistable: sessionStatePersistable,
+		start:                   start,
+	}, nil
+}
 
-	sw := sse.New(c.Writer)
+// chatStream runs the LLM turn and streams frames over sw (SSE or WS). It owns
+// everything from the meta frame through the done/error frame plus post-stream
+// persistence. streamCtx scopes the turn — cancelling it (client disconnect)
+// aborts the engine and unblocks any pending confirmation. The engine lease is
+// released by the caller's deferred prep.release().
+func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base BaseRequest, prep *chatPrep) {
+	agent := prep.agent
+	sessionID := prep.sessionID
+	assistantMsgID := prep.assistantMsgID
+	traceRecorder := prep.traceRecorder
+	start := prep.start
+
+	defer clearChatTraceObservers(agent)
+
+	finishTrace := func(err error) {
+		if traceRecorder == nil {
+			return
+		}
+		if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
+			log.Printf("warning: HTTP trace write failed: %v", traceErr)
+		}
+		traceRecorder = nil
+	}
+
+	ctx := tools.WithUser(streamCtx, mustUserContext(h, base))
+
 	_ = sw.WriteEvent("meta", metaEvent{
 		RequestID: base.RequestUUID,
 		SessionID: sessionID,
@@ -297,7 +332,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	})
 
 	// -----------------------------------------------------------------------
-	// 5. Keepalive goroutine
+	// Keepalive goroutine
 	// -----------------------------------------------------------------------
 	var firstToken time.Time
 	tokenEmitted := false
@@ -311,7 +346,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 			select {
 			case <-ticker.C:
 				_ = sw.WriteKeepalive()
-			case <-c.Request.Context().Done():
+			case <-streamCtx.Done():
 				return
 			case <-done:
 				return
@@ -320,10 +355,10 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	}()
 
 	// -----------------------------------------------------------------------
-	// 5. LLM streaming call
+	// LLM streaming call
 	// -----------------------------------------------------------------------
 	stepIndex := 0
-	reply, chatErr := agent.ChatWithOptions(ctx, message, func(ev engine.StepEvent) {
+	reply, chatErr := agent.ChatWithOptions(ctx, prep.message, func(ev engine.StepEvent) {
 		if traceRecorder != nil {
 			traceRecorder.OnStep(ev)
 		}
@@ -335,7 +370,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 		})
 		stepIndex++
 	}, engine.ChatOptions{
-		ImageContext: ocrText,
+		ImageContext: prep.ocrText,
 		OnTextDelta: func(s string) {
 			if firstToken.IsZero() {
 				firstToken = time.Now()
@@ -358,7 +393,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 			}); err != nil {
 				return false
 			}
-			return WaitForConfirmation(c.Request.Context(), ch, time.Duration(confirmTimeoutSeconds)*time.Second)
+			return WaitForConfirmation(streamCtx, ch, time.Duration(confirmTimeoutSeconds)*time.Second)
 		},
 	})
 
@@ -366,7 +401,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	close(done)
 
 	// -----------------------------------------------------------------------
-	// 6. Post-stream branching
+	// Post-stream branching
 	// -----------------------------------------------------------------------
 	if chatErr == nil && !tokenEmitted && reply != "" {
 		if firstToken.IsZero() {
@@ -383,7 +418,7 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 	}
 
 	// Client disconnected.
-	if errors.Is(chatErr, context.Canceled) || errors.Is(c.Request.Context().Err(), context.Canceled) {
+	if errors.Is(chatErr, context.Canceled) || errors.Is(streamCtx.Err(), context.Canceled) {
 		finishTrace(chatErr)
 		_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
 			store.AssistantPatch{Status: "aborted"})
@@ -428,16 +463,16 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 
 	// Persist SessionState envelope AFTER the done frame so the client is
 	// not blocked on a DB write. Guarded by sessionStatePersistable, which
-	// is false on parse failure / unknown schema version (see Lease block
-	// above). Persistence failures are warning-only — the assistant reply
-	// is already delivered, the worst case is "previous instance" memory
-	// loss on the next turn.
-	if sessionStatePersistable {
+	// is false on parse failure / unknown schema version (see prepareChat).
+	// Persistence failures are warning-only — the assistant reply is already
+	// delivered, the worst case is "previous instance" memory loss on the
+	// next turn.
+	if prep.sessionStatePersistable {
 		newState, expectedVer, hydrated := agent.SessionStateSnapshot()
 		if hydrated {
 			envelope := engine.PersistedContext{
 				AgentSessionState: newState,
-				ClientContext:     clientCtxPreserve,
+				ClientContext:     prep.clientCtxPreserve,
 			}
 			if raw, mErr := json.Marshal(envelope); mErr == nil {
 				persistCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
@@ -457,6 +492,17 @@ func (h *Handlers) handleChat(c *gin.Context, base BaseRequest, raw *simplejson.
 			}
 		}
 	}
+}
+
+// mustUserContext rebuilds the UserContext for the streaming context. prepareChat
+// already validated it succeeds (same base), so an error here is not possible;
+// it falls back to an empty context defensively rather than panicking.
+func mustUserContext(h *Handlers, base BaseRequest) tools.UserContext {
+	uc, err := h.buildUserContext(base)
+	if err != nil {
+		return tools.UserContext{}
+	}
+	return uc
 }
 
 // sanitizeConfirmArgs projects workflow confirm args to a safe subset for the
@@ -498,15 +544,6 @@ func (h *Handlers) processOCR(ctx context.Context, requestUUID, imageDataURL str
 		text = string(runes[:maxOCRTextRunes])
 	}
 	return text, nil
-}
-
-// writeStreamError updates the assistant message status to "error" and emits
-// an event:error frame after SSE has already started.
-func writeStreamError(sw *sse.Writer, messages store.MessageStore, owner store.Owner, msgID string, apiErr *APIError) {
-	code := apiErr.Code
-	_ = messages.UpdateAssistant(context.Background(), owner, msgID,
-		store.AssistantPatch{Status: "error", ErrorCode: &code})
-	_ = sw.WriteEvent("error", streamErrorEvent{Code: apiErr.Code, Message: apiErr.Message})
 }
 
 // classifyChatError maps LLM errors to API error codes.

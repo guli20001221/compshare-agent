@@ -33,10 +33,12 @@ func TestBuildUserContextUsesRequestProjectID(t *testing.T) {
 	base := BaseRequest{
 		Owner:     store.Owner{TopOrganizationID: 123, OrganizationID: 456},
 		ProjectID: "org-cwy2qk",
+		UserEmail: "operator@example.com",
 	}
 	u, err := h.buildUserContext(base)
 	require.NoError(t, err)
 	assert.Equal(t, "org-cwy2qk", u.ProjectId)
+	assert.Equal(t, "operator@example.com", u.UserEmail)
 }
 
 func TestBuildUserContextLegacyCredentialModeAllowsEmptyRole(t *testing.T) {

@@ -60,6 +60,15 @@ func IntentToolSubset(i Intent) []string {
 		return []string{
 			"CheckCompShareNetOptimizer",
 		}
+	case IntentImageTagCatalog:
+		return []string{
+			"DescribeCompShareImageTags",
+		}
+	case IntentModelRepositoryBrowse:
+		return []string{
+			"DescribeModelRepositoryModels",
+			"DescribeModelRepositoryTags",
+		}
 	case IntentPlatformImageList:
 		return []string{
 			"DescribeCompShareImages",
@@ -71,6 +80,10 @@ func IntentToolSubset(i Intent) []string {
 	case IntentCommunityImageList:
 		return []string{
 			"DescribeCommunityImages",
+		}
+	case IntentSharedImageList:
+		return []string{
+			"DescribeCompShareSharingImages",
 		}
 	case IntentRecommendation:
 		return []string{

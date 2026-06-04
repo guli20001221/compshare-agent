@@ -1,6 +1,9 @@
 ---
-name: diagnose_image_issue
+name: diagnose-image-issue
 description: Use this skill when user suspects a CompShare instance image issue (image fails to install, community image misbehaving, image incompatible with application) and needs read-only platform-side triage
+license: UNLICENSED
+compatibility: CompShare diagnosis executor; read-only CompShare API tools only; no direct SSH or shell access.
+allowed-tools: DescribeCompShareInstance
 metadata:
   triggers:
     - "镜像问题"
@@ -11,8 +14,6 @@ metadata:
   applicable_tiers: [agent]
   required_tools:
     - DescribeCompShareInstance
-  related_skills:
-    - safety_warning
   body_cap_lines: 100
   verification_status: unverified
   field_refs_verified: false

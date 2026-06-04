@@ -50,13 +50,16 @@ type routeHandlerFunc = func(ctx context.Context, h *DemoHandler, req HandlerReq
 // Drift (against the expected per-intent handlers and against the skill-declared
 // handler_keys) is caught by skill_registry_test.go.
 var routeHandlerByKey = map[string]routeHandlerFunc{
-	"handleGPUSpecsQuery":        handleGPUSpecsQuery,
-	"handleStockAvailability":    handleStockAvailability,
-	"handleNetAcceleratorStatus": handleNetAcceleratorStatus,
-	"handlePlatformImageList":    handlePlatformImageList,
-	"handleCustomImageList":      handleCustomImageList,
-	"handleCommunityImageList":   handleCommunityImageList,
-	"handlePricingQuery":         handlePricingQuery,
+	"handleGPUSpecsQuery":         handleGPUSpecsQuery,
+	"handleStockAvailability":     handleStockAvailability,
+	"handleNetAcceleratorStatus":  handleNetAcceleratorStatus,
+	"handleImageTagCatalog":       handleImageTagCatalog,
+	"handleModelRepositoryBrowse": handleModelRepositoryBrowse,
+	"handlePlatformImageList":     handlePlatformImageList,
+	"handleCustomImageList":       handleCustomImageList,
+	"handleCommunityImageList":    handleCommunityImageList,
+	"handleSharedImageList":       handleSharedImageList,
+	"handlePricingQuery":          handlePricingQuery,
 }
 
 // RouteHandlerForKey resolves a skill handler_key to its route handler

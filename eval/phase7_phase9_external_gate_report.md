@@ -1,0 +1,157 @@
+# Phase 7 / Phase 9 External Gate Report
+
+Date: 2026-06-03
+Backend branch: `codex/diagnosis-routing-optimization`
+Backend head checked: `7a6e3c9`
+
+This report records the remaining external gates after the diagnosis/routing work.
+It is intentionally de-identified: no live credentials and no raw instance IDs are included.
+
+## Phase 7: write saga status
+
+### Current status
+
+`CreateCustomImageWorkflow` is already implemented in the backend and registered as a workflow tool.
+
+The workflow path is:
+
+1. `DescribeCompShareInstance`
+2. user confirmation
+3. `CreateCompShareCustomImage`
+4. optional `GetCompShareImageCreateProgress`
+
+The raw mutating API `CreateCompShareCustomImage` is not exposed as the user-facing action.
+The workflow asks for one confirmation before the mutating call.
+Destructive actions remain hard-refused.
+
+### API shape verification
+
+Upstream `CreateCompShareCustomImageRequest` contains:
+
+- `UHostId`
+- `Name`
+- `Description`
+- optional `Softwares`
+- optional `SoftwarePorts`
+- optional `FirewallPorts`
+
+It embeds `BaseRequest`, which contains `user_email`.
+
+The workflow currently passes only the minimum v1 fields:
+
+- `UHostId`
+- `Name`
+- optional `Description`
+
+It does not pass `Region`, `Zone`, `Softwares`, `SoftwarePorts`, or `FirewallPorts`.
+Unit tests pin this behavior.
+
+### Live evidence
+
+The previously committed live smoke report `eval/pr217_live_smoke_report.md` shows:
+
+- deny leg: confirmation denied, no `CreateCompShareCustomImage` call
+- destructive leg: hard refusal, zero tool calls
+- approve leg: reached real `CreateCompShareCustomImage`, then upstream returned `RetCode=210 Missing params [user_email]`
+- orphan check: no matching custom image was left behind
+
+Therefore the backend workflow is not waiting on instance cleanup.
+Test-created instances do not need to be deleted after the run.
+The remaining approve-leg blocker is gateway/user identity propagation for `user_email`.
+
+Follow-up backend readiness has been added after this audit:
+
+- HTTP `BaseRequest` parses `user_email`
+- `buildUserContext` carries it in `tools.UserContext`
+- `ExternalExecutor` injects it into form and JSON upstream requests
+- context `user_email` overrides any accidental tool arg value, so the model cannot spoof this identity field
+- CLI smoke can provide the same field through `COMPSHARE_USER_EMAIL`
+- reusable smoke harness: `eval/custom_image_user_email_smoke.ps1`
+
+With this backend support, the remaining external dependency is that the production gateway must provide the correct `user_email` field in agent requests.
+
+### Phase 7 conclusion
+
+Do not build publish/update image workflows until the gateway/user_email behavior is clarified, because those upstream requests also embed `BaseRequest` and may need the same identity field.
+
+After the gateway starts sending `user_email`, rerun the custom-image approve smoke with mutating tools enabled and verify:
+
+- confirmation appears before create
+- `CreateCompShareCustomImage` succeeds without `RetCode=210 Missing params [user_email]`
+- progress check runs when an image id is returned
+- listing custom images can observe the new image or expected in-progress state
+- destructive/delete-class actions remain hard-refused
+
+## Phase 9: frontend / console integration status
+
+### Backend HTTP/SSE gate
+
+Backend HTTP tests now pin the important console-facing behavior:
+
+- SSE step events are emitted before `done`
+- step events omit API args and tool result payloads
+- `done.Content` carries the final answer
+- persisted assistant content does not expose access tokens
+- HTTP traces record `actual_runtime_form=agent` for ReAct/tool-call paths
+
+Focused backend verification passed on this branch:
+
+```powershell
+go test ./internal/httpapi -count=1
+```
+
+### Frontend repo check
+
+Checked frontend repo:
+
+- path: `F:\frontend\frame`
+- MR baseline: `https://git.ucloudadmin.com/console/frame/-/merge_requests/236`
+- MR baseline branch fetched as: `codex/mr236-base`
+- integration branch: `codex/mr236-agent-integration`
+- integration head: `ac4b695`
+- head before local hardening: `06d2e4f`
+- local hardening commit: `393cc05`
+- tracked status: clean
+
+The frontend can consume the current backend shape:
+
+- `event: step`
+- `event: confirmation`
+- `event: token`
+- `event: done`
+- `ConfirmCSAgentAction`
+- `done.Content`
+
+Additional local frontend hardening has been applied in `F:\frontend\frame` commit `393cc05`:
+
+- removed confirmation debug logs
+- added friendly labels for new route/workflow actions
+- displays `tool_result`, `confirm_needed`, `blocked`, and `error` step types using coarse labels only
+- does not render step args or tool result payloads
+
+MR 236 changes the production chat transport from HTTP/SSE to the console WebSocket gateway:
+
+- normal JSON actions use the console `queryService`
+- stream chat uses `CONFIG_URL.WS` with `Action=CreateCSAgentWS`
+- `SendCSAgentChat` is sent over the WebSocket
+- `ConfirmCSAgentAction` is sent back over the same WebSocket
+- no hardcoded local gateway, org id, top org id, or project id exists in the production service file
+- no `organization_id`, `top_organization_id`, or `user_email` is sent from frontend code
+
+The local integration commit `ac4b695` is intentionally small and based on MR 236:
+
+- keeps the MR 236 WebSocket service layer unchanged
+- adds user-facing labels for the newly added read routes and custom-image workflow
+- displays `tool_result`, `confirm_needed`, `blocked`, and `error` step types instead of only `tool_call`
+
+Remaining external checks:
+
+- production gateway must inject the authoritative org/project/user identity context, including `user_email`
+- run a browser smoke against the real console build from the MR 236 integration branch after gateway context is available
+- verify the confirmation card can deny and approve a custom-image workflow through the console UI
+
+### Phase 9 conclusion
+
+Backend Phase 9 gates are pinned by tests.
+Frontend Phase 9 should use MR 236 as the production baseline, with `ac4b695` as the current UI-safety integration patch.
+It should not be treated as fully production-validated until gateway `user_email` is available and a browser smoke passes.

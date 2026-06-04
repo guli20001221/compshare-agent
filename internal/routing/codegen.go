@@ -11,13 +11,16 @@ import (
 )
 
 var knownHandlerKeys = map[string]bool{
-	"handleGPUSpecsQuery":        true,
-	"handleStockAvailability":    true,
-	"handleNetAcceleratorStatus": true,
-	"handlePlatformImageList":    true,
-	"handleCustomImageList":      true,
-	"handleCommunityImageList":   true,
-	"handlePricingQuery":         true,
+	"handleGPUSpecsQuery":         true,
+	"handleStockAvailability":     true,
+	"handleNetAcceleratorStatus":  true,
+	"handleImageTagCatalog":       true,
+	"handleModelRepositoryBrowse": true,
+	"handlePlatformImageList":     true,
+	"handleCustomImageList":       true,
+	"handleCommunityImageList":    true,
+	"handleSharedImageList":       true,
+	"handlePricingQuery":          true,
 }
 
 func KnownHandlerKeys() []string {

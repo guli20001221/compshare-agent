@@ -18,9 +18,12 @@ func TestNewLoader_LoadsSeededRoutes(t *testing.T) {
 		"community_image_list",
 		"custom_image_list",
 		"gpu_specs_query",
+		"image_tag_catalog",
+		"model_repository_browse",
 		"network_accelerator_status",
 		"platform_image_list",
 		"pricing_query",
+		"shared_image_list",
 		"stock_availability",
 	}
 	if loader.Len() != len(want) {

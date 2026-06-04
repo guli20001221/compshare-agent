@@ -13,7 +13,7 @@ import (
 	"github.com/compshare-agent/internal/routing"
 )
 
-// routingIntentOrder is the registration order of the 7 catalog/status route
+// routingIntentOrder is the registration order of the 10 catalog/status route
 // intents. It is the ONLY remnant of the deleted routeRegistry: the planner
 // prompt fragments are emitted in this order and the order is byte-identity-pinned
 // (NOT alphabetical). Handler binding, required tool, and metadata now come from
@@ -22,9 +22,12 @@ var routingIntentOrder = []Intent{
 	IntentGPUSpecsQuery,
 	IntentStockAvailability,
 	IntentNetAcceleratorStatus,
+	IntentImageTagCatalog,
+	IntentModelRepositoryBrowse,
 	IntentPlatformImageList,
 	IntentCustomImageList,
 	IntentCommunityImageList,
+	IntentSharedImageList,
 	IntentPricingQuery,
 }
 
@@ -33,6 +36,9 @@ func extraHandlerActions() map[Intent][]string {
 		IntentStockAvailability: {
 			"DescribeCompShareImages",
 			"CheckCompShareResourceCapacity",
+		},
+		IntentModelRepositoryBrowse: {
+			"DescribeModelRepositoryTags",
 		},
 	}
 }
@@ -232,6 +238,38 @@ func handlePlatformImageList(ctx context.Context, h *DemoHandler, req HandlerReq
 	return result
 }
 
+func handleImageTagCatalog(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
+	const action = "DescribeCompShareImageTags"
+	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, map[string]any{})
+	if fb != nil {
+		return *fb
+	}
+	reply := renderImageTagCatalogReply(raw)
+	result := HandledResult(reply)
+	result.ToolAction = action
+	result.ToolArgs = copyArgs(map[string]any{})
+	return result
+}
+
+func handleModelRepositoryBrowse(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
+	const modelAction = "DescribeModelRepositoryModels"
+	const tagAction = "DescribeModelRepositoryTags"
+	tagRaw, fb := executeRouteAction(ctx, h, req.Plan.Intent, tagAction, map[string]any{})
+	if fb != nil {
+		return *fb
+	}
+	args := modelRepositoryArgsFromUserText(req.UserText, tagRaw)
+	modelRaw, fb := executeRouteAction(ctx, h, req.Plan.Intent, modelAction, args)
+	if fb != nil {
+		return *fb
+	}
+	reply := renderModelRepositoryReply(modelRaw, tagRaw, req.UserText)
+	result := HandledResult(reply)
+	result.ToolAction = modelAction
+	result.ToolArgs = copyArgs(args)
+	return result
+}
+
 func handleCustomImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "DescribeCompShareCustomImages"
 	fieldOrder := []string{"CompShareImageId", "Name", "ImageName", "Status"}
@@ -258,6 +296,20 @@ func handleCommunityImageList(ctx context.Context, h *DemoHandler, req HandlerRe
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
 	setEnvelopeIfPopulated(&result, buildCommunityImageEnvelope(raw, req.UserText))
+	return result
+}
+
+func handleSharedImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
+	const action = "DescribeCompShareSharingImages"
+	args := map[string]any{"Limit": 20}
+	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, args)
+	if fb != nil {
+		return *fb
+	}
+	reply := renderSharedImageListReply(raw, req.UserText)
+	result := HandledResult(reply)
+	result.ToolAction = action
+	result.ToolArgs = copyArgs(args)
 	return result
 }
 
@@ -1741,6 +1793,177 @@ func renderImageListReply(raw map[string]any, listKey string, fieldOrder []strin
 	return strings.Join(lines, "\n")
 }
 
+func renderImageTagCatalogReply(raw map[string]any) string {
+	tagIndex := stringSliceAt(raw, "TagIndex")
+	tagsMap := stringSliceMapAt(raw, "TagsMap")
+	lines := []string{}
+	for _, category := range tagIndex {
+		tags := tagsMap[category]
+		if len(tags) == 0 {
+			continue
+		}
+		lines = append(lines, category+": "+strings.Join(limitStrings(tags, 12), "、"))
+	}
+	if len(lines) == 0 {
+		tags := stringSliceAt(raw, "Tags")
+		if len(tags) == 0 {
+			return "未获取到镜像标签。"
+		}
+		return "镜像标签: " + strings.Join(limitStrings(tags, 30), "、")
+	}
+	return "镜像标签分类:\n" + strings.Join(lines, "\n")
+}
+
+func modelRepositoryArgsFromUserText(userText string, tagRaw map[string]any) map[string]any {
+	args := map[string]any{}
+	matchedTags := matchModelRepositoryTags(userText, uniqueStrings(stringSliceAt(tagRaw, "Tags")))
+	if len(matchedTags) > 0 {
+		args["tags"] = strings.Join(limitStrings(matchedTags, 3), ",")
+		return args
+	}
+	if name := modelRepositoryNameQuery(userText); name != "" {
+		args["name"] = name
+	}
+	return args
+}
+
+func matchModelRepositoryTags(userText string, tags []string) []string {
+	if strings.TrimSpace(userText) == "" || len(tags) == 0 {
+		return nil
+	}
+	lowerText := strings.ToLower(userText)
+	matched := []string{}
+	seen := map[string]struct{}{}
+	for _, tag := range tags {
+		clean := strings.TrimSpace(tag)
+		if clean == "" {
+			continue
+		}
+		if !strings.Contains(lowerText, strings.ToLower(clean)) {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		matched = append(matched, clean)
+	}
+	return matched
+}
+
+func modelRepositoryNameQuery(userText string) string {
+	for _, tok := range extractUserTokens(userText) {
+		if !containsASCIIAlpha(tok) {
+			continue
+		}
+		switch tok {
+		case "model", "models", "repo", "repository", "huggingface", "hf":
+			continue
+		}
+		return tok
+	}
+	return ""
+}
+
+func containsASCIIAlpha(value string) bool {
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+
+func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, userText string) string {
+	tags := uniqueStrings(stringSliceAt(tagRaw, "Tags"))
+	models := mapSliceAt(modelRaw, "Models")
+	filtered := filterModelRepositoryModels(models, userText)
+	sections := []string{}
+	if len(tags) > 0 {
+		sections = append(sections, "模型仓库标签: "+strings.Join(limitStrings(tags, 20), "、"))
+	}
+	if len(filtered) == 0 {
+		if len(tags) > 0 {
+			sections = append(sections, "未找到匹配的模型。")
+			return strings.Join(sections, "\n")
+		}
+		return "未获取到模型仓库数据。"
+	}
+	lines := []string{}
+	for _, entry := range filtered {
+		line := buildModelRepositoryLine(entry)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) >= 20 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		if len(tags) > 0 {
+			sections = append(sections, "未找到匹配的模型。")
+			return strings.Join(sections, "\n")
+		}
+		return "未获取到模型仓库数据。"
+	}
+	sections = append(sections, "模型仓库列表:\n"+strings.Join(lines, "\n"))
+	return strings.Join(sections, "\n")
+}
+
+func filterModelRepositoryModels(models []any, userText string) []map[string]any {
+	out := make([]map[string]any, 0, len(models))
+	for _, item := range models {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(safeString(entry, "Deleted")) == "1" {
+			continue
+		}
+		out = append(out, entry)
+	}
+	if len(out) == 0 || isModelRepositoryListAllIntent(userText) {
+		return out
+	}
+	keywords := extractUserTokens(userText)
+	if len(keywords) == 0 {
+		return out
+	}
+	filtered := make([]map[string]any, 0, len(out))
+	for _, entry := range out {
+		if entryMatchesAnyKeyword(entry, keywords, []string{"Name", "Path", "Tag"}) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func isModelRepositoryListAllIntent(userText string) bool {
+	text := strings.ToLower(strings.TrimSpace(userText))
+	if text == "" {
+		return false
+	}
+	hasModelWord := strings.Contains(text, "模型") || strings.Contains(text, "model")
+	hasCatalogWord := strings.Contains(text, "仓库") || strings.Contains(text, "库") ||
+		strings.Contains(text, "列表") || strings.Contains(text, "哪些") ||
+		strings.Contains(text, "有什么") || strings.Contains(text, "可以用") ||
+		strings.Contains(text, "标签") || strings.Contains(text, "分类") ||
+		strings.Contains(text, "repo") || strings.Contains(text, "repository")
+	return hasModelWord && hasCatalogWord
+}
+
+func buildModelRepositoryLine(entry map[string]any) string {
+	parts := []string{}
+	for _, key := range []string{"Name", "Size", "Tag", "Path"} {
+		if v := strings.TrimSpace(safeString(entry, key)); v != "" {
+			parts = append(parts, key+"="+v)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
 func renderCommunityImageReply(raw map[string]any, userText string) string {
 	groups := mapSliceAt(raw, "CompshareImageGroup")
 	if len(groups) == 0 {
@@ -1817,6 +2040,85 @@ func renderCommunityImageReply(raw map[string]any, userText string) string {
 		return noCommunityReply
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderSharedImageListReply(raw map[string]any, userText string) string {
+	items := mapSliceAt(raw, "ImageSet")
+	if len(items) == 0 {
+		return "未获取到共享给你的镜像。"
+	}
+	keywords := extractUserTokens(userText)
+	if isSharedImageListAllIntent(userText) {
+		keywords = nil
+	}
+	filtered := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if len(keywords) > 0 && !entryMatchesAnyKeyword(entry, keywords, []string{"Name", "Description", "CompShareImageId", "ImageType", "Status"}) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	if len(keywords) > 0 && len(filtered) == 0 {
+		return "未找到匹配的共享镜像。"
+	}
+	lines := []string{}
+	for _, entry := range filtered {
+		line := buildSharedImageLine(entry)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) >= 20 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return "未获取到共享给你的镜像。"
+	}
+	prefix := "共享给你的镜像"
+	if total := strings.TrimSpace(safeString(raw, "TotalCount")); total != "" && total != "0" {
+		prefix += "（共 " + total + " 个）"
+	}
+	return prefix + ":\n" + strings.Join(lines, "\n")
+}
+
+func isSharedImageListAllIntent(userText string) bool {
+	text := strings.TrimSpace(userText)
+	return strings.Contains(text, "共享") && strings.Contains(text, "镜像") &&
+		(strings.Contains(text, "给我") || strings.Contains(text, "我的") ||
+			strings.Contains(text, "别人") || strings.Contains(text, "他人") ||
+			strings.Contains(text, "收到"))
+}
+
+func buildSharedImageLine(entry map[string]any) string {
+	parts := []string{}
+	for _, key := range []string{"CompShareImageId", "Name", "ImageType", "Status", "Container"} {
+		if v := strings.TrimSpace(safeString(entry, key)); v != "" {
+			parts = append(parts, key+"="+v)
+		}
+	}
+	if owner := sharedImageOwnerDisplay(entry); owner != "" {
+		parts = append(parts, "Owner="+owner)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func sharedImageOwnerDisplay(entry map[string]any) string {
+	owner, ok := entry["Owner"].(map[string]any)
+	if !ok || owner == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(safeString(owner, "AccountName")); name != "" {
+		return name
+	}
+	if id := strings.TrimSpace(safeString(owner, "AccountId")); id != "" && id != "0" {
+		return id
+	}
+	return ""
 }
 
 func buildCommunityGroupHeader(entry map[string]any) string {
@@ -1999,6 +2301,89 @@ func mapSliceAt(m map[string]any, key string) []any {
 		return nil
 	}
 	return arr
+}
+
+func stringSliceAt(m map[string]any, key string) []string {
+	if m == nil {
+		return nil
+	}
+	return stringsFromAny(m[key])
+}
+
+func stringSliceMapAt(m map[string]any, key string) map[string][]string {
+	out := map[string][]string{}
+	if m == nil {
+		return out
+	}
+	switch typed := m[key].(type) {
+	case map[string][]string:
+		for k, v := range typed {
+			out[safeValue(k)] = limitStrings(v, len(v))
+		}
+	case map[string]any:
+		for k, v := range typed {
+			out[safeValue(k)] = stringsFromAny(v)
+		}
+	}
+	return out
+}
+
+func stringsFromAny(v any) []string {
+	switch typed := v.(type) {
+	case []string:
+		return limitStrings(typed, len(typed))
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			s := strings.TrimSpace(safeValue(item))
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func limitStrings(values []string, max int) []string {
+	if max <= 0 || len(values) == 0 {
+		return nil
+	}
+	limit := max
+	if len(values) < limit {
+		limit = len(values)
+	}
+	out := make([]string, 0, limit)
+	for _, value := range values {
+		value = strings.TrimSpace(safeValue(value))
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func uniqueStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		clean := strings.TrimSpace(safeValue(value))
+		if clean == "" {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
 }
 
 func safeString(m map[string]any, key string) string {

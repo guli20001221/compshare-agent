@@ -1,0 +1,22 @@
+name: model_repository_browse
+description: 用户问公共模型仓库有哪些模型、有哪些模型标签、某个模型或某类标签下有哪些模型时触发
+intent_label: model_repository_browse
+route_group: catalog
+required_tools:
+  - DescribeModelRepositoryModels
+  - DescribeModelRepositoryTags
+tool_subset:
+  - DescribeModelRepositoryModels
+  - DescribeModelRepositoryTags
+required_citation: false
+handler_key: handleModelRepositoryBrowse
+planner_directives:
+  - 'Model repository browse questions like "模型仓库里有哪些模型", "有哪些 LLM 模型", or "模型仓库有哪些标签" should emit model_repository_browse.'
+  - 'Requests to deploy/run/create an instance for a model should use deploy_model or operation_lifecycle, not model_repository_browse.'
+  - 'Image catalog questions like "有哪些 PyTorch 镜像" should use image routes; model download/how-to/tutorial questions stay in knowledge_qa.'
+planner_examples:
+  - question: "模型仓库里有哪些模型可以用"
+    confidence: 0.85
+verification_status: production_validated
+field_refs_verified: true
+provenance: human_authored

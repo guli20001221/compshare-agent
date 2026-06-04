@@ -69,6 +69,22 @@ func (e *recordingExecutor) Execute(_ context.Context, action string, args map[s
 		return map[string]any{"Optimized": false, "Info": []any{
 			map[string]any{"Region": "cn-wlcb-01", "Optimized": false},
 		}}, nil
+	case "DescribeCompShareImageTags":
+		return map[string]any{
+			"TagIndex": []any{"框架", "场景"},
+			"TagsMap": map[string]any{
+				"框架": []any{"PyTorch", "TensorFlow"},
+				"场景": []any{"LLM", "图像生成"},
+			},
+			"Tags": []any{"PyTorch", "TensorFlow", "LLM", "图像生成"},
+		}, nil
+	case "DescribeModelRepositoryTags":
+		return map[string]any{"Tags": []any{"Model", "AI", "AI"}}, nil
+	case "DescribeModelRepositoryModels":
+		return map[string]any{"Models": []any{
+			map[string]any{"Name": "Qwen2.5-7B", "Path": "/models/qwen2.5-7b", "Tag": "LLM,Qwen", "Size": "15GB"},
+			map[string]any{"Name": "Llama-3-8B", "Path": "/models/llama-3-8b", "Tag": "LLM,Meta", "Size": "16GB"},
+		}}, nil
 	case "DescribeCompShareImages":
 		return map[string]any{"ImageSet": []any{
 			map[string]any{"CompShareImageId": "img-1", "Name": "PyTorch 2.9", "ImageType": "App"},
@@ -76,6 +92,16 @@ func (e *recordingExecutor) Execute(_ context.Context, action string, args map[s
 	case "DescribeCompShareCustomImages":
 		return map[string]any{"ImageSet": []any{
 			map[string]any{"CompShareImageId": "img-2", "Name": "my-image", "Status": "Available"},
+		}}, nil
+	case "DescribeCompShareSharingImages":
+		return map[string]any{"TotalCount": float64(1), "ImageSet": []any{
+			map[string]any{
+				"CompShareImageId": "img-shared-1",
+				"Name":             "shared-env",
+				"ImageType":        "Custom",
+				"Status":           "Available",
+				"Owner":            map[string]any{"AccountName": "team-a"},
+			},
 		}}, nil
 	case "DescribeCommunityImages":
 		return map[string]any{"CompshareImageGroup": []any{

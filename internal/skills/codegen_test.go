@@ -70,6 +70,9 @@ func TestGeneratedRegistry_SemanticParityWithLoader(t *testing.T) {
 		if !equalStrings(g.RequiredTools, ls.RequiredTools) {
 			t.Errorf("skill %q required_tools drift: gen=%v disk=%v", g.Name, g.RequiredTools, ls.RequiredTools)
 		}
+		if g.License != ls.License || g.Compatibility != ls.Compatibility || g.AllowedTools != ls.AllowedTools {
+			t.Errorf("skill %q standard metadata drift", g.Name)
+		}
 		if g.VerificationStatus != ls.VerificationStatus || g.FieldRefsVerified != ls.FieldRefsVerified {
 			t.Errorf("skill %q verification drift: gen=%s/%v disk=%s/%v",
 				g.Name, g.VerificationStatus, g.FieldRefsVerified, ls.VerificationStatus, ls.FieldRefsVerified)
@@ -94,8 +97,8 @@ func TestGeneratedRegistry_SemanticParityWithLoader(t *testing.T) {
 
 func TestGenerateRegistry_RejectsDistilledSkillWithoutGovernanceGate(t *testing.T) {
 	root := t.TempDir()
-	writeCanonicalSkill(t, root, "distilled_candidate",
-		"name: distilled_candidate\n"+
+	writeCanonicalSkill(t, root, "distilled-candidate",
+		"name: distilled-candidate\n"+
 			"description: distilled candidate\n"+
 			"metadata:\n"+
 			"  verification_status: spike_validated\n"+
@@ -113,13 +116,13 @@ func TestGenerateRegistry_RejectsDistilledSkillWithoutGovernanceGate(t *testing.
 
 func TestGenerateRegistry_RejectsDeterministicRoutingMetadata(t *testing.T) {
 	root := t.TempDir()
-	writeCanonicalSkill(t, root, "route_shaped",
-		"name: route_shaped\n"+
+	writeCanonicalSkill(t, root, "route-shaped",
+		"name: route-shaped\n"+
 			"description: route shaped\n"+
 			"metadata:\n"+
 			"  verification_status: production_validated\n"+
 			"  field_refs_verified: true\n"+
-			"  intent_label: route_shaped\n"+
+			"  intent_label: route-shaped\n"+
 			"  handler_key: handleGPUSpecsQuery\n"+
 			"  react_tool_subset:\n"+
 			"    - DescribeAvailableCompShareInstanceTypes",
@@ -133,8 +136,8 @@ func TestGenerateRegistry_RejectsDeterministicRoutingMetadata(t *testing.T) {
 
 func TestGenerateRegistry_AllowsReviewedSanitizedDistilledSkill(t *testing.T) {
 	root := t.TempDir()
-	writeCanonicalSkill(t, root, "distilled_candidate",
-		"name: distilled_candidate\n"+
+	writeCanonicalSkill(t, root, "distilled-candidate",
+		"name: distilled-candidate\n"+
 			"description: distilled candidate\n"+
 			"metadata:\n"+
 			"  verification_status: spike_validated\n"+
@@ -152,15 +155,15 @@ func TestGenerateRegistry_AllowsReviewedSanitizedDistilledSkill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateRegistry: %v", err)
 	}
-	if !bytes.Contains(src, []byte(`"distilled_candidate"`)) {
+	if !bytes.Contains(src, []byte(`"distilled-candidate"`)) {
 		t.Fatalf("generated registry did not include distilled candidate:\n%s", src)
 	}
 }
 
 func TestGenerateRegistry_RejectsHardcodedIdentifiersInDistilledSkill(t *testing.T) {
 	root := t.TempDir()
-	writeCanonicalSkill(t, root, "distilled_candidate",
-		"name: distilled_candidate\n"+
+	writeCanonicalSkill(t, root, "distilled-candidate",
+		"name: distilled-candidate\n"+
 			"description: distilled candidate\n"+
 			"metadata:\n"+
 			"  verification_status: spike_validated\n"+

@@ -10,7 +10,10 @@ import (
 )
 
 // Dispatch routes an incoming gateway request to the appropriate Action handler.
-// Non-SSE handlers go through writeResult; Chat is handled via SSE in handleChat.
+// These are the non-streaming Actions sent over HTTP POST (meta, session,
+// feedback, confirm). Streaming chat (SendCSAgentChat) moved to the WebSocket
+// path (HandleWS) because the gateway does not pass through SSE — see
+// docs/plans/2026-06-03-websocket-transport-refactor.md.
 func (h *Handlers) Dispatch(c *gin.Context) {
 	raw, base, err := ParseBaseRequest(c)
 	if err != nil {
@@ -31,8 +34,6 @@ func (h *Handlers) Dispatch(c *gin.Context) {
 	case "SendCSAgentFeedback":
 		data, err := h.handleFeedback(c, base, raw)
 		h.writeResult(c, base, data, err)
-	case "SendCSAgentChat":
-		h.handleChat(c, base, raw)
 	case "ConfirmCSAgentAction":
 		data, err := h.handleConfirm(c, base, raw)
 		h.writeResult(c, base, data, err)

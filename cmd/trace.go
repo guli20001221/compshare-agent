@@ -216,10 +216,11 @@ func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string)
 	var pilots []string
 	var unknown []string
 	for _, part := range strings.Split(raw, ",") {
-		name := strings.TrimSpace(part)
-		if name == "" {
+		rawName := strings.TrimSpace(part)
+		if rawName == "" {
 			continue
 		}
+		name := engine.CanonicalDiagnosisSkillName(rawName)
 		if _, ok := known[name]; ok {
 			if _, seen := seenKnown[name]; !seen {
 				pilots = append(pilots, name)
@@ -227,9 +228,9 @@ func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string)
 			}
 			continue
 		}
-		if _, seen := seenUnknown[name]; !seen {
-			unknown = append(unknown, name)
-			seenUnknown[name] = struct{}{}
+		if _, seen := seenUnknown[rawName]; !seen {
+			unknown = append(unknown, rawName)
+			seenUnknown[rawName] = struct{}{}
 		}
 	}
 	return pilots, unknown
@@ -271,12 +272,18 @@ func cutoverIntentLabels(cutoverIntents []intent.Intent) []string {
 			labels = append(labels, "gpu_specs")
 		case intent.IntentStockAvailability:
 			labels = append(labels, "stock")
+		case intent.IntentImageTagCatalog:
+			labels = append(labels, "image_tags")
+		case intent.IntentModelRepositoryBrowse:
+			labels = append(labels, "model_repo")
 		case intent.IntentPlatformImageList:
 			labels = append(labels, "platform_image")
 		case intent.IntentCustomImageList:
 			labels = append(labels, "custom_image")
 		case intent.IntentCommunityImageList:
 			labels = append(labels, "community_image")
+		case intent.IntentSharedImageList:
+			labels = append(labels, "shared_image")
 		case intent.IntentDiagnosis:
 			labels = append(labels, "diagnosis")
 		case intent.IntentVagueFailure:
@@ -572,9 +579,13 @@ func defaultCutoverIntents() []intent.Intent {
 		intent.IntentGPUSpecsQuery,
 		intent.IntentStockAvailability,
 		intent.IntentPricingQuery,
+		intent.IntentImageTagCatalog,
+		intent.IntentModelRepositoryBrowse,
 		intent.IntentPlatformImageList,
 		intent.IntentCustomImageList,
 		intent.IntentCommunityImageList,
+		intent.IntentSharedImageList,
+		intent.IntentNetAcceleratorStatus,
 	}
 }
 
@@ -606,12 +617,20 @@ func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []s
 			enabled = intent.IntentGPUSpecsQuery
 		case "stock":
 			enabled = intent.IntentStockAvailability
+		case "image_tags", "image_tag", "image_tag_catalog":
+			enabled = intent.IntentImageTagCatalog
+		case "model_repo", "model_repository", "model_repository_browse":
+			enabled = intent.IntentModelRepositoryBrowse
 		case "platform_image":
 			enabled = intent.IntentPlatformImageList
 		case "custom_image":
 			enabled = intent.IntentCustomImageList
 		case "community_image":
 			enabled = intent.IntentCommunityImageList
+		case "shared_image", "sharing_image", "shared_image_list":
+			enabled = intent.IntentSharedImageList
+		case "network_accelerator", "network_accelerator_status", "net_accelerator":
+			enabled = intent.IntentNetAcceleratorStatus
 		case "pricing", "pricing_query":
 			// Accept both the short form ("pricing", convention-consistent
 			// with the sibling cases above) and the full intent label

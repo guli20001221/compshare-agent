@@ -50,7 +50,7 @@ func (s selectionPlannerLLM) CompleteIntentPlan(ctx context.Context, req intent.
 //   - fast / agent: planner intent -> intent.DeriveSelectedSkills -> concrete skill
 //     name, compared to expected_skill. This is skill-hit / wrong-skill.
 //   - diagnosis: only the lane (intent == IntentDiagnosis) is checked, because the
-//     specific diagnose_* skill is resolved inside ReAct, not at plan time. Plan-time
+//     specific diagnose-* skill is resolved inside ReAct, not at plan time. Plan-time
 //     specific-diagnosis selection is R2-v2 (needs an engine-level run).
 //   - boundary: planner intent must match expected_intent and the selected skill must
 //     not be in forbidden_skills. This catches new skills stealing nearby FAQ/how-to

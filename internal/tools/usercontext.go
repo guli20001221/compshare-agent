@@ -15,6 +15,7 @@ type UserContext struct {
 	SessionName       string
 	ProjectId         string
 	Region            string
+	UserEmail         string
 }
 
 type userKey struct{}

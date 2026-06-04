@@ -59,6 +59,20 @@ func (m *mockLLMWithError) Chat(_ context.Context, _ llm.ChatRequest) (*llm.Chat
 	return nil, m.err
 }
 
+type streamingMockLLM struct {
+	response llm.ChatResponse
+	calls    []llm.ChatRequest
+}
+
+func (m *streamingMockLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	m.calls = append(m.calls, req)
+	if req.OnTextDelta != nil && m.response.Content != "" {
+		req.OnTextDelta(m.response.Content)
+	}
+	resp := m.response
+	return &resp, nil
+}
+
 type scriptedRateLimiter struct {
 	decisions []governance.Decision
 	requests  []governance.Request
@@ -3292,55 +3306,93 @@ func TestPlannerDiagnosisMissingTargetWithSingleInstanceFallsBackToReAct(t *test
 	require.Len(t, planner.calls, 1)
 }
 
-func TestPlannerDiagnosisClarificationRequiresEnabledIntent(t *testing.T) {
-	cases := []struct {
-		name string
-		plan intent.Plan
-		msg  string
-	}{
-		{
-			name: "diagnosis disabled",
-			plan: diagnosisPlanWithoutTarget(),
-			msg:  "\u6211\u7684\u673a\u5668 SSH \u8fde\u4e0d\u4e0a\u4e86",
+func TestPlannerDiagnosisClarificationDoesNotRequireEnabledIntent(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "train-a", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
 		},
-		{
-			name: "vague failure disabled",
-			plan: vagueFailurePlan(),
-			msg:  "\u6628\u665a\u90a3\u53f0\u8dd1\u5d29\u4e86\u5e2e\u6211\u8bca\u65ad",
+	}, "test"))
+	var plannerTraces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		plannerTraces = append(plannerTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "\u6211\u7684\u673a\u5668 SSH \u8fde\u4e0d\u4e0a\u4e86", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "\u54ea\u53f0\u5b9e\u4f8b")
+	assert.Empty(t, mock.calls, "no-target diagnosis must ask before entering ReAct")
+	require.Len(t, planner.calls, 1)
+	require.Len(t, plannerTraces, 1)
+	assert.Equal(t, string(intent.CutoverStatusFallbackUnresolvedTarget), plannerTraces[0].CutoverStatus)
+}
+
+func TestPlannerVagueFailureClarificationRequiresEnabledIntent(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: vagueFailurePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "train-a", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
 		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: tc.plan}}}
-			mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
-			eng := NewWithDeps(mock, &mockExecutor{}, nil)
-			eng.InitWithContext("test user")
-			require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-				"TotalCount": float64(2),
-				"UHostSet": []any{
-					map[string]any{"UHostId": "uhost-a", "Name": "train-a", "State": "Running"},
-					map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
-				},
-			}, "test"))
-			var plannerTraces []observability.PlannerTrace
-			eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
-				plannerTraces = append(plannerTraces, trace)
-			})
-			eng.SetIntentPlanner(planner, IntentPlannerOptions{
-				EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
-				Model:          "deepseek-v4-flash",
-			})
+	}, "test"))
+	var plannerTraces []observability.PlannerTrace
+	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+		plannerTraces = append(plannerTraces, trace)
+	})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
 
-			reply, err := eng.Chat(context.Background(), tc.msg, noopStep)
+	reply, err := eng.Chat(context.Background(), "\u6628\u665a\u90a3\u53f0\u8dd1\u5d29\u4e86\u5e2e\u6211\u8bca\u65ad", noopStep)
 
-			require.NoError(t, err)
-			assert.Equal(t, "react path", reply)
-			require.Len(t, mock.calls, 1)
-			require.Len(t, planner.calls, 1)
-			require.Len(t, plannerTraces, 1)
-			assert.Equal(t, string(intent.CutoverStatusFallbackIneligible), plannerTraces[0].CutoverStatus)
-		})
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "react path", reply)
+	require.Len(t, mock.calls, 1)
+	require.Len(t, planner.calls, 1)
+	require.Len(t, plannerTraces, 1)
+	assert.Equal(t, string(intent.CutoverStatusFallbackIneligible), plannerTraces[0].CutoverStatus)
+}
+
+func TestDiagnosisFinalReplyRedactsOperationalTokensBeforeStreaming(t *testing.T) {
+	raw := "JupyterLab 地址：http://1.2.3.4:8888?token=UCloud-CompShare-AbCd1234"
+	mock := &streamingMockLLM{response: llm.ChatResponse{Content: raw}}
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanForUHost("uhost-abc123")}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+
+	var deltas []string
+	reply, err := eng.ChatWithOptions(context.Background(), "uhost-abc123 的 SSH 进不去", noopStep, ChatOptions{
+		OnTextDelta: func(delta string) {
+			deltas = append(deltas, delta)
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "token=[REDACTED]")
+	assert.NotContains(t, reply, "UCloud-CompShare-AbCd1234")
+	assert.Equal(t, []string{"JupyterLab 地址：http://1.2.3.4:8888?token=[REDACTED]"}, deltas,
+		"diagnosis final replies are buffered so streaming never leaks raw access tokens")
+	require.Len(t, mock.calls, 1)
+	assert.NotNil(t, mock.calls[0].OnTextDelta, "engine should provide a buffering callback for diagnosis final text")
 }
 
 func TestStage2BRetrievalHitUsesLLMWithoutTools(t *testing.T) {
@@ -4001,9 +4053,12 @@ func TestDefaultRouteCutoverDoesNotSwallowKnowledgeQA(t *testing.T) {
 			intent.IntentMonitorQuery,
 			intent.IntentGPUSpecsQuery,
 			intent.IntentStockAvailability,
+			intent.IntentImageTagCatalog,
+			intent.IntentModelRepositoryBrowse,
 			intent.IntentPlatformImageList,
 			intent.IntentCustomImageList,
 			intent.IntentCommunityImageList,
+			intent.IntentSharedImageList,
 		},
 		Model: "deepseek-v4-flash",
 	})

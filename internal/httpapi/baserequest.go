@@ -6,6 +6,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/bitly/go-simplejson"
 	"github.com/compshare-agent/internal/store"
@@ -19,6 +20,7 @@ type BaseRequest struct {
 	RequestUUID string
 	Owner       store.Owner
 	ProjectID   string
+	UserEmail   string
 }
 
 // ParseBaseRequest reads the request body (POST only), resolves identity fields,
@@ -54,13 +56,104 @@ func ParseBaseRequest(c *gin.Context) (*simplejson.Json, BaseRequest, error) {
 	}
 
 	projectID := raw.Get("ProjectId").MustString()
+	userEmail := raw.Get("user_email").MustString()
 
 	return raw, BaseRequest{
 		Action:      action,
 		RequestUUID: requestUUID,
 		Owner:       store.Owner{TopOrganizationID: topOrg, OrganizationID: org},
 		ProjectID:   projectID,
+		UserEmail:   userEmail,
 	}, nil
+}
+
+// ParseBaseRequestFromHeaders resolves the connection-scoped identity for a
+// WebSocket upgrade. Unlike ParseBaseRequest (which reads the POST body), the
+// gateway injects identity into the upgrade request's HTTP headers because a
+// WS upgrade is a bodyless GET. Action comes from the query string.
+//
+// Header → field mapping (per gateway contract):
+//
+//	X-Company-Id      → top_organization_id
+//	X-Organization-Id → organization_id
+//	X-Request-Id      → request_uuid (generated when absent)
+//	X-User-Email      → user_email (optional; may be absent over WS)
+//	?Action=          → Action
+//
+// Api-Metadata ("user-id=…, organization-id=…, company-id=…, request-id=…")
+// is parsed as a fallback for any identity field missing from a dedicated header.
+func ParseBaseRequestFromHeaders(r *http.Request) (BaseRequest, error) {
+	action := r.URL.Query().Get("Action")
+	if action == "" {
+		return BaseRequest{}, ErrInvalidParam.WithMessage("missing Action")
+	}
+
+	meta := parseAPIMetadata(r.Header.Get("Api-Metadata"))
+
+	topOrg := headerUint32(r, "X-Company-Id", meta["company-id"])
+	if topOrg == 0 {
+		return BaseRequest{}, ErrInvalidParam.WithMessage("missing top_organization_id")
+	}
+	org := headerUint32(r, "X-Organization-Id", meta["organization-id"])
+	if org == 0 {
+		return BaseRequest{}, ErrInvalidParam.WithMessage("missing organization_id")
+	}
+
+	requestUUID := firstNonEmpty(r.Header.Get("X-Request-Id"), meta["request-id"])
+	if requestUUID == "" {
+		requestUUID = uuid.NewString()
+	}
+
+	return BaseRequest{
+		Action:      action,
+		RequestUUID: requestUUID,
+		Owner:       store.Owner{TopOrganizationID: topOrg, OrganizationID: org},
+		ProjectID:   r.URL.Query().Get("ProjectId"),
+		UserEmail:   r.Header.Get("X-User-Email"),
+	}, nil
+}
+
+// headerUint32 reads a uint32 from the named header, falling back to fallback
+// (e.g. a value parsed from Api-Metadata) when the header is empty.
+func headerUint32(r *http.Request, header, fallback string) uint32 {
+	s := r.Header.Get(header)
+	if s == "" {
+		s = fallback
+	}
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(v)
+}
+
+// parseAPIMetadata splits a comma-separated "key=value, key=value" header into
+// a map. Keys and values are trimmed; malformed segments are skipped.
+func parseAPIMetadata(s string) map[string]string {
+	out := map[string]string{}
+	if s == "" {
+		return out
+	}
+	for _, seg := range strings.Split(s, ",") {
+		k, v, ok := strings.Cut(seg, "=")
+		if !ok {
+			continue
+		}
+		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return out
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // parseBody reads and parses the POST body into a simplejson.Json.

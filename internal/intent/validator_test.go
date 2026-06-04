@@ -335,9 +335,12 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
 		IntentNetAcceleratorStatus,
+		IntentImageTagCatalog,
+		IntentModelRepositoryBrowse,
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		IntentSharedImageList,
 		// PR #3 (2026-05-22) — pricing route (commercial path).
 		IntentPricingQuery,
 		// disk_info (2026-05-29) — disk-listing routing; reuses

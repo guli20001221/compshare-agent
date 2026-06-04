@@ -119,15 +119,9 @@ func runCLI(cmd *cobra.Command, args []string) error {
 
 	ctx := context.Background()
 
-	// Inject a CLI UserContext when DefaultRoleUrn is configured; otherwise
-	// leave ctx as-is so the engine runs with an anonymous subject.
-	if cfg.Agent.STS.DefaultRoleUrn != "" {
-		cliUser := tools.UserContext{
-			RoleUrn:     cfg.Agent.STS.DefaultRoleUrn,
-			SessionName: cfg.Agent.STS.DefaultSessionName,
-			ProjectId:   cfg.Agent.ProjectId,
-			Region:      cfg.Agent.Region,
-		}
+	// Inject a CLI UserContext when needed. COMPSHARE_USER_EMAIL is a local
+	// smoke-test stand-in for the production gateway's user_email field.
+	if cliUser, ok := cliUserContextFromConfig(cfg, os.Getenv); ok {
 		ctx = tools.WithUser(ctx, cliUser)
 	}
 
@@ -348,6 +342,20 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\nAssistant> %s\n\n", reply)
 	}
 	return nil
+}
+
+func cliUserContextFromConfig(cfg *config.Config, getenv getenvFunc) (tools.UserContext, bool) {
+	userEmail := strings.TrimSpace(getenv("COMPSHARE_USER_EMAIL"))
+	if cfg.Agent.STS.DefaultRoleUrn == "" && userEmail == "" {
+		return tools.UserContext{}, false
+	}
+	return tools.UserContext{
+		RoleUrn:     cfg.Agent.STS.DefaultRoleUrn,
+		SessionName: cfg.Agent.STS.DefaultSessionName,
+		ProjectId:   cfg.Agent.ProjectId,
+		Region:      cfg.Agent.Region,
+		UserEmail:   userEmail,
+	}, true
 }
 
 func applyKnowledgeRetrieverStartup(eng *engine.Engine, requested bool, retriever *knowledge.Retriever, enabled bool, err error) {

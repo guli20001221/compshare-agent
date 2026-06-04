@@ -73,6 +73,23 @@ func TestRedactForLLM_RedactsBearerTokensInStringValues(t *testing.T) {
 	assert.Equal(t, "Bearer-Class GPU image is a normal product label", redacted["Description"])
 }
 
+func TestRedactForLLM_RedactsOperationalTokensInStringValues(t *testing.T) {
+	input := map[string]any{
+		"URL":         "http://1.2.3.4:8888?token=UCloud-CompShare-AbCd1234",
+		"Description": "use UCloud-CompShare-AbCd1234 as a one-time access value",
+		"Nested": map[string]any{
+			"URL": "http://1.2.3.4:8888/lab?foo=bar&token=plain-token-123",
+		},
+	}
+
+	redacted := RedactForLLM(input).(map[string]any)
+
+	assert.Equal(t, "http://1.2.3.4:8888?token=[REDACTED]", redacted["URL"])
+	assert.Equal(t, "use UCloud-CompShare-[REDACTED] as a one-time access value", redacted["Description"])
+	nested := redacted["Nested"].(map[string]any)
+	assert.Equal(t, "http://1.2.3.4:8888/lab?foo=bar&token=[REDACTED]", nested["URL"])
+}
+
 func TestRedactForLLM_RedactsOAuthStyleSecretKeys(t *testing.T) {
 	input := map[string]any{
 		"RefreshToken":  "refresh-token-value",

@@ -234,6 +234,51 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
+			Name:        "DescribeCompShareImageTags",
+			Description: "查询平台镜像标签分类目录。用于回答镜像有哪些标签、可按哪些分类筛选镜像；不返回具体镜像列表，不用于解释镜像概念或教程。",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+				"required":   []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DescribeModelRepositoryModels",
+			Description: "查询公共模型仓库中的模型列表，可按模型名称或标签筛选。用于回答模型仓库里有哪些模型、某个模型是否存在、某类标签下有哪些模型；不用于创建实例或部署模型。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "按模型名称模糊搜索，如 qwen / llama / deepseek。",
+					},
+					"tags": map[string]any{
+						"type":        "string",
+						"description": "按模型仓库标签筛选，多个标签用逗号分隔，如 LLM。",
+					},
+				},
+				"required": []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DescribeModelRepositoryTags",
+			Description: "查询公共模型仓库可用标签列表。用于回答模型仓库有哪些标签、可以按哪些模型标签筛选；不返回镜像标签。",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+				"required":   []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareSoftwarePort",
 			Description: "查询平台镜像的应用端口映射目录（JupyterLab、FileBrowser 等）。用于诊断应用端口连通性问题。注意：本接口返回的是镜像应用端口，SSH 登录信息以 DescribeCompShareInstance.SshLoginCommand 为准，不以本接口为准。仅需 Region 参数（自动填充）。",
 			Parameters: map[string]any{
@@ -281,6 +326,31 @@ var Registry = []openai.Tool{
 					"Limit": map[string]any{
 						"type":        "integer",
 						"description": "返回数据长度，默认 20",
+					},
+				},
+				"required": []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DescribeCompShareSharingImages",
+			Description: "查询其他账号共享给当前账号的镜像列表。用于回答“共享给我的镜像”“别人共享给我的镜像在哪看”；不用于社区公开镜像列表，也不用于把自己的镜像共享给别人。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"CompShareImageId": map[string]any{
+						"type":        "string",
+						"description": "按共享镜像 ID 精确查询。",
+					},
+					"Limit": map[string]any{
+						"type":        "integer",
+						"description": "分页大小，默认 20。",
+					},
+					"Offset": map[string]any{
+						"type":        "integer",
+						"description": "分页偏移，默认 0。",
 					},
 				},
 				"required": []string{},

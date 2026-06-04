@@ -15,9 +15,12 @@ func PlannedRuntimeFormForIntent(i Intent) RuntimeForm {
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
 		IntentNetAcceleratorStatus,
+		IntentImageTagCatalog,
+		IntentModelRepositoryBrowse,
 		IntentPlatformImageList,
 		IntentCustomImageList,
 		IntentCommunityImageList,
+		IntentSharedImageList,
 		IntentPricingQuery:
 		return RuntimeFormRouting
 	case IntentKnowledgeQA:

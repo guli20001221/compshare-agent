@@ -92,8 +92,8 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 		return nil, fmt.Errorf("ExternalExecutor: get credentials: %w", err)
 	}
 
-	// Resolve region and projectId: prefer UserContext when present.
-	region, project := e.region, e.projectId
+	// Resolve request-scoped identity fields: prefer UserContext when present.
+	region, project, userEmail := e.region, e.projectId, ""
 	if u, ok := UserFrom(ctx); ok {
 		if u.Region != "" {
 			region = u.Region
@@ -101,6 +101,7 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 		if u.ProjectId != "" {
 			project = u.ProjectId
 		}
+		userEmail = u.UserEmail
 	}
 
 	// Build params: Action + Region + args + PublicKey
@@ -124,6 +125,11 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 		if _, provided := params["ProjectId"]; !provided {
 			params["ProjectId"] = project
 		}
+	}
+	if userEmail != "" {
+		// user_email is request identity from the gateway, not an LLM/tool arg.
+		// Context must win if an upstream caller accidentally supplied one.
+		params["user_email"] = userEmail
 	}
 
 	// Sign: UCloud HMAC-SHA1 signature
@@ -179,8 +185,8 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 		return nil, fmt.Errorf("ExternalExecutor: get credentials: %w", err)
 	}
 
-	// Resolve region and projectId: prefer UserContext when present.
-	region, project := e.region, e.projectId
+	// Resolve request-scoped identity fields: prefer UserContext when present.
+	region, project, userEmail := e.region, e.projectId, ""
 	if u, ok := UserFrom(ctx); ok {
 		if u.Region != "" {
 			region = u.Region
@@ -188,6 +194,7 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 		if u.ProjectId != "" {
 			project = u.ProjectId
 		}
+		userEmail = u.UserEmail
 	}
 
 	body := map[string]any{
@@ -203,6 +210,11 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 		if _, provided := body["ProjectId"]; !provided {
 			body["ProjectId"] = project
 		}
+	}
+	if userEmail != "" {
+		// user_email is request identity from the gateway, not an LLM/tool arg.
+		// Context must win if an upstream caller accidentally supplied one.
+		body["user_email"] = userEmail
 	}
 
 	// Include SecurityToken for STS temporary credentials (must be before signing).

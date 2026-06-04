@@ -78,13 +78,16 @@ func TestRouteHandlerForKey_ResolvesEveryRouteSkill(t *testing.T) {
 // (compared by func pointer). This pins the skill↔Go dispatch binding.
 func TestRouteHandlerByKey_MatchesRegistry(t *testing.T) {
 	expectedByIntent := map[Intent]routeHandlerFunc{
-		IntentGPUSpecsQuery:        handleGPUSpecsQuery,
-		IntentStockAvailability:    handleStockAvailability,
-		IntentNetAcceleratorStatus: handleNetAcceleratorStatus,
-		IntentPlatformImageList:    handlePlatformImageList,
-		IntentCustomImageList:      handleCustomImageList,
-		IntentCommunityImageList:   handleCommunityImageList,
-		IntentPricingQuery:         handlePricingQuery,
+		IntentGPUSpecsQuery:         handleGPUSpecsQuery,
+		IntentStockAvailability:     handleStockAvailability,
+		IntentNetAcceleratorStatus:  handleNetAcceleratorStatus,
+		IntentImageTagCatalog:       handleImageTagCatalog,
+		IntentModelRepositoryBrowse: handleModelRepositoryBrowse,
+		IntentPlatformImageList:     handlePlatformImageList,
+		IntentCustomImageList:       handleCustomImageList,
+		IntentCommunityImageList:    handleCommunityImageList,
+		IntentSharedImageList:       handleSharedImageList,
+		IntentPricingQuery:          handlePricingQuery,
 	}
 	keyByIntent := map[Intent]string{}
 	for _, route := range routing.GeneratedRoutes() {
