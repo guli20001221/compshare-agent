@@ -253,6 +253,16 @@ type Engine struct {
 	sessionState         SessionState
 	sessionStateVersion  int
 	sessionStateHydrated bool
+	// sessionFactContextEnabled injects fresh RecentFacts into the system
+	// prompt as advisory same-session context. Default off.
+	sessionFactContextEnabled bool
+	// reactResultProjectionEnabled shrinks selected bulky tool results before
+	// they are formatted back into the ReAct model-visible history. Default off.
+	reactResultProjectionEnabled bool
+	// reactHistoryCompactionEnabled replaces count-only history trimming with
+	// deterministic compact summaries and old retrievable-tool placeholders.
+	// Default off.
+	reactHistoryCompactionEnabled bool
 }
 
 // SharedDeps groups Engine fields that are safe to share across sessions.
@@ -296,6 +306,15 @@ type SharedDeps struct {
 	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
 	// 0 = disabled. Process-wide constant; copied into every NewSession.
 	MaxTokensPerTurn int
+	// SessionFactContextEnabled enables the RecentFacts reader for every
+	// session created from these shared deps. Default false.
+	SessionFactContextEnabled bool
+	// ReactResultProjectionEnabled enables deterministic LLMResult projection
+	// for selected bulky read-only tools. Default false.
+	ReactResultProjectionEnabled bool
+	// ReactHistoryCompactionEnabled enables deterministic ReAct history
+	// compaction for long sessions. Default false.
+	ReactHistoryCompactionEnabled bool
 	// ExternalExecutor is the underlying tool executor shared across sessions
 	// (holds AK/SK + HTTP client). Each NewSession wraps it in a fresh
 	// SafeToolExecutor so per-session confirmFn stays isolated.
@@ -393,12 +412,15 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		maxTokensPerTurn:            deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
-		confirmFn:             opts.ConfirmFn,
-		registry:              entity.NewRegistry(),
-		rateLimitSubject:      opts.Subject,
-		mutatingToolsEnabled:  opts.MutatingToolsEnabled,
-		lastInstanceQueryTurn: -1,
-		lastMonitorTurn:       -1,
+		confirmFn:                     opts.ConfirmFn,
+		registry:                      entity.NewRegistry(),
+		rateLimitSubject:              opts.Subject,
+		mutatingToolsEnabled:          opts.MutatingToolsEnabled,
+		sessionFactContextEnabled:     deps.SessionFactContextEnabled,
+		reactResultProjectionEnabled:  deps.ReactResultProjectionEnabled,
+		reactHistoryCompactionEnabled: deps.ReactHistoryCompactionEnabled,
+		lastInstanceQueryTurn:         -1,
+		lastMonitorTurn:               -1,
 		// messages, userTurn, lastUserMsg, currentMonitor*, pendingResourceSelection,
 		// readExpensiveCallsThisTurn, requireKnowledgeCitationThisTurn,
 		// *Observer fields all start at zero values which is correct.
@@ -464,6 +486,21 @@ func (e *Engine) SetMutatingToolsEnabled(v bool) {
 	if e.safeExecutor != nil {
 		e.safeExecutor.SetMutatingToolsEnabled(v)
 	}
+}
+
+// SetSessionFactContextEnabled toggles advisory RecentFacts prompt injection.
+func (e *Engine) SetSessionFactContextEnabled(v bool) {
+	e.sessionFactContextEnabled = v
+}
+
+// SetReactResultProjectionEnabled toggles deterministic ReAct LLMResult projection.
+func (e *Engine) SetReactResultProjectionEnabled(v bool) {
+	e.reactResultProjectionEnabled = v
+}
+
+// SetReactHistoryCompactionEnabled toggles deterministic long-history compaction.
+func (e *Engine) SetReactHistoryCompactionEnabled(v bool) {
+	e.reactHistoryCompactionEnabled = v
 }
 
 // SetStepSink sets the agent-tier saga step sink for the current turn (B8). The
@@ -908,6 +945,11 @@ func (e *Engine) refreshSystemPrompt() {
 			ctx += "\n\n当前账户只有 1 个实例：" + name + "（" + id + "），操作时可直接使用，无需追问。"
 		} else {
 			ctx += "\n\n当前账户只有 1 个实例：" + id + "，操作时可直接使用，无需追问。"
+		}
+	}
+	if e.sessionFactContextEnabled && e.sessionStateHydrated {
+		if factCtx := assembleFactContext(e.sessionState.RecentFacts, time.Now()); factCtx != "" {
+			ctx += "\n\n" + factCtx
 		}
 	}
 	e.messages[0].Content = prompt.BuildSystemWithOptions(ctx, prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
@@ -2633,9 +2675,13 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		}
 		truncateDescribeResultForReAct(args, result.LLMResult)
 	}
+	projected := false
+	if e.reactResultProjectionEnabled {
+		projected = projectToolResultForReAct(action, result.LLMResult)
+	}
 
 	formatted := prompt.FormatToolResult(result.LLMResult)
-	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "调用成功", TraceResult: result.TraceResult, Attempts: result.Attempts})
+	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "调用成功", TraceResult: result.TraceResult, Attempts: result.Attempts, Projected: projected})
 	return formatted
 }
 
@@ -3590,6 +3636,7 @@ type StepEvent struct {
 	RequestedTargets           int
 	ExecutedTargets            int
 	WindowSeconds              int
+	Projected                  bool // ReAct result projection shrank this result (observability only)
 }
 
 // trimHistory keeps the message list under maxHistoryMessages by dropping
@@ -3597,6 +3644,10 @@ type StepEvent struct {
 // Cut point is aligned to a safe message boundary to avoid orphaned tool_calls
 // or tool responses (which would make the history malformed for the LLM).
 func (e *Engine) trimHistory() {
+	if e.reactHistoryCompactionEnabled {
+		e.trimHistoryByCompaction(time.Now())
+		return
+	}
 	if len(e.messages) <= 1+maxHistoryMessages {
 		return
 	}

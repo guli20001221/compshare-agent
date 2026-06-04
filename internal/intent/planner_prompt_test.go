@@ -228,6 +228,31 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 	}
 }
 
+func TestRenderPlannerPromptExampleGroupsUsesDelimitedBlocks(t *testing.T) {
+	rendered := strings.Join(renderPlannerPromptExampleGroups([]plannerPromptExampleGroup{{
+		Intent: IntentResourceInfo,
+		Source: `source "with" chars`,
+		Examples: []plannerPromptExample{{
+			Question: `show <instance> & gpu`,
+			PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			Source:   `example "source"`,
+		}},
+	}}), "\n")
+
+	if !strings.Contains(rendered, `<examples intent="resource_info" source="source &#34;with&#34; chars">`) {
+		t.Fatalf("rendered examples missing XML-like group delimiter:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "<example source=") || !strings.Contains(rendered, "</example>") {
+		t.Fatalf("rendered examples missing per-example delimiter:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "<user>show &lt;instance&gt; &amp; gpu</user>") {
+		t.Fatalf("rendered examples did not escape user text:\n%s", rendered)
+	}
+	if got := len(promptExampleJSONLines(rendered)); got != 1 {
+		t.Fatalf("rendered JSON count = %d, want 1:\n%s", got, rendered)
+	}
+}
+
 // TestBuildSystemPromptIncludesOperationLifecycleAnchor locks the Batch 1
 // (2026-05-28) jitter fix: planner must classify UHostId+action-verb chats
 // (帮我关机 uhost-xxx / uhost-test 停了 / 给 uhost-xxx 加 200G 数据盘) as

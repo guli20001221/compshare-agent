@@ -183,6 +183,75 @@ func TestBuildHTTPServerPoolAppliesSharedDepsEnv(t *testing.T) {
 	require.NotNil(t, eng.IntentPlannerPointer(), "HTTP server pool should inherit intent planner env wiring")
 }
 
+func TestApplySharedDepsSessionFactContextFromEnv(t *testing.T) {
+	cfg := &config.Config{Agent: config.AgentConfig{
+		LLM: config.LLMConfig{BaseURL: "http://localhost:1", Model: "deepseek-v4-flash"},
+	}}
+	deps := &engine.SharedDeps{}
+
+	err := applySharedDepsFromEnv(deps, cfg, func(key string) string {
+		switch key {
+		case "USE_SESSION_FACT_CONTEXT":
+			return "1"
+		case "USE_KNOWLEDGE_RETRIEVAL":
+			return "off"
+		case "USE_GROUNDED_RENDERER":
+			return "off"
+		default:
+			return ""
+		}
+	})
+
+	require.NoError(t, err)
+	require.True(t, deps.SessionFactContextEnabled)
+}
+
+func TestApplySharedDepsReactResultProjectionFromEnv(t *testing.T) {
+	cfg := &config.Config{Agent: config.AgentConfig{
+		LLM: config.LLMConfig{BaseURL: "http://localhost:1", Model: "deepseek-v4-flash"},
+	}}
+	deps := &engine.SharedDeps{}
+
+	err := applySharedDepsFromEnv(deps, cfg, func(key string) string {
+		switch key {
+		case "USE_REACT_RESULT_PROJECTION":
+			return "1"
+		case "USE_KNOWLEDGE_RETRIEVAL":
+			return "off"
+		case "USE_GROUNDED_RENDERER":
+			return "off"
+		default:
+			return ""
+		}
+	})
+
+	require.NoError(t, err)
+	require.True(t, deps.ReactResultProjectionEnabled)
+}
+
+func TestApplySharedDepsReactHistoryCompactionFromEnv(t *testing.T) {
+	cfg := &config.Config{Agent: config.AgentConfig{
+		LLM: config.LLMConfig{BaseURL: "http://localhost:1", Model: "deepseek-v4-flash"},
+	}}
+	deps := &engine.SharedDeps{}
+
+	err := applySharedDepsFromEnv(deps, cfg, func(key string) string {
+		switch key {
+		case "USE_REACT_HISTORY_COMPACTION":
+			return "1"
+		case "USE_KNOWLEDGE_RETRIEVAL":
+			return "off"
+		case "USE_GROUNDED_RENDERER":
+			return "off"
+		default:
+			return ""
+		}
+	})
+
+	require.NoError(t, err)
+	require.True(t, deps.ReactHistoryCompactionEnabled)
+}
+
 func TestApplySharedDepsDefaultsToQwenRRFAndRenderer(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		LLM: config.LLMConfig{

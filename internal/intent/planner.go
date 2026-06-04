@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"strings"
 
 	"github.com/compshare-agent/internal/entity"
@@ -140,6 +141,7 @@ func (p *Planner) Plan(ctx context.Context, input PlannerInput) (PlannerResult, 
 		}
 		result.Usage = addTokenUsage(result.Usage, usage)
 
+		var validationErr *ValidationError
 		plan, parseErr := parsePlanJSON(raw)
 		if parseErr == nil {
 			err = ValidatePlan(plan, ValidationContext{
@@ -157,15 +159,58 @@ func (p *Planner) Plan(ctx context.Context, input PlannerInput) (PlannerResult, 
 					Usage:    result.Usage,
 				}, nil
 			}
-			var validationErr *ValidationError
 			if errorAsValidation(err, &validationErr) {
 				result.LastValidationCode = validationErr.Code
 			}
 		}
 
-		userPrompt = buildUserPrompt(input, "上一轮输出不是合法 IntentPlan JSON，必须只返回符合 schema v1.0 的 JSON 对象。")
+		userPrompt = buildUserPrompt(input, buildRetryInstruction(parseErr, validationErr))
 	}
 	return result, nil
+}
+
+func buildRetryInstruction(parseErr error, validationErr *ValidationError) string {
+	if validationErr != nil {
+		field := validationErr.Field
+		if field == "" {
+			field = "<unknown>"
+		}
+		return fmt.Sprintf("上一轮 IntentPlan 校验失败：code=%s field=%s。修复：%s。只返回一个符合 schema v1.0 的 JSON 对象，不要解释。",
+			validationErr.Code, field, repairInstructionForValidationCode(validationErr.Code))
+	}
+	if parseErr != nil {
+		return "上一轮输出不是合法 IntentPlan JSON。只返回一个符合 schema v1.0 的 JSON 对象，不要 Markdown、代码块或解释。"
+	}
+	return "上一轮输出未通过校验。只返回一个符合 schema v1.0 的 JSON 对象。"
+}
+
+func repairInstructionForValidationCode(code ErrorCode) string {
+	switch code {
+	case ErrInvalidSchemaVersion:
+		return `schema_version 必须是 "1.0"`
+	case ErrInvalidIntent:
+		return "intent 必须使用允许的运行时意图枚举"
+	case ErrInvalidConfidence:
+		return "confidence 必须在 0 到 1 之间"
+	case ErrRetrievalDisabled:
+		return "retrieval.enabled 必须为 false"
+	case ErrInvalidRequiredTool:
+		return "required_tools 必须匹配 intent 的工具白名单"
+	case ErrInvalidTargetRefType:
+		return "slots.target_refs 必须使用允许的目标类型和值"
+	case ErrAttemptedHallucinatedEntity:
+		return "目标引用必须来自用户原文或上一轮文本，source_span 必须能在对应文本中找到"
+	case ErrEntityNotFound:
+		return "不要引用账号内不存在的实例；找不到目标时使用空 target_refs 或请求澄清"
+	case ErrNameTooShort:
+		return "name target_ref 至少 2 个字符"
+	case ErrInvalidMetric:
+		return "slots.metrics 只能使用 cpu、memory、gpu、vram"
+	case ErrInvalidTimeWindow:
+		return "slots.time_window.type 必须是 preset、relative 或 absolute"
+	default:
+		return "按失败字段修正，保持其它字段最小且有效"
+	}
 }
 
 func (p *Planner) completeIntentPlan(ctx context.Context, req PlannerLLMRequest) (string, llm.TokenUsage, error) {
@@ -497,23 +542,31 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 func renderPlannerPromptExampleGroups(groups []plannerPromptExampleGroup) []string {
 	lines := []string{}
 	for _, group := range groups {
-		lines = append(lines, fmt.Sprintf("Example group: %s (source: %s)", group.Intent, group.Source))
+		lines = append(lines, fmt.Sprintf(`<examples intent="%s" source="%s">`, group.Intent, escapePromptXML(group.Source)))
 		if group.compact && len(group.Examples) > 0 {
-			lines = append(lines, "Plan output:")
+			lines = append(lines, "<shared_plan>")
 			lines = append(lines, group.Examples[0].PlanJSON)
-			lines = append(lines, fmt.Sprintf("Classify as %s:", group.Intent))
+			lines = append(lines, "</shared_plan>")
+			lines = append(lines, "<questions>")
 			for _, example := range group.Examples {
-				lines = append(lines, "- "+example.Question)
+				lines = append(lines, fmt.Sprintf(`<question source="%s">%s</question>`, escapePromptXML(example.Source), escapePromptXML(example.Question)))
 			}
+			lines = append(lines, "</questions>")
 		} else {
 			for _, example := range group.Examples {
-				lines = append(lines, "Example source: "+example.Source)
-				lines = append(lines, "User question: "+example.Question)
+				lines = append(lines, fmt.Sprintf(`<example source="%s">`, escapePromptXML(example.Source)))
+				lines = append(lines, "<user>"+escapePromptXML(example.Question)+"</user>")
 				lines = append(lines, example.PlanJSON)
+				lines = append(lines, "</example>")
 			}
 		}
+		lines = append(lines, "</examples>")
 	}
 	return lines
+}
+
+func escapePromptXML(s string) string {
+	return html.EscapeString(s)
 }
 
 func buildSystemPrompt() string {

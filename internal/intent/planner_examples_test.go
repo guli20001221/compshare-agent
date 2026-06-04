@@ -263,7 +263,13 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // read-only expansion adds a planner-visible route for images shared to the
 // current account. Boundary remains: public/community image questions stay
 // community_image_list; sharing my own image to others is write-adjacent.
-const systemPromptSHA256Baseline = "c2ecf078927664e68de967859d7465dcc4196a7597be45d7b164896088c47d06"
+//
+// Context/prompt optimization P5 (2026-06-03): SHA bumped because planner
+// examples are wrapped in XML-like delimiters (<examples>, <example>,
+// <shared_plan>, <question>) while preserving each JSON example as its own
+// line. Boundary remains: no intent enum, required_tools allowlist, route
+// order, or example PlanJSON payload changed in this step.
+const systemPromptSHA256Baseline = "43afce1977eaff313d8b71a4b672741c5f111b0210c4f7e2e8b65fb717ef2109"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

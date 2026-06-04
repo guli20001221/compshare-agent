@@ -68,6 +68,20 @@ func (m *factWritingLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.Chat
 	}, nil
 }
 
+type factContextPromptLLM struct {
+	systemPrompts []string
+}
+
+func (m *factContextPromptLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	if len(req.Messages) > 0 {
+		m.systemPrompts = append(m.systemPrompts, req.Messages[0].Content)
+	}
+	return &llm.ChatResponse{
+		Content: "ok",
+		Usage:   llm.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+	}, nil
+}
+
 // factWritingExecutor returns a single-host UHostSet for
 // DescribeCompShareInstance, so the engine's recordInstanceStateFacts
 // path produces exactly one fact for SubjectID="uhost-e2e".
@@ -146,6 +160,50 @@ func TestSessionState_Persist_RecentFactsRoundTrip(t *testing.T) {
 	assert.Greater(t, facts[0].ProducedAtUnix, int64(0),
 		"ProducedAtUnix must be set by the writer (not the zero default)")
 	assert.Equal(t, engine.SessionStateSchemaV1, pc.AgentSessionState.SchemaVersion)
+}
+
+func TestSessionState_FactContextHydratedHTTPPrompt(t *testing.T) {
+	llmFake := &factContextPromptLLM{}
+	eng := engine.NewWithDeps(llmFake, factWritingExecutor{}, denyConfirm)
+	eng.SetSessionFactContextEnabled(true)
+	eng.RehydrateHistory(nil)
+	rawCtx, err := json.Marshal(engine.PersistedContext{
+		AgentSessionState: engine.SessionState{
+			SchemaVersion: engine.SessionStateSchemaV1,
+			RecentFacts: []engine.ToolFact{{
+				Kind:           engine.FactKindInstanceState,
+				SubjectID:      "uhost-http-fact",
+				ProducedAtUnix: time.Now().Unix(),
+				TTLSeconds:     30,
+				Payload: map[string]any{
+					"name":  "http-fact-box",
+					"state": "Running",
+				},
+			}},
+		},
+	})
+	require.NoError(t, err)
+	sess := store.Session{
+		ID:                "sess-fact-context",
+		TopOrganizationID: 1,
+		OrganizationID:    2,
+		ContextVersion:    3,
+		Context:           rawCtx,
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
+	}
+	sessions := &mockSessions{byID: map[string]store.Session{sess.ID: sess}}
+	h := newChatTestHandlersWith(t, eng, sessions)
+
+	sink, _ := dispatchChatTurn(t, h, sess.ID, "what about the previous host")
+
+	assert.True(t, sink.has("done"))
+	require.NotEmpty(t, llmFake.systemPrompts)
+	systemPrompt := llmFake.systemPrompts[0]
+	assert.Contains(t, systemPrompt, "最近观测缓存")
+	assert.Contains(t, systemPrompt, "实时状态请重新查询")
+	assert.Contains(t, systemPrompt, "http-fact-box")
+	assert.Contains(t, systemPrompt, "uhost-http-fact")
 }
 
 // newChatTestHandlersWith is a variant of newChatTestHandlers that takes

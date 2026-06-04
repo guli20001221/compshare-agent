@@ -202,7 +202,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 13 shared + 35 per-session = 48 fields. Any drift
+// Whitelist totals: 13 shared + 38 per-session = 51 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -260,10 +260,13 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// the JSON-serializable per-session dialog state envelope; mixing
 		// it across sessions would be exactly the cross-user leak this
 		// test was created to prevent.
-		"sessionState":              true,
-		"sessionStateVersion":       true,
-		"sessionStateHydrated":      true,
-		"lastPlannerIntentThisTurn": true,
+		"sessionState":                  true,
+		"sessionStateVersion":           true,
+		"sessionStateHydrated":          true,
+		"sessionFactContextEnabled":     true,
+		"reactResultProjectionEnabled":  true,
+		"reactHistoryCompactionEnabled": true,
+		"lastPlannerIntentThisTurn":     true,
 		// PR1 hotfix Bug 4 (2026-05-28): per-turn lifecycle action captured
 		// from planner output, consumed by executeTool to filter the
 		// candidate instance list by State. Per-session by definition —
@@ -277,12 +280,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 13, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 35, len(perSessionFields); want != got {
+	if want, got := 38, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 48, typ.NumField(); want != got {
+	if want, got := 51, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

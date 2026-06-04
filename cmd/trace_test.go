@@ -373,6 +373,105 @@ func TestMutatingToolsFromEnvAndRuntimeLine(t *testing.T) {
 	require.Equal(t, "yes", unknown)
 }
 
+func TestSessionFactContextEnabledFromEnv(t *testing.T) {
+	enabled, unknown := sessionFactContextEnabledFromEnv(func(string) string { return "" })
+	require.False(t, enabled)
+	require.Empty(t, unknown)
+
+	enabled, unknown = sessionFactContextEnabledFromEnv(func(key string) string {
+		if key == "USE_SESSION_FACT_CONTEXT" {
+			return "0"
+		}
+		return ""
+	})
+	require.False(t, enabled)
+	require.Empty(t, unknown)
+
+	enabled, unknown = sessionFactContextEnabledFromEnv(func(key string) string {
+		if key == "USE_SESSION_FACT_CONTEXT" {
+			return "1"
+		}
+		return ""
+	})
+	require.True(t, enabled)
+	require.Empty(t, unknown)
+
+	enabled, unknown = sessionFactContextEnabledFromEnv(func(key string) string {
+		if key == "USE_SESSION_FACT_CONTEXT" {
+			return "yes"
+		}
+		return ""
+	})
+	require.False(t, enabled)
+	require.Equal(t, "yes", unknown)
+}
+
+func TestReactResultProjectionEnabledFromEnv(t *testing.T) {
+	enabled, unknown := reactResultProjectionEnabledFromEnv(func(string) string { return "" })
+	require.False(t, enabled)
+	require.Empty(t, unknown)
+
+	enabled, unknown = reactResultProjectionEnabledFromEnv(func(key string) string {
+		if key == "USE_REACT_RESULT_PROJECTION" {
+			return "0"
+		}
+		return ""
+	})
+	require.False(t, enabled)
+	require.Empty(t, unknown)
+
+	enabled, unknown = reactResultProjectionEnabledFromEnv(func(key string) string {
+		if key == "USE_REACT_RESULT_PROJECTION" {
+			return "1"
+		}
+		return ""
+	})
+	require.True(t, enabled)
+	require.Empty(t, unknown)
+
+	enabled, unknown = reactResultProjectionEnabledFromEnv(func(key string) string {
+		if key == "USE_REACT_RESULT_PROJECTION" {
+			return "yes"
+		}
+		return ""
+	})
+	require.False(t, enabled)
+	require.Equal(t, "yes", unknown)
+}
+
+func TestReactHistoryCompactionEnabledFromEnv(t *testing.T) {
+	enabled, unknown := reactHistoryCompactionEnabledFromEnv(func(string) string { return "" })
+	require.False(t, enabled)
+	require.Empty(t, unknown)
+
+	enabled, unknown = reactHistoryCompactionEnabledFromEnv(func(key string) string {
+		if key == "USE_REACT_HISTORY_COMPACTION" {
+			return "0"
+		}
+		return ""
+	})
+	require.False(t, enabled)
+	require.Empty(t, unknown)
+
+	enabled, unknown = reactHistoryCompactionEnabledFromEnv(func(key string) string {
+		if key == "USE_REACT_HISTORY_COMPACTION" {
+			return "1"
+		}
+		return ""
+	})
+	require.True(t, enabled)
+	require.Empty(t, unknown)
+
+	enabled, unknown = reactHistoryCompactionEnabledFromEnv(func(key string) string {
+		if key == "USE_REACT_HISTORY_COMPACTION" {
+			return "yes"
+		}
+		return ""
+	})
+	require.False(t, enabled)
+	require.Equal(t, "yes", unknown)
+}
+
 func TestUseSkillExecutorFromEnv(t *testing.T) {
 	enabled, unknown := useSkillExecutorFromEnv(func(string) string { return "" })
 	require.False(t, enabled, "default off")
