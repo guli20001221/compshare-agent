@@ -103,7 +103,10 @@ func stepQueryResizeDiskPrice() Step {
 		Type: StepToolCall,
 		Tool: "GetCompShareAttachedDiskUpgradePrice",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			queried := wfCtx.Result("查询实例")
 			return map[string]any{
+				"Region":    extractInstanceRegion(queried, defaultRegion),
+				"Zone":      extractInstanceZone(queried, defaultZone),
 				"UHostId":   wfCtx.Params["UHostId"],
 				"DiskId":    wfCtx.Params["ResolvedDiskId"],
 				"DiskSpace": wfCtx.Params["Size"],
