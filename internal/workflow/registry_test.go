@@ -16,6 +16,7 @@ func TestIsWorkflowTool(t *testing.T) {
 	assert.True(t, IsWorkflowTool("ResetPasswordWorkflow"))
 	assert.True(t, IsWorkflowTool("SetStopSchedulerWorkflow"))
 	assert.True(t, IsWorkflowTool("CancelStopSchedulerWorkflow"))
+	assert.True(t, IsWorkflowTool("ResizeDiskWorkflow"))
 	assert.True(t, IsWorkflowTool("CreateCustomImageWorkflow"))
 
 	// Non-workflow actions should return false
@@ -77,6 +78,12 @@ func TestGetWorkflow(t *testing.T) {
 	assert.True(t, ok)
 	assert.NotNil(t, def)
 	assert.Len(t, def.Steps, 4)
+
+	// ResizeDiskWorkflow: query instance -> check -> price -> confirm -> resize
+	def, ok = GetWorkflow("ResizeDiskWorkflow")
+	assert.True(t, ok)
+	assert.NotNil(t, def)
+	assert.Len(t, def.Steps, 5)
 
 	// Unknown workflow returns nil, false
 	def, ok = GetWorkflow("UnknownWorkflow")

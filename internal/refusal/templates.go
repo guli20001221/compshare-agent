@@ -18,11 +18,12 @@ package refusal
 // values. Downstream MySQL trace ingest + per-category eval dashboards
 // pivot on these exact strings; treat as a stable contract.
 const (
-	CategoryAccountBilling   = "account_billing_unsupported"
-	CategoryMonitorHistory   = "monitor_history_unsupported"
-	CategoryResourceShortage = "resource_shortage_226604"
-	CategoryJailbreakAttempt = "jailbreak_attempt"
-	CategoryOffTopic         = "off_topic_refused"
+	CategoryAccountBilling                = "account_billing_unsupported"
+	CategoryMonitorHistory                = "monitor_history_unsupported"
+	CategoryResourceShortage              = "resource_shortage_226604"
+	CategoryJailbreakAttempt              = "jailbreak_attempt"
+	CategoryOffTopic                      = "off_topic_refused"
+	CategoryExistingDiskAttachUnsupported = "existing_disk_attach_unsupported"
 )
 
 // AccountBillingUnsupported is returned for account-level financial

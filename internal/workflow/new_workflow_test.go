@@ -55,6 +55,174 @@ func TestCreateDisk_HappyPath(t *testing.T) {
 	assert.Contains(t, createCall.args["Name"], "data", "Name should contain 'data'")
 }
 
+func TestCreateDisk_MissingSizeBlockedBeforeConfirm(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":    stoppedInstanceResult(),
+		"CreateAndAttachCompshareDisk": {"UDiskId": "udisk-new"},
+	}}
+	onStep, events := collectEvents()
+
+	def := CreateDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		return true
+	}, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-test",
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success, "missing Size must not create a disk")
+	assert.Contains(t, result.Message, "磁盘大小")
+
+	hasConfirm := false
+	for _, ev := range *events {
+		if ev.Type == StepConfirm {
+			hasConfirm = true
+		}
+	}
+	assert.False(t, hasConfirm, "confirmation should NOT be reached when disk size is missing")
+
+	for _, c := range executor.calls {
+		assert.NotEqual(t, "CreateAndAttachCompshareDisk", c.action, "API must not be called without Size")
+	}
+}
+
+func diskResizeInstanceResult() map[string]any {
+	return map[string]any{"UHostSet": []any{
+		map[string]any{
+			"UHostId":    "uhost-test",
+			"Name":       "test-gpu",
+			"State":      "Stopped",
+			"Zone":       "cn-sh2-02",
+			"GpuType":    "4090",
+			"GPU":        float64(1),
+			"ChargeType": "Dynamic",
+			"DiskSet": []any{
+				map[string]any{
+					"DiskId":   "udisk-boot",
+					"Name":     "sys",
+					"Type":     "Boot",
+					"DiskType": "CLOUD_SSD",
+					"Size":     float64(60),
+				},
+				map[string]any{
+					"DiskId":   "udisk-data",
+					"Name":     "data",
+					"Type":     "Data",
+					"DiskType": "SSDDataDisk",
+					"Size":     float64(100),
+				},
+			},
+		},
+	}}
+}
+
+// --- ResizeDisk tests ---
+
+func TestResizeDisk_SystemDiskHappyPath(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":            diskResizeInstanceResult(),
+		"CheckCompShareResizeAttachedDisk":     {"RetCode": 0},
+		"GetCompShareAttachedDiskUpgradePrice": {"Price": float64(2.5)},
+		"ResizeCompShareDisk":                  {"RetCode": 0},
+	}}
+	var confirmArgs map[string]any
+	confirmFn := func(action string, args map[string]any) bool {
+		confirmArgs = args
+		return true
+	}
+	onStep, _ := collectEvents()
+
+	def := ResizeDiskDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":  "uhost-test",
+		"DiskType": "Boot",
+		"Size":     float64(120),
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "udisk-boot", confirmArgs["disk_id"])
+	assert.Equal(t, "Boot", confirmArgs["disk_role"])
+	assert.Equal(t, float64(60), confirmArgs["current_size_gb"])
+	assert.Equal(t, float64(120), confirmArgs["target_size_gb"])
+	assert.Equal(t, float64(2.5), confirmArgs["price_delta"])
+
+	var priceCall executorCall
+	var resizeCall executorCall
+	for _, c := range executor.calls {
+		switch c.action {
+		case "GetCompShareAttachedDiskUpgradePrice":
+			priceCall = c
+		case "ResizeCompShareDisk":
+			resizeCall = c
+		}
+	}
+	assert.Equal(t, "uhost-test", priceCall.args["UHostId"])
+	assert.Equal(t, "udisk-boot", priceCall.args["DiskId"])
+	assert.Equal(t, float64(120), priceCall.args["DiskSpace"])
+	assert.Equal(t, "uhost-test", resizeCall.args["UHostId"])
+	assert.Equal(t, "udisk-boot", resizeCall.args["UDiskId"])
+	assert.Equal(t, float64(120), resizeCall.args["Size"])
+}
+
+func TestResizeDisk_BlocksWhenTargetNotLargerThanCurrent(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": diskResizeInstanceResult(),
+	}}
+	onStep, events := collectEvents()
+
+	def := ResizeDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		return true
+	}, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":  "uhost-test",
+		"DiskType": "Boot",
+		"Size":     float64(60),
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "目标容量")
+
+	for _, ev := range *events {
+		assert.NotEqual(t, StepConfirm, ev.Type, "confirmation should not be reached")
+	}
+	for _, c := range executor.calls {
+		assert.NotEqual(t, "ResizeCompShareDisk", c.action, "resize API must not be called")
+	}
+}
+
+func TestResizeDisk_DataDiskRequiresDiskIDWhenMultipleDataDisks(t *testing.T) {
+	instance := diskResizeInstanceResult()
+	host := instance["UHostSet"].([]any)[0].(map[string]any)
+	host["DiskSet"] = append(host["DiskSet"].([]any), map[string]any{
+		"DiskId":   "udisk-data-2",
+		"Name":     "data-2",
+		"Type":     "Data",
+		"DiskType": "SSDDataDisk",
+		"Size":     float64(200),
+	})
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": instance,
+	}}
+
+	def := ResizeDiskDef()
+	eng := NewEngine(executor, nil, nil)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":  "uhost-test",
+		"DiskType": "Data",
+		"Size":     float64(300),
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "DiskId")
+}
+
 // --- Resize tests ---
 
 func TestResize_EmptyParams_BlockedBeforeConfirm(t *testing.T) {

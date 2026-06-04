@@ -68,6 +68,11 @@ var enginePreBlock = router.New(
 		Reply:    refusal.ResourceShortage226604,
 	},
 	router.Rule{
+		Match:    isExistingDiskAttachUnsupported,
+		Category: refusal.CategoryExistingDiskAttachUnsupported,
+		Reply:    refusal.ExistingDiskAttachUnsupported,
+	},
+	router.Rule{
 		Match:    isUnsupportedHistoricalMonitorQuestion,
 		Category: refusal.CategoryMonitorHistory,
 		Reply:    refusal.MonitorHistoryUnsupported,

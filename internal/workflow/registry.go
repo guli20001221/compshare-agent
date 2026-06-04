@@ -11,6 +11,7 @@ var workflowRegistry = map[string]func() *Definition{
 	"SetStopSchedulerWorkflow":    SetStopSchedulerDef,
 	"CancelStopSchedulerWorkflow": CancelStopSchedulerDef,
 	"ResizeInstanceWorkflow":      ResizeInstanceDef,
+	"ResizeDiskWorkflow":          ResizeDiskDef,
 	"ReinstallInstanceWorkflow":   ReinstallInstanceDef,
 	"CreateDiskWorkflow":          CreateDiskDef,
 	"CreateCustomImageWorkflow":   CreateCustomImageDef,
