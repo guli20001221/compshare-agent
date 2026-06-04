@@ -151,15 +151,23 @@ func TestResizeDisk_SystemDiskHappyPath(t *testing.T) {
 	assert.Equal(t, float64(2.5), confirmArgs["price_delta"])
 
 	var priceCall executorCall
+	var checkCall executorCall
 	var resizeCall executorCall
 	for _, c := range executor.calls {
 		switch c.action {
+		case "CheckCompShareResizeAttachedDisk":
+			checkCall = c
 		case "GetCompShareAttachedDiskUpgradePrice":
 			priceCall = c
 		case "ResizeCompShareDisk":
 			resizeCall = c
 		}
 	}
+	assert.Equal(t, "uhost-test", checkCall.args["UHostId"])
+	assert.Equal(t, "udisk-boot", checkCall.args["DiskId"])
+	assert.Equal(t, float64(120), checkCall.args["DiskSpace"])
+	assert.Equal(t, "cn-sh2-02", checkCall.args["Zone"])
+	assert.Equal(t, "cn-sh2", checkCall.args["Region"])
 	assert.Equal(t, "uhost-test", priceCall.args["UHostId"])
 	assert.Equal(t, "udisk-boot", priceCall.args["DiskId"])
 	assert.Equal(t, float64(120), priceCall.args["DiskSpace"])
