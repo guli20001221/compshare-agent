@@ -146,6 +146,7 @@ var nonAuditableFields = map[string]string{
 	"GroundedRendererModel":         "string — no methods",
 	"FastTemplateRenderer":          "bool — no methods",
 	"SupportsObjectToolChoice":      "bool — no methods",
+	"SupportsRequiredToolChoice":    "bool — no methods",
 	"MaxTokensPerTurn":              "int — no methods",
 	"SessionFactContextEnabled":     "bool — no methods",
 	"ReactResultProjectionEnabled":  "bool — no methods",

@@ -26,6 +26,17 @@ const (
 // (tier mis-classification mitigation) lives in ADR-001 Risks, not here.
 var AllTiers = []Tier{TierFast, TierKnowledge, TierAgent}
 
+func TierOverridesFromConfig(tierRouting map[string]config.LLMConfig) map[Tier]config.LLMConfig {
+	if len(tierRouting) == 0 {
+		return nil
+	}
+	overrides := make(map[Tier]config.LLMConfig, len(tierRouting))
+	for k, v := range tierRouting {
+		overrides[Tier(k)] = v
+	}
+	return overrides
+}
+
 // Router holds one *Client per tier. Construct once at boot via NewRouter,
 // then share across sessions. For/Model/Capability panic on unknown tiers
 // — misrouting is a programmer bug, not a runtime fallback condition

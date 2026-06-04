@@ -49,8 +49,9 @@ func NewClient(cfg config.LLMConfig) *Client {
 
 // ChatRequest holds everything needed for one LLM call.
 type ChatRequest struct {
-	Messages []openai.ChatCompletionMessage
-	Tools    []openai.Tool
+	Messages       []openai.ChatCompletionMessage
+	Tools          []openai.Tool
+	ResponseFormat *openai.ChatCompletionResponseFormat
 	// ToolChoice forces tool selection when non-nil. Accepts either a
 	// string ("auto"/"required"/"none") or an openai.ToolChoice struct
 	// naming a specific function. Leave nil for default auto behavior.
@@ -109,6 +110,9 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 	}
 	if len(req.Tools) > 0 {
 		ccReq.Tools = req.Tools
+	}
+	if req.ResponseFormat != nil {
+		ccReq.ResponseFormat = req.ResponseFormat
 	}
 	if req.ToolChoice != nil {
 		ccReq.ToolChoice = req.ToolChoice

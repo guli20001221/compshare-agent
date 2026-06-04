@@ -1,10 +1,16 @@
 package engine
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/llm"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // validRouterCfg is the minimal cfg that NewSharedDeps accepts after B2a:
@@ -54,5 +60,58 @@ func TestNewSharedDeps_LLMClientIsRouterDerived(t *testing.T) {
 	}
 	if _, ok := deps.LLMClient.(*llm.Client); !ok {
 		t.Fatalf("SharedDeps.LLMClient = %T, want *llm.Client (Router-derived)", deps.LLMClient)
+	}
+}
+
+func TestNewSharedDeps_TierRoutingAgentOverrideReachesAgentClient(t *testing.T) {
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(body, &captured); err != nil {
+			t.Fatalf("parse request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	cfg := validRouterCfg("deepseek-v4-flash")
+	cfg.Agent.LLM.BaseURL = srv.URL + "/v1"
+	cfg.Agent.TierRouting = map[string]config.LLMConfig{
+		"agent": {Model: "Qwen/Qwen3-Max"},
+	}
+	deps, err := NewSharedDeps(cfg)
+	if err != nil {
+		t.Fatalf("NewSharedDeps: %v", err)
+	}
+
+	_, err = deps.AgentLLMClient.Chat(context.Background(), llm.ChatRequest{
+		Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("AgentLLMClient.Chat: %v", err)
+	}
+	if got := captured["model"]; got != "Qwen/Qwen3-Max" {
+		t.Fatalf("agent tier model = %#v, want Qwen/Qwen3-Max", got)
+	}
+}
+
+func TestNewSharedDeps_TierRoutingFastOverrideDrivesToolChoiceCapability(t *testing.T) {
+	cfg := validRouterCfg("deepseek-v4-flash")
+	cfg.Agent.LLM.BaseURL = "https://api.modelverse.cn/v1"
+	cfg.Agent.TierRouting = map[string]config.LLMConfig{
+		"fast": {Model: "Qwen/Qwen3-Max"},
+	}
+
+	deps, err := NewSharedDeps(cfg)
+	if err != nil {
+		t.Fatalf("NewSharedDeps: %v", err)
+	}
+	if !deps.SupportsObjectToolChoice {
+		t.Fatal("SupportsObjectToolChoice should follow the effective fast tier model")
 	}
 }

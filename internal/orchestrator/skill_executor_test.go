@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -19,11 +20,13 @@ type scriptedClient struct {
 	replies  []string
 	calls    int
 	lastMsgs []openai.ChatCompletionMessage
+	requests []llm.ChatRequest
 	usageN   int
 }
 
 func (c *scriptedClient) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	c.lastMsgs = req.Messages
+	c.requests = append(c.requests, req)
 	i := c.calls
 	c.calls++
 	reply := `{"final":"(script exhausted)"}`
@@ -94,6 +97,123 @@ func TestRunReadOnlySkill_FeedsToolResultBackToModel(t *testing.T) {
 	// The private working-set must NOT be the seed alone: system + user-seed +
 	// assistant(tool-call) + user(tool-result) = 4 messages by the final call.
 	assert.GreaterOrEqual(t, len(client.lastMsgs), 4)
+}
+
+func TestRunReadOnlySkill_SearchKnowledgeReturnsSafeLedgerOnly(t *testing.T) {
+	rawContent := "For service ports, first verify the instance is Running, then compare exposed software ports."
+	hit := knowledge.RetrievalHit{
+		Chunk: knowledge.KBChunk{
+			ChunkID: "runbook-port-001",
+			Title:   "Service port reachability",
+			Content: rawContent,
+		},
+		Score: 0.95,
+		Kept:  true,
+	}
+	client := &scriptedClient{replies: []string{
+		`{"action":"SearchKnowledge","args":{"query":"webui port blocked"}}`,
+		`{"final":"Use evidence runbook-port-001 before checking the instance."}`,
+	}}
+	var searches []string
+
+	reply, err := RunReadOnlySkill(context.Background(), "webui port blocked", nil, SkillExecOptions{
+		Body:   "body",
+		Tools:  readOnlyTools(),
+		Exec:   &scriptedExec{},
+		Client: client,
+		KnowledgeSearch: func(_ context.Context, query string) (knowledge.EvidenceLedger, []knowledge.RetrievalHit, error) {
+			searches = append(searches, query)
+			return knowledge.BuildEvidenceLedger(query, []knowledge.RetrievalHit{hit}, 3), []knowledge.RetrievalHit{hit}, nil
+		},
+		MaxKnowledgeSearches: 1,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "Use evidence runbook-port-001 before checking the instance.", reply)
+	assert.Equal(t, []string{"webui port blocked"}, searches)
+	require.Len(t, client.requests, 2)
+	assert.Contains(t, joinedSkillMessages(client.requests[0].Messages), "SearchKnowledge")
+	assert.Contains(t, joinedSkillMessages(client.requests[0].Messages), "required first step")
+	finalWorkingSet := joinedSkillMessages(client.lastMsgs)
+	assert.Contains(t, finalWorkingSet, "EvidenceLedger")
+	assert.Contains(t, finalWorkingSet, "runbook-port-001")
+	assert.Contains(t, finalWorkingSet, "Service port reachability")
+	assert.NotContains(t, finalWorkingSet, rawContent)
+}
+
+func TestRunReadOnlySkill_SearchKnowledgeToolResultWrapperIsReadable(t *testing.T) {
+	client := &scriptedClient{replies: []string{
+		`{"action":"SearchKnowledge","args":{"query":"webui port blocked"}}`,
+		`{"final":"done"}`,
+	}}
+
+	_, err := RunReadOnlySkill(context.Background(), "webui port blocked", nil, SkillExecOptions{
+		Body:   "body",
+		Tools:  readOnlyTools(),
+		Exec:   &scriptedExec{},
+		Client: client,
+		KnowledgeSearch: func(_ context.Context, query string) (knowledge.EvidenceLedger, []knowledge.RetrievalHit, error) {
+			return knowledge.EvidenceLedger{Query: query, Items: []knowledge.EvidenceItem{{ChunkID: "chunk-1", Summary: "safe"}}}, nil, nil
+		},
+		MaxKnowledgeSearches: 1,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, client.requests, 2)
+	workingSet := joinedSkillMessages(client.lastMsgs)
+	assert.Contains(t, workingSet, "工具 SearchKnowledge 返回：\n")
+	assert.NotContains(t, workingSet, "宸ュ叿")
+	assert.NotContains(t, workingSet, "杩斿洖")
+}
+
+func TestRunReadOnlySkill_SearchKnowledgeBudgetCapsCalls(t *testing.T) {
+	client := &scriptedClient{replies: []string{
+		`{"action":"SearchKnowledge","args":{"query":"first"}}`,
+		`{"action":"SearchKnowledge","args":{"query":"second"}}`,
+		`{"final":"done"}`,
+	}}
+	var searches int
+
+	reply, err := RunReadOnlySkill(context.Background(), "q", nil, SkillExecOptions{
+		Body:   "body",
+		Tools:  readOnlyTools(),
+		Exec:   &scriptedExec{},
+		Client: client,
+		KnowledgeSearch: func(_ context.Context, query string) (knowledge.EvidenceLedger, []knowledge.RetrievalHit, error) {
+			searches++
+			return knowledge.EvidenceLedger{Query: query, Items: []knowledge.EvidenceItem{{ChunkID: "chunk-1", Summary: "safe"}}}, nil, nil
+		},
+		MaxKnowledgeSearches: 1,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "done", reply)
+	assert.Equal(t, 1, searches, "second SearchKnowledge call should hit budget without callback")
+	assert.Contains(t, joinedSkillMessages(client.lastMsgs), "knowledge search budget exhausted")
+}
+
+func TestRunReadOnlySkill_CapturesDiagnosisClaims(t *testing.T) {
+	client := &scriptedClient{replies: []string{
+		`{"final":"done","diagnosis_claims":[{"claim":"Runbook evidence was used.","status":"supported","chunk_ids":["chunk-1"],"reason":"Matched ledger item."}]}`,
+	}}
+	var claims []knowledge.DiagnosisClaim
+
+	reply, err := RunReadOnlySkill(context.Background(), "q", nil, SkillExecOptions{
+		Body:   "body",
+		Tools:  readOnlyTools(),
+		Exec:   &scriptedExec{},
+		Client: client,
+		OnDiagnosisClaims: func(c []knowledge.DiagnosisClaim) {
+			claims = append([]knowledge.DiagnosisClaim(nil), c...)
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "done", reply)
+	require.Len(t, claims, 1)
+	assert.Equal(t, "Runbook evidence was used.", claims[0].Claim)
+	assert.Equal(t, knowledge.DiagnosisClaimSupported, claims[0].Status)
+	assert.Equal(t, []string{"chunk-1"}, claims[0].ChunkIDs)
 }
 
 // Lead rule (2026-06-01): a malformed step gets ONE corrective retry, then recovers.
@@ -212,4 +332,13 @@ func TestErrSkillExecUnrecovered_IsWrappable(t *testing.T) {
 	_ = wrapped
 	_, err := RunReadOnlySkill(context.Background(), "q", nil, SkillExecOptions{Tools: readOnlyTools()})
 	assert.True(t, errors.Is(err, ErrSkillExecUnrecovered))
+}
+
+func joinedSkillMessages(messages []openai.ChatCompletionMessage) string {
+	var b strings.Builder
+	for _, m := range messages {
+		b.WriteString(m.Content)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }

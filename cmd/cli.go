@@ -182,9 +182,13 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			eng.SetFastTemplate(true)
 		}
 	}
+	plannerStructuredOutput, unknownPlannerStructuredOutput := plannerStructuredOutputModeFromEnv(os.Getenv)
+	if unknownPlannerStructuredOutput != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown PLANNER_STRUCTURED_OUTPUT value %q\n", unknownPlannerStructuredOutput)
+	}
 	plannerDispatchEnabled := cutoverEnabled || knowledgeRetrievalEnabled
 	if plannerDispatchEnabled {
-		eng.SetIntentPlanner(newCLIPlanner(cfg), engine.IntentPlannerOptions{
+		eng.SetIntentPlanner(newCLIPlannerWithStructuredOutput(cfg, plannerStructuredOutput), engine.IntentPlannerOptions{
 			EnabledIntents: cutoverIntents,
 			Model:          cfg.Agent.LLM.Model,
 		})
@@ -217,7 +221,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	}
 	var shadowRunner *intent.ShadowRunner
 	if useSeparateShadowRunner(traceEnabled, shadowEnabled, plannerDispatchEnabled) {
-		shadowRunner = newCLIShadowRunner(cfg, eng)
+		shadowRunner = newCLIShadowRunner(cfg, eng, plannerStructuredOutput)
 	}
 
 	fmt.Println("╭──────────────────────────────────────╮")
@@ -286,6 +290,8 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		// when the next turn creates a fresh recorder.
 		eng.SetPlannerTraceObserver(nil)
 		eng.SetRetrievalTraceObserver(nil)
+		eng.SetFreshnessTraceObserver(nil)
+		eng.SetDiagnosisTraceObserver(nil)
 		eng.SetOutcomeTraceObserver(nil)
 		eng.SetRendererTraceObserver(nil)
 		eng.SetTokenUsageObserver(nil)
@@ -296,6 +302,8 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)
 			eng.SetHardBlockObserver(traceRecorder.SetEngineHardBlock)
 			eng.SetTokenUsageObserver(traceRecorder.AddTokenUsage)
+			eng.SetFreshnessTraceObserver(traceRecorder.SetFreshnessTrace)
+			eng.SetDiagnosisTraceObserver(traceRecorder.SetDiagnosisTrace)
 			if plannerDispatchEnabled {
 				// When Phase 1 cutover or Stage 2B retrieval is enabled, Engine
 				// owns the single planner call for this turn and writes that same
@@ -408,7 +416,8 @@ func cliShadowPlannerInput(eng *engine.Engine, userText string) intent.PlannerIn
 }
 
 type cliPlannerLLM struct {
-	client *llm.Client
+	client               *llm.Client
+	structuredOutputMode plannerStructuredOutputMode
 }
 
 func (c cliPlannerLLM) CompleteIntentPlan(ctx context.Context, req intent.PlannerLLMRequest) (string, error) {
@@ -425,6 +434,7 @@ func (c cliPlannerLLM) CompleteIntentPlanWithUsage(ctx context.Context, req inte
 			{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt},
 			{Role: openai.ChatMessageRoleUser, Content: req.UserPrompt},
 		},
+		ResponseFormat: plannerResponseFormatForMode(req.Mode, c.structuredOutputMode),
 	})
 	if err != nil {
 		return intent.PlannerLLMResponse{}, err
@@ -432,16 +442,32 @@ func (c cliPlannerLLM) CompleteIntentPlanWithUsage(ctx context.Context, req inte
 	return intent.PlannerLLMResponse{Content: resp.Content, Usage: resp.Usage}, nil
 }
 
+func plannerResponseFormatForMode(mode intent.OutputMode, structuredOutput plannerStructuredOutputMode) *openai.ChatCompletionResponseFormat {
+	if structuredOutput != plannerStructuredOutputJSONObject || mode != intent.OutputModeJSONObject {
+		return nil
+	}
+	return &openai.ChatCompletionResponseFormat{
+		Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+	}
+}
+
 func newCLIPlanner(cfg *config.Config) *intent.Planner {
-	plannerClient := cliPlannerLLM{client: llm.NewClient(cfg.Agent.LLM)}
+	return newCLIPlannerWithStructuredOutput(cfg, plannerStructuredOutputOff)
+}
+
+func newCLIPlannerWithStructuredOutput(cfg *config.Config, structuredOutput plannerStructuredOutputMode) *intent.Planner {
+	plannerClient := cliPlannerLLM{
+		client:               llm.NewClient(cfg.Agent.LLM),
+		structuredOutputMode: structuredOutput,
+	}
 	return intent.NewPlanner(plannerClient, intent.PlannerOptions{
 		BaseURL: cfg.Agent.LLM.BaseURL,
 		Model:   cfg.Agent.LLM.Model,
 	})
 }
 
-func newCLIShadowRunner(cfg *config.Config, eng *engine.Engine) *intent.ShadowRunner {
-	planner := newCLIPlanner(cfg)
+func newCLIShadowRunner(cfg *config.Config, eng *engine.Engine, structuredOutput plannerStructuredOutputMode) *intent.ShadowRunner {
+	planner := newCLIPlannerWithStructuredOutput(cfg, structuredOutput)
 	return intent.NewShadowRunner(planner, intent.ShadowRunnerOptions{
 		Enabled:      true,
 		Model:        cfg.Agent.LLM.Model,

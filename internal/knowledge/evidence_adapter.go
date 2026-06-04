@@ -17,9 +17,24 @@ type EvidenceLedger struct {
 }
 
 type EvidenceItem struct {
-	ChunkID string `json:"chunk_id"`
-	Title   string `json:"title,omitempty"`
-	Summary string `json:"summary"`
+	ChunkID     string `json:"chunk_id"`
+	Title       string `json:"title,omitempty"`
+	SourceType  string `json:"source_type,omitempty"`
+	ScoreBucket string `json:"score_bucket,omitempty"`
+	Summary     string `json:"summary"`
+}
+
+const (
+	DiagnosisClaimSupported   = "supported"
+	DiagnosisClaimInferred    = "inferred"
+	DiagnosisClaimUnconfirmed = "unconfirmed"
+)
+
+type DiagnosisClaim struct {
+	Claim    string   `json:"claim"`
+	Status   string   `json:"status"`
+	ChunkIDs []string `json:"chunk_ids,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
 }
 
 func (l EvidenceLedger) Empty() bool {
@@ -48,15 +63,122 @@ func BuildEvidenceLedger(query string, hits []RetrievalHit, maxItems int) Eviden
 			summary = "Matched platform knowledge entry: " + title
 		}
 		ledger.Items = append(ledger.Items, EvidenceItem{
-			ChunkID: chunkID,
-			Title:   title,
-			Summary: clipRunes(summary, 160),
+			ChunkID:     chunkID,
+			Title:       title,
+			SourceType:  clipRunes(compactWhitespace(hit.Chunk.SourceType), 40),
+			ScoreBucket: evidenceScoreBucket(hit.Score),
+			Summary:     clipRunes(summary, 160),
 		})
 		if len(ledger.Items) >= maxItems {
 			break
 		}
 	}
 	return ledger
+}
+
+func MergeEvidenceLedgers(first, second EvidenceLedger, maxItems int) EvidenceLedger {
+	if maxItems <= 0 {
+		maxItems = DefaultEvidenceLedgerMaxItems
+	}
+	out := EvidenceLedger{
+		Query: strings.TrimSpace(first.Query),
+		Items: []EvidenceItem{},
+	}
+	if q := strings.TrimSpace(second.Query); q != "" {
+		if out.Query == "" {
+			out.Query = q
+		} else if out.Query != q {
+			out.Query += " | " + q
+		}
+	}
+	seen := map[string]struct{}{}
+	for _, ledger := range []EvidenceLedger{first, second} {
+		for _, item := range ledger.Items {
+			id := strings.TrimSpace(item.ChunkID)
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			item.ChunkID = id
+			out.Items = append(out.Items, item)
+			if len(out.Items) >= maxItems {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func ValidateDiagnosisClaims(claims []DiagnosisClaim, ledger EvidenceLedger) ([]DiagnosisClaim, error) {
+	known := map[string]struct{}{}
+	for _, item := range ledger.Items {
+		id := strings.TrimSpace(item.ChunkID)
+		if id != "" {
+			known[id] = struct{}{}
+		}
+	}
+	validated := make([]DiagnosisClaim, 0, len(claims))
+	for i, claim := range claims {
+		text := compactWhitespace(claim.Claim)
+		if text == "" {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(claim.Status))
+		if status == "" {
+			status = DiagnosisClaimUnconfirmed
+		}
+		switch status {
+		case DiagnosisClaimSupported, DiagnosisClaimInferred, DiagnosisClaimUnconfirmed:
+		default:
+			return nil, fmt.Errorf("diagnosis claim %d has invalid status %q", i, claim.Status)
+		}
+		ids := dedupeStrings(trimStrings(claim.ChunkIDs))
+		for _, id := range ids {
+			if _, ok := known[id]; !ok {
+				return nil, fmt.Errorf("diagnosis claim %d references unknown chunk_id %q", i, id)
+			}
+		}
+		reason := compactWhitespace(claim.Reason)
+		if status == DiagnosisClaimSupported && len(ids) == 0 {
+			status = DiagnosisClaimUnconfirmed
+			reason = appendDiagnosisClaimReason(reason, "supported status had no chunk_ids; downgraded to unconfirmed")
+		}
+		validated = append(validated, DiagnosisClaim{
+			Claim:    clipRunes(text, 240),
+			Status:   status,
+			ChunkIDs: ids,
+			Reason:   clipRunes(reason, 180),
+		})
+	}
+	return validated, nil
+}
+
+func appendDiagnosisClaimReason(reason, suffix string) string {
+	reason = strings.TrimSpace(reason)
+	suffix = strings.TrimSpace(suffix)
+	if reason == "" {
+		return suffix
+	}
+	if suffix == "" {
+		return reason
+	}
+	return reason + "; " + suffix
+}
+
+func evidenceScoreBucket(score float64) string {
+	switch {
+	case score >= 0.85:
+		return "high"
+	case score >= 0.55:
+		return "medium"
+	case score > 0:
+		return "low"
+	default:
+		return ""
+	}
 }
 
 // ValidateNoRawEvidenceLeak rejects text that contains substantial raw KB body
@@ -138,6 +260,16 @@ func dedupeStrings(values []string) []string {
 		}
 		seen[value] = struct{}{}
 		out = append(out, value)
+	}
+	return out
+}
+
+func trimStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
 	}
 	return out
 }

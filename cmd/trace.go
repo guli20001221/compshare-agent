@@ -221,6 +221,25 @@ func reactHistoryCompactionEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+type plannerStructuredOutputMode string
+
+const (
+	plannerStructuredOutputOff        plannerStructuredOutputMode = ""
+	plannerStructuredOutputJSONObject plannerStructuredOutputMode = "json_object"
+)
+
+func plannerStructuredOutputModeFromEnv(getenv getenvFunc) (plannerStructuredOutputMode, string) {
+	value := strings.ToLower(strings.TrimSpace(getenv("PLANNER_STRUCTURED_OUTPUT")))
+	switch value {
+	case "", "0", "off":
+		return plannerStructuredOutputOff, ""
+	case string(plannerStructuredOutputJSONObject):
+		return plannerStructuredOutputJSONObject, ""
+	default:
+		return plannerStructuredOutputOff, value
+	}
+}
+
 // useSkillExecutorFromEnv reads USE_SKILL_EXECUTOR (P2a gray-rollout). "1"
 // enables the body-driven skill executor gate. Diagnosis still requires the
 // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS allowlist. "" is off; any other value is
@@ -762,6 +781,20 @@ func (r *cliTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace)
 		return
 	}
 	r.record.Retrieval = trace
+}
+
+func (r *cliTraceRecorder) SetFreshnessTrace(trace observability.FreshnessTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Freshness = observability.MergeFreshnessTrace(r.record.Freshness, trace)
+}
+
+func (r *cliTraceRecorder) SetDiagnosisTrace(trace observability.DiagnosisTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Diagnosis = trace
 }
 
 func (r *cliTraceRecorder) SetOutcomeTrace(trace observability.OutcomeTrace) {

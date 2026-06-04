@@ -23,6 +23,10 @@ metadata:
 
 # Diagnose: GPU Not Detected
 
+## Knowledge use
+
+Call virtual `SearchKnowledge` once as the first step with a short symptom query, then continue with read-only instance/monitor tools. Use only the returned `EvidenceLedger` chunk IDs, titles, and summaries; never quote or request raw document text. In the final JSON, include `diagnosis_claims`; use `supported` only with current `EvidenceLedger` chunk IDs, `inferred` for API-derived reasoning, and `unconfirmed` for uncertainty.
+
 > 来源:从原 `GPUNotDetectedChain` Go 代码 SOP 提炼(2026-05-29),未经真机故障验证。
 
 ## 排查步骤

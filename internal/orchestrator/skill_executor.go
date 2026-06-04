@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/tools"
 
@@ -38,15 +39,23 @@ type ChatClient interface {
 // engine adapts this to its StepEvent/onStep bridge.
 type SkillProgress func(action, message string, isResult bool)
 
+// KnowledgeSearchFunc is a host-provided virtual read-only retrieval tool. It
+// returns a safe evidence ledger for the model and raw hits only for host-side
+// validation/trace; RunReadOnlySkill never serializes raw hit content.
+type KnowledgeSearchFunc func(ctx context.Context, query string) (knowledge.EvidenceLedger, []knowledge.RetrievalHit, error)
+
 // SkillExecOptions configures one read-only body-driven skill run.
 type SkillExecOptions struct {
-	Body      string               // skill.Body() output, verbatim — cautions already injected
-	Tools     []openai.Tool        // tools the model may call (defs feed the protocol text)
-	Exec      tools.ToolExecutor   // MUST be a read-only origin (OriginDiagnosisInternal)
-	Client    ChatClient           // TierAgent strong model
-	Progress  SkillProgress        // optional progress bridge
-	OnUsage   func(llm.TokenUsage) // optional per-call token accounting (engine budget)
-	MaxRounds int                  // tool-call rounds bound; <=0 ⇒ defaultSkillMaxRounds
+	Body                 string               // skill.Body() output, verbatim — cautions already injected
+	Tools                []openai.Tool        // tools the model may call (defs feed the protocol text)
+	Exec                 tools.ToolExecutor   // MUST be a read-only origin (OriginDiagnosisInternal)
+	Client               ChatClient           // TierAgent strong model
+	Progress             SkillProgress        // optional progress bridge
+	OnUsage              func(llm.TokenUsage) // optional per-call token accounting (engine budget)
+	KnowledgeSearch      KnowledgeSearchFunc
+	MaxKnowledgeSearches int
+	OnDiagnosisClaims    func([]knowledge.DiagnosisClaim)
+	MaxRounds            int // tool-call rounds bound; <=0 ⇒ defaultSkillMaxRounds
 }
 
 const (
@@ -78,19 +87,27 @@ func RunReadOnlySkill(ctx context.Context, userRequest string, seed map[string]a
 	if maxRounds <= 0 {
 		maxRounds = defaultSkillMaxRounds
 	}
+	knowledgeSearchEnabled := opts.KnowledgeSearch != nil && opts.MaxKnowledgeSearches > 0
 	allowed := make(map[string]struct{}, len(opts.Tools))
 	for _, t := range opts.Tools {
 		if t.Function != nil {
 			allowed[t.Function.Name] = struct{}{}
 		}
 	}
+	if knowledgeSearchEnabled {
+		allowed["SearchKnowledge"] = struct{}{}
+	}
 
 	ws := []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: buildSkillSystemPrompt(opts.Body, opts.Tools)},
+		{Role: openai.ChatMessageRoleSystem, Content: buildSkillSystemPrompt(opts.Body, opts.Tools, knowledgeSearchEnabled)},
 		{Role: openai.ChatMessageRoleUser, Content: buildSkillUserSeed(userRequest, seed)},
+	}
+	if knowledgeSearchEnabled {
+		ws[0].Content += "\n- SearchKnowledge: required first step for this diagnosis before other tools. Query diagnosis runbooks and return EvidenceLedger only. Args: {\"query\":\"short symptom or question\"}. Use the returned chunk IDs, titles, and summaries only; do not ask for raw document text.\n- Final JSON must include diagnosis_claims: [{\"claim\":\"short audit claim\",\"status\":\"supported|inferred|unconfirmed\",\"chunk_ids\":[\"chunk-id\"],\"reason\":\"short reason\"}]. Use status=supported only with chunk_ids from the current EvidenceLedger; mark API-derived reasoning as inferred and uncertainty as unconfirmed.\n"
 	}
 
 	malformedBudget := skillMalformedBudget
+	knowledgeSearches := 0
 	for round := 0; round < maxRounds; round++ {
 		resp, err := opts.Client.Chat(ctx, llm.ChatRequest{Messages: ws})
 		if err != nil {
@@ -110,6 +127,9 @@ func RunReadOnlySkill(ctx context.Context, userRequest string, seed map[string]a
 			return "", fmt.Errorf("%w: malformed step twice", ErrSkillExecUnrecovered)
 		}
 		if step.Final != "" {
+			if opts.OnDiagnosisClaims != nil && len(step.DiagnosisClaims) > 0 {
+				opts.OnDiagnosisClaims(append([]knowledge.DiagnosisClaim(nil), step.DiagnosisClaims...))
+			}
 			if opts.Progress != nil {
 				opts.Progress("", "完成", true)
 			}
@@ -124,6 +144,25 @@ func RunReadOnlySkill(ctx context.Context, userRequest string, seed map[string]a
 				continue
 			}
 			return "", fmt.Errorf("%w: unavailable tool %q", ErrSkillExecUnrecovered, step.Action)
+		}
+		if step.Action == "SearchKnowledge" {
+			query := skillKnowledgeQuery(step.Args, userRequest)
+			var result map[string]any
+			var searchErr error
+			if knowledgeSearches >= opts.MaxKnowledgeSearches {
+				searchErr = fmt.Errorf("knowledge search budget exhausted")
+			} else {
+				knowledgeSearches++
+				ledger, _, err := opts.KnowledgeSearch(ctx, query)
+				searchErr = err
+				result = map[string]any{"EvidenceLedger": ledger}
+				if len(ledger.Items) == 0 {
+					result["empty"] = true
+				}
+			}
+			ws = append(ws, assistantMsg(content),
+				userMsg(fmt.Sprintf("工具 %s 返回：\n%s", step.Action, marshalToolResult(result, searchErr))))
+			continue
 		}
 		if opts.Progress != nil {
 			opts.Progress(step.Action, "调用 "+step.Action, false)
@@ -143,9 +182,10 @@ func RunReadOnlySkill(ctx context.Context, userRequest string, seed map[string]a
 }
 
 type skillStep struct {
-	Action string         `json:"action"`
-	Args   map[string]any `json:"args"`
-	Final  string         `json:"final"`
+	Action          string                     `json:"action"`
+	Args            map[string]any             `json:"args"`
+	Final           string                     `json:"final"`
+	DiagnosisClaims []knowledge.DiagnosisClaim `json:"diagnosis_claims"`
 }
 
 // parseSkillStep extracts the single JSON object from the model's reply and
@@ -167,6 +207,19 @@ func parseSkillStep(content string) (skillStep, error) {
 		step.Args = map[string]any{}
 	}
 	return step, nil
+}
+
+func skillKnowledgeQuery(args map[string]any, fallback string) string {
+	if args != nil {
+		if raw, ok := args["query"]; ok {
+			if s, ok := raw.(string); ok {
+				if q := strings.TrimSpace(s); q != "" {
+					return q
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(fallback)
 }
 
 // extractJSONObject returns the first complete brace-balanced JSON object in s
@@ -205,7 +258,7 @@ func extractJSONObject(s string) string {
 	return ""
 }
 
-func buildSkillSystemPrompt(body string, toolDefs []openai.Tool) string {
+func buildSkillSystemPrompt(body string, toolDefs []openai.Tool, knowledgeSearchEnabled bool) string {
 	var b strings.Builder
 	b.WriteString(body)
 	b.WriteString("\n\n---\n可用工具：\n")

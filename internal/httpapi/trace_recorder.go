@@ -65,6 +65,8 @@ func attachChatTraceObservers(agent *engine.Engine, recorder *chatTraceRecorder)
 	}
 	agent.SetPlannerTraceObserver(recorder.SetPlannerTrace)
 	agent.SetRetrievalTraceObserver(recorder.SetRetrievalTrace)
+	agent.SetFreshnessTraceObserver(recorder.SetFreshnessTrace)
+	agent.SetDiagnosisTraceObserver(recorder.SetDiagnosisTrace)
 	agent.SetOutcomeTraceObserver(recorder.SetOutcomeTrace)
 	agent.SetRendererTraceObserver(recorder.SetRendererTrace)
 	agent.SetHardBlockObserver(recorder.SetEngineHardBlock)
@@ -78,6 +80,8 @@ func clearChatTraceObservers(agent *engine.Engine) {
 	}
 	agent.SetPlannerTraceObserver(nil)
 	agent.SetRetrievalTraceObserver(nil)
+	agent.SetFreshnessTraceObserver(nil)
+	agent.SetDiagnosisTraceObserver(nil)
 	agent.SetOutcomeTraceObserver(nil)
 	agent.SetRendererTraceObserver(nil)
 	agent.SetHardBlockObserver(nil)
@@ -105,6 +109,20 @@ func (r *chatTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace
 		return
 	}
 	r.record.Retrieval = trace
+}
+
+func (r *chatTraceRecorder) SetFreshnessTrace(trace observability.FreshnessTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Freshness = observability.MergeFreshnessTrace(r.record.Freshness, trace)
+}
+
+func (r *chatTraceRecorder) SetDiagnosisTrace(trace observability.DiagnosisTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Diagnosis = trace
 }
 
 func (r *chatTraceRecorder) SetOutcomeTrace(trace observability.OutcomeTrace) {
