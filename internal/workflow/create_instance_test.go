@@ -583,7 +583,7 @@ func multiMemoryInstanceTypes() map[string]any {
 
 func TestListSpecCandidates_ExpandsAllCombinations(t *testing.T) {
 	result := multiMemoryInstanceTypes()
-	candidates := listSpecCandidates(result, "4090", 1)
+	candidates := listSpecCandidates(result, "4090", 1, "")
 	assert.Len(t, candidates, 2)
 	assert.Equal(t, specCandidate{CPU: 16, MemoryMB: 64 * 1024}, candidates[0])
 	assert.Equal(t, specCandidate{CPU: 16, MemoryMB: 94 * 1024}, candidates[1])
@@ -606,7 +606,7 @@ func TestListSpecCandidates_MultipleCollections(t *testing.T) {
 			},
 		},
 	}
-	candidates := listSpecCandidates(result, "A800", 1)
+	candidates := listSpecCandidates(result, "A800", 1, "")
 	assert.Len(t, candidates, 2)
 	assert.Equal(t, specCandidate{CPU: 16, MemoryMB: 64 * 1024}, candidates[0])
 	assert.Equal(t, specCandidate{CPU: 32, MemoryMB: 128 * 1024}, candidates[1])
@@ -617,11 +617,107 @@ func TestResolveTargetSpec_SingleCandidate_AutoSelect(t *testing.T) {
 	wfCtx.StepResults["查询可用配比"] = mockInstanceTypes("4090",
 		struct{ Gpu, Cpu, MemGB float64 }{1, 16, 64},
 	)
-	gpu, cpu, mem, err := resolveTargetSpec(wfCtx)
+	gpu, cpu, mem, _, err := resolveTargetSpec(wfCtx)
 	assert.NoError(t, err)
 	assert.Equal(t, float64(1), gpu)
 	assert.Equal(t, float64(16), cpu)
 	assert.Equal(t, float64(64*1024), mem)
+}
+
+// zoneTaggedTypes builds a catalog where each entry carries a Zone + Status, as the
+// real (un-MachineTypes-filtered) DescribeAvailableCompShareInstanceTypes returns.
+func zoneTaggedTypes(entries ...struct {
+	Name, Zone, Status string
+}) map[string]any {
+	types := make([]any, 0, len(entries))
+	for _, e := range entries {
+		types = append(types, map[string]any{
+			"Name": e.Name, "Zone": e.Zone, "Status": e.Status,
+			"MachineSizes": []any{map[string]any{
+				"Gpu": float64(1), "Collection": []any{
+					map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+				},
+			}},
+		})
+	}
+	return map[string]any{"AvailableInstanceTypes": types}
+}
+
+func TestResolveTargetSpec_ResolvesNonDefaultZone(t *testing.T) {
+	// 2080Ti lives only in cn-sh2-02 (the real cause of the reported bug class):
+	// resolveTargetSpec must pick that zone, not fail with the hardcoded default.
+	wfCtx := NewContext(map[string]any{"GpuType": "2080Ti"})
+	wfCtx.StepResults["查询可用配比"] = zoneTaggedTypes(
+		struct{ Name, Zone, Status string }{"4090", "cn-wlcb-01", "Normal"},
+		struct{ Name, Zone, Status string }{"2080Ti", "cn-sh2-02", "Normal"},
+	)
+	gpu, cpu, mem, zone, err := resolveTargetSpec(wfCtx)
+	assert.NoError(t, err)
+	assert.Equal(t, float64(1), gpu)
+	assert.Equal(t, float64(16), cpu)
+	assert.Equal(t, float64(64*1024), mem)
+	assert.Equal(t, "cn-sh2-02", zone, "must resolve the zone the GPU actually lives in")
+}
+
+func TestResolveTargetSpec_MultiZone_PrefersDefaultZone_NoDuplicates(t *testing.T) {
+	// A GPU present in several zones must resolve to the default zone (preference)
+	// and yield a single candidate — not one duplicate per zone.
+	wfCtx := NewContext(map[string]any{"GpuType": "4090"})
+	wfCtx.StepResults["查询可用配比"] = zoneTaggedTypes(
+		struct{ Name, Zone, Status string }{"4090", "cn-sh2-02", "Normal"},
+		struct{ Name, Zone, Status string }{"4090", "cn-wlcb-01", "Normal"},
+	)
+	_, _, _, zone, err := resolveTargetSpec(wfCtx)
+	assert.NoError(t, err)
+	assert.Equal(t, "cn-wlcb-01", zone, "must prefer the platform default zone when the GPU is in several")
+
+	// And only one candidate (no cross-zone duplicates) → auto-selects cleanly.
+	candidates := listSpecCandidates(wfCtx.StepResults["查询可用配比"], "4090", 1, zone)
+	assert.Len(t, candidates, 1, "zone filter must drop the other-zone duplicate")
+}
+
+func TestResolveTargetSpec_NoCandidate_ListsRealAvailableTypes(t *testing.T) {
+	// A type not in the catalog must fail with a GROUNDED message that lists the
+	// real available types — this is what replaces the LLM's fabricated GPU list.
+	wfCtx := NewContext(map[string]any{"GpuType": "MI300X"})
+	wfCtx.StepResults["查询可用配比"] = zoneTaggedTypes(
+		struct{ Name, Zone, Status string }{"4090", "cn-wlcb-01", "Normal"},
+		struct{ Name, Zone, Status string }{"V100S", "cn-wlcb-01", "Normal"},
+	)
+	_, _, _, _, err := resolveTargetSpec(wfCtx)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "未找到 MI300X")
+	assert.Contains(t, err.Error(), "4090")
+	assert.Contains(t, err.Error(), "V100S")
+}
+
+func TestCreateInstance_NonDefaultZone_ThreadsZoneToCreate(t *testing.T) {
+	// End-to-end: a GPU that exists only in cn-sh2-02 must be created there, with
+	// the resolved zone threaded through capacity / price / create.
+	executor := createMockExecutor()
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = zoneTaggedTypes(
+		struct{ Name, Zone, Status string }{"2080Ti", "cn-sh2-02", "Normal"},
+	)
+	executor.results["CheckCompShareResourceCapacity"] = map[string]any{"Specs": []any{
+		map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	onStep, _ := collectEvents()
+
+	def := CreateInstanceDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{"GpuType": "2080Ti"})
+	assert.NoError(t, err)
+	assert.True(t, result.Success, "2080Ti in a non-default zone must create successfully")
+
+	for _, call := range executor.calls {
+		if call.action == "CreateCompShareInstance" {
+			assert.Equal(t, "cn-sh2-02", call.args["Zone"], "create must target the GPU's real zone")
+		}
+		if call.action == "CheckCompShareResourceCapacity" {
+			assert.Equal(t, "cn-sh2-02", call.args["Zone"], "capacity check must target the GPU's real zone")
+		}
+	}
 }
 
 func TestResolveTargetSpec_MultiCandidate_NoCpuMem_DefaultsToFirst(t *testing.T) {
@@ -629,7 +725,7 @@ func TestResolveTargetSpec_MultiCandidate_NoCpuMem_DefaultsToFirst(t *testing.T)
 	wfCtx := NewContext(map[string]any{"GpuType": "4090"})
 	wfCtx.StepResults["查询可用配比"] = multiMemoryInstanceTypes()
 
-	gpu, cpu, mem, err := resolveTargetSpec(wfCtx)
+	gpu, cpu, mem, _, err := resolveTargetSpec(wfCtx)
 	assert.NoError(t, err)
 	assert.Equal(t, float64(1), gpu)
 	assert.Equal(t, float64(16), cpu)
@@ -641,7 +737,7 @@ func TestResolveTargetSpec_MultiCandidate_OnlyCpu_StillAmbiguous(t *testing.T) {
 	wfCtx := NewContext(map[string]any{"GpuType": "4090", "Cpu": float64(16)})
 	wfCtx.StepResults["查询可用配比"] = multiMemoryInstanceTypes()
 
-	_, _, _, err := resolveTargetSpec(wfCtx)
+	_, _, _, _, err := resolveTargetSpec(wfCtx)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "多种合法配比")
 }
@@ -654,7 +750,7 @@ func TestResolveTargetSpec_MultiCandidate_CpuMemExactMatch(t *testing.T) {
 	})
 	wfCtx.StepResults["查询可用配比"] = multiMemoryInstanceTypes()
 
-	gpu, cpu, mem, err := resolveTargetSpec(wfCtx)
+	gpu, cpu, mem, _, err := resolveTargetSpec(wfCtx)
 	assert.NoError(t, err)
 	assert.Equal(t, float64(1), gpu)
 	assert.Equal(t, float64(16), cpu)
@@ -669,7 +765,7 @@ func TestResolveTargetSpec_MultiCandidate_IllegalCombo(t *testing.T) {
 	})
 	wfCtx.StepResults["查询可用配比"] = multiMemoryInstanceTypes()
 
-	_, _, _, err := resolveTargetSpec(wfCtx)
+	_, _, _, _, err := resolveTargetSpec(wfCtx)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "不支持")
 	assert.Contains(t, err.Error(), "合法选项")
@@ -683,7 +779,7 @@ func TestResolveTargetSpec_MultiCandidate_OnlyMemory_Resolves(t *testing.T) {
 	})
 	wfCtx.StepResults["查询可用配比"] = multiMemoryInstanceTypes()
 
-	gpu, cpu, mem, err := resolveTargetSpec(wfCtx)
+	gpu, cpu, mem, _, err := resolveTargetSpec(wfCtx)
 	assert.NoError(t, err)
 	assert.Equal(t, float64(1), gpu)
 	assert.Equal(t, float64(16), cpu)

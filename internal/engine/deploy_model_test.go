@@ -68,14 +68,19 @@ func newDeployMock(cfg deployMockConfig) *mockExecutorFn {
 			}
 			return map[string]any{"CompshareImageGroup": []any{group}}, nil
 		case "DescribeAvailableCompShareInstanceTypes":
-			gt := firstMachineType(args)
-			return map[string]any{"AvailableInstanceTypes": []any{
-				map[string]any{"Name": gt, "MachineSizes": []any{
+			// The create workflow no longer filters by MachineTypes (it queries the
+			// full catalog and selects the type/zone in-code), so the mock mirrors
+			// that: every GPU type the arm might pick, each at 1×/16C/64GB so the
+			// capacity Specs below match the resolved spec regardless of choice.
+			var types []any
+			for _, name := range []string{"4090", "4090_48G", "5090", "A100", "A800", "V100S", "H20", "3090", "3080Ti", "P40", "2080Ti", "2080"} {
+				types = append(types, map[string]any{"Name": name, "MachineSizes": []any{
 					map[string]any{"Gpu": float64(1), "Collection": []any{
 						map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
 					}},
-				}},
-			}}, nil
+				}})
+			}
+			return map[string]any{"AvailableInstanceTypes": types}, nil
 		case "CheckCompShareResourceCapacity":
 			return map[string]any{"Specs": []any{
 				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": cfg.capacityEnough},
@@ -107,15 +112,6 @@ func newDeployMock(cfg deployMockConfig) *mockExecutorFn {
 			return map[string]any{"RetCode": float64(0)}, nil
 		}
 	}}
-}
-
-func firstMachineType(args map[string]any) string {
-	if mt, ok := args["MachineTypes"].([]any); ok && len(mt) > 0 {
-		if s, ok := mt[0].(string); ok {
-			return s
-		}
-	}
-	return "A100"
 }
 
 const deployMatchJSON = `{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-7B","quantization":""}`
@@ -453,14 +449,19 @@ func TestTryDeployModel_ThreadsCommunityImageIDToCreate(t *testing.T) {
 					"Data": []any{map[string]any{"CompShareImageId": "saga-index0-WRONG"}}},
 			}}, nil
 		case "DescribeAvailableCompShareInstanceTypes":
-			gt := firstMachineType(args)
-			return map[string]any{"AvailableInstanceTypes": []any{
-				map[string]any{"Name": gt, "MachineSizes": []any{
+			// The create workflow no longer filters by MachineTypes (it queries the
+			// full catalog and selects the type/zone in-code), so the mock mirrors
+			// that: every GPU type the arm might pick, each at 1×/16C/64GB so the
+			// capacity Specs below match the resolved spec regardless of choice.
+			var types []any
+			for _, name := range []string{"4090", "4090_48G", "5090", "A100", "A800", "V100S", "H20", "3090", "3080Ti", "P40", "2080Ti", "2080"} {
+				types = append(types, map[string]any{"Name": name, "MachineSizes": []any{
 					map[string]any{"Gpu": float64(1), "Collection": []any{
 						map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
 					}},
-				}},
-			}}, nil
+				}})
+			}
+			return map[string]any{"AvailableInstanceTypes": types}, nil
 		case "CheckCompShareResourceCapacity":
 			return map[string]any{"Specs": []any{
 				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
@@ -562,7 +563,16 @@ func availCardZ(name, zone string, vram int) map[string]any {
 		"Name": name, "Zone": zone, "Status": "Normal",
 		"GraphicsMemory": map[string]any{"Value": float64(vram)},
 		"Performance":    map[string]any{"Value": float64(vram)},
-		"MachineSizes":   []any{map[string]any{"Gpu": float64(1)}, map[string]any{"Gpu": float64(8)}},
+		// The 1-card size carries a Collection so the saga's resolveTargetSpec can
+		// pick a CPU/Memory from the zone-tagged catalog (the create query is no
+		// longer MachineTypes-filtered, so it reads these same entries). The matcher
+		// only looks at Zone/GraphicsMemory/Gpu, so the extra Collection is inert there.
+		"MachineSizes": []any{
+			map[string]any{"Gpu": float64(1), "Collection": []any{
+				map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+			}},
+			map[string]any{"Gpu": float64(8)},
+		},
 	}
 }
 
