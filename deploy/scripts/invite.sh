@@ -23,6 +23,14 @@ fi
 : "${MYSQL_DSN:?env: MYSQL_DSN missing}"
 : "${ADDR:?env: ADDR missing (e.g. 10.182.45.17:10100)}"
 
+# Write-operations switch. Optional and read-only by default (code default is off):
+# unless the env file sets it to 1, write ops (create/start/stop/reboot/reset-
+# password/resize-disk) stay hidden/blocked. Forwarded explicitly because the binary
+# only reads it from its OWN process env — sourcing the env file here is not enough,
+# `ally invite` only passes the --app-env vars below to the spawned server.
+# Destructive actions (delete / L2) stay refused even when this is 1.
+MUTATING_TOOLS="${COMPSHARE_ENABLE_MUTATING_TOOLS:-0}"
+
 ally invite compshare-agent \
     --app-bin "$APP_DIR/compshare-agent" \
     --app-pwd "$APP_DIR" \
@@ -31,6 +39,7 @@ ally invite compshare-agent \
     --app-env "COMPSHARE_SERVICE_PRIVATE_KEY=$COMPSHARE_SERVICE_PRIVATE_KEY" \
     --app-env "COMPSHARE_DEFAULT_ROLE_URN=$COMPSHARE_DEFAULT_ROLE_URN" \
     --app-env "MYSQL_DSN=$MYSQL_DSN" \
+    --app-env "COMPSHARE_ENABLE_MUTATING_TOOLS=$MUTATING_TOOLS" \
     -- server \
     --config "$CONFIG_FILE" \
     --addr "$ADDR"
