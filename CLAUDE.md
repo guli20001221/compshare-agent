@@ -133,7 +133,7 @@ Read-only diagnostic tools (init failure, billing anomaly, GPU not detected, ima
 
 ## Conventions specific to this repo
 
-- The runtime is **read-only by default**. Never flip `COMPSHARE_ENABLE_MUTATING_TOOLS` in shipped configs or tests; mutating tests use the workflow registry directly.
+- The runtime is **read-only by default in Go code** (the binary refuses mutating tools unless `COMPSHARE_ENABLE_MUTATING_TOOLS=1`). By deliberate decision the **production deploy template ships it on**: `.env.example` sets `COMPSHARE_ENABLE_MUTATING_TOOLS=1` and `deploy/scripts/invite.sh` forwards it, so a packed/deployed console enables write ops out of the box. Destructive / L2 actions (delete, terminate) stay refused regardless (`internal/tools/safe_executor.go`). Never set the flag in **tests** (mutating tests use the workflow registry directly), and keep the **Go code default off** — only the deploy template enables it.
 - Static FAQ text was removed from the ReAct prompt — platform knowledge flows only through the RAG retriever. Do not reintroduce `FAQContent` / `ReadOnlyFAQContent` injection (`internal/prompt/builder_test.go` has reverse assertions).
 - Shadow QA per-round configs under `eval/shadow_qa/**/agent.yaml` and `.env` files are git-ignored and contain real keys — never commit anything matching those globs.
 - When adding planner examples, group by intent and record a one-line source for each example; tests in `internal/intent/planner_prompt_test.go` enforce grouping/tool/intercept consistency.
