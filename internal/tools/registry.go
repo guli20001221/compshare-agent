@@ -721,7 +721,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateDiskWorkflow",
-			Description: "创建并挂载数据盘工作流。为实例创建一块新的云数据盘并自动挂载。用户要求'加数据盘'、'加磁盘'、'磁盘不够'时使用。",
+			Description: "新建数据盘并挂载到实例的工作流。只创建一块指定 Size 的新云数据盘并自动挂载，不支持挂载已有盘，也不是扩已有盘。用户要求'加数据盘'、'新建数据盘'、'加磁盘'、'磁盘不够'时使用；如果没给 Size，先追问容量。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -732,6 +732,36 @@ var Registry = []openai.Tool{
 					"Size": map[string]any{
 						"type":        "number",
 						"description": "磁盘大小（GB），如 100",
+					},
+				},
+				"required": []string{"UHostId", "Size"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "ResizeDiskWorkflow",
+			Description: "扩已有磁盘工作流。用于把实例上已经挂载的系统盘或数据盘扩到指定目标容量。不会新建磁盘，也不支持挂载已有盘。Size 是目标容量 GB，不是新增容量；例如从 60GB 扩到 120GB 时 Size=120。扩系统盘传 DiskType=Boot；扩数据盘优先传 DiskId，实例有多块数据盘时必须传 DiskId。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要扩盘的实例 ID",
+					},
+					"DiskId": map[string]any{
+						"type":        "string",
+						"description": "要扩容的已有磁盘 ID。扩多块数据盘中的某一块时必须指定",
+					},
+					"DiskType": map[string]any{
+						"type":        "string",
+						"description": "要扩的盘类型。扩系统盘传 Boot；扩唯一数据盘可传 Data",
+						"enum":        []string{"Boot", "Data"},
+					},
+					"Size": map[string]any{
+						"type":        "number",
+						"description": "目标容量（GB），必须大于当前容量；不是新增容量",
 					},
 				},
 				"required": []string{"UHostId", "Size"},

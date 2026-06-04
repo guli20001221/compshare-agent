@@ -110,6 +110,7 @@ func IntentToolSubset(i Intent) []string {
 			"SetStopSchedulerWorkflow",
 			"CancelStopSchedulerWorkflow",
 			"ResizeInstanceWorkflow",
+			"ResizeDiskWorkflow",
 			"ReinstallInstanceWorkflow",
 			"CreateDiskWorkflow",
 			"CreateCustomImageWorkflow",

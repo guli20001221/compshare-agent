@@ -1,5 +1,9 @@
 package workflow
 
+import "errors"
+
+const createDiskMissingSizeMessage = "创建数据盘需要指定磁盘大小（GB）。请告诉我要加多大的数据盘，例如 30GB。"
+
 func CreateDiskDef() *Definition {
 	return &Definition{
 		Name:        "CreateDiskWorkflow",
@@ -18,6 +22,11 @@ func stepQueryForDisk() Step {
 		Type: StepToolCall,
 		Tool: "DescribeCompShareInstance",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			size := paramNum(wfCtx.Params, "Size", 0)
+			if size <= 0 {
+				return nil, errors.New(createDiskMissingSizeMessage)
+			}
+			wfCtx.Params["Size"] = size
 			return map[string]any{
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil

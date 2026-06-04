@@ -90,7 +90,7 @@ func TestIntentToolSubset_Recommendation(t *testing.T) {
 
 func TestIntentToolSubset_OperationLifecycle(t *testing.T) {
 	subset := IntentToolSubset(IntentOperationLifecycle)
-	require.Len(t, subset, 19)
+	require.Len(t, subset, 20)
 	assert.Contains(t, subset, "DescribeCompShareInstance")
 	assert.Contains(t, subset, "CreateInstanceWorkflow")
 	assert.Contains(t, subset, "StopInstanceWorkflow")
@@ -98,6 +98,7 @@ func TestIntentToolSubset_OperationLifecycle(t *testing.T) {
 	assert.Contains(t, subset, "ResizeInstanceWorkflow")
 	assert.Contains(t, subset, "ReinstallInstanceWorkflow")
 	assert.Contains(t, subset, "CreateDiskWorkflow")
+	assert.Contains(t, subset, "ResizeDiskWorkflow")
 	assert.Contains(t, subset, "CreateCustomImageWorkflow")
 	assert.Contains(t, subset, "GetCompShareInstanceUpgradePrice")
 	assert.NotContains(t, subset, "DiagnoseSSH")

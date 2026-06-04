@@ -40,6 +40,7 @@ func TestDeterministicWorkflowReply(t *testing.T) {
 		"CreateInstanceWorkflow",
 		"ResetPasswordWorkflow",
 		"CreateDiskWorkflow",
+		"ResizeDiskWorkflow",
 		"CreateCustomImageWorkflow",
 		"ResizeInstanceWorkflow",
 		"ReinstallInstanceWorkflow",
