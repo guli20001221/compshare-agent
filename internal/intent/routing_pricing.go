@@ -90,8 +90,15 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 		// GetCompShareInstancePrice expects MB. Convert here once at the
 		// boundary so the rendered header (which says "GB") and the API
 		// argument stay consistent.
+		// Zone is OMITTED from the price call. Live probe (pricing_probe_test.go,
+		// 2026-06-04) showed the upstream validator rejects Describe's per-GPU
+		// catalog zone (5090→cn-sh2-02, 4090→cn-bj2-03) with RetCode=230
+		// "Params [Zone] not available"; forwarding it 230s those GPUs and
+		// silently degrades the route to ReAct. Omitting Zone returns the
+		// catalog price verbatim — byte-identical to the accepted-zone price
+		// for 5090/4090/A100, a zone-uniform catalog lookup. spec.Zone is kept
+		// only for the display header below.
 		args := map[string]any{
-			"Zone":    spec.Zone,
 			"GpuType": name,
 			"Gpu":     1,
 			"Cpu":     spec.Cpu,

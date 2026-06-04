@@ -327,8 +327,76 @@ func TestHandlePricingQuery_PassesMemoryAsMBToAPI(t *testing.T) {
 			"renderer would still say 64GB but API receives wrong spec")
 	assert.Equal(t, 16, priceCall.args["Cpu"], "Cpu must pass through as-is")
 	assert.Equal(t, 1, priceCall.args["Gpu"], "Gpu default is 1")
-	assert.Equal(t, "cn-wlcb-01", priceCall.args["Zone"])
+	_, hasZone := priceCall.args["Zone"]
+	assert.False(t, hasZone,
+		"Zone must be OMITTED from the price call: Describe's per-GPU catalog "+
+			"zone is rejected by the upstream validator (RetCode=230); omitting "+
+			"Zone returns the zone-uniform catalog price (see pricing_probe_test.go)")
 	assert.Equal(t, "4090", priceCall.args["GpuType"])
+}
+
+// TestHandlePricingQuery_OmitsZoneForNonWlcbCatalogZone is the 5090 regression
+// guard, and the WHY behind dropping Zone from the price call. Describe lists
+// 5090 in a non-wlcb catalog zone (cn-sh2-02); the upstream
+// GetCompShareInstancePrice validator rejects every zone but the single Online
+// catalog zone with RetCode=230 "Params [Zone] not available" (confirmed live,
+// pricing_probe_test.go 2026-06-04). If the handler forwarded Describe's Zone,
+// 5090 pricing would 230 and the route would silently degrade to ReAct. So the
+// price call MUST omit Zone — which returns the zone-uniform catalog price. The
+// GPU is still priced (not skipped) and its real catalog zone still shows in
+// the display row.
+func TestHandlePricingQuery_OmitsZoneForNonWlcbCatalogZone(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name": "5090",
+				"Zone": "cn-sh2-02", // non-wlcb catalog zone the price API rejects
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{
+								"Cpu":    float64(16),
+								"Memory": []any{float64(96)},
+							},
+						},
+					},
+				},
+			},
+		},
+		// Flat-shape price block so renderPricingReply succeeds.
+		"Postpay": float64(3.00),
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
+		Plan:     Plan{Intent: IntentPricingQuery},
+		UserText: "5090 包月多少钱",
+	})
+
+	// The route handled it (did not fall back) and priced the 5090.
+	assert.Equal(t, "GetCompShareInstancePrice", result.ToolAction)
+	assert.Contains(t, result.Reply, "5090", "5090 must be priced, not skipped")
+
+	var priceCall *handlerExecCall
+	for i := range exec.calls {
+		if exec.calls[i].action == "GetCompShareInstancePrice" {
+			priceCall = &exec.calls[i]
+			break
+		}
+	}
+	require.NotNil(t, priceCall, "GetCompShareInstancePrice never invoked — 5090 was skipped")
+
+	// The crux: no Zone forwarded, despite Describe listing cn-sh2-02. Forwarding
+	// it would 230. Without this guard the route silently regresses to ReAct.
+	_, hasZone := priceCall.args["Zone"]
+	assert.False(t, hasZone,
+		"price call must NOT carry Zone=cn-sh2-02 (or any zone) — it 230s; "+
+			"omitting Zone yields the zone-uniform catalog price")
+
+	// The GPU's real catalog zone still surfaces in the user-facing display.
+	assert.Contains(t, result.Reply, "cn-sh2-02",
+		"display header should still show the GPU's real catalog zone")
 }
 
 // TestPricingFormatNumber covers the formatter the bill-table extractor
