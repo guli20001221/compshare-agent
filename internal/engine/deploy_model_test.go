@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -957,6 +958,54 @@ func TestTryDeployModel_HonorsUserNamedGPU(t *testing.T) {
 	require.NotNil(t, createArgs, "create must run")
 	assert.Equal(t, "A100", createArgs["GpuType"], "the user-named A100 must be honored, NOT the scene-default 4090")
 	assert.Contains(t, reply, "A100")
+}
+
+// ── deploy follow-up: a short refinement inherits the previous deploy target ──
+
+// TestExtractDeploySizedModelName pins the structured sized-model token used to
+// carry a deploy target across a follow-up: it must recognize the model SIZE
+// (normalizing spacing/suffix) and must NOT fire on a bare GPU follow-up.
+func TestExtractDeploySizedModelName(t *testing.T) {
+	assert.Equal(t, "Qwen2.5-32B", extractDeploySizedModelName("我想部署Qwen2.5 32B"))
+	assert.Equal(t, "Qwen2.5-32B", extractDeploySizedModelName("部署 Qwen2.5-32B-Instruct"))
+	assert.Equal(t, "32B", extractDeploySizedModelName("部署 32B 模型"))
+	assert.Equal(t, "", extractDeploySizedModelName("A800可以吗"), "a bare GPU follow-up has no sized model")
+	assert.Equal(t, "", extractDeploySizedModelName("帮我跑个数字人"), "no size → empty")
+}
+
+// TestTryDeployModel_FollowupGPUCarriesPreviousDeployTarget proves the multi-turn
+// fix: after "部署 Qwen2.5-32B", the short follow-up "A800可以吗" must be matched as
+// "Qwen2.5-32B on A800" — the matcher prompt inherits the earlier model AND still
+// sees the newly named GPU, so the (R4) strict-GPU path honors A800 for that model.
+func TestTryDeployModel_FollowupGPUCarriesPreviousDeployTarget(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: false})
+	client := &mockLLM{responses: []llm.ChatResponse{
+		{Content: deploySearchJSON},
+		{Content: `{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-32B","quantization":"fp16"}`},
+	}}
+	eng := NewWithDeps(client, exec, okConfirm)
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "我想部署Qwen2.5 32B"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "A100 1 卡当前库存不足，请换一个规格或稍后再试。"},
+	)
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "A800可以吗", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "A800", "the reply addresses the newly named card, not a silent fallback")
+	require.GreaterOrEqual(t, len(client.calls), 2)
+	prompt := joinedChatMessages(client.calls[0].Messages) + "\n" + joinedChatMessages(client.calls[1].Messages)
+	assert.Contains(t, prompt, "Qwen2.5-32B", "the short follow-up must inherit the previous deploy model")
+	assert.Contains(t, prompt, "A800", "the user-named GPU must still be visible to the matcher")
+}
+
+func joinedChatMessages(messages []openai.ChatCompletionMessage) string {
+	var b strings.Builder
+	for _, m := range messages {
+		b.WriteString(m.Content)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 // ── pure-helper unit tests ──

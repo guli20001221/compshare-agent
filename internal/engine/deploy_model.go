@@ -103,12 +103,17 @@ type deployPlan struct {
 func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
 	result := dispatch.result
 
+	// A short refinement follow-up ("A800可以吗" / "换上海") carries no model on its
+	// own; rehydrate it from the previous deploy target so the matcher keeps sizing
+	// the SAME model instead of treating it as a new generic deploy request.
+	effectiveUserMsg := e.effectiveDeployUserMsg(userMsg)
+
 	// (1) Match an existing image + size the GPU + pick the create-zone (TierAgent
 	// judgment + deterministic VRAM/stock arithmetic). Runs in read-only mode too —
 	// it is all read-only queries, and its output IS the advice. A zone the user
-	// named in the request (e.g. "在上海部署") is honored strictly; GPU/image the user
-	// names are honored in PR2 via planner slots.
-	plan, err := e.matchDeployImage(ctx, userMsg, extractDeployZone(userMsg), onStep)
+	// named in the request (e.g. "在上海部署") is honored strictly; a GPU the user
+	// names is honored strictly by selectDeployZoneAndGPU (extractDeployGPU).
+	plan, err := e.matchDeployImage(ctx, effectiveUserMsg, extractDeployZone(effectiveUserMsg), onStep)
 	if err != nil {
 		// A deployUserError carries a specific, actionable message (e.g. "the zone
 		// you named has no suitable in-stock card") — surface it verbatim instead of
@@ -211,6 +216,81 @@ func (e *Engine) deployReply(result intent.PlannerResult, latency time.Duration,
 		Content: reply,
 	})
 	return reply, true
+}
+
+// effectiveDeployUserMsg keeps a short deploy follow-up grounded in the previous
+// deploy target. Example: after "deploy Qwen2.5 32B", a follow-up "A800可以吗" must
+// be matched as "Qwen2.5-32B on A800", NOT as a fresh generic deploy request that
+// drops the model. It only rewrites when the current message (a) names no sized
+// model of its own, AND (b) DOES refine a GPU or zone — i.e. it reads like a
+// follow-up — and a previous turn carried a sized-model target. Otherwise it
+// returns the message unchanged, so a self-contained request is never altered.
+func (e *Engine) effectiveDeployUserMsg(userMsg string) string {
+	msg := strings.TrimSpace(userMsg)
+	if msg == "" || extractDeploySizedModelName(msg) != "" {
+		return userMsg
+	}
+	if extractDeployGPU(msg) == "" && extractDeployZone(msg) == "" {
+		return userMsg
+	}
+
+	model, zone := e.previousDeployTarget(msg)
+	if model == "" {
+		return userMsg
+	}
+
+	parts := []string{"继续部署 " + model}
+	if extractDeployZone(msg) == "" && zone != "" {
+		parts = append(parts, "沿用可用区 "+zone)
+	}
+	parts = append(parts, "用户追问："+msg)
+	return strings.Join(parts, "；")
+}
+
+// previousDeployTarget scans conversation history backward for the most recent USER
+// message that named a sized model, returning that model and any zone it named. The
+// follow-up reuses these so "A800可以吗" continues to size the earlier model. Skips
+// the current message itself (it is already in history by dispatch time).
+func (e *Engine) previousDeployTarget(currentMsg string) (model, zone string) {
+	currentMsg = strings.TrimSpace(currentMsg)
+	for i := len(e.messages) - 1; i >= 0; i-- {
+		m := e.messages[i]
+		if m.Role != openai.ChatMessageRoleUser {
+			continue
+		}
+		content := strings.TrimSpace(m.Content)
+		if content == "" || content == currentMsg {
+			continue
+		}
+		if target := extractDeploySizedModelName(content); target != "" {
+			return target, extractDeployZone(content)
+		}
+	}
+	return "", ""
+}
+
+// deploySizedModelRE matches a parameter-sized model mention ("Qwen2.5-32B",
+// "32B", "Llama3 70B") — an optional name prefix followed by a number and a 'B'
+// (billions of params) on a word boundary. Deterministic (Rule 5: a structured
+// token, no LLM needed). It is intentionally loose on the prefix so it recognizes
+// the size even when the family name varies; the size is the part the GPU sizer
+// needs to carry across a follow-up.
+var deploySizedModelRE = regexp.MustCompile(`(?i)([a-z][a-z0-9._/-]*?)?\s*[-_ ]?\s*(\d+(?:\.\d+)?)\s*b\b`)
+
+// extractDeploySizedModelName returns the first parameter-sized model name in text,
+// normalized ("Qwen2.5 32B" → "Qwen2.5-32B"; "32B 模型" → "32B"), or "" if none.
+func extractDeploySizedModelName(text string) string {
+	matches := deploySizedModelRE.FindAllStringSubmatch(strings.TrimSpace(text), -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	m := matches[0]
+	prefix := strings.Trim(m[1], "-_/. ")
+	size := strings.ToUpper(strings.TrimSpace(m[2]) + "B")
+	if prefix == "" {
+		return size
+	}
+	return prefix + "-" + size
 }
 
 // matchDeployImage queries the live image catalog, asks the TierAgent model to
