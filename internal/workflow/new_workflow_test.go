@@ -171,6 +171,8 @@ func TestResizeDisk_SystemDiskHappyPath(t *testing.T) {
 	assert.Equal(t, "uhost-test", priceCall.args["UHostId"])
 	assert.Equal(t, "udisk-boot", priceCall.args["DiskId"])
 	assert.Equal(t, float64(120), priceCall.args["DiskSpace"])
+	assert.Equal(t, "cn-sh2-02", priceCall.args["Zone"])
+	assert.Equal(t, "cn-sh2", priceCall.args["Region"])
 	assert.Equal(t, "uhost-test", resizeCall.args["UHostId"])
 	assert.Equal(t, "udisk-boot", resizeCall.args["UDiskId"])
 	assert.Equal(t, float64(120), resizeCall.args["Size"])
