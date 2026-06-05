@@ -8,7 +8,10 @@ import (
 
 const (
 	// 2026-06-05: workflow and diagnosis catalogs are generated from registries.
-	mutatingReActPromptSHA256 = "e21b6aeffb52c65861fc3e7889aca8d35770a71feb5e1ed025261ad96db56670"
+	// 2026-06-05 (remediation): operation boundary / state-refresh / no-pretext /
+	// vague-failure rules now single-sourced from cards.go (shared with the
+	// flag-on cards), so the rule text lives in one place. SHA updated to match.
+	mutatingReActPromptSHA256 = "af685e87dad469f05e50418c7d8d724f01c32f02125b632656f1b23191cc8cb4"
 	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
 	readOnlyReActPromptSHA256 = "5aae720ff488add4eb47c22379bfed6b8746c1ff80bd62594098e43b622ff55b"
 )

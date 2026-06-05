@@ -65,3 +65,49 @@ func TestRenderIntentScopedReActCard_OperationPreservesImageSelectionRules(t *te
 		}
 	}
 }
+
+// TestRenderIntentScopedReActCard_NeverEmptyFallback covers the flag-on empty/
+// unknown intent gap: the slim base prompt promises a card will be injected this
+// turn, and the engine only inserts non-empty cards. The planner can also jitter
+// a real on-platform operation to "unknown". So every intent — including unknown,
+// empty, and uncovered values — must yield a non-empty conservative card.
+func TestRenderIntentScopedReActCard_NeverEmptyFallback(t *testing.T) {
+	for _, in := range []intent.Intent{
+		intent.IntentUnknown,
+		intent.Intent(""),
+		intent.Intent("some_unmapped_future_intent"),
+	} {
+		card := RenderIntentScopedReActCard(in, true)
+		if strings.TrimSpace(card) == "" {
+			t.Fatalf("intent %q produced an empty card; flag-on base promises a card every turn", in)
+		}
+		for _, text := range []string{"兜底", "Workflow", "Diagnose", "范围边界拒答"} {
+			if !strings.Contains(card, text) {
+				t.Fatalf("fallback card for intent %q missing %q:\n%s", in, text, card)
+			}
+		}
+	}
+}
+
+// TestOperationBoundaryRules_SingleSource proves the operation boundary rules are
+// rendered from one source into BOTH the full flag-off prompt and the flag-on
+// operation card, so editing operationBoundaryRuleLines updates both and the two
+// paths cannot drift.
+func TestOperationBoundaryRules_SingleSource(t *testing.T) {
+	fullOff := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
+	cardOn := RenderIntentScopedReActCard(intent.IntentOperationLifecycle, true)
+	for _, line := range operationBoundaryRuleLines() {
+		if !strings.Contains(fullOff, line) {
+			t.Fatalf("flag-off full prompt missing single-sourced operation rule:\n%s", line)
+		}
+		if !strings.Contains(cardOn, line) {
+			t.Fatalf("flag-on operation card missing single-sourced operation rule:\n%s", line)
+		}
+	}
+	// State-refresh and vague-failure shared fragments must also appear in both.
+	for _, frag := range []string{sharedStateRefreshBeforeMutationRule, sharedVagueFailureRule} {
+		if !strings.Contains(fullOff, frag) {
+			t.Fatalf("flag-off full prompt missing shared fragment:\n%s", frag)
+		}
+	}
+}
