@@ -167,12 +167,32 @@ foreach ($case in $cases) {
             if ($actions -contains [string]$forbid) { $forbiddenActionHits += [string]$forbid }
         }
     }
-    $intentOK = $true
+    # Intent label is OBSERVED, not gated. ds-v4-flash classifies clear operation
+    # commands as "unknown" ~40-60% of the time, but unknown is not a refuse path:
+    # it falls through to ReAct, which still selects the correct *Workflow tool
+    # (verified 10/10 on shutdown). Gating on the label made the goldens flaky on a
+    # signal that does not affect execution. We gate on actual behavior (tool
+    # actions); the intent mismatch is recorded for visibility only.
+    $intentMismatch = $false
     if ($case.expect_intent) {
-        $intentOK = ($intent -eq [string]$case.expect_intent)
+        $intentMismatch = ($intent -ne [string]$case.expect_intent)
     }
-    $pass = $intentOK -and ($schemaInvalid -eq 0) -and ($escaped -eq 0) -and
+    # Positive behavior assertion: when a case names allowed_actions, at least one
+    # must actually have been selected. This catches the genuinely dangerous flip
+    # (a write request misrouted onto a deterministic read handler never reaches
+    # ReAct, so the expected *Workflow tool is never called) while ignoring benign
+    # unknown<->operation_lifecycle label jitter.
+    $allowedActionMiss = $false
+    if ($case.allowed_actions) {
+        $hit = $false
+        foreach ($allow in $case.allowed_actions) {
+            if ($actions -contains [string]$allow) { $hit = $true; break }
+        }
+        $allowedActionMiss = (-not $hit)
+    }
+    $pass = ($schemaInvalid -eq 0) -and ($escaped -eq 0) -and
         ($forbiddenIntentHits.Count -eq 0) -and ($forbiddenActionHits.Count -eq 0) -and
+        (-not $allowedActionMiss) -and
         ($plannerRecords.Count -gt 0)
     $result = [PSCustomObject]@{
         id = [string]$case.id
@@ -189,6 +209,8 @@ foreach ($case in $cases) {
         total_tokens = $totalTokens
         forbidden_intent_hits = $forbiddenIntentHits
         forbidden_action_hits = $forbiddenActionHits
+        allowed_action_miss = $allowedActionMiss
+        intent_mismatch_observed = $intentMismatch
         mutating_case = [bool]$case.mutating_case
         trace_dir = $caseDir
         pass = $pass
