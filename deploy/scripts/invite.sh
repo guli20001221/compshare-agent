@@ -31,6 +31,17 @@ fi
 # Destructive actions (delete / L2) stay refused even when this is 1.
 MUTATING_TOOLS="${COMPSHARE_ENABLE_MUTATING_TOOLS:-0}"
 
+# Context-engineering optimizations. Shipped ON via .env.example by deliberate
+# decision; the Go code default stays off, so they only take effect because they are
+# forwarded here (same plumbing reason as the write-ops switch above). Default to 1
+# so a fresh env file still ships them on. Structured-output is plumbed but defaults
+# off (no measured benefit on ds-v4-flash) — set PLANNER_STRUCTURED_OUTPUT=json_object
+# in the env file to enable once validated.
+SESSION_FACT_CONTEXT="${USE_SESSION_FACT_CONTEXT:-1}"
+REACT_RESULT_PROJECTION="${USE_REACT_RESULT_PROJECTION:-1}"
+REACT_HISTORY_COMPACTION="${USE_REACT_HISTORY_COMPACTION:-1}"
+PLANNER_STRUCTURED_OUTPUT_MODE="${PLANNER_STRUCTURED_OUTPUT:-}"
+
 ally invite compshare-agent \
     --app-bin "$APP_DIR/compshare-agent" \
     --app-pwd "$APP_DIR" \
@@ -40,6 +51,10 @@ ally invite compshare-agent \
     --app-env "COMPSHARE_DEFAULT_ROLE_URN=$COMPSHARE_DEFAULT_ROLE_URN" \
     --app-env "MYSQL_DSN=$MYSQL_DSN" \
     --app-env "COMPSHARE_ENABLE_MUTATING_TOOLS=$MUTATING_TOOLS" \
+    --app-env "USE_SESSION_FACT_CONTEXT=$SESSION_FACT_CONTEXT" \
+    --app-env "USE_REACT_RESULT_PROJECTION=$REACT_RESULT_PROJECTION" \
+    --app-env "USE_REACT_HISTORY_COMPACTION=$REACT_HISTORY_COMPACTION" \
+    --app-env "PLANNER_STRUCTURED_OUTPUT=$PLANNER_STRUCTURED_OUTPUT_MODE" \
     -- server \
     --config "$CONFIG_FILE" \
     --addr "$ADDR"

@@ -67,6 +67,10 @@ Behavior is gated by env vars read in `cmd/trace.go` and `cmd/agent.go`. The def
 | `RAG_HYBRID_ENABLED` | `1` | Legacy switch; only consulted when `RAG_RETRIEVAL_MODE` is unset. |
 | `USE_GROUNDED_RENDERER` | `llm` (default), `off` | Routes final reply through `internal/renderer.GroundedRenderer`. |
 | `COMPSHARE_TRACE_ENABLED` | `1` | Writes per-turn JSONL traces to `COMPSHARE_TRACE_DIR`. |
+| `USE_SESSION_FACT_CONTEXT` | `1` | Injects a near-term fact cache (recent instance state, ~30s TTL) into context. Server-only wiring. **Go code default off; deploy template ships it on** (`.env.example`=1 + `invite.sh` forwards). |
+| `USE_REACT_RESULT_PROJECTION` | `1` | Compresses large read tool results (list endpoints) before re-feeding ReAct. **Go code default off; deploy template ships it on.** |
+| `USE_REACT_HISTORY_COMPACTION` | `1` | Summarizes old turns once history exceeds the window. **Go code default off; deploy template ships it on.** |
+| `PLANNER_STRUCTURED_OUTPUT` | `json_object` | Forces the planner to emit via `response_format` JSON. **Plumbed through `invite.sh` but shipped OFF** — a live ds-v4-flash A/B showed no schema-valid improvement; enable only after the planner-core eval validates it. |
 | `MYSQL_DSN` | DSN string | Required by `compshare-agent server`; ignored by `compshare-agent cli`. |
 | `COMPSHARE_SERVICE_PUBLIC_KEY` | AK string | Service long-term public key for STS `AssumeRole`. Required when `agent.sts` is configured. |
 | `COMPSHARE_SERVICE_PRIVATE_KEY` | SK string | Service long-term private key for STS `AssumeRole`. Required when `agent.sts` is configured. |
