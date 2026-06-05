@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -197,6 +198,153 @@ func TestSTSProviderEmptyRoleUrnErrors(t *testing.T) {
 	_, err := provider.Get(ctx)
 	if err == nil {
 		t.Fatal("expected error when RoleUrn is empty")
+	}
+}
+
+// fakeBootstrapper records calls and lets tests opt in to failure/success.
+type fakeBootstrapper struct {
+	mu     sync.Mutex
+	calls  []uint32
+	err    error
+	onCall func()
+}
+
+func (f *fakeBootstrapper) Bootstrap(ctx context.Context, companyID uint32) error {
+	f.mu.Lock()
+	f.calls = append(f.calls, companyID)
+	cb := f.onCall
+	err := f.err
+	f.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
+	return err
+}
+
+func (f *fakeBootstrapper) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func TestSTSProviderRecoversFromRoleNotExist(t *testing.T) {
+	expiration := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	var stsCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := stsCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			// First call: simulate RoleNotExist.
+			_, _ = w.Write([]byte(`{"RetCode":11277,"Message":"Role not exist"}`))
+			return
+		}
+		_, _ = w.Write(fakeSTSResponse("tmp-ak", "tmp-sk", "tmp-token", expiration))
+	}))
+	defer srv.Close()
+
+	boot := &fakeBootstrapper{}
+	provider := NewSTSProvider("svc-ak", "svc-sk", srv.URL, WithRoleBootstrapper(boot))
+	u := UserContext{
+		TopOrganizationID: 42,
+		OrganizationID:    99,
+		RoleUrn:           "ucs:iam::42:role/ucs-service-role/ServiceRoleForCompshare",
+	}
+	cred, err := provider.Get(WithUser(context.Background(), u))
+	if err != nil {
+		t.Fatalf("Get err = %v, want nil after bootstrap recovery", err)
+	}
+	if cred.AccessKeyId != "tmp-ak" {
+		t.Errorf("AccessKeyId = %q", cred.AccessKeyId)
+	}
+	if got := boot.callCount(); got != 1 {
+		t.Errorf("Bootstrap calls = %d, want 1", got)
+	}
+	if got := stsCalls.Load(); got != 2 {
+		t.Errorf("STS calls = %d, want 2 (initial + retry)", got)
+	}
+}
+
+func TestSTSProviderReturnsOriginalErrorWhenBootstrapFails(t *testing.T) {
+	var stsCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stsCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode":11277,"Message":"Role not exist"}`))
+	}))
+	defer srv.Close()
+
+	boot := &fakeBootstrapper{err: errors.New("denied")}
+	provider := NewSTSProvider("svc-ak", "svc-sk", srv.URL, WithRoleBootstrapper(boot))
+	u := UserContext{
+		TopOrganizationID: 42,
+		OrganizationID:    99,
+		RoleUrn:           "ucs:iam::42:role/ucs-service-role/ServiceRoleForCompshare",
+	}
+	_, err := provider.Get(WithUser(context.Background(), u))
+	if err == nil {
+		t.Fatal("expected RoleNotExist error to surface when bootstrap fails")
+	}
+	if !IsRoleNotExist(err) {
+		t.Errorf("IsRoleNotExist(err) = false, want true (err=%v)", err)
+	}
+	if !strings.Contains(err.Error(), "auto-provision via UAccount failed") {
+		t.Errorf("err should include bootstrap-failure context, got %v", err)
+	}
+	if got := boot.callCount(); got != 1 {
+		t.Errorf("Bootstrap calls = %d, want 1", got)
+	}
+	if got := stsCalls.Load(); got != 1 {
+		t.Errorf("STS calls = %d, want 1 (no retry when bootstrap fails)", got)
+	}
+}
+
+func TestSTSProviderSkipsBootstrapWhenNotConfigured(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode":11277,"Message":"Role not exist"}`))
+	}))
+	defer srv.Close()
+
+	provider := NewSTSProvider("svc-ak", "svc-sk", srv.URL) // no bootstrapper
+	u := UserContext{
+		TopOrganizationID: 42,
+		OrganizationID:    99,
+		RoleUrn:           "ucs:iam::42:role/ucs-service-role/ServiceRoleForCompshare",
+	}
+	_, err := provider.Get(WithUser(context.Background(), u))
+	if !IsRoleNotExist(err) {
+		t.Fatalf("err = %v, want IsRoleNotExist true", err)
+	}
+	if !strings.Contains(err.Error(), "auto-provision not configured") {
+		t.Errorf("err should hint at missing iam_url, got %v", err)
+	}
+}
+
+func TestSTSProviderDoesNotRetryOnOtherErrors(t *testing.T) {
+	var stsCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stsCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode":292,"Message":"Project not exists"}`))
+	}))
+	defer srv.Close()
+
+	boot := &fakeBootstrapper{}
+	provider := NewSTSProvider("svc-ak", "svc-sk", srv.URL, WithRoleBootstrapper(boot))
+	u := UserContext{
+		TopOrganizationID: 42,
+		OrganizationID:    99,
+		RoleUrn:           "ucs:iam::42:role/ucs-service-role/ServiceRoleForCompshare",
+	}
+	_, err := provider.Get(WithUser(context.Background(), u))
+	if err == nil || IsRoleNotExist(err) {
+		t.Fatalf("err = %v, want non-RoleNotExist error", err)
+	}
+	if got := boot.callCount(); got != 0 {
+		t.Errorf("Bootstrap calls = %d, want 0 for non-11277 error", got)
+	}
+	if got := stsCalls.Load(); got != 1 {
+		t.Errorf("STS calls = %d, want 1 (no retry for non-RoleNotExist)", got)
 	}
 }
 

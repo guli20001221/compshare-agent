@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,30 @@ import (
 	"sync"
 	"time"
 )
+
+// stsRetCodeRoleNotExist is the UCloud STS error code returned by AssumeRole
+// when the requested RoleUrn does not exist in the target company. We treat
+// this as the trigger for the service-linked role bootstrap path: the role is
+// created on demand, then AssumeRole is retried once.
+const stsRetCodeRoleNotExist = 11277
+
+// AssumeRoleError is returned by STSProvider when the STS service responds with
+// a non-zero RetCode. Callers (including STSProvider's own recovery path) can
+// use errors.As to inspect the RetCode without parsing the error string.
+type AssumeRoleError struct {
+	RetCode int
+	Message string
+}
+
+func (e *AssumeRoleError) Error() string {
+	return fmt.Sprintf("AssumeRole RetCode=%d: %s", e.RetCode, e.Message)
+}
+
+// IsRoleNotExist reports whether err is an AssumeRoleError with RetCode 11277.
+func IsRoleNotExist(err error) bool {
+	var are *AssumeRoleError
+	return errors.As(err, &are) && are.RetCode == stsRetCodeRoleNotExist
+}
 
 // Credentials holds temporary STS credentials returned by AssumeRole.
 type Credentials struct {
@@ -54,6 +79,16 @@ func WithRefreshBefore(d time.Duration) STSOption {
 	}
 }
 
+// WithRoleBootstrapper installs a RoleBootstrapper that recovers from
+// AssumeRole RetCode=11277 (RoleNotExist) by provisioning the per-tenant role
+// on demand and retrying AssumeRole once. When unset, RoleNotExist errors are
+// returned to the caller unchanged.
+func WithRoleBootstrapper(b RoleBootstrapper) STSOption {
+	return func(p *STSProvider) {
+		p.bootstrapper = b
+	}
+}
+
 // STSProvider calls the UCloud STS AssumeRole API to obtain temporary
 // credentials. Credentials are cached per RoleUrn and refreshed proactively
 // before expiry. Concurrent requests for the same RoleUrn are deduplicated.
@@ -62,6 +97,7 @@ type STSProvider struct {
 	httpClient                   *http.Client
 	refreshBefore                time.Duration
 	durationSeconds              int
+	bootstrapper                 RoleBootstrapper
 
 	mu       sync.Mutex
 	cache    map[string]*Credentials
@@ -131,6 +167,26 @@ func (p *STSProvider) Get(ctx context.Context) (*Credentials, error) {
 	}()
 
 	cred, assumeErr = p.assumeRole(ctx, u)
+	if assumeErr != nil && IsRoleNotExist(assumeErr) && u.TopOrganizationID != 0 {
+		// Recovery: provision the service-linked role on demand and retry once.
+		// Surface bootstrap state in the returned error so operators can tell
+		// "auto-provision not configured" / "auto-provision tried, failed"
+		// / "auto-provision succeeded, still failed" apart in trace logs.
+		switch {
+		case p.bootstrapper == nil:
+			assumeErr = fmt.Errorf("%w (auto-provision not configured: set agent.sts.iam_url to enable)", assumeErr)
+		default:
+			bErr := p.bootstrapper.Bootstrap(ctx, u.TopOrganizationID)
+			if bErr != nil {
+				assumeErr = fmt.Errorf("%w (auto-provision via UAccount failed for company=%d: %v)", assumeErr, u.TopOrganizationID, bErr)
+			} else {
+				cred, assumeErr = p.assumeRole(ctx, u)
+				if assumeErr != nil {
+					assumeErr = fmt.Errorf("%w (retry after successful service-linked role bootstrap for company=%d still failed)", assumeErr, u.TopOrganizationID)
+				}
+			}
+		}
+	}
 	return cred, assumeErr
 }
 
@@ -169,7 +225,7 @@ func (p *STSProvider) assumeRole(ctx context.Context, u UserContext) (*Credentia
 		return nil, fmt.Errorf("AssumeRole parse: %w", err)
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("AssumeRole RetCode=%d: %s", resp.RetCode, resp.Message)
+		return nil, &AssumeRoleError{RetCode: resp.RetCode, Message: resp.Message}
 	}
 
 	exp, err := time.Parse(time.RFC3339, resp.Credentials.Expiration)

@@ -145,3 +145,14 @@ agent:
     default_session_name: "agent-cli"
     duration_seconds: 3600
     refresh_before: "5m"
+    # iam_url: internal UCloud API gateway used to auto-provision the
+    # ServiceRoleForCompshare service-linked role per tenant when the STS
+    # AssumeRole call returns RoleNotExist (11277). Without this, every new
+    # tenant has to be onboarded manually in IAM before they can use the
+    # service. Reachable only from the UCloud private network — the gateway
+    # routes by the request body's Backend field (UAccount), so the path is
+    # just "/". Same endpoint used by uhost-extension's stop_scheduler.
+    #   prod    : http://internal.api.ucloud.cn
+    #   test03  : http://internal-api-test03.service.ucloud.cn
+    # Leave empty to disable the bootstrap (RoleNotExist surfaces as-is).
+    iam_url: "http://internal.api.ucloud.cn"
