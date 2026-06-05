@@ -157,11 +157,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS value %q\n", value)
 	}
 	engine.SetSkillExecutorDiagnosisPilots(diagnosisPilots)
-	cutoverIntents, unknownCutoverValues := intentPlannerCutoverIntentsFromEnv(os.Getenv)
-	for _, value := range unknownCutoverValues {
+	routeIntents, unknownRouteValues := intentPlannerRouteIntentsFromEnv(os.Getenv)
+	for _, value := range unknownRouteValues {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_INTENT_PLANNER_FOR value %q\n", value)
 	}
-	cutoverEnabled := len(cutoverIntents) > 0
+	routeEnabled := len(routeIntents) > 0
 	shadowEnabled := intentPlannerShadowEnabled(os.Getenv)
 	knowledgeRetrievalRequested, unknownKnowledgeRetrieval := knowledgeRetrievalModeFromEnv(os.Getenv)
 	if unknownKnowledgeRetrieval != "" {
@@ -191,10 +191,10 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	if unknownPlannerStructuredOutput != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown PLANNER_STRUCTURED_OUTPUT value %q\n", unknownPlannerStructuredOutput)
 	}
-	plannerDispatchEnabled := cutoverEnabled || knowledgeRetrievalEnabled
+	plannerDispatchEnabled := routeEnabled || knowledgeRetrievalEnabled
 	if plannerDispatchEnabled {
 		eng.SetIntentPlanner(newCLIPlannerWithStructuredOutput(cfg, plannerStructuredOutput), engine.IntentPlannerOptions{
-			EnabledIntents: cutoverIntents,
+			EnabledIntents: routeIntents,
 			Model:          cfg.Agent.LLM.Model,
 		})
 	}
@@ -232,7 +232,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	fmt.Println("╭──────────────────────────────────────╮")
 	fmt.Println("│     Compshare Copilot v0.1           │")
 	fmt.Println("╰──────────────────────────────────────╯")
-	fmt.Printf("runtime: %s\n", plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled, cutoverIntents))
+	fmt.Printf("runtime: %s\n", plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled, routeIntents))
 	fmt.Printf("renderer: %s\n", groundedRendererRuntimeLine(groundedRendererMode))
 	fmt.Printf("tools: %s\n", mutatingToolsRuntimeLine(mutatingToolsEnabled))
 	fmt.Println()
@@ -242,7 +242,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	initStart := time.Now()
 	if traceEnabled {
 		initTraceRecorder = newCLITraceRecorder(traceWriter, "", 0, "init_context", initStart)
-		initTraceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled, cutoverIntents))
+		initTraceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled, routeIntents))
 		initTraceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 		eng.SetRateLimitObserver(initTraceRecorder.SetRateLimitDecision)
 	}
@@ -302,7 +302,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		eng.SetTokenUsageObserver(nil)
 		if traceEnabled {
 			traceRecorder = newCLITraceRecorder(traceWriter, "", turnIndex, input, turnStart)
-			traceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled, cutoverIntents))
+			traceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled, routeIntents))
 			traceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)
 			eng.SetHardBlockObserver(traceRecorder.SetEngineHardBlock)

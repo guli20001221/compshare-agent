@@ -142,7 +142,7 @@ func TestSharedDeps_NoMutatingSetterLeakage(t *testing.T) {
 var nonAuditableFields = map[string]string{
 	"IntentPlannerModel":             "string — no methods",
 	"IntentPlannerEnabledIntents":    "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
-	"IntentCutoverIntents":           "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
+	"IntentRouteIntents":             "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
 	"GroundedRendererModel":          "string — no methods",
 	"FastTemplateRenderer":           "bool — no methods",
 	"SupportsObjectToolChoice":       "bool — no methods",

@@ -3310,7 +3310,7 @@ func TestPlannerDiagnosisMissingTargetWithMultipleInstancesAsksWhichInstance(t *
 	assert.Empty(t, mock.calls, "diagnosis clarification should not enter ReAct")
 	require.Len(t, planner.calls, 1)
 	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.CutoverStatusFallbackUnresolvedTarget), plannerTraces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusFallbackUnresolvedTarget), plannerTraces[0].RouteStatus)
 }
 
 func TestPlannerVagueFailureAsksForInstanceAndSymptom(t *testing.T) {
@@ -3384,7 +3384,7 @@ func TestPlannerDiagnosisClarificationDoesNotRequireEnabledIntent(t *testing.T) 
 	assert.Empty(t, mock.calls, "no-target diagnosis must ask before entering ReAct")
 	require.Len(t, planner.calls, 1)
 	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.CutoverStatusFallbackUnresolvedTarget), plannerTraces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusFallbackUnresolvedTarget), plannerTraces[0].RouteStatus)
 }
 
 func TestPlannerVagueFailureClarificationRequiresEnabledIntent(t *testing.T) {
@@ -3415,7 +3415,7 @@ func TestPlannerVagueFailureClarificationRequiresEnabledIntent(t *testing.T) {
 	require.Len(t, mock.calls, 1)
 	require.Len(t, planner.calls, 1)
 	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.CutoverStatusFallbackIneligible), plannerTraces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusFallbackIneligible), plannerTraces[0].RouteStatus)
 }
 
 func TestDiagnosisFinalReplyRedactsOperationalTokensBeforeStreaming(t *testing.T) {
@@ -3491,7 +3491,7 @@ func TestStage2BRetrievalHitUsesLLMWithoutTools(t *testing.T) {
 	assert.Equal(t, "why do stopped instances still bill", retriever.calls[0].question)
 	assert.Equal(t, "billing_rule", retriever.calls[0].productArea, "engine must infer product area without relying on planner Scope")
 	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.CutoverStatusDispatchedRetrieval), plannerTraces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusDispatchedRetrieval), plannerTraces[0].RouteStatus)
 	require.Len(t, retrievalTraces, 1)
 	assert.True(t, retrievalTraces[0].Enabled)
 	assert.Equal(t, "kb.v1", retrievalTraces[0].KBVersion)
@@ -4016,7 +4016,7 @@ func TestStage2BRetrievalMissReturnsFixedReply(t *testing.T) {
 	assert.Equal(t, ragNoEvidenceReply, reply)
 	assert.Empty(t, mock.calls, "knowledge retrieval miss is handled by fixed reply, not ReAct")
 	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.CutoverStatusFallbackRetrievalMiss), plannerTraces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusFallbackRetrievalMiss), plannerTraces[0].RouteStatus)
 	require.Len(t, retrievalTraces, 1)
 	assert.True(t, retrievalTraces[0].Enabled)
 	assert.Equal(t, "kb.v1", retrievalTraces[0].KBVersion)
@@ -4062,7 +4062,7 @@ func TestStage2BRetrievalIgnoresPlannerRetrievalFlag(t *testing.T) {
 	require.Len(t, retriever.calls, 1)
 	assert.Equal(t, "image", retriever.calls[0].productArea)
 	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.CutoverStatusDispatchedRetrieval), plannerTraces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusDispatchedRetrieval), plannerTraces[0].RouteStatus)
 }
 
 func TestStage2BRetrievalDisabledFallsBackToReAct(t *testing.T) {
@@ -4085,10 +4085,10 @@ func TestStage2BRetrievalDisabledFallsBackToReAct(t *testing.T) {
 	assert.Equal(t, "react fallback", reply)
 	assert.Len(t, mock.calls, 1)
 	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.CutoverStatusFallbackRetrievalDisabled), plannerTraces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusFallbackRetrievalDisabled), plannerTraces[0].RouteStatus)
 }
 
-func TestDefaultRouteCutoverDoesNotSwallowKnowledgeQA(t *testing.T) {
+func TestDefaultRouteRouteDoesNotSwallowKnowledgeQA(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(true)}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ordinary knowledge fallback"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
@@ -4119,14 +4119,14 @@ func TestDefaultRouteCutoverDoesNotSwallowKnowledgeQA(t *testing.T) {
 	assert.Equal(t, "ordinary knowledge fallback", reply)
 	require.Len(t, mock.calls, 1)
 	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.CutoverStatusFallbackRetrievalDisabled), plannerTraces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusFallbackRetrievalDisabled), plannerTraces[0].RouteStatus)
 }
 
 func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T) {
 	cases := []struct {
 		name       string
 		mutatePlan func(*intent.Plan)
-		wantStatus intent.CutoverStatus
+		wantStatus intent.RouteStatus
 	}{
 		// PR #61 (2026-05-21): the "hard block hint" case was removed —
 		// HardBlockHint is now advisory only and does NOT short-circuit
@@ -4137,7 +4137,7 @@ func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T
 			mutatePlan: func(plan *intent.Plan) {
 				plan.Confidence = 0.3
 			},
-			wantStatus: intent.CutoverStatusFallbackLowConfidence,
+			wantStatus: intent.RouteStatusFallbackLowConfidence,
 		},
 	}
 	for _, tc := range cases {
@@ -4175,7 +4175,7 @@ func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T
 			assert.Equal(t, ragNoEvidenceReply, reply)
 			assert.Empty(t, retriever.calls)
 			require.Len(t, plannerTraces, 1)
-			assert.Equal(t, string(tc.wantStatus), plannerTraces[0].CutoverStatus)
+			assert.Equal(t, string(tc.wantStatus), plannerTraces[0].RouteStatus)
 			require.Len(t, hardBlocks, 1)
 			assert.Equal(t, "cited_contract_violation", hardBlocks[0].Category)
 			assert.True(t, hardBlocks[0].Hit)
@@ -4474,7 +4474,7 @@ func TestStage2BFinanceRealtimeHardBlockPrecedesPlanner(t *testing.T) {
 	}
 }
 
-func TestStage2BAndPhase1CutoverShareSinglePlannerCall(t *testing.T) {
+func TestStage2BAndRouteDispatchShareSinglePlannerCall(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
@@ -4511,7 +4511,7 @@ func TestStage2BAndPhase1CutoverShareSinglePlannerCall(t *testing.T) {
 	// as the single planner-call owner for this turn.
 }
 
-func TestPhase1CutoverGateUnsetDoesNotCallPlanner(t *testing.T) {
+func TestRouteDispatchGateUnsetDoesNotCallPlanner(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
@@ -4528,7 +4528,7 @@ func TestPhase1CutoverGateUnsetDoesNotCallPlanner(t *testing.T) {
 	assert.Len(t, mock.calls, 1)
 }
 
-func TestPhase1CutoverHardBlockPrecedesPlanner(t *testing.T) {
+func TestRouteDispatchHardBlockPrecedesPlanner(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
@@ -4546,7 +4546,7 @@ func TestPhase1CutoverHardBlockPrecedesPlanner(t *testing.T) {
 	assert.Empty(t, mock.calls)
 }
 
-func TestPhase1CutoverResourcePlanBypassesReAct(t *testing.T) {
+func TestRouteDispatchResourcePlanBypassesReAct(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -4574,13 +4574,13 @@ func TestPhase1CutoverResourcePlanBypassesReAct(t *testing.T) {
 	require.Len(t, planner.calls, 1)
 	assert.NotNil(t, planner.calls[0].Resolver)
 	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.CutoverStatusDispatched), plannerTraces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusDispatched), plannerTraces[0].RouteStatus)
 	require.Len(t, *events, 2)
 	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[0].Source)
 	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[1].Source)
 }
 
-func TestPhase1CutoverResourcePlanUsesGroundedRenderer(t *testing.T) {
+func TestRouteDispatchResourcePlanUsesGroundedRenderer(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -4621,7 +4621,7 @@ func TestPhase1CutoverResourcePlanUsesGroundedRenderer(t *testing.T) {
 	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, rendererTraces[0].InputEnvelopeHashes[0])
 }
 
-func TestPhase1CutoverGPUSpecsPlanUsesGroundedRenderer(t *testing.T) {
+func TestRouteDispatchGPUSpecsPlanUsesGroundedRenderer(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1GPUSpecsPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -4781,7 +4781,7 @@ func TestFastTemplateKeepsLLMRendererForKnowledgeTier(t *testing.T) {
 	assert.Equal(t, "resource_info", rendererTraces[0].EnvelopeKind)
 }
 
-func TestPhase1CutoverResourceFilterPlanSendsFilteredEnvelopeToRenderer(t *testing.T) {
+func TestRouteDispatchResourceFilterPlanSendsFilteredEnvelopeToRenderer(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourceFilterPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -4823,7 +4823,7 @@ func TestPhase1CutoverResourceFilterPlanSendsFilteredEnvelopeToRenderer(t *testi
 	assertEngineComputedFact(t, env, "total_count", "3")
 }
 
-func TestPhase1CutoverGroundedRendererFallbackUsesDeterministicReply(t *testing.T) {
+func TestRouteDispatchGroundedRendererFallbackUsesDeterministicReply(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -4860,7 +4860,7 @@ func TestPhase1CutoverGroundedRendererFallbackUsesDeterministicReply(t *testing.
 	assert.Equal(t, grounded.FallbackValidationFailed, rendererTraces[0].FallbackReason)
 }
 
-func TestPhase1CutoverGroundedRendererRateLimitDenialUsesDeterministicReply(t *testing.T) {
+func TestRouteDispatchGroundedRendererRateLimitDenialUsesDeterministicReply(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -4901,7 +4901,7 @@ func TestPhase1CutoverGroundedRendererRateLimitDenialUsesDeterministicReply(t *t
 	assert.Equal(t, grounded.FallbackRateLimited, rendererTraces[0].FallbackReason)
 }
 
-func TestPhase1CutoverMonitorPlanBypassesReAct(t *testing.T) {
+func TestRouteDispatchMonitorPlanBypassesReAct(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -4938,7 +4938,7 @@ func TestPhase1CutoverMonitorPlanBypassesReAct(t *testing.T) {
 	assert.NotEmpty(t, (*events)[1].RendererInputToolArgHashes)
 }
 
-func TestPhase1CutoverMonitorTodayWindowReturnsFixedReplyWithoutReAct(t *testing.T) {
+func TestRouteDispatchMonitorTodayWindowReturnsFixedReplyWithoutReAct(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorTodayPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{}
@@ -4961,7 +4961,7 @@ func TestPhase1CutoverMonitorTodayWindowReturnsFixedReplyWithoutReAct(t *testing
 	assert.Empty(t, mock.calls, "non-current monitor window must not fall back to ReAct")
 	assert.Empty(t, executor.calls, "non-current monitor window must not call monitor as current data")
 	require.Len(t, traces, 1)
-	assert.Equal(t, string(intent.CutoverStatusFallbackTimeWindow), traces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusFallbackTimeWindow), traces[0].RouteStatus)
 }
 
 func TestPlannerMonitorHistoryReturnsFixedReplyWithoutReAct(t *testing.T) {
@@ -4986,10 +4986,10 @@ func TestPlannerMonitorHistoryReturnsFixedReplyWithoutReAct(t *testing.T) {
 	assert.Empty(t, mock.calls, "historical monitor planner output must not fall back to ReAct")
 	assert.Empty(t, executor.calls)
 	require.Len(t, traces, 1)
-	assert.Equal(t, string(intent.CutoverStatusFallbackTimeWindow), traces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusFallbackTimeWindow), traces[0].RouteStatus)
 }
 
-func TestPhase1CutoverMonitorMissingTargetReturnsResourceSelection(t *testing.T) {
+func TestRouteDispatchMonitorMissingTargetReturnsResourceSelection(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -5020,10 +5020,10 @@ func TestPhase1CutoverMonitorMissingTargetReturnsResourceSelection(t *testing.T)
 	require.NotNil(t, eng.pendingResourceSelection)
 	assert.Len(t, eng.pendingResourceSelection.candidates, 2)
 	require.Len(t, traces, 1)
-	assert.Equal(t, string(intent.CutoverStatusSelectionRequired), traces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusSelectionRequired), traces[0].RouteStatus)
 }
 
-func TestPhase1CutoverMonitorSelectionPromptStatesWhenCandidatesTruncated(t *testing.T) {
+func TestRouteDispatchMonitorSelectionPromptStatesWhenCandidatesTruncated(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -5048,7 +5048,7 @@ func TestPhase1CutoverMonitorSelectionPromptStatesWhenCandidatesTruncated(t *tes
 	assert.Len(t, eng.pendingResourceSelection.candidates, 20)
 }
 
-func TestPhase1CutoverMonitorEmptyFreshSnapshotRefreshesBeforeSelection(t *testing.T) {
+func TestRouteDispatchMonitorEmptyFreshSnapshotRefreshesBeforeSelection(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutorFn{
@@ -5078,7 +5078,7 @@ func TestPhase1CutoverMonitorEmptyFreshSnapshotRefreshesBeforeSelection(t *testi
 	assert.Len(t, eng.pendingResourceSelection.candidates, 2)
 }
 
-func TestPhase1CutoverMonitorCandidateRefreshFailureDoesNotFallBackToReAct(t *testing.T) {
+func TestRouteDispatchMonitorCandidateRefreshFailureDoesNotFallBackToReAct(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutorFn{
@@ -5106,10 +5106,10 @@ func TestPhase1CutoverMonitorCandidateRefreshFailureDoesNotFallBackToReAct(t *te
 	assert.Empty(t, mock.calls, "candidate refresh failure must not fall back to ReAct")
 	assert.Nil(t, eng.pendingResourceSelection)
 	require.Len(t, traces, 1)
-	assert.Equal(t, string(intent.CutoverStatusFailureAfterTool), traces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusFailureAfterTool), traces[0].RouteStatus)
 }
 
-func TestPhase1CutoverMonitorSelectionPromptDoesNotUseGroundedRenderer(t *testing.T) {
+func TestRouteDispatchMonitorSelectionPromptDoesNotUseGroundedRenderer(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -5135,7 +5135,7 @@ func TestPhase1CutoverMonitorSelectionPromptDoesNotUseGroundedRenderer(t *testin
 	require.NotNil(t, eng.pendingResourceSelection)
 }
 
-func TestPhase1CutoverMonitorAmbiguousNameReturnsMatchingResourceSelection(t *testing.T) {
+func TestRouteDispatchMonitorAmbiguousNameReturnsMatchingResourceSelection(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanForName("dup")}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -5162,7 +5162,7 @@ func TestPhase1CutoverMonitorAmbiguousNameReturnsMatchingResourceSelection(t *te
 	assert.Len(t, eng.pendingResourceSelection.candidates, 2)
 }
 
-func TestPhase1CutoverMonitorSingleCandidateContinuesDirectly(t *testing.T) {
+func TestRouteDispatchMonitorSingleCandidateContinuesDirectly(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -5557,22 +5557,22 @@ func TestResourceSelectionContinuationHardBlockClearsPending(t *testing.T) {
 	assert.Len(t, mock.calls, 1, "numeric input after hard-block must not resume stale selection")
 }
 
-func TestPhase1CutoverInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
+func TestRouteDispatchInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 	cases := []struct {
 		name       string
 		result     intent.PlannerResult
-		wantStatus intent.CutoverStatus
+		wantStatus intent.RouteStatus
 	}{
 		{
 			name:       "fallback result",
 			result:     intent.PlannerResult{Fallback: true, Plan: unknownEngineTestPlan()},
-			wantStatus: intent.CutoverStatusFallbackInvalid,
+			wantStatus: intent.RouteStatusFallbackInvalid,
 		},
 		// PR #61 (2026-05-21): removed "hard block hint" case — HardBlockHint
 		// is advisory only and no longer participates in cutover routing.
 		// New test TestCommonPlannerCandidateStatus_HardBlockHintAdvisoryOnly
 		// in engine_hardblock_advisory_test.go pins the new behavior
-		// (HardBlockHint=true with valid plan → CutoverStatusDispatched).
+		// (HardBlockHint=true with valid plan → RouteStatusDispatched).
 		{
 			name: "low confidence",
 			result: intent.PlannerResult{Plan: intent.Plan{
@@ -5581,7 +5581,7 @@ func TestPhase1CutoverInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 				Retrieval:     intent.Retrieval{Enabled: false},
 				Confidence:    0.3,
 			}},
-			wantStatus: intent.CutoverStatusFallbackLowConfidence,
+			wantStatus: intent.RouteStatusFallbackLowConfidence,
 		},
 		{
 			name: "not enabled",
@@ -5591,7 +5591,7 @@ func TestPhase1CutoverInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 				Retrieval:     intent.Retrieval{Enabled: false},
 				Confidence:    0.9,
 			}},
-			wantStatus: intent.CutoverStatusFallbackIneligible,
+			wantStatus: intent.RouteStatusFallbackIneligible,
 		},
 	}
 	for _, tc := range cases {
@@ -5615,12 +5615,12 @@ func TestPhase1CutoverInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 			assert.Equal(t, "react fallback", reply)
 			assert.Len(t, mock.calls, 1)
 			require.Len(t, traces, 1)
-			assert.Equal(t, string(tc.wantStatus), traces[0].CutoverStatus)
+			assert.Equal(t, string(tc.wantStatus), traces[0].RouteStatus)
 		})
 	}
 }
 
-func TestPhase1CutoverFailureAfterToolDoesNotFallBackToReAct(t *testing.T) {
+func TestRouteDispatchFailureAfterToolDoesNotFallBackToReAct(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutorFn{
@@ -5646,10 +5646,10 @@ func TestPhase1CutoverFailureAfterToolDoesNotFallBackToReAct(t *testing.T) {
 	assert.Contains(t, reply, intent.FriendlyToolFailureReply)
 	assert.Empty(t, mock.calls, "tool failure after handler dispatch must not fall back to ReAct")
 	require.Len(t, traces, 1)
-	assert.Equal(t, string(intent.CutoverStatusFailureAfterTool), traces[0].CutoverStatus)
+	assert.Equal(t, string(intent.RouteStatusFailureAfterTool), traces[0].RouteStatus)
 }
 
-func TestPhase1CutoverReadExpensiveQuotaDenialUsesFriendlyMessage(t *testing.T) {
+func TestRouteDispatchReadExpensiveQuotaDenialUsesFriendlyMessage(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -5677,7 +5677,7 @@ func TestPhase1CutoverReadExpensiveQuotaDenialUsesFriendlyMessage(t *testing.T) 
 	assert.Empty(t, executor.calls)
 }
 
-func TestPhase1CutoverFallbackPreservesMonitorRecallForceTool(t *testing.T) {
+func TestRouteDispatchFallbackPreservesMonitorRecallForceTool(t *testing.T) {
 	executor := monitorScenarioExecutor()
 	planner := &scriptedIntentPlanner{
 		results: []intent.PlannerResult{{Fallback: true, Plan: unknownEngineTestPlan()}},
@@ -5708,7 +5708,7 @@ func TestPhase1CutoverFallbackPreservesMonitorRecallForceTool(t *testing.T) {
 		"fallback-before-tool path must preserve existing monitor recall force-tool behavior")
 }
 
-func TestPhase1CutoverChecksPlannerQuotaOnce(t *testing.T) {
+func TestRouteDispatchChecksPlannerQuotaOnce(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -6137,7 +6137,7 @@ func TestChat_TokenBudget_DisabledByDefault(t *testing.T) {
 func TestChat_TokenBudget_PlannerHandledPath_GateFires(t *testing.T) {
 	// Planner returns a candidate whose Usage alone exceeds the 50k cap.
 	// IntentResourceInfo is a planner-handled branch in tryPlannerDispatch
-	// that normally dispatches via tryPhase1Cutover. Our gate fires
+	// that normally dispatches via tryRouteDispatch. Our gate fires
 	// BEFORE that dispatch even runs, so the cutover path never executes.
 	// Choosing IntentResourceInfo over IntentMonitorHistory because the
 	// "last week monitor" phrasing trips a pre-planner short-circuit in

@@ -147,8 +147,8 @@ func TestIntentPlannerShadowModeFromEnv(t *testing.T) {
 	}
 }
 
-func TestIntentPlannerCutoverIntentsFromEnv(t *testing.T) {
-	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+func TestIntentPlannerRouteIntentsFromEnv(t *testing.T) {
+	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
 		if key == "USE_INTENT_PLANNER_FOR" {
 			return "resource, monitor, diagnosis, vague_failure, billing, ,RESOURCE"
 		}
@@ -166,8 +166,8 @@ func TestIntentPlannerCutoverIntentsFromEnv(t *testing.T) {
 	}
 }
 
-func TestIntentPlannerCutoverIntentsFromEnv_NetworkAcceleratorAliases(t *testing.T) {
-	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+func TestIntentPlannerRouteIntentsFromEnv_NetworkAcceleratorAliases(t *testing.T) {
+	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
 		if key == "USE_INTENT_PLANNER_FOR" {
 			return "network_accelerator, network_accelerator_status, net_accelerator"
 		}
@@ -178,8 +178,8 @@ func TestIntentPlannerCutoverIntentsFromEnv_NetworkAcceleratorAliases(t *testing
 	require.Equal(t, "network_accelerator_status", string(intents[0]))
 }
 
-func TestIntentPlannerCutoverIntentsFromEnv_ImageTagAliases(t *testing.T) {
-	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+func TestIntentPlannerRouteIntentsFromEnv_ImageTagAliases(t *testing.T) {
+	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
 		if key == "USE_INTENT_PLANNER_FOR" {
 			return "image_tags, image_tag, image_tag_catalog"
 		}
@@ -190,8 +190,8 @@ func TestIntentPlannerCutoverIntentsFromEnv_ImageTagAliases(t *testing.T) {
 	require.Equal(t, "image_tag_catalog", string(intents[0]))
 }
 
-func TestIntentPlannerCutoverIntentsFromEnv_ModelRepositoryAliases(t *testing.T) {
-	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+func TestIntentPlannerRouteIntentsFromEnv_ModelRepositoryAliases(t *testing.T) {
+	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
 		if key == "USE_INTENT_PLANNER_FOR" {
 			return "model_repo, model_repository, model_repository_browse"
 		}
@@ -202,8 +202,8 @@ func TestIntentPlannerCutoverIntentsFromEnv_ModelRepositoryAliases(t *testing.T)
 	require.Equal(t, "model_repository_browse", string(intents[0]))
 }
 
-func TestIntentPlannerCutoverIntentsFromEnv_SharedImageAliases(t *testing.T) {
-	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+func TestIntentPlannerRouteIntentsFromEnv_SharedImageAliases(t *testing.T) {
+	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
 		if key == "USE_INTENT_PLANNER_FOR" {
 			return "shared_image, sharing_image, shared_image_list"
 		}
@@ -214,8 +214,8 @@ func TestIntentPlannerCutoverIntentsFromEnv_SharedImageAliases(t *testing.T) {
 	require.Equal(t, "shared_image_list", string(intents[0]))
 }
 
-func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
-	intents, unknown := intentPlannerCutoverIntentsFromEnv(func(string) string { return "" })
+func TestIntentPlannerRouteIntents_DefaultsWhenEnvUnset(t *testing.T) {
+	intents, unknown := intentPlannerRouteIntentsFromEnv(func(string) string { return "" })
 	require.Empty(t, unknown)
 
 	want := []string{
@@ -238,9 +238,9 @@ func TestIntentPlannerCutoverIntents_DefaultsWhenEnvUnset(t *testing.T) {
 	}
 }
 
-func TestIntentPlannerCutoverIntents_OffDisablesAll(t *testing.T) {
+func TestIntentPlannerRouteIntents_OffDisablesAll(t *testing.T) {
 	for _, val := range []string{"off", "OFF", "none", "  off  "} {
-		intents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+		intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
 			if key == "USE_INTENT_PLANNER_FOR" {
 				return val
 			}
@@ -251,7 +251,7 @@ func TestIntentPlannerCutoverIntents_OffDisablesAll(t *testing.T) {
 	}
 }
 
-func TestSeparateShadowRunnerDisabledWhenCutoverEnabled(t *testing.T) {
+func TestSeparateShadowRunnerDisabledWhenRouteEnabled(t *testing.T) {
 	if !useSeparateShadowRunner(true, true, false) {
 		t.Fatal("shadow-only tracing should use the existing shadow runner")
 	}
@@ -267,7 +267,7 @@ func TestSeparateShadowRunnerDisabledWhenCutoverEnabled(t *testing.T) {
 }
 
 func TestPlannerRuntimeModeLine(t *testing.T) {
-	cutoverIntents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+	routeIntents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
 		if key == "USE_INTENT_PLANNER_FOR" {
 			return "resource,monitor"
 		}
@@ -275,10 +275,10 @@ func TestPlannerRuntimeModeLine(t *testing.T) {
 	})
 	require.Empty(t, unknown)
 
-	line := plannerRuntimeModeLine(true, false, cutoverIntents)
+	line := plannerRuntimeModeLine(true, false, routeIntents)
 	require.Equal(t, "planner_mode=shadow cutover_intents=[resource,monitor]", line)
 
-	line = plannerRuntimeModeLine(true, true, cutoverIntents)
+	line = plannerRuntimeModeLine(true, true, routeIntents)
 	require.Equal(t, "planner_mode=dispatch cutover_intents=[resource,monitor]", line)
 
 	line = plannerRuntimeModeLine(false, true, nil)
@@ -289,7 +289,7 @@ func TestPlannerRuntimeModeLine(t *testing.T) {
 }
 
 func TestPlannerRuntimeTrace(t *testing.T) {
-	cutoverIntents, unknown := intentPlannerCutoverIntentsFromEnv(func(key string) string {
+	routeIntents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
 		if key == "USE_INTENT_PLANNER_FOR" {
 			return "resource,monitor"
 		}
@@ -297,20 +297,20 @@ func TestPlannerRuntimeTrace(t *testing.T) {
 	})
 	require.Empty(t, unknown)
 
-	trace := plannerRuntimeTrace(true, false, cutoverIntents)
+	trace := plannerRuntimeTrace(true, false, routeIntents)
 	require.Equal(t, "shadow", trace.PlannerMode)
-	require.Equal(t, []string{"resource", "monitor"}, trace.CutoverIntents)
+	require.Equal(t, []string{"resource", "monitor"}, trace.RouteIntents)
 
-	trace = plannerRuntimeTrace(true, true, cutoverIntents)
+	trace = plannerRuntimeTrace(true, true, routeIntents)
 	require.Equal(t, "dispatch", trace.PlannerMode)
-	require.Equal(t, []string{"resource", "monitor"}, trace.CutoverIntents)
+	require.Equal(t, []string{"resource", "monitor"}, trace.RouteIntents)
 
 	trace = plannerRuntimeTrace(false, true, nil)
 	require.Equal(t, "dispatch", trace.PlannerMode)
 
 	trace = plannerRuntimeTrace(false, false, nil)
 	require.Equal(t, "off", trace.PlannerMode)
-	require.Empty(t, trace.CutoverIntents)
+	require.Empty(t, trace.RouteIntents)
 }
 
 func TestGroundedRendererModeFromEnv(t *testing.T) {
@@ -878,8 +878,8 @@ func TestCLITraceRecorderWritesRuntimeTrace(t *testing.T) {
 	}
 	recorder := newCLITraceRecorder(writer, "", 1, "runtime", start)
 	recorder.SetRuntimeTrace(observability.RuntimeTrace{
-		PlannerMode:    "shadow",
-		CutoverIntents: []string{"resource", "monitor"},
+		PlannerMode:  "shadow",
+		RouteIntents: []string{"resource", "monitor"},
 	})
 
 	if err := recorder.Finish(nil, start); err != nil {
@@ -888,7 +888,7 @@ func TestCLITraceRecorderWritesRuntimeTrace(t *testing.T) {
 
 	record := readSingleTraceRecord(t, writer, start)
 	require.Equal(t, "shadow", record.Runtime.PlannerMode)
-	require.Equal(t, []string{"resource", "monitor"}, record.Runtime.CutoverIntents)
+	require.Equal(t, []string{"resource", "monitor"}, record.Runtime.RouteIntents)
 }
 
 func TestCLITraceRecorderAcceptsEnginePlannerTrace(t *testing.T) {
@@ -902,12 +902,12 @@ func TestCLITraceRecorderAcceptsEnginePlannerTrace(t *testing.T) {
 	}
 	recorder := newCLITraceRecorder(writer, "", 1, "cutover trace", start)
 	recorder.SetPlannerTrace(observability.PlannerTrace{
-		Enabled:       true,
-		Model:         "deepseek-v4-flash",
-		SchemaValid:   true,
-		Intent:        "resource_info",
-		Confidence:    0.9,
-		CutoverStatus: "dispatched",
+		Enabled:     true,
+		Model:       "deepseek-v4-flash",
+		SchemaValid: true,
+		Intent:      "resource_info",
+		Confidence:  0.9,
+		RouteStatus: "dispatched",
 	})
 
 	if err := recorder.Finish(nil, start); err != nil {
@@ -916,7 +916,7 @@ func TestCLITraceRecorderAcceptsEnginePlannerTrace(t *testing.T) {
 
 	record := readSingleTraceRecord(t, writer, start)
 	if !record.Planner.Enabled || record.Planner.Intent != "resource_info" ||
-		record.Planner.CutoverStatus != "dispatched" {
+		record.Planner.RouteStatus != "dispatched" {
 		t.Fatalf("planner trace = %#v", record.Planner)
 	}
 }

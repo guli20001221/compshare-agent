@@ -18,10 +18,10 @@ func TestHandlerResultStatesAreDistinct(t *testing.T) {
 	assert.Equal(t, HandlerStatusFallbackBeforeTool, fallback.Status)
 	assert.Equal(t, HandlerStatusFailureAfterTool, failure.Status)
 	assert.Equal(t, FallbackUnresolvedTarget, fallback.FallbackReason)
-	assert.Equal(t, CutoverStatusFailureAfterTool, failure.CutoverStatus)
+	assert.Equal(t, RouteStatusFailureAfterTool, failure.RouteStatus)
 	assert.Contains(t, failure.Reply, FriendlyToolFailureReply)
 	assert.NotContains(t, failure.Reply, assert.AnError.Error())
-	assert.Equal(t, CutoverStatusFallbackTimeWindow, FallbackBeforeTool(FallbackTimeWindow).CutoverStatus)
+	assert.Equal(t, RouteStatusFallbackTimeWindow, FallbackBeforeTool(FallbackTimeWindow).RouteStatus)
 }
 
 func TestResourceSummaryRendererIsDeterministicAndRedactsSensitiveFields(t *testing.T) {
@@ -117,5 +117,5 @@ func TestHandlerActionWhitelist(t *testing.T) {
 	require.NotNil(t, result)
 	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
 	assert.Equal(t, FallbackActionNotAllowed, result.FallbackReason)
-	assert.Equal(t, CutoverStatusFallbackIneligible, result.CutoverStatus)
+	assert.Equal(t, RouteStatusFallbackIneligible, result.RouteStatus)
 }

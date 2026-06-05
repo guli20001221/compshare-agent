@@ -231,5 +231,5 @@ func plannerObserved(trace observability.PlannerTrace) bool {
 		trace.Slots.TimeWindow != nil ||
 		trace.Confidence != 0 ||
 		trace.HardBlockHint ||
-		trace.CutoverStatus != ""
+		trace.RouteStatus != ""
 }

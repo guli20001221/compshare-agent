@@ -25,7 +25,7 @@ func TestMonitorQueryHandler_ValidTargetCallsMonitorAndReturnsTraceMetadata(t *t
 	})
 
 	require.Equal(t, HandlerStatusHandled, result.Status)
-	assert.Equal(t, CutoverStatusDispatched, result.CutoverStatus)
+	assert.Equal(t, RouteStatusDispatched, result.RouteStatus)
 	require.Len(t, exec.calls, 1)
 	assert.Equal(t, "GetCompShareInstanceMonitor", exec.calls[0].action)
 	assert.Equal(t, []string{"uhost-a"}, exec.calls[0].args["UHostIds"])
@@ -54,7 +54,7 @@ func TestMonitorQueryHandler_MissingTargetFallsBackBeforeTool(t *testing.T) {
 
 	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
 	assert.Equal(t, FallbackMissingTarget, result.FallbackReason)
-	assert.Equal(t, CutoverStatusFallbackUnresolvedTarget, result.CutoverStatus)
+	assert.Equal(t, RouteStatusFallbackUnresolvedTarget, result.RouteStatus)
 	assert.Empty(t, exec.calls)
 }
 
@@ -80,7 +80,7 @@ func TestMonitorQueryHandler_NonCurrentTimeWindowFallsBackBeforeTool(t *testing.
 
 			assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
 			assert.Equal(t, FallbackTimeWindow, result.FallbackReason)
-			assert.Equal(t, CutoverStatusFallbackTimeWindow, result.CutoverStatus)
+			assert.Equal(t, RouteStatusFallbackTimeWindow, result.RouteStatus)
 			assert.Empty(t, exec.calls)
 		})
 	}
@@ -180,7 +180,7 @@ func TestMonitorQueryHandler_APIFailureReturnsFriendlyFailureWithTraceMetadata(t
 	})
 
 	assert.Equal(t, HandlerStatusFailureAfterTool, result.Status)
-	assert.Equal(t, CutoverStatusFailureAfterTool, result.CutoverStatus)
+	assert.Equal(t, RouteStatusFailureAfterTool, result.RouteStatus)
 	assert.Contains(t, result.Reply, FriendlyToolFailureReply)
 	assert.NotContains(t, result.Reply, "raw monitor provider error")
 	assert.Equal(t, "GetCompShareInstanceMonitor", result.ToolAction)

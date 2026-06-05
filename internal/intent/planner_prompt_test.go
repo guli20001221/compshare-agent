@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestBuildSystemPromptIncludesPhase1CutoverSchemaFields(t *testing.T) {
+func TestBuildSystemPromptIncludesRouteDispatchSchemaFields(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
 		"resource_info",

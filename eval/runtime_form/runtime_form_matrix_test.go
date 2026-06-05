@@ -15,21 +15,21 @@ func TestActualRuntimeFormMatrix(t *testing.T) {
 		{
 			name: "deterministic routing dispatch",
 			record: observability.TraceRecord{
-				Planner: observability.PlannerTrace{CutoverStatus: "dispatched"},
+				Planner: observability.PlannerTrace{RouteStatus: "dispatched"},
 			},
 			want: observability.RuntimeFormRouting,
 		},
 		{
 			name: "deterministic routing clarification",
 			record: observability.TraceRecord{
-				Planner: observability.PlannerTrace{CutoverStatus: "selection_required"},
+				Planner: observability.PlannerTrace{RouteStatus: "selection_required"},
 			},
 			want: observability.RuntimeFormRouting,
 		},
 		{
 			name: "terminal cited retrieval",
 			record: observability.TraceRecord{
-				Planner: observability.PlannerTrace{CutoverStatus: "dispatched_retrieval"},
+				Planner: observability.PlannerTrace{RouteStatus: "dispatched_retrieval"},
 			},
 			want: observability.RuntimeFormTerminalRAG,
 		},

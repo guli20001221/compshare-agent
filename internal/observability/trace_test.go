@@ -501,7 +501,7 @@ func TestTraceV02FixtureIncludesRuntimeAndCapFields(t *testing.T) {
 		t.Fatalf("unmarshal v0.2 fixture: %v", err)
 	}
 	if record.SchemaVersion != "trace.v0.2" || record.Runtime.PlannerMode != "shadow" ||
-		len(record.Runtime.CutoverIntents) != 1 || record.Runtime.CutoverIntents[0] != "monitor" {
+		len(record.Runtime.RouteIntents) != 1 || record.Runtime.RouteIntents[0] != "monitor" {
 		t.Fatalf("runtime fixture = %#v schema=%q", record.Runtime, record.SchemaVersion)
 	}
 	call := record.ToolCalls[0]
@@ -841,8 +841,8 @@ func TestTraceRecord_ActualRuntimeForm_Serialization(t *testing.T) {
 // NOTE: this table hardcodes the cutover_status string literals because
 // observability cannot import internal/intent (intent imports observability —
 // import cycle). It therefore tests the derivation ALGORITHM, not the binding to
-// the real enum VALUES. The value binding (which fails if a CutoverStatus
-// constant is renamed in handler.go) lives in intent.TestCutoverStatusBindsToRealizedTier,
+// the real enum VALUES. The value binding (which fails if a RouteStatus
+// constant is renamed in handler.go) lives in intent.TestRouteStatusBindsToRealizedTier,
 // which can reference the constants directly. Both must be kept in sync when the
 // enum changes (internal/intent/handler.go:42-58).
 func TestDeriveRealizedTier(t *testing.T) {
@@ -854,13 +854,13 @@ func TestDeriveRealizedTier(t *testing.T) {
 		want   string
 	}{
 		{"cutover dispatched -> fast",
-			TraceRecord{Planner: PlannerTrace{CutoverStatus: "dispatched"}}, RealizedTierFast},
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched"}}, RealizedTierFast},
 		{"cutover selection_required -> fast (clarify prompt, no ReAct)",
-			TraceRecord{Planner: PlannerTrace{CutoverStatus: "selection_required"}}, RealizedTierFast},
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "selection_required"}}, RealizedTierFast},
 		{"cutover dispatched_retrieval -> knowledge",
-			TraceRecord{Planner: PlannerTrace{CutoverStatus: "dispatched_retrieval"}}, RealizedTierKnowledge},
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_retrieval"}}, RealizedTierKnowledge},
 		{"cutover dispatched_agent -> agent (B8.3 deploy_model arm)",
-			TraceRecord{Planner: PlannerTrace{CutoverStatus: "dispatched_agent"}}, RealizedTierAgent},
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_agent"}}, RealizedTierAgent},
 		{"no cutover but retrieval hits -> knowledge",
 			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}}, RealizedTierKnowledge},
 		{"main_react tool fired -> agent",
@@ -868,11 +868,11 @@ func TestDeriveRealizedTier(t *testing.T) {
 		{"retrieval enabled but 0 hits, ReAct ran -> agent",
 			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 0}, ToolCalls: reactCall}, RealizedTierAgent},
 		{"retrieval fallback continued into ReAct -> agent (path that ran, not status name)",
-			TraceRecord{Planner: PlannerTrace{CutoverStatus: "fallback_retrieval_miss"}, ToolCalls: reactCall}, RealizedTierAgent},
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "fallback_retrieval_miss"}, ToolCalls: reactCall}, RealizedTierAgent},
 		{"low-confidence fallback into ReAct -> agent",
-			TraceRecord{Planner: PlannerTrace{CutoverStatus: "fallback_low_confidence"}, ToolCalls: reactCall}, RealizedTierAgent},
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "fallback_low_confidence"}, ToolCalls: reactCall}, RealizedTierAgent},
 		{"failure_after_tool but retrieval hits present -> knowledge",
-			TraceRecord{Planner: PlannerTrace{CutoverStatus: "failure_after_tool"}, Retrieval: RetrievalTrace{Enabled: true, Hits: 1}}, RealizedTierKnowledge},
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "failure_after_tool"}, Retrieval: RetrievalTrace{Enabled: true, Hits: 1}}, RealizedTierKnowledge},
 		{"no observable signal -> unknown (not default-agent)",
 			TraceRecord{}, ""},
 		{"hard-block canned reply, no dispatch signal -> unknown",
@@ -902,13 +902,13 @@ func TestDeriveActualRuntimeForm(t *testing.T) {
 		want   string
 	}{
 		{"cutover dispatched -> routing",
-			TraceRecord{Planner: PlannerTrace{CutoverStatus: "dispatched"}}, RuntimeFormRouting},
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched"}}, RuntimeFormRouting},
 		{"cutover selection_required -> routing",
-			TraceRecord{Planner: PlannerTrace{CutoverStatus: "selection_required"}}, RuntimeFormRouting},
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "selection_required"}}, RuntimeFormRouting},
 		{"cutover dispatched_retrieval -> terminal_rag",
-			TraceRecord{Planner: PlannerTrace{CutoverStatus: "dispatched_retrieval"}}, RuntimeFormTerminalRAG},
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_retrieval"}}, RuntimeFormTerminalRAG},
 		{"cutover dispatched_agent -> agent",
-			TraceRecord{Planner: PlannerTrace{CutoverStatus: "dispatched_agent"}}, RuntimeFormAgent},
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_agent"}}, RuntimeFormAgent},
 		{"saga step -> agent",
 			TraceRecord{Steps: sagaStep}, RuntimeFormAgent},
 		{"main ReAct tool -> agent",
