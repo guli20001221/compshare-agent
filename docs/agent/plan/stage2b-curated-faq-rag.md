@@ -484,7 +484,7 @@ Acceptance:
 
 Files:
 
-- `eval/capability/2026-05-09-stage2b-curated-faq-smoke.md`
+- `eval/smoke/2026-05-09-stage2b-curated-faq-smoke.md`
 
 Scope:
 

@@ -207,7 +207,7 @@ Tests:
 
 Files:
 
-- Update this ticket or add a short artifact under `eval/capability/` after running the smoke.
+- Update this ticket or add a short artifact under `eval/smoke/` after running the smoke.
 
 Scope:
 

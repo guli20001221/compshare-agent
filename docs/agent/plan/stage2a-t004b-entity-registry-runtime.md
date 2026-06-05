@@ -318,7 +318,7 @@ Acceptance:
 
 Files:
 
-- Add: `eval/capability/2026-05-08-t004b-entity-registry-runtime-smoke.md`
+- Add: `eval/smoke/2026-05-08-t004b-entity-registry-runtime-smoke.md`
 
 Scope:
 

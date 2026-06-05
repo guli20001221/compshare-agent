@@ -93,7 +93,7 @@ Why nil overrides and no `NewRouterFromConfig(cfg)` helper (B-6b): the router bu
 
 | Caller | File:line | Change |
 |---|---|---|
-| `engine.New(cfg, confirmFn)` | engine.go:376 (used by `cmd/cli.go:82` + `eval/capability/monitor_stale_reuse_probe_test.go:177`) | none — calls `NewSharedDeps(cfg)`, signature unchanged |
+| `engine.New(cfg, confirmFn)` | engine.go:376 (used by `cmd/cli.go:82` + `eval/smoke/monitor_stale_reuse_probe_test.go:177`) | none — calls `NewSharedDeps(cfg)`, signature unchanged |
 | `buildHTTPServerPool` | cmd/shared_deps.go:15 | none |
 | `agentpool.New` | pool.go:81 (test-only; HTTP uses `NewWithDeps`) | none |
 | `NewSharedDeps(nil)` test | engine_session_test.go:388 | none |

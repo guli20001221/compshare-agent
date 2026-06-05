@@ -347,7 +347,7 @@ Acceptance:
 
 Files:
 
-- Add: `eval/capability/2026-05-09-t005-rate-limiter-smoke.md`
+- Add: `eval/smoke/2026-05-09-t005-rate-limiter-smoke.md`
 
 Scope:
 

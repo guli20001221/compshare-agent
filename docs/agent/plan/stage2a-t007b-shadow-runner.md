@@ -323,7 +323,7 @@ Acceptance:
 
 Files:
 
-- Add: `eval/capability/2026-05-09-t007b-shadow-runner-smoke.md`
+- Add: `eval/smoke/2026-05-09-t007b-shadow-runner-smoke.md`
 
 Scope:
 
