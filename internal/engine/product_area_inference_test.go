@@ -45,6 +45,19 @@ func TestInferKnowledgeProductArea_LabelsMatchCorpus(t *testing.T) {
 		{"显存占用怎么查", "monitor"},
 		{"CPU占用率怎么看", "monitor"},
 		{"GPU 占用率高", "monitor"},
+		// inference_serving / gpu_troubleshooting (external corpus, RAG Phase 1).
+		// These labels live in deploy/kb/external_w0.jsonl, not stage2b_w0.jsonl;
+		// the +2 boost fires once that corpus is merged into the live index. The
+		// external sets are checked AFTER every platform set, so a platform
+		// message keeps its mapping.
+		{"vllm 怎么启动推理服务", "inference_serving"},
+		{"sglang 部署", "inference_serving"},
+		{"ollama 怎么用", "inference_serving"},
+		{"out of memory 报错", "gpu_troubleshooting"},
+		{"显存不足怎么解决", "gpu_troubleshooting"},
+		// Deliberate ordering: a message with "cuda" still maps to the platform
+		// driver_cuda group (checked first) even when paired with an OOM phrase.
+		{"cuda out of memory", "driver_cuda"},
 		// out-of-scope
 		{"今天天气怎么样", ""},
 		{"", ""},

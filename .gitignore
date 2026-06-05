@@ -69,6 +69,8 @@ eval/shadow_qa/2026-05-25-phase1-prompt-split-cli-eval/
 agent.exe
 agent.exe~
 .claude/
+# Local-only Codex tooling scratch/artifacts dir (planning notes, eval dumps).
+.Codex/
 agent
 compshare-agent
 dist/

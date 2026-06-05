@@ -34,6 +34,11 @@ ALLOWED_PRODUCT_AREAS = {
     "modelverse",
     "init_failure",
     "resource_purchase",
+    # External tool/ops corpus areas (RAG Phase 1, deploy/kb/external_w0.jsonl).
+    # Must stay in sync with the labels inferKnowledgeProductArea can return in
+    # internal/engine/engine.go (asserted by TestInferredProductAreasAllowedInPython).
+    "inference_serving",
+    "gpu_troubleshooting",
 }
 ALLOWED_CONFIDENCE = {"high", "medium", "low"}
 ALLOWED_EVIDENCE_KIND = {"knowledge"}
