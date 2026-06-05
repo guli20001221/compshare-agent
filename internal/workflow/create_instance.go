@@ -12,7 +12,7 @@ const defaultZone = "cn-wlcb-01"
 // The system disk has a 200GB free tier on CompShare.
 //
 // SYNC: this value is mirrored in engine.deployPrecheckDisk (deploy_model.go) so the
-// deploy arm's pre-create per-zone stock check passes the same Disks the saga will.
+// deploy handler's pre-create per-zone stock check passes the same Disks the saga will.
 // Keep the two in sync if this changes.
 var defaultDisk = []any{
 	map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 60},
@@ -318,7 +318,7 @@ func stepQueryInstanceTypes() Step {
 			// Candidate + zone selection is done in-code (resolveTargetSpec).
 			args := map[string]any{}
 			if z := paramStr(wfCtx.Params, "Zone", ""); z != "" {
-				args["Zone"] = z // honour an explicit zone (e.g. the deploy arm's ChosenZone)
+				args["Zone"] = z // honour an explicit zone (e.g. the deploy handler's ChosenZone)
 			}
 			return args, nil
 		},
@@ -408,7 +408,7 @@ func stepGetPrice() Step {
 				"ChargeType": userPriceChargeType(paramStr(wfCtx.Params, "ChargeType", "Dynamic")),
 			}
 			// Community images may be paid; include CompShareImageId for accurate pricing.
-			// Prefer a threaded id (deploy_model arm) so price reflects the exact image
+			// Prefer a threaded id (deploy_model handler) so price reflects the exact image
 			// the saga will create, not an independently re-resolved one.
 			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
 				imageId := paramStr(wfCtx.Params, "CompShareImageId", "")
@@ -452,7 +452,7 @@ func stepConfirmCreate() Step {
 				"ChargeType": paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
 				"image":      pickImageName(wfCtx.Params, wfCtx.Result("查询镜像")),
 				"price":      wfCtx.Result("查询价格"),
-				// FallbackNote is set by the deploy_model arm when it switched the
+				// FallbackNote is set by the deploy_model handler when it switched the
 				// create-zone (sold-out primary). Empty for the CLI/ReAct create path.
 				// Surfaced in the confirm card so the user sees the zone switch before
 				// approving. The key is always present (value "" when unset); the
@@ -547,7 +547,7 @@ func paramNum(params map[string]any, key string, defaultVal float64) float64 {
 // pickImageId dispatches to the correct picker based on ImageSource.
 //
 // A caller may THREAD an already-resolved CompShareImageId in params (the
-// deploy_model arm does, so the saga creates exactly the image the matcher chose +
+// deploy_model handler does, so the saga creates exactly the image the matcher chose +
 // sized the GPU for, instead of re-resolving independently). CLI/ReAct callers do
 // NOT set it, so their resolution is byte-unchanged.
 func pickImageId(params map[string]any, result map[string]any) string {
@@ -561,7 +561,7 @@ func pickImageId(params map[string]any, result map[string]any) string {
 }
 
 // pickImageName dispatches to the correct picker based on ImageSource. When an
-// image id was threaded (deploy_model arm), the threaded ImageName is the display
+// image id was threaded (deploy_model handler), the threaded ImageName is the display
 // name of that exact image — use it so the confirm shows what actually gets built.
 func pickImageName(params map[string]any, result map[string]any) string {
 	if paramStr(params, "CompShareImageId", "") != "" {

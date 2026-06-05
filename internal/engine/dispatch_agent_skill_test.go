@@ -10,8 +10,8 @@ import (
 	"github.com/compshare-agent/internal/intent"
 )
 
-// dispatch_agent_skill_test.go pins the P2b agent-arm dispatch seam. The seam
-// (dispatchAgentSkill + agentArmSkillForIntent) replaced the hardcoded
+// dispatch_agent_skill_test.go pins the P2b agent-handler dispatch seam. The seam
+// (dispatchAgentSkill + agentSkillForIntent) replaced the hardcoded
 // `if Intent == IntentDeployModel { tryDeployModel }` branch; these tests prove
 // it is BYTE-STABLE wiring (delegates without altering output), captures only
 // agent-tier intents, and keeps the table locked to the saga skillID so the
@@ -76,36 +76,36 @@ func TestDispatchAgentSkill_IgnoresObserveOnlyPlanSkills(t *testing.T) {
 	assert.Empty(t, exec.calls)
 }
 
-// TestAgentArmSkillForIntent_BoundToDedicatedArm locks every table value to a
-// dedicated agent arm. deploy_model is a saga workflow arm, not a body-read
+// TestAgentSkillForIntent_BoundToDedicatedArm locks every table value to a
+// dedicated agent handler. deploy_model is a saga workflow handler, not a body-read
 // skill, so it is deliberately not looked up in the generated skill registry.
-func TestAgentArmSkillForIntent_BoundToDedicatedArm(t *testing.T) {
-	require.NotEmpty(t, agentArmSkillForIntent)
-	for it, skillName := range agentArmSkillForIntent {
+func TestAgentSkillForIntent_BoundToDedicatedArm(t *testing.T) {
+	require.NotEmpty(t, agentSkillForIntent)
+	for it, skillName := range agentSkillForIntent {
 		switch skillName {
 		case "deploy_model":
 			assert.Equal(t, intent.IntentDeployModel, it)
 		default:
-			t.Fatalf("intent %q maps to unknown agent arm %q", it, skillName)
+			t.Fatalf("intent %q maps to unknown agent handler %q", it, skillName)
 		}
 	}
-	assert.Equal(t, "deploy_model", agentArmSkillForIntent[intent.IntentDeployModel])
+	assert.Equal(t, "deploy_model", agentSkillForIntent[intent.IntentDeployModel])
 }
 
-func TestAgentArmSkillForIntent_MatchesCodeDerivedPlanSkills(t *testing.T) {
-	for it, skillName := range agentArmSkillForIntent {
+func TestAgentSkillForIntent_MatchesCodeDerivedPlanSkills(t *testing.T) {
+	for it, skillName := range agentSkillForIntent {
 		derived := intent.DeriveSelectedSkills(intent.Plan{Intent: it})
-		require.Lenf(t, derived, 1, "intent %q should derive exactly one agent-arm skill", it)
-		assert.Equalf(t, skillName, derived[0].Name, "intent %q agent-arm skill drifted from Plan.Skills projection", it)
+		require.Lenf(t, derived, 1, "intent %q should derive exactly one agent-handler skill", it)
+		assert.Equalf(t, skillName, derived[0].Name, "intent %q agent-handler skill drifted from Plan.Skills projection", it)
 		assert.Equal(t, intent.SkillResolutionAgentArm, derived[0].Resolution)
 	}
 }
 
-// TestAgentArmSkillForIntent_MatchesSagaSkillID locks the table value to the
-// skillID the deploy arm actually stamps on its saga StepTraces. deploy_model.go
+// TestAgentSkillForIntent_MatchesSagaSkillID locks the table value to the
+// skillID the deploy handler actually stamps on its saga StepTraces. deploy_model.go
 // hardcodes "deploy_model" as the saga skillID; if that literal ever drifts from
 // the table (the "fourth copy of the same string" risk), this test fails.
-func TestAgentArmSkillForIntent_MatchesSagaSkillID(t *testing.T) {
+func TestAgentSkillForIntent_MatchesSagaSkillID(t *testing.T) {
 	withFastPoll(t, 5)
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
@@ -116,6 +116,6 @@ func TestAgentArmSkillForIntent_MatchesSagaSkillID(t *testing.T) {
 	require.True(t, handled)
 
 	require.NotEmpty(t, sink.steps, "the deploy saga must emit step traces")
-	assert.Equal(t, agentArmSkillForIntent[intent.IntentDeployModel], sink.steps[0].SkillID,
-		"saga StepTrace SkillID must equal the agent-arm table value")
+	assert.Equal(t, agentSkillForIntent[intent.IntentDeployModel], sink.steps[0].SkillID,
+		"saga StepTrace SkillID must equal the agent-handler table value")
 }

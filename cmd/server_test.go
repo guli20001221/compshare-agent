@@ -276,8 +276,8 @@ func TestApplySharedDepsDefaultsToQwenRRFAndRenderer(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, deps.KnowledgeRetriever, "default runtime should enable qwen3_rrf retrieval")
 	require.NotNil(t, deps.IntentPlanner, "default retrieval needs the intent planner")
-	require.NotNil(t, deps.GroundedRenderer, "default runtime should enable LLM grounded renderer")
-	require.Equal(t, "deepseek-v4-flash", deps.GroundedRendererModel)
+	require.NotNil(t, deps.GroundedGenerator, "default runtime should enable LLM grounded renderer")
+	require.Equal(t, "deepseek-v4-flash", deps.GroundedGeneratorModel)
 	require.Equal(t, "deepseek-v4-flash", deps.IntentPlannerModel)
 	require.Contains(t, deps.IntentRouteIntents, intent.IntentPricingQuery, "default runtime should cut over pricing queries")
 }

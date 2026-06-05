@@ -20,19 +20,19 @@ import (
 	"github.com/compshare-agent/internal/workflow"
 )
 
-// deploy_model.go is the B8.3 agent-tier dispatch arm. deploy_model = "按用户需求
+// deploy_model.go is the B8.3 agent-tier dispatch handler. deploy_model = "按用户需求
 // 选优云已有镜像建实例并轮询到 Running" (the lead's 2026-05-31 reframe): the platform
 // image already bakes in the framework/model, so this neither installs a model
 // over SSH nor uses UserData — it MATCHES a need to an existing image, sizes the
 // GPU, and creates the instance through the orchestrator saga.
 //
-// Why a dedicated arm and not a deterministic route: route handlers (DispatchRoute)
+// Why a dedicated handler and not a deterministic route: route handlers (DispatchRoute)
 // reach only the ToolExecutor and cannot call e.RunAgentSaga, so routing
 // deploy_model as a deterministic route would force a raw CreateCompShareInstance that
-// bypasses the saga entirely — defeating B6.2/B8.2. This arm owns the engine, so
+// bypasses the saga entirely — defeating B6.2/B8.2. This handler owns the engine, so
 // it drives the saga (step-trace + StepConfirm HITL + L2-refuse) and polls.
 //
-// The saga reuses workflow.CreateInstanceDef() verbatim (no fork) — the arm only
+// The saga reuses workflow.CreateInstanceDef() verbatim (no fork) — the handler only
 // produces the param dict it already consumes (GpuType / ImageSource / ImageName)
 // and recovers the new UHostId via a capture CheckResult, because workflow.Result
 // carries only StepSummary, not step outputs. Polling to Running is handler-side
@@ -52,9 +52,9 @@ var (
 	deployPollInterval = 20 * time.Second
 )
 
-// deployPreferredZones is the zone preference order the deploy arm tries when the
+// deployPreferredZones is the zone preference order the deploy handler tries when the
 // user did not name a zone: cn-wlcb-01 (Ulanqab) first, then cn-sh2-02 (Shanghai).
-// The arm sizes the GPU against a zone's live cards and only creates there if that
+// The handler sizes the GPU against a zone's live cards and only creates there if that
 // card has REAL stock (CheckCompShareResourceCapacity.ResourceEnough); a sold-out
 // primary zone falls back to the next BEFORE create (a pre-create selection, not an
 // ADR-006-forbidden create-retry). DescribeAvailableCompShareInstanceTypes returns
@@ -66,7 +66,7 @@ var (
 var deployPreferredZones = []string{"cn-wlcb-01", "cn-sh2-02"}
 
 // deployPrecheckDisk mirrors workflow.defaultDisk (the system-disk spec the saga's
-// capacity check uses). The arm's pre-create per-zone stock check must pass the
+// capacity check uses). The handler's pre-create per-zone stock check must pass the
 // same Disks so its ResourceEnough read matches what the saga will see. Kept local
 // (not imported) to avoid widening the workflow package's API for a read-only check.
 var deployPrecheckDisk = []any{
@@ -96,7 +96,7 @@ type deployPlan struct {
 // the generic ReAct loop; failures surface as a friendly reply, not a fallback.
 //
 // Advise-first (deploy v2): the matcher runs FIRST, unconditionally, producing a
-// GPU + image + zone recommendation. In read-only mode (shipped default) the arm
+// GPU + image + zone recommendation. In read-only mode (shipped default) the handler
 // stops there and returns that advice — so "跑X用哪个卡 / 帮我搭个能跑Y的环境" gives
 // a useful answer instead of a flat refusal. Only when writes are enabled does the
 // recommendation flow into the create saga, gated by the confirm card.
@@ -158,7 +158,7 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchRes
 		params["CompShareImageId"] = plan.ImageID
 	}
 	// Thread the chosen zone (preference + per-zone stock) so the saga creates in the
-	// zone the arm confirmed, not its hardcoded default; and the fallback note so the
+	// zone the handler confirmed, not its hardcoded default; and the fallback note so the
 	// confirm card can tell the user a sold-out primary zone was switched.
 	if plan.ChosenZone != "" {
 		params["Zone"] = plan.ChosenZone
@@ -204,7 +204,7 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchRes
 
 // deployReply emits the planner trace and appends the assistant message, then
 // returns (reply, true). The status is always RouteStatusDispatchedAgent: the
-// agent-tier deploy arm owned the turn (TierAgent match + orchestrator saga), so
+// agent-tier deploy handler owned the turn (TierAgent match + orchestrator saga), so
 // DeriveRealizedTier labels it the agent tier — mirroring how route dispatch
 // emits "dispatched"→fast even on refusal. Centralizes the three return-side
 // concerns so every exit path of tryDeployModel stays consistent.
@@ -936,7 +936,7 @@ func (e *Engine) emitDeployStep(onStep func(StepEvent), typ StepType, action, ms
 	onStep(StepEvent{Type: typ, Action: action, Source: observability.ToolSourcePlannerHandler, Message: msg})
 }
 
-// captureStepResult wraps (never replaces) a named step's CheckResult so the arm
+// captureStepResult wraps (never replaces) a named step's CheckResult so the handler
 // can recover that step's output map. The wrapper invokes capture(result) then
 // delegates to any original CheckResult; with none it passes the step. CreateInstanceDef
 // returns a fresh Definition each call, so mutating its steps is race-free.
@@ -1012,7 +1012,7 @@ func buildDeployReply(plan deployPlan, uHostId string, host map[string]any, stat
 	return b.String()
 }
 
-// buildAdviseReply renders the read-only recommendation: which GPU + image the arm
+// buildAdviseReply renders the read-only recommendation: which GPU + image the handler
 // would deploy, and how to proceed. It runs when writes are disabled, so it NEVER
 // creates anything — it turns "跑X用哪个卡 / 帮我搭个能跑Y的环境" into a useful answer
 // instead of a blank refusal. Deterministic render of the resolved deployPlan (the

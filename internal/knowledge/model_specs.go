@@ -108,7 +108,7 @@ func GetModelVRAMRequirement(modelName, quantization string) map[string]any {
 // as GetModelVRAMRequirement, smallest single card that fits, else the
 // largest-card multi-card fallback); otherwise it falls back to the
 // scene-keyword recommendation (GetGPURecommendation). It always returns a
-// non-empty GpuType. Pure / deterministic — the deploy_model arm calls this
+// non-empty GpuType. Pure / deterministic — the deploy_model handler calls this
 // instead of the map[string]any tool surface so it gets a typed value rather
 // than an unexported gpuFit hidden behind `any` (B8.3).
 func RecommendGPUType(modelName, quantization, scene string) (gpuType, note string) {

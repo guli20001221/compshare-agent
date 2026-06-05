@@ -19,7 +19,7 @@ func TestDeriveSelectedSkills_IntentBackedObserveOnly(t *testing.T) {
 			want: []SelectedSkill{{Name: "pricing_query", Resolution: SkillResolutionDerivedFromIntent}},
 		},
 		{
-			name: "agent arm derives deploy skill",
+			name: "agent handler derives deploy skill",
 			plan: Plan{Intent: IntentDeployModel},
 			want: []SelectedSkill{{Name: "deploy_model", Resolution: SkillResolutionAgentArm}},
 		},

@@ -150,12 +150,12 @@ func (r *scriptedKnowledgeRetriever) Retrieve(question, productArea string) know
 	return result
 }
 
-type mockGroundedRenderer struct {
+type mockGroundedGenerator struct {
 	result   grounded.RenderResult
 	requests []grounded.RenderRequest
 }
 
-func (r *mockGroundedRenderer) Render(_ context.Context, req grounded.RenderRequest) grounded.RenderResult {
+func (r *mockGroundedGenerator) Render(_ context.Context, req grounded.RenderRequest) grounded.RenderResult {
 	r.requests = append(r.requests, req)
 	return r.result
 }
@@ -4580,13 +4580,13 @@ func TestRouteDispatchResourcePlanBypassesReAct(t *testing.T) {
 	assert.Equal(t, observability.ToolSourcePlannerHandler, (*events)[1].Source)
 }
 
-func TestRouteDispatchResourcePlanUsesGroundedRenderer(t *testing.T) {
+func TestRouteDispatchResourcePlanUsesGroundedGenerator(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
 	}}
-	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+	groundedRenderer := &mockGroundedGenerator{result: grounded.RenderResult{
 		Text:            "renderer says phase1-demo is running",
 		Model:           "deepseek-v4-flash",
 		AttributionMode: grounded.AttributionEnvelope,
@@ -4599,7 +4599,7 @@ func TestRouteDispatchResourcePlanUsesGroundedRenderer(t *testing.T) {
 		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
 		Model:          "deepseek-v4-flash",
 	})
-	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetGroundedGenerator(groundedRenderer, "deepseek-v4-flash")
 	var rendererTraces []observability.RendererTrace
 	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
 		rendererTraces = append(rendererTraces, trace)
@@ -4621,7 +4621,7 @@ func TestRouteDispatchResourcePlanUsesGroundedRenderer(t *testing.T) {
 	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, rendererTraces[0].InputEnvelopeHashes[0])
 }
 
-func TestRouteDispatchGPUSpecsPlanUsesGroundedRenderer(t *testing.T) {
+func TestRouteDispatchGPUSpecsPlanUsesGroundedGenerator(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1GPUSpecsPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -4642,7 +4642,7 @@ func TestRouteDispatchGPUSpecsPlanUsesGroundedRenderer(t *testing.T) {
 			},
 		},
 	}}
-	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+	groundedRenderer := &mockGroundedGenerator{result: grounded.RenderResult{
 		Text:            "renderer says 4090 has 24GB",
 		Model:           "deepseek-v4-flash",
 		AttributionMode: grounded.AttributionEnvelope,
@@ -4654,7 +4654,7 @@ func TestRouteDispatchGPUSpecsPlanUsesGroundedRenderer(t *testing.T) {
 		EnabledIntents: []intent.Intent{intent.IntentGPUSpecsQuery},
 		Model:          "deepseek-v4-flash",
 	})
-	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetGroundedGenerator(groundedRenderer, "deepseek-v4-flash")
 	var rendererTraces []observability.RendererTrace
 	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
 		rendererTraces = append(rendererTraces, trace)
@@ -4706,7 +4706,7 @@ func TestFastTemplateBypassesLLMRendererForFastTier(t *testing.T) {
 			},
 		},
 	}}
-	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+	groundedRenderer := &mockGroundedGenerator{result: grounded.RenderResult{
 		Text:            "renderer SHOULD NOT be called under fast_template",
 		Model:           "deepseek-v4-flash",
 		AttributionMode: grounded.AttributionEnvelope,
@@ -4717,7 +4717,7 @@ func TestFastTemplateBypassesLLMRendererForFastTier(t *testing.T) {
 		EnabledIntents: []intent.Intent{intent.IntentGPUSpecsQuery},
 		Model:          "deepseek-v4-flash",
 	})
-	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetGroundedGenerator(groundedRenderer, "deepseek-v4-flash")
 	eng.SetFastTemplate(true)
 	var rendererTraces []observability.RendererTrace
 	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
@@ -4751,7 +4751,7 @@ func TestFastTemplateKeepsLLMRendererForKnowledgeTier(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
 	}}
-	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+	groundedRenderer := &mockGroundedGenerator{result: grounded.RenderResult{
 		Text:            "renderer says phase1-demo is running",
 		Model:           "deepseek-v4-flash",
 		AttributionMode: grounded.AttributionEnvelope,
@@ -4764,7 +4764,7 @@ func TestFastTemplateKeepsLLMRendererForKnowledgeTier(t *testing.T) {
 		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
 		Model:          "deepseek-v4-flash",
 	})
-	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetGroundedGenerator(groundedRenderer, "deepseek-v4-flash")
 	eng.SetFastTemplate(true)
 	var rendererTraces []observability.RendererTrace
 	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
@@ -4794,7 +4794,7 @@ func TestRouteDispatchResourceFilterPlanSendsFilteredEnvelopeToRenderer(t *testi
 			},
 		},
 	}}
-	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+	groundedRenderer := &mockGroundedGenerator{result: grounded.RenderResult{
 		Text:            "renderer says one running 4090 instance",
 		Model:           "deepseek-v4-flash",
 		AttributionMode: grounded.AttributionEnvelope,
@@ -4806,7 +4806,7 @@ func TestRouteDispatchResourceFilterPlanSendsFilteredEnvelopeToRenderer(t *testi
 		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
 		Model:          "deepseek-v4-flash",
 	})
-	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetGroundedGenerator(groundedRenderer, "deepseek-v4-flash")
 
 	reply, err := eng.Chat(context.Background(), "show running 4090 instances", noopStep)
 
@@ -4823,13 +4823,13 @@ func TestRouteDispatchResourceFilterPlanSendsFilteredEnvelopeToRenderer(t *testi
 	assertEngineComputedFact(t, env, "total_count", "3")
 }
 
-func TestRouteDispatchGroundedRendererFallbackUsesDeterministicReply(t *testing.T) {
+func TestRouteDispatchGroundedGeneratorFallbackUsesDeterministicReply(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
 	}}
-	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+	groundedRenderer := &mockGroundedGenerator{result: grounded.RenderResult{
 		Text:            "fallback from deterministic handler",
 		Model:           "deepseek-v4-flash",
 		AttributionMode: grounded.AttributionEnvelope,
@@ -4844,7 +4844,7 @@ func TestRouteDispatchGroundedRendererFallbackUsesDeterministicReply(t *testing.
 		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
 		Model:          "deepseek-v4-flash",
 	})
-	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetGroundedGenerator(groundedRenderer, "deepseek-v4-flash")
 	var rendererTraces []observability.RendererTrace
 	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
 		rendererTraces = append(rendererTraces, trace)
@@ -4860,7 +4860,7 @@ func TestRouteDispatchGroundedRendererFallbackUsesDeterministicReply(t *testing.
 	assert.Equal(t, grounded.FallbackValidationFailed, rendererTraces[0].FallbackReason)
 }
 
-func TestRouteDispatchGroundedRendererRateLimitDenialUsesDeterministicReply(t *testing.T) {
+func TestRouteDispatchGroundedGeneratorRateLimitDenialUsesDeterministicReply(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -4871,7 +4871,7 @@ func TestRouteDispatchGroundedRendererRateLimitDenialUsesDeterministicReply(t *t
 		{Allowed: true, SubjectHash: "sha256:subject"},
 		{Allowed: false, Reason: governance.ReasonQPSExceeded, SubjectHash: "sha256:subject", Err: governance.ErrRateLimited},
 	}}
-	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+	groundedRenderer := &mockGroundedGenerator{result: grounded.RenderResult{
 		Text: "should not be used",
 	}}
 	eng := NewWithDeps(mock, executor, nil)
@@ -4883,7 +4883,7 @@ func TestRouteDispatchGroundedRendererRateLimitDenialUsesDeterministicReply(t *t
 		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
 		Model:          "deepseek-v4-flash",
 	})
-	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetGroundedGenerator(groundedRenderer, "deepseek-v4-flash")
 	var rendererTraces []observability.RendererTrace
 	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
 		rendererTraces = append(rendererTraces, trace)
@@ -5109,13 +5109,13 @@ func TestRouteDispatchMonitorCandidateRefreshFailureDoesNotFallBackToReAct(t *te
 	assert.Equal(t, string(intent.RouteStatusFailureAfterTool), traces[0].RouteStatus)
 }
 
-func TestRouteDispatchMonitorSelectionPromptDoesNotUseGroundedRenderer(t *testing.T) {
+func TestRouteDispatchMonitorSelectionPromptDoesNotUseGroundedGenerator(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
 	}}
-	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+	groundedRenderer := &mockGroundedGenerator{result: grounded.RenderResult{
 		Text: "renderer should not be used",
 	}}
 	eng := NewWithDeps(mock, executor, nil)
@@ -5124,7 +5124,7 @@ func TestRouteDispatchMonitorSelectionPromptDoesNotUseGroundedRenderer(t *testin
 		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
 		Model:          "deepseek-v4-flash",
 	})
-	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetGroundedGenerator(groundedRenderer, "deepseek-v4-flash")
 
 	reply, err := eng.Chat(context.Background(), "show cpu monitor", noopStep)
 
@@ -5291,7 +5291,7 @@ func TestResourceSelectionContinuationExactIDRunsMonitorQuery(t *testing.T) {
 	assert.Nil(t, eng.pendingResourceSelection)
 }
 
-func TestResourceSelectionContinuationExactNameUsesGroundedRendererAndPlannerSource(t *testing.T) {
+func TestResourceSelectionContinuationExactNameUsesGroundedGeneratorAndPlannerSource(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutorFn{
@@ -5306,12 +5306,12 @@ func TestResourceSelectionContinuationExactNameUsesGroundedRendererAndPlannerSou
 			}
 		},
 	}
-	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+	groundedRenderer := &mockGroundedGenerator{result: grounded.RenderResult{
 		Text: "grounded monitor summary",
 	}}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
-	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetGroundedGenerator(groundedRenderer, "deepseek-v4-flash")
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
 		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
 		Model:          "deepseek-v4-flash",
@@ -5378,7 +5378,7 @@ func TestResourceSelectionContinuationTroubleshootingFallbackAddsSafeContext(t *
 	assert.NotContains(t, reply, "SSH")
 }
 
-func TestResourceSelectionContinuationLoadAssessmentUsesGroundedRendererMode(t *testing.T) {
+func TestResourceSelectionContinuationLoadAssessmentUsesGroundedGeneratorMode(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutorFn{
@@ -5393,7 +5393,7 @@ func TestResourceSelectionContinuationLoadAssessmentUsesGroundedRendererMode(t *
 			}
 		},
 	}
-	groundedRenderer := &mockGroundedRenderer{result: grounded.RenderResult{
+	groundedRenderer := &mockGroundedGenerator{result: grounded.RenderResult{
 		Text:            "从当前采样看，这台实例现在不算忙。",
 		Model:           "deepseek-v4-flash",
 		AttributionMode: grounded.AttributionEnvelope,
@@ -5401,7 +5401,7 @@ func TestResourceSelectionContinuationLoadAssessmentUsesGroundedRendererMode(t *
 	}}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
-	eng.SetGroundedRenderer(groundedRenderer, "deepseek-v4-flash")
+	eng.SetGroundedGenerator(groundedRenderer, "deepseek-v4-flash")
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
 		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
 		Model:          "deepseek-v4-flash",

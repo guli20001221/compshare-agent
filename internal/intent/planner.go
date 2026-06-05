@@ -501,9 +501,9 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 			// it (the agent picks the image + GPU). This is distinct from
 			// operation_lifecycle, which covers operations on EXISTING instances
 			// and spec-first creation (user dictates exact hardware). target_refs
-			// stays empty: the workload name is extracted by the deploy arm's
+			// stays empty: the workload name is extracted by the deploy handler's
 			// matcher, not a planner slot. required_tools is the image-catalog read
-			// (the arm ignores it; it keeps ValidatePlan happy — see
+			// (the handler ignores it; it keeps ValidatePlan happy — see
 			// requiredToolsForIntent IntentDeployModel).
 			Intent: IntentDeployModel,
 			Source: "B8.3 (2026-05-31): anchor workload-first deploy phrasing (部署/跑/搭 + model/app) to deploy_model, not operation_lifecycle",

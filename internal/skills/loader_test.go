@@ -207,7 +207,7 @@ func TestNewLoader_ListsProgressiveDisclosureResources(t *testing.T) {
 
 // TestNewLoader_LoadsAllSeededSkills checks every on-disk true skill loads and
 // name==dir holds for all of them (load would fail otherwise). Deterministic
-// routes live under internal/routing and saga workflow arms are not body-read
+// routes live under internal/routing and saga workflow handlers are not body-read
 // skills.
 func TestNewLoader_LoadsAllSeededSkills(t *testing.T) {
 	l, err := NewLoaderWithLogger(seededRoot, silentLogger())

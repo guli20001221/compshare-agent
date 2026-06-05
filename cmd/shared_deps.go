@@ -118,8 +118,8 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 		// The LLM renderer is built in both modes — under fast_template it
 		// still serves knowledge/agent tiers; B3 only diverts fast-tier
 		// catalog envelopes to the deterministic template.
-		deps.GroundedRenderer = renderer.NewGroundedRenderer(router.For(llm.TierKnowledge))
-		deps.GroundedRendererModel = router.Model(llm.TierKnowledge)
+		deps.GroundedGenerator = renderer.NewGroundedGenerator(router.For(llm.TierKnowledge))
+		deps.GroundedGeneratorModel = router.Model(llm.TierKnowledge)
 		deps.FastTemplateRenderer = groundedMode == "fast_template"
 	}
 
