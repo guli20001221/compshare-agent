@@ -13,6 +13,17 @@ LINK_MANIFEST_SCHEMA = "rag_w0.link_manifest.v1"
 CHUNK_SCHEMA = "rag_w0.chunk.v1"
 
 ALLOWED_SOURCE_TYPES = {"faq", "runbook"}
+# ALLOWED_SOURCE_ORIGINS is the Python side of a cross-language enum contract:
+# it must stay aligned with the Go allowedSourceOrigins set in
+# internal/knowledge/loader.go (asserted by TestSourceOriginEnumMatchesPython).
+# external_* values are reserved for the out-of-platform tool/ops corpus
+# (deploy/kb/external_w0.jsonl); platform chunks stay official / support_curated.
+ALLOWED_SOURCE_ORIGINS = {
+    "official",
+    "support_curated",
+    "external_official",
+    "external_community",
+}
 ALLOWED_PRODUCT_AREAS = {
     "login",
     "billing_rule",

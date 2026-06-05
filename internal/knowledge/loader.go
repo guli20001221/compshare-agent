@@ -22,10 +22,24 @@ const (
 	confidenceLow              = "low"
 	sourceTypeFAQ              = "faq"
 	sourceTypeRunbook          = "runbook"
-	sourceOriginOfficial       = "official"
-	sourceOriginSupportCurated = "support_curated"
-	defaultCorpusScannerBuffer = 64 * 1024
+	sourceOriginOfficial          = "official"
+	sourceOriginSupportCurated    = "support_curated"
+	sourceOriginExternalOfficial  = "external_official"
+	sourceOriginExternalCommunity = "external_community"
+	defaultCorpusScannerBuffer    = 64 * 1024
 )
+
+// allowedSourceOrigins is the Go side of a cross-language enum contract: this
+// set must stay aligned with scripts/rag_w0/common.py ALLOWED_SOURCE_ORIGINS
+// (asserted by TestSourceOriginEnumMatchesPython). The external_* values are
+// reserved for the out-of-platform tool/ops corpus (deploy/kb/external_w0.jsonl);
+// platform chunks stay official / support_curated.
+var allowedSourceOrigins = map[string]struct{}{
+	sourceOriginOfficial:          {},
+	sourceOriginSupportCurated:    {},
+	sourceOriginExternalOfficial:  {},
+	sourceOriginExternalCommunity: {},
+}
 
 func LoadCorpus(path string) (Corpus, error) {
 	f, err := os.Open(path)
@@ -102,10 +116,8 @@ func validateChunk(chunk KBChunk) error {
 	default:
 		return fmt.Errorf("source_type must be faq or runbook")
 	}
-	switch chunk.SourceOrigin {
-	case sourceOriginOfficial, sourceOriginSupportCurated:
-	default:
-		return fmt.Errorf("source_origin must be official or support_curated")
+	if _, ok := allowedSourceOrigins[chunk.SourceOrigin]; !ok {
+		return fmt.Errorf("source_origin must be one of official, support_curated, external_official, external_community")
 	}
 	switch chunk.Confidence {
 	case confidenceHigh, confidenceMedium, confidenceLow:
