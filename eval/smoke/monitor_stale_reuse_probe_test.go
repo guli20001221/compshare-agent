@@ -1,4 +1,4 @@
-package capability
+package smoke
 
 import (
 	"context"
@@ -52,7 +52,7 @@ func TestProbeMonitorStaleReuse(t *testing.T) {
 	target := pickMonitorProbeTarget(ctx, t, cfg)
 	artifactPath := os.Getenv("MONITOR_STALE_REUSE_ARTIFACT")
 	if artifactPath == "" {
-		artifactPath = filepath.Join("eval", "capability", "2026-05-08-ds-v4-flash-monitor-stale-reuse-probe.md")
+		artifactPath = filepath.Join("eval", "smoke", "2026-05-08-ds-v4-flash-monitor-stale-reuse-probe.md")
 	}
 	artifactPath = resolveRepoRelativePath(t, artifactPath)
 

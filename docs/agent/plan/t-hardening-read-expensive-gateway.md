@@ -458,7 +458,7 @@ Acceptance:
 
 Files:
 
-- Add sanitized artifact under `eval/capability/`.
+- Add sanitized artifact under `eval/smoke/`.
 
 Acceptance:
 

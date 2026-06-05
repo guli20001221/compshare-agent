@@ -89,7 +89,7 @@ const (
 //
 // shouldForceBillingDiagnosis was removed 2026-05-08: ds v4 flash returns 400
 // on object tool_choice in thinking mode, and auto-routing achieves the same
-// success rate as required (5/6). See eval/capability/2026-05-08-ds-v4-flash-
+// success rate as required (5/6). See eval/smoke/2026-05-08-ds-v4-flash-
 // tool-choice-probe.md.
 //
 // Each force step is short-circuited by a higher one. When adding a new
@@ -1116,7 +1116,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// models without object tool_choice support (e.g. deepseek-v4-flash
 		// in thinking mode) fall through to LLM auto routing instead of
 		// 400ing on a forced ToolChoice. Stale-reuse is then unmitigated
-		// on those models — see eval/capability/2026-05-08-ds-v4-flash-
+		// on those models — see eval/smoke/2026-05-08-ds-v4-flash-
 		// tool-choice-probe.md and the pending monitor stale-reuse probe.
 		if round == 0 && forceMonitorRecall {
 			freshness := observability.FreshnessTrace{

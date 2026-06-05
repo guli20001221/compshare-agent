@@ -8,7 +8,7 @@ T-007b itself is still **shadow planner + trace + dashboard**. It must not chang
 
 Reference artifact:
 
-- `eval/capability/2026-05-08-ds-v4-flash-monitor-stale-reuse-probe.md`
+- `eval/smoke/2026-05-08-ds-v4-flash-monitor-stale-reuse-probe.md`
 
 ## Background
 

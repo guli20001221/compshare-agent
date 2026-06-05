@@ -471,7 +471,7 @@ git commit -m "refactor: extract billing facts for future envelopes"
 ### Commit 5: Real-Account Smoke Artifact
 
 **Files:**
-- Add: `eval/capability/2026-05-11-factual-envelope-renderer-smoke.md`
+- Add: `eval/smoke/2026-05-11-factual-envelope-renderer-smoke.md`
 
 **Step 1: Run unit verification**
 
@@ -521,7 +521,7 @@ The artifact must include:
 **Step 4: Commit**
 
 ```powershell
-git add eval/capability/2026-05-11-factual-envelope-renderer-smoke.md
+git add eval/smoke/2026-05-11-factual-envelope-renderer-smoke.md
 git commit -m "test: add factual envelope renderer smoke artifact"
 ```
 
