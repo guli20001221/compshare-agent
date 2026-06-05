@@ -472,6 +472,33 @@ func TestReactHistoryCompactionEnabledFromEnv(t *testing.T) {
 	require.Equal(t, "yes", unknown)
 }
 
+func TestIntentScopedReActPromptEnabledFromEnv(t *testing.T) {
+	enabled, unknown := intentScopedReActPromptEnabledFromEnv(func(string) string { return "" })
+	if enabled || unknown != "" {
+		t.Fatalf("unset USE_INTENT_SCOPED_REACT_PROMPT = (%v,%q), want disabled with no warning", enabled, unknown)
+	}
+
+	enabled, unknown = intentScopedReActPromptEnabledFromEnv(func(key string) string {
+		if key == "USE_INTENT_SCOPED_REACT_PROMPT" {
+			return "1"
+		}
+		return ""
+	})
+	if !enabled || unknown != "" {
+		t.Fatalf("USE_INTENT_SCOPED_REACT_PROMPT=1 = (%v,%q), want enabled", enabled, unknown)
+	}
+
+	enabled, unknown = intentScopedReActPromptEnabledFromEnv(func(key string) string {
+		if key == "USE_INTENT_SCOPED_REACT_PROMPT" {
+			return "maybe"
+		}
+		return ""
+	})
+	if enabled || unknown != "maybe" {
+		t.Fatalf("unknown USE_INTENT_SCOPED_REACT_PROMPT = (%v,%q), want disabled with unknown value", enabled, unknown)
+	}
+}
+
 func TestUseSkillExecutorFromEnv(t *testing.T) {
 	enabled, unknown := useSkillExecutorFromEnv(func(string) string { return "" })
 	require.False(t, enabled, "default off")
@@ -1183,6 +1210,12 @@ func TestCLITraceRecorderWritesActualTotalTokens(t *testing.T) {
 	record := readSingleTraceRecord(t, writer, start)
 	if record.Outcome.TotalTokens != 26 {
 		t.Fatalf("outcome.total_tokens = %d, want 26", record.Outcome.TotalTokens)
+	}
+	if record.Outcome.PromptTokens != 18 {
+		t.Fatalf("outcome.prompt_tokens = %d, want 18", record.Outcome.PromptTokens)
+	}
+	if record.Outcome.CompletionTokens != 8 {
+		t.Fatalf("outcome.completion_tokens = %d, want 8", record.Outcome.CompletionTokens)
 	}
 }
 

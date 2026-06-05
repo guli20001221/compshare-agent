@@ -4,6 +4,7 @@ param(
     [switch]$EnableProjection,
     [switch]$EnableHistoryCompaction,
     [switch]$EnableSessionFactContext,
+    [switch]$EnableIntentScopedReActPrompt,
     [switch]$SkipBuild,
     [ValidateSet("0", "1")][string]$Mutating = "1",
     [string]$ReportPath = ""
@@ -45,6 +46,16 @@ function Sum-Escaped($records) {
     foreach ($rec in $records) {
         if ($rec.outcome -and $rec.outcome.escaped_hallucinated_count) {
             $sum += [int]$rec.outcome.escaped_hallucinated_count
+        }
+    }
+    return $sum
+}
+
+function Sum-OutcomeField($records, [string]$field) {
+    $sum = 0
+    foreach ($rec in $records) {
+        if ($rec.outcome -and $rec.outcome.PSObject.Properties.Name -contains $field -and $rec.outcome.$field) {
+            $sum += [int]$rec.outcome.$field
         }
     }
     return $sum
@@ -105,6 +116,7 @@ $env:COMPSHARE_ENABLE_MUTATING_TOOLS = $Mutating
 $env:USE_REACT_RESULT_PROJECTION = $(if ($EnableProjection) { "1" } else { "" })
 $env:USE_REACT_HISTORY_COMPACTION = $(if ($EnableHistoryCompaction) { "1" } else { "" })
 $env:USE_SESSION_FACT_CONTEXT = $(if ($EnableSessionFactContext) { "1" } else { "" })
+$env:USE_INTENT_SCOPED_REACT_PROMPT = $(if ($EnableIntentScopedReActPrompt) { "1" } else { "" })
 if (-not $env:COMPSHARE_PROJECT_ID) {
     $env:COMPSHARE_PROJECT_ID = "org-cwy2qk"
 }
@@ -129,6 +141,9 @@ foreach ($case in $cases) {
     $intent = if ($firstPlanner) { [string]$firstPlanner.planner.intent } else { "" }
     $schemaInvalid = @($plannerRecords | Where-Object { -not $_.planner.schema_valid }).Count
     $escaped = Sum-Escaped $records
+    $promptTokens = Sum-OutcomeField $records "prompt_tokens"
+    $completionTokens = Sum-OutcomeField $records "completion_tokens"
+    $totalTokens = Sum-OutcomeField $records "total_tokens"
     $actions = @(Get-ToolActions $records)
     # Count tool results that ReAct projection actually shrank (trace field
     # tool_calls[].projected, emitted only when projection fired). When run with
@@ -169,6 +184,9 @@ foreach ($case in $cases) {
         tool_actions = @($actions | Sort-Object -Unique)
         projected_tool_count = $projectedToolCount
         projection_fired = ($projectedToolCount -gt 0)
+        prompt_tokens = $promptTokens
+        completion_tokens = $completionTokens
+        total_tokens = $totalTokens
         forbidden_intent_hits = $forbiddenIntentHits
         forbidden_action_hits = $forbiddenActionHits
         mutating_case = [bool]$case.mutating_case
@@ -188,7 +206,13 @@ $summary = [PSCustomObject]@{
         use_react_result_projection = [bool]$EnableProjection
         use_react_history_compaction = [bool]$EnableHistoryCompaction
         use_session_fact_context = [bool]$EnableSessionFactContext
+        use_intent_scoped_react_prompt = [bool]$EnableIntentScopedReActPrompt
         compshare_enable_mutating_tools = $Mutating
+    }
+    token_totals = [PSCustomObject]@{
+        prompt_tokens = [int]((@($results | ForEach-Object { $_.prompt_tokens }) | Measure-Object -Sum).Sum)
+        completion_tokens = [int]((@($results | ForEach-Object { $_.completion_tokens }) | Measure-Object -Sum).Sum)
+        total_tokens = [int]((@($results | ForEach-Object { $_.total_tokens }) | Measure-Object -Sum).Sum)
     }
     projection = [PSCustomObject]@{
         enabled = [bool]$EnableProjection

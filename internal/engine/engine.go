@@ -229,6 +229,9 @@ type Engine struct {
 	// L1 mutating API actions are exposed and executable. Production defaults
 	// to read-only until these operations are product-ready.
 	mutatingToolsEnabled bool
+	// intentScopedReActPromptEnabled keeps the persisted system prompt slim
+	// and injects intent cards only into the per-call message copy.
+	intentScopedReActPromptEnabled bool
 	// Raw user message for the current turn. Set at the start of Chat().
 	// Read by executeDiagnosis guards for signal matching. Never mutated
 	// mid-turn.
@@ -320,6 +323,8 @@ type SharedDeps struct {
 	// ReactHistoryCompactionEnabled enables deterministic ReAct history
 	// compaction for long sessions. Default false.
 	ReactHistoryCompactionEnabled bool
+	// IntentScopedReActPromptEnabled is a default-off prompt rollout gate.
+	IntentScopedReActPromptEnabled bool
 	// ExternalExecutor is the underlying tool executor shared across sessions
 	// (holds AK/SK + HTTP client). Each NewSession wraps it in a fresh
 	// SafeToolExecutor so per-session confirmFn stays isolated.
@@ -419,15 +424,16 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		maxTokensPerTurn:            deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
-		confirmFn:                     opts.ConfirmFn,
-		registry:                      entity.NewRegistry(),
-		rateLimitSubject:              opts.Subject,
-		mutatingToolsEnabled:          opts.MutatingToolsEnabled,
-		sessionFactContextEnabled:     deps.SessionFactContextEnabled,
-		reactResultProjectionEnabled:  deps.ReactResultProjectionEnabled,
-		reactHistoryCompactionEnabled: deps.ReactHistoryCompactionEnabled,
-		lastInstanceQueryTurn:         -1,
-		lastMonitorTurn:               -1,
+		confirmFn:                      opts.ConfirmFn,
+		registry:                       entity.NewRegistry(),
+		rateLimitSubject:               opts.Subject,
+		mutatingToolsEnabled:           opts.MutatingToolsEnabled,
+		sessionFactContextEnabled:      deps.SessionFactContextEnabled,
+		reactResultProjectionEnabled:   deps.ReactResultProjectionEnabled,
+		reactHistoryCompactionEnabled:  deps.ReactHistoryCompactionEnabled,
+		intentScopedReActPromptEnabled: deps.IntentScopedReActPromptEnabled,
+		lastInstanceQueryTurn:          -1,
+		lastMonitorTurn:                -1,
 		// messages, userTurn, lastUserMsg, currentMonitor*, pendingResourceSelection,
 		// readExpensiveCallsThisTurn, requireKnowledgeCitationThisTurn,
 		// *Observer fields all start at zero values which is correct.
@@ -509,6 +515,19 @@ func (e *Engine) SetReactResultProjectionEnabled(v bool) {
 // SetReactHistoryCompactionEnabled toggles deterministic long-history compaction.
 func (e *Engine) SetReactHistoryCompactionEnabled(v bool) {
 	e.reactHistoryCompactionEnabled = v
+}
+
+// SetIntentScopedReActPromptEnabled toggles the default-off prompt rollout
+// that injects per-intent ReAct cards ephemerally.
+func (e *Engine) SetIntentScopedReActPromptEnabled(v bool) {
+	e.intentScopedReActPromptEnabled = v
+}
+
+func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
+	return prompt.BuildOptions{
+		MutatingToolsEnabled:    e.mutatingToolsEnabled,
+		IntentScopedReActPrompt: e.intentScopedReActPromptEnabled,
+	}
 }
 
 // SetStepSink sets the agent-tier saga step sink for the current turn (B8). The
@@ -716,7 +735,7 @@ func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
 	}
 
 	e.baseUserContext = userCtx
-	systemPrompt := prompt.BuildSystemWithOptions(userCtx, prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
+	systemPrompt := prompt.BuildSystemWithOptions(userCtx, e.reactPromptBuildOptions())
 	e.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 	}
@@ -838,7 +857,7 @@ func (e *Engine) PlannerPriorTextSnapshot() string {
 // bypassing the DescribeCompShareInstance API call. Used for testing.
 func (e *Engine) InitWithContext(userCtx string) {
 	e.baseUserContext = userCtx
-	systemPrompt := prompt.BuildSystemWithOptions(userCtx, prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
+	systemPrompt := prompt.BuildSystemWithOptions(userCtx, e.reactPromptBuildOptions())
 	e.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 	}
@@ -850,7 +869,7 @@ func (e *Engine) InitWithContext(userCtx string) {
 // non-user/non-assistant roles are silently skipped.
 func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 	e.baseUserContext = ""
-	systemPrompt := prompt.BuildSystemWithOptions("", prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
+	systemPrompt := prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions())
 	e.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: systemPrompt}}
 	for _, msg := range msgs {
 		if msg.Content == "" {
@@ -968,7 +987,7 @@ func (e *Engine) refreshSystemPrompt() {
 			ctx += "\n\n" + factCtx
 		}
 	}
-	e.messages[0].Content = prompt.BuildSystemWithOptions(ctx, prompt.BuildOptions{MutatingToolsEnabled: e.mutatingToolsEnabled})
+	e.messages[0].Content = prompt.BuildSystemWithOptions(ctx, e.reactPromptBuildOptions())
 }
 
 // Chat processes one user message through the ReAct loop and returns the final text reply.
@@ -3861,36 +3880,20 @@ const monitorRecallRequiredToolNote = "The previous user turn queried instance m
 // If instance state from a prior turn may be stale, a temporary system note
 // is appended. The note is NOT persisted in e.messages.
 func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
-	if e.lastInstanceQueryTurn < 0 || e.lastInstanceQueryTurn >= e.userTurn {
-		return e.messages
+	messages := e.messages
+	if e.lastInstanceQueryTurn >= 0 && e.lastInstanceQueryTurn < e.userTurn {
+		// Insert stale note immediately before the latest user message, so the
+		// model sees the warning right next to the ask it's about to answer.
+		// This is much higher attention than burying the note at index 1
+		// (after the main system prompt) in a long conversation.
+		messages = withEphemeralSystemBeforeLastUser(messages, staleStateNote)
 	}
-	// Insert stale note immediately before the latest user message, so the
-	// model sees the warning right next to the ask it's about to answer.
-	// This is much higher attention than burying the note at index 1
-	// (after the main system prompt) in a long conversation.
-	lastUserIdx := -1
-	for i := len(e.messages) - 1; i >= 0; i-- {
-		if e.messages[i].Role == openai.ChatMessageRoleUser {
-			lastUserIdx = i
-			break
+	if e.intentScopedReActPromptEnabled {
+		if card := prompt.RenderIntentScopedReActCard(e.lastPlannerIntentThisTurn, e.mutatingToolsEnabled); card != "" {
+			messages = withEphemeralSystemBeforeLastUser(messages, card)
 		}
 	}
-	note := openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleSystem,
-		Content: staleStateNote,
-	}
-	// Fallback: no user message in history (shouldn't happen in the ReAct
-	// loop, but keep the helper total). Append at end.
-	if lastUserIdx < 0 {
-		msgs := make([]openai.ChatCompletionMessage, len(e.messages), len(e.messages)+1)
-		copy(msgs, e.messages)
-		return append(msgs, note)
-	}
-	msgs := make([]openai.ChatCompletionMessage, 0, len(e.messages)+1)
-	msgs = append(msgs, e.messages[:lastUserIdx]...)
-	msgs = append(msgs, note)
-	msgs = append(msgs, e.messages[lastUserIdx:]...)
-	return msgs
+	return messages
 }
 
 func withEphemeralSystemBeforeLastUser(messages []openai.ChatCompletionMessage, content string) []openai.ChatCompletionMessage {

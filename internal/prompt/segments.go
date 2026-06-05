@@ -22,3 +22,9 @@ const segmentKnowledgeBoundary = `## 知识来源边界
 - 平台知识类问题必须通过知识库/RAG资料回答；系统提示中不再内置平台 FAQ 正文。
 - 不要凭内置 FAQ 或模型记忆补全平台规则；没有知识库引用、工具返回事实或诊断结果时，应说明当前资料不足。
 - 价格、状态、监控、库存、镜像列表、实例详情等实时事实必须来自工具返回，不要使用历史快照或常识估计。`
+
+const sharedInstanceReadOnlySelfCheckCommandRule = "可以给用户实例内只读自查命令，例如 systemctl status ... --no-pager、ss -lntp、nvidia-smi、free -h、df -h。必须明确这些命令由用户自行执行，助手没有执行。"
+
+const sharedOptionalRepairCommandRule = "修改实例环境的命令必须标为可选修复，例如安装软件、重启/启用服务、写配置文件、创建自启动脚本；不要把这类命令写成默认下一步。"
+
+const sharedCompleteListingRule = "列出实例/镜像/资源时必须完整列出，禁止用\"未显示全\"、\"剩余 N 台\"、\"还有 X 个\"等省略表达；如果用户问\"我的实例\"，把 DescribeCompShareInstance 返回的所有 UHostSet 条目都展示出来"

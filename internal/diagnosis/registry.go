@@ -1,5 +1,14 @@
 package diagnosis
 
+var registeredDiagnosisActions = []string{
+	"DiagnoseSSH",
+	"DiagnoseInitFailure",
+	"DiagnoseGPU",
+	"DiagnoseBilling",
+	"DiagnosePortOrFirewall",
+	"DiagnoseImageIssue",
+}
+
 var chainRegistry = map[string]func() *Chain{
 	"DiagnoseSSH":            SSHFailureChain,
 	"DiagnoseInitFailure":    InitFailureChain,
@@ -7,6 +16,12 @@ var chainRegistry = map[string]func() *Chain{
 	"DiagnoseBilling":        BillingAnomalyChain,
 	"DiagnosePortOrFirewall": PortFirewallChain,
 	"DiagnoseImageIssue":     ImageIssueChain,
+}
+
+// RegisteredDiagnosisActions returns diagnosis action names in prompt-stable
+// human order.
+func RegisteredDiagnosisActions() []string {
+	return append([]string(nil), registeredDiagnosisActions...)
 }
 
 func IsDiagnosisTool(action string) bool {

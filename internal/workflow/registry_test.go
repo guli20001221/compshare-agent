@@ -24,6 +24,20 @@ func TestIsWorkflowTool(t *testing.T) {
 	assert.False(t, IsWorkflowTool(""))
 }
 
+func TestRegisteredWorkflowActionsMatchRegistry(t *testing.T) {
+	actions := RegisteredWorkflowActions()
+	seen := map[string]bool{}
+	for _, action := range actions {
+		assert.True(t, IsWorkflowTool(action), "registered action list contains unknown workflow %s", action)
+		assert.False(t, seen[action], "duplicate workflow action %s", action)
+		seen[action] = true
+	}
+	assert.Len(t, actions, len(workflowRegistry), "registered workflow action list must match registry size")
+	for action := range workflowRegistry {
+		assert.True(t, seen[action], "workflow action %s missing from stable list", action)
+	}
+}
+
 func TestGetWorkflow(t *testing.T) {
 	// CreateInstanceWorkflow: 7 steps
 	def, ok := GetWorkflow("CreateInstanceWorkflow")

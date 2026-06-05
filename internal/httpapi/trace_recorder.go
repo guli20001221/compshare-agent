@@ -24,6 +24,8 @@ type chatTraceRecorder struct {
 	record                observability.TraceRecord
 	start                 time.Time
 	totalTokens           int
+	promptTokens          int
+	completionTokens      int
 	pendingByID           map[string][]int
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
 }
@@ -102,6 +104,8 @@ func (r *chatTraceRecorder) SetPlannerTrace(trace observability.PlannerTrace) {
 	}
 	r.record.Planner = trace
 	r.totalTokens += trace.InputTokens + trace.OutputTokens
+	r.promptTokens += trace.InputTokens
+	r.completionTokens += trace.OutputTokens
 }
 
 func (r *chatTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace) {
@@ -181,6 +185,8 @@ func (r *chatTraceRecorder) AddTokenUsage(usage llm.TokenUsage) {
 		return
 	}
 	r.totalTokens += traceTokenUsageTotal(usage)
+	r.promptTokens += usage.PromptTokens
+	r.completionTokens += usage.CompletionTokens
 }
 
 func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
@@ -271,6 +277,8 @@ func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 	}
 	r.record.Outcome.TotalLatencyMS = end.Sub(r.start).Milliseconds()
 	r.record.Outcome.TotalTokens = r.totalTokens
+	r.record.Outcome.PromptTokens = r.promptTokens
+	r.record.Outcome.CompletionTokens = r.completionTokens
 	for _, call := range r.record.ToolCalls {
 		if call.TurnIndex == r.record.TurnIndex && call.Action == "GetCompShareInstanceMonitor" {
 			r.record.Freshness.MonitorCallInCurrentTurn = true

@@ -85,6 +85,14 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 	if reactHistoryCompaction {
 		log.Printf("runtime: HTTP ReAct history compaction enabled (USE_REACT_HISTORY_COMPACTION=1)")
 	}
+	intentScopedReActPrompt, unknownIntentScopedReActPrompt := intentScopedReActPromptEnabledFromEnv(getenv)
+	if unknownIntentScopedReActPrompt != "" {
+		log.Printf("warning: ignoring unknown USE_INTENT_SCOPED_REACT_PROMPT value %q", unknownIntentScopedReActPrompt)
+	}
+	deps.IntentScopedReActPromptEnabled = intentScopedReActPrompt
+	if intentScopedReActPrompt {
+		log.Printf("runtime: HTTP intent-scoped ReAct prompt enabled (USE_INTENT_SCOPED_REACT_PROMPT=1)")
+	}
 
 	knowledgeRetrievalRequested, unknownKnowledge := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledge != "" {
