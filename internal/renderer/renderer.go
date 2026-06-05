@@ -46,15 +46,15 @@ type RenderResult struct {
 	Usage           llm.TokenUsage
 }
 
-type GroundedRenderer struct {
+type GroundedGenerator struct {
 	client LLMClient
 }
 
-func NewGroundedRenderer(client LLMClient) *GroundedRenderer {
-	return &GroundedRenderer{client: client}
+func NewGroundedGenerator(client LLMClient) *GroundedGenerator {
+	return &GroundedGenerator{client: client}
 }
 
-func (r *GroundedRenderer) Render(ctx context.Context, req RenderRequest) RenderResult {
+func (r *GroundedGenerator) Render(ctx context.Context, req RenderRequest) RenderResult {
 	start := time.Now()
 	hash, _ := envelope.Hash(req.Envelope)
 	result := RenderResult{

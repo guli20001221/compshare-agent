@@ -13,8 +13,8 @@ import (
 	"github.com/compshare-agent/internal/llm"
 )
 
-// deployDispatch builds the minimal plannerDispatchResult the deploy arm needs:
-// an IntentDeployModel plan. The arm reads only the intent + (for the trace) the
+// deployDispatch builds the minimal plannerDispatchResult the deploy handler needs:
+// an IntentDeployModel plan. The handler reads only the intent + (for the trace) the
 // plan; everything else it derives from the user message + live queries.
 func deployDispatch() plannerDispatchResult {
 	return plannerDispatchResult{
@@ -71,7 +71,7 @@ func newDeployMock(cfg deployMockConfig) *mockExecutorFn {
 		case "DescribeAvailableCompShareInstanceTypes":
 			// The create workflow no longer filters by MachineTypes (it queries the
 			// full catalog and selects the type/zone in-code), so the mock mirrors
-			// that: every GPU type the arm might pick, each at 1×/16C/64GB so the
+			// that: every GPU type the handler might pick, each at 1×/16C/64GB so the
 			// capacity Specs below match the resolved spec regardless of choice.
 			var types []any
 			for _, name := range []string{"4090", "4090_48G", "5090", "A100", "A800", "V100S", "H20", "3090", "3080Ti", "P40", "2080Ti", "2080"} {
@@ -124,7 +124,7 @@ const deploySearchJSON = `{"search":"Qwen"}`
 func newDeployEngine(matchJSON string, exec *mockExecutorFn, confirm func(string, map[string]any) bool) *Engine {
 	// matchDeployImage makes TWO TierAgent calls: (1) keyword extraction for the
 	// community FuzzySearch, then (2) the image pick. Seed both in order so the
-	// single-arg helper still drives the whole arm.
+	// single-arg helper still drives the whole handler.
 	client := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: matchJSON}}}
 	return NewWithDeps(client, exec, confirm) // mutatingToolsEnabled=true; agentLLMClient=nil → falls back to client
 }
@@ -138,7 +138,7 @@ func withFastPoll(t *testing.T, rounds int) {
 	t.Cleanup(func() { deployPollMaxRounds = origRounds; deployPollInterval = origInterval })
 }
 
-// TestTryDeployModel_HappyPath_AlreadyRunning proves the end-to-end arm: TierAgent
+// TestTryDeployModel_HappyPath_AlreadyRunning proves the end-to-end handler: TierAgent
 // match → CreateInstanceDef saga (incl. the L1 create) → poll sees Running →
 // deterministic reply with the new instance id + access info. WHY it matters:
 // this is B8's first agent-tier skill exercising the orchestrator on a real
@@ -166,7 +166,7 @@ func TestTryDeployModel_HappyPath_AlreadyRunning(t *testing.T) {
 	assert.NotEmpty(t, *events, "user-facing progress steps should be emitted")
 }
 
-// TestTryDeployModel_SurfacesUsageGuidance proves the arm fetches the deployed
+// TestTryDeployModel_SurfacesUsageGuidance proves the handler fetches the deployed
 // image's usage detail post-create and renders an access endpoint, so the user
 // learns HOW to use the instance (here: JupyterLab on :8888 built from the image
 // SoftwarePorts + the instance public IP) — closing the "deployed but no guidance"
@@ -190,7 +190,7 @@ func TestTryDeployModel_SurfacesUsageGuidance(t *testing.T) {
 // TestTryDeployModel_PollUntilRunning proves the handler-side poll loop advances
 // across states. The saga's own describe (step 7) consumes the first state; the
 // poll loop then re-reads until Running. WHY: a freshly created instance is not
-// Running yet; the arm must wait and report the live state, never fabricate it.
+// Running yet; the handler must wait and report the live state, never fabricate it.
 func TestTryDeployModel_PollUntilRunning(t *testing.T) {
 	withFastPoll(t, 10)
 	// [saga step-7]=Starting, [poll1]=Starting, [poll2]=Running.
@@ -452,7 +452,7 @@ func TestTryDeployModel_ThreadsCommunityImageIDToCreate(t *testing.T) {
 		case "DescribeAvailableCompShareInstanceTypes":
 			// The create workflow no longer filters by MachineTypes (it queries the
 			// full catalog and selects the type/zone in-code), so the mock mirrors
-			// that: every GPU type the arm might pick, each at 1×/16C/64GB so the
+			// that: every GPU type the handler might pick, each at 1×/16C/64GB so the
 			// capacity Specs below match the resolved spec regardless of choice.
 			var types []any
 			for _, name := range []string{"4090", "4090_48G", "5090", "A100", "A800", "V100S", "H20", "3090", "3080Ti", "P40", "2080Ti", "2080"} {
@@ -508,7 +508,7 @@ func TestTryDeployModel_TerminalFailState(t *testing.T) {
 }
 
 // TestTryDeployModel_CapacitySoldOut proves the saga stops at the capacity check
-// (sold out) BEFORE create, and the arm reports it without creating anything.
+// (sold out) BEFORE create, and the handler reports it without creating anything.
 func TestTryDeployModel_CapacitySoldOut(t *testing.T) {
 	exec := newDeployMock(deployMockConfig{capacityEnough: false})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
@@ -534,7 +534,7 @@ func TestTryDeployModel_ConfirmDenied(t *testing.T) {
 }
 
 // TestTryDeployModel_MutatingDisabled proves the deploy v2 read-only behavior:
-// instead of a blank refusal, the arm ADVISES — it runs the matcher (read-only
+// instead of a blank refusal, the handler ADVISES — it runs the matcher (read-only
 // queries + sizing) and returns the GPU/image recommendation — but NEVER creates.
 // This is the intentional behavior change that makes "跑X用哪个卡 / 帮我搭个能跑Y的
 // 环境" useful in read-only mode while keeping create strictly write-gated.
@@ -677,7 +677,7 @@ func TestBuildAdviseReply(t *testing.T) {
 	assert.NotContains(t, r, "实例 ID", "advice never reports a created instance")
 }
 
-// newZoneDeployMock is a full-arm mock with per-zone availability + stock so the
+// newZoneDeployMock is a full-handler mock with per-zone availability + stock so the
 // fallback path can be exercised end-to-end. The matcher's unfiltered availability
 // query returns zone-tagged cards; the saga's MachineTypes-filtered query returns
 // the spec-shaped response resolveTargetSpec needs; capacity answers per zone.
@@ -730,7 +730,7 @@ func newZoneDeployMock(stockByZone map[string]bool, createArgs *map[string]any) 
 }
 
 // TestTryDeployModel_FallbackZoneInReply proves the end-to-end zone fallback: the
-// primary zone (cn-wlcb-01) is sold out for the chosen card, so the arm creates in
+// primary zone (cn-wlcb-01) is sold out for the chosen card, so the handler creates in
 // cn-sh2-02 instead, threads that zone to the saga's create, and tells the user.
 func TestTryDeployModel_FallbackZoneInReply(t *testing.T) {
 	withFastPoll(t, 3)
@@ -756,7 +756,7 @@ func TestExtractDeployZone(t *testing.T) {
 }
 
 // TestExtractDeployGPU pins the deterministic user-named-GPU signal that R4 fixed:
-// a card the user explicitly names must be recognized (and canonicalized) so the arm
+// a card the user explicitly names must be recognized (and canonicalized) so the handler
 // honors it instead of auto-sizing a different one — WHILE NOT false-matching a
 // digit-run inside a model name (the regression that would make this worse than the
 // bug). WHY each case matters is named inline.
@@ -796,7 +796,7 @@ func TestExtractDeployGPU(t *testing.T) {
 func TestTryDeployModel_UserZoneFromMessage(t *testing.T) {
 	withFastPoll(t, 3)
 	var createArgs map[string]any
-	// Both zones in stock; without a user zone the arm would pick cn-wlcb-01.
+	// Both zones in stock; without a user zone the handler would pick cn-wlcb-01.
 	exec := newZoneDeployMock(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": true}, &createArgs)
 	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-7B","quantization":""}`, exec, okConfirm)
 
@@ -845,7 +845,7 @@ func TestSelectDeployZoneAndGPU_PinnedGPUFallbackZone(t *testing.T) {
 }
 
 // TestSelectDeployZoneAndGPU_PinnedGPUNotOffered proves strict honoring: when the
-// named card is not in the deployable set (only 4090 is), the arm surfaces a grounded
+// named card is not in the deployable set (only 4090 is), the handler surfaces a grounded
 // error listing what IS available — it must NEVER silently substitute 4090.
 func TestSelectDeployZoneAndGPU_PinnedGPUNotOffered(t *testing.T) {
 	exec := stockExec(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": true})
@@ -909,7 +909,7 @@ func TestSelectDeployZoneAndGPU_PinnedGPUEmptyAvailDegrades(t *testing.T) {
 
 // TestTryDeployModel_HonorsUserNamedGPU is the end-to-end proof of R4: a request that
 // names A100 while describing an SD workload (whose scene-sizer picks 4090) must
-// create on A100. This exercises the full arm: matcher → pin extraction → zone/stock
+// create on A100. This exercises the full handler: matcher → pin extraction → zone/stock
 // selection → saga create, asserting the create call carries the user's card.
 func TestTryDeployModel_HonorsUserNamedGPU(t *testing.T) {
 	withFastPoll(t, 3)

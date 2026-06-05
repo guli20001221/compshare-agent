@@ -49,9 +49,9 @@ const (
 	// "按需求选优云已有镜像建实例并轮询到 Running". UNLIKE the read-only route
 	// intents above, this is NOT a route (route handlers reach only
 	// the ToolExecutor and cannot call e.RunAgentSaga). It routes through a
-	// dedicated engine dispatch arm (tryDeployModel) that does TierAgent
+	// dedicated engine dispatch handler (tryDeployModel) that does TierAgent
 	// image-matching, drives CreateInstanceDef through the orchestrator saga,
-	// and polls the new instance to Running. Declared here so the arm compiles;
+	// and polls the new instance to Running. Declared here so the handler compiles;
 	// the planner does NOT emit it until B8.3 ③ teaches the example + re-pins
 	// the system-prompt SHA, so this constant is zero-behavior on its own.
 	IntentDeployModel Intent = "deploy_model"
@@ -236,8 +236,8 @@ func RuntimeIntents() []Intent {
 		IntentPricingQuery,
 		IntentDiskInfo,
 		// deploy_model is a runtime intent: validIntent (validator.go) must accept
-		// it so the planner can emit it (B8.3 ③) and the dispatch arm fire. It has
-		// no ReAct tool subset (the arm always handles the turn, never falls
+		// it so the planner can emit it (B8.3 ③) and the dispatch handler fire. It has
+		// no ReAct tool subset (the handler always handles the turn, never falls
 		// through) — see tool_subset_test.go nilExpected.
 		IntentDeployModel,
 		IntentUnknown,

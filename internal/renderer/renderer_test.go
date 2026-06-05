@@ -13,9 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGroundedRendererSendsOnlyEnvelopeAndNoTools(t *testing.T) {
+func TestGroundedGeneratorSendsOnlyEnvelopeAndNoTools(t *testing.T) {
 	mock := &mockRendererLLM{response: "train-a 当前运行中。"}
-	r := NewGroundedRenderer(mock)
+	r := NewGroundedGenerator(mock)
 
 	result := r.Render(context.Background(), RenderRequest{
 		Envelope: testResourceEnvelope(),
@@ -38,8 +38,8 @@ func TestGroundedRendererSendsOnlyEnvelopeAndNoTools(t *testing.T) {
 	assert.NotContains(t, mock.requests[0].Messages[1].Content, "RawAPI")
 }
 
-func TestGroundedRendererFallsBackOnLLMError(t *testing.T) {
-	r := NewGroundedRenderer(&mockRendererLLM{err: errors.New("llm down")})
+func TestGroundedGeneratorFallsBackOnLLMError(t *testing.T) {
+	r := NewGroundedGenerator(&mockRendererLLM{err: errors.New("llm down")})
 
 	result := r.Render(context.Background(), RenderRequest{
 		Envelope: testResourceEnvelope(),
@@ -52,8 +52,8 @@ func TestGroundedRendererFallsBackOnLLMError(t *testing.T) {
 	assert.Equal(t, "deterministic fallback", result.Text)
 }
 
-func TestGroundedRendererFallsBackOnRateLimit(t *testing.T) {
-	r := NewGroundedRenderer(&mockRendererLLM{err: governance.ErrRateLimited})
+func TestGroundedGeneratorFallsBackOnRateLimit(t *testing.T) {
+	r := NewGroundedGenerator(&mockRendererLLM{err: governance.ErrRateLimited})
 
 	result := r.Render(context.Background(), RenderRequest{
 		Envelope: testResourceEnvelope(),
@@ -66,8 +66,8 @@ func TestGroundedRendererFallsBackOnRateLimit(t *testing.T) {
 	assert.Equal(t, "deterministic fallback", result.Text)
 }
 
-func TestGroundedRendererFallsBackOnValidationFailure(t *testing.T) {
-	r := NewGroundedRenderer(&mockRendererLLM{response: "uhost-invented 正在运行。"})
+func TestGroundedGeneratorFallsBackOnValidationFailure(t *testing.T) {
+	r := NewGroundedGenerator(&mockRendererLLM{response: "uhost-invented 正在运行。"})
 
 	result := r.Render(context.Background(), RenderRequest{
 		Envelope: testResourceEnvelope(),
@@ -80,8 +80,8 @@ func TestGroundedRendererFallsBackOnValidationFailure(t *testing.T) {
 	assert.Equal(t, "fallback", result.Text)
 }
 
-func TestGroundedRendererFallsBackOnUnknownInstanceName(t *testing.T) {
-	r := NewGroundedRenderer(&mockRendererLLM{response: "prod-db-01 正在运行。"})
+func TestGroundedGeneratorFallsBackOnUnknownInstanceName(t *testing.T) {
+	r := NewGroundedGenerator(&mockRendererLLM{response: "prod-db-01 正在运行。"})
 
 	result := r.Render(context.Background(), RenderRequest{
 		Envelope: testResourceEnvelope(),
@@ -93,8 +93,8 @@ func TestGroundedRendererFallsBackOnUnknownInstanceName(t *testing.T) {
 	assert.Equal(t, FallbackValidationFailed, result.FallbackReason)
 }
 
-func TestGroundedRendererFallsBackOnEmptyOutput(t *testing.T) {
-	r := NewGroundedRenderer(&mockRendererLLM{response: "  "})
+func TestGroundedGeneratorFallsBackOnEmptyOutput(t *testing.T) {
+	r := NewGroundedGenerator(&mockRendererLLM{response: "  "})
 
 	result := r.Render(context.Background(), RenderRequest{
 		Envelope: testResourceEnvelope(),
@@ -107,9 +107,9 @@ func TestGroundedRendererFallsBackOnEmptyOutput(t *testing.T) {
 	assert.Equal(t, "fallback", result.Text)
 }
 
-func TestGroundedRendererPromptIncludesNoInventInstruction(t *testing.T) {
+func TestGroundedGeneratorPromptIncludesNoInventInstruction(t *testing.T) {
 	mock := &mockRendererLLM{response: "train-a 当前运行中。"}
-	r := NewGroundedRenderer(mock)
+	r := NewGroundedGenerator(mock)
 
 	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
 
@@ -118,9 +118,9 @@ func TestGroundedRendererPromptIncludesNoInventInstruction(t *testing.T) {
 	assert.Contains(t, mock.requests[0].Messages[0].Content, "envelope")
 }
 
-func TestGroundedRendererPromptIncludesResourceListRules(t *testing.T) {
+func TestGroundedGeneratorPromptIncludesResourceListRules(t *testing.T) {
 	mock := &mockRendererLLM{response: "train-a"}
-	r := NewGroundedRenderer(mock)
+	r := NewGroundedGenerator(mock)
 
 	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
 
@@ -134,9 +134,9 @@ func TestGroundedRendererPromptIncludesResourceListRules(t *testing.T) {
 	assert.Contains(t, prompt, "Do not rank")
 }
 
-func TestGroundedRendererPromptIncludesTroubleshootingRules(t *testing.T) {
+func TestGroundedGeneratorPromptIncludesTroubleshootingRules(t *testing.T) {
 	mock := &mockRendererLLM{response: "train-a"}
-	r := NewGroundedRenderer(mock)
+	r := NewGroundedGenerator(mock)
 
 	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
 
@@ -149,9 +149,9 @@ func TestGroundedRendererPromptIncludesTroubleshootingRules(t *testing.T) {
 	assert.Contains(t, prompt, "instance-internal root cause")
 }
 
-func TestGroundedRendererPromptIncludesLoadAssessmentRules(t *testing.T) {
+func TestGroundedGeneratorPromptIncludesLoadAssessmentRules(t *testing.T) {
 	mock := &mockRendererLLM{response: "train-a"}
-	r := NewGroundedRenderer(mock)
+	r := NewGroundedGenerator(mock)
 
 	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
 
@@ -163,9 +163,9 @@ func TestGroundedRendererPromptIncludesLoadAssessmentRules(t *testing.T) {
 	assert.Contains(t, prompt, "historical trend")
 }
 
-func TestGroundedRendererPromptKeepsPlainMonitorQueriesFactOnly(t *testing.T) {
+func TestGroundedGeneratorPromptKeepsPlainMonitorQueriesFactOnly(t *testing.T) {
 	mock := &mockRendererLLM{response: "train-a"}
-	r := NewGroundedRenderer(mock)
+	r := NewGroundedGenerator(mock)
 
 	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
 
@@ -176,9 +176,9 @@ func TestGroundedRendererPromptKeepsPlainMonitorQueriesFactOnly(t *testing.T) {
 	assert.Contains(t, prompt, "Do not add troubleshooting advice")
 }
 
-func TestGroundedRendererPromptForbidsInternalEnvelopeWording(t *testing.T) {
+func TestGroundedGeneratorPromptForbidsInternalEnvelopeWording(t *testing.T) {
 	mock := &mockRendererLLM{response: "train-a"}
-	r := NewGroundedRenderer(mock)
+	r := NewGroundedGenerator(mock)
 
 	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
 

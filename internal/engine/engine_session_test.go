@@ -209,7 +209,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"llmClient": true,
 		// agentLLMClient is the TierAgent (strong-model) client — shared like
 		// llmClient (a stateless client wrapper, pointer-equal across sessions).
-		// Used by the B8 deploy_model image-matching arm.
+		// Used by the B8 deploy_model image-matching handler.
 		"agentLLMClient":              true,
 		"intentPlanner":               true,
 		"intentPlannerModel":          true,

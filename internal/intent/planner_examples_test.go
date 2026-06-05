@@ -226,7 +226,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 //	    model/app) from operation_lifecycle (existing-instance ops + spec-first create);
 //	(3) new IntentDeployModel example group with 4 anchors, required_tools=
 //	    [DescribeCompShareImages]. UNLIKE the routing-only intents above, this one
-//	    DOES have a new engine arm (tryDeployModel) — but the planner prompt change
+//	    DOES have a new engine handler (tryDeployModel) — but the planner prompt change
 //	    is the same shape. SHA bumped by construction.
 //
 // PR #217 integrated runtime refactor (2026-06-02): SHA bumped for two

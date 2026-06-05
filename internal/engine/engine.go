@@ -162,11 +162,11 @@ type IntentPlannerOptions struct {
 type Engine struct {
 	llmClient LLMClient
 	// agentLLMClient is the TierAgent (strong-model) client, used by the
-	// agent-tier dispatch arms (B8 deploy_model image-matching) for semantic
+	// agent-tier dispatch handlers (B8 deploy_model image-matching) for semantic
 	// judgment that warrants the strong model rather than the fast planner
 	// model (ADR-002 high-freedom + strong-guardrail). Shared across sessions
 	// like llmClient. nil on the NewWithDeps test path — callers MUST guard
-	// (the deploy arm falls back to llmClient when nil).
+	// (the deploy handler falls back to llmClient when nil).
 	agentLLMClient              LLMClient
 	safeExecutor                *tools.SafeToolExecutor
 	registry                    *entity.EntityRegistry
@@ -278,10 +278,10 @@ type Engine struct {
 // (RateLimiter has its own mutex). See plan §3.1 / §5 for the full
 // classification rationale.
 //
-// IntentPlanner / KnowledgeRetriever / GroundedRenderer are exported so the
+// IntentPlanner / KnowledgeRetriever / GroundedGenerator are exported so the
 // server bootstrap (A3) can assign them directly on a SharedDeps assembled
 // by NewSharedDeps. CLI keeps populating them via Engine.SetIntentPlanner /
-// SetKnowledgeRetriever / SetGroundedRenderer on the per-process Engine
+// SetKnowledgeRetriever / SetGroundedGenerator on the per-process Engine
 // returned by engine.New; that path stays valid because NewSession copies
 // these fields into the Engine and the setters then overwrite them with
 // the same instance. ApplySharedDepsFromEnv (planned for A3, see plan §5.6)
@@ -302,8 +302,8 @@ type SharedDeps struct {
 	IntentPlannerEnabledIntents map[intent.Intent]struct{}
 	IntentRouteIntents          map[intent.Intent]struct{}
 	KnowledgeRetriever          KnowledgeRetriever
-	GroundedRenderer            grounded.Renderer
-	GroundedRendererModel       string
+	GroundedGenerator           grounded.Renderer
+	GroundedGeneratorModel      string
 	// FastTemplateRenderer enables B3: fast-tier catalog envelopes render
 	// via the handler's deterministic Reply instead of the LLM grounded
 	// renderer. Default false (LLM renderer for all tiers, unchanged).
@@ -342,7 +342,7 @@ type SessionOptions struct {
 
 // NewSharedDeps assembles the always-shared engine dependencies from config.
 // Call once at process startup; share the result across every NewSession.
-// Planner / KnowledgeRetriever / GroundedRenderer are NOT populated here —
+// Planner / KnowledgeRetriever / GroundedGenerator are NOT populated here —
 // they are env-driven and the caller assigns them on the returned struct
 // (server) or via Engine setters post-NewSession (CLI).
 func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
@@ -376,7 +376,7 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 	cap := router.Capability(llm.TierFast)
 	return &SharedDeps{
 		LLMClient: router.For(llm.TierFast),
-		// Keep the router's TierAgent client for the agent-tier dispatch arms
+		// Keep the router's TierAgent client for the agent-tier dispatch handlers
 		// (B8). With empty tier_routing this is byte-identical to the base
 		// model (router.go nil-override path), so it changes nothing until a
 		// config sets tier_routing.agent — at which point deploy_model
@@ -415,8 +415,8 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		intentPlannerEnabledIntents: deps.IntentPlannerEnabledIntents,
 		intentRouteIntents:          deps.IntentRouteIntents,
 		knowledgeRetriever:          deps.KnowledgeRetriever,
-		groundedRenderer:            deps.GroundedRenderer,
-		groundedRendererModel:       deps.GroundedRendererModel,
+		groundedRenderer:            deps.GroundedGenerator,
+		groundedRendererModel:       deps.GroundedGeneratorModel,
 		fastTemplate:                deps.FastTemplateRenderer,
 		rateLimiter:                 deps.RateLimiter,
 		supportsObjectToolChoice:    deps.SupportsObjectToolChoice,
@@ -539,7 +539,7 @@ func (e *Engine) SetStepSink(sink orchestrator.StepSink) {
 
 // RunAgentSaga drives a workflow.Definition through the agent-tier orchestrator
 // saga (B6.2) rather than the synchronous workflow.Engine.Run. It is the engine
-// seam the B8 deploy_model dispatch arm calls: the saga emits a StepTrace per
+// seam the B8 deploy_model dispatch handler calls: the saga emits a StepTrace per
 // transition (to e.stepSink), enforces per-step timeouts, runs the StepConfirm
 // gate through e.confirmFn (HTTP: ConfirmBroker / CLI: cliConfirm), and
 // hard-refuses any L2/destructive step. The executor is wired with
@@ -606,7 +606,7 @@ func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
 	e.knowledgeRetriever = retriever
 }
 
-func (e *Engine) SetGroundedRenderer(r grounded.Renderer, model string) {
+func (e *Engine) SetGroundedGenerator(r grounded.Renderer, model string) {
 	e.groundedRenderer = r
 	e.groundedRendererModel = model
 }
@@ -1378,9 +1378,9 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// Agent-tier skills (deploy_model today) dispatch through dispatchAgentSkill —
 	// the uniform seam — not as routes: a route handler reaches only the
 	// ToolExecutor and cannot drive the orchestrator saga. The seam maps the intent
-	// to its arm (agentArmSkillForIntent) and delegates; deploy_model's arm does
+	// to its handler (agentSkillForIntent) and delegates; deploy_model's handler does
 	// TierAgent image-matching + RunAgentSaga(CreateInstanceDef) + poll-to-Running
-	// (see deploy_model.go). This is byte-stable wiring: the arm body is unchanged.
+	// (see deploy_model.go). This is byte-stable wiring: the handler body is unchanged.
 	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
@@ -1399,28 +1399,28 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	return "", false
 }
 
-// agentArmSkillForIntent maps an agent-tier intent to the skill name its dispatch
-// arm runs. deploy_model is the only agent arm today; this table is the extension
+// agentSkillForIntent maps an agent-tier intent to the skill name its dispatch
+// handler runs. deploy_model is the only agent handler today; this table is the extension
 // point future agent skills (P3b) register into — adding one is a row here plus a
 // case in dispatchAgentSkill, not a new branch in the dispatch chain. Each value is
 // a skill Name in the generated registry (skills.GeneratedSkills) AND the saga
-// skillID the arm stamps on every StepTrace; TestAgentArmSkillForIntent_* lock both
+// skillID the handler stamps on every StepTrace; TestAgentSkillForIntent_* lock both
 // bindings so a rename or typo fails CI rather than shipping.
-var agentArmSkillForIntent = map[intent.Intent]string{
+var agentSkillForIntent = map[intent.Intent]string{
 	intent.IntentDeployModel: "deploy_model",
 }
 
 // dispatchAgentSkill is the uniform agent-tier dispatch seam: it routes an
-// agent-skill intent to its arm and returns (reply, true) exactly when an arm owns
+// agent-skill intent to its handler and returns (reply, true) exactly when an handler owns
 // the turn. An unmapped intent returns ("", false) so the caller falls through to
 // the Phase-1/RAG chain unchanged — identical to the per-intent branch it replaced.
 // It deliberately does NOT look the skill up in the registry at runtime: deploy_model
 // hardcodes its own saga skillID (deploy_model.go) and never consumes the *Skill, so
 // a lookup would be dead work plus a non-byte-stable fallthrough on (CI-caught)
-// registry drift. A future body-loop arm does its own findGeneratedSkill + Body()
+// registry drift. A future body-loop handler does its own findGeneratedSkill + Body()
 // inside its case, like runDiagnosisSkill, where the lookup is load-bearing.
 func (e *Engine) dispatchAgentSkill(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	skillName, ok := agentArmSkillForIntent[dispatch.result.Plan.Intent]
+	skillName, ok := agentSkillForIntent[dispatch.result.Plan.Intent]
 	if !ok {
 		return "", false
 	}

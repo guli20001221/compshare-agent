@@ -42,10 +42,10 @@ type RouteStatus string
 const (
 	RouteStatusNone       RouteStatus = ""
 	RouteStatusDispatched RouteStatus = "dispatched"
-	// RouteStatusDispatchedAgent marks a turn the agent-tier dispatch arm
+	// RouteStatusDispatchedAgent marks a turn the agent-tier dispatch handler
 	// owned (B8.3 deploy_model). Distinct from "dispatched" (fast-tier route
 	// dispatch) so DeriveRealizedTier maps it to the agent tier rather than fast
-	// — the deploy arm runs a TierAgent LLM match + the orchestrator saga.
+	// — the deploy handler runs a TierAgent LLM match + the orchestrator saga.
 	RouteStatusDispatchedAgent       RouteStatus = "dispatched_agent"
 	RouteStatusFallbackInvalid       RouteStatus = "fallback_invalid"
 	RouteStatusFallbackLowConfidence RouteStatus = "fallback_low_confidence"

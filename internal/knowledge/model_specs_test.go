@@ -15,7 +15,7 @@ func recommended(t *testing.T, res map[string]any) gpuFit {
 	return r
 }
 
-// TestRecommendGPUType pins the typed accessor the deploy_model arm calls
+// TestRecommendGPUType pins the typed accessor the deploy_model handler calls
 // (B8.3): a recognized model name sizes by VRAM (same pick as
 // GetModelVRAMRequirement); an unrecognized name falls back to the scene
 // recommendation; it always returns a non-empty, valid GpuType.

@@ -859,7 +859,7 @@ func TestDeriveRealizedTier(t *testing.T) {
 			TraceRecord{Planner: PlannerTrace{RouteStatus: "selection_required"}}, RealizedTierFast},
 		{"cutover dispatched_retrieval -> knowledge",
 			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_retrieval"}}, RealizedTierKnowledge},
-		{"cutover dispatched_agent -> agent (B8.3 deploy_model arm)",
+		{"cutover dispatched_agent -> agent (B8.3 deploy_model handler)",
 			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_agent"}}, RealizedTierAgent},
 		{"no cutover but retrieval hits -> knowledge",
 			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}}, RealizedTierKnowledge},

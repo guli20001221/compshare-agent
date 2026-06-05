@@ -60,7 +60,7 @@ const (
 	// TierFast and TierAgent are the ONLY permitted applicable_tiers values
 	// (ADR-001 two-lane model). The enum is closed: a typo like "fas" fails to
 	// load rather than silently routing a skill to no lane. fast = deterministic
-	// route dispatch (no LLM); agent = body-driven executor / saga arm.
+	// route dispatch (no LLM); agent = body-driven executor / saga handler.
 	TierFast  = "fast"
 	TierAgent = "agent"
 

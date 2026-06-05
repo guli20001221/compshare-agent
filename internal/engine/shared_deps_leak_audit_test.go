@@ -23,7 +23,7 @@ package engine
 //   — would let session A redirect session B's LLM calls.
 // - "I added UpdateCorpus to KnowledgeRetriever for hot-reload"
 //   — would let session A poison session B's RAG corpus.
-// - "I added ResetState to GroundedRenderer to fix flaky tests"
+// - "I added ResetState to GroundedGenerator to fix flaky tests"
 //   — would let session A wipe session B's renderer state mid-turn.
 //
 // What this does NOT catch
@@ -91,7 +91,7 @@ var allowedSharedDepMethods = map[string]struct{}{}
 var sharedDepConcreteTypes = []reflect.Type{
 	reflect.TypeOf((*llm.Client)(nil)),                 // SharedDeps.LLMClient
 	reflect.TypeOf((*knowledge.Retriever)(nil)),        // SharedDeps.KnowledgeRetriever
-	reflect.TypeOf((*grounded.GroundedRenderer)(nil)),  // SharedDeps.GroundedRenderer
+	reflect.TypeOf((*grounded.GroundedGenerator)(nil)), // SharedDeps.GroundedGenerator
 	reflect.TypeOf((*governance.MemoryLimiter)(nil)),   // SharedDeps.RateLimiter
 	reflect.TypeOf((*knowledge.EmbeddingSidecar)(nil)), // injected into knowledge.Retriever
 	reflect.TypeOf((*embedding.Client)(nil)),           // upstream of knowledge.EmbeddingSidecar
@@ -143,7 +143,7 @@ var nonAuditableFields = map[string]string{
 	"IntentPlannerModel":             "string — no methods",
 	"IntentPlannerEnabledIntents":    "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
 	"IntentRouteIntents":             "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
-	"GroundedRendererModel":          "string — no methods",
+	"GroundedGeneratorModel":         "string — no methods",
 	"FastTemplateRenderer":           "bool — no methods",
 	"SupportsObjectToolChoice":       "bool — no methods",
 	"SupportsRequiredToolChoice":     "bool — no methods",
@@ -202,8 +202,8 @@ func TestSharedDeps_AuditCoversAllSharedDepFields(t *testing.T) {
 			requireAudited(t, audited, "github.com/compshare-agent/internal/llm.Client", field.Name)
 		case "KnowledgeRetriever":
 			requireAudited(t, audited, "github.com/compshare-agent/internal/knowledge.Retriever", field.Name)
-		case "GroundedRenderer":
-			requireAudited(t, audited, "github.com/compshare-agent/internal/renderer.GroundedRenderer", field.Name)
+		case "GroundedGenerator":
+			requireAudited(t, audited, "github.com/compshare-agent/internal/renderer.GroundedGenerator", field.Name)
 		case "RateLimiter":
 			requireAudited(t, audited, "github.com/compshare-agent/internal/governance.MemoryLimiter", field.Name)
 		default:

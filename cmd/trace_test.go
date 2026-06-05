@@ -313,7 +313,7 @@ func TestPlannerRuntimeTrace(t *testing.T) {
 	require.Empty(t, trace.RouteIntents)
 }
 
-func TestGroundedRendererModeFromEnv(t *testing.T) {
+func TestGroundedGeneratorModeFromEnv(t *testing.T) {
 	mode, unknown := groundedRendererModeFromEnv(func(string) string { return "" })
 	require.Equal(t, "llm", mode)
 	require.Empty(t, unknown)
