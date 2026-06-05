@@ -1347,18 +1347,27 @@ type softwarePort struct {
 	port int
 }
 
-// fetchImageUsage reads the usage guidance for the deployed image, keyed by the
-// resolved CompShareImageId so it describes EXACTLY the created image. It is
-// source-aware (community carries Readme, ExcludeReadme MUST be off here; the
-// matcher's shortlist query sets ExcludeReadme=true for token thrift, but this
-// post-create read wants the Readme). Best-effort: empty id or any read error
-// yields an empty imageUsage and the reply simply omits the usage block.
+// fetchImageUsage reads the usage guidance for the deployed image so the reply can
+// describe EXACTLY the created image. It is source-aware (community carries Readme,
+// ExcludeReadme MUST be off here; the matcher's shortlist query sets
+// ExcludeReadme=true for token thrift, but this post-create read wants the Readme).
+// Best-effort: empty id or any read error yields an empty imageUsage and the reply
+// simply omits the usage block.
+//
+// Source asymmetry (verified live 2026-06-05): DescribeCompShareImages honors the
+// CompShareImageId filter (returns the one image), but DescribeCommunityImages
+// IGNORES it in production — a keyed community query returns the default popular
+// list, not the keyed image (a DeepSeek-R1 deploy got an LTX-2.3 video image's
+// Readme this way). So community is queried by FuzzySearch on the resolved image
+// name (the matcher already proved that name resolves to this group) and the exact
+// id is strict-matched across the returned groups; the id filter is used only for
+// platform, where it works.
 func (e *Engine) fetchImageUsage(ctx context.Context, plan deployPlan) imageUsage {
 	if plan.ImageID == "" {
 		return imageUsage{}
 	}
 	if plan.ImageSource == "community" {
-		res := e.querySafeRead(ctx, "DescribeCommunityImages", map[string]any{"CompShareImageId": plan.ImageID})
+		res := e.querySafeRead(ctx, "DescribeCommunityImages", map[string]any{"FuzzySearch": plan.ImageName, "Limit": 30})
 		return communityImageUsage(res, plan.ImageID)
 	}
 	res := e.querySafeRead(ctx, "DescribeCompShareImages", map[string]any{"CompShareImageId": plan.ImageID})
@@ -1366,7 +1375,8 @@ func (e *Engine) fetchImageUsage(ctx context.Context, plan deployPlan) imageUsag
 }
 
 // platformImageUsage extracts usage from a DescribeCompShareImages response,
-// preferring the entry whose CompShareImageId matches (falling back to the first).
+// returning the entry whose CompShareImageId matches (or empty when absent — the
+// keyed platform query returns exactly that image, verified live 2026-06-05).
 func platformImageUsage(result map[string]any, imageID string) imageUsage {
 	if result == nil {
 		return imageUsage{}
@@ -1377,7 +1387,13 @@ func platformImageUsage(result map[string]any, imageID string) imageUsage {
 }
 
 // communityImageUsage extracts usage from a DescribeCommunityImages response by
-// scanning CompshareImageGroup[].Data[] for the matching CompShareImageId.
+// scanning CompshareImageGroup[].Data[] for the EXACT CompShareImageId. It returns
+// empty (the reply omits the usage block) when the id is absent — it must NEVER
+// substitute an arbitrary image's Readme. Because DescribeCommunityImages ignores
+// the CompShareImageId filter in production, fetchImageUsage queries by FuzzySearch
+// (which returns the target group plus possibly others); this strict scan picks the
+// created image out of that result, so a query that fails to include it surfaces no
+// usage block rather than a wrong one.
 func communityImageUsage(result map[string]any, imageID string) imageUsage {
 	if result == nil {
 		return imageUsage{}
@@ -1393,39 +1409,30 @@ func communityImageUsage(result map[string]any, imageID string) imageUsage {
 			return imageUsageFromImage(m)
 		}
 	}
-	// Fall back to the first version of the first group (keyed query returns one
-	// group; if the id didn't line up, the first entry is still the right image).
-	for _, g := range groups {
-		gm, _ := g.(map[string]any)
-		if gm == nil {
-			continue
-		}
-		if data, _ := gm["Data"].([]any); len(data) > 0 {
-			if m, _ := data[0].(map[string]any); m != nil {
-				return imageUsageFromImage(m)
-			}
-		}
-	}
 	return imageUsage{}
 }
 
-// pickByImageID returns the map in items whose CompShareImageId == imageID, or
-// the first map when none matches (imageID may be ""), or nil when items is empty.
+// pickByImageID returns the entry in items whose CompShareImageId == imageID, or
+// nil when none matches (or imageID is "", or items is empty). It deliberately does
+// NOT fall back to the first entry: a post-create usage block must describe EXACTLY
+// the created image, and a first-entry fallback once surfaced a completely unrelated
+// image's Readme (an LTX-2.3 video image shown for a DeepSeek-R1 deploy) when the
+// upstream query returned a default list instead of the keyed image. Omitting the
+// block is correct when the exact image is absent; never substitute an arbitrary one.
 func pickByImageID(items []any, imageID string) map[string]any {
-	var first map[string]any
+	if imageID == "" {
+		return nil
+	}
 	for _, it := range items {
 		m, _ := it.(map[string]any)
 		if m == nil {
 			continue
 		}
-		if first == nil {
-			first = m
-		}
-		if id, _ := m["CompShareImageId"].(string); imageID != "" && id == imageID {
+		if id, _ := m["CompShareImageId"].(string); id == imageID {
 			return m
 		}
 	}
-	return first
+	return nil
 }
 
 // imageUsageFromImage projects one image map (CompShareImage shape) into imageUsage.

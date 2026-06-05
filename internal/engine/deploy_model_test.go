@@ -1234,6 +1234,81 @@ func TestImageUsageFromResponses(t *testing.T) {
 	assert.Equal(t, imageUsage{}, communityImageUsage(nil, "x"))
 }
 
+// TestCommunityImageUsage_NeverSubstitutesUnrelatedImage is the regression guard for
+// the 2026-06-05 bug: a "deploy DeepSeek-R1-32B" reply showed an LTX-2.3 video
+// image's Readme under 「使用说明」. Root cause (confirmed by live probe): production
+// DescribeCommunityImages IGNORES the CompShareImageId request filter and returns the
+// default popular list (LTX-2.3 at the top), so the keyed post-create read never
+// contained the created image's id — and the old first-of-group / first-entry
+// fallback then surfaced the unrelated top image's Readme. WHY it matters: a
+// post-create usage block must describe EXACTLY the created image; surfacing an
+// arbitrary image's guide actively misleads. The fix is strict exact-id matching (no
+// fallback), so an absent id yields NO usage block rather than a wrong one.
+func TestCommunityImageUsage_NeverSubstitutesUnrelatedImage(t *testing.T) {
+	// The production default-list shape: unrelated groups, none is the created image.
+	defaultList := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{"ImageName": "LTX-2.3视频生成合集", "Data": []any{
+			map[string]any{"CompShareImageId": "img-ltx", "Readme": "# LTX-2.3视频生成合集"},
+		}},
+		map[string]any{"ImageName": "LiveTalking", "Data": []any{
+			map[string]any{"CompShareImageId": "img-lt", "Readme": "# LiveTalking 数字人"},
+		}},
+	}}
+	assert.Equal(t, imageUsage{}, communityImageUsage(defaultList, "want-deepseek"),
+		"absent id must yield NO usage block — never the first group's unrelated Readme (the LTX bug)")
+
+	// When the FuzzySearch result DOES contain the exact id (possibly among others),
+	// it returns THAT image's usage — the correct Readme, not the first group's.
+	withTarget := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{"ImageName": "LTX-2.3视频生成合集", "Data": []any{
+			map[string]any{"CompShareImageId": "img-ltx", "Readme": "# LTX-2.3视频生成合集"},
+		}},
+		map[string]any{"ImageName": "DeepSeek-R1:32b", "Data": []any{
+			map[string]any{"CompShareImageId": "want-deepseek", "Readme": "# DeepSeek-R1:32b 镜像", "AutoStart": true,
+				"SoftwarePorts": []any{map[string]any{"Software": "WebUI", "Port": float64(7860)}}},
+		}},
+	}}
+	got := communityImageUsage(withTarget, "want-deepseek")
+	assert.Contains(t, got.readme, "DeepSeek-R1:32b 镜像", "exact-id match returns the created image's Readme")
+	assert.NotContains(t, got.readme, "LTX", "must not surface the first group's unrelated Readme")
+	assert.True(t, got.autoStart)
+	require.Len(t, got.ports, 1)
+	assert.Equal(t, 7860, got.ports[0].port)
+
+	// pickByImageID is strict: an absent/empty id returns nil, never the first entry.
+	items := []any{map[string]any{"CompShareImageId": "a"}, map[string]any{"CompShareImageId": "b"}}
+	assert.Nil(t, pickByImageID(items, "missing"), "absent id → nil (no first-entry fallback)")
+	assert.Nil(t, pickByImageID(items, ""), "empty id → nil")
+	assert.Equal(t, "b", pickByImageID(items, "b")["CompShareImageId"], "exact id → that entry")
+}
+
+// TestFetchImageUsage_CommunityQueriesByName proves the community post-create read
+// queries DescribeCommunityImages by FuzzySearch on the image NAME — not by the
+// CompShareImageId filter, which production ignores (see the regression test above).
+func TestFetchImageUsage_CommunityQueriesByName(t *testing.T) {
+	var gotArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeCommunityImages" {
+			gotArgs = args
+			return map[string]any{"CompshareImageGroup": []any{
+				map[string]any{"ImageName": "DeepSeek-R1:32b", "Data": []any{
+					map[string]any{"CompShareImageId": "ds-id", "Readme": "# DeepSeek-R1:32b 镜像"},
+				}},
+			}}, nil
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(nil, exec, okConfirm)
+	usage := eng.fetchImageUsage(context.Background(),
+		deployPlan{ImageSource: "community", ImageName: "DeepSeek-R1:32b", ImageID: "ds-id"})
+
+	require.NotNil(t, gotArgs, "DescribeCommunityImages must be called")
+	assert.Equal(t, "DeepSeek-R1:32b", gotArgs["FuzzySearch"], "community usage is queried by image name")
+	_, keyed := gotArgs["CompShareImageId"]
+	assert.False(t, keyed, "must NOT use the CompShareImageId filter (production ignores it)")
+	assert.Contains(t, usage.readme, "DeepSeek-R1:32b 镜像")
+}
+
 func countCalls(calls []string, action string) int {
 	n := 0
 	for _, c := range calls {
