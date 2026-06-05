@@ -173,7 +173,7 @@ type Engine struct {
 	intentPlanner               IntentPlanner
 	intentPlannerModel          string
 	intentPlannerEnabledIntents map[intent.Intent]struct{}
-	intentCutoverIntents        map[intent.Intent]struct{}
+	intentRouteIntents          map[intent.Intent]struct{}
 	knowledgeRetriever          KnowledgeRetriever
 	groundedRenderer            grounded.Renderer
 	groundedRendererModel       string
@@ -300,7 +300,7 @@ type SharedDeps struct {
 	IntentPlanner               IntentPlanner
 	IntentPlannerModel          string
 	IntentPlannerEnabledIntents map[intent.Intent]struct{}
-	IntentCutoverIntents        map[intent.Intent]struct{}
+	IntentRouteIntents          map[intent.Intent]struct{}
 	KnowledgeRetriever          KnowledgeRetriever
 	GroundedRenderer            grounded.Renderer
 	GroundedRendererModel       string
@@ -413,7 +413,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		intentPlanner:               deps.IntentPlanner,
 		intentPlannerModel:          deps.IntentPlannerModel,
 		intentPlannerEnabledIntents: deps.IntentPlannerEnabledIntents,
-		intentCutoverIntents:        deps.IntentCutoverIntents,
+		intentRouteIntents:          deps.IntentRouteIntents,
 		knowledgeRetriever:          deps.KnowledgeRetriever,
 		groundedRenderer:            deps.GroundedRenderer,
 		groundedRendererModel:       deps.GroundedRendererModel,
@@ -563,16 +563,16 @@ func (e *Engine) RunAgentSaga(ctx context.Context, def *workflow.Definition, par
 func (e *Engine) SetIntentPlanner(planner IntentPlanner, opts IntentPlannerOptions) {
 	e.intentPlanner = planner
 	e.intentPlannerModel = opts.Model
-	e.intentPlannerEnabledIntents, e.intentCutoverIntents = BuildIntentPlannerMaps(opts.EnabledIntents)
+	e.intentPlannerEnabledIntents, e.intentRouteIntents = BuildIntentPlannerMaps(opts.EnabledIntents)
 }
 
 // BuildIntentPlannerMaps converts the configured EnabledIntents slice into the
 // two derived sets the engine consults during planning. Extracted so both
 // Engine.SetIntentPlanner (CLI path) and a future ApplySharedDepsFromEnv
 // helper (A3, server path) build the same maps.
-func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, cutoverMap map[intent.Intent]struct{}) {
+func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, routeMap map[intent.Intent]struct{}) {
 	enabledMap = map[intent.Intent]struct{}{}
-	cutoverMap = map[intent.Intent]struct{}{}
+	routeMap = map[intent.Intent]struct{}{}
 	for _, e := range enabled {
 		if e == intent.IntentResourceInfo ||
 			e == intent.IntentMonitorQuery ||
@@ -583,16 +583,16 @@ func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, cutoverMap map
 		}
 		switch e {
 		case intent.IntentResourceInfo, intent.IntentMonitorQuery:
-			cutoverMap[e] = struct{}{}
+			routeMap[e] = struct{}{}
 		default:
 			// Routing Registry v1: any registered route intent is
 			// admissible to the cutover set without per-case wiring here.
 			if intent.IsRoutingIntent(e) {
-				cutoverMap[e] = struct{}{}
+				routeMap[e] = struct{}{}
 			}
 		}
 	}
-	return enabledMap, cutoverMap
+	return enabledMap, routeMap
 }
 
 func (e *Engine) SetPlannerTraceObserver(observer func(observability.PlannerTrace)) {
@@ -1352,7 +1352,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// the (c) protocol invariant is naturally satisfied.
 	if e.tokenBudgetExceeded() {
 		e.emitTokenBudgetExceededHardBlock()
-		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
+		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: tokenBudgetExceededMessage,
@@ -1366,10 +1366,10 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		// a historical monitor question. Only honor the refusal if the raw
 		// user message independently satisfies the keyword pattern.
 		if e.imageContextThisTurn != "" && !isUnsupportedHistoricalMonitorQuestion(userMsg) {
-			e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
+			e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 			return "", false
 		}
-		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackTimeWindow, dispatch.latency)
+		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackTimeWindow, dispatch.latency)
 		return e.emitMonitorHistoryHardBlock(), true
 	}
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
@@ -1385,7 +1385,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		return reply, true
 	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
-		return e.tryPhase1Cutover(ctx, dispatch, userMsg, onStep)
+		return e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
 	}
 	if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
 		return reply, true
@@ -1395,7 +1395,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		return "", false
 	}
 
-	e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
+	e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 	return "", false
 }
 
@@ -1438,7 +1438,7 @@ func (e *Engine) tryPlannerDiagnosisClarification(dispatch plannerDispatchResult
 			return "", false
 		}
 		reply := diagnosisVagueFailureClarificationReply
-		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackUnresolvedTarget, dispatch.latency)
+		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: reply,
@@ -1449,7 +1449,7 @@ func (e *Engine) tryPlannerDiagnosisClarification(dispatch plannerDispatchResult
 			return "", false
 		}
 		reply := diagnosisMissingTargetClarificationReply
-		e.emitPlannerTrace(dispatch.result, intent.CutoverStatusFallbackUnresolvedTarget, dispatch.latency)
+		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: reply,
@@ -1519,13 +1519,13 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 	return plannerDispatchResult{result: result, latency: latency, snapshot: snapshot}
 }
 
-func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
 	result := dispatch.result
 	result.Plan = planWithUserTextMonitorMetrics(result.Plan, userMsg)
 	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsRoutingIntent(result.Plan.Intent) {
 		return "", false
 	}
-	if status, ok := e.phase1CutoverCandidateStatus(result); !ok {
+	if status, ok := e.phase1RouteCandidateStatus(result); !ok {
 		e.emitPlannerTrace(result, status, dispatch.latency)
 		return "", false
 	}
@@ -1552,7 +1552,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 		if intent.IsRoutingIntent(result.Plan.Intent) {
 			handled = handler.DispatchRoute(ctx, req)
 		} else {
-			e.emitPlannerTrace(result, intent.CutoverStatusFallbackIneligible, dispatch.latency)
+			e.emitPlannerTrace(result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 			return "", false
 		}
 	}
@@ -1565,7 +1565,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 					reply = msg
 				}
 				e.pendingResourceSelection = nil
-				e.emitPlannerTrace(result, intent.CutoverStatusFailureAfterTool, dispatch.latency)
+				e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, dispatch.latency)
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: reply,
@@ -1581,7 +1581,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 						UserText: userMsg,
 					}
 					handled = handler.HandleMonitorQuery(ctx, req)
-					e.emitPlannerTrace(resumed, handled.CutoverStatus, dispatch.latency)
+					e.emitPlannerTrace(resumed, handled.RouteStatus, dispatch.latency)
 					e.annotateHandlerResultForUserQuestion(&handled, resumed.Plan, e.lastUserMsg)
 					reply := handled.Reply
 					if handled.Status == intent.HandlerStatusHandled {
@@ -1597,7 +1597,7 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 				}
 				e.pendingResourceSelection = selection
 				reply := renderResourceSelectionPrompt(*selection)
-				e.emitPlannerTrace(result, intent.CutoverStatusSelectionRequired, dispatch.latency)
+				e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: reply,
@@ -1606,14 +1606,14 @@ func (e *Engine) tryPhase1Cutover(ctx context.Context, dispatch plannerDispatchR
 			}
 		}
 		if handled.FallbackReason == intent.FallbackTimeWindow {
-			e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
+			e.emitPlannerTrace(result, handled.RouteStatus, dispatch.latency)
 			return e.emitMonitorHistoryHardBlock(), true
 		}
-		e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
+		e.emitPlannerTrace(result, handled.RouteStatus, dispatch.latency)
 		return "", false
 	}
 
-	e.emitPlannerTrace(result, handled.CutoverStatus, dispatch.latency)
+	e.emitPlannerTrace(result, handled.RouteStatus, dispatch.latency)
 	e.annotateHandlerResultForUserQuestion(&handled, result.Plan, e.lastUserMsg)
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
@@ -1666,7 +1666,7 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		Resolver: pending.snapshot,
 		UserText: pending.originalUserMsg,
 	})
-	e.emitPlannerTrace(intent.PlannerResult{Plan: resumedPlan}, handled.CutoverStatus, 0)
+	e.emitPlannerTrace(intent.PlannerResult{Plan: resumedPlan}, handled.RouteStatus, 0)
 	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, pending.originalUserMsg)
 
 	reply := handled.Reply
@@ -1959,7 +1959,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 	}
 	if e.knowledgeRetriever == nil {
 		e.emitRetrievalTrace(observability.RetrievalTrace{})
-		e.emitPlannerTrace(result, intent.CutoverStatusFallbackRetrievalDisabled, dispatch.latency)
+		e.emitPlannerTrace(result, intent.RouteStatusFallbackRetrievalDisabled, dispatch.latency)
 		return "", false
 	}
 
@@ -1991,7 +1991,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 		trace.RefusedReason = "no_evidence"
 		trace.RankingErrorCandidate = true
 		e.emitRetrievalTrace(trace)
-		e.emitPlannerTrace(result, intent.CutoverStatusFallbackRetrievalMiss, dispatch.latency)
+		e.emitPlannerTrace(result, intent.RouteStatusFallbackRetrievalMiss, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: ragNoEvidenceReply,
@@ -2048,7 +2048,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispat
 
 	e.emitRetrievalTrace(trace)
 	e.emitOutcomeTrace(outcome)
-	e.emitPlannerTrace(result, intent.CutoverStatusDispatchedRetrieval, dispatch.latency)
+	e.emitPlannerTrace(result, intent.RouteStatusDispatchedRetrieval, dispatch.latency)
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
 		Content: clipKnowledgeHistoryContent(displayReply),
@@ -2257,10 +2257,10 @@ func clipKnowledgeHistoryContent(content string) string {
 	return string(runes[:maxKnowledgeHistoryRunes]) + knowledgeHistoryClipMarker
 }
 
-func (e *Engine) commonPlannerCandidateStatus(result intent.PlannerResult) (intent.CutoverStatus, bool) {
+func (e *Engine) commonPlannerCandidateStatus(result intent.PlannerResult) (intent.RouteStatus, bool) {
 	if result.Fallback || result.LastValidationCode != "" ||
 		result.Plan.SchemaVersion != intent.SchemaVersion || result.Plan.Intent == "" {
-		return intent.CutoverStatusFallbackInvalid, false
+		return intent.RouteStatusFallbackInvalid, false
 	}
 	// PR #61 (2026-05-21): planner's HardBlockHint is advisory only and no
 	// longer participates in cutover routing — it ships to trace via
@@ -2270,22 +2270,22 @@ func (e *Engine) commonPlannerCandidateStatus(result intent.PlannerResult) (inte
 	// path (emitMonitorHistoryHardBlock), both of which run AFTER this
 	// candidate-status check.
 	if result.Plan.Confidence < 0.60 {
-		return intent.CutoverStatusFallbackLowConfidence, false
+		return intent.RouteStatusFallbackLowConfidence, false
 	}
-	return intent.CutoverStatusDispatched, true
+	return intent.RouteStatusDispatched, true
 }
 
-func (e *Engine) phase1CutoverCandidateStatus(result intent.PlannerResult) (intent.CutoverStatus, bool) {
+func (e *Engine) phase1RouteCandidateStatus(result intent.PlannerResult) (intent.RouteStatus, bool) {
 	if result.Plan.Retrieval.Enabled {
-		return intent.CutoverStatusFallbackIneligible, false
+		return intent.RouteStatusFallbackIneligible, false
 	}
 	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsRoutingIntent(result.Plan.Intent) {
-		return intent.CutoverStatusFallbackIneligible, false
+		return intent.RouteStatusFallbackIneligible, false
 	}
-	if _, ok := e.intentCutoverIntents[result.Plan.Intent]; !ok {
-		return intent.CutoverStatusFallbackIneligible, false
+	if _, ok := e.intentRouteIntents[result.Plan.Intent]; !ok {
+		return intent.RouteStatusFallbackIneligible, false
 	}
-	return intent.CutoverStatusDispatched, true
+	return intent.RouteStatusDispatched, true
 }
 
 const (
@@ -2300,7 +2300,7 @@ func countPlannerSnapshotInstances(snapshot entity.RegistrySnapshot) int {
 	return len(snapshot.Instances)
 }
 
-func (e *Engine) emitPlannerTrace(result intent.PlannerResult, status intent.CutoverStatus, latency time.Duration) {
+func (e *Engine) emitPlannerTrace(result intent.PlannerResult, status intent.RouteStatus, latency time.Duration) {
 	if e.plannerTraceObserver == nil {
 		return
 	}
@@ -2309,7 +2309,7 @@ func (e *Engine) emitPlannerTrace(result intent.PlannerResult, status intent.Cut
 		Model:   e.intentPlannerModel,
 		Latency: latency,
 	})
-	trace.CutoverStatus = string(status)
+	trace.RouteStatus = string(status)
 	e.plannerTraceObserver(trace)
 }
 
@@ -2958,7 +2958,7 @@ func isAllAcceptedKeys(kind string, payload map[string]any) bool {
 
 // recordSelectedInstanceFromEnvelope sets SessionState.SelectedInstance{ID,Name}
 // when the handler envelope identifies exactly one instance subject. Called
-// only from cutover/resume success paths — see callers in tryPhase1Cutover
+// only from cutover/resume success paths — see callers in tryRouteDispatch
 // and tryResumeResourceSelection.
 //
 // Gates:

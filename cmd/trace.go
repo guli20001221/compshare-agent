@@ -149,14 +149,14 @@ func intentPlannerShadowEnabled(getenv getenvFunc) bool {
 	return getenv("USE_INTENT_PLANNER") == "shadow"
 }
 
-func plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled bool, cutoverIntents []intent.Intent) string {
+func plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled bool, routeIntents []intent.Intent) string {
 	mode := "off"
 	if plannerDispatchEnabled {
 		mode = "dispatch"
 	} else if shadowEnabled {
 		mode = "shadow"
 	}
-	return fmt.Sprintf("planner_mode=%s cutover_intents=%s", mode, formatCutoverIntents(cutoverIntents))
+	return fmt.Sprintf("planner_mode=%s cutover_intents=%s", mode, formatRouteIntents(routeIntents))
 }
 
 func groundedRendererRuntimeLine(mode string) string {
@@ -303,7 +303,7 @@ func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string)
 	return pilots, unknown
 }
 
-func plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled bool, cutoverIntents []intent.Intent) observability.RuntimeTrace {
+func plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled bool, routeIntents []intent.Intent) observability.RuntimeTrace {
 	mode := "off"
 	if plannerDispatchEnabled {
 		mode = "dispatch"
@@ -311,25 +311,25 @@ func plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled bool, cutoverInte
 		mode = "shadow"
 	}
 	return observability.RuntimeTrace{
-		PlannerMode:    mode,
-		CutoverIntents: cutoverIntentLabels(cutoverIntents),
+		PlannerMode:  mode,
+		RouteIntents: routeIntentLabels(routeIntents),
 	}
 }
 
-func formatCutoverIntents(cutoverIntents []intent.Intent) string {
-	labels := cutoverIntentLabels(cutoverIntents)
+func formatRouteIntents(routeIntents []intent.Intent) string {
+	labels := routeIntentLabels(routeIntents)
 	if len(labels) == 0 {
 		return "[]"
 	}
 	return "[" + strings.Join(labels, ",") + "]"
 }
 
-func cutoverIntentLabels(cutoverIntents []intent.Intent) []string {
-	if len(cutoverIntents) == 0 {
+func routeIntentLabels(routeIntents []intent.Intent) []string {
+	if len(routeIntents) == 0 {
 		return nil
 	}
-	labels := make([]string, 0, len(cutoverIntents))
-	for _, enabled := range cutoverIntents {
+	labels := make([]string, 0, len(routeIntents))
+	for _, enabled := range routeIntents {
 		switch enabled {
 		case intent.IntentResourceInfo:
 			labels = append(labels, "resource")
@@ -639,7 +639,7 @@ func rerankerTimeoutFromEnv(getenv getenvFunc) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-func defaultCutoverIntents() []intent.Intent {
+func defaultRouteIntents() []intent.Intent {
 	return []intent.Intent{
 		intent.IntentResourceInfo,
 		intent.IntentMonitorQuery,
@@ -656,11 +656,11 @@ func defaultCutoverIntents() []intent.Intent {
 	}
 }
 
-func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []string) {
+func intentPlannerRouteIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []string) {
 	raw := getenv("USE_INTENT_PLANNER_FOR")
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return defaultCutoverIntents(), nil
+		return defaultRouteIntents(), nil
 	}
 	switch strings.ToLower(trimmed) {
 	case "off", "none", "disabled":
@@ -721,8 +721,8 @@ func intentPlannerCutoverIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []s
 	return intents, unknown
 }
 
-func useSeparateShadowRunner(traceEnabled, shadowEnabled, cutoverEnabled bool) bool {
-	return traceEnabled && shadowEnabled && !cutoverEnabled
+func useSeparateShadowRunner(traceEnabled, shadowEnabled, routeEnabled bool) bool {
+	return traceEnabled && shadowEnabled && !routeEnabled
 }
 
 type cliTraceRecorder struct {

@@ -28,7 +28,7 @@ import (
 
 // TestCommonPlannerCandidateStatus_HardBlockHintAdvisoryOnly pins the core
 // behavior change at unit level: HardBlockHint=true alone must produce
-// CutoverStatusDispatched, not CutoverStatusFallbackHardBlockHint. The
+// RouteStatusDispatched, not RouteStatusFallbackHardBlockHint. The
 // previous routing branch is gone — HardBlockHint is now observability
 // only.
 func TestCommonPlannerCandidateStatus_HardBlockHintAdvisoryOnly(t *testing.T) {
@@ -36,7 +36,7 @@ func TestCommonPlannerCandidateStatus_HardBlockHintAdvisoryOnly(t *testing.T) {
 	cases := []struct {
 		name       string
 		result     intent.PlannerResult
-		wantStatus intent.CutoverStatus
+		wantStatus intent.RouteStatus
 		wantOK     bool
 	}{
 		{
@@ -48,7 +48,7 @@ func TestCommonPlannerCandidateStatus_HardBlockHintAdvisoryOnly(t *testing.T) {
 				Retrieval:     intent.Retrieval{Enabled: false},
 				Confidence:    0.9,
 			}},
-			wantStatus: intent.CutoverStatusDispatched,
+			wantStatus: intent.RouteStatusDispatched,
 			wantOK:     true,
 		},
 		{
@@ -60,7 +60,7 @@ func TestCommonPlannerCandidateStatus_HardBlockHintAdvisoryOnly(t *testing.T) {
 				Retrieval:     intent.Retrieval{Enabled: false},
 				Confidence:    0.9,
 			}},
-			wantStatus: intent.CutoverStatusDispatched,
+			wantStatus: intent.RouteStatusDispatched,
 			wantOK:     true,
 		},
 		{
@@ -74,7 +74,7 @@ func TestCommonPlannerCandidateStatus_HardBlockHintAdvisoryOnly(t *testing.T) {
 			}},
 			// HardBlockHint does NOT participate, but low confidence still
 			// triggers fallback (the legitimate non-HardBlockHint reason).
-			wantStatus: intent.CutoverStatusFallbackLowConfidence,
+			wantStatus: intent.RouteStatusFallbackLowConfidence,
 			wantOK:     false,
 		},
 	}

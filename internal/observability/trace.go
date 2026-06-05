@@ -240,7 +240,7 @@ const (
 //
 // Derivation is priority-ordered, NOT a flat prefix sweep of cutover_status
 // (which has 13 values and is set only on the Phase-1 cutover path — see
-// internal/intent/handler.go CutoverStatus*). It maps the unambiguous cutover
+// internal/intent/handler.go RouteStatus*). It maps the unambiguous cutover
 // dispositions, then falls through to what actually executed:
 //
 //  1. dispatched_retrieval            -> knowledge (RAG handler ran)
@@ -254,7 +254,7 @@ const (
 //     ReAct answer, or hard-block / canned
 //     reply)
 //
-// Cutover fallbacks (fallback_*) and failure_after_tool are deliberately NOT
+// Route fallbacks (fallback_*) and failure_after_tool are deliberately NOT
 // mapped by status name: they mean the cutover attempt declined and the turn
 // continued, so the real tier is whatever steps 3-4 observe (typically agent).
 // Returning "" rather than defaulting to agent keeps the realized mix honest —
@@ -263,8 +263,8 @@ const (
 // signal (e.g. a round counter) could promote step 5 from "" to agent.
 func (r TraceRecord) DeriveRealizedTier() string {
 	// cutover_status literals mirror internal/intent/handler.go:42-58
-	// (CutoverStatus*); pinned by TestDeriveRealizedTier.
-	switch r.Planner.CutoverStatus {
+	// (RouteStatus*); pinned by TestDeriveRealizedTier.
+	switch r.Planner.RouteStatus {
 	case "dispatched_retrieval":
 		return RealizedTierKnowledge
 	case "dispatched_agent":
@@ -288,7 +288,7 @@ func (r TraceRecord) DeriveRealizedTier() string {
 // terminal RAG is only a final-answer retrieval workflow; retrieval used inside
 // diagnosis or another agent path remains agent.
 func (r TraceRecord) DeriveActualRuntimeForm() string {
-	switch r.Planner.CutoverStatus {
+	switch r.Planner.RouteStatus {
 	case "dispatched_agent":
 		return RuntimeFormAgent
 	case "dispatched_retrieval":
@@ -329,8 +329,8 @@ func (r TraceRecord) RuntimeFormMismatch() (bool, bool) {
 }
 
 type RuntimeTrace struct {
-	PlannerMode    string   `json:"planner_mode"`
-	CutoverIntents []string `json:"cutover_intents"`
+	PlannerMode  string   `json:"planner_mode"`
+	RouteIntents []string `json:"cutover_intents"`
 }
 
 type PlannerTrace struct {
@@ -346,7 +346,7 @@ type PlannerTrace struct {
 	Slots              PlannerSlots        `json:"slots"`
 	Confidence         float64             `json:"confidence"`
 	HardBlockHint      bool                `json:"hard_block_hint"`
-	CutoverStatus      string              `json:"cutover_status"`
+	RouteStatus        string              `json:"cutover_status"`
 }
 
 type PlannerSkillTrace struct {
@@ -762,7 +762,7 @@ func dateOnly(t time.Time) time.Time {
 }
 
 func traceRuntimeObserved(trace RuntimeTrace) bool {
-	return trace.PlannerMode != "" || len(trace.CutoverIntents) > 0
+	return trace.PlannerMode != "" || len(trace.RouteIntents) > 0
 }
 
 func tracePlannerObserved(trace PlannerTrace) bool {
@@ -780,7 +780,7 @@ func tracePlannerObserved(trace PlannerTrace) bool {
 		trace.Slots.TimeWindow != nil ||
 		trace.Confidence != 0 ||
 		trace.HardBlockHint ||
-		trace.CutoverStatus != ""
+		trace.RouteStatus != ""
 }
 
 func traceEngineHardBlockObserved(trace EngineHardBlockTrace) bool {
@@ -866,8 +866,8 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	if r.Timestamp == "" {
 		r.Timestamp = now.Format(time.RFC3339)
 	}
-	if r.Runtime.CutoverIntents == nil {
-		r.Runtime.CutoverIntents = []string{}
+	if r.Runtime.RouteIntents == nil {
+		r.Runtime.RouteIntents = []string{}
 	}
 	if r.Planner.Slots.TargetRefs == nil {
 		r.Planner.Slots.TargetRefs = []any{}

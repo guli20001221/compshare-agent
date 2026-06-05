@@ -593,7 +593,7 @@ func TestSessionState_FieldsRoundTripWithSelectedAndIntent(t *testing.T) {
 	assert.Equal(t, string(intent.IntentMonitorQuery), roundTripped.AgentSessionState.LastIntent)
 }
 
-// TestPhase1Cutover_Success_PopulatesSessionState is the P1 integration test
+// TestRouteDispatch_Success_PopulatesSessionState is the P1 integration test
 // pinning the M2 writer wiring at engine.go:1198-1199, 1230-1231, 1284-1285.
 //
 // MUTATION-VERIFIED: deleting `e.recordSelectedInstanceFromEnvelope(...)` and
@@ -603,12 +603,13 @@ func TestSessionState_FieldsRoundTripWithSelectedAndIntent(t *testing.T) {
 // cutover dispatch. Confirms the wiring is load-bearing.
 //
 // Drives:
-//   ChatWithOptions
-//     → tryPlannerDispatch
-//     → tryPhase1Cutover
-//     → HandlerStatusHandled branch (engine.go:1228-1232)
-//     → assertions on SessionStateSnapshot
-func TestPhase1Cutover_Success_PopulatesSessionState(t *testing.T) {
+//
+//	ChatWithOptions
+//	  → tryPlannerDispatch
+//	  → tryRouteDispatch
+//	  → HandlerStatusHandled branch (engine.go:1228-1232)
+//	  → assertions on SessionStateSnapshot
+func TestRouteDispatch_Success_PopulatesSessionState(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	exec := &mockExecutor{results: map[string]map[string]any{

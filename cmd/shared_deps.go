@@ -57,8 +57,8 @@ func buildLLMRouter(cfg *config.Config) (*llm.Router, error) {
 }
 
 func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv getenvFunc) error {
-	cutoverIntents, unknownCutover := intentPlannerCutoverIntentsFromEnv(getenv)
-	for _, value := range unknownCutover {
+	routeIntents, unknownRoute := intentPlannerRouteIntentsFromEnv(getenv)
+	for _, value := range unknownRoute {
 		log.Printf("warning: ignoring unknown USE_INTENT_PLANNER_FOR value %q", value)
 	}
 	sessionFactContext, unknownSessionFactContext := sessionFactContextEnabledFromEnv(getenv)
@@ -128,13 +128,13 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 		log.Printf("warning: ignoring unknown PLANNER_STRUCTURED_OUTPUT value %q", unknownPlannerStructuredOutput)
 	}
 
-	cutoverEnabled := len(cutoverIntents) > 0
-	if cutoverEnabled || knowledgeEnabled {
+	routeEnabled := len(routeIntents) > 0
+	if routeEnabled || knowledgeEnabled {
 		deps.IntentPlanner = newCLIPlannerWithStructuredOutput(cfg, plannerStructuredOutput)
 		deps.IntentPlannerModel = cfg.Agent.LLM.Model
-		enabled, cutover := engine.BuildIntentPlannerMaps(cutoverIntents)
+		enabled, routeMap := engine.BuildIntentPlannerMaps(routeIntents)
 		deps.IntentPlannerEnabledIntents = enabled
-		deps.IntentCutoverIntents = cutover
+		deps.IntentRouteIntents = routeMap
 	}
 	return nil
 }

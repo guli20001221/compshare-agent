@@ -279,7 +279,7 @@ func TestApplySharedDepsDefaultsToQwenRRFAndRenderer(t *testing.T) {
 	require.NotNil(t, deps.GroundedRenderer, "default runtime should enable LLM grounded renderer")
 	require.Equal(t, "deepseek-v4-flash", deps.GroundedRendererModel)
 	require.Equal(t, "deepseek-v4-flash", deps.IntentPlannerModel)
-	require.Contains(t, deps.IntentCutoverIntents, intent.IntentPricingQuery, "default runtime should cut over pricing queries")
+	require.Contains(t, deps.IntentRouteIntents, intent.IntentPricingQuery, "default runtime should cut over pricing queries")
 }
 
 func TestRootCommandDoesNotExposeWebSocketServe(t *testing.T) {

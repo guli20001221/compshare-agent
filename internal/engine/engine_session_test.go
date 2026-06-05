@@ -214,7 +214,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"intentPlanner":               true,
 		"intentPlannerModel":          true,
 		"intentPlannerEnabledIntents": true,
-		"intentCutoverIntents":        true,
+		"intentRouteIntents":          true,
 		"knowledgeRetriever":          true,
 		"groundedRenderer":            true,
 		"groundedRendererModel":       true,

@@ -37,38 +37,38 @@ const (
 	FallbackActionNotAllowed FallbackReason = "action_not_allowed"
 )
 
-type CutoverStatus string
+type RouteStatus string
 
 const (
-	CutoverStatusNone       CutoverStatus = ""
-	CutoverStatusDispatched CutoverStatus = "dispatched"
-	// CutoverStatusDispatchedAgent marks a turn the agent-tier dispatch arm
+	RouteStatusNone       RouteStatus = ""
+	RouteStatusDispatched RouteStatus = "dispatched"
+	// RouteStatusDispatchedAgent marks a turn the agent-tier dispatch arm
 	// owned (B8.3 deploy_model). Distinct from "dispatched" (fast-tier route
 	// dispatch) so DeriveRealizedTier maps it to the agent tier rather than fast
 	// — the deploy arm runs a TierAgent LLM match + the orchestrator saga.
-	CutoverStatusDispatchedAgent       CutoverStatus = "dispatched_agent"
-	CutoverStatusFallbackInvalid       CutoverStatus = "fallback_invalid"
-	CutoverStatusFallbackLowConfidence CutoverStatus = "fallback_low_confidence"
-	// CutoverStatusFallbackHardBlockHint (removed PR #61, 2026-05-21):
+	RouteStatusDispatchedAgent       RouteStatus = "dispatched_agent"
+	RouteStatusFallbackInvalid       RouteStatus = "fallback_invalid"
+	RouteStatusFallbackLowConfidence RouteStatus = "fallback_low_confidence"
+	// RouteStatusFallbackHardBlockHint (removed PR #61, 2026-05-21):
 	// planner's HardBlockHint is advisory only — no longer routes. Survives
 	// in PlannerTrace.HardBlockHint for analytics join with
 	// EngineHardBlockTrace. Deterministic refusal comes from keyword
 	// PreBlock + IntentMonitorHistory dispatcher.
-	CutoverStatusFallbackIneligible        CutoverStatus = "fallback_ineligible"
-	CutoverStatusFallbackUnresolvedTarget  CutoverStatus = "fallback_unresolved_target"
-	CutoverStatusFallbackTimeWindow        CutoverStatus = "fallback_time_window"
-	CutoverStatusFailureAfterTool          CutoverStatus = "failure_after_tool"
-	CutoverStatusDispatchedRetrieval       CutoverStatus = "dispatched_retrieval"
-	CutoverStatusFallbackRetrievalMiss     CutoverStatus = "fallback_retrieval_miss"
-	CutoverStatusFallbackRetrievalDisabled CutoverStatus = "fallback_retrieval_disabled"
-	CutoverStatusSelectionRequired         CutoverStatus = "selection_required"
+	RouteStatusFallbackIneligible        RouteStatus = "fallback_ineligible"
+	RouteStatusFallbackUnresolvedTarget  RouteStatus = "fallback_unresolved_target"
+	RouteStatusFallbackTimeWindow        RouteStatus = "fallback_time_window"
+	RouteStatusFailureAfterTool          RouteStatus = "failure_after_tool"
+	RouteStatusDispatchedRetrieval       RouteStatus = "dispatched_retrieval"
+	RouteStatusFallbackRetrievalMiss     RouteStatus = "fallback_retrieval_miss"
+	RouteStatusFallbackRetrievalDisabled RouteStatus = "fallback_retrieval_disabled"
+	RouteStatusSelectionRequired         RouteStatus = "selection_required"
 )
 
 type HandlerResult struct {
 	Status         HandlerStatus
 	Reply          string
 	FallbackReason FallbackReason
-	CutoverStatus  CutoverStatus
+	RouteStatus    RouteStatus
 	ToolAction     string
 	ToolArgs       map[string]any
 	Envelope       *envelope.Envelope
@@ -89,13 +89,13 @@ type HandlerRequest struct {
 	// UserText is the raw user question. Used by route handlers'
 	// deterministic NL filter (e.g. "4090 显存多大" -> filter Name=="4090" out
 	// of the API response). Set by engine.go when dispatching to handlers via
-	// tryPhase1Cutover / tryResumeResourceSelection. Legacy handlers
+	// tryRouteDispatch / tryResumeResourceSelection. Legacy handlers
 	// (HandleResourceInfo / HandleMonitorQuery) ignore this field.
 	UserText string
 	// FallbackInstanceID is the SelectedInstanceID from SessionState. When
 	// TargetRefs is empty and this is non-empty, HandleMonitorQuery uses it
 	// as a default target instead of triggering resource selection.
-	// Set by engine.go from e.sessionState at the tryPhase1Cutover call site.
+	// Set by engine.go from e.sessionState at the tryRouteDispatch call site.
 	FallbackInstanceID string
 }
 
@@ -109,9 +109,9 @@ func NewDemoHandler(executor HandlerExecutor) *DemoHandler {
 
 func HandledResult(reply string) HandlerResult {
 	return HandlerResult{
-		Status:        HandlerStatusHandled,
-		Reply:         reply,
-		CutoverStatus: CutoverStatusDispatched,
+		Status:      HandlerStatusHandled,
+		Reply:       reply,
+		RouteStatus: RouteStatusDispatched,
 	}
 }
 
@@ -119,7 +119,7 @@ func FallbackBeforeTool(reason FallbackReason) HandlerResult {
 	return HandlerResult{
 		Status:         HandlerStatusFallbackBeforeTool,
 		FallbackReason: reason,
-		CutoverStatus:  cutoverStatusForFallback(reason),
+		RouteStatus:    routeStatusForFallback(reason),
 	}
 }
 
@@ -130,9 +130,9 @@ func FailureAfterTool(label string) HandlerResult {
 		reply = label + ": " + reply
 	}
 	return HandlerResult{
-		Status:        HandlerStatusFailureAfterTool,
-		Reply:         reply,
-		CutoverStatus: CutoverStatusFailureAfterTool,
+		Status:      HandlerStatusFailureAfterTool,
+		Reply:       reply,
+		RouteStatus: RouteStatusFailureAfterTool,
 	}
 }
 
@@ -246,16 +246,16 @@ func (h *DemoHandler) HandleMonitorQuery(ctx context.Context, req HandlerRequest
 	return result
 }
 
-func cutoverStatusForFallback(reason FallbackReason) CutoverStatus {
+func routeStatusForFallback(reason FallbackReason) RouteStatus {
 	switch reason {
 	case FallbackMissingTarget, FallbackUnresolvedTarget, FallbackAmbiguousTarget:
-		return CutoverStatusFallbackUnresolvedTarget
+		return RouteStatusFallbackUnresolvedTarget
 	case FallbackTimeWindow:
-		return CutoverStatusFallbackTimeWindow
+		return RouteStatusFallbackTimeWindow
 	case FallbackActionNotAllowed:
-		return CutoverStatusFallbackIneligible
+		return RouteStatusFallbackIneligible
 	default:
-		return CutoverStatusFallbackInvalid
+		return RouteStatusFallbackInvalid
 	}
 }
 
@@ -396,11 +396,11 @@ func failureAfterToolForError(action string, args map[string]any, label string, 
 	var friendly userFacingError
 	if errors.As(err, &friendly) {
 		result := HandlerResult{
-			Status:        HandlerStatusFailureAfterTool,
-			Reply:         friendly.UserMessage(),
-			CutoverStatus: CutoverStatusFailureAfterTool,
-			ToolAction:    action,
-			ToolArgs:      copyArgs(args),
+			Status:      HandlerStatusFailureAfterTool,
+			Reply:       friendly.UserMessage(),
+			RouteStatus: RouteStatusFailureAfterTool,
+			ToolAction:  action,
+			ToolArgs:    copyArgs(args),
 		}
 		return result
 	}

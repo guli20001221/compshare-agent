@@ -96,7 +96,7 @@ var enginePreBlock = router.New(
 //     planner-classified path silently emitted the same reply but no
 //     observer record — partial trace coverage. PR #140 review
 //     finding fixed by routing through here.
-//  3. tryPhase1Cutover → FallbackTimeWindow (engine.go). Same partial-
+//  3. tryRouteDispatch → FallbackTimeWindow (engine.go). Same partial-
 //     trace bug as path 2; same fix.
 //
 // Post-tool error paths (executeTool / friendlyToolErrorMessage with

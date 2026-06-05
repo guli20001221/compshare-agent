@@ -28,7 +28,7 @@ func TestResourceInfoHandler_TargetByNameCallsDescribe(t *testing.T) {
 	})
 
 	require.Equal(t, HandlerStatusHandled, result.Status)
-	assert.Equal(t, CutoverStatusDispatched, result.CutoverStatus)
+	assert.Equal(t, RouteStatusDispatched, result.RouteStatus)
 	assert.Contains(t, result.Reply, "train-a")
 	assert.NotContains(t, result.Reply, "train-b")
 	require.Len(t, exec.calls, 1)
@@ -203,7 +203,7 @@ func TestResourceInfoHandler_AmbiguousNameFallsBackBeforeTool(t *testing.T) {
 
 	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
 	assert.Equal(t, FallbackAmbiguousTarget, result.FallbackReason)
-	assert.Equal(t, CutoverStatusFallbackUnresolvedTarget, result.CutoverStatus)
+	assert.Equal(t, RouteStatusFallbackUnresolvedTarget, result.RouteStatus)
 	assert.Empty(t, exec.calls)
 }
 
@@ -394,7 +394,7 @@ func TestResourceInfoHandler_APIFailureReturnsFriendlyFailure(t *testing.T) {
 	})
 
 	assert.Equal(t, HandlerStatusFailureAfterTool, result.Status)
-	assert.Equal(t, CutoverStatusFailureAfterTool, result.CutoverStatus)
+	assert.Equal(t, RouteStatusFailureAfterTool, result.RouteStatus)
 	assert.Contains(t, result.Reply, FriendlyToolFailureReply)
 	assert.NotContains(t, result.Reply, "raw provider secret error")
 	require.Len(t, exec.calls, 1)
@@ -412,7 +412,7 @@ func TestResourceInfoHandler_ParseFailureReturnsFriendlyFailure(t *testing.T) {
 	})
 
 	assert.Equal(t, HandlerStatusFailureAfterTool, result.Status)
-	assert.Equal(t, CutoverStatusFailureAfterTool, result.CutoverStatus)
+	assert.Equal(t, RouteStatusFailureAfterTool, result.RouteStatus)
 	assert.Contains(t, result.Reply, FriendlyToolFailureReply)
 	require.Len(t, exec.calls, 1)
 	assert.Equal(t, "DescribeCompShareInstance", result.ToolAction)

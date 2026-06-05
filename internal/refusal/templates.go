@@ -7,7 +7,7 @@
 //     edits across the engine.
 //  3. Multiple routing decision points that share a refusal (e.g. the
 //     monitor-history reply reused at 5 sites in engine.Chat /
-//     tryPlannerDispatch / tryPhase1Cutover) read from a single source.
+//     tryPlannerDispatch / tryRouteDispatch) read from a single source.
 //
 // New refusal categories add to BOTH the Category* and the reply-text
 // constants here, then are wired into internal/router or other callers.

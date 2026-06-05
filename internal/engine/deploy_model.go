@@ -203,13 +203,13 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchRes
 }
 
 // deployReply emits the planner trace and appends the assistant message, then
-// returns (reply, true). The status is always CutoverStatusDispatchedAgent: the
+// returns (reply, true). The status is always RouteStatusDispatchedAgent: the
 // agent-tier deploy arm owned the turn (TierAgent match + orchestrator saga), so
 // DeriveRealizedTier labels it the agent tier — mirroring how route dispatch
 // emits "dispatched"→fast even on refusal. Centralizes the three return-side
 // concerns so every exit path of tryDeployModel stays consistent.
 func (e *Engine) deployReply(result intent.PlannerResult, latency time.Duration, reply string) (string, bool) {
-	e.emitPlannerTrace(result, intent.CutoverStatusDispatchedAgent, latency)
+	e.emitPlannerTrace(result, intent.RouteStatusDispatchedAgent, latency)
 	e.recordLastIntentFromPlan(result.Plan)
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
