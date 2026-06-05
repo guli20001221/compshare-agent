@@ -243,6 +243,8 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 	assert.Equal(t, 1, trace.TurnIndex)
 	assert.NotEmpty(t, trace.UserMsgHash)
 	assert.Equal(t, 3, trace.Outcome.TotalTokens)
+	assert.Equal(t, 1, trace.Outcome.PromptTokens)
+	assert.Equal(t, 2, trace.Outcome.CompletionTokens)
 	assert.GreaterOrEqual(t, trace.Outcome.TotalLatencyMS, int64(0))
 	assert.Equal(t, int64(7), tenant.TopOrgID)
 	assert.Equal(t, int64(8), tenant.OrgID)

@@ -7,7 +7,8 @@ import (
 )
 
 type BuildOptions struct {
-	MutatingToolsEnabled bool
+	MutatingToolsEnabled    bool
+	IntentScopedReActPrompt bool
 }
 
 // BuildSystem creates the system prompt with user context injected.
@@ -39,11 +40,19 @@ func BuildSystemWithOptions(userContext string, opts BuildOptions) string {
 		b.WriteString("\n\n")
 		b.WriteString(segmentScopeBoundary)
 		b.WriteString("\n\n")
-		b.WriteString(segmentMutatingRules)
+		if opts.IntentScopedReActPrompt {
+			b.WriteString(segmentIntentScopedMutatingRules)
+		} else {
+			b.WriteString(segmentMutatingRules)
+		}
 		b.WriteString("\n\n")
 		b.WriteString(segmentKnowledgeBoundary)
 		b.WriteString("\n\n")
-		b.WriteString(segmentMutatingReplyStyle)
+		if opts.IntentScopedReActPrompt {
+			b.WriteString(segmentIntentScopedMutatingReplyStyle)
+		} else {
+			b.WriteString(segmentMutatingReplyStyle)
+		}
 		b.WriteString("\n")
 	} else {
 		b.WriteString(segmentReadOnlyCapabilities)
@@ -54,7 +63,11 @@ func BuildSystemWithOptions(userContext string, opts BuildOptions) string {
 		b.WriteString("\n\n")
 		b.WriteString(segmentScopeBoundary)
 		b.WriteString("\n\n")
-		b.WriteString(segmentReadOnlyBehavior)
+		if opts.IntentScopedReActPrompt {
+			b.WriteString(segmentIntentScopedReadOnlyBehavior)
+		} else {
+			b.WriteString(segmentReadOnlyBehavior)
+		}
 		b.WriteString("\n\n")
 		b.WriteString(segmentKnowledgeBoundary)
 		b.WriteString("\n\n")

@@ -142,6 +142,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_REACT_HISTORY_COMPACTION value %q\n", unknownReactHistoryCompaction)
 	}
 	eng.SetReactHistoryCompactionEnabled(reactHistoryCompaction)
+	intentScopedReActPrompt, unknownIntentScopedReActPrompt := intentScopedReActPromptEnabledFromEnv(os.Getenv)
+	if unknownIntentScopedReActPrompt != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_INTENT_SCOPED_REACT_PROMPT value %q\n", unknownIntentScopedReActPrompt)
+	}
+	eng.SetIntentScopedReActPromptEnabled(intentScopedReActPrompt)
 	useSkillExecutor, unknownSkillExecutor := useSkillExecutorFromEnv(os.Getenv)
 	if unknownSkillExecutor != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR value %q\n", unknownSkillExecutor)

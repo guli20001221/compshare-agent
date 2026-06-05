@@ -1,5 +1,21 @@
 package workflow
 
+var registeredWorkflowActions = []string{
+	"CreateInstanceWorkflow",
+	"StopInstanceWorkflow",
+	"StartInstanceWorkflow",
+	"RebootInstanceWorkflow",
+	"RenameInstanceWorkflow",
+	"ResetPasswordWorkflow",
+	"SetStopSchedulerWorkflow",
+	"CancelStopSchedulerWorkflow",
+	"ResizeInstanceWorkflow",
+	"ResizeDiskWorkflow",
+	"ReinstallInstanceWorkflow",
+	"CreateDiskWorkflow",
+	"CreateCustomImageWorkflow",
+}
+
 // workflowRegistry maps workflow action names to their factory functions.
 var workflowRegistry = map[string]func() *Definition{
 	"CreateInstanceWorkflow":      CreateInstanceDef,
@@ -15,6 +31,12 @@ var workflowRegistry = map[string]func() *Definition{
 	"ReinstallInstanceWorkflow":   ReinstallInstanceDef,
 	"CreateDiskWorkflow":          CreateDiskDef,
 	"CreateCustomImageWorkflow":   CreateCustomImageDef,
+}
+
+// RegisteredWorkflowActions returns workflow action names in prompt-stable
+// human order.
+func RegisteredWorkflowActions() []string {
+	return append([]string(nil), registeredWorkflowActions...)
 }
 
 // IsWorkflowTool reports whether the given action name corresponds to a

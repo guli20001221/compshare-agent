@@ -221,6 +221,18 @@ func reactHistoryCompactionEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+func intentScopedReActPromptEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	value := strings.TrimSpace(getenv("USE_INTENT_SCOPED_REACT_PROMPT"))
+	switch value {
+	case "", "0":
+		return false, ""
+	case "1":
+		return true, ""
+	default:
+		return false, value
+	}
+}
+
 type plannerStructuredOutputMode string
 
 const (
@@ -718,6 +730,8 @@ type cliTraceRecorder struct {
 	record                observability.TraceRecord
 	start                 time.Time
 	totalTokens           int
+	promptTokens          int
+	completionTokens      int
 	pendingByID           map[string][]int
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
 	plannerTraceSupplier  func() observability.PlannerTrace
@@ -877,6 +891,8 @@ func (r *cliTraceRecorder) AddTokenUsage(usage llm.TokenUsage) {
 		return
 	}
 	r.totalTokens += llmTokenUsageTotal(usage)
+	r.promptTokens += usage.PromptTokens
+	r.completionTokens += usage.CompletionTokens
 }
 
 func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {
@@ -963,6 +979,8 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	}
 	r.record.Outcome.TotalLatencyMS = end.Sub(r.start).Milliseconds()
 	r.record.Outcome.TotalTokens = r.totalTokens
+	r.record.Outcome.PromptTokens = r.promptTokens
+	r.record.Outcome.CompletionTokens = r.completionTokens
 	for _, call := range r.record.ToolCalls {
 		if call.TurnIndex == r.record.TurnIndex && call.Action == "GetCompShareInstanceMonitor" {
 			r.record.Freshness.MonitorCallInCurrentTurn = true
@@ -976,6 +994,8 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 
 func (r *cliTraceRecorder) addPlannerTokens(trace observability.PlannerTrace) {
 	r.totalTokens += trace.InputTokens + trace.OutputTokens
+	r.promptTokens += trace.InputTokens
+	r.completionTokens += trace.OutputTokens
 }
 
 func llmTokenUsageTotal(usage llm.TokenUsage) int {

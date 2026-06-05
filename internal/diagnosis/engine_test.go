@@ -122,7 +122,7 @@ func TestEngine_Run_ConcludeAtFirstStep(t *testing.T) {
 func TestEngine_Run_AllStepsPass_Fallback(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"State": "Running"},
-		"DescribeFirewall":         {"Port22": "open"},
+		"DescribeFirewall":          {"Port22": "open"},
 	}}
 	onStep, _ := collectEvents()
 
@@ -340,6 +340,20 @@ func TestRegistry_IsDiagnosisTool(t *testing.T) {
 	assert.False(t, IsDiagnosisTool("DescribeCompShareInstance"))
 	assert.False(t, IsDiagnosisTool("NonExistent"))
 	assert.False(t, IsDiagnosisTool(""))
+}
+
+func TestRegisteredDiagnosisActionsMatchRegistry(t *testing.T) {
+	actions := RegisteredDiagnosisActions()
+	seen := map[string]bool{}
+	for _, action := range actions {
+		assert.True(t, IsDiagnosisTool(action), "registered action list contains unknown diagnosis %s", action)
+		assert.False(t, seen[action], "duplicate diagnosis action %s", action)
+		seen[action] = true
+	}
+	assert.Len(t, actions, len(chainRegistry), "registered diagnosis action list must match registry size")
+	for action := range chainRegistry {
+		assert.True(t, seen[action], "diagnosis action %s missing from stable list", action)
+	}
 }
 
 func TestRegistry_GetChain(t *testing.T) {

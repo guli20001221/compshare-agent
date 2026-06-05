@@ -603,6 +603,8 @@ func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 type OutcomeTrace struct {
 	TotalLatencyMS             int64 `json:"total_latency_ms,omitempty"`
 	TotalTokens                int   `json:"total_tokens,omitempty"`
+	PromptTokens               int   `json:"prompt_tokens,omitempty"`
+	CompletionTokens           int   `json:"completion_tokens,omitempty"`
 	AttemptedHallucinatedCount int   `json:"attempted_hallucinated_count,omitempty"`
 	// EscapedHallucinatedCount counts turns where the cited-contract
 	// retry was skipped or failed. Note: turns aborted by the per-turn
