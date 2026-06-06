@@ -391,6 +391,41 @@ func TestBuildRAGMessagesPromptEncodesThirdPartyToolIntegrationPattern(t *testin
 	}
 }
 
+func TestBuildRAGMessagesEncodesPlatformVsSelfHostAntiConfusion(t *testing.T) {
+	// Parity follow-up (2026-06-06): the platform 256-Q parity on the merged
+	// (687 platform + 29 external) index showed retrieval Top-3 is unchanged at
+	// aggregate AND per-group, but external self-hosting serving chunks
+	// (ext-ollama-openai-001, ext-vllm-serving-001) are topically adjacent to
+	// the ModelVerse hosted-OpenAI-compatible-API cluster (golden 0194/0196/
+	// 0198/0202/0234) and DO get retrieved into those questions' top-3 at
+	// runtime. A "call hosted model X via the OpenAI API" question must not be
+	// answered with "run vLLM/Ollama in your instance" — that is a different
+	// scenario. NOTE: a single-variable A/B smoke (anchor vs no-anchor, both
+	// external-on) found the existing guards (third-party addendum + anti-fab
+	// anchors + the reranker keeping platform chunks rank-1 + grounded-renderer
+	// citation discipline) already keep all 6 platform-correct; the external
+	// chunk is retrieved-but-not-cited in BOTH builds. So this anchor is
+	// DEFENSIVE INSURANCE — not a proven-necessary fix — making the rule
+	// explicit as the external corpus scales (Phase 5) and collision pressure
+	// grows (memory feedback_hybrid_recall_introduces_fab). Kept global; does
+	// not weaken anti-fab anchor #4.
+	messages := BuildRAGMessages("test q", []RAGReference{
+		{Number: 1, Title: "t", Content: "c"},
+	}, false, false)
+	system := messages[0].Content
+	for _, want := range []string{
+		"平台托管 API 与实例内自建推理服务的区分",
+		"按平台托管的 OpenAI 兼容 API 作答",
+		"不要建议用户在实例里用 vLLM / Ollama / SGLang 自建服务来调用平台模型",
+		"不要混填平台的 Base URL / API Key",
+		"CUDA_VISIBLE_DEVICES",
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("platform-vs-self-host anti-confusion anchor %q missing in system prompt:\n%s", want, system)
+		}
+	}
+}
+
 func TestBuildRAGMessagesRetryModeUnchanged(t *testing.T) {
 	// Stage 5 (2026-05-19): retry mode encodes the cited_guard contract
 	// (retry-no-cite tail). The Stage 5 prompt rewrite explicitly does
