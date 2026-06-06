@@ -1227,26 +1227,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 				content = ragNoEvidenceReply
 			}
-			// Agentic-RAG synthesis guard (P3): when SearchKnowledge fed the agent
-			// evidence this turn, the final answer must not dump >=32-rune raw
-			// chunk content. This is the route-independent no-raw-leak discipline
-			// that BuildRAGMessages+cited-strip give terminal RAG but a ReAct tool
-			// does not. cite-grounding is verified empirically by the P3 substance
-			// gate (anchored token from the expected chunk); P5 generalizes a
-			// route-independent cite validator. Inert unless the flag exposed the
-			// tool, so flag-off is byte-identical.
-			if e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
-				if lerr := knowledge.ValidateNoRawEvidenceLeak(content, e.searchKnowledgeHitsThisTurn); lerr != nil {
-					if e.hardBlockObserver != nil {
-						e.hardBlockObserver(observability.EngineHardBlockTrace{
-							Hit:         true,
-							Category:    "search_knowledge_raw_leak",
-							TriggeredBy: observability.HardBlockTriggerPostLLM,
-						})
-					}
-					content = ragNoEvidenceReply
-				}
-			}
+			content = e.guardSearchKnowledgeSynthesis(content)
 			// Replay buffered streaming deltas when the LLM content was returned
 			// verbatim. If an engine guard overwrote content, emit the canonical
 			// override as a single chunk so the SSE stream matches the persisted
@@ -2713,6 +2694,32 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	empty := retrieved.Empty || len(ledger.Items) == 0
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
 	return searchKnowledgeResultJSON(ledger, empty)
+}
+
+// guardSearchKnowledgeSynthesis enforces the no-raw-leak discipline on the final
+// ReAct answer when SearchKnowledge fed the agent evidence this turn (P3). The
+// answer must not dump >=32-rune raw chunk content — the route-independent
+// discipline BuildRAGMessages+cited-strip give terminal RAG but a ReAct tool does
+// not. On leak it records a hardblock trace and replaces the answer with the
+// canned no-evidence reply. cite-grounding is verified empirically by the P3
+// substance gate; P5 generalizes a route-independent cite validator. No-op (and
+// thus byte-identical) when SearchKnowledge did not run this turn — which is
+// always the case while the COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate is off.
+func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
+	if !e.searchKnowledgeRanThisTurn || len(e.searchKnowledgeHitsThisTurn) == 0 {
+		return content
+	}
+	if lerr := knowledge.ValidateNoRawEvidenceLeak(content, e.searchKnowledgeHitsThisTurn); lerr != nil {
+		if e.hardBlockObserver != nil {
+			e.hardBlockObserver(observability.EngineHardBlockTrace{
+				Hit:         true,
+				Category:    "search_knowledge_raw_leak",
+				TriggeredBy: observability.HardBlockTriggerPostLLM,
+			})
+		}
+		return ragNoEvidenceReply
+	}
+	return content
 }
 
 func searchKnowledgeArg(args map[string]any, key string) string {
