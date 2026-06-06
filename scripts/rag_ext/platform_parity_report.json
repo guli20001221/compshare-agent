@@ -1,0 +1,466 @@
+{
+  "aggregate_parity": true,
+  "changed_top3": [
+    {
+      "A_top3": [
+        "w0-windows-windows-20260511182054-windows-8da15672",
+        "w0-windows-gitlab-compshare-docs-operation--0fc9b487",
+        "w0-login-gitlab-compshare-docs-logininsta-a20e052e"
+      ],
+      "B_top3": [
+        "w0-windows-windows-20260511182054-windows-8da15672",
+        "w0-windows-gitlab-compshare-docs-operation--f0e9da75",
+        "w0-windows-gitlab-compshare-docs-operation--0fc9b487"
+      ],
+      "group": "windows_rdp_sound",
+      "qid": "w0-golden-0001",
+      "question": "远程桌面没声音该怎么处理"
+    },
+    {
+      "A_top3": [
+        "w0-modelverse-gitlab-compshare-docs-modelverse-c9767399",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-0d6911f2",
+        "w0-modelverse-gitlab-compshare-docs-quick-star-d13f0e02"
+      ],
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-modelverse-c9767399",
+        "w0-modelverse-gitlab-compshare-docs-quick-star-d13f0e02",
+        "w0-modelverse-gitlab-compshare-docs-model-comp-08005f89"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0036",
+      "question": "我在 CherryStudio 里添加了 GPT 模型但调用失败，应该怎么设置 API 地址和协议？"
+    },
+    {
+      "A_top3": [
+        "w0-driver_cuda-feishu-usage-faq-latest-feishu-u-8f6c7531",
+        "w0-image-feishu-usage-faq-latest-feishu-u-e12145e1",
+        "w0-driver_cuda-gitlab-compshare-docs-operation--1c2ab4b4"
+      ],
+      "B_top3": [
+        "w0-driver_cuda-feishu-usage-faq-latest-feishu-u-8f6c7531",
+        "w0-image-feishu-usage-faq-latest-feishu-u-e12145e1",
+        "ext-gpu-not-detected-001"
+      ],
+      "group": "cuda_nvidia_driver",
+      "qid": "w0-golden-0052",
+      "question": "为什么我的 SD-WebUI 用着用着就自动断开了，而且运行 nvidia-smi 也看不到显卡？"
+    },
+    {
+      "A_top3": [
+        "w0-image-feishu-usage-faq-latest-feishu-u-7feab1e4",
+        "w0-image-gitlab-compshare-docs-operation--e2f1ddda",
+        "w0-image-feishu-usage-faq-latest-feishu-u-f5ab9804"
+      ],
+      "B_top3": [
+        "w0-image-feishu-usage-faq-latest-feishu-u-7feab1e4",
+        "ext-ollama-openai-001",
+        "w0-image-feishu-usage-faq-latest-feishu-u-f5ab9804"
+      ],
+      "group": "image_types_gpu_specs",
+      "qid": "w0-golden-0058",
+      "question": "在 CompShare 上跑 Dify 时，怎么让它调用我实例里部署的 Ollama 服务？"
+    },
+    {
+      "A_top3": [
+        "w0-billing_rule-gitlab-compshare-docs-gpus-team--351bea18",
+        "w0-login-gitlab-compshare-docs-uaccount-t-6c17f916",
+        "w0-billing_rule-gitlab-compshare-docs-gpus-team--36418a86"
+      ],
+      "B_top3": [
+        "w0-billing_rule-gitlab-compshare-docs-gpus-team--351bea18",
+        "ext-gpu-visible-devices-001",
+        "w0-login-gitlab-compshare-docs-uaccount-t-6c17f916"
+      ],
+      "group": "invoice_refund_arrears",
+      "qid": "w0-golden-0063",
+      "question": "我们公司想给几个员工分配不同的 GPU 使用额度，这个该怎么操作？"
+    },
+    {
+      "A_top3": [
+        "w0-image-feishu-usage-faq-latest-feishu-u-4b20eaec",
+        "w0-login-gitlab-compshare-docs-operation--ac685d66",
+        "w0-resource_purchase-gitlab-compshare-docs-operation--507f6898"
+      ],
+      "B_top3": [
+        "w0-image-feishu-usage-faq-latest-feishu-u-4b20eaec",
+        "ext-gpu-hf-download-001",
+        "w0-resource_purchase-gitlab-compshare-docs-operation--507f6898"
+      ],
+      "group": "image_types_gpu_specs",
+      "qid": "w0-golden-0064",
+      "question": "我在用 CompShare 的云主机，从 Huggingface 拉模型权重特别慢，有没有什么办法能快一点？"
+    },
+    {
+      "A_top3": [
+        "w0-billing_rule-gitlab-compshare-docs-bill-f41fabd1",
+        "w0-image-feishu-usage-faq-latest-feishu-u-6b8a3fb5",
+        "w0-billing_rule-gitlab-compshare-docs-overview-s-60c2715c"
+      ],
+      "B_top3": [
+        "w0-billing_rule-gitlab-compshare-docs-bill-f41fabd1",
+        "w0-billing_rule-gitlab-compshare-docs-overview-s-60c2715c",
+        "w0-billing_rule-gitlab-compshare-docs-billdescri-122e9f8b"
+      ],
+      "group": "billing_mode_shutdown",
+      "qid": "w0-golden-0070",
+      "question": "我想租一台24G显存的3090跑模型，按小时计费的话每小时要多少钱？"
+    },
+    {
+      "A_top3": [
+        "w0-image-gitlab-compshare-docs-operation--0c4bead7",
+        "w0-image-gitlab-compshare-docs-createreso-bfe98826",
+        "w0-image-gitlab-compshare-docs-operation--9bf5d8ba"
+      ],
+      "B_top3": [
+        "w0-image-gitlab-compshare-docs-createreso-bfe98826",
+        "w0-image-gitlab-compshare-docs-operation--9bf5d8ba",
+        "w0-resource_purchase-gitlab-compshare-docs-operation--db6a66e8"
+      ],
+      "group": "image_types_gpu_specs",
+      "qid": "w0-golden-0084",
+      "question": "我想用 PyTorch 跑模型，有没有现成的环境可以直接部署，不用自己装驱动和框架？"
+    },
+    {
+      "A_top3": [
+        "w0-image-feishu-usage-faq-latest-feishu-u-4ab156ea",
+        "w0-image-gitlab-compshare-docs-gpus-image-4320cc3b",
+        "w0-image-gitlab-compshare-docs-imagecommu-b7c269ff"
+      ],
+      "B_top3": [
+        "w0-image-feishu-usage-faq-latest-feishu-u-4ab156ea",
+        "w0-image-gitlab-compshare-docs-imagecommu-b7c269ff",
+        "w0-image-gitlab-compshare-docs-operation--e031fc2c"
+      ],
+      "group": "image_types_gpu_specs",
+      "qid": "w0-golden-0090",
+      "question": "我想把自己调好的环境做成镜像分享给别人，具体怎么操作？"
+    },
+    {
+      "A_top3": [
+        "w0-driver_cuda-gitlab-compshare-docs-operation--a3a4f578",
+        "w0-driver_cuda-gitlab-compshare-docs-operation--f888f2de",
+        "w0-windows-gitlab-compshare-docs-operation--f030f647"
+      ],
+      "B_top3": [
+        "w0-driver_cuda-gitlab-compshare-docs-operation--a3a4f578",
+        "w0-driver_cuda-gitlab-compshare-docs-operation--f888f2de",
+        "ext-gpu-driver-cuda-version-001"
+      ],
+      "group": "cuda_nvidia_driver",
+      "qid": "w0-golden-0126",
+      "question": "我在 Ubuntu 上用 runfile 方式装完 CUDA 后，怎么确认它已经正确生效了？"
+    },
+    {
+      "A_top3": [
+        "w0-modelverse-gitlab-compshare-docs-model-comp-6fa3edd0",
+        "w0-modelverse-gitlab-compshare-docs-quick-star-d13f0e02",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-64824b90"
+      ],
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-model-comp-6fa3edd0",
+        "ext-ollama-openai-001",
+        "w0-modelverse-gitlab-compshare-docs-quick-star-d13f0e02"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0194",
+      "question": "grok-4-1-fast-reasoning 可以通过 OpenAI 的接口来调用吗"
+    },
+    {
+      "A_top3": [
+        "w0-modelverse-gitlab-compshare-docs-model-comp-b9e785dc",
+        "w0-modelverse-gitlab-compshare-docs-quick-star-d13f0e02",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-cc6d7f08"
+      ],
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-model-comp-b9e785dc",
+        "w0-modelverse-gitlab-compshare-docs-quick-star-d13f0e02",
+        "ext-vllm-serving-001"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0196",
+      "question": "Qwen3-vl-Plus 模型可以用 OpenAI 的对话接口来调用吗"
+    },
+    {
+      "A_top3": [
+        "w0-modelverse-gitlab-compshare-docs-model-comp-4ec21dd6",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-cc6d7f08",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-a5caea58"
+      ],
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-modelverse-cc6d7f08",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-a5caea58",
+        "ext-ollama-openai-001"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0198",
+      "question": "gemini-3-pro-preview 这个模型能用 OpenAI 的 chat 接口调用吗"
+    },
+    {
+      "A_top3": [
+        "w0-modelverse-gitlab-compshare-docs-model-comp-8ff5cd67",
+        "w0-modelverse-gitlab-compshare-docs-models-cb297433",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-64824b90"
+      ],
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-model-comp-8ff5cd67",
+        "ext-ollama-openai-001",
+        "w0-modelverse-gitlab-compshare-docs-models-cb297433"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0202",
+      "question": "豆包 1.5 pro 模型能用 OpenAI 的接口来调用吗"
+    },
+    {
+      "A_top3": [
+        "w0-modelverse-gitlab-compshare-docs-models-cb297433",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-e31f6879",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-e7d33faa"
+      ],
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-models-cb297433",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-e31f6879",
+        "w0-modelverse-gitlab-compshare-docs-model-comp-08005f89"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0206",
+      "question": "我想看看 ModelVerse 平台目前支持哪些文本生成模型，该怎么查"
+    },
+    {
+      "A_top3": [
+        "w0-modelverse-gitlab-compshare-docs-quick-star-f3b63355",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-cc6d7f08",
+        "w0-modelverse-gitlab-compshare-docs-gemini-com-435cd920"
+      ],
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-quick-star-f3b63355",
+        "w0-modelverse-gitlab-compshare-docs-gemini-com-435cd920",
+        "w0-modelverse-gitlab-compshare-docs-openai-com-1e2cf542"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0212",
+      "question": "在 ModelVerse 上用 curl 调用 OpenAI 接口，怎么发送非流式的对话请求？"
+    },
+    {
+      "A_top3": [
+        "w0-modelverse-gitlab-compshare-docs-price-6c06a89a",
+        "w0-modelverse-gitlab-compshare-docs-logic-fffb725f",
+        "w0-modelverse-gitlab-compshare-docs-price-154a39f8"
+      ],
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-price-6c06a89a",
+        "w0-modelverse-gitlab-compshare-docs-price-154a39f8",
+        "w0-modelverse-gitlab-compshare-docs-model-comp-1d495b40"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0222",
+      "question": "Kimi K2 系列模型怎么收费，输入和输出价格一样吗"
+    },
+    {
+      "A_top3": [
+        "w0-modelverse-gitlab-compshare-docs-quick-star-ff8a19cd",
+        "w0-modelverse-gitlab-compshare-docs-quick-star-f3b63355",
+        "w0-modelverse-gitlab-compshare-docs-models-cb297433"
+      ],
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-quick-star-ff8a19cd",
+        "ext-ollama-openai-001",
+        "w0-modelverse-gitlab-compshare-docs-quick-star-f3b63355"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0234",
+      "question": "我想用 OpenAI 的 SDK 来调用你们的模型，应该把请求发到哪个地址"
+    }
+  ],
+  "changed_top3_count": 18,
+  "external_chunks": 29,
+  "external_intrusion_count": 10,
+  "external_intrusion_displacing_count": 3,
+  "external_intrusions": [
+    {
+      "B_top3": [
+        "w0-driver_cuda-feishu-usage-faq-latest-feishu-u-8f6c7531",
+        "w0-image-feishu-usage-faq-latest-feishu-u-e12145e1",
+        "ext-gpu-not-detected-001"
+      ],
+      "expected_still_present": true,
+      "external_in_top3": [
+        "ext-gpu-not-detected-001"
+      ],
+      "group": "cuda_nvidia_driver",
+      "qid": "w0-golden-0052",
+      "question": "为什么我的 SD-WebUI 用着用着就自动断开了，而且运行 nvidia-smi 也看不到显卡？"
+    },
+    {
+      "B_top3": [
+        "w0-image-feishu-usage-faq-latest-feishu-u-7feab1e4",
+        "ext-ollama-openai-001",
+        "w0-image-feishu-usage-faq-latest-feishu-u-f5ab9804"
+      ],
+      "expected_still_present": true,
+      "external_in_top3": [
+        "ext-ollama-openai-001"
+      ],
+      "group": "image_types_gpu_specs",
+      "qid": "w0-golden-0058",
+      "question": "在 CompShare 上跑 Dify 时，怎么让它调用我实例里部署的 Ollama 服务？"
+    },
+    {
+      "B_top3": [
+        "w0-billing_rule-gitlab-compshare-docs-gpus-team--351bea18",
+        "ext-gpu-visible-devices-001",
+        "w0-login-gitlab-compshare-docs-uaccount-t-6c17f916"
+      ],
+      "expected_still_present": false,
+      "external_in_top3": [
+        "ext-gpu-visible-devices-001"
+      ],
+      "group": "invoice_refund_arrears",
+      "qid": "w0-golden-0063",
+      "question": "我们公司想给几个员工分配不同的 GPU 使用额度，这个该怎么操作？"
+    },
+    {
+      "B_top3": [
+        "w0-image-feishu-usage-faq-latest-feishu-u-4b20eaec",
+        "ext-gpu-hf-download-001",
+        "w0-resource_purchase-gitlab-compshare-docs-operation--507f6898"
+      ],
+      "expected_still_present": true,
+      "external_in_top3": [
+        "ext-gpu-hf-download-001"
+      ],
+      "group": "image_types_gpu_specs",
+      "qid": "w0-golden-0064",
+      "question": "我在用 CompShare 的云主机，从 Huggingface 拉模型权重特别慢，有没有什么办法能快一点？"
+    },
+    {
+      "B_top3": [
+        "w0-driver_cuda-gitlab-compshare-docs-operation--a3a4f578",
+        "w0-driver_cuda-gitlab-compshare-docs-operation--f888f2de",
+        "ext-gpu-driver-cuda-version-001"
+      ],
+      "expected_still_present": true,
+      "external_in_top3": [
+        "ext-gpu-driver-cuda-version-001"
+      ],
+      "group": "cuda_nvidia_driver",
+      "qid": "w0-golden-0126",
+      "question": "我在 Ubuntu 上用 runfile 方式装完 CUDA 后，怎么确认它已经正确生效了？"
+    },
+    {
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-model-comp-6fa3edd0",
+        "ext-ollama-openai-001",
+        "w0-modelverse-gitlab-compshare-docs-quick-star-d13f0e02"
+      ],
+      "expected_still_present": true,
+      "external_in_top3": [
+        "ext-ollama-openai-001"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0194",
+      "question": "grok-4-1-fast-reasoning 可以通过 OpenAI 的接口来调用吗"
+    },
+    {
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-model-comp-b9e785dc",
+        "w0-modelverse-gitlab-compshare-docs-quick-star-d13f0e02",
+        "ext-vllm-serving-001"
+      ],
+      "expected_still_present": true,
+      "external_in_top3": [
+        "ext-vllm-serving-001"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0196",
+      "question": "Qwen3-vl-Plus 模型可以用 OpenAI 的对话接口来调用吗"
+    },
+    {
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-modelverse-cc6d7f08",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-a5caea58",
+        "ext-ollama-openai-001"
+      ],
+      "expected_still_present": false,
+      "external_in_top3": [
+        "ext-ollama-openai-001"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0198",
+      "question": "gemini-3-pro-preview 这个模型能用 OpenAI 的 chat 接口调用吗"
+    },
+    {
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-model-comp-8ff5cd67",
+        "ext-ollama-openai-001",
+        "w0-modelverse-gitlab-compshare-docs-models-cb297433"
+      ],
+      "expected_still_present": true,
+      "external_in_top3": [
+        "ext-ollama-openai-001"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0202",
+      "question": "豆包 1.5 pro 模型能用 OpenAI 的接口来调用吗"
+    },
+    {
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-quick-star-ff8a19cd",
+        "ext-ollama-openai-001",
+        "w0-modelverse-gitlab-compshare-docs-quick-star-f3b63355"
+      ],
+      "expected_still_present": false,
+      "external_in_top3": [
+        "ext-ollama-openai-001"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0234",
+      "question": "我想用 OpenAI 的 SDK 来调用你们的模型，应该把请求发到哪个地址"
+    }
+  ],
+  "hit_rate_delta": 0.0,
+  "improvement_count": 1,
+  "improvements": [
+    {
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0212",
+      "question": "在 ModelVerse 上用 curl 调用 OpenAI 接口，怎么发送非流式的对话请求？"
+    }
+  ],
+  "mode": "qwen3_rrf",
+  "per_group_parity": true,
+  "per_group_regressions": [],
+  "per_question_displacement_count": 1,
+  "per_question_displacements": [
+    {
+      "A_top3": [
+        "w0-modelverse-gitlab-compshare-docs-model-comp-4ec21dd6",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-cc6d7f08",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-a5caea58"
+      ],
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-modelverse-cc6d7f08",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-a5caea58",
+        "ext-ollama-openai-001"
+      ],
+      "expected": [
+        "w0-modelverse-gitlab-compshare-docs-model-comp-4ec21dd6"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0198",
+      "question": "gemini-3-pro-preview 这个模型能用 OpenAI 的 chat 接口调用吗"
+    }
+  ],
+  "platform_chunks": 687,
+  "questions_evaluated": 256,
+  "review_warnings": {
+    "external_chunks_displacing_expected": 3,
+    "external_chunks_in_platform_top3": 10,
+    "note": "displacements/intrusions are answer-faithfulness REVIEW items, not retrieval-parity failures; address via RAG anti-confusion anchor before flipping COMPSHARE_EXTERNAL_KNOWLEDGE default-on",
+    "per_question_displacements": 1
+  },
+  "top_3_hit_rate_merged": 0.82421875,
+  "top_3_hit_rate_platform_only": 0.82421875,
+  "verdict": "PASS",
+  "workdir": "C:\\Users\\23843\\AppData\\Local\\Temp\\rag_parity"
+}
