@@ -14,7 +14,10 @@ var agenticSearchKnowledgeOn bool
 // (reversible by restart), mirroring the USE_SKILL_REGISTRY precedent (#114).
 func SetAgenticSearchKnowledgeEnabled(v bool) { agenticSearchKnowledgeOn = v }
 
-func agenticSearchKnowledgeEnabled() bool { return agenticSearchKnowledgeOn }
+// AgenticSearchKnowledgeEnabled reports whether the agentic SearchKnowledge gate
+// is on. Used by the engine (P4a) to decide whether to relax the diagnosis
+// instance-demand dead-end so the agent can retrieve evidence first.
+func AgenticSearchKnowledgeEnabled() bool { return agenticSearchKnowledgeOn }
 
 // Registry holds all registered tools for function calling.
 var Registry = []openai.Tool{
@@ -966,7 +969,7 @@ func VisibleRegistryForSubset(subset []string, mutatingEnabled bool) []openai.To
 // runtime mode. Read-only mode hides mutating workflow tools while keeping
 // query, knowledge, and cloud-side diagnosis tools available.
 func VisibleRegistry(mutatingEnabled bool) []openai.Tool {
-	agenticSearch := agenticSearchKnowledgeEnabled()
+	agenticSearch := AgenticSearchKnowledgeEnabled()
 	policies := DefaultToolExecutionPolicies()
 	visible := make([]openai.Tool, 0, len(Registry))
 	for _, tool := range Registry {

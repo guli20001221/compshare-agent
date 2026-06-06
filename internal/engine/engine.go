@@ -1478,6 +1478,18 @@ func (e *Engine) tryPlannerDiagnosisClarification(dispatch plannerDispatchResult
 		if len(dispatch.result.Plan.Slots.TargetRefs) > 0 || countPlannerSnapshotInstances(dispatch.snapshot) <= 1 {
 			return "", false
 		}
+		// P4a (flag-gated, env-reversible): when agentic SearchKnowledge is on, do
+		// NOT short-circuit empty-target diagnosis with the canned which-instance
+		// reply. Fall through to the agent lane so the ReAct loop calls
+		// SearchKnowledge for prior tool/ops evidence FIRST, and asks "which
+		// instance?" only if a Diagnose* tool genuinely needs instance-specific
+		// data (the LLM clarifies in-loop, e.g. before DiagnoseSSH). Flag off =>
+		// byte-identical: the canned dead-end still fires. The TargetRefs>0 and
+		// <=1-instance escape hatches above are unchanged. NOTE: inert for the
+		// symptom set until P4b routes symptom-with-no-target turns here.
+		if tools.AgenticSearchKnowledgeEnabled() {
+			return "", false
+		}
 		reply := diagnosisMissingTargetClarificationReply
 		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{

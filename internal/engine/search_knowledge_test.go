@@ -4,8 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,4 +63,38 @@ func TestExecuteSearchKnowledge_LocalDispatchSubstantive(t *testing.T) {
 	assert.Equal(t, "vllm 显存不足", retriever.calls[0].question)
 	assert.True(t, eng.searchKnowledgeRanThisTurn)
 	assert.Len(t, eng.searchKnowledgeHitsThisTurn, 1)
+}
+
+// TestPlannerDiagnosis_DeadEndRelaxedWhenAgenticOn proves the P4a flag-gated
+// relax: with COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE on, an empty-target diagnosis
+// turn (>1 instance) NO LONGER short-circuits with the canned which-instance
+// reply — it falls through to the agent lane (ReAct) so the loop can call
+// SearchKnowledge first. Flag off is byte-identical (covered by
+// TestPlannerDiagnosisClarificationDoesNotRequireEnabledIntent).
+func TestPlannerDiagnosis_DeadEndRelaxedWhenAgenticOn(t *testing.T) {
+	tools.SetAgenticSearchKnowledgeEnabled(true)
+	defer tools.SetAgenticSearchKnowledgeEnabled(false)
+
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "train-a", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
+		},
+	}, "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+
+	// "我的机器 SSH 连不上了" = "my machine can't SSH"
+	reply, err := eng.Chat(context.Background(), "我的机器 SSH 连不上了", noopStep)
+	require.NoError(t, err)
+	// "哪台实例" = "which instance" — the canned dead-end phrase.
+	assert.NotContains(t, reply, "哪台实例", "flag on: must NOT fire the canned which-instance dead-end")
+	assert.NotEmpty(t, mock.calls, "flag on: empty-target diagnosis falls through to the agent lane (ReAct)")
 }
