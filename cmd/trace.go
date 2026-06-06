@@ -269,6 +269,24 @@ func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// agenticSearchKnowledgeEnabledFromEnv gates the agentic-RAG SearchKnowledge
+// registry tool (P3). Default OFF => the tool is never visible to the planner/
+// ReAct loop and the runtime is byte-identical to before it existed. 1/true/yes/on
+// turns it on (it then appears in full-registry intents and the diagnosis subset
+// once P4a wires it). The returned unknown-value string is non-empty for an
+// unrecognized value so the caller can warn (never silently coerce).
+func agenticSearchKnowledgeEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"))
+	switch strings.ToLower(raw) {
+	case "":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
 func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string) {
 	raw := strings.TrimSpace(getenv("USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"))
 	if raw == "" {

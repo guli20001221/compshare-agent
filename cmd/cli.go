@@ -152,6 +152,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR value %q\n", unknownSkillExecutor)
 	}
 	engine.SetSkillExecutorEnabled(useSkillExecutor)
+	agenticSearch, unknownAgenticSearch := agenticSearchKnowledgeEnabledFromEnv(os.Getenv)
+	if unknownAgenticSearch != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE value %q\n", unknownAgenticSearch)
+	}
+	tools.SetAgenticSearchKnowledgeEnabled(agenticSearch)
 	diagnosisPilots, unknownDiagnosisPilots := skillExecutorDiagnosisPilotsFromEnv(os.Getenv)
 	for _, value := range unknownDiagnosisPilots {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS value %q\n", value)

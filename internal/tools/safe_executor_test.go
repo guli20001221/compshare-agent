@@ -138,7 +138,13 @@ func TestVisibleRegistryFiltersMutatingWorkflowsByDefault(t *testing.T) {
 	}
 	assert.True(t, allNames["StopInstanceWorkflow"])
 	assert.True(t, allNames["CreateCustomImageWorkflow"])
-	assert.Equal(t, len(Registry), len(all))
+	// SearchKnowledge (agentic-RAG, P3) is gated behind
+	// COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE: absent by default even in mutating
+	// mode, so the visible mutating set is the full registry minus that one
+	// gated tool. With the flag on it would equal len(Registry) (see
+	// TestSearchKnowledgeGatedVisibility).
+	assert.False(t, allNames["SearchKnowledge"], "SearchKnowledge is gated off by default")
+	assert.Equal(t, len(Registry)-1, len(all))
 }
 
 func TestDefaultPoliciesAttachMonitorCaps(t *testing.T) {
