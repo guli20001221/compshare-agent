@@ -1466,8 +1466,14 @@ func (e *Engine) tryPlannerDiagnosisClarification(dispatch plannerDispatchResult
 		// instance?" only if a Diagnose* tool genuinely needs instance-specific
 		// data (the LLM clarifies in-loop, e.g. before DiagnoseSSH). Flag off =>
 		// byte-identical: the canned dead-end still fires. The TargetRefs>0 and
-		// <=1-instance escape hatches above are unchanged. NOTE: inert for the
-		// symptom set until P4b routes symptom-with-no-target turns here.
+		// <=1-instance escape hatches above are unchanged. ACTIVE FOR THE SYMPTOM
+		// SET (verified live, zero jitter): naturally-phrased tool-ops/error
+		// symptoms already classify as IntentDiagnosis with empty target (the
+		// 2026-06-03 diagnosis recall fix closed #123), so this relax removes
+		// their pre-ReAct dead-end directly — no planner-prompt change (P4b) is
+		// needed. It does NOT force SearchKnowledge: the ReAct loop may still
+		// clarify in-loop for overly-generic platform symptoms (e.g. "实例突然
+		// 连不上了") instead of retrieving — that in-loop tool choice is the LLM's.
 		if tools.AgenticSearchKnowledgeEnabled() {
 			return "", false
 		}
@@ -2687,13 +2693,81 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		areaText = hint + " " + query
 	}
 	retrieved := e.knowledgeRetriever.Retrieve(query, inferKnowledgeProductArea(areaText))
-	hits := retrieved.HitItems
+	rawHits := retrieved.HitItems
+	// Relevance floor: the retriever always returns top-K, so on a turn whose corpus
+	// lacks a relevant chunk (e.g. a tool-ops symptom with the external KB off) the
+	// top hits are topically IRRELEVANT and feeding them would false-ground the
+	// synthesis. qwen3_rrf's Score IS the qwen3-reranker relevance score, so the
+	// existing weak-evidence floor (weakEvidenceSemanticThreshold=0.5) discriminates
+	// cleanly — verified live: relevant ext-* hits score 0.60-0.99 (kept); irrelevant
+	// platform hits at external-off score 0.01-0.07 (dropped). Drop to no-evidence
+	// when weak, mirroring the terminal-RAG weak refusal (engine.go:2031), so the
+	// agent gets an honest empty ledger and gives general guidance instead of
+	// pretending the irrelevant chunks support a specific answer.
+	hits := rawHits
+	if isWeakEvidence(rawHits, retrieved.HybridMode) {
+		hits = nil
+	}
 	ledger := knowledge.BuildSubstantiveEvidenceLedger(query, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
 	e.searchKnowledgeRanThisTurn = true
 	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
+	// Emit the RAW retrieval as a RetrievalTrace so what SearchKnowledge retrieved
+	// (enabled, hit count, chunk_ids, weak_evidence) is OBSERVABLE in traces and eval
+	// — including when the relevance floor dropped it. Without this the rec.retrieval
+	// block is populated only by the terminal-RAG path. Mirrors
+	// recordDiagnosisKnowledgeProbe's trace emission.
+	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits)
 	empty := retrieved.Empty || len(ledger.Items) == 0
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
 	return searchKnowledgeResultJSON(ledger, empty)
+}
+
+// emitSearchKnowledgeRetrievalTrace records the agent-lane SearchKnowledge
+// retrieval as a RetrievalTrace so it is observable in traces/eval, exactly like
+// the terminal-RAG path and recordDiagnosisKnowledgeProbe. Enabled + Hits +
+// HitItems (the retrieved chunk_ids) populate rec.retrieval; an empty/no-hit
+// retrieval honestly records refused_reason=no_evidence (so a corpus-gap query
+// is visible, not silently presented as grounded). CitedChunkIDs is left to the
+// terminal-RAG cited-strip pass; this is the RETRIEVED set, not the cited set.
+func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowledge.RetrievalResult, hitItems []knowledge.RetrievalHit) {
+	if len(hitItems) == 0 && len(retrieved.Hits) > 0 {
+		hitItems = make([]knowledge.RetrievalHit, 0, len(retrieved.Hits))
+		for _, chunk := range retrieved.Hits {
+			hitItems = append(hitItems, knowledge.RetrievalHit{Chunk: chunk, Kept: true})
+		}
+	}
+	trace := observability.RetrievalTrace{
+		Enabled:                retrieved.Enabled,
+		KBVersion:              retrieved.KBVersion,
+		QueryRaw:               query,
+		QueryNormalized:        retrieved.QueryNormalized,
+		QueryExpansions:        []string{},
+		Hits:                   len(retrieved.Hits),
+		HybridMode:             retrieved.HybridMode,
+		HybridFallbackReason:   retrieved.HybridFallbackReason,
+		EmbeddingLatencyMS:     retrieved.EmbeddingLatencyMS,
+		EmbeddingModel:         retrieved.EmbeddingModel,
+		RerankerMode:           retrieved.RerankerMode,
+		RerankerLatencyMS:      retrieved.RerankerLatencyMS,
+		RerankerFallbackReason: retrieved.RerankerFallbackReason,
+	}
+	if trace.QueryNormalized == "" {
+		trace.QueryNormalized = knowledge.NormalizeQuery(query)
+	}
+	evidences, evidenceErr := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
+	trace.HitItems = projectEvidenceTraceHits(evidences, hitItems)
+	if retrieved.Empty || len(retrieved.Hits) == 0 || len(evidences) == 0 || evidenceErr != nil {
+		trace.RefusedReason = "no_evidence"
+		trace.RankingErrorCandidate = true
+	} else {
+		if isWeakEvidence(hitItems, retrieved.HybridMode) {
+			trace.WeakEvidence = true
+		}
+		if isRankingAmbiguous(hitItems, retrieved.HybridMode) {
+			trace.RankingErrorCandidate = true
+		}
+	}
+	e.emitRetrievalTrace(trace)
 }
 
 // guardSearchKnowledgeSynthesis enforces the no-raw-leak discipline on the final

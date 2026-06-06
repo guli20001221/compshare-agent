@@ -270,18 +270,30 @@ func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
 }
 
 // agenticSearchKnowledgeEnabledFromEnv gates the agentic-RAG SearchKnowledge
-// registry tool (P3). Default OFF => the tool is never visible to the planner/
-// ReAct loop and the runtime is byte-identical to before it existed. 1/true/yes/on
-// turns it on (it then appears in full-registry intents and the diagnosis subset
-// once P4a wires it). The returned unknown-value string is non-empty for an
-// unrecognized value so the caller can warn (never silently coerce).
+// registry tool (P3/P4a). DEFAULT OFF. When on, a symptom/tool-ops diagnosis turn
+// can call SearchKnowledge for prior tool/ops evidence before any Diagnose* tool,
+// and the empty-target which-instance dead-end is relaxed so the loop reaches that
+// retrieval. 1/true/yes/on turns it on; 0/off/false/no turns it off; unknown =>
+// off + non-empty warn string (CLAUDE.md: never silently coerce).
+//
+// WHY DEFAULT-OFF (P5, 2026-06-07): the flip only delivers value when the external
+// corpus is loaded. Live prod-default smoke (COMPSHARE_EXTERNAL_KNOWLEDGE=0) showed
+// tool-ops symptoms (vLLM/SGLang) fire SearchKnowledge but retrieve topically
+// IRRELEVANT platform chunks (resource_purchase/modelverse/image docs) — a
+// false-grounding risk — while platform symptoms (SSH/GPU) correctly clarify and
+// do not fire it. With COMPSHARE_EXTERNAL_KNOWLEDGE=1 the same probes retrieve the
+// RIGHT chunks (ext-gpu-oom-*, ext-sglang-oom-001) and ground well (see
+// eval/trace_gate/after_state_p5_report.md). So default-on is RE-HOMED to the
+// external-KB-on decision: enable this together with COMPSHARE_EXTERNAL_KNOWLEDGE
+// (its own parity-gated flip), not before. The retrieval observability
+// (emitSearchKnowledgeRetrievalTrace) and the relax logic ship now, default-off.
 func agenticSearchKnowledgeEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.TrimSpace(getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"))
 	switch strings.ToLower(raw) {
-	case "":
-		return false, ""
 	case "1", "true", "yes", "on":
 		return true, ""
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
 	default:
 		return false, raw
 	}

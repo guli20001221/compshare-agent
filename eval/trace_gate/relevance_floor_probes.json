@@ -1,0 +1,8 @@
+[
+  { "id": "b-vllm-killed",  "set": "toolops",  "question": "vllm 进程被 kill 了，怎么回事" },
+  { "id": "b-sglang-oom",   "set": "toolops",  "question": "sglang 启动报显存不足" },
+  { "id": "b-ssh",          "set": "platform", "question": "ssh连接超时一直进不去" },
+  { "id": "b-gpu",          "set": "platform", "question": "跑模型的时候说找不到GPU" },
+  { "id": "b-init",         "set": "platform", "question": "实例初始化失败一直卡住" },
+  { "id": "b-port",         "set": "platform", "question": "为什么我开的端口在外面访问不了" }
+]

@@ -66,6 +66,48 @@ func TestExecuteSearchKnowledge_LocalDispatchSubstantive(t *testing.T) {
 	assert.Len(t, eng.searchKnowledgeHitsThisTurn, 1)
 }
 
+// TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits proves the relevance floor:
+// when the retriever returns only topically-IRRELEVANT top-K (qwen3-reranker score
+// below weakEvidenceSemanticThreshold=0.5 — what a tool-ops symptom retrieves when
+// the external KB is off and only platform docs are in the index), SearchKnowledge
+// drops them to an EMPTY ledger so the agent gives honest general guidance instead of
+// false-grounding on irrelevant chunks. Verified live: relevant ext-* hits score
+// 0.60-0.99 (kept); irrelevant platform hits at external-off score 0.01-0.07 (dropped).
+func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:    true,
+		HybridMode: "qwen3_rrf",
+		HitItems: []knowledge.RetrievalHit{{
+			Kept:  true,
+			Score: 0.07, // below the 0.5 semantic floor — topically irrelevant top-K
+			Chunk: knowledge.KBChunk{
+				ChunkID:    "w0-resource_purchase-irrelevant",
+				Title:      "购买资源",
+				SourceType: "platform",
+				Content:    "无关平台文档：如何购买资源与计费说明，与 vllm 进程被 kill 无关。",
+			},
+		}},
+	}}}
+	exec := &mockExecutor{}
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, exec, nil)
+	eng.SetKnowledgeRetriever(retriever)
+
+	tc := openai.ToolCall{
+		ID:   "call-sk",
+		Type: openai.ToolTypeFunction,
+		Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"vllm 进程被 kill"}`},
+	}
+	out := eng.executeTool(context.Background(), tc, noopStep)
+
+	// The weak (irrelevant) hit is NOT in the ledger the agent sees — no false-grounding.
+	assert.NotContains(t, out, "w0-resource_purchase-irrelevant", "weak hit must be dropped from the agent's ledger")
+	// And it is NOT recorded as evidence the agent grounded on (the no-raw-leak guard
+	// would otherwise validate against content the agent never received).
+	assert.Empty(t, eng.searchKnowledgeHitsThisTurn, "weak hits must not be recorded as grounding evidence")
+	// SearchKnowledge still ran (the raw retrieval is traced as weak for observability).
+	assert.True(t, eng.searchKnowledgeRanThisTurn)
+}
+
 // TestPlannerDiagnosis_DeadEndRelaxedWhenAgenticOn proves the P4a flag-gated
 // relax: with COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE on, an empty-target diagnosis
 // turn (>1 instance) NO LONGER short-circuits with the canned which-instance
