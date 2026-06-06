@@ -13,6 +13,7 @@ try:
         ALLOWED_CONFIDENCE,
         ALLOWED_EVIDENCE_KIND,
         ALLOWED_PRODUCT_AREAS,
+        ALLOWED_SOURCE_ORIGINS,
         ALLOWED_SOURCE_TYPES,
         contains_internal_pattern,
         surface_url_rejection_reason,
@@ -22,6 +23,7 @@ except ImportError:  # pragma: no cover
         ALLOWED_CONFIDENCE,
         ALLOWED_EVIDENCE_KIND,
         ALLOWED_PRODUCT_AREAS,
+        ALLOWED_SOURCE_ORIGINS,
         ALLOWED_SOURCE_TYPES,
         contains_internal_pattern,
         surface_url_rejection_reason,
@@ -32,6 +34,7 @@ REQUIRED_FIELDS = {
     "chunk_id",
     "kb_version",
     "source_type",
+    "source_origin",
     "product_area",
     "acl",
     "title",
@@ -99,11 +102,13 @@ def _validate_chunk(row: int, chunk: dict[str, Any]) -> None:
     missing = sorted(field for field in REQUIRED_FIELDS if field not in chunk)
     if missing:
         raise ValueError(f"row {row}: missing required fields: {', '.join(missing)}")
-    for field in ("chunk_id", "kb_version", "source_type", "product_area", "acl", "title", "content", "confidence", "valid_from", "evidence_kind"):
+    for field in ("chunk_id", "kb_version", "source_type", "source_origin", "product_area", "acl", "title", "content", "confidence", "valid_from", "evidence_kind"):
         if not isinstance(chunk.get(field), str) or not chunk[field].strip():
             raise ValueError(f"row {row}: {field} must be a non-empty string")
     if chunk["source_type"] not in ALLOWED_SOURCE_TYPES:
         raise ValueError(f"row {row}: source_type must be faq or runbook")
+    if chunk["source_origin"] not in ALLOWED_SOURCE_ORIGINS:
+        raise ValueError(f"row {row}: invalid source_origin {chunk['source_origin']!r}")
     if chunk["product_area"] not in ALLOWED_PRODUCT_AREAS:
         raise ValueError(f"row {row}: invalid product_area {chunk['product_area']!r}")
     if chunk["acl"] != "customer_safe":

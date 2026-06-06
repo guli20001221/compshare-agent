@@ -115,6 +115,7 @@ class RagW0ScriptTests(unittest.TestCase):
             "chunk_id": "w0-login-doc-001",
             "kb_version": "kb.test",
             "source_type": "faq",
+            "source_origin": "official",
             "product_area": "login",
             "acl": "customer_safe",
             "title": "Login",
@@ -1050,6 +1051,7 @@ class RagW0ScriptTests(unittest.TestCase):
                 "chunk_id": "w0-init-failure-001",
                 "kb_version": "kb.stage2b.w0.2026-05-13",
                 "source_type": "faq",
+                "source_origin": "official",
                 "product_area": "init_failure",
                 "acl": "customer_safe",
                 "title": "Init failure",
@@ -1125,6 +1127,7 @@ class RagW0ScriptTests(unittest.TestCase):
                 "chunk_id": "w0-login-doc-001",
                 "kb_version": "kb.test",
                 "source_type": "faq",
+                "source_origin": "official",
                 "product_area": "login",
                 "acl": "customer_safe",
                 "title": "Login",
@@ -1151,6 +1154,31 @@ class RagW0ScriptTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "asset_note"):
                 validate_chunks.validate_chunks(path)
+
+    def test_validate_chunks_validates_source_origin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "chunks.jsonl"
+
+            # Missing source_origin is rejected as a missing required field. This
+            # is the gap that used to let a chunk pass Python yet fail the Go
+            # loader; the shared enum is guarded by TestSourceOriginEnumMatchesPython.
+            chunk = self._valid_chunk()
+            del chunk["source_origin"]
+            path.write_text(json.dumps(chunk, ensure_ascii=False) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "source_origin"):
+                validate_chunks.validate_chunks(path)
+
+            # An unknown source_origin is rejected against the shared enum.
+            chunk = self._valid_chunk(source_origin="bogus")
+            path.write_text(json.dumps(chunk, ensure_ascii=False) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid source_origin"):
+                validate_chunks.validate_chunks(path)
+
+            # external_* origins (reserved for the out-of-platform corpus) are accepted.
+            for origin in ("external_official", "external_community"):
+                chunk = self._valid_chunk(source_origin=origin)
+                path.write_text(json.dumps(chunk, ensure_ascii=False) + "\n", encoding="utf-8")
+                self.assertEqual(validate_chunks.validate_chunks(path)["chunk_count"], 1)
 
     def test_validate_chunks_rejects_oversize(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1575,6 +1603,7 @@ class RagW0ScriptTests(unittest.TestCase):
                     "chunk_id": chunk_id,
                     "kb_version": "kb.test",
                     "source_type": "faq",
+                    "source_origin": "official",
                     "product_area": "login",
                     "acl": "customer_safe",
                     "title": chunk_id,
@@ -2975,6 +3004,7 @@ class RagW0ScriptTests(unittest.TestCase):
                     "chunk_id": "w0-login-001",
                     "kb_version": "kb.test",
                     "source_type": "faq",
+                    "source_origin": "official",
                     "product_area": "login",
                     "acl": "customer_safe",
                     "title": "Login guidance",
@@ -2992,6 +3022,7 @@ class RagW0ScriptTests(unittest.TestCase):
                     "chunk_id": "w0-billing-001",
                     "kb_version": "kb.test",
                     "source_type": "faq",
+                    "source_origin": "official",
                     "product_area": "billing_rule",
                     "acl": "customer_safe",
                     "title": "Shutdown billing",

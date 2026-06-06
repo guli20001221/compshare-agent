@@ -4239,6 +4239,26 @@ var knowledgeMonitorKeywords = []string{
 	"gpu \u5360\u7528", // gpu \u5360\u7528
 }
 
+// knowledgeInferenceServingKeywords / knowledgeGPUTroubleshootingKeywords map to
+// the external tool/ops corpus areas (deploy/kb/external_w0.jsonl, RAG Phase 1),
+// not the platform corpus. They are tool/error specific and the switch checks
+// them AFTER every platform set, so a platform message keeps its existing area
+// mapping by construction — only messages that match no platform keyword fall
+// through to these. The +2 boost only fires once the external corpus is merged
+// into the live index. Return labels must stay in scripts/rag_w0/common.py
+// ALLOWED_PRODUCT_AREAS (asserted by TestInferredProductAreasAllowedInPython).
+var knowledgeInferenceServingKeywords = []string{
+	"vllm", "sglang", "ollama", "lmdeploy", "tgi", "text-generation-inference",
+	"openai-compatible", "openai 兼容", "openai兼容",
+	"推理服务", "推理框架", "推理引擎",
+}
+
+var knowledgeGPUTroubleshootingKeywords = []string{
+	"out of memory", "outofmemory", "oom",
+	"cuda out of memory", "torch.cuda",
+	"显存不足", "显存溢出", "爆显存", "显存爆",
+}
+
 // normalizeMsg was moved to internal/textutil.Normalize in the C2
 // hard-block 归一 refactor. All engine call sites now invoke
 // textutil.Normalize directly. See textutil/normalize.go for the
@@ -4615,9 +4635,32 @@ func inferKnowledgeProductArea(userMsg string) string {
 		return "billing_rule"
 	case containsAnyKeyword(n, knowledgeModelverseKeywords):
 		return "modelverse"
+	case containsAnyKeyword(n, knowledgeInferenceServingKeywords):
+		return "inference_serving"
+	case containsAnyKeyword(n, knowledgeGPUTroubleshootingKeywords):
+		return "gpu_troubleshooting"
 	default:
 		return ""
 	}
+}
+
+// knowledgeInferredProductAreas enumerates every non-empty label
+// inferKnowledgeProductArea can return. Keep it in sync with the switch above;
+// TestInferredProductAreasAllowedInPython asserts each is a member of
+// scripts/rag_w0/common.py ALLOWED_PRODUCT_AREAS so an engine label can never
+// drift to a value the offline corpus validator would reject.
+var knowledgeInferredProductAreas = []string{
+	"init_failure",
+	"windows",
+	"driver_cuda",
+	"monitor",
+	"image",
+	"login",
+	"resource_purchase",
+	"billing_rule",
+	"modelverse",
+	"inference_serving",
+	"gpu_troubleshooting",
 }
 
 // pickProjectId removed in PR9 with ensureProjectId. See comment block

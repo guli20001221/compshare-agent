@@ -127,11 +127,11 @@ func TestLoadCorpusRejectsInvalidSourceOrigin(t *testing.T) {
 	_, err := LoadCorpus(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "source_origin")
-	assert.Contains(t, err.Error(), "official or support_curated")
+	assert.Contains(t, err.Error(), "external_official")
 }
 
 func TestLoadCorpusAcceptsValidSourceOrigins(t *testing.T) {
-	for _, origin := range []string{"official", "support_curated"} {
+	for _, origin := range []string{"official", "support_curated", "external_official", "external_community"} {
 		t.Run(origin, func(t *testing.T) {
 			path := writeCorpusFile(t, strings.Replace(validChunkWithPatterns(t, []string{"ok"}), `"source_origin":"official"`, `"source_origin":"`+origin+`"`, 1))
 

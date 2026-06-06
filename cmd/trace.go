@@ -363,6 +363,7 @@ func routeIntentLabels(routeIntents []intent.Intent) []string {
 }
 
 const defaultKnowledgeCorpusPath = "deploy/kb/stage2b_w0.jsonl"
+const defaultExternalKnowledgeCorpusPath = "deploy/kb/external_w0.jsonl"
 
 func knowledgeRetrievalModeFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.ToLower(strings.TrimSpace(getenv("USE_KNOWLEDGE_RETRIEVAL")))
@@ -407,7 +408,7 @@ func knowledgeRetrieverFromEnv(getenv getenvFunc) (*knowledge.Retriever, bool, e
 	embedModel := embedModelForMode(mode, getenv)
 	expectedDigest := embeddingDigestForMode(mode)
 	embeddingsPath := hybridEmbeddingsPathFromEnv(getenv, corpusPath, embedModel)
-	corpus, sidecar, err := knowledge.LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, expectedDigest)
+	corpus, sidecar, err := loadKnowledgeCorpora(getenv, mode, corpusPath, embeddingsPath, expectedDigest)
 	if err != nil {
 		return nil, false, fmt.Errorf("rag hybrid load (mode=%s): %w", mode, err)
 	}
@@ -520,6 +521,80 @@ func hybridEmbeddingsPathFromEnv(getenv getenvFunc, corpusPath, embedModel strin
 		return filepath.Join(dir, "embeddings_"+knowledge.CorpusDigestExpected+".jsonl")
 	}
 	return filepath.Join(dir, "embeddings_"+knowledge.CorpusDigestExpected+"_"+embedModel+".jsonl")
+}
+
+// externalKnowledgeEnabled gates the additive external tool/ops corpus
+// (deploy/kb/external_w0.jsonl). Default OFF: with COMPSHARE_EXTERNAL_KNOWLEDGE
+// unset the retriever loads the platform corpus exactly as before
+// (byte-identical), so platform RAG behavior and the frozen platform parity are
+// untouched. Set it to 1/true/yes/on to merge the external corpus into the index.
+func externalKnowledgeEnabled(getenv getenvFunc) bool {
+	switch strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_EXTERNAL_KNOWLEDGE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// externalEmbeddingsPathFromEnv derives the external qwen3 sidecar path, mirroring
+// hybridEmbeddingsPathFromEnv. COMPSHARE_EXTERNAL_KNOWLEDGE_EMBEDDINGS overrides it.
+func externalEmbeddingsPathFromEnv(getenv getenvFunc, corpusPath string) string {
+	if override := strings.TrimSpace(getenv("COMPSHARE_EXTERNAL_KNOWLEDGE_EMBEDDINGS")); override != "" {
+		return override
+	}
+	dir := filepath.Dir(corpusPath)
+	return filepath.Join(dir, "embeddings_"+knowledge.ExternalCorpusDigestExpected+"_qwen3-embedding-8b.jsonl")
+}
+
+// externalKnowledgeSource returns the pinned external source to merge, or
+// ok=false to serve platform-only. External is opt-in (externalKnowledgeEnabled)
+// and ships only a qwen3 sidecar, so it can merge only in the qwen3 retrieval
+// modes; any other mode logs and is skipped.
+func externalKnowledgeSource(getenv getenvFunc, mode string) (knowledge.PinnedCorpusSource, bool) {
+	if !externalKnowledgeEnabled(getenv) {
+		return knowledge.PinnedCorpusSource{}, false
+	}
+	if mode != knowledge.RetrievalModeQwen3Full && mode != knowledge.RetrievalModeQwen3RRF {
+		log.Printf("rag: COMPSHARE_EXTERNAL_KNOWLEDGE set but mode=%s is not qwen3-based; serving platform-only", mode)
+		return knowledge.PinnedCorpusSource{}, false
+	}
+	corpusPath := strings.TrimSpace(getenv("COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS"))
+	if corpusPath == "" {
+		corpusPath = defaultExternalKnowledgeCorpusPath
+	}
+	return knowledge.PinnedCorpusSource{
+		CorpusPath:              corpusPath,
+		EmbeddingsPath:          externalEmbeddingsPathFromEnv(getenv, corpusPath),
+		ExpectedCorpusDigest:    knowledge.ExternalCorpusDigestExpected,
+		ExpectedEmbeddingDigest: knowledge.ExternalEmbeddingDigestExpectedQwen3,
+	}, true
+}
+
+// loadKnowledgeCorpora loads the platform corpus + sidecar, optionally merging
+// the external corpus when enabled. External is ADDITIVE and must never take
+// down platform RAG: if it is enabled but fails to load (bad/missing file, digest
+// drift), we log and fall back to the platform-only load — the exact pre-Phase-2
+// behavior. When external is off, this is byte-identical to the single-source
+// LoadPinnedCorpusWithEmbeddingsDigest.
+func loadKnowledgeCorpora(getenv getenvFunc, mode, corpusPath, embeddingsPath, expectedDigest string) (knowledge.Corpus, knowledge.EmbeddingSidecar, error) {
+	extSrc, ok := externalKnowledgeSource(getenv, mode)
+	if !ok {
+		return knowledge.LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, expectedDigest)
+	}
+	platform := knowledge.PinnedCorpusSource{
+		CorpusPath:              corpusPath,
+		EmbeddingsPath:          embeddingsPath,
+		ExpectedCorpusDigest:    knowledge.CorpusDigestExpected,
+		ExpectedEmbeddingDigest: expectedDigest,
+	}
+	merged, sidecar, err := knowledge.LoadPinnedCorporaWithEmbeddings([]knowledge.PinnedCorpusSource{platform, extSrc})
+	if err != nil {
+		log.Printf("rag: external knowledge corpus %s failed to load (%v); serving platform-only", extSrc.CorpusPath, err)
+		return knowledge.LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, expectedDigest)
+	}
+	log.Printf("rag: merged external knowledge corpus %s into the index (%d total chunks)", extSrc.CorpusPath, len(merged.Chunks))
+	return merged, sidecar, nil
 }
 
 // hybridTimeoutFromEnv reads RAG_HYBRID_TIMEOUT_MS and returns a duration.

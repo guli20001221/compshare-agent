@@ -127,7 +127,31 @@ func LoadPinnedCorpusWithEmbeddings(corpusPath, embeddingsPath string) (Corpus, 
 // constants). The pin is enforced at load time — a sidecar produced by a
 // different model with a different digest will fail this check.
 func LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, expectedDigest string) (Corpus, EmbeddingSidecar, error) {
-	corpus, err := LoadPinnedCorpus(corpusPath)
+	return loadPinnedCorpusWithDigests(corpusPath, embeddingsPath, CorpusDigestExpected, expectedDigest)
+}
+
+// loadCorpusVerified loads a corpus file after verifying its LF-normalized
+// digest against expectedCorpusDigest. It is the per-source primitive behind
+// the multi-source loader, which pins each corpus to its own digest (the
+// platform and external corpora have different digests).
+func loadCorpusVerified(corpusPath, expectedCorpusDigest string) (Corpus, error) {
+	digest, err := ComputeCorpusFileDigest(corpusPath)
+	if err != nil {
+		return Corpus{}, err
+	}
+	if digest != expectedCorpusDigest {
+		return Corpus{}, fmt.Errorf("corpus digest mismatch: got %s want %s", digest, expectedCorpusDigest)
+	}
+	return LoadCorpus(corpusPath)
+}
+
+// loadPinnedCorpusWithDigests loads one corpus + embedding sidecar, verifying
+// each against the supplied expected digests and enforcing a strict
+// chunk↔vector bijection. It is shared by LoadPinnedCorpusWithEmbeddingsDigest
+// (platform, pinned to CorpusDigestExpected) and LoadPinnedCorporaWithEmbeddings
+// (each source pinned independently).
+func loadPinnedCorpusWithDigests(corpusPath, embeddingsPath, expectedCorpusDigest, expectedEmbeddingDigest string) (Corpus, EmbeddingSidecar, error) {
+	corpus, err := loadCorpusVerified(corpusPath, expectedCorpusDigest)
 	if err != nil {
 		return Corpus{}, EmbeddingSidecar{}, err
 	}
@@ -135,8 +159,8 @@ func LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, expectedDi
 	if err != nil {
 		return Corpus{}, EmbeddingSidecar{}, err
 	}
-	if digest != expectedDigest {
-		return Corpus{}, EmbeddingSidecar{}, fmt.Errorf("embedding sidecar digest mismatch: got %s want %s", digest, expectedDigest)
+	if digest != expectedEmbeddingDigest {
+		return Corpus{}, EmbeddingSidecar{}, fmt.Errorf("embedding sidecar digest mismatch: got %s want %s", digest, expectedEmbeddingDigest)
 	}
 	sidecar, err := LoadEmbeddingSidecar(embeddingsPath)
 	if err != nil {
@@ -155,4 +179,78 @@ func LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, expectedDi
 		}
 	}
 	return corpus, sidecar, nil
+}
+
+// mergedKBVersion labels the corpus-level KBVersion when
+// LoadPinnedCorporaWithEmbeddings concatenates sources whose kb_versions differ
+// (platform vs external). Per-chunk KBVersion is preserved on each KBChunk; only
+// the corpus-level summary is generalized.
+const mergedKBVersion = "merged"
+
+// PinnedCorpusSource identifies one (corpus, sidecar) pair and the digests each
+// file is pinned to. It is the input unit for LoadPinnedCorporaWithEmbeddings.
+type PinnedCorpusSource struct {
+	CorpusPath              string
+	EmbeddingsPath          string
+	ExpectedCorpusDigest    string
+	ExpectedEmbeddingDigest string
+}
+
+// LoadPinnedCorporaWithEmbeddings loads several pinned corpus+sidecar sources
+// (e.g. the platform FAQ corpus + the external tool/ops corpus) and concatenates
+// them into a single in-memory retrieval index. Each source is verified
+// independently — its own digest pins plus the strict per-source chunk↔vector
+// bijection from loadPinnedCorpusWithDigests. On top of that this enforces two
+// cross-source invariants:
+//
+//   - chunk_id uniqueness across sources. The retriever keys purely by chunk_id
+//     (Vectors[chunk.ChunkID]); two sources sharing an id would silently shadow
+//     one source's chunk or vector, so a collision is a hard error.
+//   - a single embedding model + dim across all sources. The retriever assumes a
+//     homogeneous vector space; mixing models/dims is rejected.
+//
+// The merged corpus KBVersion is mergedKBVersion ("merged") because chunks may
+// originate from corpora with different kb_versions. retriever.go is unchanged —
+// it consumes the flat merged Corpus/EmbeddingSidecar exactly as the
+// single-source path produces them, so a one-element slice is byte-equivalent to
+// LoadPinnedCorpusWithEmbeddingsDigest.
+func LoadPinnedCorporaWithEmbeddings(sources []PinnedCorpusSource) (Corpus, EmbeddingSidecar, error) {
+	if len(sources) == 0 {
+		return Corpus{}, EmbeddingSidecar{}, fmt.Errorf("no corpus sources provided")
+	}
+	merged := Corpus{KBVersion: mergedKBVersion}
+	mergedSidecar := EmbeddingSidecar{Vectors: map[string][]float32{}}
+	chunkSource := map[string]string{}
+	for i, src := range sources {
+		corpus, sidecar, err := loadPinnedCorpusWithDigests(src.CorpusPath, src.EmbeddingsPath, src.ExpectedCorpusDigest, src.ExpectedEmbeddingDigest)
+		if err != nil {
+			return Corpus{}, EmbeddingSidecar{}, fmt.Errorf("load corpus %s: %w", src.CorpusPath, err)
+		}
+		// The first source seeds the model/dim; every later source must match it.
+		// Use the index as the sentinel (not Model=="") so a sidecar with a
+		// legitimately empty model is still cross-checked rather than re-seeding.
+		if i == 0 {
+			mergedSidecar.Model = sidecar.Model
+			mergedSidecar.Dim = sidecar.Dim
+		} else {
+			if sidecar.Model != mergedSidecar.Model {
+				return Corpus{}, EmbeddingSidecar{}, fmt.Errorf("embedding model mismatch across sources: %s has %q, want %q", src.EmbeddingsPath, sidecar.Model, mergedSidecar.Model)
+			}
+			if sidecar.Dim != mergedSidecar.Dim {
+				return Corpus{}, EmbeddingSidecar{}, fmt.Errorf("embedding dim mismatch across sources: %s has %d, want %d", src.EmbeddingsPath, sidecar.Dim, mergedSidecar.Dim)
+			}
+		}
+		for _, c := range corpus.Chunks {
+			if prev, ok := chunkSource[c.ChunkID]; ok {
+				return Corpus{}, EmbeddingSidecar{}, fmt.Errorf("duplicate chunk_id %q across sources (%s and %s)", c.ChunkID, prev, src.CorpusPath)
+			}
+			chunkSource[c.ChunkID] = src.CorpusPath
+			merged.Chunks = append(merged.Chunks, c)
+		}
+		for id, vec := range sidecar.Vectors {
+			mergedSidecar.Vectors[id] = vec
+		}
+	}
+	mergedSidecar.Rows = len(mergedSidecar.Vectors)
+	return merged, mergedSidecar, nil
 }
