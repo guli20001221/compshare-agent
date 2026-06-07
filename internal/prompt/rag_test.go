@@ -419,6 +419,12 @@ func TestBuildRAGMessagesEncodesPlatformVsSelfHostAntiConfusion(t *testing.T) {
 		"不要建议用户在实例里用 vLLM / Ollama / SGLang 自建服务来调用平台模型",
 		"不要混填平台的 Base URL / API Key",
 		"CUDA_VISIBLE_DEVICES",
+		// Joint-enablement eval (2026-06-07) finding bd-apikey-where-selfhost-mixup:
+		// "我起了个本地服务，api key 在哪拿" got the platform console key 3/3 with no
+		// disambiguation. A self-hosted service needs NO platform key; the platform-key
+		// path is only for ModelVerse/api.modelverse.cn. This rule encodes that intent.
+		"自己在实例里起的 vLLM / Ollama / SGLang 服务默认不需要平台 API Key",
+		"不要默认引导其去平台控制台领取 ModelVerse API Key",
 	} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("platform-vs-self-host anti-confusion anchor %q missing in system prompt:\n%s", want, system)
