@@ -1,0 +1,132 @@
+[
+  {
+    "id": "bd-apikey-where-selfhost-mixup",
+    "question": "我起了个本地服务，调的时候 api key 在哪拿",
+    "klass": "boundary",
+    "expected_grounding": "clarify_or_platform",
+    "expected_chunk_prefix": "w0-modelverse-",
+    "confusion_risk": "用户已自建了服务(「本地服务」)却问「api key 在哪拿」——这是平台托管 API 的概念(ModelVerse key)。用户把自建服务和平台 key 概念混了。风险:顺着「本地服务」假设有个 key 要配(自建 vllm 默认无鉴权或自定义),或顺着「api key 在哪拿」直接丢 ModelVerse 控制台链接而不点破矛盾。",
+    "pass_criteria": "点破概念错位:自己起的 vllm/ollama 服务默认无需平台 key(可设 --api-key 自定义或留空),base_url 指向本机端口;「在哪拿 API key」是平台托管 API(ModelVerse 控制台)才有的概念。澄清用户到底要调本地服务还是平台模型。",
+    "fail_signal": "不指出矛盾,直接让用户去 ModelVerse 控制台拿 key 配到本地服务上(自建服务并不消费平台 key),或直接给自建 vllm 命令而忽略用户问的是 key。"
+  },
+  {
+    "id": "vsk-vllm-apikey-selfhost",
+    "question": "我在实例里用 vllm 起了个服务，调用的时候需要 api key 吗，在哪配",
+    "klass": "self_hosted",
+    "expected_grounding": "external",
+    "expected_chunk_prefix": "ext-vllm-",
+    "confusion_risk": "自建 vLLM 服务的鉴权被误答成去平台控制台拿 ModelVerse API Key",
+    "pass_criteria": "说明自建 vLLM 服务默认不需要平台 API Key，可用 --api-key 自定义服务端 key，调用地址是实例内 127.0.0.1:8000",
+    "fail_signal": "让用户去优云智算/ModelVerse 控制台领取平台 API Key 给自建服务用"
+  },
+  {
+    "id": "vsk-ollama-apikey-selfhost",
+    "question": "ollama 起在本地，用 openai 接口调它要填 key 吗",
+    "klass": "self_hosted",
+    "expected_grounding": "external",
+    "expected_chunk_prefix": "ext-ollama-",
+    "confusion_risk": "本地 Ollama 的 OpenAI 接口鉴权被误答成平台 ModelVerse key",
+    "pass_criteria": "说明本地 Ollama 默认无鉴权，OpenAI 接口的 key 可任意/留空，base_url 指向 localhost:11434/v1",
+    "fail_signal": "让用户去平台控制台拿 ModelVerse API Key 填进本地 ollama 调用"
+  },
+  {
+    "id": "sh-ollama-openai-api",
+    "question": "ollama 起来之后我想用 OpenAI 的 sdk/接口去调它,base url 和 key 怎么填?",
+    "klass": "self_hosted",
+    "expected_grounding": "external",
+    "expected_chunk_prefix": "ext-ollama-openai",
+    "confusion_risk": "最强混淆:出现「OpenAI 接口 + base url + key」,极易答成 ModelVerse 的 OpenAI 兼容 /v1/chat/completions 平台 base url + 平台 API Key",
+    "pass_criteria": "grounding 在 ext-ollama-openai,指向本机/实例 ollama 的 http://localhost:11434/v1、key 可任意填的本地用法",
+    "fail_signal": "给 ModelVerse 平台 OpenAI 兼容 base url + 让去控制台获取平台 API Key,而不是 ollama 本地 11434 接口"
+  },
+  {
+    "id": "sh-vllm-serve-qwen",
+    "question": "我在你们租的 4090 实例上想用 vllm 起一个 Qwen2.5-7B 的 OpenAI 兼容服务,命令怎么写?",
+    "klass": "self_hosted",
+    "expected_grounding": "external",
+    "expected_chunk_prefix": "ext-vllm-",
+    "confusion_risk": "同样是 Qwen + OpenAI 兼容,易被当成「怎么调用平台/ModelVerse 的 Qwen OpenAI 兼容 API」,回去控制台拿 API Key + base url",
+    "pass_criteria": "给出 `vllm serve Qwen2.5-7B ...` 起 OpenAI 兼容服务的命令/flags,grounding 在 ext-vllm-serving",
+    "fail_signal": "让用户去 ModelVerse 控制台拿 API Key / 给 /v1/chat/completions 平台 base url 而不是 vllm serve flags"
+  },
+  {
+    "id": "pa-modelverse-apikey-where",
+    "question": "你们的 deepseek api key 在哪拿啊，调用地址是什么",
+    "klass": "platform_api",
+    "expected_grounding": "platform",
+    "expected_chunk_prefix": "w0-modelverse-",
+    "confusion_risk": "用户说 deepseek，系统可能误以为是自建/本地拉 DeepSeek 模型，回 ollama pull / vllm 下载权重，而不是 ModelVerse 控制台 API Key 获取与 api.modelverse.cn base url",
+    "pass_criteria": "指向 console.compshare.cn 的 API KEY 页面创建 Key，并给出 https://api.modelverse.cn/v1 调用地址 + Authorization: Bearer 头",
+    "fail_signal": "回答用 ollama pull deepseek 或 vllm serve 下载 DeepSeek 权重来'获取',完全不提平台控制台 API Key"
+  },
+  {
+    "id": "pa-modelverse-openai-sdk-qwen",
+    "question": "怎么用 openai 的 python sdk 调你们平台的 qwen 模型，base_url 填啥",
+    "klass": "platform_api",
+    "expected_grounding": "platform",
+    "expected_chunk_prefix": "w0-modelverse-",
+    "confusion_risk": "Qwen 同名两模式:用户问的是平台托管 API(OpenAI 兼容 /v1/chat/completions),但易被误答成在租来的 GPU 上用 vLLM 起 OpenAI 兼容服务再用 sdk 连 localhost:8000",
+    "pass_criteria": "OpenAI SDK 的 base_url 指向 https://api.modelverse.cn/v1、api_key 用平台 Key、model 填平台 Qwen 模型 id,走 /v1/chat/completions",
+    "fail_signal": "回答让用户 vllm serve Qwen 再把 base_url 指向自己实例的 http://localhost:8000/v1"
+  },
+  {
+    "id": "pa-modelverse-models-list",
+    "question": "怎么查你们平台上有哪些模型可以调，有没有接口能拉模型列表",
+    "klass": "platform_api",
+    "expected_grounding": "platform",
+    "expected_chunk_prefix": "w0-modelverse-",
+    "confusion_risk": "平台托管模型列表用 GET /v1/models(ModelVerse);易被误答成 ollama list / vllm 已加载模型,或自建服务的 /v1/models",
+    "pass_criteria": "指向 ModelVerse GET https://api.modelverse.cn/v1/models(带 Bearer Key),或控制台模型列表入口,grounds 平台托管模型",
+    "fail_signal": "回答 ollama list 看本地模型,或让用户去自己实例上的服务查 /v1/models"
+  },
+  {
+    "id": "rg-pricing-4090",
+    "question": "4090 多少钱",
+    "klass": "regression",
+    "expected_grounding": "platform",
+    "expected_chunk_prefix": "",
+    "confusion_risk": "agentic SearchKnowledge could fire on external ext-gpu-vram-estimate / ext-vllm chunks (4090 appears in self-hosted how-tos) and answer pricing from corpus prose instead of the deterministic platform pricing handler / live GPU inventory",
+    "pass_criteria": "Planner routes to the pricing capability handler (Phase-1 cutover, platform pricing/GpuInventory API); reply is the same per-hour price card as before enablement, no external-KB citation, no vLLM/serve content",
+    "fail_signal": "agentic SearchKnowledge mis-fires / false-grounds / mis-routes"
+  },
+  {
+    "id": "rg-stock-4090",
+    "question": "4090 有没有货",
+    "klass": "regression",
+    "expected_grounding": "platform",
+    "expected_chunk_prefix": "",
+    "confusion_risk": "agentic SearchKnowledge could grab an ext-* chunk that mentions 4090 and answer availability from static corpus text instead of the live stock/capacity-precheck handler — corpus can never know real-time stock",
+    "pass_criteria": "Planner routes to the stock capability handler (live GpuInventory + capacity precheck); reply is the same real-time availability/zone answer as before enablement, no external-KB chunk cited",
+    "fail_signal": "agentic SearchKnowledge mis-fires / false-grounds / mis-routes"
+  },
+  {
+    "id": "rg-instance-symptom-disconnect",
+    "question": "我的实例突然连不上了",
+    "klass": "regression",
+    "expected_grounding": "clarify_or_platform",
+    "expected_chunk_prefix": "",
+    "confusion_risk": "agentic SearchKnowledge could over-route this instance-specific symptom to generic external how-to chunks (ext-gpu-nvidia-smi / ext-vllm-port / ext-gpu-not-detected) and dump a generic vLLM/port checklist instead of clarifying which instance and pulling instance-specific SSH/state facts (DescribeCompShareInstance.SshLoginCommand)",
+    "pass_criteria": "Routes to instance diagnosis lane; clarify-first (which instance / what error) or platform diagnosis grounded on the user's actual instance state — same behavior as before enablement, no false-grounding on ext-* generic how-to chunks",
+    "fail_signal": "agentic SearchKnowledge mis-fires / false-grounds / mis-routes"
+  },
+  {
+    "id": "rg-offtopic-other-vendor",
+    "question": "AWS 的 EC2 GPU 实例怎么开，比你们便宜吗",
+    "klass": "regression",
+    "expected_grounding": "refuse",
+    "expected_chunk_prefix": "",
+    "confusion_risk": "agentic SearchKnowledge could match an ext-gpu-* chunk on the generic 'GPU 实例' tokens and answer an other-vendor/off-topic question from external KB instead of returning the canonical off-topic refusal",
+    "pass_criteria": "enginePreBlock off-topic rule fires and returns refusal.OffTopic verbatim with CategoryOffTopic before any retrieval; no external-KB chunk cited, no competitor comparison generated",
+    "fail_signal": "agentic SearchKnowledge mis-fires / false-grounds / mis-routes"
+  },
+  {
+    "id": "rg-account-billing-balance",
+    "question": "我账户余额还剩多少，这个月一共花了多少钱",
+    "klass": "regression",
+    "expected_grounding": "refuse",
+    "expected_chunk_prefix": "",
+    "confusion_risk": "agentic SearchKnowledge could grab a platform pricing/套餐 chunk (w0-modelverse-* pricing or Coding Plan 计量) and fabricate an account-balance answer from corpus prose, when the only correct response is the canned account-billing-unsupported hard-block (account financial data is not API-accessible)",
+    "pass_criteria": "accountOnlyDataKeywords (余额) triggers the highest-priority account_billing_unsupported canned reply (refusal.AccountBillingUnsupported) before retrieval; same verbatim reply as before enablement, no chunk cited, no fabricated balance/spend figure",
+    "fail_signal": "agentic SearchKnowledge mis-fires / false-grounds / mis-routes"
+  }
+]
