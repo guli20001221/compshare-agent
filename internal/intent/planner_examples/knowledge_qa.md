@@ -70,7 +70,7 @@ examples:
 
 # Planner one-shot examples: knowledge_qa intent
 
-14 anchors covering platform how-to/config, error-codes, FAQ/process,
+15 anchors covering platform how-to/config, error-codes, FAQ/process,
 billing navigation, comparison/feasibility/procedure phrasings, and
 concept questions that contain monitor-trigger or finance-trigger
 keywords without actually being monitor/billing requests.

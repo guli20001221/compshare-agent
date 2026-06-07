@@ -265,7 +265,7 @@ type plannerPromptExampleGroup struct {
 	// compact renders the group as a shared plan JSON + question list instead
 	// of repeating the full JSON per example. Use for groups where all examples
 	// share the same output structure (e.g. knowledge_qa: empty slots, empty
-	// required_tools). Saves ~1,100 tokens for the 20-example knowledge_qa group.
+	// required_tools). Saves ~1,100 tokens for the 21-example knowledge_qa group.
 	compact bool
 }
 
