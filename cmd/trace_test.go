@@ -93,6 +93,30 @@ func TestTraceWriterFromEnvEnabled(t *testing.T) {
 	}
 }
 
+func TestAgenticSearchKnowledgeEnabledFromEnv_DefaultOff(t *testing.T) {
+	// P5 (2026-06-07): COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE is DEFAULT-OFF. The
+	// default-on flip is re-homed to the external-KB-on decision (a prod-default
+	// smoke showed tool-ops symptoms false-ground on irrelevant platform chunks
+	// when COMPSHARE_EXTERNAL_KNOWLEDGE=0). Explicit affirmative => on (used with
+	// external KB on / in eval); unset / empty / explicit negative => off;
+	// unknown => off + non-empty warn string per CLAUDE.md (never silently coerce).
+	off := []string{"", "  ", "0", "off", "OFF", "false", "no", "disabled", "none"}
+	for _, v := range off {
+		got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return v })
+		require.Falsef(t, got, "value %q should be off (default-off)", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	on := []string{"1", "on", "ON", "true", "TRUE", "yes"}
+	for _, v := range on {
+		got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return v })
+		require.Truef(t, got, "value %q should explicitly enable", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return "maybe" })
+	require.False(t, got, "unknown value treated as off")
+	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
+}
+
 func TestMultiTraceWriterEnqueuePreservesTenantForMySQLLikeSink(t *testing.T) {
 	fileSink := &captureAppendWriter{}
 	mysqlSink := &captureEnqueueWriter{}

@@ -97,7 +97,7 @@ foreach ($probe in $probes) {
         [IO.File]::WriteAllText((Join-Path $runDir "transcript.txt"), $transcript, (New-Object Text.UTF8Encoding $false))
 
         $rec = Read-TraceRecord $runDir
-        $intent = ""; $arf = ""; $rEnabled = $false; $rHits = 0; $cited = @(); $toolActions = @(); $stepTools = @()
+        $intent = ""; $arf = ""; $rEnabled = $false; $rHits = 0; $cited = @(); $retrievedChunks = @(); $weakEvidence = $false; $toolActions = @(); $stepTools = @()
         if ($null -ne $rec) {
             if ($rec.planner) { $intent = [string]$rec.planner.intent }
             $arf = [string]$rec.actual_runtime_form
@@ -105,6 +105,8 @@ foreach ($probe in $probes) {
                 $rEnabled = [bool]$rec.retrieval.enabled
                 $rHits = [int]$rec.retrieval.hits
                 if ($rec.retrieval.cited_chunk_ids) { $cited = @($rec.retrieval.cited_chunk_ids) }
+                if ($rec.retrieval.hit_items) { $retrievedChunks = @($rec.retrieval.hit_items | ForEach-Object { [string]$_.chunk_id } | Where-Object { $_ }) }
+                $weakEvidence = [bool]$rec.retrieval.weak_evidence
             }
             if ($rec.tool_calls) { $toolActions = @($rec.tool_calls | ForEach-Object { [string]$_.action }) }
             if ($rec.steps) { $stepTools = @($rec.steps | ForEach-Object { [string]$_.tool }) }
@@ -113,14 +115,17 @@ foreach ($probe in $probes) {
         $skFired = ($toolActions -contains "SearchKnowledge") -or ($stepTools -contains "SearchKnowledge") -or ($transcript -match "SearchKnowledge")
         $retrievalFired = ($rEnabled -and $rHits -gt 0)
 
+        $redactedReply = Redact-LiveText $reply
         $row = [ordered]@{
             probe_id = $probe.id; run = $i; intent = $intent; actual_runtime_form = $arf
             retrieval_fired = $retrievalFired; retrieval_hits = $rHits; cited_chunk_ids = $cited
+            retrieved_chunk_ids = $retrievedChunks; weak_evidence = $weakEvidence
             search_knowledge_fired = [bool]$skFired; tool_actions = $toolActions; step_tools = $stepTools
-            reply_head = (Redact-LiveText $reply).Substring(0, [Math]::Min(160, (Redact-LiveText $reply).Length))
+            reply_head = $redactedReply.Substring(0, [Math]::Min(160, $redactedReply.Length))
+            reply_full = $redactedReply
         }
         ($row | ConvertTo-Json -Compress -Depth 6) | Add-Content -Path $ReportPath -Encoding UTF8
-        Write-Host ("    run{0}: intent={1} form={2} retr={3}(h={4}) sk={5} cited=[{6}]" -f $i, $intent, $arf, $retrievalFired, $rHits, $skFired, ($cited -join ",")) -ForegroundColor Gray
+        Write-Host ("    run{0}: intent={1} form={2} retr={3}(h={4}) sk={5} got=[{6}] cited=[{7}]" -f $i, $intent, $arf, $retrievalFired, $rHits, $skFired, ($retrievedChunks -join ","), ($cited -join ",")) -ForegroundColor Gray
     }
 }
 Write-Host ""

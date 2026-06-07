@@ -1,0 +1,16 @@
+[
+  { "id": "ga-vllm-killed",    "set": "core_toolops",     "question": "vllm 进程被 kill 了，怎么回事",
+    "gate": "MUST: SearchKnowledge before any Diagnose*; enters agent; concrete answer (not the which-instance dead-end)" },
+  { "id": "ga-sglang-oom",     "set": "core_toolops",     "question": "sglang 启动报显存不足",
+    "gate": "MUST: SearchKnowledge before any Diagnose*; enters agent; concrete answer" },
+  { "id": "ga-vllm-valueerr",  "set": "core_toolops",     "question": "vllm serve 报 ValueError 起不来",
+    "gate": "MUST: SearchKnowledge before any Diagnose*; enters agent; concrete answer" },
+  { "id": "ga-instance-noconn","set": "generic_platform", "question": "我的实例突然连不上了",
+    "gate": "MAY clarify in-loop (which instance / which connection); do NOT require SearchKnowledge" },
+  { "id": "ga-pricing",        "set": "regression",       "question": "4090 多少钱一小时",
+    "gate": "MUST NOT mis-fire SearchKnowledge; pricing_query answered" },
+  { "id": "ga-stock",          "set": "regression",       "question": "4090 现在有没有货",
+    "gate": "MUST NOT mis-fire SearchKnowledge; stock_availability answered" },
+  { "id": "ga-knowledge-howto","set": "regression",       "question": "vllm 怎么启动 openai 兼容服务",
+    "gate": "knowledge_qa terminal_rag path; cites external chunk; no spurious SearchKnowledge tool-call" }
+]
