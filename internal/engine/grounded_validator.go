@@ -27,6 +27,10 @@ func GroundedAnswerValidatorEnabled() bool { return groundedAnswerValidatorOn }
 const searchKnowledgeCiteProtocol = "回答时，对每条结论在句末用 [[chunk_id]] 标注其所依据的条目(chunk_id 见上方 items)；无法在所给证据中找到依据的内容请勿写出，必要时直说资料未覆盖。"
 
 // searchKnowledgeLedgerTurnMaxItems caps the per-turn ChunkID-keyed evidence ledger
-// (the union of every SearchKnowledge call's items this turn). Large enough that any
-// ChunkID shown to the agent across multiple calls stays citable; a backstop only.
-const searchKnowledgeLedgerTurnMaxItems = 30
+// (the union of every SearchKnowledge call's items this turn). Set well above any
+// realistic per-turn distinct-chunk count (the ReAct loop is bounded by
+// maxReActRounds and each SearchKnowledge call surfaces <=DefaultEvidenceLedgerMaxItems
+// items), so a ChunkID shown to the agent stays citable. If the cap were ever
+// exceeded the failure is fail-SAFE: a citation to a dropped item lands in
+// UnknownCitations → conservative refusal, never a fabricated citation.
+const searchKnowledgeLedgerTurnMaxItems = 256

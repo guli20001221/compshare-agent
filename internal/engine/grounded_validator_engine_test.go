@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"context"
 	"testing"
 
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
@@ -64,12 +66,26 @@ func TestGuardSearchKnowledgeSynthesis_GroundedValidator(t *testing.T) {
 		assert.Empty(t, *traces)
 	})
 
-	t.Run("flag on: explicit refusal passes without a citation", func(t *testing.T) {
+	t.Run("flag on: explicit canned refusal passes without a citation", func(t *testing.T) {
 		SetGroundedAnswerValidatorEnabled(true)
 		defer SetGroundedAnswerValidatorEnabled(false)
 		eng, traces := newEng()
 		assert.Equal(t, ragNoEvidenceReply, eng.guardSearchKnowledgeSynthesis(ragNoEvidenceReply))
-		assert.Empty(t, *traces, "a refusal is allowed to be uncited")
+		assert.Empty(t, *traces, "the canned refusal is allowed to be uncited")
+	})
+
+	t.Run("flag on: substantive uncited answer with a hedge phrase is refused (closes the substring-refusal hole)", func(t *testing.T) {
+		SetGroundedAnswerValidatorEnabled(true)
+		defer SetGroundedAnswerValidatorEnabled(false)
+		eng, traces := newEng()
+		// Carries actionable vLLM flags but cites nothing; the trailing "知识库未覆盖"
+		// is a hedge phrase that isKnowledgeRefusal matches by substring. It must NOT
+		// be treated as a refusal: cite-exemption is the exact canned reply only.
+		ans := "你可以用 vllm serve --max-model-len 4096 来省显存。部分高级参数知识库未覆盖。"
+		assert.Equal(t, ragNoEvidenceReply, eng.guardSearchKnowledgeSynthesis(ans),
+			"a substantive uncited answer must be refused even though it contains a hedge phrase")
+		require.Len(t, *traces, 1)
+		assert.Equal(t, "search_knowledge_uncited", (*traces)[0].Category)
 	})
 
 	t.Run("flag on: citation to unknown chunk_id is refused (anti-fabrication)", func(t *testing.T) {
@@ -109,4 +125,30 @@ func TestSearchKnowledgeResultJSON_CiteProtocolGatedByFlag(t *testing.T) {
 	emptyOn := searchKnowledgeResultJSON(knowledge.EvidenceLedger{}, true, true)
 	assert.NotContains(t, emptyOn, "cite_protocol")
 	assert.Contains(t, emptyOn, "\"empty\":true")
+}
+
+// TestChatResetsSearchKnowledgeLedgerEachTurn proves the per-turn ChunkID ledger is
+// zeroed at the top of every turn, so one turn's accumulated evidence cannot leak
+// into the next (the cross-tenant/cross-turn concern engine_session_test.go guards).
+func TestChatResetsSearchKnowledgeLedgerEachTurn(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanWithoutTarget()}}}
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "a", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "b", "State": "Running"},
+		},
+	}, "test"))
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "deepseek-v4-flash",
+	})
+
+	// Simulate a prior turn that accumulated agentic evidence into the per-turn ledger.
+	eng.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: "stale-1"}}}
+	_, err := eng.Chat(context.Background(), "我的机器有问题", noopStep)
+	require.NoError(t, err)
+	assert.Empty(t, eng.searchKnowledgeLedgerThisTurn.Items, "per-turn agentic ledger must be reset at the top of each turn")
 }

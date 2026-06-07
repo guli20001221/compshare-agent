@@ -6,12 +6,16 @@ import (
 )
 
 // citeMarkerRE matches a grounded-citation marker [[chunk_id]] that an agent
-// emits to attribute a claim to a specific retrieved evidence item. Double
-// brackets keep it unambiguous against the terminal-RAG positional [n] scheme
-// (single bracket, numeric — see engine/cited_guard.go) and against incidental
-// single-bracket prose. The captured group is the raw chunk_id the agent cited;
-// it is validated against the per-turn evidence ledger by ValidateGroundedCitations.
-var citeMarkerRE = regexp.MustCompile(`\[\[\s*([^\[\]]+?)\s*\]\]`)
+// emits to attribute a claim to a specific retrieved evidence item. It requires
+// at least two brackets on each side (\[\[+ ... \]\]+) so it (a) stays unambiguous
+// against the terminal-RAG positional [n] scheme (single bracket, numeric — see
+// engine/cited_guard.go) and incidental single-bracket prose, and (b) consumes the
+// WHOLE of an over-bracketed marker like [[[id]]] so StripCiteMarkers leaves no
+// orphan "[]" residue. The id class excludes brackets and newlines so a
+// line-wrapped marker fails closed (no match → refusal) rather than matching a
+// newline-bearing id. The captured group is the raw chunk_id the agent cited; it
+// is validated against the per-turn evidence ledger by ValidateGroundedCitations.
+var citeMarkerRE = regexp.MustCompile(`\[\[+\s*([^\[\]\r\n]+?)\s*\]\]+`)
 
 // GroundedAnswerReport is the route-independent verdict for a free-text final
 // answer validated against a per-turn ChunkID-keyed evidence ledger (#126). It is
@@ -21,7 +25,7 @@ type GroundedAnswerReport struct {
 	// resolves to a ChunkID present in the ledger.
 	HasCitation bool
 	// CitedChunkIDs are the ledger ChunkIDs the answer cited, deduped, in
-	// first-occurrence order. Suitable for trace.CitedChunkIDs audit ingestion.
+	// first-occurrence order.
 	CitedChunkIDs []string
 	// UnknownCitations are [[...]] markers that do NOT resolve to any ledger
 	// ChunkID — a fabricated or garbled citation. Any non-empty value fails the
@@ -29,17 +33,14 @@ type GroundedAnswerReport struct {
 	UnknownCitations []string
 }
 
-// Grounded reports whether the answer satisfies the route-independent
-// cite-or-refuse contract against the ledger: it must carry >=1 citation that
-// resolves to a retrieved ChunkID AND carry NO citation to an unknown ChunkID —
-// OR be an explicit refusal. Refusal detection is the caller's responsibility
-// (refusal phrasing is an engine-layer concern), so the caller passes isRefusal.
-// A fabricated citation always fails, so a partially-hallucinated answer cannot
-// slip through on the strength of one valid citation.
-func (r GroundedAnswerReport) Grounded(isRefusal bool) bool {
-	if isRefusal {
-		return true
-	}
+// Grounded reports whether the answer is properly cited: it carries >=1 citation
+// that resolves to a retrieved ChunkID AND no citation to an unknown ChunkID (a
+// fabricated/garbled citation fails even an otherwise-cited answer). It does NOT
+// decide the refusal exemption — whether an UNcited answer is an acceptable
+// abstention is an engine-layer call, because a substantive answer that merely
+// contains a hedge phrase must not be mistaken for a refusal. Scope note: this
+// validates the CITATIONS that are present, not the grounding of uncited prose.
+func (r GroundedAnswerReport) Grounded() bool {
 	return r.HasCitation && len(r.UnknownCitations) == 0
 }
 

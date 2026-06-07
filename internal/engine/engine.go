@@ -2806,17 +2806,24 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 	// COMPSHARE_RAG_GROUNDED_VALIDATOR. Flag-off the leak check above is the only
 	// guard (byte-identical to pre-#126). Flag-on: the agent was told (cite_protocol
 	// in the tool result) to attribute each conclusion with [[chunk_id]]; require
-	// >=1 citation resolving to a retrieved ChunkID — or an explicit refusal — and
-	// reject any citation to an unknown chunk_id, then strip the markers for display.
+	// >=1 citation resolving to a retrieved ChunkID and no citation to an unknown
+	// chunk_id, then strip the markers for display.
 	if !groundedAnswerValidatorOn {
 		return content
 	}
 	report := knowledge.ValidateGroundedCitations(content, e.searchKnowledgeLedgerThisTurn)
-	if !report.Grounded(isKnowledgeRefusal(content)) {
-		e.emitSearchKnowledgeHardBlock("search_knowledge_uncited")
-		return ragNoEvidenceReply
+	if report.Grounded() {
+		return knowledge.StripCiteMarkers(content)
 	}
-	return knowledge.StripCiteMarkers(content)
+	// Not properly cited. The ONLY cite-exempt answer is the explicit canned
+	// no-evidence refusal — deliberately NOT a substring/hedge match: a substantive
+	// answer that merely contains a phrase like "知识库未覆盖" is NOT a refusal and
+	// must cite the evidence it used, else it is replaced with the canned refusal.
+	if strings.TrimSpace(content) == ragNoEvidenceReply {
+		return content
+	}
+	e.emitSearchKnowledgeHardBlock("search_knowledge_uncited")
+	return ragNoEvidenceReply
 }
 
 // emitSearchKnowledgeHardBlock records a post-LLM hardblock trace for the agentic
