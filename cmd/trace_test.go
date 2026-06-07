@@ -93,23 +93,24 @@ func TestTraceWriterFromEnvEnabled(t *testing.T) {
 	}
 }
 
-func TestAgenticSearchKnowledgeEnabledFromEnv_DefaultOff(t *testing.T) {
-	// P5 (2026-06-07): COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE is DEFAULT-OFF. The
-	// default-on flip is re-homed to the external-KB-on decision (a prod-default
-	// smoke showed tool-ops symptoms false-ground on irrelevant platform chunks
-	// when COMPSHARE_EXTERNAL_KNOWLEDGE=0). Explicit affirmative => on (used with
-	// external KB on / in eval); unset / empty / explicit negative => off;
-	// unknown => off + non-empty warn string per CLAUDE.md (never silently coerce).
-	off := []string{"", "  ", "0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should be off (default-off)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	on := []string{"1", "on", "ON", "true", "TRUE", "yes"}
+func TestAgenticSearchKnowledgeEnabledFromEnv_DefaultOn(t *testing.T) {
+	// 2026-06-07: COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE is DEFAULT-ON, enabled together
+	// with COMPSHARE_EXTERNAL_KNOWLEDGE. The joint enablement was eval-gated on merged
+	// main: the 34-probe joint eval showed no platform-hosted-API vs self-hosted-service
+	// confusion + clean regression, and the platform-FAQ faithfulness eval showed zero
+	// external-corpus contamination of platform answers. unset/empty/affirmative => on;
+	// explicit negative => off; unknown => off + non-empty warn string per CLAUDE.md
+	// (never silently coerce). Boot-only reversible (=0 restores).
+	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes"}
 	for _, v := range on {
 		got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should explicitly enable", v)
+		require.Truef(t, got, "value %q should be on (default-on)", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
+	for _, v := range off {
+		got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return v })
+		require.Falsef(t, got, "value %q should explicitly disable", v)
 		require.Emptyf(t, unknown, "value %q should not warn", v)
 	}
 	got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return "maybe" })

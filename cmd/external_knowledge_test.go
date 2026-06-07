@@ -13,14 +13,16 @@ func envFromMap(m map[string]string) getenvFunc {
 	return func(k string) string { return m[k] }
 }
 
+// DEFAULT ON (2026-06-07): unset/empty/affirmative => on; explicit negative => off;
+// unknown => off (logged). Enabled together with COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE.
 func TestExternalKnowledgeEnabled(t *testing.T) {
-	on := []string{"1", "true", "TRUE", "yes", "on", " On "}
+	on := []string{"", " ", "1", "true", "TRUE", "yes", "on", " On "}
 	for _, v := range on {
 		if !externalKnowledgeEnabled(envFromMap(map[string]string{"COMPSHARE_EXTERNAL_KNOWLEDGE": v})) {
-			t.Errorf("value %q should enable external knowledge", v)
+			t.Errorf("value %q should enable external knowledge (default-on)", v)
 		}
 	}
-	off := []string{"", "0", "off", "no", "garbage"}
+	off := []string{"0", "off", "no", "false", "disabled", "none", "garbage"}
 	for _, v := range off {
 		if externalKnowledgeEnabled(envFromMap(map[string]string{"COMPSHARE_EXTERNAL_KNOWLEDGE": v})) {
 			t.Errorf("value %q should NOT enable external knowledge", v)
@@ -28,12 +30,15 @@ func TestExternalKnowledgeEnabled(t *testing.T) {
 	}
 }
 
-// Default OFF is the load-bearing invariant: with the flag unset the retriever is
-// platform-only, so platform RAG stays byte-identical and the frozen parity holds.
-func TestExternalKnowledgeSourceDefaultOff(t *testing.T) {
-	_, ok := externalKnowledgeSource(envFromMap(map[string]string{}), knowledge.RetrievalModeQwen3RRF)
-	if ok {
-		t.Fatal("external knowledge must be OFF by default")
+// DEFAULT ON: with the flag unset the retriever merges the external corpus in qwen3
+// modes; COMPSHARE_EXTERNAL_KNOWLEDGE=0 rolls back to platform-only (byte-identical
+// to pre-Phase-2). The merge degrades to platform-only on load failure regardless.
+func TestExternalKnowledgeSourceDefaultOn(t *testing.T) {
+	if _, ok := externalKnowledgeSource(envFromMap(map[string]string{}), knowledge.RetrievalModeQwen3RRF); !ok {
+		t.Fatal("external knowledge must be ON by default in qwen3 mode")
+	}
+	if _, ok := externalKnowledgeSource(envFromMap(map[string]string{"COMPSHARE_EXTERNAL_KNOWLEDGE": "0"}), knowledge.RetrievalModeQwen3RRF); ok {
+		t.Fatal("COMPSHARE_EXTERNAL_KNOWLEDGE=0 must roll back to platform-only")
 	}
 }
 

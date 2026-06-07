@@ -44,7 +44,9 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 	}
 	tools.SetAgenticSearchKnowledgeEnabled(agenticSearch)
 	if agenticSearch {
-		log.Printf("runtime: HTTP agentic SearchKnowledge enabled (COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE on; enable with external KB on)")
+		log.Printf("runtime: HTTP agentic SearchKnowledge enabled (COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE default-on; disable with =0)")
+	} else {
+		log.Printf("runtime: HTTP agentic SearchKnowledge disabled (COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=0)")
 	}
 	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
 		Capacity:             cfg.Agent.HTTP.PoolCapacity,
