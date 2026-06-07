@@ -202,6 +202,13 @@ type Engine struct {
 	// tool (flag off => tool never visible => never runs => both stay zero).
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
+	// searchKnowledgeLedgerThisTurn is the per-turn ChunkID-keyed, deduped
+	// evidence ledger (the union of every SearchKnowledge call's items this turn,
+	// #126). The route-independent grounded-answer validator checks the final
+	// synthesis cites only ChunkIDs present here. Reset per turn; populated only
+	// when the agentic tool runs AND the grounded validator is on — empty (inert)
+	// otherwise, keeping flag-off byte-identical.
+	searchKnowledgeLedgerThisTurn knowledge.EvidenceLedger
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
 	// user turn. 0 = disabled. Copied from SharedDeps in NewSession.
 	maxTokensPerTurn int
@@ -1038,6 +1045,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.lastPlannerActionThisTurn = ""
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
+	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
@@ -2686,7 +2694,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Args: map[string]any{"query": query}})
 	if e.knowledgeRetriever == nil || query == "" {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
-		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: query}, true)
+		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: query}, true, false)
 	}
 	areaText := query
 	if hint != "" {
@@ -2711,6 +2719,13 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	ledger := knowledge.BuildSubstantiveEvidenceLedger(query, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
 	e.searchKnowledgeRanThisTurn = true
 	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
+	// Accumulate the per-turn ChunkID-keyed, deduped ledger so the grounded-answer
+	// validator can check the final synthesis cites only retrieved ChunkIDs (#126).
+	// Gated on the validator flag so flag-off does no extra work and keeps no extra
+	// state (byte-identical to before #126).
+	if groundedAnswerValidatorOn {
+		e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
+	}
 	// Emit the RAW retrieval as a RetrievalTrace so what SearchKnowledge retrieved
 	// (enabled, hit count, chunk_ids, weak_evidence) is OBSERVABLE in traces and eval
 	// — including when the relevance floor dropped it. Without this the rec.retrieval
@@ -2719,7 +2734,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits)
 	empty := retrieved.Empty || len(ledger.Items) == 0
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
-	return searchKnowledgeResultJSON(ledger, empty)
+	return searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn)
 }
 
 // emitSearchKnowledgeRetrievalTrace records the agent-lane SearchKnowledge
@@ -2784,16 +2799,36 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 		return content
 	}
 	if lerr := knowledge.ValidateNoRawEvidenceLeak(content, e.searchKnowledgeHitsThisTurn); lerr != nil {
-		if e.hardBlockObserver != nil {
-			e.hardBlockObserver(observability.EngineHardBlockTrace{
-				Hit:         true,
-				Category:    "search_knowledge_raw_leak",
-				TriggeredBy: observability.HardBlockTriggerPostLLM,
-			})
-		}
+		e.emitSearchKnowledgeHardBlock("search_knowledge_raw_leak")
 		return ragNoEvidenceReply
 	}
-	return content
+	// Route-independent cite-grounding (#126), default-off via
+	// COMPSHARE_RAG_GROUNDED_VALIDATOR. Flag-off the leak check above is the only
+	// guard (byte-identical to pre-#126). Flag-on: the agent was told (cite_protocol
+	// in the tool result) to attribute each conclusion with [[chunk_id]]; require
+	// >=1 citation resolving to a retrieved ChunkID — or an explicit refusal — and
+	// reject any citation to an unknown chunk_id, then strip the markers for display.
+	if !groundedAnswerValidatorOn {
+		return content
+	}
+	report := knowledge.ValidateGroundedCitations(content, e.searchKnowledgeLedgerThisTurn)
+	if !report.Grounded(isKnowledgeRefusal(content)) {
+		e.emitSearchKnowledgeHardBlock("search_knowledge_uncited")
+		return ragNoEvidenceReply
+	}
+	return knowledge.StripCiteMarkers(content)
+}
+
+// emitSearchKnowledgeHardBlock records a post-LLM hardblock trace for the agentic
+// SearchKnowledge synthesis guard (raw-leak or uncited). Shared by both guard arms.
+func (e *Engine) emitSearchKnowledgeHardBlock(category string) {
+	if e.hardBlockObserver != nil {
+		e.hardBlockObserver(observability.EngineHardBlockTrace{
+			Hit:         true,
+			Category:    category,
+			TriggeredBy: observability.HardBlockTriggerPostLLM,
+		})
+	}
 }
 
 func searchKnowledgeArg(args map[string]any, key string) string {
@@ -2805,10 +2840,15 @@ func searchKnowledgeArg(args map[string]any, key string) string {
 	return ""
 }
 
-func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool) string {
+func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool, citeProtocol bool) string {
 	result := map[string]any{"EvidenceLedger": ledger}
 	if empty || len(ledger.Items) == 0 {
 		result["empty"] = true
+	} else if citeProtocol {
+		// Only when the grounded-answer validator is on: tell the agent to attribute
+		// each conclusion with [[chunk_id]] so the synthesis can be cite-validated.
+		// Flag-off this key is absent => byte-identical result JSON.
+		result["cite_protocol"] = searchKnowledgeCiteProtocol
 	}
 	b, err := json.Marshal(result)
 	if err != nil {

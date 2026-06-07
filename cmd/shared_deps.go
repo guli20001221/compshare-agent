@@ -48,6 +48,14 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 	} else {
 		log.Printf("runtime: HTTP agentic SearchKnowledge disabled (COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=0)")
 	}
+	groundedValidator, unknownGroundedValidator := groundedAnswerValidatorEnabledFromEnv(getenv)
+	if unknownGroundedValidator != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_RAG_GROUNDED_VALIDATOR value %q", unknownGroundedValidator)
+	}
+	engine.SetGroundedAnswerValidatorEnabled(groundedValidator)
+	if groundedValidator {
+		log.Printf("runtime: HTTP grounded-answer validator enabled (COMPSHARE_RAG_GROUNDED_VALIDATOR=1; cite-or-refuse on agentic SearchKnowledge)")
+	}
 	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
 		Capacity:             cfg.Agent.HTTP.PoolCapacity,
 		IdleTTL:              cfg.Agent.HTTP.PoolIdleTTL,
