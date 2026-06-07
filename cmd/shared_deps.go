@@ -10,6 +10,7 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/renderer"
 	"github.com/compshare-agent/internal/store"
+	"github.com/compshare-agent/internal/tools"
 )
 
 func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, getenv getenvFunc) (*agentpool.Pool, error) {
@@ -36,6 +37,14 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 	engine.SetSkillExecutorDiagnosisPilots(diagnosisPilots)
 	if useSkillExecutor {
 		log.Printf("runtime: HTTP skill executor enabled (USE_SKILL_EXECUTOR=1, diagnosis_pilots=%v)", diagnosisPilots)
+	}
+	agenticSearch, unknownAgenticSearch := agenticSearchKnowledgeEnabledFromEnv(getenv)
+	if unknownAgenticSearch != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE value %q", unknownAgenticSearch)
+	}
+	tools.SetAgenticSearchKnowledgeEnabled(agenticSearch)
+	if agenticSearch {
+		log.Printf("runtime: HTTP agentic SearchKnowledge enabled (COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=1)")
 	}
 	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
 		Capacity:             cfg.Agent.HTTP.PoolCapacity,

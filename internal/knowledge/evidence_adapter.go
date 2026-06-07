@@ -8,9 +8,21 @@ import (
 
 const DefaultEvidenceLedgerMaxItems = 3
 
+// DefaultEvidenceSnippetMaxRunes bounds the per-item content excerpt carried by
+// the SUBSTANTIVE ledger (BuildSubstantiveEvidenceLedger). It is large enough to
+// capture the actionable head of an external runbook chunk (the flags/commands
+// live in the first lines) yet bounded so a 3-item ledger fed back through the
+// multi-round ReAct loop does not bloat the input (memory:
+// priortext-avalanche-invalidates-planner).
+const DefaultEvidenceSnippetMaxRunes = 400
+
 // EvidenceLedger is the safe view of retrieval results for body-read agent
-// skills. It intentionally does not expose KBChunk.Content. Terminal RAG still
-// uses the full cited prompt path; this ledger is for evidence-in-process only.
+// skills. The diagnosis lane (BuildEvidenceLedger) intentionally does not expose
+// KBChunk.Content because there the instance data is the primary evidence and the
+// ledger is supplementary. The agentic-RAG registry tool (P3) instead uses
+// BuildSubstantiveEvidenceLedger, which fills Snippet with a bounded content
+// excerpt — on a symptom tool-ops turn the retrieved evidence IS the primary
+// base, so a content-free ledger could not ground a real fix.
 type EvidenceLedger struct {
 	Query string         `json:"query,omitempty"`
 	Items []EvidenceItem `json:"items"`
@@ -22,6 +34,12 @@ type EvidenceItem struct {
 	SourceType  string `json:"source_type,omitempty"`
 	ScoreBucket string `json:"score_bucket,omitempty"`
 	Summary     string `json:"summary"`
+	// Snippet is a bounded excerpt of the chunk body. Empty on the content-free
+	// diagnosis-lane ledger; populated by BuildSubstantiveEvidenceLedger so the
+	// agent can ground an actionable answer. The no-raw-leak guard
+	// (ValidateNoRawEvidenceLeak) still runs on the FINAL answer, so the agent
+	// must paraphrase/cite rather than echo a >=32-rune verbatim passage.
+	Snippet string `json:"snippet,omitempty"`
 }
 
 const (
@@ -72,6 +90,34 @@ func BuildEvidenceLedger(query string, hits []RetrievalHit, maxItems int) Eviden
 		if len(ledger.Items) >= maxItems {
 			break
 		}
+	}
+	return ledger
+}
+
+// BuildSubstantiveEvidenceLedger is the agentic-RAG (P3) projection: identical to
+// BuildEvidenceLedger but each item carries a bounded Snippet excerpt of the
+// chunk body so the agent can synthesize an ACTIONABLE answer on a symptom
+// tool-ops turn (where the retrieved evidence is the primary, not supplementary,
+// base). snippetMaxRunes<=0 uses DefaultEvidenceSnippetMaxRunes. The Snippet is
+// content the agent reads; the no-raw-leak guard still runs on the final answer.
+func BuildSubstantiveEvidenceLedger(query string, hits []RetrievalHit, maxItems, snippetMaxRunes int) EvidenceLedger {
+	if snippetMaxRunes <= 0 {
+		snippetMaxRunes = DefaultEvidenceSnippetMaxRunes
+	}
+	ledger := BuildEvidenceLedger(query, hits, maxItems)
+	byID := map[string]string{}
+	for _, hit := range hits {
+		id := strings.TrimSpace(hit.Chunk.ChunkID)
+		if id == "" {
+			continue
+		}
+		if _, ok := byID[id]; ok {
+			continue
+		}
+		byID[id] = clipRunes(compactWhitespace(hit.Chunk.Content), snippetMaxRunes)
+	}
+	for i := range ledger.Items {
+		ledger.Items[i].Snippet = byID[ledger.Items[i].ChunkID]
 	}
 	return ledger
 }

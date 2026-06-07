@@ -195,6 +195,13 @@ type Engine struct {
 	rateLimitObserver                func(governance.Decision)
 	readExpensiveCallsThisTurn       int
 	requireKnowledgeCitationThisTurn bool
+	// searchKnowledgeRanThisTurn / searchKnowledgeHitsThisTurn track the agentic
+	// SearchKnowledge tool (P3) so the final-answer no-raw-leak guard validates
+	// the synthesis against exactly the evidence the agent was shown. Reset per
+	// turn. Inert unless the COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate exposed the
+	// tool (flag off => tool never visible => never runs => both stay zero).
+	searchKnowledgeRanThisTurn  bool
+	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
 	// user turn. 0 = disabled. Copied from SharedDeps in NewSession.
 	maxTokensPerTurn int
@@ -1029,6 +1036,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.turnTokensConsumed = 0
 	e.lastPlannerIntentThisTurn = ""
 	e.lastPlannerActionThisTurn = ""
+	e.searchKnowledgeRanThisTurn = false
+	e.searchKnowledgeHitsThisTurn = nil
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
@@ -1159,7 +1168,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// live mode does not leak partial tool args.
 		guardMayRewrite := e.currentMonitorWindow ||
 			(round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil) ||
-			e.lastPlannerIntentThisTurn == intent.IntentDiagnosis
+			e.lastPlannerIntentThisTurn == intent.IntentDiagnosis ||
+			e.searchKnowledgeRanThisTurn
 		liveStream := opts.OnTextDelta != nil && !guardMayRewrite
 		var streamedDeltas []string
 		if liveStream {
@@ -1217,6 +1227,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 				content = ragNoEvidenceReply
 			}
+			content = e.guardSearchKnowledgeSynthesis(content)
 			// Replay buffered streaming deltas when the LLM content was returned
 			// verbatim. If an engine guard overwrote content, emit the canonical
 			// override as a single chunk so the SSE stream matches the persisted
@@ -1446,6 +1457,18 @@ func (e *Engine) tryPlannerDiagnosisClarification(dispatch plannerDispatchResult
 		return reply, true
 	case intent.IntentDiagnosis:
 		if len(dispatch.result.Plan.Slots.TargetRefs) > 0 || countPlannerSnapshotInstances(dispatch.snapshot) <= 1 {
+			return "", false
+		}
+		// P4a (flag-gated, env-reversible): when agentic SearchKnowledge is on, do
+		// NOT short-circuit empty-target diagnosis with the canned which-instance
+		// reply. Fall through to the agent lane so the ReAct loop calls
+		// SearchKnowledge for prior tool/ops evidence FIRST, and asks "which
+		// instance?" only if a Diagnose* tool genuinely needs instance-specific
+		// data (the LLM clarifies in-loop, e.g. before DiagnoseSSH). Flag off =>
+		// byte-identical: the canned dead-end still fires. The TargetRefs>0 and
+		// <=1-instance escape hatches above are unchanged. NOTE: inert for the
+		// symptom set until P4b routes symptom-with-no-target turns here.
+		if tools.AgenticSearchKnowledgeEnabled() {
 			return "", false
 		}
 		reply := diagnosisMissingTargetClarificationReply
@@ -2638,6 +2661,88 @@ func isFinalReply(result string) (string, bool) {
 }
 
 // executeTool handles security check + execution for one tool call.
+// executeSearchKnowledge runs the agentic-RAG SearchKnowledge tool (P3): it
+// retrieves from the merged platform+external corpus and returns a SUBSTANTIVE
+// EvidenceLedger (bounded content snippets) for the agent to ground its answer
+// on — on a symptom tool-ops turn the retrieved evidence is the PRIMARY base, so
+// the content-free diagnosis ledger would not suffice. Read-only by
+// construction; never touches SafeToolExecutor. Shares the orchestrator lane's
+// param name (query) + result wrapper ({"EvidenceLedger": ...}); the orchestrator
+// stays content-free by design (its lane has instance data as primary evidence),
+// P5 unifies further. Records hits so the final-answer no-raw-leak guard can
+// validate the synthesis.
+func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
+	query := strings.TrimSpace(searchKnowledgeArg(args, "query"))
+	hint := strings.TrimSpace(searchKnowledgeArg(args, "context_hint"))
+	if query == "" {
+		query = hint
+	}
+	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Args: map[string]any{"query": query}})
+	if e.knowledgeRetriever == nil || query == "" {
+		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
+		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: query}, true)
+	}
+	areaText := query
+	if hint != "" {
+		areaText = hint + " " + query
+	}
+	retrieved := e.knowledgeRetriever.Retrieve(query, inferKnowledgeProductArea(areaText))
+	hits := retrieved.HitItems
+	ledger := knowledge.BuildSubstantiveEvidenceLedger(query, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
+	e.searchKnowledgeRanThisTurn = true
+	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
+	empty := retrieved.Empty || len(ledger.Items) == 0
+	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
+	return searchKnowledgeResultJSON(ledger, empty)
+}
+
+// guardSearchKnowledgeSynthesis enforces the no-raw-leak discipline on the final
+// ReAct answer when SearchKnowledge fed the agent evidence this turn (P3). The
+// answer must not dump >=32-rune raw chunk content — the route-independent
+// discipline BuildRAGMessages+cited-strip give terminal RAG but a ReAct tool does
+// not. On leak it records a hardblock trace and replaces the answer with the
+// canned no-evidence reply. cite-grounding is verified empirically by the P3
+// substance gate; P5 generalizes a route-independent cite validator. No-op (and
+// thus byte-identical) when SearchKnowledge did not run this turn — which is
+// always the case while the COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate is off.
+func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
+	if !e.searchKnowledgeRanThisTurn || len(e.searchKnowledgeHitsThisTurn) == 0 {
+		return content
+	}
+	if lerr := knowledge.ValidateNoRawEvidenceLeak(content, e.searchKnowledgeHitsThisTurn); lerr != nil {
+		if e.hardBlockObserver != nil {
+			e.hardBlockObserver(observability.EngineHardBlockTrace{
+				Hit:         true,
+				Category:    "search_knowledge_raw_leak",
+				TriggeredBy: observability.HardBlockTriggerPostLLM,
+			})
+		}
+		return ragNoEvidenceReply
+	}
+	return content
+}
+
+func searchKnowledgeArg(args map[string]any, key string) string {
+	if v, ok := args[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool) string {
+	result := map[string]any{"EvidenceLedger": ledger}
+	if empty || len(ledger.Items) == 0 {
+		result["empty"] = true
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		return `{"EvidenceLedger":{"items":[]},"empty":true}`
+	}
+	return string(b)
+}
+
 func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) string {
 	action := tc.Function.Name
 
@@ -2661,6 +2766,16 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		}
 		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceKnowledgeLocal, Message: "查询成功", TraceResult: result})
 		return knowledge.ResultToJSON(result)
+	}
+
+	// Agentic-RAG SearchKnowledge (P3) executes locally on the engine's retriever
+	// — like the knowledge tools above, never through SafeToolExecutor (its Route
+	// is knowledge, not external_api). The LLM can only emit this when the
+	// COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate made it visible, so this branch is
+	// unreachable when the flag is off (byte-identical behavior).
+	if action == "SearchKnowledge" {
+		args = e.safeExecutor.FilterArgs(action, args)
+		return e.executeSearchKnowledge(ctx, args, onStep)
 	}
 
 	// Workflow meta-tools → delegate to workflow engine.

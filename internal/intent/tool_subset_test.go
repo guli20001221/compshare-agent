@@ -7,9 +7,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIntentToolSubset_DiagnosisReturns9Tools(t *testing.T) {
+func TestIntentToolSubset_DiagnosisReturns10Tools(t *testing.T) {
 	subset := IntentToolSubset(IntentDiagnosis)
-	require.Len(t, subset, 9)
+	require.Len(t, subset, 10)
+	// SearchKnowledge (P4a) is a candidate diagnosis tool, emit-gated at the
+	// visibility layer (tools.VisibleRegistry) behind COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE:
+	// listing it here is inert until the flag is on, so the EMITTED diagnosis
+	// subset is byte-identical to before when off (see internal/tools
+	// TestSearchKnowledgeGatedVisibility).
+	assert.Contains(t, subset, "SearchKnowledge")
 	assert.Contains(t, subset, "DiagnoseSSH")
 	assert.Contains(t, subset, "DiagnosePortOrFirewall")
 	assert.Contains(t, subset, "DescribeCompShareInstance")

@@ -1,0 +1,12 @@
+[
+  { "id": "sym-vllm-killed",   "set": "symptom", "question": "vllm 进程被 kill 了，怎么回事",
+    "expect_intent": "diagnosis", "expect_runtime_form": "", "expect_retrieval_fired": false, "expect_dead_end": true },
+  { "id": "sym-sglang-oom",    "set": "symptom", "question": "sglang 启动报显存不足",
+    "expect_intent": "diagnosis", "expect_runtime_form": "", "expect_retrieval_fired": false, "expect_dead_end": true },
+  { "id": "sym-vllm-valueerr", "set": "symptom", "question": "vllm serve 报 ValueError 起不来",
+    "expect_intent": "diagnosis", "expect_runtime_form": "", "expect_retrieval_fired": false, "expect_dead_end": true },
+  { "id": "howto-vllm-serve",  "set": "howto",   "question": "vllm 怎么启动 openai 兼容服务",
+    "expect_intent": "knowledge_qa", "expect_runtime_form": "terminal_rag", "expect_retrieval_fired": true },
+  { "id": "howto-reduce-vram", "set": "howto",   "question": "怎么降低 vllm 的显存占用",
+    "expect_intent": "knowledge_qa", "expect_runtime_form": "terminal_rag", "expect_retrieval_fired": true }
+]

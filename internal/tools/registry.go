@@ -2,9 +2,47 @@ package tools
 
 import openai "github.com/sashabaranov/go-openai"
 
+// agenticSearchKnowledgeOn gates the agentic-RAG SearchKnowledge tool (P3) in
+// VisibleRegistry. Default false => byte-identical to before the tool existed,
+// for EVERY intent. Set once at boot from COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE
+// (cmd/trace.go). The flag is read at the single tool-visibility choke point
+// (VisibleRegistry/VisibleRegistryForSubset), so that filter IS the gate
+// (unified plan P3, gating design 2 — full byte-identity when off).
+var agenticSearchKnowledgeOn bool
+
+// SetAgenticSearchKnowledgeEnabled toggles SearchKnowledge visibility. Boot-only
+// (reversible by restart), mirroring the USE_SKILL_REGISTRY precedent (#114).
+func SetAgenticSearchKnowledgeEnabled(v bool) { agenticSearchKnowledgeOn = v }
+
+// AgenticSearchKnowledgeEnabled reports whether the agentic SearchKnowledge gate
+// is on. Used by the engine (P4a) to decide whether to relax the diagnosis
+// instance-demand dead-end so the agent can retrieve evidence first.
+func AgenticSearchKnowledgeEnabled() bool { return agenticSearchKnowledgeOn }
+
 // Registry holds all registered tools for function calling.
 var Registry = []openai.Tool{
 	// --- Knowledge Tools (local, no API call) ---
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "SearchKnowledge",
+			Description: "检索平台与第三方工具（vLLM/SGLang/Ollama/ComfyUI 等）运维知识库，返回带证据片段的条目（chunk_id/标题/摘要/片段）。排查报错、定位原因或回答“怎么做/为什么”类工具问题时，先用它取证再作答；引用返回的 chunk 内容，不要凭空编造命令或参数。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{
+						"type":        "string",
+						"description": "要检索的症状、报错或问题（简短自然语言）。",
+					},
+					"context_hint": map[string]any{
+						"type":        "string",
+						"description": "可选，缩小检索范围的产品/工具领域提示，如 vllm / sglang / gpu。",
+					},
+				},
+				"required": []string{"query"},
+			},
+		},
+	},
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
@@ -931,18 +969,27 @@ func VisibleRegistryForSubset(subset []string, mutatingEnabled bool) []openai.To
 // runtime mode. Read-only mode hides mutating workflow tools while keeping
 // query, knowledge, and cloud-side diagnosis tools available.
 func VisibleRegistry(mutatingEnabled bool) []openai.Tool {
-	if mutatingEnabled {
-		return Registry
-	}
+	agenticSearch := AgenticSearchKnowledgeEnabled()
 	policies := DefaultToolExecutionPolicies()
 	visible := make([]openai.Tool, 0, len(Registry))
 	for _, tool := range Registry {
 		if tool.Function == nil {
 			continue
 		}
-		policy, ok := policies[tool.Function.Name]
-		if ok && (policy.Route == ActionRouteWorkflow || policy.Class == ActionClassMutating) {
+		// Agentic-RAG SearchKnowledge (P3) is gated behind
+		// COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE. When off it is invisible for EVERY
+		// intent (full-registry AND subset), so the flag-off tool surface is
+		// byte-identical to before this tool existed. When on it survives the
+		// read-only filter below (Route=knowledge, read_cheap) and is scoped by
+		// the subset filter (P4a adds it only to the diagnosis subset).
+		if tool.Function.Name == "SearchKnowledge" && !agenticSearch {
 			continue
+		}
+		if !mutatingEnabled {
+			policy, ok := policies[tool.Function.Name]
+			if ok && (policy.Route == ActionRouteWorkflow || policy.Class == ActionClassMutating) {
+				continue
+			}
 		}
 		visible = append(visible, tool)
 	}
