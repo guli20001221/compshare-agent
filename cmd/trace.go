@@ -270,29 +270,29 @@ func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
 }
 
 // agenticSearchKnowledgeEnabledFromEnv gates the agentic-RAG SearchKnowledge
-// registry tool (P3/P4a). DEFAULT OFF. When on, a symptom/tool-ops diagnosis turn
+// registry tool (P3/P4a). DEFAULT ON. When on, a symptom/tool-ops diagnosis turn
 // can call SearchKnowledge for prior tool/ops evidence before any Diagnose* tool,
 // and the empty-target which-instance dead-end is relaxed so the loop reaches that
-// retrieval. 1/true/yes/on turns it on; 0/off/false/no turns it off; unknown =>
-// off + non-empty warn string (CLAUDE.md: never silently coerce).
+// retrieval. ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off +
+// non-empty warn string (CLAUDE.md: never silently coerce). Boot-only: resolved
+// once in cmd (CLI + HTTP) and frozen via tools.SetAgenticSearchKnowledgeEnabled;
+// the Go-package default (tools.agenticSearchKnowledgeOn) stays false so the
+// engine/tools unit tests are unaffected. Rollback = COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=0.
 //
-// WHY DEFAULT-OFF (P5, 2026-06-07): the flip only delivers value when the external
-// corpus is loaded. Live prod-default smoke (COMPSHARE_EXTERNAL_KNOWLEDGE=0) showed
-// tool-ops symptoms (vLLM/SGLang) fire SearchKnowledge but retrieve topically
-// IRRELEVANT platform chunks (resource_purchase/modelverse/image docs) — a
-// false-grounding risk — while platform symptoms (SSH/GPU) correctly clarify and
-// do not fire it. With COMPSHARE_EXTERNAL_KNOWLEDGE=1 the same probes retrieve the
-// RIGHT chunks (ext-gpu-oom-*, ext-sglang-oom-001) and ground well (see
-// eval/trace_gate/after_state_p5_report.md). So default-on is RE-HOMED to the
-// external-KB-on decision: enable this together with COMPSHARE_EXTERNAL_KNOWLEDGE
-// (its own parity-gated flip), not before. The retrieval observability
-// (emitSearchKnowledgeRetrievalTrace) and the relax logic ship now, default-off.
+// WHY DEFAULT-ON (2026-06-07): enabled TOGETHER with COMPSHARE_EXTERNAL_KNOWLEDGE
+// (the agentic value comes from the external tool/ops KB — agentic-alone at
+// external-off had no positive value and a false-grounding risk, see the P5 report).
+// The joint enablement was eval-gated on merged main: the 34-probe joint eval
+// (170 runs) showed no platform-hosted-API vs self-hosted-service confusion and a
+// clean regression set, and the platform-FAQ faithfulness eval (15 probes x both
+// conditions) showed ZERO external-corpus contamination of platform answers. See
+// eval/trace_gate/{joint_onmain_anchor_observations.jsonl, agentic_rag_default_on_report.md}.
 func agenticSearchKnowledgeEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.TrimSpace(getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"))
 	switch strings.ToLower(raw) {
-	case "1", "true", "yes", "on":
+	case "", "1", "true", "yes", "on":
 		return true, ""
-	case "", "0", "off", "no", "false", "disabled", "none":
+	case "0", "off", "no", "false", "disabled", "none":
 		return false, ""
 	default:
 		return false, raw
@@ -554,15 +554,23 @@ func hybridEmbeddingsPathFromEnv(getenv getenvFunc, corpusPath, embedModel strin
 }
 
 // externalKnowledgeEnabled gates the additive external tool/ops corpus
-// (deploy/kb/external_w0.jsonl). Default OFF: with COMPSHARE_EXTERNAL_KNOWLEDGE
-// unset the retriever loads the platform corpus exactly as before
-// (byte-identical), so platform RAG behavior and the frozen platform parity are
-// untouched. Set it to 1/true/yes/on to merge the external corpus into the index.
+// (deploy/kb/external_w0.jsonl). DEFAULT ON: ""/1/true/yes/on => the retriever
+// merges the external corpus into the index; 0/off/false/no => platform-only
+// (byte-identical to pre-Phase-2); unknown => off + warn (CLAUDE.md: never silently
+// coerce). The merge stays ADDITIVE and safe: loadKnowledgeCorpora falls back to
+// platform-only if the external corpus is missing/bad/digest-drifted, so a broken
+// external file never takes down platform RAG. Platform retrieval parity is
+// preserved (the merged 687+29 index keeps platform Top-3 unchanged, #237 256-Q
+// gate). Rollback = COMPSHARE_EXTERNAL_KNOWLEDGE=0.
 func externalKnowledgeEnabled(getenv getenvFunc) bool {
-	switch strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_EXTERNAL_KNOWLEDGE"))) {
-	case "1", "true", "yes", "on":
+	raw := strings.TrimSpace(getenv("COMPSHARE_EXTERNAL_KNOWLEDGE"))
+	switch strings.ToLower(raw) {
+	case "", "1", "true", "yes", "on":
 		return true
+	case "0", "off", "no", "false", "disabled", "none":
+		return false
 	default:
+		log.Printf("warning: ignoring unknown COMPSHARE_EXTERNAL_KNOWLEDGE value %q; treating as off", raw)
 		return false
 	}
 }
