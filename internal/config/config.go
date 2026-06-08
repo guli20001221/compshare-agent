@@ -28,6 +28,11 @@ type STSConfig struct {
 	DefaultSessionName string        `yaml:"default_session_name"`
 	DurationSeconds    int           `yaml:"duration_seconds"`
 	RefreshBefore      time.Duration `yaml:"refresh_before"`
+	// IAMURL is the internal UAccount endpoint used to bootstrap per-tenant
+	// service-linked roles on demand when AssumeRole returns RoleNotExist
+	// (RetCode 11277). Optional: when empty, RoleNotExist errors are returned
+	// to the caller unchanged. Reachable only from the UCloud private network.
+	IAMURL string `yaml:"iam_url"`
 }
 
 type AgentConfig struct {
@@ -217,6 +222,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if err := resolveOptionalCredential(&cfg.Agent.STS.DefaultRoleUrn, "agent.sts.default_role_urn"); err != nil {
+		return nil, err
+	}
+	if err := resolveOptionalCredential(&cfg.Agent.STS.IAMURL, "agent.sts.iam_url"); err != nil {
 		return nil, err
 	}
 	if err := validateSTSConfig(&cfg.Agent.STS); err != nil {

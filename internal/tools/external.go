@@ -35,9 +35,24 @@ type ExternalExecutor struct {
 func NewExternalExecutor(cfg config.AgentConfig) *ExternalExecutor {
 	var provider CredentialProvider
 	if cfg.STS.ServiceAK != "" && cfg.STS.ServiceSK != "" {
-		provider = NewSTSProvider(cfg.STS.ServiceAK, cfg.STS.ServiceSK, cfg.STS.URL,
+		opts := []STSOption{
 			WithDurationSeconds(cfg.STS.DurationSeconds),
-			WithRefreshBefore(cfg.STS.RefreshBefore))
+			WithRefreshBefore(cfg.STS.RefreshBefore),
+		}
+		// When the internal UAccount URL is configured, recover from
+		// AssumeRole RoleNotExist (11277) by provisioning the per-tenant
+		// service-linked role on demand. Without this, the tenant must
+		// pre-create the role via the IAM console — mirrors the auto-
+		// provisioning pattern used by uhost-extension's stop_scheduler.
+		if cfg.STS.IAMURL != "" {
+			boot := NewServiceLinkedRoleBootstrapper(
+				NewUAccountClient(cfg.STS.IAMURL),
+				"compshare",
+				"ucs-service-role/ServiceRoleForCompshare",
+			)
+			opts = append(opts, WithRoleBootstrapper(boot))
+		}
+		provider = NewSTSProvider(cfg.STS.ServiceAK, cfg.STS.ServiceSK, cfg.STS.URL, opts...)
 	} else if cfg.PublicKey != "" && cfg.PrivateKey != "" {
 		provider = StaticCredentialProvider{Cred: &Credentials{
 			AccessKeyId:     cfg.PublicKey,
