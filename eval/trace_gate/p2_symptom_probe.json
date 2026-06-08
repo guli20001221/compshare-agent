@@ -1,6 +1,0 @@
-[
-  {"id":"sym-ssh","question":"我的机器 SSH 连不上了","category":"diagnosis","expected":"retrieve_first"},
-  {"id":"sym-gpu","question":"GPU 突然检测不到了","category":"diagnosis","expected":"retrieve_first"},
-  {"id":"sym-init","question":"实例初始化一直卡住进不去","category":"diagnosis","expected":"retrieve_first"},
-  {"id":"sym-port","question":"我部署的服务端口连不上怎么办","category":"diagnosis","expected":"retrieve_first"}
-]
