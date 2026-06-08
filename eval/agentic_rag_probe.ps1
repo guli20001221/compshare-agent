@@ -13,7 +13,9 @@ param(
     [string]$ReportPath = "",
     [string]$External = "1",            # COMPSHARE_EXTERNAL_KNOWLEDGE
     [string]$AgenticSearch = "",        # COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE ("" = unset/off)
-    [string]$SkillExec = ""             # USE_SKILL_EXECUTOR ("" = off)
+    [string]$SkillExec = "",            # USE_SKILL_EXECUTOR ("" = off)
+    [string]$KnowledgeQAAgentLoop = "", # COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP ("" = off=terminal RAG; "1" = agent-loop route)
+    [string]$GroundedValidator = ""     # COMPSHARE_RAG_GROUNDED_VALIDATOR ("" = off)
 )
 
 $ErrorActionPreference = "Continue"
@@ -54,6 +56,8 @@ $env:COMPSHARE_TRACE_ENABLED = "1"
 $env:COMPSHARE_EXTERNAL_KNOWLEDGE = $External
 $env:COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE = $AgenticSearch
 $env:USE_SKILL_EXECUTOR = $SkillExec
+$env:COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP = $KnowledgeQAAgentLoop
+$env:COMPSHARE_RAG_GROUNDED_VALIDATOR = $GroundedValidator
 
 $runId = Get-Date -Format "yyyyMMdd-HHmmss"
 $baseDir = Join-Path $env:TEMP "compshare-$Tag-$runId"
@@ -93,7 +97,8 @@ if (Test-Path $ReportPath) { Remove-Item $ReportPath -Force }
 
 $agenticLabel = $AgenticSearch; if ([string]::IsNullOrEmpty($agenticLabel)) { $agenticLabel = "off" }
 $skillLabel = $SkillExec; if ([string]::IsNullOrEmpty($skillLabel)) { $skillLabel = "off" }
-Write-Host "ext=$External agentic=$agenticLabel skillexec=$skillLabel runs=$Runs" -ForegroundColor Yellow
+$kqaLabel = $KnowledgeQAAgentLoop; if ([string]::IsNullOrEmpty($kqaLabel)) { $kqaLabel = "off" }
+Write-Host "ext=$External agentic=$agenticLabel skillexec=$skillLabel kqa_agent_loop=$kqaLabel runs=$Runs" -ForegroundColor Yellow
 
 foreach ($probe in $probes) {
     $question = [string]$probe.question
