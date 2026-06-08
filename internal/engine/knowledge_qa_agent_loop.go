@@ -50,3 +50,16 @@ func toolListContainsFunction(toolDefs []openai.Tool, name string) bool {
 	}
 	return false
 }
+
+// toolCallsContain reports whether the model's response carried a tool call for the
+// named function. Used to detect a forced-hop misfire — a forced SearchKnowledge round
+// whose response carries no SearchKnowledge call because the model ignored the object
+// tool_choice — so the engine can retry the forced first hop once.
+func toolCallsContain(calls []openai.ToolCall, name string) bool {
+	for _, tc := range calls {
+		if tc.Function.Name == name {
+			return true
+		}
+	}
+	return false
+}

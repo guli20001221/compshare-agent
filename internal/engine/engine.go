@@ -1233,6 +1233,30 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			opts.OnUsage(resp.Usage)
 		}
 
+		// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP forced-hop reliability: flash occasionally
+		// ignores the forced SearchKnowledge object tool_choice and returns a direct text
+		// answer (the round-0 cited gate then refuses a turn that should have retrieved).
+		// Retry the forced first hop ONCE — the misfire is jittery, so the retry usually
+		// fires — reinforcing with the ephemeral note alongside the force. The condition is
+		// re-derived (not a tracking flag) and bounded to one extra call: the forced round,
+		// SearchKnowledge available, and the response carrying no SearchKnowledge call.
+		if round == 0 && e.knowledgeQAAgentLoopThisTurn && !forceMonitorRecall &&
+			toolListContainsFunction(req.Tools, "SearchKnowledge") &&
+			!toolCallsContain(resp.ToolCalls, "SearchKnowledge") && !e.tokenBudgetExceeded() {
+			retryReq := req
+			retryReq.OnTextDelta = nil
+			retryReq.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQAAgentLoopSearchNote)
+			if retryResp, retryErr := e.llmClient.Chat(ctx, retryReq); retryErr == nil {
+				e.emitTokenUsage(retryResp.Usage)
+				if opts.OnUsage != nil {
+					opts.OnUsage(retryResp.Usage)
+				}
+				if toolCallsContain(retryResp.ToolCalls, "SearchKnowledge") {
+					resp = retryResp
+				}
+			}
+		}
+
 		// Post-call budget check: emitTokenUsage just accumulated this
 		// call's usage. If the single call already blew the cap, gate
 		// here so the user gets the canned reply instead of an answer

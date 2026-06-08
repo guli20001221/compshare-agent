@@ -40,3 +40,17 @@ The migration itself is sound: 16/16 correct routing, faithful where it answers,
 5. Re-run this A/B (N≥5) after (1)–(4); flip only when B refusal-rate ≤ A and faithfulness ≤ A hold.
 
 **Disposition:** Phase 1 (mechanism) + Phase 2 (harness + this eval) land **default-off** — a reversible, byte-identical foundation plus the negative gate result as the repo's decision record. `COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP` stays off until the above are fixed and re-eval'd.
+
+## Update 2026-06-08 — cite-parity fix → refusal 0.44 → 0.19
+
+A raw-synthesis probe (temp instrumentation, captured the synthesis BEFORE the guard, reverted) showed the answers are excellent and flash **does** cite the right chunk_id (11/13) — the false-refusals were mostly the validator being too strict on exact `[[chunk_id]]` format (a perfect 226601 answer cited `[ [w0-init_failure-…] ]` with spaced brackets → wrongly refused), plus occasional no-cite. Two bounded fixes shipped (commit `9003399`): tolerant `citeMarkerRE` (spaces/tabs between brackets) + `retrySearchKnowledgeCitation` (one cite-retry before refusing, mirroring terminal `answerWithRetrievedEvidence`).
+
+Re-run (B2, same 8 probes ×2):
+
+| | refusal rate | substantive | remaining refusals |
+|---|---:|---:|---|
+| A terminal | 0.00 | 16/16 | — |
+| B1 (before fix) | 0.44 | 8/16 | 5 cite-gate + 2 forced-hop + 1 budget |
+| **B2 (after fix)** | **0.19** | **13/16** | **3 forced-hop misfire only** |
+
+**Every cite-gate over-refusal (5→0) and the budget case (1→0) are gone.** The 3 residual refusals are all `no-sk` (the forced `SearchKnowledge` object tool_choice was ignored by flash that run). Faithfulness/contamination unchanged. Remaining Phase-3 prerequisite narrows to **(1) forced-hop reliability** (re-force once on misfire); (2) token headroom is no longer observed in this run. Re-eval N≥5 after the forced-hop retry; flip only when B refusal ≤ A.

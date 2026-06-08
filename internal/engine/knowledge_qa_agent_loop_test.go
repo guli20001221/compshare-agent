@@ -295,6 +295,45 @@ func TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal(t *testing.T) {
 	assert.Equal(t, ragNoEvidenceReply, reply, "a retry that still won't cite keeps the refusal")
 }
 
+// TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire proves the forced-hop retry:
+// when flash ignores the forced SearchKnowledge object tool_choice at round 0 and
+// answers directly (no tool call), the engine re-forces the first hop once; the retry
+// fires SearchKnowledge and the turn proceeds to a grounded answer instead of the
+// round-0 cited-gate refusal.
+func TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire(t *testing.T) {
+	SetKnowledgeQAAgentLoopEnabled(true)
+	defer SetKnowledgeQAAgentLoopEnabled(false)
+	tools.SetAgenticSearchKnowledgeEnabled(true)
+	defer tools.SetAgenticSearchKnowledgeEnabled(false)
+	SetGroundedAnswerValidatorEnabled(false)
+
+	chunk := knowledgeQAAgentLoopBillingChunk()
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled: true, KBVersion: "kb.v1",
+		Hits:     []knowledge.KBChunk{chunk},
+		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "我直接回答，没有调用工具。"}, // round0: forced hop MISFIRED (no tool call)
+		{ToolCalls: []openai.ToolCall{{ID: "c1", Type: openai.ToolTypeFunction, // forced-hop retry fires
+			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"billing"}`}}}},
+		{Content: "停止的按量实例的磁盘仍会计费 [[faq-billing-001]]。"}, // round1 cited
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
+	require.NoError(t, err)
+	assert.True(t, eng.searchKnowledgeRanThisTurn, "forced-hop retry must recover the misfire and fire SearchKnowledge")
+	require.Len(t, retriever.calls, 1)
+	assert.Contains(t, reply, "停止的按量实例的磁盘仍会计费")
+	assert.NotEqual(t, ragNoEvidenceReply, reply)
+	assert.GreaterOrEqual(t, len(mock.calls), 3, "round0 misfire + forced-hop retry + final synthesis")
+}
+
 // TestToolListContainsFunction unit-tests the 400-trap helper: present, absent, and
 // the nil-Function guard.
 func TestToolListContainsFunction(t *testing.T) {
