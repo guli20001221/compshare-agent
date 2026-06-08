@@ -2795,6 +2795,16 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 // thus byte-identical) when SearchKnowledge did not run this turn — which is
 // always the case while the COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate is off.
 func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
+	// SCOPE (both guards below): this validates the synthesis only when SearchKnowledge
+	// actually surfaced evidence the agent was shown this turn. When the tool ran but
+	// the relevance floor dropped every hit (len==0 — a corpus-gap / weak-evidence
+	// turn), the agent was handed an EMPTY ledger: there is nothing to cite, so the
+	// cite-grounding validator does NOT gate the answer (forcing a refusal here would
+	// suppress legitimate general guidance). This matches the no-raw-leak guard's
+	// identical gating. The cite-or-refuse contract is therefore scoped to
+	// "the agent was shown retrieved evidence", NOT "SearchKnowledge was merely
+	// invoked". A weak/empty-evidence turn falls back to the un-gated agent answer
+	// exactly as before #126 — see TestGuardSearchKnowledgeSynthesis_EmptyEvidenceUngated.
 	if !e.searchKnowledgeRanThisTurn || len(e.searchKnowledgeHitsThisTurn) == 0 {
 		return content
 	}

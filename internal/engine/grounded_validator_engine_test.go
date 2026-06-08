@@ -107,6 +107,28 @@ func TestGuardSearchKnowledgeSynthesis_GroundedValidator(t *testing.T) {
 	})
 }
 
+// TestGuardSearchKnowledgeSynthesis_EmptyEvidenceUngated documents the deliberate
+// SCOPE of the cite-or-refuse contract (review of PR #243): when SearchKnowledge ran
+// but the relevance floor dropped every hit (empty ledger — a corpus-gap turn), the
+// agent was shown NO evidence, so an uncited substantive answer is NOT gated by the
+// validator (nothing to cite; forcing a refusal would suppress legitimate general
+// guidance). The contract is "the agent was shown retrieved evidence ⇒ cite or
+// refuse", NOT "SearchKnowledge was invoked ⇒ cite or refuse".
+func TestGuardSearchKnowledgeSynthesis_EmptyEvidenceUngated(t *testing.T) {
+	SetGroundedAnswerValidatorEnabled(true)
+	defer SetGroundedAnswerValidatorEnabled(false)
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
+	var traces []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(tr observability.EngineHardBlockTrace) { traces = append(traces, tr) })
+	// SearchKnowledge ran this turn, but the relevance floor dropped all hits.
+	eng.searchKnowledgeRanThisTurn = true
+	eng.searchKnowledgeHitsThisTurn = nil
+	eng.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
+	ans := "可以先确认显存占用，再调小 batch size 等通用做法。"
+	assert.Equal(t, ans, eng.guardSearchKnowledgeSynthesis(ans), "empty-evidence turn is ungated by the cite validator")
+	assert.Empty(t, traces, "no hardblock on an empty-evidence turn")
+}
+
 // TestSearchKnowledgeResultJSON_CiteProtocolGatedByFlag proves the tool result is
 // byte-identical when the validator is off, and carries the cite protocol only when
 // on and the ledger is non-empty.
