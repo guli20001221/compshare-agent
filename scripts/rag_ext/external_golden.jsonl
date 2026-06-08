@@ -27,3 +27,10 @@
 {"question_id": "ext-eg-027", "question": "多卡机器上怎么让程序只用第 0 和第 1 张卡", "product_area": "gpu_troubleshooting", "expected_behavior": "answer", "expected_chunk_ids": ["ext-gpu-visible-devices-001"], "group": "gpu_ops"}
 {"question_id": "ext-eg-028", "question": "从 huggingface 下载模型特别慢,有没有什么办法", "product_area": "gpu_troubleshooting", "expected_behavior": "answer", "expected_chunk_ids": ["ext-gpu-hf-download-001"], "group": "gpu_ops"}
 {"question_id": "ext-eg-029", "question": "我要跑一个 14b 的模型,大概得多大显存的卡", "product_area": "inference_serving", "expected_behavior": "answer", "expected_chunk_ids": ["ext-gpu-vram-estimate-001"], "group": "gpu_ops"}
+{"question_id": "ext-eg-030", "question": "我在实例里把 comfyui 跑起来了,想让别的电脑也能打开它的页面", "product_area": "", "expected_behavior": "answer", "expected_chunk_ids": ["ext-comfyui-start-001"], "group": "comfyui"}
+{"question_id": "ext-eg-031", "question": "comfyui 出图的时候老是爆显存,有什么办法能降一点", "product_area": "gpu_troubleshooting", "expected_behavior": "answer", "expected_chunk_ids": ["ext-comfyui-oom-001"], "group": "comfyui"}
+{"question_id": "ext-eg-032", "question": "下载的大模型放进去了,comfyui 里却选不到,该放哪个文件夹", "product_area": "modelverse", "expected_behavior": "answer", "expected_chunk_ids": ["ext-comfyui-models-dir-001"], "group": "comfyui"}
+{"question_id": "ext-eg-033", "question": "comfyui 想用一个第三方的节点,怎么把它装上", "product_area": "", "expected_behavior": "answer", "expected_chunk_ids": ["ext-comfyui-custom-nodes-001"], "group": "comfyui"}
+{"question_id": "ext-eg-034", "question": "在新开的实例上从头装 comfyui 该怎么弄", "product_area": "", "expected_behavior": "answer", "expected_chunk_ids": ["ext-comfyui-install-001"], "group": "comfyui"}
+{"question_id": "ext-eg-035", "question": "comfyui 启动了日志也没报错,可浏览器就是打不开", "product_area": "", "expected_behavior": "answer", "expected_chunk_ids": ["ext-comfyui-cant-connect-001"], "group": "comfyui"}
+{"question_id": "ext-eg-036", "question": "不想每次手点界面,能不能用脚本自动让 comfyui 跑一个工作流", "product_area": "", "expected_behavior": "answer", "expected_chunk_ids": ["ext-comfyui-api-001"], "group": "comfyui"}

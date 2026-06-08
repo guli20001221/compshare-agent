@@ -58,6 +58,25 @@ func TestInferKnowledgeProductArea_LabelsMatchCorpus(t *testing.T) {
 		// Deliberate ordering: a message with "cuda" still maps to the platform
 		// driver_cuda group (checked first) even when paired with an OOM phrase.
 		{"cuda out of memory", "driver_cuda"},
+		// ComfyUI (external corpus, RAG Phase 5). "comfyui" is deliberately NOT a
+		// keyword, so most serving/setup/connectivity queries fall through to ""
+		// (no +2 boost — retrieval relies on the distinctive "comfyui" token via
+		// BM25 + qwen3). Exceptions, both faithfully reflected in the golden:
+		//   - the OOM query reaches gpu_troubleshooting via "爆显存" (and only because
+		//     it carries no "cuda"/"驱动" token, which would shadow it to driver_cuda);
+		//   - the model-directory query says "模型", which is a modelverse keyword
+		//     (checked before inference_serving), so it infers "modelverse". On the
+		//     external-only retrieval eval that boost is a no-op (no external chunk
+		//     has product_area=modelverse); the merged-index mis-boost toward
+		//     platform modelverse chunks is covered by CLI smoke, not this unit.
+		// These pin the golden areas in scripts/rag_ext/build_external_golden.py.
+		{"我在实例里把 comfyui 跑起来了,想让别的电脑也能打开它的页面", ""},
+		{"comfyui 出图的时候老是爆显存,有什么办法能降一点", "gpu_troubleshooting"},
+		{"下载的大模型放进去了,comfyui 里却选不到,该放哪个文件夹", "modelverse"},
+		{"comfyui 想用一个第三方的节点,怎么把它装上", ""},
+		{"在新开的实例上从头装 comfyui 该怎么弄", ""},
+		{"comfyui 启动了日志也没报错,可浏览器就是打不开", ""},
+		{"不想每次手点界面,能不能用脚本自动让 comfyui 跑一个工作流", ""},
 		// out-of-scope
 		{"今天天气怎么样", ""},
 		{"", ""},

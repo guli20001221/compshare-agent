@@ -1,3 +1,7 @@
 # Build artifact: identical to deploy/kb/external_w0.jsonl after promotion.
 # Regenerate with `python scripts/rag_ext/build_pilot_chunks.py`.
 external_candidate_w0.jsonl
+
+# Scratch eval outputs (retrieval/parity --out). The committed evidence is
+# platform_parity_report.json (refreshed deliberately), not these.
+_*.json

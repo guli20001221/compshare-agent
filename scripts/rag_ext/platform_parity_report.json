@@ -273,7 +273,7 @@
     }
   ],
   "changed_top3_count": 18,
-  "external_chunks": 29,
+  "external_chunks": 36,
   "external_intrusion_count": 10,
   "external_intrusion_displacing_count": 3,
   "external_intrusions": [
@@ -456,11 +456,11 @@
   "review_warnings": {
     "external_chunks_displacing_expected": 3,
     "external_chunks_in_platform_top3": 10,
-    "note": "displacements/intrusions are answer-faithfulness REVIEW items, not retrieval-parity failures; address via RAG anti-confusion anchor before flipping COMPSHARE_EXTERNAL_KNOWLEDGE default-on",
+    "note": "displacements/intrusions are answer-faithfulness REVIEW items, not retrieval-parity failures; external KB is already default-on (#242) and these are handled by the RAG anti-confusion anchor + grounded-renderer citation discipline",
     "per_question_displacements": 1
   },
-  "top_3_hit_rate_merged": 0.82421875,
-  "top_3_hit_rate_platform_only": 0.82421875,
+  "top_3_hit_rate_merged": 0.828125,
+  "top_3_hit_rate_platform_only": 0.828125,
   "verdict": "PASS",
-  "workdir": "C:\\Users\\23843\\AppData\\Local\\Temp\\rag_parity"
+  "workdir": "C:\\Users\\23843\\AppData\\Local\\Temp\\rag_parity_comfyui"
 }
