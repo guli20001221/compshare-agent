@@ -30,8 +30,8 @@ func TestValidateGroundedCitations_KnownCitationGrounds(t *testing.T) {
 // the bracket pairs — "[ [id] ]" / "[[ id ]]" / "[ [ id ] ]" — which a strict \[\[
 // missed and wrongly refused a correctly-grounded answer (a perfect 226601 answer was
 // false-refused for "[ [w0-init_failure-…] ]"). Spaces/tabs between brackets must
-// still resolve; the markers must still strip; a single-bracket positional [n] and
-// incidental prose stay ignored.
+// still resolve; the markers must still strip; incidental non-numeric prose brackets
+// stay ignored (the numbered [n] scheme is covered separately).
 func TestValidateGroundedCitations_ToleratesSpacedBrackets(t *testing.T) {
 	ledger := ledgerWith("w0-init_failure-001", "ext-a-1")
 	for _, ans := range []string{
@@ -45,8 +45,31 @@ func TestValidateGroundedCitations_ToleratesSpacedBrackets(t *testing.T) {
 	}
 	assert.Equal(t, "实例已欠费，请支付订单。",
 		StripCiteMarkers("实例已欠费，请支付订单 [ [w0-init_failure-001] ]。"))
-	assert.False(t, ValidateGroundedCitations("见步骤 [1] 与 [注意] 部分。", ledger).HasCitation,
-		"single-bracket positional/prose must not be read as a grounded citation")
+	assert.False(t, ValidateGroundedCitations("见 [注意] 部分。", ledger).HasCitation,
+		"non-numeric incidental brackets are not citations")
+}
+
+// TestValidateGroundedCitations_PositionalNumberedCitations covers the numbered [n]
+// scheme: flash emits a simple [1]/[2] far more reliably than echoing a long
+// [[chunk_id]] (and terminal RAG already uses [n]). An in-range [n] resolves to the
+// n-th ledger item (1-based); an out-of-range [n] is prose, NOT a fabricated citation;
+// [[chunk_id]] and [n] compose; the markers strip for display.
+func TestValidateGroundedCitations_PositionalNumberedCitations(t *testing.T) {
+	ledger := ledgerWith("ext-a-1", "ext-b-2") // [1]->ext-a-1, [2]->ext-b-2
+
+	r := ValidateGroundedCitations("方案A [1]，方案B [2]。", ledger)
+	assert.True(t, r.Grounded(), "in-range [n] grounds the answer")
+	assert.Equal(t, []string{"ext-a-1", "ext-b-2"}, r.CitedChunkIDs)
+
+	r2 := ValidateGroundedCitations("见步骤 [9]。", ledger)
+	assert.False(t, r2.HasCitation, "out-of-range [n] does not ground")
+	assert.Empty(t, r2.UnknownCitations, "out-of-range [n] is prose, not a fabricated citation")
+
+	r3 := ValidateGroundedCitations("X [[ext-b-2]] 和 Y [1]。", ledger)
+	assert.True(t, r3.Grounded())
+	assert.ElementsMatch(t, []string{"ext-b-2", "ext-a-1"}, r3.CitedChunkIDs, "[[chunk_id]] and [n] compose")
+
+	assert.Equal(t, "方案A，方案B。", StripCiteMarkers("方案A [1]，方案B [2]。"))
 }
 
 // TestValidateGroundedCitations_UnknownCitationFabricated is the anti-fabrication
@@ -114,13 +137,14 @@ func TestValidateGroundedCitations_DedupesAndTrims(t *testing.T) {
 	assert.True(t, r.Grounded())
 }
 
-// TestValidateGroundedCitations_IgnoresPositionalAndIncidentalBrackets proves the
-// double-bracket scheme does not collide with the terminal-RAG [n] markers or with
-// incidental single-bracket prose — those are not treated as citations at all.
-func TestValidateGroundedCitations_IgnoresPositionalAndIncidentalBrackets(t *testing.T) {
-	ledger := ledgerWith("ext-a-1")
-	r := ValidateGroundedCitations("见步骤 [1] 与 [注意] 部分。", ledger)
-	assert.False(t, r.HasCitation, "[1] and [注意] are not [[chunk_id]] citations")
+// TestValidateGroundedCitations_IgnoresIncidentalBrackets proves that brackets which
+// are NOT citations — non-numeric prose ([注意]) and an out-of-range positional [n]
+// (no such ledger item) — are not treated as citations and are not fabrications. The
+// in-range numbered [n] scheme is covered by TestValidateGroundedCitations_PositionalNumberedCitations.
+func TestValidateGroundedCitations_IgnoresIncidentalBrackets(t *testing.T) {
+	ledger := ledgerWith("ext-a-1") // only [1] is in range
+	r := ValidateGroundedCitations("见 [注意] 部分，另见 [9]。", ledger)
+	assert.False(t, r.HasCitation, "[注意] and out-of-range [9] are not citations")
 	assert.Empty(t, r.CitedChunkIDs)
 	assert.Empty(t, r.UnknownCitations)
 }

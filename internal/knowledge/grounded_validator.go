@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -23,6 +24,16 @@ import (
 // The captured group is the raw chunk_id; ValidateGroundedCitations validates it
 // against the per-turn evidence ledger.
 var citeMarkerRE = regexp.MustCompile(`\[[ \t]*\[+\s*([^\[\]\r\n]+?)\s*\]+[ \t]*\]`)
+
+// positionalCiteRE matches a positional citation [n] (single bracket, 1-2 digits)
+// that cites the n-th retrieved evidence item, 1-based in ledger order — the simple
+// scheme flash emits FAR more reliably than echoing a long opaque [[chunk_id]] (and
+// the scheme the terminal RAG route already uses, see engine/cited_guard.go). It is
+// scanned only AFTER the [[chunk_id]] markers are removed, so the inner digits of a
+// [[id]] are never reread as a positional ref. An in-range [n] resolves to its ledger
+// item; an out-of-range or prose [n] is ignored (not a fabricated citation) so a stray
+// bracketed number cannot force a refusal.
+var positionalCiteRE = regexp.MustCompile(`\[(\d{1,2})\]`)
 
 // GroundedAnswerReport is the route-independent verdict for a free-text final
 // answer validated against a per-turn ChunkID-keyed evidence ledger (#126). It is
@@ -87,6 +98,26 @@ func ValidateGroundedCitations(answer string, ledger EvidenceLedger) GroundedAns
 			report.UnknownCitations = append(report.UnknownCitations, id)
 		}
 	}
+	// Positional [n] citations (1-based into ledger order). Scanned on a copy with the
+	// [[chunk_id]] markers removed so the inner digits of a [[id]] are not reread. An
+	// in-range [n] cites ledger.Items[n-1]; out-of-range/prose [n] is ignored (NOT a
+	// fabricated citation — avoids a stray bracketed number forcing a refusal).
+	stripped := citeMarkerRE.ReplaceAllString(answer, "")
+	for _, m := range positionalCiteRE.FindAllStringSubmatch(stripped, -1) {
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n < 1 || n > len(ledger.Items) {
+			continue
+		}
+		id := strings.TrimSpace(ledger.Items[n-1].ChunkID)
+		if id == "" {
+			continue
+		}
+		report.HasCitation = true
+		if _, dup := seenKnown[id]; !dup {
+			seenKnown[id] = struct{}{}
+			report.CitedChunkIDs = append(report.CitedChunkIDs, id)
+		}
+	}
 	return report
 }
 
@@ -111,6 +142,11 @@ func StripCiteMarkers(answer string) string {
 		return answer
 	}
 	out := citeMarkerRE.ReplaceAllString(answer, "")
+	// Also strip positional [n] markers (1-2 digit single bracket) so a numbered
+	// citation does not show in the user-facing reply, mirroring the terminal route's
+	// stripCitationMarkers. Done after the [[chunk_id]] strip so [[id]] inner digits
+	// were already consumed.
+	out = positionalCiteRE.ReplaceAllString(out, "")
 	for _, pair := range citeStripPunct {
 		out = strings.ReplaceAll(out, pair[0], pair[1])
 	}
