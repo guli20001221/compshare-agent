@@ -1,0 +1,419 @@
+{
+  "artifact": "compshare_console_page_cards",
+  "version": "0.1",
+  "observed_at": "2026-06-08",
+  "source": "logged_in_console_ui",
+  "redaction": "Instance IDs, IPs, account identifiers, balances, passwords, tokens, and API secrets were not retained.",
+  "page_cards": [
+    {
+      "type": "page_card",
+      "page": "实例列表",
+      "url_pattern": "/light-gpu/console/resources",
+      "visible_concepts": ["实例", "容器/虚机", "运行中/关机", "登录指令", "密码", "规格详情", "GPU", "镜像", "CPU", "内存", "系统盘", "数据盘", "基础网络", "定时关机", "收费项", "释放时间"],
+      "actions_visible": ["部署实例", "批量启动", "批量关闭", "状态筛选", "实例ID/名称/外网IP搜索", "卡片视图", "列表视图", "JupyterLab", "文件管理", "登录", "监控", "更多操作"],
+      "read_only_observations": [
+        "按量实例连续关机 7 天后释放的提示在列表上方常驻。",
+        "运行中实例的更多操作菜单含关闭、重启、制作镜像、配置防火墙、删除、更改配置。",
+        "关机实例的更多操作菜单含无卡模式启动、重启、制作镜像、配置防火墙、删除、更改配置。",
+        "登录按钮会打开 web-terminal 远程登录页，展示认证密码、用户名/端口，并可切换 VNC。",
+        "监控按钮在当前页打开监控弹窗，含基础监控/进程监控、1 小时时间窗、关闭/刷新。"
+      ],
+      "unknowns": ["不同状态如抢占式已中断、初始化失败时的按钮差异仍需补样本"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "实例监控弹窗",
+      "url_pattern": "/light-gpu/console/resources",
+      "visible_concepts": ["基础监控", "进程监控", "CPU监控", "网络监控", "磁盘监控", "内存监控", "TCP监控", "GPU卡数量监控", "GPU卡监控", "进程采集监控", "监控代理"],
+      "actions_visible": ["切换基础监控", "切换进程监控", "选择1小时", "关闭", "刷新", "查看说明"],
+      "read_only_observations": [
+        "部分指标会提示未获得有效数据或需要确认监控指标对设备有效。",
+        "部分指标标注不支持 Windows 或仅新版监控代理 UBoltAgent 支持。"
+      ],
+      "unknowns": ["更多时间窗口选项未展开", "图表数据结构未采集"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "远程登录",
+      "url_pattern": "https://web-terminal.compshare.cn/<instance>",
+      "visible_concepts": ["远程登录", "认证密码", "用户名", "端口", "SSH命令", "VNC登录"],
+      "actions_visible": ["确定", "切换至VNC登录"],
+      "read_only_observations": [
+        "从实例列表点击登录进入 web-terminal 页面。",
+        "页面直接展示敏感登录信息，agent 不应记录或回传明文。"
+      ],
+      "unknowns": ["JupyterLab 与文件管理跳转目标未点击验证"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "部署GPU实例",
+      "url_pattern": "/light-gpu/resources/create",
+      "visible_concepts": ["平台镜像", "社区镜像", "共享镜像", "私有镜像", "实例配置", "可用区", "实例类型", "独占式", "抢占式", "GPU型号", "GPU数量", "CPU配置", "系统盘", "数据盘", "云存储", "CPU平台", "网络带宽", "防火墙", "实例名称", "付款方式", "按量计费", "包日", "包月", "暂无资源"],
+      "actions_visible": ["选择镜像来源", "选择GPU型号", "选择GPU数量", "选择CPU配置", "挂载数据盘", "挂载云存储", "展开更多配置", "选择付款方式", "提交部署"],
+      "read_only_observations": [
+        "实例类型有独占式和抢占式。",
+        "GPU 型号区展示 24G RTX40系、32G RTX50系、48G RTX40系、3080Ti、3090、2080、A800、H20、P40、V100S、A100 等。",
+        "按量计费旁显示关机不收费说明；包日/包月显示节省提示。",
+        "当前选择下提交按钮显示暂无资源，说明创建页会把容量约束直接反馈在提交入口。"
+      ],
+      "unknowns": ["立即部署/订单确认弹窗未触发", "社区镜像版本下拉未逐项展开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "模型库",
+      "url_pattern": "/light-gpu/console/models",
+      "visible_concepts": ["公共模型库", "模型名称", "模型路径", "模型大小", "容器实例", "/models目录"],
+      "actions_visible": ["关键词搜索模型"],
+      "read_only_observations": ["页面提示仅容器实例支持，模型已下载至 /models 目录下，可直接使用。"],
+      "unknowns": ["模型详情页或复制路径交互未展开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "云硬盘",
+      "url_pattern": "/light-gpu/console/disks",
+      "visible_concepts": ["云硬盘", "硬盘名称", "资源ID", "配置", "类型", "可用区", "挂载实例", "挂载点", "状态", "创建时间", "付费方式"],
+      "actions_visible": ["创建云硬盘", "续费", "删除", "资源ID/名称/内网IP/实例名称搜索", "分页"],
+      "read_only_observations": ["系统盘和数据盘在同一列表按资源展示。"],
+      "unknowns": ["创建云硬盘表单未打开", "挂载/卸载操作入口需在选中资源后确认"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "云存储",
+      "url_pattern": "/ufile/ufile/detail",
+      "visible_concepts": ["存储空间", "对象文件", "ETag", "文件大小", "存储类型", "MIME-Type", "更新时间", "文件管理", "域名管理", "镜像回源", "跨区域复制", "跨域设置", "数据处理"],
+      "actions_visible": ["创建存储空间", "上传文件", "创建目录", "删除", "输入文件前缀查找"],
+      "read_only_observations": ["云存储菜单会进入 UFile 风格的对象存储管理页。"],
+      "unknowns": ["创建空间/上传文件属于写操作，未打开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "镜像列表",
+      "url_pattern": "/light-gpu/console/images",
+      "visible_concepts": ["自制镜像", "镜像名称", "镜像ID", "可用区", "镜像来源", "镜像大小", "框架版本", "状态", "可见性", "镜像描述", "创建时间", "创作者中心"],
+      "actions_visible": ["制作镜像", "删除", "部署实例", "编辑"],
+      "read_only_observations": [
+        "页面提示自制镜像存储按当日最大容量计费，30GB 免费，超出部分按 GB/日计费。",
+        "公开镜像编辑或下线引导到创作者中心。"
+      ],
+      "unknowns": ["制作镜像表单和编辑表单未打开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "网络加速",
+      "url_pattern": "/light-gpu/console/accelerator",
+      "visible_concepts": ["网络加速", "内测中", "服务状态", "加速可用区", "加速域名", "配置说明"],
+      "actions_visible": ["查看配置说明"],
+      "read_only_observations": ["页面提示容器实例已自动开启网络加速，虚机实例需按配置说明设置；内测结束后将自动关闭。"],
+      "unknowns": ["加速域名完整列表未记录"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "外网防火墙",
+      "url_pattern": "/unet/ufirewall",
+      "visible_concepts": ["防火墙名称", "资源ID", "是否绑定资源", "可用区", "创建时间"],
+      "actions_visible": ["创建防火墙", "删除"],
+      "read_only_observations": ["当前样本为空列表。"],
+      "unknowns": ["创建防火墙表单字段未打开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "镜像社区",
+      "url_pattern": "https://www.compshare.cn/image-community",
+      "visible_concepts": ["镜像社区", "我的收藏", "快捷筛选", "镜像名称", "作者名", "AIGC热门", "图像/视频生成", "语音/TTS生成", "LLM", "计算机视觉", "科学计算"],
+      "actions_visible": ["搜索镜像", "发布社区镜像", "创作者中心", "部署实例"],
+      "read_only_observations": ["顶部镜像社区入口跳出控制台到官网镜像社区页面。"],
+      "unknowns": ["镜像详情页未逐项打开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "发布社区镜像",
+      "url_pattern": "/light-gpu/images/publish",
+      "visible_concepts": ["发布镜像", "基本设置", "版本设置", "撰写README", "镜像名称", "镜像封面", "镜像单价", "镜像标签", "镜像描述", "创作者中心"],
+      "actions_visible": ["上传封面", "选择镜像标签", "下一步: 版本设置"],
+      "read_only_observations": ["页面提示平台会审核镜像内容，违规会强制下线且无法再次使用该镜像。"],
+      "unknowns": ["版本设置与 README 步骤未进入"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "Agent社区-社区广场",
+      "url_pattern": "/light-gpu/agent-community/square",
+      "visible_concepts": ["Agent社区", "社区广场", "Agent应用", "分类", "内容创作", "产品研发", "商业金融"],
+      "actions_visible": ["全部", "分类筛选", "输入名称搜索", "立即创建", "详情", "填写问卷"],
+      "read_only_observations": ["社区广场展示可创建/查看的 Agent 应用。"],
+      "unknowns": ["创建 Agent 实例流程未进入"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "Agent社区-我的Agent应用",
+      "url_pattern": "/light-gpu/agent-community/mine",
+      "visible_concepts": ["我的Agent应用", "Agent实例", "Agent Plan", "云电脑", "文件管理", "模型配置", "连接器", "技能"],
+      "actions_visible": ["创建Agent实例", "文档", "Agent Plan订阅管理", "对话", "云电脑", "文件管理", "续费", "升级", "重启", "一键修复", "恢复出厂设置", "模型配置", "连接器", "更换Agent", "退订"],
+      "read_only_observations": ["该页有多项高影响 Agent 实例管理操作，agent 应视为变更类动作。"],
+      "unknowns": ["实例操作确认弹窗未打开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "Agent社区-对话",
+      "url_pattern": "/light-gpu/agent-community/chat/<agent>",
+      "visible_concepts": ["Agent对话", "云桌面", "定时任务", "技能", "连接器", "模型配置", "日程预告", "运行报告"],
+      "actions_visible": ["新建对话", "收起云桌面", "云桌面全屏", "定时任务", "技能", "连接器", "模型配置", "刷新"],
+      "read_only_observations": ["对话页可关联云桌面、技能、连接器和模型配置。"],
+      "unknowns": ["发送消息和技能配置流程未执行"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "Agent Plan-套餐订阅",
+      "url_pattern": "/light-gpu/model-subscription",
+      "visible_concepts": ["套餐购买", "Mini", "Lite", "Basic", "Pro", "Max", "Ultra", "权益说明", "Base URL", "API Key", "模型支持", "退订规则", "升级规则"],
+      "actions_visible": ["查看套餐", "购买/订阅"],
+      "read_only_observations": ["页面展示 Agent Plan 套餐层级和 API Key/Base URL 说明。"],
+      "unknowns": ["购买确认流程未进入"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "Agent Plan-个人套餐管理",
+      "url_pattern": "/light-gpu/model-manage",
+      "visible_concepts": ["个人套餐", "API Key", "续费", "升级", "请求时间", "请求追踪ID", "模型", "Key ID", "套餐ID", "消耗次数"],
+      "actions_visible": ["获取 API Key", "续费套餐", "升级套餐", "最近1小时", "最近1天", "最近14天", "最近30天", "自定义"],
+      "read_only_observations": ["可查看个人套餐调用明细和消耗。"],
+      "unknowns": ["获取 API Key 是否直接跳转或弹窗未验证"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "Agent Plan-团队套餐管理",
+      "url_pattern": "/light-gpu/model-team-manage",
+      "visible_concepts": ["团队套餐", "套餐名称", "套餐ID", "套餐版本", "状态", "有效期", "调用额度"],
+      "actions_visible": ["批量续费"],
+      "read_only_observations": ["团队套餐管理展示每5小时、每周、每订阅月累计调用字段。"],
+      "unknowns": ["团队权限差异未验证"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "OpenClaw",
+      "url_pattern": "/light-gpu/openclaw-chat",
+      "visible_concepts": ["OpenClaw", "Agent Plan"],
+      "actions_visible": [],
+      "read_only_observations": ["页面存在但当前样本可见信息较少。"],
+      "unknowns": ["需补充已配置 OpenClaw 账号下的页面状态"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "模型API-模型广场",
+      "url_pattern": "/light-gpu/model-center",
+      "visible_concepts": ["模型广场", "模型类型", "模型语言", "上下文长度", "模型搜索"],
+      "actions_visible": ["模型类型筛选", "模型语言筛选", "上下文长度筛选"],
+      "read_only_observations": ["顶部模型API入口也进入该页。"],
+      "unknowns": ["模型详情页和复制调用参数未打开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "模型API-文本对话",
+      "url_pattern": "/light-gpu/chat",
+      "visible_concepts": ["文本对话", "模型选择", "参数配置", "消息输入"],
+      "actions_visible": ["清空对话", "发送"],
+      "read_only_observations": ["输入框提示部分模型不支持固定参数，额外参数需求需通过 API 实现。"],
+      "unknowns": ["模型选择器和参数面板未展开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "模型API-图片生成",
+      "url_pattern": "/light-gpu/experience-image",
+      "visible_concepts": ["图片生成", "Playground", "API", "图片URL", "prompt"],
+      "actions_visible": ["切换Playground/API", "发送"],
+      "read_only_observations": ["页面提供 Playground 与 API 两个视图。"],
+      "unknowns": ["生成参数未逐项展开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "模型API-视频生成",
+      "url_pattern": "/light-gpu/experience-video",
+      "visible_concepts": ["视频生成", "音频URL", "prompt"],
+      "actions_visible": ["发送"],
+      "read_only_observations": ["页面含音频 URL 和 prompt 输入占位。"],
+      "unknowns": ["视频生成模型参数未逐项展开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "模型API-API KEY",
+      "url_pattern": "/light-gpu/api-keys",
+      "visible_concepts": ["API Key", "资源ID", "API Key名称", "创建时间", "额度设置"],
+      "actions_visible": ["创建 API Key", "删除", "编辑", "查看调用", "名称搜索"],
+      "read_only_observations": ["这是 Model API 服务的 API Key 页面，不同于账户中心 API 密钥。"],
+      "unknowns": ["创建 Key 表单未打开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "模型API-调用统计",
+      "url_pattern": "/light-gpu/token-usage/",
+      "visible_concepts": ["调用统计", "概览", "调用明细", "模型", "类型", "调用量"],
+      "actions_visible": ["最近1小时", "最近1天", "最近14天", "最近30天", "自定义"],
+      "read_only_observations": ["支持按时间范围查看模型调用统计。"],
+      "unknowns": ["调用明细字段未切换采集"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "财务中心-概览",
+      "url_pattern": "/uaccount/costcenter",
+      "visible_concepts": ["费用中心", "余额", "代金券", "待续费", "充值"],
+      "actions_visible": ["充值"],
+      "read_only_observations": ["账号级财务事实属于敏感实时信息，未记录具体金额。"],
+      "unknowns": ["财务概览卡片字段需在脱敏环境补充"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "财务中心-订单管理",
+      "url_pattern": "/uaccount/order_list",
+      "visible_concepts": ["订单号", "创建时间", "开始时间", "结束时间", "订单类型", "资源ID", "产品类型", "计费方式", "金额", "GPU云服务", "模型API", "待支付", "已完成", "已取消"],
+      "actions_visible": ["支付", "按资源ID搜索", "切换订单状态"],
+      "read_only_observations": ["订单管理区分 GPU 云服务与模型 API。"],
+      "unknowns": ["支付流程未进入"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "财务中心-发票管理",
+      "url_pattern": "/uaccount/invoice",
+      "visible_concepts": ["发票类型", "开具类型", "发票抬头", "金额", "发票备注", "申请时间", "状态", "邮寄单号"],
+      "actions_visible": ["管理", "申请发票"],
+      "read_only_observations": ["发票状态和邮寄信息是账号级实时财务信息。"],
+      "unknowns": ["申请发票表单未打开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "财务中心-续费管理",
+      "url_pattern": "/uaccount/batch_renew",
+      "visible_concepts": ["资源类型", "可用区", "配置信息", "计费方式", "当前单价", "到期时间", "自动续费", "状态"],
+      "actions_visible": ["自动续费管理", "批量续费", "批量变更计费方式", "续费", "变更计费方式", "资源ID搜索"],
+      "read_only_observations": ["续费和计费方式变更均为高影响操作，agent 应要求确认或引导手动操作。"],
+      "unknowns": ["变更计费方式弹窗未打开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "财务中心-交易账单",
+      "url_pattern": "/uaccount/bills",
+      "visible_concepts": ["交易账单", "GPU云服务", "模型API", "收支明细", "账单总览", "账单明细", "待支付", "已入账", "产品类型", "未支付金额"],
+      "actions_visible": ["按产品", "按用户", "待支付", "已入账", "下载CSV", "选择日期"],
+      "read_only_observations": ["下载 CSV 和账单明细属于账号级财务数据，不应由 agent 擅自导出。"],
+      "unknowns": ["账单明细字段未切换采集"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "账户中心-账户信息",
+      "url_pattern": "/uaccount/userinfo",
+      "visible_concepts": ["账户信息", "账号安全", "安全锁", "语言", "深色模式", "注销账号"],
+      "actions_visible": ["立即开启", "立即注销"],
+      "read_only_observations": ["安全锁说明为云资源高危操作提供二次验证，涉及关机、断电、删除等。"],
+      "unknowns": ["安全锁开启流程未进入"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "账户中心-收益管理",
+      "url_pattern": "/uaccount/income",
+      "visible_concepts": ["收益明细", "月结收益", "收益来源", "订单支付时间", "订单归属人", "订单号", "订单金额", "消费金额", "返利比例", "返利金额"],
+      "actions_visible": ["开始时间筛选", "结束时间筛选"],
+      "read_only_observations": ["收益数据属于账号财务/创作者收益数据。"],
+      "unknowns": ["导出/结算操作未观察到"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "账户中心-实名认证",
+      "url_pattern": "/uaccount/authentication",
+      "visible_concepts": ["实名认证", "个人/企业身份"],
+      "actions_visible": [],
+      "read_only_observations": ["实名认证可能影响发布镜像、支付或账号权限。"],
+      "unknowns": ["当前账号实名状态字段未记录"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "账户中心-API密钥",
+      "url_pattern": "/uaccount/api_manage",
+      "visible_concepts": ["公钥", "私钥", "备注", "最后调用时间", "创建时间", "状态"],
+      "actions_visible": ["新建密钥", "文档", "启用", "禁用", "删除"],
+      "read_only_observations": ["这是 UCloud/CompShare API 签名密钥页面，密钥属于高敏感凭证。"],
+      "unknowns": ["新建密钥是否只展示一次未验证"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "团队管理-团队信息",
+      "url_pattern": "observed_menu_selected_but_url_/light-gpu/",
+      "visible_concepts": ["团队信息"],
+      "actions_visible": [],
+      "read_only_observations": ["菜单项存在且可选中，但当前样本 URL 回到 /light-gpu/，可能受权限、未开通或路由实现影响。"],
+      "unknowns": ["需企业/高校定向开通账号验证真实页面"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "团队管理-受邀记录",
+      "url_pattern": "/uaccount/invitation_record",
+      "visible_concepts": ["团队管理员ID", "团队ID", "团队名称", "状态"],
+      "actions_visible": ["文档"],
+      "read_only_observations": ["用于查看团队邀请记录。"],
+      "unknowns": ["接受/拒绝邀请按钮需有邀请样本才可观察"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "消息中心",
+      "url_pattern": "/uaccount/msgcenter",
+      "visible_concepts": ["消息类型", "标题内容", "创建时间", "消息详情", "未读消息"],
+      "actions_visible": ["删除", "标为已读", "全部标为已读", "消息详情"],
+      "read_only_observations": ["删除、标为已读会改变消息状态，不应在研究中执行。"],
+      "unknowns": ["消息详情弹窗未打开"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "常见问题FAQ",
+      "url_pattern": "https://compshare.feishu.cn/wiki/GE5vwRiCUiCX2KkgFs5cIJ5Enfc",
+      "visible_concepts": ["FAQ", "实例", "计费", "镜像", "模型套餐"],
+      "actions_visible": ["分享"],
+      "read_only_observations": ["顶部 FAQ 入口跳转到飞书文档。"],
+      "unknowns": ["飞书登录权限或外部分享策略未评估"],
+      "screenshots": []
+    },
+    {
+      "type": "page_card",
+      "page": "文档中心",
+      "url_pattern": "https://www.compshare.cn/docs/overview/platform/introduce",
+      "visible_concepts": ["平台概述", "GPU操作指南", "GPU接口文档", "模型API服务", "Agent社区", "账号与账单", "服务协议"],
+      "actions_visible": ["搜索文档", "展开文档目录"],
+      "read_only_observations": ["顶部文档中心入口跳转到官方文档站。"],
+      "unknowns": [],
+      "screenshots": []
+    }
+  ]
+}
