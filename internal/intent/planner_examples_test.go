@@ -145,9 +145,10 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // "X 怎么调 / 用 SDK 怎么传参 / 返回 N 是什么错误" so they don't conflict
 // with billing/stock/pricing/diagnosis intents (no $-amount, no instance ID,
 // no "我的" personal-status markers).
-// L2 prompt tiering (2026-05-27): knowledge_qa compact rendering — 20 examples
-// share one plan JSON template + question list instead of repeating the full
-// JSON 20 times. All 20 boundary anchor questions preserved; saves ~1,100
+// L2 prompt tiering (2026-05-27): knowledge_qa compact rendering — the group
+// (21 examples as of 2026-06-08; 20 at the original tiering, +1 Task-147 套餐计费
+// anchor) shares one plan JSON template + question list instead of repeating the
+// full JSON per example. All boundary anchor questions preserved; saves ~1,100
 // planner prompt tokens (~27% reduction). Bump justified: no examples removed,
 // only rendering format changed for the knowledge_qa group.
 //
