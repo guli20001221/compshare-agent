@@ -956,7 +956,7 @@ func (r *cliTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace)
 	if r == nil {
 		return
 	}
-	r.record.Retrieval = trace
+	r.record.Retrieval = observability.MergeRetrievalTrace(r.record.Retrieval, trace)
 }
 
 func (r *cliTraceRecorder) SetFreshnessTrace(trace observability.FreshnessTrace) {

@@ -32,7 +32,19 @@ $smokeEnv = Join-Path $repoRoot "eval\.smoke_env.ps1"
 if (Test-Path $smokeEnv) { . $smokeEnv }
 if (-not $env:LLM_API_KEY) { Write-Host "LLM_API_KEY not set; cannot run live probe." -ForegroundColor Red; exit 1 }
 if (-not (Test-Path $agentExe)) { Write-Host "agent.exe not found; run: go build -o agent.exe ./cmd" -ForegroundColor Red; exit 1 }
-if (-not (Test-Path $config)) { Write-Host "config not found: $config" -ForegroundColor Red; exit 1 }
+if (-not (Test-Path $config)) {
+    # Clean checkout: deploy/conf/agent.yaml is gitignored and absent. Fall back to the
+    # tracked agent.yaml.example, whose ${ENV_VAR} placeholders the config loader
+    # resolves from the environment (eval\.smoke_env.ps1 supplies the keys). Mirrors the
+    # diagnose-skill smoke harness so the probe runs on a fresh worktree.
+    $exampleConfig = Join-Path $repoRoot "deploy\conf\agent.yaml.example"
+    if (Test-Path $exampleConfig) {
+        Write-Host "config not found: $config -> falling back to agent.yaml.example (placeholders from env)" -ForegroundColor Yellow
+        $config = $exampleConfig
+    } else {
+        Write-Host "config not found: $config (and no agent.yaml.example)" -ForegroundColor Red; exit 1
+    }
+}
 
 $env:COMPSHARE_PROJECT_ID = "org-cwy2qk"
 $env:COMPSHARE_ENABLE_MUTATING_TOOLS = ""

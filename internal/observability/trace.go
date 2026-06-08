@@ -466,6 +466,21 @@ func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 	return current
 }
 
+// MergeRetrievalTrace folds a new per-turn retrieval into the recorded one. A turn
+// can retrieve more than once (e.g. the COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP forced
+// SearchKnowledge first hop, then a voluntary re-query later in the same ReAct loop).
+// The recorders historically kept only the LAST retrieval, so a trailing no-hit
+// re-query would clobber the forced hop's substantive retrieval and make it look like
+// nothing was retrieved. Preserve the substantive one: keep the existing hits-bearing
+// retrieval when the incoming one has no hits; otherwise the latest (substantive or
+// first-ever) wins. Terminal RAG retrieves once, so its trace is unchanged.
+func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
+	if current.Enabled && current.Hits > 0 && (!next.Enabled || next.Hits == 0) {
+		return current
+	}
+	return next
+}
+
 type RateLimitTrace struct {
 	Checked      bool   `json:"checked"`
 	Allowed      bool   `json:"allowed"`
