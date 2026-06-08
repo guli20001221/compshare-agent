@@ -322,6 +322,30 @@ func groundedAnswerValidatorEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// knowledgeQAAgentLoopEnabledFromEnv gates the terminal-knowledge_qa → agent-loop
+// migration route (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). DEFAULT OFF — a knowledge_qa
+// turn keeps the deterministic terminal-RAG route (tryStage2BRetrieval) until a
+// flag-on A/B eval proves the forced-SearchKnowledge agent-loop answer matches it at
+// the hard-gate bar (faithfulness 0-fab, 100% cite-or-refuse, retrieval-coverage, no
+// mis-route). Inert unless COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE is also on (the tool
+// must be visible) and a retriever is wired — the engine route gate enforces both, so
+// the forced first hop can never name an absent tool (the 400 trap). ""/0/off/false/no
+// => off; 1/true/yes/on => on; unknown => off + non-empty warn string (CLAUDE.md:
+// never silently coerce). Boot-only; the Go-package default (engine.knowledgeQAAgentLoopOn)
+// stays false so engine/tools unit tests are unaffected. Rollback =
+// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=0.
+func knowledgeQAAgentLoopEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP"))
+	switch strings.ToLower(raw) {
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
 func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string) {
 	raw := strings.TrimSpace(getenv("USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"))
 	if raw == "" {

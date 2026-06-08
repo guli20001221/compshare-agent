@@ -265,7 +265,12 @@ func (r TraceRecord) DeriveRealizedTier() string {
 	// cutover_status literals mirror internal/intent/handler.go:42-58
 	// (RouteStatus*); pinned by TestDeriveRealizedTier.
 	switch r.Planner.RouteStatus {
-	case "dispatched_retrieval":
+	case "dispatched_retrieval", "dispatched_knowledge_agent_loop":
+		// dispatched_knowledge_agent_loop is a knowledge_qa turn forced through the
+		// agent loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP): the realized work is still
+		// knowledge retrieval, so the realized-tier attribution stays comparable
+		// across the terminal→agent-loop migration even though the runtime FORM
+		// becomes agent (see DeriveActualRuntimeForm).
 		return RealizedTierKnowledge
 	case "dispatched_agent":
 		return RealizedTierAgent
@@ -289,7 +294,12 @@ func (r TraceRecord) DeriveRealizedTier() string {
 // diagnosis or another agent path remains agent.
 func (r TraceRecord) DeriveActualRuntimeForm() string {
 	switch r.Planner.RouteStatus {
-	case "dispatched_agent":
+	case "dispatched_agent", "dispatched_knowledge_agent_loop":
+		// dispatched_knowledge_agent_loop: a knowledge_qa turn forced through the
+		// shared ReAct loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). It runs the agent
+		// loop (a SearchKnowledge tool call fires), so the runtime FORM is agent —
+		// the migration's whole point (terminal_rag → agent). The engine projects
+		// PlannedRuntimeForm=agent for the same turn so planned==actual.
 		return RuntimeFormAgent
 	case "dispatched_retrieval":
 		return RuntimeFormTerminalRAG

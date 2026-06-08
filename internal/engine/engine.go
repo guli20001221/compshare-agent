@@ -209,6 +209,16 @@ type Engine struct {
 	// when the agentic tool runs AND the grounded validator is on — empty (inert)
 	// otherwise, keeping flag-off byte-identical.
 	searchKnowledgeLedgerThisTurn knowledge.EvidenceLedger
+	// knowledgeQAAgentLoopThisTurn marks a knowledge_qa turn that the
+	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP route sent into the shared ReAct loop
+	// (forced SearchKnowledge first hop) instead of the terminal-RAG route. Set
+	// in tryPlannerDispatch when the flag + agentic tool + retriever are all on;
+	// read by the ReAct loop (forces the first hop), executeSearchKnowledge /
+	// guardSearchKnowledgeSynthesis (turn-scoped cite-or-refuse parity with the
+	// terminal route, independent of the global grounded-validator flag), and
+	// emitPlannerTrace (projects PlannedRuntimeForm=agent so planned==actual).
+	// Reset per turn; always false when the flag is off => byte-identical.
+	knowledgeQAAgentLoopThisTurn bool
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
 	// user turn. 0 = disabled. Copied from SharedDeps in NewSession.
 	maxTokensPerTurn int
@@ -1046,6 +1056,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
+	e.knowledgeQAAgentLoopThisTurn = false
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
@@ -1159,6 +1170,31 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 			}
 			e.emitFreshnessTrace(freshness)
+		}
+		// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP forced first hop: a knowledge_qa turn
+		// routed into the agent loop must deterministically retrieve before it
+		// answers — soft prompt directives don't reliably move flash (#145), so the
+		// terminal route's guaranteed retrieval is reproduced by forcing
+		// SearchKnowledge on the FIRST ReAct call. Mutually exclusive with the
+		// monitor-recall force above (different intents; the !forceMonitorRecall guard
+		// keeps monitor precedence so ToolChoice is never double-set). The in-registry
+		// assert is the belt-and-suspenders half of the 400 trap: the route gate
+		// already requires the agentic tool be enabled, so SearchKnowledge is in the
+		// full knowledge_qa (nil-subset) tool list — but never force a tool absent from
+		// req.Tools. Non-object models fall back to "required" + an ephemeral note.
+		if round == 0 && e.knowledgeQAAgentLoopThisTurn && !forceMonitorRecall &&
+			toolListContainsFunction(req.Tools, "SearchKnowledge") {
+			if e.supportsObjectToolChoice {
+				req.ToolChoice = openai.ToolChoice{
+					Type:     openai.ToolTypeFunction,
+					Function: openai.ToolFunction{Name: "SearchKnowledge"},
+				}
+			} else {
+				req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQAAgentLoopSearchNote)
+				if e.supportsRequiredToolChoice {
+					req.ToolChoice = "required"
+				}
+			}
 		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
 			content := rateLimitMessage(decision.Reason)
@@ -1405,6 +1441,27 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
 		return e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
+	}
+	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP migration: route a knowledge_qa turn into
+	// the shared ReAct loop (forced SearchKnowledge first hop) instead of the
+	// deterministic terminal-RAG route below. Gated so flag-off is byte-identical,
+	// and so the forced first hop can never reference an absent tool (the 400 trap):
+	// it fires ONLY when the agentic SearchKnowledge tool is actually enabled AND a
+	// retriever is wired. With agentic off or no retriever the flag is inert and the
+	// turn stays on the terminal route (which emits its own fallback trace and, for
+	// the nil-retriever case, falls through identically). The distinct
+	// dispatched_knowledge_agent_loop route status + the turn-scoped planned-form
+	// projection (emitPlannerTrace) keep planned==actual==agent so the runtime-form
+	// mismatch gate does not false-flag; cite-or-refuse parity with the terminal
+	// route is preserved turn-scoped (see knowledgeQAAgentLoopThisTurn).
+	if knowledgeQAAgentLoopOn &&
+		dispatch.result.Plan.Intent == intent.IntentKnowledgeQA &&
+		tools.AgenticSearchKnowledgeEnabled() &&
+		e.knowledgeRetriever != nil {
+		e.requireKnowledgeCitationThisTurn = true
+		e.knowledgeQAAgentLoopThisTurn = true
+		e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedKnowledgeAgentLoop, dispatch.latency)
+		return "", false
 	}
 	if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
 		return reply, true
@@ -2347,6 +2404,15 @@ func (e *Engine) emitPlannerTrace(result intent.PlannerResult, status intent.Rou
 		Latency: latency,
 	})
 	trace.RouteStatus = string(status)
+	// Turn-scoped runtime-form projection for the knowledge_qa agent-loop route
+	// (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). PlannedRuntimeFormForIntent stays pure
+	// (knowledge_qa -> terminal_rag) because a flag-on-but-agentic-off knowledge_qa
+	// turn still runs the terminal route; only a turn actually routed into the agent
+	// loop projects agent, so planned==actual==agent and RuntimeFormMismatch does not
+	// false-flag. Off-flag this is never reached (the field is always false).
+	if e.knowledgeQAAgentLoopThisTurn && trace.Intent == string(intent.IntentKnowledgeQA) {
+		trace.PlannedRuntimeForm = observability.RuntimeFormAgent
+	}
 	e.plannerTraceObserver(trace)
 }
 
@@ -2721,9 +2787,12 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
 	// Accumulate the per-turn ChunkID-keyed, deduped ledger so the grounded-answer
 	// validator can check the final synthesis cites only retrieved ChunkIDs (#126).
-	// Gated on the validator flag so flag-off does no extra work and keeps no extra
-	// state (byte-identical to before #126).
-	if groundedAnswerValidatorOn {
+	// Gated so flag-off does no extra work and keeps no extra state (byte-identical
+	// to before #126): the global grounded-validator flag, OR a knowledge_qa turn
+	// routed into the agent loop, which cite-or-refuses turn-scoped regardless of the
+	// global flag to preserve the terminal route's guarantee (see
+	// guardSearchKnowledgeSynthesis).
+	if groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn {
 		e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
 	}
 	// Emit the RAW retrieval as a RetrievalTrace so what SearchKnowledge retrieved
@@ -2734,7 +2803,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits)
 	empty := retrieved.Empty || len(ledger.Items) == 0
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
-	return searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn)
+	return searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn)
 }
 
 // emitSearchKnowledgeRetrievalTrace records the agent-lane SearchKnowledge
@@ -2813,12 +2882,15 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 		return ragNoEvidenceReply
 	}
 	// Route-independent cite-grounding (#126), default-off via
-	// COMPSHARE_RAG_GROUNDED_VALIDATOR. Flag-off the leak check above is the only
-	// guard (byte-identical to pre-#126). Flag-on: the agent was told (cite_protocol
-	// in the tool result) to attribute each conclusion with [[chunk_id]]; require
-	// >=1 citation resolving to a retrieved ChunkID and no citation to an unknown
-	// chunk_id, then strip the markers for display.
-	if !groundedAnswerValidatorOn {
+	// COMPSHARE_RAG_GROUNDED_VALIDATOR — OR turn-scoped on for a knowledge_qa turn
+	// routed into the agent loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP), which must
+	// cite-or-refuse exactly as the terminal route did regardless of the global
+	// validator flag. Off (neither): the leak check above is the only guard
+	// (byte-identical to pre-#126). On: the agent was told (cite_protocol in the tool
+	// result) to attribute each conclusion with [[chunk_id]]; require >=1 citation
+	// resolving to a retrieved ChunkID and no citation to an unknown chunk_id, then
+	// strip the markers for display.
+	if !groundedAnswerValidatorOn && !e.knowledgeQAAgentLoopThisTurn {
 		return content
 	}
 	report := knowledge.ValidateGroundedCitations(content, e.searchKnowledgeLedgerThisTurn)

@@ -56,6 +56,14 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 	if groundedValidator {
 		log.Printf("runtime: HTTP grounded-answer validator enabled (COMPSHARE_RAG_GROUNDED_VALIDATOR=1; cite-or-refuse on agentic SearchKnowledge)")
 	}
+	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
+	if unknownKnowledgeQAAgentLoop != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q", unknownKnowledgeQAAgentLoop)
+	}
+	engine.SetKnowledgeQAAgentLoopEnabled(knowledgeQAAgentLoop)
+	if knowledgeQAAgentLoop {
+		log.Printf("runtime: HTTP knowledge_qa agent-loop route enabled (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=1; forced SearchKnowledge first hop, terminal RAG bypassed)")
+	}
 	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
 		Capacity:             cfg.Agent.HTTP.PoolCapacity,
 		IdleTTL:              cfg.Agent.HTTP.PoolIdleTTL,

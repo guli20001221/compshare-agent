@@ -165,6 +165,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_GROUNDED_VALIDATOR value %q\n", unknownGroundedValidator)
 	}
 	engine.SetGroundedAnswerValidatorEnabled(groundedValidator)
+	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(os.Getenv)
+	if unknownKnowledgeQAAgentLoop != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q\n", unknownKnowledgeQAAgentLoop)
+	}
+	engine.SetKnowledgeQAAgentLoopEnabled(knowledgeQAAgentLoop)
 	diagnosisPilots, unknownDiagnosisPilots := skillExecutorDiagnosisPilotsFromEnv(os.Getenv)
 	for _, value := range unknownDiagnosisPilots {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS value %q\n", value)
