@@ -4505,6 +4505,43 @@ var knowledgeGPUTroubleshootingKeywords = []string{
 	"显存不足", "显存溢出", "爆显存", "显存爆",
 }
 
+// knowledgeLinuxOpsKeywords / knowledgePytorchBasicsKeywords map to the external
+// areas added in the Linux-ops + env-management + PyTorch-basics vertical
+// (deploy/kb/external_w0.jsonl). Like inference_serving / gpu_troubleshooting they
+// are checked AFTER every platform set, so a platform message keeps its existing
+// mapping by construction — only messages matching no platform keyword fall
+// through to these. Return labels must stay in scripts/rag_w0/common.py
+// ALLOWED_PRODUCT_AREAS (asserted by TestInferredProductAreasAllowedInPython).
+//
+// Deliberately exclude bare "ssh" (stays a login keyword) and "cuda" /
+// "torch.cuda" (stay driver_cuda / gpu_troubleshooting, checked first). The
+// SSH-免密 and CUDA-version overlaps resolve in favor of those platform groups;
+// the affected external chunks are verified to still retrieve on the MERGED index
+// by the CLI smoke, not by an affinity boost (same posture as the ComfyUI vertical).
+var knowledgeLinuxOpsKeywords = []string{
+	// 后台运行 / 终端复用
+	"tmux", "nohup", "后台运行", "后台跑", "后台执行", "挂后台", "挂在后台",
+	// 虚拟环境 / 包管理(注意:不收 bare "pip",避免吞掉 "pip install vllm" 这类应归 inference_serving 的问题)
+	"conda", "miniconda", "anaconda", "venv", "virtualenv", "虚拟环境",
+	"换源", "国内源", "镜像源", "清华源", "pip 源", "pip源", "pypi",
+	// 文件传输
+	"scp", "rsync", "传文件", "上传文件", "文件传输", "传到实例",
+	// SSH 免密(含 "ssh"/"登录" 的表述会先命中 login,checked first;此处只兜住不含这两词的 bare 表述)
+	"ssh-keygen", "ssh-copy-id", "authorized_keys", "id_rsa", "免密",
+	// 磁盘
+	"df -h", "du -sh", "du -h", "磁盘满", "磁盘清理", "清理磁盘", "清理空间", "空间不够", "硬盘满", "磁盘空间不足",
+	// CPU/内存 资源(monitor 关键词只含 显存/cpu/gpu 占用,不含 内存/top/free/htop)
+	"htop", "free -h", "free -m", "free 命令", "top 命令", "内存占用", "内存满",
+}
+
+var knowledgePytorchBasicsKeywords = []string{
+	"pytorch", "torchrun", "torch.distributed", "ddp", "distributeddataparallel",
+	"dataloader", "num_workers", "pin_memory",
+	"分布式训练", "多卡训练", "数据并行", "单机多卡",
+	"混合精度", "torch.cuda.amp", "autocast", "梯度累积", "梯度检查点",
+	"state_dict", "torch.save", "torch.load",
+}
+
 // normalizeMsg was moved to internal/textutil.Normalize in the C2
 // hard-block 归一 refactor. All engine call sites now invoke
 // textutil.Normalize directly. See textutil/normalize.go for the
@@ -4885,6 +4922,10 @@ func inferKnowledgeProductArea(userMsg string) string {
 		return "inference_serving"
 	case containsAnyKeyword(n, knowledgeGPUTroubleshootingKeywords):
 		return "gpu_troubleshooting"
+	case containsAnyKeyword(n, knowledgePytorchBasicsKeywords):
+		return "pytorch_basics"
+	case containsAnyKeyword(n, knowledgeLinuxOpsKeywords):
+		return "linux_ops"
 	default:
 		return ""
 	}
@@ -4907,6 +4948,8 @@ var knowledgeInferredProductAreas = []string{
 	"modelverse",
 	"inference_serving",
 	"gpu_troubleshooting",
+	"pytorch_basics",
+	"linux_ops",
 }
 
 // pickProjectId removed in PR9 with ensureProjectId. See comment block

@@ -57,6 +57,29 @@ Q = [
     ("在新开的实例上从头装 comfyui 该怎么弄", ["ext-comfyui-install-001"], "", "comfyui"),
     ("comfyui 启动了日志也没报错,可浏览器就是打不开", ["ext-comfyui-cant-connect-001"], "", "comfyui"),
     ("不想每次手点界面,能不能用脚本自动让 comfyui 跑一个工作流", ["ext-comfyui-api-001"], "", "comfyui"),
+    # Linux ops + env management. Areas mirror inferKnowledgeProductArea (pinned in
+    # product_area_inference_test.go). Most infer "linux_ops"; the SSH-免密 query
+    # carries "ssh"/"密码"/"登录", which the login group claims first (checked
+    # before the external sets) — declared faithfully as "login" (a no-op boost on
+    # this external-only eval; the merged-index retrieval is covered by CLI smoke).
+    ("想让训练在后台跑,人离开后还能重新连回去接着看", ["ext-linux-tmux-001"], "linux_ops", "linux_ops"),
+    ("怎么把一条命令丢到后台跑,顺便把输出都存进日志", ["ext-linux-nohup-001"], "linux_ops", "linux_ops"),
+    ("实例报 no space left,磁盘满了怎么清出空间", ["ext-linux-disk-cleanup-001"], "linux_ops", "linux_ops"),
+    ("free -h 看着内存不多了,想找出是哪个进程占的", ["ext-linux-resource-001"], "linux_ops", "linux_ops"),
+    ("想给新项目单独建个 conda 环境,装的包不影响别的", ["ext-linux-conda-001"], "linux_ops", "linux_ops"),
+    ("不想装 conda,python 自带的 venv 怎么建环境", ["ext-linux-venv-001"], "linux_ops", "linux_ops"),
+    ("pip 下载特别慢,想换成国内的镜像源", ["ext-linux-pip-mirror-001"], "linux_ops", "linux_ops"),
+    ("本地的数据集怎么传到实例上去", ["ext-linux-transfer-001"], "linux_ops", "linux_ops"),
+    ("每次 ssh 登录都要输密码,怎么搞成免密的", ["ext-linux-ssh-key-001"], "login", "linux_ops"),
+    # PyTorch / CUDA basics. "pytorch"/"dataloader"/"混合精度"/"state_dict" reach
+    # pytorch_basics (checked after the platform + serving + troubleshooting sets,
+    # so an OOM/cuda message still maps to those, not here).
+    ("装完 pytorch 发现用不了 gpu,是不是装成 cpu 版了", ["ext-pytorch-install-001"], "pytorch_basics", "pytorch"),
+    ("pytorch 写好的代码默认在 cpu 跑,怎么让它上 gpu", ["ext-pytorch-device-001"], "pytorch_basics", "pytorch"),
+    ("单机 4 张卡想一起训练,pytorch 怎么搞多卡", ["ext-pytorch-ddp-001"], "pytorch_basics", "pytorch"),
+    ("gpu 利用率老是很低,感觉卡在数据加载,dataloader 怎么调快", ["ext-pytorch-dataloader-001"], "pytorch_basics", "pytorch"),
+    ("训练想省点显存又快一点,听说混合精度可以,怎么写", ["ext-pytorch-amp-001"], "pytorch_basics", "pytorch"),
+    ("pytorch 训练完想把权重保存下来,下次加载接着用,怎么写", ["ext-pytorch-checkpoint-001"], "pytorch_basics", "pytorch"),
 ]
 
 

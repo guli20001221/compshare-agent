@@ -39,6 +39,9 @@ ALLOWED_PRODUCT_AREAS = {
     # internal/engine/engine.go (asserted by TestInferredProductAreasAllowedInPython).
     "inference_serving",
     "gpu_troubleshooting",
+    # Linux-ops + env-management + PyTorch/CUDA-basics vertical.
+    "linux_ops",
+    "pytorch_basics",
 }
 ALLOWED_CONFIDENCE = {"high", "medium", "low"}
 ALLOWED_EVIDENCE_KIND = {"knowledge"}
