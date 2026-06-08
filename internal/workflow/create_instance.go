@@ -345,7 +345,7 @@ func stepCheckCapacity() Step {
 				"MachineType":        "G",
 				"MinimalCpuPlatform": "Auto",
 				"CompShareImageId":   imageId,
-				"ChargeType":         paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
+				"ChargeType":         createChargeType(wfCtx.Params),
 				"Disks":              defaultDisk,
 			}, nil
 		},
@@ -405,7 +405,7 @@ func stepGetPrice() Step {
 				"GPU":        gpu,
 				"CPU":        cpu,
 				"Memory":     mem,
-				"ChargeType": userPriceChargeType(paramStr(wfCtx.Params, "ChargeType", "Dynamic")),
+				"ChargeType": createChargeType(wfCtx.Params),
 			}
 			// Community images may be paid; include CompShareImageId for accurate pricing.
 			// Prefer a threaded id (deploy_model handler) so price reflects the exact image
@@ -424,10 +424,12 @@ func stepGetPrice() Step {
 	}
 }
 
-// userPriceChargeType maps workflow ChargeType values to the enum expected by
-// GetCompShareInstanceUserPrice. The key difference: "Dynamic" → "Postpay".
-func userPriceChargeType(ct string) string {
-	if ct == "Dynamic" {
+// createChargeType normalizes the create path to the current upstream billing
+// contract: pay-as-you-go/hourly uses Postpay. Dynamic is a deprecated input
+// spelling kept only for backward compatibility with older LLM/tool args.
+func createChargeType(params map[string]any) string {
+	ct := paramStr(params, "ChargeType", "")
+	if ct == "" || ct == "Dynamic" {
 		return "Postpay"
 	}
 	return ct
@@ -449,7 +451,7 @@ func stepConfirmCreate() Step {
 				"CPU":        cpu,
 				"Memory":     memMB,
 				"Zone":       zone,
-				"ChargeType": paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
+				"ChargeType": createChargeType(wfCtx.Params),
 				"image":      pickImageName(wfCtx.Params, wfCtx.Result("查询镜像")),
 				"price":      wfCtx.Result("查询价格"),
 				// FallbackNote is set by the deploy_model handler when it switched the
@@ -490,7 +492,7 @@ func stepCreateInstance() Step {
 				"CPU":              cpu,
 				"Memory":           mem,
 				"CompShareImageId": imageId,
-				"ChargeType":       paramStr(wfCtx.Params, "ChargeType", "Dynamic"),
+				"ChargeType":       createChargeType(wfCtx.Params),
 				"Disks":            defaultDisk,
 			}
 			if name, ok := wfCtx.Params["Name"]; ok {
