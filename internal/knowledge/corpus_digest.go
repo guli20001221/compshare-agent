@@ -26,15 +26,16 @@ const EmbeddingDigestExpected = "9dcb902bb6026836b43cf52be159af6690bb4c93818e1b3
 const EmbeddingDigestExpectedQwen3 = "da488ead7fb53b6d7ab2e7529b9724b1a6f60910aeef253028db624c7dcd99b4"
 
 // ExternalCorpusDigestExpected pins deploy/kb/external_w0.jsonl — the separate
-// external tool/ops corpus (vLLM / SGLang / Ollama + GPU troubleshooting),
-// loaded alongside the platform corpus via LoadPinnedCorporaWithEmbeddings.
-// RAG Phase 1. Same refuse-to-start-on-mismatch semantics as the platform pin.
-const ExternalCorpusDigestExpected = "c6c9a986e3a3ac4baf393739ab868a65480bce19cd601b647100ed52200579eb"
+// external tool/ops corpus (vLLM / SGLang / Ollama / ComfyUI + GPU
+// troubleshooting), loaded alongside the platform corpus via
+// LoadPinnedCorporaWithEmbeddings. RAG Phase 1 (ComfyUI vertical added in
+// Phase 5). Same refuse-to-start-on-mismatch semantics as the platform pin.
+const ExternalCorpusDigestExpected = "6715f82726ed430d3745ff138d44fb36c0b81e3dfbfdbddf55a2fa1803c066c4"
 
 // ExternalEmbeddingDigestExpectedQwen3 pins the qwen3-embedding-8b sidecar
 // (4096-dim) for the external corpus:
 // deploy/kb/embeddings_<ExternalCorpusDigestExpected>_qwen3-embedding-8b.jsonl.
-const ExternalEmbeddingDigestExpectedQwen3 = "65ea84dfd85e7aeeb66194e24f12219f7205fd8ebe3f58140dad226994b54eca"
+const ExternalEmbeddingDigestExpectedQwen3 = "5c5e2ddd838a2c3d2f52c6230b7dcaed650e6b1a32a8c75e55bfdf593fb2a736"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.

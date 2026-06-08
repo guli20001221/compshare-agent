@@ -1,0 +1,59 @@
+[
+  {
+    "qid": "comfy-start",
+    "kind": "comfyui",
+    "expect_chunk": "ext-comfyui-start-001",
+    "anchors_any": ["--listen", "8188"],
+    "question": "我在实例里把 ComfyUI 跑起来了，怎么让本机以外的电脑也能打开它的网页？"
+  },
+  {
+    "qid": "comfy-oom",
+    "kind": "comfyui",
+    "expect_chunk": "ext-comfyui-oom-001",
+    "anchors_any": ["--lowvram", "--novram"],
+    "question": "ComfyUI 出图老是显存不足，有哪些启动参数能省显存？"
+  },
+  {
+    "qid": "comfy-models-dir",
+    "kind": "comfyui-modelverse-collision",
+    "expect_chunk": "ext-comfyui-models-dir-001",
+    "anchors_any": ["checkpoints", "extra_model_paths"],
+    "question": "我下载的大模型放进去了，ComfyUI 里却选不到，应该放在哪个目录？"
+  },
+  {
+    "qid": "comfy-custom-nodes",
+    "kind": "comfyui",
+    "expect_chunk": "ext-comfyui-custom-nodes-001",
+    "anchors_any": ["custom_nodes", "git clone"],
+    "question": "ComfyUI 想用一个第三方节点，怎么把它安装上？"
+  },
+  {
+    "qid": "comfy-install",
+    "kind": "comfyui",
+    "expect_chunk": "ext-comfyui-install-001",
+    "anchors_any": ["git clone", "requirements.txt"],
+    "question": "怎么在一台新的 GPU 实例上从头安装 ComfyUI？"
+  },
+  {
+    "qid": "comfy-cant-connect",
+    "kind": "comfyui",
+    "expect_chunk": "ext-comfyui-cant-connect-001",
+    "anchors_any": ["--listen", "8188"],
+    "question": "ComfyUI 启动了，日志也没报错，但浏览器就是打不开页面，怎么排查？"
+  },
+  {
+    "qid": "comfy-api",
+    "kind": "comfyui",
+    "expect_chunk": "ext-comfyui-api-001",
+    "anchors_any": ["/prompt", "API"],
+    "question": "我不想每次手动点界面，能不能用脚本自动让 ComfyUI 跑一个工作流？"
+  },
+  {
+    "qid": "ctrl-platform-api",
+    "kind": "control-anticontam",
+    "expect_chunk": "",
+    "anchors_any": [],
+    "must_not_contain": ["ComfyUI", "comfyui"],
+    "question": "用 OpenAI 的接口调用你们平台上的模型，请求应该发到哪个地址？"
+  }
+]

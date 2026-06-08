@@ -29,6 +29,10 @@ Sources:
   pytorch-docs:notes/cuda                    https://docs.pytorch.org/docs/stable/notes/cuda.html
   nvidia-docs:nvidia-smi                      https://docs.nvidia.com/deploy/nvidia-smi/
   hf-docs:installation                        https://huggingface.co/docs/huggingface_hub/installation
+  comfyui-docs:getting_started               https://docs.comfy.org/
+  comfyui-repo:README                        https://github.com/comfyanonymous/ComfyUI
+  comfyui-repo:comfy/cli_args.py             https://github.com/comfyanonymous/ComfyUI/blob/master/comfy/cli_args.py
+  comfyui-repo:extra_model_paths.yaml.example  https://github.com/comfyanonymous/ComfyUI/blob/master/extra_model_paths.yaml.example
 """
 from __future__ import annotations
 
@@ -455,6 +459,180 @@ OLLAMA_CHUNKS = [
     ),
 ]
 
+# ============================== ComfyUI ==============================
+# Scope is deliberately CLI / filesystem / troubleshooting only — launch flags,
+# model directories, custom-node install, connectivity. The node-graph visual UI
+# (menu paths / field names / per-node behavior) is intentionally NOT described:
+# it is version- and custom-node-dependent, and the third_party_tool_addendum
+# already forbids asserting a tool's UI steps/field names. Stay on documented,
+# stable command-line + directory facts.
+COMFYUI_CHUNKS = [
+    chunk(
+        chunk_id="ext-comfyui-start-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="在实例里启动 ComfyUI 并从外部访问",
+        question_patterns=[
+            "comfyui 怎么启动",
+            "comfyui 怎么从外部访问",
+            "comfyui 默认只能本机打开怎么办",
+            "comfyui --listen 怎么用",
+        ],
+        content=(
+            "适用场景:在 GPU 实例里把 ComfyUI 跑起来,并希望从本机以外打开它的网页。\n\n"
+            "在 ComfyUI 目录里启动:\n"
+            "```\npython main.py\n```\n"
+            "默认监听 `127.0.0.1:8188`,只能本机访问。要让其它机器能访问,用 `--listen` 监听所有网卡、"
+            "用 `--port` 指定端口:\n"
+            "```\npython main.py --listen 0.0.0.0 --port 8188\n```\n"
+            "启动后控制台会打印实际监听的地址和端口,以日志为准。\n\n"
+            "注意:从公网/外部访问还要确认实例的安全组 / 端口映射放行了该端口(这属于平台侧配置,"
+            "以平台文档为准);完整参数以 `python main.py --help` 为准。"
+        ),
+        source_refs=["comfyui-repo:README", "comfyui-repo:comfy/cli_args.py"],
+    ),
+    chunk(
+        chunk_id="ext-comfyui-oom-001",
+        product_area="gpu_troubleshooting",
+        source_type="runbook",
+        source_origin="external_official",
+        title="ComfyUI 显存不足 / 爆显存怎么降",
+        question_patterns=[
+            "comfyui 显存不足怎么办",
+            "comfyui 出图爆显存",
+            "comfyui lowvram 怎么用",
+            "comfyui 显存不够报错",
+        ],
+        content=(
+            "适用场景:ComfyUI 生成时报显存不足 / 爆显存,常见于大图、视频或较大的模型。可按下面处理,"
+            "通常组合使用:\n\n"
+            "1. 启动时加省显存开关:`--lowvram` 把模型尽量分块、少占显存;显存特别紧张可用 `--novram`;"
+            "完全没有可用显存时用 `--cpu` 退回 CPU(很慢,仅兜底)。\n"
+            "2. 降低单次生成负载:减小出图分辨率、batch 数量、视频帧数——分辨率和帧数对显存影响最大。\n"
+            "3. 释放/腾出显存:用 `nvidia-smi` 看是否有其它进程占着显存并酌情停掉;换更小或量化过的模型。\n\n"
+            "注意:`--lowvram` / `--novram` 是以速度换显存,不是凭空增加显存;具体开关以 "
+            "`python main.py --help` 与当前版本为准。"
+        ),
+        source_refs=["comfyui-repo:README", "comfyui-repo:comfy/cli_args.py"],
+    ),
+    chunk(
+        chunk_id="ext-comfyui-models-dir-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="ComfyUI 模型放在哪 / 列表里选不到模型",
+        question_patterns=[
+            "comfyui 模型放哪个目录",
+            "comfyui 选不到 checkpoint",
+            "comfyui 加载不到模型",
+            "comfyui 怎么用已有的模型目录",
+        ],
+        content=(
+            "适用场景:ComfyUI 列表里看不到刚下载的模型,或不确定权重该放哪。\n\n"
+            "ComfyUI 在自己的 `models/` 子目录里按类型找模型:大模型(checkpoint)放 `models/checkpoints`,"
+            "LoRA 放 `models/loras`,VAE 放 `models/vae`,ControlNet 放 `models/controlnet`,其余类型类推。"
+            "放好后刷新模型列表或重启 ComfyUI 即可看到。\n\n"
+            "已有模型不想再复制一份:把 `extra_model_paths.yaml.example` 复制成 `extra_model_paths.yaml`,"
+            "在里面填已有模型所在的目录,让 ComfyUI 直接读取。\n\n"
+            "注意:目录要对应模型类型放对;改了 `extra_model_paths.yaml` 后需重启 ComfyUI 生效。"
+        ),
+        source_refs=["comfyui-repo:README", "comfyui-repo:extra_model_paths.yaml.example"],
+    ),
+    chunk(
+        chunk_id="ext-comfyui-custom-nodes-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="安装 ComfyUI 自定义节点(custom nodes)",
+        question_patterns=[
+            "comfyui 怎么装自定义节点",
+            "comfyui 缺少某个节点怎么办",
+            "comfyui custom_nodes 怎么用",
+            "comfyui 别人的工作流提示缺节点",
+        ],
+        content=(
+            "适用场景:别人的工作流用到你没有的节点,需要安装自定义节点(custom node)。\n\n"
+            "手动安装:把该节点的仓库 `git clone` 到 ComfyUI 的 `custom_nodes/` 目录下;如果它带有 "
+            "`requirements.txt`,在该目录里 `pip install -r requirements.txt` 装好依赖;然后重启 ComfyUI。\n\n"
+            "社区也有 ComfyUI-Manager 这类扩展可以帮忙安装/更新节点(它本身也是装在 `custom_nodes/` 下的一个节点)。\n\n"
+            "注意:自定义节点来自第三方,安装前留意来源是否可信、依赖是否冲突;装完必须重启 ComfyUI 才会加载;"
+            "加载报错多半是缺依赖或版本不匹配,按控制台日志补装即可。"
+        ),
+        source_refs=["comfyui-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-comfyui-install-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="在实例里安装 / 更新 ComfyUI",
+        question_patterns=[
+            "comfyui 怎么安装",
+            "怎么在实例上装 comfyui",
+            "comfyui 怎么更新到新版本",
+            "comfyui 装好怎么启动",
+        ],
+        content=(
+            "适用场景:在 Linux GPU 实例里从头安装 ComfyUI 或更新到新版本。\n\n"
+            "安装:\n"
+            "```\ngit clone https://github.com/comfyanonymous/ComfyUI\ncd ComfyUI\n"
+            "# 先按实例的 CUDA 版本装好对应的 PyTorch,再装其余依赖\npip install -r requirements.txt\n"
+            "python main.py\n```\n"
+            "更新:在 ComfyUI 目录里 `git pull` 拉取最新代码,必要时再次 `pip install -r requirements.txt` "
+            "更新依赖,然后重启。\n\n"
+            "注意:PyTorch 要装与实例 CUDA 匹配的版本(见相关条目);依赖较多,建议在独立的 Python 环境"
+            "(venv / conda)里安装,避免污染系统环境。"
+        ),
+        source_refs=["comfyui-repo:README", "comfyui-docs:getting_started"],
+    ),
+    chunk(
+        chunk_id="ext-comfyui-cant-connect-001",
+        product_area="gpu_troubleshooting",
+        source_type="runbook",
+        source_origin="external_official",
+        title="ComfyUI 起来了但浏览器打不开 / 连不上怎么排查",
+        question_patterns=[
+            "comfyui 打不开网页",
+            "comfyui 启动了连不上",
+            "comfyui 浏览器访问不了",
+            "comfyui 页面白屏打不开",
+        ],
+        content=(
+            "适用场景:ComfyUI 进程在跑,但从浏览器访问不到页面。按顺序排查:\n\n"
+            "1. 是不是只监听了本机:默认 `127.0.0.1:8188` 只能本机访问,要从外部访问需用 `--listen 0.0.0.0` 启动;"
+            "看启动日志里打印的实际监听地址。\n"
+            "2. 端口有没有放行:确认访问的端口(默认 8188)在实例的安全组 / 端口映射里放行了;需要换端口用 `--port`。\n"
+            "3. 进程是否真的起好:看 ComfyUI 控制台日志有没有报错、有没有打印出监听地址(类似 "
+            "“Starting server” / “To see the GUI go to …”)。\n\n"
+            "注意:平台侧的端口放行属于平台配置(以平台文档 / 控制台为准),这里只判断 ComfyUI 自身的监听设置;"
+            "本机能开、外部打不开,基本就是 `--listen` 或端口放行的问题。"
+        ),
+        source_refs=["comfyui-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-comfyui-api-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="用 API / 脚本方式触发 ComfyUI 工作流(不手点界面)",
+        question_patterns=[
+            "comfyui 怎么用 api 调",
+            "comfyui 能不能脚本自动跑",
+            "comfyui 后台批量生成",
+            "comfyui /prompt 接口怎么用",
+        ],
+        content=(
+            "适用场景:想用脚本/服务自动触发 ComfyUI 生成,而不是每次手动在界面里点。\n\n"
+            "ComfyUI 服务端本身提供 HTTP 接口:先在界面里开启开发者选项,把要跑的工作流导出成 “API 格式” 的 JSON;"
+            "再把这段 JSON 作为请求体 POST 到服务端的 `/prompt` 接口排队执行,产出可通过历史记录或 WebSocket 获取。\n\n"
+            "注意:工作流 JSON 的具体结构取决于你自己搭的节点图,并会随版本/节点变化——请以你当前 ComfyUI 版本"
+            "实际导出的 API JSON 和官方文档为准,不要照搬别处的字段;这里不预设具体字段名。"
+        ),
+        source_refs=["comfyui-docs:getting_started", "comfyui-repo:README"],
+    ),
+]
+
 # ============================== General GPU ops ==============================
 GPU_OPS_CHUNKS = [
     chunk(
@@ -760,7 +938,9 @@ EXTRA_CHUNKS = [
     ),
 ]
 
-CHUNKS = VLLM_CHUNKS + SGLANG_CHUNKS + OLLAMA_CHUNKS + GPU_OPS_CHUNKS + EXTRA_CHUNKS
+CHUNKS = (
+    VLLM_CHUNKS + SGLANG_CHUNKS + OLLAMA_CHUNKS + COMFYUI_CHUNKS + GPU_OPS_CHUNKS + EXTRA_CHUNKS
+)
 
 
 def main() -> None:

@@ -43,6 +43,20 @@ Q = [
     ("多卡机器上怎么让程序只用第 0 和第 1 张卡", ["ext-gpu-visible-devices-001"], "gpu_troubleshooting", "gpu_ops"),
     ("从 huggingface 下载模型特别慢,有没有什么办法", ["ext-gpu-hf-download-001"], "gpu_troubleshooting", "gpu_ops"),
     ("我要跑一个 14b 的模型,大概得多大显存的卡", ["ext-gpu-vram-estimate-001"], "inference_serving", "gpu_ops"),
+    # ComfyUI. "comfyui" is not in inferKnowledgeProductArea's keyword sets, so most
+    # serving/setup queries infer "" (no +2 boost). Two exceptions, faithfully
+    # mirrored here (pinned by TestInferKnowledgeProductArea_LabelsMatchCorpus): the
+    # OOM query hits gpu_troubleshooting ("爆显存"); the model-directory query says
+    # "模型", a modelverse keyword checked before inference_serving, so it infers
+    # "modelverse" — a no-op boost in this external-only eval (no external modelverse
+    # chunk); the merged-index mis-boost is checked separately in CLI smoke.
+    ("我在实例里把 comfyui 跑起来了,想让别的电脑也能打开它的页面", ["ext-comfyui-start-001"], "", "comfyui"),
+    ("comfyui 出图的时候老是爆显存,有什么办法能降一点", ["ext-comfyui-oom-001"], "gpu_troubleshooting", "comfyui"),
+    ("下载的大模型放进去了,comfyui 里却选不到,该放哪个文件夹", ["ext-comfyui-models-dir-001"], "modelverse", "comfyui"),
+    ("comfyui 想用一个第三方的节点,怎么把它装上", ["ext-comfyui-custom-nodes-001"], "", "comfyui"),
+    ("在新开的实例上从头装 comfyui 该怎么弄", ["ext-comfyui-install-001"], "", "comfyui"),
+    ("comfyui 启动了日志也没报错,可浏览器就是打不开", ["ext-comfyui-cant-connect-001"], "", "comfyui"),
+    ("不想每次手点界面,能不能用脚本自动让 comfyui 跑一个工作流", ["ext-comfyui-api-001"], "", "comfyui"),
 ]
 
 

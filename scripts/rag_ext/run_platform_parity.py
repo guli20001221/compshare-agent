@@ -269,8 +269,9 @@ def main() -> int:
             "external_chunks_in_platform_top3": len(intrusions),
             "external_chunks_displacing_expected": len(intrusions_displacing),
             "note": "displacements/intrusions are answer-faithfulness REVIEW items, "
-                    "not retrieval-parity failures; address via RAG anti-confusion "
-                    "anchor before flipping COMPSHARE_EXTERNAL_KNOWLEDGE default-on",
+                    "not retrieval-parity failures; external KB is already default-on "
+                    "(#242) and these are handled by the RAG anti-confusion anchor + "
+                    "grounded-renderer citation discipline",
         },
         "workdir": str(workdir),
     }
