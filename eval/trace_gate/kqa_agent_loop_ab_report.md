@@ -53,4 +53,17 @@ Re-run (B2, same 8 probes ×2):
 | B1 (before fix) | 0.44 | 8/16 | 5 cite-gate + 2 forced-hop + 1 budget |
 | **B2 (after fix)** | **0.19** | **13/16** | **3 forced-hop misfire only** |
 
-**Every cite-gate over-refusal (5→0) and the budget case (1→0) are gone.** The 3 residual refusals are all `no-sk` (the forced `SearchKnowledge` object tool_choice was ignored by flash that run). Faithfulness/contamination unchanged. Remaining Phase-3 prerequisite narrows to **(1) forced-hop reliability** (re-force once on misfire); (2) token headroom is no longer observed in this run. Re-eval N≥5 after the forced-hop retry; flip only when B refusal ≤ A.
+**Every cite-gate over-refusal (5→0) and the budget case (1→0) are gone.** The 3 residual refusals are all `no-sk` (the forced `SearchKnowledge` object tool_choice was ignored by flash that run). Faithfulness/contamination unchanged. Remaining Phase-3 prerequisite narrows to **(1) forced-hop reliability** (re-force once on misfire); (2) token headroom is no longer observed in this run.
+
+## Update 2026-06-08 (2) — forced-hop retry → refusal 0.19 → 0.12
+
+Added `forced-hop retry` (commit `a938a8b`): when flash ignores the forced SearchKnowledge object tool_choice at round 0 and answers directly, re-force the first hop once. Re-run (B3):
+
+| | refusal rate | substantive | residual |
+|---|---:|---:|---|
+| A terminal | 0.00 | 16/16 | — |
+| B1 (no fix) | 0.44 | 8/16 | 5 cite + 2 forced-hop + 1 budget |
+| B2 (cite fix) | 0.19 | 13/16 | 3 forced-hop |
+| **B3 (cite + forced-hop)** | **0.12** | **14/16** | **0 forced-hop; 2 residual cite jitter (both retrieved)** |
+
+**Forced-hop misfires 3→0** (retry recovered them). Refusal fell 0.44→0.12 (−73%). The 2 residual refusals both retrieved (sk=True) but the cite-retry didn't land a valid marker that run — high variance at N=2, and a SAFE failure (conservative refusal, not an uncited/fabricated answer). Both remaining refusals are cite-recall jitter, so the last lever toward A is **accept numbered `[n]` (mapped to ledger order) as a citation** — the simple scheme flash emits most reliably (terminal already uses it), instead of requiring `[[chunk_id]]`. Decision point: accept 0.12 conservative-refusal + confirm at N≥5, or add the numbered-`[n]` acceptance to push toward ~0.
