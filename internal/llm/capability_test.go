@@ -24,12 +24,12 @@ func TestLookupCapability_BuiltinMatrix(t *testing.T) {
 		wantRequiresExtraBodyKeys int
 	}{
 		{
-			name:                   "modelverse deepseek v4 flash object tool_choice broken in thinking mode",
+			name:                   "modelverse deepseek v4 flash object tool_choice works (re-probed 2026-06-08)",
 			baseURL:                "https://api.modelverse.cn/v1",
 			model:                  "deepseek-v4-flash",
 			wantJSONObject:         true,
 			wantThinking:           true,
-			wantObjectToolChoice:   false,
+			wantObjectToolChoice:   true,
 			wantRequiredToolChoice: true,
 		},
 		{
