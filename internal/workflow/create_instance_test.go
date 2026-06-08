@@ -423,10 +423,80 @@ func TestCreateInstance_ConfirmArgsContainSummary(t *testing.T) {
 	assert.Equal(t, float64(16), capturedArgs["CPU"])
 	assert.Equal(t, float64(65536), capturedArgs["Memory"]) // 64GB in MB
 
-	// price should be the full price step result
-	priceResult, ok := capturedArgs["price"].(map[string]any)
-	assert.True(t, ok)
-	assert.NotNil(t, priceResult)
+	// price is rendered as a readable display string for the confirm card, NOT
+	// the raw GetCompShareInstanceUserPrice object (which the frontend stringified
+	// as "[object Object]"). Default ChargeType is Postpay; the mock returns
+	// PriceDetails [{ChargeType: Postpay, Price: 1.58}] with no list price.
+	assert.Equal(t, "¥1.58/小时", capturedArgs["price"])
+}
+
+func TestConfirmPriceText(t *testing.T) {
+	cases := []struct {
+		name       string
+		price      any
+		chargeType string
+		want       string
+	}{
+		{
+			name:       "postpay payable only",
+			price:      map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.58}}},
+			chargeType: "Postpay",
+			want:       "¥1.58/小时",
+		},
+		{
+			name: "discount surfaces list price as 原价",
+			price: map[string]any{
+				"PriceDetails":     []any{map[string]any{"ChargeType": "Postpay", "Price": 1.58}},
+				"ListPriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.98}},
+			},
+			chargeType: "Postpay",
+			want:       "¥1.58/小时（原价 ¥1.98）",
+		},
+		{
+			name: "list equal to payable -> no 原价",
+			price: map[string]any{
+				"PriceDetails":     []any{map[string]any{"ChargeType": "Postpay", "Price": 1.58}},
+				"ListPriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.58}},
+			},
+			chargeType: "Postpay",
+			want:       "¥1.58/小时",
+		},
+		{
+			name:       "Instance field fallback (catalog-shape robustness)",
+			price:      map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Instance": 2.0}}},
+			chargeType: "Postpay",
+			want:       "¥2.00/小时",
+		},
+		{
+			name:       "Month period unit",
+			price:      map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Month", "Price": 1000.0}}},
+			chargeType: "Month",
+			want:       "¥1000.00/月",
+		},
+		{
+			name:       "resolved charge type absent -> empty",
+			price:      map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Month", "Price": 1.0}}},
+			chargeType: "Postpay",
+			want:       "",
+		},
+		{
+			name:       "unexpected shape -> empty (never a raw object)",
+			price:      map[string]any{"unexpected": true},
+			chargeType: "Postpay",
+			want:       "",
+		},
+		{
+			name:       "nil result -> empty",
+			price:      nil,
+			chargeType: "Postpay",
+			want:       "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, confirmPriceText(tc.price, tc.chargeType))
+		})
+	}
 }
 
 // --- Platform image selection tests ---
