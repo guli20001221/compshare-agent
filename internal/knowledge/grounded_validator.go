@@ -7,15 +7,22 @@ import (
 
 // citeMarkerRE matches a grounded-citation marker [[chunk_id]] that an agent
 // emits to attribute a claim to a specific retrieved evidence item. It requires
-// at least two brackets on each side (\[\[+ ... \]\]+) so it (a) stays unambiguous
-// against the terminal-RAG positional [n] scheme (single bracket, numeric — see
+// at least two brackets on each side so it (a) stays unambiguous against the
+// terminal-RAG positional [n] scheme (single bracket, numeric — see
 // engine/cited_guard.go) and incidental single-bracket prose, and (b) consumes the
 // WHOLE of an over-bracketed marker like [[[id]]] so StripCiteMarkers leaves no
-// orphan "[]" residue. The id class excludes brackets and newlines so a
-// line-wrapped marker fails closed (no match → refusal) rather than matching a
-// newline-bearing id. The captured group is the raw chunk_id the agent cited; it
-// is validated against the per-turn evidence ledger by ValidateGroundedCitations.
-var citeMarkerRE = regexp.MustCompile(`\[\[+\s*([^\[\]\r\n]+?)\s*\]\]+`)
+// orphan "[]" residue.
+//
+// The bracket pairs tolerate intra-marker spaces/tabs ([ \t]* between the brackets)
+// because flash reliably emits the right chunk_id but sometimes spaces the brackets
+// — e.g. "[ [chunk_id] ]" — which a strict \[\[ would miss and wrongly refuse a
+// correctly-grounded answer (the 2026-06-08 raw-synthesis probe: a perfect 226601
+// answer cited "[ [w0-init_failure-…] ]" and was false-refused). Only spaces/tabs are
+// tolerated, NOT newlines, so the id class excluding brackets+newlines still makes a
+// line-wrapped marker fail closed (no match → refusal) rather than spanning prose.
+// The captured group is the raw chunk_id; ValidateGroundedCitations validates it
+// against the per-turn evidence ledger.
+var citeMarkerRE = regexp.MustCompile(`\[[ \t]*\[+\s*([^\[\]\r\n]+?)\s*\]+[ \t]*\]`)
 
 // GroundedAnswerReport is the route-independent verdict for a free-text final
 // answer validated against a per-turn ChunkID-keyed evidence ledger (#126). It is

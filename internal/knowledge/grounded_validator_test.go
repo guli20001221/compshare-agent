@@ -25,6 +25,30 @@ func TestValidateGroundedCitations_KnownCitationGrounds(t *testing.T) {
 	assert.True(t, r.Grounded(), "a known citation grounds the answer")
 }
 
+// TestValidateGroundedCitations_ToleratesSpacedBrackets covers the 2026-06-08
+// raw-synthesis finding: flash reliably cites the right chunk_id but sometimes spaces
+// the bracket pairs — "[ [id] ]" / "[[ id ]]" / "[ [ id ] ]" — which a strict \[\[
+// missed and wrongly refused a correctly-grounded answer (a perfect 226601 answer was
+// false-refused for "[ [w0-init_failure-…] ]"). Spaces/tabs between brackets must
+// still resolve; the markers must still strip; a single-bracket positional [n] and
+// incidental prose stay ignored.
+func TestValidateGroundedCitations_ToleratesSpacedBrackets(t *testing.T) {
+	ledger := ledgerWith("w0-init_failure-001", "ext-a-1")
+	for _, ans := range []string{
+		"实例已欠费，请支付订单 [ [w0-init_failure-001] ]。",
+		"实例已欠费 [[ w0-init_failure-001 ]]。",
+		"实例已欠费 [ [ w0-init_failure-001 ] ]。",
+	} {
+		r := ValidateGroundedCitations(ans, ledger)
+		assert.True(t, r.Grounded(), "spaced brackets must still ground: %q", ans)
+		assert.Equal(t, []string{"w0-init_failure-001"}, r.CitedChunkIDs, ans)
+	}
+	assert.Equal(t, "实例已欠费，请支付订单。",
+		StripCiteMarkers("实例已欠费，请支付订单 [ [w0-init_failure-001] ]。"))
+	assert.False(t, ValidateGroundedCitations("见步骤 [1] 与 [注意] 部分。", ledger).HasCitation,
+		"single-bracket positional/prose must not be read as a grounded citation")
+}
+
 // TestValidateGroundedCitations_UnknownCitationFabricated is the anti-fabrication
 // gate: a [[id]] marker not present in the ledger is a fabricated citation and
 // fails the contract even though a marker is present.

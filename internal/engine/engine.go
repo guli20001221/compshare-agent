@@ -1271,7 +1271,21 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 				content = ragNoEvidenceReply
 			}
+			preGuardContent := content
 			content = e.guardSearchKnowledgeSynthesis(content)
+			// Cite-retry parity with the terminal route: when the guard replaced a real
+			// synthesis with the canned refusal (typically flash omitted/garbled the
+			// [[chunk_id]] marker, not a content problem), give it ONE more chance with an
+			// explicit cite reminder before the refusal stands — mirroring
+			// answerWithRetrievedEvidence's single retry. Scoped to turns where
+			// SearchKnowledge surfaced evidence (the guard's own scope); a retry that still
+			// won't cite keeps the refusal. No-op when the guard accepted the answer.
+			if content == ragNoEvidenceReply && strings.TrimSpace(preGuardContent) != ragNoEvidenceReply &&
+				e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
+				if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
+					content = retried
+				}
+			}
 			// Replay buffered streaming deltas when the LLM content was returned
 			// verbatim. If an engine guard overwrote content, emit the canonical
 			// override as a single chunk so the SSE stream matches the persisted
@@ -2906,6 +2920,44 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 	}
 	e.emitSearchKnowledgeHardBlock("search_knowledge_uncited")
 	return ragNoEvidenceReply
+}
+
+// retrySearchKnowledgeCitation gives an agent-loop synthesis that the grounded
+// validator would refuse ONE more chance to cite before the refusal stands — the
+// parity the terminal route already has (answerWithRetrievedEvidence retries once with
+// a stronger cite instruction). It re-prompts with the current history (which still
+// carries the SearchKnowledge tool result + its evidence) plus an explicit
+// [[chunk_id]] reminder, then re-runs the same no-raw-leak + grounded-citation gates.
+// Returns (stripped grounded answer, true) only when the retry is clean AND properly
+// cited; ("", false) on budget/LLM error, refusal, leak, or still-uncited — the caller
+// then keeps the original refusal. The retry uses no tools, so it must produce text.
+func (e *Engine) retrySearchKnowledgeCitation(ctx context.Context) (string, bool) {
+	if e.tokenBudgetExceeded() {
+		return "", false
+	}
+	msgs := append(e.buildMessagesForLLM(), openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleUser,
+		Content: searchKnowledgeCiteRetryNote,
+	})
+	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{Messages: msgs})
+	if err != nil {
+		return "", false
+	}
+	e.emitTokenUsage(resp.Usage)
+	if e.tokenBudgetExceeded() {
+		return "", false
+	}
+	retry := security.RedactOperationalTokensInText(strings.TrimSpace(resp.Content))
+	if retry == "" || isKnowledgeRefusal(retry) {
+		return "", false
+	}
+	if knowledge.ValidateNoRawEvidenceLeak(retry, e.searchKnowledgeHitsThisTurn) != nil {
+		return "", false
+	}
+	if !knowledge.ValidateGroundedCitations(retry, e.searchKnowledgeLedgerThisTurn).Grounded() {
+		return "", false
+	}
+	return knowledge.StripCiteMarkers(retry), true
 }
 
 // emitSearchKnowledgeHardBlock records a post-LLM hardblock trace for the agentic

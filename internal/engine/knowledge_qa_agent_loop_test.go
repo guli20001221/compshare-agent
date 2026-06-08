@@ -224,6 +224,77 @@ func TestKnowledgeQAAgentLoop_CiteOrRefuseParity_WithoutGlobalValidator(t *testi
 	})
 }
 
+// TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis proves the cite-retry
+// parity: when the agent-loop synthesis would be refused for lack of a valid
+// [[chunk_id]] (flash omitted it), the engine re-prompts once and, if the retry cites,
+// keeps the substantive answer instead of refusing — exactly what the terminal route's
+// answerWithRetrievedEvidence retry does. Active turn-scoped with the global validator off.
+func TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis(t *testing.T) {
+	SetKnowledgeQAAgentLoopEnabled(true)
+	defer SetKnowledgeQAAgentLoopEnabled(false)
+	tools.SetAgenticSearchKnowledgeEnabled(true)
+	defer tools.SetAgenticSearchKnowledgeEnabled(false)
+	SetGroundedAnswerValidatorEnabled(false)
+
+	chunk := knowledgeQAAgentLoopBillingChunk()
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled: true, KBVersion: "kb.v1",
+		Hits:     []knowledge.KBChunk{chunk},
+		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{{ID: "c1", Type: openai.ToolTypeFunction,
+			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"billing"}`}}}},
+		{Content: "停止的按量实例的磁盘仍会计费。"},                       // uncited -> guard would refuse
+		{Content: "停止的按量实例的磁盘仍会计费 [[faq-billing-001]]。"}, // retry cites -> recovered
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, "停止的按量实例的磁盘仍会计费", "cite-retry must recover the substantive answer")
+	assert.NotContains(t, reply, "[[", "recovered answer must have markers stripped")
+	assert.NotEqual(t, ragNoEvidenceReply, reply, "a retry that cites must NOT leave a refusal")
+	assert.GreaterOrEqual(t, len(mock.calls), 3, "expected tool-call + uncited synthesis + cite-retry")
+}
+
+// TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal proves the retry is
+// bounded to ONE attempt: if the re-prompt still fails to cite, the refusal stands
+// (no infinite retry, fail-safe).
+func TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal(t *testing.T) {
+	SetKnowledgeQAAgentLoopEnabled(true)
+	defer SetKnowledgeQAAgentLoopEnabled(false)
+	tools.SetAgenticSearchKnowledgeEnabled(true)
+	defer tools.SetAgenticSearchKnowledgeEnabled(false)
+	SetGroundedAnswerValidatorEnabled(false)
+
+	chunk := knowledgeQAAgentLoopBillingChunk()
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled: true, KBVersion: "kb.v1",
+		Hits:     []knowledge.KBChunk{chunk},
+		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{{ID: "c1", Type: openai.ToolTypeFunction,
+			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"billing"}`}}}},
+		{Content: "停止的按量实例的磁盘仍会计费。"}, // uncited
+		{Content: "停止的按量实例的磁盘仍会计费。"}, // retry STILL uncited -> refusal stands
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
+	require.NoError(t, err)
+	assert.Equal(t, ragNoEvidenceReply, reply, "a retry that still won't cite keeps the refusal")
+}
+
 // TestToolListContainsFunction unit-tests the 400-trap helper: present, absent, and
 // the nil-Function guard.
 func TestToolListContainsFunction(t *testing.T) {

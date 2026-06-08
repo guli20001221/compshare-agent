@@ -26,6 +26,14 @@ func GroundedAnswerValidatorEnabled() bool { return groundedAnswerValidatorOn }
 // the grounded-answer validator is on; flag-off the result JSON is byte-identical.
 const searchKnowledgeCiteProtocol = "回答时，对每条结论在句末用 [[chunk_id]] 标注其所依据的条目(chunk_id 见上方 items)；无法在所给证据中找到依据的内容请勿写出，必要时直说资料未覆盖。"
 
+// searchKnowledgeCiteRetryNote is the cite reminder sent on the ONE retry the engine
+// gives an agent-loop synthesis that the grounded validator would otherwise refuse
+// (mirrors the terminal route's single retry in answerWithRetrievedEvidence). The
+// 2026-06-08 raw-synthesis probe showed flash usually answers well and cites the right
+// chunk_id but occasionally omits the marker or spaces the brackets; this re-prompt
+// asks it to re-attach a strict [[chunk_id]] to each conclusion before any refusal.
+const searchKnowledgeCiteRetryNote = "请只依据上面 SearchKnowledge 返回的 items 重写你刚才的回答：对每条结论在句末用 [[chunk_id]] 标注其依据(chunk_id 见 items，必须逐字照抄，用紧贴的双方括号 [[ ]] 包裹、中间不要留空格)；无法在证据中找到依据的内容请勿写出。"
+
 // searchKnowledgeLedgerTurnMaxItems caps the per-turn ChunkID-keyed evidence ledger
 // (the union of every SearchKnowledge call's items this turn). Set well above any
 // realistic per-turn distinct-chunk count (the ReAct loop is bounded by
