@@ -34,3 +34,18 @@
 {"question_id": "ext-eg-034", "question": "在新开的实例上从头装 comfyui 该怎么弄", "product_area": "", "expected_behavior": "answer", "expected_chunk_ids": ["ext-comfyui-install-001"], "group": "comfyui"}
 {"question_id": "ext-eg-035", "question": "comfyui 启动了日志也没报错,可浏览器就是打不开", "product_area": "", "expected_behavior": "answer", "expected_chunk_ids": ["ext-comfyui-cant-connect-001"], "group": "comfyui"}
 {"question_id": "ext-eg-036", "question": "不想每次手点界面,能不能用脚本自动让 comfyui 跑一个工作流", "product_area": "", "expected_behavior": "answer", "expected_chunk_ids": ["ext-comfyui-api-001"], "group": "comfyui"}
+{"question_id": "ext-eg-037", "question": "想让训练在后台跑,人离开后还能重新连回去接着看", "product_area": "linux_ops", "expected_behavior": "answer", "expected_chunk_ids": ["ext-linux-tmux-001"], "group": "linux_ops"}
+{"question_id": "ext-eg-038", "question": "怎么把一条命令丢到后台跑,顺便把输出都存进日志", "product_area": "linux_ops", "expected_behavior": "answer", "expected_chunk_ids": ["ext-linux-nohup-001"], "group": "linux_ops"}
+{"question_id": "ext-eg-039", "question": "实例报 no space left,磁盘满了怎么清出空间", "product_area": "linux_ops", "expected_behavior": "answer", "expected_chunk_ids": ["ext-linux-disk-cleanup-001"], "group": "linux_ops"}
+{"question_id": "ext-eg-040", "question": "free -h 看着内存不多了,想找出是哪个进程占的", "product_area": "linux_ops", "expected_behavior": "answer", "expected_chunk_ids": ["ext-linux-resource-001"], "group": "linux_ops"}
+{"question_id": "ext-eg-041", "question": "想给新项目单独建个 conda 环境,装的包不影响别的", "product_area": "linux_ops", "expected_behavior": "answer", "expected_chunk_ids": ["ext-linux-conda-001"], "group": "linux_ops"}
+{"question_id": "ext-eg-042", "question": "不想装 conda,python 自带的 venv 怎么建环境", "product_area": "linux_ops", "expected_behavior": "answer", "expected_chunk_ids": ["ext-linux-venv-001"], "group": "linux_ops"}
+{"question_id": "ext-eg-043", "question": "pip 下载特别慢,想换成国内的镜像源", "product_area": "linux_ops", "expected_behavior": "answer", "expected_chunk_ids": ["ext-linux-pip-mirror-001"], "group": "linux_ops"}
+{"question_id": "ext-eg-044", "question": "本地的数据集怎么传到实例上去", "product_area": "linux_ops", "expected_behavior": "answer", "expected_chunk_ids": ["ext-linux-transfer-001"], "group": "linux_ops"}
+{"question_id": "ext-eg-045", "question": "每次 ssh 登录都要输密码,怎么搞成免密的", "product_area": "login", "expected_behavior": "answer", "expected_chunk_ids": ["ext-linux-ssh-key-001"], "group": "linux_ops"}
+{"question_id": "ext-eg-046", "question": "装完 pytorch 发现用不了 gpu,是不是装成 cpu 版了", "product_area": "pytorch_basics", "expected_behavior": "answer", "expected_chunk_ids": ["ext-pytorch-install-001"], "group": "pytorch"}
+{"question_id": "ext-eg-047", "question": "pytorch 写好的代码默认在 cpu 跑,怎么让它上 gpu", "product_area": "pytorch_basics", "expected_behavior": "answer", "expected_chunk_ids": ["ext-pytorch-device-001"], "group": "pytorch"}
+{"question_id": "ext-eg-048", "question": "单机 4 张卡想一起训练,pytorch 怎么搞多卡", "product_area": "pytorch_basics", "expected_behavior": "answer", "expected_chunk_ids": ["ext-pytorch-ddp-001"], "group": "pytorch"}
+{"question_id": "ext-eg-049", "question": "gpu 利用率老是很低,感觉卡在数据加载,dataloader 怎么调快", "product_area": "pytorch_basics", "expected_behavior": "answer", "expected_chunk_ids": ["ext-pytorch-dataloader-001"], "group": "pytorch"}
+{"question_id": "ext-eg-050", "question": "训练想省点显存又快一点,听说混合精度可以,怎么写", "product_area": "pytorch_basics", "expected_behavior": "answer", "expected_chunk_ids": ["ext-pytorch-amp-001"], "group": "pytorch"}
+{"question_id": "ext-eg-051", "question": "pytorch 训练完想把权重保存下来,下次加载接着用,怎么写", "product_area": "pytorch_basics", "expected_behavior": "answer", "expected_chunk_ids": ["ext-pytorch-checkpoint-001"], "group": "pytorch"}

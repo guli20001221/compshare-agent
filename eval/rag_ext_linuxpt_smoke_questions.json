@@ -1,0 +1,66 @@
+[
+  {
+    "qid": "linux-tmux",
+    "kind": "linux_ops",
+    "expect_chunk": "ext-linux-tmux-001",
+    "anchors_any": ["tmux", "attach"],
+    "question": "我想让训练在后台一直跑，人离开后还能重新接回来继续看，怎么弄？"
+  },
+  {
+    "qid": "linux-disk",
+    "kind": "linux_ops",
+    "expect_chunk": "ext-linux-disk-cleanup-001",
+    "anchors_any": ["df", "du"],
+    "question": "实例磁盘满了，报 No space left on device，怎么查是哪占了空间并清理？"
+  },
+  {
+    "qid": "linux-conda",
+    "kind": "linux_ops",
+    "expect_chunk": "ext-linux-conda-001",
+    "anchors_any": ["conda create", "conda activate"],
+    "question": "想给新项目单独建一个 conda 环境，装的包别影响其它项目，怎么操作？"
+  },
+  {
+    "qid": "linux-pip-mirror",
+    "kind": "linux_ops",
+    "expect_chunk": "ext-linux-pip-mirror-001",
+    "anchors_any": ["index-url", "-i"],
+    "question": "pip 装包特别慢，怎么换成国内镜像源加速？"
+  },
+  {
+    "qid": "linux-ssh-key-collision",
+    "kind": "linux_ops-login-collision",
+    "expect_chunk": "ext-linux-ssh-key-001",
+    "anchors_any": ["ssh-keygen", "authorized_keys"],
+    "question": "每次 SSH 登录都要输密码太麻烦了，怎么配置成免密登录？"
+  },
+  {
+    "qid": "pytorch-install",
+    "kind": "pytorch_basics",
+    "expect_chunk": "ext-pytorch-install-001",
+    "anchors_any": ["is_available", "nvidia-smi"],
+    "question": "我装完 PyTorch 发现用不了 GPU，是不是装成 CPU 版了？怎么装对？"
+  },
+  {
+    "qid": "pytorch-ddp",
+    "kind": "pytorch_basics",
+    "expect_chunk": "ext-pytorch-ddp-001",
+    "anchors_any": ["torchrun", "DDP"],
+    "question": "单机有 4 张卡，想用 PyTorch 做多卡训练，怎么写？"
+  },
+  {
+    "qid": "pytorch-amp",
+    "kind": "pytorch_basics",
+    "expect_chunk": "ext-pytorch-amp-001",
+    "anchors_any": ["autocast", "GradScaler"],
+    "question": "训练想省点显存还能快一些，听说混合精度可以，代码怎么写？"
+  },
+  {
+    "qid": "ctrl-platform-billing",
+    "kind": "control-anticontam",
+    "expect_chunk": "",
+    "anchors_any": [],
+    "must_not_contain": ["tmux", "conda", "torchrun", "ssh-keygen"],
+    "question": "你们平台的 GPU 实例都有哪些计费方式？"
+  }
+]

@@ -78,3 +78,4 @@ dist/
 # CLI smoke trace dumps (per-question reply.txt + JSONL traces). The committed
 # evidence is eval/rag_ext_comfyui_smoke_report.md, not the raw traces.
 eval/traces_comfyui_smoke/
+eval/traces_linuxpt_smoke/

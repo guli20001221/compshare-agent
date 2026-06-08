@@ -77,6 +77,29 @@ func TestInferKnowledgeProductArea_LabelsMatchCorpus(t *testing.T) {
 		{"在新开的实例上从头装 comfyui 该怎么弄", ""},
 		{"comfyui 启动了日志也没报错,可浏览器就是打不开", ""},
 		{"不想每次手点界面,能不能用脚本自动让 comfyui 跑一个工作流", ""},
+		// linux_ops (external corpus, Linux-ops + env-management vertical). Checked
+		// LAST (after every platform set + the other external sets), so these only
+		// fire for messages no platform keyword claimed.
+		{"想让训练在 tmux 里后台一直跑", "linux_ops"},
+		{"conda 怎么新建一个虚拟环境", "linux_ops"},
+		{"pip 安装太慢,怎么换国内源", "linux_ops"},
+		{"磁盘满了怎么清理出空间", "linux_ops"},
+		{"scp 怎么把本地文件传到实例上", "linux_ops"},
+		{"怎么用 top 命令看哪个进程占内存", "linux_ops"},
+		// Deliberate overlap: any SSH-免密 phrasing carries "ssh"/"登录", which the
+		// login group (checked first) claims. The SSH-key external chunk therefore
+		// gets no +2 affinity boost; the CLI smoke verifies it still retrieves on the
+		// merged index. The bare "免密" keyword only catches phrasings without ssh/登录.
+		{"ssh 免密登录怎么配置", "login"},
+		// pytorch_basics (external corpus, PyTorch/CUDA-basics vertical).
+		{"pytorch 单机多卡训练 ddp 怎么写", "pytorch_basics"},
+		{"dataloader 的 num_workers 设多少合适", "pytorch_basics"},
+		{"想用混合精度加速训练", "pytorch_basics"},
+		{"怎么在实例上装 gpu 版的 pytorch", "pytorch_basics"},
+		{"conda 里怎么装 pytorch", "pytorch_basics"}, // pytorch_basics checked before linux_ops
+		// Precedence: a PyTorch OOM message still maps to gpu_troubleshooting
+		// (checked before pytorch_basics) — troubleshooting wins over usage-basics.
+		{"pytorch 训练爆显存了怎么办", "gpu_troubleshooting"},
 		// out-of-scope
 		{"今天天气怎么样", ""},
 		{"", ""},

@@ -33,6 +33,21 @@
     },
     {
       "A_top3": [
+        "w0-login-feishu-usage-faq-latest-feishu-u-cdb8aafa",
+        "w0-resource_purchase-gitlab-compshare-docs-operation--678c9e54",
+        "w0-login-gitlab-compshare-docs-logininsta-4da830c4"
+      ],
+      "B_top3": [
+        "w0-login-feishu-usage-faq-latest-feishu-u-cdb8aafa",
+        "ext-linux-tmux-001",
+        "w0-resource_purchase-gitlab-compshare-docs-operation--678c9e54"
+      ],
+      "group": "remote_login_ssh_jupyter",
+      "qid": "w0-golden-0050",
+      "question": "我在 JupyterLab 里跑训练任务，中途把浏览器标签页关了，代码还会继续执行吗？"
+    },
+    {
+      "A_top3": [
         "w0-driver_cuda-feishu-usage-faq-latest-feishu-u-8f6c7531",
         "w0-image-feishu-usage-faq-latest-feishu-u-e12145e1",
         "w0-driver_cuda-gitlab-compshare-docs-operation--1c2ab4b4"
@@ -60,6 +75,21 @@
       "group": "image_types_gpu_specs",
       "qid": "w0-golden-0058",
       "question": "在 CompShare 上跑 Dify 时，怎么让它调用我实例里部署的 Ollama 服务？"
+    },
+    {
+      "A_top3": [
+        "w0-billing_rule-feishu-usage-faq-latest-feishu-u-9163b49a",
+        "w0-login-gitlab-compshare-docs-uaccount-a-9c2a4cb5",
+        "w0-resource_purchase-gitlab-compshare-docs-operation--718b67b8"
+      ],
+      "B_top3": [
+        "w0-billing_rule-feishu-usage-faq-latest-feishu-u-9163b49a",
+        "ext-linux-ssh-key-001",
+        "w0-login-gitlab-compshare-docs-uaccount-a-9c2a4cb5"
+      ],
+      "group": "invoice_refund_arrears",
+      "qid": "w0-golden-0062",
+      "question": "我每次登录都要收短信验证码，有没有办法改成固定密码登录？"
     },
     {
       "A_top3": [
@@ -138,6 +168,21 @@
     },
     {
       "A_top3": [
+        "w0-modelverse-gitlab-compshare-docs-logic-ef2d9bd6",
+        "w0-modelverse-gitlab-compshare-docs-logic-c2439aba",
+        "w0-modelverse-gitlab-compshare-docs-logic-55a9c108"
+      ],
+      "B_top3": [
+        "w0-modelverse-gitlab-compshare-docs-logic-ef2d9bd6",
+        "w0-modelverse-gitlab-compshare-docs-logic-c2439aba",
+        "w0-modelverse-gitlab-compshare-docs-modelverse-e57c2778"
+      ],
+      "group": "modelverse_package_credit",
+      "qid": "w0-golden-0095",
+      "question": "调用模型接口时收到 429 状态码，提示额度超限，我该怎么知道什么时候能恢复？"
+    },
+    {
+      "A_top3": [
         "w0-driver_cuda-gitlab-compshare-docs-operation--a3a4f578",
         "w0-driver_cuda-gitlab-compshare-docs-operation--f888f2de",
         "w0-windows-gitlab-compshare-docs-operation--f030f647"
@@ -150,6 +195,21 @@
       "group": "cuda_nvidia_driver",
       "qid": "w0-golden-0126",
       "question": "我在 Ubuntu 上用 runfile 方式装完 CUDA 后，怎么确认它已经正确生效了？"
+    },
+    {
+      "A_top3": [
+        "w0-billing_rule-gitlab-compshare-docs-checkbill-09ce7f1e",
+        "w0-login-gitlab-compshare-docs-uaccount-t-05766899",
+        "w0-billing_rule-gitlab-compshare-docs-gpus-team--f958c4a2"
+      ],
+      "B_top3": [
+        "w0-billing_rule-gitlab-compshare-docs-checkbill-09ce7f1e",
+        "w0-login-gitlab-compshare-docs-uaccount-t-05766899",
+        "w0-billing_rule-gitlab-compshare-docs-gpus-team--c7483646"
+      ],
+      "group": "billing_mode_shutdown",
+      "qid": "w0-golden-0145",
+      "question": "怎么找到已完成订单的汇总金额和明细？"
     },
     {
       "A_top3": [
@@ -180,21 +240,6 @@
       "group": "modelverse_package_credit",
       "qid": "w0-golden-0196",
       "question": "Qwen3-vl-Plus 模型可以用 OpenAI 的对话接口来调用吗"
-    },
-    {
-      "A_top3": [
-        "w0-modelverse-gitlab-compshare-docs-model-comp-4ec21dd6",
-        "w0-modelverse-gitlab-compshare-docs-modelverse-cc6d7f08",
-        "w0-modelverse-gitlab-compshare-docs-modelverse-a5caea58"
-      ],
-      "B_top3": [
-        "w0-modelverse-gitlab-compshare-docs-modelverse-cc6d7f08",
-        "w0-modelverse-gitlab-compshare-docs-modelverse-a5caea58",
-        "ext-ollama-openai-001"
-      ],
-      "group": "modelverse_package_credit",
-      "qid": "w0-golden-0198",
-      "question": "gemini-3-pro-preview 这个模型能用 OpenAI 的 chat 接口调用吗"
     },
     {
       "A_top3": [
@@ -272,11 +317,25 @@
       "question": "我想用 OpenAI 的 SDK 来调用你们的模型，应该把请求发到哪个地址"
     }
   ],
-  "changed_top3_count": 18,
-  "external_chunks": 36,
-  "external_intrusion_count": 10,
-  "external_intrusion_displacing_count": 3,
+  "changed_top3_count": 21,
+  "external_chunks": 51,
+  "external_intrusion_count": 11,
+  "external_intrusion_displacing_count": 2,
   "external_intrusions": [
+    {
+      "B_top3": [
+        "w0-login-feishu-usage-faq-latest-feishu-u-cdb8aafa",
+        "ext-linux-tmux-001",
+        "w0-resource_purchase-gitlab-compshare-docs-operation--678c9e54"
+      ],
+      "expected_still_present": true,
+      "external_in_top3": [
+        "ext-linux-tmux-001"
+      ],
+      "group": "remote_login_ssh_jupyter",
+      "qid": "w0-golden-0050",
+      "question": "我在 JupyterLab 里跑训练任务，中途把浏览器标签页关了，代码还会继续执行吗？"
+    },
     {
       "B_top3": [
         "w0-driver_cuda-feishu-usage-faq-latest-feishu-u-8f6c7531",
@@ -304,6 +363,20 @@
       "group": "image_types_gpu_specs",
       "qid": "w0-golden-0058",
       "question": "在 CompShare 上跑 Dify 时，怎么让它调用我实例里部署的 Ollama 服务？"
+    },
+    {
+      "B_top3": [
+        "w0-billing_rule-feishu-usage-faq-latest-feishu-u-9163b49a",
+        "ext-linux-ssh-key-001",
+        "w0-login-gitlab-compshare-docs-uaccount-a-9c2a4cb5"
+      ],
+      "expected_still_present": true,
+      "external_in_top3": [
+        "ext-linux-ssh-key-001"
+      ],
+      "group": "invoice_refund_arrears",
+      "qid": "w0-golden-0062",
+      "question": "我每次登录都要收短信验证码，有没有办法改成固定密码登录？"
     },
     {
       "B_top3": [
@@ -377,20 +450,6 @@
     },
     {
       "B_top3": [
-        "w0-modelverse-gitlab-compshare-docs-modelverse-cc6d7f08",
-        "w0-modelverse-gitlab-compshare-docs-modelverse-a5caea58",
-        "ext-ollama-openai-001"
-      ],
-      "expected_still_present": false,
-      "external_in_top3": [
-        "ext-ollama-openai-001"
-      ],
-      "group": "modelverse_package_credit",
-      "qid": "w0-golden-0198",
-      "question": "gemini-3-pro-preview 这个模型能用 OpenAI 的 chat 接口调用吗"
-    },
-    {
-      "B_top3": [
         "w0-modelverse-gitlab-compshare-docs-model-comp-8ff5cd67",
         "ext-ollama-openai-001",
         "w0-modelverse-gitlab-compshare-docs-models-cb297433"
@@ -418,7 +477,7 @@
       "question": "我想用 OpenAI 的 SDK 来调用你们的模型，应该把请求发到哪个地址"
     }
   ],
-  "hit_rate_delta": 0.0,
+  "hit_rate_delta": 0.00390625,
   "improvement_count": 1,
   "improvements": [
     {
@@ -430,37 +489,18 @@
   "mode": "qwen3_rrf",
   "per_group_parity": true,
   "per_group_regressions": [],
-  "per_question_displacement_count": 1,
-  "per_question_displacements": [
-    {
-      "A_top3": [
-        "w0-modelverse-gitlab-compshare-docs-model-comp-4ec21dd6",
-        "w0-modelverse-gitlab-compshare-docs-modelverse-cc6d7f08",
-        "w0-modelverse-gitlab-compshare-docs-modelverse-a5caea58"
-      ],
-      "B_top3": [
-        "w0-modelverse-gitlab-compshare-docs-modelverse-cc6d7f08",
-        "w0-modelverse-gitlab-compshare-docs-modelverse-a5caea58",
-        "ext-ollama-openai-001"
-      ],
-      "expected": [
-        "w0-modelverse-gitlab-compshare-docs-model-comp-4ec21dd6"
-      ],
-      "group": "modelverse_package_credit",
-      "qid": "w0-golden-0198",
-      "question": "gemini-3-pro-preview 这个模型能用 OpenAI 的 chat 接口调用吗"
-    }
-  ],
+  "per_question_displacement_count": 0,
+  "per_question_displacements": [],
   "platform_chunks": 687,
   "questions_evaluated": 256,
   "review_warnings": {
-    "external_chunks_displacing_expected": 3,
-    "external_chunks_in_platform_top3": 10,
+    "external_chunks_displacing_expected": 2,
+    "external_chunks_in_platform_top3": 11,
     "note": "displacements/intrusions are answer-faithfulness REVIEW items, not retrieval-parity failures; external KB is already default-on (#242) and these are handled by the RAG anti-confusion anchor + grounded-renderer citation discipline",
-    "per_question_displacements": 1
+    "per_question_displacements": 0
   },
   "top_3_hit_rate_merged": 0.828125,
-  "top_3_hit_rate_platform_only": 0.828125,
+  "top_3_hit_rate_platform_only": 0.82421875,
   "verdict": "PASS",
-  "workdir": "C:\\Users\\23843\\AppData\\Local\\Temp\\rag_parity_comfyui"
+  "workdir": "C:\\Users\\23843\\AppData\\Local\\Temp\\rag_parity_9zoyhnkz"
 }
