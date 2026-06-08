@@ -98,13 +98,16 @@ func printCreateConfirmCard(args map[string]any) {
 	cpu, hasCPU := num("CPU")
 	mem, hasMem := num("Memory")
 	if hasCPU && hasMem {
-		fmt.Printf("    配置：%.0f 核 / %.0f MB\n", cpu, mem/1024) // Memory is MB; show GB
+		fmt.Printf("    配置：%.0f 核 / %.0f GB\n", cpu, mem/1024) // Memory is MB; show GB
 	}
 	if z := str("Zone"); z != "" {
 		fmt.Printf("    可用区：%s\n", z)
 	}
 	if ct := str("ChargeType"); ct != "" {
 		fmt.Printf("    计费：%s\n", ct)
+	}
+	if p := str("price"); p != "" {
+		fmt.Printf("    价格：%s\n", p)
 	}
 	if fb := str("FallbackNote"); fb != "" {
 		fmt.Printf("    ℹ️  %s\n", fb)

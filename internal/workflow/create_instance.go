@@ -435,6 +435,84 @@ func createChargeType(params map[string]any) string {
 	return ct
 }
 
+// confirmPriceText renders a human-readable hourly/period price for the confirm
+// card from the GetCompShareInstanceUserPrice result, instead of putting the raw
+// API object into the card (the frontend stringified that as "[object Object]").
+// It reads the payable amount for the resolved ChargeType out of PriceDetails,
+// appending the list price as 原价 when a discount applies. Returns "" when the
+// result is missing/empty/an unexpected shape so the caller omits the price line
+// rather than surfacing a raw object. The UserPrice PriceDetails entry carries a
+// "Price" field (per the API + create/golden/deploy_model fixtures); "Instance"
+// is accepted as a fallback for robustness (it is the catalog-API field name).
+func confirmPriceText(priceResult any, chargeType string) string {
+	raw, ok := priceResult.(map[string]any)
+	if !ok {
+		return ""
+	}
+	amountFor := func(arrKey string) (float64, bool) {
+		arr, ok := raw[arrKey].([]any)
+		if !ok {
+			return 0, false
+		}
+		for _, entry := range arr {
+			m, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			if ct, _ := m["ChargeType"].(string); ct != chargeType {
+				continue
+			}
+			if n, ok := priceNumber(m["Price"]); ok {
+				return n, true
+			}
+			if n, ok := priceNumber(m["Instance"]); ok {
+				return n, true
+			}
+		}
+		return 0, false
+	}
+	payable, ok := amountFor("PriceDetails")
+	if !ok {
+		return ""
+	}
+	text := fmt.Sprintf("¥%.2f%s", payable, chargePeriodUnit(chargeType))
+	list, hasList := amountFor("ListPriceDetails")
+	if !hasList {
+		list, hasList = amountFor("OriginalPriceDetails")
+	}
+	if hasList && list > payable {
+		text += fmt.Sprintf("（原价 ¥%.2f）", list)
+	}
+	return text
+}
+
+// chargePeriodUnit maps a ChargeType to its billing-period suffix for display.
+func chargePeriodUnit(chargeType string) string {
+	switch chargeType {
+	case "Day":
+		return "/天"
+	case "Month":
+		return "/月"
+	default: // Postpay / Spot are pay-as-you-go hourly
+		return "/小时"
+	}
+}
+
+// priceNumber coerces a JSON-decoded numeric price field to float64.
+func priceNumber(v any) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case float32:
+		return float64(t), true
+	case int:
+		return float64(t), true
+	case int64:
+		return float64(t), true
+	}
+	return 0, false
+}
+
 func stepConfirmCreate() Step {
 	return Step{
 		Name: "确认创建",
@@ -453,7 +531,7 @@ func stepConfirmCreate() Step {
 				"Zone":       zone,
 				"ChargeType": createChargeType(wfCtx.Params),
 				"image":      pickImageName(wfCtx.Params, wfCtx.Result("查询镜像")),
-				"price":      wfCtx.Result("查询价格"),
+				"price":      confirmPriceText(wfCtx.Result("查询价格"), createChargeType(wfCtx.Params)),
 				// FallbackNote is set by the deploy_model handler when it switched the
 				// create-zone (sold-out primary). Empty for the CLI/ReAct create path.
 				// Surfaced in the confirm card so the user sees the zone switch before
