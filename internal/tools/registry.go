@@ -155,7 +155,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareInstancePrice",
-			Description: "查询创建实例的目录价/标准价。返回按量/包日/包月/抢占式等分项价格（实例、磁盘、镜像）。Zone 格式为 cn-wlcb-01。Memory 单位为 MB（如 65536 = 64GB）。不传 ChargeType 则返回所有计费方式的价格。注意：本接口参数 Gpu/Cpu 小写、按量计费枚举为 Dynamic；用户实际折后价请用 GetCompShareInstanceUserPrice（其参数 GPU/CPU 大写、按量用 Postpay）。",
+			Description: "查询创建实例的目录价/标准价。返回按量/包日/包月/抢占式等分项价格（实例、磁盘、镜像）。Zone 格式为 cn-wlcb-01。Memory 单位为 MB（如 65536 = 64GB）。不传 ChargeType 则返回所有计费方式的价格。注意：本接口参数 Gpu/Cpu 小写；按量/按小时用 Postpay。用户实际折后价请用 GetCompShareInstanceUserPrice（其参数 GPU/CPU 大写）。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -181,8 +181,8 @@ var Registry = []openai.Tool{
 					},
 					"ChargeType": map[string]any{
 						"type":        "string",
-						"description": "计费方式：Month / Day / Dynamic / Postpay / Spot，不传则返回所有方式",
-						"enum":        []string{"Month", "Day", "Dynamic", "Postpay", "Spot"},
+						"description": "计费方式：Month / Day / Postpay / Spot，不传则返回所有方式。按量/按小时用 Postpay。",
+						"enum":        []string{"Month", "Day", "Postpay", "Spot"},
 					},
 				},
 				"required": []string{"Zone", "GpuType", "Gpu", "Cpu", "Memory"},
@@ -441,7 +441,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareInstanceUserPrice",
-			Description: "查用户折后价/实际价格。返回 PriceDetails（折后）、OriginalPriceDetails（原价）、ListPriceDetails（目录价）三组明细。计费方式用 Postpay（等同于按量 Dynamic）。参数 GPU/CPU 大写。",
+			Description: "查用户折后价/实际价格。返回 PriceDetails（折后）、OriginalPriceDetails（原价）、ListPriceDetails（目录价）三组明细。按量/按小时计费方式用 Postpay。参数 GPU/CPU 大写。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -467,7 +467,7 @@ var Registry = []openai.Tool{
 					},
 					"ChargeType": map[string]any{
 						"type":        "string",
-						"description": "计费方式：Month / Day / Postpay / Spot，按量用 Postpay（不是 Dynamic）",
+						"description": "计费方式：Month / Day / Postpay / Spot，按量/按小时用 Postpay。",
 						"enum":        []string{"Month", "Day", "Postpay", "Spot"},
 					},
 				},
@@ -498,7 +498,7 @@ var Registry = []openai.Tool{
 					},
 					"ChargeType": map[string]any{
 						"type":        "string",
-						"description": "计费方式：Dynamic(按量) / Month(包月) / Day(包日) / Spot(抢占式)，默认 Dynamic",
+						"description": "计费方式：Postpay(按量/按小时后付费) / Month(包月) / Day(包日) / Spot(抢占式)，默认 Postpay。",
 					},
 					"Cpu": map[string]any{
 						"type":        "number",

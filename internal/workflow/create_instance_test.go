@@ -135,7 +135,7 @@ func TestCreateInstance_Defaults(t *testing.T) {
 	}
 	assert.NotNil(t, createArgs)
 	assert.Equal(t, "cn-wlcb-01", createArgs["Zone"])
-	assert.Equal(t, "Dynamic", createArgs["ChargeType"])
+	assert.Equal(t, "Postpay", createArgs["ChargeType"])
 	assert.Equal(t, float64(1), createArgs["GPU"])
 	assert.Equal(t, float64(16), createArgs["CPU"])
 	assert.Equal(t, float64(65536), createArgs["Memory"])
@@ -153,7 +153,37 @@ func TestCreateInstance_Defaults(t *testing.T) {
 	assert.NotNil(t, priceArgs, "should call GetCompShareInstanceUserPrice")
 	assert.Equal(t, float64(1), priceArgs["GPU"], "UserPrice API uses uppercase GPU")
 	assert.Equal(t, float64(16), priceArgs["CPU"], "UserPrice API uses uppercase CPU")
-	assert.Equal(t, "Postpay", priceArgs["ChargeType"], "Dynamic should map to Postpay for UserPrice API")
+	assert.Equal(t, "Postpay", priceArgs["ChargeType"], "default hourly billing should use Postpay for UserPrice API")
+}
+
+func TestCreateInstance_DynamicInputNormalizesToPostpay(t *testing.T) {
+	executor := createMockExecutor()
+
+	var capturedArgs map[string]any
+	confirmFn := func(action string, args map[string]any) bool {
+		capturedArgs = args
+		return true
+	}
+	onStep, _ := collectEvents()
+
+	def := CreateInstanceDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"GpuType":    "4090",
+		"ChargeType": "Dynamic",
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.NotNil(t, capturedArgs)
+	assert.Equal(t, "Postpay", capturedArgs["ChargeType"])
+
+	for _, call := range executor.calls {
+		switch call.action {
+		case "CheckCompShareResourceCapacity", "GetCompShareInstanceUserPrice", "CreateCompShareInstance":
+			assert.Equal(t, "Postpay", call.args["ChargeType"], "%s should not receive deprecated Dynamic", call.action)
+		}
+	}
 }
 
 func TestCreateInstance_UserOverrides(t *testing.T) {
@@ -386,7 +416,7 @@ func TestCreateInstance_ConfirmArgsContainSummary(t *testing.T) {
 	assert.Equal(t, "Ubuntu 22.04 CUDA 12", capturedArgs["image"])
 	assert.Equal(t, "CreateInstanceWorkflow", capturedArgs["workflow"])
 	assert.Equal(t, "cn-wlcb-01", capturedArgs["Zone"])
-	assert.Equal(t, "Dynamic", capturedArgs["ChargeType"])
+	assert.Equal(t, "Postpay", capturedArgs["ChargeType"])
 
 	// Confirm must show resolved spec so user sees what will be created
 	assert.Equal(t, float64(1), capturedArgs["Gpu"])
