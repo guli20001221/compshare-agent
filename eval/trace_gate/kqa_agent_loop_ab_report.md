@@ -67,3 +67,24 @@ Added `forced-hop retry` (commit `a938a8b`): when flash ignores the forced Searc
 | **B3 (cite + forced-hop)** | **0.12** | **14/16** | **0 forced-hop; 2 residual cite jitter (both retrieved)** |
 
 **Forced-hop misfires 3→0** (retry recovered them). Refusal fell 0.44→0.12 (−73%). The 2 residual refusals both retrieved (sk=True) but the cite-retry didn't land a valid marker that run — high variance at N=2, and a SAFE failure (conservative refusal, not an uncited/fabricated answer). Both remaining refusals are cite-recall jitter, so the last lever toward A is **accept numbered `[n]` (mapped to ledger order) as a citation** — the simple scheme flash emits most reliably (terminal already uses it), instead of requiring `[[chunk_id]]`. Decision point: accept 0.12 conservative-refusal + confirm at N≥5, or add the numbered-`[n]` acceptance to push toward ~0.
+
+## Update 2026-06-08 (3) — numbered `[n]` acceptance still does NOT meet the flip gate
+
+Added numbered `[n]` citation acceptance (commit `a76c031`): `[1]` / `[2]` now map to the SearchKnowledge evidence ledger order and are stripped from the user-facing answer. This closes one parser gap but **does not make B match A**.
+
+Authoritative B4 run was started at N=5 × 8 with `COMPSHARE_EXTERNAL_KNOWLEDGE=1`, `COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=1`, `COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=1`, and `COMPSHARE_RAG_GROUNDED_VALIDATOR=1`. The batch was stopped after 20 completed rows because the hard gate had already failed and the runner then stalled on the next probe (the runner has no per-run timeout).
+
+Raw partial rows: `eval/trace_gate/kqa_ab_B4_partial.jsonl`.
+
+Completed rows:
+
+| probe | rows | expected chunk retrieved | refusals | hardblock reason |
+|---|---:|---|---:|---|
+| `kqa-linux-tmux` | 5/5 | `ext-linux-tmux-001` 5/5 | 0 | — |
+| `kqa-pytorch-install` | 5/5 | `ext-pytorch-install-001` 4/5 (GPU fallback 1/5) | 0 | — |
+| `kqa-pytorch-ddp` | 5/5 | `ext-pytorch-ddp-001` 5/5 | **3** | 2× `search_knowledge_uncited`, 1× `search_knowledge_raw_leak` |
+| `kqa-comfy-start` | 5/5 | `ext-comfyui-start-001` 5/5 | 0 | — |
+
+Partial B4 refusal rate so far: **3/20 = 0.15**. This is already worse than A terminal (**0.00**) and worse than the target for a default-on flip. Most importantly, the three failures are **not retrieval misses**: every failed DDP run retrieved the correct `ext-pytorch-ddp-001` chunk at rank 1. The remaining problem is agent-loop synthesis discipline under flash: even with `[n]` acceptance, the answer can still omit a valid citation or dump enough evidence text to trip the raw-leak guard.
+
+**Disposition unchanged:** keep `COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP` default-off. Do not prepare a default-on PR from B4. The next fix should target synthesis reliability itself (or reduce the prompt/tool-result shape), not merely citation parsing.
