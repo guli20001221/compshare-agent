@@ -1306,8 +1306,23 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// won't cite keeps the refusal. No-op when the guard accepted the answer.
 			if content == ragNoEvidenceReply && strings.TrimSpace(preGuardContent) != ragNoEvidenceReply &&
 				e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
-				if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
-					content = retried
+				recovered := false
+				// Disciplined-synthesis recovery (synthesis-discipline lever): the free
+				// ReAct synthesis was refused (flash omitted the cite or dumped raw text,
+				// not a retrieval problem). Re-write the answer with terminal RAG's tight
+				// cited-synthesis prompt on the gathered evidence — far more reliable than
+				// re-prompting the heavy ReAct context. Default-off; falls through to the
+				// cite-retry below when disabled or when it does not land a clean answer.
+				if disciplinedKQASynthesisOn && e.knowledgeQAAgentLoopThisTurn {
+					if synth, ok := e.synthesizeKnowledgeQAFromLedger(ctx, userMsg); ok {
+						content = synth
+						recovered = true
+					}
+				}
+				if !recovered {
+					if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
+						content = retried
+					}
 				}
 			}
 			// Replay buffered streaming deltas when the LLM content was returned

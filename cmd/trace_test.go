@@ -140,6 +140,28 @@ func TestGroundedAnswerValidatorEnabledFromEnv_DefaultOff(t *testing.T) {
 	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
 }
 
+func TestDisciplinedKQASynthesisEnabledFromEnv_DefaultOff(t *testing.T) {
+	// COMPSHARE_KQA_DISCIPLINED_SYNTHESIS is DEFAULT-OFF: the agent-loop knowledge_qa
+	// turn keeps the existing cite-retry fallback until a flag-on A/B proves the
+	// terminal-style disciplined synthesis lowers refusal toward terminal without new
+	// fabrication. unset/empty/negative => off; affirmative => on; unknown => off + warn.
+	off := []string{"", "  ", "0", "off", "OFF", "false", "no", "disabled", "none"}
+	for _, v := range off {
+		got, unknown := disciplinedKQASynthesisEnabledFromEnv(func(string) string { return v })
+		require.Falsef(t, got, "value %q should be off (default-off)", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	on := []string{"1", "on", "ON", "true", "TRUE", "yes", " On "}
+	for _, v := range on {
+		got, unknown := disciplinedKQASynthesisEnabledFromEnv(func(string) string { return v })
+		require.Truef(t, got, "value %q should enable", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	got, unknown := disciplinedKQASynthesisEnabledFromEnv(func(string) string { return "maybe" })
+	require.False(t, got, "unknown value treated as off")
+	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
+}
+
 func TestMultiTraceWriterEnqueuePreservesTenantForMySQLLikeSink(t *testing.T) {
 	fileSink := &captureAppendWriter{}
 	mysqlSink := &captureEnqueueWriter{}

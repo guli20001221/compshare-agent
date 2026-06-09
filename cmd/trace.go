@@ -346,6 +346,29 @@ func knowledgeQAAgentLoopEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// disciplinedKQASynthesisEnabledFromEnv gates the disciplined-synthesis recovery on
+// an agent-loop knowledge_qa turn (COMPSHARE_KQA_DISCIPLINED_SYNTHESIS). DEFAULT OFF
+// and effective only when COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is also on — when the
+// forced-SearchKnowledge synthesis would be refused (flash omitted the cite or dumped
+// raw text), the final answer is re-written by terminal RAG's tight cited-synthesis
+// prompt on the gathered evidence instead of re-prompting the heavy ReAct context.
+// Targets the migration's residual refusals (kqa_agent_loop_ab_report.md B4), which
+// are synthesis-discipline failures, not retrieval or cite-format misses. ""/0/off/...
+// => off; 1/true/yes/on => on; unknown => off + non-empty warn (CLAUDE.md: never
+// silently coerce). Boot-only; the Go-package default
+// (engine.disciplinedKQASynthesisOn) stays false so unit tests are unaffected.
+func disciplinedKQASynthesisEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_KQA_DISCIPLINED_SYNTHESIS"))
+	switch strings.ToLower(raw) {
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
 func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string) {
 	raw := strings.TrimSpace(getenv("USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"))
 	if raw == "" {
