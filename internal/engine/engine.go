@@ -1295,36 +1295,42 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 				content = ragNoEvidenceReply
 			}
-			preGuardContent := content
-			content = e.guardSearchKnowledgeSynthesis(content)
-			// Cite-retry parity with the terminal route: when the guard replaced a real
-			// synthesis with the canned refusal (typically flash omitted/garbled the
-			// [[chunk_id]] marker, not a content problem), give it ONE more chance with an
-			// explicit cite reminder before the refusal stands — mirroring
-			// answerWithRetrievedEvidence's single retry. Scoped to turns where
-			// SearchKnowledge surfaced evidence (the guard's own scope); a retry that still
-			// won't cite keeps the refusal. No-op when the guard accepted the answer.
-			if content == ragNoEvidenceReply && strings.TrimSpace(preGuardContent) != ragNoEvidenceReply &&
-				e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
-				recovered := false
-				// Disciplined-synthesis recovery (synthesis-discipline lever): the free
-				// ReAct synthesis was refused (flash omitted the cite or dumped raw text,
-				// not a retrieval problem). Re-write the answer with terminal RAG's tight
-				// cited-synthesis prompt on the gathered evidence — far more reliable than
-				// re-prompting the heavy ReAct context. Default-off; falls through to the
-				// cite-retry below when disabled or when it does not land a clean answer.
-				if disciplinedKQASynthesisOn && e.knowledgeQAAgentLoopThisTurn {
+				// Convergent agent-loop synthesis (synthesis-discipline lever): for a
+				// knowledge_qa agent-loop turn where SearchKnowledge surfaced evidence, write the
+				// FINAL answer with the shared disciplined cited-synthesis primitive
+				// (answerWithRetrievedEvidence) on the gathered evidence — NOT the free ReAct
+				// write, which under flash intermittently omits the cite / dumps raw text. This
+				// makes the agent loop self-sufficient on knowledge turns: the precondition for
+				// retiring the separate terminal route (tryStage2BRetrieval) so knowledge flows
+				// through ONE loop. The primitive cite-validates (its own cite-harder retry) and
+				// synthesizeKnowledgeQAFromLedger leak-checks + strips, so this path needs no
+				// post-hoc guard. Default-off; on failure (or when disabled) it falls through to
+				// the free-write guard + cite-retry below, so it is never worse than B4.
+				synthDone := false
+				if disciplinedKQASynthesisOn && e.knowledgeQAAgentLoopThisTurn &&
+					e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
 					if synth, ok := e.synthesizeKnowledgeQAFromLedger(ctx, userMsg); ok {
 						content = synth
-						recovered = true
+						synthDone = true
 					}
 				}
-				if !recovered {
-					if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
-						content = retried
+				if !synthDone {
+					preGuardContent := content
+					content = e.guardSearchKnowledgeSynthesis(content)
+					// Cite-retry parity with the terminal route: when the guard replaced a real
+					// synthesis with the canned refusal (typically flash omitted/garbled the
+					// [[chunk_id]] marker, not a content problem), give it ONE more chance with an
+					// explicit cite reminder before the refusal stands — mirroring
+					// answerWithRetrievedEvidence's single retry. Scoped to turns where
+					// SearchKnowledge surfaced evidence (the guard's own scope); a retry that still
+					// won't cite keeps the refusal. No-op when the guard accepted the answer.
+					if content == ragNoEvidenceReply && strings.TrimSpace(preGuardContent) != ragNoEvidenceReply &&
+						e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
+						if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
+							content = retried
+						}
 					}
 				}
-			}
 			// Replay buffered streaming deltas when the LLM content was returned
 			// verbatim. If an engine guard overwrote content, emit the canonical
 			// override as a single chunk so the SSE stream matches the persisted

@@ -15,7 +15,8 @@ param(
     [string]$AgenticSearch = "",        # COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE ("" = unset/off)
     [string]$SkillExec = "",            # USE_SKILL_EXECUTOR ("" = off)
     [string]$KnowledgeQAAgentLoop = "", # COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP ("" = off=terminal RAG; "1" = agent-loop route)
-    [string]$GroundedValidator = ""     # COMPSHARE_RAG_GROUNDED_VALIDATOR ("" = off)
+    [string]$GroundedValidator = "",    # COMPSHARE_RAG_GROUNDED_VALIDATOR ("" = off)
+    [string]$DisciplinedSynthesis = "" # COMPSHARE_KQA_DISCIPLINED_SYNTHESIS ("" = off; "1" = terminal-style synthesis recovery on agent-loop refusal)
 )
 
 $ErrorActionPreference = "Continue"
@@ -58,6 +59,7 @@ $env:COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE = $AgenticSearch
 $env:USE_SKILL_EXECUTOR = $SkillExec
 $env:COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP = $KnowledgeQAAgentLoop
 $env:COMPSHARE_RAG_GROUNDED_VALIDATOR = $GroundedValidator
+$env:COMPSHARE_KQA_DISCIPLINED_SYNTHESIS = $DisciplinedSynthesis
 
 $runId = Get-Date -Format "yyyyMMdd-HHmmss"
 $baseDir = Join-Path $env:TEMP "compshare-$Tag-$runId"
