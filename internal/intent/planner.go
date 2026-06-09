@@ -7,6 +7,7 @@ import (
 	"html"
 	"strings"
 
+	"github.com/compshare-agent/internal/boundarypacks"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/llm"
 )
@@ -580,11 +581,11 @@ func escapePromptXML(s string) string {
 	return html.EscapeString(s)
 }
 
-func buildSystemPrompt() string {
+func basePromptScaffold() string {
 	// Keep the planner scaffold ASCII/English. Earlier Windows console/source
 	// encoding issues made non-ASCII prompt labels fragile, while the baseline
 	// model handles bilingual user text with English JSON-field instructions.
-	base := strings.Join([]string{
+	return strings.Join([]string{
 		"You are the IntentPlan planner for the CompShare console agent.",
 		"Return exactly one JSON object. Do not output Markdown, prose, or tool calls.",
 		"Required top-level fields: schema_version, intent, slots, required_tools, retrieval, hard_block_hint, confidence.",
@@ -601,7 +602,6 @@ func buildSystemPrompt() string {
 		"The distinction is action shape, not target presence: 'how do I do X on the platform' = knowledge_qa; runtime failure reports such as cannot connect/open/access, port unreachable, SSH timeout, service not reachable, GPU not found/detected, or instance stuck/failed/init stuck = diagnosis even with target_refs:[]. When target_refs is empty, the engine will ask which instance. Without a concrete instance target, default to knowledge_qa ONLY for pure usage/config/error-code/how-to questions.",
 		"Direct runtime/list/user price questions like 4090 多少钱, H20 按月包多少钱, 折后价多少, or actual purchase price should emit pricing_query — the route handler runs DescribeAvailableCompShareInstanceTypes + GetCompShareInstancePrice deterministically. Personal-billing complaints (我账单怎么这么高 / 充值就被扣完了) stay as billing_instance. But a named plan/package billing-RULE question — how is the X plan/package billed, 套餐怎么计费 / 计费方式 / 按什么收费 (e.g. Coding Plan) — is NOT a runtime instance-type price lookup: emit knowledge_qa (the docs cover the billing rule), not pricing_query.",
 		"Comparison questions ('X 和 Y 哪个划算' / 'X vs Y'), yes-no feasibility questions ('X 可以 Y 吗' / 'can I X'), and procedure-description questions ('X 流程是怎样的' / 'how does X work') about platform usage, pricing rules, image, instance, or billing should emit knowledge_qa unless they reference a specific instance target.",
-		"Inventory availability questions like whether a GPU model has stock, is available, is sold out, or has data-center inventory are not resource_info. resource_info is only for the user's own CompShare instances. Platform stock questions should emit stock_availability.",
 		"For billing-specific FAQ plus instance facts should emit billing_instance; unsupported account totals still use billing_account_unsupported.",
 		"finance policy/how-to questions like invoice issuance, refund rules, arrears handling, why am I still charged after shutdown, billing mode differences, or package expiry should emit knowledge_qa.",
 		"account realtime finance/status questions about THE USER'S OWN ACCOUNT data — balance, total bills, transaction records, charge records, payable bills, my invoice status (e.g. 我的发票开好了吗 / 我账单还剩多少), my refund progress, recharge amount on my account — emit billing_account_unsupported.",
@@ -624,17 +624,27 @@ func buildSystemPrompt() string {
 		"Set hard_block_hint=true only for unsupported account-level billing questions such as account balance, total account bill, or transaction flow.",
 		"Examples:",
 	}, "\n")
+}
+
+func buildSystemPrompt() string {
+	base := basePromptScaffold()
 	// Routing Registry v1 (PR A, 2026-05-18): append directives + one-shot
 	// examples that come from internal/routing/*/route.yaml
 	// metadata. Engine.go has a single generic dispatch hook; planner-side
 	// directives + examples are the only place that "knows about" new
 	// routes, so adding a route stays data-only.
 	directives, examples := RoutingPromptFragments()
+	// PR5: cross-intent classification tie-breakers (stock vs resource, ...) are
+	// projected from internal/boundarypacks as a contiguous directive block,
+	// after the routing directives and before the routing examples. The pack is
+	// the single source of these rules; the base scaffold no longer carries them.
+	boundaryDirectives := boundarypacks.BoundaryPromptFragments()
 	plannerExamples := renderPlannerPromptExampleGroups(plannerPromptExampleGroups())
-	parts := make([]string, 0, 1+len(plannerExamples)+len(directives)+len(examples))
+	parts := make([]string, 0, 1+len(plannerExamples)+len(directives)+len(boundaryDirectives)+len(examples))
 	parts = append(parts, base)
 	parts = append(parts, plannerExamples...)
 	parts = append(parts, directives...)
+	parts = append(parts, boundaryDirectives...)
 	parts = append(parts, examples...)
 	return strings.Join(parts, "\n")
 }
