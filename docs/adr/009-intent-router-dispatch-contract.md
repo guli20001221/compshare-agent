@@ -1,7 +1,8 @@
 # ADR-009: Intent-Router 与 Dispatch-Contract 边界
 
 **Status**: Proposed (2026-06-09)
-**Depends on**: ADR-001(三 tier 单 agent)/ ADR-003(skill ⊥ tool)/ ADR-007(不引 framework,自写 orchestrator)
+**Depends on**: ADR-003(skill ⊥ tool)/ ADR-007(不引 framework,自写 orchestrator)
+**Amends**: ADR-001(task-tier architecture)——supersede 其 **planner-emits-`task_tier` / planner-emits-lane** 部分(ADR-001 Decision「Tier 选择是 planner 输出的 first-class 字段」+ Acceptance「Planner 输出 `task_tier` 字段」)。**ADR-001 的三个 runtime form(fast / knowledge / agent)仍保留不变**;被修订的只是"由 LLM 输出 tier / lane"这一实现方式——tier / runtime 归属改由 `DispatchSpec` + `ResolveDispatch` + trace **投影**,LLM 只吐 `intent + slots`。
 **Plan**: `docs/plans/2026-06-09-intent-router-dispatch-restructure.md`(完整 6-PR 序 + 各组分瘦身 + 行号锚点)
 
 ## Context
@@ -13,6 +14,8 @@
 同时:Anthropic / OpenAI 的 Agent Skills **渐进披露**(L0 metadata → L1 `SKILL.md` → L2 resources)在本仓已实现(`internal/skills/loader.go`),但本产品有真实租户身份、写操作、计费 / STS 边界、固定 saga,**不能照搬 free skill discovery**(把所有 skill metadata 常驻 + 模型自由选择 + skill 影响工具授权)。
 
 本 ADR 钉住三条边界,作为常驻 reference,防未来 PR 把分类器 / skill 重新变成 routing 真理源或工具授权源。
+
+**与 ADR-001 的关系**:ADR-001 的三个 runtime form(fast / knowledge / agent)**保留不变**;本 ADR 仅**修订**其"由 planner 输出 `task_tier` / lane"的实现方式(详见 header `Amends`)——tier / runtime 归属改为 `DispatchSpec` + `ResolveDispatch` + trace 的确定性投影,不再是 LLM 输出字段。这避免 ADR-001 与 ADR-009 在"planner emits tier/lane"上留下明面相反结论。
 
 ## Decision
 
@@ -61,7 +64,7 @@
 - [ ] PR2 补 body-read skill `RequiredTools ⊆ ToolSubset` 测试,绑实际 pilot / allowlist 路径(非假设 `CandidateSkills`)。
 - [ ] PR3 ExecutionContract 显式 `static | dynamic | none` tool binding,dynamic `ToolFunc` / `StepConfirm` 步 `RiskKnown=false`(不伪造 risk)。
 - [ ] #128 在 task tracker 标 parked。
-- [ ] 本 ADR 进 `docs/adr/` 索引,新人入职 review。
+- [ ] 本 ADR 加入 ADR index(若仓库建立 `docs/adr/README.md` 时补齐;当前仓库无 ADR index);新人入职 review。
 
 ## References
 
