@@ -79,13 +79,24 @@ type PlannerResult struct {
 	Usage              llm.TokenUsage
 }
 
-type Planner struct {
+type IntentRouter struct {
 	llm              PlannerLLM
 	baseURL          string
 	model            string
 	maxRetries       int
 	lookupCapability func(baseURL, model string) llm.Capability
 }
+
+// Planner is the deprecated one-release compatibility alias for IntentRouter.
+// The type was renamed (PR4 of the Intent-Router / Dispatch-Contract
+// restructure) to name what it actually is: an intent ROUTER — one LLM call
+// produces one intent label — not a multi-step planner. The alias keeps existing
+// call sites (intent.Planner, NewPlanner's *Planner return, cmd newCLIPlanner)
+// compiling while they migrate; new code should use IntentRouter. Being an alias
+// (=) it is the same type: identical method set, no behavior change.
+//
+// Deprecated: use IntentRouter.
+type Planner = IntentRouter
 
 func NewPlanner(client PlannerLLM, opts PlannerOptions) *Planner {
 	lookup := opts.LookupCapability
@@ -115,7 +126,7 @@ func SelectOutputMode(cap llm.Capability) OutputMode {
 	return OutputModeStrictPromptJSON
 }
 
-func (p *Planner) Plan(ctx context.Context, input PlannerInput) (PlannerResult, error) {
+func (p *IntentRouter) Plan(ctx context.Context, input PlannerInput) (PlannerResult, error) {
 	mode := SelectOutputMode(p.lookupCapability(p.baseURL, p.model))
 	result := PlannerResult{
 		Plan:     unknownFallbackPlan(),
@@ -213,7 +224,7 @@ func repairInstructionForValidationCode(code ErrorCode) string {
 	}
 }
 
-func (p *Planner) completeIntentPlan(ctx context.Context, req PlannerLLMRequest) (string, llm.TokenUsage, error) {
+func (p *IntentRouter) completeIntentPlan(ctx context.Context, req PlannerLLMRequest) (string, llm.TokenUsage, error) {
 	if withUsage, ok := p.llm.(PlannerLLMWithUsage); ok {
 		resp, err := withUsage.CompleteIntentPlanWithUsage(ctx, req)
 		return resp.Content, resp.Usage, err
