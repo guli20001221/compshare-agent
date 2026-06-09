@@ -13,7 +13,10 @@ param(
     [string]$ReportPath = "",
     [string]$External = "1",            # COMPSHARE_EXTERNAL_KNOWLEDGE
     [string]$AgenticSearch = "",        # COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE ("" = unset/off)
-    [string]$SkillExec = ""             # USE_SKILL_EXECUTOR ("" = off)
+    [string]$SkillExec = "",            # USE_SKILL_EXECUTOR ("" = off)
+    [string]$KnowledgeQAAgentLoop = "", # COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP ("" = off=terminal RAG; "1" = agent-loop route)
+    [string]$GroundedValidator = "",    # COMPSHARE_RAG_GROUNDED_VALIDATOR ("" = off)
+    [string]$DisciplinedSynthesis = "" # COMPSHARE_KQA_DISCIPLINED_SYNTHESIS ("" = off; "1" = terminal-style synthesis recovery on agent-loop refusal)
 )
 
 $ErrorActionPreference = "Continue"
@@ -32,7 +35,19 @@ $smokeEnv = Join-Path $repoRoot "eval\.smoke_env.ps1"
 if (Test-Path $smokeEnv) { . $smokeEnv }
 if (-not $env:LLM_API_KEY) { Write-Host "LLM_API_KEY not set; cannot run live probe." -ForegroundColor Red; exit 1 }
 if (-not (Test-Path $agentExe)) { Write-Host "agent.exe not found; run: go build -o agent.exe ./cmd" -ForegroundColor Red; exit 1 }
-if (-not (Test-Path $config)) { Write-Host "config not found: $config" -ForegroundColor Red; exit 1 }
+if (-not (Test-Path $config)) {
+    # Clean checkout: deploy/conf/agent.yaml is gitignored and absent. Fall back to the
+    # tracked agent.yaml.example, whose ${ENV_VAR} placeholders the config loader
+    # resolves from the environment (eval\.smoke_env.ps1 supplies the keys). Mirrors the
+    # diagnose-skill smoke harness so the probe runs on a fresh worktree.
+    $exampleConfig = Join-Path $repoRoot "deploy\conf\agent.yaml.example"
+    if (Test-Path $exampleConfig) {
+        Write-Host "config not found: $config -> falling back to agent.yaml.example (placeholders from env)" -ForegroundColor Yellow
+        $config = $exampleConfig
+    } else {
+        Write-Host "config not found: $config (and no agent.yaml.example)" -ForegroundColor Red; exit 1
+    }
+}
 
 $env:COMPSHARE_PROJECT_ID = "org-cwy2qk"
 $env:COMPSHARE_ENABLE_MUTATING_TOOLS = ""
@@ -42,6 +57,9 @@ $env:COMPSHARE_TRACE_ENABLED = "1"
 $env:COMPSHARE_EXTERNAL_KNOWLEDGE = $External
 $env:COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE = $AgenticSearch
 $env:USE_SKILL_EXECUTOR = $SkillExec
+$env:COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP = $KnowledgeQAAgentLoop
+$env:COMPSHARE_RAG_GROUNDED_VALIDATOR = $GroundedValidator
+$env:COMPSHARE_KQA_DISCIPLINED_SYNTHESIS = $DisciplinedSynthesis
 
 $runId = Get-Date -Format "yyyyMMdd-HHmmss"
 $baseDir = Join-Path $env:TEMP "compshare-$Tag-$runId"
@@ -81,7 +99,8 @@ if (Test-Path $ReportPath) { Remove-Item $ReportPath -Force }
 
 $agenticLabel = $AgenticSearch; if ([string]::IsNullOrEmpty($agenticLabel)) { $agenticLabel = "off" }
 $skillLabel = $SkillExec; if ([string]::IsNullOrEmpty($skillLabel)) { $skillLabel = "off" }
-Write-Host "ext=$External agentic=$agenticLabel skillexec=$skillLabel runs=$Runs" -ForegroundColor Yellow
+$kqaLabel = $KnowledgeQAAgentLoop; if ([string]::IsNullOrEmpty($kqaLabel)) { $kqaLabel = "off" }
+Write-Host "ext=$External agentic=$agenticLabel skillexec=$skillLabel kqa_agent_loop=$kqaLabel runs=$Runs" -ForegroundColor Yellow
 
 foreach ($probe in $probes) {
     $question = [string]$probe.question
@@ -93,7 +112,20 @@ foreach ($probe in $probes) {
         $env:COMPSHARE_TRACE_DIR = $runDir
         $inputPath = Join-Path $runDir "stdin.txt"
         [IO.File]::WriteAllText($inputPath, "$question`nexit`n", (New-Object Text.UTF8Encoding $false))
-        $transcript = (Get-Content $inputPath -Raw -Encoding UTF8) | & $agentExe cli -c $config 2>&1 | Out-String
+        # Per-run timeout (Start-Process inherits the env flags set above; pipe form had no
+        # timeout so a hung CLI turn stalled the whole batch — the #150 runner quirk). 150s is
+        # generous; a normal turn is <60s. On timeout the run records as empty (filtered downstream).
+        $outPath = Join-Path $runDir "stdout.txt"; $errPath = Join-Path $runDir "stderr.txt"
+        $proc = Start-Process -FilePath $agentExe -ArgumentList @('cli', '-c', $config) `
+            -RedirectStandardInput $inputPath -RedirectStandardOutput $outPath -RedirectStandardError $errPath `
+            -NoNewWindow -PassThru
+        if (-not $proc.WaitForExit(150000)) {
+            try { $proc.Kill() } catch {}
+            Write-Host "    (run$i TIMED OUT after 150s — killed)" -ForegroundColor Red
+        }
+        $transcript = ""
+        if (Test-Path $outPath) { $transcript += (Get-Content $outPath -Raw -Encoding UTF8) }
+        if (Test-Path $errPath) { $transcript += (Get-Content $errPath -Raw -Encoding UTF8) }
         [IO.File]::WriteAllText((Join-Path $runDir "transcript.txt"), $transcript, (New-Object Text.UTF8Encoding $false))
 
         $rec = Read-TraceRecord $runDir

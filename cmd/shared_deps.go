@@ -56,6 +56,26 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 	if groundedValidator {
 		log.Printf("runtime: HTTP grounded-answer validator enabled (COMPSHARE_RAG_GROUNDED_VALIDATOR=1; cite-or-refuse on agentic SearchKnowledge)")
 	}
+	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
+	if unknownKnowledgeQAAgentLoop != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q", unknownKnowledgeQAAgentLoop)
+	}
+	engine.SetKnowledgeQAAgentLoopEnabled(knowledgeQAAgentLoop)
+	if knowledgeQAAgentLoop {
+		log.Printf("runtime: HTTP knowledge_qa agent-loop route enabled (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP default-on; forced SearchKnowledge first hop, terminal RAG bypassed; disable with =0)")
+	} else {
+		log.Printf("runtime: HTTP knowledge_qa agent-loop route disabled (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=0; deterministic terminal RAG route)")
+	}
+	disciplinedKQASynthesis, unknownDisciplinedKQASynthesis := disciplinedKQASynthesisEnabledFromEnv(getenv)
+	if unknownDisciplinedKQASynthesis != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_KQA_DISCIPLINED_SYNTHESIS value %q", unknownDisciplinedKQASynthesis)
+	}
+	engine.SetDisciplinedKQASynthesisEnabled(disciplinedKQASynthesis)
+	if disciplinedKQASynthesis {
+		log.Printf("runtime: HTTP disciplined knowledge_qa synthesis enabled (COMPSHARE_KQA_DISCIPLINED_SYNTHESIS default-on; terminal-style cited synthesis writes the final answer; disable with =0)")
+	} else {
+		log.Printf("runtime: HTTP disciplined knowledge_qa synthesis disabled (COMPSHARE_KQA_DISCIPLINED_SYNTHESIS=0; free ReAct write + cite-retry)")
+	}
 	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
 		Capacity:             cfg.Agent.HTTP.PoolCapacity,
 		IdleTTL:              cfg.Agent.HTTP.PoolIdleTTL,

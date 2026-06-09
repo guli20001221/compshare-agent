@@ -209,6 +209,16 @@ type Engine struct {
 	// when the agentic tool runs AND the grounded validator is on — empty (inert)
 	// otherwise, keeping flag-off byte-identical.
 	searchKnowledgeLedgerThisTurn knowledge.EvidenceLedger
+	// knowledgeQAAgentLoopThisTurn marks a knowledge_qa turn that the
+	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP route sent into the shared ReAct loop
+	// (forced SearchKnowledge first hop) instead of the terminal-RAG route. Set
+	// in tryPlannerDispatch when the flag + agentic tool + retriever are all on;
+	// read by the ReAct loop (forces the first hop), executeSearchKnowledge /
+	// guardSearchKnowledgeSynthesis (turn-scoped cite-or-refuse parity with the
+	// terminal route, independent of the global grounded-validator flag), and
+	// emitPlannerTrace (projects PlannedRuntimeForm=agent so planned==actual).
+	// Reset per turn; always false when the flag is off => byte-identical.
+	knowledgeQAAgentLoopThisTurn bool
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
 	// user turn. 0 = disabled. Copied from SharedDeps in NewSession.
 	maxTokensPerTurn int
@@ -1046,6 +1056,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
+	e.knowledgeQAAgentLoopThisTurn = false
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
@@ -1160,6 +1171,31 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			}
 			e.emitFreshnessTrace(freshness)
 		}
+		// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP forced first hop: a knowledge_qa turn
+		// routed into the agent loop must deterministically retrieve before it
+		// answers — soft prompt directives don't reliably move flash (#145), so the
+		// terminal route's guaranteed retrieval is reproduced by forcing
+		// SearchKnowledge on the FIRST ReAct call. Mutually exclusive with the
+		// monitor-recall force above (different intents; the !forceMonitorRecall guard
+		// keeps monitor precedence so ToolChoice is never double-set). The in-registry
+		// assert is the belt-and-suspenders half of the 400 trap: the route gate
+		// already requires the agentic tool be enabled, so SearchKnowledge is in the
+		// full knowledge_qa (nil-subset) tool list — but never force a tool absent from
+		// req.Tools. Non-object models fall back to "required" + an ephemeral note.
+		if round == 0 && e.knowledgeQAAgentLoopThisTurn && !forceMonitorRecall &&
+			toolListContainsFunction(req.Tools, "SearchKnowledge") {
+			if e.supportsObjectToolChoice {
+				req.ToolChoice = openai.ToolChoice{
+					Type:     openai.ToolTypeFunction,
+					Function: openai.ToolFunction{Name: "SearchKnowledge"},
+				}
+			} else {
+				req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQAAgentLoopSearchNote)
+				if e.supportsRequiredToolChoice {
+					req.ToolChoice = "required"
+				}
+			}
+		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
 			content := rateLimitMessage(decision.Reason)
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -1195,6 +1231,30 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		e.emitTokenUsage(resp.Usage)
 		if opts.OnUsage != nil {
 			opts.OnUsage(resp.Usage)
+		}
+
+		// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP forced-hop reliability: flash occasionally
+		// ignores the forced SearchKnowledge object tool_choice and returns a direct text
+		// answer (the round-0 cited gate then refuses a turn that should have retrieved).
+		// Retry the forced first hop ONCE — the misfire is jittery, so the retry usually
+		// fires — reinforcing with the ephemeral note alongside the force. The condition is
+		// re-derived (not a tracking flag) and bounded to one extra call: the forced round,
+		// SearchKnowledge available, and the response carrying no SearchKnowledge call.
+		if round == 0 && e.knowledgeQAAgentLoopThisTurn && !forceMonitorRecall &&
+			toolListContainsFunction(req.Tools, "SearchKnowledge") &&
+			!toolCallsContain(resp.ToolCalls, "SearchKnowledge") && !e.tokenBudgetExceeded() {
+			retryReq := req
+			retryReq.OnTextDelta = nil
+			retryReq.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQAAgentLoopSearchNote)
+			if retryResp, retryErr := e.llmClient.Chat(ctx, retryReq); retryErr == nil {
+				e.emitTokenUsage(retryResp.Usage)
+				if opts.OnUsage != nil {
+					opts.OnUsage(retryResp.Usage)
+				}
+				if toolCallsContain(retryResp.ToolCalls, "SearchKnowledge") {
+					resp = retryResp
+				}
+			}
 		}
 
 		// Post-call budget check: emitTokenUsage just accumulated this
@@ -1235,7 +1295,42 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 				content = ragNoEvidenceReply
 			}
-			content = e.guardSearchKnowledgeSynthesis(content)
+				// Convergent agent-loop synthesis (synthesis-discipline lever): for a
+				// knowledge_qa agent-loop turn where SearchKnowledge surfaced evidence, write the
+				// FINAL answer with the shared disciplined cited-synthesis primitive
+				// (answerWithRetrievedEvidence) on the gathered evidence — NOT the free ReAct
+				// write, which under flash intermittently omits the cite / dumps raw text. This
+				// makes the agent loop self-sufficient on knowledge turns: the precondition for
+				// retiring the separate terminal route (tryStage2BRetrieval) so knowledge flows
+				// through ONE loop. The primitive cite-validates (its own cite-harder retry) and
+				// synthesizeKnowledgeQAFromLedger leak-checks + strips, so this path needs no
+				// post-hoc guard. Default-off; on failure (or when disabled) it falls through to
+				// the free-write guard + cite-retry below, so it is never worse than B4.
+				synthDone := false
+				if disciplinedKQASynthesisOn && e.knowledgeQAAgentLoopThisTurn &&
+					e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
+					if synth, ok := e.synthesizeKnowledgeQAFromLedger(ctx, userMsg); ok {
+						content = synth
+						synthDone = true
+					}
+				}
+				if !synthDone {
+					preGuardContent := content
+					content = e.guardSearchKnowledgeSynthesis(content)
+					// Cite-retry parity with the terminal route: when the guard replaced a real
+					// synthesis with the canned refusal (typically flash omitted/garbled the
+					// [[chunk_id]] marker, not a content problem), give it ONE more chance with an
+					// explicit cite reminder before the refusal stands — mirroring
+					// answerWithRetrievedEvidence's single retry. Scoped to turns where
+					// SearchKnowledge surfaced evidence (the guard's own scope); a retry that still
+					// won't cite keeps the refusal. No-op when the guard accepted the answer.
+					if content == ragNoEvidenceReply && strings.TrimSpace(preGuardContent) != ragNoEvidenceReply &&
+						e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
+						if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
+							content = retried
+						}
+					}
+				}
 			// Replay buffered streaming deltas when the LLM content was returned
 			// verbatim. If an engine guard overwrote content, emit the canonical
 			// override as a single chunk so the SSE stream matches the persisted
@@ -1405,6 +1500,27 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
 		return e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
+	}
+	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP migration: route a knowledge_qa turn into
+	// the shared ReAct loop (forced SearchKnowledge first hop) instead of the
+	// deterministic terminal-RAG route below. Gated so flag-off is byte-identical,
+	// and so the forced first hop can never reference an absent tool (the 400 trap):
+	// it fires ONLY when the agentic SearchKnowledge tool is actually enabled AND a
+	// retriever is wired. With agentic off or no retriever the flag is inert and the
+	// turn stays on the terminal route (which emits its own fallback trace and, for
+	// the nil-retriever case, falls through identically). The distinct
+	// dispatched_knowledge_agent_loop route status + the turn-scoped planned-form
+	// projection (emitPlannerTrace) keep planned==actual==agent so the runtime-form
+	// mismatch gate does not false-flag; cite-or-refuse parity with the terminal
+	// route is preserved turn-scoped (see knowledgeQAAgentLoopThisTurn).
+	if knowledgeQAAgentLoopOn &&
+		dispatch.result.Plan.Intent == intent.IntentKnowledgeQA &&
+		tools.AgenticSearchKnowledgeEnabled() &&
+		e.knowledgeRetriever != nil {
+		e.requireKnowledgeCitationThisTurn = true
+		e.knowledgeQAAgentLoopThisTurn = true
+		e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedKnowledgeAgentLoop, dispatch.latency)
+		return "", false
 	}
 	if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
 		return reply, true
@@ -2347,6 +2463,15 @@ func (e *Engine) emitPlannerTrace(result intent.PlannerResult, status intent.Rou
 		Latency: latency,
 	})
 	trace.RouteStatus = string(status)
+	// Turn-scoped runtime-form projection for the knowledge_qa agent-loop route
+	// (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). PlannedRuntimeFormForIntent stays pure
+	// (knowledge_qa -> terminal_rag) because a flag-on-but-agentic-off knowledge_qa
+	// turn still runs the terminal route; only a turn actually routed into the agent
+	// loop projects agent, so planned==actual==agent and RuntimeFormMismatch does not
+	// false-flag. Off-flag this is never reached (the field is always false).
+	if e.knowledgeQAAgentLoopThisTurn && trace.Intent == string(intent.IntentKnowledgeQA) {
+		trace.PlannedRuntimeForm = observability.RuntimeFormAgent
+	}
 	e.plannerTraceObserver(trace)
 }
 
@@ -2721,9 +2846,12 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
 	// Accumulate the per-turn ChunkID-keyed, deduped ledger so the grounded-answer
 	// validator can check the final synthesis cites only retrieved ChunkIDs (#126).
-	// Gated on the validator flag so flag-off does no extra work and keeps no extra
-	// state (byte-identical to before #126).
-	if groundedAnswerValidatorOn {
+	// Gated so flag-off does no extra work and keeps no extra state (byte-identical
+	// to before #126): the global grounded-validator flag, OR a knowledge_qa turn
+	// routed into the agent loop, which cite-or-refuses turn-scoped regardless of the
+	// global flag to preserve the terminal route's guarantee (see
+	// guardSearchKnowledgeSynthesis).
+	if groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn {
 		e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
 	}
 	// Emit the RAW retrieval as a RetrievalTrace so what SearchKnowledge retrieved
@@ -2734,7 +2862,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits)
 	empty := retrieved.Empty || len(ledger.Items) == 0
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
-	return searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn)
+	return searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn)
 }
 
 // emitSearchKnowledgeRetrievalTrace records the agent-lane SearchKnowledge
@@ -2813,12 +2941,15 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 		return ragNoEvidenceReply
 	}
 	// Route-independent cite-grounding (#126), default-off via
-	// COMPSHARE_RAG_GROUNDED_VALIDATOR. Flag-off the leak check above is the only
-	// guard (byte-identical to pre-#126). Flag-on: the agent was told (cite_protocol
-	// in the tool result) to attribute each conclusion with [[chunk_id]]; require
-	// >=1 citation resolving to a retrieved ChunkID and no citation to an unknown
-	// chunk_id, then strip the markers for display.
-	if !groundedAnswerValidatorOn {
+	// COMPSHARE_RAG_GROUNDED_VALIDATOR — OR turn-scoped on for a knowledge_qa turn
+	// routed into the agent loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP), which must
+	// cite-or-refuse exactly as the terminal route did regardless of the global
+	// validator flag. Off (neither): the leak check above is the only guard
+	// (byte-identical to pre-#126). On: the agent was told (cite_protocol in the tool
+	// result) to attribute each conclusion with [[chunk_id]]; require >=1 citation
+	// resolving to a retrieved ChunkID and no citation to an unknown chunk_id, then
+	// strip the markers for display.
+	if !groundedAnswerValidatorOn && !e.knowledgeQAAgentLoopThisTurn {
 		return content
 	}
 	report := knowledge.ValidateGroundedCitations(content, e.searchKnowledgeLedgerThisTurn)
@@ -2834,6 +2965,44 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 	}
 	e.emitSearchKnowledgeHardBlock("search_knowledge_uncited")
 	return ragNoEvidenceReply
+}
+
+// retrySearchKnowledgeCitation gives an agent-loop synthesis that the grounded
+// validator would refuse ONE more chance to cite before the refusal stands — the
+// parity the terminal route already has (answerWithRetrievedEvidence retries once with
+// a stronger cite instruction). It re-prompts with the current history (which still
+// carries the SearchKnowledge tool result + its evidence) plus an explicit
+// [[chunk_id]] reminder, then re-runs the same no-raw-leak + grounded-citation gates.
+// Returns (stripped grounded answer, true) only when the retry is clean AND properly
+// cited; ("", false) on budget/LLM error, refusal, leak, or still-uncited — the caller
+// then keeps the original refusal. The retry uses no tools, so it must produce text.
+func (e *Engine) retrySearchKnowledgeCitation(ctx context.Context) (string, bool) {
+	if e.tokenBudgetExceeded() {
+		return "", false
+	}
+	msgs := append(e.buildMessagesForLLM(), openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleUser,
+		Content: searchKnowledgeCiteRetryNote,
+	})
+	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{Messages: msgs})
+	if err != nil {
+		return "", false
+	}
+	e.emitTokenUsage(resp.Usage)
+	if e.tokenBudgetExceeded() {
+		return "", false
+	}
+	retry := security.RedactOperationalTokensInText(strings.TrimSpace(resp.Content))
+	if retry == "" || isKnowledgeRefusal(retry) {
+		return "", false
+	}
+	if knowledge.ValidateNoRawEvidenceLeak(retry, e.searchKnowledgeHitsThisTurn) != nil {
+		return "", false
+	}
+	if !knowledge.ValidateGroundedCitations(retry, e.searchKnowledgeLedgerThisTurn).Grounded() {
+		return "", false
+	}
+	return knowledge.StripCiteMarkers(retry), true
 }
 
 // emitSearchKnowledgeHardBlock records a post-LLM hardblock trace for the agentic

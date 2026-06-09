@@ -112,7 +112,7 @@ func (r *chatTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace
 	if r == nil {
 		return
 	}
-	r.record.Retrieval = trace
+	r.record.Retrieval = observability.MergeRetrievalTrace(r.record.Retrieval, trace)
 }
 
 func (r *chatTraceRecorder) SetFreshnessTrace(trace observability.FreshnessTrace) {
