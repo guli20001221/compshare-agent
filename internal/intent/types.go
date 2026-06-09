@@ -106,7 +106,7 @@ const (
 	TimeWindowAbsolute TimeWindowType = "absolute"
 )
 
-type Plan struct {
+type IntentRoute struct {
 	SchemaVersion string `json:"schema_version"`
 	Intent        Intent `json:"intent"`
 	Scope         string `json:"scope,omitempty"`
@@ -121,6 +121,16 @@ type Plan struct {
 	Confidence    float64         `json:"confidence"`
 	Reasoning     string          `json:"reasoning,omitempty"`
 }
+
+// Plan is the deprecated one-release compatibility alias for IntentRoute. The
+// type was renamed (PR4 of the Intent-Router / Dispatch-Contract restructure) to
+// signal that planner output is a flat intent ROUTE, not a multi-step plan. The
+// alias keeps existing call sites compiling while they migrate; new code should
+// use IntentRoute. Being an alias (=) not a defined type, it is the same type —
+// byte-identical JSON, no method-set change.
+//
+// Deprecated: use IntentRoute.
+type Plan = IntentRoute
 
 type SelectedSkill struct {
 	Name       string `json:"name,omitempty"`

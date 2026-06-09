@@ -153,14 +153,14 @@ var nonAuditableFields = map[string]string{
 	"ReactHistoryCompactionEnabled":  "bool — no methods",
 	"IntentScopedReActPromptEnabled": "bool — no methods",
 	"ExternalExecutor":               "tools.ToolExecutor — already covered by TestSessionIsolation_NoProjectIdLeak (PR #135)",
-	"IntentPlanner":                  "intent.IntentPlanner interface — concrete intent.Planner verified clean (single exported method Plan, see TODO below for promotion criteria)",
+	"IntentPlanner":                  "intent.IntentPlanner interface — concrete intent.IntentRouter (deprecated alias Planner) verified clean (single exported method Plan, see TODO below for promotion criteria)",
 }
 
-// TODO(future): promote intent.Planner into sharedDepConcreteTypes IF
+// TODO(future): promote intent.IntentRouter into sharedDepConcreteTypes IF
 // either (a) it gains a second exported method whose semantics aren't
 // trivially obvious, or (b) production wiring starts handing out the
-// concrete *Planner pointer rather than the IntentPlanner interface.
-// Verified at this PR: intent.Planner only exports Plan(ctx,input)
+// concrete *IntentRouter pointer rather than the IntentPlanner interface.
+// Verified at this PR: intent.IntentRouter only exports Plan(ctx,input)
 // (internal/intent/planner.go:101) — non-mutating, no setter. Behind
 // the IntentPlanner interface (engine.go:111), a setter would also
 // have to widen the interface or require an unsafe type assertion to
