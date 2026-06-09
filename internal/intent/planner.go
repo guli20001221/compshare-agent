@@ -99,7 +99,11 @@ type IntentRouter struct {
 // Deprecated: use IntentRouter.
 type Planner = IntentRouter
 
-func NewPlanner(client PlannerLLM, opts PlannerOptions) *Planner {
+// NewIntentRouter constructs an IntentRouter from a planner LLM client and
+// options. It applies the default capability lookup (llm.LookupCapability) when
+// none is supplied and a minimum of one retry. This is the canonical
+// constructor; NewPlanner is a deprecated shim that delegates here.
+func NewIntentRouter(client PlannerLLM, opts PlannerOptions) *IntentRouter {
 	lookup := opts.LookupCapability
 	if lookup == nil {
 		lookup = llm.LookupCapability
@@ -108,13 +112,23 @@ func NewPlanner(client PlannerLLM, opts PlannerOptions) *Planner {
 	if maxRetries == 0 {
 		maxRetries = 1
 	}
-	return &Planner{
+	return &IntentRouter{
 		llm:              client,
 		baseURL:          opts.BaseURL,
 		model:            opts.Model,
 		maxRetries:       maxRetries,
 		lookupCapability: lookup,
 	}
+}
+
+// NewPlanner is the deprecated one-release compatibility shim for
+// NewIntentRouter. It keeps existing call sites (cmd newCLIPlanner, tests)
+// compiling while they migrate; the return type *Planner is an alias of
+// *IntentRouter, so this is pure delegation with no behavior change.
+//
+// Deprecated: use NewIntentRouter.
+func NewPlanner(client PlannerLLM, opts PlannerOptions) *Planner {
+	return NewIntentRouter(client, opts)
 }
 
 func SelectOutputMode(cap llm.Capability) OutputMode {
