@@ -66,14 +66,15 @@ func (e *Engine) synthesizeKnowledgeQAFromLedger(ctx context.Context, userMsg st
 	if aerr != nil || refusedReason != "" {
 		return "", false
 	}
-	// answerWithRetrievedEvidence guarantees a positional-cited answer when
-	// refusedReason=="" (else it returns the canned refusal with a reason). Re-run the
-	// no-raw-leak guard the agent-loop enforces (terminal relies on its paraphrase
-	// prompt and does not leak-check); a leak keeps the conservative fallback.
+	// DELIBERATELY no separate no-raw-leak guard here: this synthesis IS the terminal
+	// route's answerWithRetrievedEvidence, which terminal RAG itself runs WITHOUT a leak
+	// check. A how-to knowledge answer legitimately reproduces a command / code snippet
+	// (e.g. the torchrun + DDP boilerplate) verbatim from the evidence — that is the
+	// answer, not a leak. Re-applying the agent-loop's prose-oriented leak guard here
+	// flagged those code answers and forced the conservative fallback, which is exactly
+	// why the agent loop over-refused code-heavy probes (DDP) where terminal does not.
+	// Matching terminal (no leak check) is the whole point of the convergence.
 	if strings.TrimSpace(reply) == "" || isKnowledgeRefusal(reply) {
-		return "", false
-	}
-	if knowledge.ValidateNoRawEvidenceLeak(reply, e.searchKnowledgeHitsThisTurn) != nil {
 		return "", false
 	}
 	return stripCitationMarkers(reply), true

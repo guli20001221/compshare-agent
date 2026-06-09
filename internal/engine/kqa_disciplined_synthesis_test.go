@@ -62,17 +62,20 @@ func TestSynthesizeKnowledgeQAFromLedger_UncitedRefused(t *testing.T) {
 	assert.False(t, ok, "an uncited synthesis must not be accepted as disciplined recovery")
 }
 
-// TestSynthesizeKnowledgeQAFromLedger_RawLeakReturnsFalse proves the no-raw-leak guard
-// still applies to the disciplined synthesis: a cited answer that echoes a >=32-rune
-// verbatim chunk passage is rejected (returns false → caller keeps the fallback),
-// never shown to the user.
-func TestSynthesizeKnowledgeQAFromLedger_RawLeakReturnsFalse(t *testing.T) {
+// TestSynthesizeKnowledgeQAFromLedger_CodeReproductionAccepted pins the leak-guard
+// removal: the disciplined synthesis mirrors terminal RAG, which runs NO no-raw-leak
+// check. A how-to answer that reproduces a command/code snippet verbatim from the
+// evidence (the legitimate answer for a code probe like DDP) is ACCEPTED, not rejected
+// as a leak — the over-strict prose leak guard was the cause of the agent loop's
+// code-heavy over-refusal that terminal does not have.
+func TestSynthesizeKnowledgeQAFromLedger_CodeReproductionAccepted(t *testing.T) {
 	hit := disciplinedSynthHit()
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
 		{Content: hit.Chunk.Content + " [1]"},
 	}}, &mockExecutor{}, nil)
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
 
-	_, ok := eng.synthesizeKnowledgeQAFromLedger(context.Background(), "q")
-	assert.False(t, ok, "a verbatim-leaking synthesis must be rejected even when cited")
+	got, ok := eng.synthesizeKnowledgeQAFromLedger(context.Background(), "q")
+	assert.True(t, ok, "verbatim code/command reproduction is the answer, not a leak — accepted like terminal")
+	assert.NotContains(t, got, "[1]", "the [n] marker is stripped for display")
 }

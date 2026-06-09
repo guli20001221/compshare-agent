@@ -112,7 +112,20 @@ foreach ($probe in $probes) {
         $env:COMPSHARE_TRACE_DIR = $runDir
         $inputPath = Join-Path $runDir "stdin.txt"
         [IO.File]::WriteAllText($inputPath, "$question`nexit`n", (New-Object Text.UTF8Encoding $false))
-        $transcript = (Get-Content $inputPath -Raw -Encoding UTF8) | & $agentExe cli -c $config 2>&1 | Out-String
+        # Per-run timeout (Start-Process inherits the env flags set above; pipe form had no
+        # timeout so a hung CLI turn stalled the whole batch — the #150 runner quirk). 150s is
+        # generous; a normal turn is <60s. On timeout the run records as empty (filtered downstream).
+        $outPath = Join-Path $runDir "stdout.txt"; $errPath = Join-Path $runDir "stderr.txt"
+        $proc = Start-Process -FilePath $agentExe -ArgumentList @('cli', '-c', $config) `
+            -RedirectStandardInput $inputPath -RedirectStandardOutput $outPath -RedirectStandardError $errPath `
+            -NoNewWindow -PassThru
+        if (-not $proc.WaitForExit(150000)) {
+            try { $proc.Kill() } catch {}
+            Write-Host "    (run$i TIMED OUT after 150s — killed)" -ForegroundColor Red
+        }
+        $transcript = ""
+        if (Test-Path $outPath) { $transcript += (Get-Content $outPath -Raw -Encoding UTF8) }
+        if (Test-Path $errPath) { $transcript += (Get-Content $errPath -Raw -Encoding UTF8) }
         [IO.File]::WriteAllText((Join-Path $runDir "transcript.txt"), $transcript, (New-Object Text.UTF8Encoding $false))
 
         $rec = Read-TraceRecord $runDir
