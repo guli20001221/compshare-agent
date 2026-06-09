@@ -270,7 +270,19 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // <shared_plan>, <question>) while preserving each JSON example as its own
 // line. Boundary remains: no intent enum, required_tools allowlist, route
 // order, or example PlanJSON payload changed in this step.
-const systemPromptSHA256Baseline = "64dc6a4c1b3e1efb7cae810eadf115212b1ea59f6c4e130a2d9ffb522f0d9e85"
+//
+// BoundaryPack pilot — stock_vs_resource (PR5, 2026-06-09): FIRST intentional
+// bump of the restructure. The single SHA-delta source is that the
+// stock-vs-resource tie-breaker directive moved from the base scaffold
+// (basePromptScaffold) to the boundarypacks projection, which buildSystemPrompt
+// now appends after the routing directives (before the routing examples). The
+// directive TEXT is byte-identical and appears exactly once
+// (TestStockVsResourceBoundary_MovedOutOfBasePrompt); only its position in the
+// assembled prompt changed. The pack content is pinned separately by
+// stockVsResourceBoundaryPackSHA256Baseline. No intent enum, no required_tools
+// allowlist, no route order, no example PlanJSON, and no finance/diagnosis
+// directive changed.
+const systemPromptSHA256Baseline = "fef7410d46df395ba3602f9c43d3164616c8f37d59aba8faf64e8bce2aaec8c3"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
