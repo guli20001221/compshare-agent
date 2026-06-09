@@ -119,10 +119,11 @@ type IntentRoute struct {
 	//
 	// ValidatePlan checks each entry against the per-intent allowlist
 	// (requiredToolsForIntent), but the dispatch tool window is built solely from
-	// the intent enum via intent.IntentToolSubset → tools.VisibleRegistryForSubset
-	// (engine.go:1139). The planner-emitted value never reaches that construction —
-	// see TestPlannerRequiredToolsDoNotAuthorizeDispatch. The 6b step (v2 schema)
-	// removes this from planner output and keeps only the derived trace projection.
+	// the intent enum via the engine.visibleRegistryForIntentRoute seam
+	// (intent.IntentToolSubset → tools.VisibleRegistryForSubset). The planner-emitted
+	// value never reaches that construction — TestPlannerRequiredToolsDoNotAuthorizeDispatch
+	// drives the same seam to enforce it. The 6b step (v2 schema) removes this from
+	// planner output and keeps only the derived trace projection.
 	RequiredTools []string `json:"required_tools"`
 	// Retrieval is likewise validation/trace-only. ValidatePlan rejects Enabled=true
 	// (stage-2A RAG is disabled), and its only engine consumer treats a stray

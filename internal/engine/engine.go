@@ -1136,7 +1136,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		messages := e.buildMessagesForLLM()
 		req := llm.ChatRequest{
 			Messages: messages,
-			Tools:    tools.VisibleRegistryForSubset(intent.IntentToolSubset(e.lastPlannerIntentThisTurn), e.mutatingToolsEnabled),
+			// The dispatch tool window is derived solely from the planner intent
+			// via this seam; the planner-emitted RequiredTools is validation/
+			// trace-only and never authorizes dispatch (see
+			// visibleRegistryForIntentRoute + TestPlannerRequiredToolsDoNotAuthorizeDispatch).
+			Tools: visibleRegistryForIntentRoute(intent.IntentRoute{Intent: e.lastPlannerIntentThisTurn}, e.mutatingToolsEnabled),
 		}
 		// BRIDGE T-001.f1: adjacent monitor follow-up must re-call
 		// GetCompShareInstanceMonitor instead of reusing prior numbers.

@@ -15,14 +15,17 @@ import (
 // validation/trace-only LLM output and MUST NOT influence which tools the
 // dispatch path exposes.
 //
-// The real dispatch tool window (engine.go:1139 and the ReAct loop) is:
+// It calls the SAME production seam the ReAct loop uses for req.Tools —
+// visibleRegistryForIntentRoute (engine.go) — passing routes whose Intent is
+// fixed but whose RequiredTools varies adversarially. The expected window
+// (`want`) is computed INDEPENDENTLY of that seam, straight from the intent:
 //
-//	tools.VisibleRegistryForSubset(intent.IntentToolSubset(plan.Intent), mutating)
+//	tools.VisibleRegistryForSubset(intent.IntentToolSubset(intent), mutating)
 //
-// — it is keyed solely on plan.Intent. plan.RequiredTools is consumed only by
-// ValidatePlan (an allowlist gate) and the trace; it never reaches the window
-// construction. This test would fail if someone wired plan.RequiredTools into
-// dispatch (e.g. VisibleRegistryForSubset(plan.RequiredTools, …)).
+// so `want` is an oracle, not a tautology. If anyone rewired the seam to read
+// route.RequiredTools (e.g. VisibleRegistryForSubset(route.RequiredTools, …)),
+// `got` would diverge from the oracle and this test would fail — which is the
+// regression guard the contract needs.
 func TestPlannerRequiredToolsDoNotAuthorizeDispatch(t *testing.T) {
 	// Each intent below has a non-empty dispatch subset. For each we hold the
 	// intent fixed and vary plan.RequiredTools across values an adversarial /
@@ -72,10 +75,10 @@ func TestPlannerRequiredToolsDoNotAuthorizeDispatch(t *testing.T) {
 			}
 
 			for _, rt := range tc.requiredTools {
-				// Mirror the engine's dispatch expression exactly. plan.RequiredTools
-				// is deliberately NOT referenced here — that absence is the contract.
-				plan := intent.IntentRoute{Intent: tc.probe, RequiredTools: rt}
-				got := toolNameSet(tools.VisibleRegistryForSubset(intent.IntentToolSubset(plan.Intent), mutating))
+				// Drive the actual production seam with an adversarial RequiredTools.
+				// The seam must ignore route.RequiredTools and return the oracle window.
+				route := intent.IntentRoute{Intent: tc.probe, RequiredTools: rt}
+				got := toolNameSet(visibleRegistryForIntentRoute(route, mutating))
 
 				if !equalStringSets(want, got) {
 					t.Errorf("dispatch window changed with RequiredTools=%v for intent %q (mutating=%v):\n  want %v\n  got  %v\nRequiredTools must not authorize dispatch.",
@@ -98,10 +101,12 @@ func TestRequiredToolsWindowDivergesFromAuthoritativeWindow(t *testing.T) {
 	const probe = intent.IntentOperationLifecycle
 
 	// What the few-shots actually emit and the validator accepts.
-	plan := intent.IntentRoute{Intent: probe, RequiredTools: []string{"DescribeCompShareInstance"}}
+	route := intent.IntentRoute{Intent: probe, RequiredTools: []string{"DescribeCompShareInstance"}}
 
-	authoritative := toolNameSet(tools.VisibleRegistryForSubset(intent.IntentToolSubset(plan.Intent), true))
-	ifMiswired := toolNameSet(tools.VisibleRegistryForSubset(plan.RequiredTools, true))
+	// authoritative goes through the production seam; ifMiswired is the hypothetical
+	// RequiredTools-keyed window the seam must NOT produce.
+	authoritative := toolNameSet(visibleRegistryForIntentRoute(route, true))
+	ifMiswired := toolNameSet(tools.VisibleRegistryForSubset(route.RequiredTools, true))
 
 	if equalStringSets(authoritative, ifMiswired) {
 		t.Fatalf("expected the authoritative (intent-derived) window to differ from the RequiredTools-derived window; both = %v", sortedKeys(authoritative))
