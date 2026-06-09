@@ -1,0 +1,12 @@
+[
+  {"qid":"anchor-res-1","kind":"anchor","expect":"resource_info","question":"我有哪些实例"},
+  {"qid":"anchor-res-2","kind":"anchor","expect":"resource_info","question":"我账号下有哪些 4090 实例"},
+  {"qid":"anchor-stk-1","kind":"anchor","expect":"stock_availability","question":"4090 有吗"},
+  {"qid":"anchor-stk-2","kind":"anchor","expect":"stock_availability","question":"H20 还有没有"},
+  {"qid":"jit-stk-1","kind":"jitter","expect":"stock_availability","question":"现在还有 4090 吗"},
+  {"qid":"jit-stk-2","kind":"jitter","expect":"stock_availability","question":"4090 卖完了吗"},
+  {"qid":"jit-stk-3","kind":"jitter","expect":"stock_availability","question":"数据中心还有 H20 库存吗"},
+  {"qid":"jit-res-1","kind":"jitter","expect":"resource_info","question":"我有几台机器"},
+  {"qid":"jit-res-2","kind":"jitter","expect":"resource_info","question":"我账号下的 A100 实例"},
+  {"qid":"jit-res-3","kind":"jitter","expect":"resource_info","question":"我现在有哪些在跑的卡"}
+]

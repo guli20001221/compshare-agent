@@ -79,3 +79,4 @@ dist/
 # evidence is eval/rag_ext_comfyui_smoke_report.md, not the raw traces.
 eval/traces_comfyui_smoke/
 eval/traces_linuxpt_smoke/
+eval/traces_pr5_ab/
