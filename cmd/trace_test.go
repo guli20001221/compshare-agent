@@ -140,21 +140,48 @@ func TestGroundedAnswerValidatorEnabledFromEnv_DefaultOff(t *testing.T) {
 	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
 }
 
-func TestDisciplinedKQASynthesisEnabledFromEnv_DefaultOff(t *testing.T) {
-	// COMPSHARE_KQA_DISCIPLINED_SYNTHESIS is DEFAULT-OFF: the agent-loop knowledge_qa
-	// turn keeps the existing cite-retry fallback until a flag-on A/B proves the
-	// terminal-style disciplined synthesis lowers refusal toward terminal without new
-	// fabrication. unset/empty/negative => off; affirmative => on; unknown => off + warn.
-	off := []string{"", "  ", "0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := disciplinedKQASynthesisEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should be off (default-off)", v)
+func TestKnowledgeQAAgentLoopEnabledFromEnv_DefaultOn(t *testing.T) {
+	// 2026-06-09: COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is DEFAULT-ON — a knowledge_qa turn
+	// routes through the agent loop (forced SearchKnowledge first hop + disciplined
+	// synthesis) instead of the terminal-RAG route. Flip gated on the #150 A/B: the
+	// decisive code-heavy probe (DDP N=20) matched terminal RAG at refusal 0.00 / 0 fab
+	// (opus judge). The terminal route is retained as the =0 rollback. unset/empty/
+	// affirmative => on; explicit negative => off; unknown => off + non-empty warn string
+	// per CLAUDE.md (never silently coerce). Boot-only reversible (=0 restores terminal).
+	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes"}
+	for _, v := range on {
+		got, unknown := knowledgeQAAgentLoopEnabledFromEnv(func(string) string { return v })
+		require.Truef(t, got, "value %q should be on (default-on)", v)
 		require.Emptyf(t, unknown, "value %q should not warn", v)
 	}
-	on := []string{"1", "on", "ON", "true", "TRUE", "yes", " On "}
+	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
+	for _, v := range off {
+		got, unknown := knowledgeQAAgentLoopEnabledFromEnv(func(string) string { return v })
+		require.Falsef(t, got, "value %q should explicitly disable", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	got, unknown := knowledgeQAAgentLoopEnabledFromEnv(func(string) string { return "maybe" })
+	require.False(t, got, "unknown value treated as off")
+	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
+}
+
+func TestDisciplinedKQASynthesisEnabledFromEnv_DefaultOn(t *testing.T) {
+	// 2026-06-09: COMPSHARE_KQA_DISCIPLINED_SYNTHESIS is DEFAULT-ON — when the agent-loop
+	// route is on (also default), the final knowledge_qa answer is written by terminal
+	// RAG's tight cited-synthesis prompt on the gathered evidence (not the free ReAct
+	// write). This is what made the agent loop match terminal on the #150 A/B (DDP N=20:
+	// refusal 0.00, 0 fab). unset/empty/affirmative => on; explicit negative => off;
+	// unknown => off + non-empty warn string per CLAUDE.md (never silently coerce).
+	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes"}
 	for _, v := range on {
 		got, unknown := disciplinedKQASynthesisEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should enable", v)
+		require.Truef(t, got, "value %q should be on (default-on)", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
+	for _, v := range off {
+		got, unknown := disciplinedKQASynthesisEnabledFromEnv(func(string) string { return v })
+		require.Falsef(t, got, "value %q should explicitly disable", v)
 		require.Emptyf(t, unknown, "value %q should not warn", v)
 	}
 	got, unknown := disciplinedKQASynthesisEnabledFromEnv(func(string) string { return "maybe" })

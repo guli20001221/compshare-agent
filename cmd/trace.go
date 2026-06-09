@@ -323,47 +323,55 @@ func groundedAnswerValidatorEnabledFromEnv(getenv getenvFunc) (bool, string) {
 }
 
 // knowledgeQAAgentLoopEnabledFromEnv gates the terminal-knowledge_qa → agent-loop
-// migration route (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). DEFAULT OFF — a knowledge_qa
-// turn keeps the deterministic terminal-RAG route (tryStage2BRetrieval) until a
-// flag-on A/B eval proves the forced-SearchKnowledge agent-loop answer matches it at
-// the hard-gate bar (faithfulness 0-fab, 100% cite-or-refuse, retrieval-coverage, no
-// mis-route). Inert unless COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE is also on (the tool
-// must be visible) and a retriever is wired — the engine route gate enforces both, so
-// the forced first hop can never name an absent tool (the 400 trap). ""/0/off/false/no
-// => off; 1/true/yes/on => on; unknown => off + non-empty warn string (CLAUDE.md:
-// never silently coerce). Boot-only; the Go-package default (engine.knowledgeQAAgentLoopOn)
-// stays false so engine/tools unit tests are unaffected. Rollback =
-// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=0.
+// route (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). DEFAULT ON (2026-06-09) — a knowledge_qa
+// turn routes through the agent loop: a forced SearchKnowledge first hop retrieves
+// evidence, then the disciplined-synthesis primitive writes the final cited answer
+// (see disciplinedKQASynthesisEnabledFromEnv, also default-on). This collapses the
+// separate deterministic terminal-RAG route into the single agent loop (the lead's
+// "rag as a tool the agent calls in a loop" north star). The flip was gated on the
+// #150 A/B: on the decisive code-heavy probe (PyTorch DDP, N=20) the
+// agent-loop+disciplined answer matched terminal RAG — refusal 0.00 == terminal, 0
+// fabrication / 0 contamination (opus-4-7 judge); the other 7 real-tone probes were
+// already 0-refusal. The terminal route (tryStage2BRetrieval) is retained as the =0
+// rollback, not deleted. Inert unless COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE is also on
+// (the tool must be visible) and a retriever is wired — the engine route gate enforces
+// both, so the forced first hop can never name an absent tool (the 400 trap).
+// ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off + non-empty warn string
+// (CLAUDE.md: never silently coerce). Boot-only; the Go-package default
+// (engine.knowledgeQAAgentLoopOn) stays false so engine/tools unit tests are
+// unaffected. Rollback = COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=0.
 func knowledgeQAAgentLoopEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP"))
 	switch strings.ToLower(raw) {
-	case "", "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	case "1", "true", "yes", "on":
+	case "", "1", "true", "yes", "on":
 		return true, ""
+	case "0", "off", "no", "false", "disabled", "none":
+		return false, ""
 	default:
 		return false, raw
 	}
 }
 
-// disciplinedKQASynthesisEnabledFromEnv gates the disciplined-synthesis recovery on
-// an agent-loop knowledge_qa turn (COMPSHARE_KQA_DISCIPLINED_SYNTHESIS). DEFAULT OFF
-// and effective only when COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is also on — when the
-// forced-SearchKnowledge synthesis would be refused (flash omitted the cite or dumped
-// raw text), the final answer is re-written by terminal RAG's tight cited-synthesis
-// prompt on the gathered evidence instead of re-prompting the heavy ReAct context.
-// Targets the migration's residual refusals (kqa_agent_loop_ab_report.md B4), which
-// are synthesis-discipline failures, not retrieval or cite-format misses. ""/0/off/...
-// => off; 1/true/yes/on => on; unknown => off + non-empty warn (CLAUDE.md: never
-// silently coerce). Boot-only; the Go-package default
+// disciplinedKQASynthesisEnabledFromEnv gates the disciplined-synthesis primitive on
+// an agent-loop knowledge_qa turn (COMPSHARE_KQA_DISCIPLINED_SYNTHESIS). DEFAULT ON
+// (2026-06-09) and effective only when COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is also on:
+// the FINAL answer for the turn is written by terminal RAG's tight cited-synthesis
+// prompt (answerWithRetrievedEvidence, with its own cite-harder retry) on the evidence
+// the agent gathered via SearchKnowledge — rather than the free ReAct write, which
+// under flash intermittently omits the cite or dumps raw text. This is what made the
+// agent loop match terminal on faithfulness/refusal in the #150 A/B (DDP N=20: refusal
+// 0.00, 0 fab; see knowledgeQAAgentLoopEnabledFromEnv). On synthesis failure it falls
+// through to the existing cite-retry/refusal, so it is never worse than free-write.
+// ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off + non-empty warn
+// (CLAUDE.md: never silently coerce). Boot-only; the Go-package default
 // (engine.disciplinedKQASynthesisOn) stays false so unit tests are unaffected.
 func disciplinedKQASynthesisEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.TrimSpace(getenv("COMPSHARE_KQA_DISCIPLINED_SYNTHESIS"))
 	switch strings.ToLower(raw) {
-	case "", "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	case "1", "true", "yes", "on":
+	case "", "1", "true", "yes", "on":
 		return true, ""
+	case "0", "off", "no", "false", "disabled", "none":
+		return false, ""
 	default:
 		return false, raw
 	}
