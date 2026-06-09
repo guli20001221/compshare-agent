@@ -45,4 +45,4 @@ Every cell is `distinct=1` (no jitter on either binary).
 
 Relocating the stock-vs-resource tie-breaker into the boundary-pack projection is **behavior-neutral**; the intentional SHA bump `64dc6a4c… → fef7410d…` carries no routing change.
 
-> Raw per-turn traces are under `eval/traces_pr5_ab/` (git-ignored). The committed evidence is this report + the two `summary_<label>.json` files were captured during the run.
+> Raw per-turn traces are under `eval/traces_pr5_ab/` (git-ignored). The committed evidence is this report; the two `summary_<label>.json` files were captured during the run but are not committed.
