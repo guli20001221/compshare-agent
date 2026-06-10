@@ -134,6 +134,20 @@ func TestGroundedGeneratorPromptIncludesResourceListRules(t *testing.T) {
 	assert.Contains(t, prompt, "Do not rank")
 }
 
+func TestGroundedGeneratorPromptHidesImageIDsByDefault(t *testing.T) {
+	mock := &mockRendererLLM{response: "train-a"}
+	r := NewGroundedGenerator(mock)
+
+	r.Render(context.Background(), RenderRequest{Envelope: testResourceEnvelope(), Fallback: "fallback"})
+
+	require.Len(t, mock.requests, 1)
+	prompt := mock.requests[0].Messages[0].Content
+	assert.Contains(t, prompt, "Always include both instance ID and instance name")
+	assert.Contains(t, prompt, "Do not include image ID / CompShareImageId by default")
+	assert.Contains(t, prompt, "only when the user's question explicitly asks for IDs")
+	assert.NotContains(t, prompt, "Always include image ID (CompShareImageId)")
+}
+
 func TestGroundedGeneratorPromptIncludesTroubleshootingRules(t *testing.T) {
 	mock := &mockRendererLLM{response: "train-a"}
 	r := NewGroundedGenerator(mock)

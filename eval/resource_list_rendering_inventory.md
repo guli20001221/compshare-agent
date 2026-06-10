@@ -21,5 +21,5 @@
 ## Live CLI smoke (merged runtime, USE_GROUNDED_RENDERER=llm)
 「列出全部镜像」→ 按 System/App/Other **分组的整洁 markdown 表**，**截断到 30/39 + 溢出提示**，无冗余 name 列。对比改前的「`Name=X, CompShareImageId=img-xxx, ImageType=App` 单行倾倒 × 39」——「乱」的问题解决。
 
-## 已知残留（诚实记录）
-默认 **grounded 渲染器仍会把 `镜像ID` 作为一列展示**（它通用地从 `Subject.ID` 取并去掉 `image:` 前缀）。`Subject.ID` 经核实**仅被设置、无下游读取**（纯展示），但把它改成不透明索引只会让渲染更糟（显示「0/1」），而让 grounded 渲染器**彻底隐藏 ID** 需要改共享的 renderer prompt/constraint（会同时影响实例列表——而实例的 UHostId 是用户想要的），故**留作可选后续**，由 user 定。`fast_template` 路径已**完全无 ID**。
+## Grounded 渲染器收口
+默认 grounded 渲染器原先要求镜像列表必须展示 `CompShareImageId`，这会把确定性路径已经清理掉的裸 ID 又带回来。现已同步收口：`image_list` 默认只展示镜像名称和人可读字段，只有用户明确询问 ID 时才展示镜像 ID；实例列表仍保留实例 ID 规则，不影响用户按 UHostId 定位实例。
