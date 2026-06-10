@@ -15,7 +15,7 @@ import (
 // scope rather than mutating this singleton.
 //
 // Order = evaluation order. Keyword sets are disjoint by construction
-// (余额/账单/财务 vs 226604/资源不足 vs monitor-history regex), so the
+// (余额/账单/财务 vs monitor-history regex), so the
 // ordering does not affect correctness for any current real input —
 // but it is preserved for trace stability and to keep ranking explicit
 // if a future rule introduces overlap.
@@ -61,11 +61,6 @@ var enginePreBlock = router.New(
 		Match:    isAccountBillingUnsupported,
 		Category: refusal.CategoryAccountBilling,
 		Reply:    refusal.AccountBillingUnsupported,
-	},
-	router.Rule{
-		Match:    isResourceShortageQuestion,
-		Category: refusal.CategoryResourceShortage,
-		Reply:    refusal.ResourceShortage226604,
 	},
 	router.Rule{
 		Match:    isExistingDiskAttachUnsupported,
