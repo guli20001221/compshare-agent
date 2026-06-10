@@ -1,6 +1,9 @@
 package workflow
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // StepType identifies the kind of workflow step.
 type StepType int
@@ -33,6 +36,22 @@ type Step struct {
 	// behavior). Consumed only by the B6.2 saga runner; ignored by
 	// workflow.Engine.Run. (ADR-006 §决策2, default 240s applied by the runner)
 	Timeout time.Duration
+
+	// --- Editable confirm form (StepConfirm only; all three nil/empty =
+	// legacy boolean confirm, byte-identical). Consumed only by
+	// workflow.Engine.Run when a ConfirmEditsFunc is wired (HTTP path with
+	// COMPSHARE_CONFIRM_FORM on + client opt-in); the saga runner ignores
+	// them, so deploy_model keeps the plain confirm. ---
+
+	// BuildForm builds the editable selection form shown alongside the
+	// confirm card. All option values are server-generated; user overrides
+	// are validated against them (whitelist) before ApplyOverrides runs.
+	BuildForm func(wfCtx *Context) (*ConfirmForm, error)
+	// ApplyOverrides merges validated form overrides into wfCtx.Params.
+	ApplyOverrides func(wfCtx *Context, overrides map[string]string) error
+	// RevalidateSteps names earlier StepToolCall steps to re-run after
+	// ApplyOverrides, before re-entering this confirm (e.g. stock + price).
+	RevalidateSteps []string
 }
 
 // CompensateStep is the rollback action for a side-effecting Step, run in
@@ -94,6 +113,82 @@ type StepSummary struct {
 
 // ConfirmFunc asks the user to confirm. Receives workflow name + summary args.
 type ConfirmFunc func(action string, args map[string]any) bool
+
+// ConfirmForm is the editable selection form attached to a confirmation.
+// It is wire-shaped (PascalCase JSON) — the HTTP layer embeds it verbatim in
+// the `confirmation` frame's optional Form field. v1 is select-only: every
+// editable field carries server-generated Options and user edits may only
+// pick one of them (no free text).
+type ConfirmForm struct {
+	Version int                `json:"Version"`
+	Fields  []ConfirmFormField `json:"Fields"`
+}
+
+// ConfirmFormField is one editable (or display-only) field of a ConfirmForm.
+type ConfirmFormField struct {
+	Key      string              `json:"Key"`   // override key, e.g. GpuType / Zone / ImageId / ChargeType
+	Label    string              `json:"Label"` // display label, backend-formatted
+	Type     string              `json:"Type"`  // v1: "select" only
+	Value    string              `json:"Value"` // current/default option value
+	Editable bool                `json:"Editable"`
+	Options  []ConfirmFormOption `json:"Options,omitempty"`
+}
+
+// ConfirmFormOption is one selectable value of a select field.
+type ConfirmFormOption struct {
+	Value string `json:"Value"`
+	Label string `json:"Label"`
+	Note  string `json:"Note,omitempty"`
+}
+
+// Field returns the form field with the given key, or nil.
+func (f *ConfirmForm) Field(key string) *ConfirmFormField {
+	if f == nil {
+		return nil
+	}
+	for i := range f.Fields {
+		if f.Fields[i].Key == key {
+			return &f.Fields[i]
+		}
+	}
+	return nil
+}
+
+// ValidateOverrides checks user-supplied overrides against the form: every
+// key must name an Editable field and every value must be one of that field's
+// Options. Returns a user-displayable error on the first violation.
+func (f *ConfirmForm) ValidateOverrides(overrides map[string]string) error {
+	for k, v := range overrides {
+		field := f.Field(k)
+		if field == nil || !field.Editable {
+			return fmt.Errorf("字段 %s 不可修改", k)
+		}
+		valid := false
+		for _, opt := range field.Options {
+			if opt.Value == v {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("字段 %s 的取值不在可选范围内", k)
+		}
+	}
+	return nil
+}
+
+// ConfirmResolution is the user's decision on a form-bearing confirmation:
+// confirmed/denied plus any validated field overrides.
+type ConfirmResolution struct {
+	Confirmed bool
+	Overrides map[string]string
+}
+
+// ConfirmEditsFunc is the richer HITL gate used when a StepConfirm carries a
+// BuildForm. It presents args + form and returns the user's resolution. The
+// transport (HTTP ConfirmBroker) has already validated Overrides against the
+// form; Engine.Run re-validates defensively before applying.
+type ConfirmEditsFunc func(action string, args map[string]any, form *ConfirmForm) ConfirmResolution
 
 // StepEvent is emitted during workflow execution for UI/CLI display.
 type StepEvent struct {

@@ -176,7 +176,7 @@ func TestWS_Confirm_FrameResolvesBrokerWaiter(t *testing.T) {
 	confirmID, ch := h.confirmBroker.Register("sess-1", gatewayOwner)
 	result := make(chan bool, 1)
 	go func() {
-		result <- WaitForConfirmation(context.Background(), ch, 5*time.Second)
+		result <- WaitForConfirmation(context.Background(), ch, 5*time.Second).Confirmed
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -205,7 +205,7 @@ func TestWS_Confirm_WrongOwnerRejected(t *testing.T) {
 	confirmID, ch := h.confirmBroker.Register("sess-1", otherOwner)
 	result := make(chan bool, 1)
 	go func() {
-		result <- WaitForConfirmation(context.Background(), ch, 1*time.Second)
+		result <- WaitForConfirmation(context.Background(), ch, 1*time.Second).Confirmed
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

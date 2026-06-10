@@ -152,6 +152,12 @@ type ChatOptions struct {
 	// this turn only. Used by the HTTP path to inject an SSE-backed confirm
 	// that blocks on a channel instead of stdin.
 	ConfirmFunc func(action string, args map[string]any) bool
+	// ConfirmEditsFunc, if non-nil, additionally enables the editable confirm
+	// form for workflow StepConfirms that declare one (create-flow 表单化).
+	// Only the HTTP path sets it, and only when COMPSHARE_CONFIRM_FORM is on
+	// AND the client opted in via Features — nil keeps the boolean confirm
+	// path byte-identical.
+	ConfirmEditsFunc workflow.ConfirmEditsFunc
 }
 
 type IntentPlannerOptions struct {
@@ -234,6 +240,11 @@ type Engine struct {
 	// trace_json.steps[]. nil = no step observability. Consumed by RunAgentSaga.
 	stepSink                 orchestrator.StepSink
 	confirmFn                ConfirmFunc
+	// confirmEditsFn is the editable-form HITL gate (create-flow 表单化).
+	// Set per-turn via ChatOptions.ConfirmEditsFunc by the HTTP path only when
+	// COMPSHARE_CONFIRM_FORM is on AND the client opted in; nil everywhere
+	// else (CLI, flag-off) so every confirm stays on the boolean ConfirmFunc.
+	confirmEditsFn workflow.ConfirmEditsFunc
 	messages                 []openai.ChatCompletionMessage // conversation history
 	userTurn                 int                            // incremented at start of each Chat() call
 	lastInstanceQueryTurn    int                            // set to userTurn on successful DescribeCompShareInstance
@@ -1045,6 +1056,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			e.confirmFn = origConfirm
 			e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(origConfirm))
 		}()
+	}
+	// Per-turn editable-form gate (HTTP path, flag+opt-in only).
+	if opts.ConfirmEditsFunc != nil {
+		origEdits := e.confirmEditsFn
+		e.confirmEditsFn = opts.ConfirmEditsFunc
+		defer func() { e.confirmEditsFn = origEdits }()
 	}
 
 	e.lastUserMsg = userMsg
@@ -3738,6 +3755,12 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 			CapReason: capReason,
 		})
 	})
+	// Editable confirm form (create-flow 表单化): nil except on HTTP turns
+	// with COMPSHARE_CONFIRM_FORM on + client opt-in, where StepConfirms that
+	// declare a BuildForm gain select-only field edits with revalidation.
+	if e.confirmEditsFn != nil {
+		wfEngine.SetConfirmEditsFn(e.confirmEditsFn)
+	}
 
 	// Normalize the GPU type to the platform's canonical catalog name before the
 	// create workflow queries availability. The planner echoes the user's literal
