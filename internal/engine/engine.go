@@ -50,8 +50,8 @@ const (
 const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
 
-// monitor_history / account_billing / resource_shortage refusal text moved
-// to internal/refusal/templates.go in the C2 hard-block 归一 refactor.
+// monitor_history / account_billing refusal text moved to
+// internal/refusal/templates.go in the C2 hard-block 归一 refactor.
 // Call sites import refusal directly; this file no longer declares them.
 
 const (
@@ -1125,6 +1125,23 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// pre-loaded with any planner LLM call (accumulateTokenUsage
 		// in callPlannerOnce) and triggers if that already blew budget.
 		if e.tokenBudgetExceeded() {
+			// PR2 budget policy: if a prior round's SearchKnowledge already
+			// gathered evidence this turn, write the final answer from it
+			// (disciplined cited synthesis) instead of discarding the turn for
+			// a bare "请简化问题". Only fall back to the budget refusal when
+			// nothing groundable was retrieved (the "no evidence → refuse,
+			// never fabricate" guard). round 0 reaches this with an empty
+			// ledger (no tool has run yet) and so still refuses.
+			if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: synth,
+				})
+				if opts.OnTextDelta != nil {
+					opts.OnTextDelta(synth)
+				}
+				return synth, nil
+			}
 			e.emitTokenBudgetExceededHardBlock()
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
@@ -1265,13 +1282,19 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// Post-call budget check: emitTokenUsage just accumulated this
 		// call's usage. If the single call already blew the cap, gate
 		// here so the user gets the canned reply instead of an answer
-		// that already exceeded budget. Without this, a one-shot 60k-
-		// token final answer would still flow through to the user
-		// despite max_tokens_per_turn=50000. Returning canned makes the
-		// cap meaningful end-to-end. (c) invariant still holds: this
+		// that already exceeded budget. (c) invariant still holds: this
 		// branch has NO tool_calls in flight — len(resp.ToolCalls)==0
-		// is the condition just below — so no orphan pair.
-		if len(resp.ToolCalls) == 0 && e.tokenBudgetExceeded() {
+		// is part of the condition — so no orphan pair.
+		//
+		// PR2 budget policy: refuse here ONLY when no evidence was gathered
+		// this turn. If SearchKnowledge already surfaced evidence
+		// (searchKnowledgeHitsThisTurn non-empty), fall through to the
+		// no-tool-calls block below, which writes a final answer grounded on
+		// that evidence (disciplined cited synthesis) instead of discarding
+		// the work for a bare "请简化问题". The answerer it calls is itself
+		// budget-aware (delivers a grounded answer over cap, only suppressing
+		// its extra retry), so this never fabricates an ungrounded answer.
+		if len(resp.ToolCalls) == 0 && e.tokenBudgetExceeded() && len(e.searchKnowledgeHitsThisTurn) == 0 {
 			e.emitTokenBudgetExceededHardBlock()
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
@@ -2226,25 +2249,30 @@ func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string
 	}
 	e.emitTokenUsage(resp.Usage)
 
-	// Post-call budget gate. The first answerer LLM call has been
-	// accounted for; if cumulative tokens are over cap, return the
-	// canned message instead of the LLM content. WHY: pre-fix, an
-	// answer that itself blew budget was still delivered to the user
-	// — the cap stopped only FURTHER calls. That made the cap
-	// non-strict on RAG paths. EscapedHallucinatedCount stays 0 here
-	// (no hallucination was attempted — there's no answer being
-	// scored), distinct from organic retry_no_cite which sets it to 1.
-	if e.tokenBudgetExceeded() {
-		e.emitTokenBudgetExceededHardBlock()
-		return tokenBudgetExceededMessage, outcome, "token_budget", false, nil
-	}
-
 	answer := strings.TrimSpace(resp.Content)
+	// A grounded (cited) first answer or an honest refusal is delivered
+	// regardless of the per-turn token budget — PR2 budget policy: when we
+	// already have an answer grounded on retrieved evidence, do NOT discard
+	// it for a bare "请简化问题". The budget only suppresses spending MORE
+	// tokens (the cite-harder retry below), never the delivery of an answer
+	// already in hand.
 	if isKnowledgeRefusal(answer) {
 		return answer, outcome, refusedReasonForRefusal(weak), false, nil
 	}
 	if hasNumberedCitation(answer) {
 		return answer, outcome, "", false, nil
+	}
+
+	// The first answer is neither an honest refusal nor cited; normally we
+	// retry once with a cite-harder prompt. That is another LLM call, so
+	// gate it on the budget: if the per-turn cap is already blown, do NOT
+	// spend the retry — return the budget refusal rather than ship an
+	// uncited answer (the "no groundable answer → refuse, never fabricate"
+	// guard). EscapedHallucinatedCount stays 0 here (no hallucination was
+	// scored), distinct from organic retry_no_cite which sets it to 1.
+	if e.tokenBudgetExceeded() {
+		e.emitTokenBudgetExceededHardBlock()
+		return tokenBudgetExceededMessage, outcome, "token_budget", false, nil
 	}
 
 	outcome.AttemptedHallucinatedCount = 1
@@ -2257,14 +2285,10 @@ func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string
 	}
 	e.emitTokenUsage(retryResp.Usage)
 
-	// Post-retry budget gate. Symmetric to the post-first-call gate
-	// above. If the retry pushed us over cap, deliver canned instead
-	// of the retry's answer — even if the retry produced a cited
-	// answer, the cap is binding.
-	if e.tokenBudgetExceeded() {
-		e.emitTokenBudgetExceededHardBlock()
-		return tokenBudgetExceededMessage, outcome, "token_budget", false, nil
-	}
+	// No post-retry budget gate (PR2): the retry only runs when we were
+	// under cap at the first-call gate, and a cited retry answer is an
+	// answer grounded on retrieved evidence — deliver it even if the retry
+	// itself tipped over cap, rather than discarding it for "请简化问题".
 	retryAnswer := strings.TrimSpace(retryResp.Content)
 	if isKnowledgeRefusal(retryAnswer) {
 		return retryAnswer, outcome, refusedReasonForRefusal(weak), false, nil
