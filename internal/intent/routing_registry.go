@@ -1082,11 +1082,7 @@ func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []str
 		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(filtered), Source: envelope.FactSourceComputed},
 		envelope.Fact{Key: "user_question", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
 	)
-	shown := 0
 	for i, entry := range filtered {
-		if shown >= imageListDisplayCap {
-			break
-		}
 		id := safeString(entry, "CompShareImageId")
 		if id == "" {
 			id = fmt.Sprintf("image_%d", i)
@@ -1096,13 +1092,7 @@ func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []str
 		env.Subjects = append(env.Subjects, envelope.Subject{
 			ID: subjectID, Name: name, Type: envelope.SubjectImage,
 		})
-		// Skip the raw-id / redundant-name display facts so the grounded renderer
-		// does not dump CompShareImageId per row — the id lives in Subject.ID and the
-		// name in Subject.Name. Keeps the rendered list clean (类型/状态/作者 only).
 		for _, key := range fieldOrder {
-			if _, skip := imageDisplaySkipFields[key]; skip {
-				continue
-			}
 			v := safeString(entry, key)
 			if v == "" {
 				continue
@@ -1111,14 +1101,6 @@ func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []str
 				SubjectID: subjectID, Key: key, Label: imageFieldLabel(key), Value: v, Source: envelope.FactSourceAPI,
 			})
 		}
-		shown++
-	}
-	if len(filtered) > shown {
-		env.Computed = append(env.Computed, envelope.Fact{
-			Key: "display_truncated", Label: "Display truncated",
-			Value:  fmt.Sprintf("showing %d of %d images; ask with a keyword to narrow", shown, len(filtered)),
-			Source: envelope.FactSourceComputed,
-		})
 	}
 	return env
 }
@@ -1750,53 +1732,6 @@ func entryMatchesAnyKeyword(entry map[string]any, keywords []string, fields []st
 	return false
 }
 
-// imageListDisplayCap bounds how many image rows the fast-tier reply / envelope
-// surfaces by default, so a "列出全部镜像" turn does not dump the whole catalog
-// (39+) as one wall of text. The keyword filter narrows when the user names
-// something; this cap only bites on the list-all path. Overflow is reported as a
-// "共 N 个" note inviting a keyword filter.
-const imageListDisplayCap = 30
-
-// imageDisplaySkipFields are the raw-id / redundant-name keys the clean image
-// display intentionally OMITS: the name is shown once up front (bestImageName) and
-// the raw CompShareImageId is dropped from the default view (用户按名称引用即可; the
-// envelope's Subject.ID still carries the id for any downstream consumer).
-var imageDisplaySkipFields = map[string]struct{}{
-	"CompShareImageId":   {},
-	"Name":               {},
-	"CompShareImageName": {},
-	"ImageName":          {},
-}
-
-// formatImageDisplayLine renders one image as a clean, ID-free display line —
-// 名称 first, then the human-relevant fields (类型/作者/状态) with 中文 labels
-// (imageFieldLabel) — matching the GPU/stock renderers instead of the raw English
-// `Key=Value` dump that led with CompShareImageId. Returns "" when there is no name.
-func formatImageDisplayLine(entry map[string]any, fieldOrder []string) string {
-	name := bestImageName(entry)
-	if name == "" {
-		return ""
-	}
-	parts := []string{"名称=" + name}
-	seen := map[string]struct{}{}
-	for _, key := range fieldOrder {
-		if _, skip := imageDisplaySkipFields[key]; skip {
-			continue
-		}
-		v := safeString(entry, key)
-		if v == "" {
-			continue
-		}
-		label := imageFieldLabel(key)
-		if _, dup := seen[label]; dup {
-			continue
-		}
-		seen[label] = struct{}{}
-		parts = append(parts, label+"="+v)
-	}
-	return strings.Join(parts, ", ")
-}
-
 func renderImageListReply(raw map[string]any, listKey string, fieldOrder []string, userText string) string {
 	items := mapSliceAt(raw, listKey)
 	if len(items) == 0 {
@@ -1839,25 +1774,23 @@ func renderImageListReply(raw map[string]any, listKey string, fieldOrder []strin
 	if len(keywords) > 0 && len(filtered) == 0 {
 		return noImageListNoMatchReply
 	}
-	lines := make([]string, 0, imageListDisplayCap)
+	lines := make([]string, 0, len(filtered))
 	for _, entry := range filtered {
-		if len(lines) >= imageListDisplayCap {
-			break
+		parts := make([]string, 0, len(fieldOrder))
+		for _, key := range fieldOrder {
+			if v := safeString(entry, key); v != "" {
+				parts = append(parts, key+"="+v)
+			}
 		}
-		line := formatImageDisplayLine(entry, fieldOrder)
-		if line == "" {
+		if len(parts) == 0 {
 			continue
 		}
-		lines = append(lines, line)
+		lines = append(lines, strings.Join(parts, ", "))
 	}
 	if len(lines) == 0 {
 		return noImageListReply
 	}
-	out := strings.Join(lines, "\n")
-	if len(filtered) > len(lines) {
-		out += fmt.Sprintf("\n（共 %d 个镜像，已显示前 %d 个；可补充关键词进一步筛选）", len(filtered), len(lines))
-	}
-	return out
+	return strings.Join(lines, "\n")
 }
 
 func renderImageTagCatalogReply(raw map[string]any) string {
@@ -2162,23 +2095,14 @@ func isSharedImageListAllIntent(userText string) bool {
 }
 
 func buildSharedImageLine(entry map[string]any) string {
-	name := bestImageName(entry)
-	if name == "" {
-		return ""
-	}
-	// 名称 first, raw CompShareImageId dropped (用户按名称引用即可) — same clean style
-	// as the platform image list.
-	parts := []string{"名称=" + name}
-	for _, key := range []string{"ImageType", "Status"} {
+	parts := []string{}
+	for _, key := range []string{"CompShareImageId", "Name", "ImageType", "Status", "Container"} {
 		if v := strings.TrimSpace(safeString(entry, key)); v != "" {
-			parts = append(parts, imageFieldLabel(key)+"="+v)
+			parts = append(parts, key+"="+v)
 		}
 	}
-	if v := strings.TrimSpace(safeString(entry, "Container")); v != "" {
-		parts = append(parts, "容器="+v)
-	}
 	if owner := sharedImageOwnerDisplay(entry); owner != "" {
-		parts = append(parts, "所有者="+owner)
+		parts = append(parts, "Owner="+owner)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -2213,15 +2137,10 @@ func buildCommunityGroupHeader(entry map[string]any) string {
 }
 
 func buildCommunityVersionLine(ver map[string]any) string {
-	// 版本名 first, raw CompShareImageId dropped from display (用户按名称引用即可).
 	parts := []string{}
-	if name := bestImageName(ver); name != "" {
-		parts = append(parts, "版本="+name)
-	}
-	for _, key := range []string{"VersionName", "Version"} {
+	for _, key := range []string{"CompShareImageId", "Name", "VersionName", "Version"} {
 		if v := safeString(ver, key); v != "" {
-			parts = append(parts, "版本号="+v)
-			break
+			parts = append(parts, key+"="+v)
 		}
 	}
 	return strings.Join(parts, ", ")

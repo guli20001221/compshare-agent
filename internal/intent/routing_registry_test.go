@@ -3,7 +3,6 @@ package intent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -1229,15 +1228,10 @@ func TestRenderSharedImageListReply_ListAll(t *testing.T) {
 		}},
 	}
 	reply := renderSharedImageListReply(raw, "别人共享给我的镜像在哪看")
-	// Clean display (③): 名称-first + 中文 labels + owner; the raw CompShareImageId is
-	// dropped from the default view (用户按名称引用即可) — assert it is ABSENT.
-	for _, want := range []string{"共享给你的镜像", "名称=shared-env", "所有者=team-a"} {
+	for _, want := range []string{"共享给你的镜像", "img-shared-1", "shared-env", "Owner=team-a"} {
 		if !strings.Contains(reply, want) {
 			t.Errorf("shared image reply missing %q: %s", want, reply)
 		}
-	}
-	if strings.Contains(reply, "img-shared-1") {
-		t.Errorf("raw CompShareImageId must NOT appear in the clean shared-image display: %s", reply)
 	}
 }
 
@@ -1255,63 +1249,6 @@ func TestRenderSharedImageListReply_Empty(t *testing.T) {
 	reply := renderSharedImageListReply(map[string]any{}, "别人共享给我的镜像")
 	if !strings.Contains(reply, "未获取到共享给你的镜像") {
 		t.Errorf("empty shared image reply should be explicit; got: %s", reply)
-	}
-}
-
-// TestRenderImageListReply_CleanDisplay (③) proves the platform image list renders
-// 名称-first with 中文 labels and DROPS the raw CompShareImageId from the default
-// view — the user's "像镜像一样输出来的比较乱" complaint (raw English Key=Value dump
-// led by the image id).
-func TestRenderImageListReply_CleanDisplay(t *testing.T) {
-	raw := map[string]any{"ImageSet": []any{
-		map[string]any{"CompShareImageId": "img-pt", "Name": "PyTorch 2.9", "ImageType": "App"},
-	}}
-	fieldOrder := []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"}
-	reply := renderImageListReply(raw, "ImageSet", fieldOrder, "有哪些镜像")
-	if !strings.Contains(reply, "名称=PyTorch 2.9") {
-		t.Errorf("clean display must lead with 名称; got: %s", reply)
-	}
-	if !strings.Contains(reply, "镜像类型=App") {
-		t.Errorf("clean display must use 中文 field labels; got: %s", reply)
-	}
-	if strings.Contains(reply, "img-pt") || strings.Contains(reply, "CompShareImageId") {
-		t.Errorf("raw CompShareImageId must NOT appear in the clean image display; got: %s", reply)
-	}
-}
-
-// TestRenderImageListReply_CapAndOverflow (③) proves a list-all over the cap shows
-// only imageListDisplayCap rows + a "共 N 个" overflow note inviting a keyword filter.
-func TestRenderImageListReply_CapAndOverflow(t *testing.T) {
-	total := imageListDisplayCap + 7
-	items := make([]any, 0, total)
-	for i := 0; i < total; i++ {
-		items = append(items, map[string]any{"CompShareImageId": fmt.Sprintf("img-%d", i), "Name": fmt.Sprintf("img-name-%d", i)})
-	}
-	reply := renderImageListReply(map[string]any{"ImageSet": items}, "ImageSet", []string{"CompShareImageId", "Name"}, "列出全部镜像")
-	if got := strings.Count(reply, "名称="); got != imageListDisplayCap {
-		t.Errorf("expected %d capped rows, got %d", imageListDisplayCap, got)
-	}
-	if !strings.Contains(reply, fmt.Sprintf("共 %d 个镜像", total)) || !strings.Contains(reply, "可补充关键词") {
-		t.Errorf("over-cap reply must carry the overflow note; got: %s", reply)
-	}
-}
-
-// TestBuildImageListEnvelope_NoRawIDFacts (③) proves the grounded-render envelope no
-// longer emits CompShareImageId as a per-row display Fact (which made the LLM dump
-// ids) — the id is preserved structurally in Subject.ID.
-func TestBuildImageListEnvelope_NoRawIDFacts(t *testing.T) {
-	raw := map[string]any{"ImageSet": []any{
-		map[string]any{"CompShareImageId": "img-pt", "Name": "PyTorch 2.9", "ImageType": "App"},
-	}}
-	fieldOrder := []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"}
-	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, "有哪些镜像", "DescribeCompShareImages", "platform")
-	for _, f := range env.Facts {
-		if f.Key == "CompShareImageId" || f.Key == "Name" {
-			t.Errorf("display Fact %q should be dropped (id→Subject.ID, name→Subject.Name); facts=%v", f.Key, env.Facts)
-		}
-	}
-	if len(env.Subjects) != 1 || env.Subjects[0].ID != "image:img-pt" || env.Subjects[0].Name != "PyTorch 2.9" {
-		t.Errorf("Subject must still carry id+name: %+v", env.Subjects)
 	}
 }
 
