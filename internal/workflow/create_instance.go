@@ -517,6 +517,13 @@ func stepConfirmCreate() Step {
 	return Step{
 		Name: "确认创建",
 		Type: StepConfirm,
+		// Editable selection form (v1, select-only). Consumed only when the
+		// HTTP path wires a ConfirmEditsFunc (COMPSHARE_CONFIRM_FORM on +
+		// client opt-in); the CLI boolean confirm and the deploy_model saga
+		// ignore these three fields entirely.
+		BuildForm:       buildCreateConfirmForm,
+		ApplyOverrides:  applyCreateOverrides,
+		RevalidateSteps: []string{"检查库存", "查询价格"},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			gpu, cpu, memMB, zone, err := resolveTargetSpec(wfCtx)
 			if err != nil {
@@ -774,4 +781,353 @@ func pickFirstCommunityImageName(result map[string]any) string {
 		return name
 	}
 	return "未知"
+}
+
+// ---------------------------------------------------------------------------
+// Editable confirm form (v1, select-only)
+//
+// All option sets are assembled from data ALREADY collected by earlier steps
+// (查询镜像 / 查询可用配比) — zero extra API calls, zero LLM. No stock or price
+// claim is made for combinations that were never checked: after an override
+// the 检查库存/查询价格 steps re-run and a refreshed card is re-confirmed
+// (方案 A), so the authoritative answer always precedes creation.
+// ---------------------------------------------------------------------------
+
+const (
+	maxFormGPUOptions   = 5
+	maxFormImageOptions = 3
+)
+
+// createFormChargeTypes are the selectable billing modes. Postpay is the
+// platform default; the deprecated Dynamic spelling is normalized away by
+// createChargeType and never offered.
+var createFormChargeTypes = []ConfirmFormOption{
+	{Value: "Postpay", Label: "按量付费（按小时计费）"},
+	{Value: "Day", Label: "包日"},
+	{Value: "Month", Label: "包月"},
+}
+
+// buildCreateConfirmForm assembles the editable selection form shown with the
+// create confirm card. Fields with no real alternative (single option) are
+// omitted — the read-only Summary already displays their values.
+func buildCreateConfirmForm(wfCtx *Context) (*ConfirmForm, error) {
+	_, _, _, zone, err := resolveTargetSpec(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	gpuType, _ := wfCtx.Params["GpuType"].(string)
+	catalog := wfCtx.Result("查询可用配比")
+	images := wfCtx.Result("查询镜像")
+
+	supported := currentImageSupportedGPUs(wfCtx.Params, images)
+
+	var fields []ConfirmFormField
+	if opts := gpuFormOptions(catalog, supported, gpuType); len(opts) > 1 {
+		fields = append(fields, ConfirmFormField{
+			Key: "GpuType", Label: "GPU 型号", Type: "select",
+			Value: gpuType, Editable: true, Options: opts,
+		})
+	}
+	if opts := zoneFormOptions(catalog, gpuType, zone); len(opts) > 1 {
+		fields = append(fields, ConfirmFormField{
+			Key: "Zone", Label: "可用区", Type: "select",
+			Value: zone, Editable: true, Options: opts,
+		})
+	}
+	if cur, opts := imageFormOptions(wfCtx.Params, images, gpuType); cur != "" && len(opts) > 1 {
+		fields = append(fields, ConfirmFormField{
+			Key: "ImageId", Label: "镜像", Type: "select",
+			Value: cur, Editable: true, Options: opts,
+		})
+	}
+	fields = append(fields, ConfirmFormField{
+		Key: "ChargeType", Label: "计费方式", Type: "select",
+		Value: createChargeType(wfCtx.Params), Editable: true, Options: createFormChargeTypes,
+	})
+	return &ConfirmForm{Version: 1, Fields: fields}, nil
+}
+
+// applyCreateOverrides merges validated form overrides into the workflow
+// params. Keys are restricted to the form's field set; anything else is
+// rejected (defense in depth on top of ConfirmForm.ValidateOverrides).
+func applyCreateOverrides(wfCtx *Context, overrides map[string]string) error {
+	_, zoneOverridden := overrides["Zone"]
+	for k, v := range overrides {
+		switch k {
+		case "GpuType":
+			wfCtx.Params["GpuType"] = v
+			// A pinned CPU/Memory combo (and an auto-resolved zone) belongs to
+			// the PREVIOUS GPU; drop them so resolveTargetSpec re-defaults for
+			// the new card. Nothing is silent: the refreshed confirm card shows
+			// the re-resolved CPU/Memory/Zone before anything is created.
+			delete(wfCtx.Params, "Cpu")
+			delete(wfCtx.Params, "Memory")
+			if !zoneOverridden {
+				delete(wfCtx.Params, "Zone")
+			}
+		case "Zone":
+			wfCtx.Params["Zone"] = v
+		case "ChargeType":
+			wfCtx.Params["ChargeType"] = v
+		case "ImageId":
+			// Thread the exact id — pickImageId prefers it everywhere
+			// (capacity / price / create), so the validated image is the one
+			// that gets built.
+			wfCtx.Params["CompShareImageId"] = v
+			if name := imageNameByID(wfCtx.Result("查询镜像"), v); name != "" {
+				wfCtx.Params["ImageName"] = name
+			}
+		default:
+			return fmt.Errorf("不支持修改字段 %s", k)
+		}
+	}
+	return nil
+}
+
+// gpuFormOptions lists selectable GPU types: sellable types from the catalog,
+// filtered to the current image's SupportedGpuTypes when declared, current
+// type first. No stock claim is attached — stock is only asserted by the
+// post-edit 检查库存 re-run.
+func gpuFormOptions(catalog map[string]any, supported []string, current string) []ConfirmFormOption {
+	if catalog == nil {
+		return nil
+	}
+	opts := []ConfirmFormOption{{Value: current, Label: gpuOptionLabel(catalog, current)}}
+	seen := map[string]bool{current: true}
+	types, _ := catalog["AvailableInstanceTypes"].([]any)
+	for _, t := range types {
+		if len(opts) >= maxFormGPUOptions {
+			break
+		}
+		mt, _ := t.(map[string]any)
+		name, _ := mt["Name"].(string)
+		if name == "" || seen[name] {
+			continue
+		}
+		if status, _ := mt["Status"].(string); status != "" && status != "Normal" {
+			continue
+		}
+		if len(supported) > 0 && !containsFold(supported, name) {
+			continue
+		}
+		seen[name] = true
+		opts = append(opts, ConfirmFormOption{Value: name, Label: gpuOptionLabel(catalog, name)})
+	}
+	return opts
+}
+
+// gpuOptionLabel renders "4090（24G显存）" when the catalog carries VRAM info,
+// else just the type name.
+func gpuOptionLabel(catalog map[string]any, gpuType string) string {
+	types, _ := catalog["AvailableInstanceTypes"].([]any)
+	for _, t := range types {
+		mt, _ := t.(map[string]any)
+		if name, _ := mt["Name"].(string); name != gpuType {
+			continue
+		}
+		gm, _ := mt["GraphicsMemory"].(map[string]any)
+		if v, _ := gm["Value"].(float64); v > 0 {
+			return fmt.Sprintf("%s（%.0fG显存）", gpuType, v)
+		}
+		break
+	}
+	return gpuType
+}
+
+// zoneFormOptions lists the zones the current GPU type is sellable in,
+// current zone first.
+func zoneFormOptions(catalog map[string]any, gpuType, current string) []ConfirmFormOption {
+	if catalog == nil {
+		return nil
+	}
+	opts := []ConfirmFormOption{{Value: current, Label: current}}
+	seen := map[string]bool{current: true}
+	types, _ := catalog["AvailableInstanceTypes"].([]any)
+	for _, t := range types {
+		mt, _ := t.(map[string]any)
+		if name, _ := mt["Name"].(string); name != gpuType {
+			continue
+		}
+		z, _ := mt["Zone"].(string)
+		if z == "" || seen[z] {
+			continue
+		}
+		if status, _ := mt["Status"].(string); status != "" && status != "Normal" {
+			continue
+		}
+		seen[z] = true
+		opts = append(opts, ConfirmFormOption{Value: z, Label: z})
+	}
+	return opts
+}
+
+// imageFormOptions returns the currently selected image id plus up to
+// maxFormImageOptions recommendations from the queried source (no cross-source
+// mixing), filtered to images that declare support for the current GPU type
+// (or declare no constraint). The current selection is always first.
+func imageFormOptions(params map[string]any, images map[string]any, gpuType string) (string, []ConfirmFormOption) {
+	current := pickImageId(params, images)
+	if current == "" || images == nil {
+		return "", nil
+	}
+	currentLabel := imageNameByID(images, current)
+	if currentLabel == "" {
+		currentLabel = pickImageName(params, images)
+	}
+	opts := []ConfirmFormOption{{Value: current, Label: currentLabel}}
+	seen := map[string]bool{current: true}
+
+	appendOpt := func(id, label string, supported []string) {
+		if id == "" || seen[id] || len(opts) >= maxFormImageOptions {
+			return
+		}
+		if len(supported) > 0 && !containsFold(supported, gpuType) {
+			return
+		}
+		seen[id] = true
+		opts = append(opts, ConfirmFormOption{Value: id, Label: label})
+	}
+
+	if groups, ok := images["CompshareImageGroup"].([]any); ok {
+		for _, g := range groups {
+			gm, _ := g.(map[string]any)
+			if gm == nil {
+				continue
+			}
+			data, _ := gm["Data"].([]any)
+			if len(data) == 0 {
+				continue
+			}
+			d0, _ := data[0].(map[string]any)
+			id, _ := d0["CompShareImageId"].(string)
+			name, _ := gm["ImageName"].(string)
+			appendOpt(id, name, formStringSlice(d0["SupportedGpuTypes"]))
+		}
+		return current, opts
+	}
+
+	imageSet, _ := images["ImageSet"].([]any)
+	for _, item := range imageSet {
+		img, _ := item.(map[string]any)
+		if img == nil {
+			continue
+		}
+		id, _ := img["CompShareImageId"].(string)
+		name, _ := img["Name"].(string)
+		appendOpt(id, name, formStringSlice(img["SupportedGpuTypes"]))
+	}
+	return current, opts
+}
+
+// currentImageSupportedGPUs returns the SupportedGpuTypes declared by the
+// currently selected image (empty = no constraint declared).
+func currentImageSupportedGPUs(params map[string]any, images map[string]any) []string {
+	if images == nil {
+		return nil
+	}
+	if id := pickImageId(params, images); id != "" {
+		if s := imageSupportedByID(images, id); len(s) > 0 {
+			return s
+		}
+	}
+	return nil
+}
+
+// imageNameByID finds the display name for an image id in either result shape
+// (platform ImageSet / community CompshareImageGroup). Returns "" when absent.
+func imageNameByID(images map[string]any, id string) string {
+	if images == nil || id == "" {
+		return ""
+	}
+	if groups, ok := images["CompshareImageGroup"].([]any); ok {
+		for _, g := range groups {
+			gm, _ := g.(map[string]any)
+			if gm == nil {
+				continue
+			}
+			data, _ := gm["Data"].([]any)
+			for _, d := range data {
+				dm, _ := d.(map[string]any)
+				if got, _ := dm["CompShareImageId"].(string); got == id {
+					name, _ := gm["ImageName"].(string)
+					return name
+				}
+			}
+		}
+		return ""
+	}
+	imageSet, _ := images["ImageSet"].([]any)
+	for _, item := range imageSet {
+		img, _ := item.(map[string]any)
+		if img == nil {
+			continue
+		}
+		if got, _ := img["CompShareImageId"].(string); got == id {
+			name, _ := img["Name"].(string)
+			return name
+		}
+	}
+	return ""
+}
+
+// imageSupportedByID returns the SupportedGpuTypes list of the image with the
+// given id, in either result shape.
+func imageSupportedByID(images map[string]any, id string) []string {
+	if groups, ok := images["CompshareImageGroup"].([]any); ok {
+		for _, g := range groups {
+			gm, _ := g.(map[string]any)
+			if gm == nil {
+				continue
+			}
+			data, _ := gm["Data"].([]any)
+			for _, d := range data {
+				dm, _ := d.(map[string]any)
+				if got, _ := dm["CompShareImageId"].(string); got == id {
+					return formStringSlice(dm["SupportedGpuTypes"])
+				}
+			}
+		}
+		return nil
+	}
+	imageSet, _ := images["ImageSet"].([]any)
+	for _, item := range imageSet {
+		img, _ := item.(map[string]any)
+		if img == nil {
+			continue
+		}
+		if got, _ := img["CompShareImageId"].(string); got == id {
+			return formStringSlice(img["SupportedGpuTypes"])
+		}
+	}
+	return nil
+}
+
+// formStringSlice converts a JSON-decoded []any of strings to []string,
+// skipping non-string and duplicate entries.
+func formStringSlice(v any) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	seen := make(map[string]bool, len(arr))
+	var out []string
+	for _, x := range arr {
+		s, ok := x.(string)
+		if !ok || s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+// containsFold reports whether list contains s, case-insensitively.
+func containsFold(list []string, s string) bool {
+	for _, item := range list {
+		if strings.EqualFold(item, s) {
+			return true
+		}
+	}
+	return false
 }

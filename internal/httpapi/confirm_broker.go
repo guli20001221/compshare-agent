@@ -7,18 +7,33 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/store"
+	"github.com/compshare-agent/internal/workflow"
 	"github.com/google/uuid"
 )
 
 var (
 	ErrConfirmationNotFound = errors.New("confirmation not found or already resolved")
 	ErrConfirmationOwner    = errors.New("confirmation does not belong to this session/owner")
+	// ErrOverridesNotAllowed is returned when a ConfirmCSAgentAction carries
+	// Overrides but the pending confirmation never offered an editable form.
+	ErrOverridesNotAllowed = errors.New("this confirmation does not accept overrides")
 )
+
+// ConfirmDecision is the user's resolution of a pending confirmation:
+// confirm/deny plus (form confirmations only) validated field overrides.
+type ConfirmDecision struct {
+	Confirmed bool
+	Overrides map[string]string
+}
 
 type pendingConfirm struct {
 	sessionID string
 	owner     store.Owner
-	ch        chan bool
+	ch        chan ConfirmDecision
+	// form, when non-nil, is the editable form emitted with this confirmation.
+	// Overrides are accepted only against it (whitelist validation); nil
+	// rejects any Overrides (legacy boolean confirmation).
+	form *workflow.ConfirmForm
 }
 
 // ConfirmBroker mediates between an SSE Chat handler (which blocks waiting
@@ -36,13 +51,23 @@ func NewConfirmBroker() *ConfirmBroker {
 }
 
 // Register creates a new pending confirmation and returns its unique ID plus
-// a receive-only channel. The caller blocks on the channel; the result is
-// true (confirmed) or false (denied/timeout/cancelled).
-func (b *ConfirmBroker) Register(sessionID string, owner store.Owner) (string, <-chan bool) {
+// a receive-only channel. The caller blocks on the channel; the decision
+// carries confirmed/denied (Overrides always empty — no form was offered).
+func (b *ConfirmBroker) Register(sessionID string, owner store.Owner) (string, <-chan ConfirmDecision) {
+	return b.register(sessionID, owner, nil)
+}
+
+// RegisterWithForm is Register plus the editable form emitted with the
+// confirmation; Resolve validates any Overrides against it.
+func (b *ConfirmBroker) RegisterWithForm(sessionID string, owner store.Owner, form *workflow.ConfirmForm) (string, <-chan ConfirmDecision) {
+	return b.register(sessionID, owner, form)
+}
+
+func (b *ConfirmBroker) register(sessionID string, owner store.Owner, form *workflow.ConfirmForm) (string, <-chan ConfirmDecision) {
 	id := uuid.NewString()
-	ch := make(chan bool, 1)
+	ch := make(chan ConfirmDecision, 1)
 	b.mu.Lock()
-	b.pending[id] = &pendingConfirm{sessionID: sessionID, owner: owner, ch: ch}
+	b.pending[id] = &pendingConfirm{sessionID: sessionID, owner: owner, ch: ch, form: form}
 	b.mu.Unlock()
 	return id, ch
 }
@@ -50,7 +75,13 @@ func (b *ConfirmBroker) Register(sessionID string, owner store.Owner) (string, <
 // Resolve delivers the user's decision. Returns ErrConfirmationNotFound if
 // the ID is unknown, or ErrConfirmationOwner if the sessionID/owner doesn't
 // match — preventing cross-session confirmation hijacking.
-func (b *ConfirmBroker) Resolve(confirmationID, sessionID string, owner store.Owner, confirmed bool) error {
+//
+// A CONFIRMED decision carrying Overrides is validated against the pending
+// confirmation's form (whitelist: editable fields, offered option values
+// only). On validation failure the pending entry is KEPT (the client may fix
+// and resend; the waiter's timeout still applies) and the error is returned
+// for an error frame. A deny ignores Overrides — denial needs no validation.
+func (b *ConfirmBroker) Resolve(confirmationID, sessionID string, owner store.Owner, decision ConfirmDecision) error {
 	b.mu.Lock()
 	p, ok := b.pending[confirmationID]
 	if !ok {
@@ -61,9 +92,22 @@ func (b *ConfirmBroker) Resolve(confirmationID, sessionID string, owner store.Ow
 		b.mu.Unlock()
 		return ErrConfirmationOwner
 	}
+	if decision.Confirmed && len(decision.Overrides) > 0 {
+		if p.form == nil {
+			b.mu.Unlock()
+			return ErrOverridesNotAllowed
+		}
+		if err := p.form.ValidateOverrides(decision.Overrides); err != nil {
+			b.mu.Unlock()
+			return err
+		}
+	}
+	if !decision.Confirmed {
+		decision.Overrides = nil
+	}
 	delete(b.pending, confirmationID)
 	b.mu.Unlock()
-	p.ch <- confirmed
+	p.ch <- decision
 	close(p.ch)
 	return nil
 }
@@ -83,17 +127,20 @@ func (b *ConfirmBroker) Cancel(confirmationID string) {
 }
 
 // WaitForConfirmation blocks until the confirmation is resolved, the context
-// is cancelled (SSE disconnect), or the timeout expires. Returns true only
-// if the user explicitly confirmed.
-func WaitForConfirmation(ctx context.Context, ch <-chan bool, timeout time.Duration) bool {
+// is cancelled (SSE disconnect), or the timeout expires. The zero decision
+// (denied) is returned on cancel/timeout/closed channel.
+func WaitForConfirmation(ctx context.Context, ch <-chan ConfirmDecision, timeout time.Duration) ConfirmDecision {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
-	case confirmed, ok := <-ch:
-		return ok && confirmed
+	case decision, ok := <-ch:
+		if !ok {
+			return ConfirmDecision{}
+		}
+		return decision
 	case <-ctx.Done():
-		return false
+		return ConfirmDecision{}
 	case <-timer.C:
-		return false
+		return ConfirmDecision{}
 	}
 }

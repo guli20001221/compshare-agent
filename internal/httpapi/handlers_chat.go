@@ -15,6 +15,7 @@ import (
 	"github.com/compshare-agent/internal/ocr"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
+	"github.com/compshare-agent/internal/workflow"
 	"github.com/google/uuid"
 )
 
@@ -67,14 +68,30 @@ type stepEvent struct {
 // confirmationEvent is the frame that tells the frontend to show a confirmation
 // dialog. The frontend sends ConfirmCSAgentAction with the ConfirmationId to
 // resolve it (over the same WebSocket).
+//
+// Form is the optional editable selection form (create-flow 表单化). It is
+// emitted ONLY when COMPSHARE_CONFIRM_FORM is on AND the client opted in via
+// SendCSAgentChat Features ("confirm_form_v1") — absent otherwise, keeping the
+// frame byte-identical for legacy clients. A client that received a Form may
+// attach select-only Overrides to its ConfirmCSAgentAction.
 type confirmationEvent struct {
-	ConfirmationID string         `json:"ConfirmationId"`
-	Action         string         `json:"Action"`
-	Summary        map[string]any `json:"Summary,omitempty"`
-	TimeoutSeconds int            `json:"TimeoutSeconds"`
+	ConfirmationID string                 `json:"ConfirmationId"`
+	Action         string                 `json:"Action"`
+	Summary        map[string]any         `json:"Summary,omitempty"`
+	TimeoutSeconds int                    `json:"TimeoutSeconds"`
+	Form           *workflow.ConfirmForm  `json:"Form,omitempty"`
 }
 
 const confirmTimeoutSeconds = 60
+
+// confirmFormTimeoutSeconds is the wait for form-bearing confirmations: the
+// user may be editing selects, so the window is wider than the plain y/N 60s.
+// Only the new opt-in path uses it; legacy confirmations keep 60s.
+const confirmFormTimeoutSeconds = 120
+
+// featureConfirmForm is the SendCSAgentChat Features value a client sends to
+// opt in to form-bearing confirmations (and Overrides on resolve).
+const featureConfirmForm = "confirm_form_v1"
 
 // streamWriter is the transport-agnostic sink for Chat streaming frames. The
 // production ws.Writer satisfies it, as does the test recordingSink, so the
@@ -119,6 +136,12 @@ type chatPrep struct {
 	clientCtxPreserve       json.RawMessage
 	sessionStatePersistable bool
 	start                   time.Time
+
+	// confirmFormOptIn is set by the WS read loop when the turn's
+	// SendCSAgentChat carried Features:["confirm_form_v1"]. Combined with the
+	// boot flag (Handlers.confirmFormEnabled) it gates the editable confirm
+	// form; the SSE POST path never sets it.
+	confirmFormOptIn bool
 }
 
 // prepareChat performs all pre-stream work shared by the SSE and WS paths:
@@ -393,8 +416,9 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			}); err != nil {
 				return false
 			}
-			return WaitForConfirmation(streamCtx, ch, time.Duration(confirmTimeoutSeconds)*time.Second)
+			return WaitForConfirmation(streamCtx, ch, time.Duration(confirmTimeoutSeconds)*time.Second).Confirmed
 		},
+		ConfirmEditsFunc: h.confirmEditsFuncFor(streamCtx, sw, sessionID, base.Owner, prep),
 	})
 
 	// Signal keepalive goroutine to exit.
@@ -507,6 +531,35 @@ func mustUserContext(h *Handlers, base BaseRequest) tools.UserContext {
 
 // sanitizeConfirmArgs projects workflow confirm args to a safe subset for the
 // frontend confirmation dialog. Sensitive fields (passwords, tokens) are excluded.
+// confirmEditsFuncFor builds the editable-form confirm gate for this turn, or
+// returns nil when either gate is closed (boot flag COMPSHARE_CONFIRM_FORM /
+// client Features opt-in) — nil keeps the engine on the legacy boolean
+// ConfirmFunc, so legacy clients see byte-identical confirmation frames.
+//
+// Each call round (including post-edit re-confirms) registers a FRESH
+// ConfirmationId carrying the round's form; the broker validates Overrides
+// against exactly that form before delivering them.
+func (h *Handlers) confirmEditsFuncFor(streamCtx context.Context, sw streamWriter, sessionID string, owner store.Owner, prep *chatPrep) workflow.ConfirmEditsFunc {
+	if !h.confirmFormEnabled || prep == nil || !prep.confirmFormOptIn || h.confirmBroker == nil {
+		return nil
+	}
+	return func(action string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+		confirmID, ch := h.confirmBroker.RegisterWithForm(sessionID, owner, form)
+		defer h.confirmBroker.Cancel(confirmID)
+		if err := sw.WriteEvent("confirmation", confirmationEvent{
+			ConfirmationID: confirmID,
+			Action:         action,
+			Summary:        sanitizeConfirmArgs(args),
+			TimeoutSeconds: confirmFormTimeoutSeconds,
+			Form:           form,
+		}); err != nil {
+			return workflow.ConfirmResolution{}
+		}
+		d := WaitForConfirmation(streamCtx, ch, time.Duration(confirmFormTimeoutSeconds)*time.Second)
+		return workflow.ConfirmResolution{Confirmed: d.Confirmed, Overrides: d.Overrides}
+	}
+}
+
 func sanitizeConfirmArgs(args map[string]any) map[string]any {
 	if args == nil {
 		return nil

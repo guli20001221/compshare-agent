@@ -41,6 +41,11 @@ type Handlers struct {
 	traceWriter   observability.Writer
 	ocrClient     OCRRecognizer
 	confirmBroker *ConfirmBroker
+	// confirmFormEnabled is the boot half of the editable-confirm-form double
+	// gate (COMPSHARE_CONFIRM_FORM, parsed in cmd/server.go). The per-turn
+	// half is the client's SendCSAgentChat Features opt-in. Both must hold
+	// before a confirmation frame carries a Form / Overrides are accepted.
+	confirmFormEnabled bool
 }
 
 // NewHandlers constructs a Handlers with all dependencies injected.
@@ -68,6 +73,13 @@ func NewHandlers(
 // nil disables OCR; images in requests are silently ignored with a log warning.
 func (h *Handlers) SetOCRClient(c OCRRecognizer) {
 	h.ocrClient = c
+}
+
+// SetConfirmFormEnabled flips the boot half of the editable-confirm-form gate
+// (COMPSHARE_CONFIRM_FORM). Default false = feature fully off; confirmation
+// frames stay byte-identical and Overrides are rejected.
+func (h *Handlers) SetConfirmFormEnabled(enabled bool) {
+	h.confirmFormEnabled = enabled
 }
 
 // buildUserContext constructs a tools.UserContext from a BaseRequest.

@@ -24,7 +24,10 @@ func (h *Handlers) handleConfirm(_ *gin.Context, base BaseRequest, raw *simplejs
 	}
 	confirmed := raw.Get("Confirmed").MustBool(false)
 
-	err := h.confirmBroker.Resolve(confirmationID, sessionID, base.Owner, confirmed)
+	// Boolean-only on the POST path: the editable confirm form is WS-only
+	// (Features opt-in lives on the WS SendCSAgentChat frame), so no Overrides
+	// are accepted here.
+	err := h.confirmBroker.Resolve(confirmationID, sessionID, base.Owner, ConfirmDecision{Confirmed: confirmed})
 	if err != nil {
 		if errors.Is(err, ErrConfirmationOwner) {
 			return nil, ErrForbidden.WithMessage("confirmation does not belong to this session")

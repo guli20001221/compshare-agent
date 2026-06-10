@@ -19,11 +19,11 @@ func TestConfirmBroker_ResolveConfirmed(t *testing.T) {
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
-		require.NoError(t, b.Resolve(id, "sess-1", testOwner, true))
+		require.NoError(t, b.Resolve(id, "sess-1", testOwner, ConfirmDecision{Confirmed: true}))
 	}()
 
 	result := WaitForConfirmation(context.Background(), ch, 1*time.Second)
-	assert.True(t, result)
+	assert.True(t, result.Confirmed)
 }
 
 func TestConfirmBroker_ResolveDenied(t *testing.T) {
@@ -32,11 +32,11 @@ func TestConfirmBroker_ResolveDenied(t *testing.T) {
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
-		require.NoError(t, b.Resolve(id, "sess-1", testOwner, false))
+		require.NoError(t, b.Resolve(id, "sess-1", testOwner, ConfirmDecision{Confirmed: false}))
 	}()
 
 	result := WaitForConfirmation(context.Background(), ch, 1*time.Second)
-	assert.False(t, result)
+	assert.False(t, result.Confirmed)
 }
 
 func TestConfirmBroker_Timeout(t *testing.T) {
@@ -44,7 +44,7 @@ func TestConfirmBroker_Timeout(t *testing.T) {
 	_, ch := b.Register("sess-1", testOwner)
 
 	result := WaitForConfirmation(context.Background(), ch, 50*time.Millisecond)
-	assert.False(t, result, "timeout should return false")
+	assert.False(t, result.Confirmed, "timeout should return false")
 }
 
 func TestConfirmBroker_ContextCancelled(t *testing.T) {
@@ -58,7 +58,7 @@ func TestConfirmBroker_ContextCancelled(t *testing.T) {
 	}()
 
 	result := WaitForConfirmation(ctx, ch, 5*time.Second)
-	assert.False(t, result, "cancelled context should return false")
+	assert.False(t, result.Confirmed, "cancelled context should return false")
 }
 
 func TestConfirmBroker_Cancel(t *testing.T) {
@@ -68,15 +68,15 @@ func TestConfirmBroker_Cancel(t *testing.T) {
 	b.Cancel(id)
 
 	result := WaitForConfirmation(context.Background(), ch, 50*time.Millisecond)
-	assert.False(t, result, "cancelled confirmation should return false")
+	assert.False(t, result.Confirmed, "cancelled confirmation should return false")
 }
 
 func TestConfirmBroker_DoubleResolve(t *testing.T) {
 	b := NewConfirmBroker()
 	id, _ := b.Register("sess-1", testOwner)
 
-	require.NoError(t, b.Resolve(id, "sess-1", testOwner, true))
-	err := b.Resolve(id, "sess-1", testOwner, true)
+	require.NoError(t, b.Resolve(id, "sess-1", testOwner, ConfirmDecision{Confirmed: true}))
+	err := b.Resolve(id, "sess-1", testOwner, ConfirmDecision{Confirmed: true})
 	assert.Error(t, err, "second resolve should fail")
 }
 
@@ -84,7 +84,7 @@ func TestConfirmBroker_ResolveWrongSession(t *testing.T) {
 	b := NewConfirmBroker()
 	id, _ := b.Register("sess-1", testOwner)
 
-	err := b.Resolve(id, "sess-other", testOwner, true)
+	err := b.Resolve(id, "sess-other", testOwner, ConfirmDecision{Confirmed: true})
 	assert.ErrorIs(t, err, ErrConfirmationOwner, "wrong session should be rejected")
 }
 
@@ -93,13 +93,13 @@ func TestConfirmBroker_ResolveWrongOwner(t *testing.T) {
 	id, _ := b.Register("sess-1", testOwner)
 
 	otherOwner := store.Owner{TopOrganizationID: 99, OrganizationID: 99}
-	err := b.Resolve(id, "sess-1", otherOwner, true)
+	err := b.Resolve(id, "sess-1", otherOwner, ConfirmDecision{Confirmed: true})
 	assert.ErrorIs(t, err, ErrConfirmationOwner, "wrong owner should be rejected")
 }
 
 func TestConfirmBroker_ResolveUnknownID(t *testing.T) {
 	b := NewConfirmBroker()
-	err := b.Resolve("nonexistent", "sess-1", testOwner, true)
+	err := b.Resolve("nonexistent", "sess-1", testOwner, ConfirmDecision{Confirmed: true})
 	assert.Error(t, err)
 }
 

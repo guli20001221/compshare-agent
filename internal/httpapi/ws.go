@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -140,6 +141,17 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 				_ = writer.WriteEvent("error", streamErrorEvent{Code: apiErr.Code, Message: apiErr.Message})
 				continue
 			}
+			// Editable-confirm-form opt-in (create-flow 表单化): per-turn client
+			// capability declaration. Absent/unknown values leave it off, so
+			// legacy clients keep byte-identical confirmation frames.
+			if features, err := frame.Get("Features").StringArray(); err == nil {
+				for _, f := range features {
+					if f == featureConfirmForm {
+						prep.confirmFormOptIn = true
+						break
+					}
+				}
+			}
 
 			started = true
 			go func(base BaseRequest, prep *chatPrep) {
@@ -161,10 +173,24 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 			sessionID := frame.Get("SessionId").MustString()
 			confirmationID := frame.Get("ConfirmationId").MustString()
 			confirmed := frame.Get("Confirmed").MustBool(false)
-			if rErr := h.confirmBroker.Resolve(confirmationID, sessionID, frameBase.Owner, confirmed); rErr != nil {
+			// Optional select-only field overrides (editable confirm form).
+			// Strictly string-valued: a malformed entry rejects the WHOLE frame
+			// (error + keep pending) rather than silently dropping the edit and
+			// confirming the unedited card.
+			overrides, ovErr := overridesFromFrame(frame)
+			if ovErr != nil {
+				_ = writer.WriteEvent("error", streamErrorEvent{Code: "InvalidParam", Message: ovErr.Error()})
+				continue
+			}
+			if rErr := h.confirmBroker.Resolve(confirmationID, sessionID, frameBase.Owner, ConfirmDecision{Confirmed: confirmed, Overrides: overrides}); rErr != nil {
 				code := "NotFound"
-				if errors.Is(rErr, ErrConfirmationOwner) {
+				switch {
+				case errors.Is(rErr, ErrConfirmationOwner):
 					code = "Forbidden"
+				case !errors.Is(rErr, ErrConfirmationNotFound):
+					// Override validation failure: pending is kept (the client
+					// may fix and resend within the timeout window).
+					code = "InvalidParam"
 				}
 				_ = writer.WriteEvent("error", streamErrorEvent{Code: code, Message: rErr.Error()})
 			}
@@ -175,4 +201,37 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 			})
 		}
 	}
+}
+
+// overridesFromFrame parses the optional Overrides object. Missing is allowed
+// and means "confirm without edits"; present-but-not-object is invalid because
+// silently treating it as empty would confirm the unedited card.
+func overridesFromFrame(frame *simplejson.Json) (map[string]string, error) {
+	raw, ok := frame.CheckGet("Overrides")
+	if !ok {
+		return nil, nil
+	}
+	m, err := raw.Map()
+	if err != nil {
+		return nil, fmt.Errorf("Overrides must be an object")
+	}
+	return stringMapFromFrame(m)
+}
+
+// stringMapFromFrame coerces a JSON-decoded object to map[string]string,
+// erroring on any non-string value (a malformed override must reject the
+// frame, not silently degrade to a no-edit confirm). nil/empty in → nil out.
+func stringMapFromFrame(m map[string]any) (map[string]string, error) {
+	if len(m) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("Overrides.%s must be a string", k)
+		}
+		out[k] = s
+	}
+	return out, nil
 }

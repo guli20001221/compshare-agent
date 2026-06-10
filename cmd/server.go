@@ -86,6 +86,17 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		handlers.SetOCRClient(ocr.NewClient(cfg.Agent.OCR))
 		log.Printf("OCR enabled: model=%s", cfg.Agent.OCR.Model)
 	}
+	// Editable confirm form (create-flow 表单化), boot half of the double gate;
+	// the per-turn half is the client's Features opt-in. Default off.
+	switch v := os.Getenv("COMPSHARE_CONFIRM_FORM"); v {
+	case "", "0":
+		// off (default)
+	case "1":
+		handlers.SetConfirmFormEnabled(true)
+		log.Printf("confirm form enabled (COMPSHARE_CONFIRM_FORM=1): confirmation frames carry Form for opted-in clients")
+	default:
+		log.Printf("warning: unknown COMPSHARE_CONFIRM_FORM value %q, treating as off", v)
+	}
 	router := gin.New()
 	if !cfg.Agent.HTTP.DisableCORS {
 		router.Use(corsMiddleware())
