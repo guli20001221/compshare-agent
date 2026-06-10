@@ -2552,173 +2552,6 @@ func TestPlannerPriorTextSnapshotKeepsNewestMessagesWithinRuneBudget(t *testing.
 // covers the cfg-time wiring; TestSessionIsolation_NoProjectIdLeak
 // (engine_session_test.go) guards against the setter coming back.
 
-// billingScenarioExecutor returns a mockExecutor configured with the
-// DescribeCompShareInstance result needed for DiagnoseBilling to complete
-// its two-step chain.
-func billingScenarioExecutor(state string) *mockExecutor {
-	return &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": {
-			"UHostSet": []any{
-				map[string]any{
-					"UHostId":       "uhost-bill-001",
-					"Name":          "qa-bill",
-					"State":         state,
-					"ChargeType":    "Dynamic",
-					"InstancePrice": 0.70,
-					"DiskPrice":     0.00,
-					"GPU":           float64(1),
-					"GpuType":       "3080Ti",
-				},
-			},
-		},
-	}}
-}
-
-type hardBlockMatrixCase struct {
-	name        string
-	msg         string
-	wantBlocked bool
-}
-
-func runHardBlockMatrixCase(t *testing.T, tc hardBlockMatrixCase) {
-	t.Helper()
-
-	executor := billingScenarioExecutor("Running")
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "fall through"}}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	reply, err := eng.Chat(context.Background(), tc.msg, noopStep)
-	assert.NoError(t, err)
-
-	if tc.wantBlocked {
-		assert.Empty(t, mock.calls, "hard-block must not call LLM")
-		assert.Empty(t, executor.calls, "hard-block must not call tools")
-		assert.Contains(t, reply, "财务中心")
-		return
-	}
-
-	assert.Len(t, mock.calls, 1, "non-blocked cases should enter exactly one LLM round")
-}
-
-func TestAccountBillingHardBlock_Matrix(t *testing.T) {
-	cases := []hardBlockMatrixCase{
-		// Branch 1: account-only data always hard-blocks. Instance words
-		// must NOT veto balance / total-bill / transaction-flow queries.
-		{name: "branch1_refuses_monthly_total_bill", msg: "查本月总账单", wantBlocked: true},
-		{name: "branch1_refuses_account_balance", msg: "账号余额还剩多少", wantBlocked: true},
-		{name: "branch1_refuses_transaction_flow", msg: "给我消费流水", wantBlocked: true},
-		{name: "branch1_refuses_english_balance", msg: "balance 多少", wantBlocked: true},
-		{name: "branch1_balance_not_vetoed_by_instance_words", msg: "这些机器导致账号余额还剩多少", wantBlocked: true},
-		{name: "branch1_transaction_flow_not_vetoed_by_instance_words", msg: "每台机器的消费流水", wantBlocked: true},
-
-		// Branch 2: monthly account summaries hard-block only when no
-		// instance-scope words are present.
-		{name: "branch2_refuses_monthly_account_total", msg: "本月总共扣了多少钱", wantBlocked: true},
-		{name: "branch2_refuses_monthly_spend", msg: "当月花费多少", wantBlocked: true},
-		{name: "branch2_refuses_monthly_bill", msg: "月度账单", wantBlocked: true},
-		{name: "branch2_vetoed_by_instance_scope_allows_llm", msg: "本月哪台实例消费最高"},
-		{name: "branch2_vetoed_by_specific_instance_word_allows_llm", msg: "当月这台机器扣了多少"},
-
-		// Instance-level billing must pass through the hard-block. It stays
-		// on the normal LLM/tool loop because forced object tool_choice is not
-		// supported reliably by the ds v4 flash baseline for DiagnoseBilling.
-		{name: "instance_top_spender_allows_llm", msg: "我账号下哪台实例消费最高"},
-		{name: "instance_cost_breakdown_allows_llm", msg: "当前这些实例费用明细"},
-		{name: "stopped_instance_still_charging_allows_llm", msg: "那台机器为什么关机后还在扣费"},
-		{name: "named_instance_billing_allows_llm", msg: "uhost-abc123 这台为什么扣费这么多"},
-		{name: "instance_cost_ratio_allows_llm", msg: "实例费用占比"},
-
-		// Non-billing turns must not hard-block.
-		{name: "monitor_query_passes_through", msg: "看监控"},
-		{name: "off_topic_passes_through", msg: "今天天气"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runHardBlockMatrixCase(t, tc)
-		})
-	}
-}
-
-func TestAccountBillingHardBlock_FinanceRealtimeVsRules(t *testing.T) {
-	cases := []hardBlockMatrixCase{
-		{name: "refuses_invoice_status", msg: "\u6211\u7684\u53d1\u7968\u72b6\u6001\u600e\u4e48\u6837", wantBlocked: true},
-		{name: "refuses_invoice_application_approved", msg: "\u5f00\u7968\u7533\u8bf7\u901a\u8fc7\u4e86\u5417", wantBlocked: true},
-		{name: "refuses_invoice_review_approved", msg: "\u53d1\u7968\u5ba1\u6838\u901a\u8fc7\u4e86\u5417", wantBlocked: true},
-		{name: "refuses_refund_progress", msg: "\u9000\u6b3e\u8fdb\u5ea6\u5230\u54ea\u4e86", wantBlocked: true},
-		{name: "refuses_refund_success", msg: "\u9000\u6b3e\u6210\u529f\u4e86\u5417", wantBlocked: true},
-		{name: "refuses_refunded_yet", msg: "\u9000\u6b3e\u4e86\u5417", wantBlocked: true},
-		{name: "refuses_arrears_amount", msg: "\u6b20\u8d39\u91d1\u989d\u591a\u5c11", wantBlocked: true},
-		{name: "refuses_pending_payable_bill", msg: "\u5f85\u652f\u4ed8\u8d26\u5355\u7ed9\u6211\u770b\u4e00\u4e0b", wantBlocked: true},
-		{name: "refuses_invoice_delivery", msg: "\u53d1\u7968\u5bc4\u9001\u5230\u54ea\u4e86", wantBlocked: true},
-		{name: "refuses_charge_record", msg: "\u6263\u8d39\u8bb0\u5f55\u67e5\u4e00\u4e0b", wantBlocked: true},
-		{name: "refuses_transaction_record", msg: "\u4ea4\u6613\u8bb0\u5f55\u67e5\u4e00\u4e0b", wantBlocked: true},
-		{name: "refuses_my_package_expiry_time", msg: "\u6211\u7684\u5957\u9910\u4ec0\u4e48\u65f6\u5019\u5230\u671f", wantBlocked: true},
-		{name: "refuses_my_recharge_amount", msg: "\u6211\u5145\u503c\u4e86\u591a\u5c11\u94b1", wantBlocked: true},
-		{name: "mixed_invoice_rule_and_status_refuses", msg: "\u600e\u4e48\u5f00\u53d1\u7968\uff0c\u6211\u7684\u53d1\u7968\u72b6\u6001\u600e\u4e48\u6837", wantBlocked: true},
-		{name: "mixed_refund_rule_and_progress_refuses", msg: "\u9000\u6b3e\u89c4\u5219\u662f\u4ec0\u4e48\uff0c\u6211\u7684\u9000\u6b3e\u8fdb\u5ea6\u5230\u54ea\u4e86", wantBlocked: true},
-		{name: "instance_transaction_flow_still_refuses", msg: "\u6bcf\u53f0\u5b9e\u4f8b\u7684\u6d88\u8d39\u6d41\u6c34", wantBlocked: true},
-		{name: "invoice_howto_allows_knowledge", msg: "\u600e\u4e48\u5f00\u53d1\u7968"},
-		{name: "invoice_application_flow_allows_knowledge", msg: "\u53d1\u7968\u7533\u8bf7\u6d41\u7a0b"},
-		{name: "refund_rule_allows_knowledge", msg: "\u9000\u6b3e\u89c4\u5219\u662f\u4ec0\u4e48"},
-		{name: "arrears_howto_allows_knowledge", msg: "\u6b20\u8d39\u600e\u4e48\u529e"},
-		{name: "billing_mode_difference_allows_knowledge", msg: "\u6309\u91cf\u548c\u5305\u65e5\u6709\u4ec0\u4e48\u533a\u522b"},
-		{name: "package_expiry_rule_allows_knowledge", msg: "\u5957\u9910\u5230\u671f\u600e\u4e48\u529e"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runHardBlockMatrixCase(t, tc)
-		})
-	}
-}
-
-func TestAccountBillingHardBlock_DoesNotResetTurnScopedMonitorState(t *testing.T) {
-	executor := billingScenarioExecutor("Running")
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-	eng.currentMonitorWindow = true
-	eng.currentMonitorTargets = []string{"uhost-monitor-001"}
-	eng.currentMonitorNoData = []string{"uhost-monitor-001"}
-	eng.currentMonitorStart = 100
-	eng.currentMonitorEnd = 200
-
-	reply, err := eng.Chat(context.Background(), "查一下我这个账号本月总账单、余额和消费流水明细", noopStep)
-	assert.NoError(t, err)
-	assert.Contains(t, reply, "财务中心")
-	assert.Empty(t, mock.calls)
-	assert.Empty(t, executor.calls)
-	assert.True(t, eng.currentMonitorWindow)
-	assert.Equal(t, []string{"uhost-monitor-001"}, eng.currentMonitorTargets)
-	assert.Equal(t, []string{"uhost-monitor-001"}, eng.currentMonitorNoData)
-	assert.Equal(t, int64(100), eng.currentMonitorStart)
-	assert.Equal(t, int64(200), eng.currentMonitorEnd)
-}
-
-func TestAccountBillingHardBlock_NotifiesObserverWithoutStepEvent(t *testing.T) {
-	executor := billingScenarioExecutor("Running")
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Stopped on-demand instances still charge for disks. [1]"}}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-	var hardBlocks []observability.EngineHardBlockTrace
-	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) {
-		hardBlocks = append(hardBlocks, trace)
-	})
-	onStep, events := collectSteps()
-
-	reply, err := eng.Chat(context.Background(), "账号余额还剩多少", onStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, refusal.AccountBillingUnsupported, reply)
-	assert.Empty(t, mock.calls)
-	assert.Empty(t, *events, "hard-block trace signal must not surface as a CLI step")
-	require.Len(t, hardBlocks, 1)
-	assert.True(t, hardBlocks[0].Hit)
-	assert.Equal(t, "account_billing_unsupported", hardBlocks[0].Category)
-}
-
 func TestPlannerMonitorHistoryHardBlock_FiresObserverEvenWhenKeywordMisses(t *testing.T) {
 	// REGRESSION GUARD (PR #140 follow-up review):
 	//
@@ -4287,28 +4120,6 @@ func TestRAGCitedContractInvariantResetsKnowledgeFallbackFlagEachTurn(t *testing
 	require.Len(t, hardBlocks, 1, "knowledge-path citation flag must be cleared at the start of each turn")
 }
 
-func TestStage2BRetrievalHardBlockPrecedesPlanner(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
-		Enabled:   true,
-		KBVersion: "kb.v1",
-		Empty:     true,
-	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
-	eng.SetKnowledgeRetriever(retriever)
-
-	reply, err := eng.Chat(context.Background(), "\u8d26\u53f7\u4f59\u989d\u8fd8\u5269\u591a\u5c11", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, refusal.AccountBillingUnsupported, reply)
-	assert.Empty(t, planner.calls, "permanent hard-block must run before Stage 2B planner")
-	assert.Empty(t, retriever.calls)
-	assert.Empty(t, mock.calls)
-}
-
 func TestStage2BFinanceFAQRetrievalUsesBillingArea(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
@@ -4373,37 +4184,6 @@ func TestStage2BStoppedBillingFAQUsesKnowledgeRetrieval(t *testing.T) {
 	assert.Equal(t, "billing_rule", retriever.calls[0].productArea)
 }
 
-func TestStage2BFinanceRealtimeHardBlockPrecedesPlanner(t *testing.T) {
-	cases := []string{
-		"\u6211\u7684\u53d1\u7968\u72b6\u6001\u600e\u4e48\u6837",
-		"\u9000\u6b3e\u8fdb\u5ea6\u5230\u54ea\u4e86",
-		"\u6b20\u8d39\u91d1\u989d\u591a\u5c11",
-	}
-	for _, msg := range cases {
-		t.Run(msg, func(t *testing.T) {
-			planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
-			retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
-				Enabled:   true,
-				KBVersion: "kb.v1",
-				Empty:     true,
-			}}}
-			mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-			eng := NewWithDeps(mock, &mockExecutor{}, nil)
-			eng.InitWithContext("test user")
-			eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
-			eng.SetKnowledgeRetriever(retriever)
-
-			reply, err := eng.Chat(context.Background(), msg, noopStep)
-
-			require.NoError(t, err)
-			assert.Equal(t, refusal.AccountBillingUnsupported, reply)
-			assert.Empty(t, planner.calls)
-			assert.Empty(t, retriever.calls)
-			assert.Empty(t, mock.calls)
-		})
-	}
-}
-
 func TestStage2BAndRouteDispatchShareSinglePlannerCall(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
@@ -4456,24 +4236,6 @@ func TestRouteDispatchGateUnsetDoesNotCallPlanner(t *testing.T) {
 	assert.Equal(t, "react path", reply)
 	assert.Empty(t, planner.calls, "planner must not run when no demo intent is enabled")
 	assert.Len(t, mock.calls, 1)
-}
-
-func TestRouteDispatchHardBlockPrecedesPlanner(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
-		Model:          "deepseek-v4-flash",
-	})
-
-	reply, err := eng.Chat(context.Background(), "\u8d26\u53f7\u4f59\u989d\u8fd8\u5269\u591a\u5c11", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, refusal.AccountBillingUnsupported, reply)
-	assert.Empty(t, planner.calls, "permanent hard-block must run before planner")
-	assert.Empty(t, mock.calls)
 }
 
 func TestRouteDispatchResourcePlanBypassesReAct(t *testing.T) {
@@ -5475,9 +5237,13 @@ func TestResourceSelectionContinuationHardBlockClearsPending(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, eng.pendingResourceSelection)
 
-	reply, err := eng.Chat(context.Background(), "账号余额还有多少", noopStep)
+	// account_billing was this test's original hard-block trigger; after its
+	// removal (2026-06-10), use monitor_history — another enginePreBlock
+	// keyword hard-block — to exercise the same "hard-block clears pending
+	// resource selection" invariant.
+	reply, err := eng.Chat(context.Background(), "看昨天的监控数据", noopStep)
 	require.NoError(t, err)
-	assert.Contains(t, reply, refusal.AccountBillingUnsupported)
+	assert.Contains(t, reply, refusal.MonitorHistoryUnsupported)
 	assert.Nil(t, eng.pendingResourceSelection)
 
 	reply, err = eng.Chat(context.Background(), "2", noopStep)

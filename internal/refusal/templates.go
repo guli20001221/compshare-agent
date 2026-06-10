@@ -18,17 +18,11 @@ package refusal
 // values. Downstream MySQL trace ingest + per-category eval dashboards
 // pivot on these exact strings; treat as a stable contract.
 const (
-	CategoryAccountBilling                = "account_billing_unsupported"
 	CategoryMonitorHistory                = "monitor_history_unsupported"
 	CategoryJailbreakAttempt              = "jailbreak_attempt"
 	CategoryOffTopic                      = "off_topic_refused"
 	CategoryExistingDiskAttachUnsupported = "existing_disk_attach_unsupported"
 )
-
-// AccountBillingUnsupported is returned for account-level financial
-// questions (余额 / 总账单 / 消费流水 / 退款 / 发票 etc.). These live in
-// the user's billing center, not in any per-instance API.
-const AccountBillingUnsupported = "这类账号级财务信息当前不支持由助手查询。请到控制台的财务中心查看：账号总览看余额，账单管理看月度账单，消费记录看扣费流水，发票管理看开票和寄送状态，退款或欠费信息以订单/财务中心页面为准。"
 
 // MonitorHistoryUnsupported is returned when the user asks for monitor
 // data over a past time window (昨天/上周/最近 N 天 etc.). The runtime

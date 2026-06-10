@@ -50,9 +50,10 @@ const (
 const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
 
-// monitor_history / account_billing refusal text moved to
-// internal/refusal/templates.go in the C2 hard-block 归一 refactor.
-// Call sites import refusal directly; this file no longer declares them.
+// monitor_history refusal text moved to internal/refusal/templates.go in the
+// C2 hard-block 归一 refactor. Call sites import refusal directly; this file no
+// longer declares it. (account_billing canned reply removed 2026-06-10 — the
+// planner's semantic billing routing replaced the keyword hard-block.)
 
 const (
 	rateLimitQPSMessage   = "请求过于频繁，请稍后再试。"
@@ -74,12 +75,13 @@ const (
 
 // Force-tool / hard-block priority chain (highest first):
 //
-//  1. isAccountBillingUnsupported    -> canned reply, no LLM call (hard-block)
-//  2. isExistingDiskAttachUnsupported -> canned reply, no LLM call
-//  3. isUnsupportedHistoricalMonitorQuestion -> canned reply, no LLM call
-//  4. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
+//  1. isExistingDiskAttachUnsupported -> canned reply, no LLM call (hard-block)
+//  2. isUnsupportedHistoricalMonitorQuestion -> canned reply, no LLM call
+//  3. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
 //                                       (BRIDGE T-001.f1, model-feature-gated)
-//  5. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
+//  4. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
+//
+// (account_billing keyword hard-block removed 2026-06-10 — planner-routed.)
 //
 // Model feature gating: force-tool paths that emit object tool_choice MUST
 // short-circuit when supportsObjectToolChoice=false. ds v4 flash in thinking
@@ -135,8 +137,8 @@ type HistoryMessage struct {
 type ChatOptions struct {
 	// OnTextDelta, if non-nil, is called once per text token in order, but
 	// only for the final LLM reply (not for intermediate ReAct tool-call rounds).
-	// Canned-reply branches (account_billing_unsupported, monitor_history) skip
-	// the LLM entirely and therefore never call this.
+	// Canned-reply branches (monitor_history, etc.) skip the LLM entirely and
+	// therefore never call this.
 	OnTextDelta func(string)
 	// OnUsage, if non-nil, is called once after the final LLM call returns its
 	// usage data.
@@ -1023,8 +1025,8 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 // ChatWithOptions is like Chat but accepts streaming callbacks via opts.
 // OnTextDelta is buffered per-round and only replayed on the final text branch
 // (never on intermediate tool-call rounds). OnUsage is called once after the
-// final LLM reply. Canned-reply branches (account_billing_unsupported,
-// monitor_history_unsupported) skip the LLM and therefore never fire callbacks.
+// final LLM reply. Canned-reply branches (monitor_history_unsupported, etc.)
+// skip the LLM and therefore never fire callbacks.
 func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (string, error) {
 	e.userTurn++
 	e.currentCtx = ctx
@@ -4365,195 +4367,6 @@ func traceBoolPtr(v bool) *bool { return &v }
 // mutation is gone. When mutating tools that need ProjectId open up,
 // route the value through args["ProjectId"] (per-session field on Engine).
 
-// accountBillingUnsupportedReply moved to internal/refusal/templates.go
-// (refusal.AccountBillingUnsupported) in the C2 hard-block 归一 refactor.
-
-var monthlyBillKeywords = []string{
-	"\u672c\u6708", // 本月
-	"\u6708\u5ea6", // 月度
-	"\u5f53\u6708", // 当月
-}
-
-// thirdPartyServiceForeignBalanceContexts are prefixes that indicate the
-// query is about a *third-party service's* account state, not CompShare's.
-// When any of these substrings appear in a normalized user message, the
-// account-billing hard-block must NOT fire — the question is RAG-answerable
-// from corpus docs covering that service (e.g. ModelVerse 18 chunks in
-// w0 corpus, OpenAI client docs, etc.).
-//
-// CONSTRAINT (per skill phase prereq doc; see .claude/CONTEXT.md "Skill 化
-// prereq" section): this list is intentionally small and bounded. Do NOT
-// grow it as a way to handle new false-positive cases; instead, surface
-// those cases as input to skill scope schema design. Long-term home is
-// the skill manifest's disambiguating_prefixes field, NOT this engine var.
-//
-// All entries are stored in normalized form (ASCII lowercased; CJK as-is)
-// to match textutil.Normalize output without re-normalizing per call.
-var thirdPartyServiceForeignBalanceContexts = []string{
-	"modelverse",
-	"openai",
-	"open ai",
-	"anthropic",
-	"deepseek",
-	"deep seek",
-	"volcano",
-	"火山", // 火山(火山方舟 / 火山引擎)
-	"豆包", // 豆包
-}
-
-// accountOnlyDataKeywords are signals that ONLY the account financial
-// center can satisfy. Their presence triggers the hard-block regardless
-// of instance words elsewhere in the message.
-var accountOnlyDataKeywords = []string{
-	"\u4f59\u989d",                   // 余额
-	"\u603b\u8d26\u5355",             // 总账单
-	"\u6d88\u8d39\u6d41\u6c34",       // 消费流水
-	"\u6d41\u6c34",                   // 流水
-	"\u8d26\u5355\u660e\u7ec6",       // 账单明细
-	"\u6263\u8d39\u8bb0\u5f55",       // 扣费记录
-	"\u4ea4\u6613\u8bb0\u5f55",       // 交易记录
-	"\u5f85\u652f\u4ed8\u8d26\u5355", // 待支付账单
-	"\u8ba2\u5355\u72b6\u6001",       // 订单状态
-	"balance",
-	"transaction record",
-	"charge record",
-	"payable bill",
-	"order status",
-}
-
-// monthlyAccountCostKeywords are cost-related words that, when paired
-// with a monthly time word, indicate an account-level monthly summary
-// question (which is unsupported). Kept separate from the broader
-// instance-side billing vocabulary so we don't over-trigger.
-var monthlyAccountCostKeywords = []string{
-	"\u8d39\u7528",       // 费用
-	"\u82b1\u4e86",       // 花了
-	"\u82b1\u8d39",       // 花费
-	"\u6d88\u8d39",       // 消费
-	"\u8d26\u5355",       // 账单
-	"\u6263\u8d39",       // 扣费
-	"\u6263\u4e86",       // 扣了
-	"\u591a\u5c11\u94b1", // 多少钱
-	"\u591a\u5c11",       // 多少
-}
-
-// accountInstanceScopeKeywords vetoes the monthly-summary branch ONLY.
-// The unambiguous account-data branch above is NOT vetoed by these.
-var accountInstanceScopeKeywords = []string{
-	"\u5b9e\u4f8b", // 实例
-	"\u673a\u5668", // 机器
-	"\u4e3b\u673a", // 主机
-	"\u54ea\u53f0", // 哪台
-	"\u6bcf\u53f0", // 每台
-	"\u8fd9\u4e9b", // 这些
-	"\u54ea\u4e9b", // 哪些
-	"\u8fd9\u53f0", // 这台
-	"uhost-",
-}
-
-var invoiceSubjectKeywords = []string{
-	"\u53d1\u7968", // 发票
-	"\u5f00\u7968", // 开票
-	"invoice",
-}
-
-var invoiceRealtimeKeywords = []string{
-	"\u72b6\u6001",       // 状态
-	"\u8fdb\u5ea6",       // 进度
-	"\u5bc4\u9001",       // 寄送
-	"\u7269\u6d41",       // 物流
-	"\u5230\u54ea",       // 到哪
-	"\u5f00\u597d",       // 开好
-	"\u5f00\u51fa\u6765", // 开出来
-	"\u4e0b\u8f7d",       // 下载
-	"\u901a\u8fc7",
-	"\u5ba1\u6838",
-	"\u6210\u529f",
-	"\u4e86\u5417",
-	"\u597d\u4e86\u5417",
-	"status",
-	"progress",
-	"delivery",
-	"approved",
-	"review",
-}
-
-var refundSubjectKeywords = []string{
-	"\u9000\u6b3e", // 退款
-	"refund",
-}
-
-var refundRealtimeKeywords = []string{
-	"\u8fdb\u5ea6",                   // 进度
-	"\u5230\u8d26",                   // 到账
-	"\u72b6\u6001",                   // 状态
-	"\u5230\u54ea",                   // 到哪
-	"\u4ec0\u4e48\u65f6\u5019\u5230", // 什么时候到
-	"\u51e0\u65f6\u5230",             // 几时到
-	"\u6ca1\u5230\u8d26",             // 没到账
-	"\u91d1\u989d",                   // 金额
-	"\u6210\u529f",
-	"\u4e86\u5417",
-	"\u597d\u4e86\u5417",
-	"progress",
-	"status",
-	"received",
-	"success",
-}
-
-var arrearsSubjectKeywords = []string{
-	"\u6b20\u8d39", // 欠费
-	"arrears",
-	"overdue",
-}
-
-var arrearsRealtimeKeywords = []string{
-	"\u91d1\u989d",       // 金额
-	"\u591a\u5c11",       // 多少
-	"\u4e86\u5417",       // 了吗
-	"\u662f\u5426",       // 是否
-	"\u72b6\u6001",       // 状态
-	"\u8ba2\u5355",       // 订单
-	"\u8d26\u5355",       // 账单
-	"\u5f85\u652f\u4ed8", // 待支付
-	"amount",
-	"status",
-	"payable",
-}
-
-var packageSubjectKeywords = []string{
-	"\u5957\u9910", // 套餐
-	"package",
-}
-
-var packageRealtimeKeywords = []string{
-	"\u4ec0\u4e48\u65f6\u5019", // 什么时候
-	"\u5230\u671f\u65f6\u95f4", // 到期时间
-	"\u5230\u671f\u4e86\u5417", // 到期了吗
-	"\u8fd8\u5269\u591a\u4e45", // 还剩多久
-	"when",
-	"expire time",
-}
-
-var rechargeSubjectKeywords = []string{
-	"\u5145\u503c", // 充值
-	"recharge",
-	"top up",
-}
-
-var rechargeRealtimeKeywords = []string{
-	"\u591a\u5c11",       // 多少
-	"\u591a\u5c11\u94b1", // 多少钱
-	"\u91d1\u989d",       // 金额
-	"\u8bb0\u5f55",       // 记录
-	"\u72b6\u6001",       // 状态
-	"\u6210\u529f",       // 成功
-	"\u5230\u8d26",       // 到账
-	"amount",
-	"record",
-	"status",
-}
-
 var monitorRecallKeywords = []string{
 	"刚才",
 	"刚刚",
@@ -4838,185 +4651,6 @@ func containsScanAllSignal(msg string) bool {
 	return false
 }
 
-// isAccountBillingUnsupported is a permanent product boundary.
-// Per docs/agent/plan/stage2-intent-planner.md §3.9.3, account-level
-// billing/balance/transaction queries are out of scope for the agent
-// regardless of IntentPlan classification. Planner may emit
-// intent=billing_account_unsupported as a hint, but engine independently
-// enforces this hard-block. DO NOT delete when IntentPlan ships.
-func isAccountBillingUnsupported(userMsg string) bool {
-	return isAccountBillingUnsupportedNormalized(textutil.Normalize(userMsg))
-}
-
-func containsInvoiceRealtimeQuestion(n string) bool {
-	return containsAnyKeyword(n, invoiceSubjectKeywords) && containsAnyKeyword(n, invoiceRealtimeKeywords)
-}
-
-func containsRefundRealtimeQuestion(n string) bool {
-	return containsAnyKeyword(n, refundSubjectKeywords) && containsAnyKeyword(n, refundRealtimeKeywords)
-}
-
-func containsArrearsRealtimeQuestion(n string) bool {
-	return containsAnyKeyword(n, arrearsSubjectKeywords) && containsAnyKeyword(n, arrearsRealtimeKeywords)
-}
-
-func containsPackageRealtimeQuestion(n string) bool {
-	return containsAnyKeyword(n, packageSubjectKeywords) && containsAnyKeyword(n, packageRealtimeKeywords)
-}
-
-func containsRechargeRealtimeQuestion(n string) bool {
-	return containsAnyKeyword(n, rechargeSubjectKeywords) && containsAnyKeyword(n, rechargeRealtimeKeywords)
-}
-
-// isAccountBillingUnsupportedNormalized hard-blocks two disjoint classes
-// of account-level requests the agent cannot satisfy:
-//
-//  1. Unambiguous account-financial-center data: 余额 / 总账单 /
-//     消费流水 / 流水 / balance. These live in the user's billing
-//     center, not in any per-instance API. Even when the message also
-//     names instances (e.g. "这些机器导致账号余额还剩多少"), the answer
-//     still has to come from the billing center — hard-block ALWAYS,
-//     no instance-scope veto.
-//
-//  2. Account-level monthly summary phrasings (本月/当月/月度 + 费用/
-//     花了/消费/账单/扣费) when the user does NOT name a specific
-//     instance. Empirically, deepseek-v4-flash violates a prompt-only
-//     soft guidance and calls DiagnoseBilling on these, so we keep
-//     this as a hard-block. When instance-scope words co-occur, fall
-//     through to the normal LLM/tool loop so instance-scoped billing
-//     questions remain answerable.
-//
-// For other ambiguous mixed-scope phrasing (e.g. "查我账号下哪台实例
-// 消费最高"), neither branch fires and the request falls through to
-// the LLM, steered by the "## 计费问题口径" system-prompt rule.
-func isAccountBillingUnsupportedNormalized(n string) bool {
-	// False-positive scoping (#34b, 2026-05-18): if the query mentions a
-	// third-party service by name, the question is about THAT service's
-	// account/billing state, not CompShare's. P32 v1 captured r16 "ModelVerse
-	// 的余额怎么查" being wrongly hard-blocked by the bare 余额 keyword. The
-	// corpus covers these third-party services (modelverse 18 chunks etc.),
-	// so the planner should run and route to knowledge_qa instead.
-	//
-	// This check is intentionally whole-message-level (not window-based)
-	// because user phrasing varies ("ModelVerse 的余额" / "在哪里看
-	// modelverse 余额" / "怎么充 modelverse 余额"). The cost of letting the
-	// planner handle a mixed-scope question is far lower than the cost of
-	// silently hard-blocking a third-party-service docs query.
-	if containsNormalizedKeyword(n, thirdPartyServiceForeignBalanceContexts) {
-		return false
-	}
-	// #52 (2026-05-19): finance FAQ / process-question scope-out.
-	// h03 ("我的发票什么时候开") + mq05 ("下载速度突然变慢 是欠费了吗 还是
-	// 网络高峰") were 4-mode hard-blocked despite being process/diagnostic
-	// questions a FAQ corpus can answer. The exemption fires ONLY when all
-	// three conditions hold simultaneously (per brief; user 2026-05-19
-	// tightening to prevent over-exemption like "账户余额怎么查"):
-	//   (1) hits a finance-FAQ topic word (开票/发票/退款/欠费/到期/续费/
-	//       包月规则);
-	//   (2) hits a process / diagnostic marker (怎么/什么时候/几天/流程/
-	//       是不是/还是/会影响/恢复 etc.);
-	//   (3) does NOT hit a realtime-account-data marker (我的/账上/还剩/
-	//       开好了吗/进度 — these signal "my specific personal data" and
-	//       must keep the hard-block path).
-	// `余额` is intentionally classified as account-data (NOT a finance-FAQ
-	// topic) so "账户余额怎么查" still hard-blocks under the existing
-	// accountOnlyDataKeywords check below. See engine_hardblock_scoping_test.go
-	// for the full case table.
-	if isFinanceFAQProcessQuestion(n) {
-		return false
-	}
-	if containsNormalizedKeyword(n, accountOnlyDataKeywords) ||
-		containsInvoiceRealtimeQuestion(n) ||
-		containsRefundRealtimeQuestion(n) ||
-		containsArrearsRealtimeQuestion(n) ||
-		containsPackageRealtimeQuestion(n) ||
-		containsRechargeRealtimeQuestion(n) {
-		return true
-	}
-	if containsNormalizedKeyword(n, monthlyBillKeywords) &&
-		containsNormalizedKeyword(n, monthlyAccountCostKeywords) &&
-		!containsNormalizedKeyword(n, accountInstanceScopeKeywords) {
-		return true
-	}
-	return false
-}
-
-// financeFAQTopicWords are finance-related TOPICS that admit FAQ/process
-// answers (invoice issuance schedule, refund process flow, arrears policy,
-// expiry rules). Distinct from accountOnlyDataKeywords — `余额` lives there
-// because it's account-balance data, not a process topic.
-//
-// CONSTRAINT (#52, memory `feedback_l0_stop_grow_dictionary`): keep this
-// list bounded. The long-term home is a finance-policy guard skill manifest;
-// this var is the bridge until that skill ships. Growing it to handle a new
-// false-positive case is the wrong fix — surface it as skill schema input.
-var financeFAQTopicWords = []string{
-	"开票",   // 开票
-	"发票",   // 发票
-	"退款",   // 退款
-	"欠费",   // 欠费
-	"到期",   // 到期
-	"续费",   // 续费
-	"包月规则", // 包月规则
-}
-
-// financeProcessMarkerWords are phrasing markers that indicate the user is
-// asking about a process / rule / time-window / diagnostic — i.e. content
-// a FAQ corpus can answer — rather than asking for the realtime state of
-// their own personal record.
-var financeProcessMarkerWords = []string{
-	"怎么",   // 怎么
-	"如何",   // 如何
-	"什么时候", // 什么时候
-	"多久",   // 多久
-	"几天",   // 几天
-	"流程",   // 流程
-	"规则",   // 规则
-	"是不是",  // 是不是
-	"还是",   // 还是
-	"会影响",  // 会影响
-	"影响",   // 影响
-	"恢复",   // 恢复
-}
-
-// financeRealtimeAccountMarkers are signals the user is asking about their
-// own specific record (status / progress / amount remaining). Their presence
-// vetoes the financeFAQ exemption — the question goes back through the
-// existing account-data check, which routes to hard-block as before.
-//
-// Note: this is intentionally a "veto list" not an "expand-the-block list".
-// Pure account-data words like 余额 / 流水 / 账单明细 don't appear here
-// because they already trigger accountOnlyDataKeywords below; this veto
-// only handles the personal-status phrasing layer.
-var financeRealtimeAccountMarkers = []string{
-	"我的",   // 我的
-	"我账户",  // 我账户
-	"账上",   // 账上
-	"我现在",  // 我现在
-	"当前状态", // 当前状态
-	"开好了吗", // 开好了吗
-	"寄了吗",  // 寄了吗
-	"进度",   // 进度
-	"还剩",   // 还剩
-	"剩多少",  // 剩多少
-}
-
-// isFinanceFAQProcessQuestion implements the #52 3-condition AND scope-out
-// per brief: topic + marker + NOT realtime → exempt from hard-block, letting
-// the planner route to knowledge_qa / RAG. See the comment block above
-// the call site in isAccountBillingUnsupportedNormalized for context.
-func isFinanceFAQProcessQuestion(normalized string) bool {
-	if !containsNormalizedKeyword(normalized, financeFAQTopicWords) {
-		return false
-	}
-	if !containsNormalizedKeyword(normalized, financeProcessMarkerWords) {
-		return false
-	}
-	if containsNormalizedKeyword(normalized, financeRealtimeAccountMarkers) {
-		return false
-	}
-	return true
-}
 
 // shouldForceMonitorRecall reports whether the current turn is an adjacent
 // monitor follow-up that should force a fresh GetCompShareInstanceMonitor call
