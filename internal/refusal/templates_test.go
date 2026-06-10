@@ -28,22 +28,6 @@ func TestMonitorHistoryUnsupported_Anchors(t *testing.T) {
 	}
 }
 
-func TestResourceShortage226604_Anchors(t *testing.T) {
-	want := []string{"226604", "资源池", "重试", "包日", "包月"}
-	for _, anchor := range want {
-		if !strings.Contains(ResourceShortage226604, anchor) {
-			t.Errorf("ResourceShortage226604 lost anchor %q", anchor)
-		}
-	}
-	// Over-promise guard — PR #139 review #4
-	forbidden := []string{"独占机器", "不会因为资源紧张"}
-	for _, bad := range forbidden {
-		if strings.Contains(ResourceShortage226604, bad) {
-			t.Errorf("ResourceShortage226604 reintroduced forbidden phrase %q", bad)
-		}
-	}
-}
-
 func TestJailbreakAttempt_Anchors(t *testing.T) {
 	want := []string{"安全限制", "核心规则", "算力平台", "我无法忽略"}
 	for _, anchor := range want {
@@ -98,7 +82,6 @@ func TestCategoryStrings_NeverChange(t *testing.T) {
 	cases := map[string]string{
 		"CategoryAccountBilling":                "account_billing_unsupported",
 		"CategoryMonitorHistory":                "monitor_history_unsupported",
-		"CategoryResourceShortage":              "resource_shortage_226604",
 		"CategoryJailbreakAttempt":              "jailbreak_attempt",
 		"CategoryOffTopic":                      "off_topic_refused",
 		"CategoryExistingDiskAttachUnsupported": "existing_disk_attach_unsupported",
@@ -108,9 +91,6 @@ func TestCategoryStrings_NeverChange(t *testing.T) {
 	}
 	if CategoryMonitorHistory != cases["CategoryMonitorHistory"] {
 		t.Errorf("CategoryMonitorHistory = %q; want %q", CategoryMonitorHistory, cases["CategoryMonitorHistory"])
-	}
-	if CategoryResourceShortage != cases["CategoryResourceShortage"] {
-		t.Errorf("CategoryResourceShortage = %q; want %q", CategoryResourceShortage, cases["CategoryResourceShortage"])
 	}
 	if CategoryJailbreakAttempt != cases["CategoryJailbreakAttempt"] {
 		t.Errorf("CategoryJailbreakAttempt = %q; want %q", CategoryJailbreakAttempt, cases["CategoryJailbreakAttempt"])

@@ -11,7 +11,7 @@
 //
 // New refusal categories add to BOTH the Category* and the reply-text
 // constants here, then are wired into internal/router or other callers.
-// See PR #139 (resource_shortage_226604) for the canonical add pattern.
+// See CategoryExistingDiskAttachUnsupported for the canonical add pattern.
 package refusal
 
 // Category names — must match observability.EngineHardBlockTrace.Category
@@ -20,7 +20,6 @@ package refusal
 const (
 	CategoryAccountBilling                = "account_billing_unsupported"
 	CategoryMonitorHistory                = "monitor_history_unsupported"
-	CategoryResourceShortage              = "resource_shortage_226604"
 	CategoryJailbreakAttempt              = "jailbreak_attempt"
 	CategoryOffTopic                      = "off_topic_refused"
 	CategoryExistingDiskAttachUnsupported = "existing_disk_attach_unsupported"
@@ -63,11 +62,3 @@ const JailbreakAttempt = "我注意到您的消息看起来像在请求我绕过
 // "professional help" redirect. If/when we add a maintainer-curated
 // hotline table, that's a follow-up with proper sourcing + review.
 const OffTopic = "我是 CompShare 算力平台助手，这类问题超出了我的回答范围。建议您咨询相应领域的专业人士（医生 / 律师 / 财务顾问 / 心理咨询师 等）。如果您有算力平台相关问题（GPU 规格、计费、监控、镜像、价格等），我很乐意继续帮您。"
-
-// ResourceShortage226604 is returned when the user pastes upstream
-// uhost-compshare-api error code 226604 ("当前资源不足，请稍后再试") or
-// phrases the question as 资源不足. Wording softened from earlier draft
-// per PR #139 review #4 — avoid hard guarantees about 独占机器 /
-// 不会被退出 because 包日/包月 SKUs still draw from the same pool at
-// create-time.
-const ResourceShortage226604 = "226604（当前资源不足）是平台 GPU 资源池的实时状态，并不是您账号或操作的问题——您选择的机型当前已被其他用户占满。资源会随着其他用户关机或退订陆续流转出来，建议您稍等片刻后重试同一机型，或在控制台库存页换一个可用区或相近规格（例如 4090 紧张时可以试试 A100）。如果业务需要长期稳定使用资源，也可以考虑包日或包月付费，相比按量计费在资源稳定性上更有保障。感谢您的耐心等待。"

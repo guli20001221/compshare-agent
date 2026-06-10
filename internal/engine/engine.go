@@ -75,12 +75,11 @@ const (
 // Force-tool / hard-block priority chain (highest first):
 //
 //  1. isAccountBillingUnsupported    -> canned reply, no LLM call (hard-block)
-//  2. isResourceShortageQuestion     -> canned reply, no LLM call (hard-block; error 226604)
-//  3. isExistingDiskAttachUnsupported -> canned reply, no LLM call
-//  4. isUnsupportedHistoricalMonitorQuestion -> canned reply, no LLM call
-//  5. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
+//  2. isExistingDiskAttachUnsupported -> canned reply, no LLM call
+//  3. isUnsupportedHistoricalMonitorQuestion -> canned reply, no LLM call
+//  4. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
 //                                       (BRIDGE T-001.f1, model-feature-gated)
-//  6. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
+//  5. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
 //
 // Model feature gating: force-tool paths that emit object tool_choice MUST
 // short-circuit when supportsObjectToolChoice=false. ds v4 flash in thinking
@@ -4823,33 +4822,6 @@ func containsScanAllSignal(msg string) bool {
 // enforces this hard-block. DO NOT delete when IntentPlan ships.
 func isAccountBillingUnsupported(userMsg string) bool {
 	return isAccountBillingUnsupportedNormalized(textutil.Normalize(userMsg))
-}
-
-// resourceShortageSignalKeywords are the precision-first phrases that
-// flag a user message as asking about upstream GPU pool exhaustion
-// (error code 226604: "当前资源不足，请稍后再试"). The matcher narrowly
-// targets product-specific phrases so it does not collide with adjacent
-// "X 不足" senses (余额不足 / 积分不足 / 权限不足).
-var resourceShortageSignalKeywords = []string{
-	"226604",
-	"资源不足", // 资源不足
-}
-
-// isResourceShortageQuestion reports whether the user message is asking
-// about upstream resource shortage (error code 226604). When true the
-// engine short-circuits before any LLM/planner/RAG call and returns
-// refusal.ResourceShortage226604 unchanged, so the response stays stable across
-// runs and never drifts via LLM paraphrase. Mirrors the
-// isAccountBillingUnsupported / isUnsupportedHistoricalMonitorQuestion
-// pattern.
-func isResourceShortageQuestion(userMsg string) bool {
-	n := textutil.Normalize(userMsg)
-	for _, kw := range resourceShortageSignalKeywords {
-		if strings.Contains(n, kw) {
-			return true
-		}
-	}
-	return false
 }
 
 func containsInvoiceRealtimeQuestion(n string) bool {
