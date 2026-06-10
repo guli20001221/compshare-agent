@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bitly/go-simplejson"
 	"github.com/coder/websocket"
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/stretchr/testify/assert"
@@ -143,6 +144,25 @@ func TestStringMapFromFrame(t *testing.T) {
 	// turn "confirm with edits" into "confirm the unedited card".
 	_, err = stringMapFromFrame(map[string]any{"GpuType": float64(1)})
 	assert.Error(t, err)
+}
+
+func TestOverridesFromFrame(t *testing.T) {
+	frame, err := simplejson.NewJson([]byte(`{"Action":"ConfirmCSAgentAction"}`))
+	require.NoError(t, err)
+	got, err := overridesFromFrame(frame)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	frame, err = simplejson.NewJson([]byte(`{"Overrides":{"GpuType":"A800"}}`))
+	require.NoError(t, err)
+	got, err = overridesFromFrame(frame)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"GpuType": "A800"}, got)
+
+	frame, err = simplejson.NewJson([]byte(`{"Overrides":[]}`))
+	require.NoError(t, err)
+	_, err = overridesFromFrame(frame)
+	assert.Error(t, err, "present but non-object Overrides must not silently confirm the unedited card")
 }
 
 // ---------------------------------------------------------------------------

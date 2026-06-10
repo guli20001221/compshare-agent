@@ -177,7 +177,7 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 			// Strictly string-valued: a malformed entry rejects the WHOLE frame
 			// (error + keep pending) rather than silently dropping the edit and
 			// confirming the unedited card.
-			overrides, ovErr := stringMapFromFrame(frame.Get("Overrides").MustMap())
+			overrides, ovErr := overridesFromFrame(frame)
 			if ovErr != nil {
 				_ = writer.WriteEvent("error", streamErrorEvent{Code: "InvalidParam", Message: ovErr.Error()})
 				continue
@@ -201,6 +201,21 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 			})
 		}
 	}
+}
+
+// overridesFromFrame parses the optional Overrides object. Missing is allowed
+// and means "confirm without edits"; present-but-not-object is invalid because
+// silently treating it as empty would confirm the unedited card.
+func overridesFromFrame(frame *simplejson.Json) (map[string]string, error) {
+	raw, ok := frame.CheckGet("Overrides")
+	if !ok {
+		return nil, nil
+	}
+	m, err := raw.Map()
+	if err != nil {
+		return nil, fmt.Errorf("Overrides must be an object")
+	}
+	return stringMapFromFrame(m)
 }
 
 // stringMapFromFrame coerces a JSON-decoded object to map[string]string,
