@@ -1356,6 +1356,114 @@ PYTORCH_BASICS_CHUNKS = [
     ),
 ]
 
+# ============================== 模型下载 ==============================
+# Download vertical: the serving side (vLLM/SGLang/Ollama launch, tensor-parallel,
+# quantized loading) is already covered; the genuine gap is GETTING the weights in
+# China (hf-mirror / ModelScope / gated-model tokens / local GGUF import) and then
+# pointing a serving engine at the locally-downloaded path. Conservative authoring:
+# name the common tools, hedge volatile mirror addresses, defer platform-specific
+# disk/quota concerns to platform docs.
+MODEL_DOWNLOAD_CHUNKS = [
+    # NOTE: a dedicated hf-mirror chunk was intentionally NOT added — HF_ENDPOINT /
+    # mirror download is already covered by ext-gpu-hf-download-001, and a near-
+    # duplicate crowded the platform HF-download FAQ out of a golden query's top-3
+    # (parity regression on w0-golden-0064, the textbook hybrid-recall pattern). The
+    # concrete hf-mirror.com naming is delivered operationally by the deploy reply's
+    # self-pull guidance instead.
+    chunk(
+        chunk_id="ext-modelscope-download-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="用 ModelScope(魔搭)下载模型",
+        question_patterns=[
+            "modelscope 怎么下载模型",
+            "魔搭怎么下模型",
+            "国内下载模型除了 huggingface 还有什么",
+            "modelscope download 怎么用",
+        ],
+        content=(
+            "适用场景:很多模型在国内的 ModelScope(魔搭)社区有镜像,可作为 HuggingFace 之外的下载来源。\n\n"
+            "安装:\n```\npip install -U modelscope\n```\n"
+            "命令行下载到指定目录:\n```\nmodelscope download --model <模型ID> --local_dir ./model\n```\n"
+            "或在 Python 里下载:\n```\nfrom modelscope import snapshot_download\n"
+            "snapshot_download('<模型ID>', local_dir='./model')\n```\n\n"
+            "注意:模型 ID 以 ModelScope 站点上的名称为准;同一模型在 ModelScope 与 HuggingFace 的 ID 可能不同。"
+        ),
+        source_refs=["modelscope-docs:download"],
+    ),
+    chunk(
+        chunk_id="ext-hf-token-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="下载受限(gated)模型需要 HuggingFace 访问令牌",
+        question_patterns=[
+            "huggingface 模型需要登录怎么办",
+            "下载 llama 提示没有权限",
+            "hf token 怎么设置",
+            "gated model 401 403 怎么解决",
+        ],
+        content=(
+            "适用场景:部分模型(如 Llama 等)是受限(gated)模型,下载会提示无权限/需要登录。\n\n"
+            "1. 先在该模型在 HuggingFace 上的页面申请访问并等待通过。\n"
+            "2. 在 HuggingFace 账号设置里创建一个访问令牌(Access Token)。\n"
+            "3. 在实例里登录,或用环境变量提供令牌:\n"
+            "```\nhuggingface-cli login   # 按提示粘贴令牌\n"
+            "# 或:\nexport HF_TOKEN=<你的令牌>\n```\n"
+            "之后再下载即可带上凭证。\n\n"
+            "注意:访问令牌是私密凭证,不要写进代码仓库或分享给他人;泄露后应及时在账号设置里吊销重建。"
+        ),
+        source_refs=["hf-docs:security-tokens", "hf-docs:models-gated"],
+    ),
+    chunk(
+        chunk_id="ext-ollama-modelfile-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="Ollama 导入本地模型(Modelfile / GGUF)",
+        question_patterns=[
+            "ollama 怎么导入自己的模型",
+            "ollama 加载本地 gguf",
+            "ollama modelfile 怎么写",
+            "ollama 用自定义模型",
+        ],
+        content=(
+            "适用场景:已有一个本地 GGUF 权重文件,想让 Ollama 使用它(而不是从模型库拉取)。\n\n"
+            "1. 新建一个 Modelfile,用 `FROM` 指向本地权重文件:\n"
+            "```\nFROM ./your-model.gguf\n```\n"
+            "可按需追加 `PARAMETER`(如温度)、`TEMPLATE`、`SYSTEM` 等指令。\n"
+            "2. 创建并运行:\n```\nollama create my-model -f Modelfile\n"
+            "ollama run my-model\n```\n\n"
+            "注意:GGUF 文件的来源与转换方式以实际为准;Modelfile 的可用指令以 Ollama 官方文档为准。"
+        ),
+        source_refs=["ollama-docs:modelfile", "ollama-docs:import"],
+    ),
+    chunk(
+        chunk_id="ext-serve-local-path-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="用本地已下载的模型目录起服务(避免重复下载)",
+        question_patterns=[
+            "vllm 怎么加载本地模型",
+            "模型已经下载好了怎么用 vllm 起服务",
+            "sglang 怎么指定本地模型路径",
+            "怎么不让每次都重新下载模型",
+        ],
+        content=(
+            "适用场景:模型已经下载到本地(如数据盘),想让推理引擎直接用本地目录,避免每次重新下载。\n\n"
+            "把模型名换成本地目录的路径即可:\n"
+            "```\n# vLLM\nvllm serve /data/models/Qwen2.5-7B-Instruct\n"
+            "# SGLang\npython -m sglang.launch_server --model-path /data/models/Qwen2.5-7B-Instruct\n```\n"
+            "该目录应是一个完整的模型仓库(包含 config.json、权重文件、tokenizer 等)。\n\n"
+            "建议先用 huggingface-cli 或 modelscope 把模型下载到数据盘的固定目录,再让服务指向它;"
+            "这样既不占系统盘,也能在重建/多次启动时复用。注意:具体参数以各引擎的 `--help` / 官方文档为准。"
+        ),
+        source_refs=["vllm-docs:cli/serve", "sglang-docs:server_arguments"],
+    ),
+]
+
 CHUNKS = (
     VLLM_CHUNKS
     + SGLANG_CHUNKS
@@ -1365,6 +1473,7 @@ CHUNKS = (
     + EXTRA_CHUNKS
     + LINUX_OPS_CHUNKS
     + PYTORCH_BASICS_CHUNKS
+    + MODEL_DOWNLOAD_CHUNKS
 )
 
 
