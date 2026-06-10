@@ -57,11 +57,12 @@ var enginePreBlock = router.New(
 		Category: refusal.CategoryOffTopic,
 		Reply:    refusal.OffTopic,
 	},
-	router.Rule{
-		Match:    isAccountBillingUnsupported,
-		Category: refusal.CategoryAccountBilling,
-		Reply:    refusal.AccountBillingUnsupported,
-	},
+	// account_billing keyword hard-block removed (2026-06-10): the planner's
+	// semantic billing_account_unsupported / billing_instance / knowledge_qa
+	// split handles these better (instance-billing-symptom questions like
+	// "机器关机了为什么还扣费" now diagnose the real cause instead of being
+	// keyword-deflected; genuine account-data like 余额/发票 still gets
+	// console-guidance). Same pattern as the resource_shortage removal (#261).
 	router.Rule{
 		Match:    isExistingDiskAttachUnsupported,
 		Category: refusal.CategoryExistingDiskAttachUnsupported,

@@ -10,15 +10,6 @@ import (
 // verify that the canonical anchors users / dashboards rely on remain
 // present.
 
-func TestAccountBillingUnsupported_Anchors(t *testing.T) {
-	want := []string{"财务中心", "余额", "账单", "消费记录", "发票"}
-	for _, anchor := range want {
-		if !strings.Contains(AccountBillingUnsupported, anchor) {
-			t.Errorf("AccountBillingUnsupported lost anchor %q", anchor)
-		}
-	}
-}
-
 func TestMonitorHistoryUnsupported_Anchors(t *testing.T) {
 	want := []string{"历史时间段", "实时监控", "控制台监控页"}
 	for _, anchor := range want {
@@ -80,14 +71,10 @@ func TestCategoryStrings_NeverChange(t *testing.T) {
 	// EXACT strings as a stable contract. Changing them would break
 	// historical aggregations silently.
 	cases := map[string]string{
-		"CategoryAccountBilling":                "account_billing_unsupported",
 		"CategoryMonitorHistory":                "monitor_history_unsupported",
 		"CategoryJailbreakAttempt":              "jailbreak_attempt",
 		"CategoryOffTopic":                      "off_topic_refused",
 		"CategoryExistingDiskAttachUnsupported": "existing_disk_attach_unsupported",
-	}
-	if CategoryAccountBilling != cases["CategoryAccountBilling"] {
-		t.Errorf("CategoryAccountBilling = %q; want %q", CategoryAccountBilling, cases["CategoryAccountBilling"])
 	}
 	if CategoryMonitorHistory != cases["CategoryMonitorHistory"] {
 		t.Errorf("CategoryMonitorHistory = %q; want %q", CategoryMonitorHistory, cases["CategoryMonitorHistory"])
