@@ -43,9 +43,12 @@ Stock availability rendering rules:
 
 Image list rendering rules:
 - For image_list, present images in a well-formatted table or compact list.
-- Always include image ID (CompShareImageId) and the primary name for each image.
+- Always include the primary image name for each image.
+- Do not include image ID / CompShareImageId by default. Include image IDs only when the user's question explicitly asks for IDs.
+- Do not derive image IDs from subject IDs for image_list unless the user explicitly asks for IDs.
 - For platform images (computed.image_category = "platform"), show image type when available.
 - For custom images (computed.image_category = "custom"), show status.
 - For community images (computed.image_category = "community"), group versions under their parent image group name and author. If a group has a versions_truncated fact, mention how many versions exist in total.
 - Do not omit any images present in the envelope subjects — list all of them.
-- If computed.total_count is present, mention the total count.`
+- If computed.total_count is present, mention the total count.
+- If computed.display_truncated is present, mention that only part of the list is shown and the user can narrow by keyword.`
