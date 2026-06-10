@@ -9,7 +9,16 @@ import (
 	"os"
 )
 
-const CorpusDigestExpected = "3b4513e3da62bcff7c254c727828814a942fb4d881b12fd3463243074b3398c8"
+// CorpusDigestExpected pins deploy/kb/stage2b_w0.jsonl (LF-normalized SHA256).
+// Bumped 2026-06-10 for the A800-无卡 factual hotfix (A800 removed from the
+// 无卡开机 supported-card lists across 5 chunks; price/inventory/Spot mentions of
+// A800 left intact). The qwen3 sidecar was renamed to this digest but NOT
+// re-embedded: vectors are keyed by stable chunk_id (bijection holds), and the
+// 5 edited chunks keep their prior-text vectors. That is acceptable here — the
+// edit is a tiny same-topic factual correction, retrieval still surfaces the
+// chunk, and the CORRECTED content is what gets synthesized/cited. A full
+// re-embed folds into the deferred incremental-update rebuild.
+const CorpusDigestExpected = "eacdc94141566e22ab978a2c0728d834379f9559cffaca7a7a7f71508f83a2c8"
 
 // EmbeddingDigestExpected pins the hybrid retrieval embedding sidecar produced by
 // scripts/rag_w0/build_corpus_embeddings.py over the CorpusDigestExpected corpus
