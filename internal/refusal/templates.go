@@ -11,7 +11,7 @@
 //
 // New refusal categories add to BOTH the Category* and the reply-text
 // constants here, then are wired into internal/router or other callers.
-// See CategoryExistingDiskAttachUnsupported for the canonical add pattern.
+// See CategoryMonitorHistory for the canonical add pattern.
 package refusal
 
 // Category names — must match observability.EngineHardBlockTrace.Category
@@ -21,7 +21,6 @@ const (
 	CategoryMonitorHistory                = "monitor_history_unsupported"
 	CategoryJailbreakAttempt              = "jailbreak_attempt"
 	CategoryOffTopic                      = "off_topic_refused"
-	CategoryExistingDiskAttachUnsupported = "existing_disk_attach_unsupported"
 )
 
 // MonitorHistoryUnsupported is returned when the user asks for monitor
