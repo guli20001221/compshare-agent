@@ -6,7 +6,7 @@ package engine
 //
 // Sibling tests already verify the actually-executed hard-block sources
 // produce the correct EngineHardBlockTrace.TriggeredBy value:
-//   - keyword preblock        → TestResourceShortageHardBlock_NotifiesObserverWithoutStepEvent
+//   - keyword preblock        → TestAccountBillingHardBlock_NotifiesObserverWithoutStepEvent
 //   - planner_intent dispatch → TestPlannerMonitorHistoryHardBlock_FiresObserverEvenWhenKeywordMisses
 //   - post_llm cited contract → TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever
 //
@@ -108,8 +108,8 @@ func TestPlanner_HardBlockHint_KeywordMiss_NoRefusal(t *testing.T) {
 	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 
-	// Neutral question — no resource_shortage / account_billing / monitor_history
-	// keyword matches; planner classifies it as knowledge_qa with HardBlockHint
+	// Neutral question — no account_billing / monitor_history keyword
+	// matches; planner classifies it as knowledge_qa with HardBlockHint
 	// erroneously set. Pre-PR #61: this could refuse via ReAct guard drift.
 	// Post-PR #61: must produce the LLM's normal answer.
 	reply, err := eng.Chat(context.Background(), "如何创建一个 GPU 实例", noopStep)

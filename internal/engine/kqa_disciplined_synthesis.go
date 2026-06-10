@@ -79,3 +79,23 @@ func (e *Engine) synthesizeKnowledgeQAFromLedger(ctx context.Context, userMsg st
 	}
 	return stripCitationMarkers(reply), true
 }
+
+// synthesizeOnBudgetExceeded writes a final grounded answer from the evidence
+// SearchKnowledge already gathered this turn, for the PR2 budget policy: when
+// the per-turn token budget is exhausted but evidence is in hand, deliver an
+// answer grounded on it rather than discarding the turn for a bare
+// "请简化问题". Returns ("", false) when nothing was retrieved or the evidence
+// can't produce a clean cited answer — the caller then keeps the budget
+// refusal (the "no evidence → refuse, never fabricate" guard).
+//
+// Independent of disciplinedKQASynthesisOn: that flag gates the NORMAL
+// (under-budget) synthesis path, whereas this is a budget-recovery path that
+// only fires once the cap is already blown. It reuses the same primitive,
+// which is itself budget-aware — answerWithRetrievedEvidence delivers a
+// grounded answer even over cap, suppressing only its extra cite-retry.
+func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string) (string, bool) {
+	if len(e.searchKnowledgeHitsThisTurn) == 0 {
+		return "", false
+	}
+	return e.synthesizeKnowledgeQAFromLedger(ctx, userMsg)
+}

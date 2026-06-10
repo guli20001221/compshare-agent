@@ -73,10 +73,16 @@ agent:
     user_turn_qps: 2      # max 2 messages/sec per tenant; 0 = no QPS cap
     user_turn_daily: 30   # 0 = no daily cap; 30 is the 2026-05-21 test-phase value
     # Per-turn cap on total LLM tokens (prompt + completion summed across
-    # every LLM call in one user turn). 0 = no cap. 80000 covers heavy
-    # multi-tool diagnosis turns; observe trace.outcome.total_tokens and
-    # tighten once steady-state distribution is known.
-    max_tokens_per_turn: 80000
+    # every LLM call in one user turn). 0 = no cap. 150000 gives headroom
+    # for heavy multi-tool diagnosis turns AND multi-turn sessions where the
+    # prior-text/history accumulation inflates input on otherwise-simple
+    # follow-ups (the 80000 cap was tripping those, fully refusing answerable
+    # questions). When the cap IS hit mid-turn, the engine now synthesizes a
+    # grounded answer from any evidence already retrieved instead of returning
+    # a bare "请简化问题" (see answerWithRetrievedEvidence / synthesizeOnBudgetExceeded);
+    # it only refuses when no evidence is in hand. Observe
+    # trace.outcome.total_tokens and tighten once steady-state is known.
+    max_tokens_per_turn: 150000
 
   # HTTP service settings (used by: compshare-agent server).
   # write_timeout must be 0 for SSE streaming connections.
