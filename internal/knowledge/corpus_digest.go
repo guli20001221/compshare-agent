@@ -36,17 +36,16 @@ const EmbeddingDigestExpectedQwen3 = "da488ead7fb53b6d7ab2e7529b9724b1a6f60910ae
 
 // ExternalCorpusDigestExpected pins deploy/kb/external_w0.jsonl — the separate
 // external tool/ops corpus (vLLM / SGLang / Ollama / ComfyUI + GPU
-// troubleshooting + Linux-ops/env-management + PyTorch-basics + model-download),
-// loaded alongside the platform corpus via LoadPinnedCorporaWithEmbeddings. RAG
-// Phase 1 (ComfyUI vertical Phase 5; Linux-ops + PyTorch-basics; then the
-// model-download vertical: ModelScope / HF token / Ollama Modelfile / local-path
-// serving). Same refuse-to-start-on-mismatch semantics as the platform pin.
-const ExternalCorpusDigestExpected = "6058e11b4bb2923a46715c659b8b49061de2177a0980efc9a7b98227cf28892f"
+// troubleshooting + Linux-ops/env-management + PyTorch-basics), loaded alongside
+// the platform corpus via LoadPinnedCorporaWithEmbeddings. RAG Phase 1 (ComfyUI
+// vertical Phase 5; Linux-ops + PyTorch-basics vertical added next). Same
+// refuse-to-start-on-mismatch semantics as the platform pin.
+const ExternalCorpusDigestExpected = "760623b42c029a09656d0eb4a540f48548f48897ea15eb55e5b65b6642375537"
 
 // ExternalEmbeddingDigestExpectedQwen3 pins the qwen3-embedding-8b sidecar
 // (4096-dim) for the external corpus:
 // deploy/kb/embeddings_<ExternalCorpusDigestExpected>_qwen3-embedding-8b.jsonl.
-const ExternalEmbeddingDigestExpectedQwen3 = "1865a2110500ca7f4617bd9b447987400f1eb196d72e01e9ab8a9a5b1be8eeeb"
+const ExternalEmbeddingDigestExpectedQwen3 = "809d3be90dbdf91e37ed1457c3f14e87a77539cddfa08c6262ecaeafc80bea0a"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.

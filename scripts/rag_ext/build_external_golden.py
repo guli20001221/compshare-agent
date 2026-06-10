@@ -80,15 +80,6 @@ Q = [
     ("gpu 利用率老是很低,感觉卡在数据加载,dataloader 怎么调快", ["ext-pytorch-dataloader-001"], "pytorch_basics", "pytorch"),
     ("训练想省点显存又快一点,听说混合精度可以,怎么写", ["ext-pytorch-amp-001"], "pytorch_basics", "pytorch"),
     ("pytorch 训练完想把权重保存下来,下次加载接着用,怎么写", ["ext-pytorch-checkpoint-001"], "pytorch_basics", "pytorch"),
-    # 模型下载 — product_area declared FAITHFULLY to inferKnowledgeProductArea:
-    # "模型" collides into modelverse (checked before inference_serving); the gguf/vllm
-    # phrasings (no "模型") fall to inference_serving; the llama-no-permission Q matches
-    # no keyword -> "". Distinctive tokens (huggingface/modelscope/gguf/vllm-本地) carry
-    # retrieval despite the modelverse mis-boost on the merged index (CLI-smoke verified).
-    ("除了 huggingface,国内还能从哪里下载模型", ["ext-modelscope-download-001"], "modelverse", "model_download"),
-    ("下载 llama 的时候提示没有权限,需要先申请什么吗", ["ext-hf-token-001"], "", "model_download"),
-    ("我有个 gguf 文件,想让 ollama 直接用它", ["ext-ollama-modelfile-001"], "inference_serving", "model_download"),
-    ("vllm 怎么加载本地已经下好的目录,不想每次重新下", ["ext-serve-local-path-001"], "inference_serving", "model_download"),
 ]
 
 
