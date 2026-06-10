@@ -441,3 +441,76 @@ func TestOnTextDeltaNotCalledForToolCallOnlyChunks(t *testing.T) {
 		t.Fatal("OnTextDelta should not be called for tool-call-only chunks")
 	}
 }
+
+// TestClientChatFallsBackToAutoWhenForcedToolChoiceUnsupported pins the P0 fix:
+// when the upstream rejects a forced tool_choice in thinking mode (per-key
+// Modelverse behavior), Chat retries once with auto rather than failing the turn.
+// The retry must drop tool_choice; the engine-injected note keeps the tool likely.
+func TestClientChatFallsBackToAutoWhenForcedToolChoiceUnsupported(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&attempts, 1)
+		body, _ := io.ReadAll(r.Body)
+		if attempt == 1 {
+			if !strings.Contains(string(body), "tool_choice") {
+				t.Fatalf("first request should carry forced tool_choice: %s", string(body))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"The tool_choice parameter does not support being set to required or object in thinking mode","type":"invalid_request_error"}}`))
+			return
+		}
+		if strings.Contains(string(body), `"tool_choice"`) {
+			t.Fatalf("fallback request must omit tool_choice (auto): %s", string(body))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"SearchKnowledge\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "deepseek-v4-flash"})
+	resp, err := client.Chat(context.Background(), ChatRequest{
+		Messages:   []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "hi"}},
+		Tools:      []openai.Tool{{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{Name: "SearchKnowledge", Parameters: map[string]any{"type": "object"}}}},
+		ToolChoice: openai.ToolChoice{Type: openai.ToolTypeFunction, Function: openai.ToolFunction{Name: "SearchKnowledge"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("attempts = %d, want 2 (forced 400, then auto retry)", got)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Function.Name != "SearchKnowledge" {
+		t.Fatalf("expected SearchKnowledge tool call after auto fallback, got %#v", resp.ToolCalls)
+	}
+}
+
+func TestForcedToolChoiceClassifiers(t *testing.T) {
+	// Only the thinking-mode message triggers the auto fallback.
+	if !isForcedToolChoiceUnsupportedError(errors.New("llm stream: status 400 The tool_choice parameter does not support being set to required or object in thinking mode")) {
+		t.Error("thinking-mode tool_choice 400 should match")
+	}
+	for _, e := range []error{
+		errors.New("tool_choice unsupported"), // mirrors TestClientChatDoesNotRetryProviderStatusError
+		errors.New("no function named 'SearchKnowledge' was specified in the 'tools' parameter"),
+		errors.New("some other 400"),
+		nil,
+	} {
+		if isForcedToolChoiceUnsupportedError(e) {
+			t.Errorf("non-thinking-mode error must not match: %v", e)
+		}
+	}
+	// Object struct and "required" are forced; nil/auto/none are not.
+	if !isForcedToolChoice(openai.ToolChoice{Type: openai.ToolTypeFunction, Function: openai.ToolFunction{Name: "X"}}) {
+		t.Error("object tool_choice should be forced")
+	}
+	if !isForcedToolChoice("required") {
+		t.Error(`"required" should be forced`)
+	}
+	for _, tc := range []any{nil, "auto", "none"} {
+		if isForcedToolChoice(tc) {
+			t.Errorf("%v should not be forced", tc)
+		}
+	}
+}

@@ -36,6 +36,11 @@ eval/shadow_qa/**/shadow_qa_agent.yaml
 eval/shadow_qa/.env
 eval/shadow_qa/**/.env
 
+# Realism eval run outputs (eval/realism/run_realism_eval.ps1): per-question
+# traces, replies, and the generated agent.org.yaml contain real-account data
+# (instance IDs, IPs). The harness + question set are committed; outputs are not.
+eval/realism/out*/
+
 # M1 CLI eval round (2026-05-23) — entire directory is local-only.
 # Contains real-account traces (UHostIds, IPs, prices, trace_id), GT JSON
 # dumps, and raw_results.json. Older rounds (round2 etc.) committed a
