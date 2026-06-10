@@ -75,13 +75,13 @@ const (
 
 // Force-tool / hard-block priority chain (highest first):
 //
-//  1. isUnsupportedHistoricalMonitorQuestion -> canned reply, no LLM call (hard-block)
-//  2. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
+//  1. isExistingDiskAttachUnsupported -> canned reply, no LLM call (hard-block)
+//  2. isUnsupportedHistoricalMonitorQuestion -> canned reply, no LLM call
+//  3. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
 //                                       (BRIDGE T-001.f1, model-feature-gated)
-//  3. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
+//  4. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
 //
-// (account_billing + existing_disk_attach keyword hard-blocks removed
-// 2026-06-10 — planner/agent-routed.)
+// (account_billing keyword hard-block removed 2026-06-10 — planner-routed.)
 //
 // Model feature gating: force-tool paths that emit object tool_choice MUST
 // short-circuit when supportsObjectToolChoice=false. ds v4 flash in thinking
