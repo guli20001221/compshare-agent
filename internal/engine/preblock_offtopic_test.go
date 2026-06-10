@@ -46,29 +46,7 @@ func TestEnginePreBlock_OffTopicRuleFires(t *testing.T) {
 	}
 }
 
-func TestEnginePreBlock_ExistingDiskAttachUnsupported(t *testing.T) {
-	cases := []struct {
-		name      string
-		input     string
-		wantMatch bool
-	}{
-		{"existing-data-disk", "把已有数据盘挂载到 uhost-abc123", true},
-		{"existing-udisk-id", "把 udisk-abc123 挂到 uhost-abc123", true},
-		{"new-data-disk", "给 uhost-abc123 加一块 100GB 数据盘", false},
-		{"model-library", "公共模型库怎么挂载", false},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			d := enginePreBlock.Decide(tc.input)
-			if tc.wantMatch {
-				assert.True(t, d.Matched, "expected match for %q", tc.input)
-				assert.Equal(t, "existing_disk_attach_unsupported", d.Category)
-				assert.Contains(t, d.Reply, "当前不支持挂载已有盘")
-				assert.Contains(t, d.Reply, "新建数据盘")
-			} else {
-				assert.False(t, d.Matched, "expected no match for %q", tc.input)
-			}
-		})
-	}
-}
+// existing_disk_attach preblock removed 2026-06-10 — "挂载已有盘" now routes
+// through the planner / create-disk workflow (tool description states it only
+// creates a new disk). Its TestEnginePreBlock_ExistingDiskAttachUnsupported
+// case table was removed with the predicate.

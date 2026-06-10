@@ -57,15 +57,6 @@ func TestOffTopic_Anchors(t *testing.T) {
 	}
 }
 
-func TestExistingDiskAttachUnsupported_Anchors(t *testing.T) {
-	want := []string{"当前不支持挂载已有盘", "新建数据盘", "扩已有盘"}
-	for _, anchor := range want {
-		if !strings.Contains(ExistingDiskAttachUnsupported, anchor) {
-			t.Errorf("ExistingDiskAttachUnsupported lost anchor %q", anchor)
-		}
-	}
-}
-
 func TestCategoryStrings_NeverChange(t *testing.T) {
 	// Downstream MySQL ingest + per-category eval depend on these
 	// EXACT strings as a stable contract. Changing them would break
@@ -74,7 +65,6 @@ func TestCategoryStrings_NeverChange(t *testing.T) {
 		"CategoryMonitorHistory":                "monitor_history_unsupported",
 		"CategoryJailbreakAttempt":              "jailbreak_attempt",
 		"CategoryOffTopic":                      "off_topic_refused",
-		"CategoryExistingDiskAttachUnsupported": "existing_disk_attach_unsupported",
 	}
 	if CategoryMonitorHistory != cases["CategoryMonitorHistory"] {
 		t.Errorf("CategoryMonitorHistory = %q; want %q", CategoryMonitorHistory, cases["CategoryMonitorHistory"])
@@ -84,8 +74,5 @@ func TestCategoryStrings_NeverChange(t *testing.T) {
 	}
 	if CategoryOffTopic != cases["CategoryOffTopic"] {
 		t.Errorf("CategoryOffTopic = %q; want %q", CategoryOffTopic, cases["CategoryOffTopic"])
-	}
-	if CategoryExistingDiskAttachUnsupported != cases["CategoryExistingDiskAttachUnsupported"] {
-		t.Errorf("CategoryExistingDiskAttachUnsupported = %q; want %q", CategoryExistingDiskAttachUnsupported, cases["CategoryExistingDiskAttachUnsupported"])
 	}
 }
