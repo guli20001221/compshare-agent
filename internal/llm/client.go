@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"sort"
@@ -79,9 +80,53 @@ type TokenUsage struct {
 func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	resp, err := c.chat(ctx, req, true)
 	if err != nil && isUsageUnsupportedChatError(err) {
-		return c.chat(ctx, req, false)
+		resp, err = c.chat(ctx, req, false)
+	}
+	// Graceful degradation for forced tool_choice. On Modelverse the
+	// deepseek-v4-flash deployment's support for object/"required" tool_choice in
+	// THINKING mode is per-KEY: some keys honor a forced choice, others return
+	// HTTP 400 ("tool_choice ... does not support being set to required or object
+	// in thinking mode") — verified by direct probe 2026-06-10 (same model + request,
+	// only the API key differs). Forcing a tool is only ever an advisory optimization
+	// here: engine callers that force SearchKnowledge / a monitor tool also inject a
+	// system note naming it, so retry once with auto instead of failing the turn. The
+	// note keeps the intended tool highly likely. Scoped to the thinking-mode message
+	// so an absent-tool 400 ("no function named X in tools") does NOT trigger it.
+	if err != nil && isForcedToolChoice(req.ToolChoice) && isForcedToolChoiceUnsupportedError(err) {
+		log.Printf("runtime: upstream rejected forced tool_choice in thinking mode; retrying with auto (configure a forced-tool-capable LLM key for deterministic forcing)")
+		auto := req
+		auto.ToolChoice = nil
+		resp, err = c.chat(ctx, auto, true)
+		if err != nil && isUsageUnsupportedChatError(err) {
+			resp, err = c.chat(ctx, auto, false)
+		}
 	}
 	return resp, err
+}
+
+// isForcedToolChoice reports whether tc forces a specific tool — "required" or an
+// object {type:function,function:{name}}. nil / "auto" / "none" are not forced.
+func isForcedToolChoice(tc any) bool {
+	switch v := tc.(type) {
+	case nil:
+		return false
+	case string:
+		return v == "required"
+	default:
+		return true // openai.ToolChoice struct (object) names a function
+	}
+}
+
+// isForcedToolChoiceUnsupportedError matches the Modelverse rejection of forced
+// tool_choice in thinking mode. Scoped narrowly to that message so a generic
+// tool_choice error (e.g. "no function named X in tools") does NOT trigger the
+// auto fallback (mirrors TestClientChatDoesNotRetryProviderStatusError).
+func isForcedToolChoiceUnsupportedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "tool_choice") && strings.Contains(msg, "thinking mode")
 }
 
 func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool) (*ChatResponse, error) {

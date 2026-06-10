@@ -1188,16 +1188,18 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// req.Tools. Non-object models fall back to "required" + an ephemeral note.
 		if round == 0 && e.knowledgeQAAgentLoopThisTurn && !forceMonitorRecall &&
 			toolListContainsFunction(req.Tools, "SearchKnowledge") {
+			// Inject the advisory note UNCONDITIONALLY: forced object/"required"
+			// tool_choice 400s on thinking-mode-only Modelverse keys (per-key,
+			// probed 2026-06-10); llm.Client.Chat then retries with auto, and this
+			// note keeps auto calling SearchKnowledge first. Harmless when honored.
+			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQAAgentLoopSearchNote)
 			if e.supportsObjectToolChoice {
 				req.ToolChoice = openai.ToolChoice{
 					Type:     openai.ToolTypeFunction,
 					Function: openai.ToolFunction{Name: "SearchKnowledge"},
 				}
-			} else {
-				req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQAAgentLoopSearchNote)
-				if e.supportsRequiredToolChoice {
-					req.ToolChoice = "required"
-				}
+			} else if e.supportsRequiredToolChoice {
+				req.ToolChoice = "required"
 			}
 		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
