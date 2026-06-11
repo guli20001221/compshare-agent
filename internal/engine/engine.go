@@ -45,6 +45,17 @@ const (
 	maxPlannerPriorTextRunes     = 2000
 	maxKnowledgeHistoryRunes     = 4000
 	maxReadExpensiveCallsPerTurn = 20
+	// maxSearchKnowledgeCallsPerTurn bounds how many times the knowledge_qa agent
+	// loop may call SearchKnowledge in a single turn. On a corpus-gap query the
+	// retriever returns only weak hits (dropped by the relevance floor), so the
+	// model sees "no relevant docs" and re-searches with new phrasings round after
+	// round — up to maxReActRounds, each round re-sending a growing context — until
+	// the per-turn token budget trips and the user gets the bare "请简化问题" instead
+	// of an honest "no specific docs" answer. Past this cap SearchKnowledge is
+	// withdrawn from the tool list so the model must answer from what it has (or
+	// decline) well within budget. Generous enough to preserve genuine multi-hop
+	// retrieval (1-2 productive searches is typical); it only kills the thrash.
+	maxSearchKnowledgeCallsPerTurn = 5
 )
 
 const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
@@ -209,6 +220,11 @@ type Engine struct {
 	// tool (flag off => tool never visible => never runs => both stay zero).
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
+	// searchKnowledgeCallsThisTurn counts SearchKnowledge invocations this turn so
+	// the ReAct loop can withdraw the tool once it hits maxSearchKnowledgeCallsPerTurn,
+	// bounding the corpus-gap re-search thrash that otherwise exhausts the token
+	// budget. Reset per turn; inert unless the agentic SearchKnowledge tool runs.
+	searchKnowledgeCallsThisTurn int
 	// searchKnowledgeLedgerThisTurn is the per-turn ChunkID-keyed, deduped
 	// evidence ledger (the union of every SearchKnowledge call's items this turn,
 	// #126). The route-independent grounded-answer validator checks the final
@@ -1073,6 +1089,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.lastPlannerActionThisTurn = ""
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
+	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.refreshSystemPrompt()
@@ -1176,6 +1193,17 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// trace-only and never authorizes dispatch (see
 			// visibleRegistryForIntentRoute + TestPlannerRequiredToolsDoNotAuthorizeDispatch).
 			Tools: visibleRegistryForIntentRoute(intent.IntentRoute{Intent: e.lastPlannerIntentThisTurn}, e.mutatingToolsEnabled),
+		}
+		// Per-turn SearchKnowledge cap: once the agent loop has searched
+		// maxSearchKnowledgeCallsPerTurn times, withdraw the tool so a corpus-gap
+		// query stops re-searching (which balloons context to the token budget) and
+		// instead answers from what it has — or honestly declines. Paired with an
+		// ephemeral nudge so it states "no specific docs" rather than fabricating
+		// (the round-0 cited-contract gate no longer applies on these later rounds).
+		if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn &&
+			toolListContainsFunction(req.Tools, "SearchKnowledge") {
+			req.Tools = toolListWithoutFunction(req.Tools, "SearchKnowledge")
+			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQASearchCapNote)
 		}
 		// BRIDGE T-001.f1: adjacent monitor follow-up must re-call
 		// GetCompShareInstanceMonitor instead of reusing prior numbers.
@@ -2865,6 +2893,9 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		query = hint
 	}
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Args: map[string]any{"query": query}})
+	// Count every invocation (incl. the degenerate no-retriever/empty-query path)
+	// so the ReAct loop can withdraw the tool once the per-turn cap is hit.
+	e.searchKnowledgeCallsThisTurn++
 	if e.knowledgeRetriever == nil || query == "" {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
 		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: query}, true, false)

@@ -346,3 +346,88 @@ func TestToolListContainsFunction(t *testing.T) {
 	assert.False(t, toolListContainsFunction(toolDefs, "GetCompShareInstanceMonitor"))
 	assert.False(t, toolListContainsFunction(nil, "SearchKnowledge"))
 }
+
+// TestToolListWithoutFunction unit-tests the cap helper: it removes the named tool,
+// keeps the others, tolerates a nil Function entry, and never mutates the input.
+func TestToolListWithoutFunction(t *testing.T) {
+	in := []openai.Tool{
+		{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{Name: "DescribeCompShareInstance"}},
+		{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{Name: "SearchKnowledge"}},
+		{Type: openai.ToolTypeFunction, Function: nil}, // must not panic
+	}
+	out := toolListWithoutFunction(in, "SearchKnowledge")
+	assert.False(t, toolListContainsFunction(out, "SearchKnowledge"), "named tool removed")
+	assert.True(t, toolListContainsFunction(out, "DescribeCompShareInstance"), "other tools kept")
+	assert.Len(t, out, 2)
+	assert.True(t, toolListContainsFunction(in, "SearchKnowledge"), "input slice must not be mutated")
+}
+
+// TestKnowledgeQAAgentLoop_SearchCapWithdrawsToolAndAnswers proves the corpus-gap
+// thrash fix: when the model keeps re-calling SearchKnowledge (the real-world trigger
+// is weak evidence on a query the corpus doesn't cover — here every retrieval is weak
+// and dropped to an empty ledger), the loop withdraws SearchKnowledge after
+// maxSearchKnowledgeCallsPerTurn calls and injects the honest-answer nudge, so the
+// turn settles on a final reply instead of re-searching until the token budget trips
+// (the D7 "Agent Plan" bug: 9 SearchKnowledge calls → 95K prompt tokens → bare
+// "请简化问题"). WHY it matters: an uncovered question must yield a fast honest
+// "no specific docs", never an opaque token-exhaustion message.
+func TestKnowledgeQAAgentLoop_SearchCapWithdrawsToolAndAnswers(t *testing.T) {
+	SetKnowledgeQAAgentLoopEnabled(true)
+	defer SetKnowledgeQAAgentLoopEnabled(false)
+	tools.SetAgenticSearchKnowledgeEnabled(true)
+	defer tools.SetAgenticSearchKnowledgeEnabled(false)
+	SetGroundedAnswerValidatorEnabled(false)
+
+	// Weak hit (score 0.1 < weakEvidenceSemanticThreshold 0.5 on qwen3_rrf) → dropped
+	// to an empty ledger, exactly like a corpus-gap query. One scripted result; the
+	// retriever returns Empty for the remaining calls (same empty-ledger effect).
+	weak := knowledge.RetrievalResult{
+		Enabled: true, KBVersion: "kb.v1", HybridMode: "qwen3_rrf",
+		HitItems: []knowledge.RetrievalHit{{Chunk: knowledge.KBChunk{ChunkID: "irrelevant-001", Content: "unrelated"}, Score: 0.1, Kept: true}},
+	}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{weak}}
+	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+
+	// The model keeps calling SearchKnowledge (the thrash). Script one call per round
+	// up to the cap, then a final honest answer once the tool is withdrawn.
+	skCall := llm.ChatResponse{ToolCalls: []openai.ToolCall{{
+		ID: "sk", Type: openai.ToolTypeFunction,
+		Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"agent plan 个人 团队"}`},
+	}}}
+	finalAnswer := "暂无该主题的专项文档，建议查阅优云控制台或官网帮助。"
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		skCall, skCall, skCall, skCall, skCall, // 5 = maxSearchKnowledgeCallsPerTurn
+		{Content: finalAnswer},                 // round after the cap: tool withdrawn → final reply
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "Agent Plan 个人版和团队版有什么区别", noopStep)
+	require.NoError(t, err)
+
+	// SearchKnowledge ran exactly the cap, NOT all maxReActRounds — the thrash is bounded.
+	require.Len(t, retriever.calls, maxSearchKnowledgeCallsPerTurn,
+		"SearchKnowledge must be capped at maxSearchKnowledgeCallsPerTurn, not loop to maxReActRounds")
+	require.GreaterOrEqual(t, len(mock.calls), maxSearchKnowledgeCallsPerTurn+1)
+
+	// The tool is offered up to the cap, then withdrawn on the next round.
+	assert.True(t, toolListContainsFunction(mock.calls[maxSearchKnowledgeCallsPerTurn-1].Tools, "SearchKnowledge"),
+		"SearchKnowledge still offered on the cap-th call")
+	capCall := mock.calls[maxSearchKnowledgeCallsPerTurn]
+	assert.False(t, toolListContainsFunction(capCall.Tools, "SearchKnowledge"),
+		"SearchKnowledge withdrawn once the cap is hit")
+	// The honest-answer nudge is injected alongside the withdrawal.
+	foundNote := false
+	for _, m := range capCall.Messages {
+		if m.Content == knowledgeQASearchCapNote {
+			foundNote = true
+		}
+	}
+	assert.True(t, foundNote, "the honest-answer nudge must be injected when the tool is withdrawn")
+
+	// The turn settles on the final answer, NOT the token-budget refusal.
+	assert.Equal(t, finalAnswer, reply)
+	assert.NotEqual(t, tokenBudgetExceededMessage, reply, "capped thrash must not exhaust the token budget")
+}
