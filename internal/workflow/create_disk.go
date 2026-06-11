@@ -49,7 +49,7 @@ func stepConfirmCreateDisk() Step {
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
 			summary["disk_size_gb"] = wfCtx.Params["Size"]
 			summary["disk_type"] = "SSDDataDisk"
-			summary["charge_type"] = "Dynamic"
+			summary["charge_type"] = "Postpay"
 			summary["warning"] = "将创建一块 SSD 云数据盘并挂载到该实例，按量计费。"
 			return summary, nil
 		},
@@ -74,7 +74,7 @@ func stepCreateAndAttachDisk() Step {
 				"Size":       wfCtx.Params["Size"],
 				"Name":       name + "-data",
 				"DiskType":   "SSDDataDisk",
-				"ChargeType": "Dynamic",
+				"ChargeType": "Postpay",
 			}
 			return args, nil
 		},

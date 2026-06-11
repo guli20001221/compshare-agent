@@ -738,7 +738,7 @@ func (e *Engine) zoneStockState(ctx context.Context, zone, gpuType, imageID stri
 		"MachineType":        "G",
 		"MinimalCpuPlatform": "Auto",
 		"CompShareImageId":   imageID,
-		"ChargeType":         "Dynamic",
+		"ChargeType":         "Postpay",
 		"Disks":              deployPrecheckDisk,
 	})
 	if res == nil {
