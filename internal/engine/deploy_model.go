@@ -1153,12 +1153,14 @@ func deployAlternativesNote(plan deployPlan, cards []knowledge.AvailableGPU) str
 	for _, a := range alts {
 		names = append(names, fmt.Sprintf("%s(%dGB)", a.Name, a.VRAMGB))
 	}
-	model := strings.TrimSpace(plan.ModelName)
-	if model == "" {
-		model = "该模型"
+	// LLM deploys name the model ("够跑 Qwen2.5-7B"); app/image deploys (ComfyUI /
+	// SD-WebUI / 数字人) have no model name, so the line stays image-scoped.
+	head := "当前镜像支持的可用机型还有"
+	if model := strings.TrimSpace(plan.ModelName); model != "" {
+		head = "当前镜像支持、且够跑 " + model + " 的机型还有"
 	}
-	return fmt.Sprintf("当前镜像支持、且够跑 %s 的机型还有：%s。回复「用 %s」我就帮你换上重建（实际是否有货以创建结果为准）。",
-		model, strings.Join(names, " / "), alts[0].Name)
+	return fmt.Sprintf("%s：%s。回复「用 %s」我就帮你换上重建（实际是否有货以创建结果为准）。",
+		head, strings.Join(names, " / "), alts[0].Name)
 }
 
 // ── small pure helpers ──

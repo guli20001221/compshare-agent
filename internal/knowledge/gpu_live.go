@@ -148,21 +148,27 @@ func RecommendGPUTypeLive(modelName, quantization, scene string, allowed []strin
 	return best.Name, fmt.Sprintf("按当前可用机型%s选算力较高的 %s(%dGB)", suffix, best.Name, best.VRAMGB)
 }
 
-// FittingGPUAlternatives returns up to `limit` of the `available` cards that can
-// host the model on a single card, ranked cheapest-sufficient first (smallest
-// VRAM that still fits; ties → higher perf, then name for determinism), excluding
-// `exclude` (e.g. a sold-out recommended card). When `allowed` (the image's
-// SupportedGpuTypes) intersects the available set, only image-compatible cards are
-// returned; otherwise the constraint is dropped — VRAM-correctness wins, the same
-// policy RecommendGPUTypeLive uses. Returns nil when the model size is unknown (no
-// VRAM math possible) or nothing fits, so callers degrade to a generic message.
-// Used to offer concrete alternatives when the recommended card is sold out.
+// FittingGPUAlternatives returns up to `limit` of the `available` cards a deploy
+// can fall back to when its recommended card (`exclude`) is sold out, image-compat
+// filtered by `allowed` (the image's SupportedGpuTypes; dropped when it doesn't
+// intersect what's offered, matching RecommendGPUTypeLive's policy).
+//
+// Two ranking regimes, mirroring RecommendGPUTypeLive:
+//   - Known model size (LLM): keep only VRAM-sufficient cards, ranked cheapest-
+//     sufficient first (smallest fitting VRAM; ties → higher perf, then name) to
+//     minimise over-provisioning.
+//   - Unknown model size (an app/image deploy — ComfyUI / SD-WebUI / 数字人 — that
+//     has no parameter count): no VRAM floor (any image-compatible card runs the
+//     app), ranked strongest-first (highest perf, then larger VRAM), the same
+//     preference the scene path uses (mostPerfAvailable).
+//
+// Returns nil only when nothing is offered after filtering, so callers degrade to
+// a generic message.
 func FittingGPUAlternatives(modelName, quantization string, allowed []string, available []AvailableGPU, exclude string, limit int) []AvailableGPU {
-	paramsB, ok := resolveParamCountB(modelName)
-	if !ok {
-		return nil
+	required, sized := 0, false
+	if paramsB, ok := resolveParamCountB(modelName); ok {
+		required, sized = liveVRAMRequired(paramsB, quantization), true
 	}
-	required := liveVRAMRequired(paramsB, quantization)
 	pool := available
 	if allowedPool := filterAvailableByNames(available, allowed); len(allowedPool) > 0 {
 		pool = allowedPool
@@ -172,17 +178,28 @@ func FittingGPUAlternatives(modelName, quantization string, allowed []string, av
 		if strings.EqualFold(strings.TrimSpace(g.Name), strings.TrimSpace(exclude)) {
 			continue
 		}
-		if g.VRAMGB < required {
+		if sized && g.VRAMGB < required {
 			continue
 		}
 		out = append(out, g)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].VRAMGB != out[j].VRAMGB {
-			return out[i].VRAMGB < out[j].VRAMGB
-		}
-		if out[i].Perf != out[j].Perf {
-			return out[i].Perf > out[j].Perf
+		if sized {
+			// LLM: cheapest sufficient first (smallest fitting VRAM; ties → higher perf).
+			if out[i].VRAMGB != out[j].VRAMGB {
+				return out[i].VRAMGB < out[j].VRAMGB
+			}
+			if out[i].Perf != out[j].Perf {
+				return out[i].Perf > out[j].Perf
+			}
+		} else {
+			// App/image: strongest first (highest perf; ties → larger VRAM).
+			if out[i].Perf != out[j].Perf {
+				return out[i].Perf > out[j].Perf
+			}
+			if out[i].VRAMGB != out[j].VRAMGB {
+				return out[i].VRAMGB > out[j].VRAMGB
+			}
 		}
 		return out[i].Name < out[j].Name
 	})
