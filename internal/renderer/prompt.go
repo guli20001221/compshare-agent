@@ -49,6 +49,8 @@ Image list rendering rules:
 - For platform images (computed.image_category = "platform"), show image type when available.
 - For custom images (computed.image_category = "custom"), show status.
 - For community images (computed.image_category = "community"), group versions under their parent image group name and author. If a group has a versions_truncated fact, mention how many versions exist in total.
+- For community images, when a group has a 部署次数 (deploy_count) fact, include that number for the group so users can gauge popularity. Keep the envelope subject order — it is already sorted most-deployed first.
 - Do not omit any images present in the envelope subjects — list all of them.
 - If computed.total_count is present, mention the total count.
-- If computed.display_truncated is present, mention that only part of the list is shown and the user can narrow by keyword.`
+- If computed.display_truncated is present, mention that only part of the list is shown and the user can narrow by keyword.
+- If computed.disclaimer is present (image_list), output it VERBATIM as the last line of your reply — do not rephrase or omit it.`

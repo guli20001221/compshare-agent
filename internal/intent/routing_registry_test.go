@@ -1232,6 +1232,124 @@ func TestRenderCommunityImage_DataExpansionAndCap(t *testing.T) {
 	if !strings.Contains(reply, "共 5 个版本") {
 		t.Errorf("community renderer should add 'remaining N' hint when capped; got: %s", reply)
 	}
+	// Footer bridges the list to the deploy flow so users can hand an image straight
+	// to deploy_model — the live alternative to ingesting per-image READMEs into RAG.
+	if !strings.Contains(reply, "我来帮你选 GPU 配置并创建") {
+		t.Errorf("community renderer should append the deploy-bridge footer; got: %s", reply)
+	}
+}
+
+func TestRenderCommunityImage_Popularity(t *testing.T) {
+	// Live DescribeCommunityImages carries the group name in ImageName and
+	// CreatedCount (部署次数) as the popularity signal. The header must surface the
+	// deploy count so users can judge popularity.
+	group := map[string]any{
+		"ImageName":    "最强AI数字人InfiniteTalk",
+		"Author":       "与AI同行",
+		"CreatedCount": float64(13517),
+		"Data": []any{
+			map[string]any{"CompShareImageId": "g1v1", "Name": "v26.0201"},
+		},
+	}
+	raw := map[string]any{"CompshareImageGroup": []any{group}}
+	reply := renderCommunityImageReply(raw, "查询社区镜像")
+	if !strings.Contains(reply, "部署次数=13517") {
+		t.Errorf("header should surface CreatedCount popularity; got: %s", reply)
+	}
+	if !strings.Contains(reply, "名称=最强AI数字人InfiniteTalk") {
+		t.Errorf("header should use group-level ImageName (live shape); got: %s", reply)
+	}
+
+	// A group with no CreatedCount must NOT fabricate a 部署次数 figure.
+	noCount := map[string]any{"ImageName": "x", "Data": []any{map[string]any{"Name": "v1"}}}
+	rawNoCount := map[string]any{"CompshareImageGroup": []any{noCount}}
+	if got := renderCommunityImageReply(rawNoCount, "查询社区镜像"); strings.Contains(got, "部署次数=") {
+		t.Errorf("must not show 部署次数 when CreatedCount is absent; got: %s", got)
+	}
+}
+
+func TestRenderCommunityImage_SortedByDeployCount(t *testing.T) {
+	// Live API default order is recommend-weighted, not deploy-count. The renderer
+	// reorders by CreatedCount desc so the most-deployed images surface first and
+	// the 部署次数 figures read monotonically (jumbled numbers look broken).
+	mk := func(name string, created int) map[string]any {
+		return map[string]any{
+			"ImageName":    name,
+			"CreatedCount": float64(created),
+			"Data":         []any{map[string]any{"Name": name + "-v1", "CompShareImageId": name}},
+		}
+	}
+	raw := map[string]any{"CompshareImageGroup": []any{
+		mk("low", 100), mk("high", 9000), mk("mid", 3000),
+	}}
+	reply := renderCommunityImageReply(raw, "查询社区镜像")
+	hi := strings.Index(reply, "名称=high")
+	mi := strings.Index(reply, "名称=mid")
+	lo := strings.Index(reply, "名称=low")
+	if !(hi >= 0 && mi > hi && lo > mi) {
+		t.Errorf("expected deploy-count-desc order (high<mid<low); got idx hi=%d mid=%d low=%d in:\n%s", hi, mi, lo, reply)
+	}
+}
+
+func TestBuildCommunityImageEnvelope_PopularityFactsAndOrder(t *testing.T) {
+	// Prod renders community_image via the LLM grounded renderer, which works off
+	// THIS envelope (not the deterministic reply). So the popularity signal, the
+	// most-deployed-first ordering, and the deploy-bridge footer must live here.
+	mk := func(name string, created int) map[string]any {
+		return map[string]any{
+			"ImageName":    name,
+			"CreatedCount": float64(created),
+			"Data":         []any{map[string]any{"Name": name + "-v1", "CompShareImageId": name + "-v1"}},
+		}
+	}
+	noCount := map[string]any{"ImageName": "nocount", "Data": []any{map[string]any{"Name": "nc-v1", "CompShareImageId": "nc-v1"}}}
+	raw := map[string]any{"CompshareImageGroup": []any{
+		mk("low", 100), mk("high", 9000), mk("mid", 3000), noCount,
+	}}
+	env := buildCommunityImageEnvelope(raw, "查询社区镜像")
+
+	// Subjects sorted by deploy count desc; the unsized group sorts last.
+	got := make([]string, 0, len(env.Subjects))
+	for _, s := range env.Subjects {
+		got = append(got, s.Name)
+	}
+	want := []string{"high", "mid", "low", "nocount"}
+	if len(got) != len(want) {
+		t.Fatalf("subject names = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("subject[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+
+	// deploy_count fact carries CreatedCount for sized groups; absent for unsized.
+	deployFor := map[string]int{}
+	for _, f := range env.Facts {
+		if f.Key == "deploy_count" {
+			if n, ok := f.Value.(int); ok {
+				deployFor[f.SubjectID] = n
+			}
+		}
+	}
+	if deployFor["image_group:high"] != 9000 {
+		t.Errorf("high deploy_count fact = %d, want 9000", deployFor["image_group:high"])
+	}
+	if _, ok := deployFor["image_group:nocount"]; ok {
+		t.Errorf("unsized group must not carry a deploy_count fact")
+	}
+
+	// disclaimer computed fact carries the deploy-bridge footer verbatim (the
+	// renderer prompt emits computed.disclaimer as the last line, unmodified).
+	var disclaimer string
+	for _, f := range env.Computed {
+		if f.Key == "disclaimer" {
+			disclaimer, _ = f.Value.(string)
+		}
+	}
+	if disclaimer != communityImageDeployFooter() {
+		t.Errorf("disclaimer computed fact = %q, want deploy footer %q", disclaimer, communityImageDeployFooter())
+	}
 }
 
 func TestRenderSharedImageListReply_ListAll(t *testing.T) {
