@@ -148,6 +148,50 @@ func RecommendGPUTypeLive(modelName, quantization, scene string, allowed []strin
 	return best.Name, fmt.Sprintf("按当前可用机型%s选算力较高的 %s(%dGB)", suffix, best.Name, best.VRAMGB)
 }
 
+// FittingGPUAlternatives returns up to `limit` of the `available` cards that can
+// host the model on a single card, ranked cheapest-sufficient first (smallest
+// VRAM that still fits; ties → higher perf, then name for determinism), excluding
+// `exclude` (e.g. a sold-out recommended card). When `allowed` (the image's
+// SupportedGpuTypes) intersects the available set, only image-compatible cards are
+// returned; otherwise the constraint is dropped — VRAM-correctness wins, the same
+// policy RecommendGPUTypeLive uses. Returns nil when the model size is unknown (no
+// VRAM math possible) or nothing fits, so callers degrade to a generic message.
+// Used to offer concrete alternatives when the recommended card is sold out.
+func FittingGPUAlternatives(modelName, quantization string, allowed []string, available []AvailableGPU, exclude string, limit int) []AvailableGPU {
+	paramsB, ok := resolveParamCountB(modelName)
+	if !ok {
+		return nil
+	}
+	required := liveVRAMRequired(paramsB, quantization)
+	pool := available
+	if allowedPool := filterAvailableByNames(available, allowed); len(allowedPool) > 0 {
+		pool = allowedPool
+	}
+	var out []AvailableGPU
+	for _, g := range pool {
+		if strings.EqualFold(strings.TrimSpace(g.Name), strings.TrimSpace(exclude)) {
+			continue
+		}
+		if g.VRAMGB < required {
+			continue
+		}
+		out = append(out, g)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].VRAMGB != out[j].VRAMGB {
+			return out[i].VRAMGB < out[j].VRAMGB
+		}
+		if out[i].Perf != out[j].Perf {
+			return out[i].Perf > out[j].Perf
+		}
+		return out[i].Name < out[j].Name
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
 // liveVRAMRequired mirrors the static VRAM arithmetic (params × bytes × buffer).
 func liveVRAMRequired(paramsB float64, quantization string) int {
 	bpp, ok := bytesPerParam[strings.ToLower(strings.TrimSpace(quantization))]
