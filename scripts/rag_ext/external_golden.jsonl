@@ -49,3 +49,7 @@
 {"question_id": "ext-eg-049", "question": "gpu 利用率老是很低,感觉卡在数据加载,dataloader 怎么调快", "product_area": "pytorch_basics", "expected_behavior": "answer", "expected_chunk_ids": ["ext-pytorch-dataloader-001"], "group": "pytorch"}
 {"question_id": "ext-eg-050", "question": "训练想省点显存又快一点,听说混合精度可以,怎么写", "product_area": "pytorch_basics", "expected_behavior": "answer", "expected_chunk_ids": ["ext-pytorch-amp-001"], "group": "pytorch"}
 {"question_id": "ext-eg-051", "question": "pytorch 训练完想把权重保存下来,下次加载接着用,怎么写", "product_area": "pytorch_basics", "expected_behavior": "answer", "expected_chunk_ids": ["ext-pytorch-checkpoint-001"], "group": "pytorch"}
+{"question_id": "ext-eg-052", "question": "除了 huggingface,国内还能从哪里下载模型", "product_area": "modelverse", "expected_behavior": "answer", "expected_chunk_ids": ["ext-modelscope-download-001"], "group": "model_download"}
+{"question_id": "ext-eg-053", "question": "下载 llama 的时候提示没有权限,需要先申请什么吗", "product_area": "", "expected_behavior": "answer", "expected_chunk_ids": ["ext-hf-token-001"], "group": "model_download"}
+{"question_id": "ext-eg-054", "question": "我有个 gguf 文件,想让 ollama 直接用它", "product_area": "inference_serving", "expected_behavior": "answer", "expected_chunk_ids": ["ext-ollama-modelfile-001"], "group": "model_download"}
+{"question_id": "ext-eg-055", "question": "vllm 怎么加载本地已经下好的目录,不想每次重新下", "product_area": "inference_serving", "expected_behavior": "answer", "expected_chunk_ids": ["ext-serve-local-path-001"], "group": "model_download"}
