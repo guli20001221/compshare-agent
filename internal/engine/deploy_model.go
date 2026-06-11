@@ -30,27 +30,15 @@ import (
 // reach only the ToolExecutor and cannot call e.RunAgentSaga, so routing
 // deploy_model as a deterministic route would force a raw CreateCompShareInstance that
 // bypasses the saga entirely — defeating B6.2/B8.2. This handler owns the engine, so
-// it drives the saga (step-trace + StepConfirm HITL + L2-refuse) and polls.
+// it drives the saga (step-trace + StepConfirm HITL + L2-refuse).
 //
 // The saga reuses workflow.CreateInstanceDef() verbatim (no fork) — the handler only
 // produces the param dict it already consumes (GpuType / ImageSource / ImageName)
 // and recovers the new UHostId via a capture CheckResult, because workflow.Result
-// carries only StepSummary, not step outputs. Polling to Running is handler-side
-// (a bounded loop of short reads), NOT a saga step: Step.Timeout firing STOPS the
-// saga (step.go:88 → saga.go:170-182), so there is no "timed-out-but-OK" exit —
-// "poll exhausted ≠ failure" must be loop logic, not saga-timeout semantics.
-
-var (
-	// deployPollMaxRounds bounds the post-create poll loop. Exhausting it is NOT
-	// a failure: the instance exists and is returned with whatever state it
-	// reached (the reply says "still provisioning"). Package var (not const) so
-	// tests override it; mutated only from tests (no t.Parallel on those).
-	deployPollMaxRounds = 30
-	// deployPollInterval is the ctx-aware sleep between poll rounds. 30×20s ≈
-	// 10min ceiling; a GPU instance normally reaches Running in 1-3min. Tests
-	// set this to 0 to skip real waits.
-	deployPollInterval = 20 * time.Second
-)
+// carries only StepSummary, not step outputs. The handler replies on the saga's own
+// post-create describe (step "查看状态"); it does NOT block the turn waiting for the
+// instance to reach Running — a GPU instance can take minutes to initialize, and the
+// manual CreateInstanceWorkflow path replies after a single describe too.
 
 // deployPreferredZones is the zone preference order the deploy handler tries when the
 // user did not name a zone: cn-wlcb-01 (Ulanqab) first, then cn-sh2-02 (Shanghai).
@@ -188,21 +176,24 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchRes
 		return e.deployReply(result, dispatch.latency, e.deployStopReplyWithAlternatives(ctx, sagaResult, plan))
 	}
 
-	// (4) Recover the new instance id and poll it to Running (handler-side).
+	// (4) Recover the new instance id and reply on the saga's own post-create
+	// describe (step "查看状态"). We deliberately do NOT block the turn polling
+	// until the instance reaches Running: a GPU instance can take several minutes
+	// to finish initializing, and holding the turn open that long stalls the SSE
+	// stream and the frontend's post-create jump to the console. The manual
+	// CreateInstanceWorkflow path replies after a single describe too, so the two
+	// create paths stay symmetric. Login/usage details that only exist once the
+	// instance is Running (SSH command, public IP) are surfaced on the console's
+	// instance-list page, which the reply links to.
 	uHostId := firstUHostID(createResult)
 	if uHostId == "" {
 		// Grounding guard: saga succeeded but capture didn't fire (step renamed?).
-		// Fail loud rather than silently skip the poll.
+		// Fail loud rather than silently skip the status read.
 		return e.deployReply(result, dispatch.latency,
-			"实例已创建，但未能解析实例 ID 进行状态轮询。请用「查询我的实例」查看最新状态。")
+			"实例已创建，但未能解析实例 ID。请用「查询我的实例」查看最新状态。")
 	}
-	host, state := e.pollInstanceRunning(ctx, uHostId, onStep)
-	if host == nil {
-		// Never observed a describe result during polling; fall back to the
-		// saga's own post-create describe so the reply still carries access info.
-		host = firstHost(describeResult)
-		state = stringFromHost(host, "State")
-	}
+	host := firstHost(describeResult)
+	state := stringFromHost(host, "State")
 
 	// (5) Fetch the chosen image's usage guidance (which apps on which ports +
 	// the community author's Readme) so the reply can tell the user HOW to use
@@ -980,43 +971,6 @@ func (e *Engine) querySafeRead(ctx context.Context, action string, args map[stri
 	return res.RawResult
 }
 
-// pollInstanceRunning polls DescribeCompShareInstance until the instance reaches
-// Running, hits a terminal install-failure state, the context is cancelled, or
-// deployPollMaxRounds is exhausted. Exhaustion is NOT a failure — the caller
-// reports the last observed state ("still provisioning"). Returns the last host
-// map observed (nil if no describe ever succeeded) and its State.
-func (e *Engine) pollInstanceRunning(ctx context.Context, uHostId string, onStep func(StepEvent)) (host map[string]any, state string) {
-	for round := 0; round < deployPollMaxRounds; round++ {
-		res, err := e.executeSafeTool(ctx, tools.SafeToolRequest{
-			Action: "DescribeCompShareInstance",
-			Args:   map[string]any{"UHostIds": []any{uHostId}},
-			Origin: tools.OriginWorkflowInternal,
-		})
-		if err == nil && res != nil {
-			if h := firstHost(res.RawResult); h != nil {
-				host = h
-				state = stringFromHost(h, "State")
-			}
-			e.emitDeployStep(onStep, StepToolResult, "deploy_poll",
-				fmt.Sprintf("轮询实例状态 [%d/%d]：%s", round+1, deployPollMaxRounds, orUnknown(state)))
-			if state == "Running" {
-				return host, state
-			}
-			if isTerminalFailState(state) {
-				return host, state
-			}
-		}
-		if round < deployPollMaxRounds-1 {
-			select {
-			case <-ctx.Done():
-				return host, state
-			case <-time.After(deployPollInterval):
-			}
-		}
-	}
-	return host, state
-}
-
 // emitDeployStep emits a coarse user-facing StepEvent for the deploy milestones.
 // The saga's fine-grained StepTraces go to e.stepSink (trace_json.steps[]); these
 // are the progress lines the CLI/SSE shows, since RunAgentSaga does not bridge to
@@ -1256,13 +1210,6 @@ func sourceLabel(source string) string {
 		return "社区镜像"
 	}
 	return "平台镜像"
-}
-
-func orUnknown(state string) string {
-	if state == "" {
-		return "未知"
-	}
-	return state
 }
 
 // isTerminalFailState reports states from which the instance will not reach
