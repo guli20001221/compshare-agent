@@ -39,7 +39,17 @@ func TestFittingGPUAlternatives(t *testing.T) {
 	require.Equal(t, []string{"5090", "A800"},
 		gpuAltNames(FittingGPUAlternatives("Qwen2.5-7B", "fp16", []string{"A800", "5090"}, cards, "4090", 3)))
 
-	// Unknown model size → nil (no VRAM math possible) so the caller degrades to a
-	// generic "换一个规格" message rather than suggesting random cards.
-	require.Nil(t, FittingGPUAlternatives("mystery-model", "fp16", nil, cards, "4090", 3))
+	// Unknown model size (an app/image deploy — ComfyUI / SD-WebUI / 数字人 — with no
+	// parameter count): NO VRAM floor (any image-compatible card runs the app), and
+	// the ranking flips to strongest-first (perf desc) to match the scene path.
+	// 2080(perf 50) is no longer dropped; A800(perf 150) leads.
+	require.Equal(t, []string{"A800", "5090", "4090_48G"},
+		gpuAltNames(FittingGPUAlternatives("ComfyUI", "", nil, cards, "4090", 3)))
+
+	// App deploy still honors the image-compat constraint.
+	require.Equal(t, []string{"A800", "2080"},
+		gpuAltNames(FittingGPUAlternatives("ComfyUI", "", []string{"A800", "2080"}, cards, "4090", 3)))
+
+	// Nothing offered after excluding the sold-out card → nil (caller degrades).
+	require.Nil(t, FittingGPUAlternatives("ComfyUI", "", nil, []AvailableGPU{{Name: "4090", VRAMGB: 24}}, "4090", 3))
 }

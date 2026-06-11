@@ -43,3 +43,22 @@ func TestIsDeployStockShortage(t *testing.T) {
 	require.False(t, isDeployStockShortage(&workflow.Result{Message: "用户取消了操作"}))
 	require.False(t, isDeployStockShortage(nil))
 }
+
+// TestDeployAlternativesNote_NonLLM: an app/image deploy (ComfyUI / SD / 数字人)
+// has no model name, so the note must stay image-scoped (no "够跑 X") and still
+// offer the strongest in-stock compatible cards — not dead-end like before #175.
+func TestDeployAlternativesNote_NonLLM(t *testing.T) {
+	plan := deployPlan{ModelName: "", GpuType: "4090"} // app deploy: no model
+	cards := []knowledge.AvailableGPU{
+		{Name: "4090", VRAMGB: 24, Perf: 100},
+		{Name: "A800", VRAMGB: 80, Perf: 150},
+		{Name: "3090", VRAMGB: 24, Perf: 80},
+	}
+	note := deployAlternativesNote(plan, cards)
+	require.Contains(t, note, "当前镜像支持的可用机型还有")
+	require.NotContains(t, note, "够跑") // no model name → no "够跑 X" phrasing
+	// Strongest in-stock compatible card (A800, perf 150) leads and is the default.
+	require.Contains(t, note, "A800(80GB)")
+	require.Contains(t, note, "回复「用 A800」")
+	require.NotContains(t, note, "4090") // the sold-out recommended card is excluded
+}
