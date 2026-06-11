@@ -531,3 +531,83 @@ func TestSaga_Run_ParentCtxCancelledMidStep(t *testing.T) {
 	_, isTimeout := sink.lastWithState(observability.StepStateTimeout)
 	assert.False(t, isTimeout, "parent cancellation must not be misreported as a step timeout")
 }
+
+// TestSaga_Run_ConfirmForm_OverrideRevalidatesAndReasks pins the editable-form
+// gate ported from workflow.Engine: an override re-runs RevalidateSteps with the
+// new params and re-asks, never creating on an unvalidated combination.
+func TestSaga_Run_ConfirmForm_OverrideRevalidatesAndReasks(t *testing.T) {
+	exec := &mockExecutor{}
+	sink := &captureSink{}
+
+	// First resolution submits an override; the second confirms as-is.
+	editCalls := 0
+	edits := func(action string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+		editCalls++
+		if editCalls == 1 {
+			return workflow.ConfirmResolution{Confirmed: true, Overrides: map[string]string{"GpuType": "4090"}}
+		}
+		return workflow.ConfirmResolution{Confirmed: true}
+	}
+
+	appliedTo := ""
+	confirmStep := workflow.Step{
+		Name: "确认创建",
+		Type: workflow.StepConfirm,
+		BuildArgs: func(wfCtx *workflow.Context) (map[string]any, error) {
+			return map[string]any{"GpuType": wfCtx.Params["GpuType"]}, nil
+		},
+		BuildForm: func(*workflow.Context) (*workflow.ConfirmForm, error) {
+			return &workflow.ConfirmForm{Version: 1, Fields: []workflow.ConfirmFormField{{
+				Key: "GpuType", Label: "GPU", Type: "select", Value: "5090", Editable: true,
+				Options: []workflow.ConfirmFormOption{{Value: "5090", Label: "5090"}, {Value: "4090", Label: "4090"}},
+			}}}, nil
+		},
+		ApplyOverrides: func(wfCtx *workflow.Context, ov map[string]string) error {
+			appliedTo = ov["GpuType"]
+			wfCtx.Params["GpuType"] = ov["GpuType"]
+			return nil
+		},
+		RevalidateSteps: []string{"检查库存"},
+	}
+
+	def := &workflow.Definition{Name: "CreateInstanceWorkflow", Steps: []workflow.Step{
+		{Name: "检查库存", Type: workflow.StepToolCall, Tool: "CheckCompShareResourceCapacity",
+			BuildArgs: func(*workflow.Context) (map[string]any, error) { return map[string]any{}, nil }},
+		confirmStep,
+	}}
+
+	s := New(Options{Executor: exec, ConfirmEdits: edits, Sink: sink, TurnID: "t1"})
+	res, err := s.Run(context.Background(), def, map[string]any{"GpuType": "5090"})
+	require.NoError(t, err)
+	assert.True(t, res.Success, "saga succeeds after override → revalidate → reconfirm")
+	assert.Equal(t, 2, editCalls, "ConfirmEdits asked twice (override round + confirm round)")
+	assert.Equal(t, "4090", appliedTo, "override was applied via ApplyOverrides")
+	assert.Equal(t, 2, exec.countOf("CheckCompShareResourceCapacity"),
+		"stock step re-ran on revalidate (forward pass + 1 revalidate) — no create on a stale combination")
+}
+
+// TestSaga_Run_ConfirmEdits_NoBuildForm_UsesBoolean pins the byte-identical
+// fallback: a confirm step WITHOUT a BuildForm uses the boolean Confirm gate even
+// when ConfirmEdits is wired — legacy steps are unaffected by the form feature.
+func TestSaga_Run_ConfirmEdits_NoBuildForm_UsesBoolean(t *testing.T) {
+	exec := &mockExecutor{}
+	boolCalled, editsCalled := false, false
+	def := &workflow.Definition{Name: "demo", Steps: []workflow.Step{
+		{Name: "确认", Type: workflow.StepConfirm,
+			BuildArgs: func(*workflow.Context) (map[string]any, error) { return map[string]any{}, nil }},
+	}}
+	s := New(Options{
+		Executor: exec,
+		Confirm:  func(string, map[string]any) bool { boolCalled = true; return true },
+		ConfirmEdits: func(string, map[string]any, *workflow.ConfirmForm) workflow.ConfirmResolution {
+			editsCalled = true
+			return workflow.ConfirmResolution{Confirmed: true}
+		},
+		TurnID: "t1",
+	})
+	res, err := s.Run(context.Background(), def, nil)
+	require.NoError(t, err)
+	assert.True(t, res.Success)
+	assert.True(t, boolCalled, "boolean Confirm used when the step has no BuildForm")
+	assert.False(t, editsCalled, "ConfirmEdits NOT consulted without a BuildForm (legacy steps unaffected)")
+}
