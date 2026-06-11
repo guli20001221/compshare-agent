@@ -101,17 +101,18 @@ type TraceRecord struct {
 	TurnIndex     int    `json:"turn_index"`
 	Timestamp     string `json:"timestamp"`
 	UserMsgHash   string `json:"user_msg_hash"`
-	// TaskTier is the ADR-001 task-complexity tier (fast / knowledge /
-	// agent) selected by the planner for this turn. Empty when planner is
-	// disabled or pre-ADR-002. B2-B4 will populate it from planner output;
-	// the field is added in B1 as a reserved schema slot so consumers
-	// (analytics SQL, dashboards) can start treating its presence as the
-	// signal to switch from legacy per-turn rows to tier-aware aggregation.
-	// Memory: attribution-observable-only — empty means "tier not known
-	// for this turn", never default-to-agent.
+	// TaskTier is the work-tier axis (fast / knowledge / agent; see the
+	// RealizedTier* consts) the planner PREDICTS for this turn — an input,
+	// the predicted twin of RealizedTier. RESERVED SCHEMA SLOT, NOT YET
+	// WIRED: no production code emits it (planner-predicted task_tier is
+	// B4b, still pending), so outside tests it is always empty. Added early
+	// as a reserved field so consumers (analytics SQL, dashboards) can treat
+	// its eventual presence as the signal to switch from legacy per-turn
+	// rows to tier-aware aggregation. Memory: attribution-observable-only —
+	// empty means "tier not known for this turn", never default-to-agent.
 	TaskTier string `json:"task_tier,omitempty"`
-	// RealizedTier is the task-complexity tier the turn ACTUALLY ran on
-	// (fast / knowledge / agent), DERIVED from observed dispatch signals.
+	// RealizedTier is the work-tier axis: the task-complexity tier the turn
+	// ACTUALLY ran on (fast / knowledge / agent), DERIVED from observed dispatch signals.
 	// It is distinct from TaskTier, which is the planner's PREDICTED tier
 	// (an input): predicted and realized diverge whenever the planner picks
 	// a tier but the turn falls through to a different path, so the two are
@@ -121,9 +122,11 @@ type TraceRecord struct {
 	// turn (no-tool ReAct answer, hard-block / canned reply) — empty means
 	// "tier not known", never default-to-agent (attribution-observable-only).
 	RealizedTier string `json:"realized_tier,omitempty"`
-	// ActualRuntimeForm is the coarse runtime architecture form that actually
-	// handled this turn. It is derived from observed execution signals, not from
-	// planner output: routing / terminal_rag / agent. Empty means not observable.
+	// ActualRuntimeForm is the runtime-form axis: the coarse runtime architecture
+	// form that actually handled this turn. It is derived from observed execution
+	// signals, not from planner output: routing / terminal_rag / agent. This is a
+	// DIFFERENT axis from RealizedTier and may diverge from it by design (see the
+	// RuntimeForm* consts). Empty means not observable.
 	ActualRuntimeForm string               `json:"actual_runtime_form,omitempty"`
 	Runtime           RuntimeTrace         `json:"runtime"`
 	Planner           PlannerTrace         `json:"planner"`
@@ -217,14 +220,36 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// Realized-tier values for TraceRecord.RealizedTier. Mirror the ADR-001
-// task-complexity tiers (fast / knowledge / agent).
+// TWO SEPARATE AXES describe how a turn ran. They are NOT interchangeable and
+// deliberately diverge for some turns — keep them distinct (do not collapse the
+// two fields into one, or force one shared vocabulary onto both).
+// TestRealizedTierAndRuntimeFormAreSeparateAxes pins the divergence.
+//
+//   - Work-tier axis (TaskTier predicted / RealizedTier realized): WHAT KIND of
+//     work the turn did, on the ADR-001 complexity scale fast < knowledge < agent.
+//   - Runtime-form axis (PlannedRuntimeForm / ActualRuntimeForm): WHICH runtime
+//     architecture executed — routing (deterministic handler) / terminal_rag
+//     (final-answer retrieval workflow) / agent (ReAct loop).
+//
+// The axes correspond only loosely (fast↔routing, knowledge↔terminal_rag,
+// agent↔agent): a turn can do knowledge-tier WORK on the agent FORM — a
+// knowledge_qa turn forced through the ReAct loop, or diagnosis that retrieves
+// mid-flow, both realize knowledge while their runtime form is agent (see
+// DeriveRealizedTier / DeriveActualRuntimeForm).
+
+// RealizedTier* are the work-tier-axis values for TraceRecord.RealizedTier (and
+// the predicted TaskTier). Mirror the ADR-001 task-complexity tiers.
 const (
 	RealizedTierFast      = "fast"
 	RealizedTierKnowledge = "knowledge"
 	RealizedTierAgent     = "agent"
 )
 
+// RuntimeForm* are the runtime-form-axis values for TraceRecord.ActualRuntimeForm
+// (and PlannedRuntimeForm). NOTE: "terminal_rag" is the odd value out vs the
+// rest of the routing/agent vocabulary; renaming it to "rag" is a wire-visible
+// trace-schema change and must be done as its own compatibility-aware migration,
+// not folded into a comment/test cleanup.
 const (
 	RuntimeFormRouting     = "routing"
 	RuntimeFormTerminalRAG = "terminal_rag"

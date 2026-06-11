@@ -937,6 +937,45 @@ func TestDeriveActualRuntimeForm(t *testing.T) {
 	}
 }
 
+// TestRealizedTierAndRuntimeFormAreSeparateAxes pins that the work-tier axis
+// (RealizedTier) and the runtime-form axis (ActualRuntimeForm) are DELIBERATELY
+// distinct and diverge for real turns — they must not be collapsed into one
+// field or one shared vocabulary. WHY it matters: a turn can do knowledge-tier
+// WORK while running the agent runtime FORM; merging the two would erase that
+// signal — it would make the knowledge_qa→agent-loop migration invisible in
+// traces and mislabel diagnosis-with-retrieval. Each case derives BOTH axes
+// from the same record; the first two take different values per axis (knowledge
+// work, agent form), the third shows the axes agreeing on the natural
+// knowledge↔terminal_rag correspondence.
+func TestRealizedTierAndRuntimeFormAreSeparateAxes(t *testing.T) {
+	cases := []struct {
+		name     string
+		record   TraceRecord
+		wantTier string // work-tier axis (RealizedTier)
+		wantForm string // runtime-form axis (ActualRuntimeForm)
+	}{
+		{"knowledge_qa agent loop: knowledge work, agent form",
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_knowledge_agent_loop"}},
+			RealizedTierKnowledge, RuntimeFormAgent},
+		{"diagnosis with retrieval: knowledge work, agent form",
+			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}, ToolCalls: []ToolCallTrace{{Source: ToolSourceDiagnosisInternal}}},
+			RealizedTierKnowledge, RuntimeFormAgent},
+		{"terminal RAG answer: knowledge work, terminal_rag form (axes agree)",
+			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_retrieval"}},
+			RealizedTierKnowledge, RuntimeFormTerminalRAG},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.record.DeriveRealizedTier(); got != tc.wantTier {
+				t.Fatalf("DeriveRealizedTier() = %q, want %q (work-tier axis)", got, tc.wantTier)
+			}
+			if got := tc.record.DeriveActualRuntimeForm(); got != tc.wantForm {
+				t.Fatalf("DeriveActualRuntimeForm() = %q, want %q (runtime-form axis)", got, tc.wantForm)
+			}
+		})
+	}
+}
+
 func TestRuntimeFormMismatch(t *testing.T) {
 	cases := []struct {
 		name         string
