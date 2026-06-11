@@ -1149,6 +1149,12 @@ func buildCommunityImageEnvelope(raw map[string]any, userText string) envelope.E
 		}
 		filtered = append(filtered, entry)
 	}
+	// Surface genuinely-popular images first: live API order is recommend-weighted,
+	// so sort subjects by CreatedCount (部署次数) desc — the grounded renderer lists
+	// subjects in envelope order.
+	sort.SliceStable(filtered, func(i, j int) bool {
+		return communityDeployCount(filtered[i]) > communityDeployCount(filtered[j])
+	})
 
 	env := envelope.Envelope{
 		Kind:          envelope.KindImageList,
@@ -1162,6 +1168,9 @@ func buildCommunityImageEnvelope(raw map[string]any, userText string) envelope.E
 		envelope.Fact{Key: "image_category", Label: "Image category", Value: "community", Source: envelope.FactSourceComputed},
 		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(filtered), Source: envelope.FactSourceComputed},
 		envelope.Fact{Key: "user_question", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
+		// disclaimer is rendered verbatim at the end by the grounded renderer
+		// (see renderer/prompt.go image_list rules) — the deploy bridge.
+		envelope.Fact{Key: "disclaimer", Label: "Deploy bridge", Value: communityImageDeployFooter(), Source: envelope.FactSourceComputed},
 	)
 	lineBudget := communityImageGroupLimit
 	for _, entry := range filtered {
@@ -1188,6 +1197,11 @@ func buildCommunityImageEnvelope(raw map[string]any, userText string) envelope.E
 		env.Facts = append(env.Facts, envelope.Fact{
 			SubjectID: subjectID, Key: "version_count", Label: "版本数", Value: len(versions), Source: envelope.FactSourceAPI,
 		})
+		if dc := communityDeployCount(entry); dc > 0 {
+			env.Facts = append(env.Facts, envelope.Fact{
+				SubjectID: subjectID, Key: "deploy_count", Label: "部署次数", Value: int(dc), Source: envelope.FactSourceAPI,
+			})
+		}
 		lineBudget--
 		shown := 0
 		for _, v := range versions {
@@ -2084,6 +2098,13 @@ func renderCommunityImageReply(raw map[string]any, userText string) string {
 		return noImageListNoMatchReply
 	}
 
+	// Surface genuinely-popular images first: the live API default order is
+	// recommend-weighted, so sort by CreatedCount (部署次数) desc to make the
+	// popularity figures monotonic and put the most-deployed images on top.
+	sort.SliceStable(filtered, func(i, j int) bool {
+		return communityDeployCount(filtered[i]) > communityDeployCount(filtered[j])
+	})
+
 	lines := make([]string, 0, communityImageGroupLimit)
 	lineBudget := communityImageGroupLimit
 	for _, entry := range filtered {
@@ -2126,7 +2147,14 @@ func renderCommunityImageReply(raw map[string]any, userText string) string {
 	if len(lines) == 0 {
 		return noCommunityReply
 	}
+	lines = append(lines, communityImageDeployFooter())
 	return strings.Join(lines, "\n")
+}
+
+// communityImageDeployFooter bridges the community-image list to the deploy
+// flow: the user can hand a community image straight to deploy_model.
+func communityImageDeployFooter() string {
+	return "说明：想用其中某个镜像开实例，直接告诉我镜像名（如「用 ComfyUI 镜像部署」），或直接说模型名（如「部署 Qwen2.5-32B」），我来帮你选 GPU 配置并创建。"
 }
 
 func renderSharedImageListReply(raw map[string]any, userText string) string {
@@ -2219,17 +2247,53 @@ func sharedImageOwnerDisplay(entry map[string]any) string {
 
 func buildCommunityGroupHeader(entry map[string]any) string {
 	parts := []string{}
-	if v := safeString(entry, "Name"); v != "" {
-		parts = append(parts, "名称="+v)
+	// Live DescribeCommunityImages carries the group name in ImageName (group-level
+	// Name is empty); communityGroupName reads ImageName||Name.
+	if name := communityGroupName(entry); name != "" {
+		parts = append(parts, "名称="+name)
 	}
 	if v := safeString(entry, "Author"); v != "" {
 		parts = append(parts, "作者="+v)
+	}
+	if n := communityDeployCount(entry); n > 0 {
+		parts = append(parts, fmt.Sprintf("部署次数=%d", n))
 	}
 	versions := mapSliceAt(entry, "Data")
 	if len(versions) > 0 {
 		parts = append(parts, fmt.Sprintf("版本数=%d", len(versions)))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// communityDeployCount reads CreatedCount (the catalog's 部署次数 popularity
+// signal) from a community-image group, falling back to its first version.
+func communityDeployCount(entry map[string]any) int64 {
+	if n := numericFieldInt(entry, "CreatedCount"); n > 0 {
+		return n
+	}
+	if versions := mapSliceAt(entry, "Data"); len(versions) > 0 {
+		if v0, ok := versions[0].(map[string]any); ok {
+			return numericFieldInt(v0, "CreatedCount")
+		}
+	}
+	return 0
+}
+
+// numericFieldInt reads a JSON-decoded numeric field as int64 (live responses
+// decode numbers to float64).
+func numericFieldInt(m map[string]any, key string) int64 {
+	if m == nil {
+		return 0
+	}
+	switch v := m[key].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	}
+	return 0
 }
 
 func buildCommunityVersionLine(ver map[string]any) string {
