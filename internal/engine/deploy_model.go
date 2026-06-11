@@ -89,6 +89,12 @@ type deployPlan struct {
 	MatchNote    string // human-readable selection rationale (GPU sizing + any fallback)
 	ChosenZone   string // resolved create-zone (preference + per-zone stock); "" → saga default
 	FallbackNote string // set when the create-zone differs from the primary (sold-out fallback / user zone)
+
+	// Quantization + SupportedGPUs are retained so the stock-shortage reply can
+	// size and image-filter alternative cards (knowledge.FittingGPUAlternatives)
+	// when the recommended card is sold out at create time.
+	Quantization  string   // the matcher's chosen quantization (drives VRAM math); may be ""
+	SupportedGPUs []string // the chosen image's SupportedGpuTypes (image↔GPU compat); may be empty
 }
 
 // tryDeployModel handles an IntentDeployModel turn end-to-end. It ALWAYS returns
@@ -174,7 +180,7 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchRes
 			fmt.Sprintf("创建流程未能启动：%v", sagaErr))
 	}
 	if !sagaResult.Success {
-		return e.deployReply(result, dispatch.latency, deployStopReply(sagaResult))
+		return e.deployReply(result, dispatch.latency, e.deployStopReplyWithAlternatives(ctx, sagaResult, plan))
 	}
 
 	// (4) Recover the new instance id and poll it to Running (handler-side).
@@ -402,6 +408,10 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 	plan.ChosenZone = zone
 	plan.MatchNote = gpuNote
 	plan.FallbackNote = fallbackNote
+	// Retain the sizing inputs so a stock-shortage reply can offer image-compatible,
+	// VRAM-sufficient alternative cards (see deployAlternativesNote).
+	plan.Quantization = decision.Quantization
+	plan.SupportedGPUs = supported
 	if groundNote != "" {
 		plan.MatchNote = groundNote + "；" + plan.MatchNote
 	}
@@ -1099,6 +1109,56 @@ func deployStopReply(r *workflow.Result) string {
 		return fmt.Sprintf("创建在「%s」步骤中止。", r.StoppedAt)
 	}
 	return "创建未完成。"
+}
+
+// deployStopReplyWithAlternatives wraps deployStopReply. When the saga halted on a
+// real stock shortage (the recommended card's specific spec is sold out), it
+// re-queries availability and appends the image-compatible cards that still fit the
+// model and are currently offered — so the user gets concrete next options instead
+// of a bare "换一个规格". The user can then reply "用 5090" and the pinned-GPU path
+// (selectPinnedGPUZone) deploys that card. Type-level availability is advisory (the
+// create call is the only ground truth), which the note states. Falls back to the
+// plain reply when nothing fits or the model size is unknown.
+func (e *Engine) deployStopReplyWithAlternatives(ctx context.Context, r *workflow.Result, plan deployPlan) string {
+	reply := deployStopReply(r)
+	if !isDeployStockShortage(r) {
+		return reply
+	}
+	avail := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
+	cards := knowledge.ParseAvailableGPUs(avail, plan.ChosenZone)
+	if note := deployAlternativesNote(plan, cards); note != "" {
+		return reply + "\n" + note
+	}
+	return reply
+}
+
+// isDeployStockShortage reports whether the saga stopped because the chosen spec is
+// sold out. The capacity gate's message (create_instance.go: "...当前库存不足（售罄）...")
+// is the signal; matching its stable "库存不足" substring keeps this decoupled from
+// the gate's exact wording while still firing only on the stock case.
+func isDeployStockShortage(r *workflow.Result) bool {
+	return r != nil && strings.Contains(r.Message, "库存不足")
+}
+
+// deployAlternativesNote builds the "these cards still fit and are offered" line
+// from already-parsed availability. Pure (no ctx/API) so it is unit-testable; the
+// query lives in deployStopReplyWithAlternatives. Returns "" when no compatible,
+// VRAM-sufficient alternative is offered (caller keeps the bare reply).
+func deployAlternativesNote(plan deployPlan, cards []knowledge.AvailableGPU) string {
+	alts := knowledge.FittingGPUAlternatives(plan.ModelName, plan.Quantization, plan.SupportedGPUs, cards, plan.GpuType, 3)
+	if len(alts) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(alts))
+	for _, a := range alts {
+		names = append(names, fmt.Sprintf("%s(%dGB)", a.Name, a.VRAMGB))
+	}
+	model := strings.TrimSpace(plan.ModelName)
+	if model == "" {
+		model = "该模型"
+	}
+	return fmt.Sprintf("当前镜像支持、且够跑 %s 的机型还有：%s。回复「用 %s」我就帮你换上重建（实际是否有货以创建结果为准）。",
+		model, strings.Join(names, " / "), alts[0].Name)
 }
 
 // ── small pure helpers ──
