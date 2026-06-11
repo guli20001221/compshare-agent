@@ -369,6 +369,73 @@ func TestGpuImageCompatible(t *testing.T) {
 	assert.True(t, gpuImageCompatible("", []string{"5090"}), "empty gpu = no claim")
 }
 
+// TestResolveArchImageVariant proves #174: the catalog ships a base image whose
+// SupportedGpuTypes EXCLUDES 5090 alongside a dedicated "<name>-5090"/"-50系" build.
+// When the user pins a 5090 the base can't run, the matcher must swap to the variant
+// (so the create uses a 5090-capable image) instead of dead-ending on the gate.
+func TestResolveArchImageVariant(t *testing.T) {
+	platform := map[string]any{"ImageSet": []any{
+		map[string]any{"Name": "vLLM v0.12.0", "CompShareImageId": "img-base",
+			"SupportedGpuTypes": []any{"4090", "A100", "H20"}}, // base excludes 5090
+		map[string]any{"Name": "vLLM v0.12.0-5090", "CompShareImageId": "img-5090",
+			"SupportedGpuTypes": []any{"5090"}}, // dedicated 5090 build
+		map[string]any{"Name": "ComfyUI基础镜像0.3.66", "CompShareImageId": "img-cf",
+			"SupportedGpuTypes": []any{"4090"}},
+		map[string]any{"Name": "ComfyUI基础镜像0.3.66-50系", "CompShareImageId": "img-cf-5090",
+			"SupportedGpuTypes": []any{"5090"}},
+	}}
+
+	t.Run("pinned 5090 swaps base to -5090 variant", func(t *testing.T) {
+		plan := deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0", ImageID: "img-base"}
+		got, supp, note := resolveArchImageVariant(plan, []string{"4090", "A100", "H20"}, "5090", platform)
+		require.NotEmpty(t, note, "swap must be noted so the user sees why the image changed")
+		assert.Equal(t, "vLLM v0.12.0-5090", got.ImageName)
+		assert.Equal(t, "img-5090", got.ImageID)
+		assert.Equal(t, []string{"5090"}, supp, "supported set follows the swapped image")
+	})
+
+	t.Run("-50系 suffix variant", func(t *testing.T) {
+		plan := deployPlan{ImageSource: "platform", ImageName: "ComfyUI基础镜像0.3.66", ImageID: "img-cf"}
+		got, _, note := resolveArchImageVariant(plan, []string{"4090"}, "5090", platform)
+		require.NotEmpty(t, note)
+		assert.Equal(t, "ComfyUI基础镜像0.3.66-50系", got.ImageName)
+	})
+
+	t.Run("no swap when image already supports 5090", func(t *testing.T) {
+		plan := deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0", ImageID: "img-base"}
+		_, _, note := resolveArchImageVariant(plan, []string{"4090", "5090"}, "5090", platform)
+		assert.Empty(t, note)
+	})
+
+	t.Run("no swap when GPU is not 5090", func(t *testing.T) {
+		plan := deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0", ImageID: "img-base"}
+		_, _, note := resolveArchImageVariant(plan, []string{"4090", "A100", "H20"}, "4090", platform)
+		assert.Empty(t, note)
+	})
+
+	t.Run("no swap for community source", func(t *testing.T) {
+		plan := deployPlan{ImageSource: "community", ImageName: "vLLM v0.12.0", ImageID: "x"}
+		_, _, note := resolveArchImageVariant(plan, []string{"4090"}, "5090", platform)
+		assert.Empty(t, note, "community images have no clean sibling-suffix convention")
+	})
+
+	t.Run("no swap when no variant exists", func(t *testing.T) {
+		plan := deployPlan{ImageSource: "platform", ImageName: "Ollama v0.13.1", ImageID: "x"}
+		_, _, note := resolveArchImageVariant(plan, []string{"4090"}, "5090", platform)
+		assert.Empty(t, note)
+	})
+}
+
+// TestBuildDeployReply_IncludesConsoleManageLink proves the post-create reply hands
+// the user a jump to the console instance-list page (manage state / login / billing).
+func TestBuildDeployReply_IncludesConsoleManageLink(t *testing.T) {
+	plan := deployPlan{ImageName: "vLLM v0.12.0-5090", GpuType: "5090", ImageSource: "platform"}
+	host := map[string]any{"State": "Running", "Name": "n"}
+	reply := buildDeployReply(plan, "uhost-x", host, "Running", imageUsage{})
+	assert.Contains(t, reply, deployConsoleInstancesURL)
+	assert.Contains(t, reply, "管理实例")
+}
+
 // TestMatchDeployImage_IncompatibleGPUImage proves the compatibility gate: when no
 // image-supported card has enough VRAM, the sizer keeps a VRAM-correct card that the
 // image does NOT support (e.g. a 72B model on a 4090-only image), which would error

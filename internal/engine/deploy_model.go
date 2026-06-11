@@ -78,6 +78,11 @@ var deployPrecheckDisk = []any{
 // excerpt + a pointer to the console image-detail page keeps the reply readable.
 const deployReadmeExcerptRunes = 400
 
+// deployConsoleInstancesURL is the console's instance-list ("我的资源") page —
+// where the user manages the just-created instance (state / login / billing).
+// Static (no per-instance id needed) per the console's light-gpu resources route.
+const deployConsoleInstancesURL = "https://console.compshare.cn/light-gpu/console/resources"
+
 // deployPlan is the resolved deploy specification the matcher produces and the
 // saga consumes. ImageSource/ImageName/GpuType are CreateInstanceDef params.
 type deployPlan struct {
@@ -392,6 +397,11 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 	// The static gpuSpecs table is only the offline fallback (empty live set).
 	imageID, supported := chosenImage(plan, platform, community)
 	plan.ImageID = imageID
+	// (d.1) #174: if the user pinned a 5090 the chosen image can't run, switch to its
+	// 5090 sibling variant BEFORE sizing (e.g. vLLM v0.12.0 → vLLM v0.12.0-5090) so the
+	// create uses an image that actually supports the card, instead of dead-ending on
+	// the gpuImageCompatible gate even though the 5090 build exists.
+	plan, supported, variantNote := resolveArchImageVariant(plan, supported, extractDeployGPU(userMsg), platform)
 	// (e) Size the GPU AND pick the create-zone together (interdependent: zones
 	// offer different cards, and a card must have real stock in the zone we create
 	// in). DescribeAvailableCompShareInstanceTypes takes no Zone request param and
@@ -414,6 +424,9 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 	plan.SupportedGPUs = supported
 	if groundNote != "" {
 		plan.MatchNote = groundNote + "；" + plan.MatchNote
+	}
+	if variantNote != "" {
+		plan.MatchNote = variantNote + "；" + plan.MatchNote
 	}
 
 	// (f) GPU↔image compatibility gate. An image is built for a specific GPU series
@@ -452,6 +465,44 @@ func gpuImageCompatible(gpuType string, supported []string) bool {
 		}
 	}
 	return false
+}
+
+// arch5090VariantSuffixes are the catalog's per-arch image-name suffixes for the
+// 50-series (Blackwell/5090). The platform ships a base image (supp excludes 5090)
+// alongside a dedicated 5090 build, e.g. "vLLM v0.12.0" + "vLLM v0.12.0-5090",
+// "ComfyUI基础镜像0.3.66" + "ComfyUI基础镜像0.3.66-50系" (verified live 2026-06-11).
+var arch5090VariantSuffixes = []string{"-5090", "-50系", "-50系列"}
+
+// resolveArchImageVariant swaps a chosen PLATFORM image to its 5090 sibling when
+// the user pinned a 5090 the chosen image can't run but a "<name>-5090"/"-50系"
+// variant can. The image-match LLM picks the base by name, so without this a
+// "用 5090 部署 vLLM" dead-ends on the gpuImageCompatible gate even though
+// vLLM v0.12.0-5090 (supp=[5090]) exists. Returns the (possibly updated) plan, its
+// SupportedGpuTypes, and a non-empty note iff a swap happened. Platform-only:
+// community images have no clean sibling-suffix convention (each declares its own
+// supp). Scoped to "5090" (the only suffix-split arch in the catalog today).
+func resolveArchImageVariant(plan deployPlan, supported []string, userGPU string, platform map[string]any) (deployPlan, []string, string) {
+	if plan.ImageSource != "platform" || strings.TrimSpace(plan.ImageName) == "" {
+		return plan, supported, ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(userGPU), "5090") {
+		return plan, supported, ""
+	}
+	if gpuImageCompatible("5090", supported) {
+		return plan, supported, "" // chosen image already runs 5090 (newer unified bases do)
+	}
+	for _, suffix := range arch5090VariantSuffixes {
+		cand := plan.ImageName + suffix
+		id, supp := chosenImage(deployPlan{ImageSource: "platform", ImageName: cand}, platform, nil)
+		if id == "" || !gpuImageCompatible("5090", supp) {
+			continue
+		}
+		note := fmt.Sprintf("你指定了 5090，已切换到该镜像的 5090 专用版「%s」", cand)
+		plan.ImageName = cand
+		plan.ImageID = id
+		return plan, supp, note
+	}
+	return plan, supported, ""
 }
 
 // deployUserError is a matchDeployImage error whose message is safe + actionable
@@ -1009,6 +1060,10 @@ func buildDeployReply(plan deployPlan, uHostId string, host map[string]any, stat
 	}
 
 	writeUsageGuidance(&b, host, usage)
+
+	// Jump to the console's instance-list page to manage the new instance (state /
+	// login / billing). Static URL — no per-instance id needed.
+	b.WriteString("\n🔗 管理实例（状态 / 登录信息 / 计费）：" + deployConsoleInstancesURL + "\n")
 
 	if plan.FallbackNote != "" {
 		b.WriteString("\nℹ️ " + plan.FallbackNote + "\n")
