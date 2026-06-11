@@ -1172,6 +1172,13 @@ func TestRenderModelRepositoryReply_ListAll(t *testing.T) {
 	if strings.Contains(reply, "DeletedModel") {
 		t.Errorf("deleted model should not render: %s", reply)
 	}
+	// A found listing must bridge to the two real follow-ups (user asked for this):
+	// deploy a pre-downloaded repo model, or self-pull a model the repo lacks.
+	for _, want := range []string{"无需重新下载", "想部署", "自行拉取"} {
+		if !strings.Contains(reply, want) {
+			t.Errorf("found listing missing deploy/self-pull guidance %q: %s", want, reply)
+		}
+	}
 }
 
 func TestRenderModelRepositoryReply_NameFilterNoMatch(t *testing.T) {
@@ -1182,6 +1189,17 @@ func TestRenderModelRepositoryReply_NameFilterNoMatch(t *testing.T) {
 	reply := renderModelRepositoryReply(modelRaw, tagRaw, "llama 模型有吗")
 	if !strings.Contains(reply, "未找到匹配的模型") {
 		t.Errorf("name-filter no-match should be explicit; got: %s", reply)
+	}
+	// A repo miss must guide the user to self-pull rather than dead-end (the model
+	// the user wants simply isn't pre-downloaded).
+	for _, want := range []string{"自行拉取", "ollama pull"} {
+		if !strings.Contains(reply, want) {
+			t.Errorf("no-match reply missing self-pull guidance %q: %s", want, reply)
+		}
+	}
+	// The pre-download note belongs only to a FOUND listing, not a miss.
+	if strings.Contains(reply, "无需重新下载") {
+		t.Errorf("no-match reply should not claim models are pre-downloaded: %s", reply)
 	}
 }
 
