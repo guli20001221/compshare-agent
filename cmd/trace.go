@@ -638,7 +638,7 @@ func hybridEmbeddingsPathFromEnv(getenv getenvFunc, corpusPath, embedModel strin
 // coerce). The merge stays ADDITIVE and safe: loadKnowledgeCorpora falls back to
 // platform-only if the external corpus is missing/bad/digest-drifted, so a broken
 // external file never takes down platform RAG. Platform retrieval parity is
-// preserved (the merged 687+51 index keeps platform Top-3 unchanged, re-verified
+// preserved (the merged 687+55 index keeps platform Top-3 unchanged, re-verified
 // per the #237 256-Q parity gate after the Linux-ops + PyTorch-basics vertical).
 // Rollback =
 // COMPSHARE_EXTERNAL_KNOWLEDGE=0.
