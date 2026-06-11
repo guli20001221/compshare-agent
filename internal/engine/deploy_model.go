@@ -1338,7 +1338,10 @@ func buildImageMatchPrompt(userMsg string, platform, community map[string]any) [
 	sys.WriteString("只能选候选清单里真实存在的镜像名，不要编造。\n")
 	sys.WriteString("严格只输出一个 JSON 对象，不要任何额外文字：\n")
 	sys.WriteString(`{"image_source":"platform|community","image_name":"候选清单中的镜像名","model_name":"用户要运行的模型全称或留空","quantization":"留空或 fp16/int8/int4"}` + "\n")
-	sys.WriteString("model_name 用于按显存推荐 GPU：用户明确提到模型(如 Qwen2.5-32B)就填，纯应用类(如数字人)留空。")
+	sys.WriteString("model_name 用于按显存推荐 GPU、并在参数规模不明时先向用户追问，按以下规则填写：\n")
+	sys.WriteString("- 用户点名了要跑的模型(如 Qwen、Llama3、DeepSeek-R1、Qwen2.5-32B)就填该模型名；即使你选的是 Ollama 或社区应用镜像，也照填用户说的那个模型名，不要省略。\n")
+	sys.WriteString("- 严格按用户原话填：用户没给参数规模就别自己补(别把 Llama3 写成 Llama3-8B、别把 Qwen 写成 Qwen2.5-72B)；用户给了就带上(如 Qwen2.5-32B)。\n")
+	sys.WriteString("- 仅当用户没点名任何具体模型、纯应用类需求(数字人/视频生成/TTS/某工作流)时才留空。")
 
 	var usr strings.Builder
 	usr.WriteString("用户需求：" + strings.TrimSpace(userMsg) + "\n\n")
