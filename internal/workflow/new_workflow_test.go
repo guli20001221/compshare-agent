@@ -49,7 +49,7 @@ func TestCreateDisk_HappyPath(t *testing.T) {
 		}
 	}
 	assert.Equal(t, "SSDDataDisk", createCall.args["DiskType"], "must use SSDDataDisk")
-	assert.Equal(t, "Dynamic", createCall.args["ChargeType"], "must default to Dynamic")
+	assert.Equal(t, "Postpay", createCall.args["ChargeType"], "按量 = Postpay (deprecated Dynamic retired, #246)")
 	assert.Equal(t, "test-gpu-data", createCall.args["Name"], "Name should be instance name + -data")
 	assert.NotEmpty(t, createCall.args["Name"], "Name must be set")
 	assert.Contains(t, createCall.args["Name"], "data", "Name should contain 'data'")

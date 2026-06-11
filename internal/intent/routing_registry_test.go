@@ -980,8 +980,8 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	if args["CompShareImageId"] != "img-ubuntu" {
 		t.Fatalf("capacity CompShareImageId = %#v, want img-ubuntu", args["CompShareImageId"])
 	}
-	if args["ChargeType"] != "Dynamic" {
-		t.Fatalf("capacity ChargeType = %#v, want Dynamic", args["ChargeType"])
+	if args["ChargeType"] != "Postpay" {
+		t.Fatalf("capacity ChargeType = %#v, want Postpay", args["ChargeType"]) // 按量 = Postpay (Dynamic retired, #246)
 	}
 }
 
