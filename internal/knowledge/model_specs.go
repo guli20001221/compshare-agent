@@ -46,11 +46,15 @@ var paramCountRE = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*b\b`)
 // for MoE models the total (all experts) is correct because every expert must
 // be resident in VRAM even though only some are active per token. Kept small +
 // public-spec-sourced; the regex path handles the long tail.
+// canonicalModels maps count-less model names whose size is UNAMBIGUOUS to their
+// parameter total. Multi-size families (DeepSeek-R1/V3/V2, Qwen, Llama, …) are
+// deliberately ABSENT: a bare "DeepSeek R1" spans 1.5B–671B, so defaulting to one
+// total silently sizes for a config the user never asked for. Those names resolve
+// to unresolved on purpose, so the deploy flow asks which size (see
+// deploy_model.go shouldClarifyDeployModelSize) and GetModelVRAMRequirement returns
+// its "请提供参数量" note. Only genuinely single-variant or regex-trap names belong here.
 var canonicalModels = map[string]float64{
-	"deepseekv3":   671, // MoE total
-	"deepseekr1":   671, // MoE total
-	"deepseekv2":   236, // MoE total
-	"mixtral8x7b":  47,  // MoE total (~46.7B); regex would wrongly read "7b"
+	"mixtral8x7b":  47,  // MoE total (~46.7B); regex would wrongly read "7b" → 7
 	"mixtral8x22b": 141, // MoE total (~141B)
 	"qwq":          32,  // QwQ-32B (single variant; useful when size omitted)
 }
@@ -269,6 +273,16 @@ func resolveParamCountB(modelName string) (float64, bool) {
 		return 0, false
 	}
 	return p, true
+}
+
+// ModelParamCountResolvable reports whether a model's parameter count can be
+// determined from its name — either a sized token ("32B") or a single-variant
+// canonical entry. False means the size is ambiguous (e.g. a bare "DeepSeek R1"
+// that spans 1.5B–671B); callers should ask which size rather than size a silent
+// default. Pure / deterministic (Rule 5: a structured check, no LLM).
+func ModelParamCountResolvable(modelName string) bool {
+	_, ok := resolveParamCountB(modelName)
+	return ok
 }
 
 // normalizeModelName lowercases and strips spaces/underscores/hyphens/dots so

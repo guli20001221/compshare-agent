@@ -174,13 +174,28 @@ func TestGetModelVRAMRequirement_CanonicalMoE(t *testing.T) {
 	res := GetModelVRAMRequirement("mixtral-8x7b", "fp16")
 	assert.Equal(t, float64(47), res["params_b"])
 
-	// deepseek-v3 has no count in the name → canonical 671B → far beyond a
-	// single host's card limit, surfaced in the note.
+	// deepseek-v3 is a multi-size family (16B Lite … 671B), deliberately NOT in
+	// the canonical table: a count-less name is left UNRESOLVED so the caller asks
+	// for the size instead of silently sizing the 671B total. (Was: canonical 671B.)
 	ds := GetModelVRAMRequirement("deepseek-v3", "fp16")
-	assert.Equal(t, float64(671), ds["params_b"])
-	rec := recommended(t, ds)
-	assert.Greater(t, rec.Cards, 8)
-	assert.Contains(t, rec.Note, "超过单机")
+	assert.False(t, ds["resolved"].(bool))
+	assert.Contains(t, ds["note"].(string), "参数量")
+	assert.Nil(t, ds["recommended"])
+}
+
+// TestModelParamCountResolvable pins the size-ambiguity signal the deploy clarify
+// gate reads: sized tokens and single-variant canonicals resolve; bare multi-size
+// family names and apps do not.
+func TestModelParamCountResolvable(t *testing.T) {
+	// Resolvable: explicit size, or single-variant canonical.
+	assert.True(t, ModelParamCountResolvable("Qwen2.5-32B"))
+	assert.True(t, ModelParamCountResolvable("DeepSeek-R1-Distill-Qwen-7B"))
+	assert.True(t, ModelParamCountResolvable("mixtral-8x7b")) // canonical MoE
+	assert.True(t, ModelParamCountResolvable("QwQ"))          // single variant
+	// Ambiguous: multi-size family with no size, or a non-model app name.
+	assert.False(t, ModelParamCountResolvable("DeepSeek R1"))
+	assert.False(t, ModelParamCountResolvable("deepseek-v3"))
+	assert.False(t, ModelParamCountResolvable("ComfyUI"))
 }
 
 func TestGetModelVRAMRequirement_ViaExecuteTool(t *testing.T) {

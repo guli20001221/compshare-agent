@@ -304,6 +304,26 @@ func extractDeploySizedModelName(text string) string {
 	return prefix + "-" + size
 }
 
+// shouldClarifyDeployModelSize reports whether a deploy request named a model
+// whose parameter size is ambiguous and the user pinned no GPU — in which case
+// the flow asks which size instead of sizing for a silent default. App deploys
+// (empty model_name per the match prompt — ComfyUI/数字人) and explicit GPUs
+// return false. Pure / deterministic.
+func shouldClarifyDeployModelSize(modelName, userMsg string) bool {
+	return strings.TrimSpace(modelName) != "" &&
+		extractDeployGPU(userMsg) == "" &&
+		!knowledge.ModelParamCountResolvable(modelName)
+}
+
+// deployClarifyModelSizeMsg asks which size of an ambiguous model family to
+// deploy. The listed sizes are illustrative examples, NOT an authoritative
+// per-family enumeration (those live in the platform model library, not a
+// hand-maintained table) — the user only needs to name a size or full model.
+func deployClarifyModelSizeMsg(modelName string) string {
+	name := strings.TrimSpace(modelName)
+	return fmt.Sprintf("「%s」有多个参数规模的版本（如 1.5B / 7B / 14B / 32B / 70B，以及满血版），不同规模的显存占用、单卡/多卡需求和价格差别很大。你想部署哪个规模？告诉我参数量或完整型号名（如 %s-32B），我再帮你选合适的 GPU 和镜像。", name, name)
+}
+
 // matchDeployImage queries the live image catalog, asks the TierAgent model to
 // pick the best fit, and sizes the GPU image-aware. The LLM does the fuzzy
 // judgment (a keyword to search + which image + which model/quantization);
@@ -388,6 +408,17 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 		}
 		// On no match keep the LLM's name; matchPlatformImage falls back to the
 		// first base. (Empty name → first base, also fine.)
+	}
+
+	// (c.1) Ambiguous model size → ask which one instead of silently sizing for a
+	// default variant. The user's complaint: "部署 DeepSeek R1" (spans 1.5B–671B)
+	// shouldn't dead-pick the 671B/H20 config. Fires only for a NAMED model whose
+	// size can't be resolved AND no pinned GPU — app deploys (ComfyUI/数字人 leave
+	// model_name empty per the match prompt) and explicit GPUs proceed unchanged.
+	// Surfaced via deployUserError so tryDeployModel returns it verbatim (it's an
+	// actionable clarification, not a failure).
+	if shouldClarifyDeployModelSize(plan.ModelName, userMsg) {
+		return deployPlan{}, deployUserError{msg: deployClarifyModelSizeMsg(plan.ModelName)}
 	}
 
 	// (d) Resolve the chosen image's id (threaded to the saga so it creates EXACTLY

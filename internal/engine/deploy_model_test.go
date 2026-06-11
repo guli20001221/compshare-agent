@@ -1385,3 +1385,36 @@ func countCalls(calls []string, action string) int {
 	}
 	return n
 }
+
+// TestShouldClarifyDeployModelSize pins the deploy size-clarify gate: a named
+// model with no resolvable size and no pinned GPU asks; an explicit size, a
+// pinned GPU, or an app deploy (empty model name) proceeds.
+func TestShouldClarifyDeployModelSize(t *testing.T) {
+	cases := []struct {
+		name      string
+		modelName string
+		userMsg   string
+		want      bool
+	}{
+		{"ambiguous family, no GPU → clarify", "DeepSeek R1", "我想部署 DeepSeek R1", true},
+		{"ambiguous family v3 → clarify", "DeepSeek-V3", "部署 DeepSeek V3", true},
+		{"explicit size → proceed", "Qwen2.5-32B", "部署 Qwen2.5-32B", false},
+		{"distill with size → proceed", "DeepSeek-R1-Distill-Qwen-7B", "部署 DeepSeek-R1-Distill-Qwen-7B", false},
+		{"pinned GPU → proceed", "DeepSeek R1", "用 5090 部署 DeepSeek R1", false},
+		{"app deploy (empty model) → proceed", "", "部署 ComfyUI", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, shouldClarifyDeployModelSize(tc.modelName, tc.userMsg))
+		})
+	}
+}
+
+// TestDeployClarifyModelSizeMsg checks the clarification names the model and asks
+// for a parameter count.
+func TestDeployClarifyModelSizeMsg(t *testing.T) {
+	msg := deployClarifyModelSizeMsg("DeepSeek R1")
+	assert.Contains(t, msg, "DeepSeek R1")
+	assert.Contains(t, msg, "参数量")
+	assert.Contains(t, msg, "规模")
+}
