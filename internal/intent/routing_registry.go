@@ -1952,7 +1952,7 @@ func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, userText string
 	}
 	if len(filtered) == 0 {
 		if len(tags) > 0 {
-			sections = append(sections, "未找到匹配的模型。")
+			sections = append(sections, "未找到匹配的模型。", modelRepositoryGuidanceFooter(false))
 			return strings.Join(sections, "\n")
 		}
 		return "未获取到模型仓库数据。"
@@ -1970,13 +1970,33 @@ func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, userText string
 	}
 	if len(lines) == 0 {
 		if len(tags) > 0 {
-			sections = append(sections, "未找到匹配的模型。")
+			sections = append(sections, "未找到匹配的模型。", modelRepositoryGuidanceFooter(false))
 			return strings.Join(sections, "\n")
 		}
 		return "未获取到模型仓库数据。"
 	}
 	sections = append(sections, "模型仓库列表:\n"+strings.Join(lines, "\n"))
+	sections = append(sections, modelRepositoryGuidanceFooter(true))
 	return strings.Join(sections, "\n")
+}
+
+// modelRepositoryGuidanceFooter bridges a model-repository browse reply to the
+// two real follow-up actions the user can take. Repo models are pre-downloaded
+// onto the instance under the per-entry Path (verified live 2026-06-11: paths
+// sit under /model/HuggingFace, /model/ModelScope, /model/ollama, /model/llm by
+// source), so a found model is usable after deploy without re-downloading; a
+// model the repo does not carry is self-pulled inside the instance. The footer
+// points at the per-line Path field rather than hardcoding a single mount so it
+// stays correct if the layout changes.
+func modelRepositoryGuidanceFooter(found bool) string {
+	if !found {
+		return "仓库里暂时没有匹配的模型。你可以部署实例后自行拉取：HuggingFace / ModelScope 下载，或 Ollama 容器用 `ollama pull <模型名>`——需要具体命令可以问我。"
+	}
+	return strings.Join([]string{
+		"说明：以上模型已预置在实例对应的 Path 路径下（见每条的 Path，按来源分布在 /model/HuggingFace、/model/ModelScope、/model/ollama 等），部署实例后可直接加载，无需重新下载。",
+		"· 想部署某个模型，直接告诉我模型名（如「部署 Llama-3.1-8B」），我来帮你选 GPU 配置。",
+		"· 仓库里没有的模型，可在实例内自行拉取（HuggingFace / ModelScope 下载，或 Ollama `ollama pull <模型名>`）——需要命令可以问我。",
+	}, "\n")
 }
 
 func filterModelRepositoryModels(models []any, userText string) []map[string]any {
