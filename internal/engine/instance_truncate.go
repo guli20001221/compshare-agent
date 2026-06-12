@@ -13,7 +13,7 @@ import (
 // pinned in the call args). Mutates result in place, adding "Shown" and
 // "Truncated" fields so the LLM sees the pagination signal.
 //
-// This is the ReAct-path defense-in-depth: the handler cutover path
+// This is the ReAct-path defense-in-depth: the handler route path
 // (intent.HandleResourceInfo) already truncates earlier, but planner
 // misclassification ("operation_lifecycle" → "unknown" jitter) can route
 // a list query through the LLM-driven ReAct loop instead. Without this

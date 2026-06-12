@@ -170,7 +170,7 @@ func executeRouteAction(ctx context.Context, h *DemoHandler, intentValue Intent,
 	// TestHandlerActionWhitelist_ExactGoldenSet.
 	if h == nil || h.executor == nil {
 		// Defensive: production wiring must construct the handler with a
-		// SafeToolExecutor adapter before enabling route cutover.
+		// SafeToolExecutor adapter before enabling route dispatch.
 		fb := FallbackBeforeTool(FallbackValidation)
 		return nil, &fb
 	}

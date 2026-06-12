@@ -333,7 +333,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			eng.SetFreshnessTraceObserver(traceRecorder.SetFreshnessTrace)
 			eng.SetDiagnosisTraceObserver(traceRecorder.SetDiagnosisTrace)
 			if plannerDispatchEnabled {
-				// When Phase 1 cutover or Stage 2B retrieval is enabled, Engine
+				// When Phase 1 routing or Stage 2B retrieval is enabled, Engine
 				// owns the single planner call for this turn and writes that same
 				// result into trace.planner.
 				traceRecorder.SetPlannerTraceSupplier(nil)
@@ -345,7 +345,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 				eng.SetRendererTraceObserver(traceRecorder.SetRendererTrace)
 			} else if shadowRunner != nil {
 				// By construction, shadowRunner is only created for the
-				// trace+shadow+no-cutover case.
+				// trace+shadow+no-route case.
 				plannerInput := cliShadowPlannerInput(eng, input)
 				traceRecorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
 					return shadowRunner.Run(ctx, plannerInput)

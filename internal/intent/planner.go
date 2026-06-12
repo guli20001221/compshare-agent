@@ -299,7 +299,7 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 	return []plannerPromptExampleGroup{
 		{
 			Intent: IntentResourceInfo,
-			Source: "Phase 1 baseline resource inventory cutover",
+			Source: "Phase 1 baseline resource inventory routing",
 			Examples: []plannerPromptExample{
 				{
 					Question: "show resource info for my-test-agent",
@@ -395,7 +395,7 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 		},
 		{
 			Intent: IntentMonitorQuery,
-			Source: "Phase 1 baseline monitor cutover",
+			Source: "Phase 1 baseline monitor routing",
 			Examples: []plannerPromptExample{
 				{
 					Question: "show current CPU and GPU monitor for my-test-agent",
