@@ -60,8 +60,8 @@ Behavior is gated by env vars read in `cmd/trace.go` and `cmd/agent.go`. The def
 | Var | Values | Effect |
 |---|---|---|
 | `COMPSHARE_ENABLE_MUTATING_TOOLS` | `1` | Enables start/stop/reboot/reset-password/create. Default off — read-only mode. |
-| `USE_INTENT_PLANNER` | `shadow` | Runs the LLM planner alongside ReAct for trace-only comparison. |
-| `USE_INTENT_PLANNER_FOR` | default `resource,monitor,gpu_specs,stock,pricing,platform_image,custom_image,community_image`; explicit comma list overrides; `off` disables | Enables Phase-1 cutover: engine owns the planner call for those intents. |
+| `COMPSHARE_INTENT_ROUTER_MODE` | `shadow` | Runs the LLM intent router alongside ReAct for trace-only comparison. |
+| `COMPSHARE_DIRECT_DISPATCH_INTENTS` | default `resource,monitor,gpu_specs,stock,pricing,platform_image,custom_image,community_image`; explicit comma list overrides; `off` disables | Enables direct dispatch: the engine owns the intent-router call for those intents and dispatches deterministically (no ReAct). |
 | `USE_KNOWLEDGE_RETRIEVAL` | `curated` (default), `off` | Wires the RAG retriever into the engine. Combine with `RAG_RETRIEVAL_MODE`. |
 | `RAG_RETRIEVAL_MODE` | `qwen3_rrf` (default), `bm25_only`, `hybrid_cosine`, `hybrid_rerank`, `qwen3_full` | Picks the retrieval pipeline. Hybrid/qwen3 modes require `MODELVERSE_API_KEY` or `LLM_API_KEY` and the matching pinned sidecar under `deploy/kb/`. |
 | `RAG_HYBRID_ENABLED` | `1` | Legacy switch; only consulted when `RAG_RETRIEVAL_MODE` is unset. |
@@ -76,7 +76,7 @@ Behavior is gated by env vars read in `cmd/trace.go` and `cmd/agent.go`. The def
 | `USE_SESSION_FACT_CONTEXT` | `1` | Injects a near-term fact cache (recent instance state, ~30s TTL) into context. Server-only wiring. **Go code default off; deploy template ships it on** (`.env.example`=1 + `invite.sh` forwards). |
 | `USE_REACT_RESULT_PROJECTION` | `1` | Compresses large read tool results (list endpoints) before re-feeding ReAct. **Go code default off; deploy template ships it on.** |
 | `USE_REACT_HISTORY_COMPACTION` | `1` | Summarizes old turns once history exceeds the window. **Go code default off; deploy template ships it on.** |
-| `PLANNER_STRUCTURED_OUTPUT` | `json_object` | Forces the planner to emit via `response_format` JSON. **Plumbed through `invite.sh` but shipped OFF** — a live ds-v4-flash A/B showed no schema-valid improvement; enable only after the planner-core eval validates it. |
+| `COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT` | `json_object` | Forces the intent router to emit via `response_format` JSON. **Plumbed through `invite.sh` but shipped OFF** — a live ds-v4-flash A/B showed no schema-valid improvement; enable only after the intent-router-core eval validates it. |
 | `MYSQL_DSN` | DSN string | Required by `compshare-agent server`; ignored by `compshare-agent cli`. |
 | `COMPSHARE_SERVICE_PUBLIC_KEY` | AK string | Service long-term public key for STS `AssumeRole`. Required when `agent.sts` is configured. |
 | `COMPSHARE_SERVICE_PRIVATE_KEY` | SK string | Service long-term private key for STS `AssumeRole`. Required when `agent.sts` is configured. |
@@ -101,7 +101,7 @@ The loader **refuses to start** if any pin mismatches. When the corpus changes, 
 
 ### Engine (`internal/engine/`)
 Runs a ReAct loop (`maxReActRounds=10`, `maxHistoryMessages=40`) with a tool-call budget per turn (`maxReadExpensiveCallsPerTurn=20`). Two dispatch paths coexist:
-1. **Phase-1 cutover** — the default cutover set handles resource, monitor, GPU specs, stock, and image-list intents; `USE_INTENT_PLANNER_FOR` can override the set or disable it with `off`. `tryPhase1Cutover` calls handlers in `internal/intent/handler*.go` directly and emits `StepEvent`s without going through ReAct.
+1. **Direct dispatch** (formerly "Phase-1 cutover") — the default direct-dispatch set handles resource, monitor, GPU specs, stock, and image-list intents; `COMPSHARE_DIRECT_DISPATCH_INTENTS` can override the set or disable it with `off`. `tryRouteDispatch` calls handlers in `internal/intent/handler*.go` directly and emits `StepEvent`s without going through ReAct.
 2. **ReAct** — default; the LLM picks tools registered in `internal/tools/registry.go`. Mutating tools are blocked unless `COMPSHARE_ENABLE_MUTATING_TOOLS=1`.
 
 Force-tool / hard-block priority chain (highest first) is documented inline in `engine.go` and **must be kept in sync** when adding new force paths: account-billing-unsupported canned reply > monitor-recall force tool. Capability gating is required for any new object-`tool_choice` path: `ds-v4-flash` thinking mode 400s on object tool_choice, so callers must short-circuit when `supportsObjectToolChoice=false`.

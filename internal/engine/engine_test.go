@@ -4217,7 +4217,7 @@ func TestStage2BAndRouteDispatchShareSinglePlannerCall(t *testing.T) {
 	assert.Equal(t, governance.ClassReadExpensiveTool, limiter.requests[1].Class)
 	assert.Equal(t, "DescribeCompShareInstance", limiter.requests[1].Action)
 	// CLI passes plannerDispatchEnabled into useSeparateShadowRunner, so adding
-	// USE_INTENT_PLANNER=shadow on top of Phase 1 + Stage 2B still leaves Engine
+	// COMPSHARE_INTENT_ROUTER_MODE=shadow on top of Phase 1 + Stage 2B still leaves Engine
 	// as the single planner-call owner for this turn.
 }
 

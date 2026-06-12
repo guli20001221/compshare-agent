@@ -146,7 +146,7 @@ func cleanupTraceWriter(writer observability.Writer, now time.Time) error {
 }
 
 func intentPlannerShadowEnabled(getenv getenvFunc) bool {
-	return getenv("USE_INTENT_PLANNER") == "shadow"
+	return getenv("COMPSHARE_INTENT_ROUTER_MODE") == "shadow"
 }
 
 func plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled bool, routeIntents []intent.Intent) string {
@@ -241,7 +241,7 @@ const (
 )
 
 func plannerStructuredOutputModeFromEnv(getenv getenvFunc) (plannerStructuredOutputMode, string) {
-	value := strings.ToLower(strings.TrimSpace(getenv("PLANNER_STRUCTURED_OUTPUT")))
+	value := strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT")))
 	switch value {
 	case "", "0", "off":
 		return plannerStructuredOutputOff, ""
@@ -850,7 +850,7 @@ func defaultRouteIntents() []intent.Intent {
 }
 
 func intentPlannerRouteIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []string) {
-	raw := getenv("USE_INTENT_PLANNER_FOR")
+	raw := getenv("COMPSHARE_DIRECT_DISPATCH_INTENTS")
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return defaultRouteIntents(), nil

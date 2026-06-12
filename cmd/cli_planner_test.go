@@ -20,7 +20,7 @@ func TestPlannerStructuredOutputModeFromEnv(t *testing.T) {
 	require.Empty(t, unknown)
 
 	mode, unknown = plannerStructuredOutputModeFromEnv(func(key string) string {
-		if key == "PLANNER_STRUCTURED_OUTPUT" {
+		if key == "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT" {
 			return " json_object "
 		}
 		return ""
@@ -29,7 +29,7 @@ func TestPlannerStructuredOutputModeFromEnv(t *testing.T) {
 	require.Empty(t, unknown)
 
 	mode, unknown = plannerStructuredOutputModeFromEnv(func(key string) string {
-		if key == "PLANNER_STRUCTURED_OUTPUT" {
+		if key == "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT" {
 			return "off"
 		}
 		return ""
@@ -38,7 +38,7 @@ func TestPlannerStructuredOutputModeFromEnv(t *testing.T) {
 	require.Empty(t, unknown)
 
 	mode, unknown = plannerStructuredOutputModeFromEnv(func(key string) string {
-		if key == "PLANNER_STRUCTURED_OUTPUT" {
+		if key == "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT" {
 			return "json_schema"
 		}
 		return ""

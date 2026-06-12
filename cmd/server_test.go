@@ -168,7 +168,7 @@ func TestBuildHTTPServerPoolAppliesSharedDepsEnv(t *testing.T) {
 
 	pool, err := buildHTTPServerPool(cfg, serverTestMessageStore{}, func(key string) string {
 		switch key {
-		case "USE_INTENT_PLANNER_FOR":
+		case "COMPSHARE_DIRECT_DISPATCH_INTENTS":
 			return "resource"
 		case "USE_KNOWLEDGE_RETRIEVAL":
 			return "off"

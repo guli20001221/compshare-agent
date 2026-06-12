@@ -223,18 +223,18 @@ func TestCleanupTraceWriterDeletesExpiredFiles(t *testing.T) {
 
 func TestIntentPlannerShadowModeFromEnv(t *testing.T) {
 	if intentPlannerShadowEnabled(func(string) string { return "" }) {
-		t.Fatal("unset USE_INTENT_PLANNER must not enable shadow planner")
+		t.Fatal("unset COMPSHARE_INTENT_ROUTER_MODE must not enable shadow planner")
 	}
 	if !intentPlannerShadowEnabled(func(key string) string {
-		if key == "USE_INTENT_PLANNER" {
+		if key == "COMPSHARE_INTENT_ROUTER_MODE" {
 			return "shadow"
 		}
 		return ""
 	}) {
-		t.Fatal("USE_INTENT_PLANNER=shadow should enable shadow planner")
+		t.Fatal("COMPSHARE_INTENT_ROUTER_MODE=shadow should enable shadow planner")
 	}
 	if intentPlannerShadowEnabled(func(key string) string {
-		if key == "USE_INTENT_PLANNER" {
+		if key == "COMPSHARE_INTENT_ROUTER_MODE" {
 			return "auto"
 		}
 		return ""
@@ -245,7 +245,7 @@ func TestIntentPlannerShadowModeFromEnv(t *testing.T) {
 
 func TestIntentPlannerRouteIntentsFromEnv(t *testing.T) {
 	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "USE_INTENT_PLANNER_FOR" {
+		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
 			return "resource, monitor, diagnosis, vague_failure, billing, ,RESOURCE"
 		}
 		return ""
@@ -264,7 +264,7 @@ func TestIntentPlannerRouteIntentsFromEnv(t *testing.T) {
 
 func TestIntentPlannerRouteIntentsFromEnv_NetworkAcceleratorAliases(t *testing.T) {
 	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "USE_INTENT_PLANNER_FOR" {
+		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
 			return "network_accelerator, network_accelerator_status, net_accelerator"
 		}
 		return ""
@@ -276,7 +276,7 @@ func TestIntentPlannerRouteIntentsFromEnv_NetworkAcceleratorAliases(t *testing.T
 
 func TestIntentPlannerRouteIntentsFromEnv_ImageTagAliases(t *testing.T) {
 	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "USE_INTENT_PLANNER_FOR" {
+		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
 			return "image_tags, image_tag, image_tag_catalog"
 		}
 		return ""
@@ -288,7 +288,7 @@ func TestIntentPlannerRouteIntentsFromEnv_ImageTagAliases(t *testing.T) {
 
 func TestIntentPlannerRouteIntentsFromEnv_ModelRepositoryAliases(t *testing.T) {
 	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "USE_INTENT_PLANNER_FOR" {
+		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
 			return "model_repo, model_repository, model_repository_browse"
 		}
 		return ""
@@ -300,7 +300,7 @@ func TestIntentPlannerRouteIntentsFromEnv_ModelRepositoryAliases(t *testing.T) {
 
 func TestIntentPlannerRouteIntentsFromEnv_SharedImageAliases(t *testing.T) {
 	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "USE_INTENT_PLANNER_FOR" {
+		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
 			return "shared_image, sharing_image, shared_image_list"
 		}
 		return ""
@@ -337,7 +337,7 @@ func TestIntentPlannerRouteIntents_DefaultsWhenEnvUnset(t *testing.T) {
 func TestIntentPlannerRouteIntents_OffDisablesAll(t *testing.T) {
 	for _, val := range []string{"off", "OFF", "none", "  off  "} {
 		intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-			if key == "USE_INTENT_PLANNER_FOR" {
+			if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
 				return val
 			}
 			return ""
@@ -364,7 +364,7 @@ func TestSeparateShadowRunnerDisabledWhenRouteEnabled(t *testing.T) {
 
 func TestPlannerRuntimeModeLine(t *testing.T) {
 	routeIntents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "USE_INTENT_PLANNER_FOR" {
+		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
 			return "resource,monitor"
 		}
 		return ""
@@ -386,7 +386,7 @@ func TestPlannerRuntimeModeLine(t *testing.T) {
 
 func TestPlannerRuntimeTrace(t *testing.T) {
 	routeIntents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "USE_INTENT_PLANNER_FOR" {
+		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
 			return "resource,monitor"
 		}
 		return ""

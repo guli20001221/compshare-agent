@@ -98,7 +98,7 @@ func buildLLMRouter(cfg *config.Config) (*llm.Router, error) {
 func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv getenvFunc) error {
 	routeIntents, unknownRoute := intentPlannerRouteIntentsFromEnv(getenv)
 	for _, value := range unknownRoute {
-		log.Printf("warning: ignoring unknown USE_INTENT_PLANNER_FOR value %q", value)
+		log.Printf("warning: ignoring unknown COMPSHARE_DIRECT_DISPATCH_INTENTS value %q", value)
 	}
 	sessionFactContext, unknownSessionFactContext := sessionFactContextEnabledFromEnv(getenv)
 	if unknownSessionFactContext != "" {
@@ -164,7 +164,7 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 
 	plannerStructuredOutput, unknownPlannerStructuredOutput := plannerStructuredOutputModeFromEnv(getenv)
 	if unknownPlannerStructuredOutput != "" {
-		log.Printf("warning: ignoring unknown PLANNER_STRUCTURED_OUTPUT value %q", unknownPlannerStructuredOutput)
+		log.Printf("warning: ignoring unknown COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT value %q", unknownPlannerStructuredOutput)
 	}
 
 	routeEnabled := len(routeIntents) > 0
