@@ -19,8 +19,8 @@ func disciplinedSynthHit() knowledge.RetrievalHit {
 	}}
 }
 
-func TestDisciplinedKQASynthesisEnabled_DefaultOff(t *testing.T) {
-	assert.False(t, DisciplinedKQASynthesisEnabled(), "disciplined synthesis must default off (byte-identical)")
+func TestDisciplinedKnowledgeQASynthesisEnabled_DefaultOff(t *testing.T) {
+	assert.False(t, DisciplinedKnowledgeQASynthesisEnabled(), "disciplined synthesis must default off (byte-identical)")
 }
 
 // TestSynthesizeKnowledgeQAFromLedger_CitedAnswerStripped is the core happy path:

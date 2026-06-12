@@ -1387,7 +1387,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				// post-hoc guard. Default-off; on failure (or when disabled) it falls through to
 				// the free-write guard + cite-retry below, so it is never worse than B4.
 				synthDone := false
-				if disciplinedKQASynthesisOn && e.knowledgeQAAgentLoopThisTurn &&
+				if disciplinedKnowledgeQASynthesisOn && e.knowledgeQAAgentLoopThisTurn &&
 					e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
 					if synth, ok := e.synthesizeKnowledgeQAFromLedger(ctx, userMsg); ok {
 						content = synth
