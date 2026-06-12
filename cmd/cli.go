@@ -182,7 +182,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	engine.SetSkillExecutorDiagnosisPilots(diagnosisPilots)
 	routeIntents, unknownRouteValues := intentPlannerRouteIntentsFromEnv(os.Getenv)
 	for _, value := range unknownRouteValues {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_INTENT_PLANNER_FOR value %q\n", value)
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_DIRECT_DISPATCH_INTENTS value %q\n", value)
 	}
 	routeEnabled := len(routeIntents) > 0
 	shadowEnabled := intentPlannerShadowEnabled(os.Getenv)
@@ -212,7 +212,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	}
 	plannerStructuredOutput, unknownPlannerStructuredOutput := plannerStructuredOutputModeFromEnv(os.Getenv)
 	if unknownPlannerStructuredOutput != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown PLANNER_STRUCTURED_OUTPUT value %q\n", unknownPlannerStructuredOutput)
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT value %q\n", unknownPlannerStructuredOutput)
 	}
 	plannerDispatchEnabled := routeEnabled || knowledgeRetrievalEnabled
 	if plannerDispatchEnabled {

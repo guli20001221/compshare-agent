@@ -35,12 +35,12 @@ MUTATING_TOOLS="${COMPSHARE_ENABLE_MUTATING_TOOLS:-0}"
 # decision; the Go code default stays off, so they only take effect because they are
 # forwarded here (same plumbing reason as the write-ops switch above). Default to 1
 # so a fresh env file still ships them on. Structured-output is plumbed but defaults
-# off (no measured benefit on ds-v4-flash) — set PLANNER_STRUCTURED_OUTPUT=json_object
+# off (no measured benefit on ds-v4-flash) — set COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT=json_object
 # in the env file to enable once validated.
 SESSION_FACT_CONTEXT="${USE_SESSION_FACT_CONTEXT:-1}"
 REACT_RESULT_PROJECTION="${USE_REACT_RESULT_PROJECTION:-1}"
 REACT_HISTORY_COMPACTION="${USE_REACT_HISTORY_COMPACTION:-1}"
-PLANNER_STRUCTURED_OUTPUT_MODE="${PLANNER_STRUCTURED_OUTPUT:-}"
+COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT_MODE="${COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT:-}"
 
 ally invite compshare-agent \
     --app-bin "$APP_DIR/compshare-agent" \
@@ -54,7 +54,7 @@ ally invite compshare-agent \
     --app-env "USE_SESSION_FACT_CONTEXT=$SESSION_FACT_CONTEXT" \
     --app-env "USE_REACT_RESULT_PROJECTION=$REACT_RESULT_PROJECTION" \
     --app-env "USE_REACT_HISTORY_COMPACTION=$REACT_HISTORY_COMPACTION" \
-    --app-env "PLANNER_STRUCTURED_OUTPUT=$PLANNER_STRUCTURED_OUTPUT_MODE" \
+    --app-env "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT=$COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT_MODE" \
     -- server \
     --config "$CONFIG_FILE" \
     --addr "$ADDR"
