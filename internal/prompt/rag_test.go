@@ -453,3 +453,44 @@ func TestBuildRAGMessagesRetryModeUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildRAGMessagesPartialCoverageDefersToAntiFab(t *testing.T) {
+	// 2026-06-12: coverage_rules rule 2 (partial coverage) previously invited an
+	// open-ended "建议 <具体下一步行动>", which conflicted with the anti-fabrication
+	// anchor's hard ban on evidence-external next-steps (see
+	// TestBuildRAGMessagesPromptEncodesAntiFabricationAnchors, fab pattern 0259).
+	// The precedence is resolved toward the guardrail: on partial coverage the
+	// model states the gap as a meta-statement and may add ONLY two non-fabricable
+	// supplements (point to a platform entry, or ask the user for the missing
+	// specifics); everything else defers to the anti-fab anchor. This contract
+	// pins that resolution so a future edit cannot silently re-introduce the
+	// open-ended next-step invitation.
+	messages := BuildRAGMessages("test q", []RAGReference{
+		{Number: 1, Title: "test", Content: "test content"},
+	}, false, false)
+	system := messages[0].Content
+
+	// The precedence clause and its two bounded escape hatches must be present.
+	for _, want := range []string{
+		"指出缺口属元陈述",          // gap is a meta-statement (no citation needed)
+		"缺口之后只允许两类资料外补充", // only two evidence-external supplements allowed
+		"指向平台既有入口",         // (1) point to a platform entry (console / official docs)
+		"请用户补充",            // (2) ask the user for the missing specifics
+		"冲突时以反编造锚点为准",    // explicit deferral to the anti-fab anchor
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("partial-coverage precedence clause %q missing in system prompt:\n%s", want, system)
+		}
+	}
+
+	// The anti-fab hard contract it defers to must remain present and intact.
+	if !strings.Contains(system, "故障排除建议、操作步骤、联系方式或下一步行动") {
+		t.Fatalf("anti-fab anchor #4 (evidence-external next-step ban) must remain intact alongside the rule-2 deferral:\n%s", system)
+	}
+
+	// Negative: the old open-ended "建议 <具体下一步行动>" invitation must be gone.
+	// (Distinct from anti-fab's "...或下一步行动", which lacks the 具体 qualifier.)
+	if strings.Contains(system, "具体下一步行动") {
+		t.Fatalf("legacy open-ended next-step invitation '具体下一步行动' must be removed from rule 2:\n%s", system)
+	}
+}
