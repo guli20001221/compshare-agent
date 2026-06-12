@@ -207,7 +207,7 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 // deployReply emits the planner trace and appends the assistant message, then
 // returns (reply, true). The status is always RouteStatusDispatchedAgent: the
 // agent-tier deploy handler owned the turn (TierAgent match + orchestrator saga), so
-// DeriveRealizedTier labels it the agent tier — mirroring how route dispatch
+// DeriveActualExecutionTier labels it the agent tier — mirroring how route dispatch
 // emits "dispatched"→fast even on refusal. Centralizes the three return-side
 // concerns so every exit path of tryDeployModel stays consistent.
 func (e *Engine) deployReply(result intent.IntentRouterResult, latency time.Duration, reply string) (string, bool) {

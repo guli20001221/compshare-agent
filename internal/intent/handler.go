@@ -44,7 +44,7 @@ const (
 	RouteStatusDispatched RouteStatus = "dispatched"
 	// RouteStatusDispatchedAgent marks a turn the agent-tier dispatch handler
 	// owned (B8.3 deploy_model). Distinct from "dispatched" (fast-tier route
-	// dispatch) so DeriveRealizedTier maps it to the agent tier rather than fast
+	// dispatch) so DeriveActualExecutionTier maps it to the agent tier rather than fast
 	// — the deploy handler runs a TierAgent LLM match + the orchestrator saga.
 	RouteStatusDispatchedAgent RouteStatus = "dispatched_agent"
 	// RouteStatusDispatchedKnowledgeAgentLoop marks a knowledge_qa turn that the
@@ -53,7 +53,7 @@ const (
 	// (dispatched_retrieval). Distinct so mainline reports tell the agent-loop
 	// knowledge turn apart from BOTH the terminal-RAG route AND the deploy_model
 	// agent-skill dispatch (dispatched_agent): DeriveActualExecutionPath maps it to
-	// agent (the turn runs the agent loop) while DeriveRealizedTier maps it to
+	// agent (the turn runs the agent loop) while DeriveActualExecutionTier maps it to
 	// knowledge (it answers a knowledge question via retrieval — keeping the realized
 	// knowledge-work attribution stable across the terminal→agent-loop migration).
 	// Trace-only; emitted by the engine's tryPlannerDispatch, no planner prompt / SHA impact.

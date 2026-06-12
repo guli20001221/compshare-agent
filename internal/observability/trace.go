@@ -102,8 +102,8 @@ type TraceRecord struct {
 	Timestamp     string `json:"timestamp"`
 	UserMsgHash   string `json:"user_msg_hash"`
 	// TaskTier is the work-tier axis (fast / knowledge / agent; see the
-	// RealizedTier* consts) the planner PREDICTS for this turn — an input,
-	// the predicted twin of RealizedTier. RESERVED SCHEMA SLOT, NOT YET
+	// ActualExecutionTier* consts) the planner PREDICTS for this turn — an input,
+	// the predicted twin of ActualExecutionTier. RESERVED SCHEMA SLOT, NOT YET
 	// WIRED: no production code emits it (planner-predicted task_tier is
 	// B4b, still pending), so outside tests it is always empty. Added early
 	// as a reserved field so consumers (analytics SQL, dashboards) can treat
@@ -111,21 +111,21 @@ type TraceRecord struct {
 	// rows to tier-aware aggregation. Memory: attribution-observable-only —
 	// empty means "tier not known for this turn", never default-to-agent.
 	TaskTier string `json:"task_tier,omitempty"`
-	// RealizedTier is the work-tier axis: the task-complexity tier the turn
+	// ActualExecutionTier is the work-tier axis: the task-complexity tier the turn
 	// ACTUALLY ran on (fast / knowledge / agent), DERIVED from observed dispatch signals.
 	// It is distinct from TaskTier, which is the planner's PREDICTED tier
 	// (an input): predicted and realized diverge whenever the planner picks
 	// a tier but the turn falls through to a different path, so the two are
 	// kept in separate fields to preserve both the prediction and the
-	// outcome. Set by the recorders via DeriveRealizedTier at Finish, after
+	// outcome. Set by the recorders via DeriveActualExecutionTier at Finish, after
 	// every signal is final. Empty when the tier is not observable for the
 	// turn (no-tool ReAct answer, hard-block / canned reply) — empty means
 	// "tier not known", never default-to-agent (attribution-observable-only).
-	RealizedTier string `json:"realized_tier,omitempty"`
+	ActualExecutionTier string `json:"actual_execution_tier,omitempty"`
 	// ActualExecutionPath is the runtime-form axis: the coarse runtime architecture
 	// form that actually handled this turn. It is derived from observed execution
 	// signals, not from planner output: routing / terminal_rag / agent. This is a
-	// DIFFERENT axis from RealizedTier and may diverge from it by design (see the
+	// DIFFERENT axis from ActualExecutionTier and may diverge from it by design (see the
 	// ExecutionPath* consts). Empty means not observable.
 	ActualExecutionPath string               `json:"actual_execution_path,omitempty"`
 	Runtime             RuntimeTrace         `json:"runtime"`
@@ -153,7 +153,7 @@ type traceRecordJSON struct {
 	Timestamp           string                `json:"timestamp"`
 	UserMsgHash         string                `json:"user_msg_hash"`
 	TaskTier            string                `json:"task_tier,omitempty"`
-	RealizedTier        string                `json:"realized_tier,omitempty"`
+	ActualExecutionTier string                `json:"actual_execution_tier,omitempty"`
 	ActualExecutionPath string                `json:"actual_execution_path,omitempty"`
 	Runtime             *RuntimeTrace         `json:"runtime,omitempty"`
 	IntentRouter        *RouterTrace          `json:"intent_router,omitempty"`
@@ -178,7 +178,7 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 		Timestamp:           r.Timestamp,
 		UserMsgHash:         r.UserMsgHash,
 		TaskTier:            r.TaskTier,
-		RealizedTier:        r.RealizedTier,
+		ActualExecutionTier: r.ActualExecutionTier,
 		ActualExecutionPath: r.ActualExecutionPath,
 	}
 	if traceRuntimeObserved(r.Runtime) {
@@ -223,9 +223,9 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 // TWO SEPARATE AXES describe how a turn ran. They are NOT interchangeable and
 // deliberately diverge for some turns — keep them distinct (do not collapse the
 // two fields into one, or force one shared vocabulary onto both).
-// TestRealizedTierAndExecutionPathAreSeparateAxes pins the divergence.
+// TestActualExecutionTierAndExecutionPathAreSeparateAxes pins the divergence.
 //
-//   - Work-tier axis (TaskTier predicted / RealizedTier realized): WHAT KIND of
+//   - Work-tier axis (TaskTier predicted / ActualExecutionTier realized): WHAT KIND of
 //     work the turn did, on the ADR-001 complexity scale fast < knowledge < agent.
 //   - Runtime-form axis (PlannedExecutionPath / ActualExecutionPath): WHICH runtime
 //     architecture executed — routing (deterministic handler) / terminal_rag
@@ -235,14 +235,14 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 // agent↔agent): a turn can do knowledge-tier WORK on the agent FORM — a
 // knowledge_qa turn forced through the ReAct loop, or diagnosis that retrieves
 // mid-flow, both realize knowledge while their runtime form is agent (see
-// DeriveRealizedTier / DeriveActualExecutionPath).
+// DeriveActualExecutionTier / DeriveActualExecutionPath).
 
-// RealizedTier* are the work-tier-axis values for TraceRecord.RealizedTier (and
+// ActualExecutionTier* are the work-tier-axis values for TraceRecord.ActualExecutionTier (and
 // the predicted TaskTier). Mirror the ADR-001 task-complexity tiers.
 const (
-	RealizedTierFast      = "fast"
-	RealizedTierKnowledge = "knowledge"
-	RealizedTierAgent     = "agent"
+	ActualExecutionTierFast      = "fast"
+	ActualExecutionTierKnowledge = "knowledge"
+	ActualExecutionTierAgent     = "agent"
 )
 
 // ExecutionPath* are the runtime-form-axis values for TraceRecord.ActualExecutionPath
@@ -256,7 +256,7 @@ const (
 	ExecutionPathAgent       = "agent"
 )
 
-// DeriveRealizedTier computes the tier the turn ACTUALLY ran on from observed
+// DeriveActualExecutionTier computes the tier the turn ACTUALLY ran on from observed
 // trace signals, returning "" when the tier is not observable. It is pure
 // (depends only on the record) and is invoked by the recorders at Finish —
 // after every signal is final — so the result reflects the turn's terminal
@@ -286,9 +286,9 @@ const (
 // it under-counts no-tool agent turns instead of mis-labelling refusals as
 // agent (memory: attribution-observable-only). A future "ReAct loop ran"
 // signal (e.g. a round counter) could promote step 5 from "" to agent.
-func (r TraceRecord) DeriveRealizedTier() string {
+func (r TraceRecord) DeriveActualExecutionTier() string {
 	// route_status literals mirror internal/intent/handler.go:42-58
-	// (RouteStatus*); pinned by TestDeriveRealizedTier.
+	// (RouteStatus*); pinned by TestDeriveActualExecutionTier.
 	switch r.IntentRouter.RouteStatus {
 	case "dispatched_retrieval", "dispatched_knowledge_agent_loop":
 		// dispatched_knowledge_agent_loop is a knowledge_qa turn forced through the
@@ -296,25 +296,25 @@ func (r TraceRecord) DeriveRealizedTier() string {
 		// knowledge retrieval, so the realized-tier attribution stays comparable
 		// across the terminal→agent-loop migration even though the runtime FORM
 		// becomes agent (see DeriveActualExecutionPath).
-		return RealizedTierKnowledge
+		return ActualExecutionTierKnowledge
 	case "dispatched_agent":
-		return RealizedTierAgent
+		return ActualExecutionTierAgent
 	case "dispatched", "selection_required":
-		return RealizedTierFast
+		return ActualExecutionTierFast
 	}
 	if r.Retrieval.Enabled && r.Retrieval.Hits > 0 {
-		return RealizedTierKnowledge
+		return ActualExecutionTierKnowledge
 	}
 	for _, call := range r.ToolCalls {
 		if call.Source == ToolSourceMainReAct {
-			return RealizedTierAgent
+			return ActualExecutionTierAgent
 		}
 	}
 	return ""
 }
 
 // DeriveActualExecutionPath computes the production architecture form that
-// actually handled the turn. It is intentionally coarser than RealizedTier:
+// actually handled the turn. It is intentionally coarser than ActualExecutionTier:
 // terminal RAG is only a final-answer retrieval workflow; retrieval used inside
 // diagnosis or another agent path remains agent.
 func (r TraceRecord) DeriveActualExecutionPath() string {
