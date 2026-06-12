@@ -63,43 +63,50 @@ type Options struct {
 	// ErrUserDeclined). The StepConfirm step is the saga's SOLE HITL gate,
 	// mirroring the existing workflow.Engine wiring (engine.go:3048). The
 	// L2-always-refuse gate (ExecuteSafe:189) still applies regardless.
-	Executor  tools.ToolExecutor   // required: runs each tool step
-	Confirm   workflow.ConfirmFunc // HITL gate for StepConfirm; nil = decline all
-	Sink      StepSink             // step-trace sink; nil = no trace
-	SessionID string               // stamped into every StepTrace
-	TurnID    string               // stamped into every StepTrace
-	SagaID    string               // multi-step task group id; derived from TurnID when empty
-	SkillID   string               // ADR-003 skill name driving this run; may be empty
-	Now       func() time.Time     // clock; defaults to time.Now (injected for tests)
-	Logf      func(string, ...any) // warning sink; defaults to log.Printf
+	Executor tools.ToolExecutor   // required: runs each tool step
+	Confirm  workflow.ConfirmFunc // HITL gate for StepConfirm; nil = decline all
+	// ConfirmEdits is the richer editable-form HITL gate (create-flow 表单化).
+	// When set AND a confirm step declares a BuildForm, the user may submit
+	// select-only field overrides (re-validated + re-asked). nil → boolean
+	// Confirm only, byte-identical to the pre-form behavior.
+	ConfirmEdits workflow.ConfirmEditsFunc
+	Sink         StepSink             // step-trace sink; nil = no trace
+	SessionID    string               // stamped into every StepTrace
+	TurnID       string               // stamped into every StepTrace
+	SagaID       string               // multi-step task group id; derived from TurnID when empty
+	SkillID      string               // ADR-003 skill name driving this run; may be empty
+	Now          func() time.Time     // clock; defaults to time.Now (injected for tests)
+	Logf         func(string, ...any) // warning sink; defaults to log.Printf
 }
 
 // Saga is the agent-tier step runner. Construct with New; drive with Run.
 type Saga struct {
-	executor  tools.ToolExecutor
-	confirm   workflow.ConfirmFunc
-	sink      StepSink
-	sessionID string
-	turnID    string
-	sagaID    string
-	skillID   string
-	now       func() time.Time
-	logf      func(string, ...any)
+	executor     tools.ToolExecutor
+	confirm      workflow.ConfirmFunc
+	confirmEdits workflow.ConfirmEditsFunc
+	sink         StepSink
+	sessionID    string
+	turnID       string
+	sagaID       string
+	skillID      string
+	now          func() time.Time
+	logf         func(string, ...any)
 }
 
 // New builds a Saga, filling defaults (Now=time.Now, Logf=log.Printf,
 // SagaID derived from TurnID).
 func New(opts Options) *Saga {
 	s := &Saga{
-		executor:  opts.Executor,
-		confirm:   opts.Confirm,
-		sink:      opts.Sink,
-		sessionID: opts.SessionID,
-		turnID:    opts.TurnID,
-		sagaID:    opts.SagaID,
-		skillID:   opts.SkillID,
-		now:       opts.Now,
-		logf:      opts.Logf,
+		executor:     opts.Executor,
+		confirm:      opts.Confirm,
+		confirmEdits: opts.ConfirmEdits,
+		sink:         opts.Sink,
+		sessionID:    opts.SessionID,
+		turnID:       opts.TurnID,
+		sagaID:       opts.SagaID,
+		skillID:      opts.SkillID,
+		now:          opts.Now,
+		logf:         opts.Logf,
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -162,7 +169,7 @@ func (s *Saga) Run(ctx context.Context, def *workflow.Definition, params map[str
 		var sr stepResult
 		switch step.Type {
 		case workflow.StepConfirm:
-			sr = s.runConfirmStep(step, i, wfCtx, def.Name)
+			sr = s.runConfirmStep(ctx, def, step, i, wfCtx)
 		default:
 			sr = s.runToolStep(ctx, step, i, wfCtx)
 		}

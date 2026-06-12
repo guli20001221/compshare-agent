@@ -24,8 +24,6 @@ import (
 // their replies are compared — if the seam altered any LLM input, saga param, or
 // render, the strings would diverge.
 func TestDispatchAgentSkill_RoutesDeployModelByteStable(t *testing.T) {
-	withFastPoll(t, 5)
-
 	execA := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	engA := newDeployEngine(deployMatchJSON, execA, func(string, map[string]any) bool { return true })
 	viaSeam, handledA := engA.dispatchAgentSkill(context.Background(), deployDispatch(), "帮我部署 Qwen2.5-7B", noopStep)
@@ -106,7 +104,6 @@ func TestAgentSkillForIntent_MatchesCodeDerivedPlanSkills(t *testing.T) {
 // hardcodes "deploy_model" as the saga skillID; if that literal ever drifts from
 // the table (the "fourth copy of the same string" risk), this test fails.
 func TestAgentSkillForIntent_MatchesSagaSkillID(t *testing.T) {
-	withFastPoll(t, 5)
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
 	sink := &sagaFakeSink{}

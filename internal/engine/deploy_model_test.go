@@ -129,22 +129,12 @@ func newDeployEngine(matchJSON string, exec *mockExecutorFn, confirm func(string
 	return NewWithDeps(client, exec, confirm) // mutatingToolsEnabled=true; agentLLMClient=nil → falls back to client
 }
 
-// withFastPoll shrinks the poll loop so tests don't sleep. Restored on cleanup.
-func withFastPoll(t *testing.T, rounds int) {
-	t.Helper()
-	origRounds, origInterval := deployPollMaxRounds, deployPollInterval
-	deployPollMaxRounds = rounds
-	deployPollInterval = 0
-	t.Cleanup(func() { deployPollMaxRounds = origRounds; deployPollInterval = origInterval })
-}
-
 // TestTryDeployModel_HappyPath_AlreadyRunning proves the end-to-end handler: TierAgent
 // match → CreateInstanceDef saga (incl. the L1 create) → poll sees Running →
 // deterministic reply with the new instance id + access info. WHY it matters:
 // this is B8's first agent-tier skill exercising the orchestrator on a real
 // mutating create; the reply must carry the created resource so the user owns it.
 func TestTryDeployModel_HappyPath_AlreadyRunning(t *testing.T) {
-	withFastPoll(t, 5)
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	confirmCalls := 0
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { confirmCalls++; return true })
@@ -172,7 +162,6 @@ func TestTryDeployModel_HappyPath_AlreadyRunning(t *testing.T) {
 // SoftwarePorts + the instance public IP) — closing the "deployed but no guidance"
 // gap. The DescribeCompShareImages re-read (by id) must actually happen.
 func TestTryDeployModel_SurfacesUsageGuidance(t *testing.T) {
-	withFastPoll(t, 5)
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
 
@@ -187,30 +176,13 @@ func TestTryDeployModel_SurfacesUsageGuidance(t *testing.T) {
 		"image is re-read by id post-create for usage guidance")
 }
 
-// TestTryDeployModel_PollUntilRunning proves the handler-side poll loop advances
-// across states. The saga's own describe (step 7) consumes the first state; the
-// poll loop then re-reads until Running. WHY: a freshly created instance is not
-// Running yet; the handler must wait and report the live state, never fabricate it.
-func TestTryDeployModel_PollUntilRunning(t *testing.T) {
-	withFastPoll(t, 10)
-	// [saga step-7]=Starting, [poll1]=Starting, [poll2]=Running.
-	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Starting", "Starting", "Running"}})
-	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
-
-	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署 Qwen2.5-7B", noopStep)
-
-	require.True(t, handled)
-	assert.Contains(t, reply, "运行状态", "poll should observe the Running transition")
-	// saga step-7 (1) + at least 2 poll reads to reach Running (index 2).
-	assert.GreaterOrEqual(t, countCalls(exec.calls, "DescribeCompShareInstance"), 3)
-}
-
-// TestTryDeployModel_PollExhausted proves "poll exhausted ≠ failure": the instance
-// never reaches Running within the bound, but the reply still returns the id and
-// frames it as still-provisioning (not an error). WHY: slow provisioning must not
-// read as a failure — the instance exists and is billable/owned.
-func TestTryDeployModel_PollExhausted(t *testing.T) {
-	withFastPoll(t, 2)
+// TestTryDeployModel_StillInitializing proves the handler replies immediately on the
+// saga's own post-create describe instead of blocking until Running: a freshly
+// created instance is still initializing, and the reply frames it as such (not an
+// error) while still returning the id. WHY: a GPU instance can take minutes to
+// reach Running; holding the turn open that long stalls the SSE stream and the
+// frontend's post-create jump — login/status is surfaced on the console page.
+func TestTryDeployModel_StillInitializing(t *testing.T) {
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Starting"}})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
 
@@ -218,19 +190,18 @@ func TestTryDeployModel_PollExhausted(t *testing.T) {
 
 	require.True(t, handled)
 	assert.Contains(t, reply, "uhost-deploy-1")
-	assert.Contains(t, reply, "初始化", "exhausted poll frames as still-initializing, not failed")
+	assert.Contains(t, reply, "初始化", "a still-initializing instance frames as initializing, not failed")
 	assert.NotContains(t, reply, "运行状态")
-	// saga step-7 (1) + 2 poll rounds (withFastPoll 2) = 3; pins that the loop
-	// actually ran rather than the host==nil fallback masking a no-op poll.
-	assert.Equal(t, 3, countCalls(exec.calls, "DescribeCompShareInstance"),
-		"saga describe (1) + 2 poll rounds = 3")
+	// Exactly ONE describe — the saga's own post-create "查看状态" step. The handler
+	// no longer polls, so the turn returns without waiting for Running.
+	assert.Equal(t, 1, countCalls(exec.calls, "DescribeCompShareInstance"),
+		"only the saga's post-create describe runs; no handler-side poll")
 }
 
 // TestTryDeployModel_CommunityHappyPath proves the community image path end-to-end:
 // the matcher picks a community app, grounding matches it against the live catalog,
 // and the saga resolves its CompShareImageId from Data[] and creates.
 func TestTryDeployModel_CommunityHappyPath(t *testing.T) {
-	withFastPoll(t, 3)
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, communityImageID: "comm-img-9", instanceStates: []string{"Running"}})
 	matchJSON := `{"image_source":"community","image_name":"LiveTalking","model_name":"","quantization":""}`
 	eng := newDeployEngine(matchJSON, exec, func(string, map[string]any) bool { return true })
@@ -262,7 +233,6 @@ func TestTryDeployModel_CommunityEmptyDataHalts(t *testing.T) {
 // image name (absent from the live catalog) falls back to a platform base rather
 // than reaching the saga with an unresolvable name.
 func TestTryDeployModel_CommunityGroundingFallback(t *testing.T) {
-	withFastPoll(t, 3)
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	matchJSON := `{"image_source":"community","image_name":"TotallyMadeUpApp","model_name":"","quantization":""}`
 	eng := newDeployEngine(matchJSON, exec, func(string, map[string]any) bool { return true })
@@ -497,7 +467,6 @@ func TestMatchDeployImage_CommunityUsesExtractedKeyword(t *testing.T) {
 // resolved CompShareImageId must be THREADED to the create so the instance built is
 // the same image the GPU was sized against — not the saga's index-0 of its own query.
 func TestTryDeployModel_ThreadsCommunityImageIDToCreate(t *testing.T) {
-	withFastPoll(t, 3)
 	var createArgs map[string]any
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
@@ -559,10 +528,10 @@ func TestTryDeployModel_ThreadsCommunityImageIDToCreate(t *testing.T) {
 		"create must use the matcher-resolved image id (threaded), not the saga's index-0 of its own query")
 }
 
-// TestTryDeployModel_TerminalFailState proves a terminal init-failure stops the
-// poll early and reports the failure (instance created but init failed).
+// TestTryDeployModel_TerminalFailState proves a terminal init-failure observed on
+// the saga's post-create describe is reported as a failure (instance created but
+// init failed), not silently framed as still-initializing.
 func TestTryDeployModel_TerminalFailState(t *testing.T) {
-	withFastPoll(t, 10)
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Install Fail"}})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
 
@@ -570,8 +539,8 @@ func TestTryDeployModel_TerminalFailState(t *testing.T) {
 
 	require.True(t, handled)
 	assert.Contains(t, reply, "初始化未成功")
-	// Poll must stop at the first terminal-fail read, not loop to exhaustion.
-	assert.Equal(t, 2, countCalls(exec.calls, "DescribeCompShareInstance"), "saga step-7 + one poll read, then stop")
+	// Exactly ONE describe — the saga's own post-create "查看状态"; no handler poll.
+	assert.Equal(t, 1, countCalls(exec.calls, "DescribeCompShareInstance"), "only the saga's post-create describe runs")
 }
 
 // TestTryDeployModel_CapacitySoldOut proves the saga stops at the capacity check
@@ -800,7 +769,6 @@ func newZoneDeployMock(stockByZone map[string]bool, createArgs *map[string]any) 
 // primary zone (cn-wlcb-01) is sold out for the chosen card, so the handler creates in
 // cn-sh2-02 instead, threads that zone to the saga's create, and tells the user.
 func TestTryDeployModel_FallbackZoneInReply(t *testing.T) {
-	withFastPoll(t, 3)
 	var createArgs map[string]any
 	exec := newZoneDeployMock(map[string]bool{"cn-wlcb-01": false, "cn-sh2-02": true}, &createArgs)
 	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-7B","quantization":""}`, exec, okConfirm)
@@ -861,7 +829,6 @@ func TestExtractDeployGPU(t *testing.T) {
 // reaches selectDeployZoneAndGPU end-to-end: a request naming 上海 (cn-sh2-02)
 // creates in that zone even though cn-wlcb-01 is the default preference.
 func TestTryDeployModel_UserZoneFromMessage(t *testing.T) {
-	withFastPoll(t, 3)
 	var createArgs map[string]any
 	// Both zones in stock; without a user zone the handler would pick cn-wlcb-01.
 	exec := newZoneDeployMock(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": true}, &createArgs)
@@ -979,7 +946,6 @@ func TestSelectDeployZoneAndGPU_PinnedGPUEmptyAvailDegrades(t *testing.T) {
 // create on A100. This exercises the full handler: matcher → pin extraction → zone/stock
 // selection → saga create, asserting the create call carries the user's card.
 func TestTryDeployModel_HonorsUserNamedGPU(t *testing.T) {
-	withFastPoll(t, 3)
 	var createArgs map[string]any
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
@@ -1384,4 +1350,37 @@ func countCalls(calls []string, action string) int {
 		}
 	}
 	return n
+}
+
+// TestShouldClarifyDeployModelSize pins the deploy size-clarify gate: a named
+// model with no resolvable size and no pinned GPU asks; an explicit size, a
+// pinned GPU, or an app deploy (empty model name) proceeds.
+func TestShouldClarifyDeployModelSize(t *testing.T) {
+	cases := []struct {
+		name      string
+		modelName string
+		userMsg   string
+		want      bool
+	}{
+		{"ambiguous family, no GPU → clarify", "DeepSeek R1", "我想部署 DeepSeek R1", true},
+		{"ambiguous family v3 → clarify", "DeepSeek-V3", "部署 DeepSeek V3", true},
+		{"explicit size → proceed", "Qwen2.5-32B", "部署 Qwen2.5-32B", false},
+		{"distill with size → proceed", "DeepSeek-R1-Distill-Qwen-7B", "部署 DeepSeek-R1-Distill-Qwen-7B", false},
+		{"pinned GPU → proceed", "DeepSeek R1", "用 5090 部署 DeepSeek R1", false},
+		{"app deploy (empty model) → proceed", "", "部署 ComfyUI", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, shouldClarifyDeployModelSize(tc.modelName, tc.userMsg))
+		})
+	}
+}
+
+// TestDeployClarifyModelSizeMsg checks the clarification names the model and asks
+// for a parameter count.
+func TestDeployClarifyModelSizeMsg(t *testing.T) {
+	msg := deployClarifyModelSizeMsg("DeepSeek R1")
+	assert.Contains(t, msg, "DeepSeek R1")
+	assert.Contains(t, msg, "参数量")
+	assert.Contains(t, msg, "规模")
 }
