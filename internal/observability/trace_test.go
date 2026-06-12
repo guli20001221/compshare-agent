@@ -143,7 +143,7 @@ func TestSchemaVersionIsV04(t *testing.T) {
 	}
 }
 
-func TestPlannerTracePlannedRuntimeFormMarshals(t *testing.T) {
+func TestPlannerTracePlannedExecutionPathMarshals(t *testing.T) {
 	data, err := json.Marshal(TraceRecord{
 		SchemaVersion: SchemaVersion,
 		TraceID:       "trace-1",
@@ -153,15 +153,15 @@ func TestPlannerTracePlannedRuntimeFormMarshals(t *testing.T) {
 		UserMsgHash:   "sha256:user",
 		IntentRouter: RouterTrace{
 			Intent:             "knowledge_qa",
-			PlannedRuntimeForm: "terminal_rag",
+			PlannedExecutionPath: "terminal_rag",
 		},
 	})
 	if err != nil {
 		t.Fatalf("marshal TraceRecord: %v", err)
 	}
 	text := string(data)
-	if !strings.Contains(text, `"planned_runtime_form":"terminal_rag"`) {
-		t.Fatalf("trace record missing planned_runtime_form: %s", text)
+	if !strings.Contains(text, `"planned_execution_path":"terminal_rag"`) {
+		t.Fatalf("trace record missing planned_execution_path: %s", text)
 	}
 }
 
@@ -798,7 +798,7 @@ func TestTraceRecord_RealizedTier_Serialization(t *testing.T) {
 	})
 }
 
-func TestTraceRecord_ActualRuntimeForm_Serialization(t *testing.T) {
+func TestTraceRecord_ActualExecutionPath_Serialization(t *testing.T) {
 	base := TraceRecord{
 		SchemaVersion: SchemaVersion,
 		TraceID:       "trace-1",
@@ -808,25 +808,25 @@ func TestTraceRecord_ActualRuntimeForm_Serialization(t *testing.T) {
 		UserMsgHash:   "sha256:user",
 	}
 
-	t.Run("empty ActualRuntimeForm is omitted", func(t *testing.T) {
+	t.Run("empty ActualExecutionPath is omitted", func(t *testing.T) {
 		data, err := json.Marshal(base)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		if strings.Contains(string(data), `"actual_runtime_form"`) {
-			t.Fatalf("empty ActualRuntimeForm should be omitted, got: %s", data)
+		if strings.Contains(string(data), `"actual_execution_path"`) {
+			t.Fatalf("empty ActualExecutionPath should be omitted, got: %s", data)
 		}
 	})
 
-	t.Run("populated ActualRuntimeForm appears in JSON", func(t *testing.T) {
+	t.Run("populated ActualExecutionPath appears in JSON", func(t *testing.T) {
 		rec := base
-		rec.ActualRuntimeForm = RuntimeFormAgent
+		rec.ActualExecutionPath = ExecutionPathAgent
 		data, err := json.Marshal(rec)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		if !strings.Contains(string(data), `"actual_runtime_form":"agent"`) {
-			t.Fatalf("populated ActualRuntimeForm should serialize, got: %s", data)
+		if !strings.Contains(string(data), `"actual_execution_path":"agent"`) {
+			t.Fatalf("populated ActualExecutionPath should serialize, got: %s", data)
 		}
 	})
 }
@@ -889,7 +889,7 @@ func TestDeriveRealizedTier(t *testing.T) {
 	}
 }
 
-func TestDeriveActualRuntimeForm(t *testing.T) {
+func TestDeriveActualExecutionPath(t *testing.T) {
 	reactCall := []ToolCallTrace{{Source: ToolSourceMainReAct}}
 	plannerCall := []ToolCallTrace{{Source: ToolSourcePlannerHandler}}
 	diagnosisCall := []ToolCallTrace{{Source: ToolSourceDiagnosisInternal}}
@@ -902,43 +902,43 @@ func TestDeriveActualRuntimeForm(t *testing.T) {
 		want   string
 	}{
 		{"cutover dispatched -> routing",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched"}}, RuntimeFormRouting},
+			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched"}}, ExecutionPathRouting},
 		{"cutover selection_required -> routing",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "selection_required"}}, RuntimeFormRouting},
+			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "selection_required"}}, ExecutionPathRouting},
 		{"cutover dispatched_retrieval -> terminal_rag",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_retrieval"}}, RuntimeFormTerminalRAG},
+			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_retrieval"}}, ExecutionPathTerminalRAG},
 		{"cutover dispatched_agent -> agent",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_agent"}}, RuntimeFormAgent},
+			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_agent"}}, ExecutionPathAgent},
 		{"saga step -> agent",
-			TraceRecord{Steps: sagaStep}, RuntimeFormAgent},
+			TraceRecord{Steps: sagaStep}, ExecutionPathAgent},
 		{"main ReAct tool -> agent",
-			TraceRecord{ToolCalls: reactCall}, RuntimeFormAgent},
+			TraceRecord{ToolCalls: reactCall}, ExecutionPathAgent},
 		{"workflow internal tool -> agent",
-			TraceRecord{ToolCalls: workflowCall}, RuntimeFormAgent},
+			TraceRecord{ToolCalls: workflowCall}, ExecutionPathAgent},
 		{"diagnosis tool with retrieval hits -> agent",
-			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}, ToolCalls: diagnosisCall}, RuntimeFormAgent},
+			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}, ToolCalls: diagnosisCall}, ExecutionPathAgent},
 		{"knowledge tool inside loop -> agent",
-			TraceRecord{ToolCalls: knowledgeToolCall}, RuntimeFormAgent},
+			TraceRecord{ToolCalls: knowledgeToolCall}, ExecutionPathAgent},
 		{"retrieval hits only -> terminal_rag",
-			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}}, RuntimeFormTerminalRAG},
+			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}}, ExecutionPathTerminalRAG},
 		{"planner handler tool only -> routing",
-			TraceRecord{ToolCalls: plannerCall}, RuntimeFormRouting},
+			TraceRecord{ToolCalls: plannerCall}, ExecutionPathRouting},
 		{"retrieval miss then ReAct -> agent",
-			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 0}, ToolCalls: reactCall}, RuntimeFormAgent},
+			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 0}, ToolCalls: reactCall}, ExecutionPathAgent},
 		{"no observable signal -> unknown",
 			TraceRecord{}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.record.DeriveActualRuntimeForm(); got != tc.want {
-				t.Fatalf("DeriveActualRuntimeForm() = %q, want %q", got, tc.want)
+			if got := tc.record.DeriveActualExecutionPath(); got != tc.want {
+				t.Fatalf("DeriveActualExecutionPath() = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-// TestRealizedTierAndRuntimeFormAreSeparateAxes pins that the work-tier axis
-// (RealizedTier) and the runtime-form axis (ActualRuntimeForm) are DELIBERATELY
+// TestRealizedTierAndExecutionPathAreSeparateAxes pins that the work-tier axis
+// (RealizedTier) and the runtime-form axis (ActualExecutionPath) are DELIBERATELY
 // distinct and diverge for real turns — they must not be collapsed into one
 // field or one shared vocabulary. WHY it matters: a turn can do knowledge-tier
 // WORK while running the agent runtime FORM; merging the two would erase that
@@ -947,36 +947,36 @@ func TestDeriveActualRuntimeForm(t *testing.T) {
 // from the same record; the first two take different values per axis (knowledge
 // work, agent form), the third shows the axes agreeing on the natural
 // knowledge↔terminal_rag correspondence.
-func TestRealizedTierAndRuntimeFormAreSeparateAxes(t *testing.T) {
+func TestRealizedTierAndExecutionPathAreSeparateAxes(t *testing.T) {
 	cases := []struct {
 		name     string
 		record   TraceRecord
 		wantTier string // work-tier axis (RealizedTier)
-		wantForm string // runtime-form axis (ActualRuntimeForm)
+		wantForm string // runtime-form axis (ActualExecutionPath)
 	}{
 		{"knowledge_qa agent loop: knowledge work, agent form",
 			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_knowledge_agent_loop"}},
-			RealizedTierKnowledge, RuntimeFormAgent},
+			RealizedTierKnowledge, ExecutionPathAgent},
 		{"diagnosis with retrieval: knowledge work, agent form",
 			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}, ToolCalls: []ToolCallTrace{{Source: ToolSourceDiagnosisInternal}}},
-			RealizedTierKnowledge, RuntimeFormAgent},
+			RealizedTierKnowledge, ExecutionPathAgent},
 		{"terminal RAG answer: knowledge work, terminal_rag form (axes agree)",
 			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_retrieval"}},
-			RealizedTierKnowledge, RuntimeFormTerminalRAG},
+			RealizedTierKnowledge, ExecutionPathTerminalRAG},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.record.DeriveRealizedTier(); got != tc.wantTier {
 				t.Fatalf("DeriveRealizedTier() = %q, want %q (work-tier axis)", got, tc.wantTier)
 			}
-			if got := tc.record.DeriveActualRuntimeForm(); got != tc.wantForm {
-				t.Fatalf("DeriveActualRuntimeForm() = %q, want %q (runtime-form axis)", got, tc.wantForm)
+			if got := tc.record.DeriveActualExecutionPath(); got != tc.wantForm {
+				t.Fatalf("DeriveActualExecutionPath() = %q, want %q (runtime-form axis)", got, tc.wantForm)
 			}
 		})
 	}
 }
 
-func TestRuntimeFormMismatch(t *testing.T) {
+func TestExecutionPathMismatch(t *testing.T) {
 	cases := []struct {
 		name         string
 		record       TraceRecord
@@ -986,8 +986,8 @@ func TestRuntimeFormMismatch(t *testing.T) {
 		{
 			name: "planned and actual match",
 			record: TraceRecord{
-				IntentRouter:           RouterTrace{PlannedRuntimeForm: RuntimeFormRouting},
-				ActualRuntimeForm: RuntimeFormRouting,
+				IntentRouter:           RouterTrace{PlannedExecutionPath: ExecutionPathRouting},
+				ActualExecutionPath: ExecutionPathRouting,
 			},
 			wantMismatch: false,
 			wantOK:       true,
@@ -995,8 +995,8 @@ func TestRuntimeFormMismatch(t *testing.T) {
 		{
 			name: "planned terminal rag actual agent mismatch",
 			record: TraceRecord{
-				IntentRouter:           RouterTrace{PlannedRuntimeForm: RuntimeFormTerminalRAG},
-				ActualRuntimeForm: RuntimeFormAgent,
+				IntentRouter:           RouterTrace{PlannedExecutionPath: ExecutionPathTerminalRAG},
+				ActualExecutionPath: ExecutionPathAgent,
 			},
 			wantMismatch: true,
 			wantOK:       true,
@@ -1004,7 +1004,7 @@ func TestRuntimeFormMismatch(t *testing.T) {
 		{
 			name: "derive actual when unset",
 			record: TraceRecord{
-				IntentRouter:   RouterTrace{PlannedRuntimeForm: RuntimeFormAgent},
+				IntentRouter:   RouterTrace{PlannedExecutionPath: ExecutionPathAgent},
 				ToolCalls: []ToolCallTrace{{Source: ToolSourceMainReAct}},
 			},
 			wantMismatch: false,
@@ -1013,7 +1013,7 @@ func TestRuntimeFormMismatch(t *testing.T) {
 		{
 			name: "missing planned excluded",
 			record: TraceRecord{
-				ActualRuntimeForm: RuntimeFormAgent,
+				ActualExecutionPath: ExecutionPathAgent,
 			},
 			wantMismatch: false,
 			wantOK:       false,
@@ -1021,7 +1021,7 @@ func TestRuntimeFormMismatch(t *testing.T) {
 		{
 			name: "missing actual excluded",
 			record: TraceRecord{
-				IntentRouter: RouterTrace{PlannedRuntimeForm: RuntimeFormAgent},
+				IntentRouter: RouterTrace{PlannedExecutionPath: ExecutionPathAgent},
 			},
 			wantMismatch: false,
 			wantOK:       false,
@@ -1029,9 +1029,9 @@ func TestRuntimeFormMismatch(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotMismatch, gotOK := tc.record.RuntimeFormMismatch()
+			gotMismatch, gotOK := tc.record.ExecutionPathMismatch()
 			if gotMismatch != tc.wantMismatch || gotOK != tc.wantOK {
-				t.Fatalf("RuntimeFormMismatch() = (%v, %v), want (%v, %v)", gotMismatch, gotOK, tc.wantMismatch, tc.wantOK)
+				t.Fatalf("ExecutionPathMismatch() = (%v, %v), want (%v, %v)", gotMismatch, gotOK, tc.wantMismatch, tc.wantOK)
 			}
 		})
 	}

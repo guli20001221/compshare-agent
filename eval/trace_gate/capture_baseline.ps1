@@ -31,8 +31,8 @@ function Convert-ToGateRecord($rec) {
         turn_index = [int]$rec.turn_index
         timestamp = [string]$rec.timestamp
     }
-    if ($rec.actual_runtime_form) {
-        $out.actual_runtime_form = [string]$rec.actual_runtime_form
+    if ($rec.actual_execution_path) {
+        $out.actual_execution_path = [string]$rec.actual_execution_path
     }
     if ($rec.intent_router) {
         $out.intent_router = [ordered]@{
@@ -40,7 +40,7 @@ function Convert-ToGateRecord($rec) {
             model = [string]$rec.intent_router.model
             schema_valid = [bool]$rec.intent_router.schema_valid
             intent = [string]$rec.intent_router.intent
-            planned_runtime_form = [string]$rec.intent_router.planned_runtime_form
+            planned_execution_path = [string]$rec.intent_router.planned_execution_path
             confidence = [double]$rec.intent_router.confidence
             route_status = [string]$rec.intent_router.route_status
         }
@@ -207,8 +207,8 @@ $formCompared = 0
 $formMismatch = 0
 foreach ($gl in $gateLines) {
     $line = $gl | ConvertFrom-Json
-    $pf = [string]$line.intent_router.planned_runtime_form
-    $af = [string]$line.actual_runtime_form
+    $pf = [string]$line.intent_router.planned_execution_path
+    $af = [string]$line.actual_execution_path
     if ($pf -and $af) {
         $formCompared++
         if ($pf -ne $af) { $formMismatch++ }
@@ -217,7 +217,7 @@ foreach ($gl in $gateLines) {
 $formMax = if ($formCompared -gt 0) { [Math]::Round(($formMismatch / $formCompared) + 0.02, 3) } else { 0.0 }
 $labels = [PSCustomObject]@{
     thresholds = [PSCustomObject]@{
-        runtime_form_mismatch_rate_max = $formMax
+        execution_path_mismatch_rate_max = $formMax
         schema_valid_rate_min = [Math]::Round($schemaMin, 3)
     }
     cases = $labelCases

@@ -10,23 +10,23 @@ import (
 func TestAggregateCountsTraceSignalsAndLabels(t *testing.T) {
 	records := []observability.TraceRecord{
 		{
-			TurnID:            "diag-anchor",
-			ActualRuntimeForm: observability.RuntimeFormAgent,
+			TurnID:              "diag-anchor",
+			ActualExecutionPath: observability.ExecutionPathAgent,
 			IntentRouter: observability.RouterTrace{
-				Enabled:            true,
-				SchemaValid:        true,
-				Intent:             "knowledge_qa",
-				PlannedRuntimeForm: observability.RuntimeFormAgent,
+				Enabled:              true,
+				SchemaValid:          true,
+				Intent:               "knowledge_qa",
+				PlannedExecutionPath: observability.ExecutionPathAgent,
 			},
 			Outcome: observability.OutcomeTrace{EscapedHallucinatedCount: 2},
 		},
 		{
 			TurnID: "routing-mismatch",
 			IntentRouter: observability.RouterTrace{
-				Enabled:            true,
-				SchemaValid:        false,
-				Intent:             "resource_info",
-				PlannedRuntimeForm: observability.RuntimeFormRouting,
+				Enabled:              true,
+				SchemaValid:          false,
+				Intent:               "resource_info",
+				PlannedExecutionPath: observability.ExecutionPathRouting,
 			},
 			ToolCalls: []observability.ToolCallTrace{{Source: observability.ToolSourceMainReAct}},
 		},
@@ -66,9 +66,9 @@ func TestAggregateCountsTraceSignalsAndLabels(t *testing.T) {
 		t.Fatalf("curated schema = %d/%d invalid, want 1/2",
 			stats.CuratedSchemaInvalid, stats.CuratedSchemaTotal)
 	}
-	if stats.RuntimeFormCompared != 2 || stats.RuntimeFormMismatch != 1 {
+	if stats.ExecutionPathCompared != 2 || stats.ExecutionPathMismatch != 1 {
 		t.Fatalf("runtime mismatch = %d/%d, want 1/2",
-			stats.RuntimeFormMismatch, stats.RuntimeFormCompared)
+			stats.ExecutionPathMismatch, stats.ExecutionPathCompared)
 	}
 	if stats.EscapedHallucinatedCount != 2 {
 		t.Fatalf("EscapedHallucinatedCount = %d, want 2", stats.EscapedHallucinatedCount)
@@ -87,16 +87,16 @@ func TestGateFailures(t *testing.T) {
 		SchemaInvalid:            2,
 		CuratedSchemaTotal:       1,
 		CuratedSchemaInvalid:     1,
-		RuntimeFormCompared:      4,
-		RuntimeFormMismatch:      2,
+		ExecutionPathCompared:    4,
+		ExecutionPathMismatch:    2,
 		EscapedHallucinatedCount: 1,
 		IntentMismatches:         []IntentMismatch{{Key: "k", Want: "diagnosis", Got: "knowledge_qa"}},
 		ForbiddenIntentHits:      []ForbiddenIntentHit{{Key: "k", Forbidden: "knowledge_qa"}},
 	}
 	labels := Labels{
 		Thresholds: Thresholds{
-			RuntimeFormMismatchRateMax: 0.25,
-			SchemaValidRateMin:         0.75,
+			ExecutionPathMismatchRateMax: 0.25,
+			SchemaValidRateMin:           0.75,
 		},
 	}
 
@@ -110,7 +110,7 @@ func TestGateFailures(t *testing.T) {
 		"curated_schema_invalid",
 		"intent_mismatch",
 		"forbidden_intent",
-		"runtime_form_mismatch_rate",
+		"execution_path_mismatch_rate",
 		"schema_valid_rate",
 	} {
 		if !codes[code] {

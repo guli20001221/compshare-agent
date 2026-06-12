@@ -21,13 +21,13 @@
 
 ### D1. IntentRouter 只做语义路由,不做 plan / 执行 / 工具授权
 
-`Planner → IntentRouter`,`Plan → IntentRoute`(非 `RouteDecision`——Decision 暗示含 execution)。产物只有 `{Intent, Slots}`(confidence / reasoning 为 observe-only)。它 **不** emit lane / runtime_form / handler / tool authorization。**不新增 AgentPlanner**,**不做 planner-emits-lane**(#128 PARK,与"LLM 只吐 intent+slots"目标冲突)。系统保持 ADR-001 的"确定性 workflow 层 + single-agent ReAct 层"——对稳定 GPU 操作,**没有 AgentPlanner 是正确默认,不是缺陷**。
+`Planner → IntentRouter`,`Plan → IntentRoute`(非 `RouteDecision`——Decision 暗示含 execution)。产物只有 `{Intent, Slots}`(confidence / reasoning 为 observe-only)。它 **不** emit lane / execution_path / handler / tool authorization。**不新增 AgentPlanner**,**不做 planner-emits-lane**(#128 PARK,与"LLM 只吐 intent+slots"目标冲突)。系统保持 ADR-001 的"确定性 workflow 层 + single-agent ReAct 层"——对稳定 GPU 操作,**没有 AgentPlanner 是正确默认,不是缺陷**。
 
 ### D2. DispatchSpec 是名义(nominal)纯契约;effective runtime form 单独 resolve
 
-`DispatchSpec = intent → {NominalLane, ToolSubset, AgentSkillName}` 的**纯投影**,只委托现有三面(`PlannedRuntimeFormForIntent` / `IntentToolSubset` / `agentSkillForIntent`)。它**不读 runtime 状态、不闭包、不执行**。运行时差异——flag gate、snapshot count、screenshot suppression、per-engine enable——由 `ResolveDispatch(route, runtimeCtx) → DispatchDecision{EffectiveRuntimeForm, RouteStatus}` 解析。
+`DispatchSpec = intent → {NominalLane, ToolSubset, AgentSkillName}` 的**纯投影**,只委托现有三面(`PlannedExecutionPathForIntent` / `IntentToolSubset` / `agentSkillForIntent`)。它**不读 runtime 状态、不闭包、不执行**。运行时差异——flag gate、snapshot count、screenshot suppression、per-engine enable——由 `ResolveDispatch(route, runtimeCtx) → DispatchDecision{EffectiveExecutionPath, RouteStatus}` 解析。
 
-- **红线**:`PlannedRuntimeFormForIntent(knowledge_qa) = terminal_rag` 保持纯;agent-loop override 只活在 trace / resolve,**绝不进 spec**。
+- **红线**:`PlannedExecutionPathForIntent(knowledge_qa) = terminal_rag` 保持纯;agent-loop override 只活在 trace / resolve,**绝不进 spec**。
 - **红线**:`DispatchSpec` 条目禁 capture-runtime-state 闭包(`HandlerKey string` / `HandlerKind enum` 可;knowledge_qa 三标志 AND-gate 闭包不可 = 第二 planner)。
 - **不是"一张纯表吃掉所有 routing"**:只有 bucket A(per-intent 纯事实)入 `DispatchSpec`;bucket B(跨 intent tie-breaker)入 `BoundaryPack`/`TieBreakerPack`(prompt 投影);bucket C/D(分类核心 / 输出契约)永留 Router base prompt。
 

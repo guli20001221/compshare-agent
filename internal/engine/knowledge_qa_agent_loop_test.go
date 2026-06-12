@@ -34,7 +34,7 @@ func knowledgeQAAgentLoopBillingChunk() knowledge.KBChunk {
 // with a FORCED SearchKnowledge first hop instead of the terminal-RAG route. It
 // proves (a) the forced object tool_choice on the first LLM call, (b) the agent loop
 // actually retrieves (SearchKnowledge ran on the engine retriever), (c) the distinct
-// dispatched_knowledge_agent_loop route status with PlannedRuntimeForm=agent (so the
+// dispatched_knowledge_agent_loop route status with PlannedExecutionPath=agent (so the
 // runtime-form mismatch gate does not false-flag), and (d) turn-scoped cite-or-refuse
 // parity (a properly [[chunk_id]]-cited synthesis is kept with markers stripped, NOT
 // refused) — all WITHOUT the global grounded-validator flag.
@@ -93,7 +93,7 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 	// (c) distinct route status + planned form == actual (agent), so no mismatch.
 	require.Len(t, plannerTraces, 1)
 	assert.Equal(t, string(intent.RouteStatusDispatchedKnowledgeAgentLoop), plannerTraces[0].RouteStatus)
-	assert.Equal(t, observability.RuntimeFormAgent, plannerTraces[0].PlannedRuntimeForm)
+	assert.Equal(t, observability.ExecutionPathAgent, plannerTraces[0].PlannedExecutionPath)
 	assert.NotEqual(t, string(intent.RouteStatusDispatchedRetrieval), plannerTraces[0].RouteStatus,
 		"agent-loop route must NOT report as terminal RAG")
 

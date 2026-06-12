@@ -1,6 +1,6 @@
 {
     "thresholds":  {
-                       "runtime_form_mismatch_rate_max":  0.145,
+                       "execution_path_mismatch_rate_max":  0.145,
                        "schema_valid_rate_min":  0.98
                    },
     "cases":  [

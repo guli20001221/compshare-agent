@@ -1,6 +1,6 @@
 # Reusable live-CLI probe runner for the agentic-RAG unified plan (P2/P3/P4b/P5).
 # Runs each probe N times through agent.exe, captures the per-turn TraceRecord
-# (planner.intent, actual_runtime_form, retrieval enabled/hits/cited_chunk_ids,
+# (planner.intent, actual_execution_path, retrieval enabled/hits/cited_chunk_ids,
 # tool_calls, steps) and the redacted assistant reply, and emits a JSONL summary
 # (one line per run) + a compact table. No secret values are printed.
 #
@@ -132,7 +132,7 @@ foreach ($probe in $probes) {
         $intent = ""; $arf = ""; $rEnabled = $false; $rHits = 0; $cited = @(); $retrievedChunks = @(); $weakEvidence = $false; $toolActions = @(); $stepTools = @()
         if ($null -ne $rec) {
             if ($rec.intent_router) { $intent = [string]$rec.intent_router.intent }
-            $arf = [string]$rec.actual_runtime_form
+            $arf = [string]$rec.actual_execution_path
             if ($rec.retrieval) {
                 $rEnabled = [bool]$rec.retrieval.enabled
                 $rHits = [int]$rec.retrieval.hits
@@ -149,7 +149,7 @@ foreach ($probe in $probes) {
 
         $redactedReply = Redact-LiveText $reply
         $row = [ordered]@{
-            probe_id = $probe.id; run = $i; intent = $intent; actual_runtime_form = $arf
+            probe_id = $probe.id; run = $i; intent = $intent; actual_execution_path = $arf
             retrieval_fired = $retrievalFired; retrieval_hits = $rHits; cited_chunk_ids = $cited
             retrieved_chunk_ids = $retrievedChunks; weak_evidence = $weakEvidence
             search_knowledge_fired = [bool]$skFired; tool_actions = $toolActions; step_tools = $stepTools

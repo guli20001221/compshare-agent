@@ -200,7 +200,7 @@ foreach ($case in $cases) {
         intent = $intent
         schema_invalid = $schemaInvalid
         escaped_hallucinated = $escaped
-        actual_runtime_forms = @($records | Where-Object { $_.actual_runtime_form } | ForEach-Object { [string]$_.actual_runtime_form } | Sort-Object -Unique)
+        actual_execution_paths = @($records | Where-Object { $_.actual_execution_path } | ForEach-Object { [string]$_.actual_execution_path } | Sort-Object -Unique)
         tool_actions = @($actions | Sort-Object -Unique)
         projected_tool_count = $projectedToolCount
         projection_fired = ($projectedToolCount -gt 0)

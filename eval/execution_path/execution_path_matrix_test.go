@@ -1,4 +1,4 @@
-package runtime_form
+package execution_path
 
 import (
 	"testing"
@@ -6,7 +6,7 @@ import (
 	"github.com/compshare-agent/internal/observability"
 )
 
-func TestActualRuntimeFormMatrix(t *testing.T) {
+func TestActualExecutionPathMatrix(t *testing.T) {
 	cases := []struct {
 		name   string
 		record observability.TraceRecord
@@ -17,21 +17,21 @@ func TestActualRuntimeFormMatrix(t *testing.T) {
 			record: observability.TraceRecord{
 				IntentRouter: observability.RouterTrace{RouteStatus: "dispatched"},
 			},
-			want: observability.RuntimeFormRouting,
+			want: observability.ExecutionPathRouting,
 		},
 		{
 			name: "deterministic routing clarification",
 			record: observability.TraceRecord{
 				IntentRouter: observability.RouterTrace{RouteStatus: "selection_required"},
 			},
-			want: observability.RuntimeFormRouting,
+			want: observability.ExecutionPathRouting,
 		},
 		{
 			name: "terminal cited retrieval",
 			record: observability.TraceRecord{
 				IntentRouter: observability.RouterTrace{RouteStatus: "dispatched_retrieval"},
 			},
-			want: observability.RuntimeFormTerminalRAG,
+			want: observability.ExecutionPathTerminalRAG,
 		},
 		{
 			name: "retrieval evidence inside diagnosis remains agent",
@@ -41,7 +41,7 @@ func TestActualRuntimeFormMatrix(t *testing.T) {
 					Source: observability.ToolSourceDiagnosisInternal,
 				}},
 			},
-			want: observability.RuntimeFormAgent,
+			want: observability.ExecutionPathAgent,
 		},
 		{
 			name: "saga workflow remains agent",
@@ -51,7 +51,7 @@ func TestActualRuntimeFormMatrix(t *testing.T) {
 					State:  observability.StepStateAwaitingConfirm,
 				}},
 			},
-			want: observability.RuntimeFormAgent,
+			want: observability.ExecutionPathAgent,
 		},
 		{
 			name: "main tool loop remains agent",
@@ -60,7 +60,7 @@ func TestActualRuntimeFormMatrix(t *testing.T) {
 					Source: observability.ToolSourceMainReAct,
 				}},
 			},
-			want: observability.RuntimeFormAgent,
+			want: observability.ExecutionPathAgent,
 		},
 		{
 			name: "hard block or canned no-signal answer stays unknown",
@@ -73,14 +73,14 @@ func TestActualRuntimeFormMatrix(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.record.DeriveActualRuntimeForm(); got != tc.want {
-				t.Fatalf("DeriveActualRuntimeForm() = %q, want %q", got, tc.want)
+			if got := tc.record.DeriveActualExecutionPath(); got != tc.want {
+				t.Fatalf("DeriveActualExecutionPath() = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
+func TestPlannedActualExecutionPathMismatchMatrix(t *testing.T) {
 	cases := []struct {
 		name         string
 		record       observability.TraceRecord
@@ -90,8 +90,8 @@ func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
 		{
 			name: "routing planned and routing executed",
 			record: observability.TraceRecord{
-				IntentRouter:           observability.RouterTrace{PlannedRuntimeForm: observability.RuntimeFormRouting},
-				ActualRuntimeForm: observability.RuntimeFormRouting,
+				IntentRouter:           observability.RouterTrace{PlannedExecutionPath: observability.ExecutionPathRouting},
+				ActualExecutionPath: observability.ExecutionPathRouting,
 			},
 			wantMismatch: false,
 			wantCounted:  true,
@@ -99,8 +99,8 @@ func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
 		{
 			name: "terminal rag planned and terminal rag executed",
 			record: observability.TraceRecord{
-				IntentRouter:           observability.RouterTrace{PlannedRuntimeForm: observability.RuntimeFormTerminalRAG},
-				ActualRuntimeForm: observability.RuntimeFormTerminalRAG,
+				IntentRouter:           observability.RouterTrace{PlannedExecutionPath: observability.ExecutionPathTerminalRAG},
+				ActualExecutionPath: observability.ExecutionPathTerminalRAG,
 			},
 			wantMismatch: false,
 			wantCounted:  true,
@@ -108,8 +108,8 @@ func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
 		{
 			name: "agent planned and saga executed",
 			record: observability.TraceRecord{
-				IntentRouter:           observability.RouterTrace{PlannedRuntimeForm: observability.RuntimeFormAgent},
-				ActualRuntimeForm: observability.RuntimeFormAgent,
+				IntentRouter:           observability.RouterTrace{PlannedExecutionPath: observability.ExecutionPathAgent},
+				ActualExecutionPath: observability.ExecutionPathAgent,
 			},
 			wantMismatch: false,
 			wantCounted:  true,
@@ -117,8 +117,8 @@ func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
 		{
 			name: "tutorial planned but diagnosis actually ran",
 			record: observability.TraceRecord{
-				IntentRouter:           observability.RouterTrace{PlannedRuntimeForm: observability.RuntimeFormTerminalRAG},
-				ActualRuntimeForm: observability.RuntimeFormAgent,
+				IntentRouter:           observability.RouterTrace{PlannedExecutionPath: observability.ExecutionPathTerminalRAG},
+				ActualExecutionPath: observability.ExecutionPathAgent,
 			},
 			wantMismatch: true,
 			wantCounted:  true,
@@ -126,7 +126,7 @@ func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
 		{
 			name: "hard block with no actual form is excluded",
 			record: observability.TraceRecord{
-				IntentRouter:         observability.RouterTrace{PlannedRuntimeForm: observability.RuntimeFormAgent},
+				IntentRouter:         observability.RouterTrace{PlannedExecutionPath: observability.ExecutionPathAgent},
 				EngineHardBlock: observability.EngineHardBlockTrace{Hit: true, Category: "account_billing"},
 			},
 			wantMismatch: false,
@@ -136,9 +136,9 @@ func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotMismatch, gotCounted := tc.record.RuntimeFormMismatch()
+			gotMismatch, gotCounted := tc.record.ExecutionPathMismatch()
 			if gotMismatch != tc.wantMismatch || gotCounted != tc.wantCounted {
-				t.Fatalf("RuntimeFormMismatch() = (%v, %v), want (%v, %v)", gotMismatch, gotCounted, tc.wantMismatch, tc.wantCounted)
+				t.Fatalf("ExecutionPathMismatch() = (%v, %v), want (%v, %v)", gotMismatch, gotCounted, tc.wantMismatch, tc.wantCounted)
 			}
 		})
 	}

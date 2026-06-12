@@ -98,7 +98,7 @@ The runtime has three observable execution forms:
 
 ```text
 user request
-  -> planner predicts planned_runtime_form
+  -> planner predicts planned_execution_path
   -> runtime executes one of:
        routing
        terminal_rag
@@ -161,7 +161,7 @@ merged.
 
 ## Migration Sequence
 
-1. Add observe-only `planned_runtime_form` trace derived from existing intent.
+1. Add observe-only `planned_execution_path` trace derived from existing intent.
 2. Keep this terminology document as the naming source for future reviews.
 3. Add high-value saga workflows one at a time, starting with custom image
    creation.
@@ -171,7 +171,7 @@ merged.
    read-only tool visibility.
 6. Add a citation-aware RAG evidence adapter before any diagnosis skill consumes
    retrieval content.
-7. Add actual `runtime_form` trace after trace sources can distinguish what
+7. Add actual `execution_path` trace after trace sources can distinguish what
    really executed.
 8. Split MCP work into server and client directions only after the internal
    boundaries are stable.

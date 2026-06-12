@@ -239,7 +239,7 @@ type Engine struct {
 	// read by the ReAct loop (forces the first hop), executeSearchKnowledge /
 	// guardSearchKnowledgeSynthesis (turn-scoped cite-or-refuse parity with the
 	// terminal route, independent of the global grounded-validator flag), and
-	// emitPlannerTrace (projects PlannedRuntimeForm=agent so planned==actual).
+	// emitPlannerTrace (projects PlannedExecutionPath=agent so planned==actual).
 	// Reset per turn; always false when the flag is off => byte-identical.
 	knowledgeQAAgentLoopThisTurn bool
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
@@ -2545,13 +2545,13 @@ func (e *Engine) emitPlannerTrace(result intent.IntentRouterResult, status inten
 	})
 	trace.RouteStatus = string(status)
 	// Turn-scoped runtime-form projection for the knowledge_qa agent-loop route
-	// (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). PlannedRuntimeFormForIntent stays pure
+	// (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). PlannedExecutionPathForIntent stays pure
 	// (knowledge_qa -> terminal_rag) because a flag-on-but-agentic-off knowledge_qa
 	// turn still runs the terminal route; only a turn actually routed into the agent
-	// loop projects agent, so planned==actual==agent and RuntimeFormMismatch does not
+	// loop projects agent, so planned==actual==agent and ExecutionPathMismatch does not
 	// false-flag. Off-flag this is never reached (the field is always false).
 	if e.knowledgeQAAgentLoopThisTurn && trace.Intent == string(intent.IntentKnowledgeQA) {
-		trace.PlannedRuntimeForm = observability.RuntimeFormAgent
+		trace.PlannedExecutionPath = observability.ExecutionPathAgent
 	}
 	e.plannerTraceObserver(trace)
 }
