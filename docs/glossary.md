@@ -61,7 +61,7 @@ Verified against `main` (file:line where it helps). "Why" cites the mismatch.
 | `runtime_form` | `execution_path` / `execution_mode` | Non-standard term; reads poorly externally. |
 | `RealizedTier` | `ActualExecutionTier` | Disambiguate from `TaskTier` / `RuntimeForm`. |
 | `ConfirmBroker` | `UserConfirmationBroker` | Make the human-in-the-loop subject explicit. |
-| `CSAgent` | `CompShareAgent` | Avoid an unfriendly external abbreviation. |
+| `CSAgent` | `CompShareAgent` | Avoid an unfriendly external abbreviation. **DEFERRED (won't-fix for the byte-stable sweep):** `CSAgent` survives ONLY as HTTP **Action wire values** the frontend posts and `dispatch.go`/`ws.go` route on (`SendCSAgentChat`, `ConfirmCSAgentAction`, `GetCSAgentMeta`, `CreateCSAgentSession`, `GetCSAgentSession`, `SendCSAgentFeedback`, `CreateCSAgentWS`) — there are **no internal Go symbols**. Renaming the strings breaks the deployed frontend, so it needs a coordinated server+frontend change or a dual-route compat window. Revisit with a planned API v2. |
 | `capability` (non-LLM senses) | reserve only for `ModelCapability` | Historically meant skill/route-abstraction; now should mean only model capability (`SupportsObjectToolChoice`, …). The route-abstraction sense was retired (#115). |
 | `KQA` | `KnowledgeQA` | Over-abbreviated; opaque outside the team. |
 | Env: `USE_INTENT_PLANNER` | `COMPSHARE_INTENT_ROUTER_MODE` | Reflect the router + unify the prefix. |
