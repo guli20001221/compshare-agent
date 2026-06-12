@@ -34,15 +34,15 @@ function Convert-ToGateRecord($rec) {
     if ($rec.actual_runtime_form) {
         $out.actual_runtime_form = [string]$rec.actual_runtime_form
     }
-    if ($rec.planner) {
-        $out.planner = [ordered]@{
-            enabled = [bool]$rec.planner.enabled
-            model = [string]$rec.planner.model
-            schema_valid = [bool]$rec.planner.schema_valid
-            intent = [string]$rec.planner.intent
-            planned_runtime_form = [string]$rec.planner.planned_runtime_form
-            confidence = [double]$rec.planner.confidence
-            cutover_status = [string]$rec.planner.cutover_status
+    if ($rec.intent_router) {
+        $out.intent_router = [ordered]@{
+            enabled = [bool]$rec.intent_router.enabled
+            model = [string]$rec.intent_router.model
+            schema_valid = [bool]$rec.intent_router.schema_valid
+            intent = [string]$rec.intent_router.intent
+            planned_runtime_form = [string]$rec.intent_router.planned_runtime_form
+            confidence = [double]$rec.intent_router.confidence
+            route_status = [string]$rec.intent_router.route_status
         }
     }
     if ($rec.tool_calls) {
@@ -168,7 +168,7 @@ Get-ChildItem -Path $TraceDir -Filter "agent-trace-*.jsonl" -File | ForEach-Obje
         } catch {
             return
         }
-        if ($null -eq $rec.planner) { return }
+        if ($null -eq $rec.intent_router) { return }
         $caseId = if ($recordIndex -lt $caseIds.Count) { $caseIds[$recordIndex] } else { "case-$recordIndex" }
         $expect = if ($recordIndex -lt $expectedIntents.Count) { $expectedIntents[$recordIndex] } else { "" }
         $recordIndex++
@@ -181,7 +181,7 @@ Get-ChildItem -Path $TraceDir -Filter "agent-trace-*.jsonl" -File | ForEach-Obje
                 turn_id = $caseId
                 expected_intent = $expect
                 forbidden_intent = $(if ($expect -eq "diagnosis") { "knowledge_qa" } else { "" })
-                curated_schema_valid = [bool]$rec.planner.schema_valid
+                curated_schema_valid = [bool]$rec.intent_router.schema_valid
                 note = "captured by trace_gate/capture_baseline.ps1"
             }
         }
@@ -191,7 +191,7 @@ Get-ChildItem -Path $TraceDir -Filter "agent-trace-*.jsonl" -File | ForEach-Obje
 [IO.File]::WriteAllLines($OutFixture, $gateLines, (New-Object Text.UTF8Encoding $false))
 $schemaValid = @($gateLines | ForEach-Object {
     $line = $_ | ConvertFrom-Json
-    if ($line.planner.schema_valid) { 1 } else { 0 }
+    if ($line.intent_router.schema_valid) { 1 } else { 0 }
 })
 $schemaMin = if ($schemaValid.Count -gt 0) {
     [Math]::Max(0.0, (($schemaValid | Measure-Object -Sum).Sum / $schemaValid.Count) - 0.02)
@@ -207,7 +207,7 @@ $formCompared = 0
 $formMismatch = 0
 foreach ($gl in $gateLines) {
     $line = $gl | ConvertFrom-Json
-    $pf = [string]$line.planner.planned_runtime_form
+    $pf = [string]$line.intent_router.planned_runtime_form
     $af = [string]$line.actual_runtime_form
     if ($pf -and $af) {
         $formCompared++

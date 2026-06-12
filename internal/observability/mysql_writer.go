@@ -256,7 +256,7 @@ func rowFromTrace(p persistedTrace) ([]any, error) {
 		rec.TurnIndex,
 		createdAt,
 		statusFromTrace(rec),
-		string(rec.Planner.Intent),
+		string(rec.IntentRouter.Intent),
 		len(rec.ToolCalls),
 		citedJSON,
 		rec.Outcome.TotalLatencyMS,

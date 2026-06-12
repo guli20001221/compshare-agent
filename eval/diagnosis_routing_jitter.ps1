@@ -73,11 +73,11 @@ foreach ($q in $questions) {
     Get-ChildItem -Path $qDir -Filter "agent-trace-*.jsonl" -ErrorAction SilentlyContinue | ForEach-Object {
         Get-Content $_.FullName -Encoding UTF8 | Where-Object { $_.Trim() } | ForEach-Object {
             try { $rec = $_ | ConvertFrom-Json } catch { return }
-            if ($null -ne $rec.planner) {
-                $intents += [string]$rec.planner.intent
-                $plannedForms += [string]$rec.planner.planned_runtime_form
-                $cutovers += [string]$rec.planner.cutover_status
-                if (-not $rec.planner.schema_valid) { $schemaInvalid++ }
+            if ($null -ne $rec.intent_router) {
+                $intents += [string]$rec.intent_router.intent
+                $plannedForms += [string]$rec.intent_router.planned_runtime_form
+                $cutovers += [string]$rec.intent_router.route_status
+                if (-not $rec.intent_router.schema_valid) { $schemaInvalid++ }
             }
         }
     }

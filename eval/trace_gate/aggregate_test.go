@@ -12,7 +12,7 @@ func TestAggregateCountsTraceSignalsAndLabels(t *testing.T) {
 		{
 			TurnID:            "diag-anchor",
 			ActualRuntimeForm: observability.RuntimeFormAgent,
-			Planner: observability.RouterTrace{
+			IntentRouter: observability.RouterTrace{
 				Enabled:            true,
 				SchemaValid:        true,
 				Intent:             "knowledge_qa",
@@ -22,7 +22,7 @@ func TestAggregateCountsTraceSignalsAndLabels(t *testing.T) {
 		},
 		{
 			TurnID: "routing-mismatch",
-			Planner: observability.RouterTrace{
+			IntentRouter: observability.RouterTrace{
 				Enabled:            true,
 				SchemaValid:        false,
 				Intent:             "resource_info",

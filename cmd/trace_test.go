@@ -372,16 +372,16 @@ func TestPlannerRuntimeModeLine(t *testing.T) {
 	require.Empty(t, unknown)
 
 	line := plannerRuntimeModeLine(true, false, routeIntents)
-	require.Equal(t, "planner_mode=shadow cutover_intents=[resource,monitor]", line)
+	require.Equal(t, "router_mode=shadow route_intents=[resource,monitor]", line)
 
 	line = plannerRuntimeModeLine(true, true, routeIntents)
-	require.Equal(t, "planner_mode=dispatch cutover_intents=[resource,monitor]", line)
+	require.Equal(t, "router_mode=dispatch route_intents=[resource,monitor]", line)
 
 	line = plannerRuntimeModeLine(false, true, nil)
-	require.Equal(t, "planner_mode=dispatch cutover_intents=[]", line)
+	require.Equal(t, "router_mode=dispatch route_intents=[]", line)
 
 	line = plannerRuntimeModeLine(false, false, nil)
-	require.Equal(t, "planner_mode=off cutover_intents=[]", line)
+	require.Equal(t, "router_mode=off route_intents=[]", line)
 }
 
 func TestPlannerRuntimeTrace(t *testing.T) {
@@ -394,18 +394,18 @@ func TestPlannerRuntimeTrace(t *testing.T) {
 	require.Empty(t, unknown)
 
 	trace := plannerRuntimeTrace(true, false, routeIntents)
-	require.Equal(t, "shadow", trace.PlannerMode)
+	require.Equal(t, "shadow", trace.RouterMode)
 	require.Equal(t, []string{"resource", "monitor"}, trace.RouteIntents)
 
 	trace = plannerRuntimeTrace(true, true, routeIntents)
-	require.Equal(t, "dispatch", trace.PlannerMode)
+	require.Equal(t, "dispatch", trace.RouterMode)
 	require.Equal(t, []string{"resource", "monitor"}, trace.RouteIntents)
 
 	trace = plannerRuntimeTrace(false, true, nil)
-	require.Equal(t, "dispatch", trace.PlannerMode)
+	require.Equal(t, "dispatch", trace.RouterMode)
 
 	trace = plannerRuntimeTrace(false, false, nil)
-	require.Equal(t, "off", trace.PlannerMode)
+	require.Equal(t, "off", trace.RouterMode)
 	require.Empty(t, trace.RouteIntents)
 }
 
@@ -954,9 +954,9 @@ func TestCLITraceRecorderWritesPlannerTrace(t *testing.T) {
 	}
 
 	record := readSingleTraceRecord(t, writer, start)
-	if !record.Planner.Enabled || !record.Planner.SchemaValid ||
-		record.Planner.Model != "deepseek-v4-flash" || record.Planner.Intent != "monitor_query" {
-		t.Fatalf("planner trace = %#v", record.Planner)
+	if !record.IntentRouter.Enabled || !record.IntentRouter.SchemaValid ||
+		record.IntentRouter.Model != "deepseek-v4-flash" || record.IntentRouter.Intent != "monitor_query" {
+		t.Fatalf("planner trace = %#v", record.IntentRouter)
 	}
 	if len(record.ToolCalls) != 1 || record.ToolCalls[0].Action != "DescribeCompShareInstance" {
 		t.Fatalf("tool calls changed by planner trace supplier: %#v", record.ToolCalls)
@@ -974,7 +974,7 @@ func TestCLITraceRecorderWritesRuntimeTrace(t *testing.T) {
 	}
 	recorder := newCLITraceRecorder(writer, "", 1, "runtime", start)
 	recorder.SetRuntimeTrace(observability.RuntimeTrace{
-		PlannerMode:  "shadow",
+		RouterMode:  "shadow",
 		RouteIntents: []string{"resource", "monitor"},
 	})
 
@@ -983,7 +983,7 @@ func TestCLITraceRecorderWritesRuntimeTrace(t *testing.T) {
 	}
 
 	record := readSingleTraceRecord(t, writer, start)
-	require.Equal(t, "shadow", record.Runtime.PlannerMode)
+	require.Equal(t, "shadow", record.Runtime.RouterMode)
 	require.Equal(t, []string{"resource", "monitor"}, record.Runtime.RouteIntents)
 }
 
@@ -1011,9 +1011,9 @@ func TestCLITraceRecorderAcceptsEnginePlannerTrace(t *testing.T) {
 	}
 
 	record := readSingleTraceRecord(t, writer, start)
-	if !record.Planner.Enabled || record.Planner.Intent != "resource_info" ||
-		record.Planner.RouteStatus != "dispatched" {
-		t.Fatalf("planner trace = %#v", record.Planner)
+	if !record.IntentRouter.Enabled || record.IntentRouter.Intent != "resource_info" ||
+		record.IntentRouter.RouteStatus != "dispatched" {
+		t.Fatalf("planner trace = %#v", record.IntentRouter)
 	}
 }
 
@@ -1190,8 +1190,8 @@ func TestCLITraceRecorderPlannerInvalidTraceStillWritesLine(t *testing.T) {
 	}
 
 	record := readSingleTraceRecord(t, writer, start)
-	if !record.Planner.Enabled || record.Planner.SchemaValid || record.Planner.Intent != "unknown" {
-		t.Fatalf("planner failure trace = %#v", record.Planner)
+	if !record.IntentRouter.Enabled || record.IntentRouter.SchemaValid || record.IntentRouter.Intent != "unknown" {
+		t.Fatalf("planner failure trace = %#v", record.IntentRouter)
 	}
 }
 
@@ -1605,7 +1605,7 @@ func TestCLITraceRecorderWritesInitRateLimitDenial(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	recorder := newCLITraceRecorder(writer, "", 0, "init_context", start)
-	recorder.SetRuntimeTrace(observability.RuntimeTrace{PlannerMode: "shadow"})
+	recorder.SetRuntimeTrace(observability.RuntimeTrace{RouterMode: "shadow"})
 	recorder.SetRateLimitDecision(governance.Decision{
 		Allowed:     false,
 		Class:       governance.ClassReadExpensiveTool,
@@ -1620,7 +1620,7 @@ func TestCLITraceRecorderWritesInitRateLimitDenial(t *testing.T) {
 
 	record := readSingleTraceRecord(t, writer, start)
 	require.Equal(t, 0, record.TurnIndex)
-	require.Equal(t, "shadow", record.Runtime.PlannerMode)
+	require.Equal(t, "shadow", record.Runtime.RouterMode)
 	require.True(t, record.RateLimit.Checked)
 	require.False(t, record.RateLimit.Allowed)
 	require.Equal(t, string(governance.ClassReadExpensiveTool), record.RateLimit.Class)

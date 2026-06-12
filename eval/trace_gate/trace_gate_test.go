@@ -65,7 +65,7 @@ func TestDiagnosisAnchorFailsWhenRoutedToKnowledgeQA(t *testing.T) {
 	mutated := false
 	for i := range records {
 		if recordKey(records[i]) == anchorKey {
-			records[i].Planner.Intent = "knowledge_qa"
+			records[i].IntentRouter.Intent = "knowledge_qa"
 			mutated = true
 		}
 	}

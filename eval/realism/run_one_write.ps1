@@ -60,7 +60,7 @@ Write-Host "--- trace summary ---" -ForegroundColor Cyan
 Get-ChildItem -Path $qDir -Filter "agent-trace-*.jsonl" -ErrorAction SilentlyContinue | ForEach-Object {
     Get-Content $_.FullName -Encoding utf8 | Where-Object { $_.Trim() } | ForEach-Object {
         try { $rec = $_ | ConvertFrom-Json } catch { return }
-        $intent = if ($rec.planner) { $rec.planner.intent } else { "" }
+        $intent = if ($rec.intent_router) { $rec.intent_router.intent } else { "" }
         $hb = if ($rec.engine_hard_block -and $rec.engine_hard_block.hit) { "HB:" + $rec.engine_hard_block.category } else { "" }
         $tnames = @(); foreach ($tc in @($rec.tool_calls)) { if ($tc.name) { $tnames += "$($tc.name)(ok=$($tc.ok)$($tc.error)$($tc.err))" } elseif ($tc.action) { $tnames += $tc.action } }
         if ($intent -or $hb -or $tnames.Count) { Write-Host ("turn: intent={0} {1} tools=[{2}]" -f $intent, $hb, ($tnames -join ", ")) -ForegroundColor DarkGray }

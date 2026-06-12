@@ -129,7 +129,7 @@ type TraceRecord struct {
 	// RuntimeForm* consts). Empty means not observable.
 	ActualRuntimeForm string               `json:"actual_runtime_form,omitempty"`
 	Runtime           RuntimeTrace         `json:"runtime"`
-	Planner           RouterTrace          `json:"planner"`
+	IntentRouter      RouterTrace          `json:"intent_router"`
 	EngineHardBlock   EngineHardBlockTrace `json:"engine_hard_block"`
 	EntityRegistry    EntityRegistryTrace  `json:"entity_registry"`
 	ToolCalls         []ToolCallTrace      `json:"tool_calls"`
@@ -156,7 +156,7 @@ type traceRecordJSON struct {
 	RealizedTier      string                `json:"realized_tier,omitempty"`
 	ActualRuntimeForm string                `json:"actual_runtime_form,omitempty"`
 	Runtime           *RuntimeTrace         `json:"runtime,omitempty"`
-	Planner           *RouterTrace          `json:"planner,omitempty"`
+	IntentRouter      *RouterTrace          `json:"intent_router,omitempty"`
 	EngineHardBlock   *EngineHardBlockTrace `json:"engine_hard_block,omitempty"`
 	EntityRegistry    *EntityRegistryTrace  `json:"entity_registry,omitempty"`
 	ToolCalls         []ToolCallTrace       `json:"tool_calls,omitempty"`
@@ -184,8 +184,8 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	if traceRuntimeObserved(r.Runtime) {
 		out.Runtime = &r.Runtime
 	}
-	if tracePlannerObserved(r.Planner) {
-		out.Planner = &r.Planner
+	if tracePlannerObserved(r.IntentRouter) {
+		out.IntentRouter = &r.IntentRouter
 	}
 	if traceEngineHardBlockObserved(r.EngineHardBlock) {
 		out.EngineHardBlock = &r.EngineHardBlock
@@ -287,9 +287,9 @@ const (
 // agent (memory: attribution-observable-only). A future "ReAct loop ran"
 // signal (e.g. a round counter) could promote step 5 from "" to agent.
 func (r TraceRecord) DeriveRealizedTier() string {
-	// cutover_status literals mirror internal/intent/handler.go:42-58
+	// route_status literals mirror internal/intent/handler.go:42-58
 	// (RouteStatus*); pinned by TestDeriveRealizedTier.
-	switch r.Planner.RouteStatus {
+	switch r.IntentRouter.RouteStatus {
 	case "dispatched_retrieval", "dispatched_knowledge_agent_loop":
 		// dispatched_knowledge_agent_loop is a knowledge_qa turn forced through the
 		// agent loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP): the realized work is still
@@ -318,7 +318,7 @@ func (r TraceRecord) DeriveRealizedTier() string {
 // terminal RAG is only a final-answer retrieval workflow; retrieval used inside
 // diagnosis or another agent path remains agent.
 func (r TraceRecord) DeriveActualRuntimeForm() string {
-	switch r.Planner.RouteStatus {
+	switch r.IntentRouter.RouteStatus {
 	case "dispatched_agent", "dispatched_knowledge_agent_loop":
 		// dispatched_knowledge_agent_loop: a knowledge_qa turn forced through the
 		// shared ReAct loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). It runs the agent
@@ -352,7 +352,7 @@ func (r TraceRecord) DeriveActualRuntimeForm() string {
 }
 
 func (r TraceRecord) RuntimeFormMismatch() (bool, bool) {
-	planned := strings.TrimSpace(r.Planner.PlannedRuntimeForm)
+	planned := strings.TrimSpace(r.IntentRouter.PlannedRuntimeForm)
 	actual := strings.TrimSpace(r.ActualRuntimeForm)
 	if actual == "" {
 		actual = strings.TrimSpace(r.DeriveActualRuntimeForm())
@@ -364,8 +364,8 @@ func (r TraceRecord) RuntimeFormMismatch() (bool, bool) {
 }
 
 type RuntimeTrace struct {
-	PlannerMode  string   `json:"planner_mode"`
-	RouteIntents []string `json:"cutover_intents"`
+	RouterMode   string   `json:"router_mode"`
+	RouteIntents []string `json:"route_intents"`
 }
 
 type RouterTrace struct {
@@ -381,7 +381,7 @@ type RouterTrace struct {
 	Slots              PlannerSlots        `json:"slots"`
 	Confidence         float64             `json:"confidence"`
 	HardBlockHint      bool                `json:"hard_block_hint"`
-	RouteStatus        string              `json:"cutover_status"`
+	RouteStatus        string              `json:"route_status"`
 }
 
 type PlannerSkillTrace struct {
@@ -812,7 +812,7 @@ func dateOnly(t time.Time) time.Time {
 }
 
 func traceRuntimeObserved(trace RuntimeTrace) bool {
-	return trace.PlannerMode != "" || len(trace.RouteIntents) > 0
+	return trace.RouterMode != "" || len(trace.RouteIntents) > 0
 }
 
 func tracePlannerObserved(trace RouterTrace) bool {
@@ -919,11 +919,11 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	if r.Runtime.RouteIntents == nil {
 		r.Runtime.RouteIntents = []string{}
 	}
-	if r.Planner.Slots.TargetRefs == nil {
-		r.Planner.Slots.TargetRefs = []any{}
+	if r.IntentRouter.Slots.TargetRefs == nil {
+		r.IntentRouter.Slots.TargetRefs = []any{}
 	}
-	if r.Planner.Slots.Metrics == nil {
-		r.Planner.Slots.Metrics = []string{}
+	if r.IntentRouter.Slots.Metrics == nil {
+		r.IntentRouter.Slots.Metrics = []string{}
 	}
 	if r.ToolCalls == nil {
 		r.ToolCalls = []ToolCallTrace{}

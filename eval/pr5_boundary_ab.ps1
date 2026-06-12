@@ -74,7 +74,7 @@ foreach ($q in $questions) {
     Get-ChildItem -Path $qDir -Filter "agent-trace-*.jsonl" -ErrorAction SilentlyContinue | ForEach-Object {
         Get-Content $_.FullName -Encoding utf8 | Where-Object { $_.Trim() } | ForEach-Object {
             try { $rec = $_ | ConvertFrom-Json } catch { return }
-            if ($null -ne $rec.planner) { $intents += [string]$rec.planner.intent }
+            if ($null -ne $rec.intent_router) { $intents += [string]$rec.intent_router.intent }
         }
     }
     $grouped = $intents | Group-Object | Sort-Object Count -Descending

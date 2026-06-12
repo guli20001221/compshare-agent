@@ -83,7 +83,7 @@ foreach ($item in $qs) {
         Get-ChildItem -Path $qDir -Filter "agent-trace-*.jsonl" -ErrorAction SilentlyContinue | ForEach-Object {
             Get-Content $_.FullName -Encoding utf8 | Where-Object { $_.Trim() } | ForEach-Object {
                 try { $rec = $_ | ConvertFrom-Json } catch { return }
-                if ($rec.planner -and $rec.planner.intent) { $intent = $rec.planner.intent }
+                if ($rec.intent_router -and $rec.intent_router.intent) { $intent = $rec.intent_router.intent }
                 # Keyword preblocks short-circuit BEFORE the planner (no planner record).
                 # Record them as HB:<category> so routing is fully visible.
                 if ($rec.engine_hard_block -and $rec.engine_hard_block.hit) { $intent = "HB:" + $rec.engine_hard_block.category }
