@@ -181,7 +181,7 @@ func TestEval(t *testing.T) {
 			// (tier-aware) instead of llm.NewClient. nil overrides →
 			// For(TierFast) == base model byte-for-byte. The no-API-key
 			// Logf+continue above runs before this t.Run.
-			router, err := llm.NewRouter(llmConfigFromModel(model), nil)
+			router, err := llm.NewModelRouter(llmConfigFromModel(model), nil)
 			if err != nil {
 				t.Fatalf("build LLM router for model %s: %v", model.Name, err)
 			}

@@ -21,7 +21,7 @@ import (
 // a new string; the input is never mutated.
 //
 // This is the canonical normalization used by engine.Chat preblock
-// predicates and router.PreBlock rules. Do NOT fork; if a new
+// predicates and inputguard.PreBlock rules. Do NOT fork; if a new
 // normalization rule is needed (e.g. full-width punctuation), add it
 // here so all callers see it uniformly.
 func Normalize(s string) string {

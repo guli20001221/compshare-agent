@@ -2,16 +2,16 @@ package engine
 
 import (
 	"github.com/compshare-agent/internal/guardrails"
+	"github.com/compshare-agent/internal/inputguard"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/refusal"
-	"github.com/compshare-agent/internal/router"
 
 	openai "github.com/sashabaranov/go-openai"
 )
 
 // enginePreBlock is the package-level Chat()-head decision chain. Static
 // because the rule list is stateless data; per-tenant rule overlays
-// (when needed) should construct a fresh router.PreBlock at session
+// (when needed) should construct a fresh inputguard.PreBlock at session
 // scope rather than mutating this singleton.
 //
 // Order = evaluation order. Keyword sets are disjoint by construction
@@ -24,15 +24,15 @@ import (
 //
 //  1. Add the Category + reply text in internal/refusal/templates.go.
 //  2. Implement the predicate in this package (engine_*.go helpers).
-//  3. Append a router.Rule literal here.
+//  3. Append a inputguard.Rule literal here.
 //  4. Update the priority-chain comment block above Engine.Chat().
 //
 // post-LLM hard-blocks (currently only cited_contract_violation in
 // Chat()) are intentionally NOT routed through this chain — they are
 // structurally different (run AFTER the LLM produces text, not BEFORE).
 // When ≥2 post-LLM rules exist, factor them out to a sibling
-// internal/policy/postblock.go using the same router.Rule pattern.
-var enginePreBlock = router.New(
+// internal/policy/postblock.go using the same inputguard.Rule pattern.
+var enginePreBlock = inputguard.New(
 	// Jailbreak detection runs FIRST in the chain. If a user message
 	// matches an instruction-override pattern we want to short-circuit
 	// before any other rule (or the LLM) reads the payload; later rules
@@ -41,7 +41,7 @@ var enginePreBlock = router.New(
 	// category. Detection itself is conservative-compound (verb + domain
 	// noun BOTH required), so the false-positive cost of running first
 	// is low.
-	router.Rule{
+	inputguard.Rule{
 		Match:    guardrails.DetectJailbreakAttempt,
 		Category: refusal.CategoryJailbreakAttempt,
 		Reply:    refusal.JailbreakAttempt,
@@ -52,7 +52,7 @@ var enginePreBlock = router.New(
 	// refusal rather than going to the planner / LLM. Conservative-
 	// compound predicates same shape as jailbreak — false-positive cost
 	// kept low so benign platform questions never trip.
-	router.Rule{
+	inputguard.Rule{
 		Match:    guardrails.DetectOffTopic,
 		Category: refusal.CategoryOffTopic,
 		Reply:    refusal.OffTopic,
@@ -63,7 +63,7 @@ var enginePreBlock = router.New(
 	// console-guidance; "挂载已有盘" reaches the create-disk workflow whose tool
 	// description already states it only creates a new disk (不支持挂载已有盘).
 	// Same pattern as the resource_shortage removal (#261).
-	router.Rule{
+	inputguard.Rule{
 		Match:    isUnsupportedHistoricalMonitorQuestion,
 		Category: refusal.CategoryMonitorHistory,
 		Reply:    refusal.MonitorHistoryUnsupported,

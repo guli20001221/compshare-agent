@@ -20,9 +20,9 @@ func baseConfig() config.LLMConfig {
 // acceptance #5 invariant ("tier_routing 为空时 N=10 回归确认行为跟改造前
 // 一致").
 func TestNewRouter_NilOverrides_AllTiersUseBaseModel(t *testing.T) {
-	r, err := NewRouter(baseConfig(), nil)
+	r, err := NewModelRouter(baseConfig(), nil)
 	if err != nil {
-		t.Fatalf("NewRouter returned error: %v", err)
+		t.Fatalf("NewModelRouter returned error: %v", err)
 	}
 	for _, tier := range AllTiers {
 		if got := r.Model(tier); got != "deepseek-v4-flash" {
@@ -32,9 +32,9 @@ func TestNewRouter_NilOverrides_AllTiersUseBaseModel(t *testing.T) {
 }
 
 func TestNewRouter_EmptyOverrides_AllTiersUseBaseModel(t *testing.T) {
-	r, err := NewRouter(baseConfig(), map[Tier]config.LLMConfig{})
+	r, err := NewModelRouter(baseConfig(), map[Tier]config.LLMConfig{})
 	if err != nil {
-		t.Fatalf("NewRouter returned error: %v", err)
+		t.Fatalf("NewModelRouter returned error: %v", err)
 	}
 	for _, tier := range AllTiers {
 		if got := r.Model(tier); got != "deepseek-v4-flash" {
@@ -50,9 +50,9 @@ func TestNewRouter_AgentTierOverride_OnlyAgentSwitches(t *testing.T) {
 	overrides := map[Tier]config.LLMConfig{
 		TierAgent: {Model: "deepseek-v4-pro"},
 	}
-	r, err := NewRouter(baseConfig(), overrides)
+	r, err := NewModelRouter(baseConfig(), overrides)
 	if err != nil {
-		t.Fatalf("NewRouter returned error: %v", err)
+		t.Fatalf("NewModelRouter returned error: %v", err)
 	}
 	if got := r.Model(TierFast); got != "deepseek-v4-flash" {
 		t.Errorf("TierFast: expected deepseek-v4-flash, got %q", got)
@@ -73,9 +73,9 @@ func TestNewRouter_ModelOnlyOverride_InheritsBaseURLAndAPIKey(t *testing.T) {
 	overrides := map[Tier]config.LLMConfig{
 		TierAgent: {Model: "deepseek-v4-pro"},
 	}
-	r, err := NewRouter(baseConfig(), overrides)
+	r, err := NewModelRouter(baseConfig(), overrides)
 	if err != nil {
-		t.Fatalf("NewRouter returned error: %v", err)
+		t.Fatalf("NewModelRouter returned error: %v", err)
 	}
 	cfg := r.configs[TierAgent]
 	if cfg.BaseURL != "https://api.modelverse.cn/v1" {
@@ -98,9 +98,9 @@ func TestNewRouter_FullOverride_ReplacesAllFields(t *testing.T) {
 			Model:   "claude-opus-4-7",
 		},
 	}
-	r, err := NewRouter(baseConfig(), overrides)
+	r, err := NewModelRouter(baseConfig(), overrides)
 	if err != nil {
-		t.Fatalf("NewRouter returned error: %v", err)
+		t.Fatalf("NewModelRouter returned error: %v", err)
 	}
 	cfg := r.configs[TierAgent]
 	if cfg.BaseURL != "https://api.alt-provider.example/v1" {
@@ -124,7 +124,7 @@ func TestNewRouter_FullOverride_ReplacesAllFields(t *testing.T) {
 func TestNewRouter_EmptyBaseModel_ReturnsError(t *testing.T) {
 	base := baseConfig()
 	base.Model = ""
-	_, err := NewRouter(base, nil)
+	_, err := NewModelRouter(base, nil)
 	if err == nil {
 		t.Fatal("expected error for empty base.Model, got nil")
 	}
@@ -134,12 +134,12 @@ func TestNewRouter_EmptyBaseModel_ReturnsError(t *testing.T) {
 }
 
 // Unknown tier is a programmer bug — panic so callers can't silently
-// drift past the misroute. ADR-002 "Router 不做兜底, misrouting 是
+// drift past the misroute. ADR-002 "ModelRouter 不做兜底, misrouting 是
 // planner bug 不是 router bug".
 func TestRouter_For_UnknownTier_Panics(t *testing.T) {
-	r, err := NewRouter(baseConfig(), nil)
+	r, err := NewModelRouter(baseConfig(), nil)
 	if err != nil {
-		t.Fatalf("NewRouter: %v", err)
+		t.Fatalf("NewModelRouter: %v", err)
 	}
 	defer func() {
 		if rec := recover(); rec == nil {
@@ -150,9 +150,9 @@ func TestRouter_For_UnknownTier_Panics(t *testing.T) {
 }
 
 func TestRouter_Model_UnknownTier_Panics(t *testing.T) {
-	r, err := NewRouter(baseConfig(), nil)
+	r, err := NewModelRouter(baseConfig(), nil)
 	if err != nil {
-		t.Fatalf("NewRouter: %v", err)
+		t.Fatalf("NewModelRouter: %v", err)
 	}
 	defer func() {
 		if rec := recover(); rec == nil {
@@ -162,12 +162,12 @@ func TestRouter_Model_UnknownTier_Panics(t *testing.T) {
 	r.Model(Tier("nonexistent"))
 }
 
-// Router.Capability delegates to LookupCapability with the tier's
-// effective (BaseURL, Model) tuple — proves Router is wired into the
+// ModelRouter.Capability delegates to LookupCapability with the tier's
+// effective (BaseURL, Model) tuple — proves ModelRouter is wired into the
 // existing capability matrix, not a parallel store. Loops every tier
 // AND verifies the Agent override (Qwen/Qwen3-Max) returns a DIFFERENT
 // capability profile than the flash base — without this, the test
-// could pass even if Router silently returned the base capability for
+// could pass even if ModelRouter silently returned the base capability for
 // every tier.
 func TestRouter_Capability_MatchesLookupCapability(t *testing.T) {
 	overrides := map[Tier]config.LLMConfig{
@@ -176,9 +176,9 @@ func TestRouter_Capability_MatchesLookupCapability(t *testing.T) {
 		// Qwen3-Max's is unset — that diff is what proves delegation per-tier.
 		TierAgent: {Model: "Qwen/Qwen3-Max"},
 	}
-	r, err := NewRouter(baseConfig(), overrides)
+	r, err := NewModelRouter(baseConfig(), overrides)
 	if err != nil {
-		t.Fatalf("NewRouter: %v", err)
+		t.Fatalf("NewModelRouter: %v", err)
 	}
 	cases := []struct {
 		tier  Tier
@@ -199,7 +199,7 @@ func TestRouter_Capability_MatchesLookupCapability(t *testing.T) {
 		}
 	}
 	// Sanity: Agent override and Fast must actually differ on at least
-	// one capability dim — otherwise this test couldn't catch a Router
+	// one capability dim — otherwise this test couldn't catch a ModelRouter
 	// that ignored the override. As of the 2026-06-08 flash re-probe,
 	// ds-v4-flash and Qwen/Qwen3-Max now AGREE on SupportsObjectToolChoice
 	// (both true) but still differ on IsThinkingMode (true vs unset/false),

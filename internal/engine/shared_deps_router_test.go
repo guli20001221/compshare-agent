@@ -14,7 +14,7 @@ import (
 )
 
 // validRouterCfg is the minimal cfg that NewSharedDeps accepts after B2a:
-// non-empty base.Model so llm.NewRouter does not reject it.
+// non-empty base.Model so llm.NewModelRouter does not reject it.
 func validRouterCfg(model string) *config.Config {
 	return &config.Config{Agent: config.AgentConfig{
 		LLM: config.LLMConfig{
@@ -27,7 +27,7 @@ func validRouterCfg(model string) *config.Config {
 
 // TestNewSharedDeps_EmptyBaseModel_ReturnsError pins the B2a allowed-change
 // (memory acceptance-invariant-with-allowed-change): SharedDeps now builds its
-// LLM client through llm.NewRouter (ADR-002 Acceptance #3), which validates
+// LLM client through llm.NewModelRouter (ADR-002 Acceptance #3), which validates
 // base.Model is non-empty. A config with an empty model therefore fails loud at
 // NewSharedDeps instead of deferring to the first LLM call (the pre-B2a
 // llm.NewClient tolerated an empty model). config.Load always populates a model

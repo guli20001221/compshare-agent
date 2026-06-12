@@ -421,7 +421,7 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 	// constructor tolerated it). config.Load does not itself require a model,
 	// but the shipped configs set one, so this only triggers on a model-less
 	// misconfig — and surfaces at boot rather than at the first LLM call.
-	router, err := llm.NewRouter(cfg.Agent.LLM, llm.TierOverridesFromConfig(cfg.Agent.TierRouting))
+	router, err := llm.NewModelRouter(cfg.Agent.LLM, llm.TierOverridesFromConfig(cfg.Agent.TierRouting))
 	if err != nil {
 		return nil, fmt.Errorf("engine.NewSharedDeps: build LLM router: %w", err)
 	}

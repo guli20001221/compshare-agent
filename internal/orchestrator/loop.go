@@ -24,7 +24,7 @@ type AgentLoop struct {
 }
 
 // NewAgentLoop builds the loop with the strong-tier client from the router.
-func NewAgentLoop(router *llm.Router) *AgentLoop {
+func NewAgentLoop(router *llm.ModelRouter) *AgentLoop {
 	return &AgentLoop{client: router.For(llm.TierAgent)}
 }
 

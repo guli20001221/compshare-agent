@@ -20,7 +20,7 @@
 // Decide() does NOT mutate engine state; the caller still owns side
 // effects (pendingResourceSelection clear, hardBlockObserver fire,
 // message append). The dispatcher only returns the decision triplet.
-package router
+package inputguard
 
 // Rule is one entry in the pre-block chain: a predicate plus the reply
 // + category to emit when it fires. Category MUST be a stable string
