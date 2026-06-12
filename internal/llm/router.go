@@ -114,7 +114,7 @@ func (r *Router) For(tier Tier) *Client {
 // to populate the model attribution at the actual call site —
 // trace.task_tier sits at the TraceRecord top level (ADR-002 acceptance
 // #4 schema slot, B4 populates), while the per-call model lands inside
-// the nested PlannerTrace.Model / RendererTrace.Model fields that
+// the nested RouterTrace.Model / RendererTrace.Model fields that
 // already exist. There is no top-level trace.model field. Panics on
 // unknown tier.
 func (r *Router) Model(tier Tier) string {

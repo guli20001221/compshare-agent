@@ -9,18 +9,18 @@ import (
 )
 
 type ShadowPlanner interface {
-	Plan(ctx context.Context, input PlannerInput) (PlannerResult, error)
+	Plan(ctx context.Context, input IntentRouterInput) (IntentRouterResult, error)
 }
 
 type ShadowRunnerOptions struct {
 	Enabled bool
 	Model   string
-	// BaseURL is intentionally omitted because PlannerTrace has no
+	// BaseURL is intentionally omitted because RouterTrace has no
 	// BaseURL field. Add it only if a future trace schema includes it.
 	Now func() time.Time
 	// QuotaSubject must be a non-secret subject key, such as the hashed value
 	// from governance.SubjectKeyFromPublicKey. ShadowRunner never writes it to
-	// PlannerTrace.
+	// RouterTrace.
 	QuotaSubject string
 	QuotaHook    func(governance.Request) governance.Decision
 }
@@ -49,13 +49,13 @@ func NewShadowRunner(planner ShadowPlanner, opts ShadowRunnerOptions) *ShadowRun
 	}
 }
 
-func (r *ShadowRunner) Run(ctx context.Context, input PlannerInput) observability.PlannerTrace {
+func (r *ShadowRunner) Run(ctx context.Context, input IntentRouterInput) observability.RouterTrace {
 	if r == nil || !r.enabled {
-		return ProjectPlannerTrace(PlannerResult{}, PlannerTraceOptions{Enabled: false})
+		return ProjectPlannerTrace(IntentRouterResult{}, PlannerTraceOptions{Enabled: false})
 	}
 
 	start := r.now()
-	result := PlannerResult{
+	result := IntentRouterResult{
 		Fallback: true,
 		Plan:     unknownFallbackPlan(),
 	}

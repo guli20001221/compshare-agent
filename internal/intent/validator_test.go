@@ -12,7 +12,7 @@ func TestValidatePlan_AcceptsValidMonitorPlan(t *testing.T) {
 	reg := testRegistry(t)
 	plan := validMonitorPlan()
 
-	err := ValidatePlan(plan, ValidationContext{
+	err := ValidateRoute(plan, ValidationContext{
 		UserText: "看看 uhost-abc123 的 CPU 和 GPU 监控",
 		Registry: reg,
 	})
@@ -24,7 +24,7 @@ func TestValidatePlan_RejectsInvalidSchemaVersion(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.SchemaVersion = "2.0"
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
 
 	requireValidationCode(t, err, ErrInvalidSchemaVersion)
 }
@@ -33,7 +33,7 @@ func TestValidatePlan_RejectsInvalidIntentEnum(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.Intent = Intent("made_up_intent")
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
 
 	requireValidationCode(t, err, ErrInvalidIntent)
 }
@@ -44,7 +44,7 @@ func TestValidatePlan_RejectsLegacyMixedIntentEnums(t *testing.T) {
 			plan := validMonitorPlan()
 			plan.Intent = legacy
 
-			err := ValidatePlan(plan, ValidationContext{UserText: "monitor uhost-abc123", Registry: testRegistry(t)})
+			err := ValidateRoute(plan, ValidationContext{UserText: "monitor uhost-abc123", Registry: testRegistry(t)})
 
 			requireValidationCode(t, err, ErrInvalidIntent)
 		})
@@ -55,7 +55,7 @@ func TestValidatePlan_RejectsInvalidSlotType(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.Slots.TargetRefs[0].Type = TargetRefType("uhost_id_planner_generated")
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
 
 	requireValidationCode(t, err, ErrInvalidTargetRefType)
 }
@@ -64,7 +64,7 @@ func TestValidatePlan_RejectsMissingOrMismatchedProvenance(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.Slots.TargetRefs[0].SourceSpan = "uhost-not-in-user-text"
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
 
 	requireValidationCode(t, err, ErrAttemptedHallucinatedEntity)
 }
@@ -73,13 +73,13 @@ func TestValidatePlan_RejectsInvalidRequiredTool(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.RequiredTools = []string{"DeleteEverything"}
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
 
 	requireValidationCode(t, err, ErrInvalidRequiredTool)
 }
 
 func TestValidatePlan_AcceptsStockCapacityPrecheckTool(t *testing.T) {
-	plan := Plan{
+	plan := IntentRoute{
 		SchemaVersion: SchemaVersion,
 		Intent:        IntentStockAvailability,
 		RequiredTools: []string{"DescribeAvailableCompShareInstanceTypes", "CheckCompShareResourceCapacity"},
@@ -87,7 +87,7 @@ func TestValidatePlan_AcceptsStockCapacityPrecheckTool(t *testing.T) {
 		Confidence:    0.8,
 	}
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "4090 现在有没有货", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "4090 现在有没有货", Registry: testRegistry(t)})
 
 	require.NoError(t, err)
 }
@@ -99,7 +99,7 @@ func TestValidatePlan_RouteRegistryToolsStayAllowed(t *testing.T) {
 		tools := []string{requiredTool}
 		tools = append(tools, extraHandlerActions()[intentValue]...)
 
-		plan := Plan{
+		plan := IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        intentValue,
 			RequiredTools: tools,
@@ -107,7 +107,7 @@ func TestValidatePlan_RouteRegistryToolsStayAllowed(t *testing.T) {
 			Confidence:    0.8,
 		}
 
-		err := ValidatePlan(plan, ValidationContext{UserText: "route query", Registry: testRegistry(t)})
+		err := ValidateRoute(plan, ValidationContext{UserText: "route query", Registry: testRegistry(t)})
 
 		require.NoError(t, err, "route intent %q tools %v must stay allowed", intentValue, tools)
 	}
@@ -116,11 +116,11 @@ func TestValidatePlan_RouteRegistryToolsStayAllowed(t *testing.T) {
 func TestValidatePlan_RejectsRequiredToolOutsideIntentAllowlist(t *testing.T) {
 	tests := []struct {
 		name string
-		plan Plan
+		plan IntentRoute
 	}{
 		{
 			name: "knowledge qa cannot declare api tools",
-			plan: Plan{
+			plan: IntentRoute{
 				SchemaVersion: SchemaVersion,
 				Intent:        IntentKnowledgeQA,
 				RequiredTools: []string{"DescribeCompShareInstance"},
@@ -130,7 +130,7 @@ func TestValidatePlan_RejectsRequiredToolOutsideIntentAllowlist(t *testing.T) {
 		},
 		{
 			name: "resource info cannot declare monitor tools",
-			plan: Plan{
+			plan: IntentRoute{
 				SchemaVersion: SchemaVersion,
 				Intent:        IntentResourceInfo,
 				RequiredTools: []string{"GetCompShareInstanceMonitor"},
@@ -140,7 +140,7 @@ func TestValidatePlan_RejectsRequiredToolOutsideIntentAllowlist(t *testing.T) {
 		},
 		{
 			name: "route cannot declare another route tool",
-			plan: Plan{
+			plan: IntentRoute{
 				SchemaVersion: SchemaVersion,
 				Intent:        IntentPlatformImageList,
 				RequiredTools: []string{"DescribeCompShareCustomImages"},
@@ -150,7 +150,7 @@ func TestValidatePlan_RejectsRequiredToolOutsideIntentAllowlist(t *testing.T) {
 		},
 		{
 			name: "unknown cannot declare tools",
-			plan: Plan{
+			plan: IntentRoute{
 				SchemaVersion: SchemaVersion,
 				Intent:        IntentUnknown,
 				RequiredTools: []string{"GetCompShareInstancePrice"},
@@ -162,7 +162,7 @@ func TestValidatePlan_RejectsRequiredToolOutsideIntentAllowlist(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidatePlan(tt.plan, ValidationContext{UserText: "test", Registry: testRegistry(t)})
+			err := ValidateRoute(tt.plan, ValidationContext{UserText: "test", Registry: testRegistry(t)})
 
 			requireValidationCode(t, err, ErrInvalidRequiredTool)
 		})
@@ -170,7 +170,7 @@ func TestValidatePlan_RejectsRequiredToolOutsideIntentAllowlist(t *testing.T) {
 }
 
 func TestValidatePlan_AcceptsRequiredToolsForIntentAllowlist(t *testing.T) {
-	tests := []Plan{
+	tests := []IntentRoute{
 		{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentResourceInfo,
@@ -203,7 +203,7 @@ func TestValidatePlan_AcceptsRequiredToolsForIntentAllowlist(t *testing.T) {
 
 	for _, plan := range tests {
 		t.Run(string(plan.Intent), func(t *testing.T) {
-			err := ValidatePlan(plan, ValidationContext{UserText: "test", Registry: testRegistry(t)})
+			err := ValidateRoute(plan, ValidationContext{UserText: "test", Registry: testRegistry(t)})
 
 			require.NoError(t, err)
 		})
@@ -214,7 +214,7 @@ func TestValidatePlan_RejectsInvalidMetricEnum(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.Slots.Metrics = []Metric{MetricCPU, Metric("disk")}
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
 
 	requireValidationCode(t, err, ErrInvalidMetric)
 }
@@ -223,7 +223,7 @@ func TestValidatePlan_RejectsInvalidTimeWindowType(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.Slots.TimeWindow.Type = TimeWindowType("made_up")
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
 
 	requireValidationCode(t, err, ErrInvalidTimeWindow)
 }
@@ -233,13 +233,13 @@ func TestValidatePlan_RejectsAccountUnsupportedWithTargetRefs(t *testing.T) {
 	plan.Intent = IntentBillingAccountUnsupported
 	plan.RequiredTools = nil
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "查一下账号余额和 uhost-abc123", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "查一下账号余额和 uhost-abc123", Registry: testRegistry(t)})
 
 	requireValidationCode(t, err, ErrInvalidTargetRefType)
 }
 
 func TestValidatePlan_AcceptsResourceFilterSlots(t *testing.T) {
-	plan := Plan{
+	plan := IntentRoute{
 		SchemaVersion: SchemaVersion,
 		Intent:        IntentResourceInfo,
 		Slots: Slots{TargetRefs: []TargetRef{
@@ -251,13 +251,13 @@ func TestValidatePlan_AcceptsResourceFilterSlots(t *testing.T) {
 		Confidence:    0.8,
 	}
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "running 4090 instances", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "running 4090 instances", Registry: testRegistry(t)})
 
 	require.NoError(t, err)
 }
 
 func TestValidatePlan_RejectsInvalidResourceFilterSlot(t *testing.T) {
-	plan := Plan{
+	plan := IntentRoute{
 		SchemaVersion: SchemaVersion,
 		Intent:        IntentResourceInfo,
 		Slots:         Slots{TargetRefs: []TargetRef{{Type: TargetRefFilter, Value: "state=deleted"}}},
@@ -266,13 +266,13 @@ func TestValidatePlan_RejectsInvalidResourceFilterSlot(t *testing.T) {
 		Confidence:    0.8,
 	}
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "deleted instances", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "deleted instances", Registry: testRegistry(t)})
 
 	requireValidationCode(t, err, ErrInvalidTargetRefType)
 }
 
 func TestValidatePlan_EntityValidatorAcceptsUserProvidedIDWithMatchingSpan(t *testing.T) {
-	plan := Plan{
+	plan := IntentRoute{
 		SchemaVersion: SchemaVersion,
 		Intent:        IntentMonitorQuery,
 		Slots: Slots{
@@ -288,7 +288,7 @@ func TestValidatePlan_EntityValidatorAcceptsUserProvidedIDWithMatchingSpan(t *te
 		Confidence:    0.8,
 	}
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "帮我看 uhost-abc123", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "帮我看 uhost-abc123", Registry: testRegistry(t)})
 
 	require.NoError(t, err)
 }
@@ -297,7 +297,7 @@ func TestValidatePlan_EntityValidatorRejectsUserProvidedIDWithoutMatchingSpan(t 
 	plan := validMonitorPlan()
 	plan.Slots.TargetRefs[0].SourceSpan = "这不是用户原文"
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "帮我看 uhost-abc123", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "帮我看 uhost-abc123", Registry: testRegistry(t)})
 
 	requireValidationCode(t, err, ErrAttemptedHallucinatedEntity)
 }
@@ -311,7 +311,7 @@ func TestValidatePlan_RejectsShortNameSlot(t *testing.T) {
 		SourceSpan: "a",
 	}}
 
-	err := ValidatePlan(plan, ValidationContext{UserText: "看 a 这台", Registry: testRegistry(t)})
+	err := ValidateRoute(plan, ValidationContext{UserText: "看 a 这台", Registry: testRegistry(t)})
 
 	requireValidationCode(t, err, ErrNameTooShort)
 }
@@ -357,8 +357,8 @@ func TestRuntimeIntentsExcludeLegacyMixedIntents(t *testing.T) {
 	assert.NotContains(t, RuntimeIntents(), IntentMixedBillingKB)
 }
 
-func validMonitorPlan() Plan {
-	return Plan{
+func validMonitorPlan() IntentRoute {
+	return IntentRoute{
 		SchemaVersion: SchemaVersion,
 		Intent:        IntentMonitorQuery,
 		Scope:         "single_instance",

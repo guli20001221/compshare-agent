@@ -10,7 +10,7 @@ import (
 
 // alwaysHitResolver resolves every id/name to a HIT. The guard test below is
 // about the required_tools allowlist, not entity resolution, so the resolver
-// must SUCCEED — otherwise a target-carrying few-shot would fail ValidatePlan
+// must SUCCEED — otherwise a target-carrying few-shot would fail ValidateRoute
 // for an unrelated reason (target not in registry) and mask the tool check.
 type alwaysHitResolver struct{}
 
@@ -26,7 +26,7 @@ func (alwaysHitResolver) ResolveByName(name string) ([]*entity.InstanceSnapshot,
 // invariant that the operation_lifecycle 8/8 schema_invalid bug (2026-05-30,
 // both flash and pro) violated: a tool the few-shot TEACHES the model to emit
 // in plan.required_tools must be an ACCEPTED required tool for that intent —
-// i.e. every few-shot's required_tools must pass ValidatePlan, which checks
+// i.e. every few-shot's required_tools must pass ValidateRoute, which checks
 // requiredToolsForIntent.
 //
 // This is deliberately NARROW. It does NOT assert validator == tool_subset:
@@ -41,12 +41,12 @@ func (alwaysHitResolver) ResolveByName(name string) ([]*entity.InstanceSnapshot,
 //
 // Root cause this closes: TestPlannerPromptExamplesGroupedByIntentWithSource
 // only compared few-shot required_tools to its OWN expectedTools map and never
-// called ValidatePlan, so the planner.go few-shots (which teach
+// called ValidateRoute, so the planner.go few-shots (which teach
 // ["DescribeCompShareInstance"] for operation_lifecycle) drifted away from the
 // validator's requiredToolsForIntent (which had no operation_lifecycle case)
 // without any test failing. Memory: cross-pr-contract-drift-check.
 func TestPlannerExamples_TaughtRequiredToolsAreAccepted(t *testing.T) {
-	groups := plannerPromptExampleGroups()
+	groups := routerPromptExampleGroups()
 	require.NotEmpty(t, groups, "no planner example groups loaded")
 	for _, group := range groups {
 		for _, ex := range group.Examples {
@@ -56,12 +56,12 @@ func TestPlannerExamples_TaughtRequiredToolsAreAccepted(t *testing.T) {
 			// checks pass (each few-shot's source_span is a substring of its
 			// question). Resolver always hits so target validation can't be the
 			// failing cause — only the required_tools allowlist can.
-			verr := ValidatePlan(plan, ValidationContext{
+			verr := ValidateRoute(plan, ValidationContext{
 				UserText: ex.Question,
 				Resolver: alwaysHitResolver{},
 			})
 			assert.NoErrorf(t, verr,
-				"few-shot %q teaches required_tools=%v for intent %s but ValidatePlan rejects it; "+
+				"few-shot %q teaches required_tools=%v for intent %s but ValidateRoute rejects it; "+
 					"the taught tool must be an accepted required tool — fix requiredToolsForIntent(%s), not the few-shot",
 				ex.Question, plan.RequiredTools, group.Intent, group.Intent)
 		}

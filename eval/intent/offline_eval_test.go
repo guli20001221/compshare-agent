@@ -18,7 +18,7 @@ func TestOfflineFixturesEval(t *testing.T) {
 	fixtures := loadFixtures(t, "fixtures.jsonl")
 	require.GreaterOrEqual(t, len(fixtures), 50)
 
-	planner := intp.NewPlanner(&heuristicFixtureLLM{}, intp.PlannerOptions{
+	planner := intp.NewIntentRouter(&heuristicFixtureLLM{}, intp.IntentRouterOptions{
 		BaseURL: "https://api.modelverse.cn/v1",
 		Model:   "Qwen/Qwen3-Max",
 	})
@@ -26,7 +26,7 @@ func TestOfflineFixturesEval(t *testing.T) {
 	var legal, targetTotal, targetCorrect, unknownTotal, unknownCorrect int
 	for _, fx := range fixtures {
 		reg := registryFromFixture(t, fx.RegistrySnapshot)
-		result, err := planner.Plan(context.Background(), intp.PlannerInput{
+		result, err := planner.Plan(context.Background(), intp.IntentRouterInput{
 			UserText: fx.UserMsg,
 			Registry: reg,
 		})
@@ -123,14 +123,14 @@ func registryFromFixture(t *testing.T, snapshots []entity.InstanceSnapshot) *ent
 
 type heuristicFixtureLLM struct{}
 
-func (h *heuristicFixtureLLM) CompleteIntentPlan(_ context.Context, req intp.PlannerLLMRequest) (string, error) {
+func (h *heuristicFixtureLLM) CompleteIntentPlan(_ context.Context, req intp.IntentRouterLLMRequest) (string, error) {
 	msg := extractUserMessage(req.UserPrompt)
 	plan := classifyFixtureMessage(msg)
 	data, err := json.Marshal(plan)
 	return string(data), err
 }
 
-func classifyFixtureMessage(msg string) intp.Plan {
+func classifyFixtureMessage(msg string) intp.IntentRoute {
 	normalized := strings.ToLower(msg)
 	switch {
 	case isResourceFilterText(normalized):
@@ -138,7 +138,7 @@ func classifyFixtureMessage(msg string) intp.Plan {
 	case isMixedOrNonTargetText(normalized):
 		return unknownFixturePlan()
 	case strings.Contains(normalized, "uhost-abc123") && isMonitorText(normalized):
-		return intp.Plan{
+		return intp.IntentRoute{
 			SchemaVersion: intp.SchemaVersion,
 			Intent:        intp.IntentMonitorQuery,
 			Slots: intp.Slots{
@@ -159,7 +159,7 @@ func classifyFixtureMessage(msg string) intp.Plan {
 			Confidence:    0.9,
 		}
 	case strings.Contains(normalized, "uhost-abc123") && isBillingInstanceText(normalized):
-		return intp.Plan{
+		return intp.IntentRoute{
 			SchemaVersion: intp.SchemaVersion,
 			Intent:        intp.IntentBillingInstance,
 			Slots: intp.Slots{TargetRefs: []intp.TargetRef{{
@@ -173,7 +173,7 @@ func classifyFixtureMessage(msg string) intp.Plan {
 			Confidence:    0.86,
 		}
 	case isAccountBillingUnsupportedText(normalized):
-		return intp.Plan{
+		return intp.IntentRoute{
 			SchemaVersion: intp.SchemaVersion,
 			Intent:        intp.IntentBillingAccountUnsupported,
 			Retrieval:     intp.Retrieval{Enabled: false},
@@ -181,7 +181,7 @@ func classifyFixtureMessage(msg string) intp.Plan {
 			Confidence:    0.9,
 		}
 	case isBillingInstanceText(normalized):
-		return intp.Plan{
+		return intp.IntentRoute{
 			SchemaVersion: intp.SchemaVersion,
 			Intent:        intp.IntentBillingInstance,
 			Slots: intp.Slots{TargetRefs: []intp.TargetRef{{
@@ -197,7 +197,7 @@ func classifyFixtureMessage(msg string) intp.Plan {
 	case isDiagnosisText(normalized):
 		return diagnosisFixturePlan()
 	case isMonitorText(normalized):
-		return intp.Plan{
+		return intp.IntentRoute{
 			SchemaVersion: intp.SchemaVersion,
 			Intent:        intp.IntentMonitorQuery,
 			Slots: intp.Slots{
@@ -220,7 +220,7 @@ func classifyFixtureMessage(msg string) intp.Plan {
 	}
 }
 
-func resourceFilterFixturePlan(normalized string) intp.Plan {
+func resourceFilterFixturePlan(normalized string) intp.IntentRoute {
 	refs := []intp.TargetRef{}
 	if strings.Contains(normalized, "在跑") ||
 		strings.Contains(normalized, "运行") ||
@@ -235,7 +235,7 @@ func resourceFilterFixturePlan(normalized string) intp.Plan {
 	if strings.Contains(normalized, "4090") {
 		refs = append(refs, intp.TargetRef{Type: intp.TargetRefFilter, Value: "gpu_type=4090"})
 	}
-	return intp.Plan{
+	return intp.IntentRoute{
 		SchemaVersion: intp.SchemaVersion,
 		Intent:        intp.IntentResourceInfo,
 		Slots:         intp.Slots{TargetRefs: refs},
@@ -245,8 +245,8 @@ func resourceFilterFixturePlan(normalized string) intp.Plan {
 	}
 }
 
-func unknownFixturePlan() intp.Plan {
-	return intp.Plan{
+func unknownFixturePlan() intp.IntentRoute {
+	return intp.IntentRoute{
 		SchemaVersion: intp.SchemaVersion,
 		Intent:        intp.IntentUnknown,
 		Retrieval:     intp.Retrieval{Enabled: false},
@@ -254,8 +254,8 @@ func unknownFixturePlan() intp.Plan {
 	}
 }
 
-func diagnosisFixturePlan() intp.Plan {
-	return intp.Plan{
+func diagnosisFixturePlan() intp.IntentRoute {
+	return intp.IntentRoute{
 		SchemaVersion: intp.SchemaVersion,
 		Intent:        intp.IntentDiagnosis,
 		Slots:         intp.Slots{},
@@ -265,8 +265,8 @@ func diagnosisFixturePlan() intp.Plan {
 	}
 }
 
-func vagueFailureFixturePlan() intp.Plan {
-	return intp.Plan{
+func vagueFailureFixturePlan() intp.IntentRoute {
+	return intp.IntentRoute{
 		SchemaVersion: intp.SchemaVersion,
 		Intent:        intp.IntentVagueFailure,
 		Slots:         intp.Slots{},

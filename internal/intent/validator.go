@@ -56,7 +56,7 @@ type EntityResolver interface {
 	ResolveByName(name string) ([]*entity.InstanceSnapshot, entity.ResolveResult)
 }
 
-func ValidatePlan(plan Plan, ctx ValidationContext) error {
+func ValidateRoute(plan IntentRoute, ctx ValidationContext) error {
 	if plan.SchemaVersion != SchemaVersion {
 		return validationErr(ErrInvalidSchemaVersion, "schema_version", "unsupported schema version")
 	}
@@ -269,13 +269,13 @@ func requiredToolsForIntent(intent Intent) map[string]struct{} {
 	case IntentDiagnosis:
 		add("DescribeCompShareInstance")
 	case IntentOperationLifecycle:
-		// Read tool ONLY. The planner resolves/lists the target via
+		// Read tool ONLY. The intent router resolves/lists the target via
 		// DescribeCompShareInstance; the actual mutation runs through the
 		// workflow layer + confirm (still gated by COMPSHARE_ENABLE_MUTATING_TOOLS),
 		// never via plan.required_tools — so do NOT add *Workflow / mutating
 		// actions here even though IntentToolSubset lists them. The few-shots
-		// teach exactly this one tool (planner.go); without this case every
-		// operation_lifecycle plan failed validation → fallback_invalid → unknown.
+		// teach exactly this one tool (router.go); without this case every
+		// operation_lifecycle route failed validation → fallback_invalid → unknown.
 		add("DescribeCompShareInstance")
 	case IntentDiskInfo:
 		// Read tool ONLY. Disk facts surface solely via DiskSet[] in the
@@ -288,7 +288,7 @@ func requiredToolsForIntent(intent Intent) map[string]struct{} {
 		// (CreateCompShareInstance) runs through the orchestrator saga + StepConfirm,
 		// never via plan.required_tools — same discipline as operation_lifecycle.
 		// The handler ignores plan.required_tools; this case only keeps the few-shots'
-		// declared tool accepted by ValidatePlan (B8.3 ③).
+		// declared tool accepted by ValidateRoute (B8.3 ③).
 		add("DescribeCompShareImages", "DescribeCommunityImages")
 	}
 

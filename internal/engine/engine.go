@@ -125,7 +125,7 @@ type LLMClient interface {
 }
 
 type IntentPlanner interface {
-	Plan(ctx context.Context, input intent.PlannerInput) (intent.PlannerResult, error)
+	Plan(ctx context.Context, input intent.IntentRouterInput) (intent.IntentRouterResult, error)
 }
 
 type KnowledgeRetriever interface {
@@ -202,7 +202,7 @@ type Engine struct {
 	// flag), copied into every session.
 	fastTemplate                     bool
 	rendererTraceObserver            func(observability.RendererTrace)
-	plannerTraceObserver             func(observability.PlannerTrace)
+	plannerTraceObserver             func(observability.RouterTrace)
 	retrievalTraceObserver           func(observability.RetrievalTrace)
 	freshnessTraceObserver           func(observability.FreshnessTrace)
 	diagnosisTraceObserver           func(observability.DiagnosisTrace)
@@ -652,7 +652,7 @@ func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, routeMap map[i
 	return enabledMap, routeMap
 }
 
-func (e *Engine) SetPlannerTraceObserver(observer func(observability.PlannerTrace)) {
+func (e *Engine) SetPlannerTraceObserver(observer func(observability.RouterTrace)) {
 	e.plannerTraceObserver = observer
 }
 
@@ -858,7 +858,7 @@ func (e *Engine) RegistrySnapshot() entity.RegistrySnapshot {
 
 // PlannerLastAssistantSnippet returns the most recent assistant message's
 // content from the in-memory ReAct history. Used by callers that build
-// PlannerInput externally (e.g. the CLI shadow runner) to supply the
+// IntentRouterInput externally (e.g. the CLI shadow runner) to supply the
 // PR1 hotfix Bug 2 structured "Last assistant snippet" signal.
 func (e *Engine) PlannerLastAssistantSnippet() string {
 	return e.lastAssistantContent()
@@ -1488,15 +1488,15 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	return "抱歉，处理轮次超限，请重新描述您的需求。", nil
 }
 
-type plannerDispatchResult struct {
-	result   intent.PlannerResult
+type routerDispatchResult struct {
+	result   intent.IntentRouterResult
 	latency  time.Duration
 	snapshot entity.RegistrySnapshot
 }
 
 // lastAssistantContent returns the most recent assistant message's text from
 // the in-memory ReAct history, or "" if none. Used as a low-token topic
-// continuity hint for the planner (see PlannerInput.LastAssistantSnippet).
+// continuity hint for the planner (see IntentRouterInput.LastAssistantSnippet).
 func (e *Engine) lastAssistantContent() string {
 	if e == nil {
 		return ""
@@ -1634,7 +1634,7 @@ var agentSkillForIntent = map[intent.Intent]string{
 // a lookup would be dead work plus a non-byte-stable fallthrough on (CI-caught)
 // registry drift. A future body-loop handler does its own findGeneratedSkill + Body()
 // inside its case, like runDiagnosisSkill, where the lookup is load-bearing.
-func (e *Engine) dispatchAgentSkill(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+func (e *Engine) dispatchAgentSkill(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
 	skillName, ok := agentSkillForIntent[dispatch.result.Plan.Intent]
 	if !ok {
 		return "", false
@@ -1646,7 +1646,7 @@ func (e *Engine) dispatchAgentSkill(ctx context.Context, dispatch plannerDispatc
 	return "", false
 }
 
-func (e *Engine) tryPlannerDiagnosisClarification(dispatch plannerDispatchResult) (string, bool) {
+func (e *Engine) tryPlannerDiagnosisClarification(dispatch routerDispatchResult) (string, bool) {
 	switch dispatch.result.Plan.Intent {
 	case intent.IntentVagueFailure:
 		if !e.plannerIntentEnabled(dispatch.result.Plan.Intent) {
@@ -1706,7 +1706,7 @@ func (e *Engine) plannerIntentEnabled(intentValue intent.Intent) bool {
 	return ok
 }
 
-func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string) plannerDispatchResult {
+func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string) routerDispatchResult {
 	start := time.Now()
 	result := engineFallbackPlannerResult()
 	snapshot := e.RegistrySnapshot()
@@ -1721,7 +1721,7 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 		if e.sessionStateHydrated {
 			selectedID = e.sessionState.SelectedInstanceID
 		}
-		planned, err := e.intentPlanner.Plan(ctx, intent.PlannerInput{
+		planned, err := e.intentPlanner.Plan(ctx, intent.IntentRouterInput{
 			UserText:               userMsg,
 			ImageContext:           e.imageContextThisTurn,
 			LastIntent:             e.sessionState.LastIntent,
@@ -1741,7 +1741,7 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 	latency := time.Since(start)
 
 	// Add planner LLM tokens to the per-turn budget. Planner usage is
-	// surfaced via PlannerTrace (not emitTokenUsage), so without this
+	// surfaced via RouterTrace (not emitTokenUsage), so without this
 	// accumulation a knowledge-QA turn that resolves entirely through
 	// the planner-handled path would never count its planner cost
 	// against maxTokensPerTurn — defeating the "total tokens per turn"
@@ -1749,10 +1749,10 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 	// TestChat_TokenBudget_PlannerHandledPath_GateFires.
 	e.accumulateTokenUsage(result.Usage)
 
-	return plannerDispatchResult{result: result, latency: latency, snapshot: snapshot}
+	return routerDispatchResult{result: result, latency: latency, snapshot: snapshot}
 }
 
-func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
 	result := dispatch.result
 	result.Plan = planWithUserTextMonitorMetrics(result.Plan, userMsg)
 	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsRoutingIntent(result.Plan.Intent) {
@@ -1899,7 +1899,7 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		Resolver: pending.snapshot,
 		UserText: pending.originalUserMsg,
 	})
-	e.emitPlannerTrace(intent.PlannerResult{Plan: resumedPlan}, handled.RouteStatus, 0)
+	e.emitPlannerTrace(intent.IntentRouterResult{Plan: resumedPlan}, handled.RouteStatus, 0)
 	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, pending.originalUserMsg)
 
 	reply := handled.Reply
@@ -2005,7 +2005,7 @@ func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent
 	return result.Text
 }
 
-func planWithUserTextMonitorMetrics(plan intent.Plan, userText string) intent.Plan {
+func planWithUserTextMonitorMetrics(plan intent.IntentRoute, userText string) intent.IntentRoute {
 	if plan.Intent != intent.IntentMonitorQuery {
 		return plan
 	}
@@ -2044,7 +2044,7 @@ func removeMonitorMetric(metrics []intent.Metric, metric intent.Metric) []intent
 	return out
 }
 
-func (e *Engine) annotateHandlerResultForUserQuestion(result *intent.HandlerResult, plan intent.Plan, userMsg string) {
+func (e *Engine) annotateHandlerResultForUserQuestion(result *intent.HandlerResult, plan intent.IntentRoute, userMsg string) {
 	if result == nil || result.Envelope == nil || plan.Intent != intent.IntentMonitorQuery {
 		return
 	}
@@ -2185,7 +2185,7 @@ func isMonitorLoadAssessmentQuestion(userMsg string) bool {
 	return false
 }
 
-func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent), onTextDelta func(string)) (string, bool) {
+func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent), onTextDelta func(string)) (string, bool) {
 	result := dispatch.result
 	if result.Plan.Intent != intent.IntentKnowledgeQA {
 		return "", false
@@ -2491,14 +2491,14 @@ func clipKnowledgeHistoryContent(content string) string {
 	return string(runes[:maxKnowledgeHistoryRunes]) + knowledgeHistoryClipMarker
 }
 
-func (e *Engine) commonPlannerCandidateStatus(result intent.PlannerResult) (intent.RouteStatus, bool) {
+func (e *Engine) commonPlannerCandidateStatus(result intent.IntentRouterResult) (intent.RouteStatus, bool) {
 	if result.Fallback || result.LastValidationCode != "" ||
 		result.Plan.SchemaVersion != intent.SchemaVersion || result.Plan.Intent == "" {
 		return intent.RouteStatusFallbackInvalid, false
 	}
 	// PR #61 (2026-05-21): planner's HardBlockHint is advisory only and no
 	// longer participates in route dispatch — it ships to trace via
-	// PlannerTrace.HardBlockHint for downstream join with engine_hard_block
+	// RouterTrace.HardBlockHint for downstream join with engine_hard_block
 	// (observability). Deterministic refusal comes from the keyword
 	// PreBlock (router.go) and the planner-classified IntentMonitorHistory
 	// path (emitMonitorHistoryHardBlock), both of which run AFTER this
@@ -2509,7 +2509,7 @@ func (e *Engine) commonPlannerCandidateStatus(result intent.PlannerResult) (inte
 	return intent.RouteStatusDispatched, true
 }
 
-func (e *Engine) phase1RouteCandidateStatus(result intent.PlannerResult) (intent.RouteStatus, bool) {
+func (e *Engine) phase1RouteCandidateStatus(result intent.IntentRouterResult) (intent.RouteStatus, bool) {
 	if result.Plan.Retrieval.Enabled {
 		return intent.RouteStatusFallbackIneligible, false
 	}
@@ -2534,7 +2534,7 @@ func countPlannerSnapshotInstances(snapshot entity.RegistrySnapshot) int {
 	return len(snapshot.Instances)
 }
 
-func (e *Engine) emitPlannerTrace(result intent.PlannerResult, status intent.RouteStatus, latency time.Duration) {
+func (e *Engine) emitPlannerTrace(result intent.IntentRouterResult, status intent.RouteStatus, latency time.Duration) {
 	if e.plannerTraceObserver == nil {
 		return
 	}
@@ -2654,10 +2654,10 @@ func (e *Engine) emitRendererTrace(trace observability.RendererTrace) {
 	e.rendererTraceObserver(trace)
 }
 
-func engineFallbackPlannerResult() intent.PlannerResult {
-	return intent.PlannerResult{
+func engineFallbackPlannerResult() intent.IntentRouterResult {
+	return intent.IntentRouterResult{
 		Fallback: true,
-		Plan: intent.Plan{
+		Plan: intent.IntentRoute{
 			SchemaVersion: intent.SchemaVersion,
 			Intent:        intent.IntentUnknown,
 			Retrieval:     intent.Retrieval{Enabled: false},
@@ -3493,7 +3493,7 @@ func (e *Engine) recordSelectedInstanceFromEnvelope(env *envelope.Envelope) {
 // reply. Refuses to write IntentUnknown / empty / non-RuntimeIntents
 // values, so the stored value is always a legal short-circuited
 // "future M3 ContextAssembler will switch on this" enum string.
-func (e *Engine) recordLastIntentFromPlan(plan intent.Plan) {
+func (e *Engine) recordLastIntentFromPlan(plan intent.IntentRoute) {
 	if !e.sessionStateHydrated {
 		return
 	}

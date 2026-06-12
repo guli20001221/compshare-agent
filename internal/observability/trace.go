@@ -129,7 +129,7 @@ type TraceRecord struct {
 	// RuntimeForm* consts). Empty means not observable.
 	ActualRuntimeForm string               `json:"actual_runtime_form,omitempty"`
 	Runtime           RuntimeTrace         `json:"runtime"`
-	Planner           PlannerTrace         `json:"planner"`
+	Planner           RouterTrace          `json:"planner"`
 	EngineHardBlock   EngineHardBlockTrace `json:"engine_hard_block"`
 	EntityRegistry    EntityRegistryTrace  `json:"entity_registry"`
 	ToolCalls         []ToolCallTrace      `json:"tool_calls"`
@@ -156,7 +156,7 @@ type traceRecordJSON struct {
 	RealizedTier      string                `json:"realized_tier,omitempty"`
 	ActualRuntimeForm string                `json:"actual_runtime_form,omitempty"`
 	Runtime           *RuntimeTrace         `json:"runtime,omitempty"`
-	Planner           *PlannerTrace         `json:"planner,omitempty"`
+	Planner           *RouterTrace          `json:"planner,omitempty"`
 	EngineHardBlock   *EngineHardBlockTrace `json:"engine_hard_block,omitempty"`
 	EntityRegistry    *EntityRegistryTrace  `json:"entity_registry,omitempty"`
 	ToolCalls         []ToolCallTrace       `json:"tool_calls,omitempty"`
@@ -368,7 +368,7 @@ type RuntimeTrace struct {
 	RouteIntents []string `json:"cutover_intents"`
 }
 
-type PlannerTrace struct {
+type RouterTrace struct {
 	Enabled            bool                `json:"enabled"`
 	Model              string              `json:"model"`
 	LatencyMS          int64               `json:"latency_ms"`
@@ -815,7 +815,7 @@ func traceRuntimeObserved(trace RuntimeTrace) bool {
 	return trace.PlannerMode != "" || len(trace.RouteIntents) > 0
 }
 
-func tracePlannerObserved(trace PlannerTrace) bool {
+func tracePlannerObserved(trace RouterTrace) bool {
 	return trace.Enabled ||
 		trace.Model != "" ||
 		trace.LatencyMS != 0 ||

@@ -151,7 +151,7 @@ func TestPlannerTracePlannedRuntimeFormMarshals(t *testing.T) {
 		TurnIndex:     1,
 		Timestamp:     "2026-06-02T00:00:00Z",
 		UserMsgHash:   "sha256:user",
-		Planner: PlannerTrace{
+		Planner: RouterTrace{
 			Intent:             "knowledge_qa",
 			PlannedRuntimeForm: "terminal_rag",
 		},
@@ -854,13 +854,13 @@ func TestDeriveRealizedTier(t *testing.T) {
 		want   string
 	}{
 		{"cutover dispatched -> fast",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched"}}, RealizedTierFast},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "dispatched"}}, RealizedTierFast},
 		{"cutover selection_required -> fast (clarify prompt, no ReAct)",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "selection_required"}}, RealizedTierFast},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "selection_required"}}, RealizedTierFast},
 		{"cutover dispatched_retrieval -> knowledge",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_retrieval"}}, RealizedTierKnowledge},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "dispatched_retrieval"}}, RealizedTierKnowledge},
 		{"cutover dispatched_agent -> agent (B8.3 deploy_model handler)",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_agent"}}, RealizedTierAgent},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "dispatched_agent"}}, RealizedTierAgent},
 		{"no cutover but retrieval hits -> knowledge",
 			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}}, RealizedTierKnowledge},
 		{"main_react tool fired -> agent",
@@ -868,11 +868,11 @@ func TestDeriveRealizedTier(t *testing.T) {
 		{"retrieval enabled but 0 hits, ReAct ran -> agent",
 			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 0}, ToolCalls: reactCall}, RealizedTierAgent},
 		{"retrieval fallback continued into ReAct -> agent (path that ran, not status name)",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "fallback_retrieval_miss"}, ToolCalls: reactCall}, RealizedTierAgent},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "fallback_retrieval_miss"}, ToolCalls: reactCall}, RealizedTierAgent},
 		{"low-confidence fallback into ReAct -> agent",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "fallback_low_confidence"}, ToolCalls: reactCall}, RealizedTierAgent},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "fallback_low_confidence"}, ToolCalls: reactCall}, RealizedTierAgent},
 		{"failure_after_tool but retrieval hits present -> knowledge",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "failure_after_tool"}, Retrieval: RetrievalTrace{Enabled: true, Hits: 1}}, RealizedTierKnowledge},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "failure_after_tool"}, Retrieval: RetrievalTrace{Enabled: true, Hits: 1}}, RealizedTierKnowledge},
 		{"no observable signal -> unknown (not default-agent)",
 			TraceRecord{}, ""},
 		{"hard-block canned reply, no dispatch signal -> unknown",
@@ -902,13 +902,13 @@ func TestDeriveActualRuntimeForm(t *testing.T) {
 		want   string
 	}{
 		{"cutover dispatched -> routing",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched"}}, RuntimeFormRouting},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "dispatched"}}, RuntimeFormRouting},
 		{"cutover selection_required -> routing",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "selection_required"}}, RuntimeFormRouting},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "selection_required"}}, RuntimeFormRouting},
 		{"cutover dispatched_retrieval -> terminal_rag",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_retrieval"}}, RuntimeFormTerminalRAG},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "dispatched_retrieval"}}, RuntimeFormTerminalRAG},
 		{"cutover dispatched_agent -> agent",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_agent"}}, RuntimeFormAgent},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "dispatched_agent"}}, RuntimeFormAgent},
 		{"saga step -> agent",
 			TraceRecord{Steps: sagaStep}, RuntimeFormAgent},
 		{"main ReAct tool -> agent",
@@ -955,13 +955,13 @@ func TestRealizedTierAndRuntimeFormAreSeparateAxes(t *testing.T) {
 		wantForm string // runtime-form axis (ActualRuntimeForm)
 	}{
 		{"knowledge_qa agent loop: knowledge work, agent form",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_knowledge_agent_loop"}},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "dispatched_knowledge_agent_loop"}},
 			RealizedTierKnowledge, RuntimeFormAgent},
 		{"diagnosis with retrieval: knowledge work, agent form",
 			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}, ToolCalls: []ToolCallTrace{{Source: ToolSourceDiagnosisInternal}}},
 			RealizedTierKnowledge, RuntimeFormAgent},
 		{"terminal RAG answer: knowledge work, terminal_rag form (axes agree)",
-			TraceRecord{Planner: PlannerTrace{RouteStatus: "dispatched_retrieval"}},
+			TraceRecord{Planner: RouterTrace{RouteStatus: "dispatched_retrieval"}},
 			RealizedTierKnowledge, RuntimeFormTerminalRAG},
 	}
 	for _, tc := range cases {
@@ -986,7 +986,7 @@ func TestRuntimeFormMismatch(t *testing.T) {
 		{
 			name: "planned and actual match",
 			record: TraceRecord{
-				Planner:           PlannerTrace{PlannedRuntimeForm: RuntimeFormRouting},
+				Planner:           RouterTrace{PlannedRuntimeForm: RuntimeFormRouting},
 				ActualRuntimeForm: RuntimeFormRouting,
 			},
 			wantMismatch: false,
@@ -995,7 +995,7 @@ func TestRuntimeFormMismatch(t *testing.T) {
 		{
 			name: "planned terminal rag actual agent mismatch",
 			record: TraceRecord{
-				Planner:           PlannerTrace{PlannedRuntimeForm: RuntimeFormTerminalRAG},
+				Planner:           RouterTrace{PlannedRuntimeForm: RuntimeFormTerminalRAG},
 				ActualRuntimeForm: RuntimeFormAgent,
 			},
 			wantMismatch: true,
@@ -1004,7 +1004,7 @@ func TestRuntimeFormMismatch(t *testing.T) {
 		{
 			name: "derive actual when unset",
 			record: TraceRecord{
-				Planner:   PlannerTrace{PlannedRuntimeForm: RuntimeFormAgent},
+				Planner:   RouterTrace{PlannedRuntimeForm: RuntimeFormAgent},
 				ToolCalls: []ToolCallTrace{{Source: ToolSourceMainReAct}},
 			},
 			wantMismatch: false,
@@ -1021,7 +1021,7 @@ func TestRuntimeFormMismatch(t *testing.T) {
 		{
 			name: "missing actual excluded",
 			record: TraceRecord{
-				Planner: PlannerTrace{PlannedRuntimeForm: RuntimeFormAgent},
+				Planner: RouterTrace{PlannedRuntimeForm: RuntimeFormAgent},
 			},
 			wantMismatch: false,
 			wantOK:       false,

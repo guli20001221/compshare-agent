@@ -45,7 +45,7 @@ func TestRouteStatusBindsToRealizedTier(t *testing.T) {
 	}
 	for _, tc := range cases {
 		rec := observability.TraceRecord{
-			Planner: observability.PlannerTrace{RouteStatus: string(tc.status)},
+			Planner: observability.RouterTrace{RouteStatus: string(tc.status)},
 		}
 		if got := rec.DeriveRealizedTier(); got != tc.want {
 			t.Errorf("RouteStatus %q: DeriveRealizedTier() = %q, want %q",

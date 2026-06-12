@@ -347,7 +347,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 				// By construction, shadowRunner is only created for the
 				// trace+shadow+no-route case.
 				plannerInput := cliShadowPlannerInput(eng, input)
-				traceRecorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
+				traceRecorder.SetPlannerTraceSupplier(func() observability.RouterTrace {
 					return shadowRunner.Run(ctx, plannerInput)
 				})
 			}
@@ -425,8 +425,8 @@ func applyStartupSuggestion(input string, suggestions []prompt.Suggestion, turnI
 	return suggestions[n-1].Text, true
 }
 
-func cliShadowPlannerInput(eng *engine.Engine, userText string) intent.PlannerInput {
-	input := intent.PlannerInput{UserText: userText}
+func cliShadowPlannerInput(eng *engine.Engine, userText string) intent.IntentRouterInput {
+	input := intent.IntentRouterInput{UserText: userText}
 	if eng == nil {
 		return input
 	}
@@ -448,12 +448,12 @@ type cliPlannerLLM struct {
 	structuredOutputMode plannerStructuredOutputMode
 }
 
-func (c cliPlannerLLM) CompleteIntentPlan(ctx context.Context, req intent.PlannerLLMRequest) (string, error) {
+func (c cliPlannerLLM) CompleteIntentPlan(ctx context.Context, req intent.IntentRouterLLMRequest) (string, error) {
 	resp, err := c.CompleteIntentPlanWithUsage(ctx, req)
 	return resp.Content, err
 }
 
-func (c cliPlannerLLM) CompleteIntentPlanWithUsage(ctx context.Context, req intent.PlannerLLMRequest) (intent.PlannerLLMResponse, error) {
+func (c cliPlannerLLM) CompleteIntentPlanWithUsage(ctx context.Context, req intent.IntentRouterLLMRequest) (intent.IntentRouterLLMResponse, error) {
 	// Planner requests intentionally provide no tools. Omitting ToolChoice here
 	// avoids provider-specific validation for tool_choice without tools while
 	// still preventing planner-side tool calls.
@@ -465,9 +465,9 @@ func (c cliPlannerLLM) CompleteIntentPlanWithUsage(ctx context.Context, req inte
 		ResponseFormat: plannerResponseFormatForMode(req.Mode, c.structuredOutputMode),
 	})
 	if err != nil {
-		return intent.PlannerLLMResponse{}, err
+		return intent.IntentRouterLLMResponse{}, err
 	}
-	return intent.PlannerLLMResponse{Content: resp.Content, Usage: resp.Usage}, nil
+	return intent.IntentRouterLLMResponse{Content: resp.Content, Usage: resp.Usage}, nil
 }
 
 func plannerResponseFormatForMode(mode intent.OutputMode, structuredOutput plannerStructuredOutputMode) *openai.ChatCompletionResponseFormat {
@@ -479,16 +479,16 @@ func plannerResponseFormatForMode(mode intent.OutputMode, structuredOutput plann
 	}
 }
 
-func newCLIPlanner(cfg *config.Config) *intent.Planner {
+func newCLIPlanner(cfg *config.Config) *intent.IntentRouter {
 	return newCLIPlannerWithStructuredOutput(cfg, plannerStructuredOutputOff)
 }
 
-func newCLIPlannerWithStructuredOutput(cfg *config.Config, structuredOutput plannerStructuredOutputMode) *intent.Planner {
+func newCLIPlannerWithStructuredOutput(cfg *config.Config, structuredOutput plannerStructuredOutputMode) *intent.IntentRouter {
 	plannerClient := cliPlannerLLM{
 		client:               llm.NewClient(cfg.Agent.LLM),
 		structuredOutputMode: structuredOutput,
 	}
-	return intent.NewPlanner(plannerClient, intent.PlannerOptions{
+	return intent.NewIntentRouter(plannerClient, intent.IntentRouterOptions{
 		BaseURL: cfg.Agent.LLM.BaseURL,
 		Model:   cfg.Agent.LLM.Model,
 	})

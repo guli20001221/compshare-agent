@@ -48,7 +48,7 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 	SetGroundedAnswerValidatorEnabled(false)
 
 	chunk := knowledgeQAAgentLoopBillingChunk()
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -67,8 +67,8 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
-	var plannerTraces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(tr observability.PlannerTrace) { plannerTraces = append(plannerTraces, tr) })
+	var plannerTraces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(tr observability.RouterTrace) { plannerTraces = append(plannerTraces, tr) })
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 	eng.SetKnowledgeRetriever(retriever)
 
@@ -113,7 +113,7 @@ func TestKnowledgeQAAgentLoop_FlagOff_TerminalRouteUnchanged(t *testing.T) {
 	defer tools.SetAgenticSearchKnowledgeEnabled(false)
 
 	chunk := knowledgeQAAgentLoopBillingChunk()
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -123,8 +123,8 @@ func TestKnowledgeQAAgentLoop_FlagOff_TerminalRouteUnchanged(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Stopped on-demand instances still charge for disks. [1]"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
-	var plannerTraces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(tr observability.PlannerTrace) { plannerTraces = append(plannerTraces, tr) })
+	var plannerTraces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(tr observability.RouterTrace) { plannerTraces = append(plannerTraces, tr) })
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 	eng.SetKnowledgeRetriever(retriever)
 
@@ -148,7 +148,7 @@ func TestKnowledgeQAAgentLoop_InertWhenAgenticOff(t *testing.T) {
 	// Agentic OFF (default) => SearchKnowledge not visible => flag must be inert.
 
 	chunk := knowledgeQAAgentLoopBillingChunk()
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -158,8 +158,8 @@ func TestKnowledgeQAAgentLoop_InertWhenAgenticOff(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Stopped on-demand instances still charge for disks. [1]"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
-	var plannerTraces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(tr observability.PlannerTrace) { plannerTraces = append(plannerTraces, tr) })
+	var plannerTraces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(tr observability.RouterTrace) { plannerTraces = append(plannerTraces, tr) })
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 	eng.SetKnowledgeRetriever(retriever)
 
@@ -237,7 +237,7 @@ func TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis(t *testing.T) {
 	SetGroundedAnswerValidatorEnabled(false)
 
 	chunk := knowledgeQAAgentLoopBillingChunk()
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled: true, KBVersion: "kb.v1",
 		Hits:     []knowledge.KBChunk{chunk},
@@ -273,7 +273,7 @@ func TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal(t *testing.T) {
 	SetGroundedAnswerValidatorEnabled(false)
 
 	chunk := knowledgeQAAgentLoopBillingChunk()
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled: true, KBVersion: "kb.v1",
 		Hits:     []knowledge.KBChunk{chunk},
@@ -308,7 +308,7 @@ func TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire(t *testing.T) {
 	SetGroundedAnswerValidatorEnabled(false)
 
 	chunk := knowledgeQAAgentLoopBillingChunk()
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled: true, KBVersion: "kb.v1",
 		Hits:     []knowledge.KBChunk{chunk},
@@ -386,7 +386,7 @@ func TestKnowledgeQAAgentLoop_SearchCapWithdrawsToolAndAnswers(t *testing.T) {
 		HitItems: []knowledge.RetrievalHit{{Chunk: knowledge.KBChunk{ChunkID: "irrelevant-001", Content: "unrelated"}, Score: 0.1, Kept: true}},
 	}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{weak}}
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 
 	// The model keeps calling SearchKnowledge (the thrash). Script one call per round
 	// up to the cap, then a final honest answer once the tool is withdrawn.

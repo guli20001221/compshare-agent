@@ -118,7 +118,7 @@ func TestPlannerDiagnosis_DeadEndRelaxedWhenAgenticOn(t *testing.T) {
 	tools.SetAgenticSearchKnowledgeEnabled(true)
 	defer tools.SetAgenticSearchKnowledgeEnabled(false)
 
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: diagnosisPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")

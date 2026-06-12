@@ -98,7 +98,7 @@ func (r *chatTraceRecorder) SetRegistryTraceSupplier(supplier func(time.Time) ob
 	r.registryTraceSupplier = supplier
 }
 
-func (r *chatTraceRecorder) SetPlannerTrace(trace observability.PlannerTrace) {
+func (r *chatTraceRecorder) SetPlannerTrace(trace observability.RouterTrace) {
 	if r == nil {
 		return
 	}

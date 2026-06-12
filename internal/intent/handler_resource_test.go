@@ -451,8 +451,8 @@ func resourceTestSnapshot(t *testing.T) entity.RegistrySnapshot {
 	return reg.Snapshot()
 }
 
-func resourceInfoPlan(refs []TargetRef) Plan {
-	return Plan{
+func resourceInfoPlan(refs []TargetRef) IntentRoute {
+	return IntentRoute{
 		SchemaVersion: SchemaVersion,
 		Intent:        IntentResourceInfo,
 		Slots:         Slots{TargetRefs: refs},

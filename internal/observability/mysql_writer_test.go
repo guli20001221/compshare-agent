@@ -20,7 +20,7 @@ func TestRowFromTrace_PopulatesAllColumnsFromCanonicalSources(t *testing.T) {
 		TraceID:   "req-uuid-123",
 		TurnIndex: 7,
 		Timestamp: "2026-05-21T03:00:00Z",
-		Planner: PlannerTrace{
+		Planner: RouterTrace{
 			Intent: "resource_info",
 		},
 		EngineHardBlock: EngineHardBlockTrace{Hit: false},

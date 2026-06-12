@@ -1,7 +1,7 @@
 package engine
 
 // Tests pinning the PR #61 design invariant: planner.HardBlockHint is
-// advisory only — it ships to PlannerTrace.HardBlockHint for observability
+// advisory only — it ships to RouterTrace.HardBlockHint for observability
 // but does NOT participate in cutover routing.
 //
 // Sibling tests already verify the actually-executed hard-block sources
@@ -35,13 +35,13 @@ func TestCommonPlannerCandidateStatus_HardBlockHintAdvisoryOnly(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	cases := []struct {
 		name       string
-		result     intent.PlannerResult
+		result     intent.IntentRouterResult
 		wantStatus intent.RouteStatus
 		wantOK     bool
 	}{
 		{
 			name: "hint_true_high_confidence_dispatches",
-			result: intent.PlannerResult{Plan: intent.Plan{
+			result: intent.IntentRouterResult{Plan: intent.IntentRoute{
 				SchemaVersion: intent.SchemaVersion,
 				Intent:        intent.IntentBillingAccountUnsupported,
 				HardBlockHint: true,
@@ -53,7 +53,7 @@ func TestCommonPlannerCandidateStatus_HardBlockHintAdvisoryOnly(t *testing.T) {
 		},
 		{
 			name: "hint_false_high_confidence_dispatches",
-			result: intent.PlannerResult{Plan: intent.Plan{
+			result: intent.IntentRouterResult{Plan: intent.IntentRoute{
 				SchemaVersion: intent.SchemaVersion,
 				Intent:        intent.IntentBillingAccountUnsupported,
 				HardBlockHint: false,
@@ -65,7 +65,7 @@ func TestCommonPlannerCandidateStatus_HardBlockHintAdvisoryOnly(t *testing.T) {
 		},
 		{
 			name: "hint_true_low_confidence_still_falls_back",
-			result: intent.PlannerResult{Plan: intent.Plan{
+			result: intent.IntentRouterResult{Plan: intent.IntentRoute{
 				SchemaVersion: intent.SchemaVersion,
 				Intent:        intent.IntentBillingAccountUnsupported,
 				HardBlockHint: true,
@@ -98,7 +98,7 @@ func TestPlanner_HardBlockHint_KeywordMiss_NoRefusal(t *testing.T) {
 	plan := knowledgeQAPlan(false)
 	plan.HardBlockHint = true
 	plan.Confidence = 0.9
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: plan}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "normal answer"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")

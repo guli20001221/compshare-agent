@@ -107,7 +107,7 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 }
 
 func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
-	groups := plannerPromptExampleGroups()
+	groups := routerPromptExampleGroups()
 	if len(groups) < 5 {
 		t.Fatalf("expected planner examples to be split into intent groups, got %d groups", len(groups))
 	}
@@ -222,17 +222,17 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			renderedJSONCount += len(group.Examples)
 		}
 	}
-	rendered := strings.Join(renderPlannerPromptExampleGroups(groups), "\n")
+	rendered := strings.Join(renderRouterPromptExampleGroups(groups), "\n")
 	if got := len(promptExampleJSONLines(rendered)); got != renderedJSONCount {
 		t.Fatalf("rendered example JSON count = %d, want %d", got, renderedJSONCount)
 	}
 }
 
 func TestRenderPlannerPromptExampleGroupsUsesDelimitedBlocks(t *testing.T) {
-	rendered := strings.Join(renderPlannerPromptExampleGroups([]plannerPromptExampleGroup{{
+	rendered := strings.Join(renderRouterPromptExampleGroups([]routerPromptExampleGroup{{
 		Intent: IntentResourceInfo,
 		Source: `source "with" chars`,
-		Examples: []plannerPromptExample{{
+		Examples: []routerPromptExample{{
 			Question: `show <instance> & gpu`,
 			PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
 			Source:   `example "source"`,
@@ -524,7 +524,7 @@ func TestBuildSystemPromptTreatsClockRangesAsHistoricalMonitor(t *testing.T) {
 }
 
 func TestBuildUserPromptUsesReadableLabels(t *testing.T) {
-	prompt := buildUserPrompt(PlannerInput{
+	prompt := buildUserPrompt(IntentRouterInput{
 		UserText:               "show monitor",
 		PriorText:              "assistant: prior answer",
 		LastIntent:             "monitor_query",
@@ -537,7 +537,7 @@ func TestBuildUserPromptUsesReadableLabels(t *testing.T) {
 	// PR1 hotfix Bug 2 (2026-05-28): the planner USER prompt no longer dumps
 	// PriorText verbatim. Multi-turn input_tok growth was the schema_valid=
 	// false avalanche driver — see memory:priortext-avalanche-invalidates-
-	// planner. PriorText is still passed via PlannerInput for the validator's
+	// planner. PriorText is still passed via IntentRouterInput for the validator's
 	// source:prior_turn span check, but buildUserPrompt must emit ONLY the
 	// structured signals.
 	if strings.Contains(prompt, "Prior turns:") {
@@ -564,7 +564,7 @@ func TestBuildUserPrompt_SnippetTruncated(t *testing.T) {
 	// lastAssistantSnippetCap runes so cumulative prompt size stays bounded
 	// across multi-turn sessions.
 	long := strings.Repeat("我", lastAssistantSnippetCap+50)
-	prompt := buildUserPrompt(PlannerInput{
+	prompt := buildUserPrompt(IntentRouterInput{
 		UserText:             "再来一次",
 		LastAssistantSnippet: long,
 	}, "")

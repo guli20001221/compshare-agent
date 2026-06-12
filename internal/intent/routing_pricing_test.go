@@ -297,7 +297,7 @@ func TestHandlePricingQuery_PassesMemoryAsMBToAPI(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
-		Plan:     Plan{Intent: IntentPricingQuery},
+		Plan:     IntentRoute{Intent: IntentPricingQuery},
 		UserText: "4090 多少钱一小时",
 	})
 
@@ -370,7 +370,7 @@ func TestHandlePricingQuery_OmitsZoneForNonWlcbCatalogZone(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
-		Plan:     Plan{Intent: IntentPricingQuery},
+		Plan:     IntentRoute{Intent: IntentPricingQuery},
 		UserText: "5090 包月多少钱",
 	})
 

@@ -11,7 +11,7 @@ import (
 )
 
 func TestProjectPlannerTrace_DisabledWritesEmptySlots(t *testing.T) {
-	trace := ProjectPlannerTrace(PlannerResult{}, PlannerTraceOptions{Enabled: false})
+	trace := ProjectPlannerTrace(IntentRouterResult{}, PlannerTraceOptions{Enabled: false})
 
 	assert.False(t, trace.Enabled)
 	assert.Empty(t, trace.Model)
@@ -26,8 +26,8 @@ func TestProjectPlannerTrace_DisabledWritesEmptySlots(t *testing.T) {
 }
 
 func TestProjectPlannerTrace_ValidMonitorPlan(t *testing.T) {
-	trace := ProjectPlannerTrace(PlannerResult{
-		Plan: Plan{
+	trace := ProjectPlannerTrace(IntentRouterResult{
+		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentMonitorQuery,
 			Slots: Slots{
@@ -70,8 +70,8 @@ func TestProjectPlannerTrace_ValidMonitorPlan(t *testing.T) {
 }
 
 func TestProjectPlannerTrace_ProjectsCodeDerivedSkills(t *testing.T) {
-	trace := ProjectPlannerTrace(PlannerResult{
-		Plan: Plan{
+	trace := ProjectPlannerTrace(IntentRouterResult{
+		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentDeployModel,
 			Slots:         Slots{},
@@ -94,8 +94,8 @@ func TestProjectPlannerTrace_HashesTargetRefsAndNonAllowlistedTimeWindow(t *test
 	const rawWindow = "2026-05-09T01:00:00+08:00/2026-05-09T02:00:00+08:00"
 	const rawReasoning = "secret reasoning mentions uhost-abc123 and prod-gpu-01"
 
-	trace := ProjectPlannerTrace(PlannerResult{
-		Plan: Plan{
+	trace := ProjectPlannerTrace(IntentRouterResult{
+		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentMonitorHistory,
 			Slots: Slots{
@@ -154,9 +154,9 @@ func TestProjectPlannerTrace_FallbackPreservesExplicitHardBlockHint(t *testing.T
 		{name: "hint_false", hardBlockHint: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			trace := ProjectPlannerTrace(PlannerResult{
+			trace := ProjectPlannerTrace(IntentRouterResult{
 				Fallback: true,
-				Plan: Plan{
+				Plan: IntentRoute{
 					SchemaVersion: SchemaVersion,
 					Intent:        IntentBillingAccountUnsupported,
 					HardBlockHint: tc.hardBlockHint,
@@ -175,8 +175,8 @@ func TestProjectPlannerTrace_FallbackPreservesExplicitHardBlockHint(t *testing.T
 }
 
 func TestProjectPlannerTrace_StableHashesForEqualPlans(t *testing.T) {
-	result := PlannerResult{
-		Plan: Plan{
+	result := IntentRouterResult{
+		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentMonitorQuery,
 			Slots: Slots{

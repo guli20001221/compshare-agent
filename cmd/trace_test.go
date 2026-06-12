@@ -924,8 +924,8 @@ func TestCLITraceRecorderWritesPlannerTrace(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	recorder := newCLITraceRecorder(writer, "", 1, "planner trace", start)
-	recorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
-		return observability.PlannerTrace{
+	recorder.SetPlannerTraceSupplier(func() observability.RouterTrace {
+		return observability.RouterTrace{
 			Enabled:     true,
 			Model:       "deepseek-v4-flash",
 			SchemaValid: true,
@@ -997,7 +997,7 @@ func TestCLITraceRecorderAcceptsEnginePlannerTrace(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	recorder := newCLITraceRecorder(writer, "", 1, "cutover trace", start)
-	recorder.SetPlannerTrace(observability.PlannerTrace{
+	recorder.SetPlannerTrace(observability.RouterTrace{
 		Enabled:     true,
 		Model:       "deepseek-v4-flash",
 		SchemaValid: true,
@@ -1176,8 +1176,8 @@ func TestCLITraceRecorderPlannerInvalidTraceStillWritesLine(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	recorder := newCLITraceRecorder(writer, "", 3, "planner failure", start)
-	recorder.SetPlannerTraceSupplier(func() observability.PlannerTrace {
-		return observability.PlannerTrace{
+	recorder.SetPlannerTraceSupplier(func() observability.RouterTrace {
+		return observability.RouterTrace{
 			Enabled:     true,
 			Model:       "deepseek-v4-flash",
 			SchemaValid: false,
@@ -1293,7 +1293,7 @@ func TestCLITraceRecorderWritesActualTotalTokens(t *testing.T) {
 	}
 	recorder := newCLITraceRecorder(writer, "", 1, "tokens", start)
 	recorder.AddTokenUsage(llm.TokenUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10})
-	recorder.SetPlannerTrace(observability.PlannerTrace{
+	recorder.SetPlannerTrace(observability.RouterTrace{
 		Enabled:      true,
 		InputTokens:  11,
 		OutputTokens: 5,

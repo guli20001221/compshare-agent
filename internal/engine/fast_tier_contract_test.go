@@ -60,7 +60,7 @@ func TestFastTierSkills_HandlerEnvelopeBypassesRenderer(t *testing.T) {
 	for _, route := range routing.GeneratedRoutes() {
 		fast++
 		res := h.DispatchRoute(context.Background(),
-			intent.HandlerRequest{Plan: intent.Plan{Intent: intent.Intent(route.IntentLabel)}})
+			intent.HandlerRequest{Plan: intent.IntentRoute{Intent: intent.Intent(route.IntentLabel)}})
 		if res.Envelope != nil {
 			assert.Truef(t, isFastTierEnvelope(res.Envelope.Kind),
 				"route %q produced envelope Kind %q - NOT routing-safe, would reach the LLM renderer", route.Name, res.Envelope.Kind)

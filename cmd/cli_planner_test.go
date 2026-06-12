@@ -79,7 +79,7 @@ func TestCLIPlannerLLMSendsJSONObjectResponseFormatWhenFlagOn(t *testing.T) {
 		structuredOutputMode: plannerStructuredOutputJSONObject,
 	}
 
-	_, err := plannerLLM.CompleteIntentPlanWithUsage(context.Background(), intent.PlannerLLMRequest{
+	_, err := plannerLLM.CompleteIntentPlanWithUsage(context.Background(), intent.IntentRouterLLMRequest{
 		Mode:         intent.OutputModeJSONObject,
 		SystemPrompt: "system",
 		UserPrompt:   "user",
@@ -115,7 +115,7 @@ func TestCLIPlannerLLMOmitsResponseFormatWhenFlagOff(t *testing.T) {
 		structuredOutputMode: plannerStructuredOutputOff,
 	}
 
-	_, err := plannerLLM.CompleteIntentPlanWithUsage(context.Background(), intent.PlannerLLMRequest{
+	_, err := plannerLLM.CompleteIntentPlanWithUsage(context.Background(), intent.IntentRouterLLMRequest{
 		Mode:         intent.OutputModeJSONObject,
 		SystemPrompt: "system",
 		UserPrompt:   "user",

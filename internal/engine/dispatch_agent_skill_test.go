@@ -47,7 +47,7 @@ func TestDispatchAgentSkill_UnmappedIntentFallsThrough(t *testing.T) {
 	}}
 	eng := NewWithDeps(nil, exec, nil)
 
-	dispatch := plannerDispatchResult{result: intent.PlannerResult{Plan: intent.Plan{Intent: intent.IntentResourceInfo}}}
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentResourceInfo}}}
 	reply, handled := eng.dispatchAgentSkill(context.Background(), dispatch, "我有哪些实例", noopStep)
 
 	assert.False(t, handled, "a non-agent intent must fall through, not be captured by the agent seam")
@@ -61,7 +61,7 @@ func TestDispatchAgentSkill_IgnoresObserveOnlyPlanSkills(t *testing.T) {
 	}}
 	eng := NewWithDeps(nil, exec, nil)
 
-	dispatch := plannerDispatchResult{result: intent.PlannerResult{Plan: intent.Plan{
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{
 		Intent: intent.IntentResourceInfo,
 		Skills: []intent.SelectedSkill{
 			{Name: "deploy_model", Resolution: intent.SkillResolutionAgentArm},
@@ -92,7 +92,7 @@ func TestAgentSkillForIntent_BoundToDedicatedArm(t *testing.T) {
 
 func TestAgentSkillForIntent_MatchesCodeDerivedPlanSkills(t *testing.T) {
 	for it, skillName := range agentSkillForIntent {
-		derived := intent.DeriveSelectedSkills(intent.Plan{Intent: it})
+		derived := intent.DeriveSelectedSkills(intent.IntentRoute{Intent: it})
 		require.Lenf(t, derived, 1, "intent %q should derive exactly one agent-handler skill", it)
 		assert.Equalf(t, skillName, derived[0].Name, "intent %q agent-handler skill drifted from Plan.Skills projection", it)
 		assert.Equal(t, intent.SkillResolutionAgentArm, derived[0].Resolution)

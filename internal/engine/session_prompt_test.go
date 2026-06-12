@@ -85,7 +85,7 @@ func TestRefreshSystemPrompt_PreservesBaseUserContext(t *testing.T) {
 }
 
 func TestPlannerInput_ReceivesLastIntent(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
 		Plan: unknownEngineTestPlan(),
 	}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
@@ -111,7 +111,7 @@ func TestPlannerInput_ReceivesLastIntent(t *testing.T) {
 }
 
 func TestPlannerInput_LastIntentEmptyWhenNotHydrated(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
 		Plan: unknownEngineTestPlan(),
 	}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}

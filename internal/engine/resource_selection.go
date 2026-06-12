@@ -17,7 +17,7 @@ const maxResourceSelectionCandidates = 20
 
 type pendingResourceSelection struct {
 	originalUserMsg string
-	plan            intent.Plan
+	plan            intent.IntentRoute
 	snapshot        entity.RegistrySnapshot
 	candidates      []entity.InstanceSnapshot
 	truncated       bool
@@ -108,7 +108,7 @@ func isResourceSelectionFallbackReason(reason intent.FallbackReason) bool {
 	}
 }
 
-func (e *Engine) buildResourceSelectionForPlan(ctx context.Context, result intent.PlannerResult, snapshot entity.RegistrySnapshot, _ func(StepEvent)) (*pendingResourceSelection, bool, error) {
+func (e *Engine) buildResourceSelectionForPlan(ctx context.Context, result intent.IntentRouterResult, snapshot entity.RegistrySnapshot, _ func(StepEvent)) (*pendingResourceSelection, bool, error) {
 	if result.Plan.Intent != intent.IntentMonitorQuery {
 		return nil, false, nil
 	}
@@ -129,7 +129,7 @@ func (e *Engine) buildResourceSelectionForPlan(ctx context.Context, result inten
 	}, true, nil
 }
 
-func (e *Engine) candidateInstancesForSelection(ctx context.Context, plan intent.Plan, snapshot entity.RegistrySnapshot, _ func(StepEvent)) ([]entity.InstanceSnapshot, entity.RegistrySnapshot, bool, bool, error) {
+func (e *Engine) candidateInstancesForSelection(ctx context.Context, plan intent.IntentRoute, snapshot entity.RegistrySnapshot, _ func(StepEvent)) ([]entity.InstanceSnapshot, entity.RegistrySnapshot, bool, bool, error) {
 	snapshot, ok, err := e.freshResourceSelectionSnapshot(ctx, snapshot)
 	if err != nil {
 		return nil, entity.RegistrySnapshot{}, false, false, err
@@ -167,7 +167,7 @@ func (e *Engine) freshResourceSelectionSnapshot(ctx context.Context, snapshot en
 	return snapshot, !snapshot.LastFullSync.IsZero() && len(snapshot.Instances) > 0, nil
 }
 
-func matchingSelectionCandidates(plan intent.Plan, snapshot entity.RegistrySnapshot) []entity.InstanceSnapshot {
+func matchingSelectionCandidates(plan intent.IntentRoute, snapshot entity.RegistrySnapshot) []entity.InstanceSnapshot {
 	var candidates []entity.InstanceSnapshot
 	for _, ref := range plan.Slots.TargetRefs {
 		switch ref.Type {
@@ -225,7 +225,7 @@ func dedupeResourceSelectionCandidates(candidates []entity.InstanceSnapshot) []e
 	return out
 }
 
-func planWithSelectedResource(plan intent.Plan, uhostID string) intent.Plan {
+func planWithSelectedResource(plan intent.IntentRoute, uhostID string) intent.IntentRoute {
 	plan.Slots.TargetRefs = []intent.TargetRef{{
 		Type:       intent.TargetRefUHostIDUserInput,
 		Value:      uhostID,

@@ -19,7 +19,7 @@ func TestShadowRunner_DisabledDoesNotCallPlanner(t *testing.T) {
 		Model:   "deepseek-v4-flash",
 	})
 
-	trace := runner.Run(context.Background(), PlannerInput{UserText: "monitor"})
+	trace := runner.Run(context.Background(), IntentRouterInput{UserText: "monitor"})
 
 	assert.False(t, trace.Enabled)
 	assert.Zero(t, planner.calls)
@@ -30,8 +30,8 @@ func TestShadowRunner_DisabledDoesNotCallPlanner(t *testing.T) {
 func TestShadowRunner_ShadowModeCallsPlannerOnce(t *testing.T) {
 	now := steppedClock(time.Unix(100, 0), 42*time.Millisecond)
 	planner := &mockShadowPlanner{
-		result: PlannerResult{
-			Plan: Plan{
+		result: IntentRouterResult{
+			Plan: IntentRoute{
 				SchemaVersion: SchemaVersion,
 				Intent:        IntentMonitorQuery,
 				Slots:         Slots{Metrics: []Metric{MetricGPU}},
@@ -45,7 +45,7 @@ func TestShadowRunner_ShadowModeCallsPlannerOnce(t *testing.T) {
 		Now:     now,
 	})
 
-	input := PlannerInput{UserText: "看 GPU 监控"}
+	input := IntentRouterInput{UserText: "看 GPU 监控"}
 	trace := runner.Run(context.Background(), input)
 
 	require.Equal(t, 1, planner.calls)
@@ -65,7 +65,7 @@ func TestShadowRunner_PlannerErrorReturnsInvalidTrace(t *testing.T) {
 		Model:   "deepseek-v4-flash",
 	})
 
-	trace := runner.Run(context.Background(), PlannerInput{UserText: "monitor"})
+	trace := runner.Run(context.Background(), IntentRouterInput{UserText: "monitor"})
 
 	assert.Equal(t, 1, planner.calls)
 	assert.True(t, trace.Enabled)
@@ -81,7 +81,7 @@ func TestShadowRunner_NilPlannerReturnsFallbackTrace(t *testing.T) {
 		Model:   "deepseek-v4-flash",
 	})
 
-	trace := runner.Run(context.Background(), PlannerInput{UserText: "monitor"})
+	trace := runner.Run(context.Background(), IntentRouterInput{UserText: "monitor"})
 
 	assert.True(t, trace.Enabled)
 	assert.False(t, trace.SchemaValid)
@@ -92,9 +92,9 @@ func TestShadowRunner_NilPlannerReturnsFallbackTrace(t *testing.T) {
 
 func TestShadowRunner_FallbackResultReturnsInvalidTrace(t *testing.T) {
 	planner := &mockShadowPlanner{
-		result: PlannerResult{
+		result: IntentRouterResult{
 			Fallback: true,
-			Plan: Plan{
+			Plan: IntentRoute{
 				SchemaVersion: SchemaVersion,
 				Intent:        IntentBillingAccountUnsupported,
 				HardBlockHint: true,
@@ -107,7 +107,7 @@ func TestShadowRunner_FallbackResultReturnsInvalidTrace(t *testing.T) {
 		Model:   "deepseek-v4-flash",
 	})
 
-	trace := runner.Run(context.Background(), PlannerInput{UserText: "账号余额还有多少"})
+	trace := runner.Run(context.Background(), IntentRouterInput{UserText: "账号余额还有多少"})
 
 	assert.Equal(t, 1, planner.calls)
 	assert.True(t, trace.Enabled)
@@ -120,7 +120,7 @@ func TestShadowRunner_FallbackResultReturnsInvalidTrace(t *testing.T) {
 func TestShadowRunner_QuotaDenialSkipsPlannerAndReturnsInvalidTrace(t *testing.T) {
 	planner := &mockShadowPlanner{}
 	// Production callers pass a hashed subject. This intentionally raw test
-	// value verifies quota metadata cannot leak through PlannerTrace.
+	// value verifies quota metadata cannot leak through RouterTrace.
 	rawSubject := "raw-public-key-must-not-appear"
 	var requests []governance.Request
 	runner := NewShadowRunner(planner, ShadowRunnerOptions{
@@ -140,7 +140,7 @@ func TestShadowRunner_QuotaDenialSkipsPlannerAndReturnsInvalidTrace(t *testing.T
 		},
 	})
 
-	trace := runner.Run(context.Background(), PlannerInput{UserText: "monitor"})
+	trace := runner.Run(context.Background(), IntentRouterInput{UserText: "monitor"})
 
 	require.Len(t, requests, 1)
 	assert.Equal(t, governance.ClassLLM, requests[0].Class)
@@ -158,8 +158,8 @@ func TestShadowRunner_QuotaDenialSkipsPlannerAndReturnsInvalidTrace(t *testing.T
 
 func TestShadowRunner_QuotaAllowCallsPlannerOnce(t *testing.T) {
 	planner := &mockShadowPlanner{
-		result: PlannerResult{
-			Plan: Plan{
+		result: IntentRouterResult{
+			Plan: IntentRoute{
 				SchemaVersion: SchemaVersion,
 				Intent:        IntentMonitorQuery,
 				Slots:         Slots{Metrics: []Metric{MetricGPU}},
@@ -177,7 +177,7 @@ func TestShadowRunner_QuotaAllowCallsPlannerOnce(t *testing.T) {
 		},
 	})
 
-	trace := runner.Run(context.Background(), PlannerInput{UserText: "monitor"})
+	trace := runner.Run(context.Background(), IntentRouterInput{UserText: "monitor"})
 
 	require.Len(t, requests, 1)
 	assert.Equal(t, governance.ClassLLM, requests[0].Class)
@@ -189,8 +189,8 @@ func TestShadowRunner_QuotaAllowCallsPlannerOnce(t *testing.T) {
 
 func TestShadowRunner_NilQuotaHookCallsPlannerNormally(t *testing.T) {
 	planner := &mockShadowPlanner{
-		result: PlannerResult{
-			Plan: Plan{
+		result: IntentRouterResult{
+			Plan: IntentRoute{
 				SchemaVersion: SchemaVersion,
 				Intent:        IntentMonitorQuery,
 				Slots:         Slots{Metrics: []Metric{MetricGPU}},
@@ -203,7 +203,7 @@ func TestShadowRunner_NilQuotaHookCallsPlannerNormally(t *testing.T) {
 		Model:   "deepseek-v4-flash",
 	})
 
-	trace := runner.Run(context.Background(), PlannerInput{UserText: "monitor"})
+	trace := runner.Run(context.Background(), IntentRouterInput{UserText: "monitor"})
 
 	assert.Equal(t, 1, planner.calls)
 	assert.True(t, trace.Enabled)
@@ -223,7 +223,7 @@ func TestShadowRunner_DisabledDoesNotCallQuotaHook(t *testing.T) {
 		},
 	})
 
-	trace := runner.Run(context.Background(), PlannerInput{UserText: "monitor"})
+	trace := runner.Run(context.Background(), IntentRouterInput{UserText: "monitor"})
 
 	assert.False(t, trace.Enabled)
 	assert.Zero(t, quotaCalls)
@@ -232,12 +232,12 @@ func TestShadowRunner_DisabledDoesNotCallQuotaHook(t *testing.T) {
 
 type mockShadowPlanner struct {
 	calls     int
-	lastInput PlannerInput
-	result    PlannerResult
+	lastInput IntentRouterInput
+	result    IntentRouterResult
 	err       error
 }
 
-func (m *mockShadowPlanner) Plan(_ context.Context, input PlannerInput) (PlannerResult, error) {
+func (m *mockShadowPlanner) Plan(_ context.Context, input IntentRouterInput) (IntentRouterResult, error) {
 	m.calls++
 	m.lastInput = input
 	return m.result, m.err

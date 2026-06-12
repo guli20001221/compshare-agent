@@ -62,7 +62,7 @@ const (
 	RouteStatusFallbackLowConfidence RouteStatus = "fallback_low_confidence"
 	// RouteStatusFallbackHardBlockHint (removed PR #61, 2026-05-21):
 	// planner's HardBlockHint is advisory only — no longer routes. Survives
-	// in PlannerTrace.HardBlockHint for analytics join with
+	// in RouterTrace.HardBlockHint for analytics join with
 	// EngineHardBlockTrace. Deterministic refusal comes from keyword
 	// PreBlock + IntentMonitorHistory dispatcher.
 	RouteStatusFallbackIneligible        RouteStatus = "fallback_ineligible"
@@ -95,7 +95,7 @@ type HandlerExecutor interface {
 }
 
 type HandlerRequest struct {
-	Plan     Plan
+	Plan     IntentRoute
 	Resolver EntityResolver
 	// UserText is the raw user question. Used by route handlers'
 	// deterministic NL filter (e.g. "4090 显存多大" -> filter Name=="4090" out

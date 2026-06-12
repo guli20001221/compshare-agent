@@ -103,18 +103,18 @@ func (l *scriptedRateLimiter) Allow(req governance.Request) governance.Decision 
 }
 
 type scriptedIntentPlanner struct {
-	results []intent.PlannerResult
-	calls   []intent.PlannerInput
+	results []intent.IntentRouterResult
+	calls   []intent.IntentRouterInput
 	err     error
 }
 
-func (p *scriptedIntentPlanner) Plan(_ context.Context, input intent.PlannerInput) (intent.PlannerResult, error) {
+func (p *scriptedIntentPlanner) Plan(_ context.Context, input intent.IntentRouterInput) (intent.IntentRouterResult, error) {
 	p.calls = append(p.calls, input)
 	if p.err != nil {
-		return intent.PlannerResult{}, p.err
+		return intent.IntentRouterResult{}, p.err
 	}
 	if len(p.results) == 0 {
-		return intent.PlannerResult{Fallback: true, Plan: unknownEngineTestPlan()}, nil
+		return intent.IntentRouterResult{Fallback: true, Plan: unknownEngineTestPlan()}, nil
 	}
 	result := p.results[0]
 	p.results = p.results[1:]
@@ -2568,7 +2568,7 @@ func TestPlannerMonitorHistoryHardBlock_FiresObserverEvenWhenKeywordMisses(t *te
 	// branch through e.emitMonitorHistoryHardBlock(), which fires the
 	// observer with refusal.CategoryMonitorHistory. This test pins the
 	// invariant.
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorHistoryPlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorHistoryPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -2858,8 +2858,8 @@ func phase1AmbiguousInstanceDescribeResult() map[string]any {
 	}
 }
 
-func phase1ResourcePlan() intent.Plan {
-	return intent.Plan{
+func phase1ResourcePlan() intent.IntentRoute {
+	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentResourceInfo,
 		Slots: intent.Slots{TargetRefs: []intent.TargetRef{{
@@ -2873,8 +2873,8 @@ func phase1ResourcePlan() intent.Plan {
 	}
 }
 
-func phase1GPUSpecsPlan() intent.Plan {
-	return intent.Plan{
+func phase1GPUSpecsPlan() intent.IntentRoute {
+	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentGPUSpecsQuery,
 		Retrieval:     intent.Retrieval{Enabled: false},
@@ -2882,8 +2882,8 @@ func phase1GPUSpecsPlan() intent.Plan {
 	}
 }
 
-func phase1ResourcePlanWithoutTarget() intent.Plan {
-	return intent.Plan{
+func phase1ResourcePlanWithoutTarget() intent.IntentRoute {
+	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentResourceInfo,
 		Slots:         intent.Slots{},
@@ -2904,8 +2904,8 @@ func assertEngineComputedFact(t *testing.T, env envelope.Envelope, key string, w
 	t.Fatalf("missing computed fact key=%s in %#v", key, env.Computed)
 }
 
-func phase1ResourceFilterPlan() intent.Plan {
-	return intent.Plan{
+func phase1ResourceFilterPlan() intent.IntentRoute {
+	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentResourceInfo,
 		Slots: intent.Slots{TargetRefs: []intent.TargetRef{
@@ -2917,8 +2917,8 @@ func phase1ResourceFilterPlan() intent.Plan {
 	}
 }
 
-func phase1MonitorPlan() intent.Plan {
-	return intent.Plan{
+func phase1MonitorPlan() intent.IntentRoute {
+	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentMonitorQuery,
 		Slots: intent.Slots{
@@ -2934,21 +2934,21 @@ func phase1MonitorPlan() intent.Plan {
 	}
 }
 
-func phase1MonitorHistoryPlan() intent.Plan {
+func phase1MonitorHistoryPlan() intent.IntentRoute {
 	plan := phase1MonitorPlan()
 	plan.Intent = intent.IntentMonitorHistory
 	plan.Slots.TimeWindow = &intent.TimeWindow{Type: intent.TimeWindowRelative, Value: "yesterday"}
 	return plan
 }
 
-func phase1MonitorTodayPlan() intent.Plan {
+func phase1MonitorTodayPlan() intent.IntentRoute {
 	plan := phase1MonitorPlan()
 	plan.Slots.TimeWindow = &intent.TimeWindow{Type: intent.TimeWindowPreset, Value: "today"}
 	return plan
 }
 
-func phase1MonitorPlanWithoutTarget() intent.Plan {
-	return intent.Plan{
+func phase1MonitorPlanWithoutTarget() intent.IntentRoute {
+	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentMonitorQuery,
 		Slots: intent.Slots{
@@ -2959,8 +2959,8 @@ func phase1MonitorPlanWithoutTarget() intent.Plan {
 	}
 }
 
-func phase1MonitorPlanForName(name string) intent.Plan {
-	return intent.Plan{
+func phase1MonitorPlanForName(name string) intent.IntentRoute {
+	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentMonitorQuery,
 		Slots: intent.Slots{
@@ -2986,8 +2986,8 @@ func TestPlanWithUserTextMonitorMetricsCorrectsChineseVRAM(t *testing.T) {
 	assert.Equal(t, []intent.Metric{intent.MetricCPU, intent.MetricVRAM}, got.Slots.Metrics)
 }
 
-func knowledgeQAPlan(retrievalEnabled bool) intent.Plan {
-	return intent.Plan{
+func knowledgeQAPlan(retrievalEnabled bool) intent.IntentRoute {
+	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentKnowledgeQA,
 		Slots:         intent.Slots{},
@@ -2996,8 +2996,8 @@ func knowledgeQAPlan(retrievalEnabled bool) intent.Plan {
 	}
 }
 
-func diagnosisPlanForUHost(uhostID string) intent.Plan {
-	return intent.Plan{
+func diagnosisPlanForUHost(uhostID string) intent.IntentRoute {
+	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentDiagnosis,
 		Slots: intent.Slots{
@@ -3014,8 +3014,8 @@ func diagnosisPlanForUHost(uhostID string) intent.Plan {
 	}
 }
 
-func diagnosisPlanWithoutTarget() intent.Plan {
-	return intent.Plan{
+func diagnosisPlanWithoutTarget() intent.IntentRoute {
+	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentDiagnosis,
 		Slots:         intent.Slots{},
@@ -3025,8 +3025,8 @@ func diagnosisPlanWithoutTarget() intent.Plan {
 	}
 }
 
-func vagueFailurePlan() intent.Plan {
-	return intent.Plan{
+func vagueFailurePlan() intent.IntentRoute {
+	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentVagueFailure,
 		Slots:         intent.Slots{},
@@ -3036,8 +3036,8 @@ func vagueFailurePlan() intent.Plan {
 	}
 }
 
-func unknownEngineTestPlan() intent.Plan {
-	return intent.Plan{
+func unknownEngineTestPlan() intent.IntentRoute {
+	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentUnknown,
 		Retrieval:     intent.Retrieval{Enabled: false},
@@ -3046,12 +3046,12 @@ func unknownEngineTestPlan() intent.Plan {
 }
 
 func TestPlannerDiagnosisMissingTargetWithMultipleInstancesAsksWhichInstance(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: diagnosisPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
-	var plannerTraces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	var plannerTraces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		plannerTraces = append(plannerTraces, trace)
 	})
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
@@ -3077,7 +3077,7 @@ func TestPlannerDiagnosisMissingTargetWithMultipleInstancesAsksWhichInstance(t *
 }
 
 func TestPlannerVagueFailureAsksForInstanceAndSymptom(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: vagueFailurePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: vagueFailurePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -3096,7 +3096,7 @@ func TestPlannerVagueFailureAsksForInstanceAndSymptom(t *testing.T) {
 }
 
 func TestPlannerDiagnosisMissingTargetWithSingleInstanceFallsBackToReAct(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: diagnosisPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -3120,7 +3120,7 @@ func TestPlannerDiagnosisMissingTargetWithSingleInstanceFallsBackToReAct(t *test
 }
 
 func TestPlannerDiagnosisClarificationDoesNotRequireEnabledIntent(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: diagnosisPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -3131,8 +3131,8 @@ func TestPlannerDiagnosisClarificationDoesNotRequireEnabledIntent(t *testing.T) 
 			map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
 		},
 	}, "test"))
-	var plannerTraces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	var plannerTraces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		plannerTraces = append(plannerTraces, trace)
 	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
@@ -3151,7 +3151,7 @@ func TestPlannerDiagnosisClarificationDoesNotRequireEnabledIntent(t *testing.T) 
 }
 
 func TestPlannerVagueFailureClarificationRequiresEnabledIntent(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: vagueFailurePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: vagueFailurePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -3162,8 +3162,8 @@ func TestPlannerVagueFailureClarificationRequiresEnabledIntent(t *testing.T) {
 			map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
 		},
 	}, "test"))
-	var plannerTraces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	var plannerTraces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		plannerTraces = append(plannerTraces, trace)
 	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
@@ -3184,7 +3184,7 @@ func TestPlannerVagueFailureClarificationRequiresEnabledIntent(t *testing.T) {
 func TestDiagnosisFinalReplyRedactsOperationalTokensBeforeStreaming(t *testing.T) {
 	raw := "JupyterLab 地址：http://1.2.3.4:8888?token=UCloud-CompShare-AbCd1234"
 	mock := &streamingMockLLM{response: llm.ChatResponse{Content: raw}}
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanForUHost("uhost-abc123")}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: diagnosisPlanForUHost("uhost-abc123")}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
@@ -3220,7 +3220,7 @@ func TestStage2BRetrievalHitUsesLLMWithoutTools(t *testing.T) {
 		Content:     "Stopped on-demand instances still charge for disks.",
 		SourceURL:   "https://example.test/billing",
 	}
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -3231,9 +3231,9 @@ func TestStage2BRetrievalHitUsesLLMWithoutTools(t *testing.T) {
 	executor := &mockExecutor{}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
-	var plannerTraces []observability.PlannerTrace
+	var plannerTraces []observability.RouterTrace
 	var retrievalTraces []observability.RetrievalTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		plannerTraces = append(plannerTraces, trace)
 	})
 	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
@@ -3285,7 +3285,7 @@ func TestPlannerRoutingControlsStage2BRAGPath(t *testing.T) {
 	cases := []struct {
 		name          string
 		userMsg       string
-		plan          intent.Plan
+		plan          intent.IntentRoute
 		expectRAGPath bool
 		expectTool    string
 	}{
@@ -3342,7 +3342,7 @@ func TestPlannerRoutingControlsStage2BRAGPath(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: tc.plan}}}
+			planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: tc.plan}}}
 			retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{knowledgeResult}}
 			// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): non-RAG fallback path
 			// is now guarded by the cited-contract invariant — plain text would
@@ -3399,7 +3399,7 @@ func TestStage2BRetrievalHitCallsLLMWithNumberedEvidence(t *testing.T) {
 		Content:     "Stopped on-demand instances still charge for disks.",
 		SourceURL:   "https://www.compshare.cn/docs/billing",
 	}
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	latency := int64(4987)
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:              true,
@@ -3472,7 +3472,7 @@ func TestStage2BRetrievalAmbiguousTopHitsMarksRankingErrorCandidate(t *testing.T
 		Title:       "Storage billing",
 		Content:     "Disks keep billing while attached storage exists.",
 	}
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:         true,
 		KBVersion:       "kb.v1",
@@ -3517,7 +3517,7 @@ func TestStage2BRetrievalNormalRefusalSetsRefusedReason(t *testing.T) {
 		Title:       "Stopped instance billing",
 		Content:     "Stopped on-demand instances still charge for disks.",
 	}
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:         true,
 		KBVersion:       "kb.v1",
@@ -3546,7 +3546,7 @@ func TestStage2BRetrievalNormalRefusalSetsRefusedReason(t *testing.T) {
 }
 
 func TestStage2BRetrievalMissReturnsNewNoEvidenceReplyAndTrace(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:         true,
 		KBVersion:       "kb.v1",
@@ -3584,7 +3584,7 @@ func TestStage2BRetrievalWeakEvidenceMarksTraceAndAddsPromptHint(t *testing.T) {
 		Title:       "ModelVerse package",
 		Content:     "Coding Plan has a quota window.",
 	}
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:         true,
 		KBVersion:       "kb.v1",
@@ -3625,7 +3625,7 @@ func TestStage2BRetrievalWeakEvidenceCitedAnswerHasNoRefusedReason(t *testing.T)
 		Title:       "ModelVerse package",
 		Content:     "Coding Plan has a quota window.",
 	}
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:         true,
 		KBVersion:       "kb.v1",
@@ -3666,7 +3666,7 @@ func TestStage2BRetrievalRetryNoCitationFallsBackToNoEvidence(t *testing.T) {
 		Title:       "4090 pricing",
 		Content:     "4090 is billed hourly.",
 	}
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:         true,
 		KBVersion:       "kb.v1",
@@ -3726,7 +3726,7 @@ func TestStage2BRetrievalHitClipsStoredAssistantHistory(t *testing.T) {
 		Title:       "Long billing answer",
 		Content:     longContent,
 	}
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -3753,7 +3753,7 @@ func TestStage2BRetrievalHitClipsStoredAssistantHistory(t *testing.T) {
 }
 
 func TestStage2BRetrievalMissReturnsFixedReply(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -3762,9 +3762,9 @@ func TestStage2BRetrievalMissReturnsFixedReply(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
-	var plannerTraces []observability.PlannerTrace
+	var plannerTraces []observability.RouterTrace
 	var retrievalTraces []observability.RetrievalTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		plannerTraces = append(plannerTraces, trace)
 	})
 	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
@@ -3799,7 +3799,7 @@ func TestStage2BRetrievalIgnoresPlannerRetrievalFlag(t *testing.T) {
 		Title:       "Images",
 		Content:     "The platform provides platform, community, shared, and private images.",
 	}
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(true)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(true)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -3809,8 +3809,8 @@ func TestStage2BRetrievalIgnoresPlannerRetrievalFlag(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "The platform provides community images. [1]"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
-	var plannerTraces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	var plannerTraces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		plannerTraces = append(plannerTraces, trace)
 	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
@@ -3829,12 +3829,12 @@ func TestStage2BRetrievalIgnoresPlannerRetrievalFlag(t *testing.T) {
 }
 
 func TestStage2BRetrievalDisabledFallsBackToReAct(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(true)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(true)}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
-	var plannerTraces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	var plannerTraces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		plannerTraces = append(plannerTraces, trace)
 	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
@@ -3852,12 +3852,12 @@ func TestStage2BRetrievalDisabledFallsBackToReAct(t *testing.T) {
 }
 
 func TestDefaultRouteRouteDoesNotSwallowKnowledgeQA(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(true)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(true)}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ordinary knowledge fallback"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
-	var plannerTraces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	var plannerTraces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		plannerTraces = append(plannerTraces, trace)
 	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
@@ -3888,7 +3888,7 @@ func TestDefaultRouteRouteDoesNotSwallowKnowledgeQA(t *testing.T) {
 func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T) {
 	cases := []struct {
 		name       string
-		mutatePlan func(*intent.Plan)
+		mutatePlan func(*intent.IntentRoute)
 		wantStatus intent.RouteStatus
 	}{
 		// PR #61 (2026-05-21): the "hard block hint" case was removed —
@@ -3897,7 +3897,7 @@ func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T
 		// the common-predicate fallback path (retriever must not be called).
 		{
 			name: "low confidence",
-			mutatePlan: func(plan *intent.Plan) {
+			mutatePlan: func(plan *intent.IntentRoute) {
 				plan.Confidence = 0.3
 			},
 			wantStatus: intent.RouteStatusFallbackLowConfidence,
@@ -3907,7 +3907,7 @@ func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			plan := knowledgeQAPlan(false)
 			tc.mutatePlan(&plan)
-			planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
+			planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: plan}}}
 			retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 				Enabled:   true,
 				KBVersion: "kb.v1",
@@ -3916,8 +3916,8 @@ func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T
 			mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback"}}}
 			eng := NewWithDeps(mock, &mockExecutor{}, nil)
 			eng.InitWithContext("test user")
-			var plannerTraces []observability.PlannerTrace
-			eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+			var plannerTraces []observability.RouterTrace
+			eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 				plannerTraces = append(plannerTraces, trace)
 			})
 			var hardBlocks []observability.EngineHardBlockTrace
@@ -3955,7 +3955,7 @@ func TestRAGCitedContractInvariantSkipsWhenAnswerAlreadyCited(t *testing.T) {
 	// fire and the reply must pass through unchanged.
 	plan := knowledgeQAPlan(false)
 	plan.Confidence = 0.3 // PR #61: HardBlockHint no longer forces fallback; use low confidence instead
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: plan}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -3985,7 +3985,7 @@ func TestRAGCitedContractInvariantSkipsWhenAnswerIsKnowledgeRefusal(t *testing.T
 	// must recognise the refusal and let it pass through unchanged.
 	plan := knowledgeQAPlan(false)
 	plan.Confidence = 0.3 // force fallback via low confidence
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: plan}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -4016,7 +4016,7 @@ func TestRAGCitedContractInvariantSkipsWhenRetrieverDisabled(t *testing.T) {
 	// not apply.
 	plan := knowledgeQAPlan(false)
 	plan.Confidence = 0.3 // PR #61: HardBlockHint no longer forces fallback; use low confidence instead
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: plan}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: plan}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback without RAG"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -4035,7 +4035,7 @@ func TestRAGCitedContractInvariantSkipsWhenRetrieverDisabled(t *testing.T) {
 }
 
 func TestRAGCitedContractInvariantSkipsUnknownPlannerFallback(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: unknownEngineTestPlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: unknownEngineTestPlan()}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -4060,7 +4060,7 @@ func TestRAGCitedContractInvariantSkipsUnknownPlannerFallback(t *testing.T) {
 }
 
 func TestRAGCitedContractInvariantSkipsDiagnosisPlannerFallback(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanForUHost("uhost-abc123")}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: diagnosisPlanForUHost("uhost-abc123")}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -4087,7 +4087,7 @@ func TestRAGCitedContractInvariantSkipsDiagnosisPlannerFallback(t *testing.T) {
 func TestRAGCitedContractInvariantResetsKnowledgeFallbackFlagEachTurn(t *testing.T) {
 	knowledgePlan := knowledgeQAPlan(false)
 	knowledgePlan.Confidence = 0.3 // PR #61: HardBlockHint no longer forces fallback; use low confidence instead
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{
 		{Plan: knowledgePlan},
 		{Plan: unknownEngineTestPlan()},
 	}}
@@ -4121,7 +4121,7 @@ func TestRAGCitedContractInvariantResetsKnowledgeFallbackFlagEachTurn(t *testing
 }
 
 func TestStage2BFinanceFAQRetrievalUsesBillingArea(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -4153,7 +4153,7 @@ func TestStage2BFinanceFAQRetrievalUsesBillingArea(t *testing.T) {
 }
 
 func TestStage2BStoppedBillingFAQUsesKnowledgeRetrieval(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: knowledgeQAPlan(false)}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -4185,7 +4185,7 @@ func TestStage2BStoppedBillingFAQUsesKnowledgeRetrieval(t *testing.T) {
 }
 
 func TestStage2BAndRouteDispatchShareSinglePlannerCall(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
 		KBVersion: "kb.v1",
@@ -4222,7 +4222,7 @@ func TestStage2BAndRouteDispatchShareSinglePlannerCall(t *testing.T) {
 }
 
 func TestRouteDispatchGateUnsetDoesNotCallPlanner(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -4239,7 +4239,7 @@ func TestRouteDispatchGateUnsetDoesNotCallPlanner(t *testing.T) {
 }
 
 func TestRouteDispatchResourcePlanBypassesReAct(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
@@ -4247,8 +4247,8 @@ func TestRouteDispatchResourcePlanBypassesReAct(t *testing.T) {
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
 	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
-	var plannerTraces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	var plannerTraces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		plannerTraces = append(plannerTraces, trace)
 	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
@@ -4273,7 +4273,7 @@ func TestRouteDispatchResourcePlanBypassesReAct(t *testing.T) {
 }
 
 func TestRouteDispatchResourcePlanUsesGroundedGenerator(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
@@ -4314,7 +4314,7 @@ func TestRouteDispatchResourcePlanUsesGroundedGenerator(t *testing.T) {
 }
 
 func TestRouteDispatchGPUSpecsPlanUsesGroundedGenerator(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1GPUSpecsPlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1GPUSpecsPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
@@ -4378,7 +4378,7 @@ func TestRouteDispatchGPUSpecsPlanUsesGroundedGenerator(t *testing.T) {
 // must read Status="template" with no fallback (so analytics joining
 // fallback_reason don't miscount it as a failure).
 func TestFastTemplateBypassesLLMRendererForFastTier(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1GPUSpecsPlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1GPUSpecsPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
@@ -4438,7 +4438,7 @@ func TestFastTemplateBypassesLLMRendererForFastTier(t *testing.T) {
 // knowledge-tier answer quality (entity resolution, multi-instance prose)
 // would regress with no signal.
 func TestFastTemplateKeepsLLMRendererForKnowledgeTier(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
@@ -4474,7 +4474,7 @@ func TestFastTemplateKeepsLLMRendererForKnowledgeTier(t *testing.T) {
 }
 
 func TestRouteDispatchResourceFilterPlanSendsFilteredEnvelopeToRenderer(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourceFilterPlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourceFilterPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
@@ -4516,7 +4516,7 @@ func TestRouteDispatchResourceFilterPlanSendsFilteredEnvelopeToRenderer(t *testi
 }
 
 func TestRouteDispatchGroundedGeneratorFallbackUsesDeterministicReply(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
@@ -4553,7 +4553,7 @@ func TestRouteDispatchGroundedGeneratorFallbackUsesDeterministicReply(t *testing
 }
 
 func TestRouteDispatchGroundedGeneratorRateLimitDenialUsesDeterministicReply(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
@@ -4594,7 +4594,7 @@ func TestRouteDispatchGroundedGeneratorRateLimitDenialUsesDeterministicReply(t *
 }
 
 func TestRouteDispatchMonitorPlanBypassesReAct(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"GetCompShareInstanceMonitor": {
@@ -4631,14 +4631,14 @@ func TestRouteDispatchMonitorPlanBypassesReAct(t *testing.T) {
 }
 
 func TestRouteDispatchMonitorTodayWindowReturnsFixedReplyWithoutReAct(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorTodayPlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorTodayPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
 	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
-	var traces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	var traces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		traces = append(traces, trace)
 	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
@@ -4657,13 +4657,13 @@ func TestRouteDispatchMonitorTodayWindowReturnsFixedReplyWithoutReAct(t *testing
 }
 
 func TestPlannerMonitorHistoryReturnsFixedReplyWithoutReAct(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorHistoryPlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorHistoryPlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
-	var traces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	var traces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		traces = append(traces, trace)
 	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
@@ -4682,7 +4682,7 @@ func TestPlannerMonitorHistoryReturnsFixedReplyWithoutReAct(t *testing.T) {
 }
 
 func TestRouteDispatchMonitorMissingTargetReturnsResourceSelection(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
@@ -4692,8 +4692,8 @@ func TestRouteDispatchMonitorMissingTargetReturnsResourceSelection(t *testing.T)
 	}}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
-	var traces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	var traces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		traces = append(traces, trace)
 	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
@@ -4716,7 +4716,7 @@ func TestRouteDispatchMonitorMissingTargetReturnsResourceSelection(t *testing.T)
 }
 
 func TestRouteDispatchMonitorSelectionPromptStatesWhenCandidatesTruncated(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1ManyInstanceDescribeResult(21),
@@ -4741,7 +4741,7 @@ func TestRouteDispatchMonitorSelectionPromptStatesWhenCandidatesTruncated(t *tes
 }
 
 func TestRouteDispatchMonitorEmptyFreshSnapshotRefreshesBeforeSelection(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutorFn{
 		fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -4771,7 +4771,7 @@ func TestRouteDispatchMonitorEmptyFreshSnapshotRefreshesBeforeSelection(t *testi
 }
 
 func TestRouteDispatchMonitorCandidateRefreshFailureDoesNotFallBackToReAct(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutorFn{
 		fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -4781,8 +4781,8 @@ func TestRouteDispatchMonitorCandidateRefreshFailureDoesNotFallBackToReAct(t *te
 	}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
-	var traces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	var traces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		traces = append(traces, trace)
 	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
@@ -4802,7 +4802,7 @@ func TestRouteDispatchMonitorCandidateRefreshFailureDoesNotFallBackToReAct(t *te
 }
 
 func TestRouteDispatchMonitorSelectionPromptDoesNotUseGroundedGenerator(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
@@ -4828,7 +4828,7 @@ func TestRouteDispatchMonitorSelectionPromptDoesNotUseGroundedGenerator(t *testi
 }
 
 func TestRouteDispatchMonitorAmbiguousNameReturnsMatchingResourceSelection(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanForName("dup")}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanForName("dup")}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"GetCompShareInstanceMonitor": {
@@ -4855,7 +4855,7 @@ func TestRouteDispatchMonitorAmbiguousNameReturnsMatchingResourceSelection(t *te
 }
 
 func TestRouteDispatchMonitorSingleCandidateContinuesDirectly(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
@@ -4887,7 +4887,7 @@ func TestRouteDispatchMonitorSingleCandidateContinuesDirectly(t *testing.T) {
 }
 
 func TestPhase1ResourceInfoNoTargetStillListsInstancesWithoutPendingSelection(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
@@ -4910,7 +4910,7 @@ func TestPhase1ResourceInfoNoTargetStillListsInstancesWithoutPendingSelection(t 
 }
 
 func TestResourceSelectionContinuationOrdinalRunsOriginalMonitorQuery(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	var monitorArgs map[string]any
 	executor := &mockExecutorFn{
@@ -4949,7 +4949,7 @@ func TestResourceSelectionContinuationOrdinalRunsOriginalMonitorQuery(t *testing
 }
 
 func TestResourceSelectionContinuationExactIDRunsMonitorQuery(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	var monitorArgs map[string]any
 	executor := &mockExecutorFn{
@@ -4984,7 +4984,7 @@ func TestResourceSelectionContinuationExactIDRunsMonitorQuery(t *testing.T) {
 }
 
 func TestResourceSelectionContinuationExactNameUsesGroundedGeneratorAndPlannerSource(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutorFn{
 		fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -5032,7 +5032,7 @@ func TestResourceSelectionContinuationExactNameUsesGroundedGeneratorAndPlannerSo
 }
 
 func TestResourceSelectionContinuationTroubleshootingFallbackAddsSafeContext(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutorFn{
 		fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -5071,7 +5071,7 @@ func TestResourceSelectionContinuationTroubleshootingFallbackAddsSafeContext(t *
 }
 
 func TestResourceSelectionContinuationLoadAssessmentUsesGroundedGeneratorMode(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutorFn{
 		fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -5142,7 +5142,7 @@ func TestMonitorHistoryUnsupportedReplyUsesCurrentScopeWording(t *testing.T) {
 }
 
 func TestResourceSelectionContinuationDuplicateNameRepeatsPrompt(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanForName("dup")}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanForName("dup")}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"GetCompShareInstanceMonitor": {
@@ -5171,7 +5171,7 @@ func TestResourceSelectionContinuationDuplicateNameRepeatsPrompt(t *testing.T) {
 }
 
 func TestResourceSelectionContinuationInvalidOnceRepeatsPrompt(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
@@ -5196,7 +5196,7 @@ func TestResourceSelectionContinuationInvalidOnceRepeatsPrompt(t *testing.T) {
 }
 
 func TestResourceSelectionContinuationStaleInvalidClearsAndFallsBack(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
@@ -5221,7 +5221,7 @@ func TestResourceSelectionContinuationStaleInvalidClearsAndFallsBack(t *testing.
 }
 
 func TestResourceSelectionContinuationHardBlockClearsPending(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "normal fallback"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
@@ -5256,12 +5256,12 @@ func TestResourceSelectionContinuationHardBlockClearsPending(t *testing.T) {
 func TestRouteDispatchInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 	cases := []struct {
 		name       string
-		result     intent.PlannerResult
+		result     intent.IntentRouterResult
 		wantStatus intent.RouteStatus
 	}{
 		{
 			name:       "fallback result",
-			result:     intent.PlannerResult{Fallback: true, Plan: unknownEngineTestPlan()},
+			result:     intent.IntentRouterResult{Fallback: true, Plan: unknownEngineTestPlan()},
 			wantStatus: intent.RouteStatusFallbackInvalid,
 		},
 		// PR #61 (2026-05-21): removed "hard block hint" case — HardBlockHint
@@ -5271,7 +5271,7 @@ func TestRouteDispatchInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 		// (HardBlockHint=true with valid plan → RouteStatusDispatched).
 		{
 			name: "low confidence",
-			result: intent.PlannerResult{Plan: intent.Plan{
+			result: intent.IntentRouterResult{Plan: intent.IntentRoute{
 				SchemaVersion: intent.SchemaVersion,
 				Intent:        intent.IntentResourceInfo,
 				Retrieval:     intent.Retrieval{Enabled: false},
@@ -5281,7 +5281,7 @@ func TestRouteDispatchInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 		},
 		{
 			name: "not enabled",
-			result: intent.PlannerResult{Plan: intent.Plan{
+			result: intent.IntentRouterResult{Plan: intent.IntentRoute{
 				SchemaVersion: intent.SchemaVersion,
 				Intent:        intent.IntentBillingInstance,
 				Retrieval:     intent.Retrieval{Enabled: false},
@@ -5292,12 +5292,12 @@ func TestRouteDispatchInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			planner := &scriptedIntentPlanner{results: []intent.PlannerResult{tc.result}}
+			planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{tc.result}}
 			mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react fallback"}}}
 			eng := NewWithDeps(mock, &mockExecutor{}, nil)
 			eng.InitWithContext("test user")
-			var traces []observability.PlannerTrace
-			eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+			var traces []observability.RouterTrace
+			eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 				traces = append(traces, trace)
 			})
 			eng.SetIntentPlanner(planner, IntentPlannerOptions{
@@ -5317,7 +5317,7 @@ func TestRouteDispatchInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 }
 
 func TestRouteDispatchFailureAfterToolDoesNotFallBackToReAct(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutorFn{
 		fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -5327,8 +5327,8 @@ func TestRouteDispatchFailureAfterToolDoesNotFallBackToReAct(t *testing.T) {
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
 	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
-	var traces []observability.PlannerTrace
-	eng.SetPlannerTraceObserver(func(trace observability.PlannerTrace) {
+	var traces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		traces = append(traces, trace)
 	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
@@ -5346,7 +5346,7 @@ func TestRouteDispatchFailureAfterToolDoesNotFallBackToReAct(t *testing.T) {
 }
 
 func TestRouteDispatchReadExpensiveQuotaDenialUsesFriendlyMessage(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
@@ -5376,7 +5376,7 @@ func TestRouteDispatchReadExpensiveQuotaDenialUsesFriendlyMessage(t *testing.T) 
 func TestRouteDispatchFallbackPreservesMonitorRecallForceTool(t *testing.T) {
 	executor := monitorScenarioExecutor()
 	planner := &scriptedIntentPlanner{
-		results: []intent.PlannerResult{{Fallback: true, Plan: unknownEngineTestPlan()}},
+		results: []intent.IntentRouterResult{{Fallback: true, Plan: unknownEngineTestPlan()}},
 	}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
@@ -5405,7 +5405,7 @@ func TestRouteDispatchFallbackPreservesMonitorRecallForceTool(t *testing.T) {
 }
 
 func TestRouteDispatchChecksPlannerQuotaOnce(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
@@ -5839,8 +5839,8 @@ func TestChat_TokenBudget_PlannerHandledPath_GateFires(t *testing.T) {
 	// "last week monitor" phrasing trips a pre-planner short-circuit in
 	// Chat (isUnsupportedHistoricalMonitorQuestion), short-circuiting
 	// before the planner is even consulted — which masks the test.
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{
-		Plan: intent.Plan{
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
 			SchemaVersion: intent.SchemaVersion,
 			Intent:        intent.IntentResourceInfo,
 			Retrieval:     intent.Retrieval{Enabled: false},

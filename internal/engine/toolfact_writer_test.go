@@ -529,7 +529,7 @@ func TestRecordLastIntentFromPlan_AcceptsRuntimeIntents(t *testing.T) {
 		intent.IntentStockAvailability,
 	} {
 		e.sessionState.LastIntent = ""
-		e.recordLastIntentFromPlan(intent.Plan{Intent: i})
+		e.recordLastIntentFromPlan(intent.IntentRoute{Intent: i})
 		assert.Equalf(t, string(i), e.sessionState.LastIntent, "intent %s must be written", i)
 	}
 }
@@ -543,12 +543,12 @@ func TestRecordLastIntentFromPlan_RejectsInvalid(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		plan intent.Plan
+		plan intent.IntentRoute
 	}{
-		{name: "empty intent", plan: intent.Plan{Intent: ""}},
-		{name: "IntentUnknown", plan: intent.Plan{Intent: intent.IntentUnknown}},
-		{name: "short alias 'monitor'", plan: intent.Plan{Intent: intent.Intent("monitor")}},
-		{name: "made-up value", plan: intent.Plan{Intent: intent.Intent("hallucinated_intent")}},
+		{name: "empty intent", plan: intent.IntentRoute{Intent: ""}},
+		{name: "IntentUnknown", plan: intent.IntentRoute{Intent: intent.IntentUnknown}},
+		{name: "short alias 'monitor'", plan: intent.IntentRoute{Intent: intent.Intent("monitor")}},
+		{name: "made-up value", plan: intent.IntentRoute{Intent: intent.Intent("hallucinated_intent")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e.recordLastIntentFromPlan(tc.plan)
@@ -570,7 +570,7 @@ func TestRecordLastIntentFromPlan_NotHydratedSkips(t *testing.T) {
 	e := NewSession(deps, SessionOptions{Subject: "cli-subject"})
 	require.False(t, e.sessionStateHydrated)
 
-	e.recordLastIntentFromPlan(intent.Plan{Intent: intent.IntentResourceInfo})
+	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentResourceInfo})
 	assert.Empty(t, e.sessionState.LastIntent)
 }
 
@@ -582,7 +582,7 @@ func TestSessionState_FieldsRoundTripWithSelectedAndIntent(t *testing.T) {
 	e.recordSelectedInstanceFromEnvelope(&envelope.Envelope{Subjects: []envelope.Subject{
 		{ID: "uhost-pick", Name: "train-a", Type: envelope.SubjectInstance},
 	}})
-	e.recordLastIntentFromPlan(intent.Plan{Intent: intent.IntentMonitorQuery})
+	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentMonitorQuery})
 
 	state, _, _ := e.SessionStateSnapshot()
 	pc := PersistedContext{AgentSessionState: state}
@@ -610,7 +610,7 @@ func TestSessionState_FieldsRoundTripWithSelectedAndIntent(t *testing.T) {
 //	  → HandlerStatusHandled branch (engine.go:1228-1232)
 //	  → assertions on SessionStateSnapshot
 func TestRouteDispatch_Success_PopulatesSessionState(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: phase1ResourcePlan()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
 	exec := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
