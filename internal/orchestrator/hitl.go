@@ -30,7 +30,7 @@ const maxConfirmEdits = 3
 // it calls the workflow.ConfirmFunc / ConfirmEditsFunc passed via Options, which
 // the live paths supply (HTTP SSE broker / CLI stdin). A nil gate declines (safe
 // default: never auto-approve a mutating step).
-func (s *Saga) runConfirmStep(ctx context.Context, def *workflow.Definition, step workflow.Step, idx int, wfCtx *workflow.Context) stepResult {
+func (s *StepRunner) runConfirmStep(ctx context.Context, def *workflow.Definition, step workflow.Step, idx int, wfCtx *workflow.Context) stepResult {
 	action := def.Name
 	for edits := 0; ; {
 		var args map[string]any

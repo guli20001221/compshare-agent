@@ -603,7 +603,7 @@ func (e *Engine) RunAgentSaga(ctx context.Context, def *workflow.Definition, par
 	if e.confirmFn != nil {
 		confirm = workflow.ConfirmFunc(e.confirmFn)
 	}
-	saga := orchestrator.NewWithSafeExecutor(e.safeExecutor, orchestrator.Options{
+	runner := orchestrator.NewWithSafeExecutor(e.safeExecutor, orchestrator.Options{
 		Confirm: confirm,
 		// Editable confirm form (create-flow 表单化): nil except on HTTP turns with
 		// COMPSHARE_CONFIRM_FORM on + client opt-in. Wiring it here gives the
@@ -614,7 +614,7 @@ func (e *Engine) RunAgentSaga(ctx context.Context, def *workflow.Definition, par
 		TurnID:       fmt.Sprintf("turn-%d", e.userTurn),
 		SkillID:      skillID,
 	})
-	return saga.Run(ctx, def, params)
+	return runner.Run(ctx, def, params)
 }
 
 func (e *Engine) SetIntentPlanner(planner IntentPlanner, opts IntentPlannerOptions) {

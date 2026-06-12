@@ -52,7 +52,7 @@ type StepSink interface {
 	EmitStep(observability.StepTrace) error
 }
 
-// Options configures a Saga run.
+// Options configures a StepRunner run.
 type Options struct {
 	// Executor runs each tool step. When backed by *tools.SafeToolExecutor it
 	// MUST be wired with OriginWorkflowInternal (use NewWithSafeExecutor, or
@@ -79,8 +79,8 @@ type Options struct {
 	Logf         func(string, ...any) // warning sink; defaults to log.Printf
 }
 
-// Saga is the agent-tier step runner. Construct with New; drive with Run.
-type Saga struct {
+// StepRunner is the agent-tier step runner. Construct with New; drive with Run.
+type StepRunner struct {
 	executor     tools.ToolExecutor
 	confirm      workflow.ConfirmFunc
 	confirmEdits workflow.ConfirmEditsFunc
@@ -93,10 +93,10 @@ type Saga struct {
 	logf         func(string, ...any)
 }
 
-// New builds a Saga, filling defaults (Now=time.Now, Logf=log.Printf,
+// New builds a StepRunner, filling defaults (Now=time.Now, Logf=log.Printf,
 // SagaID derived from TurnID).
-func New(opts Options) *Saga {
-	s := &Saga{
+func New(opts Options) *StepRunner {
+	s := &StepRunner{
 		executor:     opts.Executor,
 		confirm:      opts.Confirm,
 		confirmEdits: opts.ConfirmEdits,
@@ -124,12 +124,12 @@ func New(opts Options) *Saga {
 	return s
 }
 
-// NewWithSafeExecutor builds a Saga whose executor is the SafeToolExecutor wired
+// NewWithSafeExecutor builds a StepRunner whose executor is the SafeToolExecutor wired
 // with OriginWorkflowInternal — making the double-confirm misuse described on
 // Options.Executor unrepresentable at the (B8) call site. The saga's StepConfirm
 // step remains the sole HITL gate; the L2-always-refuse gate (ExecuteSafe:189)
 // still applies. opts.Executor, if set, is overridden.
-func NewWithSafeExecutor(safe *tools.SafeToolExecutor, opts Options) *Saga {
+func NewWithSafeExecutor(safe *tools.SafeToolExecutor, opts Options) *StepRunner {
 	opts.Executor = safe.AsToolExecutor(tools.OriginWorkflowInternal)
 	return New(opts)
 }
@@ -148,7 +148,7 @@ type stepResult struct {
 // workflow.Engine.Run it never returns a Go error for step failures; those are
 // captured in the Result. A nil/invalid definition or an L2-containing
 // definition returns a Go error (programming error, not a step failure).
-func (s *Saga) Run(ctx context.Context, def *workflow.Definition, params map[string]any) (*workflow.Result, error) {
+func (s *StepRunner) Run(ctx context.Context, def *workflow.Definition, params map[string]any) (*workflow.Result, error) {
 	if def == nil {
 		return nil, errors.New("orchestrator: nil workflow definition")
 	}
