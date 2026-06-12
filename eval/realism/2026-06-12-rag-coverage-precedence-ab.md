@@ -32,8 +32,8 @@ config: deepseek-v4-flash (Modelverse) + agentic RAG default-on + write-ops ON.
 - **Fabrication:** none introduced. Partial-coverage Qs show consistent conservative
   gap-marking ("无法确认 / 资料未写明") plus only the allowed meta-pointer (控制台/官方文档).
 - **Over-refusal:** no question answered by A went to a hard refusal in B.
-- **cite-rate:** ≈0 both arms — agentic positional citation is the separate pre-existing
-  gap (#155), unchanged here.
+- **cite-rate:** ≈0 both arms — agentic positional citation is a separate, pre-existing
+  gap (the agentic-path positional `[n]` citation work-stream), unchanged here.
 - `go test ./...` green.
 
 **Verdict:** preventive hardening — closes the latent fabrication invitation while
