@@ -17,7 +17,7 @@ import (
 // gets its own *Client allocation, so assert.Same fails if NewAgentLoop bound
 // the wrong tier. NewRouter does no network at construction.
 func TestAgentLoop_WiresTierAgent(t *testing.T) {
-	router, err := llm.NewRouter(
+	router, err := llm.NewModelRouter(
 		config.LLMConfig{Model: "fast-model"},
 		map[llm.Tier]config.LLMConfig{llm.TierAgent: {Model: "agent-model"}},
 	)

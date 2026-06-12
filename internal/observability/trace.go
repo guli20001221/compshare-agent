@@ -410,7 +410,7 @@ type EngineHardBlockTrace struct {
 	// TriggeredBy records the actually-executed stage that produced the
 	// hard-block — single-source (no "both"), since short-circuited stages
 	// are unobservable. Allowed values:
-	//   "keyword"        — Chat() head router.PreBlock keyword match
+	//   "keyword"        — Chat() head inputguard.PreBlock keyword match
 	//   "planner_intent" — planner-classified intent (monitor_history etc.)
 	//                      routed through emitMonitorHistoryHardBlock helper
 	//   "post_llm"       — post-LLM gate (currently cited_contract_violation)

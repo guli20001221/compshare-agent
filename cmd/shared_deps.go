@@ -91,8 +91,8 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 //
 // When cfg.Agent.TierRouting is empty, all tiers fall back to
 // cfg.Agent.LLM.Model (backward compat per ADR-002 Acceptance #5).
-func buildLLMRouter(cfg *config.Config) (*llm.Router, error) {
-	return llm.NewRouter(cfg.Agent.LLM, llm.TierOverridesFromConfig(cfg.Agent.TierRouting))
+func buildLLMRouter(cfg *config.Config) (*llm.ModelRouter, error) {
+	return llm.NewModelRouter(cfg.Agent.LLM, llm.TierOverridesFromConfig(cfg.Agent.TierRouting))
 }
 
 func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv getenvFunc) error {

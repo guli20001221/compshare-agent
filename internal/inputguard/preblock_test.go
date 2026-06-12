@@ -1,4 +1,4 @@
-package router
+package inputguard
 
 import "testing"
 

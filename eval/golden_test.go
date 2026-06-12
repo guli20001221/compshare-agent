@@ -669,7 +669,7 @@ func TestGoldenScripts(t *testing.T) {
 	// factory (tier-aware) instead of llm.NewClient directly. nil overrides →
 	// For(TierFast) is byte-identical to the base model. The no-API-key skip
 	// above (t.Skipf) still fires first.
-	router, err := llm.NewRouter(config.LLMConfig{
+	router, err := llm.NewModelRouter(config.LLMConfig{
 		BaseURL: m.BaseURL,
 		APIKey:  m.APIKey,
 		Model:   m.ModelID,
