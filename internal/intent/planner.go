@@ -568,19 +568,19 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 func renderPlannerPromptExampleGroups(groups []plannerPromptExampleGroup) []string {
 	lines := []string{}
 	for _, group := range groups {
-		lines = append(lines, fmt.Sprintf(`<examples intent="%s" source="%s">`, group.Intent, escapePromptXML(group.Source)))
+		lines = append(lines, fmt.Sprintf(`<examples intent="%s">`, group.Intent))
 		if group.compact && len(group.Examples) > 0 {
 			lines = append(lines, "<shared_plan>")
 			lines = append(lines, group.Examples[0].PlanJSON)
 			lines = append(lines, "</shared_plan>")
 			lines = append(lines, "<questions>")
 			for _, example := range group.Examples {
-				lines = append(lines, fmt.Sprintf(`<question source="%s">%s</question>`, escapePromptXML(example.Source), escapePromptXML(example.Question)))
+				lines = append(lines, fmt.Sprintf(`<question>%s</question>`, escapePromptXML(example.Question)))
 			}
 			lines = append(lines, "</questions>")
 		} else {
 			for _, example := range group.Examples {
-				lines = append(lines, fmt.Sprintf(`<example source="%s">`, escapePromptXML(example.Source)))
+				lines = append(lines, "<example>")
 				lines = append(lines, "<user>"+escapePromptXML(example.Question)+"</user>")
 				lines = append(lines, example.PlanJSON)
 				lines = append(lines, "</example>")
