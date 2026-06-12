@@ -434,10 +434,10 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 		// config sets tier_routing.agent — at which point deploy_model
 		// image-matching uses the configured strong model.
 		AgentLLMClient: router.For(llm.TierAgent),
-		// MemoryLimiter is process-local and suitable for local demo or
+		// InMemoryRateLimiter is process-local and suitable for local demo or
 		// single-instance deployment only. Multi-replica production needs a
 		// centralized limiter such as Redis or an API gateway.
-		RateLimiter:                governance.NewMemoryLimiter(cfg.Agent.RateLimit.Limits()),
+		RateLimiter:                governance.NewInMemoryRateLimiter(cfg.Agent.RateLimit.Limits()),
 		SupportsObjectToolChoice:   cap.SupportsObjectToolChoice,
 		SupportsRequiredToolChoice: cap.SupportsRequiredToolChoice,
 		MaxTokensPerTurn:           cfg.Agent.RateLimit.MaxTokensPerTurn,

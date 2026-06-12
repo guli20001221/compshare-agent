@@ -17,7 +17,7 @@ func newTwoSessions(t *testing.T) (engA, engB *Engine, deps *SharedDeps) {
 	t.Helper()
 	deps = &SharedDeps{
 		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
 		SupportsObjectToolChoice: true,
 		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
 	}
@@ -117,7 +117,7 @@ func TestSessionIsolation_Registry(t *testing.T) {
 func TestSessionIsolation_ConfirmFn(t *testing.T) {
 	deps := &SharedDeps{
 		LLMClient:        &mockLLM{},
-		RateLimiter:      governance.NewMemoryLimiter(governance.DefaultLimits()),
+		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
 		ExternalExecutor: &mockExecutor{results: map[string]map[string]any{}},
 	}
 	var calledA, calledB bool
@@ -176,7 +176,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 	engA.SetRateLimitSubject("rl-subj-A")
 	engB.SetRateLimitSubject("rl-subj-B")
 
-	// MemoryLimiter default LLMQPS = 5; burn 5 to drain session A's bucket
+	// InMemoryRateLimiter default LLMQPS = 5; burn 5 to drain session A's bucket
 	// then expect the 6th call to be denied.
 	for i := 0; i < governance.DefaultLLMQPS; i++ {
 		if dec, _ := engA.allowRateLimited(governance.ClassLLM, "main_react_chat"); !dec.Allowed {

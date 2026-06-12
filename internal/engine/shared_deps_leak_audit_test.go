@@ -89,12 +89,12 @@ var allowedSharedDepMethods = map[string]struct{}{}
 // interface method set, missing concrete-only setters that an unsafe
 // type-assertion could reach.
 var sharedDepConcreteTypes = []reflect.Type{
-	reflect.TypeOf((*llm.Client)(nil)),                 // SharedDeps.LLMClient
-	reflect.TypeOf((*knowledge.Retriever)(nil)),        // SharedDeps.KnowledgeRetriever
-	reflect.TypeOf((*grounded.GroundedGenerator)(nil)), // SharedDeps.GroundedGenerator
-	reflect.TypeOf((*governance.MemoryLimiter)(nil)),   // SharedDeps.RateLimiter
-	reflect.TypeOf((*knowledge.EmbeddingSidecar)(nil)), // injected into knowledge.Retriever
-	reflect.TypeOf((*embedding.Client)(nil)),           // upstream of knowledge.EmbeddingSidecar
+	reflect.TypeOf((*llm.Client)(nil)),                     // SharedDeps.LLMClient
+	reflect.TypeOf((*knowledge.Retriever)(nil)),            // SharedDeps.KnowledgeRetriever
+	reflect.TypeOf((*grounded.GroundedGenerator)(nil)),     // SharedDeps.GroundedGenerator
+	reflect.TypeOf((*governance.InMemoryRateLimiter)(nil)), // SharedDeps.RateLimiter
+	reflect.TypeOf((*knowledge.EmbeddingSidecar)(nil)),     // injected into knowledge.Retriever
+	reflect.TypeOf((*embedding.Client)(nil)),               // upstream of knowledge.EmbeddingSidecar
 }
 
 // TestSharedDeps_NoMutatingSetterLeakage scans every method of every
@@ -205,7 +205,7 @@ func TestSharedDeps_AuditCoversAllSharedDepFields(t *testing.T) {
 		case "GroundedGenerator":
 			requireAudited(t, audited, "github.com/compshare-agent/internal/renderer.GroundedGenerator", field.Name)
 		case "RateLimiter":
-			requireAudited(t, audited, "github.com/compshare-agent/internal/governance.MemoryLimiter", field.Name)
+			requireAudited(t, audited, "github.com/compshare-agent/internal/governance.InMemoryRateLimiter", field.Name)
 		default:
 			t.Errorf(
 				"SharedDeps field %q is neither in nonAuditableFields nor "+

@@ -21,7 +21,7 @@ func newEngineForToolFactTest(t *testing.T) *Engine {
 	t.Helper()
 	deps := &SharedDeps{
 		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
 		SupportsObjectToolChoice: true,
 		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
 	}
@@ -231,7 +231,7 @@ func TestRecordMonitorSampleFacts_TwoHosts_ProducesTwoFacts(t *testing.T) {
 func TestRecordToolFacts_NotHydratedSkipsWrite(t *testing.T) {
 	deps := &SharedDeps{
 		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
 		SupportsObjectToolChoice: true,
 		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
 	}
@@ -299,7 +299,7 @@ func TestExecuteSafeTool_OriginDirectLLM_RecordsFacts(t *testing.T) {
 	}
 	deps := &SharedDeps{
 		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
 		SupportsObjectToolChoice: true,
 		ExternalExecutor:         exec,
 	}
@@ -343,7 +343,7 @@ func TestExecuteSafeTool_OriginWorkflowInternal_DoesNotRecordFacts(t *testing.T)
 	}
 	deps := &SharedDeps{
 		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
 		SupportsObjectToolChoice: true,
 		ExternalExecutor:         exec,
 	}
@@ -375,7 +375,7 @@ func TestExecuteSafeTool_OriginDiagnosisInternal_DoesNotRecordFacts(t *testing.T
 	}
 	deps := &SharedDeps{
 		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
 		SupportsObjectToolChoice: true,
 		ExternalExecutor:         exec,
 	}
@@ -413,7 +413,7 @@ func TestExecuteSafeTool_PayloadRoundTripStable(t *testing.T) {
 	}
 	deps := &SharedDeps{
 		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
 		SupportsObjectToolChoice: true,
 		ExternalExecutor:         exec,
 	}
@@ -472,7 +472,7 @@ func TestRecordSelectedInstanceFromEnvelope_SingleSubject(t *testing.T) {
 func TestRecordSelectedInstanceFromEnvelope_NotHydratedSkips(t *testing.T) {
 	deps := &SharedDeps{
 		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
 		SupportsObjectToolChoice: true,
 		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
 	}
@@ -563,7 +563,7 @@ func TestRecordLastIntentFromPlan_RejectsInvalid(t *testing.T) {
 func TestRecordLastIntentFromPlan_NotHydratedSkips(t *testing.T) {
 	deps := &SharedDeps{
 		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
 		SupportsObjectToolChoice: true,
 		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
 	}

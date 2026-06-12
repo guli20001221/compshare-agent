@@ -19,7 +19,7 @@ func newEngineForSessionStateTest(t *testing.T) *Engine {
 	t.Helper()
 	deps := &SharedDeps{
 		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
 		SupportsObjectToolChoice: true,
 		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
 	}

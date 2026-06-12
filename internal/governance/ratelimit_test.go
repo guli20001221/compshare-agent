@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-var _ RateLimiter = (*MemoryLimiter)(nil)
+var _ RateLimiter = (*InMemoryRateLimiter)(nil)
 
 func TestSubjectKeyFromOrganization(t *testing.T) {
 	t.Run("nonzero pair produces sha256 key", func(t *testing.T) {
@@ -87,9 +87,9 @@ func TestSubjectKeyFromPublicKey(t *testing.T) {
 	}
 }
 
-func TestMemoryLimiterQPSLimit(t *testing.T) {
+func TestInMemoryRateLimiterQPSLimit(t *testing.T) {
 	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
-	limiter := NewMemoryLimiter(Limits{
+	limiter := NewInMemoryRateLimiter(Limits{
 		LLMQPS:        2,
 		LLMDaily:      100,
 		MutatingQPS:   1,
@@ -107,9 +107,9 @@ func TestMemoryLimiterQPSLimit(t *testing.T) {
 	}
 }
 
-func TestMemoryLimiterUsesDefaultLimits(t *testing.T) {
+func TestInMemoryRateLimiterUsesDefaultLimits(t *testing.T) {
 	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
-	limiter := NewMemoryLimiter(Limits{})
+	limiter := NewInMemoryRateLimiter(Limits{})
 
 	req := Request{SubjectKey: "sha256:subject", Class: ClassLLM, Action: "main_react_chat", Now: now}
 	for i := 0; i < DefaultLLMQPS; i++ {
@@ -125,9 +125,9 @@ func TestMemoryLimiterUsesDefaultLimits(t *testing.T) {
 	assertDenied(t, limiter.Allow(req), ReasonQPSExceeded)
 }
 
-func TestMemoryLimiterQPSRefillWithFakeClock(t *testing.T) {
+func TestInMemoryRateLimiterQPSRefillWithFakeClock(t *testing.T) {
 	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
-	limiter := NewMemoryLimiter(Limits{
+	limiter := NewInMemoryRateLimiter(Limits{
 		LLMQPS:        1,
 		LLMDaily:      100,
 		MutatingQPS:   1,
@@ -142,9 +142,9 @@ func TestMemoryLimiterQPSRefillWithFakeClock(t *testing.T) {
 	assertAllowed(t, limiter.Allow(req))
 }
 
-func TestMemoryLimiterWithClockUsedWhenRequestNowIsZero(t *testing.T) {
+func TestInMemoryRateLimiterWithClockUsedWhenRequestNowIsZero(t *testing.T) {
 	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
-	limiter := NewMemoryLimiter(Limits{
+	limiter := NewInMemoryRateLimiter(Limits{
 		LLMQPS:        1,
 		LLMDaily:      100,
 		MutatingQPS:   1,
@@ -161,9 +161,9 @@ func TestMemoryLimiterWithClockUsedWhenRequestNowIsZero(t *testing.T) {
 	assertAllowed(t, limiter.Allow(req))
 }
 
-func TestMemoryLimiterDailyQuota(t *testing.T) {
+func TestInMemoryRateLimiterDailyQuota(t *testing.T) {
 	now := time.Date(2026, 5, 9, 23, 30, 0, 0, time.FixedZone("CST", 8*3600))
-	limiter := NewMemoryLimiter(Limits{
+	limiter := NewInMemoryRateLimiter(Limits{
 		LLMQPS:        10,
 		LLMDaily:      2,
 		MutatingQPS:   1,
@@ -184,9 +184,9 @@ func TestMemoryLimiterDailyQuota(t *testing.T) {
 	assertAllowed(t, limiter.Allow(req))
 }
 
-func TestMemoryLimiterSubjectsAndClassesAreIndependent(t *testing.T) {
+func TestInMemoryRateLimiterSubjectsAndClassesAreIndependent(t *testing.T) {
 	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
-	limiter := NewMemoryLimiter(Limits{
+	limiter := NewInMemoryRateLimiter(Limits{
 		LLMQPS:        1,
 		LLMDaily:      1,
 		MutatingQPS:   1,
@@ -211,9 +211,9 @@ func TestMemoryLimiterSubjectsAndClassesAreIndependent(t *testing.T) {
 	assertAllowed(t, limiter.Allow(req))
 }
 
-func TestMemoryLimiterReadExpensiveUsesSeparateBucket(t *testing.T) {
+func TestInMemoryRateLimiterReadExpensiveUsesSeparateBucket(t *testing.T) {
 	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
-	limiter := NewMemoryLimiter(Limits{
+	limiter := NewInMemoryRateLimiter(Limits{
 		LLMQPS:             1,
 		LLMDaily:           1,
 		MutatingQPS:        1,
@@ -228,14 +228,14 @@ func TestMemoryLimiterReadExpensiveUsesSeparateBucket(t *testing.T) {
 	assertDenied(t, limiter.Allow(req), ReasonDailyExceeded)
 }
 
-func TestMemoryLimiterDoesNotLeakRawPublicKey(t *testing.T) {
+func TestInMemoryRateLimiterDoesNotLeakRawPublicKey(t *testing.T) {
 	rawPublicKey := "public-key-that-must-not-appear"
 	subject, ok := SubjectKeyFromPublicKey(rawPublicKey)
 	if !ok {
 		t.Fatalf("SubjectKeyFromPublicKey returned ok=false")
 	}
 	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
-	limiter := NewMemoryLimiter(Limits{
+	limiter := NewInMemoryRateLimiter(Limits{
 		LLMQPS:        1,
 		LLMDaily:      100,
 		MutatingQPS:   1,
@@ -255,7 +255,7 @@ func TestMemoryLimiterDoesNotLeakRawPublicKey(t *testing.T) {
 
 func TestConcurrentAllowNoRace(t *testing.T) {
 	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
-	limiter := NewMemoryLimiter(Limits{
+	limiter := NewInMemoryRateLimiter(Limits{
 		LLMQPS:        10,
 		LLMDaily:      100,
 		MutatingQPS:   1,
@@ -372,7 +372,7 @@ func TestUserTurn_DisabledByDefault(t *testing.T) {
 		t.Fatalf("DefaultLimits must leave UserTurn zero (opt-in); got qps=%d daily=%d",
 			limits.UserTurnQPS, limits.UserTurnDaily)
 	}
-	limiter := NewMemoryLimiter(limits)
+	limiter := NewInMemoryRateLimiter(limits)
 	for i := 0; i < 1000; i++ {
 		req := Request{
 			SubjectKey: "tenant-a",
@@ -396,7 +396,7 @@ func TestUserTurn_DailyExhaustion(t *testing.T) {
 	limits := DefaultLimits()
 	limits.UserTurnDaily = 3
 	// qps stays 0 — daily-only cap
-	limiter := NewMemoryLimiter(limits, WithClock(func() time.Time { return now }))
+	limiter := NewInMemoryRateLimiter(limits, WithClock(func() time.Time { return now }))
 
 	req := Request{SubjectKey: "tenant-a", Class: ClassUserTurn, Action: "chat_turn", Now: now}
 	for i := 0; i < 3; i++ {
@@ -424,7 +424,7 @@ func TestUserTurn_PerSubjectBucket(t *testing.T) {
 	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.Local)
 	limits := DefaultLimits()
 	limits.UserTurnDaily = 1
-	limiter := NewMemoryLimiter(limits, WithClock(func() time.Time { return now }))
+	limiter := NewInMemoryRateLimiter(limits, WithClock(func() time.Time { return now }))
 
 	reqA := Request{SubjectKey: "tenant-a", Class: ClassUserTurn, Action: "chat_turn", Now: now}
 	reqB := Request{SubjectKey: "tenant-b", Class: ClassUserTurn, Action: "chat_turn", Now: now}
