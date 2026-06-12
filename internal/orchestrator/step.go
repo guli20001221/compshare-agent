@@ -31,7 +31,7 @@ const _ = uint((DefaultStepTimeout - agentLLMTimeout) - 1)
 // silently honored) — the "widening isn't silent" guard from ADR-006 §决策2
 // ("Per-step override > 4 min build-time 警告"), realized as a runtime warning
 // the first time such a step runs.
-func (s *Saga) effectiveTimeout(step workflow.Step) time.Duration {
+func (s *StepRunner) effectiveTimeout(step workflow.Step) time.Duration {
 	if step.Timeout <= 0 {
 		return DefaultStepTimeout
 	}
@@ -43,7 +43,7 @@ func (s *Saga) effectiveTimeout(step workflow.Step) time.Duration {
 
 // runToolStep executes one StepToolCall with per-step timeout enforcement,
 // emitting a running trace then a terminal (success / failed / timeout) trace.
-func (s *Saga) runToolStep(ctx context.Context, step workflow.Step, idx int, wfCtx *workflow.Context) stepResult {
+func (s *StepRunner) runToolStep(ctx context.Context, step workflow.Step, idx int, wfCtx *workflow.Context) stepResult {
 	toolName := step.Tool
 	if step.ToolFunc != nil {
 		toolName = step.ToolFunc(wfCtx)
@@ -111,7 +111,7 @@ func (s *Saga) runToolStep(ctx context.Context, step workflow.Step, idx int, wfC
 // Args/Result are stored verbatim; secret redaction happens centrally at
 // persist time via observability.prepareForPersist → RedactStepDerivedFields,
 // so a single choke point covers every sink.
-func (s *Saga) emit(state observability.StepState, idx int, tool string, args map[string]any, result any, errCat string, started, ended time.Time) {
+func (s *StepRunner) emit(state observability.StepState, idx int, tool string, args map[string]any, result any, errCat string, started, ended time.Time) {
 	if s.sink == nil {
 		return
 	}
@@ -143,6 +143,6 @@ func optionalTime(t time.Time) *time.Time {
 
 // stepID is a deterministic per-step id (no randomness, so traces correlate and
 // tests stay stable): "<sagaID>-step-NN".
-func (s *Saga) stepID(idx int) string {
+func (s *StepRunner) stepID(idx int) string {
 	return fmt.Sprintf("%s-step-%02d", s.sagaID, idx)
 }

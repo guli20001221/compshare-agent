@@ -480,7 +480,7 @@ func TestTryDeployModel_ThreadsCommunityImageIDToCreate(t *testing.T) {
 						"Data": []any{map[string]any{"CompShareImageId": "matcher-pick", "SupportedGpuTypes": []any{"4090"}}}},
 				}}, nil
 			}
-			// Saga's FuzzySearch=ImageName query → a DIFFERENT id at index 0.
+			// StepRunner's FuzzySearch=ImageName query → a DIFFERENT id at index 0.
 			return map[string]any{"CompshareImageGroup": []any{
 				map[string]any{"ImageName": "数字人 LiveTalking",
 					"Data": []any{map[string]any{"CompShareImageId": "saga-index0-WRONG"}}},
@@ -729,7 +729,7 @@ func newZoneDeployMock(stockByZone map[string]bool, createArgs *map[string]any) 
 			return map[string]any{"CompshareImageGroup": []any{}}, nil
 		case "DescribeAvailableCompShareInstanceTypes":
 			if _, filtered := args["MachineTypes"]; filtered {
-				// Saga spec-resolution query (Zone + MachineTypes) → Collection shape.
+				// StepRunner spec-resolution query (Zone + MachineTypes) → Collection shape.
 				return map[string]any{"AvailableInstanceTypes": []any{
 					map[string]any{"Name": "4090", "MachineSizes": []any{
 						map[string]any{"Gpu": float64(1), "Collection": []any{
