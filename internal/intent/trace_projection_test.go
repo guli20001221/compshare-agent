@@ -16,7 +16,7 @@ func TestProjectPlannerTrace_DisabledWritesEmptySlots(t *testing.T) {
 	assert.False(t, trace.Enabled)
 	assert.Empty(t, trace.Model)
 	assert.Empty(t, trace.Intent)
-	assert.Empty(t, trace.PlannedRuntimeForm)
+	assert.Empty(t, trace.PlannedExecutionPath)
 	assert.False(t, trace.SchemaValid)
 	assert.NotNil(t, trace.Slots.TargetRefs)
 	assert.Empty(t, trace.Slots.TargetRefs)
@@ -58,7 +58,7 @@ func TestProjectPlannerTrace_ValidMonitorPlan(t *testing.T) {
 	assert.Equal(t, 17, trace.OutputTokens)
 	assert.True(t, trace.SchemaValid)
 	assert.Equal(t, string(IntentMonitorQuery), trace.Intent)
-	assert.Equal(t, string(RuntimeFormRouting), trace.PlannedRuntimeForm)
+	assert.Equal(t, string(ExecutionPathRouting), trace.PlannedExecutionPath)
 	assert.Equal(t, []string{"gpu", "vram"}, trace.Slots.Metrics)
 	assert.InDelta(t, 0.87, trace.Confidence, 0.0001)
 
@@ -82,7 +82,7 @@ func TestProjectPlannerTrace_ProjectsCodeDerivedSkills(t *testing.T) {
 	}, PlannerTraceOptions{Enabled: true, Model: "deepseek-v4-flash"})
 
 	require.Len(t, trace.Skills, 1)
-	assert.Equal(t, string(RuntimeFormAgent), trace.PlannedRuntimeForm)
+	assert.Equal(t, string(ExecutionPathAgent), trace.PlannedExecutionPath)
 	assert.Equal(t, "deploy_model", trace.Skills[0].Name)
 	assert.Equal(t, SkillResolutionAgentArm, trace.Skills[0].Resolution)
 }
@@ -167,7 +167,7 @@ func TestProjectPlannerTrace_FallbackPreservesExplicitHardBlockHint(t *testing.T
 			assert.True(t, trace.Enabled)
 			assert.False(t, trace.SchemaValid)
 			assert.Equal(t, string(IntentUnknown), trace.Intent)
-			assert.Empty(t, trace.PlannedRuntimeForm)
+			assert.Empty(t, trace.PlannedExecutionPath)
 			assert.Zero(t, trace.Confidence)
 			assert.Equal(t, tc.hardBlockHint, trace.HardBlockHint)
 		})

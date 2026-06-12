@@ -20,14 +20,14 @@ import "github.com/compshare-agent/internal/intent"
 // contract instead of the scattered planner-prompt directives + engine if-chain.
 type DispatchSpec struct {
 	Intent         intent.Intent
-	NominalLane    intent.RuntimeForm
+	NominalLane    intent.ExecutionPath
 	ToolSubset     []string
 	AgentSkillName string
 }
 
 // specForIntent projects the three live per-intent surfaces into a DispatchSpec.
 // It is a pure function of the intent: the nominal lane from
-// intent.PlannedRuntimeFormForIntent, the ReAct tool subset from
+// intent.PlannedExecutionPathForIntent, the ReAct tool subset from
 // intent.IntentToolSubset (defensively copied so a caller holding the spec cannot
 // mutate the surface every other consumer reads), and the agent-skill name from
 // the agentSkillForIntent map (engine.go; "" for non-agent intents). It must stay
@@ -36,7 +36,7 @@ type DispatchSpec struct {
 func specForIntent(i intent.Intent) DispatchSpec {
 	return DispatchSpec{
 		Intent:         i,
-		NominalLane:    intent.PlannedRuntimeFormForIntent(i),
+		NominalLane:    intent.PlannedExecutionPathForIntent(i),
 		ToolSubset:     append([]string(nil), intent.IntentToolSubset(i)...),
 		AgentSkillName: agentSkillForIntent[i],
 	}

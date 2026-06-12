@@ -16,8 +16,8 @@ type Labels struct {
 }
 
 type Thresholds struct {
-	RuntimeFormMismatchRateMax float64 `json:"runtime_form_mismatch_rate_max"`
-	SchemaValidRateMin         float64 `json:"schema_valid_rate_min,omitempty"`
+	ExecutionPathMismatchRateMax float64 `json:"execution_path_mismatch_rate_max"`
+	SchemaValidRateMin           float64 `json:"schema_valid_rate_min,omitempty"`
 }
 
 type CaseLabel struct {
@@ -35,8 +35,8 @@ type Stats struct {
 	SchemaInvalid            int
 	CuratedSchemaTotal       int
 	CuratedSchemaInvalid     int
-	RuntimeFormCompared      int
-	RuntimeFormMismatch      int
+	ExecutionPathCompared    int
+	ExecutionPathMismatch    int
 	EscapedHallucinatedCount int
 	LabeledRecords           int
 	IntentMismatches         []IntentMismatch
@@ -70,10 +70,10 @@ func Aggregate(records []observability.TraceRecord, labels Labels) Stats {
 				stats.SchemaInvalid++
 			}
 		}
-		if mismatch, ok := record.RuntimeFormMismatch(); ok {
-			stats.RuntimeFormCompared++
+		if mismatch, ok := record.ExecutionPathMismatch(); ok {
+			stats.ExecutionPathCompared++
 			if mismatch {
-				stats.RuntimeFormMismatch++
+				stats.ExecutionPathMismatch++
 			}
 		}
 		stats.EscapedHallucinatedCount += record.Outcome.EscapedHallucinatedCount
@@ -106,11 +106,11 @@ func Aggregate(records []observability.TraceRecord, labels Labels) Stats {
 	return stats
 }
 
-func (s Stats) RuntimeFormMismatchRate() float64 {
-	if s.RuntimeFormCompared == 0 {
+func (s Stats) ExecutionPathMismatchRate() float64 {
+	if s.ExecutionPathCompared == 0 {
 		return 0
 	}
-	return float64(s.RuntimeFormMismatch) / float64(s.RuntimeFormCompared)
+	return float64(s.ExecutionPathMismatch) / float64(s.ExecutionPathCompared)
 }
 
 func (s Stats) SchemaValidRate() float64 {
@@ -146,11 +146,11 @@ func GateFailures(stats Stats, labels Labels) []GateFailure {
 			Message: fmt.Sprintf("forbidden intent hits = %d, want 0", len(stats.ForbiddenIntentHits)),
 		})
 	}
-	if stats.RuntimeFormCompared > 0 && stats.RuntimeFormMismatchRate() > labels.Thresholds.RuntimeFormMismatchRateMax {
+	if stats.ExecutionPathCompared > 0 && stats.ExecutionPathMismatchRate() > labels.Thresholds.ExecutionPathMismatchRateMax {
 		failures = append(failures, GateFailure{
-			Code: "runtime_form_mismatch_rate",
+			Code: "execution_path_mismatch_rate",
 			Message: fmt.Sprintf("runtime form mismatch rate = %.3f, max %.3f",
-				stats.RuntimeFormMismatchRate(), labels.Thresholds.RuntimeFormMismatchRateMax),
+				stats.ExecutionPathMismatchRate(), labels.Thresholds.ExecutionPathMismatchRateMax),
 		})
 	}
 	if labels.Thresholds.SchemaValidRateMin > 0 && stats.SchemaValidRate() < labels.Thresholds.SchemaValidRateMin {
@@ -224,7 +224,7 @@ func plannerObserved(trace observability.RouterTrace) bool {
 		trace.OutputTokens != 0 ||
 		trace.SchemaValid ||
 		trace.Intent != "" ||
-		trace.PlannedRuntimeForm != "" ||
+		trace.PlannedExecutionPath != "" ||
 		len(trace.Skills) > 0 ||
 		len(trace.Slots.TargetRefs) > 0 ||
 		len(trace.Slots.Metrics) > 0 ||

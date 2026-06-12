@@ -52,7 +52,7 @@ const (
 	// forced SearchKnowledge first hop, instead of the terminal-RAG route
 	// (dispatched_retrieval). Distinct so mainline reports tell the agent-loop
 	// knowledge turn apart from BOTH the terminal-RAG route AND the deploy_model
-	// agent-skill dispatch (dispatched_agent): DeriveActualRuntimeForm maps it to
+	// agent-skill dispatch (dispatched_agent): DeriveActualExecutionPath maps it to
 	// agent (the turn runs the agent loop) while DeriveRealizedTier maps it to
 	// knowledge (it answers a knowledge question via retrieval — keeping the realized
 	// knowledge-work attribution stable across the terminal→agent-loop migration).

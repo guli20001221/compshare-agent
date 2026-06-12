@@ -7,11 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPlannedRuntimeFormForIntent_ExhaustiveRuntimeIntents(t *testing.T) {
+func TestPlannedExecutionPathForIntent_ExhaustiveRuntimeIntents(t *testing.T) {
 	seen := make(map[Intent]struct{}, len(RuntimeIntents()))
 	for _, i := range RuntimeIntents() {
-		form := PlannedRuntimeFormForIntent(i)
-		require.True(t, IsRuntimeForm(form), "intent %q mapped to invalid runtime form %q", i, form)
+		form := PlannedExecutionPathForIntent(i)
+		require.True(t, IsExecutionPath(form), "intent %q mapped to invalid runtime form %q", i, form)
 		seen[i] = struct{}{}
 	}
 
@@ -21,9 +21,9 @@ func TestPlannedRuntimeFormForIntent_ExhaustiveRuntimeIntents(t *testing.T) {
 	}
 }
 
-func TestPlannedRuntimeFormForIntent_RuntimeIntentPartition(t *testing.T) {
-	expected := map[RuntimeForm][]Intent{
-		RuntimeFormRouting: {
+func TestPlannedExecutionPathForIntent_RuntimeIntentPartition(t *testing.T) {
+	expected := map[ExecutionPath][]Intent{
+		ExecutionPathRouting: {
 			IntentMonitorQuery,
 			IntentResourceInfo,
 			IntentGPUSpecsQuery,
@@ -37,10 +37,10 @@ func TestPlannedRuntimeFormForIntent_RuntimeIntentPartition(t *testing.T) {
 			IntentSharedImageList,
 			IntentPricingQuery,
 		},
-		RuntimeFormTerminalRAG: {
+		ExecutionPathTerminalRAG: {
 			IntentKnowledgeQA,
 		},
-		RuntimeFormAgent: {
+		ExecutionPathAgent: {
 			IntentMonitorHistory,
 			IntentBillingInstance,
 			IntentBillingAccountUnsupported,
@@ -55,9 +55,9 @@ func TestPlannedRuntimeFormForIntent_RuntimeIntentPartition(t *testing.T) {
 		},
 	}
 
-	actual := map[RuntimeForm][]Intent{}
+	actual := map[ExecutionPath][]Intent{}
 	for _, i := range RuntimeIntents() {
-		actual[PlannedRuntimeFormForIntent(i)] = append(actual[PlannedRuntimeFormForIntent(i)], i)
+		actual[PlannedExecutionPathForIntent(i)] = append(actual[PlannedExecutionPathForIntent(i)], i)
 	}
 	for form, expectedIntents := range expected {
 		assert.ElementsMatch(t, expectedIntents, actual[form], form)
@@ -65,7 +65,7 @@ func TestPlannedRuntimeFormForIntent_RuntimeIntentPartition(t *testing.T) {
 	assert.Len(t, actual, len(expected))
 }
 
-func TestPlannedRuntimeFormForIntent_RoutingWorkflowIntents(t *testing.T) {
+func TestPlannedExecutionPathForIntent_RoutingWorkflowIntents(t *testing.T) {
 	for _, i := range []Intent{
 		IntentMonitorQuery,
 		IntentResourceInfo,
@@ -80,15 +80,15 @@ func TestPlannedRuntimeFormForIntent_RoutingWorkflowIntents(t *testing.T) {
 		IntentSharedImageList,
 		IntentPricingQuery,
 	} {
-		assert.Equal(t, RuntimeFormRouting, PlannedRuntimeFormForIntent(i), i)
+		assert.Equal(t, ExecutionPathRouting, PlannedExecutionPathForIntent(i), i)
 	}
 }
 
-func TestPlannedRuntimeFormForIntent_TerminalRAGIntent(t *testing.T) {
-	assert.Equal(t, RuntimeFormTerminalRAG, PlannedRuntimeFormForIntent(IntentKnowledgeQA))
+func TestPlannedExecutionPathForIntent_TerminalRAGIntent(t *testing.T) {
+	assert.Equal(t, ExecutionPathTerminalRAG, PlannedExecutionPathForIntent(IntentKnowledgeQA))
 }
 
-func TestPlannedRuntimeFormForIntent_AgentDefault(t *testing.T) {
+func TestPlannedExecutionPathForIntent_AgentDefault(t *testing.T) {
 	for _, i := range []Intent{
 		IntentMonitorHistory,
 		IntentBillingInstance,
@@ -103,6 +103,6 @@ func TestPlannedRuntimeFormForIntent_AgentDefault(t *testing.T) {
 		IntentUnknown,
 		Intent("made_up_intent"),
 	} {
-		assert.Equal(t, RuntimeFormAgent, PlannedRuntimeFormForIntent(i), i)
+		assert.Equal(t, ExecutionPathAgent, PlannedExecutionPathForIntent(i), i)
 	}
 }

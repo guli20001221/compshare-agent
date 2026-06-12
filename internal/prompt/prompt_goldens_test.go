@@ -13,7 +13,7 @@ type promptGoldenCase struct {
 	ID             string   `json:"id"`
 	Question       string   `json:"question"`
 	ExpectIntent   string   `json:"expect_intent"`
-	ExpectedForm   string   `json:"expected_runtime_form"`
+	ExpectedForm   string   `json:"expected_execution_path"`
 	AllowedActions []string `json:"allowed_actions"`
 	ForbiddenTools []string `json:"forbid_actions"`
 	Boundary       string   `json:"boundary"`

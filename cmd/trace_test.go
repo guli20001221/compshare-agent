@@ -1258,8 +1258,8 @@ func TestCLITraceRecorderWritesOneRedactedTraceLine(t *testing.T) {
 	if !record.Freshness.MonitorCallInCurrentTurn {
 		t.Fatal("monitor_call_in_current_turn = false, want true")
 	}
-	if record.ActualRuntimeForm != observability.RuntimeFormAgent {
-		t.Fatalf("actual_runtime_form = %q, want agent", record.ActualRuntimeForm)
+	if record.ActualExecutionPath != observability.ExecutionPathAgent {
+		t.Fatalf("actual_execution_path = %q, want agent", record.ActualExecutionPath)
 	}
 	if len(record.ToolCalls) != 1 {
 		t.Fatalf("tool calls = %d, want 1", len(record.ToolCalls))

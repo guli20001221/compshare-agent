@@ -18,7 +18,7 @@ type ProbeObservation struct {
 	ProbeID              string   `json:"probe_id"`
 	Run                  int      `json:"run"`
 	Intent               string   `json:"intent"`
-	ActualRuntimeForm    string   `json:"actual_runtime_form"`
+	ActualExecutionPath  string   `json:"actual_execution_path"`
 	RetrievalFired       bool     `json:"retrieval_fired"`
 	RetrievalHits        int      `json:"retrieval_hits"`
 	CitedChunkIDs        []string `json:"cited_chunk_ids"`
@@ -36,10 +36,10 @@ func (o ProbeObservation) ProbeSet() string {
 	return o.ProbeID
 }
 
-// ContractKey is the (intent, runtime_form, retrieval_fired) triple -- the three
+// ContractKey is the (intent, execution_path, retrieval_fired) triple -- the three
 // signals the before/after gate compares. Used to assert per-probe determinism.
 func (o ProbeObservation) ContractKey() string {
-	return fmt.Sprintf("intent=%s form=%q retrieval_fired=%t", o.Intent, o.ActualRuntimeForm, o.RetrievalFired)
+	return fmt.Sprintf("intent=%s form=%q retrieval_fired=%t", o.Intent, o.ActualExecutionPath, o.RetrievalFired)
 }
 
 // trimBOM drops a single leading UTF-8 BOM (U+FEFF) if present. PowerShell

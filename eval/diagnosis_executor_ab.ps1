@@ -225,8 +225,8 @@ foreach ($cfg in $configs) {
                 run = $i
                 question = Redact-LiveText $question
                 intent = if ($record) { [string]$record.intent_router.intent } else { "" }
-                planned_runtime_form = if ($record) { [string]$record.intent_router.planned_runtime_form } else { "" }
-                actual_runtime_form = if ($record) { [string]$record.actual_runtime_form } else { "" }
+                planned_execution_path = if ($record) { [string]$record.intent_router.planned_execution_path } else { "" }
+                actual_execution_path = if ($record) { [string]$record.actual_execution_path } else { "" }
                 route_status = if ($record) { [string]$record.intent_router.route_status } else { "" }
                 tool_actions = $toolActions
                 mutating_actions = $mutating

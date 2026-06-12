@@ -75,7 +75,7 @@ foreach ($q in $questions) {
             try { $rec = $_ | ConvertFrom-Json } catch { return }
             if ($null -ne $rec.intent_router) {
                 $intents += [string]$rec.intent_router.intent
-                $plannedForms += [string]$rec.intent_router.planned_runtime_form
+                $plannedForms += [string]$rec.intent_router.planned_execution_path
                 $cutovers += [string]$rec.intent_router.route_status
                 if (-not $rec.intent_router.schema_valid) { $schemaInvalid++ }
             }

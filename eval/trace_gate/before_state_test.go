@@ -22,16 +22,16 @@ import (
 //
 // Contract (the gap):
 //   - symptom set  -> intent "diagnosis", retrieval NEVER fires, and NO
-//     observable runtime form (ActualRuntimeForm==""): the pre-ReAct
+//     observable runtime form (ActualExecutionPath==""): the pre-ReAct
 //     which-instance clarification dead-end fires before any tool/retrieval, so
 //     the turn never reaches the agent loop. RAG never runs even though the
 //     answering external chunks exist and are retrievable (proven by how-to).
 //   - how-to set   -> intent "knowledge_qa", retrieval fires, runtime form
-//     observability.RuntimeFormTerminalRAG.
+//     observability.ExecutionPathTerminalRAG.
 //
 // Cross-package note (plan section 3): runtime form is compared against the
-// observability.RuntimeForm* STRING consts returned by DeriveActualRuntimeForm,
-// NOT intent.RuntimeForm* (a distinct typed string).
+// observability.ExecutionPath* STRING consts returned by DeriveActualExecutionPath,
+// NOT intent.ExecutionPath* (a distinct typed string).
 func TestMisroutingBeforeState(t *testing.T) {
 	f, err := os.Open("before_state_observations.jsonl")
 	if err != nil {
@@ -76,8 +76,8 @@ func TestMisroutingBeforeState(t *testing.T) {
 			if o.RetrievalFired {
 				t.Errorf("%s run%d: retrieval fired, want NOT-fired (which-instance dead-end before RAG)", o.ProbeID, o.Run)
 			}
-			if o.ActualRuntimeForm != "" {
-				t.Errorf("%s run%d: actual_runtime_form=%q, want \"\" (pre-ReAct dead-end, never reaches agent loop)", o.ProbeID, o.Run, o.ActualRuntimeForm)
+			if o.ActualExecutionPath != "" {
+				t.Errorf("%s run%d: actual_execution_path=%q, want \"\" (pre-ReAct dead-end, never reaches agent loop)", o.ProbeID, o.Run, o.ActualExecutionPath)
 			}
 		case "howto":
 			sawHowto = true
@@ -87,8 +87,8 @@ func TestMisroutingBeforeState(t *testing.T) {
 			if !o.RetrievalFired {
 				t.Errorf("%s run%d: retrieval did NOT fire, want fired", o.ProbeID, o.Run)
 			}
-			if o.ActualRuntimeForm != observability.RuntimeFormTerminalRAG {
-				t.Errorf("%s run%d: actual_runtime_form=%q, want %q", o.ProbeID, o.Run, o.ActualRuntimeForm, observability.RuntimeFormTerminalRAG)
+			if o.ActualExecutionPath != observability.ExecutionPathTerminalRAG {
+				t.Errorf("%s run%d: actual_execution_path=%q, want %q", o.ProbeID, o.Run, o.ActualExecutionPath, observability.ExecutionPathTerminalRAG)
 			}
 		default:
 			t.Errorf("%s: unknown probe set %q", o.ProbeID, o.ProbeSet())

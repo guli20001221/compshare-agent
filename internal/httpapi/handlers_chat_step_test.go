@@ -110,7 +110,7 @@ func TestDispatchChat_StepEventsAppearBeforeDone(t *testing.T) {
 	assert.Less(t, lastStep, firstDone, "all step events must precede done")
 }
 
-func TestDispatchChatTraceRecordsAgentRuntimeFormForToolCall(t *testing.T) {
+func TestDispatchChatTraceRecordsAgentExecutionPathForToolCall(t *testing.T) {
 	llmFake := &factWritingLLM{}
 	eng := engine.NewWithDeps(llmFake, factWritingExecutor{}, denyConfirm)
 	eng.RehydrateHistory(nil)
@@ -142,7 +142,7 @@ func TestDispatchChatTraceRecordsAgentRuntimeFormForToolCall(t *testing.T) {
 
 	require.Len(t, traceWriter.records, 1)
 	trace := traceWriter.records[0]
-	assert.Equal(t, observability.RuntimeFormAgent, trace.ActualRuntimeForm)
+	assert.Equal(t, observability.ExecutionPathAgent, trace.ActualExecutionPath)
 	require.Len(t, trace.ToolCalls, 1)
 	assert.Equal(t, "DescribeCompShareInstance", trace.ToolCalls[0].Action)
 }

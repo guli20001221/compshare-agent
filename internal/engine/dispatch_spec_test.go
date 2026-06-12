@@ -21,7 +21,7 @@ func TestSpecForIntent_MatchesExistingSurfaces(t *testing.T) {
 		if spec.Intent != i {
 			t.Errorf("specForIntent(%q).Intent = %q, want %q", i, spec.Intent, i)
 		}
-		if want := intent.PlannedRuntimeFormForIntent(i); spec.NominalLane != want {
+		if want := intent.PlannedExecutionPathForIntent(i); spec.NominalLane != want {
 			t.Errorf("specForIntent(%q).NominalLane = %q, want %q", i, spec.NominalLane, want)
 		}
 		if want := intent.IntentToolSubset(i); !slices.Equal(spec.ToolSubset, want) {

@@ -100,7 +100,7 @@ def analyze(summary_rows: list[dict], probes: dict[str, dict], chunks: dict[str,
         probe = probes.get(pid, {})
         kind = probe.get("kind", "")
         intent = row.get("intent") or "?"
-        form = row.get("actual_runtime_form") or "?"
+        form = row.get("actual_execution_path") or "?"
         intents[intent] = intents.get(intent, 0) + 1
         forms[form] = forms.get(form, 0) + 1
         if row.get("search_knowledge_fired"):
