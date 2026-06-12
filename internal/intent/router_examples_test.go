@@ -302,7 +302,21 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // drops it, so the hash moves by construction. No example question, PlanJSON,
 // directive, intent enum, or route order touched — classification unaffected, gated
 // by the offline intent eval (cases.json) + golden suite A/B before this lands.
-const systemPromptSHA256Baseline = "f013ea4218633a567576a023f546c9e01040d45c81ef7bce625a7c6b043c7dc8"
+//
+// #130 Stage 2 (2026-06-12) — rename the model-facing role self-description:
+// basePromptScaffold's first line "You are the IntentPlan planner for the CompShare
+// console agent." → "You are the intent router for the CompShare console agent." The
+// intent layer is a single-call classification+routing step (one intent + slots →
+// deterministic dispatch), not a multi-step planner; "IntentPlan planner" was a
+// fast-iteration misnomer (see docs/glossary.md). This is a model-read behavior
+// surface (not byte-stable), so the hash moves by construction and the change is
+// eval-gated by a live realism A/B (arm A = #286 tip, arm B = this) checking intent
+// parity / no classification drift. Only the role line changed — no intent enum,
+// required_tools, route order, example question/PlanJSON, or directive touched. The
+// retry-instruction "IntentPlan" mentions (router.go:183/187) reference the output
+// JSON object label, a distinct referent from the role identity, and are deferred to
+// the schema/label pass.
+const systemPromptSHA256Baseline = "10d56b7e02c2764e8736521e8444e50b550191662f4a4cf02c8c81a1c5715f01"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
