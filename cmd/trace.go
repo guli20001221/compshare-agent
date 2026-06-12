@@ -1180,7 +1180,7 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 			break
 		}
 	}
-	r.record.RealizedTier = r.record.DeriveRealizedTier()
+	r.record.ActualExecutionTier = r.record.DeriveActualExecutionTier()
 	r.record.ActualExecutionPath = r.record.DeriveActualExecutionPath()
 	return r.writer.Append(r.record)
 }

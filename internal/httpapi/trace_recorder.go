@@ -285,7 +285,7 @@ func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 			break
 		}
 	}
-	r.record.RealizedTier = r.record.DeriveRealizedTier()
+	r.record.ActualExecutionTier = r.record.DeriveActualExecutionTier()
 	r.record.ActualExecutionPath = r.record.DeriveActualExecutionPath()
 	if enqueuer, ok := r.writer.(traceEnqueuer); ok {
 		return enqueuer.Enqueue(r.tenant, r.record)

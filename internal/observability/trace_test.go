@@ -760,12 +760,12 @@ func TestTraceRecord_TaskTier_Serialization(t *testing.T) {
 	})
 }
 
-// RealizedTier (B4a derived dispatch tier) must serialize when populated and
+// ActualExecutionTier (B4a derived dispatch tier) must serialize when populated and
 // stay absent when empty (omitempty), same contract as TaskTier. The "empty"
 // branch protects consumers parsing pre-B4a traces from an unexpected
-// "realized_tier":"" key, and is also the on-the-wire encoding of "tier not
+// "actual_execution_tier":"" key, and is also the on-the-wire encoding of "tier not
 // observable for this turn" (attribution-observable-only).
-func TestTraceRecord_RealizedTier_Serialization(t *testing.T) {
+func TestTraceRecord_ActualExecutionTier_Serialization(t *testing.T) {
 	base := TraceRecord{
 		SchemaVersion: SchemaVersion,
 		TraceID:       "trace-1",
@@ -775,25 +775,25 @@ func TestTraceRecord_RealizedTier_Serialization(t *testing.T) {
 		UserMsgHash:   "sha256:user",
 	}
 
-	t.Run("empty RealizedTier is omitted", func(t *testing.T) {
+	t.Run("empty ActualExecutionTier is omitted", func(t *testing.T) {
 		data, err := json.Marshal(base)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		if strings.Contains(string(data), `"realized_tier"`) {
-			t.Fatalf("empty RealizedTier should be omitted, got: %s", data)
+		if strings.Contains(string(data), `"actual_execution_tier"`) {
+			t.Fatalf("empty ActualExecutionTier should be omitted, got: %s", data)
 		}
 	})
 
-	t.Run("populated RealizedTier appears in JSON", func(t *testing.T) {
+	t.Run("populated ActualExecutionTier appears in JSON", func(t *testing.T) {
 		rec := base
-		rec.RealizedTier = RealizedTierAgent
+		rec.ActualExecutionTier = ActualExecutionTierAgent
 		data, err := json.Marshal(rec)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		if !strings.Contains(string(data), `"realized_tier":"agent"`) {
-			t.Fatalf("populated RealizedTier should serialize, got: %s", data)
+		if !strings.Contains(string(data), `"actual_execution_tier":"agent"`) {
+			t.Fatalf("populated ActualExecutionTier should serialize, got: %s", data)
 		}
 	})
 }
@@ -831,7 +831,7 @@ func TestTraceRecord_ActualExecutionPath_Serialization(t *testing.T) {
 	})
 }
 
-// TestDeriveRealizedTier pins the priority-ordered derivation. The cases that
+// TestDeriveActualExecutionTier pins the priority-ordered derivation. The cases that
 // matter for correctness (not just coverage): a retrieval *fallback* that
 // continued into ReAct must read as agent (the path that actually ran), NOT
 // knowledge by status name; and a turn with no observable dispatch signal must
@@ -842,10 +842,10 @@ func TestTraceRecord_ActualExecutionPath_Serialization(t *testing.T) {
 // observability cannot import internal/intent (intent imports observability —
 // import cycle). It therefore tests the derivation ALGORITHM, not the binding to
 // the real enum VALUES. The value binding (which fails if a RouteStatus
-// constant is renamed in handler.go) lives in intent.TestRouteStatusBindsToRealizedTier,
+// constant is renamed in handler.go) lives in intent.TestRouteStatusBindsToActualExecutionTier,
 // which can reference the constants directly. Both must be kept in sync when the
 // enum changes (internal/intent/handler.go:42-58).
-func TestDeriveRealizedTier(t *testing.T) {
+func TestDeriveActualExecutionTier(t *testing.T) {
 	reactCall := []ToolCallTrace{{Source: ToolSourceMainReAct}}
 	knowledgeCall := []ToolCallTrace{{Source: ToolSourceKnowledgeLocal}}
 	cases := []struct {
@@ -854,25 +854,25 @@ func TestDeriveRealizedTier(t *testing.T) {
 		want   string
 	}{
 		{"cutover dispatched -> fast",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched"}}, RealizedTierFast},
+			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched"}}, ActualExecutionTierFast},
 		{"cutover selection_required -> fast (clarify prompt, no ReAct)",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "selection_required"}}, RealizedTierFast},
+			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "selection_required"}}, ActualExecutionTierFast},
 		{"cutover dispatched_retrieval -> knowledge",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_retrieval"}}, RealizedTierKnowledge},
+			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_retrieval"}}, ActualExecutionTierKnowledge},
 		{"cutover dispatched_agent -> agent (B8.3 deploy_model handler)",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_agent"}}, RealizedTierAgent},
+			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_agent"}}, ActualExecutionTierAgent},
 		{"no cutover but retrieval hits -> knowledge",
-			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}}, RealizedTierKnowledge},
+			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}}, ActualExecutionTierKnowledge},
 		{"main_react tool fired -> agent",
-			TraceRecord{ToolCalls: reactCall}, RealizedTierAgent},
+			TraceRecord{ToolCalls: reactCall}, ActualExecutionTierAgent},
 		{"retrieval enabled but 0 hits, ReAct ran -> agent",
-			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 0}, ToolCalls: reactCall}, RealizedTierAgent},
+			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 0}, ToolCalls: reactCall}, ActualExecutionTierAgent},
 		{"retrieval fallback continued into ReAct -> agent (path that ran, not status name)",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "fallback_retrieval_miss"}, ToolCalls: reactCall}, RealizedTierAgent},
+			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "fallback_retrieval_miss"}, ToolCalls: reactCall}, ActualExecutionTierAgent},
 		{"low-confidence fallback into ReAct -> agent",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "fallback_low_confidence"}, ToolCalls: reactCall}, RealizedTierAgent},
+			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "fallback_low_confidence"}, ToolCalls: reactCall}, ActualExecutionTierAgent},
 		{"failure_after_tool but retrieval hits present -> knowledge",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "failure_after_tool"}, Retrieval: RetrievalTrace{Enabled: true, Hits: 1}}, RealizedTierKnowledge},
+			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "failure_after_tool"}, Retrieval: RetrievalTrace{Enabled: true, Hits: 1}}, ActualExecutionTierKnowledge},
 		{"no observable signal -> unknown (not default-agent)",
 			TraceRecord{}, ""},
 		{"hard-block canned reply, no dispatch signal -> unknown",
@@ -882,8 +882,8 @@ func TestDeriveRealizedTier(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.record.DeriveRealizedTier(); got != tc.want {
-				t.Fatalf("DeriveRealizedTier() = %q, want %q", got, tc.want)
+			if got := tc.record.DeriveActualExecutionTier(); got != tc.want {
+				t.Fatalf("DeriveActualExecutionTier() = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -937,8 +937,8 @@ func TestDeriveActualExecutionPath(t *testing.T) {
 	}
 }
 
-// TestRealizedTierAndExecutionPathAreSeparateAxes pins that the work-tier axis
-// (RealizedTier) and the runtime-form axis (ActualExecutionPath) are DELIBERATELY
+// TestActualExecutionTierAndExecutionPathAreSeparateAxes pins that the work-tier axis
+// (ActualExecutionTier) and the runtime-form axis (ActualExecutionPath) are DELIBERATELY
 // distinct and diverge for real turns — they must not be collapsed into one
 // field or one shared vocabulary. WHY it matters: a turn can do knowledge-tier
 // WORK while running the agent runtime FORM; merging the two would erase that
@@ -947,27 +947,27 @@ func TestDeriveActualExecutionPath(t *testing.T) {
 // from the same record; the first two take different values per axis (knowledge
 // work, agent form), the third shows the axes agreeing on the natural
 // knowledge↔terminal_rag correspondence.
-func TestRealizedTierAndExecutionPathAreSeparateAxes(t *testing.T) {
+func TestActualExecutionTierAndExecutionPathAreSeparateAxes(t *testing.T) {
 	cases := []struct {
 		name     string
 		record   TraceRecord
-		wantTier string // work-tier axis (RealizedTier)
+		wantTier string // work-tier axis (ActualExecutionTier)
 		wantForm string // runtime-form axis (ActualExecutionPath)
 	}{
 		{"knowledge_qa agent loop: knowledge work, agent form",
 			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_knowledge_agent_loop"}},
-			RealizedTierKnowledge, ExecutionPathAgent},
+			ActualExecutionTierKnowledge, ExecutionPathAgent},
 		{"diagnosis with retrieval: knowledge work, agent form",
 			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}, ToolCalls: []ToolCallTrace{{Source: ToolSourceDiagnosisInternal}}},
-			RealizedTierKnowledge, ExecutionPathAgent},
+			ActualExecutionTierKnowledge, ExecutionPathAgent},
 		{"terminal RAG answer: knowledge work, terminal_rag form (axes agree)",
 			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_retrieval"}},
-			RealizedTierKnowledge, ExecutionPathTerminalRAG},
+			ActualExecutionTierKnowledge, ExecutionPathTerminalRAG},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.record.DeriveRealizedTier(); got != tc.wantTier {
-				t.Fatalf("DeriveRealizedTier() = %q, want %q (work-tier axis)", got, tc.wantTier)
+			if got := tc.record.DeriveActualExecutionTier(); got != tc.wantTier {
+				t.Fatalf("DeriveActualExecutionTier() = %q, want %q (work-tier axis)", got, tc.wantTier)
 			}
 			if got := tc.record.DeriveActualExecutionPath(); got != tc.wantForm {
 				t.Fatalf("DeriveActualExecutionPath() = %q, want %q (runtime-form axis)", got, tc.wantForm)
