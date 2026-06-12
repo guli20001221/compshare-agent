@@ -143,9 +143,9 @@ foreach ($q in $questions) {
     Get-ChildItem -Path $qDir -Filter "agent-trace-*.jsonl" -ErrorAction SilentlyContinue | ForEach-Object {
         Get-Content $_.FullName | Where-Object { $_.Trim() } | ForEach-Object {
             try { $rec = $_ | ConvertFrom-Json } catch { return }
-            if ($null -ne $rec.planner) {
-                $intents += [string]$rec.planner.intent
-                if (-not $rec.planner.schema_valid) { $schemaInvalid++ }
+            if ($null -ne $rec.intent_router) {
+                $intents += [string]$rec.intent_router.intent
+                if (-not $rec.intent_router.schema_valid) { $schemaInvalid++ }
             }
         }
     }

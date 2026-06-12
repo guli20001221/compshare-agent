@@ -99,7 +99,7 @@ function Read-TraceRecord {
             }
         }
     }
-    $planned = @($records | Where-Object { $null -ne $_.planner -and $_.planner.intent } | Sort-Object turn_index)
+    $planned = @($records | Where-Object { $null -ne $_.intent_router -and $_.intent_router.intent } | Sort-Object turn_index)
     if ($planned.Count -eq 0) { return $null }
     return $planned[$planned.Count - 1]
 }
@@ -190,10 +190,10 @@ foreach ($case in $cases) {
         $clarified = ($reply.Trim().Length -gt 0 -and $diagnosisActions.Count -eq 0 -and @($toolActions | Where-Object { $_ -eq "SearchKnowledge" }).Count -eq 0 -and $mutating.Count -eq 0)
 
         $checks = [ordered]@{}
-        $checks.intent = ($record -and ([string]$record.planner.intent -eq [string]$case.expect_intent))
+        $checks.intent = ($record -and ([string]$record.intent_router.intent -eq [string]$case.expect_intent))
         $checks.expected_tools = Contains-All $toolActions $expectedTools
         $checks.no_mutating = (-not [bool]$case.forbid_mutating) -or ($mutating.Count -eq 0)
-        $checks.no_diagnosis = (-not [bool]$case.forbid_diagnosis) -or ($diagnosisActions.Count -eq 0 -and [string]$record.planner.intent -ne "diagnosis")
+        $checks.no_diagnosis = (-not [bool]$case.forbid_diagnosis) -or ($diagnosisActions.Count -eq 0 -and [string]$record.intent_router.intent -ne "diagnosis")
         $checks.retrieval = (-not $expectRetrieval) -or ($retrievalEnabled -and $retrievalHits -gt 0 -or @($toolActions | Where-Object { $_ -eq "SearchKnowledge" }).Count -gt 0)
         $checks.no_unexpected_retrieval = ($expectRetrieval) -or (@($toolActions | Where-Object { $_ -eq "SearchKnowledge" }).Count -eq 0)
         $checks.body_read = (-not $requireBodyRead) -or (@($toolActions | Where-Object { $_ -eq "SearchKnowledge" }).Count -gt 0 -and @($toolActions | Where-Object { $_ -eq $expectedDiagnosisTool }).Count -gt 0)
@@ -208,10 +208,10 @@ foreach ($case in $cases) {
         $caseResults += [PSCustomObject]@{
             run = $i
             pass = $pass
-            intent = if ($record) { [string]$record.planner.intent } else { "" }
-            planned_runtime_form = if ($record) { [string]$record.planner.planned_runtime_form } else { "" }
+            intent = if ($record) { [string]$record.intent_router.intent } else { "" }
+            planned_runtime_form = if ($record) { [string]$record.intent_router.planned_runtime_form } else { "" }
             actual_runtime_form = if ($record) { [string]$record.actual_runtime_form } else { "" }
-            cutover_status = if ($record) { [string]$record.planner.cutover_status } else { "" }
+            route_status = if ($record) { [string]$record.intent_router.route_status } else { "" }
             tool_actions = $toolActions
             tool_sources = $toolSources
             retrieval_enabled = $retrievalEnabled

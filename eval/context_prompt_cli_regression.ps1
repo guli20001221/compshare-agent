@@ -136,10 +136,10 @@ foreach ($case in $cases) {
     Write-Host ">>> [$($case.id)] expected=$($case.expect_intent)" -ForegroundColor Cyan
     Invoke-AgentCase $agentExe $config $case $caseDir
     $records = @(Read-TraceRecords $caseDir)
-    $plannerRecords = @($records | Where-Object { $null -ne $_.planner })
+    $plannerRecords = @($records | Where-Object { $null -ne $_.intent_router })
     $firstPlanner = $plannerRecords | Select-Object -First 1
-    $intent = if ($firstPlanner) { [string]$firstPlanner.planner.intent } else { "" }
-    $schemaInvalid = @($plannerRecords | Where-Object { -not $_.planner.schema_valid }).Count
+    $intent = if ($firstPlanner) { [string]$firstPlanner.intent_router.intent } else { "" }
+    $schemaInvalid = @($plannerRecords | Where-Object { -not $_.intent_router.schema_valid }).Count
     $escaped = Sum-Escaped $records
     $promptTokens = Sum-OutcomeField $records "prompt_tokens"
     $completionTokens = Sum-OutcomeField $records "completion_tokens"

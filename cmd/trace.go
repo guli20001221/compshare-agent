@@ -156,7 +156,7 @@ func plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled bool, routeInt
 	} else if shadowEnabled {
 		mode = "shadow"
 	}
-	return fmt.Sprintf("planner_mode=%s cutover_intents=%s", mode, formatRouteIntents(routeIntents))
+	return fmt.Sprintf("router_mode=%s route_intents=%s", mode, formatRouteIntents(routeIntents))
 }
 
 func groundedRendererRuntimeLine(mode string) string {
@@ -419,7 +419,7 @@ func plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled bool, routeIntent
 		mode = "shadow"
 	}
 	return observability.RuntimeTrace{
-		PlannerMode:  mode,
+		RouterMode:   mode,
 		RouteIntents: routeIntentLabels(routeIntents),
 	}
 }
@@ -978,7 +978,7 @@ func (r *cliTraceRecorder) SetPlannerTrace(trace observability.RouterTrace) {
 	if r == nil {
 		return
 	}
-	r.record.Planner = trace
+	r.record.IntentRouter = trace
 	r.addPlannerTokens(trace)
 	r.plannerTraceSupplier = nil
 }
@@ -1167,8 +1167,8 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 		r.record.EntityRegistry = r.registryTraceSupplier(end)
 	}
 	if r.plannerTraceSupplier != nil {
-		r.record.Planner = r.plannerTraceSupplier()
-		r.addPlannerTokens(r.record.Planner)
+		r.record.IntentRouter = r.plannerTraceSupplier()
+		r.addPlannerTokens(r.record.IntentRouter)
 	}
 	r.record.Outcome.TotalLatencyMS = end.Sub(r.start).Milliseconds()
 	r.record.Outcome.TotalTokens = r.totalTokens

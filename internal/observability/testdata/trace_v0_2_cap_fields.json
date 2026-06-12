@@ -4,8 +4,8 @@
   "turn_id": "turn-2",
   "turn_index": 2,
   "runtime": {
-    "planner_mode": "shadow",
-    "cutover_intents": ["monitor"]
+    "router_mode": "shadow",
+    "route_intents": ["monitor"]
   },
   "tool_calls": [
     {

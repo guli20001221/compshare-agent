@@ -44,9 +44,9 @@ func TestShadowMonitorFixturesEval(t *testing.T) {
 			report := evaluateShadowMonitorRecord(record)
 
 			if fx.RequireMonitorIntent {
-				assert.True(t, isShadowMonitorIntent(record.Planner.Intent), "turn 2 should be monitor intent")
+				assert.True(t, isShadowMonitorIntent(record.IntentRouter.Intent), "turn 2 should be monitor intent")
 				for _, metric := range fx.ExpectedMetrics {
-					assert.Contains(t, record.Planner.Slots.Metrics, metric)
+					assert.Contains(t, record.IntentRouter.Slots.Metrics, metric)
 				}
 			}
 			if fx.ExpectHardBlock {
@@ -112,7 +112,7 @@ func shadowPriorText(turns []shadowFixtureTurn) string {
 func shadowTraceRecordFromFixture(fx shadowMonitorFixture, planner observability.RouterTrace) observability.TraceRecord {
 	record := observability.TraceRecord{
 		TurnIndex: 2,
-		Planner:   planner,
+		IntentRouter:   planner,
 	}
 	if fx.ExpectHardBlock {
 		record.EngineHardBlock = observability.EngineHardBlockTrace{
@@ -137,7 +137,7 @@ func shadowTraceRecordFromFixture(fx shadowMonitorFixture, planner observability
 
 func evaluateShadowMonitorRecord(record observability.TraceRecord) shadowMonitorReport {
 	return shadowMonitorReport{
-		MonitorFreshnessMiss: isShadowMonitorIntent(record.Planner.Intent) && !hasCurrentTurnMonitorCall(record),
+		MonitorFreshnessMiss: isShadowMonitorIntent(record.IntentRouter.Intent) && !hasCurrentTurnMonitorCall(record),
 	}
 }
 

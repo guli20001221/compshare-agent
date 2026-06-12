@@ -102,7 +102,7 @@ function Read-TraceRecord {
             }
         }
     }
-    $planned = @($records | Where-Object { $null -ne $_.planner -and $_.planner.intent } | Sort-Object turn_index)
+    $planned = @($records | Where-Object { $null -ne $_.intent_router -and $_.intent_router.intent } | Sort-Object turn_index)
     if ($planned.Count -eq 0) { return $null }
     return $planned[$planned.Count - 1]
 }
@@ -178,11 +178,11 @@ foreach ($cfg in $configs) {
                 }
             }
 
-            $intentHit = ($record -and ([string]$record.planner.intent -eq [string]$case.expect_intent))
+            $intentHit = ($record -and ([string]$record.intent_router.intent -eq [string]$case.expect_intent))
             $actionHit = (-not $expectedAction) -or (@($toolActions | Where-Object { $_ -eq $expectedAction }).Count -gt 0)
             $noRawLeak = ($forbiddenHits.Count -eq 0)
             $noMutating = (-not [bool]$case.forbid_mutating) -or ($mutating.Count -eq 0)
-            $controlOk = (-not [bool]$case.forbid_diagnosis) -or ($diagnosisActions.Count -eq 0 -and [string]$record.planner.intent -ne "diagnosis")
+            $controlOk = (-not [bool]$case.forbid_diagnosis) -or ($diagnosisActions.Count -eq 0 -and [string]$record.intent_router.intent -ne "diagnosis")
             $noUnexpectedTools = (-not [bool]$case.expect_no_tools) -or ($toolActions.Count -eq 0)
             $qualityOk = Contains-Any $reply @($case.quality_terms)
             $bodyReadOk = (-not $expectedBodyRead) -or ($searchCalls.Count -gt 0 -and $actionHit)
@@ -224,10 +224,10 @@ foreach ($cfg in $configs) {
                 case_id = [string]$case.id
                 run = $i
                 question = Redact-LiveText $question
-                intent = if ($record) { [string]$record.planner.intent } else { "" }
-                planned_runtime_form = if ($record) { [string]$record.planner.planned_runtime_form } else { "" }
+                intent = if ($record) { [string]$record.intent_router.intent } else { "" }
+                planned_runtime_form = if ($record) { [string]$record.intent_router.planned_runtime_form } else { "" }
                 actual_runtime_form = if ($record) { [string]$record.actual_runtime_form } else { "" }
-                cutover_status = if ($record) { [string]$record.planner.cutover_status } else { "" }
+                route_status = if ($record) { [string]$record.intent_router.route_status } else { "" }
                 tool_actions = $toolActions
                 mutating_actions = $mutating
                 diagnosis_actions = $diagnosisActions

@@ -57,7 +57,7 @@ class PlannerVsGuardDiffTests(unittest.TestCase):
             {
                 "trace_id": "legacy",
                 "turn_index": 1,
-                "planner": {
+                "intent_router": {
                     "enabled": True,
                     "schema_valid": True,
                     "intent": "mixed_diagnosis_kb",
@@ -66,7 +66,7 @@ class PlannerVsGuardDiffTests(unittest.TestCase):
             {
                 "trace_id": "legacy-billing",
                 "turn_index": 2,
-                "planner": {
+                "intent_router": {
                     "enabled": True,
                     "schema_valid": True,
                     "intent": "billing_instance",
@@ -75,7 +75,7 @@ class PlannerVsGuardDiffTests(unittest.TestCase):
             {
                 "trace_id": "new-diagnosis",
                 "turn_index": 3,
-                "planner": {
+                "intent_router": {
                     "enabled": True,
                     "schema_valid": True,
                     "intent": "diagnosis",

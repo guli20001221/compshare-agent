@@ -64,9 +64,9 @@ func Aggregate(records []observability.TraceRecord, labels Labels) Stats {
 	var stats Stats
 	for _, record := range records {
 		stats.TotalRecords++
-		if plannerObserved(record.Planner) {
+		if plannerObserved(record.IntentRouter) {
 			stats.PlannerHandled++
-			if !record.Planner.SchemaValid {
+			if !record.IntentRouter.SchemaValid {
 				stats.SchemaInvalid++
 			}
 		}
@@ -85,18 +85,18 @@ func Aggregate(records []observability.TraceRecord, labels Labels) Stats {
 		stats.LabeledRecords++
 		if label.CuratedSchemaValid {
 			stats.CuratedSchemaTotal++
-			if !record.Planner.SchemaValid {
+			if !record.IntentRouter.SchemaValid {
 				stats.CuratedSchemaInvalid++
 			}
 		}
-		if label.ExpectedIntent != "" && record.Planner.Intent != label.ExpectedIntent {
+		if label.ExpectedIntent != "" && record.IntentRouter.Intent != label.ExpectedIntent {
 			stats.IntentMismatches = append(stats.IntentMismatches, IntentMismatch{
 				Key:  recordKey(record),
 				Want: label.ExpectedIntent,
-				Got:  record.Planner.Intent,
+				Got:  record.IntentRouter.Intent,
 			})
 		}
-		if label.ForbiddenIntent != "" && record.Planner.Intent == label.ForbiddenIntent {
+		if label.ForbiddenIntent != "" && record.IntentRouter.Intent == label.ForbiddenIntent {
 			stats.ForbiddenIntentHits = append(stats.ForbiddenIntentHits, ForbiddenIntentHit{
 				Key:       recordKey(record),
 				Forbidden: label.ForbiddenIntent,

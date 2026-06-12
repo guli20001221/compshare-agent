@@ -89,7 +89,7 @@ function Read-TraceRecord {
             try { $records += ($_ | ConvertFrom-Json) } catch { }
         }
     }
-    $planned = @($records | Where-Object { $null -ne $_.planner -and $_.planner.intent } | Sort-Object turn_index)
+    $planned = @($records | Where-Object { $null -ne $_.intent_router -and $_.intent_router.intent } | Sort-Object turn_index)
     if ($planned.Count -eq 0) { return $null }
     return $planned[$planned.Count - 1]
 }
@@ -131,7 +131,7 @@ foreach ($probe in $probes) {
         $rec = Read-TraceRecord $runDir
         $intent = ""; $arf = ""; $rEnabled = $false; $rHits = 0; $cited = @(); $retrievedChunks = @(); $weakEvidence = $false; $toolActions = @(); $stepTools = @()
         if ($null -ne $rec) {
-            if ($rec.planner) { $intent = [string]$rec.planner.intent }
+            if ($rec.intent_router) { $intent = [string]$rec.intent_router.intent }
             $arf = [string]$rec.actual_runtime_form
             if ($rec.retrieval) {
                 $rEnabled = [bool]$rec.retrieval.enabled

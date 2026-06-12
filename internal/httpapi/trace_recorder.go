@@ -102,7 +102,7 @@ func (r *chatTraceRecorder) SetPlannerTrace(trace observability.RouterTrace) {
 	if r == nil {
 		return
 	}
-	r.record.Planner = trace
+	r.record.IntentRouter = trace
 	r.totalTokens += trace.InputTokens + trace.OutputTokens
 	r.promptTokens += trace.InputTokens
 	r.completionTokens += trace.OutputTokens

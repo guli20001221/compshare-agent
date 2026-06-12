@@ -159,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _planner(record: dict[str, Any]) -> dict[str, Any]:
-    planner = record.get("planner")
+    planner = record.get("intent_router")
     return planner if isinstance(planner, dict) else {}
 
 

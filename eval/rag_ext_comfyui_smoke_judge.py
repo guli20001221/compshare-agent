@@ -64,7 +64,7 @@ def load_trace(qdir: Path):
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            pl = rec.get("planner") or {}
+            pl = rec.get("intent_router") or {}
             if isinstance(pl, dict) and pl.get("intent"):
                 intent = str(pl.get("intent"))
             rt = rec.get("retrieval") or {}
