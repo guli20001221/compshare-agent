@@ -1,12 +1,12 @@
 package intent
 
-// Planner one-shot examples — disk-backed migration (C5 Phase A).
+// Intent-router one-shot examples — disk-backed migration (C5 Phase A).
 //
 // Background
 // ----------
-// plannerPromptExampleGroups() in planner.go inlines ~30 one-shot
+// routerPromptExampleGroups() in router.go inlines ~30 one-shot
 // examples across 7 intent groups. That data is editorial — adding /
-// editing a one-shot example is a planner-prompt change, not a
+// editing a one-shot example is a router-prompt change, not a
 // behavioral code change. Mixing the two in a Go literal block makes
 // editorial review heavy (need to know Go) and obscures which intent
 // owns which example.
@@ -56,7 +56,7 @@ import (
 var plannerExamplesFS embed.FS
 
 // plannerExampleFile is the on-disk frontmatter shape. Mapped 1:1 to
-// the in-memory plannerPromptExampleGroup struct.
+// the in-memory routerPromptExampleGroup struct.
 type plannerExampleFile struct {
 	Intent   string                `yaml:"intent"`
 	Source   string                `yaml:"source"`
@@ -71,16 +71,16 @@ type plannerExampleEntry struct {
 }
 
 // diskPlannerExampleGroups returns the disk-backed example groups
-// indexed by Intent. Used by plannerPromptExampleGroups() to splice
+// indexed by Intent. Used by routerPromptExampleGroups() to splice
 // migrated intents into the prompt in place of inline literals.
 //
 // Phase A only migrates IntentDiagnosis. Other intents return zero
-// entries here and remain inline in planner.go; the byte-equal test
-// (planner_examples_test.go) pins that the rendered prompt is
+// entries here and remain inline in router.go; the byte-equal test
+// (router_examples_test.go) pins that the rendered prompt is
 // identical before and after.
 var diskPlannerExampleGroups = mustLoadPlannerExampleGroups()
 
-func mustLoadPlannerExampleGroups() map[Intent]plannerPromptExampleGroup {
+func mustLoadPlannerExampleGroups() map[Intent]routerPromptExampleGroup {
 	loaded, err := loadPlannerExampleGroups(plannerExamplesFS)
 	if err != nil {
 		panic(fmt.Sprintf("intent: planner example load failed: %v", err))
@@ -88,12 +88,12 @@ func mustLoadPlannerExampleGroups() map[Intent]plannerPromptExampleGroup {
 	return loaded
 }
 
-func loadPlannerExampleGroups(efs fs.FS) (map[Intent]plannerPromptExampleGroup, error) {
+func loadPlannerExampleGroups(efs fs.FS) (map[Intent]routerPromptExampleGroup, error) {
 	entries, err := fs.ReadDir(efs, "planner_examples")
 	if err != nil {
 		return nil, fmt.Errorf("read planner_examples dir: %w", err)
 	}
-	out := map[Intent]plannerPromptExampleGroup{}
+	out := map[Intent]routerPromptExampleGroup{}
 	for _, ent := range entries {
 		if ent.IsDir() {
 			continue
@@ -118,49 +118,49 @@ func loadPlannerExampleGroups(efs fs.FS) (map[Intent]plannerPromptExampleGroup, 
 	return out, nil
 }
 
-func parsePlannerExampleFrontmatter(data []byte) (plannerPromptExampleGroup, error) {
+func parsePlannerExampleFrontmatter(data []byte) (routerPromptExampleGroup, error) {
 	content := string(data)
 	if !strings.HasPrefix(content, "---") {
-		return plannerPromptExampleGroup{}, fmt.Errorf("missing frontmatter `---` opener")
+		return routerPromptExampleGroup{}, fmt.Errorf("missing frontmatter `---` opener")
 	}
 	rest := strings.TrimPrefix(content, "---")
 	rest = strings.TrimLeft(rest, "\r\n")
 	closer := strings.Index(rest, "\n---")
 	if closer < 0 {
-		return plannerPromptExampleGroup{}, fmt.Errorf("missing frontmatter `---` closer")
+		return routerPromptExampleGroup{}, fmt.Errorf("missing frontmatter `---` closer")
 	}
 	frontmatter := rest[:closer]
 	var file plannerExampleFile
 	decoder := yaml.NewDecoder(bytes.NewReader([]byte(frontmatter)))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&file); err != nil {
-		return plannerPromptExampleGroup{}, fmt.Errorf("yaml unmarshal: %w", err)
+		return routerPromptExampleGroup{}, fmt.Errorf("yaml unmarshal: %w", err)
 	}
 	if file.Intent == "" {
-		return plannerPromptExampleGroup{}, fmt.Errorf("intent must be non-empty")
+		return routerPromptExampleGroup{}, fmt.Errorf("intent must be non-empty")
 	}
 	if file.Source == "" {
-		return plannerPromptExampleGroup{}, fmt.Errorf("source must be non-empty")
+		return routerPromptExampleGroup{}, fmt.Errorf("source must be non-empty")
 	}
 	if len(file.Examples) == 0 {
-		return plannerPromptExampleGroup{}, fmt.Errorf("examples must be non-empty")
+		return routerPromptExampleGroup{}, fmt.Errorf("examples must be non-empty")
 	}
-	group := plannerPromptExampleGroup{
+	group := routerPromptExampleGroup{
 		Intent:  Intent(file.Intent),
 		Source:   file.Source,
 		compact: file.Compact,
 	}
 	for i, ex := range file.Examples {
 		if strings.TrimSpace(ex.Question) == "" {
-			return plannerPromptExampleGroup{}, fmt.Errorf("examples[%d].question must be non-empty", i)
+			return routerPromptExampleGroup{}, fmt.Errorf("examples[%d].question must be non-empty", i)
 		}
 		if strings.TrimSpace(ex.PlanJSON) == "" {
-			return plannerPromptExampleGroup{}, fmt.Errorf("examples[%d].plan_json must be non-empty", i)
+			return routerPromptExampleGroup{}, fmt.Errorf("examples[%d].plan_json must be non-empty", i)
 		}
 		if strings.TrimSpace(ex.Source) == "" {
-			return plannerPromptExampleGroup{}, fmt.Errorf("examples[%d].source must be non-empty", i)
+			return routerPromptExampleGroup{}, fmt.Errorf("examples[%d].source must be non-empty", i)
 		}
-		group.Examples = append(group.Examples, plannerPromptExample{
+		group.Examples = append(group.Examples, routerPromptExample{
 			Question: ex.Question,
 			PlanJSON: ex.PlanJSON,
 			Source:   ex.Source,

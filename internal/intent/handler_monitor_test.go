@@ -238,8 +238,8 @@ func TestMonitorQueryHandler_FallbackInstanceIDNotInSnapshotTriggersSelection(t 
 	assert.Empty(t, exec.calls)
 }
 
-func monitorQueryPlan(refs []TargetRef, metrics []Metric, window *TimeWindow) Plan {
-	return Plan{
+func monitorQueryPlan(refs []TargetRef, metrics []Metric, window *TimeWindow) IntentRoute {
+	return IntentRoute{
 		SchemaVersion: SchemaVersion,
 		Intent:        IntentMonitorQuery,
 		Slots: Slots{

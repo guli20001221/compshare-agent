@@ -50,7 +50,7 @@ func TestTraceRecord_NoStepsByteIdentity(t *testing.T) {
 		TurnIndex:     0,
 		Timestamp:     "2026-05-31T00:00:00Z",
 		UserMsgHash:   "sha256:abc",
-		Planner:       PlannerTrace{Enabled: true, Intent: "resource"},
+		Planner:       RouterTrace{Enabled: true, Intent: "resource"},
 		ToolCalls:     []ToolCallTrace{{ID: "tc-1", Action: "DescribeCompShareInstance", Source: ToolSourceMainReAct}},
 		Retrieval:     RetrievalTrace{Enabled: true, Hits: 2},
 		// Steps intentionally nil — the non-agent turn case.

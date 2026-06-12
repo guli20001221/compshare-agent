@@ -216,7 +216,7 @@ func recordKey(record observability.TraceRecord) string {
 	return record.TraceID
 }
 
-func plannerObserved(trace observability.PlannerTrace) bool {
+func plannerObserved(trace observability.RouterTrace) bool {
 	return trace.Enabled ||
 		trace.Model != "" ||
 		trace.LatencyMS != 0 ||

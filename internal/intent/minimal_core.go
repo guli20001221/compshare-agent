@@ -10,8 +10,8 @@ type minimalPlanCore struct {
 	Action     LifecycleAction `json:"action,omitempty"`
 }
 
-func compileMinimalPlanCore(core minimalPlanCore) Plan {
-	plan := Plan{
+func compileMinimalPlanCore(core minimalPlanCore) IntentRoute {
+	plan := IntentRoute{
 		SchemaVersion: SchemaVersion,
 		Intent:        core.Intent,
 		Slots: Slots{

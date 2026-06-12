@@ -12,7 +12,7 @@ func TestCompileMinimalPlanCore_AllRuntimeIntentsProduceValidPlan(t *testing.T) 
 		t.Run(string(intentValue), func(t *testing.T) {
 			plan := compileMinimalPlanCore(minimalPlanCore{Intent: intentValue})
 
-			require.NoError(t, ValidatePlan(plan, ValidationContext{}))
+			require.NoError(t, ValidateRoute(plan, ValidationContext{}))
 			assert.Equal(t, SchemaVersion, plan.SchemaVersion)
 			assert.Equal(t, intentValue, plan.Intent)
 			assert.False(t, plan.Retrieval.Enabled)
@@ -43,7 +43,7 @@ func TestCompileMinimalPlanCore_PreservesStructuredSlots(t *testing.T) {
 
 	plan := compileMinimalPlanCore(core)
 
-	require.NoError(t, ValidatePlan(plan, ValidationContext{
+	require.NoError(t, ValidateRoute(plan, ValidationContext{
 		UserText: "看看 uhost-abc123 的 CPU 和 GPU 监控",
 		Registry: testRegistry(t),
 	}))
@@ -61,7 +61,7 @@ func TestCompileMinimalPlanCore_DerivesLifecycleActionAndTools(t *testing.T) {
 		Action: LifecycleActionReboot,
 	})
 
-	require.NoError(t, ValidatePlan(plan, ValidationContext{}))
+	require.NoError(t, ValidateRoute(plan, ValidationContext{}))
 	assert.Equal(t, LifecycleActionReboot, plan.Slots.Action)
 	assert.Equal(t, []string{"DescribeCompShareInstance"}, plan.RequiredTools)
 	assert.Empty(t, plan.Skills)
@@ -70,7 +70,7 @@ func TestCompileMinimalPlanCore_DerivesLifecycleActionAndTools(t *testing.T) {
 func TestCompileMinimalPlanCore_DerivesRouteSkillAndExtraTools(t *testing.T) {
 	plan := compileMinimalPlanCore(minimalPlanCore{Intent: IntentStockAvailability})
 
-	require.NoError(t, ValidatePlan(plan, ValidationContext{}))
+	require.NoError(t, ValidateRoute(plan, ValidationContext{}))
 	assert.Equal(t, []string{
 		"CheckCompShareResourceCapacity",
 		"DescribeAvailableCompShareInstanceTypes",

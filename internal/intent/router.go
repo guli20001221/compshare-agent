@@ -20,38 +20,38 @@ const (
 	OutputModeStrictPromptJSON OutputMode = "strict_prompt_json"
 )
 
-type PlannerLLM interface {
-	CompleteIntentPlan(ctx context.Context, req PlannerLLMRequest) (string, error)
+type IntentRouterLLM interface {
+	CompleteIntentPlan(ctx context.Context, req IntentRouterLLMRequest) (string, error)
 }
 
-type PlannerLLMWithUsage interface {
-	CompleteIntentPlanWithUsage(ctx context.Context, req PlannerLLMRequest) (PlannerLLMResponse, error)
+type IntentRouterLLMWithUsage interface {
+	CompleteIntentPlanWithUsage(ctx context.Context, req IntentRouterLLMRequest) (IntentRouterLLMResponse, error)
 }
 
-type PlannerLLMResponse struct {
+type IntentRouterLLMResponse struct {
 	Content string
 	Usage   llm.TokenUsage
 }
 
-type PlannerLLMRequest struct {
+type IntentRouterLLMRequest struct {
 	Mode         OutputMode
 	SystemPrompt string
 	UserPrompt   string
 }
 
-type PlannerOptions struct {
+type IntentRouterOptions struct {
 	BaseURL          string
 	Model            string
 	MaxRetries       int
 	LookupCapability func(baseURL, model string) llm.Capability
 }
 
-type PlannerInput struct {
+type IntentRouterInput struct {
 	UserText     string
 	ImageContext string
 	LastIntent   string
 	// PriorText is retained as the validator's `source:prior_turn` span
-	// haystack (see ValidationContext.PriorText). The planner USER prompt
+	// haystack (see ValidationContext.PriorText). The intent-router USER prompt
 	// no longer dumps it verbatim — PR1 hotfix Bug 2 (2026-05-28): structured
 	// signals (LastSelectedInstanceID + LastAssistantSnippet) replace it to
 	// avoid the 5k→11k input_tok avalanche that broke ds-v4-flash JSON
@@ -59,8 +59,8 @@ type PlannerInput struct {
 	// structured-signals.
 	PriorText string
 	// LastSelectedInstanceID surfaces SessionState.SelectedInstanceID so the
-	// planner can resolve "那台机" / "它" cross-turn references without seeing
-	// the full transcript.
+	// intent router can resolve "那台机" / "它" cross-turn references without
+	// seeing the full transcript.
 	LastSelectedInstanceID string
 	// LastAssistantSnippet is the prefix of the most recent assistant reply
 	// (capped at ~200 chars) used as a low-token topic continuity hint.
@@ -71,8 +71,8 @@ type PlannerInput struct {
 	Registry *entity.EntityRegistry
 }
 
-type PlannerResult struct {
-	Plan               Plan
+type IntentRouterResult struct {
+	Plan               IntentRoute
 	Mode               OutputMode
 	Attempts           int
 	Fallback           bool
@@ -81,29 +81,18 @@ type PlannerResult struct {
 }
 
 type IntentRouter struct {
-	llm              PlannerLLM
+	llm              IntentRouterLLM
 	baseURL          string
 	model            string
 	maxRetries       int
 	lookupCapability func(baseURL, model string) llm.Capability
 }
 
-// Planner is the deprecated one-release compatibility alias for IntentRouter.
-// The type was renamed (PR4 of the Intent-Router / Dispatch-Contract
-// restructure) to name what it actually is: an intent ROUTER — one LLM call
-// produces one intent label — not a multi-step planner. The alias keeps existing
-// call sites (intent.Planner, NewPlanner's *Planner return, cmd newCLIPlanner)
-// compiling while they migrate; new code should use IntentRouter. Being an alias
-// (=) it is the same type: identical method set, no behavior change.
-//
-// Deprecated: use IntentRouter.
-type Planner = IntentRouter
-
-// NewIntentRouter constructs an IntentRouter from a planner LLM client and
-// options. It applies the default capability lookup (llm.LookupCapability) when
-// none is supplied and a minimum of one retry. This is the canonical
-// constructor; NewPlanner is a deprecated shim that delegates here.
-func NewIntentRouter(client PlannerLLM, opts PlannerOptions) *IntentRouter {
+// NewIntentRouter constructs an IntentRouter from an intent-router LLM client
+// and options. It applies the default capability lookup (llm.LookupCapability)
+// when none is supplied and a minimum of one retry. This is the canonical
+// constructor.
+func NewIntentRouter(client IntentRouterLLM, opts IntentRouterOptions) *IntentRouter {
 	lookup := opts.LookupCapability
 	if lookup == nil {
 		lookup = llm.LookupCapability
@@ -121,16 +110,6 @@ func NewIntentRouter(client PlannerLLM, opts PlannerOptions) *IntentRouter {
 	}
 }
 
-// NewPlanner is the deprecated one-release compatibility shim for
-// NewIntentRouter. It keeps existing call sites (cmd newCLIPlanner, tests)
-// compiling while they migrate; the return type *Planner is an alias of
-// *IntentRouter, so this is pure delegation with no behavior change.
-//
-// Deprecated: use NewIntentRouter.
-func NewPlanner(client PlannerLLM, opts PlannerOptions) *Planner {
-	return NewIntentRouter(client, opts)
-}
-
 func SelectOutputMode(cap llm.Capability) OutputMode {
 	if cap.SupportsJSONSchema && !cap.IsThinkingMode {
 		return OutputModeJSONSchema
@@ -141,15 +120,15 @@ func SelectOutputMode(cap llm.Capability) OutputMode {
 	return OutputModeStrictPromptJSON
 }
 
-func (p *IntentRouter) Plan(ctx context.Context, input PlannerInput) (PlannerResult, error) {
+func (p *IntentRouter) Plan(ctx context.Context, input IntentRouterInput) (IntentRouterResult, error) {
 	mode := SelectOutputMode(p.lookupCapability(p.baseURL, p.model))
-	result := PlannerResult{
+	result := IntentRouterResult{
 		Plan:     unknownFallbackPlan(),
 		Mode:     mode,
 		Fallback: true,
 	}
 	if p.llm == nil {
-		return result, fmt.Errorf("intent planner LLM is nil")
+		return result, fmt.Errorf("intent router LLM is nil")
 	}
 
 	systemPrompt := buildSystemPrompt()
@@ -157,7 +136,7 @@ func (p *IntentRouter) Plan(ctx context.Context, input PlannerInput) (PlannerRes
 	attempts := p.maxRetries + 1
 	for attempt := 1; attempt <= attempts; attempt++ {
 		result.Attempts = attempt
-		raw, usage, err := p.completeIntentPlan(ctx, PlannerLLMRequest{
+		raw, usage, err := p.completeIntentPlan(ctx, IntentRouterLLMRequest{
 			Mode:         mode,
 			SystemPrompt: systemPrompt,
 			UserPrompt:   userPrompt,
@@ -170,7 +149,7 @@ func (p *IntentRouter) Plan(ctx context.Context, input PlannerInput) (PlannerRes
 		var validationErr *ValidationError
 		plan, parseErr := parsePlanJSON(raw)
 		if parseErr == nil {
-			err = ValidatePlan(plan, ValidationContext{
+			err = ValidateRoute(plan, ValidationContext{
 				UserText:  input.UserText,
 				PriorText: input.PriorText,
 				Resolver:  input.entityResolver(),
@@ -178,7 +157,7 @@ func (p *IntentRouter) Plan(ctx context.Context, input PlannerInput) (PlannerRes
 			})
 			if err == nil {
 				plan = withDerivedSelectedSkills(plan)
-				return PlannerResult{
+				return IntentRouterResult{
 					Plan:     plan,
 					Mode:     mode,
 					Attempts: attempt,
@@ -239,8 +218,8 @@ func repairInstructionForValidationCode(code ErrorCode) string {
 	}
 }
 
-func (p *IntentRouter) completeIntentPlan(ctx context.Context, req PlannerLLMRequest) (string, llm.TokenUsage, error) {
-	if withUsage, ok := p.llm.(PlannerLLMWithUsage); ok {
+func (p *IntentRouter) completeIntentPlan(ctx context.Context, req IntentRouterLLMRequest) (string, llm.TokenUsage, error) {
+	if withUsage, ok := p.llm.(IntentRouterLLMWithUsage); ok {
 		resp, err := withUsage.CompleteIntentPlanWithUsage(ctx, req)
 		return resp.Content, resp.Usage, err
 	}
@@ -255,7 +234,7 @@ func addTokenUsage(left, right llm.TokenUsage) llm.TokenUsage {
 	return left
 }
 
-func (input PlannerInput) entityResolver() EntityResolver {
+func (input IntentRouterInput) entityResolver() EntityResolver {
 	if input.Resolver != nil {
 		return input.Resolver
 	}
@@ -265,29 +244,29 @@ func (input PlannerInput) entityResolver() EntityResolver {
 	return nil
 }
 
-func parsePlanJSON(raw string) (Plan, error) {
-	var plan Plan
+func parsePlanJSON(raw string) (IntentRoute, error) {
+	var plan IntentRoute
 	raw = strings.TrimSpace(raw)
 	raw = strings.TrimPrefix(raw, "```json")
 	raw = strings.TrimPrefix(raw, "```")
 	raw = strings.TrimSuffix(raw, "```")
 	raw = strings.TrimSpace(raw)
 	if err := json.Unmarshal([]byte(raw), &plan); err != nil {
-		return Plan{}, err
+		return IntentRoute{}, err
 	}
 	return plan, nil
 }
 
-type plannerPromptExample struct {
+type routerPromptExample struct {
 	Question string
 	PlanJSON string
 	Source   string
 }
 
-type plannerPromptExampleGroup struct {
+type routerPromptExampleGroup struct {
 	Intent   Intent
 	Source   string
-	Examples []plannerPromptExample
+	Examples []routerPromptExample
 	// compact renders the group as a shared plan JSON + question list instead
 	// of repeating the full JSON per example. Use for groups where all examples
 	// share the same output structure (e.g. knowledge_qa: empty slots, empty
@@ -295,12 +274,12 @@ type plannerPromptExampleGroup struct {
 	compact bool
 }
 
-func plannerPromptExampleGroups() []plannerPromptExampleGroup {
-	return []plannerPromptExampleGroup{
+func routerPromptExampleGroups() []routerPromptExampleGroup {
+	return []routerPromptExampleGroup{
 		{
 			Intent: IntentResourceInfo,
 			Source: "Phase 1 baseline resource inventory routing",
-			Examples: []plannerPromptExample{
+			Examples: []routerPromptExample{
 				{
 					Question: "show resource info for my-test-agent",
 					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"name","value":"my-test-agent","source":"user_text","source_span":"my-test-agent"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
@@ -354,7 +333,7 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 			// generic instance summary.
 			Intent: IntentDiskInfo,
 			Source: "2026-05-29 disk-listing routing fix (upstream has no list API; reuse DescribeCompShareInstance.DiskSet)",
-			Examples: []plannerPromptExample{
+			Examples: []routerPromptExample{
 				{
 					Question: "我有哪些数据盘",
 					PlanJSON: `{"schema_version":"1.0","intent":"disk_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
@@ -380,7 +359,7 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 		{
 			Intent: IntentUnknown,
 			Source: "Phase 1 demo boundary: unsupported non-platform requests",
-			Examples: []plannerPromptExample{
+			Examples: []routerPromptExample{
 				{
 					Question: "今天北京天气怎么样",
 					PlanJSON: `{"schema_version":"1.0","intent":"unknown","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.7}`,
@@ -396,7 +375,7 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 		{
 			Intent: IntentMonitorQuery,
 			Source: "Phase 1 baseline monitor routing",
-			Examples: []plannerPromptExample{
+			Examples: []routerPromptExample{
 				{
 					Question: "show current CPU and GPU monitor for my-test-agent",
 					PlanJSON: `{"schema_version":"1.0","intent":"monitor_query","slots":{"target_refs":[{"type":"name","value":"my-test-agent","source":"user_text","source_span":"my-test-agent"}],"metrics":["cpu","gpu"],"time_window":{"type":"preset","value":"now"}},"required_tools":["GetCompShareInstanceMonitor"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
@@ -414,12 +393,12 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 		// Phase A diagnosis migration — see TestPlannerExamples_KnowledgeQADisk
 		// LoaderEqualsLegacy + the SHA hash in TestPlannerExamples_FullSystem
 		// PromptStable. Editorial review of knowledge_qa anchors now happens
-		// in the markdown file; planner.go retains structural code only.
+		// in the markdown file; router.go retains structural code only.
 		diskPlannerExampleGroups[IntentKnowledgeQA],
 		{
 			Intent: IntentBillingAccountUnsupported,
 			Source: "PR #52 finance process vs personal-status hard-block split",
-			Examples: []plannerPromptExample{
+			Examples: []routerPromptExample{
 				{
 					Question: "account balance",
 					PlanJSON: `{"schema_version":"1.0","intent":"billing_account_unsupported","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":true,"confidence":0.9}`,
@@ -445,7 +424,7 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 			// F:/compshare-agent-runs/q04-jitter-20260520-165129.
 			Intent: IntentBillingInstance,
 			Source: "Stable routing for personal billing complaints with vague cause (2026-05-20 N=5 jitter check)",
-			Examples: []plannerPromptExample{
+			Examples: []routerPromptExample{
 				{
 					Question: "充值 10 块就被扣完了 我啥也没干啊",
 					PlanJSON: `{"schema_version":"1.0","intent":"billing_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance","DiagnoseBilling"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
@@ -477,7 +456,7 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 			// target-ref-required-for-operation-lifecycle.
 			Intent: IntentOperationLifecycle,
 			Source: "PR1 hotfix (2026-05-28): anchor action-verb chats including ZERO-target so 'help me shutdown' stops drifting to unknown",
-			Examples: []plannerPromptExample{
+			Examples: []routerPromptExample{
 				{
 					Question: "帮我关机",
 					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.7}`,
@@ -529,11 +508,11 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 			// and spec-first creation (user dictates exact hardware). target_refs
 			// stays empty: the workload name is extracted by the deploy handler's
 			// matcher, not a planner slot. required_tools is the image-catalog read
-			// (the handler ignores it; it keeps ValidatePlan happy — see
+			// (the handler ignores it; it keeps ValidateRoute happy — see
 			// requiredToolsForIntent IntentDeployModel).
 			Intent: IntentDeployModel,
 			Source: "B8.3 (2026-05-31): anchor workload-first deploy phrasing (部署/跑/搭 + model/app) to deploy_model, not operation_lifecycle",
-			Examples: []plannerPromptExample{
+			Examples: []routerPromptExample{
 				{
 					Question: "帮我部署一个 Qwen2.5-32B",
 					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
@@ -565,7 +544,7 @@ func plannerPromptExampleGroups() []plannerPromptExampleGroup {
 	}
 }
 
-func renderPlannerPromptExampleGroups(groups []plannerPromptExampleGroup) []string {
+func renderRouterPromptExampleGroups(groups []routerPromptExampleGroup) []string {
 	lines := []string{}
 	for _, group := range groups {
 		lines = append(lines, fmt.Sprintf(`<examples intent="%s">`, group.Intent))
@@ -596,9 +575,10 @@ func escapePromptXML(s string) string {
 }
 
 func basePromptScaffold() string {
-	// Keep the planner scaffold ASCII/English. Earlier Windows console/source
-	// encoding issues made non-ASCII prompt labels fragile, while the baseline
-	// model handles bilingual user text with English JSON-field instructions.
+	// Keep the intent-router scaffold ASCII/English. Earlier Windows
+	// console/source encoding issues made non-ASCII prompt labels fragile, while
+	// the baseline model handles bilingual user text with English JSON-field
+	// instructions.
 	return strings.Join([]string{
 		"You are the IntentPlan planner for the CompShare console agent.",
 		"Return exactly one JSON object. Do not output Markdown, prose, or tool calls.",
@@ -644,7 +624,7 @@ func buildSystemPrompt() string {
 	base := basePromptScaffold()
 	// Routing Registry v1 (PR A, 2026-05-18): append directives + one-shot
 	// examples that come from internal/routing/*/route.yaml
-	// metadata. Engine.go has a single generic dispatch hook; planner-side
+	// metadata. Engine.go has a single generic dispatch hook; router-side
 	// directives + examples are the only place that "knows about" new
 	// routes, so adding a route stays data-only.
 	directives, examples := RoutingPromptFragments()
@@ -653,10 +633,10 @@ func buildSystemPrompt() string {
 	// after the routing directives and before the routing examples. The pack is
 	// the single source of these rules; the base scaffold no longer carries them.
 	boundaryDirectives := boundarypacks.BoundaryPromptFragments()
-	plannerExamples := renderPlannerPromptExampleGroups(plannerPromptExampleGroups())
-	parts := make([]string, 0, 1+len(plannerExamples)+len(directives)+len(boundaryDirectives)+len(examples))
+	routerExamples := renderRouterPromptExampleGroups(routerPromptExampleGroups())
+	parts := make([]string, 0, 1+len(routerExamples)+len(directives)+len(boundaryDirectives)+len(examples))
 	parts = append(parts, base)
-	parts = append(parts, plannerExamples...)
+	parts = append(parts, routerExamples...)
 	parts = append(parts, directives...)
 	parts = append(parts, boundaryDirectives...)
 	parts = append(parts, examples...)
@@ -664,12 +644,12 @@ func buildSystemPrompt() string {
 }
 
 // lastAssistantSnippetCap is the byte cap applied to LastAssistantSnippet
-// before it is emitted into the planner user prompt. ~200 chars keeps each
+// before it is emitted into the intent-router user prompt. ~200 chars keeps each
 // turn's prior-signal payload under ~100 tokens while preserving enough of
 // the prior reply to disambiguate topic continuity (e.g. "刚才聊的 Suno").
 const lastAssistantSnippetCap = 200
 
-func buildUserPrompt(input PlannerInput, retryInstruction string) string {
+func buildUserPrompt(input IntentRouterInput, retryInstruction string) string {
 	var b strings.Builder
 	if retryInstruction != "" {
 		b.WriteString(retryInstruction)
@@ -708,8 +688,8 @@ func truncatePlannerSnippet(s string, cap int) string {
 	return string(runes[:cap])
 }
 
-func unknownFallbackPlan() Plan {
-	return Plan{
+func unknownFallbackPlan() IntentRoute {
+	return IntentRoute{
 		SchemaVersion: SchemaVersion,
 		Intent:        IntentUnknown,
 		Retrieval:     Retrieval{Enabled: false},

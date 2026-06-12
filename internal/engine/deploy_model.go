@@ -99,7 +99,7 @@ type deployPlan struct {
 // stops there and returns that advice — so "跑X用哪个卡 / 帮我搭个能跑Y的环境" gives
 // a useful answer instead of a flat refusal. Only when writes are enabled does the
 // recommendation flow into the create saga, gated by the confirm card.
-func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
 	result := dispatch.result
 
 	// A short refinement follow-up ("A800可以吗" / "换上海") carries no model on its
@@ -210,7 +210,7 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch plannerDispatchRes
 // DeriveRealizedTier labels it the agent tier — mirroring how route dispatch
 // emits "dispatched"→fast even on refusal. Centralizes the three return-side
 // concerns so every exit path of tryDeployModel stays consistent.
-func (e *Engine) deployReply(result intent.PlannerResult, latency time.Duration, reply string) (string, bool) {
+func (e *Engine) deployReply(result intent.IntentRouterResult, latency time.Duration, reply string) (string, bool) {
 	e.emitPlannerTrace(result, intent.RouteStatusDispatchedAgent, latency)
 	e.recordLastIntentFromPlan(result.Plan)
 	e.messages = append(e.messages, openai.ChatCompletionMessage{

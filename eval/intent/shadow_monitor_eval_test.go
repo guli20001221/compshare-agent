@@ -18,7 +18,7 @@ func TestShadowMonitorFixturesEval(t *testing.T) {
 	fixtures := loadShadowMonitorFixtures(t, "shadow_monitor_fixtures.jsonl")
 	require.GreaterOrEqual(t, len(fixtures), 8)
 
-	planner := intp.NewPlanner(&shadowMonitorFixtureLLM{}, intp.PlannerOptions{
+	planner := intp.NewIntentRouter(&shadowMonitorFixtureLLM{}, intp.IntentRouterOptions{
 		BaseURL: "https://api.modelverse.cn/v1",
 		Model:   "deepseek-v4-flash",
 	})
@@ -28,7 +28,7 @@ func TestShadowMonitorFixturesEval(t *testing.T) {
 			require.GreaterOrEqual(t, len(fx.Turns), 2)
 			reg := registryFromFixture(t, fx.RegistrySnapshot)
 			current := fx.Turns[len(fx.Turns)-1].UserMsg
-			result, err := planner.Plan(context.Background(), intp.PlannerInput{
+			result, err := planner.Plan(context.Background(), intp.IntentRouterInput{
 				UserText:  current,
 				PriorText: shadowPriorText(fx.Turns[:len(fx.Turns)-1]),
 				Resolver:  reg.Snapshot(),
@@ -109,7 +109,7 @@ func shadowPriorText(turns []shadowFixtureTurn) string {
 	return strings.TrimSpace(b.String())
 }
 
-func shadowTraceRecordFromFixture(fx shadowMonitorFixture, planner observability.PlannerTrace) observability.TraceRecord {
+func shadowTraceRecordFromFixture(fx shadowMonitorFixture, planner observability.RouterTrace) observability.TraceRecord {
 	record := observability.TraceRecord{
 		TurnIndex: 2,
 		Planner:   planner,
@@ -156,17 +156,17 @@ func isShadowMonitorIntent(intent string) bool {
 
 type shadowMonitorFixtureLLM struct{}
 
-func (h *shadowMonitorFixtureLLM) CompleteIntentPlan(_ context.Context, req intp.PlannerLLMRequest) (string, error) {
+func (h *shadowMonitorFixtureLLM) CompleteIntentPlan(_ context.Context, req intp.IntentRouterLLMRequest) (string, error) {
 	plan := classifyShadowMonitorFixture(req.UserPrompt)
 	data, err := json.Marshal(plan)
 	return string(data), err
 }
 
-func classifyShadowMonitorFixture(prompt string) intp.Plan {
+func classifyShadowMonitorFixture(prompt string) intp.IntentRoute {
 	normalized := strings.ToLower(prompt)
 	switch {
 	case strings.Contains(normalized, "account balance"):
-		return intp.Plan{
+		return intp.IntentRoute{
 			SchemaVersion: intp.SchemaVersion,
 			Intent:        intp.IntentBillingAccountUnsupported,
 			Retrieval:     intp.Retrieval{Enabled: false},
@@ -198,8 +198,8 @@ func looksLikeMonitorFollowup(s string) bool {
 	return hasMetric && hasMonitorShape
 }
 
-func shadowFixturePlan(intent intp.Intent, metrics []intp.Metric) intp.Plan {
-	plan := intp.Plan{
+func shadowFixturePlan(intent intp.Intent, metrics []intp.Metric) intp.IntentRoute {
+	plan := intp.IntentRoute{
 		SchemaVersion: intp.SchemaVersion,
 		Intent:        intent,
 		Retrieval:     intp.Retrieval{Enabled: false},

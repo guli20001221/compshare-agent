@@ -246,7 +246,7 @@ func TestResourceSelectionExpiry(t *testing.T) {
 func testPendingResourceSelection(candidates []entity.InstanceSnapshot) pendingResourceSelection {
 	return pendingResourceSelection{
 		originalUserMsg: "CPU question",
-		plan: intent.Plan{
+		plan: intent.IntentRoute{
 			SchemaVersion: intent.SchemaVersion,
 			Intent:        intent.IntentMonitorQuery,
 		},

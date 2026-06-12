@@ -15,7 +15,7 @@ package intent
 // 2. TestPlannerExamples_DiagnosisDiskLoaderEqualsLegacy asserts the
 //    disk loader produces a struct deeply equal to the legacy literal.
 // 3. TestPlannerExamples_RenderedPromptUnchanged exercises the actual
-//    prompt-construction path (renderPlannerPromptExampleGroups +
+//    prompt-construction path (renderRouterPromptExampleGroups +
 //    buildSystemPrompt) and asserts the rendered substring for the
 //    diagnosis block is byte-equal to the legacy rendering.
 // 4. TestPlannerExamples_FullSystemPromptStable hashes the entire
@@ -38,14 +38,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// legacyDiagnosisGroup is the pre-migration plannerPromptExampleGroup
+// legacyDiagnosisGroup is the pre-migration routerPromptExampleGroup
 // for IntentDiagnosis. Hand-coded from planner.go at b3d97bf (origin/main).
 // MUST match planner_examples/diagnosis.md byte-for-byte after the
 // migration. Updating this requires explicit reviewer sign-off.
-var legacyDiagnosisGroup = plannerPromptExampleGroup{
+var legacyDiagnosisGroup = routerPromptExampleGroup{
 	Intent: IntentDiagnosis,
 	Source: "Stage 2B diagnosis-vs-knowledge boundary",
-	Examples: []plannerPromptExample{
+	Examples: []routerPromptExample{
 		{
 			Question: "uhost-abc123 这台启动失败了帮我查",
 			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-abc123","source":"user_text","source_span":"uhost-abc123"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
@@ -87,11 +87,11 @@ func TestPlannerExamples_DiagnosisDiskLoaderEqualsLegacy(t *testing.T) {
 // rendering path (the one buildSystemPrompt actually uses) produces a
 // byte-equal diagnosis substring before and after migration.
 func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
-	legacyRendered := renderPlannerPromptExampleGroups([]plannerPromptExampleGroup{legacyDiagnosisGroup})
+	legacyRendered := renderRouterPromptExampleGroups([]routerPromptExampleGroup{legacyDiagnosisGroup})
 	migrated := diskPlannerExampleGroups[IntentDiagnosis]
-	migratedRendered := renderPlannerPromptExampleGroups([]plannerPromptExampleGroup{migrated})
+	migratedRendered := renderRouterPromptExampleGroups([]routerPromptExampleGroup{migrated})
 	assert.Equal(t, legacyRendered, migratedRendered,
-		"renderPlannerPromptExampleGroups produced different lines for "+
+		"renderRouterPromptExampleGroups produced different lines for "+
 			"legacy vs migrated diagnosis group — prompt drift would shift "+
 			"ds-v4-flash classifications")
 }
@@ -294,7 +294,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // are already renamed.
 //
 // Prompt-review remediation (2026-06-12) — strip provenance from the rendered
-// prompt: renderPlannerPromptExampleGroups no longer emits the source="..."
+// prompt: renderRouterPromptExampleGroups no longer emits the source="..."
 // attributes on <examples>/<example>/<question>. Those labels (e.g. "B8.3: ...")
 // are dev-facing authoring/PR-background metadata that the model does not need and
 // that the prompt review flagged as noise. The `Source` field stays in the data
@@ -376,16 +376,16 @@ func TestPlannerExamples_MigratedIntentsArePresent(t *testing.T) {
 	}
 }
 
-// legacyKnowledgeQAGroup is the pre-migration plannerPromptExampleGroup
+// legacyKnowledgeQAGroup is the pre-migration routerPromptExampleGroup
 // for IntentKnowledgeQA. Hand-coded from planner.go at 19a692d
 // (claude/tool-retry-timeout head, which inherits from PR #151+#152).
 // MUST match planner_examples/knowledge_qa.md byte-for-byte after the
 // migration. Updating this requires explicit reviewer sign-off.
-var legacyKnowledgeQAGroup = plannerPromptExampleGroup{
+var legacyKnowledgeQAGroup = routerPromptExampleGroup{
 	Intent:  IntentKnowledgeQA,
 	Source:  "Stage 2B + PR #34a/#52/#60 knowledge_qa routing regressions + R3-A1 modelverse model-API coverage",
 	compact: true,
-	Examples: []plannerPromptExample{
+	Examples: []routerPromptExample{
 		{
 			Question: "为啥显卡内存满了 GPU 占用才 10%",
 			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
@@ -511,11 +511,11 @@ func TestPlannerExamples_KnowledgeQADiskLoaderEqualsLegacy(t *testing.T) {
 // production rendering path produces byte-equal output for the legacy
 // inline literal vs the disk-loaded group.
 func TestPlannerExamples_KnowledgeQARenderedPromptUnchanged(t *testing.T) {
-	legacyRendered := renderPlannerPromptExampleGroups([]plannerPromptExampleGroup{legacyKnowledgeQAGroup})
+	legacyRendered := renderRouterPromptExampleGroups([]routerPromptExampleGroup{legacyKnowledgeQAGroup})
 	migrated := diskPlannerExampleGroups[IntentKnowledgeQA]
-	migratedRendered := renderPlannerPromptExampleGroups([]plannerPromptExampleGroup{migrated})
+	migratedRendered := renderRouterPromptExampleGroups([]routerPromptExampleGroup{migrated})
 	assert.Equal(t, legacyRendered, migratedRendered,
-		"renderPlannerPromptExampleGroups produced different lines for "+
+		"renderRouterPromptExampleGroups produced different lines for "+
 			"legacy vs migrated knowledge_qa group — prompt drift would shift "+
 			"ds-v4-flash classifications")
 }
@@ -557,8 +557,8 @@ func TestPlannerExamples_DiagnosisExampleJSONLooksValid(t *testing.T) {
 // identical line-by-line output even when chained with the prompt's
 // per-example wrapping.
 func TestPlannerExamples_RenderedLinesByteEqual(t *testing.T) {
-	legacy := renderPlannerPromptExampleGroups([]plannerPromptExampleGroup{legacyDiagnosisGroup})
-	disk := renderPlannerPromptExampleGroups([]plannerPromptExampleGroup{
+	legacy := renderRouterPromptExampleGroups([]routerPromptExampleGroup{legacyDiagnosisGroup})
+	disk := renderRouterPromptExampleGroups([]routerPromptExampleGroup{
 		diskPlannerExampleGroups[IntentDiagnosis],
 	})
 	require.Equal(t, len(legacy), len(disk),

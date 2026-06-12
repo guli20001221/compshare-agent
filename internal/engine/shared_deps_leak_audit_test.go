@@ -153,7 +153,7 @@ var nonAuditableFields = map[string]string{
 	"ReactHistoryCompactionEnabled":  "bool — no methods",
 	"IntentScopedReActPromptEnabled": "bool — no methods",
 	"ExternalExecutor":               "tools.ToolExecutor — already covered by TestSessionIsolation_NoProjectIdLeak (PR #135)",
-	"IntentPlanner":                  "intent.IntentPlanner interface — concrete intent.IntentRouter (deprecated alias Planner) verified clean (single exported method Plan, see TODO below for promotion criteria)",
+	"IntentPlanner":                  "intent.IntentPlanner interface — concrete intent.IntentRouter verified clean (single exported method Plan, see TODO below for promotion criteria)",
 }
 
 // TODO(future): promote intent.IntentRouter into sharedDepConcreteTypes IF

@@ -153,7 +153,7 @@ func TestSearchKnowledgeResultJSON_CiteProtocolGatedByFlag(t *testing.T) {
 // zeroed at the top of every turn, so one turn's accumulated evidence cannot leak
 // into the next (the cross-tenant/cross-turn concern engine_session_test.go guards).
 func TestChatResetsSearchKnowledgeLedgerEachTurn(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{Plan: diagnosisPlanWithoutTarget()}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: diagnosisPlanWithoutTarget()}}}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{

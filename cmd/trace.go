@@ -927,7 +927,7 @@ type cliTraceRecorder struct {
 	completionTokens      int
 	pendingByID           map[string][]int
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
-	plannerTraceSupplier  func() observability.PlannerTrace
+	plannerTraceSupplier  func() observability.RouterTrace
 }
 
 // newCLITraceRecorder constructs a per-turn trace recorder for the CLI path.
@@ -967,14 +967,14 @@ func (r *cliTraceRecorder) SetRuntimeTrace(trace observability.RuntimeTrace) {
 	r.record.Runtime = trace
 }
 
-func (r *cliTraceRecorder) SetPlannerTraceSupplier(supplier func() observability.PlannerTrace) {
+func (r *cliTraceRecorder) SetPlannerTraceSupplier(supplier func() observability.RouterTrace) {
 	if r == nil {
 		return
 	}
 	r.plannerTraceSupplier = supplier
 }
 
-func (r *cliTraceRecorder) SetPlannerTrace(trace observability.PlannerTrace) {
+func (r *cliTraceRecorder) SetPlannerTrace(trace observability.RouterTrace) {
 	if r == nil {
 		return
 	}
@@ -1185,7 +1185,7 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	return r.writer.Append(r.record)
 }
 
-func (r *cliTraceRecorder) addPlannerTokens(trace observability.PlannerTrace) {
+func (r *cliTraceRecorder) addPlannerTokens(trace observability.RouterTrace) {
 	r.totalTokens += trace.InputTokens + trace.OutputTokens
 	r.promptTokens += trace.InputTokens
 	r.completionTokens += trace.OutputTokens

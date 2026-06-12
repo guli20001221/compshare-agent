@@ -117,7 +117,7 @@ type IntentRoute struct {
 	Slots  Slots           `json:"slots"`
 	// RequiredTools is validation/trace-only. It does not authorize dispatch and must be derived from DispatchSpec in v2.
 	//
-	// ValidatePlan checks each entry against the per-intent allowlist
+	// ValidateRoute checks each entry against the per-intent allowlist
 	// (requiredToolsForIntent), but the dispatch tool window is built solely from
 	// the intent enum via the engine.visibleRegistryForIntentRoute seam
 	// (intent.IntentToolSubset → tools.VisibleRegistryForSubset). The planner-emitted
@@ -125,7 +125,7 @@ type IntentRoute struct {
 	// drives the same seam to enforce it. The 6b step (v2 schema) removes this from
 	// planner output and keeps only the derived trace projection.
 	RequiredTools []string `json:"required_tools"`
-	// Retrieval is likewise validation/trace-only. ValidatePlan rejects Enabled=true
+	// Retrieval is likewise validation/trace-only. ValidateRoute rejects Enabled=true
 	// (stage-2A RAG is disabled), and its only engine consumer treats a stray
 	// Enabled=true as route-ineligible (phase1RouteCandidateStatus, engine.go:2432) —
 	// it never turns retrieval ON. Like RequiredTools it must be derived from
@@ -135,16 +135,6 @@ type IntentRoute struct {
 	Confidence    float64   `json:"confidence"`
 	Reasoning     string    `json:"reasoning,omitempty"`
 }
-
-// Plan is the deprecated one-release compatibility alias for IntentRoute. The
-// type was renamed (PR4 of the Intent-Router / Dispatch-Contract restructure) to
-// signal that planner output is a flat intent ROUTE, not a multi-step plan. The
-// alias keeps existing call sites compiling while they migrate; new code should
-// use IntentRoute. Being an alias (=) not a defined type, it is the same type —
-// byte-identical JSON, no method-set change.
-//
-// Deprecated: use IntentRoute.
-type Plan = IntentRoute
 
 type SelectedSkill struct {
 	Name       string `json:"name,omitempty"`

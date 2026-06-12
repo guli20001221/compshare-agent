@@ -23,12 +23,12 @@ func TestSelectOutputMode_ThinkingModeChoosesJSONObjectBeforeJSONSchema(t *testi
 
 func TestPlanner_ReturnsValidPlanFromMockLLM(t *testing.T) {
 	mock := &mockPlannerLLM{responses: []string{mustPlanJSON(t, validMonitorPlan())}}
-	planner := NewPlanner(mock, PlannerOptions{
+	planner := NewIntentRouter(mock, IntentRouterOptions{
 		BaseURL: "https://api.modelverse.cn/v1",
 		Model:   "Qwen/Qwen3-Max",
 	})
 
-	result, err := planner.Plan(context.Background(), PlannerInput{
+	result, err := planner.Plan(context.Background(), IntentRouterInput{
 		UserText: "看看 uhost-abc123 的 CPU 和 GPU 监控",
 		Registry: testRegistry(t),
 	})
@@ -51,9 +51,9 @@ func TestPlanner_ValidatesAgainstImmutableResolverSnapshot(t *testing.T) {
 	}, "test"))
 
 	mock := &mockPlannerLLM{responses: []string{mustPlanJSON(t, validMonitorPlan())}}
-	planner := NewPlanner(mock, PlannerOptions{})
+	planner := NewIntentRouter(mock, IntentRouterOptions{})
 
-	result, err := planner.Plan(context.Background(), PlannerInput{
+	result, err := planner.Plan(context.Background(), IntentRouterInput{
 		UserText: "check uhost-abc123 monitor",
 		Resolver: snap,
 	})
@@ -68,12 +68,12 @@ func TestPlanner_RetriesInvalidJSONThenReturnsValidPlan(t *testing.T) {
 		`{"schema_version":`,
 		mustPlanJSON(t, validMonitorPlan()),
 	}}
-	planner := NewPlanner(mock, PlannerOptions{
+	planner := NewIntentRouter(mock, IntentRouterOptions{
 		BaseURL: "https://unknown.example/v1",
 		Model:   "unknown",
 	})
 
-	result, err := planner.Plan(context.Background(), PlannerInput{
+	result, err := planner.Plan(context.Background(), IntentRouterInput{
 		UserText: "看看 uhost-abc123 的 CPU 和 GPU 监控",
 		Registry: testRegistry(t),
 	})
@@ -93,9 +93,9 @@ func TestPlanner_RetryInstructionNamesValidationCodeAndField(t *testing.T) {
 		mustPlanJSON(t, badPlan),
 		mustPlanJSON(t, validMonitorPlan()),
 	}}
-	planner := NewPlanner(mock, PlannerOptions{})
+	planner := NewIntentRouter(mock, IntentRouterOptions{})
 
-	result, err := planner.Plan(context.Background(), PlannerInput{
+	result, err := planner.Plan(context.Background(), IntentRouterInput{
 		UserText: "看看 uhost-abc123 的 CPU 和 GPU 监控",
 		Registry: testRegistry(t),
 	})
@@ -111,7 +111,7 @@ func TestPlanner_RetryInstructionNamesValidationCodeAndField(t *testing.T) {
 }
 
 func TestPlanner_OverridesLLMSuppliedSkillsWithDerivedProjection(t *testing.T) {
-	plan := Plan{
+	plan := IntentRoute{
 		SchemaVersion: SchemaVersion,
 		Intent:        IntentPricingQuery,
 		Skills: []SelectedSkill{
@@ -123,9 +123,9 @@ func TestPlanner_OverridesLLMSuppliedSkillsWithDerivedProjection(t *testing.T) {
 		Confidence:    0.9,
 	}
 	mock := &mockPlannerLLM{responses: []string{mustPlanJSON(t, plan)}}
-	planner := NewPlanner(mock, PlannerOptions{})
+	planner := NewIntentRouter(mock, IntentRouterOptions{})
 
-	result, err := planner.Plan(context.Background(), PlannerInput{UserText: "4090 多少钱"})
+	result, err := planner.Plan(context.Background(), IntentRouterInput{UserText: "4090 多少钱"})
 
 	require.NoError(t, err)
 	require.Len(t, result.Plan.Skills, 1)
@@ -137,9 +137,9 @@ func TestPlanner_FallsBackUnknownAfterInvalidPartialPlans(t *testing.T) {
 		`{"intent":"monitor_query"}`,
 		`{"intent":"monitor_query"}`,
 	}}
-	planner := NewPlanner(mock, PlannerOptions{})
+	planner := NewIntentRouter(mock, IntentRouterOptions{})
 
-	result, err := planner.Plan(context.Background(), PlannerInput{
+	result, err := planner.Plan(context.Background(), IntentRouterInput{
 		UserText: "看看 uhost-abc123 的 CPU 和 GPU 监控",
 		Registry: testRegistry(t),
 	})
@@ -153,9 +153,9 @@ func TestPlanner_FallsBackUnknownAfterInvalidPartialPlans(t *testing.T) {
 
 func TestPlanner_ReturnsErrorWhenLLMCallFails(t *testing.T) {
 	mock := &mockPlannerLLM{err: errors.New("llm unavailable")}
-	planner := NewPlanner(mock, PlannerOptions{})
+	planner := NewIntentRouter(mock, IntentRouterOptions{})
 
-	result, err := planner.Plan(context.Background(), PlannerInput{
+	result, err := planner.Plan(context.Background(), IntentRouterInput{
 		UserText: "看看 uhost-abc123 的 CPU 和 GPU 监控",
 		Registry: testRegistry(t),
 	})
@@ -169,10 +169,10 @@ func TestPlanner_ReturnsErrorWhenLLMCallFails(t *testing.T) {
 type mockPlannerLLM struct {
 	responses []string
 	err       error
-	requests  []PlannerLLMRequest
+	requests  []IntentRouterLLMRequest
 }
 
-func (m *mockPlannerLLM) CompleteIntentPlan(_ context.Context, req PlannerLLMRequest) (string, error) {
+func (m *mockPlannerLLM) CompleteIntentPlan(_ context.Context, req IntentRouterLLMRequest) (string, error) {
 	m.requests = append(m.requests, req)
 	if m.err != nil {
 		return "", m.err
@@ -185,7 +185,7 @@ func (m *mockPlannerLLM) CompleteIntentPlan(_ context.Context, req PlannerLLMReq
 	return out, nil
 }
 
-func mustPlanJSON(t *testing.T, plan Plan) string {
+func mustPlanJSON(t *testing.T, plan IntentRoute) string {
 	t.Helper()
 	data, err := json.Marshal(plan)
 	require.NoError(t, err)

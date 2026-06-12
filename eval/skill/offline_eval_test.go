@@ -185,7 +185,7 @@ func TestOfflineSkillEval(t *testing.T) {
 			require.NotEmptyf(t, route.IntentLabel, "route %q has no intent_label", route.Name)
 			fastSkills[route.Name] = true
 
-			plan := intent.Plan{Intent: intent.Intent(route.IntentLabel)}
+			plan := intent.IntentRoute{Intent: intent.Intent(route.IntentLabel)}
 
 			// (1) routing pin: the intent derives exactly the expected skill.
 			derived := intent.DeriveSelectedSkills(plan)

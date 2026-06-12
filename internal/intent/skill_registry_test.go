@@ -39,7 +39,7 @@ func TestRouteSource_SkillRegistryRoutesIdenticalDispatch(t *testing.T) {
 		if !IsRoutingIntent(i) {
 			t.Errorf("IsRoutingIntent(%q) = false, want true", i)
 		}
-		req := HandlerRequest{Plan: Plan{Intent: i}}
+		req := HandlerRequest{Plan: IntentRoute{Intent: i}}
 		result := h.DispatchRoute(context.Background(), req)
 		if result.Status != HandlerStatusHandled {
 			t.Errorf("DispatchRoute(%q) status = %q, want %q", i, result.Status, HandlerStatusHandled)

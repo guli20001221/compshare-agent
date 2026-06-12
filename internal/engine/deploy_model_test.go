@@ -13,12 +13,12 @@ import (
 	"github.com/compshare-agent/internal/llm"
 )
 
-// deployDispatch builds the minimal plannerDispatchResult the deploy handler needs:
+// deployDispatch builds the minimal routerDispatchResult the deploy handler needs:
 // an IntentDeployModel plan. The handler reads only the intent + (for the trace) the
 // plan; everything else it derives from the user message + live queries.
-func deployDispatch() plannerDispatchResult {
-	return plannerDispatchResult{
-		result: intent.PlannerResult{Plan: intent.Plan{Intent: intent.IntentDeployModel}},
+func deployDispatch() routerDispatchResult {
+	return routerDispatchResult{
+		result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentDeployModel}},
 	}
 }
 

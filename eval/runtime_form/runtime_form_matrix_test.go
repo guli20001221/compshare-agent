@@ -15,21 +15,21 @@ func TestActualRuntimeFormMatrix(t *testing.T) {
 		{
 			name: "deterministic routing dispatch",
 			record: observability.TraceRecord{
-				Planner: observability.PlannerTrace{RouteStatus: "dispatched"},
+				Planner: observability.RouterTrace{RouteStatus: "dispatched"},
 			},
 			want: observability.RuntimeFormRouting,
 		},
 		{
 			name: "deterministic routing clarification",
 			record: observability.TraceRecord{
-				Planner: observability.PlannerTrace{RouteStatus: "selection_required"},
+				Planner: observability.RouterTrace{RouteStatus: "selection_required"},
 			},
 			want: observability.RuntimeFormRouting,
 		},
 		{
 			name: "terminal cited retrieval",
 			record: observability.TraceRecord{
-				Planner: observability.PlannerTrace{RouteStatus: "dispatched_retrieval"},
+				Planner: observability.RouterTrace{RouteStatus: "dispatched_retrieval"},
 			},
 			want: observability.RuntimeFormTerminalRAG,
 		},
@@ -90,7 +90,7 @@ func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
 		{
 			name: "routing planned and routing executed",
 			record: observability.TraceRecord{
-				Planner:           observability.PlannerTrace{PlannedRuntimeForm: observability.RuntimeFormRouting},
+				Planner:           observability.RouterTrace{PlannedRuntimeForm: observability.RuntimeFormRouting},
 				ActualRuntimeForm: observability.RuntimeFormRouting,
 			},
 			wantMismatch: false,
@@ -99,7 +99,7 @@ func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
 		{
 			name: "terminal rag planned and terminal rag executed",
 			record: observability.TraceRecord{
-				Planner:           observability.PlannerTrace{PlannedRuntimeForm: observability.RuntimeFormTerminalRAG},
+				Planner:           observability.RouterTrace{PlannedRuntimeForm: observability.RuntimeFormTerminalRAG},
 				ActualRuntimeForm: observability.RuntimeFormTerminalRAG,
 			},
 			wantMismatch: false,
@@ -108,7 +108,7 @@ func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
 		{
 			name: "agent planned and saga executed",
 			record: observability.TraceRecord{
-				Planner:           observability.PlannerTrace{PlannedRuntimeForm: observability.RuntimeFormAgent},
+				Planner:           observability.RouterTrace{PlannedRuntimeForm: observability.RuntimeFormAgent},
 				ActualRuntimeForm: observability.RuntimeFormAgent,
 			},
 			wantMismatch: false,
@@ -117,7 +117,7 @@ func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
 		{
 			name: "tutorial planned but diagnosis actually ran",
 			record: observability.TraceRecord{
-				Planner:           observability.PlannerTrace{PlannedRuntimeForm: observability.RuntimeFormTerminalRAG},
+				Planner:           observability.RouterTrace{PlannedRuntimeForm: observability.RuntimeFormTerminalRAG},
 				ActualRuntimeForm: observability.RuntimeFormAgent,
 			},
 			wantMismatch: true,
@@ -126,7 +126,7 @@ func TestPlannedActualRuntimeFormMismatchMatrix(t *testing.T) {
 		{
 			name: "hard block with no actual form is excluded",
 			record: observability.TraceRecord{
-				Planner:         observability.PlannerTrace{PlannedRuntimeForm: observability.RuntimeFormAgent},
+				Planner:         observability.RouterTrace{PlannedRuntimeForm: observability.RuntimeFormAgent},
 				EngineHardBlock: observability.EngineHardBlockTrace{Hit: true, Category: "account_billing"},
 			},
 			wantMismatch: false,

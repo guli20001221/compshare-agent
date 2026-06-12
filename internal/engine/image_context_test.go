@@ -12,7 +12,7 @@ import (
 )
 
 func TestImageContext_PlannerReceivesSeparateFields(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
 		Plan: unknownEngineTestPlan(),
 	}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
@@ -43,8 +43,8 @@ func TestImageContext_PlannerMonitorHistoryOverriddenByCodeGuardrail(t *testing.
 	// in tryPlannerDispatch checks: image context present + raw userMsg
 	// does NOT match isUnsupportedHistoricalMonitorQuestion → override
 	// the planner, fall through to ReAct instead of refusing.
-	planner := &scriptedIntentPlanner{results: []intent.PlannerResult{{
-		Plan: intent.Plan{
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
 			SchemaVersion: intent.SchemaVersion,
 			Intent:        intent.IntentMonitorHistory,
 			Slots:         intent.Slots{},

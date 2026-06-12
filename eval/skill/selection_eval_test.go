@@ -23,11 +23,11 @@ import (
 var skillModelFlag = flag.String("skillmodel", "", "planner model id for the real-model skill-selection layer (empty = skip)")
 var skillRunsFlag = flag.Int("skillruns", 1, "number of repeated real-model selection runs for stability checks")
 
-// selectionPlannerLLM adapts an llm.Client to intent.PlannerLLM, exactly like the
+// selectionPlannerLLM adapts an llm.Client to intent.IntentRouterLLM, exactly like the
 // production cliPlannerLLM (cmd/cli.go): planner requests carry no tools.
 type selectionPlannerLLM struct{ client *llm.Client }
 
-func (s selectionPlannerLLM) CompleteIntentPlan(ctx context.Context, req intent.PlannerLLMRequest) (string, error) {
+func (s selectionPlannerLLM) CompleteIntentPlan(ctx context.Context, req intent.IntentRouterLLMRequest) (string, error) {
 	resp, err := s.client.Chat(ctx, llm.ChatRequest{
 		Messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt},
@@ -71,9 +71,9 @@ func TestSelectionSkillEval(t *testing.T) {
 		baseURL = "https://api.modelverse.cn/v1"
 	}
 
-	planner := intent.NewPlanner(
+	planner := intent.NewIntentRouter(
 		selectionPlannerLLM{client: llm.NewClient(config.LLMConfig{BaseURL: baseURL, APIKey: apiKey, Model: *skillModelFlag})},
-		intent.PlannerOptions{BaseURL: baseURL, Model: *skillModelFlag},
+		intent.IntentRouterOptions{BaseURL: baseURL, Model: *skillModelFlag},
 	)
 
 	cases := loadSkillCases(t)
@@ -91,7 +91,7 @@ func TestSelectionSkillEval(t *testing.T) {
 	}
 	for run := 1; run <= runs; run++ {
 		for _, c := range cases {
-			result, err := planner.Plan(context.Background(), intent.PlannerInput{UserText: c.Question})
+			result, err := planner.Plan(context.Background(), intent.IntentRouterInput{UserText: c.Question})
 			require.NoErrorf(t, err, "planner error on %s run %d", c.ID, run)
 			selected := selectedSkillName(result.Plan)
 			outcome := evaluateSelectionCase(c, result.Plan, selected)
@@ -221,7 +221,7 @@ type selectionReport struct {
 	Cases              []selCaseResult      `json:"cases"`
 }
 
-func evaluateSelectionCase(c SkillCase, plan intent.Plan, selected string) selCaseResult {
+func evaluateSelectionCase(c SkillCase, plan intent.IntentRoute, selected string) selCaseResult {
 	result := selCaseResult{
 		ID:               c.ID,
 		Lane:             c.Lane,
@@ -256,7 +256,7 @@ func evaluateSelectionCase(c SkillCase, plan intent.Plan, selected string) selCa
 
 // selectedSkillName returns the concrete plan-time skill for a plan, or "" when
 // the skill is resolved later (diagnosis -> resolved_in_react).
-func selectedSkillName(plan intent.Plan) string {
+func selectedSkillName(plan intent.IntentRoute) string {
 	for _, s := range intent.DeriveSelectedSkills(plan) {
 		if s.Name != "" {
 			return s.Name

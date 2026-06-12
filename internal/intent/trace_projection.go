@@ -25,8 +25,8 @@ type PlannerTraceTimeWindow struct {
 	ValueHash string `json:"value_hash,omitempty"`
 }
 
-func ProjectPlannerTrace(result PlannerResult, opts PlannerTraceOptions) observability.PlannerTrace {
-	trace := observability.PlannerTrace{
+func ProjectPlannerTrace(result IntentRouterResult, opts PlannerTraceOptions) observability.RouterTrace {
+	trace := observability.RouterTrace{
 		Slots: observability.PlannerSlots{
 			TargetRefs: []any{},
 			Metrics:    []string{},

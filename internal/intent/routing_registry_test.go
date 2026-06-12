@@ -267,7 +267,7 @@ func (m *routeSequenceExecutor) Execute(_ context.Context, action string, args m
 func TestDispatchRoute_RoutesToHandler(t *testing.T) {
 	h := NewDemoHandler(stubFailingExecutor{})
 	for i := range routingIntentSet() {
-		req := HandlerRequest{Plan: Plan{Intent: i}}
+		req := HandlerRequest{Plan: IntentRoute{Intent: i}}
 		result := h.DispatchRoute(context.Background(), req)
 		// With empty mock response, handlers should return a HandledResult
 		// (their renderers produce "未获取到..." replies on empty data).
@@ -341,7 +341,7 @@ func (m *stockCapacityFallbackExecutor) Execute(_ context.Context, action string
 // (defensive layer; engine.go gates on IsRoutingIntent before invoking).
 func TestDispatchRoute_UnknownIntentFalls(t *testing.T) {
 	h := NewDemoHandler(stubFailingExecutor{})
-	req := HandlerRequest{Plan: Plan{Intent: Intent("not_a_route")}}
+	req := HandlerRequest{Plan: IntentRoute{Intent: Intent("not_a_route")}}
 	result := h.DispatchRoute(context.Background(), req)
 	if result.Status != HandlerStatusFallbackBeforeTool {
 		t.Errorf("unknown-intent dispatch status = %q, want %q", result.Status, HandlerStatusFallbackBeforeTool)
@@ -764,7 +764,7 @@ func TestGPUSpecsRouteUsesDescribeAvailableAndExpandsFullRequest(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     Plan{Intent: IntentGPUSpecsQuery},
+		Plan:     IntentRoute{Intent: IntentGPUSpecsQuery},
 		UserText: "4090 的所有规格",
 	})
 
@@ -950,7 +950,7 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     Plan{Intent: IntentStockAvailability},
+		Plan:     IntentRoute{Intent: IntentStockAvailability},
 		UserText: "4090 现在有没有货",
 	})
 
@@ -1012,7 +1012,7 @@ func TestStockAvailabilityUsesFirstMatchedZoneForCapacityPrecheck(t *testing.T) 
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     Plan{Intent: IntentStockAvailability},
+		Plan:     IntentRoute{Intent: IntentStockAvailability},
 		UserText: "4090 现在有没有货",
 	})
 
@@ -1035,7 +1035,7 @@ func TestStockAvailabilityFallsBackToNextZoneWhenCapacityCheckFails(t *testing.T
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     Plan{Intent: IntentStockAvailability},
+		Plan:     IntentRoute{Intent: IntentStockAvailability},
 		UserText: "4090 鐜板湪鏈夋病鏈夎揣",
 	})
 
@@ -1472,7 +1472,7 @@ func TestRegistry_FutureProof_AcceptanceNumberEight(t *testing.T) {
 			t.Errorf("future-proof: IsRoutingIntent(%q) = false for a generated route skill", i)
 			continue
 		}
-		result := h.DispatchRoute(context.Background(), HandlerRequest{Plan: Plan{Intent: i}})
+		result := h.DispatchRoute(context.Background(), HandlerRequest{Plan: IntentRoute{Intent: i}})
 		if result.Status != HandlerStatusHandled {
 			t.Errorf("future-proof: DispatchRoute(%q) status = %q, want Handled", i, result.Status)
 		}

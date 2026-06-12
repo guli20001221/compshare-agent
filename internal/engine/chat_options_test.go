@@ -137,13 +137,13 @@ func TestOnTextDeltaReplacedWhenCitedContractOverrides(t *testing.T) {
 
 	// Low-confidence KnowledgeQA plan triggers requireKnowledgeCitationThisTurn=true
 	// via the !ok branch of commonPlannerCandidateStatus (confidence < 0.60).
-	lowConfPlan := intent.Plan{
+	lowConfPlan := intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentKnowledgeQA,
 		Confidence:    0.3,
 	}
 	eng.intentPlanner = &scriptedIntentPlanner{
-		results: []intent.PlannerResult{{Plan: lowConfPlan}},
+		results: []intent.IntentRouterResult{{Plan: lowConfPlan}},
 	}
 	// A non-nil retriever satisfies the guard's knowledgeRetriever != nil check.
 	// plannerDispatchEnabled also returns true when knowledgeRetriever != nil.

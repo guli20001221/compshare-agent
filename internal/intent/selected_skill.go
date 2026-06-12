@@ -3,9 +3,10 @@ package intent
 import "github.com/compshare-agent/internal/routing"
 
 // DeriveSelectedSkills projects today's intent-first routing contract into the
-// observe-only Plan.Skills field. It deliberately ignores any planner-supplied
-// skills so R0 cannot change dispatch or trust model-selected skill names.
-func DeriveSelectedSkills(plan Plan) []SelectedSkill {
+// observe-only IntentRoute.Skills field. It deliberately ignores any
+// router-supplied skills so R0 cannot change dispatch or trust model-selected
+// skill names.
+func DeriveSelectedSkills(plan IntentRoute) []SelectedSkill {
 	if name, ok := routeNameForIntent(plan.Intent); ok {
 		return []SelectedSkill{{Name: name, Resolution: SkillResolutionDerivedFromIntent}}
 	}
@@ -19,7 +20,7 @@ func DeriveSelectedSkills(plan Plan) []SelectedSkill {
 	}
 }
 
-func withDerivedSelectedSkills(plan Plan) Plan {
+func withDerivedSelectedSkills(plan IntentRoute) IntentRoute {
 	plan.Skills = DeriveSelectedSkills(plan)
 	return plan
 }

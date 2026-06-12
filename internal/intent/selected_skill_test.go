@@ -10,27 +10,27 @@ import (
 func TestDeriveSelectedSkills_IntentBackedObserveOnly(t *testing.T) {
 	tests := []struct {
 		name string
-		plan Plan
+		plan IntentRoute
 		want []SelectedSkill
 	}{
 		{
 			name: "route intent derives registry skill",
-			plan: Plan{Intent: IntentPricingQuery},
+			plan: IntentRoute{Intent: IntentPricingQuery},
 			want: []SelectedSkill{{Name: "pricing_query", Resolution: SkillResolutionDerivedFromIntent}},
 		},
 		{
 			name: "agent handler derives deploy skill",
-			plan: Plan{Intent: IntentDeployModel},
+			plan: IntentRoute{Intent: IntentDeployModel},
 			want: []SelectedSkill{{Name: "deploy_model", Resolution: SkillResolutionAgentArm}},
 		},
 		{
 			name: "diagnosis is not plan-time selected",
-			plan: Plan{Intent: IntentDiagnosis},
+			plan: IntentRoute{Intent: IntentDiagnosis},
 			want: []SelectedSkill{{Resolution: SkillResolutionResolvedInReAct}},
 		},
 		{
 			name: "plain resource intent has no skill projection",
-			plan: Plan{Intent: IntentResourceInfo},
+			plan: IntentRoute{Intent: IntentResourceInfo},
 			want: nil,
 		},
 	}
@@ -43,7 +43,7 @@ func TestDeriveSelectedSkills_IntentBackedObserveOnly(t *testing.T) {
 }
 
 func TestWithDerivedSelectedSkills_OverridesPlannerSuppliedSkills(t *testing.T) {
-	plan := Plan{
+	plan := IntentRoute{
 		Intent: IntentPricingQuery,
 		Skills: []SelectedSkill{
 			{Name: "deploy_model", Resolution: "planner_supplied"},
