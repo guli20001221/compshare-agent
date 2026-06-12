@@ -139,9 +139,11 @@ merged.
 - Disk creation already has a workflow.
 - Custom image creation is a high-value mutating action, but it still needs a
   saga workflow with confirmation and progress follow-up.
-- Some deterministic routing entries are still stored in skill-shaped files.
-  That is an authoring artifact to migrate, not the runtime definition of a
-  true skill.
+- Deterministic routing entries now live in route manifests
+  (`internal/routing/<name>/route.yaml`); the skill-shaped files
+  (`internal/skills/<name>/SKILL.md`) hold only the agent-lane diagnosis
+  skills. The earlier skill-shaped routing entries were an authoring artifact,
+  since migrated — they were never the runtime definition of a true skill.
 
 ## Naming Rules
 
