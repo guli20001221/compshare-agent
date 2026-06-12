@@ -292,7 +292,17 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // (offline eval + golden suite re-run green). Part of retiring the non-industry
 // "cutover" term (audit #1) now that the Go symbols (tryRouteDispatch / RouteStatus)
 // are already renamed.
-const systemPromptSHA256Baseline = "b5b0158b621594cb59b1624145b9e7b85e182a5a75f4bf8cdef0e1f5ea4f6b97"
+//
+// Prompt-review remediation (2026-06-12) — strip provenance from the rendered
+// prompt: renderPlannerPromptExampleGroups no longer emits the source="..."
+// attributes on <examples>/<example>/<question>. Those labels (e.g. "B8.3: ...")
+// are dev-facing authoring/PR-background metadata that the model does not need and
+// that the prompt review flagged as noise. The `Source` field stays in the data
+// model (frontmatter-validated, used for authoring/review); only the render path
+// drops it, so the hash moves by construction. No example question, PlanJSON,
+// directive, intent enum, or route order touched — classification unaffected, gated
+// by the offline intent eval (cases.json) + golden suite A/B before this lands.
+const systemPromptSHA256Baseline = "f013ea4218633a567576a023f546c9e01040d45c81ef7bce625a7c6b043c7dc8"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

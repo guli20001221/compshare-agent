@@ -239,11 +239,17 @@ func TestRenderPlannerPromptExampleGroupsUsesDelimitedBlocks(t *testing.T) {
 		}},
 	}}), "\n")
 
-	if !strings.Contains(rendered, `<examples intent="resource_info" source="source &#34;with&#34; chars">`) {
+	if !strings.Contains(rendered, `<examples intent="resource_info">`) {
 		t.Fatalf("rendered examples missing XML-like group delimiter:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "<example source=") || !strings.Contains(rendered, "</example>") {
+	if !strings.Contains(rendered, "<example>") || !strings.Contains(rendered, "</example>") {
 		t.Fatalf("rendered examples missing per-example delimiter:\n%s", rendered)
+	}
+	// Provenance (source="...") is dev-facing metadata; it must NOT be rendered
+	// into the prompt the model sees. The Source field stays in the data model
+	// (frontmatter-validated, used for authoring/review) but is omitted here.
+	if strings.Contains(rendered, "source=") {
+		t.Fatalf("example provenance source= must not be rendered into the planner prompt:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "<user>show &lt;instance&gt; &amp; gpu</user>") {
 		t.Fatalf("rendered examples did not escape user text:\n%s", rendered)
