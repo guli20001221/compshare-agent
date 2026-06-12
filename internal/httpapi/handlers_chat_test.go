@@ -440,7 +440,7 @@ func TestDispatchChatColdSessionDoesNotRehydrateCurrentUserMessage(t *testing.T)
 	messages := &rehydratingMessages{}
 	deps := &engine.SharedDeps{
 		LLMClient:                captured,
-		RateLimiter:              governance.NewMemoryLimiter(governance.DefaultLimits()),
+		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
 		SupportsObjectToolChoice: true,
 		ExternalExecutor:         tools.ToolExecutor(chatExecutor{}),
 	}

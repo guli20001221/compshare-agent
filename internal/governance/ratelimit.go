@@ -95,25 +95,25 @@ func DefaultLimits() Limits {
 	}
 }
 
-type MemoryLimiter struct {
+type InMemoryRateLimiter struct {
 	mu     sync.Mutex
 	limits Limits
 	now    func() time.Time
 	state  map[limitKey]*counterState
 }
 
-type Option func(*MemoryLimiter)
+type Option func(*InMemoryRateLimiter)
 
 func WithClock(now func() time.Time) Option {
-	return func(l *MemoryLimiter) {
+	return func(l *InMemoryRateLimiter) {
 		if now != nil {
 			l.now = now
 		}
 	}
 }
 
-func NewMemoryLimiter(limits Limits, opts ...Option) *MemoryLimiter {
-	l := &MemoryLimiter{
+func NewInMemoryRateLimiter(limits Limits, opts ...Option) *InMemoryRateLimiter {
+	l := &InMemoryRateLimiter{
 		limits: normalizeLimits(limits),
 		now:    time.Now,
 		state:  make(map[limitKey]*counterState),
@@ -124,7 +124,7 @@ func NewMemoryLimiter(limits Limits, opts ...Option) *MemoryLimiter {
 	return l
 }
 
-func (l *MemoryLimiter) Allow(req Request) Decision {
+func (l *InMemoryRateLimiter) Allow(req Request) Decision {
 	now := req.Now
 	if now.IsZero() {
 		now = l.now()
@@ -210,9 +210,9 @@ func SubjectKeyFromOrganization(topOrg, org uint32) (string, bool) {
 // SubjectKeyFromPublicKey because there is only one process-level identity.
 //
 // Format: "sha256:" + hex(sha256("top=<topOrgID>;org=<orgID>"))
-// When both IDs are 0 returns AnonymousSubjectKey so MemoryLimiter still
+// When both IDs are 0 returns AnonymousSubjectKey so InMemoryRateLimiter still
 // applies a quota bucket (rather than passing an empty SubjectKey which
-// MemoryLimiter would normalize to AnonymousSubjectKey anyway).
+// InMemoryRateLimiter would normalize to AnonymousSubjectKey anyway).
 func SubjectKeyFromTenant(topOrgID, orgID int64) string {
 	if topOrgID == 0 && orgID == 0 {
 		return AnonymousSubjectKey
