@@ -7,7 +7,7 @@ import (
 	"github.com/compshare-agent/internal/knowledge"
 )
 
-// disciplinedKQASynthesisOn gates the disciplined-synthesis recovery for an
+// disciplinedKnowledgeQASynthesisOn gates the disciplined-synthesis recovery for an
 // agent-loop knowledge_qa turn (the synthesis-discipline lever). Default false =>
 // byte-identical: an uncited agent-loop synthesis keeps the existing
 // retrySearchKnowledgeCitation fallback (re-prompt the heavy ReAct context once).
@@ -22,16 +22,16 @@ import (
 // SearchKnowledge — importing terminal's reliability instead of hoping the loop
 // reproduces it. Effective ONLY on an agent-loop knowledge_qa turn
 // (knowledgeQAAgentLoopThisTurn); inert otherwise, so flag-off is byte-identical.
-// Set once at boot from COMPSHARE_KQA_DISCIPLINED_SYNTHESIS (cmd); the Go-package
+// Set once at boot from COMPSHARE_KnowledgeQA_DISCIPLINED_SYNTHESIS (cmd); the Go-package
 // default stays false so engine unit tests are unaffected.
-var disciplinedKQASynthesisOn bool
+var disciplinedKnowledgeQASynthesisOn bool
 
-// SetDisciplinedKQASynthesisEnabled toggles the disciplined-synthesis recovery.
+// SetDisciplinedKnowledgeQASynthesisEnabled toggles the disciplined-synthesis recovery.
 // Boot-only (reversible by restart), mirroring SetKnowledgeQAAgentLoopEnabled.
-func SetDisciplinedKQASynthesisEnabled(v bool) { disciplinedKQASynthesisOn = v }
+func SetDisciplinedKnowledgeQASynthesisEnabled(v bool) { disciplinedKnowledgeQASynthesisOn = v }
 
-// DisciplinedKQASynthesisEnabled reports whether the disciplined-synthesis recovery is on.
-func DisciplinedKQASynthesisEnabled() bool { return disciplinedKQASynthesisOn }
+// DisciplinedKnowledgeQASynthesisEnabled reports whether the disciplined-synthesis recovery is on.
+func DisciplinedKnowledgeQASynthesisEnabled() bool { return disciplinedKnowledgeQASynthesisOn }
 
 // synthesizeKnowledgeQAFromLedger writes the final answer for an agent-loop
 // knowledge_qa turn using terminal RAG's disciplined cited-synthesis prompt
@@ -88,7 +88,7 @@ func (e *Engine) synthesizeKnowledgeQAFromLedger(ctx context.Context, userMsg st
 // can't produce a clean cited answer — the caller then keeps the budget
 // refusal (the "no evidence → refuse, never fabricate" guard).
 //
-// Independent of disciplinedKQASynthesisOn: that flag gates the NORMAL
+// Independent of disciplinedKnowledgeQASynthesisOn: that flag gates the NORMAL
 // (under-budget) synthesis path, whereas this is a budget-recovery path that
 // only fires once the cap is already blown. It reuses the same primitive,
 // which is itself budget-aware — answerWithRetrievedEvidence delivers a

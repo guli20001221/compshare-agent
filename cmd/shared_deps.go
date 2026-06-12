@@ -66,15 +66,15 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 	} else {
 		log.Printf("runtime: HTTP knowledge_qa agent-loop route disabled (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=0; deterministic terminal RAG route)")
 	}
-	disciplinedKQASynthesis, unknownDisciplinedKQASynthesis := disciplinedKQASynthesisEnabledFromEnv(getenv)
-	if unknownDisciplinedKQASynthesis != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_KQA_DISCIPLINED_SYNTHESIS value %q", unknownDisciplinedKQASynthesis)
+	disciplinedKnowledgeQASynthesis, unknownDisciplinedKnowledgeQASynthesis := disciplinedKnowledgeQASynthesisEnabledFromEnv(getenv)
+	if unknownDisciplinedKnowledgeQASynthesis != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS value %q", unknownDisciplinedKnowledgeQASynthesis)
 	}
-	engine.SetDisciplinedKQASynthesisEnabled(disciplinedKQASynthesis)
-	if disciplinedKQASynthesis {
-		log.Printf("runtime: HTTP disciplined knowledge_qa synthesis enabled (COMPSHARE_KQA_DISCIPLINED_SYNTHESIS default-on; terminal-style cited synthesis writes the final answer; disable with =0)")
+	engine.SetDisciplinedKnowledgeQASynthesisEnabled(disciplinedKnowledgeQASynthesis)
+	if disciplinedKnowledgeQASynthesis {
+		log.Printf("runtime: HTTP disciplined knowledge_qa synthesis enabled (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS default-on; terminal-style cited synthesis writes the final answer; disable with =0)")
 	} else {
-		log.Printf("runtime: HTTP disciplined knowledge_qa synthesis disabled (COMPSHARE_KQA_DISCIPLINED_SYNTHESIS=0; free ReAct write + cite-retry)")
+		log.Printf("runtime: HTTP disciplined knowledge_qa synthesis disabled (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS=0; free ReAct write + cite-retry)")
 	}
 	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
 		Capacity:             cfg.Agent.HTTP.PoolCapacity,

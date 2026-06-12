@@ -326,7 +326,7 @@ func groundedAnswerValidatorEnabledFromEnv(getenv getenvFunc) (bool, string) {
 // route (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). DEFAULT ON (2026-06-09) — a knowledge_qa
 // turn routes through the agent loop: a forced SearchKnowledge first hop retrieves
 // evidence, then the disciplined-synthesis primitive writes the final cited answer
-// (see disciplinedKQASynthesisEnabledFromEnv, also default-on). This collapses the
+// (see disciplinedKnowledgeQASynthesisEnabledFromEnv, also default-on). This collapses the
 // separate deterministic terminal-RAG route into the single agent loop (the lead's
 // "rag as a tool the agent calls in a loop" north star). The flip was gated on the
 // #150 A/B: on the decisive code-heavy probe (PyTorch DDP, N=20) the
@@ -352,8 +352,8 @@ func knowledgeQAAgentLoopEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-// disciplinedKQASynthesisEnabledFromEnv gates the disciplined-synthesis primitive on
-// an agent-loop knowledge_qa turn (COMPSHARE_KQA_DISCIPLINED_SYNTHESIS). DEFAULT ON
+// disciplinedKnowledgeQASynthesisEnabledFromEnv gates the disciplined-synthesis primitive on
+// an agent-loop knowledge_qa turn (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS). DEFAULT ON
 // (2026-06-09) and effective only when COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is also on:
 // the FINAL answer for the turn is written by terminal RAG's tight cited-synthesis
 // prompt (answerWithRetrievedEvidence, with its own cite-harder retry) on the evidence
@@ -364,9 +364,9 @@ func knowledgeQAAgentLoopEnabledFromEnv(getenv getenvFunc) (bool, string) {
 // through to the existing cite-retry/refusal, so it is never worse than free-write.
 // ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off + non-empty warn
 // (CLAUDE.md: never silently coerce). Boot-only; the Go-package default
-// (engine.disciplinedKQASynthesisOn) stays false so unit tests are unaffected.
-func disciplinedKQASynthesisEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_KQA_DISCIPLINED_SYNTHESIS"))
+// (engine.disciplinedKnowledgeQASynthesisOn) stays false so unit tests are unaffected.
+func disciplinedKnowledgeQASynthesisEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS"))
 	switch strings.ToLower(raw) {
 	case "", "1", "true", "yes", "on":
 		return true, ""
