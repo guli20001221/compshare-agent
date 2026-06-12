@@ -154,7 +154,7 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 	}
 	if h == nil || h.executor == nil {
 		// Defensive only: production wiring must construct the handler with a
-		// SafeToolExecutor adapter before enabling demo cutover.
+		// SafeToolExecutor adapter before enabling demo route dispatch.
 		return FallbackBeforeTool(FallbackValidation)
 	}
 
@@ -219,7 +219,7 @@ func (h *DemoHandler) HandleMonitorQuery(ctx context.Context, req HandlerRequest
 	}
 	if h == nil || h.executor == nil {
 		// Defensive only: production wiring must construct the handler with a
-		// SafeToolExecutor adapter before enabling demo cutover.
+		// SafeToolExecutor adapter before enabling demo route dispatch.
 		return FallbackBeforeTool(FallbackValidation)
 	}
 	if !isCurrentMonitorTimeWindow(req.Plan.Slots.TimeWindow) {
@@ -707,7 +707,7 @@ func flattenScalars(prefix string, v any, out map[string]string) {
 func matchesRequestedMetric(key string, metrics []Metric) bool {
 	key = strings.ToLower(key)
 	for _, metric := range metrics {
-		// Demo cutover intentionally uses substring matching over the rendered
+		// Demo route dispatch intentionally uses substring matching over the rendered
 		// monitor field paths. Narrow this only if real smoke traces show noisy
 		// API metadata in user-visible replies.
 		if strings.Contains(key, string(metric)) {

@@ -282,7 +282,17 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // stockVsResourceBoundaryPackSHA256Baseline. No intent enum, no required_tools
 // allowlist, no route order, no example PlanJSON, and no finance/diagnosis
 // directive changed.
-const systemPromptSHA256Baseline = "fef7410d46df395ba3602f9c43d3164616c8f37d59aba8faf64e8bce2aaec8c3"
+//
+// #130 naming realignment (2026-06-12) — cutover→route lexical sweep: the two
+// example-group `Source` provenance labels "Phase 1 baseline resource inventory
+// cutover" / "Phase 1 baseline monitor cutover" → "...routing". These render into
+// the prompt as <examples source="..."> attributes, so the hash moves by
+// construction. Change is provenance-label-only — no example question, PlanJSON,
+// directive, intent enum, or route order touched — so classification is unaffected
+// (offline eval + golden suite re-run green). Part of retiring the non-industry
+// "cutover" term (audit #1) now that the Go symbols (tryRouteDispatch / RouteStatus)
+// are already renamed.
+const systemPromptSHA256Baseline = "b5b0158b621594cb59b1624145b9e7b85e182a5a75f4bf8cdef0e1f5ea4f6b97"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

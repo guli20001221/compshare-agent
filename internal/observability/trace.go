@@ -264,8 +264,8 @@ const (
 // must be called in the recorders (not in Append) to populate both sinks.
 //
 // Derivation is priority-ordered, NOT a flat prefix sweep of cutover_status
-// (which has 13 values and is set only on the Phase-1 cutover path — see
-// internal/intent/handler.go RouteStatus*). It maps the unambiguous cutover
+// (which has 13 values and is set only on the Phase-1 route path — see
+// internal/intent/handler.go RouteStatus*). It maps the unambiguous route
 // dispositions, then falls through to what actually executed:
 //
 //  1. dispatched_retrieval            -> knowledge (RAG handler ran)
@@ -273,14 +273,14 @@ const (
 //     selection returned a clarify prompt,
 //     still no RAG / ReAct)
 //  3. else retrieval produced hits    -> knowledge (RAG path that never went
-//     through cutover)
+//     through routing)
 //  4. else a main_react tool fired    -> agent     (ReAct loop ran)
 //  5. else                            -> ""        (not observable: no-tool
 //     ReAct answer, or hard-block / canned
 //     reply)
 //
 // Route fallbacks (fallback_*) and failure_after_tool are deliberately NOT
-// mapped by status name: they mean the cutover attempt declined and the turn
+// mapped by status name: they mean the route attempt declined and the turn
 // continued, so the real tier is whatever steps 3-4 observe (typically agent).
 // Returning "" rather than defaulting to agent keeps the realized mix honest —
 // it under-counts no-tool agent turns instead of mis-labelling refusals as

@@ -643,7 +643,7 @@ func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, routeMap map[i
 			routeMap[e] = struct{}{}
 		default:
 			// Routing Registry v1: any registered route intent is
-			// admissible to the cutover set without per-case wiring here.
+			// admissible to the route set without per-case wiring here.
 			if intent.IsRoutingIntent(e) {
 				routeMap[e] = struct{}{}
 			}
@@ -1535,7 +1535,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 
 	// Token budget gate. callPlannerOnce already added planner usage to
 	// the per-turn counter; if that alone blew the cap, return the
-	// canned reply BEFORE any further LLM call (cutover handler,
+	// canned reply BEFORE any further LLM call (route handler,
 	// answerWithRetrievedEvidence, grounded renderer). Without this
 	// every planner-handled path could spend an extra answerer call's
 	// worth of tokens past the cap — the C1 finding from 2026-05-21
@@ -1735,7 +1735,7 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 		}
 	} else {
 		// Planner quota denial is observable through trace.rate_limit. The
-		// cutover status intentionally collapses this into fallback_invalid
+		// route status intentionally collapses this into fallback_invalid
 		// because trace currently has no dedicated planner-denied enum.
 	}
 	latency := time.Since(start)
@@ -2497,7 +2497,7 @@ func (e *Engine) commonPlannerCandidateStatus(result intent.PlannerResult) (inte
 		return intent.RouteStatusFallbackInvalid, false
 	}
 	// PR #61 (2026-05-21): planner's HardBlockHint is advisory only and no
-	// longer participates in cutover routing — it ships to trace via
+	// longer participates in route dispatch — it ships to trace via
 	// PlannerTrace.HardBlockHint for downstream join with engine_hard_block
 	// (observability). Deterministic refusal comes from the keyword
 	// PreBlock (router.go) and the planner-classified IntentMonitorHistory
@@ -2628,7 +2628,7 @@ func (e *Engine) tokenBudgetExceeded() bool {
 
 // emitTokenBudgetExceededHardBlock fires the trace observer for a turn
 // that ran over budget. Separate from message-append so each call site
-// can keep its own assistant-message conventions (cutover handlers
+// can keep its own assistant-message conventions (route handlers
 // already manage their history slot; the ReAct loop appends inline).
 func (e *Engine) emitTokenBudgetExceededHardBlock() {
 	if e.hardBlockObserver != nil {
@@ -3230,7 +3230,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return errMsg
 	}
 
-	// ReAct fallback truncation for full-account list dumps. Handler-cutover
+	// ReAct fallback truncation for full-account list dumps. Handler-route
 	// path already sorts+truncates earlier (intent.HandleResourceInfo); this
 	// catches the planner-misclassified turns that reach ReAct directly,
 	// keeping the LLM-visible list bounded regardless of routing.
@@ -3457,7 +3457,7 @@ func isAllAcceptedKeys(kind string, payload map[string]any) bool {
 
 // recordSelectedInstanceFromEnvelope sets SessionState.SelectedInstance{ID,Name}
 // when the handler envelope identifies exactly one instance subject. Called
-// only from cutover/resume success paths — see callers in tryRouteDispatch
+// only from route/resume success paths — see callers in tryRouteDispatch
 // and tryResumeResourceSelection.
 //
 // Gates:
@@ -3488,7 +3488,7 @@ func (e *Engine) recordSelectedInstanceFromEnvelope(env *envelope.Envelope) {
 }
 
 // recordLastIntentFromPlan sets SessionState.LastIntent from the plan's
-// classified Intent. Called only on cutover/resume success paths — i.e.
+// classified Intent. Called only on route/resume success paths — i.e.
 // when the user's intent was confirmed by a fully-dispatched handler
 // reply. Refuses to write IntentUnknown / empty / non-RuntimeIntents
 // values, so the stored value is always a legal short-circuited
