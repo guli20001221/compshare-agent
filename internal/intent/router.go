@@ -580,7 +580,7 @@ func basePromptScaffold() string {
 	// the baseline model handles bilingual user text with English JSON-field
 	// instructions.
 	return strings.Join([]string{
-		"You are the IntentPlan planner for the CompShare console agent.",
+		"You are the intent router for the CompShare console agent.",
 		"Return exactly one JSON object. Do not output Markdown, prose, or tool calls.",
 		"Required top-level fields: schema_version, intent, slots, required_tools, retrieval, hard_block_hint, confidence.",
 		"schema_version must be \"1.0\". confidence must be a number in [0,1]. retrieval.enabled must be false for the current demo slice.",
