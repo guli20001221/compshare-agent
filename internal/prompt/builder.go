@@ -11,11 +11,6 @@ type BuildOptions struct {
 	IntentScopedReActPrompt bool
 }
 
-// BuildSystem creates the system prompt with user context injected.
-func BuildSystem(userContext string) string {
-	return BuildSystemWithOptions(userContext, BuildOptions{MutatingToolsEnabled: true})
-}
-
 // BuildSystemWithOptions creates the system prompt for the active runtime mode.
 // Shared sections (segmentIdentity, segmentScopeBoundary, segmentKnowledgeBoundary)
 // are defined once in segments.go; mode-specific sections live in

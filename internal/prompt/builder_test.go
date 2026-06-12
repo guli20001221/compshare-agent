@@ -7,7 +7,7 @@ import (
 
 func TestBuildSystem_WithContext(t *testing.T) {
 	ctx := "您有 2 个实例（1 个运行中）"
-	result := BuildSystem(ctx)
+	result := BuildSystemWithOptions(ctx, BuildOptions{MutatingToolsEnabled: true})
 
 	if !strings.Contains(result, ctx) {
 		t.Error("BuildSystem should inject user context into prompt")
@@ -21,7 +21,7 @@ func TestBuildSystem_WithContext(t *testing.T) {
 }
 
 func TestBuildSystem_EmptyContext(t *testing.T) {
-	result := BuildSystem("")
+	result := BuildSystemWithOptions("", BuildOptions{MutatingToolsEnabled: true})
 	if !strings.Contains(result, "暂无用户信息") {
 		t.Error("empty context should use default placeholder")
 	}
@@ -100,7 +100,7 @@ func TestTranslateState(t *testing.T) {
 }
 
 func TestBuildSystem_ContainsDiagnosis(t *testing.T) {
-	prompt := BuildSystem("test context")
+	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
 	for _, tool := range []string{"DiagnoseSSH", "DiagnoseInitFailure", "DiagnoseGPU", "DiagnoseBilling"} {
 		if !strings.Contains(prompt, tool) {
 			t.Errorf("system prompt should contain %s routing", tool)
@@ -109,7 +109,7 @@ func TestBuildSystem_ContainsDiagnosis(t *testing.T) {
 }
 
 func TestBuildSystem_ContainsDiagnosisCommandBoundary(t *testing.T) {
-	prompt := BuildSystem("test context")
+	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
 	for _, text := range []string{
 		"实例内只读自查命令",
 		"修改实例环境的命令必须标为可选修复",

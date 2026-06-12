@@ -77,7 +77,7 @@ func evaluateCase(ctx context.Context, client *llm.Client, c EvalCase) CaseResul
 	if userCtx == "" {
 		userCtx = "暂无用户信息"
 	}
-	systemPrompt := prompt.BuildSystem(userCtx)
+	systemPrompt := prompt.BuildSystemWithOptions(userCtx, prompt.BuildOptions{MutatingToolsEnabled: true})
 
 	messages := []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
