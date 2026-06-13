@@ -307,10 +307,11 @@ func isBareDeploySize(name string) bool {
 }
 
 // deployClarifyModelRE pulls the model family out of OUR OWN size-clarify message
-// ("「DeepSeek R1」有多个参数规模…"). We control that message's format
+// ("为「DeepSeek R1」选机型前…"). We control that message's format
 // (deployClarifyModelSizeMsg), so this is a reliable in-band carry — no fragile
-// re-extraction of an unsized family from the user's free text.
-var deployClarifyModelRE = regexp.MustCompile(`「(.+?)」有多个参数规模`)
+// re-extraction of an unsized family from the user's free text. Keep this anchor in
+// sync with deployClarifyModelSizeMsg.
+var deployClarifyModelRE = regexp.MustCompile(`为「(.+?)」选机型`)
 
 // previousDeployClarifyModel returns the model named by the most recent assistant
 // size-clarify, or "" when the last assistant turn was not a size-clarify. It stops
@@ -390,13 +391,19 @@ func shouldClarifyDeployModelSize(modelName, userMsg string) bool {
 		!knowledge.ModelParamCountResolvable(modelName)
 }
 
-// deployClarifyModelSizeMsg asks which size of an ambiguous model family to
-// deploy. The listed sizes are illustrative examples, NOT an authoritative
-// per-family enumeration (those live in the platform model library, not a
-// hand-maintained table) — the user only needs to name a size or full model.
+// deployClarifyModelSizeMsg asks for the spec needed to size the GPU when the model's
+// parameter count can't be resolved from its name. The size question is CONDITIONAL —
+// the resolvability check (ModelParamCountResolvable) fires for BOTH a genuine
+// multi-size family ("DeepSeek R1", 1.5B–671B) AND a single specific model the table
+// doesn't know ("Fish Audio S2-Pro", a TTS model with no size variants), and code
+// can't tell them apart without a hand-maintained family table. So the message does
+// NOT assert the model has multiple sizes (that fabricated "1.5B/7B/…/70B" list was
+// wrong for single models): it frames the size as conditional and offers a
+// pick-a-GPU escape hatch for the single-model case. Keep the "为「%s」选机型" prefix in
+// sync with deployClarifyModelRE (the bare-size follow-up combine reads it back).
 func deployClarifyModelSizeMsg(modelName string) string {
 	name := strings.TrimSpace(modelName)
-	return fmt.Sprintf("「%s」有多个参数规模的版本（如 1.5B / 7B / 14B / 32B / 70B，以及满血版），不同规模的显存占用、单卡/多卡需求和价格差别很大。你想部署哪个规模？告诉我参数量或完整型号名（如 %s-32B），我再帮你选合适的 GPU 和镜像。", name, name)
+	return fmt.Sprintf("为「%s」选机型前，我还需要确认一下规格：\n- 如果它有多个参数规模（如 7B / 32B / 70B 等），告诉我你要哪个；\n- 如果它是固定的单一模型，直接指定要用的 GPU 再说一次即可（如「部署 %s 用 4090」），我就按它部署。", name, name)
 }
 
 // matchDeployImage queries the live image catalog, asks the TierAgent model to

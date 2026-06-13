@@ -1105,7 +1105,7 @@ func TestTryDeployModel_FollowupGPUCarriesPreviousDeployTarget(t *testing.T) {
 }
 
 // TestTryDeployModel_BareSizeFollowupInheritsClarifiedModel proves the size-clarify
-// follow-up combine: after the handler asks "「DeepSeek R1」有多个参数规模…", a bare
+// follow-up combine: after the handler asks "为「DeepSeek R1」选机型前…", a bare
 // "32B" answer must be matched as "DeepSeek R1 32B" — the matcher prompt inherits the
 // model family from our own clarify message, so the model is sized & picked as a 32B
 // DeepSeek-R1 instead of a family-less "32B". WHY: real session s_c05ecbeccce4 — the
@@ -1490,13 +1490,24 @@ func TestShouldClarifyDeployModelSize(t *testing.T) {
 	}
 }
 
-// TestDeployClarifyModelSizeMsg checks the clarification names the model and asks
-// for a parameter count.
+// TestDeployClarifyModelSizeMsg checks the clarification names the model and frames
+// the size question HONESTLY — it must NOT assert that a single model has multiple
+// sizes (real session #16: "Fish Audio S2-Pro", a TTS model, was told it has
+// "1.5B/7B/14B/32B/70B"). The size branch is conditional, and a pick-a-GPU escape
+// hatch is offered for the single-model case.
 func TestDeployClarifyModelSizeMsg(t *testing.T) {
-	msg := deployClarifyModelSizeMsg("DeepSeek R1")
-	assert.Contains(t, msg, "DeepSeek R1")
-	assert.Contains(t, msg, "参数量")
-	assert.Contains(t, msg, "规模")
+	msg := deployClarifyModelSizeMsg("Fish Audio S2-Pro")
+	assert.Contains(t, msg, "Fish Audio S2-Pro", "names the model")
+	assert.Contains(t, msg, "如果它有多个参数规模", "the size list is conditional, not an assertion the model has them")
+	assert.NotContains(t, msg, "有多个参数规模的版本", "must not fabricate that the model definitely has size variants")
+	assert.Contains(t, msg, "GPU", "offers a pick-a-GPU path for a single/unknown model")
+	assert.Contains(t, msg, "部署 Fish Audio S2-Pro 用 4090", "shows a concrete restate the user can copy")
+
+	// The deployClarifyModelRE anchor must still extract the model (the bare-size
+	// follow-up combine depends on it).
+	mm := deployClarifyModelRE.FindStringSubmatch(deployClarifyModelSizeMsg("DeepSeek R1"))
+	require.NotNil(t, mm)
+	assert.Equal(t, "DeepSeek R1", mm[1])
 }
 
 // TestBuildImageMatchPrompt_AntiConfusionContract pins the load-bearing fix: the
