@@ -705,12 +705,84 @@ func TestZoneStockState(t *testing.T) {
 }
 
 func TestBuildAdviseReply(t *testing.T) {
-	r := buildAdviseReply(deployPlan{ImageSource: "platform", ImageName: "ComfyUI", GpuType: "A100", ChosenZone: "cn-wlcb-01", MatchNote: "按显存推荐"})
-	assert.Contains(t, r, "推荐 GPU：A100")
-	assert.Contains(t, r, "ComfyUI")
-	assert.Contains(t, r, "cn-wlcb-01")
-	assert.Contains(t, r, "只读模式", "advice tells the user how to actually deploy")
-	assert.NotContains(t, r, "实例 ID", "advice never reports a created instance")
+	plan := deployPlan{ImageSource: "platform", ImageName: "ComfyUI", GpuType: "A100", ChosenZone: "cn-wlcb-01", MatchNote: "按显存推荐"}
+
+	// read-only: advice + the "ask an admin to enable writes" footer.
+	ro := buildAdviseReply(plan, false)
+	assert.Contains(t, ro, "推荐 GPU：A100")
+	assert.Contains(t, ro, "ComfyUI")
+	assert.Contains(t, ro, "cn-wlcb-01")
+	assert.Contains(t, ro, "只读模式", "read-only advice tells the user how to actually deploy")
+	assert.NotContains(t, ro, "实例 ID", "advice never reports a created instance")
+
+	// mutating-on advice (a recommendation request): same body, but offers to proceed
+	// on a concrete restate instead of pointing at the read-only switch.
+	rw := buildAdviseReply(plan, true)
+	assert.Contains(t, rw, "推荐 GPU：A100")
+	assert.NotContains(t, rw, "只读模式", "writes are on — don't tell the user to enable them")
+	assert.Contains(t, rw, "部署 ComfyUI", "offers to proceed on an explicit restate")
+	assert.NotContains(t, rw, "实例 ID", "advice never reports a created instance")
+}
+
+// TestDeployIsAdviceOnly pins the recommend-vs-create classifier. A request that asks
+// for a recommendation / how-to advises; an explicit create command creates (and wins
+// over an incidental advice marker). Safe-biased toward advice when in doubt.
+func TestDeployIsAdviceOnly(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"LiveTalking这个镜像推荐我用哪种卡部署", true}, // real session s_fd7f1b9669fd
+		{"用什么显卡部署 ComfyUI", true},
+		{"部署 DeepSeek R1 用哪种卡好", true},
+		{"怎么部署 Qwen", true},
+		{"推荐一个能跑 Qwen 的配置", true},
+		{"用什么镜像合适", true},
+		{"我想部署 DeepSeek R1", false},
+		{"部署一台A100的Ollama，按量", false},
+		{"帮我部署 Qwen2.5-7B", false},
+		{"帮我部署你推荐的那台", false}, // explicit create command overrides 推荐
+		{"现在创建一台 4090", false},
+		{"部署 Qwen2.5 32B", false},
+		{"32B", false},
+	}
+	for _, c := range cases {
+		t.Run(c.msg, func(t *testing.T) {
+			assert.Equal(t, c.want, deployIsAdviceOnly(c.msg))
+		})
+	}
+}
+
+// TestTryDeployModel_AdviceOnlyDoesNotCreate proves the fix end-to-end: with writes
+// ENABLED, a recommendation request ("推荐我用哪种卡部署") returns the matcher's advice
+// and runs NO create saga — instead of the real-session stock-out create. The advice
+// offers to proceed on an explicit restate.
+func TestTryDeployModel_AdviceOnlyDoesNotCreate(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, communityImageID: "comm-img-9", instanceStates: []string{"Running"}})
+	matchJSON := `{"image_source":"community","image_name":"LiveTalking 数字人","model_name":"","match_kind":"exact","quantization":""}`
+	confirmCalls := 0
+	eng := newDeployEngine(matchJSON, exec, func(string, map[string]any) bool { confirmCalls++; return true }) // mutating ON
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "LiveTalking这个镜像推荐我用哪种卡部署", noopStep)
+
+	require.True(t, handled)
+	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "an advice-only request must NOT create an instance")
+	assert.Equal(t, 0, confirmCalls, "no confirm card for a recommendation question")
+	assert.Contains(t, reply, "建议", "the recommendation is returned as advice")
+	assert.Contains(t, reply, "部署 LiveTalking 数字人", "mutating-on advice offers to proceed on an explicit restate")
+}
+
+// TestTryDeployModel_ExplicitCreateStillCreates guards the other side: an explicit
+// "帮我部署X" with writes on still runs the create saga (the advice gate must not
+// swallow real create commands).
+func TestTryDeployModel_ExplicitCreateStillCreates(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
+
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "帮我部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	assert.Equal(t, 1, countCalls(exec.calls, "CreateCompShareInstance"), "an explicit create command still creates")
 }
 
 // newZoneDeployMock is a full-handler mock with per-zone availability + stock so the

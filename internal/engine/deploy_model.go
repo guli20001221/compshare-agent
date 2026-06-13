@@ -128,11 +128,17 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 	e.emitDeployStep(onStep, StepToolResult, "deploy_match",
 		fmt.Sprintf("已选型：%s 镜像 %s / GPU %s。%s", sourceLabel(plan.ImageSource), plan.ImageName, plan.GpuType, plan.MatchNote))
 
-	// (2) Mutating gate. deploy_model creates a billable instance. When writes are
-	// disabled (shipped default = read-only) we DON'T refuse blankly — we return the
-	// recommendation as advice and tell the user how to proceed. No saga runs.
-	if !e.mutatingToolsEnabled {
-		return e.deployReply(result, dispatch.latency, buildAdviseReply(plan))
+	// (2) Advice gate. deploy_model creates a billable instance, so we return the
+	// matcher's recommendation as ADVICE (no saga) in two cases:
+	//   - writes disabled (shipped read-only default) — the handler cannot create; and
+	//   - the request only ASKS for a recommendation / how-to ("推荐我用哪种卡部署",
+	//     "怎么部署") rather than commanding a create — it must not silently enter the
+	//     create saga (real session s_fd7f1b9669fd: a "which card?" question hit a
+	//     stock-out create instead of advising). The matcher already produced the
+	//     GPU+image recommendation either way; buildAdviseReply's footer adapts (the
+	//     mutating-on advice case offers to proceed on an explicit restate).
+	if !e.mutatingToolsEnabled || deployIsAdviceOnly(effectiveUserMsg) {
+		return e.deployReply(result, dispatch.latency, buildAdviseReply(plan, e.mutatingToolsEnabled))
 	}
 
 	// (3) Drive CreateInstanceDef through the orchestrator saga. Reuse the shipped
@@ -322,6 +328,31 @@ func (e *Engine) previousDeployClarifyModel() string {
 		return "" // most recent assistant turn wasn't a size-clarify → no carry
 	}
 	return ""
+}
+
+// deployCreateCommandRE matches an explicit "do it now" create command ("帮我部署X" /
+// "现在创建") — it overrides an advice marker so "帮我部署你推荐的那台" still creates.
+var deployCreateCommandRE = regexp.MustCompile(`(帮我|为我|给我|替我|直接|立即|立刻|马上|现在|赶紧)[的来]?(部署|创建)`)
+
+// deployAdviceOnlyRE matches a deploy request that ASKS for a recommendation / how-to
+// rather than commanding a create: a bare 推荐/建议, a "which/what 卡/GPU/机型/配置/镜像"
+// question, or a "怎么/如何…部署" how-to.
+var deployAdviceOnlyRE = regexp.MustCompile(`(?i)推荐|建议|(哪种|哪个|哪款|哪张|哪台|什么|啥)[^。！？\n]{0,6}(卡|gpu|显卡|机型|规格|配置|镜像)|(怎么|怎样|如何|咋)[^。！？\n]{0,4}部署`)
+
+// deployIsAdviceOnly reports whether a deploy request only wants a recommendation /
+// how-to ("推荐我用哪种卡部署" / "用什么显卡" / "怎么部署") rather than a create command
+// ("帮我部署X" / "部署一台A100"). Such a request must get the matcher's recommendation
+// as advice, never silently enter the create saga — real session s_fd7f1b9669fd:
+// "LiveTalking 推荐我用哪种卡部署" hit a stock-out create instead of advising which
+// card. An explicit create command wins over an incidental advice marker. Safe-biased:
+// when in doubt it advises (one extra "部署X" turn) rather than create an unwanted
+// billable instance.
+func deployIsAdviceOnly(userMsg string) bool {
+	s := strings.ToLower(strings.TrimSpace(userMsg))
+	if deployCreateCommandRE.MatchString(s) {
+		return false
+	}
+	return deployAdviceOnlyRE.MatchString(s)
 }
 
 // deploySizedModelRE matches a parameter-sized model mention ("Qwen2.5-32B",
@@ -1124,18 +1155,23 @@ func buildDeployReply(plan deployPlan, uHostId string, host map[string]any, stat
 	return b.String()
 }
 
-// buildAdviseReply renders the read-only recommendation: which GPU + image the handler
-// would deploy, and how to proceed. It runs when writes are disabled, so it NEVER
-// creates anything — it turns "跑X用哪个卡 / 帮我搭个能跑Y的环境" into a useful answer
-// instead of a blank refusal. Deterministic render of the resolved deployPlan (the
-// matcher already did the LLM judgment + live sizing/stock).
+// buildAdviseReply renders the recommendation: which GPU + image the handler would
+// deploy, and how to proceed. It NEVER creates anything — it turns "跑X用哪个卡 /
+// 帮我搭个能跑Y的环境 / 推荐我用哪种卡部署" into a useful answer. Deterministic render of
+// the resolved deployPlan (the matcher already did the LLM judgment + live
+// sizing/stock). The footer depends on whether writes are enabled:
+//   - mutating OFF (shipped read-only default): tell the user to ask an admin to
+//     enable writes — the handler cannot create.
+//   - mutating ON (advice-only request, e.g. "推荐哪种卡"): the recommendation is
+//     ready and the handler COULD create, so it offers to proceed on a concrete
+//     restate ("部署 <image>") instead of silently entering the create saga.
 //
 // Secret boundary: every field rendered here (GpuType / ImageName / ChosenZone /
 // MatchNote / FallbackNote) is derived from API metadata or constructed from zone
 // ids + status strings — none carries a secret. Do NOT thread instance-level
 // secrets (Password / FileBrowserPassword / Jupyter token) through deployPlan into
 // this reply.
-func buildAdviseReply(plan deployPlan) string {
+func buildAdviseReply(plan deployPlan, mutatingEnabled bool) string {
 	var b strings.Builder
 	b.WriteString("根据你的需求，建议如下配置：\n")
 	if plan.GpuType != "" {
@@ -1156,7 +1192,17 @@ func buildAdviseReply(plan deployPlan) string {
 	if hint := deploySelfDeployHint(plan); hint != "" {
 		b.WriteString("- " + hint + "\n")
 	}
-	b.WriteString("\n助手当前为只读模式，未自动为你创建实例。如需我直接部署，请联系管理员开启写操作权限后再说一次。")
+	if !mutatingEnabled {
+		b.WriteString("\n助手当前为只读模式，未自动为你创建实例。如需我直接部署，请联系管理员开启写操作权限后再说一次。")
+		return b.String()
+	}
+	// Writes are on: this is an advice-only request (a recommendation/how-to), so we
+	// deliberately did NOT auto-create. Offer to proceed on an explicit restate.
+	if plan.ImageName != "" {
+		b.WriteString(fmt.Sprintf("\n以上为推荐配置，尚未为你创建实例。确认后回复「部署 %s」我就开始创建（也可指定机型/可用区，如「部署 %s 用 A100」）。", plan.ImageName, plan.ImageName))
+	} else {
+		b.WriteString("\n以上为推荐配置，尚未为你创建实例。确认后回复「帮我部署」我就开始创建。")
+	}
 	return b.String()
 }
 
