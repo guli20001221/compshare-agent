@@ -79,6 +79,7 @@ type deployPlan struct {
 	ImageID      string // resolved CompShareImageId of the chosen image; threaded to the saga so it creates EXACTLY this image (may be "")
 	GpuType      string // CreateInstance GpuType, e.g. "A100"
 	ModelName    string // model the user wants to run, for the reply; may be ""
+	MatchKind    string // the matcher's judgment of the image↔model fit: "exact" (a ready-made image FOR the named model / the named app) | "base" (a framework base to self-host the model on); drives the self-deploy hint. May be "" (legacy/app → treated as exact, no hint).
 	MatchNote    string // human-readable selection rationale (GPU sizing + any fallback)
 	ChosenZone   string // resolved create-zone (preference + per-zone stock); "" → saga default
 	FallbackNote string // set when the create-zone differs from the primary (sold-out fallback / user zone)
@@ -229,7 +230,24 @@ func (e *Engine) deployReply(result intent.IntentRouterResult, latency time.Dura
 // returns the message unchanged, so a self-contained request is never altered.
 func (e *Engine) effectiveDeployUserMsg(userMsg string) string {
 	msg := strings.TrimSpace(userMsg)
-	if msg == "" || extractDeploySizedModelName(msg) != "" {
+	if msg == "" {
+		return userMsg
+	}
+	sized := extractDeploySizedModelName(msg)
+
+	// A BARE size follow-up ("32B" answering a "which size?" clarify) names a size
+	// but no model family. Re-attach the model the previous turn was clarifying — read
+	// from our OWN clarify message in history — so "DeepSeek R1" + "32B" sizes & picks
+	// for DeepSeek-R1-32B, not a generic 32B base. (Real session s_c05ecbeccce4: the
+	// "32B" answer lost the DeepSeek-R1 identity.) A sized name that already carries a
+	// family ("Qwen2.5-32B") is self-contained and returned unchanged.
+	if isBareDeploySize(sized) {
+		if model := e.previousDeployClarifyModel(); model != "" {
+			return "继续部署 " + model + " " + sized
+		}
+		return userMsg
+	}
+	if sized != "" {
 		return userMsg
 	}
 	if extractDeployGPU(msg) == "" && extractDeployZone(msg) == "" {
@@ -269,6 +287,41 @@ func (e *Engine) previousDeployTarget(currentMsg string) (model, zone string) {
 		}
 	}
 	return "", ""
+}
+
+// bareDeploySizeRE matches a size-only token ("32B", "1.5B") — the shape
+// extractDeploySizedModelName returns when the user names a parameter count with no
+// model family (a bare "32B" answer to a size-clarify).
+var bareDeploySizeRE = regexp.MustCompile(`(?i)^\d+(?:\.\d+)?b$`)
+
+// isBareDeploySize reports whether a normalized deploy model name is size-only (no
+// family). Such a follow-up must inherit the model family from the clarify it answers.
+func isBareDeploySize(name string) bool {
+	return bareDeploySizeRE.MatchString(strings.TrimSpace(name))
+}
+
+// deployClarifyModelRE pulls the model family out of OUR OWN size-clarify message
+// ("「DeepSeek R1」有多个参数规模…"). We control that message's format
+// (deployClarifyModelSizeMsg), so this is a reliable in-band carry — no fragile
+// re-extraction of an unsized family from the user's free text.
+var deployClarifyModelRE = regexp.MustCompile(`「(.+?)」有多个参数规模`)
+
+// previousDeployClarifyModel returns the model named by the most recent assistant
+// size-clarify, or "" when the last assistant turn was not a size-clarify. It stops
+// at the first assistant message scanned backward, so a stale, already-answered
+// clarify cannot leak into an unrelated later "<n>B" message.
+func (e *Engine) previousDeployClarifyModel() string {
+	for i := len(e.messages) - 1; i >= 0; i-- {
+		m := e.messages[i]
+		if m.Role != openai.ChatMessageRoleAssistant {
+			continue
+		}
+		if mm := deployClarifyModelRE.FindStringSubmatch(m.Content); mm != nil {
+			return strings.TrimSpace(mm[1])
+		}
+		return "" // most recent assistant turn wasn't a size-clarify → no carry
+	}
+	return ""
 }
 
 // deploySizedModelRE matches a parameter-sized model mention ("Qwen2.5-32B",
@@ -365,6 +418,7 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 		ImageSource  string `json:"image_source"`
 		ImageName    string `json:"image_name"`
 		ModelName    string `json:"model_name"`
+		MatchKind    string `json:"match_kind"`
 		Quantization string `json:"quantization"`
 	}
 	if err := json.Unmarshal([]byte(extractJSONObject(resp.Content)), &decision); err != nil {
@@ -375,6 +429,7 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 		ImageSource: strings.ToLower(strings.TrimSpace(decision.ImageSource)),
 		ImageName:   strings.TrimSpace(decision.ImageName),
 		ModelName:   strings.TrimSpace(decision.ModelName),
+		MatchKind:   strings.ToLower(strings.TrimSpace(decision.MatchKind)),
 	}
 
 	// Ground the choice against the live catalog. Community requires an exact-ish
@@ -1050,6 +1105,13 @@ func buildDeployReply(plan deployPlan, uHostId string, host map[string]any, stat
 	// login / billing). Static URL — no per-instance id needed.
 	b.WriteString("\n🔗 管理实例（状态 / 登录信息 / 计费）：" + deployConsoleInstancesURL + "\n")
 
+	// base match: no ready-made image for the named model → tell the user the base
+	// was deployed and how to self-host, so they're not left thinking the wrong
+	// model was baked in (the real-session bug: a same-size sibling silently shipped).
+	if hint := deploySelfDeployHint(plan); hint != "" {
+		b.WriteString("\nℹ️ " + hint + "\n")
+	}
+
 	if plan.FallbackNote != "" {
 		b.WriteString("\nℹ️ " + plan.FallbackNote + "\n")
 	}
@@ -1091,8 +1153,40 @@ func buildAdviseReply(plan deployPlan) string {
 	if plan.FallbackNote != "" {
 		b.WriteString("- " + plan.FallbackNote + "\n")
 	}
+	if hint := deploySelfDeployHint(plan); hint != "" {
+		b.WriteString("- " + hint + "\n")
+	}
 	b.WriteString("\n助手当前为只读模式，未自动为你创建实例。如需我直接部署，请联系管理员开启写操作权限后再说一次。")
 	return b.String()
+}
+
+// deploySelfDeployHint returns the "no ready-made image → here's how to self-host"
+// note for a BASE match: the matcher judged that no ready-made image exists for the
+// user's named model and deployed a framework base instead (match_kind="base"), so
+// the user must pull/load the model themselves. Returns "" for an exact match (a
+// ready-made model/app image needs no self-pull) or when the user named no model.
+//
+// It deliberately does NOT fabricate an exact model tag — a maintained model→tag
+// table is unrealistic (the same reason the matching itself is an LLM judgment, not
+// a lookup). It names the model the user asked for and the base that was deployed,
+// then points at where to find the real tag. The framework line is chosen from the
+// deployed image's OWN name (ollama / vllm / …), so it renders the already-made
+// decision rather than making a second matching decision.
+func deploySelfDeployHint(plan deployPlan) string {
+	if plan.MatchKind != "base" || strings.TrimSpace(plan.ModelName) == "" {
+		return ""
+	}
+	img := strings.ToLower(plan.ImageName)
+	var how string
+	switch {
+	case strings.Contains(img, "ollama"):
+		how = "登录后用 Ollama 自行拉取：`ollama pull <模型标签>`（到 ollama.com/library 查“" + plan.ModelName + "”的准确标签）"
+	case strings.Contains(img, "vllm"), strings.Contains(img, "sglang"), strings.Contains(img, "lmdeploy"), strings.Contains(img, "tensorrt"):
+		how = "登录后从 HuggingFace / ModelScope 下载“" + plan.ModelName + "”的权重，再用镜像内的推理框架加载启动"
+	default:
+		how = "登录后自行拉取“" + plan.ModelName + "”的权重（HuggingFace / ModelScope / Ollama）并用对应框架加载"
+	}
+	return fmt.Sprintf("平台暂无与「%s」完全匹配的现成镜像，已为你部署可承载它的框架底座「%s」。%s。", plan.ModelName, plan.ImageName, how)
 }
 
 // writeUsageGuidance appends the "how to use it" section: the app→endpoint map
@@ -1333,11 +1427,15 @@ func buildImageMatchPrompt(userMsg string, platform, community map[string]any) [
 	sys.WriteString("下面提供两个来源的现成镜像（均已预装环境，无需手动安装）：\n")
 	sys.WriteString("- 平台镜像(platform)：由优云官方维护。既有框架/系统底座(PyTorch、CUDA、Ubuntu)，也有打包好的应用镜像(如 ComfyUI、vLLM、Ollama、SGLang)。\n")
 	sys.WriteString("- 社区镜像(community)：由社区作者发布，多为面向具体应用/模型/工作流打包好的开箱即用镜像(如数字人、视频生成、TTS、特定工作流)。\n\n")
-	sys.WriteString("注意：两个来源都可能同时含有框架底座和应用镜像，不要假设“平台只有框架、社区只有应用”。请只依据下面候选清单中每个镜像的真实名称(Name)、框架(Framework)与描述(Description)来判断，挑出与用户需求最匹配、最具体的那一个。\n")
-	sys.WriteString("优先级：若某镜像的名称/描述明确命中用户要的应用或模型 → 选它；否则选一个能承载该工作负载的合适框架底座（如部署某个 LLM 选带 vLLM/PyTorch 的镜像）。\n")
+	sys.WriteString("注意：两个来源都可能同时含有框架底座和应用镜像，不要假设“平台只有框架、社区只有应用”。请只依据下面候选清单中每个镜像的真实名称(Name)、框架(Framework)与描述(Description)来判断。\n")
+	sys.WriteString("选型规则（按顺序判断，并据此填写 match_kind）：\n")
+	sys.WriteString("1. 用户点名了某个模型时：只有当某镜像的名称/描述指向同一个模型(同系列且同变体)，才算它的现成镜像。⚠️ 同品牌或同参数量都不等于同一个模型——DeepSeek-R1-32B、QwQ-32B、Janus-Pro 都是 32B 或同公司，但属于不同模型，绝不能互相顶替；拿不准就当作“没有现成镜像”。\n")
+	sys.WriteString("2. 有该模型的现成镜像 → 选它，match_kind 填 exact。\n")
+	sys.WriteString("3. 没有该模型的现成镜像 → 选一个能承载它的框架底座(部署 LLM 用带 vLLM/Ollama/SGLang/PyTorch 的镜像)，match_kind 填 base；这是完全正常的方案，用户登录后自行拉取模型，绝不要硬塞一个名字相近的别的模型来冒充。\n")
+	sys.WriteString("4. 纯应用类需求(数字人/视频生成/TTS/某工作流) → 按应用名匹配对应镜像，match_kind 填 exact。\n")
 	sys.WriteString("只能选候选清单里真实存在的镜像名，不要编造。\n")
 	sys.WriteString("严格只输出一个 JSON 对象，不要任何额外文字：\n")
-	sys.WriteString(`{"image_source":"platform|community","image_name":"候选清单中的镜像名","model_name":"用户要运行的模型全称或留空","quantization":"留空或 fp16/int8/int4"}` + "\n")
+	sys.WriteString(`{"image_source":"platform|community","image_name":"候选清单中的镜像名","model_name":"用户要运行的模型全称或留空","match_kind":"exact|base","quantization":"留空或 fp16/int8/int4"}` + "\n")
 	sys.WriteString("model_name 用于按显存推荐 GPU、并在参数规模不明时先向用户追问，按以下规则填写：\n")
 	sys.WriteString("- 用户点名了要跑的模型(如 Qwen、Llama3、DeepSeek-R1、Qwen2.5-32B)就填该模型名；即使你选的是 Ollama 或社区应用镜像，也照填用户说的那个模型名，不要省略。\n")
 	sys.WriteString("- 严格按用户原话填：用户没给参数规模就别自己补(别把 Llama3 写成 Llama3-8B、别把 Qwen 写成 Qwen2.5-72B)；用户给了就带上(如 Qwen2.5-32B)。\n")
