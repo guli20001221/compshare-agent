@@ -307,11 +307,11 @@ func isBareDeploySize(name string) bool {
 }
 
 // deployClarifyModelRE pulls the model family out of OUR OWN size-clarify message
-// ("为「DeepSeek R1」选机型前…"). We control that message's format
+// ("「DeepSeek R1」有多个参数规模…"). We control that message's format
 // (deployClarifyModelSizeMsg), so this is a reliable in-band carry — no fragile
 // re-extraction of an unsized family from the user's free text. Keep this anchor in
 // sync with deployClarifyModelSizeMsg.
-var deployClarifyModelRE = regexp.MustCompile(`为「(.+?)」选机型`)
+var deployClarifyModelRE = regexp.MustCompile(`「(.+?)」有多个参数规模`)
 
 // previousDeployClarifyModel returns the model named by the most recent assistant
 // size-clarify, or "" when the last assistant turn was not a size-clarify. It stops
@@ -391,19 +391,15 @@ func shouldClarifyDeployModelSize(modelName, userMsg string) bool {
 		!knowledge.ModelParamCountResolvable(modelName)
 }
 
-// deployClarifyModelSizeMsg asks for the spec needed to size the GPU when the model's
-// parameter count can't be resolved from its name. The size question is CONDITIONAL —
-// the resolvability check (ModelParamCountResolvable) fires for BOTH a genuine
-// multi-size family ("DeepSeek R1", 1.5B–671B) AND a single specific model the table
-// doesn't know ("Fish Audio S2-Pro", a TTS model with no size variants), and code
-// can't tell them apart without a hand-maintained family table. So the message does
-// NOT assert the model has multiple sizes (that fabricated "1.5B/7B/…/70B" list was
-// wrong for single models): it frames the size as conditional and offers a
-// pick-a-GPU escape hatch for the single-model case. Keep the "为「%s」选机型" prefix in
+// deployClarifyModelSizeMsg asks which size of a multi-size model family to deploy.
+// It now fires ONLY for a genuine multi-size family (the call site ANDs the matcher's
+// size_ambiguous judgment), so the message can state "有多个参数规模" directly without
+// the earlier hedging — a single specific model the table doesn't know
+// ("Fish Audio S2-Pro") no longer reaches here. Keep the "「%s」有多个参数规模" prefix in
 // sync with deployClarifyModelRE (the bare-size follow-up combine reads it back).
 func deployClarifyModelSizeMsg(modelName string) string {
 	name := strings.TrimSpace(modelName)
-	return fmt.Sprintf("为「%s」选机型前，我还需要确认一下规格：\n- 如果它有多个参数规模（如 7B / 32B / 70B 等），告诉我你要哪个；\n- 如果它是固定的单一模型，直接指定要用的 GPU 再说一次即可（如「部署 %s 用 4090」），我就按它部署。", name, name)
+	return fmt.Sprintf("「%s」有多个参数规模（如 7B / 32B / 70B 等），你想部署哪个？直接回参数量（如「32B」）或完整型号（如「%s-32B」）即可，我就帮你选机型和镜像。", name, name)
 }
 
 // matchDeployImage queries the live image catalog, asks the TierAgent model to
@@ -453,11 +449,12 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 	e.emitTokenUsage(resp.Usage)
 
 	var decision struct {
-		ImageSource  string `json:"image_source"`
-		ImageName    string `json:"image_name"`
-		ModelName    string `json:"model_name"`
-		MatchKind    string `json:"match_kind"`
-		Quantization string `json:"quantization"`
+		ImageSource   string `json:"image_source"`
+		ImageName     string `json:"image_name"`
+		ModelName     string `json:"model_name"`
+		MatchKind     string `json:"match_kind"`
+		SizeAmbiguous bool   `json:"size_ambiguous"`
+		Quantization  string `json:"quantization"`
 	}
 	if err := json.Unmarshal([]byte(extractJSONObject(resp.Content)), &decision); err != nil {
 		return deployPlan{}, fmt.Errorf("deploy_model: cannot parse image-match decision: %w", err)
@@ -496,12 +493,15 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 
 	// (c.1) Ambiguous model size → ask which one instead of silently sizing for a
 	// default variant. The user's complaint: "部署 DeepSeek R1" (spans 1.5B–671B)
-	// shouldn't dead-pick the 671B/H20 config. Fires only for a NAMED model whose
-	// size can't be resolved AND no pinned GPU — app deploys (ComfyUI/数字人 leave
-	// model_name empty per the match prompt) and explicit GPUs proceed unchanged.
+	// shouldn't dead-pick the 671B/H20 config. Fires only for a multi-size FAMILY
+	// the user didn't pin a size for: the deterministic check (size unresolvable from
+	// name + no GPU) is ANDed with the matcher's size_ambiguous judgment, so a single
+	// specific model the table doesn't know ("Fish Audio S2-Pro") is NOT asked a
+	// confusing size question — it falls through to a base deploy + self-host hint.
+	// App deploys (empty model_name) and explicit GPUs/sizes proceed unchanged.
 	// Surfaced via deployUserError so tryDeployModel returns it verbatim (it's an
 	// actionable clarification, not a failure).
-	if shouldClarifyDeployModelSize(plan.ModelName, userMsg) {
+	if decision.SizeAmbiguous && shouldClarifyDeployModelSize(plan.ModelName, userMsg) {
 		return deployPlan{}, deployUserError{msg: deployClarifyModelSizeMsg(plan.ModelName)}
 	}
 
@@ -553,9 +553,21 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 	// card had enough VRAM (RecommendGPUType kept the VRAM-correct-but-unsupported card),
 	// so we surface that as an actionable message instead of letting the create fail.
 	if !gpuImageCompatible(plan.GpuType, supported) {
-		return deployPlan{}, deployUserError{msg: fmt.Sprintf(
-			"所选镜像「%s」支持的机型为 %s，其显存不足以运行该工作负载。建议换一个支持更大显存机型的镜像，或选择更小的模型 / 量化版本。",
-			plan.ImageName, strings.Join(supported, "、"))}
+		// The matcher sometimes picks an arch-specific variant ("vLLM v0.12.0-5090",
+		// supp=[5090]) the user didn't ask for; a workload too big for the arch's
+		// single card (a 32B model on a 5090's 32GB) then leaves the sizer with a
+		// VRAM-correct but unsupported card. The generic base usually supports it —
+		// downgrade to the base instead of erroring (inverse of resolveArchImageVariant).
+		if id, baseSupp, baseName, ok := tryArchVariantDowngrade(plan, extractDeployGPU(userMsg), platform); ok && gpuImageCompatible(plan.GpuType, baseSupp) {
+			variantName, variantSupp := plan.ImageName, supported
+			plan.ImageName, plan.ImageID = baseName, id
+			supported, plan.SupportedGPUs = baseSupp, baseSupp
+			plan.MatchNote = fmt.Sprintf("所选镜像「%s」仅支持 %s、不满足显存需求，已回退到通用基础镜像「%s」；", variantName, strings.Join(variantSupp, "、"), baseName) + plan.MatchNote
+		} else {
+			return deployPlan{}, deployUserError{msg: fmt.Sprintf(
+				"所选镜像「%s」支持的机型为 %s，其显存不足以运行该工作负载。建议换一个支持更大显存机型的镜像，或选择更小的模型 / 量化版本。",
+				plan.ImageName, strings.Join(supported, "、"))}
+		}
 	}
 	return plan, nil
 }
@@ -618,6 +630,33 @@ func resolveArchImageVariant(plan deployPlan, supported []string, userGPU string
 		return plan, supp, note
 	}
 	return plan, supported, ""
+}
+
+// tryArchVariantDowngrade is the inverse of resolveArchImageVariant: when the matcher
+// picked an arch-specific PLATFORM image ("vLLM v0.12.0-5090", supp=[5090]) the user
+// did NOT pin the arch for, swap it back to the generic base ("vLLM v0.12.0") whose
+// broader supp usually includes the VRAM-correct card the sizer kept. The matcher
+// occasionally grabs the variant by name even though nothing asked for the 5090, and a
+// workload too big for the arch's single card then fails the gpuImageCompatible gate.
+// Returns the base image id + its SupportedGpuTypes + base name + ok. No-op (ok=false)
+// for community images, when the user pinned the 5090 (resolveArchImageVariant owns
+// that), or when no "<name>-suffix" base resolves — the caller then surfaces the
+// original incompatibility. The caller re-checks compat against the base's supp before
+// committing the swap.
+func tryArchVariantDowngrade(plan deployPlan, userGPU string, platform map[string]any) (imageID string, supported []string, baseName string, ok bool) {
+	if plan.ImageSource != "platform" || strings.EqualFold(strings.TrimSpace(userGPU), "5090") {
+		return "", nil, "", false
+	}
+	for _, suffix := range arch5090VariantSuffixes {
+		if !strings.HasSuffix(plan.ImageName, suffix) {
+			continue
+		}
+		base := strings.TrimSuffix(plan.ImageName, suffix)
+		if id, supp := chosenImage(deployPlan{ImageSource: "platform", ImageName: base}, platform, nil); id != "" {
+			return id, supp, base, true
+		}
+	}
+	return "", nil, "", false
 }
 
 // deployUserError is a matchDeployImage error whose message is safe + actionable
@@ -1488,11 +1527,12 @@ func buildImageMatchPrompt(userMsg string, platform, community map[string]any) [
 	sys.WriteString("4. 纯应用类需求(数字人/视频生成/TTS/某工作流) → 按应用名匹配对应镜像，match_kind 填 exact。\n")
 	sys.WriteString("只能选候选清单里真实存在的镜像名，不要编造。\n")
 	sys.WriteString("严格只输出一个 JSON 对象，不要任何额外文字：\n")
-	sys.WriteString(`{"image_source":"platform|community","image_name":"候选清单中的镜像名","model_name":"用户要运行的模型全称或留空","match_kind":"exact|base","quantization":"留空或 fp16/int8/int4"}` + "\n")
+	sys.WriteString(`{"image_source":"platform|community","image_name":"候选清单中的镜像名","model_name":"用户要运行的模型全称或留空","match_kind":"exact|base","size_ambiguous":true,"quantization":"留空或 fp16/int8/int4"}` + "\n")
 	sys.WriteString("model_name 用于按显存推荐 GPU、并在参数规模不明时先向用户追问，按以下规则填写：\n")
 	sys.WriteString("- 用户点名了要跑的模型(如 Qwen、Llama3、DeepSeek-R1、Qwen2.5-32B)就填该模型名；即使你选的是 Ollama 或社区应用镜像，也照填用户说的那个模型名，不要省略。\n")
 	sys.WriteString("- 严格按用户原话填：用户没给参数规模就别自己补(别把 Llama3 写成 Llama3-8B、别把 Qwen 写成 Qwen2.5-72B)；用户给了就带上(如 Qwen2.5-32B)。\n")
-	sys.WriteString("- 仅当用户没点名任何具体模型、纯应用类需求(数字人/视频生成/TTS/某工作流)时才留空。")
+	sys.WriteString("- 仅当用户没点名任何具体模型、纯应用类需求(数字人/视频生成/TTS/某工作流)时才留空。\n")
+	sys.WriteString("size_ambiguous：仅当用户点名的模型是一个有多个参数规模的系列、且没说要哪个(如 DeepSeek-R1 / Qwen 没带 7B/32B)时填 true；具体的单一模型(如 Fish Audio S2-Pro、Janus-Pro)、已带规模、或纯应用需求都填 false。")
 
 	var usr strings.Builder
 	usr.WriteString("用户需求：" + strings.TrimSpace(userMsg) + "\n\n")

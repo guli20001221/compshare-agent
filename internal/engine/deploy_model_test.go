@@ -29,6 +29,7 @@ type deployMockConfig struct {
 	createID              string   // UHostIds[0] returned by CreateCompShareInstance
 	communityImageID      string   // when set, the community group carries Data[] with this id; "" = group without Data[] (halt case)
 	platformSupportedGPUs []string // when set, the platform image declares these SupportedGpuTypes (M2 intersection)
+	platformImages        []any    // when set, overrides the platform ImageSet wholesale (e.g. an arch variant + its base)
 }
 
 // newDeployMock returns a function-based executor covering every action the
@@ -46,6 +47,9 @@ func newDeployMock(cfg deployMockConfig) *mockExecutorFn {
 	return &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
 		case "DescribeCompShareImages":
+			if len(cfg.platformImages) > 0 {
+				return map[string]any{"ImageSet": cfg.platformImages}, nil
+			}
 			img := map[string]any{
 				"CompShareImageId": "img-pt",
 				"Name":             "PyTorch 2.9.1 cuda128",
@@ -394,6 +398,55 @@ func TestResolveArchImageVariant(t *testing.T) {
 		_, _, note := resolveArchImageVariant(plan, []string{"4090"}, "5090", platform)
 		assert.Empty(t, note)
 	})
+}
+
+// TestTryArchVariantDowngrade is the inverse swap: the matcher mis-picked an
+// arch-specific variant the user didn't pin, so it downgrades to the generic base.
+func TestTryArchVariantDowngrade(t *testing.T) {
+	platform := map[string]any{"ImageSet": []any{
+		map[string]any{"Name": "vLLM v0.12.0-5090", "CompShareImageId": "img-5090", "SupportedGpuTypes": []any{"5090"}},
+		map[string]any{"Name": "vLLM v0.12.0", "CompShareImageId": "img-base", "SupportedGpuTypes": []any{"4090", "A100", "A800"}},
+	}}
+
+	t.Run("variant + no pinned arch → downgrade to base", func(t *testing.T) {
+		id, supp, name, ok := tryArchVariantDowngrade(deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0-5090"}, "", platform)
+		require.True(t, ok)
+		assert.Equal(t, "img-base", id)
+		assert.Equal(t, "vLLM v0.12.0", name)
+		assert.ElementsMatch(t, []string{"4090", "A100", "A800"}, supp)
+	})
+	t.Run("user pinned 5090 → no downgrade (they want the variant)", func(t *testing.T) {
+		_, _, _, ok := tryArchVariantDowngrade(deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0-5090"}, "5090", platform)
+		assert.False(t, ok)
+	})
+	t.Run("not an arch variant → no downgrade", func(t *testing.T) {
+		_, _, _, ok := tryArchVariantDowngrade(deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0"}, "", platform)
+		assert.False(t, ok)
+	})
+	t.Run("community source → no downgrade", func(t *testing.T) {
+		_, _, _, ok := tryArchVariantDowngrade(deployPlan{ImageSource: "community", ImageName: "Foo-5090"}, "", platform)
+		assert.False(t, ok)
+	})
+}
+
+// TestMatchDeployImage_ArchVariantDowngradesToBase proves the gate end-to-end: the
+// matcher picks "vLLM v0.12.0-5090" (supp=[5090]) for a 32B model the 5090's 32GB
+// can't hold; instead of erroring, the handler downgrades to the generic
+// "vLLM v0.12.0" (supports A100) and proceeds. WHY: ~1-in-5 real runs the matcher
+// grabs the arch variant for a large model and the user sees a confusing compat error.
+func TestMatchDeployImage_ArchVariantDowngradesToBase(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, platformImages: []any{
+		map[string]any{"Name": "vLLM v0.12.0-5090", "CompShareImageId": "img-5090", "Softwares": map[string]any{"Framework": "vLLM"}, "SupportedGpuTypes": []any{"5090"}},
+		map[string]any{"Name": "vLLM v0.12.0", "CompShareImageId": "img-base", "Softwares": map[string]any{"Framework": "vLLM"}, "SupportedGpuTypes": []any{"4090", "A100", "A800"}},
+	}})
+	matchJSON := `{"image_source":"platform","image_name":"vLLM v0.12.0-5090","model_name":"DeepSeek-R1-32B","match_kind":"base","size_ambiguous":false,"quantization":"fp16"}`
+	eng := newDeployEngine(matchJSON, exec, okConfirm)
+
+	plan, err := eng.matchDeployImage(context.Background(), "部署 DeepSeek-R1-32B", "", noopStep)
+
+	require.NoError(t, err, "the arch variant must downgrade to the base instead of erroring")
+	assert.Equal(t, "vLLM v0.12.0", plan.ImageName, "swapped to the generic base")
+	assert.Contains(t, plan.MatchNote, "回退到通用基础镜像", "the downgrade is noted for the user")
 }
 
 // TestBuildDeployReply_IncludesConsoleManageLink proves the post-create reply hands
@@ -1105,7 +1158,7 @@ func TestTryDeployModel_FollowupGPUCarriesPreviousDeployTarget(t *testing.T) {
 }
 
 // TestTryDeployModel_BareSizeFollowupInheritsClarifiedModel proves the size-clarify
-// follow-up combine: after the handler asks "为「DeepSeek R1」选机型前…", a bare
+// follow-up combine: after the handler asks "「DeepSeek R1」有多个参数规模…", a bare
 // "32B" answer must be matched as "DeepSeek R1 32B" — the matcher prompt inherits the
 // model family from our own clarify message, so the model is sized & picked as a 32B
 // DeepSeek-R1 instead of a family-less "32B". WHY: real session s_c05ecbeccce4 — the
@@ -1490,22 +1543,41 @@ func TestShouldClarifyDeployModelSize(t *testing.T) {
 	}
 }
 
-// TestDeployClarifyModelSizeMsg checks the clarification names the model and frames
-// the size question HONESTLY — it must NOT assert that a single model has multiple
-// sizes (real session #16: "Fish Audio S2-Pro", a TTS model, was told it has
-// "1.5B/7B/14B/32B/70B"). The size branch is conditional, and a pick-a-GPU escape
-// hatch is offered for the single-model case.
+// TestMatchDeployImage_SizeAmbiguousGatesClarify proves the #16 fix: the size-clarify
+// is ANDed with the matcher's size_ambiguous judgment, so a single specific model the
+// table can't size ("Fish Audio S2-Pro", size_ambiguous=false) deploys instead of
+// being asked a confusing size question, while a genuine multi-size family
+// ("DeepSeek R1", size_ambiguous=true) still gets the clarify.
+func TestMatchDeployImage_SizeAmbiguousGatesClarify(t *testing.T) {
+	// size_ambiguous=false for an unresolvable single model → NO clarify (proceeds).
+	exec := newDeployMock(deployMockConfig{capacityEnough: true})
+	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"Fish Audio S2-Pro","match_kind":"base","size_ambiguous":false}`, exec, okConfirm)
+	_, err := eng.matchDeployImage(context.Background(), "我想要部署 Fish Audio S2-Pro", "", noopStep)
+	assert.NoError(t, err, "a single model (size_ambiguous=false) must NOT trigger the size clarify")
+
+	// size_ambiguous=true for a multi-size family with no size → clarify.
+	exec2 := newDeployMock(deployMockConfig{capacityEnough: true})
+	eng2 := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"DeepSeek R1","match_kind":"base","size_ambiguous":true}`, exec2, okConfirm)
+	_, err2 := eng2.matchDeployImage(context.Background(), "我想部署 DeepSeek R1", "", noopStep)
+	var ue deployUserError
+	require.ErrorAs(t, err2, &ue, "a multi-size family with no size (size_ambiguous=true) must trigger the clarify")
+	assert.Contains(t, ue.Error(), "有多个参数规模")
+}
+
+// TestDeployClarifyModelSizeMsg checks the clarification names the model and asks
+// which size directly. It now fires ONLY for a genuine multi-size family (the call
+// site ANDs size_ambiguous), so the message can state "有多个参数规模" plainly — the
+// #16 over-fire for a single model (Fish Audio S2-Pro) is handled upstream, not by
+// hedging this message.
 func TestDeployClarifyModelSizeMsg(t *testing.T) {
-	msg := deployClarifyModelSizeMsg("Fish Audio S2-Pro")
-	assert.Contains(t, msg, "Fish Audio S2-Pro", "names the model")
-	assert.Contains(t, msg, "如果它有多个参数规模", "the size list is conditional, not an assertion the model has them")
-	assert.NotContains(t, msg, "有多个参数规模的版本", "must not fabricate that the model definitely has size variants")
-	assert.Contains(t, msg, "GPU", "offers a pick-a-GPU path for a single/unknown model")
-	assert.Contains(t, msg, "部署 Fish Audio S2-Pro 用 4090", "shows a concrete restate the user can copy")
+	msg := deployClarifyModelSizeMsg("DeepSeek R1")
+	assert.Contains(t, msg, "DeepSeek R1", "names the model")
+	assert.Contains(t, msg, "有多个参数规模", "asks which size of the multi-size family")
+	assert.Contains(t, msg, "32B", "shows a concrete size the user can reply with")
 
 	// The deployClarifyModelRE anchor must still extract the model (the bare-size
 	// follow-up combine depends on it).
-	mm := deployClarifyModelRE.FindStringSubmatch(deployClarifyModelSizeMsg("DeepSeek R1"))
+	mm := deployClarifyModelRE.FindStringSubmatch(msg)
 	require.NotNil(t, mm)
 	assert.Equal(t, "DeepSeek R1", mm[1])
 }
