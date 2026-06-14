@@ -17,9 +17,12 @@ import (
 const maxResourceSelectionCandidates = 20
 
 // uhostIDPattern matches a literal CompShare instance ID token in free text.
-// Instance IDs are lowercase alphanumeric (e.g. uhost-1qy6d8tkfrl4); the trailing
-// class stops at any non-[0-9a-z] rune so "uhost-xxx的GPU利用率" yields "uhost-xxx".
-var uhostIDPattern = regexp.MustCompile(`uhost-[0-9a-z]+`)
+// Real IDs are lowercase alphanumeric (e.g. uhost-1qy6d8tkfrl4); the class accepts
+// A-Z too so a mistyped-case ID is captured WHOLE and echoed back intact in the
+// "未找到实例 X" notice (it won't resolve — ResolveByID is exact — so it falls to the
+// wrong-ID branch). The trailing class stops at any non-alphanumeric rune, so
+// "uhost-xxx的GPU利用率" yields "uhost-xxx".
+var uhostIDPattern = regexp.MustCompile(`uhost-[0-9a-zA-Z]+`)
 
 type pendingResourceSelection struct {
 	originalUserMsg string

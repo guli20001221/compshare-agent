@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	recentObservationPrefix = "【最近观测缓存，30s 内；实时状态请重新查询】"
+	recentObservationPrefix = "【最近观测缓存，5 分钟内；实时状态请重新查询】"
 	maxFactContextRunes     = 600
 )
 

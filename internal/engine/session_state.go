@@ -114,8 +114,8 @@ const (
 // enough to survive a normal multi-turn conversation about one instance without
 // the agent forgetting which instance / its basic state. Volatile metric freshness
 // is NOT relied on here: a "现在还高吗" follow-up re-queries via the force-recall
-// mechanism at engine.go:3438-3444, so a stale monitor sample is never presented
-// as the authoritative current value — it is advisory context only.
+// mechanism (shouldForceMonitorRecall), so a stale monitor sample is never
+// presented as the authoritative current value — it is advisory context only.
 const (
 	factTTLSecondsInstanceState = 300
 	factTTLSecondsMonitorSample = 300

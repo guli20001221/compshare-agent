@@ -271,6 +271,7 @@ func TestFindExplicitInstanceRef(t *testing.T) {
 		{"explicit ID resolves", "uhost-1qy6d8tkfrl4 的GPU利用率是多少？", "uhost-1qy6d8tkfrl4", ""},
 		{"ID with trailing CJK", "查uhost-1qy6d8tkfrl4的内存", "uhost-1qy6d8tkfrl4", ""},
 		{"wrong ID surfaces as notFound", "uhost-doesnotexist 的GPU利用率", "", "uhost-doesnotexist"},
+		{"mistyped-case ID echoes whole as notFound", "uhost-1QY6D8 的GPU利用率", "", "uhost-1QY6D8"},
 		{"no ID at all", "查看GPU利用率", "", ""},
 		{"first resolvable wins", "uhost-1qy6d8tkfrl4 还是 uhost-1rkv126dxgiq", "uhost-1qy6d8tkfrl4", ""},
 	}
