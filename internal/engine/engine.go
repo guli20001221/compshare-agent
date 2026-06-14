@@ -3221,7 +3221,14 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			return finalReplyPrefix + msg
 		}
 		if errors.Is(err, tools.ErrUserDeclined) {
-			msg := fmt.Sprintf("操作已取消：%s 未执行。", friendlyActionName(action))
+			// A not-granted confirm is NOT necessarily a user cancellation. On the
+			// HTTP/WS path an UNRESOLVED confirm — the user never clicked the card
+			// (timeout / disconnect / they typed in the chat box instead) — yields
+			// the same ErrUserDeclined as an explicit decline. Narrate it honestly
+			// as not-executed, never as a false "操作已取消" (sibling of the workflow
+			// path's console false-cancel P0). The mutating call was not made either
+			// way.
+			msg := fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", friendlyActionName(action))
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			return finalReplyPrefix + msg
 		}
