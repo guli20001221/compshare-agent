@@ -1325,8 +1325,11 @@ func writeUsageGuidance(b *strings.Builder, host map[string]any, usage imageUsag
 // deployStopReply renders a saga that stopped before success (capacity / price /
 // confirm / create). The saga already put a human message in Result.Message.
 func deployStopReply(r *workflow.Result) string {
+	// An unresolved confirm (timeout / disconnect / user typed instead of
+	// clicking the card) reaches here as "用户取消了操作" too — narrate it
+	// honestly as not-executed, never as a false "已取消创建实例".
 	if r.Message == "用户取消了操作" {
-		return "好的，已取消创建实例。"
+		return "好的，本次创建未执行。如需继续，请重新发送指令并确认。"
 	}
 	if r.Message != "" {
 		return "创建未完成：" + r.Message

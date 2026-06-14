@@ -38,7 +38,8 @@ func TestMutatingModeSmoke_L1WorkflowStopsAtConfirmWhenDenied(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "stop uhost-stop-001", onStep)
 
 	require.NoError(t, err)
-	assert.Contains(t, reply, "取消")
+	assert.Contains(t, reply, "未执行")
+	assert.NotContains(t, reply, "已取消", "a not-granted confirm must not falsely claim the user cancelled")
 	assert.Equal(t, 1, confirmCalls, "L1 workflow must ask for exactly one confirmation")
 	assertStepWithType(t, *events, StepConfirmNeeded, "", "")
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
@@ -74,7 +75,8 @@ func TestMutatingModeSmoke_CreateCustomImageStopsAtConfirmWhenDenied(t *testing.
 	reply, err := eng.Chat(context.Background(), "save uhost-img-001 as snapshot-v1", onStep)
 
 	require.NoError(t, err)
-	assert.Contains(t, reply, "取消")
+	assert.Contains(t, reply, "未执行")
+	assert.NotContains(t, reply, "已取消", "a not-granted confirm must not falsely claim the user cancelled")
 	assert.Equal(t, 1, confirmCalls, "custom-image workflow must ask for exactly one confirmation")
 	assertStepWithType(t, *events, StepConfirmNeeded, "", "")
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")

@@ -3826,9 +3826,15 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		}
 	}
 
-	// User-cancelled workflows return a deterministic reply directly
+	// A workflow that stopped at its confirm gate was NOT necessarily cancelled
+	// by the user. On the HTTP/WS path an UNRESOLVED confirm — the user never
+	// clicked the card (timeout / disconnect / they typed in the chat box
+	// instead) — yields the same "用户取消了操作" as an explicit decline. So
+	// narrate it honestly as not-executed, never as a false "已取消X操作" (the
+	// console P0: a fully-specified shutdown command answered with
+	// "好的，已取消关机操作。"). The mutating call was not made either way.
 	if !result.Success && result.Message == "用户取消了操作" {
-		return finalReplyPrefix + fmt.Sprintf("好的，已取消%s操作。", friendlyActionName(action))
+		return finalReplyPrefix + fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", friendlyActionName(action))
 	}
 
 	// Create failures must NOT be handed to the LLM narration round. When given a
