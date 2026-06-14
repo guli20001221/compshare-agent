@@ -674,9 +674,14 @@ func TestChat_ExternalTool_L1Denied(t *testing.T) {
 
 	hasBlocked := false
 	for _, ev := range *events {
-		if ev.Type == StepBlocked && strings.Contains(ev.Message, "取消") {
+		// A denied confirm emits a blocked step narrated honestly as not-executed
+		// ("未执行"), never as a false "已取消" — the direct-tool sibling of the
+		// console false-cancel P0 (see TestFalseCancel_DirectTool…).
+		if ev.Type == StepBlocked && strings.Contains(ev.Message, "未执行") {
 			hasBlocked = true
 		}
+		assert.NotContains(t, ev.Message, "已取消",
+			"a not-granted confirm must not falsely claim the user cancelled")
 	}
 	assert.True(t, hasBlocked)
 }

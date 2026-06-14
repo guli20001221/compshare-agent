@@ -81,3 +81,50 @@ func TestFalseCancel_UnresolvedConfirmRendersHonestNotExecuted(t *testing.T) {
 			"must never execute the shutdown when the confirm was not granted")
 	}
 }
+
+// TestFalseCancel_DirectToolUnresolvedConfirmRendersHonestNotExecuted is the
+// sibling of the workflow test above, for the OTHER false-cancel render site:
+// a direct mutating tool call (one not wrapped in a *Workflow, e.g. the raw
+// StartCompShareInstance L1 action) whose confirm was not granted. executeTool
+// used to render "操作已取消：%s 未执行。" on tools.ErrUserDeclined — the same
+// accusatory wording, because an UNRESOLVED confirm (timeout / disconnect / the
+// user typed instead of clicking) yields the same ErrUserDeclined as an explicit
+// decline. The fix narrates it honestly, identically to the workflow path.
+func TestFalseCancel_DirectToolUnresolvedConfirmRendersHonestNotExecuted(t *testing.T) {
+	exec := &mockExecutor{
+		results: map[string]map[string]any{
+			"StartCompShareInstance": {"RetCode": float64(0)},
+		},
+	}
+
+	mock := &mockLLM{
+		responses: []llm.ChatResponse{
+			{ToolCalls: []openai.ToolCall{tc("StartCompShareInstance", map[string]any{"UHostId": "uhost-falsecancel"})}},
+			{Content: "narration-should-be-skipped"},
+		},
+	}
+
+	// confirmFn returning false === what WaitForConfirmation yields on
+	// timeout / disconnect / no-resolve (the zero ConfirmDecision{}).
+	eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+		return false
+	})
+	eng.Init(context.Background())
+
+	reply, err := eng.Chat(context.Background(), "开机 uhost-falsecancel", noopStep)
+	require.NoError(t, err)
+
+	// The fix: an unresolved confirm on a direct tool must NOT falsely claim the
+	// user cancelled (the old "操作已取消：…" wording).
+	assert.NotContains(t, reply, "操作已取消",
+		"unresolved confirm on a direct tool must not falsely claim cancellation")
+	// It must honestly say the action was not executed.
+	assert.Contains(t, reply, "未执行",
+		"unresolved confirm must honestly report the action was not executed")
+
+	// Safety invariant: no mutating call was executed.
+	for _, c := range exec.calls {
+		assert.NotEqual(t, "StartCompShareInstance", c,
+			"must never execute the mutating call when the confirm was not granted")
+	}
+}
