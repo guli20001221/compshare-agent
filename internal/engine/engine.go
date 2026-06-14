@@ -3374,6 +3374,16 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 	if len(hosts) == 0 {
 		return
 	}
+	// Exactly one host in the result = the turn unambiguously concerns that
+	// instance → track it as the session's current instance. A multi-host
+	// (list-all) result is ambiguous and must NOT set it.
+	if len(hosts) == 1 {
+		if row, ok := hosts[0].(map[string]any); ok {
+			if snap := entity.InstanceFromMap(row); snap.UHostId != "" {
+				e.recordSelectedInstanceID(snap.UHostId, snap.Name)
+			}
+		}
+	}
 	nowUnix := time.Now().Unix()
 	for _, item := range hosts {
 		row, _ := item.(map[string]any)
@@ -3443,6 +3453,13 @@ func (e *Engine) recordMonitorSampleFacts(raw map[string]any) {
 			TTLSeconds:     factTTLSecondsMonitorSample,
 		})
 	}
+	// A monitor query scoped to exactly one instance = that instance is the
+	// one under discussion → track it for cross-turn reference resolution.
+	if len(bySubject) == 1 {
+		for subjectID := range bySubject {
+			e.recordSelectedInstanceID(subjectID, "")
+		}
+	}
 }
 
 // isAllAcceptedKeys verifies every key in payload is accepted for the
@@ -3492,6 +3509,28 @@ func (e *Engine) recordSelectedInstanceFromEnvelope(env *envelope.Envelope) {
 	}
 	e.sessionState.SelectedInstanceID = s.ID
 	e.sessionState.SelectedInstanceName = s.Name
+}
+
+// recordSelectedInstanceID tracks the session's "current instance" from the
+// ReAct tool-fact path. recordSelectedInstanceFromEnvelope only fires on the
+// direct-dispatch route paths, so a monitor/state turn that resolves through
+// ReAct (planner jitter routes the same question either way) used to leave
+// SelectedInstanceID empty — and the next turn's "它的状态 / 重启它" then lost
+// the instance. Setting it here unifies both dispatch paths. Callers MUST pass
+// an id only when the turn unambiguously concerns exactly ONE instance (a
+// list-all result is ambiguous and must not set it). Name is resolved from the
+// registry when the caller doesn't have it (the monitor result carries only IDs).
+func (e *Engine) recordSelectedInstanceID(id, name string) {
+	if !e.sessionStateHydrated || id == "" {
+		return
+	}
+	if name == "" {
+		if inst, res := e.RegistrySnapshot().ResolveByID(id); res.Status == entity.ResolveHit && inst != nil {
+			name = inst.Name
+		}
+	}
+	e.sessionState.SelectedInstanceID = id
+	e.sessionState.SelectedInstanceName = name
 }
 
 // recordLastIntentFromPlan sets SessionState.LastIntent from the plan's

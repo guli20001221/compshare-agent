@@ -109,14 +109,16 @@ const (
 	FactKindMonitorSample = "monitor_sample"
 )
 
-// Per-kind TTL constants. Aligned with [[project-context-first-roadmap]]
-// rule 1: instance_state 15-30s, monitor 10-30s, pricing/stock short. We
-// pick the upper end of the range — facts are descriptive ("刚才那个 CPU
-// 高是什么意思"), and re-query for "现在还高吗" is enforced by the existing
-// force-recall mechanism at engine.go:3438-3444.
+// Per-kind TTL constants. Facts are descriptive same-session context ("刚才那个
+// CPU 高是什么意思" / "我们在看哪台实例"), so the window is set to 5 minutes — long
+// enough to survive a normal multi-turn conversation about one instance without
+// the agent forgetting which instance / its basic state. Volatile metric freshness
+// is NOT relied on here: a "现在还高吗" follow-up re-queries via the force-recall
+// mechanism at engine.go:3438-3444, so a stale monitor sample is never presented
+// as the authoritative current value — it is advisory context only.
 const (
-	factTTLSecondsInstanceState = 30
-	factTTLSecondsMonitorSample = 30
+	factTTLSecondsInstanceState = 300
+	factTTLSecondsMonitorSample = 300
 )
 
 // maxRecentFacts caps RecentFacts slice length to bound persist payload

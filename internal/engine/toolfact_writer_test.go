@@ -221,6 +221,66 @@ func TestRecordMonitorSampleFacts_TwoHosts_ProducesTwoFacts(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// SelectedInstanceID tracking from the tool-fact (ReAct) path
+// ---------------------------------------------------------------------------
+// WHY: recordSelectedInstanceFromEnvelope only fires on the direct-dispatch
+// route paths. The intent router routes the SAME monitor/state question to
+// either direct-dispatch OR ReAct (flash jitter); on the ReAct path the
+// instance went untracked, so the next turn's "它的状态 / 重启它" lost it and
+// re-listed all instances (live-reproduced via the local server, 上下文复用
+// cluster). Tracking here unifies both paths.
+
+// TestRecordInstanceStateFacts_SingleHostSetsSelectedInstance: a result naming
+// exactly one instance pins it as the session's current instance.
+func TestRecordInstanceStateFacts_SingleHostSetsSelectedInstance(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+	e.recordInstanceStateFacts(map[string]any{
+		"UHostSet": []any{map[string]any{
+			"UHostId": "uhost-solo", "Name": "only-one", "State": "Running",
+			"GPU": 1, "GpuType": "RTX4090", "CPU": 16, "Memory": 65536, "Zone": "cn-bj-01",
+		}},
+	})
+	assert.Equal(t, "uhost-solo", e.sessionState.SelectedInstanceID)
+	assert.Equal(t, "only-one", e.sessionState.SelectedInstanceName)
+}
+
+// TestRecordInstanceStateFacts_MultiHostKeepsSelectedInstanceUnset: a list-all
+// result is ambiguous and MUST NOT pin a current instance.
+func TestRecordInstanceStateFacts_MultiHostKeepsSelectedInstanceUnset(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+	e.recordInstanceStateFacts(map[string]any{
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-A", "Name": "a", "State": "Running"},
+			map[string]any{"UHostId": "uhost-B", "Name": "b", "State": "Stopped"},
+		},
+	})
+	assert.Empty(t, e.sessionState.SelectedInstanceID, "list-all is ambiguous; must not pin a current instance")
+}
+
+// TestRecordMonitorSampleFacts_SingleSubjectSetsSelectedInstance: the exact
+// case that reproduced the cross-turn context loss — a monitor query scoped to
+// one instance must pin it so a follow-up resolves.
+func TestRecordMonitorSampleFacts_SingleSubjectSetsSelectedInstance(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+	e.recordMonitorSampleFacts(monitorPayload([]monitorPayloadHost{{
+		UHostID: "uhost-mon",
+		Metrics: []monitorPayloadMetric{{Key: "uhost_cpu_used", Values: [][2]any{{1716530000, "1.0"}}}},
+	}}))
+	assert.Equal(t, "uhost-mon", e.sessionState.SelectedInstanceID)
+}
+
+// TestRecordMonitorSampleFacts_MultiSubjectKeepsSelectedInstanceUnset: a
+// multi-instance monitor query is ambiguous and must not pin one.
+func TestRecordMonitorSampleFacts_MultiSubjectKeepsSelectedInstanceUnset(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+	e.recordMonitorSampleFacts(monitorPayload([]monitorPayloadHost{
+		{UHostID: "uhost-A", Metrics: []monitorPayloadMetric{{Key: "uhost_cpu_used", Values: [][2]any{{1716530000, "10.0"}}}}},
+		{UHostID: "uhost-B", Metrics: []monitorPayloadMetric{{Key: "uhost_cpu_used", Values: [][2]any{{1716530000, "20.0"}}}}},
+	}))
+	assert.Empty(t, e.sessionState.SelectedInstanceID, "multi-instance monitor is ambiguous; must not pin one")
+}
+
+// ---------------------------------------------------------------------------
 // recordToolFacts gating
 // ---------------------------------------------------------------------------
 
