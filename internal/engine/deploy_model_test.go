@@ -618,7 +618,10 @@ func TestTryDeployModel_ConfirmDenied(t *testing.T) {
 	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署 Qwen2.5-7B", noopStep)
 
 	require.True(t, handled)
-	assert.Contains(t, reply, "已取消")
+	// A not-granted confirm must honestly report not-executed, never falsely
+	// claim the user cancelled.
+	assert.Contains(t, reply, "未执行")
+	assert.NotContains(t, reply, "已取消")
 	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"))
 }
 

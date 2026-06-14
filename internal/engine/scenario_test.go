@@ -776,8 +776,10 @@ func TestScenario_WorkflowConfirmCancelled(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "帮我创建一台4090", func(e StepEvent) {})
 	assert.NoError(t, err)
-	// Deterministic cancel reply, narration skipped.
-	assert.Contains(t, reply, "已取消创建实例操作")
+	// Deterministic not-executed reply, narration skipped. A not-granted confirm
+	// must honestly say "未执行", never falsely claim the user cancelled.
+	assert.Contains(t, reply, "未执行")
+	assert.NotContains(t, reply, "已取消创建实例操作")
 
 	// Should NOT have called CreateCompShareInstance
 	for _, c := range exec.calls {
