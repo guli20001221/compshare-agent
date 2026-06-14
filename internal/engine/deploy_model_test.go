@@ -29,6 +29,7 @@ type deployMockConfig struct {
 	createID              string   // UHostIds[0] returned by CreateCompShareInstance
 	communityImageID      string   // when set, the community group carries Data[] with this id; "" = group without Data[] (halt case)
 	platformSupportedGPUs []string // when set, the platform image declares these SupportedGpuTypes (M2 intersection)
+	platformImages        []any    // when set, overrides the platform ImageSet wholesale (e.g. an arch variant + its base)
 }
 
 // newDeployMock returns a function-based executor covering every action the
@@ -46,6 +47,9 @@ func newDeployMock(cfg deployMockConfig) *mockExecutorFn {
 	return &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
 		case "DescribeCompShareImages":
+			if len(cfg.platformImages) > 0 {
+				return map[string]any{"ImageSet": cfg.platformImages}, nil
+			}
 			img := map[string]any{
 				"CompShareImageId": "img-pt",
 				"Name":             "PyTorch 2.9.1 cuda128",
@@ -396,6 +400,55 @@ func TestResolveArchImageVariant(t *testing.T) {
 	})
 }
 
+// TestTryArchVariantDowngrade is the inverse swap: the matcher mis-picked an
+// arch-specific variant the user didn't pin, so it downgrades to the generic base.
+func TestTryArchVariantDowngrade(t *testing.T) {
+	platform := map[string]any{"ImageSet": []any{
+		map[string]any{"Name": "vLLM v0.12.0-5090", "CompShareImageId": "img-5090", "SupportedGpuTypes": []any{"5090"}},
+		map[string]any{"Name": "vLLM v0.12.0", "CompShareImageId": "img-base", "SupportedGpuTypes": []any{"4090", "A100", "A800"}},
+	}}
+
+	t.Run("variant + no pinned arch → downgrade to base", func(t *testing.T) {
+		id, supp, name, ok := tryArchVariantDowngrade(deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0-5090"}, "", platform)
+		require.True(t, ok)
+		assert.Equal(t, "img-base", id)
+		assert.Equal(t, "vLLM v0.12.0", name)
+		assert.ElementsMatch(t, []string{"4090", "A100", "A800"}, supp)
+	})
+	t.Run("user pinned 5090 → no downgrade (they want the variant)", func(t *testing.T) {
+		_, _, _, ok := tryArchVariantDowngrade(deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0-5090"}, "5090", platform)
+		assert.False(t, ok)
+	})
+	t.Run("not an arch variant → no downgrade", func(t *testing.T) {
+		_, _, _, ok := tryArchVariantDowngrade(deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0"}, "", platform)
+		assert.False(t, ok)
+	})
+	t.Run("community source → no downgrade", func(t *testing.T) {
+		_, _, _, ok := tryArchVariantDowngrade(deployPlan{ImageSource: "community", ImageName: "Foo-5090"}, "", platform)
+		assert.False(t, ok)
+	})
+}
+
+// TestMatchDeployImage_ArchVariantDowngradesToBase proves the gate end-to-end: the
+// matcher picks "vLLM v0.12.0-5090" (supp=[5090]) for a 32B model the 5090's 32GB
+// can't hold; instead of erroring, the handler downgrades to the generic
+// "vLLM v0.12.0" (supports A100) and proceeds. WHY: ~1-in-5 real runs the matcher
+// grabs the arch variant for a large model and the user sees a confusing compat error.
+func TestMatchDeployImage_ArchVariantDowngradesToBase(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, platformImages: []any{
+		map[string]any{"Name": "vLLM v0.12.0-5090", "CompShareImageId": "img-5090", "Softwares": map[string]any{"Framework": "vLLM"}, "SupportedGpuTypes": []any{"5090"}},
+		map[string]any{"Name": "vLLM v0.12.0", "CompShareImageId": "img-base", "Softwares": map[string]any{"Framework": "vLLM"}, "SupportedGpuTypes": []any{"4090", "A100", "A800"}},
+	}})
+	matchJSON := `{"image_source":"platform","image_name":"vLLM v0.12.0-5090","model_name":"DeepSeek-R1-32B","match_kind":"base","size_ambiguous":false,"quantization":"fp16"}`
+	eng := newDeployEngine(matchJSON, exec, okConfirm)
+
+	plan, err := eng.matchDeployImage(context.Background(), "部署 DeepSeek-R1-32B", "", noopStep)
+
+	require.NoError(t, err, "the arch variant must downgrade to the base instead of erroring")
+	assert.Equal(t, "vLLM v0.12.0", plan.ImageName, "swapped to the generic base")
+	assert.Contains(t, plan.MatchNote, "回退到通用基础镜像", "the downgrade is noted for the user")
+}
+
 // TestBuildDeployReply_IncludesConsoleManageLink proves the post-create reply hands
 // the user a jump to the console instance-list page (manage state / login / billing).
 func TestBuildDeployReply_IncludesConsoleManageLink(t *testing.T) {
@@ -705,12 +758,84 @@ func TestZoneStockState(t *testing.T) {
 }
 
 func TestBuildAdviseReply(t *testing.T) {
-	r := buildAdviseReply(deployPlan{ImageSource: "platform", ImageName: "ComfyUI", GpuType: "A100", ChosenZone: "cn-wlcb-01", MatchNote: "按显存推荐"})
-	assert.Contains(t, r, "推荐 GPU：A100")
-	assert.Contains(t, r, "ComfyUI")
-	assert.Contains(t, r, "cn-wlcb-01")
-	assert.Contains(t, r, "只读模式", "advice tells the user how to actually deploy")
-	assert.NotContains(t, r, "实例 ID", "advice never reports a created instance")
+	plan := deployPlan{ImageSource: "platform", ImageName: "ComfyUI", GpuType: "A100", ChosenZone: "cn-wlcb-01", MatchNote: "按显存推荐"}
+
+	// read-only: advice + the "ask an admin to enable writes" footer.
+	ro := buildAdviseReply(plan, false)
+	assert.Contains(t, ro, "推荐 GPU：A100")
+	assert.Contains(t, ro, "ComfyUI")
+	assert.Contains(t, ro, "cn-wlcb-01")
+	assert.Contains(t, ro, "只读模式", "read-only advice tells the user how to actually deploy")
+	assert.NotContains(t, ro, "实例 ID", "advice never reports a created instance")
+
+	// mutating-on advice (a recommendation request): same body, but offers to proceed
+	// on a concrete restate instead of pointing at the read-only switch.
+	rw := buildAdviseReply(plan, true)
+	assert.Contains(t, rw, "推荐 GPU：A100")
+	assert.NotContains(t, rw, "只读模式", "writes are on — don't tell the user to enable them")
+	assert.Contains(t, rw, "部署 ComfyUI", "offers to proceed on an explicit restate")
+	assert.NotContains(t, rw, "实例 ID", "advice never reports a created instance")
+}
+
+// TestDeployIsAdviceOnly pins the recommend-vs-create classifier. A request that asks
+// for a recommendation / how-to advises; an explicit create command creates (and wins
+// over an incidental advice marker). Safe-biased toward advice when in doubt.
+func TestDeployIsAdviceOnly(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"LiveTalking这个镜像推荐我用哪种卡部署", true}, // real session s_fd7f1b9669fd
+		{"用什么显卡部署 ComfyUI", true},
+		{"部署 DeepSeek R1 用哪种卡好", true},
+		{"怎么部署 Qwen", true},
+		{"推荐一个能跑 Qwen 的配置", true},
+		{"用什么镜像合适", true},
+		{"我想部署 DeepSeek R1", false},
+		{"部署一台A100的Ollama，按量", false},
+		{"帮我部署 Qwen2.5-7B", false},
+		{"帮我部署你推荐的那台", false}, // explicit create command overrides 推荐
+		{"现在创建一台 4090", false},
+		{"部署 Qwen2.5 32B", false},
+		{"32B", false},
+	}
+	for _, c := range cases {
+		t.Run(c.msg, func(t *testing.T) {
+			assert.Equal(t, c.want, deployIsAdviceOnly(c.msg))
+		})
+	}
+}
+
+// TestTryDeployModel_AdviceOnlyDoesNotCreate proves the fix end-to-end: with writes
+// ENABLED, a recommendation request ("推荐我用哪种卡部署") returns the matcher's advice
+// and runs NO create saga — instead of the real-session stock-out create. The advice
+// offers to proceed on an explicit restate.
+func TestTryDeployModel_AdviceOnlyDoesNotCreate(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, communityImageID: "comm-img-9", instanceStates: []string{"Running"}})
+	matchJSON := `{"image_source":"community","image_name":"LiveTalking 数字人","model_name":"","match_kind":"exact","quantization":""}`
+	confirmCalls := 0
+	eng := newDeployEngine(matchJSON, exec, func(string, map[string]any) bool { confirmCalls++; return true }) // mutating ON
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "LiveTalking这个镜像推荐我用哪种卡部署", noopStep)
+
+	require.True(t, handled)
+	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "an advice-only request must NOT create an instance")
+	assert.Equal(t, 0, confirmCalls, "no confirm card for a recommendation question")
+	assert.Contains(t, reply, "建议", "the recommendation is returned as advice")
+	assert.Contains(t, reply, "部署 LiveTalking 数字人", "mutating-on advice offers to proceed on an explicit restate")
+}
+
+// TestTryDeployModel_ExplicitCreateStillCreates guards the other side: an explicit
+// "帮我部署X" with writes on still runs the create saga (the advice gate must not
+// swallow real create commands).
+func TestTryDeployModel_ExplicitCreateStillCreates(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
+
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "帮我部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	assert.Equal(t, 1, countCalls(exec.calls, "CreateCompShareInstance"), "an explicit create command still creates")
 }
 
 // newZoneDeployMock is a full-handler mock with per-zone availability + stock so the
@@ -1030,6 +1155,48 @@ func TestTryDeployModel_FollowupGPUCarriesPreviousDeployTarget(t *testing.T) {
 	prompt := joinedChatMessages(client.calls[0].Messages) + "\n" + joinedChatMessages(client.calls[1].Messages)
 	assert.Contains(t, prompt, "Qwen2.5-32B", "the short follow-up must inherit the previous deploy model")
 	assert.Contains(t, prompt, "A800", "the user-named GPU must still be visible to the matcher")
+}
+
+// TestTryDeployModel_BareSizeFollowupInheritsClarifiedModel proves the size-clarify
+// follow-up combine: after the handler asks "「DeepSeek R1」有多个参数规模…", a bare
+// "32B" answer must be matched as "DeepSeek R1 32B" — the matcher prompt inherits the
+// model family from our own clarify message, so the model is sized & picked as a 32B
+// DeepSeek-R1 instead of a family-less "32B". WHY: real session s_c05ecbeccce4 — the
+// "32B" answer lost the DeepSeek-R1 identity and deployed a same-size sibling (QwQ-32B).
+func TestTryDeployModel_BareSizeFollowupInheritsClarifiedModel(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	client := &mockLLM{responses: []llm.ChatResponse{
+		{Content: deploySearchJSON},
+		{Content: `{"image_source":"platform","image_name":"vLLM v0.12.0","model_name":"DeepSeek-R1-32B","match_kind":"base","quantization":""}`},
+	}}
+	eng := NewWithDeps(client, exec, okConfirm)
+	// History as it stands when the user answers the size-clarify: their unsized
+	// request + our verbatim clarify message (the family carrier).
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "我想要部署 DeepSeek R1"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: deployClarifyModelSizeMsg("DeepSeek R1")},
+	)
+
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "32B", noopStep)
+
+	require.True(t, handled)
+	require.GreaterOrEqual(t, len(client.calls), 2)
+	prompt := joinedChatMessages(client.calls[0].Messages) + "\n" + joinedChatMessages(client.calls[1].Messages)
+	assert.Contains(t, prompt, "DeepSeek R1", "the bare-size answer must inherit the clarified model family")
+	assert.Contains(t, prompt, "32B", "the answered size must reach the matcher")
+}
+
+// TestEffectiveDeployUserMsg_BareSizeWithoutClarifyUnchanged proves the guard: a bare
+// "32B" with NO preceding size-clarify is left untouched (no spurious family is
+// invented), so the combine only fires as an answer to our own clarify.
+func TestEffectiveDeployUserMsg_BareSizeWithoutClarifyUnchanged(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
+	// Last assistant turn is NOT a size-clarify → no model to inherit.
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "你好"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "你好，有什么可以帮你？"},
+	)
+	assert.Equal(t, "32B", eng.effectiveDeployUserMsg("32B"), "bare size without a clarify stays unchanged")
 }
 
 func joinedChatMessages(messages []openai.ChatCompletionMessage) string {
@@ -1376,11 +1543,149 @@ func TestShouldClarifyDeployModelSize(t *testing.T) {
 	}
 }
 
+// TestMatchDeployImage_SizeAmbiguousGatesClarify proves the #16 fix: the size-clarify
+// is ANDed with the matcher's size_ambiguous judgment, so a single specific model the
+// table can't size ("Fish Audio S2-Pro", size_ambiguous=false) deploys instead of
+// being asked a confusing size question, while a genuine multi-size family
+// ("DeepSeek R1", size_ambiguous=true) still gets the clarify.
+func TestMatchDeployImage_SizeAmbiguousGatesClarify(t *testing.T) {
+	// size_ambiguous=false for an unresolvable single model → NO clarify (proceeds).
+	exec := newDeployMock(deployMockConfig{capacityEnough: true})
+	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"Fish Audio S2-Pro","match_kind":"base","size_ambiguous":false}`, exec, okConfirm)
+	_, err := eng.matchDeployImage(context.Background(), "我想要部署 Fish Audio S2-Pro", "", noopStep)
+	assert.NoError(t, err, "a single model (size_ambiguous=false) must NOT trigger the size clarify")
+
+	// size_ambiguous=true for a multi-size family with no size → clarify.
+	exec2 := newDeployMock(deployMockConfig{capacityEnough: true})
+	eng2 := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"DeepSeek R1","match_kind":"base","size_ambiguous":true}`, exec2, okConfirm)
+	_, err2 := eng2.matchDeployImage(context.Background(), "我想部署 DeepSeek R1", "", noopStep)
+	var ue deployUserError
+	require.ErrorAs(t, err2, &ue, "a multi-size family with no size (size_ambiguous=true) must trigger the clarify")
+	assert.Contains(t, ue.Error(), "有多个参数规模")
+}
+
 // TestDeployClarifyModelSizeMsg checks the clarification names the model and asks
-// for a parameter count.
+// which size directly. It now fires ONLY for a genuine multi-size family (the call
+// site ANDs size_ambiguous), so the message can state "有多个参数规模" plainly — the
+// #16 over-fire for a single model (Fish Audio S2-Pro) is handled upstream, not by
+// hedging this message.
 func TestDeployClarifyModelSizeMsg(t *testing.T) {
 	msg := deployClarifyModelSizeMsg("DeepSeek R1")
-	assert.Contains(t, msg, "DeepSeek R1")
-	assert.Contains(t, msg, "参数量")
-	assert.Contains(t, msg, "规模")
+	assert.Contains(t, msg, "DeepSeek R1", "names the model")
+	assert.Contains(t, msg, "有多个参数规模", "asks which size of the multi-size family")
+	assert.Contains(t, msg, "32B", "shows a concrete size the user can reply with")
+
+	// The deployClarifyModelRE anchor must still extract the model (the bare-size
+	// follow-up combine depends on it).
+	mm := deployClarifyModelRE.FindStringSubmatch(msg)
+	require.NotNil(t, mm)
+	assert.Equal(t, "DeepSeek R1", mm[1])
+}
+
+// TestBuildImageMatchPrompt_AntiConfusionContract pins the load-bearing fix: the
+// match prompt MUST tell the model that same-brand / same-size ≠ same model and MUST
+// ask for a match_kind judgment. WHY it matters: a real session deployed QwQ-32B for
+// a "DeepSeek R1 32B" request — a same-size sibling silently shipped as the wrong
+// model. The decision to ship a base instead of a wrong model is an LLM judgment
+// (no maintained model→image table); this test guards the prompt that carries it, so
+// a future prompt edit that drops the rule fails loudly instead of regressing the bug.
+func TestBuildImageMatchPrompt_AntiConfusionContract(t *testing.T) {
+	msgs := buildImageMatchPrompt("我想部署 DeepSeek R1 32B", nil, nil)
+	require.NotEmpty(t, msgs)
+	sys := msgs[0].Content
+	assert.Contains(t, sys, "同品牌或同参数量都不等于同一个模型", "anti-confusion rule must be present")
+	assert.Contains(t, sys, "match_kind", "the exact|base judgment field must be requested")
+	assert.Contains(t, sys, "base", "the base-fallback path (self-host) must be described")
+	assert.Contains(t, sys, "绝不要硬塞一个名字相近的别的模型", "must forbid substituting a name-similar different model")
+}
+
+// TestDeploySelfDeployHint covers the base-match self-host note. The hint fires ONLY
+// for match_kind="base" with a named model (no ready-made image → user pulls it
+// themselves); an exact match (ready-made model/app image) and a model-less app
+// deploy get no hint. The framework line is rendered from the deployed image's own
+// name — a render of the already-made decision, never a second matching decision —
+// and the hint never fabricates an exact model tag (no model→tag table).
+func TestDeploySelfDeployHint(t *testing.T) {
+	cases := []struct {
+		name         string
+		plan         deployPlan
+		wantContains []string
+		wantEmpty    bool
+	}{
+		{
+			name:         "base + ollama image → ollama pull guidance, names the model",
+			plan:         deployPlan{MatchKind: "base", ModelName: "DeepSeek-R1-32B", ImageName: "Ollama v0.13.1"},
+			wantContains: []string{"DeepSeek-R1-32B", "Ollama", "ollama pull", "ollama.com/library", "暂无"},
+		},
+		{
+			name:         "base + vllm image → HF download + framework load",
+			plan:         deployPlan{MatchKind: "base", ModelName: "Qwen2.5-32B", ImageName: "vLLM v0.12.0"},
+			wantContains: []string{"Qwen2.5-32B", "vLLM", "HuggingFace"},
+		},
+		{
+			name:         "base + generic pytorch base → generic self-pull",
+			plan:         deployPlan{MatchKind: "base", ModelName: "Llama-3-70B", ImageName: "PyTorch 2.9.1 cuda128"},
+			wantContains: []string{"Llama-3-70B", "PyTorch 2.9.1 cuda128"},
+		},
+		{
+			name:      "exact match → no hint (ready-made image needs no self-pull)",
+			plan:      deployPlan{MatchKind: "exact", ModelName: "DeepSeek-R1-32B", ImageName: "Ollama-DeepSeek-R1-32B"},
+			wantEmpty: true,
+		},
+		{
+			name:      "base but no model named (app deploy) → no hint",
+			plan:      deployPlan{MatchKind: "base", ModelName: "", ImageName: "PyTorch"},
+			wantEmpty: true,
+		},
+		{
+			name:      "empty match_kind (legacy) → treated as exact, no hint",
+			plan:      deployPlan{MatchKind: "", ModelName: "Qwen2.5-7B", ImageName: "PyTorch"},
+			wantEmpty: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := deploySelfDeployHint(c.plan)
+			if c.wantEmpty {
+				assert.Empty(t, got)
+				return
+			}
+			for _, sub := range c.wantContains {
+				assert.Contains(t, got, sub)
+			}
+		})
+	}
+}
+
+// TestTryDeployModel_BaseMatchShipsHintNotWrongModel proves the fix end-to-end: when
+// the matcher judges match_kind="base" for a named model (no ready-made image), the
+// deploy still succeeds on a framework base AND the reply tells the user the base was
+// shipped + how to self-host — instead of silently presenting a wrong-model image as
+// if it were the model. This is the real-session bug (DeepSeek-R1-32B → QwQ-32B) seen
+// from the correct side: a base honestly framed, not a sibling smuggled in.
+func TestTryDeployModel_BaseMatchShipsHintNotWrongModel(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	matchJSON := `{"image_source":"platform","image_name":"vLLM v0.12.0","model_name":"DeepSeek-R1-32B","match_kind":"base","quantization":""}`
+	eng := newDeployEngine(matchJSON, exec, func(string, map[string]any) bool { return true })
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "我想部署 DeepSeek R1 32B", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "uhost-deploy-1", "base match still creates the instance")
+	assert.Contains(t, reply, "DeepSeek-R1-32B", "the reply names the model the user actually asked for")
+	assert.Contains(t, reply, "暂无", "the reply states there is no ready-made image for that model")
+	assert.Equal(t, 1, countCalls(exec.calls, "CreateCompShareInstance"), "still creates once, on the base")
+}
+
+// TestTryDeployModel_ExactMatchNoBaseHint proves the symmetric case: an exact match
+// (the default match JSON omits match_kind → treated as exact) ships NO self-host
+// hint, so a ready-made deploy is not cluttered with "no image" framing.
+func TestTryDeployModel_ExactMatchNoBaseHint(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "帮我部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	assert.NotContains(t, reply, "平台暂无", "an exact match must not show the no-ready-made-image note")
 }
