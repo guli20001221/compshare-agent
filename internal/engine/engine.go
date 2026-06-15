@@ -76,6 +76,14 @@ const (
 	// breaks at iteration boundary, so any tool_call already issued has
 	// its tool_result on the wire before this frame.
 	tokenBudgetExceededMessage = "本次问题消耗的算力已超过单次上限，请简化问题或拆分提问。"
+	// emptyReplyFallbackMessage is the honest fallback when a turn completes
+	// WITHOUT an error (err == nil) but the model produced no text and no tool
+	// call — flash intermittently returns empty content. A blank reply must
+	// never reach the user (it reads as a silent failure / "空回复"). This does
+	// not mask real errors: an LLM/tool error returns a non-nil err on a
+	// separate path and is surfaced as such; this only substitutes for a
+	// genuinely empty successful turn.
+	emptyReplyFallbackMessage = "抱歉，本次没有生成有效回复，请重试，或换一种方式描述您的问题。"
 )
 
 const (
@@ -1489,6 +1497,17 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 						}
 					}
 				}
+			// P0 empty-reply safety net: a successful round (err == nil) that
+			// produced no text — flash intermittently returns empty content with
+			// no tool call — must not surface as a blank reply ("空回复"). Replace
+			// it with an honest fallback BEFORE the replay below, so the fallback
+			// flows through the normal stream + persist path (content != rawContent
+			// → emitted as one corrective chunk in both live and buffered modes).
+			// Fires only when the reply is genuinely empty; the error path returns
+			// a non-nil err separately, so this never masks a real failure.
+			if strings.TrimSpace(content) == "" {
+				content = emptyReplyFallbackMessage
+			}
 			// Replay buffered streaming deltas when the LLM content was returned
 			// verbatim. If an engine guard overwrote content, emit the canonical
 			// override as a single chunk so the SSE stream matches the persisted
