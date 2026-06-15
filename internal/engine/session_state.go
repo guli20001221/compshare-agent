@@ -48,8 +48,8 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 //	(1) JSON tag with omitempty for backwards compat, and
 //	(2) extending the round-trip test in session_state_test.go.
 //
-// M1 shipped with 4 scalar fields. M2 added RecentFacts. known_constraints /
-// pending_action remain deferred.
+// M1 shipped with 4 scalar fields. M2 added RecentFacts. M3.1 added
+// LastStockGpuModel. known_constraints / pending_action remain deferred.
 //
 // LastIntent vocabulary contract: when non-empty, the value MUST be
 // exactly string(intent.X) for some X in intent.RuntimeIntents() — e.g.
@@ -58,11 +58,23 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 // intentional to keep the engine package from reverse-depending on the
 // intent package; the test in session_state_test.go enforces the
 // vocabulary contract via test-side import of internal/intent.
+//
+// LastStockGpuModel carries the GPU model a prior stock-availability turn
+// resolved to (the API instance-type Name, e.g. "4090"), so a follow-up
+// that elides the subject ("现在还有库存吗") reuses that referent instead of
+// re-listing every model (RC017). It is the stock analogue of
+// SelectedInstanceID for monitor turns. Unlike SelectedInstanceID it is
+// recorded/read WITHOUT the sessionStateHydrated gate (see
+// recordLastStockGpuModel) because the stock route is direct-dispatch and
+// has no ReAct-history fallback, so the CLI in-memory single-session path
+// must carry it too; safety in HTTP is preserved because ClearSessionState
+// zeroes it at every turn start.
 type SessionState struct {
 	SchemaVersion        string     `json:"schema_version"`
 	SelectedInstanceID   string     `json:"selected_instance_id,omitempty"`
 	SelectedInstanceName string     `json:"selected_instance_name,omitempty"`
 	LastIntent           string     `json:"last_intent,omitempty"`
+	LastStockGpuModel    string     `json:"last_stock_gpu_model,omitempty"`
 	RecentFacts          []ToolFact `json:"recent_facts,omitempty"`
 }
 

@@ -544,6 +544,7 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 			SelectedInstanceID:   "uhost-abc",
 			SelectedInstanceName: "gpu-prod",
 			LastIntent:           string(intent.IntentMonitorQuery),
+			LastStockGpuModel:    "4090",
 			RecentFacts: []ToolFact{
 				{
 					Kind:           FactKindInstanceState,
@@ -578,6 +579,30 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, string(raw), string(raw2),
 		"byte-equal round-trip required for multi-replica preservation")
+}
+
+// TestRecordLastStockGpuModel_UngatedByHydration is the RC017 record-side
+// contract. Unlike recordSelectedInstanceID, the stock referent must be
+// recorded even when the engine is NOT hydrated (the CLI in-memory
+// single-session path never hydrates yet must carry the referent across
+// turns). It also must NOT clear a referent on a list-all/ambiguous turn
+// (model == ""), and a new single referent overwrites.
+func TestRecordLastStockGpuModel_UngatedByHydration(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	require.False(t, e.sessionStateHydrated,
+		"fresh CLI-style engine must be un-hydrated — this is the path the gate must survive")
+
+	e.recordLastStockGpuModel("4090")
+	assert.Equal(t, "4090", e.sessionState.LastStockGpuModel,
+		"referent must record without hydration so the CLI direct-dispatch path carries it")
+
+	e.recordLastStockGpuModel("")
+	assert.Equal(t, "4090", e.sessionState.LastStockGpuModel,
+		"a list-all / ambiguous turn (empty model) must NOT clear the prior referent")
+
+	e.recordLastStockGpuModel("5090")
+	assert.Equal(t, "5090", e.sessionState.LastStockGpuModel,
+		"a new single referent overwrites the prior one")
 }
 
 // TestToolFact_TTLDefaultsByKind verifies the per-kind default TTL constants.

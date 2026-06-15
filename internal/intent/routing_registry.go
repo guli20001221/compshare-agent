@@ -207,20 +207,67 @@ func handleStockAvailability(ctx context.Context, h *DemoHandler, req HandlerReq
 	if fb != nil {
 		return *fb
 	}
-	if reply, ok, fb := renderStockWithCapacityPrecheck(ctx, h, req, raw); fb != nil {
+	// RC017: resolve a subject-eliding follow-up ("现在还有库存吗") to the GPU
+	// model a prior stock turn resolved to (req.FallbackGpuModel), so it is
+	// not re-expanded to every model. All three stock renderers
+	// (renderStockWithCapacityPrecheck / renderStockReply / buildStockEnvelope)
+	// filter off the user text, so substituting one effective text keeps them
+	// consistent. resolved is recorded back into SessionState by the engine.
+	items := mapSliceAt(raw, "AvailableInstanceTypes")
+	effReq := req
+	effReq.UserText = stockReferentText(req, items)
+	resolved := singleStockModel(effReq.UserText, items)
+
+	if reply, ok, fb := renderStockWithCapacityPrecheck(ctx, h, effReq, raw); fb != nil {
 		return *fb
 	} else if ok {
 		result := HandledResult(reply)
 		result.ToolAction = action
 		result.ToolArgs = copyArgs(map[string]any{})
+		result.ResolvedStockGpuModel = resolved
 		return result
 	}
-	reply := renderStockReply(raw, req.UserText)
+	reply := renderStockReply(raw, effReq.UserText)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
-	setEnvelopeIfPopulated(&result, buildStockEnvelope(raw, req.UserText))
+	result.ResolvedStockGpuModel = resolved
+	setEnvelopeIfPopulated(&result, buildStockEnvelope(raw, effReq.UserText))
 	return result
+}
+
+// stockReferentText returns the user text the stock renderers should filter
+// on. When the current turn already names an available model, that text is
+// authoritative. When the turn elides the subject entirely — no GPU-like
+// token at all — and a prior stock turn in this session resolved to a single
+// model (req.FallbackGpuModel) that is STILL offered, the prior model name is
+// used as the referent (RC017). The "still offered" check uses the same
+// matcher as rendering, so a retired model never resurrects, and a turn that
+// names an unknown/unavailable GPU ("H200") falls through to the normal
+// not-found path rather than silently swapping to the prior model.
+func stockReferentText(req HandlerRequest, items []any) string {
+	if len(matchUserTextToInstanceTypeNames(req.UserText, items, false)) > 0 {
+		return req.UserText
+	}
+	if req.FallbackGpuModel == "" || userMentionedGPULikeToken(req.UserText) {
+		return req.UserText
+	}
+	if len(matchUserTextToInstanceTypeNames(req.FallbackGpuModel, items, false)) == 0 {
+		return req.UserText
+	}
+	return req.FallbackGpuModel
+}
+
+// singleStockModel returns the model name when the text resolves to exactly
+// one available model, else "". Only an unambiguous single referent is
+// recorded — a list-all or multi-model turn must not bind the session to one
+// model (mirrors recordSelectedInstanceID's "exactly one instance" rule).
+func singleStockModel(userText string, items []any) string {
+	matched := matchUserTextToInstanceTypeNames(userText, items, false)
+	if len(matched) == 1 {
+		return matched[0]
+	}
+	return ""
 }
 
 func handlePlatformImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {

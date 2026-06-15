@@ -88,6 +88,12 @@ type HandlerResult struct {
 	// populates this for monitor handler results only.
 	RendererInputToolArgHashes  []string
 	RendererInputEnvelopeHashes []string
+	// ResolvedStockGpuModel is the single GPU model (API instance-type Name,
+	// e.g. "4090") a stock-availability turn resolved to, or "" when the turn
+	// was ambiguous / listed all models. engine.go records it into
+	// SessionState.LastStockGpuModel so a later subject-eliding stock turn can
+	// reuse it as the referent (RC017). Populated by handleStockAvailability only.
+	ResolvedStockGpuModel string
 }
 
 type HandlerExecutor interface {
@@ -108,6 +114,13 @@ type HandlerRequest struct {
 	// as a default target instead of triggering resource selection.
 	// Set by engine.go from e.sessionState at the tryRouteDispatch call site.
 	FallbackInstanceID string
+	// FallbackGpuModel is the LastStockGpuModel from SessionState (the API
+	// instance-type Name a prior stock turn resolved to, e.g. "4090"). When
+	// the current stock turn elides the subject ("现在还有库存吗") and names no
+	// GPU-like token, handleStockAvailability reuses this as the referent
+	// instead of re-listing every model (RC017). Set by engine.go from
+	// e.sessionState at the tryRouteDispatch call site.
+	FallbackGpuModel string
 }
 
 type DemoHandler struct {
