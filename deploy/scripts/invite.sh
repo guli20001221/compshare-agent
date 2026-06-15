@@ -56,6 +56,15 @@ TRACE_ENABLED="${COMPSHARE_TRACE_ENABLED:-1}"
 TRACE_SINK="${COMPSHARE_TRACE_SINK:-mysql}"
 TRACE_DIR="${COMPSHARE_TRACE_DIR:-}"
 
+# Editable create-flow confirmation form (server half of the double gate, create-flow
+# 表单化). With this on AND the client opting in per turn (SendCSAgentChat
+# Features:["confirm_form_v1"], which the AIAssistant already sends), CreateInstanceWorkflow
+# confirmation frames carry a select-only Form (GPU/zone/image/charge-type) and accept
+# Overrides (re-validated, <=3 edits). SAFE when the client does NOT opt in — frames stay
+# byte-identical, Overrides rejected. deploy_model saga + CLI confirm unaffected either way.
+# Forwarded for the same own-process-env reason as the switches above; Go code default OFF.
+CONFIRM_FORM="${COMPSHARE_CONFIRM_FORM:-1}"
+
 ally invite compshare-agent \
     --app-bin "$APP_DIR/compshare-agent" \
     --app-pwd "$APP_DIR" \
@@ -72,6 +81,7 @@ ally invite compshare-agent \
     --app-env "COMPSHARE_TRACE_ENABLED=$TRACE_ENABLED" \
     --app-env "COMPSHARE_TRACE_SINK=$TRACE_SINK" \
     --app-env "COMPSHARE_TRACE_DIR=$TRACE_DIR" \
+    --app-env "COMPSHARE_CONFIRM_FORM=$CONFIRM_FORM" \
     -- server \
     --config "$CONFIG_FILE" \
     --addr "$ADDR"
