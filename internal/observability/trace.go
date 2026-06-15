@@ -543,9 +543,24 @@ type RetrievalTrace struct {
 	QueryExpansions       []string       `json:"query_expansions,omitempty"`
 	Hits                  int            `json:"hits"`
 	HitItems              []RetrievalHit `json:"hit_items,omitempty"`
-	RefusedReason         string         `json:"refused_reason,omitempty"`
-	WeakEvidence          bool           `json:"weak_evidence,omitempty"`
-	RankingErrorCandidate bool           `json:"ranking_error_candidate,omitempty"`
+	RefusedReason string `json:"refused_reason,omitempty"`
+	// RefusalType classifies a RAG refusal into the #5 four-state taxonomy
+	// (corpus_gap / all_below_floor / synthesis_refused / wrong_domain). Derived
+	// at Finish from RefusedReason + FloorDroppedAll (DeriveRefusalType); empty
+	// when the turn did not emit a knowledge-coverage refusal.
+	RefusalType string `json:"refusal_type,omitempty"`
+	// FloorDroppedAll is true when the relevance floor removed EVERY retrieved hit
+	// this turn (the agent-loop drop point) — the signal that distinguishes
+	// all_below_floor from a genuinely empty corpus (corpus_gap). A retrieval fact
+	// independent of whether the turn then refused or answered with general
+	// guidance, so it is queryable on its own even when refusal_type is empty.
+	FloorDroppedAll bool `json:"floor_dropped_all,omitempty"`
+	// FloorValue is the weak-evidence relevance floor in effect for this turn's
+	// HybridMode (0.5 semantic / 55 BM25). With HitItems[0].Score it shows how
+	// far the top hit fell from the floor.
+	FloorValue            float64 `json:"floor_value,omitempty"`
+	WeakEvidence          bool    `json:"weak_evidence,omitempty"`
+	RankingErrorCandidate bool    `json:"ranking_error_candidate,omitempty"`
 	// HybridMode mirrors internal/knowledge/retriever.RetrievalResult.HybridMode.
 	// One of "bm25_only" | "hybrid_cosine" | "hybrid_rerank" | "qwen3_full"
 	// | "bm25_fallback". Empty when retrieval is disabled.
@@ -591,9 +606,13 @@ type RetrievalTrace struct {
 }
 
 type RetrievalHit struct {
-	ChunkID string  `json:"chunk_id"`
-	Score   float64 `json:"score"`
-	Kept    bool    `json:"kept"`
+	ChunkID string `json:"chunk_id"`
+	// SourceArea is the cited chunk's declared product_area (KBChunk.ProductArea).
+	// Stages the per-chunk domain visibility the #5 wrong-domain guard reads;
+	// empty when the chunk declares no product_area.
+	SourceArea string  `json:"source_area,omitempty"`
+	Score      float64 `json:"score"`
+	Kept       bool    `json:"kept"`
 	// RRF-only trace diagnostics. Populated only when the producing
 	// retrieval mode was qwen3_rrf; omitted from JSONL for all other
 	// modes via omitempty. Ranks are 1-indexed (0 = absent from that
@@ -919,6 +938,9 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.Hits != 0 ||
 		len(trace.HitItems) > 0 ||
 		trace.RefusedReason != "" ||
+		trace.RefusalType != "" ||
+		trace.FloorDroppedAll ||
+		trace.FloorValue != 0 ||
 		trace.WeakEvidence ||
 		trace.RankingErrorCandidate ||
 		trace.HybridMode != "" ||

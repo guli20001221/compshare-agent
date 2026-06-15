@@ -2295,6 +2295,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatc
 		RerankerMode:           retrieved.RerankerMode,
 		RerankerLatencyMS:      retrieved.RerankerLatencyMS,
 		RerankerFallbackReason: retrieved.RerankerFallbackReason,
+		FloorValue:             weakEvidenceThresholdFor(retrieved.HybridMode),
 	}
 	if trace.QueryNormalized == "" {
 		trace.QueryNormalized = knowledge.NormalizeQuery(userMsg)
@@ -2482,8 +2483,11 @@ func projectEvidenceTraceHits(evidences []envelope.Evidence, items []knowledge.R
 		}
 		hits = append(hits, observability.RetrievalHit{
 			ChunkID: view.ChunkID,
-			Score:   view.RetrievalScore,
-			Kept:    kept,
+			// SourceArea is the chunk's declared product_area, staging the #5
+			// wrong-domain visibility (empty when item is unset / undeclared).
+			SourceArea: item.Chunk.ProductArea,
+			Score:      view.RetrievalScore,
+			Kept:       kept,
 			// RRF trace fields. Zero values omitted via json omitempty
 			// for non-qwen3_rrf modes; populated when knowledge.Retriever
 			// ran the qwen3_rrf branch.
@@ -3004,8 +3008,12 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	// agent gets an honest empty ledger and gives general guidance instead of
 	// pretending the irrelevant chunks support a specific answer.
 	hits := rawHits
+	floorDroppedAll := false
 	if isWeakEvidence(rawHits, retrieved.HybridMode) {
 		hits = nil
+		// Only "dropped ALL" when there were hits to drop — a corpus-empty turn
+		// (rawHits==0) is corpus_gap, not all_below_floor.
+		floorDroppedAll = len(rawHits) > 0
 	}
 	ledger := knowledge.BuildSubstantiveEvidenceLedger(query, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
 	e.searchKnowledgeRanThisTurn = true
@@ -3025,7 +3033,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	// — including when the relevance floor dropped it. Without this the rec.retrieval
 	// block is populated only by the terminal-RAG path. Mirrors
 	// recordDiagnosisKnowledgeProbe's trace emission.
-	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits)
+	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits, floorDroppedAll)
 	empty := retrieved.Empty || len(ledger.Items) == 0
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
 	return searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn)
@@ -3038,7 +3046,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 // retrieval honestly records refused_reason=no_evidence (so a corpus-gap query
 // is visible, not silently presented as grounded). CitedChunkIDs is left to the
 // terminal-RAG cited-strip pass; this is the RETRIEVED set, not the cited set.
-func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowledge.RetrievalResult, hitItems []knowledge.RetrievalHit) {
+func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowledge.RetrievalResult, hitItems []knowledge.RetrievalHit, floorDroppedAll bool) {
 	if len(hitItems) == 0 && len(retrieved.Hits) > 0 {
 		hitItems = make([]knowledge.RetrievalHit, 0, len(retrieved.Hits))
 		for _, chunk := range retrieved.Hits {
@@ -3059,6 +3067,8 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 		RerankerMode:           retrieved.RerankerMode,
 		RerankerLatencyMS:      retrieved.RerankerLatencyMS,
 		RerankerFallbackReason: retrieved.RerankerFallbackReason,
+		FloorDroppedAll:        floorDroppedAll,
+		FloorValue:             weakEvidenceThresholdFor(retrieved.HybridMode),
 	}
 	if trace.QueryNormalized == "" {
 		trace.QueryNormalized = knowledge.NormalizeQuery(query)

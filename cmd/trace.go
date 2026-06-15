@@ -1203,6 +1203,7 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	}
 	r.record.ActualExecutionTier = r.record.DeriveActualExecutionTier()
 	r.record.ActualExecutionPath = r.record.DeriveActualExecutionPath()
+	r.record.Retrieval.RefusalType = r.record.Retrieval.DeriveRefusalType()
 	r.record.State = r.stateTrace
 	signals := r.terminalSignals
 	signals.ChatErr = chatErr
