@@ -98,6 +98,72 @@ func TestRowFromTrace_EmptyCitedChunkIDsBecomesEmptyJSONArray(t *testing.T) {
 	}
 }
 
+// TestPromotedColumnValues_ProjectsDerivedAxesInColumnOrder asserts the 0004
+// promoted-column projection: the 7 derived attribution axes, in the exact order
+// promotedInsertCols lists them after trace_json, from their canonical source
+// fields. Encodes WHY: a field-routing drift here writes the wrong axis into the
+// wrong queryable column — silently corrupting every dashboard GROUP BY. refusal_type
+// is the one DERIVED value (DeriveRefusalType over RefusedReason+FloorDroppedAll),
+// not a raw field copy, so it is exercised through a real refusal reason.
+func TestPromotedColumnValues_ProjectsDerivedAxesInColumnOrder(t *testing.T) {
+	rec := TraceRecord{
+		IntentRouter: RouterTrace{RouteStatus: "dispatched_agent"},
+		Retrieval:    RetrievalTrace{RefusedReason: "no_evidence"}, // → corpus_gap
+		State:        StateTrace{ResolutionSource: "explicit_id"},
+		Outcome: OutcomeTrace{
+			TerminatedBy: TerminatedByError,
+			AbortCause:   "client_disconnect",
+			ErrorClass:   "upstream_5xx",
+			Resolution:   "blocked",
+		},
+	}
+	vals := promotedColumnValues(rec)
+	want := []any{
+		TerminatedByError,   // terminated_by
+		"client_disconnect", // abort_cause
+		"upstream_5xx",      // error_class
+		"blocked",           // resolution
+		"dispatched_agent",  // route_status
+		"corpus_gap",        // refusal_type (DERIVED)
+		"explicit_id",       // resolution_source
+	}
+	if len(vals) != len(want) {
+		t.Fatalf("promotedColumnValues len = %d, want %d", len(vals), len(want))
+	}
+	for i := range want {
+		if vals[i] != want[i] {
+			t.Fatalf("promoted col %d = %#v, want %#v", i, vals[i], want[i])
+		}
+	}
+}
+
+// TestPromotedColumnValues_EmptyAxesBecomeSQLNull guards the NULL contract: a clean
+// answered turn (no refusal, no error, no special terminus) must store NULL — not ""
+// — in every promoted column, so COUNT(refusal_type) / GROUP BY counts only the
+// turns where the axis actually fired. (terminated_by is the one axis always set on
+// a finalized turn; here the record is un-finalized so even it is empty → NULL.)
+func TestPromotedColumnValues_EmptyAxesBecomeSQLNull(t *testing.T) {
+	vals := promotedColumnValues(TraceRecord{})
+	if len(vals) != 7 {
+		t.Fatalf("promotedColumnValues len = %d, want 7", len(vals))
+	}
+	for i, v := range vals {
+		if v != nil {
+			t.Fatalf("promoted col %d = %#v, want nil (SQL NULL) for empty axis", i, v)
+		}
+	}
+}
+
+// TestNullableStr pins the ""→NULL mapping that keeps GROUP BY buckets clean.
+func TestNullableStr(t *testing.T) {
+	if got := nullableStr(""); got != nil {
+		t.Fatalf(`nullableStr("") = %#v, want nil`, got)
+	}
+	if got := nullableStr("done"); got != "done" {
+		t.Fatalf(`nullableStr("done") = %#v, want "done"`, got)
+	}
+}
+
 // TestStatusFromTrace covers the three terminal states inferable from the
 // trace alone. The richer server-side helper (DeriveStatus, lands in PR5)
 // also factors in the engine's chatErr — that path is tested separately.

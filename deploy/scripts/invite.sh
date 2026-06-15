@@ -42,6 +42,20 @@ REACT_RESULT_PROJECTION="${USE_REACT_RESULT_PROJECTION:-1}"
 REACT_HISTORY_COMPACTION="${USE_REACT_HISTORY_COMPACTION:-1}"
 COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT_MODE="${COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT:-}"
 
+# Trace / observability sink (Phase-0 of the trace-observability rollout). Forwarded
+# for the same reason as the switches above — the binary reads COMPSHARE_TRACE_* only
+# from its OWN process env, and `ally invite` passes only the --app-env vars below.
+# Shipped ON writing to MySQL by deliberate decision: every turn writes one
+# agent_traces row (outcome/state/retrieval attribution). PREREQUISITE: ops must run
+# the deploy/migrations/0002 + 0004 DDL on the MYSQL_DSN database first; the writer
+# probes for the promoted columns and degrades to the trace_json blob if 0004 is not
+# applied. The Go code default is OFF (nil writer), so traces flow only because these
+# are shipped here and forwarded. Set COMPSHARE_TRACE_ENABLED=0 to disable, or
+# COMPSHARE_TRACE_SINK=file|both to change where traces land.
+TRACE_ENABLED="${COMPSHARE_TRACE_ENABLED:-1}"
+TRACE_SINK="${COMPSHARE_TRACE_SINK:-mysql}"
+TRACE_DIR="${COMPSHARE_TRACE_DIR:-}"
+
 ally invite compshare-agent \
     --app-bin "$APP_DIR/compshare-agent" \
     --app-pwd "$APP_DIR" \
@@ -55,6 +69,9 @@ ally invite compshare-agent \
     --app-env "USE_REACT_RESULT_PROJECTION=$REACT_RESULT_PROJECTION" \
     --app-env "USE_REACT_HISTORY_COMPACTION=$REACT_HISTORY_COMPACTION" \
     --app-env "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT=$COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT_MODE" \
+    --app-env "COMPSHARE_TRACE_ENABLED=$TRACE_ENABLED" \
+    --app-env "COMPSHARE_TRACE_SINK=$TRACE_SINK" \
+    --app-env "COMPSHARE_TRACE_DIR=$TRACE_DIR" \
     -- server \
     --config "$CONFIG_FILE" \
     --addr "$ADDR"
