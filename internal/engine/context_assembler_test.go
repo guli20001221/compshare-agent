@@ -126,3 +126,37 @@ func TestAssembleFactContext_TruncatesLongOutputButKeepsPrefix(t *testing.T) {
 func TestAssembleFactContext_EmptyFactsReturnEmpty(t *testing.T) {
 	assert.Empty(t, assembleFactContext(nil, time.Unix(1, 0)))
 }
+
+// TestOldestFreshFactAgeSeconds verifies the #3 StateTrace stale-cache observable:
+// the age returned is the OLDEST still-fresh subject-bearing fact (the highest
+// staleness risk), stale and subject-less facts are skipped, and an all-stale /
+// empty cache returns -1 (so the recorder omits the bucket).
+func TestOldestFreshFactAgeSeconds(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	t.Run("oldest fresh wins over newer", func(t *testing.T) {
+		facts := []ToolFact{
+			{Kind: FactKindMonitorSample, SubjectID: "uhost-A", ProducedAtUnix: now.Add(-10 * time.Second).Unix(), TTLSeconds: 300},
+			{Kind: FactKindInstanceState, SubjectID: "uhost-B", ProducedAtUnix: now.Add(-200 * time.Second).Unix(), TTLSeconds: 300},
+		}
+		assert.Equal(t, 200, oldestFreshFactAgeSeconds(facts, now))
+	})
+	t.Run("stale fact past TTL is skipped", func(t *testing.T) {
+		facts := []ToolFact{
+			{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: now.Add(-400 * time.Second).Unix(), TTLSeconds: 300},
+			{Kind: FactKindMonitorSample, SubjectID: "uhost-A", ProducedAtUnix: now.Add(-30 * time.Second).Unix(), TTLSeconds: 300},
+		}
+		assert.Equal(t, 30, oldestFreshFactAgeSeconds(facts, now))
+	})
+	t.Run("subject-less fact is skipped", func(t *testing.T) {
+		facts := []ToolFact{
+			{Kind: FactKindInstanceState, SubjectID: "", ProducedAtUnix: now.Add(-250 * time.Second).Unix(), TTLSeconds: 300},
+			{Kind: FactKindMonitorSample, SubjectID: "uhost-A", ProducedAtUnix: now.Add(-5 * time.Second).Unix(), TTLSeconds: 300},
+		}
+		assert.Equal(t, 5, oldestFreshFactAgeSeconds(facts, now))
+	})
+	t.Run("all-stale and empty return -1", func(t *testing.T) {
+		assert.Equal(t, -1, oldestFreshFactAgeSeconds(nil, now))
+		stale := []ToolFact{{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: now.Add(-9_000 * time.Second).Unix(), TTLSeconds: 300}}
+		assert.Equal(t, -1, oldestFreshFactAgeSeconds(stale, now))
+	})
+}

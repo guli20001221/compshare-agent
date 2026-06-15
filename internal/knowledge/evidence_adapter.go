@@ -29,8 +29,16 @@ type EvidenceLedger struct {
 }
 
 type EvidenceItem struct {
-	ChunkID     string `json:"chunk_id"`
-	Title       string `json:"title,omitempty"`
+	ChunkID string `json:"chunk_id"`
+	Title   string `json:"title,omitempty"`
+	// ProductArea is the chunk's declared product_area (KBChunk.ProductArea),
+	// carried so the #5 wrong-domain guard can compare the cited evidence's
+	// domain against the question's inferred area. Empty when undeclared.
+	// json:"-" deliberately: this is internal plumbing for the guard, NOT part
+	// of the agent-visible SearchKnowledge tool result — keeping it out of the
+	// JSON leaves what the agent reads byte-identical (the agent loop is
+	// default-on in production).
+	ProductArea string `json:"-"`
 	SourceType  string `json:"source_type,omitempty"`
 	ScoreBucket string `json:"score_bucket,omitempty"`
 	Summary     string `json:"summary"`
@@ -83,6 +91,7 @@ func BuildEvidenceLedger(query string, hits []RetrievalHit, maxItems int) Eviden
 		ledger.Items = append(ledger.Items, EvidenceItem{
 			ChunkID:     chunkID,
 			Title:       title,
+			ProductArea: strings.TrimSpace(hit.Chunk.ProductArea),
 			SourceType:  clipRunes(compactWhitespace(hit.Chunk.SourceType), 40),
 			ScoreBucket: evidenceScoreBucket(hit.Score),
 			Summary:     clipRunes(summary, 160),

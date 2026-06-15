@@ -250,7 +250,15 @@ type Engine struct {
 	// Chat. Read at ReAct loop iteration boundaries to enforce
 	// maxTokensPerTurn — never mid tool_call / tool_result pair.
 	turnTokensConsumed int
-	hardBlockObserver  func(observability.EngineHardBlockTrace)
+	// reactRoundsThisTurn counts the ReAct loop rounds entered this turn (0 when
+	// the turn never ran the loop — routing / RAG / pre-block). reactCeilingHit
+	// ThisTurn is set when the loop exhausted maxReActRounds without a final
+	// answer (that path emits no hard-block, so the trace's budget terminus is
+	// otherwise underivable). Both reset at the top of Chat; read post-turn by the
+	// trace recorder via ReactRoundsThisTurn / ReactCeilingHitThisTurn.
+	reactRoundsThisTurn     int
+	reactCeilingHitThisTurn bool
+	hardBlockObserver       func(observability.EngineHardBlockTrace)
 	// stepSink receives agent-tier saga StepTraces (B8). Set per-turn via
 	// SetStepSink to the trace recorder, which folds them into the turn's
 	// trace_json.steps[]. nil = no step observability. Consumed by RunAgentSaga.
@@ -322,6 +330,21 @@ type Engine struct {
 	// deterministic compact summaries and old retrievable-tool placeholders.
 	// Default off.
 	reactHistoryCompactionEnabled bool
+	// Per-turn instance-binding observability (#3 StateTrace). Captured at turn
+	// entry / refreshSystemPrompt, read post-turn by the trace recorder. Per-turn
+	// by design (reset every turn) — a shared value would attribute one tenant's
+	// binding to another's turn.
+	//   - selectedInstanceIDAtTurnStart: the carried SelectedInstanceID at turn
+	//     entry, before any mid-turn re-binding.
+	//   - instanceResolutionSourceThisTurn: how the turn-start binding was
+	//     determined (observability.ResolutionSource* — session_state /
+	//     single_host / fact_cache / unresolved).
+	//   - factCacheOldestAgeSecondsThisTurn: age of the oldest still-fresh fact
+	//     injected this turn, or -1 when none. Bucketed before it leaves the
+	//     recorder.
+	selectedInstanceIDAtTurnStart     string
+	instanceResolutionSourceThisTurn  string
+	factCacheOldestAgeSecondsThisTurn int
 }
 
 // SharedDeps groups Engine fields that are safe to share across sessions.
@@ -693,6 +716,31 @@ func (e *Engine) SetOutcomeTraceObserver(observer func(observability.OutcomeTrac
 	e.outcomeTraceObserver = observer
 }
 
+// ReactRoundsThisTurn returns the number of ReAct loop rounds entered in the most
+// recent Chat turn (0 when the turn did not run the loop). Read post-turn by the
+// trace recorder to populate outcome.react_rounds and the budget terminus.
+func (e *Engine) ReactRoundsThisTurn() int { return e.reactRoundsThisTurn }
+
+// ReactCeilingHitThisTurn reports whether the most recent Chat turn exhausted the
+// ReAct round ceiling without producing a final answer. That path emits no
+// hard-block, so this is the only signal for terminated_by=budget on it.
+func (e *Engine) ReactCeilingHitThisTurn() bool { return e.reactCeilingHitThisTurn }
+
+// SelectedInstanceIDAtTurnStart returns the carried SelectedInstanceID captured
+// at the start of the most recent turn, before any mid-turn re-bind. Read
+// post-turn by the trace recorder for the #3 StateTrace.
+func (e *Engine) SelectedInstanceIDAtTurnStart() string { return e.selectedInstanceIDAtTurnStart }
+
+// InstanceResolutionSource returns how the most recent turn's current-instance
+// binding was determined at turn start (an observability.ResolutionSource*
+// value). Empty only on the degenerate uninitialized-prompt path.
+func (e *Engine) InstanceResolutionSource() string { return e.instanceResolutionSourceThisTurn }
+
+// FactCacheOldestAgeSeconds returns the age in seconds of the oldest still-fresh
+// fact injected into the most recent turn's prompt, or -1 when none was. The
+// recorder buckets it (observability.BucketFactCacheAge) before persisting.
+func (e *Engine) FactCacheOldestAgeSeconds() int { return e.factCacheOldestAgeSecondsThisTurn }
+
 func (e *Engine) SetTokenUsageObserver(observer func(llm.TokenUsage)) {
 	e.tokenUsageObserver = observer
 }
@@ -1025,24 +1073,45 @@ func (e *Engine) refreshSystemPrompt() {
 	if ctx == "" {
 		ctx = "暂无用户信息"
 	}
-	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
+	hasSessionBinding := e.sessionStateHydrated && e.sessionState.SelectedInstanceID != ""
+	if hasSessionBinding {
 		if e.sessionState.SelectedInstanceName != "" {
 			ctx += "\n\n当前会话已选实例：" + e.sessionState.SelectedInstanceName + "（" + e.sessionState.SelectedInstanceID + "）"
 		} else {
 			ctx += "\n\n当前会话已选实例：" + e.sessionState.SelectedInstanceID
 		}
 	}
-	if id, name := e.singleRegistryInstance(); id != "" {
-		if name != "" {
-			ctx += "\n\n当前账户只有 1 个实例：" + name + "（" + id + "），操作时可直接使用，无需追问。"
+	singleID, singleName := e.singleRegistryInstance()
+	if singleID != "" {
+		if singleName != "" {
+			ctx += "\n\n当前账户只有 1 个实例：" + singleName + "（" + singleID + "），操作时可直接使用，无需追问。"
 		} else {
-			ctx += "\n\n当前账户只有 1 个实例：" + id + "，操作时可直接使用，无需追问。"
+			ctx += "\n\n当前账户只有 1 个实例：" + singleID + "，操作时可直接使用，无需追问。"
 		}
 	}
+	hasFactContext := false
 	if e.sessionFactContextEnabled && e.sessionStateHydrated {
-		if factCtx := assembleFactContext(e.sessionState.RecentFacts, time.Now()); factCtx != "" {
+		now := time.Now()
+		if factCtx := assembleFactContext(e.sessionState.RecentFacts, now); factCtx != "" {
 			ctx += "\n\n" + factCtx
+			hasFactContext = true
+			e.factCacheOldestAgeSecondsThisTurn = oldestFreshFactAgeSeconds(e.sessionState.RecentFacts, now)
 		}
+	}
+	// #3 StateTrace: record how the turn-start instance binding was determined.
+	// Priority mirrors the injection order above — an explicit prior selection is
+	// the strongest binding, the single-host shortcut next, the fact cache
+	// weakest, "unresolved" when none is present. (Trace-only; the prompt built
+	// below is byte-identical to before.)
+	switch {
+	case hasSessionBinding:
+		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceSessionState
+	case singleID != "":
+		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceSingleHost
+	case hasFactContext:
+		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceFactCache
+	default:
+		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceUnresolved
 	}
 	e.messages[0].Content = prompt.BuildSystemWithOptions(ctx, e.reactPromptBuildOptions())
 }
@@ -1090,6 +1159,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.readExpensiveCallsThisTurn = 0
 	e.requireKnowledgeCitationThisTurn = false
 	e.turnTokensConsumed = 0
+	e.reactRoundsThisTurn = 0
+	e.reactCeilingHitThisTurn = false
 	e.lastPlannerIntentThisTurn = ""
 	e.lastPlannerActionThisTurn = ""
 	e.searchKnowledgeRanThisTurn = false
@@ -1097,6 +1168,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.knowledgeQAAgentLoopThisTurn = false
+	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
+	// any mid-turn re-bind), and reset the per-turn binding observables that
+	// refreshSystemPrompt fills next.
+	e.selectedInstanceIDAtTurnStart = e.sessionState.SelectedInstanceID
+	e.instanceResolutionSourceThisTurn = ""
+	e.factCacheOldestAgeSecondsThisTurn = -1
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
@@ -1156,6 +1233,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	}
 
 	for round := 0; round < maxReActRounds; round++ {
+		e.reactRoundsThisTurn = round + 1
 		// Per-turn token budget gate. Placed at the TOP of the loop so
 		// any tool_call → tool_result pair emitted in the previous
 		// iteration has already completed and been appended to history
@@ -1485,6 +1563,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 	}
 
+	// The loop exhausted maxReActRounds without returning a final answer. Mark the
+	// round-ceiling so the trace can attribute terminated_by=budget (this path,
+	// unlike the token-budget gate, emits no hard-block).
+	e.reactCeilingHitThisTurn = true
 	return "抱歉，处理轮次超限，请重新描述您的需求。", nil
 }
 
@@ -2197,7 +2279,8 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatc
 	}
 
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
-	retrieved := e.knowledgeRetriever.Retrieve(userMsg, inferKnowledgeProductArea(userMsg))
+	questionArea := inferKnowledgeProductArea(userMsg)
+	retrieved := e.knowledgeRetriever.Retrieve(userMsg, questionArea)
 	hitItems := retrieved.HitItems
 	trace := observability.RetrievalTrace{
 		Enabled:                retrieved.Enabled,
@@ -2213,6 +2296,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatc
 		RerankerMode:           retrieved.RerankerMode,
 		RerankerLatencyMS:      retrieved.RerankerLatencyMS,
 		RerankerFallbackReason: retrieved.RerankerFallbackReason,
+		FloorValue:             weakEvidenceThresholdFor(retrieved.HybridMode),
 	}
 	if trace.QueryNormalized == "" {
 		trace.QueryNormalized = knowledge.NormalizeQuery(userMsg)
@@ -2265,6 +2349,20 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatc
 	}
 	if rankingCandidate {
 		trace.RankingErrorCandidate = true
+	}
+	// #5 domain guard. The verdict over the retrieved evidence is recorded in the
+	// trace regardless of the flag (AllCitedOffDomain / DomainInferenceEmpty); the
+	// COMPSHARE_RAG_DOMAIN_MATCH_GUARD refuse arm (default-off) additionally
+	// replaces an all-off-domain answer with the canned no-evidence reply and
+	// stamps refusal_type=wrong_domain. Treated like a refusal so the buffered
+	// deltas are not replayed.
+	allOff, inferEmpty := allCitedOffDomain(questionArea, hitProductAreas(hitItems))
+	trace.DomainInferenceEmpty = inferEmpty
+	trace.AllCitedOffDomain = allOff
+	if domainMatchGuardOn && allOff {
+		trace.RefusedReason = "wrong_domain"
+		reply = ragNoEvidenceReply
+		refusedReason = "wrong_domain"
 	}
 	trace.CitedChunkIDs = extractCitedChunkIDs(reply, hitItems)
 	displayReply := stripCitationMarkers(reply)
@@ -2400,8 +2498,11 @@ func projectEvidenceTraceHits(evidences []envelope.Evidence, items []knowledge.R
 		}
 		hits = append(hits, observability.RetrievalHit{
 			ChunkID: view.ChunkID,
-			Score:   view.RetrievalScore,
-			Kept:    kept,
+			// SourceArea is the chunk's declared product_area, staging the #5
+			// wrong-domain visibility (empty when item is unset / undeclared).
+			SourceArea: item.Chunk.ProductArea,
+			Score:      view.RetrievalScore,
+			Kept:       kept,
 			// RRF trace fields. Zero values omitted via json omitempty
 			// for non-qwen3_rrf modes; populated when knowledge.Retriever
 			// ran the qwen3_rrf branch.
@@ -2634,7 +2735,7 @@ func (e *Engine) emitTokenBudgetExceededHardBlock() {
 	if e.hardBlockObserver != nil {
 		e.hardBlockObserver(observability.EngineHardBlockTrace{
 			Hit:         true,
-			Category:    "token_budget_exceeded",
+			Category:    observability.HardBlockCategoryTokenBudget,
 			TriggeredBy: observability.HardBlockTriggerTokenBudget,
 		})
 	}
@@ -2922,8 +3023,12 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	// agent gets an honest empty ledger and gives general guidance instead of
 	// pretending the irrelevant chunks support a specific answer.
 	hits := rawHits
+	floorDroppedAll := false
 	if isWeakEvidence(rawHits, retrieved.HybridMode) {
 		hits = nil
+		// Only "dropped ALL" when there were hits to drop — a corpus-empty turn
+		// (rawHits==0) is corpus_gap, not all_below_floor.
+		floorDroppedAll = len(rawHits) > 0
 	}
 	ledger := knowledge.BuildSubstantiveEvidenceLedger(query, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
 	e.searchKnowledgeRanThisTurn = true
@@ -2943,7 +3048,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	// — including when the relevance floor dropped it. Without this the rec.retrieval
 	// block is populated only by the terminal-RAG path. Mirrors
 	// recordDiagnosisKnowledgeProbe's trace emission.
-	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits)
+	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits, floorDroppedAll)
 	empty := retrieved.Empty || len(ledger.Items) == 0
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
 	return searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn)
@@ -2956,7 +3061,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 // retrieval honestly records refused_reason=no_evidence (so a corpus-gap query
 // is visible, not silently presented as grounded). CitedChunkIDs is left to the
 // terminal-RAG cited-strip pass; this is the RETRIEVED set, not the cited set.
-func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowledge.RetrievalResult, hitItems []knowledge.RetrievalHit) {
+func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowledge.RetrievalResult, hitItems []knowledge.RetrievalHit, floorDroppedAll bool) {
 	if len(hitItems) == 0 && len(retrieved.Hits) > 0 {
 		hitItems = make([]knowledge.RetrievalHit, 0, len(retrieved.Hits))
 		for _, chunk := range retrieved.Hits {
@@ -2977,6 +3082,8 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 		RerankerMode:           retrieved.RerankerMode,
 		RerankerLatencyMS:      retrieved.RerankerLatencyMS,
 		RerankerFallbackReason: retrieved.RerankerFallbackReason,
+		FloorDroppedAll:        floorDroppedAll,
+		FloorValue:             weakEvidenceThresholdFor(retrieved.HybridMode),
 	}
 	if trace.QueryNormalized == "" {
 		trace.QueryNormalized = knowledge.NormalizeQuery(query)
@@ -2992,6 +3099,20 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 		}
 		if isRankingAmbiguous(hitItems, retrieved.HybridMode) {
 			trace.RankingErrorCandidate = true
+		}
+	}
+	// #5 domain guard (agent-loop). DomainInferenceEmpty is recorded whenever the
+	// question area can't be inferred. AllCitedOffDomain is judged only over the
+	// evidence the agent actually received — skip when the floor dropped it all,
+	// since the agent grounded on nothing. The COMPSHARE_RAG_DOMAIN_MATCH_GUARD
+	// refuse arm (default-off) additionally stamps refusal_type=wrong_domain here;
+	// guardSearchKnowledgeSynthesis enforces the matching refusal.
+	allOff, inferEmpty := allCitedOffDomain(inferKnowledgeProductArea(query), hitProductAreas(hitItems))
+	trace.DomainInferenceEmpty = inferEmpty
+	if !floorDroppedAll {
+		trace.AllCitedOffDomain = allOff
+		if domainMatchGuardOn && allOff && trace.RefusedReason == "" {
+			trace.RefusedReason = "wrong_domain"
 		}
 	}
 	e.emitRetrievalTrace(trace)
@@ -3023,6 +3144,18 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 	if lerr := knowledge.ValidateNoRawEvidenceLeak(content, e.searchKnowledgeHitsThisTurn); lerr != nil {
 		e.emitSearchKnowledgeHardBlock("search_knowledge_raw_leak")
 		return ragNoEvidenceReply
+	}
+	// #5 wrong-domain refuse arm (COMPSHARE_RAG_DOMAIN_MATCH_GUARD, default-off).
+	// Recompute the verdict over the ledger the agent was actually shown; refuse
+	// when every cited/retrieved chunk is off the question's product area. The
+	// retrieval trace already recorded AllCitedOffDomain at emit; this enforces the
+	// reply. Fail-safe: allCitedOffDomain never flags an unknown / un-judgeable
+	// question area, so an answer is suppressed only on a clear domain mismatch.
+	if domainMatchGuardOn {
+		if allOff, _ := allCitedOffDomain(inferKnowledgeProductArea(e.lastUserMsg), ledgerProductAreas(e.searchKnowledgeLedgerThisTurn)); allOff {
+			e.emitSearchKnowledgeHardBlock("search_knowledge_wrong_domain")
+			return ragNoEvidenceReply
+		}
 	}
 	// Route-independent cite-grounding (#126), default-off via
 	// COMPSHARE_RAG_GROUNDED_VALIDATOR — OR turn-scoped on for a knowledge_qa turn
@@ -4574,6 +4707,14 @@ var knowledgeResourcePurchaseKeywords = []string{
 	"\u89c4\u683c",       // \u89c4\u683c
 	"\u62a2\u5360\u5f0f", // \u62a2\u5360\u5f0f
 	"\u72ec\u5360\u5f0f", // \u72ec\u5360\u5f0f
+	// Stock / availability phrasing (#5): a "\u5e93\u5b58 / \u6709\u6ca1\u6709\u8d27" question must infer the
+	// resource_purchase area so the wrong-domain guard has a question area to
+	// compare against (and the +2 boost prefers stock chunks). "\u6709\u8d27" also
+	// covers "\u6709\u6ca1\u6709\u8d27" as a substring.
+	"\u5e93\u5b58", // \u5e93\u5b58
+	"\u6709\u8d27", // \u6709\u8d27
+	"\u7f3a\u8d27", // \u7f3a\u8d27
+	"\u73b0\u8d27", // \u73b0\u8d27
 }
 
 var knowledgeDriverCudaKeywords = []string{

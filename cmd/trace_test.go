@@ -140,6 +140,28 @@ func TestGroundedAnswerValidatorEnabledFromEnv_DefaultOff(t *testing.T) {
 	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
 }
 
+func TestDomainMatchGuardEnabledFromEnv_DefaultOff(t *testing.T) {
+	// COMPSHARE_RAG_DOMAIN_MATCH_GUARD is DEFAULT-OFF (#5): the wrong-domain verdict
+	// is always traced, but the refuse arm stays off until a flag-on eval proves
+	// 0 over-refusal. unset/empty/explicit-negative => off; affirmative => on;
+	// unknown => off + non-empty warn string per CLAUDE.md (never silently coerce).
+	off := []string{"", "  ", "0", "off", "OFF", "false", "no", "disabled", "none"}
+	for _, v := range off {
+		got, unknown := domainMatchGuardEnabledFromEnv(func(string) string { return v })
+		require.Falsef(t, got, "value %q should be off (default-off)", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	on := []string{"1", "on", "ON", "true", "TRUE", "yes", " On "}
+	for _, v := range on {
+		got, unknown := domainMatchGuardEnabledFromEnv(func(string) string { return v })
+		require.Truef(t, got, "value %q should enable", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	got, unknown := domainMatchGuardEnabledFromEnv(func(string) string { return "maybe" })
+	require.False(t, got, "unknown value treated as off")
+	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
+}
+
 func TestKnowledgeQAAgentLoopEnabledFromEnv_DefaultOn(t *testing.T) {
 	// 2026-06-09: COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is DEFAULT-ON — a knowledge_qa turn
 	// routes through the agent loop (forced SearchKnowledge first hop + disciplined

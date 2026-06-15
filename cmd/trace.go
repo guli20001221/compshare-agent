@@ -322,6 +322,28 @@ func groundedAnswerValidatorEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// domainMatchGuardEnabledFromEnv gates the #5 wrong-domain REFUSE arm
+// (COMPSHARE_RAG_DOMAIN_MATCH_GUARD). DEFAULT OFF — the domain verdict is always
+// recorded in the trace (all_cited_off_domain / domain_inference_empty), but the
+// synthesis is replaced with a refusal only when this is on. Kept off until a
+// flag-on eval proves 0 over-refusal (an over-eager domain refusal would suppress
+// legitimate answers whenever inferKnowledgeProductArea and the chunk product_area
+// tags disagree on a true match). ""/0/off/... => off; 1/true/yes/on => on;
+// unknown => off + non-empty warn string (CLAUDE.md: never silently coerce).
+// Boot-only; the Go-package default (engine.domainMatchGuardOn) stays false so
+// engine/knowledge unit tests are unaffected.
+func domainMatchGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_RAG_DOMAIN_MATCH_GUARD"))
+	switch strings.ToLower(raw) {
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
 // knowledgeQAAgentLoopEnabledFromEnv gates the terminal-knowledge_qa → agent-loop
 // route (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). DEFAULT ON (2026-06-09) — a knowledge_qa
 // turn routes through the agent loop: a forced SearchKnowledge first hop retrieves
@@ -928,6 +950,8 @@ type cliTraceRecorder struct {
 	pendingByID           map[string][]int
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
 	plannerTraceSupplier  func() observability.RouterTrace
+	terminalSignals       observability.FinishSignals
+	stateTrace            observability.StateTrace
 }
 
 // newCLITraceRecorder constructs a per-turn trace recorder for the CLI path.
@@ -1157,12 +1181,31 @@ func (r *cliTraceRecorder) EmitStep(step observability.StepTrace) error {
 	return nil
 }
 
+// SetTerminalSignals records the per-turn terminal facts (empty reply, ReAct
+// round count, round-ceiling) the trace record cannot observe on its own. The
+// chat error is passed separately to Finish. Call it before Finish; a
+// never-called recorder finalizes a clean turn as "done".
+func (r *cliTraceRecorder) SetTerminalSignals(signals observability.FinishSignals) {
+	if r == nil {
+		return
+	}
+	r.terminalSignals = signals
+}
+
+// SetStateTrace records the per-turn instance-binding state (#3) the recorder
+// reads from the engine getters. Call it before Finish; an un-set recorder
+// leaves State zero (omitted, SHA-stable).
+func (r *cliTraceRecorder) SetStateTrace(state observability.StateTrace) {
+	if r == nil {
+		return
+	}
+	r.stateTrace = state
+}
+
 func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	if r == nil || r.writer == nil {
 		return nil
 	}
-	// TODO(T-006+): use chatErr when trace schema grows outcome.error_class.
-	_ = chatErr
 	if r.registryTraceSupplier != nil {
 		r.record.EntityRegistry = r.registryTraceSupplier(end)
 	}
@@ -1182,6 +1225,11 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	}
 	r.record.ActualExecutionTier = r.record.DeriveActualExecutionTier()
 	r.record.ActualExecutionPath = r.record.DeriveActualExecutionPath()
+	r.record.Retrieval.RefusalType = r.record.Retrieval.DeriveRefusalType()
+	r.record.State = r.stateTrace
+	signals := r.terminalSignals
+	signals.ChatErr = chatErr
+	r.record.FinalizeOutcome(signals)
 	return r.writer.Append(r.record)
 }
 

@@ -29,6 +29,13 @@ func TestInferKnowledgeProductArea_LabelsMatchCorpus(t *testing.T) {
 		{"抢占式实例怎么购买", "resource_purchase"},
 		{"独占式和共享有什么区别", "resource_purchase"},
 		{"规格怎么选", "resource_purchase"},
+		// resource_purchase — stock/availability phrasing (#5 keyword widening). A
+		// "库存 / 有没有货" question must infer this area so the wrong-domain guard
+		// has a question area to compare. "有货" also covers "有没有货" as a substring.
+		{"现在还有库存吗", "resource_purchase"},
+		{"4090 有没有货", "resource_purchase"},
+		{"现货能马上开吗", "resource_purchase"},
+		{"这个卡缺货了吗", "resource_purchase"},
 		// driver_cuda (new group)
 		{"nvidia-smi 报错", "driver_cuda"},
 		{"驱动版本是什么", "driver_cuda"},

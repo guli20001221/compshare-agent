@@ -165,6 +165,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_GROUNDED_VALIDATOR value %q\n", unknownGroundedValidator)
 	}
 	engine.SetGroundedAnswerValidatorEnabled(groundedValidator)
+	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(os.Getenv)
+	if unknownDomainMatchGuard != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q\n", unknownDomainMatchGuard)
+	}
+	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
 	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(os.Getenv)
 	if unknownKnowledgeQAAgentLoop != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q\n", unknownKnowledgeQAAgentLoop)
@@ -376,6 +381,19 @@ func runCLI(cmd *cobra.Command, args []string) error {
 
 		reply, err := eng.Chat(ctx, input, onStep)
 		if traceRecorder != nil {
+			traceRecorder.SetTerminalSignals(observability.FinishSignals{
+				ReplyEmpty:      strings.TrimSpace(reply) == "",
+				ReactRounds:     eng.ReactRoundsThisTurn(),
+				RoundCeilingHit: eng.ReactCeilingHitThisTurn(),
+			})
+			sessState, _, hydrated := eng.SessionStateSnapshot()
+			traceRecorder.SetStateTrace(observability.StateTrace{
+				SessionStateHydrated:          hydrated,
+				ResolutionSource:              eng.InstanceResolutionSource(),
+				SelectedInstanceID:            sessState.SelectedInstanceID,
+				SelectedInstanceIDAtTurnStart: eng.SelectedInstanceIDAtTurnStart(),
+				FactCacheOldestAgeBucket:      observability.BucketFactCacheAge(eng.FactCacheOldestAgeSeconds()),
+			})
 			if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: trace write failed: %v\n", traceErr)
 			}

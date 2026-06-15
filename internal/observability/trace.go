@@ -16,7 +16,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.4"
+const SchemaVersion = "trace.v0.5"
 
 const (
 	ToolSourceMainReAct         = "main_react"
@@ -138,6 +138,7 @@ type TraceRecord struct {
 	RateLimit           RateLimitTrace       `json:"rate_limit"`
 	Retrieval           RetrievalTrace       `json:"retrieval"`
 	Diagnosis           DiagnosisTrace       `json:"diagnosis"`
+	State               StateTrace           `json:"state"`
 	Outcome             OutcomeTrace         `json:"outcome"`
 	// Steps holds agent-tier saga step traces, populated by B6.2. Empty /
 	// omitempty for all non-agent turns, so trace output stays byte-identical
@@ -165,6 +166,7 @@ type traceRecordJSON struct {
 	RateLimit           *RateLimitTrace       `json:"rate_limit,omitempty"`
 	Retrieval           *RetrievalTrace       `json:"retrieval,omitempty"`
 	Diagnosis           *DiagnosisTrace       `json:"diagnosis,omitempty"`
+	State               *StateTrace           `json:"state,omitempty"`
 	Outcome             *OutcomeTrace         `json:"outcome,omitempty"`
 	Steps               []StepTrace           `json:"steps,omitempty"`
 }
@@ -210,6 +212,9 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	}
 	if traceDiagnosisObserved(r.Diagnosis) {
 		out.Diagnosis = &r.Diagnosis
+	}
+	if traceStateObserved(r.State) {
+		out.State = &r.State
 	}
 	if traceOutcomeObserved(r.Outcome) {
 		out.Outcome = &r.Outcome
@@ -404,6 +409,20 @@ const (
 	HardBlockTriggerTokenBudget   = "token_budget"
 )
 
+// EngineHardBlock Category values the outcome derivation special-cases. They are
+// NOT genuine "blocked" terminuses (see TraceRecord.isGenuineBlock):
+//   - HardBlockCategoryTokenBudget: per-turn token budget exhaustion → budget terminus.
+//   - HardBlockCategoryChatError:   the synthetic marker the HTTP recorder stamps
+//     when chatErr != nil → error terminus.
+//
+// Defined here so the producers (engine.emitTokenBudgetExceededHardBlock,
+// chatTraceRecorder.Finish) and the consumer (outcome.go) share one literal and
+// cannot drift.
+const (
+	HardBlockCategoryTokenBudget = "token_budget_exceeded"
+	HardBlockCategoryChatError   = "chat_error"
+)
+
 type EngineHardBlockTrace struct {
 	Hit      bool   `json:"hit"`
 	Category string `json:"category"`
@@ -524,9 +543,34 @@ type RetrievalTrace struct {
 	QueryExpansions       []string       `json:"query_expansions,omitempty"`
 	Hits                  int            `json:"hits"`
 	HitItems              []RetrievalHit `json:"hit_items,omitempty"`
-	RefusedReason         string         `json:"refused_reason,omitempty"`
-	WeakEvidence          bool           `json:"weak_evidence,omitempty"`
-	RankingErrorCandidate bool           `json:"ranking_error_candidate,omitempty"`
+	RefusedReason string `json:"refused_reason,omitempty"`
+	// RefusalType classifies a RAG refusal into the #5 four-state taxonomy
+	// (corpus_gap / all_below_floor / synthesis_refused / wrong_domain). Derived
+	// at Finish from RefusedReason + FloorDroppedAll (DeriveRefusalType); empty
+	// when the turn did not emit a knowledge-coverage refusal.
+	RefusalType string `json:"refusal_type,omitempty"`
+	// FloorDroppedAll is true when the relevance floor removed EVERY retrieved hit
+	// this turn (the agent-loop drop point) — the signal that distinguishes
+	// all_below_floor from a genuinely empty corpus (corpus_gap). A retrieval fact
+	// independent of whether the turn then refused or answered with general
+	// guidance, so it is queryable on its own even when refusal_type is empty.
+	FloorDroppedAll bool `json:"floor_dropped_all,omitempty"`
+	// FloorValue is the weak-evidence relevance floor in effect for this turn's
+	// HybridMode (0.5 semantic / 55 BM25). With HitItems[0].Score it shows how
+	// far the top hit fell from the floor.
+	FloorValue float64 `json:"floor_value,omitempty"`
+	// DomainInferenceEmpty is true when the question's product area could not be
+	// inferred (inferKnowledgeProductArea=="") — so the #5 wrong-domain guard
+	// could not judge this turn. Recorded so a low wrong_domain rate is not
+	// misread as "no problem" (the question-side keyword-coverage gap).
+	DomainInferenceEmpty bool `json:"domain_inference_empty,omitempty"`
+	// AllCitedOffDomain is true when every judgeable retrieved chunk was off the
+	// question's product area (the #5 case: a 库存 question grounded on billing
+	// chunks). Trace-only by default; the COMPSHARE_RAG_DOMAIN_MATCH_GUARD refuse
+	// arm turns it into refusal_type=wrong_domain.
+	AllCitedOffDomain     bool `json:"all_cited_off_domain,omitempty"`
+	WeakEvidence          bool `json:"weak_evidence,omitempty"`
+	RankingErrorCandidate bool `json:"ranking_error_candidate,omitempty"`
 	// HybridMode mirrors internal/knowledge/retriever.RetrievalResult.HybridMode.
 	// One of "bm25_only" | "hybrid_cosine" | "hybrid_rerank" | "qwen3_full"
 	// | "bm25_fallback". Empty when retrieval is disabled.
@@ -572,9 +616,13 @@ type RetrievalTrace struct {
 }
 
 type RetrievalHit struct {
-	ChunkID string  `json:"chunk_id"`
-	Score   float64 `json:"score"`
-	Kept    bool    `json:"kept"`
+	ChunkID string `json:"chunk_id"`
+	// SourceArea is the cited chunk's declared product_area (KBChunk.ProductArea).
+	// Stages the per-chunk domain visibility the #5 wrong-domain guard reads;
+	// empty when the chunk declares no product_area.
+	SourceArea string  `json:"source_area,omitempty"`
+	Score      float64 `json:"score"`
+	Kept       bool    `json:"kept"`
 	// RRF-only trace diagnostics. Populated only when the producing
 	// retrieval mode was qwen3_rrf; omitted from JSONL for all other
 	// modes via omitempty. Ranks are 1-indexed (0 = absent from that
@@ -651,6 +699,21 @@ func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 }
 
 type OutcomeTrace struct {
+	// TerminatedBy / AbortCause / ErrorClass / Resolution are the four
+	// outcome-attribution axes derived at Finish (see outcome.go). They close the
+	// "no attribution on ~25% of turns" dark hole. TerminatedBy is always set for a
+	// finalized turn (at minimum "done"); the other three are empty unless their
+	// condition fires. All omitempty → a record that never ran FinalizeOutcome
+	// (raw fixtures) marshals byte-identically to before.
+	TerminatedBy string `json:"terminated_by,omitempty"`
+	AbortCause   string `json:"abort_cause,omitempty"`
+	ErrorClass   string `json:"error_class,omitempty"`
+	Resolution   string `json:"resolution,omitempty"`
+	// ReactRounds is the number of ReAct loop rounds entered this turn; BudgetHit
+	// is true when the turn hit the token budget or the round ceiling. Both feed
+	// the D7 (per-turn budget exhaustion) analysis and the budget terminus.
+	ReactRounds                int   `json:"react_rounds,omitempty"`
+	BudgetHit                  bool  `json:"budget_hit,omitempty"`
 	TotalLatencyMS             int64 `json:"total_latency_ms,omitempty"`
 	TotalTokens                int   `json:"total_tokens,omitempty"`
 	PromptTokens               int   `json:"prompt_tokens,omitempty"`
@@ -885,6 +948,11 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.Hits != 0 ||
 		len(trace.HitItems) > 0 ||
 		trace.RefusedReason != "" ||
+		trace.RefusalType != "" ||
+		trace.FloorDroppedAll ||
+		trace.FloorValue != 0 ||
+		trace.DomainInferenceEmpty ||
+		trace.AllCitedOffDomain ||
 		trace.WeakEvidence ||
 		trace.RankingErrorCandidate ||
 		trace.HybridMode != "" ||
@@ -906,7 +974,13 @@ func traceOutcomeObserved(trace OutcomeTrace) bool {
 		trace.TotalTokens != 0 ||
 		trace.AttemptedHallucinatedCount != 0 ||
 		trace.EscapedHallucinatedCount != 0 ||
-		trace.KBConflictCount != 0
+		trace.KBConflictCount != 0 ||
+		trace.TerminatedBy != "" ||
+		trace.AbortCause != "" ||
+		trace.ErrorClass != "" ||
+		trace.Resolution != "" ||
+		trace.ReactRounds != 0 ||
+		trace.BudgetHit
 }
 
 func (r TraceRecord) withDefaults(now time.Time) TraceRecord {

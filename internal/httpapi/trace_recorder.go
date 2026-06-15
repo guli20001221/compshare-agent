@@ -28,6 +28,8 @@ type chatTraceRecorder struct {
 	completionTokens      int
 	pendingByID           map[string][]int
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
+	terminalSignals       observability.FinishSignals
+	stateTrace            observability.StateTrace
 }
 
 func newChatTraceRecorder(
@@ -96,6 +98,27 @@ func (r *chatTraceRecorder) SetRegistryTraceSupplier(supplier func(time.Time) ob
 		return
 	}
 	r.registryTraceSupplier = supplier
+}
+
+// SetTerminalSignals records the per-turn terminal facts (empty reply, ReAct
+// round count, round-ceiling) the trace record cannot observe on its own. The
+// chat error is passed separately to Finish; this carries the rest. Call it
+// before Finish; a never-called recorder finalizes a clean turn as "done".
+func (r *chatTraceRecorder) SetTerminalSignals(signals observability.FinishSignals) {
+	if r == nil {
+		return
+	}
+	r.terminalSignals = signals
+}
+
+// SetStateTrace records the per-turn instance-binding state (#3) read from the
+// engine getters. Call it before Finish; an un-set recorder leaves State zero
+// (omitted, SHA-stable).
+func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
+	if r == nil {
+		return
+	}
+	r.stateTrace = state
 }
 
 func (r *chatTraceRecorder) SetPlannerTrace(trace observability.RouterTrace) {
@@ -272,7 +295,7 @@ func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 	if chatErr != nil && r.record.EngineHardBlock.Category == "" {
 		r.record.EngineHardBlock = observability.EngineHardBlockTrace{
 			Hit:      true,
-			Category: "chat_error",
+			Category: observability.HardBlockCategoryChatError,
 		}
 	}
 	r.record.Outcome.TotalLatencyMS = end.Sub(r.start).Milliseconds()
@@ -287,6 +310,11 @@ func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 	}
 	r.record.ActualExecutionTier = r.record.DeriveActualExecutionTier()
 	r.record.ActualExecutionPath = r.record.DeriveActualExecutionPath()
+	r.record.Retrieval.RefusalType = r.record.Retrieval.DeriveRefusalType()
+	r.record.State = r.stateTrace
+	signals := r.terminalSignals
+	signals.ChatErr = chatErr
+	r.record.FinalizeOutcome(signals)
 	if enqueuer, ok := r.writer.(traceEnqueuer); ok {
 		return enqueuer.Enqueue(r.tenant, r.record)
 	}
