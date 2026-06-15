@@ -1854,6 +1854,13 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
 		req.FallbackInstanceID = e.sessionState.SelectedInstanceID
 	}
+	// RC017: stock referent. Read ungated by sessionStateHydrated (unlike
+	// SelectedInstanceID above) so the CLI in-memory single-session path
+	// carries it — see recordLastStockGpuModel. In HTTP non-hydrated turns
+	// ClearSessionState already zeroed it, so the empty check stays safe.
+	if e.sessionState.LastStockGpuModel != "" {
+		req.FallbackGpuModel = e.sessionState.LastStockGpuModel
+	}
 	var handled intent.HandlerResult
 	switch result.Plan.Intent {
 	case intent.IntentResourceInfo:
@@ -1935,6 +1942,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 		reply = e.renderGroundedHandlerResult(ctx, handled)
 		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 		e.recordLastIntentFromPlan(result.Plan)
+		e.recordLastStockGpuModel(handled.ResolvedStockGpuModel)
 	}
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
@@ -3664,6 +3672,26 @@ func (e *Engine) recordSelectedInstanceID(id, name string) {
 	}
 	e.sessionState.SelectedInstanceID = id
 	e.sessionState.SelectedInstanceName = name
+}
+
+// recordLastStockGpuModel tracks the GPU model a stock-availability turn
+// resolved to (RC017), so a later subject-eliding stock turn reuses it as
+// the referent. model is the unambiguous single model the handler reported
+// (HandlerResult.ResolvedStockGpuModel); empty means the turn listed all
+// models or was ambiguous, in which case the prior referent is kept.
+//
+// Unlike recordSelectedInstanceID this is NOT gated on sessionStateHydrated.
+// The stock route is direct-dispatch with no ReAct-history fallback, so the
+// CLI in-memory single-session path (which never hydrates) must still carry
+// the referent across turns. This is safe in HTTP: the write lands in the
+// turn's SessionState which is snapshot-persisted only when hydrated, and
+// ClearSessionState zeroes it at the next turn's start, so no value leaks
+// across sessions.
+func (e *Engine) recordLastStockGpuModel(model string) {
+	if model == "" {
+		return
+	}
+	e.sessionState.LastStockGpuModel = model
 }
 
 // recordLastIntentFromPlan sets SessionState.LastIntent from the plan's
