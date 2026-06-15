@@ -316,7 +316,20 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // retry-instruction "IntentPlan" mentions (router.go:183/187) reference the output
 // JSON object label, a distinct referent from the role identity, and are deferred to
 // the schema/label pass.
-const systemPromptSHA256Baseline = "10d56b7e02c2764e8736521e8444e50b550191662f4a4cf02c8c81a1c5715f01"
+//
+// RC012/RC014 consultation-routing fix (2026-06-16): SHA bumped for a narrow
+// planner-boundary change. The deploy_model directive now states that
+// API-subscription developer tools / coding assistants used via an API key or
+// platform package — Claude Code, Codex, Coding Plan, Cursor — are NOT
+// deployable models, so how-to-use questions about them are knowledge_qa, not
+// deploy_model; and knowledge_qa.md gains one anchor ("Claude Code 怎么用").
+// Real traffic mis-routed bare coding-assistant names to deploy_model, which
+// then fabricated a base image + "拉取权重" (they call a hosted API — there
+// are no weights). The corpus already covers Claude Code / Codex / Coding Plan,
+// so knowledge_qa answers it. Boundary preserved: real deployable workloads
+// (部署 Qwen / 跑数字人 / 搭 ComfyUI) stay deploy_model. Eval-gated by a live
+// jitter probe (target cases → knowledge_qa, legit deploys unchanged).
+const systemPromptSHA256Baseline = "09e37c13c154769227f58f2479287ff863345c8e3a4e631c08a6d6a267a00ef1"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
@@ -456,6 +469,11 @@ var legacyKnowledgeQAGroup = routerPromptExampleGroup{
 			Source:   "Task 147: named-package billing-RULE question (how is a plan billed), NOT a GPU runtime price lookup — anchors knowledge_qa vs pricing_query jitter on 套餐/计费",
 		},
 		{
+			Question: "Claude Code 怎么用",
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			Source:   "RC012/RC014: a coding assistant used via API key / platform package (Claude Code, Codex) is a usage consultation answered by RAG, NOT a deployable model — anchors knowledge_qa vs deploy_model",
+		},
+		{
 			Question: "哪里可以看发票发起记录",
 			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
 			Source:   "PR #52: invoice navigation question",
@@ -538,7 +556,7 @@ func TestPlannerExamples_KnowledgeQARenderedPromptUnchanged(t *testing.T) {
 // fields. Counterpart to TestPlannerExamples_DiagnosisExampleJSONLooksValid.
 func TestPlannerExamples_KnowledgeQAExamplesJSONLookValid(t *testing.T) {
 	group := diskPlannerExampleGroups[IntentKnowledgeQA]
-	require.Len(t, group.Examples, 21, "knowledge_qa.md must have 21 examples (15 legacy [+1 Task 147 套餐计费 anchor] + 6 R3-A1 modelverse model-API anchors)")
+	require.Len(t, group.Examples, 22, "knowledge_qa.md must have 22 examples (16 platform/billing/how-to anchors [incl. Task 147 套餐计费 + RC012/RC014 Claude Code] + 6 R3-A1 modelverse model-API anchors)")
 	for i, ex := range group.Examples {
 		assert.Contains(t, ex.PlanJSON, `"intent":"knowledge_qa"`,
 			"example[%d] plan_json yaml key didn't round-trip", i)

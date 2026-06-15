@@ -36,6 +36,9 @@ examples:
   - question: "套餐是按什么方式计费的"
     plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
     source: "Task 147: named-package billing-RULE question (how is a plan billed), NOT a GPU runtime price lookup — anchors knowledge_qa vs pricing_query jitter on 套餐/计费"
+  - question: "Claude Code 怎么用"
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    source: "RC012/RC014: a coding assistant used via API key / platform package (Claude Code, Codex) is a usage consultation answered by RAG, NOT a deployable model — anchors knowledge_qa vs deploy_model"
   - question: "哪里可以看发票发起记录"
     plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
     source: "PR #52: invoice navigation question"

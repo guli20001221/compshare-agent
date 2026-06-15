@@ -186,14 +186,14 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			t.Fatalf("planner examples missing group for intent %q", intent)
 		}
 	}
-	if total != 57 {
-		t.Fatalf("legacy planner example count = %d, want 57", total)
+	if total != 58 {
+		t.Fatalf("legacy planner example count = %d, want 58", total)
 	}
 	expectedCounts := map[Intent]int{
 		IntentResourceInfo:              8,
 		IntentUnknown:                   2,
 		IntentMonitorQuery:              2,
-		IntentKnowledgeQA:               21,
+		IntentKnowledgeQA:               22,
 		IntentBillingAccountUnsupported: 2,
 		IntentBillingInstance:           2,
 		// PR1 hotfix Bug 1 (2026-05-28): 6 = 5 Batch 1 anchors + new
