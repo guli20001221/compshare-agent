@@ -127,9 +127,11 @@ func translateState(state string) string {
 	return state
 }
 
-// FormatToolResult returns a compact JSON string for feeding back to LLM.
-// If the result exceeds maxRunes, it truncates individual array/list fields
-// rather than cutting the serialized JSON string (which produces invalid JSON).
+// FormatToolResult returns a compact JSON string (<= maxRunes runes) for
+// feeding back to the LLM. If the result exceeds the cap it first truncates
+// individual array/list fields to stay valid JSON; only when that cannot bring
+// it under the cap (a giant scalar field, or an array nested too deep to reach)
+// does it fall back to a hard rune-cut — invalid JSON, but a bounded result.
 func FormatToolResult(result map[string]any) string {
 	b, err := json.Marshal(result)
 	if err != nil {
@@ -141,13 +143,20 @@ func FormatToolResult(result map[string]any) string {
 		return string(b)
 	}
 
-	// Truncate by shrinking array fields in the result, then re-marshal.
-	trimmed := truncateMapArrays(result, 5)
-	b2, err := json.Marshal(trimmed)
-	if err != nil {
-		return string(runes[:maxRunes])
+	// Over budget: shrink array fields and re-marshal so the result stays
+	// valid JSON. truncateMapArrays only reaches top-level []any fields, so
+	// this does not help a giant scalar field or an array nested deeper.
+	best := runes
+	if b2, err := json.Marshal(truncateMapArrays(result, 5)); err == nil {
+		best = []rune(string(b2))
+		if len(best) <= maxRunes {
+			return string(best)
+		}
 	}
-	return string(b2)
+	// Array-shrink could not bring it under the cap. Hard-cut as a last
+	// resort: this yields invalid JSON, but a bounded result beats an
+	// unbounded one that would masquerade as a token-budget refusal.
+	return string(best[:maxRunes])
 }
 
 // truncateMapArrays limits []any fields in the map to maxItems entries,
