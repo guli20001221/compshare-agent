@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +16,14 @@ import (
 
 const maxResourceSelectionCandidates = 20
 
+// uhostIDPattern matches a literal CompShare instance ID token in free text.
+// Real IDs are lowercase alphanumeric (e.g. uhost-1qy6d8tkfrl4); the class accepts
+// A-Z too so a mistyped-case ID is captured WHOLE and echoed back intact in the
+// "未找到实例 X" notice (it won't resolve — ResolveByID is exact — so it falls to the
+// wrong-ID branch). The trailing class stops at any non-alphanumeric rune, so
+// "uhost-xxx的GPU利用率" yields "uhost-xxx".
+var uhostIDPattern = regexp.MustCompile(`uhost-[0-9a-zA-Z]+`)
+
 type pendingResourceSelection struct {
 	originalUserMsg string
 	plan            intent.IntentRoute
@@ -23,6 +32,33 @@ type pendingResourceSelection struct {
 	truncated       bool
 	createdTurn     int
 	invalidAttempts int
+	// notFoundRef, when non-empty, is a uhost-ID the user typed that did NOT
+	// resolve to any of their instances. The prompt then leads with "未找到实例
+	// X" so a wrong/typo'd ID is distinguished from "no instance specified".
+	notFoundRef string
+}
+
+// findExplicitInstanceRef scans a raw user message for an explicit uhost-ID and
+// resolves it against the snapshot. This is the deterministic backstop for the
+// intent router intermittently NOT extracting a literal ID into Slots.TargetRefs
+// (Rule 5: a regex-matchable literal is resolved by code, not the LLM). Returns
+// the matched instance when an ID resolves; otherwise returns the first
+// unresolved uhost-shaped token so the caller can say "未找到 X".
+func findExplicitInstanceRef(msg string, snapshot entity.RegistrySnapshot) (*entity.InstanceSnapshot, string) {
+	tokens := uhostIDPattern.FindAllString(msg, -1)
+	if len(tokens) == 0 {
+		return nil, ""
+	}
+	notFound := ""
+	for _, tok := range tokens {
+		if inst, res := snapshot.ResolveByID(tok); res.Status == entity.ResolveHit && inst != nil {
+			return inst, ""
+		}
+		if notFound == "" {
+			notFound = tok
+		}
+	}
+	return nil, notFound
 }
 
 type resourceSelectionMatch struct {
@@ -33,7 +69,11 @@ type resourceSelectionMatch struct {
 
 func renderResourceSelectionPrompt(p pendingResourceSelection) string {
 	var b strings.Builder
-	b.WriteString("\u6211\u9700\u8981\u5148\u786e\u8ba4\u4f60\u8981\u67e5\u770b\u54ea\u53f0\u5b9e\u4f8b\u3002\u8bf7\u9009\u62e9\u4e00\u4e2a\uff1a\n\n")
+	if p.notFoundRef != "" {
+		fmt.Fprintf(&b, "\u672a\u627e\u5230\u5b9e\u4f8b %s\uff0c\u8bf7\u786e\u8ba4\u5b9e\u4f8b ID \u662f\u5426\u6b63\u786e\u3002\u4ee5\u4e0b\u662f\u60a8\u540d\u4e0b\u7684\u5b9e\u4f8b\uff0c\u8bf7\u9009\u62e9\u4e00\u4e2a\uff1a\n\n", sanitizeResourceSelectionPromptField(p.notFoundRef))
+	} else {
+		b.WriteString("\u6211\u9700\u8981\u5148\u786e\u8ba4\u4f60\u8981\u67e5\u770b\u54ea\u53f0\u5b9e\u4f8b\u3002\u8bf7\u9009\u62e9\u4e00\u4e2a\uff1a\n\n")
+	}
 	for i, inst := range p.candidates {
 		fmt.Fprintf(
 			&b,
@@ -119,6 +159,24 @@ func (e *Engine) buildResourceSelectionForPlan(ctx context.Context, result inten
 	if !ok || len(candidates) == 0 {
 		return nil, false, nil
 	}
+
+	// Deterministic explicit-ID backstop (Rule 5): the intent router intermittently
+	// fails to extract a literal uhost-ID from a monitor query into Slots.TargetRefs,
+	// which collapses to "all instances" and a needless "select one" prompt even
+	// though the user already named the instance. Resolve it from the raw message.
+	// A single resolved candidate flows through the existing len==1 auto-dispatch
+	// (engine.go) → HandleMonitorQuery → recordSelectedInstanceFromEnvelope, so
+	// SelectedInstanceID is populated exactly as a manual pick would (the all-
+	// instances prompt path never set it — a real context gap this also closes).
+	notFoundRef := ""
+	if len(result.Plan.Slots.TargetRefs) == 0 && len(candidates) > 1 {
+		if matched, notFound := findExplicitInstanceRef(e.lastUserMsg, refreshedSnapshot); matched != nil {
+			candidates = []entity.InstanceSnapshot{*matched}
+		} else if notFound != "" {
+			notFoundRef = notFound
+		}
+	}
+
 	return &pendingResourceSelection{
 		originalUserMsg: e.lastUserMsg,
 		plan:            result.Plan,
@@ -126,6 +184,7 @@ func (e *Engine) buildResourceSelectionForPlan(ctx context.Context, result inten
 		candidates:      candidates,
 		truncated:       truncated,
 		createdTurn:     e.userTurn,
+		notFoundRef:     notFoundRef,
 	}, true, nil
 }
 

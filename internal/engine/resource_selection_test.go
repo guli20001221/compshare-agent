@@ -243,6 +243,76 @@ func TestResourceSelectionExpiry(t *testing.T) {
 	}
 }
 
+func testSnapshotWithInstances(insts ...entity.InstanceSnapshot) entity.RegistrySnapshot {
+	m := make(map[string]entity.InstanceSnapshot, len(insts))
+	for _, i := range insts {
+		m[i.UHostId] = i
+	}
+	return entity.RegistrySnapshot{Instances: m}
+}
+
+// TestFindExplicitInstanceRef locks the deterministic backstop for the monitor
+// flow: when the user names a literal uhost-ID, code resolves it (Rule 5) instead
+// of depending on the intent router to extract it into Slots.TargetRefs. WHY it
+// matters: a resolved single candidate flows through the len==1 auto-dispatch that
+// also populates SelectedInstanceID, so the explicit-ID turn both answers AND
+// records context — the all-instances "select one" prompt did neither.
+func TestFindExplicitInstanceRef(t *testing.T) {
+	snap := testSnapshotWithInstances(
+		testInstance("uhost-1qy6d8tkfrl4", "host", "Running"),
+		testInstance("uhost-1rkv126dxgiq", "host", "Running"),
+	)
+	tests := []struct {
+		name      string
+		msg       string
+		wantID    string // matched instance ID, "" if none
+		wantNotFd string // unresolved uhost token, "" if none
+	}{
+		{"explicit ID resolves", "uhost-1qy6d8tkfrl4 的GPU利用率是多少？", "uhost-1qy6d8tkfrl4", ""},
+		{"ID with trailing CJK", "查uhost-1qy6d8tkfrl4的内存", "uhost-1qy6d8tkfrl4", ""},
+		{"wrong ID surfaces as notFound", "uhost-doesnotexist 的GPU利用率", "", "uhost-doesnotexist"},
+		{"mistyped-case ID echoes whole as notFound", "uhost-1QY6D8 的GPU利用率", "", "uhost-1QY6D8"},
+		{"no ID at all", "查看GPU利用率", "", ""},
+		{"first resolvable wins", "uhost-1qy6d8tkfrl4 还是 uhost-1rkv126dxgiq", "uhost-1qy6d8tkfrl4", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matched, notFound := findExplicitInstanceRef(tt.msg, snap)
+			gotID := ""
+			if matched != nil {
+				gotID = matched.UHostId
+			}
+			if gotID != tt.wantID {
+				t.Fatalf("matched = %q, want %q", gotID, tt.wantID)
+			}
+			if notFound != tt.wantNotFd {
+				t.Fatalf("notFound = %q, want %q", notFound, tt.wantNotFd)
+			}
+		})
+	}
+}
+
+// TestResourceSelectionPromptWrongIDPrefix: a typo'd/unowned ID gets an explicit
+// "未找到实例 X" notice (distinct from the no-ID-given prompt) but still lists
+// candidates so the user can recover.
+func TestResourceSelectionPromptWrongIDPrefix(t *testing.T) {
+	p := testPendingResourceSelection([]entity.InstanceSnapshot{
+		testInstance("uhost-a", "host", "Running"),
+		testInstance("uhost-b", "host2", "Stopped"),
+	})
+	p.notFoundRef = "uhost-typo"
+	got := renderResourceSelectionPrompt(p)
+	if !strings.Contains(got, "未找到实例 uhost-typo") {
+		t.Fatalf("prompt missing wrong-ID notice:\n%s", got)
+	}
+	if strings.Contains(got, "我需要先确认你要查看哪台实例") {
+		t.Fatalf("wrong-ID prompt must not reuse the no-ID lead line:\n%s", got)
+	}
+	if !strings.Contains(got, "uhost-a") || !strings.Contains(got, "uhost-b") {
+		t.Fatalf("wrong-ID prompt must still list candidates so the user can recover:\n%s", got)
+	}
+}
+
 func testPendingResourceSelection(candidates []entity.InstanceSnapshot) pendingResourceSelection {
 	return pendingResourceSelection{
 		originalUserMsg: "CPU question",
