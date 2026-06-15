@@ -3935,7 +3935,20 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		wfConfirm = workflow.ConfirmFunc(e.confirmFn)
 	}
 
+	// Captured from the create saga's capacity step so the create-zone image
+	// recovery (after Run) can re-resolve an available image in the SAME zone
+	// the saga used, and know which image already 230'd.
+	var capacityZone, attemptedImageID string
+
 	wfEngine := workflow.NewEngine(e.toolExecutorFor(tools.OriginWorkflowInternal), wfConfirm, func(ev workflow.StepEvent) {
+		if ev.Tool == "CheckCompShareResourceCapacity" && ev.Status == "running" && ev.Args != nil {
+			if z, _ := ev.Args["Zone"].(string); z != "" {
+				capacityZone = z
+			}
+			if iid, _ := ev.Args["CompShareImageId"].(string); iid != "" {
+				attemptedImageID = iid
+			}
+		}
 		eventType := StepToolCall
 		message := fmt.Sprintf("[%d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status)
 		if ev.Message != "" {
@@ -3998,6 +4011,24 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
+
+	// Create-zone recovery: a named platform image that isn't available in the
+	// resolved zone fails capacity with RetCode=230 ("Params [CompShareImageId]
+	// not available") — DescribeCompShareImages is zone-blind, so a name match
+	// can pick an image absent from where the GPU lives. Re-resolve to an
+	// available same-intent image in that zone and re-run ONCE, so the user
+	// reaches a confirm card (with a FallbackNote) for a working image instead
+	// of a cryptic API error. Bounded to a single attempt; only fires on the
+	// 230-image signature, so success / sold-out / balance paths are unchanged.
+	if action == "CreateInstanceWorkflow" && createImageUnavailable(result) && capacityZone != "" {
+		if newID, newName, ok := e.resolveAvailableCreateImage(ctx, args, capacityZone, attemptedImageID); ok {
+			args["CompShareImageId"] = newID
+			args["ImageName"] = newName
+			args["FallbackNote"] = fmt.Sprintf("原指定镜像在可用区 %s 暂不可用，已自动为你选择可用镜像「%s」。", capacityZone, newName)
+			result, _ = wfEngine.Run(ctx, wf, args)
+		}
+	}
+
 	if !result.Success {
 		if msg, ok := friendlyMessageFromText(result.Message); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
@@ -4081,6 +4112,14 @@ var workflowStepPrefixRE = regexp.MustCompile(`^步骤「[^」]*」(?:参数构�
 // LLM (see the call site): the workflow message is already grounded, and narration
 // has been observed to fabricate availability/下架 claims.
 func createWorkflowFailureReply(message string) string {
+	// When the chosen image isn't available in the resolved zone, the raw
+	// upstream error ("API error (RetCode=230): Params [CompShareImageId] not
+	// available") is cryptic. The recovery above already tried to swap in an
+	// available image; reaching here means none was creatable, so give honest,
+	// actionable guidance rather than leaking the error code.
+	if isImageUnavailableMessage(message) {
+		return "抱歉，创建实例没有成功：您指定的镜像在当前可用区暂不可用。请更换镜像名称重试，或在控制台创建页选择该可用区支持的镜像。"
+	}
 	msg := workflowStepPrefixRE.ReplaceAllString(strings.TrimSpace(message), "")
 	msg = strings.TrimSpace(msg)
 	if msg == "" {
