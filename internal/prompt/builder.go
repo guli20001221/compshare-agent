@@ -141,13 +141,20 @@ func FormatToolResult(result map[string]any) string {
 		return string(b)
 	}
 
-	// Truncate by shrinking array fields in the result, then re-marshal.
-	trimmed := truncateMapArrays(result, 5)
-	b2, err := json.Marshal(trimmed)
-	if err != nil {
-		return string(runes[:maxRunes])
+	// Over budget: shrink array fields and re-marshal so the result stays
+	// valid JSON. truncateMapArrays only reaches top-level []any fields, so
+	// this does not help a giant scalar field or an array nested deeper.
+	best := runes
+	if b2, err := json.Marshal(truncateMapArrays(result, 5)); err == nil {
+		best = []rune(string(b2))
+		if len(best) <= maxRunes {
+			return string(best)
+		}
 	}
-	return string(b2)
+	// Array-shrink could not bring it under the cap. Hard-cut as a last
+	// resort: this yields invalid JSON, but a bounded result beats an
+	// unbounded one that would masquerade as a token-budget refusal.
+	return string(best[:maxRunes])
 }
 
 // truncateMapArrays limits []any fields in the map to maxItems entries,

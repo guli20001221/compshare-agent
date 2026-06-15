@@ -267,3 +267,33 @@ func TestFormatToolResult_ValidJSON(t *testing.T) {
 		t.Error("should not use old-style truncation")
 	}
 }
+
+// TestFormatToolResult_GiantScalarStaysBounded guards the rune cap for inputs
+// that array-shrink cannot help: a single huge scalar field. truncateMapArrays
+// only trims top-level []any, so without the post-shrink length re-check the
+// result would be returned unbounded — and an oversized tool result silently
+// masquerades as the per-turn token-budget refusal, which is why the cap must
+// hold here, not just for array-heavy results.
+func TestFormatToolResult_GiantScalarStaysBounded(t *testing.T) {
+	large := map[string]any{"log": strings.Repeat("x", 10000)}
+	result := FormatToolResult(large)
+	if n := len([]rune(result)); n > 4000 {
+		t.Errorf("FormatToolResult must cap at 4000 runes, got %d", n)
+	}
+}
+
+// TestFormatToolResult_DeepNestedArrayStaysBounded guards the same cap for an
+// array buried one level below the top, which truncateMapArrays (one level
+// deep) does not reach. Without the length re-check the re-marshaled result
+// exceeds the cap unbounded.
+func TestFormatToolResult_DeepNestedArrayStaysBounded(t *testing.T) {
+	items := make([]any, 100)
+	for i := range items {
+		items[i] = strings.Repeat("y", 200)
+	}
+	large := map[string]any{"outer": map[string]any{"items": items}}
+	result := FormatToolResult(large)
+	if n := len([]rune(result)); n > 4000 {
+		t.Errorf("FormatToolResult must cap nested arrays at 4000 runes, got %d", n)
+	}
+}
