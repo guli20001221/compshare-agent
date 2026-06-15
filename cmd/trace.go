@@ -928,6 +928,7 @@ type cliTraceRecorder struct {
 	pendingByID           map[string][]int
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
 	plannerTraceSupplier  func() observability.RouterTrace
+	terminalSignals       observability.FinishSignals
 }
 
 // newCLITraceRecorder constructs a per-turn trace recorder for the CLI path.
@@ -1157,12 +1158,21 @@ func (r *cliTraceRecorder) EmitStep(step observability.StepTrace) error {
 	return nil
 }
 
+// SetTerminalSignals records the per-turn terminal facts (empty reply, ReAct
+// round count, round-ceiling) the trace record cannot observe on its own. The
+// chat error is passed separately to Finish. Call it before Finish; a
+// never-called recorder finalizes a clean turn as "done".
+func (r *cliTraceRecorder) SetTerminalSignals(signals observability.FinishSignals) {
+	if r == nil {
+		return
+	}
+	r.terminalSignals = signals
+}
+
 func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	if r == nil || r.writer == nil {
 		return nil
 	}
-	// TODO(T-006+): use chatErr when trace schema grows outcome.error_class.
-	_ = chatErr
 	if r.registryTraceSupplier != nil {
 		r.record.EntityRegistry = r.registryTraceSupplier(end)
 	}
@@ -1182,6 +1192,9 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	}
 	r.record.ActualExecutionTier = r.record.DeriveActualExecutionTier()
 	r.record.ActualExecutionPath = r.record.DeriveActualExecutionPath()
+	signals := r.terminalSignals
+	signals.ChatErr = chatErr
+	r.record.FinalizeOutcome(signals)
 	return r.writer.Append(r.record)
 }
 

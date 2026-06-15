@@ -16,7 +16,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.4"
+const SchemaVersion = "trace.v0.5"
 
 const (
 	ToolSourceMainReAct         = "main_react"
@@ -404,6 +404,20 @@ const (
 	HardBlockTriggerTokenBudget   = "token_budget"
 )
 
+// EngineHardBlock Category values the outcome derivation special-cases. They are
+// NOT genuine "blocked" terminuses (see TraceRecord.isGenuineBlock):
+//   - HardBlockCategoryTokenBudget: per-turn token budget exhaustion → budget terminus.
+//   - HardBlockCategoryChatError:   the synthetic marker the HTTP recorder stamps
+//     when chatErr != nil → error terminus.
+//
+// Defined here so the producers (engine.emitTokenBudgetExceededHardBlock,
+// chatTraceRecorder.Finish) and the consumer (outcome.go) share one literal and
+// cannot drift.
+const (
+	HardBlockCategoryTokenBudget = "token_budget_exceeded"
+	HardBlockCategoryChatError   = "chat_error"
+)
+
 type EngineHardBlockTrace struct {
 	Hit      bool   `json:"hit"`
 	Category string `json:"category"`
@@ -651,6 +665,21 @@ func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 }
 
 type OutcomeTrace struct {
+	// TerminatedBy / AbortCause / ErrorClass / Resolution are the four
+	// outcome-attribution axes derived at Finish (see outcome.go). They close the
+	// "no attribution on ~25% of turns" dark hole. TerminatedBy is always set for a
+	// finalized turn (at minimum "done"); the other three are empty unless their
+	// condition fires. All omitempty → a record that never ran FinalizeOutcome
+	// (raw fixtures) marshals byte-identically to before.
+	TerminatedBy string `json:"terminated_by,omitempty"`
+	AbortCause   string `json:"abort_cause,omitempty"`
+	ErrorClass   string `json:"error_class,omitempty"`
+	Resolution   string `json:"resolution,omitempty"`
+	// ReactRounds is the number of ReAct loop rounds entered this turn; BudgetHit
+	// is true when the turn hit the token budget or the round ceiling. Both feed
+	// the D7 (per-turn budget exhaustion) analysis and the budget terminus.
+	ReactRounds                int   `json:"react_rounds,omitempty"`
+	BudgetHit                  bool  `json:"budget_hit,omitempty"`
 	TotalLatencyMS             int64 `json:"total_latency_ms,omitempty"`
 	TotalTokens                int   `json:"total_tokens,omitempty"`
 	PromptTokens               int   `json:"prompt_tokens,omitempty"`
@@ -906,7 +935,13 @@ func traceOutcomeObserved(trace OutcomeTrace) bool {
 		trace.TotalTokens != 0 ||
 		trace.AttemptedHallucinatedCount != 0 ||
 		trace.EscapedHallucinatedCount != 0 ||
-		trace.KBConflictCount != 0
+		trace.KBConflictCount != 0 ||
+		trace.TerminatedBy != "" ||
+		trace.AbortCause != "" ||
+		trace.ErrorClass != "" ||
+		trace.Resolution != "" ||
+		trace.ReactRounds != 0 ||
+		trace.BudgetHit
 }
 
 func (r TraceRecord) withDefaults(now time.Time) TraceRecord {

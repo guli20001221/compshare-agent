@@ -250,7 +250,15 @@ type Engine struct {
 	// Chat. Read at ReAct loop iteration boundaries to enforce
 	// maxTokensPerTurn — never mid tool_call / tool_result pair.
 	turnTokensConsumed int
-	hardBlockObserver  func(observability.EngineHardBlockTrace)
+	// reactRoundsThisTurn counts the ReAct loop rounds entered this turn (0 when
+	// the turn never ran the loop — routing / RAG / pre-block). reactCeilingHit
+	// ThisTurn is set when the loop exhausted maxReActRounds without a final
+	// answer (that path emits no hard-block, so the trace's budget terminus is
+	// otherwise underivable). Both reset at the top of Chat; read post-turn by the
+	// trace recorder via ReactRoundsThisTurn / ReactCeilingHitThisTurn.
+	reactRoundsThisTurn     int
+	reactCeilingHitThisTurn bool
+	hardBlockObserver       func(observability.EngineHardBlockTrace)
 	// stepSink receives agent-tier saga StepTraces (B8). Set per-turn via
 	// SetStepSink to the trace recorder, which folds them into the turn's
 	// trace_json.steps[]. nil = no step observability. Consumed by RunAgentSaga.
@@ -693,6 +701,16 @@ func (e *Engine) SetOutcomeTraceObserver(observer func(observability.OutcomeTrac
 	e.outcomeTraceObserver = observer
 }
 
+// ReactRoundsThisTurn returns the number of ReAct loop rounds entered in the most
+// recent Chat turn (0 when the turn did not run the loop). Read post-turn by the
+// trace recorder to populate outcome.react_rounds and the budget terminus.
+func (e *Engine) ReactRoundsThisTurn() int { return e.reactRoundsThisTurn }
+
+// ReactCeilingHitThisTurn reports whether the most recent Chat turn exhausted the
+// ReAct round ceiling without producing a final answer. That path emits no
+// hard-block, so this is the only signal for terminated_by=budget on it.
+func (e *Engine) ReactCeilingHitThisTurn() bool { return e.reactCeilingHitThisTurn }
+
 func (e *Engine) SetTokenUsageObserver(observer func(llm.TokenUsage)) {
 	e.tokenUsageObserver = observer
 }
@@ -1090,6 +1108,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.readExpensiveCallsThisTurn = 0
 	e.requireKnowledgeCitationThisTurn = false
 	e.turnTokensConsumed = 0
+	e.reactRoundsThisTurn = 0
+	e.reactCeilingHitThisTurn = false
 	e.lastPlannerIntentThisTurn = ""
 	e.lastPlannerActionThisTurn = ""
 	e.searchKnowledgeRanThisTurn = false
@@ -1156,6 +1176,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	}
 
 	for round := 0; round < maxReActRounds; round++ {
+		e.reactRoundsThisTurn = round + 1
 		// Per-turn token budget gate. Placed at the TOP of the loop so
 		// any tool_call → tool_result pair emitted in the previous
 		// iteration has already completed and been appended to history
@@ -1485,6 +1506,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 	}
 
+	// The loop exhausted maxReActRounds without returning a final answer. Mark the
+	// round-ceiling so the trace can attribute terminated_by=budget (this path,
+	// unlike the token-budget gate, emits no hard-block).
+	e.reactCeilingHitThisTurn = true
 	return "抱歉，处理轮次超限，请重新描述您的需求。", nil
 }
 
@@ -2634,7 +2659,7 @@ func (e *Engine) emitTokenBudgetExceededHardBlock() {
 	if e.hardBlockObserver != nil {
 		e.hardBlockObserver(observability.EngineHardBlockTrace{
 			Hit:         true,
-			Category:    "token_budget_exceeded",
+			Category:    observability.HardBlockCategoryTokenBudget,
 			TriggeredBy: observability.HardBlockTriggerTokenBudget,
 		})
 	}

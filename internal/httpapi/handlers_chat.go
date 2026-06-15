@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/ocr"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
@@ -336,10 +338,20 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 
 	defer clearChatTraceObservers(agent)
 
+	// Declared before finishTrace so the closure can read the final reply (for the
+	// empty_reply terminus) and the post-turn ReAct counters off the engine.
+	var reply string
+	var chatErr error
+
 	finishTrace := func(err error) {
 		if traceRecorder == nil {
 			return
 		}
+		traceRecorder.SetTerminalSignals(observability.FinishSignals{
+			ReplyEmpty:      strings.TrimSpace(reply) == "",
+			ReactRounds:     agent.ReactRoundsThisTurn(),
+			RoundCeilingHit: agent.ReactCeilingHitThisTurn(),
+		})
 		if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
 			log.Printf("warning: HTTP trace write failed: %v", traceErr)
 		}
@@ -381,7 +393,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	// LLM streaming call
 	// -----------------------------------------------------------------------
 	stepIndex := 0
-	reply, chatErr := agent.ChatWithOptions(ctx, prep.message, func(ev engine.StepEvent) {
+	reply, chatErr = agent.ChatWithOptions(ctx, prep.message, func(ev engine.StepEvent) {
 		if traceRecorder != nil {
 			traceRecorder.OnStep(ev)
 		}

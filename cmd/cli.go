@@ -376,6 +376,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 
 		reply, err := eng.Chat(ctx, input, onStep)
 		if traceRecorder != nil {
+			traceRecorder.SetTerminalSignals(observability.FinishSignals{
+				ReplyEmpty:      strings.TrimSpace(reply) == "",
+				ReactRounds:     eng.ReactRoundsThisTurn(),
+				RoundCeilingHit: eng.ReactCeilingHitThisTurn(),
+			})
 			if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: trace write failed: %v\n", traceErr)
 			}

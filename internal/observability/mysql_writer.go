@@ -31,12 +31,13 @@ import (
 // Close drains the queue and shuts down the worker. Callers should invoke it
 // at process shutdown; otherwise the buffered records are lost.
 type MySQLWriter struct {
-	db          *sql.DB
-	queue       chan persistedTrace
-	workerDone  chan struct{}
-	batchSize   int
-	flushPeriod time.Duration
-	logger      *log.Logger
+	db            *sql.DB
+	queue         chan persistedTrace
+	workerDone    chan struct{}
+	batchSize     int
+	flushPeriod   time.Duration
+	retentionDays int
+	logger        *log.Logger
 }
 
 // persistedTrace bundles tenant context with the trace record. TraceRecord
@@ -60,10 +61,11 @@ type TenantContext struct {
 // MySQLWriterOptions tunes the buffering knobs. Sensible defaults are used
 // when fields are zero.
 type MySQLWriterOptions struct {
-	QueueSize   int           // default 1024
-	BatchSize   int           // default 50
-	FlushPeriod time.Duration // default 1s
-	Logger      *log.Logger   // default log.Default()
+	QueueSize     int           // default 1024
+	BatchSize     int           // default 50
+	FlushPeriod   time.Duration // default 1s
+	RetentionDays int           // default DefaultTraceRetentionDays (30); <=0 → default
+	Logger        *log.Logger   // default log.Default()
 }
 
 // NewMySQLWriter opens a connection to the given DSN, pings to verify
@@ -93,12 +95,13 @@ func NewMySQLWriter(dsn string, opts MySQLWriterOptions) (*MySQLWriter, error) {
 	}
 
 	w := &MySQLWriter{
-		db:          db,
-		queue:       make(chan persistedTrace, defaultIfZero(opts.QueueSize, 1024)),
-		workerDone:  make(chan struct{}),
-		batchSize:   defaultIfZero(opts.BatchSize, 50),
-		flushPeriod: defaultDurationIfZero(opts.FlushPeriod, time.Second),
-		logger:      defaultLogger(opts.Logger),
+		db:            db,
+		queue:         make(chan persistedTrace, defaultIfZero(opts.QueueSize, 1024)),
+		workerDone:    make(chan struct{}),
+		batchSize:     defaultIfZero(opts.BatchSize, 50),
+		flushPeriod:   defaultDurationIfZero(opts.FlushPeriod, time.Second),
+		retentionDays: defaultIfZero(opts.RetentionDays, DefaultTraceRetentionDays),
+		logger:        defaultLogger(opts.Logger),
 	}
 	go w.run()
 	return w, nil
@@ -173,6 +176,14 @@ func (w *MySQLWriter) run() {
 		batch = batch[:0]
 	}
 
+	// Retention sweep: agent_traces has no TTL of its own (the JSONL sink expires
+	// files via observability.Cleanup; the MySQL sink previously had no equivalent
+	// and grew unbounded). Sweep once at startup (mirrors the file sink's
+	// per-process cleanup) and then daily for the long-running server.
+	w.sweepExpired()
+	retentionTick := time.NewTicker(24 * time.Hour)
+	defer retentionTick.Stop()
+
 	for {
 		select {
 		case rec, ok := <-w.queue:
@@ -186,7 +197,38 @@ func (w *MySQLWriter) run() {
 			}
 		case <-tick.C:
 			flush()
+		case <-retentionTick.C:
+			w.sweepExpired()
 		}
+	}
+}
+
+// retentionCutoff is the created_at boundary below which rows are expired: rows
+// strictly older than now - retentionDays. Pure so the boundary is unit-testable
+// without a live DB.
+func retentionCutoff(now time.Time, retentionDays int) time.Time {
+	if retentionDays <= 0 {
+		retentionDays = DefaultTraceRetentionDays
+	}
+	return now.Add(-time.Duration(retentionDays) * 24 * time.Hour)
+}
+
+// sweepExpired deletes agent_traces rows older than the retention window. Errors
+// are logged, not fatal — a failed sweep must never disrupt trace ingestion.
+func (w *MySQLWriter) sweepExpired() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cutoff := retentionCutoff(time.Now(), w.retentionDays)
+	res, err := w.db.ExecContext(ctx,
+		"DELETE FROM agent_traces WHERE created_at < ?", cutoff)
+	if err != nil {
+		w.logger.Printf("mysql_writer: retention sweep failed (cutoff=%s): %v",
+			cutoff.Format(time.RFC3339), err)
+		return
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		w.logger.Printf("mysql_writer: retention sweep removed %d rows older than %s",
+			n, cutoff.Format(time.RFC3339))
 	}
 }
 
@@ -265,17 +307,37 @@ func rowFromTrace(p persistedTrace) ([]any, error) {
 }
 
 // statusFromTrace collapses the trace record's terminal state into the
-// agent_traces.status enum. Mirrors plan §7.7 DeriveStatus.
-//   - "blocked": engine hard-block fired OR rate-limit denial.
-//   - "error":   reserved for caller (chatErr != nil); statusFromTrace can't
-//     distinguish error from success without the caller's error value, so
-//     callers SHOULD pre-set rec.Outcome.AttemptedHallucinatedCount > 0 or
-//     use a wrapper. For pure-trace inference the default is "success".
+// agent_traces.status ENUM('success','blocked','error'). It now derives from the
+// finalized outcome.terminated_by axis (FinalizeOutcome), which fixes the empty
+// LLM reply hiding inside "success" while preserving the existing meanings of the
+// three values:
+//   - "blocked" = the engine deliberately stopped the turn: a hard-block,
+//     rate-limit denial, OR a budget cap (token budget / ReAct round ceiling — the
+//     token-budget path already reported "blocked" via its hard-block; the round
+//     ceiling previously leaked into "success", which this un-masks).
+//   - "error"   = the turn failed to complete for a non-policy reason: an LLM
+//     error, timeout, empty reply (the dark-hole-within-the-dark-hole, previously
+//     "success"), or a client disconnect.
+//   - "success" = the turn delivered a normal answer.
 //
-// The server WS handler uses the richer server.DeriveStatus(chatErr,trace)
-// helper (lands in A5/PR5); this internal version covers the file/MySQL
-// boundary when only the trace is available.
+// The precise terminated_by / abort_cause live in trace_json for queryability;
+// when ops adds finer ENUM values (e.g. 'aborted') in Phase 1b, this collapse can
+// widen.
+//
+// Legacy fallback: a record that never ran FinalizeOutcome (TerminatedBy=="")
+// keeps the original trace-only inference, so older fixtures / un-finalized
+// records are unaffected.
 func statusFromTrace(rec TraceRecord) string {
+	switch rec.Outcome.TerminatedBy {
+	case TerminatedByBlocked, TerminatedByBudget:
+		return "blocked"
+	case TerminatedByDone:
+		return "success"
+	case TerminatedByError, TerminatedByEmptyReply, TerminatedByTimeout,
+		TerminatedByUserCancel:
+		return "error"
+	}
+	// Un-finalized record: original trace-only inference.
 	if rec.EngineHardBlock.Hit {
 		return "blocked"
 	}
