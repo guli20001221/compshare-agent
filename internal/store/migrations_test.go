@@ -40,3 +40,31 @@ func TestHTTPMigrationsAddSessionContextVersion(t *testing.T) {
 	assert.Contains(t, ddl, "ADD COLUMN context_version INT NOT NULL DEFAULT 0")
 	assert.Contains(t, ddl, "AFTER context")
 }
+
+// TestHTTPMigrationsAddAgentTracesOutcomeColumns pins the 0004 promote-to-columns
+// migration to the exact column names the MySQL writer's promoted INSERT references
+// (mysql_writer.go::promotedInsertCols). A drift on either side — a renamed column in
+// the DDL or a reordered value in promotedColumnValues — silently writes the wrong
+// axis into the wrong dashboard column, so this guards the DDL↔writer contract.
+func TestHTTPMigrationsAddAgentTracesOutcomeColumns(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0004_add_agent_traces_outcome_columns.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	assert.Contains(t, ddl, "ALTER TABLE agent_traces")
+	for _, column := range []string{
+		"terminated_by",
+		"abort_cause",
+		"error_class",
+		"resolution",
+		"route_status",
+		"refusal_type",
+		"resolution_source",
+	} {
+		assert.Contains(t, ddl, "ADD COLUMN "+column, "0004 must add column %s", column)
+	}
+	// Columns must be NULLable so an axis that did not fire stores NULL (clean
+	// GROUP BY / COUNT semantics) — never NOT NULL with a default.
+	assert.NotContains(t, strings.ToUpper(ddl), "NOT NULL")
+}

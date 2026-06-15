@@ -38,6 +38,12 @@ type MySQLWriter struct {
 	flushPeriod   time.Duration
 	retentionDays int
 	logger        *log.Logger
+	// promotedColumns is true when agent_traces has the 0004 outcome columns
+	// (terminated_by, refusal_type, …). Probed once at startup. When false the
+	// writer falls back to the legacy 12-column INSERT so a new binary on a DB
+	// that has 0002 but not 0004 still ingests trace_json instead of failing
+	// every batch on an unknown-column error (the deploy-order must-fix).
+	promotedColumns bool
 }
 
 // persistedTrace bundles tenant context with the trace record. TraceRecord
@@ -103,8 +109,35 @@ func NewMySQLWriter(dsn string, opts MySQLWriterOptions) (*MySQLWriter, error) {
 		retentionDays: defaultIfZero(opts.RetentionDays, DefaultTraceRetentionDays),
 		logger:        defaultLogger(opts.Logger),
 	}
+	w.promotedColumns = detectPromotedColumns(db, w.logger)
 	go w.run()
 	return w, nil
+}
+
+// detectPromotedColumns probes once at startup whether agent_traces has the 0004
+// outcome columns. When false, insertBatch uses the legacy 12-column INSERT so a
+// new binary on a DB that has 0002 but not 0004 still ingests trace_json instead of
+// failing every batch on an unknown-column error (the deploy-order must-fix). Any
+// probe error is treated as "absent" — degrade safely, never block ingestion.
+func detectPromotedColumns(db *sql.DB, logger *log.Logger) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var n int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM information_schema.columns
+		   WHERE table_schema = DATABASE()
+		     AND table_name = 'agent_traces'
+		     AND column_name = 'terminated_by'`).Scan(&n)
+	if err != nil {
+		logger.Printf("mysql_writer: promoted-column probe failed (%v); using legacy 12-column INSERT", err)
+		return false
+	}
+	if n == 0 {
+		logger.Printf("mysql_writer: agent_traces missing promoted columns (run migration 0004); writing trace_json only")
+		return false
+	}
+	logger.Printf("mysql_writer: agent_traces has promoted outcome columns; GROUP-BY columns enabled")
+	return true
 }
 
 // Append satisfies the Writer interface. CLI / legacy callers use this when
@@ -236,26 +269,52 @@ func (w *MySQLWriter) sweepExpired() {
 // MySQL's INSERT IGNORE behavior on duplicate request_uuid (the unique key)
 // so retries don't fail loudly; the engine reply path can re-enqueue
 // without coordination.
+// Column lists + per-row placeholders for the two INSERT shapes. The legacy 12-
+// column form is the floor (always valid against a 0002 schema); the promoted form
+// appends the 0004 outcome columns AFTER trace_json — so the order here must match
+// rowFromTrace (base 12) followed by promotedColumnValues (the 7 extras).
+const (
+	legacyInsertCols = "(request_uuid, top_organization_id, organization_id, connection_id, " +
+		"turn_index, created_at, status, intent, tool_count, cited_chunk_ids, " +
+		"duration_ms, trace_json)"
+	legacyRowPlaceholder = "(?,?,?,?,?,?,?,?,?,?,?,?)"
+
+	promotedInsertCols = "(request_uuid, top_organization_id, organization_id, connection_id, " +
+		"turn_index, created_at, status, intent, tool_count, cited_chunk_ids, " +
+		"duration_ms, trace_json, " +
+		"terminated_by, abort_cause, error_class, resolution, route_status, " +
+		"refusal_type, resolution_source)"
+	promotedRowPlaceholder = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)" // 12 base + 7 promoted
+
+	promotedColCount = 19
+)
+
 func (w *MySQLWriter) insertBatch(batch []persistedTrace) error {
 	if len(batch) == 0 {
 		return nil
 	}
-	const cols = "(request_uuid, top_organization_id, organization_id, connection_id, " +
-		"turn_index, created_at, status, intent, tool_count, cited_chunk_ids, " +
-		"duration_ms, trace_json)"
-	placeholders := make([]byte, 0, len(batch)*40)
-	args := make([]any, 0, len(batch)*12)
-	for i, p := range batch {
-		if i > 0 {
-			placeholders = append(placeholders, ',')
-		}
-		placeholders = append(placeholders, "(?,?,?,?,?,?,?,?,?,?,?,?)"...)
+	cols, rowPlaceholder := legacyInsertCols, legacyRowPlaceholder
+	if w.promotedColumns {
+		cols, rowPlaceholder = promotedInsertCols, promotedRowPlaceholder
+	}
+	placeholders := make([]byte, 0, len(batch)*(promotedColCount*2+2))
+	args := make([]any, 0, len(batch)*promotedColCount)
+	for _, p := range batch {
 		row, err := rowFromTrace(p)
 		if err != nil {
 			w.logger.Printf("mysql_writer: skipping malformed trace_id=%s: %v",
 				p.record.TraceID, err)
 			continue
 		}
+		if w.promotedColumns {
+			row = append(row, promotedColumnValues(p.record)...)
+		}
+		// Append the placeholder group only after rowFromTrace succeeds, so a
+		// skipped (malformed) record never desyncs placeholders from args.
+		if len(placeholders) > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, rowPlaceholder...)
 		args = append(args, row...)
 	}
 	if len(args) == 0 {
@@ -267,6 +326,32 @@ func (w *MySQLWriter) insertBatch(batch []persistedTrace) error {
 	defer cancel()
 	_, err := w.db.ExecContext(ctx, query, args...)
 	return err
+}
+
+// promotedColumnValues projects the 0004 outcome columns from a finalized
+// TraceRecord, in the same order promotedInsertCols lists them after trace_json.
+// Each empty axis becomes SQL NULL (an answered turn that did not refuse has
+// refusal_type = NULL, error_class = NULL), so a dashboard COUNT/GROUP BY over a
+// column counts only the turns where that axis actually fired.
+func promotedColumnValues(rec TraceRecord) []any {
+	return []any{
+		nullableStr(rec.Outcome.TerminatedBy),
+		nullableStr(rec.Outcome.AbortCause),
+		nullableStr(rec.Outcome.ErrorClass),
+		nullableStr(rec.Outcome.Resolution),
+		nullableStr(rec.IntentRouter.RouteStatus),
+		nullableStr(rec.Retrieval.DeriveRefusalType()),
+		nullableStr(rec.State.ResolutionSource),
+	}
+}
+
+// nullableStr maps "" → SQL NULL and any non-empty string to itself, so empty
+// attribution axes store as NULL rather than '' (keeps COUNT / GROUP BY clean).
+func nullableStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // rowFromTrace projects a persistedTrace into the 12 column values for

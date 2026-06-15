@@ -71,7 +71,7 @@ agent:
     # Per-tenant cap on user-initiated chat turns (one user_message frame
     # = 1 turn; confirm responses and pings do NOT count).
     user_turn_qps: 2      # max 2 messages/sec per tenant; 0 = no QPS cap
-    user_turn_daily: 30   # 0 = no daily cap; 30 is the 2026-05-21 test-phase value
+    user_turn_daily: 50   # 0 = no daily cap; per-tenant production cap (was 30 in test phase)
     # Per-turn cap on total LLM tokens (prompt + completion summed across
     # every LLM call in one user turn). 0 = no cap. 150000 gives headroom
     # for heavy multi-tool diagnosis turns AND multi-turn sessions where the
@@ -82,7 +82,7 @@ agent:
     # a bare "请简化问题" (see answerWithRetrievedEvidence / synthesizeOnBudgetExceeded);
     # it only refuses when no evidence is in hand. Observe
     # trace.outcome.total_tokens and tighten once steady-state is known.
-    max_tokens_per_turn: 150000
+    max_tokens_per_turn: 200000
 
   # HTTP service settings (used by: compshare-agent server).
   # write_timeout must be 0 for SSE streaming connections.
@@ -131,7 +131,7 @@ agent:
   # 留空 model 则关闭该功能——请求中的 Image 会被忽略。
   # base_url 和 api_key 留空时继承 agent.llm 的值。
   ocr:
-    model: ""              # recommended: "qwen3-vl-flash"
+    model: "qwen3-vl-flash"   # VL model for screenshot OCR / multimodal diagnosis (empty = disabled)
     base_url: ""           # inherits from agent.llm.base_url
     api_key: ""            # inherits from agent.llm.api_key
     timeout: "15s"

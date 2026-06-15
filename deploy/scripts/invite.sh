@@ -42,6 +42,41 @@ REACT_RESULT_PROJECTION="${USE_REACT_RESULT_PROJECTION:-1}"
 REACT_HISTORY_COMPACTION="${USE_REACT_HISTORY_COMPACTION:-1}"
 COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT_MODE="${COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT:-}"
 
+# Trace / observability sink (Phase-0 of the trace-observability rollout). Forwarded
+# for the same reason as the switches above — the binary reads COMPSHARE_TRACE_* only
+# from its OWN process env, and `ally invite` passes only the --app-env vars below.
+# Shipped ON writing to MySQL by deliberate decision: every turn writes one
+# agent_traces row (outcome/state/retrieval attribution). PREREQUISITE: ops must run
+# the deploy/migrations/0002 + 0004 DDL on the MYSQL_DSN database first; the writer
+# probes for the promoted columns and degrades to the trace_json blob if 0004 is not
+# applied. The Go code default is OFF (nil writer), so traces flow only because these
+# are shipped here and forwarded. Set COMPSHARE_TRACE_ENABLED=0 to disable, or
+# COMPSHARE_TRACE_SINK=file|both to change where traces land.
+TRACE_ENABLED="${COMPSHARE_TRACE_ENABLED:-1}"
+TRACE_SINK="${COMPSHARE_TRACE_SINK:-mysql}"
+TRACE_DIR="${COMPSHARE_TRACE_DIR:-}"
+
+# Editable create-flow confirmation form (server half of the double gate, create-flow
+# 表单化). With this on AND the client opting in per turn (SendCSAgentChat
+# Features:["confirm_form_v1"], which the AIAssistant already sends), CreateInstanceWorkflow
+# confirmation frames carry a select-only Form (GPU/zone/image/charge-type) and accept
+# Overrides (re-validated, <=3 edits). SAFE when the client does NOT opt in — frames stay
+# byte-identical, Overrides rejected. deploy_model saga + CLI confirm unaffected either way.
+# Forwarded for the same own-process-env reason as the switches above; Go code default OFF.
+CONFIRM_FORM="${COMPSHARE_CONFIRM_FORM:-1}"
+
+# Agentic-RAG answer stack. Pinned EXPLICITLY (rather than relying on the binary's
+# cmd-boot default-on) so production behavior never depends on an implicit default a
+# future code change could silently flip. All default ON; set any to 0 to roll back.
+#   COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE            read-only SearchKnowledge registry tool (RAG as an agent tool)
+#   COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP            knowledge_qa runs in the agent loop (forced SearchKnowledge first hop)
+#   COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS final answer written by the tight cited-synthesis prompt (anti-fab)
+#   COMPSHARE_EXTERNAL_KNOWLEDGE                 merge external tool/ops corpus (vLLM/CUDA/Linux/PyTorch) into the index
+AGENTIC_SEARCH="${COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE:-1}"
+KQA_AGENT_LOOP="${COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP:-1}"
+KQA_DISCIPLINED="${COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS:-1}"
+EXTERNAL_KNOWLEDGE="${COMPSHARE_EXTERNAL_KNOWLEDGE:-1}"
+
 ally invite compshare-agent \
     --app-bin "$APP_DIR/compshare-agent" \
     --app-pwd "$APP_DIR" \
@@ -55,6 +90,14 @@ ally invite compshare-agent \
     --app-env "USE_REACT_RESULT_PROJECTION=$REACT_RESULT_PROJECTION" \
     --app-env "USE_REACT_HISTORY_COMPACTION=$REACT_HISTORY_COMPACTION" \
     --app-env "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT=$COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT_MODE" \
+    --app-env "COMPSHARE_TRACE_ENABLED=$TRACE_ENABLED" \
+    --app-env "COMPSHARE_TRACE_SINK=$TRACE_SINK" \
+    --app-env "COMPSHARE_TRACE_DIR=$TRACE_DIR" \
+    --app-env "COMPSHARE_CONFIRM_FORM=$CONFIRM_FORM" \
+    --app-env "COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=$AGENTIC_SEARCH" \
+    --app-env "COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=$KQA_AGENT_LOOP" \
+    --app-env "COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS=$KQA_DISCIPLINED" \
+    --app-env "COMPSHARE_EXTERNAL_KNOWLEDGE=$EXTERNAL_KNOWLEDGE" \
     -- server \
     --config "$CONFIG_FILE" \
     --addr "$ADDR"
