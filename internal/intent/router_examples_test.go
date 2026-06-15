@@ -556,7 +556,7 @@ func TestPlannerExamples_KnowledgeQARenderedPromptUnchanged(t *testing.T) {
 // fields. Counterpart to TestPlannerExamples_DiagnosisExampleJSONLooksValid.
 func TestPlannerExamples_KnowledgeQAExamplesJSONLookValid(t *testing.T) {
 	group := diskPlannerExampleGroups[IntentKnowledgeQA]
-	require.Len(t, group.Examples, 22, "knowledge_qa.md must have 22 examples (15 legacy [+1 Task 147 套餐计费 anchor] [+1 RC012/RC014 Claude Code coding-assistant anchor] + 6 R3-A1 modelverse model-API anchors)")
+	require.Len(t, group.Examples, 22, "knowledge_qa.md must have 22 examples (16 platform/billing/how-to anchors [incl. Task 147 套餐计费 + RC012/RC014 Claude Code] + 6 R3-A1 modelverse model-API anchors)")
 	for i, ex := range group.Examples {
 		assert.Contains(t, ex.PlanJSON, `"intent":"knowledge_qa"`,
 			"example[%d] plan_json yaml key didn't round-trip", i)
