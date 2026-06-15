@@ -65,6 +65,18 @@ TRACE_DIR="${COMPSHARE_TRACE_DIR:-}"
 # Forwarded for the same own-process-env reason as the switches above; Go code default OFF.
 CONFIRM_FORM="${COMPSHARE_CONFIRM_FORM:-1}"
 
+# Agentic-RAG answer stack. Pinned EXPLICITLY (rather than relying on the binary's
+# cmd-boot default-on) so production behavior never depends on an implicit default a
+# future code change could silently flip. All default ON; set any to 0 to roll back.
+#   COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE            read-only SearchKnowledge registry tool (RAG as an agent tool)
+#   COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP            knowledge_qa runs in the agent loop (forced SearchKnowledge first hop)
+#   COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS final answer written by the tight cited-synthesis prompt (anti-fab)
+#   COMPSHARE_EXTERNAL_KNOWLEDGE                 merge external tool/ops corpus (vLLM/CUDA/Linux/PyTorch) into the index
+AGENTIC_SEARCH="${COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE:-1}"
+KQA_AGENT_LOOP="${COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP:-1}"
+KQA_DISCIPLINED="${COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS:-1}"
+EXTERNAL_KNOWLEDGE="${COMPSHARE_EXTERNAL_KNOWLEDGE:-1}"
+
 ally invite compshare-agent \
     --app-bin "$APP_DIR/compshare-agent" \
     --app-pwd "$APP_DIR" \
@@ -82,6 +94,10 @@ ally invite compshare-agent \
     --app-env "COMPSHARE_TRACE_SINK=$TRACE_SINK" \
     --app-env "COMPSHARE_TRACE_DIR=$TRACE_DIR" \
     --app-env "COMPSHARE_CONFIRM_FORM=$CONFIRM_FORM" \
+    --app-env "COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=$AGENTIC_SEARCH" \
+    --app-env "COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=$KQA_AGENT_LOOP" \
+    --app-env "COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS=$KQA_DISCIPLINED" \
+    --app-env "COMPSHARE_EXTERNAL_KNOWLEDGE=$EXTERNAL_KNOWLEDGE" \
     -- server \
     --config "$CONFIG_FILE" \
     --addr "$ADDR"
