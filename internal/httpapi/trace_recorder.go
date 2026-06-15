@@ -29,6 +29,7 @@ type chatTraceRecorder struct {
 	pendingByID           map[string][]int
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
 	terminalSignals       observability.FinishSignals
+	stateTrace            observability.StateTrace
 }
 
 func newChatTraceRecorder(
@@ -108,6 +109,16 @@ func (r *chatTraceRecorder) SetTerminalSignals(signals observability.FinishSigna
 		return
 	}
 	r.terminalSignals = signals
+}
+
+// SetStateTrace records the per-turn instance-binding state (#3) read from the
+// engine getters. Call it before Finish; an un-set recorder leaves State zero
+// (omitted, SHA-stable).
+func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
+	if r == nil {
+		return
+	}
+	r.stateTrace = state
 }
 
 func (r *chatTraceRecorder) SetPlannerTrace(trace observability.RouterTrace) {
@@ -299,6 +310,7 @@ func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 	}
 	r.record.ActualExecutionTier = r.record.DeriveActualExecutionTier()
 	r.record.ActualExecutionPath = r.record.DeriveActualExecutionPath()
+	r.record.State = r.stateTrace
 	signals := r.terminalSignals
 	signals.ChatErr = chatErr
 	r.record.FinalizeOutcome(signals)

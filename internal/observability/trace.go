@@ -138,6 +138,7 @@ type TraceRecord struct {
 	RateLimit           RateLimitTrace       `json:"rate_limit"`
 	Retrieval           RetrievalTrace       `json:"retrieval"`
 	Diagnosis           DiagnosisTrace       `json:"diagnosis"`
+	State               StateTrace           `json:"state"`
 	Outcome             OutcomeTrace         `json:"outcome"`
 	// Steps holds agent-tier saga step traces, populated by B6.2. Empty /
 	// omitempty for all non-agent turns, so trace output stays byte-identical
@@ -165,6 +166,7 @@ type traceRecordJSON struct {
 	RateLimit           *RateLimitTrace       `json:"rate_limit,omitempty"`
 	Retrieval           *RetrievalTrace       `json:"retrieval,omitempty"`
 	Diagnosis           *DiagnosisTrace       `json:"diagnosis,omitempty"`
+	State               *StateTrace           `json:"state,omitempty"`
 	Outcome             *OutcomeTrace         `json:"outcome,omitempty"`
 	Steps               []StepTrace           `json:"steps,omitempty"`
 }
@@ -210,6 +212,9 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	}
 	if traceDiagnosisObserved(r.Diagnosis) {
 		out.Diagnosis = &r.Diagnosis
+	}
+	if traceStateObserved(r.State) {
+		out.State = &r.State
 	}
 	if traceOutcomeObserved(r.Outcome) {
 		out.Outcome = &r.Outcome

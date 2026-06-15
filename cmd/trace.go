@@ -929,6 +929,7 @@ type cliTraceRecorder struct {
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
 	plannerTraceSupplier  func() observability.RouterTrace
 	terminalSignals       observability.FinishSignals
+	stateTrace            observability.StateTrace
 }
 
 // newCLITraceRecorder constructs a per-turn trace recorder for the CLI path.
@@ -1169,6 +1170,16 @@ func (r *cliTraceRecorder) SetTerminalSignals(signals observability.FinishSignal
 	r.terminalSignals = signals
 }
 
+// SetStateTrace records the per-turn instance-binding state (#3) the recorder
+// reads from the engine getters. Call it before Finish; an un-set recorder
+// leaves State zero (omitted, SHA-stable).
+func (r *cliTraceRecorder) SetStateTrace(state observability.StateTrace) {
+	if r == nil {
+		return
+	}
+	r.stateTrace = state
+}
+
 func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	if r == nil || r.writer == nil {
 		return nil
@@ -1192,6 +1203,7 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	}
 	r.record.ActualExecutionTier = r.record.DeriveActualExecutionTier()
 	r.record.ActualExecutionPath = r.record.DeriveActualExecutionPath()
+	r.record.State = r.stateTrace
 	signals := r.terminalSignals
 	signals.ChatErr = chatErr
 	r.record.FinalizeOutcome(signals)

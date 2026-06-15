@@ -330,6 +330,21 @@ type Engine struct {
 	// deterministic compact summaries and old retrievable-tool placeholders.
 	// Default off.
 	reactHistoryCompactionEnabled bool
+	// Per-turn instance-binding observability (#3 StateTrace). Captured at turn
+	// entry / refreshSystemPrompt, read post-turn by the trace recorder. Per-turn
+	// by design (reset every turn) — a shared value would attribute one tenant's
+	// binding to another's turn.
+	//   - selectedInstanceIDAtTurnStart: the carried SelectedInstanceID at turn
+	//     entry, before any mid-turn re-binding.
+	//   - instanceResolutionSourceThisTurn: how the turn-start binding was
+	//     determined (observability.ResolutionSource* — session_state /
+	//     single_host / fact_cache / unresolved).
+	//   - factCacheOldestAgeSecondsThisTurn: age of the oldest still-fresh fact
+	//     injected this turn, or -1 when none. Bucketed before it leaves the
+	//     recorder.
+	selectedInstanceIDAtTurnStart     string
+	instanceResolutionSourceThisTurn  string
+	factCacheOldestAgeSecondsThisTurn int
 }
 
 // SharedDeps groups Engine fields that are safe to share across sessions.
@@ -711,6 +726,21 @@ func (e *Engine) ReactRoundsThisTurn() int { return e.reactRoundsThisTurn }
 // hard-block, so this is the only signal for terminated_by=budget on it.
 func (e *Engine) ReactCeilingHitThisTurn() bool { return e.reactCeilingHitThisTurn }
 
+// SelectedInstanceIDAtTurnStart returns the carried SelectedInstanceID captured
+// at the start of the most recent turn, before any mid-turn re-bind. Read
+// post-turn by the trace recorder for the #3 StateTrace.
+func (e *Engine) SelectedInstanceIDAtTurnStart() string { return e.selectedInstanceIDAtTurnStart }
+
+// InstanceResolutionSource returns how the most recent turn's current-instance
+// binding was determined at turn start (an observability.ResolutionSource*
+// value). Empty only on the degenerate uninitialized-prompt path.
+func (e *Engine) InstanceResolutionSource() string { return e.instanceResolutionSourceThisTurn }
+
+// FactCacheOldestAgeSeconds returns the age in seconds of the oldest still-fresh
+// fact injected into the most recent turn's prompt, or -1 when none was. The
+// recorder buckets it (observability.BucketFactCacheAge) before persisting.
+func (e *Engine) FactCacheOldestAgeSeconds() int { return e.factCacheOldestAgeSecondsThisTurn }
+
 func (e *Engine) SetTokenUsageObserver(observer func(llm.TokenUsage)) {
 	e.tokenUsageObserver = observer
 }
@@ -1043,24 +1073,45 @@ func (e *Engine) refreshSystemPrompt() {
 	if ctx == "" {
 		ctx = "暂无用户信息"
 	}
-	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
+	hasSessionBinding := e.sessionStateHydrated && e.sessionState.SelectedInstanceID != ""
+	if hasSessionBinding {
 		if e.sessionState.SelectedInstanceName != "" {
 			ctx += "\n\n当前会话已选实例：" + e.sessionState.SelectedInstanceName + "（" + e.sessionState.SelectedInstanceID + "）"
 		} else {
 			ctx += "\n\n当前会话已选实例：" + e.sessionState.SelectedInstanceID
 		}
 	}
-	if id, name := e.singleRegistryInstance(); id != "" {
-		if name != "" {
-			ctx += "\n\n当前账户只有 1 个实例：" + name + "（" + id + "），操作时可直接使用，无需追问。"
+	singleID, singleName := e.singleRegistryInstance()
+	if singleID != "" {
+		if singleName != "" {
+			ctx += "\n\n当前账户只有 1 个实例：" + singleName + "（" + singleID + "），操作时可直接使用，无需追问。"
 		} else {
-			ctx += "\n\n当前账户只有 1 个实例：" + id + "，操作时可直接使用，无需追问。"
+			ctx += "\n\n当前账户只有 1 个实例：" + singleID + "，操作时可直接使用，无需追问。"
 		}
 	}
+	hasFactContext := false
 	if e.sessionFactContextEnabled && e.sessionStateHydrated {
-		if factCtx := assembleFactContext(e.sessionState.RecentFacts, time.Now()); factCtx != "" {
+		now := time.Now()
+		if factCtx := assembleFactContext(e.sessionState.RecentFacts, now); factCtx != "" {
 			ctx += "\n\n" + factCtx
+			hasFactContext = true
+			e.factCacheOldestAgeSecondsThisTurn = oldestFreshFactAgeSeconds(e.sessionState.RecentFacts, now)
 		}
+	}
+	// #3 StateTrace: record how the turn-start instance binding was determined.
+	// Priority mirrors the injection order above — an explicit prior selection is
+	// the strongest binding, the single-host shortcut next, the fact cache
+	// weakest, "unresolved" when none is present. (Trace-only; the prompt built
+	// below is byte-identical to before.)
+	switch {
+	case hasSessionBinding:
+		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceSessionState
+	case singleID != "":
+		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceSingleHost
+	case hasFactContext:
+		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceFactCache
+	default:
+		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceUnresolved
 	}
 	e.messages[0].Content = prompt.BuildSystemWithOptions(ctx, e.reactPromptBuildOptions())
 }
@@ -1117,6 +1168,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.knowledgeQAAgentLoopThisTurn = false
+	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
+	// any mid-turn re-bind), and reset the per-turn binding observables that
+	// refreshSystemPrompt fills next.
+	e.selectedInstanceIDAtTurnStart = e.sessionState.SelectedInstanceID
+	e.instanceResolutionSourceThisTurn = ""
+	e.factCacheOldestAgeSecondsThisTurn = -1
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.

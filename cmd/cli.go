@@ -381,6 +381,14 @@ func runCLI(cmd *cobra.Command, args []string) error {
 				ReactRounds:     eng.ReactRoundsThisTurn(),
 				RoundCeilingHit: eng.ReactCeilingHitThisTurn(),
 			})
+			sessState, _, hydrated := eng.SessionStateSnapshot()
+			traceRecorder.SetStateTrace(observability.StateTrace{
+				SessionStateHydrated:          hydrated,
+				ResolutionSource:              eng.InstanceResolutionSource(),
+				SelectedInstanceID:            sessState.SelectedInstanceID,
+				SelectedInstanceIDAtTurnStart: eng.SelectedInstanceIDAtTurnStart(),
+				FactCacheOldestAgeBucket:      observability.BucketFactCacheAge(eng.FactCacheOldestAgeSeconds()),
+			})
 			if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: trace write failed: %v\n", traceErr)
 			}

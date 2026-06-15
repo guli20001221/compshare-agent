@@ -84,6 +84,32 @@ func factFresh(fact ToolFact, nowUnix int64) bool {
 	return nowUnix-fact.ProducedAtUnix <= int64(fact.TTLSeconds)
 }
 
+// oldestFreshFactAgeSeconds returns the age in seconds of the oldest still-fresh,
+// subject-bearing fact in the cache, or -1 when none qualify. It is the single
+// stale-cache observable for the #3 StateTrace: a fact approaching its TTL is
+// the case where the engine may answer from a near-expired observation. Bounded
+// by the TTL (a stale fact is skipped), so the caller can bucket it safely.
+func oldestFreshFactAgeSeconds(facts []ToolFact, now time.Time) int {
+	nowUnix := now.Unix()
+	oldest := int64(-1)
+	for _, fact := range facts {
+		if !factFresh(fact, nowUnix) || fact.SubjectID == "" {
+			continue
+		}
+		if oldest < 0 || fact.ProducedAtUnix < oldest {
+			oldest = fact.ProducedAtUnix
+		}
+	}
+	if oldest < 0 {
+		return -1
+	}
+	age := nowUnix - oldest
+	if age < 0 {
+		age = 0
+	}
+	return int(age)
+}
+
 func renderInstanceFact(payload map[string]any) []string {
 	var parts []string
 	if name := factString(payload, "name"); name != "" {
