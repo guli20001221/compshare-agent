@@ -127,9 +127,11 @@ func translateState(state string) string {
 	return state
 }
 
-// FormatToolResult returns a compact JSON string for feeding back to LLM.
-// If the result exceeds maxRunes, it truncates individual array/list fields
-// rather than cutting the serialized JSON string (which produces invalid JSON).
+// FormatToolResult returns a compact JSON string (<= maxRunes runes) for
+// feeding back to the LLM. If the result exceeds the cap it first truncates
+// individual array/list fields to stay valid JSON; only when that cannot bring
+// it under the cap (a giant scalar field, or an array nested too deep to reach)
+// does it fall back to a hard rune-cut — invalid JSON, but a bounded result.
 func FormatToolResult(result map[string]any) string {
 	b, err := json.Marshal(result)
 	if err != nil {
