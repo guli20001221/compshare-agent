@@ -2279,7 +2279,8 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatc
 	}
 
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
-	retrieved := e.knowledgeRetriever.Retrieve(userMsg, inferKnowledgeProductArea(userMsg))
+	questionArea := inferKnowledgeProductArea(userMsg)
+	retrieved := e.knowledgeRetriever.Retrieve(userMsg, questionArea)
 	hitItems := retrieved.HitItems
 	trace := observability.RetrievalTrace{
 		Enabled:                retrieved.Enabled,
@@ -2348,6 +2349,20 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatc
 	}
 	if rankingCandidate {
 		trace.RankingErrorCandidate = true
+	}
+	// #5 domain guard. The verdict over the retrieved evidence is recorded in the
+	// trace regardless of the flag (AllCitedOffDomain / DomainInferenceEmpty); the
+	// COMPSHARE_RAG_DOMAIN_MATCH_GUARD refuse arm (default-off) additionally
+	// replaces an all-off-domain answer with the canned no-evidence reply and
+	// stamps refusal_type=wrong_domain. Treated like a refusal so the buffered
+	// deltas are not replayed.
+	allOff, inferEmpty := allCitedOffDomain(questionArea, hitProductAreas(hitItems))
+	trace.DomainInferenceEmpty = inferEmpty
+	trace.AllCitedOffDomain = allOff
+	if domainMatchGuardOn && allOff {
+		trace.RefusedReason = "wrong_domain"
+		reply = ragNoEvidenceReply
+		refusedReason = "wrong_domain"
 	}
 	trace.CitedChunkIDs = extractCitedChunkIDs(reply, hitItems)
 	displayReply := stripCitationMarkers(reply)
@@ -3086,6 +3101,20 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 			trace.RankingErrorCandidate = true
 		}
 	}
+	// #5 domain guard (agent-loop). DomainInferenceEmpty is recorded whenever the
+	// question area can't be inferred. AllCitedOffDomain is judged only over the
+	// evidence the agent actually received — skip when the floor dropped it all,
+	// since the agent grounded on nothing. The COMPSHARE_RAG_DOMAIN_MATCH_GUARD
+	// refuse arm (default-off) additionally stamps refusal_type=wrong_domain here;
+	// guardSearchKnowledgeSynthesis enforces the matching refusal.
+	allOff, inferEmpty := allCitedOffDomain(inferKnowledgeProductArea(query), hitProductAreas(hitItems))
+	trace.DomainInferenceEmpty = inferEmpty
+	if !floorDroppedAll {
+		trace.AllCitedOffDomain = allOff
+		if domainMatchGuardOn && allOff && trace.RefusedReason == "" {
+			trace.RefusedReason = "wrong_domain"
+		}
+	}
 	e.emitRetrievalTrace(trace)
 }
 
@@ -3115,6 +3144,18 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 	if lerr := knowledge.ValidateNoRawEvidenceLeak(content, e.searchKnowledgeHitsThisTurn); lerr != nil {
 		e.emitSearchKnowledgeHardBlock("search_knowledge_raw_leak")
 		return ragNoEvidenceReply
+	}
+	// #5 wrong-domain refuse arm (COMPSHARE_RAG_DOMAIN_MATCH_GUARD, default-off).
+	// Recompute the verdict over the ledger the agent was actually shown; refuse
+	// when every cited/retrieved chunk is off the question's product area. The
+	// retrieval trace already recorded AllCitedOffDomain at emit; this enforces the
+	// reply. Fail-safe: allCitedOffDomain never flags an unknown / un-judgeable
+	// question area, so an answer is suppressed only on a clear domain mismatch.
+	if domainMatchGuardOn {
+		if allOff, _ := allCitedOffDomain(inferKnowledgeProductArea(e.lastUserMsg), ledgerProductAreas(e.searchKnowledgeLedgerThisTurn)); allOff {
+			e.emitSearchKnowledgeHardBlock("search_knowledge_wrong_domain")
+			return ragNoEvidenceReply
+		}
 	}
 	// Route-independent cite-grounding (#126), default-off via
 	// COMPSHARE_RAG_GROUNDED_VALIDATOR — OR turn-scoped on for a knowledge_qa turn
@@ -4666,6 +4707,14 @@ var knowledgeResourcePurchaseKeywords = []string{
 	"\u89c4\u683c",       // \u89c4\u683c
 	"\u62a2\u5360\u5f0f", // \u62a2\u5360\u5f0f
 	"\u72ec\u5360\u5f0f", // \u72ec\u5360\u5f0f
+	// Stock / availability phrasing (#5): a "\u5e93\u5b58 / \u6709\u6ca1\u6709\u8d27" question must infer the
+	// resource_purchase area so the wrong-domain guard has a question area to
+	// compare against (and the +2 boost prefers stock chunks). "\u6709\u8d27" also
+	// covers "\u6709\u6ca1\u6709\u8d27" as a substring.
+	"\u5e93\u5b58", // \u5e93\u5b58
+	"\u6709\u8d27", // \u6709\u8d27
+	"\u7f3a\u8d27", // \u7f3a\u8d27
+	"\u73b0\u8d27", // \u73b0\u8d27
 }
 
 var knowledgeDriverCudaKeywords = []string{

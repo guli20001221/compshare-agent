@@ -56,6 +56,14 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 	if groundedValidator {
 		log.Printf("runtime: HTTP grounded-answer validator enabled (COMPSHARE_RAG_GROUNDED_VALIDATOR=1; cite-or-refuse on agentic SearchKnowledge)")
 	}
+	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(getenv)
+	if unknownDomainMatchGuard != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q", unknownDomainMatchGuard)
+	}
+	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
+	if domainMatchGuard {
+		log.Printf("runtime: HTTP wrong-domain refuse arm enabled (COMPSHARE_RAG_DOMAIN_MATCH_GUARD=1; #5 cite-relevance)")
+	}
 	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
 	if unknownKnowledgeQAAgentLoop != "" {
 		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q", unknownKnowledgeQAAgentLoop)

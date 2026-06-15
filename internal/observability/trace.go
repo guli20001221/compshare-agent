@@ -558,9 +558,19 @@ type RetrievalTrace struct {
 	// FloorValue is the weak-evidence relevance floor in effect for this turn's
 	// HybridMode (0.5 semantic / 55 BM25). With HitItems[0].Score it shows how
 	// far the top hit fell from the floor.
-	FloorValue            float64 `json:"floor_value,omitempty"`
-	WeakEvidence          bool    `json:"weak_evidence,omitempty"`
-	RankingErrorCandidate bool    `json:"ranking_error_candidate,omitempty"`
+	FloorValue float64 `json:"floor_value,omitempty"`
+	// DomainInferenceEmpty is true when the question's product area could not be
+	// inferred (inferKnowledgeProductArea=="") — so the #5 wrong-domain guard
+	// could not judge this turn. Recorded so a low wrong_domain rate is not
+	// misread as "no problem" (the question-side keyword-coverage gap).
+	DomainInferenceEmpty bool `json:"domain_inference_empty,omitempty"`
+	// AllCitedOffDomain is true when every judgeable retrieved chunk was off the
+	// question's product area (the #5 case: a 库存 question grounded on billing
+	// chunks). Trace-only by default; the COMPSHARE_RAG_DOMAIN_MATCH_GUARD refuse
+	// arm turns it into refusal_type=wrong_domain.
+	AllCitedOffDomain     bool `json:"all_cited_off_domain,omitempty"`
+	WeakEvidence          bool `json:"weak_evidence,omitempty"`
+	RankingErrorCandidate bool `json:"ranking_error_candidate,omitempty"`
 	// HybridMode mirrors internal/knowledge/retriever.RetrievalResult.HybridMode.
 	// One of "bm25_only" | "hybrid_cosine" | "hybrid_rerank" | "qwen3_full"
 	// | "bm25_fallback". Empty when retrieval is disabled.
@@ -941,6 +951,8 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.RefusalType != "" ||
 		trace.FloorDroppedAll ||
 		trace.FloorValue != 0 ||
+		trace.DomainInferenceEmpty ||
+		trace.AllCitedOffDomain ||
 		trace.WeakEvidence ||
 		trace.RankingErrorCandidate ||
 		trace.HybridMode != "" ||

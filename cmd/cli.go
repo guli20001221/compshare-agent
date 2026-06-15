@@ -165,6 +165,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_GROUNDED_VALIDATOR value %q\n", unknownGroundedValidator)
 	}
 	engine.SetGroundedAnswerValidatorEnabled(groundedValidator)
+	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(os.Getenv)
+	if unknownDomainMatchGuard != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q\n", unknownDomainMatchGuard)
+	}
+	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
 	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(os.Getenv)
 	if unknownKnowledgeQAAgentLoop != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q\n", unknownKnowledgeQAAgentLoop)
