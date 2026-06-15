@@ -40,6 +40,27 @@ func TestChat_NonEmptyLLMContent_Unchanged(t *testing.T) {
 		"a non-empty reply must pass through unchanged — the fallback must not fire")
 }
 
+// TestChatWithOptions_EmptyContent_StreamsFallbackAsOneChunk proves the
+// fallback flows through the SSE stream path, not just the return value: an
+// empty turn with an OnTextDelta collector must receive exactly ONE chunk
+// equal to the fallback (never zero chunks / never a blank chunk), so the
+// streamed view and the persisted reply match.
+func TestChatWithOptions_EmptyContent_StreamsFallbackAsOneChunk(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: ""}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+
+	var chunks []string
+	reply, err := eng.ChatWithOptions(context.Background(), "你好", noopStep, ChatOptions{
+		OnTextDelta: func(d string) { chunks = append(chunks, d) },
+	})
+	require.NoError(t, err)
+	assert.Equal(t, emptyReplyFallbackMessage, reply)
+	require.Len(t, chunks, 1, "the fallback must be streamed as exactly one corrective chunk")
+	assert.Equal(t, emptyReplyFallbackMessage, chunks[0],
+		"the streamed chunk must equal the persisted fallback reply")
+}
+
 // TestChat_WhitespaceOnlyLLMContent_ReturnsFallback covers the case where the
 // model returns only whitespace — still a blank reply to the user, so the
 // honest fallback must fire (TrimSpace guard).
