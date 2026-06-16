@@ -11,6 +11,7 @@ import (
 
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/workflow"
 )
 
 // deployDispatch builds the minimal routerDispatchResult the deploy handler needs:
@@ -839,6 +840,30 @@ func TestTryDeployModel_ExplicitCreateStillCreates(t *testing.T) {
 
 	require.True(t, handled)
 	assert.Equal(t, 1, countCalls(exec.calls, "CreateCompShareInstance"), "an explicit create command still creates")
+}
+
+func TestTryDeployModel_GuidedCreateFiltersExplicitGPUIntent(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	eng := newDeployEngine(deployMatchJSON, exec, okConfirm)
+	eng.guidedCreate = true
+	var gpuOptions []string
+	eng.confirmEditsFn = func(_ string, _ map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+		require.NotNil(t, form)
+		require.NotNil(t, form.Step)
+		if form.Step.Index == 1 {
+			gpu := form.Field("GpuType")
+			require.NotNil(t, gpu)
+			for _, opt := range gpu.Options {
+				gpuOptions = append(gpuOptions, opt.Value)
+			}
+		}
+		return workflow.ConfirmResolution{Confirmed: false}
+	}
+
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "用4090部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	assert.Equal(t, []string{"4090", "4090_48G"}, gpuOptions)
 }
 
 // newZoneDeployMock is a full-handler mock with per-zone availability + stock so the

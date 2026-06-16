@@ -46,6 +46,10 @@ type Handlers struct {
 	// half is the client's SendCSAgentChat Features opt-in. Both must hold
 	// before a confirmation frame carries a Form / Overrides are accepted.
 	confirmFormEnabled bool
+	// guidedCreateEnabled is the boot half for the guided GPU create order
+	// flow. It only takes effect together with confirmFormEnabled and the
+	// client's guided_create_v1 feature opt-in.
+	guidedCreateEnabled bool
 }
 
 // NewHandlers constructs a Handlers with all dependencies injected.
@@ -80,6 +84,13 @@ func (h *Handlers) SetOCRClient(c OCRRecognizer) {
 // frames stay byte-identical and Overrides are rejected.
 func (h *Handlers) SetConfirmFormEnabled(enabled bool) {
 	h.confirmFormEnabled = enabled
+}
+
+// SetGuidedCreateEnabled flips the boot half of the guided GPU create order
+// flow. Default false keeps CreateInstanceWorkflow on the existing final-card
+// confirmation flow.
+func (h *Handlers) SetGuidedCreateEnabled(enabled bool) {
+	h.guidedCreateEnabled = enabled
 }
 
 // buildUserContext constructs a tools.UserContext from a BaseRequest.

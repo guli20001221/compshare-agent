@@ -103,6 +103,10 @@ func (s *StepRunner) runConfirmStep(ctx context.Context, def *workflow.Definitio
 			s.emit(observability.StepStateFailed, idx, "", args, nil, "invalid_overrides", started, ended)
 			return stepResult{state: observability.StepStateFailed, msg: fmt.Sprintf("配置修改无效: %v", aerr)}
 		}
+		if step.ConfirmSubmitMode == workflow.ConfirmSubmitContinue {
+			s.emit(observability.StepStateSuccess, idx, "", args, nil, "", started, ended)
+			return stepResult{state: observability.StepStateSuccess}
+		}
 		for _, name := range step.RevalidateSteps {
 			rs, rIdx, ok := findToolStep(def, name)
 			if !ok {

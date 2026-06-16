@@ -77,11 +77,11 @@ type stepEvent struct {
 // frame byte-identical for legacy clients. A client that received a Form may
 // attach select-only Overrides to its ConfirmCSAgentAction.
 type confirmationEvent struct {
-	ConfirmationID string                 `json:"ConfirmationId"`
-	Action         string                 `json:"Action"`
-	Summary        map[string]any         `json:"Summary,omitempty"`
-	TimeoutSeconds int                    `json:"TimeoutSeconds"`
-	Form           *workflow.ConfirmForm  `json:"Form,omitempty"`
+	ConfirmationID string                `json:"ConfirmationId"`
+	Action         string                `json:"Action"`
+	Summary        map[string]any        `json:"Summary,omitempty"`
+	TimeoutSeconds int                   `json:"TimeoutSeconds"`
+	Form           *workflow.ConfirmForm `json:"Form,omitempty"`
 }
 
 const confirmTimeoutSeconds = 60
@@ -94,6 +94,11 @@ const confirmFormTimeoutSeconds = 120
 // featureConfirmForm is the SendCSAgentChat Features value a client sends to
 // opt in to form-bearing confirmations (and Overrides on resolve).
 const featureConfirmForm = "confirm_form_v1"
+
+// featureGuidedCreate opts an eligible client into the guided GPU-create order
+// flow. The backend only honors it when COMPSHARE_CONFIRM_FORM and
+// COMPSHARE_GUIDED_CREATE are both on.
+const featureGuidedCreate = "guided_create_v1"
 
 // streamWriter is the transport-agnostic sink for Chat streaming frames. The
 // production ws.Writer satisfies it, as does the test recordingSink, so the
@@ -144,6 +149,9 @@ type chatPrep struct {
 	// boot flag (Handlers.confirmFormEnabled) it gates the editable confirm
 	// form; the SSE POST path never sets it.
 	confirmFormOptIn bool
+	// guidedCreateOptIn is set by the WS read loop when the client supports the
+	// guided GPU-create cards.
+	guidedCreateOptIn bool
 }
 
 // prepareChat performs all pre-stream work shared by the SSE and WS paths:
@@ -422,6 +430,10 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			_ = sw.WriteEvent("token", tokenEvent{Text: s})
 		},
 		OnUsage: func(u llm.TokenUsage) { usage = u },
+		GuidedCreate: h.confirmFormEnabled &&
+			h.guidedCreateEnabled &&
+			prep.confirmFormOptIn &&
+			prep.guidedCreateOptIn,
 		ConfirmFunc: func(action string, args map[string]any) bool {
 			if h.confirmBroker == nil {
 				return false

@@ -2,11 +2,14 @@ package workflow
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
 // defaultZone is the default availability zone per API docs (cn-wlcb-01, not cn-wlcb-a).
 const defaultZone = "cn-wlcb-01"
+
+const guidedCreateStepTotal = 5
 
 // defaultDisk is the minimum required disk configuration for instance creation.
 // The system disk has a 200GB free tier on CompShare.
@@ -268,6 +271,29 @@ func CreateInstanceDef() *Definition {
 	}
 }
 
+// CreateInstanceGuidedDef returns the guided, Figma-style order flow for
+// creating a CompShare GPU instance. The public action name stays
+// CreateInstanceWorkflow so old tooling and confirmation labels remain stable.
+func CreateInstanceGuidedDef() *Definition {
+	return &Definition{
+		Name:        "CreateInstanceWorkflow",
+		Description: "查询镜像 → 查询可用配比 → 选择 GPU → 选择可用区 → 选择卡数量 → 选择 CPU/内存 → 检查库存 → 查询价格 → 确认镜像计费 → 创建实例 → 查看状态",
+		Steps: []Step{
+			stepQueryImages(),
+			stepQueryInstanceTypes(),
+			stepGuidedChooseGPU(),
+			stepGuidedChooseZone(),
+			stepGuidedChooseGPUCount(),
+			stepGuidedChooseCPUMemory(),
+			stepCheckCapacity(),
+			stepGetPrice(),
+			stepConfirmCreateGuided(),
+			stepCreateInstance(),
+			stepDescribeInstance(),
+		},
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Step definitions (params aligned with docs/api/ specs)
 // ---------------------------------------------------------------------------
@@ -425,6 +451,120 @@ func stepGetPrice() Step {
 	}
 }
 
+func stepGuidedChooseGPU() Step {
+	return Step{
+		Name:              "选择 GPU",
+		Type:              StepConfirm,
+		BuildForm:         buildGuidedGPUForm,
+		ApplyOverrides:    applyGuidedGPUOverrides,
+		ConfirmSubmitMode: ConfirmSubmitContinue,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			gpuType, err := ensureGuidedGPUType(wfCtx)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"workflow": "CreateInstanceWorkflow",
+				"step":     "1/5",
+				"GpuType":  gpuType,
+			}, nil
+		},
+	}
+}
+
+func stepGuidedChooseZone() Step {
+	return Step{
+		Name:              "选择可用区",
+		Type:              StepConfirm,
+		BuildForm:         buildGuidedZoneForm,
+		ApplyOverrides:    applyGuidedZoneOverrides,
+		ConfirmSubmitMode: ConfirmSubmitContinue,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			gpuType, err := ensureGuidedGPUType(wfCtx)
+			if err != nil {
+				return nil, err
+			}
+			zone, err := ensureGuidedZone(wfCtx)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"workflow": "CreateInstanceWorkflow",
+				"step":     "2/5",
+				"GpuType":  gpuType,
+				"Zone":     zone,
+			}, nil
+		},
+	}
+}
+
+func stepGuidedChooseGPUCount() Step {
+	return Step{
+		Name:              "选择卡数量",
+		Type:              StepConfirm,
+		BuildForm:         buildGuidedGPUCountForm,
+		ApplyOverrides:    applyGuidedGPUCountOverrides,
+		ConfirmSubmitMode: ConfirmSubmitContinue,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			gpuType, err := ensureGuidedGPUType(wfCtx)
+			if err != nil {
+				return nil, err
+			}
+			zone, err := ensureGuidedZone(wfCtx)
+			if err != nil {
+				return nil, err
+			}
+			gpu, err := ensureGuidedGPUCount(wfCtx)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"workflow": "CreateInstanceWorkflow",
+				"step":     "3/5",
+				"GpuType":  gpuType,
+				"Zone":     zone,
+				"Gpu":      gpu,
+			}, nil
+		},
+	}
+}
+
+func stepGuidedChooseCPUMemory() Step {
+	return Step{
+		Name:              "选择 CPU/内存",
+		Type:              StepConfirm,
+		BuildForm:         buildGuidedCpuMemoryForm,
+		ApplyOverrides:    applyGuidedCpuMemoryOverrides,
+		ConfirmSubmitMode: ConfirmSubmitContinue,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			gpuType, err := ensureGuidedGPUType(wfCtx)
+			if err != nil {
+				return nil, err
+			}
+			zone, err := ensureGuidedZone(wfCtx)
+			if err != nil {
+				return nil, err
+			}
+			gpu, err := ensureGuidedGPUCount(wfCtx)
+			if err != nil {
+				return nil, err
+			}
+			current, opts := guidedCpuMemoryFormOptions(wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params)
+			if current == "" || len(opts) == 0 {
+				return nil, fmt.Errorf("%s 在 %s 的 %.0f 卡暂无可选 CPU/内存规格，请换一个可用区或卡数量", gpuType, zone, gpu)
+			}
+			return map[string]any{
+				"workflow":  "CreateInstanceWorkflow",
+				"step":      "4/5",
+				"GpuType":   gpuType,
+				"Zone":      zone,
+				"Gpu":       gpu,
+				"CpuMemory": current,
+			}, nil
+		},
+	}
+}
+
 // createChargeType normalizes the create path to the current upstream billing
 // contract: pay-as-you-go/hourly uses Postpay. Dynamic is a deprecated input
 // spelling kept only for backward compatibility with older LLM/tool args.
@@ -525,30 +665,43 @@ func stepConfirmCreate() Step {
 		BuildForm:       buildCreateConfirmForm,
 		ApplyOverrides:  applyCreateOverrides,
 		RevalidateSteps: []string{"检查库存", "查询价格"},
-		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			gpu, cpu, memMB, zone, err := resolveTargetSpec(wfCtx)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{
-				"workflow":   "CreateInstanceWorkflow",
-				"GpuType":    wfCtx.Params["GpuType"],
-				"Gpu":        gpu,
-				"CPU":        cpu,
-				"Memory":     memMB,
-				"Zone":       zone,
-				"ChargeType": createChargeType(wfCtx.Params),
-				"image":      pickImageName(wfCtx.Params, wfCtx.Result("查询镜像")),
-				"price":      confirmPriceText(wfCtx.Result("查询价格"), createChargeType(wfCtx.Params)),
-				// FallbackNote is set by the deploy_model handler when it switched the
-				// create-zone (sold-out primary). Empty for the CLI/ReAct create path.
-				// Surfaced in the confirm card so the user sees the zone switch before
-				// approving. The key is always present (value "" when unset); the
-				// renderer (cli.go printCreateConfirmCard) skips it when empty.
-				"FallbackNote": paramStr(wfCtx.Params, "FallbackNote", ""),
-			}, nil
-		},
+		BuildArgs:       buildCreateConfirmArgs,
 	}
+}
+
+func stepConfirmCreateGuided() Step {
+	return Step{
+		Name:            "确认创建",
+		Type:            StepConfirm,
+		BuildForm:       buildGuidedFinalForm,
+		ApplyOverrides:  applyCreateOverrides,
+		RevalidateSteps: []string{"检查库存", "查询价格"},
+		BuildArgs:       buildCreateConfirmArgs,
+	}
+}
+
+func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
+	gpu, cpu, memMB, zone, err := resolveTargetSpec(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"workflow":   "CreateInstanceWorkflow",
+		"GpuType":    wfCtx.Params["GpuType"],
+		"Gpu":        gpu,
+		"CPU":        cpu,
+		"Memory":     memMB,
+		"Zone":       zone,
+		"ChargeType": createChargeType(wfCtx.Params),
+		"image":      pickImageName(wfCtx.Params, wfCtx.Result("查询镜像")),
+		"price":      confirmPriceText(wfCtx.Result("查询价格"), createChargeType(wfCtx.Params)),
+		// FallbackNote is set by the deploy_model handler when it switched the
+		// create-zone (sold-out primary). Empty for the CLI/ReAct create path.
+		// Surfaced in the confirm card so the user sees the zone switch before
+		// approving. The key is always present (value "" when unset); the
+		// renderer (cli.go printCreateConfirmCard) skips it when empty.
+		"FallbackNote": paramStr(wfCtx.Params, "FallbackNote", ""),
+	}, nil
 }
 
 func stepCreateInstance() Step {
@@ -615,6 +768,21 @@ func paramStr(params map[string]any, key, defaultVal string) string {
 	if v, ok := params[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
+		}
+	}
+	return defaultVal
+}
+
+func paramBool(params map[string]any, key string, defaultVal bool) bool {
+	if v, ok := params[key]; ok {
+		switch b := v.(type) {
+		case bool:
+			return b
+		case string:
+			parsed, err := strconv.ParseBool(b)
+			if err == nil {
+				return parsed
+			}
 		}
 	}
 	return defaultVal
@@ -849,6 +1017,194 @@ func buildCreateConfirmForm(wfCtx *Context) (*ConfirmForm, error) {
 	return &ConfirmForm{Version: 1, Fields: fields}, nil
 }
 
+func buildGuidedGPUForm(wfCtx *Context) (*ConfirmForm, error) {
+	gpuType, err := ensureGuidedGPUType(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	supported := currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像"))
+	locked := paramBool(wfCtx.Params, "GuidedGpuLocked", false) && gpuType != ""
+	recommended := paramBool(wfCtx.Params, "GuidedRecommended", false) && gpuType != ""
+	_, opts := guidedGPUFormOptions(wfCtx.Result("查询可用配比"), supported, gpuType, locked)
+	if len(opts) == 0 {
+		return nil, fmt.Errorf("暂无可选 GPU 型号")
+	}
+	title := "第一步，请选择 GPU 参数"
+	desc := "GPU 型号决定可用显存与算力：显存越大，越能支撑更大的模型与更高的批量。不确定时可先用默认项。"
+	if locked {
+		title = "第一步，请确认 GPU 参数"
+		desc = "已按你的需求推荐合适的 GPU 显存规格，可直接确认，也可在下方调整。显存越大，可支撑的模型与批量越大。"
+	} else if recommended {
+		// A model-driven deploy keeps every GPU on the card but pre-selects the
+		// matcher's pick; flag it so the recommendation is visible, not just default.
+		title = "第一步，请确认推荐的 GPU 参数"
+		desc = "已根据你要部署的模型推荐合适的 GPU 显存规格（默认已选中），如需更大显存可在下方调整。"
+		markGuidedRecommendedOption(opts, gpuType)
+	}
+	return &ConfirmForm{
+		Version: 2,
+		Step: &ConfirmFormStep{
+			Index:          1,
+			Total:          guidedCreateStepTotal,
+			Title:          title,
+			Description:    desc,
+			PrimaryLabel:   "确认选择",
+			SecondaryLabel: "跳过",
+			Skippable:      true,
+		},
+		Fields: []ConfirmFormField{{
+			Key: "GpuType", Label: "GPU 参数", Type: "select",
+			Value: gpuType, Render: "cards", Editable: true, Options: opts,
+		}},
+	}, nil
+}
+
+func buildGuidedZoneForm(wfCtx *Context) (*ConfirmForm, error) {
+	gpuType, err := ensureGuidedGPUType(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	current, err := ensureGuidedZone(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	_, opts := guidedZoneFormOptions(wfCtx.Result("查询可用配比"), gpuType, current)
+	if len(opts) == 0 {
+		return nil, fmt.Errorf("%s 暂无可选可用区，请换一个 GPU 型号或稍后再试", gpuType)
+	}
+	return &ConfirmForm{
+		Version: 2,
+		Step: &ConfirmFormStep{
+			Index:          2,
+			Total:          guidedCreateStepTotal,
+			Title:          "第二步，请选择可用区",
+			Description:    "可用区影响 GPU 现货与就近接入。建议优先选择有现货的可用区；同一型号在不同区的库存可能不同。",
+			PrimaryLabel:   "确认选择",
+			SecondaryLabel: "跳过",
+			Skippable:      true,
+		},
+		Fields: []ConfirmFormField{{
+			Key: "Zone", Label: "可用区", Type: "select",
+			Value: current, Render: "cards", Editable: true, Options: opts,
+		}},
+	}, nil
+}
+
+func buildGuidedGPUCountForm(wfCtx *Context) (*ConfirmForm, error) {
+	gpuType, err := ensureGuidedGPUType(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	zone, err := ensureGuidedZone(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	gpu, err := ensureGuidedGPUCount(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	_, opts := guidedGPUCountFormOptions(wfCtx.Result("查询可用配比"), gpuType, zone, gpu)
+	if len(opts) == 0 {
+		return nil, fmt.Errorf("%s 在 %s 暂无可选卡数量，请换一个可用区", gpuType, zone)
+	}
+	current := fmt.Sprintf("%.0f", gpu)
+	return &ConfirmForm{
+		Version: 2,
+		Step: &ConfirmFormStep{
+			Index:          3,
+			Total:          guidedCreateStepTotal,
+			Title:          "第三步，请选择卡数量",
+			Description:    "卡数量越多，显存与并行算力越大，费用也相应增加。常规推理通常单卡即可，大模型或分布式训练再增加卡数。",
+			PrimaryLabel:   "确认选择",
+			SecondaryLabel: "跳过",
+			Skippable:      true,
+		},
+		Fields: []ConfirmFormField{{
+			Key: "Gpu", Label: "卡数量", Type: "select",
+			Value: current, Render: "cards", Editable: true, Options: opts,
+		}},
+	}, nil
+}
+
+func buildGuidedCpuMemoryForm(wfCtx *Context) (*ConfirmForm, error) {
+	gpuType, err := ensureGuidedGPUType(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	zone, err := ensureGuidedZone(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	gpu, err := ensureGuidedGPUCount(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	current, err := ensureGuidedCPUMemory(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	_, opts := guidedCpuMemoryFormOptions(wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params)
+	if len(opts) == 0 {
+		return nil, fmt.Errorf("%s 在 %s 的 %.0f 卡暂无可选 CPU/内存规格，请换一个可用区或卡数量", gpuType, zone, gpu)
+	}
+	return &ConfirmForm{
+		Version: 2,
+		Step: &ConfirmFormStep{
+			Index:          4,
+			Total:          guidedCreateStepTotal,
+			Title:          "第四步，请选择 CPU/内存",
+			Description:    "CPU 与内存随 GPU 套餐配比，默认规格已匹配所选 GPU。数据预处理重、多进程加载较多时可选更高配比。",
+			PrimaryLabel:   "确认选择",
+			SecondaryLabel: "跳过",
+			Skippable:      true,
+		},
+		Fields: []ConfirmFormField{{
+			Key: "CpuMemory", Label: "CPU/内存", Type: "select",
+			Value: current, Render: "cards", Editable: true, Options: opts,
+		}},
+	}, nil
+}
+
+func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
+	_, _, _, _, err := resolveTargetSpec(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	gpuType, _ := wfCtx.Params["GpuType"].(string)
+	images := wfCtx.Result("查询镜像")
+
+	recommended := paramBool(wfCtx.Params, "GuidedRecommended", false)
+	var fields []ConfirmFormField
+	if cur, opts := guidedImageFormOptions(wfCtx.Params, images, gpuType); cur != "" && len(opts) > 0 {
+		if recommended {
+			markGuidedRecommendedOption(opts, cur)
+		}
+		fields = append(fields, ConfirmFormField{
+			Key: "ImageId", Label: "镜像", Type: "select",
+			Value: cur, Render: "cards", Editable: true, Options: opts,
+		})
+	}
+	chargeOpts := make([]ConfirmFormOption, len(createFormChargeTypes))
+	copy(chargeOpts, createFormChargeTypes)
+	fields = append(fields, ConfirmFormField{
+		Key: "ChargeType", Label: "计费方式", Type: "select",
+		Value: createChargeType(wfCtx.Params), Render: "cards", Editable: true, Options: chargeOpts,
+	})
+	return &ConfirmForm{
+		Version: 2,
+		Step: &ConfirmFormStep{
+			Index:          5,
+			Total:          guidedCreateStepTotal,
+			Title:          "第五步，确认镜像与计费",
+			Description:    "镜像决定开机即用的预装环境（框架与驱动），计费方式可选按量或包时。确认无误后点击下方按钮即开始创建。",
+			PrimaryLabel:   "确认部署",
+			SecondaryLabel: "取消",
+			Final:          true,
+		},
+		Fields: fields,
+	}, nil
+}
+
 // applyCreateOverrides merges validated form overrides into the workflow
 // params. Keys are restricted to the form's field set; anything else is
 // rejected (defense in depth on top of ConfirmForm.ValidateOverrides).
@@ -884,6 +1240,653 @@ func applyCreateOverrides(wfCtx *Context, overrides map[string]string) error {
 		}
 	}
 	return nil
+}
+
+func applyGuidedGPUOverrides(wfCtx *Context, overrides map[string]string) error {
+	for k, v := range overrides {
+		switch k {
+		case "GpuType":
+			wfCtx.Params["GpuType"] = v
+			delete(wfCtx.Params, "Gpu")
+			delete(wfCtx.Params, "Cpu")
+			delete(wfCtx.Params, "Memory")
+			delete(wfCtx.Params, "Zone")
+			if supported := currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像")); len(supported) > 0 && !containsFold(supported, v) {
+				delete(wfCtx.Params, "CompShareImageId")
+				delete(wfCtx.Params, "ImageName")
+			}
+		default:
+			return fmt.Errorf("不支持修改字段 %s", k)
+		}
+	}
+	return nil
+}
+
+func applyGuidedZoneOverrides(wfCtx *Context, overrides map[string]string) error {
+	for k, v := range overrides {
+		switch k {
+		case "Zone":
+			wfCtx.Params["Zone"] = v
+			delete(wfCtx.Params, "Gpu")
+			delete(wfCtx.Params, "Cpu")
+			delete(wfCtx.Params, "Memory")
+		default:
+			return fmt.Errorf("不支持修改字段 %s", k)
+		}
+	}
+	return nil
+}
+
+func applyGuidedGPUCountOverrides(wfCtx *Context, overrides map[string]string) error {
+	for k, v := range overrides {
+		switch k {
+		case "Gpu":
+			gpu, err := strconv.ParseFloat(v, 64)
+			if err != nil || gpu <= 0 {
+				return fmt.Errorf("卡数量选择无效")
+			}
+			wfCtx.Params["Gpu"] = gpu
+			delete(wfCtx.Params, "Cpu")
+			delete(wfCtx.Params, "Memory")
+		default:
+			return fmt.Errorf("不支持修改字段 %s", k)
+		}
+	}
+	return nil
+}
+
+func applyGuidedCpuMemoryOverrides(wfCtx *Context, overrides map[string]string) error {
+	for k, v := range overrides {
+		switch k {
+		case "CpuMemory":
+			zone, gpu, cpu, memoryMB, err := parseGuidedSpecKey(v)
+			if err != nil {
+				return err
+			}
+			wfCtx.Params["Zone"] = zone
+			wfCtx.Params["Gpu"] = gpu
+			wfCtx.Params["Cpu"] = cpu
+			wfCtx.Params["Memory"] = memoryMB
+		default:
+			return fmt.Errorf("不支持修改字段 %s", k)
+		}
+	}
+	return nil
+}
+
+func ensureGuidedGPUType(wfCtx *Context) (string, error) {
+	current, _ := wfCtx.Params["GpuType"].(string)
+	supported := currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像"))
+	locked := paramBool(wfCtx.Params, "GuidedGpuLocked", false) && current != ""
+	selected, opts := guidedGPUFormOptions(wfCtx.Result("查询可用配比"), supported, current, locked)
+	if selected == "" {
+		for _, opt := range opts {
+			if !opt.Disabled {
+				selected = opt.Value
+				break
+			}
+		}
+	}
+	if selected == "" {
+		return "", fmt.Errorf("暂无可选 GPU 型号")
+	}
+	if current == "" {
+		wfCtx.Params["GpuType"] = selected
+	}
+	return selected, nil
+}
+
+func ensureGuidedZone(wfCtx *Context) (string, error) {
+	gpuType, err := ensureGuidedGPUType(wfCtx)
+	if err != nil {
+		return "", err
+	}
+	current := paramStr(wfCtx.Params, "Zone", "")
+	selected, opts := guidedZoneFormOptions(wfCtx.Result("查询可用配比"), gpuType, current)
+	if selected == "" || len(opts) == 0 {
+		return "", fmt.Errorf("%s 暂无可选可用区，请换一个 GPU 型号或稍后再试", gpuType)
+	}
+	wfCtx.Params["Zone"] = selected
+	return selected, nil
+}
+
+func ensureGuidedGPUCount(wfCtx *Context) (float64, error) {
+	gpuType, err := ensureGuidedGPUType(wfCtx)
+	if err != nil {
+		return 0, err
+	}
+	zone, err := ensureGuidedZone(wfCtx)
+	if err != nil {
+		return 0, err
+	}
+	current := paramNum(wfCtx.Params, "Gpu", 0)
+	selected, opts := guidedGPUCountFormOptions(wfCtx.Result("查询可用配比"), gpuType, zone, current)
+	if selected == 0 || len(opts) == 0 {
+		return 0, fmt.Errorf("%s 在 %s 暂无可选卡数量，请换一个可用区", gpuType, zone)
+	}
+	wfCtx.Params["Gpu"] = selected
+	return selected, nil
+}
+
+func ensureGuidedCPUMemory(wfCtx *Context) (string, error) {
+	gpuType, err := ensureGuidedGPUType(wfCtx)
+	if err != nil {
+		return "", err
+	}
+	zone, err := ensureGuidedZone(wfCtx)
+	if err != nil {
+		return "", err
+	}
+	gpu, err := ensureGuidedGPUCount(wfCtx)
+	if err != nil {
+		return "", err
+	}
+	current, opts := guidedCpuMemoryFormOptions(wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params)
+	if current == "" || len(opts) == 0 {
+		return "", fmt.Errorf("%s 在 %s 的 %.0f 卡暂无可选 CPU/内存规格，请换一个可用区或卡数量", gpuType, zone, gpu)
+	}
+	parsedZone, parsedGPU, cpu, memoryMB, err := parseGuidedSpecKey(current)
+	if err != nil {
+		return "", err
+	}
+	wfCtx.Params["Zone"] = parsedZone
+	wfCtx.Params["Gpu"] = parsedGPU
+	wfCtx.Params["Cpu"] = cpu
+	wfCtx.Params["Memory"] = memoryMB
+	return current, nil
+}
+
+// markGuidedRecommendedOption tags the option matching value with a 推荐 badge so
+// a model-driven recommendation reads as such on the card (the option is already
+// the default selection). Prepends rather than overwrites the existing Note, which
+// carries VRAM / 库存 detail.
+func markGuidedRecommendedOption(opts []ConfirmFormOption, value string) {
+	if value == "" {
+		return
+	}
+	for i := range opts {
+		if opts[i].Value == value {
+			if opts[i].Note == "" {
+				opts[i].Note = "推荐"
+			} else {
+				opts[i].Note = "推荐 · " + opts[i].Note
+			}
+			return
+		}
+	}
+}
+
+func guidedGPUFormOptions(catalog map[string]any, supported []string, current string, locked bool) (string, []ConfirmFormOption) {
+	if catalog == nil {
+		return current, nil
+	}
+	type gpuChoice struct {
+		name    string
+		normal  bool
+		vramGB  float64
+		zones   []string
+		current bool
+	}
+	choices := map[string]*gpuChoice{}
+	order := []string{}
+	types, _ := catalog["AvailableInstanceTypes"].([]any)
+	for _, t := range types {
+		mt, _ := t.(map[string]any)
+		name, _ := mt["Name"].(string)
+		if name == "" {
+			continue
+		}
+		if locked && current != "" && !guidedGPUIntentMatches(current, name) {
+			continue
+		}
+		if !locked && len(supported) > 0 && !containsFold(supported, name) {
+			continue
+		}
+		ch, ok := choices[name]
+		if !ok {
+			ch = &gpuChoice{name: name}
+			choices[name] = ch
+			order = append(order, name)
+		}
+		if name == current {
+			ch.current = true
+		}
+		status, _ := mt["Status"].(string)
+		if status == "" || strings.EqualFold(status, "Normal") {
+			ch.normal = true
+		}
+		if z, _ := mt["Zone"].(string); z != "" && !containsFold(ch.zones, z) {
+			ch.zones = append(ch.zones, z)
+		}
+		if gm, _ := mt["GraphicsMemory"].(map[string]any); gm != nil {
+			if v, _ := gm["Value"].(float64); v > 0 && ch.vramGB == 0 {
+				ch.vramGB = v
+			}
+		}
+	}
+	if current != "" {
+		if _, ok := choices[current]; !ok {
+			choices[current] = &gpuChoice{name: current, current: true}
+			order = append([]string{current}, order...)
+		}
+	}
+	var opts []ConfirmFormOption
+	appendChoice := func(name string) {
+		ch := choices[name]
+		if ch == nil {
+			return
+		}
+		label := ch.name
+		if ch.vramGB > 0 {
+			label = fmt.Sprintf("%s（%.0fG显存）", ch.name, ch.vramGB)
+		}
+		noteParts := []string{}
+		if ch.vramGB > 0 {
+			noteParts = append(noteParts, fmt.Sprintf("%.0fG 显存", ch.vramGB))
+		}
+		if ch.normal {
+			noteParts = append(noteParts, "可售")
+		} else {
+			noteParts = append(noteParts, "暂不可售")
+		}
+		if len(ch.zones) > 0 {
+			noteParts = append(noteParts, "可用区 "+strings.Join(ch.zones, "、"))
+		}
+		opt := ConfirmFormOption{
+			Value:    ch.name,
+			Label:    label,
+			Note:     strings.Join(noteParts, " · "),
+			Disabled: !ch.normal,
+			Meta: map[string]string{
+				"Sellable": strconv.FormatBool(ch.normal),
+			},
+		}
+		opts = append(opts, opt)
+	}
+	if current != "" {
+		appendChoice(current)
+	}
+	for _, name := range order {
+		if name == current {
+			continue
+		}
+		appendChoice(name)
+	}
+	selected := current
+	if selected == "" {
+		for _, opt := range opts {
+			if !opt.Disabled {
+				selected = opt.Value
+				break
+			}
+		}
+	}
+	return selected, opts
+}
+
+func guidedGPUIntentMatches(intent, candidate string) bool {
+	if strings.EqualFold(intent, candidate) {
+		return true
+	}
+	// A broad model mention like "4090" should include closely related variants
+	// such as "4090_48G". A precise variant mention stays exact.
+	if strings.ContainsAny(intent, "_-") {
+		return false
+	}
+	intentLower := strings.ToLower(intent)
+	candidateLower := strings.ToLower(candidate)
+	return strings.HasPrefix(candidateLower, intentLower+"_") ||
+		strings.HasPrefix(candidateLower, intentLower+"-")
+}
+
+func guidedZoneFormOptions(catalog map[string]any, gpuType, current string) (string, []ConfirmFormOption) {
+	if catalog == nil || gpuType == "" {
+		return "", nil
+	}
+	seen := map[string]bool{}
+	var opts []ConfirmFormOption
+	types, _ := catalog["AvailableInstanceTypes"].([]any)
+	for _, t := range types {
+		mt, _ := t.(map[string]any)
+		if name, _ := mt["Name"].(string); name != gpuType {
+			continue
+		}
+		if status, _ := mt["Status"].(string); status != "" && !strings.EqualFold(status, "Normal") {
+			continue
+		}
+		zone, _ := mt["Zone"].(string)
+		if zone == "" {
+			zone = defaultZone
+		}
+		if seen[zone] {
+			continue
+		}
+		seen[zone] = true
+		opt := ConfirmFormOption{
+			Value: zone,
+			Label: zone,
+			Note:  fmt.Sprintf("%s 可用", gpuType),
+			Meta:  map[string]string{"Zone": zone},
+		}
+		if zone == current {
+			opts = append([]ConfirmFormOption{opt}, opts...)
+		} else {
+			opts = append(opts, opt)
+		}
+	}
+	selected := current
+	if selected == "" || !seen[selected] {
+		if len(opts) > 0 {
+			selected = opts[0].Value
+		}
+	}
+	return selected, opts
+}
+
+func guidedGPUCountFormOptions(catalog map[string]any, gpuType, zone string, current float64) (float64, []ConfirmFormOption) {
+	if catalog == nil || gpuType == "" || zone == "" {
+		return 0, nil
+	}
+	seen := map[string]bool{}
+	var opts []ConfirmFormOption
+	types, _ := catalog["AvailableInstanceTypes"].([]any)
+	for _, t := range types {
+		mt, _ := t.(map[string]any)
+		if name, _ := mt["Name"].(string); name != gpuType {
+			continue
+		}
+		if status, _ := mt["Status"].(string); status != "" && !strings.EqualFold(status, "Normal") {
+			continue
+		}
+		entryZone, _ := mt["Zone"].(string)
+		if entryZone == "" {
+			entryZone = defaultZone
+		}
+		if entryZone != zone {
+			continue
+		}
+		sizes, _ := mt["MachineSizes"].([]any)
+		for _, s := range sizes {
+			size, _ := s.(map[string]any)
+			gpu, _ := size["Gpu"].(float64)
+			if gpu <= 0 {
+				continue
+			}
+			value := fmt.Sprintf("%.0f", gpu)
+			if seen[value] {
+				continue
+			}
+			seen[value] = true
+			opt := ConfirmFormOption{
+				Value: value,
+				Label: fmt.Sprintf("%.0f 卡", gpu),
+				Note:  fmt.Sprintf("%s · %s", gpuType, zone),
+				Meta:  map[string]string{"GPU": value, "Zone": zone},
+			}
+			if current == gpu {
+				opts = append([]ConfirmFormOption{opt}, opts...)
+			} else {
+				opts = append(opts, opt)
+			}
+		}
+	}
+	selected := current
+	if selected == 0 || !seen[fmt.Sprintf("%.0f", selected)] {
+		if len(opts) > 0 {
+			selected, _ = strconv.ParseFloat(opts[0].Value, 64)
+		}
+	}
+	return selected, opts
+}
+
+func guidedSpecFormOptions(catalog map[string]any, gpuType string, params map[string]any) (string, []ConfirmFormOption) {
+	if catalog == nil || gpuType == "" {
+		return "", nil
+	}
+	current := ""
+	if z, ok := params["Zone"].(string); ok && z != "" {
+		gpu := paramNum(params, "Gpu", 1)
+		if _, hasCPU := params["Cpu"]; hasCPU {
+			if _, hasMem := params["Memory"]; hasMem {
+				current = formatGuidedSpecKey(z, gpu, paramNum(params, "Cpu", 0), paramNum(params, "Memory", 0))
+			}
+		}
+	}
+	seen := map[string]bool{}
+	var opts []ConfirmFormOption
+	types, _ := catalog["AvailableInstanceTypes"].([]any)
+	for _, t := range types {
+		mt, _ := t.(map[string]any)
+		if name, _ := mt["Name"].(string); name != gpuType {
+			continue
+		}
+		if status, _ := mt["Status"].(string); status != "" && !strings.EqualFold(status, "Normal") {
+			continue
+		}
+		zone, _ := mt["Zone"].(string)
+		if zone == "" {
+			zone = defaultZone
+		}
+		sizes, _ := mt["MachineSizes"].([]any)
+		for _, s := range sizes {
+			size, _ := s.(map[string]any)
+			gpu, _ := size["Gpu"].(float64)
+			if gpu == 0 {
+				continue
+			}
+			collection, _ := size["Collection"].([]any)
+			for _, c := range collection {
+				col, _ := c.(map[string]any)
+				cpu, _ := col["Cpu"].(float64)
+				if cpu == 0 {
+					continue
+				}
+				mems, _ := col["Memory"].([]any)
+				for _, m := range mems {
+					memGB, _ := m.(float64)
+					if memGB <= 0 {
+						continue
+					}
+					memMB := memGB * 1024
+					key := formatGuidedSpecKey(zone, gpu, cpu, memMB)
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
+					if current == "" {
+						current = key
+					}
+					opts = append(opts, ConfirmFormOption{
+						Value: key,
+						Label: fmt.Sprintf("%s · %.0f 卡 · %.0f 核 CPU · %.0fGB 内存", zone, gpu, cpu, memGB),
+						Note:  fmt.Sprintf("可用区 %s", zone),
+						Meta: map[string]string{
+							"Zone":     zone,
+							"GPU":      fmt.Sprintf("%.0f", gpu),
+							"CPU":      fmt.Sprintf("%.0f", cpu),
+							"MemoryGB": fmt.Sprintf("%.0f", memGB),
+						},
+					})
+				}
+			}
+		}
+	}
+	return current, opts
+}
+
+func guidedCpuMemoryFormOptions(catalog map[string]any, gpuType, zone string, gpuCount float64, params map[string]any) (string, []ConfirmFormOption) {
+	if catalog == nil || gpuType == "" || zone == "" || gpuCount <= 0 {
+		return "", nil
+	}
+	current := ""
+	if _, hasCPU := params["Cpu"]; hasCPU {
+		if _, hasMem := params["Memory"]; hasMem {
+			current = formatGuidedSpecKey(zone, gpuCount, paramNum(params, "Cpu", 0), paramNum(params, "Memory", 0))
+		}
+	}
+	seen := map[string]bool{}
+	var opts []ConfirmFormOption
+	types, _ := catalog["AvailableInstanceTypes"].([]any)
+	for _, t := range types {
+		mt, _ := t.(map[string]any)
+		if name, _ := mt["Name"].(string); name != gpuType {
+			continue
+		}
+		if status, _ := mt["Status"].(string); status != "" && !strings.EqualFold(status, "Normal") {
+			continue
+		}
+		entryZone, _ := mt["Zone"].(string)
+		if entryZone == "" {
+			entryZone = defaultZone
+		}
+		if entryZone != zone {
+			continue
+		}
+		sizes, _ := mt["MachineSizes"].([]any)
+		for _, s := range sizes {
+			size, _ := s.(map[string]any)
+			gpu, _ := size["Gpu"].(float64)
+			if gpu != gpuCount {
+				continue
+			}
+			collection, _ := size["Collection"].([]any)
+			for _, c := range collection {
+				col, _ := c.(map[string]any)
+				cpu, _ := col["Cpu"].(float64)
+				if cpu <= 0 {
+					continue
+				}
+				mems, _ := col["Memory"].([]any)
+				for _, m := range mems {
+					memGB, _ := m.(float64)
+					if memGB <= 0 {
+						continue
+					}
+					memMB := memGB * 1024
+					key := formatGuidedSpecKey(zone, gpu, cpu, memMB)
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
+					if current == "" {
+						current = key
+					}
+					opts = append(opts, ConfirmFormOption{
+						Value: key,
+						Label: fmt.Sprintf("%.0f 核 CPU · %.0fGB 内存", cpu, memGB),
+						Note:  fmt.Sprintf("%s · %.0f 卡 · %s", gpuType, gpu, zone),
+						Meta: map[string]string{
+							"Zone":     zone,
+							"GPU":      fmt.Sprintf("%.0f", gpu),
+							"CPU":      fmt.Sprintf("%.0f", cpu),
+							"MemoryGB": fmt.Sprintf("%.0f", memGB),
+						},
+					})
+				}
+			}
+		}
+	}
+	if current != "" && !seen[current] && len(opts) > 0 {
+		current = opts[0].Value
+	}
+	return current, opts
+}
+
+func formatGuidedSpecKey(zone string, gpu, cpu, memoryMB float64) string {
+	return fmt.Sprintf("%s|%.0f|%.0f|%.0f", zone, gpu, cpu, memoryMB)
+}
+
+func parseGuidedSpecKey(key string) (zone string, gpu, cpu, memoryMB float64, err error) {
+	parts := strings.Split(key, "|")
+	if len(parts) != 4 {
+		return "", 0, 0, 0, fmt.Errorf("规格选择无效")
+	}
+	gpu, err = strconv.ParseFloat(parts[1], 64)
+	if err != nil || gpu <= 0 {
+		return "", 0, 0, 0, fmt.Errorf("规格选择无效")
+	}
+	cpu, err = strconv.ParseFloat(parts[2], 64)
+	if err != nil || cpu <= 0 {
+		return "", 0, 0, 0, fmt.Errorf("规格选择无效")
+	}
+	memoryMB, err = strconv.ParseFloat(parts[3], 64)
+	if err != nil || memoryMB <= 0 {
+		return "", 0, 0, 0, fmt.Errorf("规格选择无效")
+	}
+	zone = strings.TrimSpace(parts[0])
+	if zone == "" {
+		return "", 0, 0, 0, fmt.Errorf("规格选择无效")
+	}
+	return zone, gpu, cpu, memoryMB, nil
+}
+
+func guidedImageFormOptions(params map[string]any, images map[string]any, gpuType string) (string, []ConfirmFormOption) {
+	if images == nil {
+		return "", nil
+	}
+	current := pickImageId(params, images)
+	seen := map[string]bool{}
+	var opts []ConfirmFormOption
+
+	appendOpt := func(id, label string, supported []string, enforceSupport bool) {
+		if id == "" || seen[id] {
+			return
+		}
+		if enforceSupport && len(supported) > 0 && !containsFold(supported, gpuType) {
+			return
+		}
+		seen[id] = true
+		opts = append(opts, ConfirmFormOption{
+			Value: id,
+			Label: label,
+			Meta:  map[string]string{"ImageId": id},
+		})
+	}
+
+	if current != "" {
+		label := imageNameByID(images, current)
+		if label == "" {
+			label = pickImageName(params, images)
+		}
+		appendOpt(current, label, imageSupportedByID(images, current), false)
+	}
+	if groups, ok := images["CompshareImageGroup"].([]any); ok {
+		for _, g := range groups {
+			gm, _ := g.(map[string]any)
+			if gm == nil {
+				continue
+			}
+			name, _ := gm["ImageName"].(string)
+			data, _ := gm["Data"].([]any)
+			for _, d := range data {
+				dm, _ := d.(map[string]any)
+				id, _ := dm["CompShareImageId"].(string)
+				label := name
+				if label == "" {
+					label, _ = dm["Name"].(string)
+				}
+				appendOpt(id, label, formStringSlice(dm["SupportedGpuTypes"]), true)
+			}
+		}
+	} else {
+		imageSet, _ := images["ImageSet"].([]any)
+		for _, item := range imageSet {
+			img, _ := item.(map[string]any)
+			if img == nil {
+				continue
+			}
+			id, _ := img["CompShareImageId"].(string)
+			name, _ := img["Name"].(string)
+			appendOpt(id, name, formStringSlice(img["SupportedGpuTypes"]), true)
+		}
+	}
+	if len(opts) == 0 {
+		return "", nil
+	}
+	if !seen[current] {
+		current = opts[0].Value
+	}
+	return current, opts
 }
 
 // gpuFormOptions lists selectable GPU types: sellable types from the catalog,

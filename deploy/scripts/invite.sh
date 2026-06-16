@@ -30,6 +30,8 @@ fi
 # `ally invite` only passes the --app-env vars below to the spawned server.
 # Destructive actions (delete / L2) stay refused even when this is 1.
 MUTATING_TOOLS="${COMPSHARE_ENABLE_MUTATING_TOOLS:-0}"
+CONFIRM_FORM="${COMPSHARE_CONFIRM_FORM:-0}"
+GUIDED_CREATE="${COMPSHARE_GUIDED_CREATE:-0}"
 
 # Context-engineering optimizations. Shipped ON via .env.example by deliberate
 # decision; the Go code default stays off, so they only take effect because they are
@@ -86,6 +88,8 @@ ally invite compshare-agent \
     --app-env "COMPSHARE_DEFAULT_ROLE_URN=$COMPSHARE_DEFAULT_ROLE_URN" \
     --app-env "MYSQL_DSN=$MYSQL_DSN" \
     --app-env "COMPSHARE_ENABLE_MUTATING_TOOLS=$MUTATING_TOOLS" \
+    --app-env "COMPSHARE_CONFIRM_FORM=$CONFIRM_FORM" \
+    --app-env "COMPSHARE_GUIDED_CREATE=$GUIDED_CREATE" \
     --app-env "USE_SESSION_FACT_CONTEXT=$SESSION_FACT_CONTEXT" \
     --app-env "USE_REACT_RESULT_PROJECTION=$REACT_RESULT_PROJECTION" \
     --app-env "USE_REACT_HISTORY_COMPACTION=$REACT_HISTORY_COMPACTION" \

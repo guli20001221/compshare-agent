@@ -31,6 +31,8 @@ func formCatalogFixture() map[string]any {
 			"MachineSizes": size(1, 16, 64), "GraphicsMemory": map[string]any{"Value": float64(24)}},
 		map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal",
 			"MachineSizes": size(1, 16, 64)},
+		map[string]any{"Name": "4090_48G", "Zone": "cn-wlcb-01", "Status": "Normal",
+			"MachineSizes": size(1, 16, 94), "GraphicsMemory": map[string]any{"Value": float64(48)}},
 		map[string]any{"Name": "A800", "Zone": "cn-wlcb-01", "Status": "Normal",
 			"MachineSizes": size(1, 32, 128), "GraphicsMemory": map[string]any{"Value": float64(80)}},
 		map[string]any{"Name": "P40", "Zone": "cn-wlcb-01", "Status": "Soldout",
@@ -114,7 +116,7 @@ func TestBuildCreateConfirmForm_OptionsAreServerWhitelists(t *testing.T) {
 	gpu := fieldByKey(t, form, "GpuType")
 	assert.Equal(t, "4090", gpu.Value)
 	assert.True(t, gpu.Editable)
-	assert.Equal(t, []string{"4090", "A800"}, optionValues(gpu))
+	assert.Equal(t, []string{"4090", "4090_48G", "A800"}, optionValues(gpu))
 	assert.Contains(t, gpu.Options[0].Label, "24G", "catalog VRAM should reach the option label")
 	assert.NotContains(t, optionValues(gpu), "P40")
 
@@ -239,6 +241,208 @@ func TestValidateOverrides_WhitelistOnly(t *testing.T) {
 	assert.Error(t, form.ValidateOverrides(map[string]string{"GpuType": "H100"}), "value outside offered options")
 	assert.Error(t, form.ValidateOverrides(map[string]string{"Locked": "y"}), "non-editable field")
 	assert.Error(t, form.ValidateOverrides(map[string]string{"Nope": "v"}), "unknown field")
+}
+
+func TestValidateOverrides_DisabledOptionRejected(t *testing.T) {
+	form := &ConfirmForm{Version: 2, Fields: []ConfirmFormField{
+		{Key: "GpuType", Type: "select", Value: "4090", Editable: true,
+			Options: []ConfirmFormOption{
+				{Value: "4090", Label: "4090"},
+				{Value: "P40", Label: "P40", Disabled: true},
+			}},
+	}}
+	assert.NoError(t, form.ValidateOverrides(map[string]string{"GpuType": "4090"}))
+	assert.Error(t, form.ValidateOverrides(map[string]string{"GpuType": "P40"}), "disabled options must not be selectable")
+}
+
+// ---------------------------------------------------------------------------
+// Guided create flow (Figma-style step cards)
+// ---------------------------------------------------------------------------
+
+func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.T) {
+	executor := formMockExecutor()
+	var seenSteps []int
+
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, args map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		require.NotNil(t, form.Step)
+		seenSteps = append(seenSteps, form.Step.Index)
+
+		// Every guided card carries 引导信息 (guidance text). The frontend renders
+		// step.Description under the title; dropping it would leave a bare card.
+		assert.NotEmpty(t, form.Step.Description,
+			"guided step %d must carry guidance text", form.Step.Index)
+
+		switch form.Step.Index {
+		case 1:
+			assert.Equal(t, 5, form.Step.Total)
+			assert.Equal(t, "确认选择", form.Step.PrimaryLabel)
+			assert.Equal(t, "跳过", form.Step.SecondaryLabel)
+			assert.True(t, form.Step.Skippable)
+			gpu := fieldByKey(t, form, "GpuType")
+			assert.Equal(t, "cards", gpu.Render)
+			assert.Equal(t, []string{"4090", "4090_48G", "A800", "P40"}, optionValues(gpu))
+			assert.Contains(t, gpu.Options[0].Label, "24G")
+			assert.False(t, gpu.Options[0].Disabled)
+			assert.True(t, gpu.Options[3].Disabled)
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"GpuType": "A800"}}
+		case 2:
+			zone := fieldByKey(t, form, "Zone")
+			assert.Equal(t, "cards", zone.Render)
+			assert.Equal(t, []string{"cn-wlcb-01"}, optionValues(zone))
+			return ConfirmResolution{Confirmed: true}
+		case 3:
+			gpuCount := fieldByKey(t, form, "Gpu")
+			assert.Equal(t, "cards", gpuCount.Render)
+			assert.Equal(t, []string{"1"}, optionValues(gpuCount))
+			return ConfirmResolution{Confirmed: true}
+		case 4:
+			spec := fieldByKey(t, form, "CpuMemory")
+			assert.Equal(t, "cards", spec.Render)
+			assert.Contains(t, optionValues(spec), "cn-wlcb-01|1|32|131072")
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"CpuMemory": "cn-wlcb-01|1|32|131072"}}
+		case 5:
+			assert.Equal(t, "A800", args["GpuType"])
+			assert.Equal(t, float64(1), args["Gpu"])
+			assert.Equal(t, float64(32), args["CPU"])
+			assert.Equal(t, float64(131072), args["Memory"])
+			assert.Equal(t, "cn-wlcb-01", args["Zone"])
+			assert.Equal(t, "确认部署", form.Step.PrimaryLabel)
+			assert.True(t, form.Step.Final)
+			return ConfirmResolution{Confirmed: true}
+		default:
+			t.Fatalf("unexpected guided form step %d", form.Step.Index)
+			return ConfirmResolution{}
+		}
+	})
+
+	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	assert.Equal(t, []int{1, 2, 3, 4, 5}, seenSteps)
+
+	var capacityCalls, priceCalls int
+	var created map[string]any
+	for _, c := range executor.calls {
+		switch c.action {
+		case "CheckCompShareResourceCapacity":
+			capacityCalls++
+		case "GetCompShareInstanceUserPrice":
+			priceCalls++
+		case "CreateCompShareInstance":
+			created = c.args
+		}
+	}
+	assert.Equal(t, 1, capacityCalls, "GPU/spec selection steps should continue; stock is checked after the full spec is chosen")
+	assert.Equal(t, 1, priceCalls, "price is checked after the full spec is chosen")
+	require.NotNil(t, created)
+	assert.Equal(t, "A800", created["GpuType"])
+	assert.Equal(t, float64(1), created["GPU"])
+	assert.Equal(t, float64(32), created["CPU"])
+	assert.Equal(t, float64(131072), created["Memory"])
+	assert.Equal(t, "cn-wlcb-01", created["Zone"])
+}
+
+func TestCreateInstanceGuided_ExplicitGPUOffersIntentFamily(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "GuidedGpuLocked": true})
+	form, err := buildGuidedGPUForm(wfCtx)
+	require.NoError(t, err)
+	require.NotNil(t, form.Step)
+	assert.Equal(t, 1, form.Step.Index)
+	assert.Equal(t, 5, form.Step.Total)
+	gpu := fieldByKey(t, form, "GpuType")
+	assert.Equal(t, []string{"4090", "4090_48G"}, optionValues(gpu))
+}
+
+func TestCreateInstanceGuided_ExplicitGPUVariantStaysExact(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090_48G", "GuidedGpuLocked": true})
+	form, err := buildGuidedGPUForm(wfCtx)
+	require.NoError(t, err)
+	gpu := fieldByKey(t, form, "GpuType")
+	assert.Equal(t, []string{"4090_48G"}, optionValues(gpu))
+}
+
+// A model-driven deploy (deploy_model sets GuidedRecommended, not GuidedGpuLocked)
+// keeps every GPU on the card but must SHOW the matcher's pick as a recommendation:
+// recommendation-aware title + a 推荐 badge on the matching option. Encodes WHY —
+// "用户有明确需求的时候，卡片中也应该是相应的推荐的配置".
+func TestCreateInstanceGuided_RecommendedGPUIsVisible(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "A800", "GuidedRecommended": true})
+	form, err := buildGuidedGPUForm(wfCtx)
+	require.NoError(t, err)
+	require.NotNil(t, form.Step)
+	assert.Contains(t, form.Step.Title, "推荐")
+	assert.NotEmpty(t, form.Step.Description)
+	gpu := fieldByKey(t, form, "GpuType")
+	// unlocked: every option still offered, the recommended one hoisted first + badged.
+	assert.Equal(t, []string{"A800", "4090", "4090_48G", "P40"}, optionValues(gpu))
+	for _, o := range gpu.Options {
+		if o.Value == "A800" {
+			assert.Contains(t, o.Note, "推荐", "recommended option must carry a 推荐 badge")
+		}
+	}
+}
+
+func TestGuidedSpecOverrideSetsFullCreateParams(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "Zone": "cn-sh2-02", "Gpu": float64(1)})
+	form, err := buildGuidedCpuMemoryForm(wfCtx)
+	require.NoError(t, err)
+	spec := fieldByKey(t, form, "CpuMemory")
+	assert.Equal(t, "cards", spec.Render)
+	assert.Contains(t, optionValues(spec), "cn-sh2-02|1|16|65536")
+
+	require.NoError(t, applyGuidedCpuMemoryOverrides(wfCtx, map[string]string{"CpuMemory": "cn-sh2-02|1|16|65536"}))
+	assert.Equal(t, "cn-sh2-02", wfCtx.Params["Zone"])
+	assert.Equal(t, float64(1), wfCtx.Params["Gpu"])
+	assert.Equal(t, float64(16), wfCtx.Params["Cpu"])
+	assert.Equal(t, float64(65536), wfCtx.Params["Memory"])
+}
+
+func TestCreateInstanceGuided_FinalEditRevalidatesPriceBeforeCreate(t *testing.T) {
+	executor := formMockExecutor()
+	finalRounds := 0
+
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		require.NotNil(t, form.Step)
+		switch form.Step.Index {
+		case 1, 2, 3, 4:
+			return ConfirmResolution{Confirmed: true}
+		case 5:
+			finalRounds++
+			if finalRounds == 1 {
+				return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageId": "img-002"}}
+			}
+			return ConfirmResolution{Confirmed: true}
+		default:
+			t.Fatalf("unexpected guided form step %d", form.Step.Index)
+			return ConfirmResolution{}
+		}
+	})
+
+	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	assert.Equal(t, 2, finalRounds, "final image edit must refresh the final confirm card")
+
+	capacityCalls, priceCalls := 0, 0
+	var created map[string]any
+	for _, c := range executor.calls {
+		switch c.action {
+		case "CheckCompShareResourceCapacity":
+			capacityCalls++
+		case "GetCompShareInstanceUserPrice":
+			priceCalls++
+		case "CreateCompShareInstance":
+			created = c.args
+		}
+	}
+	assert.Equal(t, 2, capacityCalls)
+	assert.Equal(t, 2, priceCalls)
+	require.NotNil(t, created)
+	assert.Equal(t, "img-002", created["CompShareImageId"])
 }
 
 // ---------------------------------------------------------------------------

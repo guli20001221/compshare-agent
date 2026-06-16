@@ -97,6 +97,17 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	default:
 		log.Printf("warning: unknown COMPSHARE_CONFIRM_FORM value %q, treating as off", v)
 	}
+	// Guided GPU create order flow. Requires COMPSHARE_CONFIRM_FORM=1 plus the
+	// client's guided_create_v1 opt-in; default off for rollout safety.
+	switch v := os.Getenv("COMPSHARE_GUIDED_CREATE"); v {
+	case "", "0":
+		// off (default)
+	case "1":
+		handlers.SetGuidedCreateEnabled(true)
+		log.Printf("guided create enabled (COMPSHARE_GUIDED_CREATE=1): opted-in clients use guided GPU create cards")
+	default:
+		log.Printf("warning: unknown COMPSHARE_GUIDED_CREATE value %q, treating as off", v)
+	}
 	router := gin.New()
 	if !cfg.Agent.HTTP.DisableCORS {
 		router.Use(corsMiddleware())

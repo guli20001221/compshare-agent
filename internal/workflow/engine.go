@@ -217,6 +217,11 @@ func (e *Engine) runConfirmStep(ctx context.Context, def *Definition, step Step,
 		if aerr := step.ApplyOverrides(wfCtx, res.Overrides); aerr != nil {
 			return failStop(fmt.Sprintf("配置修改无效: %v", aerr))
 		}
+		if step.ConfirmSubmitMode == ConfirmSubmitContinue {
+			e.emit(step.Name, i, total, StepConfirm, "success", "", nil, "")
+			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "success"})
+			return true
+		}
 		for _, name := range step.RevalidateSteps {
 			rs, idx, ok := findToolStep(def, name)
 			if !ok {
