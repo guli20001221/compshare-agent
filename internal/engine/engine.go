@@ -4058,6 +4058,17 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		if gt, ok := args["GpuType"].(string); ok && gt != "" {
 			args["GpuType"] = knowledge.CanonicalGPUType(gt)
 		}
+		// Resolve a user-named availability zone before the create runs. The ReAct
+		// LLM echoes the user's literal zone text (or the tool's documented default)
+		// into Zone but cannot know a new zone's id, so without this a "华北一C"
+		// create silently lands in the default zone. Same resolver as the deploy
+		// saga: an exact name/id overrides Zone, a partial/ambiguous mention
+		// ("华北一区") stops and asks "是华北一C吗？", and no/unresolvable mention
+		// leaves the LLM-provided Zone untouched (never worse than before).
+		if clarify := e.applyCreateZoneResolution(ctx, args); clarify != "" {
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), clarify, nil))
+			return finalReplyPrefix + clarify
+		}
 	}
 
 	result, err := wfEngine.Run(ctx, wf, args)

@@ -141,6 +141,10 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "可用区，如 cn-wlcb-01",
 					},
+					"Region": map[string]any{
+						"type":        "string",
+						"description": "可用区所属地域，如 cn-bj2（cn-bj2-03 所在地域）。指定非默认可用区时需一并提供，否则上游报 Zone not available。",
+					},
 					"MachineTypes": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
@@ -200,6 +204,10 @@ var Registry = []openai.Tool{
 					"Zone": map[string]any{
 						"type":        "string",
 						"description": "可用区，如 cn-wlcb-01",
+					},
+					"Region": map[string]any{
+						"type":        "string",
+						"description": "可用区所属地域，如 cn-bj2（cn-bj2-03 所在地域）。指定非默认可用区时需一并提供，否则上游报 Zone not available。",
 					},
 					"GpuType": map[string]any{
 						"type":        "string",
@@ -448,6 +456,10 @@ var Registry = []openai.Tool{
 					"Zone": map[string]any{
 						"type":        "string",
 						"description": "可用区，如 cn-wlcb-01",
+					},
+					"Region": map[string]any{
+						"type":        "string",
+						"description": "可用区所属地域，如 cn-bj2（cn-bj2-03 所在地域）。指定非默认可用区时需一并提供，否则上游报 Zone not available。",
 					},
 					"GpuType": map[string]any{
 						"type":        "string",

@@ -125,14 +125,23 @@ func TestExactZone(t *testing.T) {
 }
 
 func TestMentions(t *testing.T) {
-	if !Mentions("华北一区的4090") {
-		t.Error("should detect 华北 mention")
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"华北一区的4090", true}, // region-word token
+		{"用cn-bj2-03", true}, // cn- token
+		{"上海二B 机房", true},   // 机房 token
+		{"XX可用区创建一台", true}, // 可用区 token
+		// A non-existent zone phrased with a region word is still detected, so it
+		// reaches the matcher and gets challenged (the matcher names what IS supported).
+		{"创建华北十区的4090", true},
+		{"部署一个qwen 32b", false}, // no zone reference at all
 	}
-	if !Mentions("用cn-bj2-03") {
-		t.Error("should detect cn- mention")
-	}
-	if Mentions("部署一个qwen 32b") {
-		t.Error("no zone mention expected")
+	for _, c := range cases {
+		if got := Mentions(c.msg); got != c.want {
+			t.Errorf("Mentions(%q) = %v, want %v", c.msg, got, c.want)
+		}
 	}
 }
 

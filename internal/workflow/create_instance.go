@@ -319,6 +319,7 @@ func stepQueryInstanceTypes() Step {
 			args := map[string]any{}
 			if z := paramStr(wfCtx.Params, "Zone", ""); z != "" {
 				args["Zone"] = z // honour an explicit zone (e.g. the deploy handler's ChosenZone)
+				addZoneRegion(args, z)
 			}
 			return args, nil
 		},
@@ -339,7 +340,7 @@ func stepCheckCapacity() Step {
 				return nil, err
 			}
 			imageId := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
-			return map[string]any{
+			return addZoneRegion(map[string]any{
 				"Zone":               zone,
 				"GpuType":            wfCtx.Params["GpuType"],
 				"MachineType":        "G",
@@ -347,7 +348,7 @@ func stepCheckCapacity() Step {
 				"CompShareImageId":   imageId,
 				"ChargeType":         createChargeType(wfCtx.Params),
 				"Disks":              defaultDisk,
-			}, nil
+			}, zone), nil
 		},
 		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
 			specs, _ := result["Specs"].([]any)
@@ -419,7 +420,7 @@ func stepGetPrice() Step {
 					args["CompShareImageId"] = imageId
 				}
 			}
-			return args, nil
+			return addZoneRegion(args, zone), nil
 		},
 	}
 }
@@ -583,7 +584,7 @@ func stepCreateInstance() Step {
 			if name, ok := wfCtx.Params["Name"]; ok {
 				args["Name"] = name
 			}
-			return args, nil
+			return addZoneRegion(args, zone), nil
 		},
 	}
 }

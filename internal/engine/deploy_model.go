@@ -113,7 +113,7 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 	// Chinese display name ("华北一C") maps to its zone id (cn-bj2-03) instead of
 	// being silently dropped to the platform default. A partial/ambiguous/unsupported
 	// mention ("华北一区") returns a clarify reply — we stop and ask rather than guess.
-	userZone, zoneClarify := e.resolveDeployZone(ctx, effectiveUserMsg)
+	userZone, zoneClarify := e.resolveRequestedZone(ctx, effectiveUserMsg)
 	if zoneClarify != "" {
 		return e.deployReply(result, dispatch.latency, zoneClarify)
 	}
@@ -891,7 +891,7 @@ func extractDeployZone(userMsg string) string {
 	return ""
 }
 
-// resolveDeployZone resolves the availability zone the user named, matching the
+// resolveRequestedZone resolves the availability zone the user named, matching the
 // live support-zone catalog so a Chinese display name ("华北一C") maps to its
 // zone id (cn-bj2-03) — the upstream catalog carries that mapping but the agent
 // previously had no way to read it, so "华北一C" was silently dropped to the
@@ -901,10 +901,14 @@ func extractDeployZone(userMsg string) string {
 //     "是华北一C吗？") — the caller stops and asks instead of guessing a default.
 //   - both "" : no zone referenced → existing default-zone behavior.
 //
+// Shared by both instance-create entry points — the deploy_model saga (here) and
+// the ReAct CreateInstanceWorkflow tool (engine.applyCreateZoneResolution) — so a
+// user-named zone resolves identically regardless of which path the turn took.
+//
 // It is strictly additive over the deterministic alias floor (extractDeployZone):
 // when the live catalog is unavailable (CLI/no tenant identity) or the model
 // declines, it degrades to that floor, never worse than before.
-func (e *Engine) resolveDeployZone(ctx context.Context, userMsg string) (zone, clarify string) {
+func (e *Engine) resolveRequestedZone(ctx context.Context, userMsg string) (zone, clarify string) {
 	aliasZone := extractDeployZone(userMsg)
 	if e.externalExecutor == nil {
 		return aliasZone, ""
@@ -987,6 +991,30 @@ func (e *Engine) zoneDescribeMap(ctx context.Context) map[string]string {
 	return m
 }
 
+// applyCreateZoneResolution resolves a user-named zone for the ReAct
+// CreateInstanceWorkflow path, mutating args in place. It overrides args["Zone"]
+// with the resolved zone id (e.g. "华北一C" → cn-bj2-03) and injects
+// args["ZoneDescribes"] (zone-id → 显示名) so the confirm form labels each zone
+// with the console's Chinese name. It returns a non-empty clarify question when
+// the zone mention is partial/ambiguous ("华北一区" → "是华北一C吗？") so the
+// caller stops before creating; otherwise "". Reuses the deploy saga's
+// resolveRequestedZone so both create entry points behave identically. Degrades
+// to no-op (LLM Zone untouched, no ZoneDescribes) when the live catalog is
+// unavailable — e.g. on the CLI path with no tenant identity.
+func (e *Engine) applyCreateZoneResolution(ctx context.Context, args map[string]any) (clarify string) {
+	userZone, clarify := e.resolveRequestedZone(ctx, e.lastUserMsg)
+	if clarify != "" {
+		return clarify
+	}
+	if userZone != "" {
+		args["Zone"] = userZone
+	}
+	if descMap := e.zoneDescribeMap(ctx); len(descMap) > 0 {
+		args["ZoneDescribes"] = descMap
+	}
+	return ""
+}
+
 // deployGPUAliases maps a GPU the user names in the request to its canonical
 // CreateInstance GpuType (the gpuSpecs / catalog key). Each pattern is
 // boundary-anchored — (?:^|[^0-9a-z]) … (?:[^0-9a-z]|$) — so a card token only
@@ -1059,7 +1087,7 @@ func (e *Engine) zoneStockState(ctx context.Context, zone, gpuType, imageID stri
 	if imageID == "" || gpuType == "" {
 		return zoneUnknown
 	}
-	res := e.querySafeRead(ctx, "CheckCompShareResourceCapacity", map[string]any{
+	capArgs := map[string]any{
 		"Zone":               zone,
 		"GpuType":            gpuType,
 		"MachineType":        "G",
@@ -1067,7 +1095,13 @@ func (e *Engine) zoneStockState(ctx context.Context, zone, gpuType, imageID stri
 		"CompShareImageId":   imageID,
 		"ChargeType":         "Postpay",
 		"Disks":              deployPrecheckDisk,
-	})
+	}
+	// Non-default zones reject a Zone without its Region (RetCode=230); add it so
+	// the per-zone stock probe works in cn-bj2-03 / cn-sh2-02, not just the default.
+	if r := workflow.RegionFromZone(zone); r != "" {
+		capArgs["Region"] = r
+	}
+	res := e.querySafeRead(ctx, "CheckCompShareResourceCapacity", capArgs)
 	if res == nil {
 		return zoneUnknown
 	}
