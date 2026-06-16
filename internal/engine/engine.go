@@ -29,6 +29,7 @@ import (
 	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
+	"github.com/compshare-agent/internal/zones"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -195,6 +196,15 @@ type Engine struct {
 	// (the deploy handler falls back to llmClient when nil).
 	agentLLMClient              LLMClient
 	safeExecutor                *tools.SafeToolExecutor
+	// externalExecutor is the RAW (unfiltered) shared executor. Used only for
+	// read-only L0 catalog calls that must pass gateway-identity args the
+	// SafeToolExecutor would strip (e.g. DescribeCompShareSupportZone needs
+	// organization_id). Never used for mutating calls — those go via safeExecutor.
+	externalExecutor            tools.ToolExecutor
+	// zoneCatalog resolves availability zones (incl. Chinese display names) from
+	// the live support-zone catalog. nil → falls back to the process-wide
+	// zones.Default(); tests inject a fresh catalog for isolation.
+	zoneCatalog                 *zones.Catalog
 	registry                    *entity.EntityRegistry
 	intentPlanner               IntentPlanner
 	intentPlannerModel          string
@@ -523,6 +533,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 	}
 	eng.safeExecutor = newSafeToolExecutor(deps.ExternalExecutor, opts.ConfirmFn)
 	eng.safeExecutor.SetMutatingToolsEnabled(opts.MutatingToolsEnabled)
+	eng.externalExecutor = deps.ExternalExecutor
 	return eng
 }
 
@@ -565,6 +576,7 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 		mutatingToolsEnabled:       true,
 	}
 	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn)
+	eng.externalExecutor = executor
 	return eng
 }
 

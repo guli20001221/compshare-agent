@@ -136,6 +136,36 @@ func TestBuildCreateConfirmForm_OptionsAreServerWhitelists(t *testing.T) {
 	assert.Equal(t, []string{"Postpay", "Day", "Month"}, optionValues(ct))
 }
 
+func TestBuildCreateConfirmForm_ZoneOptionsUseDisplayNames(t *testing.T) {
+	// params["ZoneDescribes"] (threaded from the engine's live support-zone
+	// catalog) labels zone options with the console's Chinese names so the user
+	// recognizes "华北一C" instead of the opaque "cn-bj2-03".
+	form, err := buildCreateConfirmForm(formWfCtx(t, map[string]any{
+		"GpuType": "4090",
+		"ZoneDescribes": map[string]string{
+			"cn-wlcb-01": "华北二A",
+			"cn-sh2-02":  "上海二B",
+		},
+	}))
+	require.NoError(t, err)
+	zone := fieldByKey(t, form, "Zone")
+	// Values stay the zone ids — the create API speaks zone ids, not names.
+	assert.Equal(t, []string{"cn-wlcb-01", "cn-sh2-02"}, optionValues(zone))
+	// Labels carry the display name + id so the dropdown is human-readable.
+	assert.Equal(t, "华北二A (cn-wlcb-01)", zone.Options[0].Label)
+	assert.Equal(t, "上海二B (cn-sh2-02)", zone.Options[1].Label)
+}
+
+func TestBuildCreateConfirmForm_ZoneLabelsFallBackToIdWithoutDescribes(t *testing.T) {
+	// No ZoneDescribes (manual/CLI path or catalog unavailable) → labels are the
+	// bare zone ids, byte-identical to the pre-change behavior.
+	form, err := buildCreateConfirmForm(formWfCtx(t, map[string]any{"GpuType": "4090"}))
+	require.NoError(t, err)
+	zone := fieldByKey(t, form, "Zone")
+	assert.Equal(t, "cn-wlcb-01", zone.Options[0].Label)
+	assert.Equal(t, "cn-sh2-02", zone.Options[1].Label)
+}
+
 func TestBuildCreateConfirmForm_OmitsSingleOptionFields(t *testing.T) {
 	// A800 lives in one zone only → no real zone choice → field omitted (the
 	// read-only Summary already shows the value; an uneditable select is noise).

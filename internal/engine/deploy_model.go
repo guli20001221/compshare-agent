@@ -18,6 +18,7 @@ import (
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
+	"github.com/compshare-agent/internal/zones"
 )
 
 // deploy_model.go is the B8.3 agent-tier dispatch handler. deploy_model = "按用户需求
@@ -108,12 +109,21 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 	// the SAME model instead of treating it as a new generic deploy request.
 	effectiveUserMsg := e.effectiveDeployUserMsg(userMsg)
 
+	// (1a) Resolve a user-named zone against the live support-zone catalog so a
+	// Chinese display name ("华北一C") maps to its zone id (cn-bj2-03) instead of
+	// being silently dropped to the platform default. A partial/ambiguous/unsupported
+	// mention ("华北一区") returns a clarify reply — we stop and ask rather than guess.
+	userZone, zoneClarify := e.resolveDeployZone(ctx, effectiveUserMsg)
+	if zoneClarify != "" {
+		return e.deployReply(result, dispatch.latency, zoneClarify)
+	}
+
 	// (1) Match an existing image + size the GPU + pick the create-zone (TierAgent
 	// judgment + deterministic VRAM/stock arithmetic). Runs in read-only mode too —
 	// it is all read-only queries, and its output IS the advice. A zone the user
 	// named in the request (e.g. "在上海部署") is honored strictly; a GPU the user
 	// names is honored strictly by selectDeployZoneAndGPU (extractDeployGPU).
-	plan, err := e.matchDeployImage(ctx, effectiveUserMsg, extractDeployZone(effectiveUserMsg), onStep)
+	plan, err := e.matchDeployImage(ctx, effectiveUserMsg, userZone, onStep)
 	if err != nil {
 		// A deployUserError carries a specific, actionable message (e.g. "the zone
 		// you named has no suitable in-stock card") — surface it verbatim instead of
@@ -171,6 +181,12 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 	}
 	if plan.FallbackNote != "" {
 		params["FallbackNote"] = plan.FallbackNote
+	}
+	// Display-only: label the confirm form's zone options with the console's
+	// Chinese names ("华北一C") instead of bare zone ids. Ignored by every API
+	// step (which read specific keys); consumed only by buildCreateConfirmForm.
+	if descMap := e.zoneDescribeMap(ctx); len(descMap) > 0 {
+		params["ZoneDescribes"] = descMap
 	}
 
 	sagaResult, sagaErr := e.RunAgentSaga(ctx, def, params, "deploy_model")
@@ -873,6 +889,102 @@ func extractDeployZone(userMsg string) string {
 		}
 	}
 	return ""
+}
+
+// resolveDeployZone resolves the availability zone the user named, matching the
+// live support-zone catalog so a Chinese display name ("华北一C") maps to its
+// zone id (cn-bj2-03) — the upstream catalog carries that mapping but the agent
+// previously had no way to read it, so "华北一C" was silently dropped to the
+// platform default. Returns:
+//   - zone != "" : a confident match → honored strictly downstream.
+//   - clarify != "": the mention was partial/ambiguous/unsupported ("华北一区" →
+//     "是华北一C吗？") — the caller stops and asks instead of guessing a default.
+//   - both "" : no zone referenced → existing default-zone behavior.
+//
+// It is strictly additive over the deterministic alias floor (extractDeployZone):
+// when the live catalog is unavailable (CLI/no tenant identity) or the model
+// declines, it degrades to that floor, never worse than before.
+func (e *Engine) resolveDeployZone(ctx context.Context, userMsg string) (zone, clarify string) {
+	aliasZone := extractDeployZone(userMsg)
+	if e.externalExecutor == nil {
+		return aliasZone, ""
+	}
+	cat := e.zoneCatalog
+	if cat == nil {
+		cat = zones.Default()
+	}
+	u, _ := tools.UserFrom(ctx)
+	list, err := cat.Get(ctx, e.externalExecutor, u.TopOrganizationID, u.OrganizationID)
+	if err != nil || len(list) == 0 {
+		return aliasZone, "" // degrade to the deterministic alias floor
+	}
+	// Unambiguous literal (zone id or full display name) → no LLM needed.
+	if z, ok := zones.ExactZone(list, userMsg); ok {
+		return z, ""
+	}
+	// No zone-ish mention at all → keep the alias floor (e.g. a bare city alias).
+	if !zones.Mentions(userMsg) {
+		return aliasZone, ""
+	}
+	// A zone mention with no exact literal → LLM judgment (partial/ambiguous).
+	switch d := e.matchZoneLLM(ctx, userMsg, list); d.Kind {
+	case "exact":
+		return d.Zone, ""
+	case "clarify":
+		return "", d.Clarify
+	default:
+		return aliasZone, ""
+	}
+}
+
+// matchZoneLLM asks the TierAgent model to match a fuzzy zone mention against the
+// live zone list, returning a structured decision (exact / clarify / none).
+// Mirrors extractDeploySearch: small focused prompt, JSON out, hallucinated
+// zones rejected by zones.ParseDecision against the live list.
+func (e *Engine) matchZoneLLM(ctx context.Context, userMsg string, list []zones.ZoneInfo) zones.Decision {
+	client := e.agentLLMClient
+	if client == nil {
+		client = e.llmClient
+	}
+	if client == nil {
+		return zones.Decision{Kind: "none"}
+	}
+	resp, err := client.Chat(ctx, llm.ChatRequest{Messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: zones.MatchSystemPrompt(list)},
+		{Role: openai.ChatMessageRoleUser, Content: "用户消息：" + strings.TrimSpace(userMsg)},
+	}})
+	if err != nil || resp == nil {
+		return zones.Decision{Kind: "none"}
+	}
+	e.emitTokenUsage(resp.Usage)
+	return zones.ParseDecision(extractJSONObject(resp.Content), list,
+		func(s string, v any) error { return json.Unmarshal([]byte(s), v) })
+}
+
+// zoneDescribeMap returns a zone-id → display-name map ("cn-bj2-03"→"华北一C")
+// from the live catalog, used to label the create confirm form's zone options
+// with the names the console shows. Empty when the catalog is unavailable — the
+// form then falls back to bare zone ids (current behavior).
+func (e *Engine) zoneDescribeMap(ctx context.Context) map[string]string {
+	if e.externalExecutor == nil {
+		return nil
+	}
+	cat := e.zoneCatalog
+	if cat == nil {
+		cat = zones.Default()
+	}
+	u, _ := tools.UserFrom(ctx)
+	list, err := cat.Get(ctx, e.externalExecutor, u.TopOrganizationID, u.OrganizationID)
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]string, len(list))
+	for _, z := range list {
+		if z.Describe != "" {
+			m[z.Zone] = z.Describe
+		}
+	}
+	return m
 }
 
 // deployGPUAliases maps a GPU the user names in the request to its canonical

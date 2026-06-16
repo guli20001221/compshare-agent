@@ -202,7 +202,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 14 shared + 40 per-session = 54 fields. Any drift
+// Whitelist totals: 16 shared + 52 per-session = 68 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -223,6 +223,13 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"supportsObjectToolChoice":    true,
 		"supportsRequiredToolChoice":  true,
 		"maxTokensPerTurn":            true,
+		// externalExecutor is the RAW shared tool executor (same instance as the
+		// one safeExecutor wraps) — pointer-equal across sessions, used only for
+		// read-only L0 catalog calls. Shared like llmClient.
+		"externalExecutor": true,
+		// zoneCatalog is the process-wide zone-display-name cache (or nil →
+		// zones.Default()). A shared read-mostly cache, not per-session state.
+		"zoneCatalog": true,
 	}
 	perSessionFields := map[string]bool{
 		"safeExecutor":                     true,
@@ -313,7 +320,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"baseUserContext":           true,
 	}
 
-	if want, got := 14, len(sharedFields); want != got {
+	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
 	if want, got := 52, len(perSessionFields); want != got {
@@ -321,7 +328,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 66, typ.NumField(); want != got {
+	if want, got := 68, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

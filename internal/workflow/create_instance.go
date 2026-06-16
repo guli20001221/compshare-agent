@@ -828,7 +828,8 @@ func buildCreateConfirmForm(wfCtx *Context) (*ConfirmForm, error) {
 			Value: gpuType, Editable: true, Options: opts,
 		})
 	}
-	if opts := zoneFormOptions(catalog, gpuType, zone); len(opts) > 1 {
+	zoneDescribes, _ := wfCtx.Params["ZoneDescribes"].(map[string]string)
+	if opts := zoneFormOptions(catalog, gpuType, zone, zoneDescribes); len(opts) > 1 {
 		fields = append(fields, ConfirmFormField{
 			Key: "Zone", Label: "可用区", Type: "select",
 			Value: zone, Editable: true, Options: opts,
@@ -935,12 +936,15 @@ func gpuOptionLabel(catalog map[string]any, gpuType string) string {
 }
 
 // zoneFormOptions lists the zones the current GPU type is sellable in,
-// current zone first.
-func zoneFormOptions(catalog map[string]any, gpuType, current string) []ConfirmFormOption {
+// current zone first. describes (zone-id → 显示名, from the live support-zone
+// catalog, threaded in via params["ZoneDescribes"]) labels each option with the
+// console's Chinese name ("华北一C") so the user recognizes the zone; it falls
+// back to the bare zone id when the name is unknown (CLI / catalog unavailable).
+func zoneFormOptions(catalog map[string]any, gpuType, current string, describes map[string]string) []ConfirmFormOption {
 	if catalog == nil {
 		return nil
 	}
-	opts := []ConfirmFormOption{{Value: current, Label: current}}
+	opts := []ConfirmFormOption{{Value: current, Label: zoneOptionLabel(describes, current)}}
 	seen := map[string]bool{current: true}
 	types, _ := catalog["AvailableInstanceTypes"].([]any)
 	for _, t := range types {
@@ -956,9 +960,18 @@ func zoneFormOptions(catalog map[string]any, gpuType, current string) []ConfirmF
 			continue
 		}
 		seen[z] = true
-		opts = append(opts, ConfirmFormOption{Value: z, Label: z})
+		opts = append(opts, ConfirmFormOption{Value: z, Label: zoneOptionLabel(describes, z)})
 	}
 	return opts
+}
+
+// zoneOptionLabel renders a zone for the form: "华北一C (cn-bj2-03)" when the
+// display name is known, else the bare zone id.
+func zoneOptionLabel(describes map[string]string, zone string) string {
+	if d := describes[zone]; d != "" {
+		return d + " (" + zone + ")"
+	}
+	return zone
 }
 
 // imageFormOptions returns the currently selected image id plus up to
