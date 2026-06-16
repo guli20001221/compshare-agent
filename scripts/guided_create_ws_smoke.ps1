@@ -6,6 +6,7 @@ param(
     [int]$CompanyId = 1,
     [int]$OrganizationId = 2,
     [string]$GpuType = "",
+    [string]$Zone = "",
     [string]$SpecKey = "",
     [switch]$EditImageOnFinal,
     [switch]$ConfirmCreate,
@@ -13,7 +14,10 @@ param(
     [int]$TimeoutSeconds = 300
 )
 
-Set-StrictMode -Version Latest
+# Version 1.0 (not Latest): still flags typo'd variables, but lets us read
+# optional (omitempty) JSON props — Step.Final, Option.Note, Option.Disabled —
+# which are simply absent on non-final cards / available options.
+Set-StrictMode -Version 1.0
 $ErrorActionPreference = "Stop"
 
 if ($ConfirmCreate -and -not $IUnderstandThisCreatesInstance) {
@@ -39,7 +43,7 @@ function Send-JsonFrame {
     $json = ($Frame | ConvertTo-Json -Depth 20 -Compress)
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
     $segment = [System.ArraySegment[byte]]::new($bytes)
-    $Socket.SendAsync($segment, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $Token).GetAwaiter().GetResult()
+    [void]$Socket.SendAsync($segment, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $Token).GetAwaiter().GetResult()
 }
 
 function Receive-JsonFrame {
@@ -154,30 +158,19 @@ try {
             $seenSteps[[string]$idx] = $true
             Write-Host ("Confirmation step {0}/{1}: {2}" -f $step.Index, $step.Total, $step.Title)
 
-            if ($idx -eq 1) {
-                $field = Find-Field -Form $form -Key "GpuType"
-                $value = Pick-OptionValue -Field $field -Preferred $GpuType
-                $overrides = @{}
-                if ($value -ne "" -and $value -ne [string]$field.Value) {
-                    $overrides.GpuType = $value
+            if ($step.Description) {
+                Write-Host ("  guidance: {0}" -f $step.Description)
+            }
+            foreach ($f in $form.Fields) {
+                $optDump = (($f.Options | ForEach-Object { $_.Value }) -join ", ")
+                Write-Host ("  field {0} (default={1}) options=[{2}]" -f $f.Key, $f.Value, $optDump)
+                foreach ($o in $f.Options) {
+                    if ($o.Note) { Write-Host ("    - {0}: {1}" -f $o.Value, $o.Note) }
                 }
-                Send-Confirm -Socket $socket -ConfirmationId $frame.ConfirmationId -Confirmed $true -Overrides $overrides -Token $cts.Token
-                continue
             }
 
-            if ($idx -eq 2) {
-                $field = Find-Field -Form $form -Key "SpecKey"
-                $value = Pick-OptionValue -Field $field -Preferred $SpecKey
-                $overrides = @{}
-                if ($value -ne "" -and $value -ne [string]$field.Value) {
-                    $overrides.SpecKey = $value
-                }
-                Send-Confirm -Socket $socket -ConfirmationId $frame.ConfirmationId -Confirmed $true -Overrides $overrides -Token $cts.Token
-                continue
-            }
-
-            if ($idx -eq 3) {
-                $finalCount++
+            if ([bool]$step.Final) {
+                # Final card: optional one-time image edit (revalidation path), then confirm/decline.
                 if ($EditImageOnFinal -and -not $editedFinalImage) {
                     $imageField = Find-Field -Form $form -Key "ImageId"
                     $candidate = ""
@@ -192,12 +185,14 @@ try {
                     if ($candidate -ne "") {
                         $requestedFinalEdit = $true
                         $editedFinalImage = $true
+                        $finalCount++
                         Send-Confirm -Socket $socket -ConfirmationId $frame.ConfirmationId -Confirmed $true -Overrides @{ ImageId = $candidate } -Token $cts.Token
                         Write-Host "Edited final image; waiting for refreshed final confirmation."
                         continue
                     }
                     Write-Host "No alternate image was available; skipping final image edit."
                 }
+                $finalCount++
                 Send-Confirm -Socket $socket -ConfirmationId $frame.ConfirmationId -Confirmed ([bool]$ConfirmCreate) -Overrides @{} -Token $cts.Token
                 if ($ConfirmCreate) {
                     Write-Host "Final confirmation accepted; this may create a billable instance."
@@ -207,7 +202,24 @@ try {
                 continue
             }
 
-            throw "Unexpected guided step index $idx."
+            # Intermediate card (GPU / Zone / 卡数 / CPU·内存): accept the preferred value
+            # for a known key, else the card's own default. Step-count-agnostic.
+            $overrides = @{}
+            foreach ($f in $form.Fields) {
+                if (-not [bool]$f.Editable) { continue }
+                $preferred = ""
+                switch ($f.Key) {
+                    "GpuType"   { $preferred = $GpuType }
+                    "Zone"      { $preferred = $Zone }
+                    "CpuMemory" { $preferred = $SpecKey }
+                }
+                $value = Pick-OptionValue -Field $f -Preferred $preferred
+                if ($value -ne "" -and $value -ne [string]$f.Value) {
+                    $overrides[$f.Key] = $value
+                }
+            }
+            Send-Confirm -Socket $socket -ConfirmationId $frame.ConfirmationId -Confirmed $true -Overrides $overrides -Token $cts.Token
+            continue
         }
 
         if ($event -eq "token") {
@@ -225,7 +237,7 @@ try {
         }
     }
 
-    foreach ($required in @("1", "2", "3")) {
+    foreach ($required in @("1", "2", "3", "4", "5")) {
         if (-not $seenSteps.ContainsKey($required)) {
             throw "Guided step $required was not observed."
         }
