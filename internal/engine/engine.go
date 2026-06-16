@@ -178,6 +178,10 @@ type ChatOptions struct {
 	// AND the client opted in via Features — nil keeps the boolean confirm
 	// path byte-identical.
 	ConfirmEditsFunc workflow.ConfirmEditsFunc
+	// GuidedCreate switches CreateInstanceWorkflow to the guided multi-step
+	// order flow for this turn. Only the HTTP path sets it after both backend
+	// and client feature gates are open.
+	GuidedCreate bool
 }
 
 type IntentPlannerOptions struct {
@@ -280,13 +284,16 @@ type Engine struct {
 	// stepSink receives agent-tier saga StepTraces (B8). Set per-turn via
 	// SetStepSink to the trace recorder, which folds them into the turn's
 	// trace_json.steps[]. nil = no step observability. Consumed by RunAgentSaga.
-	stepSink                 orchestrator.StepSink
-	confirmFn                ConfirmFunc
+	stepSink  orchestrator.StepSink
+	confirmFn ConfirmFunc
 	// confirmEditsFn is the editable-form HITL gate (create-flow 表单化).
 	// Set per-turn via ChatOptions.ConfirmEditsFunc by the HTTP path only when
 	// COMPSHARE_CONFIRM_FORM is on AND the client opted in; nil everywhere
 	// else (CLI, flag-off) so every confirm stays on the boolean ConfirmFunc.
 	confirmEditsFn workflow.ConfirmEditsFunc
+	// guidedCreate is a per-turn HTTP feature gate; false keeps
+	// CreateInstanceWorkflow on the legacy final-card flow.
+	guidedCreate             bool
 	messages                 []openai.ChatCompletionMessage // conversation history
 	userTurn                 int                            // incremented at start of each Chat() call
 	lastInstanceQueryTurn    int                            // set to userTurn on successful DescribeCompShareInstance
@@ -1173,6 +1180,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		e.confirmEditsFn = opts.ConfirmEditsFunc
 		defer func() { e.confirmEditsFn = origEdits }()
 	}
+	if opts.GuidedCreate {
+		origGuidedCreate := e.guidedCreate
+		e.guidedCreate = true
+		defer func() { e.guidedCreate = origGuidedCreate }()
+	}
 
 	e.lastUserMsg = userMsg
 	e.imageContextThisTurn = opts.ImageContext
@@ -1494,42 +1506,42 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 				content = ragNoEvidenceReply
 			}
-				// Convergent agent-loop synthesis (synthesis-discipline lever): for a
-				// knowledge_qa agent-loop turn where SearchKnowledge surfaced evidence, write the
-				// FINAL answer with the shared disciplined cited-synthesis primitive
-				// (answerWithRetrievedEvidence) on the gathered evidence — NOT the free ReAct
-				// write, which under flash intermittently omits the cite / dumps raw text. This
-				// makes the agent loop self-sufficient on knowledge turns: the precondition for
-				// retiring the separate terminal route (tryStage2BRetrieval) so knowledge flows
-				// through ONE loop. The primitive cite-validates (its own cite-harder retry) and
-				// synthesizeKnowledgeQAFromLedger leak-checks + strips, so this path needs no
-				// post-hoc guard. Default-off; on failure (or when disabled) it falls through to
-				// the free-write guard + cite-retry below, so it is never worse than B4.
-				synthDone := false
-				if disciplinedKnowledgeQASynthesisOn && e.knowledgeQAAgentLoopThisTurn &&
+			// Convergent agent-loop synthesis (synthesis-discipline lever): for a
+			// knowledge_qa agent-loop turn where SearchKnowledge surfaced evidence, write the
+			// FINAL answer with the shared disciplined cited-synthesis primitive
+			// (answerWithRetrievedEvidence) on the gathered evidence — NOT the free ReAct
+			// write, which under flash intermittently omits the cite / dumps raw text. This
+			// makes the agent loop self-sufficient on knowledge turns: the precondition for
+			// retiring the separate terminal route (tryStage2BRetrieval) so knowledge flows
+			// through ONE loop. The primitive cite-validates (its own cite-harder retry) and
+			// synthesizeKnowledgeQAFromLedger leak-checks + strips, so this path needs no
+			// post-hoc guard. Default-off; on failure (or when disabled) it falls through to
+			// the free-write guard + cite-retry below, so it is never worse than B4.
+			synthDone := false
+			if disciplinedKnowledgeQASynthesisOn && e.knowledgeQAAgentLoopThisTurn &&
+				e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
+				if synth, ok := e.synthesizeKnowledgeQAFromLedger(ctx, userMsg); ok {
+					content = synth
+					synthDone = true
+				}
+			}
+			if !synthDone {
+				preGuardContent := content
+				content = e.guardSearchKnowledgeSynthesis(content)
+				// Cite-retry parity with the terminal route: when the guard replaced a real
+				// synthesis with the canned refusal (typically flash omitted/garbled the
+				// [[chunk_id]] marker, not a content problem), give it ONE more chance with an
+				// explicit cite reminder before the refusal stands — mirroring
+				// answerWithRetrievedEvidence's single retry. Scoped to turns where
+				// SearchKnowledge surfaced evidence (the guard's own scope); a retry that still
+				// won't cite keeps the refusal. No-op when the guard accepted the answer.
+				if content == ragNoEvidenceReply && strings.TrimSpace(preGuardContent) != ragNoEvidenceReply &&
 					e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
-					if synth, ok := e.synthesizeKnowledgeQAFromLedger(ctx, userMsg); ok {
-						content = synth
-						synthDone = true
+					if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
+						content = retried
 					}
 				}
-				if !synthDone {
-					preGuardContent := content
-					content = e.guardSearchKnowledgeSynthesis(content)
-					// Cite-retry parity with the terminal route: when the guard replaced a real
-					// synthesis with the canned refusal (typically flash omitted/garbled the
-					// [[chunk_id]] marker, not a content problem), give it ONE more chance with an
-					// explicit cite reminder before the refusal stands — mirroring
-					// answerWithRetrievedEvidence's single retry. Scoped to turns where
-					// SearchKnowledge surfaced evidence (the guard's own scope); a retry that still
-					// won't cite keeps the refusal. No-op when the guard accepted the answer.
-					if content == ragNoEvidenceReply && strings.TrimSpace(preGuardContent) != ragNoEvidenceReply &&
-						e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
-						if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
-							content = retried
-						}
-					}
-				}
+			}
 			// P0 empty-reply safety net: a successful round (err == nil) that
 			// produced no text — flash intermittently returns empty content with
 			// no tool call — must not surface as a blank reply ("空回复"). Replace
@@ -4024,6 +4036,9 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
+	if action == "CreateInstanceWorkflow" && e.guidedCreate && e.confirmEditsFn != nil {
+		wf = workflow.CreateInstanceGuidedDef()
+	}
 
 	if decision, ok := e.allowMutatingTool(action); !ok {
 		msg := rateLimitMessage(decision.Reason)
@@ -4099,6 +4114,11 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	if action == "CreateInstanceWorkflow" {
 		if gt, ok := args["GpuType"].(string); ok && gt != "" {
 			args["GpuType"] = knowledge.CanonicalGPUType(gt)
+			if e.guidedCreate && e.confirmEditsFn != nil {
+				if _, preset := args["GuidedGpuLocked"]; !preset {
+					args["GuidedGpuLocked"] = true
+				}
+			}
 		}
 		// Resolve a user-named availability zone before the create runs. The ReAct
 		// LLM echoes the user's literal zone text (or the tool's documented default)
@@ -5053,7 +5073,6 @@ func containsScanAllSignal(msg string) bool {
 	}
 	return false
 }
-
 
 // shouldForceMonitorRecall reports whether the current turn is an adjacent
 // monitor follow-up that should force a fresh GetCompShareInstanceMonitor call

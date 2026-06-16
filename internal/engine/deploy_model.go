@@ -155,6 +155,9 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 	// definition verbatim; inject capture hooks to recover the created instance id
 	// (Result carries only StepSummary, not step outputs).
 	def := workflow.CreateInstanceDef()
+	if e.guidedCreate && e.confirmEditsFn != nil {
+		def = workflow.CreateInstanceGuidedDef()
+	}
 	var createResult, describeResult map[string]any
 	captureStepResult(def, "创建实例", func(r map[string]any) { createResult = r })
 	captureStepResult(def, "查看状态", func(r map[string]any) { describeResult = r })
@@ -162,6 +165,14 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 	params := map[string]any{
 		"GpuType":     plan.GpuType,
 		"ImageSource": plan.ImageSource,
+	}
+	// deploy_model always reaches here with a matcher-sized GPU + image, so the
+	// guided cards should present them AS a recommendation (default-selected +
+	// 推荐 badge), not as a blank pick. Distinct from GuidedGpuLocked, which fires
+	// only when the user named a GPU explicitly and hard-filters the GPU card.
+	params["GuidedRecommended"] = true
+	if extractDeployGPU(effectiveUserMsg) != "" {
+		params["GuidedGpuLocked"] = true
 	}
 	if plan.ImageName != "" {
 		params["ImageName"] = plan.ImageName

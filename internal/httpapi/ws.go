@@ -148,7 +148,9 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 				for _, f := range features {
 					if f == featureConfirmForm {
 						prep.confirmFormOptIn = true
-						break
+					}
+					if f == featureGuidedCreate {
+						prep.guidedCreateOptIn = true
 					}
 				}
 			}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -185,6 +186,7 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 	// Check RetCode
 	if retCode, ok := result["RetCode"].(float64); ok && retCode != 0 {
 		msg, _ := result["Message"].(string)
+		logUpstreamAPIError(action, int(retCode), msg, result, args)
 		return nil, fmt.Errorf("API error (RetCode=%d): %s", int(retCode), msg)
 	}
 
@@ -271,10 +273,45 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 
 	if retCode, ok := result["RetCode"].(float64); ok && retCode != 0 {
 		msg, _ := result["Message"].(string)
+		logUpstreamAPIError(action, int(retCode), msg, result, args)
 		return nil, fmt.Errorf("API error (RetCode=%d): %s", int(retCode), msg)
 	}
 
 	return result, nil
+}
+
+func logUpstreamAPIError(action string, retCode int, msg string, result map[string]any, args map[string]any) {
+	requestID := firstString(result, "request_uuid", "RequestId", "RequestID")
+	if action == "CreateCompShareInstance" {
+		log.Printf("upstream API error action=%s retCode=%d request_id=%s message=%q create_args=%s",
+			action, retCode, requestID, msg, createInstanceDiagArgs(args))
+		return
+	}
+	log.Printf("upstream API error action=%s retCode=%d request_id=%s message=%q", action, retCode, requestID, msg)
+}
+
+func createInstanceDiagArgs(args map[string]any) string {
+	keys := []string{"Zone", "GpuType", "GPU", "Gpu", "CPU", "Cpu", "Memory", "CompShareImageId", "ChargeType"}
+	out := map[string]any{}
+	for _, key := range keys {
+		if v, ok := args[key]; ok {
+			out[key] = v
+		}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+func firstString(m map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if v, _ := m[key].(string); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func httpStatusError(statusCode int, body []byte) error {

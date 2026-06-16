@@ -52,7 +52,20 @@ type Step struct {
 	// RevalidateSteps names earlier StepToolCall steps to re-run after
 	// ApplyOverrides, before re-entering this confirm (e.g. stock + price).
 	RevalidateSteps []string
+	// ConfirmSubmitMode controls what happens after a form-bearing confirm is
+	// submitted with Overrides. Empty preserves the legacy edit→revalidate→
+	// re-confirm loop. ConfirmSubmitContinue applies the whitelisted selection
+	// and advances to the next workflow step, used by guided multi-step forms.
+	ConfirmSubmitMode ConfirmSubmitMode
 }
+
+// ConfirmSubmitMode controls StepConfirm form-submission behavior.
+type ConfirmSubmitMode string
+
+const (
+	ConfirmSubmitRevalidate ConfirmSubmitMode = ""
+	ConfirmSubmitContinue   ConfirmSubmitMode = "continue"
+)
 
 // CompensateStep is the rollback action for a side-effecting Step, run in
 // reverse order by the orchestrator saga when a later step fails (B6.2).
@@ -121,7 +134,21 @@ type ConfirmFunc func(action string, args map[string]any) bool
 // pick one of them (no free text).
 type ConfirmForm struct {
 	Version int                `json:"Version"`
+	Step    *ConfirmFormStep   `json:"Step,omitempty"`
 	Fields  []ConfirmFormField `json:"Fields"`
+}
+
+// ConfirmFormStep carries guided-form presentation metadata. It is optional so
+// v1 forms and legacy clients keep the same JSON shape.
+type ConfirmFormStep struct {
+	Index          int    `json:"Index"`
+	Total          int    `json:"Total"`
+	Title          string `json:"Title,omitempty"`
+	Description    string `json:"Description,omitempty"`
+	PrimaryLabel   string `json:"PrimaryLabel,omitempty"`
+	SecondaryLabel string `json:"SecondaryLabel,omitempty"`
+	Skippable      bool   `json:"Skippable,omitempty"`
+	Final          bool   `json:"Final,omitempty"`
 }
 
 // ConfirmFormField is one editable (or display-only) field of a ConfirmForm.
@@ -130,15 +157,18 @@ type ConfirmFormField struct {
 	Label    string              `json:"Label"` // display label, backend-formatted
 	Type     string              `json:"Type"`  // v1: "select" only
 	Value    string              `json:"Value"` // current/default option value
+	Render   string              `json:"Render,omitempty"`
 	Editable bool                `json:"Editable"`
 	Options  []ConfirmFormOption `json:"Options,omitempty"`
 }
 
 // ConfirmFormOption is one selectable value of a select field.
 type ConfirmFormOption struct {
-	Value string `json:"Value"`
-	Label string `json:"Label"`
-	Note  string `json:"Note,omitempty"`
+	Value    string            `json:"Value"`
+	Label    string            `json:"Label"`
+	Note     string            `json:"Note,omitempty"`
+	Disabled bool              `json:"Disabled,omitempty"`
+	Meta     map[string]string `json:"Meta,omitempty"`
 }
 
 // Field returns the form field with the given key, or nil.
@@ -165,7 +195,7 @@ func (f *ConfirmForm) ValidateOverrides(overrides map[string]string) error {
 		}
 		valid := false
 		for _, opt := range field.Options {
-			if opt.Value == v {
+			if opt.Value == v && !opt.Disabled {
 				valid = true
 				break
 			}

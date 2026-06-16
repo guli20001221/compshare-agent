@@ -24,6 +24,9 @@ func (h *Handlers) handleGetMeta(_ *gin.Context, _ BaseRequest, _ *simplejson.Js
 	var features []string
 	if h.confirmFormEnabled {
 		features = append(features, featureConfirmForm)
+		if h.guidedCreateEnabled {
+			features = append(features, featureGuidedCreate)
+		}
 	}
 	return metaData{
 		Model:            h.cfg.Agent.LLM.Model,

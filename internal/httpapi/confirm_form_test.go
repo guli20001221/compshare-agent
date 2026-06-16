@@ -129,6 +129,11 @@ func TestGetMeta_FeaturesAdvertisedOnlyWhenEnabled(t *testing.T) {
 	dataOn, err := hOff.handleGetMeta(nil, BaseRequest{}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, []string{featureConfirmForm}, dataOn.(metaData).Features)
+
+	hOff.SetGuidedCreateEnabled(true)
+	dataGuided, err := hOff.handleGetMeta(nil, BaseRequest{}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{featureConfirmForm, featureGuidedCreate}, dataGuided.(metaData).Features)
 }
 
 func TestStringMapFromFrame(t *testing.T) {

@@ -283,21 +283,24 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"selectedInstanceIDAtTurnStart":     true,
 		"instanceResolutionSourceThisTurn":  true,
 		"factCacheOldestAgeSecondsThisTurn": true,
-		"rendererTraceObserver":            true,
-		"plannerTraceObserver":             true,
-		"retrievalTraceObserver":           true,
-		"freshnessTraceObserver":           true,
-		"diagnosisTraceObserver":           true,
-		"outcomeTraceObserver":             true,
-		"tokenUsageObserver":               true,
-		"rateLimitObserver":                true,
-		"hardBlockObserver":                true,
+		"rendererTraceObserver":             true,
+		"plannerTraceObserver":              true,
+		"retrievalTraceObserver":            true,
+		"freshnessTraceObserver":            true,
+		"diagnosisTraceObserver":            true,
+		"outcomeTraceObserver":              true,
+		"tokenUsageObserver":                true,
+		"rateLimitObserver":                 true,
+		"hardBlockObserver":                 true,
 		// stepSink is the agent-tier saga StepTrace sink (B8), set per-turn via
 		// SetStepSink to THIS session's trace recorder. Per-session by design:
 		// sharing it would route one tenant's step traces into another tenant's
 		// recorder — exactly the cross-session leak this test guards.
 		"stepSink":   true,
 		"currentCtx": true,
+		// guidedCreate is a per-turn HTTP capability gate; sharing it would let
+		// one client's opt-in change another client's create workflow shape.
+		"guidedCreate": true,
 		// M1 SessionState fields — per-session by design. SessionState is
 		// the JSON-serializable per-session dialog state envelope; mixing
 		// it across sessions would be exactly the cross-user leak this
@@ -323,12 +326,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 52, len(perSessionFields); want != got {
+	if want, got := 53, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 68, typ.NumField(); want != got {
+	if want, got := 69, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}
