@@ -1397,6 +1397,27 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 		resp, err := e.llmClient.Chat(ctx, req)
 		if err != nil {
+			// The per-call LLM error — including the http.Client timeout
+			// (internal/llm/client.go) behind the long-running 超时 cases — would
+			// otherwise discard the turn. If a prior round already gathered groundable
+			// evidence AND the outer ctx is still live, deliver a cited answer from it
+			// (same recovery as the budget/ceiling exits) instead of a bare error. The
+			// ctx.Err()==nil gate never spends a recovery LLM call on an already
+			// cancelled/deadline-exceeded ctx — it would just fail again and mask the
+			// cancellation. Empty ledger → synthesizeOnBudgetExceeded returns false →
+			// the original error still propagates (TestChat_LLMError stays green).
+			if ctx.Err() == nil {
+				if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
+					e.messages = append(e.messages, openai.ChatCompletionMessage{
+						Role:    openai.ChatMessageRoleAssistant,
+						Content: synth,
+					})
+					if opts.OnTextDelta != nil {
+						opts.OnTextDelta(synth)
+					}
+					return synth, nil
+				}
+			}
 			return "", fmt.Errorf("LLM 调用失败: %w", err)
 		}
 
@@ -1596,8 +1617,29 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 
 	// The loop exhausted maxReActRounds without returning a final answer. Mark the
 	// round-ceiling so the trace can attribute terminated_by=budget (this path,
-	// unlike the token-budget gate, emits no hard-block).
+	// unlike the token-budget gate, emits no hard-block). Mark BEFORE recovery: the
+	// loop DID hit the ceiling, so the attribution holds whether or not we recover
+	// an answer from gathered evidence — recovery only changes what the user sees.
 	e.reactCeilingHitThisTurn = true
+	// If a prior round's SearchKnowledge already gathered groundable evidence this
+	// turn, deliver the final cited answer from it instead of discarding the whole
+	// turn for a bare 请重新描述 — the same recovery the token-budget gate uses at the
+	// top of this loop. synthesizeOnBudgetExceeded returns ("",false) on an empty
+	// ledger, so a no-evidence thrash (GetGPUSpecs-only, or a corpus-gap query the
+	// relevance floor emptied) keeps the canned message byte-identical and never
+	// fabricates. Streaming invariant: any turn that ran SearchKnowledge has
+	// guardMayRewrite=true (searchKnowledgeRanThisTurn), so its deltas were buffered
+	// not streamed — opts.OnTextDelta(synth) is the sole emission.
+	if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: synth,
+		})
+		if opts.OnTextDelta != nil {
+			opts.OnTextDelta(synth)
+		}
+		return synth, nil
+	}
 	return "抱歉，处理轮次超限，请重新描述您的需求。", nil
 }
 

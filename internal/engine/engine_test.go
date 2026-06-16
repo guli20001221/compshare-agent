@@ -730,6 +730,10 @@ func TestChat_MaxRoundsExceeded(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "test", noopStep)
 	assert.NoError(t, err)
 	assert.Contains(t, reply, "轮次超限")
+	// No SearchKnowledge ran (GetGPUSpecs-only) → empty ledger → the loop-ceiling
+	// recovery must NOT fire and the canned message stays byte-identical. Pins the
+	// no-fabrication contract that gates synthesizeOnBudgetExceeded at this exit.
+	assert.Empty(t, eng.searchKnowledgeHitsThisTurn, "no evidence gathered → recovery must not fabricate over the ceiling refusal")
 }
 
 func TestInit_InjectsContextAndKnowledgeBoundary(t *testing.T) {
@@ -1045,6 +1049,10 @@ func TestChat_LLMError(t *testing.T) {
 	_, err := eng.Chat(context.Background(), "hello", noopStep)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "LLM 调用失败")
+	// No SearchKnowledge ran before the error → empty ledger → the LLM-error
+	// recovery must NOT fire and the error must still propagate (never masked by a
+	// fabricated answer). Pins the no-evidence half of the recovery contract.
+	assert.Empty(t, eng.searchKnowledgeHitsThisTurn, "no evidence gathered → LLM error must propagate, not be masked by recovery")
 }
 
 func TestChat_LLMRateLimitDenialSkipsLLM(t *testing.T) {
