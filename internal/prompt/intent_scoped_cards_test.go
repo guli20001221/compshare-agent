@@ -86,6 +86,9 @@ func TestRenderIntentScopedReActCard_NeverEmptyFallback(t *testing.T) {
 				t.Fatalf("fallback card for intent %q missing %q:\n%s", in, text, card)
 			}
 		}
+		if strings.Contains(card, "创建实例") || strings.Contains(card, "CreateInstanceWorkflow") {
+			t.Fatalf("fallback card for intent %q must not duplicate create workflow rules already owned by operation cards:\n%s", in, card)
+		}
 	}
 }
 

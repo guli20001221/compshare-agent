@@ -83,7 +83,9 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	// custom image.
 	// diagnosis recall fix (2026-06-03): bumped from 34 → 37 with 3 no-target
 	// symptom anchors for port unreachable, GPU not found, and SSH timeout.
-	if got, want := len(examples), 37+routeExampleCount; got != want {
+	// Deployment planner (2026-06-18): bumped from 37 -> 39 with 2 spec-first
+	// create anchors for 4090 and strict-zone create requests.
+	if got, want := len(examples), 39+routeExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -186,8 +188,8 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			t.Fatalf("planner examples missing group for intent %q", intent)
 		}
 	}
-	if total != 58 {
-		t.Fatalf("legacy planner example count = %d, want 58", total)
+	if total != 60 {
+		t.Fatalf("legacy planner example count = %d, want 60", total)
 	}
 	expectedCounts := map[Intent]int{
 		IntentResourceInfo:              8,
@@ -199,7 +201,8 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		// PR1 hotfix Bug 1 (2026-05-28): 6 = 5 Batch 1 anchors + new
 		// ZERO-target sample for bare "帮我关机" classification.
 		// Phase 3 (2026-06-02): +2 custom-image workflow anchors.
-		IntentOperationLifecycle: 8,
+		// Deployment planner (2026-06-18): +2 spec-first create anchors.
+		IntentOperationLifecycle: 10,
 		// Diagnosis recall fix (2026-06-03): +3 no-target symptom anchors.
 		IntentDiagnosis: 4,
 		// disk_info (2026-05-29): 4 anchors — 我有哪些数据盘 / 我的磁盘列表 /
@@ -279,6 +282,10 @@ func TestBuildSystemPromptIncludesOperationLifecycleAnchor(t *testing.T) {
 		// One-shot anchors that the prompt MUST keep as concrete examples.
 		"启动 train-gpu",
 		"给 uhost-xxx 加 200G 数据盘",
+		"帮我搞台 4090",
+		"部署一台 4090",
+		"部署 DeepSeekR1",
+		"stay deploy_model",
 		// Disambiguation from resource_info — without this clause the
 		// classifier can fall back to "list-style" reading of the same words.
 		"Do NOT route bare action verbs to resource_info",
@@ -287,6 +294,9 @@ func TestBuildSystemPromptIncludesOperationLifecycleAnchor(t *testing.T) {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("system prompt missing operation_lifecycle anchor fragment %q:\n%s", fragment, prompt)
 		}
+	}
+	if strings.Contains(prompt, "Action verbs include 创建 / 开一台 / 搞台 / 抢一台 / 部署一台") {
+		t.Fatalf("system prompt must not classify every 部署一台 phrase as operation_lifecycle:\n%s", prompt)
 	}
 }
 

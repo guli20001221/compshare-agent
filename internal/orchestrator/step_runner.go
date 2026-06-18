@@ -165,6 +165,21 @@ func (s *StepRunner) Run(ctx context.Context, def *workflow.Definition, params m
 			result.Message = fmt.Sprintf("任务已取消: %v", err)
 			return result, nil
 		}
+		if step.SkipIf != nil {
+			skip, err := step.SkipIf(wfCtx)
+			if err != nil {
+				now := s.now()
+				msg := fmt.Sprintf("步骤「%s」跳过判断失败: %v", step.Name, err)
+				s.emit(observability.StepStateFailed, i, "", nil, nil, "skip_if", now, now)
+				result.Steps = append(result.Steps, workflow.StepSummary{Name: step.Name, Status: "failed", Message: msg})
+				result.StoppedAt = step.Name
+				result.Message = msg
+				return result, nil
+			}
+			if skip {
+				continue
+			}
+		}
 
 		var sr stepResult
 		switch step.Type {
@@ -184,6 +199,9 @@ func (s *StepRunner) Run(ctx context.Context, def *workflow.Definition, params m
 			status = "cancelled"
 		}
 		result.Steps = append(result.Steps, workflow.StepSummary{Name: step.Name, Status: status, Message: sr.msg})
+		if step.Optional {
+			continue
+		}
 		result.StoppedAt = step.Name
 		result.Message = sr.msg
 		return result, nil

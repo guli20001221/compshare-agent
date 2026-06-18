@@ -11,6 +11,7 @@ import (
 
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 )
 
@@ -21,6 +22,16 @@ func deployDispatch() routerDispatchResult {
 	return routerDispatchResult{
 		result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentDeployModel}},
 	}
+}
+
+func TestDeployStopReplyClassifiesAdaptiveImageFailure(t *testing.T) {
+	reply := deployStopReply(&workflow.Result{
+		Message: "步骤「创建实例」执行失败: ActionError: adaptive uhost image id is empty",
+	})
+
+	assert.Contains(t, reply, "当前可用区")
+	assert.Contains(t, reply, "镜像")
+	assert.NotContains(t, reply, "adaptive uhost image id is empty")
 }
 
 // deployMockConfig parameterizes the fake upstream for a deploy run.
@@ -249,6 +260,66 @@ func TestTryDeployModel_CommunityGroundingFallback(t *testing.T) {
 	assert.Equal(t, 1, countCalls(exec.calls, "CreateCompShareInstance"), "fallback still creates (on a platform base)")
 }
 
+func TestMatchDeployImage_ExactCommunityModelOverridesBaseChoice(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-ollama", "Name": "Ollama v0.13.1", "ImageType": "App"},
+			}}, nil
+		case "DescribeCommunityImages":
+			search, _ := args["FuzzySearch"].(string)
+			if strings.Contains(strings.ToLower(search), "deepseek") || strings.Contains(strings.ToLower(search), "r1") {
+				return map[string]any{"CompshareImageGroup": []any{
+					map[string]any{"ImageName": "DeepSeek-R1:32b", "ImageDesc": "DeepSeek R1 32B 开箱即用镜像", "Data": []any{
+						map[string]any{"CompShareImageId": "comm-deepseek-32b", "Name": "DeepSeek-R1:32b", "SupportedGpuTypes": []any{"4090_48G", "4090"}},
+					}},
+				}}, nil
+			}
+			return map[string]any{"CompshareImageGroup": []any{}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{
+				availCardZ("4090_48G", "cn-bj2-03", 48),
+				availCardZ("4090", "cn-bj2-03", 24),
+			}}, nil
+		case "CheckCompShareResourceCapacity":
+			return map[string]any{"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	client := &mockLLM{responses: []llm.ChatResponse{
+		{Content: `{"search":"DeepSeek R1"}`},
+		{Content: `{"image_source":"platform","image_name":"Ollama v0.13.1","model_name":"DeepSeek-R1-32B","match_kind":"base","size_ambiguous":false,"quantization":""}`},
+	}}
+	eng := NewWithDeps(client, exec, okConfirm)
+
+	plan, err := eng.matchDeployImage(context.Background(), "为我部署 DeepSeek R1 32B", "", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "community", plan.ImageSource)
+	assert.Equal(t, "DeepSeek-R1:32b", plan.ImageName)
+	assert.Equal(t, "comm-deepseek-32b", plan.ImageID)
+	assert.Equal(t, "exact", plan.MatchKind)
+	assert.NotEqual(t, "A100", plan.GpuType, "exact community image should not default to fp16 A100 sizing")
+	assert.Contains(t, plan.MatchNote, "现成 DeepSeek-R1:32b 镜像")
+	assert.NotContains(t, plan.CandidateGPUs, "A100", "guided deploy card should show the feasible recommendation set, not unrelated sellable cards")
+	assert.Contains(t, plan.GPUReasons[plan.GpuType], "现成 DeepSeek-R1:32b 镜像")
+}
+
+func TestExactCommunityModelImageName_DoesNotMatchSameSizeSibling(t *testing.T) {
+	community := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{"ImageName": "QwQ-32B", "ImageDesc": "32B reasoning model"},
+		map[string]any{"ImageName": "Janus-Pro-32B", "ImageDesc": "DeepSeek family visual model"},
+	}}
+
+	_, ok := exactCommunityModelImageName("DeepSeek-R1-32B", "为我部署 DeepSeek R1 32B", community)
+
+	assert.False(t, ok, "same parameter scale or same brand is not the same model")
+}
+
 // TestTryDeployModel_MatcherJSONParseFailure proves a non-JSON matcher response
 // yields a clarification reply (not a crash or a garbage create).
 func TestTryDeployModel_MatcherJSONParseFailure(t *testing.T) {
@@ -399,6 +470,42 @@ func TestResolveArchImageVariant(t *testing.T) {
 		_, _, note := resolveArchImageVariant(plan, []string{"4090"}, "5090", platform)
 		assert.Empty(t, note)
 	})
+}
+
+func TestPreferDeployPlatformImageForPinnedGPU(t *testing.T) {
+	platform := map[string]any{"ImageSet": []any{
+		map[string]any{"Name": "PyTorch 2.4", "CompShareImageId": "img-a800",
+			"ImageType": "App", "Status": "Available", "SupportedGpuTypes": []any{"A800"}},
+		map[string]any{"Name": "PyTorch 2.4-4090", "CompShareImageId": "img-4090",
+			"ImageType": "App", "Status": "Available", "SupportedGpuTypes": []any{"4090"}},
+		map[string]any{"Name": "Ubuntu 22.04", "CompShareImageId": "img-ubuntu",
+			"ImageType": "System", "Status": "Available"},
+	}}
+	plan := deployPlan{ImageSource: "platform", ImageName: "PyTorch 2.4", ImageID: "img-a800"}
+
+	got, supported, note := preferDeployPlatformImageForGPU(plan, platform, "4090", "", false)
+
+	require.NotEmpty(t, note)
+	assert.Equal(t, "PyTorch 2.4-4090", got.ImageName)
+	assert.Equal(t, "img-4090", got.ImageID)
+	assert.Equal(t, []string{"4090"}, supported)
+}
+
+func TestPreferDeployPlatformImageForPinnedGPURejectsVMImageInPodZone(t *testing.T) {
+	platform := map[string]any{"ImageSet": []any{
+		map[string]any{"Name": "PyTorch 2.4", "CompShareImageId": "img-vm",
+			"ImageType": "System", "Status": "Available", "SupportedGpuTypes": []any{"4090"}},
+		map[string]any{"Name": "PyTorch 2.4 Container", "CompShareImageId": "img-container",
+			"ImageType": "App", "Status": "Available", "Container": true, "SupportedGpuTypes": []any{"4090"}},
+	}}
+	plan := deployPlan{ImageSource: "platform", ImageName: "PyTorch 2.4", ImageID: "img-vm"}
+
+	got, supported, note := preferDeployPlatformImageForGPU(plan, platform, "4090", "cn-pod-01", true)
+
+	require.NotEmpty(t, note)
+	assert.Equal(t, "PyTorch 2.4 Container", got.ImageName)
+	assert.Equal(t, "img-container", got.ImageID)
+	assert.Equal(t, []string{"4090"}, supported)
 }
 
 // TestTryArchVariantDowngrade is the inverse swap: the matcher mis-picked an
@@ -711,6 +818,19 @@ func TestSelectDeployZoneAndGPU_FallbackOnSoldOut(t *testing.T) {
 	assert.Contains(t, fb, "cn-sh2-02", "fallback note names the chosen zone")
 }
 
+func TestSelectDeployZoneAndGPU_UsesLiveZonesWhenNoUserZone(t *testing.T) {
+	exec := stockExec(map[string]bool{"cn-bj2-03": true})
+	eng := NewWithDeps(nil, exec, okConfirm)
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("4090", "cn-bj2-03", 24),
+	}}
+	zone, gpu, _, fb, err := eng.selectDeployZoneAndGPU(context.Background(), avail, deployPlan{ModelName: "Qwen2.5-7B", ImageID: "img-1"}, nil, "fp16", "部署", "")
+	require.NoError(t, err)
+	assert.Equal(t, "cn-bj2-03", zone, "new live zones must participate without a hardcoded preference list")
+	assert.Equal(t, "4090", gpu)
+	assert.Empty(t, fb)
+}
+
 func TestSelectDeployZoneAndGPU_UserZoneHonored(t *testing.T) {
 	exec := stockExec(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": true})
 	eng := NewWithDeps(nil, exec, okConfirm)
@@ -992,6 +1112,79 @@ func TestTryDeployModel_UserZoneFromMessage(t *testing.T) {
 	require.True(t, handled)
 	require.NotNil(t, createArgs, "create must run")
 	assert.Equal(t, "cn-sh2-02", createArgs["Zone"], "user-named zone (上海) overrides the cn-wlcb-01 preference")
+}
+
+func TestTryDeployModel_ThreadsInventoryContextToGuidedCard(t *testing.T) {
+	var inventoryArgs map[string]any
+	var gpuForm *workflow.ConfirmForm
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{}}, nil
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{map[string]any{
+				"CompShareImageId":  "img-pt",
+				"Name":              "PyTorch 2.9.1 cuda128",
+				"ImageType":         "App",
+				"SupportedGpuTypes": []any{"4090"},
+			}}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{availCardZ("4090", "cn-bj2-03", 24)}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{map[string]any{
+				"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": false,
+			}}}, nil
+		case "DescribeCompShareGpuInventory":
+			inventoryArgs = args
+			return map[string]any{"GpuInventory": map[string]any{"Exclusive": map[string]any{
+				"5001": map[string]any{"4090": float64(5)},
+			}}}, nil
+		case "CheckCompShareResourceCapacity":
+			return map[string]any{"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			}}, nil
+		case "GetCompShareInstanceUserPrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.23}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-7B","quantization":""}`, exec, okConfirm)
+	eng.guidedCreate = true
+	eng.confirmEditsFn = func(_ string, _ map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+		if form != nil && form.Step != nil && form.Step.Index == 1 {
+			gpuForm = form
+		}
+		return workflow.ConfirmResolution{Confirmed: false}
+	}
+	ctx := tools.WithUser(context.Background(), tools.UserContext{TopOrganizationID: 101, OrganizationID: 202})
+
+	_, handled := eng.tryDeployModel(ctx, deployDispatch(), "部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	require.NotNil(t, inventoryArgs, "deploy saga must query live GPU inventory before showing the guided card")
+	assert.Equal(t, uint32(101), inventoryArgs["top_organization_id"])
+	assert.Equal(t, uint32(202), inventoryArgs["organization_id"])
+	require.NotNil(t, gpuForm, "first guided form should be captured")
+	gpuField := gpuForm.Field("GpuType")
+	require.NotNil(t, gpuField)
+	require.Len(t, gpuField.Options, 1)
+	assert.Contains(t, gpuField.Options[0].Note, "库存约 5 张 GPU", "ZoneIds must be threaded so inventory maps back to the live zone")
+}
+
+func TestDeployGuidedGPUCandidates_OnlyClaimsStockWhenConfirmed(t *testing.T) {
+	_, reasons := deployGuidedGPUCandidates(deployPlan{
+		ImageSource:    "community",
+		MatchKind:      "exact",
+		ImageName:      "DeepSeek-R1:32b",
+		GpuType:        "4090",
+		StockConfirmed: false,
+	}, nil, nil, "", "", "部署 DeepSeek R1 32B")
+
+	reason := reasons["4090"]
+	assert.Contains(t, reason, "现成 DeepSeek-R1:32b 镜像")
+	assert.NotContains(t, reason, "当前库存可满足")
+	assert.Contains(t, reason, "将继续校验库存")
 }
 
 // ── R4: user-named GPU is honored strictly (never silently auto-sized away) ──

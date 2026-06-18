@@ -197,7 +197,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CheckCompShareResourceCapacity",
-			Description: "预检某个具体创建实例配置是否有足够资源，适合在用户已给出 GPU/CPU/内存/镜像/计费方式等创建参数时使用；也可在库存问题已识别 GPU 型号并拿到可用区后，确认该机型当前是否真实可创建。Zone 必须为 cn-wlcb-01 格式。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。注意：仅校验容量，不校验 GPU 与镜像兼容性——不兼容组合也可能返回 ResourceEnough=true，兼容性需用镜像 SupportedGpuTypes 另行校验。",
+			Description: "预检某个具体创建实例配置是否有足够资源，适合在用户已给出 GPU/CPU/内存/镜像/计费方式等创建参数时使用；也可在库存问题已识别 GPU 型号并拿到可用区后，确认该机型当前是否真实可创建。Zone 必须为 cn-wlcb-01 格式。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。注意：本接口会校验镜像存在/状态，并在 ucloud 路径触发底层镜像适配解析；但它仍不能保证最终创建一定成功，镜像的 SupportedGpuTypes 也只能作为候选排序和风险提示。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -271,6 +271,10 @@ var Registry = []openai.Tool{
 					"Limit": map[string]any{
 						"type":        "integer",
 						"description": "返回数据长度，默认 20",
+					},
+					"Offset": map[string]any{
+						"type":        "integer",
+						"description": "分页偏移量，配合 Limit 翻页",
 					},
 				},
 				"required": []string{},

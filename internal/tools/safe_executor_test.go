@@ -97,6 +97,18 @@ func TestDescribeCompShareImagesAllowsImageIDFilter(t *testing.T) {
 	assert.NotContains(t, filtered, "Unexpected")
 }
 
+func TestDescribeCompShareImagesAllowsOffsetForPagination(t *testing.T) {
+	safe := NewSafeToolExecutor(&spyExecutor{})
+
+	filtered := safe.FilterArgs("DescribeCompShareImages", map[string]any{
+		"Limit":  100,
+		"Offset": 100,
+	})
+
+	assert.Equal(t, 100, filtered["Limit"])
+	assert.Equal(t, 100, filtered["Offset"])
+}
+
 func TestVisibleRegistryFiltersMutatingWorkflowsByDefault(t *testing.T) {
 	visible := VisibleRegistry(false)
 	names := map[string]bool{}

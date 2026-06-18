@@ -63,6 +63,7 @@ func TestCreateInstance_HappyPath(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.Equal(t, "工作流执行完成", result.Message)
+	assert.Equal(t, []any{"uhost-new001"}, result.Data["UHostIds"])
 
 	// All 7 steps completed
 	assert.Len(t, result.Steps, 7)
@@ -85,6 +86,25 @@ func TestCreateInstance_HappyPath(t *testing.T) {
 	for i, action := range expectedActions {
 		assert.Equal(t, action, executor.calls[i].action)
 	}
+}
+
+func TestCreateInstance_DescribeFailureDoesNotHideCreatedInstance(t *testing.T) {
+	executor := createMockExecutor()
+	executor.failOn = "DescribeCompShareInstance"
+	confirmFn := func(action string, args map[string]any) bool { return true }
+
+	def := CreateInstanceDef()
+	eng := NewEngine(executor, confirmFn, nil)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"GpuType": "4090",
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success, "CreateCompShareInstance returned UHostIds, so a not-ready describe must not flip create success")
+	assert.Empty(t, result.StoppedAt)
+	assert.Contains(t, executor.calls, executorCall{action: "CreateCompShareInstance", args: executor.calls[4].args})
+	assert.Equal(t, "查看状态", result.Steps[len(result.Steps)-1].Name)
+	assert.Equal(t, "failed", result.Steps[len(result.Steps)-1].Status)
 }
 
 func TestCreateInstance_ConfirmDenied(t *testing.T) {
@@ -588,6 +608,51 @@ func TestPickPlatformImage_ContainsMatch(t *testing.T) {
 	}
 	id := pickPlatformImageId(map[string]any{"ImageName": "comfyui"}, result)
 	assert.Equal(t, "img-comfy", id, "case-insensitive contains should match")
+}
+
+func TestPickPlatformImage_PrefersRequestedGPUSupportWithinNameMatches(t *testing.T) {
+	result := map[string]any{
+		"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-pytorch-a800", "Name": "PyTorch 2.4",
+				"ImageType": "App", "Status": "Available", "SupportedGpuTypes": []any{"A800"}},
+			map[string]any{"CompShareImageId": "img-pytorch-4090", "Name": "PyTorch 2.4-4090",
+				"ImageType": "App", "Status": "Available", "SupportedGpuTypes": []any{"4090"}},
+			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04",
+				"ImageType": "System", "Status": "Available"},
+		},
+	}
+
+	id := pickPlatformImageId(map[string]any{"ImageName": "PyTorch", "GpuType": "4090"}, result)
+	assert.Equal(t, "img-pytorch-4090", id)
+}
+
+func TestPickPlatformImage_PyTorchLatestMatchesTorchNamedImages(t *testing.T) {
+	result := map[string]any{
+		"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-win", "Name": "Windows-nvidia 2022", "ImageType": "System", "Status": "Available"},
+			map[string]any{"CompShareImageId": "img-torch-old", "Name": "cuda128_torch280_py312", "ImageType": "App", "Status": "Available"},
+			map[string]any{"CompShareImageId": "img-torch-new", "Name": "cuda130_torch291_py312", "ImageType": "App", "Status": "Available"},
+			map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI基础镜像0.10.0", "ImageType": "App", "Status": "Available"},
+		},
+	}
+
+	id := pickPlatformImageId(map[string]any{"ImageName": "torch", "GpuType": "4090"}, result)
+
+	assert.Equal(t, "img-torch-new", id)
+}
+
+func TestPickPlatformImage_VLLMLatestUsesVersionOrder(t *testing.T) {
+	result := map[string]any{
+		"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-vllm-010", "Name": "vLLM v0.10.0", "ImageType": "App", "Status": "Available"},
+			map[string]any{"CompShareImageId": "img-vllm-012", "Name": "vLLM v0.12.0", "ImageType": "App", "Status": "Available"},
+			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 24.04 64位", "ImageType": "System", "Status": "Available"},
+		},
+	}
+
+	id := pickPlatformImageId(map[string]any{"ImageName": "vLLM", "GpuType": "4090"}, result)
+
+	assert.Equal(t, "img-vllm-012", id)
 }
 
 func TestPickPlatformImage_NoMatchFallsBackToFirst(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
@@ -41,26 +42,18 @@ import (
 // instance to reach Running — a GPU instance can take minutes to initialize, and the
 // manual CreateInstanceWorkflow path replies after a single describe too.
 
-// deployPreferredZones is the zone preference order the deploy handler tries when the
-// user did not name a zone: cn-wlcb-01 (Ulanqab) first, then cn-sh2-02 (Shanghai).
-// The handler sizes the GPU against a zone's live cards and only creates there if that
-// card has REAL stock (CheckCompShareResourceCapacity.ResourceEnough); a sold-out
-// primary zone falls back to the next BEFORE create (a pre-create selection, not an
+// deployPreferredZones is only the last-resort fallback when the live availability
+// response carries no zone data. Normal deploy planning uses the zones returned by
+// DescribeAvailableCompShareInstanceTypes, so newly added upstream zones participate
+// without changing this list.
+//
+// The handler sizes the GPU against a zone's live cards and only creates there if
+// that card has REAL stock (CheckCompShareResourceCapacity.ResourceEnough); a
+// sold-out primary zone falls back BEFORE create (a pre-create selection, not an
 // ADR-006-forbidden create-retry). DescribeAvailableCompShareInstanceTypes returns
 // cards across multiple zones, so per-zone filtering is via AvailableType.Zone
 // (knowledge.ParseAvailableGPUs(result, zone)).
-//
-// STOP-GROW: keep this to the two zones the platform actually offers GPU instances
-// in. A longer list belongs in config (agent.yaml), not a hand-grown literal.
 var deployPreferredZones = []string{"cn-wlcb-01", "cn-sh2-02"}
-
-// deployPrecheckDisk mirrors workflow.defaultDisk (the system-disk spec the saga's
-// capacity check uses). The handler's pre-create per-zone stock check must pass the
-// same Disks so its ResourceEnough read matches what the saga will see. Kept local
-// (not imported) to avoid widening the workflow package's API for a read-only check.
-var deployPrecheckDisk = []any{
-	map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 60},
-}
 
 // deployReadmeExcerptRunes caps the community-author Readme excerpt surfaced in
 // the deploy reply. Live Readmes run ~1-2K runes of markdown+HTML; a short
@@ -90,6 +83,16 @@ type deployPlan struct {
 	// when the recommended card is sold out at create time.
 	Quantization  string   // the matcher's chosen quantization (drives VRAM math); may be ""
 	SupportedGPUs []string // the chosen image's SupportedGpuTypes (image↔GPU compat); may be empty
+
+	// CandidateGPUs is the small, already-validated GPU set the guided create card
+	// should show for model deploys. GPUReasons carries display-only rationale.
+	CandidateGPUs []string
+	GPUReasons    map[string]string
+
+	// StockConfirmed means the pre-create capacity probe confirmed the selected
+	// single-GPU config has real stock. When false, guided copy must not claim
+	// inventory is sufficient; the workflow capacity gate will continue checking.
+	StockConfirmed bool
 }
 
 // tryDeployModel handles an IntentDeployModel turn end-to-end. It ALWAYS returns
@@ -171,6 +174,12 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 	// 推荐 badge), not as a blank pick. Distinct from GuidedGpuLocked, which fires
 	// only when the user named a GPU explicitly and hard-filters the GPU card.
 	params["GuidedRecommended"] = true
+	if len(plan.CandidateGPUs) > 0 {
+		params["GuidedCandidateGPUs"] = plan.CandidateGPUs
+	}
+	if len(plan.GPUReasons) > 0 {
+		params["GuidedGpuReasons"] = plan.GPUReasons
+	}
 	if extractDeployGPU(effectiveUserMsg) != "" {
 		params["GuidedGpuLocked"] = true
 	}
@@ -189,6 +198,9 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 	// confirm card can tell the user a sold-out primary zone was switched.
 	if plan.ChosenZone != "" {
 		params["Zone"] = plan.ChosenZone
+		if isPod, ok := e.zoneIsPod(ctx, plan.ChosenZone); ok {
+			params["ZoneIsPod"] = isPod
+		}
 	}
 	if plan.FallbackNote != "" {
 		params["FallbackNote"] = plan.FallbackNote
@@ -198,6 +210,17 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 	// step (which read specific keys); consumed only by buildCreateConfirmForm.
 	if descMap := e.zoneDescribeMap(ctx); len(descMap) > 0 {
 		params["ZoneDescribes"] = descMap
+	}
+	if idMap := e.zoneIDMap(ctx); len(idMap) > 0 {
+		params["ZoneIds"] = idMap
+	}
+	if u, ok := tools.UserFrom(ctx); ok {
+		if u.TopOrganizationID != 0 {
+			params["top_organization_id"] = u.TopOrganizationID
+		}
+		if u.OrganizationID != 0 {
+			params["organization_id"] = u.OrganizationID
+		}
 	}
 
 	sagaResult, sagaErr := e.RunAgentSaga(ctx, def, params, "deploy_model")
@@ -461,9 +484,11 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 	search := e.extractDeploySearch(ctx, client, userMsg)
 
 	// (b) Query both catalogs: platform whole (small + broken Name filter),
-	// community keyword-filtered (large + working FuzzySearch).
+	// community keyword-filtered (large + working FuzzySearch). Community uses
+	// multiple deterministic terms as well as the LLM keyword so an exact model
+	// image like DeepSeek-R1:32b is present even when the first keyword is too broad.
 	platform := e.querySafeRead(ctx, "DescribeCompShareImages", map[string]any{"Limit": 100})
-	community := e.queryCommunityCandidates(ctx, search)
+	community := e.queryCommunityCandidates(ctx, deployCommunitySearchTerms(userMsg, search)...)
 	platformNames := platformImageNames(platform)
 	communityNames := communityGroupNames(community)
 
@@ -532,6 +557,19 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 		return deployPlan{}, deployUserError{msg: deployClarifyModelSizeMsg(plan.ModelName)}
 	}
 
+	// Exact community model images beat framework bases. The LLM may reasonably pick
+	// Ollama/vLLM as a base, but if the real community catalog contains a ready-made
+	// image for the same model+size, that is the better grounded deploy target.
+	if exactName, ok := exactCommunityModelImageName(plan.ModelName, userMsg, community); ok {
+		plan.ImageSource = "community"
+		plan.ImageName = exactName
+		plan.MatchKind = "exact"
+		if strings.TrimSpace(plan.ModelName) == "" {
+			plan.ModelName = extractDeploySizedModelName(userMsg)
+		}
+		groundNote = fmt.Sprintf("发现现成 %s 镜像，优先使用社区镜像", exactName)
+	}
+
 	// (d) Resolve the chosen image's id (threaded to the saga so it creates EXACTLY
 	// this image, not a re-resolved one) and size the GPU constrained to that same
 	// image's recommended cards (M2) — against the LIVE available-card set, so a
@@ -539,11 +577,19 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 	// The static gpuSpecs table is only the offline fallback (empty live set).
 	imageID, supported := chosenImage(plan, platform, community)
 	plan.ImageID = imageID
+	userPinnedGPU := extractDeployGPU(userMsg)
+	var imagePreferenceNote string
+	userZoneIsPod, _ := e.zoneIsPod(ctx, userZone)
+	if updated, updatedSupported, note := preferDeployPlatformImageForGPU(plan, platform, userPinnedGPU, userZone, userZoneIsPod); note != "" {
+		plan = updated
+		supported = updatedSupported
+		imagePreferenceNote = note
+	}
 	// (d.1) #174: if the user pinned a 5090 the chosen image can't run, switch to its
 	// 5090 sibling variant BEFORE sizing (e.g. vLLM v0.12.0 → vLLM v0.12.0-5090) so the
 	// create uses an image that actually supports the card, instead of dead-ending on
 	// the gpuImageCompatible gate even though the 5090 build exists.
-	plan, supported, variantNote := resolveArchImageVariant(plan, supported, extractDeployGPU(userMsg), platform)
+	plan, supported, variantNote := resolveArchImageVariant(plan, supported, userPinnedGPU, platform)
 	// (e) Size the GPU AND pick the create-zone together (interdependent: zones
 	// offer different cards, and a card must have real stock in the zone we create
 	// in). DescribeAvailableCompShareInstanceTypes takes no Zone request param and
@@ -551,7 +597,14 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 	// selectDeployZoneAndGPU filters per-zone via AvailableType.Zone, sizes against
 	// each zone's live cards, and prefers the first zone with confirmed stock.
 	availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
-	zone, gpuType, gpuNote, fallbackNote, zerr := e.selectDeployZoneAndGPU(ctx, availResult, plan, supported, decision.Quantization, userMsg, userZone)
+	sizingPlan := plan
+	if plan.ImageSource == "community" && plan.MatchKind == "exact" && strings.TrimSpace(decision.Quantization) == "" {
+		// A ready-made community model image is usually pre-packaged in its own
+		// runtime/quantization form. Do not force generic fp16 VRAM sizing unless the
+		// matcher explicitly chose a quantization; rank by image support + live stock.
+		sizingPlan.ModelName = ""
+	}
+	zone, gpuType, gpuNote, fallbackNote, zerr := e.selectDeployZoneAndGPU(ctx, availResult, sizingPlan, supported, decision.Quantization, userMsg, userZone)
 	if zerr != nil {
 		// User pinned a zone we can't satisfy — surface, never silently override.
 		return deployPlan{}, zerr
@@ -560,25 +613,30 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 	plan.ChosenZone = zone
 	plan.MatchNote = gpuNote
 	plan.FallbackNote = fallbackNote
+	plan.StockConfirmed = e.zoneStockState(ctx, zone, gpuType, plan.ImageID) == zoneInStock
 	// Retain the sizing inputs so a stock-shortage reply can offer image-compatible,
 	// VRAM-sufficient alternative cards (see deployAlternativesNote).
 	plan.Quantization = decision.Quantization
 	plan.SupportedGPUs = supported
+	plan.CandidateGPUs, plan.GPUReasons = deployGuidedGPUCandidates(plan, supported, availResult, sizingPlan.ModelName, decision.Quantization, userMsg)
 	if groundNote != "" {
 		plan.MatchNote = groundNote + "；" + plan.MatchNote
+	}
+	if imagePreferenceNote != "" {
+		plan.MatchNote = imagePreferenceNote + "；" + plan.MatchNote
 	}
 	if variantNote != "" {
 		plan.MatchNote = variantNote + "；" + plan.MatchNote
 	}
 
-	// (f) GPU↔image compatibility gate. An image is built for a specific GPU series
-	// and only runs on the cards in its SupportedGpuTypes. CheckCompShareResourceCapacity
-	// does NOT enforce this (verified 2026-06-01: an unsupported card returns
-	// ResourceEnough=true) — so the CREATE call is what errors. Guard it here: if the
+	// (f) GPU↔image compatibility gate. Capacity preflight may catch image status
+	// and adaptive-image failures, but SupportedGpuTypes is still not a complete
+	// upstream hard gate. Keep it as an agent-side risk gate before create: if the
 	// image declares supported types and the sized card isn't among them, the image
-	// cannot run this workload. On the auto path this only happens when no supported
-	// card had enough VRAM (RecommendGPUType kept the VRAM-correct-but-unsupported card),
-	// so we surface that as an actionable message instead of letting the create fail.
+	// is not a good match for this workload. On the auto path this only happens when
+	// no supported card had enough VRAM (RecommendGPUType kept the
+	// VRAM-correct-but-unsupported card), so we surface that as an actionable message
+	// instead of letting the create fail late.
 	if !gpuImageCompatible(plan.GpuType, supported) {
 		// The matcher sometimes picks an arch-specific variant ("vLLM v0.12.0-5090",
 		// supp=[5090]) the user didn't ask for; a workload too big for the arch's
@@ -601,9 +659,9 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 
 // gpuImageCompatible reports whether gpuType is allowed by the image's declared
 // SupportedGpuTypes. An empty list means "no per-image constraint" → compatible.
-// This MUST be checked before create: CheckCompShareResourceCapacity does not
-// validate image↔GPU compatibility (an unsupported card returns ResourceEnough=true),
-// so an incompatible combo would otherwise only fail at CreateCompShareInstance.
+// This MUST be checked before create: capacity preflight is not a complete
+// image↔GPU compatibility proof, so an incompatible combo may still only fail at
+// CreateCompShareInstance.
 //
 // It compares against the RAW SupportedGpuTypes (not the static-table-normalized
 // subset RecommendGPUTypeWithin uses) on purpose: the create API validates against
@@ -659,6 +717,100 @@ func resolveArchImageVariant(plan deployPlan, supported []string, userGPU string
 	return plan, supported, ""
 }
 
+func preferDeployPlatformImageForGPU(plan deployPlan, platform map[string]any, requestedGPU, zone string, zoneIsPod bool) (deployPlan, []string, string) {
+	if plan.ImageSource != "platform" || strings.TrimSpace(plan.ImageName) == "" || strings.TrimSpace(requestedGPU) == "" {
+		return plan, nil, ""
+	}
+	images := deployPlatformImagesMatchingName(platform, plan.ImageName)
+	if len(images) == 0 {
+		return plan, nil, ""
+	}
+	candidates, byID := deployPlatformImageCandidates(images)
+	selected := deployment.SelectImageCandidates(deployment.ImageSelectionInput{
+		Images:       candidates,
+		RequestedGPU: requestedGPU,
+		Zone:         deployment.ZoneConstraint{Zone: zone, IsPod: zoneIsPod},
+	})
+	if len(selected.Viable) == 0 || containsString(selected.Viable[0].Warnings, deployment.WarningSupportedGPUMismatch) {
+		return plan, nil, ""
+	}
+	best := selected.Viable[0].Image
+	img := byID[best.ID]
+	if img == nil || best.ID == "" || best.ID == plan.ImageID {
+		return plan, nil, ""
+	}
+	name, _ := img["Name"].(string)
+	updated := plan
+	updated.ImageName = name
+	updated.ImageID = best.ID
+	note := fmt.Sprintf("你指定了 %s，已切换到支持该 GPU 的镜像「%s」", requestedGPU, name)
+	return updated, best.SupportedGPUTypes, note
+}
+
+func deployPlatformImagesMatchingName(platform map[string]any, imageName string) []map[string]any {
+	set, _ := platform["ImageSet"].([]any)
+	if len(set) == 0 {
+		return nil
+	}
+	lowerName := strings.ToLower(strings.TrimSpace(imageName))
+	var out []map[string]any
+	for _, item := range set {
+		img, _ := item.(map[string]any)
+		if img == nil {
+			continue
+		}
+		name, _ := img["Name"].(string)
+		if strings.EqualFold(name, imageName) || strings.Contains(strings.ToLower(name), lowerName) {
+			out = append(out, img)
+		}
+	}
+	return out
+}
+
+func deployPlatformImageCandidates(images []map[string]any) ([]deployment.ImageCandidate, map[string]map[string]any) {
+	candidates := make([]deployment.ImageCandidate, 0, len(images))
+	byID := make(map[string]map[string]any, len(images))
+	for i, img := range images {
+		id, _ := img["CompShareImageId"].(string)
+		if id == "" {
+			id = fmt.Sprintf("__image_%d", i)
+		}
+		name, _ := img["Name"].(string)
+		imageType, _ := img["ImageType"].(string)
+		status, _ := img["Status"].(string)
+		candidates = append(candidates, deployment.ImageCandidate{
+			ID:                id,
+			Name:              name,
+			ImageType:         imageType,
+			Container:         boolFromAny(img["Container"]) || boolFromAny(img["IsContainer"]),
+			Status:            status,
+			SupportedGPUTypes: stringSliceFromAny(img["SupportedGpuTypes"]),
+		})
+		byID[id] = img
+	}
+	return candidates, byID
+}
+
+func containsString(list []string, needle string) bool {
+	for _, item := range list {
+		if item == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func boolFromAny(v any) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		return strings.EqualFold(b, "true")
+	default:
+		return false
+	}
+}
+
 // tryArchVariantDowngrade is the inverse of resolveArchImageVariant: when the matcher
 // picked an arch-specific PLATFORM image ("vLLM v0.12.0-5090", supp=[5090]) the user
 // did NOT pin the arch for, swap it back to the generic base ("vLLM v0.12.0") whose
@@ -704,10 +856,14 @@ func (e deployUserError) Error() string { return e.msg }
 // have the final word (so behavior degrades to today's, never worse). An empty
 // live set (query failed) degrades to the static-table sizing on the primary zone.
 func (e *Engine) selectDeployZoneAndGPU(ctx context.Context, availResult map[string]any, plan deployPlan, supported []string, quant, userMsg, userZone string) (zone, gpuType, gpuNote, fallbackNote string, err error) {
-	candidates := deployPreferredZones
 	if strings.TrimSpace(userZone) != "" {
-		candidates = []string{strings.TrimSpace(userZone)}
+		return e.selectDeployZoneAndGPUInZones(ctx, availResult, plan, supported, quant, userMsg, strings.TrimSpace(userZone), []string{strings.TrimSpace(userZone)}, true)
 	}
+	candidates := deployCandidateZones(availResult)
+	return e.selectDeployZoneAndGPUInZones(ctx, availResult, plan, supported, quant, userMsg, "", candidates, false)
+}
+
+func (e *Engine) selectDeployZoneAndGPUInZones(ctx context.Context, availResult map[string]any, plan deployPlan, supported []string, quant, userMsg, userZone string, candidates []string, strictUserZone bool) (zone, gpuType, gpuNote, fallbackNote string, err error) {
 	primary := candidates[0]
 
 	// A GPU the user explicitly named is honored STRICTLY (same contract as a
@@ -750,8 +906,8 @@ func (e *Engine) selectDeployZoneAndGPU(ctx context.Context, availResult map[str
 		}
 	}
 
-	if strings.TrimSpace(userZone) != "" {
-		return "", "", "", "", deployUserError{msg: fmt.Sprintf("你指定的可用区 %s 当前没有可承载该工作负载且有货的机型，可换一个可用区（如 cn-wlcb-01）或换一个机型再试。", strings.TrimSpace(userZone))}
+	if strictUserZone {
+		return "", "", "", "", deployUserError{msg: fmt.Sprintf("你指定的可用区 %s 当前没有可承载该工作负载且有货的机型，可换一个有货的可用区或换一个机型再试。", strings.TrimSpace(userZone))}
 	}
 	if firstZone != "" {
 		// Sizeable but no zone confirmed in stock → proceed on the preferred zone;
@@ -761,6 +917,65 @@ func (e *Engine) selectDeployZoneAndGPU(ctx context.Context, availResult map[str
 	// Availability query failed/empty → static-table sizing on the primary zone.
 	gt, note := knowledge.RecommendGPUTypeLive(plan.ModelName, quant, userMsg, supported, nil)
 	return primary, gt, note, "", nil
+}
+
+func deployCandidateZones(availResult map[string]any) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, item := range anySlice(availResult["AvailableInstanceTypes"]) {
+		mt, _ := item.(map[string]any)
+		if mt == nil {
+			continue
+		}
+		if status, _ := mt["Status"].(string); status != "" && !strings.EqualFold(status, "Normal") {
+			continue
+		}
+		zone, _ := mt["Zone"].(string)
+		if zone == "" {
+			zone = deployPreferredZones[0]
+		}
+		if seen[zone] {
+			continue
+		}
+		seen[zone] = true
+		out = append(out, zone)
+	}
+	if len(out) == 0 {
+		return deployPreferredZones
+	}
+	return out
+}
+
+func deployGuidedGPUCandidates(plan deployPlan, supported []string, availResult map[string]any, sizingModelName, quant, userMsg string) ([]string, map[string]string) {
+	selected := strings.TrimSpace(plan.GpuType)
+	if selected == "" {
+		return nil, nil
+	}
+	seen := map[string]bool{strings.ToLower(selected): true}
+	candidates := []string{selected}
+	cards := knowledge.ParseAvailableGPUs(availResult, plan.ChosenZone)
+	for _, alt := range knowledge.FittingGPUAlternatives(sizingModelName, quant, supported, cards, selected, 2) {
+		if alt.Name == "" || seen[strings.ToLower(alt.Name)] {
+			continue
+		}
+		seen[strings.ToLower(alt.Name)] = true
+		candidates = append(candidates, alt.Name)
+	}
+
+	stockText := "将继续校验库存"
+	if plan.StockConfirmed {
+		stockText = "当前库存可满足"
+	}
+	reasons := map[string]string{}
+	switch {
+	case plan.ImageSource == "community" && plan.MatchKind == "exact" && plan.ImageName != "":
+		reasons[selected] = fmt.Sprintf("现成 %s 镜像 · %s", plan.ImageName, stockText)
+	case plan.MatchKind == "base" && strings.TrimSpace(plan.ModelName) != "":
+		reasons[selected] = fmt.Sprintf("可承载 %s 的基础环境 · %s", plan.ModelName, stockText)
+	default:
+		reasons[selected] = "推荐配置 · " + stockText
+	}
+	return candidates, reasons
 }
 
 // selectPinnedGPUZone honors a GPU the user explicitly named. It threads that exact
@@ -873,11 +1088,9 @@ func availableGPUNames(availResult map[string]any, zones []string) string {
 	return strings.Join(names, "、")
 }
 
-// deployZoneAliases maps explicit zone mentions in a request to a zone id. The
-// user-named zone is then honored strictly by selectDeployZoneAndGPU.
-//
-// STOP-GROW: only the two zones the platform offers GPU instances in. A broader
-// alias table belongs in config (agent.yaml), not a hand-grown literal here.
+// deployZoneAliases is a small deterministic floor for common legacy mentions.
+// Full zone ids and display names, including newly added zones, are resolved from
+// the live support-zone catalog in resolveRequestedZone.
 var deployZoneAliases = []struct {
 	keys []string
 	zone string
@@ -921,15 +1134,7 @@ func extractDeployZone(userMsg string) string {
 // declines, it degrades to that floor, never worse than before.
 func (e *Engine) resolveRequestedZone(ctx context.Context, userMsg string) (zone, clarify string) {
 	aliasZone := extractDeployZone(userMsg)
-	if e.externalExecutor == nil {
-		return aliasZone, ""
-	}
-	cat := e.zoneCatalog
-	if cat == nil {
-		cat = zones.Default()
-	}
-	u, _ := tools.UserFrom(ctx)
-	list, err := cat.Get(ctx, e.externalExecutor, u.TopOrganizationID, u.OrganizationID)
+	list, err := e.supportZoneList(ctx)
 	if err != nil || len(list) == 0 {
 		return aliasZone, "" // degrade to the deterministic alias floor
 	}
@@ -950,6 +1155,18 @@ func (e *Engine) resolveRequestedZone(ctx context.Context, userMsg string) (zone
 	default:
 		return aliasZone, ""
 	}
+}
+
+func (e *Engine) supportZoneList(ctx context.Context) ([]zones.ZoneInfo, error) {
+	if e.externalExecutor == nil {
+		return nil, nil
+	}
+	cat := e.zoneCatalog
+	if cat == nil {
+		cat = zones.Default()
+	}
+	u, _ := tools.UserFrom(ctx)
+	return cat.Get(ctx, e.externalExecutor, u.TopOrganizationID, u.OrganizationID)
 }
 
 // matchZoneLLM asks the TierAgent model to match a fuzzy zone mention against the
@@ -981,15 +1198,7 @@ func (e *Engine) matchZoneLLM(ctx context.Context, userMsg string, list []zones.
 // with the names the console shows. Empty when the catalog is unavailable — the
 // form then falls back to bare zone ids (current behavior).
 func (e *Engine) zoneDescribeMap(ctx context.Context) map[string]string {
-	if e.externalExecutor == nil {
-		return nil
-	}
-	cat := e.zoneCatalog
-	if cat == nil {
-		cat = zones.Default()
-	}
-	u, _ := tools.UserFrom(ctx)
-	list, err := cat.Get(ctx, e.externalExecutor, u.TopOrganizationID, u.OrganizationID)
+	list, err := e.supportZoneList(ctx)
 	if err != nil {
 		return nil
 	}
@@ -1000,6 +1209,37 @@ func (e *Engine) zoneDescribeMap(ctx context.Context) map[string]string {
 		}
 	}
 	return m
+}
+
+func (e *Engine) zoneIDMap(ctx context.Context) map[string]uint32 {
+	list, err := e.supportZoneList(ctx)
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]uint32, len(list))
+	for _, z := range list {
+		if z.Zone != "" && z.ZoneID != 0 {
+			m[z.Zone] = z.ZoneID
+		}
+	}
+	return m
+}
+
+func (e *Engine) zoneIsPod(ctx context.Context, zone string) (bool, bool) {
+	zone = strings.TrimSpace(zone)
+	if zone == "" {
+		return false, false
+	}
+	list, err := e.supportZoneList(ctx)
+	if err != nil {
+		return false, false
+	}
+	for _, z := range list {
+		if strings.EqualFold(z.Zone, zone) {
+			return z.IsPod, true
+		}
+	}
+	return false, false
 }
 
 // applyCreateZoneResolution resolves a user-named zone for the ReAct
@@ -1020,8 +1260,15 @@ func (e *Engine) applyCreateZoneResolution(ctx context.Context, args map[string]
 	if userZone != "" {
 		args["Zone"] = userZone
 	}
+	targetZone, _ := args["Zone"].(string)
+	if isPod, ok := e.zoneIsPod(ctx, targetZone); ok {
+		args["ZoneIsPod"] = isPod
+	}
 	if descMap := e.zoneDescribeMap(ctx); len(descMap) > 0 {
 		args["ZoneDescribes"] = descMap
+	}
+	if idMap := e.zoneIDMap(ctx); len(idMap) > 0 {
+		args["ZoneIds"] = idMap
 	}
 	return ""
 }
@@ -1098,15 +1345,11 @@ func (e *Engine) zoneStockState(ctx context.Context, zone, gpuType, imageID stri
 	if imageID == "" || gpuType == "" {
 		return zoneUnknown
 	}
-	capArgs := map[string]any{
-		"Zone":               zone,
-		"GpuType":            gpuType,
-		"MachineType":        "G",
-		"MinimalCpuPlatform": "Auto",
-		"CompShareImageId":   imageID,
-		"ChargeType":         "Postpay",
-		"Disks":              deployPrecheckDisk,
-	}
+	capArgs := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
+		Zone:             zone,
+		GPUType:          gpuType,
+		CompShareImageID: imageID,
+	})
 	// Non-default zones reject a Zone without its Region (RetCode=230); add it so
 	// the per-zone stock probe works in cn-bj2-03 / cn-sh2-02, not just the default.
 	if r := workflow.RegionFromZone(zone); r != "" {
@@ -1163,16 +1406,153 @@ func (e *Engine) extractDeploySearch(ctx context.Context, client LLMClient, user
 // queryCommunityCandidates fetches community images filtered by the extracted
 // keyword (FuzzySearch matches name+author). When the keyword is empty or finds
 // nothing, it falls back to an unfiltered sample so the matcher still sees options.
-func (e *Engine) queryCommunityCandidates(ctx context.Context, search string) map[string]any {
-	if search != "" {
+func (e *Engine) queryCommunityCandidates(ctx context.Context, searches ...string) map[string]any {
+	merged := map[string]any{"CompshareImageGroup": []any{}}
+	for _, search := range searches {
+		search = strings.TrimSpace(search)
+		if search == "" {
+			continue
+		}
 		res := e.querySafeRead(ctx, "DescribeCommunityImages",
 			map[string]any{"Limit": 30, "ExcludeReadme": true, "FuzzySearch": search})
-		if len(communityGroupNames(res)) > 0 {
-			return res
-		}
+		mergeCommunityGroups(merged, res)
+	}
+	if len(communityGroupNames(merged)) > 0 {
+		return merged
 	}
 	return e.querySafeRead(ctx, "DescribeCommunityImages",
 		map[string]any{"Limit": 30, "ExcludeReadme": true})
+}
+
+func mergeCommunityGroups(dst, src map[string]any) {
+	if dst == nil || src == nil {
+		return
+	}
+	dstGroups, _ := dst["CompshareImageGroup"].([]any)
+	seen := map[string]bool{}
+	for _, item := range dstGroups {
+		if m, _ := item.(map[string]any); m != nil {
+			name, _ := m["ImageName"].(string)
+			seen[strings.ToLower(strings.TrimSpace(name))] = true
+		}
+	}
+	for _, item := range anySlice(src["CompshareImageGroup"]) {
+		m, _ := item.(map[string]any)
+		if m == nil {
+			continue
+		}
+		name, _ := m["ImageName"].(string)
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		dstGroups = append(dstGroups, item)
+	}
+	dst["CompshareImageGroup"] = dstGroups
+}
+
+func deployCommunitySearchTerms(userMsg, llmSearch string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		key := strings.ToLower(s)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, s)
+	}
+	add(llmSearch)
+	if sized := extractDeploySizedModelName(userMsg); sized != "" && !isBareDeploySize(sized) {
+		add(sized)
+		add(strings.ReplaceAll(sized, "-", " "))
+		add(strings.ReplaceAll(sized, "-", ":"))
+		if family, size := splitDeployModelSize(sized); family != "" && size != "" {
+			add(family)
+			add(family + ":" + strings.ToLower(size))
+			add(family + " " + size)
+		}
+	}
+	return out
+}
+
+func exactCommunityModelImageName(modelName, userMsg string, community map[string]any) (string, bool) {
+	keys := exactDeployModelKeys(modelName, userMsg)
+	if len(keys) == 0 {
+		return "", false
+	}
+	for _, item := range anySlice(community["CompshareImageGroup"]) {
+		m, _ := item.(map[string]any)
+		if m == nil {
+			continue
+		}
+		name, _ := m["ImageName"].(string)
+		desc, _ := m["ImageDesc"].(string)
+		hay := normalizeDeployModelIdentity(name + " " + desc)
+		for _, key := range keys {
+			if key != "" && strings.Contains(hay, key) {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+func exactDeployModelKeys(modelName, userMsg string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" || !deployTextHasModelFamilyAndSize(s) {
+			return
+		}
+		key := normalizeDeployModelIdentity(s)
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	add(modelName)
+	add(extractDeploySizedModelName(userMsg))
+	return out
+}
+
+func deployTextHasModelFamilyAndSize(s string) bool {
+	hasSize := regexp.MustCompile(`(?i)\d+(?:\.\d+)?b`).MatchString(s)
+	hasLetter := regexp.MustCompile(`(?i)[a-z]`).MatchString(s)
+	return hasSize && hasLetter && !isBareDeploySize(strings.TrimSpace(s))
+}
+
+func normalizeDeployModelIdentity(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func splitDeployModelSize(s string) (family, size string) {
+	re := regexp.MustCompile(`(?i)(\d+(?:\.\d+)?b)`)
+	loc := re.FindStringIndex(s)
+	if loc == nil {
+		return "", ""
+	}
+	family = strings.Trim(strings.TrimSpace(s[:loc[0]]), "-_: ")
+	size = strings.TrimSpace(s[loc[0]:loc[1]])
+	return family, size
+}
+
+func anySlice(v any) []any {
+	arr, _ := v.([]any)
+	return arr
 }
 
 // chosenImage returns BOTH the CompShareImageId AND the SupportedGpuTypes of the
@@ -1487,6 +1867,9 @@ func deployStopReply(r *workflow.Result) string {
 	// honestly as not-executed, never as a false "已取消创建实例".
 	if r.Message == "用户取消了操作" {
 		return "好的，本次创建未执行。如需继续，请重新发送指令并确认。"
+	}
+	if deployment.ClassifyCreateFailure(r.Message).Kind == deployment.FailureImageZoneNotAdapted {
+		return "创建未完成：所选镜像在当前可用区暂未适配。请更换镜像，或选择其他可用区后重试。"
 	}
 	if r.Message != "" {
 		return "创建未完成：" + r.Message

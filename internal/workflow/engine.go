@@ -46,6 +46,20 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 			result.Message = fmt.Sprintf("工作流已取消: %v", err)
 			return result, nil
 		}
+		if step.SkipIf != nil {
+			skip, err := step.SkipIf(wfCtx)
+			if err != nil {
+				msg := fmt.Sprintf("步骤「%s」跳过判断失败: %v", step.Name, err)
+				e.emit(step.Name, i, total, step.Type, "failed", "", nil, msg)
+				result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: msg})
+				result.StoppedAt = step.Name
+				result.Message = msg
+				return result, nil
+			}
+			if skip {
+				continue
+			}
+		}
 
 		switch step.Type {
 		case StepToolCall:
@@ -196,6 +210,17 @@ func (e *Engine) runConfirmStep(ctx context.Context, def *Definition, step Step,
 			return false
 		}
 		if len(res.Overrides) == 0 {
+			if step.ConfirmSubmitMode == ConfirmSubmitContinue && step.ApplyOverrides != nil {
+				defaults := FormDefaultOverrides(form)
+				if len(defaults) > 0 {
+					if verr := form.ValidateOverrides(defaults); verr != nil {
+						return failStop(fmt.Sprintf("默认配置无效: %v", verr))
+					}
+					if aerr := step.ApplyOverrides(wfCtx, defaults); aerr != nil {
+						return failStop(fmt.Sprintf("默认配置无效: %v", aerr))
+					}
+				}
+			}
 			e.emit(step.Name, i, total, StepConfirm, "success", "", nil, "")
 			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "success"})
 			return true

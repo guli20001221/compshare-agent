@@ -29,9 +29,9 @@ func (f *fakeExec) Execute(_ context.Context, action string, args map[string]any
 func liveZonesResp() map[string]any {
 	return map[string]any{
 		"ZoneInfo": []any{
-			map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(10027), "Describe": "华北二A"},
+			map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(10027), "Describe": "华北二A", "IsPod": false},
 			map[string]any{"Zone": "cn-sh2-02", "Region": "cn-sh2", "ZoneId": float64(8200), "Describe": "上海二B"},
-			map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "Describe": "华北一C"},
+			map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": true},
 		},
 	}
 }
@@ -52,6 +52,9 @@ func TestFetchSupportZones_ParsesAndForwardsTenant(t *testing.T) {
 	}
 	if got[2].Zone != "cn-bj2-03" || got[2].Describe != "华北一C" || got[2].ZoneID != 5001 {
 		t.Fatalf("bj2-03 parsed wrong: %+v", got[2])
+	}
+	if got[0].IsPod || !got[2].IsPod {
+		t.Fatalf("IsPod parsed wrong: got[0]=%v got[2]=%v", got[0].IsPod, got[2].IsPod)
 	}
 	// organization_id MUST be forwarded — the action 230s without it.
 	if f.lastArgs["organization_id"] != uint32(64404856) || f.lastArgs["top_organization_id"] != uint32(66391350) {
@@ -113,8 +116,8 @@ func TestExactZone(t *testing.T) {
 		{"华北一 C 的实例", "cn-bj2-03", true}, // space-insensitive on describe
 		{"用 cn-sh2-02 创建", "cn-sh2-02", true},
 		{"华北二A 有货吗", "cn-wlcb-01", true},
-		{"随便给我来一台4090", "", false},     // no zone named
-		{"华北一区的4090", "", false},        // partial — not an exact literal, defer to LLM
+		{"随便给我来一台4090", "", false}, // no zone named
+		{"华北一区的4090", "", false},   // partial — not an exact literal, defer to LLM
 	}
 	for _, c := range cases {
 		got, ok := ExactZone(list, c.msg)
@@ -129,10 +132,10 @@ func TestMentions(t *testing.T) {
 		msg  string
 		want bool
 	}{
-		{"华北一区的4090", true}, // region-word token
+		{"华北一区的4090", true},  // region-word token
 		{"用cn-bj2-03", true}, // cn- token
-		{"上海二B 机房", true},   // 机房 token
-		{"XX可用区创建一台", true}, // 可用区 token
+		{"上海二B 机房", true},    // 机房 token
+		{"XX可用区创建一台", true},  // 可用区 token
 		// A non-existent zone phrased with a region word is still detected, so it
 		// reaches the matcher and gets challenged (the matcher names what IS supported).
 		{"创建华北十区的4090", true},

@@ -23,6 +23,9 @@ type Step struct {
 	ToolFunc    func(wfCtx *Context) string // dynamic tool name (overrides Tool if set)
 	BuildArgs   func(wfCtx *Context) (map[string]any, error)
 	CheckResult func(wfCtx *Context, result map[string]any) (bool, string)
+	// SkipIf lets adaptive workflows omit a step once earlier context has made
+	// that choice unambiguous. nil preserves the legacy "always run" behavior.
+	SkipIf func(wfCtx *Context) (bool, error)
 	// Optional lets a post-success enrichment step fail without failing the
 	// whole workflow. Default false preserves existing fail-stop behavior.
 	Optional bool
@@ -88,8 +91,9 @@ type Definition struct {
 
 // Context accumulates state during workflow execution.
 type Context struct {
-	Params      map[string]any
-	StepResults map[string]map[string]any
+	Params        map[string]any
+	InitialParams map[string]any
+	StepResults   map[string]map[string]any
 }
 
 // NewContext creates a workflow context with the given initial parameters.
@@ -97,9 +101,14 @@ func NewContext(params map[string]any) *Context {
 	if params == nil {
 		params = make(map[string]any)
 	}
+	initial := make(map[string]any, len(params))
+	for k, v := range params {
+		initial[k] = v
+	}
 	return &Context{
-		Params:      params,
-		StepResults: make(map[string]map[string]any),
+		Params:        params,
+		InitialParams: initial,
+		StepResults:   make(map[string]map[string]any),
 	}
 }
 
@@ -205,6 +214,22 @@ func (f *ConfirmForm) ValidateOverrides(overrides map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// FormDefaultOverrides returns the currently selected value of every editable
+// field. Guided multi-step forms use this when the user confirms a card without
+// changing anything, so the displayed default becomes the workflow parameter.
+func FormDefaultOverrides(form *ConfirmForm) map[string]string {
+	if form == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, field := range form.Fields {
+		if field.Editable && field.Value != "" {
+			out[field.Key] = field.Value
+		}
+	}
+	return out
 }
 
 // ConfirmResolution is the user's decision on a form-bearing confirmation:

@@ -16,9 +16,9 @@ func zoneCatalogExec() *mockExecutorFn {
 	return &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
 		if action == "DescribeCompShareSupportZone" {
 			return map[string]any{"ZoneInfo": []any{
-				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(10027), "Describe": "华北二A"},
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(10027), "Describe": "华北二A", "IsPod": false},
 				map[string]any{"Zone": "cn-sh2-02", "Region": "cn-sh2", "ZoneId": float64(8200), "Describe": "上海二B"},
-				map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "Describe": "华北一C"},
+				map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": true},
 			}}, nil
 		}
 		return map[string]any{"RetCode": float64(0)}, nil
@@ -165,6 +165,9 @@ func TestApplyCreateZoneResolution_ExactChineseName_OverridesZoneAndInjectsDescr
 	if args["Zone"] != "cn-bj2-03" {
 		t.Errorf("Zone not overridden to the resolved id: got %v, want cn-bj2-03", args["Zone"])
 	}
+	if args["ZoneIsPod"] != true {
+		t.Errorf("ZoneIsPod not threaded from support-zone catalog: got %v, want true", args["ZoneIsPod"])
+	}
 	describes, _ := args["ZoneDescribes"].(map[string]string)
 	if describes["cn-bj2-03"] != "华北一C" {
 		t.Errorf("ZoneDescribes missing the console display name: got %v", describes)
@@ -199,6 +202,9 @@ func TestApplyCreateZoneResolution_NoZoneMention_LeavesZone_StillInjectsDescribe
 	}
 	if args["Zone"] != "cn-wlcb-01" {
 		t.Errorf("Zone must stay as the LLM provided when no zone is named, got %v", args["Zone"])
+	}
+	if args["ZoneIsPod"] != false {
+		t.Errorf("ZoneIsPod should be threaded for the retained zone: got %v, want false", args["ZoneIsPod"])
 	}
 	// Describes are still injected so the form labels whatever zone is shown.
 	if describes, _ := args["ZoneDescribes"].(map[string]string); describes["cn-bj2-03"] != "华北一C" {

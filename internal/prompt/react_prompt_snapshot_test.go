@@ -11,7 +11,8 @@ const (
 	// 2026-06-05 (remediation): operation boundary / state-refresh / no-pretext /
 	// vague-failure rules now single-sourced from cards.go (shared with the
 	// flag-on cards), so the rule text lives in one place. SHA updated to match.
-	mutatingReActPromptSHA256 = "af685e87dad469f05e50418c7d8d724f01c32f02125b632656f1b23191cc8cb4"
+	// 2026-06-18: narrow deploy/create boundary to hardware-first creation only.
+	mutatingReActPromptSHA256 = "b3b482791822068887657b1c9b482c4a9636c530e038c1ac7f4c8b45c4380558"
 	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
 	readOnlyReActPromptSHA256 = "5aae720ff488add4eb47c22379bfed6b8746c1ff80bd62594098e43b622ff55b"
 )

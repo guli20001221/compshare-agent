@@ -101,6 +101,26 @@ func optionValues(f *ConfirmFormField) []string {
 	return out
 }
 
+func indexOf(values []string, want string) int {
+	for i, v := range values {
+		if v == want {
+			return i
+		}
+	}
+	return len(values)
+}
+
+func optionByValue(t *testing.T, field *ConfirmFormField, value string) ConfirmFormOption {
+	t.Helper()
+	for _, opt := range field.Options {
+		if opt.Value == value {
+			return opt
+		}
+	}
+	t.Fatalf("missing option %s in %v", value, optionValues(field))
+	return ConfirmFormOption{}
+}
+
 // ---------------------------------------------------------------------------
 // Form assembly
 // ---------------------------------------------------------------------------
@@ -185,6 +205,25 @@ func TestBuildCreateConfirmForm_ImageConstraintFiltersGPUs(t *testing.T) {
 	require.NoError(t, err)
 	// 4090 is the only compatible+sellable type → single option → field omitted.
 	assert.Nil(t, form.Field("GpuType"))
+}
+
+func TestBuildCreateConfirmForm_PodZoneFiltersVMImages(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType":   "4090",
+		"Zone":      "cn-wlcb-01",
+		"ZoneIsPod": true,
+	})
+	wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-vm", "Name": "Ubuntu 22.04 CUDA 12", "ImageType": "System"},
+		map[string]any{"CompShareImageId": "img-container", "Name": "PyTorch Container", "ImageType": "App", "Container": true},
+		map[string]any{"CompShareImageId": "img-container-2", "Name": "CUDA Container", "ImageType": "App", "IsContainer": true},
+	}}
+
+	form, err := buildCreateConfirmForm(wfCtx)
+	require.NoError(t, err)
+
+	img := fieldByKey(t, form, "ImageId")
+	assert.Equal(t, []string{"img-container", "img-container-2"}, optionValues(img))
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +383,57 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 	assert.Equal(t, "cn-wlcb-01", created["Zone"])
 }
 
+func TestCreateInstanceGuided_ExplicitFullSpecShowsFinalOnly(t *testing.T) {
+	executor := formMockExecutor()
+	var seenSteps []int
+
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, args map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		require.NotNil(t, form.Step)
+		seenSteps = append(seenSteps, form.Step.Index)
+		assert.Equal(t, 1, form.Step.Index)
+		assert.Equal(t, 1, form.Step.Total)
+		assert.True(t, form.Step.Final)
+		assert.Equal(t, "A800", args["GpuType"])
+		assert.Equal(t, float64(1), args["Gpu"])
+		assert.Equal(t, float64(32), args["CPU"])
+		assert.Equal(t, float64(131072), args["Memory"])
+		assert.Equal(t, "cn-wlcb-01", args["Zone"])
+		return ConfirmResolution{Confirmed: true}
+	})
+
+	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+		"GpuType":           "A800",
+		"GuidedGpuLocked":   true,
+		"Zone":              "cn-wlcb-01",
+		"Gpu":               float64(1),
+		"Cpu":               float64(32),
+		"Memory":            float64(131072),
+		"GuidedRecommended": true,
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	assert.Equal(t, []int{1}, seenSteps)
+	for _, step := range result.Steps {
+		assert.NotContains(t, step.Name, "选择")
+	}
+
+	var created map[string]any
+	for _, c := range executor.calls {
+		if c.action == "CreateCompShareInstance" {
+			created = c.args
+		}
+	}
+	require.NotNil(t, created)
+	assert.Equal(t, "A800", created["GpuType"])
+	assert.Equal(t, float64(1), created["GPU"])
+	assert.Equal(t, float64(32), created["CPU"])
+	assert.Equal(t, float64(131072), created["Memory"])
+	assert.Equal(t, "cn-wlcb-01", created["Zone"])
+}
+
 func TestCreateInstanceGuided_ExplicitGPUOffersIntentFamily(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "GuidedGpuLocked": true})
 	form, err := buildGuidedGPUForm(wfCtx)
@@ -355,6 +445,51 @@ func TestCreateInstanceGuided_ExplicitGPUOffersIntentFamily(t *testing.T) {
 	assert.Equal(t, []string{"4090", "4090_48G"}, optionValues(gpu))
 }
 
+func TestCreateInstanceGuided_GPUCardDisablesSoldOutFamilyFromInventory(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType":         "4090",
+		"GuidedGpuLocked": true,
+		"ZoneIds": map[string]uint32{
+			"cn-wlcb-01": 1,
+			"cn-sh2-02":  2,
+		},
+	})
+	wfCtx.StepResults["查询GPU库存"] = map[string]any{"GpuInventory": map[string]any{
+		"Exclusive": map[string]any{
+			"1": map[string]any{"4090": float64(0), "4090_48G": float64(1)},
+			"2": map[string]any{"4090": float64(0)},
+		},
+	}}
+
+	form, err := buildGuidedGPUForm(wfCtx)
+	require.NoError(t, err)
+	gpu := fieldByKey(t, form, "GpuType")
+	require.Equal(t, []string{"4090", "4090_48G"}, optionValues(gpu))
+	plain4090 := optionByValue(t, gpu, "4090")
+	wide4090 := optionByValue(t, gpu, "4090_48G")
+	assert.True(t, plain4090.Disabled, "4090 has no live inventory in any offered zone")
+	assert.Contains(t, plain4090.Note, "暂无库存")
+	assert.False(t, wide4090.Disabled, "4090_48G still has live inventory")
+	assert.Contains(t, wide4090.Note, "库存约 1 张 GPU")
+}
+
+func TestGuidedImageFormOptionsFiltersToRequestedImageIntent(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImageName": "torch"})
+	wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-win", "Name": "Windows-nvidia 2022", "ImageType": "System", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-torch-old", "Name": "cuda128_torch280_py312", "ImageType": "App", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-torch-new", "Name": "cuda130_torch291_py312", "ImageType": "App", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI基础镜像0.10.0", "ImageType": "App", "Status": "Available"},
+	}}
+
+	form, err := buildGuidedFinalForm(wfCtx)
+	require.NoError(t, err)
+
+	img := fieldByKey(t, form, "ImageId")
+	assert.Equal(t, "img-torch-new", img.Value)
+	assert.Equal(t, []string{"img-torch-new", "img-torch-old"}, optionValues(img))
+}
+
 func TestCreateInstanceGuided_ExplicitGPUVariantStaysExact(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090_48G", "GuidedGpuLocked": true})
 	form, err := buildGuidedGPUForm(wfCtx)
@@ -363,23 +498,88 @@ func TestCreateInstanceGuided_ExplicitGPUVariantStaysExact(t *testing.T) {
 	assert.Equal(t, []string{"4090_48G"}, optionValues(gpu))
 }
 
-// A model-driven deploy (deploy_model sets GuidedRecommended, not GuidedGpuLocked)
-// keeps every GPU on the card but must SHOW the matcher's pick as a recommendation:
-// recommendation-aware title + a 推荐 badge on the matching option. Encodes WHY —
-// "用户有明确需求的时候，卡片中也应该是相应的推荐的配置".
-func TestCreateInstanceGuided_RecommendedGPUIsVisible(t *testing.T) {
-	wfCtx := formWfCtx(t, map[string]any{"GpuType": "A800", "GuidedRecommended": true})
+func TestCreateInstanceGuided_ZoneCardDisablesSoldOutZonesFromInventory(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType": "4090",
+		"Zone":    "cn-wlcb-01",
+		"ZoneIds": map[string]uint32{
+			"cn-wlcb-01": 1,
+			"cn-sh2-02":  2,
+		},
+	})
+	wfCtx.StepResults["查询GPU库存"] = map[string]any{"GpuInventory": map[string]any{
+		"Exclusive": map[string]any{
+			"1": map[string]any{"4090": float64(0)},
+			"2": map[string]any{"4090": float64(3)},
+		},
+	}}
+
+	form, err := buildGuidedZoneForm(wfCtx)
+	require.NoError(t, err)
+	zone := fieldByKey(t, form, "Zone")
+	assert.ElementsMatch(t, []string{"cn-wlcb-01", "cn-sh2-02"}, optionValues(zone))
+	wlcb := optionByValue(t, zone, "cn-wlcb-01")
+	sh2 := optionByValue(t, zone, "cn-sh2-02")
+	assert.True(t, wlcb.Disabled, "selected zone has no live 4090 inventory")
+	assert.Contains(t, wlcb.Note, "暂无库存")
+	assert.False(t, sh2.Disabled)
+	assert.Contains(t, sh2.Note, "库存约 3 张 GPU")
+}
+
+func TestCreateInstanceGuided_GPUCountCardUsesReadableStockCopy(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType": "4090_48G",
+		"Zone":    "cn-sh2-02",
+		"ZoneIds": map[string]uint32{"cn-sh2-02": 2},
+	})
+	wfCtx.StepResults["查询可用配比"] = map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{"Name": "4090_48G", "Zone": "cn-sh2-02", "Status": "Normal",
+			"MachineSizes": []any{
+				map[string]any{"Gpu": float64(1), "Collection": []any{map[string]any{"Cpu": float64(16), "Memory": []any{float64(96)}}}},
+				map[string]any{"Gpu": float64(2), "Collection": []any{map[string]any{"Cpu": float64(32), "Memory": []any{float64(192)}}}},
+			}},
+	}}
+	wfCtx.StepResults["查询GPU库存"] = map[string]any{"GpuInventory": map[string]any{
+		"Exclusive": map[string]any{"2": map[string]any{"4090_48G": float64(1)}},
+	}}
+
+	form, err := buildGuidedGPUCountForm(wfCtx)
+	require.NoError(t, err)
+
+	gpuCount := fieldByKey(t, form, "Gpu")
+	one := optionByValue(t, gpuCount, "1")
+	two := optionByValue(t, gpuCount, "2")
+	assert.Equal(t, "1 张 GPU", one.Label)
+	assert.Contains(t, one.Note, "当前库存可满足")
+	assert.Equal(t, "2 张 GPU", two.Label)
+	assert.True(t, two.Disabled)
+	assert.Contains(t, two.Note, "库存不足，仅剩 1 张 GPU")
+	assert.NotContains(t, one.Note, "有货 1 卡")
+	assert.NotContains(t, two.Note, "有货 1 卡")
+}
+
+// A model-driven deploy should show the feasible recommendation set that the
+// deploy planner already validated, not every sellable GPU in the catalog.
+func TestCreateInstanceGuided_RecommendedGPUUsesCandidateSet(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType":             "4090_48G",
+		"GuidedRecommended":   true,
+		"GuidedCandidateGPUs": []string{"4090_48G", "4090"},
+		"GuidedGpuReasons": map[string]string{
+			"4090_48G": "现成 DeepSeek-R1:32b 镜像 · 当前库存可满足",
+		},
+	})
 	form, err := buildGuidedGPUForm(wfCtx)
 	require.NoError(t, err)
 	require.NotNil(t, form.Step)
 	assert.Contains(t, form.Step.Title, "推荐")
 	assert.NotEmpty(t, form.Step.Description)
 	gpu := fieldByKey(t, form, "GpuType")
-	// unlocked: every option still offered, the recommended one hoisted first + badged.
-	assert.Equal(t, []string{"A800", "4090", "4090_48G", "P40"}, optionValues(gpu))
+	assert.Equal(t, []string{"4090_48G", "4090"}, optionValues(gpu))
 	for _, o := range gpu.Options {
-		if o.Value == "A800" {
+		if o.Value == "4090_48G" {
 			assert.Contains(t, o.Note, "推荐", "recommended option must carry a 推荐 badge")
+			assert.Contains(t, o.Note, "现成 DeepSeek-R1:32b 镜像", "recommendation reason should explain why this card is shown")
 		}
 	}
 }
@@ -397,6 +597,24 @@ func TestGuidedSpecOverrideSetsFullCreateParams(t *testing.T) {
 	assert.Equal(t, float64(1), wfCtx.Params["Gpu"])
 	assert.Equal(t, float64(16), wfCtx.Params["Cpu"])
 	assert.Equal(t, float64(65536), wfCtx.Params["Memory"])
+}
+
+func TestCreateInstanceGuided_ImageOptionsRankGPUSupportWithoutHardFiltering(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090"})
+	form, err := buildGuidedFinalForm(wfCtx)
+	require.NoError(t, err)
+
+	img := fieldByKey(t, form, "ImageId")
+	values := optionValues(img)
+	assert.Less(t, indexOf(values, "img-002"), indexOf(values, "img-003"), "GPU-supported PyTorch image should rank before V100-only image")
+	assert.Contains(t, values, "img-003", "SupportedGpuTypes mismatch is a warning/ranking signal, not a static hard filter")
+	var mismatchNote string
+	for _, opt := range img.Options {
+		if opt.Value == "img-003" {
+			mismatchNote = opt.Note
+		}
+	}
+	assert.Contains(t, mismatchNote, "可能不适配")
 }
 
 func TestCreateInstanceGuided_FinalEditRevalidatesPriceBeforeCreate(t *testing.T) {

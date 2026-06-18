@@ -79,6 +79,19 @@ func (s *StepRunner) runConfirmStep(ctx context.Context, def *workflow.Definitio
 			return stepResult{state: observability.StepStateFailed, msg: "用户取消了操作", confirmDeclined: true}
 		}
 		if len(res.Overrides) == 0 {
+			if step.ConfirmSubmitMode == workflow.ConfirmSubmitContinue && step.ApplyOverrides != nil {
+				defaults := workflow.FormDefaultOverrides(form)
+				if len(defaults) > 0 {
+					if verr := form.ValidateOverrides(defaults); verr != nil {
+						s.emit(observability.StepStateFailed, idx, "", args, nil, "invalid_defaults", started, ended)
+						return stepResult{state: observability.StepStateFailed, msg: fmt.Sprintf("默认配置无效: %v", verr)}
+					}
+					if aerr := step.ApplyOverrides(wfCtx, defaults); aerr != nil {
+						s.emit(observability.StepStateFailed, idx, "", args, nil, "invalid_defaults", started, ended)
+						return stepResult{state: observability.StepStateFailed, msg: fmt.Sprintf("默认配置无效: %v", aerr)}
+					}
+				}
+			}
 			s.emit(observability.StepStateSuccess, idx, "", args, nil, "", started, ended)
 			return stepResult{state: observability.StepStateSuccess}
 		}
