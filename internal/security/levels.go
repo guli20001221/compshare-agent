@@ -34,6 +34,7 @@ var ActionLevels = map[string]Level{
 	"DescribeFavoriteImages":                  L0,
 	"DescribeCommunityImages":                 L0,
 	"DescribeCompShareSupportZone":            L0,
+	"DescribeCompShareGpuInventory":           L0,
 	"DescribeAvailableCompShareInstanceTypes": L0,
 	"DescribeCompShareMachineTypeFamilies":    L0,
 	"CheckCompShareResourceCapacity":          L0,

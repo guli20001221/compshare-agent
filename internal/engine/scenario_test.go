@@ -1072,6 +1072,13 @@ func TestCreateWorkflowFailureReply(t *testing.T) {
 	assert.Contains(t, got, "insufficient balance")
 	assert.NotContains(t, got, "执行失败")
 
+	// Upstream adaptive-image failure should be translated into a user-facing
+	// image/zone compatibility message, not leak the internal action error.
+	got = createWorkflowFailureReply("步骤「创建实例」执行失败: ActionError: adaptive uhost image id is empty")
+	assert.Contains(t, got, "当前可用区")
+	assert.Contains(t, got, "镜像")
+	assert.NotContains(t, got, "adaptive uhost image id is empty")
+
 	// Empty message → safe fallback.
 	got = createWorkflowFailureReply("")
 	assert.Contains(t, got, "未能创建实例")

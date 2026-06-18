@@ -125,19 +125,34 @@ func TestGetGPUSpecs_V100S_DenseNotSparsity(t *testing.T) {
 
 func TestCanonicalGPUType(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"V100", "V100S"},  // the reported bug: platform sells V100S, not V100
-		{"v100", "V100S"},  // alias is case-insensitive
+		{"V100", "V100S"},   // the reported bug: platform sells V100S, not V100
+		{"v100", "V100S"},   // alias is case-insensitive
 		{" V100 ", "V100S"}, // trimmed
-		{"V100S", "V100S"}, // already canonical → unchanged
-		{"4090", "4090"},   // exact catalog key → unchanged
-		{"a100", "A100"},   // case-folds to canonical key
+		{"V100S", "V100S"},  // already canonical → unchanged
+		{"4090", "4090"},    // exact catalog key → unchanged
+		{"4090 48G", "4090_48G"},
+		{"4090-48G", "4090_48G"},
+		{"4090_48G", "4090_48G"},
+		{"a100", "A100"}, // case-folds to canonical key
 		{"H20", "H20"},
-		{"", ""},                 // empty stays empty
+		{"", ""},                   // empty stays empty
 		{"NoSuchGPU", "NoSuchGPU"}, // unknown returned as-is (caller surfaces grounded error)
 	}
 	for _, c := range cases {
 		assert.Equalf(t, c.want, CanonicalGPUType(c.in), "CanonicalGPUType(%q)", c.in)
 	}
+}
+
+func TestExplicitGPUTypeFromText(t *testing.T) {
+	cases := []string{
+		"开一台 4090 48G",
+		"帮我搞台4090-48G",
+		"我要 RTX 4090_48GB",
+	}
+	for _, c := range cases {
+		assert.Equalf(t, "4090_48G", ExplicitGPUTypeFromText(c), "ExplicitGPUTypeFromText(%q)", c)
+	}
+	assert.Empty(t, ExplicitGPUTypeFromText("帮我搞台 4090"))
 }
 
 func TestGetGPUSpecs_V100Alias_ResolvesToV100S(t *testing.T) {
@@ -220,10 +235,10 @@ func TestGetGPURecommendation_BuildRecsInvalidGPU(t *testing.T) {
 
 func TestContainsAny_EdgeCases(t *testing.T) {
 	assert.False(t, containsAny("", "test"))
-	assert.True(t, containsAny("hello", ""))          // Go: strings.Contains(s, "") is always true
+	assert.True(t, containsAny("hello", "")) // Go: strings.Contains(s, "") is always true
 	assert.True(t, containsAny("推理部署", "推理"))
-	assert.True(t, containsAny("lora微调", "lora"))    // caller must pre-lowercase s
-	assert.False(t, containsAny("LORA微调", "lora"))   // uppercase s won't match (caller's job)
+	assert.True(t, containsAny("lora微调", "lora"))  // caller must pre-lowercase s
+	assert.False(t, containsAny("LORA微调", "lora")) // uppercase s won't match (caller's job)
 	assert.False(t, containsAny("training", "推理"))
 }
 

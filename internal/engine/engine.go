@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
@@ -123,6 +124,8 @@ var (
 	clockRangeRE         = regexp.MustCompile(`(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)`)
 	historicalDurationRE = regexp.MustCompile(`(?i)(?:过去|近|最近|last|past|previous|recent)\s*(?:\d+\s*)?(?:分钟|小时|天|周|月|hour|hours|day|days|week|weeks|month|months|h|d)`)
 	percentValueRE       = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*%`)
+	hardwareCreateVerbRE = regexp.MustCompile(`(?i)(创建|新建|开一台|开个|搞台|搞一台|抢一台|买一台|租一台|来一台|部署一台)`)
+	hardwareAdviceRE     = regexp.MustCompile(`(?i)(能干嘛|能做什么|有什么用|适合做什么|适合干嘛)`)
 )
 
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
@@ -198,13 +201,13 @@ type Engine struct {
 	// model (ADR-002 high-freedom + strong-guardrail). Shared across sessions
 	// like llmClient. nil on the NewWithDeps test path — callers MUST guard
 	// (the deploy handler falls back to llmClient when nil).
-	agentLLMClient              LLMClient
-	safeExecutor                *tools.SafeToolExecutor
+	agentLLMClient LLMClient
+	safeExecutor   *tools.SafeToolExecutor
 	// externalExecutor is the RAW (unfiltered) shared executor. Used only for
 	// read-only L0 catalog calls that must pass gateway-identity args the
 	// SafeToolExecutor would strip (e.g. DescribeCompShareSupportZone needs
 	// organization_id). Never used for mutating calls — those go via safeExecutor.
-	externalExecutor            tools.ToolExecutor
+	externalExecutor tools.ToolExecutor
 	// zoneCatalog resolves availability zones (incl. Chinese display names) from
 	// the live support-zone catalog. nil → falls back to the process-wide
 	// zones.Default(); tests inject a fresh catalog for isolation.
@@ -685,6 +688,7 @@ func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, routeMap map[i
 			e == intent.IntentMonitorQuery ||
 			e == intent.IntentDiagnosis ||
 			e == intent.IntentVagueFailure ||
+			e == intent.IntentOperationLifecycle ||
 			intent.IsRoutingIntent(e) {
 			enabledMap[e] = struct{}{}
 		}
@@ -1736,6 +1740,9 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
 		return reply, true
 	}
+	if reply, handled := e.tryDirectHardwareCreate(ctx, dispatch, userMsg, onStep); handled {
+		return reply, true
+	}
 	// Agent-tier skills (deploy_model today) dispatch through dispatchAgentSkill —
 	// the uniform seam — not as routes: a route handler reaches only the
 	// ToolExecutor and cannot drive the orchestrator saga. The seam maps the intent
@@ -1779,6 +1786,122 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 
 	e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 	return "", false
+}
+
+func (e *Engine) tryDirectHardwareCreate(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+	if dispatch.result.Plan.Intent != intent.IntentOperationLifecycle || !explicitHardwareCreateRequest(userMsg) {
+		return "", false
+	}
+	args, ok := hardwareCreateWorkflowArgs(userMsg)
+	if !ok {
+		return "", false
+	}
+	const action = "CreateInstanceWorkflow"
+	e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
+	args = e.safeExecutor.FilterArgs(action, args)
+	onStep(StepEvent{
+		Type:   StepToolCall,
+		Action: action,
+		Source: observability.ToolSourceMainReAct,
+		Args:   e.safeExecutor.RedactArgs(action, args),
+	})
+	raw := e.executeWorkflow(ctx, action, args, onStep)
+	reply := workflowDirectReply(action, raw)
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: reply,
+	})
+	return reply, true
+}
+
+func explicitHardwareCreateRequest(userMsg string) bool {
+	text := strings.TrimSpace(userMsg)
+	if text == "" || hardwareAdviceRE.MatchString(text) {
+		return false
+	}
+	if !hardwareCreateVerbRE.MatchString(text) {
+		return false
+	}
+	return knowledge.ExplicitGPUTypeFromText(text) != "" || extractDeployGPU(text) != ""
+}
+
+func hardwareCreateWorkflowArgs(userMsg string) (map[string]any, bool) {
+	gpu := knowledge.ExplicitGPUTypeFromText(userMsg)
+	if gpu == "" {
+		gpu = extractDeployGPU(userMsg)
+	}
+	gpu = knowledge.CanonicalGPUType(gpu)
+	if gpu == "" {
+		return nil, false
+	}
+	args := map[string]any{
+		"GpuType": gpu,
+		"Gpu":     float64(1),
+	}
+	if imageName := createImageNameFromText(userMsg); imageName != "" {
+		args["ImageName"] = imageName
+	}
+	return args, true
+}
+
+func createImageNameFromText(text string) string {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return ""
+	}
+	switch {
+	case strings.Contains(lower, "pytorch") || strings.Contains(lower, "torch"):
+		return "torch"
+	case strings.Contains(lower, "vllm"):
+		return "vLLM"
+	case strings.Contains(lower, "ollama"):
+		return "Ollama"
+	case strings.Contains(lower, "comfyui") || strings.Contains(lower, "comfy ui"):
+		return "ComfyUI"
+	case strings.Contains(lower, "dify"):
+		return "Dify"
+	case strings.Contains(lower, "ragflow"):
+		return "RAGFlow"
+	case strings.Contains(lower, "sglang"):
+		return "SGLang"
+	case strings.Contains(lower, "docker"):
+		return "Docker"
+	case strings.Contains(lower, "cuda"):
+		return "cuda"
+	case strings.Contains(lower, "ubuntu"):
+		return "Ubuntu"
+	case strings.Contains(lower, "windows"):
+		return "Windows"
+	default:
+		return ""
+	}
+}
+
+func workflowDirectReply(action, raw string) string {
+	if finalMsg, ok := isFinalReply(raw); ok {
+		return finalMsg
+	}
+	if action != "CreateInstanceWorkflow" {
+		return raw
+	}
+	var result workflow.Result
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return raw
+	}
+	if !result.Success {
+		return createWorkflowFailureReply(result.Message)
+	}
+	ids, _ := result.Data["UHostIds"].([]any)
+	var parts []string
+	for _, id := range ids {
+		if s, ok := id.(string); ok && strings.TrimSpace(s) != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		return "创建实例请求已提交。"
+	}
+	return fmt.Sprintf("创建实例请求已提交，实例 ID：%s。", strings.Join(parts, "、"))
 }
 
 // agentSkillForIntent maps an agent-tier intent to the skill name its dispatch
@@ -4112,8 +4235,12 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// availability query returns nothing and the failure gets narrated into a
 	// fabricated "V100 下架" reply.
 	if action == "CreateInstanceWorkflow" {
-		if gt, ok := args["GpuType"].(string); ok && gt != "" {
+		if explicit := knowledge.ExplicitGPUTypeFromText(e.lastUserMsg); explicit != "" {
+			args["GpuType"] = explicit
+		} else if gt, ok := args["GpuType"].(string); ok && gt != "" {
 			args["GpuType"] = knowledge.CanonicalGPUType(gt)
+		}
+		if gt, _ := args["GpuType"].(string); gt != "" {
 			if e.guidedCreate && e.confirmEditsFn != nil {
 				if _, preset := args["GuidedGpuLocked"]; !preset {
 					args["GuidedGpuLocked"] = true
@@ -4130,6 +4257,14 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		if clarify := e.applyCreateZoneResolution(ctx, args); clarify != "" {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), clarify, nil))
 			return finalReplyPrefix + clarify
+		}
+		if u, ok := tools.UserFrom(ctx); ok {
+			if u.TopOrganizationID != 0 {
+				args["top_organization_id"] = u.TopOrganizationID
+			}
+			if u.OrganizationID != 0 {
+				args["organization_id"] = u.OrganizationID
+			}
 		}
 	}
 
@@ -4251,6 +4386,9 @@ func createWorkflowFailureReply(message string) string {
 	// actionable guidance rather than leaking the error code.
 	if isImageUnavailableMessage(message) {
 		return "抱歉，创建实例没有成功：您指定的镜像在当前可用区暂不可用。请更换镜像名称重试，或在控制台创建页选择该可用区支持的镜像。"
+	}
+	if deployment.ClassifyCreateFailure(message).Kind == deployment.FailureImageZoneNotAdapted {
+		return "抱歉，创建实例没有成功：您选择的镜像在当前可用区暂未适配。请更换镜像，或选择其他可用区后重试。"
 	}
 	msg := workflowStepPrefixRE.ReplaceAllString(strings.TrimSpace(message), "")
 	msg = strings.TrimSpace(msg)

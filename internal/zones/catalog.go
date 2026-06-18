@@ -28,6 +28,7 @@ type ZoneInfo struct {
 	Region   string // region id, e.g. "cn-bj2"
 	ZoneID   uint32 // numeric zone id, e.g. 5001
 	Describe string // 可用区显示名称, e.g. "华北一C"
+	IsPod    bool   // true when the zone creates CPod/container instances.
 }
 
 // Executor is the subset of the CompShare API executor this package needs.
@@ -65,6 +66,7 @@ func FetchSupportZones(ctx context.Context, exec Executor, topOrg, org uint32) (
 			Region:   str(m["Region"]),
 			Describe: str(m["Describe"]),
 			ZoneID:   u32(m["ZoneId"]),
+			IsPod:    boolVal(m["IsPod"]),
 		}
 		if zi.Zone == "" {
 			continue
@@ -83,8 +85,8 @@ type Catalog struct {
 	now   func() time.Time
 	fetch func(ctx context.Context, exec Executor, topOrg, org uint32) ([]ZoneInfo, error)
 
-	mu       sync.Mutex
-	zones    []ZoneInfo
+	mu        sync.Mutex
+	zones     []ZoneInfo
 	fetchedAt time.Time
 }
 
@@ -260,6 +262,17 @@ func u32(v any) uint32 {
 		return n
 	}
 	return 0
+}
+
+func boolVal(v any) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		return strings.EqualFold(strings.TrimSpace(b), "true")
+	default:
+		return false
+	}
 }
 
 func squashSpace(s string) string {

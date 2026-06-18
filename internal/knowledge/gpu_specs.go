@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -14,14 +15,14 @@ import (
 // Prices are NOT included — must be queried via GetCompShareInstancePrice API.
 type GPUSpec struct {
 	Name        string   `json:"name"`
-	VRAM        int      `json:"vram_gb"`        // 显存 GB
-	FP16        float64  `json:"fp16_tflops"`    // FP16 算力 TFLOPS (Tensor Core dense, 不含 sparsity)
-	MaxGPU      int      `json:"max_gpu"`        // 最大 GPU 卡数
-	MaxCPU      int      `json:"max_cpu"`        // 最大 CPU 核数
-	MaxMemoryGB int      `json:"max_memory_gb"`  // 最大内存 GB
-	BestFor     []string `json:"best_for"`       // 推荐使用场景
-	SpotSupport bool     `json:"spot_support"`   // 是否支持抢占式
-	Generation  string   `json:"generation"`     // 架构代次
+	VRAM        int      `json:"vram_gb"`       // 显存 GB
+	FP16        float64  `json:"fp16_tflops"`   // FP16 算力 TFLOPS (Tensor Core dense, 不含 sparsity)
+	MaxGPU      int      `json:"max_gpu"`       // 最大 GPU 卡数
+	MaxCPU      int      `json:"max_cpu"`       // 最大 CPU 核数
+	MaxMemoryGB int      `json:"max_memory_gb"` // 最大内存 GB
+	BestFor     []string `json:"best_for"`      // 推荐使用场景
+	SpotSupport bool     `json:"spot_support"`  // 是否支持抢占式
+	Generation  string   `json:"generation"`    // 架构代次
 }
 
 // gpuSpecs is the canonical GPU specification table.
@@ -132,6 +133,13 @@ var gpuTypeAliases = map[string]string{
 	"V100": "V100S",
 }
 
+var explicitGPUTypePatterns = []struct {
+	re      *regexp.Regexp
+	gpuType string
+}{
+	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])(?:rtx\s*)?4090[\s_-]*48\s*g(?:b)?(?:[^0-9a-z]|$)`), "4090_48G"},
+}
+
 // CanonicalGPUType normalizes a user/LLM-supplied GPU type to the platform's
 // canonical name so downstream API calls (availability / capacity / price /
 // create) match the catalog. It (1) maps known aliases (e.g. "V100"->"V100S"),
@@ -143,6 +151,9 @@ func CanonicalGPUType(s string) string {
 	t := strings.TrimSpace(s)
 	if t == "" {
 		return t
+	}
+	if normalizeGPUVariantToken(t) == "409048G" {
+		return "4090_48G"
 	}
 	if canon, ok := gpuTypeAliases[strings.ToUpper(t)]; ok {
 		return canon
@@ -156,6 +167,23 @@ func CanonicalGPUType(s string) string {
 		}
 	}
 	return t
+}
+
+// ExplicitGPUTypeFromText returns a precise platform GPU type explicitly
+// mentioned in free-form user text. This catches cases where the LLM tool call
+// collapses a variant ("4090 48G") back to the base card ("4090").
+func ExplicitGPUTypeFromText(text string) string {
+	for _, p := range explicitGPUTypePatterns {
+		if p.re.MatchString(text) {
+			return p.gpuType
+		}
+	}
+	return ""
+}
+
+func normalizeGPUVariantToken(s string) string {
+	token := strings.NewReplacer(" ", "", "\t", "", "_", "", "-", "").Replace(strings.ToUpper(strings.TrimSpace(s)))
+	return strings.TrimPrefix(token, "RTX")
 }
 
 // GetGPUSpecs returns specifications for the given GPU type.

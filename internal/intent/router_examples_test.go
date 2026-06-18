@@ -329,7 +329,13 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // so knowledge_qa answers it. Boundary preserved: real deployable workloads
 // (部署 Qwen / 跑数字人 / 搭 ComfyUI) stay deploy_model. Eval-gated by a live
 // jitter probe (target cases → knowledge_qa, legit deploys unchanged).
-const systemPromptSHA256Baseline = "09e37c13c154769227f58f2479287ff863345c8e3a4e631c08a6d6a267a00ef1"
+//
+// Deployment planner follow-up (2026-06-18): tighten the create/deploy boundary
+// after review. Hardware-first creation such as "部署一台 4090" remains
+// operation_lifecycle, but model/app/framework-first requests such as
+// "部署 DeepSeekR1 / 部署数字人" stay deploy_model. Also removes "部署一台" from the
+// generic lifecycle verb list so it cannot over-bias workload deploys.
+const systemPromptSHA256Baseline = "5e84ba28c1d9ca1dfadf87162eec0501e051d66a9827e2df4296aaf25c452b2d"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

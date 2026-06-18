@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // --- Mock Executor ---
@@ -287,6 +288,68 @@ func TestEngine_Run_ConfirmApproved(t *testing.T) {
 	// Tool was called after confirmation
 	assert.Len(t, executor.calls, 1)
 	assert.Equal(t, "StopCompShareInstance", executor.calls[0].action)
+}
+
+func TestEngine_Run_SkipIfOmitsStep(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"RetCode": 0},
+		"CreateCompShareInstance":   {"RetCode": 0},
+	}}
+	confirmCalled := false
+	eventsFn, events := collectEvents()
+
+	def := &Definition{
+		Name: "CreateInstanceWorkflow",
+		Steps: []Step{
+			{
+				Name: "query",
+				Type: StepToolCall,
+				Tool: "DescribeCompShareInstance",
+				BuildArgs: func(*Context) (map[string]any, error) {
+					return map[string]any{"Phase": "query"}, nil
+				},
+			},
+			{
+				Name: "skipped-confirm",
+				Type: StepConfirm,
+				SkipIf: func(*Context) (bool, error) {
+					return true, nil
+				},
+				BuildArgs: func(*Context) (map[string]any, error) {
+					t.Fatal("BuildArgs must not be called for skipped steps")
+					return nil, nil
+				},
+			},
+			{
+				Name: "create",
+				Type: StepToolCall,
+				Tool: "CreateCompShareInstance",
+				BuildArgs: func(*Context) (map[string]any, error) {
+					return map[string]any{"Phase": "create"}, nil
+				},
+			},
+		},
+	}
+
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		confirmCalled = true
+		return true
+	}, eventsFn)
+	result, err := eng.Run(context.Background(), def, nil)
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.False(t, confirmCalled)
+	assert.Equal(t, []StepSummary{
+		{Name: "query", Status: "success"},
+		{Name: "create", Status: "success"},
+	}, result.Steps)
+	require.Len(t, executor.calls, 2)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
+	assert.Equal(t, "CreateCompShareInstance", executor.calls[1].action)
+	for _, ev := range *events {
+		assert.NotEqual(t, "skipped-confirm", ev.StepName)
+	}
 }
 
 func TestEngine_Run_ConfirmDenied(t *testing.T) {

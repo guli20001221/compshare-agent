@@ -24,7 +24,7 @@ const segmentIntentScopedMutatingRules = `## 行为规则
 - 对诊断类问题的续问，不要直接复用上一轮诊断结论，应重新调用相关诊断工具或先重新查询实例状态。`
 
 var segmentMutatingRules = `## 意图优先级
-- 用户提到"创建"、"开一台"、"帮我建"、"部署一台"等明确创建操作时，必须使用 CreateInstanceWorkflow，不要先用 GetCompShareInstancePrice 查价格。仅当用户明确只问价格时才用价格查询工具。
+- 用户提到"创建"、"开一台"、"帮我建"等明确创建操作，或"部署一台 4090"这类硬件优先表达时，必须使用 CreateInstanceWorkflow，不要先用 GetCompShareInstancePrice 查价格。模型/应用优先表达（如"部署 DeepSeekR1"、"部署数字人"）走部署模型流程；仅当用户明确只问价格时才用价格查询工具。
 
 ## 行为规则
 每次收到用户消息，先判断意图类别，再选择行动：

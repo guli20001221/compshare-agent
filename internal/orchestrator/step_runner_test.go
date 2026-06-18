@@ -175,6 +175,72 @@ func TestSaga_Run_ForwardSuccess(t *testing.T) {
 	assert.Equal(t, "turn-7-saga-step-02", sink.steps[4].StepID)
 }
 
+func TestSaga_Run_OptionalToolFailureDoesNotFailWorkflow(t *testing.T) {
+	exec := &mockExecutor{errOn: map[string]error{"DescribeCompShareInstance": fmt.Errorf("not ready")}}
+	def := &workflow.Definition{Name: "CreateInstanceWorkflow", Steps: []workflow.Step{
+		toolStep("创建实例", "CreateCompShareInstance"),
+		{
+			Name:     "查看状态",
+			Type:     workflow.StepToolCall,
+			Tool:     "DescribeCompShareInstance",
+			Optional: true,
+			BuildArgs: func(*workflow.Context) (map[string]any, error) {
+				return map[string]any{"UHostIds": []any{"uhost-new001"}}, nil
+			},
+		},
+	}}
+
+	result, err := New(Options{Executor: exec, Confirm: approve}).Run(context.Background(), def, nil)
+
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Empty(t, result.StoppedAt)
+	require.Len(t, result.Steps, 2)
+	assert.Equal(t, "success", result.Steps[0].Status)
+	assert.Equal(t, "failed", result.Steps[1].Status)
+}
+
+func TestSaga_Run_SkipIfOmitsStep(t *testing.T) {
+	exec := &mockExecutor{}
+	sink := &captureSink{}
+	confirmCalled := false
+	def := &workflow.Definition{Name: "CreateInstanceWorkflow", Steps: []workflow.Step{
+		toolStep("query", "DescribeCompShareInstance"),
+		{
+			Name: "skipped-confirm",
+			Type: workflow.StepConfirm,
+			SkipIf: func(*workflow.Context) (bool, error) {
+				return true, nil
+			},
+			BuildArgs: func(*workflow.Context) (map[string]any, error) {
+				t.Fatal("BuildArgs must not be called for skipped steps")
+				return nil, nil
+			},
+		},
+		toolStep("create", "CreateCompShareInstance"),
+	}}
+
+	result, err := New(Options{
+		Executor: exec,
+		Confirm: func(string, map[string]any) bool {
+			confirmCalled = true
+			return true
+		},
+		Sink:   sink,
+		TurnID: "t-skip",
+	}).Run(context.Background(), def, nil)
+
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.False(t, confirmCalled)
+	assert.Equal(t, []workflow.StepSummary{
+		{Name: "query", Status: "success"},
+		{Name: "create", Status: "success"},
+	}, result.Steps)
+	assert.Equal(t, []string{"DescribeCompShareInstance", "CreateCompShareInstance"}, exec.calls)
+	assert.NotContains(t, sink.states(), observability.StepStateAwaitingConfirm)
+}
+
 func TestSaga_Run_ToolError_StopsNoRetry(t *testing.T) {
 	exec := &mockExecutor{errOn: map[string]error{"DescribeCompShareImages": fmt.Errorf("boom")}}
 	sink := &captureSink{}
