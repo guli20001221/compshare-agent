@@ -1,0 +1,766 @@
+package engine
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+	"unicode"
+
+	"github.com/compshare-agent/internal/diagnosis"
+	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/intent"
+	openai "github.com/sashabaranov/go-openai"
+)
+
+func augmentPlanTargetRefsFromUserText(plan intent.IntentRoute, userText string, snapshot entity.RegistrySnapshot) intent.IntentRoute {
+	if len(plan.Slots.TargetRefs) > 0 {
+		return plan
+	}
+	if plan.Intent != intent.IntentResourceInfo &&
+		plan.Intent != intent.IntentMonitorQuery &&
+		plan.Intent != intent.IntentOperationLifecycle &&
+		plan.Intent != intent.IntentDiagnosis {
+		return plan
+	}
+	if inst, _ := findExplicitInstanceRef(userText, snapshot); inst != nil {
+		plan.Slots.TargetRefs = []intent.TargetRef{{
+			Type:       intent.TargetRefUHostIDUserInput,
+			Value:      inst.UHostId,
+			Source:     intent.SourceUserText,
+			SourceSpan: inst.UHostId,
+		}}
+		return plan
+	}
+	if inst, ok := findUniqueInstanceNameInText(userText, snapshot); ok {
+		plan.Slots.TargetRefs = []intent.TargetRef{{
+			Type:       intent.TargetRefUHostIDUserInput,
+			Value:      inst.UHostId,
+			Source:     intent.SourceUserText,
+			SourceSpan: inst.Name,
+		}}
+		return plan
+	}
+	if plan.Intent == intent.IntentResourceInfo {
+		if gpu, ok := findUniqueGPUTypeInText(userText, snapshot); ok {
+			plan.Slots.TargetRefs = []intent.TargetRef{{
+				Type:   intent.TargetRefFilter,
+				Value:  "gpu_type=" + gpu,
+				Source: intent.SourceUserText,
+			}}
+		}
+	}
+	if plan.Intent == intent.IntentDiagnosis {
+		if inst, ok := findUniqueInstanceByGPUTypeInText(userText, snapshot); ok {
+			plan.Slots.TargetRefs = []intent.TargetRef{{
+				Type:       intent.TargetRefUHostIDUserInput,
+				Value:      inst.UHostId,
+				Source:     intent.SourceUserText,
+				SourceSpan: inst.GpuType,
+			}}
+		}
+	}
+	return plan
+}
+
+func findUniqueInstanceNameInText(userText string, snapshot entity.RegistrySnapshot) (entity.InstanceSnapshot, bool) {
+	text := strings.TrimSpace(userText)
+	if text == "" || len(snapshot.Instances) == 0 {
+		return entity.InstanceSnapshot{}, false
+	}
+	compactText := normalizeResourceText(text)
+	type candidate struct {
+		inst  entity.InstanceSnapshot
+		score int
+	}
+	var candidates []candidate
+	for _, inst := range snapshot.Instances {
+		name := strings.TrimSpace(inst.Name)
+		if name == "" {
+			continue
+		}
+		score := 0
+		if strings.Contains(text, name) {
+			score = len([]rune(name)) * 10
+		} else {
+			normalizedName := normalizeResourceText(name)
+			if len([]rune(normalizedName)) >= 4 && strings.Contains(compactText, normalizedName) {
+				score = len([]rune(normalizedName))*10 - 1
+			}
+		}
+		if score > 0 {
+			candidates = append(candidates, candidate{inst: inst, score: score})
+		}
+	}
+	if len(candidates) == 0 {
+		return entity.InstanceSnapshot{}, false
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		if len([]rune(candidates[i].inst.Name)) != len([]rune(candidates[j].inst.Name)) {
+			return len([]rune(candidates[i].inst.Name)) > len([]rune(candidates[j].inst.Name))
+		}
+		return candidates[i].inst.UHostId < candidates[j].inst.UHostId
+	})
+	bestScore := candidates[0].score
+	var best []entity.InstanceSnapshot
+	for _, c := range candidates {
+		if c.score != bestScore {
+			break
+		}
+		best = append(best, c.inst)
+	}
+	if len(best) != 1 {
+		return entity.InstanceSnapshot{}, false
+	}
+	return best[0], true
+}
+
+func findUniqueGPUTypeInText(userText string, snapshot entity.RegistrySnapshot) (string, bool) {
+	compactText := normalizeResourceText(userText)
+	if compactText == "" {
+		return "", false
+	}
+	seen := map[string]struct{}{}
+	var matches []string
+	for _, inst := range snapshot.Instances {
+		gpuType := strings.TrimSpace(inst.GpuType)
+		if gpuType == "" {
+			continue
+		}
+		if _, ok := seen[gpuType]; ok {
+			continue
+		}
+		seen[gpuType] = struct{}{}
+		if strings.Contains(compactText, normalizeResourceText(gpuType)) {
+			matches = append(matches, gpuType)
+		}
+	}
+	if len(matches) == 0 {
+		return "", false
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if len([]rune(matches[i])) != len([]rune(matches[j])) {
+			return len([]rune(matches[i])) > len([]rune(matches[j]))
+		}
+		return matches[i] < matches[j]
+	})
+	longestLen := len([]rune(matches[0]))
+	var longest []string
+	for _, match := range matches {
+		if len([]rune(match)) != longestLen {
+			break
+		}
+		longest = append(longest, match)
+	}
+	if len(longest) != 1 {
+		return "", false
+	}
+	return longest[0], true
+}
+
+func findUniqueInstanceByGPUTypeInText(userText string, snapshot entity.RegistrySnapshot) (entity.InstanceSnapshot, bool) {
+	gpuType, ok := findUniqueGPUTypeInText(userText, snapshot)
+	if !ok {
+		return entity.InstanceSnapshot{}, false
+	}
+	var matches []entity.InstanceSnapshot
+	for _, inst := range snapshot.Instances {
+		if strings.EqualFold(strings.TrimSpace(inst.GpuType), gpuType) {
+			matches = append(matches, inst)
+		}
+	}
+	if len(matches) != 1 {
+		return entity.InstanceSnapshot{}, false
+	}
+	return matches[0], true
+}
+
+func findInstancesByGPUTypeInText(userText string, snapshot entity.RegistrySnapshot) (string, []entity.InstanceSnapshot) {
+	gpuType, ok := findUniqueGPUTypeInText(userText, snapshot)
+	if !ok {
+		return "", nil
+	}
+	var matches []entity.InstanceSnapshot
+	for _, inst := range snapshot.Instances {
+		if strings.EqualFold(strings.TrimSpace(inst.GpuType), gpuType) {
+			matches = append(matches, inst)
+		}
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if strings.TrimSpace(matches[i].Name) != strings.TrimSpace(matches[j].Name) {
+			return strings.TrimSpace(matches[i].Name) < strings.TrimSpace(matches[j].Name)
+		}
+		return matches[i].UHostId < matches[j].UHostId
+	})
+	return gpuType, matches
+}
+
+func renderGPUInstanceSelectionPrompt(gpuType string, matches []entity.InstanceSnapshot) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "我看到账户里有多台 %s 实例。请回复要诊断的实例名称或实例 ID：", gpuType)
+	limit := len(matches)
+	if limit > 8 {
+		limit = 8
+	}
+	for i := 0; i < limit; i++ {
+		inst := matches[i]
+		fmt.Fprintf(&b, "\n%d. %s (%s)，状态：%s", i+1, strings.TrimSpace(inst.Name), inst.UHostId, emptyStateLabel(inst.State))
+	}
+	if len(matches) > limit {
+		fmt.Fprintf(&b, "\n另外还有 %d 台同型号实例未展示。", len(matches)-limit)
+	}
+	return b.String()
+}
+
+func normalizeResourceText(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+	result := dispatch.result
+	if result.Plan.Intent != intent.IntentOperationLifecycle {
+		return "", false
+	}
+	action := result.Plan.Slots.Action
+	if action == "" {
+		action = inferLifecycleAction(userMsg)
+		result.Plan.Slots.Action = action
+	}
+	workflowName, ok := lifecycleWorkflowName(action)
+	if !ok {
+		return "", false
+	}
+	snapshot, okSnapshot, err := e.freshResourceSelectionSnapshot(ctx, dispatch.snapshot)
+	if err != nil || !okSnapshot {
+		return "", false
+	}
+	result.Plan = augmentPlanTargetRefsFromUserText(result.Plan, userMsg, snapshot)
+	inst, status := resolveSingleLifecycleTarget(result.Plan, snapshot)
+	switch status {
+	case lifecycleTargetMissing:
+		return "", false
+	case lifecycleTargetUnresolved:
+		reply := "没有找到你要操作的实例，请确认实例名称或 ID 是否正确。"
+		e.emitPlannerTrace(result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	case lifecycleTargetAmbiguous:
+		reply := "找到多台可能的实例，请补充完整实例名称或实例 ID 后再操作。"
+		e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	case lifecycleTargetHit:
+	default:
+		return "", false
+	}
+	if reply, blocked := lifecycleStateGateReply(action, inst); blocked {
+		e.emitPlannerTrace(result, intent.RouteStatusDispatched, dispatch.latency)
+		e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+		e.recordLastIntentFromPlan(result.Plan)
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	}
+	args := map[string]any{"UHostId": inst.UHostId}
+	e.emitPlannerTrace(result, intent.RouteStatusDispatched, dispatch.latency)
+	reply := e.executeWorkflow(ctx, workflowName, args, onStep)
+	if final, ok := isFinalReply(reply); ok {
+		reply = final
+	}
+	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+	e.recordLastIntentFromPlan(result.Plan)
+	e.messages = append(e.messages, assistantMessage(reply))
+	return reply, true
+}
+
+func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
+	if e == nil || !e.mutatingToolsEnabled {
+		return "", false
+	}
+	if looksLikeLifecycleQuestion(userMsg) {
+		return "", false
+	}
+	action := inferLifecycleAction(userMsg)
+	if action == "" {
+		return "", false
+	}
+	cachedSnapshot := e.RegistrySnapshot()
+	if _, ok := findUniqueInstanceNameInText(userMsg, cachedSnapshot); !ok {
+		return "", false
+	}
+	snapshot, okSnapshot, err := e.freshResourceSelectionSnapshot(ctx, cachedSnapshot)
+	if err != nil || !okSnapshot {
+		return "", false
+	}
+	inst, ok := resolveContinuationInstance(userMsg, snapshot)
+	if !ok {
+		return "", false
+	}
+	plan := intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentOperationLifecycle,
+		Slots: intent.Slots{
+			Action: action,
+			TargetRefs: []intent.TargetRef{{
+				Type:       intent.TargetRefUHostIDUserInput,
+				Value:      inst.UHostId,
+				Source:     intent.SourceUserText,
+				SourceSpan: inst.Name,
+			}},
+		},
+		RequiredTools: []string{"DescribeCompShareInstance"},
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    1,
+	}
+	return e.tryOperationLifecycleDispatch(ctx, routerDispatchResult{
+		result:   intent.IntentRouterResult{Plan: plan},
+		snapshot: snapshot,
+	}, userMsg, onStep)
+}
+
+func (e *Engine) tryDeterministicProductFactReply(userMsg string) (string, bool) {
+	if e == nil {
+		return "", false
+	}
+	if reply, ok := deterministicDiskBillingReply(userMsg, e.messages); ok {
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	}
+	if reply, ok := deterministicGenericStockShortageReply(userMsg); ok {
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	}
+	return "", false
+}
+
+func deterministicDiskBillingReply(userMsg string, history []openai.ChatCompletionMessage) (string, bool) {
+	text := strings.TrimSpace(userMsg)
+	if text == "" {
+		return "", false
+	}
+	if isDiskBillingQuestion(text) {
+		return diskBillingFactReply(), true
+	}
+	if looksLikeGPUModelOnly(text) && recentUserAskedDiskBilling(history) {
+		return "磁盘空间收费和 GPU 型号无关，不需要选择 4090 或其他卡型。\n\n" + diskBillingFactReply(), true
+	}
+	return "", false
+}
+
+func isDiskBillingQuestion(text string) bool {
+	compact := normalizeResourceText(text)
+	if compact == "" {
+		return false
+	}
+	hasDisk := strings.Contains(text, "磁盘") ||
+		strings.Contains(text, "云硬盘") ||
+		strings.Contains(text, "系统盘") ||
+		strings.Contains(text, "数据盘") ||
+		strings.Contains(strings.ToLower(text), "disk")
+	hasBilling := strings.Contains(text, "收费") ||
+		strings.Contains(text, "计费") ||
+		strings.Contains(text, "价格") ||
+		strings.Contains(text, "价钱") ||
+		strings.Contains(text, "免费") ||
+		strings.Contains(text, "扣费")
+	return hasDisk && hasBilling
+}
+
+func diskBillingFactReply() string {
+	return "磁盘计费可以这样理解：系统盘默认 100GB 免费；如果系统盘扩容超过 100GB，超出的存储会计费。数据盘会单独按量计费。\n\n按量实例关机后，CPU、GPU、内存停止计费，但额外扩容的系统盘、数据盘和镜像资源会继续保留并计费。你说的“100GB 原始空间”通常指默认系统盘 100GB，这部分不收费；最终费用以控制台账单为准。"
+}
+
+func recentUserAskedDiskBilling(history []openai.ChatCompletionMessage) bool {
+	seen := 0
+	for i := len(history) - 1; i >= 0 && seen < 6; i-- {
+		msg := history[i]
+		if msg.Role != openai.ChatMessageRoleUser {
+			continue
+		}
+		seen++
+		if isDiskBillingQuestion(msg.Content) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeGPUModelOnly(text string) bool {
+	compact := normalizeResourceText(text)
+	if compact == "" || len([]rune(compact)) > 12 {
+		return false
+	}
+	for _, token := range []string{"4090", "5090", "3090", "3080ti", "a100", "a800", "h20", "v100", "v100s", "p40"} {
+		if compact == token {
+			return true
+		}
+	}
+	return false
+}
+
+func deterministicGenericStockShortageReply(userMsg string) (string, bool) {
+	text := strings.TrimSpace(userMsg)
+	if text == "" {
+		return "", false
+	}
+	compact := normalizeResourceText(text)
+	if compact == "" {
+		return "", false
+	}
+	triggers := []string{
+		"暂无资源", "没有卡了", "没卡了", "没货了", "没资源", "无资源", "资源不足",
+		"无法创建", "都被占用", "可用的没有了", "可用资源没了",
+	}
+	matched := false
+	for _, trigger := range triggers {
+		if strings.Contains(text, trigger) || strings.Contains(compact, normalizeResourceText(trigger)) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return "", false
+	}
+	return "“暂无资源/没有卡”通常指当前具体配置没有可创建容量，不等于机型已经下架。\n\n这里要分开看：机型状态 Normal 只表示平台仍在售；真正能不能创建，要看 GPU、卡数、CPU、内存、镜像和可用区组合的容量预检结果。某个组合可能因为资源被占用、某个可用区没容量、镜像和可用区形态不匹配而创建失败。\n\n如果你要继续下单，建议换可用区、减少卡数、换相近卡型，或稍后重试；如果你给出具体卡型和可用区，我可以按当前配置再帮你做创建前校验。", true
+}
+
+func looksLikeLifecycleQuestion(userText string) bool {
+	text := strings.TrimSpace(userText)
+	if text == "" {
+		return false
+	}
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(strings.ToLower(text))
+	for _, marker := range []string{"吗", "么", "是否", "是不是", "有没有", "状态", "为什么", "怎么", "如何"} {
+		if strings.Contains(compact, marker) {
+			return true
+		}
+	}
+	return strings.Contains(compact, "?") || strings.Contains(compact, "？")
+}
+
+func (e *Engine) tryDiagnosisDispatch(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+	result := dispatch.result
+	if result.Plan.Intent != intent.IntentDiagnosis {
+		return "", false
+	}
+	action := inferDiagnosisActionFromText(userMsg)
+	if action == "" {
+		return "", false
+	}
+	snapshot, okSnapshot, err := e.freshResourceSelectionSnapshot(ctx, dispatch.snapshot)
+	if err != nil || !okSnapshot {
+		return "", false
+	}
+	result.Plan = augmentPlanTargetRefsFromUserText(result.Plan, userMsg, snapshot)
+	inst, status := resolveSingleLifecycleTarget(result.Plan, snapshot)
+	if status != lifecycleTargetHit {
+		return "", false
+	}
+	raw := e.executeDiagnosis(ctx, action, map[string]any{"UHostId": inst.UHostId}, onStep)
+	reply := renderDiagnosisContinuationReply(inst, action, raw)
+	e.emitPlannerTrace(result, intent.RouteStatusDispatched, dispatch.latency)
+	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+	e.recordLastIntentFromPlan(result.Plan)
+	e.messages = append(e.messages, assistantMessage(reply))
+	return reply, true
+}
+
+func (e *Engine) tryDirectDiagnosisFromUserText(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
+	if e == nil {
+		return "", false
+	}
+	action := inferDiagnosisActionFromText(userMsg)
+	if action == "" {
+		return "", false
+	}
+	snapshot, okSnapshot, err := e.freshResourceSelectionSnapshot(ctx, e.RegistrySnapshot())
+	if err != nil || !okSnapshot {
+		return "", false
+	}
+	if inst, ok := resolveContinuationInstance(userMsg, snapshot); ok {
+		return e.runDeterministicDiagnosis(ctx, inst, action, onStep), true
+	}
+	if inst, ok := findUniqueInstanceByGPUTypeInText(userMsg, snapshot); ok {
+		return e.runDeterministicDiagnosis(ctx, inst, action, onStep), true
+	}
+	if gpuType, matches := findInstancesByGPUTypeInText(userMsg, snapshot); gpuType != "" && len(matches) > 1 {
+		reply := renderGPUInstanceSelectionPrompt(gpuType, matches)
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	}
+	return "", false
+}
+
+func (e *Engine) runDeterministicDiagnosis(ctx context.Context, inst entity.InstanceSnapshot, action string, onStep func(StepEvent)) string {
+	raw := e.executeDiagnosis(ctx, action, map[string]any{"UHostId": inst.UHostId}, onStep)
+	reply := renderDiagnosisContinuationReply(inst, action, raw)
+	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentDiagnosis})
+	e.messages = append(e.messages, assistantMessage(reply))
+	return reply
+}
+
+func assistantMessage(reply string) openai.ChatCompletionMessage {
+	return openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: reply,
+	}
+}
+
+func (e *Engine) tryDiagnosisTargetContinuation(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
+	if e == nil || !assistantAskedForInstanceTarget(e.lastAssistantContent()) {
+		return "", false
+	}
+	action := inferPendingDiagnosisActionFromHistory(e.messages)
+	if action == "" {
+		return "", false
+	}
+	snapshot, ok, err := e.freshResourceSelectionSnapshot(ctx, e.RegistrySnapshot())
+	if err != nil || !ok {
+		return "", false
+	}
+	inst, ok := resolveContinuationInstance(userMsg, snapshot)
+	if !ok {
+		return "", false
+	}
+	raw := e.executeDiagnosis(ctx, action, map[string]any{"UHostId": inst.UHostId}, onStep)
+	reply := renderDiagnosisContinuationReply(inst, action, raw)
+	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentDiagnosis})
+	e.messages = append(e.messages, assistantMessage(reply))
+	return reply, true
+}
+
+func assistantAskedForInstanceTarget(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	compact := normalizeResourceText(text)
+	if compact == "" {
+		return false
+	}
+	if !strings.Contains(compact, "实例") && !strings.Contains(strings.ToLower(text), "uhost") {
+		return false
+	}
+	for _, marker := range []string{
+		"哪台实例", "哪一台实例", "哪台机器", "哪个实例", "实例名称", "实例id", "实例ID", "提供实例", "告诉我哪台",
+	} {
+		if strings.Contains(text, marker) || strings.Contains(compact, normalizeResourceText(marker)) {
+			return true
+		}
+	}
+	return false
+}
+
+func inferPendingDiagnosisActionFromHistory(messages []openai.ChatCompletionMessage) string {
+	seen := 0
+	for i := len(messages) - 1; i >= 0 && seen < 10; i-- {
+		msg := messages[i]
+		if msg.Role != openai.ChatMessageRoleUser {
+			continue
+		}
+		seen++
+		text := strings.TrimSpace(msg.Content)
+		if text == "" {
+			continue
+		}
+		if action := inferDiagnosisActionFromText(text); action != "" {
+			return action
+		}
+	}
+	return ""
+}
+
+func inferDiagnosisActionFromText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	compact := normalizeResourceText(text)
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(compact, "ssh") &&
+		(strings.Contains(text, "连不上") || strings.Contains(text, "进不去") ||
+			strings.Contains(text, "超时") || strings.Contains(text, "打不开") ||
+			strings.Contains(lower, "timeout") || strings.Contains(lower, "refused")):
+		return "DiagnoseSSH"
+	case (strings.Contains(compact, "nvidiasmi") || strings.Contains(compact, "gpu") || strings.Contains(text, "显卡")) &&
+		(strings.Contains(text, "检测不到") || strings.Contains(text, "找不到") ||
+			strings.Contains(text, "看不见") || strings.Contains(text, "不可见") ||
+			strings.Contains(text, "报错") || strings.Contains(text, "不可用")):
+		return "DiagnoseGPU"
+	case strings.Contains(text, "初始化") &&
+		(strings.Contains(text, "失败") || strings.Contains(text, "卡住") || strings.Contains(text, "一直")):
+		return "DiagnoseInitFailure"
+	case (strings.Contains(text, "端口") || strings.Contains(compact, "jupyter") ||
+		strings.Contains(compact, "jupyterlab") || strings.Contains(compact, "filebrowser")) &&
+		(strings.Contains(text, "打不开") || strings.Contains(text, "访问不了") ||
+			strings.Contains(text, "不通") || strings.Contains(text, "连不上")):
+		return "DiagnosePortOrFirewall"
+	default:
+		return ""
+	}
+}
+
+func resolveContinuationInstance(userMsg string, snapshot entity.RegistrySnapshot) (entity.InstanceSnapshot, bool) {
+	if inst, _ := findExplicitInstanceRef(userMsg, snapshot); inst != nil {
+		return *inst, true
+	}
+	if inst, ok := findUniqueInstanceNameInText(userMsg, snapshot); ok {
+		return inst, true
+	}
+	return entity.InstanceSnapshot{}, false
+}
+
+func renderDiagnosisContinuationReply(inst entity.InstanceSnapshot, action, raw string) string {
+	if final, ok := isFinalReply(raw); ok {
+		return final
+	}
+	var result diagnosis.DiagResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil || (result.Conclusion == "" && result.Suggestion == "") {
+		return raw
+	}
+	label := diagnosisActionLabel(action)
+	var b strings.Builder
+	gpuSuffix := ""
+	if strings.TrimSpace(inst.GpuType) != "" {
+		gpuSuffix = "，GPU=" + strings.TrimSpace(inst.GpuType)
+	}
+	fmt.Fprintf(&b, "实例「%s」(%s%s) 的%s结果：%s", inst.Name, inst.UHostId, gpuSuffix, label, result.Conclusion)
+	if result.Suggestion != "" {
+		b.WriteString("\n\n建议：")
+		b.WriteString(result.Suggestion)
+	}
+	return b.String()
+}
+
+func diagnosisActionLabel(action string) string {
+	switch action {
+	case "DiagnoseSSH":
+		return " SSH 诊断"
+	case "DiagnoseGPU":
+		return " GPU 诊断"
+	case "DiagnoseInitFailure":
+		return "初始化诊断"
+	case "DiagnosePortOrFirewall":
+		return "端口诊断"
+	default:
+		return "诊断"
+	}
+}
+
+type lifecycleTargetStatus int
+
+const (
+	lifecycleTargetMissing lifecycleTargetStatus = iota
+	lifecycleTargetUnresolved
+	lifecycleTargetAmbiguous
+	lifecycleTargetHit
+)
+
+func resolveSingleLifecycleTarget(plan intent.IntentRoute, snapshot entity.RegistrySnapshot) (entity.InstanceSnapshot, lifecycleTargetStatus) {
+	if len(plan.Slots.TargetRefs) == 0 {
+		return entity.InstanceSnapshot{}, lifecycleTargetMissing
+	}
+	var matches []entity.InstanceSnapshot
+	for _, ref := range plan.Slots.TargetRefs {
+		switch ref.Type {
+		case intent.TargetRefUHostIDUserInput:
+			inst, res := snapshot.ResolveByID(ref.Value)
+			if res.Status != entity.ResolveHit || inst == nil {
+				return entity.InstanceSnapshot{}, lifecycleTargetUnresolved
+			}
+			matches = append(matches, *inst)
+		case intent.TargetRefName:
+			found, res := snapshot.ResolveByName(ref.Value)
+			if res.Status == entity.ResolveNotFoundInAccount || len(found) == 0 {
+				return entity.InstanceSnapshot{}, lifecycleTargetUnresolved
+			}
+			if res.Status == entity.ResolveAmbiguous || len(found) > 1 {
+				return entity.InstanceSnapshot{}, lifecycleTargetAmbiguous
+			}
+			matches = append(matches, *found[0])
+		}
+	}
+	matches = dedupeResourceSelectionCandidates(matches)
+	if len(matches) == 0 {
+		return entity.InstanceSnapshot{}, lifecycleTargetMissing
+	}
+	if len(matches) > 1 {
+		return entity.InstanceSnapshot{}, lifecycleTargetAmbiguous
+	}
+	return matches[0], lifecycleTargetHit
+}
+
+func lifecycleWorkflowName(action intent.LifecycleAction) (string, bool) {
+	switch action {
+	case intent.LifecycleActionStop:
+		return "StopInstanceWorkflow", true
+	case intent.LifecycleActionStart:
+		return "StartInstanceWorkflow", true
+	case intent.LifecycleActionReboot:
+		return "RebootInstanceWorkflow", true
+	default:
+		return "", false
+	}
+}
+
+func lifecycleStateGateReply(action intent.LifecycleAction, inst entity.InstanceSnapshot) (string, bool) {
+	state := strings.TrimSpace(inst.State)
+	switch action {
+	case intent.LifecycleActionStop:
+		if strings.EqualFold(state, "Stopped") {
+			return fmt.Sprintf("实例「%s」(%s) 当前已经是关机状态，无需再次关机。", inst.Name, inst.UHostId), true
+		}
+		if !strings.EqualFold(state, "Running") {
+			return fmt.Sprintf("实例「%s」(%s) 当前状态为 %s，暂不能直接关机。", inst.Name, inst.UHostId, emptyStateLabel(state)), true
+		}
+	case intent.LifecycleActionStart:
+		if strings.EqualFold(state, "Running") {
+			return fmt.Sprintf("实例「%s」(%s) 当前已经是运行中，无需再次开机。", inst.Name, inst.UHostId), true
+		}
+		if !strings.EqualFold(state, "Stopped") {
+			return fmt.Sprintf("实例「%s」(%s) 当前状态为 %s，暂不能直接开机。", inst.Name, inst.UHostId, emptyStateLabel(state)), true
+		}
+	case intent.LifecycleActionReboot:
+		if !strings.EqualFold(state, "Running") {
+			return fmt.Sprintf("实例「%s」(%s) 当前状态为 %s，只有运行中的实例才能重启。", inst.Name, inst.UHostId, emptyStateLabel(state)), true
+		}
+	}
+	return "", false
+}
+
+func emptyStateLabel(state string) string {
+	if strings.TrimSpace(state) == "" {
+		return "未知"
+	}
+	return state
+}
+
+func inferLifecycleAction(userText string) intent.LifecycleAction {
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(strings.ToLower(userText))
+	switch {
+	case strings.Contains(compact, "重启") || strings.Contains(compact, "reboot"):
+		return intent.LifecycleActionReboot
+	case strings.Contains(compact, "开机") || strings.Contains(compact, "启动") || strings.Contains(compact, "start"):
+		return intent.LifecycleActionStart
+	case strings.Contains(compact, "关机") || strings.Contains(compact, "关闭") ||
+		strings.Contains(compact, "关掉") || strings.Contains(compact, "关下") ||
+		strings.Contains(compact, "停机") || strings.Contains(compact, "停了") ||
+		strings.Contains(compact, "shutdown") || strings.Contains(compact, "stop"):
+		return intent.LifecycleActionStop
+	default:
+		return ""
+	}
+}

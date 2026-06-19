@@ -36,7 +36,7 @@ func (e *recordingExecutor) Execute(_ context.Context, action string, args map[s
 	switch action {
 	case "DescribeCompShareInstance":
 		return map[string]any{"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-src", "Name": "train-env", "State": "Running"},
+			map[string]any{"UHostId": "uhost-src", "Name": "train-env", "State": "Running", "Region": "cn-sh2", "Zone": "cn-sh2-02"},
 		}}, nil
 	case "CreateCompShareCustomImage":
 		return map[string]any{"CompShareImageId": "cimg-custom-001"}, nil
@@ -76,9 +76,15 @@ func TestCustomImageWorkflowEvalCases(t *testing.T) {
 				assert.NotContains(t, exec.calls, action)
 			}
 			if createArgs, ok := exec.args["CreateCompShareCustomImage"]; ok {
-				for _, key := range []string{"Region", "Zone", "Softwares", "SoftwarePorts", "FirewallPorts"} {
+				assert.Equal(t, "cn-sh2", createArgs["Region"])
+				assert.Equal(t, "cn-sh2-02", createArgs["Zone"])
+				for _, key := range []string{"Softwares", "SoftwarePorts", "FirewallPorts"} {
 					assert.NotContains(t, createArgs, key)
 				}
+			}
+			if progressArgs, ok := exec.args["GetCompShareImageCreateProgress"]; ok {
+				assert.Equal(t, "cn-sh2", progressArgs["Region"])
+				assert.Equal(t, "cn-sh2-02", progressArgs["Zone"])
 			}
 		})
 	}

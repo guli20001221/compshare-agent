@@ -217,13 +217,22 @@ var monitorMetricDefinitions = map[string]monitorMetricDefinition{
 	"cloudwatch_data_disk_used_per": {Metric: "", Key: "data_disk_usage", Label: "数据盘使用率", Unit: "%"},
 }
 
+var podMonitorMetricDefinitions = map[string]monitorMetricDefinition{
+	"Cpu":         {Metric: MetricCPU, Key: "cpu_usage", Label: "CPU 使用率", Unit: "%"},
+	"Memory":      {Metric: MetricMemory, Key: "memory_usage", Label: "内存使用率", Unit: "%"},
+	"SysDiskUsed": {Metric: "", Key: "system_disk_usage", Label: "系统盘使用率", Unit: "%"},
+	"GpuUtil":     {Metric: MetricGPU, Key: "gpu_usage", Label: "GPU 使用率", Unit: "%"},
+	"GpuMemory":   {Metric: MetricVRAM, Key: "vram_usage", Label: "显存使用率", Unit: "%"},
+}
+
 func monitorSemanticFacts(metrics []Metric, payload map[string]any) ([]monitorScalarFact, bool) {
 	data, _ := payload["Data"].(map[string]any)
 	if data == nil {
 		return nil, false
 	}
 	list, _ := data["List"].([]any)
-	if len(list) == 0 {
+	podList, _ := data["PodList"].([]any)
+	if len(list) == 0 && len(podList) == 0 {
 		return nil, false
 	}
 	recognized := false
@@ -265,6 +274,80 @@ func monitorSemanticFacts(metrics []Metric, payload map[string]any) ([]monitorSc
 					Unit:      def.Unit,
 				})
 			}
+		}
+	}
+	for _, item := range podList {
+		instance, _ := item.(map[string]any)
+		if instance == nil {
+			continue
+		}
+		subjectID, _ := instance["UHostId"].(string)
+		metricItems, _ := instance["Metrics"].(map[string]any)
+		if metricItems == nil {
+			continue
+		}
+
+		for _, field := range []string{"Cpu", "Memory", "SysDiskUsed"} {
+			values, exists := metricItems[field]
+			if !exists {
+				continue
+			}
+			recognized = true
+			def := podMonitorMetricDefinitions[field]
+			if !monitorMetricRequested(def.Metric, metrics) {
+				continue
+			}
+			value, ok := latestPodMonitorValue(values)
+			if !ok {
+				continue
+			}
+			facts = append(facts, monitorScalarFact{
+				SubjectID: subjectID,
+				Key:       def.Key,
+				Label:     def.Label,
+				Value:     value,
+				Unit:      def.Unit,
+			})
+		}
+
+		gpuItems, _ := metricItems["Gpu"].([]any)
+		if _, exists := metricItems["Gpu"]; exists {
+			recognized = true
+		}
+		for i, item := range gpuItems {
+			gpu, _ := item.(map[string]any)
+			if gpu == nil {
+				continue
+			}
+			addPodGPUFact := func(field, defKey string) {
+				values, exists := gpu[field]
+				if !exists {
+					return
+				}
+				recognized = true
+				def := podMonitorMetricDefinitions[defKey]
+				if !monitorMetricRequested(def.Metric, metrics) {
+					return
+				}
+				value, ok := latestPodMonitorValue(values)
+				if !ok {
+					return
+				}
+				key, label := def.Key, def.Label
+				if suffix := podMonitorResultLabelSuffix(i, len(gpuItems)); suffix != "" {
+					key += "." + suffix
+					label += " (" + suffix + ")"
+				}
+				facts = append(facts, monitorScalarFact{
+					SubjectID: subjectID,
+					Key:       key,
+					Label:     label,
+					Value:     value,
+					Unit:      def.Unit,
+				})
+			}
+			addPodGPUFact("Util", "GpuUtil")
+			addPodGPUFact("Memory", "GpuMemory")
 		}
 	}
 	if !recognized {
@@ -387,6 +470,18 @@ func latestMonitorValue(result map[string]any) (string, bool) {
 	return monitorNumberString(valuePoint["Value"])
 }
 
+func latestPodMonitorValue(values any) (string, bool) {
+	items, _ := values.([]any)
+	if len(items) == 0 {
+		return "", false
+	}
+	valuePoint, _ := items[len(items)-1].(map[string]any)
+	if valuePoint == nil {
+		return "", false
+	}
+	return monitorNumberString(valuePoint["Value"])
+}
+
 func monitorNumberString(value any) (string, bool) {
 	switch typed := value.(type) {
 	case float64:
@@ -422,6 +517,13 @@ func monitorResultLabelSuffix(metricKey string, index, total int) string {
 	default:
 		return fmt.Sprintf("%d", index+1)
 	}
+}
+
+func podMonitorResultLabelSuffix(index, total int) string {
+	if total <= 1 {
+		return ""
+	}
+	return fmt.Sprintf("GPU %d", index+1)
 }
 
 func addStringFact(add func(string, string, any), key, label, value string) {

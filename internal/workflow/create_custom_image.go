@@ -34,6 +34,9 @@ func stepQuerySourceInstanceForCustomImage() Step {
 			state := extractInstanceState(result)
 			switch state {
 			case "Running", "Stopped":
+				if _, _, ok := sourceCustomImagePlacement(result); !ok {
+					return false, "源实例缺少可用区或地域信息，无法安全创建自制镜像。"
+				}
 				return true, ""
 			case "":
 				return false, "未找到源实例，无法创建自制镜像。"
@@ -57,6 +60,12 @@ func stepConfirmCreateCustomImage() Step {
 			summary["workflow"] = "CreateCustomImageWorkflow"
 			summary["UHostId"] = paramStr(wfCtx.Params, "UHostId", "")
 			summary["Name"] = name
+			region, zone, ok := sourceCustomImagePlacement(wfCtx.Result("查询源实例"))
+			if !ok {
+				return nil, fmt.Errorf("源实例缺少可用区或地域信息，无法安全创建自制镜像")
+			}
+			summary["Region"] = region
+			summary["Zone"] = zone
 			if description := paramStr(wfCtx.Params, "Description", ""); description != "" {
 				summary["Description"] = description
 			}
@@ -80,9 +89,15 @@ func stepCreateCustomImage() Step {
 			if name == "" {
 				return nil, fmt.Errorf("image Name is required before creating a custom image")
 			}
+			region, zone, ok := sourceCustomImagePlacement(wfCtx.Result("查询源实例"))
+			if !ok {
+				return nil, fmt.Errorf("源实例缺少可用区或地域信息，无法安全创建自制镜像")
+			}
 			args := map[string]any{
 				"UHostId": uHostId,
 				"Name":    name,
+				"Region":  region,
+				"Zone":    zone,
 			}
 			if description := paramStr(wfCtx.Params, "Description", ""); description != "" {
 				args["Description"] = description
@@ -109,8 +124,14 @@ func stepGetCustomImageCreateProgress() Step {
 			if imageID == "" {
 				return nil, fmt.Errorf("CompShareImageId is empty; skip progress query")
 			}
+			region, zone, ok := sourceCustomImagePlacement(wfCtx.Result("查询源实例"))
+			if !ok {
+				return nil, fmt.Errorf("源实例缺少可用区或地域信息，无法查询镜像制作进度")
+			}
 			return map[string]any{
 				"CompShareImageId": imageID,
+				"Region":           region,
+				"Zone":             zone,
 			}, nil
 		},
 	}
@@ -139,4 +160,10 @@ func customImageID(result map[string]any) string {
 		return id
 	}
 	return ""
+}
+
+func sourceCustomImagePlacement(result map[string]any) (region, zone string, ok bool) {
+	zone = extractInstanceZone(result, "")
+	region = extractInstanceRegion(result, "")
+	return region, zone, region != "" && zone != ""
 }

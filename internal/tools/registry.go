@@ -133,7 +133,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeAvailableCompShareInstanceTypes",
-			Description: "获取可用 GPU 机型列表及每种机型的合法 CPU/内存/GPU 组合。用于回答所有/完整 GPU 规格、某型号所有规格、CPU/内存组合、可选配置，也可用于回答 GPU 机型是否可售/是否售罄；返回 Status（Normal/SoldOut），不返回精确剩余数量。注意：返回的 Memory 单位为 GB，创建实例时需转换为 MB。",
+			Description: "获取可用 GPU 机型列表及每种机型的合法 CPU/内存/GPU 组合。用于回答所有/完整 GPU 规格、某型号所有规格、CPU/内存组合、可选配置，也可用于回答 GPU 机型是否可售/是否售罄；返回 Status（Normal/SoldOut），只表示是否售卖，不代表实时可创建库存，也不返回精确剩余数量。注意：返回的 Memory 单位为 GB，创建实例时需转换为 MB。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -197,7 +197,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CheckCompShareResourceCapacity",
-			Description: "预检某个具体创建实例配置是否有足够资源，适合在用户已给出 GPU/CPU/内存/镜像/计费方式等创建参数时使用；也可在库存问题已识别 GPU 型号并拿到可用区后，确认该机型当前是否真实可创建。Zone 必须为 cn-wlcb-01 格式。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。注意：本接口会校验镜像存在/状态，并在 ucloud 路径触发底层镜像适配解析；但它仍不能保证最终创建一定成功，镜像的 SupportedGpuTypes 也只能作为候选排序和风险提示。",
+			Description: "预检某个具体创建实例配置是否有足够资源，适合在用户已给出 GPU/CPU/内存/镜像/计费方式等创建参数时使用；也可在库存问题已识别 GPU 型号并拿到可用区后，确认该机型当前是否真实可创建。只传 Zone/Region 字符串，内部会处理上游所需字段，不要手填 zone_id/az_group。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。注意：本接口会校验镜像存在/状态，并在 ucloud 路径触发底层镜像适配解析；但它仍不能保证最终创建一定成功，镜像的 SupportedGpuTypes 也只能作为候选排序和风险提示。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -496,7 +496,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateInstanceWorkflow",
-			Description: "创建实例的完整工作流。自动执行：查询镜像→检查库存→查询价格→用户确认→创建实例→查看状态。支持平台镜像和社区镜像。平台镜像默认查询公共镜像（含系统镜像和应用基础镜像如 PyTorch/CUDA 等）。传 ImageName 可按名称缩小镜像范围（平台和社区均可用）。传 ImageSource='community' 使用社区镜像创建。不支持自制/私有镜像。用户要求创建实例时必须使用此工具，不要直接调用 CreateCompShareInstance。",
+			Description: "创建实例的完整工作流。自动执行：查询镜像→检查库存→查询价格→用户确认→创建实例→查看状态。支持平台镜像和社区镜像。平台镜像默认查询公共镜像（含系统镜像和应用基础镜像如 PyTorch/CUDA 等）。传 ImageName 可按名称缩小镜像范围（平台和社区均可用）。传 ImageSource='community' 使用社区镜像创建。Pod 区必须使用容器镜像，普通区可使用系统镜像或应用镜像。不支持自制/私有镜像。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
