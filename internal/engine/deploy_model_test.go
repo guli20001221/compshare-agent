@@ -915,6 +915,8 @@ func TestDeployIsAdviceOnly(t *testing.T) {
 		{"怎么部署 Qwen", true},
 		{"推荐一个能跑 Qwen 的配置", true},
 		{"用什么镜像合适", true},
+		{"我想对一个模型进行微调", true},
+		{"我想训练我的rvc模型", true},
 		{"我想部署 DeepSeek R1", false},
 		{"部署一台A100的Ollama，按量", false},
 		{"帮我部署 Qwen2.5-7B", false},
@@ -947,6 +949,20 @@ func TestTryDeployModel_AdviceOnlyDoesNotCreate(t *testing.T) {
 	assert.Equal(t, 0, confirmCalls, "no confirm card for a recommendation question")
 	assert.Contains(t, reply, "建议", "the recommendation is returned as advice")
 	assert.Contains(t, reply, "部署 LiveTalking 数字人", "mutating-on advice offers to proceed on an explicit restate")
+}
+
+func TestTryDeployModel_TrainingIntentDoesNotCreate(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, communityImageID: "comm-img-9", instanceStates: []string{"Running"}})
+	matchJSON := `{"image_source":"community","image_name":"RVC 训练环境","model_name":"","match_kind":"base","quantization":""}`
+	confirmCalls := 0
+	eng := newDeployEngine(matchJSON, exec, func(string, map[string]any) bool { confirmCalls++; return true }) // mutating ON
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "我想训练我的rvc模型", noopStep)
+
+	require.True(t, handled)
+	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "a training advice request must NOT create an instance")
+	assert.Equal(t, 0, confirmCalls, "no confirm card for a training advice request")
+	assert.Contains(t, reply, "建议", "the recommendation is returned as advice")
 }
 
 // TestTryDeployModel_ExplicitCreateStillCreates guards the other side: an explicit
