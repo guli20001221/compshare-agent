@@ -14,7 +14,18 @@ func customImageInstanceResult(state string) map[string]any {
 			"UHostId": "uhost-src",
 			"Name":    "train-env",
 			"State":   state,
+			"Region":  "cn-sh2",
 			"Zone":    "cn-sh2-02",
+		},
+	}}
+}
+
+func customImageInstanceResultWithoutZoneRegion() map[string]any {
+	return map[string]any{"UHostSet": []any{
+		map[string]any{
+			"UHostId": "uhost-src",
+			"Name":    "train-env",
+			"State":   "Running",
 		},
 	}}
 }
@@ -118,6 +129,8 @@ func TestCreateCustomImage_ConfirmDeniedStopsBeforeMutatingCall(t *testing.T) {
 		assert.Equal(t, "CreateCustomImageWorkflow", action)
 		assert.Equal(t, "snapshot-v1", args["Name"])
 		assert.Equal(t, "uhost-src", args["UHostId"])
+		assert.Equal(t, "cn-sh2", args["Region"])
+		assert.Equal(t, "cn-sh2-02", args["Zone"])
 		return false
 	}, nil)
 
@@ -136,7 +149,7 @@ func TestCreateCustomImage_ConfirmDeniedStopsBeforeMutatingCall(t *testing.T) {
 	assert.False(t, created)
 }
 
-func TestCreateCustomImage_HappyPathPassesOnlyV1FieldsAndQueriesProgress(t *testing.T) {
+func TestCreateCustomImage_HappyPathThreadsSourceZoneRegionAndQueriesProgress(t *testing.T) {
 	executor := customImageMockExecutor()
 	def := CreateCustomImageDef()
 	eng := NewEngine(executor, func(string, map[string]any) bool { return true }, nil)
@@ -165,16 +178,38 @@ func TestCreateCustomImage_HappyPathPassesOnlyV1FieldsAndQueriesProgress(t *test
 	assert.Equal(t, "uhost-src", createCall.args["UHostId"])
 	assert.Equal(t, "snapshot-v1", createCall.args["Name"])
 	assert.Equal(t, "training environment", createCall.args["Description"])
-	for _, key := range []string{"Region", "Zone", "Softwares", "SoftwarePorts", "FirewallPorts"} {
+	assert.Equal(t, "cn-sh2", createCall.args["Region"])
+	assert.Equal(t, "cn-sh2-02", createCall.args["Zone"])
+	for _, key := range []string{"Softwares", "SoftwarePorts", "FirewallPorts"} {
 		assert.NotContains(t, createCall.args, key, "v1 must not pass %s", key)
 	}
 
 	progressCall, ok := findExecutorCall(executor.calls, "GetCompShareImageCreateProgress")
 	require.True(t, ok)
 	assert.Equal(t, "cimg-custom-001", progressCall.args["CompShareImageId"])
-	for _, key := range []string{"Region", "Zone"} {
-		assert.NotContains(t, progressCall.args, key)
-	}
+	assert.Equal(t, "cn-sh2", progressCall.args["Region"])
+	assert.Equal(t, "cn-sh2-02", progressCall.args["Zone"])
+}
+
+func TestCreateCustomImage_MissingSourceZoneRegionStopsBeforeConfirmation(t *testing.T) {
+	executor := customImageMockExecutor()
+	executor.results["DescribeCompShareInstance"] = customImageInstanceResultWithoutZoneRegion()
+	def := CreateCustomImageDef()
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("confirmation must not fire without source Zone/Region")
+		return false
+	}, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-src",
+		"Name":    "snapshot-v1",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "源实例缺少可用区")
+	_, created := findExecutorCall(executor.calls, "CreateCompShareCustomImage")
+	assert.False(t, created)
 }
 
 func TestCreateCustomImage_ProgressFailureDoesNotHideCreatedImage(t *testing.T) {

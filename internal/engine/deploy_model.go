@@ -390,6 +390,11 @@ var deployCreateCommandRE = regexp.MustCompile(`(帮我|为我|给我|替我|直
 // question, or a "怎么/如何…部署" how-to.
 var deployAdviceOnlyRE = regexp.MustCompile(`(?i)推荐|建议|(哪种|哪个|哪款|哪张|哪台|什么|啥)[^。！？\n]{0,6}(卡|gpu|显卡|机型|规格|配置|镜像)|(怎么|怎样|如何|咋)[^。！？\n]{0,4}部署`)
 
+// deployTrainingAdviceRE catches exploratory training / fine-tuning tasks. These
+// usually need a recommendation or a follow-up question before provisioning; only
+// an explicit create command should turn them into a billable instance flow.
+var deployTrainingAdviceRE = regexp.MustCompile(`(?i)(微调|fine[-_ ]?tun(?:e|ing)|训练|train(?:ing)?)[^。！？\n]{0,24}(模型|model|rvc|lora|数据集|dataset)?`)
+
 // deployIsAdviceOnly reports whether a deploy request only wants a recommendation /
 // how-to ("推荐我用哪种卡部署" / "用什么显卡" / "怎么部署") rather than a create command
 // ("帮我部署X" / "部署一台A100"). Such a request must get the matcher's recommendation
@@ -402,6 +407,9 @@ func deployIsAdviceOnly(userMsg string) bool {
 	s := strings.ToLower(strings.TrimSpace(userMsg))
 	if deployCreateCommandRE.MatchString(s) {
 		return false
+	}
+	if deployTrainingAdviceRE.MatchString(s) {
+		return true
 	}
 	return deployAdviceOnlyRE.MatchString(s)
 }

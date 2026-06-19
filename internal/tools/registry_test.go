@@ -42,10 +42,16 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustContain(t, descriptions["DescribeAvailableCompShareInstanceTypes"], "是否可售")
 	mustContain(t, descriptions["DescribeAvailableCompShareInstanceTypes"], "Status（Normal/SoldOut）")
 	mustContain(t, descriptions["DescribeAvailableCompShareInstanceTypes"], "不返回精确剩余数量")
+	mustContain(t, descriptions["DescribeAvailableCompShareInstanceTypes"], "不代表实时可创建库存")
 
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "具体创建实例配置")
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "确认该机型当前是否真实可创建")
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "CompShareImageId 和 ChargeType 必填")
+	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "只传 Zone/Region 字符串")
+	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "不要手填 zone_id/az_group")
+
+	mustContain(t, descriptions["CreateInstanceWorkflow"], "Pod 区必须使用容器镜像")
+	mustNotContain(t, descriptions["CreateInstanceWorkflow"], "必须使用此工具")
 }
 
 func TestCustomImageWorkflowIsUserFacingButRawImageCreateIsNot(t *testing.T) {
@@ -73,5 +79,12 @@ func mustContain(t *testing.T, haystack, needle string) {
 	t.Helper()
 	if !strings.Contains(haystack, needle) {
 		t.Fatalf("description missing %q:\n%s", needle, haystack)
+	}
+}
+
+func mustNotContain(t *testing.T, haystack, needle string) {
+	t.Helper()
+	if strings.Contains(haystack, needle) {
+		t.Fatalf("description should not contain %q:\n%s", needle, haystack)
 	}
 }

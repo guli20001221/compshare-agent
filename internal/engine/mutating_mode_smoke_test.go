@@ -51,7 +51,7 @@ func TestMutatingModeSmoke_CreateCustomImageStopsAtConfirmWhenDenied(t *testing.
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
-				map[string]any{"UHostId": "uhost-img-001", "State": "Running", "Name": "train-env"},
+				map[string]any{"UHostId": "uhost-img-001", "State": "Running", "Name": "train-env", "Region": "cn-sh2", "Zone": "cn-sh2-02"},
 			},
 		},
 		"CreateCompShareCustomImage":      {"CompShareImageId": "cimg-custom-001"},

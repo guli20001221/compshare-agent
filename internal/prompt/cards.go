@@ -59,7 +59,6 @@ func toolDescriptionsByName() map[string]string {
 // boundary rules that the tool registry descriptions cannot express.
 func operationBoundaryRuleLines() []string {
 	return []string{
-		"创建实例请求必须使用 CreateInstanceWorkflow，不要直接调 CreateCompShareInstance。",
 		`用户提到 PyTorch/CUDA/vLLM 等框架环境时，平台镜像优先，带上 ImageName（如 ImageName="PyTorch"）。`,
 		"用户提到 Ubuntu/Windows/裸系统/干净环境时，使用平台镜像，不传 ImageName 即可。",
 		`用户提到具体应用名（ComfyUI、SD WebUI、Stable Diffusion、Dify、Ollama 等）时，传 ImageSource="community" + ImageName="应用名"，使用社区镜像创建。`,

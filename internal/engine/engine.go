@@ -1262,6 +1262,18 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	if reply, handled := e.tryResumeResourceSelection(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
+	if reply, handled := e.tryDeterministicProductFactReply(userMsg); handled {
+		return reply, nil
+	}
+	if reply, handled := e.tryDiagnosisTargetContinuation(ctx, userMsg, onStep); handled {
+		return reply, nil
+	}
+	if reply, handled := e.tryDirectDiagnosisFromUserText(ctx, userMsg, onStep); handled {
+		return reply, nil
+	}
+	if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
+		return reply, nil
+	}
 
 	forceMonitorRecall := e.shouldForceMonitorRecall(userMsg)
 	if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep, opts.OnTextDelta); handled {
@@ -1703,6 +1715,9 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// PR1 hotfix Bug 4 (2026-05-28): capture slots.action so executeTool can
 	// deterministically pre-filter DescribeCompShareInstance rows by State.
 	e.lastPlannerActionThisTurn = dispatch.result.Plan.Slots.Action
+	if dispatch.result.Plan.Intent == intent.IntentDiagnosis {
+		dispatch.result.Plan = augmentPlanTargetRefsFromUserText(dispatch.result.Plan, userMsg, dispatch.snapshot)
+	}
 
 	// Token budget gate. callPlannerOnce already added planner usage to
 	// the per-turn counter; if that alone blew the cap, return the
@@ -1738,6 +1753,12 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		return e.emitMonitorHistoryHardBlock(), true
 	}
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
+		return reply, true
+	}
+	if reply, handled := e.tryDiagnosisDispatch(ctx, dispatch, userMsg, onStep); handled {
+		return reply, true
+	}
+	if reply, handled := e.tryOperationLifecycleDispatch(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
 	if reply, handled := e.tryDirectHardwareCreate(ctx, dispatch, userMsg, onStep); handled {
@@ -2045,6 +2066,7 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
 	result := dispatch.result
 	result.Plan = planWithUserTextMonitorMetrics(result.Plan, userMsg)
+	result.Plan = augmentPlanTargetRefsFromUserText(result.Plan, userMsg, dispatch.snapshot)
 	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsRoutingIntent(result.Plan.Intent) {
 		return "", false
 	}

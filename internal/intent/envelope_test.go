@@ -164,6 +164,47 @@ func TestBuildMonitorEnvelopeExtractsSemanticMonitorFacts(t *testing.T) {
 	}
 }
 
+func TestBuildMonitorEnvelopeExtractsPodListMonitorFacts(t *testing.T) {
+	subjects := []entity.InstanceSnapshot{{
+		UHostId: "cpod-a",
+		Name:    "pod-train",
+		State:   "Running",
+	}}
+
+	env := BuildMonitorEnvelope(subjects, nil, map[string]any{
+		"Data": map[string]any{
+			"PodList": []any{
+				map[string]any{
+					"UHostId": "cpod-a",
+					"Metrics": map[string]any{
+						"Cpu":         []any{monitorPoint(1)},
+						"Memory":      []any{monitorPoint(2)},
+						"SysDiskUsed": []any{monitorPoint(3)},
+						"Gpu": []any{
+							map[string]any{
+								"GpuIndex": "0",
+								"Util":     []any{monitorPoint(4)},
+								"Memory":   []any{monitorPoint(5)},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	assertEnvelopeFact(t, env, "cpod-a", "cpu_usage", "1")
+	assertEnvelopeFact(t, env, "cpod-a", "memory_usage", "2")
+	assertEnvelopeFact(t, env, "cpod-a", "system_disk_usage", "3")
+	assertEnvelopeFact(t, env, "cpod-a", "gpu_usage", "4")
+	assertEnvelopeFact(t, env, "cpod-a", "vram_usage", "5")
+
+	raw, err := json.Marshal(env)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "GpuIndex")
+	assert.NotContains(t, string(raw), "SysDiskUsed")
+}
+
 func TestBuildMonitorEnvelopeIncludesMissingRequestedMetricFacts(t *testing.T) {
 	subjects := []entity.InstanceSnapshot{{
 		UHostId: "uhost-a",
@@ -289,10 +330,7 @@ func monitorAPIResult() map[string]any {
 func monitorMetric(key string, tags map[string]any, values ...float64) map[string]any {
 	points := make([]any, 0, len(values))
 	for i, value := range values {
-		points = append(points, map[string]any{
-			"Timestamp": float64(1778420000 + i),
-			"Value":     value,
-		})
+		points = append(points, monitorPoint(value, i))
 	}
 	result := map[string]any{"Values": points}
 	if tags != nil {
@@ -301,6 +339,17 @@ func monitorMetric(key string, tags map[string]any, values ...float64) map[strin
 	return map[string]any{
 		"MetricKey": key,
 		"Results":   []any{result},
+	}
+}
+
+func monitorPoint(value float64, offset ...int) map[string]any {
+	i := 0
+	if len(offset) > 0 {
+		i = offset[0]
+	}
+	return map[string]any{
+		"Timestamp": float64(1778420000 + i),
+		"Value":     value,
 	}
 }
 
