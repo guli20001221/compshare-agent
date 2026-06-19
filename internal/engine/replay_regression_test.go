@@ -116,6 +116,23 @@ func TestReplayRegression_DirectLifecycleStopColloquialPhraseBypassesReActLoop(t
 	require.Len(t, mock.calls, 0, "explicit lifecycle command with exact instance name must not enter the ReAct loop")
 }
 
+func TestReplayRegression_CodingPlanDeleteDoesNotInspectInstances(t *testing.T) {
+	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("claude-write-test", "Stopped"))
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.Init(context.Background())
+	exec.calls = nil
+
+	reply, err := eng.Chat(context.Background(), "删除coding plan 包", noopStep)
+
+	require.NoError(t, err)
+	require.Contains(t, reply, "Coding Plan")
+	require.Contains(t, reply, "未提供")
+	require.NotContains(t, reply, "轮次超限")
+	require.Len(t, exec.calls, 0, "Coding Plan package management is product knowledge, not instance lookup")
+	require.Len(t, mock.calls, 0, "deterministic knowledge floor must bypass the ReAct loop for this replay regression")
+}
+
 func TestReplayRegression_CurrentAccountGPUFactOverridesStale5090Knowledge(t *testing.T) {
 	exec := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": manyInstancesWithNamedTargetGPU("new-5090", "Running", "5090"),
