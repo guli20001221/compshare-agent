@@ -124,6 +124,78 @@ UPDATE sessions
 	return expectedVersion + 1, nil
 }
 
+// ListByOwner returns up to limit of the owner's sessions, most recently
+// active first. Soft-deleted rows are excluded. Uses idx_owner_updated
+// (top_organization_id, organization_id, updated_at) via reverse index scan.
+// The SELECT column list mirrors GetByID for scan parity; context is read but
+// the history sidebar does not use it.
+func (s *MySQLSessionStore) ListByOwner(ctx context.Context, owner Owner, limit int) ([]Session, error) {
+	if limit < 1 {
+		// The HTTP handler clamps to [1,50]; this guards the exported method
+		// against a future caller passing <=0, which would otherwise panic at
+		// make(cap) below or emit LIMIT 0 / a negative LIMIT to the engine.
+		return []Session{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, top_organization_id, organization_id, title, context, context_version, message_count, pinned, created_at, updated_at
+FROM sessions
+WHERE top_organization_id = ? AND organization_id = ? AND deleted_at IS NULL
+ORDER BY updated_at DESC
+LIMIT ?
+`, owner.TopOrganizationID, owner.OrganizationID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions by owner: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Session, 0, limit)
+	for rows.Next() {
+		var sess Session
+		var title sql.NullString
+		var ctxRaw sql.NullString
+		if err := rows.Scan(
+			&sess.ID,
+			&sess.TopOrganizationID,
+			&sess.OrganizationID,
+			&title,
+			&ctxRaw,
+			&sess.ContextVersion,
+			&sess.MessageCount,
+			&sess.Pinned,
+			&sess.CreatedAt,
+			&sess.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan session row: %w", err)
+		}
+		if title.Valid {
+			sess.Title = &title.String
+		}
+		if ctxRaw.Valid {
+			sess.Context = json.RawMessage(ctxRaw.String)
+		}
+		out = append(out, sess)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate session rows: %w", err)
+	}
+	return out, nil
+}
+
+// SetTitleIfEmpty sets title only when it is currently NULL, preserving an
+// explicit client-set title. Owner-scoped + deleted_at IS NULL. 0 rows affected
+// (title already present, or row missing) is intentionally NOT an error: this is
+// a best-effort first-turn derivation, never fatal to the chat turn.
+func (s *MySQLSessionStore) SetTitleIfEmpty(ctx context.Context, owner Owner, sessionID string, title string) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE sessions SET title = ?
+WHERE id = ? AND top_organization_id = ? AND organization_id = ? AND deleted_at IS NULL AND title IS NULL
+`, title, sessionID, owner.TopOrganizationID, owner.OrganizationID)
+	if err != nil {
+		return fmt.Errorf("set session title if empty: %w", err)
+	}
+	return nil
+}
+
 // nullableJSON returns nil for empty/nil RawMessage, otherwise the string form.
 func nullableJSON(raw json.RawMessage) any {
 	if len(raw) == 0 {

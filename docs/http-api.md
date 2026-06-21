@@ -189,7 +189,56 @@ HTTP 状态码与 `Code` 一一对应：
 
 ---
 
-## 5. Action: `SendCSAgentChat` — 流式对话（SSE）
+## 5. Action: `ListCSAgentSessions` — 拉取最近会话列表（历史侧边栏）
+
+按"最近活跃"倒序返回当前用户的会话列表，用于「历史对话」侧边栏。不返回消息体。
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|---|---|---|---|---|
+| `Limit` | int | 否 | 10 | 1–50；越界自动夹紧（不报错），与 `GetCSAgentSession` 的严格校验不同 |
+
+> 无需 `SessionId`：按组织身份（`top_organization_id` / `organization_id`）返回该用户自己的会话。
+
+```json
+{
+  "Action": "ListCSAgentSessions",
+  "ProjectId": "org-cwy2qk",
+  "Limit": 10
+}
+```
+
+**响应**：
+
+```json
+{
+  "RequestId": "req-uuid",
+  "Code": "Success",
+  "Message": "",
+  "Sessions": [
+    {
+      "SessionId": "9348b71e-7081-492d-99d9-650a34c120ef",
+      "Title": "查询我的实例",
+      "MessageCount": 12,
+      "Pinned": false,
+      "CreatedAt": "2026-05-21T17:01:38.572Z",
+      "UpdatedAt": "2026-05-21T17:05:01.000Z"
+    }
+  ]
+}
+```
+
+字段说明：
+
+- `Sessions`：按 `UpdatedAt` 倒序（最近活跃在前）。无会话时为 `[]`（空数组，非 `null`）——前端据此渲染「暂无历史对话」空态。
+- `Title`：首轮对话后由用户首条消息自动生成（PII 脱敏、约 30 字截断）；会话创建时客户端显式传入的标题优先保留；仍为空时为 `null`，前端应回退占位。
+- `Pinned`：是否置顶。当前后端排序仅按 `UpdatedAt`，是否置顶展示由前端处理。
+- 仅返回会话元信息，不含消息；点击某条会话后用 `GetCSAgentSession` 拉取其消息。
+
+---
+
+## 6. Action: `SendCSAgentChat` — 流式对话（SSE）
 
 **与其它 Action 的关键差异**：响应是 `text/event-stream`，不是 JSON 包。
 
@@ -297,7 +346,7 @@ event: error  ← 任意时刻出现，表示终止
 
 ---
 
-## 6. Action: `SendCSAgentFeedback` — 对单条 assistant 消息点赞 / 点踩
+## 7. Action: `SendCSAgentFeedback` — 对单条 assistant 消息点赞 / 点踩
 
 **请求体**：
 
@@ -332,7 +381,7 @@ event: error  ← 任意时刻出现，表示终止
 
 ---
 
-## 7. 前端最小流程示例（伪代码）
+## 8. 前端最小流程示例（伪代码）
 
 ```ts
 // 1. 启动时拉元信息
@@ -412,7 +461,7 @@ await post('/', {
 
 ---
 
-## 8. 联调常见错误
+## 9. 联调常见错误
 
 | 现象 | 可能原因 |
 |---|---|

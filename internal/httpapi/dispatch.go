@@ -31,6 +31,9 @@ func (h *Handlers) Dispatch(c *gin.Context) {
 	case "GetCSAgentSession":
 		data, err := h.handleGetSession(c, base, raw)
 		h.writeResult(c, base, data, err)
+	case "ListCSAgentSessions":
+		data, err := h.handleListSessions(c, base, raw)
+		h.writeResult(c, base, data, err)
 	case "SendCSAgentFeedback":
 		data, err := h.handleFeedback(c, base, raw)
 		h.writeResult(c, base, data, err)

@@ -309,6 +309,21 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		return nil, AsAPIError(err)
 	}
 
+	// First-turn title derivation: name the session after the user's first
+	// message so the history sidebar shows e.g. "4090现在有连存吗?". Uses message
+	// (not persistContent, which carries the OCR prefix). Gated on the
+	// turn-start snapshot sess.Title being empty so from turn 2 onward we skip a
+	// guaranteed 0-row UPDATE on the hot chat path; the store's `title IS NULL`
+	// predicate stays as a concurrency backstop. Explicit client titles win.
+	// Best-effort: a failure here must not fail the turn.
+	if sess.Title == nil {
+		if derived := deriveSessionTitle(message); derived != "" {
+			if err := h.sessions.SetTitleIfEmpty(ctx, base.Owner, sessionID, derived); err != nil {
+				log.Printf("warning: session %s title derivation failed (non-fatal): %v", sessionID, err)
+			}
+		}
+	}
+
 	if err := h.sessions.BumpUpdatedAtAndIncCount(ctx, base.Owner, sessionID, 2); err != nil {
 		clearChatTraceObservers(agent)
 		release()
