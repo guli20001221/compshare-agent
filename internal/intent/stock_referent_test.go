@@ -53,7 +53,7 @@ func TestStockReferentText(t *testing.T) {
 		{"pure ellipsis reuses fallback", "现在还有库存吗", "4090", "4090"},
 		{"ellipsis without fallback is unchanged", "现在还有库存吗", "", "现在还有库存吗"},
 		{"named-but-unknown GPU token does not swap to fallback", "H200还有吗", "4090", "H200还有吗"},
-		{"retired fallback is not resurrected", "现在还有库存吗", "B200", "现在还有库存吗"},
+		{"retired fallback is not resurrected", "现在还有库存吗", "TEST_GPU_X", "现在还有库存吗"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

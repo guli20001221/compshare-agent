@@ -132,15 +132,152 @@ func TestExecuteWorkflow_GuidedCreateUsesExplicit409048GFromUserText(t *testing.
 }
 
 func TestHardwareCreateWorkflowArgsCarriesImageIntent(t *testing.T) {
-	args, ok := hardwareCreateWorkflowArgs("为我用pytorch最新镜像开一台4090")
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{"Name": "4090"},
+		map[string]any{"Name": "4090_48G"},
+		map[string]any{"Name": "TEST_GPU_X"},
+	}}
+
+	args, ok := hardwareCreateWorkflowArgs("为我用pytorch最新镜像开一台4090", avail)
 	require.True(t, ok)
 
 	assert.Equal(t, "4090", args["GpuType"])
 	assert.Equal(t, "torch", args["ImageName"], "PyTorch requests must search the real torch/cuda image names, not fall back to Windows")
 
-	plain, ok := hardwareCreateWorkflowArgs("为我开一台4090")
+	plain, ok := hardwareCreateWorkflowArgs("为我开一台4090", avail)
 	require.True(t, ok)
 	assert.NotContains(t, plain, "ImageName", "plain hardware creates must not force a framework image")
+
+	bareOpen, ok := hardwareCreateWorkflowArgs("在华北一C用最新 PyTorch 镜像开 4090", avail)
+	require.True(t, ok)
+	assert.Equal(t, "4090", bareOpen["GpuType"])
+	assert.Equal(t, "torch", bareOpen["ImageName"])
+
+	newGPU, ok := hardwareCreateWorkflowArgs("帮我开一台 TEST_GPU_X", avail)
+	require.True(t, ok)
+	assert.Equal(t, "TEST_GPU_X", newGPU["GpuType"], "new GPU names must come from the upstream availability catalog")
+}
+
+func TestDirectHardwareCreateRespectsAgentIntent(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentDeployModel,
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.92,
+		},
+	}}
+
+	reply, handled := eng.tryDirectHardwareCreate(context.Background(), dispatch, "部署一台4090跑vLLM", noopStep)
+
+	assert.False(t, handled)
+	assert.Empty(t, reply)
+	assert.Empty(t, executor.calls, "deploy-model intent must not be stolen by the hardware-create fallback")
+}
+
+func TestDirectHardwareCreateBlocksConsultation(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentKnowledgeQA,
+			Retrieval:     intent.Retrieval{Enabled: true},
+			Confidence:    0.9,
+		},
+	}}
+
+	_, handled := eng.tryDirectHardwareCreate(context.Background(), dispatch, "开4090之前要注意什么", noopStep)
+
+	assert.False(t, handled)
+	assert.Empty(t, executor.calls, "consultation turns must stay with the agent/router instead of opening a create card")
+}
+
+func TestDirectHardwareCreateBlocksPriceQuestion(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentResourceInfo,
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}
+
+	_, handled := eng.tryDirectHardwareCreate(context.Background(), dispatch, "开一台 4090 多少钱", noopStep)
+
+	assert.False(t, handled)
+	assert.Empty(t, executor.calls, "price questions must not open a billable create card")
+}
+
+func TestChat_DirectHardwareCreateDoesNotDependOnPlannerLifecycleIntent(t *testing.T) {
+	var availableZone string
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(10027), "Describe": "华北二A", "IsPod": false},
+				map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": true},
+			}}, nil
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-torch", "Name": "cuda130_torch291_py312", "ImageType": "App", "Status": "Available", "Container": true},
+			}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			availableZone, _ = args["Zone"].(string)
+			return map[string]any{"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Zone": "cn-bj2-03", "Status": "Normal",
+					"MachineSizes": []any{
+						map[string]any{
+							"Gpu": float64(1),
+							"Collection": []any{
+								map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+							},
+						},
+					}},
+			}}, nil
+		case "DescribeCompShareGpuInventory":
+			return map[string]any{}, nil
+		default:
+			return map[string]any{"RetCode": float64(0)}, nil
+		}
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path must not be reached"}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentResourceInfo,
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "test-planner-model",
+	})
+	confirm := func(_ string, _ map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+		require.NotNil(t, form)
+		return workflow.ConfirmResolution{Confirmed: false}
+	}
+
+	reply, err := eng.ChatWithOptions(context.Background(), "在华北一C用最新 PyTorch 镜像开 4090", noopStep, ChatOptions{GuidedCreate: true, ConfirmEditsFunc: confirm})
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "未执行")
+	assert.Empty(t, mock.calls, "clear hardware-create requests must not depend on the ReAct model choosing the workflow")
+	assert.Equal(t, "cn-bj2-03", availableZone)
+	assert.Contains(t, executor.calls, "DescribeAvailableCompShareInstanceTypes")
+	assert.NotContains(t, executor.calls, "CreateCompShareInstance")
 }
 
 func TestChat_DirectHardwareCreateForGrabShanghai4090(t *testing.T) {

@@ -139,7 +139,7 @@ func (s *SafeToolExecutor) FilterArgs(action string, args map[string]any) map[st
 	if !ok {
 		return copyMap(args)
 	}
-	return filterSafeArgs(args, policy.AllowedParams)
+	return filterSafeArgs(args, allowedParamsForOrigin(policy, OriginDirectLLM))
 }
 
 func (s *SafeToolExecutor) RedactArgs(action string, args map[string]any) map[string]any {
@@ -191,7 +191,7 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 		return nil, fmt.Errorf("%w: monitor history window is not enabled in this stage", ErrHistoricalMonitorUnsupported)
 	}
 
-	args := filterSafeArgs(req.Args, policy.AllowedParams)
+	args := filterSafeArgs(req.Args, allowedParamsForOrigin(policy, req.Origin))
 	if err := checkPolicyCaps(policy, args); err != nil {
 		return nil, err
 	}
@@ -401,6 +401,23 @@ func shouldConfirm(policy ToolExecutionPolicy, origin ExecutionOrigin) bool {
 		return false
 	default:
 		return true
+	}
+}
+
+func allowedParamsForOrigin(policy ToolExecutionPolicy, origin ExecutionOrigin) []string {
+	allowed := policy.AllowedParams
+	switch origin {
+	case OriginWorkflowInternal, OriginDiagnosisInternal:
+		if len(policy.InternalAllowedParams) == 0 {
+			return allowed
+		}
+		allowed = append([]string{}, allowed...)
+		for _, p := range policy.InternalAllowedParams {
+			allowed = appendAllowedParam(allowed, p)
+		}
+		return allowed
+	default:
+		return allowed
 	}
 }
 

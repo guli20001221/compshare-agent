@@ -92,14 +92,14 @@ func TestRecommendGPUTypeLive(t *testing.T) {
 	assert.Equal(t, "5090", gt, "sold-out 4090 excluded → next available tier")
 
 	// NEW CARD the static table never models: 16B (≈39GB) → the only fitting card
-	// is a hypothetical "B200" (48GB). Static would pick 4090_48G; live picks B200.
+	// is a hypothetical "TEST_GPU_X" (48GB). Static would pick 4090_48G; live picks TEST_GPU_X.
 	liveNew := []AvailableGPU{
 		{Name: "4090", VRAMGB: 24, Perf: 83, MaxGPU: 8},
-		{Name: "B200", VRAMGB: 48, Perf: 130, MaxGPU: 8},
+		{Name: "TEST_GPU_X", VRAMGB: 48, Perf: 130, MaxGPU: 8},
 		{Name: "A100", VRAMGB: 80, Perf: 100, MaxGPU: 8},
 	}
 	gt, _ = RecommendGPUTypeLive("Qwen2.5-16B", "fp16", "部署", nil, liveNew)
-	assert.Equal(t, "B200", gt, "a new card absent from the static table is selectable live")
+	assert.Equal(t, "TEST_GPU_X", gt, "a new card absent from the static table is selectable live")
 
 	// EMPTY live set → static-table fallback (7B → 4090).
 	gt, _ = RecommendGPUTypeLive("Qwen2.5-7B", "fp16", "部署", nil, nil)

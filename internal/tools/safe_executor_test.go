@@ -109,6 +109,50 @@ func TestDescribeCompShareImagesAllowsOffsetForPagination(t *testing.T) {
 	assert.Equal(t, 100, filtered["Offset"])
 }
 
+func TestBackendZoneIDIsInternalOnly(t *testing.T) {
+	directInner := &spyExecutor{}
+	direct := NewSafeToolExecutor(directInner)
+	_, err := direct.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CheckCompShareResourceCapacity",
+		Args: map[string]any{
+			"Zone":               "cn-pod-01",
+			"Region":             "cn-pod",
+			"zone_id":            uint32(9001),
+			"GpuType":            "4090",
+			"MachineType":        "G",
+			"MinimalCpuPlatform": "Auto",
+			"CompShareImageId":   "img-container",
+			"ChargeType":         "Postpay",
+			"Disks":              []any{map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": float64(60)}},
+		},
+		Origin: OriginDirectLLM,
+	})
+	require.NoError(t, err)
+	require.Len(t, directInner.args, 1)
+	assert.NotContains(t, directInner.args[0], "zone_id", "model-origin calls must not be able to hand-fill zone_id")
+
+	internalInner := &spyExecutor{}
+	internal := NewSafeToolExecutor(internalInner)
+	_, err = internal.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CheckCompShareResourceCapacity",
+		Args: map[string]any{
+			"Zone":               "cn-pod-01",
+			"Region":             "cn-pod",
+			"zone_id":            uint32(9001),
+			"GpuType":            "4090",
+			"MachineType":        "G",
+			"MinimalCpuPlatform": "Auto",
+			"CompShareImageId":   "img-container",
+			"ChargeType":         "Postpay",
+			"Disks":              []any{map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": float64(60)}},
+		},
+		Origin: OriginWorkflowInternal,
+	})
+	require.NoError(t, err)
+	require.Len(t, internalInner.args, 1)
+	assert.Equal(t, uint32(9001), internalInner.args[0]["zone_id"], "workflow-derived zone_id must reach upstream")
+}
+
 func TestVisibleRegistryFiltersMutatingWorkflowsByDefault(t *testing.T) {
 	visible := VisibleRegistry(false)
 	names := map[string]bool{}

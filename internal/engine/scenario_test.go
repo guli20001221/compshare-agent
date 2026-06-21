@@ -1084,6 +1084,16 @@ func TestCreateWorkflowFailureReply(t *testing.T) {
 	assert.Contains(t, got, "未能创建实例")
 }
 
+func TestCreateWorkflowSuccessReplyIncludesInstanceListLink(t *testing.T) {
+	raw := `{"success":true,"data":{"UHostIds":["uhost-new001"]}}`
+	got := workflowDirectReply("CreateInstanceWorkflow", raw)
+	assert.Contains(t, got, "创建实例请求已提交")
+	assert.Contains(t, got, "uhost-new001")
+	assert.Contains(t, got, "实例列表")
+	assert.Contains(t, got, deployConsoleInstancesURL)
+	assert.NotContains(t, got, "未创建成功")
+}
+
 // ── Scenario 23: StartInstanceWorkflow full success ──────────────────────
 
 func TestScenario_StartInstanceWorkflow(t *testing.T) {

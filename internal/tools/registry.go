@@ -53,7 +53,7 @@ var Registry = []openai.Tool{
 				"properties": map[string]any{
 					"GpuType": map[string]any{
 						"type":        "string",
-						"description": "GPU 类型，如 4090 / A100 / H20 / 3090 等。不传则返回全部 GPU 概览规格。",
+						"description": "GPU 类型，可填上游返回的机型名称，例如 4090 或 A100。不传则返回本地 GPU 概览；要确认当前平台完整可选机型和配比，请用 DescribeAvailableCompShareInstanceTypes。",
 					},
 				},
 				"required": []string{},
@@ -139,7 +139,7 @@ var Registry = []openai.Tool{
 				"properties": map[string]any{
 					"Zone": map[string]any{
 						"type":        "string",
-						"description": "可用区，如 cn-wlcb-01",
+						"description": "可用区，格式示例 cn-wlcb-01；真实可用区以支持区/机型接口返回为准。",
 					},
 					"Region": map[string]any{
 						"type":        "string",
@@ -148,7 +148,7 @@ var Registry = []openai.Tool{
 					"MachineTypes": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
-						"description": "按完整机型名称精确筛选，如 [\"H20\"]。用户问 4090 的所有规格、RTX40 系列、某型号家族/变体时不要传此参数，应先查全量再保留 4090、4090_48G 等相关变体，避免漏规格。",
+						"description": "按完整机型名称精确筛选，例如 [\"H20\"]。不确定完整名称、询问某型号家族/变体或当前支持哪些卡型时不要传此参数，应先查全量再按返回的 Name 过滤。",
 					},
 				},
 				"required": []string{},
@@ -165,11 +165,11 @@ var Registry = []openai.Tool{
 				"properties": map[string]any{
 					"Zone": map[string]any{
 						"type":        "string",
-						"description": "可用区，如 cn-wlcb-01",
+						"description": "可用区，格式示例 cn-wlcb-01；真实可用区以支持区/机型接口返回为准。",
 					},
 					"GpuType": map[string]any{
 						"type":        "string",
-						"description": "GPU 类型：4090 / 5090 / A100 / A800 / H20 / 3080Ti / 3090 / P40 / 2080Ti / 2080 / V100S 等",
+						"description": "GPU 类型，必须来自 DescribeAvailableCompShareInstanceTypes 返回的 Name；例如 4090 或 A100，不要自行编造。",
 					},
 					"Gpu": map[string]any{
 						"type":        "integer",
@@ -203,7 +203,7 @@ var Registry = []openai.Tool{
 				"properties": map[string]any{
 					"Zone": map[string]any{
 						"type":        "string",
-						"description": "可用区，如 cn-wlcb-01",
+						"description": "可用区，格式示例 cn-wlcb-01；真实可用区以支持区/机型接口返回为准。",
 					},
 					"Region": map[string]any{
 						"type":        "string",
@@ -459,7 +459,7 @@ var Registry = []openai.Tool{
 				"properties": map[string]any{
 					"Zone": map[string]any{
 						"type":        "string",
-						"description": "可用区，如 cn-wlcb-01",
+						"description": "可用区，格式示例 cn-wlcb-01；真实可用区以支持区/机型接口返回为准。",
 					},
 					"Region": map[string]any{
 						"type":        "string",
@@ -467,7 +467,7 @@ var Registry = []openai.Tool{
 					},
 					"GpuType": map[string]any{
 						"type":        "string",
-						"description": "GPU 类型：4090 / 5090 / A100 / A800 / H20 / 3090 等",
+						"description": "GPU 类型，必须来自 DescribeAvailableCompShareInstanceTypes 返回的 Name；例如 4090 或 A100，不要自行编造。",
 					},
 					"GPU": map[string]any{
 						"type":        "integer",
@@ -502,7 +502,7 @@ var Registry = []openai.Tool{
 				"properties": map[string]any{
 					"GpuType": map[string]any{
 						"type":        "string",
-						"description": "GPU 类型：4090 / A100 / H20 / 3090 等",
+						"description": "GPU 类型，优先使用上游机型接口返回的 Name；例如 4090 或 A100。",
 					},
 					"Gpu": map[string]any{
 						"type":        "number",
@@ -510,7 +510,7 @@ var Registry = []openai.Tool{
 					},
 					"Zone": map[string]any{
 						"type":        "string",
-						"description": "可用区，默认 cn-wlcb-01",
+						"description": "可用区，格式示例 cn-wlcb-01；真实候选来自上游支持区和机型接口。",
 					},
 					"ChargeType": map[string]any{
 						"type":        "string",

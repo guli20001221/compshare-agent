@@ -31,6 +31,7 @@ type ToolExecutionPolicy struct {
 	SecurityLevel           security.Level
 	NeedsConfirm            bool
 	AllowedParams           []string
+	InternalAllowedParams   []string
 	RedactInResult          []string
 	HistoryMonitorGuard     bool
 	MaxTargetsPerCall       int
@@ -73,6 +74,9 @@ func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
 	for action, allowed := range registryParams {
 		policy := policyForAction(action)
 		policy.AllowedParams = allowed
+		if actionAllowsBackendZoneID(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "zone_id")
+		}
 		policies[action] = policy
 	}
 
@@ -159,8 +163,16 @@ func policyForAction(action string) ToolExecutionPolicy {
 	if action == "GetCompShareInstancePrice" || action == "GetCompShareInstanceUserPrice" {
 		policy.MaxTargetsPerCall = 20
 	}
-
 	return policy
+}
+
+func actionAllowsBackendZoneID(action string) bool {
+	switch action {
+	case "DescribeAvailableCompShareInstanceTypes", "CheckCompShareResourceCapacity", "GetCompShareInstancePrice", "GetCompShareInstanceUserPrice":
+		return true
+	default:
+		return false
+	}
 }
 
 func routeForAction(action string) ActionRoute {
@@ -243,4 +255,13 @@ func allowedParamsFromDefinition(params any) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+func appendAllowedParam(params []string, key string) []string {
+	for _, p := range params {
+		if p == key {
+			return params
+		}
+	}
+	return append(params, key)
 }

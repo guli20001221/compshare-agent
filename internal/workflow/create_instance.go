@@ -354,7 +354,7 @@ func stepQueryInstanceTypes() Step {
 			args := map[string]any{}
 			if z := paramStr(wfCtx.Params, "Zone", ""); z != "" {
 				args["Zone"] = z // honour an explicit zone (e.g. the deploy handler's ChosenZone)
-				addZoneRegion(args, z)
+				addZoneRegionAndID(args, z, wfCtx.Params)
 			}
 			return args, nil
 		},
@@ -394,7 +394,7 @@ func stepCheckCapacity() Step {
 				return nil, err
 			}
 			imageId := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
-			return addZoneRegion(map[string]any{
+			return addZoneRegionAndID(map[string]any{
 				"Zone":               zone,
 				"GpuType":            wfCtx.Params["GpuType"],
 				"MachineType":        "G",
@@ -402,7 +402,7 @@ func stepCheckCapacity() Step {
 				"CompShareImageId":   imageId,
 				"ChargeType":         createChargeType(wfCtx.Params),
 				"Disks":              defaultDisk,
-			}, zone), nil
+			}, zone, wfCtx.Params), nil
 		},
 		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
 			specs, _ := result["Specs"].([]any)
@@ -474,7 +474,7 @@ func stepGetPrice() Step {
 					args["CompShareImageId"] = imageId
 				}
 			}
-			return addZoneRegion(args, zone), nil
+			return addZoneRegionAndID(args, zone, wfCtx.Params), nil
 		},
 	}
 }
@@ -765,7 +765,7 @@ func stepCreateInstance() Step {
 			if name, ok := wfCtx.Params["Name"]; ok {
 				args["Name"] = name
 			}
-			return addZoneRegion(args, zone), nil
+			return addZoneRegionAndID(args, zone, wfCtx.Params), nil
 		},
 	}
 }
@@ -1827,7 +1827,9 @@ func applyGuidedZoneOverrides(wfCtx *Context, overrides map[string]string) error
 		case "Zone":
 			old := paramStr(wfCtx.Params, "Zone", "")
 			wfCtx.Params["Zone"] = v
+			syncGuidedZoneMeta(wfCtx.Params, v)
 			if !strings.EqualFold(old, v) {
+				delete(wfCtx.Params, "GuidedZoneLocked")
 				delete(wfCtx.Params, "Gpu")
 				delete(wfCtx.Params, "Cpu")
 				delete(wfCtx.Params, "Memory")
@@ -1871,6 +1873,7 @@ func applyGuidedCpuMemoryOverrides(wfCtx *Context, overrides map[string]string) 
 				return err
 			}
 			wfCtx.Params["Zone"] = zone
+			syncGuidedZoneMeta(wfCtx.Params, zone)
 			wfCtx.Params["Gpu"] = gpu
 			wfCtx.Params["Cpu"] = cpu
 			wfCtx.Params["Memory"] = memoryMB
@@ -1896,6 +1899,20 @@ func ensureGuidedGPUType(wfCtx *Context) (string, error) {
 		}
 	}
 	if selected == "" {
+		if current != "" {
+			for _, opt := range opts {
+				if strings.EqualFold(opt.Value, current) && opt.Disabled {
+					reason := opt.Reason
+					if reason == "" {
+						reason = opt.Note
+					}
+					if reason == "" {
+						reason = "当前不可用"
+					}
+					return "", fmt.Errorf("%s %s，请换一个 GPU 型号或稍后再试", current, reason)
+				}
+			}
+		}
 		return "", fmt.Errorf("暂无可选 GPU 型号")
 	}
 	if current == "" {
@@ -1914,7 +1931,28 @@ func ensureGuidedZone(wfCtx *Context) (string, error) {
 	if selected == "" || len(opts) == 0 {
 		return "", fmt.Errorf("%s 暂无可选可用区，请换一个 GPU 型号或稍后再试", gpuType)
 	}
+	if paramBool(wfCtx.Params, "GuidedZoneLocked", false) && current != "" {
+		for _, opt := range opts {
+			if strings.EqualFold(opt.Value, current) {
+				if opt.Disabled {
+					reason := opt.Reason
+					if reason == "" {
+						reason = opt.Note
+					}
+					if reason == "" {
+						reason = "暂不可用"
+					}
+					return "", fmt.Errorf("你指定的可用区 %s 当前%s，请换一个可用区或稍后再试", zoneOptionLabel(zoneDescribeMapFromParams(wfCtx.Params), current), reason)
+				}
+				wfCtx.Params["Zone"] = current
+				syncGuidedZoneMeta(wfCtx.Params, current)
+				return current, nil
+			}
+		}
+		return "", fmt.Errorf("你指定的可用区 %s 当前不支持 %s，请换一个可用区或 GPU 型号", zoneOptionLabel(zoneDescribeMapFromParams(wfCtx.Params), current), gpuType)
+	}
 	wfCtx.Params["Zone"] = selected
+	syncGuidedZoneMeta(wfCtx.Params, selected)
 	return selected, nil
 }
 
@@ -1958,6 +1996,7 @@ func ensureGuidedCPUMemory(wfCtx *Context) (string, error) {
 		return "", err
 	}
 	wfCtx.Params["Zone"] = parsedZone
+	syncGuidedZoneMeta(wfCtx.Params, parsedZone)
 	wfCtx.Params["Gpu"] = parsedGPU
 	wfCtx.Params["Cpu"] = cpu
 	wfCtx.Params["Memory"] = memoryMB
@@ -2063,6 +2102,71 @@ func guidedZoneIDs(params map[string]any) map[string]uint32 {
 	return out
 }
 
+func addZoneRegionAndID(args map[string]any, zone string, params map[string]any) map[string]any {
+	addZoneRegion(args, zone)
+	if id := guidedZoneID(params, zone); id != 0 {
+		args["zone_id"] = id
+	}
+	return args
+}
+
+func guidedZoneID(params map[string]any, zone string) uint32 {
+	zone = strings.TrimSpace(zone)
+	if zone == "" {
+		return 0
+	}
+	for z, id := range guidedZoneIDs(params) {
+		if strings.EqualFold(z, zone) {
+			return id
+		}
+	}
+	return 0
+}
+
+func syncGuidedZoneMeta(params map[string]any, zone string) {
+	if params == nil || strings.TrimSpace(zone) == "" {
+		return
+	}
+	if isPod, ok := guidedZoneIsPod(params, zone); ok {
+		params["ZoneIsPod"] = isPod
+		params["IsPodZone"] = isPod
+	}
+}
+
+func guidedZoneIsPod(params map[string]any, zone string) (bool, bool) {
+	zone = strings.TrimSpace(zone)
+	if zone == "" {
+		return false, false
+	}
+	switch m := params["ZoneIsPods"].(type) {
+	case map[string]bool:
+		for z, isPod := range m {
+			if strings.EqualFold(z, zone) {
+				return isPod, true
+			}
+		}
+	case map[string]any:
+		for z, raw := range m {
+			if !strings.EqualFold(z, zone) {
+				continue
+			}
+			if b, ok := parseBoolAny(raw); ok {
+				return b, true
+			}
+		}
+	case map[string]string:
+		for z, raw := range m {
+			if !strings.EqualFold(z, zone) {
+				continue
+			}
+			if b, ok := parseBoolAny(raw); ok {
+				return b, true
+			}
+		}
+	}
+	return false, false
+}
+
 func parseUint32Any(v any) (uint32, bool) {
 	switch x := v.(type) {
 	case uint32:
@@ -2096,6 +2200,19 @@ func parseUint32Any(v any) (uint32, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func parseBoolAny(v any) (bool, bool) {
+	switch x := v.(type) {
+	case bool:
+		return x, true
+	case string:
+		b, err := strconv.ParseBool(strings.TrimSpace(x))
+		if err == nil {
+			return b, true
+		}
+	}
+	return false, false
 }
 
 func anyFloat(v any) float64 {
@@ -2262,6 +2379,8 @@ func guidedGPUFormOptions(catalog map[string]any, supported []string, current st
 			noteParts = append(noteParts, fmt.Sprintf("%.0fG 显存", ch.vramGB))
 		}
 		stock, stockKnown := inventory.total(ch.zones, ch.name)
+		disabled := !ch.normal || (stockKnown && stock <= 0)
+		disabledReason := ""
 		if ch.normal {
 			if stockKnown {
 				noteParts = append(noteParts, guidedStockNote(stock))
@@ -2270,6 +2389,10 @@ func guidedGPUFormOptions(catalog map[string]any, supported []string, current st
 			}
 		} else {
 			noteParts = append(noteParts, "暂不可售")
+			disabledReason = "暂不可售"
+		}
+		if stockKnown && stock <= 0 {
+			disabledReason = "暂无库存"
 		}
 		if len(ch.zones) > 0 {
 			noteParts = append(noteParts, "可用区 "+strings.Join(ch.zones, "、"))
@@ -2278,7 +2401,8 @@ func guidedGPUFormOptions(catalog map[string]any, supported []string, current st
 			Value:    ch.name,
 			Label:    label,
 			Note:     strings.Join(noteParts, " · "),
-			Disabled: !ch.normal || (stockKnown && stock <= 0),
+			Reason:   disabledReason,
+			Disabled: disabled,
 			Meta: map[string]string{
 				"Sellable": strconv.FormatBool(ch.normal),
 			},
@@ -2402,14 +2526,19 @@ func guidedZoneFormOptions(catalog map[string]any, gpuType, current string, para
 		count, stockKnown := inventory.count(zone, gpuType)
 		note := fmt.Sprintf("%s 可用", gpuType)
 		disabled := false
+		disabledReason := ""
 		if stockKnown {
 			note = fmt.Sprintf("%s · %s", gpuType, guidedStockNote(count))
 			disabled = count <= 0
+			if disabled {
+				disabledReason = "暂无库存"
+			}
 		}
 		opt := ConfirmFormOption{
 			Value:    zone,
 			Label:    zone,
 			Note:     note,
+			Reason:   disabledReason,
 			Disabled: disabled,
 			Meta:     map[string]string{"Zone": zone},
 		}
@@ -2468,14 +2597,20 @@ func guidedGPUCountFormOptions(catalog map[string]any, gpuType, zone string, cur
 			free, stockKnown := inventory.count(zone, gpuType)
 			note := fmt.Sprintf("%s · %s", gpuType, zone)
 			disabled := false
+			disabledReason := ""
 			if stockKnown {
-				note = fmt.Sprintf("%s · %s · %s", gpuType, zone, guidedStockFitNote(free, gpu))
+				fit := guidedStockFitNote(free, gpu)
+				note = fmt.Sprintf("%s · %s · %s", gpuType, zone, fit)
 				disabled = free < gpu
+				if disabled {
+					disabledReason = fit
+				}
 			}
 			opt := ConfirmFormOption{
 				Value:    value,
 				Label:    fmt.Sprintf("%.0f 张 GPU", gpu),
 				Note:     note,
+				Reason:   disabledReason,
 				Disabled: disabled,
 				Meta:     map[string]string{"GPU": value, "Zone": zone},
 			}
@@ -2637,14 +2772,20 @@ func guidedCpuMemoryFormOptions(catalog map[string]any, gpuType, zone string, gp
 					free, stockKnown := inventory.count(zone, gpuType)
 					note := fmt.Sprintf("%s · %.0f 张 GPU · %s", gpuType, gpu, zone)
 					disabled := false
+					disabledReason := ""
 					if stockKnown {
-						note = fmt.Sprintf("%s · %.0f 张 GPU · %s · %s", gpuType, gpu, zone, guidedStockFitNote(free, gpu))
+						fit := guidedStockFitNote(free, gpu)
+						note = fmt.Sprintf("%s · %.0f 张 GPU · %s · %s", gpuType, gpu, zone, fit)
 						disabled = free < gpu
+						if disabled {
+							disabledReason = fit
+						}
 					}
 					opts = append(opts, ConfirmFormOption{
 						Value:    key,
 						Label:    fmt.Sprintf("%.0f 核 CPU · %.0fGB 内存", cpu, memGB),
 						Note:     note,
+						Reason:   disabledReason,
 						Disabled: disabled,
 						Meta: map[string]string{
 							"Zone":     zone,
@@ -2913,6 +3054,26 @@ func zoneOptionLabel(describes map[string]string, zone string) string {
 		return d + " (" + zone + ")"
 	}
 	return zone
+}
+
+func zoneDescribeMapFromParams(params map[string]any) map[string]string {
+	raw, ok := params["ZoneDescribes"]
+	if !ok || raw == nil {
+		return nil
+	}
+	if m, ok := raw.(map[string]string); ok {
+		return m
+	}
+	if m, ok := raw.(map[string]any); ok {
+		out := make(map[string]string, len(m))
+		for k, v := range m {
+			if s, ok := v.(string); ok && strings.TrimSpace(k) != "" && strings.TrimSpace(s) != "" {
+				out[k] = s
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // imageFormOptions returns the currently selected image id plus up to
