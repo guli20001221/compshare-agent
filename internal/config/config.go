@@ -117,13 +117,21 @@ type LLMConfig struct {
 	Model   string `yaml:"model"`
 }
 
-// OCRConfig holds settings for the optional OCR (image text extraction)
-// feature used by the HTTP Chat handler. When Model is empty, OCR is disabled.
-// BaseURL and APIKey default to the LLM values when empty.
+// OCRConfig holds settings for the optional screenshot-understanding feature
+// used by the HTTP Chat handler. Despite the name it drives a vision-language
+// (Qwen3-VL) call, not plain character OCR. When Model is empty the feature is
+// disabled. BaseURL and APIKey default to the LLM values when empty.
 type OCRConfig struct {
-	Model    string        `yaml:"model"`
-	BaseURL  string        `yaml:"base_url"`
-	APIKey   string        `yaml:"api_key"`
+	Model   string `yaml:"model"`
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
+	// Prompt overrides the built-in vision prompt the VL model is asked to
+	// follow when reading a screenshot. Empty = use the built-in structured
+	// interpretation prompt (ocr.DefaultPrompt). Set it to tune what the model
+	// extracts/interprets (e.g. emphasize training-error diagnosis) without a
+	// code change. An empty/whitespace value is treated as "use the default";
+	// it is never sent as an empty instruction.
+	Prompt   string        `yaml:"prompt"`
 	Timeout  time.Duration `yaml:"timeout"`
 	MaxBytes int           `yaml:"max_bytes"`
 }

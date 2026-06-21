@@ -280,7 +280,9 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	// the user's original message.
 	persistContent := message
 	if ocrText != "" {
-		persistContent = "用户上传了一张截图，系统自动识别到以下内容：\n" + ocrText + "\n\n" + message
+		// Same wrapper the engine uses for the live turn, so the rehydrated
+		// copy re-fed to the LLM on later turns is byte-identical.
+		persistContent = engine.WrapScreenshotContext(ocrText, message)
 	}
 	if err := h.messages.Append(ctx, store.Message{
 		ID:          userMsgID,
