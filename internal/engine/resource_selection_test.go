@@ -292,6 +292,61 @@ func TestFindExplicitInstanceRef(t *testing.T) {
 	}
 }
 
+func TestResolveContinuationInstanceFindsNameOutsideDisplayedCandidates(t *testing.T) {
+	instances := make([]entity.InstanceSnapshot, 0, maxResourceSelectionCandidates+1)
+	for i := 0; i < maxResourceSelectionCandidates; i++ {
+		instances = append(instances, testInstance("uhost-visible-"+strconv.Itoa(i), "visible-"+strconv.Itoa(i), "Running"))
+	}
+	hidden := testInstance("uhost-zzzz-hidden", "claude-write-test", "Stopped")
+	instances = append(instances, hidden)
+	snapshot := testSnapshotWithInstances(instances...)
+	candidates, truncated := sortAndLimitResourceSelectionCandidates(instances)
+	if !truncated {
+		t.Fatal("test setup should produce a truncated candidate list")
+	}
+	for _, candidate := range candidates {
+		if candidate.UHostId == hidden.UHostId {
+			t.Fatal("test setup should keep target outside the displayed candidate list")
+		}
+	}
+
+	got, ok := resolveContinuationInstance("claude-write-test 这台关机", snapshot)
+	if !ok {
+		t.Fatalf("resolveContinuationInstance should search the full snapshot, not only displayed candidates")
+	}
+	if got.UHostId != hidden.UHostId {
+		t.Fatalf("resolved %q, want %q", got.UHostId, hidden.UHostId)
+	}
+}
+
+func TestResolveLoopCeilingInstanceUsesSelectedInstanceForFollowups(t *testing.T) {
+	selected := testInstance("uhost-selected", "train-box", "Running")
+	other := testInstance("uhost-other", "other-box", "Stopped")
+	snapshot := testSnapshotWithInstances(selected, other)
+
+	for _, msg := range []string{"这台现在状态呢", "它还能重启吗", "？", "?"} {
+		t.Run(msg, func(t *testing.T) {
+			got, ok := resolveLoopCeilingInstance(msg, snapshot, selected.UHostId)
+			if !ok {
+				t.Fatalf("resolveLoopCeilingInstance(%q) did not resolve selected instance", msg)
+			}
+			if got.UHostId != selected.UHostId {
+				t.Fatalf("resolved %q, want %q", got.UHostId, selected.UHostId)
+			}
+		})
+	}
+}
+
+func TestResolveLoopCeilingInstanceDoesNotGuessWithoutFollowupSignal(t *testing.T) {
+	selected := testInstance("uhost-selected", "train-box", "Running")
+	other := testInstance("uhost-other", "other-box", "Stopped")
+	snapshot := testSnapshotWithInstances(selected, other)
+
+	if got, ok := resolveLoopCeilingInstance("现在怎么样", snapshot, selected.UHostId); ok {
+		t.Fatalf("ambiguous text should not guess selected instance, got %s", got.UHostId)
+	}
+}
+
 // TestResourceSelectionPromptWrongIDPrefix: a typo'd/unowned ID gets an explicit
 // "未找到实例 X" notice (distinct from the no-ID-given prompt) but still lists
 // candidates so the user can recover.

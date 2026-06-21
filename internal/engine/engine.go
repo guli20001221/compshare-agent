@@ -1413,7 +1413,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		guardMayRewrite := e.currentMonitorWindow ||
 			(round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil) ||
 			e.lastPlannerIntentThisTurn == intent.IntentDiagnosis ||
-			e.searchKnowledgeRanThisTurn
+			e.searchKnowledgeRanThisTurn ||
+			e.mayCorrectFalseInstanceNotFoundReply(userMsg)
 		liveStream := opts.OnTextDelta != nil && !guardMayRewrite
 		var streamedDeltas []string
 		if liveStream {
@@ -1558,6 +1559,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 					}
 				}
 			}
+			if corrected, ok := e.correctFalseInstanceNotFoundReply(userMsg, content); ok {
+				content = corrected
+			}
 			// P0 empty-reply safety net: a successful round (err == nil) that
 			// produced no text — flash intermittently returns empty content with
 			// no tool call — must not surface as a blank reply ("空回复"). Replace
@@ -1659,6 +1663,16 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// guardMayRewrite=true (searchKnowledgeRanThisTurn), so its deltas were buffered
 	// not streamed — opts.OnTextDelta(synth) is the sole emission.
 	if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: synth,
+		})
+		if opts.OnTextDelta != nil {
+			opts.OnTextDelta(synth)
+		}
+		return synth, nil
+	}
+	if synth, ok := e.synthesizeLoopCeilingFromInstanceContext(userMsg); ok {
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: synth,
