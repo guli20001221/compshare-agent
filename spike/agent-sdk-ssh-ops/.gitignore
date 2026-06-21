@@ -1,0 +1,17 @@
+# secrets — NEVER commit
+.env
+.env.local
+*.local
+secrets*.env
+
+# python
+__pycache__/
+*.pyc
+
+# gateway / node
+node_modules/
+.ccr/
+
+# run artifacts
+.runs/
+*.log
