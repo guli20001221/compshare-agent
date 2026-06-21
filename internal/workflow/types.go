@@ -176,6 +176,7 @@ type ConfirmFormOption struct {
 	Value    string            `json:"Value"`
 	Label    string            `json:"Label"`
 	Note     string            `json:"Note,omitempty"`
+	Reason   string            `json:"Reason,omitempty"`
 	Disabled bool              `json:"Disabled,omitempty"`
 	Meta     map[string]string `json:"Meta,omitempty"`
 }

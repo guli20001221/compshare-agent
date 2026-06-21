@@ -383,6 +383,42 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 	assert.Equal(t, "cn-wlcb-01", created["Zone"])
 }
 
+func TestCreateInstanceGuided_PassesZoneIDToCreatePathAPIs(t *testing.T) {
+	executor := formMockExecutor()
+	var byAction = map[string]map[string]any{}
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		return ConfirmResolution{Confirmed: true}
+	})
+
+	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+		"GpuType": "4090",
+		"Zone":    "cn-sh2-02",
+		"ZoneIds": map[string]uint32{
+			"cn-sh2-02": 9001,
+		},
+		"ZoneIsPods": map[string]bool{
+			"cn-sh2-02": false,
+		},
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	for _, c := range executor.calls {
+		byAction[c.action] = c.args
+	}
+	for _, action := range []string{
+		"DescribeAvailableCompShareInstanceTypes",
+		"CheckCompShareResourceCapacity",
+		"GetCompShareInstanceUserPrice",
+		"CreateCompShareInstance",
+	} {
+		require.Contains(t, byAction, action)
+		assert.Equal(t, uint32(9001), byAction[action]["zone_id"], "%s must carry the backend-resolved zone_id", action)
+	}
+}
+
 func TestCreateInstanceGuided_ExplicitFullSpecShowsFinalOnly(t *testing.T) {
 	executor := formMockExecutor()
 	var seenSteps []int
@@ -469,8 +505,31 @@ func TestCreateInstanceGuided_GPUCardDisablesSoldOutFamilyFromInventory(t *testi
 	wide4090 := optionByValue(t, gpu, "4090_48G")
 	assert.True(t, plain4090.Disabled, "4090 has no live inventory in any offered zone")
 	assert.Contains(t, plain4090.Note, "暂无库存")
+	assert.Equal(t, "暂无库存", plain4090.Reason)
 	assert.False(t, wide4090.Disabled, "4090_48G still has live inventory")
 	assert.Contains(t, wide4090.Note, "库存约 1 张 GPU")
+}
+
+func TestCreateInstanceGuided_LockedGPUFailureNamesStockReason(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType":         "4090",
+		"GuidedGpuLocked": true,
+		"ZoneIds": map[string]uint32{
+			"cn-wlcb-01": 1,
+			"cn-sh2-02":  2,
+		},
+	})
+	wfCtx.StepResults["查询GPU库存"] = map[string]any{"GpuInventory": map[string]any{
+		"Exclusive": map[string]any{
+			"1": map[string]any{"4090": float64(0)},
+			"2": map[string]any{"4090": float64(0)},
+		},
+	}}
+
+	_, err := ensureGuidedGPUType(wfCtx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "4090")
+	assert.Contains(t, err.Error(), "暂无库存")
 }
 
 func TestGuidedImageFormOptionsFiltersToRequestedImageIntent(t *testing.T) {
@@ -522,8 +581,68 @@ func TestCreateInstanceGuided_ZoneCardDisablesSoldOutZonesFromInventory(t *testi
 	sh2 := optionByValue(t, zone, "cn-sh2-02")
 	assert.True(t, wlcb.Disabled, "selected zone has no live 4090 inventory")
 	assert.Contains(t, wlcb.Note, "暂无库存")
+	assert.Equal(t, "暂无库存", wlcb.Reason)
 	assert.False(t, sh2.Disabled)
 	assert.Contains(t, sh2.Note, "库存约 3 张 GPU")
+}
+
+func TestApplyGuidedZoneOverridesRefreshesPodState(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType":   "4090",
+		"Zone":      "cn-wlcb-01",
+		"ZoneIsPod": false,
+		"ZoneIsPods": map[string]bool{
+			"cn-wlcb-01": false,
+			"cn-pod-01":  true,
+		},
+	})
+
+	require.NoError(t, applyGuidedZoneOverrides(wfCtx, map[string]string{"Zone": "cn-pod-01"}))
+
+	assert.Equal(t, "cn-pod-01", wfCtx.Params["Zone"])
+	assert.Equal(t, true, wfCtx.Params["ZoneIsPod"])
+	assert.Equal(t, true, wfCtx.Params["IsPodZone"])
+}
+
+func TestCreateInstanceGuided_UserLockedZoneDoesNotAutoFallbackWhenSoldOut(t *testing.T) {
+	executor := formMockExecutor()
+	executor.results["DescribeCompShareGpuInventory"] = map[string]any{"GpuInventory": map[string]any{
+		"Exclusive": map[string]any{
+			"1": map[string]any{"4090": float64(0)},
+			"2": map[string]any{"4090": float64(3)},
+		},
+	}}
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal",
+			"MachineSizes": []any{map[string]any{"Gpu": float64(1), "Collection": []any{
+				map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+			}}}},
+		map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal",
+			"MachineSizes": []any{map[string]any{"Gpu": float64(1), "Collection": []any{
+				map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+			}}}},
+	}}
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		return ConfirmResolution{Confirmed: true}
+	})
+
+	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+		"GpuType":          "4090",
+		"Zone":             "cn-wlcb-01",
+		"GuidedZoneLocked": true,
+		"ZoneIds":          map[string]uint32{"cn-wlcb-01": 1, "cn-sh2-02": 2},
+		"ZoneDescribes":    map[string]string{"cn-wlcb-01": "华北二A", "cn-sh2-02": "上海二B"},
+	})
+
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	assert.Contains(t, result.Message, "你指定的可用区")
+	assert.Contains(t, result.Message, "暂无库存")
+	for _, call := range executor.calls {
+		assert.NotEqual(t, "CreateCompShareInstance", call.action)
+	}
 }
 
 func TestCreateInstanceGuided_GPUCountCardUsesReadableStockCopy(t *testing.T) {
@@ -554,6 +673,7 @@ func TestCreateInstanceGuided_GPUCountCardUsesReadableStockCopy(t *testing.T) {
 	assert.Equal(t, "2 张 GPU", two.Label)
 	assert.True(t, two.Disabled)
 	assert.Contains(t, two.Note, "库存不足，仅剩 1 张 GPU")
+	assert.Equal(t, "库存不足，仅剩 1 张 GPU", two.Reason)
 	assert.NotContains(t, one.Note, "有货 1 卡")
 	assert.NotContains(t, two.Note, "有货 1 卡")
 }

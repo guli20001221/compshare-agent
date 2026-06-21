@@ -124,8 +124,9 @@ var (
 	clockRangeRE         = regexp.MustCompile(`(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)`)
 	historicalDurationRE = regexp.MustCompile(`(?i)(?:过去|近|最近|last|past|previous|recent)\s*(?:\d+\s*)?(?:分钟|小时|天|周|月|hour|hours|day|days|week|weeks|month|months|h|d)`)
 	percentValueRE       = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*%`)
-	hardwareCreateVerbRE = regexp.MustCompile(`(?i)(创建|新建|开一台|开个|搞台|搞一台|抢一台|买一台|租一台|来一台|部署一台)`)
+	hardwareCreateVerbRE = regexp.MustCompile(`(?i)(创建|新建|开\s*(?:一台|一个|个|台)?\s*[a-z0-9]|搞台|搞一台|抢一台|买一台|租一台|来一台|部署一台)`)
 	hardwareAdviceRE     = regexp.MustCompile(`(?i)(能干嘛|能做什么|有什么用|适合做什么|适合干嘛)`)
+	hardwarePriceQueryRE = regexp.MustCompile(`(?i)(多少钱|价格|费用|计费|包月|包日|按量|每小时|一小时|小时价|贵不贵)`)
 )
 
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
@@ -1797,9 +1798,6 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.tryOperationLifecycleDispatch(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
-	if reply, handled := e.tryDirectHardwareCreate(ctx, dispatch, userMsg, onStep); handled {
-		return reply, true
-	}
 	// Agent-tier skills (deploy_model today) dispatch through dispatchAgentSkill —
 	// the uniform seam — not as routes: a route handler reaches only the
 	// ToolExecutor and cannot drive the orchestrator saga. The seam maps the intent
@@ -1807,6 +1805,9 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// TierAgent image-matching + RunAgentSaga(CreateInstanceDef) + poll-to-Running
 	// (see deploy_model.go). This is byte-stable wiring: the handler body is unchanged.
 	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
+		return reply, true
+	}
+	if reply, handled := e.tryDirectHardwareCreate(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
@@ -1846,10 +1847,14 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 }
 
 func (e *Engine) tryDirectHardwareCreate(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	if dispatch.result.Plan.Intent != intent.IntentOperationLifecycle || !explicitHardwareCreateRequest(userMsg) {
+	if !plannerAllowsDirectHardwareCreate(dispatch.result.Plan.Intent) {
 		return "", false
 	}
-	args, ok := hardwareCreateWorkflowArgs(userMsg)
+	if !directHardwareCreateActionCue(userMsg) {
+		return "", false
+	}
+	availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
+	args, ok := hardwareCreateWorkflowArgs(userMsg, availResult)
 	if !ok {
 		return "", false
 	}
@@ -1871,21 +1876,27 @@ func (e *Engine) tryDirectHardwareCreate(ctx context.Context, dispatch routerDis
 	return reply, true
 }
 
-func explicitHardwareCreateRequest(userMsg string) bool {
-	text := strings.TrimSpace(userMsg)
-	if text == "" || hardwareAdviceRE.MatchString(text) {
+func plannerAllowsDirectHardwareCreate(route intent.Intent) bool {
+	switch route {
+	case "", intent.IntentUnknown, intent.IntentOperationLifecycle, intent.IntentResourceInfo:
+		return true
+	default:
 		return false
 	}
-	if !hardwareCreateVerbRE.MatchString(text) {
-		return false
-	}
-	return knowledge.ExplicitGPUTypeFromText(text) != "" || extractDeployGPU(text) != ""
 }
 
-func hardwareCreateWorkflowArgs(userMsg string) (map[string]any, bool) {
-	gpu := knowledge.ExplicitGPUTypeFromText(userMsg)
+func directHardwareCreateActionCue(userMsg string) bool {
+	text := strings.TrimSpace(userMsg)
+	if text == "" || hardwareAdviceRE.MatchString(text) || hardwarePriceQueryRE.MatchString(text) {
+		return false
+	}
+	return hardwareCreateVerbRE.MatchString(text)
+}
+
+func hardwareCreateWorkflowArgs(userMsg string, availResult map[string]any) (map[string]any, bool) {
+	gpu := extractDeployGPUFromCatalog(userMsg, availResult)
 	if gpu == "" {
-		gpu = extractDeployGPU(userMsg)
+		gpu = knowledge.ExplicitGPUTypeFromText(userMsg)
 	}
 	gpu = knowledge.CanonicalGPUType(gpu)
 	if gpu == "" {
@@ -1956,9 +1967,9 @@ func workflowDirectReply(action, raw string) string {
 		}
 	}
 	if len(parts) == 0 {
-		return "创建实例请求已提交。"
+		return fmt.Sprintf("创建实例请求已提交。你可以在实例列表查看进度：%s", deployConsoleInstancesURL)
 	}
-	return fmt.Sprintf("创建实例请求已提交，实例 ID：%s。", strings.Join(parts, "、"))
+	return fmt.Sprintf("创建实例请求已提交，实例 ID：%s。你可以在实例列表查看进度：%s", strings.Join(parts, "、"), deployConsoleInstancesURL)
 }
 
 // agentSkillForIntent maps an agent-tier intent to the skill name its dispatch

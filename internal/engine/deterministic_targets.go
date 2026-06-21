@@ -693,6 +693,9 @@ func (e *Engine) synthesizeLoopCeilingFromInstanceContext(userMsg string) (strin
 		if requiresSpecificInstanceForLoopCeiling(userMsg) {
 			return renderMissingInstanceLoopCeiling(userMsg), true
 		}
+		if looksLikeAmbiguousInstanceListFollowup(userMsg, e.lastAssistantContent()) {
+			return renderInstanceListLoopCeilingSummary(snapshot.Instances), true
+		}
 		return "", false
 	}
 	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
@@ -959,6 +962,62 @@ func renderInstanceLoopCeilingSummary(inst entity.InstanceSnapshot) string {
 	fmt.Fprintf(&b, "我已经查到这台实例的信息，但本轮没有继续生成完整说明。当前可确认的是：\n\n")
 	b.WriteString(renderInstanceSummaryBullets(inst))
 	b.WriteString("\n如果你要继续操作这台实例，请直接说明要做什么，例如开机、关机、重启、查监控或排查 SSH。")
+	return b.String()
+}
+
+func looksLikeAmbiguousInstanceListFollowup(userMsg, lastAssistant string) bool {
+	text := strings.TrimSpace(userMsg)
+	if text == "" {
+		return false
+	}
+	compact := normalizeResourceText(text)
+	ambiguous := text == "?" || text == "？" ||
+		compact == "什么意思" || compact == "啥意思" ||
+		strings.Contains(text, "没看懂") || strings.Contains(text, "没明白") ||
+		strings.Contains(text, "哪些") || strings.Contains(text, "哪几个") ||
+		strings.Contains(text, "列全") || strings.Contains(text, "完整")
+	if !ambiguous {
+		return false
+	}
+	last := strings.TrimSpace(lastAssistant)
+	return strings.Contains(last, "实例") || strings.Contains(strings.ToLower(last), "uhost")
+}
+
+func renderInstanceListLoopCeilingSummary(instances map[string]entity.InstanceSnapshot) string {
+	total := len(instances)
+	if total == 0 {
+		return ""
+	}
+	copied := make([]entity.InstanceSnapshot, 0, total)
+	for _, inst := range instances {
+		copied = append(copied, inst)
+	}
+	sort.SliceStable(copied, func(i, j int) bool {
+		if strings.TrimSpace(copied[i].Name) != strings.TrimSpace(copied[j].Name) {
+			return strings.TrimSpace(copied[i].Name) < strings.TrimSpace(copied[j].Name)
+		}
+		return copied[i].UHostId < copied[j].UHostId
+	})
+	limit := total
+	if limit > 10 {
+		limit = 10
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "我刚才查到的是你当前账户里的实例列表，共 %d 台。你这条追问还不够具体，先把可确认的信息列出来：", total)
+	for i := 0; i < limit; i++ {
+		inst := copied[i]
+		fmt.Fprintf(&b, "\n%d. %s（%s），状态：%s", i+1, emptyLabel(inst.Name), inst.UHostId, emptyStateLabel(inst.State))
+		if strings.TrimSpace(inst.GpuType) != "" {
+			fmt.Fprintf(&b, "，GPU：%s", inst.GpuType)
+		}
+		if strings.TrimSpace(inst.Zone) != "" {
+			fmt.Fprintf(&b, "，可用区：%s", inst.Zone)
+		}
+	}
+	if total > limit {
+		fmt.Fprintf(&b, "\n另外还有 %d 台未展示。", total-limit)
+	}
+	b.WriteString("\n请直接告诉我你想看哪台实例，或想继续做什么，例如查某台状态、开机、关机、查监控。")
 	return b.String()
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
+	"github.com/compshare-agent/internal/zones"
 )
 
 // deployDispatch builds the minimal routerDispatchResult the deploy handler needs:
@@ -335,8 +336,8 @@ func TestTryDeployModel_MatcherJSONParseFailure(t *testing.T) {
 
 // TestMatchDeployImage_UsesLiveGPUSet proves GPU sizing is API-driven: the matcher
 // queries DescribeAvailableCompShareInstanceTypes and sizes against the LIVE set, so
-// a card the static gpuSpecs table has never heard of ("B200") is selectable. A
-// 16B model (~39GB) sizes to the only fitting live card, B200 (48GB) — impossible
+// a card the static gpuSpecs table has never heard of ("TEST_GPU_X") is selectable. A
+// 16B model (~39GB) sizes to the only fitting live card, TEST_GPU_X (48GB) — impossible
 // via the static table, proving the live path (not the static fallback) was taken.
 func TestMatchDeployImage_UsesLiveGPUSet(t *testing.T) {
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -355,7 +356,7 @@ func TestMatchDeployImage_UsesLiveGPUSet(t *testing.T) {
 			z := "cn-wlcb-01" // matcher filters availability to the create-zone
 			return map[string]any{"AvailableInstanceTypes": []any{
 				map[string]any{"Name": "4090", "Zone": z, "Status": "Normal", "GraphicsMemory": gmem(24), "Performance": perf(83), "MachineSizes": sizes},
-				map[string]any{"Name": "B200", "Zone": z, "Status": "Normal", "GraphicsMemory": gmem(48), "Performance": perf(130), "MachineSizes": sizes},
+				map[string]any{"Name": "TEST_GPU_X", "Zone": z, "Status": "Normal", "GraphicsMemory": gmem(48), "Performance": perf(130), "MachineSizes": sizes},
 				map[string]any{"Name": "A100", "Zone": z, "Status": "Normal", "GraphicsMemory": gmem(80), "Performance": perf(100), "MachineSizes": sizes},
 			}}, nil
 		default:
@@ -371,7 +372,7 @@ func TestMatchDeployImage_UsesLiveGPUSet(t *testing.T) {
 	plan, err := eng.matchDeployImage(context.Background(), "部署 Qwen2.5-16B", "", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, "B200", plan.GpuType, "16B (~39GB) must size to the live 48GB card B200, which the static table does not model")
+	assert.Equal(t, "TEST_GPU_X", plan.GpuType, "16B (~39GB) must size to the live 48GB card TEST_GPU_X, which the static table does not model")
 }
 
 // TestMatchDeployImage_PrefersAgentClient proves the TierAgent routing split
@@ -415,59 +416,44 @@ func TestGpuImageCompatible(t *testing.T) {
 	assert.True(t, gpuImageCompatible("", []string{"5090"}), "empty gpu = no claim")
 }
 
-// TestResolveArchImageVariant proves #174: the catalog ships a base image whose
-// SupportedGpuTypes EXCLUDES 5090 alongside a dedicated "<name>-5090"/"-50系" build.
-// When the user pins a 5090 the base can't run, the matcher must swap to the variant
-// (so the create uses a 5090-capable image) instead of dead-ending on the gate.
-func TestResolveArchImageVariant(t *testing.T) {
+func TestPreferDeployPlatformImageForPinnedGPUUsesSupportedTypes(t *testing.T) {
 	platform := map[string]any{"ImageSet": []any{
 		map[string]any{"Name": "vLLM v0.12.0", "CompShareImageId": "img-base",
-			"SupportedGpuTypes": []any{"4090", "A100", "H20"}}, // base excludes 5090
-		map[string]any{"Name": "vLLM v0.12.0-5090", "CompShareImageId": "img-5090",
-			"SupportedGpuTypes": []any{"5090"}}, // dedicated 5090 build
+			"SupportedGpuTypes": []any{"4090", "A100", "H20"}},
+		map[string]any{"Name": "vLLM v0.12.0-newgpu", "CompShareImageId": "img-newgpu",
+			"SupportedGpuTypes": []any{"TEST_GPU_X", "TEST_GPU_XL"}},
 		map[string]any{"Name": "ComfyUI基础镜像0.3.66", "CompShareImageId": "img-cf",
 			"SupportedGpuTypes": []any{"4090"}},
-		map[string]any{"Name": "ComfyUI基础镜像0.3.66-50系", "CompShareImageId": "img-cf-5090",
-			"SupportedGpuTypes": []any{"5090"}},
+		map[string]any{"Name": "ComfyUI基础镜像0.3.66 新架构版", "CompShareImageId": "img-cf-newgpu",
+			"SupportedGpuTypes": []any{"TEST_GPU_X"}},
 	}}
 
-	t.Run("pinned 5090 swaps base to -5090 variant", func(t *testing.T) {
+	t.Run("pinned catalog GPU swaps base to supported sibling without card-specific suffixes", func(t *testing.T) {
 		plan := deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0", ImageID: "img-base"}
-		got, supp, note := resolveArchImageVariant(plan, []string{"4090", "A100", "H20"}, "5090", platform)
+		got, supp, note := preferDeployPlatformImageForGPU(plan, platform, "TEST_GPU_X", "", false)
 		require.NotEmpty(t, note, "swap must be noted so the user sees why the image changed")
-		assert.Equal(t, "vLLM v0.12.0-5090", got.ImageName)
-		assert.Equal(t, "img-5090", got.ImageID)
-		assert.Equal(t, []string{"5090"}, supp, "supported set follows the swapped image")
+		assert.Equal(t, "vLLM v0.12.0-newgpu", got.ImageName)
+		assert.Equal(t, "img-newgpu", got.ImageID)
+		assert.Equal(t, []string{"TEST_GPU_X", "TEST_GPU_XL"}, supp, "supported set follows the swapped image")
 	})
 
-	t.Run("-50系 suffix variant", func(t *testing.T) {
+	t.Run("non-suffix sibling also works when SupportedGpuTypes matches", func(t *testing.T) {
 		plan := deployPlan{ImageSource: "platform", ImageName: "ComfyUI基础镜像0.3.66", ImageID: "img-cf"}
-		got, _, note := resolveArchImageVariant(plan, []string{"4090"}, "5090", platform)
+		got, _, note := preferDeployPlatformImageForGPU(plan, platform, "TEST_GPU_X", "", false)
 		require.NotEmpty(t, note)
-		assert.Equal(t, "ComfyUI基础镜像0.3.66-50系", got.ImageName)
+		assert.Equal(t, "ComfyUI基础镜像0.3.66 新架构版", got.ImageName)
 	})
 
-	t.Run("no swap when image already supports 5090", func(t *testing.T) {
+	t.Run("no swap when image already supports requested GPU", func(t *testing.T) {
 		plan := deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0", ImageID: "img-base"}
-		_, _, note := resolveArchImageVariant(plan, []string{"4090", "5090"}, "5090", platform)
+		got, _, note := preferDeployPlatformImageForGPU(plan, platform, "4090", "", false)
 		assert.Empty(t, note)
+		assert.Equal(t, "vLLM v0.12.0", got.ImageName)
 	})
 
-	t.Run("no swap when GPU is not 5090", func(t *testing.T) {
+	t.Run("no swap when no compatible sibling exists", func(t *testing.T) {
 		plan := deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0", ImageID: "img-base"}
-		_, _, note := resolveArchImageVariant(plan, []string{"4090", "A100", "H20"}, "4090", platform)
-		assert.Empty(t, note)
-	})
-
-	t.Run("no swap for community source", func(t *testing.T) {
-		plan := deployPlan{ImageSource: "community", ImageName: "vLLM v0.12.0", ImageID: "x"}
-		_, _, note := resolveArchImageVariant(plan, []string{"4090"}, "5090", platform)
-		assert.Empty(t, note, "community images have no clean sibling-suffix convention")
-	})
-
-	t.Run("no swap when no variant exists", func(t *testing.T) {
-		plan := deployPlan{ImageSource: "platform", ImageName: "Ollama v0.13.1", ImageID: "x"}
-		_, _, note := resolveArchImageVariant(plan, []string{"4090"}, "5090", platform)
+		_, _, note := preferDeployPlatformImageForGPU(plan, platform, "MI300X", "", false)
 		assert.Empty(t, note)
 	})
 }
@@ -508,32 +494,22 @@ func TestPreferDeployPlatformImageForPinnedGPURejectsVMImageInPodZone(t *testing
 	assert.Equal(t, []string{"4090"}, supported)
 }
 
-// TestTryArchVariantDowngrade is the inverse swap: the matcher mis-picked an
-// arch-specific variant the user didn't pin, so it downgrades to the generic base.
-func TestTryArchVariantDowngrade(t *testing.T) {
+func TestAlignDeployPlatformImageForGPU(t *testing.T) {
 	platform := map[string]any{"ImageSet": []any{
 		map[string]any{"Name": "vLLM v0.12.0-5090", "CompShareImageId": "img-5090", "SupportedGpuTypes": []any{"5090"}},
 		map[string]any{"Name": "vLLM v0.12.0", "CompShareImageId": "img-base", "SupportedGpuTypes": []any{"4090", "A100", "A800"}},
 	}}
 
-	t.Run("variant + no pinned arch → downgrade to base", func(t *testing.T) {
-		id, supp, name, ok := tryArchVariantDowngrade(deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0-5090"}, "", platform)
-		require.True(t, ok)
-		assert.Equal(t, "img-base", id)
-		assert.Equal(t, "vLLM v0.12.0", name)
+	t.Run("variant + selected GPU → align to compatible sibling", func(t *testing.T) {
+		plan, supp, note := alignDeployPlatformImageForGPU(deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0-5090", ImageID: "img-5090"}, platform, "A100", "", false)
+		require.NotEmpty(t, note)
+		assert.Equal(t, "img-base", plan.ImageID)
+		assert.Equal(t, "vLLM v0.12.0", plan.ImageName)
 		assert.ElementsMatch(t, []string{"4090", "A100", "A800"}, supp)
 	})
-	t.Run("user pinned 5090 → no downgrade (they want the variant)", func(t *testing.T) {
-		_, _, _, ok := tryArchVariantDowngrade(deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0-5090"}, "5090", platform)
-		assert.False(t, ok)
-	})
-	t.Run("not an arch variant → no downgrade", func(t *testing.T) {
-		_, _, _, ok := tryArchVariantDowngrade(deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0"}, "", platform)
-		assert.False(t, ok)
-	})
-	t.Run("community source → no downgrade", func(t *testing.T) {
-		_, _, _, ok := tryArchVariantDowngrade(deployPlan{ImageSource: "community", ImageName: "Foo-5090"}, "", platform)
-		assert.False(t, ok)
+	t.Run("no compatible sibling", func(t *testing.T) {
+		_, _, note := alignDeployPlatformImageForGPU(deployPlan{ImageSource: "platform", ImageName: "vLLM v0.12.0-5090", ImageID: "img-5090"}, platform, "MI300X", "", false)
+		assert.Empty(t, note)
 	})
 }
 
@@ -554,7 +530,7 @@ func TestMatchDeployImage_ArchVariantDowngradesToBase(t *testing.T) {
 
 	require.NoError(t, err, "the arch variant must downgrade to the base instead of erroring")
 	assert.Equal(t, "vLLM v0.12.0", plan.ImageName, "swapped to the generic base")
-	assert.Contains(t, plan.MatchNote, "回退到通用基础镜像", "the downgrade is noted for the user")
+	assert.Contains(t, plan.MatchNote, "已切换到支持该 GPU 的同类镜像", "the downgrade is noted for the user")
 }
 
 // TestBuildDeployReply_IncludesConsoleManageLink proves the post-create reply hands
@@ -912,11 +888,15 @@ func TestDeployIsAdviceOnly(t *testing.T) {
 		{"LiveTalking这个镜像推荐我用哪种卡部署", true}, // real session s_fd7f1b9669fd
 		{"用什么显卡部署 ComfyUI", true},
 		{"部署 DeepSeek R1 用哪种卡好", true},
+		{"部署一台 4090 多少钱", true},
+		{"部署 4090 包月价格", true},
 		{"怎么部署 Qwen", true},
 		{"推荐一个能跑 Qwen 的配置", true},
 		{"用什么镜像合适", true},
 		{"我想对一个模型进行微调", true},
 		{"我想训练我的rvc模型", true},
+		{"vasp计算", true},
+		{"RVC模型", true},
 		{"我想部署 DeepSeek R1", false},
 		{"部署一台A100的Ollama，按量", false},
 		{"帮我部署 Qwen2.5-7B", false},
@@ -949,6 +929,17 @@ func TestTryDeployModel_AdviceOnlyDoesNotCreate(t *testing.T) {
 	assert.Equal(t, 0, confirmCalls, "no confirm card for a recommendation question")
 	assert.Contains(t, reply, "建议", "the recommendation is returned as advice")
 	assert.Contains(t, reply, "部署 LiveTalking 数字人", "mutating-on advice offers to proceed on an explicit restate")
+}
+
+func TestTryDeployModel_PriceQuestionDoesNotCreate(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署一台 4090 多少钱", noopStep)
+
+	require.True(t, handled)
+	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "price questions must not create instances")
+	assert.Contains(t, reply, "推荐 GPU", "price-like deploy turns should return advice rather than a billable create card")
 }
 
 func TestTryDeployModel_TrainingIntentDoesNotCreate(t *testing.T) {
@@ -1114,6 +1105,20 @@ func TestExtractDeployGPU(t *testing.T) {
 	assert.Equal(t, "", extractDeployGPU("部署"), "bare verb → empty")
 }
 
+func TestExtractDeployGPUFromCatalogSeesNewUpstreamGPU(t *testing.T) {
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("4090", "cn-wlcb-01", 24),
+		availCardZ("A100", "cn-wlcb-01", 80),
+		availCardZ("TEST_GPU_X", "cn-bj2-03", 192),
+		availCardZ("TEST_GPU_XL", "cn-bj2-03", 192),
+	}}
+
+	assert.Equal(t, "TEST_GPU_X", extractDeployGPUFromCatalog("用 TEST_GPU_X 部署 Qwen", avail))
+	assert.Equal(t, "TEST_GPU_XL", extractDeployGPUFromCatalog("用 TEST_GPU_XL 部署 Qwen", avail))
+	assert.Equal(t, "4090", extractDeployGPUFromCatalog("用4090部署", avail))
+	assert.Equal(t, "", extractDeployGPUFromCatalog("跑一下 Llama100 这个模型", avail), "catalog matching must keep token boundaries")
+}
+
 // TestTryDeployModel_UserZoneFromMessage proves the deterministic zone extraction
 // reaches selectDeployZoneAndGPU end-to-end: a request naming 上海 (cn-sh2-02)
 // creates in that zone even though cn-wlcb-01 is the default preference.
@@ -1188,6 +1193,175 @@ func TestTryDeployModel_ThreadsInventoryContextToGuidedCard(t *testing.T) {
 	assert.Contains(t, gpuField.Options[0].Note, "库存约 5 张 GPU", "ZoneIds must be threaded so inventory maps back to the live zone")
 }
 
+func TestTryDeployModel_UserPinnedCatalogGPULocksGuidedCard(t *testing.T) {
+	var forms []*workflow.ConfirmForm
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{}}, nil
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{map[string]any{
+				"CompShareImageId": "img-pt",
+				"Name":             "PyTorch 2.9.1 cuda128",
+				"ImageType":        "App",
+			}}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{availCardZ("TEST_GPU_X", "cn-bj2-03", 192), availCardZ("4090", "cn-bj2-03", 24)}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{map[string]any{
+				"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": false,
+			}}}, nil
+		case "DescribeCompShareGpuInventory":
+			return map[string]any{"GpuInventory": map[string]any{"Exclusive": map[string]any{
+				"5001": map[string]any{"TEST_GPU_X": float64(2), "4090": float64(9)},
+			}}}, nil
+		case "CheckCompShareResourceCapacity":
+			return map[string]any{"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			}}, nil
+		case "GetCompShareInstanceUserPrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.23}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch 2.9.1 cuda128","model_name":"Qwen2.5-7B","quantization":""}`, exec, okConfirm)
+	eng.guidedCreate = true
+	eng.confirmEditsFn = func(_ string, _ map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+		if form != nil {
+			forms = append(forms, form)
+		}
+		return workflow.ConfirmResolution{Confirmed: false}
+	}
+
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "用 TEST_GPU_X 部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	require.NotEmpty(t, forms, "a guided flow should still present a later selection/confirm form")
+	for _, form := range forms {
+		gpuField := form.Field("GpuType")
+		if gpuField == nil {
+			continue
+		}
+		require.Len(t, gpuField.Options, 1, "user-pinned catalog GPU must be locked, not mixed with recommendation alternatives")
+		assert.Equal(t, "TEST_GPU_X", gpuField.Value)
+		assert.Equal(t, "TEST_GPU_X", gpuField.Options[0].Value)
+	}
+}
+
+func TestTryDeployModel_CatalogGPUBypassesAmbiguousModelSizeClarify(t *testing.T) {
+	var forms []*workflow.ConfirmForm
+	var confirmArgs []map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{}}, nil
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{map[string]any{
+				"CompShareImageId": "img-pt",
+				"Name":             "PyTorch 2.9.1 cuda128",
+				"ImageType":        "App",
+			}}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{availCardZ("TEST_GPU_X", "cn-bj2-03", 192)}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{map[string]any{
+				"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": false,
+			}}}, nil
+		case "DescribeCompShareGpuInventory":
+			return map[string]any{"GpuInventory": map[string]any{"Exclusive": map[string]any{
+				"5001": map[string]any{"TEST_GPU_X": float64(2)},
+			}}}, nil
+		case "CheckCompShareResourceCapacity":
+			return map[string]any{"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			}}, nil
+		case "GetCompShareInstanceUserPrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.23}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch 2.9.1 cuda128","model_name":"DeepSeek R1","size_ambiguous":true,"quantization":""}`, exec, okConfirm)
+	eng.guidedCreate = true
+	eng.confirmEditsFn = func(_ string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+		confirmArgs = append(confirmArgs, args)
+		if form != nil {
+			forms = append(forms, form)
+		}
+		return workflow.ConfirmResolution{Confirmed: false}
+	}
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "用 TEST_GPU_X 部署 DeepSeek R1", noopStep)
+
+	require.True(t, handled)
+	assert.NotContains(t, reply, "多个参数规模", "a user-pinned live catalog GPU should not be blocked by model-size clarification")
+	require.NotEmpty(t, forms)
+	var seenPinnedGPU bool
+	for _, form := range forms {
+		if f := form.Field("GpuType"); f != nil {
+			assert.Equal(t, "TEST_GPU_X", f.Value)
+			seenPinnedGPU = true
+		}
+	}
+	for _, args := range confirmArgs {
+		if args["GpuType"] == "TEST_GPU_X" {
+			seenPinnedGPU = true
+		}
+	}
+	assert.True(t, seenPinnedGPU, "confirm flow should carry the user-pinned catalog GPU even if the GPU card is skipped")
+}
+
+func TestTryDeployModel_RealignsPlatformImageAfterAutoSelectingPodZone(t *testing.T) {
+	var createArgs map[string]any
+	var capacityArgs map[string]any
+	var priceArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{}}, nil
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-vm", "Name": "PyTorch", "ImageType": "System", "Status": "Available", "Container": false, "SupportedGpuTypes": []any{"4090"}},
+				map[string]any{"CompShareImageId": "img-container", "Name": "PyTorch-container", "ImageType": "App", "Status": "Available", "Container": true, "SupportedGpuTypes": []any{"4090"}},
+			}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{availCardZ("4090", "cn-pod-01", 24)}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{map[string]any{
+				"Zone": "cn-pod-01", "Region": "cn-pod", "ZoneId": float64(9001), "Describe": "测试 Pod 区", "IsPod": true,
+			}}}, nil
+		case "CheckCompShareResourceCapacity":
+			capacityArgs = args
+			return map[string]any{"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			}}, nil
+		case "GetCompShareInstanceUserPrice":
+			priceArgs = args
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.23}}}, nil
+		case "CreateCompShareInstance":
+			createArgs = args
+			return map[string]any{"UHostIds": []any{"uhost-pod"}}, nil
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{"UHostId": "uhost-pod", "State": "Initializing", "GpuType": "4090"}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-7B","quantization":""}`, exec, okConfirm)
+	eng.zoneCatalog = zones.NewCatalog(0)
+
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	require.NotNil(t, createArgs, "create must run")
+	assert.Equal(t, "cn-pod-01", createArgs["Zone"])
+	assert.Equal(t, uint32(9001), createArgs["zone_id"], "Pod create must route upstream by zone_id derived from support-zone catalog")
+	assert.Equal(t, uint32(9001), capacityArgs["zone_id"], "Pod capacity preflight must use the same zone_id")
+	assert.Equal(t, uint32(9001), priceArgs["zone_id"], "Pod price preflight must use the same zone_id")
+	assert.Equal(t, "img-container", createArgs["CompShareImageId"], "auto-selected Pod zones must create with a container image")
+}
+
 func TestDeployGuidedGPUCandidates_OnlyClaimsStockWhenConfirmed(t *testing.T) {
 	_, reasons := deployGuidedGPUCandidates(deployPlan{
 		ImageSource:    "community",
@@ -1221,6 +1395,23 @@ func TestSelectDeployZoneAndGPU_PinnedGPUHonored(t *testing.T) {
 	assert.Equal(t, "cn-wlcb-01", zone)
 	assert.Empty(t, fb)
 	assert.Contains(t, note, "A100", "note explains the pin was honored")
+}
+
+func TestSelectDeployZoneAndGPU_PinnedCatalogGPUHonored(t *testing.T) {
+	exec := stockExec(map[string]bool{"cn-bj2-03": true})
+	eng := NewWithDeps(nil, exec, okConfirm)
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("TEST_GPU_X", "cn-bj2-03", 192),
+		availCardZ("4090", "cn-wlcb-01", 24),
+	}}
+
+	zone, gpu, note, fb, err := eng.selectDeployZoneAndGPU(context.Background(), avail, deployPlan{ImageID: "img-1"}, []string{"TEST_GPU_X"}, "", "用 TEST_GPU_X 部署 Qwen", "")
+
+	require.NoError(t, err)
+	assert.Equal(t, "TEST_GPU_X", gpu)
+	assert.Equal(t, "cn-bj2-03", zone)
+	assert.Empty(t, fb)
+	assert.Contains(t, note, "TEST_GPU_X")
 }
 
 // TestSelectDeployZoneAndGPU_PinnedGPUFallbackZone proves the pin reuses the same
@@ -1775,9 +1966,13 @@ func TestShouldClarifyDeployModelSize(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, shouldClarifyDeployModelSize(tc.modelName, tc.userMsg))
+			assert.Equal(t, tc.want, shouldClarifyDeployModelSize(tc.modelName, tc.userMsg, ""))
 		})
 	}
+}
+
+func TestShouldClarifyDeployModelSize_HonorsCatalogGPU(t *testing.T) {
+	assert.False(t, shouldClarifyDeployModelSize("DeepSeek R1", "用 TEST_GPU_X 部署 DeepSeek R1", "TEST_GPU_X"))
 }
 
 // TestMatchDeployImage_SizeAmbiguousGatesClarify proves the #16 fix: the size-clarify

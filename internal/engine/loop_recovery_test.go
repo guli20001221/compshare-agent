@@ -176,6 +176,36 @@ func TestChat_RoundCeiling_SummarizesResolvedInstanceFromRegistry(t *testing.T) 
 	assert.Contains(t, reply, "uhost-zzzz-hidden")
 }
 
+func TestChat_RoundCeiling_SummarizesRecentInstanceListForAmbiguousFollowup(t *testing.T) {
+	responses := make([]llm.ChatResponse, maxReActRounds)
+	for i := range responses {
+		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
+			toolCall(fmt.Sprintf("list-%d", i), "DescribeCompShareInstance", `{}`),
+		}}
+	}
+	describe := map[string]any{"UHostSet": []any{
+		map[string]any{"UHostId": "uhost-a", "Name": "host-a", "State": "Running", "GpuType": "4090", "Zone": "cn-wlcb-01"},
+		map[string]any{"UHostId": "uhost-b", "Name": "host-b", "State": "Stopped", "GpuType": "A100", "Zone": "cn-sh2-02"},
+	}, "TotalCount": float64(2)}
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": describe,
+	}}
+	eng := NewWithDeps(&mockLLM{responses: responses}, exec, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+		{Role: openai.ChatMessageRoleUser, Content: "我有哪些实例"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "您共有 2 台实例：host-a、host-b。"},
+	}
+	require.NoError(t, eng.registry.SyncFromDescribe(describe, "test"))
+
+	reply, err := eng.Chat(context.Background(), "？", noopStep)
+	require.NoError(t, err)
+	assert.NotContains(t, reply, "轮次超限")
+	assert.Contains(t, reply, "host-a")
+	assert.Contains(t, reply, "host-b")
+	assert.Contains(t, reply, "具体")
+}
+
 func TestChat_RoundCeiling_ExplainsMissingInstanceTarget(t *testing.T) {
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
@@ -326,7 +356,7 @@ func TestChat_LLMError_RecoversWhenEvidenceInHandAndCtxLive(t *testing.T) {
 		{resp: &llm.ChatResponse{ToolCalls: []openai.ToolCall{
 			toolCall("sk", "SearchKnowledge", `{"query":"vllm 显存不足"}`),
 		}}},
-		{err: fmt.Errorf("connection reset by peer")}, // round 1 errors → recovery
+		{err: fmt.Errorf("connection reset by peer")},                          // round 1 errors → recovery
 		{resp: &llm.ChatResponse{Content: "可以把 max-model-len 调小来降低显存占用 [1]。"}}, // synthesis call
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
@@ -354,7 +384,7 @@ func TestChat_LLMError_CtxCancelledSkipsRecovery(t *testing.T) {
 			toolCall("sk", "SearchKnowledge", `{"query":"vllm 显存不足"}`),
 		}}},
 		{err: fmt.Errorf("context canceled"), onErr: cancel}, // cancel as the error surfaces
-		{resp: &llm.ChatResponse{Content: "这条不应被消费 [1]。"}},        // synthesis step — must NOT run
+		{resp: &llm.ChatResponse{Content: "这条不应被消费 [1]。"}},   // synthesis step — must NOT run
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(vllmRetriever())

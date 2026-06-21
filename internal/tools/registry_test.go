@@ -33,6 +33,36 @@ func TestCreatePathToolsAllowRegion(t *testing.T) {
 	}
 }
 
+func TestCreatePathToolsAllowBackendZoneID(t *testing.T) {
+	policies := DefaultToolExecutionPolicies()
+	for _, action := range []string{
+		"DescribeAvailableCompShareInstanceTypes",
+		"CheckCompShareResourceCapacity",
+		"GetCompShareInstancePrice",
+		"GetCompShareInstanceUserPrice",
+	} {
+		p, ok := policies[action]
+		if !ok {
+			t.Fatalf("%s should have a policy", action)
+		}
+		found := false
+		for _, param := range p.InternalAllowedParams {
+			if param == "zone_id" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s must allow backend-derived zone_id only for internal workflow calls", action)
+		}
+		for _, param := range p.AllowedParams {
+			if param == "zone_id" {
+				t.Errorf("%s must not expose zone_id to model-origin calls", action)
+			}
+		}
+	}
+}
+
 func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	descriptions := registryDescriptions()
 
