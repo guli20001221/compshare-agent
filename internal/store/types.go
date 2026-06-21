@@ -87,6 +87,19 @@ type SessionStore interface {
 		ctxJSON json.RawMessage,
 		expectedVersion int,
 	) (newVersion int, err error)
+
+	// ListByOwner returns up to limit of the owner's sessions, most recently
+	// active first (ORDER BY updated_at DESC), excluding soft-deleted rows. It
+	// backs the history sidebar; messages are not loaded. limit must be >= 1;
+	// a limit < 1 yields an empty result (callers are expected to clamp).
+	ListByOwner(ctx context.Context, owner Owner, limit int) ([]Session, error)
+
+	// SetTitleIfEmpty sets sessions.title to title only when the row's title is
+	// currently NULL, preserving an explicit client-set title. Owner-scoped +
+	// deleted_at IS NULL. 0 rows affected (title already set, or row missing) is
+	// not an error — this is a best-effort first-turn derivation that must never
+	// fail the chat turn.
+	SetTitleIfEmpty(ctx context.Context, owner Owner, sessionID string, title string) error
 }
 
 // MessageStore manages messages within sessions.

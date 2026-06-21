@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,12 @@ type mockSessions struct {
 	// updateContextOverride, when non-nil, replaces the default CAS
 	// behavior. Tests use it to force outcomes like ErrStaleWrite.
 	updateContextOverride func(sessionID string, ctxJSON json.RawMessage, expectedVersion int) (int, error)
+	// setTitleCallCount counts SetTitleIfEmpty invocations so tests can assert
+	// the chat write path attempts first-turn title derivation.
+	setTitleCallCount int
+	// lastListLimit records the limit ListByOwner was last called with so tests
+	// can assert the handler's clamp logic.
+	lastListLimit int
 }
 
 func (m *mockSessions) Create(_ context.Context, owner store.Owner, title *string, ctxJSON json.RawMessage) (store.Session, error) {
@@ -95,6 +102,40 @@ func (m *mockSessions) UpdateContext(_ context.Context, owner store.Owner, sessi
 	s.ContextVersion = expectedVersion + 1
 	m.byID[sessionID] = s
 	return s.ContextVersion, nil
+}
+
+// ListByOwner mirrors MySQLSessionStore.ListByOwner: owner-scoped, most
+// recently active first (updated_at DESC), capped at limit. The in-memory
+// mock has no deleted_at, so all owned rows are eligible.
+func (m *mockSessions) ListByOwner(_ context.Context, owner store.Owner, limit int) ([]store.Session, error) {
+	m.lastListLimit = limit
+	if limit < 1 {
+		return []store.Session{}, nil
+	}
+	out := make([]store.Session, 0, len(m.byID))
+	for _, s := range m.byID {
+		if s.TopOrganizationID == owner.TopOrganizationID && s.OrganizationID == owner.OrganizationID {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	if limit < len(out) {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// SetTitleIfEmpty mirrors the store: sets title only when currently nil,
+// owner-scoped. 0-effect (title already set / missing row) is not an error.
+func (m *mockSessions) SetTitleIfEmpty(_ context.Context, owner store.Owner, sessionID, title string) error {
+	m.setTitleCallCount++
+	s, ok := m.byID[sessionID]
+	if ok && s.Title == nil && s.TopOrganizationID == owner.TopOrganizationID && s.OrganizationID == owner.OrganizationID {
+		t := title
+		s.Title = &t
+		m.byID[sessionID] = s
+	}
+	return nil
 }
 
 type mockMessages struct {
