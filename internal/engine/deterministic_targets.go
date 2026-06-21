@@ -675,6 +675,320 @@ func renderDiagnosisContinuationReply(inst entity.InstanceSnapshot, action, raw 
 	return b.String()
 }
 
+func (e *Engine) synthesizeLoopCeilingFromInstanceContext(userMsg string) (string, bool) {
+	if e == nil {
+		return "", false
+	}
+	snapshot := e.RegistrySnapshot()
+	if len(snapshot.Instances) == 0 {
+		return "", false
+	}
+	if _, hasExplicitName := extractLikelyMissingInstanceName(userMsg); hasExplicitName {
+		if _, found := resolveContinuationInstance(userMsg, snapshot); !found && requiresSpecificInstanceForLoopCeiling(userMsg) {
+			return renderMissingInstanceLoopCeiling(userMsg), true
+		}
+	}
+	inst, ok := resolveLoopCeilingInstance(userMsg, snapshot, e.sessionState.SelectedInstanceID)
+	if !ok {
+		if requiresSpecificInstanceForLoopCeiling(userMsg) {
+			return renderMissingInstanceLoopCeiling(userMsg), true
+		}
+		return "", false
+	}
+	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+	return renderInstanceLoopCeilingSummary(inst), true
+}
+
+func (e *Engine) correctFalseInstanceNotFoundReply(userMsg, content string) (string, bool) {
+	if e == nil || !containsInstanceNotFoundClaim(content) {
+		return "", false
+	}
+	snapshot := e.RegistrySnapshot()
+	if len(snapshot.Instances) == 0 {
+		return "", false
+	}
+	inst, ok := resolveLoopCeilingInstance(userMsg, snapshot, e.sessionState.SelectedInstanceID)
+	if !ok {
+		return "", false
+	}
+	if !notFoundClaimMentionsTargetOrInstance(content, inst) {
+		return "", false
+	}
+	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+	return renderInstanceFoundCorrection(inst), true
+}
+
+func (e *Engine) mayCorrectFalseInstanceNotFoundReply(userMsg string) bool {
+	if e == nil {
+		return false
+	}
+	snapshot := e.RegistrySnapshot()
+	if len(snapshot.Instances) == 0 {
+		return false
+	}
+	_, ok := resolveLoopCeilingInstance(userMsg, snapshot, e.sessionState.SelectedInstanceID)
+	return ok
+}
+
+func containsInstanceNotFoundClaim(content string) bool {
+	text := strings.TrimSpace(content)
+	if text == "" {
+		return false
+	}
+	for _, phrase := range []string{"没有找到", "未找到", "找不到", "查不到", "不存在"} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func notFoundClaimMentionsTargetOrInstance(content string, inst entity.InstanceSnapshot) bool {
+	text := strings.TrimSpace(content)
+	if text == "" {
+		return false
+	}
+	for _, target := range []string{strings.TrimSpace(inst.UHostId), strings.TrimSpace(inst.Name)} {
+		if target != "" && targetMissingClaimMentionsInstance(text, target) {
+			return true
+		}
+	}
+	for _, phrase := range []string{
+		"没有找到目标实例", "未找到目标实例", "找不到目标实例", "查不到目标实例",
+		"没有找到你要操作的实例", "未找到你要操作的实例", "找不到你要操作的实例", "查不到你要操作的实例",
+		"没有找到您要操作的实例", "未找到您要操作的实例", "找不到您要操作的实例", "查不到您要操作的实例",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func targetMissingClaimMentionsInstance(text, target string) bool {
+	if !strings.Contains(text, target) || targetMentionLooksNestedResource(text, target) {
+		return false
+	}
+	if strings.Contains(text, "名为") && strings.Contains(text, "实例") && containsInstanceNotFoundClaim(text) {
+		return true
+	}
+	for _, prefix := range []string{"没有找到", "未找到", "找不到", "查不到"} {
+		if strings.Contains(text, prefix+target) || strings.Contains(text, prefix+" "+target) ||
+			strings.Contains(text, prefix+"「"+target+"」") || strings.Contains(text, prefix+"“"+target+"”") ||
+			strings.Contains(text, prefix+" **\""+target+"\"**") {
+			return true
+		}
+		if strings.Contains(text, prefix+"实例 "+target) || strings.Contains(text, prefix+"实例「"+target+"」") {
+			return true
+		}
+	}
+	return false
+}
+
+func targetMentionLooksNestedResource(text, target string) bool {
+	nestedMarkers := []string{
+		target + " 上", target + "上",
+		target + " 中", target + "中",
+		target + " 里", target + "里",
+		target + " 内", target + "内",
+		target + " 这台实例里", target + "这台实例里",
+		target + " 这台实例中", target + "这台实例中",
+		target + " 这个实例里", target + "这个实例里",
+		target + " 这个实例中", target + "这个实例中",
+	}
+	for _, marker := range nestedMarkers {
+		if strings.Contains(text, marker) && containsNestedResourceWord(text) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsNestedResourceWord(text string) bool {
+	for _, word := range []string{"文件", "模型", "目录", "路径", "节点", "服务", "端口", "容器", "环境"} {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveLoopCeilingInstance(userMsg string, snapshot entity.RegistrySnapshot, selectedID string) (entity.InstanceSnapshot, bool) {
+	if inst, ok := resolveContinuationInstance(userMsg, snapshot); ok {
+		return inst, true
+	}
+	if selectedID != "" && looksLikeSelectedInstanceFollowup(userMsg) {
+		if inst, res := snapshot.ResolveByID(selectedID); res.Status == entity.ResolveHit && inst != nil {
+			return *inst, true
+		}
+	}
+	return entity.InstanceSnapshot{}, false
+}
+
+func renderInstanceFoundCorrection(inst entity.InstanceSnapshot) string {
+	return "这台实例存在于当前实例列表中，当前可确认的是：\n\n" + renderInstanceSummaryBullets(inst)
+}
+
+func requiresSpecificInstanceForLoopCeiling(userMsg string) bool {
+	text := strings.TrimSpace(userMsg)
+	if text == "" {
+		return false
+	}
+	if inferLifecycleAction(text) != "" || inferDiagnosisActionFromText(text) != "" {
+		return true
+	}
+	return strings.Contains(text, "无卡模式")
+}
+
+func renderMissingInstanceLoopCeiling(userMsg string) string {
+	if target, ok := extractLikelyMissingInstanceName(userMsg); ok {
+		return fmt.Sprintf("我已经查过当前实例列表，但没有找到名为「%s」的实例。请确认实例名称是否正确，或直接提供 uhost- 开头的实例 ID。", target)
+	}
+	return "我已经查过当前实例列表，但没有定位到你要操作的具体实例。请提供准确的实例名称，或直接提供 uhost- 开头的实例 ID。"
+}
+
+func extractLikelyMissingInstanceName(userMsg string) (string, bool) {
+	text := strings.TrimSpace(userMsg)
+	if text == "" {
+		return "", false
+	}
+	for _, token := range splitResourceTokens(text) {
+		if strings.HasPrefix(strings.ToLower(token), "uhost-") {
+			return token, true
+		}
+	}
+	for _, marker := range []string{"这台实例", "这臺实例", "这个实例", "這個实例", "这台机器", "這台机器", "这个机器"} {
+		idx := strings.Index(text, marker)
+		if idx <= 0 {
+			continue
+		}
+		if name, ok := cleanLikelyInstanceName(text[:idx]); ok {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+func splitResourceTokens(text string) []string {
+	var tokens []string
+	var b strings.Builder
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, b.String())
+		b.Reset()
+	}
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' {
+			b.WriteRune(r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return tokens
+}
+
+func cleanLikelyInstanceName(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	value = strings.Trim(value, " \t\r\n:：,，.。;；!！?？[]【】()（）\"'`")
+	for {
+		trimmed := value
+		for _, prefix := range []string{"帮我", "请帮我", "麻烦帮我", "麻烦", "请", "将", "把", "给我", "帮"} {
+			trimmed = strings.TrimPrefix(trimmed, prefix)
+		}
+		trimmed = strings.TrimSpace(trimmed)
+		if trimmed == value {
+			break
+		}
+		value = trimmed
+	}
+	fields := splitResourceTokens(value)
+	if len(fields) > 0 {
+		value = fields[len(fields)-1]
+	}
+	value = strings.TrimSpace(value)
+	if len([]rune(value)) < 3 {
+		return "", false
+	}
+	switch normalizeResourceText(value) {
+	case "", "instance", "host", "机器", "实例":
+		return "", false
+	default:
+		return value, true
+	}
+}
+
+func looksLikeSelectedInstanceFollowup(userMsg string) bool {
+	text := strings.TrimSpace(userMsg)
+	if text == "" {
+		return false
+	}
+	if text == "?" || text == "？" {
+		return true
+	}
+	compact := normalizeResourceText(text)
+	if compact == "" {
+		return false
+	}
+	for _, marker := range []string{"这台", "这臺", "它", "刚才那台", "刚刚那台", "上面那台", "当前这台", "那台"} {
+		if strings.Contains(text, marker) || strings.Contains(compact, normalizeResourceText(marker)) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeInstanceStatusQuestion(userMsg string) bool {
+	text := strings.TrimSpace(userMsg)
+	if text == "" {
+		return false
+	}
+	compact := normalizeResourceText(text)
+	return strings.Contains(text, "实例") ||
+		strings.Contains(text, "机器") ||
+		strings.Contains(text, "状态") ||
+		strings.Contains(strings.ToLower(text), "uhost") ||
+		strings.Contains(compact, "gpu") ||
+		looksLikeSelectedInstanceFollowup(text)
+}
+
+func renderInstanceLoopCeilingSummary(inst entity.InstanceSnapshot) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "我已经查到这台实例的信息，但本轮没有继续生成完整说明。当前可确认的是：\n\n")
+	b.WriteString(renderInstanceSummaryBullets(inst))
+	b.WriteString("\n如果你要继续操作这台实例，请直接说明要做什么，例如开机、关机、重启、查监控或排查 SSH。")
+	return b.String()
+}
+
+func renderInstanceSummaryBullets(inst entity.InstanceSnapshot) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "- 实例：%s（%s）\n", emptyLabel(inst.Name), inst.UHostId)
+	fmt.Fprintf(&b, "- 状态：%s\n", emptyStateLabel(inst.State))
+	if strings.TrimSpace(inst.GpuType) != "" || inst.GPU > 0 {
+		fmt.Fprintf(&b, "- GPU：%s", emptyLabel(inst.GpuType))
+		if inst.GPU > 0 {
+			fmt.Fprintf(&b, " × %d", inst.GPU)
+		}
+		b.WriteString("\n")
+	}
+	if inst.CPU > 0 || inst.Memory > 0 {
+		fmt.Fprintf(&b, "- 配置：%d 核 CPU / %d MB 内存\n", inst.CPU, inst.Memory)
+	}
+	if strings.TrimSpace(inst.Zone) != "" {
+		fmt.Fprintf(&b, "- 可用区：%s\n", inst.Zone)
+	}
+	return b.String()
+}
+
+func emptyLabel(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "未知"
+	}
+	return value
+}
+
 func diagnosisActionLabel(action string) string {
 	switch action {
 	case "DiagnoseSSH":
