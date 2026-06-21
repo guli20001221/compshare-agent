@@ -281,7 +281,8 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	persistContent := message
 	if ocrText != "" {
 		// Same wrapper the engine uses for the live turn, so the rehydrated
-		// copy re-fed to the LLM on later turns is byte-identical.
+		// copy re-fed to the LLM on later turns matches the live-turn framing
+		// (the RedactPII below additionally scrubs the user-message portion).
 		persistContent = engine.WrapScreenshotContext(ocrText, message)
 	}
 	if err := h.messages.Append(ctx, store.Message{

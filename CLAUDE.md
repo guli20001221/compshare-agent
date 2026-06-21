@@ -128,6 +128,7 @@ Read-only diagnostic tools (init failure, billing anomaly, GPU not detected, ima
 - `internal/policy/leakage.go` — citation-leakage guards used by the cited-strip pass in the engine.
 - `internal/governance/ratelimit.go` — QPS/daily limits live in `agent.rate_limit` config and are enforced for LLM, mutating, and read-expensive call classes.
 - `internal/entity/` — only Go package run with `-race` in CI; concurrent registry access is a known concern there.
+- `internal/ocr/` (screenshot understanding, server/WS-only) — when `SendCSAgentChat` carries an `Image`, a Qwen3-VL call (`agent.ocr.model`, e.g. `qwen3-vl-flash`; empty = disabled) interprets the screenshot to **structured text** that is injected as context (it is NOT plain OCR, and the raw image never reaches the main model). The vision prompt is `ocr.DefaultPrompt`, overridable via `agent.ocr.prompt` (empty/whitespace = default, never an empty instruction). Trust boundary: recognized screenshot text is **untrusted reference context** — fenced via `engine.WrapScreenshotContext` (the single producer for both the live turn and the persisted/rehydrated copy), interprets-but-does-not-prescribe-fixes, runs through `RedactPII`, and feeds only conversation history (never routing/force-tool/hard-block, which use the raw user message). It must never auto-drive a mutating action; the confirmation gate / `COMPSHARE_ENABLE_MUTATING_TOOLS` remains the hard stop.
 
 ## HTTP service
 
