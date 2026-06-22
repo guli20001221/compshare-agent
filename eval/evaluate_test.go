@@ -19,6 +19,15 @@ import (
 
 var modelFlag = flag.String("model", "", "model name/ID to evaluate, or 'all'")
 
+// Accuracy-gate thresholds (percent, 0-100). Default 0 = report-only (preserves
+// ad-hoc -model runs). CI sets a measured floor to turn TestEval into a real gate;
+// without these the test only t.Logf'd failures and was always green even with -model.
+var (
+	minIntentAcc  = flag.Float64("min-intent-acc", 0, "fail if intent accuracy (%) is below this; 0 = off")
+	minToolAcc    = flag.Float64("min-tool-acc", 0, "fail if tool accuracy (%) is below this; 0 = off")
+	minContentAcc = flag.Float64("min-content-acc", 0, "fail if content accuracy (%) is below this; 0 = off")
+)
+
 // EvalCase is one evaluation case from cases.json.
 type EvalCase struct {
 	ID               string   `json:"id"`
@@ -169,12 +178,15 @@ func TestEval(t *testing.T) {
 	}
 
 	var reports []ModelReport
+	thresholdsSet := *minIntentAcc > 0 || *minToolAcc > 0 || *minContentAcc > 0
+	ran := 0
 
 	for _, model := range modelsToTest {
 		if model.APIKey == "" {
 			t.Logf("SKIP %s: no API key (set MODELVERSE_API_KEY or LOCAL_PROXY_API_KEY)", model.Name)
 			continue
 		}
+		ran++
 
 		t.Run(model.Name, func(t *testing.T) {
 			// B2a (ADR-002 Acceptance #3): eval client via the Router factory
@@ -227,7 +239,25 @@ func TestEval(t *testing.T) {
 				report.ToolAccuracy(), report.ToolCorrect, report.ToolTotal,
 				report.ContentAccuracy(), report.ContentCorrect, report.ContentTotal,
 				report.Duration.Round(time.Second))
+
+			// Accuracy gate (only when a threshold is set). This is what turns the
+			// real-model run into a CI gate instead of report-only.
+			if *minIntentAcc > 0 && report.IntentAccuracy() < *minIntentAcc {
+				t.Errorf("intent accuracy %.1f%% below threshold %.1f%%", report.IntentAccuracy(), *minIntentAcc)
+			}
+			if *minToolAcc > 0 && report.ToolAccuracy() < *minToolAcc {
+				t.Errorf("tool accuracy %.1f%% below threshold %.1f%%", report.ToolAccuracy(), *minToolAcc)
+			}
+			if *minContentAcc > 0 && report.ContentAccuracy() < *minContentAcc {
+				t.Errorf("content accuracy %.1f%% below threshold %.1f%%", report.ContentAccuracy(), *minContentAcc)
+			}
 		})
+	}
+
+	// A threshold with zero models actually run (all skipped for missing keys) would
+	// silently pass the gate — fail loud instead.
+	if thresholdsSet && ran == 0 {
+		t.Fatal("accuracy thresholds set but no model had an API key — gate would silently pass")
 	}
 
 	// Print comparison report
