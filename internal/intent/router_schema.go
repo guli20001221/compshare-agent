@@ -61,6 +61,10 @@ func IntentRouteResponseSchema() json.RawMessage {
 			"metrics": map[string]any{"type": "array", "items": stringEnum(
 				string(MetricCPU), string(MetricMemory), string(MetricGPU), string(MetricVRAM),
 			)},
+			// slots.action (LifecycleAction) is deliberately omitted: the prompt
+			// never asks the model to emit it and the engine re-derives it from the
+			// user text (inferLifecycleAction). Non-strict + no additionalProperties
+			// restriction means a model that does emit it is still accepted.
 			// time_window is *TimeWindow (nullable, omitempty) — object or null.
 			"time_window": map[string]any{
 				"type": []string{"object", "null"},
@@ -81,8 +85,11 @@ func IntentRouteResponseSchema() json.RawMessage {
 			"schema_version":  map[string]any{"type": "string", "const": SchemaVersion},
 			"intent":          map[string]any{"type": "string", "enum": intents},
 			"slots":           slots,
-			"required_tools":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"retrieval":       map[string]any{"type": "object", "properties": map[string]any{"enabled": map[string]any{"type": "boolean"}}, "required": []string{"enabled"}},
+			"required_tools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			// retrieval.enabled is pinned false: ValidateRoute rejects Enabled==true
+			// (stage-2A RAG is disabled), so const-false constrains decoding and
+			// removes a retry-able failure mode (mirrors the schema_version const).
+			"retrieval":       map[string]any{"type": "object", "properties": map[string]any{"enabled": map[string]any{"type": "boolean", "const": false}}, "required": []string{"enabled"}},
 			"hard_block_hint": map[string]any{"type": "boolean"},
 			"confidence":      map[string]any{"type": "number", "minimum": 0, "maximum": 1},
 		},

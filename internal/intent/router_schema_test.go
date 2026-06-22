@@ -23,6 +23,13 @@ func TestIntentRouteResponseSchema_IntentEnumMatchesRuntime(t *testing.T) {
 				Minimum *float64 `json:"minimum"`
 				Maximum *float64 `json:"maximum"`
 			} `json:"confidence"`
+			Retrieval struct {
+				Properties struct {
+					Enabled struct {
+						Const *bool `json:"const"`
+					} `json:"enabled"`
+				} `json:"properties"`
+			} `json:"retrieval"`
 		} `json:"properties"`
 		Required []string `json:"required"`
 	}
@@ -66,6 +73,11 @@ func TestIntentRouteResponseSchema_IntentEnumMatchesRuntime(t *testing.T) {
 	}
 	if schema.Properties.Confidence.Maximum == nil || *schema.Properties.Confidence.Maximum != 1 {
 		t.Error("confidence maximum must be 1")
+	}
+
+	// retrieval.enabled must be pinned false (ValidateRoute rejects Enabled==true).
+	if c := schema.Properties.Retrieval.Properties.Enabled.Const; c == nil || *c != false {
+		t.Error("retrieval.enabled must be const false")
 	}
 
 	// The seven IntentRoute top-level fields ValidateRoute reads must be required.
