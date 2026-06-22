@@ -35,12 +35,16 @@ func TestUpstreamAPIError_ErrorStringByteIdentical(t *testing.T) {
 	}
 }
 
+// hintedCodes are the upstream RetCodes that carry an actionable recovery hint,
+// pinned to the upstream gateway errors/code.go (audited 2026-06-23): 230 params,
+// 226604 real capacity, 226603 image-gpu incompat, 8433 generic service error.
+var hintedCodes = []int{230, 226604, 226603, 8433}
+
 func TestRetCodeHint_KnownAndUnknown(t *testing.T) {
-	if h := retCodeHint(230); h == "" {
-		t.Error("expected a hint for RetCode 230")
-	}
-	if h := retCodeHint(8433); h == "" {
-		t.Error("expected a hint for RetCode 8433")
+	for _, code := range hintedCodes {
+		if h := retCodeHint(code); h == "" {
+			t.Errorf("expected a hint for RetCode %d", code)
+		}
 	}
 	if h := retCodeHint(0); h != "" {
 		t.Errorf("expected no hint for RetCode 0, got %q", h)
@@ -51,17 +55,34 @@ func TestRetCodeHint_KnownAndUnknown(t *testing.T) {
 }
 
 // TestRetCodeHint_NoForbiddenTokens guards the reply_not_contains regression gate
-// (eval/regression_6cat_cases.json): a hint surfaced to the model must never
-// carry the raw upstream tokens, or the model could echo them into the reply.
+// (eval/regression_6cat_cases.json): a hint is surfaced to BOTH the model (ReAct
+// tool result) and the user (direct-dispatch reply via UserMessage), so it must
+// never carry the raw upstream tokens or they could reach the reply.
 func TestRetCodeHint_NoForbiddenTokens(t *testing.T) {
-	forbidden := []string{"RetCode=230", "not available", "CompShareImageId"}
-	for _, code := range []int{230, 8433} {
+	forbidden := []string{"RetCode=230", "RetCode", "not available", "CompShareImageId"}
+	for _, code := range hintedCodes {
 		h := retCodeHint(code)
 		for _, tok := range forbidden {
 			if strings.Contains(h, tok) {
 				t.Errorf("hint for %d contains forbidden token %q: %s", code, tok, h)
 			}
 		}
+	}
+}
+
+// TestUpstreamAPIError_UserMessage is the direct-dispatch contract: UserMessage()
+// returns the hint for a hinted code (so intent.failureAfterToolForError replies
+// with it) and "" for an un-hinted code (so the caller falls back to the generic
+// friendly reply rather than answering blank).
+func TestUpstreamAPIError_UserMessage(t *testing.T) {
+	if msg := NewUpstreamAPIError(230, "Params [Zone] not available").UserMessage(); msg == "" {
+		t.Error("expected a user-facing message for a hinted code (230)")
+	}
+	if msg := NewUpstreamAPIError(226604, "out of resources").UserMessage(); msg == "" {
+		t.Error("expected a user-facing message for a hinted code (226604)")
+	}
+	if msg := NewUpstreamAPIError(17000, "some unhinted error").UserMessage(); msg != "" {
+		t.Errorf("expected empty user message for an un-hinted code, got %q", msg)
 	}
 }
 

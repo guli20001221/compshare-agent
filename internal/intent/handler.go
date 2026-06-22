@@ -419,14 +419,20 @@ type userFacingError interface {
 func failureAfterToolForError(action string, args map[string]any, label string, err error) HandlerResult {
 	var friendly userFacingError
 	if errors.As(err, &friendly) {
-		result := HandlerResult{
-			Status:      HandlerStatusFailureAfterTool,
-			Reply:       friendly.UserMessage(),
-			RouteStatus: RouteStatusFailureAfterTool,
-			ToolAction:  action,
-			ToolArgs:    copyArgs(args),
+		// A typed upstream error (e.g. *tools.UpstreamAPIError on a 230 / 226604
+		// from a direct-dispatched read route) carries a user-facing recovery
+		// message. Use it ONLY when non-empty: UpstreamAPIError.UserMessage()
+		// returns "" for codes without an actionable hint, in which case we fall
+		// through to the generic friendly reply rather than answering blank.
+		if msg := strings.TrimSpace(friendly.UserMessage()); msg != "" {
+			return HandlerResult{
+				Status:      HandlerStatusFailureAfterTool,
+				Reply:       msg,
+				RouteStatus: RouteStatusFailureAfterTool,
+				ToolAction:  action,
+				ToolArgs:    copyArgs(args),
+			}
 		}
-		return result
 	}
 	return failureAfterToolWithTrace(action, args, label)
 }

@@ -53,13 +53,28 @@ func TestReActPromptStaticPrefixStable(t *testing.T) {
 		if ia < 0 || ib < 0 {
 			t.Fatalf("mutating=%v: %q marker missing from prompt", mutating, marker)
 		}
-		if ia != ib || a[:ia] != b[:ib] {
-			t.Fatalf("mutating=%v: static prefix is NOT byte-identical across turns — KV-cache prefix would miss. "+
-				"The volatile %q block must stay at the tail.\nprefixA len=%d prefixB len=%d", mutating, marker, ia, ib)
+		// Position guard — the actual regression detector. Everything from the
+		// marker to EOF must be EXACTLY "<marker>\n<userContext>\n": the volatile
+		// block is the final block and no static text follows it. If someone moves
+		// the block back into the middle, trailing static text appears after
+		// userContext and this exact-tail equality fails. (The earlier
+		// HasSuffix-only / prefix-identity checks could NOT catch that move: with
+		// two different contexts injected at the same middle position, the static
+		// prefix before the marker stays identical across A and B, so a[:ia]!=b[:ib]
+		// never fires under the regression — only this tail check does.)
+		if a[ia:] != marker+"\n"+ctxA+"\n" || b[ib:] != marker+"\n"+ctxB+"\n" {
+			t.Fatalf("mutating=%v: the volatile %q block is not the final block — static text "+
+				"follows userContext, so the KV-cache prefix would miss. It must stay at the tail.\n"+
+				"tailA=%q", mutating, marker, a[ia:])
 		}
-		// The marker must be the start of the FINAL block: only userContext follows it.
-		if !strings.HasSuffix(a, ctxA+"\n") {
-			t.Fatalf("mutating=%v: userContext is not at the very tail of the prompt", mutating)
+		// Determinism complement: the static body before the volatile block does
+		// not vary with the injected context. This cannot fail under the
+		// middle-move regression above (both prefixes change together); it instead
+		// catches a different bug — static text accidentally depending on
+		// userContext (e.g. interpolating its length).
+		if a[:ia] != b[:ib] {
+			t.Fatalf("mutating=%v: static prefix before %q differs across turns — "+
+				"some static content leaked a dependency on userContext.", mutating, marker)
 		}
 	}
 }
