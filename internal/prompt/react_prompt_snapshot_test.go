@@ -15,8 +15,10 @@ const (
 	// 2026-06-18: narrow deploy/create boundary to hardware-first creation only.
 	// 2026-06-20: remove duplicate CreateInstanceWorkflow routing sentence from the shared card.
 	// 2026-06-22 (阶段1A KV-cache): move the volatile "## 用户当前状态" block to the
-	// tail so the static prefix is cacheable — body bytes unchanged, only position.
-	mutatingReActPromptSHA256 = "5f1e4d7ac919a2069e3f38cfed61209097d945899ed96d85216062ba6c86a17b"
+	// tail so the static prefix is cacheable; also drop the now-wrong "上方"
+	// (above) directional word from the real-time-query rule, since the block is
+	// no longer above that rule.
+	mutatingReActPromptSHA256 = "356348eb55afa2332e4836cf2d1b4aaf288169b5c48f778c14329c1546a410cd"
 	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
 	// 2026-06-22 (阶段1A KV-cache): volatile userContext block moved to the tail.
 	readOnlyReActPromptSHA256 = "77fb47bb7ef45d6d73e0087574d4e2b1ba5bd9ea50b0cdc0c532330b89f5068f"
