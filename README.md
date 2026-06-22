@@ -46,6 +46,7 @@ cp deploy/conf/agent.yaml.example deploy/conf/agent.yaml
 | ② 直连模式（本地 demo 最简单）：`COMPSHARE_PUBLIC_KEY` / `COMPSHARE_PRIVATE_KEY` | ✅ | ✅ | legacy 直连 AK/SK。`agent.sts` 未配置时走这条 |
 
 要点：
+- **真实密钥值不入库**：`.env` / `deploy/conf/agent.yaml` 都在 `.gitignore` 里，且 pre-commit 有密钥扫描——**不要把真实 key 提交到仓库**（GitHub 是外网，提交即外泄）。向团队/内部密钥库索取实际值后填进本地 `.env`。
 - **本地最快路径 = 直连模式**：只填 `LLM_API_KEY` + `COMPSHARE_PUBLIC_KEY` + `COMPSHARE_PRIVATE_KEY`，跑 `cli` 就能起（不碰 MySQL/STS）。
 - `project_id` 可留空（只读 API 会回退账号级默认）；mutating 工具（开关机/创建）建议在 `agent.yaml` 里设固定 `project_id`。
 - `.env.example` 里每个开关都有逐行注释（写操作开关、上下文优化、trace、agentic-RAG 栈等），默认值即生产部署形态；本地随意，保持默认即可。完整 flag 说明见 `CLAUDE.md` 的「Runtime feature flags」表。
@@ -53,6 +54,11 @@ cp deploy/conf/agent.yaml.example deploy/conf/agent.yaml
 ---
 
 ## 3. 构建 & 运行
+
+> ⚠️ 配置加载前提（实测）：config loader 对 `agent.yaml` 里每个 `${ENV_VAR}` 做**严格**替换——引用的变量必须**已设置**，其中必填密钥（`LLM_API_KEY`，以及直连模式的 `COMPSHARE_PUBLIC_KEY`/`COMPSHARE_PRIVATE_KEY`）必须**非空**，否则报 `environment variable X is required`。所以：
+> 1. 用 `just run`（自动加载 `.env`）最省事；**直接跑二进制要先把 `.env` 的变量 `export` 到环境**，否则报缺变量。
+> 2. `cp .env.example .env` 已包含全部变量（含留空的 legacy key），别删行。
+> 3. **直连模式（本地最简单）**：填 `COMPSHARE_PUBLIC_KEY`/`COMPSHARE_PRIVATE_KEY` 非空即可。**STS 模式**：把 `agent.yaml` 的 `public_key`/`private_key` 两行置空、改用 `sts.service_*`（`.env` 的 `COMPSHARE_SERVICE_*`），否则会卡在 `COMPSHARE_PUBLIC_KEY is required`。
 
 ```bash
 # 构建
