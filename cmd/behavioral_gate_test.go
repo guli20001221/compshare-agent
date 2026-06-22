@@ -540,11 +540,12 @@ func loadEnvFiles(paths ...string) {
 				continue
 			}
 			key := strings.TrimSpace(line[:eq])
-			val := strings.TrimSpace(line[eq+1:])
+			// Trim surrounding quotes BEFORE the placeholder check so a quoted
+			// "${VAR}" is still recognized as an unresolved placeholder and skipped.
+			val := strings.Trim(strings.TrimSpace(line[eq+1:]), `"'`)
 			if val == "" || (strings.HasPrefix(val, "${") && strings.HasSuffix(val, "}")) {
 				continue
 			}
-			val = strings.Trim(val, `"'`)
 			if os.Getenv(key) == "" {
 				os.Setenv(key, val)
 			}
