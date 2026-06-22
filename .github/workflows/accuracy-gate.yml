@@ -1,0 +1,54 @@
+name: Accuracy Gate
+
+# Real-model intent-router accuracy gate. Runs the production model
+# (deepseek-v4-flash via ModelVerse) over the intent fixtures and fails the
+# job if intent accuracy drops below the regression floor.
+#
+# Deliberately NOT on `pull_request`: each run makes ~70 real LLM calls
+# (cost + ~5 min wall-clock + depends on api.modelverse.cn reachability), so
+# PRs stay fast and free. The gate runs nightly and on-demand instead. The
+# deterministic offline mock (TestOfflineFixturesEval) still guards every PR
+# via the normal `go test ./...`.
+#
+# Floor = 80%: current main baseline is ~87% (59-60/68). Each fixture is
+# ~1.5%, so 80 leaves ~4-5 fixtures of jitter margin while still catching a
+# real ~7-point regression. Raise once model/router output stabilizes.
+#
+# NOTE: requires api.modelverse.cn to be reachable from the runner. If the
+# GitHub-hosted runner cannot reach it, move this job to a China-resident
+# self-hosted runner (change `runs-on`).
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "model name/ID from eval/models.go"
+        default: "deepseek-v4-flash"
+      min_intent_acc:
+        description: "fail if intent accuracy (%) is below this"
+        default: "80"
+  schedule:
+    - cron: "0 18 * * *" # 02:00 China time (UTC+8)
+
+jobs:
+  intent-router-accuracy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Real-model intent router accuracy gate
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          go test ./eval/intent -run TestOnlineRouterEval -v \
+            -model "${{ github.event.inputs.model || 'deepseek-v4-flash' }}" \
+            -min-intent-acc "${{ github.event.inputs.min_intent_acc || '80' }}" \
+            -timeout 25m
