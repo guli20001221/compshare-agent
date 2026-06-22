@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
-	// MySQL driver registered via blank import. The Server bootstrap (A3) is
+	// PostgreSQL driver registered via blank import. The Server bootstrap (A3) is
 	// responsible for verifying connectivity at startup so callers of this
-	// package never see driver-registration failures.
-	_ "github.com/go-sql-driver/mysql"
+	// package never see driver-registration failures. (Type/name retained as
+	// MySQLWriter for call-site stability; backend is PostgreSQL.)
+	_ "github.com/lib/pq"
 )
 
 // MySQLWriter is a Writer that persists TraceRecords into agent_traces in a
@@ -85,9 +88,9 @@ func NewMySQLWriter(dsn string, opts MySQLWriterOptions) (*MySQLWriter, error) {
 	if dsn == "" {
 		return nil, errors.New("mysql writer: dsn is empty")
 	}
-	db, err := sql.Open("mysql", dsn)
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("mysql writer open: %w", err)
+		return nil, fmt.Errorf("trace writer open: %w", err)
 	}
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(2)
@@ -125,7 +128,7 @@ func detectPromotedColumns(db *sql.DB, logger *log.Logger) bool {
 	var n int
 	err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM information_schema.columns
-		   WHERE table_schema = DATABASE()
+		   WHERE table_schema = current_schema()
 		     AND table_name = 'agent_traces'
 		     AND column_name = 'terminated_by'`).Scan(&n)
 	if err != nil {
@@ -253,7 +256,7 @@ func (w *MySQLWriter) sweepExpired() {
 	defer cancel()
 	cutoff := retentionCutoff(time.Now(), w.retentionDays)
 	res, err := w.db.ExecContext(ctx,
-		"DELETE FROM agent_traces WHERE created_at < ?", cutoff)
+		"DELETE FROM agent_traces WHERE created_at < $1", cutoff)
 	if err != nil {
 		w.logger.Printf("mysql_writer: retention sweep failed (cutoff=%s): %v",
 			cutoff.Format(time.RFC3339), err)
@@ -277,14 +280,12 @@ const (
 	legacyInsertCols = "(request_uuid, top_organization_id, organization_id, connection_id, " +
 		"turn_index, created_at, status, intent, tool_count, cited_chunk_ids, " +
 		"duration_ms, trace_json)"
-	legacyRowPlaceholder = "(?,?,?,?,?,?,?,?,?,?,?,?)"
 
 	promotedInsertCols = "(request_uuid, top_organization_id, organization_id, connection_id, " +
 		"turn_index, created_at, status, intent, tool_count, cited_chunk_ids, " +
 		"duration_ms, trace_json, " +
 		"terminated_by, abort_cause, error_class, resolution, route_status, " +
 		"refusal_type, resolution_source)"
-	promotedRowPlaceholder = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)" // 12 base + 7 promoted
 
 	promotedColCount = 19
 )
@@ -293,12 +294,13 @@ func (w *MySQLWriter) insertBatch(batch []persistedTrace) error {
 	if len(batch) == 0 {
 		return nil
 	}
-	cols, rowPlaceholder := legacyInsertCols, legacyRowPlaceholder
+	cols := legacyInsertCols
 	if w.promotedColumns {
-		cols, rowPlaceholder = promotedInsertCols, promotedRowPlaceholder
+		cols = promotedInsertCols
 	}
-	placeholders := make([]byte, 0, len(batch)*(promotedColCount*2+2))
+	var placeholders strings.Builder
 	args := make([]any, 0, len(batch)*promotedColCount)
+	n := 0 // running $N counter across the whole multi-row VALUES list
 	for _, p := range batch {
 		row, err := rowFromTrace(p)
 		if err != nil {
@@ -309,18 +311,40 @@ func (w *MySQLWriter) insertBatch(batch []persistedTrace) error {
 		if w.promotedColumns {
 			row = append(row, promotedColumnValues(p.record)...)
 		}
-		// Append the placeholder group only after rowFromTrace succeeds, so a
+		// Build this row's ($N,$N+1,...) group only after rowFromTrace succeeds, so a
 		// skipped (malformed) record never desyncs placeholders from args.
-		if len(placeholders) > 0 {
-			placeholders = append(placeholders, ',')
+		if placeholders.Len() > 0 {
+			placeholders.WriteByte(',')
 		}
-		placeholders = append(placeholders, rowPlaceholder...)
-		args = append(args, row...)
+		placeholders.WriteByte('(')
+		for j := range row {
+			if j > 0 {
+				placeholders.WriteByte(',')
+			}
+			n++
+			placeholders.WriteByte('$')
+			placeholders.WriteString(strconv.Itoa(n))
+		}
+		placeholders.WriteByte(')')
+		for _, v := range row {
+			// lib/pq sends []byte as bytea, which won't insert into a jsonb column.
+			// rowFromTrace returns cited_chunk_ids / trace_json as json.Marshal'd
+			// []byte (kept that way for its unit tests); convert to string here so
+			// PostgreSQL casts text→jsonb cleanly.
+			if b, ok := v.([]byte); ok {
+				args = append(args, string(b))
+			} else {
+				args = append(args, v)
+			}
+		}
 	}
 	if len(args) == 0 {
 		return nil
 	}
-	query := "INSERT IGNORE INTO agent_traces " + cols + " VALUES " + string(placeholders)
+	// ON CONFLICT DO NOTHING mirrors MySQL's INSERT IGNORE on the request_uuid
+	// unique key so retried enqueues don't fail loudly.
+	query := "INSERT INTO agent_traces " + cols + " VALUES " + placeholders.String() +
+		" ON CONFLICT (request_uuid) DO NOTHING"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

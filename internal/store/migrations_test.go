@@ -23,7 +23,7 @@ func TestHTTPMigrationsCreateAgentTraces(t *testing.T) {
 		"organization_id",
 		"connection_id",
 		"trace_json",
-		"UNIQUE KEY uk_request_uuid",
+		"uk_request_uuid", // unique constraint on request_uuid (PostgreSQL: CONSTRAINT ... UNIQUE)
 	} {
 		assert.Contains(t, ddl, column)
 	}
@@ -38,7 +38,8 @@ func TestHTTPMigrationsAddSessionContextVersion(t *testing.T) {
 	ddl := string(data)
 	assert.Contains(t, ddl, "ALTER TABLE sessions")
 	assert.Contains(t, ddl, "ADD COLUMN context_version INT NOT NULL DEFAULT 0")
-	assert.Contains(t, ddl, "AFTER context")
+	// PostgreSQL appends columns at the end of the row; MySQL's `AFTER context`
+	// positional clause has no equivalent and was dropped in the migration.
 }
 
 // TestHTTPMigrationsAddAgentTracesOutcomeColumns pins the 0004 promote-to-columns

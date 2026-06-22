@@ -8,26 +8,23 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/config"
-	"github.com/go-sql-driver/mysql"
+	// PostgreSQL driver, registered via blank import. The backing store is now
+	// PostgreSQL; the OpenMySQL / MySQLConfig names are deliberately retained so
+	// this swap stays surgical (server bootstrap + config keys unchanged). The
+	// DSN is a libpq/URL string, e.g. postgresql://user:pass@host:5432/db?sslmode=disable.
+	_ "github.com/lib/pq"
 )
 
-// OpenMySQL opens a MySQL connection, configures the pool, pings the server,
-// and verifies the schema. It closes the DB and returns an error on any failure.
+// OpenMySQL opens the PostgreSQL connection, configures the pool, pings the
+// server, and verifies the schema. It closes the DB and returns an error on any
+// failure. (Name retained for call-site stability; backend is PostgreSQL.)
 func OpenMySQL(cfg config.MySQLConfig) (*sql.DB, error) {
 	if cfg.DSN == "" {
-		return nil, fmt.Errorf("mysql dsn is required")
+		return nil, fmt.Errorf("database dsn is required")
 	}
-	parsed, err := mysql.ParseDSN(cfg.DSN)
+	db, err := sql.Open("postgres", cfg.DSN)
 	if err != nil {
-		return nil, fmt.Errorf("parse mysql dsn: %w", err)
-	}
-	parsed.ParseTime = true
-	parsed.Loc = time.UTC
-	dsn := parsed.FormatDSN()
-
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open mysql: %w", err)
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 	db.SetMaxOpenConns(cfg.MaxOpenConns)
 	db.SetMaxIdleConns(cfg.MaxIdleConns)

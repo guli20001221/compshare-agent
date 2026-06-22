@@ -21,7 +21,7 @@ func NewMessageStore(db *sql.DB) *MySQLMessageStore {
 func (s *MySQLMessageStore) Append(ctx context.Context, m Message) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO messages (id, session_id, request_uuid, role, content, status, error_code, model, input_tokens, output_tokens, ttft_ms, latency_ms, metadata)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 `, m.ID, m.SessionID, nullableRequestUUID(m.RequestUUID), m.Role, m.Content, m.Status,
 		nullableStringPtr(m.ErrorCode), nullableStringPtr(m.Model),
 		nullableIntPtr(m.InputTokens), nullableIntPtr(m.OutputTokens),
@@ -39,10 +39,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 func (s *MySQLMessageStore) UpdateAssistant(ctx context.Context, owner Owner, msgID string, patch AssistantPatch) error {
 	res, err := s.db.ExecContext(ctx, `
 UPDATE messages m
-JOIN sessions s ON s.id = m.session_id
-SET m.content = ?, m.status = ?, m.error_code = ?, m.input_tokens = ?, m.output_tokens = ?, m.ttft_ms = ?, m.latency_ms = ?
-WHERE m.id = ? AND m.role = 'assistant'
-  AND s.top_organization_id = ? AND s.organization_id = ? AND s.deleted_at IS NULL
+SET content = $1, status = $2, error_code = $3, input_tokens = $4, output_tokens = $5, ttft_ms = $6, latency_ms = $7
+FROM sessions s
+WHERE s.id = m.session_id
+  AND m.id = $8 AND m.role = 'assistant'
+  AND s.top_organization_id = $9 AND s.organization_id = $10 AND s.deleted_at IS NULL
 `, patch.Content, patch.Status,
 		nullableStringPtr(patch.ErrorCode),
 		nullableIntPtr(patch.InputTokens), nullableIntPtr(patch.OutputTokens),
@@ -75,9 +76,9 @@ func (s *MySQLMessageStore) ListBySession(ctx context.Context, sessionID string,
 		rows, err = s.db.QueryContext(ctx, `
 SELECT id, session_id, request_uuid, role, content, status, error_code, model, input_tokens, output_tokens, ttft_ms, latency_ms, metadata, created_at
 FROM messages
-WHERE session_id = ?
+WHERE session_id = $1
 ORDER BY created_at ASC, id ASC
-LIMIT ?
+LIMIT $2
 `, sessionID, queryLimit)
 	} else {
 		ts, id, decodeErr := DecodeCursor(cursor)
@@ -87,9 +88,9 @@ LIMIT ?
 		rows, err = s.db.QueryContext(ctx, `
 SELECT id, session_id, request_uuid, role, content, status, error_code, model, input_tokens, output_tokens, ttft_ms, latency_ms, metadata, created_at
 FROM messages
-WHERE session_id = ? AND (created_at > ? OR (created_at = ? AND id > ?))
+WHERE session_id = $1 AND (created_at > $2 OR (created_at = $3 AND id > $4))
 ORDER BY created_at ASC, id ASC
-LIMIT ?
+LIMIT $5
 `, sessionID, ts, ts, id, queryLimit)
 	}
 	if err != nil {
@@ -121,7 +122,7 @@ func (s *MySQLMessageStore) GetWithOwnerCheck(ctx context.Context, owner Owner, 
 SELECT m.id, m.session_id, m.request_uuid, m.role, m.content, m.status, m.error_code, m.model, m.input_tokens, m.output_tokens, m.ttft_ms, m.latency_ms, m.metadata, m.created_at
 FROM messages m
 JOIN sessions sess ON sess.id = m.session_id
-WHERE m.id = ? AND sess.top_organization_id = ? AND sess.organization_id = ? AND sess.deleted_at IS NULL
+WHERE m.id = $1 AND sess.top_organization_id = $2 AND sess.organization_id = $3 AND sess.deleted_at IS NULL
 `, msgID, owner.TopOrganizationID, owner.OrganizationID)
 	if err != nil {
 		return Message{}, fmt.Errorf("get message with owner check: %w", err)

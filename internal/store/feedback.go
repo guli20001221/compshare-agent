@@ -28,7 +28,7 @@ func (s *MySQLFeedbackStore) Insert(ctx context.Context, msgID, rating, comment 
 	}
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO message_feedback (id, message_id, rating, comment)
-VALUES (?, ?, ?, ?)
+VALUES ($1, $2, $3, $4)
 `, id, msgID, rating, commentArg)
 	if err != nil {
 		return "", fmt.Errorf("insert feedback: %w", err)
