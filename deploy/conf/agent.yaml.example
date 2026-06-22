@@ -128,10 +128,10 @@ agent:
   # OCR / 截图理解。用于 SendCSAgentChat 携带 Image 字段时，调 VL 模型
   # 生成结构化截图解读（场景 + 关键信息 + 错误与可能原因）。结果作为
   # 上下文注入对话，不替代用户问题；只解读不开修复药方（修复由助手结合知识库回答）。
-  # 留空 model 则关闭该功能——请求中的 Image 会被忽略。
+  # model 留空时会读取 MODELVERSE_QWEN_VL_MODEL；二者都空则关闭该功能。
   # base_url 和 api_key 留空时继承 agent.llm 的值。
   ocr:
-    model: "qwen3-vl-flash"   # VL model for screenshot OCR / multimodal diagnosis (empty = disabled)
+    model: "qwen3-vl-flash"   # VL model for screenshot OCR / multimodal diagnosis; env fallback: MODELVERSE_QWEN_VL_MODEL
     base_url: ""           # inherits from agent.llm.base_url
     api_key: ""            # inherits from agent.llm.api_key
     prompt: ""             # 留空=用内置结构化解读提示词(场景/关键信息/错误与可能原因)；设置可改写为更针对性的解读，如训练报错诊断

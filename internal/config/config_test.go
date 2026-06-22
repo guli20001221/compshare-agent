@@ -130,6 +130,32 @@ func TestLoad_OmittedRateLimitUsesDefaults(t *testing.T) {
 	assert.Equal(t, governance.DefaultLimits(), cfg.Agent.RateLimit.Limits())
 }
 
+func TestLoad_OCRModelDefaultsFromModelVerseEnv(t *testing.T) {
+	setRequiredSecretEnv(t)
+	t.Setenv("MODELVERSE_QWEN_VL_MODEL", "qwen3-vl-flash")
+	path := writeConfig(t, baseConfig(""))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, "qwen3-vl-flash", cfg.Agent.OCR.Model)
+	assert.Equal(t, cfg.Agent.LLM.BaseURL, cfg.Agent.OCR.BaseURL)
+	assert.Equal(t, cfg.Agent.LLM.APIKey, cfg.Agent.OCR.APIKey)
+}
+
+func TestLoad_OCRStaysDisabledWhenModelUnset(t *testing.T) {
+	setRequiredSecretEnv(t)
+	t.Setenv("MODELVERSE_QWEN_VL_MODEL", "")
+	path := writeConfig(t, baseConfig(""))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Empty(t, cfg.Agent.OCR.Model)
+	assert.Equal(t, cfg.Agent.LLM.BaseURL, cfg.Agent.OCR.BaseURL)
+	assert.Equal(t, cfg.Agent.LLM.APIKey, cfg.Agent.OCR.APIKey)
+}
+
 func TestLoad_RateLimitPartialOverridesMergeWithDefaults(t *testing.T) {
 	setRequiredSecretEnv(t)
 	path := writeConfig(t, baseConfig(`
