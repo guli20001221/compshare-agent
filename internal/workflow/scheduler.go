@@ -166,6 +166,9 @@ func stepConfirmScheduler() Step {
 			if err != nil {
 				return nil, err
 			}
+			if _, _, err := extractRequiredInstanceLocation(wfCtx.Result("查询实例")); err != nil {
+				return nil, err
+			}
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
 			summary["shutdownTime"] = display
 			return summary, nil
@@ -184,9 +187,13 @@ func stepSetStopScheduler() Step {
 				return nil, err
 			}
 			queried := wfCtx.Result("查询实例")
+			region, zone, err := extractRequiredInstanceLocation(queried)
+			if err != nil {
+				return nil, err
+			}
 			return map[string]any{
-				"Region":            extractInstanceRegion(queried, defaultRegion),
-				"Zone":              extractInstanceZone(queried, defaultZone),
+				"Region":            region,
+				"Zone":              zone,
 				"UHostId":           wfCtx.Params["UHostId"],
 				"SchedulerStopTime": unix,
 			}, nil
@@ -240,6 +247,9 @@ func stepConfirmCancelScheduler() Step {
 		Name: "确认取消",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			if _, _, err := extractRequiredInstanceLocation(wfCtx.Result("查询实例")); err != nil {
+				return nil, err
+			}
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
 			summary["warning"] = "将尝试取消该实例的定时关机任务。"
 			return summary, nil
@@ -254,8 +264,12 @@ func stepDeleteStopScheduler() Step {
 		Tool: "DeleteCompShareStopScheduler",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
+			region, _, err := extractRequiredInstanceLocation(queried)
+			if err != nil {
+				return nil, err
+			}
 			return map[string]any{
-				"Region":  extractInstanceRegion(queried, defaultRegion),
+				"Region":  region,
 				"UHostId": wfCtx.Params["UHostId"],
 			}, nil
 		},

@@ -18,16 +18,17 @@ package refusal
 // values. Downstream MySQL trace ingest + per-category eval dashboards
 // pivot on these exact strings; treat as a stable contract.
 const (
-	CategoryMonitorHistory                = "monitor_history_unsupported"
-	CategoryJailbreakAttempt              = "jailbreak_attempt"
-	CategoryOffTopic                      = "off_topic_refused"
+	CategoryMonitorHistory   = "monitor_history_unsupported"
+	CategoryJailbreakAttempt = "jailbreak_attempt"
+	CategoryOffTopic         = "off_topic_refused"
 )
 
-// MonitorHistoryUnsupported is returned when the user asks for monitor
-// data over a past time window (昨天/上周/最近 N 天 etc.). The runtime
-// monitor API only exposes a sliding real-time window. Reused at five
-// routing decision points in the engine.
-const MonitorHistoryUnsupported = "当前暂不支持指定历史时间段的监控查询。我可以先帮你查看实时监控；如需历史趋势，请在控制台监控页选择对应日期和时间范围查看。"
+// MonitorHistoryUnsupported is returned when the user asks for a historical
+// monitor shape the agent cannot safely execute yet (missing target, missing
+// concrete time window, multiple instances, or a window beyond the supported
+// limit). Single-instance historical monitor with an explicit <=24h window is
+// handled by the monitor workflow.
+const MonitorHistoryUnsupported = "历史监控目前一次只支持查询一台实例，且需要明确 24 小时内的时间范围。请补充实例和时间段，例如“查询 uhost-xxx 昨天 8 点到 10 点的 CPU 监控”。"
 
 // JailbreakAttempt is returned when the input matches a known
 // instruction-override / system-prompt-extraction pattern (e.g. "ignore

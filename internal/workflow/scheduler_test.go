@@ -131,6 +131,7 @@ func schedulerMockExecutor() *mockExecutor {
 				"Name":       "my-gpu",
 				"State":      "Running",
 				"Zone":       "cn-bj2-04",
+				"Region":     "cn-bj2",
 				"GpuType":    "4090",
 				"GPU":        float64(1),
 				"ChargeType": "Dynamic",
@@ -165,6 +166,7 @@ func TestSetStopScheduler_HappyPath(t *testing.T) {
 
 	callArgs := executor.calls[1].args
 	assert.Equal(t, "cn-bj2-04", callArgs["Zone"])
+	assert.Equal(t, "cn-bj2", callArgs["Region"])
 	assert.Equal(t, "uhost-xxx", callArgs["UHostId"])
 
 	// SchedulerStopTime must be an int64 in the future.
@@ -313,6 +315,73 @@ func TestSetStopScheduler_BadTime(t *testing.T) {
 	assert.Contains(t, result.Message, "5 分钟")
 }
 
+func TestSetStopScheduler_MissingZoneRejectedBeforeMutation(t *testing.T) {
+	withFixedNow(t)
+
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-no-zone",
+				"Name":       "no-zone",
+				"State":      "Running",
+				"GpuType":    "4090",
+				"GPU":        float64(1),
+				"ChargeType": "Dynamic",
+			},
+		}},
+		"UpdateCompShareStopScheduler": {"RetCode": 0},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	onStep, _ := collectEvents()
+
+	def := SetStopSchedulerDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":      "uhost-no-zone",
+		"AfterMinutes": float64(60),
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "可用区")
+	assert.Len(t, executor.calls, 1)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
+}
+
+func TestSetStopScheduler_MissingRegionRejectedBeforeMutation(t *testing.T) {
+	withFixedNow(t)
+
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-no-region",
+				"Name":       "no-region",
+				"State":      "Running",
+				"Zone":       "cn-sh2-02",
+				"GpuType":    "4090",
+				"GPU":        float64(1),
+				"ChargeType": "Dynamic",
+			},
+		}},
+		"UpdateCompShareStopScheduler": {"RetCode": 0},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	onStep, _ := collectEvents()
+
+	def := SetStopSchedulerDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":      "uhost-no-region",
+		"AfterMinutes": float64(60),
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "可用区")
+	assert.Len(t, executor.calls, 1)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
+}
+
 // ---------------------------------------------------------------------------
 // CancelStopScheduler workflow tests
 // ---------------------------------------------------------------------------
@@ -327,6 +396,7 @@ func cancelSchedulerMockExecutor() *mockExecutor {
 				"Name":       "my-gpu",
 				"State":      "Running",
 				"Zone":       "cn-bj2-04",
+				"Region":     "cn-bj2",
 				"GpuType":    "4090",
 				"GPU":        float64(1),
 				"ChargeType": "Dynamic",
@@ -359,7 +429,7 @@ func TestCancelStopScheduler_HappyPath(t *testing.T) {
 	assert.Contains(t, executor.calls[1].args, "Region", "DeleteCompShareStopScheduler must include Region")
 }
 
-func TestCancelStopScheduler_UsesInstanceRegion(t *testing.T) {
+func TestCancelStopScheduler_UsesReturnedInstanceRegion(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{
@@ -367,6 +437,7 @@ func TestCancelStopScheduler_UsesInstanceRegion(t *testing.T) {
 				"Name":       "sh-gpu",
 				"State":      "Running",
 				"Zone":       "cn-sh2-02",
+				"Region":     "cn-sh2",
 				"GpuType":    "H20",
 				"GPU":        float64(1),
 				"ChargeType": "Dynamic",
@@ -386,7 +457,7 @@ func TestCancelStopScheduler_UsesInstanceRegion(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
 	deleteCall := executor.calls[1]
-	assert.Equal(t, "cn-sh2", deleteCall.args["Region"], "Region must be derived from instance Zone cn-sh2-02, not default")
+	assert.Equal(t, "cn-sh2", deleteCall.args["Region"], "Region must come from the queried instance")
 }
 
 func TestCancelStopScheduler_NotFound(t *testing.T) {
@@ -431,6 +502,7 @@ func TestCancelStopScheduler_StoppedInstance_Allowed(t *testing.T) {
 				"Name":       "my-gpu",
 				"State":      "Stopped",
 				"Zone":       "cn-bj2-04",
+				"Region":     "cn-bj2",
 				"GpuType":    "4090",
 				"GPU":        float64(1),
 				"ChargeType": "Dynamic",
@@ -454,4 +526,65 @@ func TestCancelStopScheduler_StoppedInstance_Allowed(t *testing.T) {
 	// Stopped instance should still allow cancellation of residual scheduler tasks.
 	assert.Len(t, executor.calls, 2)
 	assert.Equal(t, "DeleteCompShareStopScheduler", executor.calls[1].action)
+}
+
+func TestCancelStopScheduler_MissingZoneRejectedBeforeMutation(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-no-zone",
+				"Name":       "no-zone",
+				"State":      "Stopped",
+				"GpuType":    "4090",
+				"GPU":        float64(1),
+				"ChargeType": "Dynamic",
+			},
+		}},
+		"DeleteCompShareStopScheduler": {"RetCode": 0},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	onStep, _ := collectEvents()
+
+	def := CancelStopSchedulerDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-no-zone",
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "可用区")
+	assert.Len(t, executor.calls, 1)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
+}
+
+func TestCancelStopScheduler_MissingRegionRejectedBeforeMutation(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-no-region",
+				"Name":       "no-region",
+				"State":      "Stopped",
+				"Zone":       "cn-sh2-02",
+				"GpuType":    "4090",
+				"GPU":        float64(1),
+				"ChargeType": "Dynamic",
+			},
+		}},
+		"DeleteCompShareStopScheduler": {"RetCode": 0},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	onStep, _ := collectEvents()
+
+	def := CancelStopSchedulerDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-no-region",
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "可用区")
+	assert.Len(t, executor.calls, 1)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 }

@@ -35,7 +35,7 @@ func IntentToolSubset(i Intent) []string {
 		return []string{
 			"DescribeCompShareInstance",
 		}
-	case IntentMonitorQuery:
+	case IntentMonitorQuery, IntentMonitorHistory:
 		return []string{
 			"DescribeCompShareInstance",
 			"GetCompShareInstanceMonitor",

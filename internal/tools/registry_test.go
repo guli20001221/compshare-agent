@@ -134,6 +134,21 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustNotContain(t, descriptions["CreateInstanceWorkflow"], "必须使用此工具")
 }
 
+func TestDescribeCompShareInstanceDoesNotExposeWithoutGpu(t *testing.T) {
+	for _, tool := range Registry {
+		if tool.Function == nil || tool.Function.Name != "DescribeCompShareInstance" {
+			continue
+		}
+		params, _ := tool.Function.Parameters.(map[string]any)
+		props, _ := params["properties"].(map[string]any)
+		if _, ok := props["WithoutGpu"]; ok {
+			t.Fatal("DescribeCompShareInstance must not expose WithoutGpu to model-origin calls; no-card start is workflow-owned")
+		}
+		return
+	}
+	t.Fatal("DescribeCompShareInstance tool not found")
+}
+
 func TestCustomImageWorkflowIsUserFacingButRawImageCreateIsNot(t *testing.T) {
 	descriptions := registryDescriptions()
 

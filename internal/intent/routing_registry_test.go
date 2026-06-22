@@ -156,6 +156,7 @@ func TestHandlerActionWhitelist_ExactGoldenSet(t *testing.T) {
 	golden := map[Intent]map[string]struct{}{
 		IntentResourceInfo:          {"DescribeCompShareInstance": {}},
 		IntentMonitorQuery:          {"GetCompShareInstanceMonitor": {}},
+		IntentMonitorHistory:        {"GetCompShareInstanceMonitor": {}},
 		IntentGPUSpecsQuery:         {"DescribeAvailableCompShareInstanceTypes": {}},
 		IntentStockAvailability:     {"DescribeAvailableCompShareInstanceTypes": {}, "DescribeCompShareImages": {}, "CheckCompShareResourceCapacity": {}},
 		IntentNetAcceleratorStatus:  {"CheckCompShareNetOptimizer": {}},

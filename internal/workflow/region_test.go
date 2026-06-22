@@ -113,7 +113,7 @@ func TestStartInstance_SetsRegion(t *testing.T) {
 	args := runMutatingWorkflowAndCaptureMutatingArgs(t, StartInstanceDef(),
 		map[string]any{"UHostSet": []any{
 			// Match startMockExecutor: state must be Stopped.
-			map[string]any{"UHostId": "uhost-x", "State": "Stopped", "Zone": "cn-sh2-02"},
+			map[string]any{"UHostId": "uhost-x", "State": "Stopped", "Region": "cn-sh2", "Zone": "cn-sh2-02"},
 		}},
 		"StartCompShareInstance",
 		map[string]any{"UHostId": "uhost-x"})
@@ -213,6 +213,7 @@ func TestSetStopScheduler_SetsRegion(t *testing.T) {
 				"Name":       "gpu",
 				"State":      "Running",
 				"Zone":       "cn-bj2-04",
+				"Region":     "cn-bj2",
 				"GpuType":    "4090",
 				"GPU":        float64(1),
 				"ChargeType": "Dynamic",

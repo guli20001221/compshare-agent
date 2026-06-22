@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/deployment"
@@ -94,12 +96,15 @@ const (
 	readExpensiveTurnBudgetMessage = "本轮读取类查询次数已达上限，请缩小问题范围后重试。"
 )
 
-// Force-tool / hard-block priority chain (highest first):
+// Force-tool / deterministic monitor priority chain (highest first):
 //
-//  1. isUnsupportedHistoricalMonitorQuestion -> canned reply, no LLM call (hard-block)
-//  2. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
+//  1. explicit historical monitor with UHostId + concrete window -> direct
+//     GetCompShareInstanceMonitor with StartTime/EndTime, no LLM clock parsing
+//  2. explicit historical monitor with UHostId but vague window -> ask for a
+//     concrete <=24h range, no realtime-monitor fallback
+//  3. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
 //                                       (BRIDGE T-001.f1, model-feature-gated)
-//  3. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
+//  4. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
 //
 // (account_billing + existing_disk_attach keyword hard-blocks removed
 // 2026-06-10 — planner/agent-routed.)
@@ -124,6 +129,7 @@ var (
 	clockRangeRE         = regexp.MustCompile(`(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)`)
 	historicalDurationRE = regexp.MustCompile(`(?i)(?:过去|近|最近|last|past|previous|recent)\s*(?:\d+\s*)?(?:分钟|小时|天|周|月|hour|hours|day|days|week|weeks|month|months|h|d)`)
 	percentValueRE       = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*%`)
+	uhostIDInTextRE      = regexp.MustCompile(`uhost-[A-Za-z0-9][A-Za-z0-9-]*`)
 	hardwareCreateVerbRE = regexp.MustCompile(`(?i)(创建|新建|开\s*(?:一台|一个|个|台)?\s*[a-z0-9]|搞台|搞一台|抢一台|买一台|租一台|来一台|部署一台)`)
 	hardwareAdviceRE     = regexp.MustCompile(`(?i)(能干嘛|能做什么|有什么用|适合做什么|适合干嘛)`)
 	hardwarePriceQueryRE = regexp.MustCompile(`(?i)(多少钱|价格|费用|计费|包月|包日|按量|每小时|一小时|小时价|贵不贵)`)
@@ -687,6 +693,7 @@ func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, routeMap map[i
 	for _, e := range enabled {
 		if e == intent.IntentResourceInfo ||
 			e == intent.IntentMonitorQuery ||
+			e == intent.IntentMonitorHistory ||
 			e == intent.IntentDiagnosis ||
 			e == intent.IntentVagueFailure ||
 			e == intent.IntentOperationLifecycle ||
@@ -694,7 +701,7 @@ func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, routeMap map[i
 			enabledMap[e] = struct{}{}
 		}
 		switch e {
-		case intent.IntentResourceInfo, intent.IntentMonitorQuery:
+		case intent.IntentResourceInfo, intent.IntentMonitorQuery, intent.IntentMonitorHistory:
 			routeMap[e] = struct{}{}
 		default:
 			// Routing Registry v1: any registered route intent is
@@ -1288,6 +1295,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	if reply, handled := e.tryDeterministicProductFactReply(userMsg); handled {
 		return reply, nil
 	}
+	if reply, handled := e.tryDirectMonitorHistoryFromUserText(ctx, userMsg, onStep); handled {
+		return reply, nil
+	}
+	if reply, handled := e.tryRejectIncompleteMonitorHistoryFromUserText(userMsg); handled {
+		return reply, nil
+	}
 	if reply, handled := e.tryDiagnosisTargetContinuation(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
@@ -1297,7 +1310,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
-
 	forceMonitorRecall := e.shouldForceMonitorRecall(userMsg)
 	if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep, opts.OnTextDelta); handled {
 		return reply, nil
@@ -1777,18 +1789,6 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		return tokenBudgetExceededMessage, true
 	}
 
-	if dispatch.result.Plan.Intent == intent.IntentMonitorHistory {
-		// Code-level guardrail: when image context is present, the planner
-		// may misclassify screenshot UI labels ("运维监控", "最近访问") as
-		// a historical monitor question. Only honor the refusal if the raw
-		// user message independently satisfies the keyword pattern.
-		if e.imageContextThisTurn != "" && !isUnsupportedHistoricalMonitorQuestion(userMsg) {
-			e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
-			return "", false
-		}
-		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackTimeWindow, dispatch.latency)
-		return e.emitMonitorHistoryHardBlock(), true
-	}
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
 		return reply, true
 	}
@@ -1810,7 +1810,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.tryDirectHardwareCreate(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
-	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
+	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || dispatch.result.Plan.Intent == intent.IntentMonitorHistory || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
 		return e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
 	}
 	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP migration: route a knowledge_qa turn into
@@ -1874,6 +1874,288 @@ func (e *Engine) tryDirectHardwareCreate(ctx context.Context, dispatch routerDis
 		Content: reply,
 	})
 	return reply, true
+}
+
+func (e *Engine) tryDirectMonitorHistoryFromUserText(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
+	if !isUnsupportedHistoricalMonitorQuestion(userMsg) {
+		return "", false
+	}
+	start, end, ok := intent.ResolveMonitorHistoryWindowFromUserText(userMsg)
+	if !ok {
+		if intent.ContainsUnparsedSpecificMonitorClockRange(userMsg) {
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: monitorHistoryNeedTimeWindowMessage,
+			})
+			return monitorHistoryNeedTimeWindowMessage, true
+		}
+		return "", false
+	}
+	if monitorHistoryRequestsMultipleTargets(userMsg) {
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: monitorHistoryNeedSingleInstanceMessage,
+		})
+		return monitorHistoryNeedSingleInstanceMessage, true
+	}
+	if ids := monitorHistoryExplicitIDs(userMsg); len(ids) > 1 {
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: monitorHistoryNeedSingleInstanceMessage,
+		})
+		return monitorHistoryNeedSingleInstanceMessage, true
+	}
+	if _, err := e.refreshRegistry(ctx, entity.RefreshReasonManual); err != nil {
+		return "", false
+	}
+	snapshot := e.RegistrySnapshot()
+	uHostID, targetStatus := e.monitorHistoryTargetID(userMsg, snapshot)
+	if targetStatus == monitorHistoryTargetMultiple {
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: monitorHistoryNeedSingleInstanceMessage,
+		})
+		return monitorHistoryNeedSingleInstanceMessage, true
+	}
+	if uHostID == "" {
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: monitorHistoryNeedSingleInstanceMessage,
+		})
+		return monitorHistoryNeedSingleInstanceMessage, true
+	}
+	loc := time.FixedZone("Asia/Shanghai", 8*3600)
+	plan := intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentMonitorHistory,
+		Slots: intent.Slots{
+			TargetRefs: []intent.TargetRef{{
+				Type:       intent.TargetRefUHostIDUserInput,
+				Value:      uHostID,
+				Source:     intent.SourceUserText,
+				SourceSpan: uHostID,
+			}},
+			Metrics: monitorMetricsFromUserText(userMsg),
+			TimeWindow: &intent.TimeWindow{
+				Type:  intent.TimeWindowAbsolute,
+				Value: fmt.Sprintf("%s/%s", time.Unix(start, 0).In(loc).Format(time.RFC3339), time.Unix(end, 0).In(loc).Format(time.RFC3339)),
+			},
+		},
+		Retrieval:  intent.Retrieval{Enabled: false},
+		Confidence: 1,
+	}
+	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
+	handled := handler.HandleMonitorQuery(ctx, intent.HandlerRequest{
+		Plan:     plan,
+		Resolver: e.RegistrySnapshot(),
+		UserText: userMsg,
+	})
+	if handled.Status != intent.HandlerStatusHandled {
+		return "", false
+	}
+	e.emitPlannerTrace(intent.IntentRouterResult{Plan: plan}, handled.RouteStatus, 0)
+	e.annotateHandlerResultForUserQuestion(&handled, plan, userMsg)
+	reply := handled.Reply
+	if strings.TrimSpace(reply) == "未返回监控数据。" {
+		reply = formatHistoricalMonitorNoDataReply(start, end, []string{uHostID})
+	}
+	e.recordSelectedInstanceFromEnvelope(handled.Envelope)
+	e.recordLastIntentFromPlan(plan)
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: reply,
+	})
+	return reply, true
+}
+
+func (e *Engine) tryRejectIncompleteMonitorHistoryFromUserText(userMsg string) (string, bool) {
+	if !isUnsupportedHistoricalMonitorQuestion(userMsg) {
+		return "", false
+	}
+	if _, _, ok := intent.ResolveMonitorHistoryWindowFromUserText(userMsg); ok {
+		return "", false
+	}
+	if intent.ContainsUnparsedSpecificMonitorClockRange(userMsg) {
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: monitorHistoryNeedTimeWindowMessage,
+		})
+		return monitorHistoryNeedTimeWindowMessage, true
+	}
+	if monitorHistoryRequestsMultipleTargets(userMsg) {
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: monitorHistoryNeedSingleInstanceMessage,
+		})
+		return monitorHistoryNeedSingleInstanceMessage, true
+	}
+	if ids := monitorHistoryExplicitIDs(userMsg); len(ids) > 1 {
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: monitorHistoryNeedSingleInstanceMessage,
+		})
+		return monitorHistoryNeedSingleInstanceMessage, true
+	} else if len(ids) == 0 {
+		if e == nil || strings.TrimSpace(e.sessionState.SelectedInstanceID) == "" {
+			return "", false
+		}
+	}
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: monitorHistoryNeedTimeWindowMessage,
+	})
+	return monitorHistoryNeedTimeWindowMessage, true
+}
+
+type monitorHistoryTargetStatus string
+
+const (
+	monitorHistoryTargetNone     monitorHistoryTargetStatus = "none"
+	monitorHistoryTargetOK       monitorHistoryTargetStatus = "ok"
+	monitorHistoryTargetMultiple monitorHistoryTargetStatus = "multiple"
+)
+
+func (e *Engine) monitorHistoryTargetID(userMsg string, snapshot entity.RegistrySnapshot) (string, monitorHistoryTargetStatus) {
+	if ids := monitorHistoryExplicitIDs(userMsg); len(ids) > 1 {
+		return "", monitorHistoryTargetMultiple
+	} else if len(ids) == 1 {
+		return ids[0], monitorHistoryTargetOK
+	}
+	if ids := monitorHistoryNameIDs(userMsg, snapshot); len(ids) > 1 {
+		return "", monitorHistoryTargetMultiple
+	} else if len(ids) == 1 {
+		return ids[0], monitorHistoryTargetOK
+	}
+	if e != nil {
+		if selected := strings.TrimSpace(e.sessionState.SelectedInstanceID); selected != "" {
+			return selected, monitorHistoryTargetOK
+		}
+	}
+	return "", monitorHistoryTargetNone
+}
+
+func monitorHistoryExplicitIDs(userMsg string) []string {
+	return uniqueStrings(uhostIDInTextRE.FindAllString(userMsg, -1))
+}
+
+func monitorHistoryNameIDs(userMsg string, snapshot entity.RegistrySnapshot) []string {
+	ids := make([]string, 0, 2)
+	for _, inst := range snapshot.Instances {
+		name := strings.TrimSpace(inst.Name)
+		if name == "" || inst.UHostId == "" {
+			continue
+		}
+		if monitorHistoryNameMentioned(userMsg, name) {
+			ids = append(ids, inst.UHostId)
+		}
+	}
+	return uniqueStrings(ids)
+}
+
+func monitorHistoryNameMentioned(userMsg, name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	lowerMsg := strings.ToLower(userMsg)
+	lowerName := strings.ToLower(name)
+	if monitorHistoryGenericShortName(lowerName) {
+		return false
+	}
+	if monitorHistoryExplicitNameMention(lowerMsg, lowerName) {
+		return true
+	}
+	if utf8.RuneCountInString(lowerName) < 5 {
+		return false
+	}
+	return containsStandaloneASCIIName(lowerMsg, lowerName)
+}
+
+func monitorHistoryExplicitNameMention(lowerMsg, lowerName string) bool {
+	for _, marker := range []string{"实例名", "实例", "云主机", "主机", "机器", "名称"} {
+		idx := strings.Index(lowerMsg, marker)
+		for idx >= 0 {
+			tail := strings.TrimLeft(lowerMsg[idx+len(marker):], " \t\r\n:：为是叫名")
+			if strings.HasPrefix(tail, lowerName) && monitorHistoryNameBoundaryAfter(tail, len(lowerName)) {
+				return true
+			}
+			next := strings.Index(lowerMsg[idx+len(marker):], marker)
+			if next < 0 {
+				break
+			}
+			idx += len(marker) + next
+		}
+	}
+	return false
+}
+
+func monitorHistoryGenericShortName(lowerName string) bool {
+	switch lowerName {
+	case "gpu", "cpu", "vram", "mem", "memory", "test", "monitor", "history":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsStandaloneASCIIName(lowerMsg, lowerName string) bool {
+	if lowerName == "" || !isASCIIIdentifierLike(lowerName) {
+		return strings.Contains(lowerMsg, lowerName)
+	}
+	pattern := `(?i)(^|[^a-z0-9_])` + regexp.QuoteMeta(lowerName) + `($|[^a-z0-9_])`
+	return regexp.MustCompile(pattern).FindStringIndex(lowerMsg) != nil
+}
+
+func isASCIIIdentifierLike(value string) bool {
+	for _, r := range value {
+		if r > 127 {
+			return false
+		}
+	}
+	return true
+}
+
+func monitorHistoryNameBoundaryAfter(text string, n int) bool {
+	if len(text) == n {
+		return true
+	}
+	if len(text) < n {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(text[n:])
+	return unicode.IsSpace(r) || strings.ContainsRune("，。,.、;；:：)）]】", r)
+}
+
+func monitorHistoryRequestsMultipleTargets(userMsg string) bool {
+	lower := strings.ToLower(userMsg)
+	markers := []string{"所有实例", "所有的实例", "全部实例", "全部的实例", "全部机器", "全部的机器", "所有机器", "所有的机器", "所有主机", "所有的主机", "全部主机", "全部的主机", "all instances", "all machines", "all hosts"}
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func monitorMetricsFromUserText(userMsg string) []intent.Metric {
+	lower := strings.ToLower(userMsg)
+	metrics := make([]intent.Metric, 0, 4)
+	if strings.Contains(lower, "cpu") || strings.Contains(userMsg, "处理器") {
+		metrics = append(metrics, intent.MetricCPU)
+	}
+	if strings.Contains(userMsg, "内存") || strings.Contains(lower, "memory") || strings.Contains(lower, "mem") {
+		metrics = append(metrics, intent.MetricMemory)
+	}
+	if strings.Contains(lower, "gpu") || strings.Contains(userMsg, "显卡") {
+		metrics = append(metrics, intent.MetricGPU)
+	}
+	if strings.Contains(userMsg, "显存") || strings.Contains(lower, "vram") || strings.Contains(lower, "gpu memory") {
+		metrics = appendMonitorMetricIfMissing(metrics, intent.MetricVRAM)
+	}
+	if len(metrics) == 0 {
+		metrics = append(metrics, intent.MetricCPU, intent.MetricMemory, intent.MetricGPU, intent.MetricVRAM)
+	}
+	return metrics
 }
 
 func plannerAllowsDirectHardwareCreate(route intent.Intent) bool {
@@ -2114,7 +2396,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	result := dispatch.result
 	result.Plan = planWithUserTextMonitorMetrics(result.Plan, userMsg)
 	result.Plan = augmentPlanTargetRefsFromUserText(result.Plan, userMsg, dispatch.snapshot)
-	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsRoutingIntent(result.Plan.Intent) {
+	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && result.Plan.Intent != intent.IntentMonitorHistory && !intent.IsRoutingIntent(result.Plan.Intent) {
 		return "", false
 	}
 	if status, ok := e.phase1RouteCandidateStatus(result); !ok {
@@ -2142,7 +2424,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	switch result.Plan.Intent {
 	case intent.IntentResourceInfo:
 		handled = handler.HandleResourceInfo(ctx, req)
-	case intent.IntentMonitorQuery:
+	case intent.IntentMonitorQuery, intent.IntentMonitorHistory:
 		handled = handler.HandleMonitorQuery(ctx, req)
 	default:
 		// Routing Registry v1: any registered route intent dispatches
@@ -2181,6 +2463,14 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 					}
 					handled = handler.HandleMonitorQuery(ctx, req)
 					e.emitPlannerTrace(resumed, handled.RouteStatus, dispatch.latency)
+					if handled.Status == intent.HandlerStatusFallbackBeforeTool && handled.FallbackReason == intent.FallbackTimeWindow {
+						reply := monitorHistoryNeedTimeWindowMessage
+						e.messages = append(e.messages, openai.ChatCompletionMessage{
+							Role:    openai.ChatMessageRoleAssistant,
+							Content: reply,
+						})
+						return reply, true
+					}
 					e.annotateHandlerResultForUserQuestion(&handled, resumed.Plan, e.lastUserMsg)
 					reply := handled.Reply
 					if handled.Status == intent.HandlerStatusHandled {
@@ -2206,7 +2496,12 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 		}
 		if handled.FallbackReason == intent.FallbackTimeWindow {
 			e.emitPlannerTrace(result, handled.RouteStatus, dispatch.latency)
-			return e.emitMonitorHistoryHardBlock(), true
+			reply := monitorHistoryNeedTimeWindowMessage
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: reply,
+			})
+			return reply, true
 		}
 		e.emitPlannerTrace(result, handled.RouteStatus, dispatch.latency)
 		return "", false
@@ -2254,7 +2549,7 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 	}
 
 	e.pendingResourceSelection = nil
-	if pending.plan.Intent != intent.IntentMonitorQuery {
+	if pending.plan.Intent != intent.IntentMonitorQuery && pending.plan.Intent != intent.IntentMonitorHistory {
 		return "", false
 	}
 
@@ -2373,7 +2668,7 @@ func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent
 }
 
 func planWithUserTextMonitorMetrics(plan intent.IntentRoute, userText string) intent.IntentRoute {
-	if plan.Intent != intent.IntentMonitorQuery {
+	if plan.Intent != intent.IntentMonitorQuery && plan.Intent != intent.IntentMonitorHistory {
 		return plan
 	}
 	lower := strings.ToLower(userText)
@@ -2899,7 +3194,7 @@ func (e *Engine) phase1RouteCandidateStatus(result intent.IntentRouterResult) (i
 	if result.Plan.Retrieval.Enabled {
 		return intent.RouteStatusFallbackIneligible, false
 	}
-	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && !intent.IsRoutingIntent(result.Plan.Intent) {
+	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && result.Plan.Intent != intent.IntentMonitorHistory && !intent.IsRoutingIntent(result.Plan.Intent) {
 		return intent.RouteStatusFallbackIneligible, false
 	}
 	if _, ok := e.intentRouteIntents[result.Plan.Intent]; !ok {
@@ -4038,9 +4333,9 @@ func (x engineToolExecutor) Execute(ctx context.Context, action string, args map
 	return x.engine.executeRawTool(ctx, action, args, x.origin)
 }
 
-// guardMonitorTemporalFinalReply is retained for the future historical-monitor
-// stage. It is unreachable for new monitor history calls while
-// ErrHistoricalMonitorUnsupported blocks StartTime/EndTime tool arguments.
+// guardMonitorTemporalFinalReply keeps LLM narration aligned with the actual
+// historical monitor window when a routed/tool-call path queried StartTime and
+// EndTime.
 func (e *Engine) guardMonitorTemporalFinalReply(content string) string {
 	if !e.currentMonitorWindow || content == "" {
 		return content
@@ -4073,9 +4368,8 @@ func (e *Engine) guardMonitorTemporalFinalReply(content string) string {
 	return corrected
 }
 
-// trackMonitorResult is retained for the future historical-monitor stage.
-// Current user-facing paths reject history-window monitor calls before API
-// execution, so this only protects legacy/internal test seams.
+// trackMonitorResult records historical monitor query metadata so no-data and
+// final-answer correction logic can describe the exact queried window.
 func (e *Engine) trackMonitorResult(result *tools.SafeToolResult) {
 	if result == nil || result.Action != "GetCompShareInstanceMonitor" || !hasMonitorTimeRangeArgs(result.Args) {
 		return
@@ -4126,6 +4420,9 @@ func formatHistoricalMonitorNoDataReply(start, end int64, targets []string) stri
 	}
 	return fmt.Sprintf("北京时间 %s ~ %s，%s 没有返回有效监控数据。不能判断该时间窗内的 CPU、内存、GPU 或显存占用，也不会用其他时间的数据替代。", startText, endText, targetText)
 }
+
+const monitorHistoryNeedTimeWindowMessage = "请补充要查询的历史监控时间范围，例如“昨天 8 点到 10 点”或“2026-05-08 01:00 到 02:00”。历史监控目前一次只支持查询一台实例，时间范围最长 24 小时。"
+const monitorHistoryNeedSingleInstanceMessage = "历史监控目前一次只支持查询一台实例，请指定一台实例后再查询。"
 
 func hasMonitorTimeRangeArgs(args map[string]any) bool {
 	if args == nil {
@@ -4210,6 +4507,13 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		msg := mutatingToolsDisabledMessage
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, tools.ErrMutatingActionDisabled))
 		return finalReplyPrefix + msg
+	}
+	if action == "StartInstanceWorkflow" {
+		if startWithoutGPURequestedByText(e.lastUserMsg) {
+			args["WithoutGpu"] = true
+		} else {
+			delete(args, "WithoutGpu")
+		}
 	}
 	// Hard guard — instance-operation workflows MUST have a non-empty UHostId.
 	// CreateInstanceWorkflow is excluded because it creates a new instance.
@@ -4421,6 +4725,47 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	b, _ := json.Marshal(result)
 	return string(b)
+}
+
+func startWithoutGPURequestedByText(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	compact := strings.ReplaceAll(lower, " ", "")
+	negations := []string{"不要无卡", "不用无卡", "不是无卡", "别无卡", "正常开机", "普通开机", "带卡开机", "不要不带gpu", "不用不带gpu", "notwithoutgpu"}
+	for _, negation := range negations {
+		if strings.Contains(compact, negation) {
+			return false
+		}
+	}
+	consultationWords := []string{"多少钱", "价格", "费用", "计费", "包月", "包时", "包天", "折扣", "贵不贵"}
+	for _, word := range consultationWords {
+		if strings.Contains(compact, word) {
+			return false
+		}
+	}
+	startWords := []string{"启动", "开机", "start", "boot"}
+	hasStartIntent := false
+	for _, word := range startWords {
+		if strings.Contains(lower, word) {
+			hasStartIntent = true
+			break
+		}
+	}
+	if !hasStartIntent {
+		return false
+	}
+	return strings.Contains(text, "无卡") ||
+		strings.Contains(compact, "无gpu") ||
+		strings.Contains(compact, "无显卡") ||
+		strings.Contains(compact, "不分配gpu") ||
+		strings.Contains(compact, "不分配显卡") ||
+		strings.Contains(compact, "不使用gpu") ||
+		strings.Contains(compact, "不使用显卡") ||
+		strings.Contains(compact, "不带gpu") ||
+		strings.Contains(lower, "without gpu") ||
+		strings.Contains(lower, "no gpu")
 }
 
 // deterministicWorkflowReply returns a fixed success reply for lifecycle

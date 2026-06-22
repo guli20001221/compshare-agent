@@ -1,6 +1,9 @@
 package workflow
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // defaultRegion is the Region paired with defaultZone. Kept in lockstep with
 // defaultZone (cn-wlcb-01 → cn-wlcb) so workflow fallbacks are consistent.
@@ -87,4 +90,23 @@ func extractInstanceRegion(result map[string]any, defaultRegionVal string) strin
 		}
 	}
 	return defaultRegionVal
+}
+
+func extractRequiredInstanceLocation(result map[string]any) (region, zone string, err error) {
+	if result != nil {
+		if hostSet, ok := result["UHostSet"].([]any); ok && len(hostSet) > 0 {
+			if first, ok := hostSet[0].(map[string]any); ok {
+				if v, ok := first["Zone"].(string); ok {
+					zone = strings.TrimSpace(v)
+				}
+				if v, ok := first["Region"].(string); ok {
+					region = strings.TrimSpace(v)
+				}
+			}
+		}
+	}
+	if zone == "" || region == "" {
+		return "", "", fmt.Errorf("未获取到实例真实可用区，无法安全执行该操作。请稍后重试或到控制台确认实例可用区。")
+	}
+	return region, zone, nil
 }

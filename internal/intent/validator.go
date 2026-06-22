@@ -262,7 +262,7 @@ func requiredToolsForIntent(intent Intent) map[string]struct{} {
 	switch intent {
 	case IntentResourceInfo:
 		add("DescribeCompShareInstance")
-	case IntentMonitorQuery:
+	case IntentMonitorQuery, IntentMonitorHistory:
 		add("DescribeCompShareInstance", "GetCompShareInstanceMonitor")
 	case IntentBillingInstance:
 		add("DescribeCompShareInstance", "DiagnoseBilling")

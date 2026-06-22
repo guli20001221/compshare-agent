@@ -187,10 +187,6 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 		return nil, fmt.Errorf("%w: %s", ErrMutatingActionDisabled, req.Action)
 	}
 
-	if policy.Action == "GetCompShareInstanceMonitor" && hasMonitorTimeRangeArgs(req.Args) {
-		return nil, fmt.Errorf("%w: monitor history window is not enabled in this stage", ErrHistoricalMonitorUnsupported)
-	}
-
 	args := filterSafeArgs(req.Args, allowedParamsForOrigin(policy, req.Origin))
 	if err := checkPolicyCaps(policy, args); err != nil {
 		return nil, err
@@ -284,8 +280,8 @@ func checkPolicyCaps(policy ToolExecutionPolicy, args map[string]any) error {
 	}
 	if policy.MaxHistoryWindowSeconds > 0 {
 		window, ok := requestedHistoryWindowSeconds(args)
-		if ok && countRequestedTargets(args) > 1 {
-			return fmt.Errorf("%w: requested historical monitor for %d targets; max 1", ErrHistoryWindowExceeded, countRequestedTargets(args))
+		if ok && countRequestedTargets(args) != 1 {
+			return fmt.Errorf("%w: requested historical monitor for %d targets; expected exactly 1", ErrHistoryWindowExceeded, countRequestedTargets(args))
 		}
 		if ok && window > int64(policy.MaxHistoryWindowSeconds) {
 			return fmt.Errorf("%w: requested %d seconds exceeds max %d", ErrHistoryWindowExceeded, window, policy.MaxHistoryWindowSeconds)
@@ -329,6 +325,9 @@ func requestedHistoryWindowSeconds(args map[string]any) (int64, bool) {
 	startValue, hasStart := args["StartTime"]
 	endValue, hasEnd := args["EndTime"]
 	if !hasStart || !hasEnd {
+		if hasStart || hasEnd {
+			return maxInt64, true
+		}
 		return 0, false
 	}
 	start, okStart := secondsArg(startValue)
@@ -340,7 +339,7 @@ func requestedHistoryWindowSeconds(args map[string]any) (int64, bool) {
 		return maxInt64, true
 	}
 	if end <= start {
-		return 0, false
+		return maxInt64, true
 	}
 	if end > maxInt64-start {
 		return maxInt64, true
@@ -437,9 +436,8 @@ func filterSafeArgs(args map[string]any, allowed []string) map[string]any {
 	return filtered
 }
 
-// applyHistoryGuard is retained for the future historical-monitor stage.
-// Current user-facing monitor calls with time-window arguments are rejected
-// before API execution by ErrHistoricalMonitorUnsupported.
+// applyHistoryGuard marks an empty historical-monitor response so later
+// rendering does not substitute current realtime data or invented values.
 func applyHistoryGuard(policy ToolExecutionPolicy, args map[string]any, raw map[string]any) map[string]any {
 	if !policy.HistoryMonitorGuard || !hasMonitorTimeRangeArgs(args) || raw == nil {
 		return raw

@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
@@ -59,7 +62,7 @@ const (
 	// Trace-only; emitted by the engine's tryPlannerDispatch, no planner prompt / SHA impact.
 	RouteStatusDispatchedKnowledgeAgentLoop RouteStatus = "dispatched_knowledge_agent_loop"
 	RouteStatusFallbackInvalid              RouteStatus = "fallback_invalid"
-	RouteStatusFallbackLowConfidence RouteStatus = "fallback_low_confidence"
+	RouteStatusFallbackLowConfidence        RouteStatus = "fallback_low_confidence"
 	// RouteStatusFallbackHardBlockHint (removed PR #61, 2026-05-21):
 	// planner's HardBlockHint is advisory only — no longer routes. Survives
 	// in RouterTrace.HardBlockHint for analytics join with
@@ -235,7 +238,8 @@ func (h *DemoHandler) HandleMonitorQuery(ctx context.Context, req HandlerRequest
 		// SafeToolExecutor adapter before enabling demo route dispatch.
 		return FallbackBeforeTool(FallbackValidation)
 	}
-	if !isCurrentMonitorTimeWindow(req.Plan.Slots.TimeWindow) {
+	historical := req.Plan.Intent == IntentMonitorHistory
+	if !historical && !isCurrentMonitorTimeWindow(req.Plan.Slots.TimeWindow) {
 		return FallbackBeforeTool(FallbackTimeWindow)
 	}
 	if len(req.Plan.Slots.TargetRefs) == 0 {
@@ -256,11 +260,26 @@ func (h *DemoHandler) HandleMonitorQuery(ctx context.Context, req HandlerRequest
 		return *fallback
 	}
 	args := map[string]any{"UHostIds": append([]string(nil), ids...)}
+	if historical {
+		if len(ids) != 1 {
+			return FallbackBeforeTool(FallbackValidation)
+		}
+		start, end, ok := resolveMonitorHistoryWindow(req.Plan.Slots.TimeWindow)
+		if !ok {
+			return FallbackBeforeTool(FallbackTimeWindow)
+		}
+		args["StartTime"] = start
+		args["EndTime"] = end
+	}
 	raw, err := h.executor.Execute(ctx, action, args)
 	if err != nil {
 		return failureAfterToolForError(action, args, "monitor_query", err)
 	}
-	result := HandledResult(RenderMonitorSummary(req.Plan.Slots.Metrics, raw))
+	reply := RenderMonitorSummary(req.Plan.Slots.Metrics, raw)
+	if historical {
+		reply = RenderHistoricalMonitorSummary(req.Plan.Slots.Metrics, raw)
+	}
+	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
 	result.RendererInputToolArgHashes = hashArgsForRenderer(args)
@@ -303,8 +322,9 @@ var (
 func handlerActionWhitelist() map[Intent]map[string]struct{} {
 	handlerActionWhitelistOnce.Do(func() {
 		m := map[Intent]map[string]struct{}{
-			IntentResourceInfo: {"DescribeCompShareInstance": {}},
-			IntentMonitorQuery: {"GetCompShareInstanceMonitor": {}},
+			IntentResourceInfo:   {"DescribeCompShareInstance": {}},
+			IntentMonitorQuery:   {"GetCompShareInstanceMonitor": {}},
+			IntentMonitorHistory: {"GetCompShareInstanceMonitor": {}},
 		}
 		for _, route := range routing.GeneratedRoutes() {
 			if route.IntentLabel == "" || len(route.RequiredTools) == 0 {
@@ -450,6 +470,232 @@ func isCurrentMonitorTimeWindow(window *TimeWindow) bool {
 	default:
 		return false
 	}
+}
+
+var monitorNowFunc = time.Now
+
+var monitorHistoryLoc = func() *time.Location {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return time.FixedZone("CST", 8*3600)
+	}
+	return loc
+}()
+
+var relativeMonitorWindowRE = regexp.MustCompile(`(?i)(?:过去|最近|近|past|last|previous)\s*(\d+)\s*([a-z]+|分钟|分|小时|时)`)
+
+var yesterdayClockRangeRE = regexp.MustCompile(`昨天\s*(\d{1,2})(?:\s*(?::|点|时)\s*(\d{1,2})?)?\s*(?:到|至|-|~|～)\s*(\d{1,2})(?:\s*(?::|点|时)\s*(\d{1,2})?)?`)
+
+var unparsedSpecificMonitorClockRangeRE = regexp.MustCompile(`(?i)(?:昨天|今天|上午|下午|晚上|中午)[^0-9]{0,8}\d{1,2}\s*(?::|点|时)\s*\d{0,2}[^0-9]{0,8}(?:到|至|~|～|-)[^0-9]{0,12}(?:(?:昨天|今天|上午|下午|晚上|中午)[^0-9]{0,8})?\d{1,2}\s*(?::|点|时)\s*\d{0,2}`)
+
+func resolveMonitorHistoryWindow(window *TimeWindow) (int64, int64, bool) {
+	if window == nil {
+		return 0, 0, false
+	}
+	now := monitorNowFunc().In(monitorHistoryLoc)
+	var start, end time.Time
+	switch window.Type {
+	case TimeWindowAbsolute:
+		s, e, ok := parseAbsoluteMonitorWindow(window.Value)
+		if !ok {
+			return 0, 0, false
+		}
+		start, end = s, e
+	case TimeWindowPreset:
+		switch strings.ToLower(strings.TrimSpace(window.Value)) {
+		case "yesterday", "昨天":
+			day := startOfDay(now).AddDate(0, 0, -1)
+			start, end = day, day.Add(24*time.Hour)
+		case "today", "今天":
+			start, end = startOfDay(now), now
+		default:
+			return 0, 0, false
+		}
+	case TimeWindowRelative:
+		s, e, ok := parseRelativeMonitorWindow(window.Value, now)
+		if !ok {
+			return 0, 0, false
+		}
+		start, end = s, e
+	default:
+		return 0, 0, false
+	}
+	if !end.After(start) || end.Sub(start) > 24*time.Hour {
+		return 0, 0, false
+	}
+	return start.Unix(), end.Unix(), true
+}
+
+func ResolveMonitorHistoryWindowFromUserText(text string) (int64, int64, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0, 0, false
+	}
+	if start, end, ok := parseAbsoluteMonitorWindow(text); ok {
+		if end.After(start) && end.Sub(start) <= 24*time.Hour {
+			return start.Unix(), end.Unix(), true
+		}
+	}
+	if m := yesterdayClockRangeRE.FindStringSubmatch(text); len(m) == 5 {
+		now := monitorNowFunc().In(monitorHistoryLoc)
+		startHour, err1 := strconv.Atoi(m[1])
+		startMin := atoiDefault(m[2], 0)
+		endHour, err2 := strconv.Atoi(m[3])
+		endMin := atoiDefault(m[4], 0)
+		if err1 == nil && err2 == nil && validClock(startHour, startMin) && validClock(endHour, endMin) {
+			day := startOfDay(now).AddDate(0, 0, -1)
+			start := day.Add(time.Duration(startHour)*time.Hour + time.Duration(startMin)*time.Minute)
+			end := day.Add(time.Duration(endHour)*time.Hour + time.Duration(endMin)*time.Minute)
+			if end.After(start) && end.Sub(start) <= 24*time.Hour {
+				return start.Unix(), end.Unix(), true
+			}
+		}
+		return 0, 0, false
+	}
+	if ContainsUnparsedSpecificMonitorClockRange(text) {
+		return 0, 0, false
+	}
+	if strings.Contains(text, "昨天") {
+		day := startOfDay(monitorNowFunc().In(monitorHistoryLoc)).AddDate(0, 0, -1)
+		return day.Unix(), day.Add(24 * time.Hour).Unix(), true
+	}
+	if strings.Contains(text, "今天") {
+		now := monitorNowFunc().In(monitorHistoryLoc)
+		day := startOfDay(now)
+		if now.After(day) {
+			return day.Unix(), now.Unix(), true
+		}
+	}
+	if start, end, ok := parseRelativeMonitorWindow(text, monitorNowFunc().In(monitorHistoryLoc)); ok && end.After(start) && end.Sub(start) <= 24*time.Hour {
+		return start.Unix(), end.Unix(), true
+	}
+	return 0, 0, false
+}
+
+func ContainsUnparsedSpecificMonitorClockRange(text string) bool {
+	return unparsedSpecificMonitorClockRangeRE.FindStringIndex(text) != nil
+}
+
+func atoiDefault(value string, fallback int) int {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func validClock(hour, minute int) bool {
+	return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
+}
+
+func parseAbsoluteMonitorWindow(value string) (time.Time, time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, time.Time{}, false
+	}
+	for _, sep := range []string{"/", "~", "～", "到", "至"} {
+		parts := strings.Split(value, sep)
+		if len(parts) != 2 {
+			continue
+		}
+		start, okStart := parseMonitorTime(parts[0])
+		end, okEnd := parseMonitorTimeWithDefaultDate(parts[1], start)
+		if okStart && okEnd {
+			return start, end, true
+		}
+	}
+	return time.Time{}, time.Time{}, false
+}
+
+func parseRelativeMonitorWindow(value string, now time.Time) (time.Time, time.Time, bool) {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if lower == "" {
+		return time.Time{}, time.Time{}, false
+	}
+	if strings.Contains(lower, "yesterday") || strings.Contains(lower, "昨天") {
+		day := startOfDay(now).AddDate(0, 0, -1)
+		return day, day.Add(24 * time.Hour), true
+	}
+	m := relativeMonitorWindowRE.FindStringSubmatch(lower)
+	if len(m) != 3 {
+		return time.Time{}, time.Time{}, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n <= 0 {
+		return time.Time{}, time.Time{}, false
+	}
+	unit := strings.ToLower(strings.TrimSpace(m[2]))
+	d := time.Duration(n) * time.Minute
+	switch unit {
+	case "分钟", "分", "minute", "minutes", "min", "m":
+		d = time.Duration(n) * time.Minute
+	case "小时", "时", "hour", "hours", "h":
+		d = time.Duration(n) * time.Hour
+	default:
+		return time.Time{}, time.Time{}, false
+	}
+	return now.Add(-d), now, true
+}
+
+func parseMonitorTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	if match := regexp.MustCompile(`(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?`).FindStringSubmatch(value); len(match) > 0 {
+		second := match[4]
+		if second == "" {
+			second = "00"
+		}
+		normalized := fmt.Sprintf("%s %02s:%02s:%02s", match[1], match[2], match[3], second)
+		if t, err := time.ParseInLocation("2006-01-02 15:04:05", normalized, monitorHistoryLoc); err == nil {
+			return t, true
+		}
+	}
+	if match := regexp.MustCompile(`(\d{4}-\d{2}-\d{2})T(\d{1,2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2}))`).FindStringSubmatch(value); len(match) > 0 {
+		if t, err := time.Parse(time.RFC3339, match[1]+"T"+match[2]); err == nil {
+			return t, true
+		}
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t, true
+	}
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04"} {
+		if t, err := time.ParseInLocation(layout, value, monitorHistoryLoc); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func parseMonitorTimeWithDefaultDate(value string, defaultDate time.Time) (time.Time, bool) {
+	if t, ok := parseMonitorTime(value); ok {
+		return t, true
+	}
+	value = strings.TrimSpace(value)
+	m := regexp.MustCompile(`(?:^|\D)(\d{1,2})(?:\s*(?::|点|时)\s*(\d{1,2})?)?`).FindStringSubmatch(value)
+	if len(m) == 0 || defaultDate.IsZero() {
+		return time.Time{}, false
+	}
+	hour, err := strconv.Atoi(m[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	minute := atoiDefault(m[2], 0)
+	if !validClock(hour, minute) {
+		return time.Time{}, false
+	}
+	base := defaultDate.In(monitorHistoryLoc)
+	y, mon, d := base.Date()
+	return time.Date(y, mon, d, hour, minute, 0, 0, monitorHistoryLoc), true
+}
+
+func startOfDay(t time.Time) time.Time {
+	y, m, d := t.In(monitorHistoryLoc).Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, monitorHistoryLoc)
 }
 
 func describeResourceArgs(ids []string) map[string]any {
@@ -645,6 +891,212 @@ func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {
 		}
 	}
 	return strings.Join(parts, "; ")
+}
+
+type monitorHistoricalPoint struct {
+	Timestamp int64
+	Value     float64
+}
+
+type monitorHistoricalSeries struct {
+	Key    string
+	Label  string
+	Unit   string
+	Metric Metric
+	Points []monitorHistoricalPoint
+}
+
+func RenderHistoricalMonitorSummary(metrics []Metric, payload map[string]any) string {
+	series := historicalMonitorSeries(metrics, payload)
+	if len(series) == 0 {
+		if len(historicalMonitorSeries(nil, payload)) > 0 {
+			return noRequestedMonitorValuesReply
+		}
+		return noMonitorValuesReply
+	}
+	parts := make([]string, 0, len(series))
+	for _, item := range series {
+		if len(item.Points) == 0 {
+			continue
+		}
+		latest := item.Points[len(item.Points)-1]
+		sum := 0.0
+		peak := item.Points[0]
+		for _, p := range item.Points {
+			sum += p.Value
+			if p.Value > peak.Value {
+				peak = p
+			}
+		}
+		avg := sum / float64(len(item.Points))
+		label := item.Label
+		if label == "" {
+			label = item.Key
+		}
+		peakAt := time.Unix(peak.Timestamp, 0).In(monitorHistoryLoc).Format("2006-01-02 15:04")
+		parts = append(parts, fmt.Sprintf("%s最新=%s%s, 平均=%s%s, 峰值=%s%s（%s）",
+			label,
+			formatMonitorFloat(latest.Value), item.Unit,
+			formatMonitorFloat(avg), item.Unit,
+			formatMonitorFloat(peak.Value), item.Unit,
+			peakAt,
+		))
+	}
+	if len(parts) == 0 {
+		return noMonitorValuesReply
+	}
+	return strings.Join(parts, "; ")
+}
+
+func historicalMonitorSeries(metrics []Metric, payload map[string]any) []monitorHistoricalSeries {
+	data, _ := payload["Data"].(map[string]any)
+	if data == nil {
+		return nil
+	}
+	var out []monitorHistoricalSeries
+	for _, item := range mapSliceAt(data, "List") {
+		instance, _ := item.(map[string]any)
+		if instance == nil {
+			continue
+		}
+		for _, metricItem := range mapSliceAt(instance, "Metrics") {
+			metric, _ := metricItem.(map[string]any)
+			if metric == nil {
+				continue
+			}
+			metricKey, _ := metric["MetricKey"].(string)
+			def, ok := monitorMetricDefinitions[metricKey]
+			if !ok || !monitorMetricRequested(def.Metric, metrics) {
+				continue
+			}
+			results := monitorMetricResults(metric)
+			for i, result := range results {
+				points := historicalPointsFromValues(result["Values"])
+				if len(points) == 0 {
+					continue
+				}
+				key, label := def.Key, def.Label
+				if suffix := monitorResultLabelSuffix(metricKey, i, len(results)); suffix != "" {
+					key += "." + suffix
+					label += " (" + suffix + ")"
+				}
+				out = append(out, monitorHistoricalSeries{Key: key, Label: label, Unit: def.Unit, Metric: def.Metric, Points: points})
+			}
+		}
+	}
+	for _, item := range mapSliceAt(data, "PodList") {
+		instance, _ := item.(map[string]any)
+		if instance == nil {
+			continue
+		}
+		metricItems, _ := instance["Metrics"].(map[string]any)
+		if metricItems == nil {
+			continue
+		}
+		for _, field := range []string{"Cpu", "Memory", "SysDiskUsed"} {
+			values, exists := metricItems[field]
+			if !exists {
+				continue
+			}
+			def := podMonitorMetricDefinitions[field]
+			if !monitorMetricRequested(def.Metric, metrics) {
+				continue
+			}
+			if points := historicalPointsFromValues(values); len(points) > 0 {
+				out = append(out, monitorHistoricalSeries{Key: def.Key, Label: def.Label, Unit: def.Unit, Metric: def.Metric, Points: points})
+			}
+		}
+		gpuItems, _ := metricItems["Gpu"].([]any)
+		for i, item := range gpuItems {
+			gpu, _ := item.(map[string]any)
+			if gpu == nil {
+				continue
+			}
+			addGPU := func(field, defKey string) {
+				values, exists := gpu[field]
+				if !exists {
+					return
+				}
+				def := podMonitorMetricDefinitions[defKey]
+				if !monitorMetricRequested(def.Metric, metrics) {
+					return
+				}
+				points := historicalPointsFromValues(values)
+				if len(points) == 0 {
+					return
+				}
+				key, label := def.Key, def.Label
+				if suffix := podMonitorResultLabelSuffix(i, len(gpuItems)); suffix != "" {
+					key += "." + suffix
+					label += " (" + suffix + ")"
+				}
+				out = append(out, monitorHistoricalSeries{Key: key, Label: label, Unit: def.Unit, Metric: def.Metric, Points: points})
+			}
+			addGPU("Util", "GpuUtil")
+			addGPU("Memory", "GpuMemory")
+		}
+	}
+	return out
+}
+
+func historicalPointsFromValues(values any) []monitorHistoricalPoint {
+	items, _ := values.([]any)
+	out := make([]monitorHistoricalPoint, 0, len(items))
+	for _, item := range items {
+		point, _ := item.(map[string]any)
+		if point == nil {
+			continue
+		}
+		value, ok := monitorFloat(point["Value"])
+		if !ok {
+			continue
+		}
+		ts, ok := monitorTimestamp(point["Timestamp"])
+		if !ok {
+			continue
+		}
+		out = append(out, monitorHistoricalPoint{Timestamp: ts, Value: value})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Timestamp < out[j].Timestamp })
+	return out
+}
+
+func monitorFloat(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case string:
+		v, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		return v, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func monitorTimestamp(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return int64(typed), true
+	case int:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case string:
+		v, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		return v, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func formatMonitorFloat(value float64) string {
+	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
 func uniqueMonitorMetrics(metrics []Metric) []Metric {
