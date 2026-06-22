@@ -87,9 +87,10 @@ just run addr=":8080"             # 自定义端口
 docker run -d --name compshare-mysql -p 3307:3306 \
   -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=compshare_agent mysql:8
 
-# 建表（DDL 由人工执行，二进制不自动建表）
-docker exec -i compshare-mysql mysql -uroot -proot compshare_agent < deploy/migrations/0001_init.sql
-# 如需 trace 观测列，再依次执行 deploy/migrations/0002_*.sql、0004_*.sql
+# 建表（DDL 由人工执行，二进制不自动建表）——按顺序执行【全部】迁移。
+# 注：0003 给 sessions 加 context_version，是 server 启动 schema 校验的必需项；只跑 0001 会直接启动失败。
+for f in deploy/migrations/000*.sql; do docker exec -i compshare-mysql mysql -uroot -proot compshare_agent < "$f"; done
+# 建出表：sessions / messages / message_feedback / agent_traces（实测 /healthz 返回 {"status":"ok"}）
 
 # .env 里对应：
 # MYSQL_DSN=root:root@tcp(127.0.0.1:3307)/compshare_agent?parseTime=true&loc=Local&charset=utf8mb4
