@@ -187,7 +187,7 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 	if retCode, ok := result["RetCode"].(float64); ok && retCode != 0 {
 		msg, _ := result["Message"].(string)
 		logUpstreamAPIError(action, int(retCode), msg, result, args)
-		return nil, fmt.Errorf("API error (RetCode=%d): %s", int(retCode), msg)
+		return nil, NewUpstreamAPIError(int(retCode), msg)
 	}
 
 	return result, nil
@@ -274,7 +274,7 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 	if retCode, ok := result["RetCode"].(float64); ok && retCode != 0 {
 		msg, _ := result["Message"].(string)
 		logUpstreamAPIError(action, int(retCode), msg, result, args)
-		return nil, fmt.Errorf("API error (RetCode=%d): %s", int(retCode), msg)
+		return nil, NewUpstreamAPIError(int(retCode), msg)
 	}
 
 	return result, nil

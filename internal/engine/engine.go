@@ -3651,6 +3651,16 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			return finalReplyPrefix + msg
 		}
 		errMsg := fmt.Sprintf("API 调用失败: %v", err)
+		// P0 阶段1B: attach a recovery hint for known upstream RetCodes so the model
+		// self-corrects (change zone/region/image, back off) instead of blindly
+		// retrying the same failing call — the codebase's recorded create-failure
+		// root cause. The hint is carried out-of-band on the typed error (Error()
+		// is unchanged, so isImageUnavailableMessage and saga string matches are
+		// unaffected) and never contains the raw upstream tokens, so surfacing it
+		// cannot leak them into the reply.
+		if apiErr, ok := tools.UpstreamAPIErrorFrom(err); ok && apiErr.Hint != "" {
+			errMsg += "\n建议：" + apiErr.Hint
+		}
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errMsg})
 		return errMsg
 	}
