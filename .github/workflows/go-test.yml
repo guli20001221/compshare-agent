@@ -1,0 +1,39 @@
+name: Go Tests
+
+# Full deterministic Go suite — the table-stakes correctness gate. Runs the
+# entire `go test ./...` (unit tests, golden scripts, offline intent eval,
+# behavioral-contract tests) on every PR and on pushes to main.
+#
+# No model / server / DB needed: the real-model evals (TestEval,
+# TestOnlineRouterEval) self-skip without a -model flag, so this stays fast,
+# free, and deterministic. The real-model accuracy gate lives in
+# accuracy-gate.yml (dispatch + nightly).
+#
+# Complements entity-race.yml and skills-ci.yml (which add -race on their
+# packages); this adds full-suite coverage that CI was previously missing.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  go-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test ./...
+        run: go test ./... -count=1
