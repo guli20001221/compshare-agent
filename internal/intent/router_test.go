@@ -11,14 +11,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSelectOutputMode_ThinkingModeChoosesJSONObjectBeforeJSONSchema(t *testing.T) {
+func TestSelectOutputMode_ThinkingModeStillChoosesJSONSchema(t *testing.T) {
+	// 2026-06-23: a thinking model that supports json_schema now selects
+	// json_schema (the prior !IsThinkingMode guard was over-conservative — a live
+	// probe confirmed ds-v4-flash enforces json_schema in thinking mode).
 	mode := SelectOutputMode(llm.Capability{
 		SupportsJSONSchema: true,
 		SupportsJSONObject: true,
 		IsThinkingMode:     true,
 	})
 
-	assert.Equal(t, OutputModeJSONObject, mode)
+	assert.Equal(t, OutputModeJSONSchema, mode)
+}
+
+func TestSelectOutputMode_FallsBackWhenJSONSchemaUnsupported(t *testing.T) {
+	assert.Equal(t, OutputModeJSONObject, SelectOutputMode(llm.Capability{SupportsJSONObject: true}))
+	assert.Equal(t, OutputModeStrictPromptJSON, SelectOutputMode(llm.Capability{}))
 }
 
 func TestPlanner_ReturnsValidPlanFromMockLLM(t *testing.T) {

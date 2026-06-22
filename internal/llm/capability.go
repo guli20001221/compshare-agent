@@ -49,6 +49,18 @@ var builtinCapabilities = []capabilityEntry{
 		BaseURL: "https://api.modelverse.cn/v1",
 		Model:   "deepseek-v4-flash",
 		Capability: Capability{
+			// json_schema re-probed 2026-06-23 (supersedes the untested
+			// conservative default): a STRICT json_schema request returned HTTP 200
+			// with grammar-constrained output — the model was forced into an enum
+			// value that excluded the natural answer — EVEN in thinking mode; and a
+			// NON-strict json_schema whose intent enum omitted the natural intent
+			// likewise produced an in-enum value. So flip true. The intent router
+			// uses NON-strict json_schema (SelectOutputMode + IntentRouteResponseSchema)
+			// because IntentRoute is polymorphic/omitempty and strict mode's
+			// all-required rule would fight it; modelverse enforces enum/const even
+			// without strict. Hot-rollback: COMPSHARE_LLM_CAPABILITY_FILE override
+			// with supports_json_schema:false.
+			SupportsJSONSchema:         true,
 			SupportsJSONObject:         true,
 			IsThinkingMode:             true,
 			SupportsObjectToolChoice:   true,
