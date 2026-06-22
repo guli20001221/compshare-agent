@@ -1,0 +1,71 @@
+name: Behavioral Gate
+
+# In-process behavioral gate (eval P0 阶段0 §②). Drives the REAL engine — same
+# wiring as the HTTP server (configureSharedDepsFromEnv), real deepseek-v4-flash —
+# over the recorded multi-turn probe inputs, then evaluates the machine-checkable
+# behavioral contract (eval/realism/ci_behavioral_gates_2026-06-22.jsonl). Each
+# assertion checks an OBSERVABLE outcome (which tool/workflow was invoked, whether a
+# confirm frame was reached, reply text), never the router internals — so it is the
+# regression safety net for later routing / taxonomy changes (阶段2/3).
+#
+# Deliberately NOT on `pull_request`: a full run makes hundreds of real LLM calls
+# (cost + ~40-60 min + depends on api.modelverse.cn reachability). PRs stay fast and
+# free; the deterministic suite (go test ./...) still guards every PR and the gate
+# self-skips there (it needs -behavioral-gate). Runs nightly + on-demand instead.
+#
+# CREDENTIALS: runs identically to production — the executor goes through STS
+# (COMPSHARE_SERVICE_* AK/SK → AssumeRole(default_role_urn) → temp creds → CompShare
+# API), so executor-dependent / multi-hop gates (reach_confirm, must_confirm_mutating,
+# slot_retain) are faithful, not just the single-hop routing gates. LLM_API_KEY drives
+# the model. REQUIRES the runner to reach api.compshare.cn + the STS endpoint
+# (api.ucloud.cn) — same external-reachability dependency as the model endpoint; if the
+# GitHub-hosted runner cannot reach them, move to a China-resident self-hosted runner.
+# (The gate still self-skips in `go test ./...` since it needs -behavioral-gate.)
+#
+# FLOOR: -behavioral-min-pass is the BLOCK-gate pass-rate floor (%). Shipped at 0
+# (report-only) until the current-main green baseline is curated (over-strict tags
+# removed per the spec §7); flipping the floor to blocking is a follow-up once the
+# baseline proves stable. The job still runs the full gate and logs the per-gate
+# breakdown every night so regressions are visible immediately.
+#
+# NOTE: requires api.modelverse.cn reachable from the runner (same dependency as the
+# Accuracy Gate). If unreachable, move to a China-resident self-hosted runner.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: "limit to first N contract cases (0 = all 119)"
+        default: "0"
+      min_pass:
+        description: "fail if BLOCK-gate pass rate (%) below this (0 = report-only)"
+        default: "0"
+  schedule:
+    - cron: "30 18 * * *" # 02:30 China time (UTC+8); offset from the Accuracy Gate
+
+jobs:
+  behavioral-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: In-process behavioral gate
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          # STS service credentials — executor mints temp creds via AssumeRole, same as prod.
+          COMPSHARE_SERVICE_PUBLIC_KEY: ${{ secrets.COMPSHARE_SERVICE_PUBLIC_KEY }}
+          COMPSHARE_SERVICE_PRIVATE_KEY: ${{ secrets.COMPSHARE_SERVICE_PRIVATE_KEY }}
+          COMPSHARE_DEFAULT_ROLE_URN: ${{ secrets.COMPSHARE_DEFAULT_ROLE_URN }}
+        run: |
+          go test ./cmd -run TestBehavioralGate -behavioral-gate -v \
+            -behavioral-cases "${{ github.event.inputs.cases || '0' }}" \
+            -behavioral-min-pass "${{ github.event.inputs.min_pass || '0' }}" \
+            -timeout 85m
