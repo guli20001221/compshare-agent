@@ -13,6 +13,12 @@ type ModelConfig struct {
 // Models returns the configured evaluation models with API keys resolved from env.
 func Models() []ModelConfig {
 	mvKey := os.Getenv("MODELVERSE_API_KEY")
+	// deepseek-v4-flash is the production answer + intent-router model (ModelVerse).
+	// Its key is LLM_API_KEY in production; fall back to MODELVERSE_API_KEY for eval.
+	dsKey := os.Getenv("LLM_API_KEY")
+	if dsKey == "" {
+		dsKey = mvKey
+	}
 	localKey := os.Getenv("LOCAL_PROXY_API_KEY")
 	if localKey == "" {
 		localKey = "sk-local"
@@ -24,6 +30,8 @@ func Models() []ModelConfig {
 	geminiGodKey := os.Getenv("GEMINI_GPTGOD_API_KEY")
 
 	return []ModelConfig{
+		// Production answer + intent-router model — the one CI accuracy gates run against.
+		{Name: "deepseek-v4-flash", ModelID: "deepseek-v4-flash", BaseURL: "https://api.modelverse.cn/v1", APIKey: dsKey},
 		{Name: "Qwen3-Max", ModelID: "Qwen/Qwen3-Max", BaseURL: "https://api.modelverse.cn/v1", APIKey: mvKey},
 		{Name: "GLM-5", ModelID: "zai-org/glm-5", BaseURL: "https://api.modelverse.cn/v1", APIKey: mvKey},
 		{Name: "Kimi-K2", ModelID: "moonshotai/Kimi-K2-Instruct", BaseURL: "https://api.modelverse.cn/v1", APIKey: mvKey},

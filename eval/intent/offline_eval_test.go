@@ -4,15 +4,96 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"flag"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/entity"
 	intp "github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/llm"
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// Real-model intent-router eval flags. Default empty/0 → TestOnlineRouterEval skips,
+// so the default `go test ./...` suite still runs only the deterministic mock above.
+var (
+	onlineModelFlag   = flag.String("model", "", "run the intent router against a real model (e.g. deepseek-v4-flash); empty = skip")
+	onlineMinIntentAcc = flag.Float64("min-intent-acc", 0, "fail if real-model intent accuracy (%) is below this; 0 = report-only")
+)
+
+// onlineRouterLLM wraps a real llm.Client as the intent-router LLM (mirrors the
+// production cliPlannerLLM in cmd/cli.go, minus structured-output mode).
+type onlineRouterLLM struct{ client *llm.Client }
+
+func (o onlineRouterLLM) CompleteIntentPlan(ctx context.Context, req intp.IntentRouterLLMRequest) (string, error) {
+	resp, err := o.client.Chat(ctx, llm.ChatRequest{
+		Messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt},
+			{Role: openai.ChatMessageRoleUser, Content: req.UserPrompt},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
+}
+
+// TestOnlineRouterEval runs the SAME fixtures through the REAL intent router instead
+// of the keyword mock — closing the P0 where the only default "accuracy" gate scored
+// a mock against fixtures it encodes. Gated on -model so the default suite skips it.
+func TestOnlineRouterEval(t *testing.T) {
+	if *onlineModelFlag == "" {
+		t.Skip("use -model to evaluate the real intent router (e.g. -model deepseek-v4-flash)")
+	}
+	apiKey := os.Getenv("LLM_API_KEY")
+	if apiKey == "" {
+		apiKey = os.Getenv("MODELVERSE_API_KEY")
+	}
+	if apiKey == "" {
+		t.Fatal("-model set but no LLM_API_KEY / MODELVERSE_API_KEY in env")
+	}
+	baseURL := os.Getenv("LLM_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://api.modelverse.cn/v1"
+	}
+
+	client := llm.NewClient(config.LLMConfig{BaseURL: baseURL, APIKey: apiKey, Model: *onlineModelFlag})
+	router := intp.NewIntentRouter(onlineRouterLLM{client: client}, intp.IntentRouterOptions{
+		BaseURL: baseURL,
+		Model:   *onlineModelFlag,
+	})
+
+	fixtures := loadFixtures(t, "fixtures.jsonl")
+	require.GreaterOrEqual(t, len(fixtures), 50)
+
+	var total, correct int
+	for _, fx := range fixtures {
+		reg := registryFromFixture(t, fx.RegistrySnapshot)
+		result, err := router.Plan(context.Background(), intp.IntentRouterInput{
+			UserText: fx.UserMsg,
+			Registry: reg,
+		})
+		total++
+		if err != nil {
+			t.Logf("ERROR %s: %v", fx.ID, err)
+			continue
+		}
+		if result.Plan.Intent == fx.ExpectedPlan.Intent {
+			correct++
+		} else {
+			t.Logf("MISS %s: expected %s got %s", fx.ID, fx.ExpectedPlan.Intent, result.Plan.Intent)
+		}
+	}
+	acc := float64(correct) / float64(total) * 100
+	t.Logf("online intent router (%s): intent_accuracy=%.1f%% (%d/%d)", *onlineModelFlag, acc, correct, total)
+	if *onlineMinIntentAcc > 0 && acc < *onlineMinIntentAcc {
+		t.Errorf("intent accuracy %.1f%% below threshold %.1f%%", acc, *onlineMinIntentAcc)
+	}
+}
 
 func TestOfflineFixturesEval(t *testing.T) {
 	fixtures := loadFixtures(t, "fixtures.jsonl")
