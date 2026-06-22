@@ -72,9 +72,8 @@ func UpstreamAPIErrorFrom(err error) (*UpstreamAPIError, bool) {
 //           does not offer). The create path already prevents the zone/Region
 //           case deterministically (region.go addZoneRegion + create_image_recovery),
 //           so this hint mainly helps the read-tool path (e.g. a Describe/price 230).
-//   - 226604 ResourceNotEnough — the real "out of GPU resources" code (emitted by
-//           checkResourceCapacity → GetMachineTypeByGpuAndZone). This is the code a
-//           wrong/sold-out (zone, GPU) create actually fails with, NOT 8433.
+//   - 226604 ResourceNotEnough — the real "out of GPU resources" code; the one a
+//           sold-out / unavailable (zone, GPU) create actually fails with, NOT 8433.
 //   - 226603 GpuTypeNotSupportError — the chosen image does not support the GPU.
 //   - 8433  ActionError — a GENERIC upstream service error ("retry or contact
 //           support"). The pre-audit hint wrongly labelled this "out of stock";

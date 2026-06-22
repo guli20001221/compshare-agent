@@ -43,6 +43,21 @@ func TestFailureAfterToolForError_DirectDispatchHint(t *testing.T) {
 		}
 	})
 
+	t.Run("every hinted code surfaces its hint end-to-end", func(t *testing.T) {
+		// The path is code-identical across hinted codes, but assert each so a
+		// future table change can't silently drop a code from the user reply.
+		for _, code := range []int{230, 226604, 226603, 8433} {
+			apiErr := tools.NewUpstreamAPIError(code, "upstream message")
+			got := failureAfterToolForError(action, args, "stock_availability", apiErr)
+			if got.Reply != apiErr.Hint || got.Reply == "" {
+				t.Errorf("code %d: reply = %q, want non-empty hint %q", code, got.Reply, apiErr.Hint)
+			}
+			if got.Reply == FriendlyToolFailureReply {
+				t.Errorf("code %d: fell back to generic reply — hint dropped", code)
+			}
+		}
+	})
+
 	t.Run("hint survives a wrapped error", func(t *testing.T) {
 		// The saga / executor wrap the typed error with %w; errors.As must still
 		// recover it so the direct-dispatch path is not the only one that loses it.
