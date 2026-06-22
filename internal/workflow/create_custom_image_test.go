@@ -30,6 +30,19 @@ func customImageInstanceResultWithoutZoneRegion() map[string]any {
 	}}
 }
 
+func customImageContainerInstanceResult(state string) map[string]any {
+	return map[string]any{"UHostSet": []any{
+		map[string]any{
+			"UHostId":      "cpod-src",
+			"Name":         "container-env",
+			"State":        state,
+			"Region":       "cn-pod",
+			"Zone":         "cn-pod-01",
+			"InstanceType": "Container",
+		},
+	}}
+}
+
 func customImageMockExecutor() *mockExecutor {
 	return &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance":        customImageInstanceResult("Running"),
@@ -208,6 +221,28 @@ func TestCreateCustomImage_MissingSourceZoneRegionStopsBeforeConfirmation(t *tes
 	require.NoError(t, err)
 	assert.False(t, result.Success)
 	assert.Contains(t, result.Message, "源实例缺少可用区")
+	_, created := findExecutorCall(executor.calls, "CreateCompShareCustomImage")
+	assert.False(t, created)
+}
+
+func TestCreateCustomImage_StoppedContainerSourceBlockedBeforeConfirmation(t *testing.T) {
+	executor := customImageMockExecutor()
+	executor.results["DescribeCompShareInstance"] = customImageContainerInstanceResult("Stopped")
+	def := CreateCustomImageDef()
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("容器来源实例未运行时不应进入确认")
+		return false
+	}, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "cpod-src",
+		"Name":    "snapshot-v1",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "容器")
+	assert.Contains(t, result.Message, "开机")
 	_, created := findExecutorCall(executor.calls, "CreateCompShareCustomImage")
 	assert.False(t, created)
 }

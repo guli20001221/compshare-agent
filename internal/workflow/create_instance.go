@@ -394,6 +394,9 @@ func stepCheckCapacity() Step {
 				return nil, err
 			}
 			imageId := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
+			if imageId == "" {
+				return nil, createImageUnavailableError(wfCtx.Params)
+			}
 			return addZoneRegionAndID(map[string]any{
 				"Zone":               zone,
 				"GpuType":            wfCtx.Params["GpuType"],
@@ -461,19 +464,16 @@ func stepGetPrice() Step {
 				"CPU":        cpu,
 				"Memory":     mem,
 				"ChargeType": createChargeType(wfCtx.Params),
+				"Disks":      defaultDisk,
 			}
-			// Community images may be paid; include CompShareImageId for accurate pricing.
-			// Prefer a threaded id (deploy_model handler) so price reflects the exact image
-			// the saga will create, not an independently re-resolved one.
-			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
-				imageId := paramStr(wfCtx.Params, "CompShareImageId", "")
-				if imageId == "" {
-					imageId = pickFirstCommunityImageId(wfCtx.Result("查询镜像"))
-				}
-				if imageId != "" {
-					args["CompShareImageId"] = imageId
-				}
+			// Price uses the same resolved image as capacity and create. Upstream
+			// GetCompShareInstancePriceRequest carries CompShareImageId, and live
+			// UCloud pricing can fail when the image is omitted.
+			imageId := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
+			if imageId == "" {
+				return nil, createImageUnavailableError(wfCtx.Params)
 			}
+			args["CompShareImageId"] = imageId
 			return addZoneRegionAndID(args, zone, wfCtx.Params), nil
 		},
 	}
@@ -744,12 +744,10 @@ func stepCreateInstance() Step {
 			}
 			imageId := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
 			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" && imageId == "" {
-				// Fail loud rather than POST an empty CompShareImageId (which the
-				// upstream rejects cryptically). The community path is the real risk:
-				// pickFirstCommunityImageId returns "" when the group has no Data[]
-				// array (a valid API shape). Scoped to community to leave the shipped
-				// platform create path byte-identical (B8.3 review).
 				return nil, fmt.Errorf("社区镜像未返回有效的镜像 ID，无法创建实例（请确认社区镜像名称是否正确）")
+			}
+			if imageId == "" {
+				return nil, createImageUnavailableError(wfCtx.Params)
 			}
 			gt, _ := wfCtx.Params["GpuType"].(string)
 			args := map[string]any{
@@ -920,7 +918,7 @@ func matchPlatformImage(params map[string]any, result map[string]any) map[string
 		if img := firstViablePlatformImage(params, imageSet); img != nil {
 			return img
 		}
-		return firstImageMap(imageSet)
+		return firstUsableImageMap(imageSet)
 	}
 
 	maps := platformImageMaps(imageSet)
@@ -928,13 +926,14 @@ func matchPlatformImage(params map[string]any, result map[string]any) map[string
 		if img := bestViablePlatformImage(params, ranked); img != nil {
 			return img
 		}
+		return nil
 	}
 
 	// No match — fall back to the default platform image.
 	if img := firstViablePlatformImage(params, imageSet); img != nil {
 		return img
 	}
-	return firstImageMap(imageSet)
+	return firstUsableImageMap(imageSet)
 }
 
 func platformImageMaps(imageSet []any) []map[string]any {
@@ -976,6 +975,29 @@ func firstImageMap(imageSet []any) map[string]any {
 		}
 	}
 	return nil
+}
+
+func firstUsableImageMap(imageSet []any) map[string]any {
+	for _, item := range imageSet {
+		if img, _ := item.(map[string]any); img != nil && platformImageStatusUsable(img) {
+			return img
+		}
+	}
+	return nil
+}
+
+func platformImageStatusUsable(img map[string]any) bool {
+	status, _ := img["Status"].(string)
+	status = strings.TrimSpace(status)
+	return status == "" || status == deployment.ImageStatusAvailable
+}
+
+func createImageUnavailableError(params map[string]any) error {
+	imageName := strings.TrimSpace(paramStr(params, "ImageName", ""))
+	if imageName != "" {
+		return fmt.Errorf("未找到可用的 %s 镜像；候选镜像可能已下线或不适配当前实例形态，请换镜像或稍后重试", imageName)
+	}
+	return fmt.Errorf("未找到可用镜像，无法创建实例；请换镜像或稍后重试")
 }
 
 func firstViablePlatformImage(params map[string]any, imageSet []any) map[string]any {

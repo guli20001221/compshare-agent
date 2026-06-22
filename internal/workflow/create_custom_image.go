@@ -37,6 +37,9 @@ func stepQuerySourceInstanceForCustomImage() Step {
 				if _, _, ok := sourceCustomImagePlacement(result); !ok {
 					return false, "源实例缺少可用区或地域信息，无法安全创建自制镜像。"
 				}
+				if sourceCustomImageRequiresRunning(result) && state != "Running" {
+					return false, "容器来源实例创建自制镜像需要先开机，请启动实例后再创建。"
+				}
 				return true, ""
 			case "":
 				return false, "未找到源实例，无法创建自制镜像。"
@@ -69,7 +72,7 @@ func stepConfirmCreateCustomImage() Step {
 			if description := paramStr(wfCtx.Params, "Description", ""); description != "" {
 				summary["Description"] = description
 			}
-			summary["warning"] = "将基于该实例创建自制镜像。虚机 Running/Stopped 均可制作；容器实例通常需要 Running，若平台返回限制错误，请先启动实例后重试。"
+			summary["warning"] = "将基于该实例创建自制镜像。虚机 Running/Stopped 均可制作；容器实例需要 Running。"
 			return summary, nil
 		},
 	}
@@ -166,4 +169,8 @@ func sourceCustomImagePlacement(result map[string]any) (region, zone string, ok 
 	zone = extractInstanceZone(result, "")
 	region = extractInstanceRegion(result, "")
 	return region, zone, region != "" && zone != ""
+}
+
+func sourceCustomImageRequiresRunning(result map[string]any) bool {
+	return isPodInstanceResult(result) || isContainerInstanceResult(result)
 }

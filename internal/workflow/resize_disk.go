@@ -150,9 +150,23 @@ func stepResizeDisk() Step {
 	return Step{
 		Name: "扩已有盘",
 		Type: StepToolCall,
-		Tool: "ResizeCompShareDisk",
+		ToolFunc: func(wfCtx *Context) string {
+			if resizeDiskViaInstance(wfCtx.Result("查询实例")) {
+				return "ResizeCompShareInstance"
+			}
+			return "ResizeCompShareDisk"
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
+			if resizeDiskViaInstance(queried) {
+				return map[string]any{
+					"Region":    extractInstanceRegion(queried, defaultRegion),
+					"Zone":      extractInstanceZone(queried, defaultZone),
+					"UHostId":   wfCtx.Params["UHostId"],
+					"DiskId":    wfCtx.Params["ResolvedDiskId"],
+					"DiskSpace": wfCtx.Params["Size"],
+				}, nil
+			}
 			return map[string]any{
 				"Region":  extractInstanceRegion(queried, defaultRegion),
 				"Zone":    extractInstanceZone(queried, defaultZone),
@@ -162,6 +176,10 @@ func stepResizeDisk() Step {
 			}, nil
 		},
 	}
+}
+
+func resizeDiskViaInstance(result map[string]any) bool {
+	return isPodInstanceResult(result) || isContainerInstanceResult(result)
 }
 
 func resolveDiskForResize(wfCtx *Context, result map[string]any) (map[string]any, error) {

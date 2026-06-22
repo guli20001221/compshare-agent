@@ -14,10 +14,61 @@ func stoppedInstanceResult() map[string]any {
 			"UHostId":    "uhost-test",
 			"Name":       "test-gpu",
 			"State":      "Stopped",
+			"Region":     "cn-sh2",
 			"Zone":       "cn-sh2-02",
 			"GpuType":    "4090",
 			"GPU":        float64(1),
 			"ChargeType": "Dynamic",
+		},
+	}}
+}
+
+func podStoppedInstanceResult() map[string]any {
+	return map[string]any{"UHostSet": []any{
+		map[string]any{
+			"UHostId":      "cpod-test",
+			"Name":         "pod-gpu",
+			"State":        "Stopped",
+			"Region":       "cn-pod",
+			"Zone":         "cn-pod-01",
+			"InstanceType": "Container",
+			"GpuType":      "4090",
+			"GPU":          float64(1),
+			"ChargeType":   "Dynamic",
+			"DiskSet": []any{
+				map[string]any{
+					"DiskId":   "cvolume-boot",
+					"Name":     "pod-sys",
+					"Type":     "Boot",
+					"DiskType": "CLOUD_SSD",
+					"Size":     float64(60),
+				},
+			},
+		},
+	}}
+}
+
+func containerStoppedInstanceResult() map[string]any {
+	return map[string]any{"UHostSet": []any{
+		map[string]any{
+			"UHostId":      "uhost-container-test",
+			"Name":         "container-gpu",
+			"State":        "Stopped",
+			"Region":       "cn-pod",
+			"Zone":         "cn-pod-01",
+			"InstanceType": "Container",
+			"GpuType":      "4090",
+			"GPU":          float64(1),
+			"ChargeType":   "Dynamic",
+			"DiskSet": []any{
+				map[string]any{
+					"DiskId":   "cvolume-boot",
+					"Name":     "pod-sys",
+					"Type":     "Boot",
+					"DiskType": "CLOUD_SSD",
+					"Size":     float64(60),
+				},
+			},
 		},
 	}}
 }
@@ -87,12 +138,65 @@ func TestCreateDisk_MissingSizeBlockedBeforeConfirm(t *testing.T) {
 	}
 }
 
+func TestCreateDisk_PodInstanceBlockedBeforeConfirm(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":    podStoppedInstanceResult(),
+		"CreateAndAttachCompshareDisk": {"UDiskId": "udisk-new"},
+	}}
+	onStep, events := collectEvents()
+
+	def := CreateDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("Pod 实例不支持普通数据盘时不应进入确认")
+		return true
+	}, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "cpod-test",
+		"Size":    float64(100),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "数据盘")
+
+	for _, ev := range *events {
+		assert.NotEqual(t, StepConfirm, ev.Type, "confirmation should not be reached for Pod data disk create")
+	}
+	for _, c := range executor.calls {
+		assert.NotEqual(t, "CreateAndAttachCompshareDisk", c.action, "Pod data disk create API must not be called")
+	}
+}
+
+func TestCreateDisk_ContainerInstanceBlockedBeforeConfirm(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":    containerStoppedInstanceResult(),
+		"CreateAndAttachCompshareDisk": {"UDiskId": "udisk-new"},
+	}}
+
+	def := CreateDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("Container 实例不支持普通数据盘时不应进入确认")
+		return true
+	}, nil)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-container-test",
+		"Size":    float64(100),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "数据盘")
+	_, created := findExecutorCall(executor.calls, "CreateAndAttachCompshareDisk")
+	assert.False(t, created)
+}
+
 func diskResizeInstanceResult() map[string]any {
 	return map[string]any{"UHostSet": []any{
 		map[string]any{
 			"UHostId":    "uhost-test",
 			"Name":       "test-gpu",
 			"State":      "Stopped",
+			"Region":     "cn-sh2",
 			"Zone":       "cn-sh2-02",
 			"GpuType":    "4090",
 			"GPU":        float64(1),
@@ -176,6 +280,38 @@ func TestResizeDisk_SystemDiskHappyPath(t *testing.T) {
 	assert.Equal(t, "uhost-test", resizeCall.args["UHostId"])
 	assert.Equal(t, "udisk-boot", resizeCall.args["UDiskId"])
 	assert.Equal(t, float64(120), resizeCall.args["Size"])
+}
+
+func TestResizeDisk_PodSystemDiskUsesResizeInstance(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":            podStoppedInstanceResult(),
+		"CheckCompShareResizeAttachedDisk":     {"RetCode": 0},
+		"GetCompShareAttachedDiskUpgradePrice": {"Price": float64(2.5)},
+		"ResizeCompShareInstance":              {"RetCode": 0},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	onStep, _ := collectEvents()
+
+	def := ResizeDiskDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":  "cpod-test",
+		"DiskType": "Boot",
+		"Size":     float64(120),
+	})
+
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+
+	resizeCall, ok := findExecutorCall(executor.calls, "ResizeCompShareInstance")
+	require.True(t, ok, "Pod disk resize must call ResizeCompShareInstance")
+	assert.Equal(t, "cpod-test", resizeCall.args["UHostId"])
+	assert.Equal(t, "cvolume-boot", resizeCall.args["DiskId"])
+	assert.Equal(t, float64(120), resizeCall.args["DiskSpace"])
+	assert.Equal(t, "cn-pod-01", resizeCall.args["Zone"])
+	assert.Equal(t, "cn-pod", resizeCall.args["Region"])
+	_, oldAPICalled := findExecutorCall(executor.calls, "ResizeCompShareDisk")
+	assert.False(t, oldAPICalled, "Pod disk resize must not call ResizeCompShareDisk")
 }
 
 func TestResizeDisk_BlocksWhenTargetNotLargerThanCurrent(t *testing.T) {
@@ -285,6 +421,11 @@ func TestResize_IncludesPriceInConfirm(t *testing.T) {
 	require.NotNil(t, confirmArgs)
 	assert.Equal(t, float64(1.5), confirmArgs["price_delta"], "confirm should show price delta")
 	assert.Equal(t, float64(2), confirmArgs["target_gpu"])
+
+	priceCall, ok := findExecutorCall(executor.calls, "GetCompShareInstanceUpgradePrice")
+	require.True(t, ok)
+	assert.Equal(t, "cn-sh2", priceCall.args["Region"])
+	assert.Equal(t, "cn-sh2-02", priceCall.args["Zone"])
 }
 
 func TestResize_PassesParamsToAPI(t *testing.T) {
@@ -379,6 +520,94 @@ func TestReinstall_PasswordBase64Encoded(t *testing.T) {
 	assert.Equal(t, "Password", reinstallCall.args["LoginMode"])
 }
 
+func TestReinstall_CommunityImageLookupAccepted(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"DescribeCompShareImages":   {"ImageSet": []any{}},
+		"DescribeCommunityImages": {"ImageSet": []any{
+			map[string]any{"CompShareImageId": "comm-img-001", "Name": "DeepSeek-R1:32b", "Container": "False"},
+		}},
+		"DescribeCompShareCustomImages":  {"ImageSet": []any{}},
+		"DescribeCompShareSharingImages": {"ImageSet": []any{}},
+		"ReinstallCompShareInstance":     {"RetCode": 0},
+	}}
+	var confirmArgs map[string]any
+	confirmFn := func(action string, args map[string]any) bool {
+		confirmArgs = args
+		return true
+	}
+	onStep, _ := collectEvents()
+
+	def := ReinstallInstanceDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":          "uhost-test",
+		"CompShareImageId": "comm-img-001",
+	})
+
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "DeepSeek-R1:32b", confirmArgs["target_image_name"])
+	assert.Equal(t, "community", confirmArgs["target_image_source"])
+	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
+	assert.True(t, reinstalled)
+}
+
+func TestReinstall_PodRejectsNonContainerImageBeforeConfirm(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": podStoppedInstanceResult(),
+		"DescribeCompShareImages": {"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu-nvidia 22.04", "Container": "False"},
+		}},
+	}}
+	onStep, events := collectEvents()
+
+	def := ReinstallInstanceDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("Pod 重装非容器镜像时不应进入确认")
+		return true
+	}, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":          "cpod-test",
+		"CompShareImageId": "img-001",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "容器镜像")
+	for _, ev := range *events {
+		assert.NotEqual(t, "waiting", ev.Status, "confirmation should not wait for user on incompatible Pod image")
+	}
+	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
+	assert.False(t, reinstalled)
+}
+
+func TestReinstall_ContainerRejectsNonContainerImageBeforeConfirm(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": containerStoppedInstanceResult(),
+		"DescribeCompShareImages": {"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu-nvidia 22.04", "Container": "False"},
+		}},
+	}}
+
+	def := ReinstallInstanceDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("Container 重装非容器镜像时不应进入确认")
+		return true
+	}, nil)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":          "uhost-container-test",
+		"CompShareImageId": "img-001",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "容器镜像")
+	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
+	assert.False(t, reinstalled)
+}
+
 func TestReinstall_RunningInstanceBlocked(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{
@@ -401,8 +630,11 @@ func TestReinstall_RunningInstanceBlocked(t *testing.T) {
 
 func TestReinstall_TargetImageMissingBlockedBeforeConfirm(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": stoppedInstanceResult(),
-		"DescribeCompShareImages":   {"ImageSet": []any{}},
+		"DescribeCompShareInstance":      stoppedInstanceResult(),
+		"DescribeCompShareImages":        {"ImageSet": []any{}},
+		"DescribeCommunityImages":        {"ImageSet": []any{}},
+		"DescribeCompShareCustomImages":  {"ImageSet": []any{}},
+		"DescribeCompShareSharingImages": {"ImageSet": []any{}},
 	}}
 	onStep, events := collectEvents()
 
@@ -415,11 +647,11 @@ func TestReinstall_TargetImageMissingBlockedBeforeConfirm(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Equal(t, "查询目标镜像", result.StoppedAt)
+	assert.Equal(t, "确认重装", result.StoppedAt)
 
 	hasConfirm := false
 	for _, ev := range *events {
-		if ev.Type == StepConfirm {
+		if ev.Type == StepConfirm && ev.Status == "waiting" {
 			hasConfirm = true
 		}
 	}

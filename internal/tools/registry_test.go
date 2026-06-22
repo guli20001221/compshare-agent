@@ -63,6 +63,56 @@ func TestCreatePathToolsAllowBackendZoneID(t *testing.T) {
 	}
 }
 
+func TestResizeUpgradePriceAllowsSourcePlacementStrings(t *testing.T) {
+	policies := DefaultToolExecutionPolicies()
+	p, ok := policies["GetCompShareInstanceUpgradePrice"]
+	if !ok {
+		t.Fatal("GetCompShareInstanceUpgradePrice should have a policy")
+	}
+
+	for _, want := range []string{"Zone", "Region"} {
+		found := false
+		for _, param := range p.AllowedParams {
+			if param == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("GetCompShareInstanceUpgradePrice must allow %s so workflow can keep source instance placement", want)
+		}
+	}
+	for _, forbidden := range []string{"zone_id", "az_group"} {
+		for _, param := range p.AllowedParams {
+			if param == forbidden {
+				t.Fatalf("GetCompShareInstanceUpgradePrice must not expose %s to model-origin calls", forbidden)
+			}
+		}
+	}
+}
+
+func TestCreatePriceToolsAllowUpstreamRequestFields(t *testing.T) {
+	policies := DefaultToolExecutionPolicies()
+	for _, action := range []string{"GetCompShareInstancePrice", "GetCompShareInstanceUserPrice"} {
+		p, ok := policies[action]
+		if !ok {
+			t.Fatalf("%s should have a policy", action)
+		}
+		for _, want := range []string{"CompShareImageId", "Disks"} {
+			found := false
+			for _, param := range p.AllowedParams {
+				if param == want {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("%s must allow %s so create pricing matches upstream request structure", action, want)
+			}
+		}
+	}
+}
+
 func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	descriptions := registryDescriptions()
 
