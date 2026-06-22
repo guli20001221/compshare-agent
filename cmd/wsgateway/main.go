@@ -35,6 +35,10 @@ import (
 	"github.com/coder/websocket"
 )
 
+// Keep this in sync with the agent WebSocket limit. Screenshot uploads are sent
+// as data URLs, so the frame is larger than the raw image bytes.
+const maxWSMessageBytes int64 = 20 * 1024 * 1024
+
 func main() {
 	var (
 		listen  = flag.String("listen", ":8090", "address for the browser to connect to")
@@ -78,6 +82,7 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[wsgateway] browser accept failed: %v", err)
 		return
 	}
+	browserConn.SetReadLimit(maxWSMessageBytes)
 	defer browserConn.CloseNow()
 
 	// Forward to the agent, preserving the query (Action=CreateCSAgentWS, etc.)
@@ -103,6 +108,7 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 		_ = browserConn.Close(websocket.StatusInternalError, "agent dial failed")
 		return
 	}
+	agentConn.SetReadLimit(maxWSMessageBytes)
 	defer agentConn.CloseNow()
 	log.Printf("[wsgateway] connection open: browser ⇄ %s", agentURL)
 

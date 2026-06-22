@@ -119,8 +119,9 @@ type LLMConfig struct {
 
 // OCRConfig holds settings for the optional screenshot-understanding feature
 // used by the HTTP Chat handler. Despite the name it drives a vision-language
-// (Qwen3-VL) call, not plain character OCR. When Model is empty the feature is
-// disabled. BaseURL and APIKey default to the LLM values when empty.
+// (Qwen3-VL) call, not plain character OCR. When Model is empty, it falls back
+// to MODELVERSE_QWEN_VL_MODEL; if still empty, the feature is disabled. BaseURL
+// and APIKey default to the LLM values when empty.
 type OCRConfig struct {
 	Model   string `yaml:"model"`
 	BaseURL string `yaml:"base_url"`
@@ -598,6 +599,9 @@ func validateOCRConfig(ocr *OCRConfig) error {
 }
 
 func applyOCRDefaults(ocr *OCRConfig, llmCfg *LLMConfig) {
+	if ocr.Model == "" {
+		ocr.Model = strings.TrimSpace(os.Getenv("MODELVERSE_QWEN_VL_MODEL"))
+	}
 	if ocr.Timeout == 0 {
 		ocr.Timeout = 15 * time.Second
 	}

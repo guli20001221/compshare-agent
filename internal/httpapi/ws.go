@@ -14,12 +14,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// maxWSConnLifetime caps a single chat WebSocket connection. The gateway opens
-// one connection per chat turn (see frame/src/Frame/AIAssistant/service.js: a
-// new WebSocket per chatStream call, closed on done/error/abort), so this is a
-// generous turn-level ceiling, not a session lifetime. It backstops a wedged
-// connection that the gateway never closes.
-const maxWSConnLifetime = 10 * time.Minute
+const (
+	// maxWSConnLifetime caps a single chat WebSocket connection. The gateway opens
+	// one connection per chat turn (see frame/src/Frame/AIAssistant/service.js: a
+	// new WebSocket per chatStream call, closed on done/error/abort), so this is a
+	// generous turn-level ceiling, not a session lifetime. It backstops a wedged
+	// connection that the gateway never closes.
+	maxWSConnLifetime = 10 * time.Minute
+
+	// maxWSMessageBytes must fit screenshot uploads. OCR accepts up to 10 MiB raw
+	// image bytes; base64 plus JSON framing needs extra room on the WebSocket.
+	maxWSMessageBytes int64 = 20 * 1024 * 1024
+)
 
 // HandleWS upgrades a gateway-initiated request to a WebSocket and serves the
 // streaming chat protocol. Identity comes from the upgrade request's HTTP
@@ -63,6 +69,7 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 		log.Printf("warning: websocket accept failed (request %s): %v", connBase.RequestUUID, err)
 		return
 	}
+	conn.SetReadLimit(maxWSMessageBytes)
 	defer conn.CloseNow()
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), maxWSConnLifetime)
