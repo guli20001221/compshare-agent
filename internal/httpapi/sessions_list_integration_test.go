@@ -11,7 +11,6 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/store"
-	"github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,18 +18,17 @@ import (
 const httpITSessionsDDL = `
 CREATE TABLE IF NOT EXISTS sessions (
   id                   CHAR(36)     NOT NULL PRIMARY KEY,
-  top_organization_id  INT UNSIGNED NOT NULL,
-  organization_id      INT UNSIGNED NOT NULL,
-  title                VARCHAR(255) NULL,
-  context              JSON         NULL,
+  top_organization_id  BIGINT       NOT NULL,
+  organization_id      BIGINT       NOT NULL,
+  title                VARCHAR(255),
+  context              JSONB,
   context_version      INT          NOT NULL DEFAULT 0,
   message_count        INT          NOT NULL DEFAULT 0,
-  pinned               TINYINT(1)   NOT NULL DEFAULT 0,
-  created_at           DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  updated_at           DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  deleted_at           DATETIME(3)  NULL,
-  KEY idx_owner_updated (top_organization_id, organization_id, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`
+  pinned               BOOLEAN      NOT NULL DEFAULT FALSE,
+  created_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  updated_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  deleted_at           TIMESTAMPTZ
+)`
 
 func openHTTPTestDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -38,14 +36,10 @@ func openHTTPTestDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("COMPSHARE_TEST_MYSQL_DSN not set — skipping HTTP real-DB integration test")
 	}
-	if strings.Contains(dsn, "117.50.121.245") {
-		t.Fatal("refusing to run the integration test against the production TiDB host")
+	if strings.Contains(dsn, "117.50.198.43") {
+		t.Fatal("refusing to run the integration test against the production PostgreSQL host")
 	}
-	parsed, err := mysql.ParseDSN(dsn)
-	require.NoError(t, err)
-	parsed.ParseTime = true
-	parsed.Loc = time.UTC
-	db, err := sql.Open("mysql", parsed.FormatDSN())
+	db, err := sql.Open("postgres", dsn)
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -72,7 +66,7 @@ func TestListSessionsHTTP_Integration(t *testing.T) {
 
 	const topOrg, org = 4294967100, 4294967101
 	cleanup := func() {
-		_, _ = db.ExecContext(ctx, "DELETE FROM sessions WHERE top_organization_id = ?", topOrg)
+		_, _ = db.ExecContext(ctx, "DELETE FROM sessions WHERE top_organization_id = $1", topOrg)
 	}
 	cleanup()
 	t.Cleanup(cleanup)
@@ -100,7 +94,7 @@ func TestListSessionsHTTP_Integration(t *testing.T) {
 	var dbTitle string
 	var dbTopOrg, dbOrg uint32
 	require.NoError(t, db.QueryRowContext(ctx,
-		"SELECT title, top_organization_id, organization_id FROM sessions WHERE id = ?", sessionID).
+		"SELECT title, top_organization_id, organization_id FROM sessions WHERE id = $1", sessionID).
 		Scan(&dbTitle, &dbTopOrg, &dbOrg))
 	assert.Equal(t, "HTTP 真实落库测试", dbTitle, "title must be persisted in the DB")
 	assert.EqualValues(t, topOrg, dbTopOrg)

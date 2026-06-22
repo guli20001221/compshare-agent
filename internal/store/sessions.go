@@ -24,7 +24,7 @@ func (s *MySQLSessionStore) Create(ctx context.Context, owner Owner, title *stri
 	id := uuid.NewString()
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO sessions (id, top_organization_id, organization_id, title, context)
-VALUES (?, ?, ?, ?, ?)
+VALUES ($1, $2, $3, $4, $5)
 `, id, owner.TopOrganizationID, owner.OrganizationID, title, nullableJSON(ctxJSON))
 	if err != nil {
 		return Session{}, fmt.Errorf("create session: %w", err)
@@ -40,7 +40,7 @@ func (s *MySQLSessionStore) GetByID(ctx context.Context, owner Owner, sessionID 
 	err := s.db.QueryRowContext(ctx, `
 SELECT id, top_organization_id, organization_id, title, context, context_version, message_count, pinned, created_at, updated_at
 FROM sessions
-WHERE id = ? AND top_organization_id = ? AND organization_id = ? AND deleted_at IS NULL
+WHERE id = $1 AND top_organization_id = $2 AND organization_id = $3 AND deleted_at IS NULL
 `, sessionID, owner.TopOrganizationID, owner.OrganizationID).Scan(
 		&out.ID,
 		&out.TopOrganizationID,
@@ -70,8 +70,8 @@ WHERE id = ? AND top_organization_id = ? AND organization_id = ? AND deleted_at 
 // Returns sql.ErrNoRows when the session does not exist or does not belong to owner.
 func (s *MySQLSessionStore) BumpUpdatedAtAndIncCount(ctx context.Context, owner Owner, sessionID string, delta int) error {
 	res, err := s.db.ExecContext(ctx, `
-UPDATE sessions SET message_count = message_count + ?, updated_at = NOW(3)
-WHERE id = ? AND top_organization_id = ? AND organization_id = ? AND deleted_at IS NULL
+UPDATE sessions SET message_count = message_count + $1, updated_at = NOW()
+WHERE id = $2 AND top_organization_id = $3 AND organization_id = $4 AND deleted_at IS NULL
 `, delta, sessionID, owner.TopOrganizationID, owner.OrganizationID)
 	if err != nil {
 		return fmt.Errorf("bump session count: %w", err)
@@ -98,12 +98,12 @@ func (s *MySQLSessionStore) UpdateContext(
 ) (int, error) {
 	res, err := s.db.ExecContext(ctx, `
 UPDATE sessions
-   SET context = ?, context_version = context_version + 1
- WHERE id = ?
-   AND top_organization_id = ?
-   AND organization_id = ?
+   SET context = $1, context_version = context_version + 1
+ WHERE id = $2
+   AND top_organization_id = $3
+   AND organization_id = $4
    AND deleted_at IS NULL
-   AND context_version = ?
+   AND context_version = $5
 `,
 		nullableJSON(ctxJSON),
 		sessionID,
@@ -139,9 +139,9 @@ func (s *MySQLSessionStore) ListByOwner(ctx context.Context, owner Owner, limit 
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, top_organization_id, organization_id, title, context, context_version, message_count, pinned, created_at, updated_at
 FROM sessions
-WHERE top_organization_id = ? AND organization_id = ? AND deleted_at IS NULL
+WHERE top_organization_id = $1 AND organization_id = $2 AND deleted_at IS NULL
 ORDER BY updated_at DESC
-LIMIT ?
+LIMIT $3
 `, owner.TopOrganizationID, owner.OrganizationID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions by owner: %w", err)
@@ -187,8 +187,8 @@ LIMIT ?
 // a best-effort first-turn derivation, never fatal to the chat turn.
 func (s *MySQLSessionStore) SetTitleIfEmpty(ctx context.Context, owner Owner, sessionID string, title string) error {
 	_, err := s.db.ExecContext(ctx, `
-UPDATE sessions SET title = ?
-WHERE id = ? AND top_organization_id = ? AND organization_id = ? AND deleted_at IS NULL AND title IS NULL
+UPDATE sessions SET title = $1
+WHERE id = $2 AND top_organization_id = $3 AND organization_id = $4 AND deleted_at IS NULL AND title IS NULL
 `, title, sessionID, owner.TopOrganizationID, owner.OrganizationID)
 	if err != nil {
 		return fmt.Errorf("set session title if empty: %w", err)

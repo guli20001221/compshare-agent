@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,41 +15,39 @@ import (
 // sessionsITTableDDL mirrors deploy/migrations/0001_init.sql + 0003 (the
 // context_version column) for the sessions table only, so the integration test
 // is self-contained. ListByOwner / SetTitleIfEmpty / Create /
-// BumpUpdatedAtAndIncCount touch only this table.
+// BumpUpdatedAtAndIncCount touch only this table. (PostgreSQL; the prod 0001
+// adds an ON-UPDATE trigger for updated_at — omitted here since the assertions
+// rely only on BumpUpdatedAtAndIncCount's explicit updated_at = NOW().)
 const sessionsITTableDDL = `
 CREATE TABLE IF NOT EXISTS sessions (
   id                   CHAR(36)     NOT NULL PRIMARY KEY,
-  top_organization_id  INT UNSIGNED NOT NULL,
-  organization_id      INT UNSIGNED NOT NULL,
-  title                VARCHAR(255) NULL,
-  context              JSON         NULL,
+  top_organization_id  BIGINT       NOT NULL,
+  organization_id      BIGINT       NOT NULL,
+  title                VARCHAR(255),
+  context              JSONB,
   context_version      INT          NOT NULL DEFAULT 0,
   message_count        INT          NOT NULL DEFAULT 0,
-  pinned               TINYINT(1)   NOT NULL DEFAULT 0,
-  created_at           DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  updated_at           DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  deleted_at           DATETIME(3)  NULL,
-  KEY idx_owner_updated (top_organization_id, organization_id, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`
+  pinned               BOOLEAN      NOT NULL DEFAULT FALSE,
+  created_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  updated_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  deleted_at           TIMESTAMPTZ
+)`
 
-// openTestDB opens COMPSHARE_TEST_MYSQL_DSN. The test is SKIPPED when the var is
-// unset (so it never runs in the normal `go test ./...` suite), and it REFUSES
-// to run against the known production TiDB host so a misconfiguration can never
-// write test rows to prod.
+// openTestDB opens COMPSHARE_TEST_MYSQL_DSN (value is a PostgreSQL DSN; env name
+// kept for deploy-template stability). The test is SKIPPED when the var is unset
+// (so it never runs in the normal `go test ./...` suite), and it REFUSES to run
+// against the production PostgreSQL host so a misconfiguration can never write
+// test rows to prod.
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("COMPSHARE_TEST_MYSQL_DSN")
 	if dsn == "" {
 		t.Skip("COMPSHARE_TEST_MYSQL_DSN not set — skipping real-DB integration test")
 	}
-	if strings.Contains(dsn, "117.50.121.245") {
-		t.Fatal("refusing to run the integration test against the production TiDB host")
+	if strings.Contains(dsn, "117.50.198.43") {
+		t.Fatal("refusing to run the integration test against the production PostgreSQL host")
 	}
-	parsed, err := mysql.ParseDSN(dsn)
-	require.NoError(t, err, "parse COMPSHARE_TEST_MYSQL_DSN")
-	parsed.ParseTime = true
-	parsed.Loc = time.UTC
-	db, err := sql.Open("mysql", parsed.FormatDSN())
+	db, err := sql.Open("postgres", dsn)
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -86,7 +83,7 @@ func TestSessionStore_Integration(t *testing.T) {
 	ownerB := Owner{TopOrganizationID: 4294967200, OrganizationID: 4294967202}
 
 	cleanup := func() {
-		_, _ = db.ExecContext(ctx, "DELETE FROM sessions WHERE top_organization_id = ?", ownerA.TopOrganizationID)
+		_, _ = db.ExecContext(ctx, "DELETE FROM sessions WHERE top_organization_id = $1", ownerA.TopOrganizationID)
 	}
 	cleanup()
 	t.Cleanup(cleanup)
@@ -111,7 +108,7 @@ func TestSessionStore_Integration(t *testing.T) {
 
 	// Raw read-back proves the title actually persisted (independent of the store).
 	var gotTitle sql.NullString
-	require.NoError(t, db.QueryRowContext(ctx, "SELECT title FROM sessions WHERE id = ?", a1.ID).Scan(&gotTitle))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT title FROM sessions WHERE id = $1", a1.ID).Scan(&gotTitle))
 	require.True(t, gotTitle.Valid, "title must be persisted, not NULL")
 	assert.Equal(t, "first title", gotTitle.String, "SetTitleIfEmpty must NOT overwrite an existing title")
 
@@ -143,7 +140,7 @@ func TestSessionStore_Integration(t *testing.T) {
 	assert.Equal(t, "first title", *list[1].Title, "persisted title surfaces in the list")
 
 	// Soft-deleted rows are excluded.
-	_, err = db.ExecContext(ctx, "UPDATE sessions SET deleted_at = NOW(3) WHERE id = ?", a2.ID)
+	_, err = db.ExecContext(ctx, "UPDATE sessions SET deleted_at = now() WHERE id = $1", a2.ID)
 	require.NoError(t, err)
 	afterDelete, err := ss.ListByOwner(ctx, ownerA, 10)
 	require.NoError(t, err)
