@@ -14,12 +14,32 @@ import (
 )
 
 func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, getenv getenvFunc) (*agentpool.Pool, error) {
+	deps, mutating, err := configureSharedDepsFromEnv(cfg, getenv)
+	if err != nil {
+		return nil, err
+	}
+	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
+		Capacity:             cfg.Agent.HTTP.PoolCapacity,
+		IdleTTL:              cfg.Agent.HTTP.PoolIdleTTL,
+		MutatingToolsEnabled: mutating,
+	}), nil
+}
+
+// configureSharedDepsFromEnv builds the shared engine dependencies and applies
+// every runtime feature flag exactly as the HTTP server boot does. Extracted
+// from buildHTTPServerPool so the in-process behavioral-gate test
+// (cmd/behavioral_gate_test.go) can drive an engine wired identically to
+// production — the gate would be worthless if it tested a hand-rolled wiring
+// that drifted from the server's. Returns the configured deps and whether
+// mutating tools are enabled. Behavior is byte-identical to the original inline
+// body of buildHTTPServerPool.
+func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.SharedDeps, bool, error) {
 	deps, err := engine.NewSharedDeps(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("shared deps: %w", err)
+		return nil, false, fmt.Errorf("shared deps: %w", err)
 	}
 	if err := applySharedDepsFromEnv(deps, cfg, getenv); err != nil {
-		return nil, fmt.Errorf("apply shared deps from env: %w", err)
+		return nil, false, fmt.Errorf("apply shared deps from env: %w", err)
 	}
 	mutating := getenv("COMPSHARE_ENABLE_MUTATING_TOOLS") == "1"
 	if mutating {
@@ -84,11 +104,7 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 	} else {
 		log.Printf("runtime: HTTP disciplined knowledge_qa synthesis disabled (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS=0; free ReAct write + cite-retry)")
 	}
-	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
-		Capacity:             cfg.Agent.HTTP.PoolCapacity,
-		IdleTTL:              cfg.Agent.HTTP.PoolIdleTTL,
-		MutatingToolsEnabled: mutating,
-	}), nil
+	return deps, mutating, nil
 }
 
 // buildLLMRouter constructs a per-tier LLM Router from cfg. Called once at

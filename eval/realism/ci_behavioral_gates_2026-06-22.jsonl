@@ -1,0 +1,187 @@
+{"case_id": "M001", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M001", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M002", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M003", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M004", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M004", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M004", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M005", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M005", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M007", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M009", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M010", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M011", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M012", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M013", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeAvailableCompShareInstanceTypes"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M013", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M014", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnoseGPU"]}, "note": "进入对应诊断"}
+{"case_id": "M015", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["GetCompShareInstanceUserPrice", "GetCompShareInstancePrice"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M016", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
+{"case_id": "M016", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M017", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M018", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["GetCompShareInstanceUserPrice", "GetCompShareInstancePrice"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M018", "gate": "no_false_cancel", "kind": "forbid_reply_substring", "params": {"substrings": ["已取消", "取消了", "已为您取消", "已为你取消", "取消关机", "取消了关机操作", "已撤销", "已停止操作", "已帮你取消", "已帮您取消"]}, "note": "不谎称已取消"}
+{"case_id": "M018", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
+{"case_id": "M019", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M019", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M020", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["StartInstanceWorkflow"]}, "note": "到达对应变更确认门"}
+{"case_id": "M020", "gate": "no_false_cancel", "kind": "forbid_reply_substring", "params": {"substrings": ["已取消", "取消了", "已为您取消", "已为你取消", "取消关机", "取消了关机操作", "已撤销", "已停止操作", "已帮你取消", "已帮您取消"]}, "note": "不谎称已取消"}
+{"case_id": "M020", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
+{"case_id": "M021", "gate": "no_false_cancel", "kind": "forbid_reply_substring", "params": {"substrings": ["已取消", "取消了", "已为您取消", "已为你取消", "取消关机", "取消了关机操作", "已撤销", "已停止操作", "已帮你取消", "已帮您取消"]}, "note": "不谎称已取消"}
+{"case_id": "M021", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
+{"case_id": "M022", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["StopInstanceWorkflow"]}, "note": "到达对应变更确认门"}
+{"case_id": "M022", "gate": "no_false_cancel", "kind": "forbid_reply_substring", "params": {"substrings": ["已取消", "取消了", "已为您取消", "已为你取消", "取消关机", "取消了关机操作", "已撤销", "已停止操作", "已帮你取消", "已帮您取消"]}, "note": "不谎称已取消"}
+{"case_id": "M023", "gate": "no_false_cancel", "kind": "forbid_reply_substring", "params": {"substrings": ["已取消", "取消了", "已为您取消", "已为你取消", "取消关机", "取消了关机操作", "已撤销", "已停止操作", "已帮你取消", "已帮您取消"]}, "note": "不谎称已取消"}
+{"case_id": "M024", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCommunityImages"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M025", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCommunityImages"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M025", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M026", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M026", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M027", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M027", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M028", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M029", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M029", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M030", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M031", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M032", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M032", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M034", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M034", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M036", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["StopInstanceWorkflow"]}, "note": "到达对应变更确认门"}
+{"case_id": "M037", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M037", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M038", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["StartInstanceWorkflow"]}, "note": "到达对应变更确认门"}
+{"case_id": "M040", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["CreateInstanceWorkflow"]}, "note": "到达对应变更确认门"}
+{"case_id": "M041", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
+{"case_id": "M042", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M042", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M043", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M043", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M045", "gate": "no_false_cancel", "kind": "forbid_reply_substring", "params": {"substrings": ["已取消", "取消了", "已为您取消", "已为你取消", "取消关机", "取消了关机操作", "已撤销", "已停止操作", "已帮你取消", "已帮您取消"]}, "note": "不谎称已取消"}
+{"case_id": "M046", "gate": "no_false_cancel", "kind": "forbid_reply_substring", "params": {"substrings": ["已取消", "取消了", "已为您取消", "已为你取消", "取消关机", "取消了关机操作", "已撤销", "已停止操作", "已帮你取消", "已帮您取消"]}, "note": "不谎称已取消"}
+{"case_id": "M046", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M046", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M047", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["StopInstanceWorkflow"]}, "note": "到达对应变更确认门"}
+{"case_id": "M049", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M054", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M058", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M058", "gate": "must_confirm_mutating", "kind": "forbid_step_action", "params": {"actions": ["StartCompShareInstance", "StopCompShareInstance", "RebootCompShareInstance", "ResetCompShareInstancePassword", "CreateCompShareInstance", "DeleteCompShareInstance", "TerminateCompShareInstance", "ResizeCompShareInstance", "ModifyCompShareInstanceName", "AttachCompShareDisk", "DetachCompShareDisk"]}, "note": "mutating 须经确认门:replay confirm=false→任何 raw 执行=确认门被绕过=FAIL"}
+{"case_id": "M058", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
+{"case_id": "M059", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCommunityImages"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M060", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["GetCompShareInstanceUserPrice", "GetCompShareInstancePrice"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M060", "gate": "reach_confirm", "kind": "require_any_confirm", "params": {}, "note": "到达确认门(workflow 未定)"}
+{"case_id": "M060", "gate": "must_confirm_mutating", "kind": "forbid_step_action", "params": {"actions": ["StartCompShareInstance", "StopCompShareInstance", "RebootCompShareInstance", "ResetCompShareInstancePassword", "CreateCompShareInstance", "DeleteCompShareInstance", "TerminateCompShareInstance", "ResizeCompShareInstance", "ModifyCompShareInstanceName", "AttachCompShareDisk", "DetachCompShareDisk"]}, "note": "mutating 须经确认门:replay confirm=false→任何 raw 执行=确认门被绕过=FAIL"}
+{"case_id": "M061", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M061", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M062", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M062", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M064", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M067", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M070", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
+{"case_id": "M074", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnoseInitFailure"]}, "note": "进入对应诊断"}
+{"case_id": "M075", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
+{"case_id": "M076", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": false}
+{"case_id": "M078", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M080", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M084", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnoseGPU"]}, "note": "进入对应诊断"}
+{"case_id": "M085", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M085", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M087", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCommunityImages"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M088", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnosePortOrFirewall"]}, "note": "进入对应诊断"}
+{"case_id": "M088", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M093", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": false}
+{"case_id": "M094", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnosePortOrFirewall"]}, "note": "进入对应诊断"}
+{"case_id": "M094", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M098", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnoseInitFailure"]}, "note": "进入对应诊断"}
+{"case_id": "M098", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
+{"case_id": "M098", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M099", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["CreateInstanceWorkflow"]}, "note": "到达对应变更确认门"}
+{"case_id": "M100", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
+{"case_id": "M100", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M102", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M102", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M105", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnosePortOrFirewall"]}, "note": "进入对应诊断"}
+{"case_id": "M108", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": false}
+{"case_id": "M109", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M111", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M113", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnoseBilling"]}, "note": "进入对应诊断"}
+{"case_id": "M116", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnoseInitFailure"]}, "note": "进入对应诊断"}
+{"case_id": "M116", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M116", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
+{"case_id": "M116", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M118", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
+{"case_id": "M119", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnoseGPU"]}, "note": "进入对应诊断"}
+{"case_id": "M119", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
+{"case_id": "M120", "gate": "route_not_create", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "must-not 进创建/部署确认 saga"}
+{"case_id": "M120", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnosePortOrFirewall"]}, "note": "进入对应诊断"}
+{"case_id": "M121", "gate": "route_not_create", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "must-not 进创建/部署确认 saga"}
+{"case_id": "M122", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
+{"case_id": "M124", "gate": "route_not_create", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "must-not 进创建/部署确认 saga"}
+{"case_id": "M124", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M125", "gate": "route_not_create", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "must-not 进创建/部署确认 saga"}
+{"case_id": "M125", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M135", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeAvailableCompShareInstanceTypes"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M138", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
+{"case_id": "M144", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M144", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M146", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M146", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M150", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M153", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M157", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
+{"case_id": "M158", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
+{"case_id": "M159", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M160", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M163", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M167", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M167", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M169", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M170", "gate": "route_not_create", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "must-not 进创建/部署确认 saga"}
+{"case_id": "M170", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
+{"case_id": "M171", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M171", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M171", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M172", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M172", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M172", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M173", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "M173", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "M177", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "M181", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "N003", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "N004", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["CreateInstanceWorkflow"]}, "note": "到达对应变更确认门"}
+{"case_id": "N005", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "N005", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "N006", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnoseGPU"]}, "note": "进入对应诊断"}
+{"case_id": "N006", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["StopInstanceWorkflow"]}, "note": "到达对应变更确认门"}
+{"case_id": "N006", "gate": "must_confirm_mutating", "kind": "forbid_step_action", "params": {"actions": ["StartCompShareInstance", "StopCompShareInstance", "RebootCompShareInstance", "ResetCompShareInstancePassword", "CreateCompShareInstance", "DeleteCompShareInstance", "TerminateCompShareInstance", "ResizeCompShareInstance", "ModifyCompShareInstanceName", "AttachCompShareDisk", "DetachCompShareDisk"]}, "note": "mutating 须经确认门:replay confirm=false→任何 raw 执行=确认门被绕过=FAIL"}
+{"case_id": "N006", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "N007", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnoseInitFailure"]}, "note": "进入对应诊断"}
+{"case_id": "N007", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "N010", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "N014", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["GetCompShareInstanceMonitor"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "N015", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "N016", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
+{"case_id": "N018", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnoseInitFailure"]}, "note": "进入对应诊断"}
+{"case_id": "N018", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
+{"case_id": "N018", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "N023", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "N024", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "N024", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "N025", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
+{"case_id": "N026", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "N029", "gate": "no_false_cancel", "kind": "forbid_reply_substring", "params": {"substrings": ["已取消", "取消了", "已为您取消", "已为你取消", "取消关机", "取消了关机操作", "已撤销", "已停止操作", "已帮你取消", "已帮您取消"]}, "note": "不谎称已取消"}
+{"case_id": "N029", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "N033", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareImages"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "N034", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeAvailableCompShareInstanceTypes"]}, "note": "调对应只读 API 反映真值"}
+{"case_id": "N037", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "N038", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["CreateInstanceWorkflow"]}, "note": "到达对应变更确认门"}
+{"case_id": "N038", "gate": "no_false_cancel", "kind": "forbid_reply_substring", "params": {"substrings": ["已取消", "取消了", "已为您取消", "已为你取消", "取消关机", "取消了关机操作", "已撤销", "已停止操作", "已帮你取消", "已帮您取消"]}, "note": "不谎称已取消"}
+{"case_id": "N038", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "N039", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["CreateInstanceWorkflow"]}, "note": "到达对应变更确认门"}
+{"case_id": "N039", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "N039", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
+{"case_id": "N041", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["StopInstanceWorkflow"]}, "note": "到达对应变更确认门"}
+{"case_id": "N041", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
+{"case_id": "N041", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
