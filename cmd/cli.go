@@ -488,12 +488,46 @@ func (c cliPlannerLLM) CompleteIntentPlanWithUsage(ctx context.Context, req inte
 	return intent.IntentRouterLLMResponse{Content: resp.Content, Usage: resp.Usage}, nil
 }
 
+// plannerResponseFormatForMode maps the operator opt-in (structuredOutput, from
+// COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT) AND the model capability (mode, from
+// intent.SelectOutputMode) to a response_format, or nil for the un-gated default.
+//
+//   - off                → nil (shipped default; byte-identical to no opt-in).
+//   - json_schema opt-in → json_schema when the model supports it (mode==json_schema),
+//     degrading to json_object when the model only supports object-level structured
+//     output, else nil.
+//   - json_object opt-in → json_object whenever the model supports object-level
+//     structured output (mode is json_object OR the richer json_schema). The
+//     "|| json_schema" arm keeps the explicit json_object opt-in working on a
+//     json_schema-capable model (e.g. ds-v4-flash after the 2026-06-23 capability
+//     flip), which the A/B needs to compare json_object vs json_schema.
 func plannerResponseFormatForMode(mode intent.OutputMode, structuredOutput plannerStructuredOutputMode) *openai.ChatCompletionResponseFormat {
-	if structuredOutput != plannerStructuredOutputJSONObject || mode != intent.OutputModeJSONObject {
-		return nil
-	}
-	return &openai.ChatCompletionResponseFormat{
+	jsonObject := &openai.ChatCompletionResponseFormat{
 		Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+	}
+	switch structuredOutput {
+	case plannerStructuredOutputJSONSchema:
+		if mode == intent.OutputModeJSONSchema {
+			return &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+				JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+					Name:   "intent_route",
+					Schema: intent.IntentRouteResponseSchema(),
+					Strict: false,
+				},
+			}
+		}
+		if mode == intent.OutputModeJSONObject {
+			return jsonObject
+		}
+		return nil
+	case plannerStructuredOutputJSONObject:
+		if mode == intent.OutputModeJSONObject || mode == intent.OutputModeJSONSchema {
+			return jsonObject
+		}
+		return nil
+	default:
+		return nil
 	}
 }
 

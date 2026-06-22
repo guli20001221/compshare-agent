@@ -221,7 +221,9 @@ func TestOnlineRoutingHandlingEval(t *testing.T) {
 	}
 
 	client := llm.NewClient(config.LLMConfig{BaseURL: baseURL, APIKey: apiKey, Model: *onlineModelFlag})
-	router := intp.NewIntentRouter(onlineRouterLLM{client: client}, intp.IntentRouterOptions{
+	respFormat := onlineRouterResponseFormatFromEnv(baseURL, *onlineModelFlag)
+	t.Logf("structured-output: env=%q applied=%v", os.Getenv("COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT"), respFormat != nil)
+	router := intp.NewIntentRouter(onlineRouterLLM{client: client, responseFormat: respFormat}, intp.IntentRouterOptions{
 		BaseURL: baseURL,
 		Model:   *onlineModelFlag,
 	})

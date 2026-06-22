@@ -26,8 +26,13 @@ var (
 )
 
 // onlineRouterLLM wraps a real llm.Client as the intent-router LLM (mirrors the
-// production cliPlannerLLM in cmd/cli.go, minus structured-output mode).
-type onlineRouterLLM struct{ client *llm.Client }
+// production cliPlannerLLM in cmd/cli.go). responseFormat, when non-nil, applies
+// the same structured-output request the production planner would send — set by
+// onlineRouterResponseFormatFromEnv so the A/B can compare off vs json_schema.
+type onlineRouterLLM struct {
+	client         *llm.Client
+	responseFormat *openai.ChatCompletionResponseFormat
+}
 
 func (o onlineRouterLLM) CompleteIntentPlan(ctx context.Context, req intp.IntentRouterLLMRequest) (string, error) {
 	resp, err := o.client.Chat(ctx, llm.ChatRequest{
@@ -35,11 +40,42 @@ func (o onlineRouterLLM) CompleteIntentPlan(ctx context.Context, req intp.Intent
 			{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt},
 			{Role: openai.ChatMessageRoleUser, Content: req.UserPrompt},
 		},
+		ResponseFormat: o.responseFormat,
 	})
 	if err != nil {
 		return "", err
 	}
 	return resp.Content, nil
+}
+
+// onlineRouterResponseFormatFromEnv mirrors cmd/cli.go's
+// plannerResponseFormatForMode so the eval exercises the SAME structured-output
+// request production would send for the model under test. Reads
+// COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT; nil when off (the shipped default)
+// or when the model capability does not support the requested mode.
+func onlineRouterResponseFormatFromEnv(baseURL, model string) *openai.ChatCompletionResponseFormat {
+	mode := intp.SelectOutputMode(llm.LookupCapability(baseURL, model))
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT"))) {
+	case "json_schema":
+		if mode == intp.OutputModeJSONSchema {
+			return &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+				JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+					Name:   "intent_route",
+					Schema: intp.IntentRouteResponseSchema(),
+					Strict: false,
+				},
+			}
+		}
+		if mode == intp.OutputModeJSONObject {
+			return &openai.ChatCompletionResponseFormat{Type: openai.ChatCompletionResponseFormatTypeJSONObject}
+		}
+	case "json_object":
+		if mode == intp.OutputModeJSONObject || mode == intp.OutputModeJSONSchema {
+			return &openai.ChatCompletionResponseFormat{Type: openai.ChatCompletionResponseFormatTypeJSONObject}
+		}
+	}
+	return nil
 }
 
 // TestOnlineRouterEval runs the SAME fixtures through the REAL intent router instead
@@ -62,7 +98,9 @@ func TestOnlineRouterEval(t *testing.T) {
 	}
 
 	client := llm.NewClient(config.LLMConfig{BaseURL: baseURL, APIKey: apiKey, Model: *onlineModelFlag})
-	router := intp.NewIntentRouter(onlineRouterLLM{client: client}, intp.IntentRouterOptions{
+	respFormat := onlineRouterResponseFormatFromEnv(baseURL, *onlineModelFlag)
+	t.Logf("structured-output: env=%q applied=%v", os.Getenv("COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT"), respFormat != nil)
+	router := intp.NewIntentRouter(onlineRouterLLM{client: client, responseFormat: respFormat}, intp.IntentRouterOptions{
 		BaseURL: baseURL,
 		Model:   *onlineModelFlag,
 	})

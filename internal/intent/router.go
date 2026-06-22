@@ -111,7 +111,12 @@ func NewIntentRouter(client IntentRouterLLM, opts IntentRouterOptions) *IntentRo
 }
 
 func SelectOutputMode(cap llm.Capability) OutputMode {
-	if cap.SupportsJSONSchema && !cap.IsThinkingMode {
+	// json_schema is preferred whenever the model supports it. The earlier
+	// `&& !cap.IsThinkingMode` guard was over-conservative: a 2026-06-23 live
+	// probe confirmed ds-v4-flash (a thinking model) enforces json_schema
+	// (enum/const constrained decoding) in thinking mode, so excluding thinking
+	// models needlessly fell them back to the weaker json_object.
+	if cap.SupportsJSONSchema {
 		return OutputModeJSONSchema
 	}
 	if cap.SupportsJSONObject {

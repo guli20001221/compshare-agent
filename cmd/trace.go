@@ -238,6 +238,7 @@ type plannerStructuredOutputMode string
 const (
 	plannerStructuredOutputOff        plannerStructuredOutputMode = ""
 	plannerStructuredOutputJSONObject plannerStructuredOutputMode = "json_object"
+	plannerStructuredOutputJSONSchema plannerStructuredOutputMode = "json_schema"
 )
 
 func plannerStructuredOutputModeFromEnv(getenv getenvFunc) (plannerStructuredOutputMode, string) {
@@ -247,6 +248,8 @@ func plannerStructuredOutputModeFromEnv(getenv getenvFunc) (plannerStructuredOut
 		return plannerStructuredOutputOff, ""
 	case string(plannerStructuredOutputJSONObject):
 		return plannerStructuredOutputJSONObject, ""
+	case string(plannerStructuredOutputJSONSchema):
+		return plannerStructuredOutputJSONSchema, ""
 	default:
 		return plannerStructuredOutputOff, value
 	}
