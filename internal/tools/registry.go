@@ -188,6 +188,22 @@ var Registry = []openai.Tool{
 						"description": "计费方式：Month / Day / Postpay / Spot，不传则返回所有方式。按量/按小时用 Postpay。",
 						"enum":        []string{"Month", "Day", "Postpay", "Spot"},
 					},
+					"CompShareImageId": map[string]any{
+						"type":        "string",
+						"description": "镜像 ID。创建/询价流程已选定镜像时应传入，用于计算镜像价格并匹配上游请求结构。",
+					},
+					"Disks": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"IsBoot": map[string]any{"type": "boolean"},
+								"Type":   map[string]any{"type": "string"},
+								"Size":   map[string]any{"type": "integer"},
+							},
+						},
+						"description": "磁盘配置，创建价格应带系统盘，例如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。",
+					},
 				},
 				"required": []string{"Zone", "GpuType", "Gpu", "Cpu", "Memory"},
 			},
@@ -486,6 +502,22 @@ var Registry = []openai.Tool{
 						"description": "计费方式：Month / Day / Postpay / Spot，按量/按小时用 Postpay。",
 						"enum":        []string{"Month", "Day", "Postpay", "Spot"},
 					},
+					"CompShareImageId": map[string]any{
+						"type":        "string",
+						"description": "镜像 ID。创建/询价流程已选定镜像时应传入，用于计算镜像价格并匹配上游请求结构。",
+					},
+					"Disks": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"IsBoot": map[string]any{"type": "boolean"},
+								"Type":   map[string]any{"type": "string"},
+								"Size":   map[string]any{"type": "integer"},
+							},
+						},
+						"description": "磁盘配置，创建价格应带系统盘，例如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。",
+					},
 				},
 				"required": []string{"Zone", "GpuType", "GPU", "CPU", "Memory"},
 			},
@@ -710,6 +742,14 @@ var Registry = []openai.Tool{
 					"Memory": map[string]any{
 						"type":        "number",
 						"description": "目标内存大小（MB）",
+					},
+					"Region": map[string]any{
+						"type":        "string",
+						"description": "源实例所在地域。工作流会从实例查询结果填入；模型只传字符串，不需要填写 zone_id/az_group。",
+					},
+					"Zone": map[string]any{
+						"type":        "string",
+						"description": "源实例所在可用区。工作流会从实例查询结果填入；模型只传可用区字符串。",
 					},
 				},
 				"required": []string{"UHostId"},

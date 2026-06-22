@@ -36,6 +36,9 @@ func stepQueryForDisk() Step {
 			if state == "" {
 				return false, "未找到该实例。"
 			}
+			if isPodInstanceResult(result) || isContainerInstanceResult(result) {
+				return false, "Pod/容器 Pod 实例不支持普通新建数据盘。可改用系统盘扩容，或使用平台支持的共享存储能力。"
+			}
 			return true, ""
 		},
 	}

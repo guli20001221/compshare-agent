@@ -174,6 +174,79 @@ func TestCreateInstance_Defaults(t *testing.T) {
 	assert.Equal(t, float64(1), priceArgs["GPU"], "UserPrice API uses uppercase GPU")
 	assert.Equal(t, float64(16), priceArgs["CPU"], "UserPrice API uses uppercase CPU")
 	assert.Equal(t, "Postpay", priceArgs["ChargeType"], "default hourly billing should use Postpay for UserPrice API")
+	assert.Equal(t, "img-001", priceArgs["CompShareImageId"], "price query must use the same resolved image as create")
+	assert.Equal(t, defaultDisk, priceArgs["Disks"], "price query must include system disk config")
+}
+
+func TestCreateInstance_PlatformImageSkipsOfflineCandidate(t *testing.T) {
+	executor := createMockExecutor()
+	executor.results["DescribeCompShareImages"] = map[string]any{"ImageSet": []any{
+		map[string]any{
+			"CompShareImageId": "img-pytorch-offline",
+			"Name":             "PyTorch:24.04-py3",
+			"Status":           "Offline",
+		},
+		map[string]any{
+			"CompShareImageId": "img-pytorch-available",
+			"Name":             "cuda130_torch291_py312",
+			"Status":           "Available",
+		},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+
+	def := CreateInstanceDef()
+	eng := NewEngine(executor, confirmFn, nil)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"GpuType":   "4090",
+		"ImageName": "PyTorch",
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+
+	for _, action := range []string{"CheckCompShareResourceCapacity", "GetCompShareInstanceUserPrice", "CreateCompShareInstance"} {
+		var args map[string]any
+		for _, call := range executor.calls {
+			if call.action == action {
+				args = call.args
+				break
+			}
+		}
+		assert.NotNil(t, args, "expected %s call", action)
+		assert.Equal(t, "img-pytorch-available", args["CompShareImageId"], "expected %s to use the available PyTorch-compatible image", action)
+	}
+}
+
+func TestCreateInstance_PlatformImageAllOfflineBlockedBeforeCapacity(t *testing.T) {
+	executor := createMockExecutor()
+	executor.results["DescribeCompShareImages"] = map[string]any{"ImageSet": []any{
+		map[string]any{
+			"CompShareImageId": "img-pytorch-offline",
+			"Name":             "PyTorch:24.04-py3",
+			"Status":           "Offline",
+		},
+	}}
+	confirmFn := func(action string, args map[string]any) bool {
+		t.Fatalf("confirm should not be reached when all requested images are unavailable")
+		return false
+	}
+
+	def := CreateInstanceDef()
+	eng := NewEngine(executor, confirmFn, nil)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"GpuType":   "4090",
+		"ImageName": "PyTorch",
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, "检查库存", result.StoppedAt)
+	assert.Contains(t, result.Message, "未找到可用的 PyTorch 镜像")
+	for _, call := range executor.calls {
+		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action)
+		assert.NotEqual(t, "GetCompShareInstanceUserPrice", call.action)
+		assert.NotEqual(t, "CreateCompShareInstance", call.action)
+	}
 }
 
 func TestCreateInstance_DynamicInputNormalizesToPostpay(t *testing.T) {

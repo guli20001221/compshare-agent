@@ -1793,7 +1793,7 @@ func TestChat_WorkflowTool_CreateInstance(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareImages": {
 			"ImageSet": []any{
-				map[string]any{"ImageId": "img-001", "ImageName": "PyTorch 2.1"},
+				map[string]any{"CompShareImageId": "img-001", "Name": "PyTorch 2.1", "Status": "Available"},
 			},
 		},
 		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{

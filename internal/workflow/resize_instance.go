@@ -55,8 +55,11 @@ func stepQueryResizePrice() Step {
 		Type: StepToolCall,
 		Tool: "GetCompShareInstanceUpgradePrice",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			queried := wfCtx.Result("查询实例")
 			args := map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
+				"Region":  extractInstanceRegion(queried, defaultRegion),
+				"Zone":    extractInstanceZone(queried, defaultZone),
 			}
 			if cpu, ok := wfCtx.Params["Cpu"]; ok {
 				args["CPU"] = cpu
