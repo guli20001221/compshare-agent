@@ -19,8 +19,6 @@ name: Accuracy Gate
 # self-hosted runner (change `runs-on`).
 
 on:
-  push:
-    branches: [ci/accuracy-gate] # TEMP: reachability probe, removed before merge
   workflow_dispatch:
     inputs:
       model:
