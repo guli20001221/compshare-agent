@@ -3,6 +3,7 @@ package prompt
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -13,9 +14,14 @@ const (
 	// flag-on cards), so the rule text lives in one place. SHA updated to match.
 	// 2026-06-18: narrow deploy/create boundary to hardware-first creation only.
 	// 2026-06-20: remove duplicate CreateInstanceWorkflow routing sentence from the shared card.
-	mutatingReActPromptSHA256 = "c19d3c49b615c0e9052aaf0f70a79f3b3253ecb0c76fff8958768a04c28215d6"
+	// 2026-06-22 (阶段1A KV-cache): move the volatile "## 用户当前状态" block to the
+	// tail so the static prefix is cacheable; also drop the now-wrong "上方"
+	// (above) directional word from the real-time-query rule, since the block is
+	// no longer above that rule.
+	mutatingReActPromptSHA256 = "356348eb55afa2332e4836cf2d1b4aaf288169b5c48f778c14329c1546a410cd"
 	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
-	readOnlyReActPromptSHA256 = "5aae720ff488add4eb47c22379bfed6b8746c1ff80bd62594098e43b622ff55b"
+	// 2026-06-22 (阶段1A KV-cache): volatile userContext block moved to the tail.
+	readOnlyReActPromptSHA256 = "77fb47bb7ef45d6d73e0087574d4e2b1ba5bd9ea50b0cdc0c532330b89f5068f"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {
@@ -26,6 +32,36 @@ func TestReActPromptSnapshot_Mutating(t *testing.T) {
 func TestReActPromptSnapshot_ReadOnly(t *testing.T) {
 	p := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false})
 	assertPromptSHA256(t, "read_only", p, readOnlyReActPromptSHA256)
+}
+
+// TestReActPromptStaticPrefixStable is the KV-cache prefix-stability guard
+// (P0 阶段1A). The volatile per-turn "## 用户当前状态" block must live at the TAIL
+// so the static body before it is byte-identical across turns — that is the
+// precondition for the provider's automatic prefix cache to hit. This test fails
+// the moment someone moves the volatile block back into the middle of the prompt
+// (which is exactly the regression that defeated caching before this change).
+func TestReActPromptStaticPrefixStable(t *testing.T) {
+	const marker = "## 用户当前状态"
+	for _, mutating := range []bool{true, false} {
+		opts := BuildOptions{MutatingToolsEnabled: mutating}
+		ctxA := "当前会话已选实例：alpha（uhost-aaaaaaaa）"
+		ctxB := "当前会话已选实例：beta（uhost-bbbbbbbb）\n\n当前账户只有 1 个实例：beta（uhost-bbbbbbbb），操作时可直接使用，无需追问。"
+		a := BuildSystemWithOptions(ctxA, opts)
+		b := BuildSystemWithOptions(ctxB, opts)
+
+		ia, ib := strings.Index(a, marker), strings.Index(b, marker)
+		if ia < 0 || ib < 0 {
+			t.Fatalf("mutating=%v: %q marker missing from prompt", mutating, marker)
+		}
+		if ia != ib || a[:ia] != b[:ib] {
+			t.Fatalf("mutating=%v: static prefix is NOT byte-identical across turns — KV-cache prefix would miss. "+
+				"The volatile %q block must stay at the tail.\nprefixA len=%d prefixB len=%d", mutating, marker, ia, ib)
+		}
+		// The marker must be the start of the FINAL block: only userContext follows it.
+		if !strings.HasSuffix(a, ctxA+"\n") {
+			t.Fatalf("mutating=%v: userContext is not at the very tail of the prompt", mutating)
+		}
+	}
 }
 
 func assertPromptSHA256(t *testing.T, name, prompt, want string) {
