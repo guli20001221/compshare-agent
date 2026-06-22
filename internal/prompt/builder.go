@@ -25,13 +25,16 @@ func BuildSystemWithOptions(userContext string, opts BuildOptions) string {
 	b.WriteString(segmentIdentity)
 	b.WriteString("\n\n")
 
-	// userContext position differs between modes (inherited from original
-	// templates): mutating puts it after capabilities; read-only puts it
-	// after the readonly boundary block. Keeping it stable avoids prompt drift.
+	// KV-cache prefix stability (P0 阶段1A): the static body is written first and
+	// the volatile per-turn "## 用户当前状态" block is appended LAST (see below), so
+	// everything up to that block is byte-identical across turns and the provider's
+	// automatic prefix cache hits it. The block used to sit mid-prompt (after
+	// capabilities in mutating mode, after the readonly boundary in read-only mode)
+	// — that position was frozen only for snapshot stability, not for any semantic
+	// reason — which left the entire static tail (boundary/rules/knowledge/reply
+	// style) downstream of a value that changes every round, defeating the cache.
 	if opts.MutatingToolsEnabled {
 		b.WriteString(segmentMutatingCapabilities)
-		b.WriteString("\n\n## 用户当前状态\n")
-		b.WriteString(userContext)
 		b.WriteString("\n\n")
 		b.WriteString(segmentScopeBoundary)
 		b.WriteString("\n\n")
@@ -53,8 +56,6 @@ func BuildSystemWithOptions(userContext string, opts BuildOptions) string {
 		b.WriteString(segmentReadOnlyCapabilities)
 		b.WriteString("\n\n")
 		b.WriteString(segmentReadOnlyBoundary)
-		b.WriteString("\n\n## 用户当前状态\n")
-		b.WriteString(userContext)
 		b.WriteString("\n\n")
 		b.WriteString(segmentScopeBoundary)
 		b.WriteString("\n\n")
@@ -69,6 +70,12 @@ func BuildSystemWithOptions(userContext string, opts BuildOptions) string {
 		b.WriteString(segmentReadOnlyReplyStyle)
 		b.WriteString("\n")
 	}
+
+	// Volatile tail — the ONLY part that changes turn-to-turn. Keep it last so the
+	// static prefix above stays cacheable. Guard: TestReActPromptStaticPrefixStable.
+	b.WriteString("\n## 用户当前状态\n")
+	b.WriteString(userContext)
+	b.WriteString("\n")
 
 	return b.String()
 }
