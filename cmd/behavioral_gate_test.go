@@ -56,6 +56,7 @@ var (
 	behavioralConfig    = flag.String("behavioral-config", "", "agent.yaml path; default deploy/conf/agent.yaml then deploy/conf/agent.yaml.example")
 	behavioralReplayOut = flag.String("behavioral-replay-out", "", "if set, write the produced replay-output JSONL here (checker-compatible; debug/parity)")
 	behavioralTimeout   = flag.Duration("behavioral-timeout", 240*time.Second, "per-turn engine timeout")
+	behavioralBudget    = flag.Duration("behavioral-budget", 0, "overall wall-clock budget across cases; stop launching new cases once exceeded and report partial (0 = no budget). Keep below the `go test -timeout` so the gate always reaches its report instead of being killed mid-run.")
 )
 
 // ---------- replay-output record (checker-compatible JSON keys) ----------
@@ -176,7 +177,16 @@ func TestBehavioralGate(t *testing.T) {
 
 	records := make(map[string]*replayCaseRecord, len(caseIDs))
 	var ordered []*replayCaseRecord
+	runStart := time.Now()
 	for i, cid := range caseIDs {
+		if *behavioralBudget > 0 && time.Since(runStart) > *behavioralBudget {
+			// Stop launching new cases and fall through to the report so the gate
+			// always emits its per-gate breakdown instead of being killed at the
+			// `go test -timeout`. Unrun cases score NOCASE (excluded from the rate).
+			t.Logf("budget %s exceeded after %d/%d cases — stopping; %d case(s) not run (NOCASE)",
+				*behavioralBudget, i, len(caseIDs), len(caseIDs)-i)
+			break
+		}
 		turns := inputs[cid]
 		if len(turns) == 0 {
 			t.Logf("[%d/%d] %s SKIP (no input turns in replay-input)", i+1, len(caseIDs), cid)

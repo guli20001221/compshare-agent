@@ -13,14 +13,17 @@ name: Behavioral Gate
 # free; the deterministic suite (go test ./...) still guards every PR and the gate
 # self-skips there (it needs -behavioral-gate). Runs nightly + on-demand instead.
 #
-# CREDENTIALS: runs identically to production — the executor goes through STS
-# (COMPSHARE_SERVICE_* AK/SK → AssumeRole(default_role_urn) → temp creds → CompShare
-# API), so executor-dependent / multi-hop gates (reach_confirm, must_confirm_mutating,
-# slot_retain) are faithful, not just the single-hop routing gates. LLM_API_KEY drives
-# the model. REQUIRES the runner to reach api.compshare.cn + the STS endpoint
-# (api.ucloud.cn) — same external-reachability dependency as the model endpoint; if the
-# GitHub-hosted runner cannot reach them, move to a China-resident self-hosted runner.
-# (The gate still self-skips in `go test ./...` since it needs -behavioral-gate.)
+# CREDENTIALS: LLM_API_KEY drives the model. The executor uses the SAME STS path as
+# production (COMPSHARE_SERVICE_* AK/SK → AssumeRole → CompShare API), and the STS
+# secrets are wired so this exact workflow runs STS-faithful the moment it is pointed at
+# a China/UCloud-resident runner. BUT GitHub-hosted runners CANNOT reach the China STS
+# endpoints — VERIFIED 2026-06-22: AssumeRole fails, 7/7 executor calls error. So on
+# GitHub-hosted the executor degrades gracefully and only the ROUTING/DECISION gates are
+# meaningful (read_truth / route_to_diagnosis / route_not_create / route_no_misroute /
+# no_false_cancel / non_empty) — they assert the tool CALL, emitted before execution.
+# The executor-dependent gates (reach_confirm / must_confirm_mutating / slot_retain) are
+# only faithful on a China/UCloud runner; until then treat them as report-only. That is
+# why the floor stays 0 here. (Gate self-skips in `go test ./...`; needs -behavioral-gate.)
 #
 # FLOOR: -behavioral-min-pass is the BLOCK-gate pass-rate floor (%). Shipped at 0
 # (report-only) until the current-main green baseline is curated (over-strict tags
@@ -68,4 +71,5 @@ jobs:
           go test ./cmd -run TestBehavioralGate -behavioral-gate -v \
             -behavioral-cases "${{ github.event.inputs.cases || '0' }}" \
             -behavioral-min-pass "${{ github.event.inputs.min_pass || '0' }}" \
+            -behavioral-budget 70m \
             -timeout 85m
