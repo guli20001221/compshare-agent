@@ -15,8 +15,8 @@ linux:
     GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o compshare-agent ./cmd
 
 # Build the deploy binary and register it with ally.
-invite: linux
-    ./deploy/scripts/invite.sh
+deploy: linux
+    ./deploy/scripts/deploy.sh
 
 # Run all Go tests.
 test:

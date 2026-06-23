@@ -50,7 +50,7 @@ agent:
   # from THIS file — no env vars needed for behavior. Precedence: a value set
   # here WINS; if you omit a field the binary falls back to the matching env
   # var, and if that is unset too, to the built-in default. The values below
-  # are the production deploy defaults (the same stack invite.sh used to
+  # are the production deploy defaults.
   # forward). Set a field to false / "off" to roll one back.
   #
   # NOTE 截图理解 (screenshot/VL) is enabled separately by agent.ocr.model
@@ -167,7 +167,7 @@ agent:
     # front-back-local-debug skill). In production set this to true so the
     # console gateway is the SOLE source of CORS headers — otherwise both
     # agent and gateway add them and the browser rejects the duplicate.
-    disable_cors: false
+    disable_cors: true
 
   # PostgreSQL backing store (used by: compshare-agent server). The config key
   # `mysql` is kept for compatibility; the value is a libpq URL, e.g.
