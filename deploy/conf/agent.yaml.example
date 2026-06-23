@@ -107,7 +107,9 @@ agent:
     # agent and gateway add them and the browser rejects the duplicate.
     disable_cors: false
 
-  # MySQL backing store (used by: compshare-agent server).
+  # PostgreSQL backing store (used by: compshare-agent server). The config key
+  # `mysql` and the env var name MYSQL_DSN are kept for compatibility; the value
+  # is a libpq URL, e.g. postgresql://user:pass@host:5432/db?sslmode=disable.
   # DSN is resolved from ${MYSQL_DSN} env var.
   mysql:
     dsn: "${MYSQL_DSN}"

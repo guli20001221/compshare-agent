@@ -26,7 +26,7 @@ The config loader (`internal/config/config.go`) only supports plain `${ENV_VAR}`
 - `LLM_API_KEY` — required for all subcommands.
 - `COMPSHARE_SERVICE_PUBLIC_KEY` / `COMPSHARE_SERVICE_PRIVATE_KEY` — service's own AK/SK used to call STS `AssumeRole`; optional for the `server` subcommand when legacy direct AK/SK is used instead.
 - `COMPSHARE_DEFAULT_ROLE_URN` — required for the `cli` subcommand when STS mode is used.
-- `MYSQL_DSN` — required for the `server` subcommand.
+- `MYSQL_DSN` — required for the `server` subcommand. PostgreSQL libpq URL (`postgresql://user:pass@host:5432/db?sslmode=disable`); the env var name is kept for compat.
 - `COMPSHARE_PUBLIC_KEY` / `COMPSHARE_PRIVATE_KEY` — legacy direct AK/SK; only needed when `agent.sts` is not configured (e.g., local dev without STS).
 
 `project_id` may be left empty for read-only calls; HTTP requests can also pass `ProjectId` per request.
@@ -77,7 +77,7 @@ Behavior is gated by env vars read in `cmd/trace.go` and `cmd/agent.go`. The def
 | `USE_REACT_RESULT_PROJECTION` | `1` | Compresses large read tool results (list endpoints) before re-feeding ReAct. **Go code default off; deploy template ships it on.** |
 | `USE_REACT_HISTORY_COMPACTION` | `1` | Summarizes old turns once history exceeds the window. **Go code default off; deploy template ships it on.** |
 | `COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT` | `json_object` \| `json_schema` | Forces the intent router to emit via `response_format`. `json_object` requests bare JSON; `json_schema` (2026-06-23) requests the typed `IntentRoute` schema (`intent.IntentRouteResponseSchema`, **non-strict** — ds-v4-flash enforces the enum/const even without `strict`; live-probed). `json_schema` only takes effect when the model capability resolves to `OutputModeJSONSchema` (`SupportsJSONSchema`), degrading to `json_object` on object-only models. **Plumbed through `invite.sh` but shipped OFF** — the earlier `json_object` A/B showed no schema-valid improvement (json_object carries no schema); enable `json_schema` only after the intent-router accuracy A/B validates it. |
-| `MYSQL_DSN` | DSN string | Required by `compshare-agent server`; ignored by `compshare-agent cli`. |
+| `MYSQL_DSN` | DSN string | PostgreSQL libpq URL (env var name kept for compat). Required by `compshare-agent server`; ignored by `compshare-agent cli`. |
 | `COMPSHARE_SERVICE_PUBLIC_KEY` | AK string | Service long-term public key for STS `AssumeRole`. Required when `agent.sts` is configured. |
 | `COMPSHARE_SERVICE_PRIVATE_KEY` | SK string | Service long-term private key for STS `AssumeRole`. Required when `agent.sts` is configured. |
 | `COMPSHARE_DEFAULT_ROLE_URN` | URN string | Default role URN used by `cli` subcommand in STS mode. Overrides per-request `role_urn_template` derivation. |
@@ -137,9 +137,9 @@ Read-only diagnostic tools (init failure, billing anomaly, GPU not detected, ima
 - Entry: `cmd/server.go`. Routes: `POST /` (Action-routed) + `GET /healthz`.
 - Identity is taken from the request body (gateway-injected), not headers: `top_organization_id` / `organization_id` (uint32, snake_case) and `request_uuid` (string, snake_case, auto-generated if missing). Business fields stay PascalCase (`Action`, `SessionId`, `Message`).
 - Phase-1 Actions: `GetSession` / `CreateSession` / `Chat` (SSE) / `GetMeta` / `Feedback`. `SessionId` is mandatory on every session-scoped Action; the frontend persists it in localStorage.
-- Per-session `*engine.Engine` lives in `internal/agentpool` (LRU 200 / 30min idle). HTTP path skips `engine.Init()` and rehydrates history from MySQL via `engine.RehydrateHistory`.
+- Per-session `*engine.Engine` lives in `internal/agentpool` (LRU 200 / 30min idle). HTTP path skips `engine.Init()` and rehydrates history from PostgreSQL via `engine.RehydrateHistory`.
 - SSE stream is per-token end-to-end via `llm.ChatRequest.OnTextDelta` → `engine.ChatOptions.OnTextDelta` → `sse.Writer`. ReAct intermediate `StepEvent`s are not exposed in phase 1.
-- Persistence: MySQL 8 via `database/sql + go-sql-driver/mysql`; schema in `deploy/migrations/0001_init.sql`. `messages` is INSERTed twice per turn (user immediately, assistant placeholder before LLM call) and UPDATEd once on SSE done — never per-token. DDL is run by ops, not the binary.
+- Persistence: PostgreSQL via `database/sql + lib/pq` (migrated from MySQL/TiDB; the `store.OpenMySQL` symbol, `internal/store/mysql.go` file, `mysql` config key, and `MYSQL_DSN` env var name are all kept for compat but open a `postgres` connection). Schema in `deploy/migrations/0001_init.sql` (PG-dialect; apply with `psql`). `messages` is INSERTed twice per turn (user immediately, assistant placeholder before LLM call) and UPDATEd once on SSE done — never per-token. DDL is run by ops, not the binary.
 - Credentials: HTTP path prefers STS AssumeRole when `agent.sts.service_ak/service_sk` are set. If they are empty, it falls back to legacy `agent.public_key/private_key` for local/demo use. Rate limiting is keyed by `(top_organization_id, organization_id)` pair, not by static public key.
 
 ## Conventions specific to this repo
