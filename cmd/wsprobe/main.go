@@ -8,7 +8,7 @@
 //
 // Client mode (default):
 //
-//	go run ./cmd/wsprobe -url ws://localhost:8080 -session SESS -message "你好"
+//	go run ./cmd/wsprobe -url ws://localhost:7429 -session SESS -message "你好"
 //	go run ./cmd/wsprobe -url ws://HOST:PORT -message "关机 uhost-xxx" -confirm yes
 //
 // Mock-server mode — stands up a fake agent that speaks the same frame protocol
@@ -39,7 +39,7 @@ import (
 func main() {
 	var (
 		mockAddr = flag.String("mock", "", "run a fake-agent WS server on this addr (e.g. :8089) instead of dialing")
-		url      = flag.String("url", "ws://localhost:8080", "agent WS base URL (Action=CreateCSAgentWS is appended)")
+		url      = flag.String("url", "ws://localhost:7429", "agent WS base URL (Action=CreateCSAgentWS is appended)")
 		session  = flag.String("session", "probe-sess", "SessionId to send")
 		message  = flag.String("message", "你好", "chat Message to send")
 		confirm  = flag.String("confirm", "", "auto-reply to a confirmation frame: 'yes' or 'no' (empty = do not reply)")

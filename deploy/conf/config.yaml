@@ -149,7 +149,7 @@ agent:
   # HTTP service settings (used by: compshare-agent server).
   # write_timeout must be 0 for SSE streaming connections.
   http:
-    listen_addr: "0.0.0.0:8080"
+    listen_addr: "0.0.0.0:7429"
     read_timeout: "30s"
     write_timeout: "0s"
     sse_keepalive_interval: "15s"

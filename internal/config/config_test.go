@@ -324,7 +324,7 @@ func TestLoad_HTTPDefaultsAppliedWhenSectionOmitted(t *testing.T) {
 	require.NoError(t, err)
 
 	h := cfg.Agent.HTTP
-	assert.Equal(t, "0.0.0.0:8080", h.ListenAddr)
+	assert.Equal(t, "0.0.0.0:7429", h.ListenAddr)
 	assert.Equal(t, 30*time.Second, h.ReadTimeout)
 	assert.Equal(t, time.Duration(0), h.WriteTimeout) // SSE: must stay 0
 	assert.Equal(t, 15*time.Second, h.SSEKeepaliveInterval)

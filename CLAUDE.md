@@ -17,7 +17,7 @@ go build -o agent.exe ./cmd            # Windows / cross-build via GOOS
 ./agent cli [-c path/to/config.yaml]
 
 go build -o agent ./cmd
-./agent server --addr :8080
+./agent server --addr 0.0.0.0:7429
 ```
 
 The deploy config is `deploy/conf/config.yaml`. Runtime flags, model keys,

@@ -1,4 +1,4 @@
-ADDR ?= :8236
+ADDR ?= 0.0.0.0:7429
 
 .PHONY: run build linux deploy test stop
 

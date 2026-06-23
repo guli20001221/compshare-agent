@@ -522,7 +522,7 @@ func resolveOptionalDSN(field *string) error {
 // applyHTTPDefaults fills zero-value fields with documented defaults.
 func applyHTTPDefaults(h *HTTPConfig) {
 	if h.ListenAddr == "" {
-		h.ListenAddr = "0.0.0.0:8080"
+		h.ListenAddr = "0.0.0.0:7429"
 	}
 	if h.ReadTimeout == 0 {
 		h.ReadTimeout = 30 * time.Second

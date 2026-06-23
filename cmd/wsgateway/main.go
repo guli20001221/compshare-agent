@@ -13,9 +13,9 @@
 //
 // Usage:
 //
-//	# 1. start the real agent server (separate shell), e.g. on :8080
+//	# 1. start the real agent server (separate shell), e.g. on :7429
 //	# 2. start this gateway sim pointing at it:
-//	go run ./cmd/wsgateway -listen :8090 -agent ws://127.0.0.1:8080 \
+//	go run ./cmd/wsgateway -listen :8090 -agent ws://127.0.0.1:7429 \
 //	    -company 66391350 -org 64404856 -email compshare-test@ucloud.cn
 //	# 3. point the frontend CONFIG_URL.WS at ws://localhost:8090
 //
@@ -42,7 +42,7 @@ const maxWSMessageBytes int64 = 20 * 1024 * 1024
 func main() {
 	var (
 		listen  = flag.String("listen", ":8090", "address for the browser to connect to")
-		agent   = flag.String("agent", "ws://127.0.0.1:8080", "agent server WS base URL to forward to")
+		agent   = flag.String("agent", "ws://127.0.0.1:7429", "agent server WS base URL to forward to")
 		company = flag.String("company", "66391350", "X-Company-Id to inject (top_organization_id)")
 		org     = flag.String("org", "64404856", "X-Organization-Id to inject (organization_id)")
 		email   = flag.String("email", "compshare-test@ucloud.cn", "X-User-Email to inject (optional)")
