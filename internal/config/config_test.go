@@ -92,12 +92,43 @@ agent:
 	assert.Contains(t, err.Error(), "environment variable")
 }
 
-func TestLoad_RejectsLiteralSecretValuesInYAML(t *testing.T) {
+func TestLoad_AcceptsInlineLiteralSecretValuesInYAML(t *testing.T) {
+	// YAML-first config migration: a self-contained agent.yaml may inline
+	// secrets so a deployment needs no env file at all. The committed
+	// agent.yaml.example keeps ${ENV_VAR} placeholders; the real
+	// deploy/conf/agent.yaml is gitignored + the pre-commit secret scanner
+	// guards accidental commits.
 	path := writeConfig(t, `
 agent:
   executor: external
   compshare_api_url: "https://api.compshare.cn/"
-  public_key: "literal"
+  public_key: "ak-inline"
+  private_key: "sk-inline"
+  region: "cn-wlcb"
+  project_id: "org-inline"
+  llm:
+    base_url: "https://api.modelverse.cn/v1"
+    api_key: "llm-inline"
+    model: "deepseek-v4-flash"
+`)
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "ak-inline", cfg.Agent.PublicKey)
+	assert.Equal(t, "sk-inline", cfg.Agent.PrivateKey)
+	assert.Equal(t, "llm-inline", cfg.Agent.LLM.APIKey)
+	assert.Equal(t, "org-inline", cfg.Agent.ProjectId)
+}
+
+func TestLoad_RejectsMalformedDollarSecretPlaceholder(t *testing.T) {
+	// A "$"-prefixed value that is not a valid ${...} placeholder is a typo
+	// (e.g. "$COMPSHARE_PUBLIC_KEY") and must fail loud, not be taken as a
+	// literal secret.
+	path := writeConfig(t, `
+agent:
+  executor: external
+  compshare_api_url: "https://api.compshare.cn/"
+  public_key: "$COMPSHARE_PUBLIC_KEY"
   private_key: "${COMPSHARE_PRIVATE_KEY}"
   region: "cn-wlcb"
   project_id: ""
@@ -111,7 +142,7 @@ agent:
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "public_key")
-	assert.Contains(t, err.Error(), "must use ${")
+	assert.Contains(t, err.Error(), "${ENV_VAR}")
 }
 
 func TestLoad_OmittedRateLimitUsesDefaults(t *testing.T) {
@@ -817,11 +848,13 @@ func TestLoad_TierRouting_APIKey_PlaceholderResolved(t *testing.T) {
 	assert.Equal(t, "resolved-from-env", cfg.Agent.TierRouting["agent"].APIKey)
 }
 
-// TestLoad_TierRouting_APIKey_LiteralRejected catches the security gap
-// the B1 reviewer flagged: tier override api_key MUST use ${ENV_VAR}
-// placeholder like the base path. Literal secrets in YAML are rejected
-// to match resolveRequiredSecret's contract for agent.llm.api_key.
-func TestLoad_TierRouting_APIKey_LiteralRejected(t *testing.T) {
+// TestLoad_TierRouting_APIKey_LiteralAccepted verifies a tier override api_key
+// may be inlined, matching the relaxed resolveOptionalPlaceholder contract for
+// the base path (YAML-first config migration — see
+// TestLoad_AcceptsInlineLiteralSecretValuesInYAML). A ${ENV_VAR} placeholder
+// still resolves from the environment (see the test above); both forms are now
+// allowed.
+func TestLoad_TierRouting_APIKey_LiteralAccepted(t *testing.T) {
 	setRequiredSecretEnv(t)
 	path := writeConfig(t, baseConfig(`
   tier_routing:
@@ -829,9 +862,9 @@ func TestLoad_TierRouting_APIKey_LiteralRejected(t *testing.T) {
       model: "deepseek-v4-pro"
       api_key: "sk-literal-leaked"
 `))
-	_, err := Load(path)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "agent.tier_routing.agent.api_key")
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-literal-leaked", cfg.Agent.TierRouting["agent"].APIKey)
 }
 
 // TestLoad_TierRouting_APIKey_EmptyInheritsFromBase verifies the common
@@ -850,4 +883,105 @@ func TestLoad_TierRouting_APIKey_EmptyInheritsFromBase(t *testing.T) {
 	assert.Empty(t, cfg.Agent.TierRouting["agent"].APIKey)
 	// Base APIKey is still resolved.
 	assert.Equal(t, "llm-from-env", cfg.Agent.LLM.APIKey)
+}
+
+// ---------------------------------------------------------------------------
+// Runtime feature flags — YAML sections + RuntimeGetenv overlay
+// ---------------------------------------------------------------------------
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(`
+  features:
+    mutating_tools: true
+    confirm_form: true
+    guided_create: true
+    agentic_search_knowledge: true
+    knowledge_qa_agent_loop: true
+    knowledge_qa_disciplined_synthesis: true
+    external_knowledge: true
+    session_fact_context: true
+    react_result_projection: true
+    react_history_compaction: true
+    grounded_validator: false
+    skill_executor_diagnosis_pilots:
+      - diagnose-ssh
+      - diagnose-billing
+  retrieval:
+    knowledge_retrieval: curated
+    mode: qwen3_rrf
+    grounded_renderer: llm
+    hybrid_timeout_ms: 8000
+  trace:
+    enabled: true
+    sink: mysql
+  planner:
+    direct_dispatch_intents: "resource,monitor"
+    structured_output: ""
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	f := cfg.Agent.Features
+	require.NotNil(t, f.MutatingTools)
+	assert.True(t, *f.MutatingTools)
+	require.NotNil(t, f.GroundedValidator)
+	assert.False(t, *f.GroundedValidator)
+	assert.Nil(t, f.DomainMatchGuard, "omitted bool stays nil (env/default fallback)")
+	assert.Equal(t, []string{"diagnose-ssh", "diagnose-billing"}, f.SkillExecutorDiagnosisPilots)
+
+	assert.Equal(t, "qwen3_rrf", cfg.Agent.Retrieval.Mode)
+	assert.Equal(t, 8000, cfg.Agent.Retrieval.HybridTimeoutMS)
+	require.NotNil(t, cfg.Agent.Trace.Enabled)
+	assert.True(t, *cfg.Agent.Trace.Enabled)
+	assert.Equal(t, "mysql", cfg.Agent.Trace.Sink)
+	assert.Equal(t, "resource,monitor", cfg.Agent.Planner.DirectDispatchIntents)
+}
+
+func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
+	cfg := &Config{Agent: AgentConfig{
+		LLM: LLMConfig{APIKey: "resolved-llm-key"},
+		Features: FeaturesConfig{
+			MutatingTools:          boolPtr(true),  // YAML true → "1"
+			AgenticSearchKnowledge: boolPtr(false), // YAML false → "0" (off; this flag defaults ON)
+			// SessionFactContext omitted (nil) → falls through to base env
+		},
+		Retrieval: RetrievalConfig{
+			Mode: "bm25_only", // YAML string wins
+			// KnowledgeRetrieval omitted → base env fallback
+		},
+		Trace: TraceConfig{Sink: "file"},
+	}}
+
+	base := func(key string) string {
+		switch key {
+		case "USE_SESSION_FACT_CONTEXT":
+			return "1" // env fallback (YAML omitted this field)
+		case "USE_KNOWLEDGE_RETRIEVAL":
+			return "off"
+		case "SOME_UNMAPPED_VAR":
+			return "passthrough"
+		}
+		return ""
+	}
+	getenv := cfg.RuntimeGetenv(base)
+
+	assert.Equal(t, "1", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"), "YAML true wins")
+	assert.Equal(t, "0", getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"), "YAML false → explicit off, wins over default-on")
+	assert.Equal(t, "1", getenv("USE_SESSION_FACT_CONTEXT"), "omitted bool → env fallback")
+	assert.Equal(t, "bm25_only", getenv("RAG_RETRIEVAL_MODE"), "YAML string wins")
+	assert.Equal(t, "off", getenv("USE_KNOWLEDGE_RETRIEVAL"), "omitted string → env fallback")
+	assert.Equal(t, "file", getenv("COMPSHARE_TRACE_SINK"))
+	assert.Equal(t, "resolved-llm-key", getenv("LLM_API_KEY"), "resolved secret exposed for RAG clients")
+	assert.Equal(t, "passthrough", getenv("SOME_UNMAPPED_VAR"), "unmapped key → base passthrough")
+}
+
+func TestRuntimeGetenv_NilConfigReturnsBase(t *testing.T) {
+	var cfg *Config
+	base := func(string) string { return "from-base" }
+	getenv := cfg.RuntimeGetenv(base)
+	assert.Equal(t, "from-base", getenv("ANYTHING"))
 }

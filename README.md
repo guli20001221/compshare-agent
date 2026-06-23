@@ -3,7 +3,7 @@
 优云算力共享 AI 助手（CompShare GPU 平台）。Go 1.22 单二进制（`server` 子命令 = HTTP 服务）。
 **目标：克隆 → 填密钥 → 直接部署。**
 
-> 配置不入库：`.env`、`deploy/conf/agent.yaml` 都在 `.gitignore` 里（含密钥），仓库里只有 `*.example` 模板。密钥永远只在 `.env`，绝不提交。
+> 配置不入库：`.env`、`deploy/conf/agent.yaml` 都在 `.gitignore` 里（含密钥），仓库里只有 `*.example` 模板。**运行时开关（写操作 / agentic-RAG / trace / 检索 / 截图等）现在全在 `agent.yaml`**（`agent.features` / `retrieval` / `trace` / `planner`），不再靠 env；密钥放 `.env`（`${ENV_VAR}` 占位）或直接内联进 gitignored 的 `agent.yaml`，绝不提交。优先级：YAML 设了就用 YAML，没设回退 env。
 
 ---
 
@@ -22,14 +22,14 @@
 git clone <repo-url> compshare-agent && cd compshare-agent
 git config core.hooksPath .githooks                         # 启用 pre-commit 密钥扫描（fresh clone 必做一次）
 cp .env.example .env                                         # 填 §2 的密钥
-cp deploy/conf/agent.yaml.example deploy/conf/agent.yaml     # 只含 ${ENV_VAR} 占位，值从 .env 注入
+cp deploy/conf/agent.yaml.example deploy/conf/agent.yaml     # 运行时开关都在这里；密钥用 ${ENV_VAR} 占位从 .env 注入（也可内联明文）
 ```
 
 ---
 
 ## 2. 必填密钥（**全部填进同一个文件：`.env`**）
 
-`agent.yaml` 只有 `${ENV_VAR}` 占位符，**不放明文**；它从环境读值，而 `.env` 就是那个环境。`.env.example` 已列全部变量，照行填即可：
+`agent.yaml` 的**运行时开关用明文配置**（`agent.features` / `retrieval` / `trace` / `planner`，见 §4 与 `agent.yaml.example`）；**密钥**用 `${ENV_VAR}` 占位从 `.env` 注入（committed example 保持占位），也可直接内联进 gitignored 的 `agent.yaml`。`.env.example` 已列全部密钥变量，照行填即可：
 
 | `.env` 里的键 | 说明 / 从哪拿 |
 |---|---|
@@ -86,11 +86,12 @@ curl http://127.0.0.1:8236/healthz                # 期望 {"status":"ok"}
 
 ## 4. 生产部署（pack → tarball → invite.sh）
 
-生产密钥同样只放 `.env`——`just pack` 会把 `.env` 打进 tarball 上传内网服务器，**全程不经 git**。
+生产密钥放 `.env`、运行时开关放 `agent.yaml`——`just pack` 会把两者打进 tarball 上传内网服务器，**全程不经 git**。
 
 ```bash
-# (1) .env 填生产值：STS 服务 AK/SK + COMPSHARE_DEFAULT_ROLE_URN、真实 MYSQL_DSN、ADDR（监听地址）。
-#     生产 flag 形态已是 .env.example 默认（写操作开、trace 写库、agentic-RAG 栈等），一般不用改。
+# (1) .env 填生产密钥：STS 服务 AK/SK + COMPSHARE_DEFAULT_ROLE_URN、真实 MYSQL_DSN、ADDR（监听地址）。
+#     运行时开关在 agent.yaml（agent.features/retrieval/trace/planner）——生产形态已是 agent.yaml.example
+#     默认（写操作开、trace 写库、agentic-RAG 栈、截图 OCR 等），一般不用改。.env 现在只放密钥 + ADDR。
 
 # (2) 打包（需装 just；交叉编译 linux 二进制 + kb + 真实 env + invite.sh）
 just pack                              # → dist/compshare-agent-<version>.tar.gz
@@ -98,11 +99,11 @@ just pack                              # → dist/compshare-agent-<version>.tar.
 # (3) 上传内网服务器并启动
 scp dist/compshare-agent-*.tar.gz ucloud@<host>:/data/yuanpeng.wei/compshare-agent/
 ssh ucloud@<host> 'cd /data/yuanpeng.wei/compshare-agent && tar -xzf compshare-agent-*.tar.gz && ./invite.sh'
-#     invite.sh 会转发 .env 里的开关并以 server --addr $ADDR 启动。
+#     invite.sh 转发 .env 里的密钥并以 server -c agent.yaml --addr $ADDR 启动；运行时开关由 agent.yaml 决定。
 ```
 
 生产 vs 本地差异：
 - **凭证**：生产用 STS（`iam_url` 内网自动开通 role）；本地测试直连模式更省事。
 - **数据库**：生产填真实 `MYSQL_DSN`（PostgreSQL libpq URL），并需 ops 先在目标库用 `psql` 按顺序跑 `deploy/migrations/0001`–`0004`（PG 方言；同 §3 第 4 步）。
-- **trace**：`COMPSHARE_TRACE_ENABLED=1`/`SINK=mysql` 默认开（`SINK` 值沿用 `mysql`，实际写入上面的 PostgreSQL `agent_traces` 表），依赖该表（`0002`+`0004`）。
+- **trace**：`agent.trace.enabled: true` / `sink: mysql` 默认开（`sink` 值沿用 `mysql`，实际写入上面的 PostgreSQL `agent_traces` 表），依赖该表（`0002`+`0004`）。
 - 全部运行时开关说明见 `CLAUDE.md` 的「Runtime feature flags」表。

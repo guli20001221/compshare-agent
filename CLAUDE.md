@@ -55,7 +55,7 @@ git config core.hooksPath .githooks
 
 ## Runtime feature flags
 
-Behavior is gated by env vars read in `cmd/trace.go` and `cmd/agent.go`. The default answer path uses the current demo stack: ds-v4-flash, qwen3 RRF retrieval, and LLM grounded rendering.
+**Preferred config is YAML (`deploy/conf/agent.yaml`).** The flags below now have typed fields under `agent.features` / `agent.retrieval` / `agent.trace` / `agent.planner` (see `internal/config/runtime.go` + `agent.yaml.example`). Precedence is **YAML wins, env is the fallback**: a field set in YAML overrides the env var; a field omitted in YAML falls through to the env var, then to the built-in default. The bridge is `(*config.Config).RuntimeGetenv`, which overlays the YAML fields on `os.Getenv` so the `cmd/` parsers still read every flag through one `getenv` (wired in `cmd/server.go` + `cmd/cli.go`). Secrets may also be inlined in YAML now (loader accepts literals; the committed `agent.yaml.example` keeps `${ENV_VAR}` placeholders and `deploy/conf/agent.yaml` is gitignored). The env-var table below stays valid as the fallback / per-flag reference. The default answer path uses the current demo stack: ds-v4-flash, qwen3 RRF retrieval, and LLM grounded rendering.
 
 | Var | Values | Effect |
 |---|---|---|
