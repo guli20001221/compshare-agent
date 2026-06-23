@@ -11,7 +11,7 @@ import (
 // present.
 
 func TestMonitorHistoryUnsupported_Anchors(t *testing.T) {
-	want := []string{"历史时间段", "实时监控", "控制台监控页"}
+	want := []string{"历史监控", "一台实例", "24 小时", "时间段"}
 	for _, anchor := range want {
 		if !strings.Contains(MonitorHistoryUnsupported, anchor) {
 			t.Errorf("MonitorHistoryUnsupported lost anchor %q", anchor)
@@ -62,9 +62,9 @@ func TestCategoryStrings_NeverChange(t *testing.T) {
 	// EXACT strings as a stable contract. Changing them would break
 	// historical aggregations silently.
 	cases := map[string]string{
-		"CategoryMonitorHistory":                "monitor_history_unsupported",
-		"CategoryJailbreakAttempt":              "jailbreak_attempt",
-		"CategoryOffTopic":                      "off_topic_refused",
+		"CategoryMonitorHistory":   "monitor_history_unsupported",
+		"CategoryJailbreakAttempt": "jailbreak_attempt",
+		"CategoryOffTopic":         "off_topic_refused",
 	}
 	if CategoryMonitorHistory != cases["CategoryMonitorHistory"] {
 		t.Errorf("CategoryMonitorHistory = %q; want %q", CategoryMonitorHistory, cases["CategoryMonitorHistory"])

@@ -1101,7 +1101,7 @@ func TestScenario_StartInstanceWorkflow(t *testing.T) {
 		results: map[string]map[string]any{
 			"DescribeCompShareInstance": {
 				"TotalCount": float64(1),
-				"UHostSet":   []any{map[string]any{"UHostId": "uhost-start1", "State": "Stopped", "GpuType": "3080Ti", "GPU": float64(1), "Name": "test"}},
+				"UHostSet":   []any{map[string]any{"UHostId": "uhost-start1", "State": "Stopped", "Region": "cn-wlcb", "Zone": "cn-wlcb-01", "GpuType": "3080Ti", "GPU": float64(1), "Name": "test"}},
 			},
 			"StartCompShareInstance": {"RetCode": 0},
 		},
@@ -1989,7 +1989,7 @@ func TestScenario_SetStopScheduler_Success(t *testing.T) {
 				"UHostSet": []any{
 					map[string]any{
 						"UHostId": "uhost-xxx", "Name": "my-gpu",
-						"State": "Running", "Zone": "cn-bj2-04",
+						"State": "Running", "Zone": "cn-bj2-04", "Region": "cn-bj2",
 						"GpuType": "4090", "GPU": float64(1),
 						"ChargeType": "Dynamic",
 					},
@@ -2026,7 +2026,7 @@ func TestScenario_CancelStopScheduler_Success(t *testing.T) {
 				"UHostSet": []any{
 					map[string]any{
 						"UHostId": "uhost-xxx", "Name": "my-gpu",
-						"State": "Running", "Zone": "cn-bj2-04",
+						"State": "Running", "Zone": "cn-bj2-04", "Region": "cn-bj2",
 						"GpuType": "4090", "GPU": float64(1),
 						"ChargeType": "Dynamic",
 					},

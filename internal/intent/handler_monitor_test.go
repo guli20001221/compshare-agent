@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,6 +85,273 @@ func TestMonitorQueryHandler_NonCurrentTimeWindowFallsBackBeforeTool(t *testing.
 			assert.Empty(t, exec.calls)
 		})
 	}
+}
+
+func TestMonitorQueryHandler_HistoricalAbsoluteWindowCallsMonitorWithRange(t *testing.T) {
+	exec := &mockHandlerExecutor{result: monitorAPIResult()}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleMonitorQuery(context.Background(), HandlerRequest{
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentMonitorHistory,
+			Slots: Slots{
+				TargetRefs: []TargetRef{{
+					Type:       TargetRefName,
+					Value:      "train-a",
+					Source:     SourceUserText,
+					SourceSpan: "train-a",
+				}},
+				Metrics: []Metric{MetricCPU, MetricGPU},
+				TimeWindow: &TimeWindow{
+					Type:  TimeWindowAbsolute,
+					Value: "2026-05-08T01:00:00+08:00/2026-05-08T02:00:00+08:00",
+				},
+			},
+			Retrieval:  Retrieval{Enabled: false},
+			Confidence: 0.8,
+		},
+		Resolver: resourceTestSnapshot(t),
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, "GetCompShareInstanceMonitor", exec.calls[0].action)
+	assert.Equal(t, []string{"uhost-a"}, exec.calls[0].args["UHostIds"])
+	assert.Equal(t, int64(1778173200), exec.calls[0].args["StartTime"])
+	assert.Equal(t, int64(1778176800), exec.calls[0].args["EndTime"])
+	assert.Contains(t, result.Reply, "最新")
+	assert.Contains(t, result.Reply, "平均")
+	assert.Contains(t, result.Reply, "峰值")
+}
+
+func TestMonitorHistoryWindowParserAcceptsChineseRangeExamples(t *testing.T) {
+	start, end, ok := resolveMonitorHistoryWindow(&TimeWindow{
+		Type:  TimeWindowAbsolute,
+		Value: "2026-05-08 01:00 到 02:00",
+	})
+
+	require.True(t, ok)
+	assert.Equal(t, int64(1778173200), start)
+	assert.Equal(t, int64(1778176800), end)
+}
+
+func TestMonitorHistoryWindowParserAcceptsYesterdayClockRange(t *testing.T) {
+	orig := monitorNowFunc
+	loc := monitorHistoryLoc
+	monitorNowFunc = func() time.Time {
+		return time.Date(2026, 6, 22, 12, 0, 0, 0, loc)
+	}
+	t.Cleanup(func() { monitorNowFunc = orig })
+
+	start, end, ok := ResolveMonitorHistoryWindowFromUserText("查询 uhost-a 昨天 8 点到 10 点的 CPU 历史监控")
+
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 6, 21, 8, 0, 0, 0, loc).Unix(), start)
+	assert.Equal(t, time.Date(2026, 6, 21, 10, 0, 0, 0, loc).Unix(), end)
+}
+
+func TestMonitorHistoryWindowParserAcceptsRecentHoursFromUserText(t *testing.T) {
+	orig := monitorNowFunc
+	loc := monitorHistoryLoc
+	monitorNowFunc = func() time.Time {
+		return time.Date(2026, 6, 22, 12, 0, 0, 0, loc)
+	}
+	t.Cleanup(func() { monitorNowFunc = orig })
+
+	start, end, ok := ResolveMonitorHistoryWindowFromUserText("查询 uhost-a 过去 3 小时 CPU 历史监控")
+
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 6, 22, 9, 0, 0, 0, loc).Unix(), start)
+	assert.Equal(t, time.Date(2026, 6, 22, 12, 0, 0, 0, loc).Unix(), end)
+}
+
+func TestMonitorHistoryWindowParserAcceptsRecentMinutesFromUserText(t *testing.T) {
+	orig := monitorNowFunc
+	loc := monitorHistoryLoc
+	monitorNowFunc = func() time.Time {
+		return time.Date(2026, 6, 22, 12, 0, 0, 0, loc)
+	}
+	t.Cleanup(func() { monitorNowFunc = orig })
+
+	start, end, ok := ResolveMonitorHistoryWindowFromUserText("查询 uhost-a 最近 30 分钟 CPU 历史监控")
+
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 6, 22, 11, 30, 0, 0, loc).Unix(), start)
+	assert.Equal(t, time.Date(2026, 6, 22, 12, 0, 0, 0, loc).Unix(), end)
+}
+
+func TestMonitorHistoryWindowParserAcceptsTodayWithInstancePrefixAndID(t *testing.T) {
+	orig := monitorNowFunc
+	loc := monitorHistoryLoc
+	monitorNowFunc = func() time.Time {
+		return time.Date(2026, 6, 22, 12, 0, 0, 0, loc)
+	}
+	t.Cleanup(func() { monitorNowFunc = orig })
+
+	start, end, ok := ResolveMonitorHistoryWindowFromUserText("实例: uhost-1ry1rvipr0aa 今天 CPU 历史监控")
+
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 6, 22, 0, 0, 0, 0, loc).Unix(), start)
+	assert.Equal(t, time.Date(2026, 6, 22, 12, 0, 0, 0, loc).Unix(), end)
+}
+
+func TestMonitorHistoryWindowParserRejectsRelativeFalsePositives(t *testing.T) {
+	cases := []string{
+		"查询 uhost-1mabc 上周 CPU 历史监控",
+		"查询 uhost-1habc 上周 CPU 历史监控",
+		"查询 uhost-a 过去 3 months CPU 历史监控",
+		"查询 uhost-a 3 hours CPU 历史监控",
+	}
+	for _, text := range cases {
+		t.Run(text, func(t *testing.T) {
+			_, _, ok := ResolveMonitorHistoryWindowFromUserText(text)
+			assert.False(t, ok)
+		})
+	}
+}
+
+func TestMonitorHistoryWindowParserRejectsInvalidYesterdayClockRange(t *testing.T) {
+	orig := monitorNowFunc
+	loc := monitorHistoryLoc
+	monitorNowFunc = func() time.Time {
+		return time.Date(2026, 6, 22, 12, 0, 0, 0, loc)
+	}
+	t.Cleanup(func() { monitorNowFunc = orig })
+
+	_, _, ok := ResolveMonitorHistoryWindowFromUserText("查询 uhost-a 昨天 10 点到 9 点的 CPU 历史监控")
+
+	assert.False(t, ok, "invalid explicit range must not degrade to the whole yesterday")
+}
+
+func TestMonitorHistoryWindowParserRejectsUnparsedSpecificClockRanges(t *testing.T) {
+	cases := []string{
+		"查询 uhost-a 昨天 10 点到今天 9 点 CPU 历史监控",
+		"查询 uhost-a 今天下午 3 点到 4 点 CPU 历史监控",
+		"查询 uhost-a 今天下午 3 点-4 点 CPU 历史监控",
+		"查询 uhost-a 昨天 10:00-今天 9:00 CPU 历史监控",
+	}
+	for _, text := range cases {
+		t.Run(text, func(t *testing.T) {
+			_, _, ok := ResolveMonitorHistoryWindowFromUserText(text)
+			assert.False(t, ok, "unparsed explicit clock range must not degrade to a whole-day range")
+		})
+	}
+}
+
+func TestMonitorQueryHandler_HistoricalMissingWindowRejectedBeforeTool(t *testing.T) {
+	exec := &mockHandlerExecutor{result: monitorAPIResult()}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleMonitorQuery(context.Background(), HandlerRequest{
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentMonitorHistory,
+			Slots: Slots{
+				TargetRefs: []TargetRef{{
+					Type:       TargetRefName,
+					Value:      "train-a",
+					Source:     SourceUserText,
+					SourceSpan: "train-a",
+				}},
+				Metrics: []Metric{MetricCPU},
+			},
+			Retrieval:  Retrieval{Enabled: false},
+			Confidence: 0.8,
+		},
+		Resolver: resourceTestSnapshot(t),
+	})
+
+	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, FallbackTimeWindow, result.FallbackReason)
+	assert.Empty(t, exec.calls)
+}
+
+func TestMonitorQueryHandler_HistoricalWindowOver24HoursRejectedBeforeTool(t *testing.T) {
+	exec := &mockHandlerExecutor{result: monitorAPIResult()}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleMonitorQuery(context.Background(), HandlerRequest{
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentMonitorHistory,
+			Slots: Slots{
+				TargetRefs: []TargetRef{{
+					Type:       TargetRefName,
+					Value:      "train-a",
+					Source:     SourceUserText,
+					SourceSpan: "train-a",
+				}},
+				Metrics:    []Metric{MetricCPU},
+				TimeWindow: &TimeWindow{Type: TimeWindowAbsolute, Value: "2026-05-08 01:00 到 2026-05-09 02:00"},
+			},
+			Retrieval:  Retrieval{Enabled: false},
+			Confidence: 0.8,
+		},
+		Resolver: resourceTestSnapshot(t),
+	})
+
+	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, FallbackTimeWindow, result.FallbackReason)
+	assert.Empty(t, exec.calls)
+}
+
+func TestHistoricalMonitorSummaryExtractsPodListShape(t *testing.T) {
+	summary := RenderHistoricalMonitorSummary(nil, map[string]any{
+		"Data": map[string]any{
+			"PodList": []any{
+				map[string]any{
+					"UHostId": "cpod-a",
+					"Metrics": map[string]any{
+						"Cpu":         []any{monitorPoint(10, 0), monitorPoint(20, 1)},
+						"Memory":      []any{monitorPoint(30, 0), monitorPoint(40, 1)},
+						"SysDiskUsed": []any{monitorPoint(50, 0), monitorPoint(60, 1)},
+						"Gpu": []any{
+							map[string]any{
+								"GpuIndex": "0",
+								"Util":     []any{monitorPoint(70, 0), monitorPoint(80, 1)},
+								"Memory":   []any{monitorPoint(90, 0), monitorPoint(95, 1)},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	assert.Contains(t, summary, "CPU 使用率")
+	assert.Contains(t, summary, "内存使用率")
+	assert.Contains(t, summary, "系统盘使用率")
+	assert.Contains(t, summary, "GPU 使用率")
+	assert.Contains(t, summary, "显存使用率")
+	assert.NotContains(t, summary, "SysDiskUsed")
+	assert.NotContains(t, summary, "GpuIndex")
+}
+
+func TestMonitorQueryHandler_HistoricalMultipleTargetsRejectedBeforeTool(t *testing.T) {
+	exec := &mockHandlerExecutor{result: monitorAPIResult()}
+	handler := NewDemoHandler(exec)
+
+	result := handler.HandleMonitorQuery(context.Background(), HandlerRequest{
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentMonitorHistory,
+			Slots: Slots{
+				TargetRefs: []TargetRef{
+					{Type: TargetRefName, Value: "train-a", Source: SourceUserText, SourceSpan: "train-a"},
+					{Type: TargetRefName, Value: "train-b", Source: SourceUserText, SourceSpan: "train-b"},
+				},
+				TimeWindow: &TimeWindow{Type: TimeWindowPreset, Value: "yesterday"},
+			},
+			Retrieval:  Retrieval{Enabled: false},
+			Confidence: 0.8,
+		},
+		Resolver: resourceTestSnapshot(t),
+	})
+
+	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, FallbackValidation, result.FallbackReason)
+	assert.Empty(t, exec.calls)
 }
 
 func TestMonitorQueryHandler_CurrentPresetTimeWindowIsAllowed(t *testing.T) {

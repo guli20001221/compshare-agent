@@ -289,6 +289,10 @@ func TestSafeExecutorRejectsMonitorHistoryWindowCapBeforeCallingInner(t *testing
 			args: mustUnmarshalArgs(t, `{"UHostIds":["uhost-1","uhost-2"],"StartTime":1777471200,"EndTime":1777474800}`),
 		},
 		{
+			name: "historical window requires a target",
+			args: mustUnmarshalArgs(t, `{"StartTime":1777471200,"EndTime":1777474800}`),
+		},
+		{
 			name: "start time without end time is still historical monitor",
 			args: mustUnmarshalArgs(t, `{"UHostIds":["uhost-1"],"StartTime":1777471200}`),
 		},
@@ -313,10 +317,25 @@ func TestSafeExecutorRejectsMonitorHistoryWindowCapBeforeCallingInner(t *testing
 				Origin: OriginDirectLLM,
 			})
 
-			require.ErrorIs(t, err, ErrHistoricalMonitorUnsupported)
+			require.ErrorIs(t, err, ErrHistoryWindowExceeded)
 			assert.Equal(t, 0, inner.calls)
 		})
 	}
+}
+
+func TestSafeExecutorAllowsSingleTargetMonitorHistoryWindow(t *testing.T) {
+	inner := &spyExecutor{result: map[string]any{"RetCode": 0}}
+	safe := NewSafeToolExecutor(inner)
+
+	result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "GetCompShareInstanceMonitor",
+		Args:   mustUnmarshalArgs(t, `{"UHostIds":["uhost-1"],"StartTime":1777471200,"EndTime":1777474800}`),
+		Origin: OriginDirectLLM,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, 1, inner.calls)
 }
 
 func mustUnmarshalArgs(t *testing.T, raw string) map[string]any {

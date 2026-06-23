@@ -149,7 +149,7 @@ func isResourceSelectionFallbackReason(reason intent.FallbackReason) bool {
 }
 
 func (e *Engine) buildResourceSelectionForPlan(ctx context.Context, result intent.IntentRouterResult, snapshot entity.RegistrySnapshot, _ func(StepEvent)) (*pendingResourceSelection, bool, error) {
-	if result.Plan.Intent != intent.IntentMonitorQuery {
+	if result.Plan.Intent != intent.IntentMonitorQuery && result.Plan.Intent != intent.IntentMonitorHistory {
 		return nil, false, nil
 	}
 	candidates, refreshedSnapshot, truncated, ok, err := e.candidateInstancesForSelection(ctx, result.Plan, snapshot, nil)

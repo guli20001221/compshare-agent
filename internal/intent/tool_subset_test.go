@@ -118,7 +118,6 @@ func TestIntentToolSubset_NilForAmbiguousIntents(t *testing.T) {
 		IntentMixedDiagnosisKB,
 		IntentMixedBillingKB,
 		IntentBillingAccountUnsupported,
-		IntentMonitorHistory,
 		"",
 	} {
 		assert.Nil(t, IntentToolSubset(i), "expected nil for %q", i)
@@ -130,7 +129,6 @@ func TestIntentToolSubset_AllRuntimeIntentsCovered(t *testing.T) {
 		IntentUnknown:                   true,
 		IntentKnowledgeQA:               true,
 		IntentBillingAccountUnsupported: true,
-		IntentMonitorHistory:            true,
 		// deploy_model has no ReAct tool subset: the engine's tryDeployModel handler
 		// always handles the turn (it never falls through to the ReAct loop), so
 		// there is no fallback tool list to expose (B8.3).

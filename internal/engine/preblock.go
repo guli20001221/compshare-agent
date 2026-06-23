@@ -63,32 +63,12 @@ var enginePreBlock = inputguard.New(
 	// console-guidance; "挂载已有盘" reaches the create-disk workflow whose tool
 	// description already states it only creates a new disk (不支持挂载已有盘).
 	// Same pattern as the resource_shortage removal (#261).
-	inputguard.Rule{
-		Match:    isUnsupportedHistoricalMonitorQuestion,
-		Category: refusal.CategoryMonitorHistory,
-		Reply:    refusal.MonitorHistoryUnsupported,
-	},
 )
 
-// emitMonitorHistoryHardBlock centralizes the hard-block side-effects
-// for the monitor_history category — emit the observer record and
-// append the canned reply to history — so all pre-LLM routing branches
-// produce identical trace output.
-//
-// Three call sites converge here:
-//
-//  1. Chat() head keyword match — goes through enginePreBlock.Decide(),
-//     which emits its own observer fire with category from the rule
-//     literal. That path does NOT call this helper directly; the
-//     observer payload it emits is byte-equal to what this helper
-//     emits (same category, same Hit=true).
-//  2. tryPlannerDispatch → dispatch.Plan.Intent == IntentMonitorHistory
-//     (engine.go). Without this helper, pre-PR #140-followup the
-//     planner-classified path silently emitted the same reply but no
-//     observer record — partial trace coverage. PR #140 review
-//     finding fixed by routing through here.
-//  3. tryRouteDispatch → FallbackTimeWindow (engine.go). Same partial-
-//     trace bug as path 2; same fix.
+// emitMonitorHistoryHardBlock centralizes legacy monitor-history refusal side
+// effects. The main product path now supports single-instance history windows;
+// this helper remains for older guard/error paths that still need a consistent
+// trace and canned reply.
 //
 // Post-tool error paths (executeTool / friendlyToolErrorMessage with
 // tools.ErrHistoricalMonitorUnsupported) are deliberately NOT routed
