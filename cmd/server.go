@@ -65,7 +65,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := store.VerifyTraceSchema(ctx, db); err != nil {
 			cancel()
-			return fmt.Errorf("%w; run deploy/migrations/0002_create_agent_traces.sql before enabling MySQL trace persistence", err)
+			return fmt.Errorf("%w; run deploy/migrations/0002_create_agent_traces.sql before enabling PostgreSQL trace persistence", err)
 		}
 		cancel()
 	}

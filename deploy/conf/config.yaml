@@ -98,7 +98,7 @@ agent:
     # reranker_timeout_ms: 0          # RAG_RERANKER_TIMEOUT_MS (0 = reranker default 5s)
 
   # Per-turn trace/observability. sink=mysql writes one agent_traces row per
-  # turn to the MYSQL_DSN database. PREREQUISITE: ops must run
+  # turn to the PostgreSQL database. PREREQUISITE: ops must run
   # deploy/migrations/0002 + 0004 DDL first; the writer degrades to the
   # trace_json blob if 0004 is not applied. Set enabled: false to disable.
   trace:
@@ -173,7 +173,7 @@ agent:
   # `mysql` is kept for compatibility; the value is a libpq URL, e.g.
   # postgresql://user:pass@host:5432/db?sslmode=disable.
   mysql:
-    dsn: "root:+=0+^U95qD-7@tcp(117.50.121.245:4000)/compshare_agent?parseTime=true&loc=UTC&charset=utf8mb4"
+    dsn: "postgresql://root:U3JSFCnwt5dfcC5f@117.50.198.43:5432/postgres?sslmode=disable"
     max_open_conns: 20
     max_idle_conns: 5
     conn_max_lifetime: "1h"

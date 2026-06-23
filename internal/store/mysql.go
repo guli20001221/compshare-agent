@@ -35,7 +35,7 @@ func OpenMySQL(cfg config.MySQLConfig) (*sql.DB, error) {
 
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("ping mysql: %w", err)
+		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 	if err := VerifySchema(ctx, db); err != nil {
 		_ = db.Close()
@@ -66,7 +66,7 @@ func VerifySchema(ctx context.Context, db *sql.DB) error {
 }
 
 // VerifyTraceSchema checks that the optional HTTP trace table exists when the
-// server is configured to persist traces to MySQL.
+// server is configured to persist traces to PostgreSQL.
 func VerifyTraceSchema(ctx context.Context, db *sql.DB) error {
 	var v int
 	if err := db.QueryRowContext(ctx, "SELECT 1 FROM agent_traces LIMIT 1").Scan(&v); err != nil && !errors.Is(err, sql.ErrNoRows) {
