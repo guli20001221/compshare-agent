@@ -45,13 +45,75 @@ agent:
   #   agent:
   #     model: "deepseek-v4-pro"
 
-  # Default answer stack is enabled by environment defaults in the binary:
-  # COMPSHARE_DIRECT_DISPATCH_INTENTS defaults to
-  # resource,monitor,gpu_specs,stock,pricing,platform_image,custom_image,community_image.
-  # USE_KNOWLEDGE_RETRIEVAL=curated, RAG_RETRIEVAL_MODE=qwen3_rrf,
-  # USE_GROUNDED_RENDERER=llm. Set COMPSHARE_DIRECT_DISPATCH_INTENTS=off,
-  # USE_KNOWLEDGE_RETRIEVAL=off, or USE_GROUNDED_RENDERER=off only for
-  # debugging/fallback.
+  # ──────────────────────────────────────────────────────────────────────
+  # Runtime feature flags (previously env-only). Configure the whole agent
+  # from THIS file — no env vars needed for behavior. Precedence: a value set
+  # here WINS; if you omit a field the binary falls back to the matching env
+  # var, and if that is unset too, to the built-in default. The values below
+  # are the production deploy defaults (the same stack invite.sh used to
+  # forward). Set a field to false / "off" to roll one back.
+  #
+  # NOTE 截图理解 (screenshot/VL) is enabled separately by agent.ocr.model
+  # below (qwen3-vl-flash) — it is already on.
+  features:
+    # Write operations: create/start/stop/reboot/reset-password/resize-disk.
+    # Destructive actions (delete / L2 terminate) stay refused REGARDLESS.
+    mutating_tools: true
+    # Editable + guided GPU create flow (server-only; also needs the client's
+    # per-turn Features opt-in — safe if the client does not opt in).
+    confirm_form: true
+    guided_create: true
+    # Agentic-RAG answer stack (RAG as a tool the agent calls in-loop).
+    agentic_search_knowledge: true
+    knowledge_qa_agent_loop: true
+    knowledge_qa_disciplined_synthesis: true
+    external_knowledge: true            # merge external tool/ops corpus (vLLM/CUDA/Linux/PyTorch)
+    # Context-engineering optimizations.
+    session_fact_context: true          # near-term fact cache injected into context
+    react_result_projection: true       # compress large read tool results before re-feeding ReAct
+    react_history_compaction: true      # summarize old turns once history exceeds the window
+    # Eval-gated / pilot flags — kept OFF until their flag-on eval passes.
+    grounded_validator: false           # cite-or-refuse validator on SearchKnowledge synthesis (#126)
+    domain_match_guard: false           # wrong-domain REFUSE arm (#5 cite-relevance)
+    intent_scoped_react_prompt: false   # intent-specific ReAct system prompts
+    skill_executor: false               # body-driven skill executor gate (P2a gray-rollout)
+    skill_executor_diagnosis_pilots: [] # e.g. [diagnose-ssh, diagnose-billing] — requires skill_executor: true
+
+  # Knowledge retrieval / RAG. The default answer stack: curated retrieval,
+  # qwen3 RRF, LLM grounded rendering. corpus/embeddings/model/timeout fields
+  # are left empty = use the pinned built-in defaults; set them only to point
+  # at a non-default corpus or tune timeouts.
+  retrieval:
+    knowledge_retrieval: curated        # curated | off
+    mode: qwen3_rrf                     # qwen3_rrf | bm25_only | hybrid_cosine | hybrid_rerank | qwen3_full
+    grounded_renderer: llm             # llm | fast_template | off
+    # corpus_path: ""                  # COMPSHARE_KNOWLEDGE_CORPUS (default deploy/kb/stage2b_w0.jsonl)
+    # embeddings_path: ""              # COMPSHARE_KNOWLEDGE_EMBEDDINGS (default: computed from digest)
+    # external_corpus_path: ""        # COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS (default deploy/kb/external_w0.jsonl)
+    # external_embeddings_path: ""    # COMPSHARE_EXTERNAL_KNOWLEDGE_EMBEDDINGS
+    # embed_model: ""                 # MODELVERSE_EMBED_MODEL (default by mode)
+    # reranker_model: ""              # MODELVERSE_RERANKER_MODEL (default qwen3-reranker-8b)
+    # modelverse_base_url: ""         # MODELVERSE_BASE_URL (default https://api.modelverse.cn/v1)
+    # hybrid_timeout_ms: 0            # RAG_HYBRID_TIMEOUT_MS (0 = retriever default 5s)
+    # reranker_timeout_ms: 0          # RAG_RERANKER_TIMEOUT_MS (0 = reranker default 5s)
+
+  # Per-turn trace/observability. sink=mysql writes one agent_traces row per
+  # turn to the MYSQL_DSN database. PREREQUISITE: ops must run
+  # deploy/migrations/0002 + 0004 DDL first; the writer degrades to the
+  # trace_json blob if 0004 is not applied. Set enabled: false to disable.
+  trace:
+    enabled: true
+    sink: mysql                        # file | mysql | both
+    dir: ""                            # JSONL dir for file/both sinks; ignored for mysql
+
+  # Intent router / direct dispatch. Empty direct_dispatch_intents = the
+  # built-in platform set (resource,monitor,gpu_specs,stock,pricing,
+  # platform_image,custom_image,community_image,shared_image,net_accelerator).
+  # Set "off" to disable direct dispatch (everything via ReAct, debugging only).
+  planner:
+    router_mode: ""                    # "" (off) | shadow (trace-only A/B)
+    direct_dispatch_intents: ""        # "" (default set) | CSV | off
+    structured_output: ""              # "" (off) | json_object | json_schema — plumbed, not yet validated on flash
 
   # 0 or omitted uses the built-in defaults for llm / mutating /
   # read_expensive. The user_turn_* and max_tokens_per_turn fields are

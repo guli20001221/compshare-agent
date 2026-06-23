@@ -55,7 +55,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	messageStore := store.NewMessageStore(db)
 	feedbackStore := store.NewFeedbackStore(db)
 
-	serverGetenv := serverTraceGetenv(os.Getenv, cfg.Agent.MySQL.DSN)
+	// overlayGetenv makes the YAML runtime-flag sections (agent.features /
+	// retrieval / trace / planner) win over the OS env, with env as the
+	// fallback for any field omitted in YAML. Every flag the server reads below
+	// goes through it so a single agent.yaml can configure the whole server.
+	overlayGetenv := cfg.RuntimeGetenv(os.Getenv)
+	serverGetenv := serverTraceGetenv(overlayGetenv, cfg.Agent.MySQL.DSN)
 	if traceMySQLSinkEnabled(serverGetenv) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := store.VerifyTraceSchema(ctx, db); err != nil {
@@ -75,7 +80,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		defer closeServerTraceWriter(traceWriter)
 	}
 
-	pool, err := buildHTTPServerPool(cfg, messageStore, os.Getenv)
+	pool, err := buildHTTPServerPool(cfg, messageStore, overlayGetenv)
 	if err != nil {
 		return err
 	}
@@ -88,7 +93,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 	// Editable confirm form (create-flow 表单化), boot half of the double gate;
 	// the per-turn half is the client's Features opt-in. Default off.
-	switch v := os.Getenv("COMPSHARE_CONFIRM_FORM"); v {
+	switch v := overlayGetenv("COMPSHARE_CONFIRM_FORM"); v {
 	case "", "0":
 		// off (default)
 	case "1":
@@ -99,7 +104,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 	// Guided GPU create order flow. Requires COMPSHARE_CONFIRM_FORM=1 plus the
 	// client's guided_create_v1 opt-in; default off for rollout safety.
-	switch v := os.Getenv("COMPSHARE_GUIDED_CREATE"); v {
+	switch v := overlayGetenv("COMPSHARE_GUIDED_CREATE"); v {
 	case "", "0":
 		// off (default)
 	case "1":

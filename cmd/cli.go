@@ -120,84 +120,90 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// overlayGetenv makes the YAML runtime-flag sections (agent.features /
+	// retrieval / trace / planner) win over the OS env, env being the fallback
+	// for any field omitted in YAML. Every flag the CLI reads below goes through
+	// it so a single agent.yaml configures the CLI the same way it does the server.
+	getenv := cfg.RuntimeGetenv(os.Getenv)
+
 	ctx := context.Background()
 
 	// Inject a CLI UserContext when needed. COMPSHARE_USER_EMAIL is a local
 	// smoke-test stand-in for the production gateway's user_email field.
-	if cliUser, ok := cliUserContextFromConfig(cfg, os.Getenv); ok {
+	if cliUser, ok := cliUserContextFromConfig(cfg, getenv); ok {
 		ctx = tools.WithUser(ctx, cliUser)
 	}
 
 	scanner := bufio.NewScanner(os.Stdin)
 	eng := engine.New(cfg, cliConfirm(scanner))
-	mutatingToolsEnabled, unknownMutatingTools := mutatingToolsEnabledFromEnv(os.Getenv)
+	mutatingToolsEnabled, unknownMutatingTools := mutatingToolsEnabledFromEnv(getenv)
 	if unknownMutatingTools != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_ENABLE_MUTATING_TOOLS value %q\n", unknownMutatingTools)
 	}
 	eng.SetMutatingToolsEnabled(mutatingToolsEnabled)
-	reactResultProjection, unknownReactResultProjection := reactResultProjectionEnabledFromEnv(os.Getenv)
+	reactResultProjection, unknownReactResultProjection := reactResultProjectionEnabledFromEnv(getenv)
 	if unknownReactResultProjection != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_REACT_RESULT_PROJECTION value %q\n", unknownReactResultProjection)
 	}
 	eng.SetReactResultProjectionEnabled(reactResultProjection)
-	reactHistoryCompaction, unknownReactHistoryCompaction := reactHistoryCompactionEnabledFromEnv(os.Getenv)
+	reactHistoryCompaction, unknownReactHistoryCompaction := reactHistoryCompactionEnabledFromEnv(getenv)
 	if unknownReactHistoryCompaction != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_REACT_HISTORY_COMPACTION value %q\n", unknownReactHistoryCompaction)
 	}
 	eng.SetReactHistoryCompactionEnabled(reactHistoryCompaction)
-	intentScopedReActPrompt, unknownIntentScopedReActPrompt := intentScopedReActPromptEnabledFromEnv(os.Getenv)
+	intentScopedReActPrompt, unknownIntentScopedReActPrompt := intentScopedReActPromptEnabledFromEnv(getenv)
 	if unknownIntentScopedReActPrompt != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_INTENT_SCOPED_REACT_PROMPT value %q\n", unknownIntentScopedReActPrompt)
 	}
 	eng.SetIntentScopedReActPromptEnabled(intentScopedReActPrompt)
-	useSkillExecutor, unknownSkillExecutor := useSkillExecutorFromEnv(os.Getenv)
+	useSkillExecutor, unknownSkillExecutor := useSkillExecutorFromEnv(getenv)
 	if unknownSkillExecutor != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR value %q\n", unknownSkillExecutor)
 	}
 	engine.SetSkillExecutorEnabled(useSkillExecutor)
-	agenticSearch, unknownAgenticSearch := agenticSearchKnowledgeEnabledFromEnv(os.Getenv)
+	agenticSearch, unknownAgenticSearch := agenticSearchKnowledgeEnabledFromEnv(getenv)
 	if unknownAgenticSearch != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE value %q\n", unknownAgenticSearch)
 	}
 	tools.SetAgenticSearchKnowledgeEnabled(agenticSearch)
-	groundedValidator, unknownGroundedValidator := groundedAnswerValidatorEnabledFromEnv(os.Getenv)
+	groundedValidator, unknownGroundedValidator := groundedAnswerValidatorEnabledFromEnv(getenv)
 	if unknownGroundedValidator != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_GROUNDED_VALIDATOR value %q\n", unknownGroundedValidator)
 	}
 	engine.SetGroundedAnswerValidatorEnabled(groundedValidator)
-	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(os.Getenv)
+	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(getenv)
 	if unknownDomainMatchGuard != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q\n", unknownDomainMatchGuard)
 	}
 	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
-	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(os.Getenv)
+	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
 	if unknownKnowledgeQAAgentLoop != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q\n", unknownKnowledgeQAAgentLoop)
 	}
 	engine.SetKnowledgeQAAgentLoopEnabled(knowledgeQAAgentLoop)
-	disciplinedKnowledgeQASynthesis, unknownDisciplinedKnowledgeQASynthesis := disciplinedKnowledgeQASynthesisEnabledFromEnv(os.Getenv)
+	disciplinedKnowledgeQASynthesis, unknownDisciplinedKnowledgeQASynthesis := disciplinedKnowledgeQASynthesisEnabledFromEnv(getenv)
 	if unknownDisciplinedKnowledgeQASynthesis != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS value %q\n", unknownDisciplinedKnowledgeQASynthesis)
 	}
 	engine.SetDisciplinedKnowledgeQASynthesisEnabled(disciplinedKnowledgeQASynthesis)
-	diagnosisPilots, unknownDiagnosisPilots := skillExecutorDiagnosisPilotsFromEnv(os.Getenv)
+	diagnosisPilots, unknownDiagnosisPilots := skillExecutorDiagnosisPilotsFromEnv(getenv)
 	for _, value := range unknownDiagnosisPilots {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS value %q\n", value)
 	}
 	engine.SetSkillExecutorDiagnosisPilots(diagnosisPilots)
-	routeIntents, unknownRouteValues := intentPlannerRouteIntentsFromEnv(os.Getenv)
+	routeIntents, unknownRouteValues := intentPlannerRouteIntentsFromEnv(getenv)
 	for _, value := range unknownRouteValues {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_DIRECT_DISPATCH_INTENTS value %q\n", value)
 	}
 	routeEnabled := len(routeIntents) > 0
-	shadowEnabled := intentPlannerShadowEnabled(os.Getenv)
-	knowledgeRetrievalRequested, unknownKnowledgeRetrieval := knowledgeRetrievalModeFromEnv(os.Getenv)
+	shadowEnabled := intentPlannerShadowEnabled(getenv)
+	knowledgeRetrievalRequested, unknownKnowledgeRetrieval := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledgeRetrieval != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q\n", unknownKnowledgeRetrieval)
 	}
-	knowledgeRetriever, knowledgeRetrievalEnabled, knowledgeErr := knowledgeRetrieverFromEnv(os.Getenv)
+	knowledgeRetriever, knowledgeRetrievalEnabled, knowledgeErr := knowledgeRetrieverFromEnv(getenv)
 	applyKnowledgeRetrieverStartup(eng, knowledgeRetrievalRequested, knowledgeRetriever, knowledgeRetrievalEnabled, knowledgeErr)
-	groundedRendererMode, unknownGroundedGeneratorMode := groundedRendererModeFromEnv(os.Getenv)
+	groundedRendererMode, unknownGroundedGeneratorMode := groundedRendererModeFromEnv(getenv)
 	if unknownGroundedGeneratorMode != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_GROUNDED_RENDERER value %q\n", unknownGroundedGeneratorMode)
 	}
@@ -215,7 +221,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			eng.SetFastTemplate(true)
 		}
 	}
-	plannerStructuredOutput, unknownPlannerStructuredOutput := plannerStructuredOutputModeFromEnv(os.Getenv)
+	plannerStructuredOutput, unknownPlannerStructuredOutput := plannerStructuredOutputModeFromEnv(getenv)
 	if unknownPlannerStructuredOutput != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT value %q\n", unknownPlannerStructuredOutput)
 	}
@@ -226,7 +232,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			Model:          cfg.Agent.LLM.Model,
 		})
 	}
-	traceWriter, traceEnabled, traceErr := traceWriterFromEnv(os.Getenv)
+	traceWriter, traceEnabled, traceErr := traceWriterFromEnv(getenv)
 	if traceErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: trace disabled: %v\n", traceErr)
 		traceEnabled = false

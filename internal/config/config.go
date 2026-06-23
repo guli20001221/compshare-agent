@@ -60,6 +60,15 @@ type AgentConfig struct {
 	Meta  MetaConfig  `yaml:"meta"`
 	STS   STSConfig   `yaml:"sts"`
 	OCR   OCRConfig   `yaml:"ocr"`
+
+	// Runtime feature flags, previously env-only (read in cmd/). These are
+	// overlaid on os.Getenv via RuntimeGetenv with "YAML wins, env fallback"
+	// precedence — see runtime.go. Omitting any section preserves the prior
+	// env-driven behavior unchanged.
+	Features  FeaturesConfig  `yaml:"features"`
+	Retrieval RetrievalConfig `yaml:"retrieval"`
+	Trace     TraceConfig     `yaml:"trace"`
+	Planner   PlannerConfig   `yaml:"planner"`
 }
 
 // HTTPConfig holds settings for the HTTP server mode (compshare-agent server).
@@ -419,44 +428,69 @@ func validateMetaConfig(meta *MetaConfig) error {
 	return nil
 }
 
+// resolveRequiredSecret resolves a required secret field. It accepts EITHER a
+// ${ENV_VAR} placeholder (resolved from the environment; the named var must be
+// non-empty) OR an inline literal value. Inline literals are permitted so a
+// production agent.yaml can be fully self-contained with no environment variables
+// (the YAML-first config migration). KEEP literals out of the committed example:
+// deploy/conf/agent.yaml is gitignored and the pre-commit secret scanner guards
+// against accidental commits, so the committed agent.yaml.example must keep the
+// ${ENV_VAR} placeholders. envKey names the conventional env var for the error
+// message only; any ${...} placeholder is honored.
 func resolveRequiredSecret(field *string, yamlPath, envKey string) error {
 	raw := strings.TrimSpace(*field)
 	if raw == "" {
-		return fmt.Errorf("%s must use ${%s} placeholder; literal or empty secrets are not allowed", yamlPath, envKey)
+		return fmt.Errorf("%s is required: use the ${%s} placeholder or an inline value", yamlPath, envKey)
 	}
-	if raw != placeholder(envKey) {
-		return fmt.Errorf("%s must use ${%s} placeholder; literal secrets are not allowed", yamlPath, envKey)
+	if strings.HasPrefix(raw, "${") && strings.HasSuffix(raw, "}") {
+		key := strings.TrimSuffix(strings.TrimPrefix(raw, "${"), "}")
+		if key == "" {
+			return fmt.Errorf("%s placeholder must name an environment variable", yamlPath)
+		}
+		value := os.Getenv(key)
+		if value == "" {
+			return fmt.Errorf("environment variable %s is required for %s", key, yamlPath)
+		}
+		*field = value
+		return nil
 	}
-	value := os.Getenv(envKey)
-	if value == "" {
-		return fmt.Errorf("environment variable %s is required for %s", envKey, yamlPath)
+	if strings.HasPrefix(raw, "$") {
+		return fmt.Errorf("%s must use ${ENV_VAR} placeholder syntax or an inline value", yamlPath)
 	}
-	*field = value
+	// Inline literal — pass through unchanged.
+	*field = raw
 	return nil
 }
 
+// resolveOptionalPlaceholder resolves an optional credential-ish field
+// (public_key / private_key / project_id). Empty is allowed (left unchanged). A
+// ${ENV_VAR} placeholder is resolved from the environment (the named var must be
+// non-empty, matching the prior contract). An inline literal is now permitted
+// too (YAML-first migration), so a self-contained agent.yaml needs no env. A
+// "$"-prefixed value that is not valid ${...} is rejected as a typo.
 func resolveOptionalPlaceholder(field *string, yamlPath string) error {
 	raw := strings.TrimSpace(*field)
 	if raw == "" {
 		return nil
 	}
-	if !strings.HasPrefix(raw, "${") || !strings.HasSuffix(raw, "}") {
-		return fmt.Errorf("%s must use ${ENV_VAR} placeholder or be empty", yamlPath)
+	if strings.HasPrefix(raw, "${") && strings.HasSuffix(raw, "}") {
+		envKey := strings.TrimSuffix(strings.TrimPrefix(raw, "${"), "}")
+		if envKey == "" {
+			return fmt.Errorf("%s placeholder must name an environment variable", yamlPath)
+		}
+		value := os.Getenv(envKey)
+		if value == "" {
+			return fmt.Errorf("environment variable %s is required for %s", envKey, yamlPath)
+		}
+		*field = value
+		return nil
 	}
-	envKey := strings.TrimSuffix(strings.TrimPrefix(raw, "${"), "}")
-	if envKey == "" {
-		return fmt.Errorf("%s placeholder must name an environment variable", yamlPath)
+	if strings.HasPrefix(raw, "$") {
+		return fmt.Errorf("%s must use ${ENV_VAR} placeholder syntax or be a plain literal", yamlPath)
 	}
-	value := os.Getenv(envKey)
-	if value == "" {
-		return fmt.Errorf("environment variable %s is required for %s", envKey, yamlPath)
-	}
-	*field = value
+	// Inline literal — pass through unchanged.
+	*field = raw
 	return nil
-}
-
-func placeholder(envKey string) string {
-	return "${" + envKey + "}"
 }
 
 // resolveOptionalDSN resolves any ${ENV_VAR} placeholder in the DSN field.
