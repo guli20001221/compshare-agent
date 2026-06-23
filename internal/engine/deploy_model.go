@@ -77,6 +77,7 @@ type deployPlan struct {
 	MatchKind    string // the matcher's judgment of the image↔model fit: "exact" (a ready-made image FOR the named model / the named app) | "base" (a framework base to self-host the model on); drives the self-deploy hint. May be "" (legacy/app → treated as exact, no hint).
 	MatchNote    string // human-readable selection rationale (GPU sizing + any fallback)
 	ChosenZone   string // resolved create-zone (preference + per-zone stock); "" → saga default
+	ZoneLabel    string // display-only zone name, e.g. 华北一C. ChosenZone remains the create API value.
 	FallbackNote string // set when the create-zone differs from the primary (sold-out fallback / user zone)
 
 	// Quantization + SupportedGPUs are retained so the stock-shortage reply can
@@ -643,6 +644,7 @@ func (e *Engine) matchDeployImage(ctx context.Context, userMsg, userZone string,
 	}
 	plan.GpuType = gpuType
 	plan.ChosenZone = zone
+	plan.ZoneLabel = e.zoneDisplayName(ctx, zone)
 	plan.MatchNote = gpuNote
 	plan.FallbackNote = fallbackNote
 	finalZoneIsPod, _ := e.zoneIsPod(ctx, zone)
@@ -870,7 +872,7 @@ func (e *Engine) selectDeployZoneAndGPU(ctx context.Context, availResult map[str
 	if strings.TrimSpace(userZone) != "" {
 		return e.selectDeployZoneAndGPUInZones(ctx, availResult, plan, supported, quant, userMsg, strings.TrimSpace(userZone), []string{strings.TrimSpace(userZone)}, true)
 	}
-	candidates := deployCandidateZones(availResult)
+	candidates := e.deployCandidateZones(ctx, availResult)
 	return e.selectDeployZoneAndGPUInZones(ctx, availResult, plan, supported, quant, userMsg, "", candidates, false)
 }
 
@@ -907,7 +909,7 @@ func (e *Engine) selectDeployZoneAndGPUInZones(ctx context.Context, availResult 
 			// implies the primary was checked and rejected — that would mislead.
 			fb := ""
 			if z != primary && primarySoldOut {
-				fb = fmt.Sprintf("%s 暂时售罄，已自动切换到 %s 创建。", primary, z)
+				fb = fmt.Sprintf("%s 暂时售罄，已自动切换到 %s 创建。", e.zoneDisplayName(ctx, primary), e.zoneDisplayName(ctx, z))
 			}
 			return z, gt, note, fb, nil
 		case zoneSoldOut:
@@ -918,7 +920,7 @@ func (e *Engine) selectDeployZoneAndGPUInZones(ctx context.Context, availResult 
 	}
 
 	if strictUserZone {
-		return "", "", "", "", deployUserError{msg: fmt.Sprintf("你指定的可用区 %s 当前没有可承载该工作负载且有货的机型，可换一个有货的可用区或换一个机型再试。", strings.TrimSpace(userZone))}
+		return "", "", "", "", deployUserError{msg: fmt.Sprintf("你指定的可用区 %s 当前没有可承载该工作负载且有货的机型，可换一个有货的可用区或换一个机型再试。", e.zoneDisplayName(ctx, strings.TrimSpace(userZone)))}
 	}
 	if firstZone != "" {
 		// Sizeable but no zone confirmed in stock → proceed on the preferred zone;
@@ -954,6 +956,43 @@ func deployCandidateZones(availResult map[string]any) []string {
 	if len(out) == 0 {
 		return deployPreferredZones
 	}
+	return out
+}
+
+func (e *Engine) deployCandidateZones(ctx context.Context, availResult map[string]any) []string {
+	candidates := deployCandidateZones(availResult)
+	list, err := e.supportZoneList(ctx)
+	if err != nil || len(list) == 0 {
+		return candidates
+	}
+	return sortDeployCandidateZonesBySupportZones(candidates, list)
+}
+
+func sortDeployCandidateZonesBySupportZones(candidates []string, support []zones.ZoneInfo) []string {
+	if len(candidates) == 0 || len(support) == 0 {
+		return candidates
+	}
+	order := make(map[string]int, len(support))
+	for i, z := range support {
+		if z.Zone != "" {
+			order[strings.ToLower(z.Zone)] = i
+		}
+	}
+	out := append([]string(nil), candidates...)
+	sort.SliceStable(out, func(i, j int) bool {
+		oi, okI := order[strings.ToLower(out[i])]
+		oj, okJ := order[strings.ToLower(out[j])]
+		switch {
+		case okI && okJ:
+			return oi < oj
+		case okI:
+			return true
+		case okJ:
+			return false
+		default:
+			return false
+		}
+	})
 	return out
 }
 
@@ -1220,6 +1259,20 @@ func (e *Engine) zoneDescribeMap(ctx context.Context) map[string]string {
 		}
 	}
 	return m
+}
+
+func (e *Engine) zoneDisplayName(ctx context.Context, zone string) string {
+	zone = strings.TrimSpace(zone)
+	if zone == "" {
+		return ""
+	}
+	list, err := e.supportZoneList(ctx)
+	if err == nil {
+		if d := zones.DescribeFor(list, zone); d != "" {
+			return d
+		}
+	}
+	return zone
 }
 
 func (e *Engine) zoneIDMap(ctx context.Context) map[string]uint32 {
@@ -1854,8 +1907,8 @@ func buildDeployReply(plan deployPlan, uHostId string, host map[string]any, stat
 	if plan.ImageName != "" {
 		b.WriteString(fmt.Sprintf("- 镜像：%s（%s）\n", plan.ImageName, sourceLabel(plan.ImageSource)))
 	}
-	if plan.ChosenZone != "" {
-		b.WriteString(fmt.Sprintf("- 可用区：%s\n", plan.ChosenZone))
+	if zone := deployPlanZoneDisplay(plan); zone != "" {
+		b.WriteString(fmt.Sprintf("- 可用区：%s\n", zone))
 	}
 	if name := stringFromHost(host, "Name"); name != "" {
 		b.WriteString(fmt.Sprintf("- 名称：%s\n", name))
@@ -1914,8 +1967,8 @@ func buildAdviseReply(plan deployPlan, mutatingEnabled bool) string {
 	if plan.ImageName != "" {
 		b.WriteString(fmt.Sprintf("- 推荐镜像：%s（%s）\n", plan.ImageName, sourceLabel(plan.ImageSource)))
 	}
-	if plan.ChosenZone != "" {
-		b.WriteString(fmt.Sprintf("- 可用区：%s\n", plan.ChosenZone))
+	if zone := deployPlanZoneDisplay(plan); zone != "" {
+		b.WriteString(fmt.Sprintf("- 可用区：%s\n", zone))
 	}
 	if plan.MatchNote != "" {
 		b.WriteString("- 选型说明：" + plan.MatchNote + "\n")
@@ -1938,6 +1991,13 @@ func buildAdviseReply(plan deployPlan, mutatingEnabled bool) string {
 		b.WriteString("\n以上为推荐配置，尚未为你创建实例。确认后回复「帮我部署」我就开始创建。")
 	}
 	return b.String()
+}
+
+func deployPlanZoneDisplay(plan deployPlan) string {
+	if strings.TrimSpace(plan.ZoneLabel) != "" {
+		return strings.TrimSpace(plan.ZoneLabel)
+	}
+	return strings.TrimSpace(plan.ChosenZone)
 }
 
 // deploySelfDeployHint returns the "no ready-made image → here's how to self-host"

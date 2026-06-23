@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -55,11 +56,45 @@ func formImagesFixture() map[string]any {
 	}}
 }
 
+func formCommunityImagesFixture() map[string]any {
+	return map[string]any{"CompshareImageGroup": []any{
+		map[string]any{
+			"ImageName":    "社区 Stable Diffusion",
+			"CreatedCount": float64(200),
+			"Data": []any{
+				map[string]any{"CompShareImageId": "cimg-sd-001", "Name": "v1.9"},
+			},
+		},
+		map[string]any{
+			"ImageName":    "社区 DeepSeek R1 32B",
+			"CreatedCount": float64(100),
+			"Data": []any{
+				map[string]any{"CompShareImageId": "cimg-ds-r1-32b", "Name": "32B"},
+			},
+		},
+	}}
+}
+
+func formManyCommunityImagesFixture(n int) map[string]any {
+	groups := make([]any, 0, n)
+	for i := 0; i < n; i++ {
+		groups = append(groups, map[string]any{
+			"ImageName":    fmt.Sprintf("社区热门镜像 %02d", i+1),
+			"CreatedCount": float64(100 - i),
+			"Data": []any{
+				map[string]any{"CompShareImageId": fmt.Sprintf("cimg-hot-%02d", i+1), "Name": "latest"},
+			},
+		})
+	}
+	return map[string]any{"CompshareImageGroup": groups}
+}
+
 // formMockExecutor seeds all create-workflow calls with stock available for
 // both the 4090 (16C/64G) and A800 (32C/128G) specs.
 func formMockExecutor() *mockExecutor {
 	return &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareImages":                 formImagesFixture(),
+		"DescribeCommunityImages":                 formCommunityImagesFixture(),
 		"DescribeAvailableCompShareInstanceTypes": formCatalogFixture(),
 		"CheckCompShareResourceCapacity": {"Specs": []any{
 			map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
@@ -173,9 +208,9 @@ func TestBuildCreateConfirmForm_ZoneOptionsUseDisplayNames(t *testing.T) {
 	zone := fieldByKey(t, form, "Zone")
 	// Values stay the zone ids — the create API speaks zone ids, not names.
 	assert.Equal(t, []string{"cn-wlcb-01", "cn-sh2-02"}, optionValues(zone))
-	// Labels carry the display name + id so the dropdown is human-readable.
-	assert.Equal(t, "华北二A (cn-wlcb-01)", zone.Options[0].Label)
-	assert.Equal(t, "上海二B (cn-sh2-02)", zone.Options[1].Label)
+	// Labels carry the display name only; Values stay the zone ids.
+	assert.Equal(t, "华北二A", zone.Options[0].Label)
+	assert.Equal(t, "上海二B", zone.Options[1].Label)
 }
 
 func TestBuildCreateConfirmForm_ZoneLabelsFallBackToIdWithoutDescribes(t *testing.T) {
@@ -224,6 +259,22 @@ func TestBuildCreateConfirmForm_PodZoneFiltersVMImages(t *testing.T) {
 
 	img := fieldByKey(t, form, "ImageId")
 	assert.Equal(t, []string{"img-container", "img-container-2"}, optionValues(img))
+}
+
+func TestBuildCreateConfirmArgs_UsesZoneLabelForDisplayOnly(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType": "4090",
+		"Zone":    "cn-sh2-02",
+		"ZoneDescribes": map[string]string{
+			"cn-sh2-02": "上海二B",
+		},
+	})
+
+	args, err := buildCreateConfirmArgs(wfCtx)
+	require.NoError(t, err)
+
+	assert.Equal(t, "cn-sh2-02", args["Zone"])
+	assert.Equal(t, "上海二B", args["ZoneLabel"])
 }
 
 // ---------------------------------------------------------------------------
@@ -315,7 +366,7 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 
 		switch form.Step.Index {
 		case 1:
-			assert.Equal(t, 5, form.Step.Total)
+			assert.Equal(t, 6, form.Step.Total)
 			assert.Equal(t, "确认选择", form.Step.PrimaryLabel)
 			assert.Equal(t, "跳过", form.Step.SecondaryLabel)
 			assert.True(t, form.Step.Skippable)
@@ -342,6 +393,11 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			assert.Contains(t, optionValues(spec), "cn-wlcb-01|1|32|131072")
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"CpuMemory": "cn-wlcb-01|1|32|131072"}}
 		case 5:
+			purpose := fieldByKey(t, form, "ImagePurpose")
+			assert.Equal(t, "deep_learning", purpose.Value)
+			assert.Equal(t, "确认选择", form.Step.PrimaryLabel)
+			return ConfirmResolution{Confirmed: true}
+		case 6:
 			assert.Equal(t, "A800", args["GpuType"])
 			assert.Equal(t, float64(1), args["Gpu"])
 			assert.Equal(t, float64(32), args["CPU"])
@@ -359,7 +415,7 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.True(t, result.Success)
-	assert.Equal(t, []int{1, 2, 3, 4, 5}, seenSteps)
+	assert.Equal(t, []int{1, 2, 3, 4, 5, 6}, seenSteps)
 
 	var capacityCalls, priceCalls int
 	var created map[string]any
@@ -419,7 +475,7 @@ func TestCreateInstanceGuided_PassesZoneIDToCreatePathAPIs(t *testing.T) {
 	}
 }
 
-func TestCreateInstanceGuided_ExplicitFullSpecShowsFinalOnly(t *testing.T) {
+func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *testing.T) {
 	executor := formMockExecutor()
 	var seenSteps []int
 
@@ -447,6 +503,7 @@ func TestCreateInstanceGuided_ExplicitFullSpecShowsFinalOnly(t *testing.T) {
 		"Cpu":               float64(32),
 		"Memory":            float64(131072),
 		"GuidedRecommended": true,
+		"ImageName":         "PyTorch",
 	})
 
 	require.NoError(t, err)
@@ -476,7 +533,7 @@ func TestCreateInstanceGuided_ExplicitGPUOffersIntentFamily(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, form.Step)
 	assert.Equal(t, 1, form.Step.Index)
-	assert.Equal(t, 5, form.Step.Total)
+	assert.Equal(t, 6, form.Step.Total)
 	gpu := fieldByKey(t, form, "GpuType")
 	assert.Equal(t, []string{"4090", "4090_48G"}, optionValues(gpu))
 }
@@ -547,6 +604,240 @@ func TestGuidedImageFormOptionsFiltersToRequestedImageIntent(t *testing.T) {
 	img := fieldByKey(t, form, "ImageId")
 	assert.Equal(t, "img-torch-new", img.Value)
 	assert.Equal(t, []string{"img-torch-new", "img-torch-old"}, optionValues(img))
+	assert.Nil(t, form.Field("ImagePurpose"), "explicit image intent should not ask a generic purpose question")
+}
+
+func TestGuidedImagePurposeFormAppearsWhenNoImageIntent(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090"})
+
+	form, err := buildGuidedImagePurposeForm(wfCtx)
+	require.NoError(t, err)
+
+	purpose := fieldByKey(t, form, "ImagePurpose")
+	assert.Equal(t, "deep_learning", purpose.Value)
+	assert.Equal(t, []string{"deep_learning", "llm_inference", "image_video", "system", "platform_app", "community"}, optionValues(purpose))
+}
+
+func TestGuidedImagePurposeStepSkipsWhenImageIntentExists(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImageName": "torch"})
+	skip, err := shouldSkipGuidedImagePurposeStep(wfCtx)
+	require.NoError(t, err)
+	assert.True(t, skip)
+}
+
+func TestGuidedFinalFormUsesPurposeToNarrowImages(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImagePurpose": "deep_learning"})
+	wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-win", "Name": "Windows-nvidia 2022", "ImageType": "System", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-torch", "Name": "cuda128_torch291_py312", "ImageType": "App", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-vllm", "Name": "vLLM v0.12.0", "ImageType": "App", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI基础镜像0.10.0", "ImageType": "App", "Status": "Available"},
+	}}
+
+	form, err := buildGuidedFinalForm(wfCtx)
+	require.NoError(t, err)
+
+	img := fieldByKey(t, form, "ImageId")
+	assert.Equal(t, []string{"img-torch"}, optionValues(img))
+	assert.Equal(t, "img-torch", img.Value)
+}
+
+func TestGuidedFinalFormPurposeSwitchNarrowsLLMImages(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImagePurpose": "llm_inference"})
+	wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-win", "Name": "Windows-nvidia 2022", "ImageType": "System", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-torch", "Name": "cuda128_torch291_py312", "ImageType": "App", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-vllm", "Name": "vLLM v0.12.0", "ImageType": "App", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-ollama", "Name": "Ollama v0.13.1", "ImageType": "App", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI基础镜像0.10.0", "ImageType": "App", "Status": "Available"},
+	}}
+
+	form, err := buildGuidedFinalForm(wfCtx)
+	require.NoError(t, err)
+
+	img := fieldByKey(t, form, "ImageId")
+	assert.Equal(t, []string{"img-vllm", "img-ollama"}, optionValues(img))
+}
+
+func TestGuidedImagePurposeOverridesClearStaleImageSelection(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType":          "4090",
+		"ImagePurpose":     "deep_learning",
+		"CompShareImageId": "img-torch",
+		"ImageName":        "cuda128_torch291_py312",
+	})
+
+	require.NoError(t, applyGuidedImagePurposeOverrides(wfCtx, map[string]string{"ImagePurpose": "llm_inference"}))
+
+	assert.Equal(t, "llm_inference", wfCtx.Params["ImagePurpose"])
+	assert.NotContains(t, wfCtx.Params, "CompShareImageId")
+	assert.NotContains(t, wfCtx.Params, "ImageName")
+}
+
+func TestGuidedImagePurposeOverrideCommunitySwitchesSource(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType":          "4090",
+		"ImagePurpose":     "deep_learning",
+		"ImageSource":      "platform",
+		"CompShareImageId": "img-torch",
+		"ImageName":        "cuda128_torch291_py312",
+	})
+
+	require.NoError(t, applyGuidedImagePurposeOverrides(wfCtx, map[string]string{"ImagePurpose": "community"}))
+
+	assert.Equal(t, "community", wfCtx.Params["ImagePurpose"])
+	assert.Equal(t, "community", wfCtx.Params["ImageSource"])
+	assert.NotContains(t, wfCtx.Params, "CompShareImageId")
+	assert.NotContains(t, wfCtx.Params, "ImageName")
+}
+
+func TestCreateInstanceGuided_CommunityPurposeQueriesCommunityImages(t *testing.T) {
+	executor := formMockExecutor()
+	var finalImageOptions []string
+
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		require.NotNil(t, form.Step)
+		switch form.Step.Index {
+		case 1, 2, 3, 4:
+			return ConfirmResolution{Confirmed: true}
+		case 5:
+			purpose := fieldByKey(t, form, "ImagePurpose")
+			assert.Contains(t, optionValues(purpose), "community")
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImagePurpose": "community"}}
+		case 6:
+			image := fieldByKey(t, form, "ImageId")
+			finalImageOptions = optionValues(image)
+			return ConfirmResolution{Confirmed: false}
+		default:
+			t.Fatalf("unexpected guided form step %d", form.Step.Index)
+			return ConfirmResolution{}
+		}
+	})
+
+	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, []string{"cimg-sd-001", "cimg-ds-r1-32b"}, finalImageOptions)
+	assert.NotContains(t, finalImageOptions, "img-001")
+	assert.NotContains(t, finalImageOptions, "img-002")
+
+	var calls []string
+	for _, c := range executor.calls {
+		calls = append(calls, c.action)
+	}
+	assert.Contains(t, calls, "DescribeCompShareImages")
+	assert.Contains(t, calls, "DescribeCommunityImages")
+
+	communityCall, ok := findExecutorCall(executor.calls, "DescribeCommunityImages")
+	require.True(t, ok)
+	assert.Equal(t, maxGuidedCommunityImageQueryLimit, communityCall.args["Limit"])
+	assert.Equal(t, true, communityCall.args["ExcludeReadme"])
+	sortCondition, _ := communityCall.args["SortCondition"].(map[string]any)
+	require.NotNil(t, sortCondition)
+	assert.Equal(t, "CreatedCount", sortCondition["Field"])
+	assert.Equal(t, false, sortCondition["ASC"])
+}
+
+func TestCreateInstanceGuided_CommunityPurposeOverridesInitialPlatformSource(t *testing.T) {
+	executor := formMockExecutor()
+	var finalImageOptions []string
+
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		require.NotNil(t, form.Step)
+		switch form.Step.Index {
+		case 1, 2, 3, 4:
+			return ConfirmResolution{Confirmed: true}
+		case 5:
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImagePurpose": "community"}}
+		case 6:
+			finalImageOptions = optionValues(fieldByKey(t, form, "ImageId"))
+			return ConfirmResolution{Confirmed: false}
+		default:
+			t.Fatalf("unexpected guided form step %d", form.Step.Index)
+			return ConfirmResolution{}
+		}
+	})
+
+	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+		"GpuType":     "4090",
+		"ImageSource": "platform",
+	})
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, []string{"cimg-sd-001", "cimg-ds-r1-32b"}, finalImageOptions)
+
+	var communityCalls int
+	for _, c := range executor.calls {
+		if c.action == "DescribeCommunityImages" {
+			communityCalls++
+		}
+	}
+	assert.Equal(t, 1, communityCalls)
+}
+
+func TestCommunityImageCandidatesUseOneLatestVersionPerGroup(t *testing.T) {
+	groups := []any{
+		map[string]any{
+			"ImageName": "LiveTalking",
+			"Data": []any{
+				map[string]any{"CompShareImageId": "cimg-live-new", "Name": "2026-06"},
+				map[string]any{"CompShareImageId": "cimg-live-old", "Name": "2026-05"},
+			},
+		},
+		map[string]any{
+			"ImageName": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+			"Data": []any{
+				map[string]any{"CompShareImageId": "cimg-ltx-new", "Name": "latest"},
+			},
+		},
+	}
+
+	candidates, labels := communityImageCandidates(groups)
+
+	require.Len(t, candidates, 2)
+	assert.Equal(t, "cimg-live-new", candidates[0].ID)
+	assert.Equal(t, "LiveTalking", labels["cimg-live-new"])
+	assert.Equal(t, "cimg-ltx-new", candidates[1].ID)
+	assert.NotContains(t, labels, "cimg-live-old")
+}
+
+func TestGuidedImageFormOptionsShowsTopTenCommunityGroups(t *testing.T) {
+	params := map[string]any{"GpuType": "4090", "ImagePurpose": "community"}
+	images := formManyCommunityImagesFixture(12)
+
+	_, opts := guidedImageFormOptions(params, images, "4090")
+
+	require.Len(t, opts, 10)
+	assert.Equal(t, "cimg-hot-01", opts[0].Value)
+	assert.Equal(t, "cimg-hot-10", opts[9].Value)
+}
+
+func TestNormalizeImagePurposeKeepsLegacyAppCommunityAsPlatformApp(t *testing.T) {
+	assert.Equal(t, imagePurposePlatformApp, normalizeImagePurpose(imagePurposeAppCommunity))
+}
+
+func TestCreateInstanceGuided_ZoneCardUsesDisplayNamesAndRawValues(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType": "4090",
+		"Zone":    "cn-sh2-02",
+		"ZoneDescribes": map[string]string{
+			"cn-wlcb-01": "华北二A",
+			"cn-sh2-02":  "上海二B",
+		},
+	})
+
+	form, err := buildGuidedZoneForm(wfCtx)
+	require.NoError(t, err)
+
+	zone := fieldByKey(t, form, "Zone")
+	assert.ElementsMatch(t, []string{"cn-wlcb-01", "cn-sh2-02"}, optionValues(zone))
+	assert.Equal(t, "上海二B", optionByValue(t, zone, "cn-sh2-02").Label)
+	assert.Equal(t, "华北二A", optionByValue(t, zone, "cn-wlcb-01").Label)
+	assert.Equal(t, "上海二B", optionByValue(t, zone, "cn-sh2-02").Meta["ZoneLabel"])
 }
 
 func TestCreateInstanceGuided_ExplicitGPUVariantStaysExact(t *testing.T) {
@@ -746,9 +1037,9 @@ func TestCreateInstanceGuided_FinalEditRevalidatesPriceBeforeCreate(t *testing.T
 		require.NotNil(t, form)
 		require.NotNil(t, form.Step)
 		switch form.Step.Index {
-		case 1, 2, 3, 4:
+		case 1, 2, 3, 4, 5:
 			return ConfirmResolution{Confirmed: true}
-		case 5:
+		case 6:
 			finalRounds++
 			if finalRounds == 1 {
 				return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageId": "img-002"}}
