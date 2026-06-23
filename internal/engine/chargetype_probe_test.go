@@ -18,7 +18,7 @@ func TestChargeTypePostpayProbe(t *testing.T) {
 	if os.Getenv("CHARGE_PROBE") != "1" {
 		t.Skip("set CHARGE_PROBE=1 + live creds to run")
 	}
-	cfg, err := config.Load("../../deploy/conf/agent.yaml")
+	cfg, err := config.Load("../../deploy/conf/config.yaml")
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}

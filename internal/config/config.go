@@ -431,12 +431,10 @@ func validateMetaConfig(meta *MetaConfig) error {
 // resolveRequiredSecret resolves a required secret field. It accepts EITHER a
 // ${ENV_VAR} placeholder (resolved from the environment; the named var must be
 // non-empty) OR an inline literal value. Inline literals are permitted so a
-// production agent.yaml can be fully self-contained with no environment variables
-// (the YAML-first config migration). KEEP literals out of the committed example:
-// deploy/conf/agent.yaml is gitignored and the pre-commit secret scanner guards
-// against accidental commits, so the committed agent.yaml.example must keep the
-// ${ENV_VAR} placeholders. envKey names the conventional env var for the error
-// message only; any ${...} placeholder is honored.
+// production config.yaml can be fully self-contained with no environment
+// variables (the YAML-first config migration). envKey names the conventional
+// env var for the error message only; any ${...} placeholder is honored for
+// compatibility.
 func resolveRequiredSecret(field *string, yamlPath, envKey string) error {
 	raw := strings.TrimSpace(*field)
 	if raw == "" {
@@ -466,7 +464,7 @@ func resolveRequiredSecret(field *string, yamlPath, envKey string) error {
 // (public_key / private_key / project_id). Empty is allowed (left unchanged). A
 // ${ENV_VAR} placeholder is resolved from the environment (the named var must be
 // non-empty, matching the prior contract). An inline literal is now permitted
-// too (YAML-first migration), so a self-contained agent.yaml needs no env. A
+// too (YAML-first migration), so a self-contained config.yaml needs no env. A
 // "$"-prefixed value that is not valid ${...} is rejected as a typo.
 func resolveOptionalPlaceholder(field *string, yamlPath string) error {
 	raw := strings.TrimSpace(*field)

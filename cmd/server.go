@@ -58,7 +58,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// overlayGetenv makes the YAML runtime-flag sections (agent.features /
 	// retrieval / trace / planner) win over the OS env, with env as the
 	// fallback for any field omitted in YAML. Every flag the server reads below
-	// goes through it so a single agent.yaml can configure the whole server.
+	// goes through it so a single config.yaml can configure the whole server.
 	overlayGetenv := cfg.RuntimeGetenv(os.Getenv)
 	serverGetenv := serverTraceGetenv(overlayGetenv, cfg.Agent.MySQL.DSN)
 	if traceMySQLSinkEnabled(serverGetenv) {

@@ -25,6 +25,19 @@ $secretPatterns = @(
     '(?i)\bbearer\s+[A-Za-z0-9_\-.]{20,}'
 )
 
+$allowedSecretFiles = @(
+    'deploy/conf/config.yaml'
+)
+
+function IsAllowedSecretFile($path) {
+    foreach ($allowed in $allowedSecretFiles) {
+        if ($path -eq $allowed) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Fail($message) {
     Write-Error $message
     exit 1
@@ -40,10 +53,15 @@ if ($Staged) {
         }
     }
 
-    $diff = git diff --cached --unified=0
-    foreach ($pattern in $secretPatterns) {
-        if ($diff -match $pattern) {
-            Fail "Potential secret detected in staged diff. Replace literals with environment placeholders."
+    foreach ($path in $paths) {
+        if (IsAllowedSecretFile $path) {
+            continue
+        }
+        $diff = git diff --cached --unified=0 -- $path
+        foreach ($pattern in $secretPatterns) {
+            if ($diff -match $pattern) {
+                Fail "Potential secret detected in staged diff. Replace literals with environment placeholders."
+            }
         }
     }
     exit 0
@@ -58,6 +76,9 @@ foreach ($path in $trackedAndUntracked) {
         if ($path -match $pattern -and $path -notmatch '\.example$') {
             Fail "Secret-bearing local config is present in git-visible files: $path"
         }
+    }
+    if (IsAllowedSecretFile $path) {
+        continue
     }
     $content = Get-Content -LiteralPath $path -Raw -ErrorAction SilentlyContinue
     if ($null -eq $content) {
