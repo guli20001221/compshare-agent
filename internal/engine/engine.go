@@ -3352,13 +3352,21 @@ type plannerHandlerExecutor struct {
 }
 
 func (x plannerHandlerExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	return x.execute(ctx, action, args, tools.OriginDirectLLM)
+}
+
+func (x plannerHandlerExecutor) ExecuteInternal(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	return x.execute(ctx, action, args, tools.OriginDiagnosisInternal)
+}
+
+func (x plannerHandlerExecutor) execute(ctx context.Context, action string, args map[string]any, origin tools.ExecutionOrigin) (map[string]any, error) {
 	if x.engine == nil {
 		return nil, fmt.Errorf("planner handler engine is nil")
 	}
 	result, err := x.engine.executeSafeTool(ctx, tools.SafeToolRequest{
 		Action: action,
 		Args:   args,
-		Origin: tools.OriginDirectLLM,
+		Origin: origin,
 		Hooks: tools.SafeToolHooks{
 			OnConfirmNeeded: func(action string, args map[string]any) {
 				x.emit(StepEvent{Type: StepConfirmNeeded, Action: action, Source: observability.ToolSourcePlannerHandler, Args: x.engine.safeExecutor.RedactArgs(action, args), Message: "此操作需要您确认"})
@@ -4516,10 +4524,9 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		}
 	}
 	// Hard guard — instance-operation workflows MUST have a non-empty UHostId.
-	// CreateInstanceWorkflow is excluded because it creates a new instance.
-	// NOTE: If you add a workflow that does not target an existing instance,
-	// add it to this exclusion list. The default is to block (fail-safe).
-	if action != "CreateInstanceWorkflow" {
+	// Account/storage creation workflows do not target an existing instance and
+	// are listed in workflowRequiresInstanceTarget. The default remains fail-safe.
+	if workflowRequiresInstanceTarget(action) {
 		uHostId, _ := args["UHostId"].(string)
 		if uHostId == "" {
 			if single, _ := e.singleRegistryInstance(); single != "" {
@@ -4630,17 +4637,6 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 				}
 			}
 		}
-		// Resolve a user-named availability zone before the create runs. The ReAct
-		// LLM echoes the user's literal zone text (or the tool's documented default)
-		// into Zone but cannot know a new zone's id, so without this a "华北一C"
-		// create silently lands in the default zone. Same resolver as the deploy
-		// saga: an exact name/id overrides Zone, a partial/ambiguous mention
-		// ("华北一区") stops and asks "是华北一C吗？", and no/unresolvable mention
-		// leaves the LLM-provided Zone untouched (never worse than before).
-		if clarify := e.applyCreateZoneResolution(ctx, args); clarify != "" {
-			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), clarify, nil))
-			return finalReplyPrefix + clarify
-		}
 		if u, ok := tools.UserFrom(ctx); ok {
 			if u.TopOrganizationID != 0 {
 				args["top_organization_id"] = u.TopOrganizationID
@@ -4648,6 +4644,30 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 			if u.OrganizationID != 0 {
 				args["organization_id"] = u.OrganizationID
 			}
+		}
+	}
+	if action == "CreateCFSWorkflow" || action == "ResizeCFSWorkflow" || action == "EnableNetOptimizerWorkflow" {
+		if u, ok := tools.UserFrom(ctx); ok {
+			if u.TopOrganizationID != 0 {
+				args["top_organization_id"] = u.TopOrganizationID
+			}
+			if u.OrganizationID != 0 {
+				args["organization_id"] = u.OrganizationID
+			}
+		}
+	}
+	if action == "CreateInstanceWorkflow" || action == "CreateCFSWorkflow" || action == "EnableNetOptimizerWorkflow" {
+		// Resolve a user-named availability zone before zone-sensitive creates
+		// run. The ReAct LLM echoes the user's literal zone text (or the tool's
+		// documented default) into Zone but cannot know a new zone's id, so
+		// without this a "华北一C" create can silently land in a default zone or
+		// miss Pod routing. Same resolver as the deploy saga: an exact name/id
+		// overrides Zone, partial/ambiguous mention stops and asks, and no
+		// catalog leaves the LLM-provided Zone untouched for the workflow to
+		// validate.
+		if clarify := e.applyCreateZoneResolution(ctx, args); clarify != "" {
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), clarify, nil))
+			return finalReplyPrefix + clarify
 		}
 	}
 
@@ -4707,6 +4727,11 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
 		return finalReplyPrefix + reply
 	}
+	if !result.Success && action == "CreateCFSWorkflow" {
+		reply := cfsWorkflowFailureReply(result.Message)
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
+		return finalReplyPrefix + reply
+	}
 
 	if result.Success {
 		e.markRegistryInvalidated(action)
@@ -4725,6 +4750,18 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	b, _ := json.Marshal(result)
 	return string(b)
+}
+
+func workflowRequiresInstanceTarget(action string) bool {
+	switch action {
+	case "CreateInstanceWorkflow",
+		"EnableNetOptimizerWorkflow",
+		"CreateCFSWorkflow",
+		"ResizeCFSWorkflow":
+		return false
+	default:
+		return true
+	}
 }
 
 func startWithoutGPURequestedByText(text string) bool {
@@ -4820,6 +4857,15 @@ func createWorkflowFailureReply(message string) string {
 		msg = "未能创建实例，请稍后重试或更换机型/配置。"
 	}
 	return "抱歉，创建实例没有成功：" + msg
+}
+
+func cfsWorkflowFailureReply(message string) string {
+	msg := workflowStepPrefixRE.ReplaceAllString(strings.TrimSpace(message), "")
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		msg = "未能创建 CFS，请稍后重试或更换可用区。"
+	}
+	return "抱歉，CFS 创建没有成功：" + msg
 }
 
 // executeDiagnosis runs a diagnostic chain and returns the result as JSON.

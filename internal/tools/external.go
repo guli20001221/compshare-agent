@@ -110,6 +110,7 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 
 	// Resolve request-scoped identity fields: prefer UserContext when present.
 	region, project, userEmail := e.region, e.projectId, ""
+	var topOrgID, orgID uint32
 	if u, ok := UserFrom(ctx); ok {
 		if u.Region != "" {
 			region = u.Region
@@ -118,6 +119,8 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 			project = u.ProjectId
 		}
 		userEmail = u.UserEmail
+		topOrgID = u.TopOrganizationID
+		orgID = u.OrganizationID
 	}
 
 	// Build params: Action + Region + args + PublicKey
@@ -141,6 +144,12 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 		if _, provided := params["ProjectId"]; !provided {
 			params["ProjectId"] = project
 		}
+	}
+	if topOrgID != 0 {
+		params["top_organization_id"] = fmt.Sprint(topOrgID)
+	}
+	if orgID != 0 {
+		params["organization_id"] = fmt.Sprint(orgID)
 	}
 	if userEmail != "" {
 		// user_email is request identity from the gateway, not an LLM/tool arg.
@@ -204,6 +213,7 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 
 	// Resolve request-scoped identity fields: prefer UserContext when present.
 	region, project, userEmail := e.region, e.projectId, ""
+	var topOrgID, orgID uint32
 	if u, ok := UserFrom(ctx); ok {
 		if u.Region != "" {
 			region = u.Region
@@ -212,6 +222,8 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 			project = u.ProjectId
 		}
 		userEmail = u.UserEmail
+		topOrgID = u.TopOrganizationID
+		orgID = u.OrganizationID
 	}
 
 	body := map[string]any{
@@ -227,6 +239,12 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 		if _, provided := body["ProjectId"]; !provided {
 			body["ProjectId"] = project
 		}
+	}
+	if topOrgID != 0 {
+		body["top_organization_id"] = topOrgID
+	}
+	if orgID != 0 {
+		body["organization_id"] = orgID
 	}
 	if userEmail != "" {
 		// user_email is request identity from the gateway, not an LLM/tool arg.

@@ -7,9 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIntentToolSubset_DiagnosisReturns10Tools(t *testing.T) {
+func TestIntentToolSubset_DiagnosisReturnsEntryTools(t *testing.T) {
 	subset := IntentToolSubset(IntentDiagnosis)
-	require.Len(t, subset, 10)
+	require.Len(t, subset, 11)
 	// SearchKnowledge (P4a) is a candidate diagnosis tool, emit-gated at the
 	// visibility layer (tools.VisibleRegistry) behind COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE:
 	// listing it here is inert until the flag is on, so the EMITTED diagnosis
@@ -20,6 +20,7 @@ func TestIntentToolSubset_DiagnosisReturns10Tools(t *testing.T) {
 	assert.Contains(t, subset, "DiagnosePortOrFirewall")
 	assert.Contains(t, subset, "DescribeCompShareInstance")
 	assert.Contains(t, subset, "DescribeCompShareSoftwarePort")
+	assert.Contains(t, subset, "DescribeCompShareJupyterToken")
 	assert.NotContains(t, subset, "GetCompShareInstancePrice")
 	assert.NotContains(t, subset, "DescribeCompShareImages")
 	assert.NotContains(t, subset, "CreateInstanceWorkflow")
@@ -31,10 +32,12 @@ func TestIntentToolSubset_VagueFailureSameAsDiagnosis(t *testing.T) {
 
 func TestIntentToolSubset_ResourceInfo(t *testing.T) {
 	subset := IntentToolSubset(IntentResourceInfo)
-	require.Len(t, subset, 4)
+	require.Len(t, subset, 6)
 	assert.Contains(t, subset, "DescribeCompShareInstance")
 	assert.Contains(t, subset, "GetCompShareInstanceMonitor")
 	assert.Contains(t, subset, "DescribeCompShareSoftwarePort")
+	assert.Contains(t, subset, "DescribeCompShareJupyterToken")
+	assert.Contains(t, subset, "DescribeCFS")
 	assert.Contains(t, subset, "GetCompShareInstanceUserPrice")
 	assert.NotContains(t, subset, "DiagnoseSSH")
 }
@@ -49,10 +52,12 @@ func TestIntentToolSubset_MonitorQuery(t *testing.T) {
 func TestIntentToolSubset_BillingSameAsExpiryRenewal(t *testing.T) {
 	assert.Equal(t, IntentToolSubset(IntentBillingInstance), IntentToolSubset(IntentExpiryRenewal))
 	subset := IntentToolSubset(IntentBillingInstance)
-	require.Len(t, subset, 4)
+	require.Len(t, subset, 6)
 	assert.Contains(t, subset, "DescribeCompShareInstance")
 	assert.Contains(t, subset, "GetCompShareInstanceUserPrice")
 	assert.Contains(t, subset, "GetCompShareInstancePrice")
+	assert.Contains(t, subset, "GetCompShareRefundPrice")
+	assert.Contains(t, subset, "GetCompShareCFSRefundPrice")
 	assert.Contains(t, subset, "DiagnoseBilling")
 }
 
@@ -66,6 +71,8 @@ func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 		{IntentStockAvailability, "DescribeAvailableCompShareInstanceTypes", 3},
 		{IntentPricingQuery, "GetCompShareInstancePrice", 2},
 		{IntentNetAcceleratorStatus, "CheckCompShareNetOptimizer", 1},
+		{IntentRefundEstimate, "GetCompShareRefundPrice", 2},
+		{IntentCFSInfo, "DescribeCFS", 4},
 		{IntentImageTagCatalog, "DescribeCompShareImageTags", 1},
 		{IntentModelRepositoryBrowse, "DescribeModelRepositoryModels", 2},
 		{IntentPlatformImageList, "DescribeCompShareImages", 1},
@@ -96,7 +103,7 @@ func TestIntentToolSubset_Recommendation(t *testing.T) {
 
 func TestIntentToolSubset_OperationLifecycle(t *testing.T) {
 	subset := IntentToolSubset(IntentOperationLifecycle)
-	require.Len(t, subset, 20)
+	require.Len(t, subset, 23)
 	assert.Contains(t, subset, "DescribeCompShareInstance")
 	assert.Contains(t, subset, "CreateInstanceWorkflow")
 	assert.Contains(t, subset, "StopInstanceWorkflow")
@@ -106,6 +113,9 @@ func TestIntentToolSubset_OperationLifecycle(t *testing.T) {
 	assert.Contains(t, subset, "CreateDiskWorkflow")
 	assert.Contains(t, subset, "ResizeDiskWorkflow")
 	assert.Contains(t, subset, "CreateCustomImageWorkflow")
+	assert.Contains(t, subset, "EnableNetOptimizerWorkflow")
+	assert.Contains(t, subset, "CreateCFSWorkflow")
+	assert.Contains(t, subset, "ResizeCFSWorkflow")
 	assert.Contains(t, subset, "GetCompShareInstanceUpgradePrice")
 	assert.NotContains(t, subset, "DiagnoseSSH")
 	assert.NotContains(t, subset, "GetGPURecommendation")

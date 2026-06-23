@@ -1,0 +1,22 @@
+name: cfs_info
+description: 用户查询 CFS 共享文件存储列表、容量、挂载状态、某个 CFS 信息、CFS 创建/扩容/退费价格估算时触发；真正创建/扩容走 operation_lifecycle
+intent_label: cfs_info
+route_group: storage
+required_tools:
+  - DescribeCFS
+tool_subset:
+  - DescribeCFS
+  - GetCompShareCFSPrice
+  - GetCompShareCFSUpgradePrice
+  - GetCompShareCFSRefundPrice
+required_citation: false
+handler_key: handleCFSInfo
+planner_directives:
+  - '用户问"CFS 有哪些"、"共享文件存储容量/挂载状态"、"cfs-xxx 是什么状态"、"创建/扩容/退费多少钱"时 emit cfs_info。'
+  - '真正执行 CFS 创建或扩容属于操作流程，应 emit operation_lifecycle；删除/解绑 CFS 不由 agent 暴露。'
+planner_examples:
+  - question: "我的 CFS 共享文件存储有哪些"
+    confidence: 0.84
+verification_status: production_validated
+field_refs_verified: true
+provenance: human_authored

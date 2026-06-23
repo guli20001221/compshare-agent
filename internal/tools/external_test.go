@@ -495,6 +495,41 @@ func TestExecuteWithUserContextInjectsUserEmail(t *testing.T) {
 	}
 }
 
+func TestExecuteWithUserContextInjectsTenantIdentity(t *testing.T) {
+	var capturedForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedForm, _ = url.ParseQuery(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "TestResponse"}`))
+	}))
+	defer srv.Close()
+
+	provider := StaticCredentialProvider{Cred: &Credentials{
+		AccessKeyId:     "ak",
+		AccessKeySecret: "sk",
+	}}
+	ext := NewExternalExecutorWithProvider(srv.URL, "cn-wlcb", "default-project", provider)
+	ctx := WithUser(context.Background(), UserContext{
+		TopOrganizationID: 101,
+		OrganizationID:    202,
+	})
+
+	if _, err := ext.Execute(ctx, "DescribeCFS", map[string]any{
+		"top_organization_id": uint32(999),
+		"organization_id":     uint32(998),
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := capturedForm.Get("top_organization_id"); got != "101" {
+		t.Errorf("top_organization_id = %q, want context value 101", got)
+	}
+	if got := capturedForm.Get("organization_id"); got != "202" {
+		t.Errorf("organization_id = %q, want context value 202", got)
+	}
+}
+
 func TestExecuteJSONWithUserContextInjectsUserEmail(t *testing.T) {
 	var capturedBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

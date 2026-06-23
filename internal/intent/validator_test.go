@@ -335,6 +335,8 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
 		IntentNetAcceleratorStatus,
+		IntentRefundEstimate,
+		IntentCFSInfo,
 		IntentImageTagCatalog,
 		IntentModelRepositoryBrowse,
 		IntentPlatformImageList,

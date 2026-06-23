@@ -77,6 +77,13 @@ func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		if actionAllowsBackendZoneID(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "zone_id")
 		}
+		if actionAllowsBackendAzGroup(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "az_group")
+		}
+		if actionAllowsBackendIdentity(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "top_organization_id")
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "organization_id")
+		}
 		policies[action] = policy
 	}
 
@@ -84,7 +91,19 @@ func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		if _, ok := policies[action]; ok {
 			continue
 		}
-		policies[action] = policyForAction(action)
+		policy := policyForAction(action)
+		policy.AllowedParams = internalOnlyAllowedParams(action)
+		if actionAllowsBackendZoneID(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "zone_id")
+		}
+		if actionAllowsBackendAzGroup(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "az_group")
+		}
+		if actionAllowsBackendIdentity(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "top_organization_id")
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "organization_id")
+		}
+		policies[action] = policy
 	}
 	if _, ok := policies["GetProjectList"]; !ok {
 		policies["GetProjectList"] = policyForAction("GetProjectList")
@@ -155,6 +174,9 @@ func policyForAction(action string) ToolExecutionPolicy {
 	if action == "ResetCompShareInstancePassword" || action == "ResetPasswordWorkflow" {
 		policy.RedactInResult = append(policy.RedactInResult, "Password")
 	}
+	if action == "DescribeCompShareJupyterToken" {
+		policy.RedactInResult = append(policy.RedactInResult, "JupyterToken")
+	}
 	if action == "GetCompShareInstanceMonitor" {
 		policy.HistoryMonitorGuard = true
 		policy.MaxTargetsPerCall = 20
@@ -166,9 +188,57 @@ func policyForAction(action string) ToolExecutionPolicy {
 	return policy
 }
 
+func internalOnlyAllowedParams(action string) []string {
+	switch action {
+	case "CreateCFS":
+		return []string{"Name", "Size", "TotalFiles", "ChargeType", "Quantity", "CouponId", "Zone", "Region"}
+	case "ResizeCFS":
+		return []string{"CfsId", "Size", "CouponId"}
+	default:
+		return nil
+	}
+}
+
 func actionAllowsBackendZoneID(action string) bool {
 	switch action {
-	case "DescribeAvailableCompShareInstanceTypes", "CheckCompShareResourceCapacity", "GetCompShareInstancePrice", "GetCompShareInstanceUserPrice":
+	case "DescribeAvailableCompShareInstanceTypes",
+		"CheckCompShareResourceCapacity",
+		"GetCompShareInstancePrice",
+		"GetCompShareInstanceUserPrice",
+		"GetCompShareCFSPrice",
+		"GetCompShareCFSUpgradePrice",
+		"GetCompShareCFSRefundPrice",
+		"DescribeCFS",
+		"CreateCFS",
+		"ResizeCFS":
+		return true
+	default:
+		return false
+	}
+}
+
+func actionAllowsBackendAzGroup(action string) bool {
+	switch action {
+	case "CheckCompShareNetOptimizer",
+		"SyncCompShareNetOptimizer",
+		"GetCompShareCFSPrice",
+		"CreateCFS":
+		return true
+	default:
+		return false
+	}
+}
+
+func actionAllowsBackendIdentity(action string) bool {
+	switch action {
+	case "CheckCompShareNetOptimizer",
+		"SyncCompShareNetOptimizer",
+		"DescribeCFS",
+		"GetCompShareCFSPrice",
+		"GetCompShareCFSUpgradePrice",
+		"GetCompShareCFSRefundPrice",
+		"CreateCFS",
+		"ResizeCFS":
 		return true
 	default:
 		return false
@@ -226,6 +296,12 @@ var readExpensiveDefaultActions = map[string]bool{
 	"DescribeCompShareInstance":               true,
 	"GetCompShareInstancePrice":               true,
 	"GetCompShareInstanceUserPrice":           true,
+	"GetCompShareRefundPrice":                 true,
+	"DescribeCompShareJupyterToken":           true,
+	"DescribeCFS":                             true,
+	"GetCompShareCFSPrice":                    true,
+	"GetCompShareCFSUpgradePrice":             true,
+	"GetCompShareCFSRefundPrice":              true,
 	"DescribeAvailableCompShareInstanceTypes": true,
 	"CheckCompShareResourceCapacity":          true,
 }

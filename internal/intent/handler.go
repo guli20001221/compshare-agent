@@ -103,6 +103,10 @@ type HandlerExecutor interface {
 	Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error)
 }
 
+type internalHandlerExecutor interface {
+	ExecuteInternal(ctx context.Context, action string, args map[string]any) (map[string]any, error)
+}
+
 type HandlerRequest struct {
 	Plan     IntentRoute
 	Resolver EntityResolver

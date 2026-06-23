@@ -153,6 +153,72 @@ func TestBackendZoneIDIsInternalOnly(t *testing.T) {
 	assert.Equal(t, uint32(9001), internalInner.args[0]["zone_id"], "workflow-derived zone_id must reach upstream")
 }
 
+func TestBackendPlacementAndIdentityFieldsAreInternalOnlyForCFSAndNetwork(t *testing.T) {
+	cases := []struct {
+		action string
+		args   map[string]any
+	}{
+		{
+			action: "GetCompShareCFSPrice",
+			args: map[string]any{
+				"Size":                50,
+				"Zone":                "cn-bj2-03",
+				"ChargeType":          "Month",
+				"Quantity":            1,
+				"zone_id":             uint32(5001),
+				"az_group":            uint32(3003),
+				"top_organization_id": uint32(1001),
+				"organization_id":     uint32(1002),
+			},
+		},
+		{
+			action: "CheckCompShareNetOptimizer",
+			args: map[string]any{
+				"az_group":            uint32(3003),
+				"top_organization_id": uint32(1001),
+				"organization_id":     uint32(1002),
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.action, func(t *testing.T) {
+			directInner := &spyExecutor{}
+			direct := NewSafeToolExecutor(directInner)
+			_, err := direct.ExecuteSafe(context.Background(), SafeToolRequest{
+				Action: tc.action,
+				Args:   tc.args,
+				Origin: OriginDirectLLM,
+			})
+			require.NoError(t, err)
+			require.Len(t, directInner.args, 1)
+			for _, forbidden := range []string{"zone_id", "az_group", "top_organization_id", "organization_id"} {
+				assert.NotContains(t, directInner.args[0], forbidden, "model-origin calls must not hand-fill internal upstream fields")
+			}
+
+			internalInner := &spyExecutor{}
+			internal := NewSafeToolExecutor(internalInner)
+			_, err = internal.ExecuteSafe(context.Background(), SafeToolRequest{
+				Action: tc.action,
+				Args:   tc.args,
+				Origin: OriginDiagnosisInternal,
+			})
+			require.NoError(t, err)
+			require.Len(t, internalInner.args, 1)
+			for _, want := range []string{"top_organization_id", "organization_id"} {
+				assert.Equal(t, tc.args[want], internalInner.args[0][want], "backend-injected identity must survive internal calls")
+			}
+			switch tc.action {
+			case "GetCompShareCFSPrice":
+				assert.Equal(t, tc.args["zone_id"], internalInner.args[0]["zone_id"])
+				assert.Equal(t, tc.args["az_group"], internalInner.args[0]["az_group"])
+			case "CheckCompShareNetOptimizer":
+				assert.Equal(t, tc.args["az_group"], internalInner.args[0]["az_group"])
+			}
+		})
+	}
+}
+
 func TestVisibleRegistryFiltersMutatingWorkflowsByDefault(t *testing.T) {
 	visible := VisibleRegistry(false)
 	names := map[string]bool{}
@@ -438,6 +504,21 @@ func TestSafeExecutorUsesPolicyForDisplayAndRedaction(t *testing.T) {
 		assert.Equal(t, "[REDACTED]", result.LLMResult["OneTimeCode"])
 		assert.Equal(t, "[REDACTED]", result.TraceResult["OneTimeCode"])
 	})
+
+	t.Run("jupyter token action is explicitly redacted", func(t *testing.T) {
+		inner := &spyExecutor{result: map[string]any{"JupyterToken": "raw-jupyter-token"}}
+		safe := NewSafeToolExecutor(inner)
+
+		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+			Action: "DescribeCompShareJupyterToken",
+			Args:   map[string]any{"UHostIds": []any{"uhost-1"}},
+			Origin: OriginDirectLLM,
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, "[REDACTED]", result.LLMResult["JupyterToken"])
+		assert.Equal(t, "[REDACTED]", result.TraceResult["JupyterToken"])
+	})
 }
 
 func TestMonitorHistoryGuardMarksNoDataWindow(t *testing.T) {
@@ -541,6 +622,43 @@ func TestSafeExecutorWorkflowOriginSkipsPerAPIL1Confirmation(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, inner.calls)
+}
+
+func TestSafeExecutorWorkflowCreateCFSPreservesInternalArgs(t *testing.T) {
+	inner := &spyExecutor{}
+	safe := NewSafeToolExecutor(inner, WithConfirmFunc(func(string, map[string]any) bool {
+		t.Fatal("workflow-internal CreateCFS must not trigger per-API confirmation")
+		return false
+	}))
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CreateCFS",
+		Args: map[string]any{
+			"Name":                "shared-train",
+			"Size":                float64(50),
+			"ChargeType":          "Month",
+			"Quantity":            float64(1),
+			"Zone":                "cn-bj2-03",
+			"Region":              "cn-bj2",
+			"zone_id":             uint32(5001),
+			"az_group":            uint32(9999),
+			"top_organization_id": uint32(101),
+			"organization_id":     uint32(202),
+		},
+		Origin: OriginWorkflowInternal,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, inner.args, 1)
+	got := inner.args[0]
+	assert.Equal(t, "shared-train", got["Name"])
+	assert.Equal(t, float64(50), got["Size"])
+	assert.Equal(t, "Month", got["ChargeType"])
+	assert.Equal(t, "cn-bj2-03", got["Zone"])
+	assert.Equal(t, uint32(5001), got["zone_id"])
+	assert.Equal(t, uint32(9999), got["az_group"])
+	assert.Equal(t, uint32(101), got["top_organization_id"])
+	assert.Equal(t, uint32(202), got["organization_id"])
 }
 
 func TestSafeExecutorOriginViewImplementsToolExecutor(t *testing.T) {

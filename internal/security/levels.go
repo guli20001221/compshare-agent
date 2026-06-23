@@ -43,6 +43,11 @@ var ActionLevels = map[string]Level{
 	"GetCompShareInstanceUpgradePrice":        L0,
 	"GetCompShareAttachedDiskUpgradePrice":    L0,
 	"GetCompShareRefundPrice":                 L0,
+	"DescribeCompShareJupyterToken":           L0,
+	"DescribeCFS":                             L0,
+	"GetCompShareCFSPrice":                    L0,
+	"GetCompShareCFSUpgradePrice":             L0,
+	"GetCompShareCFSRefundPrice":              L0,
 	"GetCompShareAccountInfo":                 L0,
 	"GetCompShareInstanceMonitor":             L0,
 	"GetCompShareImageCreateProgress":         L0,
@@ -80,6 +85,9 @@ var ActionLevels = map[string]Level{
 	"ModifyCompShareImageShareAccount": L1,
 	"UpdateCompShareStopScheduler":     L1,
 	"DeleteCompShareStopScheduler":     L1,
+	"SyncCompShareNetOptimizer":        L1,
+	"CreateCFS":                        L1,
+	"ResizeCFS":                        L1,
 	"CreateCompShareTeam":              L1,
 	"UpdateCompShareTeam":              L1,
 	"CreateCompShareTeamRelation":      L1,
@@ -95,6 +103,8 @@ var ActionLevels = map[string]Level{
 	"TerminateCompShareCustomImage": L2,
 	"DeleteCompshareDisk":           L2,
 	"DeleteCompShareTeam":           L2,
+	"DeleteCFS":                     L2,
+	"DetachCFS":                     L2,
 }
 
 // Check returns the security level for an action.

@@ -23,12 +23,15 @@ func IntentToolSubset(i Intent) []string {
 			"DescribeCompShareInstance",
 			"GetCompShareInstanceMonitor",
 			"DescribeCompShareSoftwarePort",
+			"DescribeCompShareJupyterToken",
 		}
 	case IntentResourceInfo:
 		return []string{
 			"DescribeCompShareInstance",
 			"GetCompShareInstanceMonitor",
 			"DescribeCompShareSoftwarePort",
+			"DescribeCompShareJupyterToken",
+			"DescribeCFS",
 			"GetCompShareInstanceUserPrice",
 		}
 	case IntentDiskInfo:
@@ -45,6 +48,8 @@ func IntentToolSubset(i Intent) []string {
 			"DescribeCompShareInstance",
 			"GetCompShareInstanceUserPrice",
 			"GetCompShareInstancePrice",
+			"GetCompShareRefundPrice",
+			"GetCompShareCFSRefundPrice",
 			"DiagnoseBilling",
 		}
 	case IntentGPUSpecsQuery:
@@ -66,6 +71,18 @@ func IntentToolSubset(i Intent) []string {
 	case IntentNetAcceleratorStatus:
 		return []string{
 			"CheckCompShareNetOptimizer",
+		}
+	case IntentRefundEstimate:
+		return []string{
+			"DescribeCompShareInstance",
+			"GetCompShareRefundPrice",
+		}
+	case IntentCFSInfo:
+		return []string{
+			"DescribeCFS",
+			"GetCompShareCFSPrice",
+			"GetCompShareCFSUpgradePrice",
+			"GetCompShareCFSRefundPrice",
 		}
 	case IntentImageTagCatalog:
 		return []string{
@@ -121,6 +138,9 @@ func IntentToolSubset(i Intent) []string {
 			"ReinstallInstanceWorkflow",
 			"CreateDiskWorkflow",
 			"CreateCustomImageWorkflow",
+			"EnableNetOptimizerWorkflow",
+			"CreateCFSWorkflow",
+			"ResizeCFSWorkflow",
 		}
 	default:
 		return nil

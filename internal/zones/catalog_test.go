@@ -29,9 +29,9 @@ func (f *fakeExec) Execute(_ context.Context, action string, args map[string]any
 func liveZonesResp() map[string]any {
 	return map[string]any{
 		"ZoneInfo": []any{
-			map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(10027), "Describe": "华北二A", "IsPod": false},
-			map[string]any{"Zone": "cn-sh2-02", "Region": "cn-sh2", "ZoneId": float64(8200), "Describe": "上海二B"},
-			map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": true},
+			map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "RegionId": float64(3001), "ZoneId": float64(10027), "Describe": "华北二A", "IsPod": false},
+			map[string]any{"Zone": "cn-sh2-02", "Region": "cn-sh2", "RegionId": float64(3002), "ZoneId": float64(8200), "Describe": "上海二B"},
+			map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "RegionId": float64(3003), "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": true},
 		},
 	}
 }
@@ -50,7 +50,7 @@ func TestFetchSupportZones_ParsesAndForwardsTenant(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("want 3 zones, got %d", len(got))
 	}
-	if got[2].Zone != "cn-bj2-03" || got[2].Describe != "华北一C" || got[2].ZoneID != 5001 {
+	if got[2].Zone != "cn-bj2-03" || got[2].Describe != "华北一C" || got[2].ZoneID != 5001 || got[2].RegionID != 3003 {
 		t.Fatalf("bj2-03 parsed wrong: %+v", got[2])
 	}
 	if got[0].IsPod || !got[2].IsPod {

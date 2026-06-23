@@ -14,6 +14,9 @@ var registeredWorkflowActions = []string{
 	"ReinstallInstanceWorkflow",
 	"CreateDiskWorkflow",
 	"CreateCustomImageWorkflow",
+	"EnableNetOptimizerWorkflow",
+	"CreateCFSWorkflow",
+	"ResizeCFSWorkflow",
 }
 
 // workflowRegistry maps workflow action names to their factory functions.
@@ -31,6 +34,9 @@ var workflowRegistry = map[string]func() *Definition{
 	"ReinstallInstanceWorkflow":   ReinstallInstanceDef,
 	"CreateDiskWorkflow":          CreateDiskDef,
 	"CreateCustomImageWorkflow":   CreateCustomImageDef,
+	"EnableNetOptimizerWorkflow":  EnableNetOptimizerDef,
+	"CreateCFSWorkflow":           CreateCFSDef,
+	"ResizeCFSWorkflow":           ResizeCFSDef,
 }
 
 // RegisteredWorkflowActions returns workflow action names in prompt-stable

@@ -22,6 +22,8 @@ var routingIntentOrder = []Intent{
 	IntentGPUSpecsQuery,
 	IntentStockAvailability,
 	IntentNetAcceleratorStatus,
+	IntentRefundEstimate,
+	IntentCFSInfo,
 	IntentImageTagCatalog,
 	IntentModelRepositoryBrowse,
 	IntentPlatformImageList,
@@ -183,6 +185,25 @@ func executeRouteAction(ctx context.Context, h *DemoHandler, intentValue Intent,
 		raw = map[string]any{}
 	}
 	return raw, nil
+}
+
+func executeRouteActionInternal(ctx context.Context, h *DemoHandler, intentValue Intent, action string, args map[string]any) (map[string]any, *HandlerResult) {
+	if h == nil || h.executor == nil {
+		fb := FallbackBeforeTool(FallbackValidation)
+		return nil, &fb
+	}
+	if exec, ok := h.executor.(internalHandlerExecutor); ok {
+		raw, err := exec.ExecuteInternal(ctx, action, args)
+		if err != nil {
+			fail := failureAfterToolForError(action, args, string(intentValue), err)
+			return nil, &fail
+		}
+		if raw == nil {
+			raw = map[string]any{}
+		}
+		return raw, nil
+	}
+	return executeRouteAction(ctx, h, intentValue, action, args)
 }
 
 func handleGPUSpecsQuery(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
