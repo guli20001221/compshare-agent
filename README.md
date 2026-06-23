@@ -27,7 +27,7 @@ go build -o compshare-agent ./cmd
 make deploy
 ```
 
-`make deploy` 会交叉编译 Linux amd64 二进制到仓库根目录的 `compshare-agent`，然后调用 `deploy/scripts/deploy.sh` 用 `deploy/conf/config.yaml` 注册服务。
+`make deploy` 不会编译；它会直接使用项目根目录已有的 `./compshare-agent`，然后调用 `deploy/scripts/deploy.sh` 用 `deploy/conf/config.yaml` 注册服务。管理机上部署前，先在本地编译并把二进制上传到项目根目录。
 
 ## 本地数据库
 
