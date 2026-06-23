@@ -52,9 +52,13 @@ func TestCreateCFSWorkflowRequiresZoneBeforeConfirm(t *testing.T) {
 
 func TestCreateCFSWorkflowConfirmsBeforeCreate(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
-		"GetCompShareCFSPrice": {"Price": float64(99), "OriginalPrice": float64(120)},
-		"CreateCFS":            {"CfsId": "cfs-new", "Name": "shared-train", "Size": float64(100)},
-		"DescribeCFS":          cfsDescribeResult(),
+		// Real GetCompShareCFSPrice shape: no flat Price; payable value is in
+		// PriceDetails[0].Disks (upstream pod/get_compshare_cfs_price.go).
+		"GetCompShareCFSPrice": {
+			"PriceDetails": []any{map[string]any{"ChargeType": "Month", "Disks": float64(99)}},
+		},
+		"CreateCFS":   {"CfsId": "cfs-new", "Name": "shared-train", "Size": float64(100)},
+		"DescribeCFS": cfsDescribeResult(),
 	}}
 	var confirmed bool
 	eng := NewEngine(executor, func(action string, args map[string]any) bool {
@@ -63,7 +67,9 @@ func TestCreateCFSWorkflowConfirmsBeforeCreate(t *testing.T) {
 		assert.Equal(t, "shared-train", args["Name"])
 		assert.Equal(t, float64(100), args["Size"])
 		assert.Equal(t, "cn-pod-01", args["Zone"])
-		assert.Contains(t, args, "price")
+		// Confirm card must carry a formatted price STRING, not the raw
+		// PriceDetails array (which would render as "[object Object]").
+		assert.Equal(t, "¥99.00", args["price"])
 		return true
 	}, nil)
 

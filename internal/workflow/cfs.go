@@ -96,8 +96,8 @@ func stepConfirmCreateCFS() Step {
 				"Quantity":   wfCtx.Params["Quantity"],
 				"warning":    "将创建新的 CFS 共享文件存储并开始计费；CFS 暂不支持按量付费，删除能力不由 agent 暴露。",
 			}
-			if price := firstCFSPrice(priceResult, "Price", "OriginalPrice", "ListPrice"); price != nil {
-				args["price"] = price
+			if priceText := cfsCreatePriceText(priceResult); priceText != "" {
+				args["price"] = priceText
 			}
 			return args, nil
 		},
@@ -400,4 +400,33 @@ func firstCFSPrice(result map[string]any, keys ...string) any {
 		}
 	}
 	return nil
+}
+
+// cfsCreatePriceText formats the CFS create confirm-card price string from a
+// GetCompShareCFSPrice response. That response has NO flat Price field — the
+// payable price lives in PriceDetails[0].Disks (CFS is a single dimension;
+// upstream pod/get_compshare_cfs_price.go fills Disks and leaves Instance nil).
+// Returning a formatted string keeps the confirm card from emitting the raw
+// PriceDetails array, which the frontend renders as "[object Object]" (same
+// class as the instance-create #249 fix). This mirrors the read-only CFS price
+// route's cfsPriceFromDetails (internal/intent) — bare "¥X.XX", no period unit,
+// since the confirm card already shows ChargeType/Quantity separately.
+func cfsCreatePriceText(priceResult map[string]any) string {
+	if priceResult == nil {
+		return ""
+	}
+	details, ok := priceResult["PriceDetails"].([]any)
+	if !ok || len(details) == 0 {
+		return ""
+	}
+	row, ok := details[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"Disks", "Price", "TotalPrice"} {
+		if n, ok := priceNumber(row[key]); ok {
+			return fmt.Sprintf("¥%.2f", n)
+		}
+	}
+	return ""
 }
