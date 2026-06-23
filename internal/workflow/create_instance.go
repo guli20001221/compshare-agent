@@ -2124,6 +2124,31 @@ func guidedZoneIDs(params map[string]any) map[string]uint32 {
 	return out
 }
 
+func guidedZoneRegionIDs(params map[string]any) map[string]uint32 {
+	out := map[string]uint32{}
+	switch m := params["ZoneRegionIds"].(type) {
+	case map[string]uint32:
+		for zone, id := range m {
+			if zone != "" && id != 0 {
+				out[zone] = id
+			}
+		}
+	case map[string]any:
+		for zone, raw := range m {
+			if id, ok := parseUint32Any(raw); ok && zone != "" && id != 0 {
+				out[zone] = id
+			}
+		}
+	case map[string]string:
+		for zone, raw := range m {
+			if id, ok := parseUint32Any(raw); ok && zone != "" && id != 0 {
+				out[zone] = id
+			}
+		}
+	}
+	return out
+}
+
 func addZoneRegionAndID(args map[string]any, zone string, params map[string]any) map[string]any {
 	addZoneRegion(args, zone)
 	if id := guidedZoneID(params, zone); id != 0 {
@@ -2138,6 +2163,19 @@ func guidedZoneID(params map[string]any, zone string) uint32 {
 		return 0
 	}
 	for z, id := range guidedZoneIDs(params) {
+		if strings.EqualFold(z, zone) {
+			return id
+		}
+	}
+	return 0
+}
+
+func guidedZoneRegionID(params map[string]any, zone string) uint32 {
+	zone = strings.TrimSpace(zone)
+	if zone == "" {
+		return 0
+	}
+	for z, id := range guidedZoneRegionIDs(params) {
 		if strings.EqualFold(z, zone) {
 			return id
 		}

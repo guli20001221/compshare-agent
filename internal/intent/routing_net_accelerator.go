@@ -35,16 +35,16 @@ func renderNetAcceleratorStatusReply(raw map[string]any) string {
 				parts = append(parts, fmt.Sprintf("%s %s", row.region, status))
 			}
 		}
-		return "网络加速状态：" + strings.Join(parts, "；") + "。这是只读状态查询，不会替你开通；如需开通请到控制台网络加速入口处理。"
+		return "网络加速状态：" + strings.Join(parts, "；") + "。这是只读状态查询，不会直接修改配置；如需开通，我会走确认流程。"
 	}
 	if optimized, ok := boolField(raw, "Optimized"); ok {
 		status := "未开通"
 		if optimized {
 			status = "已开通"
 		}
-		return "网络加速" + status + "。这是只读状态查询，不会替你开通；如需开通请到控制台网络加速入口处理。"
+		return "网络加速" + status + "。这是只读状态查询，不会直接修改配置；如需开通，我会走确认流程。"
 	}
-	return "未获取到网络加速状态。这是只读状态查询，不会替你开通。"
+	return "未获取到网络加速状态。这是只读状态查询，不会直接修改配置。"
 }
 
 type netAcceleratorRow struct {
@@ -75,12 +75,17 @@ func netAcceleratorRows(raw map[string]any) []netAcceleratorRow {
 	return rows
 }
 
-func stringField(m map[string]any, key string) string {
-	value, ok := m[key]
-	if !ok || value == nil {
-		return ""
+func stringField(m map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := m[key]
+		if !ok || value == nil {
+			continue
+		}
+		if s := strings.TrimSpace(fmt.Sprint(value)); s != "" {
+			return s
+		}
 	}
-	return strings.TrimSpace(fmt.Sprint(value))
+	return ""
 }
 
 func boolField(m map[string]any, key string) (bool, bool) {

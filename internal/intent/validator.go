@@ -227,6 +227,7 @@ func validRequiredTool(tool string) bool {
 		"DiagnoseBilling",
 		"GetCompShareInstancePrice",
 		"GetCompShareInstanceUserPrice",
+		"GetCompShareRefundPrice",
 		// Route Registry v1 (PR A, 2026-05-18). Keep the legacy list above
 		// untouched and accept the route-bound platform-query tools.
 		"DescribeAvailableCompShareInstanceTypes",
@@ -238,7 +239,8 @@ func validRequiredTool(tool string) bool {
 		"DescribeModelRepositoryTags",
 		"DescribeCompShareCustomImages",
 		"DescribeCompShareSharingImages",
-		"DescribeCommunityImages":
+		"DescribeCommunityImages",
+		"DescribeCFS":
 		return true
 	default:
 		return false

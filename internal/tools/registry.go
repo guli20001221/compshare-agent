@@ -724,9 +724,154 @@ var Registry = []openai.Tool{
 	},
 	// --- Additional Read-Only Tools ---
 	//
-	// DescribeCompShareSupportZone and CheckCompShareNetOptimizer are registered
-	// in security/levels.go (L0) but NOT exposed to the LLM. They are internal
-	// APIs called by handlers/diagnosis chains, not user-facing tools.
+	// DescribeCompShareSupportZone is registered in security/levels.go (L0) but
+	// not exposed to the LLM. It is an internal API called by create/deploy
+	// planning. Read-only status/cost/entry/CFS tools below are user-facing.
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "GetCompShareRefundPrice",
+			Description: "估算实例现在释放/退订可退金额，只做只读估算，不执行释放。必须传用户明确指定的实例 ID 列表；如果用户没说明是哪台实例，应先追问或列出候选。返回 RefundPriceSet，Code 非 0 时按 Message 说明原因。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostIds": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "要估算退费的实例 ID 列表。",
+					},
+				},
+				"required": []string{"UHostIds"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DescribeCompShareJupyterToken",
+			Description: "查询实例 Jupyter 入口所需 token 的只读接口。token 属于敏感凭据，回答时不要明文展示完整 token；只用于判断 Jupyter 是否需要 token、入口是否可用，必要时提示用户到控制台安全查看。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostIds": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "实例 ID 列表，通常只传一台实例。",
+					},
+				},
+				"required": []string{"UHostIds"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "CheckCompShareNetOptimizer",
+			Description: "查询当前账号/地域的网络加速状态，只读。用于回答网络加速是否已开通、哪些地域已加速；不会修改网络配置。用户要求开启加速时应使用 EnableNetOptimizerWorkflow。",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+				"required":   []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "DescribeCFS",
+			Description: "查询 CFS 共享文件存储列表或单个 CFS。CFS 是共享文件存储，可挂载到算力实例用于共享数据集/模型文件。可传 CfsId 精确查询；可传 Zone/Region 字符串筛选，内部会处理上游字段，不要手填 zone_id/az_group。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"CfsId": map[string]any{
+						"type":        "string",
+						"description": "CFS ID，可选。",
+					},
+					"Zone": map[string]any{
+						"type":        "string",
+						"description": "可用区字符串，可选。",
+					},
+					"Region": map[string]any{
+						"type":        "string",
+						"description": "地域字符串，可选。",
+					},
+				},
+				"required": []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "GetCompShareCFSPrice",
+			Description: "查询创建 CFS 共享文件存储的价格。Size 单位 GB，上游支持 50 到 2048；必须指定可用区，且 CFS 当前只支持 Pod/容器可用区，不支持普通 UCloud 区；CFS 不支持按量付费，ChargeType 使用 Month/Year/Day/Dynamic。只传 Zone/Region 字符串，内部会处理上游字段。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"Size": map[string]any{
+						"type":        "integer",
+						"description": "CFS 容量，单位 GB，范围 50 到 2048。",
+					},
+					"ChargeType": map[string]any{
+						"type":        "string",
+						"description": "计费方式：Month / Year / Day / Dynamic。CFS 不支持 Postpay。",
+						"enum":        []string{"Month", "Year", "Day", "Dynamic"},
+					},
+					"Quantity": map[string]any{
+						"type":        "integer",
+						"description": "购买时长，默认 1。",
+					},
+					"Zone": map[string]any{
+						"type":        "string",
+						"description": "可用区字符串。",
+					},
+					"Region": map[string]any{
+						"type":        "string",
+						"description": "地域字符串。",
+					},
+				},
+				"required": []string{"Size", "Zone"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "GetCompShareCFSUpgradePrice",
+			Description: "查询 CFS 扩容到目标容量的价格差额。Size 是目标容量 GB，必须大于当前容量；工作流会从 DescribeCFS 结果带入内部可用区编号，模型不要手填 zone_id/az_group。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"CfsId": map[string]any{
+						"type":        "string",
+						"description": "CFS ID。",
+					},
+					"Size": map[string]any{
+						"type":        "integer",
+						"description": "目标容量，单位 GB。",
+					},
+				},
+				"required": []string{"CfsId", "Size"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "GetCompShareCFSRefundPrice",
+			Description: "估算 CFS 共享文件存储现在退订可退金额，只做只读估算，不执行删除或释放。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"CFSId": map[string]any{
+						"type":        "string",
+						"description": "CFS ID。",
+					},
+				},
+				"required": []string{"CFSId"},
+			},
+		},
+	},
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
@@ -892,6 +1037,82 @@ var Registry = []openai.Tool{
 					},
 				},
 				"required": []string{"UHostId", "Name"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "EnableNetOptimizerWorkflow",
+			Description: "开启/同步指定可用区网络加速的确认式工作流。需要 Zone；先查询该区域网络加速状态，未开通时必须用户确认后才调用上游开启/同步接口；本轮 agent 暂不暴露关闭能力，因此不用于关闭网络加速。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"Zone": map[string]any{
+						"type":        "string",
+						"description": "要开启网络加速的可用区字符串；真实可用区以支持区接口返回为准，不要填写 az_group。",
+					},
+					"Region": map[string]any{
+						"type":        "string",
+						"description": "地域字符串，可选；通常可由 Zone 推导。",
+					},
+				},
+				"required": []string{"Zone"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "CreateCFSWorkflow",
+			Description: "创建 CFS 共享文件存储的确认式工作流。CFS 用于共享数据集/模型文件，当前只支持 Pod/容器可用区；创建前会查询价格并要求确认。需要 Name、Size、Zone；Size 单位 GB，范围 50 到 2048。CFS 不支持按量付费，不能用于删除 CFS。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"Name": map[string]any{
+						"type":        "string",
+						"description": "CFS 名称。",
+					},
+					"Size": map[string]any{
+						"type":        "number",
+						"description": "CFS 容量，单位 GB，范围 50 到 2048。",
+					},
+					"Zone": map[string]any{
+						"type":        "string",
+						"description": "可用区字符串，例如 cn-pod-01。真实可用区以支持区接口返回为准；不要填写 zone_id/az_group。",
+					},
+					"ChargeType": map[string]any{
+						"type":        "string",
+						"description": "计费方式：Month / Year / Day / Dynamic。默认 Month，CFS 不支持 Postpay。",
+						"enum":        []string{"Month", "Year", "Day", "Dynamic"},
+					},
+					"Quantity": map[string]any{
+						"type":        "number",
+						"description": "购买时长，默认 1。",
+					},
+				},
+				"required": []string{"Name", "Size", "Zone"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "ResizeCFSWorkflow",
+			Description: "扩容 CFS 共享文件存储的确认式工作流。先查询 CFS 当前容量和价格差额，再确认扩容。Size 是目标容量 GB，必须大于当前容量；不支持缩容或删除。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"CfsId": map[string]any{
+						"type":        "string",
+						"description": "要扩容的 CFS ID。",
+					},
+					"Size": map[string]any{
+						"type":        "number",
+						"description": "目标容量，单位 GB，必须大于当前容量。",
+					},
+				},
+				"required": []string{"CfsId", "Size"},
 			},
 		},
 	},

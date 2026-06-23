@@ -69,6 +69,14 @@ func (e *recordingExecutor) Execute(_ context.Context, action string, args map[s
 		return map[string]any{"Optimized": false, "Info": []any{
 			map[string]any{"Region": "cn-wlcb-01", "Optimized": false},
 		}}, nil
+	case "GetCompShareRefundPrice":
+		return map[string]any{"RefundPriceSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Code": float64(0), "RefundPrice": float64(12.34)},
+		}}, nil
+	case "DescribeCFS":
+		return map[string]any{"CFSSet": []any{
+			map[string]any{"CfsId": "cfs-test", "Name": "shared-train", "Size": float64(100), "ChargeType": "Month", "MountStatus": "Mounted"},
+		}}, nil
 	case "DescribeCompShareImageTags":
 		return map[string]any{
 			"TagIndex": []any{"框架", "场景"},

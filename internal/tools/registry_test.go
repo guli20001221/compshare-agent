@@ -91,6 +91,112 @@ func TestResizeUpgradePriceAllowsSourcePlacementStrings(t *testing.T) {
 	}
 }
 
+func TestFirstBatchCapabilityToolsAreRegisteredWithSafeBoundaries(t *testing.T) {
+	descriptions := registryDescriptions()
+	for _, action := range []string{
+		"GetCompShareRefundPrice",
+		"DescribeCompShareJupyterToken",
+		"DescribeCFS",
+		"GetCompShareCFSPrice",
+		"GetCompShareCFSUpgradePrice",
+		"GetCompShareCFSRefundPrice",
+		"EnableNetOptimizerWorkflow",
+		"CreateCFSWorkflow",
+		"ResizeCFSWorkflow",
+	} {
+		if _, ok := descriptions[action]; !ok {
+			t.Fatalf("%s must be registered for the first upstream capability batch", action)
+		}
+	}
+	mustContain(t, descriptions["DescribeCompShareJupyterToken"], "不要明文展示")
+	mustContain(t, descriptions["EnableNetOptimizerWorkflow"], "确认")
+	mustContain(t, descriptions["CreateCFSWorkflow"], "确认")
+	mustContain(t, descriptions["ResizeCFSWorkflow"], "确认")
+	if _, ok := descriptions["DeleteCFS"]; ok {
+		t.Fatal("DeleteCFS must not be exposed as a user-facing tool")
+	}
+	if _, ok := descriptions["DetachCFS"]; ok {
+		t.Fatal("DetachCFS must not be exposed as a user-facing tool")
+	}
+}
+
+func TestCFSInternalZoneIDIsWorkflowOnly(t *testing.T) {
+	policies := DefaultToolExecutionPolicies()
+	for _, action := range []string{
+		"GetCompShareCFSPrice",
+		"GetCompShareCFSUpgradePrice",
+		"GetCompShareCFSRefundPrice",
+		"DescribeCFS",
+		"CreateCFS",
+		"ResizeCFS",
+	} {
+		p, ok := policies[action]
+		if !ok {
+			t.Fatalf("%s should have a policy", action)
+		}
+		for _, param := range p.AllowedParams {
+			if param == "zone_id" || param == "az_group" {
+				t.Fatalf("%s must not expose %s to model-origin calls", action, param)
+			}
+		}
+	}
+
+	for _, action := range []string{"GetCompShareCFSPrice", "GetCompShareCFSUpgradePrice", "GetCompShareCFSRefundPrice", "ResizeCFS"} {
+		p := policies[action]
+		found := false
+		for _, param := range p.InternalAllowedParams {
+			if param == "zone_id" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%s must allow workflow-derived zone_id internally", action)
+		}
+	}
+
+	for _, action := range []string{
+		"CheckCompShareNetOptimizer",
+		"SyncCompShareNetOptimizer",
+		"DescribeCFS",
+		"GetCompShareCFSPrice",
+		"GetCompShareCFSUpgradePrice",
+		"GetCompShareCFSRefundPrice",
+		"CreateCFS",
+		"ResizeCFS",
+	} {
+		p := policies[action]
+		for _, want := range []string{"top_organization_id", "organization_id"} {
+			if !containsString(p.InternalAllowedParams, want) {
+				t.Fatalf("%s must preserve backend-injected %s internally", action, want)
+			}
+			if containsString(p.AllowedParams, want) {
+				t.Fatalf("%s must not expose %s to model-origin calls", action, want)
+			}
+		}
+	}
+
+	for _, action := range []string{"CheckCompShareNetOptimizer", "SyncCompShareNetOptimizer", "GetCompShareCFSPrice", "CreateCFS"} {
+		p := policies[action]
+		if !containsString(p.InternalAllowedParams, "az_group") {
+			t.Fatalf("%s must preserve backend-derived az_group internally", action)
+		}
+		if containsString(p.AllowedParams, "az_group") {
+			t.Fatalf("%s must not expose az_group to model-origin calls", action)
+		}
+	}
+
+	createPolicy := policies["CreateCFS"]
+	for _, want := range []string{"Name", "Size", "ChargeType", "Quantity", "Zone", "Region"} {
+		if !containsString(createPolicy.AllowedParams, want) {
+			t.Fatalf("CreateCFS workflow-internal policy must preserve %s", want)
+		}
+	}
+	if !containsString(createPolicy.InternalAllowedParams, "zone_id") {
+		t.Fatal("CreateCFS must allow workflow-derived zone_id internally")
+	}
+}
+
 func TestCreatePriceToolsAllowUpstreamRequestFields(t *testing.T) {
 	policies := DefaultToolExecutionPolicies()
 	for _, action := range []string{"GetCompShareInstancePrice", "GetCompShareInstanceUserPrice"} {
@@ -168,6 +274,15 @@ func registryDescriptions() map[string]string {
 		out[tool.Function.Name] = tool.Function.Description
 	}
 	return out
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func mustContain(t *testing.T, haystack, needle string) {

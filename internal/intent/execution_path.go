@@ -15,6 +15,8 @@ func PlannedExecutionPathForIntent(i Intent) ExecutionPath {
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
 		IntentNetAcceleratorStatus,
+		IntentRefundEstimate,
+		IntentCFSInfo,
 		IntentImageTagCatalog,
 		IntentModelRepositoryBrowse,
 		IntentPlatformImageList,

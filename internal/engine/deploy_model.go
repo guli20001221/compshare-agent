@@ -1236,6 +1236,20 @@ func (e *Engine) zoneIDMap(ctx context.Context) map[string]uint32 {
 	return m
 }
 
+func (e *Engine) zoneRegionIDMap(ctx context.Context) map[string]uint32 {
+	list, err := e.supportZoneList(ctx)
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]uint32, len(list))
+	for _, z := range list {
+		if z.Zone != "" && z.RegionID != 0 {
+			m[z.Zone] = z.RegionID
+		}
+	}
+	return m
+}
+
 func (e *Engine) zoneIDFor(ctx context.Context, zone string) uint32 {
 	zone = strings.TrimSpace(zone)
 	if zone == "" {
@@ -1308,6 +1322,9 @@ func (e *Engine) applyCreateZoneResolution(ctx context.Context, args map[string]
 	}
 	if idMap := e.zoneIDMap(ctx); len(idMap) > 0 {
 		args["ZoneIds"] = idMap
+	}
+	if regionIDMap := e.zoneRegionIDMap(ctx); len(regionIDMap) > 0 {
+		args["ZoneRegionIds"] = regionIDMap
 	}
 	if podMap := e.zoneIsPodMap(ctx); len(podMap) > 0 {
 		args["ZoneIsPods"] = podMap

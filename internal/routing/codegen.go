@@ -14,6 +14,8 @@ var knownHandlerKeys = map[string]bool{
 	"handleGPUSpecsQuery":         true,
 	"handleStockAvailability":     true,
 	"handleNetAcceleratorStatus":  true,
+	"handleRefundEstimate":        true,
+	"handleCFSInfo":               true,
 	"handleImageTagCatalog":       true,
 	"handleModelRepositoryBrowse": true,
 	"handlePlatformImageList":     true,

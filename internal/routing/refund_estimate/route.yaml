@@ -1,0 +1,20 @@
+name: refund_estimate
+description: 用户问某台实例现在释放/退订大概能退多少钱时触发；这是只读估算，不执行释放
+intent_label: refund_estimate
+route_group: billing
+required_tools:
+  - GetCompShareRefundPrice
+tool_subset:
+  - DescribeCompShareInstance
+  - GetCompShareRefundPrice
+required_citation: false
+handler_key: handleRefundEstimate
+planner_directives:
+  - '用户问"这台现在释放能退多少钱"、"退订大概退多少"、"实例现在退款多少"时 emit refund_estimate，并带上目标实例。'
+  - '本路线只做实例退费估算；不会释放实例。没有目标实例时应先追问或让用户选择。'
+planner_examples:
+  - question: "train-a 现在释放能退多少钱"
+    confidence: 0.86
+verification_status: production_validated
+field_refs_verified: true
+provenance: human_authored

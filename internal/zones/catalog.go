@@ -26,6 +26,7 @@ import (
 type ZoneInfo struct {
 	Zone     string // zone id, e.g. "cn-bj2-03"
 	Region   string // region id, e.g. "cn-bj2"
+	RegionID uint32 // numeric region/az_group id used by selected upstream APIs.
 	ZoneID   uint32 // numeric zone id, e.g. 5001
 	Describe string // 可用区显示名称, e.g. "华北一C"
 	IsPod    bool   // true when the zone creates CPod/container instances.
@@ -64,6 +65,7 @@ func FetchSupportZones(ctx context.Context, exec Executor, topOrg, org uint32) (
 		zi := ZoneInfo{
 			Zone:     str(m["Zone"]),
 			Region:   str(m["Region"]),
+			RegionID: u32(m["RegionId"]),
 			Describe: str(m["Describe"]),
 			ZoneID:   u32(m["ZoneId"]),
 			IsPod:    boolVal(m["IsPod"]),

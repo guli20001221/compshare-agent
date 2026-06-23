@@ -31,6 +31,8 @@ const (
 	IntentImageTagCatalog       Intent = "image_tag_catalog"
 	IntentModelRepositoryBrowse Intent = "model_repository_browse"
 	IntentNetAcceleratorStatus  Intent = "network_accelerator_status"
+	IntentRefundEstimate        Intent = "refund_estimate"
+	IntentCFSInfo               Intent = "cfs_info"
 	// PR #3 (2026-05-22): pricing route — deterministic route for
 	// "X 多少钱 / X 价格 / X 包月" so commercial-critical paths don't depend
 	// on LLM tool-selection variance (which produced 35s/33k-token paths
@@ -218,6 +220,8 @@ func AllIntents() []Intent {
 		IntentImageTagCatalog,
 		IntentModelRepositoryBrowse,
 		IntentNetAcceleratorStatus,
+		IntentRefundEstimate,
+		IntentCFSInfo,
 		IntentPricingQuery,
 		IntentDiskInfo,
 		IntentDeployModel,
@@ -247,6 +251,8 @@ func RuntimeIntents() []Intent {
 		IntentImageTagCatalog,
 		IntentModelRepositoryBrowse,
 		IntentNetAcceleratorStatus,
+		IntentRefundEstimate,
+		IntentCFSInfo,
 		IntentPricingQuery,
 		IntentDiskInfo,
 		// deploy_model is a runtime intent: validIntent (validator.go) must accept
