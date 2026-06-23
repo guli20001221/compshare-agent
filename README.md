@@ -24,10 +24,10 @@ go build -o compshare-agent ./cmd
 部署入口简化为：
 
 ```bash
-just deploy
+make deploy
 ```
 
-`just deploy` 会交叉编译 Linux amd64 二进制到仓库根目录的 `compshare-agent`，然后调用 `deploy/scripts/deploy.sh` 用 `deploy/conf/config.yaml` 注册服务。
+`make deploy` 会交叉编译 Linux amd64 二进制到仓库根目录的 `compshare-agent`，然后调用 `deploy/scripts/deploy.sh` 用 `deploy/conf/config.yaml` 注册服务。
 
 ## 本地数据库
 
