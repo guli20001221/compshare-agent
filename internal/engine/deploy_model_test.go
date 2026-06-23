@@ -543,6 +543,21 @@ func TestBuildDeployReply_IncludesConsoleManageLink(t *testing.T) {
 	assert.Contains(t, reply, "管理实例")
 }
 
+func TestBuildDeployReply_UsesZoneLabelForDisplay(t *testing.T) {
+	plan := deployPlan{ImageName: "PyTorch", GpuType: "4090", ImageSource: "platform", ChosenZone: "cn-bj2-03", ZoneLabel: "华北一C"}
+	host := map[string]any{"State": "Running", "Name": "n"}
+	reply := buildDeployReply(plan, "uhost-x", host, "Running", imageUsage{})
+	assert.Contains(t, reply, "可用区：华北一C")
+	assert.NotContains(t, reply, "可用区：cn-bj2-03")
+}
+
+func TestBuildAdviseReply_UsesZoneLabelForDisplay(t *testing.T) {
+	plan := deployPlan{ImageName: "PyTorch", GpuType: "4090", ImageSource: "platform", ChosenZone: "cn-bj2-03", ZoneLabel: "华北一C"}
+	reply := buildAdviseReply(plan, true)
+	assert.Contains(t, reply, "可用区：华北一C")
+	assert.NotContains(t, reply, "可用区：cn-bj2-03")
+}
+
 // TestMatchDeployImage_IncompatibleGPUImage proves the compatibility gate: when no
 // image-supported card has enough VRAM, the sizer keeps a VRAM-correct card that the
 // image does NOT support (e.g. a 72B model on a 4090-only image), which would error
@@ -1060,6 +1075,21 @@ func TestTryDeployModel_FallbackZoneInReply(t *testing.T) {
 	assert.Equal(t, "cn-sh2-02", createArgs["Zone"], "create must use the fallback zone, not the sold-out primary")
 	assert.Contains(t, reply, "cn-sh2-02", "reply names the zone used")
 	assert.Contains(t, reply, "售罄", "reply tells the user the primary zone was sold out")
+}
+
+func TestDeployCandidateZonesSortsBySupportZoneCatalog(t *testing.T) {
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("4090", "cn-sh2-02", 24),
+		availCardZ("4090", "cn-bj2-03", 24),
+		availCardZ("4090", "cn-wlcb-01", 24),
+	}}
+	candidates := deployCandidateZones(avail)
+	sorted := sortDeployCandidateZonesBySupportZones(candidates, []zones.ZoneInfo{
+		{Zone: "cn-bj2-03", Describe: "华北一C"},
+		{Zone: "cn-wlcb-01", Describe: "华北二A"},
+		{Zone: "cn-sh2-02", Describe: "上海二B"},
+	})
+	assert.Equal(t, []string{"cn-bj2-03", "cn-wlcb-01", "cn-sh2-02"}, sorted)
 }
 
 func TestExtractDeployZone(t *testing.T) {

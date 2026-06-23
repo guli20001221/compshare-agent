@@ -464,6 +464,20 @@ var Registry = []openai.Tool{
 						"type":        "integer",
 						"description": "返回数据长度，默认 20",
 					},
+					"SortCondition": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"Field": map[string]any{
+								"type":        "string",
+								"enum":        []string{"PubTime", "CreatedCount", "Favor", "ImageUseTime", "FavoritesCount"},
+								"description": "排序字段。CreatedCount 表示按被用于创建实例的次数排序；PubTime 表示发布时间。",
+							},
+							"ASC": map[string]any{
+								"type":        "boolean",
+								"description": "是否升序；取热门或最新时通常为 false。",
+							},
+						},
+					},
 					"ExcludeReadme": map[string]any{
 						"type":        "boolean",
 						"description": "为 true 时响应不含 Readme 富文本，仅做列表/筛选时可省流量",

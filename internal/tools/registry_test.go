@@ -33,6 +33,17 @@ func TestCreatePathToolsAllowRegion(t *testing.T) {
 	}
 }
 
+func TestDescribeCommunityImagesAllowsPopularSortCondition(t *testing.T) {
+	policies := DefaultToolExecutionPolicies()
+	p, ok := policies["DescribeCommunityImages"]
+	if !ok {
+		t.Fatal("DescribeCommunityImages should have a policy")
+	}
+	if !containsString(p.AllowedParams, "SortCondition") {
+		t.Fatal("DescribeCommunityImages must allow SortCondition so workflows can request popular community images")
+	}
+}
+
 func TestCreatePathToolsAllowBackendZoneID(t *testing.T) {
 	policies := DefaultToolExecutionPolicies()
 	for _, action := range []string{
