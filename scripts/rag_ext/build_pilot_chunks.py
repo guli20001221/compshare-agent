@@ -27,6 +27,7 @@ Sources:
   sglang-docs:backend/hyperparameter_tuning  https://docs.sglang.ai/backend/hyperparameter_tuning.html
   ollama-docs:api/openai-compatibility       https://docs.ollama.com/api/openai-compatibility
   ollama-docs:faq                            https://docs.ollama.com/
+  ollama-docs:modelfile                      https://docs.ollama.com/modelfile
   pytorch-docs:notes/cuda                    https://docs.pytorch.org/docs/stable/notes/cuda.html
   nvidia-docs:nvidia-smi                      https://docs.nvidia.com/deploy/nvidia-smi/
   nvidia-docs:cuda-install-linux              https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html
@@ -201,6 +202,43 @@ Sources:
   minio-docs:mc-mirror                          https://docs.min.io/aistor/reference/cli/mc-mirror/
   label-studio-repo:README                      https://github.com/HumanSignal/label-studio
   label-studio-docs:guide                       https://labelstud.io/guide/
+  hf-accelerate:fsdp                            https://huggingface.co/docs/accelerate/en/usage_guides/fsdp
+  hf-accelerate:model-size-estimator            https://huggingface.co/docs/accelerate/en/usage_guides/model_size_estimator
+  hf-accelerate:big-model-inference             https://huggingface.co/docs/accelerate/en/concept_guides/big_model_inference
+  hf-accelerate:megatron-lm                     https://huggingface.co/docs/accelerate/en/usage_guides/megatron_lm
+  pytorch-docs:fsdp-advanced                    https://docs.pytorch.org/tutorials/intermediate/FSDP_advanced_tutorial.html
+  pytorch-docs:activation-checkpointing          https://pytorch.org/docs/stable/checkpoint.html
+  vllm-docs:features/lora                       https://docs.vllm.ai/en/stable/features/lora/
+  vllm-docs:features/structured_outputs          https://docs.vllm.ai/en/stable/features/structured_outputs/
+  vllm-docs:features/automatic_prefix_caching    https://docs.vllm.ai/en/stable/features/automatic_prefix_caching/
+  vllm-docs:design/metrics                      https://docs.vllm.ai/en/stable/design/metrics/
+  vllm-docs:observability-config                https://docs.vllm.ai/en/stable/api/vllm/config/observability/
+  vllm-docs:usage/security                      https://docs.vllm.ai/en/stable/usage/security/
+  litellm-docs:virtual-keys                     https://docs.litellm.ai/docs/proxy/virtual_keys
+  litellm-docs:users-budgets                    https://docs.litellm.ai/docs/proxy/users
+  nvidia-docs:nccl-troubleshooting              https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting.html
+  nvidia-nccl-tests-repo:README                 https://github.com/NVIDIA/nccl-tests
+  kueue-docs:pytorchjob                         https://kueue.sigs.k8s.io/docs/tasks/run/kubeflow/pytorchjobs/
+  kubeflow-docs:job-scheduling                  https://www.kubeflow.org/docs/components/trainer/legacy-v1/user-guides/job-scheduling/
+  kubeflow-docs:trainer-overview                https://www.kubeflow.org/docs/components/trainer/overview/
+  volcano-docs:kubeflow                         https://volcano.sh/docs/Ecosystem/KubeflowOnVolcano
+  lm-eval-repo:README                           https://github.com/EleutherAI/lm-evaluation-harness
+  lm-eval-repo:task-guide                       https://github.com/EleutherAI/lm-evaluation-harness/blob/main/docs/task_guide.md
+  mlflow-docs:genai-eval                        https://mlflow.org/docs/latest/genai/eval-monitor/
+  mlflow-docs:model-registry                    https://mlflow.org/docs/latest/ml/model-registry/
+  ultralytics-docs:train                        https://docs.ultralytics.com/modes/train/
+  ultralytics-docs:predict                      https://docs.ultralytics.com/modes/predict/
+  sam2-repo:README                              https://github.com/facebookresearch/sam2
+  lammps-docs:gpu-package                       https://docs.lammps.org/Speed_gpu.html
+  pyscf-docs:gpu                                https://pyscf.org/user/gpu.html
+  gpu4pyscf-repo:README                         https://github.com/pyscf/gpu4pyscf
+  apptainer-docs:gpu                            https://apptainer.org/docs/user/main/gpu.html
+  hf-docs:datasets-webdataset                   https://huggingface.co/docs/hub/en/datasets-webdataset
+  webdataset-repo:README                        https://github.com/webdataset/webdataset
+  onnxruntime-docs:quantization                 https://onnxruntime.ai/docs/performance/model-optimizations/quantization.html
+  hf-optimum-onnx:gpu                           https://huggingface.co/docs/optimum-onnx/en/onnxruntime/usage_guides/gpu
+  hf-transformers:quantization                  https://huggingface.co/docs/transformers/main/en/quantization
+  llama-cpp-repo:README                         https://github.com/ggml-org/llama.cpp
 """
 from __future__ import annotations
 
@@ -4947,6 +4985,1173 @@ CUDA_COMPILE_CLEANUP_CHUNKS = [
     ),
 ]
 
+THIRD_WAVE_EXTERNAL_CHUNKS = [
+    chunk(
+        chunk_id="ext-accelerate-fsdp-config-001",
+        product_area="pytorch_basics",
+        source_type="runbook",
+        source_origin="external_official",
+        title="Accelerate FSDP 训练大模型的基础配置",
+        question_patterns=[
+            "accelerate fsdp 怎么配置",
+            "fsdp 训练大模型怎么启动",
+            "多卡训练想用 fsdp 省显存",
+            "fsdp_transformer_layer_cls_to_wrap 填什么",
+            "accelerate launch fsdp 配置示例",
+        ],
+        content=(
+            "适用场景:客户用 DDP 或普通 Trainer 训练大模型显存不够,想用 FSDP 把参数、梯度和优化器状态切到多张 GPU 上。"
+            "Hugging Face Accelerate 支持通过 `accelerate config` 生成 FSDP 配置,再用 `accelerate launch` 启动训练。\n\n"
+            "处理建议:\n"
+            "1. 先确认单卡或 DDP 版本能跑通,再切 FSDP,避免把脚本 bug 和分布式配置问题混在一起。\n"
+            "2. `distributed_type` 选择 FSDP,`fsdp_sharding_strategy` 常见选择是 `FULL_SHARD`。\n"
+            "3. Transformer 模型优先用 `TRANSFORMER_BASED_WRAP`,并设置正确的 transformer layer 类名。\n"
+            "4. 训练超大模型时可打开 `fsdp_cpu_ram_efficient_loading`,但要配合 `fsdp_sync_module_states`。\n"
+            "5. FSDP 能降单卡显存压力,但通信更多,多节点网络和磁盘 checkpoint 也会影响速度。\n\n"
+            "典型流程:\n"
+            "```bash\n"
+            "accelerate config\n"
+            "accelerate launch train.py\n"
+            "```\n\n"
+            "注意:FSDP 配置强依赖模型结构。类名填错、包裹策略不合适或 checkpoint 策略不匹配,都可能导致 OOM、速度慢或保存失败。"
+        ),
+        source_refs=["hf-accelerate:fsdp", "pytorch-docs:fsdp-advanced"],
+    ),
+    chunk(
+        chunk_id="ext-fsdp-checkpoint-merge-001",
+        product_area="pytorch_basics",
+        source_type="runbook",
+        source_origin="external_official",
+        title="FSDP checkpoint 保存、恢复和合并权重",
+        question_patterns=[
+            "fsdp 保存出来一堆 shard 怎么合并",
+            "accelerate fsdp checkpoint 怎么恢复训练",
+            "fsdp 训练完怎么 save_pretrained",
+            "merge_fsdp_weights 怎么用",
+            "fsdp sharded state dict 是什么",
+        ],
+        content=(
+            "适用场景:FSDP 训练后输出多个分片文件,客户不知道如何恢复训练、导出单个模型文件或上传模型。"
+            "Accelerate 文档建议 FSDP checkpoint 可使用 `accelerator.save_state()` / `load_state()`,也可用 `merge_fsdp_weights` 合并分片权重。\n\n"
+            "处理建议:\n"
+            "1. 恢复训练优先保留完整 checkpoint 目录,包括模型、优化器、scheduler 和随机状态。\n"
+            "2. `SHARDED_STATE_DICT` 适合训练中保存,每个进程写自己的分片。\n"
+            "3. 对外发布或部署前,再用 `accelerate merge-weights` 或 `merge_fsdp_weights` 合并成普通权重。\n"
+            "4. 使用 Transformers `save_pretrained` 时,按 Accelerate 文档把 `accelerator.get_state_dict(model)` 传进去。\n"
+            "5. 合并权重要在空间充足的磁盘上做,大模型可能需要大量 CPU 内存和临时空间。\n\n"
+            "示例:\n"
+            "```bash\n"
+            "accelerate merge-weights pytorch_model_fsdp_0/ output_path\n"
+            "```\n\n"
+            "注意:不要只复制其中一个 rank 的分片目录就当成完整模型。分片 checkpoint 缺文件后通常无法正确恢复。"
+        ),
+        source_refs=["hf-accelerate:fsdp", "pytorch-docs:fsdp-advanced"],
+    ),
+    chunk(
+        chunk_id="ext-fsdp-vs-deepspeed-zero-001",
+        product_area="pytorch_basics",
+        source_type="faq",
+        source_origin="external_official",
+        title="FSDP 和 DeepSpeed ZeRO 怎么选",
+        question_patterns=[
+            "fsdp 和 deepspeed zero 有什么区别",
+            "训练大模型用 fsdp 还是 zero3",
+            "fsdp full shard 对应 deepspeed 哪个 stage",
+            "zero2 zero3 和 fsdp 怎么选",
+            "accelerate 里 fsdp deepspeed 选哪个",
+        ],
+        content=(
+            "适用场景:客户训练大模型时在 PyTorch FSDP 和 DeepSpeed ZeRO 之间选择。二者都能减少单卡显存占用,但配置方式、生态和 checkpoint 处理不同。"
+            "Accelerate 文档给出映射关系:`FULL_SHARD` 类似 ZeRO Stage 3,`SHARD_GRAD_OP` 类似 ZeRO Stage 2。\n\n"
+            "选择建议:\n"
+            "1. 已经在 PyTorch/Transformers/Accelerate 生态里,优先试 FSDP,集成路径更直接。\n"
+            "2. 已有 DeepSpeed 配置或需要 ZeRO-Offload、成熟 DeepSpeed 配置项时,继续用 DeepSpeed。\n"
+            "3. ZeRO-3/FULL_SHARD 通常更省显存,但通信和 checkpoint 更复杂。\n"
+            "4. ZeRO-2/SHARD_GRAD_OP 通常更容易调通,但参数仍有更多副本。\n"
+            "5. 不要只看显存,还要看网络、磁盘、恢复训练和最终导出权重流程。\n\n"
+            "注意:同一模型在不同节点、网络和 batch 下结果不同。建议用小规模样例先比较能否稳定跑完、吞吐和 checkpoint 成本。"
+        ),
+        source_refs=["hf-accelerate:fsdp", "hf-accelerate:deepspeed", "deepspeed-docs:config-json"],
+    ),
+    chunk(
+        chunk_id="ext-accelerate-memory-estimator-001",
+        product_area="pytorch_basics",
+        source_type="faq",
+        source_origin="external_official",
+        title="用 Accelerate 估算模型显存和内存需求",
+        question_patterns=[
+            "模型要多大显存怎么估算",
+            "accelerate estimate-memory 怎么用",
+            "训练前怎么判断卡够不够",
+            "显存不够是不是换更大卡",
+            "模型参数量和显存怎么换算",
+        ],
+        content=(
+            "适用场景:客户还没开始训练或推理,想先判断模型能不能放进 GPU,或者该选多大显存的实例。"
+            "Accelerate 提供 `estimate-memory` 工具,可按模型名估算加载模型时不同精度的大致内存占用。\n\n"
+            "处理建议:\n"
+            "1. 用 `accelerate estimate-memory <model_id>` 先估算权重加载需求。\n"
+            "2. 推理还要额外考虑 KV cache、并发、上下文长度和 batch。\n"
+            "3. 训练还要考虑梯度、优化器状态、激活值和 checkpoint,通常远高于只加载权重。\n"
+            "4. 量化、LoRA、FSDP/DeepSpeed、activation checkpointing 都会改变显存需求。\n"
+            "5. 估算值只能用于选型起点,最终要用实际脚本和目标 batch 做一次 smoke run。\n\n"
+            "示例:\n"
+            "```bash\n"
+            "accelerate estimate-memory Qwen/Qwen2.5-7B-Instruct\n"
+            "```\n\n"
+            "注意:客户问“7B 要多大卡”时,要先区分是加载推理、长上下文服务、全量训练还是 LoRA 微调。"
+        ),
+        source_refs=["hf-accelerate:model-size-estimator", "hf-accelerate:big-model-inference"],
+    ),
+    chunk(
+        chunk_id="ext-hf-big-model-device-map-offload-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="Hugging Face 大模型 device_map、CPU offload 和磁盘 offload 边界",
+        question_patterns=[
+            "device_map auto 是不是就不会爆显存",
+            "大模型能不能一部分放 cpu 一部分放 gpu",
+            "transformers offload_folder 怎么用",
+            "模型太大加载不了怎么用 accelerate 分层加载",
+            "cpu offload 为什么推理很慢",
+        ],
+        content=(
+            "适用场景:客户用 Transformers 加载大模型时显存不足,想用 `device_map=\"auto\"`、CPU offload 或磁盘 offload 勉强运行。"
+            "Accelerate 的 big model inference 文档说明可用空权重初始化、device map 和 offload 把模型分布到 GPU/CPU/磁盘。\n\n"
+            "处理建议:\n"
+            "1. `device_map=\"auto\"` 能帮助放置层,但不是保证不 OOM 的开关;KV cache 和输入长度仍占显存。\n"
+            "2. CPU/disk offload 可以让模型跑起来,但速度通常明显下降,适合验证功能,不适合高并发服务。\n"
+            "3. `offload_folder` 要放到空间足够且 IO 较好的磁盘。\n"
+            "4. 如果只是推理服务,优先评估 vLLM/SGLang 的张量并行、量化和上下文设置。\n"
+            "5. 如果频繁切层或磁盘 IO 打满,应换更大显存或多卡方案,不要继续堆 offload。\n\n"
+            "注意:offload 能降低显存压力,但会把压力转移到 CPU 内存和磁盘 IO。客户追求吞吐和延迟时要谨慎使用。"
+        ),
+        source_refs=["hf-accelerate:big-model-inference", "hf-accelerate:model-size-estimator"],
+    ),
+    chunk(
+        chunk_id="ext-megatron-lm-accelerate-001",
+        product_area="pytorch_basics",
+        source_type="faq",
+        source_origin="external_official",
+        title="Megatron-LM / Accelerate 适合更大规模并行训练",
+        question_patterns=[
+            "megatron lm 是什么",
+            "张量并行和 fsdp 有什么区别",
+            "accelerate megatron lm 怎么用",
+            "训练超大模型只用数据并行够吗",
+            "pipeline parallel tensor parallel 什么时候需要",
+        ],
+        content=(
+            "适用场景:客户训练模型规模继续变大,只靠 DDP、FSDP 或 ZeRO 仍不够,开始关注张量并行和流水线并行。"
+            "Accelerate 提供 Megatron-LM 集成文档,用于把模型训练扩展到更多并行维度。\n\n"
+            "处理建议:\n"
+            "1. 普通微调优先用 LoRA/QLoRA、FSDP 或 DeepSpeed,不要一开始就上 Megatron-LM。\n"
+            "2. 当单层矩阵本身太大、单卡放不下或吞吐不够时,才考虑 tensor parallel。\n"
+            "3. 当模型层数很多、需要跨阶段切分时,再考虑 pipeline parallel。\n"
+            "4. 这类训练对网络、启动脚本、数据吞吐和 checkpoint 要求更高,建议先在小模型上验证流程。\n"
+            "5. 多节点训练前先确认 NCCL 和节点间带宽,否则并行策略配置正确也可能很慢。\n\n"
+            "注意:Megatron-LM 属于高级分布式训练方案。客户只想做 7B/14B LoRA 微调时,通常不需要它。"
+        ),
+        source_refs=["hf-accelerate:megatron-lm", "pytorch-docs:distributed"],
+    ),
+    chunk(
+        chunk_id="ext-pytorch-activation-checkpointing-001",
+        product_area="pytorch_basics",
+        source_type="faq",
+        source_origin="external_official",
+        title="Activation checkpointing 用计算换训练显存",
+        question_patterns=[
+            "activation checkpointing 怎么省显存",
+            "gradient checkpointing 为什么训练变慢",
+            "显存不够能不能重算激活",
+            "torch checkpoint 怎么用",
+            "transformers gradient_checkpointing_enable 有什么代价",
+        ],
+        content=(
+            "适用场景:训练时显存主要被激活值占用,客户希望用更小显存跑更长序列或更大 batch。"
+            "PyTorch checkpoint 文档说明 activation checkpointing 会在前向时少保存中间激活,反向时重新计算,以计算时间换显存。\n\n"
+            "处理建议:\n"
+            "1. 优先在 Transformer block 或重复的大模块上启用,不要随意包很小的函数。\n"
+            "2. 预期训练会变慢,因为反向阶段需要重算一部分前向。\n"
+            "3. 与混合精度、LoRA、FSDP/DeepSpeed 可组合,但每次只改一个变量更容易定位效果。\n"
+            "4. 用 Transformers 时可优先使用模型提供的 `gradient_checkpointing_enable()`。\n"
+            "5. 打开后重新确认 loss 是否正常下降,并比较显存峰值和 step time。\n\n"
+            "注意:activation checkpointing 主要解决训练激活显存,不能减少模型权重本身占用,也不解决数据加载慢。"
+        ),
+        source_refs=["pytorch-docs:activation-checkpointing", "hf-transformers:trainer"],
+    ),
+    chunk(
+        chunk_id="ext-fsdp-mixed-precision-auto-wrap-001",
+        product_area="pytorch_basics",
+        source_type="runbook",
+        source_origin="external_official",
+        title="FSDP mixed precision 和 auto wrap 策略排查",
+        question_patterns=[
+            "fsdp mixed precision 怎么配置",
+            "fsdp auto wrap 策略怎么选",
+            "fsdp 训练显存没降下来",
+            "transformer_based_wrap 为什么没包住模型",
+            "fsdp bf16 fp16 训练怎么排查",
+        ],
+        content=(
+            "适用场景:客户已经启用 FSDP,但显存下降不明显、速度很慢、精度异常,或不确定 mixed precision 和 auto wrap 策略怎么配。"
+            "Accelerate FSDP 和 PyTorch FSDP 文档都强调自动包裹策略、混合精度和模型结构会共同影响显存、通信和稳定性。\n\n"
+            "处理建议:\n"
+            "1. 先确认 FSDP 真的包住了目标层,尤其是 Transformer block 类名是否写对。\n"
+            "2. mixed precision 优先按硬件选择 bf16 或 fp16;A100/H100 等通常优先考虑 bf16。\n"
+            "3. 如果只包了最外层或包裹粒度太粗,显存和通信效果可能不符合预期。\n"
+            "4. 如果包裹粒度太细,通信和调度开销会上升,训练可能变慢。\n"
+            "5. 每次只改一个变量,记录显存峰值、step time、loss 和 checkpoint 是否正常。\n\n"
+            "注意:FSDP 不是单一开关。auto wrap、mixed precision、sharding strategy、checkpoint 和模型加载方式要一起检查。"
+        ),
+        source_refs=["hf-accelerate:fsdp", "pytorch-docs:fsdp-advanced"],
+    ),
+    chunk(
+        chunk_id="ext-vllm-lora-serving-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="vLLM 用一个底模挂载 LoRA adapter 对外服务",
+        question_patterns=[
+            "vllm 怎么加载 lora 模型服务",
+            "一个 base model 能不能挂多个 lora",
+            "vllm --enable-lora 怎么用",
+            "lora 微调完怎么部署成 openai 接口",
+            "vllm lora adapter 模型名怎么填",
+        ],
+        content=(
+            "适用场景:客户已经有一个基础模型和若干 LoRA adapter,希望不用为每个 LoRA 单独加载完整模型,直接用 vLLM 对外提供 OpenAI 兼容接口。"
+            "vLLM 官方 LoRA 文档支持启动时用 `--enable-lora` 和 `--lora-modules` 挂载 adapter。\n\n"
+            "启动示例:\n"
+            "```bash\n"
+            "vllm serve <base-model> --enable-lora --lora-modules sql-lora=/data/lora/sql\n"
+            "```\n\n"
+            "处理建议:\n"
+            "1. 确认 LoRA adapter 与 base model 架构匹配。\n"
+            "2. 请求里的 `model` 填暴露出来的 LoRA 名称,而不是一定填 base model。\n"
+            "3. 多 LoRA 会增加显存和调度开销,需要关注 vLLM 的 LoRA 相关限制和指标。\n"
+            "4. adapter 目录要包含完整 adapter 权重和配置,不要只传训练日志目录。\n\n"
+            "注意:LoRA serving 适合多个轻量业务变体共用一个底模;如果 adapter 与底模不匹配,通常会在加载阶段报错。"
+        ),
+        source_refs=["vllm-docs:features/lora", "vllm-docs:cli/serve"],
+    ),
+    chunk(
+        chunk_id="ext-vllm-dynamic-lora-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="vLLM 动态加载 LoRA adapter 的适用边界",
+        question_patterns=[
+            "vllm lora 能不能运行中动态加载",
+            "不用重启 vllm 可以加 lora 吗",
+            "动态 lora adapter 为什么加载失败",
+            "vllm 多租户 lora 怎么管理",
+            "lora adapter 等待队列怎么看",
+        ],
+        content=(
+            "适用场景:客户希望服务不停机,在运行中为不同客户或不同任务切换 LoRA adapter。"
+            "vLLM LoRA 文档说明服务端可支持运行时配置 LoRA adapter,同时指标里也有 running/waiting LoRA adapter 信息。\n\n"
+            "处理建议:\n"
+            "1. 先用启动时加载方式验证 adapter 与 base model 兼容,再尝试动态加载。\n"
+            "2. 动态加载的 adapter 路径要能被服务进程访问,容器内外路径不要混淆。\n"
+            "3. 给 adapter 命名时避免和 base model 或其他 adapter 冲突。\n"
+            "4. 监控 LoRA 请求等待情况,如果 adapter 太多或显存紧张,请求会排队或失败。\n"
+            "5. 多租户场景要加鉴权和配额,不要让用户任意加载不可信权重。\n\n"
+            "注意:动态 LoRA 是服务治理能力,不是无限显存能力。adapter 数量、rank、并发和 base model 大小都会影响资源。"
+        ),
+        source_refs=["vllm-docs:features/lora", "vllm-docs:design/metrics", "vllm-docs:usage/security"],
+    ),
+    chunk(
+        chunk_id="ext-vllm-structured-output-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="vLLM 结构化输出让模型按 JSON/schema 返回",
+        question_patterns=[
+            "vllm 怎么让模型输出 json",
+            "openai 接口 response_format 在 vllm 支持吗",
+            "结构化输出和普通 prompt 有什么区别",
+            "模型总是不按格式返回怎么办",
+            "vllm guided decoding 怎么用",
+        ],
+        content=(
+            "适用场景:客户把模型接到业务系统,希望结果稳定返回 JSON、枚举或指定 schema,而不是只靠 prompt 约束。"
+            "vLLM structured outputs 文档说明 OpenAI 兼容接口可使用结构化输出相关参数来约束生成。\n\n"
+            "处理建议:\n"
+            "1. 简单场景先用明确 prompt 加 JSON 示例;稳定性不够时再用 structured outputs。\n"
+            "2. 约束越复杂,解码开销和失败概率可能越高,先从小 schema 验证。\n"
+            "3. 请求失败时检查模型是否支持对应解码方式、schema 是否合法、输出长度是否足够。\n"
+            "4. 生产接口仍要在服务端解析和校验 JSON,不要完全相信模型输出。\n"
+            "5. 对外 API 要说明返回格式版本,避免业务端 schema 改动无法兼容。\n\n"
+            "注意:结构化输出解决的是格式约束,不保证事实正确。事实性问题仍需要检索、评测和业务校验。"
+        ),
+        source_refs=["vllm-docs:features/structured_outputs"],
+    ),
+    chunk(
+        chunk_id="ext-vllm-prometheus-metrics-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="vLLM Prometheus 指标看吞吐、延迟和队列",
+        question_patterns=[
+            "vllm 怎么接 prometheus",
+            "vllm metrics 看哪些指标",
+            "模型服务吞吐和延迟怎么监控",
+            "vllm 请求排队怎么判断",
+            "grafana 怎么看 vllm 服务状态",
+        ],
+        content=(
+            "适用场景:客户把 vLLM 服务用于多人或业务调用,需要持续看请求量、延迟、KV cache、队列和 LoRA adapter 状态。"
+            "vLLM metrics 文档说明 OpenAI API server 暴露 Prometheus 风格指标,可接 Prometheus/Grafana。\n\n"
+            "处理建议:\n"
+            "1. 先确认 vLLM 的 `/metrics` 端点能被 Prometheus 抓取。\n"
+            "2. 重点看请求吞吐、首 token 延迟、每 token 延迟、队列等待、KV cache 使用和错误数。\n"
+            "3. 使用 LoRA 时关注 running/waiting LoRA adapter 指标。\n"
+            "4. GPU 指标要结合 DCGM/nvidia-smi,不要只看应用层指标。\n"
+            "5. 做压测时同时保存 prompt 长度、输出长度、并发和模型参数,否则指标不可比较。\n\n"
+            "注意:服务变慢可能来自队列、KV cache、长上下文、磁盘、网络或 GPU 利用率,需要把 vLLM 指标和系统指标一起看。"
+        ),
+        source_refs=["vllm-docs:design/metrics", "vllm-docs:observability-config", "nvidia-dcgm:exporter"],
+    ),
+    chunk(
+        chunk_id="ext-vllm-opentelemetry-tracing-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="vLLM OpenTelemetry tracing 用于请求链路定位",
+        question_patterns=[
+            "vllm 能不能接 opentelemetry",
+            "模型服务请求链路怎么追踪",
+            "otlp_traces_endpoint 是什么",
+            "vllm 详细 trace 怎么开",
+            "为什么模型请求慢但 gpu 不满",
+        ],
+        content=(
+            "适用场景:客户需要定位模型请求从入口到推理引擎的耗时,区分排队、调度、预填充、解码或外部网关开销。"
+            "vLLM observability 配置包含 OTLP traces endpoint 和详细 trace 选项,可把 trace 送到 OpenTelemetry 兼容后端。\n\n"
+            "处理建议:\n"
+            "1. 先用 Prometheus 指标判断整体是否慢,再用 trace 查单个请求链路。\n"
+            "2. 配置 OTLP endpoint 前先确认 trace 后端可达,网络和证书没有问题。\n"
+            "3. 详细 trace 可能增加开销,建议用于排查或采样,不要无边界长期全量开启。\n"
+            "4. 日志、metrics、trace 三者要用同一请求 ID 或时间窗口关联。\n"
+            "5. 对外服务要注意不要把敏感 prompt 或响应内容无控制地写入 trace。\n\n"
+            "注意:trace 是定位手段,不是性能优化开关。开启后仍需要根据瓶颈选择扩容、限流、缩短上下文或调整并发。"
+        ),
+        source_refs=["vllm-docs:observability-config", "vllm-docs:design/metrics"],
+    ),
+    chunk(
+        chunk_id="ext-vllm-security-reverse-proxy-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="vLLM 对外服务的鉴权、限流和反向代理安全",
+        question_patterns=[
+            "vllm 服务直接暴露公网安全吗",
+            "openai 兼容接口怎么加鉴权和限流",
+            "vllm 前面要不要加 nginx",
+            "模型 api 被刷爆怎么防",
+            "vllm security 文档建议什么",
+        ],
+        content=(
+            "适用场景:客户把 vLLM OpenAI 兼容接口暴露给团队或公网,担心未授权调用、超长请求、滥用和日志泄露。"
+            "vLLM security 文档建议在代理层实现额外鉴权、限流、日志和请求约束。\n\n"
+            "处理建议:\n"
+            "1. 不要把无鉴权的模型服务直接暴露到公网。\n"
+            "2. vLLM 内置 API key 适合基础保护,生产场景建议再加反向代理或 API gateway。\n"
+            "3. 在代理层限制请求体大小、上下文长度、并发、速率和来源。\n"
+            "4. 日志里避免记录完整敏感 prompt、密钥和用户数据。\n"
+            "5. 对不同团队/客户使用独立 key 和配额,便于追踪和停用。\n\n"
+            "注意:安全策略要放在服务入口统一执行。只依赖应用脚本里的简单判断,很难覆盖所有调用路径。"
+        ),
+        source_refs=["vllm-docs:usage/security", "vllm-docs:cli/serve"],
+    ),
+    chunk(
+        chunk_id="ext-litellm-virtual-keys-budget-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="LiteLLM virtual keys 用于模型 API 分租户和预算控制",
+        question_patterns=[
+            "litellm virtual key 怎么用",
+            "一个模型服务给多个团队怎么分 key",
+            "怎么限制每个用户调用预算",
+            "openai compatible 服务怎么做租户隔离",
+            "litellm proxy 能不能控制模型访问权限",
+        ],
+        content=(
+            "适用场景:客户有多个自托管或外部 LLM 接口,希望用统一入口发 key、限制预算、追踪用量和控制可访问模型。"
+            "LiteLLM proxy 文档提供 virtual keys,可用于跟踪花费和控制模型访问。\n\n"
+            "处理建议:\n"
+            "1. 先设置 proxy master key,只给管理员使用。\n"
+            "2. 给每个用户、团队或应用创建独立 virtual key。\n"
+            "3. 为 key 绑定可访问模型、预算和过期时间,避免一个 key 无限制调用所有模型。\n"
+            "4. 下游可对接 vLLM、Ollama、云厂商或其他 OpenAI 兼容服务。\n"
+            "5. key 泄露时只吊销单个 virtual key,不要重启所有模型服务。\n\n"
+            "注意:virtual key 是治理入口,不是模型本身的安全边界。后端模型服务仍应放在内网或受控网络。"
+        ),
+        source_refs=["litellm-docs:virtual-keys", "litellm-docs:getting-started", "litellm-docs:openai-compatible"],
+    ),
+    chunk(
+        chunk_id="ext-litellm-rate-limit-teams-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="LiteLLM 团队预算、限流和模型访问排查",
+        question_patterns=[
+            "litellm 怎么按团队设置预算",
+            "某个 key 调不了模型怎么查",
+            "litellm rate limit 怎么配置",
+            "模型 api 预算用完了会怎样",
+            "团队共用额度和个人额度怎么区分",
+        ],
+        content=(
+            "适用场景:团队共享模型服务后,有人调用失败、超预算或被限流,需要区分是 key、团队、模型权限还是后端服务问题。"
+            "LiteLLM users/budgets 文档支持个人预算、团队预算、模型访问和 rate limit 等治理能力。\n\n"
+            "排查顺序:\n"
+            "1. 确认请求使用的是 virtual key,不是 master key 或过期 key。\n"
+            "2. 检查 key 是否绑定了目标模型,模型别名是否和配置一致。\n"
+            "3. 看个人预算和团队预算是否已达到上限。\n"
+            "4. 检查 rate limit,短时间并发过高会被限制。\n"
+            "5. 如果治理层通过但后端报错,再查 vLLM/Ollama/云模型服务日志。\n\n"
+            "注意:给客户解释失败原因时要区分“没有权限”“额度用完”“限流”“后端模型不可用”,处理动作完全不同。"
+        ),
+        source_refs=["litellm-docs:users-budgets", "litellm-docs:virtual-keys"],
+    ),
+    chunk(
+        chunk_id="ext-vllm-prefix-cache-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="vLLM prefix caching 适合重复长前缀请求",
+        question_patterns=[
+            "vllm prefix cache 有什么用",
+            "很多请求都有同一段 system prompt 怎么加速",
+            "长上下文重复请求为什么还是慢",
+            "automatic prefix caching 适合哪些场景",
+            "rag 请求能不能复用 kv cache",
+        ],
+        content=(
+            "适用场景:很多请求共享相同系统提示词、工具说明、长文档前缀或模板,客户希望减少重复 prefill 开销。"
+            "vLLM automatic prefix caching 文档用于复用相同前缀的 KV cache,提高重复前缀场景效率。\n\n"
+            "处理建议:\n"
+            "1. 先确认请求确实有大量完全相同的前缀;只相似但不相同的文本不能稳定命中缓存。\n"
+            "2. 把稳定系统提示词和模板放在前面,变化内容放在后面。\n"
+            "3. 监控首 token 延迟、KV cache 使用和命中效果,不要只看平均吞吐。\n"
+            "4. 对 RAG 场景,检索片段每次不同会降低复用率;固定系统提示词仍可能受益。\n"
+            "5. 缓存会占用显存或内存资源,并发高时要结合上下文长度一起评估。\n\n"
+            "注意:prefix caching 不是通用加速魔法。输入前缀变化大、每次 prompt 都不同的场景收益有限。"
+        ),
+        source_refs=["vllm-docs:features/automatic_prefix_caching", "vllm-docs:design/metrics"],
+    ),
+    chunk(
+        chunk_id="ext-nccl-tests-allreduce-001",
+        product_area="gpu_troubleshooting",
+        source_type="runbook",
+        source_origin="external_official",
+        title="用 nccl-tests 验证多卡 all-reduce 性能和正确性",
+        question_patterns=[
+            "nccl-tests 怎么跑",
+            "多卡 allreduce 带宽怎么测",
+            "训练慢是不是 nccl 网络问题",
+            "all_reduce_perf 输出怎么看",
+            "多节点训练前怎么验证通信",
+        ],
+        content=(
+            "适用场景:客户多卡或多节点训练很慢、卡住或怀疑网络有问题,需要先把模型脚本之外的 NCCL 通信能力测清楚。"
+            "NVIDIA nccl-tests 仓库提供性能和正确性测试,常用 `all_reduce_perf` 验证 all-reduce。\n\n"
+            "处理建议:\n"
+            "1. 先在单机多卡跑 `all_reduce_perf`,确认 PCIe/NVLink 路径正常。\n"
+            "2. 再跨节点运行同一测试,确认节点间网络带宽和稳定性。\n"
+            "3. 测试环境要和训练环境一致,包括容器、驱动、NCCL、网卡和环境变量。\n"
+            "4. 如果 nccl-tests 都慢或报错,先修网络/驱动/拓扑,不要继续调训练代码。\n"
+            "5. 如果 nccl-tests 正常但训练慢,再查 DataLoader、checkpoint、模型并行策略和 batch。\n\n"
+            "注意:nccl-tests 是通信基线,不能代表完整训练吞吐;但它能快速排除或确认底层通信问题。"
+        ),
+        source_refs=["nvidia-nccl-tests-repo:README", "nvidia-docs:nccl-troubleshooting"],
+    ),
+    chunk(
+        chunk_id="ext-nccl-gpu-nic-topology-001",
+        product_area="gpu_troubleshooting",
+        source_type="runbook",
+        source_origin="external_official",
+        title="NCCL GPU-to-NIC 拓扑和网卡选择排查",
+        question_patterns=[
+            "nccl 选错网卡怎么办",
+            "多节点训练为什么走了慢网卡",
+            "gpu 到 nic 拓扑怎么查",
+            "NCCL_SOCKET_IFNAME 怎么设置",
+            "NCCL_IB_HCA 什么时候用",
+        ],
+        content=(
+            "适用场景:多节点训练能跑但很慢,怀疑 NCCL 没走正确网卡、GPU-to-NIC 路径不理想或拓扑不匹配。"
+            "NVIDIA NCCL troubleshooting 文档覆盖网络接口选择、拓扑、GPU-to-NIC 和多节点网络问题。\n\n"
+            "排查顺序:\n"
+            "1. 用 `nvidia-smi topo -m` 看 GPU、CPU、NIC 的相对拓扑。\n"
+            "2. 用 `ip addr` / `ibv_devinfo` 等确认可用网卡和 IB 设备。\n"
+            "3. 通过 `NCCL_DEBUG=INFO` 查看 NCCL 实际选择的接口。\n"
+            "4. 多网卡环境可设置 `NCCL_SOCKET_IFNAME` 指定以太网接口。\n"
+            "5. InfiniBand/RDMA 环境可按实际设备配置 NCCL IB 相关变量,但不要盲目复制其他机器的 HCA 名称。\n\n"
+            "注意:接口名、网卡数量和拓扑是机器相关事实。迁移实例或换镜像后要重新检查。"
+        ),
+        source_refs=["nvidia-docs:nccl-troubleshooting", "nvidia-docs:nccl-env", "nvidia-docs:nvidia-smi"],
+    ),
+    chunk(
+        chunk_id="ext-nccl-acs-iommu-rdma-001",
+        product_area="gpu_troubleshooting",
+        source_type="faq",
+        source_origin="external_official",
+        title="NCCL RDMA、ACS、IOMMU 导致跨节点通信异常",
+        question_patterns=[
+            "nccl rdma 一开就卡住",
+            "gpu direct rdma 为什么不生效",
+            "acs iommu 会影响 nccl 吗",
+            "跨节点 nccl 性能很差怎么查 bios",
+            "rdma 关闭反而能跑是什么原因",
+        ],
+        content=(
+            "适用场景:跨节点 NCCL 在 RDMA/InfiniBand 环境下卡住、带宽很低,或开启 GPU Direct RDMA 后失败。"
+            "NVIDIA NCCL troubleshooting 文档提到 GPU troubleshooting 会覆盖 GPU-to-GPU、GPU-to-NIC、ACS、拓扑和多节点网络问题。\n\n"
+            "处理建议:\n"
+            "1. 先用 nccl-tests 和低层网络测试确认不是训练脚本问题。\n"
+            "2. 检查 NCCL 日志里是否启用了 IB/RDMA,以及选择了哪些 HCA。\n"
+            "3. 让管理员确认 BIOS/PCIe ACS、IOMMU、驱动和 OFED/rdma-core 状态。\n"
+            "4. 不要在不了解硬件环境时随意关闭或强开 RDMA 相关变量。\n"
+            "5. 如果平台不提供 RDMA,应按普通 TCP/以太网带宽预期设置训练规模。\n\n"
+            "注意:ACS/IOMMU/BIOS 属于节点级配置,普通用户通常无法自行修复。需要把 NCCL 日志、节点型号和测试结果交给运维定位。"
+        ),
+        source_refs=["nvidia-docs:nccl-troubleshooting", "nvidia-nccl-tests-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-infiniband-low-level-test-001",
+        product_area="gpu_troubleshooting",
+        source_type="runbook",
+        source_origin="external_official",
+        title="跑 NCCL 前先用低层 InfiniBand 测试确认网络",
+        question_patterns=[
+            "跑 nccl 前怎么确认 ib 网络通",
+            "ib_write_bw 和 nccl-tests 有什么关系",
+            "多节点训练网络底层怎么测",
+            "infiniband 带宽正常但训练慢怎么办",
+            "rdma 网络先测什么",
+        ],
+        content=(
+            "适用场景:客户有多节点 GPU 训练环境,但不确定 InfiniBand/RDMA 网络是否正常。"
+            "NVIDIA NCCL troubleshooting 文档建议在 NCCL 前运行低层 InfiniBand 测试,特别是带宽类测试,先确认节点间网络能力。\n\n"
+            "处理建议:\n"
+            "1. 先确认两台节点的 IB 设备和驱动都正常。\n"
+            "2. 用低层 IB 带宽/连通性测试确认节点间能通信。\n"
+            "3. 再运行 nccl-tests,验证 GPU 通信路径。\n"
+            "4. 最后再运行真实训练脚本,比较吞吐和通信占比。\n"
+            "5. 如果低层 IB 测试已经异常,不要继续从 PyTorch 代码层面排查。\n\n"
+            "注意:低层 IB 工具名和安装包随系统而异。客户没有权限安装或运行时,应请管理员提供同节点同网络的测试结果。"
+        ),
+        source_refs=["nvidia-docs:nccl-troubleshooting", "nvidia-nccl-tests-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-multinode-nccl-env-minimal-001",
+        product_area="gpu_troubleshooting",
+        source_type="runbook",
+        source_origin="external_official",
+        title="多节点训练 NCCL 环境变量最小排查集",
+        question_patterns=[
+            "多节点训练 nccl 环境变量怎么设",
+            "NCCL_DEBUG INFO 有什么用",
+            "torchrun 多机卡住怎么收集日志",
+            "nccl 日志太少怎么打开",
+            "MASTER_ADDR MASTER_PORT 和 nccl 有关系吗",
+        ],
+        content=(
+            "适用场景:多节点 PyTorch/Accelerate/DeepSpeed 训练启动后卡住或报通信错误,需要先收集可判断的日志。"
+            "PyTorch distributed 与 NVIDIA NCCL 文档都建议通过启动参数和 NCCL 日志明确节点、端口、rank、接口和错误位置。\n\n"
+            "最小排查集:\n"
+            "1. 记录 `MASTER_ADDR`、`MASTER_PORT`、`NNODES`、`NODE_RANK`、每节点 GPU 数。\n"
+            "2. 设置 `NCCL_DEBUG=INFO` 和必要时 `TORCH_DISTRIBUTED_DEBUG=DETAIL`。\n"
+            "3. 多网卡机器先明确 `NCCL_SOCKET_IFNAME`,避免 NCCL 选到容器网卡或慢网卡。\n"
+            "4. 确认所有节点时间、镜像、驱动、NCCL/PyTorch 版本一致。\n"
+            "5. 先用 nccl-tests 复现通信,再回到训练脚本。\n\n"
+            "注意:环境变量不要无限堆。每次改一到两个关键变量并保存日志,否则很难判断哪个设置起作用。"
+        ),
+        source_refs=["pytorch-docs:elastic-run", "pytorch-docs:distributed", "nvidia-docs:nccl-env", "nvidia-docs:nccl-troubleshooting"],
+    ),
+    chunk(
+        chunk_id="ext-kueue-pytorchjob-queue-001",
+        product_area="linux_ops",
+        source_type="faq",
+        source_origin="external_official",
+        title="Kueue 管理 PyTorchJob 队列和 GPU 资源",
+        question_patterns=[
+            "kueue pytorchjob 怎么排队",
+            "gpu 训练任务怎么进队列",
+            "kubeflow pytorchjob 为什么一直 pending",
+            "多用户 gpu 资源怎么排队调度",
+            "localqueue clusterqueue 是什么",
+        ],
+        content=(
+            "适用场景:客户在 Kubernetes 上提交多用户 GPU 训练任务,希望按队列、配额和优先级管理 PyTorchJob。"
+            "Kueue 文档提供运行 Kubeflow PyTorchJob 的任务指南,把训练任务接入 Kueue 的调度和资源管理。\n\n"
+            "处理建议:\n"
+            "1. 把训练任务提交为 PyTorchJob,并指定 Kueue 需要的队列标签或配置。\n"
+            "2. 检查 LocalQueue 是否存在并指向正确 ClusterQueue。\n"
+            "3. ClusterQueue 的 resource flavor 和 GPU 配额决定任务是否能被接纳。\n"
+            "4. Pending 不一定是报错,可能是在等待 GPU 资源或 gang scheduling 条件满足。\n"
+            "5. 排查时看 Job、Workload、LocalQueue、ClusterQueue 的状态和事件。\n\n"
+            "注意:Kueue 是集群调度层能力。单机 GPU 实例里直接跑训练脚本时不需要 Kueue。"
+        ),
+        source_refs=["kueue-docs:pytorchjob", "kubeflow-docs:job-scheduling"],
+    ),
+    chunk(
+        chunk_id="ext-kueue-resource-flavors-quota-001",
+        product_area="linux_ops",
+        source_type="runbook",
+        source_origin="external_official",
+        title="Kueue resource flavor 和配额导致训练任务排队",
+        question_patterns=[
+            "kueue 任务为什么一直 admitted false",
+            "clusterqueue 配额不够怎么看",
+            "gpu resource flavor 是什么",
+            "训练任务等不到资源怎么查",
+            "kueue 队列里有资源为什么不调度",
+        ],
+        content=(
+            "适用场景:PyTorchJob 已提交但长期排队,客户想知道是 GPU 不够、队列配额不够,还是任务声明不匹配。"
+            "Kueue 使用 ClusterQueue、LocalQueue、ResourceFlavor 和配额来决定 Workload 何时被接纳。\n\n"
+            "排查顺序:\n"
+            "1. 看 Workload 状态,确认是否已 admitted。\n"
+            "2. 看 LocalQueue 是否绑定到预期 ClusterQueue。\n"
+            "3. 看 ClusterQueue 中对应 GPU flavor 的可用配额。\n"
+            "4. 检查任务请求的 GPU 数、CPU、内存是否超过队列上限。\n"
+            "5. 如果使用 gang scheduling,所有副本资源都满足后才可能启动。\n\n"
+            "注意:客户看到 Pod Pending 时,不要只查 Pod。Kueue 场景下要从 Workload/Queue 这一层看调度原因。"
+        ),
+        source_refs=["kueue-docs:pytorchjob", "kubeflow-docs:job-scheduling"],
+    ),
+    chunk(
+        chunk_id="ext-kubeflow-trainer-trainjob-001",
+        product_area="linux_ops",
+        source_type="faq",
+        source_origin="external_official",
+        title="Kubeflow Trainer 适合 Kubernetes 原生分布式训练",
+        question_patterns=[
+            "kubeflow trainer 是什么",
+            "pytorchjob 和 trainjob 有什么区别",
+            "kubernetes 上怎么跑多节点训练",
+            "kubeflow trainer 能跑 mpi 吗",
+            "训练平台怎么管理分布式任务",
+        ],
+        content=(
+            "适用场景:客户不满足于手写 `torchrun` 和 SSH 脚本,希望在 Kubernetes 上以训练任务对象管理多节点、多 GPU 作业。"
+            "Kubeflow Trainer 文档定位为 Kubernetes-native 的分布式 AI 模型训练项目,用于编排多框架训练作业。\n\n"
+            "处理建议:\n"
+            "1. 单机调试阶段先用普通脚本跑通,再迁移到 Trainer/Kubeflow。\n"
+            "2. 把镜像、训练入口、数据路径、GPU 资源和副本数写进任务规格。\n"
+            "3. 与 Kueue/Volcano 结合时,关注 gang scheduling 和队列状态。\n"
+            "4. 任务失败先看 driver/worker Pod 日志和事件,再看训练框架日志。\n"
+            "5. 多节点训练要提前验证镜像一致、数据可见、网络和 NCCL。\n\n"
+            "注意:Kubeflow Trainer 是集群平台能力,不是单台云主机里的 Python 包。客户需要有 Kubernetes 和对应控制器。"
+        ),
+        source_refs=["kubeflow-docs:trainer-overview", "kubeflow-docs:job-scheduling"],
+    ),
+    chunk(
+        chunk_id="ext-volcano-gang-scheduling-001",
+        product_area="linux_ops",
+        source_type="faq",
+        source_origin="external_official",
+        title="Volcano gang scheduling 避免分布式训练只起一部分 worker",
+        question_patterns=[
+            "volcano gang scheduling 是什么",
+            "分布式训练只启动部分 worker 会怎样",
+            "kubeflow on volcano 怎么用",
+            "pytorchjob 为什么需要 gang scheduling",
+            "多机训练资源不齐能不能先跑",
+        ],
+        content=(
+            "适用场景:分布式训练需要多个 worker 同时启动,但普通调度可能只启动一部分 Pod,导致任务等待、超时或浪费 GPU。"
+            "Kubeflow job scheduling 文档提到可用 Volcano 等调度器支持 gang scheduling。\n\n"
+            "处理建议:\n"
+            "1. 多 worker 训练任务需要所有关键 Pod 都拿到资源后再运行。\n"
+            "2. gang scheduling 可以避免只占住部分 GPU 却无法开始训练。\n"
+            "3. 配置时要确认任务的最小可运行副本数和资源请求。\n"
+            "4. 如果一直排队,说明集群当前无法一次性满足整组资源,需要降副本数或等待资源。\n"
+            "5. 对单 Pod 推理服务或单机脚本,通常不需要 gang scheduling。\n\n"
+            "注意:gang scheduling 提升的是分布式作业调度正确性,不是训练性能优化。"
+        ),
+        source_refs=["kubeflow-docs:job-scheduling", "volcano-docs:kubeflow"],
+    ),
+    chunk(
+        chunk_id="ext-kubeflow-job-failure-logs-001",
+        product_area="linux_ops",
+        source_type="runbook",
+        source_origin="external_official",
+        title="Kubeflow / Kueue 训练任务失败时先看哪些对象",
+        question_patterns=[
+            "kubeflow 训练任务失败怎么查",
+            "pytorchjob pod 失败看哪里",
+            "kueue workload admitted 了但任务没跑",
+            "分布式训练 worker 日志怎么收集",
+            "训练 job pending failed 怎么定位",
+        ],
+        content=(
+            "适用场景:客户用 Kubeflow/Kueue 提交训练任务后,状态显示 Pending、Failed 或部分 Pod 退出,不知道从哪里查。"
+            "这类任务有调度层、控制器层和训练脚本层,需要按层排查。\n\n"
+            "排查顺序:\n"
+            "1. 看 Workload/Queue 是否已 admitted,排除队列和配额问题。\n"
+            "2. 看 PyTorchJob/TrainJob 状态和事件,确认控制器是否创建了 Pod。\n"
+            "3. 看 driver/master Pod 日志,通常包含分布式启动错误。\n"
+            "4. 看各 worker Pod 日志,确认是否 OOM、镜像拉取失败、数据路径不可见或 NCCL 错误。\n"
+            "5. 如果是节点资源问题,再看 Pod events、node 状态和 GPU device plugin。\n\n"
+            "注意:不要只看最后一个失败 Pod。分布式任务常常是一个 rank 先报错,其他 rank 被动退出。"
+        ),
+        source_refs=["kueue-docs:pytorchjob", "kubeflow-docs:trainer-overview", "kubeflow-docs:job-scheduling"],
+    ),
+    chunk(
+        chunk_id="ext-lm-eval-harness-basic-001",
+        product_area="pytorch_basics",
+        source_type="faq",
+        source_origin="external_official",
+        title="用 lm-evaluation-harness 做大模型基准评测",
+        question_patterns=[
+            "lm evaluation harness 怎么用",
+            "模型微调后怎么跑基准测试",
+            "怎么验证新模型有没有退化",
+            "mmlu gsm8k 这类评测怎么跑",
+            "上线前怎么比较两个大模型",
+        ],
+        content=(
+            "适用场景:客户微调或换模型后,想用统一任务集比较模型质量,而不是只凭几条人工提问判断效果。"
+            "EleutherAI lm-evaluation-harness 提供统一框架,可在多种生成任务上评测语言模型。\n\n"
+            "处理建议:\n"
+            "1. 先选和业务相关的任务集,不要只追通用榜单分数。\n"
+            "2. 固定模型版本、prompt、采样参数、精度和数据集版本。\n"
+            "3. 对自托管模型,确认评测工具支持本地模型或 OpenAI 兼容接口。\n"
+            "4. 记录每次评测的 commit、模型路径、量化方式和硬件。\n"
+            "5. 评测结果只说明任务集表现,不能替代真实业务验收。\n\n"
+            "注意:基准评测可能消耗大量 token 和 GPU 时间。正式跑前先用少量样本验证命令、路径和输出格式。"
+        ),
+        source_refs=["lm-eval-repo:README", "lm-eval-repo:task-guide"],
+    ),
+    chunk(
+        chunk_id="ext-lm-eval-custom-task-001",
+        product_area="pytorch_basics",
+        source_type="runbook",
+        source_origin="external_official",
+        title="lm-evaluation-harness 自定义任务用于业务验收",
+        question_patterns=[
+            "lm eval 能不能评自己的题库",
+            "怎么把业务测试集接到 lm-evaluation-harness",
+            "自定义大模型评测任务怎么写",
+            "评测题和答案怎么组织",
+            "模型上线前业务集怎么自动验收",
+        ],
+        content=(
+            "适用场景:客户已有业务题库、客服问答或内部验收集,希望用统一评测流程判断模型是否可上线。"
+            "lm-evaluation-harness task guide 说明可以定义和扩展评测任务。\n\n"
+            "处理建议:\n"
+            "1. 把业务问题、标准答案、评分方式和数据版本固定下来。\n"
+            "2. 区分选择题、短答案、生成式问答和 RAG 问答,评分方式不要混用。\n"
+            "3. 自定义任务先用 5-10 条样例跑通,再扩到全量。\n"
+            "4. 评测输出要保存到文件,便于回归比较。\n"
+            "5. 对生成式业务问答,最好同时保留人工抽检或 LLM judge 复核。\n\n"
+            "注意:自定义评测的核心不是工具,而是题库质量和评分标准。题库含糊会导致评测结果不可解释。"
+        ),
+        source_refs=["lm-eval-repo:task-guide", "lm-eval-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-mlflow-genai-evaluation-001",
+        product_area="pytorch_basics",
+        source_type="faq",
+        source_origin="external_official",
+        title="MLflow GenAI Evaluation 评测 LLM 和 Agent 应用",
+        question_patterns=[
+            "mlflow 怎么评测 llm 应用",
+            "agent 回答质量怎么持续监控",
+            "rag 应用上线前怎么做评测",
+            "llm judge 和自定义 scorer 怎么用",
+            "模型应用质量怎么记录到 mlflow",
+        ],
+        content=(
+            "适用场景:客户已经有 RAG、Agent 或 LLM 应用,希望系统化记录问题、回答、评分和版本,而不是只手工测试。"
+            "MLflow GenAI evaluation 文档提供内置和自定义 scorer,用于测量、改进和监控 LLM/Agent 应用质量。\n\n"
+            "处理建议:\n"
+            "1. 先定义评测数据集:问题、上下文、期望答案或评分标准。\n"
+            "2. 用内置 scorer 覆盖通用质量维度,再按业务补自定义 scorer。\n"
+            "3. 每次模型、prompt、检索库或工具变更都记录实验版本。\n"
+            "4. 上线前比较新旧版本分数和失败样例,不要只看平均分。\n"
+            "5. 线上抽样监控要注意脱敏,避免把敏感用户内容写入日志。\n\n"
+            "注意:LLM judge 不是绝对真值。重要业务仍需人工抽检和明确拒答/引用规则。"
+        ),
+        source_refs=["mlflow-docs:genai-eval", "mlflow-docs:tracking"],
+    ),
+    chunk(
+        chunk_id="ext-mlflow-model-registry-promotion-001",
+        product_area="pytorch_basics",
+        source_type="faq",
+        source_origin="external_official",
+        title="MLflow Model Registry 管理模型版本和上线流转",
+        question_patterns=[
+            "mlflow model registry 有什么用",
+            "训练好多版模型怎么管理",
+            "模型从测试到上线怎么标记",
+            "怎么回滚到旧模型版本",
+            "模型文件和指标怎么关联",
+        ],
+        content=(
+            "适用场景:客户反复训练和微调模型,需要管理不同版本、指标、文件和上线状态。"
+            "MLflow Model Registry 用于注册模型版本、管理生命周期和关联实验记录。\n\n"
+            "处理建议:\n"
+            "1. 每次训练记录参数、指标、代码版本和模型文件。\n"
+            "2. 把可候选上线的模型注册到 Model Registry。\n"
+            "3. 用别名或阶段标记区分候选、生产和归档版本。\n"
+            "4. 上线前保留评测报告和回滚目标版本。\n"
+            "5. 模型服务部署时记录具体 registry 版本,避免“用了哪个模型”说不清。\n\n"
+            "注意:Registry 管版本,不替你判断模型是否好。上线仍要结合离线评测、业务验收和安全检查。"
+        ),
+        source_refs=["mlflow-docs:model-registry", "mlflow-docs:tracking", "mlflow-docs:pytorch"],
+    ),
+    chunk(
+        chunk_id="ext-eval-observability-release-gate-001",
+        product_area="pytorch_basics",
+        source_type="runbook",
+        source_origin="external_official",
+        title="模型上线前把评测、监控和回滚做成发布门槛",
+        question_patterns=[
+            "模型上线前要检查哪些指标",
+            "怎么判断新模型可以替换旧模型",
+            "llm 应用发布门槛怎么设",
+            "模型服务上线后怎么监控质量",
+            "模型效果变差怎么回滚",
+        ],
+        content=(
+            "适用场景:客户要把微调模型或 RAG/Agent 应用上线,希望有可执行的验收和回滚标准。"
+            "可把 lm-evaluation-harness/MLflow 这类离线评测,与线上 vLLM/LiteLLM 指标结合起来做发布门槛。\n\n"
+            "建议门槛:\n"
+            "1. 离线业务评测集通过,关键分组不能退化。\n"
+            "2. 延迟、吞吐、错误率和 GPU 利用率达到目标。\n"
+            "3. 日志、metrics、trace 能定位单个请求问题。\n"
+            "4. 模型版本、prompt 版本和知识库版本可追溯。\n"
+            "5. 保留旧版本和配置,出现质量或稳定性问题能回滚。\n\n"
+            "注意:不要只用“几条样例回答不错”作为上线依据。模型、数据、检索、工具和服务指标要一起验收。"
+        ),
+        source_refs=["lm-eval-repo:README", "mlflow-docs:genai-eval", "vllm-docs:design/metrics", "litellm-docs:users-budgets"],
+    ),
+    chunk(
+        chunk_id="ext-ultralytics-yolo-custom-training-001",
+        product_area="pytorch_basics",
+        source_type="faq",
+        source_origin="external_official",
+        title="Ultralytics YOLO 自定义数据训练目标检测模型",
+        question_patterns=[
+            "yolo 怎么训练自己的数据集",
+            "ultralytics train data yaml 怎么写",
+            "目标检测数据集怎么组织",
+            "yolo 训练用 gpu 怎么启动",
+            "训练检测模型前要准备什么",
+        ],
+        content=(
+            "适用场景:客户想在 GPU 实例上训练自己的目标检测模型,例如工业缺陷、商品、人体或实验图像识别。"
+            "Ultralytics YOLO train 文档提供 `yolo train` 入口和数据配置方式。\n\n"
+            "处理建议:\n"
+            "1. 先确认数据标注格式、类别名和 train/val 划分正确。\n"
+            "2. 准备数据配置 YAML,指向图片和标签路径。\n"
+            "3. 用小模型、小 epoch 先跑通训练,确认 GPU 可用和 loss 正常。\n"
+            "4. 再增加分辨率、batch、epoch 或换更大模型。\n"
+            "5. 训练后用验证集和真实样例检查误检、漏检和类别混淆。\n\n"
+            "示例:\n"
+            "```bash\n"
+            "yolo detect train model=yolo11n.pt data=data.yaml imgsz=640 epochs=10 device=0\n"
+            "```\n\n"
+            "注意:大多数训练问题来自数据路径、标签格式或类别映射错误,不要一上来只看显存。"
+        ),
+        source_refs=["ultralytics-docs:train", "label-studio-docs:guide"],
+    ),
+    chunk(
+        chunk_id="ext-ultralytics-yolo-oom-performance-001",
+        product_area="gpu_troubleshooting",
+        source_type="runbook",
+        source_origin="external_official",
+        title="YOLO 训练 OOM、速度慢和 GPU 利用率低排查",
+        question_patterns=[
+            "yolo 训练爆显存怎么办",
+            "ultralytics 训练很慢怎么查",
+            "yolo batch imgsz 怎么调",
+            "目标检测 gpu 利用率低",
+            "yolo 多卡训练怎么排查",
+        ],
+        content=(
+            "适用场景:YOLO 训练时报 CUDA OOM、训练速度慢或 GPU 利用率上不去。"
+            "Ultralytics train 文档暴露了 batch、imgsz、device 等训练参数,排查时要同时看模型大小、分辨率和数据加载。\n\n"
+            "排查顺序:\n"
+            "1. OOM 时先降低 `batch` 和 `imgsz`,再考虑换小模型。\n"
+            "2. 如果 GPU 利用率低,检查数据是否在慢盘、图片是否过大、workers 是否太低。\n"
+            "3. 先单卡跑通,再用多卡,避免分布式问题掩盖数据问题。\n"
+            "4. 保存训练日志、显存峰值和每 epoch 时间,便于比较不同配置。\n"
+            "5. 验证阶段也可能 OOM,需要单独调 batch 或图片尺寸。\n\n"
+            "注意:提升 imgsz 通常会显著增加显存和计算量。客户想要更高精度时,要同时评估成本和训练时间。"
+        ),
+        source_refs=["ultralytics-docs:train", "pytorch-docs:notes/cuda"],
+    ),
+    chunk(
+        chunk_id="ext-sam2-install-checkpoints-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="SAM2 安装、checkpoint 准备和图像/视频分割入口",
+        question_patterns=[
+            "sam2 怎么安装和下载模型",
+            "segment anything 2 checkpoint 放哪里",
+            "sam2 能分割视频吗",
+            "图像分割模型怎么在 gpu 上跑",
+            "sam2 demo 缺权重怎么处理",
+        ],
+        content=(
+            "适用场景:客户想用 SAM2 做图像或视频分割,但不知道代码、checkpoint 和输入输出如何准备。"
+            "Meta SAM2 仓库提供安装、模型 checkpoint 和图像/视频预测示例。\n\n"
+            "处理建议:\n"
+            "1. 按仓库说明安装依赖并确认 PyTorch/CUDA 可用。\n"
+            "2. 下载与配置匹配的 SAM2 checkpoint,放到脚本能访问的路径。\n"
+            "3. 图像分割和视频分割入口不同,先用官方最小示例跑通。\n"
+            "4. 视频任务会占更多显存和磁盘 IO,先用短视频验证。\n"
+            "5. 对外服务前要明确输入大小、并发和输出格式。\n\n"
+            "注意:SAM2 是视觉基础模型,不是自动标注全流程。具体业务仍需要提示点/框、后处理和人工抽检。"
+        ),
+        source_refs=["sam2-repo:README", "pytorch-docs:get-started"],
+    ),
+    chunk(
+        chunk_id="ext-sam2-video-segmentation-oom-001",
+        product_area="gpu_troubleshooting",
+        source_type="runbook",
+        source_origin="external_official",
+        title="SAM2 视频分割显存、帧数和分辨率排查",
+        question_patterns=[
+            "sam2 视频分割爆显存怎么办",
+            "sam2 处理长视频很慢",
+            "segment anything 2 视频帧太多",
+            "sam2 分割结果不稳定怎么查",
+            "视频分割 gpu 资源怎么估算",
+        ],
+        content=(
+            "适用场景:SAM2 处理视频时 OOM、速度慢、临时文件大或分割结果不稳定。"
+            "视频分割比单图更依赖帧数、分辨率、提示质量和显存余量。\n\n"
+            "处理建议:\n"
+            "1. 先把视频截短、降分辨率,用少量帧验证流程。\n"
+            "2. OOM 时降低输入分辨率、分段处理视频或换更小模型配置。\n"
+            "3. 把临时帧和输出放到空间足够的数据盘,不要写满系统盘。\n"
+            "4. 分割漂移时检查提示点/框是否稳定,必要时增加关键帧提示。\n"
+            "5. 服务化时限制上传文件大小、视频时长和并发。\n\n"
+            "注意:视频分割的成本不只看模型大小,还要看帧数、分辨率、输出保存和后处理。"
+        ),
+        source_refs=["sam2-repo:README", "pytorch-docs:notes/cuda"],
+    ),
+    chunk(
+        chunk_id="ext-lammps-gpu-package-001",
+        product_area="gpu_troubleshooting",
+        source_type="faq",
+        source_origin="external_official",
+        title="LAMMPS GPU package 加速分子模拟的前置条件",
+        question_patterns=[
+            "lammps 怎么用 gpu",
+            "lammps gpu package 需要 cuda 吗",
+            "分子模拟任务怎么确认跑在显卡上",
+            "lammps pair style 没用 gpu 怎么查",
+            "ai4science lammps gpu 环境怎么配",
+        ],
+        content=(
+            "适用场景:科研客户要用 LAMMPS 在 GPU 实例上跑分子动力学模拟,但不确定安装包、pair style 和 CUDA 是否支持。"
+            "LAMMPS GPU package 文档说明 CUDA 模式需要 NVIDIA GPU 和对应 CUDA Toolkit,并非所有模拟部分都会自动上 GPU。\n\n"
+            "处理建议:\n"
+            "1. 确认当前 LAMMPS 构建包含 GPU package。\n"
+            "2. 确认输入脚本使用的 pair style、kspace 或命令支持 GPU 加速。\n"
+            "3. 运行时查看 LAMMPS 输出,确认 GPU package 被启用。\n"
+            "4. 对比 CPU 和 GPU 运行时间,不要只看 `nvidia-smi` 有无瞬时波动。\n"
+            "5. 多 GPU/多节点时还要关注 MPI、NCCL/网络和任务划分。\n\n"
+            "注意:LAMMPS GPU 加速是按功能模块支持的。脚本里大部分计算如果不支持 GPU,整体速度可能提升有限。"
+        ),
+        source_refs=["lammps-docs:gpu-package", "nvidia-docs:cuda-install-linux"],
+    ),
+    chunk(
+        chunk_id="ext-pyscf-gpu4pyscf-001",
+        product_area="gpu_troubleshooting",
+        source_type="faq",
+        source_origin="external_official",
+        title="PySCF / GPU4PySCF 把量子化学计算迁移到 GPU",
+        question_patterns=[
+            "pyscf 怎么用 gpu",
+            "gpu4pyscf 怎么安装",
+            "pyscf to_gpu 是什么",
+            "量子化学 dft 能不能用显卡加速",
+            "gpu4pyscf 支持哪些显卡",
+        ],
+        content=(
+            "适用场景:科研客户用 PySCF 做量子化学/DFT 计算,希望用 NVIDIA GPU 加速。"
+            "PySCF GPU 文档说明 PySCF 对象和 GPU4PySCF 对象可通过 `to_gpu()` / `to_cpu()` 转换;GPU4PySCF 仓库说明二进制包支持一定计算能力以上的 NVIDIA GPU。\n\n"
+            "处理建议:\n"
+            "1. 先确认 Python、CUDA、CuPy/GPU4PySCF 安装匹配。\n"
+            "2. 用最小分子和小基组跑通 `to_gpu()` 示例。\n"
+            "3. 检查当前方法和积分是否已有 GPU 实现,不是所有 PySCF 功能都等价加速。\n"
+            "4. 大体系要同时关注 GPU 显存和 CPU 内存。\n"
+            "5. 结果要和 CPU 版本做小样本对比,确认数值和收敛正常。\n\n"
+            "注意:GPU4PySCF 适合特定量子化学工作流。客户问“PySCF 能否全部上 GPU”时,应按具体方法和版本确认。"
+        ),
+        source_refs=["pyscf-docs:gpu", "gpu4pyscf-repo:README", "cupy-docs:install"],
+    ),
+    chunk(
+        chunk_id="ext-apptainer-gpu-container-001",
+        product_area="linux_ops",
+        source_type="faq",
+        source_origin="external_official",
+        title="Apptainer / Singularity 在科研/HPC 场景使用 GPU 容器",
+        question_patterns=[
+            "apptainer 怎么用 nvidia gpu",
+            "singularity 容器里看不到显卡",
+            "hpc 不能用 docker 怎么跑 cuda 镜像",
+            "apptainer --nv 是什么",
+            "科研软件容器怎么带 gpu 运行",
+        ],
+        content=(
+            "适用场景:科研客户来自 HPC 习惯,希望用 Apptainer/Singularity 运行 CUDA 容器,而不是 Docker。"
+            "Apptainer GPU 文档说明可通过 NVIDIA CUDA GPU 支持运行加速应用,常见入口是 `--nv`。\n\n"
+            "处理建议:\n"
+            "1. 先确认宿主机 NVIDIA 驱动和 `nvidia-smi` 正常。\n"
+            "2. 运行容器时带上 GPU 支持选项,例如 `apptainer exec --nv image.sif nvidia-smi`。\n"
+            "3. 容器内 CUDA runtime 要和宿主驱动兼容。\n"
+            "4. 数据目录要显式 bind/mount,不要假设容器能看到宿主所有路径。\n"
+            "5. 从 Docker/NGC 镜像转换时,先用最小命令验证 GPU 可见再跑完整软件。\n\n"
+            "注意:Apptainer 和 Docker 的权限、挂载和网络模型不同。客户迁移脚本时要逐项检查路径和环境变量。"
+        ),
+        source_refs=["apptainer-docs:gpu", "nvidia-docs:cuda-compatibility"],
+    ),
+    chunk(
+        chunk_id="ext-webdataset-sharded-tar-001",
+        product_area="linux_ops",
+        source_type="faq",
+        source_origin="external_official",
+        title="WebDataset tar shards 适合海量小文件训练数据",
+        question_patterns=[
+            "webdataset 是什么",
+            "训练图片太多小文件读取慢怎么办",
+            "tar shards 数据集怎么用",
+            "多 gpu 训练数据 io 很慢",
+            "huggingface webdataset 怎么组织",
+        ],
+        content=(
+            "适用场景:客户训练图像、视频或多模态模型时有海量小文件,文件系统遍历和随机读取很慢。"
+            "Hugging Face WebDataset 文档说明大规模 WebDataset 由多个 tar shard 组成,每个 shard 通常是一个 tar 归档;WebDataset 项目支持 PyTorch 数据加载。\n\n"
+            "处理建议:\n"
+            "1. 把海量小文件按 shard 打包,减少文件系统元数据压力。\n"
+            "2. shard 大小保持相对均衡,便于多 worker 和多 GPU 分配。\n"
+            "3. 训练前先用少量 shard 跑通解码、shuffle 和 batch。\n"
+            "4. 数据放对象存储或网络盘时,要额外关注流式读取和缓存。\n"
+            "5. 记录 shard 生成脚本和数据版本,避免训练集不可复现。\n\n"
+            "注意:WebDataset 能改善大规模数据 IO 组织,但不会自动修复坏样本、标签错误或网络带宽不足。"
+        ),
+        source_refs=["hf-docs:datasets-webdataset", "webdataset-repo:README", "hf-datasets:stream"],
+    ),
+    chunk(
+        chunk_id="ext-onnxruntime-quantization-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="ONNX Runtime 量化适合传统模型和部分 Transformer 推理优化",
+        question_patterns=[
+            "onnxruntime 怎么量化模型",
+            "onnx int8 量化有什么用",
+            "pytorch 模型导出 onnx 后怎么变小",
+            "onnx 动态量化和静态量化区别",
+            "cpu 或 gpu 推理怎么用 onnx 优化",
+        ],
+        content=(
+            "适用场景:客户有 PyTorch/ONNX 模型,希望通过 ONNX Runtime 量化降低模型大小、提升部分推理性能或降低 CPU/GPU 资源。"
+            "ONNX Runtime 量化文档提供把 32-bit 浮点模型转换为 8-bit 整数量化模型的 Python API。\n\n"
+            "处理建议:\n"
+            "1. 先确认模型能稳定导出并用 ONNX Runtime 正确推理。\n"
+            "2. 动态量化更容易上手,静态量化通常需要校准数据。\n"
+            "3. 量化后必须用业务样例验证精度,不要只看模型文件变小。\n"
+            "4. GPU 推理还要确认执行 provider 和算子支持,否则可能回退 CPU。\n"
+            "5. LLM 场景常见 AWQ/GPTQ/GGUF/框架量化不等同于 ONNX int8,要按部署引擎选择。\n\n"
+            "注意:量化是精度、速度、体积和兼容性的取舍。不同硬件和模型结构收益差异很大。"
+        ),
+        source_refs=["onnxruntime-docs:quantization", "hf-optimum-onnx:gpu"],
+    ),
+    chunk(
+        chunk_id="ext-optimum-onnx-gpu-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="Hugging Face Optimum ONNX Runtime 在 NVIDIA GPU 上推理",
+        question_patterns=[
+            "optimum onnx gpu 怎么用",
+            "onnxruntime gpu provider 怎么选",
+            "transformers 模型能不能导出 onnx 加速",
+            "tensorrt execution provider 是什么",
+            "onnx 模型为什么没用上 gpu",
+        ],
+        content=(
+            "适用场景:客户想把 Transformers 模型导出到 ONNX,用 ONNX Runtime GPU 或 TensorRT execution provider 做推理优化。"
+            "Hugging Face Optimum ONNX 文档提供 NVIDIA GPU 加速推理路径,包括 ONNX Runtime 和 TensorRT provider 相关用法。\n\n"
+            "处理建议:\n"
+            "1. 先用原始 Transformers 模型确认输出正确。\n"
+            "2. 导出 ONNX 后先用 CPU/GPU provider 跑最小样例。\n"
+            "3. 检查 ONNX Runtime 是否安装 GPU 版本,CUDA/cuDNN/TensorRT 是否匹配。\n"
+            "4. 使用 TensorRT provider 前确认模型算子、shape 和精度支持。\n"
+            "5. 比较延迟和吞吐时固定 batch、序列长度和输入 shape。\n\n"
+            "注意:ONNX/TensorRT 优化更适合稳定 shape 和生产推理。频繁变化的输入可能需要额外 profile 或回退。"
+        ),
+        source_refs=["hf-optimum-onnx:gpu", "onnxruntime-docs:quantization", "nvidia-triton:tensorrt-llm"],
+    ),
+    chunk(
+        chunk_id="ext-transformers-awq-gptq-quantization-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="Transformers 量化: AWQ、GPTQ、bitsandbytes 和部署引擎选择",
+        question_patterns=[
+            "awq gptq bitsandbytes 有什么区别",
+            "量化模型怎么在 transformers 里加载",
+            "4bit 模型能不能直接 vllm 部署",
+            "gptq awq gguf 应该选哪个",
+            "量化后为什么速度没变快",
+        ],
+        content=(
+            "适用场景:客户下载到 AWQ/GPTQ/bitsandbytes/GGUF 等量化模型,不知道用哪个框架加载、能否训练或部署。"
+            "Transformers quantization 文档覆盖多种量化后端,不同格式和运行引擎兼容性不同。\n\n"
+            "处理建议:\n"
+            "1. 先看模型卡片说明支持的加载方式和推荐依赖。\n"
+            "2. bitsandbytes 常用于 Transformers 中 8bit/4bit 加载和 QLoRA 训练。\n"
+            "3. AWQ/GPTQ 多用于推理压缩,要确认 vLLM/Transformers 当前是否支持该模型架构和量化格式。\n"
+            "4. GGUF 主要面向 llama.cpp/Ollama 生态,不是普通 PyTorch checkpoint。\n"
+            "5. 量化可能省显存,但速度取决于 kernel、硬件、batch、上下文和引擎支持。\n\n"
+            "注意:不要把所有 4bit 文件都当成同一种格式。格式不匹配时,常见表现是加载失败、输出异常或完全走不到 GPU 优化路径。"
+        ),
+        source_refs=["hf-transformers:quantization", "hf-transformers:bitsandbytes", "vllm-docs:configuration/conserving_memory"],
+    ),
+    chunk(
+        chunk_id="ext-gguf-llama-cpp-convert-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="GGUF / llama.cpp 与 Transformers 权重格式的区别",
+        question_patterns=[
+            "gguf 文件能不能用 transformers 加载",
+            "huggingface 模型怎么转 gguf",
+            "ollama modelfile 和 gguf 什么关系",
+            "llama.cpp 量化模型和 safetensors 区别",
+            "下载到 gguf 后应该用什么跑",
+        ],
+        content=(
+            "适用场景:客户下载到 `.gguf` 文件或想把 Hugging Face safetensors 模型转成 llama.cpp/Ollama 可用格式。"
+            "llama.cpp 是 GGUF 生态的主要项目;Ollama 也可通过 Modelfile 使用本地 GGUF 文件。\n\n"
+            "处理建议:\n"
+            "1. `.safetensors` / PyTorch checkpoint 通常给 Transformers、vLLM、SGLang 等使用。\n"
+            "2. `.gguf` 通常给 llama.cpp 或 Ollama 生态使用,不能直接当普通 Transformers 权重加载。\n"
+            "3. 转换前确认 tokenizer、模型架构和量化目标受支持。\n"
+            "4. 转换后用小 prompt 验证输出,再做长上下文或服务化。\n"
+            "5. 如果目标是 GPU 高吞吐服务,还要比较 llama.cpp/Ollama 与 vLLM/SGLang 的性能和功能差异。\n\n"
+            "注意:GGUF 方便本地和轻量部署,但与训练/微调常用权重格式不同。客户要先明确“跑推理”还是“继续训练”。"
+        ),
+        source_refs=["llama-cpp-repo:README", "ollama-docs:modelfile"],
+    ),
+]
+
 CHUNKS = (
     VLLM_CHUNKS
     + SGLANG_CHUNKS
@@ -4965,6 +6170,7 @@ CHUNKS = (
     + SECOND_WAVE_EXTERNAL_CHUNKS
     + SESSION_637_TARGETED_CHUNKS
     + CUDA_COMPILE_CLEANUP_CHUNKS
+    + THIRD_WAVE_EXTERNAL_CHUNKS
 )
 
 

@@ -21,8 +21,13 @@ Hugging Face snapshot preload; plus 637-session-targeted gaps such as
 A1111/SD-WebUI, ControlNet, generic WebUI refused-connection triage,
 SSH/transfer failures, Ollama cache/context issues, Open WebUI/LiteLLM,
 Docker GPU visibility, card-count mismatch, NVIDIA MPS, DVC/object storage,
-Label Studio, persistence boundaries, background service patterns; and focused
-safe GPU cleanup / torch.compile / CUDA Toolkit installation topics). It is loaded *alongside* the platform corpus
+Label Studio, persistence boundaries, background service patterns; focused
+safe GPU cleanup / torch.compile / CUDA Toolkit installation topics; and
+production/research platform topics such as FSDP checkpointing and memory
+estimation, vLLM/LiteLLM serving governance, NCCL/RDMA validation,
+Kueue/Kubeflow/Volcano job queues, lm-eval/MLflow evaluation, YOLO/SAM2,
+LAMMPS/PySCF/Apptainer, WebDataset, ONNX Runtime/Optimum, and
+AWQ/GPTQ/GGUF model-format guidance). It is loaded *alongside* the platform corpus
 (`deploy/kb/stage2b_w0.jsonl`) via `knowledge.LoadPinnedCorporaWithEmbeddings`, so the
 platform corpus stays byte-identical.
 

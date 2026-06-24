@@ -55,15 +55,20 @@ const EmbeddingDigestExpectedQwen3 = "da488ead7fb53b6d7ab2e7529b9724b1a6f60910ae
 // and context/VRAM issues, Open WebUI/LiteLLM, Docker GPU visibility, card-count
 // mismatch, MPS, DVC/object storage/labeling, persistence boundaries, and
 // background service patterns, plus focused coverage for safe nvidia-smi cleanup,
-// torch.compile, and CUDA Toolkit installation), loaded
+// torch.compile, and CUDA Toolkit installation, plus third-wave production and
+// research platform coverage: FSDP/checkpointing/memory estimation/offload,
+// vLLM/LiteLLM serving governance, NCCL/RDMA validation, Kueue/Kubeflow/Volcano
+// job queues, lm-eval/MLflow evaluation, YOLO/SAM2 CV workflows, LAMMPS/PySCF/
+// Apptainer AI4Science, WebDataset, ONNX Runtime/Optimum, AWQ/GPTQ/GGUF model
+// format guidance), loaded
 // alongside the platform corpus via LoadPinnedCorporaWithEmbeddings. Same
 // refuse-to-start-on-mismatch semantics as the platform pin.
-const ExternalCorpusDigestExpected = "03d16590076cc8e4eee005962277281b896a595b62a5e9779c5f71dbad832a1c"
+const ExternalCorpusDigestExpected = "d76f2cc633987cac4c88bcb3339ea50e262099a7eb14995e7a90b030ab909d38"
 
 // ExternalEmbeddingDigestExpectedQwen3 pins the qwen3-embedding-8b sidecar
 // (4096-dim) for the external corpus:
 // deploy/kb/embeddings_<ExternalCorpusDigestExpected>_qwen3-embedding-8b.jsonl.
-const ExternalEmbeddingDigestExpectedQwen3 = "841a209b522144612010ee9e92ba8b53b90b6c556a939cdcc20e742f4fe46d7d"
+const ExternalEmbeddingDigestExpectedQwen3 = "d219162444ae434f213183add8c47adc9b804365d7818cb1bf6fd4d1fcc1b076"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.

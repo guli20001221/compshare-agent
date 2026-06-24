@@ -21,6 +21,9 @@ The content is grounded in PyTorch documentation, NVIDIA CUDA installation guide
 
 The external corpus increased from 176 to 180 chunks.
 
+This stage was later superseded by the third-wave production/research expansion
+to 224 chunks; see `docs/research/external_kb_third_wave_production_research_audit_2026-06-24.md`.
+
 The focused addition increased the golden retrieval set from 169 to 173 questions.
 After review, 7 direct chat-seeded coverage questions were added, bringing the
 current external golden set to 180 questions.
