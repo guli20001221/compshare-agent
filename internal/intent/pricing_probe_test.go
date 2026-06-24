@@ -23,7 +23,7 @@ func TestPricingProbe_RootCause(t *testing.T) {
 	if os.Getenv("PRICING_PROBE") != "1" {
 		t.Skip("set PRICING_PROBE=1 + live creds to run the pricing root-cause probe")
 	}
-	cfg, err := config.Load("../../deploy/conf/agent.yaml")
+	cfg, err := config.Load("../../deploy/conf/config.yaml")
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}

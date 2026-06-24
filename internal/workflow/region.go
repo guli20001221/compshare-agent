@@ -10,7 +10,7 @@ import (
 //
 // This is the workflow-side fallback only; the runtime Region for mutating
 // workflows comes from the queried instance via extractInstanceRegion.
-// It is independent of agent.yaml's `cfg.Region`, which only matters for
+// It is independent of config.yaml's `cfg.Region`, which only matters for
 // CLI single-region dev mode — see internal/tools/external.go for that
 // path. The two values do not need to match in production (HTTP path).
 //

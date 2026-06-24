@@ -12,8 +12,7 @@ import (
 var configPath string
 
 const (
-	defaultConfigPath        = "deploy/conf/agent.yaml"
-	defaultConfigExamplePath = "deploy/conf/agent.yaml.example"
+	defaultConfigPath = "deploy/conf/config.yaml"
 )
 
 var rootCmd = &cobra.Command{
@@ -32,8 +31,6 @@ func loadConfig() (*config.Config, error) {
 	candidates := []string{
 		defaultConfigPath,
 		filepath.Join("..", defaultConfigPath),
-		defaultConfigExamplePath,
-		filepath.Join("..", defaultConfigExamplePath),
 	}
 	var firstErr error
 	for _, candidate := range candidates {

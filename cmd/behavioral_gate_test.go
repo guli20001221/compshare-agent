@@ -3,7 +3,7 @@ package main
 // In-process behavioral gate (eval P0 阶段0 §②).
 //
 // Drives the REAL engine — same wiring as the HTTP server (configureSharedDepsFromEnv),
-// real ds-v4-flash, real CompShare executor (creds from .env) — over the recorded
+// real ds-v4-flash, real CompShare executor (creds from deploy/conf/config.yaml) — over the recorded
 // multi-turn probe inputs, then evaluates the machine-checkable behavioral contract
 // (eval/realism/ci_behavioral_gates_2026-06-22.jsonl). Each contract assertion checks
 // an OBSERVABLE outcome (which tool/workflow was invoked, whether a confirm frame was
@@ -25,8 +25,8 @@ package main
 //   go test ./cmd -run TestBehavioralGate -behavioral-gate -v \
 //       [-behavioral-cases N] [-behavioral-min-pass 80] [-behavioral-replay-out out.jsonl]
 // Skipped by default (and in `go test ./...`) so the deterministic suite never makes
-// real model calls — it self-skips unless -behavioral-gate is passed and LLM_API_KEY
-// is resolvable.
+// real model calls — it self-skips unless -behavioral-gate is passed and the
+// config has an LLM key.
 
 import (
 	"bufio"
@@ -53,7 +53,7 @@ var (
 	behavioralMinPass   = flag.Float64("behavioral-min-pass", 0, "fail the test if the BLOCK-gate pass rate (%) is below this; 0 = report-only (measurement)")
 	behavioralInput     = flag.String("behavioral-input", "", "replay-input JSONL (case_id + turns[].user); default eval/realism/http_failure_replay_main_20260616_all.jsonl")
 	behavioralContract  = flag.String("behavioral-contract", "", "contract assertions JSONL; default eval/realism/ci_behavioral_gates_2026-06-22.jsonl")
-	behavioralConfig    = flag.String("behavioral-config", "", "agent.yaml path; default deploy/conf/agent.yaml then deploy/conf/agent.yaml.example")
+	behavioralConfig    = flag.String("behavioral-config", "", "config.yaml path; default deploy/conf/config.yaml")
 	behavioralReplayOut = flag.String("behavioral-replay-out", "", "if set, write the produced replay-output JSONL here (checker-compatible; debug/parity)")
 	behavioralTimeout   = flag.Duration("behavioral-timeout", 240*time.Second, "per-turn engine timeout")
 	behavioralBudget    = flag.Duration("behavioral-budget", 0, "overall wall-clock budget across cases; stop launching new cases once exceeded and report partial (0 = no budget). Keep below the `go test -timeout` so the gate always reaches its report instead of being killed mid-run.")
@@ -139,30 +139,30 @@ func TestBehavioralGate(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = os.Chdir(orig) })
 	}
-	loadEnvFiles(filepath.Join(root, ".env"), filepath.Join(root, ".env.example"))
-	if os.Getenv("LLM_API_KEY") == "" {
-		t.Skip("LLM_API_KEY not resolvable (no .env / secret); cannot run the real-model behavioral gate")
-	}
 	if os.Getenv("COMPSHARE_PROJECT_ID") == "" {
 		os.Setenv("COMPSHARE_PROJECT_ID", "test-project")
 	}
 
 	cfgPath := *behavioralConfig
 	if cfgPath == "" {
-		cfgPath = prepGateConfig(t, root)
+		cfgPath = filepath.Join(root, "deploy", "conf", "config.yaml")
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		t.Fatalf("config.Load(%s): %v", cfgPath, err)
 	}
+	if cfg.Agent.LLM.APIKey == "" {
+		t.Skip("agent.llm.api_key is empty; cannot run the real-model behavioral gate")
+	}
 
-	deps, mutating, err := configureSharedDepsFromEnv(cfg, os.Getenv)
+	getenv := cfg.RuntimeGetenv(os.Getenv)
+	deps, mutating, err := configureSharedDepsFromEnv(cfg, getenv)
 	if err != nil {
 		t.Fatalf("configureSharedDepsFromEnv: %v", err)
 	}
 	t.Logf("wiring: model=%s mutating=%t agentic_search=%s knowledge_qa_loop=%s rag_mode=%s",
-		cfg.Agent.LLM.Model, mutating, os.Getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"),
-		os.Getenv("COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP"), os.Getenv("RAG_RETRIEVAL_MODE"))
+		cfg.Agent.LLM.Model, mutating, getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"),
+		getenv("COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP"), getenv("RAG_RETRIEVAL_MODE"))
 
 	contractPath := orDefault(*behavioralContract, filepath.Join(root, "eval", "realism", "ci_behavioral_gates_2026-06-22.jsonl"))
 	inputPath := orDefault(*behavioralInput, filepath.Join(root, "eval", "realism", "http_failure_replay_main_20260616_all.jsonl"))
@@ -493,65 +493,6 @@ func behavioralRepoRoot(t *testing.T) string {
 	}
 	// file = <root>/cmd/behavioral_gate_test.go → up two = <root>
 	return filepath.Dir(filepath.Dir(file))
-}
-
-// prepGateConfig derives an STS-mode config from the deploy template
-// (deploy/conf/agent.yaml.example) by blanking the legacy direct AK/SK fields,
-// so the gate loads in the same STS-only posture as a production deployment
-// (where COMPSHARE_PUBLIC_KEY / COMPSHARE_PRIVATE_KEY are shipped empty and the
-// service AK/SK mint STS credentials). Written to a temp file so the live deploy
-// template remains the single config source — no committed duplicate to drift.
-func prepGateConfig(t *testing.T, root string) string {
-	src := filepath.Join(root, "deploy", "conf", "agent.yaml.example")
-	data, err := os.ReadFile(src)
-	if err != nil {
-		t.Fatalf("read deploy template %s: %v", src, err)
-	}
-	y := string(data)
-	y = strings.ReplaceAll(y, `public_key: "${COMPSHARE_PUBLIC_KEY}"`, `public_key: ""`)
-	y = strings.ReplaceAll(y, `private_key: "${COMPSHARE_PRIVATE_KEY}"`, `private_key: ""`)
-	dst := filepath.Join(t.TempDir(), "agent.yaml")
-	if err := os.WriteFile(dst, []byte(y), 0o600); err != nil {
-		t.Fatalf("write gate config: %v", err)
-	}
-	return dst
-}
-
-// loadEnvFiles loads KEY=VALUE lines from the given files into the process env,
-// but only for keys NOT already set (so pre-existing env / CI secrets win) and
-// skipping unresolved ${PLACEHOLDER} values. Order: secrets file first (.env),
-// then the deploy template (.env.example) for feature-flag defaults. Missing
-// files are ignored.
-func loadEnvFiles(paths ...string) {
-	for _, p := range paths {
-		f, err := os.Open(p)
-		if err != nil {
-			continue
-		}
-		sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 0, 1024*1024), 4*1024*1024)
-		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			eq := strings.IndexByte(line, '=')
-			if eq <= 0 {
-				continue
-			}
-			key := strings.TrimSpace(line[:eq])
-			// Trim surrounding quotes BEFORE the placeholder check so a quoted
-			// "${VAR}" is still recognized as an unresolved placeholder and skipped.
-			val := strings.Trim(strings.TrimSpace(line[eq+1:]), `"'`)
-			if val == "" || (strings.HasPrefix(val, "${") && strings.HasSuffix(val, "}")) {
-				continue
-			}
-			if os.Getenv(key) == "" {
-				os.Setenv(key, val)
-			}
-		}
-		f.Close()
-	}
 }
 
 func loadContract(t *testing.T, path string) []contractAssertion {

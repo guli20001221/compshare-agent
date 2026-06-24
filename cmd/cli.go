@@ -123,7 +123,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	// overlayGetenv makes the YAML runtime-flag sections (agent.features /
 	// retrieval / trace / planner) win over the OS env, env being the fallback
 	// for any field omitted in YAML. Every flag the CLI reads below goes through
-	// it so a single agent.yaml configures the CLI the same way it does the server.
+	// it so a single config.yaml configures the CLI the same way it does the server.
 	getenv := cfg.RuntimeGetenv(os.Getenv)
 
 	ctx := context.Background()

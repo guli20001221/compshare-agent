@@ -13,7 +13,7 @@ import (
 
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "agent.yaml")
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return path
 }
@@ -93,11 +93,9 @@ agent:
 }
 
 func TestLoad_AcceptsInlineLiteralSecretValuesInYAML(t *testing.T) {
-	// YAML-first config migration: a self-contained agent.yaml may inline
+	// YAML-first config migration: a self-contained config.yaml may inline
 	// secrets so a deployment needs no env file at all. The committed
-	// agent.yaml.example keeps ${ENV_VAR} placeholders; the real
-	// deploy/conf/agent.yaml is gitignored + the pre-commit secret scanner
-	// guards accidental commits.
+	// deploy/conf/config.yaml now carries the deploy literals directly.
 	path := writeConfig(t, `
 agent:
   executor: external
@@ -326,7 +324,7 @@ func TestLoad_HTTPDefaultsAppliedWhenSectionOmitted(t *testing.T) {
 	require.NoError(t, err)
 
 	h := cfg.Agent.HTTP
-	assert.Equal(t, "0.0.0.0:8080", h.ListenAddr)
+	assert.Equal(t, "0.0.0.0:7429", h.ListenAddr)
 	assert.Equal(t, 30*time.Second, h.ReadTimeout)
 	assert.Equal(t, time.Duration(0), h.WriteTimeout) // SSE: must stay 0
 	assert.Equal(t, 15*time.Second, h.SSEKeepaliveInterval)

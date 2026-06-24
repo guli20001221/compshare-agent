@@ -8,7 +8,7 @@ import (
 // This file moves the runtime feature flags that used to be configured ONLY via
 // environment variables (read in cmd/trace.go / cmd/shared_deps.go / cmd/cli.go /
 // cmd/server.go) into the YAML config, so a deployment can be configured from a
-// single agent.yaml with no env file. Precedence is "YAML wins, env is the
+// single config.yaml with no env file. Precedence is "YAML wins, env is the
 // fallback": a field set in YAML overrides the matching env var; a field omitted
 // in YAML falls through to the env var, and if that is unset too, to the binary's
 // documented built-in default (the cmd/ *FromEnv parsers — some default ON, some
@@ -142,7 +142,7 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 
 	// The RAG embedding/reranker clients read the API key through getenv
 	// (MODELVERSE_API_KEY, falling back to LLM_API_KEY). Expose the resolved
-	// LLM key so a fully-inlined agent.yaml (no env) still powers hybrid /
+	// LLM key so a fully-inlined config.yaml (no env) still powers hybrid /
 	// qwen3 retrieval. MYSQL_DSN stays handled by serverTraceGetenv.
 	putStrEnv(overrides, "LLM_API_KEY", c.Agent.LLM.APIKey)
 

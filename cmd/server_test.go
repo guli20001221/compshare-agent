@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLoadConfigFallsBackToTrackedExampleForDefaultPath(t *testing.T) {
+func TestLoadConfigUsesTrackedConfigForDefaultPath(t *testing.T) {
 	oldConfigPath := configPath
 	configPath = defaultConfigPath
 	t.Cleanup(func() { configPath = oldConfigPath })

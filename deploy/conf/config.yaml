@@ -3,21 +3,21 @@ agent:
   compshare_api_url: "https://api.compshare.cn/"
   # Legacy direct AK/SK. HTTP server mode uses these when STS service
   # credentials are empty (local/demo fallback).
-  public_key: "${COMPSHARE_PUBLIC_KEY}"
-  private_key: "${COMPSHARE_PRIVATE_KEY}"
+  public_key: ""
+  private_key: ""
   region: "cn-wlcb"
   # project_id 可选。留空时所有 read-only API 调用不带 ProjectId（CompShare
   # 服务端会回退到账号级默认行为）。如需固定项目（mutating tools 如开关机
-  # 调度器需要），改为 "${COMPSHARE_PROJECT_ID}"。
+  # 调度器需要），直接填写项目 ID。
   # 注：PR9 之前留空会触发 GetProjectList 自动发现并通过 SetProjectId 写入
   # 共享执行器；那是一条跨 session 串数据的路径，已经移除。运行时不再有
   # mutating setter，ProjectId 只在这里设置一次。
-  # 仅支持 ${ENV_VAR} 形式，不支持 ${ENV_VAR:-default} 默认值语法。
+  # 本文件是完整部署配置；不再需要环境变量占位。
   project_id: ""
 
   llm:
     base_url: "https://api.modelverse.cn/v1"
-    api_key: "${LLM_API_KEY}"
+    api_key: "Q1J7v8S9PewEW16c2e84171e-cBb5-4763-929D-6c03Fe44"
     # ds-v4-flash is the W0+ baseline answerer (post-PR-#95 prompt fix passed
     # 5 hard contracts; ~5-10x faster + cheaper than ds-v4-pro). Ops should
     # monitor ~1.86% empty-return rate on hybrid path (P3 watch-list).
@@ -50,7 +50,7 @@ agent:
   # from THIS file — no env vars needed for behavior. Precedence: a value set
   # here WINS; if you omit a field the binary falls back to the matching env
   # var, and if that is unset too, to the built-in default. The values below
-  # are the production deploy defaults (the same stack invite.sh used to
+  # are the production deploy defaults.
   # forward). Set a field to false / "off" to roll one back.
   #
   # NOTE 截图理解 (screenshot/VL) is enabled separately by agent.ocr.model
@@ -98,7 +98,7 @@ agent:
     # reranker_timeout_ms: 0          # RAG_RERANKER_TIMEOUT_MS (0 = reranker default 5s)
 
   # Per-turn trace/observability. sink=mysql writes one agent_traces row per
-  # turn to the MYSQL_DSN database. PREREQUISITE: ops must run
+  # turn to the PostgreSQL database. PREREQUISITE: ops must run
   # deploy/migrations/0002 + 0004 DDL first; the writer degrades to the
   # trace_json blob if 0004 is not applied. Set enabled: false to disable.
   trace:
@@ -149,7 +149,7 @@ agent:
   # HTTP service settings (used by: compshare-agent server).
   # write_timeout must be 0 for SSE streaming connections.
   http:
-    listen_addr: "0.0.0.0:8080"
+    listen_addr: "0.0.0.0:7429"
     read_timeout: "30s"
     write_timeout: "0s"
     sse_keepalive_interval: "15s"
@@ -167,14 +167,13 @@ agent:
     # front-back-local-debug skill). In production set this to true so the
     # console gateway is the SOLE source of CORS headers — otherwise both
     # agent and gateway add them and the browser rejects the duplicate.
-    disable_cors: false
+    disable_cors: true
 
   # PostgreSQL backing store (used by: compshare-agent server). The config key
-  # `mysql` and the env var name MYSQL_DSN are kept for compatibility; the value
-  # is a libpq URL, e.g. postgresql://user:pass@host:5432/db?sslmode=disable.
-  # DSN is resolved from ${MYSQL_DSN} env var.
+  # `mysql` is kept for compatibility; the value is a libpq URL, e.g.
+  # postgresql://user:pass@host:5432/db?sslmode=disable.
   mysql:
-    dsn: "${MYSQL_DSN}"
+    dsn: "postgresql://root:U3JSFCnwt5dfcC5f@117.50.198.43:5432/postgres?sslmode=disable"
     max_open_conns: 20
     max_idle_conns: 5
     conn_max_lifetime: "1h"
@@ -208,11 +207,11 @@ agent:
   # legacy direct AK/SK fallback before STS permission is granted.
   # default_role_urn is optional; when set it overrides the per-request role derivation.
   sts:
-    service_ak: "${COMPSHARE_SERVICE_PUBLIC_KEY}"
-    service_sk: "${COMPSHARE_SERVICE_PRIVATE_KEY}"
+    service_ak: "A4r4q1hNPGc1vxPhjuHO8S11INY"
+    service_sk: "JhHiw05TOhdFGerfDcLZ3pK3CyxOYvhgZJp7K3TAVZSx"
     url: "https://api.ucloud.cn/"
     role_urn_template: "ucs:iam::%d:role/ucs-service-role/ServiceRoleForCompshare"
-    default_role_urn: "${COMPSHARE_DEFAULT_ROLE_URN}"
+    default_role_urn: "ucs:iam::66391350:role/ucs-service-role/ServiceRoleForCompshare"
     default_session_name: "agent-cli"
     duration_seconds: 3600
     refresh_before: "5m"

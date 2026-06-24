@@ -13,21 +13,16 @@ Go 1.22 CLI assistant ("优云算力共享 AI 助手") for the CompShare GPU pla
 go build -o agent ./cmd                # Linux/macOS
 go build -o agent.exe ./cmd            # Windows / cross-build via GOOS
 
-# Run the CLI (reads deploy/conf/agent.yaml by default)
-cp deploy/conf/agent.yaml.example deploy/conf/agent.yaml   # one-time, then fill ${ENV_VAR}s
-./agent cli [-c path/to/agent.yaml]
+# Run the CLI (reads deploy/conf/config.yaml by default)
+./agent cli [-c path/to/config.yaml]
 
 go build -o agent ./cmd
-./agent server --addr :8080
+./agent server --addr 0.0.0.0:7429
 ```
 
-The config loader (`internal/config/config.go`) only supports plain `${ENV_VAR}` substitution — no `${VAR:-default}` syntax. Required env vars depend on the subcommand:
-
-- `LLM_API_KEY` — required for all subcommands.
-- `COMPSHARE_SERVICE_PUBLIC_KEY` / `COMPSHARE_SERVICE_PRIVATE_KEY` — service's own AK/SK used to call STS `AssumeRole`; optional for the `server` subcommand when legacy direct AK/SK is used instead.
-- `COMPSHARE_DEFAULT_ROLE_URN` — required for the `cli` subcommand when STS mode is used.
-- `MYSQL_DSN` — required for the `server` subcommand. PostgreSQL libpq URL (`postgresql://user:pass@host:5432/db?sslmode=disable`); the env var name is kept for compat.
-- `COMPSHARE_PUBLIC_KEY` / `COMPSHARE_PRIVATE_KEY` — legacy direct AK/SK; only needed when `agent.sts` is not configured (e.g., local dev without STS).
+The deploy config is `deploy/conf/config.yaml`. Runtime flags, model keys,
+CompShare credentials, and PostgreSQL DSN are written directly in that file.
+Do not add new `.env` / `*.example` deployment flows.
 
 `project_id` may be left empty for read-only calls; HTTP requests can also pass `ProjectId` per request.
 
@@ -55,7 +50,7 @@ git config core.hooksPath .githooks
 
 ## Runtime feature flags
 
-**Preferred config is YAML (`deploy/conf/agent.yaml`).** The flags below now have typed fields under `agent.features` / `agent.retrieval` / `agent.trace` / `agent.planner` (see `internal/config/runtime.go` + `agent.yaml.example`). Precedence is **YAML wins, env is the fallback**: a field set in YAML overrides the env var; a field omitted in YAML falls through to the env var, then to the built-in default. The bridge is `(*config.Config).RuntimeGetenv`, which overlays the YAML fields on `os.Getenv` so the `cmd/` parsers still read every flag through one `getenv` (wired in `cmd/server.go` + `cmd/cli.go`). Secrets may also be inlined in YAML now (loader accepts literals; the committed `agent.yaml.example` keeps `${ENV_VAR}` placeholders and `deploy/conf/agent.yaml` is gitignored). The env-var table below stays valid as the fallback / per-flag reference. The default answer path uses the current demo stack: ds-v4-flash, qwen3 RRF retrieval, and LLM grounded rendering.
+**Config is YAML (`deploy/conf/config.yaml`).** Runtime flags have typed fields under `agent.features` / `agent.retrieval` / `agent.trace` / `agent.planner` (see `internal/config/runtime.go`). The deploy file also carries secrets directly: LLM key, STS service AK/SK, role URN, and PostgreSQL DSN. The env-var names below are still the historical parser names in code, but deployment must set the matching YAML fields instead of exporting environment variables. The default answer path uses the current demo stack: ds-v4-flash, qwen3 RRF retrieval, and LLM grounded rendering.
 
 | Var | Values | Effect |
 |---|---|---|
@@ -73,10 +68,10 @@ git config core.hooksPath .githooks
 | `COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS` | default **on** (2026-06-09); `0`/`off`/`false` disables | Effective only when `COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP` is also on: the final knowledge_qa answer is written by terminal RAG's tight cited-synthesis prompt (`answerWithRetrievedEvidence`, with its own cite-harder retry) on the evidence the agent gathered via `SearchKnowledge` — instead of the free ReAct write, which under flash intermittently omits the cite or dumps raw text. This is what made the agent loop match terminal on faithfulness/refusal (DDP N=20: refusal 0.00, 0 fab). On synthesis failure it falls through to the existing cite-retry/refusal, so it is never worse than free-write. Boot-only, frozen via `engine.SetDisciplinedKQASynthesisEnabled`; Go-package default stays off so unit tests are unaffected. Set `0` to roll back to the free ReAct write + cite-retry. |
 | `COMPSHARE_CONFIRM_FORM` | `1` | **Server-only.** Boot half of the editable-confirm-form double gate (create-flow 表单化, `docs/plans/2026-06-10-create-flow-form-confirm.md`): with it on AND the client opting in per turn (`SendCSAgentChat` `Features:["confirm_form_v1"]`), `confirmation` frames for `CreateInstanceWorkflow` carry a select-only `Form` (GPU/zone/image/charge-type whitelists) and `ConfirmCSAgentAction` may return `Overrides`; every edit re-runs the stock+price steps and re-confirms a refreshed card (≤3 edits). Default off — confirmation frames stay byte-identical, Overrides rejected. CLI confirm and the deploy_model saga are unaffected either way. |
 | `COMPSHARE_TRACE_ENABLED` | `1` | Writes per-turn JSONL traces to `COMPSHARE_TRACE_DIR`. |
-| `USE_SESSION_FACT_CONTEXT` | `1` | Injects a near-term fact cache (recent instance state, ~5min TTL) into context. Server-only wiring. **Go code default off; deploy template ships it on** (`.env.example`=1 + `invite.sh` forwards). |
+| `USE_SESSION_FACT_CONTEXT` | `1` | Injects a near-term fact cache (recent instance state, ~5min TTL) into context. Server-only wiring. **Go code default off; deploy config ships it on**. |
 | `USE_REACT_RESULT_PROJECTION` | `1` | Compresses large read tool results (list endpoints) before re-feeding ReAct. **Go code default off; deploy template ships it on.** |
 | `USE_REACT_HISTORY_COMPACTION` | `1` | Summarizes old turns once history exceeds the window. **Go code default off; deploy template ships it on.** |
-| `COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT` | `json_object` \| `json_schema` | Forces the intent router to emit via `response_format`. `json_object` requests bare JSON; `json_schema` (2026-06-23) requests the typed `IntentRoute` schema (`intent.IntentRouteResponseSchema`, **non-strict** — ds-v4-flash enforces the enum/const even without `strict`; live-probed). `json_schema` only takes effect when the model capability resolves to `OutputModeJSONSchema` (`SupportsJSONSchema`), degrading to `json_object` on object-only models. **Plumbed through `invite.sh` but shipped OFF** — the earlier `json_object` A/B showed no schema-valid improvement (json_object carries no schema); enable `json_schema` only after the intent-router accuracy A/B validates it. |
+| `COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT` | `json_object` \| `json_schema` | Forces the intent router to emit via `response_format`. `json_object` requests bare JSON; `json_schema` (2026-06-23) requests the typed `IntentRoute` schema (`intent.IntentRouteResponseSchema`, **non-strict** — ds-v4-flash enforces the enum/const even without `strict`; live-probed). `json_schema` only takes effect when the model capability resolves to `OutputModeJSONSchema` (`SupportsJSONSchema`), degrading to `json_object` on object-only models. **Plumbed through config.yaml but shipped OFF** — the earlier `json_object` A/B showed no schema-valid improvement (json_object carries no schema); enable `json_schema` only after the intent-router accuracy A/B validates it. |
 | `MYSQL_DSN` | DSN string | PostgreSQL libpq URL (env var name kept for compat). Required by `compshare-agent server`; ignored by `compshare-agent cli`. |
 | `COMPSHARE_SERVICE_PUBLIC_KEY` | AK string | Service long-term public key for STS `AssumeRole`. Required when `agent.sts` is configured. |
 | `COMPSHARE_SERVICE_PRIVATE_KEY` | SK string | Service long-term private key for STS `AssumeRole`. Required when `agent.sts` is configured. |
@@ -144,7 +139,7 @@ Read-only diagnostic tools (init failure, billing anomaly, GPU not detected, ima
 
 ## Conventions specific to this repo
 
-- The runtime is **read-only by default in Go code** (the binary refuses mutating tools unless `COMPSHARE_ENABLE_MUTATING_TOOLS=1`). By deliberate decision the **production deploy template ships it on**: `.env.example` sets `COMPSHARE_ENABLE_MUTATING_TOOLS=1` and `deploy/scripts/invite.sh` forwards it, so a packed/deployed console enables write ops out of the box. Destructive / L2 actions (delete, terminate) stay refused regardless (`internal/tools/safe_executor.go`). Never set the flag in **tests** (mutating tests use the workflow registry directly), and keep the **Go code default off** — only the deploy template enables it.
+- The runtime is **read-only by default in Go code** (the binary refuses mutating tools unless the runtime parser sees `COMPSHARE_ENABLE_MUTATING_TOOLS=1`). The production `deploy/conf/config.yaml` sets `agent.features.mutating_tools: true`, and `RuntimeGetenv` maps that YAML field to the parser. Destructive / L2 actions (delete, terminate) stay refused regardless (`internal/tools/safe_executor.go`). Never set the flag in tests; mutating tests use the workflow registry directly.
 - Static FAQ text was removed from the ReAct prompt — platform knowledge flows only through the RAG retriever. Do not reintroduce `FAQContent` / `ReadOnlyFAQContent` injection (`internal/prompt/builder_test.go` has reverse assertions).
 - Shadow QA per-round configs under `eval/shadow_qa/**/agent.yaml` and `.env` files are git-ignored and contain real keys — never commit anything matching those globs.
 - When adding planner examples, group by intent and record a one-line source for each example; tests in `internal/intent/planner_prompt_test.go` enforce grouping/tool/intercept consistency.
