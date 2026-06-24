@@ -204,6 +204,35 @@ func TestDispatchChatStreamsMetaTokenDone(t *testing.T) {
 	assert.Equal(t, "ok", messages.patch.Status)
 }
 
+func TestDispatchChatCreatesReplacementForMissingSession(t *testing.T) {
+	eng := engine.NewWithDeps(chatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+
+	messages := &recordingMessages{}
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{}},
+		messages,
+		mockFeedback{},
+		fakePool{eng: eng},
+		nil,
+	)
+
+	sink, apiErr := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"stale-session","Message":"hi","request_uuid":"req-stale","top_organization_id":1,"organization_id":2}`)
+
+	require.Nil(t, apiErr)
+	body := sink.body()
+	assert.Contains(t, body, `"SessionId":"sess-new"`)
+	require.Len(t, messages.appended, 2, "expected user and assistant rows inserted into the replacement session")
+	assert.Equal(t, "sess-new", messages.appended[0].SessionID)
+	assert.Equal(t, "sess-new", messages.appended[1].SessionID)
+}
+
 func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 	eng := engine.NewWithDeps(chatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
 	eng.RehydrateHistory(nil)
