@@ -740,7 +740,7 @@ func TestKnowledgeRetrieverFromEnvLoadsCorpus(t *testing.T) {
 	require.True(t, enabled)
 	require.NotNil(t, retriever)
 	result := retriever.Retrieve("Windows 远程登录", "windows")
-	if result.Empty || len(result.Hits) == 0 || result.KBVersion != "kb.stage2b.w1-r4.2026-05-25.final-3" {
+	if result.Empty || len(result.Hits) == 0 || result.KBVersion != "kb.stage2b.w1-r5.2026-06-24" {
 		t.Fatalf("retrieval result = %#v", result)
 	}
 }

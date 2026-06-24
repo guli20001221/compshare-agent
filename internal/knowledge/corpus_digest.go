@@ -10,15 +10,17 @@ import (
 )
 
 // CorpusDigestExpected pins deploy/kb/stage2b_w0.jsonl (LF-normalized SHA256).
-// Bumped 2026-06-10 for the A800-无卡 factual hotfix (A800 removed from the
-// 无卡开机 supported-card lists across 5 chunks; price/inventory/Spot mentions of
-// A800 left intact). The qwen3 sidecar was renamed to this digest but NOT
-// re-embedded: vectors are keyed by stable chunk_id (bijection holds), and the
-// 5 edited chunks keep their prior-text vectors. That is acceptable here — the
-// edit is a tiny same-topic factual correction, retrieval still surfaces the
-// chunk, and the CORRECTED content is what gets synthesized/cited. A full
-// re-embed folds into the deferred incremental-update rebuild.
-const CorpusDigestExpected = "eacdc94141566e22ab978a2c0728d834379f9559cffaca7a7a7f71508f83a2c8"
+// Bumped 2026-06-24 for the W1-R5 platform-docs freshness update: re-synced from
+// compshare-docs @ 98d28a9 (36 commits since the prior baseline). Re-chunked 21
+// docs — 4 new (Agent 社区 introduce/console/billing, codexagent, 云存储挂载
+// networkvolume, region, SwitchChargeType) + 11 substantive rewrites (instance
+// monitor, login, bill, disk, uploaddata, community, firewall, recycle, usecases,
+// createcompshareinstance, update-gpu) + 6 Agent 社区 docs — deleted s3describe
+// (removed upstream), re-pointed the renamed quickstart (+typo fix) and agents/
+// models, and de-duplicated the touched docs' historical dash/underscore/bare
+// naming variants into one canonical ref each. 687 -> 689 chunks. The qwen3
+// sidecar is FULLY re-embedded over this corpus (689 rows, 4096-dim).
+const CorpusDigestExpected = "849b5ffd61d5e6a0821fb20e26a128f024a29d7f0093ad55c4bb665741a93807"
 
 // EmbeddingDigestExpected pins the hybrid retrieval embedding sidecar produced by
 // scripts/rag_w0/build_corpus_embeddings.py over the CorpusDigestExpected corpus
@@ -32,7 +34,7 @@ const EmbeddingDigestExpected = "9dcb902bb6026836b43cf52be159af6690bb4c93818e1b3
 // RAG_RETRIEVAL_MODE=qwen3_full; the text-emb-3 sidecar above remains the
 // default for hybrid_cosine / hybrid_rerank modes. Same mismatch semantics
 // as EmbeddingDigestExpected: stale sidecar = hybrid path refuses to load.
-const EmbeddingDigestExpectedQwen3 = "da488ead7fb53b6d7ab2e7529b9724b1a6f60910aeef253028db624c7dcd99b4"
+const EmbeddingDigestExpectedQwen3 = "500e18095257fd12bceb1c6c885ea896cdd408ac428270843512152cf62153d8"
 
 // ExternalCorpusDigestExpected pins deploy/kb/external_w0.jsonl — the separate
 // external tool/ops corpus. It is intentionally platform-neutral and stable:
