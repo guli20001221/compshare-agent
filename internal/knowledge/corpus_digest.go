@@ -10,17 +10,18 @@ import (
 )
 
 // CorpusDigestExpected pins deploy/kb/stage2b_w0.jsonl (LF-normalized SHA256).
-// Bumped 2026-06-24 for the W1-R5 platform-docs freshness update: re-synced from
-// compshare-docs @ 98d28a9 (36 commits since the prior baseline). Re-chunked 21
-// docs — 4 new (Agent 社区 introduce/console/billing, codexagent, 云存储挂载
-// networkvolume, region, SwitchChargeType) + 11 substantive rewrites (instance
-// monitor, login, bill, disk, uploaddata, community, firewall, recycle, usecases,
-// createcompshareinstance, update-gpu) + 6 Agent 社区 docs — deleted s3describe
-// (removed upstream), re-pointed the renamed quickstart (+typo fix) and agents/
-// models, and de-duplicated the touched docs' historical dash/underscore/bare
-// naming variants into one canonical ref each. 687 -> 689 chunks. The qwen3
-// sidecar is FULLY re-embedded over this corpus (689 rows, 4096-dim).
-const CorpusDigestExpected = "849b5ffd61d5e6a0821fb20e26a128f024a29d7f0093ad55c4bb665741a93807"
+// Bumped 2026-06-24 (dedup follow-up to the W1-R5 freshness update): removed the
+// 38 superseded "underscore generation" docs (95 chunks). Each was an earlier
+// (valid_from 05-16/17/18) chunking of an upstream doc that a later round had
+// already re-chunked under canonical dash naming (valid_from 05-23/24) and left
+// in place — both copies were live/retrievable because the rename changed the
+// path-based chunk_id, so the loader's uniqueness check never flagged them. The
+// surviving dash generation tracks current upstream. Exception: the cardlessmode
+// survivor was freshened — its agent-authored "概念区别(避免与无显卡实例混淆)"
+// section was preserved, and its stale "(A800 不支持无卡开机)" parenthetical was
+// corrected to match current upstream (A800 IS supported). 689 -> 594 chunks. The
+// qwen3 sidecar is FULLY re-embedded over this corpus (594 rows, 4096-dim).
+const CorpusDigestExpected = "e5be50c4d04a29859670c5208f9eccb937064e510c52ac28554585072481bcfc"
 
 // EmbeddingDigestExpected pins the hybrid retrieval embedding sidecar produced by
 // scripts/rag_w0/build_corpus_embeddings.py over the CorpusDigestExpected corpus
@@ -34,7 +35,7 @@ const EmbeddingDigestExpected = "9dcb902bb6026836b43cf52be159af6690bb4c93818e1b3
 // RAG_RETRIEVAL_MODE=qwen3_full; the text-emb-3 sidecar above remains the
 // default for hybrid_cosine / hybrid_rerank modes. Same mismatch semantics
 // as EmbeddingDigestExpected: stale sidecar = hybrid path refuses to load.
-const EmbeddingDigestExpectedQwen3 = "500e18095257fd12bceb1c6c885ea896cdd408ac428270843512152cf62153d8"
+const EmbeddingDigestExpectedQwen3 = "ff87ed1cf47764ab054e0d1cb59cbe3dc91fa01ce5064818609907732313f0ac"
 
 // ExternalCorpusDigestExpected pins deploy/kb/external_w0.jsonl — the separate
 // external tool/ops corpus. It is intentionally platform-neutral and stable:

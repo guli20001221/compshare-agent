@@ -7,7 +7,7 @@ sidecars for the CompShare console agent's RAG path.
 
 | File | Purpose | Bound to |
 |---|---|---|
-| `stage2b_w0.jsonl` | Customer-safe FAQ corpus (689 chunks @ 2026-06-24, kb_version `kb.stage2b.w1-r5.2026-06-24`) | `internal/knowledge/corpus_digest.go:CorpusDigestExpected` |
+| `stage2b_w0.jsonl` | Customer-safe FAQ corpus (594 chunks @ 2026-06-24, kb_version `kb.stage2b.w1-r5.2026-06-24`) | `internal/knowledge/corpus_digest.go:CorpusDigestExpected` |
 | `embeddings_<corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for `qwen3_full` / `qwen3_rrf` modes (current default) | `internal/knowledge/corpus_digest.go:EmbeddingDigestExpectedQwen3` |
 | `external_w0.jsonl` | Stable external tool/ops corpus (255 chunks @ 2026-06-24, kb_version `kb.external.w0.2026-06-06`) | `internal/knowledge/corpus_digest.go:ExternalCorpusDigestExpected` |
 | `embeddings_<external-corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for the external corpus | `internal/knowledge/corpus_digest.go:ExternalEmbeddingDigestExpectedQwen3` |

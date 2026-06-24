@@ -54,9 +54,9 @@ func TestMergePlatformAndExternalRealData(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "merged", merged.KBVersion)
-	assert.Equal(t, 689+255, len(merged.Chunks))
+	assert.Equal(t, 594+255, len(merged.Chunks))
 	assert.Equal(t, 4096, sidecar.Dim)
-	assert.Equal(t, 689+255, len(sidecar.Vectors))
+	assert.Equal(t, 594+255, len(sidecar.Vectors))
 	for _, c := range merged.Chunks {
 		_, ok := sidecar.Vectors[c.ChunkID]
 		assert.True(t, ok, "missing vector for merged chunk %s", c.ChunkID)
