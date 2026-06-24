@@ -1,0 +1,3887 @@
+{
+  "fetched_at": "2026-06-24T00:49:55+0800",
+  "region": "cn-wlcb",
+  "action": "DescribeCommunityImages",
+  "sorts": {
+    "CreatedCount": {
+      "total_count": 775,
+      "available_total_count": 20,
+      "groups": [
+        {
+          "group_id": "9WFDPteiVhX5",
+          "image_name": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+          "image_desc": "开源版Sora2发布，LTX-2.3整合包合集，支持文生视频、图生视频、数字人！支持20s视频、1080P视频直出、批量队列生成、高清放大！",
+          "created_count": 3925,
+          "favorites_count": 264,
+          "recommend_count": 100,
+          "image_use_time": 10111,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+              "version": "v26.0529",
+              "author": "与AI同行",
+              "tags": [
+                "视频生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "5090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "打开WebUI",
+                  "Port": 7860
+                }
+              ]
+            },
+            {
+              "name": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+              "version": "v26.0515",
+              "author": "与AI同行",
+              "tags": [
+                "视频生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "5090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            },
+            {
+              "name": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+              "version": "v26.0510",
+              "author": "与AI同行",
+              "tags": [
+                "视频生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "5090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "4458094e-a43d-45fe-9b57-de79253befe4",
+          "image_name": "LiveTalking",
+          "image_desc": "LiveTalking镜像提供实时交互数字人解决方案，支持ERNerf、MuseTalk、Wav2Lip，实现单张人脸照片驱动的超低延迟（<100ms）唇形同步、表情及头部运动控制。",
+          "created_count": 4213,
+          "favorites_count": 115,
+          "recommend_count": 96,
+          "image_use_time": 78552,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "LiveTalking",
+              "version": "v2.2",
+              "author": "lipku",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "3090",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "2080",
+                "P40",
+                "A100",
+                "H20",
+                "A800"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "LiveTalking",
+              "version": "v2.1",
+              "author": "lipku",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "3080Ti",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3090",
+                "P40",
+                "V100S"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "LiveTalking",
+              "version": "v2.0",
+              "author": "lipku",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "3080Ti",
+                "4090",
+                "4090_48G",
+                "3090",
+                "A800"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "ykfC7Q7YlzmH",
+          "image_name": "最强AI数字人InfiniteTalk-图片和视频数字人",
+          "image_desc": "支持图片数字人、视频数字人、双人数字人，支持说话+唱歌对口型、长视频、完整歌曲生成、批量生成、高清放大！",
+          "created_count": 14333,
+          "favorites_count": 604,
+          "recommend_count": 95,
+          "image_use_time": 95877,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "最强AI数字人InfiniteTalk-图片和视频数字人",
+              "version": "v26.0201",
+              "author": "与AI同行",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "5090",
+                "4090_48G",
+                "H20"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                }
+              ]
+            },
+            {
+              "name": "最强AI数字人InfiniteTalk-图片和视频数字人",
+              "version": "v25.1123",
+              "author": "与AI同行",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "5090",
+                "4090",
+                "4090_48G",
+                "H20",
+                "A100",
+                "A800",
+                "3090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                }
+              ]
+            },
+            {
+              "name": "最强AI数字人InfiniteTalk-图片和视频数字人",
+              "version": "v25.0925",
+              "author": "与AI同行",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "2080",
+                "3080Ti",
+                "3090",
+                "4090_48G",
+                "2080Ti",
+                "H20",
+                "A800",
+                "P40",
+                "A100",
+                "5090",
+                "V100S"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "compshareImage-1aly0zqh3gvc",
+          "image_name": "SVC-Fusion",
+          "image_desc": "本整合包将整合So-Vits-SVC4.1、DDSP-SVC-6.3/6.1/6.0、ReFlow-VAE-SVC多种SVC模型训练及推理",
+          "created_count": 7601,
+          "favorites_count": 122,
+          "recommend_count": 94,
+          "image_use_time": 42440,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "SVC-Fusion",
+              "version": "v2.5",
+              "author": "aiguoliuguo",
+              "tags": [
+                "语音合成",
+                "语音克隆"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "3090",
+                "2080Ti",
+                "2080",
+                "A800",
+                "H20",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "SVC-Fusion",
+              "version": "v2.4",
+              "author": "aiguoliuguo",
+              "tags": [
+                "语音合成",
+                "语音克隆"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "5090",
+                "4090",
+                "2080Ti",
+                "4090_48G",
+                "3080Ti",
+                "3090",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "SVC-Fusion",
+              "version": "v2.3",
+              "author": "aiguoliuguo",
+              "tags": [
+                "语音合成",
+                "语音克隆"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "4090",
+                "2080",
+                "3080Ti",
+                "3090",
+                "4090_48G",
+                "2080Ti",
+                "H20",
+                "A800",
+                "P40",
+                "A100",
+                "5090",
+                "V100S"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "RlfmPA9sk734",
+          "image_name": "Krea2 Turbo Engine｜ComfyUI 本地加速镜像",
+          "image_desc": "基于 Krea 2 Turbo 的本地化 ComfyUI 推理环境，优化生成速度与稳定性，适用于高频文生图与风格测试。",
+          "created_count": 1,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 0,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "Krea2 Turbo Engine｜ComfyUI 本地加速镜像",
+              "version": "v1.0",
+              "author": "AI-KSK",
+              "tags": [
+                "ComfyUI",
+                "图片生成",
+                "Flux"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "5090",
+                "3090",
+                "A800",
+                "H20",
+                "A100",
+                "4090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "FileBrowser",
+                  "Port": 8889
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "3AQrtXQPaD6v",
+          "image_name": "AiToolKit汉化版",
+          "image_desc": "Aitoolkit汉化版，自适应UI方便手机端查看训练进度",
+          "created_count": 1959,
+          "favorites_count": 131,
+          "recommend_count": 0,
+          "image_use_time": 25112,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "AiToolKit汉化版",
+              "version": "v1.172",
+              "author": "Doc_workBox",
+              "tags": [
+                "Qwen-image",
+                "Wan",
+                "Lora训练"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "4090",
+                "5090",
+                "A800",
+                "H20",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "AI-ToolKit-E2U",
+                  "Port": 8675
+                }
+              ]
+            },
+            {
+              "name": "AiToolKit汉化版",
+              "version": "v1.171",
+              "author": "Doc_workBox",
+              "tags": [
+                "Qwen-image",
+                "Wan",
+                "Lora训练"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "5090",
+                "4090",
+                "4090_48G",
+                "A800",
+                "H20",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "AI-ToolKit-E2U",
+                  "Port": 8675
+                }
+              ]
+            },
+            {
+              "name": "AiToolKit汉化版",
+              "version": "v1.17",
+              "author": "Doc_workBox",
+              "tags": [
+                "Qwen-image",
+                "Wan",
+                "Lora训练"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "A800",
+                "H20",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "AI-ToolKit-E2U",
+                  "Port": 8675
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "Beq74nLMHQzf",
+          "image_name": "dots.tts语音克隆视频配音平台",
+          "image_desc": "dots.tts语音克隆视频配音平台",
+          "created_count": 7,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 13,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "dots.tts语音克隆视频配音平台",
+              "version": "v2.3",
+              "author": "K哥讲AI",
+              "tags": [
+                "语音合成",
+                "语音分离",
+                "语音识别"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "3090",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "K哥配音工作室（等待大约2-3分钟后点击启动）",
+                  "Port": 7860
+                }
+              ]
+            },
+            {
+              "name": "dots.tts语音克隆视频配音平台",
+              "version": "v2.2",
+              "author": "K哥讲AI",
+              "tags": [
+                "语音合成",
+                "语音分离",
+                "语音识别"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "V100S",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "3090",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "K哥配音工作室（等待大约2-3分钟后点击启动）",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "6LUAfMV49Tek",
+          "image_name": "Boogu Image的lora训练AI-TOOLKIT",
+          "image_desc": "Boogu Image的lora训练AI-TOOLKIT",
+          "created_count": 0,
+          "favorites_count": 1,
+          "recommend_count": 0,
+          "image_use_time": 0,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "Boogu Image的lora训练AI-TOOLKIT",
+              "version": "v1.0",
+              "author": "梦影Erislia",
+              "tags": [
+                "Lora训练",
+                "图片生成",
+                "图片编辑"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3090",
+                "A800",
+                "A100",
+                "H20"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "AI-Toolkit",
+                  "Port": 8675
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "FGzMv7CYBo3M",
+          "image_name": "ComfyUI云端整合包2506",
+          "image_desc": "ComfyUI云端整合包2506",
+          "created_count": 7,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 1,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "ComfyUI云端整合包2506",
+              "version": "v1.0",
+              "author": "鹄仙",
+              "tags": [
+                "数字人",
+                "ComfyUI"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "5090",
+                "4090_48G",
+                "4090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                },
+                {
+                  "Software": "FileBrowser",
+                  "Port": 8889
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "yIeSCTimHWqR",
+          "image_name": "Boogu-Image-GGUF,文生图,图像修改,8G显存可用,支持50系,批量任务队列",
+          "image_desc": "Boogu-Image-GGUF,文生图,图像修改,8G显存可用,支持50系,批量任务队列",
+          "created_count": 18,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 8,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "Boogu-Image-GGUF,文生图,图像修改,8G显存可用,支持50系,批量任务队列",
+              "version": "v1.0",
+              "author": "刘悦的技术博客",
+              "tags": [
+                "ComfyUI",
+                "图片编辑",
+                "图片生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "3090",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "DxvZZysTgfLe",
+          "image_name": "专业级Seed-TTS-Eval语音评测工具",
+          "image_desc": "这是一个用于评测TTS语音质量的工具",
+          "created_count": 1,
+          "favorites_count": 1,
+          "recommend_count": 0,
+          "image_use_time": 1,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "专业级Seed-TTS-Eval语音评测工具",
+              "version": "v1.0",
+              "author": "雨落实战",
+              "tags": [
+                "AI应用",
+                "语音合成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "Seed-TTS-Eval-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "zf96pG6MpaJy",
+          "image_name": "单图生成3D高斯文件，TripoSplat，超强3D效果！游戏3D | AR/VR | 3D资产创作 | 批量生成",
+          "image_desc": "单图生成3D高斯文件，TripoSplat，超强3D效果！游戏3D | AR/VR | 3D资产创作 | 批量生成",
+          "created_count": 10,
+          "favorites_count": 2,
+          "recommend_count": 0,
+          "image_use_time": 2,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "单图生成3D高斯文件，TripoSplat，超强3D效果！游戏3D | AR/VR | 3D资产创作 | 批量生成",
+              "version": "v26.0619",
+              "author": "与AI同行",
+              "tags": [
+                "3D生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "aWA3le8qrVYq",
+          "image_name": "新一代高质量语音生成模型VoxCPM 2.0 整合包升级了， 支持 30 种语言、9 种中文方言！",
+          "image_desc": "是 VoxCPM 系列的新一代语音生成模型，基于 2B 参数规模，并使用超过 200 万小时的多语言语音数据训练，支持 30 种语言、9 种中文方言",
+          "created_count": 46,
+          "favorites_count": 3,
+          "recommend_count": 0,
+          "image_use_time": 41,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "新一代高质量语音生成模型VoxCPM 2.0 整合包升级了， 支持 30 种语言、9 种中文方言！",
+              "version": "v1.0",
+              "author": "余子越Talk",
+              "tags": [
+                "语音合成",
+                "IndexTTS",
+                "AI应用"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "2080Ti",
+                "3090",
+                "2080",
+                "3080Ti",
+                "4090_48G",
+                "5090",
+                "4090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "YZY启动器",
+                  "Port": 9000
+                },
+                {
+                  "Software": "FileBrowser",
+                  "Port": 8889
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "fpFiLvKDjnAF",
+          "image_name": "AnimaBase的Lora融合训练Comfy和Trainer",
+          "image_desc": "AnimaBase的Lora融合训练Comfy和Trainer",
+          "created_count": 18,
+          "favorites_count": 6,
+          "recommend_count": 0,
+          "image_use_time": 31,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "AnimaBase的Lora融合训练Comfy和Trainer",
+              "version": "v1.0",
+              "author": "梦影Erislia",
+              "tags": [
+                "ComfyUI",
+                "图片生成",
+                "Lora训练"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "3090",
+                "4090",
+                "5090",
+                "4090_48G",
+                "A800",
+                "H20",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                },
+                {
+                  "Software": "Training-UI",
+                  "Port": 3000
+                },
+                {
+                  "Software": "TensorBoard",
+                  "Port": 6006
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "eQfLgTbqd4is",
+          "image_name": "infinitetakl数字人云端版本",
+          "image_desc": "infinitetakl数字人，支持单人对口型，双人对口型以及单人视频对口型",
+          "created_count": 79,
+          "favorites_count": 11,
+          "recommend_count": 0,
+          "image_use_time": 250,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "infinitetakl数字人云端版本",
+              "version": "v1.3",
+              "author": "pappyai",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "infinitetakl数字人云端版本",
+              "version": "v1.0",
+              "author": "pappyai",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "TdDwmKZUZebI",
+          "image_name": "OpenTalking",
+          "image_desc": "OpenTalking 是一个面向实时数字人对话与应用开发的开源平台，用统一的 WebUI、知识库、语音、模型运行时和部署链路，把数字人从单次演示连接成可落地的应用系统。",
+          "created_count": 15,
+          "favorites_count": 2,
+          "recommend_count": 0,
+          "image_use_time": 28,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "OpenTalking",
+              "version": "v0.2",
+              "author": "",
+              "tags": [
+                "数字人",
+                "视频生成",
+                "语音合成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "3090",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "WebUI",
+                  "Port": 5173
+                },
+                {
+                  "Software": "Omnirt-Quicktalk",
+                  "Port": 8000
+                },
+                {
+                  "Software": "Opentalking-API",
+                  "Port": 9000
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "skNK3sKvoTsU",
+          "image_name": "JoyAI-Echo-ComfyUI-无损版",
+          "image_desc": "JoyAI-Echo的comfyUI版本，全量模型无损版",
+          "created_count": 3,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 0,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "JoyAI-Echo-ComfyUI-无损版",
+              "version": "v1.0",
+              "author": "有趣的80后程序员",
+              "tags": [
+                "ComfyUI",
+                "LTX",
+                "视频生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "A800"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "9WXz9CvXurO5",
+          "image_name": "Ideogram-4-GGUF,自动提示词,图生图,文生图,8G显存可用,No-Safety-Filter,批量任务,Lora使用,支持50系",
+          "image_desc": "Ideogram-4-GGUF,自动提示词,图生图,文生图,8G显存可用,No-Safety-Filter,批量任务,Lora使用,支持50系",
+          "created_count": 19,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 5,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "Ideogram-4-GGUF,自动提示词,图生图,文生图,8G显存可用,No-Safety-Filter,批量任务,Lora使用,支持50系",
+              "version": "v1.0",
+              "author": "刘悦的技术博客",
+              "tags": [
+                "ComfyUI",
+                "图片生成",
+                "图片编辑"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "4090_48G"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "lfc1vAyDOjkA",
+          "image_name": "数字人直播",
+          "image_desc": "数字人直播",
+          "created_count": 44,
+          "favorites_count": 4,
+          "recommend_count": 0,
+          "image_use_time": 87,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "数字人直播",
+              "version": "v1.2",
+              "author": "AI开发日记",
+              "tags": [
+                "数字人",
+                "CosyVoice",
+                "DeepSeek"
+              ],
+              "status": "Available",
+              "price": 0.5,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "4090",
+                "A800",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "human-digital",
+                  "Port": 8000
+                }
+              ]
+            },
+            {
+              "name": "数字人直播",
+              "version": "v1.1",
+              "author": "AI开发日记",
+              "tags": [
+                "数字人",
+                "CosyVoice",
+                "DeepSeek"
+              ],
+              "status": "Available",
+              "price": 0.5,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "V100S",
+                "4090_48G",
+                "4090",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "pfKe1v9nvTCa",
+          "image_name": "VoxCPM2 声音克隆系统webui开机即用",
+          "image_desc": "VoxCPM2 声音克隆系统webui开机即用",
+          "created_count": 16,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 4,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "VoxCPM2 声音克隆系统webui开机即用",
+              "version": "v2.0",
+              "author": "鸡你太美",
+              "tags": [
+                "语音合成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "3090",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "V100S"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "ImageUseTime": {
+      "total_count": 775,
+      "available_total_count": 20,
+      "groups": [
+        {
+          "group_id": "9WFDPteiVhX5",
+          "image_name": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+          "image_desc": "开源版Sora2发布，LTX-2.3整合包合集，支持文生视频、图生视频、数字人！支持20s视频、1080P视频直出、批量队列生成、高清放大！",
+          "created_count": 3925,
+          "favorites_count": 264,
+          "recommend_count": 100,
+          "image_use_time": 10111,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+              "version": "v26.0529",
+              "author": "与AI同行",
+              "tags": [
+                "视频生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "5090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "打开WebUI",
+                  "Port": 7860
+                }
+              ]
+            },
+            {
+              "name": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+              "version": "v26.0515",
+              "author": "与AI同行",
+              "tags": [
+                "视频生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "5090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            },
+            {
+              "name": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+              "version": "v26.0510",
+              "author": "与AI同行",
+              "tags": [
+                "视频生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "5090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "4458094e-a43d-45fe-9b57-de79253befe4",
+          "image_name": "LiveTalking",
+          "image_desc": "LiveTalking镜像提供实时交互数字人解决方案，支持ERNerf、MuseTalk、Wav2Lip，实现单张人脸照片驱动的超低延迟（<100ms）唇形同步、表情及头部运动控制。",
+          "created_count": 4213,
+          "favorites_count": 115,
+          "recommend_count": 96,
+          "image_use_time": 78552,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "LiveTalking",
+              "version": "v2.2",
+              "author": "lipku",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "3090",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "2080",
+                "P40",
+                "A100",
+                "H20",
+                "A800"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "LiveTalking",
+              "version": "v2.1",
+              "author": "lipku",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "3080Ti",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3090",
+                "P40",
+                "V100S"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "LiveTalking",
+              "version": "v2.0",
+              "author": "lipku",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "3080Ti",
+                "4090",
+                "4090_48G",
+                "3090",
+                "A800"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "ykfC7Q7YlzmH",
+          "image_name": "最强AI数字人InfiniteTalk-图片和视频数字人",
+          "image_desc": "支持图片数字人、视频数字人、双人数字人，支持说话+唱歌对口型、长视频、完整歌曲生成、批量生成、高清放大！",
+          "created_count": 14333,
+          "favorites_count": 604,
+          "recommend_count": 95,
+          "image_use_time": 95877,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "最强AI数字人InfiniteTalk-图片和视频数字人",
+              "version": "v26.0201",
+              "author": "与AI同行",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "5090",
+                "4090_48G",
+                "H20"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                }
+              ]
+            },
+            {
+              "name": "最强AI数字人InfiniteTalk-图片和视频数字人",
+              "version": "v25.1123",
+              "author": "与AI同行",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "5090",
+                "4090",
+                "4090_48G",
+                "H20",
+                "A100",
+                "A800",
+                "3090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                }
+              ]
+            },
+            {
+              "name": "最强AI数字人InfiniteTalk-图片和视频数字人",
+              "version": "v25.0925",
+              "author": "与AI同行",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "2080",
+                "3080Ti",
+                "3090",
+                "4090_48G",
+                "2080Ti",
+                "H20",
+                "A800",
+                "P40",
+                "A100",
+                "5090",
+                "V100S"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "compshareImage-1aly0zqh3gvc",
+          "image_name": "SVC-Fusion",
+          "image_desc": "本整合包将整合So-Vits-SVC4.1、DDSP-SVC-6.3/6.1/6.0、ReFlow-VAE-SVC多种SVC模型训练及推理",
+          "created_count": 7601,
+          "favorites_count": 122,
+          "recommend_count": 94,
+          "image_use_time": 42440,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "SVC-Fusion",
+              "version": "v2.5",
+              "author": "aiguoliuguo",
+              "tags": [
+                "语音合成",
+                "语音克隆"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "3090",
+                "2080Ti",
+                "2080",
+                "A800",
+                "H20",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "SVC-Fusion",
+              "version": "v2.4",
+              "author": "aiguoliuguo",
+              "tags": [
+                "语音合成",
+                "语音克隆"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "5090",
+                "4090",
+                "2080Ti",
+                "4090_48G",
+                "3080Ti",
+                "3090",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "SVC-Fusion",
+              "version": "v2.3",
+              "author": "aiguoliuguo",
+              "tags": [
+                "语音合成",
+                "语音克隆"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "4090",
+                "2080",
+                "3080Ti",
+                "3090",
+                "4090_48G",
+                "2080Ti",
+                "H20",
+                "A800",
+                "P40",
+                "A100",
+                "5090",
+                "V100S"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "RlfmPA9sk734",
+          "image_name": "Krea2 Turbo Engine｜ComfyUI 本地加速镜像",
+          "image_desc": "基于 Krea 2 Turbo 的本地化 ComfyUI 推理环境，优化生成速度与稳定性，适用于高频文生图与风格测试。",
+          "created_count": 1,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 0,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "Krea2 Turbo Engine｜ComfyUI 本地加速镜像",
+              "version": "v1.0",
+              "author": "AI-KSK",
+              "tags": [
+                "ComfyUI",
+                "图片生成",
+                "Flux"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "5090",
+                "3090",
+                "A800",
+                "H20",
+                "A100",
+                "4090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "FileBrowser",
+                  "Port": 8889
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "3AQrtXQPaD6v",
+          "image_name": "AiToolKit汉化版",
+          "image_desc": "Aitoolkit汉化版，自适应UI方便手机端查看训练进度",
+          "created_count": 1959,
+          "favorites_count": 131,
+          "recommend_count": 0,
+          "image_use_time": 25112,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "AiToolKit汉化版",
+              "version": "v1.172",
+              "author": "Doc_workBox",
+              "tags": [
+                "Qwen-image",
+                "Wan",
+                "Lora训练"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "4090",
+                "5090",
+                "A800",
+                "H20",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "AI-ToolKit-E2U",
+                  "Port": 8675
+                }
+              ]
+            },
+            {
+              "name": "AiToolKit汉化版",
+              "version": "v1.171",
+              "author": "Doc_workBox",
+              "tags": [
+                "Qwen-image",
+                "Wan",
+                "Lora训练"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "5090",
+                "4090",
+                "4090_48G",
+                "A800",
+                "H20",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "AI-ToolKit-E2U",
+                  "Port": 8675
+                }
+              ]
+            },
+            {
+              "name": "AiToolKit汉化版",
+              "version": "v1.17",
+              "author": "Doc_workBox",
+              "tags": [
+                "Qwen-image",
+                "Wan",
+                "Lora训练"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "A800",
+                "H20",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "AI-ToolKit-E2U",
+                  "Port": 8675
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "Beq74nLMHQzf",
+          "image_name": "dots.tts语音克隆视频配音平台",
+          "image_desc": "dots.tts语音克隆视频配音平台",
+          "created_count": 7,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 13,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "dots.tts语音克隆视频配音平台",
+              "version": "v2.3",
+              "author": "K哥讲AI",
+              "tags": [
+                "语音合成",
+                "语音分离",
+                "语音识别"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "3090",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "K哥配音工作室（等待大约2-3分钟后点击启动）",
+                  "Port": 7860
+                }
+              ]
+            },
+            {
+              "name": "dots.tts语音克隆视频配音平台",
+              "version": "v2.2",
+              "author": "K哥讲AI",
+              "tags": [
+                "语音合成",
+                "语音分离",
+                "语音识别"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "V100S",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "3090",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "K哥配音工作室（等待大约2-3分钟后点击启动）",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "6LUAfMV49Tek",
+          "image_name": "Boogu Image的lora训练AI-TOOLKIT",
+          "image_desc": "Boogu Image的lora训练AI-TOOLKIT",
+          "created_count": 0,
+          "favorites_count": 1,
+          "recommend_count": 0,
+          "image_use_time": 0,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "Boogu Image的lora训练AI-TOOLKIT",
+              "version": "v1.0",
+              "author": "梦影Erislia",
+              "tags": [
+                "Lora训练",
+                "图片生成",
+                "图片编辑"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3090",
+                "A800",
+                "A100",
+                "H20"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "AI-Toolkit",
+                  "Port": 8675
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "FGzMv7CYBo3M",
+          "image_name": "ComfyUI云端整合包2506",
+          "image_desc": "ComfyUI云端整合包2506",
+          "created_count": 7,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 1,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "ComfyUI云端整合包2506",
+              "version": "v1.0",
+              "author": "鹄仙",
+              "tags": [
+                "数字人",
+                "ComfyUI"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "5090",
+                "4090_48G",
+                "4090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                },
+                {
+                  "Software": "FileBrowser",
+                  "Port": 8889
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "yIeSCTimHWqR",
+          "image_name": "Boogu-Image-GGUF,文生图,图像修改,8G显存可用,支持50系,批量任务队列",
+          "image_desc": "Boogu-Image-GGUF,文生图,图像修改,8G显存可用,支持50系,批量任务队列",
+          "created_count": 18,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 8,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "Boogu-Image-GGUF,文生图,图像修改,8G显存可用,支持50系,批量任务队列",
+              "version": "v1.0",
+              "author": "刘悦的技术博客",
+              "tags": [
+                "ComfyUI",
+                "图片编辑",
+                "图片生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "3090",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "DxvZZysTgfLe",
+          "image_name": "专业级Seed-TTS-Eval语音评测工具",
+          "image_desc": "这是一个用于评测TTS语音质量的工具",
+          "created_count": 1,
+          "favorites_count": 1,
+          "recommend_count": 0,
+          "image_use_time": 1,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "专业级Seed-TTS-Eval语音评测工具",
+              "version": "v1.0",
+              "author": "雨落实战",
+              "tags": [
+                "AI应用",
+                "语音合成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "Seed-TTS-Eval-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "zf96pG6MpaJy",
+          "image_name": "单图生成3D高斯文件，TripoSplat，超强3D效果！游戏3D | AR/VR | 3D资产创作 | 批量生成",
+          "image_desc": "单图生成3D高斯文件，TripoSplat，超强3D效果！游戏3D | AR/VR | 3D资产创作 | 批量生成",
+          "created_count": 10,
+          "favorites_count": 2,
+          "recommend_count": 0,
+          "image_use_time": 2,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "单图生成3D高斯文件，TripoSplat，超强3D效果！游戏3D | AR/VR | 3D资产创作 | 批量生成",
+              "version": "v26.0619",
+              "author": "与AI同行",
+              "tags": [
+                "3D生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "aWA3le8qrVYq",
+          "image_name": "新一代高质量语音生成模型VoxCPM 2.0 整合包升级了， 支持 30 种语言、9 种中文方言！",
+          "image_desc": "是 VoxCPM 系列的新一代语音生成模型，基于 2B 参数规模，并使用超过 200 万小时的多语言语音数据训练，支持 30 种语言、9 种中文方言",
+          "created_count": 46,
+          "favorites_count": 3,
+          "recommend_count": 0,
+          "image_use_time": 41,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "新一代高质量语音生成模型VoxCPM 2.0 整合包升级了， 支持 30 种语言、9 种中文方言！",
+              "version": "v1.0",
+              "author": "余子越Talk",
+              "tags": [
+                "语音合成",
+                "IndexTTS",
+                "AI应用"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "2080Ti",
+                "3090",
+                "2080",
+                "3080Ti",
+                "4090_48G",
+                "5090",
+                "4090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "YZY启动器",
+                  "Port": 9000
+                },
+                {
+                  "Software": "FileBrowser",
+                  "Port": 8889
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "fpFiLvKDjnAF",
+          "image_name": "AnimaBase的Lora融合训练Comfy和Trainer",
+          "image_desc": "AnimaBase的Lora融合训练Comfy和Trainer",
+          "created_count": 18,
+          "favorites_count": 6,
+          "recommend_count": 0,
+          "image_use_time": 31,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "AnimaBase的Lora融合训练Comfy和Trainer",
+              "version": "v1.0",
+              "author": "梦影Erislia",
+              "tags": [
+                "ComfyUI",
+                "图片生成",
+                "Lora训练"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "3090",
+                "4090",
+                "5090",
+                "4090_48G",
+                "A800",
+                "H20",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                },
+                {
+                  "Software": "Training-UI",
+                  "Port": 3000
+                },
+                {
+                  "Software": "TensorBoard",
+                  "Port": 6006
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "eQfLgTbqd4is",
+          "image_name": "infinitetakl数字人云端版本",
+          "image_desc": "infinitetakl数字人，支持单人对口型，双人对口型以及单人视频对口型",
+          "created_count": 79,
+          "favorites_count": 11,
+          "recommend_count": 0,
+          "image_use_time": 250,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "infinitetakl数字人云端版本",
+              "version": "v1.3",
+              "author": "pappyai",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "infinitetakl数字人云端版本",
+              "version": "v1.0",
+              "author": "pappyai",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "TdDwmKZUZebI",
+          "image_name": "OpenTalking",
+          "image_desc": "OpenTalking 是一个面向实时数字人对话与应用开发的开源平台，用统一的 WebUI、知识库、语音、模型运行时和部署链路，把数字人从单次演示连接成可落地的应用系统。",
+          "created_count": 15,
+          "favorites_count": 2,
+          "recommend_count": 0,
+          "image_use_time": 28,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "OpenTalking",
+              "version": "v0.2",
+              "author": "",
+              "tags": [
+                "数字人",
+                "视频生成",
+                "语音合成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "3090",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "WebUI",
+                  "Port": 5173
+                },
+                {
+                  "Software": "Omnirt-Quicktalk",
+                  "Port": 8000
+                },
+                {
+                  "Software": "Opentalking-API",
+                  "Port": 9000
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "skNK3sKvoTsU",
+          "image_name": "JoyAI-Echo-ComfyUI-无损版",
+          "image_desc": "JoyAI-Echo的comfyUI版本，全量模型无损版",
+          "created_count": 3,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 0,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "JoyAI-Echo-ComfyUI-无损版",
+              "version": "v1.0",
+              "author": "有趣的80后程序员",
+              "tags": [
+                "ComfyUI",
+                "LTX",
+                "视频生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "A800"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "9WXz9CvXurO5",
+          "image_name": "Ideogram-4-GGUF,自动提示词,图生图,文生图,8G显存可用,No-Safety-Filter,批量任务,Lora使用,支持50系",
+          "image_desc": "Ideogram-4-GGUF,自动提示词,图生图,文生图,8G显存可用,No-Safety-Filter,批量任务,Lora使用,支持50系",
+          "created_count": 19,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 5,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "Ideogram-4-GGUF,自动提示词,图生图,文生图,8G显存可用,No-Safety-Filter,批量任务,Lora使用,支持50系",
+              "version": "v1.0",
+              "author": "刘悦的技术博客",
+              "tags": [
+                "ComfyUI",
+                "图片生成",
+                "图片编辑"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "4090_48G"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "lfc1vAyDOjkA",
+          "image_name": "数字人直播",
+          "image_desc": "数字人直播",
+          "created_count": 44,
+          "favorites_count": 4,
+          "recommend_count": 0,
+          "image_use_time": 87,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "数字人直播",
+              "version": "v1.2",
+              "author": "AI开发日记",
+              "tags": [
+                "数字人",
+                "CosyVoice",
+                "DeepSeek"
+              ],
+              "status": "Available",
+              "price": 0.5,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "4090",
+                "A800",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "human-digital",
+                  "Port": 8000
+                }
+              ]
+            },
+            {
+              "name": "数字人直播",
+              "version": "v1.1",
+              "author": "AI开发日记",
+              "tags": [
+                "数字人",
+                "CosyVoice",
+                "DeepSeek"
+              ],
+              "status": "Available",
+              "price": 0.5,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "V100S",
+                "4090_48G",
+                "4090",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "pfKe1v9nvTCa",
+          "image_name": "VoxCPM2 声音克隆系统webui开机即用",
+          "image_desc": "VoxCPM2 声音克隆系统webui开机即用",
+          "created_count": 16,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 4,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "VoxCPM2 声音克隆系统webui开机即用",
+              "version": "v2.0",
+              "author": "鸡你太美",
+              "tags": [
+                "语音合成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "3090",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "V100S"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "FavoritesCount": {
+      "total_count": 775,
+      "available_total_count": 20,
+      "groups": [
+        {
+          "group_id": "9WFDPteiVhX5",
+          "image_name": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+          "image_desc": "开源版Sora2发布，LTX-2.3整合包合集，支持文生视频、图生视频、数字人！支持20s视频、1080P视频直出、批量队列生成、高清放大！",
+          "created_count": 3925,
+          "favorites_count": 264,
+          "recommend_count": 100,
+          "image_use_time": 10111,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+              "version": "v26.0529",
+              "author": "与AI同行",
+              "tags": [
+                "视频生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "5090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "打开WebUI",
+                  "Port": 7860
+                }
+              ]
+            },
+            {
+              "name": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+              "version": "v26.0515",
+              "author": "与AI同行",
+              "tags": [
+                "视频生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "5090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            },
+            {
+              "name": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+              "version": "v26.0510",
+              "author": "与AI同行",
+              "tags": [
+                "视频生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "5090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "4458094e-a43d-45fe-9b57-de79253befe4",
+          "image_name": "LiveTalking",
+          "image_desc": "LiveTalking镜像提供实时交互数字人解决方案，支持ERNerf、MuseTalk、Wav2Lip，实现单张人脸照片驱动的超低延迟（<100ms）唇形同步、表情及头部运动控制。",
+          "created_count": 4213,
+          "favorites_count": 115,
+          "recommend_count": 96,
+          "image_use_time": 78552,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "LiveTalking",
+              "version": "v2.2",
+              "author": "lipku",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "3090",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "2080",
+                "P40",
+                "A100",
+                "H20",
+                "A800"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "LiveTalking",
+              "version": "v2.1",
+              "author": "lipku",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "3080Ti",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3090",
+                "P40",
+                "V100S"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "LiveTalking",
+              "version": "v2.0",
+              "author": "lipku",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "3080Ti",
+                "4090",
+                "4090_48G",
+                "3090",
+                "A800"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "ykfC7Q7YlzmH",
+          "image_name": "最强AI数字人InfiniteTalk-图片和视频数字人",
+          "image_desc": "支持图片数字人、视频数字人、双人数字人，支持说话+唱歌对口型、长视频、完整歌曲生成、批量生成、高清放大！",
+          "created_count": 14333,
+          "favorites_count": 604,
+          "recommend_count": 95,
+          "image_use_time": 95877,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "最强AI数字人InfiniteTalk-图片和视频数字人",
+              "version": "v26.0201",
+              "author": "与AI同行",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "5090",
+                "4090_48G",
+                "H20"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                }
+              ]
+            },
+            {
+              "name": "最强AI数字人InfiniteTalk-图片和视频数字人",
+              "version": "v25.1123",
+              "author": "与AI同行",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "5090",
+                "4090",
+                "4090_48G",
+                "H20",
+                "A100",
+                "A800",
+                "3090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                }
+              ]
+            },
+            {
+              "name": "最强AI数字人InfiniteTalk-图片和视频数字人",
+              "version": "v25.0925",
+              "author": "与AI同行",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "2080",
+                "3080Ti",
+                "3090",
+                "4090_48G",
+                "2080Ti",
+                "H20",
+                "A800",
+                "P40",
+                "A100",
+                "5090",
+                "V100S"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "compshareImage-1aly0zqh3gvc",
+          "image_name": "SVC-Fusion",
+          "image_desc": "本整合包将整合So-Vits-SVC4.1、DDSP-SVC-6.3/6.1/6.0、ReFlow-VAE-SVC多种SVC模型训练及推理",
+          "created_count": 7601,
+          "favorites_count": 122,
+          "recommend_count": 94,
+          "image_use_time": 42440,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "SVC-Fusion",
+              "version": "v2.5",
+              "author": "aiguoliuguo",
+              "tags": [
+                "语音合成",
+                "语音克隆"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "3090",
+                "2080Ti",
+                "2080",
+                "A800",
+                "H20",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "SVC-Fusion",
+              "version": "v2.4",
+              "author": "aiguoliuguo",
+              "tags": [
+                "语音合成",
+                "语音克隆"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "5090",
+                "4090",
+                "2080Ti",
+                "4090_48G",
+                "3080Ti",
+                "3090",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "SVC-Fusion",
+              "version": "v2.3",
+              "author": "aiguoliuguo",
+              "tags": [
+                "语音合成",
+                "语音克隆"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "4090",
+                "2080",
+                "3080Ti",
+                "3090",
+                "4090_48G",
+                "2080Ti",
+                "H20",
+                "A800",
+                "P40",
+                "A100",
+                "5090",
+                "V100S"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "RlfmPA9sk734",
+          "image_name": "Krea2 Turbo Engine｜ComfyUI 本地加速镜像",
+          "image_desc": "基于 Krea 2 Turbo 的本地化 ComfyUI 推理环境，优化生成速度与稳定性，适用于高频文生图与风格测试。",
+          "created_count": 1,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 0,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "Krea2 Turbo Engine｜ComfyUI 本地加速镜像",
+              "version": "v1.0",
+              "author": "AI-KSK",
+              "tags": [
+                "ComfyUI",
+                "图片生成",
+                "Flux"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "5090",
+                "3090",
+                "A800",
+                "H20",
+                "A100",
+                "4090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "FileBrowser",
+                  "Port": 8889
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "3AQrtXQPaD6v",
+          "image_name": "AiToolKit汉化版",
+          "image_desc": "Aitoolkit汉化版，自适应UI方便手机端查看训练进度",
+          "created_count": 1959,
+          "favorites_count": 131,
+          "recommend_count": 0,
+          "image_use_time": 25112,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "AiToolKit汉化版",
+              "version": "v1.172",
+              "author": "Doc_workBox",
+              "tags": [
+                "Qwen-image",
+                "Wan",
+                "Lora训练"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "4090",
+                "5090",
+                "A800",
+                "H20",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "AI-ToolKit-E2U",
+                  "Port": 8675
+                }
+              ]
+            },
+            {
+              "name": "AiToolKit汉化版",
+              "version": "v1.171",
+              "author": "Doc_workBox",
+              "tags": [
+                "Qwen-image",
+                "Wan",
+                "Lora训练"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "5090",
+                "4090",
+                "4090_48G",
+                "A800",
+                "H20",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "AI-ToolKit-E2U",
+                  "Port": 8675
+                }
+              ]
+            },
+            {
+              "name": "AiToolKit汉化版",
+              "version": "v1.17",
+              "author": "Doc_workBox",
+              "tags": [
+                "Qwen-image",
+                "Wan",
+                "Lora训练"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "A800",
+                "H20",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "AI-ToolKit-E2U",
+                  "Port": 8675
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "Beq74nLMHQzf",
+          "image_name": "dots.tts语音克隆视频配音平台",
+          "image_desc": "dots.tts语音克隆视频配音平台",
+          "created_count": 7,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 13,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "dots.tts语音克隆视频配音平台",
+              "version": "v2.3",
+              "author": "K哥讲AI",
+              "tags": [
+                "语音合成",
+                "语音分离",
+                "语音识别"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "3090",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "K哥配音工作室（等待大约2-3分钟后点击启动）",
+                  "Port": 7860
+                }
+              ]
+            },
+            {
+              "name": "dots.tts语音克隆视频配音平台",
+              "version": "v2.2",
+              "author": "K哥讲AI",
+              "tags": [
+                "语音合成",
+                "语音分离",
+                "语音识别"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "V100S",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "3090",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "K哥配音工作室（等待大约2-3分钟后点击启动）",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "6LUAfMV49Tek",
+          "image_name": "Boogu Image的lora训练AI-TOOLKIT",
+          "image_desc": "Boogu Image的lora训练AI-TOOLKIT",
+          "created_count": 0,
+          "favorites_count": 1,
+          "recommend_count": 0,
+          "image_use_time": 0,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "Boogu Image的lora训练AI-TOOLKIT",
+              "version": "v1.0",
+              "author": "梦影Erislia",
+              "tags": [
+                "Lora训练",
+                "图片生成",
+                "图片编辑"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3090",
+                "A800",
+                "A100",
+                "H20"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "AI-Toolkit",
+                  "Port": 8675
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "FGzMv7CYBo3M",
+          "image_name": "ComfyUI云端整合包2506",
+          "image_desc": "ComfyUI云端整合包2506",
+          "created_count": 7,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 1,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "ComfyUI云端整合包2506",
+              "version": "v1.0",
+              "author": "鹄仙",
+              "tags": [
+                "数字人",
+                "ComfyUI"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "5090",
+                "4090_48G",
+                "4090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                },
+                {
+                  "Software": "FileBrowser",
+                  "Port": 8889
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "yIeSCTimHWqR",
+          "image_name": "Boogu-Image-GGUF,文生图,图像修改,8G显存可用,支持50系,批量任务队列",
+          "image_desc": "Boogu-Image-GGUF,文生图,图像修改,8G显存可用,支持50系,批量任务队列",
+          "created_count": 18,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 8,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "Boogu-Image-GGUF,文生图,图像修改,8G显存可用,支持50系,批量任务队列",
+              "version": "v1.0",
+              "author": "刘悦的技术博客",
+              "tags": [
+                "ComfyUI",
+                "图片编辑",
+                "图片生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "3090",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "DxvZZysTgfLe",
+          "image_name": "专业级Seed-TTS-Eval语音评测工具",
+          "image_desc": "这是一个用于评测TTS语音质量的工具",
+          "created_count": 1,
+          "favorites_count": 1,
+          "recommend_count": 0,
+          "image_use_time": 1,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "专业级Seed-TTS-Eval语音评测工具",
+              "version": "v1.0",
+              "author": "雨落实战",
+              "tags": [
+                "AI应用",
+                "语音合成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "Seed-TTS-Eval-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "zf96pG6MpaJy",
+          "image_name": "单图生成3D高斯文件，TripoSplat，超强3D效果！游戏3D | AR/VR | 3D资产创作 | 批量生成",
+          "image_desc": "单图生成3D高斯文件，TripoSplat，超强3D效果！游戏3D | AR/VR | 3D资产创作 | 批量生成",
+          "created_count": 10,
+          "favorites_count": 2,
+          "recommend_count": 0,
+          "image_use_time": 2,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "单图生成3D高斯文件，TripoSplat，超强3D效果！游戏3D | AR/VR | 3D资产创作 | 批量生成",
+              "version": "v26.0619",
+              "author": "与AI同行",
+              "tags": [
+                "3D生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "aWA3le8qrVYq",
+          "image_name": "新一代高质量语音生成模型VoxCPM 2.0 整合包升级了， 支持 30 种语言、9 种中文方言！",
+          "image_desc": "是 VoxCPM 系列的新一代语音生成模型，基于 2B 参数规模，并使用超过 200 万小时的多语言语音数据训练，支持 30 种语言、9 种中文方言",
+          "created_count": 46,
+          "favorites_count": 3,
+          "recommend_count": 0,
+          "image_use_time": 41,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "新一代高质量语音生成模型VoxCPM 2.0 整合包升级了， 支持 30 种语言、9 种中文方言！",
+              "version": "v1.0",
+              "author": "余子越Talk",
+              "tags": [
+                "语音合成",
+                "IndexTTS",
+                "AI应用"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "2080Ti",
+                "3090",
+                "2080",
+                "3080Ti",
+                "4090_48G",
+                "5090",
+                "4090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "YZY启动器",
+                  "Port": 9000
+                },
+                {
+                  "Software": "FileBrowser",
+                  "Port": 8889
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "fpFiLvKDjnAF",
+          "image_name": "AnimaBase的Lora融合训练Comfy和Trainer",
+          "image_desc": "AnimaBase的Lora融合训练Comfy和Trainer",
+          "created_count": 18,
+          "favorites_count": 6,
+          "recommend_count": 0,
+          "image_use_time": 31,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "AnimaBase的Lora融合训练Comfy和Trainer",
+              "version": "v1.0",
+              "author": "梦影Erislia",
+              "tags": [
+                "ComfyUI",
+                "图片生成",
+                "Lora训练"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": false,
+              "supported_gpu_types": [
+                "3090",
+                "4090",
+                "5090",
+                "4090_48G",
+                "A800",
+                "H20",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                },
+                {
+                  "Software": "Training-UI",
+                  "Port": 3000
+                },
+                {
+                  "Software": "TensorBoard",
+                  "Port": 6006
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "eQfLgTbqd4is",
+          "image_name": "infinitetakl数字人云端版本",
+          "image_desc": "infinitetakl数字人，支持单人对口型，双人对口型以及单人视频对口型",
+          "created_count": 79,
+          "favorites_count": 11,
+          "recommend_count": 0,
+          "image_use_time": 250,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "infinitetakl数字人云端版本",
+              "version": "v1.3",
+              "author": "pappyai",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3090"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            },
+            {
+              "name": "infinitetakl数字人云端版本",
+              "version": "v1.0",
+              "author": "pappyai",
+              "tags": [
+                "数字人"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "TdDwmKZUZebI",
+          "image_name": "OpenTalking",
+          "image_desc": "OpenTalking 是一个面向实时数字人对话与应用开发的开源平台，用统一的 WebUI、知识库、语音、模型运行时和部署链路，把数字人从单次演示连接成可落地的应用系统。",
+          "created_count": 15,
+          "favorites_count": 2,
+          "recommend_count": 0,
+          "image_use_time": 28,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "OpenTalking",
+              "version": "v0.2",
+              "author": "",
+              "tags": [
+                "数字人",
+                "视频生成",
+                "语音合成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "3090",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "WebUI",
+                  "Port": 5173
+                },
+                {
+                  "Software": "Omnirt-Quicktalk",
+                  "Port": 8000
+                },
+                {
+                  "Software": "Opentalking-API",
+                  "Port": 9000
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "skNK3sKvoTsU",
+          "image_name": "JoyAI-Echo-ComfyUI-无损版",
+          "image_desc": "JoyAI-Echo的comfyUI版本，全量模型无损版",
+          "created_count": 3,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 0,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "JoyAI-Echo-ComfyUI-无损版",
+              "version": "v1.0",
+              "author": "有趣的80后程序员",
+              "tags": [
+                "ComfyUI",
+                "LTX",
+                "视频生成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "A800"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "9WXz9CvXurO5",
+          "image_name": "Ideogram-4-GGUF,自动提示词,图生图,文生图,8G显存可用,No-Safety-Filter,批量任务,Lora使用,支持50系",
+          "image_desc": "Ideogram-4-GGUF,自动提示词,图生图,文生图,8G显存可用,No-Safety-Filter,批量任务,Lora使用,支持50系",
+          "created_count": 19,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 5,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "Ideogram-4-GGUF,自动提示词,图生图,文生图,8G显存可用,No-Safety-Filter,批量任务,Lora使用,支持50系",
+              "version": "v1.0",
+              "author": "刘悦的技术博客",
+              "tags": [
+                "ComfyUI",
+                "图片生成",
+                "图片编辑"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090",
+                "4090_48G"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "ComfyUI",
+                  "Port": 8188
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "lfc1vAyDOjkA",
+          "image_name": "数字人直播",
+          "image_desc": "数字人直播",
+          "created_count": 44,
+          "favorites_count": 4,
+          "recommend_count": 0,
+          "image_use_time": 87,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "数字人直播",
+              "version": "v1.2",
+              "author": "AI开发日记",
+              "tags": [
+                "数字人",
+                "CosyVoice",
+                "DeepSeek"
+              ],
+              "status": "Available",
+              "price": 0.5,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "4090_48G",
+                "4090",
+                "A800",
+                "V100S",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "human-digital",
+                  "Port": 8000
+                }
+              ]
+            },
+            {
+              "name": "数字人直播",
+              "version": "v1.1",
+              "author": "AI开发日记",
+              "tags": [
+                "数字人",
+                "CosyVoice",
+                "DeepSeek"
+              ],
+              "status": "Available",
+              "price": 0.5,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "V100S",
+                "4090_48G",
+                "4090",
+                "A100"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "group_id": "pfKe1v9nvTCa",
+          "image_name": "VoxCPM2 声音克隆系统webui开机即用",
+          "image_desc": "VoxCPM2 声音克隆系统webui开机即用",
+          "created_count": 16,
+          "favorites_count": 0,
+          "recommend_count": 0,
+          "image_use_time": 4,
+          "status": "Available",
+          "versions": [
+            {
+              "name": "VoxCPM2 声音克隆系统webui开机即用",
+              "version": "v2.0",
+              "author": "鸡你太美",
+              "tags": [
+                "语音合成"
+              ],
+              "status": "Available",
+              "price": 0,
+              "container": "True",
+              "auto_start": true,
+              "supported_gpu_types": [
+                "3090",
+                "4090",
+                "5090",
+                "4090_48G",
+                "3080Ti",
+                "2080Ti",
+                "2080",
+                "A800",
+                "H20",
+                "P40",
+                "V100S"
+              ],
+              "software_ports": [
+                {
+                  "Software": "JupyterLab",
+                  "Port": 8888
+                },
+                {
+                  "Software": "SD-WebUI",
+                  "Port": 7860
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "auth_note": "AK used as configured"
+}

@@ -36,17 +36,34 @@ const EmbeddingDigestExpectedQwen3 = "da488ead7fb53b6d7ab2e7529b9724b1a6f60910ae
 
 // ExternalCorpusDigestExpected pins deploy/kb/external_w0.jsonl — the separate
 // external tool/ops corpus (vLLM / SGLang / Ollama / ComfyUI + GPU
-// troubleshooting + Linux-ops/env-management + PyTorch-basics + model-download),
-// loaded alongside the platform corpus via LoadPinnedCorporaWithEmbeddings. RAG
-// Phase 1 (ComfyUI vertical Phase 5; Linux-ops + PyTorch-basics; then the
-// model-download vertical: ModelScope / HF token / Ollama Modelfile / local-path
-// serving). Same refuse-to-start-on-mismatch semantics as the platform pin.
-const ExternalCorpusDigestExpected = "6058e11b4bb2923a46715c659b8b49061de2177a0980efc9a7b98227cf28892f"
+// troubleshooting + Linux-ops/env-management + PyTorch-basics + model-download
+// + chat-seeded ops gaps: SSH keepalive, large transfers, remote web apps,
+// HuggingFace cache/downloads, LoRA/QLoRA, NCCL/DDP debugging, and
+// AI4Science/professional GPU runtime topics: JAX, CuPy, OpenMM, GROMACS,
+// RAPIDS, container GPU access, ColabFold, and AlphaFold3 + pro-GPU support
+// topics: Transformers/Accelerate/bitsandbytes/LLaMA-Factory/Unsloth/DeepSpeed,
+// git-lfs/aria2/wget/curl/rclone, VS Code Remote/Jupyter/SSH tunnels,
+// CUDA/NCCL compatibility, ComfyUI Manager/Flux/ControlNet/IPAdapter, and
+// production GPU support: DCGM/Nsight monitoring, Docker/Kubernetes/GPU Operator,
+// MIG/time-slicing, Triton/TensorRT-LLM/KServe, Ray/Slurm, TRL, HF Datasets,
+// Zarr, Dask-cuDF, and community-image-targeted coverage for popular LTX,
+// digital-human, voice/TTS, LoRA-training, Qwen/Wan, GGUF, and 3D generation
+// images, plus second-wave coverage for SD/LoRA training, ASR/video dubbing,
+// 3D/CV, AI4Science specialties, experiment tracking, proxying, and image
+// building, plus 637-session-targeted support gaps: SD-WebUI/A1111, ControlNet,
+// generic WebUI refused-connection triage, SSH/transfer failures, Ollama cache
+// and context/VRAM issues, Open WebUI/LiteLLM, Docker GPU visibility, card-count
+// mismatch, MPS, DVC/object storage/labeling, persistence boundaries, and
+// background service patterns, plus focused coverage for safe nvidia-smi cleanup,
+// torch.compile, and CUDA Toolkit installation), loaded
+// alongside the platform corpus via LoadPinnedCorporaWithEmbeddings. Same
+// refuse-to-start-on-mismatch semantics as the platform pin.
+const ExternalCorpusDigestExpected = "03d16590076cc8e4eee005962277281b896a595b62a5e9779c5f71dbad832a1c"
 
 // ExternalEmbeddingDigestExpectedQwen3 pins the qwen3-embedding-8b sidecar
 // (4096-dim) for the external corpus:
 // deploy/kb/embeddings_<ExternalCorpusDigestExpected>_qwen3-embedding-8b.jsonl.
-const ExternalEmbeddingDigestExpectedQwen3 = "1865a2110500ca7f4617bd9b447987400f1eb196d72e01e9ab8a9a5b1be8eeeb"
+const ExternalEmbeddingDigestExpectedQwen3 = "841a209b522144612010ee9e92ba8b53b90b6c556a939cdcc20e742f4fe46d7d"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.

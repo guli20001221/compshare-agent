@@ -9,6 +9,8 @@ sidecars for the CompShare console agent's RAG path.
 |---|---|---|
 | `stage2b_w0.jsonl` | Customer-safe FAQ corpus (687 chunks @ 2026-05-25, kb_version `kb.stage2b.w1-r4.2026-05-25.final-3`) | `internal/knowledge/corpus_digest.go:CorpusDigestExpected` |
 | `embeddings_<corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for `qwen3_full` / `qwen3_rrf` modes (current default) | `internal/knowledge/corpus_digest.go:EmbeddingDigestExpectedQwen3` |
+| `external_w0.jsonl` | External tool/ops corpus (180 chunks @ 2026-06-24, kb_version `kb.external.w0.2026-06-06`) | `internal/knowledge/corpus_digest.go:ExternalCorpusDigestExpected` |
+| `embeddings_<external-corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for the external corpus | `internal/knowledge/corpus_digest.go:ExternalEmbeddingDigestExpectedQwen3` |
 
 `text-embedding-3-large` sidecar is **no longer maintained** as of W1-R2
 (2026-05-23): `qwen3_rrf` is the runtime default and increments only rebuild
