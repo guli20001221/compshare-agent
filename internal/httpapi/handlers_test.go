@@ -239,6 +239,17 @@ func TestDispatchGetSessionRequiresSessionID(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"RetCode":226612`)
 }
 
+func TestDispatchGetSessionCreatesReplacementForMissingSession(t *testing.T) {
+	h := newTestHandlers()
+	rec := performGateway(h, `{"Action":"GetCSAgentSession","SessionId":"stale-session","top_organization_id":1,"organization_id":2}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"RetCode":0`)
+	assert.Contains(t, rec.Body.String(), `"SessionId":"sess-new"`)
+	assert.Contains(t, rec.Body.String(), `"MessageCount":0`)
+	assert.Contains(t, rec.Body.String(), `"Messages":[]`)
+}
+
 func TestDispatchFeedback(t *testing.T) {
 	h := newTestHandlers()
 	rec := performGateway(h, `{"Action":"SendCSAgentFeedback","MessageId":"msg-1","Rating":"Up","top_organization_id":1,"organization_id":2}`)
