@@ -9,11 +9,11 @@ import (
 
 // TestDeterministicWorkflowReply pins WHY some mutating workflows skip the
 // post-workflow LLM narration round: no-return-data lifecycle ops (reboot /
-// stop / start / scheduler / rename) deliver a fixed, instant reply so the turn never
-// stalls on the fast-tier thinking-mode narration call. Data-bearing or
-// guidance-bearing workflows MUST keep narrating — short-circuiting them would
-// hide the new password / DiskId / instance details / post-create steps the
-// user needs. If this test breaks because a workflow moved buckets, that is a
+// stop / start / scheduler / rename) and reset-password deliver a fixed, instant
+// reply so the turn never stalls on the fast-tier thinking-mode narration call.
+// Data-bearing or guidance-bearing workflows MUST keep narrating — short-circuiting
+// them would hide DiskId / instance details / post-create steps the user needs.
+// If this test breaks because a workflow moved buckets, that is a
 // deliberate product decision, not an incidental refactor.
 func TestDeterministicWorkflowReply(t *testing.T) {
 	args := map[string]any{"UHostId": "uhost-abc123", "Name": "my-renamed-box"}
@@ -26,6 +26,7 @@ func TestDeterministicWorkflowReply(t *testing.T) {
 		"SetStopSchedulerWorkflow",
 		"CancelStopSchedulerWorkflow",
 		"RenameInstanceWorkflow",
+		"ResetPasswordWorkflow",
 	} {
 		reply, ok := deterministicWorkflowReply(action, args)
 		require.Truef(t, ok, "%s must short-circuit narration", action)
@@ -36,11 +37,17 @@ func TestDeterministicWorkflowReply(t *testing.T) {
 	rename, _ := deterministicWorkflowReply("RenameInstanceWorkflow", args)
 	assert.Contains(t, rename, "my-renamed-box", "rename reply must surface the new name")
 
+	reset, _ := deterministicWorkflowReply("ResetPasswordWorkflow", map[string]any{
+		"UHostId":  "uhost-abc123",
+		"Password": "MySecret123!",
+	})
+	assert.Contains(t, reset, "重置密码")
+	assert.NotContains(t, reset, "MySecret123!", "reset-password reply must never echo the new password")
+
 	// Data/guidance-bearing workflows MUST still narrate (no short-circuit),
-	// otherwise their returned IDs / passwords / guidance would be dropped.
+	// otherwise their returned IDs / guidance would be dropped.
 	for _, action := range []string{
 		"CreateInstanceWorkflow",
-		"ResetPasswordWorkflow",
 		"CreateDiskWorkflow",
 		"ResizeDiskWorkflow",
 		"CreateCustomImageWorkflow",

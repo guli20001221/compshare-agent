@@ -330,6 +330,59 @@ func TestDispatchChatRedactsUserPIIOnlyWhenPersisting(t *testing.T) {
 	assert.True(t, rawUserSeen, "agent routing/model input must still see raw user text")
 }
 
+func TestDispatchChatRedactsPasswordSecretBeforePersistingUserMessageAndTitle(t *testing.T) {
+	llmClient := &scriptedChatLLM{content: "ok"}
+	eng := engine.NewWithDeps(llmClient, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+
+	messages := &recordingMessages{}
+	sessions := &mockSessions{byID: map[string]store.Session{
+		"sess-password": {
+			ID:                "sess-password",
+			TopOrganizationID: 1,
+			OrganizationID:    2,
+			CreatedAt:         time.Now(),
+			UpdatedAt:         time.Now(),
+		},
+	}}
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		sessions,
+		messages,
+		mockFeedback{},
+		fakePool{eng: eng},
+		nil,
+	)
+
+	const secret = "TestPass123456!"
+	const userMessage = "把 uhost-1 的密码改成 " + secret
+	runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-password","Message":"`+userMessage+`","request_uuid":"req-password","top_organization_id":1,"organization_id":2}`)
+
+	require.Len(t, messages.appended, 2)
+	persisted := messages.appended[0].Content
+	assert.NotContains(t, persisted, secret)
+	assert.Contains(t, persisted, guardrails.CredentialRedactedOutput)
+
+	gotSession := sessions.byID["sess-password"]
+	require.NotNil(t, gotSession.Title)
+	assert.NotContains(t, *gotSession.Title, secret)
+	assert.Contains(t, *gotSession.Title, guardrails.CredentialRedactedOutput)
+
+	require.NotEmpty(t, llmClient.messages)
+	rawUserSeen := false
+	for _, msg := range llmClient.messages {
+		if msg.Role == openai.ChatMessageRoleUser && msg.Content == userMessage {
+			rawUserSeen = true
+		}
+	}
+	assert.True(t, rawUserSeen, "live model turn must still receive the user's explicit password instruction")
+}
+
 func TestDispatchChatRedactsAssistantLeakOnlyWhenPersisting(t *testing.T) {
 	reply := `Instance uhost-abc123 is ready on 4090.
 Public IP: 1.2.3.4

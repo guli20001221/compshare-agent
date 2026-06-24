@@ -139,22 +139,27 @@ func TestHardwareCreateWorkflowArgsCarriesImageIntent(t *testing.T) {
 		map[string]any{"Name": "TEST_GPU_X"},
 	}}
 
-	args, ok := hardwareCreateWorkflowArgs("为我用pytorch最新镜像开一台4090", avail)
+	args, ok := hardwareCreateWorkflowArgs("为我用pytorch最新镜像开一台4090", avail, true)
 	require.True(t, ok)
 
 	assert.Equal(t, "4090", args["GpuType"])
 	assert.Equal(t, "torch", args["ImageName"], "PyTorch requests must search the real torch/cuda image names, not fall back to Windows")
 
-	plain, ok := hardwareCreateWorkflowArgs("为我开一台4090", avail)
+	noImageHints, ok := hardwareCreateWorkflowArgs("为我用pytorch最新镜像开一台4090", avail, false)
+	require.True(t, ok)
+	assert.Equal(t, "4090", noImageHints["GpuType"])
+	assert.NotContains(t, noImageHints, "ImageName", "when LLM preference extraction is enabled, framework image hints must come from stage 2")
+
+	plain, ok := hardwareCreateWorkflowArgs("为我开一台4090", avail, true)
 	require.True(t, ok)
 	assert.NotContains(t, plain, "ImageName", "plain hardware creates must not force a framework image")
 
-	bareOpen, ok := hardwareCreateWorkflowArgs("在华北一C用最新 PyTorch 镜像开 4090", avail)
+	bareOpen, ok := hardwareCreateWorkflowArgs("在华北一C用最新 PyTorch 镜像开 4090", avail, true)
 	require.True(t, ok)
 	assert.Equal(t, "4090", bareOpen["GpuType"])
 	assert.Equal(t, "torch", bareOpen["ImageName"])
 
-	newGPU, ok := hardwareCreateWorkflowArgs("帮我开一台 TEST_GPU_X", avail)
+	newGPU, ok := hardwareCreateWorkflowArgs("帮我开一台 TEST_GPU_X", avail, true)
 	require.True(t, ok)
 	assert.Equal(t, "TEST_GPU_X", newGPU["GpuType"], "new GPU names must come from the upstream availability catalog")
 }

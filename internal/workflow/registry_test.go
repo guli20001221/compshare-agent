@@ -51,11 +51,11 @@ func TestGetWorkflow(t *testing.T) {
 	assert.NotNil(t, def)
 	assert.Len(t, def.Steps, 3)
 
-	// StartInstanceWorkflow: query -> confirm -> optional no-GPU resize -> start
+	// StartInstanceWorkflow: query -> confirm -> optional no-GPU resize -> optional restore-GPU resize -> start
 	def, ok = GetWorkflow("StartInstanceWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 4)
+	assert.Len(t, def.Steps, 5)
 
 	// RebootInstanceWorkflow: 3 steps
 	def, ok = GetWorkflow("RebootInstanceWorkflow")

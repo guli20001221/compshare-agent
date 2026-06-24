@@ -23,6 +23,7 @@ func StartInstanceDef() *Definition {
 			stepQueryForStart(),
 			stepConfirmStart(),
 			stepResizeWithoutGPUForStart(),
+			stepRestoreGPUForStart(),
 			stepStartInstance(),
 		},
 	}
@@ -49,6 +50,11 @@ func stepQueryForStart() Step {
 			case "Stopped":
 				if startWithoutGPURequested(wfCtx) {
 					return validateWithoutGPUStart(result)
+				}
+				if restoreGPUStartRequired(result) {
+					if _, ok := extractSourceGPUSpec(result); !ok {
+						return false, "当前实例是无卡规格，未获取到原始带卡配置，无法安全带卡开机；如需继续无卡启动，请明确说“无卡启动”。"
+					}
 				}
 				return true, ""
 			case "":
@@ -77,6 +83,11 @@ func stepConfirmStart() Step {
 					summary["without_gpu_memory"] = spec["Memory"]
 					summary["without_gpu_gpu"] = spec["Gpu"]
 				}
+			} else if spec, ok := extractSourceGPUSpec(wfCtx.Result("查询实例")); ok && restoreGPUStartRequired(wfCtx.Result("查询实例")) {
+				summary["mode"] = "带卡模式（恢复原始 GPU 配置后开机）"
+				summary["restore_cpu"] = spec["Cpu"]
+				summary["restore_memory"] = spec["Memory"]
+				summary["restore_gpu"] = spec["Gpu"]
 			}
 			return summary, nil
 		},
@@ -114,6 +125,39 @@ func stepResizeWithoutGPUForStart() Step {
 	}
 }
 
+func stepRestoreGPUForStart() Step {
+	return Step{
+		Name: "恢复带卡规格",
+		Type: StepToolCall,
+		Tool: "ResizeCompShareInstance",
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			if startWithoutGPURequested(wfCtx) {
+				return true, nil
+			}
+			return !restoreGPUStartRequired(wfCtx.Result("查询实例")), nil
+		},
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			queried := wfCtx.Result("查询实例")
+			spec, ok := extractSourceGPUSpec(queried)
+			if !ok {
+				return nil, fmt.Errorf("未获取到原始带卡配置，无法安全恢复 GPU。")
+			}
+			region, zone, err := extractRequiredInstanceLocation(queried)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"Region":  region,
+				"Zone":    zone,
+				"UHostId": wfCtx.Params["UHostId"],
+				"Cpu":     spec["Cpu"],
+				"Memory":  spec["Memory"],
+				"Gpu":     spec["Gpu"],
+			}, nil
+		},
+	}
+}
+
 func stepStartInstance() Step {
 	return Step{
 		Name: "开机",
@@ -133,6 +177,42 @@ func stepStartInstance() Step {
 			return args, nil
 		},
 	}
+}
+
+func restoreGPUStartRequired(result map[string]any) bool {
+	first := firstUHost(result)
+	if first == nil {
+		return false
+	}
+	if v, ok := first["GPU"]; ok {
+		return anyFloat(v) == 0
+	}
+	if v, ok := first["Gpu"]; ok {
+		return anyFloat(v) == 0
+	}
+	return false
+}
+
+func extractSourceGPUSpec(result map[string]any) (map[string]any, bool) {
+	first := firstUHost(result)
+	if first == nil {
+		return nil, false
+	}
+	raw, ok := first["SrcInstanceConfig"].(map[string]any)
+	if !ok || raw == nil {
+		return nil, false
+	}
+	cpu := anyFloat(raw["Cpu"])
+	mem := anyFloat(raw["Memory"])
+	gpu := anyFloat(raw["Gpu"])
+	if cpu <= 0 || mem <= 0 || gpu <= 0 {
+		return nil, false
+	}
+	return map[string]any{
+		"Cpu":    cpu,
+		"Memory": mem,
+		"Gpu":    gpu,
+	}, true
 }
 
 func startWithoutGPURequested(wfCtx *Context) bool {

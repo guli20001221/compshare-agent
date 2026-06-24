@@ -129,6 +129,7 @@ func runClient(o clientOpts) {
 	fmt.Printf("→ sent SendCSAgentChat: %q\n\n", o.message)
 
 	var tokens strings.Builder
+	currentSession := o.session
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
@@ -144,6 +145,9 @@ func runClient(o clientOpts) {
 		switch event {
 		case "meta":
 			fmt.Printf("● meta        RequestId=%v MessageId=%v\n", f["RequestId"], f["MessageId"])
+			if sid, _ := f["SessionId"].(string); sid != "" {
+				currentSession = sid
+			}
 		case "step":
 			fmt.Printf("● step        [%v] %v %v\n", f["Index"], f["Type"], f["Action"])
 		case "token":
@@ -156,9 +160,12 @@ func runClient(o clientOpts) {
 				cid, _ := f["ConfirmationId"].(string)
 				reply := map[string]any{
 					"Action":         "ConfirmCSAgentAction",
-					"SessionId":      o.session,
+					"SessionId":      currentSession,
 					"ConfirmationId": cid,
 					"Confirmed":      o.confirm == "yes",
+				}
+				if o.project != "" {
+					reply["ProjectId"] = o.project
 				}
 				if err := writeJSON(ctx, conn, reply); err != nil {
 					fmt.Printf("✘ failed to send confirm: %v\n", err)

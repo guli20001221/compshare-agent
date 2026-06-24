@@ -335,7 +335,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // operation_lifecycle, but model/app/framework-first requests such as
 // "部署 DeepSeekR1 / 部署数字人" stay deploy_model. Also removes "部署一台" from the
 // generic lifecycle verb list so it cannot over-bias workload deploys.
-const systemPromptSHA256Baseline = "2945ffdd04ebc4ce1318ec1cb555dc537141a265804443755f8feb59a61c9ca8"
+const systemPromptSHA256Baseline = "5b6897ed8edf77beb02b60d29e9faab628be7ea0deb539ec707c27d32a4b1d6b"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

@@ -233,6 +233,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	}
 	perSessionFields := map[string]bool{
 		"safeExecutor":                     true,
+		"createPreferenceExtractor":        true,
 		"confirmFn":                        true,
 		"confirmEditsFn":                   true,
 		"registry":                         true,
@@ -305,14 +306,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// the JSON-serializable per-session dialog state envelope; mixing
 		// it across sessions would be exactly the cross-user leak this
 		// test was created to prevent.
-		"sessionState":                   true,
-		"sessionStateVersion":            true,
-		"sessionStateHydrated":           true,
-		"sessionFactContextEnabled":      true,
-		"reactResultProjectionEnabled":   true,
-		"reactHistoryCompactionEnabled":  true,
-		"intentScopedReActPromptEnabled": true,
-		"lastPlannerIntentThisTurn":      true,
+		"sessionState":                      true,
+		"sessionStateVersion":               true,
+		"sessionStateHydrated":              true,
+		"sessionFactContextEnabled":         true,
+		"reactResultProjectionEnabled":      true,
+		"reactHistoryCompactionEnabled":     true,
+		"intentScopedReActPromptEnabled":    true,
+		"createPreferenceExtractionEnabled": true,
+		"lastPlannerIntentThisTurn":         true,
 		// PR1 hotfix Bug 4 (2026-05-28): per-turn lifecycle action captured
 		// from planner output, consumed by executeTool to filter the
 		// candidate instance list by State. Per-session by definition —
@@ -320,18 +322,19 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// another's "start" subset.
 		"lastPlannerActionThisTurn": true,
 		"imageContextThisTurn":      true,
+		"createPreferenceThisTurn":  true,
 		"baseUserContext":           true,
 	}
 
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 53, len(perSessionFields); want != got {
+	if want, got := 56, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 69, typ.NumField(); want != got {
+	if want, got := 72, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

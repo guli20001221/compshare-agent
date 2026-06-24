@@ -90,7 +90,7 @@ func TestFalseCancel_UnresolvedConfirmRendersHonestNotExecuted(t *testing.T) {
 // accusatory wording, because an UNRESOLVED confirm (timeout / disconnect / the
 // user typed instead of clicking) yields the same ErrUserDeclined as an explicit
 // decline. The fix narrates it honestly, identically to the workflow path.
-func TestFalseCancel_DirectToolUnresolvedConfirmRendersHonestNotExecuted(t *testing.T) {
+func TestFalseCancel_DirectToolUnresolvedConfirmIsBlockedBeforeConfirm(t *testing.T) {
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
 			"StartCompShareInstance": {"RetCode": float64(0)},
@@ -114,13 +114,11 @@ func TestFalseCancel_DirectToolUnresolvedConfirmRendersHonestNotExecuted(t *test
 	reply, err := eng.Chat(context.Background(), "开机 uhost-falsecancel", noopStep)
 	require.NoError(t, err)
 
-	// The fix: an unresolved confirm on a direct tool must NOT falsely claim the
-	// user cancelled (the old "操作已取消：…" wording).
+	// Direct low-level mutating tools are no longer exposed to ReAct. The model
+	// must not get far enough to show a generic confirm card.
 	assert.NotContains(t, reply, "操作已取消",
 		"unresolved confirm on a direct tool must not falsely claim cancellation")
-	// It must honestly say the action was not executed.
-	assert.Contains(t, reply, "未执行",
-		"unresolved confirm must honestly report the action was not executed")
+	assert.Contains(t, reply, "不能由模型直接调用")
 
 	// Safety invariant: no mutating call was executed.
 	for _, c := range exec.calls {

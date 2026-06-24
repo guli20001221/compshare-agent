@@ -510,3 +510,83 @@ func TestStartInstance_WithoutGpuUnsupportedRejectedBeforeConfirm(t *testing.T) 
 	assert.Len(t, executor.calls, 1)
 	assert.Contains(t, result.Message, "不支持无卡")
 }
+
+func TestStartInstance_RestoreGpuSpecBeforeStart(t *testing.T) {
+	executor := startMockExecutor()
+	executor.results["DescribeCompShareInstance"] = map[string]any{
+		"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-yyy",
+				"Name":       "start-me",
+				"State":      "Stopped",
+				"Zone":       "cn-wlcb-01",
+				"Region":     "cn-wlcb",
+				"GpuType":    "V100S",
+				"GPU":        float64(0),
+				"ChargeType": "Dynamic",
+				"SrcInstanceConfig": map[string]any{
+					"Cpu":    float64(10),
+					"Memory": float64(65536),
+					"Gpu":    float64(1),
+				},
+			},
+		},
+	}
+	executor.results["ResizeCompShareInstance"] = map[string]any{"RetCode": 0}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	onStep, _ := collectEvents()
+
+	def := StartInstanceDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-yyy",
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Len(t, executor.calls, 3)
+	resizeCall := executor.calls[1]
+	assert.Equal(t, "ResizeCompShareInstance", resizeCall.action)
+	assert.NotContains(t, resizeCall.args, "WithoutGpu")
+	assert.Equal(t, float64(10), resizeCall.args["Cpu"])
+	assert.Equal(t, float64(65536), resizeCall.args["Memory"])
+	assert.Equal(t, float64(1), resizeCall.args["Gpu"])
+	startCall := executor.calls[2]
+	assert.Equal(t, "StartCompShareInstance", startCall.action)
+}
+
+func TestStartInstance_RestoreGpuMissingSourceRejectedBeforeConfirm(t *testing.T) {
+	executor := startMockExecutor()
+	executor.results["DescribeCompShareInstance"] = map[string]any{
+		"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-yyy",
+				"Name":       "start-me",
+				"State":      "Stopped",
+				"Zone":       "cn-wlcb-01",
+				"Region":     "cn-wlcb",
+				"GpuType":    "V100S",
+				"GPU":        float64(0),
+				"ChargeType": "Dynamic",
+			},
+		},
+	}
+	confirmCalled := false
+	confirmFn := func(action string, args map[string]any) bool {
+		confirmCalled = true
+		return true
+	}
+	onStep, _ := collectEvents()
+
+	def := StartInstanceDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-yyy",
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.False(t, confirmCalled)
+	assert.Len(t, executor.calls, 1)
+	assert.Contains(t, result.Message, "无卡规格")
+}

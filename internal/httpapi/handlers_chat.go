@@ -285,6 +285,7 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	// Persist user message with OCR context included (so the DB record
 	// shows what the engine saw). PII filter covers both OCR text and
 	// the user's original message.
+	turnSecrets := guardrails.ExtractPasswordTurnSecrets(message)
 	persistContent := message
 	if ocrText != "" {
 		// Same wrapper the engine uses for the live turn, so the rehydrated
@@ -292,12 +293,13 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		// (the RedactPII below additionally scrubs the user-message portion).
 		persistContent = engine.WrapScreenshotContext(ocrText, message)
 	}
+	persistContent = guardrails.RedactTurnSecrets(guardrails.RedactPII(persistContent), turnSecrets)
 	if err := h.messages.Append(ctx, store.Message{
 		ID:          userMsgID,
 		SessionID:   sessionID,
 		RequestUUID: &reqUUID,
 		Role:        "user",
-		Content:     guardrails.RedactPII(persistContent),
+		Content:     persistContent,
 		Status:      "ok",
 	}); err != nil {
 		clearChatTraceObservers(agent)
@@ -327,7 +329,8 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	// predicate stays as a concurrency backstop. Explicit client titles win.
 	// Best-effort: a failure here must not fail the turn.
 	if sess.Title == nil {
-		if derived := deriveSessionTitle(message); derived != "" {
+		titleSeed := guardrails.RedactTurnSecrets(guardrails.RedactPII(message), turnSecrets)
+		if derived := deriveSessionTitle(titleSeed); derived != "" {
 			if err := h.sessions.SetTitleIfEmpty(ctx, base.Owner, sessionID, derived); err != nil {
 				log.Printf("warning: session %s title derivation failed (non-fatal): %v", sessionID, err)
 			}
@@ -413,6 +416,9 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	var firstToken time.Time
 	tokenEmitted := false
 	var usage llm.TokenUsage
+	turnSecrets := guardrails.ExtractPasswordTurnSecrets(prep.message)
+	holdSensitiveTokens := len(turnSecrets) > 0
+	var heldTokens strings.Builder
 
 	done := make(chan struct{})
 	ticker := time.NewTicker(h.cfg.Agent.HTTP.SSEKeepaliveInterval)
@@ -448,6 +454,10 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	}, engine.ChatOptions{
 		ImageContext: prep.ocrText,
 		OnTextDelta: func(s string) {
+			if holdSensitiveTokens {
+				heldTokens.WriteString(s)
+				return
+			}
 			if firstToken.IsZero() {
 				firstToken = time.Now()
 			}
@@ -480,6 +490,13 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 
 	// Signal keepalive goroutine to exit.
 	close(done)
+
+	if holdSensitiveTokens {
+		if reply == "" && heldTokens.Len() > 0 {
+			reply = heldTokens.String()
+		}
+		reply = guardrails.RedactTurnSecrets(reply, turnSecrets)
+	}
 
 	// -----------------------------------------------------------------------
 	// Post-stream branching

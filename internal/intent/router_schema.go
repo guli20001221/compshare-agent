@@ -99,7 +99,7 @@ func IntentRouteResponseSchema() json.RawMessage {
 			"hard_block_hint": map[string]any{"type": "boolean"},
 			"confidence":      map[string]any{"type": "number", "minimum": 0, "maximum": 1},
 		},
-		"required": []string{"schema_version", "intent", "slots", "required_tools", "retrieval", "hard_block_hint", "confidence"},
+		"required": []string{"schema_version", "intent", "speech_act", "slots", "required_tools", "retrieval", "hard_block_hint", "confidence"},
 	}
 
 	raw, err := json.Marshal(schema)

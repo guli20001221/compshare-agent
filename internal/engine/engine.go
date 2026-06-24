@@ -65,6 +65,7 @@ const (
 const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
 const createFamilySpeechActGateEnv = "COMPSHARE_CREATE_FAMILY_SPEECH_ACT_GATE"
+const createPreferenceExtractorEnv = "COMPSHARE_CREATE_PREF_EXTRACTOR"
 
 // monitor_history refusal text moved to internal/refusal/templates.go in the
 // C2 hard-block 归一 refactor. Call sites import refusal directly; this file no
@@ -222,6 +223,7 @@ type Engine struct {
 	zoneCatalog                 *zones.Catalog
 	registry                    *entity.EntityRegistry
 	intentPlanner               IntentPlanner
+	createPreferenceExtractor   CreatePreferenceExtractor
 	intentPlannerModel          string
 	intentPlannerEnabledIntents map[intent.Intent]struct{}
 	intentRouteIntents          map[intent.Intent]struct{}
@@ -328,6 +330,9 @@ type Engine struct {
 	// intentScopedReActPromptEnabled keeps the persisted system prompt slim
 	// and injects intent cards only into the per-call message copy.
 	intentScopedReActPromptEnabled bool
+	// createPreferenceExtractionEnabled gates Stage 2 preference extraction for
+	// create/deploy commands. Default off until eval flips it.
+	createPreferenceExtractionEnabled bool
 	// Raw user message for the current turn. Set at the start of Chat().
 	// Read by executeDiagnosis guards for signal matching. Never mutated
 	// mid-turn.
@@ -343,6 +348,7 @@ type Engine struct {
 	// only actionable rows. Reset per turn.
 	lastPlannerActionThisTurn intent.LifecycleAction
 	imageContextThisTurn      string
+	createPreferenceThisTurn  *CreatePreferenceExtractionResult
 	baseUserContext           string
 	// currentCtx holds the context for the current ChatWithOptions call.
 	// Set at the start of ChatWithOptions and cleared (nil) on return.
@@ -436,6 +442,9 @@ type SharedDeps struct {
 	ReactHistoryCompactionEnabled bool
 	// IntentScopedReActPromptEnabled is a default-off prompt rollout gate.
 	IntentScopedReActPromptEnabled bool
+	// CreatePreferenceExtractionEnabled enables Stage 2 create/deploy preference
+	// extraction after the router has already proven a create-family command.
+	CreatePreferenceExtractionEnabled bool
 	// ExternalExecutor is the underlying tool executor shared across sessions
 	// (holds AK/SK + HTTP client). Each NewSession wraps it in a fresh
 	// SafeToolExecutor so per-session confirmFn stays isolated.
@@ -535,16 +544,17 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		maxTokensPerTurn:            deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
-		confirmFn:                      opts.ConfirmFn,
-		registry:                       entity.NewRegistry(),
-		rateLimitSubject:               opts.Subject,
-		mutatingToolsEnabled:           opts.MutatingToolsEnabled,
-		sessionFactContextEnabled:      deps.SessionFactContextEnabled,
-		reactResultProjectionEnabled:   deps.ReactResultProjectionEnabled,
-		reactHistoryCompactionEnabled:  deps.ReactHistoryCompactionEnabled,
-		intentScopedReActPromptEnabled: deps.IntentScopedReActPromptEnabled,
-		lastInstanceQueryTurn:          -1,
-		lastMonitorTurn:                -1,
+		confirmFn:                         opts.ConfirmFn,
+		registry:                          entity.NewRegistry(),
+		rateLimitSubject:                  opts.Subject,
+		mutatingToolsEnabled:              opts.MutatingToolsEnabled,
+		sessionFactContextEnabled:         deps.SessionFactContextEnabled,
+		reactResultProjectionEnabled:      deps.ReactResultProjectionEnabled,
+		reactHistoryCompactionEnabled:     deps.ReactHistoryCompactionEnabled,
+		intentScopedReActPromptEnabled:    deps.IntentScopedReActPromptEnabled,
+		createPreferenceExtractionEnabled: deps.CreatePreferenceExtractionEnabled,
+		lastInstanceQueryTurn:             -1,
+		lastMonitorTurn:                   -1,
 		// messages, userTurn, lastUserMsg, currentMonitor*, pendingResourceSelection,
 		// readExpensiveCallsThisTurn, requireKnowledgeCitationThisTurn,
 		// *Observer fields all start at zero values which is correct.
@@ -583,15 +593,16 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 // need the model-feature-gated path can flip the field via setter.
 func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn ConfirmFunc) *Engine {
 	eng := &Engine{
-		llmClient:                  client,
-		confirmFn:                  confirmFn,
-		registry:                   entity.NewRegistry(),
-		rateLimitSubject:           governance.AnonymousSubjectKey,
-		lastInstanceQueryTurn:      -1,
-		lastMonitorTurn:            -1,
-		supportsObjectToolChoice:   true,
-		supportsRequiredToolChoice: true,
-		mutatingToolsEnabled:       true,
+		llmClient:                         client,
+		confirmFn:                         confirmFn,
+		registry:                          entity.NewRegistry(),
+		rateLimitSubject:                  governance.AnonymousSubjectKey,
+		lastInstanceQueryTurn:             -1,
+		lastMonitorTurn:                   -1,
+		supportsObjectToolChoice:          true,
+		supportsRequiredToolChoice:        true,
+		mutatingToolsEnabled:              true,
+		createPreferenceExtractionEnabled: createPreferenceExtractorEnabledFromOS(),
 	}
 	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn)
 	eng.externalExecutor = executor
@@ -682,6 +693,14 @@ func (e *Engine) SetIntentPlanner(planner IntentPlanner, opts IntentPlannerOptio
 	e.intentPlanner = planner
 	e.intentPlannerModel = opts.Model
 	e.intentPlannerEnabledIntents, e.intentRouteIntents = BuildIntentPlannerMaps(opts.EnabledIntents)
+}
+
+func (e *Engine) SetCreatePreferenceExtractor(extractor CreatePreferenceExtractor) {
+	e.createPreferenceExtractor = extractor
+}
+
+func (e *Engine) SetCreatePreferenceExtractionEnabled(v bool) {
+	e.createPreferenceExtractionEnabled = v
 }
 
 // BuildIntentPlannerMaps converts the configured EnabledIntents slice into the
@@ -1229,6 +1248,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.reactCeilingHitThisTurn = false
 	e.lastPlannerIntentThisTurn = ""
 	e.lastPlannerActionThisTurn = ""
+	e.createPreferenceThisTurn = nil
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
 	e.searchKnowledgeCallsThisTurn = 0
@@ -1649,7 +1669,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		e.messages = append(e.messages, assistantMsg)
 
 		for idx, tc := range resp.ToolCalls {
-			toolResult := e.executeTool(ctx, tc, onStep)
+			toolResult := e.executeVisibleToolCall(ctx, req.Tools, tc, onStep)
 
 			// Deterministic final reply — return directly without LLM narration
 			if finalMsg, ok := isFinalReply(toolResult); ok {
@@ -1721,6 +1741,23 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		return synth, nil
 	}
 	return "抱歉，处理轮次超限，请重新描述您的需求。", nil
+}
+
+func (e *Engine) executeVisibleToolCall(ctx context.Context, visibleTools []openai.Tool, tc openai.ToolCall, onStep func(StepEvent)) string {
+	action := tc.Function.Name
+	if knowledge.IsKnowledgeTool(action) || action == "SearchKnowledge" {
+		return e.executeTool(ctx, tc, onStep)
+	}
+	if !toolListContainsFunction(visibleTools, action) {
+		args := map[string]any{}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			args = nil
+		}
+		msg := fmt.Sprintf("安全限制：%s 不能由模型直接调用，已拒绝执行。请通过受控流程重新发起。", action)
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, nil))
+		return finalReplyPrefix + msg
+	}
+	return e.executeTool(ctx, tc, onStep)
 }
 
 type routerDispatchResult struct {
@@ -1871,6 +1908,12 @@ func (e *Engine) tryCreateFamilySpeechActDispatch(ctx context.Context, dispatch 
 	case intent.IntentDeployModel:
 		switch dispatch.result.Plan.SpeechAct {
 		case intent.SpeechActCommand:
+			if e.createPreferenceExtractionEnabled {
+				pref, err := e.extractCreatePreference(ctx, userMsg, dispatch.result.Plan.Intent, dispatch.result.Plan.SpeechAct)
+				if err == nil {
+					e.createPreferenceThisTurn = pref
+				}
+			}
 			return "", false
 		case intent.SpeechActQuestion, intent.SpeechActComparison:
 			return e.replyFromPlannerGate(dispatch, "这是部署咨询类问题，我不会直接部署或创建实例。你可以继续问部署方案；如果要我开始部署，请明确说“现在部署”。", intent.RouteStatusFallbackIneligible), true
@@ -1886,7 +1929,13 @@ func (e *Engine) tryCreateInstanceSpeechActDispatch(ctx context.Context, dispatc
 	switch dispatch.result.Plan.SpeechAct {
 	case intent.SpeechActCommand:
 		const action = "CreateInstanceWorkflow"
-		args := e.safeExecutor.FilterArgs(action, e.createInstanceWorkflowArgsFromText(ctx, userMsg))
+		createArgs := e.createInstanceWorkflowArgsFromText(ctx, userMsg, !e.createPreferenceExtractionEnabled)
+		if e.createPreferenceExtractionEnabled {
+			if pref, err := e.extractCreatePreference(ctx, userMsg, dispatch.result.Plan.Intent, dispatch.result.Plan.SpeechAct); err == nil {
+				createArgs = e.mergeCreatePreferenceArgs(ctx, createArgs, *pref)
+			}
+		}
+		args := e.safeExecutor.FilterArgs(action, createArgs)
 		e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedAgent, dispatch.latency)
 		onStep(StepEvent{
 			Type:   StepToolCall,
@@ -1908,21 +1957,26 @@ func (e *Engine) tryCreateInstanceSpeechActDispatch(ctx context.Context, dispatc
 	}
 }
 
-func (e *Engine) createInstanceWorkflowArgsFromText(ctx context.Context, userMsg string) map[string]any {
+func (e *Engine) createInstanceWorkflowArgsFromText(ctx context.Context, userMsg string, includeImageHints bool) map[string]any {
 	args := map[string]any{}
 	availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
-	if parsed, ok := hardwareCreateWorkflowArgs(userMsg, availResult); ok {
+	if parsed, ok := hardwareCreateWorkflowArgs(userMsg, availResult, includeImageHints); ok {
 		for k, v := range parsed {
 			args[k] = v
 		}
 	}
-	if _, ok := args["ImageName"]; !ok {
+	if includeImageHints {
+		if createImageSourceFromText(userMsg) == "community" {
+			args["ImageSource"] = "community"
+		}
+	}
+	if includeImageHints {
+		if _, ok := args["ImageName"]; ok {
+			return args
+		}
 		if imageName := createImageNameFromText(userMsg); imageName != "" {
 			args["ImageName"] = imageName
 		}
-	}
-	if createImageSourceFromText(userMsg) == "community" {
-		args["ImageSource"] = "community"
 	}
 	return args
 }
@@ -1944,7 +1998,7 @@ func (e *Engine) tryDirectHardwareCreate(ctx context.Context, dispatch routerDis
 		return "", false
 	}
 	availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
-	args, ok := hardwareCreateWorkflowArgs(userMsg, availResult)
+	args, ok := hardwareCreateWorkflowArgs(userMsg, availResult, !e.createPreferenceExtractionEnabled)
 	if !ok {
 		return "", false
 	}
@@ -2265,7 +2319,7 @@ func directHardwareCreateActionCue(userMsg string) bool {
 	return hardwareCreateVerbRE.MatchString(text)
 }
 
-func hardwareCreateWorkflowArgs(userMsg string, availResult map[string]any) (map[string]any, bool) {
+func hardwareCreateWorkflowArgs(userMsg string, availResult map[string]any, includeImageHints bool) (map[string]any, bool) {
 	gpu := extractDeployGPUFromCatalog(userMsg, availResult)
 	if gpu == "" {
 		gpu = knowledge.ExplicitGPUTypeFromText(userMsg)
@@ -2278,8 +2332,10 @@ func hardwareCreateWorkflowArgs(userMsg string, availResult map[string]any) (map
 		"GpuType": gpu,
 		"Gpu":     float64(1),
 	}
-	if imageName := createImageNameFromText(userMsg); imageName != "" {
-		args["ImageName"] = imageName
+	if includeImageHints {
+		if imageName := createImageNameFromText(userMsg); imageName != "" {
+			args["ImageName"] = imageName
+		}
 	}
 	return args, true
 }
@@ -4923,6 +4979,8 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 		return fmt.Sprintf("✅ 已为实例 %s 执行关机。注意：关机后云硬盘仍会按量计费。", uhost), true
 	case "StartInstanceWorkflow":
 		return fmt.Sprintf("✅ 已为实例 %s 执行开机，启动需要一点时间，请稍后查看。", uhost), true
+	case "ResetPasswordWorkflow":
+		return fmt.Sprintf("✅ 已为实例 %s 重置密码。出于安全考虑，我不会在回复里显示新密码。", uhost), true
 	case "SetStopSchedulerWorkflow":
 		if minutes := numericWorkflowArg(args["AfterMinutes"]); minutes > 0 {
 			return fmt.Sprintf("✅ 已为实例 %s 设置定时关机，约 %.0f 分钟后关机。", uhost, minutes), true

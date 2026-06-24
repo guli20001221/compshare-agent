@@ -107,6 +107,24 @@ func TestValidatePlan_AcceptsCreateInstanceSpeechAct(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidatePlan_CreateDeployRequireSpeechAct(t *testing.T) {
+	for _, intentValue := range []Intent{IntentCreateInstance, IntentDeployModel} {
+		t.Run(string(intentValue), func(t *testing.T) {
+			plan := IntentRoute{
+				SchemaVersion: SchemaVersion,
+				Intent:        intentValue,
+				RequiredTools: requiredToolsForIntentSorted(intentValue),
+				Retrieval:     Retrieval{Enabled: false},
+				Confidence:    0.9,
+			}
+
+			err := ValidateRoute(plan, ValidationContext{UserText: "帮我创建一台实例", Registry: testRegistry(t)})
+
+			requireValidationCode(t, err, ErrInvalidSpeechAct)
+		})
+	}
+}
+
 func TestValidatePlan_RejectsInvalidSpeechAct(t *testing.T) {
 	plan := IntentRoute{
 		SchemaVersion: SchemaVersion,

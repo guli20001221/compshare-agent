@@ -271,23 +271,16 @@ func TestScenario_CreateInstance(t *testing.T) {
 		},
 	}
 
-	mock := &mockLLM{
-		responses: []llm.ChatResponse{
-			{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{
-				"GpuType": "4090", "Zone": "cn-wlcb-01", "CompShareImageId": "img-pt", "ChargeType": "Dynamic",
-			})}},
-			{Content: "已创建 4090 实例 uhost-new1，正在初始化。"},
-		},
-	}
-
-	eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+	eng := NewWithDeps(&mockLLM{}, exec, func(action string, args map[string]any) bool {
 		confirmCalled++
 		return true
 	})
 	eng.Init(context.Background())
 
-	reply, err := eng.Chat(context.Background(), "帮我开一台4090", func(e StepEvent) {})
-	assert.NoError(t, err)
+	reply := eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow", map[string]any{
+		"GpuType": "4090", "Zone": "cn-wlcb-01", "CompShareImageId": "img-pt", "ChargeType": "Dynamic",
+	}, func(e StepEvent) {})
+	reply = strings.TrimPrefix(reply, finalReplyPrefix)
 	assert.Contains(t, reply, "uhost-new1")
 	assert.Equal(t, 1, confirmCalled, "Should ask for confirmation once")
 	assert.Contains(t, exec.calls, "CreateCompShareInstance")
@@ -715,26 +708,15 @@ func TestScenario_WorkflowCapacityInsufficient(t *testing.T) {
 		},
 	}
 
-	mock := &mockLLM{
-		responses: []llm.ChatResponse{
-			{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{"GpuType": "H20"})}},
-			// A 2nd response is scripted but MUST NOT be consumed: create failures
-			// skip the LLM narration round (it has fabricated 下架 claims), so the
-			// reply is the deterministic, grounded one below.
-			{Content: "抱歉，H20 库存不足，建议换用 A100 或稍后再试。"},
-		},
-	}
-
-	eng := NewWithDeps(mock, exec, func(a string, args map[string]any) bool { return true })
+	eng := NewWithDeps(&mockLLM{}, exec, func(a string, args map[string]any) bool { return true })
 	eng.Init(context.Background())
 
-	reply, err := eng.Chat(context.Background(), "帮我开一台H20", func(e StepEvent) {})
-	assert.NoError(t, err)
+	reply := eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow", map[string]any{"GpuType": "H20"}, func(e StepEvent) {})
+	reply = strings.TrimPrefix(reply, finalReplyPrefix)
 	// Deterministic grounded reply (NOT the scripted narration): the "创建实例没有成功"
 	// prefix proves narration was skipped; the executor's real reason is surfaced.
 	assert.Contains(t, reply, "创建实例没有成功")
 	assert.Contains(t, reply, "库存不足")
-	assert.Len(t, mock.calls, 1, "narration round must be skipped on create failure")
 
 	// Should NOT have reached CreateCompShareInstance
 	for _, c := range exec.calls {
@@ -761,21 +743,14 @@ func TestScenario_WorkflowConfirmCancelled(t *testing.T) {
 		},
 	}
 
-	mock := &mockLLM{
-		responses: []llm.ChatResponse{
-			{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{"GpuType": "4090"})}},
-			{Content: "好的，已取消创建。"},
-		},
-	}
-
 	// User rejects at confirm step
-	eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+	eng := NewWithDeps(&mockLLM{}, exec, func(action string, args map[string]any) bool {
 		return false
 	})
 	eng.Init(context.Background())
 
-	reply, err := eng.Chat(context.Background(), "帮我创建一台4090", func(e StepEvent) {})
-	assert.NoError(t, err)
+	reply := eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, func(e StepEvent) {})
+	reply = strings.TrimPrefix(reply, finalReplyPrefix)
 	// Deterministic not-executed reply, narration skipped. A not-granted confirm
 	// must honestly say "未执行", never falsely claim the user cancelled.
 	assert.Contains(t, reply, "未执行")
@@ -986,25 +961,15 @@ func TestScenario_WorkflowCreateAPIError(t *testing.T) {
 		},
 	}
 
-	mock := &mockLLM{
-		responses: []llm.ChatResponse{
-			{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{"GpuType": "4090"})}},
-			// Scripted narration that MUST NOT be consumed — create failures return
-			// a deterministic grounded reply and skip the LLM narration round.
-			{Content: "创建失败：余额不足，请充值后重试。"},
-		},
-	}
-
-	eng := NewWithDeps(mock, exec, func(a string, args map[string]any) bool { return true })
+	eng := NewWithDeps(&mockLLM{}, exec, func(a string, args map[string]any) bool { return true })
 	eng.Init(context.Background())
 
-	reply, err := eng.Chat(context.Background(), "帮我开一台4090", func(e StepEvent) {})
-	assert.NoError(t, err)
+	reply := eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, func(e StepEvent) {})
+	reply = strings.TrimPrefix(reply, finalReplyPrefix)
 	// Deterministic reply surfaces the real executor error verbatim, no fabrication,
 	// and the scripted narration is never consumed (only the tool-call round ran).
 	assert.Contains(t, reply, "创建实例没有成功")
 	assert.Contains(t, reply, "insufficient balance")
-	assert.Len(t, mock.calls, 1, "narration round must be skipped on create failure")
 
 	// The create step must actually have been attempted (reached the API error).
 	createAttempted := false
@@ -1047,15 +1012,11 @@ func TestScenario_CreateInstance_NormalizesV100(t *testing.T) {
 		}
 		return map[string]any{}, nil
 	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{"GpuType": "V100"})}},
-		{Content: "已为您创建实例 uhost-v100s-1。"},
-	}}
-	eng := NewWithDeps(mock, exec, func(a string, args map[string]any) bool { return true })
+	eng := NewWithDeps(&mockLLM{}, exec, func(a string, args map[string]any) bool { return true })
 	eng.Init(context.Background())
+	eng.lastUserMsg = "部署一个V100的实例"
 
-	_, err := eng.Chat(context.Background(), "部署一个V100的实例", noopStep)
-	assert.NoError(t, err)
+	_ = eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow", map[string]any{"GpuType": "V100"}, noopStep)
 	assert.Equal(t, "V100S", createGpuType, "user 'V100' must be normalized to the platform's 'V100S' before create")
 }
 
@@ -1406,16 +1367,17 @@ func TestScenario_CreateInstance_CommunityImage(t *testing.T) {
 			"DescribeCompShareInstance":      {"UHostSet": []any{map[string]any{"UHostId": "uhost-new", "State": "Running"}}},
 		},
 	}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{"GpuType": "4090", "ImageSource": "community", "ImageName": "ComfyUI"})}},
-		{Content: "已用 ComfyUI 社区镜像创建实例。"},
-	}}
-	eng := NewWithDeps(mock, exec, func(a string, args map[string]any) bool { return true })
+	var confirmImage any
+	eng := NewWithDeps(&mockLLM{}, exec, func(a string, args map[string]any) bool {
+		confirmImage = args["image"]
+		return true
+	})
 	eng.Init(context.Background())
 
-	reply, err := eng.Chat(context.Background(), "用ComfyUI社区镜像开一台4090", func(e StepEvent) {})
-	assert.NoError(t, err)
-	assert.Contains(t, reply, "ComfyUI")
+	reply := eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow", map[string]any{"GpuType": "4090", "ImageSource": "community", "ImageName": "ComfyUI"}, func(e StepEvent) {})
+	reply = strings.TrimPrefix(reply, finalReplyPrefix)
+	assert.Contains(t, reply, "工作流执行完成")
+	assert.Equal(t, "ComfyUI", confirmImage)
 	assert.Contains(t, exec.calls, "DescribeCommunityImages")
 }
 
@@ -1449,19 +1411,14 @@ func TestScenario_CreateInstance_PlatformAppImage(t *testing.T) {
 		return true
 	}
 
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		// LLM passes ImageName="PyTorch" for platform path
-		{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{
-			"GpuType": "4090", "ImageName": "PyTorch",
-		})}},
-		{Content: "已用 PyTorch 2.1 CUDA 12.1 镜像创建 4090 实例 uhost-pt1。"},
-	}}
-	eng := NewWithDeps(mock, exec, confirmFn)
+	eng := NewWithDeps(&mockLLM{}, exec, confirmFn)
 	eng.Init(context.Background())
 
-	reply, err := eng.Chat(context.Background(), "帮我开一台4090跑PyTorch", func(e StepEvent) {})
-	assert.NoError(t, err)
-	assert.Contains(t, reply, "PyTorch")
+	reply := eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow", map[string]any{
+		"GpuType": "4090", "ImageName": "PyTorch",
+	}, func(e StepEvent) {})
+	reply = strings.TrimPrefix(reply, finalReplyPrefix)
+	assert.Contains(t, reply, "工作流执行完成")
 
 	// Verify DescribeCompShareImages was called (not community)
 	assert.Contains(t, exec.calls, "DescribeCompShareImages")
@@ -1472,13 +1429,6 @@ func TestScenario_CreateInstance_PlatformAppImage(t *testing.T) {
 	assert.Equal(t, "PyTorch 2.1 CUDA 12.1", confirmImage,
 		"confirm card should show PyTorch App image, not bare Ubuntu")
 
-	// The workflow result fed to LLM should show success
-	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
-	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
-	var wfResult map[string]any
-	err = json.Unmarshal([]byte(toolMsg.Content), &wfResult)
-	assert.NoError(t, err)
-	assert.Equal(t, true, wfResult["success"])
 }
 
 // ── Scenario 34: Port/firewall — service not found ───────────────────────
@@ -1583,7 +1533,8 @@ func TestScenario_SecurityBlock_L2(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	assert.True(t, blocked, "L2 operation should be blocked")
-	assert.Contains(t, reply, "控制台")
+	assert.Contains(t, reply, "不能由模型直接调用")
+	assert.Contains(t, reply, "已拒绝执行")
 	// TerminateCompShareInstance should NOT be executed
 	assert.NotContains(t, exec.calls, "TerminateCompShareInstance")
 }
@@ -1938,8 +1889,9 @@ func TestScenario_EngineGuard_InvalidatedRegistryNoAutoFill(t *testing.T) {
 	assert.True(t, hasBlocked, "invalidated registry should NOT auto-fill")
 }
 
-// Engine guard should NOT block CreateInstanceWorkflow (it doesn't need UHostId)
-func TestScenario_EngineGuard_CreateInstanceBypasses(t *testing.T) {
+// Naked CreateInstanceWorkflow calls from ReAct must be blocked. New-machine
+// creation enters through the structured create_instance router path instead.
+func TestScenario_EngineGuard_CreateInstanceBlockedFromReAct(t *testing.T) {
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
 			"DescribeCompShareImages": {"ImageSet": []any{map[string]any{"CompShareImageId": "img-1", "CompShareImageName": "PyTorch 2.1"}}},
@@ -1976,8 +1928,9 @@ func TestScenario_EngineGuard_CreateInstanceBypasses(t *testing.T) {
 	_, err := eng.Chat(context.Background(), "开一台4090", func(e StepEvent) {})
 	assert.NoError(t, err)
 
-	// CreateInstanceWorkflow should proceed normally (no UHostId guard)
-	assert.Contains(t, exec.calls, "CreateCompShareInstance")
+	// CreateInstanceWorkflow should not proceed when it is fabricated as a raw
+	// ReAct tool call.
+	assert.NotContains(t, exec.calls, "CreateCompShareInstance")
 }
 
 // ── Scenario: SetStopScheduler — happy path ──────────────────────────────

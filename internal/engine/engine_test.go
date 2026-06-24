@@ -627,7 +627,7 @@ func TestChat_ExternalTool_L2Blocked(t *testing.T) {
 	for _, ev := range *events {
 		if ev.Type == StepBlocked {
 			hasBlocked = true
-			assert.Contains(t, ev.Message, "L2")
+			assert.Contains(t, ev.Message, "不能由模型直接调用")
 		}
 	}
 	assert.True(t, hasBlocked, "L2 operation should be blocked")
@@ -651,8 +651,8 @@ func TestChat_ExternalTool_L1Confirmed(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "关机", noopStep)
 	assert.NoError(t, err)
-	assert.Equal(t, "已关机", reply)
-	assert.Contains(t, executor.calls, "StopCompShareInstance")
+	assert.Contains(t, reply, "不能由模型直接调用")
+	assert.Empty(t, executor.calls)
 }
 
 func TestChat_ExternalTool_L1Denied(t *testing.T) {
@@ -674,10 +674,7 @@ func TestChat_ExternalTool_L1Denied(t *testing.T) {
 
 	hasBlocked := false
 	for _, ev := range *events {
-		// A denied confirm emits a blocked step narrated honestly as not-executed
-		// ("未执行"), never as a false "已取消" — the direct-tool sibling of the
-		// console false-cancel P0 (see TestFalseCancel_DirectTool…).
-		if ev.Type == StepBlocked && strings.Contains(ev.Message, "未执行") {
+		if ev.Type == StepBlocked && strings.Contains(ev.Message, "不能由模型直接调用") {
 			hasBlocked = true
 		}
 		assert.NotContains(t, ev.Message, "已取消",
@@ -881,14 +878,14 @@ func TestUnknownAction_Rejected(t *testing.T) {
 	_, err := eng.Chat(context.Background(), "hack", onStep)
 	assert.NoError(t, err)
 
-	// Unknown action should be rejected by security check
-	hasError := false
+	// Unknown action should be rejected before execution.
+	hasBlocked := false
 	for _, ev := range *events {
-		if ev.Type == StepError {
-			hasError = true
+		if ev.Type == StepBlocked {
+			hasBlocked = true
 		}
 	}
-	assert.True(t, hasError, "unknown action should produce error")
+	assert.True(t, hasBlocked, "unknown action should be blocked")
 }
 
 func TestTrimHistory(t *testing.T) {
@@ -1165,21 +1162,15 @@ func TestChat_MutatingRateLimitDenialSkipsConfirmAndExecutor(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "stop it", onStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, rateLimitQPSMessage, reply)
-	assert.Equal(t, 0, confirmCalls, "quota denial must happen before L1 confirmation")
-	assert.Empty(t, executor.calls, "quota denial must happen before API execution")
-	assert.Len(t, mock.calls, 1, "quota denial should stop the turn without another LLM round")
-	require.Len(t, eng.rateLimiter.(*scriptedRateLimiter).requests, 2)
+	assert.Contains(t, reply, "不能由模型直接调用")
+	assert.Equal(t, 0, confirmCalls, "unexposed direct tool calls must not ask for confirmation")
+	assert.Empty(t, executor.calls, "unexposed direct tool calls must not execute API calls")
+	assert.Len(t, mock.calls, 1, "blocked direct tool call should stop the turn without another LLM round")
+	require.Len(t, eng.rateLimiter.(*scriptedRateLimiter).requests, 1)
 	assert.Equal(t, governance.ClassLLM, eng.rateLimiter.(*scriptedRateLimiter).requests[0].Class)
-	assert.Equal(t, governance.ClassMutatingTool, eng.rateLimiter.(*scriptedRateLimiter).requests[1].Class)
-	assert.Equal(t, "StopCompShareInstance", eng.rateLimiter.(*scriptedRateLimiter).requests[1].Action)
-	assertStepWithType(t, *events, StepBlocked, "StopCompShareInstance", rateLimitQPSMessage)
+	assertStepWithType(t, *events, StepBlocked, "StopCompShareInstance", "不能由模型直接调用")
 	for _, ev := range *events {
 		assert.NotEqual(t, StepConfirmNeeded, ev.Type, "quota denial must not ask for confirmation")
-		if ev.Type == StepBlocked && ev.Action == "StopCompShareInstance" {
-			assert.Equal(t, observability.ToolCappedRateLimit, ev.Capped)
-			assert.Equal(t, rateLimitQPSMessage, ev.CapReason)
-		}
 	}
 }
 
@@ -1237,7 +1228,7 @@ func TestChat_MutatingRateLimitDailyDenialUsesDailyMessage(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "start it", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, rateLimitDailyMessage, reply)
+	assert.Contains(t, reply, "不能由模型直接调用")
 	assert.Equal(t, 0, confirmCalls)
 	assert.Empty(t, executor.calls)
 }
@@ -1621,9 +1612,9 @@ func TestChatReadOnlyBlocksWorkflowToolCall(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "帮我关机", onStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, "blocked", reply)
+	assert.Contains(t, reply, "不能由模型直接调用")
 	assert.Empty(t, executor.calls)
-	assertStepWithType(t, *events, StepBlocked, "StopInstanceWorkflow", "当前阶段不直接执行")
+	assertStepWithType(t, *events, StepBlocked, "StopInstanceWorkflow", "不能由模型直接调用")
 }
 
 func TestExecuteSafeToolReadOnlyBlocksDirectMutatingAction(t *testing.T) {
@@ -1641,7 +1632,7 @@ func TestExecuteSafeToolReadOnlyBlocksDirectMutatingAction(t *testing.T) {
 	assert.Empty(t, executor.calls)
 }
 
-func TestChatStepToolCallRedactsArgsBeforeTrace(t *testing.T) {
+func TestChatBlocksUnexposedDirectMutatingToolCallAndRedactsArgs(t *testing.T) {
 	llmMock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
 			toolCall("call-1", "ResetCompShareInstancePassword", `{"UHostId":"uhost-1","Password":"Secret123!"}`),
@@ -1653,18 +1644,19 @@ func TestChatStepToolCallRedactsArgsBeforeTrace(t *testing.T) {
 	}}
 	eng := NewWithDeps(llmMock, exec, func(string, map[string]any) bool { return true })
 
-	var callEvent *StepEvent
+	var blockedEvent *StepEvent
 	reply, err := eng.Chat(context.Background(), "reset password", func(ev StepEvent) {
-		if ev.Type == StepToolCall && ev.Action == "ResetCompShareInstancePassword" {
+		if ev.Type == StepBlocked && ev.Action == "ResetCompShareInstancePassword" {
 			copy := ev
-			callEvent = &copy
+			blockedEvent = &copy
 		}
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, "done", reply)
-	require.NotNil(t, callEvent)
-	assert.Equal(t, "[REDACTED]", callEvent.Args["Password"])
+	assert.Contains(t, reply, "不能由模型直接调用")
+	require.NotNil(t, blockedEvent)
+	assert.Equal(t, "[REDACTED]", blockedEvent.Args["Password"])
+	assert.Empty(t, exec.calls)
 }
 
 func TestNewWarnsWhenPublicKeyMissingForRateLimiter(t *testing.T) {
@@ -1789,7 +1781,7 @@ func TestToolResult_IsValidJSON(t *testing.T) {
 	assert.Contains(t, toolMsg.Content, "96") // H20 VRAM
 }
 
-func TestChat_WorkflowTool_CreateInstance(t *testing.T) {
+func TestChatBlocksNakedCreateInstanceWorkflowToolCall(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareImages": {
 			"ImageSet": []any{
@@ -1814,12 +1806,9 @@ func TestChat_WorkflowTool_CreateInstance(t *testing.T) {
 	}}
 	confirmFn := func(action string, args map[string]any) bool { return true }
 	mock := &mockLLM{responses: []llm.ChatResponse{
-		// Round 1: LLM calls CreateInstanceWorkflow
 		{ToolCalls: []openai.ToolCall{
 			toolCall("tc1", "CreateInstanceWorkflow", `{"GpuType":"4090"}`),
 		}},
-		// Round 2: LLM narrates the workflow result
-		{Content: "已成功创建 4090 实例 uhost-new-001"},
 	}}
 	onStep, events := collectSteps()
 	eng := NewWithDeps(mock, executor, confirmFn)
@@ -1833,31 +1822,16 @@ func TestChat_WorkflowTool_CreateInstance(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "帮我创建一个4090实例", onStep)
 	assert.NoError(t, err)
-	assert.Contains(t, reply, "uhost-new-001")
+	assert.Contains(t, reply, "不能由模型直接调用")
+	assert.Empty(t, executor.calls)
 
-	// Verify workflow steps were executed via the executor
-	assert.Contains(t, executor.calls, "DescribeCompShareImages")
-	assert.Contains(t, executor.calls, "CheckCompShareResourceCapacity")
-	assert.Contains(t, executor.calls, "GetCompShareInstanceUserPrice")
-	assert.Contains(t, executor.calls, "CreateCompShareInstance")
-	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
-
-	// Verify step events were emitted
-	hasWorkflowCall := false
+	hasBlocked := false
 	for _, ev := range *events {
-		if ev.Type == StepToolCall && ev.Action == "CreateInstanceWorkflow" {
-			hasWorkflowCall = true
+		if ev.Type == StepBlocked && ev.Action == "CreateInstanceWorkflow" {
+			hasBlocked = true
 		}
 	}
-	assert.True(t, hasWorkflowCall, "should have a StepToolCall event for CreateInstanceWorkflow")
-
-	// The tool result fed to LLM round 2 should be valid JSON with success
-	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
-	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
-	var result map[string]any
-	err = json.Unmarshal([]byte(toolMsg.Content), &result)
-	assert.NoError(t, err, "workflow result should be valid JSON")
-	assert.Equal(t, true, result["success"])
+	assert.True(t, hasBlocked, "naked CreateInstanceWorkflow must be blocked")
 }
 
 func TestChat_WorkflowTool_StopInstance(t *testing.T) {
@@ -2580,13 +2554,15 @@ func TestInitRefreshesEntityRegistryThroughSafeExecutor(t *testing.T) {
 func TestRegistryInvalidatesAfterSuccessfulMutatingTool(t *testing.T) {
 	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
 	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{"UHostId": "uhost-a", "State": "Stopped", "Name": "a", "Region": "cn-wlcb", "Zone": "cn-wlcb-01"}},
+		},
 		"StartCompShareInstance": {"RetCode": 0},
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "StartCompShareInstance", `{"UHostId":"uhost-a"}`),
+			toolCall("tc1", "StartInstanceWorkflow", `{"UHostId":"uhost-a"}`),
 		}},
-		{Content: "started"},
 	}}
 	eng := NewWithDeps(mock, executor, func(string, map[string]any) bool { return true })
 	eng.registry = entity.NewRegistry(entity.WithClock(func() time.Time { return now }))
@@ -2594,7 +2570,7 @@ func TestRegistryInvalidatesAfterSuccessfulMutatingTool(t *testing.T) {
 		"RetCode":    0,
 		"TotalCount": float64(1),
 		"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-a", "Name": "a", "State": "Stopped"},
+			map[string]any{"UHostId": "uhost-a", "Name": "a", "State": "Stopped", "Region": "cn-wlcb", "Zone": "cn-wlcb-01"},
 		},
 	}, string(entity.SyncEventInit)))
 	require.False(t, eng.registry.NeedsRefresh(now.Add(time.Second)))
@@ -2603,7 +2579,7 @@ func TestRegistryInvalidatesAfterSuccessfulMutatingTool(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "start uhost-a", noopStep)
 
 	assert.NoError(t, err)
-	assert.Equal(t, "started", reply)
+	assert.Contains(t, reply, "执行开机")
 	assert.True(t, eng.registry.NeedsRefresh(now.Add(time.Second)))
 }
 

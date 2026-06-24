@@ -114,6 +114,9 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 	// own; rehydrate it from the previous deploy target so the matcher keeps sizing
 	// the SAME model instead of treating it as a new generic deploy request.
 	effectiveUserMsg := e.effectiveDeployUserMsg(userMsg)
+	if e.createPreferenceThisTurn != nil {
+		effectiveUserMsg = deployMessageWithCreatePreference(effectiveUserMsg, *e.createPreferenceThisTurn)
+	}
 
 	// (1a) Resolve a user-named zone against the live support-zone catalog so a
 	// Chinese display name ("华北一C") maps to its zone id (cn-bj2-03) instead of

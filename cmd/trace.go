@@ -233,6 +233,18 @@ func intentScopedReActPromptEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+func createPreferenceExtractorEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_CREATE_PREF_EXTRACTOR"))
+	switch strings.ToLower(raw) {
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	case "1", "on", "yes", "true", "enabled":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
 type plannerStructuredOutputMode string
 
 const (

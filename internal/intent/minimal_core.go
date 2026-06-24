@@ -14,6 +14,7 @@ func compileMinimalPlanCore(core minimalPlanCore) IntentRoute {
 	plan := IntentRoute{
 		SchemaVersion: SchemaVersion,
 		Intent:        core.Intent,
+		SpeechAct:     defaultMinimalCoreSpeechAct(core.Intent),
 		Slots: Slots{
 			TargetRefs: cloneTargetRefs(core.TargetRefs),
 			Metrics:    append([]Metric(nil), core.Metrics...),
@@ -26,6 +27,15 @@ func compileMinimalPlanCore(core minimalPlanCore) IntentRoute {
 		Confidence:    defaultMinimalCoreConfidence(core.Intent),
 	}
 	return withDerivedSelectedSkills(plan)
+}
+
+func defaultMinimalCoreSpeechAct(i Intent) SpeechAct {
+	switch i {
+	case IntentCreateInstance, IntentDeployModel:
+		return SpeechActCommand
+	default:
+		return ""
+	}
 }
 
 func defaultMinimalCoreConfidence(i Intent) float64 {

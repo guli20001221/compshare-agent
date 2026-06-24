@@ -80,12 +80,12 @@ func TestIntentRouteResponseSchema_IntentEnumMatchesRuntime(t *testing.T) {
 		t.Error("retrieval.enabled must be const false")
 	}
 
-	// The seven IntentRoute top-level fields ValidateRoute reads must be required.
+	// The top-level fields ValidateRoute and create/deploy safety gates read must be required.
 	requiredSet := make(map[string]bool, len(schema.Required))
 	for _, r := range schema.Required {
 		requiredSet[r] = true
 	}
-	for _, field := range []string{"schema_version", "intent", "slots", "required_tools", "retrieval", "hard_block_hint", "confidence"} {
+	for _, field := range []string{"schema_version", "intent", "speech_act", "slots", "required_tools", "retrieval", "hard_block_hint", "confidence"} {
 		if !requiredSet[field] {
 			t.Errorf("top-level required is missing %q", field)
 		}

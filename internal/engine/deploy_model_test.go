@@ -805,7 +805,7 @@ func TestSelectDeployZoneAndGPU_FallbackOnSoldOut(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "cn-sh2-02", zone, "sold-out primary falls back to the next zone")
 	assert.Equal(t, "4090", gpu)
-	assert.Contains(t, fb, "cn-wlcb-01", "fallback note names the sold-out primary")
+	assert.Contains(t, fb, "华北二A", "fallback note names the sold-out primary")
 	assert.Contains(t, fb, "cn-sh2-02", "fallback note names the chosen zone")
 }
 
@@ -1220,7 +1220,7 @@ func TestTryDeployModel_ThreadsInventoryContextToGuidedCard(t *testing.T) {
 	gpuField := gpuForm.Field("GpuType")
 	require.NotNil(t, gpuField)
 	require.Len(t, gpuField.Options, 1)
-	assert.Contains(t, gpuField.Options[0].Note, "库存约 5 张 GPU", "ZoneIds must be threaded so inventory maps back to the live zone")
+	assert.Contains(t, gpuField.Options[0].Note, "当前库存可满足", "ZoneIds must be threaded so inventory maps back to the live zone")
 }
 
 func TestTryDeployModel_UserPinnedCatalogGPULocksGuidedCard(t *testing.T) {

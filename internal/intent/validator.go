@@ -70,6 +70,9 @@ func ValidateRoute(plan IntentRoute, ctx ValidationContext) error {
 	if plan.SpeechAct != "" && !validSpeechAct(plan.SpeechAct) {
 		return validationErr(ErrInvalidSpeechAct, "speech_act", "unsupported speech_act enum")
 	}
+	if (plan.Intent == IntentCreateInstance || plan.Intent == IntentDeployModel) && plan.SpeechAct == "" {
+		return validationErr(ErrInvalidSpeechAct, "speech_act", "create/deploy intents must carry speech_act")
+	}
 	if plan.Retrieval.Enabled {
 		return validationErr(ErrRetrievalDisabled, "retrieval.enabled", "RAG retrieval is disabled in stage 2A")
 	}

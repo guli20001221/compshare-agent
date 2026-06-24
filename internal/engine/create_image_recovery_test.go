@@ -3,10 +3,9 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
-	"github.com/compshare-agent/internal/llm"
-	"github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,10 +28,10 @@ func TestIsImageUnavailableMessage(t *testing.T) {
 // different kind of image. The already-failed image is excluded.
 func TestRankCreateImageCandidates(t *testing.T) {
 	imageSet := []any{
-		map[string]any{"CompShareImageId": "img-bad", "Name": "PyTorch:24.04-py3"},  // the failed one
+		map[string]any{"CompShareImageId": "img-bad", "Name": "PyTorch:24.04-py3"},       // the failed one
 		map[string]any{"CompShareImageId": "img-cuda", "Name": "cuda128_torch291_py312"}, // shares "torch"
-		map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04"},     // unrelated → dropped
-		map[string]any{"CompShareImageId": "img-pt", "Name": "PyTorch 2.1 CUDA 12.1"}, // contains keyword
+		map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04"},         // unrelated → dropped
+		map[string]any{"CompShareImageId": "img-pt", "Name": "PyTorch 2.1 CUDA 12.1"},    // contains keyword
 	}
 	got := rankCreateImageCandidates(imageSet, "PyTorch", "img-bad")
 
@@ -115,16 +114,14 @@ func TestCreateZoneRecovery_SwapsToAvailableImage(t *testing.T) {
 		return false // decline — assert the recovered card without creating
 	}
 
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{
-			"GpuType": "4090", "ImageName": "PyTorch",
-		})}},
-	}}
-	eng := NewWithDeps(mock, exec, confirmFn)
+	eng := NewWithDeps(&mockLLM{}, exec, confirmFn)
 	eng.Init(context.Background())
+	eng.lastUserMsg = "帮我创建一台4090，用pytorch最新的镜像"
 
-	reply, err := eng.Chat(context.Background(), "帮我创建一台4090，用pytorch最新的镜像", func(e StepEvent) {})
-	require.NoError(t, err)
+	reply := eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow", map[string]any{
+		"GpuType": "4090", "ImageName": "PyTorch",
+	}, func(e StepEvent) {})
+	reply = strings.TrimPrefix(reply, finalReplyPrefix)
 
 	// The cryptic upstream error must never reach the user.
 	assert.NotContains(t, reply, "RetCode=230")

@@ -156,6 +156,14 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 	if intentScopedReActPrompt {
 		log.Printf("runtime: HTTP intent-scoped ReAct prompt enabled (USE_INTENT_SCOPED_REACT_PROMPT=1)")
 	}
+	createPreferenceExtraction, unknownCreatePreferenceExtraction := createPreferenceExtractorEnabledFromEnv(getenv)
+	if unknownCreatePreferenceExtraction != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_CREATE_PREF_EXTRACTOR value %q", unknownCreatePreferenceExtraction)
+	}
+	deps.CreatePreferenceExtractionEnabled = createPreferenceExtraction
+	if createPreferenceExtraction {
+		log.Printf("runtime: HTTP create/deploy preference extraction enabled (COMPSHARE_CREATE_PREF_EXTRACTOR=1)")
+	}
 
 	knowledgeRetrievalRequested, unknownKnowledge := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledge != "" {
