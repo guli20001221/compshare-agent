@@ -243,6 +243,43 @@ func TestDirectHardwareCreateBlocksPriceQuestionEvenWhenPlannerSaysCreate(t *tes
 	assert.Empty(t, executor.calls, "executor must re-check price/advice text even if planner mistakenly says create_instance")
 }
 
+func TestDirectHardwareCreateBlocksHardwareAdviceEvenWhenPlannerSaysCreate(t *testing.T) {
+	cases := []string{
+		"4090 适合训练大模型吗",
+		"我应该选 4090 还是 A100",
+		"4090 和 A100 哪个更适合推理",
+		"推荐用 4090 还是 5090",
+	}
+	for _, msg := range cases {
+		t.Run(msg, func(t *testing.T) {
+			executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+				return map[string]any{"RetCode": float64(0)}, nil
+			}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			dispatch := routerDispatchResult{result: intent.IntentRouterResult{
+				Plan: intent.IntentRoute{
+					SchemaVersion: intent.SchemaVersion,
+					Intent:        intent.IntentOperationLifecycle,
+					Slots: intent.Slots{
+						Action: intent.LifecycleActionCreate,
+					},
+					Retrieval:  intent.Retrieval{Enabled: false},
+					Confidence: 0.9,
+				},
+			}}
+
+			_, handled := eng.tryDirectHardwareCreate(context.Background(), dispatch, msg, noopStep)
+
+			assert.False(t, handled)
+			assert.Empty(t, executor.calls, "hardware advice/comparison must not open a billable create card")
+		})
+	}
+}
+
+func TestDirectHardwareCreateAdviceBlockAllowsExplicitCreateDescription(t *testing.T) {
+	assert.False(t, directHardwareCreateBlockedByText("帮我创建一台适合训练大模型的 4090 实例"))
+}
+
 func TestDirectHardwareCreateObjectCueBlocksNonCreateOperation(t *testing.T) {
 	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		return map[string]any{"RetCode": float64(0)}, nil

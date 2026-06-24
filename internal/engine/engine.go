@@ -133,6 +133,8 @@ var (
 	hardwareCreateVerbRE         = regexp.MustCompile(`(?i)(创建|新建|开\s*(?:一台|一个|个|台)?\s*[a-z0-9]|搞台|搞一台|抢一台|买一台|租一台|来一台|部署一台)`)
 	hardwareAdviceRE             = regexp.MustCompile(`(?i)(能干嘛|能做什么|有什么用|适合做什么|适合干嘛)`)
 	hardwarePriceQueryRE         = regexp.MustCompile(`(?i)(多少钱|价格|费用|计费|包月|包日|按量|每小时|一小时|小时价|贵不贵)`)
+	hardwareSelectionAdviceRE    = regexp.MustCompile(`(?i)(推荐|建议|应该|该选|怎么选|如何选|哪(?:个|种|款|张|台)|哪个更|哪种更|还是[^。！？\n]{0,24}(好|合适|适合)|vs|对比|比较)`)
+	hardwareFeasibilityAdviceRE  = regexp.MustCompile(`(?i)(适合|能不能|可不可以|可以[^。！？\n]{0,8}吗)[^。！？\n]{0,18}(训练|推理|大模型|微调|fine[-_ ]?tun(?:e|ing)|inference|training)`)
 	hardwareNonCreateOperationRE = regexp.MustCompile(`(?i)(加.*盘|数据盘|扩盘|扩容|重装|重置密码|改名|重命名|保存.*镜像|自制镜像|定时|关机|开机|启动|重启|监控|诊断|排查|删除|释放)`)
 )
 
@@ -2214,7 +2216,15 @@ func directHardwareCreateBlockedByText(text string) bool {
 	}
 	return hardwareAdviceRE.MatchString(text) ||
 		hardwarePriceQueryRE.MatchString(text) ||
+		hardwareSelectionAdviceQuestion(text) ||
 		hardwareNonCreateOperationRE.MatchString(text)
+}
+
+func hardwareSelectionAdviceQuestion(text string) bool {
+	if hardwareSelectionAdviceRE.MatchString(text) {
+		return true
+	}
+	return looksLikeLifecycleQuestion(text) && hardwareFeasibilityAdviceRE.MatchString(text)
 }
 
 func directHardwareCreateQuantityCue(text string) bool {
