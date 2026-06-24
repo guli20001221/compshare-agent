@@ -220,6 +220,49 @@ func TestDirectHardwareCreateBlocksPriceQuestion(t *testing.T) {
 	assert.Empty(t, executor.calls, "price questions must not open a billable create card")
 }
 
+func TestDirectHardwareCreateBlocksPriceQuestionEvenWhenPlannerSaysCreate(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentOperationLifecycle,
+			Slots: intent.Slots{
+				Action: intent.LifecycleActionCreate,
+			},
+			Retrieval:  intent.Retrieval{Enabled: false},
+			Confidence: 0.9,
+		},
+	}}
+
+	_, handled := eng.tryDirectHardwareCreate(context.Background(), dispatch, "V100S 实例多少钱", noopStep)
+
+	assert.False(t, handled)
+	assert.Empty(t, executor.calls, "executor must re-check price/advice text even if planner mistakenly says create_instance")
+}
+
+func TestDirectHardwareCreateObjectCueBlocksNonCreateOperation(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentOperationLifecycle,
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}
+
+	_, handled := eng.tryDirectHardwareCreate(context.Background(), dispatch, "给一台 V100S 实例加 200G 数据盘", noopStep)
+
+	assert.False(t, handled)
+	assert.Empty(t, executor.calls, "object cue fallback must not steal add-disk/resize/reinstall style instance operations")
+}
+
 func TestDirectHardwareCreateUsesObjectCueWhenPlannerOmitsAction(t *testing.T) {
 	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {

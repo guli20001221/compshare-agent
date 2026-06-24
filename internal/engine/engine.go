@@ -124,15 +124,16 @@ const (
 // decision point when the priority chain grows beyond this narrow bridge set.
 
 var (
-	beijingZone          = time.FixedZone("CST", 8*3600)
-	isoDateRE            = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
-	clockRangeRE         = regexp.MustCompile(`(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)`)
-	historicalDurationRE = regexp.MustCompile(`(?i)(?:过去|近|最近|last|past|previous|recent)\s*(?:\d+\s*)?(?:分钟|小时|天|周|月|hour|hours|day|days|week|weeks|month|months|h|d)`)
-	percentValueRE       = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*%`)
-	uhostIDInTextRE      = regexp.MustCompile(`uhost-[A-Za-z0-9][A-Za-z0-9-]*`)
-	hardwareCreateVerbRE = regexp.MustCompile(`(?i)(创建|新建|开\s*(?:一台|一个|个|台)?\s*[a-z0-9]|搞台|搞一台|抢一台|买一台|租一台|来一台|部署一台)`)
-	hardwareAdviceRE     = regexp.MustCompile(`(?i)(能干嘛|能做什么|有什么用|适合做什么|适合干嘛)`)
-	hardwarePriceQueryRE = regexp.MustCompile(`(?i)(多少钱|价格|费用|计费|包月|包日|按量|每小时|一小时|小时价|贵不贵)`)
+	beijingZone                  = time.FixedZone("CST", 8*3600)
+	isoDateRE                    = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
+	clockRangeRE                 = regexp.MustCompile(`(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)`)
+	historicalDurationRE         = regexp.MustCompile(`(?i)(?:过去|近|最近|last|past|previous|recent)\s*(?:\d+\s*)?(?:分钟|小时|天|周|月|hour|hours|day|days|week|weeks|month|months|h|d)`)
+	percentValueRE               = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*%`)
+	uhostIDInTextRE              = regexp.MustCompile(`uhost-[A-Za-z0-9][A-Za-z0-9-]*`)
+	hardwareCreateVerbRE         = regexp.MustCompile(`(?i)(创建|新建|开\s*(?:一台|一个|个|台)?\s*[a-z0-9]|搞台|搞一台|抢一台|买一台|租一台|来一台|部署一台)`)
+	hardwareAdviceRE             = regexp.MustCompile(`(?i)(能干嘛|能做什么|有什么用|适合做什么|适合干嘛)`)
+	hardwarePriceQueryRE         = regexp.MustCompile(`(?i)(多少钱|价格|费用|计费|包月|包日|按量|每小时|一小时|小时价|贵不贵)`)
+	hardwareNonCreateOperationRE = regexp.MustCompile(`(?i)(加.*盘|数据盘|扩盘|扩容|重装|重置密码|改名|重命名|保存.*镜像|自制镜像|定时|关机|开机|启动|重启|监控|诊断|排查|删除|释放)`)
 )
 
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
@@ -1850,8 +1851,13 @@ func (e *Engine) tryDirectHardwareCreate(ctx context.Context, dispatch routerDis
 	if !plannerAllowsDirectHardwareCreate(dispatch.result.Plan.Intent) {
 		return "", false
 	}
+	if directHardwareCreateBlockedByText(userMsg) {
+		return "", false
+	}
 	plannerCreate := plannerRequestsCreateInstance(dispatch.result.Plan)
-	semanticCreate := dispatch.result.Plan.Intent == intent.IntentOperationLifecycle && directHardwareCreateObjectCue(userMsg)
+	semanticCreate := dispatch.result.Plan.Intent == intent.IntentOperationLifecycle &&
+		dispatch.result.Plan.Slots.Action == "" &&
+		directHardwareCreateObjectCue(userMsg)
 	if !plannerCreate && !semanticCreate && !directHardwareCreateActionCue(userMsg) {
 		return "", false
 	}
@@ -1862,7 +1868,7 @@ func (e *Engine) tryDirectHardwareCreate(ctx context.Context, dispatch routerDis
 	}
 	const action = "CreateInstanceWorkflow"
 	routeStatus := intent.RouteStatusFallbackIneligible
-	if plannerCreate {
+	if plannerCreate || semanticCreate {
 		routeStatus = intent.RouteStatusDispatched
 	}
 	e.emitPlannerTrace(dispatch.result, routeStatus, dispatch.latency)
@@ -2179,7 +2185,7 @@ func plannerRequestsCreateInstance(plan intent.IntentRoute) bool {
 
 func directHardwareCreateActionCue(userMsg string) bool {
 	text := strings.TrimSpace(userMsg)
-	if text == "" || hardwareAdviceRE.MatchString(text) || hardwarePriceQueryRE.MatchString(text) {
+	if text == "" || directHardwareCreateBlockedByText(text) {
 		return false
 	}
 	return hardwareCreateVerbRE.MatchString(text)
@@ -2187,10 +2193,32 @@ func directHardwareCreateActionCue(userMsg string) bool {
 
 func directHardwareCreateObjectCue(userMsg string) bool {
 	text := strings.TrimSpace(userMsg)
-	if text == "" || hardwareAdviceRE.MatchString(text) || hardwarePriceQueryRE.MatchString(text) || looksLikeLifecycleQuestion(text) {
+	if text == "" || directHardwareCreateBlockedByText(text) || looksLikeLifecycleQuestion(text) {
+		return false
+	}
+	if !directHardwareCreateQuantityCue(text) {
 		return false
 	}
 	for _, marker := range []string{"实例", "机器", "主机", "云主机", "服务器"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func directHardwareCreateBlockedByText(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return true
+	}
+	return hardwareAdviceRE.MatchString(text) ||
+		hardwarePriceQueryRE.MatchString(text) ||
+		hardwareNonCreateOperationRE.MatchString(text)
+}
+
+func directHardwareCreateQuantityCue(text string) bool {
+	for _, marker := range []string{"一台", "1台", "一臺", "一部", "一套", "一个", "1个", "一個"} {
 		if strings.Contains(text, marker) {
 			return true
 		}
