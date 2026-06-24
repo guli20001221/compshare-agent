@@ -2,7 +2,32 @@
 
 This pipeline builds **`deploy/kb/external_w0.jsonl`** — a *separate* pinned corpus of
 general, platform-agnostic tool/ops knowledge (vLLM / sglang / ComfyUI / Ollama +
-in-instance GPU troubleshooting). It is loaded *alongside* the platform corpus
+in-instance GPU troubleshooting, Linux ops, PyTorch basics, model-download, and
+chat-seeded support gaps such as SSH keepalive, large transfers, remote web apps,
+LoRA/QLoRA, NCCL/DDP debugging, plus AI4Science/professional GPU topics such as
+JAX, CuPy, OpenMM, GROMACS, RAPIDS, container GPU access, ColabFold, and
+AlphaFold3; and pro-GPU support topics such as Transformers/Accelerate,
+bitsandbytes, LLaMA-Factory, Unsloth, DeepSpeed, git-lfs/aria2/wget/curl/rclone,
+VS Code Remote/Jupyter/SSH tunnels, CUDA compatibility, and ComfyUI
+Manager/Flux/ControlNet/IPAdapter; production GPU support such as DCGM/Nsight
+monitoring, Docker/Kubernetes/GPU Operator/MIG, Triton/TensorRT-LLM, KServe,
+Ray, Slurm, TRL, HF Datasets, Zarr, and Dask-cuDF; plus community-image-targeted
+topics from the live popular image snapshot: LTX, digital humans, voice/TTS,
+LoRA training, Qwen/Wan, GGUF, and single-image 3D; plus second-wave topics such
+as sd-scripts/kohya/Diffusers LoRA training, faster-whisper/WhisperX/Demucs/FFmpeg,
+Nerfstudio/COLMAP/PyTorch3D/Open3D, MONAI/PyG/DGL/PhysicsNeMo, nvitop/TensorBoard/W&B/MLflow,
+Caddy/frp/Tailscale/Cloudflare Tunnel, Dockerfile/CUDA-image builds, uv/micromamba,
+Hugging Face snapshot preload; plus 637-session-targeted gaps such as
+A1111/SD-WebUI, ControlNet, generic WebUI refused-connection triage,
+SSH/transfer failures, Ollama cache/context issues, Open WebUI/LiteLLM,
+Docker GPU visibility, card-count mismatch, NVIDIA MPS, DVC/object storage,
+Label Studio, persistence boundaries, background service patterns; focused
+safe GPU cleanup / torch.compile / CUDA Toolkit installation topics; and
+production/research platform topics such as FSDP checkpointing and memory
+estimation, vLLM/LiteLLM serving governance, NCCL/RDMA validation,
+Kueue/Kubeflow/Volcano job queues, lm-eval/MLflow evaluation, YOLO/SAM2,
+LAMMPS/PySCF/Apptainer, WebDataset, ONNX Runtime/Optimum, and
+AWQ/GPTQ/GGUF model-format guidance). It is loaded *alongside* the platform corpus
 (`deploy/kb/stage2b_w0.jsonl`) via `knowledge.LoadPinnedCorporaWithEmbeddings`, so the
 platform corpus stays byte-identical.
 
@@ -32,7 +57,7 @@ Curation is done by a strong model (Claude Opus) from **authoritative sources**:
 ## Build flow (reuses the W0 tail stages — no fork)
 
 ```
-# 1. Author candidate chunks (Opus) -> scripts/rag_ext/external_candidate_w0.jsonl
+# 1. Author candidate chunks -> scripts/rag_ext/external_candidate_w0.jsonl
 python -m scripts.rag_ext.build_pilot_chunks
 
 # 2. Schema/leakage validate (shared validator, now enforces source_origin)

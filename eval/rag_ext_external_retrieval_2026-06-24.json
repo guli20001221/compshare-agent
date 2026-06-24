@@ -1,0 +1,6801 @@
+{
+  "failed_questions": [],
+  "mode": "qwen3_rrf",
+  "per_group_hit_rate": {
+    "advanced_training": {
+      "hit": 8,
+      "hit_rate": 1.0,
+      "total": 8
+    },
+    "ai4science_gpu": {
+      "hit": 8,
+      "hit_rate": 1.0,
+      "total": 8
+    },
+    "chat_seed_direct": {
+      "hit": 7,
+      "hit_rate": 1.0,
+      "total": 7
+    },
+    "cluster_network": {
+      "hit": 5,
+      "hit_rate": 1.0,
+      "total": 5
+    },
+    "comfyui": {
+      "hit": 7,
+      "hit_rate": 1.0,
+      "total": 7
+    },
+    "comfyui_ecosystem": {
+      "hit": 4,
+      "hit_rate": 1.0,
+      "total": 4
+    },
+    "container_k8s": {
+      "hit": 8,
+      "hit_rate": 1.0,
+      "total": 8
+    },
+    "cuda_compile_cleanup": {
+      "hit": 4,
+      "hit_rate": 1.0,
+      "total": 4
+    },
+    "cuda_nvidia": {
+      "hit": 3,
+      "hit_rate": 1.0,
+      "total": 3
+    },
+    "cv_ai4science_data": {
+      "hit": 12,
+      "hit_rate": 1.0,
+      "total": 12
+    },
+    "data_scale": {
+      "hit": 3,
+      "hit_rate": 1.0,
+      "total": 3
+    },
+    "distributed_scheduler": {
+      "hit": 5,
+      "hit_rate": 1.0,
+      "total": 5
+    },
+    "download_transfer": {
+      "hit": 4,
+      "hit_rate": 1.0,
+      "total": 4
+    },
+    "eval_observability": {
+      "hit": 5,
+      "hit_rate": 1.0,
+      "total": 5
+    },
+    "external_second_wave": {
+      "hit": 25,
+      "hit_rate": 1.0,
+      "total": 25
+    },
+    "gpu_ops": {
+      "hit": 11,
+      "hit_rate": 1.0,
+      "total": 11
+    },
+    "job_scheduling": {
+      "hit": 5,
+      "hit_rate": 1.0,
+      "total": 5
+    },
+    "linux_ops": {
+      "hit": 9,
+      "hit_rate": 1.0,
+      "total": 9
+    },
+    "model_download": {
+      "hit": 4,
+      "hit_rate": 1.0,
+      "total": 4
+    },
+    "monitoring_perf": {
+      "hit": 5,
+      "hit_rate": 1.0,
+      "total": 5
+    },
+    "ollama": {
+      "hit": 5,
+      "hit_rate": 1.0,
+      "total": 5
+    },
+    "post_training": {
+      "hit": 2,
+      "hit_rate": 1.0,
+      "total": 2
+    },
+    "production_inference": {
+      "hit": 7,
+      "hit_rate": 1.0,
+      "total": 7
+    },
+    "production_serving_governance": {
+      "hit": 9,
+      "hit_rate": 1.0,
+      "total": 9
+    },
+    "professional_scene_signals": {
+      "hit": 13,
+      "hit_rate": 1.0,
+      "total": 13
+    },
+    "pytorch": {
+      "hit": 6,
+      "hit_rate": 1.0,
+      "total": 6
+    },
+    "remote_dev": {
+      "hit": 3,
+      "hit_rate": 1.0,
+      "total": 3
+    },
+    "session_637_targeted": {
+      "hit": 18,
+      "hit_rate": 1.0,
+      "total": 18
+    },
+    "sglang": {
+      "hit": 4,
+      "hit_rate": 1.0,
+      "total": 4
+    },
+    "stable_platform_external": {
+      "hit": 31,
+      "hit_rate": 1.0,
+      "total": 31
+    },
+    "training_finetune": {
+      "hit": 6,
+      "hit_rate": 1.0,
+      "total": 6
+    },
+    "vllm": {
+      "hit": 9,
+      "hit_rate": 1.0,
+      "total": 9
+    }
+  },
+  "questions_evaluated": 255,
+  "questions_excluded_non_answer_behavior": 0,
+  "top_3_hit_rate": 1.0,
+  "trace_records": [
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-serving-001",
+          "kept": true,
+          "score": 0.9997085928916931
+        },
+        {
+          "chunk_id": "ext-vllm-served-name-001",
+          "kept": true,
+          "score": 0.9911041259765625
+        },
+        {
+          "chunk_id": "ext-litellm-proxy-openai-compatible-001",
+          "kept": true,
+          "score": 0.9849541187286377
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "我想把模型起成一个接口给别人调用 vllm 怎么搞",
+      "query_raw": "我想把模型起成一个接口给别人调,用 vllm 怎么搞",
+      "question_id": "ext-eg-001",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-offline-001",
+          "kept": true,
+          "score": 0.9987530708312988
+        },
+        {
+          "chunk_id": "ext-vllm-serving-001",
+          "kept": true,
+          "score": 0.895702064037323
+        },
+        {
+          "chunk_id": "ext-vllm-tensor-parallel-001",
+          "kept": true,
+          "score": 0.45056429505348206
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "vllm 不开服务能直接在脚本里跑一批输入吗",
+      "query_raw": "vllm 不开服务,能直接在脚本里跑一批输入吗",
+      "question_id": "ext-eg-002",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-tensor-parallel-001",
+          "kept": true,
+          "score": 0.9948592185974121
+        },
+        {
+          "chunk_id": "ext-sglang-tp-001",
+          "kept": true,
+          "score": 0.8774561285972595
+        },
+        {
+          "chunk_id": "ext-vllm-offline-001",
+          "kept": true,
+          "score": 0.68365478515625
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "一张卡装不下这个模型vllm 能拆到两张卡上跑吗",
+      "query_raw": "一张卡装不下这个模型,vllm 能拆到两张卡上跑吗",
+      "question_id": "ext-eg-003",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-served-name-001",
+          "kept": true,
+          "score": 0.9863899350166321
+        },
+        {
+          "chunk_id": "ext-serve-local-path-001",
+          "kept": true,
+          "score": 0.1469448208808899
+        },
+        {
+          "chunk_id": "ext-comfyui-ipadapter-001",
+          "kept": true,
+          "score": 0.12931016087532043
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "调用的时候不想写一长串模型路径能给它起个短名字吗",
+      "query_raw": "调用的时候不想写一长串模型路径,能给它起个短名字吗",
+      "question_id": "ext-eg-004",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-oom-vllm-001",
+          "kept": true,
+          "score": 0.9972924590110779
+        },
+        {
+          "chunk_id": "ext-vllm-quantization-001",
+          "kept": true,
+          "score": 0.9807528853416443
+        },
+        {
+          "chunk_id": "ext-gpu-fragmentation-001",
+          "kept": true,
+          "score": 0.8770989775657654
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "vllm 加载模型直接 oom 了有哪些办法能省显存",
+      "query_raw": "vllm 加载模型直接 OOM 了,有哪些办法能省显存",
+      "question_id": "ext-eg-005",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-quantization-001",
+          "kept": true,
+          "score": 0.995223343372345
+        },
+        {
+          "chunk_id": "ext-gpu-oom-vllm-001",
+          "kept": true,
+          "score": 0.9890739321708679
+        },
+        {
+          "chunk_id": "ext-transformers-awq-gptq-quantization-001",
+          "kept": true,
+          "score": 0.8514543175697327
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "显存不太够能不能用量化过的模型在 vllm 上跑",
+      "query_raw": "显存不太够,能不能用量化过的模型在 vllm 上跑",
+      "question_id": "ext-eg-006",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-port-001",
+          "kept": true,
+          "score": 0.9830632209777832
+        },
+        {
+          "chunk_id": "ext-vllm-serving-001",
+          "kept": true,
+          "score": 0.7631257176399231
+        },
+        {
+          "chunk_id": "ext-serve-local-path-001",
+          "kept": true,
+          "score": 0.3696625232696533
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "起 vllm 的时候提示端口已经被占用了",
+      "query_raw": "起 vllm 的时候提示端口已经被占用了",
+      "question_id": "ext-eg-007",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-cuda-error-001",
+          "kept": true,
+          "score": 0.9976135492324829
+        },
+        {
+          "chunk_id": "ext-gpu-oom-vllm-001",
+          "kept": true,
+          "score": 0.8994684219360352
+        },
+        {
+          "chunk_id": "ext-vllm-startup-hang-001",
+          "kept": true,
+          "score": 0.4267544448375702
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "vllm 跑着跑着报 cuda error 崩了怎么定位是哪出问题",
+      "query_raw": "vllm 跑着跑着报 cuda error 崩了,怎么定位是哪出问题",
+      "question_id": "ext-eg-008",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-startup-hang-001",
+          "kept": true,
+          "score": 0.9964788556098938
+        },
+        {
+          "chunk_id": "ext-gpu-oom-vllm-001",
+          "kept": true,
+          "score": 0.9320285320281982
+        },
+        {
+          "chunk_id": "ext-vllm-serving-001",
+          "kept": true,
+          "score": 0.9066419005393982
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "vllm 启动一直卡着模型加载不出来",
+      "query_raw": "vllm 启动一直卡着,模型加载不出来",
+      "question_id": "ext-eg-009",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-sglang-serving-001",
+          "kept": true,
+          "score": 0.9987590312957764
+        },
+        {
+          "chunk_id": "ext-vllm-serving-001",
+          "kept": true,
+          "score": 0.9743727445602417
+        },
+        {
+          "chunk_id": "ext-litellm-proxy-openai-compatible-001",
+          "kept": true,
+          "score": 0.9448195695877075
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "怎么用 sglang 拉起一个兼容 openai 的服务",
+      "query_raw": "怎么用 sglang 拉起一个兼容 openai 的服务",
+      "question_id": "ext-eg-010",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-sglang-oom-001",
+          "kept": true,
+          "score": 0.9964726567268372
+        },
+        {
+          "chunk_id": "ext-sglang-context-001",
+          "kept": true,
+          "score": 0.9134844541549683
+        },
+        {
+          "chunk_id": "ext-scene-video-generation-low-vram-001",
+          "kept": true,
+          "score": 0.8988684415817261
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "sglang 跑起来报显存不够应该调哪个参数",
+      "query_raw": "sglang 跑起来报显存不够,应该调哪个参数",
+      "question_id": "ext-eg-011",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-sglang-tp-001",
+          "kept": true,
+          "score": 0.992868959903717
+        },
+        {
+          "chunk_id": "ext-vllm-tensor-parallel-001",
+          "kept": true,
+          "score": 0.9301519393920898
+        },
+        {
+          "chunk_id": "ext-pytorch-ddp-001",
+          "kept": true,
+          "score": 0.9191111326217651
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "sglang 想用多张卡一起跑同一个模型",
+      "query_raw": "sglang 想用多张卡一起跑同一个模型",
+      "question_id": "ext-eg-012",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-sglang-context-001",
+          "kept": true,
+          "score": 0.9957476258277893
+        },
+        {
+          "chunk_id": "ext-sglang-oom-001",
+          "kept": true,
+          "score": 0.9278581738471985
+        },
+        {
+          "chunk_id": "ext-ollama-context-vram-001",
+          "kept": true,
+          "score": 0.6050397753715515
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "sglang 想把上下文长度限制得小一点",
+      "query_raw": "sglang 想把上下文长度限制得小一点",
+      "question_id": "ext-eg-013",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ollama-run-001",
+          "kept": true,
+          "score": 0.9890453815460205
+        },
+        {
+          "chunk_id": "ext-ollama-modelfile-001",
+          "kept": true,
+          "score": 0.9854656457901001
+        },
+        {
+          "chunk_id": "ext-ollama-model-cache-repair-001",
+          "kept": true,
+          "score": 0.951586902141571
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ollama 怎么把一个模型下下来再跑起来",
+      "query_raw": "ollama 怎么把一个模型下下来再跑起来",
+      "question_id": "ext-eg-014",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ollama-openai-001",
+          "kept": true,
+          "score": 0.9988211989402771
+        },
+        {
+          "chunk_id": "ext-litellm-proxy-openai-compatible-001",
+          "kept": true,
+          "score": 0.903427004814148
+        },
+        {
+          "chunk_id": "ext-sglang-serving-001",
+          "kept": true,
+          "score": 0.8934025764465332
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "我想用 openai 的库去调本地的 ollamabaseurl 填什么",
+      "query_raw": "我想用 openai 的库去调本地的 ollama,base_url 填什么",
+      "question_id": "ext-eg-015",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ollama-host-001",
+          "kept": true,
+          "score": 0.9759382605552673
+        },
+        {
+          "chunk_id": "ext-comfyui-start-001",
+          "kept": true,
+          "score": 0.8575904965400696
+        },
+        {
+          "chunk_id": "ext-webapp-gradio-remote-001",
+          "kept": true,
+          "score": 0.6519517302513123
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ollama 默认只能本机连怎么让别的机器也能访问",
+      "query_raw": "ollama 默认只能本机连,怎么让别的机器也能访问",
+      "question_id": "ext-eg-016",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ollama-gpu-001",
+          "kept": true,
+          "score": 0.9784542322158813
+        },
+        {
+          "chunk_id": "ext-gpu-not-detected-001",
+          "kept": true,
+          "score": 0.9080873727798462
+        },
+        {
+          "chunk_id": "ext-ollama-run-001",
+          "kept": true,
+          "score": 0.867149829864502
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "怎么确认 ollama 到底有没有用上显卡",
+      "query_raw": "怎么确认 ollama 到底有没有用上显卡",
+      "question_id": "ext-eg-017",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ollama-models-dir-001",
+          "kept": true,
+          "score": 0.9647528529167175
+        },
+        {
+          "chunk_id": "ext-ollama-model-cache-repair-001",
+          "kept": true,
+          "score": 0.8496241569519043
+        },
+        {
+          "chunk_id": "ext-hf-cache-cli-download-001",
+          "kept": true,
+          "score": 0.7121001482009888
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ollama 的模型默认下到系统盘了能换个目录吗",
+      "query_raw": "ollama 的模型默认下到系统盘了,能换个目录吗",
+      "question_id": "ext-eg-018",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-nvidia-smi-001",
+          "kept": true,
+          "score": 0.9953794479370117
+        },
+        {
+          "chunk_id": "ext-nvitop-user-gpu-monitor-001",
+          "kept": true,
+          "score": 0.9542607069015503
+        },
+        {
+          "chunk_id": "ext-nvidia-smi-safe-cleanup-001",
+          "kept": true,
+          "score": 0.9345290064811707
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "想看看现在显卡用了多少显存是哪个进程在占",
+      "query_raw": "想看看现在显卡用了多少显存、是哪个进程在占",
+      "question_id": "ext-eg-019",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-driver-cuda-version-001",
+          "kept": true,
+          "score": 0.9973576664924622
+        },
+        {
+          "chunk_id": "ext-cuda-driver-compatibility-001",
+          "kept": true,
+          "score": 0.9953663349151611
+        },
+        {
+          "chunk_id": "ext-pytorch-install-001",
+          "kept": true,
+          "score": 0.8104698657989502
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "怎么查我这台机器的显卡驱动和 cuda 版本",
+      "query_raw": "怎么查我这台机器的显卡驱动和 cuda 版本",
+      "question_id": "ext-eg-020",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-not-detected-001",
+          "kept": true,
+          "score": 0.995337724685669
+        },
+        {
+          "chunk_id": "ext-jax-gpu-install-001",
+          "kept": true,
+          "score": 0.24447853863239288
+        },
+        {
+          "chunk_id": "ext-k8s-gpu-pod-pending-001",
+          "kept": true,
+          "score": 0.19422103464603424
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "代码里 torchcudaisavailable 返回 false怎么查",
+      "query_raw": "代码里 torch.cuda.is_available() 返回 false,怎么查",
+      "question_id": "ext-eg-021",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-pytorch-oom-001",
+          "kept": true,
+          "score": 0.9986962676048279
+        },
+        {
+          "chunk_id": "ext-gpu-oom-vllm-001",
+          "kept": true,
+          "score": 0.9883058071136475
+        },
+        {
+          "chunk_id": "ext-sglang-oom-001",
+          "kept": true,
+          "score": 0.9679839611053467
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "训练的时候老是 cuda out of memory有什么通用的降显存办法",
+      "query_raw": "训练的时候老是 cuda out of memory,有什么通用的降显存办法",
+      "question_id": "ext-eg-022",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-empty-cache-001",
+          "kept": true,
+          "score": 0.9866265654563904
+        },
+        {
+          "chunk_id": "ext-gpu-pytorch-oom-001",
+          "kept": true,
+          "score": 0.8395277857780457
+        },
+        {
+          "chunk_id": "ext-gpu-oom-vllm-001",
+          "kept": true,
+          "score": 0.6492932438850403
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "我调了 emptycache 为什么显存还是没降下来",
+      "query_raw": "我调了 empty_cache 为什么显存还是没降下来",
+      "question_id": "ext-eg-023",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-fragmentation-001",
+          "kept": true,
+          "score": 0.9903400540351868
+        },
+        {
+          "chunk_id": "ext-gpu-oom-vs-ram-001",
+          "kept": true,
+          "score": 0.8878839015960693
+        },
+        {
+          "chunk_id": "ext-gpu-pytorch-oom-001",
+          "kept": true,
+          "score": 0.7525275349617004
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "总显存看着还有富余却报 oom是不是碎片的问题",
+      "query_raw": "总显存看着还有富余,却报 oom,是不是碎片的问题",
+      "question_id": "ext-eg-024",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-nvidia-smi-safe-cleanup-001",
+          "kept": true,
+          "score": 0.9803014397621155
+        },
+        {
+          "chunk_id": "ext-gpu-kill-process-001",
+          "kept": true,
+          "score": 0.966156005859375
+        },
+        {
+          "chunk_id": "ext-gpu-nvidia-smi-001",
+          "kept": true,
+          "score": 0.8601830005645752
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "显存被一个进程一直占着不放怎么清掉",
+      "query_raw": "显存被一个进程一直占着不放,怎么清掉",
+      "question_id": "ext-eg-025",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-oom-vs-ram-001",
+          "kept": true,
+          "score": 0.9943041205406189
+        },
+        {
+          "chunk_id": "ext-gpu-kill-process-001",
+          "kept": true,
+          "score": 0.717050313949585
+        },
+        {
+          "chunk_id": "ext-linux-resource-001",
+          "kept": true,
+          "score": 0.4900825619697571
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "进程莫名其妙被 killed是显存不够还是内存不够",
+      "query_raw": "进程莫名其妙被 killed,是显存不够还是内存不够",
+      "question_id": "ext-eg-026",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-visible-devices-001",
+          "kept": true,
+          "score": 0.9981675148010254
+        },
+        {
+          "chunk_id": "ext-pytorch-nccl-ddp-debug-001",
+          "kept": true,
+          "score": 0.9400482773780823
+        },
+        {
+          "chunk_id": "ext-accelerate-launch-001",
+          "kept": true,
+          "score": 0.9260754585266113
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "多卡机器上怎么让程序只用第 0 和第 1 张卡",
+      "query_raw": "多卡机器上怎么让程序只用第 0 和第 1 张卡",
+      "question_id": "ext-eg-027",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-hf-download-001",
+          "kept": true,
+          "score": 0.9834877848625183
+        },
+        {
+          "chunk_id": "ext-hf-cache-cli-download-001",
+          "kept": true,
+          "score": 0.9597730040550232
+        },
+        {
+          "chunk_id": "ext-package-manager-proxy-dns-001",
+          "kept": true,
+          "score": 0.888119637966156
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "从 huggingface 下载模型特别慢有没有什么办法",
+      "query_raw": "从 huggingface 下载模型特别慢,有没有什么办法",
+      "question_id": "ext-eg-028",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-vram-estimate-001",
+          "kept": true,
+          "score": 0.9881522059440613
+        },
+        {
+          "chunk_id": "ext-accelerate-memory-estimator-001",
+          "kept": true,
+          "score": 0.8623477220535278
+        },
+        {
+          "chunk_id": "ext-llamafactory-lora-train-001",
+          "kept": true,
+          "score": 0.32293298840522766
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "我要跑一个 14b 的模型大概得多大显存的卡",
+      "query_raw": "我要跑一个 14b 的模型,大概得多大显存的卡",
+      "question_id": "ext-eg-029",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-comfyui-start-001",
+          "kept": true,
+          "score": 0.9983958601951599
+        },
+        {
+          "chunk_id": "ext-comfyui-cant-connect-001",
+          "kept": true,
+          "score": 0.9741326570510864
+        },
+        {
+          "chunk_id": "ext-a1111-webui-listen-port-001",
+          "kept": true,
+          "score": 0.9719520211219788
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "我在实例里把 comfyui 跑起来了想让别的电脑也能打开它的页面",
+      "query_raw": "我在实例里把 comfyui 跑起来了,想让别的电脑也能打开它的页面",
+      "question_id": "ext-eg-030",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-comfyui-oom-001",
+          "kept": true,
+          "score": 0.9947977066040039
+        },
+        {
+          "chunk_id": "ext-gpu-pytorch-oom-001",
+          "kept": true,
+          "score": 0.9446222186088562
+        },
+        {
+          "chunk_id": "ext-scene-video-comfyui-models-vram-001",
+          "kept": true,
+          "score": 0.8657188415527344
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "comfyui 出图的时候老是爆显存有什么办法能降一点",
+      "query_raw": "comfyui 出图的时候老是爆显存,有什么办法能降一点",
+      "question_id": "ext-eg-031",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-comfyui-models-dir-001",
+          "kept": true,
+          "score": 0.993504524230957
+        },
+        {
+          "chunk_id": "ext-comfyui-ipadapter-001",
+          "kept": true,
+          "score": 0.9698169231414795
+        },
+        {
+          "chunk_id": "ext-comfyui-flux-models-001",
+          "kept": true,
+          "score": 0.9619702696800232
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "下载的大模型放进去了comfyui 里却选不到该放哪个文件夹",
+      "query_raw": "下载的大模型放进去了,comfyui 里却选不到,该放哪个文件夹",
+      "question_id": "ext-eg-032",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-comfyui-custom-nodes-001",
+          "kept": true,
+          "score": 0.994111955165863
+        },
+        {
+          "chunk_id": "ext-comfyui-manager-001",
+          "kept": true,
+          "score": 0.9918434023857117
+        },
+        {
+          "chunk_id": "ext-comfyui-install-001",
+          "kept": true,
+          "score": 0.9027205109596252
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "comfyui 想用一个第三方的节点怎么把它装上",
+      "query_raw": "comfyui 想用一个第三方的节点,怎么把它装上",
+      "question_id": "ext-eg-033",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-comfyui-install-001",
+          "kept": true,
+          "score": 0.9995761513710022
+        },
+        {
+          "chunk_id": "ext-comfyui-start-001",
+          "kept": true,
+          "score": 0.9687276482582092
+        },
+        {
+          "chunk_id": "ext-comfyui-manager-001",
+          "kept": true,
+          "score": 0.9198417067527771
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "在新开的实例上从头装 comfyui 该怎么弄",
+      "query_raw": "在新开的实例上从头装 comfyui 该怎么弄",
+      "question_id": "ext-eg-034",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-comfyui-cant-connect-001",
+          "kept": true,
+          "score": 0.9894127249717712
+        },
+        {
+          "chunk_id": "ext-webui-refused-connection-debug-001",
+          "kept": true,
+          "score": 0.9559581279754639
+        },
+        {
+          "chunk_id": "ext-a1111-webui-listen-port-001",
+          "kept": true,
+          "score": 0.9325685501098633
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "comfyui 启动了日志也没报错可浏览器就是打不开",
+      "query_raw": "comfyui 启动了日志也没报错,可浏览器就是打不开",
+      "question_id": "ext-eg-035",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-comfyui-api-001",
+          "kept": true,
+          "score": 0.9970296621322632
+        },
+        {
+          "chunk_id": "ext-comfyui-start-001",
+          "kept": true,
+          "score": 0.4130871891975403
+        },
+        {
+          "chunk_id": "ext-comfyui-install-001",
+          "kept": true,
+          "score": 0.37652596831321716
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "不想每次手点界面能不能用脚本自动让 comfyui 跑一个工作流",
+      "query_raw": "不想每次手点界面,能不能用脚本自动让 comfyui 跑一个工作流",
+      "question_id": "ext-eg-036",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-linux-tmux-001",
+          "kept": true,
+          "score": 0.9962344765663147
+        },
+        {
+          "chunk_id": "ext-linux-nohup-001",
+          "kept": true,
+          "score": 0.9893989562988281
+        },
+        {
+          "chunk_id": "ext-systemd-user-service-webui-001",
+          "kept": true,
+          "score": 0.6127138733863831
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "想让训练在后台跑人离开后还能重新连回去接着看",
+      "query_raw": "想让训练在后台跑,人离开后还能重新连回去接着看",
+      "question_id": "ext-eg-037",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-linux-nohup-001",
+          "kept": true,
+          "score": 0.9989293217658997
+        },
+        {
+          "chunk_id": "ext-linux-tmux-001",
+          "kept": true,
+          "score": 0.08132050931453705
+        },
+        {
+          "chunk_id": "ext-systemd-user-service-webui-001",
+          "kept": true,
+          "score": 0.049245357513427734
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "怎么把一条命令丢到后台跑顺便把输出都存进日志",
+      "query_raw": "怎么把一条命令丢到后台跑,顺便把输出都存进日志",
+      "question_id": "ext-eg-038",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-linux-disk-cleanup-001",
+          "kept": true,
+          "score": 0.9942230582237244
+        },
+        {
+          "chunk_id": "ext-linux-resource-001",
+          "kept": true,
+          "score": 0.09210006147623062
+        },
+        {
+          "chunk_id": "ext-linux-transfer-001",
+          "kept": true,
+          "score": 0.0032015079632401466
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "实例报 no space left磁盘满了怎么清出空间",
+      "query_raw": "实例报 no space left,磁盘满了怎么清出空间",
+      "question_id": "ext-eg-039",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-linux-resource-001",
+          "kept": true,
+          "score": 0.9908921718597412
+        },
+        {
+          "chunk_id": "ext-gpu-nvidia-smi-001",
+          "kept": true,
+          "score": 0.6201510429382324
+        },
+        {
+          "chunk_id": "ext-nvidia-smi-safe-cleanup-001",
+          "kept": true,
+          "score": 0.32525375485420227
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "free h 看着内存不多了想找出是哪个进程占的",
+      "query_raw": "free -h 看着内存不多了,想找出是哪个进程占的",
+      "question_id": "ext-eg-040",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-linux-conda-001",
+          "kept": true,
+          "score": 0.997502863407135
+        },
+        {
+          "chunk_id": "ext-linux-venv-001",
+          "kept": true,
+          "score": 0.5843046307563782
+        },
+        {
+          "chunk_id": "ext-python-env-uv-micromamba-image-001",
+          "kept": true,
+          "score": 0.018504545092582703
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "想给新项目单独建个 conda 环境装的包不影响别的",
+      "query_raw": "想给新项目单独建个 conda 环境,装的包不影响别的",
+      "question_id": "ext-eg-041",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-linux-venv-001",
+          "kept": true,
+          "score": 0.999560534954071
+        },
+        {
+          "chunk_id": "ext-linux-conda-001",
+          "kept": true,
+          "score": 0.9701352119445801
+        },
+        {
+          "chunk_id": "ext-python-env-uv-micromamba-image-001",
+          "kept": true,
+          "score": 0.4410415589809418
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "不想装 condapython 自带的 venv 怎么建环境",
+      "query_raw": "不想装 conda,python 自带的 venv 怎么建环境",
+      "question_id": "ext-eg-042",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-linux-pip-mirror-001",
+          "kept": true,
+          "score": 0.9817996621131897
+        },
+        {
+          "chunk_id": "ext-package-manager-proxy-dns-001",
+          "kept": true,
+          "score": 0.21952155232429504
+        },
+        {
+          "chunk_id": "ext-gpu-hf-download-001",
+          "kept": true,
+          "score": 0.002858600579202175
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "pip 下载特别慢想换成国内的镜像源",
+      "query_raw": "pip 下载特别慢,想换成国内的镜像源",
+      "question_id": "ext-eg-043",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-linux-transfer-001",
+          "kept": true,
+          "score": 0.9971840977668762
+        },
+        {
+          "chunk_id": "ext-scp-rsync-transfer-debug-001",
+          "kept": true,
+          "score": 0.9864939451217651
+        },
+        {
+          "chunk_id": "ext-rclone-sync-copy-001",
+          "kept": true,
+          "score": 0.9855639934539795
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "本地的数据集怎么传到实例上去",
+      "query_raw": "本地的数据集怎么传到实例上去",
+      "question_id": "ext-eg-044",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-linux-ssh-key-001",
+          "kept": true,
+          "score": 0.9968435764312744
+        },
+        {
+          "chunk_id": "ext-ssh-connection-debug-001",
+          "kept": true,
+          "score": 0.00472297752276063
+        },
+        {
+          "chunk_id": "ext-linux-transfer-001",
+          "kept": true,
+          "score": 0.0013249270850792527
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "每次 ssh 登录都要输密码怎么搞成免密的",
+      "query_raw": "每次 ssh 登录都要输密码,怎么搞成免密的",
+      "question_id": "ext-eg-045",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pytorch-install-001",
+          "kept": true,
+          "score": 0.9990482926368713
+        },
+        {
+          "chunk_id": "ext-framework-cuda-match-001",
+          "kept": true,
+          "score": 0.998421311378479
+        },
+        {
+          "chunk_id": "ext-gpu-not-detected-001",
+          "kept": true,
+          "score": 0.9915325045585632
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "装完 pytorch 发现用不了 gpu是不是装成 cpu 版了",
+      "query_raw": "装完 pytorch 发现用不了 gpu,是不是装成 cpu 版了",
+      "question_id": "ext-eg-046",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pytorch-device-001",
+          "kept": true,
+          "score": 0.9994144439697266
+        },
+        {
+          "chunk_id": "ext-pytorch-install-001",
+          "kept": true,
+          "score": 0.7943321466445923
+        },
+        {
+          "chunk_id": "ext-gpu-not-detected-001",
+          "kept": true,
+          "score": 0.6300199031829834
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "pytorch 写好的代码默认在 cpu 跑怎么让它上 gpu",
+      "query_raw": "pytorch 写好的代码默认在 cpu 跑,怎么让它上 gpu",
+      "question_id": "ext-eg-047",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pytorch-ddp-001",
+          "kept": true,
+          "score": 0.9988420605659485
+        },
+        {
+          "chunk_id": "ext-pytorch-nccl-ddp-debug-001",
+          "kept": true,
+          "score": 0.9721878170967102
+        },
+        {
+          "chunk_id": "ext-accelerate-launch-001",
+          "kept": true,
+          "score": 0.9299290180206299
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "单机 4 张卡想一起训练pytorch 怎么搞多卡",
+      "query_raw": "单机 4 张卡想一起训练,pytorch 怎么搞多卡",
+      "question_id": "ext-eg-048",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pytorch-dataloader-001",
+          "kept": true,
+          "score": 0.9994033575057983
+        },
+        {
+          "chunk_id": "ext-nsight-systems-profile-001",
+          "kept": true,
+          "score": 0.975936770439148
+        },
+        {
+          "chunk_id": "ext-ultralytics-yolo-oom-performance-001",
+          "kept": true,
+          "score": 0.7891187071800232
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "gpu 利用率老是很低感觉卡在数据加载dataloader 怎么调快",
+      "query_raw": "gpu 利用率老是很低,感觉卡在数据加载,dataloader 怎么调快",
+      "question_id": "ext-eg-049",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pytorch-amp-001",
+          "kept": true,
+          "score": 0.9980054497718811
+        },
+        {
+          "chunk_id": "ext-transformers-trainer-gpu-001",
+          "kept": true,
+          "score": 0.8791516423225403
+        },
+        {
+          "chunk_id": "ext-fsdp-mixed-precision-auto-wrap-001",
+          "kept": true,
+          "score": 0.8334322571754456
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "训练想省点显存又快一点听说混合精度可以怎么写",
+      "query_raw": "训练想省点显存又快一点,听说混合精度可以,怎么写",
+      "question_id": "ext-eg-050",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pytorch-checkpoint-001",
+          "kept": true,
+          "score": 0.9962298274040222
+        },
+        {
+          "chunk_id": "ext-fsdp-checkpoint-merge-001",
+          "kept": true,
+          "score": 0.6126200556755066
+        },
+        {
+          "chunk_id": "ext-tensorboard-pytorch-logging-001",
+          "kept": true,
+          "score": 0.148092582821846
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "pytorch 训练完想把权重保存下来下次加载接着用怎么写",
+      "query_raw": "pytorch 训练完想把权重保存下来,下次加载接着用,怎么写",
+      "question_id": "ext-eg-051",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-modelscope-download-001",
+          "kept": true,
+          "score": 0.9970861077308655
+        },
+        {
+          "chunk_id": "ext-hf-cache-cli-download-001",
+          "kept": true,
+          "score": 0.829724133014679
+        },
+        {
+          "chunk_id": "ext-gpu-hf-download-001",
+          "kept": true,
+          "score": 0.7241832613945007
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "除了 huggingface国内还能从哪里下载模型",
+      "query_raw": "除了 huggingface,国内还能从哪里下载模型",
+      "question_id": "ext-eg-052",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-hf-token-001",
+          "kept": true,
+          "score": 0.9962945580482483
+        },
+        {
+          "chunk_id": "ext-hf-cache-cli-download-001",
+          "kept": true,
+          "score": 0.7155594229698181
+        },
+        {
+          "chunk_id": "ext-ollama-run-001",
+          "kept": true,
+          "score": 0.4206011891365051
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "下载 llama 的时候提示没有权限需要先申请什么吗",
+      "query_raw": "下载 llama 的时候提示没有权限,需要先申请什么吗",
+      "question_id": "ext-eg-053",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ollama-modelfile-001",
+          "kept": true,
+          "score": 0.9953923225402832
+        },
+        {
+          "chunk_id": "ext-gguf-llama-cpp-convert-001",
+          "kept": true,
+          "score": 0.8581427335739136
+        },
+        {
+          "chunk_id": "ext-ollama-run-001",
+          "kept": true,
+          "score": 0.5952039361000061
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "我有个 gguf 文件想让 ollama 直接用它",
+      "query_raw": "我有个 gguf 文件,想让 ollama 直接用它",
+      "question_id": "ext-eg-054",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-serve-local-path-001",
+          "kept": true,
+          "score": 0.996033251285553
+        },
+        {
+          "chunk_id": "ext-hf-snapshot-preload-image-001",
+          "kept": true,
+          "score": 0.8597639203071594
+        },
+        {
+          "chunk_id": "ext-vllm-quantization-001",
+          "kept": true,
+          "score": 0.7446776628494263
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "vllm 怎么加载本地已经下好的目录不想每次重新下",
+      "query_raw": "vllm 怎么加载本地已经下好的目录,不想每次重新下",
+      "question_id": "ext-eg-055",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-linux-ssh-keepalive-001",
+          "kept": true,
+          "score": 0.9983969330787659
+        },
+        {
+          "chunk_id": "ext-vscode-remote-server-001",
+          "kept": true,
+          "score": 0.5114531517028809
+        },
+        {
+          "chunk_id": "ext-ssh-connection-debug-001",
+          "kept": true,
+          "score": 0.47642144560813904
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "vscode remote 空闲一会儿就断开ssh 心跳参数应该怎么设",
+      "query_raw": "vscode remote 空闲一会儿就断开,ssh 心跳参数应该怎么设",
+      "question_id": "ext-eg-056",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-linux-large-transfer-rsync-001",
+          "kept": true,
+          "score": 0.9982557892799377
+        },
+        {
+          "chunk_id": "ext-rsync-checksum-partial-001",
+          "kept": true,
+          "score": 0.9956144094467163
+        },
+        {
+          "chunk_id": "ext-scp-rsync-transfer-debug-001",
+          "kept": true,
+          "score": 0.9645562767982483
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "几十 g 数据传到实例中断了rsync 怎么保留进度继续传",
+      "query_raw": "几十 G 数据传到实例中断了,rsync 怎么保留进度继续传",
+      "question_id": "ext-eg-057",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-webapp-gradio-remote-001",
+          "kept": true,
+          "score": 0.9940549731254578
+        },
+        {
+          "chunk_id": "ext-webapp-streamlit-uvicorn-remote-001",
+          "kept": true,
+          "score": 0.9492704272270203
+        },
+        {
+          "chunk_id": "ext-comfyui-start-001",
+          "kept": true,
+          "score": 0.8899664282798767
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "gradio 代码在云主机上跑了外部访问要把监听地址改成什么",
+      "query_raw": "gradio 代码在云主机上跑了,外部访问要把监听地址改成什么",
+      "question_id": "ext-eg-058",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-webapp-streamlit-uvicorn-remote-001",
+          "kept": true,
+          "score": 0.9987815022468567
+        },
+        {
+          "chunk_id": "ext-ollama-host-001",
+          "kept": true,
+          "score": 0.7122054696083069
+        },
+        {
+          "chunk_id": "ext-comfyui-start-001",
+          "kept": true,
+          "score": 0.6209206581115723
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "streamlit 或 fastapi 本机能访问但公网打不开host 应该怎么绑",
+      "query_raw": "streamlit 或 fastapi 本机能访问但公网打不开,host 应该怎么绑",
+      "question_id": "ext-eg-059",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-hf-cache-cli-download-001",
+          "kept": true,
+          "score": 0.9941825270652771
+        },
+        {
+          "chunk_id": "ext-hf-datasets-streaming-cache-001",
+          "kept": true,
+          "score": 0.9900179505348206
+        },
+        {
+          "chunk_id": "ext-gpu-hf-download-001",
+          "kept": true,
+          "score": 0.9649650454521179
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "huggingface 缓存把系统盘占满了怎么指定 hfhome 并下载到数据盘",
+      "query_raw": "huggingface 缓存把系统盘占满了,怎么指定 HF_HOME 并下载到数据盘",
+      "question_id": "ext-eg-060",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-peft-lora-qlora-001",
+          "kept": true,
+          "score": 0.9981867671012878
+        },
+        {
+          "chunk_id": "ext-bitsandbytes-quantization-001",
+          "kept": true,
+          "score": 0.897835373878479
+        },
+        {
+          "chunk_id": "ext-llamafactory-lora-train-001",
+          "kept": true,
+          "score": 0.7148662805557251
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "小显存做 qlora 微调时 peft 的 targetmodules 和 4bit 要先检查什么",
+      "query_raw": "小显存做 qlora 微调时 peft 的 target_modules 和 4bit 要先检查什么",
+      "question_id": "ext-eg-061",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pytorch-nccl-ddp-debug-001",
+          "kept": true,
+          "score": 0.9991682767868042
+        },
+        {
+          "chunk_id": "ext-multinode-nccl-env-minimal-001",
+          "kept": true,
+          "score": 0.993316650390625
+        },
+        {
+          "chunk_id": "ext-nccl-advanced-debug-001",
+          "kept": true,
+          "score": 0.9859187602996826
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "torchrun 多卡训练一直卡住nccl 日志和 localrank 怎么排查",
+      "query_raw": "torchrun 多卡训练一直卡住,nccl 日志和 local_rank 怎么排查",
+      "question_id": "ext-eg-062",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-jax-gpu-install-001",
+          "kept": true,
+          "score": 0.9958527088165283
+        },
+        {
+          "chunk_id": "ext-docker-run-gpu-access-001",
+          "kept": true,
+          "score": 0.9479513168334961
+        },
+        {
+          "chunk_id": "ext-ollama-gpu-001",
+          "kept": true,
+          "score": 0.9159541130065918
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "jax 装好后怎么确认是不是跑在 gpu 上",
+      "query_raw": "jax 装好后怎么确认是不是跑在 GPU 上",
+      "question_id": "ext-eg-063",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-cupy-gpu-array-001",
+          "kept": true,
+          "score": 0.9921425580978394
+        },
+        {
+          "chunk_id": "ext-jax-gpu-install-001",
+          "kept": true,
+          "score": 0.8359071016311646
+        },
+        {
+          "chunk_id": "ext-pytorch-device-001",
+          "kept": true,
+          "score": 0.6517928838729858
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "cupy 安装后怎么检查数组真的放到显卡上算了",
+      "query_raw": "cupy 安装后怎么检查数组真的放到显卡上算了",
+      "question_id": "ext-eg-064",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-openmm-cuda-platform-001",
+          "kept": true,
+          "score": 0.9989233613014221
+        },
+        {
+          "chunk_id": "ext-gromacs-gpu-offload-001",
+          "kept": true,
+          "score": 0.8654351830482483
+        },
+        {
+          "chunk_id": "ext-lammps-gpu-package-001",
+          "kept": true,
+          "score": 0.765678882598877
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "openmm 分子动力学任务怎么强制选 cuda 显卡",
+      "query_raw": "openmm 分子动力学任务怎么强制选 CUDA 显卡",
+      "question_id": "ext-eg-065",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gromacs-gpu-offload-001",
+          "kept": true,
+          "score": 0.9987868666648865
+        },
+        {
+          "chunk_id": "ext-pytorch-device-001",
+          "kept": true,
+          "score": 0.34534841775894165
+        },
+        {
+          "chunk_id": "ext-lammps-gpu-package-001",
+          "kept": true,
+          "score": 0.3008216917514801
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "gromacs mdrun 怎么把 pme 和非键计算放到 gpu 上",
+      "query_raw": "gromacs mdrun 怎么把 pme 和非键计算放到 gpu 上",
+      "question_id": "ext-eg-066",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-rapids-cudf-install-001",
+          "kept": true,
+          "score": 0.9965143799781799
+        },
+        {
+          "chunk_id": "ext-dask-cudf-multigpu-001",
+          "kept": true,
+          "score": 0.99339759349823
+        },
+        {
+          "chunk_id": "ext-cupy-gpu-array-001",
+          "kept": true,
+          "score": 0.23163524270057678
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "pandas 数据处理太慢想用 rapids cudf 在 gpu 上跑",
+      "query_raw": "pandas 数据处理太慢,想用 rapids cudf 在 GPU 上跑",
+      "question_id": "ext-eg-067",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-docker-gpu-container-001",
+          "kept": true,
+          "score": 0.9986433386802673
+        },
+        {
+          "chunk_id": "ext-docker-gpu-visible-devices-advanced-001",
+          "kept": true,
+          "score": 0.9962084293365479
+        },
+        {
+          "chunk_id": "ext-docker-run-gpu-access-001",
+          "kept": true,
+          "score": 0.9958641529083252
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "docker 容器里 nvidiasmi 看不到显卡该怎么查",
+      "query_raw": "docker 容器里 nvidia-smi 看不到显卡该怎么查",
+      "question_id": "ext-eg-068",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-colabfold-local-gpu-001",
+          "kept": true,
+          "score": 0.9982302784919739
+        },
+        {
+          "chunk_id": "ext-alphafold3-docker-gpu-001",
+          "kept": true,
+          "score": 0.8874620199203491
+        },
+        {
+          "chunk_id": "ext-ai4science-repro-env-data-001",
+          "kept": true,
+          "score": 0.06738119572401047
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "colabfold 想在本地 gpu 上预测蛋白结构要准备什么",
+      "query_raw": "colabfold 想在本地 GPU 上预测蛋白结构,要准备什么",
+      "question_id": "ext-eg-069",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-docker-gpu-container-001",
+          "kept": true,
+          "score": 0.9965474009513855
+        },
+        {
+          "chunk_id": "ext-docker-run-gpu-access-001",
+          "kept": true,
+          "score": 0.9960514903068542
+        },
+        {
+          "chunk_id": "ext-alphafold3-docker-gpu-001",
+          "kept": true,
+          "score": 0.9955347776412964
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "alphafold3 的 docker 怎么确认 gpu 已经传进容器",
+      "query_raw": "alphafold3 的 docker 怎么确认 GPU 已经传进容器",
+      "question_id": "ext-eg-070",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-transformers-trainer-gpu-001",
+          "kept": true,
+          "score": 0.9944260120391846
+        },
+        {
+          "chunk_id": "ext-peft-lora-qlora-001",
+          "kept": true,
+          "score": 0.9869071245193481
+        },
+        {
+          "chunk_id": "ext-trl-sfttrainer-001",
+          "kept": true,
+          "score": 0.9577663540840149
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "transformers trainer 微调显存不够应该先调哪些参数",
+      "query_raw": "transformers trainer 微调显存不够,应该先调哪些参数",
+      "question_id": "ext-eg-071",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-accelerate-launch-001",
+          "kept": true,
+          "score": 0.9985400438308716
+        },
+        {
+          "chunk_id": "ext-pytorch-ddp-001",
+          "kept": true,
+          "score": 0.9896078705787659
+        },
+        {
+          "chunk_id": "ext-ray-train-gpu-scaling-001",
+          "kept": true,
+          "score": 0.9850592613220215
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "accelerate 想用两张 gpu 启动训练脚本",
+      "query_raw": "accelerate 想用两张 GPU 启动训练脚本",
+      "question_id": "ext-eg-072",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-bitsandbytes-quantization-001",
+          "kept": true,
+          "score": 0.9950096607208252
+        },
+        {
+          "chunk_id": "ext-transformers-awq-gptq-quantization-001",
+          "kept": true,
+          "score": 0.836186408996582
+        },
+        {
+          "chunk_id": "ext-peft-lora-qlora-001",
+          "kept": true,
+          "score": 0.8084302544593811
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "bitsandbytes 4bit 加载模型后还能训练哪些参数",
+      "query_raw": "bitsandbytes 4bit 加载模型后还能训练哪些参数",
+      "question_id": "ext-eg-073",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-llamafactory-lora-train-001",
+          "kept": true,
+          "score": 0.9868788123130798
+        },
+        {
+          "chunk_id": "ext-trl-sfttrainer-001",
+          "kept": true,
+          "score": 0.8752272129058838
+        },
+        {
+          "chunk_id": "ext-peft-lora-qlora-001",
+          "kept": true,
+          "score": 0.6799335479736328
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "llama factory 怎么跑 qwen 的 lora 微调",
+      "query_raw": "llama factory 怎么跑 qwen 的 lora 微调",
+      "question_id": "ext-eg-074",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-jax-gpu-install-001",
+          "kept": true,
+          "score": 0.9910661578178406
+        },
+        {
+          "chunk_id": "ext-unsloth-finetune-001",
+          "kept": true,
+          "score": 0.9856963157653809
+        },
+        {
+          "chunk_id": "ext-pytorch-install-001",
+          "kept": true,
+          "score": 0.978054940700531
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "unsloth 安装后怎么确认 gpu 环境没装错",
+      "query_raw": "unsloth 安装后怎么确认 gpu 环境没装错",
+      "question_id": "ext-eg-075",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-deepspeed-zero-001",
+          "kept": true,
+          "score": 0.9906365275382996
+        },
+        {
+          "chunk_id": "ext-fsdp-vs-deepspeed-zero-001",
+          "kept": true,
+          "score": 0.8448081016540527
+        },
+        {
+          "chunk_id": "ext-hf-big-model-device-map-offload-001",
+          "kept": true,
+          "score": 0.7930479049682617
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "deepspeed zero3 offload 怎么省显存",
+      "query_raw": "deepspeed zero3 offload 怎么省显存",
+      "question_id": "ext-eg-076",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-git-lfs-model-download-001",
+          "kept": true,
+          "score": 0.9866138100624084
+        },
+        {
+          "chunk_id": "ext-a1111-model-paths-001",
+          "kept": true,
+          "score": 0.23454539477825165
+        },
+        {
+          "chunk_id": "ext-gpu-hf-download-001",
+          "kept": true,
+          "score": 0.0960645079612732
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "git clone 的 safetensors 只有几百字节怎么拉 lfs 大文件",
+      "query_raw": "git clone 的 safetensors 只有几百字节,怎么拉 lfs 大文件",
+      "question_id": "ext-eg-077",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-aria2-parallel-download-001",
+          "kept": true,
+          "score": 0.9963827133178711
+        },
+        {
+          "chunk_id": "ext-wget-curl-resume-001",
+          "kept": true,
+          "score": 0.3908858299255371
+        },
+        {
+          "chunk_id": "ext-hf-cache-cli-download-001",
+          "kept": true,
+          "score": 0.3787786662578583
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "aria2 想多线程继续下载大模型文件",
+      "query_raw": "aria2 想多线程继续下载大模型文件",
+      "question_id": "ext-eg-078",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-wget-curl-resume-001",
+          "kept": true,
+          "score": 0.9978150129318237
+        },
+        {
+          "chunk_id": "ext-aria2-parallel-download-001",
+          "kept": true,
+          "score": 0.11072967201471329
+        },
+        {
+          "chunk_id": "ext-linux-large-transfer-rsync-001",
+          "kept": true,
+          "score": 0.054910290986299515
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "wget 或 curl 下载中断了怎么接着下",
+      "query_raw": "wget 或 curl 下载中断了怎么接着下",
+      "question_id": "ext-eg-079",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-rclone-sync-copy-001",
+          "kept": true,
+          "score": 0.9984312653541565
+        },
+        {
+          "chunk_id": "ext-s5cmd-minio-object-transfer-001",
+          "kept": true,
+          "score": 0.8205103874206543
+        },
+        {
+          "chunk_id": "ext-s3-object-storage-multipart-001",
+          "kept": true,
+          "score": 0.396567702293396
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "rclone 从对象存储同步数据集到实例怎么做",
+      "query_raw": "rclone 从对象存储同步数据集到实例怎么做",
+      "question_id": "ext-eg-080",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vscode-remote-server-001",
+          "kept": true,
+          "score": 0.9964931607246399
+        },
+        {
+          "chunk_id": "ext-ssh-tunnel-reverse-proxy-001",
+          "kept": true,
+          "score": 0.6867971420288086
+        },
+        {
+          "chunk_id": "ext-linux-ssh-keepalive-001",
+          "kept": true,
+          "score": 0.3036360740661621
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "vscode remote ssh 连上后怎么转发远程端口",
+      "query_raw": "vscode remote ssh 连上后怎么转发远程端口",
+      "question_id": "ext-eg-081",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-jupyter-server-remote-001",
+          "kept": true,
+          "score": 0.9990052580833435
+        },
+        {
+          "chunk_id": "ext-ssh-tunnel-reverse-proxy-001",
+          "kept": true,
+          "score": 0.8948035836219788
+        },
+        {
+          "chunk_id": "ext-public-webui-auth-security-001",
+          "kept": true,
+          "score": 0.8703332543373108
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "jupyter server 在远程实例上怎么安全访问",
+      "query_raw": "jupyter server 在远程实例上怎么安全访问",
+      "question_id": "ext-eg-082",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ssh-tunnel-reverse-proxy-001",
+          "kept": true,
+          "score": 0.9986035227775574
+        },
+        {
+          "chunk_id": "ext-tunnel-frp-tailscale-cloudflare-001",
+          "kept": true,
+          "score": 0.25879231095314026
+        },
+        {
+          "chunk_id": "ext-vscode-remote-server-001",
+          "kept": true,
+          "score": 0.051475636661052704
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ssh l 和 r 端口转发怎么选什么时候用反向代理",
+      "query_raw": "ssh -L 和 -R 端口转发怎么选,什么时候用反向代理",
+      "question_id": "ext-eg-083",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pytorch-nccl-ddp-debug-001",
+          "kept": true,
+          "score": 0.9983578324317932
+        },
+        {
+          "chunk_id": "ext-nccl-advanced-debug-001",
+          "kept": true,
+          "score": 0.9981498718261719
+        },
+        {
+          "chunk_id": "ext-multinode-nccl-env-minimal-001",
+          "kept": true,
+          "score": 0.9928668737411499
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "nccl 多卡 all reduce 卡住怎么开日志和指定网卡",
+      "query_raw": "nccl 多卡 all reduce 卡住怎么开日志和指定网卡",
+      "question_id": "ext-eg-084",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-cuda-driver-compatibility-001",
+          "kept": true,
+          "score": 0.9948036074638367
+        },
+        {
+          "chunk_id": "ext-gpu-driver-cuda-version-001",
+          "kept": true,
+          "score": 0.9911382794380188
+        },
+        {
+          "chunk_id": "ext-framework-cuda-match-001",
+          "kept": true,
+          "score": 0.9558462500572205
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "nvidiasmi 和 torch 显示的 cuda 版本不一样怎么办",
+      "query_raw": "nvidia-smi 和 torch 显示的 cuda 版本不一样怎么办",
+      "question_id": "ext-eg-085",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-framework-cuda-match-001",
+          "kept": true,
+          "score": 0.9987947940826416
+        },
+        {
+          "chunk_id": "ext-pytorch-install-001",
+          "kept": true,
+          "score": 0.9979251623153687
+        },
+        {
+          "chunk_id": "ext-gpu-driver-cuda-version-001",
+          "kept": true,
+          "score": 0.9853797554969788
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "pytorch 装完 cuda is available false框架和 cuda 怎么匹配",
+      "query_raw": "pytorch 装完 cuda is available false,框架和 cuda 怎么匹配",
+      "question_id": "ext-eg-086",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-comfyui-manager-001",
+          "kept": true,
+          "score": 0.9852861166000366
+        },
+        {
+          "chunk_id": "ext-comfyui-custom-nodes-001",
+          "kept": true,
+          "score": 0.9173094630241394
+        },
+        {
+          "chunk_id": "ext-scene-video-comfyui-models-vram-001",
+          "kept": true,
+          "score": 0.7916848063468933
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "comfyui manager 安装节点后不显示怎么排查",
+      "query_raw": "comfyui manager 安装节点后不显示怎么排查",
+      "question_id": "ext-eg-087",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-comfyui-flux-models-001",
+          "kept": true,
+          "score": 0.9971101880073547
+        },
+        {
+          "chunk_id": "ext-comfyui-models-dir-001",
+          "kept": true,
+          "score": 0.976531982421875
+        },
+        {
+          "chunk_id": "ext-comfyui-ipadapter-001",
+          "kept": true,
+          "score": 0.9619477987289429
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "comfyui flux 工作流缺 t5xxl clipl ae 模型放哪里",
+      "query_raw": "comfyui flux 工作流缺 t5xxl clip_l ae 模型放哪里",
+      "question_id": "ext-eg-088",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-comfyui-controlnet-001",
+          "kept": true,
+          "score": 0.9940093755722046
+        },
+        {
+          "chunk_id": "ext-comfyui-custom-nodes-001",
+          "kept": true,
+          "score": 0.9578820466995239
+        },
+        {
+          "chunk_id": "ext-sd-webui-controlnet-install-001",
+          "kept": true,
+          "score": 0.9525179862976074
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "comfyui controlnet aux 预处理节点缺失怎么装",
+      "query_raw": "comfyui controlnet aux 预处理节点缺失怎么装",
+      "question_id": "ext-eg-089",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-comfyui-ipadapter-001",
+          "kept": true,
+          "score": 0.9975168704986572
+        },
+        {
+          "chunk_id": "ext-comfyui-flux-models-001",
+          "kept": true,
+          "score": 0.9567704200744629
+        },
+        {
+          "chunk_id": "ext-comfyui-controlnet-001",
+          "kept": true,
+          "score": 0.8235634565353394
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "comfyui ipadapter 找不到 clip vision 或 flux ipadapter 模型",
+      "query_raw": "comfyui ipadapter 找不到 clip vision 或 flux ipadapter 模型",
+      "question_id": "ext-eg-090",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-dcgm-exporter-prometheus-001",
+          "kept": true,
+          "score": 0.9980893731117249
+        },
+        {
+          "chunk_id": "ext-vllm-prometheus-metrics-001",
+          "kept": true,
+          "score": 0.6545177698135376
+        },
+        {
+          "chunk_id": "ext-gpu-telemetry-mig-metrics-001",
+          "kept": true,
+          "score": 0.6431028842926025
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "想把 gpu 温度功耗显存指标接到 prometheus grafana",
+      "query_raw": "想把 gpu 温度功耗显存指标接到 prometheus grafana",
+      "question_id": "ext-eg-091",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-dcgm-diagnostics-run-001",
+          "kept": true,
+          "score": 0.9985495209693909
+        },
+        {
+          "chunk_id": "ext-gpu-operator-stack-001",
+          "kept": true,
+          "score": 0.6263262033462524
+        },
+        {
+          "chunk_id": "ext-dcgm-exporter-prometheus-001",
+          "kept": true,
+          "score": 0.615023136138916
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "gpu 节点上线前想跑 dcgmi diag 验证硬件和驱动",
+      "query_raw": "gpu 节点上线前想跑 dcgmi diag 验证硬件和驱动",
+      "question_id": "ext-eg-092",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-nsight-systems-profile-001",
+          "kept": true,
+          "score": 0.9989356398582458
+        },
+        {
+          "chunk_id": "ext-nsight-compute-kernel-profile-001",
+          "kept": true,
+          "score": 0.9312314987182617
+        },
+        {
+          "chunk_id": "ext-tensorboard-pytorch-logging-001",
+          "kept": true,
+          "score": 0.6466861367225647
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "nsys profile pytorch 训练慢想看 cpu 和 cuda 时间线",
+      "query_raw": "nsys profile pytorch 训练慢,想看 cpu 和 cuda 时间线",
+      "question_id": "ext-eg-093",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-nsight-compute-kernel-profile-001",
+          "kept": true,
+          "score": 0.9977729916572571
+        },
+        {
+          "chunk_id": "ext-nsight-systems-profile-001",
+          "kept": true,
+          "score": 0.7341683506965637
+        },
+        {
+          "chunk_id": "ext-vllm-cuda-error-001",
+          "kept": true,
+          "score": 0.015401612035930157
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ncu 想分析某个 cuda kernel 的 occupancy 和 memory 瓶颈",
+      "query_raw": "ncu 想分析某个 cuda kernel 的 occupancy 和 memory 瓶颈",
+      "question_id": "ext-eg-094",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-telemetry-mig-metrics-001",
+          "kept": true,
+          "score": 0.9929080009460449
+        },
+        {
+          "chunk_id": "ext-mig-partition-001",
+          "kept": true,
+          "score": 0.7209267616271973
+        },
+        {
+          "chunk_id": "ext-dcgm-exporter-prometheus-001",
+          "kept": true,
+          "score": 0.6464058756828308
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "mig 模式下 dcgm exporter 怎么区分每个 gpu instance 指标",
+      "query_raw": "mig 模式下 dcgm exporter 怎么区分每个 gpu instance 指标",
+      "question_id": "ext-eg-095",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-docker-gpu-container-001",
+          "kept": true,
+          "score": 0.999337375164032
+        },
+        {
+          "chunk_id": "ext-docker-run-gpu-access-001",
+          "kept": true,
+          "score": 0.9984495639801025
+        },
+        {
+          "chunk_id": "ext-docker-compose-gpu-001",
+          "kept": true,
+          "score": 0.9838518500328064
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "docker run 容器里怎么用 gpus all 验证 nvidiasmi",
+      "query_raw": "docker run 容器里怎么用 --gpus all 验证 nvidia-smi",
+      "question_id": "ext-eg-096",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-docker-compose-gpu-001",
+          "kept": true,
+          "score": 0.999245285987854
+        },
+        {
+          "chunk_id": "ext-docker-run-gpu-access-001",
+          "kept": true,
+          "score": 0.9401317834854126
+        },
+        {
+          "chunk_id": "ext-docker-gpu-container-001",
+          "kept": true,
+          "score": 0.9221275448799133
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "docker compose 里怎么给服务声明一张 nvidia gpu",
+      "query_raw": "docker compose 里怎么给服务声明一张 nvidia gpu",
+      "question_id": "ext-eg-097",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-k8s-gpu-resource-request-001",
+          "kept": true,
+          "score": 0.998803973197937
+        },
+        {
+          "chunk_id": "ext-k8s-mig-device-plugin-001",
+          "kept": true,
+          "score": 0.9795265793800354
+        },
+        {
+          "chunk_id": "ext-k8s-gpu-pod-pending-001",
+          "kept": true,
+          "score": 0.8808912038803101
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "kubernetes pod 申请 nvidiacomgpu 资源怎么写",
+      "query_raw": "kubernetes pod 申请 nvidia.com/gpu 资源怎么写",
+      "question_id": "ext-eg-098",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-operator-stack-001",
+          "kept": true,
+          "score": 0.9969072937965393
+        },
+        {
+          "chunk_id": "ext-k8s-gpu-resource-request-001",
+          "kept": true,
+          "score": 0.8334875702857971
+        },
+        {
+          "chunk_id": "ext-k8s-mig-device-plugin-001",
+          "kept": true,
+          "score": 0.7367714643478394
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "gpu operator 会帮 k8s 安装哪些 nvidia 组件",
+      "query_raw": "gpu operator 会帮 k8s 安装哪些 nvidia 组件",
+      "question_id": "ext-eg-099",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-k8s-gpu-pod-pending-001",
+          "kept": true,
+          "score": 0.9992964267730713
+        },
+        {
+          "chunk_id": "ext-k8s-gpu-resource-request-001",
+          "kept": true,
+          "score": 0.9907456636428833
+        },
+        {
+          "chunk_id": "ext-kueue-resource-flavors-quota-001",
+          "kept": true,
+          "score": 0.9045409560203552
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "gpu pod 一直 pending 提示 insufficient nvidiacomgpu 怎么查",
+      "query_raw": "gpu pod 一直 pending 提示 insufficient nvidia.com/gpu 怎么查",
+      "question_id": "ext-eg-100",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-mig-partition-001",
+          "kept": true,
+          "score": 0.9967558979988098
+        },
+        {
+          "chunk_id": "ext-gpu-telemetry-mig-metrics-001",
+          "kept": true,
+          "score": 0.9333901405334473
+        },
+        {
+          "chunk_id": "ext-nvidia-mps-single-node-sharing-001",
+          "kept": true,
+          "score": 0.7260319590568542
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "一张 a100 想用 mig 切成多个隔离实例",
+      "query_raw": "一张 a100 想用 mig 切成多个隔离实例",
+      "question_id": "ext-eg-101",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-k8s-mig-device-plugin-001",
+          "kept": true,
+          "score": 0.9968785047531128
+        },
+        {
+          "chunk_id": "ext-k8s-gpu-resource-request-001",
+          "kept": true,
+          "score": 0.9538882970809937
+        },
+        {
+          "chunk_id": "ext-mig-partition-001",
+          "kept": true,
+          "score": 0.8220086097717285
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "k8s 里怎么申请 nvidiacommig1g5gb 这种 mig 资源",
+      "query_raw": "k8s 里怎么申请 nvidia.com/mig-1g.5gb 这种 mig 资源",
+      "question_id": "ext-eg-102",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-k8s-gpu-time-slicing-001",
+          "kept": true,
+          "score": 0.9955400824546814
+        },
+        {
+          "chunk_id": "ext-mig-partition-001",
+          "kept": true,
+          "score": 0.9468185901641846
+        },
+        {
+          "chunk_id": "ext-nvidia-mps-single-node-sharing-001",
+          "kept": true,
+          "score": 0.9225963950157166
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "gpu operator time slicing 能不能把一张卡给多个 pod 用",
+      "query_raw": "gpu operator time slicing 能不能把一张卡给多个 pod 用",
+      "question_id": "ext-eg-103",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-triton-model-repository-001",
+          "kept": true,
+          "score": 0.9861184358596802
+        },
+        {
+          "chunk_id": "ext-pytorch-checkpoint-001",
+          "kept": true,
+          "score": 0.31951799988746643
+        },
+        {
+          "chunk_id": "ext-onnxruntime-quantization-001",
+          "kept": true,
+          "score": 0.18885530531406403
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "triton model repository 怎么组织多个 pytorch onnx 模型",
+      "query_raw": "triton model repository 怎么组织多个 pytorch onnx 模型",
+      "question_id": "ext-eg-104",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-triton-dynamic-batching-001",
+          "kept": true,
+          "score": 0.992606520652771
+        },
+        {
+          "chunk_id": "ext-triton-model-repository-001",
+          "kept": true,
+          "score": 0.4446903169155121
+        },
+        {
+          "chunk_id": "ext-tensorrt-llm-triton-001",
+          "kept": true,
+          "score": 0.4421137571334839
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "triton dynamic batching 怎么提高吞吐但不把延迟拉太高",
+      "query_raw": "triton dynamic batching 怎么提高吞吐但不把延迟拉太高",
+      "question_id": "ext-eg-105",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-tensorrt-llm-triton-001",
+          "kept": true,
+          "score": 0.9967645406723022
+        },
+        {
+          "chunk_id": "ext-triton-model-repository-001",
+          "kept": true,
+          "score": 0.8527237176895142
+        },
+        {
+          "chunk_id": "ext-vllm-tensor-parallel-001",
+          "kept": true,
+          "score": 0.4855588674545288
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "tensorrt llm 怎么通过 triton backend 部署和优化 llm",
+      "query_raw": "tensorrt llm 怎么通过 triton backend 部署和优化 llm",
+      "question_id": "ext-eg-106",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-tensorrt-llm-triton-001",
+          "kept": true,
+          "score": 0.9943246245384216
+        },
+        {
+          "chunk_id": "ext-triton-genai-perf-metrics-001",
+          "kept": true,
+          "score": 0.9837583899497986
+        },
+        {
+          "chunk_id": "ext-triton-model-repository-001",
+          "kept": true,
+          "score": 0.5325413346290588
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "triton tensorrt llm 怎么用 genai perf 测首 token 延迟",
+      "query_raw": "triton tensorrt llm 怎么用 genai perf 测首 token 延迟",
+      "question_id": "ext-eg-107",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-kserve-inferenceservice-001",
+          "kept": true,
+          "score": 0.9941784143447876
+        },
+        {
+          "chunk_id": "ext-kserve-multinode-vllm-001",
+          "kept": true,
+          "score": 0.6561042666435242
+        },
+        {
+          "chunk_id": "ext-triton-model-repository-001",
+          "kept": true,
+          "score": 0.2088634967803955
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "kserve inferenceservice 怎么在 kubernetes 上生产部署模型",
+      "query_raw": "kserve inferenceservice 怎么在 kubernetes 上生产部署模型",
+      "question_id": "ext-eg-108",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-kserve-multinode-vllm-001",
+          "kept": true,
+          "score": 0.9911552667617798
+        },
+        {
+          "chunk_id": "ext-kserve-inferenceservice-001",
+          "kept": true,
+          "score": 0.6289359927177429
+        },
+        {
+          "chunk_id": "ext-vllm-offline-001",
+          "kept": true,
+          "score": 0.6069377660751343
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "kserve 多节点 vllm 推理为什么需要 rwx pvc 和 workerspec",
+      "query_raw": "kserve 多节点 vllm 推理为什么需要 rwx pvc 和 workerSpec",
+      "question_id": "ext-eg-109",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-tgi-maintenance-migration-001",
+          "kept": true,
+          "score": 0.9897840619087219
+        },
+        {
+          "chunk_id": "ext-hf-snapshot-preload-image-001",
+          "kept": true,
+          "score": 0.26399630308151245
+        },
+        {
+          "chunk_id": "ext-hf-cache-cli-download-001",
+          "kept": true,
+          "score": 0.0835251659154892
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "huggingface tgi 现在还建议新项目使用吗",
+      "query_raw": "huggingface tgi 现在还建议新项目使用吗",
+      "question_id": "ext-eg-110",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ray-gpu-tasks-001",
+          "kept": true,
+          "score": 0.9993385672569275
+        },
+        {
+          "chunk_id": "ext-ray-serve-gpu-replicas-001",
+          "kept": true,
+          "score": 0.9894576668739319
+        },
+        {
+          "chunk_id": "ext-ray-train-gpu-scaling-001",
+          "kept": true,
+          "score": 0.9378648996353149
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ray remote numgpus 怎么给任务或 actor 分配 gpu",
+      "query_raw": "ray remote num_gpus 怎么给任务或 actor 分配 gpu",
+      "question_id": "ext-eg-111",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ray-train-gpu-scaling-001",
+          "kept": true,
+          "score": 0.9982865452766418
+        },
+        {
+          "chunk_id": "ext-ray-gpu-tasks-001",
+          "kept": true,
+          "score": 0.896523118019104
+        },
+        {
+          "chunk_id": "ext-pytorch-device-001",
+          "kept": true,
+          "score": 0.8356702327728271
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ray train torchtrainer 想用 4 张 gpu 怎么配 scalingconfig",
+      "query_raw": "ray train torchtrainer 想用 4 张 gpu 怎么配 scalingconfig",
+      "question_id": "ext-eg-112",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ray-serve-gpu-replicas-001",
+          "kept": true,
+          "score": 0.9972161054611206
+        },
+        {
+          "chunk_id": "ext-ray-train-gpu-scaling-001",
+          "kept": true,
+          "score": 0.9898231625556946
+        },
+        {
+          "chunk_id": "ext-ray-gpu-tasks-001",
+          "kept": true,
+          "score": 0.983909547328949
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ray serve 每个模型 replica 想占一张 gpu 怎么写",
+      "query_raw": "ray serve 每个模型 replica 想占一张 gpu 怎么写",
+      "question_id": "ext-eg-113",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-slurm-gpu-gres-001",
+          "kept": true,
+          "score": 0.9987438321113586
+        },
+        {
+          "chunk_id": "ext-slurm-gpu-accounting-mig-001",
+          "kept": true,
+          "score": 0.5820733904838562
+        },
+        {
+          "chunk_id": "ext-k8s-gpu-resource-request-001",
+          "kept": true,
+          "score": 0.0646536648273468
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "slurm sbatch srun 怎么用 gres 申请 gpu 作业",
+      "query_raw": "slurm sbatch srun 怎么用 gres 申请 gpu 作业",
+      "question_id": "ext-eg-114",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-slurm-gpu-accounting-mig-001",
+          "kept": true,
+          "score": 0.9930184483528137
+        },
+        {
+          "chunk_id": "ext-slurm-gpu-gres-001",
+          "kept": true,
+          "score": 0.8669906854629517
+        },
+        {
+          "chunk_id": "ext-gpu-telemetry-mig-metrics-001",
+          "kept": true,
+          "score": 0.7895199060440063
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "slurm 里怎么统计 gpumem gpuutil 以及配置 mig mps",
+      "query_raw": "slurm 里怎么统计 gpumem gpuutil 以及配置 mig mps",
+      "question_id": "ext-eg-115",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-trl-sfttrainer-001",
+          "kept": true,
+          "score": 0.9980058073997498
+        },
+        {
+          "chunk_id": "ext-llamafactory-lora-train-001",
+          "kept": true,
+          "score": 0.8788517117500305
+        },
+        {
+          "chunk_id": "ext-trl-dpotrainer-001",
+          "kept": true,
+          "score": 0.5687168836593628
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "trl sfttrainer 怎么对 qwen 做监督微调并配 lora",
+      "query_raw": "trl sfttrainer 怎么对 qwen 做监督微调并配 lora",
+      "question_id": "ext-eg-116",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-trl-dpotrainer-001",
+          "kept": true,
+          "score": 0.9972698092460632
+        },
+        {
+          "chunk_id": "ext-trl-sfttrainer-001",
+          "kept": true,
+          "score": 0.7963031530380249
+        },
+        {
+          "chunk_id": "ext-pytorch-ddp-001",
+          "kept": true,
+          "score": 0.34552299976348877
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "trl dpotrainer 怎么用 chosen rejected 偏好数据训练",
+      "query_raw": "trl dpotrainer 怎么用 chosen rejected 偏好数据训练",
+      "question_id": "ext-eg-117",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-hf-datasets-streaming-cache-001",
+          "kept": true,
+          "score": 0.998331606388092
+        },
+        {
+          "chunk_id": "ext-hf-cache-cli-download-001",
+          "kept": true,
+          "score": 0.9481051564216614
+        },
+        {
+          "chunk_id": "ext-gpu-hf-download-001",
+          "kept": true,
+          "score": 0.7393516302108765
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "huggingface datasets 数据太大怎么 streaming 并把缓存放数据盘",
+      "query_raw": "huggingface datasets 数据太大怎么 streaming 并把缓存放数据盘",
+      "question_id": "ext-eg-118",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-zarr-science-array-storage-001",
+          "kept": true,
+          "score": 0.9850836396217346
+        },
+        {
+          "chunk_id": "ext-ai4science-repro-env-data-001",
+          "kept": true,
+          "score": 0.5328119397163391
+        },
+        {
+          "chunk_id": "ext-s3-object-storage-multipart-001",
+          "kept": true,
+          "score": 0.20420612394809723
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ai4science 大型多维数组想用 zarr 放对象存储怎么理解",
+      "query_raw": "ai4science 大型多维数组想用 zarr 放对象存储怎么理解",
+      "question_id": "ext-eg-119",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-dask-cudf-multigpu-001",
+          "kept": true,
+          "score": 0.9988258481025696
+        },
+        {
+          "chunk_id": "ext-rapids-cudf-install-001",
+          "kept": true,
+          "score": 0.7915228009223938
+        },
+        {
+          "chunk_id": "ext-gpu-visible-devices-001",
+          "kept": true,
+          "score": 0.7518160343170166
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "dask cudf 和 localcudacluster 怎么用两张 gpu 处理大表",
+      "query_raw": "dask cudf 和 localcudacluster 怎么用两张 gpu 处理大表",
+      "question_id": "ext-eg-120",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-comfyui-flux-models-001",
+          "kept": true,
+          "score": 0.9952191710472107
+        },
+        {
+          "chunk_id": "ext-scene-video-comfyui-models-vram-001",
+          "kept": true,
+          "score": 0.9936423301696777
+        },
+        {
+          "chunk_id": "ext-scene-video-generation-low-vram-001",
+          "kept": true,
+          "score": 0.9931169748306274
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "视频生成工作流缺模型又爆显存应该先查目录还是先降参数",
+      "query_raw": "视频生成工作流缺模型又爆显存,应该先查目录还是先降参数",
+      "question_id": "ext-eg-121",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-realtime-digital-human-latency-001",
+          "kept": true,
+          "score": 0.9980238676071167
+        },
+        {
+          "chunk_id": "ext-digital-human-lipsync-latency-001",
+          "kept": true,
+          "score": 0.9964339733123779
+        },
+        {
+          "chunk_id": "ext-nsight-systems-profile-001",
+          "kept": true,
+          "score": 0.18404610455036163
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "实时数字人推流卡顿怎么判断是推理慢编码慢还是网络慢",
+      "query_raw": "实时数字人推流卡顿,怎么判断是推理慢、编码慢还是网络慢",
+      "question_id": "ext-eg-122",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-audio-driven-avatar-video-001",
+          "kept": true,
+          "score": 0.9970191717147827
+        },
+        {
+          "chunk_id": "ext-scene-video-generation-low-vram-001",
+          "kept": true,
+          "score": 0.9271742105484009
+        },
+        {
+          "chunk_id": "ext-digital-human-lipsync-latency-001",
+          "kept": true,
+          "score": 0.8652597665786743
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "音频驱动头像视频跑不起来依赖权重和低显存该按什么顺序查",
+      "query_raw": "音频驱动头像视频跑不起来,依赖、权重和低显存该按什么顺序查",
+      "question_id": "ext-eg-123",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-voice-conversion-boundary-001",
+          "kept": true,
+          "score": 0.9960636496543884
+        },
+        {
+          "chunk_id": "ext-scene-tts-model-selection-001",
+          "kept": true,
+          "score": 0.5237455368041992
+        },
+        {
+          "chunk_id": "ext-scene-tts-evaluation-metrics-001",
+          "kept": true,
+          "score": 0.1962210088968277
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "变声模型能不能直接文字转语音和语音克隆有什么区别",
+      "query_raw": "变声模型能不能直接文字转语音,和语音克隆有什么区别",
+      "question_id": "ext-eg-124",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-tts-voice-cloning-reference-001",
+          "kept": true,
+          "score": 0.9990243911743164
+        },
+        {
+          "chunk_id": "ext-audio-tts-asr-quality-debug-001",
+          "kept": true,
+          "score": 0.9963701963424683
+        },
+        {
+          "chunk_id": "ext-scene-tts-evaluation-metrics-001",
+          "kept": true,
+          "score": 0.9648960828781128
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "语音克隆效果不像参考音频和转录文本分别要怎么检查",
+      "query_raw": "语音克隆效果不像,参考音频和转录文本分别要怎么检查",
+      "question_id": "ext-eg-125",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-tts-model-selection-001",
+          "kept": true,
+          "score": 0.9990805387496948
+        },
+        {
+          "chunk_id": "ext-scene-voice-conversion-boundary-001",
+          "kept": true,
+          "score": 0.9945878982543945
+        },
+        {
+          "chunk_id": "ext-scene-tts-evaluation-metrics-001",
+          "kept": true,
+          "score": 0.8874107599258423
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "客户要多语言 tts 和声音克隆选模型时先看哪些维度",
+      "query_raw": "客户要多语言 tts 和声音克隆,选模型时先看哪些维度",
+      "question_id": "ext-eg-126",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-tts-evaluation-metrics-001",
+          "kept": true,
+          "score": 0.9993782043457031
+        },
+        {
+          "chunk_id": "ext-scene-tts-model-selection-001",
+          "kept": true,
+          "score": 0.6609846949577332
+        },
+        {
+          "chunk_id": "ext-scene-voice-conversion-boundary-001",
+          "kept": true,
+          "score": 0.36704394221305847
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "tts 交付前怎么客观评估可懂度和音色相似度",
+      "query_raw": "tts 交付前怎么客观评估可懂度和音色相似度",
+      "question_id": "ext-eg-127",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-image-video-lora-training-001",
+          "kept": true,
+          "score": 0.9980641007423401
+        },
+        {
+          "chunk_id": "ext-sd-dataset-caption-buckets-001",
+          "kept": true,
+          "score": 0.9931128621101379
+        },
+        {
+          "chunk_id": "ext-peft-lora-qlora-001",
+          "kept": true,
+          "score": 0.9783520698547363
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "图像或视频 lora 训练效果差数据显存和验收怎么排查",
+      "query_raw": "图像或视频 lora 训练效果差,数据、显存和验收怎么排查",
+      "question_id": "ext-eg-128",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-image-edit-text-rendering-001",
+          "kept": true,
+          "score": 0.9952923059463501
+        },
+        {
+          "chunk_id": "ext-eval-observability-release-gate-001",
+          "kept": true,
+          "score": 0.10500706732273102
+        },
+        {
+          "chunk_id": "ext-api-structured-output-schema-001",
+          "kept": true,
+          "score": 0.07845859229564667
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "生成海报中文文字不稳定图像编辑模型的边界怎么判断",
+      "query_raw": "生成海报中文文字不稳定,图像编辑模型的边界怎么判断",
+      "question_id": "ext-eg-129",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-video-generation-low-vram-001",
+          "kept": true,
+          "score": 0.998011589050293
+        },
+        {
+          "chunk_id": "ext-video-generation-resource-tradeoff-001",
+          "kept": true,
+          "score": 0.9971709847450256
+        },
+        {
+          "chunk_id": "ext-sam2-video-segmentation-oom-001",
+          "kept": true,
+          "score": 0.959797739982605
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "视频生成 oom 或太慢分辨率帧数和 offload 怎么取舍",
+      "query_raw": "视频生成 oom 或太慢,分辨率、帧数和 offload 怎么取舍",
+      "question_id": "ext-eg-130",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-quantized-comfyui-loaders-001",
+          "kept": true,
+          "score": 0.9956613183021545
+        },
+        {
+          "chunk_id": "ext-comfyui-ipadapter-001",
+          "kept": true,
+          "score": 0.9151659607887268
+        },
+        {
+          "chunk_id": "ext-scene-video-comfyui-models-vram-001",
+          "kept": true,
+          "score": 0.8799469470977783
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "comfyui 量化模型加载失败unetclip 和 lora 节点怎么查",
+      "query_raw": "comfyui 量化模型加载失败,unet、clip 和 lora 节点怎么查",
+      "question_id": "ext-eg-131",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-single-image-3d-reconstruction-001",
+          "kept": true,
+          "score": 0.9979913234710693
+        },
+        {
+          "chunk_id": "ext-open3d-pointcloud-visualization-001",
+          "kept": true,
+          "score": 0.8539515137672424
+        },
+        {
+          "chunk_id": "ext-nerfstudio-install-custom-data-001",
+          "kept": true,
+          "score": 0.4443444311618805
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "单张图片生成 3d 结果差或 ply 文件打不开应该怎么验证",
+      "query_raw": "单张图片生成 3d 结果差或 ply 文件打不开,应该怎么验证",
+      "question_id": "ext-eg-132",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-video-dubbing-pipeline-001",
+          "kept": true,
+          "score": 0.9976848363876343
+        },
+        {
+          "chunk_id": "ext-ffmpeg-video-dubbing-chain-001",
+          "kept": true,
+          "score": 0.9896422028541565
+        },
+        {
+          "chunk_id": "ext-audio-tts-asr-quality-debug-001",
+          "kept": true,
+          "score": 0.978386640548706
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "视频配音声音不像或音画不同步asrtts对齐和封装怎么拆开查",
+      "query_raw": "视频配音声音不像或音画不同步,asr、tts、对齐和封装怎么拆开查",
+      "question_id": "ext-eg-133",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-sd-scripts-lora-training-001",
+          "kept": true,
+          "score": 0.99770587682724
+        },
+        {
+          "chunk_id": "ext-framework-cuda-match-001",
+          "kept": true,
+          "score": 0.9548630118370056
+        },
+        {
+          "chunk_id": "ext-gpu-pytorch-oom-001",
+          "kept": true,
+          "score": 0.5823193192481995
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "kohya sdscripts 训练 sdxl lora 时 pytorch 和 cuda 环境先怎么配",
+      "query_raw": "kohya sd-scripts 训练 sdxl lora 时 pytorch 和 cuda 环境先怎么配",
+      "question_id": "ext-eg-134",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-kohya-ss-gui-paths-001",
+          "kept": true,
+          "score": 0.9969494938850403
+        },
+        {
+          "chunk_id": "ext-sd-scripts-lora-training-001",
+          "kept": true,
+          "score": 0.8585201501846313
+        },
+        {
+          "chunk_id": "ext-scene-image-video-lora-training-001",
+          "kept": true,
+          "score": 0.2576006352901459
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "kohyass 图形界面里底模数据集输出和日志目录应该怎么填",
+      "query_raw": "kohya_ss 图形界面里底模、数据集、输出和日志目录应该怎么填",
+      "question_id": "ext-eg-135",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-diffusers-lora-dreambooth-001",
+          "kept": true,
+          "score": 0.9973673224449158
+        },
+        {
+          "chunk_id": "ext-sd-scripts-lora-training-001",
+          "kept": true,
+          "score": 0.9471144676208496
+        },
+        {
+          "chunk_id": "ext-scene-image-video-lora-training-001",
+          "kept": true,
+          "score": 0.6476213335990906
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "diffusers 训练图片模型时 lora 和 dreambooth 应该怎么选",
+      "query_raw": "diffusers 训练图片模型时 lora 和 dreambooth 应该怎么选",
+      "question_id": "ext-eg-136",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-sd-dataset-caption-buckets-001",
+          "kept": true,
+          "score": 0.997808039188385
+        },
+        {
+          "chunk_id": "ext-scene-image-video-lora-training-001",
+          "kept": true,
+          "score": 0.9829743504524231
+        },
+        {
+          "chunk_id": "ext-sd-scripts-lora-training-001",
+          "kept": true,
+          "score": 0.7165002226829529
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "lora 训练结果不像caption触发词和 bucket 分辨率要怎么检查",
+      "query_raw": "lora 训练结果不像,caption、触发词和 bucket 分辨率要怎么检查",
+      "question_id": "ext-eg-137",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-sd-lora-merge-convert-001",
+          "kept": true,
+          "score": 0.9922905564308167
+        },
+        {
+          "chunk_id": "ext-scene-image-video-lora-training-001",
+          "kept": true,
+          "score": 0.9184772372245789
+        },
+        {
+          "chunk_id": "ext-comfyui-models-dir-001",
+          "kept": true,
+          "score": 0.8448003530502319
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "训练好的 lora 想放到 comfyui 里用底模和格式要检查什么",
+      "query_raw": "训练好的 lora 想放到 comfyui 里用,底模和格式要检查什么",
+      "question_id": "ext-eg-138",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-faster-whisper-gpu-asr-001",
+          "kept": true,
+          "score": 0.9937703013420105
+        },
+        {
+          "chunk_id": "ext-cupy-gpu-array-001",
+          "kept": true,
+          "score": 0.114776112139225
+        },
+        {
+          "chunk_id": "ext-optimum-onnx-gpu-001",
+          "kept": true,
+          "score": 0.02791357971727848
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "fasterwhisper 用 gpu 转录长音频时 cuda 库和 int8 float16 怎么选",
+      "query_raw": "faster-whisper 用 gpu 转录长音频时 cuda 库和 int8 float16 怎么选",
+      "question_id": "ext-eg-139",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-whisperx-alignment-diarization-001",
+          "kept": true,
+          "score": 0.9883939027786255
+        },
+        {
+          "chunk_id": "ext-scene-video-dubbing-pipeline-001",
+          "kept": true,
+          "score": 0.09103886783123016
+        },
+        {
+          "chunk_id": "ext-faster-whisper-gpu-asr-001",
+          "kept": true,
+          "score": 0.0894763171672821
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "whisperx 字幕时间戳不准想做词级对齐和说话人分离",
+      "query_raw": "whisperx 字幕时间戳不准,想做词级对齐和说话人分离",
+      "question_id": "ext-eg-140",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-demucs-vocal-separation-001",
+          "kept": true,
+          "score": 0.9930737018585205
+        },
+        {
+          "chunk_id": "ext-scene-video-dubbing-pipeline-001",
+          "kept": true,
+          "score": 0.019220707938075066
+        },
+        {
+          "chunk_id": "ext-ffmpeg-video-dubbing-chain-001",
+          "kept": true,
+          "score": 0.013683928176760674
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "demucs 怎么把视频里的 vocals 和伴奏先分离出来",
+      "query_raw": "demucs 怎么把视频里的 vocals 和伴奏先分离出来",
+      "question_id": "ext-eg-141",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ffmpeg-video-dubbing-chain-001",
+          "kept": true,
+          "score": 0.9966950416564941
+        },
+        {
+          "chunk_id": "ext-scene-video-dubbing-pipeline-001",
+          "kept": true,
+          "score": 0.9411665201187134
+        },
+        {
+          "chunk_id": "ext-audio-tts-asr-quality-debug-001",
+          "kept": true,
+          "score": 0.6970645189285278
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "视频配音前后用 ffmpeg 抽音频切片再合回视频怎么排查同步",
+      "query_raw": "视频配音前后用 ffmpeg 抽音频、切片、再合回视频怎么排查同步",
+      "question_id": "ext-eg-142",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-nerfstudio-install-custom-data-001",
+          "kept": true,
+          "score": 0.9964537620544434
+        },
+        {
+          "chunk_id": "ext-nerfstudio-splatfacto-gsplat-001",
+          "kept": true,
+          "score": 0.9681190252304077
+        },
+        {
+          "chunk_id": "ext-colmap-gpu-reconstruction-001",
+          "kept": true,
+          "score": 0.8324922323226929
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "nerfstudio 用自己的照片训练 nerf需要 cuda 和 colmap 数据吗",
+      "query_raw": "nerfstudio 用自己的照片训练 nerf,需要 cuda 和 colmap 数据吗",
+      "question_id": "ext-eg-143",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-colmap-gpu-reconstruction-001",
+          "kept": true,
+          "score": 0.9976590871810913
+        },
+        {
+          "chunk_id": "ext-gpu-not-detected-001",
+          "kept": true,
+          "score": 0.6800384521484375
+        },
+        {
+          "chunk_id": "ext-nerfstudio-install-custom-data-001",
+          "kept": true,
+          "score": 0.5158889293670654
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "colmap feature extraction 没用上 gpu 或重建失败怎么查",
+      "query_raw": "colmap feature extraction 没用上 gpu 或重建失败怎么查",
+      "question_id": "ext-eg-144",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-nerfstudio-splatfacto-gsplat-001",
+          "kept": true,
+          "score": 0.9955495595932007
+        },
+        {
+          "chunk_id": "ext-pytorch3d-install-cuda-001",
+          "kept": true,
+          "score": 0.597234308719635
+        },
+        {
+          "chunk_id": "ext-nerfstudio-install-custom-data-001",
+          "kept": true,
+          "score": 0.35648030042648315
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "nerfstudio splatfacto 训练 gaussian splatting 时 gsplat cuda 编译失败",
+      "query_raw": "nerfstudio splatfacto 训练 gaussian splatting 时 gsplat cuda 编译失败",
+      "question_id": "ext-eg-145",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-framework-cuda-match-001",
+          "kept": true,
+          "score": 0.9899918437004089
+        },
+        {
+          "chunk_id": "ext-pytorch3d-install-cuda-001",
+          "kept": true,
+          "score": 0.9888217449188232
+        },
+        {
+          "chunk_id": "ext-pytorch-install-001",
+          "kept": true,
+          "score": 0.9748890399932861
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "pytorch3d 安装时 cuda 和 torch 版本不匹配怎么办",
+      "query_raw": "pytorch3d 安装时 cuda 和 torch 版本不匹配怎么办",
+      "question_id": "ext-eg-146",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-open3d-pointcloud-visualization-001",
+          "kept": true,
+          "score": 0.9795642495155334
+        },
+        {
+          "chunk_id": "ext-scene-single-image-3d-reconstruction-001",
+          "kept": true,
+          "score": 0.2884656488895416
+        },
+        {
+          "chunk_id": "ext-browser-automation-gpu-server-001",
+          "kept": true,
+          "score": 0.0008110235212370753
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "open3d 怎么在服务器上查看和处理 ply 点云文件",
+      "query_raw": "open3d 怎么在服务器上查看和处理 ply 点云文件",
+      "question_id": "ext-eg-147",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-monai-medical-imaging-001",
+          "kept": true,
+          "score": 0.9957376718521118
+        },
+        {
+          "chunk_id": "ext-gpu-fragmentation-001",
+          "kept": true,
+          "score": 0.036444805562496185
+        },
+        {
+          "chunk_id": "ext-sam2-video-segmentation-oom-001",
+          "kept": true,
+          "score": 0.031255993992090225
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "monai 做 3d 医学影像分割时显存和 dicom nifti 数据要注意什么",
+      "query_raw": "monai 做 3d 医学影像分割时显存和 dicom nifti 数据要注意什么",
+      "question_id": "ext-eg-148",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pyg-dgl-gnn-install-001",
+          "kept": true,
+          "score": 0.9943333864212036
+        },
+        {
+          "chunk_id": "ext-pytorch-install-001",
+          "kept": true,
+          "score": 0.8875925540924072
+        },
+        {
+          "chunk_id": "ext-framework-cuda-match-001",
+          "kept": true,
+          "score": 0.8730815052986145
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "pytorch geometric 或 dgl 做图神经网络时 cuda wheel 怎么选",
+      "query_raw": "pytorch geometric 或 dgl 做图神经网络时 cuda wheel 怎么选",
+      "question_id": "ext-eg-149",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-physicsnemo-sciml-gpu-001",
+          "kept": true,
+          "score": 0.9984423518180847
+        },
+        {
+          "chunk_id": "ext-ai4science-repro-env-data-001",
+          "kept": true,
+          "score": 0.1362425535917282
+        },
+        {
+          "chunk_id": "ext-lm-eval-harness-basic-001",
+          "kept": true,
+          "score": 0.0017241447931155562
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "physicsnemo 做 pinn fno meshgraphnet 这类物理机器学习怎么开始",
+      "query_raw": "physicsnemo 做 pinn fno meshgraphnet 这类物理机器学习怎么开始",
+      "question_id": "ext-eg-150",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-nvitop-user-gpu-monitor-001",
+          "kept": true,
+          "score": 0.995418906211853
+        },
+        {
+          "chunk_id": "ext-gpu-nvidia-smi-001",
+          "kept": true,
+          "score": 0.9746001958847046
+        },
+        {
+          "chunk_id": "ext-nvidia-smi-safe-cleanup-001",
+          "kept": true,
+          "score": 0.5519819259643555
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "nvitop 想看训练进程的显存gpu 利用率和进程树",
+      "query_raw": "nvitop 想看训练进程的显存、gpu 利用率和进程树",
+      "question_id": "ext-eg-151",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-tensorboard-pytorch-logging-001",
+          "kept": true,
+          "score": 0.9988803267478943
+        },
+        {
+          "chunk_id": "ext-wandb-mlflow-experiment-tracking-001",
+          "kept": true,
+          "score": 0.1122405081987381
+        },
+        {
+          "chunk_id": "ext-pytorch-ddp-001",
+          "kept": true,
+          "score": 0.0739205852150917
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "pytorch 训练想用 tensorboard 看 loss 曲线和样例图片",
+      "query_raw": "pytorch 训练想用 tensorboard 看 loss 曲线和样例图片",
+      "question_id": "ext-eg-152",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-wandb-mlflow-experiment-tracking-001",
+          "kept": true,
+          "score": 0.9951003193855286
+        },
+        {
+          "chunk_id": "ext-mlflow-model-registry-promotion-001",
+          "kept": true,
+          "score": 0.9544604420661926
+        },
+        {
+          "chunk_id": "ext-mlflow-genai-evaluation-001",
+          "kept": true,
+          "score": 0.10466798394918442
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "wandb 和 mlflow 怎么记录训练参数指标和模型文件",
+      "query_raw": "wandb 和 mlflow 怎么记录训练参数、指标和模型文件",
+      "question_id": "ext-eg-153",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-caddy-reverse-proxy-webui-001",
+          "kept": true,
+          "score": 0.9942536950111389
+        },
+        {
+          "chunk_id": "ext-comfyui-api-001",
+          "kept": true,
+          "score": 0.6410576105117798
+        },
+        {
+          "chunk_id": "ext-comfyui-start-001",
+          "kept": true,
+          "score": 0.6184852123260498
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "gradio 或 comfyui 想用 caddy 反向代理到域名和 https",
+      "query_raw": "gradio 或 comfyui 想用 caddy 反向代理到域名和 https",
+      "question_id": "ext-eg-154",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-tunnel-frp-tailscale-cloudflare-001",
+          "kept": true,
+          "score": 0.9989157915115356
+        },
+        {
+          "chunk_id": "ext-ssh-tunnel-reverse-proxy-001",
+          "kept": true,
+          "score": 0.2993587255477905
+        },
+        {
+          "chunk_id": "ext-jupyter-server-remote-001",
+          "kept": true,
+          "score": 0.0031285567674785852
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "没有公网端口时 frptailscale funnelcloudflare tunnel 怎么选",
+      "query_raw": "没有公网端口时 frp、tailscale funnel、cloudflare tunnel 怎么选",
+      "question_id": "ext-eg-155",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-dockerfile-cuda-image-build-001",
+          "kept": true,
+          "score": 0.9939802885055542
+        },
+        {
+          "chunk_id": "ext-python-env-uv-micromamba-image-001",
+          "kept": true,
+          "score": 0.330891877412796
+        },
+        {
+          "chunk_id": "ext-apptainer-gpu-container-001",
+          "kept": true,
+          "score": 0.13667045533657074
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "自制 cuda 镜像 dockerfile 怎么写镜像太大怎么优化",
+      "query_raw": "自制 cuda 镜像 dockerfile 怎么写,镜像太大怎么优化",
+      "question_id": "ext-eg-156",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-python-env-uv-micromamba-image-001",
+          "kept": true,
+          "score": 0.9971851706504822
+        },
+        {
+          "chunk_id": "ext-linux-conda-001",
+          "kept": true,
+          "score": 0.1311437487602234
+        },
+        {
+          "chunk_id": "ext-linux-pip-mirror-001",
+          "kept": true,
+          "score": 0.04051972180604935
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "镜像里用 uv 或 micromamba 固定 python 依赖该怎么选",
+      "query_raw": "镜像里用 uv 或 micromamba 固定 python 依赖,该怎么选",
+      "question_id": "ext-eg-157",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-hf-cache-cli-download-001",
+          "kept": true,
+          "score": 0.9942775368690491
+        },
+        {
+          "chunk_id": "ext-hf-snapshot-preload-image-001",
+          "kept": true,
+          "score": 0.992819607257843
+        },
+        {
+          "chunk_id": "ext-serve-local-path-001",
+          "kept": true,
+          "score": 0.9873279929161072
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "想把 huggingface 模型提前下载到镜像或数据盘避免每次启动重下",
+      "query_raw": "想把 huggingface 模型提前下载到镜像或数据盘,避免每次启动重下",
+      "question_id": "ext-eg-158",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-webui-refused-connection-debug-001",
+          "kept": true,
+          "score": 0.9966345429420471
+        },
+        {
+          "chunk_id": "ext-a1111-webui-listen-port-001",
+          "kept": true,
+          "score": 0.9866944551467896
+        },
+        {
+          "chunk_id": "ext-comfyui-start-001",
+          "kept": true,
+          "score": 0.8107805252075195
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "sd webui 在服务器里启动了外面打开 7860 显示 refused to connect",
+      "query_raw": "sd webui 在服务器里启动了,外面打开 7860 显示 refused to connect",
+      "question_id": "ext-eg-159",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-a1111-model-paths-001",
+          "kept": true,
+          "score": 0.9945669174194336
+        },
+        {
+          "chunk_id": "ext-comfyui-models-dir-001",
+          "kept": true,
+          "score": 0.972380518913269
+        },
+        {
+          "chunk_id": "ext-comfyui-ipadapter-001",
+          "kept": true,
+          "score": 0.808703601360321
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "automatic1111 下载的 checkpoint 和 lora 放到数据盘后页面里找不到",
+      "query_raw": "automatic1111 下载的 checkpoint 和 lora 放到数据盘后页面里找不到",
+      "question_id": "ext-eg-160",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-sd-webui-controlnet-install-001",
+          "kept": true,
+          "score": 0.9938628673553467
+        },
+        {
+          "chunk_id": "ext-comfyui-controlnet-001",
+          "kept": true,
+          "score": 0.9479435086250305
+        },
+        {
+          "chunk_id": "ext-a1111-model-paths-001",
+          "kept": true,
+          "score": 0.8547792434692383
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "a1111 的 controlnet 扩展装了但面板不出现模型也加载不了",
+      "query_raw": "a1111 的 controlnet 扩展装了但面板不出现,模型也加载不了",
+      "question_id": "ext-eg-161",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-webui-refused-connection-debug-001",
+          "kept": true,
+          "score": 0.9952062964439392
+        },
+        {
+          "chunk_id": "ext-a1111-webui-listen-port-001",
+          "kept": true,
+          "score": 0.975884199142456
+        },
+        {
+          "chunk_id": "ext-webapp-gradio-remote-001",
+          "kept": true,
+          "score": 0.904163658618927
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "webui jupyter gradio 日志没报错但浏览器访问端口被拒绝",
+      "query_raw": "webui jupyter gradio 日志没报错但浏览器访问端口被拒绝",
+      "question_id": "ext-eg-162",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ssh-connection-debug-001",
+          "kept": true,
+          "score": 0.9973703622817993
+        },
+        {
+          "chunk_id": "ext-scp-rsync-transfer-debug-001",
+          "kept": true,
+          "score": 0.3563695251941681
+        },
+        {
+          "chunk_id": "ext-vscode-remote-server-001",
+          "kept": true,
+          "score": 0.09742411971092224
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ssh 连实例超时和 permission denied 应该分别怎么查",
+      "query_raw": "ssh 连实例超时和 permission denied 应该分别怎么查",
+      "question_id": "ext-eg-163",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scp-rsync-transfer-debug-001",
+          "kept": true,
+          "score": 0.9987707734107971
+        },
+        {
+          "chunk_id": "ext-rsync-checksum-partial-001",
+          "kept": true,
+          "score": 0.9957719445228577
+        },
+        {
+          "chunk_id": "ext-linux-large-transfer-rsync-001",
+          "kept": true,
+          "score": 0.9936995506286621
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "scp 上传数据集 permission deniedrsync 大文件中断后怎么继续",
+      "query_raw": "scp 上传数据集 permission denied,rsync 大文件中断后怎么继续",
+      "question_id": "ext-eg-164",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ollama-model-cache-repair-001",
+          "kept": true,
+          "score": 0.9947751760482788
+        },
+        {
+          "chunk_id": "ext-ollama-run-001",
+          "kept": true,
+          "score": 0.8477035164833069
+        },
+        {
+          "chunk_id": "ext-ollama-modelfile-001",
+          "kept": true,
+          "score": 0.4392833709716797
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ollama run 报 unable to load model sha256 blob是不是模型没下完整",
+      "query_raw": "ollama run 报 unable to load model sha256 blob,是不是模型没下完整",
+      "question_id": "ext-eg-165",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ollama-context-vram-001",
+          "kept": true,
+          "score": 0.9912410378456116
+        },
+        {
+          "chunk_id": "ext-gpu-oom-vllm-001",
+          "kept": true,
+          "score": 0.9163298010826111
+        },
+        {
+          "chunk_id": "ext-gpu-kill-process-001",
+          "kept": true,
+          "score": 0.9158563017845154
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ollama 调大上下文后显存不够模型还一直占着显存怎么卸掉",
+      "query_raw": "ollama 调大上下文后显存不够,模型还一直占着显存怎么卸掉",
+      "question_id": "ext-eg-166",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ollama-openai-001",
+          "kept": true,
+          "score": 0.9958426356315613
+        },
+        {
+          "chunk_id": "ext-vllm-serving-001",
+          "kept": true,
+          "score": 0.9938382506370544
+        },
+        {
+          "chunk_id": "ext-openwebui-ollama-openai-001",
+          "kept": true,
+          "score": 0.9885703921318054
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "想用 open webui 接本机 ollama 或 vllm 的 openai 接口",
+      "query_raw": "想用 open webui 接本机 ollama 或 vllm 的 openai 接口",
+      "question_id": "ext-eg-167",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-litellm-proxy-openai-compatible-001",
+          "kept": true,
+          "score": 0.9989885687828064
+        },
+        {
+          "chunk_id": "ext-api-compatible-base-url-key-001",
+          "kept": true,
+          "score": 0.5606264472007751
+        },
+        {
+          "chunk_id": "ext-litellm-virtual-keys-budget-001",
+          "kept": true,
+          "score": 0.5480644106864929
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "团队有多个 openai compatible 模型服务想用 litellm 统一 base url",
+      "query_raw": "团队有多个 openai compatible 模型服务,想用 litellm 统一 base url",
+      "question_id": "ext-eg-168",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-docker-gpu-container-001",
+          "kept": true,
+          "score": 0.9987542629241943
+        },
+        {
+          "chunk_id": "ext-docker-run-gpu-access-001",
+          "kept": true,
+          "score": 0.9960094690322876
+        },
+        {
+          "chunk_id": "ext-docker-gpu-visible-devices-advanced-001",
+          "kept": true,
+          "score": 0.9932236671447754
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "docker 里 nvidiasmi 看不到卡或者 gpus all 只看到部分 gpu",
+      "query_raw": "docker 里 nvidia-smi 看不到卡,或者 --gpus all 只看到部分 gpu",
+      "question_id": "ext-eg-169",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-card-count-mismatch-001",
+          "kept": true,
+          "score": 0.9960222840309143
+        },
+        {
+          "chunk_id": "ext-docker-gpu-visible-devices-advanced-001",
+          "kept": true,
+          "score": 0.9904104471206665
+        },
+        {
+          "chunk_id": "ext-docker-gpu-container-001",
+          "kept": true,
+          "score": 0.9530319571495056
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "8 卡机器 torch 只显示 4 张怎么确认是容器还是 cudavisibledevices 限制",
+      "query_raw": "8 卡机器 torch 只显示 4 张,怎么确认是容器还是 cuda_visible_devices 限制",
+      "question_id": "ext-eg-170",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-nvidia-mps-single-node-sharing-001",
+          "kept": true,
+          "score": 0.9961040019989014
+        },
+        {
+          "chunk_id": "ext-k8s-gpu-time-slicing-001",
+          "kept": true,
+          "score": 0.9248833656311035
+        },
+        {
+          "chunk_id": "ext-mig-partition-001",
+          "kept": true,
+          "score": 0.9025843143463135
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "一张 gpu 想同时跑几个小任务nvidia mps 适合吗",
+      "query_raw": "一张 gpu 想同时跑几个小任务,nvidia mps 适合吗",
+      "question_id": "ext-eg-171",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-dvc-data-versioning-001",
+          "kept": true,
+          "score": 0.9987695813179016
+        },
+        {
+          "chunk_id": "ext-hf-datasets-streaming-cache-001",
+          "kept": true,
+          "score": 0.13802678883075714
+        },
+        {
+          "chunk_id": "ext-model-files-persistence-boundary-001",
+          "kept": true,
+          "score": 0.08718564361333847
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "训练数据太大不能放 git怎么用 dvc 管数据版本和远端存储",
+      "query_raw": "训练数据太大不能放 git,怎么用 dvc 管数据版本和远端存储",
+      "question_id": "ext-eg-172",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-s5cmd-minio-object-transfer-001",
+          "kept": true,
+          "score": 0.9987686276435852
+        },
+        {
+          "chunk_id": "ext-rclone-sync-copy-001",
+          "kept": true,
+          "score": 0.6250185966491699
+        },
+        {
+          "chunk_id": "ext-s3-object-storage-multipart-001",
+          "kept": true,
+          "score": 0.47033798694610596
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "对象存储里的大量训练图片想快速同步到实例用 s5cmd 还是 minio mc",
+      "query_raw": "对象存储里的大量训练图片想快速同步到实例,用 s5cmd 还是 minio mc",
+      "question_id": "ext-eg-173",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-label-studio-dataset-annotation-001",
+          "kept": true,
+          "score": 0.9747233986854553
+        },
+        {
+          "chunk_id": "ext-trl-sfttrainer-001",
+          "kept": true,
+          "score": 0.13378047943115234
+        },
+        {
+          "chunk_id": "ext-sd-dataset-caption-buckets-001",
+          "kept": true,
+          "score": 0.012209845706820488
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "想做自己的图片语音微调数据集用 label studio 怎么标注导出",
+      "query_raw": "想做自己的图片语音微调数据集,用 label studio 怎么标注导出",
+      "question_id": "ext-eg-174",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-model-files-persistence-boundary-001",
+          "kept": true,
+          "score": 0.9888426065444946
+        },
+        {
+          "chunk_id": "ext-hf-snapshot-preload-image-001",
+          "kept": true,
+          "score": 0.7287296652793884
+        },
+        {
+          "chunk_id": "ext-serve-local-path-001",
+          "kept": true,
+          "score": 0.5916118621826172
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "重启容器或者停止实例后下载的模型和训练结果到底会不会丢",
+      "query_raw": "重启容器或者停止实例后,下载的模型和训练结果到底会不会丢",
+      "question_id": "ext-eg-175",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-linux-nohup-001",
+          "kept": true,
+          "score": 0.9884551763534546
+        },
+        {
+          "chunk_id": "ext-systemd-user-service-webui-001",
+          "kept": true,
+          "score": 0.9811784625053406
+        },
+        {
+          "chunk_id": "ext-linux-tmux-001",
+          "kept": true,
+          "score": 0.9675894975662231
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ssh 断了 webui 就停怎么把模型服务放后台并能看日志",
+      "query_raw": "ssh 断了 webui 就停,怎么把模型服务放后台并能看日志",
+      "question_id": "ext-eg-176",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-nvidia-smi-safe-cleanup-001",
+          "kept": true,
+          "score": 0.9982492923736572
+        },
+        {
+          "chunk_id": "ext-gpu-kill-process-001",
+          "kept": true,
+          "score": 0.9932096600532532
+        },
+        {
+          "chunk_id": "ext-gpu-nvidia-smi-001",
+          "kept": true,
+          "score": 0.8756294250488281
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "nvidiasmi 里显存被别的 pid 占着怎么安全清理不能误杀任务",
+      "query_raw": "nvidia-smi 里显存被别的 pid 占着,怎么安全清理不能误杀任务",
+      "question_id": "ext-eg-177",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pytorch-torch-compile-basic-001",
+          "kept": true,
+          "score": 0.9981228709220886
+        },
+        {
+          "chunk_id": "ext-pytorch-torch-compile-debug-001",
+          "kept": true,
+          "score": 0.6701972484588623
+        },
+        {
+          "chunk_id": "ext-pytorch-ddp-001",
+          "kept": true,
+          "score": 0.41274377703666687
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "pytorch 2 的 torchcompile 怎么加到训练脚本里第一次慢正常吗",
+      "query_raw": "pytorch 2 的 torch.compile 怎么加到训练脚本里,第一次慢正常吗",
+      "question_id": "ext-eg-178",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pytorch-torch-compile-debug-001",
+          "kept": true,
+          "score": 0.9986687898635864
+        },
+        {
+          "chunk_id": "ext-pytorch-torch-compile-basic-001",
+          "kept": true,
+          "score": 0.5566021203994751
+        },
+        {
+          "chunk_id": "ext-vllm-cuda-error-001",
+          "kept": true,
+          "score": 0.12492240965366364
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "torchcompile 后一直 graph break 或 recompiling怎么开日志排查动态 shape",
+      "query_raw": "torch.compile 后一直 graph break 或 recompiling,怎么开日志排查动态 shape",
+      "question_id": "ext-eg-179",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-cuda-toolkit-install-linux-001",
+          "kept": true,
+          "score": 0.9973937273025513
+        },
+        {
+          "chunk_id": "ext-cuda-driver-compatibility-001",
+          "kept": true,
+          "score": 0.3901645541191101
+        },
+        {
+          "chunk_id": "ext-cupy-gpu-array-001",
+          "kept": true,
+          "score": 0.29383203387260437
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "编译 cuda 扩展提示 nvcc not foundlinux 上 cuda toolkit 应该怎么装",
+      "query_raw": "编译 cuda 扩展提示 nvcc not found,linux 上 cuda toolkit 应该怎么装",
+      "question_id": "ext-eg-180",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-accelerate-fsdp-config-001",
+          "kept": true,
+          "score": 0.9990867376327515
+        },
+        {
+          "chunk_id": "ext-deepspeed-zero-001",
+          "kept": true,
+          "score": 0.9375262260437012
+        },
+        {
+          "chunk_id": "ext-accelerate-memory-estimator-001",
+          "kept": true,
+          "score": 0.9039983153343201
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "普通 ddp 微调大模型显存不够想换 accelerate fsdp 该先配哪些项",
+      "query_raw": "普通 ddp 微调大模型显存不够,想换 accelerate fsdp 该先配哪些项",
+      "question_id": "ext-eg-181",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-fsdp-checkpoint-merge-001",
+          "kept": true,
+          "score": 0.9922633171081543
+        },
+        {
+          "chunk_id": "ext-accelerate-fsdp-config-001",
+          "kept": true,
+          "score": 0.4543539583683014
+        },
+        {
+          "chunk_id": "ext-fsdp-vs-deepspeed-zero-001",
+          "kept": true,
+          "score": 0.260715514421463
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "fsdp 训练完只有分片目录怎么合成能部署或上传的权重",
+      "query_raw": "fsdp 训练完只有分片目录,怎么合成能部署或上传的权重",
+      "question_id": "ext-eg-182",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-fsdp-vs-deepspeed-zero-001",
+          "kept": true,
+          "score": 0.9947679042816162
+        },
+        {
+          "chunk_id": "ext-deepspeed-zero-001",
+          "kept": true,
+          "score": 0.9729472398757935
+        },
+        {
+          "chunk_id": "ext-accelerate-fsdp-config-001",
+          "kept": true,
+          "score": 0.9248658418655396
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "多卡训练大模型时 fsdp 和 deepspeed zero3 该怎么取舍",
+      "query_raw": "多卡训练大模型时 fsdp 和 deepspeed zero3 该怎么取舍",
+      "question_id": "ext-eg-183",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gpu-vram-estimate-001",
+          "kept": true,
+          "score": 0.9978779554367065
+        },
+        {
+          "chunk_id": "ext-accelerate-memory-estimator-001",
+          "kept": true,
+          "score": 0.9963921904563904
+        },
+        {
+          "chunk_id": "ext-gpu-oom-vllm-001",
+          "kept": true,
+          "score": 0.7446319460868835
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "还没买实例前怎么先估一下这个模型至少要多少显存",
+      "query_raw": "还没买实例前,怎么先估一下这个模型至少要多少显存",
+      "question_id": "ext-eg-184",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-hf-big-model-device-map-offload-001",
+          "kept": true,
+          "score": 0.9861714243888855
+        },
+        {
+          "chunk_id": "ext-pytorch-device-001",
+          "kept": true,
+          "score": 0.8697252869606018
+        },
+        {
+          "chunk_id": "ext-transformers-trainer-gpu-001",
+          "kept": true,
+          "score": 0.21386504173278809
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "transformers devicemap auto 能不能把模型放一部分到 cpu 上跑",
+      "query_raw": "transformers device_map auto 能不能把模型放一部分到 cpu 上跑",
+      "question_id": "ext-eg-185",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-megatron-lm-accelerate-001",
+          "kept": true,
+          "score": 0.9980252981185913
+        },
+        {
+          "chunk_id": "ext-vllm-tensor-parallel-001",
+          "kept": true,
+          "score": 0.7772994637489319
+        },
+        {
+          "chunk_id": "ext-accelerate-fsdp-config-001",
+          "kept": true,
+          "score": 0.7356551885604858
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "模型再大一点只靠 fsdp 不够什么时候要 tensor parallel 或 pipeline parallel",
+      "query_raw": "模型再大一点只靠 fsdp 不够,什么时候要 tensor parallel 或 pipeline parallel",
+      "question_id": "ext-eg-186",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pytorch-activation-checkpointing-001",
+          "kept": true,
+          "score": 0.9891002774238586
+        },
+        {
+          "chunk_id": "ext-gpu-pytorch-oom-001",
+          "kept": true,
+          "score": 0.794940710067749
+        },
+        {
+          "chunk_id": "ext-fsdp-mixed-precision-auto-wrap-001",
+          "kept": true,
+          "score": 0.5440340638160706
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "想省训练激活显存gradient checkpointing 打开后为什么会慢",
+      "query_raw": "想省训练激活显存,gradient checkpointing 打开后为什么会慢",
+      "question_id": "ext-eg-187",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-fsdp-mixed-precision-auto-wrap-001",
+          "kept": true,
+          "score": 0.9970634579658508
+        },
+        {
+          "chunk_id": "ext-accelerate-fsdp-config-001",
+          "kept": true,
+          "score": 0.8819117546081543
+        },
+        {
+          "chunk_id": "ext-fsdp-vs-deepspeed-zero-001",
+          "kept": true,
+          "score": 0.44092875719070435
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "fsdp 已经开了但显存没降多少auto wrap 和 bf16 要怎么查",
+      "query_raw": "fsdp 已经开了但显存没降多少,auto wrap 和 bf16 要怎么查",
+      "question_id": "ext-eg-188",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-serving-001",
+          "kept": true,
+          "score": 0.9987364411354065
+        },
+        {
+          "chunk_id": "ext-vllm-lora-serving-001",
+          "kept": true,
+          "score": 0.9956076741218567
+        },
+        {
+          "chunk_id": "ext-litellm-proxy-openai-compatible-001",
+          "kept": true,
+          "score": 0.9880449175834656
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "一个底座模型挂好几个 lora想用 vllm 对外提供 openai 接口",
+      "query_raw": "一个底座模型挂好几个 lora,想用 vllm 对外提供 openai 接口",
+      "question_id": "ext-eg-189",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-dynamic-lora-001",
+          "kept": true,
+          "score": 0.9962354302406311
+        },
+        {
+          "chunk_id": "ext-vllm-lora-serving-001",
+          "kept": true,
+          "score": 0.9649803638458252
+        },
+        {
+          "chunk_id": "ext-vllm-serving-001",
+          "kept": true,
+          "score": 0.6579984426498413
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "vllm 服务不想重启能不能运行中给不同客户加 lora adapter",
+      "query_raw": "vllm 服务不想重启,能不能运行中给不同客户加 lora adapter",
+      "question_id": "ext-eg-190",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-structured-output-001",
+          "kept": true,
+          "score": 0.9752726554870605
+        },
+        {
+          "chunk_id": "ext-api-structured-output-schema-001",
+          "kept": true,
+          "score": 0.9481604695320129
+        },
+        {
+          "chunk_id": "ext-vllm-serving-001",
+          "kept": true,
+          "score": 0.7983915209770203
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "接口返回必须是 json schema 格式vllm 结构化输出怎么做",
+      "query_raw": "接口返回必须是 json schema 格式,vllm 结构化输出怎么做",
+      "question_id": "ext-eg-191",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-prometheus-metrics-001",
+          "kept": true,
+          "score": 0.9871143102645874
+        },
+        {
+          "chunk_id": "ext-dcgm-exporter-prometheus-001",
+          "kept": true,
+          "score": 0.864838182926178
+        },
+        {
+          "chunk_id": "ext-eval-observability-release-gate-001",
+          "kept": true,
+          "score": 0.736193060874939
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "vllm 上线后想看 qps延迟排队和显存指标接 prometheus",
+      "query_raw": "vllm 上线后想看 qps、延迟、排队和显存指标接 prometheus",
+      "question_id": "ext-eg-192",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-opentelemetry-tracing-001",
+          "kept": true,
+          "score": 0.9760045409202576
+        },
+        {
+          "chunk_id": "ext-vllm-prometheus-metrics-001",
+          "kept": true,
+          "score": 0.7590391635894775
+        },
+        {
+          "chunk_id": "ext-nsight-systems-profile-001",
+          "kept": true,
+          "score": 0.6982352137565613
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "线上大模型接口变慢想用 tracing 看每个请求卡在哪里",
+      "query_raw": "线上大模型接口变慢,想用 tracing 看每个请求卡在哪里",
+      "question_id": "ext-eg-193",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-security-reverse-proxy-001",
+          "kept": true,
+          "score": 0.9960516095161438
+        },
+        {
+          "chunk_id": "ext-public-webui-auth-security-001",
+          "kept": true,
+          "score": 0.9484158158302307
+        },
+        {
+          "chunk_id": "ext-ssh-tunnel-reverse-proxy-001",
+          "kept": true,
+          "score": 0.8244901299476624
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "vllm 端口要给客户访问反向代理和鉴权安全上要注意什么",
+      "query_raw": "vllm 端口要给客户访问,反向代理和鉴权安全上要注意什么",
+      "question_id": "ext-eg-194",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-litellm-virtual-keys-budget-001",
+          "kept": true,
+          "score": 0.99595046043396
+        },
+        {
+          "chunk_id": "ext-litellm-rate-limit-teams-001",
+          "kept": true,
+          "score": 0.9085522294044495
+        },
+        {
+          "chunk_id": "ext-litellm-proxy-openai-compatible-001",
+          "kept": true,
+          "score": 0.7521471977233887
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "给团队发不同 api key希望每个 key 有预算和可用模型限制",
+      "query_raw": "给团队发不同 api key,希望每个 key 有预算和可用模型限制",
+      "question_id": "ext-eg-195",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-litellm-virtual-keys-budget-001",
+          "kept": true,
+          "score": 0.9735832214355469
+        },
+        {
+          "chunk_id": "ext-litellm-rate-limit-teams-001",
+          "kept": true,
+          "score": 0.9147745370864868
+        },
+        {
+          "chunk_id": "ext-litellm-proxy-openai-compatible-001",
+          "kept": true,
+          "score": 0.8602943420410156
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "多个团队共用 litellm 代理想按人或团队限流控成本",
+      "query_raw": "多个团队共用 litellm 代理,想按人或团队限流控成本",
+      "question_id": "ext-eg-196",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-prefix-cache-001",
+          "kept": true,
+          "score": 0.9848610162734985
+        },
+        {
+          "chunk_id": "ext-vllm-prometheus-metrics-001",
+          "kept": true,
+          "score": 0.2793613076210022
+        },
+        {
+          "chunk_id": "ext-vllm-quantization-001",
+          "kept": true,
+          "score": 0.10485804080963135
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "很多请求前缀一样vllm prefix cache 能不能降低首 token 延迟",
+      "query_raw": "很多请求前缀一样,vllm prefix cache 能不能降低首 token 延迟",
+      "question_id": "ext-eg-197",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-nccl-tests-allreduce-001",
+          "kept": true,
+          "score": 0.9931721687316895
+        },
+        {
+          "chunk_id": "ext-infiniband-low-level-test-001",
+          "kept": true,
+          "score": 0.9393991231918335
+        },
+        {
+          "chunk_id": "ext-nccl-acs-iommu-rdma-001",
+          "kept": true,
+          "score": 0.862648606300354
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "两台 gpu 服务器多机训练前想先测 nccl allreduce 带宽",
+      "query_raw": "两台 gpu 服务器多机训练前,想先测 nccl allreduce 带宽",
+      "question_id": "ext-eg-198",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-nccl-gpu-nic-topology-001",
+          "kept": true,
+          "score": 0.9984061121940613
+        },
+        {
+          "chunk_id": "ext-nccl-tests-allreduce-001",
+          "kept": true,
+          "score": 0.9747544527053833
+        },
+        {
+          "chunk_id": "ext-infiniband-low-level-test-001",
+          "kept": true,
+          "score": 0.9631674885749817
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "多节点训练特别慢怎么判断 gpu 到网卡的拓扑是不是绕远了",
+      "query_raw": "多节点训练特别慢,怎么判断 gpu 到网卡的拓扑是不是绕远了",
+      "question_id": "ext-eg-199",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-nccl-acs-iommu-rdma-001",
+          "kept": true,
+          "score": 0.9970399737358093
+        },
+        {
+          "chunk_id": "ext-nccl-gpu-nic-topology-001",
+          "kept": true,
+          "score": 0.7859386801719666
+        },
+        {
+          "chunk_id": "ext-nccl-advanced-debug-001",
+          "kept": true,
+          "score": 0.7568011283874512
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "rdma 环境 nccl 还是走不起来acs 或 iommu 会不会影响",
+      "query_raw": "rdma 环境 nccl 还是走不起来,acs 或 iommu 会不会影响",
+      "question_id": "ext-eg-200",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-infiniband-low-level-test-001",
+          "kept": true,
+          "score": 0.9914121627807617
+        },
+        {
+          "chunk_id": "ext-nccl-acs-iommu-rdma-001",
+          "kept": true,
+          "score": 0.955867350101471
+        },
+        {
+          "chunk_id": "ext-nccl-tests-allreduce-001",
+          "kept": true,
+          "score": 0.9523123502731323
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ib 口看起来正常但训练带宽低除了 nccl 还要测什么",
+      "query_raw": "ib 口看起来正常但训练带宽低,除了 nccl 还要测什么",
+      "question_id": "ext-eg-201",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-multinode-nccl-env-minimal-001",
+          "kept": true,
+          "score": 0.9989809393882751
+        },
+        {
+          "chunk_id": "ext-pytorch-nccl-ddp-debug-001",
+          "kept": true,
+          "score": 0.9957088232040405
+        },
+        {
+          "chunk_id": "ext-nccl-advanced-debug-001",
+          "kept": true,
+          "score": 0.965009868144989
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "torchrun 跨节点启动卡住masteraddr 和 nccl 网卡变量怎么最小化检查",
+      "query_raw": "torchrun 跨节点启动卡住,MASTER_ADDR 和 nccl 网卡变量怎么最小化检查",
+      "question_id": "ext-eg-202",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-kueue-pytorchjob-queue-001",
+          "kept": true,
+          "score": 0.994857907295227
+        },
+        {
+          "chunk_id": "ext-kueue-resource-flavors-quota-001",
+          "kept": true,
+          "score": 0.9774749875068665
+        },
+        {
+          "chunk_id": "ext-kubeflow-trainer-trainjob-001",
+          "kept": true,
+          "score": 0.944895327091217
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "k8s 上多用户训练希望排队等 gpupytorchjob 怎么接 kueue",
+      "query_raw": "k8s 上多用户训练希望排队等 gpu,PyTorchJob 怎么接 kueue",
+      "question_id": "ext-eg-203",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-kueue-resource-flavors-quota-001",
+          "kept": true,
+          "score": 0.935651957988739
+        },
+        {
+          "chunk_id": "ext-volcano-gang-scheduling-001",
+          "kept": true,
+          "score": 0.8434819579124451
+        },
+        {
+          "chunk_id": "ext-kueue-pytorchjob-queue-001",
+          "kept": true,
+          "score": 0.8316792249679565
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "不同 gpu 规格想分队列配额避免一个团队把资源全占了",
+      "query_raw": "不同 gpu 规格想分队列配额,避免一个团队把资源全占了",
+      "question_id": "ext-eg-204",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-kubeflow-trainer-trainjob-001",
+          "kept": true,
+          "score": 0.948150098323822
+        },
+        {
+          "chunk_id": "ext-kueue-pytorchjob-queue-001",
+          "kept": true,
+          "score": 0.9203599691390991
+        },
+        {
+          "chunk_id": "ext-ray-train-gpu-scaling-001",
+          "kept": true,
+          "score": 0.41317111253738403
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "kubeflow trainer 现在提交 pytorch 训练任务的入口是什么",
+      "query_raw": "kubeflow trainer 现在提交 pytorch 训练任务的入口是什么",
+      "question_id": "ext-eg-205",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-volcano-gang-scheduling-001",
+          "kept": true,
+          "score": 0.9938269257545471
+        },
+        {
+          "chunk_id": "ext-kueue-resource-flavors-quota-001",
+          "kept": true,
+          "score": 0.5319177508354187
+        },
+        {
+          "chunk_id": "ext-ray-train-gpu-scaling-001",
+          "kept": true,
+          "score": 0.48678240180015564
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "分布式训练必须所有 worker 一起拿到 gpugang scheduling 解决什么",
+      "query_raw": "分布式训练必须所有 worker 一起拿到 gpu,gang scheduling 解决什么",
+      "question_id": "ext-eg-206",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-kubeflow-job-failure-logs-001",
+          "kept": true,
+          "score": 0.9993395209312439
+        },
+        {
+          "chunk_id": "ext-kubeflow-trainer-trainjob-001",
+          "kept": true,
+          "score": 0.9931139349937439
+        },
+        {
+          "chunk_id": "ext-kueue-pytorchjob-queue-001",
+          "kept": true,
+          "score": 0.9340621829032898
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "kubeflow 训练任务 pending 或失败应该先看哪些事件和日志",
+      "query_raw": "kubeflow 训练任务 pending 或失败,应该先看哪些事件和日志",
+      "question_id": "ext-eg-207",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-lm-eval-harness-basic-001",
+          "kept": true,
+          "score": 0.9832153916358948
+        },
+        {
+          "chunk_id": "ext-lm-eval-custom-task-001",
+          "kept": true,
+          "score": 0.9164080023765564
+        },
+        {
+          "chunk_id": "ext-eval-observability-release-gate-001",
+          "kept": true,
+          "score": 0.8492149114608765
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "新模型上线前想跑一套标准题用 lm eval harness 怎么开始",
+      "query_raw": "新模型上线前想跑一套标准题,用 lm eval harness 怎么开始",
+      "question_id": "ext-eg-208",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-lm-eval-custom-task-001",
+          "kept": true,
+          "score": 0.9809904098510742
+        },
+        {
+          "chunk_id": "ext-lm-eval-harness-basic-001",
+          "kept": true,
+          "score": 0.896088719367981
+        },
+        {
+          "chunk_id": "ext-mlflow-genai-evaluation-001",
+          "kept": true,
+          "score": 0.19018083810806274
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "公司自己的题库想接进 lm evaluation harness要准备什么文件",
+      "query_raw": "公司自己的题库想接进 lm evaluation harness,要准备什么文件",
+      "question_id": "ext-eg-209",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-mlflow-genai-evaluation-001",
+          "kept": true,
+          "score": 0.9838470816612244
+        },
+        {
+          "chunk_id": "ext-eval-observability-release-gate-001",
+          "kept": true,
+          "score": 0.9245721697807312
+        },
+        {
+          "chunk_id": "ext-wandb-mlflow-experiment-tracking-001",
+          "kept": true,
+          "score": 0.6117497086524963
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "rag 或 agent 回答质量想用 mlflow 做评测需要哪些输入",
+      "query_raw": "rag 或 agent 回答质量想用 mlflow 做评测,需要哪些输入",
+      "question_id": "ext-eg-210",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-mlflow-model-registry-promotion-001",
+          "kept": true,
+          "score": 0.9846413731575012
+        },
+        {
+          "chunk_id": "ext-wandb-mlflow-experiment-tracking-001",
+          "kept": true,
+          "score": 0.22483408451080322
+        },
+        {
+          "chunk_id": "ext-eval-observability-release-gate-001",
+          "kept": true,
+          "score": 0.15434370934963226
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "模型版本从 staging 到 productionmlflow model registry 怎么管",
+      "query_raw": "模型版本从 staging 到 production,mlflow model registry 怎么管",
+      "question_id": "ext-eg-211",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-eval-observability-release-gate-001",
+          "kept": true,
+          "score": 0.9933112859725952
+        },
+        {
+          "chunk_id": "ext-lm-eval-custom-task-001",
+          "kept": true,
+          "score": 0.8352097868919373
+        },
+        {
+          "chunk_id": "ext-lm-eval-harness-basic-001",
+          "kept": true,
+          "score": 0.6925086379051208
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "客户验收模型时怎么把评测分数服务指标和成本放在同一套门槛里",
+      "query_raw": "客户验收模型时,怎么把评测分数、服务指标和成本放在同一套门槛里",
+      "question_id": "ext-eg-212",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ultralytics-yolo-custom-training-001",
+          "kept": true,
+          "score": 0.9979787468910217
+        },
+        {
+          "chunk_id": "ext-cv-dataset-format-label-debug-001",
+          "kept": true,
+          "score": 0.17602521181106567
+        },
+        {
+          "chunk_id": "ext-ultralytics-yolo-oom-performance-001",
+          "kept": true,
+          "score": 0.11811613291501999
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "想训练自己的目标检测模型yolo 数据 yaml 和 gpu 命令怎么准备",
+      "query_raw": "想训练自己的目标检测模型,yolo 数据 yaml 和 gpu 命令怎么准备",
+      "question_id": "ext-eg-213",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ultralytics-yolo-oom-performance-001",
+          "kept": true,
+          "score": 0.9982781410217285
+        },
+        {
+          "chunk_id": "ext-pytorch-dataloader-001",
+          "kept": true,
+          "score": 0.9479077458381653
+        },
+        {
+          "chunk_id": "ext-gpu-pytorch-oom-001",
+          "kept": true,
+          "score": 0.9347588419914246
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "yolo 训练显存爆了或 gpu 利用率低batch imgsz workers 先调谁",
+      "query_raw": "yolo 训练显存爆了或 gpu 利用率低,batch imgsz workers 先调谁",
+      "question_id": "ext-eg-214",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-sam2-install-checkpoints-001",
+          "kept": true,
+          "score": 0.9982301592826843
+        },
+        {
+          "chunk_id": "ext-sam2-video-segmentation-oom-001",
+          "kept": true,
+          "score": 0.4848889410495758
+        },
+        {
+          "chunk_id": "ext-scene-video-comfyui-models-vram-001",
+          "kept": true,
+          "score": 0.07470912486314774
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "sam2 第一次跑图像或视频分割checkpoint 和 demo 怎么准备",
+      "query_raw": "sam2 第一次跑图像或视频分割,checkpoint 和 demo 怎么准备",
+      "question_id": "ext-eg-215",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-sam2-video-segmentation-oom-001",
+          "kept": true,
+          "score": 0.9916597008705139
+        },
+        {
+          "chunk_id": "ext-scene-video-generation-low-vram-001",
+          "kept": true,
+          "score": 0.9891136884689331
+        },
+        {
+          "chunk_id": "ext-video-generation-resource-tradeoff-001",
+          "kept": true,
+          "score": 0.9619048833847046
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "sam2 分割长视频又慢又爆显存应该按帧数还是分辨率排查",
+      "query_raw": "sam2 分割长视频又慢又爆显存,应该按帧数还是分辨率排查",
+      "question_id": "ext-eg-216",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-lammps-gpu-package-001",
+          "kept": true,
+          "score": 0.9936462640762329
+        },
+        {
+          "chunk_id": "ext-openmm-cuda-platform-001",
+          "kept": true,
+          "score": 0.8989132642745972
+        },
+        {
+          "chunk_id": "ext-gromacs-gpu-offload-001",
+          "kept": true,
+          "score": 0.6986587047576904
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "科研用户跑 lammps 分子模拟怎么确认 gpu package 真的启用了",
+      "query_raw": "科研用户跑 lammps 分子模拟,怎么确认 gpu package 真的启用了",
+      "question_id": "ext-eg-217",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-pyscf-gpu4pyscf-001",
+          "kept": true,
+          "score": 0.9942382574081421
+        },
+        {
+          "chunk_id": "ext-cupy-gpu-array-001",
+          "kept": true,
+          "score": 0.6808319687843323
+        },
+        {
+          "chunk_id": "ext-jax-gpu-install-001",
+          "kept": true,
+          "score": 0.24681542813777924
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "pyscf 量子化学计算想迁到 gpugpu4pyscf 和 togpu 怎么验证",
+      "query_raw": "pyscf 量子化学计算想迁到 gpu,gpu4pyscf 和 to_gpu 怎么验证",
+      "question_id": "ext-eg-218",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-apptainer-gpu-container-001",
+          "kept": true,
+          "score": 0.9991833567619324
+        },
+        {
+          "chunk_id": "ext-docker-gpu-container-001",
+          "kept": true,
+          "score": 0.9914178848266602
+        },
+        {
+          "chunk_id": "ext-docker-gpu-visible-devices-advanced-001",
+          "kept": true,
+          "score": 0.9752468466758728
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "hpc 用户不用 dockerapptainer 容器里怎么让 cuda 和显卡可见",
+      "query_raw": "hpc 用户不用 docker,apptainer 容器里怎么让 cuda 和显卡可见",
+      "question_id": "ext-eg-219",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-webdataset-sharded-tar-001",
+          "kept": true,
+          "score": 0.994818389415741
+        },
+        {
+          "chunk_id": "ext-s3-object-storage-multipart-001",
+          "kept": true,
+          "score": 0.5998131632804871
+        },
+        {
+          "chunk_id": "ext-hf-datasets-streaming-cache-001",
+          "kept": true,
+          "score": 0.2147292196750641
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "几千万张训练图片都是小文件webdataset tar shard 适合吗",
+      "query_raw": "几千万张训练图片都是小文件,webdataset tar shard 适合吗",
+      "question_id": "ext-eg-220",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-onnxruntime-quantization-001",
+          "kept": true,
+          "score": 0.9666319489479065
+        },
+        {
+          "chunk_id": "ext-optimum-onnx-gpu-001",
+          "kept": true,
+          "score": 0.08727008104324341
+        },
+        {
+          "chunk_id": "ext-vllm-quantization-001",
+          "kept": true,
+          "score": 0.06272048503160477
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "onnx 模型想 int8 量化动态量化和静态量化怎么选",
+      "query_raw": "onnx 模型想 int8 量化,动态量化和静态量化怎么选",
+      "question_id": "ext-eg-221",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-optimum-onnx-gpu-001",
+          "kept": true,
+          "score": 0.9915110468864441
+        },
+        {
+          "chunk_id": "ext-transformers-trainer-gpu-001",
+          "kept": true,
+          "score": 0.5327181220054626
+        },
+        {
+          "chunk_id": "ext-onnxruntime-quantization-001",
+          "kept": true,
+          "score": 0.5110439658164978
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "transformers 模型导出 onnx 后没用上 gpuprovider 怎么查",
+      "query_raw": "transformers 模型导出 onnx 后没用上 gpu,provider 怎么查",
+      "question_id": "ext-eg-222",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-transformers-awq-gptq-quantization-001",
+          "kept": true,
+          "score": 0.9886749982833862
+        },
+        {
+          "chunk_id": "ext-bitsandbytes-quantization-001",
+          "kept": true,
+          "score": 0.9718071222305298
+        },
+        {
+          "chunk_id": "ext-vllm-quantization-001",
+          "kept": true,
+          "score": 0.577850341796875
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "awq gptq bitsandbytes gguf 都是 4bit 吗部署时怎么分",
+      "query_raw": "awq gptq bitsandbytes gguf 都是 4bit 吗,部署时怎么分",
+      "question_id": "ext-eg-223",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-gguf-llama-cpp-convert-001",
+          "kept": true,
+          "score": 0.9814013838768005
+        },
+        {
+          "chunk_id": "ext-transformers-awq-gptq-quantization-001",
+          "kept": true,
+          "score": 0.9190862774848938
+        },
+        {
+          "chunk_id": "ext-ollama-modelfile-001",
+          "kept": true,
+          "score": 0.3536294996738434
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "下载到 gguf 文件后为什么不能直接用 transformers 当 safetensors 加载",
+      "query_raw": "下载到 gguf 文件后,为什么不能直接用 transformers 当 safetensors 加载",
+      "question_id": "ext-eg-224",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-api-compatible-base-url-key-001",
+          "kept": true,
+          "score": 0.9967949986457825
+        },
+        {
+          "chunk_id": "ext-ollama-openai-001",
+          "kept": true,
+          "score": 0.9936026930809021
+        },
+        {
+          "chunk_id": "ext-vllm-serving-001",
+          "kept": true,
+          "score": 0.9868230819702148
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "用 openai sdk 接一个兼容接口base url 和模型名老填不对怎么排查",
+      "query_raw": "用 openai sdk 接一个兼容接口,base url 和模型名老填不对怎么排查",
+      "question_id": "ext-eg-225",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-api-compatible-streaming-sse-001",
+          "kept": true,
+          "score": 0.9756930470466614
+        },
+        {
+          "chunk_id": "ext-openwebui-ollama-openai-001",
+          "kept": true,
+          "score": 0.07814307510852814
+        },
+        {
+          "chunk_id": "ext-api-compatible-error-retry-001",
+          "kept": true,
+          "score": 0.03612050041556358
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "大模型接口开了 stream 但前端还是等完整回答才显示",
+      "query_raw": "大模型接口开了 stream 但前端还是等完整回答才显示",
+      "question_id": "ext-eg-226",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-api-compatible-error-retry-001",
+          "kept": true,
+          "score": 0.979880154132843
+        },
+        {
+          "chunk_id": "ext-litellm-rate-limit-teams-001",
+          "kept": true,
+          "score": 0.2944619655609131
+        },
+        {
+          "chunk_id": "ext-api-compatible-base-url-key-001",
+          "kept": true,
+          "score": 0.2711309790611267
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "模型 api 偶尔 429 或 502哪些错误能重试哪些不能",
+      "query_raw": "模型 api 偶尔 429 或 502,哪些错误能重试哪些不能",
+      "question_id": "ext-eg-227",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-api-tool-calling-contract-001",
+          "kept": true,
+          "score": 0.9856496453285217
+        },
+        {
+          "chunk_id": "ext-langchain-langgraph-agent-state-001",
+          "kept": true,
+          "score": 0.8280932903289795
+        },
+        {
+          "chunk_id": "ext-api-structured-output-schema-001",
+          "kept": true,
+          "score": 0.3324929475784302
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "function calling 返回工具参数后服务端是不是还要校验",
+      "query_raw": "function calling 返回工具参数后,服务端是不是还要校验",
+      "question_id": "ext-eg-228",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vllm-structured-output-001",
+          "kept": true,
+          "score": 0.9677745699882507
+        },
+        {
+          "chunk_id": "ext-api-structured-output-schema-001",
+          "kept": true,
+          "score": 0.9363001585006714
+        },
+        {
+          "chunk_id": "ext-api-tool-calling-contract-001",
+          "kept": true,
+          "score": 0.09364642947912216
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "业务要求模型只返回 json怎么用 schema 限制并避免解析失败",
+      "query_raw": "业务要求模型只返回 json,怎么用 schema 限制并避免解析失败",
+      "question_id": "ext-eg-229",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-api-embedding-rerank-basics-001",
+          "kept": true,
+          "score": 0.9766266942024231
+        },
+        {
+          "chunk_id": "ext-rag-retrieval-quality-debug-001",
+          "kept": true,
+          "score": 0.4852629005908966
+        },
+        {
+          "chunk_id": "ext-rag-citation-grounding-001",
+          "kept": true,
+          "score": 0.09549900889396667
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "rag 里 embedding 和 rerank 分别管什么为什么检索还要重排",
+      "query_raw": "rag 里 embedding 和 rerank 分别管什么,为什么检索还要重排",
+      "question_id": "ext-eg-230",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-rag-ingestion-index-empty-001",
+          "kept": true,
+          "score": 0.9972947239875793
+        },
+        {
+          "chunk_id": "ext-ragflow-document-parser-index-001",
+          "kept": true,
+          "score": 0.9878271222114563
+        },
+        {
+          "chunk_id": "ext-dify-provider-knowledge-troubleshoot-001",
+          "kept": true,
+          "score": 0.9622926115989685
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "知识库文档上传了但问答完全检索不到应该从哪一步查",
+      "query_raw": "知识库文档上传了但问答完全检索不到,应该从哪一步查",
+      "question_id": "ext-eg-231",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-rag-retrieval-quality-debug-001",
+          "kept": true,
+          "score": 0.9976333379745483
+        },
+        {
+          "chunk_id": "ext-rag-ingestion-index-empty-001",
+          "kept": true,
+          "score": 0.9535149931907654
+        },
+        {
+          "chunk_id": "ext-rag-citation-grounding-001",
+          "kept": true,
+          "score": 0.9062014222145081
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "rag 回答不准怎么判断是检索错了还是模型生成错了",
+      "query_raw": "rag 回答不准,怎么判断是检索错了还是模型生成错了",
+      "question_id": "ext-eg-232",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-rag-citation-grounding-001",
+          "kept": true,
+          "score": 0.9946244359016418
+        },
+        {
+          "chunk_id": "ext-rag-ingestion-index-empty-001",
+          "kept": true,
+          "score": 0.39128628373146057
+        },
+        {
+          "chunk_id": "ext-rag-retrieval-quality-debug-001",
+          "kept": true,
+          "score": 0.19707420468330383
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "知识库没有依据时想让模型拒答并带引用怎么设计",
+      "query_raw": "知识库没有依据时想让模型拒答并带引用,怎么设计",
+      "question_id": "ext-eg-233",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-dify-provider-knowledge-troubleshoot-001",
+          "kept": true,
+          "score": 0.9962700605392456
+        },
+        {
+          "chunk_id": "ext-rag-ingestion-index-empty-001",
+          "kept": true,
+          "score": 0.963018536567688
+        },
+        {
+          "chunk_id": "ext-rag-retrieval-quality-debug-001",
+          "kept": true,
+          "score": 0.9374682307243347
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "dify 接兼容模型和知识库后不出答案要按哪几层拆开查",
+      "query_raw": "dify 接兼容模型和知识库后不出答案,要按哪几层拆开查",
+      "question_id": "ext-eg-234",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ragflow-document-parser-index-001",
+          "kept": true,
+          "score": 0.9941353797912598
+        },
+        {
+          "chunk_id": "ext-rag-ingestion-index-empty-001",
+          "kept": true,
+          "score": 0.9922458529472351
+        },
+        {
+          "chunk_id": "ext-flowise-agent-workflow-tools-001",
+          "kept": true,
+          "score": 0.7744385004043579
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ragflow 上传 pdf 后解析和索引都不稳定先看哪些日志和结果",
+      "query_raw": "ragflow 上传 pdf 后解析和索引都不稳定,先看哪些日志和结果",
+      "question_id": "ext-eg-235",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-n8n-ai-workflow-webhook-001",
+          "kept": true,
+          "score": 0.9965859651565552
+        },
+        {
+          "chunk_id": "ext-flowise-agent-workflow-tools-001",
+          "kept": true,
+          "score": 0.4975348114967346
+        },
+        {
+          "chunk_id": "ext-dify-provider-knowledge-troubleshoot-001",
+          "kept": true,
+          "score": 0.4447406828403473
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "n8n 的 ai 工作流里 webhook 和模型节点经常失败怎么定位",
+      "query_raw": "n8n 的 ai 工作流里 webhook 和模型节点经常失败,怎么定位",
+      "question_id": "ext-eg-236",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-flowise-agent-workflow-tools-001",
+          "kept": true,
+          "score": 0.996533989906311
+        },
+        {
+          "chunk_id": "ext-langchain-langgraph-agent-state-001",
+          "kept": true,
+          "score": 0.8553952574729919
+        },
+        {
+          "chunk_id": "ext-n8n-ai-workflow-webhook-001",
+          "kept": true,
+          "score": 0.8218725323677063
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "flowise 做 agent workflow 时工具和记忆节点不生效怎么查",
+      "query_raw": "flowise 做 agent workflow 时工具和记忆节点不生效怎么查",
+      "question_id": "ext-eg-237",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-langchain-langgraph-agent-state-001",
+          "kept": true,
+          "score": 0.997232973575592
+        },
+        {
+          "chunk_id": "ext-coding-agent-long-run-recovery-001",
+          "kept": true,
+          "score": 0.11835262924432755
+        },
+        {
+          "chunk_id": "ext-flowise-agent-workflow-tools-001",
+          "kept": true,
+          "score": 0.06893621385097504
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "langgraph agent 老循环或状态丢了应该怎么设计和调试",
+      "query_raw": "langgraph agent 老循环或状态丢了,应该怎么设计和调试",
+      "question_id": "ext-eg-238",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-coding-agent-compatible-endpoint-001",
+          "kept": true,
+          "score": 0.9954320192337036
+        },
+        {
+          "chunk_id": "ext-langchain-langgraph-agent-state-001",
+          "kept": true,
+          "score": 0.9502052068710327
+        },
+        {
+          "chunk_id": "ext-api-tool-calling-contract-001",
+          "kept": true,
+          "score": 0.8761419653892517
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "ai 编程工具接自定义模型接口失败普通聊天能通但 agent 不行",
+      "query_raw": "ai 编程工具接自定义模型接口失败,普通聊天能通但 agent 不行",
+      "question_id": "ext-eg-239",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-coding-agent-workspace-safety-001",
+          "kept": true,
+          "score": 0.9967306852340698
+        },
+        {
+          "chunk_id": "ext-mcp-tool-server-basics-001",
+          "kept": true,
+          "score": 0.44117483496665955
+        },
+        {
+          "chunk_id": "ext-secret-key-management-001",
+          "kept": true,
+          "score": 0.13045620918273926
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "让 coding agent 改代码和跑命令时工作区权限怎么控制更安全",
+      "query_raw": "让 coding agent 改代码和跑命令时,工作区权限怎么控制更安全",
+      "question_id": "ext-eg-240",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-coding-agent-long-run-recovery-001",
+          "kept": true,
+          "score": 0.9965837001800537
+        },
+        {
+          "chunk_id": "ext-coding-agent-workspace-safety-001",
+          "kept": true,
+          "score": 0.4847627580165863
+        },
+        {
+          "chunk_id": "ext-linux-tmux-001",
+          "kept": true,
+          "score": 0.4013911485671997
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "代码 agent 跑一半断了怎么根据 diff 和测试继续恢复",
+      "query_raw": "代码 agent 跑一半断了,怎么根据 diff 和测试继续恢复",
+      "question_id": "ext-eg-241",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-mcp-tool-server-basics-001",
+          "kept": true,
+          "score": 0.9985275268554688
+        },
+        {
+          "chunk_id": "ext-langchain-langgraph-agent-state-001",
+          "kept": true,
+          "score": 0.25463399291038513
+        },
+        {
+          "chunk_id": "ext-api-tool-calling-contract-001",
+          "kept": true,
+          "score": 0.23325185477733612
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "mcp server 工具没有出现在 agent 里连接和参数怎么排查",
+      "query_raw": "mcp server 工具没有出现在 agent 里,连接和参数怎么排查",
+      "question_id": "ext-eg-242",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-vnc-webrtc-remote-desktop-debug-001",
+          "kept": true,
+          "score": 0.9992883801460266
+        },
+        {
+          "chunk_id": "ext-scene-realtime-digital-human-latency-001",
+          "kept": true,
+          "score": 0.5491750240325928
+        },
+        {
+          "chunk_id": "ext-robotics-sim-gpu-display-001",
+          "kept": true,
+          "score": 0.11127462983131409
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "远程桌面页面能打开但黑屏novnc 或 webrtc 要查哪些环节",
+      "query_raw": "远程桌面页面能打开但黑屏,novnc 或 webrtc 要查哪些环节",
+      "question_id": "ext-eg-243",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-browser-automation-gpu-server-001",
+          "kept": true,
+          "score": 0.9966223239898682
+        },
+        {
+          "chunk_id": "ext-robotics-sim-gpu-display-001",
+          "kept": true,
+          "score": 0.015998251736164093
+        },
+        {
+          "chunk_id": "ext-comfyui-cant-connect-001",
+          "kept": true,
+          "score": 0.008705591782927513
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "服务器上跑 playwright 截图是空白或浏览器启动失败怎么办",
+      "query_raw": "服务器上跑 playwright 截图是空白或浏览器启动失败怎么办",
+      "question_id": "ext-eg-244",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-s3-object-storage-multipart-001",
+          "kept": true,
+          "score": 0.9904845952987671
+        },
+        {
+          "chunk_id": "ext-rsync-checksum-partial-001",
+          "kept": true,
+          "score": 0.7676985263824463
+        },
+        {
+          "chunk_id": "ext-linux-large-transfer-rsync-001",
+          "kept": true,
+          "score": 0.5958930253982544
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "大模型文件传到对象存储中断了分片上传和校验怎么做",
+      "query_raw": "大模型文件传到对象存储中断了,分片上传和校验怎么做",
+      "question_id": "ext-eg-245",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-rsync-checksum-partial-001",
+          "kept": true,
+          "score": 0.9985333681106567
+        },
+        {
+          "chunk_id": "ext-linux-large-transfer-rsync-001",
+          "kept": true,
+          "score": 0.9817848205566406
+        },
+        {
+          "chunk_id": "ext-scp-rsync-transfer-debug-001",
+          "kept": true,
+          "score": 0.9810656905174255
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "rsync 同步数据集断了以后想续传并确认两边一致",
+      "query_raw": "rsync 同步数据集断了以后想续传并确认两边一致",
+      "question_id": "ext-eg-246",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-package-manager-proxy-dns-001",
+          "kept": true,
+          "score": 0.9974313378334045
+        },
+        {
+          "chunk_id": "ext-gpu-hf-download-001",
+          "kept": true,
+          "score": 0.8202515840530396
+        },
+        {
+          "chunk_id": "ext-hf-cache-cli-download-001",
+          "kept": true,
+          "score": 0.4732000231742859
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "pip conda npm docker 和 huggingface 下载都慢怎么区分 dns 和代理问题",
+      "query_raw": "pip conda npm docker 和 huggingface 下载都慢,怎么区分 dns 和代理问题",
+      "question_id": "ext-eg-247",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-secret-key-management-001",
+          "kept": true,
+          "score": 0.988974928855896
+        },
+        {
+          "chunk_id": "ext-hf-token-001",
+          "kept": true,
+          "score": 0.38740256428718567
+        },
+        {
+          "chunk_id": "ext-litellm-virtual-keys-budget-001",
+          "kept": true,
+          "score": 0.30275675654411316
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "api key 不想写进代码泄露后要怎么轮换和止损",
+      "query_raw": "api key 不想写进代码,泄露后要怎么轮换和止损",
+      "question_id": "ext-eg-248",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-public-webui-auth-security-001",
+          "kept": true,
+          "score": 0.9977021813392639
+        },
+        {
+          "chunk_id": "ext-jupyter-server-remote-001",
+          "kept": true,
+          "score": 0.9711790084838867
+        },
+        {
+          "chunk_id": "ext-webapp-gradio-remote-001",
+          "kept": true,
+          "score": 0.9367906451225281
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "把 jupyter gradio comfyui 这类 webui 暴露公网前要做哪些保护",
+      "query_raw": "把 jupyter gradio comfyui 这类 webui 暴露公网前要做哪些保护",
+      "question_id": "ext-eg-249",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-audio-tts-asr-quality-debug-001",
+          "kept": true,
+          "score": 0.9977472424507141
+        },
+        {
+          "chunk_id": "ext-scene-tts-voice-cloning-reference-001",
+          "kept": true,
+          "score": 0.99272221326828
+        },
+        {
+          "chunk_id": "ext-scene-video-dubbing-pipeline-001",
+          "kept": true,
+          "score": 0.9512882232666016
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "语音克隆效果不像或 asr 错字多应该先查音频还是模型",
+      "query_raw": "语音克隆效果不像或 asr 错字多,应该先查音频还是模型",
+      "question_id": "ext-eg-250",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-digital-human-lipsync-latency-001",
+          "kept": true,
+          "score": 0.9973168969154358
+        },
+        {
+          "chunk_id": "ext-scene-realtime-digital-human-latency-001",
+          "kept": true,
+          "score": 0.993868887424469
+        },
+        {
+          "chunk_id": "ext-triton-dynamic-batching-001",
+          "kept": true,
+          "score": 0.07325989007949829
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "实时数字人口型同步延迟高怎么区分推理编码和网络瓶颈",
+      "query_raw": "实时数字人口型同步延迟高,怎么区分推理、编码和网络瓶颈",
+      "question_id": "ext-eg-251",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-scene-video-generation-low-vram-001",
+          "kept": true,
+          "score": 0.9978127479553223
+        },
+        {
+          "chunk_id": "ext-video-generation-resource-tradeoff-001",
+          "kept": true,
+          "score": 0.9968380928039551
+        },
+        {
+          "chunk_id": "ext-sam2-video-segmentation-oom-001",
+          "kept": true,
+          "score": 0.9766547679901123
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "视频生成爆显存或特别慢分辨率帧数时长应该怎么取舍",
+      "query_raw": "视频生成爆显存或特别慢,分辨率帧数时长应该怎么取舍",
+      "question_id": "ext-eg-252",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-cv-dataset-format-label-debug-001",
+          "kept": true,
+          "score": 0.9993662238121033
+        },
+        {
+          "chunk_id": "ext-ultralytics-yolo-custom-training-001",
+          "kept": true,
+          "score": 0.9090597629547119
+        },
+        {
+          "chunk_id": "ext-label-studio-dataset-annotation-001",
+          "kept": true,
+          "score": 0.3657587468624115
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "目标检测或分割训练效果差怎么先检查标签和类别映射",
+      "query_raw": "目标检测或分割训练效果差,怎么先检查标签和类别映射",
+      "question_id": "ext-eg-253",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-robotics-sim-gpu-display-001",
+          "kept": true,
+          "score": 0.9969443678855896
+        },
+        {
+          "chunk_id": "ext-gpu-not-detected-001",
+          "kept": true,
+          "score": 0.9033891558647156
+        },
+        {
+          "chunk_id": "ext-vnc-webrtc-remote-desktop-debug-001",
+          "kept": true,
+          "score": 0.8745473027229309
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "机器人仿真在云端黑屏或 gpu 没用上headless 和显示怎么查",
+      "query_raw": "机器人仿真在云端黑屏或 gpu 没用上,headless 和显示怎么查",
+      "question_id": "ext-eg-254",
+      "refused_reason": "",
+      "weak_evidence": false
+    },
+    {
+      "hit_items": [
+        {
+          "chunk_id": "ext-ai4science-repro-env-data-001",
+          "kept": true,
+          "score": 0.9992057681083679
+        },
+        {
+          "chunk_id": "ext-wandb-mlflow-experiment-tracking-001",
+          "kept": true,
+          "score": 0.4295003414154053
+        },
+        {
+          "chunk_id": "ext-apptainer-gpu-container-001",
+          "kept": true,
+          "score": 0.2999323308467865
+        }
+      ],
+      "hits": 3,
+      "query_expansions": [],
+      "query_normalized": "科研 gpu 任务换机器后要记录哪些环境和数据才能复现",
+      "query_raw": "科研 gpu 任务换机器后要记录哪些环境和数据才能复现",
+      "question_id": "ext-eg-255",
+      "refused_reason": "",
+      "weak_evidence": false
+    }
+  ]
+}

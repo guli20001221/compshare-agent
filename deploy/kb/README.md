@@ -9,6 +9,8 @@ sidecars for the CompShare console agent's RAG path.
 |---|---|---|
 | `stage2b_w0.jsonl` | Customer-safe FAQ corpus (687 chunks @ 2026-05-25, kb_version `kb.stage2b.w1-r4.2026-05-25.final-3`) | `internal/knowledge/corpus_digest.go:CorpusDigestExpected` |
 | `embeddings_<corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for `qwen3_full` / `qwen3_rrf` modes (current default) | `internal/knowledge/corpus_digest.go:EmbeddingDigestExpectedQwen3` |
+| `external_w0.jsonl` | Stable external tool/ops corpus (255 chunks @ 2026-06-24, kb_version `kb.external.w0.2026-06-06`) | `internal/knowledge/corpus_digest.go:ExternalCorpusDigestExpected` |
+| `embeddings_<external-corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for the external corpus | `internal/knowledge/corpus_digest.go:ExternalEmbeddingDigestExpectedQwen3` |
 
 `text-embedding-3-large` sidecar is **no longer maintained** as of W1-R2
 (2026-05-23): `qwen3_rrf` is the runtime default and increments only rebuild
@@ -23,6 +25,13 @@ loader refuses to start if any pin mismatches its on-disk content.
 
 Content policy: every chunk must be `acl="customer_safe"` and contain no
 account-specific values, keys, tokens, IPs, or raw transcripts.
+
+External-corpus stability policy: this file is a low-frequency, platform-neutral
+technical corpus. It should cover durable protocols, troubleshooting flows, and
+general tool behavior. Do not add volatile platform facts here, including
+pricing, packages, model availability, current community-image rankings, console
+paths, promotions, or launch announcements; those belong in the internal
+platform corpus and its incremental update path.
 
 ## Retrieval modes
 

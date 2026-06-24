@@ -35,18 +35,20 @@ const EmbeddingDigestExpected = "9dcb902bb6026836b43cf52be159af6690bb4c93818e1b3
 const EmbeddingDigestExpectedQwen3 = "da488ead7fb53b6d7ab2e7529b9724b1a6f60910aeef253028db624c7dcd99b4"
 
 // ExternalCorpusDigestExpected pins deploy/kb/external_w0.jsonl — the separate
-// external tool/ops corpus (vLLM / SGLang / Ollama / ComfyUI + GPU
-// troubleshooting + Linux-ops/env-management + PyTorch-basics + model-download),
-// loaded alongside the platform corpus via LoadPinnedCorporaWithEmbeddings. RAG
-// Phase 1 (ComfyUI vertical Phase 5; Linux-ops + PyTorch-basics; then the
-// model-download vertical: ModelScope / HF token / Ollama Modelfile / local-path
-// serving). Same refuse-to-start-on-mismatch semantics as the platform pin.
-const ExternalCorpusDigestExpected = "6058e11b4bb2923a46715c659b8b49061de2177a0980efc9a7b98227cf28892f"
+// external tool/ops corpus. It is intentionally platform-neutral and stable:
+// durable GPU/runtime troubleshooting, OpenAI-compatible API semantics, RAG and
+// Agent application basics, remote development/service exposure, data transfer,
+// security, evaluation, and professional GPU workflows. Volatile platform facts
+// such as pricing, model availability, console paths, events, and current
+// community-image rankings belong in the internal platform corpus instead.
+// Loaded alongside the platform corpus via LoadPinnedCorporaWithEmbeddings. Same
+// refuse-to-start-on-mismatch semantics as the platform pin.
+const ExternalCorpusDigestExpected = "cc3546678c5a5c21f46f77da83f98900eaf32fba3c289372f452abbbd3b1b4a7"
 
 // ExternalEmbeddingDigestExpectedQwen3 pins the qwen3-embedding-8b sidecar
 // (4096-dim) for the external corpus:
 // deploy/kb/embeddings_<ExternalCorpusDigestExpected>_qwen3-embedding-8b.jsonl.
-const ExternalEmbeddingDigestExpectedQwen3 = "1865a2110500ca7f4617bd9b447987400f1eb196d72e01e9ab8a9a5b1be8eeeb"
+const ExternalEmbeddingDigestExpectedQwen3 = "332d2b2ce9500a7077bfb894a6b7a303bf7a43fe6acf4abdad90545bfc8f2f8b"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.

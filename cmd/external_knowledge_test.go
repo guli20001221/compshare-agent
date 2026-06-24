@@ -84,7 +84,7 @@ func TestExternalKnowledgeSourceNonQwen3Skips(t *testing.T) {
 
 // TestLoadKnowledgeCorporaMergeAndDegrade exercises the cmd-layer load logic
 // against the real pinned corpora: OFF = platform-only (687, byte-identical to
-// the pre-Phase-2 path), ON = merged (742), ON + broken external path =
+// the pre-Phase-2 path), ON = merged (942), ON + broken external path =
 // graceful fall back to platform-only (687, never fatal).
 func TestLoadKnowledgeCorporaMergeAndDegrade(t *testing.T) {
 	platformCorpus := filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
@@ -117,8 +117,8 @@ func TestLoadKnowledgeCorporaMergeAndDegrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("on-path merge load: %v", err)
 	}
-	if len(merged.Chunks) != 687+55 {
-		t.Fatalf("external on: got %d chunks, want 742 (merged)", len(merged.Chunks))
+	if len(merged.Chunks) != 687+255 {
+		t.Fatalf("external on: got %d chunks, want 942 (merged)", len(merged.Chunks))
 	}
 
 	// ON but the external file is missing -> graceful fall back to platform-only.
