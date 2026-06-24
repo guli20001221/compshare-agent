@@ -19,10 +19,10 @@ const (
 	// (above) directional word from the real-time-query rule, since the block is
 	// no longer above that rule.
 	// 2026-06-23: clarify network acceleration close is not exposed by the agent.
-	mutatingReActPromptSHA256 = "a297497ce11d54003a5f38c381f925e6757e8fb777795300f8ddb674040e012c"
+	mutatingReActPromptSHA256 = "1249d1590a5327a508e93cf649cf1a9ba00a6cb0b45393237fa0b1afb61eefd6"
 	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
 	// 2026-06-22 (阶段1A KV-cache): volatile userContext block moved to the tail.
-	readOnlyReActPromptSHA256 = "77fb47bb7ef45d6d73e0087574d4e2b1ba5bd9ea50b0cdc0c532330b89f5068f"
+	readOnlyReActPromptSHA256 = "a9824405b7522b7c89de15f04c1464377207c0b52c128ce8dd2d5887f468f127"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {
