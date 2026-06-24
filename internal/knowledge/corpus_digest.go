@@ -41,12 +41,15 @@ const EmbeddingDigestExpectedQwen3 = "da488ead7fb53b6d7ab2e7529b9724b1a6f60910ae
 // Phase 1 (ComfyUI vertical Phase 5; Linux-ops + PyTorch-basics; then the
 // model-download vertical: ModelScope / HF token / Ollama Modelfile / local-path
 // serving). Same refuse-to-start-on-mismatch semantics as the platform pin.
-const ExternalCorpusDigestExpected = "6058e11b4bb2923a46715c659b8b49061de2177a0980efc9a7b98227cf28892f"
+// Bumped 2026-06-24 (#30): +3 chunks closing adjacent-evidence over-refusal gaps —
+// nvidia-smi orphan-VRAM cleanup (no visible process), torch.compile usage, and
+// CUDA-toolkit / nvcc install. Sidecar re-embedded (qwen3-embedding-8b) in the same change.
+const ExternalCorpusDigestExpected = "56a8c53ebd5b8036138e28a7ebb013e977a3085578a4f56fb28f82f7d8e5954c"
 
 // ExternalEmbeddingDigestExpectedQwen3 pins the qwen3-embedding-8b sidecar
 // (4096-dim) for the external corpus:
 // deploy/kb/embeddings_<ExternalCorpusDigestExpected>_qwen3-embedding-8b.jsonl.
-const ExternalEmbeddingDigestExpectedQwen3 = "1865a2110500ca7f4617bd9b447987400f1eb196d72e01e9ab8a9a5b1be8eeeb"
+const ExternalEmbeddingDigestExpectedQwen3 = "ff868ef409ca67bc12bc80562adbb1f007289e0c80ebfa21c4d89479ea957446"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.
