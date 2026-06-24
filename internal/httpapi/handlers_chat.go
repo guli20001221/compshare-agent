@@ -176,7 +176,14 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 
 	sess, err := h.sessions.GetByID(ctx, base.Owner, sessionID)
 	if err != nil {
-		return nil, AsAPIError(err)
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, AsAPIError(err)
+		}
+		sess, err = h.sessions.Create(ctx, base.Owner, nil, nil)
+		if err != nil {
+			return nil, AsAPIError(err)
+		}
+		sessionID = sess.ID
 	}
 
 	// Enforce per-session turn cap. Each completed Chat call persists exactly
