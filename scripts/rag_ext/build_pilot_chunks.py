@@ -129,7 +129,6 @@ Sources:
   rapids-docs:dask-cudf                        https://docs.rapids.ai/api/dask-cudf/stable/
   rapids-docs:cuml-dask                        https://docs.rapids.ai/api/cuml/stable/dask_multigpu_guide/
   tgi-repo:README                              https://github.com/huggingface/text-generation-inference
-  compshare-api:community-image-popular-snapshot docs/research/community_image_popular_snapshot_2026-06-24.json
   ltx-video-repo:README                        https://github.com/Lightricks/LTX-Video
   comfyui-ltxvideo-repo:README                 https://github.com/Lightricks/ComfyUI-LTXVideo
   livetalking-repo:README                      https://github.com/lipku/LiveTalking
@@ -3651,6 +3650,334 @@ COMMUNITY_IMAGE_TARGETED_CHUNKS = [
     ),
 ]
 
+SCENE_SIGNAL_TARGETED_CHUNKS = [
+    chunk(
+        chunk_id="ext-scene-video-comfyui-models-vram-001",
+        product_area="gpu_troubleshooting",
+        source_type="runbook",
+        source_origin="external_official",
+        title="视频生成工作流的模型路径和显存检查",
+        question_patterns=[
+            "comfyui 视频生成缺模型怎么查",
+            "视频工作流节点找不到 checkpoint",
+            "图生视频显存不够先降什么",
+            "视频生成工作流加载失败怎么办",
+            "视频模型目录怎么排查",
+        ],
+        content=(
+            "适用场景:视频生成工作流打开后缺模型、节点不可用、工作流无法加载或推理爆显存。\n\n"
+            "排查顺序:\n"
+            "1. 先确认基础 WebUI 能启动,再看自定义节点是否安装完整并重启过服务。\n"
+            "2. 按节点实际要求检查 checkpoint、text encoder、VAE、LoRA、upscaler 等目录,不要只下载主模型。\n"
+            "3. 用最小工作流先跑 1 个短片段,确认模型路径和依赖能连通。\n"
+            "4. OOM 时优先降低分辨率、帧数、batch、放大阶段和同时加载的模型数量。\n"
+            "5. 长视频、补帧、放大、音频驱动会叠加显存和磁盘压力,应分阶段验证。\n\n"
+            "注意:外部语料只保留通用排查方法;具体项目预置了哪些权重或节点,应查内部语料或项目文档。"
+        ),
+        source_refs=["comfyui-docs:getting_started", "diffusers-docs:pipelines"],
+    ),
+    chunk(
+        chunk_id="ext-scene-realtime-digital-human-latency-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="实时数字人的延迟和帧率定位",
+        question_patterns=[
+            "实时数字人推流卡顿怎么查",
+            "口型同步延迟高怎么办",
+            "数字人 webrtc 页面能开但很卡",
+            "数字人推理帧率和播放帧率不一致",
+            "实时交互数字人需要看哪些指标",
+        ],
+        content=(
+            "适用场景:数字人页面能打开,但口型延迟、画面卡顿、声音不同步或多人访问后变慢。\n\n"
+            "定位顺序:\n"
+            "1. 先把链路拆成音频输入、ASR/文本、口型或头像推理、视频编码、传输、浏览器播放。\n"
+            "2. 看后端日志里的推理耗时、编码耗时和队列长度,确认慢在 GPU 推理还是 CPU 编码。\n"
+            "3. 用单用户、短音频、低分辨率验证基线,再增加并发和画质。\n"
+            "4. WebRTC 页面异常时检查服务监听地址、端口转发、反向代理和浏览器控制台错误。\n"
+            "5. 多路并发通常同时消耗 GPU、CPU 和带宽,需要分别监控。\n\n"
+            "注意:实时性不是只看 GPU 利用率;浏览器、编码器和网络也会让最终画面变慢。"
+        ),
+        source_refs=["webrtc-docs:overview", "ffmpeg-docs:documentation"],
+    ),
+    chunk(
+        chunk_id="ext-scene-audio-driven-avatar-video-001",
+        product_area="gpu_troubleshooting",
+        source_type="runbook",
+        source_origin="external_official",
+        title="音频驱动头像视频的依赖、模型和低显存处理",
+        question_patterns=[
+            "音频驱动数字人视频缺依赖怎么查",
+            "头像视频生成需要准备哪些模型",
+            "audio driven video 低显存怎么跑",
+            "数字人视频生成 flash attention 安装失败",
+            "音频转口型视频跑不起来",
+        ],
+        content=(
+            "适用场景:用音频驱动图片或视频生成说话人视频时,遇到依赖安装、权重缺失、显存不足或视频编码失败。\n\n"
+            "排查顺序:\n"
+            "1. 先确认 Python、PyTorch、CUDA、xformers 或 flash-attn 等依赖和项目要求一致。\n"
+            "2. 按项目文档分别准备基础视频模型、音频编码器、口型或头像模型,不要把它们混在一个目录里。\n"
+            "3. FFmpeg 是音视频读写和封装的常见依赖,视频读写失败时先验证 `ffmpeg -version`。\n"
+            "4. 低显存先用短音频、低分辨率、少帧数或分段推理,确认链路通后再提高质量。\n"
+            "5. 多人对话或长视频应分片处理,再做拼接和音画对齐。\n\n"
+            "注意:音频驱动视频同时依赖语音质量、图像质量、模型权重、显存和编码链路,不要只按一个报错判断。"
+        ),
+        source_refs=["pytorch-docs:get-started", "ffmpeg-docs:documentation"],
+    ),
+    chunk(
+        chunk_id="ext-scene-voice-conversion-boundary-001",
+        product_area="pytorch_basics",
+        source_type="faq",
+        source_origin="external_official",
+        title="变声、语音克隆和文字转语音的边界",
+        question_patterns=[
+            "变声模型是不是直接文字转语音",
+            "语音克隆和 voice conversion 有什么区别",
+            "已有音频换音色应该用什么任务",
+            "唱歌变声需要自己训练吗",
+            "声音转换数据怎么准备",
+        ],
+        content=(
+            "适用场景:客户把变声、语音克隆和 TTS 混在一起,导致选错工具或预期不一致。\n\n"
+            "判断方法:\n"
+            "1. 文字输入生成语音是 TTS。\n"
+            "2. 给一段参考音频,让模型模仿音色朗读新文本,是语音克隆或可控 TTS。\n"
+            "3. 已有源音频换成另一种音色,是 voice conversion 或 singing voice conversion。\n"
+            "4. 变声/歌声转换通常需要目标声音数据、预处理、训练和推理,不是只输入文字。\n"
+            "5. 质量问题先看训练数据干净程度、音频切片长度、采样率、转录文本和授权。\n\n"
+            "注意:声音相关任务涉及肖像声纹和版权授权,对外使用前必须确认声音来源和用途许可。"
+        ),
+        source_refs=["amphion-repo:README", "so-vits-svc-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-scene-tts-voice-cloning-reference-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="语音克隆的参考音频、转录文本和效果排查",
+        question_patterns=[
+            "语音克隆效果不像先查什么",
+            "参考音频和转录文本分别有什么用",
+            "tts 克隆有噪声怎么办",
+            "参考音频没有文本能不能克隆",
+            "语音克隆速度慢怎么排查",
+        ],
+        content=(
+            "适用场景:语音克隆能跑通,但音色不像、发音错、噪声大或生成速度慢。\n\n"
+            "排查顺序:\n"
+            "1. 参考音频应尽量短、干净、单人、无背景音乐,且和转录文本一致。\n"
+            "2. 如果项目支持 reference audio + transcript,优先同时提供两者;自动转写会引入额外错误。\n"
+            "3. 文本过长时先分句,避免一次生成导致韵律漂移或显存压力上升。\n"
+            "4. 质量差先换参考音频和文本,再调整采样步数、语速、温度或模型配置。\n"
+            "5. 速度慢时区分模型推理、音频后处理和 Web 服务排队。\n\n"
+            "注意:不同 TTS 项目的参数名称不同,但参考音频质量和文本一致性是长期稳定的关键因素。"
+        ),
+        source_refs=["f5-tts-repo:README", "cosyvoice-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-scene-tts-model-selection-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="TTS 模型选型看语言、克隆方式和实时性",
+        question_patterns=[
+            "tts 模型怎么选",
+            "语音合成要多语言还是语音克隆",
+            "实时 tts 和高质量 tts 怎么取舍",
+            "音色描述和参考音频有什么区别",
+            "tts 模型下载后怎么验证",
+        ],
+        content=(
+            "适用场景:客户不知道该选哪类 TTS 模型,或下载模型后不确定是否能满足业务。\n\n"
+            "选型维度:\n"
+            "1. 语言和口音:先确认目标语言、方言、英文夹杂和数字读法是否支持。\n"
+            "2. 控制方式:有的模型靠参考音频克隆,有的支持自然语言描述音色,有的只做固定音色。\n"
+            "3. 实时性:交互场景优先延迟和稳定性;离线配音可优先质量和长文本一致性。\n"
+            "4. 部署成本:看模型大小、显存、CPU 后处理和并发排队。\n"
+            "5. 验收方式:准备固定测试文本、参考音频、目标风格和人工听测标准。\n\n"
+            "注意:外部语料不维护某个平台可用的模型列表;模型是否已预置应查内部语料或资源实际状态。"
+        ),
+        source_refs=["cosyvoice-repo:README", "voxcpm-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-scene-tts-evaluation-metrics-001",
+        product_area="pytorch_basics",
+        source_type="faq",
+        source_origin="external_official",
+        title="TTS 和语音克隆评测看可懂度、相似度和人工听测",
+        question_patterns=[
+            "语音克隆结果怎么客观评估",
+            "tts wer 和 speaker similarity 怎么理解",
+            "语音合成交付前怎么验收",
+            "asr 评测分数为什么不稳定",
+            "声音相似度高但听起来不像怎么办",
+        ],
+        content=(
+            "适用场景:需要判断 TTS 或语音克隆是否可用,不能只凭单条试听决定。\n\n"
+            "评测方法:\n"
+            "1. 可懂度常用 ASR 后的 WER/CER 做近似,但会受 ASR 模型和文本规范影响。\n"
+            "2. 音色相似度可用说话人 embedding 的 cosine similarity,但不能完全替代人耳判断。\n"
+            "3. 人工听测要覆盖目标语言、数字、专有名词、长句、情绪和噪声参考音频。\n"
+            "4. 每次评测固定测试集、采样参数、后处理和评分表,便于版本间比较。\n"
+            "5. 失败样本要分类:读错字、断句差、音色不像、噪声、节奏不稳、长文本漂移。\n\n"
+            "注意:不同评测工具输出不可直接横比;重点是同一业务测试集上的稳定改进。"
+        ),
+        source_refs=["seed-tts-eval-repo:README", "whisper-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-scene-image-video-lora-training-001",
+        product_area="pytorch_basics",
+        source_type="runbook",
+        source_origin="external_official",
+        title="图像和视频 LoRA 训练的数据、显存和验收",
+        question_patterns=[
+            "图像 lora 训练效果差先查数据吗",
+            "视频 lora 训练显存不够怎么办",
+            "flux 或 wan lora 数据怎么准备",
+            "lora 训练前怎么做小样本验证",
+            "训练出来的 lora 怎么验收",
+        ],
+        content=(
+            "适用场景:训练图像或视频生成模型的 LoRA,遇到数据不规范、显存不足、结果不像或无法复现。\n\n"
+            "处理建议:\n"
+            "1. 先固定底模、训练脚本、配置文件、数据目录和输出目录。\n"
+            "2. 数据集要检查路径、caption、触发词、分辨率、重复样本和授权。\n"
+            "3. 训练 OOM 时先降低分辨率、batch、帧数、缓存策略和训练模块数量。\n"
+            "4. 用很小的数据和短步数先跑 smoke,确认能保存 adapter 并能加载推理。\n"
+            "5. 验收时固定 prompt、seed、采样器和对照图,不要只看一张随机结果。\n\n"
+            "注意:LoRA 质量通常先受数据影响,再受训练参数影响;显卡更大不能弥补脏数据。"
+        ),
+        source_refs=["diffusers-docs:lora", "ai-toolkit-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-scene-image-edit-text-rendering-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="图像编辑和文字渲染模型的能力边界",
+        question_patterns=[
+            "图片生成中文文字不稳定怎么办",
+            "图像编辑模型改错位置怎么排查",
+            "海报文字生成效果差怎么判断",
+            "图片编辑和文生图模型能混用吗",
+            "文字渲染模型验收要看什么",
+        ],
+        content=(
+            "适用场景:用图像生成或编辑模型做海报、商品图、局部修改和带文字图片时,结果不稳定。\n\n"
+            "排查建议:\n"
+            "1. 区分文生图、图生图、局部重绘和专门的编辑模型,不要混用不兼容工作流。\n"
+            "2. 文字渲染失败时先减少文字长度、明确语言、位置、字号和背景复杂度。\n"
+            "3. 局部编辑失败时检查 mask、参考图分辨率、提示词是否只描述要改的区域。\n"
+            "4. 多轮编辑可能累积画质损失,必要时保留原图和中间版本。\n"
+            "5. 验收要用固定版式和业务真实文字,不能只看示例 prompt。\n\n"
+            "注意:长段落、小字号和复杂排版仍常需要后期设计工具修正。"
+        ),
+        source_refs=["diffusers-docs:image-to-image", "comfyui-docs:getting_started"],
+    ),
+    chunk(
+        chunk_id="ext-scene-video-generation-low-vram-001",
+        product_area="gpu_troubleshooting",
+        source_type="runbook",
+        source_origin="external_official",
+        title="视频生成低显存运行的取舍",
+        question_patterns=[
+            "视频生成 oom 先降低哪些参数",
+            "720p 视频生成显存不够怎么办",
+            "长视频生成特别慢怎么优化",
+            "视频模型 offload 会变慢吗",
+            "图生视频帧数和分辨率怎么取舍",
+        ],
+        content=(
+            "适用场景:视频生成报 OOM、速度很慢,或想在较小显存上跑通工作流。\n\n"
+            "处理顺序:\n"
+            "1. 先降分辨率、帧数、视频时长、batch 和采样步数。\n"
+            "2. 使用 CPU offload、分块 VAE、低精度或量化方案时,要接受速度下降。\n"
+            "3. 长视频优先分段生成,再做拼接、补帧或放大。\n"
+            "4. 多阶段工作流要逐段验证,不要一次打开生成、放大、插帧和配音。\n"
+            "5. 记录显存峰值、耗时、输入参数和输出质量,作为升级显卡或改参数的依据。\n\n"
+            "注意:视频生成的显存通常随分辨率、帧数和并发快速增长,低显存方案主要是换时间。"
+        ),
+        source_refs=["diffusers-docs:memory", "pytorch-docs:notes/cuda"],
+    ),
+    chunk(
+        chunk_id="ext-scene-quantized-comfyui-loaders-001",
+        product_area="gpu_troubleshooting",
+        source_type="runbook",
+        source_origin="external_official",
+        title="量化图像模型在 ComfyUI 中的加载排查",
+        question_patterns=[
+            "comfyui gguf 模型加载失败怎么办",
+            "量化模型低显存运行怎么排查",
+            "unet loader 和 clip loader 选错会怎样",
+            "gguf lora 不生效怎么查",
+            "低显存图像工作流节点不匹配",
+        ],
+        content=(
+            "适用场景:用量化图像模型降低显存,但出现 loader 不匹配、节点缺失、LoRA 不生效或效果异常。\n\n"
+            "排查顺序:\n"
+            "1. 确认量化模型格式和节点包支持的 loader 类型一致。\n"
+            "2. 区分 UNet/DiT、CLIP/text encoder、VAE/AE 和 LoRA,不要把文件放错目录。\n"
+            "3. 工作流中普通 loader 与量化 loader 不能随意互换,先跑项目提供的最小示例。\n"
+            "4. LoRA 支持可能受模型架构和节点版本限制,先用无 LoRA 的基线验证。\n"
+            "5. 低显存成功不代表质量等价,要和未量化或更高精度结果做对照。\n\n"
+            "注意:量化方案适合降低显存门槛,但排查时仍要回到模型格式、节点版本和路径三件事。"
+        ),
+        source_refs=["comfyui-docs:getting_started", "comfyui-gguf-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-scene-single-image-3d-reconstruction-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="单图生成 3D 资产的输入质量和结果查看",
+        question_patterns=[
+            "单张图片生成 3d 效果差怎么办",
+            "3d gaussian splatting 输出文件怎么查看",
+            "图片转 3d 模型权重放哪里",
+            "生成的 ply 或 splat 打不开",
+            "云端跑 3d 预览黑屏怎么办",
+        ],
+        content=(
+            "适用场景:用单张图片生成 3D Gaussian、mesh 或点云资产,但结果畸形、文件打不开或无法预览。\n\n"
+            "排查建议:\n"
+            "1. 输入图尽量主体完整、清晰、背景简单,避免强遮挡和极端视角。\n"
+            "2. 先用项目最小示例验证权重、依赖和输出目录。\n"
+            "3. 输出 `.ply`、`.splat`、mesh 或点云时,用对应 viewer 验证格式是否正确。\n"
+            "4. 云端预览黑屏时检查 WebGL、VNC/浏览器 GPU、端口转发和文件路径。\n"
+            "5. 生成结果常需要人工修正,不要把它当作最终可直接生产的 3D 模型。\n\n"
+            "注意:单图 3D 生成对输入图片非常敏感,多视角或人工后处理通常更可靠。"
+        ),
+        source_refs=["triposplat-repo:README", "gaussian-splatting-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-scene-video-dubbing-pipeline-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="视频配音要拆成 ASR、翻译、TTS、对齐和封装",
+        question_patterns=[
+            "视频配音是不是只需要 tts",
+            "视频翻译配音声音不像怎么办",
+            "语音克隆 webui 缺 ffmpeg 怎么办",
+            "配音音画不同步怎么排查",
+            "视频换语言要查哪些环节",
+        ],
+        content=(
+            "适用场景:希望把视频变成另一种语言或音色,但声音不像、字幕不准、时长不匹配或封装失败。\n\n"
+            "拆解链路:\n"
+            "1. 音频提取和降噪:先确保源音频可读且人声清楚。\n"
+            "2. ASR 和文本处理:转写、翻译、断句会影响后续 TTS 质量。\n"
+            "3. TTS 或语音克隆:参考音频、转录文本、语言和授权决定效果上限。\n"
+            "4. 时长对齐:需要调语速、分句、静音和片段边界。\n"
+            "5. 混音和视频封装:FFmpeg 缺失或参数错误会导致输出失败。\n\n"
+            "注意:客户说“配音不好”时,先定位是哪一段链路失败,不要直接归因于 GPU 或单个模型。"
+        ),
+        source_refs=["ffmpeg-docs:documentation", "f5-tts-repo:README", "gpt-sovits-repo:README"],
+    ),
+]
+
 SECOND_WAVE_EXTERNAL_CHUNKS = [
     chunk(
         chunk_id="ext-sd-scripts-lora-training-001",
@@ -6152,6 +6479,815 @@ THIRD_WAVE_EXTERNAL_CHUNKS = [
     ),
 ]
 
+STABLE_PLATFORM_EXTERNAL_CHUNKS = [
+    chunk(
+        chunk_id="ext-api-compatible-base-url-key-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="OpenAI 兼容接口的 base URL、API Key 和模型名排查",
+        question_patterns=[
+            "openai compatible api base url 怎么填",
+            "接口返回 model not found 怎么查",
+            "api key 明明填了还是 unauthorized",
+            "同一个 sdk 怎么切到自建模型服务",
+            "模型接口连不上先检查什么",
+        ],
+        content=(
+            "适用场景:客户使用 OpenAI SDK、兼容网关或自建推理服务时,接口地址、密钥和模型名填错导致无法调用。"
+            "这类问题和具体平台无关,先按协议层排查。\n\n"
+            "排查顺序:\n"
+            "1. 确认 `base_url` 指向 API 根路径,常见形态是以 `/v1` 结尾。\n"
+            "2. 确认请求头里有 Bearer API Key,且没有把密钥写进 URL 或日志。\n"
+            "3. 用 `/models` 或服务文档确认对外模型名,不要把本地目录路径误填成模型名。\n"
+            "4. 用最小 `curl` 请求验证连通性,再接入应用框架。\n"
+            "5. 区分 401/403 鉴权失败、404 路径或模型名错误、5xx 服务端异常。\n\n"
+            "注意:OpenAI 兼容通常表示接口形状相近,不代表所有参数、模型能力和错误码完全一致。"
+        ),
+        source_refs=["openai-docs:api-reference", "litellm-docs:openai-compatible", "vllm-docs:cli/serve"],
+    ),
+    chunk(
+        chunk_id="ext-api-compatible-streaming-sse-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="流式输出使用 SSE 时的客户端、代理和超时排查",
+        question_patterns=[
+            "openai 接口 stream=true 没有逐字返回",
+            "流式输出被 nginx 一次性返回",
+            "sse 连接过一会儿断开",
+            "大模型接口怎么做流式响应",
+            "客户端收不到 delta 怎么查",
+        ],
+        content=(
+            "适用场景:聊天或 Agent 应用希望边生成边返回,但客户端看不到流式输出、被代理缓冲,或长连接中途断开。"
+            "OpenAI 兼容接口常用 HTTP streaming/SSE 形态传递增量结果。\n\n"
+            "排查顺序:\n"
+            "1. 确认请求确实打开了 streaming 参数,客户端 SDK 也按迭代流读取。\n"
+            "2. 用 `curl -N` 或等价方式绕过业务代码,确认服务端是否逐段返回。\n"
+            "3. 反向代理前面要关闭响应缓冲,并调大读超时和空闲超时。\n"
+            "4. 前端或网关不要等待完整 JSON 后再渲染,要按事件增量处理。\n"
+            "5. 保存 request id、首 token 时间、总耗时和断开位置,便于定位是模型慢、代理断还是客户端读法错。\n\n"
+            "注意:流式输出改善用户体感,但不会降低总计算量。服务端仍需要限流和最大输出长度保护。"
+        ),
+        source_refs=["openai-docs:streaming", "mdn-docs:sse", "nginx-docs:proxy-buffering"],
+    ),
+    chunk(
+        chunk_id="ext-api-compatible-error-retry-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="模型 API 错误码、重试和幂等保护",
+        question_patterns=[
+            "模型 api 429 500 502 怎么重试",
+            "大模型接口偶发超时怎么办",
+            "请求失败能不能直接重试",
+            "视频或图片任务重复提交怎么避免",
+            "api 报 rate limit exceeded 怎么处理",
+        ],
+        content=(
+            "适用场景:业务调用模型 API 时遇到限流、超时或 5xx,需要判断是否重试以及如何避免重复任务。"
+            "稳定做法是按错误类型分层处理,不要对所有失败都无脑重试。\n\n"
+            "处理建议:\n"
+            "1. 401/403 先查密钥和权限,通常不应自动重试。\n"
+            "2. 400 类参数错误先修请求体,重试不会解决。\n"
+            "3. 429、连接超时、部分 5xx 可做指数退避重试,并设置最大次数。\n"
+            "4. 图片、视频、长任务提交要保存本地任务 ID 或请求摘要,避免重复扣费或重复生成。\n"
+            "5. 记录错误码、响应体、模型名、输入长度和重试次数,不要只保存一句“调用失败”。\n\n"
+            "注意:重试策略要和限流、预算和队列一起设计。过度重试会放大服务压力。"
+        ),
+        source_refs=["openai-docs:errors", "aws-docs:exponential-backoff", "google-docs:retry-strategy"],
+    ),
+    chunk(
+        chunk_id="ext-api-tool-calling-contract-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="Tool / function calling 的参数契约和执行边界",
+        question_patterns=[
+            "function calling 返回了参数下一步怎么执行",
+            "tool call 为什么参数不符合 schema",
+            "agent 工具调用失败怎么定位",
+            "模型能不能直接执行函数",
+            "工具调用要不要做参数校验",
+        ],
+        content=(
+            "适用场景:客户把模型接入工具或业务函数,以为模型会直接执行操作,或遇到工具参数不合法。"
+            "Tool/function calling 本质是让模型输出结构化的工具调用意图,真正执行仍由应用代码完成。\n\n"
+            "处理建议:\n"
+            "1. 为每个工具定义清晰名称、参数 schema、必填字段和描述。\n"
+            "2. 服务端必须重新校验参数,不要因为是模型生成就直接执行。\n"
+            "3. 工具执行失败时,把安全可公开的错误摘要返回给模型继续处理。\n"
+            "4. 对写操作、付费操作和删除操作增加人工确认或权限检查。\n"
+            "5. 记录模型输出、参数校验结果、工具返回和最终回答,便于复盘。\n\n"
+            "注意:工具调用不是权限系统。模型只能提出调用建议,应用侧才是安全边界。"
+        ),
+        source_refs=["openai-docs:function-calling", "anthropic-docs:tool-use", "modelcontextprotocol-docs:concepts"],
+    ),
+    chunk(
+        chunk_id="ext-api-structured-output-schema-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="结构化输出用 JSON Schema 降低格式不稳定",
+        question_patterns=[
+            "模型回答必须是 json 怎么保证",
+            "structured output 和普通 prompt 区别",
+            "json schema 输出失败怎么查",
+            "模型多返回解释文字导致解析失败",
+            "业务系统接大模型结果怎么做格式校验",
+        ],
+        content=(
+            "适用场景:业务系统要求模型稳定返回 JSON、枚举或固定字段,普通 prompt 约束不够稳定。"
+            "结构化输出通过 schema 或受约束解码减少格式漂移,但仍要在应用侧校验。\n\n"
+            "处理建议:\n"
+            "1. schema 先保持简单,字段名、类型和必填项清楚。\n"
+            "2. 复杂嵌套、长数组和宽松描述会增加失败或截断风险。\n"
+            "3. 给输出预留足够 token,避免 JSON 生成到一半被截断。\n"
+            "4. 服务端解析后仍要做类型、枚举、长度和业务规则校验。\n"
+            "5. 如果格式正确但事实错误,要另行加入检索、引用和评测,结构化输出本身不保证事实正确。\n\n"
+            "注意:结构化输出解决的是格式问题,不是可信性问题。"
+        ),
+        source_refs=["openai-docs:structured-outputs", "json-schema-docs:overview", "vllm-docs:features/structured_outputs"],
+    ),
+    chunk(
+        chunk_id="ext-api-embedding-rerank-basics-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="Embedding、向量检索和 rerank 的稳定分工",
+        question_patterns=[
+            "embedding 和 rerank 有什么区别",
+            "rag 检索为什么要先向量再重排",
+            "向量库搜不到正确文档怎么查",
+            "知识库相似度低是不是模型不行",
+            "reranker 能解决什么问题",
+        ],
+        content=(
+            "适用场景:客户做 RAG 或语义搜索时,不清楚 embedding、向量库和 reranker 各自负责什么。"
+            "稳定分工是:embedding 负责把文本变成可比较的向量,向量库负责粗召回,reranker 负责对候选做更精细排序。\n\n"
+            "处理建议:\n"
+            "1. 先确认查询、文档标题、正文和元数据都进入了索引。\n"
+            "2. 粗召回漏掉时,检查切块大小、关键词缺失、语言混用和过滤条件。\n"
+            "3. 粗召回有结果但排序差时,再考虑 rerank。\n"
+            "4. 更新文档后必须重建索引或增量写入,否则检索仍用旧内容。\n"
+            "5. 用固定问题集评估 Top-K 命中率,不要只凭单次问答判断。\n\n"
+            "注意:RAG 质量通常由文档质量、切块、索引、召回、重排和提示词共同决定。"
+        ),
+        source_refs=["openai-docs:embeddings", "langchain-docs:retrievers", "qdrant-docs:search"],
+    ),
+    chunk(
+        chunk_id="ext-rag-ingestion-index-empty-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="RAG 知识库为空、索引失败和文档未生效排查",
+        question_patterns=[
+            "知识库上传了但问答还是说不知道",
+            "rag 文档索引失败怎么查",
+            "dify 知识库没有命中资料",
+            "ragflow 上传 pdf 后搜不到",
+            "文档更新后模型还是按旧内容回答",
+        ],
+        content=(
+            "适用场景:客户把文档上传到 RAG 工具后,回答没有引用资料、检索为空或仍使用旧内容。"
+            "这类问题优先查索引链路,不要先怀疑大模型能力。\n\n"
+            "排查顺序:\n"
+            "1. 确认文档解析成功,文本不是空白、乱码或只有图片。\n"
+            "2. 确认切块、embedding 和写入向量库全部完成。\n"
+            "3. 检查应用是否绑定了正确知识库或 collection。\n"
+            "4. 更新文档后确认是否触发重建索引,旧索引是否清理。\n"
+            "5. 用原文关键词和语义改写各测一次,判断是解析问题还是召回问题。\n\n"
+            "注意:扫描版 PDF、表格和图片型文档通常需要 OCR 或专门解析,不能假设普通文本解析能读出内容。"
+        ),
+        source_refs=["dify-docs:knowledge", "ragflow-docs:document-management", "langchain-docs:document-loaders"],
+    ),
+    chunk(
+        chunk_id="ext-rag-retrieval-quality-debug-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="RAG 回答不准时先拆开看检索、重排和生成",
+        question_patterns=[
+            "rag 回答不准怎么定位",
+            "知识库明明有内容模型就是答错",
+            "检索到了资料但回答还是乱编",
+            "向量检索 topk 应该怎么调",
+            "rag 效果差怎么验收",
+        ],
+        content=(
+            "适用场景:RAG 应用交付前或使用中回答不准,需要判断问题在检索、重排、提示词还是生成。"
+            "稳定做法是把链路拆开验证。\n\n"
+            "排查顺序:\n"
+            "1. 固定一批真实问题,先只看检索 Top-K 是否包含正确片段。\n"
+            "2. 如果 Top-K 没有正确片段,优先改文档切块、标题、元数据和查询改写。\n"
+            "3. 如果 Top-K 有正确片段但排序靠后,评估 rerank 或调整召回数量。\n"
+            "4. 如果上下文正确但回答错,检查提示词是否要求引用、拒答和只基于上下文回答。\n"
+            "5. 保存失败样例,按问题类型分组改进,不要只调一个全局参数。\n\n"
+            "注意:把生成结果直接当检索质量是不可靠的。检索评测和答案评测要分开做。"
+        ),
+        source_refs=["langchain-docs:retrieval", "llamaindex-docs:evaluating", "mlflow-docs:genai-eval"],
+    ),
+    chunk(
+        chunk_id="ext-rag-citation-grounding-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="RAG 引用、拒答和只基于资料回答的边界",
+        question_patterns=[
+            "rag 怎么要求回答带引用",
+            "知识库没有答案时怎么让模型别瞎编",
+            "模型回答没有引用来源怎么办",
+            "怎么判断回答是不是基于资料",
+            "rag 需要拒答规则吗",
+        ],
+        content=(
+            "适用场景:客户希望 RAG 应用能说明依据,并在知识库没有答案时拒答。"
+            "这通常需要检索结果、提示词和后处理共同约束。\n\n"
+            "处理建议:\n"
+            "1. 在上下文里保留文档标题、片段 ID 或来源标识。\n"
+            "2. 提示词明确要求只基于给定资料回答,无法支持时说明未找到依据。\n"
+            "3. 输出后检查引用 ID 是否来自本次检索结果,不要让模型凭空造来源。\n"
+            "4. 对高风险问题增加最低相似度、最少命中数或人工复核。\n"
+            "5. 评测集中加入“知识库没有答案”的问题,验证拒答行为。\n\n"
+            "注意:引用格式正确不等于内容正确。仍需检查引用片段是否真的支持结论。"
+        ),
+        source_refs=["dify-docs:knowledge", "llamaindex-docs:response-synthesis", "mlflow-docs:genai-eval"],
+    ),
+    chunk(
+        chunk_id="ext-dify-provider-knowledge-troubleshoot-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="Dify 接入兼容模型和知识库时的通用排查顺序",
+        question_patterns=[
+            "dify 接 openai 兼容接口失败",
+            "dify 知识库检索不到",
+            "dify 应用调用模型报错",
+            "dify provider base url 怎么查",
+            "dify rag 回答不引用资料",
+        ],
+        content=(
+            "适用场景:客户在 Dify 中接入模型供应商或知识库应用,出现调用失败、检索不到或回答不引用资料。"
+            "不要先查平台按钮,先按模型供应商、知识库、应用编排三层拆开。\n\n"
+            "排查顺序:\n"
+            "1. 单独测试模型供应商配置:base URL、API Key、模型名和网络连通性。\n"
+            "2. 单独测试知识库:文档解析、索引状态和检索命中。\n"
+            "3. 检查应用是否绑定了正确模型和知识库。\n"
+            "4. 工作流应用要逐个节点看输入输出,定位是模型节点、知识检索节点还是工具节点失败。\n"
+            "5. 保存失败请求的错误码和节点日志,不要只截图最终聊天结果。\n\n"
+            "注意:Dify 是应用编排层。底层模型服务不可用或知识库未索引时,应用层配置再多也不会正常回答。"
+        ),
+        source_refs=["dify-docs:models", "dify-docs:knowledge", "dify-docs:workflow"],
+    ),
+    chunk(
+        chunk_id="ext-ragflow-document-parser-index-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="RAGFlow 文档解析、切片和索引问题排查",
+        question_patterns=[
+            "ragflow 上传文档后问不到内容",
+            "ragflow pdf 解析效果不好",
+            "ragflow 文档索引一直失败",
+            "ragflow 表格图片文档怎么处理",
+            "ragflow 检索结果不对怎么查",
+        ],
+        content=(
+            "适用场景:客户用 RAGFlow 做文档问答,上传文档后解析差、索引失败或检索结果不对。"
+            "RAGFlow 这类工具重点在文档解析和知识库构建,排查要从原始文档质量开始。\n\n"
+            "排查顺序:\n"
+            "1. 先查看文档解析后的文本,确认段落、表格和图片内容是否被读出。\n"
+            "2. 扫描版 PDF 或图片型资料需要 OCR,纯文本解析可能为空。\n"
+            "3. 调整切片策略时,用少量文档验证检索结果,不要直接全量重建。\n"
+            "4. 检查 embedding 模型、向量库和索引任务日志是否正常。\n"
+            "5. 对表格、合同、论文等不同文档类型分别建立测试问题。\n\n"
+            "注意:文档解析质量是 RAG 上限。解析后的文本已经错了,后面的向量检索和大模型很难补救。"
+        ),
+        source_refs=["ragflow-docs:document-management", "ragflow-docs:knowledge-base", "tesseract-docs:ocr"],
+    ),
+    chunk(
+        chunk_id="ext-n8n-ai-workflow-webhook-001",
+        product_area="linux_ops",
+        source_type="faq",
+        source_origin="external_official",
+        title="n8n AI workflow 的模型节点、Webhook 和凭据排查",
+        question_patterns=[
+            "n8n ai workflow 调模型失败",
+            "n8n webhook 收不到请求",
+            "n8n 里 api key credential 怎么查",
+            "n8n agent 节点执行失败",
+            "n8n 工作流怎么定位哪个节点报错",
+        ],
+        content=(
+            "适用场景:客户用 n8n 搭 AI 自动化流程,模型节点、Webhook、凭据或某个节点执行失败。"
+            "n8n 是工作流编排工具,排查时要看每个节点的输入输出。\n\n"
+            "排查顺序:\n"
+            "1. 先手动执行到失败节点,看该节点实际收到的输入。\n"
+            "2. 检查模型 API credential、base URL 和模型名是否独立可用。\n"
+            "3. Webhook 失败时确认外部服务能访问 n8n 的公开地址,并区分测试 URL 和生产 URL。\n"
+            "4. 节点之间传递 JSON 时检查字段路径,避免上游字段为空。\n"
+            "5. 长任务要设置超时、重试和错误分支,避免一次失败中断全流程。\n\n"
+            "注意:n8n 能连接很多系统,但密钥权限、网络暴露和错误处理仍需要应用侧设计。"
+        ),
+        source_refs=["n8n-docs:advanced-ai", "n8n-docs:webhooks", "n8n-docs:credentials"],
+    ),
+    chunk(
+        chunk_id="ext-flowise-agent-workflow-tools-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="Flowise 可视化 Agent / LLM workflow 的工具和记忆排查",
+        question_patterns=[
+            "flowise agent 工具调用失败",
+            "flowise 接 openai compatible 怎么查",
+            "flowise rag workflow 没命中文档",
+            "flowise memory 不生效",
+            "可视化 llm workflow 怎么排查节点",
+        ],
+        content=(
+            "适用场景:客户用 Flowise 这类可视化工具构建 Agent、RAG 或 LLM workflow,但模型、工具、记忆或检索节点不工作。"
+            "排查方式和代码框架类似:先拆节点,再看输入输出。\n\n"
+            "处理建议:\n"
+            "1. 先确认模型连接节点独立可用。\n"
+            "2. RAG 相关问题先看文档是否解析和索引,再看 retriever 输出。\n"
+            "3. 工具调用失败时检查工具描述、参数 schema 和外部服务权限。\n"
+            "4. 记忆不生效时确认会话 ID、存储后端和上下文窗口限制。\n"
+            "5. 发布成 API 前加鉴权和限流,不要暴露无保护的编排接口。\n\n"
+            "注意:可视化编排降低接入门槛,但不会消除模型接口、检索质量和工具安全问题。"
+        ),
+        source_refs=["flowise-docs:overview", "flowise-docs:agents", "langchain-docs:agents"],
+    ),
+    chunk(
+        chunk_id="ext-langchain-langgraph-agent-state-001",
+        product_area="pytorch_basics",
+        source_type="faq",
+        source_origin="external_official",
+        title="LangChain / LangGraph Agent 的状态、工具和可观测性",
+        question_patterns=[
+            "langgraph agent 为什么循环停不下来",
+            "langchain tool 调用参数错怎么查",
+            "agent 记不住之前步骤怎么办",
+            "langgraph state 怎么设计",
+            "agent 执行轨迹怎么调试",
+        ],
+        content=(
+            "适用场景:客户用 LangChain 或 LangGraph 写 Agent,出现循环、状态丢失、工具参数错或难以调试。"
+            "稳定做法是把 Agent 当成带状态的流程,而不是一次普通聊天。\n\n"
+            "处理建议:\n"
+            "1. 明确定义 state 里保存哪些字段,哪些来自用户输入、工具结果或历史步骤。\n"
+            "2. 工具参数用 schema 限制,执行前做服务端校验。\n"
+            "3. 给循环设置最大步数、停止条件和失败分支。\n"
+            "4. 打开 tracing 或保存每一步模型输入、工具调用和输出。\n"
+            "5. 对写操作增加确认节点或权限检查。\n\n"
+            "注意:Agent 失败常常不是模型单点问题,而是状态、工具、停止条件和错误恢复设计不完整。"
+        ),
+        source_refs=["langchain-docs:agents", "langgraph-docs:concepts", "langsmith-docs:tracing"],
+    ),
+    chunk(
+        chunk_id="ext-coding-agent-compatible-endpoint-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="AI 编程工具接入兼容模型接口的通用检查",
+        question_patterns=[
+            "claude code cursor opencode 接自定义模型失败",
+            "ai 编程工具 base url 怎么填",
+            "coding agent 提示模型不可用",
+            "代码助手调用 openai compatible 报错",
+            "编程工具连模型接口先查什么",
+        ],
+        content=(
+            "适用场景:客户把 AI 编程工具接到兼容模型网关或自建模型接口,出现模型不可用、鉴权失败或响应格式不兼容。"
+            "不同工具界面不同,但底层检查项稳定。\n\n"
+            "排查顺序:\n"
+            "1. 先用 curl 或 OpenAI SDK 确认接口、密钥和模型名可用。\n"
+            "2. 再把同一组 base URL、API Key、模型名填入编程工具。\n"
+            "3. 确认工具期望的是 OpenAI、Anthropic 还是其他协议,不要只看“支持自定义模型”。\n"
+            "4. 长上下文、工具调用、图片输入等能力可能不是所有兼容端点都支持。\n"
+            "5. 保存工具日志里的 HTTP 状态码和响应体,不要只看弹窗文案。\n\n"
+            "注意:AI 编程工具通常对模型能力和响应格式更敏感。普通聊天能通,不代表 Agent 编程流程一定能跑。"
+        ),
+        source_refs=["opencode-docs:providers", "openai-codex-repo:README", "anthropic-docs:claude-code"],
+    ),
+    chunk(
+        chunk_id="ext-coding-agent-workspace-safety-001",
+        product_area="linux_ops",
+        source_type="faq",
+        source_origin="external_official",
+        title="AI 编程 Agent 的工作区、文件权限和安全边界",
+        question_patterns=[
+            "coding agent 会不会改错我的文件",
+            "ai 编程工具工作区权限怎么限制",
+            "让 agent 跑命令安全吗",
+            "代码助手能不能访问整个机器",
+            "ai agent 执行 shell 要注意什么",
+        ],
+        content=(
+            "适用场景:客户用云端或本地 AI 编程 Agent 修改代码、运行命令或读取文件,担心误改、泄露或越权。"
+            "稳定安全边界是:限制工作区、保留版本控制、审查命令和密钥。\n\n"
+            "处理建议:\n"
+            "1. 在独立分支或独立工作区运行 Agent,避免直接改生产目录。\n"
+            "2. 用 git 查看 diff,确认变更范围再提交。\n"
+            "3. 对删除、迁移、发布、付费和外部发送类动作增加确认。\n"
+            "4. 不把 API Key、私钥和生产配置写进 prompt 或可提交文件。\n"
+            "5. 长任务保存日志,失败后按命令和输出复盘。\n\n"
+            "注意:Agent 可以提高效率,但不是权限边界。文件系统、密钥和命令执行仍要按最小权限管理。"
+        ),
+        source_refs=["openai-codex-repo:README", "anthropic-docs:claude-code-security", "git-docs:worktree"],
+    ),
+    chunk(
+        chunk_id="ext-coding-agent-long-run-recovery-001",
+        product_area="linux_ops",
+        source_type="runbook",
+        source_origin="external_official",
+        title="AI 编程 Agent 长任务中断后的恢复和验收",
+        question_patterns=[
+            "coding agent 跑到一半断了怎么办",
+            "ai agent 改代码后怎么知道完成没",
+            "长时间代码任务失败怎么恢复",
+            "agent 生成了一堆改动怎么验收",
+            "代码助手中断后如何继续",
+        ],
+        content=(
+            "适用场景:AI 编程 Agent 执行较长任务时网络断开、进程退出或生成了大量改动,客户需要恢复和验收。"
+            "稳定做法是把任务拆成可验证批次。\n\n"
+            "处理顺序:\n"
+            "1. 先看 git 状态和最近日志,确认哪些文件已经改动。\n"
+            "2. 用测试、构建或最小复现命令验证现有改动,不要只读 Agent 总结。\n"
+            "3. 如果任务中断,基于已有 diff 继续,避免从头生成另一套冲突改动。\n"
+            "4. 大变更按功能拆提交,每个提交有对应验证证据。\n"
+            "5. 合并前检查是否误改配置、密钥、生成物或无关文件。\n\n"
+            "注意:Agent 的“完成”需要用测试和 diff 证明。没有验证输出就不能认为结果可用。"
+        ),
+        source_refs=["git-docs:status", "git-docs:diff", "openai-codex-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-mcp-tool-server-basics-001",
+        product_area="inference_serving",
+        source_type="faq",
+        source_origin="external_official",
+        title="MCP 工具服务器接入 Agent 时的通用排查",
+        question_patterns=[
+            "mcp server 连不上 agent 怎么查",
+            "mcp 工具没有出现在客户端",
+            "agent 调 mcp 工具参数错误",
+            "mcp stdio 和 http 有什么区别",
+            "mcp 工具权限要怎么控制",
+        ],
+        content=(
+            "适用场景:客户给 Agent 接 MCP 工具服务器,工具不出现、连接失败或调用参数错误。"
+            "MCP 解决的是工具暴露和上下文连接协议,不替代业务权限控制。\n\n"
+            "排查顺序:\n"
+            "1. 确认客户端配置里的启动命令、环境变量或远程地址正确。\n"
+            "2. 单独启动 MCP server,看标准输出/错误日志是否正常。\n"
+            "3. 工具不出现时检查工具注册名称、描述和 schema 是否有效。\n"
+            "4. 调用失败时保存模型给出的参数和 server 返回的错误。\n"
+            "5. 对能改数据或访问外部系统的工具做权限、确认和日志审计。\n\n"
+            "注意:MCP 让 Agent 更容易使用工具,也会扩大风险面。不要把高权限工具无保护地暴露给任意会话。"
+        ),
+        source_refs=["modelcontextprotocol-docs:quickstart", "modelcontextprotocol-docs:servers", "anthropic-docs:mcp"],
+    ),
+    chunk(
+        chunk_id="ext-vnc-webrtc-remote-desktop-debug-001",
+        product_area="linux_ops",
+        source_type="runbook",
+        source_origin="external_official",
+        title="VNC / noVNC / WebRTC 远程桌面打不开或黑屏排查",
+        question_patterns=[
+            "远程桌面黑屏怎么查",
+            "vnc 能连但没有画面",
+            "novnc 页面打不开",
+            "webrtc 远程桌面连接失败",
+            "云端图形界面没声音或剪贴板不通",
+        ],
+        content=(
+            "适用场景:客户在 GPU 实例或云端 Agent 环境里使用远程桌面,遇到页面打不开、黑屏、卡顿或输入输出异常。"
+            "远程桌面问题通常由进程、端口、桌面会话、显卡渲染和代理共同决定。\n\n"
+            "排查顺序:\n"
+            "1. 确认 VNC/noVNC/WebRTC 服务进程仍在运行,并监听预期端口。\n"
+            "2. 检查桌面会话是否启动,黑屏时看 X server、窗口管理器和权限日志。\n"
+            "3. 经反向代理访问时确认 WebSocket/WebRTC 相关连接未被阻断。\n"
+            "4. 卡顿时区分网络带宽、CPU 编码、GPU 渲染和浏览器端性能。\n"
+            "5. 剪贴板、音频和文件传输通常需要额外通道支持,不要默认可用。\n\n"
+            "注意:远程桌面适合可视化操作,但长期服务仍建议用命令行、API 或受控 WebUI。"
+        ),
+        source_refs=["novnc-repo:README", "tigervnc-docs:man", "webrtc-docs:overview"],
+    ),
+    chunk(
+        chunk_id="ext-browser-automation-gpu-server-001",
+        product_area="linux_ops",
+        source_type="faq",
+        source_origin="external_official",
+        title="服务器上跑 Playwright / Selenium 浏览器自动化的稳定检查",
+        question_patterns=[
+            "服务器上 playwright 打不开浏览器",
+            "selenium 在无桌面环境怎么跑",
+            "浏览器自动化截图是空白",
+            "headless chrome 缺依赖怎么办",
+            "agent 要操作网页浏览器怎么部署",
+        ],
+        content=(
+            "适用场景:客户在云端实例或 Agent 环境里运行浏览器自动化,用于网页操作、截图、测试或数据处理。"
+            "无桌面服务器和本地电脑不同,要先确认浏览器依赖、显示模式和沙箱限制。\n\n"
+            "处理建议:\n"
+            "1. 优先用 headless 模式跑最小页面打开和截图。\n"
+            "2. 缺系统库时按 Playwright/Selenium 文档安装浏览器依赖。\n"
+            "3. 需要可视化调试时再用 VNC、Xvfb 或远程桌面。\n"
+            "4. 容器内运行要关注 sandbox、共享内存和字体依赖。\n"
+            "5. 自动化登录和文件上传要保护 cookies、账号和下载目录。\n\n"
+            "注意:浏览器自动化是外部系统交互能力,要限制目标站点、凭据和执行范围。"
+        ),
+        source_refs=["playwright-docs:browsers", "selenium-docs:drivers", "chrome-docs:headless"],
+    ),
+    chunk(
+        chunk_id="ext-s3-object-storage-multipart-001",
+        product_area="linux_ops",
+        source_type="faq",
+        source_origin="external_official",
+        title="对象存储大文件上传、分片和校验的通用原则",
+        question_patterns=[
+            "s3 大文件上传中断怎么恢复",
+            "对象存储 multipart upload 是什么",
+            "上传数据集后怎么确认没坏",
+            "rclone 同步对象存储要不要校验",
+            "很多训练文件放对象存储要注意什么",
+        ],
+        content=(
+            "适用场景:客户把模型、数据集或训练结果放到 S3 兼容对象存储,遇到大文件上传慢、中断或担心文件损坏。"
+            "对象存储通常适合大对象和归档,大量小文件需要额外组织。\n\n"
+            "处理建议:\n"
+            "1. 大文件优先使用支持 multipart upload 的工具。\n"
+            "2. 上传后记录文件大小、对象列表和校验信息,不要只看命令退出。\n"
+            "3. 大量小文件可先打包成 shard 或归档,减少请求和元数据开销。\n"
+            "4. 跨地域或公网传输要设置重试、并发和限速,避免失败后从头来。\n"
+            "5. 训练前抽样读取数据,确认路径、权限和内容格式正确。\n\n"
+            "注意:对象存储不是本地 POSIX 文件系统。随机小文件读写和频繁改写通常不是它的强项。"
+        ),
+        source_refs=["aws-docs:s3-multipart-upload", "rclone-docs:copy", "webdataset-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-rsync-checksum-partial-001",
+        product_area="linux_ops",
+        source_type="runbook",
+        source_origin="external_official",
+        title="rsync 断点续传、校验和目录同步排查",
+        question_patterns=[
+            "rsync 传大数据中断后怎么继续",
+            "rsync 怎么确认两边文件一致",
+            "scp 传一半断了能不能续传",
+            "同步数据集后文件数量不一致",
+            "rsync partial checksum 怎么用",
+        ],
+        content=(
+            "适用场景:客户在本地和实例之间传大模型或数据集,中断后需要续传并确认两边一致。"
+            "rsync 适合目录级同步和断点续传,比重复 scp 更稳。\n\n"
+            "处理建议:\n"
+            "1. 首次同步用归档模式保留目录和时间戳。\n"
+            "2. 大文件中断后用 `--partial` 或 `--partial-dir` 保留未完成片段。\n"
+            "3. 怀疑内容不一致时增加 `--checksum`,但会更慢。\n"
+            "4. 用 `--dry-run` 先看将要同步哪些文件。\n"
+            "5. 记录源目录、目标目录和结尾斜杠,避免多套一层目录。\n\n"
+            "注意:rsync 能减少重复传输,但两端权限、磁盘空间和网络稳定性仍要单独检查。"
+        ),
+        source_refs=["rsync-docs:man", "openssh-docs:ssh_config"],
+    ),
+    chunk(
+        chunk_id="ext-package-manager-proxy-dns-001",
+        product_area="linux_ops",
+        source_type="runbook",
+        source_origin="external_official",
+        title="pip / conda / npm / Docker / Hugging Face 下载慢的通用排查",
+        question_patterns=[
+            "pip conda npm docker 下载都很慢怎么查",
+            "huggingface 下载模型老是 timeout",
+            "docker pull 连接失败是 dns 还是代理",
+            "包管理器代理怎么配置",
+            "服务器能 ping 通但 pip 还是失败",
+        ],
+        content=(
+            "适用场景:客户在实例里安装依赖或下载模型时,遇到超时、DNS 失败、TLS 错误或速度很慢。"
+            "不要只换一个镜像源,先判断是 DNS、代理、证书、目标站点还是工具配置问题。\n\n"
+            "排查顺序:\n"
+            "1. 用 `curl -I` 或工具自带 verbose 模式测试目标地址。\n"
+            "2. 区分 DNS 解析失败、TCP 连接失败、TLS 证书失败和 HTTP 状态码失败。\n"
+            "3. pip、conda、npm、Docker、git-lfs、Hugging Face CLI 都有各自代理/镜像配置。\n"
+            "4. 避免把临时代理写进全局配置后忘记清理。\n"
+            "5. 下载大模型时优先使用支持续传和缓存的工具。\n\n"
+            "注意:平台级网络加速域名范围属于内部语料维护;外部语料只保留通用排查方法。"
+        ),
+        source_refs=["pip-docs:user-guide", "conda-docs:user-guide", "npm-docs:config", "docker-docs:daemon-proxy", "hf-docs:environment_variables"],
+    ),
+    chunk(
+        chunk_id="ext-secret-key-management-001",
+        product_area="linux_ops",
+        source_type="faq",
+        source_origin="external_official",
+        title="API Key、令牌和配置文件的最小安全做法",
+        question_patterns=[
+            "api key 应该放在哪里",
+            "模型接口密钥泄露了怎么办",
+            "环境变量和配置文件哪个更安全",
+            "代码里不小心提交了 token 怎么处理",
+            "给团队发模型 key 要注意什么",
+        ],
+        content=(
+            "适用场景:客户在模型 API、RAG 工具、Agent 或自动化脚本里使用密钥,担心泄露和权限过大。"
+            "稳定原则是最小权限、可轮换、可追踪、不入库。\n\n"
+            "处理建议:\n"
+            "1. 不把 API Key 写进代码、截图、聊天记录或可提交配置。\n"
+            "2. 用环境变量、密钥管理服务或受保护的本地配置注入。\n"
+            "3. 给不同应用、团队和环境使用不同 key,便于限流和吊销。\n"
+            "4. 发现泄露后立即吊销或轮换,不要只从仓库删掉历史提交。\n"
+            "5. 日志脱敏,避免把 Authorization、Cookie 和完整请求体写入排障日志。\n\n"
+            "注意:密钥管理属于应用安全基础。模型服务、Agent 工具和自动化工作流都应按同一原则处理。"
+        ),
+        source_refs=["owasp-docs:secrets-management", "github-docs:secret-scanning", "twelve-factor:config"],
+    ),
+    chunk(
+        chunk_id="ext-public-webui-auth-security-001",
+        product_area="linux_ops",
+        source_type="faq",
+        source_origin="external_official",
+        title="远程 WebUI 对外开放前的鉴权、端口和日志检查",
+        question_patterns=[
+            "gradio comfyui jupyter 对外开放安全吗",
+            "webui 直接暴露公网要注意什么",
+            "远程服务怎么加密码和 https",
+            "模型接口被别人访问怎么办",
+            "反向代理 webui 前要检查什么",
+        ],
+        content=(
+            "适用场景:客户把 Jupyter、Gradio、ComfyUI、Open WebUI 或模型接口开放给外部访问。"
+            "远程访问要先考虑鉴权和最小暴露面,再考虑方便。\n\n"
+            "处理建议:\n"
+            "1. 开发阶段优先用 SSH 本地端口转发,不要直接暴露裸端口。\n"
+            "2. 长期服务放在反向代理后面,开启 HTTPS、鉴权和访问日志。\n"
+            "3. 应用自身也要有 token、密码或用户权限,不要只靠端口隐蔽。\n"
+            "4. 限制上传文件大小、请求体大小、并发和来源。\n"
+            "5. 日志里不要记录完整 prompt、密钥或用户隐私内容。\n\n"
+            "注意:WebUI 方便演示,但一旦公网可访问,就应按正式服务的安全标准处理。"
+        ),
+        source_refs=["jupyter-server-docs:public-server", "gradio-docs:sharing", "caddy-docs:reverse-proxy", "owasp-docs:api-security"],
+    ),
+    chunk(
+        chunk_id="ext-audio-tts-asr-quality-debug-001",
+        product_area="inference_serving",
+        source_type="runbook",
+        source_origin="external_official",
+        title="TTS / ASR / 语音克隆效果差时先查音频质量和采样链路",
+        question_patterns=[
+            "tts 声音不像怎么查",
+            "语音克隆参考音频要注意什么",
+            "asr 转写错字很多怎么办",
+            "音频模型输出有杂音",
+            "配音字幕不同步怎么定位",
+        ],
+        content=(
+            "适用场景:客户做语音合成、语音克隆、ASR 或视频配音时,效果差、杂音多、识别错或不同步。"
+            "语音任务先查输入音频和处理链路,不要只换模型。\n\n"
+            "排查顺序:\n"
+            "1. 参考音频要清晰、少噪声、音量稳定,并尽量匹配目标语言和风格。\n"
+            "2. 检查采样率、声道、响度和格式转换,避免重复压缩。\n"
+            "3. ASR 错字多时先分段、降噪,再看模型语言和热词支持。\n"
+            "4. 配音不同步时分别检查 ASR 时间戳、TTS 语速和 ffmpeg 合成链路。\n"
+            "5. 保存输入音频、转写文本、合成音频和最终视频,分段对比定位。\n\n"
+            "注意:语音质量很依赖素材。低质量参考音频通常无法靠显卡或参数完全弥补。"
+        ),
+        source_refs=["ffmpeg-docs:ffmpeg", "faster-whisper-repo:README", "gpt-sovits-repo:README", "cosyvoice-repo:README"],
+    ),
+    chunk(
+        chunk_id="ext-digital-human-lipsync-latency-001",
+        product_area="gpu_troubleshooting",
+        source_type="faq",
+        source_origin="external_official",
+        title="实时数字人口型同步的延迟、帧率和资源瓶颈",
+        question_patterns=[
+            "数字人口型不同步怎么查",
+            "实时数字人延迟很高",
+            "wav2lip 推理帧率低怎么办",
+            "webrtc 数字人卡顿",
+            "数字人服务 cpu gpu 哪个是瓶颈",
+        ],
+        content=(
+            "适用场景:客户做实时数字人、口型同步或视频驱动头像,遇到延迟高、帧率低、声音和嘴型不同步。"
+            "这类链路通常同时消耗 CPU、GPU、网络和浏览器资源。\n\n"
+            "排查顺序:\n"
+            "1. 分开测音频输入、TTS/ASR、口型模型推理、视频编码和推流。\n"
+            "2. GPU 推理慢时看显存、batch、分辨率和模型大小。\n"
+            "3. CPU 编码慢时降低分辨率、帧率或换编码配置。\n"
+            "4. WebRTC 卡顿时看网络抖动、浏览器控制台和服务端日志。\n"
+            "5. 端到端延迟要分段记录,不要只看最终页面体感。\n\n"
+            "注意:实时数字人不是单模型推理问题。音频、视频、编码和网络任一环节慢都会影响体验。"
+        ),
+        source_refs=["livetalking-repo:README", "webrtc-docs:overview", "ffmpeg-docs:ffmpeg"],
+    ),
+    chunk(
+        chunk_id="ext-video-generation-resource-tradeoff-001",
+        product_area="gpu_troubleshooting",
+        source_type="faq",
+        source_origin="external_official",
+        title="视频生成的分辨率、帧数、时长和显存取舍",
+        question_patterns=[
+            "视频生成为什么特别吃显存",
+            "文生视频 oom 怎么调",
+            "视频生成时长越长越慢吗",
+            "图生视频分辨率怎么选",
+            "生成视频卡住是显存还是磁盘问题",
+        ],
+        content=(
+            "适用场景:客户跑文生视频、图生视频或视频编辑模型,遇到 OOM、很慢、临时文件大或任务卡住。"
+            "视频生成的资源消耗通常随分辨率、帧数、时长和模型规模快速上升。\n\n"
+            "处理建议:\n"
+            "1. 先用低分辨率、短时长、小步数跑通流程。\n"
+            "2. OOM 时优先降低分辨率、帧数、batch 或启用模型支持的 offload。\n"
+            "3. 磁盘写满会让任务看起来像卡住,要检查临时目录和输出目录。\n"
+            "4. 多任务并发会叠加显存和 CPU 编码压力,先单任务测基线。\n"
+            "5. 对客户验收要固定提示词、随机种子、输入素材和参数,否则结果不可比较。\n\n"
+            "注意:视频生成属于高资源工作负载。不要用图片生成的显存经验直接估算视频任务。"
+        ),
+        source_refs=["hf-diffusers:optimization", "ffmpeg-docs:ffmpeg", "pytorch-docs:notes/cuda"],
+    ),
+    chunk(
+        chunk_id="ext-cv-dataset-format-label-debug-001",
+        product_area="pytorch_basics",
+        source_type="runbook",
+        source_origin="external_official",
+        title="CV 训练数据格式、标签和类别映射错误排查",
+        question_patterns=[
+            "目标检测训练一直效果很差怎么查数据",
+            "yolo 标签格式是不是错了",
+            "图像分割 mask 和类别对不上",
+            "训练集路径正确但读不到标签",
+            "cv 数据集怎么验收",
+        ],
+        content=(
+            "适用场景:客户训练目标检测、分割或分类模型时 loss 异常、效果差、类别混淆或数据读取失败。"
+            "CV 训练问题很大比例来自数据和标签,不是 GPU 本身。\n\n"
+            "排查顺序:\n"
+            "1. 抽样可视化图片、框、mask 和类别名,确认人眼看起来正确。\n"
+            "2. 检查 train/val 路径、文件后缀、空标签和坏图。\n"
+            "3. 检查类别编号是否从框架要求的起点开始,类别名顺序是否一致。\n"
+            "4. 分割任务确认 mask 尺寸、像素值和图片一一对应。\n"
+            "5. 先用很小数据集过拟合,验证训练代码能学到东西。\n\n"
+            "注意:数据格式错时,增加显卡、训练轮数或模型大小通常只会浪费时间。"
+        ),
+        source_refs=["ultralytics-docs:train", "label-studio-docs:guide", "monai-docs:index"],
+    ),
+    chunk(
+        chunk_id="ext-robotics-sim-gpu-display-001",
+        product_area="gpu_troubleshooting",
+        source_type="faq",
+        source_origin="external_official",
+        title="机器人仿真和强化学习的 GPU、显示和无头运行检查",
+        question_patterns=[
+            "isaac sim 服务器上黑屏怎么办",
+            "机器人仿真需要显示器吗",
+            "headless 仿真怎么跑",
+            "强化学习仿真 gpu 利用率低",
+            "仿真环境远程桌面打不开",
+        ],
+        content=(
+            "适用场景:客户跑机器人仿真、强化学习或具身智能环境,遇到显示失败、远程桌面黑屏、GPU 没用上或仿真很慢。"
+            "仿真任务同时涉及渲染、物理、Python 环境和远程显示。\n\n"
+            "处理建议:\n"
+            "1. 先确认任务需要图形界面还是支持 headless 模式。\n"
+            "2. 检查 NVIDIA 驱动、OpenGL/Vulkan/EGL 等渲染依赖是否可用。\n"
+            "3. 远程桌面只负责显示,不等于仿真已经用上 GPU。\n"
+            "4. 强化学习吞吐低时同时看环境步进、CPU、GPU 和数据拷贝。\n"
+            "5. 保存最小 demo、日志和渲染模式,便于复现。\n\n"
+            "注意:机器人仿真的瓶颈不一定在模型训练,也可能在渲染、物理模拟或环境并行度。"
+        ),
+        source_refs=["nvidia-isaac-sim-docs:workstation-setup", "nvidia-isaac-lab-docs:workflows", "pytorch-docs:notes/cuda"],
+    ),
+    chunk(
+        chunk_id="ext-ai4science-repro-env-data-001",
+        product_area="linux_ops",
+        source_type="faq",
+        source_origin="external_official",
+        title="AI4Science 任务的环境、数据和结果可复现检查",
+        question_patterns=[
+            "科研任务换机器后结果不一致怎么查",
+            "ai4science 实验怎么保证可复现",
+            "分子模拟或蛋白预测结果要记录哪些信息",
+            "科研 gpu 环境迁移要注意什么",
+            "大规模科学数据怎么管理版本",
+        ],
+        content=(
+            "适用场景:科研客户把分子模拟、蛋白结构、物理机器学习或大规模数组计算迁到 GPU 环境,需要保证可复现。"
+            "稳定做法是同时记录环境、数据、代码、参数和硬件。\n\n"
+            "处理建议:\n"
+            "1. 固定代码 commit、容器/conda 环境、核心依赖和 CUDA/驱动信息。\n"
+            "2. 数据集、预处理脚本和随机种子要版本化。\n"
+            "3. 大文件用对象存储、DVC、Zarr 或 shard 方案时记录文件列表和校验。\n"
+            "4. 保存完整命令行、配置文件、日志和输出摘要。\n"
+            "5. 迁移机器后先用小样本复现,再跑长任务。\n\n"
+            "注意:科研任务的“能跑”不等于“可复现”。结果交付前要能说明环境和数据来源。"
+        ),
+        source_refs=["dvc-docs:start", "zarr-docs:index", "mlflow-docs:tracking", "apptainer-docs:gpu"],
+    ),
+]
+
 CHUNKS = (
     VLLM_CHUNKS
     + SGLANG_CHUNKS
@@ -6166,11 +7302,12 @@ CHUNKS = (
     + AI4SCIENCE_GPU_CHUNKS
     + PRO_GPU_SUPPORT_CHUNKS
     + PRODUCTION_GPU_SUPPORT_CHUNKS
-    + COMMUNITY_IMAGE_TARGETED_CHUNKS
+    + SCENE_SIGNAL_TARGETED_CHUNKS
     + SECOND_WAVE_EXTERNAL_CHUNKS
     + SESSION_637_TARGETED_CHUNKS
     + CUDA_COMPILE_CLEANUP_CHUNKS
     + THIRD_WAVE_EXTERNAL_CHUNKS
+    + STABLE_PLATFORM_EXTERNAL_CHUNKS
 )
 
 

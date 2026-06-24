@@ -35,40 +35,20 @@ const EmbeddingDigestExpected = "9dcb902bb6026836b43cf52be159af6690bb4c93818e1b3
 const EmbeddingDigestExpectedQwen3 = "da488ead7fb53b6d7ab2e7529b9724b1a6f60910aeef253028db624c7dcd99b4"
 
 // ExternalCorpusDigestExpected pins deploy/kb/external_w0.jsonl — the separate
-// external tool/ops corpus (vLLM / SGLang / Ollama / ComfyUI + GPU
-// troubleshooting + Linux-ops/env-management + PyTorch-basics + model-download
-// + chat-seeded ops gaps: SSH keepalive, large transfers, remote web apps,
-// HuggingFace cache/downloads, LoRA/QLoRA, NCCL/DDP debugging, and
-// AI4Science/professional GPU runtime topics: JAX, CuPy, OpenMM, GROMACS,
-// RAPIDS, container GPU access, ColabFold, and AlphaFold3 + pro-GPU support
-// topics: Transformers/Accelerate/bitsandbytes/LLaMA-Factory/Unsloth/DeepSpeed,
-// git-lfs/aria2/wget/curl/rclone, VS Code Remote/Jupyter/SSH tunnels,
-// CUDA/NCCL compatibility, ComfyUI Manager/Flux/ControlNet/IPAdapter, and
-// production GPU support: DCGM/Nsight monitoring, Docker/Kubernetes/GPU Operator,
-// MIG/time-slicing, Triton/TensorRT-LLM/KServe, Ray/Slurm, TRL, HF Datasets,
-// Zarr, Dask-cuDF, and community-image-targeted coverage for popular LTX,
-// digital-human, voice/TTS, LoRA-training, Qwen/Wan, GGUF, and 3D generation
-// images, plus second-wave coverage for SD/LoRA training, ASR/video dubbing,
-// 3D/CV, AI4Science specialties, experiment tracking, proxying, and image
-// building, plus 637-session-targeted support gaps: SD-WebUI/A1111, ControlNet,
-// generic WebUI refused-connection triage, SSH/transfer failures, Ollama cache
-// and context/VRAM issues, Open WebUI/LiteLLM, Docker GPU visibility, card-count
-// mismatch, MPS, DVC/object storage/labeling, persistence boundaries, and
-// background service patterns, plus focused coverage for safe nvidia-smi cleanup,
-// torch.compile, and CUDA Toolkit installation, plus third-wave production and
-// research platform coverage: FSDP/checkpointing/memory estimation/offload,
-// vLLM/LiteLLM serving governance, NCCL/RDMA validation, Kueue/Kubeflow/Volcano
-// job queues, lm-eval/MLflow evaluation, YOLO/SAM2 CV workflows, LAMMPS/PySCF/
-// Apptainer AI4Science, WebDataset, ONNX Runtime/Optimum, AWQ/GPTQ/GGUF model
-// format guidance), loaded
-// alongside the platform corpus via LoadPinnedCorporaWithEmbeddings. Same
+// external tool/ops corpus. It is intentionally platform-neutral and stable:
+// durable GPU/runtime troubleshooting, OpenAI-compatible API semantics, RAG and
+// Agent application basics, remote development/service exposure, data transfer,
+// security, evaluation, and professional GPU workflows. Volatile platform facts
+// such as pricing, model availability, console paths, events, and current
+// community-image rankings belong in the internal platform corpus instead.
+// Loaded alongside the platform corpus via LoadPinnedCorporaWithEmbeddings. Same
 // refuse-to-start-on-mismatch semantics as the platform pin.
-const ExternalCorpusDigestExpected = "d76f2cc633987cac4c88bcb3339ea50e262099a7eb14995e7a90b030ab909d38"
+const ExternalCorpusDigestExpected = "cc3546678c5a5c21f46f77da83f98900eaf32fba3c289372f452abbbd3b1b4a7"
 
 // ExternalEmbeddingDigestExpectedQwen3 pins the qwen3-embedding-8b sidecar
 // (4096-dim) for the external corpus:
 // deploy/kb/embeddings_<ExternalCorpusDigestExpected>_qwen3-embedding-8b.jsonl.
-const ExternalEmbeddingDigestExpectedQwen3 = "d219162444ae434f213183add8c47adc9b804365d7818cb1bf6fd4d1fcc1b076"
+const ExternalEmbeddingDigestExpectedQwen3 = "332d2b2ce9500a7077bfb894a6b7a303bf7a43fe6acf4abdad90545bfc8f2f8b"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.
