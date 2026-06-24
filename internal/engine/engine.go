@@ -1850,7 +1850,8 @@ func (e *Engine) tryDirectHardwareCreate(ctx context.Context, dispatch routerDis
 	if !plannerAllowsDirectHardwareCreate(dispatch.result.Plan.Intent) {
 		return "", false
 	}
-	if !directHardwareCreateActionCue(userMsg) {
+	plannerCreate := plannerRequestsCreateInstance(dispatch.result.Plan)
+	if !plannerCreate && !directHardwareCreateActionCue(userMsg) {
 		return "", false
 	}
 	availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
@@ -1859,7 +1860,11 @@ func (e *Engine) tryDirectHardwareCreate(ctx context.Context, dispatch routerDis
 		return "", false
 	}
 	const action = "CreateInstanceWorkflow"
-	e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
+	routeStatus := intent.RouteStatusFallbackIneligible
+	if plannerCreate {
+		routeStatus = intent.RouteStatusDispatched
+	}
+	e.emitPlannerTrace(dispatch.result, routeStatus, dispatch.latency)
 	args = e.safeExecutor.FilterArgs(action, args)
 	onStep(StepEvent{
 		Type:   StepToolCall,
@@ -2165,6 +2170,10 @@ func plannerAllowsDirectHardwareCreate(route intent.Intent) bool {
 	default:
 		return false
 	}
+}
+
+func plannerRequestsCreateInstance(plan intent.IntentRoute) bool {
+	return plan.Intent == intent.IntentOperationLifecycle && plan.Slots.Action == intent.LifecycleActionCreate
 }
 
 func directHardwareCreateActionCue(userMsg string) bool {

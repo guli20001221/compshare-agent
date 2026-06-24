@@ -178,6 +178,7 @@ const (
 	LifecycleActionResetPwd   LifecycleAction = "reset_password"
 	LifecycleActionRename     LifecycleAction = "rename"
 	LifecycleActionCreateDisk LifecycleAction = "create_disk"
+	LifecycleActionCreate     LifecycleAction = "create_instance"
 )
 
 type TargetRef struct {

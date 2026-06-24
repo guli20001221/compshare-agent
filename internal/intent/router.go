@@ -494,13 +494,18 @@ func routerPromptExampleGroups() []routerPromptExampleGroup {
 				},
 				{
 					Question: "帮我搞台 4090",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null,"action":"create_instance"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
 					Source:   "Deployment planner: spec-first create request with exact hardware must route to CreateInstanceWorkflow, not deploy_model or unknown",
 				},
 				{
 					Question: "帮我抢一台上海的 4090",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null,"action":"create_instance"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
 					Source:   "Deployment planner: strict-zone spec-first create; '抢' is not Spot unless explicitly stated",
+				},
+				{
+					Question: "帮我创一个 V100S 的实例",
+					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null,"action":"create_instance"},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					Source:   "Deployment planner: colloquial spec-first create; model supplies semantic action, engine validates GPU from live catalog",
 				},
 				{
 					Question: "把 uhost-1qx1qsw4b1pk 保存成镜像",
@@ -622,7 +627,7 @@ func basePromptScaffold() string {
 		"instance-scoped billing questions should emit billing_instance, but do not promise account ledger amounts or transaction exports.",
 		"Personal billing complaints with vague cause — 充值 10 块就被扣完了 / 我账单怎么这么高 / 钱怎么扣这么快 / 我啥也没干怎么就扣费了 — emit billing_instance (NOT billing_account_unsupported, which is reserved for explicit balance / total-bill / transaction-record queries; and NOT knowledge_qa, because the user wants a personal diagnostic, not a process FAQ).",
 		"Billing navigation questions like where do I find / how do I view / how to check / from which page can I see my bills, invoices, expense, balance, charges, or recharge history should emit knowledge_qa - they ask for a UI navigation path, not actual finance numbers, and the docs cover the path.",
-		"Resource operation commands — any phrase whose primary verb is a CompShare instance lifecycle / configuration action emits operation_lifecycle, REGARDLESS of whether the user specifies a target instance. Action verbs include 创建 / 开一台 / 搞台 / 抢一台 / 关机 / 停机 / 停了 / 启动 / 开机 / 重启 / 加盘 / 加数据盘 / 变配 / 升级配置 / 重装 / 重置密码 / 改名. Spec-first creation where the user dictates exact hardware (e.g. 帮我搞台 4090 / 部署一台 4090 / 上海 4090) is operation_lifecycle, not deploy_model; workload-first requests naming a model/app/framework (e.g. 部署 DeepSeekR1 / 部署数字人 / 部署 ComfyUI) stay deploy_model. When a target is given, populate target_refs (UHostId, name, or filter). When the user omits the target (e.g. 帮我关机, 启动一下, 重启那台), still emit operation_lifecycle with target_refs:[] — the engine will list the user's instances and prompt for selection. Concrete anchors: 帮我关机 uhost-xxx, uhost-test 停了, 启动 train-gpu, 把 uhost-xxx 重启一下, 给 uhost-xxx 加 200G 数据盘, 帮我搞台 4090. Do NOT route bare action verbs to resource_info (that intent is for listing/inspecting only) or unknown (the action is on-platform).",
+		"Resource operation commands — any phrase whose primary verb is a CompShare instance lifecycle / configuration action emits operation_lifecycle, REGARDLESS of whether the user specifies a target instance. When the operation is clear, set slots.action to one of: create_instance, stop, start, reboot, reinstall, resize, reset_password, rename, create_disk. Spec-first creation where the user dictates exact hardware (e.g. 帮我搞台 4090 / 部署一台 4090 / 上海 4090) is operation_lifecycle with action=create_instance, not deploy_model; workload-first requests naming a model/app/framework (e.g. 部署 DeepSeekR1 / 部署数字人 / 部署 ComfyUI) stay deploy_model. When a target is given, populate target_refs (UHostId, name, or filter). When the user omits the target (e.g. 帮我关机, 启动一下, 重启那台), still emit operation_lifecycle with target_refs:[] — the engine will list the user's instances and prompt for selection. Concrete anchors: 帮我关机 uhost-xxx, uhost-test 停了, 启动 train-gpu, 把 uhost-xxx 重启一下, 给 uhost-xxx 加 200G 数据盘, 帮我搞台 4090. Do NOT route bare action verbs to resource_info (that intent is for listing/inspecting only) or unknown (the action is on-platform).",
 		"Use unknown ONLY when the question is clearly off-platform — other vendors' products, politics, weather, unrelated code, or generic creative writing. When the question is on-platform but the exact intent is unclear, pick the closest primary intent (resource_info for inventory, knowledge_qa for usage/FAQ, diagnosis for problems on a specific instance) rather than unknown.",
 		"slots must contain target_refs, metrics, and time_window. Use [] for missing target_refs or metrics, and null for missing time_window.",
 		"For a user-written instance name, output target_refs item {\"type\":\"name\",\"value\":\"<exact name>\",\"source\":\"user_text\",\"source_span\":\"<exact substring>\"}.",

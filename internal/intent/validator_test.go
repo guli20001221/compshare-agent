@@ -219,6 +219,23 @@ func TestValidatePlan_RejectsInvalidMetricEnum(t *testing.T) {
 	requireValidationCode(t, err, ErrInvalidMetric)
 }
 
+func TestValidatePlan_RejectsInvalidLifecycleAction(t *testing.T) {
+	plan := IntentRoute{
+		SchemaVersion: SchemaVersion,
+		Intent:        IntentOperationLifecycle,
+		Slots: Slots{
+			Action: LifecycleAction("made_up_action"),
+		},
+		RequiredTools: []string{"DescribeCompShareInstance"},
+		Retrieval:     Retrieval{Enabled: false},
+		Confidence:    0.8,
+	}
+
+	err := ValidateRoute(plan, ValidationContext{UserText: "帮我创一个 V100S 的实例", Registry: testRegistry(t)})
+
+	requireValidationCode(t, err, ErrInvalidLifecycleAction)
+}
+
 func TestValidatePlan_RejectsInvalidTimeWindowType(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.Slots.TimeWindow.Type = TimeWindowType("made_up")

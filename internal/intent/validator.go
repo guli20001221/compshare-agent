@@ -24,6 +24,7 @@ const (
 	ErrNameTooShort                ErrorCode = "name_too_short"
 	ErrRetrievalDisabled           ErrorCode = "retrieval_disabled"
 	ErrInvalidConfidence           ErrorCode = "invalid_confidence"
+	ErrInvalidLifecycleAction      ErrorCode = "invalid_lifecycle_action"
 )
 
 type ValidationError struct {
@@ -97,6 +98,9 @@ func ValidateRoute(plan IntentRoute, ctx ValidationContext) error {
 		if !validMetric(metric) {
 			return validationErr(ErrInvalidMetric, fmt.Sprintf("slots.metrics[%d]", i), "unsupported metric enum")
 		}
+	}
+	if plan.Slots.Action != "" && !validLifecycleAction(plan.Slots.Action) {
+		return validationErr(ErrInvalidLifecycleAction, "slots.action", "unsupported lifecycle action enum")
 	}
 	if plan.Slots.TimeWindow != nil && !validTimeWindowType(plan.Slots.TimeWindow.Type) {
 		return validationErr(ErrInvalidTimeWindow, "slots.time_window.type", "unsupported time_window type")
@@ -214,6 +218,23 @@ func validMetric(metric Metric) bool {
 func validTimeWindowType(windowType TimeWindowType) bool {
 	switch windowType {
 	case TimeWindowPreset, TimeWindowRelative, TimeWindowAbsolute:
+		return true
+	default:
+		return false
+	}
+}
+
+func validLifecycleAction(action LifecycleAction) bool {
+	switch action {
+	case LifecycleActionStop,
+		LifecycleActionStart,
+		LifecycleActionReboot,
+		LifecycleActionReinstall,
+		LifecycleActionResize,
+		LifecycleActionResetPwd,
+		LifecycleActionRename,
+		LifecycleActionCreateDisk,
+		LifecycleActionCreate:
 		return true
 	default:
 		return false

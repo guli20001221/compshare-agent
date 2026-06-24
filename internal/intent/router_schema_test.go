@@ -30,6 +30,13 @@ func TestIntentRouteResponseSchema_IntentEnumMatchesRuntime(t *testing.T) {
 					} `json:"enabled"`
 				} `json:"properties"`
 			} `json:"retrieval"`
+			Slots struct {
+				Properties struct {
+					Action struct {
+						Enum []string `json:"enum"`
+					} `json:"action"`
+				} `json:"properties"`
+			} `json:"slots"`
 		} `json:"properties"`
 		Required []string `json:"required"`
 	}
@@ -78,6 +85,13 @@ func TestIntentRouteResponseSchema_IntentEnumMatchesRuntime(t *testing.T) {
 	// retrieval.enabled must be pinned false (ValidateRoute rejects Enabled==true).
 	if c := schema.Properties.Retrieval.Properties.Enabled.Const; c == nil || *c != false {
 		t.Error("retrieval.enabled must be const false")
+	}
+	actionEnum := map[string]bool{}
+	for _, value := range schema.Properties.Slots.Properties.Action.Enum {
+		actionEnum[value] = true
+	}
+	if !actionEnum[string(LifecycleActionCreate)] {
+		t.Errorf("slots.action enum is missing %q", LifecycleActionCreate)
 	}
 
 	// The seven IntentRoute top-level fields ValidateRoute reads must be required.

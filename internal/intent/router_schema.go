@@ -61,10 +61,21 @@ func IntentRouteResponseSchema() json.RawMessage {
 			"metrics": map[string]any{"type": "array", "items": stringEnum(
 				string(MetricCPU), string(MetricMemory), string(MetricGPU), string(MetricVRAM),
 			)},
-			// slots.action (LifecycleAction) is deliberately omitted: the prompt
-			// never asks the model to emit it and the engine re-derives it from the
-			// user text (inferLifecycleAction). Non-strict + no additionalProperties
-			// restriction means a model that does emit it is still accepted.
+			// slots.action (LifecycleAction) is optional but constrained. The
+			// engine still re-derives start/stop/reboot from text as a fallback,
+			// but spec-first create needs the router's semantic judgment so the
+			// engine does not depend on hard-coded colloquial verb cues.
+			"action": stringEnum(
+				string(LifecycleActionStop),
+				string(LifecycleActionStart),
+				string(LifecycleActionReboot),
+				string(LifecycleActionReinstall),
+				string(LifecycleActionResize),
+				string(LifecycleActionResetPwd),
+				string(LifecycleActionRename),
+				string(LifecycleActionCreateDisk),
+				string(LifecycleActionCreate),
+			),
 			// time_window is *TimeWindow (nullable, omitempty) — object or null.
 			"time_window": map[string]any{
 				"type": []string{"object", "null"},
@@ -82,9 +93,9 @@ func IntentRouteResponseSchema() json.RawMessage {
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"schema_version":  map[string]any{"type": "string", "const": SchemaVersion},
-			"intent":          map[string]any{"type": "string", "enum": intents},
-			"slots":           slots,
+			"schema_version": map[string]any{"type": "string", "const": SchemaVersion},
+			"intent":         map[string]any{"type": "string", "enum": intents},
+			"slots":          slots,
 			"required_tools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			// retrieval.enabled is pinned false: ValidateRoute rejects Enabled==true
 			// (stage-2A RAG is disabled), so const-false constrains decoding and

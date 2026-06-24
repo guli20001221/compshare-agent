@@ -85,7 +85,10 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	// symptom anchors for port unreachable, GPU not found, and SSH timeout.
 	// Deployment planner (2026-06-18): bumped from 37 -> 39 with 2 spec-first
 	// create anchors for 4090 and strict-zone create requests.
-	if got, want := len(examples), 39+routeExampleCount; got != want {
+	// Create action dispatch (2026-06-24): bumped from 39 -> 40 with 1
+	// colloquial spec-first create anchor; it emits slots.action=create_instance
+	// so the engine can dispatch without a hard-coded verb cue.
+	if got, want := len(examples), 40+routeExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -188,8 +191,8 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			t.Fatalf("planner examples missing group for intent %q", intent)
 		}
 	}
-	if total != 60 {
-		t.Fatalf("legacy planner example count = %d, want 60", total)
+	if total != 61 {
+		t.Fatalf("legacy planner example count = %d, want 61", total)
 	}
 	expectedCounts := map[Intent]int{
 		IntentResourceInfo:              8,
@@ -202,7 +205,9 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		// ZERO-target sample for bare "帮我关机" classification.
 		// Phase 3 (2026-06-02): +2 custom-image workflow anchors.
 		// Deployment planner (2026-06-18): +2 spec-first create anchors.
-		IntentOperationLifecycle: 10,
+		// Create action dispatch (2026-06-24): +1 colloquial spec-first
+		// create anchor with slots.action=create_instance.
+		IntentOperationLifecycle: 11,
 		// Diagnosis recall fix (2026-06-03): +3 no-target symptom anchors.
 		IntentDiagnosis: 4,
 		// disk_info (2026-05-29): 4 anchors — 我有哪些数据盘 / 我的磁盘列表 /
