@@ -1851,7 +1851,8 @@ func (e *Engine) tryDirectHardwareCreate(ctx context.Context, dispatch routerDis
 		return "", false
 	}
 	plannerCreate := plannerRequestsCreateInstance(dispatch.result.Plan)
-	if !plannerCreate && !directHardwareCreateActionCue(userMsg) {
+	semanticCreate := dispatch.result.Plan.Intent == intent.IntentOperationLifecycle && directHardwareCreateObjectCue(userMsg)
+	if !plannerCreate && !semanticCreate && !directHardwareCreateActionCue(userMsg) {
 		return "", false
 	}
 	availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
@@ -2182,6 +2183,19 @@ func directHardwareCreateActionCue(userMsg string) bool {
 		return false
 	}
 	return hardwareCreateVerbRE.MatchString(text)
+}
+
+func directHardwareCreateObjectCue(userMsg string) bool {
+	text := strings.TrimSpace(userMsg)
+	if text == "" || hardwareAdviceRE.MatchString(text) || hardwarePriceQueryRE.MatchString(text) || looksLikeLifecycleQuestion(text) {
+		return false
+	}
+	for _, marker := range []string{"实例", "机器", "主机", "云主机", "服务器"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func hardwareCreateWorkflowArgs(userMsg string, availResult map[string]any) (map[string]any, bool) {

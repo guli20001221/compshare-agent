@@ -220,6 +220,74 @@ func TestDirectHardwareCreateBlocksPriceQuestion(t *testing.T) {
 	assert.Empty(t, executor.calls, "price questions must not open a billable create card")
 }
 
+func TestDirectHardwareCreateUsesObjectCueWhenPlannerOmitsAction(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(10027), "Describe": "华北二A", "IsPod": false},
+			}}, nil
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-001", "Name": "PyTorch", "ImageType": "App", "Status": "Available"},
+			}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "TEST_GPU_X", "Zone": "cn-wlcb-01", "Status": "Normal",
+					"MachineSizes": []any{map[string]any{"Gpu": float64(1), "Collection": []any{
+						map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}}},
+					}}},
+			}}, nil
+		case "CheckCompShareResourceCapacity":
+			return map[string]any{"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			}}, nil
+		case "GetCompShareInstanceUserPrice":
+			return map[string]any{"PriceDetails": []any{
+				map[string]any{"ChargeType": "Postpay", "Price": 1.58},
+			}}, nil
+		default:
+			return map[string]any{"RetCode": float64(0)}, nil
+		}
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path must not be reached"}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentOperationLifecycle,
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.zoneCatalog = zones.NewCatalog(0)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentOperationLifecycle},
+		Model:          "test-planner-model",
+	})
+	confirm := func(_ string, _ map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+		require.NotNil(t, form)
+		return workflow.ConfirmResolution{Confirmed: false}
+	}
+
+	var workflowEvents []StepEvent
+	reply, err := eng.ChatWithOptions(context.Background(), "帮我创一个 TEST_GPU_X 的实例", func(ev StepEvent) {
+		workflowEvents = append(workflowEvents, ev)
+	}, ChatOptions{GuidedCreate: true, ConfirmEditsFunc: confirm})
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "未执行")
+	assert.Empty(t, mock.calls, "semantic create object cue must bypass ReAct tool selection")
+	assert.NotContains(t, executor.calls, "CreateCompShareInstance")
+	var sawWorkflow bool
+	for _, ev := range workflowEvents {
+		if ev.Type == StepToolCall && ev.Action == "CreateInstanceWorkflow" {
+			sawWorkflow = true
+		}
+	}
+	assert.True(t, sawWorkflow, "operation_lifecycle + real GPU + instance object must open the create workflow even when planner omits slots.action")
+}
+
 func TestChat_PlannerCreateInstanceActionDoesNotDependOnHardcodedVerbCue(t *testing.T) {
 	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
