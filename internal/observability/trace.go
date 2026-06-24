@@ -381,6 +381,7 @@ type RouterTrace struct {
 	OutputTokens         int                 `json:"output_tokens"`
 	SchemaValid          bool                `json:"schema_valid"`
 	Intent               string              `json:"intent"`
+	SpeechAct            string              `json:"speech_act,omitempty"`
 	PlannedExecutionPath string              `json:"planned_execution_path,omitempty"`
 	Skills               []PlannerSkillTrace `json:"skills,omitempty"`
 	Slots                PlannerSlots        `json:"slots"`
@@ -536,14 +537,14 @@ type RateLimitTrace struct {
 }
 
 type RetrievalTrace struct {
-	Enabled               bool           `json:"enabled"`
-	KBVersion             string         `json:"kb_version"`
-	QueryRaw              string         `json:"query_raw,omitempty"`
-	QueryNormalized       string         `json:"query_normalized,omitempty"`
-	QueryExpansions       []string       `json:"query_expansions,omitempty"`
-	Hits                  int            `json:"hits"`
-	HitItems              []RetrievalHit `json:"hit_items,omitempty"`
-	RefusedReason string `json:"refused_reason,omitempty"`
+	Enabled         bool           `json:"enabled"`
+	KBVersion       string         `json:"kb_version"`
+	QueryRaw        string         `json:"query_raw,omitempty"`
+	QueryNormalized string         `json:"query_normalized,omitempty"`
+	QueryExpansions []string       `json:"query_expansions,omitempty"`
+	Hits            int            `json:"hits"`
+	HitItems        []RetrievalHit `json:"hit_items,omitempty"`
+	RefusedReason   string         `json:"refused_reason,omitempty"`
 	// RefusalType classifies a RAG refusal into the #5 four-state taxonomy
 	// (corpus_gap / all_below_floor / synthesis_refused / wrong_domain). Derived
 	// at Finish from RefusedReason + FloorDroppedAll (DeriveRefusalType); empty

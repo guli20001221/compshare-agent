@@ -64,6 +64,7 @@ const (
 
 const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
+const createFamilySpeechActGateEnv = "COMPSHARE_CREATE_FAMILY_SPEECH_ACT_GATE"
 
 // monitor_history refusal text moved to internal/refusal/templates.go in the
 // C2 hard-block 归一 refactor. Call sites import refusal directly; this file no
@@ -697,6 +698,8 @@ func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, routeMap map[i
 			e == intent.IntentDiagnosis ||
 			e == intent.IntentVagueFailure ||
 			e == intent.IntentOperationLifecycle ||
+			e == intent.IntentCreateInstance ||
+			e == intent.IntentDeployModel ||
 			intent.IsRoutingIntent(e) {
 			enabledMap[e] = struct{}{}
 		}
@@ -1795,6 +1798,9 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.tryDiagnosisDispatch(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
+	if reply, handled := e.tryCreateFamilySpeechActDispatch(ctx, dispatch, userMsg, onStep); handled {
+		return reply, true
+	}
 	if reply, handled := e.tryOperationLifecycleDispatch(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
@@ -1807,8 +1813,10 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
-	if reply, handled := e.tryDirectHardwareCreate(ctx, dispatch, userMsg, onStep); handled {
-		return reply, true
+	if !createFamilySpeechActGateEnabled() {
+		if reply, handled := e.tryDirectHardwareCreate(ctx, dispatch, userMsg, onStep); handled {
+			return reply, true
+		}
 	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || dispatch.result.Plan.Intent == intent.IntentMonitorHistory || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
 		return e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
@@ -1844,6 +1852,88 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 
 	e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 	return "", false
+}
+
+func createFamilySpeechActGateEnabled() bool {
+	return strings.TrimSpace(os.Getenv(createFamilySpeechActGateEnv)) != "0"
+}
+
+func (e *Engine) tryCreateFamilySpeechActDispatch(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+	if !createFamilySpeechActGateEnabled() {
+		return "", false
+	}
+	if !e.plannerIntentEnabled(dispatch.result.Plan.Intent) {
+		return "", false
+	}
+	switch dispatch.result.Plan.Intent {
+	case intent.IntentCreateInstance:
+		return e.tryCreateInstanceSpeechActDispatch(ctx, dispatch, userMsg, onStep)
+	case intent.IntentDeployModel:
+		switch dispatch.result.Plan.SpeechAct {
+		case intent.SpeechActCommand:
+			return "", false
+		case intent.SpeechActQuestion, intent.SpeechActComparison:
+			return e.replyFromPlannerGate(dispatch, "这是部署咨询类问题，我不会直接部署或创建实例。你可以继续问部署方案；如果要我开始部署，请明确说“现在部署”。", intent.RouteStatusFallbackIneligible), true
+		default:
+			return e.replyFromPlannerGate(dispatch, "你是要我现在部署并创建实例，还是只是咨询方案？请直接回复“现在部署”或“只咨询方案”。", intent.RouteStatusSelectionRequired), true
+		}
+	default:
+		return "", false
+	}
+}
+
+func (e *Engine) tryCreateInstanceSpeechActDispatch(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+	switch dispatch.result.Plan.SpeechAct {
+	case intent.SpeechActCommand:
+		const action = "CreateInstanceWorkflow"
+		args := e.safeExecutor.FilterArgs(action, e.createInstanceWorkflowArgsFromText(ctx, userMsg))
+		e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedAgent, dispatch.latency)
+		onStep(StepEvent{
+			Type:   StepToolCall,
+			Action: action,
+			Source: observability.ToolSourcePlannerHandler,
+			Args:   e.safeExecutor.RedactArgs(action, args),
+		})
+		raw := e.executeWorkflow(ctx, action, args, onStep)
+		reply := workflowDirectReply(action, raw)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: reply,
+		})
+		return reply, true
+	case intent.SpeechActQuestion, intent.SpeechActComparison:
+		return e.replyFromPlannerGate(dispatch, "这是硬件咨询类问题，我不会直接创建实例。你可以继续问配置、价格或方案；如果要我开始创建，请明确说“现在创建”。", intent.RouteStatusFallbackIneligible), true
+	default:
+		return e.replyFromPlannerGate(dispatch, "你是要我现在创建实例，还是只是咨询方案？请直接回复“现在创建”或“只咨询方案”。", intent.RouteStatusSelectionRequired), true
+	}
+}
+
+func (e *Engine) createInstanceWorkflowArgsFromText(ctx context.Context, userMsg string) map[string]any {
+	args := map[string]any{}
+	availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
+	if parsed, ok := hardwareCreateWorkflowArgs(userMsg, availResult); ok {
+		for k, v := range parsed {
+			args[k] = v
+		}
+	}
+	if _, ok := args["ImageName"]; !ok {
+		if imageName := createImageNameFromText(userMsg); imageName != "" {
+			args["ImageName"] = imageName
+		}
+	}
+	if createImageSourceFromText(userMsg) == "community" {
+		args["ImageSource"] = "community"
+	}
+	return args
+}
+
+func (e *Engine) replyFromPlannerGate(dispatch routerDispatchResult, reply string, status intent.RouteStatus) string {
+	e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: reply,
+	})
+	return reply
 }
 
 func (e *Engine) tryDirectHardwareCreate(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
@@ -2227,6 +2317,17 @@ func createImageNameFromText(text string) string {
 	}
 }
 
+func createImageSourceFromText(text string) string {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return ""
+	}
+	if strings.Contains(lower, "community") || strings.Contains(text, "社区镜像") || strings.Contains(text, "镜像社区") {
+		return "community"
+	}
+	return ""
+}
+
 func workflowDirectReply(action, raw string) string {
 	if finalMsg, ok := isFinalReply(raw); ok {
 		return finalMsg
@@ -2275,6 +2376,9 @@ var agentSkillForIntent = map[intent.Intent]string{
 // registry drift. A future body-loop handler does its own findGeneratedSkill + Body()
 // inside its case, like runDiagnosisSkill, where the lookup is load-bearing.
 func (e *Engine) dispatchAgentSkill(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+	if !e.plannerIntentEnabled(dispatch.result.Plan.Intent) {
+		return "", false
+	}
 	skillName, ok := agentSkillForIntent[dispatch.result.Plan.Intent]
 	if !ok {
 		return "", false
@@ -4819,6 +4923,16 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 		return fmt.Sprintf("✅ 已为实例 %s 执行关机。注意：关机后云硬盘仍会按量计费。", uhost), true
 	case "StartInstanceWorkflow":
 		return fmt.Sprintf("✅ 已为实例 %s 执行开机，启动需要一点时间，请稍后查看。", uhost), true
+	case "SetStopSchedulerWorkflow":
+		if minutes := numericWorkflowArg(args["AfterMinutes"]); minutes > 0 {
+			return fmt.Sprintf("✅ 已为实例 %s 设置定时关机，约 %.0f 分钟后关机。", uhost, minutes), true
+		}
+		if shutdownAt, _ := args["ShutdownAt"].(string); strings.TrimSpace(shutdownAt) != "" {
+			return fmt.Sprintf("✅ 已为实例 %s 设置定时关机，时间：%s。", uhost, strings.TrimSpace(shutdownAt)), true
+		}
+		return fmt.Sprintf("✅ 已为实例 %s 设置定时关机。", uhost), true
+	case "CancelStopSchedulerWorkflow":
+		return fmt.Sprintf("✅ 已取消实例 %s 的定时关机任务。", uhost), true
 	case "RenameInstanceWorkflow":
 		if name, _ := args["Name"].(string); name != "" {
 			return fmt.Sprintf("✅ 已将实例 %s 重命名为「%s」。", uhost, name), true
@@ -4826,6 +4940,24 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 		return fmt.Sprintf("✅ 已重命名实例 %s。", uhost), true
 	default:
 		return "", false
+	}
+}
+
+func numericWorkflowArg(value any) float64 {
+	switch v := value.(type) {
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case json.Number:
+		f, _ := v.Float64()
+		return f
+	default:
+		return 0
 	}
 }
 

@@ -24,6 +24,7 @@ const (
 	ErrNameTooShort                ErrorCode = "name_too_short"
 	ErrRetrievalDisabled           ErrorCode = "retrieval_disabled"
 	ErrInvalidConfidence           ErrorCode = "invalid_confidence"
+	ErrInvalidSpeechAct            ErrorCode = "invalid_speech_act"
 )
 
 type ValidationError struct {
@@ -65,6 +66,9 @@ func ValidateRoute(plan IntentRoute, ctx ValidationContext) error {
 	}
 	if plan.Confidence < 0 || plan.Confidence > 1 {
 		return validationErr(ErrInvalidConfidence, "confidence", "confidence must be within [0,1]")
+	}
+	if plan.SpeechAct != "" && !validSpeechAct(plan.SpeechAct) {
+		return validationErr(ErrInvalidSpeechAct, "speech_act", "unsupported speech_act enum")
 	}
 	if plan.Retrieval.Enabled {
 		return validationErr(ErrRetrievalDisabled, "retrieval.enabled", "RAG retrieval is disabled in stage 2A")
@@ -220,6 +224,15 @@ func validTimeWindowType(windowType TimeWindowType) bool {
 	}
 }
 
+func validSpeechAct(act SpeechAct) bool {
+	switch act {
+	case SpeechActCommand, SpeechActQuestion, SpeechActComparison, SpeechActUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
 func validRequiredTool(tool string) bool {
 	switch tool {
 	case "DescribeCompShareInstance",
@@ -292,6 +305,12 @@ func requiredToolsForIntent(intent Intent) map[string]struct{} {
 		// The handler ignores plan.required_tools; this case only keeps the few-shots'
 		// declared tool accepted by ValidateRoute (B8.3 ③).
 		add("DescribeCompShareImages", "DescribeCommunityImages")
+	case IntentCreateInstance:
+		// Read tools ONLY. create_instance is a mutating creation-family intent, but
+		// the mutation itself is dispatched by the engine into CreateInstanceWorkflow
+		// after the speech_act gate and confirm form. Planner-declared tools must not
+		// authorize workflow execution.
+		add("DescribeAvailableCompShareInstanceTypes", "CheckCompShareResourceCapacity", "DescribeCompShareImages", "DescribeCommunityImages", "GetCompShareInstancePrice")
 	}
 
 	if required, ok := routingRequiredTool(intent); ok {

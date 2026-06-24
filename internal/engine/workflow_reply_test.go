@@ -9,7 +9,7 @@ import (
 
 // TestDeterministicWorkflowReply pins WHY some mutating workflows skip the
 // post-workflow LLM narration round: no-return-data lifecycle ops (reboot /
-// stop / start / rename) deliver a fixed, instant reply so the turn never
+// stop / start / scheduler / rename) deliver a fixed, instant reply so the turn never
 // stalls on the fast-tier thinking-mode narration call. Data-bearing or
 // guidance-bearing workflows MUST keep narrating — short-circuiting them would
 // hide the new password / DiskId / instance details / post-create steps the
@@ -23,6 +23,8 @@ func TestDeterministicWorkflowReply(t *testing.T) {
 		"RebootInstanceWorkflow",
 		"StopInstanceWorkflow",
 		"StartInstanceWorkflow",
+		"SetStopSchedulerWorkflow",
+		"CancelStopSchedulerWorkflow",
 		"RenameInstanceWorkflow",
 	} {
 		reply, ok := deterministicWorkflowReply(action, args)

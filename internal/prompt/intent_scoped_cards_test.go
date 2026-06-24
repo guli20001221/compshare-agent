@@ -50,19 +50,20 @@ func TestRenderIntentScopedReActCard_ReadOnlyOperationExcludesWorkflowCatalog(t 
 	}
 }
 
-func TestRenderIntentScopedReActCard_OperationPreservesImageSelectionRules(t *testing.T) {
+func TestRenderIntentScopedReActCard_OperationPreservesMutationBoundaryRules(t *testing.T) {
 	card := RenderIntentScopedReActCard(intent.IntentOperationLifecycle, true)
 	for _, text := range []string{
-		"PyTorch/CUDA/vLLM",
-		"ImageName",
-		"ComfyUI、SD WebUI、Stable Diffusion、Dify、Ollama",
-		`ImageSource="community"`,
-		"CheckCompShareResourceCapacity",
-		"不要推荐后再发现没货",
+		"CreateDiskWorkflow 必须带 Size",
+		"ResizeDiskWorkflow 的 Size 是目标容量",
+		"CreateCustomImageWorkflow 用户未提供镜像 Name",
+		"涉及实例变更前必须重新调用 DescribeCompShareInstance",
 	} {
 		if !strings.Contains(card, text) {
-			t.Fatalf("operation card missing image/capacity rule fragment %q:\n%s", text, card)
+			t.Fatalf("operation card missing mutation boundary fragment %q:\n%s", text, card)
 		}
+	}
+	if strings.Contains(card, "CreateInstanceWorkflow") {
+		t.Fatalf("operation card must not expose structured-router-only CreateInstanceWorkflow:\n%s", card)
 	}
 }
 

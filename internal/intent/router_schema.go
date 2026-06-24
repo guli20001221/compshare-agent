@@ -82,9 +82,15 @@ func IntentRouteResponseSchema() json.RawMessage {
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"schema_version":  map[string]any{"type": "string", "const": SchemaVersion},
-			"intent":          map[string]any{"type": "string", "enum": intents},
-			"slots":           slots,
+			"schema_version": map[string]any{"type": "string", "const": SchemaVersion},
+			"intent":         map[string]any{"type": "string", "enum": intents},
+			"speech_act": stringEnum(
+				string(SpeechActCommand),
+				string(SpeechActQuestion),
+				string(SpeechActComparison),
+				string(SpeechActUnknown),
+			),
+			"slots":          slots,
 			"required_tools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			// retrieval.enabled is pinned false: ValidateRoute rejects Enabled==true
 			// (stage-2A RAG is disabled), so const-false constrains decoding and

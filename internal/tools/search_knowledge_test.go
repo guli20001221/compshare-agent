@@ -34,7 +34,8 @@ func TestSearchKnowledgeGatedVisibility(t *testing.T) {
 	SetAgenticSearchKnowledgeEnabled(true)
 	assert.True(t, hasTool(VisibleRegistry(false), "SearchKnowledge"), "on: read-only (read_cheap survives the filter)")
 	assert.True(t, hasTool(VisibleRegistry(true), "SearchKnowledge"), "on: mutating surface")
-	assert.Equal(t, len(Registry), len(VisibleRegistry(true)), "on: mutating shows the full registry incl SearchKnowledge")
+	assert.False(t, hasTool(VisibleRegistry(true), "CreateInstanceWorkflow"), "on: mutating still hides structured-router-only create workflow")
+	assert.Equal(t, len(Registry)-1, len(VisibleRegistry(true)), "on: mutating shows all ReAct-visible tools incl SearchKnowledge")
 	assert.True(t, hasTool(VisibleRegistryForSubset([]string{"SearchKnowledge", "DescribeCompShareInstance"}, false), "SearchKnowledge"), "on: subset listing it")
 	assert.False(t, hasTool(VisibleRegistryForSubset([]string{"DescribeCompShareInstance"}, false), "SearchKnowledge"), "on: subset NOT listing it (subset scoping holds)")
 }

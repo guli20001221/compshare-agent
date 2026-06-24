@@ -190,8 +190,10 @@ func TestBuildSystemWithOptions_DoesNotInjectStaticFAQContent(t *testing.T) {
 
 func TestBuildSystemWithOptions_MutatingModeKeepsWorkflowGuidance(t *testing.T) {
 	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
+	if strings.Contains(prompt, "CreateInstanceWorkflow") {
+		t.Fatalf("mutating-enabled ReAct prompt must not expose structured-router-only CreateInstanceWorkflow")
+	}
 	for _, text := range []string{
-		"CreateInstanceWorkflow",
 		"StopInstanceWorkflow",
 		"ResetPasswordWorkflow",
 	} {

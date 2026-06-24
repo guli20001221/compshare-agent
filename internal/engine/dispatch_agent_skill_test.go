@@ -26,6 +26,7 @@ import (
 func TestDispatchAgentSkill_RoutesDeployModelByteStable(t *testing.T) {
 	execA := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	engA := newDeployEngine(deployMatchJSON, execA, func(string, map[string]any) bool { return true })
+	enableDeployIntentForTest(engA)
 	viaSeam, handledA := engA.dispatchAgentSkill(context.Background(), deployDispatch(), "帮我部署 Qwen2.5-7B", noopStep)
 
 	execB := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
@@ -106,6 +107,7 @@ func TestAgentSkillForIntent_MatchesCodeDerivedPlanSkills(t *testing.T) {
 func TestAgentSkillForIntent_MatchesSagaSkillID(t *testing.T) {
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
+	enableDeployIntentForTest(eng)
 	sink := &sagaFakeSink{}
 	eng.SetStepSink(sink)
 
@@ -115,4 +117,8 @@ func TestAgentSkillForIntent_MatchesSagaSkillID(t *testing.T) {
 	require.NotEmpty(t, sink.steps, "the deploy saga must emit step traces")
 	assert.Equal(t, agentSkillForIntent[intent.IntentDeployModel], sink.steps[0].SkillID,
 		"saga StepTrace SkillID must equal the agent-handler table value")
+}
+
+func enableDeployIntentForTest(eng *Engine) {
+	eng.intentPlannerEnabledIntents = map[intent.Intent]struct{}{intent.IntentDeployModel: {}}
 }

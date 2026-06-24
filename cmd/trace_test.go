@@ -268,18 +268,20 @@ func TestIntentPlannerShadowModeFromEnv(t *testing.T) {
 func TestIntentPlannerRouteIntentsFromEnv(t *testing.T) {
 	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
 		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
-			return "resource, monitor, diagnosis, vague_failure, billing, ,RESOURCE"
+			return "resource, monitor, diagnosis, vague_failure, create, deploy, operation_lifecycle, billing, ,RESOURCE"
 		}
 		return ""
 	})
 	if len(unknown) != 1 || unknown[0] != "billing" {
 		t.Fatalf("unknown values = %#v, want billing", unknown)
 	}
-	if len(intents) != 4 {
-		t.Fatalf("enabled intents = %#v, want resource, monitor, diagnosis, vague_failure", intents)
+	if len(intents) != 7 {
+		t.Fatalf("enabled intents = %#v, want resource, monitor, diagnosis, vague_failure, create, deploy, operation_lifecycle", intents)
 	}
 	if intents[0] != "resource_info" || intents[1] != "monitor_query" ||
-		intents[2] != "diagnosis" || intents[3] != "vague_failure" {
+		intents[2] != "diagnosis" || intents[3] != "vague_failure" ||
+		intents[4] != "create_instance" || intents[5] != "deploy_model" ||
+		intents[6] != "operation_lifecycle" {
 		t.Fatalf("enabled intents = %#v", intents)
 	}
 }
@@ -349,6 +351,8 @@ func TestIntentPlannerRouteIntents_DefaultsWhenEnvUnset(t *testing.T) {
 		"community_image_list",
 		"shared_image_list",
 		"network_accelerator_status",
+		"create_instance",
+		"deploy_model",
 	}
 	require.Len(t, intents, len(want))
 	for i, w := range want {
@@ -996,7 +1000,7 @@ func TestCLITraceRecorderWritesRuntimeTrace(t *testing.T) {
 	}
 	recorder := newCLITraceRecorder(writer, "", 1, "runtime", start)
 	recorder.SetRuntimeTrace(observability.RuntimeTrace{
-		RouterMode:  "shadow",
+		RouterMode:   "shadow",
 		RouteIntents: []string{"resource", "monitor"},
 	})
 

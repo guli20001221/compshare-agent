@@ -1275,6 +1275,13 @@ func VisibleRegistry(mutatingEnabled bool) []openai.Tool {
 		if tool.Function == nil {
 			continue
 		}
+		// CreateInstanceWorkflow is no longer exposed as a ReAct-callable tool.
+		// New-machine creation must enter through the structured create_instance
+		// router intent and the engine's speech_act gate, then call the workflow
+		// internally with the existing confirmation form.
+		if tool.Function.Name == "CreateInstanceWorkflow" {
+			continue
+		}
 		// Agentic-RAG SearchKnowledge (P3) is gated behind
 		// COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE. When off it is invisible for EVERY
 		// intent (full-registry AND subset), so the flag-off tool surface is

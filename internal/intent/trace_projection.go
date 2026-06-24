@@ -43,6 +43,7 @@ func ProjectPlannerTrace(result IntentRouterResult, opts PlannerTraceOptions) ob
 	trace.OutputTokens = result.Usage.CompletionTokens
 	trace.SchemaValid = !result.Fallback && result.Plan.SchemaVersion == SchemaVersion && result.Plan.Intent != ""
 	trace.Intent = string(result.Plan.Intent)
+	trace.SpeechAct = string(result.Plan.SpeechAct)
 	trace.PlannedExecutionPath = string(PlannedExecutionPathForIntent(result.Plan.Intent))
 	trace.Skills = projectPlannerSkills(DeriveSelectedSkills(result.Plan))
 	trace.Slots = projectPlannerSlots(result.Plan.Slots)
@@ -50,6 +51,7 @@ func ProjectPlannerTrace(result IntentRouterResult, opts PlannerTraceOptions) ob
 	trace.HardBlockHint = result.Plan.HardBlockHint
 	if !trace.SchemaValid {
 		trace.Intent = string(IntentUnknown)
+		trace.SpeechAct = ""
 		trace.PlannedExecutionPath = ""
 		trace.Skills = nil
 		trace.Confidence = 0

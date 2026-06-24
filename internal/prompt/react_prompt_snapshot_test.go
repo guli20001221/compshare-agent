@@ -19,7 +19,9 @@ const (
 	// (above) directional word from the real-time-query rule, since the block is
 	// no longer above that rule.
 	// 2026-06-23: clarify network acceleration close is not exposed by the agent.
-	mutatingReActPromptSHA256 = "1249d1590a5327a508e93cf649cf1a9ba00a6cb0b45393237fa0b1afb61eefd6"
+	// 2026-06-24: hide CreateInstanceWorkflow from ReAct; structured router opens
+	// the existing create confirmation workflow instead.
+	mutatingReActPromptSHA256 = "a54000f338f2278e61f733d575ea3c313b4747b697a1b1bd1f6484a6b3690566"
 	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
 	// 2026-06-22 (阶段1A KV-cache): volatile userContext block moved to the tail.
 	readOnlyReActPromptSHA256 = "a9824405b7522b7c89de15f04c1464377207c0b52c128ce8dd2d5887f468f127"

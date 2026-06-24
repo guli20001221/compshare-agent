@@ -121,7 +121,10 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 	}
 
 	if len(priced) == 0 {
-		return FallbackBeforeTool(FallbackValidation)
+		result := HandledResult(noPricingReply)
+		result.ToolAction = action
+		result.ToolArgs = copyArgs(map[string]any{})
+		return result
 	}
 
 	reply := renderPricingReply(priced, req.UserText)

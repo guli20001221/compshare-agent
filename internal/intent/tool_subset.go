@@ -116,6 +116,14 @@ func IntentToolSubset(i Intent) []string {
 			"GetCompShareInstancePrice",
 			"DescribeCompShareImages",
 		}
+	case IntentCreateInstance:
+		return []string{
+			"DescribeAvailableCompShareInstanceTypes",
+			"DescribeCompShareImages",
+			"DescribeCommunityImages",
+			"GetCompShareInstancePrice",
+			"CheckCompShareResourceCapacity",
+		}
 	case IntentOperationLifecycle:
 		return []string{
 			"DescribeCompShareInstance",
@@ -125,7 +133,6 @@ func IntentToolSubset(i Intent) []string {
 			"GetCompShareInstancePrice",
 			"GetCompShareInstanceUpgradePrice",
 			"CheckCompShareResourceCapacity",
-			"CreateInstanceWorkflow",
 			"StopInstanceWorkflow",
 			"StartInstanceWorkflow",
 			"RebootInstanceWorkflow",

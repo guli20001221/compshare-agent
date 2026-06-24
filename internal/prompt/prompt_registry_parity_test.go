@@ -21,6 +21,12 @@ func TestPromptRegistryParity_Workflows(t *testing.T) {
 
 	subset := intent.IntentToolSubset(intent.IntentOperationLifecycle)
 	for _, name := range registered {
+		if name == "CreateInstanceWorkflow" {
+			if containsString(subset, name) {
+				t.Fatalf("operation_lifecycle subset must not expose bare %s", name)
+			}
+			continue
+		}
 		if !containsString(subset, name) {
 			t.Fatalf("operation_lifecycle subset missing workflow %s", name)
 		}
@@ -49,6 +55,12 @@ func TestPromptSurfaceContainsRegisteredActions(t *testing.T) {
 	readOnlyPrompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false})
 
 	for _, name := range workflow.RegisteredWorkflowActions() {
+		if name == "CreateInstanceWorkflow" {
+			if strings.Contains(mutatingPrompt, name) {
+				t.Fatalf("mutating prompt must not expose structured-router-only workflow %s", name)
+			}
+			continue
+		}
 		if !strings.Contains(mutatingPrompt, name) {
 			t.Fatalf("mutating prompt missing workflow %s", name)
 		}

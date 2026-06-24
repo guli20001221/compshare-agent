@@ -116,6 +116,192 @@ func TestReplayRegression_DirectLifecycleStopColloquialPhraseBypassesReActLoop(t
 	require.Len(t, mock.calls, 0, "explicit lifecycle command with exact instance name must not enter the ReAct loop")
 }
 
+func TestReplayRegression_ScheduledShutdownDoesNotBecomeImmediateStop(t *testing.T) {
+	cases := []string{
+		"给 schedule-target 30分钟后自动关机",
+		"给 schedule-target 30分钟后关掉",
+		"给 schedule-target 30分钟之后关机",
+		"给 schedule-target 半小时后关下",
+		"给 schedule-target 1小时以后 stop",
+	}
+	for _, input := range cases {
+		t.Run(input, func(t *testing.T) {
+			var calls []string
+			exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+				calls = append(calls, action)
+				switch action {
+				case "DescribeCompShareInstance":
+					return singleSchedulerInstance("schedule-target", "Running"), nil
+				case "UpdateCompShareStopScheduler":
+					require.Equal(t, "uhost-schedule-target", args["UHostId"])
+					require.NotEmpty(t, args["SchedulerStopTime"], "workflow should convert AfterMinutes before calling upstream")
+					return map[string]any{"RetCode": 0}, nil
+				case "StopCompShareInstance":
+					t.Fatalf("scheduled shutdown must not call immediate stop API")
+				}
+				return map[string]any{"RetCode": 0}, nil
+			}}
+			planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+				Plan: intent.IntentRoute{
+					SchemaVersion: intent.SchemaVersion,
+					Intent:        intent.IntentOperationLifecycle,
+					Slots:         intent.Slots{Action: intent.LifecycleActionStop},
+					RequiredTools: []string{"DescribeCompShareInstance"},
+					Retrieval:     intent.Retrieval{Enabled: false},
+					Confidence:    0.9,
+				},
+			}}}
+			mock := &mockLLM{responses: []llm.ChatResponse{{Content: "已设置定时关机。"}}}
+			confirmed := false
+			eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+				confirmed = true
+				require.Equal(t, "SetStopSchedulerWorkflow", action)
+				require.Equal(t, "uhost-schedule-target", args["UHostId"])
+				require.NotEmpty(t, args["shutdownTime"])
+				return true
+			})
+			eng.Init(context.Background())
+			eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentOperationLifecycle}})
+
+			_, err := eng.Chat(context.Background(), input, noopStep)
+
+			require.NoError(t, err)
+			require.True(t, confirmed)
+			require.Contains(t, calls, "UpdateCompShareStopScheduler")
+			require.NotContains(t, calls, "StopCompShareInstance")
+		})
+	}
+}
+
+func TestReplayRegression_PlainShutdownStillUsesImmediateStop(t *testing.T) {
+	exec := replayInstanceExecutor(singleSchedulerInstance("schedule-target", "Running"))
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	confirmed := false
+	eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+		confirmed = true
+		require.Equal(t, "StopInstanceWorkflow", action)
+		require.Equal(t, "uhost-schedule-target", args["UHostId"])
+		return true
+	})
+	eng.Init(context.Background())
+
+	reply, err := eng.Chat(context.Background(), "把 schedule-target 关机", noopStep)
+
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	require.Contains(t, reply, "执行关机")
+	require.Contains(t, exec.calls, "StopCompShareInstance")
+	require.NotContains(t, exec.calls, "UpdateCompShareStopScheduler")
+}
+
+func TestReplayRegression_CreateFamilyGateDoesNotInterceptLifecycleWorkflows(t *testing.T) {
+	cases := []struct {
+		name          string
+		input         string
+		state         string
+		action        intent.LifecycleAction
+		workflow      string
+		upstreamCall  string
+		wantWithoutGP bool
+	}{
+		{
+			name:         "start",
+			input:        "启动 schedule-target",
+			state:        "Stopped",
+			action:       intent.LifecycleActionStart,
+			workflow:     "StartInstanceWorkflow",
+			upstreamCall: "StartCompShareInstance",
+		},
+		{
+			name:         "reboot",
+			input:        "重启 schedule-target",
+			state:        "Running",
+			action:       intent.LifecycleActionReboot,
+			workflow:     "RebootInstanceWorkflow",
+			upstreamCall: "RebootCompShareInstance",
+		},
+		{
+			name:          "start without gpu",
+			input:         "无卡启动 schedule-target",
+			state:         "Stopped",
+			action:        intent.LifecycleActionStart,
+			workflow:      "StartInstanceWorkflow",
+			upstreamCall:  "StartCompShareInstance",
+			wantWithoutGP: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			instanceData := singleSchedulerInstance("schedule-target", tc.state)
+			if tc.wantWithoutGP {
+				row := instanceData["UHostSet"].([]any)[0].(map[string]any)
+				row["SupportWithoutGpuStart"] = true
+				row["WithoutGpuSpec"] = map[string]any{
+					"Cpu":    float64(2),
+					"Memory": float64(4096),
+					"Gpu":    float64(0),
+				}
+			}
+			exec := lifecycleReplayExecutor(instanceData)
+			planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+				Plan: intent.IntentRoute{
+					SchemaVersion: intent.SchemaVersion,
+					Intent:        intent.IntentOperationLifecycle,
+					SpeechAct:     intent.SpeechActCommand,
+					Slots:         intent.Slots{Action: tc.action},
+					RequiredTools: []string{"DescribeCompShareInstance"},
+					Retrieval:     intent.Retrieval{Enabled: false},
+					Confidence:    0.9,
+				},
+			}}}
+			mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+			confirmed := false
+			eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+				confirmed = true
+				require.Equal(t, tc.workflow, action)
+				require.Equal(t, "uhost-schedule-target", args["UHostId"])
+				return true
+			})
+			eng.Init(context.Background())
+			eng.lastUserMsg = tc.input
+			eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{
+				intent.IntentCreateInstance,
+				intent.IntentDeployModel,
+				intent.IntentOperationLifecycle,
+			}})
+
+			reply, handled := eng.tryPlannerDispatch(context.Background(), tc.input, "", noopStep, nil)
+
+			require.True(t, handled)
+			require.True(t, confirmed, "operation lifecycle must still reach its workflow")
+			require.Contains(t, reply, "实例")
+			if tc.wantWithoutGP {
+				require.Contains(t, exec.calls, "ResizeCompShareInstance")
+			}
+			require.Contains(t, exec.calls, tc.upstreamCall)
+			require.NotContains(t, exec.calls, "CreateCompShareInstance")
+		})
+	}
+}
+
+func TestReplayRegression_ScheduledShutdownWithoutTargetDoesNotFallbackToImmediateStop(t *testing.T) {
+	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("schedule-target", "Running"))
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	eng := NewWithDeps(mock, exec, func(string, map[string]any) bool {
+		t.Fatal("missing scheduler target must ask before confirmation")
+		return false
+	})
+	eng.Init(context.Background())
+
+	reply, err := eng.Chat(context.Background(), "30分钟后自动关机", noopStep)
+
+	require.NoError(t, err)
+	require.Contains(t, reply, "实例")
+	require.NotContains(t, exec.calls, "StopCompShareInstance")
+	require.NotContains(t, exec.calls, "UpdateCompShareStopScheduler")
+	require.Len(t, mock.calls, 0, "scheduler target clarification must not fall into ReAct")
+}
+
 func TestReplayRegression_CodingPlanDeleteDoesNotInspectInstances(t *testing.T) {
 	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("claude-write-test", "Stopped"))
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
@@ -323,6 +509,26 @@ func manyInstancesWithNamedTargetGPU(name, state, gpuType string) map[string]any
 	}
 }
 
+func singleSchedulerInstance(name, state string) map[string]any {
+	return map[string]any{
+		"TotalCount": float64(1),
+		"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-schedule-target",
+				"Name":       name,
+				"State":      state,
+				"GpuType":    "4090",
+				"GPU":        float64(1),
+				"CPU":        float64(16),
+				"Memory":     float64(65536),
+				"Zone":       "cn-wlcb-01",
+				"Region":     "cn-wlcb",
+				"ChargeType": "Dynamic",
+			},
+		},
+	}
+}
+
 func manyInstancesWithTwoGPUInstances(gpuType string) map[string]any {
 	return map[string]any{
 		"TotalCount": float64(2),
@@ -360,6 +566,24 @@ func replayInstanceExecutor(data map[string]any) *mockExecutorFn {
 			}
 			return data, nil
 		case "StopCompShareInstance", "StartCompShareInstance", "RebootCompShareInstance":
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+}
+
+func lifecycleReplayExecutor(data map[string]any) *mockExecutorFn {
+	return &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			if ids := stringSliceArg(args["UHostIds"]); len(ids) > 0 {
+				return filterDescribeInstances(data, ids), nil
+			}
+			return data, nil
+		case "ResizeCompShareInstance":
+			return map[string]any{"RetCode": 0}, nil
+		case "StartCompShareInstance", "RebootCompShareInstance":
 			return map[string]any{"RetCode": 0}, nil
 		default:
 			return map[string]any{"RetCode": 0}, nil

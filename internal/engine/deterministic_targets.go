@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/compshare-agent/internal/diagnosis"
@@ -232,6 +235,9 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 	if result.Plan.Intent != intent.IntentOperationLifecycle {
 		return "", false
 	}
+	if reply, handled := e.tryStopSchedulerDispatch(ctx, result, dispatch.snapshot, dispatch.latency, userMsg, onStep, true); handled {
+		return reply, true
+	}
 	action := result.Plan.Slots.Action
 	if action == "" {
 		action = inferLifecycleAction(userMsg)
@@ -290,6 +296,16 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 	if looksLikeLifecycleQuestion(userMsg) {
 		return "", false
 	}
+	schedulerPlan := intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentOperationLifecycle,
+		RequiredTools: []string{"DescribeCompShareInstance"},
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    1,
+	}
+	if reply, handled := e.tryStopSchedulerDispatch(ctx, intent.IntentRouterResult{Plan: schedulerPlan}, e.RegistrySnapshot(), 0, userMsg, onStep, false); handled {
+		return reply, true
+	}
 	action := inferLifecycleAction(userMsg)
 	if action == "" {
 		return "", false
@@ -326,6 +342,93 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 		result:   intent.IntentRouterResult{Plan: plan},
 		snapshot: snapshot,
 	}, userMsg, onStep)
+}
+
+type stopSchedulerRequest struct {
+	workflowName string
+	args         map[string]any
+	needsTime    bool
+}
+
+func (e *Engine) tryStopSchedulerDispatch(ctx context.Context, result intent.IntentRouterResult, baseSnapshot entity.RegistrySnapshot, latency time.Duration, userMsg string, onStep func(StepEvent), emitTrace bool) (string, bool) {
+	req, ok := inferStopSchedulerRequest(userMsg)
+	if !ok {
+		return "", false
+	}
+	snapshot, okSnapshot, err := e.freshResourceSelectionSnapshot(ctx, baseSnapshot)
+	if err != nil || !okSnapshot {
+		reply := "暂时无法查询实例列表，不能继续设置定时关机。请稍后重试。"
+		if emitTrace {
+			e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, latency)
+		}
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	}
+	result.Plan = augmentPlanTargetRefsFromUserText(result.Plan, userMsg, snapshot)
+	inst, status := resolveSingleLifecycleTarget(result.Plan, snapshot)
+	switch status {
+	case lifecycleTargetMissing:
+		if only, ok := singleInstanceInSnapshot(snapshot); ok {
+			inst = only
+		} else {
+			reply := "请指定要为哪台实例设置或取消定时关机，直接回复实例名称或 ID 即可。"
+			if emitTrace {
+				e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, latency)
+			}
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
+		}
+	case lifecycleTargetUnresolved:
+		reply := "没有找到你要操作的实例，请确认实例名称或 ID 是否正确。"
+		if emitTrace {
+			e.emitPlannerTrace(result, intent.RouteStatusFallbackUnresolvedTarget, latency)
+		}
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	case lifecycleTargetAmbiguous:
+		reply := "找到多台可能的实例，请补充完整实例名称或实例 ID 后再操作。"
+		if emitTrace {
+			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, latency)
+		}
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	case lifecycleTargetHit:
+	default:
+		return "", false
+	}
+	if req.needsTime {
+		reply := "请指定定时关机时间，例如“30分钟后”或“2026-06-24 23:00”。"
+		if emitTrace {
+			e.emitPlannerTrace(result, intent.RouteStatusFallbackTimeWindow, latency)
+		}
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	}
+	args := map[string]any{"UHostId": inst.UHostId}
+	for key, value := range req.args {
+		args[key] = value
+	}
+	if emitTrace {
+		e.emitPlannerTrace(result, intent.RouteStatusDispatched, latency)
+	}
+	reply := e.executeWorkflow(ctx, req.workflowName, args, onStep)
+	if final, ok := isFinalReply(reply); ok {
+		reply = final
+	}
+	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+	e.recordLastIntentFromPlan(result.Plan)
+	e.messages = append(e.messages, assistantMessage(reply))
+	return reply, true
+}
+
+func singleInstanceInSnapshot(snapshot entity.RegistrySnapshot) (entity.InstanceSnapshot, bool) {
+	if len(snapshot.Instances) != 1 {
+		return entity.InstanceSnapshot{}, false
+	}
+	for _, inst := range snapshot.Instances {
+		return inst, true
+	}
+	return entity.InstanceSnapshot{}, false
 }
 
 func (e *Engine) tryDeterministicProductFactReply(userMsg string) (string, bool) {
@@ -1166,4 +1269,86 @@ func inferLifecycleAction(userText string) intent.LifecycleAction {
 	default:
 		return ""
 	}
+}
+
+var (
+	relativeShutdownRE = regexp.MustCompile(`(?i)(\d+)\s*(分钟|分|min|mins|minute|minutes|小时|时|h|hour|hours)\s*(后|之后|以后)`)
+	absoluteShutdownRE = regexp.MustCompile(`(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})`)
+)
+
+func inferStopSchedulerRequest(userText string) (stopSchedulerRequest, bool) {
+	text := strings.TrimSpace(userText)
+	if text == "" || looksLikeLifecycleQuestion(text) {
+		return stopSchedulerRequest{}, false
+	}
+	lower := strings.ToLower(text)
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(lower)
+	hasSchedulerWord := strings.Contains(compact, "定时关机") ||
+		strings.Contains(compact, "自动关机") ||
+		strings.Contains(compact, "延时关机") ||
+		strings.Contains(compact, "预约关机") ||
+		strings.Contains(compact, "计划关机")
+	if hasSchedulerWord && (strings.Contains(compact, "取消") || strings.Contains(compact, "撤销")) {
+		return stopSchedulerRequest{workflowName: "CancelStopSchedulerWorkflow", args: map[string]any{}}, true
+	}
+	minutes, hasRelative := relativeShutdownMinutes(text)
+	hasStopWord := strings.Contains(compact, "关机") ||
+		strings.Contains(compact, "关闭") ||
+		strings.Contains(compact, "关掉") ||
+		strings.Contains(compact, "关下") ||
+		strings.Contains(compact, "停机") ||
+		strings.Contains(compact, "停了") ||
+		strings.Contains(compact, "shutdown") ||
+		strings.Contains(compact, "stop")
+	if !hasSchedulerWord && !(hasStopWord && hasRelative) {
+		return stopSchedulerRequest{}, false
+	}
+	args := map[string]any{}
+	if hasRelative {
+		args["AfterMinutes"] = float64(minutes)
+		return stopSchedulerRequest{workflowName: "SetStopSchedulerWorkflow", args: args}, true
+	}
+	if shutdownAt, ok := absoluteShutdownAt(text); ok {
+		args["ShutdownAt"] = shutdownAt
+		return stopSchedulerRequest{workflowName: "SetStopSchedulerWorkflow", args: args}, true
+	}
+	return stopSchedulerRequest{workflowName: "SetStopSchedulerWorkflow", args: args, needsTime: true}, true
+}
+
+func relativeShutdownMinutes(text string) (int, bool) {
+	match := relativeShutdownRE.FindStringSubmatch(text)
+	if len(match) >= 3 {
+		n, err := strconv.Atoi(match[1])
+		if err != nil || n <= 0 {
+			return 0, false
+		}
+		unit := strings.ToLower(match[2])
+		switch unit {
+		case "小时", "时", "h", "hour", "hours":
+			return n * 60, true
+		default:
+			return n, true
+		}
+	}
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(strings.ToLower(text))
+	if strings.Contains(compact, "半小时后") || strings.Contains(compact, "半个小时后") {
+		return 30, true
+	}
+	return 0, false
+}
+
+func absoluteShutdownAt(text string) (string, bool) {
+	match := absoluteShutdownRE.FindStringSubmatch(text)
+	if len(match) != 6 {
+		return "", false
+	}
+	year, _ := strconv.Atoi(match[1])
+	month, _ := strconv.Atoi(match[2])
+	day, _ := strconv.Atoi(match[3])
+	hour, _ := strconv.Atoi(match[4])
+	minute, _ := strconv.Atoi(match[5])
+	if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 {
+		return "", false
+	}
+	return time.Date(year, time.Month(month), day, hour, minute, 0, 0, time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04"), true
 }
