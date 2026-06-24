@@ -17,11 +17,12 @@ import (
 // in place — both copies were live/retrievable because the rename changed the
 // path-based chunk_id, so the loader's uniqueness check never flagged them. The
 // surviving dash generation tracks current upstream. Exception: the cardlessmode
-// survivor was freshened — its agent-authored "概念区别(避免与无显卡实例混淆)"
-// section was preserved, and its stale "(A800 不支持无卡开机)" parenthetical was
-// corrected to match current upstream (A800 IS supported). 689 -> 594 chunks. The
-// qwen3 sidecar is FULLY re-embedded over this corpus (594 rows, 4096-dim).
-const CorpusDigestExpected = "e5be50c4d04a29859670c5208f9eccb937064e510c52ac28554585072481bcfc"
+// survivor preserves its agent-authored "概念区别(避免与无显卡实例混淆)" section AND
+// the operator's deliberate fact-correction that A800 does NOT support cardless
+// boot — the upstream GitLab doc wrongly lists A800 as supported, so the corpus
+// intentionally diverges here. (Do NOT "sync" this back to upstream.) 689 -> 594
+// chunks. The qwen3 sidecar is FULLY re-embedded over this corpus (594 rows, 4096-dim).
+const CorpusDigestExpected = "14bf5bdd4161bca8ce00475ecb83fad377fa3a91483cc2e3de9b438c9d7faa4e"
 
 // EmbeddingDigestExpected pins the hybrid retrieval embedding sidecar produced by
 // scripts/rag_w0/build_corpus_embeddings.py over the CorpusDigestExpected corpus
@@ -35,7 +36,7 @@ const EmbeddingDigestExpected = "9dcb902bb6026836b43cf52be159af6690bb4c93818e1b3
 // RAG_RETRIEVAL_MODE=qwen3_full; the text-emb-3 sidecar above remains the
 // default for hybrid_cosine / hybrid_rerank modes. Same mismatch semantics
 // as EmbeddingDigestExpected: stale sidecar = hybrid path refuses to load.
-const EmbeddingDigestExpectedQwen3 = "ff87ed1cf47764ab054e0d1cb59cbe3dc91fa01ce5064818609907732313f0ac"
+const EmbeddingDigestExpectedQwen3 = "c9f95c4d2dea8e5751d1fd3bac238e1e9281bc11ffe8c2252090f7ab561f5445"
 
 // ExternalCorpusDigestExpected pins deploy/kb/external_w0.jsonl — the separate
 // external tool/ops corpus. It is intentionally platform-neutral and stable:
