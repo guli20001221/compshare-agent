@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
@@ -62,7 +63,15 @@ func (h *Handlers) handleGetSession(c *gin.Context, base BaseRequest, raw *simpl
 
 	sess, err := h.sessions.GetByID(c.Request.Context(), base.Owner, sessionID)
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		sess, err = h.sessions.Create(c.Request.Context(), base.Owner, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		sessionID = sess.ID
+		cursor = ""
 	}
 	messages, nextCursor, err := h.messages.ListBySession(c.Request.Context(), sessionID, limit, cursor)
 	if err != nil {
