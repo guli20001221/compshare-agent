@@ -14,6 +14,7 @@ const (
 	IntentDiagnosis                 Intent = "diagnosis"
 	IntentVagueFailure              Intent = "vague_failure"
 	IntentOperationLifecycle        Intent = "operation_lifecycle"
+	IntentCreateInstance            Intent = "create_instance"
 	IntentRecommendation            Intent = "recommendation"
 	IntentKnowledgeQA               Intent = "knowledge_qa"
 	IntentMixedDiagnosisKB          Intent = "mixed_diagnosis_kb"
@@ -57,6 +58,15 @@ const (
 	// the planner does NOT emit it until B8.3 ③ teaches the example + re-pins
 	// the system-prompt SHA, so this constant is zero-behavior on its own.
 	IntentDeployModel Intent = "deploy_model"
+)
+
+type SpeechAct string
+
+const (
+	SpeechActCommand    SpeechAct = "command"
+	SpeechActQuestion   SpeechAct = "question"
+	SpeechActComparison SpeechAct = "comparison"
+	SpeechActUnknown    SpeechAct = "unknown"
 )
 
 type TargetRefType string
@@ -109,9 +119,10 @@ const (
 )
 
 type IntentRoute struct {
-	SchemaVersion string `json:"schema_version"`
-	Intent        Intent `json:"intent"`
-	Scope         string `json:"scope,omitempty"`
+	SchemaVersion string    `json:"schema_version"`
+	Intent        Intent    `json:"intent"`
+	SpeechAct     SpeechAct `json:"speech_act,omitempty"`
+	Scope         string    `json:"scope,omitempty"`
 	// Skills is observe-only in R0: it is code-derived after planner parsing and
 	// must not participate in dispatch. Future routing-contract work may let the
 	// planner propose skill candidates behind a gate.
@@ -207,6 +218,7 @@ func AllIntents() []Intent {
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
+		IntentCreateInstance,
 		IntentRecommendation,
 		IntentKnowledgeQA,
 		IntentMixedDiagnosisKB,
@@ -240,6 +252,7 @@ func RuntimeIntents() []Intent {
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
+		IntentCreateInstance,
 		IntentRecommendation,
 		IntentKnowledgeQA,
 		IntentGPUSpecsQuery,

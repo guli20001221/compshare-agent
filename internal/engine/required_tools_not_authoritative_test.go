@@ -114,7 +114,7 @@ func TestRequiredToolsWindowDivergesFromAuthoritativeWindow(t *testing.T) {
 
 	// Concretely: a mutating workflow tool is in the authoritative window but can
 	// never be in any plan.RequiredTools, proving authorization is intent-derived.
-	const workflowTool = "CreateInstanceWorkflow"
+	const workflowTool = "StopInstanceWorkflow"
 	if _, ok := authoritative[workflowTool]; !ok {
 		t.Fatalf("precondition: %q expected in mutating operation_lifecycle window; got %v", workflowTool, sortedKeys(authoritative))
 	}

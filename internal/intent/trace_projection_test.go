@@ -74,6 +74,7 @@ func TestProjectPlannerTrace_ProjectsCodeDerivedSkills(t *testing.T) {
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentDeployModel,
+			SpeechAct:     SpeechActCommand,
 			Slots:         Slots{},
 			RequiredTools: []string{"DescribeCompShareImages"},
 			Retrieval:     Retrieval{Enabled: false},
@@ -83,8 +84,25 @@ func TestProjectPlannerTrace_ProjectsCodeDerivedSkills(t *testing.T) {
 
 	require.Len(t, trace.Skills, 1)
 	assert.Equal(t, string(ExecutionPathAgent), trace.PlannedExecutionPath)
+	assert.Equal(t, string(SpeechActCommand), trace.SpeechAct)
 	assert.Equal(t, "deploy_model", trace.Skills[0].Name)
 	assert.Equal(t, SkillResolutionAgentArm, trace.Skills[0].Resolution)
+}
+
+func TestProjectPlannerTrace_InvalidPlanClearsSpeechAct(t *testing.T) {
+	trace := ProjectPlannerTrace(IntentRouterResult{
+		Fallback: true,
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentCreateInstance,
+			SpeechAct:     SpeechActCommand,
+			Confidence:    0.9,
+		},
+	}, PlannerTraceOptions{Enabled: true, Model: "deepseek-v4-flash"})
+
+	assert.False(t, trace.SchemaValid)
+	assert.Equal(t, string(IntentUnknown), trace.Intent)
+	assert.Empty(t, trace.SpeechAct)
 }
 
 func TestProjectPlannerTrace_HashesTargetRefsAndNonAllowlistedTimeWindow(t *testing.T) {

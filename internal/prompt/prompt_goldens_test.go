@@ -57,11 +57,11 @@ func TestPromptGoldenCasesCoverCreateImageSelection(t *testing.T) {
 		if !ok {
 			t.Fatalf("prompt golden case %s is required to guard operation image selection", id)
 		}
-		if tc.ExpectIntent != string(intent.IntentOperationLifecycle) {
-			t.Fatalf("case %s intent = %s, want %s", id, tc.ExpectIntent, intent.IntentOperationLifecycle)
+		if tc.ExpectIntent != string(intent.IntentCreateInstance) {
+			t.Fatalf("case %s intent = %s, want %s", id, tc.ExpectIntent, intent.IntentCreateInstance)
 		}
-		if !containsString(tc.AllowedActions, "CreateInstanceWorkflow") {
-			t.Fatalf("case %s must allow CreateInstanceWorkflow: %#v", id, tc)
+		if containsString(tc.AllowedActions, "CreateInstanceWorkflow") {
+			t.Fatalf("case %s must not expose bare CreateInstanceWorkflow in ReAct prompt: %#v", id, tc)
 		}
 	}
 }

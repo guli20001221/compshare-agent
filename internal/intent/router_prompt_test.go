@@ -124,6 +124,7 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentBillingAccountUnsupported: []string{},
 		IntentBillingInstance:           []string{"DescribeCompShareInstance", "DiagnoseBilling"},
 		IntentOperationLifecycle:        []string{"DescribeCompShareInstance"},
+		IntentCreateInstance:            []string{"DescribeAvailableCompShareInstanceTypes"},
 		IntentDiagnosis:                 []string{"DescribeCompShareInstance"},
 		IntentDiskInfo:                  []string{"DescribeCompShareInstance"},
 		IntentDeployModel:               []string{"DescribeCompShareImages"},
@@ -136,6 +137,7 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentBillingAccountUnsupported: true,
 		IntentBillingInstance:           false,
 		IntentOperationLifecycle:        false,
+		IntentCreateInstance:            false,
 		IntentDiagnosis:                 false,
 		IntentDiskInfo:                  false,
 		IntentDeployModel:               false,
@@ -179,6 +181,7 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		IntentBillingAccountUnsupported,
 		IntentBillingInstance,
 		IntentOperationLifecycle,
+		IntentCreateInstance,
 		IntentDiagnosis,
 		IntentDiskInfo,
 		IntentDeployModel,
@@ -201,8 +204,10 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		// PR1 hotfix Bug 1 (2026-05-28): 6 = 5 Batch 1 anchors + new
 		// ZERO-target sample for bare "帮我关机" classification.
 		// Phase 3 (2026-06-02): +2 custom-image workflow anchors.
-		// Deployment planner (2026-06-18): +2 spec-first create anchors.
-		IntentOperationLifecycle: 10,
+		IntentOperationLifecycle: 8,
+		// Create-family routing (2026-06-24): two spec-first create anchors
+		// moved out of operation_lifecycle and into create_instance.
+		IntentCreateInstance: 2,
 		// Diagnosis recall fix (2026-06-03): +3 no-target symptom anchors.
 		IntentDiagnosis: 4,
 		// disk_info (2026-05-29): 4 anchors — 我有哪些数据盘 / 我的磁盘列表 /
@@ -279,11 +284,11 @@ func TestBuildSystemPromptIncludesOperationLifecycleAnchor(t *testing.T) {
 		// to unknown.
 		"REGARDLESS of whether the user specifies a target instance",
 		"target_refs:[]",
+		"create_instance",
 		// One-shot anchors that the prompt MUST keep as concrete examples.
 		"启动 train-gpu",
 		"给 uhost-xxx 加 200G 数据盘",
 		"帮我搞台 4090",
-		"部署一台 4090",
 		"部署 DeepSeekR1",
 		"stay deploy_model",
 		// Disambiguation from resource_info — without this clause the

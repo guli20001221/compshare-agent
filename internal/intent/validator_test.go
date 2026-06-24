@@ -92,6 +92,36 @@ func TestValidatePlan_AcceptsStockCapacityPrecheckTool(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidatePlan_AcceptsCreateInstanceSpeechAct(t *testing.T) {
+	plan := IntentRoute{
+		SchemaVersion: SchemaVersion,
+		Intent:        IntentCreateInstance,
+		SpeechAct:     SpeechActCommand,
+		RequiredTools: []string{"DescribeAvailableCompShareInstanceTypes"},
+		Retrieval:     Retrieval{Enabled: false},
+		Confidence:    0.9,
+	}
+
+	err := ValidateRoute(plan, ValidationContext{UserText: "帮我创一个 V100S 的实例", Registry: testRegistry(t)})
+
+	require.NoError(t, err)
+}
+
+func TestValidatePlan_RejectsInvalidSpeechAct(t *testing.T) {
+	plan := IntentRoute{
+		SchemaVersion: SchemaVersion,
+		Intent:        IntentCreateInstance,
+		SpeechAct:     SpeechAct("maybe"),
+		RequiredTools: []string{"DescribeAvailableCompShareInstanceTypes"},
+		Retrieval:     Retrieval{Enabled: false},
+		Confidence:    0.9,
+	}
+
+	err := ValidateRoute(plan, ValidationContext{UserText: "帮我创一个 V100S 的实例", Registry: testRegistry(t)})
+
+	requireValidationCode(t, err, ErrInvalidSpeechAct)
+}
+
 func TestValidatePlan_RouteRegistryToolsStayAllowed(t *testing.T) {
 	for _, intentValue := range routingIntentOrder {
 		requiredTool, ok := routingRequiredTool(intentValue)
@@ -327,6 +357,7 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
+		IntentCreateInstance,
 		IntentRecommendation,
 		IntentKnowledgeQA,
 		IntentMixedDiagnosisKB,

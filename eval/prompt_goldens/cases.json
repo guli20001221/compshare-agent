@@ -36,31 +36,31 @@
   {
     "id": "create_instance_uses_workflow_not_raw",
     "question": "帮我创建一台 4090 实例",
-    "expect_intent": "operation_lifecycle",
+    "expect_intent": "create_instance",
     "expected_execution_path": "agent",
-    "boundary": "create instance uses workflow, not raw create API",
+    "boundary": "create instance is routed by structured create_instance intent; backend opens the existing confirmation workflow, not raw create API",
     "mutating_case": true,
-    "allowed_actions": ["CreateInstanceWorkflow"],
+    "allowed_actions": ["DescribeAvailableCompShareInstanceTypes"],
     "forbid_actions": ["CreateCompShareInstance"]
   },
   {
     "id": "create_instance_framework_prefers_platform_image",
     "question": "帮我创建一台 A100 跑 PyTorch 的实例",
-    "expect_intent": "operation_lifecycle",
+    "expect_intent": "create_instance",
     "expected_execution_path": "agent",
-    "boundary": "framework environment requests prefer platform images and carry ImageName into CreateInstanceWorkflow",
+    "boundary": "framework environment requests route to structured create_instance; backend carries image preference into the existing confirmation workflow",
     "mutating_case": true,
-    "allowed_actions": ["CreateInstanceWorkflow"],
+    "allowed_actions": ["DescribeCompShareImages"],
     "forbid_actions": ["CreateCompShareInstance"]
   },
   {
     "id": "create_instance_app_uses_community_image",
     "question": "帮我创建一台 4090 跑 ComfyUI",
-    "expect_intent": "operation_lifecycle",
+    "expect_intent": "create_instance",
     "expected_execution_path": "agent",
-    "boundary": "specific app requests use community image selection through CreateInstanceWorkflow",
+    "boundary": "specific app requests route to structured create_instance; backend carries community image preference into the existing confirmation workflow",
     "mutating_case": true,
-    "allowed_actions": ["CreateInstanceWorkflow"],
+    "allowed_actions": ["DescribeCommunityImages"],
     "forbid_actions": ["CreateCompShareInstance"]
   },
   {

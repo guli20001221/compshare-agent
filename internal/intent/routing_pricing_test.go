@@ -2,6 +2,7 @@ package intent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -243,6 +244,23 @@ func TestRenderPricingReply_AllRowsBillEmpty(t *testing.T) {
 	assert.Contains(t, reply, "4090")
 }
 
+func TestHandlePricingQuery_AllPriceCallsFailReturnsReadableReply(t *testing.T) {
+	exec := &pricingFailPriceExecutor{}
+	handler := NewDemoHandler(exec)
+
+	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
+		Plan:     IntentRoute{Intent: IntentPricingQuery},
+		UserText: "4090 实例多少钱",
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	assert.Equal(t, noPricingReply, result.Reply)
+	assert.Equal(t, "GetCompShareInstancePrice", result.ToolAction)
+	require.Len(t, exec.calls, 2)
+	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", exec.calls[0].action)
+	assert.Equal(t, "GetCompShareInstancePrice", exec.calls[1].action)
+}
+
 // TestRenderPricingReply_HeaderUsesGB locks the P3 fix from PR #151 review:
 // the header unit label must say GB, not MB. spec.Memory is sourced from
 // Describe Collection[].Memory[] which is GB; the API call (separately)
@@ -259,6 +277,35 @@ func TestRenderPricingReply_HeaderUsesGB(t *testing.T) {
 		"header must use GB (Describe units), not MB")
 	assert.NotContains(t, reply, "64MB",
 		"stale MB label must not reappear (P3 fix from PR #151 review)")
+}
+
+type pricingFailPriceExecutor struct {
+	calls []handlerExecCall
+}
+
+func (e *pricingFailPriceExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
+	e.calls = append(e.calls, handlerExecCall{action: action, args: copyArgs(args)})
+	switch action {
+	case "DescribeAvailableCompShareInstanceTypes":
+		return map[string]any{"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name": "4090",
+				"Zone": "cn-wlcb-01",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+						},
+					},
+				},
+			},
+		}}, nil
+	case "GetCompShareInstancePrice":
+		return nil, errors.New("price backend failed")
+	default:
+		return map[string]any{}, nil
+	}
 }
 
 // TestHandlePricingQuery_PassesMemoryAsMBToAPI is the args-side regression

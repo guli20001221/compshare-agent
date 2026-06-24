@@ -103,9 +103,9 @@ func TestIntentToolSubset_Recommendation(t *testing.T) {
 
 func TestIntentToolSubset_OperationLifecycle(t *testing.T) {
 	subset := IntentToolSubset(IntentOperationLifecycle)
-	require.Len(t, subset, 23)
+	require.Len(t, subset, 22)
 	assert.Contains(t, subset, "DescribeCompShareInstance")
-	assert.Contains(t, subset, "CreateInstanceWorkflow")
+	assert.NotContains(t, subset, "CreateInstanceWorkflow")
 	assert.Contains(t, subset, "StopInstanceWorkflow")
 	assert.Contains(t, subset, "ResetPasswordWorkflow")
 	assert.Contains(t, subset, "ResizeInstanceWorkflow")
@@ -119,6 +119,17 @@ func TestIntentToolSubset_OperationLifecycle(t *testing.T) {
 	assert.Contains(t, subset, "GetCompShareInstanceUpgradePrice")
 	assert.NotContains(t, subset, "DiagnoseSSH")
 	assert.NotContains(t, subset, "GetGPURecommendation")
+}
+
+func TestIntentToolSubset_CreateInstanceReadOnlyFallback(t *testing.T) {
+	subset := IntentToolSubset(IntentCreateInstance)
+	require.NotNil(t, subset)
+	assert.Contains(t, subset, "DescribeAvailableCompShareInstanceTypes")
+	assert.Contains(t, subset, "DescribeCompShareImages")
+	assert.Contains(t, subset, "DescribeCommunityImages")
+	assert.Contains(t, subset, "GetCompShareInstancePrice")
+	assert.Contains(t, subset, "CheckCompShareResourceCapacity")
+	assert.NotContains(t, subset, "CreateInstanceWorkflow")
 }
 
 func TestIntentToolSubset_NilForAmbiguousIntents(t *testing.T) {

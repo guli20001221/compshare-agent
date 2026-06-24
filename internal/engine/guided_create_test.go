@@ -7,6 +7,7 @@ import (
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/workflow"
+	"github.com/compshare-agent/internal/zones"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -179,6 +180,214 @@ func TestDirectHardwareCreateRespectsAgentIntent(t *testing.T) {
 	assert.Empty(t, executor.calls, "deploy-model intent must not be stolen by the hardware-create fallback")
 }
 
+func TestChat_CreateInstanceSpeechActCommandUsesGuidedCreateWorkflow(t *testing.T) {
+	var imageArgs map[string]any
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(10027), "Describe": "华北二A", "IsPod": false},
+			}}, nil
+		case "DescribeCompShareImages":
+			imageArgs = args
+			return map[string]any{"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-001", "Name": "PyTorch"},
+			}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "V100S", "Zone": "cn-wlcb-01", "Status": "Normal",
+					"MachineSizes": []any{map[string]any{"Gpu": float64(1), "Collection": []any{
+						map[string]any{"Cpu": float64(10), "Memory": []any{float64(64)}},
+					}}}},
+			}}, nil
+		default:
+			return map[string]any{"RetCode": float64(0)}, nil
+		}
+	}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentCreateInstance,
+			SpeechAct:     intent.SpeechActCommand,
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path must not be reached"}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.zoneCatalog = zones.NewCatalog(0)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentCreateInstance},
+		Model:          "test-planner-model",
+	})
+	confirm := func(_ string, _ map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+		require.NotNil(t, form)
+		return workflow.ConfirmResolution{Confirmed: false}
+	}
+
+	reply, err := eng.ChatWithOptions(context.Background(), "用 PyTorch 最新镜像创一个 V100S 的实例", noopStep, ChatOptions{GuidedCreate: true, ConfirmEditsFunc: confirm})
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "未执行")
+	assert.Empty(t, mock.calls, "structured create command must not depend on ReAct tool choice")
+	assert.Equal(t, "torch", imageArgs["Name"], "structured create entry should preserve image preference from user text")
+	assert.Contains(t, executor.calls, "DescribeAvailableCompShareInstanceTypes")
+	assert.NotContains(t, executor.calls, "CreateCompShareInstance")
+}
+
+func TestChat_CreateInstanceNonCommandDoesNotOpenCreateCard(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		act  intent.SpeechAct
+		msg  string
+	}{
+		{name: "question", act: intent.SpeechActQuestion, msg: "4090 适合训练大模型吗"},
+		{name: "comparison", act: intent.SpeechActComparison, msg: "我应该选 4090 还是 A100"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+				return map[string]any{"RetCode": float64(0)}, nil
+			}}
+			planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+				Plan: intent.IntentRoute{
+					SchemaVersion: intent.SchemaVersion,
+					Intent:        intent.IntentCreateInstance,
+					SpeechAct:     tc.act,
+					Retrieval:     intent.Retrieval{Enabled: false},
+					Confidence:    0.9,
+				},
+			}}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			eng.SetIntentPlanner(planner, IntentPlannerOptions{
+				EnabledIntents: []intent.Intent{intent.IntentCreateInstance},
+				Model:          "test-planner-model",
+			})
+
+			reply, err := eng.ChatWithOptions(context.Background(), tc.msg, noopStep, ChatOptions{GuidedCreate: true})
+
+			require.NoError(t, err)
+			assert.Contains(t, reply, "不会直接创建")
+			assert.Empty(t, executor.calls, "non-command create plans must not open a create card")
+		})
+	}
+}
+
+func TestChat_CreateInstanceUnknownOrMissingSpeechActAsksClarification(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		act  intent.SpeechAct
+	}{
+		{name: "unknown", act: intent.SpeechActUnknown},
+		{name: "missing", act: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+				return map[string]any{"RetCode": float64(0)}, nil
+			}}
+			planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+				Plan: intent.IntentRoute{
+					SchemaVersion: intent.SchemaVersion,
+					Intent:        intent.IntentCreateInstance,
+					SpeechAct:     tc.act,
+					Retrieval:     intent.Retrieval{Enabled: false},
+					Confidence:    0.6,
+				},
+			}}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			eng.SetIntentPlanner(planner, IntentPlannerOptions{
+				EnabledIntents: []intent.Intent{intent.IntentCreateInstance},
+				Model:          "test-planner-model",
+			})
+
+			reply, err := eng.ChatWithOptions(context.Background(), "4090", noopStep, ChatOptions{GuidedCreate: true})
+
+			require.NoError(t, err)
+			assert.Contains(t, reply, "现在创建")
+			assert.Empty(t, executor.calls, "unknown/missing speech_act must ask before any create reads or workflow")
+		})
+	}
+}
+
+func TestChat_CreateInstanceSpeechActRespectsEnabledIntentList(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentCreateInstance,
+			SpeechAct:     intent.SpeechActCommand,
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "fallback answer"}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "test-planner-model",
+	})
+
+	reply, err := eng.ChatWithOptions(context.Background(), "帮我创一个 V100S 的实例", noopStep, ChatOptions{GuidedCreate: true})
+
+	require.NoError(t, err)
+	assert.Equal(t, "fallback answer", reply)
+	assert.NotContains(t, executor.calls, "DescribeAvailableCompShareInstanceTypes")
+	assert.NotContains(t, executor.calls, "CreateCompShareInstance")
+}
+
+func TestChat_DeployModelNonCommandDoesNotDeploy(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentDeployModel,
+			SpeechAct:     intent.SpeechActQuestion,
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentDeployModel},
+		Model:          "test-planner-model",
+	})
+
+	reply, err := eng.ChatWithOptions(context.Background(), "DeepSeek R1 怎么部署", noopStep, ChatOptions{GuidedCreate: true})
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "不会直接部署")
+	assert.Empty(t, executor.calls, "non-command deploy plans must not run the deploy saga")
+}
+
+func TestChat_CreateFamilyGateDoesNotUseLegacyDirectFallbackWhenPlannerMislabels(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentResourceInfo,
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
+		Model:          "test-planner-model",
+	})
+
+	reply, err := eng.ChatWithOptions(context.Background(), "在华北一C用最新 PyTorch 镜像开 4090", noopStep, ChatOptions{GuidedCreate: true})
+
+	require.NoError(t, err)
+	assert.NotContains(t, reply, "未执行", "default gate must not let a misclassified turn open the create confirmation card")
+	assert.NotContains(t, executor.calls, "DescribeAvailableCompShareInstanceTypes", "legacy direct create fallback must stay disabled when the structured gate is on")
+	assert.NotContains(t, executor.calls, "CreateCompShareInstance")
+}
+
 func TestDirectHardwareCreateBlocksConsultation(t *testing.T) {
 	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		return map[string]any{"RetCode": float64(0)}, nil
@@ -220,6 +429,7 @@ func TestDirectHardwareCreateBlocksPriceQuestion(t *testing.T) {
 }
 
 func TestChat_DirectHardwareCreateDoesNotDependOnPlannerLifecycleIntent(t *testing.T) {
+	t.Setenv(createFamilySpeechActGateEnv, "0")
 	var availableZone string
 	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
@@ -261,6 +471,7 @@ func TestChat_DirectHardwareCreateDoesNotDependOnPlannerLifecycleIntent(t *testi
 		},
 	}}}
 	eng := NewWithDeps(mock, executor, nil)
+	eng.zoneCatalog = zones.NewCatalog(0)
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
 		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
 		Model:          "test-planner-model",
@@ -281,6 +492,7 @@ func TestChat_DirectHardwareCreateDoesNotDependOnPlannerLifecycleIntent(t *testi
 }
 
 func TestChat_DirectHardwareCreateForGrabShanghai4090(t *testing.T) {
+	t.Setenv(createFamilySpeechActGateEnv, "0")
 	var availableZone string
 	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
@@ -315,6 +527,7 @@ func TestChat_DirectHardwareCreateForGrabShanghai4090(t *testing.T) {
 		},
 	}}}
 	eng := NewWithDeps(mock, executor, nil)
+	eng.zoneCatalog = zones.NewCatalog(0)
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{
 		EnabledIntents: []intent.Intent{intent.IntentOperationLifecycle},
 		Model:          "test-planner-model",

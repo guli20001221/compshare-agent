@@ -871,6 +871,8 @@ func defaultRouteIntents() []intent.Intent {
 		intent.IntentCommunityImageList,
 		intent.IntentSharedImageList,
 		intent.IntentNetAcceleratorStatus,
+		intent.IntentCreateInstance,
+		intent.IntentDeployModel,
 	}
 }
 
@@ -926,6 +928,12 @@ func intentPlannerRouteIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []str
 			enabled = intent.IntentDiagnosis
 		case "vague_failure":
 			enabled = intent.IntentVagueFailure
+		case "operation", "operation_lifecycle", "lifecycle":
+			enabled = intent.IntentOperationLifecycle
+		case "create", "create_instance":
+			enabled = intent.IntentCreateInstance
+		case "deploy", "deploy_model":
+			enabled = intent.IntentDeployModel
 		default:
 			unknown = append(unknown, value)
 			continue

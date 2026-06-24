@@ -10,7 +10,7 @@ import (
 )
 
 func renderWorkflowSelectionCard() string {
-	return renderActionCatalog(workflow.RegisteredWorkflowActions())
+	return renderActionCatalog(reactWorkflowActions())
 }
 
 func renderDiagnosisSelectionCard() string {
@@ -18,7 +18,19 @@ func renderDiagnosisSelectionCard() string {
 }
 
 func renderWorkflowActionNameList() string {
-	return strings.Join(workflow.RegisteredWorkflowActions(), " / ")
+	return strings.Join(reactWorkflowActions(), " / ")
+}
+
+func reactWorkflowActions() []string {
+	registered := workflow.RegisteredWorkflowActions()
+	actions := make([]string, 0, len(registered))
+	for _, action := range registered {
+		if action == "CreateInstanceWorkflow" {
+			continue
+		}
+		actions = append(actions, action)
+	}
+	return actions
 }
 
 func renderActionCatalog(actions []string) string {
@@ -59,11 +71,6 @@ func toolDescriptionsByName() map[string]string {
 // boundary rules that the tool registry descriptions cannot express.
 func operationBoundaryRuleLines() []string {
 	return []string{
-		`用户提到 PyTorch/CUDA/vLLM 等框架环境时，平台镜像优先，带上 ImageName（如 ImageName="PyTorch"）。`,
-		"用户提到 Ubuntu/Windows/裸系统/干净环境时，使用平台镜像，不传 ImageName 即可。",
-		`用户提到具体应用名（ComfyUI、SD WebUI、Stable Diffusion、Dify、Ollama 等）时，传 ImageSource="community" + ImageName="应用名"，使用社区镜像创建。`,
-		"创建失败（如售罄）后不要自动重试其他 GPU，应将失败原因告知用户，让用户决定下一步。",
-		"推荐替代 GPU 前，必须先用 CheckCompShareResourceCapacity 确认有库存，不要推荐后再发现没货。",
 		"CreateDiskWorkflow 必须带 Size（GB）；用户没说容量时先追问，不要进入确认；这是新建盘，不是扩已有盘。",
 		"ResizeDiskWorkflow 的 Size 是目标容量不是新增容量；扩系统盘传 DiskType=Boot；多块数据盘中扩某一块必须传 DiskId。",
 		"CreateCustomImageWorkflow 用户未提供镜像 Name 时必须先追问名称；不要直接调用 raw CreateCompShareCustomImage，不要发布社区镜像。",
