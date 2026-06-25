@@ -14,6 +14,7 @@ func runningMockExecutor() *mockExecutor {
 				"UHostId":    "uhost-xxx",
 				"Name":       "my-gpu",
 				"State":      "Running",
+				"Region":     "cn-wlcb",
 				"Zone":       "cn-wlcb-01",
 				"GpuType":    "4090",
 				"GPU":        float64(1),

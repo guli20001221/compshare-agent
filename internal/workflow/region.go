@@ -105,6 +105,9 @@ func extractRequiredInstanceLocation(result map[string]any) (region, zone string
 			}
 		}
 	}
+	if region == "" && zone != "" {
+		region = regionFromZone(zone)
+	}
 	if zone == "" || region == "" {
 		return "", "", fmt.Errorf("未获取到实例真实可用区，无法安全执行该操作。请稍后重试或到控制台确认实例可用区。")
 	}
@@ -254,11 +257,25 @@ func requiredPriceField(result map[string]any, key string) (float64, error) {
 		return 0, fmt.Errorf(missingWorkflowPriceMessage)
 	}
 	raw, exists := result[key]
-	if !exists {
-		return 0, fmt.Errorf(missingWorkflowPriceMessage)
+	if exists {
+		if price, ok := priceNumber(raw); ok {
+			return price, nil
+		}
 	}
-	if price, ok := priceNumber(raw); ok {
-		return price, nil
+	for _, listKey := range []string{"PriceDetails", "OriginalPriceDetails", "ListPriceDetails"} {
+		details, ok := result[listKey].([]any)
+		if !ok {
+			continue
+		}
+		for _, item := range details {
+			row, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if price, ok := priceNumber(row[key]); ok {
+				return price, nil
+			}
+		}
 	}
 	return 0, fmt.Errorf(missingWorkflowPriceMessage)
 }

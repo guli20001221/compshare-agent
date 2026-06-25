@@ -64,9 +64,12 @@ func stepStopInstance() Step {
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
 			args := map[string]any{
-				"Region":  extractInstanceRegion(queried, defaultRegion),
-				"Zone":    extractInstanceZone(queried, defaultZone),
 				"UHostId": wfCtx.Params["UHostId"],
+			}
+			var err error
+			args, err = addRequiredInstanceLocationArgs(args, queried)
+			if err != nil {
+				return nil, err
 			}
 			if extractChargeType(queried) == "Spot" {
 				args["Force"] = true

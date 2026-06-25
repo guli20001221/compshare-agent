@@ -101,6 +101,7 @@ func describeRespWithZone(uhostId, zone string) map[string]any {
 			"UHostId":    uhostId,
 			"Name":       "test-instance",
 			"State":      "Running",
+			"Region":     regionFromZone(zone),
 			"Zone":       zone,
 			"GpuType":    "4090",
 			"GPU":        float64(1),
@@ -177,6 +178,7 @@ func TestResetPassword_SetsRegion(t *testing.T) {
 				"Name":         "vm",
 				"State":        "Stopped",
 				"InstanceType": "Normal",
+				"Region":       "cn-gd",
 				"Zone":         "cn-gd-01a",
 				"GpuType":      "A100",
 				"GPU":          float64(1),
@@ -303,23 +305,93 @@ func TestCreateInstance_NonDefaultZone_PairsRegionWithZone(t *testing.T) {
 	}
 }
 
-func TestStopInstance_FallsBackToDefaultRegionWhenZoneMissing(t *testing.T) {
-	// DescribeCompShareInstance returns neither Zone nor Region — workflow
-	// falls back to defaultRegion (paired with defaultZone) rather than
-	// emitting an empty Region that the upstream signer would reject.
-	args := runMutatingWorkflowAndCaptureMutatingArgs(t, StopInstanceDef(),
-		map[string]any{"UHostSet": []any{
-			map[string]any{
-				"UHostId":    "uhost-x",
-				"Name":       "test",
-				"State":      "Running",
-				"GpuType":    "4090",
-				"GPU":        float64(1),
-				"ChargeType": "Dynamic",
-			},
-		}},
-		"StopCompShareInstance",
-		map[string]any{"UHostId": "uhost-x"})
-	assert.Equal(t, defaultZone, args["Zone"])
-	assert.Equal(t, defaultRegion, args["Region"])
+func TestMutatingWorkflows_RejectMissingLocationBeforeExecute(t *testing.T) {
+	cases := []struct {
+		name           string
+		def            *Definition
+		params         map[string]any
+		mutatingAction string
+		describeResult map[string]any
+	}{
+		{
+			name:           "stop",
+			def:            StopInstanceDef(),
+			params:         map[string]any{"UHostId": "uhost-x"},
+			mutatingAction: "StopCompShareInstance",
+			describeResult: map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-x", "Name": "test", "State": "Running", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic",
+			}}},
+		},
+		{
+			name:           "reboot",
+			def:            RebootInstanceDef(),
+			params:         map[string]any{"UHostId": "uhost-x"},
+			mutatingAction: "RebootCompShareInstance",
+			describeResult: map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-x", "Name": "test", "State": "Running", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic",
+			}}},
+		},
+		{
+			name:           "rename",
+			def:            RenameInstanceDef(),
+			params:         map[string]any{"UHostId": "uhost-x", "Name": "new-name"},
+			mutatingAction: "ModifyCompShareInstanceName",
+			describeResult: map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-x", "Name": "test", "State": "Running", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic",
+			}}},
+		},
+		{
+			name:           "reset_password",
+			def:            ResetPasswordDef(),
+			params:         map[string]any{"UHostId": "uhost-x", "Password": "SecureP@ss1"},
+			mutatingAction: "ResetCompShareInstancePassword",
+			describeResult: map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-x", "Name": "test", "State": "Stopped", "InstanceType": "Normal", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic",
+			}}},
+		},
+		{
+			name:           "create_disk",
+			def:            CreateDiskDef(),
+			params:         map[string]any{"UHostId": "uhost-x", "Size": float64(100)},
+			mutatingAction: "CreateAndAttachCompshareDisk",
+			describeResult: map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-x", "Name": "test", "State": "Stopped", "InstanceType": "Normal", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic",
+			}}},
+		},
+		{
+			name:           "reinstall",
+			def:            ReinstallInstanceDef(),
+			params:         map[string]any{"UHostId": "uhost-x", "CompShareImageId": "img-001"},
+			mutatingAction: "ReinstallCompShareInstance",
+			describeResult: map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-x", "Name": "test", "State": "Stopped", "InstanceType": "Normal", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic",
+			}}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			results := map[string]map[string]any{
+				"DescribeCompShareInstance": tc.describeResult,
+				tc.mutatingAction:           {"RetCode": 0},
+				"GetCompShareInstancePrice": {"PriceDetails": []any{map[string]any{"Disks": float64(0.8)}}},
+			}
+			if tc.def.Name == "ReinstallInstanceWorkflow" {
+				results["DescribeCompShareImages"] = map[string]any{"ImageSet": []any{
+					map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu"},
+				}}
+			}
+			executor := &mockExecutor{results: results}
+			onStep, _ := collectEvents()
+			eng := NewEngine(executor, func(string, map[string]any) bool { return true }, onStep)
+
+			result, err := eng.Run(context.Background(), tc.def, tc.params)
+
+			assert.NoError(t, err)
+			assert.False(t, result.Success, "workflow should reject missing location before execute")
+			assert.Contains(t, result.Message, "可用区")
+			for _, call := range executor.calls {
+				assert.NotEqual(t, tc.mutatingAction, call.action, "must not call mutating API without real Zone/Region")
+			}
+		})
+	}
 }

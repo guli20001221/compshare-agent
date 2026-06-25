@@ -303,7 +303,7 @@ func TestScenario_StopInstance_FeeWarning(t *testing.T) {
 		results: map[string]map[string]any{
 			"DescribeCompShareInstance": {
 				"TotalCount": float64(1),
-				"UHostSet":   []any{map[string]any{"UHostId": "uhost-1", "State": "Running", "Tag": "4090", "GPU": float64(1), "Name": "my-gpu"}},
+				"UHostSet":   []any{map[string]any{"UHostId": "uhost-1", "State": "Running", "Tag": "4090", "GPU": float64(1), "Name": "my-gpu", "Region": "cn-wlcb", "Zone": "cn-wlcb-01"}},
 			},
 			"StopCompShareInstance": {"UHostId": "uhost-1"},
 		},
@@ -1282,7 +1282,7 @@ func TestScenario_RebootInstance_Success(t *testing.T) {
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
 			"DescribeCompShareInstance": {
-				"UHostSet": []any{map[string]any{"UHostId": "uhost-r1", "State": "Running", "Name": "gpu-1", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"}},
+				"UHostSet": []any{map[string]any{"UHostId": "uhost-r1", "State": "Running", "Name": "gpu-1", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic", "Region": "cn-wlcb", "Zone": "cn-wlcb-01"}},
 			},
 			"RebootCompShareInstance": {"RetCode": 0},
 		},
@@ -1330,7 +1330,7 @@ func TestScenario_RebootInstance_NotRunning(t *testing.T) {
 func TestScenario_RenameInstance(t *testing.T) {
 	exec := &mockExecutor{
 		results: map[string]map[string]any{
-			"DescribeCompShareInstance":   {"UHostSet": []any{map[string]any{"UHostId": "uhost-rn1", "State": "Running", "Name": "old-name", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"}}},
+			"DescribeCompShareInstance":   {"UHostSet": []any{map[string]any{"UHostId": "uhost-rn1", "State": "Running", "Name": "old-name", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic", "Region": "cn-wlcb", "Zone": "cn-wlcb-01"}}},
 			"ModifyCompShareInstanceName": {"UHostId": "uhost-rn1", "RetCode": 0},
 		},
 	}
@@ -1717,8 +1717,8 @@ func TestScenario_Disambiguate_ExplicitIdBypass(t *testing.T) {
 			"DescribeCompShareInstance": {
 				"TotalCount": float64(3),
 				"UHostSet": []any{
-					map[string]any{"UHostId": "uhost-1", "Name": "train-a", "State": "Running", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic"},
-					map[string]any{"UHostId": "uhost-2", "Name": "train-b", "State": "Running", "GpuType": "A100", "GPU": float64(1), "ChargeType": "Dynamic"},
+					map[string]any{"UHostId": "uhost-1", "Name": "train-a", "State": "Running", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic", "Region": "cn-wlcb", "Zone": "cn-wlcb-01"},
+					map[string]any{"UHostId": "uhost-2", "Name": "train-b", "State": "Running", "GpuType": "A100", "GPU": float64(1), "ChargeType": "Dynamic", "Region": "cn-wlcb", "Zone": "cn-wlcb-01"},
 					map[string]any{"UHostId": "uhost-3", "Name": "dev", "State": "Stopped", "GpuType": "3090", "GPU": float64(1), "ChargeType": "Month"},
 				},
 			},
