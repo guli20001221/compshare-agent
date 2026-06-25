@@ -12,10 +12,13 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/httpapi"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/ocr"
+	"github.com/compshare-agent/internal/sshops"
 	"github.com/compshare-agent/internal/store"
+	"github.com/compshare-agent/internal/tools"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 )
@@ -113,6 +116,30 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	default:
 		log.Printf("warning: unknown COMPSHARE_GUIDED_CREATE value %q, treating as off", v)
 	}
+	// Consent-gated, read-only in-instance SSH diagnosis (Option A), decoupled from
+	// the chat engine. Default off; deliberately NOT in .env.example / invite.sh. The
+	// credential is fetched out-of-band and only ever reaches the harness over stdin
+	// (internal/sshops). The audit table (deploy/migrations/0005) must exist before
+	// enabling — the writer is fail-closed.
+	switch v := overlayGetenv("COMPSHARE_SSH_OPS"); v {
+	case "", "0", "off", "false":
+		// off (default)
+	case "1":
+		sup := sshops.Supervisor{
+			Python:      firstNonEmptyEnv(overlayGetenv, "COMPSHARE_SSH_OPS_PYTHON", "python3"),
+			HarnessPath: firstNonEmptyEnv(overlayGetenv, "COMPSHARE_SSH_OPS_HARNESS", "deploy/ssh_ops_harness/harness.py"),
+			GatewayURL:  firstNonEmptyEnv(overlayGetenv, "COMPSHARE_SSH_OPS_GATEWAY", "http://127.0.0.1:3456"),
+			Model:       firstNonEmptyEnv(overlayGetenv, "COMPSHARE_SSH_OPS_MODEL", "deepseek-v4-flash"),
+		}
+		handlers.SetSSHOps(
+			sshops.NewService(sup, store.NewSSHOpsAuditStore(db)),
+			tools.NewExternalExecutor(cfg.Agent),
+			governance.NewInMemoryRateLimiter(cfg.Agent.RateLimit.Limits()),
+		)
+		log.Printf("SSH ops enabled (COMPSHARE_SSH_OPS=1): consent-gated read-only in-instance diagnosis via %s -> %s", sup.HarnessPath, sup.GatewayURL)
+	default:
+		log.Printf("warning: unknown COMPSHARE_SSH_OPS value %q, treating as off", v)
+	}
 	router := gin.New()
 	if !cfg.Agent.HTTP.DisableCORS {
 		router.Use(corsMiddleware())
@@ -167,6 +194,15 @@ func serverTraceGetenv(getenv getenvFunc, mysqlDSN string) getenvFunc {
 		}
 		return getenv(key)
 	}
+}
+
+// firstNonEmptyEnv returns getenv(key) when non-empty, else def. Used for the
+// optional SSH-ops knobs so a single COMPSHARE_SSH_OPS=1 works with sane defaults.
+func firstNonEmptyEnv(getenv getenvFunc, key, def string) string {
+	if v := getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 func validateServerConfig(cfg *config.Config) error {

@@ -166,6 +166,12 @@ type RateLimitConfig struct {
 	UserTurnQPS   int `yaml:"user_turn_qps"`
 	UserTurnDaily int `yaml:"user_turn_daily"`
 
+	// SSHExecQPS / SSHExecDaily: per-tenant cap on consent-gated SSH-ops
+	// diagnoses (COMPSHARE_SSH_OPS). 0 = disabled (opt-in), not promoted to a
+	// default. Mirrors UserTurn semantics.
+	SSHExecQPS   int `yaml:"ssh_exec_qps"`
+	SSHExecDaily int `yaml:"ssh_exec_daily"`
+
 	// MaxTokensPerTurn caps total LLM tokens (prompt + completion summed
 	// across every LLM call) used by a single user turn. 0 = disabled.
 	// Engine enforces this at ReAct iteration boundaries — never mid
@@ -184,6 +190,8 @@ func (c RateLimitConfig) Limits() governance.Limits {
 		ReadExpensiveDaily: c.ReadExpensiveDaily,
 		UserTurnQPS:        c.UserTurnQPS,
 		UserTurnDaily:      c.UserTurnDaily,
+		SSHExecQPS:         c.SSHExecQPS,
+		SSHExecDaily:       c.SSHExecDaily,
 	}
 }
 
@@ -300,6 +308,12 @@ func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 	}
 	if rateLimit.UserTurnDaily < 0 {
 		return negativeRateLimitError("agent.rate_limit.user_turn_daily")
+	}
+	if rateLimit.SSHExecQPS < 0 {
+		return negativeRateLimitError("agent.rate_limit.ssh_exec_qps")
+	}
+	if rateLimit.SSHExecDaily < 0 {
+		return negativeRateLimitError("agent.rate_limit.ssh_exec_daily")
 	}
 	if rateLimit.MaxTokensPerTurn < 0 {
 		return negativeRateLimitError("agent.rate_limit.max_tokens_per_turn")

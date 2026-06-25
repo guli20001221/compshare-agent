@@ -40,6 +40,12 @@ func (h *Handlers) Dispatch(c *gin.Context) {
 	case "ConfirmCSAgentAction":
 		data, err := h.handleConfirm(c, base, raw)
 		h.writeResult(c, base, data, err)
+	case "PrepareInstanceSSHDiagnosis":
+		data, err := h.handlePrepareInstanceSSHDiagnosis(c, base, raw)
+		h.writeResult(c, base, data, err)
+	case "StartInstanceSSHDiagnosis":
+		data, err := h.handleStartInstanceSSHDiagnosis(c, base, raw)
+		h.writeResult(c, base, data, err)
 	default:
 		h.writeError(c, base.Action, base.RequestUUID, ErrInvalidParam.WithMessage("unsupported Action %s", base.Action))
 	}

@@ -144,6 +144,15 @@ async def main():
     import asyncio  # noqa: F401  (re-exported for symmetry; main is run via asyncio.run below)
     from claude_agent_sdk import query, tool, create_sdk_mcp_server
 
+    # Make stdio UTF-8 regardless of host locale (a GBK/CJK console can't encode the agent's
+    # Chinese verdict or an emoji and would crash on print). The Go supervisor also sets
+    # PYTHONIOENCODING=utf-8; this is the belt-and-suspenders for standalone runs.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                                # noqa: BLE001 — older/odd stream types
+            pass
+
     raw = sys.stdin.readline()                            # stdin handshake: the connection config
     if not raw.strip():
         raise SystemExit("no handshake on stdin")

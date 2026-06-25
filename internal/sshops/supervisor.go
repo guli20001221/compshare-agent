@@ -49,6 +49,9 @@ func (s Supervisor) childEnv() []string {
 		"ANTHROPIC_API_KEY=dummy-unused",
 		"NO_PROXY=127.0.0.1,localhost",
 		"no_proxy=127.0.0.1,localhost",
+		// Force UTF-8 on the harness's stdio so its Chinese verdict (and any emoji) survive a
+		// CJK-locale host (e.g. GBK Windows), and so the captured bytes decode cleanly back here.
+		"PYTHONIOENCODING=utf-8",
 	}
 	for _, k := range envAllowlist {
 		if v := os.Getenv(k); v != "" {
@@ -94,9 +97,12 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string) (Resu
 	}
 	cmd.Stdin = bytes.NewReader(append(handshake, '\n'))
 
-	var out bytes.Buffer
+	// Keep stdout (the agent's scrubbed verdict + AUDIT) separate from stderr (the claude CLI's
+	// own startup chatter / a Python traceback). Only stdout is the diagnosis Output; stderr is
+	// surfaced only on failure. Neither can carry the credential — it only ever travels on stdin.
+	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd.Stderr = &errBuf
 
 	runErr := cmd.Run()
 	res := Result{Output: out.String()}
@@ -108,7 +114,19 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string) (Resu
 		return res, fmt.Errorf("sshops: harness timed out after %s", timeout)
 	}
 	if runErr != nil {
-		return res, fmt.Errorf("sshops: harness exited: %w", runErr)
+		return res, fmt.Errorf("sshops: harness exited: %w; stderr: %s", runErr, tailString(errBuf.String(), 2000))
 	}
 	return res, nil
+}
+
+// tailString returns the last n bytes of s (rune-safe-ish: trims to a valid UTF-8 boundary).
+func tailString(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	t := s[len(s)-n:]
+	for len(t) > 0 && t[0]&0xC0 == 0x80 { // skip into a UTF-8 continuation byte
+		t = t[1:]
+	}
+	return "…" + t
 }
