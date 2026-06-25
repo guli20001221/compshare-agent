@@ -662,6 +662,107 @@ func TestSafeExecutorWorkflowCreateCFSPreservesInternalArgs(t *testing.T) {
 	assert.Equal(t, uint32(202), got["organization_id"])
 }
 
+func TestSafeExecutorWorkflowResizePreservesInternalPlacement(t *testing.T) {
+	cases := []struct {
+		action string
+		args   map[string]any
+	}{
+		{
+			action: "GetCompShareInstancePrice",
+			args: map[string]any{
+				"GpuType":    "4090",
+				"Gpu":        float64(1),
+				"Cpu":        float64(16),
+				"Memory":     float64(65536),
+				"ChargeType": "Postpay",
+				"Region":     "cn-sh2",
+				"zone_id":    uint32(9001),
+				"az_group":   uint32(3001),
+			},
+		},
+		{
+			action: "GetCompShareInstanceUserPrice",
+			args: map[string]any{
+				"GpuType":  "4090",
+				"GPU":      float64(1),
+				"CPU":      float64(16),
+				"Memory":   float64(65536),
+				"Region":   "cn-sh2",
+				"zone_id":  uint32(9001),
+				"az_group": uint32(3001),
+			},
+		},
+		{
+			action: "GetCompShareInstanceUpgradePrice",
+			args: map[string]any{
+				"UHostId":  "uhost-test",
+				"Zone":     "cn-sh2-02",
+				"Region":   "cn-sh2",
+				"GPU":      float64(2),
+				"zone_id":  uint32(9001),
+				"az_group": uint32(3001),
+			},
+		},
+		{
+			action: "GetCompShareAttachedDiskUpgradePrice",
+			args: map[string]any{
+				"UHostId":   "cpod-test",
+				"DiskId":    "cvolume-boot",
+				"DiskSpace": float64(120),
+				"Zone":      "cn-pod-01",
+				"Region":    "cn-pod",
+				"zone_id":   uint32(9001),
+				"az_group":  uint32(3001),
+			},
+		},
+		{
+			action: "ResizeCompShareInstance",
+			args: map[string]any{
+				"UHostId":   "cpod-test",
+				"DiskId":    "cvolume-boot",
+				"DiskSpace": float64(120),
+				"Zone":      "cn-pod-01",
+				"Region":    "cn-pod",
+				"zone_id":   uint32(9001),
+				"az_group":  uint32(3001),
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.action, func(t *testing.T) {
+			directInner := &spyExecutor{}
+			direct := NewSafeToolExecutor(directInner, WithConfirmFunc(func(string, map[string]any) bool {
+				return true
+			}))
+			_, err := direct.ExecuteSafe(context.Background(), SafeToolRequest{
+				Action: tc.action,
+				Args:   tc.args,
+				Origin: OriginDirectLLM,
+			})
+			require.NoError(t, err)
+			require.Len(t, directInner.args, 1)
+			assert.NotContains(t, directInner.args[0], "zone_id")
+			assert.NotContains(t, directInner.args[0], "az_group")
+
+			internalInner := &spyExecutor{}
+			internal := NewSafeToolExecutor(internalInner, WithConfirmFunc(func(string, map[string]any) bool {
+				t.Fatal("workflow-internal resize call must not trigger per-API confirmation")
+				return false
+			}))
+			_, err = internal.ExecuteSafe(context.Background(), SafeToolRequest{
+				Action: tc.action,
+				Args:   tc.args,
+				Origin: OriginWorkflowInternal,
+			})
+			require.NoError(t, err)
+			require.Len(t, internalInner.args, 1)
+			assert.Equal(t, tc.args["zone_id"], internalInner.args[0]["zone_id"])
+			assert.Equal(t, tc.args["az_group"], internalInner.args[0]["az_group"])
+		})
+	}
+}
+
 func TestSafeExecutorOriginViewImplementsToolExecutor(t *testing.T) {
 	inner := &spyExecutor{}
 	safe := NewSafeToolExecutor(inner, WithConfirmFunc(func(string, map[string]any) bool {

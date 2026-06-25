@@ -13,6 +13,7 @@ func ResizeDiskDef() *Definition {
 		Description: "查询实例 -> 检查扩盘条件 -> 查询扩盘价格 -> 确认扩盘 -> 扩已有盘",
 		Steps: []Step{
 			stepQueryForResizeDisk(),
+			stepQuerySupportZonesForResizeDisk(),
 			stepCheckResizeDisk(),
 			stepQueryResizeDiskPrice(),
 			stepConfirmResizeDisk(),
@@ -70,6 +71,18 @@ func stepQueryForResizeDisk() Step {
 	}
 }
 
+func stepQuerySupportZonesForResizeDisk() Step {
+	return Step{
+		Name:     "查询支持区",
+		Type:     StepToolCall,
+		Tool:     "DescribeCompShareSupportZone",
+		Optional: true,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			return map[string]any{}, nil
+		},
+	}
+}
+
 func stepCheckResizeDisk() Step {
 	return Step{
 		Name: "检查扩盘条件",
@@ -77,13 +90,15 @@ func stepCheckResizeDisk() Step {
 		Tool: "CheckCompShareResizeAttachedDisk",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
-			return map[string]any{
-				"Region":    extractInstanceRegion(queried, defaultRegion),
-				"Zone":      extractInstanceZone(queried, defaultZone),
+			args := map[string]any{
 				"UHostId":   wfCtx.Params["UHostId"],
 				"DiskId":    wfCtx.Params["ResolvedDiskId"],
 				"DiskSpace": wfCtx.Params["Size"],
-			}, nil
+			}
+			if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
+				return nil, err
+			}
+			return args, nil
 		},
 		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
 			if needRestart, ok := result["NeedRestart"].(bool); ok {
@@ -104,13 +119,15 @@ func stepQueryResizeDiskPrice() Step {
 		Tool: "GetCompShareAttachedDiskUpgradePrice",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
-			return map[string]any{
-				"Region":    extractInstanceRegion(queried, defaultRegion),
-				"Zone":      extractInstanceZone(queried, defaultZone),
+			args := map[string]any{
 				"UHostId":   wfCtx.Params["UHostId"],
 				"DiskId":    wfCtx.Params["ResolvedDiskId"],
 				"DiskSpace": wfCtx.Params["Size"],
-			}, nil
+			}
+			if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
+				return nil, err
+			}
+			return args, nil
 		},
 	}
 }
@@ -131,9 +148,11 @@ func stepConfirmResizeDisk() Step {
 				summary["need_restart"] = needRestart
 			}
 			priceResult := wfCtx.Result("查询扩盘价格")
-			if price, ok := priceResult["Price"]; ok {
-				summary["price_delta"] = price
+			price, err := requiredPriceField(priceResult, "Price")
+			if err != nil {
+				return nil, err
 			}
+			summary["price_delta"] = price
 			if originalPrice, ok := priceResult["OriginalPrice"]; ok {
 				summary["original_price_delta"] = originalPrice
 			}
@@ -159,21 +178,25 @@ func stepResizeDisk() Step {
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
 			if resizeDiskViaInstance(queried) {
-				return map[string]any{
-					"Region":    extractInstanceRegion(queried, defaultRegion),
-					"Zone":      extractInstanceZone(queried, defaultZone),
+				args := map[string]any{
 					"UHostId":   wfCtx.Params["UHostId"],
 					"DiskId":    wfCtx.Params["ResolvedDiskId"],
 					"DiskSpace": wfCtx.Params["Size"],
-				}, nil
+				}
+				if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
+					return nil, err
+				}
+				return args, nil
 			}
-			return map[string]any{
-				"Region":  extractInstanceRegion(queried, defaultRegion),
-				"Zone":    extractInstanceZone(queried, defaultZone),
+			args := map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
 				"UDiskId": wfCtx.Params["ResolvedDiskId"],
 				"Size":    wfCtx.Params["Size"],
-			}, nil
+			}
+			if _, err := addRequiredInstanceLocationArgs(args, queried); err != nil {
+				return nil, err
+			}
+			return args, nil
 		},
 	}
 }

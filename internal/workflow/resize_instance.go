@@ -58,8 +58,9 @@ func stepQueryResizePrice() Step {
 			queried := wfCtx.Result("查询实例")
 			args := map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
-				"Region":  extractInstanceRegion(queried, defaultRegion),
-				"Zone":    extractInstanceZone(queried, defaultZone),
+			}
+			if _, err := addRequiredInstanceLocationArgs(args, queried); err != nil {
+				return nil, err
 			}
 			if cpu, ok := wfCtx.Params["Cpu"]; ok {
 				args["CPU"] = cpu
@@ -91,9 +92,11 @@ func stepConfirmResize() Step {
 				summary["target_memory"] = mem
 			}
 			priceResult := wfCtx.Result("查询变配价格")
-			if price, ok := priceResult["Price"]; ok {
-				summary["price_delta"] = price
+			price, err := requiredPriceField(priceResult, "Price")
+			if err != nil {
+				return nil, err
 			}
+			summary["price_delta"] = price
 			summary["warning"] = "变配会修改实例的 CPU/GPU/内存配置，可能影响计费。"
 			return summary, nil
 		},
@@ -108,9 +111,10 @@ func stepResizeInstance() Step {
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
 			args := map[string]any{
-				"Region":  extractInstanceRegion(queried, defaultRegion),
-				"Zone":    extractInstanceZone(queried, defaultZone),
 				"UHostId": wfCtx.Params["UHostId"],
+			}
+			if _, err := addRequiredInstanceLocationArgs(args, queried); err != nil {
+				return nil, err
 			}
 			if cpu, ok := wfCtx.Params["Cpu"]; ok {
 				args["Cpu"] = cpu

@@ -15,7 +15,7 @@
     "input": "查一下4090的价格",
     "description": "查询GPU价格",
     "expected_intent": "simple_query",
-    "expected_tools": ["GetCompShareInstancePrice"],
+    "expected_tools": ["GetCompShareInstanceUserPrice"],
     "user_context": "用户当前没有实例。",
     "tags": ["core"]
   },
@@ -55,7 +55,7 @@
     "input": "H20按月包多少钱",
     "description": "查询特定GPU和计费方式的价格",
     "expected_intent": "simple_query",
-    "expected_tools": ["GetCompShareInstancePrice", "GetCompShareInstanceUserPrice"],
+    "expected_tools": ["GetCompShareInstanceUserPrice"],
     "user_context": "用户当前没有实例。",
     "tags": []
   },

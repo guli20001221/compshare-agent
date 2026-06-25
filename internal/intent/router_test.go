@@ -126,7 +126,7 @@ func TestPlanner_OverridesLLMSuppliedSkillsWithDerivedProjection(t *testing.T) {
 			{Name: "deploy_model", Resolution: "planner_supplied"},
 		},
 		Slots:         Slots{},
-		RequiredTools: []string{"GetCompShareInstancePrice"},
+		RequiredTools: []string{"GetCompShareInstanceUserPrice"},
 		Retrieval:     Retrieval{Enabled: false},
 		Confidence:    0.9,
 	}

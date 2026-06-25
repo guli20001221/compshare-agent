@@ -374,9 +374,11 @@ func TestBuildSystemPromptRoutesRuntimePriceQueriesToRoute(t *testing.T) {
 	required := []string{
 		"Direct runtime/list/user price questions",
 		"should emit pricing_query",
-		"route handler runs DescribeAvailableCompShareInstanceTypes + GetCompShareInstancePrice deterministically",
+		"route handler runs DescribeAvailableCompShareInstanceTypes plus the account/catalog price APIs deterministically",
 		"4090 \u591a\u5c11\u94b1",
 		"H20 \u6309\u6708\u5305\u591a\u5c11\u94b1",
+		"\u76ee\u5f55\u4ef7\u591a\u5c11",
+		"\u6807\u51c6\u4ef7\u591a\u5c11",
 		"Personal-billing complaints",
 		"\u6211\u8d26\u5355\u600e\u4e48\u8fd9\u4e48\u9ad8",
 		"stay as billing_instance",

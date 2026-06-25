@@ -93,11 +93,11 @@ func TestGetWorkflow(t *testing.T) {
 	assert.NotNil(t, def)
 	assert.Len(t, def.Steps, 4)
 
-	// ResizeDiskWorkflow: query instance -> check -> price -> confirm -> resize
+	// ResizeDiskWorkflow: query instance -> query zones -> check -> price -> confirm -> resize
 	def, ok = GetWorkflow("ResizeDiskWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 5)
+	assert.Len(t, def.Steps, 6)
 
 	// Unknown workflow returns nil, false
 	def, ok = GetWorkflow("UnknownWorkflow")

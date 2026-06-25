@@ -104,6 +104,37 @@ func TestCreateCFSWorkflowConfirmsBeforeCreate(t *testing.T) {
 	assert.Equal(t, float64(100), createCall.args["Size"])
 }
 
+func TestCreateCFSWorkflowBlocksWhenPriceMissingBeforeConfirm(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"GetCompShareCFSPrice": {"RetCode": 0},
+		"CreateCFS":            {"CfsId": "cfs-new"},
+	}}
+	onStep, events := collectEvents()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("missing CFS create price must be blocked before confirmation")
+		return true
+	}, onStep)
+
+	result, err := eng.Run(context.Background(), CreateCFSDef(), map[string]any{
+		"Name":          "shared-train",
+		"Size":          float64(100),
+		"Zone":          "cn-pod-01",
+		"ChargeType":    "Month",
+		"ZoneIsPods":    map[string]bool{"cn-pod-01": true},
+		"ZoneIds":       map[string]uint32{"cn-pod-01": 9001},
+		"ZoneRegionIds": map[string]uint32{"cn-pod-01": 3001},
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "未获取到价格")
+	for _, ev := range *events {
+		assert.False(t, ev.Type == StepConfirm && ev.Status == "waiting")
+	}
+	_, created := findExecutorCall(executor.calls, "CreateCFS")
+	assert.False(t, created)
+}
+
 func TestCreateCFSWorkflowRejectsNonPodZoneBeforePrice(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"GetCompShareCFSPrice": {"Price": float64(99)},
@@ -214,6 +245,33 @@ func TestResizeCFSWorkflowUsesDescribeZoneIDInternally(t *testing.T) {
 	assert.Equal(t, uint32(101), resizeCall.args["top_organization_id"])
 	assert.Equal(t, uint32(202), resizeCall.args["organization_id"])
 	assert.Equal(t, float64(200), resizeCall.args["Size"])
+}
+
+func TestResizeCFSWorkflowBlocksWhenPriceMissingBeforeConfirm(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCFS":                 cfsDescribeResult(),
+		"GetCompShareCFSUpgradePrice": {"RetCode": 0},
+		"ResizeCFS":                   {"CfsId": "cfs-test", "OldSize": float64(100), "NewSize": float64(200)},
+	}}
+	onStep, events := collectEvents()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("missing CFS resize price must be blocked before confirmation")
+		return true
+	}, onStep)
+
+	result, err := eng.Run(context.Background(), ResizeCFSDef(), map[string]any{
+		"CfsId": "cfs-test",
+		"Size":  float64(200),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "未获取到价格")
+	for _, ev := range *events {
+		assert.False(t, ev.Type == StepConfirm && ev.Status == "waiting")
+	}
+	_, resized := findExecutorCall(executor.calls, "ResizeCFS")
+	assert.False(t, resized)
 }
 
 func TestResizeCFSWorkflowBlocksShrinkBeforeConfirm(t *testing.T) {

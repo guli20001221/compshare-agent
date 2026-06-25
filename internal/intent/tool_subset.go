@@ -67,7 +67,8 @@ func IntentToolSubset(i Intent) []string {
 		}
 	case IntentPricingQuery:
 		return []string{
-			"GetCompShareInstancePrice",
+			"GetCompShareInstanceUserPrice",
+			"DescribeCompShareSupportZone",
 			"DescribeAvailableCompShareInstanceTypes",
 		}
 	case IntentNetAcceleratorStatus:

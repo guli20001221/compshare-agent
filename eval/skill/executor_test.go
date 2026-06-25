@@ -59,10 +59,45 @@ func (e *recordingExecutor) Execute(_ context.Context, action string, args map[s
 				}},
 			},
 		}}, nil
-	case "GetCompShareInstancePrice":
-		return map[string]any{"PriceSet": []any{map[string]any{
-			"Price": float64(1.5), "ChargeType": "Dynamic",
-		}}}, nil
+	case "DescribeCompShareSupportZone":
+		return map[string]any{"ZoneInfo": []any{
+			map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "RegionId": float64(3001), "ZoneId": float64(10027), "Describe": "华北二A", "IsPod": false},
+		}}, nil
+	case "GetCompShareInstanceUserPrice":
+		gpu, _ := args["GpuType"].(string)
+		if gpu == "A100" {
+			return map[string]any{
+				"PriceDetails": []any{
+					map[string]any{"ChargeType": "Postpay", "Instance": float64(5.00)},
+					map[string]any{"ChargeType": "Month", "Instance": float64(980.00)},
+				},
+				"ListPriceDetails": []any{
+					map[string]any{"ChargeType": "Postpay", "Instance": float64(5.50)},
+					map[string]any{"ChargeType": "Month", "Instance": float64(1200.00)},
+				},
+				"OriginalPriceDetails": []any{
+					map[string]any{"ChargeType": "Postpay", "Instance": float64(5.50)},
+					map[string]any{"ChargeType": "Month", "Instance": float64(1200.00)},
+				},
+			}, nil
+		}
+		return map[string]any{
+			"PriceDetails": []any{
+				map[string]any{"ChargeType": "Postpay", "Instance": float64(1.58)},
+				map[string]any{"ChargeType": "Day", "Instance": float64(35.00)},
+				map[string]any{"ChargeType": "Month", "Instance": float64(900.00)},
+			},
+			"ListPriceDetails": []any{
+				map[string]any{"ChargeType": "Postpay", "Instance": float64(1.98)},
+				map[string]any{"ChargeType": "Day", "Instance": float64(43.00)},
+				map[string]any{"ChargeType": "Month", "Instance": float64(1100.00)},
+			},
+			"OriginalPriceDetails": []any{
+				map[string]any{"ChargeType": "Postpay", "Instance": float64(1.98)},
+				map[string]any{"ChargeType": "Day", "Instance": float64(43.00)},
+				map[string]any{"ChargeType": "Month", "Instance": float64(1100.00)},
+			},
+		}, nil
 	case "CheckCompShareResourceCapacity":
 		return map[string]any{"Specs": []any{map[string]any{"Gpu": float64(1), "ResourceEnough": true}}}, nil
 	case "CheckCompShareNetOptimizer":

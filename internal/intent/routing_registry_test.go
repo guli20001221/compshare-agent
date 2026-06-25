@@ -109,7 +109,7 @@ func TestRouteRequiredTool_BindsToRealTool(t *testing.T) {
 		IntentCustomImageList:       "DescribeCompShareCustomImages",
 		IntentCommunityImageList:    "DescribeCommunityImages",
 		IntentSharedImageList:       "DescribeCompShareSharingImages",
-		IntentPricingQuery:          "GetCompShareInstancePrice",
+		IntentPricingQuery:          "GetCompShareInstanceUserPrice",
 	}
 	for _, i := range routingIntentOrder {
 		want := expected[i]
@@ -173,7 +173,7 @@ func TestHandlerActionWhitelist_ExactGoldenSet(t *testing.T) {
 		IntentCustomImageList:       {"DescribeCompShareCustomImages": {}},
 		IntentCommunityImageList:    {"DescribeCommunityImages": {}},
 		IntentSharedImageList:       {"DescribeCompShareSharingImages": {}},
-		IntentPricingQuery:          {"GetCompShareInstancePrice": {}},
+		IntentPricingQuery:          {"GetCompShareInstanceUserPrice": {}},
 	}
 	got := handlerActionWhitelist()
 	if !reflect.DeepEqual(got, golden) {

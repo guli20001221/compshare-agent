@@ -69,7 +69,7 @@ func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 	}{
 		{IntentGPUSpecsQuery, "DescribeAvailableCompShareInstanceTypes", 2},
 		{IntentStockAvailability, "DescribeAvailableCompShareInstanceTypes", 5},
-		{IntentPricingQuery, "GetCompShareInstancePrice", 2},
+		{IntentPricingQuery, "GetCompShareInstanceUserPrice", 3},
 		{IntentNetAcceleratorStatus, "CheckCompShareNetOptimizer", 1},
 		{IntentRefundEstimate, "GetCompShareRefundPrice", 2},
 		{IntentCFSInfo, "DescribeCFS", 4},
@@ -87,6 +87,10 @@ func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 			assert.Contains(t, subset, tc.tool)
 			if tc.intent == IntentModelRepositoryBrowse {
 				assert.Contains(t, subset, "DescribeModelRepositoryTags")
+			}
+			if tc.intent == IntentPricingQuery {
+				assert.Contains(t, subset, "DescribeCompShareSupportZone")
+				assert.NotContains(t, subset, "GetCompShareInstancePrice")
 			}
 		})
 	}

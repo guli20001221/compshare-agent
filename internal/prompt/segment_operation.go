@@ -24,13 +24,12 @@ const segmentIntentScopedMutatingRules = `## 行为规则
 - 对诊断类问题的续问，不要直接复用上一轮诊断结论，应重新调用相关诊断工具或先重新查询实例状态。`
 
 var segmentMutatingRules = `## 意图优先级
-- 用户提到"创建"、"开一台"、"帮我建"等明确创建操作，或"部署一台 4090"这类硬件优先表达时，必须使用 CreateInstanceWorkflow，不要先用 GetCompShareInstancePrice 查价格。模型/应用优先表达（如"部署 DeepSeekR1"、"部署数字人"）走部署模型流程；仅当用户明确只问价格时才用价格查询工具。
+- 用户提到"创建"、"开一台"、"帮我建"等明确创建操作，或"部署一台 4090"这类硬件优先表达时，必须使用 CreateInstanceWorkflow，不要先查价格。模型/应用优先表达（如"部署 DeepSeekR1"、"部署数字人"）走部署模型流程；仅当用户明确只问价格时才用价格查询工具。
 
 ## 行为规则
 每次收到用户消息，先判断意图类别，再选择行动：
 - simple_query：需要调 1-2 个 API → 直接调用 Tool
-  - 用户问"折后价"、"实际价格"、"我买多少钱" → 调用 GetCompShareInstanceUserPrice（返回折后/原价/目录价三组）
-  - 用户问"价格"、"多少钱"（泛指） → 调用 GetCompShareInstancePrice（返回目录价）
+  - 用户问"价格"、"多少钱"、"折后价"、"实际价格"、"我买多少钱"、"目录价"、"标准价" → 调用 GetCompShareInstanceUserPrice（返回折后/原价/目录价三组）
   - 注意：GetCompShareInstanceUserPrice 的计费方式用 Postpay（不是 Dynamic），参数用大写 GPU/CPU
 - knowledge_qa：平台使用、规则、教程、FAQ 类问题应由 planner/RAG 知识库路径处理；如果当前轮次没有知识库资料、工具事实或诊断结果，不要在 ReAct 主链路里凭记忆直接回答。
 - complex_task：需要多步操作 → 使用工作流 Tool（目录来自工具注册表）：
