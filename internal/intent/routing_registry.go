@@ -1587,8 +1587,8 @@ func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req Ha
 			if firstZone == "" {
 				firstZone = entry.Zone
 			}
-			args := capacityPrecheckArgs(entry, imageID)
-			capacityRaw, err := h.executor.Execute(ctx, "CheckCompShareResourceCapacity", args)
+			args := capacityPrecheckArgs(entry, imageID, supportZones)
+			capacityRaw, err := executeStockCapacityPrecheck(ctx, h, args)
 			if err != nil {
 				continue
 			}
@@ -1844,8 +1844,8 @@ func hasSpecificImageToken(normalized string) bool {
 	return imageVersionRegex.MatchString(normalized)
 }
 
-func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string) map[string]any {
-	return map[string]any{
+func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string, supportZones []zones.ZoneInfo) map[string]any {
+	args := map[string]any{
 		"Zone":               entry.Zone,
 		"GpuType":            entry.Name,
 		"MachineType":        "G",
@@ -1856,6 +1856,48 @@ func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string) map[stri
 			map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 60},
 		},
 	}
+	if zone := stockZoneInfoForEntry(entry, supportZones); zone.Zone != "" {
+		if zone.Region != "" {
+			args["Region"] = zone.Region
+		}
+		if zone.ZoneID != 0 {
+			args["zone_id"] = zone.ZoneID
+		}
+		if zone.RegionID != 0 {
+			args["az_group"] = zone.RegionID
+		}
+	} else if region := stockRegionFromZone(entry.Zone); region != "" {
+		args["Region"] = region
+	}
+	return args
+}
+
+func executeStockCapacityPrecheck(ctx context.Context, h *DemoHandler, args map[string]any) (map[string]any, error) {
+	if exec, ok := h.executor.(internalHandlerExecutor); ok {
+		return exec.ExecuteInternal(ctx, "CheckCompShareResourceCapacity", args)
+	}
+	return h.executor.Execute(ctx, "CheckCompShareResourceCapacity", args)
+}
+
+func stockZoneInfoForEntry(entry stockInstanceTypeEntry, supportZones []zones.ZoneInfo) zones.ZoneInfo {
+	for _, z := range supportZones {
+		if z.Zone != "" && strings.EqualFold(z.Zone, entry.Zone) {
+			return z
+		}
+	}
+	return zones.ZoneInfo{}
+}
+
+func stockRegionFromZone(zone string) string {
+	zone = strings.TrimSpace(zone)
+	if zone == "" || strings.Count(zone, "-") < 2 {
+		return ""
+	}
+	idx := strings.LastIndex(zone, "-")
+	if idx <= 0 {
+		return ""
+	}
+	return zone[:idx]
 }
 
 func selectCapacityPrecheckImageID(raw map[string]any) string {

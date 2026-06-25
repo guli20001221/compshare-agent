@@ -251,9 +251,10 @@ func (stubFailingExecutor) Execute(ctx context.Context, action string, args map[
 }
 
 type routeSequenceExecutor struct {
-	results map[string]map[string]any
-	errs    map[string]error
-	calls   []handlerExecCall
+	results       map[string]map[string]any
+	errs          map[string]error
+	calls         []handlerExecCall
+	internalCalls int
 }
 
 func (m *routeSequenceExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
@@ -272,10 +273,15 @@ func (m *routeSequenceExecutor) Execute(_ context.Context, action string, args m
 	return map[string]any{}, nil
 }
 
+func (m *routeSequenceExecutor) ExecuteInternal(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	m.internalCalls++
+	return m.Execute(ctx, action, args)
+}
+
 func stockSupportZonesFixture() map[string]any {
 	return map[string]any{"ZoneInfo": []any{
-		map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(1), "Describe": "华北二A"},
-		map[string]any{"Zone": "cn-sh2-02", "Region": "cn-sh2", "ZoneId": float64(2), "Describe": "上海二B"},
+		map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "RegionId": float64(3001), "ZoneId": float64(1), "Describe": "华北二A"},
+		map[string]any{"Zone": "cn-sh2-02", "Region": "cn-sh2", "RegionId": float64(3002), "ZoneId": float64(2), "Describe": "上海二B"},
 	}}
 }
 
@@ -1015,6 +1021,12 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	if args["Zone"] != "cn-wlcb-01" {
 		t.Fatalf("capacity Zone = %#v, want cn-wlcb-01", args["Zone"])
 	}
+	if args["Region"] != "cn-wlcb" {
+		t.Fatalf("capacity Region = %#v, want cn-wlcb", args["Region"])
+	}
+	if args["zone_id"] != uint32(1) {
+		t.Fatalf("capacity zone_id = %#v, want 1", args["zone_id"])
+	}
 	if args["CompShareImageId"] != "img-ubuntu" {
 		t.Fatalf("capacity CompShareImageId = %#v, want img-ubuntu", args["CompShareImageId"])
 	}
@@ -1124,6 +1136,15 @@ func TestStockAvailabilityFiltersByLiveZoneDescribe(t *testing.T) {
 	}
 	if got := exec.calls[len(exec.calls)-1].args["Zone"]; got != "cn-sh2-02" {
 		t.Fatalf("capacity precheck zone = %#v, want cn-sh2-02", got)
+	}
+	if got := exec.calls[len(exec.calls)-1].args["Region"]; got != "cn-sh2" {
+		t.Fatalf("capacity precheck Region = %#v, want cn-sh2", got)
+	}
+	if got := exec.calls[len(exec.calls)-1].args["zone_id"]; got != uint32(2) {
+		t.Fatalf("capacity precheck zone_id = %#v, want 2", got)
+	}
+	if exec.internalCalls == 0 {
+		t.Fatalf("capacity precheck must use internal executor so backend-derived zone_id is not filtered")
 	}
 }
 
