@@ -172,6 +172,16 @@ func TestLoad_OCRModelDefaultsFromModelVerseEnv(t *testing.T) {
 	assert.Equal(t, cfg.Agent.LLM.APIKey, cfg.Agent.OCR.APIKey)
 }
 
+func TestLoad_OCRMaxBytesDefaultsToFiveMB(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(""))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 5*1024*1024, cfg.Agent.OCR.MaxBytes)
+}
+
 func TestLoad_OCRStaysDisabledWhenModelUnset(t *testing.T) {
 	setRequiredSecretEnv(t)
 	t.Setenv("MODELVERSE_QWEN_VL_MODEL", "")
