@@ -6,7 +6,9 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/sshops"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
 )
@@ -50,6 +52,17 @@ type Handlers struct {
 	// flow. It only takes effect together with confirmFormEnabled and the
 	// client's guided_create_v1 feature opt-in.
 	guidedCreateEnabled bool
+
+	// SSH-ops lane (COMPSHARE_SSH_OPS): consent-gated, read-only in-instance
+	// diagnosis, decoupled from the chat engine. sshOps runs the diagnosis;
+	// sshDescriber is the DescribeCompShareInstance executor used to list
+	// candidates and resolve the credential out-of-band; sshLimiter optionally
+	// caps the per-tenant rate (ClassSSHExec). All nil/false unless wired in
+	// cmd/server.go when COMPSHARE_SSH_OPS=1.
+	sshOps        sshDiagnoser
+	sshDescriber  sshops.Describer
+	sshLimiter    governance.RateLimiter
+	sshOpsEnabled bool
 }
 
 // NewHandlers constructs a Handlers with all dependencies injected.
@@ -91,6 +104,16 @@ func (h *Handlers) SetConfirmFormEnabled(enabled bool) {
 // confirmation flow.
 func (h *Handlers) SetGuidedCreateEnabled(enabled bool) {
 	h.guidedCreateEnabled = enabled
+}
+
+// SetSSHOps wires and enables the consent-gated SSH-ops lane. Default off: when
+// unset, PrepareInstanceSSHDiagnosis / StartInstanceSSHDiagnosis return "not
+// enabled". limiter may be nil (no per-tenant cap).
+func (h *Handlers) SetSSHOps(svc sshDiagnoser, describer sshops.Describer, limiter governance.RateLimiter) {
+	h.sshOps = svc
+	h.sshDescriber = describer
+	h.sshLimiter = limiter
+	h.sshOpsEnabled = true
 }
 
 // buildUserContext constructs a tools.UserContext from a BaseRequest.

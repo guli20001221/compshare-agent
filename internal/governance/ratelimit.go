@@ -33,6 +33,11 @@ const (
 	// daily/qps fields default to 0 = disabled (no enforcement) rather
 	// than to a built-in default — the operator opts in.
 	ClassUserTurn Class = "user_turn"
+	// ClassSSHExec counts consent-gated in-instance SSH-ops diagnoses
+	// (COMPSHARE_SSH_OPS). Like ClassUserTurn its limits default to 0 = disabled
+	// (operator opts in); it does NOT fall back to the LLM budget, so existing
+	// tenants are unaffected until configured.
+	ClassSSHExec Class = "ssh_exec"
 )
 
 type Reason string
@@ -82,6 +87,11 @@ type Limits struct {
 	// the other classes — operator opts in explicitly.
 	UserTurnQPS   int
 	UserTurnDaily int
+	// SSHExecQPS / SSHExecDaily: per-tenant cap on consent-gated SSH-ops
+	// diagnoses (ClassSSHExec). 0 = disabled (opt-in); NOT promoted to a default
+	// by normalizeLimits — same semantics as UserTurn.
+	SSHExecQPS   int
+	SSHExecDaily int
 }
 
 func DefaultLimits() Limits {
@@ -285,6 +295,9 @@ func (l Limits) forClass(class Class) (qps int, daily int) {
 		// on the LLM quota the moment they upgraded to a binary with
 		// this class.
 		return l.UserTurnQPS, l.UserTurnDaily
+	case ClassSSHExec:
+		// Opt-in like ClassUserTurn: raw 0 = disabled, never the LLM budget.
+		return l.SSHExecQPS, l.SSHExecDaily
 	default:
 		// Phase 1 hardening defines LLM, mutating-tool, and read-expensive
 		// quota classes. Unknown
