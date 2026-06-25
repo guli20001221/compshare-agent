@@ -638,7 +638,7 @@ func applyOCRDefaults(ocr *OCRConfig, llmCfg *LLMConfig) {
 		ocr.Timeout = 15 * time.Second
 	}
 	if ocr.MaxBytes == 0 {
-		ocr.MaxBytes = 10 * 1024 * 1024
+		ocr.MaxBytes = 5 * 1024 * 1024
 	}
 	if ocr.BaseURL == "" && llmCfg != nil {
 		ocr.BaseURL = llmCfg.BaseURL
