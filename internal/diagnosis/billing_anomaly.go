@@ -125,7 +125,11 @@ func buildBillingSummary(hosts []any) (conclusion, suggestion string) {
 		conclusion += formatInstanceFactCost(fact) + "\n"
 	}
 	if facts.HasDynamic {
-		conclusion += fmt.Sprintf("按量/抢占式实例合计: ¥%.2f/时", facts.HourlyTotal)
+		if facts.HasUnknownDynamicCost {
+			conclusion += "部分费用未返回，合计暂不计算。"
+		} else {
+			conclusion += fmt.Sprintf("按量/抢占式实例合计: ¥%.2f/时", facts.HourlyTotal)
+		}
 	}
 	if facts.HasPrepaid {
 		if facts.HasDynamic {
@@ -134,7 +138,7 @@ func buildBillingSummary(hosts []any) (conclusion, suggestion string) {
 		conclusion += "包月/包日实例按预付费计费，具体金额以订单为准。"
 	}
 
-	if facts.StoppedCount > 0 && facts.StoppedRetainedTotal > 0 {
+	if facts.StoppedCount > 0 && facts.StoppedRetainedTotal > 0 && !facts.HasUnknownStoppedRetained {
 		costLabel := "磁盘保留费用"
 		if facts.HasStoppedImageCost() {
 			costLabel = "磁盘和镜像保留费用"
@@ -168,19 +172,24 @@ type BillingInstanceFact struct {
 	InstancePrice         float64
 	DiskPrice             float64
 	ImagePrice            float64
+	HasInstancePrice      bool
+	HasDiskPrice          bool
+	HasImagePrice         bool
 	ActualComputeCharge   float64
 	RetainedStoppedCharge float64
 	Period                string
 }
 
 type BillingFactsSummary struct {
-	Instances            []BillingInstanceFact
-	HourlyTotal          float64
-	StoppedRetainedTotal float64
-	RunningCount         int
-	StoppedCount         int
-	HasDynamic           bool
-	HasPrepaid           bool
+	Instances                 []BillingInstanceFact
+	HourlyTotal               float64
+	StoppedRetainedTotal      float64
+	RunningCount              int
+	StoppedCount              int
+	HasDynamic                bool
+	HasPrepaid                bool
+	HasUnknownDynamicCost     bool
+	HasUnknownStoppedRetained bool
 }
 
 func BuildBillingFacts(hosts []any) BillingFactsSummary {
@@ -202,11 +211,21 @@ func BuildBillingFacts(hosts []any) BillingFactsSummary {
 		switch fact.ChargeType {
 		case "Dynamic", "Postpay", "Spot":
 			summary.HasDynamic = true
-			summary.HourlyTotal += fact.ActualComputeCharge + fact.DiskPrice + fact.ImagePrice
+			if fact.hasKnownHourlyTotal() {
+				summary.HourlyTotal += fact.ActualComputeCharge + fact.DiskPrice + fact.ImagePrice
+			} else {
+				summary.HasUnknownDynamicCost = true
+			}
 		case "Month", "Day":
 			summary.HasPrepaid = true
 		}
-		summary.StoppedRetainedTotal += fact.RetainedStoppedCharge
+		if fact.State == "Stopped" {
+			if fact.hasKnownStoppedRetainedCharge() {
+				summary.StoppedRetainedTotal += fact.RetainedStoppedCharge
+			} else {
+				summary.HasUnknownStoppedRetained = true
+			}
+		}
 		summary.Instances = append(summary.Instances, fact)
 	}
 	return summary
@@ -219,9 +238,9 @@ func billingInstanceFact(host map[string]any) BillingInstanceFact {
 	gpuType, _ := host["GpuType"].(string)
 	gpu, _ := host["GPU"].(float64)
 	chargeType, _ := host["ChargeType"].(string)
-	instancePrice, _ := host["InstancePrice"].(float64)
-	diskPrice, _ := host["DiskPrice"].(float64)
-	imagePrice, _ := host["CompShareImagePrice"].(float64)
+	instancePrice, hasInstancePrice := billingPriceField(host, "InstancePrice")
+	diskPrice, hasDiskPrice := billingPriceField(host, "DiskPrice")
+	imagePrice, hasImagePrice := billingPriceField(host, "CompShareImagePrice")
 	return BillingInstanceFact{
 		UHostID:               id,
 		Name:                  name,
@@ -232,15 +251,41 @@ func billingInstanceFact(host map[string]any) BillingInstanceFact {
 		InstancePrice:         instancePrice,
 		DiskPrice:             diskPrice,
 		ImagePrice:            imagePrice,
+		HasInstancePrice:      hasInstancePrice,
+		HasDiskPrice:          hasDiskPrice,
+		HasImagePrice:         hasImagePrice,
 		ActualComputeCharge:   actualInstanceCost(state, chargeType, instancePrice),
 		RetainedStoppedCharge: retainedStoppedCharge(state, diskPrice, imagePrice),
 		Period:                billingPeriod(chargeType),
 	}
 }
 
+func billingPriceField(host map[string]any, key string) (float64, bool) {
+	raw, exists := host[key]
+	if !exists {
+		return 0, false
+	}
+	switch v := raw.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	default:
+		return 0, false
+	}
+}
+
 func (s BillingFactsSummary) HasStoppedImageCost() bool {
 	for _, fact := range s.Instances {
-		if fact.State == "Stopped" && fact.ImagePrice > 0 {
+		if fact.State == "Stopped" && fact.HasImagePrice && fact.ImagePrice > 0 {
 			return true
 		}
 	}
@@ -272,17 +317,38 @@ func formatInstanceFactCost(fact BillingInstanceFact) string {
 	billing := chargeTypeLabel(fact.ChargeType)
 	actual := fact.ActualComputeCharge
 
-	// Build the cost breakdown: instance + disk + image (if non-zero)
-	costParts := fmt.Sprintf("实例费 ¥%.2f + 磁盘费 ¥%.2f", actual, fact.DiskPrice)
-	if fact.State == "Stopped" && actual == 0 && fact.InstancePrice > 0 {
-		costParts = fmt.Sprintf("实例费 ¥0（已关机停计） + 磁盘费 ¥%.2f", fact.DiskPrice)
+	costParts := "实例费 未返回"
+	if fact.HasInstancePrice {
+		costParts = fmt.Sprintf("实例费 ¥%.2f", actual)
+		if fact.State == "Stopped" && actual == 0 && fact.InstancePrice > 0 {
+			costParts = "实例费 ¥0（已关机停计）"
+		}
 	}
-	if fact.ImagePrice > 0 {
+
+	if fact.HasDiskPrice {
+		costParts += fmt.Sprintf(" + 磁盘费 ¥%.2f", fact.DiskPrice)
+	} else {
+		costParts += " + 磁盘费 未返回"
+	}
+	if fact.HasImagePrice && fact.ImagePrice > 0 {
 		costParts += fmt.Sprintf(" + 镜像费 ¥%.2f", fact.ImagePrice)
+	} else if !fact.HasImagePrice {
+		costParts += " + 镜像费 未返回"
 	}
 
 	return fmt.Sprintf("- %s (%s, %s×%.0f, %s, %s): %s",
 		fact.UHostID, fact.Name, fact.GpuType, float64(fact.GPU), fact.State, billing, costParts)
+}
+
+func (fact BillingInstanceFact) hasKnownHourlyTotal() bool {
+	return fact.HasInstancePrice && fact.HasDiskPrice && fact.HasImagePrice
+}
+
+func (fact BillingInstanceFact) hasKnownStoppedRetainedCharge() bool {
+	if fact.State != "Stopped" {
+		return true
+	}
+	return fact.HasDiskPrice && fact.HasImagePrice
 }
 
 // chargeTypeLabel returns a human-readable billing label with unit.

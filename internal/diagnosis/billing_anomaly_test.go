@@ -32,7 +32,7 @@ func TestBillingChain_SingleRunning(t *testing.T) {
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
 				map[string]any{
-					"UHostId":              "uhost-abc",
+					"UHostId":             "uhost-abc",
 					"Name":                "my-gpu",
 					"State":               "Running",
 					"GpuType":             "4090",
@@ -69,12 +69,46 @@ func TestBillingChain_SingleRunning(t *testing.T) {
 	assert.Equal(t, []any{"uhost-abc"}, ids)
 }
 
+func TestBillingChain_MissingPriceFieldsAreUnknownNotZero(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{
+					"UHostId":     "uhost-missing-price",
+					"Name":        "no-price",
+					"State":       "Running",
+					"GpuType":     "4090",
+					"GPU":         float64(1),
+					"ChargeType":  "Dynamic",
+					"DiskPrice":   float64(0),
+					"Memory":      float64(65536),
+					"CPU":         float64(16),
+					"CompShareId": "cs-test",
+				},
+			},
+		},
+	}}
+	onStep, _ := collectEvents()
+
+	chain := BillingAnomalyChain()
+	eng := NewEngine(executor, onStep)
+	result, err := eng.Run(context.Background(), chain, nil)
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Contains(t, result.Conclusion, "实例费 未返回")
+	assert.Contains(t, result.Conclusion, "镜像费 未返回")
+	assert.Contains(t, result.Conclusion, "部分费用未返回")
+	assert.NotContains(t, result.Conclusion, "实例费 ¥0.00")
+	assert.NotContains(t, result.Conclusion, "合计: ¥0.00/时")
+}
+
 func TestBillingChain_StoppedWithDiskCost(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
 				map[string]any{
-					"UHostId":              "uhost-def",
+					"UHostId":             "uhost-def",
 					"Name":                "idle-gpu",
 					"State":               "Stopped",
 					"GpuType":             "4090",
@@ -109,7 +143,7 @@ func TestBillingChain_PaidCommunityImage(t *testing.T) {
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
 				map[string]any{
-					"UHostId":              "uhost-img",
+					"UHostId":             "uhost-img",
 					"Name":                "sd-webui",
 					"State":               "Running",
 					"GpuType":             "4090",
@@ -142,7 +176,7 @@ func TestBillingChain_StoppedPaidImage(t *testing.T) {
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
 				map[string]any{
-					"UHostId":              "uhost-si",
+					"UHostId":             "uhost-si",
 					"Name":                "stopped-sd",
 					"State":               "Stopped",
 					"GpuType":             "4090",
@@ -176,7 +210,7 @@ func TestBillingChain_MixedInstances(t *testing.T) {
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
 				map[string]any{
-					"UHostId":              "uhost-abc",
+					"UHostId":             "uhost-abc",
 					"Name":                "running-gpu",
 					"State":               "Running",
 					"GpuType":             "4090",
@@ -187,7 +221,7 @@ func TestBillingChain_MixedInstances(t *testing.T) {
 					"CompShareImagePrice": float64(0),
 				},
 				map[string]any{
-					"UHostId":              "uhost-def",
+					"UHostId":             "uhost-def",
 					"Name":                "stopped-gpu",
 					"State":               "Stopped",
 					"GpuType":             "4090",
@@ -229,7 +263,7 @@ func TestBillingChain_SpecificInstance(t *testing.T) {
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
 				map[string]any{
-					"UHostId":              "uhost-xyz",
+					"UHostId":             "uhost-xyz",
 					"Name":                "target-gpu",
 					"State":               "Running",
 					"GpuType":             "A100",

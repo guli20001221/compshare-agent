@@ -96,9 +96,11 @@ func stepConfirmCreateCFS() Step {
 				"Quantity":   wfCtx.Params["Quantity"],
 				"warning":    "将创建新的 CFS 共享文件存储并开始计费；CFS 暂不支持按量付费，删除能力不由 agent 暴露。",
 			}
-			if priceText := cfsCreatePriceText(priceResult); priceText != "" {
-				args["price"] = priceText
+			priceText := cfsCreatePriceText(priceResult)
+			if priceText == "" {
+				return nil, fmt.Errorf(missingWorkflowPriceMessage)
 			}
+			args["price"] = priceText
 			return args, nil
 		},
 	}
@@ -223,8 +225,13 @@ func stepConfirmResizeCFS() Step {
 				"warning":         "将把 CFS 扩容到目标容量；Size 是目标容量，不是新增容量。扩容后不能缩小。",
 			}
 			priceResult := wfCtx.Result("查询 CFS 扩容价格")
-			if price := firstCFSPrice(priceResult, "Price", "OriginalPrice", "ListPrice"); price != nil {
-				args["price_delta"] = price
+			price, err := requiredPriceField(priceResult, "Price")
+			if err != nil {
+				return nil, err
+			}
+			args["price_delta"] = price
+			if original := firstCFSPrice(priceResult, "OriginalPrice", "ListPrice"); original != nil {
+				args["original_price_delta"] = original
 			}
 			return args, nil
 		},

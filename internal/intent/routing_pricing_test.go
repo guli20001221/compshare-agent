@@ -184,6 +184,29 @@ func TestPricingBillingTable_ArrayShape(t *testing.T) {
 	assert.Contains(t, out["Month"], "¥1131.40")
 }
 
+func TestPricingBillingTable_CatalogKindUsesListPriceAsPrimary(t *testing.T) {
+	raw := map[string]any{
+		"PriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.88)},
+		},
+		"ListPriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.98)},
+		},
+	}
+	out := pricingBillingTableForKind(raw, "标准价/目录价")
+	assert.Equal(t, "¥1.98", out["Postpay"], "目录价问题应把目录价作为主价格展示")
+}
+
+func TestPricingBillingTable_CatalogKindMissingListDoesNotShowDiscount(t *testing.T) {
+	raw := map[string]any{
+		"PriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.88)},
+		},
+	}
+	out := pricingBillingTableForKind(raw, "标准价/目录价")
+	assert.Empty(t, out, "目录价字段缺失时不能把折后价当成目录价展示")
+}
+
 // TestPricingBillingTable_ArrayShape_NoDiscount covers the same array
 // shape but with PriceDetails == ListPriceDetails (no discount applied).
 // Output should collapse to a single number, no "(原价 ¥X)" suffix.
@@ -267,7 +290,7 @@ func TestRenderPricingReply_HeaderUsesGB(t *testing.T) {
 // dropped (e.g. by a simplification pass), the header will still render
 // "64GB" but the API will be sent Memory=64 (== 64 MB), and prices will
 // come back for the wrong spec — silent regression. Lock the conversion
-// explicitly by asserting GetCompShareInstancePrice receives the MB-form.
+// explicitly by asserting GetCompShareInstanceUserPrice receives the MB-form.
 func TestHandlePricingQuery_PassesMemoryAsMBToAPI(t *testing.T) {
 	// One Describe entry: 4090 with 1 GPU @ (CPU=16, Memory=64GB).
 	// We return the SAME map for both Describe and GetPrice (executor stub
@@ -302,7 +325,7 @@ func TestHandlePricingQuery_PassesMemoryAsMBToAPI(t *testing.T) {
 	})
 
 	// Sanity: the handler completed (not a FallbackBeforeTool).
-	assert.Equal(t, "GetCompShareInstancePrice", result.ToolAction)
+	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
 
 	// Find the GetPrice call (Describe is first, GetPrice is second).
 	require.GreaterOrEqual(t, len(exec.calls), 2,
@@ -311,22 +334,22 @@ func TestHandlePricingQuery_PassesMemoryAsMBToAPI(t *testing.T) {
 		"pricing route must fetch available specs before asking for price")
 	var priceCall *handlerExecCall
 	for i := range exec.calls {
-		if exec.calls[i].action == "GetCompShareInstancePrice" {
+		if exec.calls[i].action == "GetCompShareInstanceUserPrice" {
 			priceCall = &exec.calls[i]
 			break
 		}
 	}
-	require.NotNil(t, priceCall, "GetCompShareInstancePrice never invoked")
+	require.NotNil(t, priceCall, "GetCompShareInstanceUserPrice never invoked")
 
 	// The crux of N1: Memory must be MB (65536), not GB (64).
 	memArg, ok := priceCall.args["Memory"]
-	require.True(t, ok, "Memory missing from GetCompShareInstancePrice args")
+	require.True(t, ok, "Memory missing from GetCompShareInstanceUserPrice args")
 	assert.Equal(t, 64*1024, memArg,
-		"GetCompShareInstancePrice.Memory must be MB (64GB * 1024); "+
+		"GetCompShareInstanceUserPrice.Memory must be MB (64GB * 1024); "+
 			"if this fails, the GB→MB boundary conversion was dropped — "+
 			"renderer would still say 64GB but API receives wrong spec")
-	assert.Equal(t, 16, priceCall.args["Cpu"], "Cpu must pass through as-is")
-	assert.Equal(t, 1, priceCall.args["Gpu"], "Gpu default is 1")
+	assert.Equal(t, 16, priceCall.args["CPU"], "CPU must pass through as-is")
+	assert.Equal(t, 1, priceCall.args["GPU"], "GPU default is 1")
 	_, hasZone := priceCall.args["Zone"]
 	assert.False(t, hasZone,
 		"Zone must be OMITTED from the price call: Describe's per-GPU catalog "+
@@ -335,16 +358,165 @@ func TestHandlePricingQuery_PassesMemoryAsMBToAPI(t *testing.T) {
 	assert.Equal(t, "4090", priceCall.args["GpuType"])
 }
 
-// TestHandlePricingQuery_OmitsZoneForNonWlcbCatalogZone is the 5090 regression
-// guard, and the WHY behind dropping Zone from the price call. Describe lists
-// 5090 in a non-wlcb catalog zone (cn-sh2-02); the upstream
-// GetCompShareInstancePrice validator rejects every zone but the single Online
-// catalog zone with RetCode=230 "Params [Zone] not available" (confirmed live,
-// pricing_probe_test.go 2026-06-04). If the handler forwarded Describe's Zone,
-// 5090 pricing would 230 and the route would silently degrade to ReAct. So the
-// price call MUST omit Zone — which returns the zone-uniform catalog price. The
-// GPU is still priced (not skipped) and its real catalog zone still shows in
-// the display row.
+func TestHandlePricingQuery_UserPriceUsesUserPriceTool(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name": "4090",
+				"Zone": "cn-wlcb-01",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{
+								"Cpu":    float64(16),
+								"Memory": []any{float64(64)},
+							},
+						},
+					},
+				},
+			},
+		},
+		"PriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.58)},
+		},
+		"OriginalPriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.98)},
+		},
+		"ListPriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(2.10)},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
+		Plan:     IntentRoute{Intent: IntentPricingQuery},
+		UserText: "4090 折后价是多少",
+	})
+
+	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
+	assert.Contains(t, result.Reply, "用户折后价")
+	assert.Contains(t, result.Reply, "¥1.58")
+	var userPriceCall *handlerExecCall
+	for i := range exec.calls {
+		if exec.calls[i].action == "GetCompShareInstanceUserPrice" {
+			userPriceCall = &exec.calls[i]
+			break
+		}
+	}
+	require.NotNil(t, userPriceCall, "actual/discount price query must call GetCompShareInstanceUserPrice")
+	assert.Equal(t, "4090", userPriceCall.args["GpuType"])
+	assert.Equal(t, 1, userPriceCall.args["GPU"], "user price API uses uppercase GPU")
+	assert.Equal(t, 16, userPriceCall.args["CPU"], "user price API uses uppercase CPU")
+	assert.Equal(t, 64*1024, userPriceCall.args["Memory"])
+}
+
+func TestHandlePricingQuery_GenericPriceUsesUserPriceToolAndLabelsIt(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name": "4090",
+				"Zone": "cn-wlcb-01",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{
+								"Cpu":    float64(16),
+								"Memory": []any{float64(64)},
+							},
+						},
+					},
+				},
+			},
+		},
+		"PriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.58)},
+		},
+		"OriginalPriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.98)},
+		},
+		"ListPriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(2.10)},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
+		Plan:     IntentRoute{Intent: IntentPricingQuery},
+		UserText: "4090 多少钱",
+	})
+
+	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
+	assert.Contains(t, result.Reply, "当前账号价格")
+	assert.NotContains(t, result.Reply, "标准价/目录价")
+	for _, call := range exec.calls {
+		assert.NotEqual(t, "GetCompShareInstancePrice", call.action)
+	}
+}
+
+func TestHandlePricingQuery_CatalogPriceUsesUserPriceListFields(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name": "4090",
+				"Zone": "cn-wlcb-01",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{
+								"Cpu":    float64(16),
+								"Memory": []any{float64(64)},
+							},
+						},
+					},
+				},
+			},
+		},
+		"ZoneInfo": []any{
+			map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "RegionId": float64(3001), "ZoneId": float64(10027), "Describe": "华北二A"},
+		},
+		"PriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.23)},
+		},
+		"ListPriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.50)},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
+		Plan:     IntentRoute{Intent: IntentPricingQuery},
+		UserText: "4090 目录价是多少",
+	})
+
+	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
+	assert.Contains(t, result.Reply, "标准价")
+	assert.Contains(t, result.Reply, "¥1.50")
+	assert.NotContains(t, result.Reply, "¥1.23", "目录价问题不应把折后价作为主价格展示")
+	for _, call := range exec.calls {
+		assert.NotEqual(t, "GetCompShareInstancePrice", call.action)
+	}
+	var priceCall *handlerExecCall
+	for i := range exec.calls {
+		if exec.calls[i].action == "GetCompShareInstanceUserPrice" {
+			priceCall = &exec.calls[i]
+			break
+		}
+	}
+	require.NotNil(t, priceCall)
+	assert.Equal(t, uint32(10027), priceCall.args["zone_id"])
+	assert.Equal(t, uint32(3001), priceCall.args["az_group"])
+	assert.Equal(t, "cn-wlcb", priceCall.args["Region"])
+	for _, call := range exec.calls {
+		assert.NotContains(t, call.args, "Zone")
+	}
+}
+
+// TestHandlePricingQuery_OmitsZoneForNonWlcbCatalogZone guards the price API
+// boundary: user-facing Zone strings stay out of the price call. Backend
+// placement ids may be added separately from the support-zone catalog.
 func TestHandlePricingQuery_OmitsZoneForNonWlcbCatalogZone(t *testing.T) {
 	exec := &mockHandlerExecutor{result: map[string]any{
 		"AvailableInstanceTypes": []any{
@@ -371,28 +543,26 @@ func TestHandlePricingQuery_OmitsZoneForNonWlcbCatalogZone(t *testing.T) {
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
 		Plan:     IntentRoute{Intent: IntentPricingQuery},
-		UserText: "5090 包月多少钱",
+		UserText: "5090 目录价包月多少钱",
 	})
 
 	// The route handled it (did not fall back) and priced the 5090.
-	assert.Equal(t, "GetCompShareInstancePrice", result.ToolAction)
+	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
 	assert.Contains(t, result.Reply, "5090", "5090 must be priced, not skipped")
 
 	var priceCall *handlerExecCall
 	for i := range exec.calls {
-		if exec.calls[i].action == "GetCompShareInstancePrice" {
+		if exec.calls[i].action == "GetCompShareInstanceUserPrice" {
 			priceCall = &exec.calls[i]
 			break
 		}
 	}
-	require.NotNil(t, priceCall, "GetCompShareInstancePrice never invoked — 5090 was skipped")
+	require.NotNil(t, priceCall, "GetCompShareInstanceUserPrice never invoked — 5090 was skipped")
 
-	// The crux: no Zone forwarded, despite Describe listing cn-sh2-02. Forwarding
-	// it would 230. Without this guard the route silently regresses to ReAct.
+	// The crux: no user-facing Zone forwarded, despite Describe listing cn-sh2-02.
 	_, hasZone := priceCall.args["Zone"]
 	assert.False(t, hasZone,
-		"price call must NOT carry Zone=cn-sh2-02 (or any zone) — it 230s; "+
-			"omitting Zone yields the zone-uniform catalog price")
+		"price call must NOT carry Zone=cn-sh2-02 (or any zone) — it 230s")
 
 	// The GPU's real catalog zone still surfaces in the user-facing display.
 	assert.Contains(t, result.Reply, "cn-sh2-02",

@@ -194,6 +194,12 @@ func internalOnlyAllowedParams(action string) []string {
 		return []string{"Name", "Size", "TotalFiles", "ChargeType", "Quantity", "CouponId", "Zone", "Region"}
 	case "ResizeCFS":
 		return []string{"CfsId", "Size", "CouponId"}
+	case "GetCompShareAttachedDiskUpgradePrice", "CheckCompShareResizeAttachedDisk":
+		return []string{"UHostId", "DiskId", "DiskSpace", "Zone", "Region"}
+	case "ResizeCompShareDisk":
+		return []string{"UHostId", "UDiskId", "Size", "Zone", "Region"}
+	case "ResizeCompShareInstance":
+		return []string{"UHostId", "Cpu", "CPU", "Gpu", "GPU", "Memory", "DiskId", "DiskSpace", "WithoutGpu", "Zone", "Region"}
 	default:
 		return nil
 	}
@@ -206,6 +212,11 @@ func actionAllowsBackendZoneID(action string) bool {
 		"CheckCompShareResourceCapacity",
 		"GetCompShareInstancePrice",
 		"GetCompShareInstanceUserPrice",
+		"GetCompShareInstanceUpgradePrice",
+		"GetCompShareAttachedDiskUpgradePrice",
+		"CheckCompShareResizeAttachedDisk",
+		"ResizeCompShareInstance",
+		"ResizeCompShareDisk",
 		"GetCompShareCFSPrice",
 		"GetCompShareCFSUpgradePrice",
 		"GetCompShareCFSRefundPrice",
@@ -222,6 +233,13 @@ func actionAllowsBackendAzGroup(action string) bool {
 	switch action {
 	case "CheckCompShareNetOptimizer",
 		"SyncCompShareNetOptimizer",
+		"GetCompShareInstancePrice",
+		"GetCompShareInstanceUserPrice",
+		"GetCompShareInstanceUpgradePrice",
+		"GetCompShareAttachedDiskUpgradePrice",
+		"CheckCompShareResizeAttachedDisk",
+		"ResizeCompShareInstance",
+		"ResizeCompShareDisk",
 		"GetCompShareCFSPrice",
 		"CreateCFS":
 		return true

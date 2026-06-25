@@ -110,3 +110,155 @@ func extractRequiredInstanceLocation(result map[string]any) (region, zone string
 	}
 	return region, zone, nil
 }
+
+func addInstancePlacementArgs(args map[string]any, result map[string]any) map[string]any {
+	host, ok := firstInstance(result)
+	if !ok {
+		return args
+	}
+	if id, ok := firstUint32Field(host, "ZoneId", "ZoneID", "zone_id"); ok && id != 0 {
+		args["zone_id"] = id
+	}
+	if id, ok := firstUint32Field(host, "RegionId", "RegionID", "region_id", "az_group", "AZGroup"); ok && id != 0 {
+		args["az_group"] = id
+	}
+	return args
+}
+
+func addRequiredInstanceLocationArgs(args map[string]any, result map[string]any) (map[string]any, error) {
+	region, zone, err := extractRequiredInstanceLocation(result)
+	if err != nil {
+		return nil, err
+	}
+	args["Region"] = region
+	args["Zone"] = zone
+	addInstancePlacementArgs(args, result)
+	return args, nil
+}
+
+func addRequiredPodPlacementArgs(args map[string]any, result map[string]any, supportZones map[string]any) (map[string]any, error) {
+	host, ok := firstInstance(result)
+	if !ok {
+		return nil, fmt.Errorf("未获取到实例真实可用区，无法安全执行该操作。请稍后重试或到控制台确认实例可用区。")
+	}
+	zone := strings.TrimSpace(stringFieldAny(host["Zone"]))
+	region := strings.TrimSpace(stringFieldAny(host["Region"]))
+	if zone == "" {
+		return nil, fmt.Errorf("未获取到实例真实可用区，无法安全执行该操作。请稍后重试或到控制台确认实例可用区。")
+	}
+	if sz, ok := supportZonePlacementForZone(supportZones, zone); ok {
+		if region == "" {
+			region = sz.region
+		}
+		if sz.zoneID != 0 {
+			args["zone_id"] = sz.zoneID
+		}
+		if sz.azGroup != 0 {
+			args["az_group"] = sz.azGroup
+		}
+	}
+	if region == "" {
+		if derived := regionFromZone(zone); derived != "" {
+			region = derived
+		}
+	}
+	if region == "" {
+		return nil, fmt.Errorf("未获取到实例真实可用区，无法安全执行该操作。请稍后重试或到控制台确认实例可用区。")
+	}
+	args["Region"] = region
+	args["Zone"] = zone
+	addInstancePlacementArgsIfMissing(args, result)
+	if resizeDiskViaInstance(result) {
+		if _, ok := args["zone_id"]; !ok {
+			return nil, fmt.Errorf("未获取到实例内部可用区编号，无法安全执行该操作。请稍后重试或到控制台确认实例可用区。")
+		}
+		if _, ok := args["az_group"]; !ok {
+			return nil, fmt.Errorf("未获取到实例内部可用区编号，无法安全执行该操作。请稍后重试或到控制台确认实例可用区。")
+		}
+	}
+	return args, nil
+}
+
+func addInstancePlacementArgsIfMissing(args map[string]any, result map[string]any) map[string]any {
+	host, ok := firstInstance(result)
+	if !ok {
+		return args
+	}
+	if _, exists := args["zone_id"]; !exists {
+		if id, ok := firstUint32Field(host, "ZoneId", "ZoneID", "zone_id"); ok && id != 0 {
+			args["zone_id"] = id
+		}
+	}
+	if _, exists := args["az_group"]; !exists {
+		if id, ok := firstUint32Field(host, "RegionId", "RegionID", "region_id", "az_group", "AZGroup"); ok && id != 0 {
+			args["az_group"] = id
+		}
+	}
+	return args
+}
+
+type supportZonePlacement struct {
+	region  string
+	zoneID  uint32
+	azGroup uint32
+}
+
+func supportZonePlacementForZone(result map[string]any, zone string) (supportZonePlacement, bool) {
+	zone = strings.TrimSpace(zone)
+	if result == nil || zone == "" {
+		return supportZonePlacement{}, false
+	}
+	raw, _ := result["ZoneInfo"].([]any)
+	for _, item := range raw {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(stringFieldAny(entry["Zone"])) != zone {
+			continue
+		}
+		placement := supportZonePlacement{
+			region: stringFieldAny(entry["Region"]),
+		}
+		if id, ok := parseUint32Any(entry["ZoneId"]); ok {
+			placement.zoneID = id
+		}
+		if id, ok := parseUint32Any(entry["RegionId"]); ok {
+			placement.azGroup = id
+		}
+		return placement, true
+	}
+	return supportZonePlacement{}, false
+}
+
+func stringFieldAny(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func firstUint32Field(m map[string]any, keys ...string) (uint32, bool) {
+	for _, key := range keys {
+		if id, ok := parseUint32Any(m[key]); ok {
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+const missingWorkflowPriceMessage = "未获取到价格，无法安全确认，请稍后重试或到控制台确认。"
+
+func requiredPriceField(result map[string]any, key string) (float64, error) {
+	if result == nil {
+		return 0, fmt.Errorf(missingWorkflowPriceMessage)
+	}
+	raw, exists := result[key]
+	if !exists {
+		return 0, fmt.Errorf(missingWorkflowPriceMessage)
+	}
+	if price, ok := priceNumber(raw); ok {
+		return price, nil
+	}
+	return 0, fmt.Errorf(missingWorkflowPriceMessage)
+}

@@ -19,7 +19,9 @@ const (
 	// (above) directional word from the real-time-query rule, since the block is
 	// no longer above that rule.
 	// 2026-06-23: clarify network acceleration close is not exposed by the agent.
-	mutatingReActPromptSHA256 = "1249d1590a5327a508e93cf649cf1a9ba00a6cb0b45393237fa0b1afb61eefd6"
+	// 2026-06-25: route price questions through the user-price API so list/original
+	// prices and discounted prices share one live upstream path.
+	mutatingReActPromptSHA256 = "d1bccd0367830243c39a50aa35133d452b9de84a9bce399b697a9ad3e0eaf950"
 	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
 	// 2026-06-22 (阶段1A KV-cache): volatile userContext block moved to the tail.
 	readOnlyReActPromptSHA256 = "a9824405b7522b7c89de15f04c1464377207c0b52c128ce8dd2d5887f468f127"

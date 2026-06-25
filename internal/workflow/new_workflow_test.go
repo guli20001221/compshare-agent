@@ -31,6 +31,8 @@ func podStoppedInstanceResult() map[string]any {
 			"State":        "Stopped",
 			"Region":       "cn-pod",
 			"Zone":         "cn-pod-01",
+			"ZoneId":       float64(9001),
+			"RegionId":     float64(3001),
 			"InstanceType": "Container",
 			"GpuType":      "4090",
 			"GPU":          float64(1),
@@ -314,6 +316,168 @@ func TestResizeDisk_PodSystemDiskUsesResizeInstance(t *testing.T) {
 	assert.False(t, oldAPICalled, "Pod disk resize must not call ResizeCompShareDisk")
 }
 
+func TestResizeDisk_MissingPriceBlockedBeforeConfirm(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":            diskResizeInstanceResult(),
+		"CheckCompShareResizeAttachedDisk":     {"RetCode": 0},
+		"GetCompShareAttachedDiskUpgradePrice": {"RetCode": 0},
+		"ResizeCompShareDisk":                  {"RetCode": 0},
+	}}
+	onStep, events := collectEvents()
+	def := ResizeDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("missing disk resize price must be blocked before confirmation")
+		return true
+	}, onStep)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":  "uhost-test",
+		"DiskType": "Boot",
+		"Size":     float64(120),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "未获取到价格")
+	for _, ev := range *events {
+		assert.False(t, ev.Type == StepConfirm && ev.Status == "waiting")
+	}
+	_, resized := findExecutorCall(executor.calls, "ResizeCompShareDisk")
+	assert.False(t, resized)
+}
+
+func TestResizeDisk_MissingInstanceLocationBlockedBeforePrice(t *testing.T) {
+	instance := diskResizeInstanceResult()
+	host := instance["UHostSet"].([]any)[0].(map[string]any)
+	delete(host, "Region")
+	delete(host, "Zone")
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": instance,
+	}}
+	def := ResizeDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("missing instance location must be blocked before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":  "uhost-test",
+		"DiskType": "Boot",
+		"Size":     float64(120),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "真实可用区")
+	_, checked := findExecutorCall(executor.calls, "CheckCompShareResizeAttachedDisk")
+	assert.False(t, checked)
+	_, priced := findExecutorCall(executor.calls, "GetCompShareAttachedDiskUpgradePrice")
+	assert.False(t, priced)
+}
+
+func TestResizeDisk_PodMissingInternalPlacementBlockedBeforePrice(t *testing.T) {
+	instance := podStoppedInstanceResult()
+	host := instance["UHostSet"].([]any)[0].(map[string]any)
+	delete(host, "ZoneId")
+	delete(host, "RegionId")
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": instance,
+	}}
+	def := ResizeDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("Pod disk resize without internal placement must be blocked before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":  "cpod-test",
+		"DiskType": "Boot",
+		"Size":     float64(120),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "内部可用区编号")
+	_, checked := findExecutorCall(executor.calls, "CheckCompShareResizeAttachedDisk")
+	assert.False(t, checked)
+	_, priced := findExecutorCall(executor.calls, "GetCompShareAttachedDiskUpgradePrice")
+	assert.False(t, priced)
+}
+
+func TestResizeDisk_PodSystemDiskCarriesInternalPlacement(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": map[string]any{"UHostSet": []any{
+			map[string]any{
+				"UHostId":      "cpod-test",
+				"Name":         "pod-gpu",
+				"State":        "Stopped",
+				"Region":       "cn-pod",
+				"Zone":         "cn-pod-01",
+				"InstanceType": "Container",
+				"DiskSet": []any{
+					map[string]any{"DiskId": "cvolume-boot", "Name": "pod-sys", "Type": "Boot", "Size": float64(60)},
+				},
+			},
+		}},
+		"DescribeCompShareSupportZone": {"ZoneInfo": []any{
+			map[string]any{
+				"Zone":     "cn-pod-01",
+				"Region":   "cn-pod",
+				"ZoneId":   float64(9001),
+				"RegionId": float64(3001),
+				"IsPod":    true,
+			},
+		}},
+		"CheckCompShareResizeAttachedDisk":     {"RetCode": 0},
+		"GetCompShareAttachedDiskUpgradePrice": {"Price": float64(2.5)},
+		"ResizeCompShareInstance":              {"RetCode": 0},
+	}}
+	def := ResizeDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool { return true }, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":  "cpod-test",
+		"DiskType": "Boot",
+		"Size":     float64(120),
+	})
+
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+	priceCall, ok := findExecutorCall(executor.calls, "GetCompShareAttachedDiskUpgradePrice")
+	require.True(t, ok)
+	assert.Equal(t, uint32(9001), priceCall.args["zone_id"])
+	assert.Equal(t, uint32(3001), priceCall.args["az_group"])
+	resizeCall, ok := findExecutorCall(executor.calls, "ResizeCompShareInstance")
+	require.True(t, ok)
+	assert.Equal(t, uint32(9001), resizeCall.args["zone_id"])
+	assert.Equal(t, uint32(3001), resizeCall.args["az_group"])
+}
+
+func TestResizeDisk_PodInternalPlacementFallsBackToInstanceFields(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":            podStoppedInstanceResult(),
+		"DescribeCompShareSupportZone":         {"ZoneInfo": []any{}},
+		"CheckCompShareResizeAttachedDisk":     {"RetCode": 0},
+		"GetCompShareAttachedDiskUpgradePrice": {"Price": float64(2.5)},
+		"ResizeCompShareInstance":              {"RetCode": 0},
+	}}
+	def := ResizeDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool { return true }, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":  "cpod-test",
+		"DiskType": "Boot",
+		"Size":     float64(120),
+	})
+
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+	resizeCall, ok := findExecutorCall(executor.calls, "ResizeCompShareInstance")
+	require.True(t, ok)
+	assert.Equal(t, uint32(9001), resizeCall.args["zone_id"])
+	assert.Equal(t, uint32(3001), resizeCall.args["az_group"])
+}
+
 func TestResizeDisk_BlocksWhenTargetNotLargerThanCurrent(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": diskResizeInstanceResult(),
@@ -426,6 +590,96 @@ func TestResize_IncludesPriceInConfirm(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "cn-sh2", priceCall.args["Region"])
 	assert.Equal(t, "cn-sh2-02", priceCall.args["Zone"])
+}
+
+func TestResize_MissingPriceBlockedBeforeConfirm(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":        stoppedInstanceResult(),
+		"GetCompShareInstanceUpgradePrice": {"RetCode": 0},
+		"ResizeCompShareInstance":          {"RetCode": 0},
+	}}
+	onStep, events := collectEvents()
+	def := ResizeInstanceDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("missing resize price must be blocked before confirmation")
+		return true
+	}, onStep)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-test",
+		"Gpu":     float64(2),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "未获取到价格")
+	for _, ev := range *events {
+		assert.False(t, ev.Type == StepConfirm && ev.Status == "waiting")
+	}
+	_, resized := findExecutorCall(executor.calls, "ResizeCompShareInstance")
+	assert.False(t, resized)
+}
+
+func TestResize_MissingInstanceLocationBlockedBeforePrice(t *testing.T) {
+	instance := stoppedInstanceResult()
+	host := instance["UHostSet"].([]any)[0].(map[string]any)
+	delete(host, "Region")
+	delete(host, "Zone")
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": instance,
+	}}
+	def := ResizeInstanceDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("missing instance location must be blocked before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-test",
+		"Gpu":     float64(2),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "真实可用区")
+	_, priced := findExecutorCall(executor.calls, "GetCompShareInstanceUpgradePrice")
+	assert.False(t, priced)
+}
+
+func TestResize_CarriesInternalPlacement(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": map[string]any{"UHostSet": []any{
+			map[string]any{
+				"UHostId":  "uhost-test",
+				"Name":     "test-gpu",
+				"State":    "Stopped",
+				"Region":   "cn-sh2",
+				"Zone":     "cn-sh2-02",
+				"ZoneId":   float64(9001),
+				"RegionId": float64(3001),
+			},
+		}},
+		"GetCompShareInstanceUpgradePrice": {"Price": float64(1.5)},
+		"ResizeCompShareInstance":          {"RetCode": 0},
+	}}
+	def := ResizeInstanceDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool { return true }, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-test",
+		"Gpu":     float64(2),
+	})
+
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+	priceCall, ok := findExecutorCall(executor.calls, "GetCompShareInstanceUpgradePrice")
+	require.True(t, ok)
+	assert.Equal(t, uint32(9001), priceCall.args["zone_id"])
+	assert.Equal(t, uint32(3001), priceCall.args["az_group"])
+	resizeCall, ok := findExecutorCall(executor.calls, "ResizeCompShareInstance")
+	require.True(t, ok)
+	assert.Equal(t, uint32(9001), resizeCall.args["zone_id"])
+	assert.Equal(t, uint32(3001), resizeCall.args["az_group"])
 }
 
 func TestResize_PassesParamsToAPI(t *testing.T) {

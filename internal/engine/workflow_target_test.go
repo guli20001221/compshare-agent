@@ -41,7 +41,11 @@ func TestExecuteWorkflowCreateCFSResolvesPodZone(t *testing.T) {
 			}}, nil
 		case "GetCompShareCFSPrice":
 			priceArgs = args
-			return map[string]any{"Price": float64(99)}, nil
+			return map[string]any{
+				"PriceDetails": []any{
+					map[string]any{"ChargeType": "Month", "Disks": float64(99)},
+				},
+			}, nil
 		case "CreateCFS":
 			createArgs = args
 			return map[string]any{"CfsId": "cfs-new"}, nil

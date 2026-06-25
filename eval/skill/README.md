@@ -27,9 +27,9 @@ One JSON object per line (`//` comments and blank lines skipped):
 ```json
 {"id":"pricing_01","question":"想问下 4090 现在租一个小时要多少钱啊","lane":"fast",
  "expected_skill":"pricing_query",
- "expected_tools":["DescribeAvailableCompShareInstanceTypes","GetCompShareInstancePrice"],
+ "expected_tools":["DescribeAvailableCompShareInstanceTypes","DescribeCompShareSupportZone","GetCompShareInstanceUserPrice"],
  "forbidden_tools":["DescribeCompShareImages"],
- "reply_should_contain":["4090"],"overlapping_group":"pricing_vs_billing","tags":["price"]}
+ "reply_should_contain":["4090","¥1.58"],"overlapping_group":"pricing_vs_billing","tags":["price"]}
 ```
 
 - `lane`: `fast` means deterministic routing and drives **both** layers; `diagnosis` / `agent` drive only the
@@ -54,7 +54,7 @@ Offline (deterministic, CI):
    also probes unrelated tools fails. This forces `expected_tools` to be the complete real
    set (it caught `stock_availability` calling 3 tools, not the 1 I first declared).
 4. **tool-arg pass** — `expected_tool_args` pins specific arguments a tool must carry
-   (e.g. pricing `GetCompShareInstancePrice.GpuType == "4090"`), so calling the right tool
+   (e.g. pricing `GetCompShareInstanceUserPrice.GpuType == "4090"`), so calling the right tool
    with the wrong GPU / zone / charge type is caught.
 5. **reply-keyword pass** — deterministic reply contains / excludes the declared keywords.
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/compshare-agent/internal/zones"
 )
 
 // Pricing route (PR #3, 2026-05-22).
@@ -12,9 +14,10 @@ import (
 // Two-stage handler: stage 1 reads DescribeAvailableCompShareInstanceTypes
 // to (a) drive the GPU-name vocabulary for user-text matching and (b)
 // pick a default 1-GPU spec (CPU + Memory + Zone) per model. Stage 2
-// invokes GetCompShareInstancePrice once per matched GPU model with
-// ChargeType omitted, which returns all billing variants (按量 / 包日 /
-// 包月 / Spot) in a single response.
+// invokes the account-price API because it returns both payable prices and
+// original/list prices. This lets ordinary "多少钱", explicit "折后价", and
+// explicit "目录价/标准价" questions share the same upstream call instead of
+// relying on the catalog-price endpoint that can return 8090 for live specs.
 //
 // Default-spec choice: 1 GPU + the smallest valid CPU/Memory combo in
 // the MachineSizes.Collection slice. Most "X 多少钱一小时" askers want
@@ -38,12 +41,11 @@ const (
 )
 
 // handlePricingQuery is the entry point. Returns a HandlerResult whose
-// reply is a markdown price table; ToolAction is always set to the
-// registry tool (GetCompShareInstancePrice) — even on early exits where
-// stage 1 fetched nothing — so the trace + handler-action-whitelist
-// plumbing stays consistent with sibling route handlers.
+// reply is a markdown price table; ToolAction is set to the selected price
+// tool even on early exits so trace + handler-action-whitelist plumbing stays
+// consistent with sibling route handlers.
 func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
-	const action = "GetCompShareInstancePrice"
+	const action = "GetCompShareInstanceUserPrice"
 
 	// Stage 1: list available GPU types (vocabulary + default spec source).
 	const describeAction = "DescribeAvailableCompShareInstanceTypes"
@@ -75,6 +77,8 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 		return result
 	}
 
+	supportZones := fetchStockSupportZones(ctx, h)
+
 	// Stage 2: fetch price for each matched GPU model with a default spec.
 	// (action is declared at the top of the function so early exits also
 	// stamp ToolAction for trace consistency.)
@@ -86,25 +90,16 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 			// an invalid price call.
 			continue
 		}
-		// spec.Memory is in GB (Describe Collection[].Memory[] schema), but
-		// GetCompShareInstancePrice expects MB. Convert here once at the
-		// boundary so the rendered header (which says "GB") and the API
-		// argument stay consistent.
-		// Zone is OMITTED from the price call. Live probe (pricing_probe_test.go,
-		// 2026-06-04) showed the upstream validator rejects Describe's per-GPU
-		// catalog zone (5090→cn-sh2-02, 4090→cn-bj2-03) with RetCode=230
-		// "Params [Zone] not available"; forwarding it 230s those GPUs and
-		// silently degrades the route to ReAct. Omitting Zone returns the
-		// catalog price verbatim — byte-identical to the accepted-zone price
-		// for 5090/4090/A100, a zone-uniform catalog lookup. spec.Zone is kept
-		// only for the display header below.
-		args := map[string]any{
-			"GpuType": name,
-			"Gpu":     1,
-			"Cpu":     spec.Cpu,
-			"Memory":  spec.Memory * 1024,
-		}
-		priceRaw, fbInner := executeRouteAction(ctx, h, req.Plan.Intent, action, args)
+		// spec.Memory is in GB (Describe Collection[].Memory[] schema), while
+		// price APIs expect MB. Convert here once at the boundary so the
+		// rendered header (which says "GB") and the API argument stay consistent.
+		// Keep the human Zone out of the price API call and pass only backend
+		// placement ids resolved from DescribeCompShareSupportZone. Passing a
+		// bare non-default Zone can trigger RetCode=230; omitting placement can
+		// make catalog pricing return empty or 8090 for some charge types.
+		args := pricingPriceArgs(name, spec)
+		addPricingPlacementArgs(args, spec.Zone, supportZones)
+		priceRaw, fbInner := executeRouteActionInternal(ctx, h, req.Plan.Intent, action, args)
 		if fbInner != nil {
 			// Tolerate per-GPU failure: continue with the others. A
 			// transient backend hiccup on one model shouldn't blank the
@@ -117,6 +112,7 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 			Cpu:     spec.Cpu,
 			Memory:  spec.Memory,
 			RawData: priceRaw,
+			Kind:    pricingKindForQuery(action, req.UserText),
 		})
 	}
 
@@ -131,6 +127,65 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 	return result
 }
 
+func pricingWantsCatalogPrice(userText string) bool {
+	text := strings.ToLower(strings.TrimSpace(userText))
+	if text == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"目录价", "标准价", "官方价",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func pricingPriceArgs(name string, spec pricingDefaultSpec) map[string]any {
+	memMB := spec.Memory * 1024
+	return map[string]any{
+		"GpuType": name,
+		"GPU":     1,
+		"CPU":     spec.Cpu,
+		"Memory":  memMB,
+	}
+}
+
+func pricingKindForQuery(_ string, userText string) string {
+	if pricingWantsCatalogPrice(userText) {
+		return "标准价/目录价"
+	}
+	text := strings.ToLower(strings.TrimSpace(userText))
+	for _, marker := range []string{"折后", "实际价格", "我的价格", "我买", "优惠后", "到手价", "用户价", "实际是多少钱", "实际多少钱"} {
+		if strings.Contains(text, marker) {
+			return "用户折后价"
+		}
+	}
+	return "当前账号价格（含折扣）"
+}
+
+func addPricingPlacementArgs(args map[string]any, zone string, supportZones []zones.ZoneInfo) {
+	if args == nil || zone == "" {
+		return
+	}
+	for _, z := range supportZones {
+		if z.Zone != zone {
+			continue
+		}
+		if z.Region != "" {
+			args["Region"] = z.Region
+		}
+		if z.ZoneID != 0 {
+			args["zone_id"] = z.ZoneID
+		}
+		if z.RegionID != 0 {
+			args["az_group"] = z.RegionID
+		}
+		return
+	}
+}
+
 // pricingDefaultSpec captures the 1-GPU default we use for price calls.
 type pricingDefaultSpec struct {
 	Zone   string
@@ -139,13 +194,14 @@ type pricingDefaultSpec struct {
 }
 
 // gpuPriceRow bundles one (name, spec, raw-price-result) tuple for the
-// renderer. RawData is the GetCompShareInstancePrice response map.
+// renderer. RawData is the selected upstream price response map.
 type gpuPriceRow struct {
 	Name    string
 	Zone    string
 	Cpu     int
 	Memory  int
 	RawData map[string]any
+	Kind    string
 }
 
 // pickDefaultPricingSpec scans the Describe items for the first entry
@@ -268,15 +324,19 @@ func renderPricingReply(rows []gpuPriceRow, userText string) string {
 	for _, row := range rows {
 		// row.Memory is in GB (sourced from Describe Collection[].Memory[],
 		// which is GB; see pickDefaultPricingSpec).
-		header := fmt.Sprintf("### %s · %s · 1卡 / %dvCPU / %dGB",
-			row.Name, row.Zone, row.Cpu, row.Memory)
+		kind := row.Kind
+		if kind == "" {
+			kind = "标准价/目录价"
+		}
+		header := fmt.Sprintf("### %s · %s · 1卡 / %dvCPU / %dGB · %s",
+			row.Name, row.Zone, row.Cpu, row.Memory, kind)
 		lines = append(lines, header)
 
 		// Extract Postpay/Day/Month/Spot price strings if present.
 		// Schema observed in CompShare price responses:
 		//   {InstancePrice: {Postpay: {Price: x.xx, OriginalPrice: y.yy}, ...}}
 		// We accept either nested form or a flat {Postpay: x.xx}.
-		bill := pricingBillingTable(row.RawData)
+		bill := pricingBillingTableForKind(row.RawData, kind)
 		if len(bill) == 0 {
 			lines = append(lines, "  价格数据缺失")
 			continue
@@ -312,7 +372,7 @@ func pricingLabel(chargeType string) string {
 }
 
 // pricingBillingTable best-efforts the price-per-charge-type extract
-// from the GetCompShareInstancePrice response. Handles three shapes
+// from the GetCompShareInstanceUserPrice response. Handles three shapes
 // observed in production:
 //
 //	Shape 1 (flat):   { Postpay: <num>, Day: <num>, ... }
@@ -328,6 +388,13 @@ func pricingLabel(chargeType string) string {
 //
 // Returns "¥X.XX" strings keyed by ChargeType label.
 func pricingBillingTable(raw map[string]any) map[string]string {
+	return pricingBillingTableForKind(raw, "")
+}
+
+func pricingBillingTableForKind(raw map[string]any, kind string) map[string]string {
+	if pricingKindIsCatalog(kind) {
+		return pricingListBillingTable(raw)
+	}
 	out := map[string]string{}
 	if raw == nil {
 		return out
@@ -398,6 +465,30 @@ func pricingBillingTable(raw map[string]any) map[string]string {
 				out[key] = orig
 			}
 		default:
+			if s := pricingFormatNumber(val); s != "" {
+				out[key] = s
+			}
+		}
+	}
+	normalizePricingChargeTypes(out)
+	return out
+}
+
+func pricingKindIsCatalog(kind string) bool {
+	return strings.Contains(kind, "目录价") || strings.Contains(kind, "标准价")
+}
+
+func pricingListBillingTable(raw map[string]any) map[string]string {
+	out := map[string]string{}
+	if raw == nil {
+		return out
+	}
+	listPrices := mapChargeTypeToInstance(raw["ListPriceDetails"])
+	if len(listPrices) == 0 {
+		listPrices = mapChargeTypeToInstance(raw["OriginalPriceDetails"])
+	}
+	for _, key := range []string{"Postpay", "Spot", "Day", "Month", "Dynamic"} {
+		if val, ok := listPrices[key]; ok {
 			if s := pricingFormatNumber(val); s != "" {
 				out[key] = s
 			}
