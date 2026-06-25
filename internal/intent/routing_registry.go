@@ -1646,11 +1646,10 @@ func stockZoneFilterFromText(userText string, supportZones []zones.ZoneInfo) map
 			out[strings.ToLower(z.Zone)] = struct{}{}
 			continue
 		}
-		for _, prefix := range stockZoneDescribePrefixes(z.Describe) {
-			if strings.Contains(squashed, prefix) {
-				out[strings.ToLower(z.Zone)] = struct{}{}
-				break
-			}
+	}
+	for prefix, zone := range stockUniqueZoneDescribePrefixes(supportZones) {
+		if strings.Contains(squashed, prefix) {
+			out[strings.ToLower(zone)] = struct{}{}
 		}
 	}
 	if len(out) == 0 {
@@ -1690,6 +1689,31 @@ func stockZoneDescribePrefixes(describe string) []string {
 		}
 		seen[prefix] = struct{}{}
 		out = append(out, prefix)
+	}
+	return out
+}
+
+func stockUniqueZoneDescribePrefixes(supportZones []zones.ZoneInfo) map[string]string {
+	prefixZones := map[string]map[string]struct{}{}
+	for _, z := range supportZones {
+		if z.Zone == "" {
+			continue
+		}
+		for _, prefix := range stockZoneDescribePrefixes(z.Describe) {
+			if prefixZones[prefix] == nil {
+				prefixZones[prefix] = map[string]struct{}{}
+			}
+			prefixZones[prefix][strings.ToLower(z.Zone)] = struct{}{}
+		}
+	}
+	out := map[string]string{}
+	for prefix, zones := range prefixZones {
+		if len(zones) != 1 {
+			continue
+		}
+		for zone := range zones {
+			out[prefix] = zone
+		}
 	}
 	return out
 }
@@ -1739,7 +1763,6 @@ func matchedNormalStockEntries(raw map[string]any, userText string) []stockInsta
 			Name:   name,
 			Status: status,
 			Zone:   zone,
-			ZoneID: stockZoneID(entry),
 		})
 	}
 	return out
@@ -1979,12 +2002,12 @@ func renderStockInventoryCapacityReply(checks []stockCapacityCheck, inventoryLin
 		inventoryLine = fmt.Sprintf("原始 GPU 库存：接口未返回 %s 的库存数量。", models)
 	}
 	if len(checks) > 0 && anyStockCapacityEnough(checks) {
-		return fmt.Sprintf("%s 当前开售。\n%s\n默认创建配置已通过容量预检，可以新建实例。", models, inventoryLine)
+		return fmt.Sprintf("%s 默认创建配置已通过容量预检，可以新建实例。\n%s\n机型状态：开售。", models, inventoryLine)
 	}
 	if allStockCapacityFailed(checks) {
-		return fmt.Sprintf("%s 当前开售。\n%s\n默认创建配置容量预检未完成，暂不能确认默认配置是否可创建。", models, inventoryLine)
+		return fmt.Sprintf("%s 默认创建配置容量预检未完成，暂不能确认默认配置是否可创建。\n%s\n机型状态：开售。", models, inventoryLine)
 	}
-	return fmt.Sprintf("%s 当前开售。\n%s\n默认创建配置暂未通过容量预检，暂时不能新建实例。", models, inventoryLine)
+	return fmt.Sprintf("%s 默认创建配置暂未通过容量预检，暂时不能新建实例。\n%s\n机型状态：开售。", models, inventoryLine)
 }
 
 func uniqueStockCheckNames(checks []stockCapacityCheck) []string {
@@ -2037,10 +2060,11 @@ func renderRawGPUInventoryLine(modelOrder []string, entriesByModel map[string][]
 		entries := entriesByModel[model]
 		known := []string{}
 		for _, entry := range entries {
-			if entry.ZoneID == 0 {
+			zoneID := stockInventoryZoneID(entry, supportZones)
+			if zoneID == 0 {
 				continue
 			}
-			gpuCounts, ok := pool[entry.ZoneID]
+			gpuCounts, ok := pool[zoneID]
 			if !ok {
 				continue
 			}
@@ -2083,9 +2107,20 @@ func stockZoneDisplay(entry stockInstanceTypeEntry, supportZones []zones.ZoneInf
 				return z.Describe
 			}
 		}
-		return fmt.Sprintf("zone_id=%d", entry.ZoneID)
+		return "未知可用区"
 	}
 	return "未知可用区"
+}
+
+func stockInventoryZoneID(entry stockInstanceTypeEntry, supportZones []zones.ZoneInfo) uint32 {
+	if entry.Zone != "" {
+		for _, z := range supportZones {
+			if z.ZoneID != 0 && strings.EqualFold(z.Zone, entry.Zone) {
+				return z.ZoneID
+			}
+		}
+	}
+	return entry.ZoneID
 }
 
 func stockEntryZoneLabels(entries []stockInstanceTypeEntry, supportZones []zones.ZoneInfo) []string {

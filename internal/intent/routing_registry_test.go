@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/routing"
+	"github.com/compshare-agent/internal/zones"
 )
 
 // routingIntentSet returns the route intents declared by the generated
@@ -303,8 +304,8 @@ func (m *stockCapacityZoneExecutor) Execute(_ context.Context, action string, ar
 	switch action {
 	case "DescribeAvailableCompShareInstanceTypes":
 		return map[string]any{"AvailableInstanceTypes": []any{
-			map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "ZoneId": float64(1), "Status": "Normal"},
-			map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "ZoneId": float64(2), "Status": "Normal"},
+			map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
+			map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
 		}}, nil
 	case "DescribeCompShareSupportZone":
 		return stockSupportZonesFixture(), nil
@@ -338,8 +339,8 @@ func (m *stockCapacityFallbackExecutor) Execute(_ context.Context, action string
 	switch action {
 	case "DescribeAvailableCompShareInstanceTypes":
 		return map[string]any{"AvailableInstanceTypes": []any{
-			map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "ZoneId": float64(2), "Status": "Normal"},
-			map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "ZoneId": float64(1), "Status": "Normal"},
+			map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
+			map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
 		}}, nil
 	case "DescribeCompShareSupportZone":
 		return stockSupportZonesFixture(), nil
@@ -961,7 +962,7 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	exec := &routeSequenceExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
 			"AvailableInstanceTypes": []any{
-				map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "ZoneId": float64(1), "Status": "Normal"},
+				map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
 			},
 		},
 		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
@@ -991,7 +992,7 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	if result.Status != HandlerStatusHandled {
 		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
 	}
-	if !strings.Contains(result.Reply, "4090 当前开售") || !strings.Contains(result.Reply, "默认创建配置暂未通过容量预检") {
+	if !strings.Contains(result.Reply, "默认创建配置暂未通过容量预检") || !strings.Contains(result.Reply, "机型状态：开售") {
 		t.Fatalf("reply should answer concrete creatability, got: %s", result.Reply)
 	}
 	if strings.Contains(result.Reply, "ResourceEnough") || strings.Contains(result.Reply, "容量预检口径") {
@@ -1026,7 +1027,7 @@ func TestStockAvailabilityReportsRawGPUInventoryAndCapacitySeparately(t *testing
 	exec := &routeSequenceExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
 			"AvailableInstanceTypes": []any{
-				map[string]any{"Name": "2080Ti", "Zone": "cn-sh2-02", "ZoneId": float64(2), "Status": "Normal"},
+				map[string]any{"Name": "2080Ti", "Zone": "cn-sh2-02", "Status": "Normal"},
 			},
 		},
 		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
@@ -1057,7 +1058,7 @@ func TestStockAvailabilityReportsRawGPUInventoryAndCapacitySeparately(t *testing
 		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
 	}
 	for _, want := range []string{
-		"2080Ti 当前开售",
+		"机型状态：开售",
 		"上海二B 库存约 3 张 GPU",
 		"默认创建配置暂未通过容量预检",
 	} {
@@ -1080,8 +1081,8 @@ func TestStockAvailabilityFiltersByLiveZoneDescribe(t *testing.T) {
 	exec := &routeSequenceExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
 			"AvailableInstanceTypes": []any{
-				map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "ZoneId": float64(1), "Status": "Normal"},
-				map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "ZoneId": float64(2), "Status": "Normal"},
+				map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
+				map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
 			},
 		},
 		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
@@ -1115,6 +1116,9 @@ func TestStockAvailabilityFiltersByLiveZoneDescribe(t *testing.T) {
 	if !strings.Contains(result.Reply, "上海二B 库存约 5 张 GPU") {
 		t.Fatalf("reply should use live Describe zone label and count, got: %s", result.Reply)
 	}
+	if !strings.Contains(result.Reply, "默认创建配置已通过容量预检，可以新建实例") {
+		t.Fatalf("reply should state positive capacity verdict, got: %s", result.Reply)
+	}
 	if strings.Contains(result.Reply, "华北二A") || strings.Contains(result.Reply, "cn-wlcb-01") {
 		t.Fatalf("reply should be narrowed to the requested Shanghai zone, got: %s", result.Reply)
 	}
@@ -1127,7 +1131,7 @@ func TestStockAvailabilityMissingInventoryKeyIsUnknownNotZero(t *testing.T) {
 	exec := &routeSequenceExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
 			"AvailableInstanceTypes": []any{
-				map[string]any{"Name": "V100S", "Zone": "cn-wlcb-01", "ZoneId": float64(1), "Status": "Normal"},
+				map[string]any{"Name": "V100S", "Zone": "cn-wlcb-01", "Status": "Normal"},
 			},
 		},
 		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
@@ -1165,6 +1169,74 @@ func TestStockAvailabilityMissingInventoryKeyIsUnknownNotZero(t *testing.T) {
 	}
 }
 
+func TestStockAvailabilityMissingSupportZoneMappingIsUnknownNotZero(t *testing.T) {
+	exec := &routeSequenceExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "2080Ti", "Zone": "cn-sh2-02", "Status": "Normal"},
+			},
+		},
+		"DescribeCompShareSupportZone": {
+			"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(1), "Describe": "华北二A"},
+			},
+		},
+		"DescribeCompShareGpuInventory": {
+			"GpuInventory": map[string]any{"Exclusive": map[string]any{
+				"2": map[string]any{"2080Ti": float64(3)},
+			}},
+		},
+		"DescribeCompShareImages": {
+			"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu-nvidia 22.04", "Status": "Available", "ImageType": "System"},
+			},
+		},
+		"CheckCompShareResourceCapacity": {
+			"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": false},
+			},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
+		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		UserText: "2080ti有库存吗",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	if !strings.Contains(result.Reply, "cn-sh2-02 接口未返回 2080Ti 的库存数量") {
+		t.Fatalf("missing support-zone mapping should be unknown, got: %s", result.Reply)
+	}
+	if strings.Contains(result.Reply, "库存约 0 张 GPU") || strings.Contains(result.Reply, "zone_id=") {
+		t.Fatalf("missing support-zone mapping must not render zero stock or internal zone_id: %s", result.Reply)
+	}
+}
+
+func TestStockZoneFilterIgnoresAmbiguousShortChineseRegionPrefix(t *testing.T) {
+	supportZones := []zones.ZoneInfo{
+		{Zone: "cn-wlcb-01", Describe: "华北二A"},
+		{Zone: "cn-bj2-03", Describe: "华北一C"},
+		{Zone: "cn-sh2-02", Describe: "上海二B"},
+	}
+
+	if got := stockZoneFilterFromText("华北有4090库存吗", supportZones); got != nil {
+		t.Fatalf("ambiguous short prefix should not narrow zones, got: %#v", got)
+	}
+	if got := stockZoneFilterFromText("华北二有4090库存吗", supportZones); len(got) != 1 {
+		t.Fatalf("unique longer prefix should narrow one zone, got: %#v", got)
+	} else if _, ok := got["cn-wlcb-01"]; !ok {
+		t.Fatalf("unique longer prefix should resolve cn-wlcb-01, got: %#v", got)
+	}
+	if got := stockZoneFilterFromText("上海有4090库存吗", supportZones); len(got) != 1 {
+		t.Fatalf("unique two-rune prefix should still resolve when unambiguous, got: %#v", got)
+	} else if _, ok := got["cn-sh2-02"]; !ok {
+		t.Fatalf("unique Shanghai prefix should resolve cn-sh2-02, got: %#v", got)
+	}
+}
+
 func TestRenderStockCapacityReply_PrecheckFailureFallsBackToCatalogOpen(t *testing.T) {
 	// #3b: every model reaching renderStockCapacityReply came from
 	// matchedNormalStockEntries, so it is catalog-Normal (机型开售) by construction.
@@ -1198,7 +1270,7 @@ func TestStockAvailabilityUsesFirstMatchedZoneForCapacityPrecheck(t *testing.T) 
 	if result.Status != HandlerStatusHandled {
 		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
 	}
-	if !strings.Contains(result.Reply, "4090 当前开售") || !strings.Contains(result.Reply, "默认创建配置暂未通过容量预检") {
+	if !strings.Contains(result.Reply, "默认创建配置暂未通过容量预检") || !strings.Contains(result.Reply, "机型状态：开售") {
 		t.Fatalf("reply should still answer from successful capacity checks, got: %s", result.Reply)
 	}
 	if strings.Contains(result.Reply, "部分可用区容量预检未完成") {
