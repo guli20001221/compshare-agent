@@ -60,6 +60,8 @@ func IntentToolSubset(i Intent) []string {
 	case IntentStockAvailability:
 		return []string{
 			"DescribeAvailableCompShareInstanceTypes",
+			"DescribeCompShareSupportZone",
+			"DescribeCompShareGpuInventory",
 			"CheckCompShareResourceCapacity",
 			"DescribeCompShareImages",
 		}

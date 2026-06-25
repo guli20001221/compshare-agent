@@ -74,7 +74,9 @@ func TestCompileMinimalPlanCore_DerivesRouteSkillAndExtraTools(t *testing.T) {
 	assert.Equal(t, []string{
 		"CheckCompShareResourceCapacity",
 		"DescribeAvailableCompShareInstanceTypes",
+		"DescribeCompShareGpuInventory",
 		"DescribeCompShareImages",
+		"DescribeCompShareSupportZone",
 	}, plan.RequiredTools)
 	require.Len(t, plan.Skills, 1)
 	assert.Equal(t, "stock_availability", plan.Skills[0].Name)

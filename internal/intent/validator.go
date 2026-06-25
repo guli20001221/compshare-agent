@@ -231,6 +231,8 @@ func validRequiredTool(tool string) bool {
 		// Route Registry v1 (PR A, 2026-05-18). Keep the legacy list above
 		// untouched and accept the route-bound platform-query tools.
 		"DescribeAvailableCompShareInstanceTypes",
+		"DescribeCompShareSupportZone",
+		"DescribeCompShareGpuInventory",
 		"CheckCompShareResourceCapacity",
 		"CheckCompShareNetOptimizer",
 		"DescribeCompShareImages",

@@ -202,6 +202,7 @@ func internalOnlyAllowedParams(action string) []string {
 func actionAllowsBackendZoneID(action string) bool {
 	switch action {
 	case "DescribeAvailableCompShareInstanceTypes",
+		"DescribeCompShareGpuInventory",
 		"CheckCompShareResourceCapacity",
 		"GetCompShareInstancePrice",
 		"GetCompShareInstanceUserPrice",
@@ -233,6 +234,7 @@ func actionAllowsBackendIdentity(action string) bool {
 	switch action {
 	case "CheckCompShareNetOptimizer",
 		"SyncCompShareNetOptimizer",
+		"DescribeCompShareGpuInventory",
 		"DescribeCFS",
 		"GetCompShareCFSPrice",
 		"GetCompShareCFSUpgradePrice",
@@ -303,6 +305,7 @@ var readExpensiveDefaultActions = map[string]bool{
 	"GetCompShareCFSUpgradePrice":             true,
 	"GetCompShareCFSRefundPrice":              true,
 	"DescribeAvailableCompShareInstanceTypes": true,
+	"DescribeCompShareGpuInventory":           true,
 	"CheckCompShareResourceCapacity":          true,
 }
 
