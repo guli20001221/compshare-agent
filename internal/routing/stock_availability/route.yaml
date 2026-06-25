@@ -6,6 +6,8 @@ required_tools:
   - DescribeAvailableCompShareInstanceTypes
 tool_subset:
   - DescribeAvailableCompShareInstanceTypes
+  - DescribeCompShareSupportZone
+  - DescribeCompShareGpuInventory
   - CheckCompShareResourceCapacity
   - DescribeCompShareImages
 required_citation: false

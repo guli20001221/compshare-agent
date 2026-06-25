@@ -176,7 +176,7 @@ var generatedRoutes = []*Route{
 		IntentLabel:        "stock_availability",
 		RouteGroup:         "catalog",
 		RequiredTools:      []string{"DescribeAvailableCompShareInstanceTypes"},
-		ToolSubset:         []string{"DescribeAvailableCompShareInstanceTypes", "CheckCompShareResourceCapacity", "DescribeCompShareImages"},
+		ToolSubset:         []string{"DescribeAvailableCompShareInstanceTypes", "DescribeCompShareSupportZone", "DescribeCompShareGpuInventory", "CheckCompShareResourceCapacity", "DescribeCompShareImages"},
 		HandlerKey:         "handleStockAvailability",
 		PlannerDirectives:  []string{"GPU stock availability questions like \"4090 有没有货\" or \"H100 库存\" should emit stock_availability — these are NOT resource_info (which is only for the user's own instances) and NOT unknown."},
 		PlannerExamples:    []PlannerExample{{Question: "4090 现在有没有货", Confidence: 0.85}},

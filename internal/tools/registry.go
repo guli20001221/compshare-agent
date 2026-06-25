@@ -212,6 +212,18 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
+			Name:        "DescribeCompShareGpuInventory",
+			Description: "查询 GPU 原始库存快照。返回 GpuInventory.Exclusive/Spot，按 zone_id -> GPU 型号 -> 剩余张数组织；该数量只表示原始 GPU 张数，不保证任意 CPU/内存/镜像组合都能创建。要确认某个具体配置是否可创建，还需要 CheckCompShareResourceCapacity。",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+				"required":   []string{},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
 			Name:        "CheckCompShareResourceCapacity",
 			Description: "预检某个具体创建实例配置是否有足够资源，适合在用户已给出 GPU/CPU/内存/镜像/计费方式等创建参数时使用；也可在库存问题已识别 GPU 型号并拿到可用区后，确认该机型当前是否真实可创建。只传 Zone/Region 字符串，内部会处理上游所需字段，不要手填 zone_id/az_group。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。注意：本接口会校验镜像存在/状态，并在 ucloud 路径触发底层镜像适配解析；但它仍不能保证最终创建一定成功，镜像的 SupportedGpuTypes 也只能作为候选排序和风险提示。",
 			Parameters: map[string]any{

@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/routing"
+	"github.com/compshare-agent/internal/zones"
 )
 
 // routingIntentOrder is the registration order of the 10 catalog/status route
@@ -36,6 +38,8 @@ var routingIntentOrder = []Intent{
 func extraHandlerActions() map[Intent][]string {
 	return map[Intent][]string{
 		IntentStockAvailability: {
+			"DescribeCompShareSupportZone",
+			"DescribeCompShareGpuInventory",
 			"DescribeCompShareImages",
 			"CheckCompShareResourceCapacity",
 		},
@@ -554,7 +558,56 @@ func matchUserTokensToAPINames(userText string, apiNames []string) []string {
 			seen[name] = struct{}{}
 		}
 	}
+	if len(matched) == 0 {
+		matched = matchUserGPUVariantAliases(userText, apiNames)
+	}
 	return matched
+}
+
+func matchUserGPUVariantAliases(userText string, apiNames []string) []string {
+	if userText == "" || len(apiNames) == 0 {
+		return nil
+	}
+	tokens := gpuLikeTokenRegex.FindAllString(userText, -1)
+	if len(tokens) == 0 {
+		return nil
+	}
+	seenTokens := map[string]struct{}{}
+	matched := []string{}
+	seenNames := map[string]struct{}{}
+	for _, token := range tokens {
+		token = strings.ToUpper(strings.TrimSpace(token))
+		if token == "" {
+			continue
+		}
+		if _, ok := seenTokens[token]; ok {
+			continue
+		}
+		seenTokens[token] = struct{}{}
+		for _, name := range apiNames {
+			if name == "" {
+				continue
+			}
+			if _, ok := seenNames[name]; ok {
+				continue
+			}
+			upperName := strings.ToUpper(name)
+			if !strings.HasPrefix(upperName, token) || len(upperName) == len(token) {
+				continue
+			}
+			next := rune(upperName[len(token)])
+			if !isGPUVariantSuffixRune(next) {
+				continue
+			}
+			matched = append(matched, name)
+			seenNames[name] = struct{}{}
+		}
+	}
+	return matched
+}
+
+func isGPUVariantSuffixRune(r rune) bool {
+	return r == '_' || (r >= 'A' && r <= 'Z')
 }
 
 // containsAsWord reports whether needle appears in haystack with word
@@ -1472,6 +1525,7 @@ type stockInstanceTypeEntry struct {
 	Name   string
 	Status string
 	Zone   string
+	ZoneID uint32
 }
 
 type stockCapacityCheck struct {
@@ -1493,6 +1547,20 @@ func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req Ha
 	if len(entries) == 0 {
 		return "", false, nil
 	}
+	if req.Plan.Intent != IntentStockAvailability {
+		result := FallbackBeforeTool(FallbackActionNotAllowed)
+		return "", false, &result
+	}
+	supportZones := fetchStockSupportZones(ctx, h)
+	if filter := stockZoneFilterFromText(req.UserText, supportZones); len(filter) > 0 {
+		entries = filterStockEntriesByZone(entries, filter)
+		if len(entries) == 0 {
+			return renderStockReply(stockRaw, req.UserText) + "\n未在你指定的可用区里找到该机型的开售信息。", true, nil
+		}
+	}
+	entriesByModel, modelOrder := groupStockEntriesByModel(entries)
+	inventoryRaw, _ := h.executor.Execute(ctx, "DescribeCompShareGpuInventory", map[string]any{})
+	inventoryLine := renderRawGPUInventoryLine(modelOrder, entriesByModel, inventoryRaw, supportZones)
 	imageRaw, fb := executeRouteAction(ctx, h, req.Plan.Intent, "DescribeCompShareImages", map[string]any{
 		"ImageType": "System",
 		"Limit":     20,
@@ -1506,18 +1574,6 @@ func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req Ha
 	}
 
 	checks := make([]stockCapacityCheck, 0, len(entries))
-	if req.Plan.Intent != IntentStockAvailability {
-		result := FallbackBeforeTool(FallbackActionNotAllowed)
-		return "", false, &result
-	}
-	entriesByModel := map[string][]stockInstanceTypeEntry{}
-	modelOrder := []string{}
-	for _, entry := range entries {
-		if _, ok := entriesByModel[entry.Name]; !ok {
-			modelOrder = append(modelOrder, entry.Name)
-		}
-		entriesByModel[entry.Name] = append(entriesByModel[entry.Name], entry)
-	}
 
 	for _, model := range modelOrder {
 		zoneEntries := entriesByModel[model]
@@ -1531,8 +1587,8 @@ func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req Ha
 			if firstZone == "" {
 				firstZone = entry.Zone
 			}
-			args := capacityPrecheckArgs(entry, imageID)
-			capacityRaw, err := h.executor.Execute(ctx, "CheckCompShareResourceCapacity", args)
+			args := capacityPrecheckArgs(entry, imageID, supportZones)
+			capacityRaw, err := executeStockCapacityPrecheck(ctx, h, args)
 			if err != nil {
 				continue
 			}
@@ -1549,7 +1605,121 @@ func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req Ha
 	if len(checks) == 0 {
 		return renderStockReply(stockRaw, req.UserText) + "\n容量预检未执行：当前接口结果缺少可用区信息。", true, nil
 	}
-	return renderStockCapacityReply(checks), true, nil
+	return renderStockInventoryCapacityReply(checks, inventoryLine), true, nil
+}
+
+func groupStockEntriesByModel(entries []stockInstanceTypeEntry) (map[string][]stockInstanceTypeEntry, []string) {
+	entriesByModel := map[string][]stockInstanceTypeEntry{}
+	modelOrder := []string{}
+	for _, entry := range entries {
+		if _, ok := entriesByModel[entry.Name]; !ok {
+			modelOrder = append(modelOrder, entry.Name)
+		}
+		entriesByModel[entry.Name] = append(entriesByModel[entry.Name], entry)
+	}
+	return entriesByModel, modelOrder
+}
+
+func fetchStockSupportZones(ctx context.Context, h *DemoHandler) []zones.ZoneInfo {
+	list, err := zones.FetchSupportZones(ctx, h.executor, 0, 0)
+	if err != nil {
+		return nil
+	}
+	return list
+}
+
+func stockZoneFilterFromText(userText string, supportZones []zones.ZoneInfo) map[string]struct{} {
+	if len(supportZones) == 0 {
+		return nil
+	}
+	if exact, ok := zones.ExactZone(supportZones, userText); ok {
+		return map[string]struct{}{strings.ToLower(exact): {}}
+	}
+	squashed := squashStockZoneText(userText)
+	out := map[string]struct{}{}
+	for _, z := range supportZones {
+		if z.Zone != "" && strings.Contains(squashed, strings.ToLower(z.Zone)) {
+			out[strings.ToLower(z.Zone)] = struct{}{}
+			continue
+		}
+		if z.Region != "" && strings.Contains(squashed, strings.ToLower(z.Region)) {
+			out[strings.ToLower(z.Zone)] = struct{}{}
+			continue
+		}
+	}
+	for prefix, zone := range stockUniqueZoneDescribePrefixes(supportZones) {
+		if strings.Contains(squashed, prefix) {
+			out[strings.ToLower(zone)] = struct{}{}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func filterStockEntriesByZone(entries []stockInstanceTypeEntry, filter map[string]struct{}) []stockInstanceTypeEntry {
+	if len(filter) == 0 {
+		return entries
+	}
+	out := make([]stockInstanceTypeEntry, 0, len(entries))
+	for _, entry := range entries {
+		if _, ok := filter[strings.ToLower(entry.Zone)]; ok {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func stockZoneDescribePrefixes(describe string) []string {
+	describe = squashStockZoneText(describe)
+	if describe == "" {
+		return nil
+	}
+	runes := []rune(describe)
+	if len(runes) < 2 {
+		return nil
+	}
+	out := []string{}
+	seen := map[string]struct{}{}
+	for n := len(runes); n >= 2; n-- {
+		prefix := string(runes[:n])
+		if _, ok := seen[prefix]; ok {
+			continue
+		}
+		seen[prefix] = struct{}{}
+		out = append(out, prefix)
+	}
+	return out
+}
+
+func stockUniqueZoneDescribePrefixes(supportZones []zones.ZoneInfo) map[string]string {
+	prefixZones := map[string]map[string]struct{}{}
+	for _, z := range supportZones {
+		if z.Zone == "" {
+			continue
+		}
+		for _, prefix := range stockZoneDescribePrefixes(z.Describe) {
+			if prefixZones[prefix] == nil {
+				prefixZones[prefix] = map[string]struct{}{}
+			}
+			prefixZones[prefix][strings.ToLower(z.Zone)] = struct{}{}
+		}
+	}
+	out := map[string]string{}
+	for prefix, zones := range prefixZones {
+		if len(zones) != 1 {
+			continue
+		}
+		for zone := range zones {
+			out[prefix] = zone
+		}
+	}
+	return out
+}
+
+func squashStockZoneText(s string) string {
+	return strings.ToLower(strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(strings.TrimSpace(s)))
 }
 
 func matchedNormalStockEntries(raw map[string]any, userText string) []stockInstanceTypeEntry {
@@ -1589,9 +1759,22 @@ func matchedNormalStockEntries(raw map[string]any, userText string) []stockInsta
 			continue
 		}
 		seen[key] = struct{}{}
-		out = append(out, stockInstanceTypeEntry{Name: name, Status: status, Zone: zone})
+		out = append(out, stockInstanceTypeEntry{
+			Name:   name,
+			Status: status,
+			Zone:   zone,
+		})
 	}
 	return out
+}
+
+func stockZoneID(entry map[string]any) uint32 {
+	for _, key := range []string{"ZoneId", "ZoneID", "zone_id"} {
+		if id, ok := parseUint32Loose(entry[key]); ok {
+			return id
+		}
+	}
+	return 0
 }
 
 // isImageListAllIntent returns true when the user is asking for a full
@@ -1661,8 +1844,8 @@ func hasSpecificImageToken(normalized string) bool {
 	return imageVersionRegex.MatchString(normalized)
 }
 
-func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string) map[string]any {
-	return map[string]any{
+func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string, supportZones []zones.ZoneInfo) map[string]any {
+	args := map[string]any{
 		"Zone":               entry.Zone,
 		"GpuType":            entry.Name,
 		"MachineType":        "G",
@@ -1673,6 +1856,48 @@ func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string) map[stri
 			map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 60},
 		},
 	}
+	if zone := stockZoneInfoForEntry(entry, supportZones); zone.Zone != "" {
+		if zone.Region != "" {
+			args["Region"] = zone.Region
+		}
+		if zone.ZoneID != 0 {
+			args["zone_id"] = zone.ZoneID
+		}
+		if zone.RegionID != 0 {
+			args["az_group"] = zone.RegionID
+		}
+	} else if region := stockRegionFromZone(entry.Zone); region != "" {
+		args["Region"] = region
+	}
+	return args
+}
+
+func executeStockCapacityPrecheck(ctx context.Context, h *DemoHandler, args map[string]any) (map[string]any, error) {
+	if exec, ok := h.executor.(internalHandlerExecutor); ok {
+		return exec.ExecuteInternal(ctx, "CheckCompShareResourceCapacity", args)
+	}
+	return h.executor.Execute(ctx, "CheckCompShareResourceCapacity", args)
+}
+
+func stockZoneInfoForEntry(entry stockInstanceTypeEntry, supportZones []zones.ZoneInfo) zones.ZoneInfo {
+	for _, z := range supportZones {
+		if z.Zone != "" && strings.EqualFold(z.Zone, entry.Zone) {
+			return z
+		}
+	}
+	return zones.ZoneInfo{}
+}
+
+func stockRegionFromZone(zone string) string {
+	zone = strings.TrimSpace(zone)
+	if zone == "" || strings.Count(zone, "-") < 2 {
+		return ""
+	}
+	idx := strings.LastIndex(zone, "-")
+	if idx <= 0 {
+		return ""
+	}
+	return zone[:idx]
 }
 
 func selectCapacityPrecheckImageID(raw map[string]any) string {
@@ -1805,6 +2030,259 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 	}
 	reply := fmt.Sprintf("%s 当前暂无可创建库存，暂时不能新建实例。", models)
 	return appendCapacityFailureNote(reply, failedZones)
+}
+
+func renderStockInventoryCapacityReply(checks []stockCapacityCheck, inventoryLine string) string {
+	reply := renderStockCapacityReply(checks)
+	names := uniqueStockCheckNames(checks)
+	if len(names) == 0 {
+		return reply
+	}
+	sort.Strings(names)
+	models := strings.Join(names, "、")
+	if inventoryLine == "" {
+		inventoryLine = fmt.Sprintf("原始 GPU 库存：接口未返回 %s 的库存数量。", models)
+	}
+	if len(checks) > 0 && anyStockCapacityEnough(checks) {
+		return fmt.Sprintf("%s 默认创建配置已通过容量预检，可以新建实例。\n%s\n机型状态：开售。", models, inventoryLine)
+	}
+	if allStockCapacityFailed(checks) {
+		return fmt.Sprintf("%s 默认创建配置容量预检未完成，暂不能确认默认配置是否可创建。\n%s\n机型状态：开售。", models, inventoryLine)
+	}
+	return fmt.Sprintf("%s 默认创建配置暂未通过容量预检，暂时不能新建实例。\n%s\n机型状态：开售。", models, inventoryLine)
+}
+
+func uniqueStockCheckNames(checks []stockCapacityCheck) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, check := range checks {
+		if check.Name == "" {
+			continue
+		}
+		if _, ok := seen[check.Name]; ok {
+			continue
+		}
+		seen[check.Name] = struct{}{}
+		out = append(out, check.Name)
+	}
+	return out
+}
+
+func anyStockCapacityEnough(checks []stockCapacityCheck) bool {
+	for _, check := range checks {
+		if len(check.EnoughSpecs) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func allStockCapacityFailed(checks []stockCapacityCheck) bool {
+	if len(checks) == 0 {
+		return false
+	}
+	for _, check := range checks {
+		if !check.Failed {
+			return false
+		}
+	}
+	return true
+}
+
+func renderRawGPUInventoryLine(modelOrder []string, entriesByModel map[string][]stockInstanceTypeEntry, raw map[string]any, supportZones []zones.ZoneInfo) string {
+	if len(modelOrder) == 0 {
+		return ""
+	}
+	pool := stockInventoryPool(raw, "Exclusive")
+	if len(pool) == 0 {
+		return "原始 GPU 库存：库存接口未返回可用数据。"
+	}
+	lines := []string{}
+	for _, model := range modelOrder {
+		entries := entriesByModel[model]
+		known := []string{}
+		for _, entry := range entries {
+			zoneID := stockInventoryZoneID(entry, supportZones)
+			if zoneID == 0 {
+				continue
+			}
+			gpuCounts, ok := pool[zoneID]
+			if !ok {
+				continue
+			}
+			count, ok := gpuCounts[entry.Name]
+			if !ok {
+				continue
+			}
+			zone := stockZoneDisplay(entry, supportZones)
+			if count > 0 {
+				known = append(known, fmt.Sprintf("%s 库存约 %s 张 GPU", zone, trimFloat(count)))
+			} else {
+				known = append(known, fmt.Sprintf("%s 暂无原始 GPU 库存", zone))
+			}
+		}
+		if len(known) == 0 {
+			labels := stockEntryZoneLabels(entries, supportZones)
+			if len(labels) > 0 {
+				lines = append(lines, fmt.Sprintf("%s 接口未返回 %s 的库存数量", strings.Join(labels, "、"), model))
+			} else {
+				lines = append(lines, fmt.Sprintf("接口未返回 %s 的库存数量", model))
+			}
+			continue
+		}
+		sort.Strings(known)
+		lines = append(lines, strings.Join(known, "；"))
+	}
+	return "原始 GPU 库存：" + strings.Join(lines, "；") + "。"
+}
+
+func stockZoneDisplay(entry stockInstanceTypeEntry, supportZones []zones.ZoneInfo) string {
+	if entry.Zone != "" {
+		if describe := zones.DescribeFor(supportZones, entry.Zone); describe != "" {
+			return describe
+		}
+		return entry.Zone
+	}
+	if entry.ZoneID != 0 {
+		for _, z := range supportZones {
+			if z.ZoneID == entry.ZoneID && z.Describe != "" {
+				return z.Describe
+			}
+		}
+		return "未知可用区"
+	}
+	return "未知可用区"
+}
+
+func stockInventoryZoneID(entry stockInstanceTypeEntry, supportZones []zones.ZoneInfo) uint32 {
+	if entry.Zone != "" {
+		for _, z := range supportZones {
+			if z.ZoneID != 0 && strings.EqualFold(z.Zone, entry.Zone) {
+				return z.ZoneID
+			}
+		}
+	}
+	return entry.ZoneID
+}
+
+func stockEntryZoneLabels(entries []stockInstanceTypeEntry, supportZones []zones.ZoneInfo) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, entry := range entries {
+		label := stockZoneDisplay(entry, supportZones)
+		if label == "" {
+			continue
+		}
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		out = append(out, label)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func stockInventoryPool(raw map[string]any, poolName string) map[uint32]map[string]float64 {
+	if raw == nil {
+		return nil
+	}
+	switch inv := raw["GpuInventory"].(type) {
+	case map[string]any:
+		return convertStockInventoryPool(inv[poolName])
+	case map[string]map[uint32]map[string]uint32:
+		return convertStockInventoryPool(inv[poolName])
+	case map[string]map[uint32]map[string]float64:
+		return convertStockInventoryPool(inv[poolName])
+	default:
+		return nil
+	}
+}
+
+func convertStockInventoryPool(raw any) map[uint32]map[string]float64 {
+	out := map[uint32]map[string]float64{}
+	switch pool := raw.(type) {
+	case map[string]any:
+		for rawZoneID, rawGPUCounts := range pool {
+			id, ok := parseUint32Loose(rawZoneID)
+			if !ok {
+				continue
+			}
+			if counts := convertGPUCountMap(rawGPUCounts); len(counts) > 0 {
+				out[id] = counts
+			}
+		}
+	case map[uint32]map[string]uint32:
+		for id, counts := range pool {
+			out[id] = map[string]float64{}
+			for gpu, count := range counts {
+				out[id][gpu] = float64(count)
+			}
+		}
+	case map[uint32]map[string]float64:
+		for id, counts := range pool {
+			out[id] = map[string]float64{}
+			for gpu, count := range counts {
+				out[id][gpu] = count
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func convertGPUCountMap(raw any) map[string]float64 {
+	out := map[string]float64{}
+	switch counts := raw.(type) {
+	case map[string]any:
+		for gpu, rawCount := range counts {
+			if count, ok := numericValue(rawCount); ok {
+				out[gpu] = count
+			}
+		}
+	case map[string]uint32:
+		for gpu, count := range counts {
+			out[gpu] = float64(count)
+		}
+	case map[string]float64:
+		for gpu, count := range counts {
+			out[gpu] = count
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func parseUint32Loose(v any) (uint32, bool) {
+	switch typed := v.(type) {
+	case string:
+		typed = strings.TrimSpace(typed)
+		if typed == "" {
+			return 0, false
+		}
+		n, err := strconv.ParseUint(typed, 10, 32)
+		if err != nil || n == 0 {
+			return 0, false
+		}
+		return uint32(n), true
+	default:
+		n, ok := numericValue(typed)
+		if !ok || n <= 0 || n != float64(uint32(n)) {
+			return 0, false
+		}
+		return uint32(n), true
+	}
+}
+
+func trimFloat(v float64) string {
+	if v == float64(int64(v)) {
+		return fmt.Sprintf("%d", int64(v))
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", v), "0"), ".")
 }
 
 func appendCapacityFailureNote(reply string, failedZones []string) string {

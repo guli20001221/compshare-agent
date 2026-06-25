@@ -68,7 +68,7 @@ func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 		count  int
 	}{
 		{IntentGPUSpecsQuery, "DescribeAvailableCompShareInstanceTypes", 2},
-		{IntentStockAvailability, "DescribeAvailableCompShareInstanceTypes", 3},
+		{IntentStockAvailability, "DescribeAvailableCompShareInstanceTypes", 5},
 		{IntentPricingQuery, "GetCompShareInstancePrice", 2},
 		{IntentNetAcceleratorStatus, "CheckCompShareNetOptimizer", 1},
 		{IntentRefundEstimate, "GetCompShareRefundPrice", 2},

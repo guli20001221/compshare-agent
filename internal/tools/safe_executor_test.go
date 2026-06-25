@@ -69,6 +69,7 @@ func TestDefaultPoliciesClassifyReadExpensiveActionsExplicitly(t *testing.T) {
 		{"GetCompShareInstancePrice", ActionClassReadExpensiveDefault},
 		{"GetCompShareInstanceUserPrice", ActionClassReadExpensiveDefault},
 		{"DescribeAvailableCompShareInstanceTypes", ActionClassReadExpensiveDefault},
+		{"DescribeCompShareGpuInventory", ActionClassReadExpensiveDefault},
 		{"CheckCompShareResourceCapacity", ActionClassReadExpensiveDefault},
 		{"DiagnoseBilling", ActionClassReadExpensiveDefault},
 	}
