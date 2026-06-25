@@ -211,7 +211,6 @@ agent:
     service_sk: "JhHiw05TOhdFGerfDcLZ3pK3CyxOYvhgZJp7K3TAVZSx"
     url: "https://api.ucloud.cn/"
     role_urn_template: "ucs:iam::%d:role/ucs-service-role/ServiceRoleForCompshare"
-    default_role_urn: "ucs:iam::66391350:role/ucs-service-role/ServiceRoleForCompshare"
     default_session_name: "agent-cli"
     duration_seconds: 3600
     refresh_before: "5m"
