@@ -567,6 +567,34 @@ func TestCreateInstanceGuided_GPUCardDisablesSoldOutFamilyFromInventory(t *testi
 	assert.Contains(t, wide4090.Note, "库存约 1 张 GPU")
 }
 
+func TestCreateInstanceGuided_GPUCardDoesNotTreatMissingInventoryKeyAsSoldOut(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType":         "V100S",
+		"GuidedGpuLocked": true,
+		"ZoneIds": map[string]uint32{
+			"cn-wlcb-01": 1,
+		},
+	})
+	wfCtx.StepResults["查询可用配比"] = map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{"Name": "V100S", "Zone": "cn-wlcb-01", "Status": "Normal",
+			"MachineSizes": []any{map[string]any{"Gpu": float64(1), "Collection": []any{
+				map[string]any{"Cpu": float64(10), "Memory": []any{float64(64)}},
+			}}}, "GraphicsMemory": map[string]any{"Value": float64(32)}},
+	}}
+	wfCtx.StepResults["查询GPU库存"] = map[string]any{"GpuInventory": map[string]any{
+		"Exclusive": map[string]any{
+			"1": map[string]any{"4090": float64(2)},
+		},
+	}}
+
+	form, err := buildGuidedGPUForm(wfCtx)
+	require.NoError(t, err)
+	gpu := fieldByKey(t, form, "GpuType")
+	v100s := optionByValue(t, gpu, "V100S")
+	assert.False(t, v100s.Disabled, "missing V100S in inventory payload means unknown, not sold out")
+	assert.NotContains(t, v100s.Note, "暂无库存")
+}
+
 func TestCreateInstanceGuided_LockedGPUFailureNamesStockReason(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{
 		"GpuType":         "4090",
@@ -578,8 +606,8 @@ func TestCreateInstanceGuided_LockedGPUFailureNamesStockReason(t *testing.T) {
 	})
 	wfCtx.StepResults["查询GPU库存"] = map[string]any{"GpuInventory": map[string]any{
 		"Exclusive": map[string]any{
-			"1": map[string]any{"4090": float64(0)},
-			"2": map[string]any{"4090": float64(0)},
+			"1": map[string]any{"4090": float64(0), "4090_48G": float64(0)},
+			"2": map[string]any{"4090": float64(0), "4090_48G": float64(0)},
 		},
 	}}
 

@@ -2563,7 +2563,11 @@ func (inv guidedInventory) count(zone, gpuType string) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return gpus[gpuType], true
+	count, ok := gpus[gpuType]
+	if !ok {
+		return 0, false
+	}
+	return count, true
 }
 
 func (inv guidedInventory) total(zones []string, gpuType string) (float64, bool) {
