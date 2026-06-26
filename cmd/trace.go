@@ -347,6 +347,21 @@ func domainMatchGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// createPreferenceExtractorEnabledFromEnv gates the optional deploy preference
+// extractor. DEFAULT OFF: enabling it adds one LLM pass before deploy image
+// matching, and the extracted fields only affect image matching, never routing.
+func createPreferenceExtractorEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_CREATE_PREF_EXTRACTOR"))
+	switch strings.ToLower(raw) {
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
 // knowledgeQAAgentLoopEnabledFromEnv gates the terminal-knowledge_qa → agent-loop
 // route (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). DEFAULT ON (2026-06-09) — a knowledge_qa
 // turn routes through the agent loop: a forced SearchKnowledge first hop retrieves

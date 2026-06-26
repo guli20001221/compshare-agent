@@ -176,6 +176,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q\n", unknownDomainMatchGuard)
 	}
 	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
+	createPrefExtractor, unknownCreatePrefExtractor := createPreferenceExtractorEnabledFromEnv(getenv)
+	if unknownCreatePrefExtractor != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_CREATE_PREF_EXTRACTOR value %q\n", unknownCreatePrefExtractor)
+	}
+	engine.SetCreatePreferenceExtractionEnabled(createPrefExtractor)
 	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
 	if unknownKnowledgeQAAgentLoop != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q\n", unknownKnowledgeQAAgentLoop)

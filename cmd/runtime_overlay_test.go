@@ -49,6 +49,24 @@ func TestRuntimeOverlayFeedsParsersWithoutWarnings(t *testing.T) {
 		assert.True(t, enabled, "omitted + no env → built-in default ON preserved")
 		assert.Empty(t, unknown)
 	})
+	t.Run("create preference extractor explicit true", func(t *testing.T) {
+		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{CreatePreferenceExtractor: boolPtr(true)}}}
+		enabled, unknown := createPreferenceExtractorEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
+		assert.True(t, enabled)
+		assert.Empty(t, unknown)
+	})
+	t.Run("create preference extractor explicit false wins over env", func(t *testing.T) {
+		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{CreatePreferenceExtractor: boolPtr(false)}}}
+		base := func(key string) string {
+			if key == "COMPSHARE_CREATE_PREF_EXTRACTOR" {
+				return "1"
+			}
+			return ""
+		}
+		enabled, unknown := createPreferenceExtractorEnabledFromEnv(cfg.RuntimeGetenv(base))
+		assert.False(t, enabled)
+		assert.Empty(t, unknown)
+	})
 	t.Run("knowledge_qa agent loop omitted stays on", func(t *testing.T) {
 		cfg := &config.Config{Agent: config.AgentConfig{}}
 		enabled, unknown := knowledgeQAAgentLoopEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))

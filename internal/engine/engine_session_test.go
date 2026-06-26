@@ -202,7 +202,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 16 shared + 52 per-session = 68 fields. Any drift
+// Whitelist totals: 16 shared + 55 per-session = 71 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -271,7 +271,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// the runtime-form projection; sharing it would cross one tenant's route decision
 		// into another's. Reset every turn.
 		"knowledgeQAAgentLoopThisTurn": true,
-		"turnTokensConsumed":           true,
+		// Optional deploy preference extractor injection + its per-turn result.
+		// Kept per-session so test doubles / future stateful wrappers cannot
+		// leak calls or extracted preferences across users.
+		"createPreferenceExtractor": true,
+		"createPreferenceThisTurn":  true,
+		"turnTokensConsumed":        true,
 		// Per-turn ReAct loop counters feeding the trace's react_rounds field and
 		// the budget terminus. Per-session/per-turn by design — a shared counter
 		// would attribute one tenant's loop depth to another's turn. Reset every turn.
@@ -326,12 +331,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 53, len(perSessionFields); want != got {
+	if want, got := 55, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 69, typ.NumField(); want != got {
+	if want, got := 71, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

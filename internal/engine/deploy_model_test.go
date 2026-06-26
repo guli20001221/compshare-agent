@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -144,6 +145,20 @@ func newDeployEngine(matchJSON string, exec *mockExecutorFn, confirm func(string
 	// single-arg helper still drives the whole handler.
 	client := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: matchJSON}}}
 	return NewWithDeps(client, exec, confirm) // mutatingToolsEnabled=true; agentLLMClient=nil → falls back to client
+}
+
+type fakeCreatePreferenceExtractor struct {
+	result *CreatePreferenceExtractionResult
+	err    error
+	calls  []CreatePreferenceExtractionInput
+}
+
+func (f *fakeCreatePreferenceExtractor) ExtractCreatePreferences(_ context.Context, in CreatePreferenceExtractionInput) (*CreatePreferenceExtractionResult, error) {
+	f.calls = append(f.calls, in)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.result, nil
 }
 
 // TestTryDeployModel_HappyPath_AlreadyRunning proves the end-to-end handler: TierAgent
@@ -1008,6 +1023,82 @@ func TestTryDeployModel_GuidedCreateFiltersExplicitGPUIntent(t *testing.T) {
 	assert.Equal(t, []string{"4090", "4090_48G"}, gpuOptions)
 }
 
+func TestTryDeployModel_CreatePreferenceFlagOffDoesNotCallExtractor(t *testing.T) {
+	SetCreatePreferenceExtractionEnabled(false)
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	eng := newDeployEngine(deployMatchJSON, exec, okConfirm)
+	extractor := &fakeCreatePreferenceExtractor{result: &CreatePreferenceExtractionResult{WorkloadPref: "DeepSeek R1 32B"}}
+	eng.SetCreatePreferenceExtractor(extractor)
+
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署 DeepSeek R1 32B", noopStep)
+
+	require.True(t, handled)
+	assert.Empty(t, extractor.calls)
+	assert.Nil(t, eng.createPreferenceThisTurn)
+}
+
+func TestTryDeployModel_CreatePreferenceFeedsOnlyImageMatcher(t *testing.T) {
+	SetCreatePreferenceExtractionEnabled(true)
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(false) })
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	client := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: deployMatchJSON}}}
+	eng := NewWithDeps(client, exec, okConfirm)
+	extractor := &fakeCreatePreferenceExtractor{result: &CreatePreferenceExtractionResult{
+		WorkloadPref: "DeepSeek R1 32B",
+		ImagePref:    "PyTorch",
+		GPUPref:      "4090",
+	}}
+	eng.SetCreatePreferenceExtractor(extractor)
+
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署 DeepSeek R1 32B", noopStep)
+
+	require.True(t, handled)
+	require.Len(t, extractor.calls, 1)
+	assert.Equal(t, intent.IntentDeployModel, extractor.calls[0].Intent)
+	require.NotNil(t, eng.createPreferenceThisTurn)
+	assert.Equal(t, "DeepSeek R1 32B", eng.createPreferenceThisTurn.WorkloadPref)
+	require.GreaterOrEqual(t, len(client.calls), 2)
+	llmInput := joinMessageContent(client.calls[0]) + "\n" + joinMessageContent(client.calls[1])
+	assert.Contains(t, llmInput, "workload_pref: DeepSeek R1 32B")
+	assert.Contains(t, llmInput, "image_pref: PyTorch")
+	assert.Contains(t, llmInput, "gpu_pref: 4090")
+}
+
+func TestTryDeployModel_CreatePreferenceFailureFallsBack(t *testing.T) {
+	SetCreatePreferenceExtractionEnabled(true)
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(false) })
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	eng := newDeployEngine(deployMatchJSON, exec, okConfirm)
+	extractor := &fakeCreatePreferenceExtractor{err: errors.New("extractor unavailable")}
+	eng.SetCreatePreferenceExtractor(extractor)
+
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	assert.Len(t, extractor.calls, 1)
+	assert.Nil(t, eng.createPreferenceThisTurn, "extractor failures must not poison deploy state")
+	assert.Equal(t, 1, countCalls(exec.calls, "CreateCompShareInstance"), "deploy falls back to the existing behavior")
+}
+
+func TestTryDeployModel_CreatePreferenceDoesNotBypassAdviceGate(t *testing.T) {
+	SetCreatePreferenceExtractionEnabled(true)
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(false) })
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	confirmCalls := 0
+	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { confirmCalls++; return true })
+	eng.SetCreatePreferenceExtractor(&fakeCreatePreferenceExtractor{result: &CreatePreferenceExtractionResult{
+		WorkloadPref: "部署 Qwen2.5-7B",
+		ImagePref:    "PyTorch",
+	}})
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "推荐我跑 PyTorch 用哪个卡", noopStep)
+
+	require.True(t, handled)
+	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"))
+	assert.Equal(t, 0, confirmCalls)
+	assert.Contains(t, reply, "建议")
+}
+
 // newZoneDeployMock is a full-handler mock with per-zone availability + stock so the
 // fallback path can be exercised end-to-end. The matcher's unfiltered availability
 // query returns zone-tagged cards; the saga's MachineTypes-filtered query returns
@@ -1163,6 +1254,25 @@ func TestTryDeployModel_UserZoneFromMessage(t *testing.T) {
 	require.True(t, handled)
 	require.NotNil(t, createArgs, "create must run")
 	assert.Equal(t, "cn-sh2-02", createArgs["Zone"], "user-named zone (上海) overrides the cn-wlcb-01 preference")
+}
+
+func TestTryDeployModel_CreatePreferenceDoesNotRewriteZoneResolution(t *testing.T) {
+	SetCreatePreferenceExtractionEnabled(true)
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(false) })
+	var createArgs map[string]any
+	exec := newZoneDeployMock(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": true}, &createArgs)
+	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-7B","quantization":""}`, exec, okConfirm)
+	eng.SetCreatePreferenceExtractor(&fakeCreatePreferenceExtractor{result: &CreatePreferenceExtractionResult{
+		WorkloadPref: "Qwen2.5-7B",
+		ImagePref:    "PyTorch",
+		ZonePref:     "华北二A",
+	}})
+
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "在上海部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	require.NotNil(t, createArgs)
+	assert.Equal(t, "cn-sh2-02", createArgs["Zone"], "zone resolution must use the literal user request, not extracted preference text")
 }
 
 func TestTryDeployModel_ThreadsInventoryContextToGuidedCard(t *testing.T) {
