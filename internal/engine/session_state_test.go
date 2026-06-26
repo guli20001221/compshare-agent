@@ -52,6 +52,9 @@ func TestPersistedContext_RoundTripBytes(t *testing.T) {
 			SelectedInstanceID:   "uhost-abc123",
 			SelectedInstanceName: "gpu-prod-01",
 			LastIntent:           string(intent.IntentMonitorQuery),
+			LastDeployWorkload:   "Qwen2.5-32B",
+			LastDeployZone:       "cn-wlcb-01",
+			PendingDeployModel:   "DeepSeek R1",
 		},
 		ClientContext: json.RawMessage(`{"source":"console","page":"/instance/list"}`),
 	}
@@ -403,6 +406,21 @@ func TestSetSessionState_HigherVersionOverwrites(t *testing.T) {
 		"higher version must fully overwrite — the in-memory state was stale")
 	assert.Equal(t, string(intent.IntentResourceInfo), state.LastIntent)
 	assert.Equal(t, 4, ver)
+}
+
+func TestRecordLastIntentFromPlan_UnknownClearsPendingDeployModel(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaV1,
+		LastIntent:         string(intent.IntentDeployModel),
+		PendingDeployModel: "DeepSeek R1",
+	}, 1)
+
+	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentUnknown})
+
+	state, _, _ := e.SessionStateSnapshot()
+	assert.Equal(t, string(intent.IntentDeployModel), state.LastIntent, "unknown must not replace LastIntent")
+	assert.Empty(t, state.PendingDeployModel, "unknown turns should break stale deploy clarification carry")
 }
 
 // TestSetSessionState_NotHydratedAlwaysFullOverwrite covers the

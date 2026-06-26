@@ -286,7 +286,7 @@ func requiredToolsForIntent(intent Intent) map[string]struct{} {
 		// DescribeCompShareInstance response (no disk-list API upstream;
 		// 2026-05-29 routing fix). Same drift as operation_lifecycle above.
 		add("DescribeCompShareInstance")
-	case IntentDeployModel:
+	case IntentDeployModel, IntentCreateInstance:
 		// Read tools ONLY (the image-catalog grounding reads the deploy handler uses
 		// to match a workload to an existing image). The actual mutation
 		// (CreateCompShareInstance) runs through the orchestrator saga + StepConfirm,

@@ -92,6 +92,14 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if createPrefExtractor {
 		log.Printf("runtime: HTTP create/deploy preference extractor enabled (COMPSHARE_CREATE_PREF_EXTRACTOR=1; deploy image-match only)")
 	}
+	unifiedCreate, unknownUnifiedCreate := unifiedCreateEnabledFromEnv(getenv)
+	if unknownUnifiedCreate != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_UNIFIED_CREATE value %q", unknownUnifiedCreate)
+	}
+	engine.SetUnifiedCreateEnabled(unifiedCreate)
+	if unifiedCreate {
+		log.Printf("runtime: HTTP unified create-family route enabled (COMPSHARE_UNIFIED_CREATE=1; create_instance prompt/schema active)")
+	}
 	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
 	if unknownKnowledgeQAAgentLoop != "" {
 		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q", unknownKnowledgeQAAgentLoop)

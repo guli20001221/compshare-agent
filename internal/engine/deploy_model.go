@@ -108,12 +108,24 @@ type deployPlan struct {
 // a useful answer instead of a flat refusal. Only when writes are enabled does the
 // recommendation flow into the create saga, gated by the confirm card.
 func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	result := dispatch.result
-
 	// A short refinement follow-up ("A800可以吗" / "换上海") carries no model on its
 	// own; rehydrate it from the previous deploy target so the matcher keeps sizing
 	// the SAME model instead of treating it as a new generic deploy request.
 	effectiveUserMsg := e.effectiveDeployUserMsg(userMsg)
+
+	matchUserMsg := effectiveUserMsg
+	if createPreferenceExtractionOn {
+		if pref, err := e.extractCreatePreference(ctx, effectiveUserMsg, intent.IntentDeployModel); err == nil && pref != nil {
+			e.createPreferenceThisTurn = pref
+			matchUserMsg = deployMessageWithCreatePreference(effectiveUserMsg, *pref)
+		}
+	}
+
+	return e.runDeployModel(ctx, dispatch, userMsg, effectiveUserMsg, matchUserMsg, onStep)
+}
+
+func (e *Engine) runDeployModel(ctx context.Context, dispatch routerDispatchResult, userMsg, effectiveUserMsg, matchUserMsg string, onStep func(StepEvent)) (string, bool) {
+	result := dispatch.result
 
 	// (1a) Resolve a user-named zone against the live support-zone catalog so a
 	// Chinese display name ("华北一C") maps to its zone id (cn-bj2-03) instead of
@@ -122,14 +134,6 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 	userZone, zoneClarify := e.resolveRequestedZone(ctx, effectiveUserMsg)
 	if zoneClarify != "" {
 		return e.deployReply(result, dispatch.latency, zoneClarify)
-	}
-
-	matchUserMsg := effectiveUserMsg
-	if createPreferenceExtractionOn {
-		if pref, err := e.extractCreatePreference(ctx, effectiveUserMsg, intent.IntentDeployModel); err == nil && pref != nil {
-			e.createPreferenceThisTurn = pref
-			matchUserMsg = deployMessageWithCreatePreference(effectiveUserMsg, *pref)
-		}
 	}
 
 	// (1) Match an existing image + size the GPU + pick the create-zone (TierAgent
@@ -144,11 +148,13 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 		// masking it with the generic "tell me what to deploy" clarification.
 		var ue deployUserError
 		if errors.As(err, &ue) {
+			e.recordPendingDeployModelFromReply(ue.Error())
 			return e.deployReply(result, dispatch.latency, ue.Error())
 		}
 		return e.deployReply(result, dispatch.latency,
 			"抱歉，我没能确定合适的镜像和配置。可以告诉我你想部署的模型（如 Qwen2.5-32B）或应用（如 ComfyUI / 数字人）吗？")
 	}
+	e.recordLastDeployTarget(plan.ModelName, plan.ChosenZone)
 	e.emitDeployStep(onStep, StepToolResult, "deploy_match",
 		fmt.Sprintf("已选型：%s 镜像 %s / GPU %s。%s", sourceLabel(plan.ImageSource), plan.ImageName, plan.GpuType, plan.MatchNote))
 
@@ -291,6 +297,30 @@ func (e *Engine) deployReply(result intent.IntentRouterResult, latency time.Dura
 	return reply, true
 }
 
+func (e *Engine) recordLastDeployTarget(model, zone string) {
+	if !e.sessionStateHydrated {
+		return
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	e.sessionState.LastDeployWorkload = model
+	e.sessionState.LastDeployZone = strings.TrimSpace(zone)
+	e.sessionState.PendingDeployModel = ""
+}
+
+func (e *Engine) recordPendingDeployModelFromReply(reply string) {
+	if !e.sessionStateHydrated {
+		return
+	}
+	model := deployClarifyModelFromMessage(reply)
+	if model == "" {
+		return
+	}
+	e.sessionState.PendingDeployModel = model
+}
+
 // effectiveDeployUserMsg keeps a short deploy follow-up grounded in the previous
 // deploy target. Example: after "deploy Qwen2.5 32B", a follow-up "A800可以吗" must
 // be matched as "Qwen2.5-32B on A800", NOT as a fresh generic deploy request that
@@ -312,6 +342,9 @@ func (e *Engine) effectiveDeployUserMsg(userMsg string) string {
 	// "32B" answer lost the DeepSeek-R1 identity.) A sized name that already carries a
 	// family ("Qwen2.5-32B") is self-contained and returned unchanged.
 	if isBareDeploySize(sized) {
+		if model := e.pendingDeployModelFromSession(); model != "" {
+			return "继续部署 " + model + " " + sized
+		}
 		if model := e.previousDeployClarifyModel(); model != "" {
 			return "继续部署 " + model + " " + sized
 		}
@@ -324,7 +357,10 @@ func (e *Engine) effectiveDeployUserMsg(userMsg string) string {
 		return userMsg
 	}
 
-	model, zone := e.previousDeployTarget(msg)
+	model, zone := e.previousDeployTargetFromSession()
+	if model == "" {
+		model, zone = e.previousDeployTarget(msg)
+	}
 	if model == "" {
 		return userMsg
 	}
@@ -359,6 +395,13 @@ func (e *Engine) previousDeployTarget(currentMsg string) (model, zone string) {
 	return "", ""
 }
 
+func (e *Engine) previousDeployTargetFromSession() (model, zone string) {
+	if !e.sessionStateHydrated || !createFamilyIntentString(e.sessionState.LastIntent) {
+		return "", ""
+	}
+	return strings.TrimSpace(e.sessionState.LastDeployWorkload), strings.TrimSpace(e.sessionState.LastDeployZone)
+}
+
 // bareDeploySizeRE matches a size-only token ("32B", "1.5B") — the shape
 // extractDeploySizedModelName returns when the user names a parameter count with no
 // model family (a bare "32B" answer to a size-clarify).
@@ -391,6 +434,20 @@ func (e *Engine) previousDeployClarifyModel() string {
 			return strings.TrimSpace(mm[1])
 		}
 		return "" // most recent assistant turn wasn't a size-clarify → no carry
+	}
+	return ""
+}
+
+func (e *Engine) pendingDeployModelFromSession() string {
+	if !e.sessionStateHydrated || !createFamilyIntentString(e.sessionState.LastIntent) {
+		return ""
+	}
+	return strings.TrimSpace(e.sessionState.PendingDeployModel)
+}
+
+func deployClarifyModelFromMessage(msg string) string {
+	if mm := deployClarifyModelRE.FindStringSubmatch(msg); mm != nil {
+		return strings.TrimSpace(mm[1])
 	}
 	return ""
 }

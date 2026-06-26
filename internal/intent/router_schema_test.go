@@ -5,10 +5,9 @@ import (
 	"testing"
 )
 
-// TestIntentRouteResponseSchema_IntentEnumMatchesRuntime is the drift guard: the
-// schema's intent enum is built from RuntimeIntents(), so it can never list an
-// intent the validator (validIntent → RuntimeIntents) would reject, nor omit one
-// it accepts. If RuntimeIntents changes, this test forces the schema to track it.
+// TestIntentRouteResponseSchema_IntentEnumMatchesRuntime is the default-off drift
+// guard: the public default schema mirrors the default router prompt. Gated
+// create_instance stays out until the caller asks for the unified-create schema.
 func TestIntentRouteResponseSchema_IntentEnumMatchesRuntime(t *testing.T) {
 	var schema struct {
 		Type       string `json:"type"`
@@ -44,8 +43,8 @@ func TestIntentRouteResponseSchema_IntentEnumMatchesRuntime(t *testing.T) {
 		t.Errorf("schema_version const = %q, want %q", schema.Properties.SchemaVersion.Const, SchemaVersion)
 	}
 
-	want := make(map[string]bool, len(RuntimeIntents()))
-	for _, i := range RuntimeIntents() {
+	want := make(map[string]bool, len(routerRuntimeIntents(false)))
+	for _, i := range routerRuntimeIntents(false) {
 		want[string(i)] = true
 	}
 	got := make(map[string]bool, len(schema.Properties.Intent.Enum))
@@ -53,7 +52,7 @@ func TestIntentRouteResponseSchema_IntentEnumMatchesRuntime(t *testing.T) {
 		got[e] = true
 	}
 	if len(got) != len(want) {
-		t.Fatalf("intent enum size = %d, want %d (RuntimeIntents)", len(got), len(want))
+		t.Fatalf("intent enum size = %d, want %d (default router intents)", len(got), len(want))
 	}
 	for i := range want {
 		if !got[i] {
@@ -89,6 +88,26 @@ func TestIntentRouteResponseSchema_IntentEnumMatchesRuntime(t *testing.T) {
 		if !requiredSet[field] {
 			t.Errorf("top-level required is missing %q", field)
 		}
+	}
+}
+
+func TestIntentRouteResponseSchemaForIntents_CanExposeUnifiedCreate(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Intent struct {
+				Enum []string `json:"enum"`
+			} `json:"intent"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(IntentRouteResponseSchemaForIntents(routerRuntimeIntents(true)), &schema); err != nil {
+		t.Fatalf("schema invalid: %v", err)
+	}
+	got := map[string]bool{}
+	for _, e := range schema.Properties.Intent.Enum {
+		got[e] = true
+	}
+	if !got[string(IntentCreateInstance)] {
+		t.Fatalf("unified-create schema must include %q", IntentCreateInstance)
 	}
 }
 

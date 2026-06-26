@@ -13,6 +13,8 @@ func DeriveSelectedSkills(plan IntentRoute) []SelectedSkill {
 	switch plan.Intent {
 	case IntentDeployModel:
 		return []SelectedSkill{{Name: "deploy_model", Resolution: SkillResolutionAgentArm}}
+	case IntentCreateInstance:
+		return []SelectedSkill{{Name: "create_instance", Resolution: SkillResolutionAgentArm}}
 	case IntentDiagnosis:
 		return []SelectedSkill{{Resolution: SkillResolutionResolvedInReAct}}
 	default:

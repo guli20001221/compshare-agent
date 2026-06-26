@@ -3,6 +3,8 @@ package intent
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestBuildSystemPromptIncludesRouteDispatchSchemaFields(t *testing.T) {
@@ -39,7 +41,7 @@ func TestBuildSystemPromptIncludesRouteDispatchSchemaFields(t *testing.T) {
 func TestBuildSystemPromptIntentEnumMatchesRuntimeIntents(t *testing.T) {
 	got := allowedIntentEnumFromPrompt(buildSystemPrompt())
 	want := make(map[string]bool, len(RuntimeIntents()))
-	for _, i := range RuntimeIntents() {
+	for _, i := range routerRuntimeIntents(false) {
 		want[string(i)] = true
 	}
 	if len(got) != len(want) {
@@ -55,6 +57,22 @@ func TestBuildSystemPromptIntentEnumMatchesRuntimeIntents(t *testing.T) {
 			t.Fatalf("prompt intent enum contains non-runtime intent %q; got=%v", label, got)
 		}
 	}
+}
+
+func TestBuildSystemPromptUnifiedCreateIncludesCreateInstance(t *testing.T) {
+	got := allowedIntentEnumFromPrompt(buildSystemPromptWithUnifiedCreate(true))
+	assert.True(t, got[string(IntentCreateInstance)], "unified prompt must expose create_instance")
+	assert.False(t, allowedIntentEnumFromPrompt(buildSystemPrompt())[string(IntentCreateInstance)], "default prompt must not expose gated create_instance")
+	examples := promptExampleJSONLines(buildSystemPromptWithUnifiedCreate(true))
+	found := false
+	for _, example := range examples {
+		plan, err := parsePlanJSON(example)
+		if err == nil && plan.Intent == IntentCreateInstance {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "unified prompt must teach at least one create_instance example")
 }
 
 func TestBuildSystemPromptDoesNotEmitRemovedIntentLabels(t *testing.T) {

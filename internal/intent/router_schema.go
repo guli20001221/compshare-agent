@@ -24,8 +24,12 @@ import "encoding/json"
 // properties (Reasoning/Scope/Skills are omitempty struct fields) and leaves
 // nested optional fields out of `required`.
 func IntentRouteResponseSchema() json.RawMessage {
-	intents := make([]string, 0, len(RuntimeIntents()))
-	for _, i := range RuntimeIntents() {
+	return IntentRouteResponseSchemaForIntents(routerRuntimeIntents(false))
+}
+
+func IntentRouteResponseSchemaForIntents(runtimeIntents []Intent) json.RawMessage {
+	intents := make([]string, 0, len(runtimeIntents))
+	for _, i := range runtimeIntents {
 		intents = append(intents, string(i))
 	}
 
@@ -82,9 +86,9 @@ func IntentRouteResponseSchema() json.RawMessage {
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"schema_version":  map[string]any{"type": "string", "const": SchemaVersion},
-			"intent":          map[string]any{"type": "string", "enum": intents},
-			"slots":           slots,
+			"schema_version": map[string]any{"type": "string", "const": SchemaVersion},
+			"intent":         map[string]any{"type": "string", "enum": intents},
+			"slots":          slots,
 			"required_tools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			// retrieval.enabled is pinned false: ValidateRoute rejects Enabled==true
 			// (stage-2A RAG is disabled), so const-false constrains decoding and
