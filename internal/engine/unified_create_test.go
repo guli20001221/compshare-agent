@@ -9,6 +9,7 @@ import (
 
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/zones"
 )
 
 func createDispatch() routerDispatchResult {
@@ -91,54 +92,95 @@ func TestDispatchAgentSkill_CreateInstanceFlagOnSpecOnlyStartsCreateWorkflowWith
 	assert.True(t, sawStepAction(*events, "CreateInstanceWorkflow"))
 }
 
-func TestDispatchAgentSkill_CreateInstanceSpecOnlyUsesExtractedPreferences(t *testing.T) {
+func TestDispatchAgentSkill_CreateInstanceSpecOnlyResolvesZonePreference(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
 	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
 
-	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
-	client := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: deployMatchJSON}}}
+	exec := newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	client := &mockLLM{}
 	eng := NewWithDeps(client, exec, func(string, map[string]any) bool { return false })
+	eng.zoneCatalog = zones.NewCatalog(0)
 	eng.SetCreatePreferenceExtractor(&fakeCreatePreferenceExtractor{result: &CreatePreferenceExtractionResult{
-		GPUPref:     "4090",
-		ImagePref:   "PyTorch",
-		ImageSource: "platform",
-		ZonePref:    "华北二A",
+		GPUPref:  "4090",
+		ZonePref: "华北二A",
 	}})
 	onStep, events := collectSteps()
 
-	reply, handled := eng.dispatchAgentSkill(context.Background(), createDispatch(), "在华北二A创建一台4090装PyTorch", onStep)
+	reply, handled := eng.dispatchAgentSkill(context.Background(), createDispatch(), "在华北二A创建一台4090", onStep)
 
 	require.True(t, handled)
 	assert.Contains(t, reply, "创建实例")
 	require.NotEmpty(t, *events)
 	args := workflowStepArgs(t, *events, "CreateInstanceWorkflow")
 	assert.Equal(t, "4090", args["GpuType"])
-	assert.Equal(t, "PyTorch", args["ImageName"])
-	assert.Equal(t, "platform", args["ImageSource"])
-	assert.Equal(t, "华北二A", args["Zone"])
-	assert.Empty(t, client.calls, "spec-only create must not call the deploy image matcher LLM")
+	assert.Equal(t, "cn-wlcb-01", args["Zone"])
+	assert.Empty(t, client.calls, "pure hardware create must not call the deploy image matcher LLM")
 }
 
-func TestDispatchAgentSkill_CreateInstanceSpecOnlyKeepsExplicitCommunityImageSource(t *testing.T) {
+func TestDispatchAgentSkill_CreateInstanceImagePreferenceUsesDeployMatcher(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
 	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
 
-	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}, communityImageID: "comm-img-9"})
-	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return false })
+	base := newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	var createArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "CreateCompShareInstance" {
+			createArgs = args
+		}
+		return base.fn(action, args)
+	}}
+	client := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: deployMatchJSON}}}
+	eng := NewWithDeps(client, exec, okConfirm)
+	eng.zoneCatalog = zones.NewCatalog(0)
 	eng.SetCreatePreferenceExtractor(&fakeCreatePreferenceExtractor{result: &CreatePreferenceExtractionResult{
 		GPUPref:     "4090",
-		ImagePref:   "LiveTalking",
-		ImageSource: "community",
+		ImagePref:   "PyTorch",
+		ImageSource: "platform",
 	}})
-	onStep, events := collectSteps()
 
-	reply, handled := eng.dispatchAgentSkill(context.Background(), createDispatch(), "用社区镜像创建一台4090", onStep)
+	reply, handled := eng.dispatchAgentSkill(context.Background(), createDispatch(), "创建一台4090装PyTorch", noopStep)
 
 	require.True(t, handled)
-	assert.Contains(t, reply, "创建实例")
-	args := workflowStepArgs(t, *events, "CreateInstanceWorkflow")
-	assert.Equal(t, "community", args["ImageSource"])
-	assert.Equal(t, "LiveTalking", args["ImageName"])
+	assert.Contains(t, reply, "uhost-deploy-1")
+	require.NotEmpty(t, client.calls, "image preference create must reuse the deploy image matcher")
+	require.NotNil(t, createArgs)
+	assert.Equal(t, "4090", createArgs["GpuType"])
+	assert.Equal(t, "img-pt", createArgs["CompShareImageId"])
+	_, hasImageName := createArgs["ImageName"]
+	assert.False(t, hasImageName, "fuzzy image preference must not be passed as the final create image name")
+}
+
+func TestDispatchAgentSkill_CreateInstanceCommunityImagePreferenceUsesDeployMatcher(t *testing.T) {
+	SetUnifiedCreateEnabled(true)
+	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
+
+	base := newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}, communityImageID: "comm-img-9"})
+	var createArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "CreateCompShareInstance" {
+			createArgs = args
+		}
+		return base.fn(action, args)
+	}}
+	client := &mockLLM{responses: []llm.ChatResponse{
+		{Content: deploySearchJSON},
+		{Content: `{"image_source":"community","image_name":"LiveTalking","model_name":"","quantization":""}`},
+	}}
+	eng := NewWithDeps(client, exec, okConfirm)
+	eng.zoneCatalog = zones.NewCatalog(0)
+	eng.SetCreatePreferenceExtractor(&fakeCreatePreferenceExtractor{result: &CreatePreferenceExtractionResult{
+		GPUPref:     "4090",
+		ImageSource: "community",
+	}})
+
+	reply, handled := eng.dispatchAgentSkill(context.Background(), createDispatch(), "用社区镜像创建一台4090", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "uhost-deploy-1")
+	require.NotEmpty(t, client.calls, "community image preference must reuse the deploy image matcher")
+	require.NotNil(t, createArgs)
+	assert.Equal(t, "4090", createArgs["GpuType"])
+	assert.Equal(t, "comm-img-9", createArgs["CompShareImageId"])
 }
 
 func TestDispatchAgentSkill_CreateInstancePriceQuestionDoesNotOpenCreateCard(t *testing.T) {
@@ -217,4 +259,18 @@ func workflowStepArgs(t *testing.T, events []StepEvent, action string) map[strin
 	}
 	t.Fatalf("missing workflow step action %s in %+v", action, events)
 	return nil
+}
+
+func newDeployMockWithSupportZones(cfg deployMockConfig) *mockExecutorFn {
+	base := newDeployMock(cfg)
+	return &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeCompShareSupportZone" {
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "RegionId": float64(3001), "ZoneId": float64(10027), "Describe": "华北二A", "IsPod": false},
+				map[string]any{"Zone": "cn-sh2-02", "Region": "cn-sh2", "RegionId": float64(3002), "ZoneId": float64(8200), "Describe": "上海二B", "IsPod": false},
+				map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "RegionId": float64(3003), "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": false},
+			}}, nil
+		}
+		return base.fn(action, args)
+	}}
 }

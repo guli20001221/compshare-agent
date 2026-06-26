@@ -29,7 +29,7 @@ func (e *Engine) tryCreateInstance(ctx context.Context, dispatch routerDispatchR
 	if extracted, err := e.extractCreatePreference(ctx, userMsg, intent.IntentCreateInstance); err == nil && extracted != nil {
 		pref = extracted
 		e.createPreferenceThisTurn = extracted
-		if createPreferenceHasWorkload(*extracted) {
+		if createPreferenceNeedsImageMatcher(*extracted) {
 			deployDispatch := dispatch
 			deployDispatch.result.Plan.Intent = intent.IntentDeployModel
 			matchUserMsg := deployMessageWithCreatePreference(userMsg, *extracted)
@@ -43,7 +43,12 @@ func (e *Engine) tryCreateInstance(ctx context.Context, dispatch routerDispatchR
 		args["GpuType"] = gpu
 		args["Gpu"] = float64(1)
 	}
-	applyCreatePreferenceWorkflowArgs(args, pref)
+	if zone, clarify := e.resolveRequestedZone(ctx, userMsg); clarify != "" {
+		return e.deployReply(dispatch.result, dispatch.latency, clarify)
+	} else if zone != "" {
+		args["Zone"] = zone
+		args["GuidedZoneLocked"] = true
+	}
 
 	const action = "CreateInstanceWorkflow"
 	e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedAgent, dispatch.latency)
@@ -63,8 +68,11 @@ func (e *Engine) tryCreateInstance(ctx context.Context, dispatch routerDispatchR
 	return reply, true
 }
 
-func createPreferenceHasWorkload(pref CreatePreferenceExtractionResult) bool {
-	return strings.TrimSpace(pref.WorkloadPref) != ""
+func createPreferenceNeedsImageMatcher(pref CreatePreferenceExtractionResult) bool {
+	return strings.TrimSpace(pref.WorkloadPref) != "" ||
+		strings.TrimSpace(pref.ImagePref) != "" ||
+		strings.TrimSpace(pref.ImageSource) != "" ||
+		strings.TrimSpace(pref.Purpose) != ""
 }
 
 func createInstanceGPUFromPreferenceOrText(userMsg string, pref *CreatePreferenceExtractionResult, availResult map[string]any) string {
@@ -74,21 +82,6 @@ func createInstanceGPUFromPreferenceOrText(userMsg string, pref *CreatePreferenc
 		}
 	}
 	return extractDeployGPUFromCatalog(userMsg, availResult)
-}
-
-func applyCreatePreferenceWorkflowArgs(args map[string]any, pref *CreatePreferenceExtractionResult) {
-	if args == nil || pref == nil {
-		return
-	}
-	if image := strings.TrimSpace(pref.ImagePref); image != "" {
-		args["ImageName"] = image
-	}
-	if source := strings.TrimSpace(pref.ImageSource); source != "" {
-		args["ImageSource"] = source
-	}
-	if zone := strings.TrimSpace(pref.ZonePref); zone != "" {
-		args["Zone"] = zone
-	}
 }
 
 func createInstanceShouldNotOpenCreateCard(userMsg string) bool {
