@@ -31,10 +31,13 @@ func stepQueryForResize() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
 			state := extractInstanceState(result)
 			switch state {
 			case "Stopped":
+				if !resizeHasEffectiveSpecChange(wfCtx.Params, result) {
+					return false, "目标配置与当前配置一致，无需变配。"
+				}
 				return true, ""
 			case "":
 				return false, "未找到该实例。"
@@ -47,6 +50,39 @@ func stepQueryForResize() Step {
 			}
 		},
 	}
+}
+
+func resizeHasEffectiveSpecChange(params map[string]any, result map[string]any) bool {
+	hostSet, ok := result["UHostSet"].([]any)
+	if !ok || len(hostSet) == 0 {
+		return true
+	}
+	host, ok := hostSet[0].(map[string]any)
+	if !ok {
+		return true
+	}
+	checks := []struct {
+		paramKey string
+		hostKey  string
+	}{
+		{paramKey: "Cpu", hostKey: "CPU"},
+		{paramKey: "Gpu", hostKey: "GPU"},
+		{paramKey: "Memory", hostKey: "Memory"},
+	}
+	for _, check := range checks {
+		target, hasTarget := priceNumber(params[check.paramKey])
+		if !hasTarget {
+			continue
+		}
+		current, hasCurrent := priceNumber(host[check.hostKey])
+		if !hasCurrent {
+			return true
+		}
+		if target != current {
+			return true
+		}
+	}
+	return false
 }
 
 func stepQueryResizePrice() Step {

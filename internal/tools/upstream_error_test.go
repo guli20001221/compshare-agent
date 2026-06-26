@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,45 @@ func TestRetCodeHint_NoForbiddenTokens(t *testing.T) {
 				t.Errorf("hint for %d contains forbidden token %q: %s", code, tok, h)
 			}
 		}
+	}
+}
+
+func TestRetCodeHint_KeyCodeMeanings(t *testing.T) {
+	cases := []struct {
+		code       int
+		substrings []string
+	}{
+		{230, []string{"可用区", "规格", "镜像"}},
+		{520, []string{"余额不足"}},
+		{8010, []string{"不是关机状态"}},
+		{8090, []string{"价格查询失败"}},
+		{8314, []string{"密码"}},
+		{8315, []string{"系统盘容量不足"}},
+		{8333, []string{"CPU", "内存"}},
+		{8357, []string{"资源不足"}},
+		{8442, []string{"不支持无卡启动"}},
+		{8903, []string{"正在执行任务"}},
+		{226603, []string{"镜像", "不支持该卡型"}},
+		{226604, []string{"资源不足"}},
+		{226619, []string{"操作过于频繁"}},
+	}
+	for _, c := range cases {
+		h := retCodeHint(c.code)
+		for _, want := range c.substrings {
+			if !strings.Contains(h, want) {
+				t.Errorf("hint for %d = %q, want substring %q", c.code, h, want)
+			}
+		}
+	}
+}
+
+func TestRetCodeHint_AuditDateCommentMatches(t *testing.T) {
+	src, err := os.ReadFile("upstream_error.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "audited 2026-06-26") {
+		t.Fatal("upstream RetCode audit date comment must match the test pin: audited 2026-06-26")
 	}
 }
 

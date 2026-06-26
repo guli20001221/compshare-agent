@@ -1525,7 +1525,6 @@ type stockInstanceTypeEntry struct {
 	Name   string
 	Status string
 	Zone   string
-	ZoneID uint32
 }
 
 type stockCapacityCheck struct {
@@ -1766,15 +1765,6 @@ func matchedNormalStockEntries(raw map[string]any, userText string) []stockInsta
 		})
 	}
 	return out
-}
-
-func stockZoneID(entry map[string]any) uint32 {
-	for _, key := range []string{"ZoneId", "ZoneID", "zone_id"} {
-		if id, ok := parseUint32Loose(entry[key]); ok {
-			return id
-		}
-	}
-	return 0
 }
 
 // isImageListAllIntent returns true when the user is asking for a full
@@ -2143,14 +2133,6 @@ func stockZoneDisplay(entry stockInstanceTypeEntry, supportZones []zones.ZoneInf
 		}
 		return entry.Zone
 	}
-	if entry.ZoneID != 0 {
-		for _, z := range supportZones {
-			if z.ZoneID == entry.ZoneID && z.Describe != "" {
-				return z.Describe
-			}
-		}
-		return "未知可用区"
-	}
 	return "未知可用区"
 }
 
@@ -2162,7 +2144,7 @@ func stockInventoryZoneID(entry stockInstanceTypeEntry, supportZones []zones.Zon
 			}
 		}
 	}
-	return entry.ZoneID
+	return 0
 }
 
 func stockEntryZoneLabels(entries []stockInstanceTypeEntry, supportZones []zones.ZoneInfo) []string {

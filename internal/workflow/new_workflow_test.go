@@ -650,6 +650,30 @@ func TestResize_MissingPriceBlockedBeforeConfirm(t *testing.T) {
 	assert.False(t, resized)
 }
 
+func TestResize_NoEffectiveChangeBlockedBeforePrice(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": stoppedInstanceResult(),
+	}}
+	def := ResizeInstanceDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("no-op resize must be blocked before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-test",
+		"Gpu":     float64(1),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "目标配置与当前配置一致")
+	_, priced := findExecutorCall(executor.calls, "GetCompShareInstanceUpgradePrice")
+	assert.False(t, priced)
+	_, resized := findExecutorCall(executor.calls, "ResizeCompShareInstance")
+	assert.False(t, resized)
+}
+
 func TestResize_MissingInstanceLocationBlockedBeforePrice(t *testing.T) {
 	instance := stoppedInstanceResult()
 	host := instance["UHostSet"].([]any)[0].(map[string]any)
