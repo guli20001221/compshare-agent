@@ -314,6 +314,30 @@ func TestIntentPlannerRouteIntentsFromEnv_NetworkAcceleratorAliases(t *testing.T
 	require.Equal(t, "network_accelerator_status", string(intents[0]))
 }
 
+func TestIntentPlannerRouteIntentsFromEnv_BillingAccountUnsupportedAliases(t *testing.T) {
+	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
+		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
+			return "billing_account_unsupported, account_billing_unsupported"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+	require.Len(t, intents, 1)
+	require.Equal(t, "billing_account_unsupported", string(intents[0]))
+}
+
+func TestIntentPlannerRouteIntentsFromEnv_RefundAliases(t *testing.T) {
+	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
+		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
+			return "refund, refund_estimate"
+		}
+		return ""
+	})
+	require.Empty(t, unknown)
+	require.Len(t, intents, 1)
+	require.Equal(t, "refund_estimate", string(intents[0]))
+}
+
 func TestIntentPlannerRouteIntentsFromEnv_ImageTagAliases(t *testing.T) {
 	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
 		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
@@ -357,9 +381,11 @@ func TestIntentPlannerRouteIntents_DefaultsWhenEnvUnset(t *testing.T) {
 	want := []string{
 		"resource_info",
 		"monitor_query",
+		"billing_account_unsupported",
 		"gpu_specs_query",
 		"stock_availability",
 		"pricing_query",
+		"refund_estimate",
 		"image_tag_catalog",
 		"model_repository_browse",
 		"platform_image_list",

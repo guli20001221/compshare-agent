@@ -135,6 +135,21 @@ func matchResourceSelection(input string, p pendingResourceSelection) resourceSe
 	return resourceSelectionMatch{}
 }
 
+func resourceSelectionLooksLikeReply(input string, p pendingResourceSelection) bool {
+	query := strings.TrimSpace(input)
+	if query == "" {
+		return true
+	}
+	match := matchResourceSelection(query, p)
+	if match.ok || match.ambiguous {
+		return true
+	}
+	if _, ok := parseResourceSelectionOrdinal(query); ok {
+		return true
+	}
+	return uhostIDPattern.FindString(query) == query
+}
+
 func isResourceSelectionExpired(currentTurn int, p pendingResourceSelection) bool {
 	return currentTurn > p.createdTurn+2
 }

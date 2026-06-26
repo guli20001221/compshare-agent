@@ -77,19 +77,18 @@ var handlingClassOrder = []string{
 // docs/research/routing_eval_set_637_2026-06-22.md §7: handling_class is labeled
 // by "应该怎么处理", the should-be handling), NOT a snapshot of what the current
 // engine literally does. For a few intents the engine has since diverged from the
-// should-be (e.g. account-billing no longer canned-refuses — the keyword
-// hard-block was removed 2026-06-10, see internal/engine/engine.go:64-66, so it
-// now dispatches to ReAct; vague_failure is a canned clarify). Those divergences are themselves routing/handling signal
-// this gate surfaces — they are NOT mapping bugs.
+// should-be (e.g. account-billing now refuses from the planner intent rather
+// than the old keyword hard-block; vague_failure is a canned clarify). Those
+// divergences are themselves routing/handling signal this gate surfaces — they
+// are NOT mapping bugs.
 //
 //   - read_query: all deterministic read routes (resource/monitor/billing-read/
 //     pricing/specs/stock/image-list/disk/expiry/net-accel).
 //   - knowledge_answer: knowledge_qa + the kb-dominant advice intents.
 //   - lifecycle_mutate: operation_lifecycle (confirm-gated saga).
 //   - diagnosis: diagnosis/vague_failure (symptom triage).
-//   - refuse_out_of_scope: billing_account_unsupported (should-be: honest refusal;
-//     main no longer canned-refuses it → this class scoring ~0% is a real, known
-//     routing gap, exactly what the eval exists to surface).
+//   - refuse_out_of_scope: billing_account_unsupported (honest refusal from
+//     planner intent, with HardBlockHint kept as observability only).
 //   - create_deploy: deploy_model (create confirm saga).
 //   - ambiguous: unknown (clarify).
 //

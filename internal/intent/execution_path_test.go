@@ -25,6 +25,7 @@ func TestPlannedExecutionPathForIntent_RuntimeIntentPartition(t *testing.T) {
 	expected := map[ExecutionPath][]Intent{
 		ExecutionPathRouting: {
 			IntentMonitorQuery,
+			IntentBillingAccountUnsupported,
 			IntentResourceInfo,
 			IntentGPUSpecsQuery,
 			IntentStockAvailability,
@@ -45,7 +46,6 @@ func TestPlannedExecutionPathForIntent_RuntimeIntentPartition(t *testing.T) {
 		ExecutionPathAgent: {
 			IntentMonitorHistory,
 			IntentBillingInstance,
-			IntentBillingAccountUnsupported,
 			IntentExpiryRenewal,
 			IntentDiagnosis,
 			IntentVagueFailure,
@@ -69,6 +69,7 @@ func TestPlannedExecutionPathForIntent_RuntimeIntentPartition(t *testing.T) {
 func TestPlannedExecutionPathForIntent_RoutingWorkflowIntents(t *testing.T) {
 	for _, i := range []Intent{
 		IntentMonitorQuery,
+		IntentBillingAccountUnsupported,
 		IntentResourceInfo,
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
@@ -95,7 +96,6 @@ func TestPlannedExecutionPathForIntent_AgentDefault(t *testing.T) {
 	for _, i := range []Intent{
 		IntentMonitorHistory,
 		IntentBillingInstance,
-		IntentBillingAccountUnsupported,
 		IntentExpiryRenewal,
 		IntentDiagnosis,
 		IntentVagueFailure,
