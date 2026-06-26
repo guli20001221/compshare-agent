@@ -4809,7 +4809,7 @@ func startWithoutGPURequestedByText(text string) bool {
 // workflows that carry no critical return data, letting executeWorkflow short-
 // circuit the LLM narration round (see the call site for why). Returns
 // ("", false) for workflows whose result must be narrated (they surface IDs,
-// passwords, or post-action guidance the user needs).
+// disk IDs, or post-action guidance the user needs).
 func deterministicWorkflowReply(action string, args map[string]any) (string, bool) {
 	uhost, _ := args["UHostId"].(string)
 	switch action {
@@ -4824,6 +4824,8 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 			return fmt.Sprintf("✅ 已将实例 %s 重命名为「%s」。", uhost, name), true
 		}
 		return fmt.Sprintf("✅ 已重命名实例 %s。", uhost), true
+	case "ResetPasswordWorkflow":
+		return fmt.Sprintf("✅ 已为实例 %s 重置密码。出于安全考虑，密码不会在对话中回显。", uhost), true
 	default:
 		return "", false
 	}

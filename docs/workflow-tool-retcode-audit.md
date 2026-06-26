@@ -6,6 +6,10 @@ This table tracks the runtime contract between agent workflows/tools and the
 CompShare upstream API. When adding or changing a tool/workflow, update this
 file together with tests.
 
+Audit source: `G:\下载\uhost-compshare-api-master\uhost-compshare-api-master`
+(`pkg/api`, `internal/api`, and upstream error-code definitions). Keep this
+document aligned with the source implementation, not only public docs.
+
 ## Workflow Matrix
 
 | Workflow | Upstream actions | Placement source | Price gate | State/preflight gate | RetCode focus |
@@ -18,7 +22,7 @@ file together with tests.
 | `ResetPasswordWorkflow` | `DescribeCompShareInstance`, `ResetCompShareInstancePassword` | queried instance `Zone`; `Region` may derive from that `Zone` | no | VM stopped or container online; password validated/masked | 230, 8314, 8903 |
 | `SetStopSchedulerWorkflow` | `DescribeCompShareInstance`, `UpdateCompShareStopScheduler` | queried instance `Zone`; `Region` may derive from that `Zone` | no | Running, non-Spot, shutdown time valid | 230, 8903, 8905 |
 | `CancelStopSchedulerWorkflow` | `DescribeCompShareInstance`, `DeleteCompShareStopScheduler` | queried instance `Zone`; `Region` may derive from that `Zone` | no | instance found; any state allowed | 230, 8903 |
-| `ResizeInstanceWorkflow` | `DescribeCompShareInstance`, `GetCompShareInstanceUpgradePrice`, `ResizeCompShareInstance` | queried instance `Zone`; `Region` may derive from that `Zone` | required before confirm | Stopped; at least one target CPU/GPU/memory change | 230, 8333, 8357, 8090 |
+| `ResizeInstanceWorkflow` | `DescribeCompShareInstance`, `GetCompShareInstanceUpgradePrice`, `ResizeCompShareInstance` | queried instance `Zone`; `Region` may derive from that `Zone` | required before confirm | Stopped; at least one requested CPU/GPU/memory value must differ from the current instance | 230, 8333, 8357, 8090 |
 | `ResizeDiskWorkflow` | `DescribeCompShareInstance`, `DescribeCompShareSupportZone`, `CheckCompShareResizeAttachedDisk`, `GetCompShareAttachedDiskUpgradePrice`, `ResizeCompShareDisk` or `ResizeCompShareInstance` | queried instance `Zone`; Pod path resolves `zone_id/az_group` through support-zone catalog first, instance fields only fallback | required before confirm | target disk resolved; target size larger; Pod uses instance-resize disk branch | 230, 8067, 8107, 8090 |
 | `ReinstallInstanceWorkflow` | `DescribeCompShareInstance`, `Describe*Images`, `ReinstallCompShareInstance` | queried instance `Zone`; `Region` may derive from that `Zone` | no | Stopped; image exists; Pod needs container image; system disk large enough for image size | 230, 8010, 8017, 8027, 8315, 226603 |
 | `CreateDiskWorkflow` | `DescribeCompShareInstance`, `GetCompShareInstancePrice`, `CreateAndAttachCompshareDisk` | queried instance `Zone`; `Region` may derive from that `Zone` | required before confirm | VM only; size present | 230, 8090, 8067 |
@@ -41,9 +45,13 @@ file together with tests.
 | `GetCompShareAttachedDiskUpgradePrice` | disk resize quote | source instance placement must be included | missing price blocks confirm | workflow only |
 | `GetCompShareRefundPrice` | instance refund estimate | explicit instance ids only | estimate only; no release action | read-only |
 | `DescribeCompShareImages` | platform images | no static zone guarantee | image size is MB; used for reinstall disk preflight | image source only, not stock |
+| `DescribeCompShareImageTags` | platform image tag catalog | account/region-scoped read | tag list only; not an image list | read-only filter metadata |
 | `DescribeCommunityImages` | community images | no static zone guarantee | exact image still may fail dynamic zone adaptation | image source only, not stock |
 | `DescribeCompShareCustomImages` | custom images | account-scoped | image status matters before reuse | do not solve upstream identity injection |
 | `DescribeCompShareSharingImages` | shared images | account-scoped | same image-shape checks as other images | read-only |
+| `DescribeModelRepositoryModels` | public model repository list | account-scoped read | model/tag metadata only; no deployment action | read-only, do not infer instance stock |
+| `DescribeModelRepositoryTags` | public model repository tag catalog | account-scoped read | tag list only | read-only filter metadata |
+| `DescribeCompShareSoftwarePort` | image software port catalog | region-scoped read | port catalog only; instance SSH/app URLs come from instance detail first | read-only fallback for entry diagnostics |
 | `GetCompShareInstanceMonitor` | current/history monitor | target instance ids only; max window guarded by tools policy | parse VM and Pod result shapes separately | no raw result dump |
 | `DescribeCompShareJupyterToken` | Jupyter entry/token | target instance only | token must not be shown in plain text | return safe entry guidance |
 | `DescribeCFS` | CFS list/detail | optional zone string; internal fields not model-filled | missing CFS zone id blocks resize | read-only |

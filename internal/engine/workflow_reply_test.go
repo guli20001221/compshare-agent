@@ -34,11 +34,19 @@ func TestDeterministicWorkflowReply(t *testing.T) {
 	rename, _ := deterministicWorkflowReply("RenameInstanceWorkflow", args)
 	assert.Contains(t, rename, "my-renamed-box", "rename reply must surface the new name")
 
+	reset, ok := deterministicWorkflowReply("ResetPasswordWorkflow", map[string]any{
+		"UHostId":  "uhost-abc123",
+		"Password": "Secret123!",
+	})
+	require.True(t, ok, "password reset must use deterministic narration")
+	assert.Contains(t, reset, "uhost-abc123")
+	assert.NotContains(t, reset, "Secret123!", "password reset replies must never echo the password")
+	assert.Contains(t, reset, "不会在对话中回显")
+
 	// Data/guidance-bearing workflows MUST still narrate (no short-circuit),
-	// otherwise their returned IDs / passwords / guidance would be dropped.
+	// otherwise their returned IDs / guidance would be dropped.
 	for _, action := range []string{
 		"CreateInstanceWorkflow",
-		"ResetPasswordWorkflow",
 		"CreateDiskWorkflow",
 		"ResizeDiskWorkflow",
 		"CreateCustomImageWorkflow",

@@ -66,7 +66,7 @@ func UpstreamAPIErrorFrom(err error) (*UpstreamAPIError, bool) {
 // final reply (eval/regression_6cat_cases.json reply_not_contains gate).
 //
 // The codes and their meaning are pinned to the upstream gateway source
-// (uhost-compshare-api internal/errors/code.go), audited 2026-06-25.
+// (uhost-compshare-api internal/errors/code.go), audited 2026-06-26.
 //
 // Unknown codes fall back to the prior raw-error behavior (no hint).
 func retCodeHint(code int) string {
