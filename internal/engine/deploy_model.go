@@ -124,12 +124,20 @@ func (e *Engine) tryDeployModel(ctx context.Context, dispatch routerDispatchResu
 		return e.deployReply(result, dispatch.latency, zoneClarify)
 	}
 
+	matchUserMsg := effectiveUserMsg
+	if createPreferenceExtractionOn {
+		if pref, err := e.extractCreatePreference(ctx, effectiveUserMsg, intent.IntentDeployModel); err == nil && pref != nil {
+			e.createPreferenceThisTurn = pref
+			matchUserMsg = deployMessageWithCreatePreference(effectiveUserMsg, *pref)
+		}
+	}
+
 	// (1) Match an existing image + size the GPU + pick the create-zone (TierAgent
 	// judgment + deterministic VRAM/stock arithmetic). Runs in read-only mode too —
 	// it is all read-only queries, and its output IS the advice. A zone the user
 	// named in the request (e.g. "在上海部署") is honored strictly; a GPU the user
 	// names is honored strictly by selectDeployZoneAndGPU (extractDeployGPU).
-	plan, err := e.matchDeployImage(ctx, effectiveUserMsg, userZone, onStep)
+	plan, err := e.matchDeployImage(ctx, matchUserMsg, userZone, onStep)
 	if err != nil {
 		// A deployUserError carries a specific, actionable message (e.g. "the zone
 		// you named has no suitable in-stock card") — surface it verbatim instead of

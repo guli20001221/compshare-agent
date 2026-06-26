@@ -225,6 +225,7 @@ type Engine struct {
 	intentPlannerEnabledIntents map[intent.Intent]struct{}
 	intentRouteIntents          map[intent.Intent]struct{}
 	knowledgeRetriever          KnowledgeRetriever
+	createPreferenceExtractor   CreatePreferenceExtractor
 	groundedRenderer            grounded.Renderer
 	groundedRendererModel       string
 	// fastTemplate, when true, makes fast-tier catalog envelopes
@@ -274,6 +275,7 @@ type Engine struct {
 	// emitPlannerTrace (projects PlannedExecutionPath=agent so planned==actual).
 	// Reset per turn; always false when the flag is off => byte-identical.
 	knowledgeQAAgentLoopThisTurn bool
+	createPreferenceThisTurn     *CreatePreferenceExtractionResult
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
 	// user turn. 0 = disabled. Copied from SharedDeps in NewSession.
 	maxTokensPerTurn int
@@ -1231,6 +1233,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.knowledgeQAAgentLoopThisTurn = false
+	e.createPreferenceThisTurn = nil
 	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
 	// any mid-turn re-bind), and reset the per-turn binding observables that
 	// refreshSystemPrompt fills next.
