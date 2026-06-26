@@ -38,8 +38,12 @@ func TestValidatePlan_RejectsInvalidIntentEnum(t *testing.T) {
 	requireValidationCode(t, err, ErrInvalidIntent)
 }
 
-func TestValidatePlan_RejectsLegacyMixedIntentEnums(t *testing.T) {
-	for _, legacy := range []Intent{IntentMixedDiagnosisKB, IntentMixedBillingKB} {
+func TestValidatePlan_RejectsRemovedIntentEnums(t *testing.T) {
+	for _, legacy := range []Intent{
+		Intent("recommendation"),
+		Intent("mixed_diagnosis_kb"),
+		Intent("mixed_billing_kb"),
+	} {
 		t.Run(string(legacy), func(t *testing.T) {
 			plan := validMonitorPlan()
 			plan.Intent = legacy
@@ -327,10 +331,7 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
-		IntentRecommendation,
 		IntentKnowledgeQA,
-		IntentMixedDiagnosisKB,
-		IntentMixedBillingKB,
 		// Route Registry v1 (PR A, 2026-05-18) — see route_registry.go.
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
@@ -354,9 +355,11 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 	}, AllIntents())
 }
 
-func TestRuntimeIntentsExcludeLegacyMixedIntents(t *testing.T) {
-	assert.NotContains(t, RuntimeIntents(), IntentMixedDiagnosisKB)
-	assert.NotContains(t, RuntimeIntents(), IntentMixedBillingKB)
+func TestRuntimeIntentsExcludeRemovedIntents(t *testing.T) {
+	runtime := RuntimeIntents()
+	assert.NotContains(t, runtime, Intent("recommendation"))
+	assert.NotContains(t, runtime, Intent("mixed_diagnosis_kb"))
+	assert.NotContains(t, runtime, Intent("mixed_billing_kb"))
 }
 
 func validMonitorPlan() IntentRoute {

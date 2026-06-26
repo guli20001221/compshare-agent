@@ -57,8 +57,6 @@ func loadCases(t *testing.T) []EvalCase {
 // toolToIntent maps a tool name to the expected intent category.
 func toolToIntent(toolName string) string {
 	switch toolName {
-	case "GetGPUSpecs", "GetGPURecommendation":
-		return "recommendation"
 	case "CreateInstanceWorkflow", "StopInstanceWorkflow", "StartInstanceWorkflow",
 		"RebootInstanceWorkflow", "RenameInstanceWorkflow", "ResetPasswordWorkflow":
 		return "complex_task"

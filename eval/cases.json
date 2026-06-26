@@ -324,50 +324,50 @@
   },
   {
     "id": "rc_01",
-    "category": "recommendation",
+    "category": "simple_query",
     "input": "训练7B模型该用什么卡",
     "description": "GPU选型推荐——训练场景",
-    "expected_intent": "recommendation",
+    "expected_intent": "simple_query",
     "expected_tools": ["GetGPURecommendation", "GetGPUSpecs"],
     "user_context": "用户当前没有实例。",
     "tags": ["core"]
   },
   {
     "id": "rc_02",
-    "category": "recommendation",
+    "category": "simple_query",
     "input": "跑Stable Diffusion用什么卡比较合适",
     "description": "GPU选型推荐——SD绘图",
-    "expected_intent": "recommendation",
+    "expected_intent": "simple_query",
     "expected_tools": ["GetGPURecommendation", "GetGPUSpecs"],
     "user_context": "用户当前没有实例。",
     "tags": []
   },
   {
     "id": "rc_03",
-    "category": "recommendation",
+    "category": "simple_query",
     "input": "4090和A100有什么区别",
     "description": "GPU对比——规格查询",
-    "expected_intent": "recommendation",
+    "expected_intent": "simple_query",
     "expected_tools": ["GetGPUSpecs"],
     "user_context": "用户当前没有实例。",
     "tags": []
   },
   {
     "id": "rc_04",
-    "category": "recommendation",
+    "category": "simple_query",
     "input": "我预算有限，想部署一个推理服务，推荐什么配置",
     "description": "预算敏感的推荐",
-    "expected_intent": "recommendation",
+    "expected_intent": "simple_query",
     "expected_tools": ["GetGPURecommendation", "GetGPUSpecs"],
     "user_context": "用户当前没有实例。",
     "tags": []
   },
   {
     "id": "rc_05",
-    "category": "recommendation",
+    "category": "simple_query",
     "input": "H20的显存是多少",
     "description": "特定GPU规格查询",
-    "expected_intent": "recommendation",
+    "expected_intent": "simple_query",
     "expected_tools": ["GetGPUSpecs"],
     "user_context": "用户当前没有实例。",
     "tags": []
@@ -722,10 +722,10 @@
   },
   {
     "id": "rc_06",
-    "category": "recommendation",
+    "category": "simple_query",
     "input": "预算200块，想跑一个14B的大模型推理，推荐什么配置",
     "description": "预算受限大模型推荐",
-    "expected_intent": "recommendation",
+    "expected_intent": "simple_query",
     "expected_tools": ["GetGPURecommendation", "GetGPUSpecs"],
     "user_context": "用户当前没有实例。",
     "tags": []

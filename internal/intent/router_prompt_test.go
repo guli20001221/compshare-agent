@@ -36,13 +36,61 @@ func TestBuildSystemPromptIncludesRouteDispatchSchemaFields(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptDoesNotEmitMixedIntents(t *testing.T) {
-	prompt := buildSystemPrompt()
-	for _, legacy := range []string{"mixed_diagnosis_kb", "mixed_billing_kb"} {
-		if strings.Contains(prompt, legacy) {
-			t.Fatalf("system prompt should not ask planner to emit legacy mixed intent %q:\n%s", legacy, prompt)
+func TestBuildSystemPromptIntentEnumMatchesRuntimeIntents(t *testing.T) {
+	got := allowedIntentEnumFromPrompt(buildSystemPrompt())
+	want := make(map[string]bool, len(RuntimeIntents()))
+	for _, i := range RuntimeIntents() {
+		want[string(i)] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("prompt intent enum size = %d, want %d; got=%v", len(got), len(want), got)
+	}
+	for label := range want {
+		if !got[label] {
+			t.Fatalf("prompt intent enum missing runtime intent %q; got=%v", label, got)
 		}
 	}
+	for label := range got {
+		if !want[label] {
+			t.Fatalf("prompt intent enum contains non-runtime intent %q; got=%v", label, got)
+		}
+	}
+}
+
+func TestBuildSystemPromptDoesNotEmitRemovedIntentLabels(t *testing.T) {
+	prompt := buildSystemPrompt()
+	enum := allowedIntentEnumFromPrompt(prompt)
+	for _, legacy := range []string{"recommendation", "mixed_diagnosis_kb", "mixed_billing_kb"} {
+		if enum[legacy] {
+			t.Fatalf("system prompt enum should not ask planner to emit removed intent %q:\n%s", legacy, prompt)
+		}
+	}
+	for _, legacy := range []string{"mixed_diagnosis_kb", "mixed_billing_kb"} {
+		if strings.Contains(prompt, legacy) {
+			t.Fatalf("system prompt should not mention removed intent label %q:\n%s", legacy, prompt)
+		}
+	}
+}
+
+func allowedIntentEnumFromPrompt(prompt string) map[string]bool {
+	const prefix = "Allowed intent enum:"
+	for _, line := range strings.Split(prompt, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		rest = strings.TrimSuffix(rest, ".")
+		out := map[string]bool{}
+		for _, part := range strings.Split(rest, ",") {
+			label := strings.TrimSpace(part)
+			if label != "" {
+				out[label] = true
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 func TestBuildSystemPromptExamplesParse(t *testing.T) {

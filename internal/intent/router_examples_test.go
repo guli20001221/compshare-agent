@@ -335,7 +335,13 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // operation_lifecycle, but model/app/framework-first requests such as
 // "部署 DeepSeekR1 / 部署数字人" stay deploy_model. Also removes "部署一台" from the
 // generic lifecycle verb list so it cannot over-bias workload deploys.
-const systemPromptSHA256Baseline = "506b491bdfedf8574f23af591242ff0493b40418964fe9b3e02445a0620f114d"
+//
+// R2b P0 intent-taxonomy cleanup (2026-06-26): remove dead planner labels
+// recommendation / mixed_diagnosis_kb / mixed_billing_kb and align the prompt's
+// allowed enum with RuntimeIntents (adds shared_image_list, image_tag_catalog,
+// model_repository_browse to the enum line). No examples or dispatch rules
+// changed.
+const systemPromptSHA256Baseline = "5970ce9595e6eecd36272edbe2337b8861db3bc80c84e8c47bcd01b7c761387c"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

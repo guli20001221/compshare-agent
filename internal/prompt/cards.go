@@ -131,12 +131,6 @@ func RenderIntentScopedReActCard(intentName intent.Intent, mutatingToolsEnabled 
 			"- 查询当前状态、价格、监控、库存、镜像和实例详情时必须基于工具返回事实。",
 			"- " + sharedCompleteListingRule,
 		}, "\n")
-	case intent.IntentRecommendation:
-		return strings.Join([]string{
-			"## 本轮 ReAct 推荐卡片",
-			"- 选型建议必须先调用规格、库存或价格工具获取事实。",
-			"- 推荐替代 GPU 前，必须先用 CheckCompShareResourceCapacity 确认可用库存。",
-		}, "\n")
 	case intent.IntentKnowledgeQA:
 		return strings.Join([]string{
 			"## 本轮 ReAct 知识卡片",

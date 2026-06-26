@@ -14,10 +14,7 @@ const (
 	IntentDiagnosis                 Intent = "diagnosis"
 	IntentVagueFailure              Intent = "vague_failure"
 	IntentOperationLifecycle        Intent = "operation_lifecycle"
-	IntentRecommendation            Intent = "recommendation"
 	IntentKnowledgeQA               Intent = "knowledge_qa"
-	IntentMixedDiagnosisKB          Intent = "mixed_diagnosis_kb"
-	IntentMixedBillingKB            Intent = "mixed_billing_kb"
 	IntentUnknown                   Intent = "unknown"
 	// Route Registry v1 (PR A, 2026-05-18) — declarative routing for static
 	// platform queries. See internal/intent/routes/*.md and
@@ -207,10 +204,7 @@ func AllIntents() []Intent {
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
-		IntentRecommendation,
 		IntentKnowledgeQA,
-		IntentMixedDiagnosisKB,
-		IntentMixedBillingKB,
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
 		IntentPlatformImageList,
@@ -240,7 +234,6 @@ func RuntimeIntents() []Intent {
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
-		IntentRecommendation,
 		IntentKnowledgeQA,
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
