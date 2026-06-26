@@ -107,6 +107,23 @@ func readFrames(t *testing.T, conn *websocket.Conn) ([]string, map[string]any) {
 	}
 }
 
+func readFrameList(t *testing.T, conn *websocket.Conn) []map[string]any {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var frames []map[string]any
+	for {
+		_, data, err := conn.Read(ctx)
+		require.NoError(t, err)
+		var f map[string]any
+		require.NoError(t, json.Unmarshal(data, &f))
+		frames = append(frames, f)
+		if f["event"] == "done" || f["event"] == "error" {
+			return frames
+		}
+	}
+}
+
 // TestWS_Handshake_RejectsMissingIdentity proves identity is taken from the
 // upgrade headers (not the frame): a connection without X-Company-Id must be
 // refused before the socket opens.
@@ -157,6 +174,32 @@ func TestWS_Chat_StreamsMetaTokenDone(t *testing.T) {
 	require.Len(t, messages.appended, 2)
 	assert.Equal(t, "你好", messages.patch.Content)
 	assert.Equal(t, "ok", messages.patch.Status)
+}
+
+func TestWS_Chat_CreatesReplacementForMissingSession(t *testing.T) {
+	srv, messages, _ := wsTestHandlers(t, chatLLM{}, denyConfirm)
+	conn := dialWS(t, srv, gatewayHeaders())
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, conn.Write(ctx, websocket.MessageText,
+		[]byte(`{"Action":"SendCSAgentChat","SessionId":"stale-session","Message":"hi"}`)))
+
+	frames := readFrameList(t, conn)
+	var meta map[string]any
+	for _, f := range frames {
+		if f["event"] == "meta" {
+			meta = f
+			break
+		}
+	}
+	require.NotNil(t, meta, "meta frame must be emitted")
+	assert.Equal(t, "sess-new", meta["SessionId"])
+	require.Len(t, messages.appended, 2)
+	assert.Equal(t, "sess-new", messages.appended[0].SessionID)
+	assert.Equal(t, "sess-new", messages.appended[1].SessionID)
+	assert.Equal(t, "done", frames[len(frames)-1]["event"])
 }
 
 // TestWS_Confirm_FrameResolvesBrokerWaiter proves the behavior that justifies

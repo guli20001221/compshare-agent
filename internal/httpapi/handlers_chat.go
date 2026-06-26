@@ -174,10 +174,11 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		return nil, ErrInvalidParam.WithMessage("Message exceeds MaxInputLength")
 	}
 
-	sess, err := h.sessions.GetByID(ctx, base.Owner, sessionID)
+	sess, _, err := h.getOrCreateSession(ctx, base.Owner, sessionID)
 	if err != nil {
 		return nil, AsAPIError(err)
 	}
+	sessionID = sess.ID
 
 	// Enforce per-session turn cap. Each completed Chat call persists exactly
 	// two rows (user + assistant), so message_count == max_session_turns * 2
