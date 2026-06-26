@@ -58,6 +58,20 @@ func (p fakePool) Get(_ context.Context, _ store.Owner, _ string) (*engine.Engin
 	return p.eng, nil
 }
 
+type recordingPool struct {
+	eng       *engine.Engine
+	sessionID []string
+}
+
+func (p *recordingPool) Lease(_ context.Context, _ store.Owner, sessionID string) (*engine.Engine, func(), error) {
+	p.sessionID = append(p.sessionID, sessionID)
+	return p.eng, func() {}, nil
+}
+func (p *recordingPool) Get(_ context.Context, _ store.Owner, sessionID string) (*engine.Engine, error) {
+	p.sessionID = append(p.sessionID, sessionID)
+	return p.eng, nil
+}
+
 // recordingMessages extends mockMessages to record Append and UpdateAssistant calls.
 type recordingMessages struct {
 	mockMessages
@@ -193,6 +207,7 @@ func TestDispatchChatStreamsMetaTokenDone(t *testing.T) {
 	body := sink.body()
 	assert.True(t, sink.has("meta"))
 	assert.Contains(t, body, `"RequestId":"req-1"`)
+	assert.Equal(t, "sess-1", firstMetaEvent(t, sink).SessionID)
 	assert.True(t, sink.has("token"))
 	assert.Contains(t, body, `"Text":"你"`)
 	assert.Contains(t, body, `"Text":"好"`)
@@ -202,6 +217,92 @@ func TestDispatchChatStreamsMetaTokenDone(t *testing.T) {
 	assert.Equal(t, "assistant", messages.appended[1].Role)
 	assert.Equal(t, "你好", messages.patch.Content)
 	assert.Equal(t, "ok", messages.patch.Status)
+}
+
+func TestDispatchChatCreatesReplacementForMissingSession(t *testing.T) {
+	eng := engine.NewWithDeps(chatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+
+	messages := &recordingMessages{}
+	pool := &recordingPool{eng: eng}
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{}},
+		messages,
+		mockFeedback{},
+		pool,
+		nil,
+	)
+
+	sink, apiErr := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"stale-session","Message":"hi","request_uuid":"req-stale","top_organization_id":1,"organization_id":2}`)
+
+	require.Nil(t, apiErr)
+	assert.True(t, sink.has("done"))
+	assert.Equal(t, []string{"sess-new"}, pool.sessionID)
+	meta := firstMetaEvent(t, sink)
+	assert.Equal(t, "sess-new", meta.SessionID)
+	require.Len(t, messages.appended, 2, "expected user and assistant rows inserted")
+	assert.Equal(t, "sess-new", messages.appended[0].SessionID)
+	assert.Equal(t, "sess-new", messages.appended[1].SessionID)
+}
+
+func TestDispatchChatCreatesReplacementForForeignSession(t *testing.T) {
+	eng := engine.NewWithDeps(chatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+
+	messages := &recordingMessages{}
+	pool := &recordingPool{eng: eng}
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{
+			"sess-foreign": {
+				ID:                "sess-foreign",
+				TopOrganizationID: 99,
+				OrganizationID:    98,
+				CreatedAt:         time.Now(),
+				UpdatedAt:         time.Now(),
+			},
+		}},
+		messages,
+		mockFeedback{},
+		pool,
+		nil,
+	)
+
+	sink, apiErr := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-foreign","Message":"hi","request_uuid":"req-foreign","top_organization_id":1,"organization_id":2}`)
+
+	require.Nil(t, apiErr)
+	assert.True(t, sink.has("done"))
+	assert.Equal(t, []string{"sess-new"}, pool.sessionID)
+	meta := firstMetaEvent(t, sink)
+	assert.Equal(t, "sess-new", meta.SessionID)
+	require.Len(t, messages.appended, 2, "expected user and assistant rows inserted")
+	assert.Equal(t, "sess-new", messages.appended[0].SessionID)
+	assert.Equal(t, "sess-new", messages.appended[1].SessionID)
+}
+
+func firstMetaEvent(t *testing.T, sink *recordingSink) metaEvent {
+	t.Helper()
+	for _, ev := range sink.events {
+		if ev.Event != "meta" {
+			continue
+		}
+		meta, ok := ev.Data.(metaEvent)
+		require.True(t, ok, "meta frame should carry metaEvent, got %T", ev.Data)
+		return meta
+	}
+	t.Fatal("missing meta event")
+	return metaEvent{}
 }
 
 func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {

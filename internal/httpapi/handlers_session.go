@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -48,6 +49,25 @@ func (h *Handlers) handleCreateSession(c *gin.Context, base BaseRequest, raw *si
 	}, nil
 }
 
+// getOrCreateSession fetches a session for owner, or creates a replacement when
+// the client sends a stale/deleted/session-from-another-owner id. This mirrors
+// the console behavior: a stale local SessionId should recover into a fresh
+// conversation without exposing whether the old id existed.
+func (h *Handlers) getOrCreateSession(ctx context.Context, owner store.Owner, sessionID string) (store.Session, bool, error) {
+	sess, err := h.sessions.GetByID(ctx, owner, sessionID)
+	if err == nil {
+		return sess, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return store.Session{}, false, err
+	}
+	sess, err = h.sessions.Create(ctx, owner, nil, nil)
+	if err != nil {
+		return store.Session{}, false, err
+	}
+	return sess, true, nil
+}
+
 // handleGetSession retrieves session metadata and a page of messages.
 // Required: SessionId. Optional: Limit (1–100, default 50), Cursor (opaque).
 func (h *Handlers) handleGetSession(c *gin.Context, base BaseRequest, raw *simplejson.Json) (any, error) {
@@ -61,16 +81,12 @@ func (h *Handlers) handleGetSession(c *gin.Context, base BaseRequest, raw *simpl
 	}
 	cursor := raw.Get("Cursor").MustString()
 
-	sess, err := h.sessions.GetByID(c.Request.Context(), base.Owner, sessionID)
+	sess, created, err := h.getOrCreateSession(c.Request.Context(), base.Owner, sessionID)
 	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-		sess, err = h.sessions.Create(c.Request.Context(), base.Owner, nil, nil)
-		if err != nil {
-			return nil, err
-		}
-		sessionID = sess.ID
+		return nil, err
+	}
+	sessionID = sess.ID
+	if created {
 		cursor = ""
 	}
 	messages, nextCursor, err := h.messages.ListBySession(c.Request.Context(), sessionID, limit, cursor)
