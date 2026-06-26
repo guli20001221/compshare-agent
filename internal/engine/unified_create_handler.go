@@ -25,22 +25,25 @@ func (e *Engine) tryCreateInstance(ctx context.Context, dispatch routerDispatchR
 		return e.deployReply(dispatch.result, dispatch.latency, createInstanceNonCommandReply())
 	}
 
-	if pref, err := e.extractCreatePreference(ctx, userMsg, intent.IntentCreateInstance); err == nil && pref != nil {
-		e.createPreferenceThisTurn = pref
-		if createPreferenceHasWorkload(*pref) {
+	var pref *CreatePreferenceExtractionResult
+	if extracted, err := e.extractCreatePreference(ctx, userMsg, intent.IntentCreateInstance); err == nil && extracted != nil {
+		pref = extracted
+		e.createPreferenceThisTurn = extracted
+		if createPreferenceHasWorkload(*extracted) {
 			deployDispatch := dispatch
 			deployDispatch.result.Plan.Intent = intent.IntentDeployModel
-			matchUserMsg := deployMessageWithCreatePreference(userMsg, *pref)
+			matchUserMsg := deployMessageWithCreatePreference(userMsg, *extracted)
 			return e.runDeployModel(ctx, deployDispatch, userMsg, userMsg, matchUserMsg, onStep)
 		}
 	}
 
 	args := map[string]any{}
 	availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
-	if gpu := extractDeployGPUFromCatalog(userMsg, availResult); gpu != "" {
+	if gpu := createInstanceGPUFromPreferenceOrText(userMsg, pref, availResult); gpu != "" {
 		args["GpuType"] = gpu
 		args["Gpu"] = float64(1)
 	}
+	applyCreatePreferenceWorkflowArgs(args, pref)
 
 	const action = "CreateInstanceWorkflow"
 	e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedAgent, dispatch.latency)
@@ -62,6 +65,30 @@ func (e *Engine) tryCreateInstance(ctx context.Context, dispatch routerDispatchR
 
 func createPreferenceHasWorkload(pref CreatePreferenceExtractionResult) bool {
 	return strings.TrimSpace(pref.WorkloadPref) != ""
+}
+
+func createInstanceGPUFromPreferenceOrText(userMsg string, pref *CreatePreferenceExtractionResult, availResult map[string]any) string {
+	if pref != nil {
+		if gpu := extractDeployGPUFromCatalog(pref.GPUPref, availResult); gpu != "" {
+			return gpu
+		}
+	}
+	return extractDeployGPUFromCatalog(userMsg, availResult)
+}
+
+func applyCreatePreferenceWorkflowArgs(args map[string]any, pref *CreatePreferenceExtractionResult) {
+	if args == nil || pref == nil {
+		return
+	}
+	if image := strings.TrimSpace(pref.ImagePref); image != "" {
+		args["ImageName"] = image
+	}
+	if source := strings.TrimSpace(pref.ImageSource); source != "" {
+		args["ImageSource"] = source
+	}
+	if zone := strings.TrimSpace(pref.ZonePref); zone != "" {
+		args["Zone"] = zone
+	}
 }
 
 func createInstanceShouldNotOpenCreateCard(userMsg string) bool {

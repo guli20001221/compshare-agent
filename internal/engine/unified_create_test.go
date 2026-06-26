@@ -70,7 +70,7 @@ func TestTryPlannerDispatch_UnknownClearsPendingDeployModel(t *testing.T) {
 	assert.Empty(t, state.PendingDeployModel)
 }
 
-func TestDispatchAgentSkill_CreateInstanceFlagOnSpecOnlyUsesGuidedCreateWithoutImageMatch(t *testing.T) {
+func TestDispatchAgentSkill_CreateInstanceFlagOnSpecOnlyStartsCreateWorkflowWithoutImageMatch(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
 	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
 
@@ -89,6 +89,56 @@ func TestDispatchAgentSkill_CreateInstanceFlagOnSpecOnlyUsesGuidedCreateWithoutI
 	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "confirm=false path must not create")
 	require.NotEmpty(t, *events)
 	assert.True(t, sawStepAction(*events, "CreateInstanceWorkflow"))
+}
+
+func TestDispatchAgentSkill_CreateInstanceSpecOnlyUsesExtractedPreferences(t *testing.T) {
+	SetUnifiedCreateEnabled(true)
+	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
+
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	client := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: deployMatchJSON}}}
+	eng := NewWithDeps(client, exec, func(string, map[string]any) bool { return false })
+	eng.SetCreatePreferenceExtractor(&fakeCreatePreferenceExtractor{result: &CreatePreferenceExtractionResult{
+		GPUPref:     "4090",
+		ImagePref:   "PyTorch",
+		ImageSource: "platform",
+		ZonePref:    "华北二A",
+	}})
+	onStep, events := collectSteps()
+
+	reply, handled := eng.dispatchAgentSkill(context.Background(), createDispatch(), "在华北二A创建一台4090装PyTorch", onStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "创建实例")
+	require.NotEmpty(t, *events)
+	args := workflowStepArgs(t, *events, "CreateInstanceWorkflow")
+	assert.Equal(t, "4090", args["GpuType"])
+	assert.Equal(t, "PyTorch", args["ImageName"])
+	assert.Equal(t, "platform", args["ImageSource"])
+	assert.Equal(t, "华北二A", args["Zone"])
+	assert.Empty(t, client.calls, "spec-only create must not call the deploy image matcher LLM")
+}
+
+func TestDispatchAgentSkill_CreateInstanceSpecOnlyKeepsExplicitCommunityImageSource(t *testing.T) {
+	SetUnifiedCreateEnabled(true)
+	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
+
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}, communityImageID: "comm-img-9"})
+	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return false })
+	eng.SetCreatePreferenceExtractor(&fakeCreatePreferenceExtractor{result: &CreatePreferenceExtractionResult{
+		GPUPref:     "4090",
+		ImagePref:   "LiveTalking",
+		ImageSource: "community",
+	}})
+	onStep, events := collectSteps()
+
+	reply, handled := eng.dispatchAgentSkill(context.Background(), createDispatch(), "用社区镜像创建一台4090", onStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "创建实例")
+	args := workflowStepArgs(t, *events, "CreateInstanceWorkflow")
+	assert.Equal(t, "community", args["ImageSource"])
+	assert.Equal(t, "LiveTalking", args["ImageName"])
 }
 
 func TestDispatchAgentSkill_CreateInstancePriceQuestionDoesNotOpenCreateCard(t *testing.T) {
@@ -156,4 +206,15 @@ func sawStepAction(events []StepEvent, action string) bool {
 		}
 	}
 	return false
+}
+
+func workflowStepArgs(t *testing.T, events []StepEvent, action string) map[string]any {
+	t.Helper()
+	for _, ev := range events {
+		if ev.Action == action {
+			return ev.Args
+		}
+	}
+	t.Fatalf("missing workflow step action %s in %+v", action, events)
+	return nil
 }

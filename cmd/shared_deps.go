@@ -34,6 +34,15 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 // mutating tools are enabled. Behavior is byte-identical to the original inline
 // body of buildHTTPServerPool.
 func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.SharedDeps, bool, error) {
+	unifiedCreate, unknownUnifiedCreate := unifiedCreateEnabledFromEnv(getenv)
+	if unknownUnifiedCreate != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_UNIFIED_CREATE value %q", unknownUnifiedCreate)
+	}
+	engine.SetUnifiedCreateEnabled(unifiedCreate)
+	if unifiedCreate {
+		log.Printf("runtime: HTTP unified create-family route enabled (COMPSHARE_UNIFIED_CREATE=1; create_instance prompt/schema active)")
+	}
+
 	deps, err := engine.NewSharedDeps(cfg)
 	if err != nil {
 		return nil, false, fmt.Errorf("shared deps: %w", err)
@@ -91,14 +100,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	engine.SetCreatePreferenceExtractionEnabled(createPrefExtractor)
 	if createPrefExtractor {
 		log.Printf("runtime: HTTP create/deploy preference extractor enabled (COMPSHARE_CREATE_PREF_EXTRACTOR=1; deploy image-match only)")
-	}
-	unifiedCreate, unknownUnifiedCreate := unifiedCreateEnabledFromEnv(getenv)
-	if unknownUnifiedCreate != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_UNIFIED_CREATE value %q", unknownUnifiedCreate)
-	}
-	engine.SetUnifiedCreateEnabled(unifiedCreate)
-	if unifiedCreate {
-		log.Printf("runtime: HTTP unified create-family route enabled (COMPSHARE_UNIFIED_CREATE=1; create_instance prompt/schema active)")
 	}
 	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
 	if unknownKnowledgeQAAgentLoop != "" {
