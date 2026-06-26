@@ -1,8 +1,8 @@
 package intent
 
 // IntentToolSubset returns the tool names to expose when an intent falls back
-// to ReAct. Returns nil for intents that should see the full tool set (unknown,
-// knowledge_qa, mixed intents, etc.).
+// to ReAct. Returns nil for intents that should see the full tool set or are
+// handled outside the shared ReAct loop.
 func IntentToolSubset(i Intent) []string {
 	switch i {
 	case IntentDiagnosis, IntentVagueFailure:
@@ -111,13 +111,6 @@ func IntentToolSubset(i Intent) []string {
 	case IntentSharedImageList:
 		return []string{
 			"DescribeCompShareSharingImages",
-		}
-	case IntentRecommendation:
-		return []string{
-			"GetGPURecommendation",
-			"DescribeAvailableCompShareInstanceTypes",
-			"GetCompShareInstancePrice",
-			"DescribeCompShareImages",
 		}
 	case IntentOperationLifecycle:
 		return []string{

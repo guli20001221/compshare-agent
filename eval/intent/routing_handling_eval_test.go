@@ -79,8 +79,7 @@ var handlingClassOrder = []string{
 // engine literally does. For a few intents the engine has since diverged from the
 // should-be (e.g. account-billing no longer canned-refuses — the keyword
 // hard-block was removed 2026-06-10, see internal/engine/engine.go:64-66, so it
-// now dispatches to ReAct; recommendation runs a tool-grounded read; vague_failure
-// is a canned clarify). Those divergences are themselves routing/handling signal
+// now dispatches to ReAct; vague_failure is a canned clarify). Those divergences are themselves routing/handling signal
 // this gate surfaces — they are NOT mapping bugs.
 //
 //   - read_query: all deterministic read routes (resource/monitor/billing-read/
@@ -101,11 +100,9 @@ var handlingClassOrder = []string{
 // is computed over ROUTABLE classes (all 8 except greeting_smalltalk); the full
 // 8-class accuracy + matrix are still reported for transparency.
 //
-// mixed_billing_kb / mixed_diagnosis_kb are mapped defensively but are NOT in
-// RuntimeIntents() (validIntent rejects them) — the router can never emit them,
-// so a session whose fine_intent is mixed_* is predicted via the unknown→ambiguous
-// fallback. The arms exist only so the mapping stays correct if they are ever
-// promoted to runtime intents.
+// Historical fine_intent labels may still contain mixed_* values in the fixture
+// data, but those labels are not runtime router intents. They are therefore
+// evaluated through the router's actual prediction, not special-cased here.
 func intentToHandlingClass(intent intp.Intent) string {
 	switch intent {
 	case intp.IntentResourceInfo,
@@ -125,15 +122,12 @@ func intentToHandlingClass(intent intp.Intent) string {
 		intp.IntentDiskInfo,
 		intp.IntentExpiryRenewal:
 		return "read_query"
-	case intp.IntentKnowledgeQA,
-		intp.IntentMixedBillingKB,
-		intp.IntentRecommendation:
+	case intp.IntentKnowledgeQA:
 		return "knowledge_answer"
 	case intp.IntentOperationLifecycle:
 		return "lifecycle_mutate"
 	case intp.IntentDiagnosis,
-		intp.IntentVagueFailure,
-		intp.IntentMixedDiagnosisKB:
+		intp.IntentVagueFailure:
 		return "diagnosis"
 	case intp.IntentBillingAccountUnsupported:
 		return "refuse_out_of_scope"

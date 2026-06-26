@@ -96,15 +96,6 @@ func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 	}
 }
 
-func TestIntentToolSubset_Recommendation(t *testing.T) {
-	subset := IntentToolSubset(IntentRecommendation)
-	require.Len(t, subset, 4)
-	assert.Contains(t, subset, "GetGPURecommendation")
-	assert.Contains(t, subset, "DescribeAvailableCompShareInstanceTypes")
-	assert.Contains(t, subset, "GetCompShareInstancePrice")
-	assert.Contains(t, subset, "DescribeCompShareImages")
-}
-
 func TestIntentToolSubset_OperationLifecycle(t *testing.T) {
 	subset := IntentToolSubset(IntentOperationLifecycle)
 	require.Len(t, subset, 23)
@@ -129,9 +120,10 @@ func TestIntentToolSubset_NilForAmbiguousIntents(t *testing.T) {
 	for _, i := range []Intent{
 		IntentUnknown,
 		IntentKnowledgeQA,
-		IntentMixedDiagnosisKB,
-		IntentMixedBillingKB,
 		IntentBillingAccountUnsupported,
+		Intent("recommendation"),
+		Intent("mixed_diagnosis_kb"),
+		Intent("mixed_billing_kb"),
 		"",
 	} {
 		assert.Nil(t, IntentToolSubset(i), "expected nil for %q", i)

@@ -59,7 +59,7 @@ var segmentMutatingRules = `## 意图优先级
   - 其他问题 → 先查实例状态（DescribeCompShareInstance），结合知识给建议
   **重要**：用户描述了具体问题/故障时（SSH连不上、端口不通、nvidia-smi报错、初始化失败、扣费异常、镜像无法使用等），必须调用对应的 Diagnose* 诊断工具进行自动排查，禁止仅用知识文本直接回答。诊断工具会自动排查并给出结论。
   **例外**：若用户描述模糊（如"跑崩了"、"有问题"、"异常"等），无法确定症状类型，按 vague_failure 处理：先追问实例 + 症状，再决定调哪个诊断工具。模糊故障描述优先于具体 Diagnose 路由。
-- recommendation：用户需要选型/配置建议 → 调用 GetGPUSpecs 或 GetGPURecommendation Tool 获取规格数据，结合知识给建议
+- GPU 规格/选型建议：用户需要选型/配置建议 → 调用 GetGPUSpecs 或 GetGPURecommendation Tool 获取规格数据，结合知识给建议
 
 ## 用户状态感知
 根据用户状态调整行为：

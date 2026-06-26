@@ -21,7 +21,9 @@ const (
 	// 2026-06-23: clarify network acceleration close is not exposed by the agent.
 	// 2026-06-25: route price questions through the user-price API so list/original
 	// prices and discounted prices share one live upstream path.
-	mutatingReActPromptSHA256 = "d1bccd0367830243c39a50aa35133d452b9de84a9bce399b697a9ad3e0eaf950"
+	// 2026-06-26: remove the dead "recommendation" intent label from the default
+	// ReAct taxonomy; GPU recommendation tools remain available as read-only facts.
+	mutatingReActPromptSHA256 = "4d4b9e2b9e984ad797275d88677ed55f38d947e45fca4e52ab81e22434da1ba0"
 	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
 	// 2026-06-22 (阶段1A KV-cache): volatile userContext block moved to the tail.
 	readOnlyReActPromptSHA256 = "a9824405b7522b7c89de15f04c1464377207c0b52c128ce8dd2d5887f468f127"
