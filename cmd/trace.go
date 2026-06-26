@@ -876,9 +876,11 @@ func defaultRouteIntents() []intent.Intent {
 	return []intent.Intent{
 		intent.IntentResourceInfo,
 		intent.IntentMonitorQuery,
+		intent.IntentBillingAccountUnsupported,
 		intent.IntentGPUSpecsQuery,
 		intent.IntentStockAvailability,
 		intent.IntentPricingQuery,
+		intent.IntentRefundEstimate,
 		intent.IntentImageTagCatalog,
 		intent.IntentModelRepositoryBrowse,
 		intent.IntentPlatformImageList,
@@ -913,6 +915,8 @@ func intentPlannerRouteIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []str
 			enabled = intent.IntentResourceInfo
 		case "monitor":
 			enabled = intent.IntentMonitorQuery
+		case "billing_account_unsupported", "account_billing_unsupported":
+			enabled = intent.IntentBillingAccountUnsupported
 		case "gpu_specs":
 			enabled = intent.IntentGPUSpecsQuery
 		case "stock":
@@ -937,6 +941,8 @@ func intentPlannerRouteIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []str
 			// ("pricing_query") so existing eval scripts and operator runbooks
 			// using either form work. Short form is canonical going forward.
 			enabled = intent.IntentPricingQuery
+		case "refund", "refund_estimate":
+			enabled = intent.IntentRefundEstimate
 		case "diagnosis":
 			enabled = intent.IntentDiagnosis
 		case "vague_failure":

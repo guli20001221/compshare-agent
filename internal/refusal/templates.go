@@ -19,6 +19,7 @@ package refusal
 // pivot on these exact strings; treat as a stable contract.
 const (
 	CategoryMonitorHistory   = "monitor_history_unsupported"
+	CategoryAccountBilling   = "account_billing_unsupported"
 	CategoryJailbreakAttempt = "jailbreak_attempt"
 	CategoryOffTopic         = "off_topic_refused"
 )
@@ -29,6 +30,12 @@ const (
 // limit). Single-instance historical monitor with an explicit <=24h window is
 // handled by the monitor workflow.
 const MonitorHistoryUnsupported = "历史监控目前一次只支持查询一台实例，且需要明确 24 小时内的时间范围。请补充实例和时间段，例如“查询 uhost-xxx 昨天 8 点到 10 点的 CPU 监控”。"
+
+// AccountBillingUnsupported is returned when the planner classifies the user
+// request as account-level finance data that the agent cannot query safely.
+// Instance-scoped pricing, billing diagnosis, and refund estimation are still
+// supported by dedicated read-only routes/tools.
+const AccountBillingUnsupported = "当前不支持直接查询账号余额、账号总账单、消费流水、发票状态、余额提现等账号级财务数据。你可以在控制台费用中心查看这些信息，或联系人工客服确认。\n\n我可以继续帮你查询实例价格、实例费用诊断、资源退费估算等已支持内容。"
 
 // JailbreakAttempt is returned when the input matches a known
 // instruction-override / system-prompt-extraction pattern (e.g. "ignore

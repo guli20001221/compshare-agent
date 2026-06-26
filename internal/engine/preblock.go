@@ -14,11 +14,10 @@ import (
 // (when needed) should construct a fresh inputguard.PreBlock at session
 // scope rather than mutating this singleton.
 //
-// Order = evaluation order. Keyword sets are disjoint by construction
-// (余额/账单/财务 vs monitor-history regex), so the
-// ordering does not affect correctness for any current real input —
-// but it is preserved for trace stability and to keep ranking explicit
-// if a future rule introduces overlap.
+// Order = evaluation order. Current rules are conservative safety classifiers
+// (jailbreak/off-topic); account-level billing is not keyword-blocked here and
+// is handled from the planner intent instead. Ordering is preserved for trace
+// stability and to keep ranking explicit if a future rule introduces overlap.
 //
 // When adding a new rule:
 //
@@ -59,9 +58,10 @@ var enginePreBlock = inputguard.New(
 	},
 	// account_billing + existing_disk_attach keyword hard-blocks removed
 	// (2026-06-10): the planner / agent loop handles these better. Billing
-	// symptoms route to billing_instance; genuine account-data (余额/发票) to
-	// console-guidance; "挂载已有盘" reaches the create-disk workflow whose tool
-	// description already states it only creates a new disk (不支持挂载已有盘).
+	// symptoms route to billing_instance; genuine account-data (余额/发票)
+	// now short-circuits from the planner intent in emitAccountBillingHardBlock;
+	// "挂载已有盘" reaches the create-disk workflow whose tool description
+	// already states it only creates a new disk (不支持挂载已有盘).
 	// Same pattern as the resource_shortage removal (#261).
 )
 
@@ -88,4 +88,23 @@ func (e *Engine) emitMonitorHistoryHardBlock() string {
 		Content: refusal.MonitorHistoryUnsupported,
 	})
 	return refusal.MonitorHistoryUnsupported
+}
+
+// emitAccountBillingHardBlock handles planner-classified account-level finance
+// requests. It deliberately does not use keyword matching: the router owns the
+// semantic split between unsupported account ledgers and supported instance
+// pricing/billing/refund routes.
+func (e *Engine) emitAccountBillingHardBlock() string {
+	if e.hardBlockObserver != nil {
+		e.hardBlockObserver(observability.EngineHardBlockTrace{
+			Hit:         true,
+			Category:    refusal.CategoryAccountBilling,
+			TriggeredBy: observability.HardBlockTriggerPlannerIntent,
+		})
+	}
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: refusal.AccountBillingUnsupported,
+	})
+	return refusal.AccountBillingUnsupported
 }

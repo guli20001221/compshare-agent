@@ -11,6 +11,7 @@ const (
 func PlannedExecutionPathForIntent(i Intent) ExecutionPath {
 	switch i {
 	case IntentMonitorQuery,
+		IntentBillingAccountUnsupported,
 		IntentResourceInfo,
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,

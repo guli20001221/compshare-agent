@@ -696,6 +696,7 @@ func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, routeMap map[i
 		if e == intent.IntentResourceInfo ||
 			e == intent.IntentMonitorQuery ||
 			e == intent.IntentMonitorHistory ||
+			e == intent.IntentBillingAccountUnsupported ||
 			e == intent.IntentDiagnosis ||
 			e == intent.IntentVagueFailure ||
 			e == intent.IntentOperationLifecycle ||
@@ -1292,6 +1293,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.currentMonitorEnd = 0
 	e.currentMonitorWindow = false
 
+	if reply, handled := e.tryBillingAccountUnsupportedBeforeResourceSelection(ctx, userMsg, priorText); handled {
+		return reply, nil
+	}
 	if reply, handled := e.tryResumeResourceSelection(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
@@ -1795,6 +1799,9 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
 		return reply, true
 	}
+	if reply, handled := e.tryBillingAccountUnsupportedDispatch(dispatch); handled {
+		return reply, true
+	}
 	if reply, handled := e.tryDiagnosisDispatch(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
@@ -1846,6 +1853,39 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	}
 
 	e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
+	return "", false
+}
+
+func (e *Engine) tryBillingAccountUnsupportedDispatch(dispatch routerDispatchResult) (string, bool) {
+	if dispatch.result.Plan.Intent != intent.IntentBillingAccountUnsupported {
+		return "", false
+	}
+	e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatched, dispatch.latency)
+	return e.emitAccountBillingHardBlock(), true
+}
+
+func (e *Engine) tryBillingAccountUnsupportedBeforeResourceSelection(ctx context.Context, userMsg, priorText string) (string, bool) {
+	pending := e.pendingResourceSelection
+	if pending == nil || isResourceSelectionExpired(e.userTurn, *pending) {
+		return "", false
+	}
+	if resourceSelectionLooksLikeReply(userMsg, *pending) {
+		return "", false
+	}
+	if !e.plannerDispatchEnabled() || !e.plannerIntentEnabled(intent.IntentBillingAccountUnsupported) {
+		return "", false
+	}
+	dispatch := e.callPlannerOnce(ctx, userMsg, priorText)
+	if status, ok := e.commonPlannerCandidateStatus(dispatch.result); !ok {
+		e.lastPlannerIntentThisTurn = dispatch.result.Plan.Intent
+		e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
+		return "", false
+	}
+	e.lastPlannerIntentThisTurn = dispatch.result.Plan.Intent
+	if reply, handled := e.tryBillingAccountUnsupportedDispatch(dispatch); handled {
+		e.pendingResourceSelection = nil
+		return reply, true
+	}
 	return "", false
 }
 
@@ -3183,10 +3223,10 @@ func (e *Engine) commonPlannerCandidateStatus(result intent.IntentRouterResult) 
 	// PR #61 (2026-05-21): planner's HardBlockHint is advisory only and no
 	// longer participates in route dispatch — it ships to trace via
 	// RouterTrace.HardBlockHint for downstream join with engine_hard_block
-	// (observability). Deterministic refusal comes from the keyword
-	// PreBlock (router.go) and the planner-classified IntentMonitorHistory
-	// path (emitMonitorHistoryHardBlock), both of which run AFTER this
-	// candidate-status check.
+	// (observability). Deterministic refusal comes from actual executed
+	// stages after this check: keyword PreBlock for static safety policies
+	// and planner-classified unsupported intents such as monitor_history or
+	// account-level billing.
 	if result.Plan.Confidence < 0.60 {
 		return intent.RouteStatusFallbackLowConfidence, false
 	}
