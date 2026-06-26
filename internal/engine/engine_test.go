@@ -1246,7 +1246,7 @@ func TestChat_MutatingRateLimitAllowsWorkflowWithoutCountingInternalSteps(t *tes
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
-				map[string]any{"UHostId": "uhost-stop-001", "State": "Running", "GpuType": "4090", "Name": "test"},
+				map[string]any{"UHostId": "uhost-stop-001", "State": "Running", "GpuType": "4090", "Name": "test", "Region": "cn-wlcb", "Zone": "cn-wlcb-01"},
 			},
 		},
 		"StopCompShareInstance": {"RetCode": 0},
@@ -1865,7 +1865,7 @@ func TestChat_WorkflowTool_StopInstance(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
-				map[string]any{"UHostId": "uhost-stop-001", "State": "Running", "GpuType": "4090", "Name": "test"},
+				map[string]any{"UHostId": "uhost-stop-001", "State": "Running", "GpuType": "4090", "Name": "test", "Region": "cn-wlcb", "Zone": "cn-wlcb-01"},
 			},
 		},
 		"StopCompShareInstance": {"RetCode": 0},

@@ -215,7 +215,7 @@ func TestCreatePriceToolsAllowUpstreamRequestFields(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s should have a policy", action)
 		}
-		for _, want := range []string{"CompShareImageId", "Disks"} {
+		for _, want := range []string{"Region", "CompShareImageId", "Disks"} {
 			found := false
 			for _, param := range p.AllowedParams {
 				if param == want {

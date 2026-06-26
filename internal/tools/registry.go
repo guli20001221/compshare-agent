@@ -167,6 +167,10 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "可用区，格式示例 cn-wlcb-01；真实可用区以支持区/机型接口返回为准。",
 					},
+					"Region": map[string]any{
+						"type":        "string",
+						"description": "可用区所属地域，如 cn-bj2（cn-bj2-03 所在地域）。指定非默认可用区时需一并提供，否则上游报 Zone not available。",
+					},
 					"GpuType": map[string]any{
 						"type":        "string",
 						"description": "GPU 类型，必须来自 DescribeAvailableCompShareInstanceTypes 返回的 Name；例如 4090 或 A100，不要自行编造。",

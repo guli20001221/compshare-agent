@@ -3,6 +3,7 @@ package workflow
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -119,6 +120,11 @@ func stepConfirmReinstall() Step {
 			if (isPodInstanceResult(queried) || isContainerInstanceResult(queried)) && !image.Container {
 				return nil, fmt.Errorf("Pod 实例重装必须选择容器镜像；当前镜像「%s」不是容器镜像。", image.Name)
 			}
+			if requiredGB := image.RequiredSystemDiskGB(); requiredGB > 0 {
+				if currentGB := currentSystemDiskGB(queried); currentGB > 0 && currentGB < requiredGB {
+					return nil, fmt.Errorf("目标镜像「%s」需要约 %.0fGB 系统盘，当前系统盘 %.0fGB，请先扩容系统盘或选择更小的镜像。", image.Name, requiredGB, currentGB)
+				}
+			}
 			summary := extractInstanceSummary(queried)
 			summary["target_image_id"] = wfCtx.Params["CompShareImageId"]
 			summary["target_image_name"] = image.Name
@@ -138,10 +144,11 @@ func stepReinstallInstance() Step {
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
 			args := map[string]any{
-				"Region":           extractInstanceRegion(queried, defaultRegion),
-				"Zone":             extractInstanceZone(queried, defaultZone),
 				"UHostId":          wfCtx.Params["UHostId"],
 				"CompShareImageId": wfCtx.Params["CompShareImageId"],
+			}
+			if _, err := addRequiredInstanceLocationArgs(args, queried); err != nil {
+				return nil, err
 			}
 			if pw, ok := wfCtx.Params["Password"].(string); ok && pw != "" {
 				args["Password"] = base64.StdEncoding.EncodeToString([]byte(pw))
@@ -157,6 +164,14 @@ type reinstallImageInfo struct {
 	Name      string
 	Source    string
 	Container bool
+	SizeMB    float64
+}
+
+func (info reinstallImageInfo) RequiredSystemDiskGB() float64 {
+	if info.SizeMB <= 0 {
+		return 0
+	}
+	return math.Ceil(info.SizeMB / 1024)
 }
 
 func targetReinstallImage(wfCtx *Context) (reinstallImageInfo, bool) {
@@ -252,7 +267,17 @@ func reinstallImageFromMap(img map[string]any, source string) (reinstallImageInf
 		Name:      name,
 		Source:    source,
 		Container: paramBool(img, "Container", false) || paramBool(img, "IsContainer", false),
+		SizeMB:    diskNumber(img, "Size", "ActualSize", "ImageSize"),
 	}, true
+}
+
+func currentSystemDiskGB(result map[string]any) float64 {
+	for _, disk := range extractDiskSet(result) {
+		if isBootDisk(disk) {
+			return diskNumber(disk, "Size", "DiskSize", "Capacity")
+		}
+	}
+	return 0
 }
 
 func firstStringValue(m map[string]any, keys ...string) string {

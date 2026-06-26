@@ -1153,6 +1153,9 @@ func emptyStateLabel(state string) string {
 
 func inferLifecycleAction(userText string) intent.LifecycleAction {
 	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(strings.ToLower(userText))
+	if looksLikeScheduledShutdownText(compact) {
+		return ""
+	}
 	switch {
 	case strings.Contains(compact, "重启") || strings.Contains(compact, "reboot"):
 		return intent.LifecycleActionReboot
@@ -1166,4 +1169,25 @@ func inferLifecycleAction(userText string) intent.LifecycleAction {
 	default:
 		return ""
 	}
+}
+
+func looksLikeScheduledShutdownText(compact string) bool {
+	if compact == "" {
+		return false
+	}
+	if strings.Contains(compact, "取消定时关机") || strings.Contains(compact, "取消自动关机") || strings.Contains(compact, "取消延时关机") {
+		return true
+	}
+	if strings.Contains(compact, "定时关机") || strings.Contains(compact, "自动关机") || strings.Contains(compact, "延时关机") {
+		return true
+	}
+	if !(strings.Contains(compact, "关机") || strings.Contains(compact, "停机") || strings.Contains(compact, "shutdown") || strings.Contains(compact, "stop")) {
+		return false
+	}
+	for _, unit := range []string{"分钟后", "小时后", "天后", "min后", "mins后", "hour后", "hours后"} {
+		if strings.Contains(compact, unit) {
+			return true
+		}
+	}
+	return strings.Contains(compact, "之后关机") || strings.Contains(compact, "以后关机")
 }

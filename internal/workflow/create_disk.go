@@ -7,9 +7,10 @@ const createDiskMissingSizeMessage = "创建数据盘需要指定磁盘大小（
 func CreateDiskDef() *Definition {
 	return &Definition{
 		Name:        "CreateDiskWorkflow",
-		Description: "查询实例 → 确认创建数据盘 → 创建并挂载",
+		Description: "查询实例 → 查询数据盘价格 → 确认创建数据盘 → 创建并挂载",
 		Steps: []Step{
 			stepQueryForDisk(),
+			stepQueryCreateDiskPrice(),
 			stepConfirmCreateDisk(),
 			stepCreateAndAttachDisk(),
 		},
@@ -44,15 +45,40 @@ func stepQueryForDisk() Step {
 	}
 }
 
+func stepQueryCreateDiskPrice() Step {
+	return Step{
+		Name: "查询数据盘价格",
+		Type: StepToolCall,
+		Tool: "GetCompShareInstancePrice",
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			queried := wfCtx.Result("查询实例")
+			args := map[string]any{
+				"ChargeType": "Postpay",
+				"Disks": []any{map[string]any{
+					"IsBoot": false,
+					"Type":   "SSDDataDisk",
+					"Size":   wfCtx.Params["Size"],
+				}},
+			}
+			return addRequiredInstanceLocationArgs(args, queried)
+		},
+	}
+}
+
 func stepConfirmCreateDisk() Step {
 	return Step{
 		Name: "确认创建数据盘",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			price, err := requiredPriceField(wfCtx.Result("查询数据盘价格"), "Disks")
+			if err != nil {
+				return nil, err
+			}
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
 			summary["disk_size_gb"] = wfCtx.Params["Size"]
 			summary["disk_type"] = "SSDDataDisk"
 			summary["charge_type"] = "Postpay"
+			summary["price"] = price
 			summary["warning"] = "将创建一块 SSD 云数据盘并挂载到该实例，按量计费。"
 			return summary, nil
 		},
@@ -71,15 +97,13 @@ func stepCreateAndAttachDisk() Step {
 				name = "data-disk"
 			}
 			args := map[string]any{
-				"Region":     extractInstanceRegion(queried, defaultRegion),
-				"Zone":       extractInstanceZone(queried, defaultZone),
 				"UHostId":    wfCtx.Params["UHostId"],
 				"Size":       wfCtx.Params["Size"],
 				"Name":       name + "-data",
 				"DiskType":   "SSDDataDisk",
 				"ChargeType": "Postpay",
 			}
-			return args, nil
+			return addRequiredInstanceLocationArgs(args, queried)
 		},
 	}
 }

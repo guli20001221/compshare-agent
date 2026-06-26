@@ -14,6 +14,7 @@ func renameMockExecutor() *mockExecutor {
 				"UHostId":    "uhost-xxx",
 				"Name":       "old-name",
 				"State":      "Running",
+				"Region":     "cn-wlcb",
 				"Zone":       "cn-wlcb-01",
 				"GpuType":    "4090",
 				"GPU":        float64(1),

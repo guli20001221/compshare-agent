@@ -96,12 +96,10 @@ func stepResetPassword() Step {
 				}
 			}
 			queried := wfCtx.Result("查询实例")
-			return map[string]any{
-				"Region":   extractInstanceRegion(queried, defaultRegion),
-				"Zone":     extractInstanceZone(queried, defaultZone),
+			return addRequiredInstanceLocationArgs(map[string]any{
 				"UHostId":  wfCtx.Params["UHostId"],
 				"Password": base64.StdEncoding.EncodeToString([]byte(password)),
-			}, nil
+			}, queried)
 		},
 	}
 }

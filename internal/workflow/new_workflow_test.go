@@ -80,6 +80,7 @@ func containerStoppedInstanceResult() map[string]any {
 func TestCreateDisk_HappyPath(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance":    stoppedInstanceResult(),
+		"GetCompShareInstancePrice":    {"PriceDetails": []any{map[string]any{"Disks": float64(0.8)}}},
 		"CreateAndAttachCompshareDisk": {"UDiskId": "udisk-new"},
 	}}
 	confirmFn := func(action string, args map[string]any) bool { return true }
@@ -94,6 +95,8 @@ func TestCreateDisk_HappyPath(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
+	_, priced := findExecutorCall(executor.calls, "GetCompShareInstancePrice")
+	assert.True(t, priced, "create disk workflow must price the new data disk before confirmation")
 
 	var createCall executorCall
 	for _, c := range executor.calls {
@@ -106,6 +109,33 @@ func TestCreateDisk_HappyPath(t *testing.T) {
 	assert.Equal(t, "test-gpu-data", createCall.args["Name"], "Name should be instance name + -data")
 	assert.NotEmpty(t, createCall.args["Name"], "Name must be set")
 	assert.Contains(t, createCall.args["Name"], "data", "Name should contain 'data'")
+}
+
+func TestCreateDisk_BlocksBeforeConfirmWhenPriceMissing(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"GetCompShareInstancePrice": {},
+	}}
+	onStep, events := collectEvents()
+
+	def := CreateDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("价格缺失时不应进入确认")
+		return true
+	}, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-test",
+		"Size":    float64(100),
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "未获取到价格")
+	for _, ev := range *events {
+		assert.NotEqual(t, "waiting", ev.Status, "confirmation should not wait when price is missing")
+	}
+	_, created := findExecutorCall(executor.calls, "CreateAndAttachCompshareDisk")
+	assert.False(t, created)
 }
 
 func TestCreateDisk_MissingSizeBlockedBeforeConfirm(t *testing.T) {
@@ -832,6 +862,43 @@ func TestReinstall_PodRejectsNonContainerImageBeforeConfirm(t *testing.T) {
 	assert.Contains(t, result.Message, "容器镜像")
 	for _, ev := range *events {
 		assert.NotEqual(t, "waiting", ev.Status, "confirmation should not wait for user on incompatible Pod image")
+	}
+	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
+	assert.False(t, reinstalled)
+}
+
+func TestReinstall_BlocksWhenImageRequiresLargerSystemDisk(t *testing.T) {
+	instance := stoppedInstanceResult()
+	host := instance["UHostSet"].([]any)[0].(map[string]any)
+	host["DiskSet"] = []any{map[string]any{
+		"DiskId": "boot-disk",
+		"Type":   "Boot",
+		"Size":   float64(100),
+	}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": instance,
+		"DescribeCompShareImages": {"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-large", "Name": "Large image", "Size": float64(200 * 1024)},
+		}},
+		"ReinstallCompShareInstance": {"RetCode": 0},
+	}}
+	onStep, events := collectEvents()
+
+	def := ReinstallInstanceDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("系统盘过小时不应进入确认")
+		return true
+	}, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId":          "uhost-test",
+		"CompShareImageId": "img-large",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "系统盘")
+	for _, ev := range *events {
+		assert.NotEqual(t, "waiting", ev.Status, "confirmation should not wait when system disk is too small")
 	}
 	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
 	assert.False(t, reinstalled)
