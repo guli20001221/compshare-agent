@@ -15,6 +15,8 @@ import (
 )
 
 const maxResourceSelectionCandidates = 20
+const pendingSelectionTTLSeconds = 300
+const pendingSelectionKindInstance = "instance"
 
 // uhostIDPattern matches a literal CompShare instance ID token in free text.
 // Real IDs are lowercase alphanumeric (e.g. uhost-1qy6d8tkfrl4); the class accepts
@@ -135,6 +137,28 @@ func matchResourceSelection(input string, p pendingResourceSelection) resourceSe
 	return resourceSelectionMatch{}
 }
 
+func matchResourceSelectionReference(input string, p pendingResourceSelection) (resourceSelectionMatch, bool) {
+	exact := matchResourceSelection(input, p)
+	if exact.ok || exact.ambiguous {
+		return exact, true
+	}
+	if ordinal, ok := extractResourceSelectionOrdinal(input); ok {
+		index := ordinal - 1
+		if index < 0 || index >= len(p.candidates) {
+			return resourceSelectionMatch{}, false
+		}
+		return resourceSelectionMatch{instance: p.candidates[index], ok: true}, false
+	}
+	for _, token := range uhostIDPattern.FindAllString(input, -1) {
+		for _, inst := range p.candidates {
+			if token == inst.UHostId {
+				return resourceSelectionMatch{instance: inst, ok: true}, false
+			}
+		}
+	}
+	return resourceSelectionMatch{}, false
+}
+
 func resourceSelectionLooksLikeReply(input string, p pendingResourceSelection) bool {
 	query := strings.TrimSpace(input)
 	if query == "" {
@@ -152,6 +176,20 @@ func resourceSelectionLooksLikeReply(input string, p pendingResourceSelection) b
 
 func isResourceSelectionExpired(currentTurn int, p pendingResourceSelection) bool {
 	return currentTurn > p.createdTurn+2
+}
+
+func isPersistedSelectionExpired(nowUnix int64, state SessionState) bool {
+	if state.PendingSelectionKind == "" || len(state.PendingSelectionItems) == 0 {
+		return true
+	}
+	ttl := state.PendingSelectionTTLSeconds
+	if ttl <= 0 {
+		ttl = pendingSelectionTTLSeconds
+	}
+	if state.PendingSelectionProducedAtUnix <= 0 {
+		return true
+	}
+	return nowUnix > state.PendingSelectionProducedAtUnix+int64(ttl)
 }
 
 func isResourceSelectionFallbackReason(reason intent.FallbackReason) bool {
@@ -201,6 +239,160 @@ func (e *Engine) buildResourceSelectionForPlan(ctx context.Context, result inten
 		createdTurn:     e.userTurn,
 		notFoundRef:     notFoundRef,
 	}, true, nil
+}
+
+func (e *Engine) recordPendingInstanceSelection(instances []entity.InstanceSnapshot, sourceIntent intent.Intent, originalUserMsg string, total int, truncated bool) {
+	if e == nil || !e.sessionStateHydrated || len(instances) == 0 {
+		return
+	}
+	candidates := append([]entity.InstanceSnapshot(nil), instances...)
+	limited := false
+	if len(candidates) > maxResourceSelectionCandidates {
+		candidates = candidates[:maxResourceSelectionCandidates]
+		limited = true
+	}
+	if total <= 0 {
+		total = len(instances)
+	}
+	items := make([]PendingSelectionItem, 0, len(candidates))
+	for i, inst := range candidates {
+		if inst.UHostId == "" {
+			continue
+		}
+		items = append(items, pendingSelectionItemFromInstance(i+1, inst))
+	}
+	if len(items) == 0 {
+		return
+	}
+	e.sessionState.PendingSelectionKind = pendingSelectionKindInstance
+	e.sessionState.PendingSelectionIntent = string(sourceIntent)
+	e.sessionState.PendingSelectionOriginalUserMsg = strings.TrimSpace(originalUserMsg)
+	e.sessionState.PendingSelectionCreatedTurn = e.userTurn
+	e.sessionState.PendingSelectionProducedAtUnix = time.Now().Unix()
+	e.sessionState.PendingSelectionTTLSeconds = pendingSelectionTTLSeconds
+	e.sessionState.PendingSelectionTruncated = truncated || limited || total > len(items)
+	e.sessionState.PendingSelectionTotalCount = total
+	e.sessionState.PendingSelectionItems = items
+}
+
+func (e *Engine) recordPendingSelectionFromHandlerResult(result intent.HandlerResult, plan intent.IntentRoute, originalUserMsg string) {
+	if e == nil || result.Status != intent.HandlerStatusHandled || plan.Intent != intent.IntentResourceInfo {
+		return
+	}
+	e.recordPendingInstanceSelection(
+		result.ResourceSelectionCandidates,
+		plan.Intent,
+		originalUserMsg,
+		len(result.ResourceSelectionCandidates),
+		false,
+	)
+}
+
+func pendingSelectionItemFromInstance(index int, inst entity.InstanceSnapshot) PendingSelectionItem {
+	return PendingSelectionItem{
+		Index:      index,
+		ID:         inst.UHostId,
+		Name:       inst.Name,
+		State:      inst.State,
+		GPU:        inst.GPU,
+		GpuType:    inst.GpuType,
+		CPU:        inst.CPU,
+		Memory:     inst.Memory,
+		Zone:       inst.Zone,
+		Region:     inst.Region,
+		ChargeType: inst.ChargeType,
+	}
+}
+
+func instanceFromPendingSelectionItem(item PendingSelectionItem) entity.InstanceSnapshot {
+	return entity.InstanceSnapshot{
+		UHostId:    item.ID,
+		Name:       item.Name,
+		State:      item.State,
+		GPU:        item.GPU,
+		GpuType:    item.GpuType,
+		CPU:        item.CPU,
+		Memory:     item.Memory,
+		Zone:       item.Zone,
+		Region:     item.Region,
+		ChargeType: item.ChargeType,
+	}
+}
+
+func (e *Engine) clearPendingSelection() {
+	if e == nil {
+		return
+	}
+	e.sessionState.PendingSelectionKind = ""
+	e.sessionState.PendingSelectionIntent = ""
+	e.sessionState.PendingSelectionOriginalUserMsg = ""
+	e.sessionState.PendingSelectionCreatedTurn = 0
+	e.sessionState.PendingSelectionProducedAtUnix = 0
+	e.sessionState.PendingSelectionTTLSeconds = 0
+	e.sessionState.PendingSelectionTruncated = false
+	e.sessionState.PendingSelectionTotalCount = 0
+	e.sessionState.PendingSelectionItems = nil
+}
+
+func (e *Engine) pendingResourceSelectionFromSession() (*pendingResourceSelection, bool) {
+	if e == nil || !e.sessionStateHydrated {
+		return nil, false
+	}
+	if e.sessionState.PendingSelectionKind != pendingSelectionKindInstance || len(e.sessionState.PendingSelectionItems) == 0 {
+		return nil, false
+	}
+	if isPersistedSelectionExpired(time.Now().Unix(), e.sessionState) {
+		e.clearPendingSelection()
+		return nil, false
+	}
+	candidates := make([]entity.InstanceSnapshot, 0, len(e.sessionState.PendingSelectionItems))
+	for _, item := range e.sessionState.PendingSelectionItems {
+		inst := instanceFromPendingSelectionItem(item)
+		if inst.UHostId == "" {
+			continue
+		}
+		candidates = append(candidates, inst)
+	}
+	if len(candidates) == 0 {
+		e.clearPendingSelection()
+		return nil, false
+	}
+	planIntent := intent.Intent(e.sessionState.PendingSelectionIntent)
+	if planIntent == "" {
+		planIntent = intent.IntentResourceInfo
+	}
+	snapshot := snapshotFromPendingSelectionCandidates(candidates)
+	return &pendingResourceSelection{
+		originalUserMsg: e.sessionState.PendingSelectionOriginalUserMsg,
+		plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        planIntent,
+		},
+		snapshot:    snapshot,
+		candidates:  candidates,
+		truncated:   e.sessionState.PendingSelectionTruncated,
+		createdTurn: e.userTurn,
+	}, true
+}
+
+func snapshotFromPendingSelectionCandidates(candidates []entity.InstanceSnapshot) entity.RegistrySnapshot {
+	instances := make(map[string]entity.InstanceSnapshot, len(candidates))
+	nameIndex := make(map[string][]string, len(candidates))
+	for _, inst := range candidates {
+		if inst.UHostId == "" {
+			continue
+		}
+		instances[inst.UHostId] = inst
+		if inst.Name != "" {
+			nameIndex[strings.ToLower(strings.TrimSpace(inst.Name))] = append(nameIndex[strings.ToLower(strings.TrimSpace(inst.Name))], inst.UHostId)
+		}
+	}
+	return entity.RegistrySnapshot{
+		Instances:    instances,
+		NameIndex:    nameIndex,
+		LastFullSync: time.Now(),
+		TotalCount:   len(candidates),
+	}
 }
 
 func (e *Engine) candidateInstancesForSelection(ctx context.Context, plan intent.IntentRoute, snapshot entity.RegistrySnapshot, _ func(StepEvent)) ([]entity.InstanceSnapshot, entity.RegistrySnapshot, bool, bool, error) {
@@ -350,6 +542,51 @@ func parseResourceSelectionOrdinal(input string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+func extractResourceSelectionOrdinal(input string) (int, bool) {
+	query := strings.TrimSpace(input)
+	if query == "" {
+		return 0, false
+	}
+	if n, ok := parseResourceSelectionOrdinal(query); ok {
+		return n, true
+	}
+	compact := compactResourceSelectionText(query)
+	numerals := chineseResourceSelectionNumerals()
+	for i := len(numerals) - 1; i >= 0; i-- {
+		n := i + 1
+		numeral := numerals[i]
+		arabic := strconv.Itoa(n)
+		for _, token := range []string{
+			"\u7b2c" + numeral + "\u53f0",
+			"\u7b2c" + numeral + "\u5b9e\u4f8b",
+			"\u7b2c" + numeral + "\u53f0\u5b9e\u4f8b",
+			"\u7b2c" + numeral + "\u673a\u5668",
+			"\u7b2c" + numeral + "\u4e3b\u673a",
+			"\u7b2c" + arabic + "\u53f0",
+			"\u7b2c" + arabic + "\u5b9e\u4f8b",
+			"\u7b2c" + arabic + "\u53f0\u5b9e\u4f8b",
+			"\u7b2c" + arabic + "\u673a\u5668",
+			"\u7b2c" + arabic + "\u4e3b\u673a",
+		} {
+			if strings.Contains(compact, token) {
+				return n, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func compactResourceSelectionText(input string) string {
+	var b strings.Builder
+	for _, r := range input {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func ordinalPhraseSet(n int, chinese string) map[string]struct{} {

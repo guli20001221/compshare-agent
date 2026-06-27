@@ -343,8 +343,8 @@ func TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber(t *testin
 	// would clobber if the guard were missing.
 	e.SetSessionState(SessionState{
 		SchemaVersion:        SessionStateSchemaV1,
-		SelectedInstanceID:   "uhost-B-stale",  // MUST NOT clobber
-		SelectedInstanceName: "stale-name",     // MUST NOT clobber
+		SelectedInstanceID:   "uhost-B-stale",                   // MUST NOT clobber
+		SelectedInstanceName: "stale-name",                      // MUST NOT clobber
 		LastIntent:           string(intent.IntentResourceInfo), // MUST NOT clobber
 		RecentFacts: []ToolFact{
 			{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 100,
@@ -540,11 +540,33 @@ func TestEnvelope_PreservesClientContextAcrossAgentWrites(t *testing.T) {
 func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 	pc1 := PersistedContext{
 		AgentSessionState: SessionState{
-			SchemaVersion:        SessionStateSchemaV1,
-			SelectedInstanceID:   "uhost-abc",
-			SelectedInstanceName: "gpu-prod",
-			LastIntent:           string(intent.IntentMonitorQuery),
-			LastStockGpuModel:    "4090",
+			SchemaVersion:                   SessionStateSchemaV1,
+			SelectedInstanceID:              "uhost-abc",
+			SelectedInstanceName:            "gpu-prod",
+			LastIntent:                      string(intent.IntentMonitorQuery),
+			LastStockGpuModel:               "4090",
+			PendingSelectionKind:            "instance",
+			PendingSelectionIntent:          string(intent.IntentResourceInfo),
+			PendingSelectionOriginalUserMsg: "我有哪些实例",
+			PendingSelectionCreatedTurn:     2,
+			PendingSelectionProducedAtUnix:  1716530001,
+			PendingSelectionTTLSeconds:      pendingSelectionTTLSeconds,
+			PendingSelectionTruncated:       true,
+			PendingSelectionTotalCount:      12,
+			PendingSelectionItems: []PendingSelectionItem{
+				{
+					Index:   1,
+					ID:      "uhost-list-1",
+					Name:    "list-one",
+					State:   "Running",
+					GPU:     1,
+					GpuType: "4090",
+					CPU:     16,
+					Memory:  65536,
+					Zone:    "cn-wlcb-01",
+					Region:  "cn-wlcb",
+				},
+			},
 			RecentFacts: []ToolFact{
 				{
 					Kind:           FactKindInstanceState,
@@ -573,6 +595,9 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 	require.Equal(t, pc1.AgentSessionState.SchemaVersion, pc2.AgentSessionState.SchemaVersion)
 	require.Equal(t, pc1.AgentSessionState.SelectedInstanceID, pc2.AgentSessionState.SelectedInstanceID)
 	require.Equal(t, pc1.AgentSessionState.LastIntent, pc2.AgentSessionState.LastIntent)
+	require.Equal(t, pc1.AgentSessionState.PendingSelectionKind, pc2.AgentSessionState.PendingSelectionKind)
+	require.Len(t, pc2.AgentSessionState.PendingSelectionItems, 1)
+	require.Equal(t, "uhost-list-1", pc2.AgentSessionState.PendingSelectionItems[0].ID)
 	require.Len(t, pc2.AgentSessionState.RecentFacts, 2)
 
 	raw2, err := json.Marshal(pc2)

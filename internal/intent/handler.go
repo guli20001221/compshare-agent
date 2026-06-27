@@ -91,6 +91,11 @@ type HandlerResult struct {
 	// populates this for monitor handler results only.
 	RendererInputToolArgHashes  []string
 	RendererInputEnvelopeHashes []string
+	// ResourceSelectionCandidates is the exact instance list shown in a
+	// resource_info reply, after any filters and display truncation. Engine
+	// persists this compact list so a later "第 N 台 / 这台" follow-up resolves
+	// against what the user actually saw, not the raw unfiltered API result.
+	ResourceSelectionCandidates []entity.InstanceSnapshot
 	// ResolvedStockGpuModel is the single GPU model (API instance-type Name,
 	// e.g. "4090") a stock-availability turn resolved to, or "" when the turn
 	// was ambiguous / listed all models. engine.go records it into
@@ -226,6 +231,9 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 	result := HandledResult(RenderResourceSummary(instances, envMeta))
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
+	if len(ids) == 0 && len(instances) > 0 {
+		result.ResourceSelectionCandidates = append([]entity.InstanceSnapshot(nil), instances...)
+	}
 	env := BuildResourceEnvelopeWithMeta(instances, envMeta)
 	result.Envelope = &env
 	result.RendererInputEnvelopeHashes = hashEnvelopeForRenderer(env)

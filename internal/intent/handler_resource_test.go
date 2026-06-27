@@ -134,6 +134,9 @@ func TestResourceInfoHandler_TruncatesAndSurfacesShownCount(t *testing.T) {
 	// Both Running instances must be visible in the reply
 	assert.Contains(t, result.Reply, "uhost-running-1")
 	assert.Contains(t, result.Reply, "uhost-running-2")
+	require.Len(t, result.ResourceSelectionCandidates, 10)
+	assert.Equal(t, "uhost-running-1", result.ResourceSelectionCandidates[0].UHostId)
+	assert.Equal(t, "uhost-running-2", result.ResourceSelectionCandidates[1].UHostId)
 }
 
 func TestResourceInfoHandler_PinnedUHostIdsSkipsTruncation(t *testing.T) {
@@ -234,8 +237,11 @@ func TestResourceInfoHandler_FilterByRunningState(t *testing.T) {
 	assert.NotContains(t, result.Reply, "stop-a")
 	require.NotNil(t, result.Envelope)
 	require.Len(t, result.Envelope.Subjects, 2)
+	require.Len(t, result.ResourceSelectionCandidates, 2)
 	assert.Equal(t, "uhost-running-a", result.Envelope.Subjects[0].ID)
 	assert.Equal(t, "uhost-running-b", result.Envelope.Subjects[1].ID)
+	assert.Equal(t, "uhost-running-a", result.ResourceSelectionCandidates[0].UHostId)
+	assert.Equal(t, "uhost-running-b", result.ResourceSelectionCandidates[1].UHostId)
 	assertComputedFact(t, *result.Envelope, "filter_applied", "state=running")
 	assertComputedFact(t, *result.Envelope, "matched_count", "2")
 	assertComputedFact(t, *result.Envelope, "total_count", "150")
@@ -264,6 +270,7 @@ func TestResourceInfoHandler_FilterTruncatesUsingMatchedCountInReply(t *testing.
 	require.Equal(t, HandlerStatusHandled, result.Status)
 	require.NotNil(t, result.Envelope)
 	require.Len(t, result.Envelope.Subjects, 10)
+	require.Len(t, result.ResourceSelectionCandidates, 10)
 	assertComputedFact(t, *result.Envelope, "total_count", "15")
 	assertComputedFact(t, *result.Envelope, "matched_count", "12")
 	assertComputedFact(t, *result.Envelope, "shown_count", "10")
