@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"testing"
@@ -195,6 +196,173 @@ func TestResourceSelectionMatchResolvesDoubleDigitChineseOrdinals(t *testing.T) 
 				t.Fatalf("matchResourceSelection(%q) resolved %q, want %q", tt.in, got.instance.UHostId, tt.want)
 			}
 		})
+	}
+}
+
+func TestResourceSelectionEmbeddedOrdinalReference(t *testing.T) {
+	candidates := make([]entity.InstanceSnapshot, 12)
+	for i := range candidates {
+		id := "uhost-" + strings.Repeat("0", 2-len(strconv.Itoa(i+1))) + strconv.Itoa(i+1)
+		candidates[i] = testInstance(id, "host-"+strconv.Itoa(i+1), "Running")
+	}
+	p := testPendingResourceSelection(candidates)
+
+	got, exact := matchResourceSelectionReference("\u7b2c11\u53f0 GPU \u5fd9\u4e0d\u5fd9", p)
+	if exact {
+		t.Fatal("embedded ordinal in a question should not be treated as a pure selection reply")
+	}
+	if !got.ok || got.instance.UHostId != "uhost-11" {
+		t.Fatalf("embedded ordinal resolved %+v, want uhost-11", got)
+	}
+
+	got, _ = matchResourceSelectionReference("\u7b2c11\u4e2a\u95ee\u9898\u662f\u4ec0\u4e48", p)
+	if got.ok || got.ambiguous {
+		t.Fatalf("non-instance ordinal phrase should not resolve a resource: %+v", got)
+	}
+}
+
+func TestPendingSelectionRoundTripsThroughSessionState(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	e.userTurn = 7
+	e.recordPendingInstanceSelection([]entity.InstanceSnapshot{
+		testInstance("uhost-a", "host-a", "Running"),
+		testInstance("uhost-b", "host-b", "Stopped"),
+	}, intent.IntentResourceInfo, "\u6211\u6709\u54ea\u4e9b\u5b9e\u4f8b", 2, false)
+
+	state, _, hydrated := e.SessionStateSnapshot()
+	if !hydrated {
+		t.Fatal("session state should be hydrated")
+	}
+	if state.PendingSelectionKind != pendingSelectionKindInstance {
+		t.Fatalf("pending kind = %q, want %q", state.PendingSelectionKind, pendingSelectionKindInstance)
+	}
+	if len(state.PendingSelectionItems) != 2 {
+		t.Fatalf("pending items = %d, want 2", len(state.PendingSelectionItems))
+	}
+
+	e2 := newEngineForSessionStateTest(t)
+	e2.SetSessionState(state, 2)
+	pending, ok := e2.pendingResourceSelectionFromSession()
+	if !ok {
+		t.Fatal("expected pending selection restored from session state")
+	}
+	match := matchResourceSelection("2", *pending)
+	if !match.ok || match.instance.UHostId != "uhost-b" {
+		t.Fatalf("restored selection resolved %+v, want uhost-b", match)
+	}
+}
+
+func TestRecordInstanceStateFactsMultiHostDoesNotStorePendingSelection(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	e.userTurn = 5
+	e.lastPlannerIntentThisTurn = intent.IntentResourceInfo
+	rawHosts := make([]any, 12)
+	for i := range rawHosts {
+		n := i + 1
+		id := "uhost-" + strings.Repeat("0", 2-len(strconv.Itoa(n))) + strconv.Itoa(n)
+		rawHosts[i] = map[string]any{
+			"UHostId": id,
+			"Name":    "host-" + strconv.Itoa(n),
+			"State":   "Running",
+			"GpuType": "4090",
+			"GPU":     float64(1),
+		}
+	}
+
+	e.recordInstanceStateFacts(map[string]any{"UHostSet": rawHosts})
+
+	state, _, _ := e.SessionStateSnapshot()
+	if state.SelectedInstanceID != "" {
+		t.Fatalf("multi-host list must not select a current instance, got %q", state.SelectedInstanceID)
+	}
+	if len(state.PendingSelectionItems) != 0 {
+		t.Fatalf("raw multi-host fact writer must not persist pending selection, got %d", len(state.PendingSelectionItems))
+	}
+}
+
+func TestRecordPendingSelectionFromResourceHandlerUsesDisplayedCandidates(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	e.userTurn = 5
+	displayed := []entity.InstanceSnapshot{
+		testInstance("uhost-running", "running", "Running"),
+		testInstance("uhost-stopped", "stopped", "Stopped"),
+	}
+
+	e.recordPendingSelectionFromHandlerResult(intent.HandlerResult{
+		Status:                      intent.HandlerStatusHandled,
+		ResourceSelectionCandidates: displayed,
+	}, intent.IntentRoute{Intent: intent.IntentResourceInfo}, "\u6211\u6709\u54ea\u4e9b\u5b9e\u4f8b")
+
+	state, _, _ := e.SessionStateSnapshot()
+	if len(state.PendingSelectionItems) != 2 {
+		t.Fatalf("pending items = %d, want 2", len(state.PendingSelectionItems))
+	}
+	if state.PendingSelectionItems[0].ID != "uhost-running" || state.PendingSelectionItems[1].ID != "uhost-stopped" {
+		t.Fatalf("pending order = %+v, want displayed order", state.PendingSelectionItems)
+	}
+}
+
+func TestRecordSelectedInstanceClearsPendingSelection(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{
+		SchemaVersion:        SessionStateSchemaV1,
+		PendingSelectionKind: pendingSelectionKindInstance,
+		PendingSelectionItems: []PendingSelectionItem{{
+			Index: 1,
+			ID:    "uhost-old",
+			Name:  "old",
+		}},
+	}, 1)
+
+	e.recordSelectedInstanceID("uhost-new", "new")
+
+	state, _, _ := e.SessionStateSnapshot()
+	if state.PendingSelectionKind != "" || len(state.PendingSelectionItems) != 0 {
+		t.Fatalf("pending selection should be cleared after selecting an instance: %+v", state)
+	}
+}
+
+func TestTryResumeResourceSelectionEmbeddedOrdinalBindsAndContinues(t *testing.T) {
+	candidates := make([]entity.InstanceSnapshot, 12)
+	for i := range candidates {
+		id := "uhost-" + strings.Repeat("0", 2-len(strconv.Itoa(i+1))) + strconv.Itoa(i+1)
+		candidates[i] = testInstance(id, "host-"+strconv.Itoa(i+1), "Running")
+	}
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	e.userTurn = 3
+	e.recordPendingInstanceSelection(candidates, intent.IntentResourceInfo, "\u6211\u6709\u54ea\u4e9b\u5b9e\u4f8b", len(candidates), false)
+
+	reply, handled := e.tryResumeResourceSelection(context.Background(), "\u7b2c11\u53f0 GPU \u5fd9\u4e0d\u5fd9", noopStep)
+	if handled {
+		t.Fatalf("embedded ordinal should bind and continue the current question, got reply %q", reply)
+	}
+	if e.sessionState.SelectedInstanceID != "uhost-11" {
+		t.Fatalf("selected = %q, want uhost-11", e.sessionState.SelectedInstanceID)
+	}
+	if e.sessionState.PendingSelectionKind != "" || len(e.sessionState.PendingSelectionItems) != 0 {
+		t.Fatalf("pending selection should be cleared after binding, state=%+v", e.sessionState)
+	}
+}
+
+func TestTryResumeResourceSelectionIgnoresUnrelatedQuestion(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	e.userTurn = 3
+	e.recordPendingInstanceSelection([]entity.InstanceSnapshot{
+		testInstance("uhost-a", "host-a", "Running"),
+		testInstance("uhost-b", "host-b", "Stopped"),
+	}, intent.IntentResourceInfo, "\u6211\u6709\u54ea\u4e9b\u5b9e\u4f8b", 2, false)
+
+	reply, handled := e.tryResumeResourceSelection(context.Background(), "4090 \u591a\u5c11\u94b1", noopStep)
+	if handled {
+		t.Fatalf("unrelated price question should continue to normal routing, got reply %q", reply)
+	}
+	if e.sessionState.SelectedInstanceID != "" {
+		t.Fatalf("unrelated question must not select an instance, got %q", e.sessionState.SelectedInstanceID)
 	}
 }
 

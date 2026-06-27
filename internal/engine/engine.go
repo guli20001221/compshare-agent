@@ -1060,8 +1060,8 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 // has hydrated state with a higher-or-equal version, the incoming state
 // is treated as STALE — its RecentFacts are merged in via
 // mergeFactsByProducedAt, but the scalar fields (SelectedInstance{ID,Name},
-// LastIntent) keep the in-memory values. This is the M1 forward-note
-// (docs/agent/plan/m1-session-state-cas.md:429) implementation.
+// LastIntent, PendingSelection*) keep the in-memory values. This is the M1
+// forward-note (docs/agent/plan/m1-session-state-cas.md:429) implementation.
 //
 // When does the merge path fire?
 //
@@ -1082,9 +1082,9 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 func (e *Engine) SetSessionState(state SessionState, version int) {
 	if e.sessionStateHydrated && version <= e.sessionStateVersion {
 		e.sessionState.RecentFacts = mergeFactsByProducedAt(e.sessionState.RecentFacts, state.RecentFacts)
-		// SelectedInstance{ID,Name} / LastIntent / SchemaVersion: keep
-		// the in-memory value. The local engine has not yet persisted,
-		// so its scalars are at-or-newer than the incoming row.
+		// SelectedInstance{ID,Name} / LastIntent / PendingSelection* /
+		// SchemaVersion: keep the in-memory value. The local engine has not
+		// yet persisted, so its scalars are at-or-newer than the incoming row.
 		return
 	}
 	e.sessionState = state
@@ -2520,6 +2520,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 						reply = e.renderGroundedHandlerResult(ctx, handled)
 						e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 						e.recordLastIntentFromPlan(resumed.Plan)
+						e.recordPendingSelectionFromHandlerResult(handled, resumed.Plan, userMsg)
 					}
 					e.messages = append(e.messages, openai.ChatCompletionMessage{
 						Role:    openai.ChatMessageRoleAssistant,
@@ -2558,6 +2559,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 		e.recordLastIntentFromPlan(result.Plan)
 		e.recordLastStockGpuModel(handled.ResolvedStockGpuModel)
+		e.recordPendingSelectionFromHandlerResult(handled, result.Plan, userMsg)
 	}
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
@@ -2568,18 +2570,36 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 
 func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
 	pending := e.pendingResourceSelection
+	restoredFromSession := false
 	if pending == nil {
-		return "", false
+		if restored, ok := e.pendingResourceSelectionFromSession(); ok {
+			pending = restored
+			e.pendingResourceSelection = restored
+			restoredFromSession = true
+		} else {
+			return "", false
+		}
 	}
 	if isResourceSelectionExpired(e.userTurn, *pending) {
 		e.pendingResourceSelection = nil
+		e.clearPendingSelection()
 		return "", false
 	}
 
 	match := matchResourceSelection(userMsg, *pending)
 	if !match.ok {
+		if embedded, exact := matchResourceSelectionReference(userMsg, *pending); embedded.ok && !exact {
+			e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
+			e.pendingResourceSelection = nil
+			e.clearPendingSelection()
+			return "", false
+		}
+		if restoredFromSession || pending.plan.Intent == intent.IntentResourceInfo {
+			return "", false
+		}
 		if e.userTurn >= pending.createdTurn+2 {
 			e.pendingResourceSelection = nil
+			e.clearPendingSelection()
 			return "", false
 		}
 		pending.invalidAttempts++
@@ -2592,8 +2612,23 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 	}
 
 	e.pendingResourceSelection = nil
+	e.clearPendingSelection()
 	if pending.plan.Intent != intent.IntentMonitorQuery && pending.plan.Intent != intent.IntentMonitorHistory {
-		return "", false
+		e.recordSelectedInstanceID(match.instance.UHostId, match.instance.Name)
+		reply := fmt.Sprintf("已选中 %s（%s）。你接下来想查看监控、重启，还是执行其他操作？",
+			sanitizeResourceSelectionPromptField(match.instance.Name),
+			sanitizeResourceSelectionPromptField(match.instance.UHostId),
+		)
+		if match.instance.Name == "" {
+			reply = fmt.Sprintf("已选中 %s。你接下来想查看监控、重启，还是执行其他操作？",
+				sanitizeResourceSelectionPromptField(match.instance.UHostId),
+			)
+		}
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: reply,
+		})
+		return reply, true
 	}
 
 	resumedPlan := planWithSelectedResource(pending.plan, match.instance.UHostId)
@@ -4283,6 +4318,7 @@ func (e *Engine) recordSelectedInstanceFromEnvelope(env *envelope.Envelope) {
 	}
 	e.sessionState.SelectedInstanceID = s.ID
 	e.sessionState.SelectedInstanceName = s.Name
+	e.clearPendingSelection()
 }
 
 // recordSelectedInstanceID tracks the session's "current instance" from the
@@ -4305,6 +4341,7 @@ func (e *Engine) recordSelectedInstanceID(id, name string) {
 	}
 	e.sessionState.SelectedInstanceID = id
 	e.sessionState.SelectedInstanceName = name
+	e.clearPendingSelection()
 }
 
 // recordLastStockGpuModel tracks the GPU model a stock-availability turn

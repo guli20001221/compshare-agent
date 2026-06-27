@@ -49,7 +49,9 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 //	(2) extending the round-trip test in session_state_test.go.
 //
 // M1 shipped with 4 scalar fields. M2 added RecentFacts. M3.1 added
-// LastStockGpuModel. known_constraints / pending_action remain deferred.
+// LastStockGpuModel. M4 added PendingSelection* so an instance list can be
+// resolved by ordinal/name/ID in a later turn. known_constraints /
+// pending_action remain deferred.
 //
 // LastIntent vocabulary contract: when non-empty, the value MUST be
 // exactly string(intent.X) for some X in intent.RuntimeIntents() — e.g.
@@ -70,12 +72,38 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 // must carry it too; safety in HTTP is preserved because ClearSessionState
 // zeroes it at every turn start.
 type SessionState struct {
-	SchemaVersion        string     `json:"schema_version"`
-	SelectedInstanceID   string     `json:"selected_instance_id,omitempty"`
-	SelectedInstanceName string     `json:"selected_instance_name,omitempty"`
-	LastIntent           string     `json:"last_intent,omitempty"`
-	LastStockGpuModel    string     `json:"last_stock_gpu_model,omitempty"`
-	RecentFacts          []ToolFact `json:"recent_facts,omitempty"`
+	SchemaVersion                   string                 `json:"schema_version"`
+	SelectedInstanceID              string                 `json:"selected_instance_id,omitempty"`
+	SelectedInstanceName            string                 `json:"selected_instance_name,omitempty"`
+	LastIntent                      string                 `json:"last_intent,omitempty"`
+	LastStockGpuModel               string                 `json:"last_stock_gpu_model,omitempty"`
+	PendingSelectionKind            string                 `json:"pending_selection_kind,omitempty"`
+	PendingSelectionIntent          string                 `json:"pending_selection_intent,omitempty"`
+	PendingSelectionOriginalUserMsg string                 `json:"pending_selection_original_user_msg,omitempty"`
+	PendingSelectionCreatedTurn     int                    `json:"pending_selection_created_turn,omitempty"`
+	PendingSelectionProducedAtUnix  int64                  `json:"pending_selection_produced_at_unix,omitempty"`
+	PendingSelectionTTLSeconds      int                    `json:"pending_selection_ttl_seconds,omitempty"`
+	PendingSelectionTruncated       bool                   `json:"pending_selection_truncated,omitempty"`
+	PendingSelectionTotalCount      int                    `json:"pending_selection_total_count,omitempty"`
+	PendingSelectionItems           []PendingSelectionItem `json:"pending_selection_items,omitempty"`
+	RecentFacts                     []ToolFact             `json:"recent_facts,omitempty"`
+}
+
+// PendingSelectionItem is one option from the most recent structured candidate
+// list shown or implied by the agent. It is intentionally a compact subset of
+// entity.InstanceSnapshot so it can be safely persisted in session context.
+type PendingSelectionItem struct {
+	Index      int    `json:"index,omitempty"`
+	ID         string `json:"id,omitempty"`
+	Name       string `json:"name,omitempty"`
+	State      string `json:"state,omitempty"`
+	GPU        int    `json:"gpu,omitempty"`
+	GpuType    string `json:"gpu_type,omitempty"`
+	CPU        int    `json:"cpu,omitempty"`
+	Memory     int    `json:"memory,omitempty"`
+	Zone       string `json:"zone,omitempty"`
+	Region     string `json:"region,omitempty"`
+	ChargeType string `json:"charge_type,omitempty"`
 }
 
 // ToolFact is one piece of evidence accumulated from a successful tool
@@ -285,29 +313,29 @@ func (s SessionState) MarshalJSON() ([]byte, error) {
 //
 // Four cases ParsePersistedContext handles:
 //
-//	1. NULL / empty / whitespace-only:  first-time hydrate. Returns zero
-//	                                    PersistedContext with no error.
-//	2. Known envelope:                  top-level object with
-//	                                    agent_session_state.schema_version
-//	                                    in knownSessionStateSchemaVersions.
-//	                                    Decoded as the real envelope.
-//	3. Unknown envelope version:        top-level object with
-//	                                    agent_session_state.schema_version
-//	                                    string, but the version is not
-//	                                    recognized by this binary. Returns
-//	                                    ErrUnknownSessionStateSchema so
-//	                                    the caller skips persistence and
-//	                                    the row is left untouched for a
-//	                                    newer binary to read.
-//	4. Legacy / anything else:          object without agent_session_state,
-//	                                    object whose agent_session_state
-//	                                    is not an object or whose
-//	                                    schema_version is missing/non-string,
-//	                                    array, string, number, bool, etc.
-//	                                    Treated as opaque client_context,
-//	                                    preserved verbatim, and upgraded
-//	                                    to a known envelope on the next
-//	                                    successful chat-turn persist.
+//  1. NULL / empty / whitespace-only:  first-time hydrate. Returns zero
+//     PersistedContext with no error.
+//  2. Known envelope:                  top-level object with
+//     agent_session_state.schema_version
+//     in knownSessionStateSchemaVersions.
+//     Decoded as the real envelope.
+//  3. Unknown envelope version:        top-level object with
+//     agent_session_state.schema_version
+//     string, but the version is not
+//     recognized by this binary. Returns
+//     ErrUnknownSessionStateSchema so
+//     the caller skips persistence and
+//     the row is left untouched for a
+//     newer binary to read.
+//  4. Legacy / anything else:          object without agent_session_state,
+//     object whose agent_session_state
+//     is not an object or whose
+//     schema_version is missing/non-string,
+//     array, string, number, bool, etc.
+//     Treated as opaque client_context,
+//     preserved verbatim, and upgraded
+//     to a known envelope on the next
+//     successful chat-turn persist.
 //
 // AgentSessionState is what Engine sees via SetSessionState; ClientContext
 // is preserved opaquely by the http layer across read/write.
