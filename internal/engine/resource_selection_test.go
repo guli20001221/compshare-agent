@@ -253,7 +253,7 @@ func TestPendingSelectionRoundTripsThroughSessionState(t *testing.T) {
 	}
 }
 
-func TestRecordInstanceStateFactsMultiHostDoesNotStorePendingSelection(t *testing.T) {
+func TestRecordInstanceStateFactsResourceInfoMultiHostStoresPendingSelection(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
 	e.userTurn = 5
@@ -277,12 +277,33 @@ func TestRecordInstanceStateFactsMultiHostDoesNotStorePendingSelection(t *testin
 	if state.SelectedInstanceID != "" {
 		t.Fatalf("multi-host list must not select a current instance, got %q", state.SelectedInstanceID)
 	}
-	if len(state.PendingSelectionItems) != 0 {
-		t.Fatalf("raw multi-host fact writer must not persist pending selection, got %d", len(state.PendingSelectionItems))
+	if len(state.PendingSelectionItems) != 12 {
+		t.Fatalf("raw multi-host fact writer must persist pending selection, got %d", len(state.PendingSelectionItems))
+	}
+	if state.PendingSelectionItems[10].ID != "uhost-11" {
+		t.Fatalf("11th pending item = %+v, want uhost-11", state.PendingSelectionItems[10])
 	}
 }
 
-func TestRecordPendingSelectionFromResourceHandlerUsesDisplayedCandidates(t *testing.T) {
+func TestRecordInstanceStateFactsNonResourceMultiHostDoesNotStorePendingSelection(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	e.userTurn = 5
+	e.lastPlannerIntentThisTurn = intent.IntentMonitorQuery
+	rawHosts := []any{
+		map[string]any{"UHostId": "uhost-a", "Name": "host-a", "State": "Running"},
+		map[string]any{"UHostId": "uhost-b", "Name": "host-b", "State": "Running"},
+	}
+
+	e.recordInstanceStateFacts(map[string]any{"UHostSet": rawHosts})
+
+	state, _, _ := e.SessionStateSnapshot()
+	if len(state.PendingSelectionItems) != 0 {
+		t.Fatalf("non-resource multi-host result must not persist pending selection, got %d", len(state.PendingSelectionItems))
+	}
+}
+
+func TestRecordPendingSelectionFromResourceHandlerUsesHandlerCandidates(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
 	e.userTurn = 5
@@ -302,6 +323,37 @@ func TestRecordPendingSelectionFromResourceHandlerUsesDisplayedCandidates(t *tes
 	}
 	if state.PendingSelectionItems[0].ID != "uhost-running" || state.PendingSelectionItems[1].ID != "uhost-stopped" {
 		t.Fatalf("pending order = %+v, want displayed order", state.PendingSelectionItems)
+	}
+}
+
+func TestRecordPendingSelectionFromResourceHandlerKeepsOrdinalBeyondDisplayCap(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	e.userTurn = 5
+	candidates := make([]entity.InstanceSnapshot, 12)
+	for i := range candidates {
+		id := "uhost-" + strings.Repeat("0", 2-len(strconv.Itoa(i+1))) + strconv.Itoa(i+1)
+		candidates[i] = testInstance(id, "host-"+strconv.Itoa(i+1), "Running")
+	}
+
+	e.recordPendingSelectionFromHandlerResult(intent.HandlerResult{
+		Status:                      intent.HandlerStatusHandled,
+		ResourceSelectionCandidates: candidates,
+	}, intent.IntentRoute{Intent: intent.IntentResourceInfo}, "\u6211\u6709\u54ea\u4e9b\u5b9e\u4f8b")
+
+	e2 := newEngineForSessionStateTest(t)
+	state, _, _ := e.SessionStateSnapshot()
+	e2.SetSessionState(state, 2)
+	pending, ok := e2.pendingResourceSelectionFromSession()
+	if !ok {
+		t.Fatal("expected pending selection restored")
+	}
+	got, exact := matchResourceSelectionReference("\u7b2c11\u53f0 GPU \u5fd9\u4e0d\u5fd9", *pending)
+	if exact {
+		t.Fatal("embedded ordinal question should continue normal routing after binding")
+	}
+	if !got.ok || got.instance.UHostId != "uhost-11" {
+		t.Fatalf("resolved %+v, want uhost-11", got)
 	}
 }
 

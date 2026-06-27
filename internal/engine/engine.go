@@ -4204,6 +4204,7 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 		}
 	}
 	nowUnix := time.Now().Unix()
+	instanceSnapshots := make([]entity.InstanceSnapshot, 0, len(hosts))
 	for _, item := range hosts {
 		row, _ := item.(map[string]any)
 		if row == nil {
@@ -4213,6 +4214,7 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 		if snap.UHostId == "" {
 			continue
 		}
+		instanceSnapshots = append(instanceSnapshots, snap)
 		payload := map[string]any{
 			"name":     snap.Name,
 			"state":    snap.State,
@@ -4230,6 +4232,9 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 			ProducedAtUnix: nowUnix,
 			TTLSeconds:     factTTLSecondsInstanceState,
 		})
+	}
+	if len(instanceSnapshots) > 1 && e.lastPlannerIntentThisTurn == intent.IntentResourceInfo {
+		e.recordPendingInstanceSelection(instanceSnapshots, intent.IntentResourceInfo, e.lastUserMsg, len(instanceSnapshots), false)
 	}
 }
 

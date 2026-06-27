@@ -31,13 +31,28 @@ func handleRefundEstimate(ctx context.Context, h *DemoHandler, req HandlerReques
 			result.ToolArgs = copyArgs(args)
 			return result
 		}
-		result := HandledResult("请先告诉我要估算哪台实例的退费，例如实例名称或实例 ID。退费估算不会释放实例。")
-		result.ToolAction = action
-		result.ToolArgs = copyArgs(map[string]any{})
-		return result
+		if id := strings.TrimSpace(req.FallbackInstanceID); id != "" {
+			req.Plan.Slots.TargetRefs = []TargetRef{{
+				Type:       TargetRefUHostIDUserInput,
+				Value:      id,
+				Source:     SourcePriorTurn,
+				SourceSpan: id,
+			}}
+		} else {
+			result := HandledResult("请先告诉我要估算哪台实例的退费，例如实例名称或实例 ID。退费估算不会释放实例。")
+			result.ToolAction = action
+			result.ToolArgs = copyArgs(map[string]any{})
+			return result
+		}
 	}
 	instances, ids, fb := resolveResourceTargetSnapshots(req.Plan.Slots.TargetRefs, req.Resolver)
 	if fb != nil {
+		if len(req.Plan.Slots.TargetRefs) == 1 && req.Plan.Slots.TargetRefs[0].Source == SourcePriorTurn {
+			result := HandledResult("未找到刚才选中的实例，可能已被删除或当前账号不可见。请重新指定实例名称或实例 ID 后再估算退费。")
+			result.ToolAction = action
+			result.ToolArgs = copyArgs(map[string]any{})
+			return result
+		}
 		return *fb
 	}
 	args := map[string]any{"UHostIds": ids}
