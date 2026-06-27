@@ -101,6 +101,81 @@ func TestReplayRegression_LifecycleStopAlreadyStoppedDoesNotAskOrCreate(t *testi
 	require.NotContains(t, exec.calls, "StopCompShareInstance")
 }
 
+func TestReplayRegression_WithoutGPUStartOverridesPlannerStop(t *testing.T) {
+	data := map[string]any{
+		"TotalCount": float64(1),
+		"UHostSet": []any{map[string]any{
+			"UHostId":                "uhost-withoutgpu",
+			"Name":                   "without-gpu-target",
+			"State":                  "Stopped",
+			"GpuType":                "V100S",
+			"GPU":                    float64(1),
+			"CPU":                    float64(10),
+			"Memory":                 float64(65536),
+			"Region":                 "cn-wlcb",
+			"Zone":                   "cn-wlcb-01",
+			"SupportWithoutGpuStart": true,
+			"WithoutGpuSpec": map[string]any{
+				"Cpu":    float64(2),
+				"Memory": float64(4096),
+				"Gpu":    float64(0),
+			},
+		}},
+	}
+	var resizeArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			if ids := stringSliceArg(args["UHostIds"]); len(ids) > 0 {
+				return filterDescribeInstances(data, ids), nil
+			}
+			return data, nil
+		case "ResizeCompShareInstance":
+			resizeArgs = map[string]any{}
+			for k, v := range args {
+				resizeArgs[k] = v
+			}
+			return map[string]any{"RetCode": 0}, nil
+		case "StartCompShareInstance":
+			return map[string]any{"RetCode": 0}, nil
+		case "StopCompShareInstance":
+			t.Fatal("无卡启动不能因为路由误判而执行关机")
+		}
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentOperationLifecycle,
+			Slots: intent.Slots{
+				Action: intent.LifecycleActionStop,
+			},
+			RequiredTools: []string{"DescribeCompShareInstance"},
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+		require.Equal(t, "StartInstanceWorkflow", action)
+		require.Equal(t, "uhost-withoutgpu", args["UHostId"])
+		return true
+	})
+	eng.Init(context.Background())
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentOperationLifecycle}})
+
+	reply, err := eng.Chat(context.Background(), "请无卡启动实例 uhost-withoutgpu", noopStep)
+
+	require.NoError(t, err)
+	require.Contains(t, reply, "开机")
+	require.Contains(t, exec.calls, "ResizeCompShareInstance")
+	require.Contains(t, exec.calls, "StartCompShareInstance")
+	require.NotContains(t, exec.calls, "StopCompShareInstance")
+	require.NotNil(t, resizeArgs)
+	require.Equal(t, true, resizeArgs["WithoutGpu"])
+	require.Equal(t, float64(0), resizeArgs["Gpu"])
+}
+
 func TestReplayRegression_DirectLifecycleStopColloquialPhraseBypassesReActLoop(t *testing.T) {
 	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("claude-write-test", "Stopped"))
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}

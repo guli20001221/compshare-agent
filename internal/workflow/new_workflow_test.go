@@ -18,6 +18,8 @@ func stoppedInstanceResult() map[string]any {
 			"Zone":       "cn-sh2-02",
 			"GpuType":    "4090",
 			"GPU":        float64(1),
+			"CPU":        float64(16),
+			"Memory":     float64(65536),
 			"ChargeType": "Dynamic",
 		},
 	}}
@@ -71,6 +73,26 @@ func containerStoppedInstanceResult() map[string]any {
 					"Size":     float64(60),
 				},
 			},
+		},
+	}}
+}
+
+func resizeInstanceTypesResult(gpuType, zone string, gpuCount float64, specs ...specCandidate) map[string]any {
+	collections := make([]any, 0, len(specs))
+	for _, spec := range specs {
+		collections = append(collections, map[string]any{
+			"Cpu":    spec.CPU,
+			"Memory": []any{spec.MemoryMB / 1024},
+		})
+	}
+	return map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{
+			"Name": gpuType,
+			"Zone": zone,
+			"MachineSizes": []any{map[string]any{
+				"Gpu":        gpuCount,
+				"Collection": collections,
+			}},
 		},
 	}}
 }
@@ -592,7 +614,10 @@ func TestResize_EmptyParams_BlockedBeforeConfirm(t *testing.T) {
 
 func TestResize_IncludesPriceInConfirm(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance":        stoppedInstanceResult(),
+		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"DescribeAvailableCompShareInstanceTypes": resizeInstanceTypesResult("4090", "cn-sh2-02", 2,
+			specCandidate{CPU: 16, MemoryMB: 65536},
+		),
 		"GetCompShareInstanceUpgradePrice": {"Price": float64(1.5), "OriginalPrice": float64(2.0)},
 		"ResizeCompShareInstance":          {"RetCode": 0},
 	}}
@@ -624,7 +649,10 @@ func TestResize_IncludesPriceInConfirm(t *testing.T) {
 
 func TestResize_MissingPriceBlockedBeforeConfirm(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance":        stoppedInstanceResult(),
+		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"DescribeAvailableCompShareInstanceTypes": resizeInstanceTypesResult("4090", "cn-sh2-02", 2,
+			specCandidate{CPU: 16, MemoryMB: 65536},
+		),
 		"GetCompShareInstanceUpgradePrice": {"RetCode": 0},
 		"ResizeCompShareInstance":          {"RetCode": 0},
 	}}
@@ -648,6 +676,37 @@ func TestResize_MissingPriceBlockedBeforeConfirm(t *testing.T) {
 	}
 	_, resized := findExecutorCall(executor.calls, "ResizeCompShareInstance")
 	assert.False(t, resized)
+}
+
+func TestResize_UnsupportedCpuMemoryBlockedBeforeConfirm(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"DescribeAvailableCompShareInstanceTypes": resizeInstanceTypesResult("4090", "cn-sh2-02", 1,
+			specCandidate{CPU: 16, MemoryMB: 65536},
+			specCandidate{CPU: 32, MemoryMB: 131072},
+		),
+		"GetCompShareInstanceUpgradePrice": {"Price": float64(0)},
+		"ResizeCompShareInstance":          {"RetCode": 0},
+	}}
+	def := ResizeInstanceDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("unsupported resize target must be blocked before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-test",
+		"Cpu":     float64(16),
+		"Memory":  float64(131072),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "不支持")
+	_, confirmed := findExecutorCall(executor.calls, "ResizeCompShareInstance")
+	assert.False(t, confirmed)
+	_, priced := findExecutorCall(executor.calls, "GetCompShareInstanceUpgradePrice")
+	assert.False(t, priced, "unsupported target should fail before pricing and confirmation")
 }
 
 func TestResize_NoEffectiveChangeBlockedBeforePrice(t *testing.T) {
@@ -709,10 +768,17 @@ func TestResize_CarriesInternalPlacement(t *testing.T) {
 				"State":    "Stopped",
 				"Region":   "cn-sh2",
 				"Zone":     "cn-sh2-02",
+				"GpuType":  "4090",
+				"GPU":      float64(1),
+				"CPU":      float64(16),
+				"Memory":   float64(65536),
 				"ZoneId":   float64(9001),
 				"RegionId": float64(3001),
 			},
 		}},
+		"DescribeAvailableCompShareInstanceTypes": resizeInstanceTypesResult("4090", "cn-sh2-02", 2,
+			specCandidate{CPU: 16, MemoryMB: 65536},
+		),
 		"GetCompShareInstanceUpgradePrice": {"Price": float64(1.5)},
 		"ResizeCompShareInstance":          {"RetCode": 0},
 	}}
@@ -738,7 +804,10 @@ func TestResize_CarriesInternalPlacement(t *testing.T) {
 
 func TestResize_PassesParamsToAPI(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance":        stoppedInstanceResult(),
+		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"DescribeAvailableCompShareInstanceTypes": resizeInstanceTypesResult("4090", "cn-sh2-02", 2,
+			specCandidate{CPU: 32, MemoryMB: 131072},
+		),
 		"GetCompShareInstanceUpgradePrice": {"Price": float64(0)},
 		"ResizeCompShareInstance":          {"RetCode": 0},
 	}}

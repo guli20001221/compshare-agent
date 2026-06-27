@@ -5,9 +5,10 @@ import "fmt"
 func ResizeInstanceDef() *Definition {
 	return &Definition{
 		Name:        "ResizeInstanceWorkflow",
-		Description: "查询实例 → 查询变配价格 → 确认变配 → 变配",
+		Description: "查询实例 → 查询合法规格 → 查询变配价格 → 确认变配 → 变配",
 		Steps: []Step{
 			stepQueryForResize(),
+			stepQueryResizeAvailableSpecs(),
 			stepQueryResizePrice(),
 			stepConfirmResize(),
 			stepResizeInstance(),
@@ -52,6 +53,33 @@ func stepQueryForResize() Step {
 	}
 }
 
+func stepQueryResizeAvailableSpecs() Step {
+	return Step{
+		Name: "查询合法规格",
+		Type: StepToolCall,
+		Tool: "DescribeAvailableCompShareInstanceTypes",
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			queried := wfCtx.Result("查询实例")
+			region, zone, err := extractRequiredInstanceLocation(queried)
+			if err != nil {
+				return nil, err
+			}
+			args := map[string]any{
+				"Region": region,
+				"Zone":   zone,
+			}
+			if gpuType := resizeCurrentGPUType(queried); gpuType != "" {
+				args["MachineTypes"] = []any{gpuType}
+			}
+			return args, nil
+		},
+		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
+			ok, msg := validateResizeTargetSpec(wfCtx, result)
+			return ok, msg
+		},
+	}
+}
+
 func resizeHasEffectiveSpecChange(params map[string]any, result map[string]any) bool {
 	hostSet, ok := result["UHostSet"].([]any)
 	if !ok || len(hostSet) == 0 {
@@ -83,6 +111,53 @@ func resizeHasEffectiveSpecChange(params map[string]any, result map[string]any) 
 		}
 	}
 	return false
+}
+
+func validateResizeTargetSpec(wfCtx *Context, catalog map[string]any) (bool, string) {
+	queried := wfCtx.Result("查询实例")
+	host := firstUHost(queried)
+	if host == nil {
+		return false, "未找到该实例。"
+	}
+	gpuType, _ := host["GpuType"].(string)
+	if gpuType == "" {
+		return false, "未获取到实例 GPU 型号，无法确认合法变配规格。"
+	}
+	zone, _ := host["Zone"].(string)
+	targetGPU := resizeTargetNumber(wfCtx.Params, host, "Gpu", "GPU")
+	targetCPU := resizeTargetNumber(wfCtx.Params, host, "Cpu", "CPU")
+	targetMemory := resizeTargetNumber(wfCtx.Params, host, "Memory", "Memory")
+	if targetGPU == 0 || targetCPU == 0 || targetMemory == 0 {
+		return false, "未获取到完整的目标 CPU/GPU/内存配置，无法确认合法变配规格。"
+	}
+	candidates := listSpecCandidates(catalog, gpuType, targetGPU, zone)
+	if len(candidates) == 0 {
+		return false, fmt.Sprintf("未找到 %s × %.0f 卡的合法变配规格，请稍后重试或到控制台确认。", gpuType, targetGPU)
+	}
+	for _, candidate := range candidates {
+		if candidate.CPU == targetCPU && candidate.MemoryMB == targetMemory {
+			return true, ""
+		}
+	}
+	return false, fmt.Sprintf("%s × %.0f 卡不支持 %.0fC/%.0fGB 的变配目标。合法选项：%s",
+		gpuType, targetGPU, targetCPU, targetMemory/1024, formatCandidates(candidates))
+}
+
+func resizeTargetNumber(params map[string]any, host map[string]any, paramKey, hostKey string) float64 {
+	if v, ok := params[paramKey]; ok {
+		return paramNum(map[string]any{paramKey: v}, paramKey, 0)
+	}
+	value, _ := priceNumber(host[hostKey])
+	return value
+}
+
+func resizeCurrentGPUType(result map[string]any) string {
+	host := firstUHost(result)
+	if host == nil {
+		return ""
+	}
+	value, _ := host["GpuType"].(string)
+	return value
 }
 
 func stepQueryResizePrice() Step {
