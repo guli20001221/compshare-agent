@@ -233,6 +233,10 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 		return "", false
 	}
 	action := result.Plan.Slots.Action
+	if startWithoutGPURequestedByText(userMsg) {
+		action = intent.LifecycleActionStart
+		result.Plan.Slots.Action = action
+	}
 	if action == "" {
 		action = inferLifecycleAction(userMsg)
 		result.Plan.Slots.Action = action
