@@ -40,6 +40,7 @@ type FeaturesConfig struct {
 	ReactHistoryCompaction          *bool    `yaml:"react_history_compaction"`           // USE_REACT_HISTORY_COMPACTION (Go default off; deploy on)
 	IntentScopedReactPrompt         *bool    `yaml:"intent_scoped_react_prompt"`         // USE_INTENT_SCOPED_REACT_PROMPT (default off)
 	CreatePreferenceExtractor       *bool    `yaml:"create_preference_extractor"`        // COMPSHARE_CREATE_PREF_EXTRACTOR (default off)
+	UnifiedCreate                   *bool    `yaml:"unified_create"`                     // COMPSHARE_UNIFIED_CREATE (default off)
 	SkillExecutor                   *bool    `yaml:"skill_executor"`                     // USE_SKILL_EXECUTOR (default off)
 	SkillExecutorDiagnosisPilots    []string `yaml:"skill_executor_diagnosis_pilots"`    // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS (CSV)
 }
@@ -108,6 +109,7 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "USE_REACT_HISTORY_COMPACTION", f.ReactHistoryCompaction, "1", "0")
 	putBoolEnv(overrides, "USE_INTENT_SCOPED_REACT_PROMPT", f.IntentScopedReactPrompt, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_CREATE_PREF_EXTRACTOR", f.CreatePreferenceExtractor, "1", "0")
+	putBoolEnv(overrides, "COMPSHARE_UNIFIED_CREATE", f.UnifiedCreate, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE", f.AgenticSearchKnowledge, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_RAG_GROUNDED_VALIDATOR", f.GroundedValidator, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_RAG_DOMAIN_MATCH_GUARD", f.DomainMatchGuard, "1", "0")

@@ -2,13 +2,19 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
+
+func twoDigit(n int) string {
+	return fmt.Sprintf("%02d", n)
+}
 
 func TestReplayRegression_ResourceInfoResolvesNamedInstanceFromFullSnapshot(t *testing.T) {
 	exec := &mockExecutor{results: map[string]map[string]any{
@@ -35,6 +41,135 @@ func TestReplayRegression_ResourceInfoResolvesNamedInstanceFromFullSnapshot(t *t
 	require.Contains(t, reply, "Stopped")
 	require.NotContains(t, reply, "未找到")
 	require.Len(t, mock.calls, 0, "resource_info must be answered by deterministic handler, not final LLM narration")
+}
+
+func TestReplayRegression_MonitorEmbeddedOrdinalUsesFreshSelection(t *testing.T) {
+	hosts := make([]any, 0, 11)
+	for i := 1; i <= 11; i++ {
+		id := "uhost-" + twoDigit(i)
+		hosts = append(hosts, map[string]any{
+			"UHostId": id,
+			"Name":    "host-" + twoDigit(i),
+			"State":   "Running",
+			"GpuType": "V100S",
+			"GPU":     float64(1),
+			"CPU":     float64(10),
+			"Memory":  float64(65536),
+			"Zone":    "cn-wlcb-01",
+		})
+	}
+	data := map[string]any{"TotalCount": float64(11), "UHostSet": hosts}
+	var monitorIDs []string
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return data, nil
+		case "GetCompShareInstanceMonitor":
+			monitorIDs = stringSliceArg(args["UHostIds"])
+			return monitorPayload([]monitorPayloadHost{{
+				UHostID: "uhost-11",
+				Metrics: []monitorPayloadMetric{{
+					Key:    "uhost_gpu_used",
+					Values: [][2]any{{1716530000, "12.0"}},
+				}},
+			}}), nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentMonitorQuery,
+			Slots:         intent.Slots{Metrics: []intent.Metric{"gpu_usage"}},
+			RequiredTools: []string{"GetCompShareInstanceMonitor"},
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.Init(context.Background())
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaV1,
+		PendingSelectionItems: []PendingSelectionItem{
+			{ID: "uhost-01", Name: "host-01", State: "Running"},
+			{ID: "uhost-02", Name: "host-02", State: "Running"},
+			{ID: "uhost-03", Name: "host-03", State: "Running"},
+			{ID: "uhost-04", Name: "host-04", State: "Running"},
+			{ID: "uhost-05", Name: "host-05", State: "Running"},
+			{ID: "uhost-06", Name: "host-06", State: "Running"},
+			{ID: "uhost-07", Name: "host-07", State: "Running"},
+			{ID: "uhost-08", Name: "host-08", State: "Running"},
+			{ID: "uhost-09", Name: "host-09", State: "Running"},
+			{ID: "uhost-10", Name: "host-10", State: "Running"},
+			{ID: "uhost-11", Name: "host-11", State: "Running"},
+		},
+		PendingSelectionKind:            "instance",
+		PendingSelectionIntent:          "resource_info",
+		PendingSelectionOriginalUserMsg: "我有哪些实例",
+		PendingSelectionCreatedTurn:     1,
+		PendingSelectionProducedAtUnix:  time.Now().Unix(),
+		PendingSelectionTTLSeconds:      pendingSelectionTTLSeconds,
+		PendingSelectionTotalCount:      11,
+	}, 2)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentMonitorQuery}})
+
+	reply, err := eng.Chat(context.Background(), "第11台 GPU 忙不忙", noopStep)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"uhost-11"}, monitorIDs)
+	require.NotContains(t, reply, "请选择")
+	require.Equal(t, "uhost-11", eng.sessionState.SelectedInstanceID)
+}
+
+func TestReplayRegression_MonitorEmbeddedOrdinalWithoutSavedSelectionAsksUser(t *testing.T) {
+	hosts := make([]any, 0, 11)
+	for i := 1; i <= 11; i++ {
+		id := "uhost-" + twoDigit(i)
+		hosts = append(hosts, map[string]any{
+			"UHostId": id,
+			"Name":    "host-" + twoDigit(i),
+			"State":   "Running",
+			"GpuType": "V100S",
+			"GPU":     float64(1),
+		})
+	}
+	data := map[string]any{"TotalCount": float64(11), "UHostSet": hosts}
+	monitorCalled := false
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return data, nil
+		case "GetCompShareInstanceMonitor":
+			monitorCalled = true
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentMonitorQuery,
+			Slots:         intent.Slots{Metrics: []intent.Metric{"gpu_usage"}},
+			RequiredTools: []string{"GetCompShareInstanceMonitor"},
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.Init(context.Background())
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentMonitorQuery}})
+
+	reply, err := eng.Chat(context.Background(), "第11台 GPU 忙不忙", noopStep)
+
+	require.NoError(t, err)
+	require.False(t, monitorCalled)
+	require.Contains(t, reply, "请选择")
+	require.Empty(t, eng.sessionState.SelectedInstanceID)
 }
 
 func TestReplayRegression_LifecycleStopExactNameUsesStateGate(t *testing.T) {

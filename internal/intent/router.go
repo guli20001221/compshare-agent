@@ -34,9 +34,10 @@ type IntentRouterLLMResponse struct {
 }
 
 type IntentRouterLLMRequest struct {
-	Mode         OutputMode
-	SystemPrompt string
-	UserPrompt   string
+	Mode           OutputMode
+	SystemPrompt   string
+	UserPrompt     string
+	ResponseSchema json.RawMessage
 }
 
 type IntentRouterOptions struct {
@@ -44,6 +45,7 @@ type IntentRouterOptions struct {
 	Model            string
 	MaxRetries       int
 	LookupCapability func(baseURL, model string) llm.Capability
+	UnifiedCreate    bool
 }
 
 type IntentRouterInput struct {
@@ -86,6 +88,7 @@ type IntentRouter struct {
 	model            string
 	maxRetries       int
 	lookupCapability func(baseURL, model string) llm.Capability
+	unifiedCreate    bool
 }
 
 // NewIntentRouter constructs an IntentRouter from an intent-router LLM client
@@ -107,6 +110,7 @@ func NewIntentRouter(client IntentRouterLLM, opts IntentRouterOptions) *IntentRo
 		model:            opts.Model,
 		maxRetries:       maxRetries,
 		lookupCapability: lookup,
+		unifiedCreate:    opts.UnifiedCreate,
 	}
 }
 
@@ -136,15 +140,17 @@ func (p *IntentRouter) Plan(ctx context.Context, input IntentRouterInput) (Inten
 		return result, fmt.Errorf("intent router LLM is nil")
 	}
 
-	systemPrompt := buildSystemPrompt()
+	systemPrompt := buildSystemPromptWithUnifiedCreate(p.unifiedCreate)
+	responseSchema := IntentRouteResponseSchemaForIntents(routerRuntimeIntents(p.unifiedCreate))
 	userPrompt := buildUserPrompt(input, "")
 	attempts := p.maxRetries + 1
 	for attempt := 1; attempt <= attempts; attempt++ {
 		result.Attempts = attempt
 		raw, usage, err := p.completeIntentPlan(ctx, IntentRouterLLMRequest{
-			Mode:         mode,
-			SystemPrompt: systemPrompt,
-			UserPrompt:   userPrompt,
+			Mode:           mode,
+			SystemPrompt:   systemPrompt,
+			UserPrompt:     userPrompt,
+			ResponseSchema: responseSchema,
 		})
 		if err != nil {
 			return result, err
@@ -559,6 +565,53 @@ func routerPromptExampleGroups() []routerPromptExampleGroup {
 	}
 }
 
+func routerPromptExampleGroupsWithUnifiedCreate(unified bool) []routerPromptExampleGroup {
+	groups := routerPromptExampleGroups()
+	if !unified {
+		return groups
+	}
+	out := make([]routerPromptExampleGroup, 0, len(groups)+1)
+	for _, group := range groups {
+		if group.Intent != IntentOperationLifecycle {
+			out = append(out, group)
+			continue
+		}
+		filtered := group
+		filtered.Examples = make([]routerPromptExample, 0, len(group.Examples))
+		for _, example := range group.Examples {
+			switch example.Question {
+			case "帮我搞台 4090", "帮我抢一台上海的 4090":
+				continue
+			default:
+				filtered.Examples = append(filtered.Examples, example)
+			}
+		}
+		out = append(out, filtered)
+	}
+	out = append(out, routerPromptExampleGroup{
+		Intent: IntentCreateInstance,
+		Source: "R2b P1a (2026-06-26): first-class create-family anchors; old hardware rescue path remains as backstop",
+		Examples: []routerPromptExample{
+			{
+				Question: "帮我搞台 4090",
+				PlanJSON: `{"schema_version":"1.0","intent":"create_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+				Source:   "R2b P1a: spec-first exact-hardware create routes to first-class create_instance",
+			},
+			{
+				Question: "帮我抢一台上海的 4090",
+				PlanJSON: `{"schema_version":"1.0","intent":"create_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+				Source:   "R2b P1a: strict-zone spec-first create routes to first-class create_instance",
+			},
+			{
+				Question: "部署一台 4090 跑 Qwen",
+				PlanJSON: `{"schema_version":"1.0","intent":"create_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+				Source:   "R2b P1a: mixed hardware+workload create-family request keeps both facets in the unified handler",
+			},
+		},
+	})
+	return out
+}
+
 func renderRouterPromptExampleGroups(groups []routerPromptExampleGroup) []string {
 	lines := []string{}
 	for _, group := range groups {
@@ -590,11 +643,15 @@ func escapePromptXML(s string) string {
 }
 
 func basePromptScaffold() string {
+	return basePromptScaffoldWithUnifiedCreate(false)
+}
+
+func basePromptScaffoldWithUnifiedCreate(unified bool) string {
 	// Keep the intent-router scaffold ASCII/English. Earlier Windows
 	// console/source encoding issues made non-ASCII prompt labels fragile, while
 	// the baseline model handles bilingual user text with English JSON-field
 	// instructions.
-	return strings.Join([]string{
+	lines := []string{
 		"You are the intent router for the CompShare console agent.",
 		"Return exactly one JSON object. Do not output Markdown, prose, or tool calls.",
 		"Required top-level fields: schema_version, intent, slots, required_tools, retrieval, hard_block_hint, confidence.",
@@ -633,11 +690,28 @@ func basePromptScaffold() string {
 		"For monitor_query, metrics may be [] when the metric words are unclear; the handler can render all returned current monitor values.",
 		"Set hard_block_hint=true only for unsupported account-level billing questions such as account balance, total account bill, or transaction flow.",
 		"Examples:",
-	}, "\n")
+	}
+	if unified {
+		for i, line := range lines {
+			switch {
+			case strings.HasPrefix(line, "Allowed intent enum:"):
+				lines[i] = "Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, knowledge_qa, gpu_specs_query, stock_availability, platform_image_list, custom_image_list, community_image_list, shared_image_list, image_tag_catalog, model_repository_browse, network_accelerator_status, refund_estimate, cfs_info, pricing_query, disk_info, deploy_model, create_instance, unknown."
+			case strings.HasPrefix(line, "deploy_model:"):
+				lines[i] = "deploy_model: the user wants to RUN or DEPLOY a specific model, framework, or application (e.g. 部署 Qwen2.5-32B / 跑数字人 / 搭一个能跑 ComfyUI 的环境 / 部署 Llama3 做推理) and wants a suitable instance created for that workload — the agent picks the image and GPU. Classify these as deploy_model with empty target_refs. API-subscription developer tools and coding assistants used through an API key or platform package — Claude Code, Codex, Coding Plan, Cursor — are NOT deployable models (they call a hosted API; there are no weights to run on an instance); classify how-to-use/configure questions about them as knowledge_qa, not deploy_model. Use operation_lifecycle only for operations on an EXISTING instance (start/stop/reboot/resize/add-disk). Use create_instance for new GPU instance creation where the user dictates exact hardware or says to create/open/buy an instance."
+			case strings.HasPrefix(line, "Resource operation commands"):
+				lines[i] = "Resource operation commands on EXISTING instances — any phrase whose primary verb is a CompShare instance lifecycle / configuration action emits operation_lifecycle, REGARDLESS of whether the user specifies a target instance. Action verbs include 关机 / 停机 / 停了 / 启动 / 开机 / 重启 / 加盘 / 加数据盘 / 变配 / 升级配置 / 重装 / 重置密码 / 改名. New GPU instance creation where the user asks to 创建 / 开一台 / 搞台 / 抢一台 / 买一台 a machine should emit create_instance, not operation_lifecycle. Workload-first requests naming a model/app/framework (e.g. 部署 DeepSeekR1 / 部署数字人 / 部署 ComfyUI) stay deploy_model. When an existing-instance target is given, populate target_refs (UHostId, name, or filter). When the user omits the target (e.g. 帮我关机, 启动一下, 重启那台), still emit operation_lifecycle with target_refs:[] — the engine will list the user's instances and prompt for selection. Concrete anchors: 帮我关机 uhost-xxx, uhost-test 停了, 启动 train-gpu, 把 uhost-xxx 重启一下, 给 uhost-xxx 加 200G 数据盘. Do NOT route bare action verbs to resource_info (that intent is for listing/inspecting only) or unknown (the action is on-platform)."
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func buildSystemPrompt() string {
-	base := basePromptScaffold()
+	return buildSystemPromptWithUnifiedCreate(false)
+}
+
+func buildSystemPromptWithUnifiedCreate(unified bool) string {
+	base := basePromptScaffoldWithUnifiedCreate(unified)
 	// Routing Registry v1 (PR A, 2026-05-18): append directives + one-shot
 	// examples that come from internal/routing/*/route.yaml
 	// metadata. Engine.go has a single generic dispatch hook; router-side
@@ -649,7 +723,7 @@ func buildSystemPrompt() string {
 	// after the routing directives and before the routing examples. The pack is
 	// the single source of these rules; the base scaffold no longer carries them.
 	boundaryDirectives := boundarypacks.BoundaryPromptFragments()
-	routerExamples := renderRouterPromptExampleGroups(routerPromptExampleGroups())
+	routerExamples := renderRouterPromptExampleGroups(routerPromptExampleGroupsWithUnifiedCreate(unified))
 	parts := make([]string, 0, 1+len(routerExamples)+len(directives)+len(boundaryDirectives)+len(examples))
 	parts = append(parts, base)
 	parts = append(parts, routerExamples...)
@@ -657,6 +731,20 @@ func buildSystemPrompt() string {
 	parts = append(parts, boundaryDirectives...)
 	parts = append(parts, examples...)
 	return strings.Join(parts, "\n")
+}
+
+func routerRuntimeIntents(unified bool) []Intent {
+	intents := RuntimeIntents()
+	if unified {
+		return intents
+	}
+	out := make([]Intent, 0, len(intents))
+	for _, i := range intents {
+		if i != IntentCreateInstance {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // lastAssistantSnippetCap is the byte cap applied to LastAssistantSnippet

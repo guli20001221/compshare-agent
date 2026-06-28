@@ -91,10 +91,11 @@ type HandlerResult struct {
 	// populates this for monitor handler results only.
 	RendererInputToolArgHashes  []string
 	RendererInputEnvelopeHashes []string
-	// ResourceSelectionCandidates is the exact instance list shown in a
-	// resource_info reply, after any filters and display truncation. Engine
-	// persists this compact list so a later "第 N 台 / 这台" follow-up resolves
-	// against what the user actually saw, not the raw unfiltered API result.
+	// ResourceSelectionCandidates is the ordered instance list implied by a
+	// resource_info reply, after any filters but before display truncation.
+	// Engine persists this compact list so a later "第 N 台 / 这台" follow-up can
+	// resolve even when the user asks for an item just past the visible display
+	// cap. The renderer still truncates what is shown to the user.
 	ResourceSelectionCandidates []entity.InstanceSnapshot
 	// ResolvedStockGpuModel is the single GPU model (API instance-type Name,
 	// e.g. "4090") a stock-availability turn resolved to, or "" when the turn
@@ -122,8 +123,9 @@ type HandlerRequest struct {
 	// (HandleResourceInfo / HandleMonitorQuery) ignore this field.
 	UserText string
 	// FallbackInstanceID is the SelectedInstanceID from SessionState. When
-	// TargetRefs is empty and this is non-empty, HandleMonitorQuery uses it
-	// as a default target instead of triggering resource selection.
+	// TargetRefs is empty and this is non-empty, instance-scoped follow-up
+	// handlers such as monitor_query and refund_estimate may use it as the
+	// default target instead of triggering resource selection.
 	// Set by engine.go from e.sessionState at the tryRouteDispatch call site.
 	FallbackInstanceID string
 	// FallbackGpuModel is the LastStockGpuModel from SessionState (the API
@@ -222,7 +224,10 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 		envMeta.FilterApplied = filters.String()
 		envMeta.MatchedCount = len(instances)
 	}
+	var selectionCandidates []entity.InstanceSnapshot
 	if len(ids) == 0 {
+		selectionCandidates = append([]entity.InstanceSnapshot(nil), instances...)
+		SortInstancesForDisplay(selectionCandidates)
 		truncated, shown, isTruncated := TruncateInstancesForDisplay(instances, 0)
 		instances = truncated
 		envMeta.Shown = shown
@@ -231,8 +236,8 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 	result := HandledResult(RenderResourceSummary(instances, envMeta))
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
-	if len(ids) == 0 && len(instances) > 0 {
-		result.ResourceSelectionCandidates = append([]entity.InstanceSnapshot(nil), instances...)
+	if len(selectionCandidates) > 0 {
+		result.ResourceSelectionCandidates = selectionCandidates
 	}
 	env := BuildResourceEnvelopeWithMeta(instances, envMeta)
 	result.Envelope = &env

@@ -62,6 +62,57 @@ func TestRefundEstimateRouteRequiresTarget(t *testing.T) {
 	assert.Empty(t, exec.calls)
 }
 
+func TestRefundEstimateRouteUsesFallbackInstanceID(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"RefundPriceSet": []any{
+			map[string]any{
+				"UHostId":     "uhost-b",
+				"Code":        float64(0),
+				"RefundPrice": float64(8.88),
+			},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
+		UserText:           "那现在退费多少",
+		FallbackInstanceID: "uhost-b",
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentRefundEstimate,
+			Retrieval:     Retrieval{Enabled: false},
+			Confidence:    0.8,
+		},
+		Resolver: resourceTestSnapshot(t),
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, "GetCompShareRefundPrice", exec.calls[0].action)
+	assert.Equal(t, []string{"uhost-b"}, exec.calls[0].args["UHostIds"])
+	assert.Contains(t, result.Reply, "train-b")
+	assert.Contains(t, result.Reply, "8.88")
+}
+
+func TestRefundEstimateRouteStaleFallbackDoesNotCallTool(t *testing.T) {
+	exec := &mockHandlerExecutor{}
+	handler := NewDemoHandler(exec)
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
+		UserText:           "那现在退费多少",
+		FallbackInstanceID: "uhost-deleted-long-ago",
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentRefundEstimate,
+			Retrieval:     Retrieval{Enabled: false},
+			Confidence:    0.8,
+		},
+		Resolver: resourceTestSnapshot(t),
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	assert.Empty(t, exec.calls)
+	assert.Contains(t, result.Reply, "未找到")
+}
+
 func TestCFSInfoRouteListsCFSReadOnly(t *testing.T) {
 	exec := &mockHandlerExecutor{result: map[string]any{
 		"CFSSet": []any{

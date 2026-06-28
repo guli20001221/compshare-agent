@@ -77,6 +77,9 @@ type SessionState struct {
 	SelectedInstanceName            string                 `json:"selected_instance_name,omitempty"`
 	LastIntent                      string                 `json:"last_intent,omitempty"`
 	LastStockGpuModel               string                 `json:"last_stock_gpu_model,omitempty"`
+	LastDeployWorkload              string                 `json:"last_deploy_workload,omitempty"`
+	LastDeployZone                  string                 `json:"last_deploy_zone,omitempty"`
+	PendingDeployModel              string                 `json:"pending_deploy_model,omitempty"`
 	PendingSelectionKind            string                 `json:"pending_selection_kind,omitempty"`
 	PendingSelectionIntent          string                 `json:"pending_selection_intent,omitempty"`
 	PendingSelectionOriginalUserMsg string                 `json:"pending_selection_original_user_msg,omitempty"`

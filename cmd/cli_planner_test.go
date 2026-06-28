@@ -58,23 +58,23 @@ func TestPlannerStructuredOutputModeFromEnv(t *testing.T) {
 
 func TestPlannerResponseFormatForMode(t *testing.T) {
 	// off → never any response_format, regardless of capability.
-	require.Nil(t, plannerResponseFormatForMode(intent.OutputModeJSONSchema, plannerStructuredOutputOff))
-	require.Nil(t, plannerResponseFormatForMode(intent.OutputModeJSONObject, plannerStructuredOutputOff))
+	require.Nil(t, plannerResponseFormatForMode(intent.OutputModeJSONSchema, plannerStructuredOutputOff, nil))
+	require.Nil(t, plannerResponseFormatForMode(intent.OutputModeJSONObject, plannerStructuredOutputOff, nil))
 
 	// json_object opt-in → json_object whenever the model supports object-level
 	// structured output (json_object OR the richer json_schema), nil otherwise.
 	for _, mode := range []intent.OutputMode{intent.OutputModeJSONObject, intent.OutputModeJSONSchema} {
-		format := plannerResponseFormatForMode(mode, plannerStructuredOutputJSONObject)
+		format := plannerResponseFormatForMode(mode, plannerStructuredOutputJSONObject, nil)
 		require.NotNil(t, format, "json_object opt-in, mode=%s", mode)
 		require.Equal(t, "json_object", string(format.Type))
 		require.Nil(t, format.JSONSchema)
 	}
-	require.Nil(t, plannerResponseFormatForMode(intent.OutputModeStrictPromptJSON, plannerStructuredOutputJSONObject))
+	require.Nil(t, plannerResponseFormatForMode(intent.OutputModeStrictPromptJSON, plannerStructuredOutputJSONObject, nil))
 
 	// json_schema opt-in → json_schema when the model supports it, carrying the
 	// IntentRoute schema (non-strict); degrades to json_object on an
 	// object-only model; nil on a model without structured output.
-	schemaFormat := plannerResponseFormatForMode(intent.OutputModeJSONSchema, plannerStructuredOutputJSONSchema)
+	schemaFormat := plannerResponseFormatForMode(intent.OutputModeJSONSchema, plannerStructuredOutputJSONSchema, nil)
 	require.NotNil(t, schemaFormat)
 	require.Equal(t, "json_schema", string(schemaFormat.Type))
 	require.NotNil(t, schemaFormat.JSONSchema)
@@ -82,11 +82,11 @@ func TestPlannerResponseFormatForMode(t *testing.T) {
 	require.False(t, schemaFormat.JSONSchema.Strict)
 	require.NotNil(t, schemaFormat.JSONSchema.Schema)
 
-	degraded := plannerResponseFormatForMode(intent.OutputModeJSONObject, plannerStructuredOutputJSONSchema)
+	degraded := plannerResponseFormatForMode(intent.OutputModeJSONObject, plannerStructuredOutputJSONSchema, nil)
 	require.NotNil(t, degraded)
 	require.Equal(t, "json_object", string(degraded.Type))
 
-	require.Nil(t, plannerResponseFormatForMode(intent.OutputModeStrictPromptJSON, plannerStructuredOutputJSONSchema))
+	require.Nil(t, plannerResponseFormatForMode(intent.OutputModeStrictPromptJSON, plannerStructuredOutputJSONSchema, nil))
 }
 
 func TestCLIPlannerLLMSendsJSONObjectResponseFormatWhenFlagOn(t *testing.T) {

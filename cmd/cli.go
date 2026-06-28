@@ -181,6 +181,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_CREATE_PREF_EXTRACTOR value %q\n", unknownCreatePrefExtractor)
 	}
 	engine.SetCreatePreferenceExtractionEnabled(createPrefExtractor)
+	unifiedCreate, unknownUnifiedCreate := unifiedCreateEnabledFromEnv(getenv)
+	if unknownUnifiedCreate != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_UNIFIED_CREATE value %q\n", unknownUnifiedCreate)
+	}
+	engine.SetUnifiedCreateEnabled(unifiedCreate)
 	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
 	if unknownKnowledgeQAAgentLoop != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q\n", unknownKnowledgeQAAgentLoop)
@@ -491,7 +496,7 @@ func (c cliPlannerLLM) CompleteIntentPlanWithUsage(ctx context.Context, req inte
 			{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt},
 			{Role: openai.ChatMessageRoleUser, Content: req.UserPrompt},
 		},
-		ResponseFormat: plannerResponseFormatForMode(req.Mode, c.structuredOutputMode),
+		ResponseFormat: plannerResponseFormatForMode(req.Mode, c.structuredOutputMode, req.ResponseSchema),
 	})
 	if err != nil {
 		return intent.IntentRouterLLMResponse{}, err
@@ -512,9 +517,12 @@ func (c cliPlannerLLM) CompleteIntentPlanWithUsage(ctx context.Context, req inte
 //     "|| json_schema" arm keeps the explicit json_object opt-in working on a
 //     json_schema-capable model (e.g. ds-v4-flash after the 2026-06-23 capability
 //     flip), which the A/B needs to compare json_object vs json_schema.
-func plannerResponseFormatForMode(mode intent.OutputMode, structuredOutput plannerStructuredOutputMode) *openai.ChatCompletionResponseFormat {
+func plannerResponseFormatForMode(mode intent.OutputMode, structuredOutput plannerStructuredOutputMode, schema json.RawMessage) *openai.ChatCompletionResponseFormat {
 	jsonObject := &openai.ChatCompletionResponseFormat{
 		Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+	}
+	if len(schema) == 0 {
+		schema = intent.IntentRouteResponseSchema()
 	}
 	switch structuredOutput {
 	case plannerStructuredOutputJSONSchema:
@@ -523,7 +531,7 @@ func plannerResponseFormatForMode(mode intent.OutputMode, structuredOutput plann
 				Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
 				JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
 					Name:   "intent_route",
-					Schema: intent.IntentRouteResponseSchema(),
+					Schema: schema,
 					Strict: false,
 				},
 			}
@@ -552,8 +560,9 @@ func newCLIPlannerWithStructuredOutput(cfg *config.Config, structuredOutput plan
 		structuredOutputMode: structuredOutput,
 	}
 	return intent.NewIntentRouter(plannerClient, intent.IntentRouterOptions{
-		BaseURL: cfg.Agent.LLM.BaseURL,
-		Model:   cfg.Agent.LLM.Model,
+		BaseURL:       cfg.Agent.LLM.BaseURL,
+		Model:         cfg.Agent.LLM.Model,
+		UnifiedCreate: engine.UnifiedCreateEnabled(),
 	})
 }
 

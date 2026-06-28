@@ -3,6 +3,11 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -181,6 +186,73 @@ func TestBuildHTTPServerPoolAppliesSharedDepsEnv(t *testing.T) {
 	eng, err := pool.Get(context.Background(), store.Owner{TopOrganizationID: 1, OrganizationID: 2}, "sess")
 	require.NoError(t, err)
 	require.NotNil(t, eng.IntentPlannerPointer(), "HTTP server pool should inherit intent planner env wiring")
+}
+
+func TestConfigureSharedDepsUnifiedCreateReachesServerPlanner(t *testing.T) {
+	engine.SetUnifiedCreateEnabled(false)
+	t.Cleanup(func() { engine.SetUnifiedCreateEnabled(false) })
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(body, &captured))
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"schema_version\\\":\\\"1.0\\\",\\\"intent\\\":\\\"unknown\\\",\\\"slots\\\":{\\\"target_refs\\\":[],\\\"metrics\\\":[],\\\"time_window\\\":null},\\\"required_tools\\\":[],\\\"retrieval\\\":{\\\"enabled\\\":false},\\\"hard_block_hint\\\":false,\\\"confidence\\\":0.1}\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	capabilityPath := filepath.Join(t.TempDir(), "capabilities.yaml")
+	require.NoError(t, os.WriteFile(capabilityPath, []byte(`capabilities:
+- base_url: "`+srv.URL+`/v1"
+  model: "deepseek-v4-flash"
+  supports_json_schema: true
+  supports_json_object: true
+`), 0o644))
+	t.Setenv("COMPSHARE_LLM_CAPABILITY_FILE", capabilityPath)
+
+	cfg := &config.Config{Agent: config.AgentConfig{
+		LLM: config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "deepseek-v4-flash"},
+	}}
+	deps, _, err := configureSharedDepsFromEnv(cfg, func(key string) string {
+		switch key {
+		case "COMPSHARE_UNIFIED_CREATE":
+			return "1"
+		case "COMPSHARE_DIRECT_DISPATCH_INTENTS":
+			return "resource"
+		case "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT":
+			return "json_schema"
+		case "USE_KNOWLEDGE_RETRIEVAL", "USE_GROUNDED_RENDERER":
+			return "off"
+		}
+		return ""
+	})
+	require.NoError(t, err)
+	require.NotNil(t, deps.IntentPlanner)
+
+	_, err = deps.IntentPlanner.Plan(context.Background(), intent.IntentRouterInput{UserText: "创建一台4090"})
+	require.NoError(t, err)
+
+	messages, ok := captured["messages"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, messages)
+	system, ok := messages[0].(map[string]any)
+	require.True(t, ok)
+	require.Contains(t, system["content"], "create_instance")
+
+	responseFormat, ok := captured["response_format"].(map[string]any)
+	require.True(t, ok)
+	jsonSchema, ok := responseFormat["json_schema"].(map[string]any)
+	require.True(t, ok)
+	schema, ok := jsonSchema["schema"].(map[string]any)
+	require.True(t, ok)
+	props, ok := schema["properties"].(map[string]any)
+	require.True(t, ok)
+	intentProp, ok := props["intent"].(map[string]any)
+	require.True(t, ok)
+	require.Contains(t, intentProp["enum"], "create_instance")
 }
 
 func TestApplySharedDepsSessionFactContextFromEnv(t *testing.T) {

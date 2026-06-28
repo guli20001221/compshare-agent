@@ -1756,6 +1756,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 
 	dispatch := e.callPlannerOnce(ctx, userMsg, priorText)
 	if status, ok := e.commonPlannerCandidateStatus(dispatch.result); !ok {
+		e.clearPendingDeployModel()
 		if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
 			e.requireKnowledgeCitationThisTurn = true
 		}
@@ -1771,6 +1772,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// PR1 hotfix Bug 4 (2026-05-28): capture slots.action so executeTool can
 	// deterministically pre-filter DescribeCompShareInstance rows by State.
 	e.lastPlannerActionThisTurn = dispatch.result.Plan.Slots.Action
+	e.clearPendingDeployModelForNonCreateFamily(dispatch.result.Plan.Intent)
 	if dispatch.result.Plan.Intent == intent.IntentDiagnosis {
 		dispatch.result.Plan = augmentPlanTargetRefsFromUserText(dispatch.result.Plan, userMsg, dispatch.snapshot)
 	}
@@ -2205,6 +2207,8 @@ func plannerAllowsDirectHardwareCreate(route intent.Intent) bool {
 	switch route {
 	case "", intent.IntentUnknown, intent.IntentOperationLifecycle, intent.IntentResourceInfo:
 		return true
+	case intent.IntentCreateInstance:
+		return !unifiedCreateOn
 	default:
 		return false
 	}
@@ -2305,7 +2309,8 @@ func workflowDirectReply(action, raw string) string {
 // skillID the handler stamps on every StepTrace; TestAgentSkillForIntent_* lock both
 // bindings so a rename or typo fails CI rather than shipping.
 var agentSkillForIntent = map[intent.Intent]string{
-	intent.IntentDeployModel: "deploy_model",
+	intent.IntentDeployModel:    "deploy_model",
+	intent.IntentCreateInstance: "create_instance",
 }
 
 // dispatchAgentSkill is the uniform agent-tier dispatch seam: it routes an
@@ -2325,6 +2330,11 @@ func (e *Engine) dispatchAgentSkill(ctx context.Context, dispatch routerDispatch
 	switch skillName {
 	case "deploy_model":
 		return e.tryDeployModel(ctx, dispatch, userMsg, onStep)
+	case "create_instance":
+		if !unifiedCreateOn {
+			return "", false
+		}
+		return e.tryCreateInstance(ctx, dispatch, userMsg, onStep)
 	}
 	return "", false
 }
@@ -4194,6 +4204,7 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 		}
 	}
 	nowUnix := time.Now().Unix()
+	instanceSnapshots := make([]entity.InstanceSnapshot, 0, len(hosts))
 	for _, item := range hosts {
 		row, _ := item.(map[string]any)
 		if row == nil {
@@ -4203,6 +4214,7 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 		if snap.UHostId == "" {
 			continue
 		}
+		instanceSnapshots = append(instanceSnapshots, snap)
 		payload := map[string]any{
 			"name":     snap.Name,
 			"state":    snap.State,
@@ -4220,6 +4232,9 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 			ProducedAtUnix: nowUnix,
 			TTLSeconds:     factTTLSecondsInstanceState,
 		})
+	}
+	if len(instanceSnapshots) > 1 && e.lastPlannerIntentThisTurn == intent.IntentResourceInfo {
+		e.recordPendingInstanceSelection(instanceSnapshots, intent.IntentResourceInfo, e.lastUserMsg, len(instanceSnapshots), false)
 	}
 }
 
@@ -4375,12 +4390,37 @@ func (e *Engine) recordLastIntentFromPlan(plan intent.IntentRoute) {
 		return
 	}
 	if plan.Intent == "" || plan.Intent == intent.IntentUnknown {
+		e.clearPendingDeployModel()
 		return
 	}
 	if !runtimeIntentMember(plan.Intent) {
 		return
 	}
 	e.sessionState.LastIntent = string(plan.Intent)
+	if !createFamilyIntent(plan.Intent) {
+		e.clearPendingDeployModel()
+	}
+}
+
+func (e *Engine) clearPendingDeployModel() {
+	if !e.sessionStateHydrated {
+		return
+	}
+	e.sessionState.PendingDeployModel = ""
+}
+
+func (e *Engine) clearPendingDeployModelForNonCreateFamily(i intent.Intent) {
+	if !createFamilyIntent(i) {
+		e.clearPendingDeployModel()
+	}
+}
+
+func createFamilyIntent(i intent.Intent) bool {
+	return i == intent.IntentDeployModel || i == intent.IntentCreateInstance
+}
+
+func createFamilyIntentString(s string) bool {
+	return s == string(intent.IntentDeployModel) || s == string(intent.IntentCreateInstance)
 }
 
 // runtimeIntentSet is a one-time-built membership set over intent.RuntimeIntents.

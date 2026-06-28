@@ -83,11 +83,14 @@ func TestAgentSkillForIntent_BoundToDedicatedArm(t *testing.T) {
 		switch skillName {
 		case "deploy_model":
 			assert.Equal(t, intent.IntentDeployModel, it)
+		case "create_instance":
+			assert.Equal(t, intent.IntentCreateInstance, it)
 		default:
 			t.Fatalf("intent %q maps to unknown agent handler %q", it, skillName)
 		}
 	}
 	assert.Equal(t, "deploy_model", agentSkillForIntent[intent.IntentDeployModel])
+	assert.Equal(t, "create_instance", agentSkillForIntent[intent.IntentCreateInstance])
 }
 
 func TestAgentSkillForIntent_MatchesCodeDerivedPlanSkills(t *testing.T) {

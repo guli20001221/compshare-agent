@@ -54,6 +54,10 @@ const (
 	// the planner does NOT emit it until B8.3 ③ teaches the example + re-pins
 	// the system-prompt SHA, so this constant is zero-behavior on its own.
 	IntentDeployModel Intent = "deploy_model"
+	// create_instance (R2b P1a, 2026-06-26): first-class create-family intent.
+	// It is wired behind COMPSHARE_UNIFIED_CREATE and keeps deploy_model plus the
+	// direct hardware rescue path as rollback while the router is re-trained.
+	IntentCreateInstance Intent = "create_instance"
 )
 
 type TargetRefType string
@@ -219,6 +223,7 @@ func AllIntents() []Intent {
 		IntentPricingQuery,
 		IntentDiskInfo,
 		IntentDeployModel,
+		IntentCreateInstance,
 		IntentUnknown,
 	}
 }
@@ -253,6 +258,7 @@ func RuntimeIntents() []Intent {
 		// no ReAct tool subset (the handler always handles the turn, never falls
 		// through) — see tool_subset_test.go nilExpected.
 		IntentDeployModel,
+		IntentCreateInstance,
 		IntentUnknown,
 	}
 }

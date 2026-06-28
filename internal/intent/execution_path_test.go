@@ -52,6 +52,7 @@ func TestPlannedExecutionPathForIntent_RuntimeIntentPartition(t *testing.T) {
 			IntentOperationLifecycle,
 			IntentDiskInfo,
 			IntentDeployModel,
+			IntentCreateInstance,
 			IntentUnknown,
 		},
 	}
@@ -102,6 +103,7 @@ func TestPlannedExecutionPathForIntent_AgentDefault(t *testing.T) {
 		IntentOperationLifecycle,
 		IntentDiskInfo,
 		IntentDeployModel,
+		IntentCreateInstance,
 		IntentUnknown,
 		Intent("made_up_intent"),
 	} {

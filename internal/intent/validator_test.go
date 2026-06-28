@@ -351,6 +351,7 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentDiskInfo,
 		// deploy_model (B8.3, 2026-05-31) — agent-tier create skill via tryDeployModel.
 		IntentDeployModel,
+		IntentCreateInstance,
 		IntentUnknown,
 	}, AllIntents())
 }
@@ -360,6 +361,11 @@ func TestRuntimeIntentsExcludeRemovedIntents(t *testing.T) {
 	assert.NotContains(t, runtime, Intent("recommendation"))
 	assert.NotContains(t, runtime, Intent("mixed_diagnosis_kb"))
 	assert.NotContains(t, runtime, Intent("mixed_billing_kb"))
+}
+
+func TestRuntimeIntentsIncludeCreateInstance(t *testing.T) {
+	assert.Contains(t, RuntimeIntents(), IntentCreateInstance)
+	assert.Contains(t, AllIntents(), IntentCreateInstance)
 }
 
 func validMonitorPlan() IntentRoute {

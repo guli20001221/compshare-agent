@@ -1767,6 +1767,28 @@ func TestEffectiveDeployUserMsg_BareSizeWithoutClarifyUnchanged(t *testing.T) {
 	assert.Equal(t, "32B", eng.effectiveDeployUserMsg("32B"), "bare size without a clarify stays unchanged")
 }
 
+func TestEffectiveDeployUserMsg_UsesExplicitPendingDeployState(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaV1,
+		LastIntent:         string(intent.IntentDeployModel),
+		PendingDeployModel: "DeepSeek R1",
+	}, 1)
+
+	assert.Equal(t, "继续部署 DeepSeek R1 32B", eng.effectiveDeployUserMsg("32B"))
+}
+
+func TestEffectiveDeployUserMsg_DoesNotUsePendingDeployStateAfterUnrelatedIntent(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaV1,
+		LastIntent:         string(intent.IntentPricingQuery),
+		PendingDeployModel: "DeepSeek R1",
+	}, 1)
+
+	assert.Equal(t, "32B", eng.effectiveDeployUserMsg("32B"))
+}
+
 func joinedChatMessages(messages []openai.ChatCompletionMessage) string {
 	var b strings.Builder
 	for _, m := range messages {

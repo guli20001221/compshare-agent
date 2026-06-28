@@ -362,6 +362,21 @@ func createPreferenceExtractorEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// unifiedCreateEnabledFromEnv gates the R2b first-class create_instance route.
+// DEFAULT OFF: while off, the router prompt/schema keep the legacy create rescue
+// path as the only spec-first create entry.
+func unifiedCreateEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_UNIFIED_CREATE"))
+	switch strings.ToLower(raw) {
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
 // knowledgeQAAgentLoopEnabledFromEnv gates the terminal-knowledge_qa → agent-loop
 // route (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). DEFAULT ON (2026-06-09) — a knowledge_qa
 // turn routes through the agent loop: a forced SearchKnowledge first hop retrieves
