@@ -92,6 +92,38 @@ func TestDispatchAgentSkill_CreateInstanceFlagOnSpecOnlyStartsCreateWorkflowWith
 	assert.True(t, sawStepAction(*events, "CreateInstanceWorkflow"))
 }
 
+func TestDispatchAgentSkill_CreateInstanceV100VariantsStartCreateWorkflow(t *testing.T) {
+	cases := []string{
+		"为我创一台V100S的实例",
+		"帮我创建一台V100S的实例",
+		"开一台V100S实例",
+		"为我创建一台v100实例",
+	}
+	for _, msg := range cases {
+		t.Run(msg, func(t *testing.T) {
+			SetUnifiedCreateEnabled(true)
+			t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
+
+			exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+			client := &mockLLM{}
+			eng := NewWithDeps(client, exec, func(string, map[string]any) bool { return false })
+			eng.guidedCreate = true
+			eng.SetCreatePreferenceExtractor(&fakeCreatePreferenceExtractor{result: &CreatePreferenceExtractionResult{}})
+			onStep, events := collectSteps()
+
+			reply, handled := eng.dispatchAgentSkill(context.Background(), createDispatch(), msg, onStep)
+
+			require.True(t, handled)
+			assert.Contains(t, reply, "创建实例")
+			assert.Empty(t, client.calls, "pure hardware create must not call the deploy image matcher LLM")
+			assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "confirm=false path must not create")
+			require.NotEmpty(t, *events)
+			args := workflowStepArgs(t, *events, "CreateInstanceWorkflow")
+			assert.Equal(t, "V100S", args["GpuType"])
+		})
+	}
+}
+
 func TestDispatchAgentSkill_CreateInstanceSpecOnlyResolvesZonePreference(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
 	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
@@ -183,28 +215,14 @@ func TestDispatchAgentSkill_CreateInstanceCommunityImagePreferenceUsesDeployMatc
 	assert.Equal(t, "comm-img-9", createArgs["CompShareImageId"])
 }
 
-func TestDispatchAgentSkill_CreateInstancePriceQuestionDoesNotOpenCreateCard(t *testing.T) {
+func TestDispatchAgentSkill_CreateInstanceEmptyInputDoesNotOpenCreateCard(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
 	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
 
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
 
-	reply, handled := eng.dispatchAgentSkill(context.Background(), createDispatch(), "开一台4090多少钱", noopStep)
-
-	assert.True(t, handled)
-	assert.Contains(t, reply, "不会直接创建")
-	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"))
-}
-
-func TestDispatchAgentSkill_CreateInstanceHowToDoesNotOpenCreateCard(t *testing.T) {
-	SetUnifiedCreateEnabled(true)
-	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
-
-	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
-	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
-
-	reply, handled := eng.dispatchAgentSkill(context.Background(), createDispatch(), "怎么部署一台4090跑Qwen", noopStep)
+	reply, handled := eng.dispatchAgentSkill(context.Background(), createDispatch(), "   ", noopStep)
 
 	assert.True(t, handled)
 	assert.Contains(t, reply, "不会直接创建")

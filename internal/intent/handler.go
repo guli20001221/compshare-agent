@@ -91,11 +91,9 @@ type HandlerResult struct {
 	// populates this for monitor handler results only.
 	RendererInputToolArgHashes  []string
 	RendererInputEnvelopeHashes []string
-	// ResourceSelectionCandidates is the ordered instance list implied by a
-	// resource_info reply, after any filters but before display truncation.
-	// Engine persists this compact list so a later "第 N 台 / 这台" follow-up can
-	// resolve even when the user asks for an item just past the visible display
-	// cap. The renderer still truncates what is shown to the user.
+	// ResourceSelectionCandidates is the ordered instance list actually surfaced
+	// in a resource_info reply. Engine persists this list so a later "第 N 台 /
+	// 这台" follow-up can only resolve to an item the user saw.
 	ResourceSelectionCandidates []entity.InstanceSnapshot
 	// ResolvedStockGpuModel is the single GPU model (API instance-type Name,
 	// e.g. "4090") a stock-availability turn resolved to, or "" when the turn
@@ -226,10 +224,9 @@ func (h *DemoHandler) HandleResourceInfo(ctx context.Context, req HandlerRequest
 	}
 	var selectionCandidates []entity.InstanceSnapshot
 	if len(ids) == 0 {
-		selectionCandidates = append([]entity.InstanceSnapshot(nil), instances...)
-		SortInstancesForDisplay(selectionCandidates)
 		truncated, shown, isTruncated := TruncateInstancesForDisplay(instances, 0)
 		instances = truncated
+		selectionCandidates = append([]entity.InstanceSnapshot(nil), instances...)
 		envMeta.Shown = shown
 		envMeta.Truncated = isTruncated
 	}

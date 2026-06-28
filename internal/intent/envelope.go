@@ -27,10 +27,6 @@ func BuildResourceEnvelope(instances []entity.InstanceSnapshot) envelope.Envelop
 
 func BuildResourceEnvelopeWithMeta(instances []entity.InstanceSnapshot, meta ResourceEnvelopeMeta) envelope.Envelope {
 	copied := append([]entity.InstanceSnapshot(nil), instances...)
-	sort.Slice(copied, func(i, j int) bool {
-		return copied[i].UHostId < copied[j].UHostId
-	})
-
 	env := envelope.Envelope{
 		Kind:          envelope.KindResourceInfo,
 		SourceActions: []string{"DescribeCompShareInstance"},

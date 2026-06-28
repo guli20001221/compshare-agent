@@ -972,6 +972,17 @@ func TestTryDeployModel_PriceQuestionDoesNotCreate(t *testing.T) {
 	assert.Contains(t, reply, "推荐 GPU", "price-like deploy turns should return advice rather than a billable create card")
 }
 
+func TestTryDeployModel_HowToQuestionDoesNotCreate(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "DeepSeek R1怎么部署", noopStep)
+
+	require.True(t, handled)
+	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "how-to questions must not create instances")
+	assert.Contains(t, reply, "建议", "how-to deploy turns should return advice")
+}
+
 func TestTryDeployModel_TrainingIntentDoesNotCreate(t *testing.T) {
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, communityImageID: "comm-img-9", instanceStates: []string{"Running"}})
 	matchJSON := `{"image_source":"community","image_name":"RVC 训练环境","model_name":"","match_kind":"base","quantization":""}`

@@ -1314,6 +1314,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	if reply, handled := e.tryDirectDiagnosisFromUserText(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
+	if reply, handled := e.tryDirectStopSchedulerFromUserText(ctx, userMsg, onStep); handled {
+		return reply, nil
+	}
 	if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
@@ -2457,14 +2460,31 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 		return "", false
 	}
 
+	routeSnapshot := dispatch.snapshot
+	fallbackInstanceID := ""
+	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
+		fallbackInstanceID = e.sessionState.SelectedInstanceID
+	}
+	if fallbackInstanceID != "" && result.Plan.Intent == intent.IntentRefundEstimate {
+		if _, err := e.refreshRegistry(ctx, entity.RefreshReasonManual); err != nil {
+			e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, dispatch.latency)
+			reply := intent.FriendlyToolFailureReply
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: reply,
+			})
+			return reply, true
+		}
+		routeSnapshot = e.RegistrySnapshot()
+	}
 	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
 	req := intent.HandlerRequest{
 		Plan:     result.Plan,
-		Resolver: dispatch.snapshot,
+		Resolver: routeSnapshot,
 		UserText: userMsg,
 	}
-	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
-		req.FallbackInstanceID = e.sessionState.SelectedInstanceID
+	if fallbackInstanceID != "" {
+		req.FallbackInstanceID = fallbackInstanceID
 	}
 	// RC017: stock referent. Read ungated by sessionStateHydrated (unlike
 	// SelectedInstanceID above) so the CLI in-memory single-session path
@@ -2599,6 +2619,27 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 	match := matchResourceSelection(userMsg, *pending)
 	if !match.ok {
 		if embedded, exact := matchResourceSelectionReference(userMsg, *pending); embedded.ok && !exact {
+			if plan, ok := monitorPlanFromEmbeddedResourceSelectionQuestion(userMsg); ok {
+				e.pendingResourceSelection = nil
+				e.clearPendingSelection()
+				return e.handleResourceSelectionMonitor(ctx, plan, pending.snapshot, embedded.instance, userMsg, onStep)
+			}
+			if action := inferLifecycleAction(userMsg); action != "" {
+				e.pendingResourceSelection = nil
+				e.clearPendingSelection()
+				plan := lifecyclePlanForSelectedInstance(action, embedded.instance)
+				return e.tryLifecycleActionForSelectedInstance(ctx, embedded.instance, action, userMsg, plan, onStep)
+			}
+			if reply, ok := resourceSelectionInfoReply(userMsg, embedded.instance); ok {
+				e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
+				e.pendingResourceSelection = nil
+				e.clearPendingSelection()
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: reply,
+				})
+				return reply, true
+			}
 			e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
 			e.pendingResourceSelection = nil
 			e.clearPendingSelection()
@@ -2641,16 +2682,20 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		return reply, true
 	}
 
-	resumedPlan := planWithSelectedResource(pending.plan, match.instance.UHostId)
-	resumedPlan = planWithUserTextMonitorMetrics(resumedPlan, pending.originalUserMsg)
+	return e.handleResourceSelectionMonitor(ctx, pending.plan, pending.snapshot, match.instance, pending.originalUserMsg, onStep)
+}
+
+func (e *Engine) handleResourceSelectionMonitor(ctx context.Context, plan intent.IntentRoute, snapshot entity.RegistrySnapshot, inst entity.InstanceSnapshot, userMsg string, onStep func(StepEvent)) (string, bool) {
+	resumedPlan := planWithSelectedResource(plan, inst.UHostId)
+	resumedPlan = planWithUserTextMonitorMetrics(resumedPlan, userMsg)
 	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
 	handled := handler.HandleMonitorQuery(ctx, intent.HandlerRequest{
 		Plan:     resumedPlan,
-		Resolver: pending.snapshot,
-		UserText: pending.originalUserMsg,
+		Resolver: snapshot,
+		UserText: userMsg,
 	})
 	e.emitPlannerTrace(intent.IntentRouterResult{Plan: resumedPlan}, handled.RouteStatus, 0)
-	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, pending.originalUserMsg)
+	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, userMsg)
 
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
@@ -2666,6 +2711,94 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		Content: reply,
 	})
 	return reply, true
+}
+
+func monitorPlanFromEmbeddedResourceSelectionQuestion(userMsg string) (intent.IntentRoute, bool) {
+	if !isMonitorLoadAssessmentQuestion(userMsg) && !isMonitorTroubleshootingQuestion(userMsg) && !mentionsMonitorQuestionText(userMsg) {
+		return intent.IntentRoute{}, false
+	}
+	metrics := monitorMetricsFromUserText(userMsg)
+	if len(metrics) == 0 {
+		metrics = []intent.Metric{intent.MetricCPU, intent.MetricMemory, intent.MetricGPU, intent.MetricVRAM}
+	}
+	return intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentMonitorQuery,
+		Slots:         intent.Slots{Metrics: metrics},
+		RequiredTools: []string{"GetCompShareInstanceMonitor"},
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    1,
+	}, true
+}
+
+func mentionsMonitorQuestionText(userMsg string) bool {
+	lower := strings.ToLower(userMsg)
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(lower)
+	for _, marker := range []string{"监控", "使用率", "占用率", "负载", "忙不忙", "空闲", "繁忙", "压力", "占用", "利用率"} {
+		if strings.Contains(compact, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceSelectionInfoReply(userMsg string, inst entity.InstanceSnapshot) (string, bool) {
+	compact := strings.ToLower(strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(userMsg))
+	if compact == "" || resourceSelectionTextContainsAny(compact,
+		"多少钱", "价格", "费用", "库存", "有货", "适合", "推荐", "哪个好",
+		"怎么", "如何", "为什么", "故障", "问题", "报错", "错误", "异常", "失败", "不可用", "连不上", "打不开", "不工作", "oom",
+		"部署", "创建", "新建", "开一台", "跑", "训练", "推理", "能跑", "能不能",
+	) {
+		return "", false
+	}
+	prefix := fmt.Sprintf("第 %s 台是 %s（%s）。", resourceSelectionOrdinalLabel(userMsg), emptyLabel(inst.Name), inst.UHostId)
+	switch {
+	case resourceSelectionTextContainsAny(compact, "gpu型号", "显卡型号"):
+		return fmt.Sprintf("%s GPU 型号是 %s，%s。", prefix, emptyLabel(inst.GpuType), resourceSelectionGPUCountText(inst)), true
+	case strings.Contains(compact, "gpu") || strings.Contains(compact, "显卡"):
+		return fmt.Sprintf("%s GPU：%s，%s。", prefix, emptyLabel(inst.GpuType), resourceSelectionGPUCountText(inst)), true
+	case strings.Contains(compact, "内存"):
+		if inst.Memory > 0 {
+			return fmt.Sprintf("%s 内存是 %d MB。", prefix, inst.Memory), true
+		}
+		return fmt.Sprintf("%s 内存信息未返回。", prefix), true
+	case strings.Contains(compact, "cpu") || strings.Contains(compact, "几核") || strings.Contains(compact, "多少核"):
+		if inst.CPU > 0 {
+			return fmt.Sprintf("%s CPU 是 %d 核。", prefix, inst.CPU), true
+		}
+		return fmt.Sprintf("%s CPU 信息未返回。", prefix), true
+	case resourceSelectionTextContainsAny(compact, "可用区", "在哪个区", "在哪一区", "区域"):
+		return fmt.Sprintf("%s 可用区是 %s。", prefix, emptyLabel(inst.Zone)), true
+	case resourceSelectionTextContainsAny(compact, "状态", "运行中", "关机", "开机"):
+		return fmt.Sprintf("%s 当前状态是 %s。", prefix, emptyStateLabel(inst.State)), true
+	case resourceSelectionTextContainsAny(compact, "配置", "规格", "详情", "信息"):
+		return fmt.Sprintf("%s 当前可确认的信息是：\n\n%s", prefix, renderInstanceSummaryBullets(inst)), true
+	default:
+		return "", false
+	}
+}
+
+func resourceSelectionTextContainsAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if needle != "" && strings.Contains(text, strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceSelectionOrdinalLabel(userMsg string) string {
+	if n, ok := extractResourceSelectionOrdinal(userMsg); ok && n > 0 {
+		return strconv.Itoa(n)
+	}
+	return "选中的"
+}
+
+func resourceSelectionGPUCountText(inst entity.InstanceSnapshot) string {
+	if inst.GPU > 0 {
+		return fmt.Sprintf("数量 %d 张", inst.GPU)
+	}
+	return "数量未返回"
 }
 
 // isFastTierEnvelope reports whether an envelope kind is fast-tier catalog
@@ -4069,6 +4202,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			filterDescribeResultByAction(args, result.LLMResult, e.lastPlannerActionThisTurn)
 		}
 		truncateDescribeResultForReAct(args, result.LLMResult)
+		e.recordPendingSelectionFromDisplayedDescribeResult(result.LLMResult)
 	}
 	projected := false
 	if e.reactResultProjectionEnabled {
@@ -4233,9 +4367,47 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 			TTLSeconds:     factTTLSecondsInstanceState,
 		})
 	}
-	if len(instanceSnapshots) > 1 && e.lastPlannerIntentThisTurn == intent.IntentResourceInfo {
-		e.recordPendingInstanceSelection(instanceSnapshots, intent.IntentResourceInfo, e.lastUserMsg, len(instanceSnapshots), false)
+}
+
+func (e *Engine) recordPendingSelectionFromDisplayedDescribeResult(raw map[string]any) {
+	if e == nil || !e.sessionStateHydrated || e.lastPlannerIntentThisTurn != intent.IntentResourceInfo || raw == nil {
+		return
 	}
+	hosts, _ := raw["UHostSet"].([]any)
+	if len(hosts) <= 1 {
+		return
+	}
+	instanceSnapshots := make([]entity.InstanceSnapshot, 0, len(hosts))
+	for _, item := range hosts {
+		row, _ := item.(map[string]any)
+		if row == nil {
+			continue
+		}
+		snap := entity.InstanceFromMap(row)
+		if snap.UHostId != "" {
+			instanceSnapshots = append(instanceSnapshots, snap)
+		}
+	}
+	if len(instanceSnapshots) <= 1 {
+		return
+	}
+	total := len(instanceSnapshots)
+	switch v := raw["TotalCount"].(type) {
+	case int:
+		if v > 0 {
+			total = v
+		}
+	case float64:
+		if v > 0 {
+			total = int(v)
+		}
+	case json.Number:
+		if i, err := v.Int64(); err == nil && i > 0 {
+			total = int(i)
+		}
+	}
+	truncated, _ := raw["Truncated"].(bool)
+	e.recordPendingInstanceSelection(instanceSnapshots, intent.IntentResourceInfo, e.lastUserMsg, total, truncated)
 }
 
 // recordMonitorSampleFacts groups all per-metric scalars from a

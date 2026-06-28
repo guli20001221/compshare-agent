@@ -246,6 +246,10 @@ func (e *Engine) recordPendingInstanceSelection(instances []entity.InstanceSnaps
 		return
 	}
 	candidates := append([]entity.InstanceSnapshot(nil), instances...)
+	if sourceIntent == intent.IntentResourceInfo && len(candidates) > intent.DefaultMaxInstancesPerDisplay {
+		candidates = candidates[:intent.DefaultMaxInstancesPerDisplay]
+		truncated = true
+	}
 	limited := false
 	if len(candidates) > maxResourceSelectionCandidates {
 		candidates = candidates[:maxResourceSelectionCandidates]
@@ -357,6 +361,11 @@ func (e *Engine) pendingResourceSelectionFromSession() (*pendingResourceSelectio
 		e.clearPendingSelection()
 		return nil, false
 	}
+	truncated := e.sessionState.PendingSelectionTruncated
+	if len(candidates) > intent.DefaultMaxInstancesPerDisplay {
+		candidates = candidates[:intent.DefaultMaxInstancesPerDisplay]
+		truncated = true
+	}
 	planIntent := intent.Intent(e.sessionState.PendingSelectionIntent)
 	if planIntent == "" {
 		planIntent = intent.IntentResourceInfo
@@ -370,7 +379,7 @@ func (e *Engine) pendingResourceSelectionFromSession() (*pendingResourceSelectio
 		},
 		snapshot:    snapshot,
 		candidates:  candidates,
-		truncated:   e.sessionState.PendingSelectionTruncated,
+		truncated:   truncated,
 		createdTurn: e.userTurn,
 	}, true
 }

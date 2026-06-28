@@ -86,7 +86,7 @@ func createInstanceGPUFromPreferenceOrText(userMsg string, pref *CreatePreferenc
 
 func createInstanceShouldNotOpenCreateCard(userMsg string) bool {
 	text := strings.TrimSpace(userMsg)
-	return text == "" || hardwareAdviceRE.MatchString(text) || hardwarePriceQueryRE.MatchString(text) || deployIsAdviceOnly(text)
+	return text == ""
 }
 
 func createInstanceNonCommandReply() string {

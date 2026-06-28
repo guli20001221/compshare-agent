@@ -1344,6 +1344,26 @@ func TestRenderImageList_KeywordFilter(t *testing.T) {
 	}
 }
 
+func TestRenderImageList_PyTorchMatchesTorchNamedImages(t *testing.T) {
+	raw := map[string]any{
+		"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04 64位", "ImageType": "System"},
+			map[string]any{"CompShareImageId": "img-torch", "Name": "cuda128_torch291_py312", "ImageType": "App"},
+			map[string]any{"CompShareImageId": "img-vllm", "Name": "vLLM v0.12.0", "ImageType": "App"},
+		},
+	}
+	reply := renderImageListReply(raw, "ImageSet",
+		[]string{"CompShareImageId", "Name", "ImageType"},
+		"有哪些 PyTorch 镜像")
+
+	if !strings.Contains(reply, "cuda128_torch291_py312") {
+		t.Errorf("PyTorch query should match torch/cuda image names; got: %s", reply)
+	}
+	if strings.Contains(reply, "Ubuntu") || strings.Contains(reply, "vLLM") {
+		t.Errorf("PyTorch query should not include unrelated images; got: %s", reply)
+	}
+}
+
 func TestRenderImageList_NoMatchFallback(t *testing.T) {
 	raw := map[string]any{
 		"ImageSet": []any{
@@ -1355,6 +1375,41 @@ func TestRenderImageList_NoMatchFallback(t *testing.T) {
 		"Debian 12 镜像有吗")
 	if !strings.Contains(reply, "未找到匹配的镜像") {
 		t.Errorf("no-match should produce explicit not-found reply; got: %s", reply)
+	}
+}
+
+func TestRenderCommunityImage_DigitalHumanQueryMatchesRelevantGroups(t *testing.T) {
+	raw := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{
+			"ImageName":    "LiveTalking",
+			"CreatedCount": float64(200),
+			"Data": []any{
+				map[string]any{"CompShareImageId": "live-1", "Name": "数字人实时对话版"},
+			},
+		},
+		map[string]any{
+			"ImageName":    "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+			"CreatedCount": float64(500),
+			"Data": []any{
+				map[string]any{"CompShareImageId": "ltx-1", "Name": "LTX-v1"},
+			},
+		},
+		map[string]any{
+			"ImageName":    "RAGFlow Ubuntu 22.04",
+			"CreatedCount": float64(900),
+			"Data": []any{
+				map[string]any{"CompShareImageId": "rag-1", "Name": "RAGFlow-v1"},
+			},
+		},
+	}}
+
+	reply := renderCommunityImageReply(raw, "有哪些社区镜像适合数字人")
+
+	if !strings.Contains(reply, "LiveTalking") || !strings.Contains(reply, "LTX-2.3") {
+		t.Errorf("digital-human query should include relevant community image groups; got: %s", reply)
+	}
+	if strings.Contains(reply, "RAGFlow") {
+		t.Errorf("digital-human query should not include unrelated community image groups; got: %s", reply)
 	}
 }
 
@@ -1563,6 +1618,27 @@ func TestRenderCommunityImage_SortedByDeployCount(t *testing.T) {
 	}
 }
 
+func TestRenderCommunityImage_CapsDefaultOutputAtTen(t *testing.T) {
+	total := communityImageGroupLimit + 5
+	groups := make([]any, 0, total)
+	for i := 0; i < total; i++ {
+		groups = append(groups, map[string]any{
+			"ImageName":    fmt.Sprintf("community-image-%02d", i),
+			"CreatedCount": float64(total - i),
+		})
+	}
+	raw := map[string]any{"CompshareImageGroup": groups}
+
+	reply := renderCommunityImageReply(raw, "查询社区镜像")
+
+	if got := strings.Count(reply, "名称=community-image-"); got != communityImageGroupLimit {
+		t.Fatalf("expected %d community image candidates, got %d in:\n%s", communityImageGroupLimit, got, reply)
+	}
+	if strings.Contains(reply, "community-image-10") || strings.Contains(reply, "community-image-14") {
+		t.Fatalf("reply should not include candidates beyond the cap; got:\n%s", reply)
+	}
+}
+
 func TestBuildCommunityImageEnvelope_PopularityFactsAndOrder(t *testing.T) {
 	// Prod renders community_image via the LLM grounded renderer, which works off
 	// THIS envelope (not the deterministic reply). So the popularity signal, the
@@ -1621,6 +1697,29 @@ func TestBuildCommunityImageEnvelope_PopularityFactsAndOrder(t *testing.T) {
 	}
 	if disclaimer != communityImageDeployFooter() {
 		t.Errorf("disclaimer computed fact = %q, want deploy footer %q", disclaimer, communityImageDeployFooter())
+	}
+}
+
+func TestBuildCommunityImageEnvelope_CapsDefaultSubjectsAtTen(t *testing.T) {
+	total := communityImageGroupLimit + 5
+	groups := make([]any, 0, total)
+	for i := 0; i < total; i++ {
+		groups = append(groups, map[string]any{
+			"ImageName":    fmt.Sprintf("community-image-%02d", i),
+			"CreatedCount": float64(total - i),
+		})
+	}
+	raw := map[string]any{"CompshareImageGroup": groups}
+
+	env := buildCommunityImageEnvelope(raw, "查询社区镜像")
+
+	if got := len(env.Subjects); got != communityImageGroupLimit {
+		t.Fatalf("expected %d community image subjects, got %d: %#v", communityImageGroupLimit, got, env.Subjects)
+	}
+	for _, subject := range env.Subjects {
+		if strings.Contains(subject.Name, "community-image-10") || strings.Contains(subject.Name, "community-image-14") {
+			t.Fatalf("envelope should not include subjects beyond the cap; got %#v", env.Subjects)
+		}
 	}
 }
 
@@ -1720,6 +1819,37 @@ func TestBuildImageListEnvelope_NoRawIDFacts(t *testing.T) {
 	}
 	if len(env.Subjects) != 1 || env.Subjects[0].ID != "image:img-pt" || env.Subjects[0].Name != "PyTorch 2.9" {
 		t.Errorf("Subject must still carry id+name: %+v", env.Subjects)
+	}
+}
+
+func TestBuildImageListEnvelope_PyTorchMatchesTorchNamedImages(t *testing.T) {
+	raw := map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04 64位", "ImageType": "System"},
+		map[string]any{"CompShareImageId": "img-torch", "Name": "cuda128_torch291_py312", "ImageType": "App"},
+	}}
+
+	env := buildImageListEnvelope(raw, "ImageSet", []string{"CompShareImageId", "Name", "ImageType"},
+		"有哪些 PyTorch 镜像", "DescribeCompShareImages", "platform")
+
+	if len(env.Subjects) != 1 || env.Subjects[0].Name != "cuda128_torch291_py312" {
+		t.Fatalf("PyTorch envelope should keep only torch-compatible image, got %#v", env.Subjects)
+	}
+}
+
+func TestBuildCommunityImageEnvelope_DigitalHumanQueryMatchesRelevantGroups(t *testing.T) {
+	raw := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{"ImageName": "LiveTalking", "CreatedCount": float64(10), "Data": []any{
+			map[string]any{"CompShareImageId": "live-1", "Name": "数字人实时对话版"},
+		}},
+		map[string]any{"ImageName": "RAGFlow Ubuntu 22.04", "CreatedCount": float64(100), "Data": []any{
+			map[string]any{"CompShareImageId": "rag-1", "Name": "RAGFlow-v1"},
+		}},
+	}}
+
+	env := buildCommunityImageEnvelope(raw, "有哪些社区镜像适合数字人")
+
+	if len(env.Subjects) != 1 || env.Subjects[0].Name != "LiveTalking" {
+		t.Fatalf("digital-human envelope should keep relevant community group only, got %#v", env.Subjects)
 	}
 }
 
