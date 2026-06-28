@@ -423,11 +423,36 @@ func TestTryResumeResourceSelectionEmbeddedOrdinalBindsAndContinues(t *testing.T
 	e.recordPendingInstanceSelection(candidates, intent.IntentResourceInfo, "\u6211\u6709\u54ea\u4e9b\u5b9e\u4f8b", len(candidates), false)
 
 	reply, handled := e.tryResumeResourceSelection(context.Background(), "\u7b2c10\u53f0 GPU \u5fd9\u4e0d\u5fd9", noopStep)
-	if handled {
-		t.Fatalf("embedded ordinal should bind and continue the current question, got reply %q", reply)
+	if !handled {
+		t.Fatalf("embedded ordinal monitor question should be answered immediately")
+	}
+	if strings.Contains(reply, "\u8bf7\u9009\u62e9") {
+		t.Fatalf("embedded ordinal monitor question must not ask the user to choose again: %q", reply)
 	}
 	if e.sessionState.SelectedInstanceID != "uhost-10" {
 		t.Fatalf("selected = %q, want uhost-10", e.sessionState.SelectedInstanceID)
+	}
+	if e.sessionState.PendingSelectionKind != "" || len(e.sessionState.PendingSelectionItems) != 0 {
+		t.Fatalf("pending selection should be cleared after binding, state=%+v", e.sessionState)
+	}
+}
+
+func TestTryResumeResourceSelectionEmbeddedOrdinalGPUInfoDoesNotBecomeMonitor(t *testing.T) {
+	candidates := []entity.InstanceSnapshot{
+		testInstance("uhost-01", "host-1", "Running"),
+		testInstance("uhost-02", "host-2", "Running"),
+	}
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	e.userTurn = 3
+	e.recordPendingInstanceSelection(candidates, intent.IntentResourceInfo, "\u6211\u6709\u54ea\u4e9b\u5b9e\u4f8b", len(candidates), false)
+
+	reply, handled := e.tryResumeResourceSelection(context.Background(), "\u7b2c1\u53f0 GPU \u578b\u53f7\u662f\u4ec0\u4e48", noopStep)
+	if handled {
+		t.Fatalf("embedded ordinal GPU info question should continue normal routing, got reply %q", reply)
+	}
+	if e.sessionState.SelectedInstanceID != "uhost-01" {
+		t.Fatalf("selected = %q, want uhost-01", e.sessionState.SelectedInstanceID)
 	}
 	if e.sessionState.PendingSelectionKind != "" || len(e.sessionState.PendingSelectionItems) != 0 {
 		t.Fatalf("pending selection should be cleared after binding, state=%+v", e.sessionState)

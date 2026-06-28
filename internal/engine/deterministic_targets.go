@@ -294,6 +294,19 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 		for k, v := range resizeArgs {
 			args[k] = v
 		}
+		if strings.EqualFold(strings.TrimSpace(inst.State), "Running") {
+			e.emitPlannerTrace(result, intent.RouteStatusDispatched, dispatch.latency)
+			reply := e.executeWorkflow(ctx, "StopInstanceWorkflow", map[string]any{"UHostId": inst.UHostId}, onStep)
+			if final, ok := isFinalReply(reply); ok {
+				reply = final
+			} else if msg, ok := workflowFailureMessage(reply); ok {
+				reply = msg
+			}
+			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+			e.recordLastIntentFromPlan(result.Plan)
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
+		}
 	case intent.LifecycleActionRename:
 		newName := renameWorkflowNameFromUserText(userMsg)
 		if newName == "" {
@@ -341,6 +354,39 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 	if action == "" {
 		return "", false
 	}
+	if selectedID := strings.TrimSpace(e.sessionState.SelectedInstanceID); selectedID != "" && looksLikeSelectedInstanceFollowup(userMsg) {
+		if inst, res := e.RegistrySnapshot().ResolveByID(selectedID); res.Status == entity.ResolveHit && inst != nil {
+			plan := lifecyclePlanForSelectedInstance(action, *inst)
+			return e.tryLifecycleActionForSelectedInstance(ctx, *inst, action, userMsg, plan, onStep)
+		}
+		workflowName, ok := lifecycleWorkflowName(action)
+		if !ok {
+			return "", false
+		}
+		args := map[string]any{"UHostId": selectedID}
+		if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
+		}
+		plan := intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentOperationLifecycle,
+			Slots:         intent.Slots{Action: action},
+			RequiredTools: []string{"DescribeCompShareInstance"},
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    1,
+		}
+		reply := e.executeWorkflow(ctx, workflowName, args, onStep)
+		if final, ok := isFinalReply(reply); ok {
+			reply = final
+		} else if msg, ok := workflowFailureMessage(reply); ok {
+			reply = msg
+		}
+		e.recordSelectedInstanceID(selectedID, e.sessionState.SelectedInstanceName)
+		e.recordLastIntentFromPlan(plan)
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	}
 	cachedSnapshot := e.RegistrySnapshot()
 	snapshot := cachedSnapshot
 	if _, ok := findUniqueInstanceNameInText(userMsg, cachedSnapshot); !ok {
@@ -382,6 +428,77 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 		result:   intent.IntentRouterResult{Plan: plan},
 		snapshot: snapshot,
 	}, userMsg, onStep)
+}
+
+func lifecyclePlanForSelectedInstance(action intent.LifecycleAction, inst entity.InstanceSnapshot) intent.IntentRoute {
+	return intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentOperationLifecycle,
+		Slots: intent.Slots{
+			Action: action,
+			TargetRefs: []intent.TargetRef{{
+				Type:       intent.TargetRefUHostIDUserInput,
+				Value:      inst.UHostId,
+				Source:     intent.SourceUserText,
+				SourceSpan: inst.Name,
+			}},
+		},
+		RequiredTools: []string{"DescribeCompShareInstance"},
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    1,
+	}
+}
+
+func (e *Engine) tryLifecycleActionForSelectedInstance(ctx context.Context, inst entity.InstanceSnapshot, action intent.LifecycleAction, userMsg string, plan intent.IntentRoute, onStep func(StepEvent)) (string, bool) {
+	workflowName, ok := lifecycleWorkflowName(action)
+	if !ok {
+		return "", false
+	}
+	args := map[string]any{"UHostId": inst.UHostId}
+	if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	}
+	if action == intent.LifecycleActionResize && strings.EqualFold(strings.TrimSpace(inst.State), "Running") {
+		workflowName = "StopInstanceWorkflow"
+		args = map[string]any{"UHostId": inst.UHostId}
+	}
+	reply := e.executeWorkflow(ctx, workflowName, args, onStep)
+	if final, ok := isFinalReply(reply); ok {
+		reply = final
+	} else if msg, ok := workflowFailureMessage(reply); ok {
+		reply = msg
+	}
+	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+	e.recordLastIntentFromPlan(plan)
+	e.messages = append(e.messages, assistantMessage(reply))
+	return reply, true
+}
+
+func populateLifecycleActionArgs(args map[string]any, action intent.LifecycleAction, userMsg string) (string, bool) {
+	switch action {
+	case intent.LifecycleActionResize:
+		resizeArgs := resizeWorkflowArgsFromUserText(userMsg)
+		if len(resizeArgs) == 0 {
+			return "请告诉我要改到什么配置，例如 4C8G、16C64G，或补充 GPU 数量。", false
+		}
+		for k, v := range resizeArgs {
+			args[k] = v
+		}
+	case intent.LifecycleActionRename:
+		newName := renameWorkflowNameFromUserText(userMsg)
+		if newName == "" {
+			return "请告诉我要把实例改成什么名称。", false
+		}
+		args["Name"] = newName
+	case intent.LifecycleActionResetPwd:
+		password := resetPasswordFromUserText(userMsg)
+		if password == "" {
+			return "请提供要设置的新密码。", false
+		}
+		args["Password"] = password
+	}
+	return "", true
 }
 
 func (e *Engine) tryDirectStopSchedulerFromUserText(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {

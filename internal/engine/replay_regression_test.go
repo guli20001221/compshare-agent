@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
@@ -67,12 +68,14 @@ func TestReplayRegression_MonitorEmbeddedOrdinalUsesFreshSelection(t *testing.T)
 		case "GetCompShareInstanceMonitor":
 			monitorIDs = stringSliceArg(args["UHostIds"])
 			return monitorPayload([]monitorPayloadHost{{
-				UHostID: "uhost-11",
+				UHostID: "uhost-01",
 				Metrics: []monitorPayloadMetric{{
 					Key:    "uhost_gpu_used",
 					Values: [][2]any{{1716530000, "12.0"}},
 				}},
 			}}), nil
+		case "RebootCompShareInstance":
+			return map[string]any{"RetCode": 0}, nil
 		default:
 			return map[string]any{"RetCode": 0}, nil
 		}
@@ -88,7 +91,13 @@ func TestReplayRegression_MonitorEmbeddedOrdinalUsesFreshSelection(t *testing.T)
 		},
 	}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
-	eng := NewWithDeps(mock, exec, nil)
+	var confirmedAction string
+	eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+		confirmedAction = action
+		require.Equal(t, "RebootInstanceWorkflow", action)
+		require.Equal(t, "uhost-01", args["UHostId"])
+		return true
+	})
 	eng.Init(context.Background())
 	eng.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaV1,
@@ -115,12 +124,18 @@ func TestReplayRegression_MonitorEmbeddedOrdinalUsesFreshSelection(t *testing.T)
 	}, 2)
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentMonitorQuery}})
 
-	reply, err := eng.Chat(context.Background(), "第11台 GPU 忙不忙", noopStep)
+	reply, err := eng.Chat(context.Background(), "第1台 GPU 忙不忙", noopStep)
 
 	require.NoError(t, err)
-	require.Empty(t, monitorIDs)
-	require.Contains(t, reply, "请选择")
-	require.Empty(t, eng.sessionState.SelectedInstanceID)
+	require.Equal(t, []string{"uhost-01"}, monitorIDs)
+	require.NotContains(t, reply, "请选择")
+	require.Equal(t, "uhost-01", eng.sessionState.SelectedInstanceID)
+
+	reply, err = eng.Chat(context.Background(), "帮我重启它", noopStep)
+
+	require.NoError(t, err)
+	require.Equal(t, "RebootInstanceWorkflow", confirmedAction)
+	require.Contains(t, reply, "重启")
 }
 
 func TestReplayRegression_MonitorEmbeddedOrdinalWithoutSavedSelectionAsksUser(t *testing.T) {
@@ -377,6 +392,99 @@ func TestReplayRegression_ResizeCommandEntersResizeWorkflow(t *testing.T) {
 	require.Equal(t, float64(4), resizeArgs["Cpu"])
 	require.Equal(t, float64(8192), resizeArgs["Memory"])
 	require.NotContains(t, resizeArgs, "Gpu")
+}
+
+func TestReplayRegression_ResizeRunningInstanceConfirmsPrerequisiteStop(t *testing.T) {
+	data := manyInstancesWithNamedTarget("resize-target", "Running")
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			if ids := stringSliceArg(args["UHostIds"]); len(ids) > 0 {
+				return filterDescribeInstances(data, ids), nil
+			}
+			return data, nil
+		case "StopCompShareInstance":
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentOperationLifecycle,
+			Slots: intent.Slots{
+				TargetRefs: []intent.TargetRef{{
+					Type:   intent.TargetRefName,
+					Value:  "resize-target",
+					Source: intent.SourceUserText,
+				}},
+				Action: intent.LifecycleActionResize,
+			},
+			RequiredTools: []string{"DescribeCompShareInstance"},
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	var confirmedAction string
+	eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+		confirmedAction = action
+		require.Equal(t, "StopInstanceWorkflow", action)
+		require.Equal(t, "uhost-target", args["UHostId"])
+		return true
+	})
+	eng.Init(context.Background())
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentOperationLifecycle}})
+
+	reply, err := eng.Chat(context.Background(), "把 resize-target 4090卡改配为 4C8G", noopStep)
+
+	require.NoError(t, err)
+	require.Equal(t, "StopInstanceWorkflow", confirmedAction)
+	require.Contains(t, reply, "关机")
+	require.NotContains(t, reply, "请先关机")
+	require.NotContains(t, exec.calls, "ResizeCompShareInstance")
+}
+
+func TestReplayRegression_ResizeEmbeddedOrdinalRunningInstanceConfirmsPrerequisiteStop(t *testing.T) {
+	data := manyInstancesWithNamedTarget("resize-target", "Running")
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			if ids := stringSliceArg(args["UHostIds"]); len(ids) > 0 {
+				return filterDescribeInstances(data, ids), nil
+			}
+			return data, nil
+		case "StopCompShareInstance":
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	var confirmedAction string
+	eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+		confirmedAction = action
+		require.Equal(t, "StopInstanceWorkflow", action)
+		require.Equal(t, "uhost-target", args["UHostId"])
+		return true
+	})
+	eng.Init(context.Background())
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	eng.userTurn = 3
+	eng.recordPendingInstanceSelection([]entity.InstanceSnapshot{
+		{UHostId: "uhost-target", Name: "resize-target", State: "Running", CPU: 2, Memory: 4096, GpuType: "4090", GPU: 1},
+		{UHostId: "uhost-other", Name: "other", State: "Stopped", CPU: 2, Memory: 4096, GpuType: "4090", GPU: 1},
+	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
+	require.NoError(t, eng.registry.SyncFromDescribe(data, "test"))
+
+	reply, err := eng.Chat(context.Background(), "把第1台实例改配为4C8G", noopStep)
+
+	require.NoError(t, err)
+	require.Equal(t, "StopInstanceWorkflow", confirmedAction)
+	require.Contains(t, reply, "关机")
+	require.NotContains(t, reply, "是否要我先执行关机")
+	require.NotContains(t, exec.calls, "ResizeCompShareInstance")
 }
 
 func TestReplayRegression_RenameCommandEntersRenameWorkflow(t *testing.T) {

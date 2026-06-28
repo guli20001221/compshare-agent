@@ -2619,6 +2619,17 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 	match := matchResourceSelection(userMsg, *pending)
 	if !match.ok {
 		if embedded, exact := matchResourceSelectionReference(userMsg, *pending); embedded.ok && !exact {
+			if plan, ok := monitorPlanFromEmbeddedResourceSelectionQuestion(userMsg); ok {
+				e.pendingResourceSelection = nil
+				e.clearPendingSelection()
+				return e.handleResourceSelectionMonitor(ctx, plan, pending.snapshot, embedded.instance, userMsg, onStep)
+			}
+			if action := inferLifecycleAction(userMsg); action != "" {
+				e.pendingResourceSelection = nil
+				e.clearPendingSelection()
+				plan := lifecyclePlanForSelectedInstance(action, embedded.instance)
+				return e.tryLifecycleActionForSelectedInstance(ctx, embedded.instance, action, userMsg, plan, onStep)
+			}
 			e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
 			e.pendingResourceSelection = nil
 			e.clearPendingSelection()
@@ -2661,16 +2672,20 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		return reply, true
 	}
 
-	resumedPlan := planWithSelectedResource(pending.plan, match.instance.UHostId)
-	resumedPlan = planWithUserTextMonitorMetrics(resumedPlan, pending.originalUserMsg)
+	return e.handleResourceSelectionMonitor(ctx, pending.plan, pending.snapshot, match.instance, pending.originalUserMsg, onStep)
+}
+
+func (e *Engine) handleResourceSelectionMonitor(ctx context.Context, plan intent.IntentRoute, snapshot entity.RegistrySnapshot, inst entity.InstanceSnapshot, userMsg string, onStep func(StepEvent)) (string, bool) {
+	resumedPlan := planWithSelectedResource(plan, inst.UHostId)
+	resumedPlan = planWithUserTextMonitorMetrics(resumedPlan, userMsg)
 	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
 	handled := handler.HandleMonitorQuery(ctx, intent.HandlerRequest{
 		Plan:     resumedPlan,
-		Resolver: pending.snapshot,
-		UserText: pending.originalUserMsg,
+		Resolver: snapshot,
+		UserText: userMsg,
 	})
 	e.emitPlannerTrace(intent.IntentRouterResult{Plan: resumedPlan}, handled.RouteStatus, 0)
-	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, pending.originalUserMsg)
+	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, userMsg)
 
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
@@ -2686,6 +2701,35 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		Content: reply,
 	})
 	return reply, true
+}
+
+func monitorPlanFromEmbeddedResourceSelectionQuestion(userMsg string) (intent.IntentRoute, bool) {
+	if !isMonitorLoadAssessmentQuestion(userMsg) && !isMonitorTroubleshootingQuestion(userMsg) && !mentionsMonitorQuestionText(userMsg) {
+		return intent.IntentRoute{}, false
+	}
+	metrics := monitorMetricsFromUserText(userMsg)
+	if len(metrics) == 0 {
+		metrics = []intent.Metric{intent.MetricCPU, intent.MetricMemory, intent.MetricGPU, intent.MetricVRAM}
+	}
+	return intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentMonitorQuery,
+		Slots:         intent.Slots{Metrics: metrics},
+		RequiredTools: []string{"GetCompShareInstanceMonitor"},
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    1,
+	}, true
+}
+
+func mentionsMonitorQuestionText(userMsg string) bool {
+	lower := strings.ToLower(userMsg)
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(lower)
+	for _, marker := range []string{"监控", "使用率", "占用率", "负载", "忙不忙", "空闲", "繁忙", "压力", "占用", "利用率"} {
+		if strings.Contains(compact, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	return false
 }
 
 // isFastTierEnvelope reports whether an envelope kind is fast-tier catalog
