@@ -246,6 +246,9 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 	if !ok {
 		return "", false
 	}
+	if looksLikeLifecycleQuestion(userMsg) {
+		return "", false
+	}
 	snapshot, okSnapshot, err := e.freshResourceSelectionSnapshot(ctx, dispatch.snapshot)
 	if err != nil || !okSnapshot {
 		return "", false
@@ -277,7 +280,8 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 		return reply, true
 	}
 	args := map[string]any{"UHostId": inst.UHostId}
-	if action == intent.LifecycleActionResize {
+	switch action {
+	case intent.LifecycleActionResize:
 		resizeArgs := resizeWorkflowArgsFromUserText(userMsg)
 		if len(resizeArgs) == 0 {
 			reply := "请告诉我要改到什么配置，例如 4C8G、16C64G，或补充 GPU 数量。"
@@ -290,11 +294,35 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 		for k, v := range resizeArgs {
 			args[k] = v
 		}
+	case intent.LifecycleActionRename:
+		newName := renameWorkflowNameFromUserText(userMsg)
+		if newName == "" {
+			reply := "请告诉我要把实例改成什么名称。"
+			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
+			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+			e.recordLastIntentFromPlan(result.Plan)
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
+		}
+		args["Name"] = newName
+	case intent.LifecycleActionResetPwd:
+		password := resetPasswordFromUserText(userMsg)
+		if password == "" {
+			reply := "请提供要设置的新密码。"
+			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
+			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+			e.recordLastIntentFromPlan(result.Plan)
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
+		}
+		args["Password"] = password
 	}
 	e.emitPlannerTrace(result, intent.RouteStatusDispatched, dispatch.latency)
 	reply := e.executeWorkflow(ctx, workflowName, args, onStep)
 	if final, ok := isFinalReply(reply); ok {
 		reply = final
+	} else if msg, ok := workflowFailureMessage(reply); ok {
+		reply = msg
 	}
 	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
 	e.recordLastIntentFromPlan(result.Plan)
@@ -314,12 +342,21 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 		return "", false
 	}
 	cachedSnapshot := e.RegistrySnapshot()
+	snapshot := cachedSnapshot
 	if _, ok := findUniqueInstanceNameInText(userMsg, cachedSnapshot); !ok {
-		return "", false
-	}
-	snapshot, okSnapshot, err := e.freshResourceSelectionSnapshot(ctx, cachedSnapshot)
-	if err != nil || !okSnapshot {
-		return "", false
+		if action != intent.LifecycleActionRename &&
+			action != intent.LifecycleActionResetPwd &&
+			!hasLikelyExplicitInstanceTargetText(userMsg) {
+			return "", false
+		}
+		freshSnapshot, okSnapshot, err := e.freshResourceSelectionSnapshot(ctx, cachedSnapshot)
+		if err != nil || !okSnapshot {
+			return "", false
+		}
+		if _, ok := findUniqueInstanceNameInText(userMsg, freshSnapshot); !ok {
+			return "", false
+		}
+		snapshot = freshSnapshot
 	}
 	inst, ok := resolveContinuationInstance(userMsg, snapshot)
 	if !ok {
@@ -345,6 +382,73 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 		result:   intent.IntentRouterResult{Plan: plan},
 		snapshot: snapshot,
 	}, userMsg, onStep)
+}
+
+func (e *Engine) tryDirectStopSchedulerFromUserText(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
+	if e == nil || !e.mutatingToolsEnabled {
+		return "", false
+	}
+	compact := normalizeResourceText(userMsg)
+	if !looksLikeScheduledShutdownText(compact) {
+		return "", false
+	}
+	if looksLikeLifecycleQuestion(userMsg) {
+		return "", false
+	}
+	cachedSnapshot := e.RegistrySnapshot()
+	snapshot, okSnapshot, err := e.freshResourceSelectionSnapshot(ctx, cachedSnapshot)
+	if err != nil || !okSnapshot {
+		return "", false
+	}
+	if _, ok := findUniqueInstanceNameInText(userMsg, snapshot); !ok {
+		return "", false
+	}
+	inst, ok := resolveContinuationInstance(userMsg, snapshot)
+	if !ok {
+		return "", false
+	}
+	workflowName := "SetStopSchedulerWorkflow"
+	args := map[string]any{"UHostId": inst.UHostId}
+	if strings.Contains(compact, "取消定时关机") ||
+		strings.Contains(compact, "取消自动关机") ||
+		strings.Contains(compact, "取消延时关机") ||
+		(strings.Contains(compact, "取消") && (strings.Contains(compact, "定时关机") || strings.Contains(compact, "自动关机") || strings.Contains(compact, "延时关机"))) {
+		workflowName = "CancelStopSchedulerWorkflow"
+	} else {
+		afterMinutes, ok := stopSchedulerAfterMinutesFromUserText(userMsg)
+		if !ok {
+			reply := "请告诉我要在多久后关机，例如 30 分钟后或 1 小时后。"
+			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
+		}
+		args["AfterMinutes"] = float64(afterMinutes)
+	}
+	reply := e.executeWorkflow(ctx, workflowName, args, onStep)
+	if final, ok := isFinalReply(reply); ok {
+		reply = final
+	} else if msg, ok := workflowFailureMessage(reply); ok {
+		reply = msg
+	}
+	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+	e.messages = append(e.messages, assistantMessage(reply))
+	return reply, true
+}
+
+func hasLikelyExplicitInstanceTargetText(userText string) bool {
+	lower := strings.ToLower(userText)
+	if strings.Contains(lower, "uhost-") || strings.Contains(lower, "cpod-") {
+		return false
+	}
+	for _, field := range strings.FieldsFunc(userText, func(r rune) bool {
+		return unicode.IsSpace(r) || r == '，' || r == ',' || r == '。' || r == ';' || r == '；'
+	}) {
+		field = strings.Trim(field, "“”\"'()（）")
+		if len([]rune(field)) >= 6 && (strings.Contains(field, "-") || strings.Contains(field, "_")) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) tryDeterministicProductFactReply(userMsg string) (string, bool) {
@@ -489,7 +593,12 @@ func looksLikeLifecycleQuestion(userText string) bool {
 		return false
 	}
 	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(strings.ToLower(text))
-	for _, marker := range []string{"吗", "么", "是否", "是不是", "有没有", "状态", "为什么", "怎么", "如何"} {
+	for _, marker := range []string{
+		"吗", "么", "是否", "是不是", "有没有", "能不能", "可不可以", "可以吗",
+		"状态", "为什么", "怎么", "如何", "是什么", "啥是", "规则", "流程", "要求", "说明", "文档", "教程",
+		"注意事项", "影响", "指南", "限制", "风险",
+		"多少", "价格", "费用", "计费", "收费", "扣费", "花费", "成本",
+	} {
 		if strings.Contains(compact, marker) {
 			return true
 		}
@@ -1135,6 +1244,10 @@ func lifecycleWorkflowName(action intent.LifecycleAction) (string, bool) {
 		return "RebootInstanceWorkflow", true
 	case intent.LifecycleActionResize:
 		return "ResizeInstanceWorkflow", true
+	case intent.LifecycleActionRename:
+		return "RenameInstanceWorkflow", true
+	case intent.LifecycleActionResetPwd:
+		return "ResetPasswordWorkflow", true
 	default:
 		return "", false
 	}
@@ -1178,6 +1291,15 @@ func inferLifecycleAction(userText string) intent.LifecycleAction {
 		return ""
 	}
 	switch {
+	case strings.Contains(compact, "重置密码") || strings.Contains(compact, "改密码") ||
+		strings.Contains(compact, "重设密码") || strings.Contains(compact, "改密") ||
+		strings.Contains(compact, "resetpassword") ||
+		(strings.Contains(compact, "重置") && strings.Contains(compact, "密码")) ||
+		(strings.Contains(compact, "reset") && strings.Contains(compact, "password")):
+		return intent.LifecycleActionResetPwd
+	case strings.Contains(compact, "改名") || strings.Contains(compact, "重命名") ||
+		strings.Contains(compact, "修改名称") || strings.Contains(compact, "rename"):
+		return intent.LifecycleActionRename
 	case strings.Contains(compact, "改配") || strings.Contains(compact, "变配") ||
 		strings.Contains(compact, "升级配置") || strings.Contains(compact, "调整配置") ||
 		strings.Contains(compact, "resize"):
@@ -1220,6 +1342,9 @@ func looksLikeScheduledShutdownText(compact string) bool {
 var (
 	resizeCPUMemorySpecRE = regexp.MustCompile(`(?i)(\d+)\s*(?:c|cpu|vcpu|核)\s*[/,， ]*\s*(\d+)\s*(?:g|gb|gib)`)
 	resizeGPUCountSpecRE  = regexp.MustCompile(`(?i)(\d+)\s*(?:张\s*)?(?:gpu|卡)`)
+	resetPasswordSpecRE   = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(?:为|成|是|:|：)?\s*([^\s，。；;]+)`)
+	stopAfterHoursRE      = regexp.MustCompile(`(?i)(\d+)\s*(?:个)?\s*(?:小时|hour|hours|h)\s*后`)
+	stopAfterMinutesRE    = regexp.MustCompile(`(?i)(\d+)\s*(?:分钟|分|min|mins|minute|minutes|m)\s*后`)
 )
 
 const maxInlineResizeGPUCount = 16
@@ -1248,4 +1373,59 @@ func parseFloatString(s string) (float64, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+func renameWorkflowNameFromUserText(userText string) string {
+	text := strings.TrimSpace(userText)
+	for _, marker := range []string{"修改名称为", "重命名为", "改名为", "改名叫", "命名为"} {
+		if idx := strings.LastIndex(text, marker); idx >= 0 {
+			name := strings.TrimSpace(text[idx+len(marker):])
+			return strings.Trim(name, "“”\"'")
+		}
+	}
+	return ""
+}
+
+func resetPasswordFromUserText(userText string) string {
+	m := resetPasswordSpecRE.FindStringSubmatch(strings.TrimSpace(userText))
+	if len(m) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(m[1])
+}
+
+func stopSchedulerAfterMinutesFromUserText(userText string) (int, bool) {
+	if m := stopAfterHoursRE.FindStringSubmatch(userText); len(m) == 2 {
+		if hours, ok := parsePositiveInt(m[1]); ok {
+			return hours * 60, true
+		}
+	}
+	if m := stopAfterMinutesRE.FindStringSubmatch(userText); len(m) == 2 {
+		if minutes, ok := parsePositiveInt(m[1]); ok {
+			return minutes, true
+		}
+	}
+	return 0, false
+}
+
+func parsePositiveInt(s string) (int, bool) {
+	var v int
+	if _, err := fmt.Sscanf(strings.TrimSpace(s), "%d", &v); err != nil || v <= 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+func workflowFailureMessage(raw string) (string, bool) {
+	var result struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return "", false
+	}
+	if result.Success || strings.TrimSpace(result.Message) == "" {
+		return "", false
+	}
+	return workflowStepPrefixRE.ReplaceAllString(strings.TrimSpace(result.Message), ""), true
 }

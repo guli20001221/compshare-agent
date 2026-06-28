@@ -1314,6 +1314,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	if reply, handled := e.tryDirectDiagnosisFromUserText(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
+	if reply, handled := e.tryDirectStopSchedulerFromUserText(ctx, userMsg, onStep); handled {
+		return reply, nil
+	}
 	if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
@@ -2457,14 +2460,31 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 		return "", false
 	}
 
+	routeSnapshot := dispatch.snapshot
+	fallbackInstanceID := ""
+	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
+		fallbackInstanceID = e.sessionState.SelectedInstanceID
+	}
+	if fallbackInstanceID != "" && result.Plan.Intent == intent.IntentRefundEstimate {
+		if _, err := e.refreshRegistry(ctx, entity.RefreshReasonManual); err != nil {
+			e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, dispatch.latency)
+			reply := intent.FriendlyToolFailureReply
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: reply,
+			})
+			return reply, true
+		}
+		routeSnapshot = e.RegistrySnapshot()
+	}
 	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
 	req := intent.HandlerRequest{
 		Plan:     result.Plan,
-		Resolver: dispatch.snapshot,
+		Resolver: routeSnapshot,
 		UserText: userMsg,
 	}
-	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
-		req.FallbackInstanceID = e.sessionState.SelectedInstanceID
+	if fallbackInstanceID != "" {
+		req.FallbackInstanceID = fallbackInstanceID
 	}
 	// RC017: stock referent. Read ungated by sessionStateHydrated (unlike
 	// SelectedInstanceID above) so the CLI in-memory single-session path
@@ -4069,6 +4089,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			filterDescribeResultByAction(args, result.LLMResult, e.lastPlannerActionThisTurn)
 		}
 		truncateDescribeResultForReAct(args, result.LLMResult)
+		e.recordPendingSelectionFromDisplayedDescribeResult(result.LLMResult)
 	}
 	projected := false
 	if e.reactResultProjectionEnabled {
@@ -4233,9 +4254,47 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 			TTLSeconds:     factTTLSecondsInstanceState,
 		})
 	}
-	if len(instanceSnapshots) > 1 && e.lastPlannerIntentThisTurn == intent.IntentResourceInfo {
-		e.recordPendingInstanceSelection(instanceSnapshots, intent.IntentResourceInfo, e.lastUserMsg, len(instanceSnapshots), false)
+}
+
+func (e *Engine) recordPendingSelectionFromDisplayedDescribeResult(raw map[string]any) {
+	if e == nil || !e.sessionStateHydrated || e.lastPlannerIntentThisTurn != intent.IntentResourceInfo || raw == nil {
+		return
 	}
+	hosts, _ := raw["UHostSet"].([]any)
+	if len(hosts) <= 1 {
+		return
+	}
+	instanceSnapshots := make([]entity.InstanceSnapshot, 0, len(hosts))
+	for _, item := range hosts {
+		row, _ := item.(map[string]any)
+		if row == nil {
+			continue
+		}
+		snap := entity.InstanceFromMap(row)
+		if snap.UHostId != "" {
+			instanceSnapshots = append(instanceSnapshots, snap)
+		}
+	}
+	if len(instanceSnapshots) <= 1 {
+		return
+	}
+	total := len(instanceSnapshots)
+	switch v := raw["TotalCount"].(type) {
+	case int:
+		if v > 0 {
+			total = v
+		}
+	case float64:
+		if v > 0 {
+			total = int(v)
+		}
+	case json.Number:
+		if i, err := v.Int64(); err == nil && i > 0 {
+			total = int(i)
+		}
+	}
+	truncated, _ := raw["Truncated"].(bool)
+	e.recordPendingInstanceSelection(instanceSnapshots, intent.IntentResourceInfo, e.lastUserMsg, total, truncated)
 }
 
 // recordMonitorSampleFacts groups all per-metric scalars from a
