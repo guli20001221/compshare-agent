@@ -2630,6 +2630,16 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 				plan := lifecyclePlanForSelectedInstance(action, embedded.instance)
 				return e.tryLifecycleActionForSelectedInstance(ctx, embedded.instance, action, userMsg, plan, onStep)
 			}
+			if reply, ok := resourceSelectionInfoReply(userMsg, embedded.instance); ok {
+				e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
+				e.pendingResourceSelection = nil
+				e.clearPendingSelection()
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: reply,
+				})
+				return reply, true
+			}
 			e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
 			e.pendingResourceSelection = nil
 			e.clearPendingSelection()
@@ -2730,6 +2740,65 @@ func mentionsMonitorQuestionText(userMsg string) bool {
 		}
 	}
 	return false
+}
+
+func resourceSelectionInfoReply(userMsg string, inst entity.InstanceSnapshot) (string, bool) {
+	compact := strings.ToLower(strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(userMsg))
+	if compact == "" || resourceSelectionTextContainsAny(compact,
+		"多少钱", "价格", "费用", "库存", "有货", "适合", "推荐", "哪个好",
+		"怎么", "如何", "为什么", "故障", "问题", "报错", "错误", "异常", "失败", "不可用", "连不上", "打不开", "不工作", "oom",
+		"部署", "创建", "新建", "开一台", "跑", "训练", "推理", "能跑", "能不能",
+	) {
+		return "", false
+	}
+	prefix := fmt.Sprintf("第 %s 台是 %s（%s）。", resourceSelectionOrdinalLabel(userMsg), emptyLabel(inst.Name), inst.UHostId)
+	switch {
+	case resourceSelectionTextContainsAny(compact, "gpu型号", "显卡型号"):
+		return fmt.Sprintf("%s GPU 型号是 %s，%s。", prefix, emptyLabel(inst.GpuType), resourceSelectionGPUCountText(inst)), true
+	case strings.Contains(compact, "gpu") || strings.Contains(compact, "显卡"):
+		return fmt.Sprintf("%s GPU：%s，%s。", prefix, emptyLabel(inst.GpuType), resourceSelectionGPUCountText(inst)), true
+	case strings.Contains(compact, "内存"):
+		if inst.Memory > 0 {
+			return fmt.Sprintf("%s 内存是 %d MB。", prefix, inst.Memory), true
+		}
+		return fmt.Sprintf("%s 内存信息未返回。", prefix), true
+	case strings.Contains(compact, "cpu") || strings.Contains(compact, "几核") || strings.Contains(compact, "多少核"):
+		if inst.CPU > 0 {
+			return fmt.Sprintf("%s CPU 是 %d 核。", prefix, inst.CPU), true
+		}
+		return fmt.Sprintf("%s CPU 信息未返回。", prefix), true
+	case resourceSelectionTextContainsAny(compact, "可用区", "在哪个区", "在哪一区", "区域"):
+		return fmt.Sprintf("%s 可用区是 %s。", prefix, emptyLabel(inst.Zone)), true
+	case resourceSelectionTextContainsAny(compact, "状态", "运行中", "关机", "开机"):
+		return fmt.Sprintf("%s 当前状态是 %s。", prefix, emptyStateLabel(inst.State)), true
+	case resourceSelectionTextContainsAny(compact, "配置", "规格", "详情", "信息"):
+		return fmt.Sprintf("%s 当前可确认的信息是：\n\n%s", prefix, renderInstanceSummaryBullets(inst)), true
+	default:
+		return "", false
+	}
+}
+
+func resourceSelectionTextContainsAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if needle != "" && strings.Contains(text, strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceSelectionOrdinalLabel(userMsg string) string {
+	if n, ok := extractResourceSelectionOrdinal(userMsg); ok && n > 0 {
+		return strconv.Itoa(n)
+	}
+	return "选中的"
+}
+
+func resourceSelectionGPUCountText(inst entity.InstanceSnapshot) string {
+	if inst.GPU > 0 {
+		return fmt.Sprintf("数量 %d 张", inst.GPU)
+	}
+	return "数量未返回"
 }
 
 // isFastTierEnvelope reports whether an envelope kind is fast-tier catalog

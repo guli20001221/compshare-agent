@@ -437,7 +437,7 @@ func TestTryResumeResourceSelectionEmbeddedOrdinalBindsAndContinues(t *testing.T
 	}
 }
 
-func TestTryResumeResourceSelectionEmbeddedOrdinalGPUInfoDoesNotBecomeMonitor(t *testing.T) {
+func TestTryResumeResourceSelectionEmbeddedOrdinalGPUInfoAnswersSelectedInstance(t *testing.T) {
 	candidates := []entity.InstanceSnapshot{
 		testInstance("uhost-01", "host-1", "Running"),
 		testInstance("uhost-02", "host-2", "Running"),
@@ -448,14 +448,78 @@ func TestTryResumeResourceSelectionEmbeddedOrdinalGPUInfoDoesNotBecomeMonitor(t 
 	e.recordPendingInstanceSelection(candidates, intent.IntentResourceInfo, "\u6211\u6709\u54ea\u4e9b\u5b9e\u4f8b", len(candidates), false)
 
 	reply, handled := e.tryResumeResourceSelection(context.Background(), "\u7b2c1\u53f0 GPU \u578b\u53f7\u662f\u4ec0\u4e48", noopStep)
-	if handled {
-		t.Fatalf("embedded ordinal GPU info question should continue normal routing, got reply %q", reply)
+	if !handled {
+		t.Fatal("embedded ordinal GPU info question should be answered from the selected instance")
+	}
+	if !strings.Contains(reply, "RTX4090") {
+		t.Fatalf("reply should include selected instance GPU type, got %q", reply)
+	}
+	if !strings.Contains(reply, "数量 1 张") {
+		t.Fatalf("reply should include selected instance GPU count, got %q", reply)
+	}
+	if strings.Contains(reply, "\u8bf7\u9009\u62e9") || strings.Contains(reply, "\u76d1\u63a7") {
+		t.Fatalf("GPU info question should not ask selection again or become monitor query: %q", reply)
 	}
 	if e.sessionState.SelectedInstanceID != "uhost-01" {
 		t.Fatalf("selected = %q, want uhost-01", e.sessionState.SelectedInstanceID)
 	}
 	if e.sessionState.PendingSelectionKind != "" || len(e.sessionState.PendingSelectionItems) != 0 {
 		t.Fatalf("pending selection should be cleared after binding, state=%+v", e.sessionState)
+	}
+}
+
+func TestTryResumeResourceSelectionEmbeddedOrdinalGPUHowToContinuesRouting(t *testing.T) {
+	candidates := []entity.InstanceSnapshot{
+		testInstance("uhost-01", "host-1", "Running"),
+		testInstance("uhost-02", "host-2", "Running"),
+	}
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	e.userTurn = 3
+	e.recordPendingInstanceSelection(candidates, intent.IntentResourceInfo, "\u6211\u6709\u54ea\u4e9b\u5b9e\u4f8b", len(candidates), false)
+
+	reply, handled := e.tryResumeResourceSelection(context.Background(), "\u7b2c1\u53f0 GPU \u578b\u53f7\u600e\u4e48\u67e5", noopStep)
+	if handled {
+		t.Fatalf("embedded ordinal GPU how-to question should continue normal routing, got reply %q", reply)
+	}
+	if e.sessionState.SelectedInstanceID != "uhost-01" {
+		t.Fatalf("selected = %q, want uhost-01", e.sessionState.SelectedInstanceID)
+	}
+	if e.sessionState.PendingSelectionKind != "" || len(e.sessionState.PendingSelectionItems) != 0 {
+		t.Fatalf("pending selection should be cleared after binding, state=%+v", e.sessionState)
+	}
+}
+
+func TestTryResumeResourceSelectionEmbeddedOrdinalTaskRequestsContinueRouting(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{name: "deploy", text: "\u7528\u7b2c1\u53f0 GPU \u90e8\u7f72 DeepSeek"},
+		{name: "create_like", text: "\u6309\u7b2c1\u53f0\u914d\u7f6e\u521b\u5efa\u4e00\u53f0"},
+		{name: "advice", text: "\u7b2c1\u53f0 GPU \u80fd\u8dd1 DeepSeek \u5417"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidates := []entity.InstanceSnapshot{
+				testInstance("uhost-01", "host-1", "Running"),
+				testInstance("uhost-02", "host-2", "Running"),
+			}
+			e := newEngineForSessionStateTest(t)
+			e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+			e.userTurn = 3
+			e.recordPendingInstanceSelection(candidates, intent.IntentResourceInfo, "\u6211\u6709\u54ea\u4e9b\u5b9e\u4f8b", len(candidates), false)
+
+			reply, handled := e.tryResumeResourceSelection(context.Background(), tc.text, noopStep)
+			if handled {
+				t.Fatalf("task request after ordinal selection should continue normal routing, got reply %q", reply)
+			}
+			if e.sessionState.SelectedInstanceID != "uhost-01" {
+				t.Fatalf("selected = %q, want uhost-01", e.sessionState.SelectedInstanceID)
+			}
+			if e.sessionState.PendingSelectionKind != "" || len(e.sessionState.PendingSelectionItems) != 0 {
+				t.Fatalf("pending selection should be cleared after binding, state=%+v", e.sessionState)
+			}
+		})
 	}
 }
 
