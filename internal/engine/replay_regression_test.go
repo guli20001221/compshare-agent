@@ -368,7 +368,7 @@ func TestReplayRegression_ResizeCommandEntersResizeWorkflow(t *testing.T) {
 	eng.Init(context.Background())
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentOperationLifecycle}})
 
-	reply, err := eng.Chat(context.Background(), "把 resize-target 改配为 4C8G", noopStep)
+	reply, err := eng.Chat(context.Background(), "把 resize-target 4090卡改配为 4C8G", noopStep)
 
 	require.NoError(t, err)
 	require.Contains(t, reply, "变配")
@@ -376,6 +376,7 @@ func TestReplayRegression_ResizeCommandEntersResizeWorkflow(t *testing.T) {
 	require.Equal(t, "uhost-target", resizeArgs["UHostId"])
 	require.Equal(t, float64(4), resizeArgs["Cpu"])
 	require.Equal(t, float64(8192), resizeArgs["Memory"])
+	require.NotContains(t, resizeArgs, "Gpu")
 }
 
 func TestReplayRegression_DirectLifecycleStopColloquialPhraseBypassesReActLoop(t *testing.T) {

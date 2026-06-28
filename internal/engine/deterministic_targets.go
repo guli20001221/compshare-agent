@@ -1222,6 +1222,8 @@ var (
 	resizeGPUCountSpecRE  = regexp.MustCompile(`(?i)(\d+)\s*(?:张\s*)?(?:gpu|卡)`)
 )
 
+const maxInlineResizeGPUCount = 16
+
 func resizeWorkflowArgsFromUserText(userText string) map[string]any {
 	args := map[string]any{}
 	if m := resizeCPUMemorySpecRE.FindStringSubmatch(userText); len(m) == 3 {
@@ -1233,7 +1235,7 @@ func resizeWorkflowArgsFromUserText(userText string) map[string]any {
 		}
 	}
 	if m := resizeGPUCountSpecRE.FindStringSubmatch(userText); len(m) == 2 {
-		if gpu, ok := parseFloatString(m[1]); ok && gpu >= 0 {
+		if gpu, ok := parseFloatString(m[1]); ok && gpu >= 0 && gpu <= maxInlineResizeGPUCount {
 			args["Gpu"] = gpu
 		}
 	}
