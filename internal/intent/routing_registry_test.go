@@ -1618,6 +1618,27 @@ func TestRenderCommunityImage_SortedByDeployCount(t *testing.T) {
 	}
 }
 
+func TestRenderCommunityImage_CapsDefaultOutputAtTen(t *testing.T) {
+	total := communityImageGroupLimit + 5
+	groups := make([]any, 0, total)
+	for i := 0; i < total; i++ {
+		groups = append(groups, map[string]any{
+			"ImageName":    fmt.Sprintf("community-image-%02d", i),
+			"CreatedCount": float64(total - i),
+		})
+	}
+	raw := map[string]any{"CompshareImageGroup": groups}
+
+	reply := renderCommunityImageReply(raw, "查询社区镜像")
+
+	if got := strings.Count(reply, "名称=community-image-"); got != communityImageGroupLimit {
+		t.Fatalf("expected %d community image candidates, got %d in:\n%s", communityImageGroupLimit, got, reply)
+	}
+	if strings.Contains(reply, "community-image-10") || strings.Contains(reply, "community-image-14") {
+		t.Fatalf("reply should not include candidates beyond the cap; got:\n%s", reply)
+	}
+}
+
 func TestBuildCommunityImageEnvelope_PopularityFactsAndOrder(t *testing.T) {
 	// Prod renders community_image via the LLM grounded renderer, which works off
 	// THIS envelope (not the deterministic reply). So the popularity signal, the
@@ -1676,6 +1697,29 @@ func TestBuildCommunityImageEnvelope_PopularityFactsAndOrder(t *testing.T) {
 	}
 	if disclaimer != communityImageDeployFooter() {
 		t.Errorf("disclaimer computed fact = %q, want deploy footer %q", disclaimer, communityImageDeployFooter())
+	}
+}
+
+func TestBuildCommunityImageEnvelope_CapsDefaultSubjectsAtTen(t *testing.T) {
+	total := communityImageGroupLimit + 5
+	groups := make([]any, 0, total)
+	for i := 0; i < total; i++ {
+		groups = append(groups, map[string]any{
+			"ImageName":    fmt.Sprintf("community-image-%02d", i),
+			"CreatedCount": float64(total - i),
+		})
+	}
+	raw := map[string]any{"CompshareImageGroup": groups}
+
+	env := buildCommunityImageEnvelope(raw, "查询社区镜像")
+
+	if got := len(env.Subjects); got != communityImageGroupLimit {
+		t.Fatalf("expected %d community image subjects, got %d: %#v", communityImageGroupLimit, got, env.Subjects)
+	}
+	for _, subject := range env.Subjects {
+		if strings.Contains(subject.Name, "community-image-10") || strings.Contains(subject.Name, "community-image-14") {
+			t.Fatalf("envelope should not include subjects beyond the cap; got %#v", env.Subjects)
+		}
 	}
 }
 

@@ -416,7 +416,7 @@ const (
 	noImageListNoMatchReply  = "未找到匹配的镜像。"
 	noCommunityReply         = "未获取到社区镜像数据。"
 	soldOutDisclaimer        = "（CompShare 平台不公开精确剩余数量，仅 Normal/SoldOut 两态。）"
-	communityImageGroupLimit = 20 // upper bound on community renderer output lines
+	communityImageGroupLimit = 10 // upper bound on community renderer output lines
 	communityVersionPerGroup = 3  // versions to show per CompshareImageGroup
 )
 
