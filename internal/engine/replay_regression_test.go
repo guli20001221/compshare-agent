@@ -311,6 +311,73 @@ func TestReplayRegression_WithoutGPUStartOverridesPlannerStop(t *testing.T) {
 	require.Equal(t, float64(0), resizeArgs["Gpu"])
 }
 
+func TestReplayRegression_ResizeCommandEntersResizeWorkflow(t *testing.T) {
+	data := manyInstancesWithNamedTarget("resize-target", "Stopped")
+	var resizeArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			if ids := stringSliceArg(args["UHostIds"]); len(ids) > 0 {
+				return filterDescribeInstances(data, ids), nil
+			}
+			return data, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{map[string]any{
+				"Name":   "4090",
+				"Zone":   "cn-wlcb-01",
+				"Status": "Normal",
+				"MachineSizes": []any{map[string]any{
+					"Gpu": float64(1),
+					"Collection": []any{map[string]any{
+						"Cpu":    float64(4),
+						"Memory": []any{float64(8)},
+					}},
+				}},
+			}}}, nil
+		case "GetCompShareInstanceUpgradePrice":
+			return map[string]any{"Price": float64(1.2), "OriginalPrice": float64(1.5)}, nil
+		case "ResizeCompShareInstance":
+			resizeArgs = map[string]any{}
+			for k, v := range args {
+				resizeArgs[k] = v
+			}
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentOperationLifecycle,
+			Slots: intent.Slots{TargetRefs: []intent.TargetRef{{
+				Type:   intent.TargetRefName,
+				Value:  "resize-target",
+				Source: intent.SourceUserText,
+			}}},
+			RequiredTools: []string{"DescribeCompShareInstance"},
+			Retrieval:     intent.Retrieval{Enabled: false},
+			Confidence:    0.9,
+		},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+		require.Equal(t, "ResizeInstanceWorkflow", action)
+		return true
+	})
+	eng.Init(context.Background())
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentOperationLifecycle}})
+
+	reply, err := eng.Chat(context.Background(), "把 resize-target 改配为 4C8G", noopStep)
+
+	require.NoError(t, err)
+	require.Contains(t, reply, "变配")
+	require.NotNil(t, resizeArgs)
+	require.Equal(t, "uhost-target", resizeArgs["UHostId"])
+	require.Equal(t, float64(4), resizeArgs["Cpu"])
+	require.Equal(t, float64(8192), resizeArgs["Memory"])
+}
+
 func TestReplayRegression_DirectLifecycleStopColloquialPhraseBypassesReActLoop(t *testing.T) {
 	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("claude-write-test", "Stopped"))
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}

@@ -452,7 +452,7 @@ var cjkStopwords = []string{
 	"显存", "多大", "多少", "几张", "几张卡", "张卡", "几个", "配比", "配置",
 	"库存", "售罄", "价格", "价钱", "收费", "扣费", "还有", "没货",
 	// common image-list question filler
-	"哪种", "用过", "用什么", "好用",
+	"哪种", "用过", "用什么", "好用", "适合",
 }
 
 // asciiStopwords applies to ASCII tokens (post-tokenization, post-lowercase).
@@ -1165,7 +1165,7 @@ func setEnvelopeIfPopulated(result *HandlerResult, env envelope.Envelope) {
 
 func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []string, userText string, action string, category string) envelope.Envelope {
 	items := mapSliceAt(raw, listKey)
-	keywords := extractUserTokens(userText)
+	keywords := imageListKeywords(userText)
 	if isImageListAllIntent(userText) {
 		keywords = nil
 	}
@@ -1251,7 +1251,7 @@ func buildCommunityImageEnvelope(raw map[string]any, userText string) envelope.E
 			[]string{"Name", "Author", "CompShareImageId"}, userText,
 			"DescribeCommunityImages", "community")
 	}
-	keywords := extractUserTokens(userText)
+	keywords := imageListKeywords(userText)
 	if isImageListAllIntent(userText) {
 		keywords = nil
 	}
@@ -2297,7 +2297,36 @@ func entryMatchesAnyKeyword(entry map[string]any, keywords []string, fields []st
 // (39+) as one wall of text. The keyword filter narrows when the user names
 // something; this cap only bites on the list-all path. Overflow is reported as a
 // "共 N 个" note inviting a keyword filter.
-const imageListDisplayCap = 30
+const imageListDisplayCap = 10
+
+func imageListKeywords(userText string) []string {
+	keywords := extractUserTokens(userText)
+	lower := strings.ToLower(userText)
+	add := func(values ...string) {
+		seen := map[string]struct{}{}
+		for _, k := range keywords {
+			seen[k] = struct{}{}
+		}
+		for _, value := range values {
+			value = strings.ToLower(strings.TrimSpace(value))
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			keywords = append(keywords, value)
+		}
+	}
+	if strings.Contains(lower, "pytorch") || strings.Contains(lower, "torch") {
+		add("torch")
+	}
+	if strings.Contains(userText, "数字人") {
+		add("数字人", "livetalking", "视频")
+	}
+	return keywords
+}
 
 // imageDisplaySkipFields are the raw-id / redundant-name keys the clean image
 // display intentionally OMITS: the name is shown once up front (bestImageName) and
@@ -2344,7 +2373,7 @@ func renderImageListReply(raw map[string]any, listKey string, fieldOrder []strin
 	if len(items) == 0 {
 		return noImageListReply
 	}
-	keywords := extractUserTokens(userText)
+	keywords := imageListKeywords(userText)
 	// PR #157 (intent matrix smoke 2026-05-22): list-all bypass. When the
 	// user explicitly asks "what's available" / "show me everything" /
 	// "my images" with no specific image name, the keyword filter strips
@@ -2600,12 +2629,12 @@ func renderCommunityImageReply(raw map[string]any, userText string) string {
 		return renderImageListReply(raw, "ImageSet",
 			[]string{"Name", "Author", "CompShareImageId"}, userText)
 	}
-	keywords := extractUserTokens(userText)
+	keywords := imageListKeywords(userText)
 	// PR #157: same list-all bypass as renderImageListReply.
 	if isImageListAllIntent(userText) {
 		keywords = nil
 	}
-	matchFields := []string{"Name", "Author"}
+	matchFields := []string{"Name", "ImageName", "Author"}
 
 	filtered := make([]map[string]any, 0, len(groups))
 	for _, item := range groups {

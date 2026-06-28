@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -276,6 +277,20 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 		return reply, true
 	}
 	args := map[string]any{"UHostId": inst.UHostId}
+	if action == intent.LifecycleActionResize {
+		resizeArgs := resizeWorkflowArgsFromUserText(userMsg)
+		if len(resizeArgs) == 0 {
+			reply := "请告诉我要改到什么配置，例如 4C8G、16C64G，或补充 GPU 数量。"
+			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
+			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+			e.recordLastIntentFromPlan(result.Plan)
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
+		}
+		for k, v := range resizeArgs {
+			args[k] = v
+		}
+	}
 	e.emitPlannerTrace(result, intent.RouteStatusDispatched, dispatch.latency)
 	reply := e.executeWorkflow(ctx, workflowName, args, onStep)
 	if final, ok := isFinalReply(reply); ok {
@@ -1118,6 +1133,8 @@ func lifecycleWorkflowName(action intent.LifecycleAction) (string, bool) {
 		return "StartInstanceWorkflow", true
 	case intent.LifecycleActionReboot:
 		return "RebootInstanceWorkflow", true
+	case intent.LifecycleActionResize:
+		return "ResizeInstanceWorkflow", true
 	default:
 		return "", false
 	}
@@ -1161,6 +1178,10 @@ func inferLifecycleAction(userText string) intent.LifecycleAction {
 		return ""
 	}
 	switch {
+	case strings.Contains(compact, "改配") || strings.Contains(compact, "变配") ||
+		strings.Contains(compact, "升级配置") || strings.Contains(compact, "调整配置") ||
+		strings.Contains(compact, "resize"):
+		return intent.LifecycleActionResize
 	case strings.Contains(compact, "重启") || strings.Contains(compact, "reboot"):
 		return intent.LifecycleActionReboot
 	case strings.Contains(compact, "开机") || strings.Contains(compact, "启动") || strings.Contains(compact, "start"):
@@ -1194,4 +1215,35 @@ func looksLikeScheduledShutdownText(compact string) bool {
 		}
 	}
 	return strings.Contains(compact, "之后关机") || strings.Contains(compact, "以后关机")
+}
+
+var (
+	resizeCPUMemorySpecRE = regexp.MustCompile(`(?i)(\d+)\s*(?:c|cpu|vcpu|核)\s*[/,， ]*\s*(\d+)\s*(?:g|gb|gib)`)
+	resizeGPUCountSpecRE  = regexp.MustCompile(`(?i)(\d+)\s*(?:张\s*)?(?:gpu|卡)`)
+)
+
+func resizeWorkflowArgsFromUserText(userText string) map[string]any {
+	args := map[string]any{}
+	if m := resizeCPUMemorySpecRE.FindStringSubmatch(userText); len(m) == 3 {
+		if cpu, ok := parseFloatString(m[1]); ok && cpu > 0 {
+			args["Cpu"] = cpu
+		}
+		if memGB, ok := parseFloatString(m[2]); ok && memGB > 0 {
+			args["Memory"] = memGB * 1024
+		}
+	}
+	if m := resizeGPUCountSpecRE.FindStringSubmatch(userText); len(m) == 2 {
+		if gpu, ok := parseFloatString(m[1]); ok && gpu >= 0 {
+			args["Gpu"] = gpu
+		}
+	}
+	return args
+}
+
+func parseFloatString(s string) (float64, bool) {
+	var v float64
+	if _, err := fmt.Sscanf(strings.TrimSpace(s), "%f", &v); err != nil {
+		return 0, false
+	}
+	return v, true
 }
