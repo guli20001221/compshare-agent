@@ -3,10 +3,12 @@ package engine
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/zones"
@@ -122,6 +124,85 @@ func TestDispatchAgentSkill_CreateInstanceV100VariantsStartCreateWorkflow(t *tes
 			assert.Equal(t, "V100S", args["GpuType"])
 		})
 	}
+}
+
+func TestOperationLifecycleCreateDiskUsesDiskWorkflow(t *testing.T) {
+	var priceArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-disk-1",
+				"Name":    "gate1-v100s",
+				"State":   "Running",
+				"GpuType": "V100S",
+				"Gpu":     float64(1),
+				"Cpu":     float64(10),
+				"Memory":  float64(65536),
+				"Region":  "cn-wlcb",
+				"Zone":    "cn-wlcb-01",
+			}}}, nil
+		case "GetCompShareInstancePrice":
+			priceArgs = args
+			return map[string]any{"PriceDetails": []any{map[string]any{
+				"Disks": float64(0.02),
+			}}}, nil
+		default:
+			return map[string]any{"RetCode": float64(0)}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return false })
+	onStep, events := collectSteps()
+	dispatch := routerDispatchResult{
+		result: intent.IntentRouterResult{Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentOperationLifecycle,
+			Slots: intent.Slots{
+				Action: intent.LifecycleActionCreateDisk,
+				TargetRefs: []intent.TargetRef{{
+					Type:   intent.TargetRefName,
+					Value:  "gate1-v100s",
+					Source: intent.SourceUserText,
+				}},
+			},
+		}},
+	}
+	dispatch.result.Plan.Slots.TargetRefs = []intent.TargetRef{{Type: intent.TargetRefName, Value: "gate1-v100s", Source: intent.SourceUserText}}
+	dispatch.snapshot = entity.RegistrySnapshot{
+		Instances: map[string]entity.InstanceSnapshot{
+			"uhost-disk-1": {
+				UHostId: "uhost-disk-1",
+				Name:    "gate1-v100s",
+				State:   "Running",
+				GpuType: "V100S",
+				GPU:     1,
+				CPU:     10,
+				Memory:  65536,
+				Region:  "cn-wlcb",
+				Zone:    "cn-wlcb-01",
+			},
+		},
+		NameIndex:    map[string][]string{"gate1v100s": {"uhost-disk-1"}},
+		LastFullSync: time.Now(),
+	}
+
+	reply, handled := eng.tryOperationLifecycleDispatch(context.Background(), dispatch, "给 gate1-v100s 创建一块 20G 数据盘", onStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	assert.False(t, sawStepAction(*events, "CreateInstanceWorkflow"))
+	assert.Equal(t, 1, countCalls(exec.calls, "GetCompShareInstancePrice"))
+	require.NotNil(t, priceArgs)
+	assert.Equal(t, "V100S", priceArgs["GpuType"])
+	assert.Equal(t, float64(1), priceArgs["Gpu"])
+	assert.Equal(t, float64(10), priceArgs["Cpu"])
+	assert.Equal(t, float64(65536), priceArgs["Memory"])
+	disks, ok := priceArgs["Disks"].([]any)
+	require.True(t, ok)
+	require.Len(t, disks, 1)
+	disk, ok := disks[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(20), disk["Size"])
 }
 
 func TestDispatchAgentSkill_CreateInstanceSpecOnlyResolvesZonePreference(t *testing.T) {

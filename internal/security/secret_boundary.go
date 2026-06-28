@@ -158,6 +158,22 @@ func RedactOperationalTokensInText(s string) string {
 	return redactOperationalTokens(s)
 }
 
+// RedactKnownSecretsInText removes operational tokens plus explicit secret
+// values already known to the caller (for example a password submitted through a
+// workflow form). It is safe for user-visible text and ignores empty/very short
+// values to avoid accidental over-redaction of common words.
+func RedactKnownSecretsInText(s string, secrets []string) string {
+	s = RedactOperationalTokensInText(s)
+	for _, secret := range secrets {
+		secret = strings.TrimSpace(secret)
+		if len(secret) < 4 {
+			continue
+		}
+		s = strings.ReplaceAll(s, secret, redactedValue)
+	}
+	return s
+}
+
 func redactOperationalTokens(s string) string {
 	if containsBearerToken(s) {
 		s = redactBearerTokens(s)

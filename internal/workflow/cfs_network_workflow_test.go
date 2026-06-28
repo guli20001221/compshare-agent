@@ -24,8 +24,22 @@ func cfsDescribeResult() map[string]any {
 	}
 }
 
+func cfsSupportZone(zone, region, describe string, zoneID, regionID float64, isPod bool) map[string]any {
+	return map[string]any{"ZoneInfo": []any{
+		map[string]any{
+			"Zone":     zone,
+			"Region":   region,
+			"ZoneId":   zoneID,
+			"RegionId": regionID,
+			"Describe": describe,
+			"IsPod":    isPod,
+		},
+	}}
+}
+
 func TestCreateCFSWorkflowRequiresZoneBeforeConfirm(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareSupportZone": cfsSupportZone("cn-bj2-03", "cn-bj2", "华北一C", 9103, 3103, true),
 		"GetCompShareCFSPrice": {"Price": float64(99)},
 		"CreateCFS":            {"CfsId": "cfs-new"},
 	}}
@@ -52,6 +66,7 @@ func TestCreateCFSWorkflowRequiresZoneBeforeConfirm(t *testing.T) {
 
 func TestCreateCFSWorkflowConfirmsBeforeCreate(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareSupportZone": cfsSupportZone("cn-bj2-03", "cn-bj2", "华北一C", 9103, 3103, true),
 		// Real GetCompShareCFSPrice shape: no flat Price; payable value is in
 		// PriceDetails[0].Disks (upstream pod/get_compshare_cfs_price.go).
 		"GetCompShareCFSPrice": {
@@ -66,7 +81,7 @@ func TestCreateCFSWorkflowConfirmsBeforeCreate(t *testing.T) {
 		assert.Equal(t, "CreateCFSWorkflow", action)
 		assert.Equal(t, "shared-train", args["Name"])
 		assert.Equal(t, float64(100), args["Size"])
-		assert.Equal(t, "cn-pod-01", args["Zone"])
+		assert.Equal(t, "cn-bj2-03", args["Zone"])
 		// Confirm card must carry a formatted price STRING, not the raw
 		// PriceDetails array (which would render as "[object Object]").
 		assert.Equal(t, "¥99.00", args["price"])
@@ -76,11 +91,8 @@ func TestCreateCFSWorkflowConfirmsBeforeCreate(t *testing.T) {
 	result, err := eng.Run(context.Background(), CreateCFSDef(), map[string]any{
 		"Name":                "shared-train",
 		"Size":                float64(100),
-		"Zone":                "cn-pod-01",
+		"Zone":                "华北一C",
 		"ChargeType":          "Month",
-		"ZoneIsPods":          map[string]bool{"cn-pod-01": true},
-		"ZoneIds":             map[string]uint32{"cn-pod-01": 9001},
-		"ZoneRegionIds":       map[string]uint32{"cn-pod-01": 3001},
 		"top_organization_id": uint32(101),
 		"organization_id":     uint32(202),
 	})
@@ -88,24 +100,57 @@ func TestCreateCFSWorkflowConfirmsBeforeCreate(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.True(t, confirmed)
+	supportZoneCall, ok := findExecutorCall(executor.calls, "DescribeCompShareSupportZone")
+	require.True(t, ok)
+	assert.Equal(t, uint32(101), supportZoneCall.args["top_organization_id"])
+	assert.Equal(t, uint32(202), supportZoneCall.args["organization_id"])
 	priceCall, ok := findExecutorCall(executor.calls, "GetCompShareCFSPrice")
 	require.True(t, ok)
-	assert.Equal(t, uint32(9001), priceCall.args["zone_id"])
-	assert.Equal(t, uint32(3001), priceCall.args["az_group"])
+	assert.Equal(t, uint32(9103), priceCall.args["zone_id"])
+	assert.Equal(t, uint32(3103), priceCall.args["az_group"])
 	createCall, ok := findExecutorCall(executor.calls, "CreateCFS")
 	require.True(t, ok)
-	assert.Equal(t, "cn-pod-01", createCall.args["Zone"])
-	assert.Equal(t, "cn-pod", createCall.args["Region"])
-	assert.Equal(t, uint32(9001), createCall.args["zone_id"])
-	assert.Equal(t, uint32(3001), createCall.args["az_group"])
+	assert.Equal(t, "cn-bj2-03", createCall.args["Zone"])
+	assert.Equal(t, "cn-bj2", createCall.args["Region"])
+	assert.Equal(t, uint32(9103), createCall.args["zone_id"])
+	assert.Equal(t, uint32(3103), createCall.args["az_group"])
 	assert.Equal(t, uint32(101), createCall.args["top_organization_id"])
 	assert.Equal(t, uint32(202), createCall.args["organization_id"])
 	assert.Equal(t, "Month", createCall.args["ChargeType"])
 	assert.Equal(t, float64(100), createCall.args["Size"])
 }
 
+func TestCreateCFSWorkflowRejectsUnknownZoneBeforePrice(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareSupportZone": cfsSupportZone("cn-bj2-03", "cn-bj2", "华北一C", 9103, 3103, true),
+		"GetCompShareCFSPrice": {"PriceDetails": []any{map[string]any{"ChargeType": "Month", "Disks": float64(99)}}},
+		"CreateCFS":            {"CfsId": "cfs-new"},
+	}}
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("unknown CFS zone must be blocked before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), CreateCFSDef(), map[string]any{
+		"Name":       "shared-train",
+		"Size":       float64(100),
+		"Zone":       "cn-pod-01",
+		"ChargeType": "Month",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "未在支持区中找到")
+	assert.NotContains(t, result.Message, "zone_id")
+	_, priced := findExecutorCall(executor.calls, "GetCompShareCFSPrice")
+	assert.False(t, priced)
+	_, created := findExecutorCall(executor.calls, "CreateCFS")
+	assert.False(t, created)
+}
+
 func TestCreateCFSWorkflowBlocksWhenPriceMissingBeforeConfirm(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareSupportZone": cfsSupportZone("cn-bj2-03", "cn-bj2", "华北一C", 9103, 3103, true),
 		"GetCompShareCFSPrice": {"RetCode": 0},
 		"CreateCFS":            {"CfsId": "cfs-new"},
 	}}
@@ -118,11 +163,8 @@ func TestCreateCFSWorkflowBlocksWhenPriceMissingBeforeConfirm(t *testing.T) {
 	result, err := eng.Run(context.Background(), CreateCFSDef(), map[string]any{
 		"Name":          "shared-train",
 		"Size":          float64(100),
-		"Zone":          "cn-pod-01",
+		"Zone":          "华北一C",
 		"ChargeType":    "Month",
-		"ZoneIsPods":    map[string]bool{"cn-pod-01": true},
-		"ZoneIds":       map[string]uint32{"cn-pod-01": 9001},
-		"ZoneRegionIds": map[string]uint32{"cn-pod-01": 3001},
 	})
 
 	require.NoError(t, err)
@@ -135,8 +177,44 @@ func TestCreateCFSWorkflowBlocksWhenPriceMissingBeforeConfirm(t *testing.T) {
 	assert.False(t, created)
 }
 
+func TestCreateCFSWorkflowStopsWhenSupportZoneQueryFails(t *testing.T) {
+	executor := &mockExecutor{
+		results: map[string]map[string]any{
+			"GetCompShareCFSPrice": {"PriceDetails": []any{map[string]any{"ChargeType": "Month", "Disks": float64(99)}}},
+			"CreateCFS":            {"CfsId": "cfs-new"},
+		},
+		failOn: "DescribeCompShareSupportZone",
+	}
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("support-zone failure must stop before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), CreateCFSDef(), map[string]any{
+		"Name":                "shared-train",
+		"Size":                float64(100),
+		"Zone":                "华北一C",
+		"ChargeType":          "Month",
+		"top_organization_id": uint32(101),
+		"organization_id":     uint32(202),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "查询支持区")
+	supportZoneCall, ok := findExecutorCall(executor.calls, "DescribeCompShareSupportZone")
+	require.True(t, ok)
+	assert.Equal(t, uint32(101), supportZoneCall.args["top_organization_id"])
+	assert.Equal(t, uint32(202), supportZoneCall.args["organization_id"])
+	_, priced := findExecutorCall(executor.calls, "GetCompShareCFSPrice")
+	assert.False(t, priced)
+	_, created := findExecutorCall(executor.calls, "CreateCFS")
+	assert.False(t, created)
+}
+
 func TestCreateCFSWorkflowRejectsNonPodZoneBeforePrice(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareSupportZone": cfsSupportZone("cn-wlcb-01", "cn-wlcb", "华北二A", 10027, 2001, false),
 		"GetCompShareCFSPrice": {"Price": float64(99)},
 		"CreateCFS":            {"CfsId": "cfs-new"},
 	}}
@@ -149,8 +227,6 @@ func TestCreateCFSWorkflowRejectsNonPodZoneBeforePrice(t *testing.T) {
 		"Name":       "shared-train",
 		"Size":       float64(100),
 		"Zone":       "cn-wlcb-01",
-		"ZoneIsPods": map[string]bool{"cn-wlcb-01": false},
-		"ZoneIds":    map[string]uint32{"cn-wlcb-01": 10027},
 	})
 
 	require.NoError(t, err)
@@ -164,6 +240,7 @@ func TestCreateCFSWorkflowRejectsNonPodZoneBeforePrice(t *testing.T) {
 
 func TestCreateCFSWorkflowRequiresZoneIDBeforePrice(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareSupportZone": cfsSupportZone("cn-bj2-03", "cn-bj2", "华北一C", 0, 3103, true),
 		"GetCompShareCFSPrice": {"Price": float64(99)},
 		"CreateCFS":            {"CfsId": "cfs-new"},
 	}}
@@ -175,8 +252,7 @@ func TestCreateCFSWorkflowRequiresZoneIDBeforePrice(t *testing.T) {
 	result, err := eng.Run(context.Background(), CreateCFSDef(), map[string]any{
 		"Name":       "shared-train",
 		"Size":       float64(100),
-		"Zone":       "cn-pod-01",
-		"ZoneIsPods": map[string]bool{"cn-pod-01": true},
+		"Zone":       "华北一C",
 	})
 
 	require.NoError(t, err)
@@ -188,6 +264,7 @@ func TestCreateCFSWorkflowRequiresZoneIDBeforePrice(t *testing.T) {
 
 func TestCreateCFSWorkflowRequiresAzGroupBeforePrice(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareSupportZone": cfsSupportZone("cn-bj2-03", "cn-bj2", "华北一C", 9103, 0, true),
 		"GetCompShareCFSPrice": {"Price": float64(99)},
 		"CreateCFS":            {"CfsId": "cfs-new"},
 	}}
@@ -199,9 +276,7 @@ func TestCreateCFSWorkflowRequiresAzGroupBeforePrice(t *testing.T) {
 	result, err := eng.Run(context.Background(), CreateCFSDef(), map[string]any{
 		"Name":       "shared-train",
 		"Size":       float64(100),
-		"Zone":       "cn-pod-01",
-		"ZoneIsPods": map[string]bool{"cn-pod-01": true},
-		"ZoneIds":    map[string]uint32{"cn-pod-01": 9001},
+		"Zone":       "华北一C",
 	})
 
 	require.NoError(t, err)

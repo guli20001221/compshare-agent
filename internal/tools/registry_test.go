@@ -123,6 +123,9 @@ func TestFirstBatchCapabilityToolsAreRegisteredWithSafeBoundaries(t *testing.T) 
 	mustContain(t, descriptions["EnableNetOptimizerWorkflow"], "确认")
 	mustContain(t, descriptions["CreateCFSWorkflow"], "确认")
 	mustContain(t, descriptions["ResizeCFSWorkflow"], "确认")
+	if strings.Contains(descriptions["CreateCFSWorkflow"], "cn-pod-01") {
+		t.Fatal("CreateCFSWorkflow description must not suggest synthetic Pod zones; real zones come from DescribeCompShareSupportZone")
+	}
 	if _, ok := descriptions["DeleteCFS"]; ok {
 		t.Fatal("DeleteCFS must not be exposed as a user-facing tool")
 	}

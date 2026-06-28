@@ -47,6 +47,23 @@ func TestScenario_UpstreamRetCodeHintFedToModel(t *testing.T) {
 	assert.Contains(t, toolMsg, retCodeHintProbe(), "the 230 hint text must reach the model")
 }
 
+func TestFriendlyMessageFromText_ExtractsRetCodeHint(t *testing.T) {
+	msg, ok := friendlyMessageFromText("步骤「重置密码」执行失败: API error (RetCode=8314): Password Invalid")
+	require.True(t, ok)
+	assert.Contains(t, msg, "密码")
+	assert.NotContains(t, msg, "RetCode")
+	assert.NotContains(t, msg, "zone_id")
+	assert.NotContains(t, msg, "az_group")
+}
+
+func TestFriendlyMessageFromText_ExistingCFSRetCodeHint(t *testing.T) {
+	msg, ok := friendlyMessageFromText("步骤「创建 CFS」执行失败: API error (RetCode=230): Param [ZoneID] conflict with param [existing CFS cfs-1rz6634ri69e]")
+	require.True(t, ok)
+	assert.Contains(t, msg, "已经存在 CFS")
+	assert.NotContains(t, msg, "ZoneID")
+	assert.NotContains(t, msg, "RetCode")
+}
+
 // retCodeHintProbe returns a stable substring of the 230 hint so the assertion
 // stays meaningful without pinning the whole sentence.
 func retCodeHintProbe() string {

@@ -329,6 +329,17 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 			return reply, true
 		}
 		args["Password"] = password
+	case intent.LifecycleActionCreateDisk:
+		size := createDiskSizeFromUserText(userMsg)
+		if size <= 0 {
+			reply := "创建数据盘需要指定磁盘大小（GB）。请告诉我要加多大的数据盘，例如 30GB。"
+			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
+			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+			e.recordLastIntentFromPlan(result.Plan)
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
+		}
+		args["Size"] = size
 	}
 	e.emitPlannerTrace(result, intent.RouteStatusDispatched, dispatch.latency)
 	reply := e.executeWorkflow(ctx, workflowName, args, onStep)
@@ -352,6 +363,9 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 	}
 	action := inferLifecycleAction(userMsg)
 	if action == "" {
+		return "", false
+	}
+	if action == intent.LifecycleActionCreateDisk {
 		return "", false
 	}
 	if selectedID := strings.TrimSpace(e.sessionState.SelectedInstanceID); selectedID != "" && looksLikeSelectedInstanceFollowup(userMsg) {
@@ -430,6 +444,42 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 	}, userMsg, onStep)
 }
 
+func (e *Engine) tryCFSWorkflowDispatch(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+	if e == nil || !e.mutatingToolsEnabled {
+		return "", false
+	}
+	if dispatch.result.Plan.Intent != intent.IntentOperationLifecycle {
+		return "", false
+	}
+	workflowName, ok := cfsWriteWorkflowFromUserText(userMsg)
+	if !ok {
+		return "", false
+	}
+	args, reply, ok := cfsWorkflowArgsFromUserText(workflowName, userMsg)
+	if !ok {
+		e.messages = append(e.messages, assistantMessage(reply))
+		return reply, true
+	}
+	plan := intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentOperationLifecycle,
+		Slots:         intent.Slots{},
+		RequiredTools: []string{workflowName},
+		Retrieval:     intent.Retrieval{Enabled: false},
+		Confidence:    1,
+	}
+	e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatched, dispatch.latency)
+	raw := e.executeWorkflow(ctx, workflowName, args, onStep)
+	if final, ok := isFinalReply(raw); ok {
+		raw = final
+	} else if msg, ok := workflowFailureMessage(raw); ok {
+		raw = msg
+	}
+	e.recordLastIntentFromPlan(plan)
+	e.messages = append(e.messages, assistantMessage(raw))
+	return raw, true
+}
+
 func lifecyclePlanForSelectedInstance(action intent.LifecycleAction, inst entity.InstanceSnapshot) intent.IntentRoute {
 	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
@@ -497,6 +547,12 @@ func populateLifecycleActionArgs(args map[string]any, action intent.LifecycleAct
 			return "请提供要设置的新密码。", false
 		}
 		args["Password"] = password
+	case intent.LifecycleActionCreateDisk:
+		size := createDiskSizeFromUserText(userMsg)
+		if size <= 0 {
+			return "创建数据盘需要指定磁盘大小（GB）。请告诉我要加多大的数据盘，例如 30GB。", false
+		}
+		args["Size"] = size
 	}
 	return "", true
 }
@@ -1365,6 +1421,8 @@ func lifecycleWorkflowName(action intent.LifecycleAction) (string, bool) {
 		return "RenameInstanceWorkflow", true
 	case intent.LifecycleActionResetPwd:
 		return "ResetPasswordWorkflow", true
+	case intent.LifecycleActionCreateDisk:
+		return "CreateDiskWorkflow", true
 	default:
 		return "", false
 	}
@@ -1408,6 +1466,9 @@ func inferLifecycleAction(userText string) intent.LifecycleAction {
 		return ""
 	}
 	switch {
+	case (strings.Contains(compact, "数据盘") || strings.Contains(compact, "datadisk")) &&
+		(strings.Contains(compact, "创建") || strings.Contains(compact, "新建") || strings.Contains(compact, "加") || strings.Contains(compact, "挂载")):
+		return intent.LifecycleActionCreateDisk
 	case strings.Contains(compact, "重置密码") || strings.Contains(compact, "改密码") ||
 		strings.Contains(compact, "重设密码") || strings.Contains(compact, "改密") ||
 		strings.Contains(compact, "resetpassword") ||
@@ -1460,6 +1521,10 @@ var (
 	resizeCPUMemorySpecRE = regexp.MustCompile(`(?i)(\d+)\s*(?:c|cpu|vcpu|核)\s*[/,， ]*\s*(\d+)\s*(?:g|gb|gib)`)
 	resizeGPUCountSpecRE  = regexp.MustCompile(`(?i)(\d+)\s*(?:张\s*)?(?:gpu|卡)`)
 	resetPasswordSpecRE   = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(?:为|成|是|:|：)?\s*([^\s，。；;]+)`)
+	diskSizeSpecRE        = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:g|gb|gib)`)
+	cfsNameSpecRE         = regexp.MustCompile(`(?i)(?:名字|名称|name)\s*(?:叫|为|是|:|：)?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{1,62})`)
+	cfsIDSpecRE           = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)
+	cfsZoneIDSpecRE       = regexp.MustCompile(`(?i)cn-[a-z0-9]+-\d+`)
 	stopAfterHoursRE      = regexp.MustCompile(`(?i)(\d+)\s*(?:个)?\s*(?:小时|hour|hours|h)\s*后`)
 	stopAfterMinutesRE    = regexp.MustCompile(`(?i)(\d+)\s*(?:分钟|分|min|mins|minute|minutes|m)\s*后`)
 )
@@ -1482,6 +1547,109 @@ func resizeWorkflowArgsFromUserText(userText string) map[string]any {
 		}
 	}
 	return args
+}
+
+func createDiskSizeFromUserText(userText string) float64 {
+	matches := diskSizeSpecRE.FindAllStringSubmatch(userText, -1)
+	for _, m := range matches {
+		if len(m) != 2 {
+			continue
+		}
+		if size, ok := parseFloatString(m[1]); ok && size > 0 {
+			return size
+		}
+	}
+	return 0
+}
+
+func cfsWriteWorkflowFromUserText(userText string) (string, bool) {
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(strings.ToLower(userText))
+	if compact == "" {
+		return "", false
+	}
+	if !(strings.Contains(compact, "cfs") || strings.Contains(compact, "共享文件存储")) {
+		return "", false
+	}
+	if cfsReadOnlyCue(compact) {
+		return "", false
+	}
+	if strings.Contains(compact, "扩容") || strings.Contains(compact, "扩大") || strings.Contains(compact, "resize") {
+		return "ResizeCFSWorkflow", true
+	}
+	if strings.Contains(compact, "创建") || strings.Contains(compact, "新建") || strings.Contains(compact, "开通") || strings.Contains(compact, "购买") {
+		return "CreateCFSWorkflow", true
+	}
+	return "", false
+}
+
+func cfsReadOnlyCue(compact string) bool {
+	for _, cue := range []string{
+		"多少钱", "价格", "费用", "询价", "退费", "退款",
+		"有哪些", "列表", "查询", "状态", "能不能", "是否", "怎么",
+	} {
+		if strings.Contains(compact, cue) {
+			return true
+		}
+	}
+	return false
+}
+
+func cfsWorkflowArgsFromUserText(workflowName, userText string) (map[string]any, string, bool) {
+	switch workflowName {
+	case "CreateCFSWorkflow":
+		name := cfsNameFromUserText(userText)
+		if name == "" {
+			return nil, "创建 CFS 需要指定名称，请告诉我要创建的 CFS 名称。", false
+		}
+		size := createDiskSizeFromUserText(userText)
+		if size <= 0 {
+			return nil, "创建 CFS 需要指定容量（GB），例如 100GB。", false
+		}
+		zone := cfsZoneFromUserText(userText)
+		if zone == "" {
+			return nil, "创建 CFS 需要指定可用区；CFS 只支持上游返回的 Pod/容器可用区。", false
+		}
+		return map[string]any{"Name": name, "Size": size, "Zone": zone}, "", true
+	case "ResizeCFSWorkflow":
+		cfsID := strings.ToLower(strings.TrimSpace(cfsIDSpecRE.FindString(userText)))
+		if cfsID == "" {
+			return nil, "扩容 CFS 需要指定 CFS ID，例如 cfs-xxxx。", false
+		}
+		size := createDiskSizeFromUserText(userText)
+		if size <= 0 {
+			return nil, "扩容 CFS 需要指定目标容量（GB），例如 200GB。", false
+		}
+		return map[string]any{"CfsId": cfsID, "Size": size}, "", true
+	default:
+		return nil, "", false
+	}
+}
+
+func cfsNameFromUserText(userText string) string {
+	if m := cfsNameSpecRE.FindStringSubmatch(strings.TrimSpace(userText)); len(m) == 2 {
+		return strings.Trim(m[1], "“”\"'，。；; ")
+	}
+	return ""
+}
+
+func cfsZoneFromUserText(userText string) string {
+	text := strings.TrimSpace(userText)
+	if zone := cfsZoneIDSpecRE.FindString(text); zone != "" {
+		return strings.TrimSpace(zone)
+	}
+	for _, marker := range []string{"创建", "新建", "开通", "购买"} {
+		if idx := strings.Index(text, marker); idx > 0 {
+			prefix := strings.TrimSpace(text[:idx])
+			if at := strings.LastIndex(prefix, "在"); at >= 0 {
+				prefix = strings.TrimSpace(prefix[at+len("在"):])
+			}
+			prefix = strings.Trim(prefix, "“”\"'，。；; ")
+			if prefix != "" && len([]rune(prefix)) <= 12 {
+				return prefix
+			}
+		}
+	}
+	return ""
 }
 
 func parseFloatString(s string) (float64, bool) {

@@ -126,6 +126,9 @@ func TestUpstreamAPIError_UserMessage(t *testing.T) {
 	if msg := NewUpstreamAPIError(230, "Params [Zone] not available").UserMessage(); msg == "" {
 		t.Error("expected a user-facing message for a hinted code (230)")
 	}
+	if msg := NewUpstreamAPIError(230, "Param [ZoneID] conflict with param [existing CFS cfs-1rz6634ri69e]").UserMessage(); !strings.Contains(msg, "已经存在 CFS") {
+		t.Errorf("expected existing-CFS guidance, got %q", msg)
+	}
 	if msg := NewUpstreamAPIError(226604, "out of resources").UserMessage(); msg == "" {
 		t.Error("expected a user-facing message for a hinted code (226604)")
 	}

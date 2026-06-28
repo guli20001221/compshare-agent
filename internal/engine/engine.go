@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1808,6 +1809,9 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		return reply, true
 	}
 	if reply, handled := e.tryDiagnosisDispatch(ctx, dispatch, userMsg, onStep); handled {
+		return reply, true
+	}
+	if reply, handled := e.tryCFSWorkflowDispatch(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
 	if reply, handled := e.tryOperationLifecycleDispatch(ctx, dispatch, userMsg, onStep); handled {
@@ -3746,8 +3750,21 @@ func friendlyMessageFromText(text string) (string, bool) {
 			return message, true
 		}
 	}
+	if match := retCodeInTextRE.FindStringSubmatch(text); len(match) >= 2 {
+		if code, err := strconv.Atoi(match[1]); err == nil {
+			upstreamMsg := ""
+			if len(match) >= 3 {
+				upstreamMsg = strings.TrimSpace(match[2])
+			}
+			if msg := tools.NewUpstreamAPIError(code, upstreamMsg).UserMessage(); strings.TrimSpace(msg) != "" {
+				return msg, true
+			}
+		}
+	}
 	return "", false
 }
+
+var retCodeInTextRE = regexp.MustCompile(`RetCode=(\d+)\)?(?::)?\s*(.*)`)
 
 func cappedTraceForFriendlyError(err error, message string) (string, string) {
 	if errors.Is(err, governance.ErrRateLimited) ||
@@ -4992,6 +5009,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	}
 
 	if !result.Success {
+		result.Message = security.RedactKnownSecretsInText(result.Message, workflowSecretValues(args))
 		if msg, ok := friendlyMessageFromText(result.Message); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
 			return finalReplyPrefix + msg
@@ -5027,14 +5045,12 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	if result.Success {
 		e.markRegistryInvalidated(action)
-		// Successful no-return-data lifecycle workflows return a deterministic
-		// final reply so the engine SKIPS the post-workflow LLM narration round.
-		// That round runs on the fast tier (ds-v4-flash thinking mode); its
-		// non-streamed reasoning phase can stall for many seconds (worst case the
-		// 120s HTTP timeout), so the user sees the workflow finish but no final
-		// reply / no `done` frame — the turn appears hung. Data-bearing workflows
-		// (create/deploy/reset-password/disk/resize/reinstall) still narrate so
-		// their IDs / passwords / next-step guidance surface.
+		// Successful no-return-data or password-bearing workflows return a
+		// deterministic final reply so the engine SKIPS the post-workflow LLM
+		// narration round. That round runs on the fast tier and can stall; for
+		// reset/reinstall it also must not be allowed to restate user secrets.
+		// Data-bearing non-secret workflows still narrate so their IDs and next
+		// steps surface.
 		if reply, ok := deterministicWorkflowReply(action, args); ok {
 			return finalReplyPrefix + reply
 		}
@@ -5118,9 +5134,31 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 		return fmt.Sprintf("✅ 已重命名实例 %s。", uhost), true
 	case "ResetPasswordWorkflow":
 		return fmt.Sprintf("✅ 已为实例 %s 重置密码。出于安全考虑，密码不会在对话中回显。", uhost), true
+	case "ReinstallInstanceWorkflow":
+		return fmt.Sprintf("✅ 已为实例 %s 发起重装系统。出于安全考虑，新密码不会在对话中回显；请使用你刚设置的密码登录。", uhost), true
 	default:
 		return "", false
 	}
+}
+
+func workflowSecretValues(args map[string]any) []string {
+	if args == nil {
+		return nil
+	}
+	var out []string
+	for _, key := range []string{"Password", "password", "NewPassword", "LoginPassword"} {
+		raw, ok := args[key]
+		if !ok {
+			continue
+		}
+		secret := strings.TrimSpace(fmt.Sprint(raw))
+		if secret == "" {
+			continue
+		}
+		out = append(out, secret)
+		out = append(out, base64.StdEncoding.EncodeToString([]byte(secret)))
+	}
+	return out
 }
 
 // workflowStepPrefixRE strips the technical step wrapper the workflow engine adds

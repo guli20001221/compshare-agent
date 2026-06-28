@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // UpstreamAPIError is the typed failure ExternalExecutor returns when an upstream
@@ -45,7 +46,7 @@ func (e *UpstreamAPIError) UserMessage() string {
 // NewUpstreamAPIError builds an UpstreamAPIError, attaching a recovery hint for
 // known RetCodes (empty for codes without actionable guidance).
 func NewUpstreamAPIError(code int, msg string) *UpstreamAPIError {
-	return &UpstreamAPIError{Code: code, Message: msg, Hint: retCodeHint(code)}
+	return &UpstreamAPIError{Code: code, Message: msg, Hint: retCodeHintForMessage(code, msg)}
 }
 
 // UpstreamAPIErrorFrom extracts an *UpstreamAPIError from an error chain.
@@ -70,6 +71,10 @@ func UpstreamAPIErrorFrom(err error) (*UpstreamAPIError, bool) {
 //
 // Unknown codes fall back to the prior raw-error behavior (no hint).
 func retCodeHint(code int) string {
+	return retCodeHintForMessage(code, "")
+}
+
+func retCodeHintForMessage(code int, msg string) string {
 	switch code {
 	case 120:
 		return "上游数据异常：请稍后重试，若持续失败请联系平台支持。"
@@ -80,6 +85,9 @@ func retCodeHint(code int) string {
 	case 220:
 		return "请求参数超出平台允许范围：请调整数值后再试。"
 	case 230:
+		if strings.Contains(strings.ToLower(msg), "existing cfs") {
+			return "该可用区已经存在 CFS 共享文件存储：请直接使用已有 CFS，或换一个支持的 Pod/容器可用区后再创建。"
+		}
 		// Params rejection: the zone/region/image/spec combination is not accepted.
 		return "该可用区/规格/镜像组合不被接受：请更换可用区、规格或镜像后再试，不要重复同一请求。"
 	case 240:
