@@ -628,41 +628,11 @@ func (e *Engine) tryDeterministicProductFactReply(userMsg string) (string, bool)
 	if e == nil {
 		return "", false
 	}
-	if reply, ok := deterministicCodingPlanManagementReply(userMsg); ok {
-		e.messages = append(e.messages, assistantMessage(reply))
-		return reply, true
-	}
 	if reply, ok := deterministicGenericStockShortageReply(userMsg); ok {
 		e.messages = append(e.messages, assistantMessage(reply))
 		return reply, true
 	}
 	return "", false
-}
-
-func deterministicCodingPlanManagementReply(userMsg string) (string, bool) {
-	text := strings.TrimSpace(userMsg)
-	if text == "" {
-		return "", false
-	}
-	lower := strings.ToLower(text)
-	compact := normalizeResourceText(text)
-	hasCodingPlan := strings.Contains(lower, "coding plan") ||
-		strings.Contains(compact, "codingplan") ||
-		strings.Contains(lower, "agent plan") ||
-		strings.Contains(compact, "agentplan")
-	if !hasCodingPlan {
-		return "", false
-	}
-	asksRemoval := strings.Contains(text, "删除") ||
-		strings.Contains(text, "取消") ||
-		strings.Contains(text, "退订") ||
-		strings.Contains(text, "退款") ||
-		strings.Contains(lower, "delete") ||
-		strings.Contains(lower, "cancel")
-	if !asksRemoval {
-		return "", false
-	}
-	return "根据资料，Coding Plan 的套餐管理入口在控制台左侧导航「Agent Plan」里的「套餐管理」页面，可以查看套餐信息、调用额度、续费或升级。\n\n但当前资料未提供删除、取消或退订 Coding Plan 套餐的操作入口；资料还说明订阅服务购买后不支持退款。若你确实需要处理已购套餐，建议到控制台套餐管理页确认是否有最新入口，或联系平台客服处理。", true
 }
 
 func deterministicGenericStockShortageReply(userMsg string) (string, bool) {
