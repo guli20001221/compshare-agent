@@ -347,16 +347,17 @@ func domainMatchGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-// createPreferenceExtractorEnabledFromEnv gates the optional deploy preference
-// extractor. DEFAULT OFF: enabling it adds one LLM pass before deploy image
-// matching, and the extracted fields only affect image matching, never routing.
+// createPreferenceExtractorEnabledFromEnv gates the optional create/deploy
+// preference extractor. DEFAULT ON: it adds one LLM pass before create/deploy
+// image matching, and the extracted fields only affect preference matching,
+// never routing or final workflow validation.
 func createPreferenceExtractorEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.TrimSpace(getenv("COMPSHARE_CREATE_PREF_EXTRACTOR"))
 	switch strings.ToLower(raw) {
-	case "", "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	case "1", "true", "yes", "on":
+	case "", "1", "true", "yes", "on":
 		return true, ""
+	case "0", "off", "no", "false", "disabled", "none":
+		return false, ""
 	default:
 		return false, raw
 	}

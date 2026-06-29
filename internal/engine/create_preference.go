@@ -1,10 +1,11 @@
 package engine
 
 // createPreferenceExtractionOn gates the optional LLM preference extraction for
-// deploy_model image matching. Default false keeps main behavior byte-identical.
-var createPreferenceExtractionOn bool
+// create_instance and deploy_model preference matching. Default on; set
+// COMPSHARE_CREATE_PREF_EXTRACTOR=0/off/false to disable it at boot.
+var createPreferenceExtractionOn = true
 
-// SetCreatePreferenceExtractionEnabled toggles the deploy preference extractor.
+// SetCreatePreferenceExtractionEnabled toggles the create/deploy preference extractor.
 // Boot-only (reversible by restart), matching the other engine feature gates.
 func SetCreatePreferenceExtractionEnabled(v bool) { createPreferenceExtractionOn = v }
 

@@ -946,6 +946,7 @@ func TestTryDeployModel_GuidedCreateFiltersExplicitGPUIntent(t *testing.T) {
 
 func TestTryDeployModel_CreatePreferenceFlagOffDoesNotCallExtractor(t *testing.T) {
 	SetCreatePreferenceExtractionEnabled(false)
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(true) })
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	eng := newDeployEngine(deployMatchJSON, exec, okConfirm)
 	extractor := &fakeCreatePreferenceExtractor{result: &CreatePreferenceExtractionResult{WorkloadPref: "DeepSeek R1 32B"}}
@@ -960,7 +961,7 @@ func TestTryDeployModel_CreatePreferenceFlagOffDoesNotCallExtractor(t *testing.T
 
 func TestTryDeployModel_CreatePreferenceFeedsOnlyImageMatcher(t *testing.T) {
 	SetCreatePreferenceExtractionEnabled(true)
-	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(false) })
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(true) })
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	client := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: deployMatchJSON}}}
 	eng := NewWithDeps(client, exec, okConfirm)
@@ -987,7 +988,7 @@ func TestTryDeployModel_CreatePreferenceFeedsOnlyImageMatcher(t *testing.T) {
 
 func TestTryDeployModel_CreatePreferenceFailureFallsBack(t *testing.T) {
 	SetCreatePreferenceExtractionEnabled(true)
-	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(false) })
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(true) })
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	eng := newDeployEngine(deployMatchJSON, exec, okConfirm)
 	extractor := &fakeCreatePreferenceExtractor{err: errors.New("extractor unavailable")}
@@ -1003,7 +1004,7 @@ func TestTryDeployModel_CreatePreferenceFailureFallsBack(t *testing.T) {
 
 func TestTryDeployModel_CreatePreferenceStillUsesDeployCommandPath(t *testing.T) {
 	SetCreatePreferenceExtractionEnabled(true)
-	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(false) })
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(true) })
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	confirmCalls := 0
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { confirmCalls++; return true })
@@ -1179,7 +1180,7 @@ func TestTryDeployModel_UserZoneFromMessage(t *testing.T) {
 
 func TestTryDeployModel_CreatePreferenceDoesNotRewriteZoneResolution(t *testing.T) {
 	SetCreatePreferenceExtractionEnabled(true)
-	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(false) })
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(true) })
 	var createArgs map[string]any
 	exec := newZoneDeployMock(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": true}, &createArgs)
 	eng := newDeployEngine(`{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-7B","quantization":""}`, exec, okConfirm)

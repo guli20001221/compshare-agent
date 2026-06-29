@@ -99,7 +99,7 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	}
 	engine.SetCreatePreferenceExtractionEnabled(createPrefExtractor)
 	if createPrefExtractor {
-		log.Printf("runtime: HTTP create/deploy preference extractor enabled (COMPSHARE_CREATE_PREF_EXTRACTOR=1; deploy image-match only)")
+		log.Printf("runtime: HTTP create/deploy preference extractor enabled (COMPSHARE_CREATE_PREF_EXTRACTOR default-on; disable with =0)")
 	}
 	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
 	if unknownKnowledgeQAAgentLoop != "" {

@@ -42,12 +42,35 @@ type mockLLM struct {
 
 func (m *mockLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	m.calls = append(m.calls, req)
+	if isCreatePreferenceMockRequest(req) && !nextMockResponseLooksLikeCreatePreference(m) {
+		return &llm.ChatResponse{Content: `{"workload_pref":"","image_pref":"","image_source":"","gpu_pref":"","zone_pref":"","purpose":""}`}, nil
+	}
 	if m.callIdx >= len(m.responses) {
 		return &llm.ChatResponse{Content: "no more mock responses"}, nil
 	}
 	resp := m.responses[m.callIdx]
 	m.callIdx++
 	return &resp, nil
+}
+
+func isCreatePreferenceMockRequest(req llm.ChatRequest) bool {
+	if len(req.Messages) == 0 {
+		return false
+	}
+	return strings.Contains(req.Messages[0].Content, "创建/部署偏好抽取器")
+}
+
+func nextMockResponseLooksLikeCreatePreference(m *mockLLM) bool {
+	if m == nil || m.callIdx >= len(m.responses) {
+		return false
+	}
+	content := m.responses[m.callIdx].Content
+	return strings.Contains(content, "workload_pref") ||
+		strings.Contains(content, "image_pref") ||
+		strings.Contains(content, "image_source") ||
+		strings.Contains(content, "gpu_pref") ||
+		strings.Contains(content, "zone_pref") ||
+		strings.Contains(content, "purpose")
 }
 
 // mockLLMWithError always returns an error.
