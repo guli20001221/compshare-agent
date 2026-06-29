@@ -15,7 +15,7 @@ import (
 	"github.com/compshare-agent/internal/zones"
 )
 
-// routingIntentOrder is the registration order of the 10 catalog/status route
+// routingIntentOrder is the registration order of the catalog/status route
 // intents. It is the ONLY remnant of the deleted routeRegistry: the planner
 // prompt fragments are emitted in this order and the order is byte-identity-pinned
 // (NOT alphabetical). Handler binding, required tool, and metadata now come from
