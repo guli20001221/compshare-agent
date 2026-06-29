@@ -96,7 +96,7 @@ func TestPlanner_RetriesInvalidJSONThenReturnsValidPlan(t *testing.T) {
 
 func TestPlanner_RetryInstructionNamesValidationCodeAndField(t *testing.T) {
 	badPlan := validMonitorPlan()
-	badPlan.RequiredTools = []string{"DescribeCompShareImages"}
+	badPlan.Slots.Metrics = []Metric{Metric("disk")}
 	mock := &mockPlannerLLM{responses: []string{
 		mustPlanJSON(t, badPlan),
 		mustPlanJSON(t, validMonitorPlan()),
@@ -112,10 +112,31 @@ func TestPlanner_RetryInstructionNamesValidationCodeAndField(t *testing.T) {
 	assert.False(t, result.Fallback)
 	assert.Equal(t, 2, result.Attempts)
 	require.Len(t, mock.requests, 2)
-	assert.Contains(t, mock.requests[1].UserPrompt, string(ErrInvalidRequiredTool))
-	assert.Contains(t, mock.requests[1].UserPrompt, "required_tools[0]")
-	assert.Contains(t, mock.requests[1].UserPrompt, "required_tools 必须匹配 intent 的工具白名单")
+	assert.Contains(t, mock.requests[1].UserPrompt, string(ErrInvalidMetric))
+	assert.Contains(t, mock.requests[1].UserPrompt, "slots.metrics[0]")
+	assert.Contains(t, mock.requests[1].UserPrompt, "slots.metrics 只能使用 cpu、memory、gpu、vram")
 	assert.NotContains(t, mock.requests[1].UserPrompt, "上一轮输出不是合法 IntentPlan JSON")
+}
+
+func TestPlanner_ClearsDeprecatedControlFieldsFromLLM(t *testing.T) {
+	plan := validMonitorPlan()
+	plan.RequiredTools = []string{"DeleteEverything"}
+	plan.Retrieval = Retrieval{Enabled: true}
+	plan.HardBlockHint = true
+	mock := &mockPlannerLLM{responses: []string{mustPlanJSON(t, plan)}}
+	planner := NewIntentRouter(mock, IntentRouterOptions{})
+
+	result, err := planner.Plan(context.Background(), IntentRouterInput{
+		UserText: "看看 uhost-abc123 的 CPU 和 GPU 监控",
+		Registry: testRegistry(t),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Fallback)
+	assert.Equal(t, 1, result.Attempts)
+	assert.Empty(t, result.Plan.RequiredTools)
+	assert.False(t, result.Plan.Retrieval.Enabled)
+	assert.False(t, result.Plan.HardBlockHint)
 }
 
 func TestPlanner_OverridesLLMSuppliedSkillsWithDerivedProjection(t *testing.T) {

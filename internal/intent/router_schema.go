@@ -18,7 +18,7 @@ import "encoding/json"
 // per-type anyOf. A 2026-06-23 live probe confirmed modelverse enforces the
 // enum/const/required constraints even in NON-strict mode, so this still
 // constrains the high-value fields — the intent enum, the schema_version const,
-// the confidence bounds, and the seven required top-level fields — which is what
+// the confidence bounds, and the required top-level fields — which is what
 // the schema_valid failure modes (unknown intent, missing schema_version) are
 // made of, without the strict-mode risk. The schema deliberately allows extra
 // properties (Reasoning/Scope/Skills are omitempty struct fields) and leaves
@@ -93,15 +93,9 @@ func IntentRouteResponseSchemaForIntents(runtimeIntents []Intent) json.RawMessag
 			"schema_version": map[string]any{"type": "string", "const": SchemaVersion},
 			"intent":         map[string]any{"type": "string", "enum": intents},
 			"slots":          slots,
-			"required_tools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			// retrieval.enabled is pinned false: ValidateRoute rejects Enabled==true
-			// (stage-2A RAG is disabled), so const-false constrains decoding and
-			// removes a retry-able failure mode (mirrors the schema_version const).
-			"retrieval":       map[string]any{"type": "object", "properties": map[string]any{"enabled": map[string]any{"type": "boolean", "const": false}}, "required": []string{"enabled"}},
-			"hard_block_hint": map[string]any{"type": "boolean"},
-			"confidence":      map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+			"confidence":     map[string]any{"type": "number", "minimum": 0, "maximum": 1},
 		},
-		"required": []string{"schema_version", "intent", "slots", "required_tools", "retrieval", "hard_block_hint", "confidence"},
+		"required": []string{"schema_version", "intent", "slots", "confidence"},
 	}
 
 	raw, err := json.Marshal(schema)

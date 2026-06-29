@@ -18,11 +18,9 @@ const (
 	ErrInvalidTargetRefType        ErrorCode = "invalid_target_ref_type"
 	ErrInvalidMetric               ErrorCode = "invalid_metric"
 	ErrInvalidTimeWindow           ErrorCode = "invalid_time_window"
-	ErrInvalidRequiredTool         ErrorCode = "invalid_required_tool"
 	ErrAttemptedHallucinatedEntity ErrorCode = "attempted_hallucinated_entity"
 	ErrEntityNotFound              ErrorCode = "entity_not_found"
 	ErrNameTooShort                ErrorCode = "name_too_short"
-	ErrRetrievalDisabled           ErrorCode = "retrieval_disabled"
 	ErrInvalidConfidence           ErrorCode = "invalid_confidence"
 	ErrInvalidImageSource          ErrorCode = "invalid_image_source"
 )
@@ -66,20 +64,6 @@ func ValidateRoute(plan IntentRoute, ctx ValidationContext) error {
 	}
 	if plan.Confidence < 0 || plan.Confidence > 1 {
 		return validationErr(ErrInvalidConfidence, "confidence", "confidence must be within [0,1]")
-	}
-	if plan.Retrieval.Enabled {
-		return validationErr(ErrRetrievalDisabled, "retrieval.enabled", "RAG retrieval is disabled in stage 2A")
-	}
-	for i, tool := range plan.RequiredTools {
-		if !validRequiredTool(tool) {
-			return validationErr(ErrInvalidRequiredTool, fmt.Sprintf("required_tools[%d]", i), "unsupported required tool")
-		}
-		if !validRequiredToolForIntent(plan.Intent, tool) {
-			return validationErr(ErrInvalidRequiredTool, fmt.Sprintf("required_tools[%d]", i), "required tool is not allowed for intent")
-		}
-	}
-	if plan.Intent == IntentBillingAccountUnsupported && len(plan.RequiredTools) > 0 {
-		return validationErr(ErrInvalidRequiredTool, "required_tools", "account-level billing unsupported intent must not call tools")
 	}
 	if plan.Intent == IntentBillingAccountUnsupported && len(plan.Slots.TargetRefs) > 0 {
 		return validationErr(ErrInvalidTargetRefType, "slots.target_refs", "account-level billing unsupported intent must not carry instance target_refs")
@@ -228,92 +212,6 @@ func validImageSource(source ImageSource) bool {
 	default:
 		return false
 	}
-}
-
-func validRequiredTool(tool string) bool {
-	switch tool {
-	case "DescribeCompShareInstance",
-		"GetCompShareInstanceMonitor",
-		"DiagnoseBilling",
-		"GetCompShareInstancePrice",
-		"GetCompShareInstanceUserPrice",
-		"GetCompShareRefundPrice",
-		// Route Registry v1 (PR A, 2026-05-18). Keep the legacy list above
-		// untouched and accept the route-bound platform-query tools.
-		"DescribeAvailableCompShareInstanceTypes",
-		"DescribeCompShareSupportZone",
-		"DescribeCompShareGpuInventory",
-		"CheckCompShareResourceCapacity",
-		"CheckCompShareNetOptimizer",
-		"DescribeCompShareImages",
-		"DescribeCompShareImageTags",
-		"DescribeModelRepositoryModels",
-		"DescribeModelRepositoryTags",
-		"DescribeCompShareCustomImages",
-		"DescribeCompShareSharingImages",
-		"DescribeCommunityImages",
-		"DescribeCFS":
-		return true
-	default:
-		return false
-	}
-}
-
-func validRequiredToolForIntent(intent Intent, tool string) bool {
-	allowed := requiredToolsForIntent(intent)
-	_, ok := allowed[tool]
-	return ok
-}
-
-func requiredToolsForIntent(intent Intent) map[string]struct{} {
-	allowed := map[string]struct{}{}
-	add := func(actions ...string) {
-		for _, action := range actions {
-			allowed[action] = struct{}{}
-		}
-	}
-
-	switch intent {
-	case IntentResourceInfo:
-		add("DescribeCompShareInstance")
-	case IntentMonitorQuery, IntentMonitorHistory:
-		add("DescribeCompShareInstance", "GetCompShareInstanceMonitor")
-	case IntentBillingInstance:
-		add("DescribeCompShareInstance", "DiagnoseBilling")
-	case IntentDiagnosis:
-		add("DescribeCompShareInstance")
-	case IntentOperationLifecycle:
-		// Read tool ONLY. The intent router resolves/lists the target via
-		// DescribeCompShareInstance; the actual mutation runs through the
-		// workflow layer + confirm (still gated by COMPSHARE_ENABLE_MUTATING_TOOLS),
-		// never via plan.required_tools — so do NOT add *Workflow / mutating
-		// actions here even though IntentToolSubset lists them. The few-shots
-		// teach exactly this one tool (router.go); without this case every
-		// operation_lifecycle route failed validation → fallback_invalid → unknown.
-		add("DescribeCompShareInstance")
-	case IntentDiskInfo:
-		// Read tool ONLY. Disk facts surface solely via DiskSet[] in the
-		// DescribeCompShareInstance response (no disk-list API upstream;
-		// 2026-05-29 routing fix). Same drift as operation_lifecycle above.
-		add("DescribeCompShareInstance")
-	case IntentDeployModel, IntentCreateInstance:
-		// Read tools ONLY (the image-catalog grounding reads the deploy handler uses
-		// to match a workload to an existing image). The actual mutation
-		// (CreateCompShareInstance) runs through the orchestrator saga + StepConfirm,
-		// never via plan.required_tools — same discipline as operation_lifecycle.
-		// The handler ignores plan.required_tools; this case only validates the
-		// image-catalog reads declared by the route examples.
-		add("DescribeCompShareImages", "DescribeCommunityImages")
-	}
-
-	if required, ok := routingRequiredTool(intent); ok {
-		add(required)
-		for _, action := range extraHandlerActions()[intent] {
-			add(action)
-		}
-	}
-
-	return allowed
 }
 
 func validFilterRef(value string) bool {

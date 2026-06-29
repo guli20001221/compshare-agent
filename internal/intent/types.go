@@ -104,25 +104,19 @@ type IntentRoute struct {
 	// planner propose skill candidates behind a gate.
 	Skills []SelectedSkill `json:"skills,omitempty"`
 	Slots  Slots           `json:"slots"`
-	// RequiredTools is validation/trace-only. It does not authorize dispatch and must be derived from DispatchSpec in v2.
-	//
-	// ValidateRoute checks each entry against the per-intent allowlist
-	// (requiredToolsForIntent), but the dispatch tool window is built solely from
-	// the intent enum via the engine.visibleRegistryForIntentRoute seam
-	// (intent.IntentToolSubset → tools.VisibleRegistryForSubset). The planner-emitted
-	// value never reaches that construction — TestPlannerRequiredToolsDoNotAuthorizeDispatch
-	// drives the same seam to enforce it. The 6b step (v2 schema) removes this from
-	// planner output and keeps only the derived trace projection.
+	// RequiredTools is a deprecated planner-output field. Dispatch is built from
+	// the intent enum and route metadata, never from this field; router parsing
+	// clears it before validation.
 	RequiredTools []string `json:"required_tools"`
-	// Retrieval is likewise validation/trace-only. ValidateRoute rejects Enabled=true
-	// (stage-2A RAG is disabled), and its only engine consumer treats a stray
-	// Enabled=true as route-ineligible (phase1RouteCandidateStatus, engine.go:2432) —
-	// it never turns retrieval ON. Like RequiredTools it must be derived from
-	// DispatchSpec in v2 rather than carried in planner output.
-	Retrieval     Retrieval `json:"retrieval"`
-	HardBlockHint bool      `json:"hard_block_hint"`
-	Confidence    float64   `json:"confidence"`
-	Reasoning     string    `json:"reasoning,omitempty"`
+	// Retrieval is a deprecated planner-output field. Knowledge retrieval is
+	// selected by backend route execution, never by planner JSON; router parsing
+	// clears it before validation.
+	Retrieval Retrieval `json:"retrieval"`
+	// HardBlockHint is backend-derived for trace joining. The planner no longer
+	// emits it in the response schema.
+	HardBlockHint bool    `json:"hard_block_hint"`
+	Confidence    float64 `json:"confidence"`
+	Reasoning     string  `json:"reasoning,omitempty"`
 }
 
 type SelectedSkill struct {

@@ -21,7 +21,7 @@ import (
 // Real-model intent-router eval flags. Default empty/0 → TestOnlineRouterEval skips,
 // so the default `go test ./...` suite still runs only the deterministic mock above.
 var (
-	onlineModelFlag   = flag.String("model", "", "run the intent router against a real model (e.g. deepseek-v4-flash); empty = skip")
+	onlineModelFlag    = flag.String("model", "", "run the intent router against a real model (e.g. deepseek-v4-flash); empty = skip")
 	onlineMinIntentAcc = flag.Float64("min-intent-acc", 0, "fail if real-model intent accuracy (%) is below this; 0 = report-only")
 )
 
@@ -164,7 +164,6 @@ func TestOfflineFixturesEval(t *testing.T) {
 				unknownCorrect++
 			}
 		}
-		assert.Equal(t, normalizeTools(fx.ExpectedPlan.RequiredTools), normalizeTools(result.Plan.RequiredTools), fx.ID)
 		if len(fx.ExpectedPlan.TargetRefs) > 0 {
 			assert.Equal(t, fx.ExpectedPlan.TargetRefs, result.Plan.Slots.TargetRefs, fx.ID)
 		}
@@ -492,11 +491,4 @@ func isTargetIntent(intent intp.Intent) bool {
 		intent == intp.IntentBillingAccountUnsupported ||
 		intent == intp.IntentDiagnosis ||
 		intent == intp.IntentVagueFailure
-}
-
-func normalizeTools(tools []string) []string {
-	if tools == nil {
-		return []string{}
-	}
-	return tools
 }

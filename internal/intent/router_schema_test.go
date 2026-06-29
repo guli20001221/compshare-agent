@@ -10,45 +10,46 @@ import (
 // create_instance stays out until the caller asks for the unified-create schema.
 func TestIntentRouteResponseSchema_IntentEnumMatchesRuntime(t *testing.T) {
 	var schema struct {
-		Type       string `json:"type"`
-		Properties struct {
-			SchemaVersion struct {
-				Const string `json:"const"`
-			} `json:"schema_version"`
-			Intent struct {
-				Enum []string `json:"enum"`
-			} `json:"intent"`
-			Confidence struct {
-				Minimum *float64 `json:"minimum"`
-				Maximum *float64 `json:"maximum"`
-			} `json:"confidence"`
-			Retrieval struct {
-				Properties struct {
-					Enabled struct {
-						Const *bool `json:"const"`
-					} `json:"enabled"`
-				} `json:"properties"`
-			} `json:"retrieval"`
-		} `json:"properties"`
-		Required []string `json:"required"`
+		Type       string                     `json:"type"`
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
 	}
 	if err := json.Unmarshal(IntentRouteResponseSchema(), &schema); err != nil {
 		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+	var schemaVersion struct {
+		Const string `json:"const"`
+	}
+	var intentProperty struct {
+		Enum []string `json:"enum"`
+	}
+	var confidence struct {
+		Minimum *float64 `json:"minimum"`
+		Maximum *float64 `json:"maximum"`
+	}
+	if err := json.Unmarshal(schema.Properties["schema_version"], &schemaVersion); err != nil {
+		t.Fatalf("schema_version property invalid: %v", err)
+	}
+	if err := json.Unmarshal(schema.Properties["intent"], &intentProperty); err != nil {
+		t.Fatalf("intent property invalid: %v", err)
+	}
+	if err := json.Unmarshal(schema.Properties["confidence"], &confidence); err != nil {
+		t.Fatalf("confidence property invalid: %v", err)
 	}
 
 	if schema.Type != "object" {
 		t.Errorf("schema type = %q, want object", schema.Type)
 	}
-	if schema.Properties.SchemaVersion.Const != SchemaVersion {
-		t.Errorf("schema_version const = %q, want %q", schema.Properties.SchemaVersion.Const, SchemaVersion)
+	if schemaVersion.Const != SchemaVersion {
+		t.Errorf("schema_version const = %q, want %q", schemaVersion.Const, SchemaVersion)
 	}
 
 	want := make(map[string]bool, len(routerRuntimeIntents(false)))
 	for _, i := range routerRuntimeIntents(false) {
 		want[string(i)] = true
 	}
-	got := make(map[string]bool, len(schema.Properties.Intent.Enum))
-	for _, e := range schema.Properties.Intent.Enum {
+	got := make(map[string]bool, len(intentProperty.Enum))
+	for _, e := range intentProperty.Enum {
 		got[e] = true
 	}
 	if len(got) != len(want) {
@@ -67,26 +68,32 @@ func TestIntentRouteResponseSchema_IntentEnumMatchesRuntime(t *testing.T) {
 	}
 
 	// Confidence bounds must match ValidateRoute's [0,1] contract.
-	if schema.Properties.Confidence.Minimum == nil || *schema.Properties.Confidence.Minimum != 0 {
+	if confidence.Minimum == nil || *confidence.Minimum != 0 {
 		t.Error("confidence minimum must be 0")
 	}
-	if schema.Properties.Confidence.Maximum == nil || *schema.Properties.Confidence.Maximum != 1 {
+	if confidence.Maximum == nil || *confidence.Maximum != 1 {
 		t.Error("confidence maximum must be 1")
 	}
 
-	// retrieval.enabled must be pinned false (ValidateRoute rejects Enabled==true).
-	if c := schema.Properties.Retrieval.Properties.Enabled.Const; c == nil || *c != false {
-		t.Error("retrieval.enabled must be const false")
+	for _, deprecated := range []string{"required_tools", "retrieval", "hard_block_hint"} {
+		if _, ok := schema.Properties[deprecated]; ok {
+			t.Errorf("schema must not expose deprecated planner control field %q", deprecated)
+		}
 	}
 
-	// The seven IntentRoute top-level fields ValidateRoute reads must be required.
+	// The IntentRoute top-level fields ValidateRoute reads from planner output must be required.
 	requiredSet := make(map[string]bool, len(schema.Required))
 	for _, r := range schema.Required {
 		requiredSet[r] = true
 	}
-	for _, field := range []string{"schema_version", "intent", "slots", "required_tools", "retrieval", "hard_block_hint", "confidence"} {
+	for _, field := range []string{"schema_version", "intent", "slots", "confidence"} {
 		if !requiredSet[field] {
 			t.Errorf("top-level required is missing %q", field)
+		}
+	}
+	for _, field := range []string{"required_tools", "retrieval", "hard_block_hint"} {
+		if requiredSet[field] {
+			t.Errorf("top-level required must not include deprecated field %q", field)
 		}
 	}
 }
@@ -152,9 +159,7 @@ func TestIntentRouteResponseSchema_AcceptsValidatorCompatibleOutput(t *testing.T
 		Slots: Slots{
 			TargetRefs: []TargetRef{{Type: TargetRefFilter, Value: "state=running"}},
 		},
-		RequiredTools: []string{"DescribeCompShareInstance"},
-		Retrieval:     Retrieval{Enabled: false},
-		Confidence:    0.85,
+		Confidence: 0.85,
 	}
 	if err := ValidateRoute(sample, ValidationContext{UserText: "which machines are running"}); err != nil {
 		t.Fatalf("sample plan should validate: %v", err)

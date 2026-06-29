@@ -15,12 +15,10 @@ func TestCompileMinimalPlanCore_AllRuntimeIntentsProduceValidPlan(t *testing.T) 
 			require.NoError(t, ValidateRoute(plan, ValidationContext{}))
 			assert.Equal(t, SchemaVersion, plan.SchemaVersion)
 			assert.Equal(t, intentValue, plan.Intent)
+			assert.Empty(t, plan.RequiredTools)
 			assert.False(t, plan.Retrieval.Enabled)
-			assert.Equal(t, requiredToolsForIntentSorted(intentValue), plan.RequiredTools)
+			assert.False(t, plan.HardBlockHint)
 			assert.Equal(t, DeriveSelectedSkills(plan), plan.Skills)
-			for _, tool := range plan.RequiredTools {
-				assert.Truef(t, validRequiredToolForIntent(intentValue, tool), "tool %s must be valid for %s", tool, intentValue)
-			}
 		})
 	}
 }
@@ -55,7 +53,7 @@ func TestCompileMinimalPlanCore_PreservesStructuredSlots(t *testing.T) {
 	assert.Equal(t, "last_60s", plan.Slots.TimeWindow.Value)
 }
 
-func TestCompileMinimalPlanCore_DerivesLifecycleActionAndTools(t *testing.T) {
+func TestCompileMinimalPlanCore_DerivesLifecycleAction(t *testing.T) {
 	plan := compileMinimalPlanCore(minimalPlanCore{
 		Intent: IntentOperationLifecycle,
 		Action: LifecycleActionReboot,
@@ -63,7 +61,7 @@ func TestCompileMinimalPlanCore_DerivesLifecycleActionAndTools(t *testing.T) {
 
 	require.NoError(t, ValidateRoute(plan, ValidationContext{}))
 	assert.Equal(t, LifecycleActionReboot, plan.Slots.Action)
-	assert.Equal(t, []string{"DescribeCompShareInstance"}, plan.RequiredTools)
+	assert.Empty(t, plan.RequiredTools)
 	assert.Empty(t, plan.Skills)
 }
 
@@ -71,13 +69,7 @@ func TestCompileMinimalPlanCore_DerivesRouteSkillAndExtraTools(t *testing.T) {
 	plan := compileMinimalPlanCore(minimalPlanCore{Intent: IntentStockAvailability})
 
 	require.NoError(t, ValidateRoute(plan, ValidationContext{}))
-	assert.Equal(t, []string{
-		"CheckCompShareResourceCapacity",
-		"DescribeAvailableCompShareInstanceTypes",
-		"DescribeCompShareGpuInventory",
-		"DescribeCompShareImages",
-		"DescribeCompShareSupportZone",
-	}, plan.RequiredTools)
+	assert.Empty(t, plan.RequiredTools)
 	require.Len(t, plan.Skills, 1)
 	assert.Equal(t, "stock_availability", plan.Skills[0].Name)
 	assert.Equal(t, SkillResolutionDerivedFromIntent, plan.Skills[0].Resolution)

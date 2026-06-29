@@ -73,25 +73,13 @@ func TestValidatePlan_RejectsMissingOrMismatchedProvenance(t *testing.T) {
 	requireValidationCode(t, err, ErrAttemptedHallucinatedEntity)
 }
 
-func TestValidatePlan_RejectsInvalidRequiredTool(t *testing.T) {
+func TestValidatePlan_IgnoresDeprecatedPlannerControlFields(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.RequiredTools = []string{"DeleteEverything"}
+	plan.Retrieval = Retrieval{Enabled: true}
+	plan.HardBlockHint = true
 
 	err := ValidateRoute(plan, ValidationContext{UserText: "看看 uhost-abc123 的监控", Registry: testRegistry(t)})
-
-	requireValidationCode(t, err, ErrInvalidRequiredTool)
-}
-
-func TestValidatePlan_AcceptsStockCapacityPrecheckTool(t *testing.T) {
-	plan := IntentRoute{
-		SchemaVersion: SchemaVersion,
-		Intent:        IntentStockAvailability,
-		RequiredTools: []string{"DescribeAvailableCompShareInstanceTypes", "CheckCompShareResourceCapacity"},
-		Retrieval:     Retrieval{Enabled: false},
-		Confidence:    0.8,
-	}
-
-	err := ValidateRoute(plan, ValidationContext{UserText: "4090 现在有没有货", Registry: testRegistry(t)})
 
 	require.NoError(t, err)
 }
@@ -115,124 +103,6 @@ func TestValidatePlan_AcceptsImageListSourceOnlyForImageList(t *testing.T) {
 	wrongIntent.Intent = IntentKnowledgeQA
 	wrongIntent.RequiredTools = nil
 	requireValidationCode(t, ValidateRoute(wrongIntent, ValidationContext{UserText: "镜像区别", Registry: testRegistry(t)}), ErrInvalidImageSource)
-}
-
-func TestValidatePlan_RouteRegistryToolsStayAllowed(t *testing.T) {
-	for _, intentValue := range routingIntentOrder {
-		requiredTool, ok := routingRequiredTool(intentValue)
-		require.True(t, ok, "route intent %q must declare a required tool", intentValue)
-		tools := []string{requiredTool}
-		tools = append(tools, extraHandlerActions()[intentValue]...)
-
-		plan := IntentRoute{
-			SchemaVersion: SchemaVersion,
-			Intent:        intentValue,
-			RequiredTools: tools,
-			Retrieval:     Retrieval{Enabled: false},
-			Confidence:    0.8,
-		}
-
-		err := ValidateRoute(plan, ValidationContext{UserText: "route query", Registry: testRegistry(t)})
-
-		require.NoError(t, err, "route intent %q tools %v must stay allowed", intentValue, tools)
-	}
-}
-
-func TestValidatePlan_RejectsRequiredToolOutsideIntentAllowlist(t *testing.T) {
-	tests := []struct {
-		name string
-		plan IntentRoute
-	}{
-		{
-			name: "knowledge qa cannot declare api tools",
-			plan: IntentRoute{
-				SchemaVersion: SchemaVersion,
-				Intent:        IntentKnowledgeQA,
-				RequiredTools: []string{"DescribeCompShareInstance"},
-				Retrieval:     Retrieval{Enabled: false},
-				Confidence:    0.8,
-			},
-		},
-		{
-			name: "resource info cannot declare monitor tools",
-			plan: IntentRoute{
-				SchemaVersion: SchemaVersion,
-				Intent:        IntentResourceInfo,
-				RequiredTools: []string{"GetCompShareInstanceMonitor"},
-				Retrieval:     Retrieval{Enabled: false},
-				Confidence:    0.8,
-			},
-		},
-		{
-			name: "route cannot declare unrelated tool",
-			plan: IntentRoute{
-				SchemaVersion: SchemaVersion,
-				Intent:        IntentImageList,
-				RequiredTools: []string{"DescribeCompShareInstance"},
-				Retrieval:     Retrieval{Enabled: false},
-				Confidence:    0.8,
-			},
-		},
-		{
-			name: "unknown cannot declare tools",
-			plan: IntentRoute{
-				SchemaVersion: SchemaVersion,
-				Intent:        IntentUnknown,
-				RequiredTools: []string{"GetCompShareInstancePrice"},
-				Retrieval:     Retrieval{Enabled: false},
-				Confidence:    0.8,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateRoute(tt.plan, ValidationContext{UserText: "test", Registry: testRegistry(t)})
-
-			requireValidationCode(t, err, ErrInvalidRequiredTool)
-		})
-	}
-}
-
-func TestValidatePlan_AcceptsRequiredToolsForIntentAllowlist(t *testing.T) {
-	tests := []IntentRoute{
-		{
-			SchemaVersion: SchemaVersion,
-			Intent:        IntentResourceInfo,
-			RequiredTools: []string{"DescribeCompShareInstance"},
-			Retrieval:     Retrieval{Enabled: false},
-			Confidence:    0.8,
-		},
-		{
-			SchemaVersion: SchemaVersion,
-			Intent:        IntentMonitorQuery,
-			RequiredTools: []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"},
-			Retrieval:     Retrieval{Enabled: false},
-			Confidence:    0.8,
-		},
-		{
-			SchemaVersion: SchemaVersion,
-			Intent:        IntentBillingInstance,
-			RequiredTools: []string{"DescribeCompShareInstance", "DiagnoseBilling"},
-			Retrieval:     Retrieval{Enabled: false},
-			Confidence:    0.8,
-		},
-		{
-			SchemaVersion: SchemaVersion,
-			Intent:        IntentKnowledgeQA,
-			RequiredTools: []string{},
-			Retrieval:     Retrieval{Enabled: false},
-			Confidence:    0.8,
-		},
-	}
-
-	for _, plan := range tests {
-		t.Run(string(plan.Intent), func(t *testing.T) {
-			err := ValidateRoute(plan, ValidationContext{UserText: "test", Registry: testRegistry(t)})
-
-			require.NoError(t, err)
-		})
-	}
 }
 
 func TestValidatePlan_RejectsInvalidMetricEnum(t *testing.T) {

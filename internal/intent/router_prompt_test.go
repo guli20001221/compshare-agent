@@ -15,8 +15,6 @@ func TestBuildSystemPromptIncludesRouteDispatchSchemaFields(t *testing.T) {
 		"confidence",
 		"target_refs",
 		"source_span",
-		"hard_block_hint",
-		"retrieval",
 		"knowledge_qa",
 		// Routing Registry v1 enum labels (PR A 2026-05-18) must appear in
 		// the system prompt enum line so the LLM can emit them as intents.
@@ -27,6 +25,11 @@ func TestBuildSystemPromptIncludesRouteDispatchSchemaFields(t *testing.T) {
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("system prompt missing %q:\n%s", fragment, prompt)
+		}
+	}
+	for _, deprecated := range []string{"required_tools", "retrieval.enabled", "hard_block_hint"} {
+		if strings.Contains(prompt, deprecated) {
+			t.Fatalf("system prompt still asks planner for deprecated field %q:\n%s", deprecated, prompt)
 		}
 	}
 	for _, staleLabel := range staleNonASCIIPlannerLabels() {
@@ -179,8 +182,10 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 		if plan.Confidence <= 0 || plan.Confidence > 1 {
 			t.Fatalf("prompt example confidence = %v, want (0,1]: %s", plan.Confidence, example)
 		}
-		if plan.Retrieval.Enabled {
-			t.Fatalf("prompt example unexpectedly enables retrieval: %s", example)
+		for _, deprecated := range []string{"required_tools", "retrieval", "hard_block_hint"} {
+			if strings.Contains(example, deprecated) {
+				t.Fatalf("prompt example still contains deprecated field %q: %s", deprecated, example)
+			}
 		}
 	}
 }
@@ -193,30 +198,6 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 	total := 0
 	seen := map[Intent]bool{}
 	counts := map[Intent]int{}
-	expectedTools := map[Intent][]string{
-		IntentResourceInfo:              []string{"DescribeCompShareInstance"},
-		IntentUnknown:                   []string{},
-		IntentMonitorQuery:              []string{"GetCompShareInstanceMonitor"},
-		IntentKnowledgeQA:               []string{},
-		IntentBillingAccountUnsupported: []string{},
-		IntentBillingInstance:           []string{"DescribeCompShareInstance", "DiagnoseBilling"},
-		IntentOperationLifecycle:        []string{"DescribeCompShareInstance"},
-		IntentDiagnosis:                 []string{"DescribeCompShareInstance"},
-		IntentDiskInfo:                  []string{"DescribeCompShareInstance"},
-		IntentDeployModel:               []string{"DescribeCompShareImages"},
-	}
-	expectedHardBlock := map[Intent]bool{
-		IntentResourceInfo:              false,
-		IntentUnknown:                   false,
-		IntentMonitorQuery:              false,
-		IntentKnowledgeQA:               false,
-		IntentBillingAccountUnsupported: true,
-		IntentBillingInstance:           false,
-		IntentOperationLifecycle:        false,
-		IntentDiagnosis:                 false,
-		IntentDiskInfo:                  false,
-		IntentDeployModel:               false,
-	}
 	for _, group := range groups {
 		if group.Intent == "" {
 			t.Fatalf("planner example group missing intent: %+v", group)
@@ -241,11 +222,10 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			if plan.Intent != group.Intent {
 				t.Fatalf("planner example %q is in group %q but JSON intent is %q", example.Question, group.Intent, plan.Intent)
 			}
-			if got, want := strings.Join(plan.RequiredTools, ","), strings.Join(expectedTools[group.Intent], ","); got != want {
-				t.Fatalf("planner example %q required_tools = %v, want %v", example.Question, plan.RequiredTools, expectedTools[group.Intent])
-			}
-			if want := expectedHardBlock[group.Intent]; plan.HardBlockHint != want {
-				t.Fatalf("planner example %q hard_block_hint = %v, want %v", example.Question, plan.HardBlockHint, want)
+			for _, deprecated := range []string{"required_tools", "retrieval", "hard_block_hint"} {
+				if strings.Contains(example.PlanJSON, deprecated) {
+					t.Fatalf("planner example %q still contains deprecated field %q", example.Question, deprecated)
+				}
 			}
 		}
 	}
@@ -313,7 +293,7 @@ func TestRenderPlannerPromptExampleGroupsUsesDelimitedBlocks(t *testing.T) {
 		Source: `source "with" chars`,
 		Examples: []routerPromptExample{{
 			Question: `show <instance> & gpu`,
-			PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   `example "source"`,
 		}},
 	}}), "\n")

@@ -3312,9 +3312,6 @@ func (e *Engine) commonPlannerCandidateStatus(result intent.IntentRouterResult) 
 }
 
 func (e *Engine) phase1RouteCandidateStatus(result intent.IntentRouterResult) (intent.RouteStatus, bool) {
-	if result.Plan.Retrieval.Enabled {
-		return intent.RouteStatusFallbackIneligible, false
-	}
 	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && result.Plan.Intent != intent.IntentMonitorHistory && !intent.IsRoutingIntent(result.Plan.Intent) {
 		return intent.RouteStatusFallbackIneligible, false
 	}

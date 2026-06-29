@@ -91,16 +91,15 @@ func TestPlannerRequiredToolsDoNotAuthorizeDispatch(t *testing.T) {
 
 // TestRequiredToolsWindowDivergesFromAuthoritativeWindow makes the negative test
 // bite: it proves the two windows are genuinely different, so the invariance
-// above is not vacuous. For operation_lifecycle, the only validator-passing
-// RequiredTools the planner can emit is {DescribeCompShareInstance} (its
-// requiredToolsForIntent allowlist), yet the authoritative dispatch subset
-// includes mutating workflow tools that can never appear in RequiredTools (they
-// are not even in validRequiredTool). Had dispatch keyed on RequiredTools, those
-// workflow tools would silently vanish from the model's tool surface.
+// above is not vacuous. For operation_lifecycle, a stale planner RequiredTools
+// value such as {DescribeCompShareInstance} is much narrower than the
+// authoritative dispatch subset, which includes mutating workflow tools. Had
+// dispatch keyed on RequiredTools, those workflow tools would silently vanish
+// from the model's tool surface.
 func TestRequiredToolsWindowDivergesFromAuthoritativeWindow(t *testing.T) {
 	const probe = intent.IntentOperationLifecycle
 
-	// What the few-shots actually emit and the validator accepts.
+	// A stale planner-emitted control field from the old schema.
 	route := intent.IntentRoute{Intent: probe, RequiredTools: []string{"DescribeCompShareInstance"}}
 
 	// authoritative goes through the production seam; ifMiswired is the hypothetical

@@ -141,9 +141,6 @@ func routingPromptExampleJSON(meta RouteMetadata, example RoutePlannerExample) s
 		SchemaVersion string      `json:"schema_version"`
 		Intent        Intent      `json:"intent"`
 		Slots         promptSlots `json:"slots"`
-		RequiredTools []string    `json:"required_tools"`
-		Retrieval     Retrieval   `json:"retrieval"`
-		HardBlockHint bool        `json:"hard_block_hint"`
 		Confidence    float64     `json:"confidence"`
 	}
 	plan := promptPlan{
@@ -155,10 +152,7 @@ func routingPromptExampleJSON(meta RouteMetadata, example RoutePlannerExample) s
 			TimeWindow:  nil,
 			ImageSource: ImageSource(example.ImageSource),
 		},
-		RequiredTools: []string{meta.RequiredTool},
-		Retrieval:     Retrieval{Enabled: false},
-		HardBlockHint: false,
-		Confidence:    example.Confidence,
+		Confidence: example.Confidence,
 	}
 	data, err := json.Marshal(plan)
 	if err != nil {
