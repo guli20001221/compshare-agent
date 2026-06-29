@@ -323,20 +323,21 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// candidate instance list by State. Per-session by definition —
 		// sharing across sessions would let one user's "stop" verb mask
 		// another's "start" subset.
-		"lastPlannerActionThisTurn": true,
-		"imageContextThisTurn":      true,
-		"baseUserContext":           true,
+		"lastPlannerActionThisTurn":          true,
+		"imageContextThisTurn":               true,
+		"baseUserContext":                    true,
+		"displayedResourceSelectionThisTurn": true,
 	}
 
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 55, len(perSessionFields); want != got {
+	if want, got := 56, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 71, typ.NumField(); want != got {
+	if want, got := 72, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

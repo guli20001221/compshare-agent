@@ -360,6 +360,89 @@ func TestChat_ExternalTool_L0(t *testing.T) {
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
 }
 
+func TestChat_ReActDisplayedInstanceListRecordsPendingSelection(t *testing.T) {
+	var monitorIDs []string
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{
+				"UHostSet": []any{
+					map[string]any{"UHostId": "uhost-visible-1", "Name": "visible-one", "State": "Running", "GpuType": "4090", "GPU": float64(1), "CPU": float64(16), "Memory": float64(65536), "Zone": "cn-wlcb-01"},
+					map[string]any{"UHostId": "uhost-visible-2", "Name": "visible-two", "State": "Running", "GpuType": "4090", "GPU": float64(1), "CPU": float64(16), "Memory": float64(65536), "Zone": "cn-wlcb-01"},
+				},
+				"TotalCount": float64(2),
+				"RetCode":    0,
+			}, nil
+		case "GetCompShareInstanceMonitor":
+			monitorIDs = stringSliceArg(args["UHostIds"])
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"Action": action, "RetCode": 0}, nil
+		}
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DescribeCompShareInstance", `{}`),
+		}},
+		{Content: "1. visible-one\n2. visible-two"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+
+	reply, err := eng.Chat(context.Background(), "我有哪些实例", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "visible-one")
+	state, _, _ := eng.SessionStateSnapshot()
+	require.Len(t, state.PendingSelectionItems, 2)
+	assert.Equal(t, "uhost-visible-1", state.PendingSelectionItems[0].ID)
+	assert.Equal(t, "uhost-visible-2", state.PendingSelectionItems[1].ID)
+
+	followup, err := eng.Chat(context.Background(), "第1台 GPU 忙不忙", noopStep)
+	require.NoError(t, err)
+	require.Equal(t, []string{"uhost-visible-1"}, monitorIDs)
+	assert.NotContains(t, followup, "请选择")
+}
+
+func TestChat_ReActHiddenInstanceLookupDoesNotRecordPendingSelection(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{
+				"UHostSet": []any{
+					map[string]any{"UHostId": "uhost-hidden-1", "Name": "hidden-one", "State": "Running", "GpuType": "4090", "GPU": float64(1), "CPU": float64(16), "Memory": float64(65536), "Zone": "cn-wlcb-01"},
+					map[string]any{"UHostId": "uhost-hidden-2", "Name": "hidden-two", "State": "Running", "GpuType": "4090", "GPU": float64(1), "CPU": float64(16), "Memory": float64(65536), "Zone": "cn-wlcb-01"},
+				},
+				"TotalCount": float64(2),
+				"RetCode":    0,
+			}, nil
+		default:
+			return map[string]any{"Action": action, "RetCode": 0}, nil
+		}
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DescribeCompShareInstance", `{}`),
+		}},
+		{Content: "hidden-one 和 hidden-two 都已检查，未发现异常。"},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+
+	reply, err := eng.Chat(context.Background(), "帮我检查实例", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "未发现异常")
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.PendingSelectionItems)
+}
+
 func TestChat_ExternalToolEventsCarryTraceMetadata(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{map[string]any{"UHostId": "uhost-1"}}, "RetCode": 0},
