@@ -15,9 +15,10 @@ tool_subset:
 required_citation: false
 handler_key: handleImageList
 planner_directives:
-  - Image list questions about platform official images, user-owned custom/private images, community marketplace images, or images shared to the user should emit image_list and set slots.image_source to platform, custom, community, or shared when the source is explicit; leave it empty when the source is not explicit.
-  - Concrete image list/search questions like "有哪些 PyTorch 镜像", "查询社区镜像", "查询自制镜像", or "共享给我的镜像有哪些" should use image_list, not image_tag_catalog or model_repository_browse.
-  - Concept/how-to questions like "系统镜像和基础镜像有什么区别" or "怎么发布社区镜像" stay in knowledge_qa, NOT image_list.
+  - Classify platform, custom/private, community, and shared image list requests as image_list.
+  - Set slots.image_source to platform, custom, community, or shared when the source is explicit; leave it empty when the source is unclear.
+  - Route concrete image list/search questions like "有哪些 PyTorch 镜像", "查询社区镜像", "查询自制镜像", or "共享给我的镜像有哪些" to image_list.
+  - Route image concept and how-to questions like "系统镜像和基础镜像有什么区别" or "怎么发布社区镜像" to knowledge_qa. Do not route them to image_list.
 planner_examples:
   - question: "查询平台镜像列表"
     confidence: 0.85

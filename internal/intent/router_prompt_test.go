@@ -76,8 +76,8 @@ func TestBuildSystemPromptUnifiedCreateIncludesCreateInstance(t *testing.T) {
 func TestBuildSystemPromptKeepsDeployAdviceOutOfDeployModel(t *testing.T) {
 	for _, prompt := range []string{buildSystemPrompt(), buildSystemPromptWithUnifiedCreate(true)} {
 		for _, fragment := range []string{
-			"Recommendation, how-to, price, configuration-sizing, comparison, or feasibility questions about deployment should emit knowledge_qa, pricing_query, or gpu_specs_query as appropriate, not deploy_model.",
-			"deploy_model is for execution requests that should enter a create confirmation flow",
+			"Route recommendation, how-to, price, configuration-sizing, comparison, or feasibility questions about deployment to knowledge_qa, pricing_query, or gpu_specs_query as appropriate; do not use deploy_model.",
+			"Classify execution requests that need a create confirmation flow as deploy_model.",
 		} {
 			if !strings.Contains(prompt, fragment) {
 				t.Fatalf("system prompt missing deploy command-only boundary %q:\n%s", fragment, prompt)
@@ -348,12 +348,12 @@ func TestRenderPlannerPromptExampleGroupsUsesDelimitedBlocks(t *testing.T) {
 func TestBuildSystemPromptIncludesOperationLifecycleAnchor(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
-		"Resource operation commands",
-		"emit operation_lifecycle",
+		"Classify resource operation commands",
+		"as operation_lifecycle",
 		// PR1 hotfix Bug 1 (2026-05-28): bare action verb (no target) must
 		// still classify as operation_lifecycle so "帮我关机" doesn't fall
 		// to unknown.
-		"REGARDLESS of whether the user specifies a target instance",
+		"regardless of whether the user specifies a target instance",
 		"target_refs:[]",
 		// One-shot anchors that the prompt MUST keep as concrete examples.
 		"启动 train-gpu",
@@ -382,8 +382,8 @@ func TestBuildSystemPromptIncludesOperationLifecycleAnchor(t *testing.T) {
 	}
 	unifiedPrompt := buildSystemPromptWithUnifiedCreate(true)
 	for _, fragment := range []string{
-		"New GPU instance creation",
-		"should emit create_instance",
+		"Use create_instance for new GPU instance creation",
+		"where the user dictates exact hardware or says to create/open/buy an instance",
 	} {
 		if !strings.Contains(unifiedPrompt, fragment) {
 			t.Fatalf("unified prompt missing create_instance routing fragment %q:\n%s", fragment, unifiedPrompt)
@@ -419,10 +419,10 @@ func TestBuildSystemPromptIncludesBillingInstanceDiagnosticGuard(t *testing.T) {
 func TestBuildSystemPromptRoutesInventoryAvailabilityToRoute(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
-		"Inventory availability questions",
-		"are not resource_info",
+		"Classify inventory availability questions",
+		"as stock_availability",
+		"Do not route them to resource_info",
 		"resource_info is only for the user's own CompShare instances",
-		"Platform stock questions should emit stock_availability",
 		"4090 现在有没有货",
 		"\u6211\u8d26\u53f7\u4e0b\u6709\u54ea\u4e9b 4090 \u5b9e\u4f8b",
 	}
@@ -439,9 +439,9 @@ func TestBuildSystemPromptRoutesInventoryAvailabilityToRoute(t *testing.T) {
 func TestBuildSystemPromptDistinguishesFinanceFAQAndRealtimeAccountData(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
-		"finance policy/how-to questions like invoice issuance, refund rules, arrears handling, why am I still charged after shutdown, billing mode differences, or package expiry should emit knowledge_qa",
+		"Route finance policy/how-to questions to knowledge_qa: invoice issuance, refund rules, arrears handling, why am I still charged after shutdown, billing mode differences, or package expiry.",
 		"account realtime finance/status questions about THE USER'S OWN ACCOUNT data",
-		"instance-scoped billing questions should emit billing_instance",
+		"Classify instance-scoped billing questions as billing_instance",
 		"why am I still charged after shutdown",
 		"how do I issue an invoice",
 		"what is my invoice status",
@@ -463,16 +463,16 @@ func TestBuildSystemPromptDistinguishesFinanceFAQAndRealtimeAccountData(t *testi
 func TestBuildSystemPromptRoutesRuntimePriceQueriesToRoute(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
-		"Direct runtime/list/user price questions",
-		"should emit pricing_query",
+		"Classify direct runtime/list/user price questions",
+		"as pricing_query",
 		"route handler runs DescribeAvailableCompShareInstanceTypes plus the account/catalog price APIs deterministically",
 		"4090 \u591a\u5c11\u94b1",
 		"H20 \u6309\u6708\u5305\u591a\u5c11\u94b1",
 		"\u76ee\u5f55\u4ef7\u591a\u5c11",
 		"\u6807\u51c6\u4ef7\u591a\u5c11",
-		"Personal-billing complaints",
+		"Route personal-billing complaints",
 		"\u6211\u8d26\u5355\u600e\u4e48\u8fd9\u4e48\u9ad8",
-		"stay as billing_instance",
+		"to billing_instance",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
@@ -547,10 +547,10 @@ func TestBuildSystemPromptPR52FAQProcessVsPersonalStatus(t *testing.T) {
 func TestBuildSystemPromptIncludesKnowledgeQARules(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
-		"clear platform usage / FAQ questions",
+		"Classify clear platform usage / FAQ questions",
 		"knowledge_qa",
-		"diagnosis questions that also reference platform FAQ or usage docs should still emit diagnosis",
-		"billing-specific FAQ plus instance facts should emit billing_instance",
+		"Classify diagnosis questions that also reference platform FAQ or usage docs as diagnosis",
+		"Route billing-specific FAQ plus instance facts to billing_instance",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {
@@ -562,13 +562,13 @@ func TestBuildSystemPromptIncludesKnowledgeQARules(t *testing.T) {
 func TestBuildSystemPromptIncludesKnowledgeQABoundaryRules(t *testing.T) {
 	prompt := buildSystemPrompt()
 	required := []string{
-		"Platform how-to/config/error-code questions",
-		"how to configure remote desktop audio",
-		"what does error code 226601 mean",
-		"how do I do X on the platform' = knowledge_qa",
+		"Classify platform how-to, config, and error-code questions",
+		"remote desktop audio setup",
+		"error code 226601",
+		"Route 'how do I do X on the platform' to knowledge_qa",
 		"runtime failure reports such as cannot connect/open/access",
 		"target_refs:[]. When target_refs is empty",
-		"default to knowledge_qa ONLY for pure usage/config/error-code/how-to questions",
+		"Default to knowledge_qa only for pure usage/config/error-code/how-to questions",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {

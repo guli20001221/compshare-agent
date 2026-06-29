@@ -11,9 +11,10 @@ tool_subset:
 required_citation: false
 handler_key: handlePricingQuery
 planner_directives:
-  - 'GPU 价格 / 多少钱 / 几钱 / 费用 / 计费 / 包月包日多少钱类问题应 emit pricing_query。用户已给出 GPU 型号即可路由；普通多少钱回答当前账号价格，明确问目录价/标准价时从用户价接口返回的原价字段展示。'
-  - '"X 多少钱一小时" "X 价格" "X 包月多少" "X 包日多少" "X spot 价" "X 抢占式价" 都属本路线。'
-  - '关键区分: 本路线仅回答**购买前价格查询**; 用户对**自己已有账单**的怨言/不解(如"账单怎么这么高"/"扣费太多")应 emit billing_instance, 不在本路线。'
+  - 'Classify GPU purchase-price questions about price, cost, billing rate, hourly price, daily price, or monthly price as pricing_query.'
+  - 'Use pricing_query when the user names a GPU. Render current-account prices by default; render original price fields when the user explicitly asks for catalog, list, or standard price.'
+  - 'Route "X 多少钱一小时", "X 价格", "X 包月多少", "X 包日多少", "X spot 价", and "X 抢占式价" to pricing_query.'
+  - 'Use pricing_query only for pre-purchase instance-type prices. Route personal existing-bill complaints like "账单怎么这么高" or "扣费太多" to billing_instance. Route named plan/package billing-rule questions to knowledge_qa.'
 planner_examples:
   - question: "4090 多少钱一小时"
     confidence: 0.9
