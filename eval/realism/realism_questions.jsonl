@@ -10,7 +10,7 @@
 {"id":"R10","q":"自己做的镜像存储是怎么收费的，会一直存在吗","theme":"billing","expect_intent":["knowledge_qa","billing_instance"],"expect":"镜像按存储计费，有免费额度30G","must_not_contradict":"镜像存储计费，免费30G","corpus":"platform_maybe","src_line":95}
 {"id":"R11","q":"我是个人认证的，怎么才能开企业抬头的发票报销","theme":"invoice","expect_intent":["knowledge_qa"],"expect":"升级到企业认证后可开企业抬头","must_not_contradict":"需升级企业认证","corpus":"platform_maybe","src_line":83}
 {"id":"R12","q":"我可以把我的实例打包成镜像下载到本地吗","theme":"image","expect_intent":["knowledge_qa"],"expect":"说明镜像制作/上传规则；只有容器实例制作的镜像才能上传社区，本地镜像不能上传","must_not_contradict":"本地镜像不能上传社区；容器实例镜像可上传","corpus":"platform_maybe","src_line":7}
-{"id":"R13","q":"自定义镜像要怎么上传","theme":"image","expect_intent":["knowledge_qa","custom_image_list"],"expect":"只有容器实例制作的镜像可以上传社区","must_not_contradict":"仅容器实例镜像可上传社区","corpus":"platform_maybe","src_line":98}
+{"id":"R13","q":"自定义镜像要怎么上传","theme":"image","expect_intent":["knowledge_qa","image_list"],"expect":"只有容器实例制作的镜像可以上传社区","must_not_contradict":"仅容器实例镜像可上传社区","corpus":"platform_maybe","src_line":98}
 {"id":"R14","q":"我手欠不小心换了个镜像，原来镜像里面的东西是不是找不回来了","theme":"image","expect_intent":["knowledge_qa","diagnosis"],"expect":"换镜像/重装会丢失原系统盘数据，找不回","must_not_contradict":"换镜像后原数据丢失","corpus":"platform_maybe","src_line":101}
 {"id":"R15","q":"无卡模式下是不是不能做镜像","theme":"image","expect_intent":["knowledge_qa"],"expect":"无卡模式不能制作镜像","must_not_contradict":"无卡模式不可做镜像","corpus":"platform_maybe","src_line":130}
 {"id":"R16","q":"怎么把我本地的文件传到主机里面去","theme":"data_transfer","expect_intent":["knowledge_qa"],"expect":"scp/文件管理/sftp等方式上传，可给操作指引","must_not_contradict":"可用scp等方式传文件","corpus":"external_or_platform","src_line":5}

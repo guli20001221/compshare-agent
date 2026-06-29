@@ -24,6 +24,7 @@ const (
 	ErrNameTooShort                ErrorCode = "name_too_short"
 	ErrRetrievalDisabled           ErrorCode = "retrieval_disabled"
 	ErrInvalidConfidence           ErrorCode = "invalid_confidence"
+	ErrInvalidImageSource          ErrorCode = "invalid_image_source"
 )
 
 type ValidationError struct {
@@ -100,6 +101,9 @@ func ValidateRoute(plan IntentRoute, ctx ValidationContext) error {
 	}
 	if plan.Slots.TimeWindow != nil && !validTimeWindowType(plan.Slots.TimeWindow.Type) {
 		return validationErr(ErrInvalidTimeWindow, "slots.time_window.type", "unsupported time_window type")
+	}
+	if err := validateImageSource(plan.Intent, plan.Slots.ImageSource); err != nil {
+		return err
 	}
 	return nil
 }
@@ -214,6 +218,28 @@ func validMetric(metric Metric) bool {
 func validTimeWindowType(windowType TimeWindowType) bool {
 	switch windowType {
 	case TimeWindowPreset, TimeWindowRelative, TimeWindowAbsolute:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateImageSource(intent Intent, source ImageSource) error {
+	if source == "" {
+		return nil
+	}
+	if intent != IntentImageList {
+		return validationErr(ErrInvalidImageSource, "slots.image_source", "image_source is only valid for image_list")
+	}
+	if !validImageSource(source) {
+		return validationErr(ErrInvalidImageSource, "slots.image_source", "unsupported image source")
+	}
+	return nil
+}
+
+func validImageSource(source ImageSource) bool {
+	switch source {
+	case ImageSourcePlatform, ImageSourceCustom, ImageSourceCommunity, ImageSourceShared:
 		return true
 	default:
 		return false

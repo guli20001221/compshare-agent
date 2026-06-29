@@ -4110,10 +4110,7 @@ func TestDefaultRouteRouteDoesNotSwallowKnowledgeQA(t *testing.T) {
 			intent.IntentStockAvailability,
 			intent.IntentImageTagCatalog,
 			intent.IntentModelRepositoryBrowse,
-			intent.IntentPlatformImageList,
-			intent.IntentCustomImageList,
-			intent.IntentCommunityImageList,
-			intent.IntentSharedImageList,
+			intent.IntentImageList,
 		},
 		Model: "deepseek-v4-flash",
 	})

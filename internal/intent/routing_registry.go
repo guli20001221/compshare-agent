@@ -28,10 +28,7 @@ var routingIntentOrder = []Intent{
 	IntentCFSInfo,
 	IntentImageTagCatalog,
 	IntentModelRepositoryBrowse,
-	IntentPlatformImageList,
-	IntentCustomImageList,
-	IntentCommunityImageList,
-	IntentSharedImageList,
+	IntentImageList,
 	IntentPricingQuery,
 }
 
@@ -45,6 +42,11 @@ func extraHandlerActions() map[Intent][]string {
 		},
 		IntentModelRepositoryBrowse: {
 			"DescribeModelRepositoryTags",
+		},
+		IntentImageList: {
+			"DescribeCompShareCustomImages",
+			"DescribeCommunityImages",
+			"DescribeCompShareSharingImages",
 		},
 	}
 }
@@ -93,8 +95,9 @@ type RouteMetadata struct {
 }
 
 type RoutePlannerExample struct {
-	Question   string
-	Confidence float64
+	Question    string
+	Confidence  float64
+	ImageSource ImageSource
 }
 
 // RoutingPromptFragments returns planner-prompt directives + one-shot
@@ -129,9 +132,10 @@ func routingPromptFragmentsFrom(meta []RouteMetadata) ([]string, []string) {
 
 func routingPromptExampleJSON(meta RouteMetadata, example RoutePlannerExample) string {
 	type promptSlots struct {
-		TargetRefs []TargetRef `json:"target_refs"`
-		Metrics    []Metric    `json:"metrics"`
-		TimeWindow *TimeWindow `json:"time_window"`
+		TargetRefs  []TargetRef `json:"target_refs"`
+		Metrics     []Metric    `json:"metrics"`
+		TimeWindow  *TimeWindow `json:"time_window"`
+		ImageSource ImageSource `json:"image_source,omitempty"`
 	}
 	type promptPlan struct {
 		SchemaVersion string      `json:"schema_version"`
@@ -146,9 +150,10 @@ func routingPromptExampleJSON(meta RouteMetadata, example RoutePlannerExample) s
 		SchemaVersion: SchemaVersion,
 		Intent:        Intent(meta.IntentLabel),
 		Slots: promptSlots{
-			TargetRefs: []TargetRef{},
-			Metrics:    []Metric{},
-			TimeWindow: nil,
+			TargetRefs:  []TargetRef{},
+			Metrics:     []Metric{},
+			TimeWindow:  nil,
+			ImageSource: ImageSource(example.ImageSource),
 		},
 		RequiredTools: []string{meta.RequiredTool},
 		Retrieval:     Retrieval{Enabled: false},
@@ -308,6 +313,19 @@ func handlePlatformImageList(ctx context.Context, h *DemoHandler, req HandlerReq
 	result.ToolArgs = copyArgs(map[string]any{})
 	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.UserText, action, "platform"))
 	return result
+}
+
+func handleImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
+	switch req.Plan.Slots.ImageSource {
+	case ImageSourceShared:
+		return handleSharedImageList(ctx, h, req)
+	case ImageSourceCustom:
+		return handleCustomImageList(ctx, h, req)
+	case ImageSourceCommunity:
+		return handleCommunityImageList(ctx, h, req)
+	default:
+		return handlePlatformImageList(ctx, h, req)
+	}
 }
 
 func handleImageTagCatalog(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {

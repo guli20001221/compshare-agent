@@ -5,5 +5,5 @@
   { "qid": "cap_net_accel",    "capability": "network accelerator",    "question": "我的网络加速现在是开着的吗？",    "expect_intent": "network_accelerator_status",   "expect_tool": "CheckCompShareNetOptimizer" },
   { "qid": "cap_image_tags",   "capability": "image tag catalog",      "question": "镜像都有哪些标签可以选？",        "expect_intent": "image_tag_catalog",            "expect_tool": "DescribeCompShareImageTags" },
   { "qid": "cap_model_repo",   "capability": "model repository",       "question": "模型仓库里有哪些模型？",          "expect_intent": "model_repository_browse",      "expect_tool": "DescribeModelRepositoryModels" },
-  { "qid": "cap_shared_image", "capability": "shared image list",      "question": "有哪些共享镜像？",                "expect_intent": "shared_image_list",            "expect_tool": "DescribeCompShareSharingImages" }
+  { "qid": "cap_shared_image", "capability": "shared image list",      "question": "有哪些共享镜像？",                "expect_intent": "image_list",                   "expect_tool": "DescribeCompShareSharingImages" }
 ]

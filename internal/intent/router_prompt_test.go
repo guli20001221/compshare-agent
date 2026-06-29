@@ -22,9 +22,7 @@ func TestBuildSystemPromptIncludesRouteDispatchSchemaFields(t *testing.T) {
 		// the system prompt enum line so the LLM can emit them as intents.
 		"gpu_specs_query",
 		"stock_availability",
-		"platform_image_list",
-		"custom_image_list",
-		"community_image_list",
+		"image_list",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(prompt, fragment) {

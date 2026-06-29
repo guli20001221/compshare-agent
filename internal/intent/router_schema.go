@@ -65,6 +65,13 @@ func IntentRouteResponseSchemaForIntents(runtimeIntents []Intent) json.RawMessag
 			"metrics": map[string]any{"type": "array", "items": stringEnum(
 				string(MetricCPU), string(MetricMemory), string(MetricGPU), string(MetricVRAM),
 			)},
+			"image_source": stringEnum(
+				"",
+				string(ImageSourcePlatform),
+				string(ImageSourceCustom),
+				string(ImageSourceCommunity),
+				string(ImageSourceShared),
+			),
 			// slots.action (LifecycleAction) is deliberately omitted: the prompt
 			// never asks the model to emit it and the engine re-derives it from the
 			// user text (inferLifecycleAction). Non-strict + no additionalProperties

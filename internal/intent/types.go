@@ -21,10 +21,7 @@ const (
 	// route_registry.go for the data-driven dispatch table.
 	IntentGPUSpecsQuery         Intent = "gpu_specs_query"
 	IntentStockAvailability     Intent = "stock_availability"
-	IntentPlatformImageList     Intent = "platform_image_list"
-	IntentCustomImageList       Intent = "custom_image_list"
-	IntentCommunityImageList    Intent = "community_image_list"
-	IntentSharedImageList       Intent = "shared_image_list"
+	IntentImageList             Intent = "image_list"
 	IntentImageTagCatalog       Intent = "image_tag_catalog"
 	IntentModelRepositoryBrowse Intent = "model_repository_browse"
 	IntentNetAcceleratorStatus  Intent = "network_accelerator_status"
@@ -105,6 +102,15 @@ const (
 	TimeWindowAbsolute TimeWindowType = "absolute"
 )
 
+type ImageSource string
+
+const (
+	ImageSourcePlatform  ImageSource = "platform"
+	ImageSourceCustom    ImageSource = "custom"
+	ImageSourceCommunity ImageSource = "community"
+	ImageSourceShared    ImageSource = "shared"
+)
+
 type IntentRoute struct {
 	SchemaVersion string `json:"schema_version"`
 	Intent        Intent `json:"intent"`
@@ -147,9 +153,10 @@ const (
 )
 
 type Slots struct {
-	TargetRefs []TargetRef `json:"target_refs,omitempty"`
-	Metrics    []Metric    `json:"metrics,omitempty"`
-	TimeWindow *TimeWindow `json:"time_window,omitempty"`
+	TargetRefs  []TargetRef `json:"target_refs,omitempty"`
+	Metrics     []Metric    `json:"metrics,omitempty"`
+	TimeWindow  *TimeWindow `json:"time_window,omitempty"`
+	ImageSource ImageSource `json:"image_source,omitempty"`
 	// Action carries the lifecycle/configuration verb when Intent is
 	// IntentOperationLifecycle. PR1 hotfix Bug 4 (2026-05-28): used by
 	// engine.executeTool to deterministically pre-filter the candidate
@@ -207,10 +214,7 @@ func AllIntents() []Intent {
 		IntentKnowledgeQA,
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
-		IntentPlatformImageList,
-		IntentCustomImageList,
-		IntentCommunityImageList,
-		IntentSharedImageList,
+		IntentImageList,
 		IntentImageTagCatalog,
 		IntentModelRepositoryBrowse,
 		IntentNetAcceleratorStatus,
@@ -238,10 +242,7 @@ func RuntimeIntents() []Intent {
 		IntentKnowledgeQA,
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
-		IntentPlatformImageList,
-		IntentCustomImageList,
-		IntentCommunityImageList,
-		IntentSharedImageList,
+		IntentImageList,
 		IntentImageTagCatalog,
 		IntentModelRepositoryBrowse,
 		IntentNetAcceleratorStatus,

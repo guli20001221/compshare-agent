@@ -96,20 +96,11 @@ func IntentToolSubset(i Intent) []string {
 			"DescribeModelRepositoryModels",
 			"DescribeModelRepositoryTags",
 		}
-	case IntentPlatformImageList:
+	case IntentImageList:
 		return []string{
 			"DescribeCompShareImages",
-		}
-	case IntentCustomImageList:
-		return []string{
 			"DescribeCompShareCustomImages",
-		}
-	case IntentCommunityImageList:
-		return []string{
 			"DescribeCommunityImages",
-		}
-	case IntentSharedImageList:
-		return []string{
 			"DescribeCompShareSharingImages",
 		}
 	case IntentOperationLifecycle:

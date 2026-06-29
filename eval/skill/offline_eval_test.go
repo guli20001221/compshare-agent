@@ -62,9 +62,10 @@ type SkillCase struct {
 	// handler that calls the right tool with the wrong GPU / zone / charge type is
 	// caught: {action: {paramKey: expectedValue}}. Compared with fmt.Sprint so a
 	// JSON number and a Go float compare equal.
-	ExpectedToolArgs map[string]map[string]any `json:"expected_tool_args,omitempty"`
-	OverlappingGroup string                    `json:"overlapping_group,omitempty"`
-	Tags             []string                  `json:"tags,omitempty"`
+	ExpectedToolArgs    map[string]map[string]any `json:"expected_tool_args,omitempty"`
+	ExpectedImageSource string                    `json:"expected_image_source,omitempty"`
+	OverlappingGroup    string                    `json:"overlapping_group,omitempty"`
+	Tags                []string                  `json:"tags,omitempty"`
 }
 
 // Lanes.
@@ -186,6 +187,9 @@ func TestOfflineSkillEval(t *testing.T) {
 			fastSkills[route.Name] = true
 
 			plan := intent.IntentRoute{Intent: intent.Intent(route.IntentLabel)}
+			if c.ExpectedImageSource != "" {
+				plan.Slots.ImageSource = intent.ImageSource(c.ExpectedImageSource)
+			}
 
 			// (1) routing pin: the intent derives exactly the expected skill.
 			derived := intent.DeriveSelectedSkills(plan)

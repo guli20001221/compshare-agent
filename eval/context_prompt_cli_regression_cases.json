@@ -16,12 +16,12 @@
   },
   {
     "id": "platform_images",
-    "expect_intent": "platform_image_list",
+    "expect_intent": "image_list",
     "question": "平台都有哪些镜像可以选"
   },
   {
     "id": "community_images",
-    "expect_intent": "community_image_list",
+    "expect_intent": "image_list",
     "question": "社区镜像里都有些什么"
   },
   {

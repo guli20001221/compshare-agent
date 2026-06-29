@@ -57,10 +57,7 @@ var routeHandlerByKey = map[string]routeHandlerFunc{
 	"handleCFSInfo":               handleCFSInfo,
 	"handleImageTagCatalog":       handleImageTagCatalog,
 	"handleModelRepositoryBrowse": handleModelRepositoryBrowse,
-	"handlePlatformImageList":     handlePlatformImageList,
-	"handleCustomImageList":       handleCustomImageList,
-	"handleCommunityImageList":    handleCommunityImageList,
-	"handleSharedImageList":       handleSharedImageList,
+	"handleImageList":             handleImageList,
 	"handlePricingQuery":          handlePricingQuery,
 }
 
@@ -103,7 +100,7 @@ func routeToRouteMetadata(route *routing.Route) RouteMetadata {
 	}
 	examples := make([]RoutePlannerExample, 0, len(route.PlannerExamples))
 	for _, ex := range route.PlannerExamples {
-		examples = append(examples, RoutePlannerExample{Question: ex.Question, Confidence: ex.Confidence})
+		examples = append(examples, RoutePlannerExample{Question: ex.Question, Confidence: ex.Confidence, ImageSource: ImageSource(ex.ImageSource)})
 	}
 	return RouteMetadata{
 		Name:              route.Name,

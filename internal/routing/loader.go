@@ -36,8 +36,9 @@ const ProvenanceHumanAuthored = "human_authored"
 var routeNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]*[a-z0-9]$`)
 
 type PlannerExample struct {
-	Question   string  `yaml:"question"`
-	Confidence float64 `yaml:"confidence"`
+	Question    string  `yaml:"question"`
+	Confidence  float64 `yaml:"confidence"`
+	ImageSource string  `yaml:"image_source,omitempty"`
 }
 
 type Route struct {

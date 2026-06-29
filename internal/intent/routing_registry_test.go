@@ -47,10 +47,7 @@ func TestIsRoutingIntent_KnownLabels(t *testing.T) {
 		IntentCFSInfo,
 		IntentImageTagCatalog,
 		IntentModelRepositoryBrowse,
-		IntentPlatformImageList,
-		IntentCustomImageList,
-		IntentCommunityImageList,
-		IntentSharedImageList,
+		IntentImageList,
 		IntentPricingQuery,
 	}
 	for _, intent := range wanted {
@@ -105,10 +102,7 @@ func TestRouteRequiredTool_BindsToRealTool(t *testing.T) {
 		IntentCFSInfo:               "DescribeCFS",
 		IntentImageTagCatalog:       "DescribeCompShareImageTags",
 		IntentModelRepositoryBrowse: "DescribeModelRepositoryModels",
-		IntentPlatformImageList:     "DescribeCompShareImages",
-		IntentCustomImageList:       "DescribeCompShareCustomImages",
-		IntentCommunityImageList:    "DescribeCommunityImages",
-		IntentSharedImageList:       "DescribeCompShareSharingImages",
+		IntentImageList:             "DescribeCompShareImages",
 		IntentPricingQuery:          "GetCompShareInstanceUserPrice",
 	}
 	for _, i := range routingIntentOrder {
@@ -169,10 +163,7 @@ func TestHandlerActionWhitelist_ExactGoldenSet(t *testing.T) {
 		IntentCFSInfo:               {"DescribeCFS": {}},
 		IntentImageTagCatalog:       {"DescribeCompShareImageTags": {}},
 		IntentModelRepositoryBrowse: {"DescribeModelRepositoryModels": {}, "DescribeModelRepositoryTags": {}},
-		IntentPlatformImageList:     {"DescribeCompShareImages": {}},
-		IntentCustomImageList:       {"DescribeCompShareCustomImages": {}},
-		IntentCommunityImageList:    {"DescribeCommunityImages": {}},
-		IntentSharedImageList:       {"DescribeCompShareSharingImages": {}},
+		IntentImageList:             {"DescribeCompShareImages": {}, "DescribeCompShareCustomImages": {}, "DescribeCommunityImages": {}, "DescribeCompShareSharingImages": {}},
 		IntentPricingQuery:          {"GetCompShareInstanceUserPrice": {}},
 	}
 	got := handlerActionWhitelist()
@@ -298,6 +289,41 @@ func TestDispatchRoute_RoutesToHandler(t *testing.T) {
 		if want := skillRequiredTool(i); result.ToolAction != want {
 			t.Errorf("DispatchRoute(%q) ToolAction = %q, want %q", i, result.ToolAction, want)
 		}
+	}
+}
+
+func TestDispatchRoute_ImageListResolvesSourceFacet(t *testing.T) {
+	cases := []struct {
+		name       string
+		userText   string
+		source     ImageSource
+		wantAction string
+	}{
+		{name: "platform explicit", userText: "查询平台镜像列表", source: ImageSourcePlatform, wantAction: "DescribeCompShareImages"},
+		{name: "platform default", userText: "有哪些 PyTorch 镜像", wantAction: "DescribeCompShareImages"},
+		{name: "custom saved phrasing", userText: "我自己保存的镜像有哪些", source: ImageSourceCustom, wantAction: "DescribeCompShareCustomImages"},
+		{name: "community", userText: "查询社区镜像", source: ImageSourceCommunity, wantAction: "DescribeCommunityImages"},
+		{name: "shared generic", userText: "有哪些共享镜像", source: ImageSourceShared, wantAction: "DescribeCompShareSharingImages"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := &routeSequenceExecutor{}
+			h := NewDemoHandler(exec)
+			req := HandlerRequest{
+				UserText: tc.userText,
+				Plan:     IntentRoute{Intent: IntentImageList, Slots: Slots{ImageSource: tc.source}},
+			}
+			result := h.DispatchRoute(context.Background(), req)
+			if result.Status != HandlerStatusHandled {
+				t.Fatalf("DispatchRoute image_list status = %q, want %q", result.Status, HandlerStatusHandled)
+			}
+			if result.ToolAction != tc.wantAction {
+				t.Fatalf("image_list ToolAction = %q, want %q", result.ToolAction, tc.wantAction)
+			}
+			if len(exec.calls) != 1 || exec.calls[0].action != tc.wantAction {
+				t.Fatalf("image_list call sequence = %#v, want one %s call", exec.calls, tc.wantAction)
+			}
+		})
 	}
 }
 
