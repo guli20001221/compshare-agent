@@ -2533,25 +2533,29 @@ func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, userText string
 		}
 		return "未获取到模型仓库数据。"
 	}
-	lines := []string{}
+	allLines := []string{}
 	for _, entry := range filtered {
 		line := buildModelRepositoryLine(entry)
 		if line == "" {
 			continue
 		}
-		lines = append(lines, line)
-		if len(lines) >= imageModelBrowseDisplayCap {
-			break
-		}
+		allLines = append(allLines, line)
 	}
-	if len(lines) == 0 {
+	if len(allLines) == 0 {
 		if len(tags) > 0 {
 			sections = append(sections, "未找到匹配的模型。", modelRepositoryGuidanceFooter(false))
 			return strings.Join(sections, "\n")
 		}
 		return "未获取到模型仓库数据。"
 	}
+	lines := allLines
+	if len(lines) > imageModelBrowseDisplayCap {
+		lines = lines[:imageModelBrowseDisplayCap]
+	}
 	sections = append(sections, "模型仓库列表:\n"+strings.Join(lines, "\n"))
+	if len(allLines) > len(lines) {
+		sections = append(sections, fmt.Sprintf("（共 %d 个模型，已显示前 %d 个；可补充关键词进一步筛选）", len(allLines), len(lines)))
+	}
 	sections = append(sections, modelRepositoryGuidanceFooter(true))
 	return strings.Join(sections, "\n")
 }

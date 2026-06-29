@@ -1694,6 +1694,34 @@ func TestRenderModelRepositoryReply_CapsDefaultOutputAtTen(t *testing.T) {
 	if strings.Contains(reply, "Qwen-10") || strings.Contains(reply, "Qwen-12") {
 		t.Fatalf("reply should not include model candidates beyond the cap, got:\n%s", reply)
 	}
+	for _, want := range []string{
+		fmt.Sprintf("共 %d 个", imageModelBrowseDisplayCap+3),
+		fmt.Sprintf("已显示前 %d 个", imageModelBrowseDisplayCap),
+		"可补充关键词",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("truncated model repository reply should include overflow note %q, got:\n%s", want, reply)
+		}
+	}
+}
+
+func TestRenderModelRepositoryReply_NoOverflowNoteWhenWithinCap(t *testing.T) {
+	models := make([]any, 0, imageModelBrowseDisplayCap)
+	for i := 0; i < imageModelBrowseDisplayCap; i++ {
+		models = append(models, map[string]any{
+			"Name": fmt.Sprintf("Qwen-%02d", i),
+			"Path": fmt.Sprintf("/model/qwen-%02d", i),
+			"Tag":  "LLM,Qwen",
+		})
+	}
+	modelRaw := map[string]any{"Models": models}
+	tagRaw := map[string]any{"Tags": []any{"LLM", "Qwen"}}
+
+	reply := renderModelRepositoryReply(modelRaw, tagRaw, "模型仓库里有哪些模型可以用")
+
+	if strings.Contains(reply, "已显示前") || strings.Contains(reply, "可补充关键词") {
+		t.Fatalf("model repository reply within cap should not include overflow note, got:\n%s", reply)
+	}
 }
 
 func TestBuildCommunityImageEnvelope_PopularityFactsAndOrder(t *testing.T) {
