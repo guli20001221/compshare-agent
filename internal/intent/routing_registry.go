@@ -2292,12 +2292,17 @@ func entryMatchesAnyKeyword(entry map[string]any, keywords []string, fields []st
 	return false
 }
 
+// imageModelBrowseDisplayCap bounds how many image/model candidates the fast-tier
+// browse replies surface by default. Keep image and model browsing aligned so
+// all catalog-style answers stay compact and comparable.
+const imageModelBrowseDisplayCap = 10
+
 // imageListDisplayCap bounds how many image rows the fast-tier reply / envelope
 // surfaces by default, so a "列出全部镜像" turn does not dump the whole catalog
 // (39+) as one wall of text. The keyword filter narrows when the user names
 // something; this cap only bites on the list-all path. Overflow is reported as a
 // "共 N 个" note inviting a keyword filter.
-const imageListDisplayCap = 10
+const imageListDisplayCap = imageModelBrowseDisplayCap
 
 func imageListKeywords(userText string) []string {
 	keywords := extractUserTokens(userText)
@@ -2535,7 +2540,7 @@ func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, userText string
 			continue
 		}
 		lines = append(lines, line)
-		if len(lines) >= 20 {
+		if len(lines) >= imageModelBrowseDisplayCap {
 			break
 		}
 	}
@@ -2655,6 +2660,8 @@ func renderCommunityImageReply(raw map[string]any, userText string) string {
 		return noImageListNoMatchReply
 	}
 
+	filtered = dedupeCommunityImageGroups(filtered)
+
 	// Surface genuinely-popular images first: the live API default order is
 	// recommend-weighted, so sort by CreatedCount (部署次数) desc to make the
 	// popularity figures monotonic and put the most-deployed images on top.
@@ -2712,6 +2719,39 @@ func renderCommunityImageReply(raw map[string]any, userText string) string {
 // flow: the user can hand a community image straight to deploy_model.
 func communityImageDeployFooter() string {
 	return "说明：想用其中某个镜像开实例，直接告诉我镜像名（如「用 ComfyUI 镜像部署」），或直接说模型名（如「部署 Qwen2.5-32B」），我来帮你选 GPU 配置并创建。"
+}
+
+func dedupeCommunityImageGroups(groups []map[string]any) []map[string]any {
+	if len(groups) <= 1 {
+		return groups
+	}
+	bestByName := map[string]map[string]any{}
+	order := []string{}
+	for _, group := range groups {
+		name := strings.TrimSpace(bestImageName(group))
+		if name == "" {
+			name = strings.TrimSpace(safeString(group, "ImageName"))
+		}
+		key := strings.ToLower(name)
+		if key == "" {
+			key = fmt.Sprintf("__unnamed_%d", len(order))
+		}
+		if _, ok := bestByName[key]; !ok {
+			order = append(order, key)
+			bestByName[key] = group
+			continue
+		}
+		if communityDeployCount(group) > communityDeployCount(bestByName[key]) {
+			bestByName[key] = group
+		}
+	}
+	out := make([]map[string]any, 0, len(bestByName))
+	for _, key := range order {
+		if group := bestByName[key]; group != nil {
+			out = append(out, group)
+		}
+	}
+	return out
 }
 
 func renderSharedImageListReply(raw map[string]any, userText string) string {

@@ -1618,6 +1618,41 @@ func TestRenderCommunityImage_SortedByDeployCount(t *testing.T) {
 	}
 }
 
+func TestRenderCommunityImage_DeduplicatesDuplicateGroupNames(t *testing.T) {
+	// The live community image API can return multiple groups with the same
+	// display name. The browse reply should not show the same image name over and
+	// over; keep the most-deployed group and drop lower-ranked duplicates.
+	raw := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{
+			"ImageName":    "LiveTalking",
+			"CreatedCount": float64(100),
+			"Data":         []any{map[string]any{"Name": "LiveTalking-old"}},
+		},
+		map[string]any{
+			"ImageName":    "LiveTalking",
+			"CreatedCount": float64(900),
+			"Data":         []any{map[string]any{"Name": "LiveTalking-new"}},
+		},
+		map[string]any{
+			"ImageName":    "数字人直播",
+			"CreatedCount": float64(300),
+			"Data":         []any{map[string]any{"Name": "digital-human-live"}},
+		},
+	}}
+
+	reply := renderCommunityImageReply(raw, "有哪些社区镜像适合数字人")
+
+	if got := strings.Count(reply, "名称=LiveTalking"); got != 1 {
+		t.Fatalf("expected LiveTalking to appear once, got %d in:\n%s", got, reply)
+	}
+	if strings.Contains(reply, "LiveTalking-old") {
+		t.Fatalf("lower-ranked duplicate version should be dropped, got:\n%s", reply)
+	}
+	if !strings.Contains(reply, "LiveTalking-new") || !strings.Contains(reply, "数字人直播") {
+		t.Fatalf("reply should keep the best duplicate and other relevant groups, got:\n%s", reply)
+	}
+}
+
 func TestRenderCommunityImage_CapsDefaultOutputAtTen(t *testing.T) {
 	total := communityImageGroupLimit + 5
 	groups := make([]any, 0, total)
@@ -1636,6 +1671,28 @@ func TestRenderCommunityImage_CapsDefaultOutputAtTen(t *testing.T) {
 	}
 	if strings.Contains(reply, "community-image-10") || strings.Contains(reply, "community-image-14") {
 		t.Fatalf("reply should not include candidates beyond the cap; got:\n%s", reply)
+	}
+}
+
+func TestRenderModelRepositoryReply_CapsDefaultOutputAtTen(t *testing.T) {
+	models := make([]any, 0, imageModelBrowseDisplayCap+3)
+	for i := 0; i < imageModelBrowseDisplayCap+3; i++ {
+		models = append(models, map[string]any{
+			"Name": fmt.Sprintf("Qwen-%02d", i),
+			"Path": fmt.Sprintf("/model/qwen-%02d", i),
+			"Tag":  "LLM,Qwen",
+		})
+	}
+	modelRaw := map[string]any{"Models": models}
+	tagRaw := map[string]any{"Tags": []any{"LLM", "Qwen"}}
+
+	reply := renderModelRepositoryReply(modelRaw, tagRaw, "模型仓库里有哪些模型可以用")
+
+	if got := strings.Count(reply, "Name=Qwen-"); got != imageModelBrowseDisplayCap {
+		t.Fatalf("expected %d model candidates, got %d in:\n%s", imageModelBrowseDisplayCap, got, reply)
+	}
+	if strings.Contains(reply, "Qwen-10") || strings.Contains(reply, "Qwen-12") {
+		t.Fatalf("reply should not include model candidates beyond the cap, got:\n%s", reply)
 	}
 }
 
