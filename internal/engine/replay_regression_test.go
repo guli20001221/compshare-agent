@@ -8,6 +8,7 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
@@ -1146,9 +1147,13 @@ func TestReplayRegression_GenericNoResourceExplainsCapacityNotStatus(t *testing.
 }
 
 func TestReplayRegression_DiskBillingQuestionDoesNotAskGPU(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "请先选择 GPU 型号"}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{diskBillingKnowledgeResult()}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "系统盘默认 100GB 免费；数据盘创建即收费；按量实例关机后 CPU、GPU、内存停止计费，但额外扩容的系统盘和数据盘继续计费。 [1]"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
 
 	reply, err := eng.Chat(context.Background(), "我没看懂收费，磁盘空间是如何收费的？100GB原始空间是免费的吗", noopStep)
 
@@ -1157,13 +1162,18 @@ func TestReplayRegression_DiskBillingQuestionDoesNotAskGPU(t *testing.T) {
 	require.Contains(t, reply, "数据盘")
 	require.Contains(t, reply, "GPU、内存停止计费")
 	require.NotContains(t, reply, "选择 GPU")
-	require.Len(t, mock.calls, 0, "disk billing fact should not be routed to GPU pricing")
+	require.Len(t, retriever.calls, 1, "disk billing must be answered through knowledge retrieval")
+	require.Len(t, mock.calls, 1, "retrieved evidence should be synthesized by the RAG answerer")
 }
 
 func TestReplayRegression_DiskBillingFollowupGPUModelStaysOnDisk(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "4090 价格如下"}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{diskBillingKnowledgeResult()}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "磁盘空间收费和 GPU 型号无关。系统盘默认 100GB 免费，数据盘创建即收费。 [1]"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
 	eng.messages = append(eng.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleUser,
 		Content: "磁盘空间是如何收费的？100GB原始空间是免费的吗",
@@ -1175,7 +1185,30 @@ func TestReplayRegression_DiskBillingFollowupGPUModelStaysOnDisk(t *testing.T) {
 	require.Contains(t, reply, "磁盘空间收费和 GPU 型号无关")
 	require.Contains(t, reply, "系统盘默认 100GB 免费")
 	require.NotContains(t, reply, "4090 价格")
-	require.Len(t, mock.calls, 0, "GPU-only follow-up after disk billing must stay in disk context")
+	require.Len(t, retriever.calls, 1, "GPU-only follow-up after disk billing must still retrieve disk evidence")
+	require.Contains(t, retriever.calls[0].question, "磁盘空间是如何收费的")
+	require.Contains(t, retriever.calls[0].question, "4090")
+	require.Len(t, mock.calls, 1, "retrieved evidence should be synthesized by the RAG answerer")
+}
+
+func diskBillingKnowledgeResult() knowledge.RetrievalResult {
+	chunk := knowledge.KBChunk{
+		ChunkID:     "w0-billing_rule-disk-billing",
+		KBVersion:   "kb.stage2b.test",
+		SourceType:  "faq",
+		ProductArea: "billing_rule",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "云盘资源计费（系统盘与数据盘）",
+		Content:     "系统盘默认一定的免费额度，系统盘扩容、新增数据盘根据单价、云盘容量和使用时长收取费用。数据盘创建即收费，与是否挂载无关；按量实例关机后，超免费额度部分正常计费。",
+	}
+	return knowledge.RetrievalResult{
+		Enabled:    true,
+		KBVersion:  "kb.stage2b.test",
+		Hits:       []knowledge.KBChunk{chunk},
+		HitItems:   []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+		HybridMode: "bm25_fallback",
+	}
 }
 
 func manyInstancesWithNamedTarget(name, state string) map[string]any {

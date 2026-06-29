@@ -628,10 +628,6 @@ func (e *Engine) tryDeterministicProductFactReply(userMsg string) (string, bool)
 	if e == nil {
 		return "", false
 	}
-	if reply, ok := deterministicDiskBillingReply(userMsg, e.messages); ok {
-		e.messages = append(e.messages, assistantMessage(reply))
-		return reply, true
-	}
 	if reply, ok := deterministicCodingPlanManagementReply(userMsg); ok {
 		e.messages = append(e.messages, assistantMessage(reply))
 		return reply, true
@@ -641,71 +637,6 @@ func (e *Engine) tryDeterministicProductFactReply(userMsg string) (string, bool)
 		return reply, true
 	}
 	return "", false
-}
-
-func deterministicDiskBillingReply(userMsg string, history []openai.ChatCompletionMessage) (string, bool) {
-	text := strings.TrimSpace(userMsg)
-	if text == "" {
-		return "", false
-	}
-	if isDiskBillingQuestion(text) {
-		return diskBillingFactReply(), true
-	}
-	if looksLikeGPUModelOnly(text) && recentUserAskedDiskBilling(history) {
-		return "磁盘空间收费和 GPU 型号无关，不需要选择 4090 或其他卡型。\n\n" + diskBillingFactReply(), true
-	}
-	return "", false
-}
-
-func isDiskBillingQuestion(text string) bool {
-	compact := normalizeResourceText(text)
-	if compact == "" {
-		return false
-	}
-	hasDisk := strings.Contains(text, "磁盘") ||
-		strings.Contains(text, "云硬盘") ||
-		strings.Contains(text, "系统盘") ||
-		strings.Contains(text, "数据盘") ||
-		strings.Contains(strings.ToLower(text), "disk")
-	hasBilling := strings.Contains(text, "收费") ||
-		strings.Contains(text, "计费") ||
-		strings.Contains(text, "价格") ||
-		strings.Contains(text, "价钱") ||
-		strings.Contains(text, "免费") ||
-		strings.Contains(text, "扣费")
-	return hasDisk && hasBilling
-}
-
-func diskBillingFactReply() string {
-	return "磁盘计费可以这样理解：系统盘默认 100GB 免费；如果系统盘扩容超过 100GB，超出的存储会计费。数据盘会单独按量计费。\n\n按量实例关机后，CPU、GPU、内存停止计费，但额外扩容的系统盘、数据盘和镜像资源会继续保留并计费。你说的“100GB 原始空间”通常指默认系统盘 100GB，这部分不收费；最终费用以控制台账单为准。"
-}
-
-func recentUserAskedDiskBilling(history []openai.ChatCompletionMessage) bool {
-	seen := 0
-	for i := len(history) - 1; i >= 0 && seen < 6; i-- {
-		msg := history[i]
-		if msg.Role != openai.ChatMessageRoleUser {
-			continue
-		}
-		seen++
-		if isDiskBillingQuestion(msg.Content) {
-			return true
-		}
-	}
-	return false
-}
-
-func looksLikeGPUModelOnly(text string) bool {
-	compact := normalizeResourceText(text)
-	if compact == "" || len([]rune(compact)) > 12 {
-		return false
-	}
-	for _, token := range []string{"4090", "5090", "3090", "3080ti", "a100", "a800", "h20", "v100", "v100s", "p40"} {
-		if compact == token {
-			return true
-		}
-	}
-	return false
 }
 
 func deterministicCodingPlanManagementReply(userMsg string) (string, bool) {
