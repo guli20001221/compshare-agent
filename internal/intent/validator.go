@@ -291,8 +291,8 @@ func requiredToolsForIntent(intent Intent) map[string]struct{} {
 		// to match a workload to an existing image). The actual mutation
 		// (CreateCompShareInstance) runs through the orchestrator saga + StepConfirm,
 		// never via plan.required_tools — same discipline as operation_lifecycle.
-		// The handler ignores plan.required_tools; this case only keeps the few-shots'
-		// declared tool accepted by ValidateRoute (B8.3 ③).
+		// The handler ignores plan.required_tools; this case only validates the
+		// image-catalog reads declared by the route examples.
 		add("DescribeCompShareImages", "DescribeCommunityImages")
 	}
 

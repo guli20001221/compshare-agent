@@ -44,15 +44,11 @@ const (
 	// resource_info or knowledge_qa) lets the renderer foreground the
 	// DiskSet view rather than the default instance summary.
 	IntentDiskInfo Intent = "disk_info"
-	// deploy_model (B8.3, 2026-05-31): the first agent-tier mutating skill —
-	// "按需求选优云已有镜像建实例并轮询到 Running". UNLIKE the read-only route
-	// intents above, this is NOT a route (route handlers reach only
-	// the ToolExecutor and cannot call e.RunAgentSaga). It routes through a
-	// dedicated engine dispatch handler (tryDeployModel) that does TierAgent
-	// image-matching, drives CreateInstanceDef through the orchestrator saga,
-	// and polls the new instance to Running. Declared here so the handler compiles;
-	// the planner does NOT emit it until B8.3 ③ teaches the example + re-pins
-	// the system-prompt SHA, so this constant is zero-behavior on its own.
+	// deploy_model: workload-first create-family intent. The user wants to run
+	// or deploy a specific model, framework, or application, and the engine
+	// uses the deploy handler to match a real image before entering the existing
+	// confirm-gated create flow. Keep this separate from create_instance, which
+	// covers hardware-first creation.
 	IntentDeployModel Intent = "deploy_model"
 	// create_instance (R2b P1a, 2026-06-26): first-class create-family intent.
 	// It is default-on via COMPSHARE_UNIFIED_CREATE and keeps deploy_model separate;
@@ -253,9 +249,8 @@ func RuntimeIntents() []Intent {
 		IntentCFSInfo,
 		IntentPricingQuery,
 		IntentDiskInfo,
-		// deploy_model is a runtime intent: validIntent (validator.go) must accept
-		// it so the planner can emit it (B8.3 ③) and the dispatch handler fire. It has
-		// no ReAct tool subset (the handler always handles the turn, never falls
+		// deploy_model is a runtime intent with a dedicated engine handler. It has
+		// no ReAct tool subset (the handler handles the turn and should not fall
 		// through) — see tool_subset_test.go nilExpected.
 		IntentDeployModel,
 		IntentCreateInstance,

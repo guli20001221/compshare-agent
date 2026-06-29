@@ -511,38 +511,36 @@ func routerPromptExampleGroups() []routerPromptExampleGroup {
 			},
 		},
 		{
-			// deploy_model (B8.3, 2026-05-31): the agent-tier "deploy a workload"
-			// skill. Anchor on WORKLOAD-FIRST phrasing — the user names a model,
-			// framework, or application and wants a suitable instance created for
-			// it (the agent picks the image + GPU). This is distinct from
-			// operation_lifecycle, which covers operations on EXISTING instances
-			// and spec-first creation (user dictates exact hardware). target_refs
-			// stays empty: the workload name is extracted by the deploy handler's
-			// matcher, not a planner slot. required_tools is the image-catalog read
-			// (the handler ignores it; it keeps ValidateRoute happy — see
-			// requiredToolsForIntent IntentDeployModel).
+			// deploy_model anchors workload-first creation. The user names a model,
+			// framework, or application and wants a suitable instance created for it
+			// (the engine picks the image + GPU). This is distinct from
+			// create_instance, which covers hardware-first creation, and from
+			// operation_lifecycle, which covers existing-instance operations.
+			// target_refs stays empty: the workload name is extracted by the deploy
+			// handler's matcher, not a planner slot. required_tools is the
+			// image-catalog read validated by requiredToolsForIntent.
 			Intent: IntentDeployModel,
-			Source: "B8.3 (2026-05-31): anchor workload-first deploy phrasing (部署/跑/搭 + model/app) to deploy_model, not operation_lifecycle",
+			Source: "workload-first create-family requests route to deploy_model",
 			Examples: []routerPromptExample{
 				{
 					Question: "帮我部署一个 Qwen2.5-32B",
 					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
-					Source:   "B8.3: 部署 + 模型全称 — agent sizes GPU by VRAM and picks a framework base",
+					Source:   "deploy model name — engine sizes GPU and picks a framework image",
 				},
 				{
 					Question: "我想跑数字人",
 					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
-					Source:   "B8.3: 跑 + 应用类 — agent matches a ready-to-run community image",
+					Source:   "run application workload — engine matches a ready-to-run image",
 				},
 				{
 					Question: "搞一个能跑 ComfyUI 的环境",
 					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
-					Source:   "B8.3: 搭环境 + 框架/应用名 — workload-first, agent selects image",
+					Source:   "set up framework or application environment — engine selects image",
 				},
 				{
 					Question: "部署 Llama3-70B 做推理服务",
 					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
-					Source:   "B8.3: 部署 + 大模型 + 用途 — exercises multi-card VRAM sizing path",
+					Source:   "deploy large-model inference workload — exercises VRAM sizing path",
 				},
 			},
 		},
@@ -564,22 +562,22 @@ func routerPromptExampleGroupsWithUnifiedCreate(unified bool) []routerPromptExam
 	out = append(out, groups...)
 	out = append(out, routerPromptExampleGroup{
 		Intent: IntentCreateInstance,
-		Source: "R2b P1a (2026-06-26): first-class create-family anchors",
+		Source: "first-class hardware-create anchors",
 		Examples: []routerPromptExample{
 			{
 				Question: "帮我搞台 4090",
 				PlanJSON: `{"schema_version":"1.0","intent":"create_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
-				Source:   "R2b P1a: spec-first exact-hardware create routes to first-class create_instance",
+				Source:   "hardware-first exact-GPU create routes to create_instance",
 			},
 			{
 				Question: "帮我抢一台上海的 4090",
 				PlanJSON: `{"schema_version":"1.0","intent":"create_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
-				Source:   "R2b P1a: strict-zone spec-first create routes to first-class create_instance",
+				Source:   "hardware-first create with zone preference routes to create_instance",
 			},
 			{
 				Question: "部署一台 4090 跑 Qwen",
 				PlanJSON: `{"schema_version":"1.0","intent":"create_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
-				Source:   "R2b P1a: mixed hardware+workload create-family request keeps both facets in the unified handler",
+				Source:   "mixed hardware and workload request keeps both facets in the unified handler",
 			},
 		},
 	})

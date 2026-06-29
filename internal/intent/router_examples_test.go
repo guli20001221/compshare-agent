@@ -218,17 +218,16 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // Engine remains routing-only — no new handler — so the change is bounded
 // to prompt + intent enum + tool subset. SHA bumped by construction.
 //
-// deploy_model (B8.3, 2026-05-31) — the first agent-tier skill becomes
-// planner-reachable. Three coupled prompt changes ship:
+// deploy_model — workload-first create-family requests stay separate from
+// hardware-first create_instance requests. The prompt includes:
 //
 //	(1) enum line bumped to include deploy_model (NOT primary-intents — it's a
 //	    mutating intent, example-driven only so it fires on clear deploy phrasing);
 //	(2) one new directive distinguishing workload-first deploy (部署/跑/搭 +
-//	    model/app) from operation_lifecycle (existing-instance ops + spec-first create);
+//	    model/app) from create_instance and existing-instance operations;
 //	(3) new IntentDeployModel example group with 4 anchors, required_tools=
-//	    [DescribeCompShareImages]. UNLIKE the routing-only intents above, this one
-//	    DOES have a new engine handler (tryDeployModel) — but the planner prompt change
-//	    is the same shape. SHA bumped by construction.
+//	    [DescribeCompShareImages]. Unlike routing-only intents above, this one
+//	    has a dedicated engine handler.
 //
 // PR #217 integrated runtime refactor (2026-06-02): SHA bumped for two
 // intentional planner-visible changes:
