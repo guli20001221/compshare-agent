@@ -1010,9 +1010,13 @@ func TestReplayRegression_DirectLifecycleStopColloquialPhraseBypassesReActLoop(t
 
 func TestReplayRegression_CodingPlanDeleteDoesNotInspectInstances(t *testing.T) {
 	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("claude-write-test", "Stopped"))
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{codingPlanManagementKnowledgeResult()}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Coding Plan 的套餐管理入口在控制台左侧导航「Agent Plan」→「套餐管理」。资料未提供删除、取消或退订 Coding Plan 套餐的操作入口；订阅服务购买后不支持退款。 [1]"}}}
 	eng := NewWithDeps(mock, exec, nil)
 	eng.Init(context.Background())
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
 	exec.calls = nil
 
 	reply, err := eng.Chat(context.Background(), "删除coding plan 包", noopStep)
@@ -1020,9 +1024,11 @@ func TestReplayRegression_CodingPlanDeleteDoesNotInspectInstances(t *testing.T) 
 	require.NoError(t, err)
 	require.Contains(t, reply, "Coding Plan")
 	require.Contains(t, reply, "未提供")
+	require.Contains(t, reply, "不支持退款")
 	require.NotContains(t, reply, "轮次超限")
 	require.Len(t, exec.calls, 0, "Coding Plan package management is product knowledge, not instance lookup")
-	require.Len(t, mock.calls, 0, "deterministic knowledge floor must bypass the ReAct loop for this replay regression")
+	require.Len(t, retriever.calls, 1, "Coding Plan package management must be answered through knowledge retrieval")
+	require.Len(t, mock.calls, 1, "retrieved evidence should be synthesized by the RAG answerer")
 }
 
 func TestReplayRegression_CurrentAccountGPUFactOverridesStale5090Knowledge(t *testing.T) {
@@ -1201,6 +1207,26 @@ func diskBillingKnowledgeResult() knowledge.RetrievalResult {
 		Confidence:  "high",
 		Title:       "云盘资源计费（系统盘与数据盘）",
 		Content:     "系统盘默认一定的免费额度，系统盘扩容、新增数据盘根据单价、云盘容量和使用时长收取费用。数据盘创建即收费，与是否挂载无关；按量实例关机后，超免费额度部分正常计费。",
+	}
+	return knowledge.RetrievalResult{
+		Enabled:    true,
+		KBVersion:  "kb.stage2b.test",
+		Hits:       []knowledge.KBChunk{chunk},
+		HitItems:   []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+		HybridMode: "bm25_fallback",
+	}
+}
+
+func codingPlanManagementKnowledgeResult() knowledge.RetrievalResult {
+	chunk := knowledge.KBChunk{
+		ChunkID:     "w0-modelverse-coding-plan-management",
+		KBVersion:   "kb.stage2b.test",
+		SourceType:  "faq",
+		ProductArea: "modelverse",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "Coding Plan 套餐购买与管理",
+		Content:     "控制台左侧导航「Agent Plan」→「套餐管理」可查看套餐信息、调用额度、续费或升级；资料未提供删除、取消或退订 Coding Plan 套餐的操作入口。订阅服务一经购买即视为确认，不支持退款。",
 	}
 	return knowledge.RetrievalResult{
 		Enabled:    true,
