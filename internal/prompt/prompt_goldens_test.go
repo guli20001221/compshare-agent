@@ -43,7 +43,7 @@ func TestPromptGoldenCasesSchema(t *testing.T) {
 	}
 }
 
-func TestPromptGoldenCasesCoverCreateImageSelection(t *testing.T) {
+func TestPromptGoldenCasesCoverCreateInstanceEntrypoint(t *testing.T) {
 	cases := loadPromptGoldenCases(t)
 	byID := map[string]promptGoldenCase{}
 	for _, tc := range cases {
@@ -55,10 +55,10 @@ func TestPromptGoldenCasesCoverCreateImageSelection(t *testing.T) {
 	} {
 		tc, ok := byID[id]
 		if !ok {
-			t.Fatalf("prompt golden case %s is required to guard operation image selection", id)
+			t.Fatalf("prompt golden case %s is required to guard create_instance entrypoint coverage", id)
 		}
-		if tc.ExpectIntent != string(intent.IntentOperationLifecycle) {
-			t.Fatalf("case %s intent = %s, want %s", id, tc.ExpectIntent, intent.IntentOperationLifecycle)
+		if tc.ExpectIntent != string(intent.IntentCreateInstance) {
+			t.Fatalf("case %s intent = %s, want %s", id, tc.ExpectIntent, intent.IntentCreateInstance)
 		}
 		if !containsString(tc.AllowedActions, "CreateInstanceWorkflow") {
 			t.Fatalf("case %s must allow CreateInstanceWorkflow: %#v", id, tc)

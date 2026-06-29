@@ -121,7 +121,6 @@ func IntentToolSubset(i Intent) []string {
 			"GetCompShareInstancePrice",
 			"GetCompShareInstanceUpgradePrice",
 			"CheckCompShareResourceCapacity",
-			"CreateInstanceWorkflow",
 			"StopInstanceWorkflow",
 			"StartInstanceWorkflow",
 			"RebootInstanceWorkflow",

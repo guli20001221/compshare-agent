@@ -112,9 +112,11 @@ func TestRequiredToolsWindowDivergesFromAuthoritativeWindow(t *testing.T) {
 		t.Fatalf("expected the authoritative (intent-derived) window to differ from the RequiredTools-derived window; both = %v", sortedKeys(authoritative))
 	}
 
-	// Concretely: a mutating workflow tool is in the authoritative window but can
-	// never be in any plan.RequiredTools, proving authorization is intent-derived.
-	const workflowTool = "CreateInstanceWorkflow"
+	// Concretely: a mutating lifecycle workflow tool is in the authoritative window
+	// but can never be in any plan.RequiredTools, proving authorization is
+	// intent-derived. CreateInstanceWorkflow is intentionally excluded from this
+	// window; new-instance creation is owned by the create_instance handler.
+	const workflowTool = "StopInstanceWorkflow"
 	if _, ok := authoritative[workflowTool]; !ok {
 		t.Fatalf("precondition: %q expected in mutating operation_lifecycle window; got %v", workflowTool, sortedKeys(authoritative))
 	}

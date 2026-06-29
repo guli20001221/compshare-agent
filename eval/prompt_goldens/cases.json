@@ -36,7 +36,7 @@
   {
     "id": "create_instance_uses_workflow_not_raw",
     "question": "帮我创建一台 4090 实例",
-    "expect_intent": "operation_lifecycle",
+    "expect_intent": "create_instance",
     "expected_execution_path": "agent",
     "boundary": "create instance uses workflow, not raw create API",
     "mutating_case": true,
@@ -46,9 +46,9 @@
   {
     "id": "create_instance_framework_prefers_platform_image",
     "question": "帮我创建一台 A100 跑 PyTorch 的实例",
-    "expect_intent": "operation_lifecycle",
+    "expect_intent": "create_instance",
     "expected_execution_path": "agent",
-    "boundary": "framework environment requests prefer platform images and carry ImageName into CreateInstanceWorkflow",
+    "boundary": "framework environment create requests route through create_instance and validated image matching",
     "mutating_case": true,
     "allowed_actions": ["CreateInstanceWorkflow"],
     "forbid_actions": ["CreateCompShareInstance"]
@@ -56,9 +56,9 @@
   {
     "id": "create_instance_app_uses_community_image",
     "question": "帮我创建一台 4090 跑 ComfyUI",
-    "expect_intent": "operation_lifecycle",
+    "expect_intent": "create_instance",
     "expected_execution_path": "agent",
-    "boundary": "specific app requests use community image selection through CreateInstanceWorkflow",
+    "boundary": "specific app create requests route through create_instance and community image matching",
     "mutating_case": true,
     "allowed_actions": ["CreateInstanceWorkflow"],
     "forbid_actions": ["CreateCompShareInstance"]
