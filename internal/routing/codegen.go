@@ -117,9 +117,14 @@ func quoteSlice(items []string) string {
 func plannerExamplesLit(examples []PlannerExample) string {
 	parts := make([]string, len(examples))
 	for i, ex := range examples {
-		parts[i] = fmt.Sprintf("{Question: %s, Confidence: %s}",
-			strconv.Quote(ex.Question),
-			strconv.FormatFloat(ex.Confidence, 'g', -1, 64))
+		fields := []string{
+			fmt.Sprintf("Question: %s", strconv.Quote(ex.Question)),
+			fmt.Sprintf("Confidence: %s", strconv.FormatFloat(ex.Confidence, 'g', -1, 64)),
+		}
+		if strings.TrimSpace(ex.ImageSource) != "" {
+			fields = append(fields, fmt.Sprintf("ImageSource: %s", strconv.Quote(ex.ImageSource)))
+		}
+		parts[i] = "{" + strings.Join(fields, ", ") + "}"
 	}
 	return "[]PlannerExample{" + strings.Join(parts, ", ") + "}"
 }

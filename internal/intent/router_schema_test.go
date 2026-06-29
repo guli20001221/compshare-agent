@@ -111,6 +111,32 @@ func TestIntentRouteResponseSchemaForIntents_CanExposeUnifiedCreate(t *testing.T
 	}
 }
 
+func TestIntentRouteResponseSchema_ExposesImageSourceSlot(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Slots struct {
+				Properties struct {
+					ImageSource struct {
+						Enum []string `json:"enum"`
+					} `json:"image_source"`
+				} `json:"properties"`
+			} `json:"slots"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(IntentRouteResponseSchema(), &schema); err != nil {
+		t.Fatalf("schema invalid: %v", err)
+	}
+	got := map[string]bool{}
+	for _, v := range schema.Properties.Slots.Properties.ImageSource.Enum {
+		got[v] = true
+	}
+	for _, want := range []string{"", "platform", "custom", "community", "shared"} {
+		if !got[want] {
+			t.Fatalf("image_source enum missing %q: %#v", want, got)
+		}
+	}
+}
+
 // TestIntentRouteResponseSchema_AcceptsValidatorCompatibleOutput is a coupling
 // check: a representative IntentRoute the validator accepts must round-trip
 // through the schema's declared structure (intent in enum, schema_version const,

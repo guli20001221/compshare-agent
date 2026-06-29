@@ -95,8 +95,9 @@ type RouteMetadata struct {
 }
 
 type RoutePlannerExample struct {
-	Question   string
-	Confidence float64
+	Question    string
+	Confidence  float64
+	ImageSource ImageSource
 }
 
 // RoutingPromptFragments returns planner-prompt directives + one-shot
@@ -131,9 +132,10 @@ func routingPromptFragmentsFrom(meta []RouteMetadata) ([]string, []string) {
 
 func routingPromptExampleJSON(meta RouteMetadata, example RoutePlannerExample) string {
 	type promptSlots struct {
-		TargetRefs []TargetRef `json:"target_refs"`
-		Metrics    []Metric    `json:"metrics"`
-		TimeWindow *TimeWindow `json:"time_window"`
+		TargetRefs  []TargetRef `json:"target_refs"`
+		Metrics     []Metric    `json:"metrics"`
+		TimeWindow  *TimeWindow `json:"time_window"`
+		ImageSource ImageSource `json:"image_source,omitempty"`
 	}
 	type promptPlan struct {
 		SchemaVersion string      `json:"schema_version"`
@@ -148,9 +150,10 @@ func routingPromptExampleJSON(meta RouteMetadata, example RoutePlannerExample) s
 		SchemaVersion: SchemaVersion,
 		Intent:        Intent(meta.IntentLabel),
 		Slots: promptSlots{
-			TargetRefs: []TargetRef{},
-			Metrics:    []Metric{},
-			TimeWindow: nil,
+			TargetRefs:  []TargetRef{},
+			Metrics:     []Metric{},
+			TimeWindow:  nil,
+			ImageSource: ImageSource(example.ImageSource),
 		},
 		RequiredTools: []string{meta.RequiredTool},
 		Retrieval:     Retrieval{Enabled: false},
@@ -312,36 +315,13 @@ func handlePlatformImageList(ctx context.Context, h *DemoHandler, req HandlerReq
 	return result
 }
 
-type imageListSource string
-
-const (
-	imageListSourcePlatform  imageListSource = "platform"
-	imageListSourceCustom    imageListSource = "custom"
-	imageListSourceCommunity imageListSource = "community"
-	imageListSourceShared    imageListSource = "shared"
-)
-
-func resolveImageListSource(userText string) imageListSource {
-	text := strings.ToLower(strings.TrimSpace(userText))
-	switch {
-	case containsAny(text, "共享镜像", "共享给我", "共享给我的", "别人共享", "收到的共享"):
-		return imageListSourceShared
-	case containsAny(text, "自制", "自定义", "私有镜像", "我的镜像", "自己做", "自己存", "自己打包"):
-		return imageListSourceCustom
-	case containsAny(text, "社区", "镜像市场", "别人发布", "分享出来", "公开镜像", "数字人"):
-		return imageListSourceCommunity
-	default:
-		return imageListSourcePlatform
-	}
-}
-
 func handleImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
-	switch resolveImageListSource(req.UserText) {
-	case imageListSourceShared:
+	switch req.Plan.Slots.ImageSource {
+	case ImageSourceShared:
 		return handleSharedImageList(ctx, h, req)
-	case imageListSourceCustom:
+	case ImageSourceCustom:
 		return handleCustomImageList(ctx, h, req)
-	case imageListSourceCommunity:
+	case ImageSourceCommunity:
 		return handleCommunityImageList(ctx, h, req)
 	default:
 		return handlePlatformImageList(ctx, h, req)

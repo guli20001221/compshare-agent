@@ -346,7 +346,11 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // deploy advice regex family to be removed. The old operation_lifecycle
 // spec-first create examples were also removed; unified create owns that path.
 // No few-shot examples added.
-const systemPromptSHA256Baseline = "8aa2ca01994603ae6fafbfb09fa49471fc4085d0926179d72afe81da794e4b6e"
+//
+// R2b Phase C image-list source cleanup (2026-06-29): image_list now asks the
+// router to emit slots.image_source for platform/custom/community/shared,
+// replacing the backend keyword source resolver. No new intent labels added.
+const systemPromptSHA256Baseline = "f7d631f962e09311cdada80b419131abe125e3747e0acb6252b8e19f5bb5c067"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

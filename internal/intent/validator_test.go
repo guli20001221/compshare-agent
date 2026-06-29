@@ -96,6 +96,27 @@ func TestValidatePlan_AcceptsStockCapacityPrecheckTool(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidatePlan_AcceptsImageListSourceOnlyForImageList(t *testing.T) {
+	valid := IntentRoute{
+		SchemaVersion: SchemaVersion,
+		Intent:        IntentImageList,
+		Slots:         Slots{ImageSource: ImageSourceCustom},
+		RequiredTools: []string{"DescribeCompShareCustomImages"},
+		Retrieval:     Retrieval{Enabled: false},
+		Confidence:    0.8,
+	}
+	require.NoError(t, ValidateRoute(valid, ValidationContext{UserText: "我自己保存的镜像有哪些", Registry: testRegistry(t)}))
+
+	invalidSource := valid
+	invalidSource.Slots.ImageSource = ImageSource("private")
+	requireValidationCode(t, ValidateRoute(invalidSource, ValidationContext{UserText: "镜像", Registry: testRegistry(t)}), ErrInvalidImageSource)
+
+	wrongIntent := valid
+	wrongIntent.Intent = IntentKnowledgeQA
+	wrongIntent.RequiredTools = nil
+	requireValidationCode(t, ValidateRoute(wrongIntent, ValidationContext{UserText: "镜像区别", Registry: testRegistry(t)}), ErrInvalidImageSource)
+}
+
 func TestValidatePlan_RouteRegistryToolsStayAllowed(t *testing.T) {
 	for _, intentValue := range routingIntentOrder {
 		requiredTool, ok := routingRequiredTool(intentValue)

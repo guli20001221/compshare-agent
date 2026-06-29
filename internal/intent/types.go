@@ -102,6 +102,15 @@ const (
 	TimeWindowAbsolute TimeWindowType = "absolute"
 )
 
+type ImageSource string
+
+const (
+	ImageSourcePlatform  ImageSource = "platform"
+	ImageSourceCustom    ImageSource = "custom"
+	ImageSourceCommunity ImageSource = "community"
+	ImageSourceShared    ImageSource = "shared"
+)
+
 type IntentRoute struct {
 	SchemaVersion string `json:"schema_version"`
 	Intent        Intent `json:"intent"`
@@ -144,9 +153,10 @@ const (
 )
 
 type Slots struct {
-	TargetRefs []TargetRef `json:"target_refs,omitempty"`
-	Metrics    []Metric    `json:"metrics,omitempty"`
-	TimeWindow *TimeWindow `json:"time_window,omitempty"`
+	TargetRefs  []TargetRef `json:"target_refs,omitempty"`
+	Metrics     []Metric    `json:"metrics,omitempty"`
+	TimeWindow  *TimeWindow `json:"time_window,omitempty"`
+	ImageSource ImageSource `json:"image_source,omitempty"`
 	// Action carries the lifecycle/configuration verb when Intent is
 	// IntentOperationLifecycle. PR1 hotfix Bug 4 (2026-05-28): used by
 	// engine.executeTool to deterministically pre-filter the candidate

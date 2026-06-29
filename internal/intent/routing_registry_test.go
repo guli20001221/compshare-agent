@@ -296,13 +296,14 @@ func TestDispatchRoute_ImageListResolvesSourceFacet(t *testing.T) {
 	cases := []struct {
 		name       string
 		userText   string
+		source     ImageSource
 		wantAction string
 	}{
-		{name: "platform default", userText: "查询平台镜像列表", wantAction: "DescribeCompShareImages"},
-		{name: "custom", userText: "查询自制镜像", wantAction: "DescribeCompShareCustomImages"},
-		{name: "community", userText: "查询社区镜像", wantAction: "DescribeCommunityImages"},
-		{name: "shared generic", userText: "有哪些共享镜像", wantAction: "DescribeCompShareSharingImages"},
-		{name: "shared", userText: "别人共享给我的镜像在哪看", wantAction: "DescribeCompShareSharingImages"},
+		{name: "platform explicit", userText: "查询平台镜像列表", source: ImageSourcePlatform, wantAction: "DescribeCompShareImages"},
+		{name: "platform default", userText: "有哪些 PyTorch 镜像", wantAction: "DescribeCompShareImages"},
+		{name: "custom saved phrasing", userText: "我自己保存的镜像有哪些", source: ImageSourceCustom, wantAction: "DescribeCompShareCustomImages"},
+		{name: "community", userText: "查询社区镜像", source: ImageSourceCommunity, wantAction: "DescribeCommunityImages"},
+		{name: "shared generic", userText: "有哪些共享镜像", source: ImageSourceShared, wantAction: "DescribeCompShareSharingImages"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -310,7 +311,7 @@ func TestDispatchRoute_ImageListResolvesSourceFacet(t *testing.T) {
 			h := NewDemoHandler(exec)
 			req := HandlerRequest{
 				UserText: tc.userText,
-				Plan:     IntentRoute{Intent: IntentImageList},
+				Plan:     IntentRoute{Intent: IntentImageList, Slots: Slots{ImageSource: tc.source}},
 			}
 			result := h.DispatchRoute(context.Background(), req)
 			if result.Status != HandlerStatusHandled {

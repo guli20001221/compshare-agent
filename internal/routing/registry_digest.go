@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 )
 
-const generatedRegistryDigestExpected = "c9867b237dbe694311e1ec71174d717239bc4a292fb52ca8e080a521a16c347c"
+const generatedRegistryDigestExpected = "c9a8f6225f75d7e73faff9ecb9f83170a81f83166f2c800376bb464f4ab36d92"
 
 func computeRegistryDigest(src []byte) string {
 	norm := bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))
