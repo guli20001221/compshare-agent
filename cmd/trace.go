@@ -507,14 +507,8 @@ func routeIntentLabels(routeIntents []intent.Intent) []string {
 			labels = append(labels, "image_tags")
 		case intent.IntentModelRepositoryBrowse:
 			labels = append(labels, "model_repo")
-		case intent.IntentPlatformImageList:
-			labels = append(labels, "platform_image")
-		case intent.IntentCustomImageList:
-			labels = append(labels, "custom_image")
-		case intent.IntentCommunityImageList:
-			labels = append(labels, "community_image")
-		case intent.IntentSharedImageList:
-			labels = append(labels, "shared_image")
+		case intent.IntentImageList:
+			labels = append(labels, "image_list")
 		case intent.IntentDiagnosis:
 			labels = append(labels, "diagnosis")
 		case intent.IntentVagueFailure:
@@ -899,10 +893,7 @@ func defaultRouteIntents() []intent.Intent {
 		intent.IntentRefundEstimate,
 		intent.IntentImageTagCatalog,
 		intent.IntentModelRepositoryBrowse,
-		intent.IntentPlatformImageList,
-		intent.IntentCustomImageList,
-		intent.IntentCommunityImageList,
-		intent.IntentSharedImageList,
+		intent.IntentImageList,
 		intent.IntentNetAcceleratorStatus,
 	}
 }
@@ -941,14 +932,8 @@ func intentPlannerRouteIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []str
 			enabled = intent.IntentImageTagCatalog
 		case "model_repo", "model_repository", "model_repository_browse":
 			enabled = intent.IntentModelRepositoryBrowse
-		case "platform_image":
-			enabled = intent.IntentPlatformImageList
-		case "custom_image":
-			enabled = intent.IntentCustomImageList
-		case "community_image":
-			enabled = intent.IntentCommunityImageList
-		case "shared_image", "sharing_image", "shared_image_list":
-			enabled = intent.IntentSharedImageList
+		case "image", "image_list", "platform_image", "platform_image_list", "custom_image", "custom_image_list", "community_image", "community_image_list", "shared_image", "sharing_image", "shared_image_list":
+			enabled = intent.IntentImageList
 		case "network_accelerator", "network_accelerator_status", "net_accelerator":
 			enabled = intent.IntentNetAcceleratorStatus
 		case "pricing", "pricing_query":

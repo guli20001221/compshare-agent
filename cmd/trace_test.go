@@ -380,16 +380,16 @@ func TestIntentPlannerRouteIntentsFromEnv_ModelRepositoryAliases(t *testing.T) {
 	require.Equal(t, "model_repository_browse", string(intents[0]))
 }
 
-func TestIntentPlannerRouteIntentsFromEnv_SharedImageAliases(t *testing.T) {
+func TestIntentPlannerRouteIntentsFromEnv_ImageListAliases(t *testing.T) {
 	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
 		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
-			return "shared_image, sharing_image, shared_image_list"
+			return "platform_image, custom_image, community_image, shared_image, sharing_image, shared_image_list"
 		}
 		return ""
 	})
 	require.Empty(t, unknown)
 	require.Len(t, intents, 1)
-	require.Equal(t, "shared_image_list", string(intents[0]))
+	require.Equal(t, "image_list", string(intents[0]))
 }
 
 func TestIntentPlannerRouteIntents_DefaultsWhenEnvUnset(t *testing.T) {
@@ -406,10 +406,7 @@ func TestIntentPlannerRouteIntents_DefaultsWhenEnvUnset(t *testing.T) {
 		"refund_estimate",
 		"image_tag_catalog",
 		"model_repository_browse",
-		"platform_image_list",
-		"custom_image_list",
-		"community_image_list",
-		"shared_image_list",
+		"image_list",
 		"network_accelerator_status",
 	}
 	require.Len(t, intents, len(want))

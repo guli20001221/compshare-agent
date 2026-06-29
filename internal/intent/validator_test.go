@@ -143,11 +143,11 @@ func TestValidatePlan_RejectsRequiredToolOutsideIntentAllowlist(t *testing.T) {
 			},
 		},
 		{
-			name: "route cannot declare another route tool",
+			name: "route cannot declare unrelated tool",
 			plan: IntentRoute{
 				SchemaVersion: SchemaVersion,
-				Intent:        IntentPlatformImageList,
-				RequiredTools: []string{"DescribeCompShareCustomImages"},
+				Intent:        IntentImageList,
+				RequiredTools: []string{"DescribeCompShareInstance"},
 				Retrieval:     Retrieval{Enabled: false},
 				Confidence:    0.8,
 			},
@@ -340,10 +340,7 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentCFSInfo,
 		IntentImageTagCatalog,
 		IntentModelRepositoryBrowse,
-		IntentPlatformImageList,
-		IntentCustomImageList,
-		IntentCommunityImageList,
-		IntentSharedImageList,
+		IntentImageList,
 		// PR #3 (2026-05-22) — pricing route (commercial path).
 		IntentPricingQuery,
 		// disk_info (2026-05-29) — disk-listing routing; reuses

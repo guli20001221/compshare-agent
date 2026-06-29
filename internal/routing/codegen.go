@@ -18,10 +18,7 @@ var knownHandlerKeys = map[string]bool{
 	"handleCFSInfo":               true,
 	"handleImageTagCatalog":       true,
 	"handleModelRepositoryBrowse": true,
-	"handlePlatformImageList":     true,
-	"handleCustomImageList":       true,
-	"handleCommunityImageList":    true,
-	"handleSharedImageList":       true,
+	"handleImageList":             true,
 	"handlePricingQuery":          true,
 }
 

@@ -20,10 +20,7 @@ func PlannedExecutionPathForIntent(i Intent) ExecutionPath {
 		IntentCFSInfo,
 		IntentImageTagCatalog,
 		IntentModelRepositoryBrowse,
-		IntentPlatformImageList,
-		IntentCustomImageList,
-		IntentCommunityImageList,
-		IntentSharedImageList,
+		IntentImageList,
 		IntentPricingQuery:
 		return ExecutionPathRouting
 	case IntentKnowledgeQA:

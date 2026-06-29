@@ -28,10 +28,7 @@ var routingIntentOrder = []Intent{
 	IntentCFSInfo,
 	IntentImageTagCatalog,
 	IntentModelRepositoryBrowse,
-	IntentPlatformImageList,
-	IntentCustomImageList,
-	IntentCommunityImageList,
-	IntentSharedImageList,
+	IntentImageList,
 	IntentPricingQuery,
 }
 
@@ -45,6 +42,11 @@ func extraHandlerActions() map[Intent][]string {
 		},
 		IntentModelRepositoryBrowse: {
 			"DescribeModelRepositoryTags",
+		},
+		IntentImageList: {
+			"DescribeCompShareCustomImages",
+			"DescribeCommunityImages",
+			"DescribeCompShareSharingImages",
 		},
 	}
 }
@@ -308,6 +310,42 @@ func handlePlatformImageList(ctx context.Context, h *DemoHandler, req HandlerReq
 	result.ToolArgs = copyArgs(map[string]any{})
 	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.UserText, action, "platform"))
 	return result
+}
+
+type imageListSource string
+
+const (
+	imageListSourcePlatform  imageListSource = "platform"
+	imageListSourceCustom    imageListSource = "custom"
+	imageListSourceCommunity imageListSource = "community"
+	imageListSourceShared    imageListSource = "shared"
+)
+
+func resolveImageListSource(userText string) imageListSource {
+	text := strings.ToLower(strings.TrimSpace(userText))
+	switch {
+	case containsAny(text, "共享镜像", "共享给我", "共享给我的", "别人共享", "收到的共享"):
+		return imageListSourceShared
+	case containsAny(text, "自制", "自定义", "私有镜像", "我的镜像", "自己做", "自己存", "自己打包"):
+		return imageListSourceCustom
+	case containsAny(text, "社区", "镜像市场", "别人发布", "分享出来", "公开镜像", "数字人"):
+		return imageListSourceCommunity
+	default:
+		return imageListSourcePlatform
+	}
+}
+
+func handleImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
+	switch resolveImageListSource(req.UserText) {
+	case imageListSourceShared:
+		return handleSharedImageList(ctx, h, req)
+	case imageListSourceCustom:
+		return handleCustomImageList(ctx, h, req)
+	case imageListSourceCommunity:
+		return handleCommunityImageList(ctx, h, req)
+	default:
+		return handlePlatformImageList(ctx, h, req)
+	}
 }
 
 func handleImageTagCatalog(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {

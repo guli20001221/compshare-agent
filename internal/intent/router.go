@@ -333,40 +333,8 @@ func routerPromptExampleGroups() []routerPromptExampleGroup {
 				},
 			},
 		},
-		{
-			// disk_info (2026-05-29): user-reported regression — "我有哪些
-			// 数据盘" was routing to resource_info and rendering the instance
-			// summary instead of disk facts. Root cause: upstream API has zero
-			// disk-list actions (verified F:/uhost-compshare-api-master), disk
-			// facts only exist as DiskSet[] inside DescribeCompShareInstance
-			// response. Splitting routing to disk_info lets the renderer
-			// foreground DiskSet instead of leaking through resource_info's
-			// generic instance summary.
-			Intent: IntentDiskInfo,
-			Source: "2026-05-29 disk-listing routing fix (upstream has no list API; reuse DescribeCompShareInstance.DiskSet)",
-			Examples: []routerPromptExample{
-				{
-					Question: "我有哪些数据盘",
-					PlanJSON: `{"schema_version":"1.0","intent":"disk_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "user-reported phrasing: bare disk inventory question",
-				},
-				{
-					Question: "我的磁盘列表",
-					PlanJSON: `{"schema_version":"1.0","intent":"disk_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "alternate phrasing: explicit list verb",
-				},
-				{
-					Question: "uhost-1qyjfcigo1r6 挂了哪些盘",
-					PlanJSON: `{"schema_version":"1.0","intent":"disk_info","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qyjfcigo1r6","source":"user_text","source_span":"uhost-1qyjfcigo1r6"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "instance-scoped disk query (target_ref carries UHostId)",
-				},
-				{
-					Question: "我账号下有哪些云盘",
-					PlanJSON: `{"schema_version":"1.0","intent":"disk_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "synonym: 云盘 (cloud disk)",
-				},
-			},
-		},
+		// IntentDiskInfo migrated to internal/intent/planner_examples/disk_info.md.
+		diskPlannerExampleGroups[IntentDiskInfo],
 		{
 			Intent: IntentUnknown,
 			Source: "Phase 1 demo boundary: unsupported non-platform requests",
@@ -448,68 +416,8 @@ func routerPromptExampleGroups() []routerPromptExampleGroup {
 				},
 			},
 		},
-		{
-			// Batch 1 (2026-05-28) jitter fix. CLI trace at N=6 over the
-			// question "帮我关机 uhost-xxx" showed planner.intent split
-			// 33% operation_lifecycle / 67% unknown (or schema_valid=false).
-			// Root cause: operation_lifecycle had ZERO one-shot examples in
-			// the planner prompt, so the classifier had no anchor for the
-			// UHostId+action-verb pattern. Examples cover the five most
-			// common workflows the user hit in 2026-05-28 integration:
-			// 关机/启动/重启/加盘/变配, with both UHostId and Name target
-			// refs and colloquial verbs (停了/重启一下).
-			//
-			// PR1 hotfix Bug 1 (2026-05-28): add a ZERO-target-ref anchor so
-			// "帮我关机" (no UHostId, no name) classifies as
-			// operation_lifecycle. Engine then lists the user's instances
-			// and lets the user pick — this is the dominant path when users
-			// say "关机" without specifying which one. See memory:
-			// target-ref-required-for-operation-lifecycle.
-			Intent: IntentOperationLifecycle,
-			Source: "PR1 hotfix (2026-05-28): anchor action-verb chats including ZERO-target so 'help me shutdown' stops drifting to unknown",
-			Examples: []routerPromptExample{
-				{
-					Question: "帮我关机",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.7}`,
-					Source:   "PR1 hotfix Bug 1: ZERO target — engine lists instances and prompts for selection",
-				},
-				{
-					Question: "帮我关机 uhost-1qx1qsw4b1pk",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
-					Source:   "Batch 1: 关机 + UHostId — direct from 2026-05-28 jitter trace",
-				},
-				{
-					Question: "uhost-test 停了",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-test","source":"user_text","source_span":"uhost-test"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
-					Source:   "Batch 1: 口语化 '停了' verb — anchors shutdown via colloquial speech",
-				},
-				{
-					Question: "启动 train-gpu",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"name","value":"train-gpu","source":"user_text","source_span":"train-gpu"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
-					Source:   "Batch 1: 启动 + Name target_ref — exercises name-typed resolution",
-				},
-				{
-					Question: "把 uhost-xxx 重启一下",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-xxx","source":"user_text","source_span":"uhost-xxx"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
-					Source:   "Batch 1: 重启 + 口语化 '一下'",
-				},
-				{
-					Question: "给 uhost-1qx1qsw4b1pk 加 200G 数据盘",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
-					Source:   "Batch 1: 加盘 — CreateDiskWorkflow trigger, same intent as start/stop",
-				},
-				{
-					Question: "把 uhost-1qx1qsw4b1pk 保存成镜像",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-1qx1qsw4b1pk","source":"user_text","source_span":"uhost-1qx1qsw4b1pk"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
-					Source:   "Phase 3: create custom image from an existing instance; workflow asks for Name if missing",
-				},
-				{
-					Question: "保存训练环境，下次复用",
-					PlanJSON: `{"schema_version":"1.0","intent":"operation_lifecycle","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.72}`,
-					Source:   "Phase 3: zero-target custom-image request; engine should ask which instance/name rather than guessing",
-				},
-			},
-		},
+		// IntentOperationLifecycle migrated to internal/intent/planner_examples/operation_lifecycle.md.
+		diskPlannerExampleGroups[IntentOperationLifecycle],
 		{
 			// deploy_model anchors workload-first creation. The user names a model,
 			// framework, or application and wants a suitable instance created for it
@@ -628,7 +536,7 @@ func basePromptScaffoldWithUnifiedCreate(unified bool) string {
 		"Return exactly one JSON object. Do not output Markdown, prose, or tool calls.",
 		"Required top-level fields: schema_version, intent, slots, required_tools, retrieval, hard_block_hint, confidence.",
 		"schema_version must be \"1.0\". confidence must be a number in [0,1]. retrieval.enabled must be false for the current demo slice.",
-		"Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, knowledge_qa, gpu_specs_query, stock_availability, platform_image_list, custom_image_list, community_image_list, shared_image_list, image_tag_catalog, model_repository_browse, network_accelerator_status, refund_estimate, cfs_info, pricing_query, disk_info, deploy_model, unknown.",
+		"Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, knowledge_qa, gpu_specs_query, stock_availability, image_list, image_tag_catalog, model_repository_browse, network_accelerator_status, refund_estimate, cfs_info, pricing_query, disk_info, deploy_model, unknown.",
 		"Primary intents — all have working handlers on this platform: resource_info, monitor_query, operation_lifecycle, pricing_query, gpu_specs_query, stock_availability, network_accelerator_status, refund_estimate, cfs_info, billing_instance, knowledge_qa, diagnosis, disk_info. Prefer the closest matching primary intent over unknown whenever the question is about the CompShare platform, the user's own instances, or platform billing/pricing/usage.",
 		"deploy_model: deploy_model is for execution requests that should enter a create confirmation flow. The user wants to RUN or DEPLOY a specific model, framework, or application (e.g. 部署 Qwen2.5-32B / 跑数字人 / 搭一个能跑 ComfyUI 的环境 / 部署 Llama3 做推理) and wants a suitable instance created for that workload — the agent picks the image and GPU. Classify these as deploy_model with empty target_refs. Recommendation, how-to, price, configuration-sizing, comparison, or feasibility questions about deployment should emit knowledge_qa, pricing_query, or gpu_specs_query as appropriate, not deploy_model. API-subscription developer tools and coding assistants used through an API key or platform package — Claude Code, Codex, Coding Plan, Cursor — are NOT deployable models (they call a hosted API; there are no weights to run on an instance); classify how-to-use/configure questions about them as knowledge_qa, not deploy_model. Use operation_lifecycle (NOT deploy_model) for operations on an EXISTING instance (start/stop/reboot/resize/add-disk).",
 		"Treat performance questions like CPU high, GPU busy/idle, memory high, VRAM high, or whether a machine is idle as monitor_query first, unless the user states a concrete SSH, init, billing, lifecycle, or instance-internal operation problem.",
@@ -667,7 +575,7 @@ func basePromptScaffoldWithUnifiedCreate(unified bool) string {
 		for i, line := range lines {
 			switch {
 			case strings.HasPrefix(line, "Allowed intent enum:"):
-				lines[i] = "Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, knowledge_qa, gpu_specs_query, stock_availability, platform_image_list, custom_image_list, community_image_list, shared_image_list, image_tag_catalog, model_repository_browse, network_accelerator_status, refund_estimate, cfs_info, pricing_query, disk_info, deploy_model, create_instance, unknown."
+				lines[i] = "Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, knowledge_qa, gpu_specs_query, stock_availability, image_list, image_tag_catalog, model_repository_browse, network_accelerator_status, refund_estimate, cfs_info, pricing_query, disk_info, deploy_model, create_instance, unknown."
 			case strings.HasPrefix(line, "deploy_model:"):
 				lines[i] = "deploy_model: deploy_model is for execution requests that should enter a create confirmation flow. The user wants to RUN or DEPLOY a specific model, framework, or application (e.g. 部署 Qwen2.5-32B / 跑数字人 / 搭一个能跑 ComfyUI 的环境 / 部署 Llama3 做推理) and wants a suitable instance created for that workload — the agent picks the image and GPU. Classify these as deploy_model with empty target_refs. Recommendation, how-to, price, configuration-sizing, comparison, or feasibility questions about deployment should emit knowledge_qa, pricing_query, or gpu_specs_query as appropriate, not deploy_model. API-subscription developer tools and coding assistants used through an API key or platform package — Claude Code, Codex, Coding Plan, Cursor — are NOT deployable models (they call a hosted API; there are no weights to run on an instance); classify how-to-use/configure questions about them as knowledge_qa, not deploy_model. Use operation_lifecycle only for operations on an EXISTING instance (start/stop/reboot/resize/add-disk). Use create_instance for new GPU instance creation where the user dictates exact hardware or says to create/open/buy an instance."
 			case strings.HasPrefix(line, "Resource operation commands"):

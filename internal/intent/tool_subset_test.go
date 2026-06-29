@@ -75,10 +75,7 @@ func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 		{IntentCFSInfo, "DescribeCFS", 4},
 		{IntentImageTagCatalog, "DescribeCompShareImageTags", 1},
 		{IntentModelRepositoryBrowse, "DescribeModelRepositoryModels", 2},
-		{IntentPlatformImageList, "DescribeCompShareImages", 1},
-		{IntentCustomImageList, "DescribeCompShareCustomImages", 1},
-		{IntentCommunityImageList, "DescribeCommunityImages", 1},
-		{IntentSharedImageList, "DescribeCompShareSharingImages", 1},
+		{IntentImageList, "DescribeCompShareImages", 4},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.intent), func(t *testing.T) {
@@ -91,6 +88,11 @@ func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 			if tc.intent == IntentPricingQuery {
 				assert.Contains(t, subset, "DescribeCompShareSupportZone")
 				assert.NotContains(t, subset, "GetCompShareInstancePrice")
+			}
+			if tc.intent == IntentImageList {
+				assert.Contains(t, subset, "DescribeCompShareCustomImages")
+				assert.Contains(t, subset, "DescribeCommunityImages")
+				assert.Contains(t, subset, "DescribeCompShareSharingImages")
 			}
 		})
 	}

@@ -21,10 +21,7 @@ const (
 	// route_registry.go for the data-driven dispatch table.
 	IntentGPUSpecsQuery         Intent = "gpu_specs_query"
 	IntentStockAvailability     Intent = "stock_availability"
-	IntentPlatformImageList     Intent = "platform_image_list"
-	IntentCustomImageList       Intent = "custom_image_list"
-	IntentCommunityImageList    Intent = "community_image_list"
-	IntentSharedImageList       Intent = "shared_image_list"
+	IntentImageList             Intent = "image_list"
 	IntentImageTagCatalog       Intent = "image_tag_catalog"
 	IntentModelRepositoryBrowse Intent = "model_repository_browse"
 	IntentNetAcceleratorStatus  Intent = "network_accelerator_status"
@@ -207,10 +204,7 @@ func AllIntents() []Intent {
 		IntentKnowledgeQA,
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
-		IntentPlatformImageList,
-		IntentCustomImageList,
-		IntentCommunityImageList,
-		IntentSharedImageList,
+		IntentImageList,
 		IntentImageTagCatalog,
 		IntentModelRepositoryBrowse,
 		IntentNetAcceleratorStatus,
@@ -238,10 +232,7 @@ func RuntimeIntents() []Intent {
 		IntentKnowledgeQA,
 		IntentGPUSpecsQuery,
 		IntentStockAvailability,
-		IntentPlatformImageList,
-		IntentCustomImageList,
-		IntentCommunityImageList,
-		IntentSharedImageList,
+		IntentImageList,
 		IntentImageTagCatalog,
 		IntentModelRepositoryBrowse,
 		IntentNetAcceleratorStatus,

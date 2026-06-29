@@ -34,10 +34,7 @@ func TestPlannedExecutionPathForIntent_RuntimeIntentPartition(t *testing.T) {
 			IntentCFSInfo,
 			IntentImageTagCatalog,
 			IntentModelRepositoryBrowse,
-			IntentPlatformImageList,
-			IntentCustomImageList,
-			IntentCommunityImageList,
-			IntentSharedImageList,
+			IntentImageList,
 			IntentPricingQuery,
 		},
 		ExecutionPathTerminalRAG: {
@@ -79,10 +76,7 @@ func TestPlannedExecutionPathForIntent_RoutingWorkflowIntents(t *testing.T) {
 		IntentCFSInfo,
 		IntentImageTagCatalog,
 		IntentModelRepositoryBrowse,
-		IntentPlatformImageList,
-		IntentCustomImageList,
-		IntentCommunityImageList,
-		IntentSharedImageList,
+		IntentImageList,
 		IntentPricingQuery,
 	} {
 		assert.Equal(t, ExecutionPathRouting, PlannedExecutionPathForIntent(i), i)

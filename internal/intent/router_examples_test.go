@@ -259,10 +259,10 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // repository browsing and model-tag filtering. Boundary remains: model
 // download/how-to questions stay knowledge_qa; deploy/run requests stay agent.
 //
-// shared_image_list route (2026-06-03): SHA bumped because the third Phase 6
-// read-only expansion adds a planner-visible route for images shared to the
-// current account. Boundary remains: public/community image questions stay
-// community_image_list; sharing my own image to others is write-adjacent.
+// image_list route (2026-06-03, collapsed 2026-06-29): SHA bumped because the
+// Phase 6 image-list expansion is now one planner-visible route. Backend source
+// resolution chooses platform/custom/community/shared reads; sharing my own
+// image to others is write-adjacent.
 //
 // Context/prompt optimization P5 (2026-06-03): SHA bumped because planner
 // examples are wrapped in XML-like delimiters (<examples>, <example>,
@@ -336,8 +336,8 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 //
 // R2b P0 intent-taxonomy cleanup (2026-06-26): remove dead planner labels
 // recommendation / mixed_diagnosis_kb / mixed_billing_kb and align the prompt's
-// allowed enum with RuntimeIntents (adds shared_image_list, image_tag_catalog,
-// model_repository_browse to the enum line). No examples or dispatch rules
+// allowed enum with RuntimeIntents (adds image routes/tag/model repository to
+// the enum line). No examples or dispatch rules
 // changed.
 //
 // R2b Phase B deploy-advice cleanup (2026-06-29): deploy_model is command-only.
@@ -346,7 +346,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // deploy advice regex family to be removed. The old operation_lifecycle
 // spec-first create examples were also removed; unified create owns that path.
 // No few-shot examples added.
-const systemPromptSHA256Baseline = "7cd60539c2dc030bffbb867c450ca4c8f8db8e6bd9e5c41c9ab8a3943e6167a8"
+const systemPromptSHA256Baseline = "8aa2ca01994603ae6fafbfb09fa49471fc4085d0926179d72afe81da794e4b6e"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
@@ -600,6 +600,23 @@ func TestPlannerExamples_DiagnosisExampleJSONLooksValid(t *testing.T) {
 		assert.Contains(t, ex.PlanJSON, `"target_refs":[]`,
 			"no-target example[%d] must keep empty target_refs", i+1)
 	}
+}
+
+func TestPlannerExamples_DiskInfoAndOperationLifecycleLoadFromDisk(t *testing.T) {
+	diskInfo, ok := diskPlannerExampleGroups[IntentDiskInfo]
+	require.True(t, ok, "disk_info.md must load")
+	require.Len(t, diskInfo.Examples, 4)
+	assert.Equal(t, "我有哪些数据盘", diskInfo.Examples[0].Question)
+	assert.Contains(t, diskInfo.Examples[0].PlanJSON, `"intent":"disk_info"`)
+	assert.Contains(t, diskInfo.Examples[2].PlanJSON, `"uhost-1qyjfcigo1r6"`)
+
+	lifecycle, ok := diskPlannerExampleGroups[IntentOperationLifecycle]
+	require.True(t, ok, "operation_lifecycle.md must load")
+	require.Len(t, lifecycle.Examples, 8)
+	assert.Equal(t, "帮我关机", lifecycle.Examples[0].Question)
+	assert.Contains(t, lifecycle.Examples[0].PlanJSON, `"intent":"operation_lifecycle"`)
+	assert.Contains(t, lifecycle.Examples[5].Question, "加 200G 数据盘")
+	assert.Contains(t, lifecycle.Examples[7].Question, "保存训练环境")
 }
 
 // Self-test for the test harness: legacy + disk renderings produce
