@@ -1109,7 +1109,7 @@ var Registry = []openai.Tool{
 					},
 					"Zone": map[string]any{
 						"type":        "string",
-						"description": "可用区字符串，例如 cn-pod-01。真实可用区以支持区接口返回为准；不要填写 zone_id/az_group。",
+						"description": "可用区字符串或展示名。真实可用区以支持区接口返回为准；不要填写 zone_id/az_group。",
 					},
 					"ChargeType": map[string]any{
 						"type":        "string",

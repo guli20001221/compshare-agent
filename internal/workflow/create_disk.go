@@ -60,9 +60,46 @@ func stepQueryCreateDiskPrice() Step {
 					"Size":   wfCtx.Params["Size"],
 				}},
 			}
-			return addRequiredInstanceLocationArgs(args, queried)
+			if _, err := addRequiredInstanceLocationArgs(args, queried); err != nil {
+				return nil, err
+			}
+			if err := addSourceInstanceSpecForDiskPrice(args, queried); err != nil {
+				return nil, err
+			}
+			return args, nil
 		},
 	}
+}
+
+func addSourceInstanceSpecForDiskPrice(args map[string]any, result map[string]any) error {
+	host, ok := firstInstance(result)
+	if !ok {
+		return errors.New("未获取到源实例规格，无法安全查询数据盘价格。")
+	}
+	gpuType := stringFieldAny(host["GpuType"])
+	if gpuType == "" {
+		gpuType = stringFieldAny(host["GPUType"])
+	}
+	gpu := firstNumberField(host, "GPU", "Gpu")
+	cpu := firstNumberField(host, "CPU", "Cpu")
+	memory := firstNumberField(host, "Memory", "Mem")
+	if gpuType == "" || gpu <= 0 || cpu <= 0 || memory <= 0 {
+		return errors.New("未获取到源实例完整规格，无法安全查询数据盘价格。")
+	}
+	args["GpuType"] = gpuType
+	args["Gpu"] = gpu
+	args["Cpu"] = cpu
+	args["Memory"] = memory
+	return nil
+}
+
+func firstNumberField(m map[string]any, keys ...string) float64 {
+	for _, key := range keys {
+		if n, ok := priceNumber(m[key]); ok {
+			return n
+		}
+	}
+	return 0
 }
 
 func stepConfirmCreateDisk() Step {

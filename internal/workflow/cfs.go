@@ -13,8 +13,9 @@ const (
 func CreateCFSDef() *Definition {
 	return &Definition{
 		Name:        "CreateCFSWorkflow",
-		Description: "查询 CFS 价格 -> 确认创建 -> 创建 CFS -> 回查 CFS",
+		Description: "查询支持区 -> 查询 CFS 价格 -> 确认创建 -> 创建 CFS -> 回查 CFS",
 		Steps: []Step{
+			stepQuerySupportZonesForCreateCFS(),
 			stepQueryCreateCFSPrice(),
 			stepConfirmCreateCFS(),
 			stepCreateCFS(),
@@ -52,6 +53,25 @@ func ResizeCFSDef() *Definition {
 				"current_size_gb": wfCtx.Params["CurrentCFSSize"],
 				"target_size_gb":  wfCtx.Params["Size"],
 			}
+		},
+	}
+}
+
+func stepQuerySupportZonesForCreateCFS() Step {
+	return Step{
+		Name: "查询支持区",
+		Type: StepToolCall,
+		Tool: "DescribeCompShareSupportZone",
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			args := map[string]any{}
+			addWorkflowIdentityArgs(args, wfCtx.Params)
+			return args, nil
+		},
+		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+			if !hasSupportZoneEntries(result) {
+				return false, "未获取到支持区列表，无法安全创建 CFS。请稍后重试或到控制台确认可用区。"
+			}
+			return true, ""
 		},
 	}
 }
@@ -272,23 +292,18 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 	if region == "" {
 		region = regionFromZone(zone)
 	}
+	isPod, zoneID, azGroup, resolvedRegion, resolved, err := resolveCreateCFSZone(wfCtx, zone)
+	if err != nil {
+		return err
+	}
+	if resolved != "" {
+		zone = resolved
+	}
+	if resolvedRegion != "" {
+		region = resolvedRegion
+	}
 	if region == "" {
-		return fmt.Errorf("无法从可用区推导地域，请同时指定 Region。")
-	}
-	isPod, ok := guidedZoneIsPod(wfCtx.Params, zone)
-	if !ok {
-		return fmt.Errorf("无法确认可用区 %s 是否支持 CFS。CFS 当前只支持 Pod/容器可用区，请先从支持区列表中选择 Pod 区。", zone)
-	}
-	if !isPod {
-		return fmt.Errorf("CFS 当前只支持 Pod/容器可用区，%s 不是 Pod 区，不能创建 CFS。", zone)
-	}
-	zoneID := guidedZoneIDs(wfCtx.Params)[zone]
-	if zoneID == 0 {
-		return fmt.Errorf("未获取到可用区 %s 的内部编号，无法安全创建 CFS。", zone)
-	}
-	azGroup := guidedZoneRegionID(wfCtx.Params, zone)
-	if azGroup == 0 {
-		return fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全创建 CFS。", zone)
+		return fmt.Errorf("无法从可用区推导地域，请从支持区列表中选择真实 Pod 区。")
 	}
 	chargeType := cfsChargeType(wfCtx.Params)
 	if strings.EqualFold(chargeType, "Postpay") {
@@ -308,6 +323,83 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 	wfCtx.Params["ChargeType"] = chargeType
 	wfCtx.Params["Quantity"] = quantity
 	return nil
+}
+
+func resolveCreateCFSZone(wfCtx *Context, requested string) (isPod bool, zoneID uint32, azGroup uint32, region string, zone string, err error) {
+	if placement, ok := createCFSSupportZonePlacement(wfCtx.Result("查询支持区"), requested); ok {
+		if !placement.isPod {
+			return false, 0, 0, "", "", fmt.Errorf("CFS 当前只支持 Pod/容器可用区，%s 不是 Pod 区，不能创建 CFS。", requested)
+		}
+		if placement.zoneID == 0 {
+			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部编号，无法安全创建 CFS。", placement.zone)
+		}
+		if placement.azGroup == 0 {
+			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全创建 CFS。", placement.zone)
+		}
+		return true, placement.zoneID, placement.azGroup, placement.region, placement.zone, nil
+	}
+	if hasSupportZoneEntries(wfCtx.Result("查询支持区")) {
+		return false, 0, 0, "", "", fmt.Errorf("未在支持区中找到可用区 %s。请从上游返回的 Pod/容器可用区中选择。", requested)
+	}
+	return false, 0, 0, "", "", fmt.Errorf("未获取到支持区列表，无法安全创建 CFS。请稍后重试或到控制台确认可用区。")
+}
+
+type createCFSZonePlacement struct {
+	zone    string
+	region  string
+	zoneID  uint32
+	azGroup uint32
+	isPod   bool
+}
+
+func createCFSSupportZonePlacement(result map[string]any, requested string) (createCFSZonePlacement, bool) {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return createCFSZonePlacement{}, false
+	}
+	raw, _ := result["ZoneInfo"].([]any)
+	for _, item := range raw {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		entryZone := strings.TrimSpace(stringFieldAny(entry["Zone"]))
+		describe := strings.TrimSpace(stringFieldAny(entry["Describe"]))
+		if requested != entryZone && requested != describe {
+			continue
+		}
+		placement := createCFSZonePlacement{
+			zone:   entryZone,
+			region: strings.TrimSpace(stringFieldAny(entry["Region"])),
+			isPod:  boolFieldAny(entry["IsPod"]),
+		}
+		if id, ok := parseUint32Any(entry["ZoneId"]); ok {
+			placement.zoneID = id
+		}
+		if id, ok := parseUint32Any(entry["RegionId"]); ok {
+			placement.azGroup = id
+		}
+		return placement, true
+	}
+	return createCFSZonePlacement{}, false
+}
+
+func hasSupportZoneEntries(result map[string]any) bool {
+	raw, _ := result["ZoneInfo"].([]any)
+	return len(raw) > 0
+}
+
+func boolFieldAny(v any) bool {
+	switch typed := v.(type) {
+	case bool:
+		return typed
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "true", "1", "yes", "y":
+			return true
+		}
+	}
+	return false
 }
 
 func addWorkflowIdentityArgs(args map[string]any, params map[string]any) {

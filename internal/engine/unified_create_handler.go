@@ -24,7 +24,6 @@ func (e *Engine) tryCreateInstance(ctx context.Context, dispatch routerDispatchR
 	if createInstanceShouldNotOpenCreateCard(userMsg) {
 		return e.deployReply(dispatch.result, dispatch.latency, createInstanceNonCommandReply())
 	}
-
 	var pref *CreatePreferenceExtractionResult
 	if extracted, err := e.extractCreatePreference(ctx, userMsg, intent.IntentCreateInstance); err == nil && extracted != nil {
 		pref = extracted

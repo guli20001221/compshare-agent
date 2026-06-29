@@ -117,8 +117,14 @@ func TestCreateDisk_HappyPath(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	_, priced := findExecutorCall(executor.calls, "GetCompShareInstancePrice")
+	priceCall, priced := findExecutorCall(executor.calls, "GetCompShareInstancePrice")
 	assert.True(t, priced, "create disk workflow must price the new data disk before confirmation")
+	assert.Equal(t, "4090", priceCall.args["GpuType"], "data-disk pricing must include the source instance GPU type; upstream rejects missing Gpu/GpuType")
+	assert.Equal(t, float64(1), priceCall.args["Gpu"], "data-disk pricing must include the source instance GPU count")
+	assert.Equal(t, float64(16), priceCall.args["Cpu"], "data-disk pricing must include the source instance CPU")
+	assert.Equal(t, float64(65536), priceCall.args["Memory"], "data-disk pricing must include the source instance memory in MB")
+	assert.Equal(t, "cn-sh2", priceCall.args["Region"], "data-disk pricing must use the source instance region")
+	assert.Equal(t, "cn-sh2-02", priceCall.args["Zone"], "data-disk pricing must use the source instance zone")
 
 	var createCall executorCall
 	for _, c := range executor.calls {

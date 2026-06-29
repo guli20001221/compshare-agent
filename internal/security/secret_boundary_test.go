@@ -109,3 +109,12 @@ func TestRedactForLLM_RedactsOAuthStyleSecretKeys(t *testing.T) {
 	assert.Equal(t, "[REDACTED]", redacted["Credential"])
 	assert.Equal(t, "pagination-cursor", redacted["next_token"])
 }
+
+func TestRedactKnownSecretsInText_RedactsWorkflowPasswords(t *testing.T) {
+	text := "已为实例重装，root 新密码是 SecurePass123，请用 SecurePass123 登录。"
+
+	redacted := RedactKnownSecretsInText(text, []string{"SecurePass123", ""})
+
+	assert.NotContains(t, redacted, "SecurePass123")
+	assert.Contains(t, redacted, "[REDACTED]")
+}
