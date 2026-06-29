@@ -40,9 +40,6 @@ func IntentRouteResponseSchemaForIntents(runtimeIntents []Intent) json.RawMessag
 	targetRefItem := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			// Only the validator-accepted target-ref types (validateTargetRef):
-			// the C15 Phase-A zone/image/gpu_model types are declared but rejected,
-			// so omitting them keeps the model from emitting an always-invalid ref.
 			"type": stringEnum(
 				string(TargetRefFilter),
 				string(TargetRefName),
