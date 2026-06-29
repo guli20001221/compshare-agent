@@ -23,7 +23,9 @@ const (
 	// prices and discounted prices share one live upstream path.
 	// 2026-06-26: remove the dead "recommendation" intent label from the default
 	// ReAct taxonomy; GPU recommendation tools remain available as read-only facts.
-	mutatingReActPromptSHA256 = "4d4b9e2b9e984ad797275d88677ed55f38d947e45fca4e52ab81e22434da1ba0"
+	// 2026-06-29: remove CreateInstanceWorkflow from ReAct operation guidance;
+	// new-instance creation is owned by create_instance / deploy_model handlers.
+	mutatingReActPromptSHA256 = "6881b14028037b58be42602d0906fdb6b5182447cff288a6074baefb1e8b6d11"
 	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
 	// 2026-06-22 (阶段1A KV-cache): volatile userContext block moved to the tail.
 	readOnlyReActPromptSHA256 = "a9824405b7522b7c89de15f04c1464377207c0b52c128ce8dd2d5887f468f127"

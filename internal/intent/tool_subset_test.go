@@ -98,9 +98,9 @@ func TestIntentToolSubset_RoutingIntents(t *testing.T) {
 
 func TestIntentToolSubset_OperationLifecycle(t *testing.T) {
 	subset := IntentToolSubset(IntentOperationLifecycle)
-	require.Len(t, subset, 23)
+	require.Len(t, subset, 22)
 	assert.Contains(t, subset, "DescribeCompShareInstance")
-	assert.Contains(t, subset, "CreateInstanceWorkflow")
+	assert.NotContains(t, subset, "CreateInstanceWorkflow")
 	assert.Contains(t, subset, "StopInstanceWorkflow")
 	assert.Contains(t, subset, "ResetPasswordWorkflow")
 	assert.Contains(t, subset, "ResizeInstanceWorkflow")

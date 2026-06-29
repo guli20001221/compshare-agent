@@ -50,18 +50,27 @@ func TestRenderIntentScopedReActCard_ReadOnlyOperationExcludesWorkflowCatalog(t 
 	}
 }
 
-func TestRenderIntentScopedReActCard_OperationPreservesImageSelectionRules(t *testing.T) {
+func TestRenderIntentScopedReActCard_OperationOmitsCreateOnlyRules(t *testing.T) {
 	card := RenderIntentScopedReActCard(intent.IntentOperationLifecycle, true)
 	for _, text := range []string{
+		"CreateInstanceWorkflow",
 		"PyTorch/CUDA/vLLM",
 		"ImageName",
 		"ComfyUI、SD WebUI、Stable Diffusion、Dify、Ollama",
 		`ImageSource="community"`,
-		"CheckCompShareResourceCapacity",
-		"不要推荐后再发现没货",
+	} {
+		if strings.Contains(card, text) {
+			t.Fatalf("operation card must not contain create-only rule fragment %q:\n%s", text, card)
+		}
+	}
+	for _, text := range []string{
+		"StopInstanceWorkflow",
+		"ResizeInstanceWorkflow",
+		"CreateDiskWorkflow",
+		"ResizeDiskWorkflow",
 	} {
 		if !strings.Contains(card, text) {
-			t.Fatalf("operation card missing image/capacity rule fragment %q:\n%s", text, card)
+			t.Fatalf("operation card missing lifecycle workflow fragment %q:\n%s", text, card)
 		}
 	}
 }

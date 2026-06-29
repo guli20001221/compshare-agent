@@ -41,7 +41,7 @@ import (
 // carries only StepSummary, not step outputs. The handler replies on the saga's own
 // post-create describe (step "查看状态"); it does NOT block the turn waiting for the
 // instance to reach Running — a GPU instance can take minutes to initialize, and the
-// manual CreateInstanceWorkflow path replies after a single describe too.
+// internal CreateInstanceWorkflow path replies after a single describe too.
 
 // deployPreferredZones is only the last-resort fallback when the live availability
 // response carries no zone data. Normal deploy planning uses the zones returned by
@@ -251,7 +251,7 @@ func (e *Engine) runDeployModel(ctx context.Context, dispatch routerDispatchResu
 	// describe (step "查看状态"). We deliberately do NOT block the turn polling
 	// until the instance reaches Running: a GPU instance can take several minutes
 	// to finish initializing, and holding the turn open that long stalls the SSE
-	// stream and the frontend's post-create jump to the console. The manual
+	// stream and the frontend's post-create jump to the console. The internal
 	// CreateInstanceWorkflow path replies after a single describe too, so the two
 	// create paths stay symmetric. Login/usage details that only exist once the
 	// instance is Running (SSH command, public IP) are surfaced on the console's
@@ -1180,7 +1180,7 @@ func extractDeployZone(userMsg string) string {
 //   - both "" : no zone referenced → existing default-zone behavior.
 //
 // Shared by both instance-create entry points — the deploy_model saga (here) and
-// the ReAct CreateInstanceWorkflow tool (engine.applyCreateZoneResolution) — so a
+// the internal CreateInstanceWorkflow path (engine.applyCreateZoneResolution) — so a
 // user-named zone resolves identically regardless of which path the turn took.
 //
 // It is strictly additive over the deterministic alias floor (extractDeployZone):
@@ -1351,7 +1351,7 @@ func (e *Engine) zoneIsPod(ctx context.Context, zone string) (bool, bool) {
 	return false, false
 }
 
-// applyCreateZoneResolution resolves a user-named zone for the ReAct
+// applyCreateZoneResolution resolves a user-named zone for the internal
 // CreateInstanceWorkflow path, mutating args in place. It overrides args["Zone"]
 // with the resolved zone id (e.g. "华北一C" → cn-bj2-03) and injects
 // args["ZoneDescribes"] (zone-id → 显示名) so the confirm form labels each zone

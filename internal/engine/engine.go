@@ -668,8 +668,8 @@ func (e *Engine) RunAgentSaga(ctx context.Context, def *workflow.Definition, par
 		Confirm: confirm,
 		// Editable confirm form (create-flow 表单化): nil except on HTTP turns with
 		// COMPSHARE_CONFIRM_FORM on + client opt-in. Wiring it here gives the
-		// deploy_model saga the SAME editable form as the ReAct CreateInstanceWorkflow
-		// tool (engine.go:3761) — without it, deploy confirmations were boolean-only.
+		// deploy_model saga the SAME editable form as the internal CreateInstanceWorkflow
+		// path — without it, deploy confirmations were boolean-only.
 		ConfirmEdits: e.confirmEditsFn,
 		Sink:         e.stepSink,
 		TurnID:       fmt.Sprintf("turn-%d", e.userTurn),

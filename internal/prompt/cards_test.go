@@ -6,12 +6,14 @@ import (
 
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/tools"
-	"github.com/compshare-agent/internal/workflow"
 )
 
 func TestRenderWorkflowSelectionCardUsesRegistryAndToolDescriptions(t *testing.T) {
 	card := renderWorkflowSelectionCard()
-	for _, name := range workflow.RegisteredWorkflowActions() {
+	if strings.Contains(card, "CreateInstanceWorkflow") {
+		t.Fatalf("workflow card must not expose create workflow after create_instance became the create entry:\n%s", card)
+	}
+	for _, name := range reactWorkflowActions() {
 		if !strings.Contains(card, name+"：") {
 			t.Fatalf("workflow card missing action name %s:\n%s", name, card)
 		}
@@ -20,7 +22,7 @@ func TestRenderWorkflowSelectionCardUsesRegistryAndToolDescriptions(t *testing.T
 			t.Fatalf("workflow card missing tool description for %s:\n%s", name, card)
 		}
 	}
-	assertStableOrder(t, card, workflow.RegisteredWorkflowActions())
+	assertStableOrder(t, card, reactWorkflowActions())
 }
 
 func TestRenderDiagnosisSelectionCardUsesRegistryAndToolDescriptions(t *testing.T) {
@@ -39,7 +41,7 @@ func TestRenderDiagnosisSelectionCardUsesRegistryAndToolDescriptions(t *testing.
 
 func TestWorkflowNoPretextActionListUsesRegistryOrder(t *testing.T) {
 	list := renderWorkflowActionNameList()
-	want := strings.Join(workflow.RegisteredWorkflowActions(), " / ")
+	want := strings.Join(reactWorkflowActions(), " / ")
 	if list != want {
 		t.Fatalf("workflow no-pretext list = %q, want %q", list, want)
 	}

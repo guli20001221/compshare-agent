@@ -106,7 +106,7 @@ func TestResolveRequestedZone_CatalogUnavailable_FallsBackToAliasFloor(t *testin
 	}
 }
 
-// applyCreateZoneResolution is the ReAct CreateInstanceWorkflow entry point: it
+// applyCreateZoneResolution is the internal CreateInstanceWorkflow entry point: it
 // mutates the LLM-built args (Zone override + ZoneDescribes injection) so a
 // user-named zone resolves identically to the deploy saga. The LLM cannot know a
 // new zone's id, so without this "华北一C" creates silently land in the default.
