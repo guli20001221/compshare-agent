@@ -10,8 +10,8 @@ tool_subset:
 required_citation: false
 handler_key: handleRefundEstimate
 planner_directives:
-  - '用户问"这台现在释放能退多少钱"、"退订大概退多少"、"实例现在退款多少"时 emit refund_estimate，并带上目标实例。'
-  - '本路线只做实例退费估算；不会释放实例。没有目标实例时应先追问或让用户选择。'
+  - 'Classify instance refund-estimate questions like "这台现在释放能退多少钱", "退订大概退多少", or "实例现在退款多少" as refund_estimate and include the target instance.'
+  - 'Use this route only for read-only refund estimation. Do not release instances. Ask the user to select a target when no instance target is present.'
 planner_examples:
   - question: "train-a 现在释放能退多少钱"
     confidence: 0.86

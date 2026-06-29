@@ -59,7 +59,7 @@ type BoundaryPack struct {
 var stockVsResourcePack = BoundaryPack{
 	ID: BoundaryPackStockVsResource,
 	Directives: []string{
-		"Inventory availability questions like whether a GPU model has stock, is available, is sold out, or has data-center inventory are not resource_info. resource_info is only for the user's own CompShare instances. Platform stock questions should emit stock_availability.",
+		"Classify inventory availability questions about whether a GPU model has stock, is available, is sold out, or has data-center inventory as stock_availability. Do not route them to resource_info; resource_info is only for the user's own CompShare instances.",
 	},
 }
 

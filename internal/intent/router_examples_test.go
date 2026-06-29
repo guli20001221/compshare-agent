@@ -350,7 +350,11 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // R2b Phase C image-list source cleanup (2026-06-29): image_list now asks the
 // router to emit slots.image_source for platform/custom/community/shared,
 // replacing the backend keyword source resolver. No new intent labels added.
-const systemPromptSHA256Baseline = "f7d631f962e09311cdada80b419131abe125e3747e0acb6252b8e19f5bb5c067"
+//
+// R2b Phase C directive-imperative cleanup (2026-06-29): route directives and
+// low-risk scaffold lines now use concise imperative wording. No intent labels,
+// examples, regexes, or workflow behavior changed.
+const systemPromptSHA256Baseline = "7abd7ec64fce89f55cc2433c698d0ef082e2ccdad97cf7ec142c82005c1334d0"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

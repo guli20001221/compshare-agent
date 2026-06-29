@@ -11,7 +11,7 @@ import (
 // into the stock_vs_resource boundary pack. The test pins that the move is
 // clean: the base no longer carries it, the pack does, and the assembled prompt
 // carries it exactly once — no duplication / attention shift.
-const stockVsResourceRule = "Inventory availability questions like whether a GPU model has stock, is available, is sold out, or has data-center inventory are not resource_info. resource_info is only for the user's own CompShare instances. Platform stock questions should emit stock_availability."
+const stockVsResourceRule = "Classify inventory availability questions about whether a GPU model has stock, is available, is sold out, or has data-center inventory as stock_availability. Do not route them to resource_info; resource_info is only for the user's own CompShare instances."
 
 func TestStockVsResourceBoundary_MovedOutOfBasePrompt(t *testing.T) {
 	// 1. The base scaffold must no longer carry the rule (it moved to the pack).

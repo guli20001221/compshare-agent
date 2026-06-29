@@ -49,6 +49,35 @@ func TestNewLoader_LoadsSeededRoutes(t *testing.T) {
 	}
 }
 
+func TestSeededRoutes_UseImperativePlannerDirectives(t *testing.T) {
+	loader, err := NewLoader(seededRoot)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	banned := []string{
+		"should emit",
+		"should use",
+		"stay in",
+		"应 emit",
+		"也应 emit",
+		"时 emit",
+		"应走",
+	}
+	for _, name := range loader.Names() {
+		route, ok := loader.Fetch(name)
+		if !ok {
+			t.Fatalf("route %q disappeared", name)
+		}
+		for _, directive := range route.PlannerDirectives {
+			for _, phrase := range banned {
+				if strings.Contains(directive, phrase) {
+					t.Errorf("%s directive %q contains descriptive phrase %q; use imperative wording", name, directive, phrase)
+				}
+			}
+		}
+	}
+}
+
 func TestParseRouteFile_RejectsUnknownYAMLKey(t *testing.T) {
 	root := t.TempDir()
 	writeRoute(t, root, "bad_route", ""+

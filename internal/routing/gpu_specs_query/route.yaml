@@ -10,8 +10,8 @@ tool_subset:
 required_citation: false
 handler_key: handleGPUSpecsQuery
 planner_directives:
-  - '普通 GPU 规格、显存、性能、最大卡数问题应 emit gpu_specs_query，并先输出概览。'
-  - '用户明确要求所有/全部/完整规格、某型号所有规格、CPU/内存组合、CPU 和内存、可选配置时，也应 emit gpu_specs_query；渲染层会展开 MachineSizes.Collection.Memory 的所有组合。'
+  - 'Classify GPU memory, performance, max-card-count, and static specification questions as gpu_specs_query; render a summary first.'
+  - 'Classify requests for all specs, complete specs, one GPU model''s full specs, CPU/memory combinations, CPU and memory, or optional configurations as gpu_specs_query.'
 planner_examples:
   - question: "4090 显存多大"
     confidence: 0.85

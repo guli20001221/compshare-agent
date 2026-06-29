@@ -11,9 +11,9 @@ tool_subset:
 required_citation: false
 handler_key: handleModelRepositoryBrowse
 planner_directives:
-  - 'Model repository browse questions like "模型仓库里有哪些模型", "有哪些 LLM 模型", or "模型仓库有哪些标签" should emit model_repository_browse.'
-  - 'Requests to deploy/run/create an instance for a model should use deploy_model or operation_lifecycle, not model_repository_browse.'
-  - 'Image catalog questions like "有哪些 PyTorch 镜像" should use image routes; model download/how-to/tutorial questions stay in knowledge_qa.'
+  - 'Classify public model repository model, LLM model, and model-tag browse questions as model_repository_browse.'
+  - 'Route requests to deploy, run, or create an instance for a model to deploy_model or operation_lifecycle. Do not route them to model_repository_browse.'
+  - 'Route image catalog questions like "有哪些 PyTorch 镜像" to image_list. Route model download, how-to, and tutorial questions to knowledge_qa.'
 planner_examples:
   - question: "模型仓库里有哪些模型可以用"
     confidence: 0.85

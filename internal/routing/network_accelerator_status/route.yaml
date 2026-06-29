@@ -9,9 +9,9 @@ tool_subset:
 required_citation: false
 handler_key: handleNetAcceleratorStatus
 planner_directives:
-  - '用户问"网络加速开了吗"、"网速慢帮我看看是不是没开网络加速"、"网络加速状态"时 emit network_accelerator_status。'
-  - '本路线只查询网络加速开通状态；用户明确要求开通/开启网络加速时应走 operation_lifecycle 的确认流程。'
-  - '关键边界: "怎么加速 GitHub / HuggingFace / pip / apt 下载" 是教程或配置问题，应 emit knowledge_qa，不能 emit network_accelerator_status。'
+  - 'Classify network accelerator status questions like "网络加速开了吗", "网速慢帮我看看是不是没开网络加速", or "网络加速状态" as network_accelerator_status.'
+  - 'Use this route only for accelerator status lookup. Route explicit enable/open accelerator commands to operation_lifecycle confirmation flow.'
+  - 'Route GitHub, HuggingFace, pip, or apt acceleration tutorials to knowledge_qa. Do not route them to network_accelerator_status.'
 planner_examples:
   - question: "网速怎么这么慢，帮我看看网络加速开没开"
     confidence: 0.86
