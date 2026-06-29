@@ -40,7 +40,7 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	}
 	engine.SetUnifiedCreateEnabled(unifiedCreate)
 	if unifiedCreate {
-		log.Printf("runtime: HTTP unified create-family route enabled (COMPSHARE_UNIFIED_CREATE=1; create_instance prompt/schema active)")
+		log.Printf("runtime: HTTP unified create-family route enabled (default-on; set COMPSHARE_UNIFIED_CREATE=0 to disable; create_instance prompt/schema active)")
 	}
 
 	deps, err := engine.NewSharedDeps(cfg)

@@ -190,7 +190,7 @@ func TestBuildHTTPServerPoolAppliesSharedDepsEnv(t *testing.T) {
 
 func TestConfigureSharedDepsUnifiedCreateReachesServerPlanner(t *testing.T) {
 	engine.SetUnifiedCreateEnabled(false)
-	t.Cleanup(func() { engine.SetUnifiedCreateEnabled(false) })
+	t.Cleanup(func() { engine.SetUnifiedCreateEnabled(true) })
 
 	var captured map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -218,8 +218,6 @@ func TestConfigureSharedDepsUnifiedCreateReachesServerPlanner(t *testing.T) {
 	}}
 	deps, _, err := configureSharedDepsFromEnv(cfg, func(key string) string {
 		switch key {
-		case "COMPSHARE_UNIFIED_CREATE":
-			return "1"
 		case "COMPSHARE_DIRECT_DISPATCH_INTENTS":
 			return "resource"
 		case "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT":
