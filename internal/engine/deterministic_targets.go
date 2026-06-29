@@ -624,43 +624,6 @@ func hasLikelyExplicitInstanceTargetText(userText string) bool {
 	return false
 }
 
-func (e *Engine) tryDeterministicProductFactReply(userMsg string) (string, bool) {
-	if e == nil {
-		return "", false
-	}
-	if reply, ok := deterministicGenericStockShortageReply(userMsg); ok {
-		e.messages = append(e.messages, assistantMessage(reply))
-		return reply, true
-	}
-	return "", false
-}
-
-func deterministicGenericStockShortageReply(userMsg string) (string, bool) {
-	text := strings.TrimSpace(userMsg)
-	if text == "" {
-		return "", false
-	}
-	compact := normalizeResourceText(text)
-	if compact == "" {
-		return "", false
-	}
-	triggers := []string{
-		"暂无资源", "没有卡了", "没卡了", "没货了", "没资源", "无资源", "资源不足",
-		"无法创建", "都被占用", "可用的没有了", "可用资源没了",
-	}
-	matched := false
-	for _, trigger := range triggers {
-		if strings.Contains(text, trigger) || strings.Contains(compact, normalizeResourceText(trigger)) {
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		return "", false
-	}
-	return "“暂无资源/没有卡”通常指当前具体配置没有可创建容量，不等于机型已经下架。\n\n这里要分开看：机型状态 Normal 只表示平台仍在售；真正能不能创建，要看 GPU、卡数、CPU、内存、镜像和可用区组合的容量预检结果。某个组合可能因为资源被占用、某个可用区没容量、镜像和可用区形态不匹配而创建失败。\n\n如果你要继续下单，建议换可用区、减少卡数、换相近卡型，或稍后重试；如果你给出具体卡型和可用区，我可以按当前配置再帮你做创建前校验。", true
-}
-
 func looksLikeLifecycleQuestion(userText string) bool {
 	text := strings.TrimSpace(userText)
 	if text == "" {

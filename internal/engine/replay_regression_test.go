@@ -1138,9 +1138,13 @@ func TestReplayRegression_DirectGPUInvisibleMultiple5090AsksForTarget(t *testing
 }
 
 func TestReplayRegression_GenericNoResourceExplainsCapacityNotStatus(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "所有机型都是 Normal，没有售罄"}}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{stockShortageKnowledgeResult()}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "“暂无资源”通常表示当前 GPU、卡数、CPU、内存、镜像和可用区组合没有通过创建前容量预检，不等于机型已经下架。机型状态 Normal 只表示平台仍在售；真正能不能创建，需要以 CheckCompShareResourceCapacity 的具体配置校验为准。 [1]"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
 
 	reply, err := eng.Chat(context.Background(), "一直暂无资源 是什么情况", noopStep)
 
@@ -1149,7 +1153,8 @@ func TestReplayRegression_GenericNoResourceExplainsCapacityNotStatus(t *testing.
 	require.Contains(t, reply, "Normal 只表示平台仍在售")
 	require.Contains(t, reply, "容量预检")
 	require.NotContains(t, reply, "所有机型都是 Normal")
-	require.Len(t, mock.calls, 0, "generic stock shortage explanation should not let LLM turn status into stock")
+	require.Len(t, retriever.calls, 1, "generic stock shortage explanation must be answered through knowledge retrieval")
+	require.Len(t, mock.calls, 1, "retrieved evidence should be synthesized by the RAG answerer")
 }
 
 func TestReplayRegression_DiskBillingQuestionDoesNotAskGPU(t *testing.T) {
@@ -1227,6 +1232,26 @@ func codingPlanManagementKnowledgeResult() knowledge.RetrievalResult {
 		Confidence:  "high",
 		Title:       "Coding Plan 套餐购买与管理",
 		Content:     "控制台左侧导航「Agent Plan」→「套餐管理」可查看套餐信息、调用额度、续费或升级；资料未提供删除、取消或退订 Coding Plan 套餐的操作入口。订阅服务一经购买即视为确认，不支持退款。",
+	}
+	return knowledge.RetrievalResult{
+		Enabled:    true,
+		KBVersion:  "kb.stage2b.test",
+		Hits:       []knowledge.KBChunk{chunk},
+		HitItems:   []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+		HybridMode: "bm25_fallback",
+	}
+}
+
+func stockShortageKnowledgeResult() knowledge.RetrievalResult {
+	chunk := knowledge.KBChunk{
+		ChunkID:     "w0-resource_purchase-capacity-check",
+		KBVersion:   "kb.stage2b.test",
+		SourceType:  "faq",
+		ProductArea: "resource_purchase",
+		ACL:         "customer_safe",
+		Confidence:  "high",
+		Title:       "GPU 实例创建前容量校验",
+		Content:     "DescribeAvailableCompShareInstanceTypes 返回可售/售罄机型列表，Status=Normal 表示机型仍在售；创建前须调用 CheckCompShareResourceCapacity 判断目标规格是否有库存，该接口按 GpuType、CPU 平台、镜像和磁盘配置模拟调度，返回各 GPU/CPU/Memory 组合的 ResourceEnough。",
 	}
 	return knowledge.RetrievalResult{
 		Enabled:    true,

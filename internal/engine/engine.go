@@ -1299,9 +1299,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	if reply, handled := e.tryResumeResourceSelection(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
-	if reply, handled := e.tryDeterministicProductFactReply(userMsg); handled {
-		return reply, nil
-	}
 	if reply, handled := e.tryDirectMonitorHistoryFromUserText(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
