@@ -303,17 +303,18 @@ type Engine struct {
 	confirmEditsFn workflow.ConfirmEditsFunc
 	// guidedCreate is a per-turn HTTP feature gate; false keeps
 	// CreateInstanceWorkflow on the legacy final-card flow.
-	guidedCreate             bool
-	messages                 []openai.ChatCompletionMessage // conversation history
-	userTurn                 int                            // incremented at start of each Chat() call
-	lastInstanceQueryTurn    int                            // set to userTurn on successful DescribeCompShareInstance
-	lastMonitorTurn          int                            // set to userTurn on successful GetCompShareInstanceMonitor
-	currentMonitorTargets    []string                       // historical monitor targets queried in the current turn
-	currentMonitorNoData     []string                       // current-turn historical monitor targets with no data samples
-	currentMonitorStart      int64                          // start of the current historical monitor window, if any
-	currentMonitorEnd        int64                          // end of the current historical monitor window, if any
-	currentMonitorWindow     bool                           // true when currentMonitorStart/End are known
-	pendingResourceSelection *pendingResourceSelection
+	guidedCreate                       bool
+	messages                           []openai.ChatCompletionMessage // conversation history
+	userTurn                           int                            // incremented at start of each Chat() call
+	lastInstanceQueryTurn              int                            // set to userTurn on successful DescribeCompShareInstance
+	lastMonitorTurn                    int                            // set to userTurn on successful GetCompShareInstanceMonitor
+	currentMonitorTargets              []string                       // historical monitor targets queried in the current turn
+	currentMonitorNoData               []string                       // current-turn historical monitor targets with no data samples
+	currentMonitorStart                int64                          // start of the current historical monitor window, if any
+	currentMonitorEnd                  int64                          // end of the current historical monitor window, if any
+	currentMonitorWindow               bool                           // true when currentMonitorStart/End are known
+	pendingResourceSelection           *pendingResourceSelection
+	displayedResourceSelectionThisTurn *pendingResourceSelection
 	// supportsObjectToolChoice gates force-tool guards (e.g. shouldForceMonitorRecall)
 	// from sending object tool_choice on models that don't support it (notably
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
@@ -1290,6 +1291,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.currentMonitorStart = 0
 	e.currentMonitorEnd = 0
 	e.currentMonitorWindow = false
+	e.displayedResourceSelectionThisTurn = nil
 
 	if reply, handled := e.tryBillingAccountUnsupportedBeforeResourceSelection(ctx, userMsg, priorText); handled {
 		return reply, nil
@@ -1616,6 +1618,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			if strings.TrimSpace(content) == "" {
 				content = emptyReplyFallbackMessage
 			}
+			e.commitDisplayedResourceSelectionIfVisible(content)
 			// Replay buffered streaming deltas when the LLM content was returned
 			// verbatim. If an engine guard overwrote content, emit the canonical
 			// override as a single chunk so the SSE stream matches the persisted
@@ -4280,7 +4283,7 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 }
 
 func (e *Engine) recordPendingSelectionFromDisplayedDescribeResult(raw map[string]any) {
-	if e == nil || !e.sessionStateHydrated || e.lastPlannerIntentThisTurn != intent.IntentResourceInfo || raw == nil {
+	if e == nil || !e.sessionStateHydrated || raw == nil {
 		return
 	}
 	hosts, _ := raw["UHostSet"].([]any)
@@ -4317,7 +4320,84 @@ func (e *Engine) recordPendingSelectionFromDisplayedDescribeResult(raw map[strin
 		}
 	}
 	truncated, _ := raw["Truncated"].(bool)
-	e.recordPendingInstanceSelection(instanceSnapshots, intent.IntentResourceInfo, e.lastUserMsg, total, truncated)
+	e.displayedResourceSelectionThisTurn = &pendingResourceSelection{
+		originalUserMsg: e.lastUserMsg,
+		plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentResourceInfo,
+		},
+		snapshot:    snapshotFromPendingSelectionCandidates(instanceSnapshots),
+		candidates:  instanceSnapshots,
+		truncated:   truncated || total > len(instanceSnapshots),
+		createdTurn: e.userTurn,
+	}
+}
+
+func (e *Engine) commitDisplayedResourceSelectionIfVisible(reply string) {
+	if e == nil || e.displayedResourceSelectionThisTurn == nil {
+		return
+	}
+	pending := e.displayedResourceSelectionThisTurn
+	if !resourceSelectionCandidatesVisibleInReply(reply, pending.candidates) {
+		return
+	}
+	e.recordPendingInstanceSelection(pending.candidates, intent.IntentResourceInfo, pending.originalUserMsg, len(pending.candidates), pending.truncated)
+}
+
+func resourceSelectionCandidatesVisibleInReply(reply string, candidates []entity.InstanceSnapshot) bool {
+	text := strings.ToLower(reply)
+	lines := strings.Split(reply, "\n")
+	seen := 0
+	for _, inst := range candidates {
+		id := strings.ToLower(strings.TrimSpace(inst.UHostId))
+		name := strings.ToLower(strings.TrimSpace(inst.Name))
+		if id != "" && strings.Contains(text, id) {
+			seen++
+		} else if name != "" && resourceSelectionNameVisibleInReplyLines(lines, name) {
+			seen++
+		}
+		if seen >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceSelectionNameVisibleInReplyLines(lines []string, name string) bool {
+	for _, line := range lines {
+		if resourceSelectionNameVisibleInTableLine(line, name) || resourceSelectionNameVisibleInNumberedLine(line, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceSelectionNameVisibleInTableLine(line, name string) bool {
+	if !strings.Contains(line, "|") {
+		return false
+	}
+	for _, cell := range strings.Split(line, "|") {
+		if strings.ToLower(strings.TrimSpace(cell)) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceSelectionNameVisibleInNumberedLine(line, name string) bool {
+	s := strings.TrimSpace(strings.ToLower(line))
+	if s == "" {
+		return false
+	}
+	original := s
+	for len(s) > 0 && s[0] >= '0' && s[0] <= '9' {
+		s = s[1:]
+	}
+	s = strings.TrimLeft(s, ".、)） \t-")
+	if s == "" || s == original {
+		return false
+	}
+	return s == name || strings.HasPrefix(s, name+" ") || strings.HasPrefix(s, name+"(") || strings.HasPrefix(s, name+"（")
 }
 
 // recordMonitorSampleFacts groups all per-metric scalars from a

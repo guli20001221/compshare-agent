@@ -323,6 +323,7 @@ func TestRecordPendingSelectionFromDisplayedDescribeResultCapsAtDisplayCap(t *te
 		"Truncated":  true,
 		"UHostSet":   rawHosts,
 	})
+	e.commitDisplayedResourceSelectionIfVisible("1. host-1\n2. host-2")
 
 	state, _, _ := e.SessionStateSnapshot()
 	if len(state.PendingSelectionItems) != intent.DefaultMaxInstancesPerDisplay {
