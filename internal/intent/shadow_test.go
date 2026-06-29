@@ -114,7 +114,7 @@ func TestShadowRunner_FallbackResultReturnsInvalidTrace(t *testing.T) {
 	assert.False(t, trace.SchemaValid)
 	assert.Equal(t, string(IntentUnknown), trace.Intent)
 	assert.Zero(t, trace.Confidence)
-	assert.True(t, trace.HardBlockHint)
+	assert.False(t, trace.HardBlockHint)
 }
 
 func TestShadowRunner_QuotaDenialSkipsPlannerAndReturnsInvalidTrace(t *testing.T) {

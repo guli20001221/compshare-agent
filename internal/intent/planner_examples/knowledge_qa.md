@@ -4,70 +4,70 @@ source: "Stage 2B + PR #34a/#52/#60 knowledge_qa routing regressions + R3-A1 mod
 compact: true
 examples:
   - question: "为啥显卡内存满了 GPU 占用才 10%"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "PR #60: concept question with monitor-trigger words"
   - question: "how do I issue an invoice"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "PR #52: finance process question, not personal status"
   - question: "what image types does the platform provide"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "Stage 2B: platform concept question"
   - question: "远程桌面没声音该怎么处理"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "Stage 2B: platform how-to/config boundary"
   - question: "错误码 226601 是什么意思"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "Stage 2B: error-code knowledge question"
   - question: "Linux 怎么装 NVIDIA 驱动"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "Stage 2B: platform how-to/config boundary"
   - question: "Coding Plan 的 BaseURL 应该填什么"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "Stage 2B: model API configuration"
   - question: "怎么在 VSCode 里连 GPU 实例"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "Stage 2B: connection how-to"
   - question: "在 CLINE 里加 mcp-server-sqlite 那段 json 该怎么写"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "PR #60: third-party tool configuration jargon"
   - question: "怎么查我这个月的账单"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "PR #52: billing navigation question"
   - question: "套餐是按什么方式计费的"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "Task 147: named-package billing-RULE question (how is a plan billed), NOT a GPU runtime price lookup — anchors knowledge_qa vs pricing_query jitter on 套餐/计费"
   - question: "Claude Code 怎么用"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "RC012/RC014: a coding assistant used via API key / platform package (Claude Code, Codex) is a usage consultation answered by RAG, NOT a deployable model — anchors knowledge_qa vs deploy_model"
   - question: "哪里可以看发票发起记录"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "PR #52: invoice navigation question"
   - question: "包月和按量哪个划算"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "PR #34a: platform comparison question"
   - question: "实例磁盘可以扩容吗"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "PR #34a: platform feasibility question"
   - question: "退款流程是怎样的"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "PR #34a: platform procedure question"
   - question: "Suno 怎么用 API 生成歌曲"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "R3-A1: modelverse music-gen API (Suno)"
   - question: "Vidu 接口怎么传图生成视频"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "R3-A1: modelverse video-gen API (Vidu)"
   - question: "flux 模型调用 API 怎么传 prompt 和图"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "R3-A1: modelverse image-gen API (flux)"
   - question: "用 OpenAI SDK 调 gpt-image-1 怎么传参"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "R3-A1: modelverse OpenAI-compat API (gpt-image)"
   - question: "minimax-speech 怎么生成中文语音"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "R3-A1: modelverse TTS API (minimax-speech)"
   - question: "modelverse 返回 1002 是什么错误"
-    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}'
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "R3-A1: modelverse error-code reference"
 ---
 

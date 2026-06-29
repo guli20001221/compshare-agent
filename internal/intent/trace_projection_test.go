@@ -145,31 +145,31 @@ func TestProjectPlannerTrace_HashesTargetRefsAndNonAllowlistedTimeWindow(t *test
 	assert.NotContains(t, raw, rawReasoning)
 }
 
-func TestProjectPlannerTrace_FallbackPreservesExplicitHardBlockHint(t *testing.T) {
+func TestProjectPlannerTrace_DerivesHardBlockHintFromIntent(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		hardBlockHint bool
+		name string
+		plan IntentRoute
+		want bool
 	}{
-		{name: "hint_true", hardBlockHint: true},
-		{name: "hint_false", hardBlockHint: false},
+		{
+			name: "billing_account_unsupported",
+			plan: IntentRoute{SchemaVersion: SchemaVersion, Intent: IntentBillingAccountUnsupported, Confidence: 0.91},
+			want: true,
+		},
+		{
+			name: "model_supplied_hint_ignored",
+			plan: IntentRoute{SchemaVersion: SchemaVersion, Intent: IntentKnowledgeQA, HardBlockHint: true, Confidence: 0.91},
+			want: false,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			trace := ProjectPlannerTrace(IntentRouterResult{
-				Fallback: true,
-				Plan: IntentRoute{
-					SchemaVersion: SchemaVersion,
-					Intent:        IntentBillingAccountUnsupported,
-					HardBlockHint: tc.hardBlockHint,
-					Confidence:    0.91,
-				},
+				Plan: tc.plan,
 			}, PlannerTraceOptions{Enabled: true, Model: "deepseek-v4-flash"})
 
 			assert.True(t, trace.Enabled)
-			assert.False(t, trace.SchemaValid)
-			assert.Equal(t, string(IntentUnknown), trace.Intent)
-			assert.Empty(t, trace.PlannedExecutionPath)
-			assert.Zero(t, trace.Confidence)
-			assert.Equal(t, tc.hardBlockHint, trace.HardBlockHint)
+			assert.True(t, trace.SchemaValid)
+			assert.Equal(t, tc.want, trace.HardBlockHint)
 		})
 	}
 }

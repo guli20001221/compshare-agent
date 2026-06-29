@@ -47,15 +47,13 @@ func ProjectPlannerTrace(result IntentRouterResult, opts PlannerTraceOptions) ob
 	trace.Skills = projectPlannerSkills(DeriveSelectedSkills(result.Plan))
 	trace.Slots = projectPlannerSlots(result.Plan.Slots)
 	trace.Confidence = result.Plan.Confidence
-	trace.HardBlockHint = result.Plan.HardBlockHint
+	trace.HardBlockHint = result.Plan.Intent == IntentBillingAccountUnsupported
 	if !trace.SchemaValid {
 		trace.Intent = string(IntentUnknown)
 		trace.PlannedExecutionPath = ""
 		trace.Skills = nil
 		trace.Confidence = 0
-		if !result.Fallback {
-			trace.HardBlockHint = false
-		}
+		trace.HardBlockHint = false
 	}
 	return trace
 }

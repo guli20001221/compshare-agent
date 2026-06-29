@@ -1,7 +1,5 @@
 package intent
 
-import "sort"
-
 type minimalPlanCore struct {
 	Intent     Intent          `json:"intent"`
 	TargetRefs []TargetRef     `json:"target_refs,omitempty"`
@@ -20,10 +18,7 @@ func compileMinimalPlanCore(core minimalPlanCore) IntentRoute {
 			TimeWindow: cloneTimeWindow(core.TimeWindow),
 			Action:     core.Action,
 		},
-		RequiredTools: requiredToolsForIntentSorted(core.Intent),
-		Retrieval:     Retrieval{Enabled: false},
-		HardBlockHint: core.Intent == IntentBillingAccountUnsupported,
-		Confidence:    defaultMinimalCoreConfidence(core.Intent),
+		Confidence: defaultMinimalCoreConfidence(core.Intent),
 	}
 	return withDerivedSelectedSkills(plan)
 }
@@ -35,16 +30,6 @@ func defaultMinimalCoreConfidence(i Intent) float64 {
 	default:
 		return 0.85
 	}
-}
-
-func requiredToolsForIntentSorted(i Intent) []string {
-	allowed := requiredToolsForIntent(i)
-	out := make([]string, 0, len(allowed))
-	for tool := range allowed {
-		out = append(out, tool)
-	}
-	sort.Strings(out)
-	return out
 }
 
 func cloneTargetRefs(in []TargetRef) []TargetRef {

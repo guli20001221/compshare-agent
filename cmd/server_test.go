@@ -199,7 +199,7 @@ func TestConfigureSharedDepsUnifiedCreateReachesServerPlanner(t *testing.T) {
 		require.NoError(t, json.Unmarshal(body, &captured))
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"schema_version\\\":\\\"1.0\\\",\\\"intent\\\":\\\"unknown\\\",\\\"slots\\\":{\\\"target_refs\\\":[],\\\"metrics\\\":[],\\\"time_window\\\":null},\\\"required_tools\\\":[],\\\"retrieval\\\":{\\\"enabled\\\":false},\\\"hard_block_hint\\\":false,\\\"confidence\\\":0.1}\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"schema_version\\\":\\\"1.0\\\",\\\"intent\\\":\\\"unknown\\\",\\\"slots\\\":{\\\"target_refs\\\":[],\\\"metrics\\\":[],\\\"time_window\\\":null},\\\"confidence\\\":0.1}\"}}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()

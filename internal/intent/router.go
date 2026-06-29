@@ -160,6 +160,7 @@ func (p *IntentRouter) Plan(ctx context.Context, input IntentRouterInput) (Inten
 		var validationErr *ValidationError
 		plan, parseErr := parsePlanJSON(raw)
 		if parseErr == nil {
+			plan = normalizePlannerControlFields(plan)
 			err = ValidateRoute(plan, ValidationContext{
 				UserText:  input.UserText,
 				PriorText: input.PriorText,
@@ -208,10 +209,6 @@ func repairInstructionForValidationCode(code ErrorCode) string {
 		return "intent 必须使用允许的运行时意图枚举"
 	case ErrInvalidConfidence:
 		return "confidence 必须在 0 到 1 之间"
-	case ErrRetrievalDisabled:
-		return "retrieval.enabled 必须为 false"
-	case ErrInvalidRequiredTool:
-		return "required_tools 必须匹配 intent 的工具白名单"
 	case ErrInvalidTargetRefType:
 		return "slots.target_refs 必须使用允许的目标类型和值"
 	case ErrAttemptedHallucinatedEntity:
@@ -268,6 +265,13 @@ func parsePlanJSON(raw string) (IntentRoute, error) {
 	return plan, nil
 }
 
+func normalizePlannerControlFields(plan IntentRoute) IntentRoute {
+	plan.RequiredTools = nil
+	plan.Retrieval = Retrieval{}
+	plan.HardBlockHint = false
+	return plan
+}
+
 type routerPromptExample struct {
 	Question string
 	PlanJSON string
@@ -280,8 +284,8 @@ type routerPromptExampleGroup struct {
 	Examples []routerPromptExample
 	// compact renders the group as a shared plan JSON + question list instead
 	// of repeating the full JSON per example. Use for groups where all examples
-	// share the same output structure (e.g. knowledge_qa: empty slots, empty
-	// required_tools). Saves ~1,100 tokens for the 21-example knowledge_qa group.
+	// share the same output structure (e.g. knowledge_qa: empty slots). Saves
+	// prompt tokens for the 21-example knowledge_qa group.
 	compact bool
 }
 
@@ -293,42 +297,42 @@ func routerPromptExampleGroups() []routerPromptExampleGroup {
 			Examples: []routerPromptExample{
 				{
 					Question: "show resource info for my-test-agent",
-					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"name","value":"my-test-agent","source":"user_text","source_span":"my-test-agent"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"name","value":"my-test-agent","source":"user_text","source_span":"my-test-agent"}],"metrics":[],"time_window":null},"confidence":0.82}`,
 					Source:   "Phase 1 baseline: named instance resource lookup",
 				},
 				{
 					Question: "which machines are running",
-					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"filter","value":"state=running"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"filter","value":"state=running"}],"metrics":[],"time_window":null},"confidence":0.82}`,
 					Source:   "Phase 1 baseline: state filter",
 				},
 				{
 					Question: "which 4090 machines are stopped",
-					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"filter","value":"state=stopped"},{"type":"filter","value":"gpu_type=4090"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"filter","value":"state=stopped"},{"type":"filter","value":"gpu_type=4090"}],"metrics":[],"time_window":null},"confidence":0.82}`,
 					Source:   "Phase 1 baseline: compound inventory filters",
 				},
 				{
 					Question: "我账号下有哪些 4090 实例",
-					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"filter","value":"gpu_type=4090"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"filter","value":"gpu_type=4090"}],"metrics":[],"time_window":null},"confidence":0.82}`,
 					Source:   "Phase 1 baseline: account inventory filter",
 				},
 				{
 					Question: "我有哪些实例",
-					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 					Source:   "PR2.5 Chinese anchor: bare inventory question (no filter)",
 				},
 				{
 					Question: "列出我的机器",
-					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 					Source:   "PR2.5 Chinese anchor: alternate inventory phrasing",
 				},
 				{
 					Question: "正在运行的实例",
-					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"filter","value":"state=running"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[{"type":"filter","value":"state=running"}],"metrics":[],"time_window":null},"confidence":0.85}`,
 					Source:   "PR2.5 Chinese anchor: running state filter",
 				},
 				{
 					Question: "我有几台机器",
-					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"resource_info","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 					Source:   "PR2.5 Chinese anchor: count question (still inventory)",
 				},
 			},
@@ -341,12 +345,12 @@ func routerPromptExampleGroups() []routerPromptExampleGroup {
 			Examples: []routerPromptExample{
 				{
 					Question: "今天北京天气怎么样",
-					PlanJSON: `{"schema_version":"1.0","intent":"unknown","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.7}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"unknown","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.7}`,
 					Source:   "Phase 1 boundary: unsupported general knowledge",
 				},
 				{
 					Question: "帮我写一首和平台无关的诗",
-					PlanJSON: `{"schema_version":"1.0","intent":"unknown","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.7}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"unknown","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.7}`,
 					Source:   "Phase 1 boundary: unrelated creative request",
 				},
 			},
@@ -357,12 +361,12 @@ func routerPromptExampleGroups() []routerPromptExampleGroup {
 			Examples: []routerPromptExample{
 				{
 					Question: "show current CPU and GPU monitor for my-test-agent",
-					PlanJSON: `{"schema_version":"1.0","intent":"monitor_query","slots":{"target_refs":[{"type":"name","value":"my-test-agent","source":"user_text","source_span":"my-test-agent"}],"metrics":["cpu","gpu"],"time_window":{"type":"preset","value":"now"}},"required_tools":["GetCompShareInstanceMonitor"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"monitor_query","slots":{"target_refs":[{"type":"name","value":"my-test-agent","source":"user_text","source_span":"my-test-agent"}],"metrics":["cpu","gpu"],"time_window":{"type":"preset","value":"now"}},"confidence":0.82}`,
 					Source:   "Phase 1 baseline: current monitor query",
 				},
 				{
 					Question: "CPU is high, what should I do",
-					PlanJSON: `{"schema_version":"1.0","intent":"monitor_query","slots":{"target_refs":[],"metrics":["cpu"],"time_window":{"type":"preset","value":"now"}},"required_tools":["GetCompShareInstanceMonitor"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"monitor_query","slots":{"target_refs":[],"metrics":["cpu"],"time_window":{"type":"preset","value":"now"}},"confidence":0.82}`,
 					Source:   "Phase 1 baseline: performance symptom maps to current monitor",
 				},
 			},
@@ -380,12 +384,12 @@ func routerPromptExampleGroups() []routerPromptExampleGroup {
 			Examples: []routerPromptExample{
 				{
 					Question: "account balance",
-					PlanJSON: `{"schema_version":"1.0","intent":"billing_account_unsupported","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":true,"confidence":0.9}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"billing_account_unsupported","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.9}`,
 					Source:   "PR #52: personal realtime account data hard block",
 				},
 				{
 					Question: "what is my invoice status",
-					PlanJSON: `{"schema_version":"1.0","intent":"billing_account_unsupported","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":true,"confidence":0.9}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"billing_account_unsupported","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.9}`,
 					Source:   "PR #52: personal invoice status hard block",
 				},
 			},
@@ -406,12 +410,12 @@ func routerPromptExampleGroups() []routerPromptExampleGroup {
 			Examples: []routerPromptExample{
 				{
 					Question: "充值 10 块就被扣完了 我啥也没干啊",
-					PlanJSON: `{"schema_version":"1.0","intent":"billing_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance","DiagnoseBilling"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"billing_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.82}`,
 					Source:   "Colloquial personal billing complaint — diagnose own instances",
 				},
 				{
 					Question: "我账单怎么这么高",
-					PlanJSON: `{"schema_version":"1.0","intent":"billing_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance","DiagnoseBilling"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"billing_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.8}`,
 					Source:   "Personal billing complaint — high bill diagnostic",
 				},
 			},
@@ -425,29 +429,28 @@ func routerPromptExampleGroups() []routerPromptExampleGroup {
 			// create_instance, which covers hardware-first creation, and from
 			// operation_lifecycle, which covers existing-instance operations.
 			// target_refs stays empty: the workload name is extracted by the deploy
-			// handler's matcher, not a planner slot. required_tools is the
-			// image-catalog read validated by requiredToolsForIntent.
+			// handler's matcher, not a planner slot.
 			Intent: IntentDeployModel,
 			Source: "workload-first create-family requests route to deploy_model",
 			Examples: []routerPromptExample{
 				{
 					Question: "帮我部署一个 Qwen2.5-32B",
-					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.8}`,
 					Source:   "deploy model name — engine sizes GPU and picks a framework image",
 				},
 				{
 					Question: "我想跑数字人",
-					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.8}`,
 					Source:   "run application workload — engine matches a ready-to-run image",
 				},
 				{
 					Question: "搞一个能跑 ComfyUI 的环境",
-					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.8}`,
 					Source:   "set up framework or application environment — engine selects image",
 				},
 				{
 					Question: "部署 Llama3-70B 做推理服务",
-					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+					PlanJSON: `{"schema_version":"1.0","intent":"deploy_model","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.8}`,
 					Source:   "deploy large-model inference workload — exercises VRAM sizing path",
 				},
 			},
@@ -474,17 +477,17 @@ func routerPromptExampleGroupsWithUnifiedCreate(unified bool) []routerPromptExam
 		Examples: []routerPromptExample{
 			{
 				Question: "帮我搞台 4090",
-				PlanJSON: `{"schema_version":"1.0","intent":"create_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+				PlanJSON: `{"schema_version":"1.0","intent":"create_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.82}`,
 				Source:   "hardware-first exact-GPU create routes to create_instance",
 			},
 			{
 				Question: "帮我抢一台上海的 4090",
-				PlanJSON: `{"schema_version":"1.0","intent":"create_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.82}`,
+				PlanJSON: `{"schema_version":"1.0","intent":"create_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.82}`,
 				Source:   "hardware-first create with zone preference routes to create_instance",
 			},
 			{
 				Question: "部署一台 4090 跑 Qwen",
-				PlanJSON: `{"schema_version":"1.0","intent":"create_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareImages"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.8}`,
+				PlanJSON: `{"schema_version":"1.0","intent":"create_instance","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.8}`,
 				Source:   "mixed hardware and workload request keeps both facets in the unified handler",
 			},
 		},
@@ -534,8 +537,8 @@ func basePromptScaffoldWithUnifiedCreate(unified bool) string {
 	lines := []string{
 		"You are the intent router for the CompShare console agent.",
 		"Return exactly one JSON object. Do not output Markdown, prose, or tool calls.",
-		"Required top-level fields: schema_version, intent, slots, required_tools, retrieval, hard_block_hint, confidence.",
-		"schema_version must be \"1.0\". confidence must be a number in [0,1]. retrieval.enabled must be false for the current demo slice.",
+		"Required top-level fields: schema_version, intent, slots, confidence.",
+		"schema_version must be \"1.0\". confidence must be a number in [0,1].",
 		"Allowed intent enum: monitor_query, monitor_history, resource_info, billing_instance, billing_account_unsupported, expiry_renewal, diagnosis, vague_failure, operation_lifecycle, knowledge_qa, gpu_specs_query, stock_availability, image_list, image_tag_catalog, model_repository_browse, network_accelerator_status, refund_estimate, cfs_info, pricing_query, disk_info, deploy_model, unknown.",
 		"Primary intents — all have working handlers on this platform: resource_info, monitor_query, operation_lifecycle, pricing_query, gpu_specs_query, stock_availability, network_accelerator_status, refund_estimate, cfs_info, billing_instance, knowledge_qa, diagnosis, disk_info. Prefer the closest matching primary intent over unknown whenever the question is about the CompShare platform, the user's own instances, or platform billing/pricing/usage.",
 		"deploy_model: Classify execution requests that need a create confirmation flow as deploy_model. The user wants to RUN or DEPLOY a specific model, framework, or application (e.g. 部署 Qwen2.5-32B / 跑数字人 / 搭一个能跑 ComfyUI 的环境 / 部署 Llama3 做推理) and wants a suitable instance created for that workload — the agent picks the image and GPU. Use deploy_model with empty target_refs. Route recommendation, how-to, price, configuration-sizing, comparison, or feasibility questions about deployment to knowledge_qa, pricing_query, or gpu_specs_query as appropriate; do not use deploy_model. API-subscription developer tools and coding assistants used through an API key or platform package — Claude Code, Codex, Coding Plan, Cursor — are NOT deployable models (they call a hosted API; there are no weights to run on an instance); classify how-to-use/configure questions about them as knowledge_qa, not deploy_model. Use operation_lifecycle (NOT deploy_model) for operations on an EXISTING instance (start/stop/reboot/resize/add-disk).",
@@ -568,7 +571,6 @@ func basePromptScaffoldWithUnifiedCreate(unified bool) string {
 		"Resource filters are ANDed across different fields. Do not mix filter target_refs with name or UHostId target_refs.",
 		"Never invent UHostIds or instance names that do not appear verbatim in the user question or prior turns.",
 		"For monitor_query, metrics may be [] when the metric words are unclear; the handler can render all returned current monitor values.",
-		"Set hard_block_hint=true only for unsupported account-level billing questions such as account balance, total account bill, or transaction flow.",
 		"Examples:",
 	}
 	if unified {
@@ -676,7 +678,6 @@ func unknownFallbackPlan() IntentRoute {
 	return IntentRoute{
 		SchemaVersion: SchemaVersion,
 		Intent:        IntentUnknown,
-		Retrieval:     Retrieval{Enabled: false},
 		Confidence:    0,
 	}
 }

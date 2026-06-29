@@ -48,22 +48,22 @@ var legacyDiagnosisGroup = routerPromptExampleGroup{
 	Examples: []routerPromptExample{
 		{
 			Question: "uhost-abc123 这台启动失败了帮我查",
-			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-abc123","source":"user_text","source_span":"uhost-abc123"}],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[{"type":"uhost_id_user_input","value":"uhost-abc123","source":"user_text","source_span":"uhost-abc123"}],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "Stage 2B: concrete instance target stays diagnosis",
 		},
 		{
 			Question: "为什么我开的端口在外面访问不了",
-			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "Stage 2B: no-target port failure report still enters diagnosis; engine asks which instance",
 		},
 		{
 			Question: "跑模型的时候说找不到GPU",
-			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "Stage 2B: no-target GPU failure report still enters diagnosis; engine asks which instance",
 		},
 		{
 			Question: "ssh连接超时一直进不去",
-			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":["DescribeCompShareInstance"],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "Stage 2B: no-target SSH failure report still enters diagnosis; engine asks which instance",
 		},
 	},
@@ -225,9 +225,8 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 //	    mutating intent, example-driven only so it fires on clear deploy phrasing);
 //	(2) one new directive distinguishing workload-first deploy (部署/跑/搭 +
 //	    model/app) from create_instance and existing-instance operations;
-//	(3) new IntentDeployModel example group with 4 anchors, required_tools=
-//	    [DescribeCompShareImages]. Unlike routing-only intents above, this one
-//	    has a dedicated engine handler.
+//	(3) new IntentDeployModel example group with 4 anchors. Unlike routing-only
+//	    intents above, this one has a dedicated engine handler.
 //
 // PR #217 integrated runtime refactor (2026-06-02): SHA bumped for two
 // intentional planner-visible changes:
@@ -267,8 +266,8 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // Context/prompt optimization P5 (2026-06-03): SHA bumped because planner
 // examples are wrapped in XML-like delimiters (<examples>, <example>,
 // <shared_plan>, <question>) while preserving each JSON example as its own
-// line. Boundary remains: no intent enum, required_tools allowlist, route
-// order, or example PlanJSON payload changed in this step.
+// line. Boundary remains: no intent enum, route order, or example PlanJSON
+// payload changed in this step.
 //
 // BoundaryPack pilot — stock_vs_resource (PR5, 2026-06-09): FIRST intentional
 // bump of the restructure. The single SHA-delta source is that the
@@ -278,8 +277,8 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // directive TEXT is byte-identical and appears exactly once
 // (TestStockVsResourceBoundary_MovedOutOfBasePrompt); only its position in the
 // assembled prompt changed. The pack content is pinned separately by
-// stockVsResourceBoundaryPackSHA256Baseline. No intent enum, no required_tools
-// allowlist, no route order, no example PlanJSON, and no finance/diagnosis
+// stockVsResourceBoundaryPackSHA256Baseline. No intent enum, no route order,
+// no example PlanJSON, and no finance/diagnosis
 // directive changed.
 //
 // #130 naming realignment (2026-06-12) — cutover→route lexical sweep: the two
@@ -311,7 +310,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // surface (not byte-stable), so the hash moves by construction and the change is
 // eval-gated by a live realism A/B (arm A = #286 tip, arm B = this) checking intent
 // parity / no classification drift. Only the role line changed — no intent enum,
-// required_tools, route order, example question/PlanJSON, or directive touched. The
+// route order, example question/PlanJSON, or directive touched. The
 // retry-instruction "IntentPlan" mentions (router.go:183/187) reference the output
 // JSON object label, a distinct referent from the role identity, and are deferred to
 // the schema/label pass.
@@ -354,7 +353,12 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // R2b Phase C directive-imperative cleanup (2026-06-29): route directives and
 // low-risk scaffold lines now use concise imperative wording. No intent labels,
 // examples, regexes, or workflow behavior changed.
-const systemPromptSHA256Baseline = "7abd7ec64fce89f55cc2433c698d0ef082e2ccdad97cf7ec142c82005c1334d0"
+//
+// Agent redundancy cleanup (2026-06-30): remove deprecated planner-output
+// control fields (required_tools / retrieval / hard_block_hint) from schema,
+// prompt, and examples. Tool windows and hard-block trace hints are backend
+// derived; no business routing strategy changed.
+const systemPromptSHA256Baseline = "9333ed08d8fbd3dc337f32cfc1f381870459d6f3eab2b240fdcded102e725557"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
@@ -440,112 +444,112 @@ var legacyKnowledgeQAGroup = routerPromptExampleGroup{
 	Examples: []routerPromptExample{
 		{
 			Question: "为啥显卡内存满了 GPU 占用才 10%",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "PR #60: concept question with monitor-trigger words",
 		},
 		{
 			Question: "how do I issue an invoice",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "PR #52: finance process question, not personal status",
 		},
 		{
 			Question: "what image types does the platform provide",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "Stage 2B: platform concept question",
 		},
 		{
 			Question: "远程桌面没声音该怎么处理",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "Stage 2B: platform how-to/config boundary",
 		},
 		{
 			Question: "错误码 226601 是什么意思",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "Stage 2B: error-code knowledge question",
 		},
 		{
 			Question: "Linux 怎么装 NVIDIA 驱动",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "Stage 2B: platform how-to/config boundary",
 		},
 		{
 			Question: "Coding Plan 的 BaseURL 应该填什么",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "Stage 2B: model API configuration",
 		},
 		{
 			Question: "怎么在 VSCode 里连 GPU 实例",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "Stage 2B: connection how-to",
 		},
 		{
 			Question: "在 CLINE 里加 mcp-server-sqlite 那段 json 该怎么写",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "PR #60: third-party tool configuration jargon",
 		},
 		{
 			Question: "怎么查我这个月的账单",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "PR #52: billing navigation question",
 		},
 		{
 			Question: "套餐是按什么方式计费的",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "Task 147: named-package billing-RULE question (how is a plan billed), NOT a GPU runtime price lookup — anchors knowledge_qa vs pricing_query jitter on 套餐/计费",
 		},
 		{
 			Question: "Claude Code 怎么用",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "RC012/RC014: a coding assistant used via API key / platform package (Claude Code, Codex) is a usage consultation answered by RAG, NOT a deployable model — anchors knowledge_qa vs deploy_model",
 		},
 		{
 			Question: "哪里可以看发票发起记录",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "PR #52: invoice navigation question",
 		},
 		{
 			Question: "包月和按量哪个划算",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "PR #34a: platform comparison question",
 		},
 		{
 			Question: "实例磁盘可以扩容吗",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "PR #34a: platform feasibility question",
 		},
 		{
 			Question: "退款流程是怎样的",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "PR #34a: platform procedure question",
 		},
 		{
 			Question: "Suno 怎么用 API 生成歌曲",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "R3-A1: modelverse music-gen API (Suno)",
 		},
 		{
 			Question: "Vidu 接口怎么传图生成视频",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "R3-A1: modelverse video-gen API (Vidu)",
 		},
 		{
 			Question: "flux 模型调用 API 怎么传 prompt 和图",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "R3-A1: modelverse image-gen API (flux)",
 		},
 		{
 			Question: "用 OpenAI SDK 调 gpt-image-1 怎么传参",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "R3-A1: modelverse OpenAI-compat API (gpt-image)",
 		},
 		{
 			Question: "minimax-speech 怎么生成中文语音",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "R3-A1: modelverse TTS API (minimax-speech)",
 		},
 		{
 			Question: "modelverse 返回 1002 是什么错误",
-			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"required_tools":[],"retrieval":{"enabled":false},"hard_block_hint":false,"confidence":0.85}`,
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "R3-A1: modelverse error-code reference",
 		},
 	},

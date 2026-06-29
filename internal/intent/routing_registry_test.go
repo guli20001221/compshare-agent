@@ -208,9 +208,6 @@ func TestRoutingPromptFragments_DeriveFromSkillRegistry(t *testing.T) {
 			if !strings.Contains(combinedExamples, meta.IntentLabel) {
 				t.Fatalf("planner examples missing metadata intent %q", meta.IntentLabel)
 			}
-			if !strings.Contains(combinedExamples, meta.RequiredTool) {
-				t.Fatalf("planner examples missing metadata required tool %q", meta.RequiredTool)
-			}
 		}
 	}
 }
