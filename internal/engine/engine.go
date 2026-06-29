@@ -2968,6 +2968,43 @@ func isMonitorLoadAssessmentQuestion(userMsg string) bool {
 	return false
 }
 
+func (e *Engine) knowledgeRetrievalQuery(userMsg string) string {
+	text := strings.TrimSpace(userMsg)
+	if text == "" || !isShortKnowledgeFollowup(text) {
+		return userMsg
+	}
+	for i := len(e.messages) - 2; i >= 0; i-- {
+		msg := e.messages[i]
+		if msg.Role != openai.ChatMessageRoleUser {
+			continue
+		}
+		prev := strings.TrimSpace(msg.Content)
+		if prev == "" || prev == text {
+			continue
+		}
+		return prev + "\n" + text
+	}
+	return userMsg
+}
+
+func isShortKnowledgeFollowup(text string) bool {
+	compact := strings.TrimSpace(normalizeResourceText(text))
+	if compact == "" {
+		return false
+	}
+	if utf8.RuneCountInString(compact) > 16 {
+		return false
+	}
+	hasSignal := false
+	for _, r := range compact {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			hasSignal = true
+			break
+		}
+	}
+	return hasSignal
+}
+
 func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent), onTextDelta func(string)) (string, bool) {
 	result := dispatch.result
 	if result.Plan.Intent != intent.IntentKnowledgeQA {
@@ -2980,13 +3017,14 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatc
 	}
 
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
-	questionArea := inferKnowledgeProductArea(userMsg)
-	retrieved := e.knowledgeRetriever.Retrieve(userMsg, questionArea)
+	retrievalQuery := e.knowledgeRetrievalQuery(userMsg)
+	questionArea := inferKnowledgeProductArea(retrievalQuery)
+	retrieved := e.knowledgeRetriever.Retrieve(retrievalQuery, questionArea)
 	hitItems := retrieved.HitItems
 	trace := observability.RetrievalTrace{
 		Enabled:                retrieved.Enabled,
 		KBVersion:              retrieved.KBVersion,
-		QueryRaw:               userMsg,
+		QueryRaw:               retrievalQuery,
 		QueryNormalized:        retrieved.QueryNormalized,
 		QueryExpansions:        []string{},
 		Hits:                   len(retrieved.Hits),
@@ -3000,7 +3038,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatc
 		FloorValue:             weakEvidenceThresholdFor(retrieved.HybridMode),
 	}
 	if trace.QueryNormalized == "" {
-		trace.QueryNormalized = knowledge.NormalizeQuery(userMsg)
+		trace.QueryNormalized = knowledge.NormalizeQuery(retrievalQuery)
 	}
 	evidences, evidenceErr := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
 	trace.HitItems = projectEvidenceTraceHits(evidences, hitItems)
