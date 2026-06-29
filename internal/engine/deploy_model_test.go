@@ -568,7 +568,7 @@ func TestBuildDeployReply_UsesZoneLabelForDisplay(t *testing.T) {
 
 func TestBuildAdviseReply_UsesZoneLabelForDisplay(t *testing.T) {
 	plan := deployPlan{ImageName: "PyTorch", GpuType: "4090", ImageSource: "platform", ChosenZone: "cn-bj2-03", ZoneLabel: "华北一C"}
-	reply := buildAdviseReply(plan, true)
+	reply := buildAdviseReply(plan)
 	assert.Contains(t, reply, "可用区：华北一C")
 	assert.NotContains(t, reply, "可用区：cn-bj2-03")
 }
@@ -890,116 +890,26 @@ func TestZoneStockState(t *testing.T) {
 func TestBuildAdviseReply(t *testing.T) {
 	plan := deployPlan{ImageSource: "platform", ImageName: "ComfyUI", GpuType: "A100", ChosenZone: "cn-wlcb-01", MatchNote: "按显存推荐"}
 
-	// read-only: advice + the "ask an admin to enable writes" footer.
-	ro := buildAdviseReply(plan, false)
-	assert.Contains(t, ro, "推荐 GPU：A100")
-	assert.Contains(t, ro, "ComfyUI")
-	assert.Contains(t, ro, "cn-wlcb-01")
-	assert.Contains(t, ro, "只读模式", "read-only advice tells the user how to actually deploy")
-	assert.NotContains(t, ro, "实例 ID", "advice never reports a created instance")
-
-	// mutating-on advice (a recommendation request): same body, but offers to proceed
-	// on a concrete restate instead of pointing at the read-only switch.
-	rw := buildAdviseReply(plan, true)
-	assert.Contains(t, rw, "推荐 GPU：A100")
-	assert.NotContains(t, rw, "只读模式", "writes are on — don't tell the user to enable them")
-	assert.Contains(t, rw, "部署 ComfyUI", "offers to proceed on an explicit restate")
-	assert.NotContains(t, rw, "实例 ID", "advice never reports a created instance")
+	reply := buildAdviseReply(plan)
+	assert.Contains(t, reply, "推荐 GPU：A100")
+	assert.Contains(t, reply, "ComfyUI")
+	assert.Contains(t, reply, "cn-wlcb-01")
+	assert.Contains(t, reply, "只读模式", "advice tells the user why no instance was created")
+	assert.NotContains(t, reply, "实例 ID", "advice never reports a created instance")
 }
 
-// TestDeployIsAdviceOnly pins the recommend-vs-create classifier. A request that asks
-// for a recommendation / how-to advises; an explicit create command creates (and wins
-// over an incidental advice marker). Safe-biased toward advice when in doubt.
-func TestDeployIsAdviceOnly(t *testing.T) {
-	cases := []struct {
-		msg  string
-		want bool
-	}{
-		{"LiveTalking这个镜像推荐我用哪种卡部署", true}, // real session s_fd7f1b9669fd
-		{"用什么显卡部署 ComfyUI", true},
-		{"部署 DeepSeek R1 用哪种卡好", true},
-		{"部署一台 4090 多少钱", true},
-		{"部署 4090 包月价格", true},
-		{"怎么部署 Qwen", true},
-		{"推荐一个能跑 Qwen 的配置", true},
-		{"用什么镜像合适", true},
-		{"我想对一个模型进行微调", true},
-		{"我想训练我的rvc模型", true},
-		{"vasp计算", true},
-		{"RVC模型", true},
-		{"我想部署 DeepSeek R1", false},
-		{"部署一台A100的Ollama，按量", false},
-		{"帮我部署 Qwen2.5-7B", false},
-		{"帮我部署你推荐的那台", false}, // explicit create command overrides 推荐
-		{"现在创建一台 4090", false},
-		{"部署 Qwen2.5 32B", false},
-		{"32B", false},
-	}
-	for _, c := range cases {
-		t.Run(c.msg, func(t *testing.T) {
-			assert.Equal(t, c.want, deployIsAdviceOnly(c.msg))
-		})
-	}
-}
-
-// TestTryDeployModel_AdviceOnlyDoesNotCreate proves the fix end-to-end: with writes
-// ENABLED, a recommendation request ("推荐我用哪种卡部署") returns the matcher's advice
-// and runs NO create saga — instead of the real-session stock-out create. The advice
-// offers to proceed on an explicit restate.
-func TestTryDeployModel_AdviceOnlyDoesNotCreate(t *testing.T) {
-	exec := newDeployMock(deployMockConfig{capacityEnough: true, communityImageID: "comm-img-9", instanceStates: []string{"Running"}})
-	matchJSON := `{"image_source":"community","image_name":"LiveTalking 数字人","model_name":"","match_kind":"exact","quantization":""}`
-	confirmCalls := 0
-	eng := newDeployEngine(matchJSON, exec, func(string, map[string]any) bool { confirmCalls++; return true }) // mutating ON
-
-	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "LiveTalking这个镜像推荐我用哪种卡部署", noopStep)
-
-	require.True(t, handled)
-	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "an advice-only request must NOT create an instance")
-	assert.Equal(t, 0, confirmCalls, "no confirm card for a recommendation question")
-	assert.Contains(t, reply, "建议", "the recommendation is returned as advice")
-	assert.Contains(t, reply, "部署 LiveTalking 数字人", "mutating-on advice offers to proceed on an explicit restate")
-}
-
-func TestTryDeployModel_PriceQuestionDoesNotCreate(t *testing.T) {
+func TestTryDeployModel_MutatingDeployIntentCreates(t *testing.T) {
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
 
-	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署一台 4090 多少钱", noopStep)
+	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署 DeepSeek R1 32B", noopStep)
 
 	require.True(t, handled)
-	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "price questions must not create instances")
-	assert.Contains(t, reply, "推荐 GPU", "price-like deploy turns should return advice rather than a billable create card")
-}
-
-func TestTryDeployModel_HowToQuestionDoesNotCreate(t *testing.T) {
-	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
-	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
-
-	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "DeepSeek R1怎么部署", noopStep)
-
-	require.True(t, handled)
-	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "how-to questions must not create instances")
-	assert.Contains(t, reply, "建议", "how-to deploy turns should return advice")
-}
-
-func TestTryDeployModel_TrainingIntentDoesNotCreate(t *testing.T) {
-	exec := newDeployMock(deployMockConfig{capacityEnough: true, communityImageID: "comm-img-9", instanceStates: []string{"Running"}})
-	matchJSON := `{"image_source":"community","image_name":"RVC 训练环境","model_name":"","match_kind":"base","quantization":""}`
-	confirmCalls := 0
-	eng := newDeployEngine(matchJSON, exec, func(string, map[string]any) bool { confirmCalls++; return true }) // mutating ON
-
-	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "我想训练我的rvc模型", noopStep)
-
-	require.True(t, handled)
-	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "a training advice request must NOT create an instance")
-	assert.Equal(t, 0, confirmCalls, "no confirm card for a training advice request")
-	assert.Contains(t, reply, "建议", "the recommendation is returned as advice")
+	assert.Equal(t, 1, countCalls(exec.calls, "CreateCompShareInstance"), "deploy_model handles execution requests and creates through the confirmation flow")
 }
 
 // TestTryDeployModel_ExplicitCreateStillCreates guards the other side: an explicit
-// "帮我部署X" with writes on still runs the create saga (the advice gate must not
-// swallow real create commands).
+// "帮我部署X" with writes on still runs the create saga.
 func TestTryDeployModel_ExplicitCreateStillCreates(t *testing.T) {
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
@@ -1091,7 +1001,7 @@ func TestTryDeployModel_CreatePreferenceFailureFallsBack(t *testing.T) {
 	assert.Equal(t, 1, countCalls(exec.calls, "CreateCompShareInstance"), "deploy falls back to the existing behavior")
 }
 
-func TestTryDeployModel_CreatePreferenceDoesNotBypassAdviceGate(t *testing.T) {
+func TestTryDeployModel_CreatePreferenceStillUsesDeployCommandPath(t *testing.T) {
 	SetCreatePreferenceExtractionEnabled(true)
 	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(false) })
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
@@ -1102,12 +1012,12 @@ func TestTryDeployModel_CreatePreferenceDoesNotBypassAdviceGate(t *testing.T) {
 		ImagePref:    "PyTorch",
 	}})
 
-	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "推荐我跑 PyTorch 用哪个卡", noopStep)
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "部署一个 PyTorch 环境", noopStep)
 
 	require.True(t, handled)
-	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"))
-	assert.Equal(t, 0, confirmCalls)
-	assert.Contains(t, reply, "建议")
+	assert.Equal(t, 1, countCalls(exec.calls, "CreateCompShareInstance"), "create preference extraction should not bypass the deploy command path")
+	assert.Equal(t, 1, confirmCalls)
+	assert.Contains(t, reply, "uhost-deploy-1")
 }
 
 // newZoneDeployMock is a full-handler mock with per-zone availability + stock so the
