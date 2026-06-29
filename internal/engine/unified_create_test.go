@@ -65,6 +65,8 @@ func TestTryPlannerDispatch_UnknownClearsPendingDeployModel(t *testing.T) {
 func TestDispatchAgentSkill_CreateInstanceFlagOnSpecOnlyStartsCreateWorkflowWithoutImageMatch(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
 	t.Cleanup(func() { SetUnifiedCreateEnabled(true) })
+	SetCreatePreferenceExtractionEnabled(true)
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(true) })
 
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	client := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: deployMatchJSON}}}
@@ -81,6 +83,32 @@ func TestDispatchAgentSkill_CreateInstanceFlagOnSpecOnlyStartsCreateWorkflowWith
 	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "confirm=false path must not create")
 	require.NotEmpty(t, *events)
 	assert.True(t, sawStepAction(*events, "CreateInstanceWorkflow"))
+}
+
+func TestDispatchAgentSkill_CreateInstancePreferenceFlagOffDoesNotCallExtractor(t *testing.T) {
+	SetUnifiedCreateEnabled(true)
+	t.Cleanup(func() { SetUnifiedCreateEnabled(true) })
+	SetCreatePreferenceExtractionEnabled(false)
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(true) })
+
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	client := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: deployMatchJSON}}}
+	eng := NewWithDeps(client, exec, func(string, map[string]any) bool { return false })
+	eng.guidedCreate = true
+	extractor := &fakeCreatePreferenceExtractor{result: &CreatePreferenceExtractionResult{ImagePref: "PyTorch"}}
+	eng.SetCreatePreferenceExtractor(extractor)
+	onStep, events := collectSteps()
+
+	reply, handled := eng.dispatchAgentSkill(context.Background(), createDispatch(), "创建一台4090装PyTorch", onStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "创建实例")
+	assert.Empty(t, extractor.calls, "flag off must disable create_instance preference extraction")
+	assert.Empty(t, client.calls, "flag off must not route image preference through deploy matcher")
+	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "confirm=false path must not create")
+	require.NotEmpty(t, *events)
+	args := workflowStepArgs(t, *events, "CreateInstanceWorkflow")
+	assert.Equal(t, "4090", args["GpuType"])
 }
 
 func TestDispatchAgentSkill_CreateInstanceV100VariantsStartCreateWorkflow(t *testing.T) {
@@ -197,6 +225,8 @@ func TestOperationLifecycleCreateDiskUsesDiskWorkflow(t *testing.T) {
 func TestDispatchAgentSkill_CreateInstanceSpecOnlyResolvesZonePreference(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
 	t.Cleanup(func() { SetUnifiedCreateEnabled(true) })
+	SetCreatePreferenceExtractionEnabled(true)
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(true) })
 
 	exec := newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	client := &mockLLM{}
@@ -222,6 +252,8 @@ func TestDispatchAgentSkill_CreateInstanceSpecOnlyResolvesZonePreference(t *test
 func TestDispatchAgentSkill_CreateInstanceImagePreferenceUsesDeployMatcher(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
 	t.Cleanup(func() { SetUnifiedCreateEnabled(true) })
+	SetCreatePreferenceExtractionEnabled(true)
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(true) })
 
 	base := newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	var createArgs map[string]any
@@ -255,6 +287,8 @@ func TestDispatchAgentSkill_CreateInstanceImagePreferenceUsesDeployMatcher(t *te
 func TestDispatchAgentSkill_CreateInstanceCommunityImagePreferenceUsesDeployMatcher(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
 	t.Cleanup(func() { SetUnifiedCreateEnabled(true) })
+	SetCreatePreferenceExtractionEnabled(true)
+	t.Cleanup(func() { SetCreatePreferenceExtractionEnabled(true) })
 
 	base := newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}, communityImageID: "comm-img-9"})
 	var createArgs map[string]any
@@ -301,8 +335,10 @@ func TestDispatchAgentSkill_CreateInstanceEmptyInputDoesNotOpenCreateCard(t *tes
 
 func TestDispatchAgentSkill_UnifiedCreateMixedWorkloadUsesDeployMatcherWithPinnedGPU(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
+	SetCreatePreferenceExtractionEnabled(true)
 	t.Cleanup(func() {
 		SetUnifiedCreateEnabled(true)
+		SetCreatePreferenceExtractionEnabled(true)
 	})
 
 	base := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})

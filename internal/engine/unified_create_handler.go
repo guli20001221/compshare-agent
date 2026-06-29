@@ -25,14 +25,16 @@ func (e *Engine) tryCreateInstance(ctx context.Context, dispatch routerDispatchR
 		return e.deployReply(dispatch.result, dispatch.latency, createInstanceNonCommandReply())
 	}
 	var pref *CreatePreferenceExtractionResult
-	if extracted, err := e.extractCreatePreference(ctx, userMsg, intent.IntentCreateInstance); err == nil && extracted != nil {
-		pref = extracted
-		e.createPreferenceThisTurn = extracted
-		if createPreferenceNeedsImageMatcher(*extracted) {
-			deployDispatch := dispatch
-			deployDispatch.result.Plan.Intent = intent.IntentDeployModel
-			matchUserMsg := deployMessageWithCreatePreference(userMsg, *extracted)
-			return e.runDeployModel(ctx, deployDispatch, userMsg, userMsg, matchUserMsg, onStep)
+	if createPreferenceExtractionOn {
+		if extracted, err := e.extractCreatePreference(ctx, userMsg, intent.IntentCreateInstance); err == nil && extracted != nil {
+			pref = extracted
+			e.createPreferenceThisTurn = extracted
+			if createPreferenceNeedsImageMatcher(*extracted) {
+				deployDispatch := dispatch
+				deployDispatch.result.Plan.Intent = intent.IntentDeployModel
+				matchUserMsg := deployMessageWithCreatePreference(userMsg, *extracted)
+				return e.runDeployModel(ctx, deployDispatch, userMsg, userMsg, matchUserMsg, onStep)
+			}
 		}
 	}
 
