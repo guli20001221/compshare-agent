@@ -131,9 +131,6 @@ var (
 	historicalDurationRE = regexp.MustCompile(`(?i)(?:过去|近|最近|last|past|previous|recent)\s*(?:\d+\s*)?(?:分钟|小时|天|周|月|hour|hours|day|days|week|weeks|month|months|h|d)`)
 	percentValueRE       = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*%`)
 	uhostIDInTextRE      = regexp.MustCompile(`uhost-[A-Za-z0-9][A-Za-z0-9-]*`)
-	hardwareCreateVerbRE = regexp.MustCompile(`(?i)(创建|新建|开\s*(?:一台|一个|个|台)?\s*[a-z0-9]|搞台|搞一台|抢一台|买一台|租一台|来一台|部署一台)`)
-	hardwareAdviceRE     = regexp.MustCompile(`(?i)(能干嘛|能做什么|有什么用|适合做什么|适合干嘛)`)
-	hardwarePriceQueryRE = regexp.MustCompile(`(?i)(多少钱|价格|费用|计费|包月|包日|按量|每小时|一小时|小时价|贵不贵)`)
 )
 
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
@@ -1826,9 +1823,6 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
-	if reply, handled := e.tryDirectHardwareCreate(ctx, dispatch, userMsg, onStep); handled {
-		return reply, true
-	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || dispatch.result.Plan.Intent == intent.IntentMonitorHistory || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
 		return e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
 	}
@@ -1896,36 +1890,6 @@ func (e *Engine) tryBillingAccountUnsupportedBeforeResourceSelection(ctx context
 		return reply, true
 	}
 	return "", false
-}
-
-func (e *Engine) tryDirectHardwareCreate(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	if !plannerAllowsDirectHardwareCreate(dispatch.result.Plan.Intent) {
-		return "", false
-	}
-	if !directHardwareCreateActionCue(userMsg) {
-		return "", false
-	}
-	availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
-	args, ok := hardwareCreateWorkflowArgs(userMsg, availResult)
-	if !ok {
-		return "", false
-	}
-	const action = "CreateInstanceWorkflow"
-	e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
-	args = e.safeExecutor.FilterArgs(action, args)
-	onStep(StepEvent{
-		Type:   StepToolCall,
-		Action: action,
-		Source: observability.ToolSourceMainReAct,
-		Args:   e.safeExecutor.RedactArgs(action, args),
-	})
-	raw := e.executeWorkflow(ctx, action, args, onStep)
-	reply := workflowDirectReply(action, raw)
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleAssistant,
-		Content: reply,
-	})
-	return reply, true
 }
 
 func (e *Engine) tryDirectMonitorHistoryFromUserText(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
@@ -2208,77 +2172,6 @@ func monitorMetricsFromUserText(userMsg string) []intent.Metric {
 		metrics = append(metrics, intent.MetricCPU, intent.MetricMemory, intent.MetricGPU, intent.MetricVRAM)
 	}
 	return metrics
-}
-
-func plannerAllowsDirectHardwareCreate(route intent.Intent) bool {
-	switch route {
-	case "", intent.IntentUnknown, intent.IntentOperationLifecycle, intent.IntentResourceInfo:
-		return true
-	case intent.IntentCreateInstance:
-		return !unifiedCreateOn
-	default:
-		return false
-	}
-}
-
-func directHardwareCreateActionCue(userMsg string) bool {
-	text := strings.TrimSpace(userMsg)
-	if text == "" || hardwareAdviceRE.MatchString(text) || hardwarePriceQueryRE.MatchString(text) {
-		return false
-	}
-	return hardwareCreateVerbRE.MatchString(text)
-}
-
-func hardwareCreateWorkflowArgs(userMsg string, availResult map[string]any) (map[string]any, bool) {
-	gpu := extractDeployGPUFromCatalog(userMsg, availResult)
-	if gpu == "" {
-		gpu = knowledge.ExplicitGPUTypeFromText(userMsg)
-	}
-	gpu = knowledge.CanonicalGPUType(gpu)
-	if gpu == "" {
-		return nil, false
-	}
-	args := map[string]any{
-		"GpuType": gpu,
-		"Gpu":     float64(1),
-	}
-	if imageName := createImageNameFromText(userMsg); imageName != "" {
-		args["ImageName"] = imageName
-	}
-	return args, true
-}
-
-func createImageNameFromText(text string) string {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	if lower == "" {
-		return ""
-	}
-	switch {
-	case strings.Contains(lower, "pytorch") || strings.Contains(lower, "torch"):
-		return "torch"
-	case strings.Contains(lower, "vllm"):
-		return "vLLM"
-	case strings.Contains(lower, "ollama"):
-		return "Ollama"
-	case strings.Contains(lower, "comfyui") || strings.Contains(lower, "comfy ui"):
-		return "ComfyUI"
-	case strings.Contains(lower, "dify"):
-		return "Dify"
-	case strings.Contains(lower, "ragflow"):
-		return "RAGFlow"
-	case strings.Contains(lower, "sglang"):
-		return "SGLang"
-	case strings.Contains(lower, "docker"):
-		return "Docker"
-	case strings.Contains(lower, "cuda"):
-		return "cuda"
-	case strings.Contains(lower, "ubuntu"):
-		return "Ubuntu"
-	case strings.Contains(lower, "windows"):
-		return "Windows"
-	default:
-		return ""
-	}
 }
 
 func workflowDirectReply(action, raw string) string {

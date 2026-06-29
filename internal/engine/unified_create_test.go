@@ -20,13 +20,14 @@ func createDispatch() routerDispatchResult {
 	}
 }
 
-func TestUnifiedCreateFlag_DefaultOff(t *testing.T) {
-	SetUnifiedCreateEnabled(false)
-	assert.False(t, UnifiedCreateEnabled())
+func TestUnifiedCreateFlag_DefaultOn(t *testing.T) {
+	SetUnifiedCreateEnabled(true)
+	assert.True(t, UnifiedCreateEnabled())
 }
 
 func TestDispatchAgentSkill_CreateInstanceFlagOffFallsThrough(t *testing.T) {
 	SetUnifiedCreateEnabled(false)
+	t.Cleanup(func() { SetUnifiedCreateEnabled(true) })
 	exec := newDeployMock(deployMockConfig{capacityEnough: true})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
 
@@ -35,18 +36,6 @@ func TestDispatchAgentSkill_CreateInstanceFlagOffFallsThrough(t *testing.T) {
 	assert.False(t, handled)
 	assert.Empty(t, reply)
 	assert.Empty(t, exec.calls)
-}
-
-func TestDirectHardwareCreate_CreateInstanceIntentUsesRescueWhenUnifiedCreateOff(t *testing.T) {
-	SetUnifiedCreateEnabled(false)
-	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
-	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return false })
-
-	reply, handled := eng.tryDirectHardwareCreate(context.Background(), createDispatch(), "帮我创建一台4090", noopStep)
-
-	require.True(t, handled)
-	assert.Contains(t, reply, "创建实例")
-	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"), "confirm=false path must not create")
 }
 
 func TestTryPlannerDispatch_UnknownClearsPendingDeployModel(t *testing.T) {
@@ -75,7 +64,7 @@ func TestTryPlannerDispatch_UnknownClearsPendingDeployModel(t *testing.T) {
 
 func TestDispatchAgentSkill_CreateInstanceFlagOnSpecOnlyStartsCreateWorkflowWithoutImageMatch(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
-	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
+	t.Cleanup(func() { SetUnifiedCreateEnabled(true) })
 
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	client := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: deployMatchJSON}}}
@@ -104,7 +93,7 @@ func TestDispatchAgentSkill_CreateInstanceV100VariantsStartCreateWorkflow(t *tes
 	for _, msg := range cases {
 		t.Run(msg, func(t *testing.T) {
 			SetUnifiedCreateEnabled(true)
-			t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
+			t.Cleanup(func() { SetUnifiedCreateEnabled(true) })
 
 			exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 			client := &mockLLM{}
@@ -207,7 +196,7 @@ func TestOperationLifecycleCreateDiskUsesDiskWorkflow(t *testing.T) {
 
 func TestDispatchAgentSkill_CreateInstanceSpecOnlyResolvesZonePreference(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
-	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
+	t.Cleanup(func() { SetUnifiedCreateEnabled(true) })
 
 	exec := newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	client := &mockLLM{}
@@ -232,7 +221,7 @@ func TestDispatchAgentSkill_CreateInstanceSpecOnlyResolvesZonePreference(t *test
 
 func TestDispatchAgentSkill_CreateInstanceImagePreferenceUsesDeployMatcher(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
-	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
+	t.Cleanup(func() { SetUnifiedCreateEnabled(true) })
 
 	base := newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	var createArgs map[string]any
@@ -265,7 +254,7 @@ func TestDispatchAgentSkill_CreateInstanceImagePreferenceUsesDeployMatcher(t *te
 
 func TestDispatchAgentSkill_CreateInstanceCommunityImagePreferenceUsesDeployMatcher(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
-	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
+	t.Cleanup(func() { SetUnifiedCreateEnabled(true) })
 
 	base := newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}, communityImageID: "comm-img-9"})
 	var createArgs map[string]any
@@ -298,7 +287,7 @@ func TestDispatchAgentSkill_CreateInstanceCommunityImagePreferenceUsesDeployMatc
 
 func TestDispatchAgentSkill_CreateInstanceEmptyInputDoesNotOpenCreateCard(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
-	t.Cleanup(func() { SetUnifiedCreateEnabled(false) })
+	t.Cleanup(func() { SetUnifiedCreateEnabled(true) })
 
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return true })
@@ -313,7 +302,7 @@ func TestDispatchAgentSkill_CreateInstanceEmptyInputDoesNotOpenCreateCard(t *tes
 func TestDispatchAgentSkill_UnifiedCreateMixedWorkloadUsesDeployMatcherWithPinnedGPU(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
 	t.Cleanup(func() {
-		SetUnifiedCreateEnabled(false)
+		SetUnifiedCreateEnabled(true)
 	})
 
 	base := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})

@@ -6,4 +6,4 @@ func SetUnifiedCreateEnabled(v bool) { unifiedCreateOn = v }
 // UnifiedCreateEnabled reports whether the unified create-family entry is on.
 func UnifiedCreateEnabled() bool { return unifiedCreateOn }
 
-var unifiedCreateOn bool
+var unifiedCreateOn = true

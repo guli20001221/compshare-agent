@@ -139,7 +139,7 @@ func TestIntentToolSubset_AllRuntimeIntentsCovered(t *testing.T) {
 		// always handles the turn (it never falls through to the ReAct loop), so
 		// there is no fallback tool list to expose (B8.3).
 		IntentDeployModel: true,
-		// create_instance is an agent-tier handler behind COMPSHARE_UNIFIED_CREATE.
+		// create_instance is an agent-tier handler controlled by COMPSHARE_UNIFIED_CREATE.
 		// It must not expose a ReAct tool window when routed directly.
 		IntentCreateInstance: true,
 	}

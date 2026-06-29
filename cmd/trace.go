@@ -363,15 +363,15 @@ func createPreferenceExtractorEnabledFromEnv(getenv getenvFunc) (bool, string) {
 }
 
 // unifiedCreateEnabledFromEnv gates the R2b first-class create_instance route.
-// DEFAULT OFF: while off, the router prompt/schema keep the legacy create rescue
-// path as the only spec-first create entry.
+// DEFAULT ON: the router prompt/schema expose create_instance by default. Set
+// COMPSHARE_UNIFIED_CREATE=0/off/false to roll back during soak.
 func unifiedCreateEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.TrimSpace(getenv("COMPSHARE_UNIFIED_CREATE"))
 	switch strings.ToLower(raw) {
-	case "", "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	case "1", "true", "yes", "on":
+	case "", "1", "true", "yes", "on":
 		return true, ""
+	case "0", "off", "no", "false", "disabled", "none":
+		return false, ""
 	default:
 		return false, raw
 	}

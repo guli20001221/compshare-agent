@@ -55,8 +55,8 @@ const (
 	// the system-prompt SHA, so this constant is zero-behavior on its own.
 	IntentDeployModel Intent = "deploy_model"
 	// create_instance (R2b P1a, 2026-06-26): first-class create-family intent.
-	// It is wired behind COMPSHARE_UNIFIED_CREATE and keeps deploy_model plus the
-	// direct hardware rescue path as rollback while the router is re-trained.
+	// It is default-on via COMPSHARE_UNIFIED_CREATE and keeps deploy_model separate;
+	// set the flag off to roll back the create_instance route during soak.
 	IntentCreateInstance Intent = "create_instance"
 )
 
