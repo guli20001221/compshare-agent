@@ -1008,7 +1008,11 @@ func TestReplayRegression_DirectLifecycleStopColloquialPhraseBypassesReActLoop(t
 	require.Len(t, mock.calls, 0, "explicit lifecycle command with exact instance name must not enter the ReAct loop")
 }
 
-func TestReplayRegression_CodingPlanDeleteDoesNotInspectInstances(t *testing.T) {
+// The wiring tests below use scripted retriever/LLM doubles intentionally: they
+// pin that these topics no longer take deterministic canned-answer shortcuts or
+// instance tools. Real answerability is covered by retrieval_recall_realdata_test.go
+// and the key-protected live smoke report.
+func TestReplayRegressionWiring_CodingPlanDeleteUsesKnowledgePath(t *testing.T) {
 	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("claude-write-test", "Stopped"))
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{codingPlanManagementKnowledgeResult()}}
@@ -1137,7 +1141,7 @@ func TestReplayRegression_DirectGPUInvisibleMultiple5090AsksForTarget(t *testing
 	require.Len(t, mock.calls, 0, "multiple same-GPU diagnosis should ask for target directly")
 }
 
-func TestReplayRegression_GenericNoResourceExplainsCapacityNotStatus(t *testing.T) {
+func TestReplayRegressionWiring_GenericNoResourceUsesKnowledgePath(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{stockShortageKnowledgeResult()}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "“暂无资源”通常表示当前 GPU、卡数、CPU、内存、镜像和可用区组合没有通过创建前容量预检，不等于机型已经下架。机型状态 Normal 只表示平台仍在售；真正能不能创建，需要以 CheckCompShareResourceCapacity 的具体配置校验为准。 [1]"}}}
@@ -1157,7 +1161,7 @@ func TestReplayRegression_GenericNoResourceExplainsCapacityNotStatus(t *testing.
 	require.Len(t, mock.calls, 1, "retrieved evidence should be synthesized by the RAG answerer")
 }
 
-func TestReplayRegression_DiskBillingQuestionDoesNotAskGPU(t *testing.T) {
+func TestReplayRegressionWiring_DiskBillingQuestionUsesKnowledgePath(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{diskBillingKnowledgeResult()}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "系统盘默认 100GB 免费；数据盘创建即收费；按量实例关机后 CPU、GPU、内存停止计费，但额外扩容的系统盘和数据盘继续计费。 [1]"}}}
@@ -1177,7 +1181,7 @@ func TestReplayRegression_DiskBillingQuestionDoesNotAskGPU(t *testing.T) {
 	require.Len(t, mock.calls, 1, "retrieved evidence should be synthesized by the RAG answerer")
 }
 
-func TestReplayRegression_DiskBillingFollowupGPUModelStaysOnDisk(t *testing.T) {
+func TestReplayRegressionWiring_DiskBillingFollowupGPUModelStaysOnDisk(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{diskBillingKnowledgeResult()}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "磁盘空间收费和 GPU 型号无关。系统盘默认 100GB 免费，数据盘创建即收费。 [1]"}}}

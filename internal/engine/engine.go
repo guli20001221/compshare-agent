@@ -2968,7 +2968,7 @@ func isMonitorLoadAssessmentQuestion(userMsg string) bool {
 func (e *Engine) knowledgeRetrievalQuery(userMsg string) string {
 	text := strings.TrimSpace(userMsg)
 	if text == "" || !isShortKnowledgeFollowup(text) {
-		return userMsg
+		return expandKnowledgeRetrievalQuery(userMsg)
 	}
 	for i := len(e.messages) - 2; i >= 0; i-- {
 		msg := e.messages[i]
@@ -2979,9 +2979,24 @@ func (e *Engine) knowledgeRetrievalQuery(userMsg string) string {
 		if prev == "" || prev == text {
 			continue
 		}
-		return prev + "\n" + text
+		return expandKnowledgeRetrievalQuery(prev + "\n" + text)
 	}
-	return userMsg
+	return expandKnowledgeRetrievalQuery(userMsg)
+}
+
+func expandKnowledgeRetrievalQuery(query string) string {
+	normalized := strings.ToLower(textutil.Normalize(query))
+	var hints []string
+	if strings.Contains(normalized, "\u6682\u65e0\u8d44\u6e90") || strings.Contains(normalized, "\u8d44\u6e90\u4e0d\u8db3") {
+		hints = append(hints, "CheckCompShareResourceCapacity ResourceEnough DescribeAvailableCompShareInstanceTypes Normal SoldOut")
+	}
+	if strings.Contains(normalized, "coding plan") && (strings.Contains(normalized, "\u5220\u9664") || strings.Contains(normalized, "\u53d6\u6d88") || strings.Contains(normalized, "\u9000\u8ba2") || strings.Contains(normalized, "\u9000\u6b3e")) {
+		hints = append(hints, "\u5957\u9910\u7ba1\u7406 \u5957\u9910\u8ba2\u9605 \u5f53\u524d\u5957\u9910 \u4e0d\u652f\u6301\u9000\u6b3e")
+	}
+	if len(hints) == 0 {
+		return query
+	}
+	return strings.TrimSpace(query) + "\n" + strings.Join(hints, "\n")
 }
 
 func isShortKnowledgeFollowup(text string) bool {
@@ -3752,6 +3767,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	if query == "" {
 		query = hint
 	}
+	query = expandKnowledgeRetrievalQuery(query)
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Args: map[string]any{"query": query}})
 	// Count every invocation (incl. the degenerate no-retriever/empty-query path)
 	// so the ReAct loop can withdraw the tool once the per-turn cap is hit.
@@ -5520,6 +5536,7 @@ func (e *Engine) recordDiagnosisKnowledgeProbe(skillName, userMsg string, onStep
 	if query == "" {
 		return knowledge.EvidenceLedger{}, nil
 	}
+	query = expandKnowledgeRetrievalQuery(query)
 
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
 	retrieved := e.knowledgeRetriever.Retrieve(query, inferKnowledgeProductArea(query))
@@ -5827,10 +5844,12 @@ var knowledgeResourcePurchaseKeywords = []string{
 	// resource_purchase area so the wrong-domain guard has a question area to
 	// compare against (and the +2 boost prefers stock chunks). "\u6709\u8d27" also
 	// covers "\u6709\u6ca1\u6709\u8d27" as a substring.
-	"\u5e93\u5b58", // \u5e93\u5b58
-	"\u6709\u8d27", // \u6709\u8d27
-	"\u7f3a\u8d27", // \u7f3a\u8d27
-	"\u73b0\u8d27", // \u73b0\u8d27
+	"\u5e93\u5b58",             // \u5e93\u5b58
+	"\u6709\u8d27",             // \u6709\u8d27
+	"\u7f3a\u8d27",             // \u7f3a\u8d27
+	"\u73b0\u8d27",             // \u73b0\u8d27
+	"\u6682\u65e0\u8d44\u6e90", // \u6682\u65e0\u8d44\u6e90
+	"\u8d44\u6e90\u4e0d\u8db3", // \u8d44\u6e90\u4e0d\u8db3
 }
 
 var knowledgeDriverCudaKeywords = []string{
