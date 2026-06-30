@@ -22,6 +22,7 @@ const (
 	CategoryAccountBilling   = "account_billing_unsupported"
 	CategoryJailbreakAttempt = "jailbreak_attempt"
 	CategoryOffTopic         = "off_topic_refused"
+	CategoryHumanAgent       = "human_agent_transfer"
 )
 
 // MonitorHistoryUnsupported is returned when the user asks for a historical
@@ -63,3 +64,11 @@ const JailbreakAttempt = "我注意到您的消息看起来像在请求我绕过
 // "professional help" redirect. If/when we add a maintainer-curated
 // hotline table, that's a follow-up with proper sourcing + review.
 const OffTopic = "我是 CompShare 算力平台助手，这类问题超出了我的回答范围。建议您咨询相应领域的专业人士（医生 / 律师 / 财务顾问 / 心理咨询师 等）。如果您有算力平台相关问题（GPU 规格、计费、监控、镜像、价格等），我很乐意继续帮您。"
+
+// HumanAgentTransfer is returned when the user explicitly asks to reach a
+// human agent (转人工 / 人工客服 / 联系人工 / 找人工 / 叫人工). The reply
+// carries the official customer-service QR code as a markdown image so a
+// markdown-capable frontend (the HTTP/WS chat client) renders it inline; the
+// CLI prints the image link verbatim. The QR URL is byte-pinned here as the
+// single source — refresh the image by editing this constant only.
+const HumanAgentTransfer = "好的，已为您转接人工客服。请扫描下方二维码添加客服微信，会有专人为您服务。\n\n![客服二维码](https://ucompshare-picture.cn-wlcb.ufileos.com/QRCode/qrcode.png)"
