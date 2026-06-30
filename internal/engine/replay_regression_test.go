@@ -1161,6 +1161,31 @@ func TestReplayRegressionWiring_GenericNoResourceUsesKnowledgePath(t *testing.T)
 	require.Len(t, mock.calls, 1, "retrieved evidence should be synthesized by the RAG answerer")
 }
 
+func TestReplayRegressionWiring_FlashGuardRedirectsStockMisrouteWhenEnabled(t *testing.T) {
+	SetFlashKnowledgeRouteGuardEnabled(true)
+	t.Cleanup(func() { SetFlashKnowledgeRouteGuardEnabled(false) })
+
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentStockAvailability,
+		Confidence:    0.9,
+	}}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{stockShortageKnowledgeResult()}}
+	exec := &mockExecutor{}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "“暂无资源”表示具体创建配置没有通过容量预检，不等于机型下架。 [1]"}}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "一直暂无资源 是什么情况", noopStep)
+
+	require.NoError(t, err)
+	require.Contains(t, reply, "容量预检")
+	require.Len(t, exec.calls, 0, "guarded product-fact question must not call live stock tools")
+	require.Len(t, retriever.calls, 1)
+}
+
 func TestReplayRegressionWiring_DiskBillingQuestionUsesKnowledgePath(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{diskBillingKnowledgeResult()}}

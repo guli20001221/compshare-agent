@@ -93,6 +93,14 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if domainMatchGuard {
 		log.Printf("runtime: HTTP wrong-domain refuse arm enabled (COMPSHARE_RAG_DOMAIN_MATCH_GUARD=1; #5 cite-relevance)")
 	}
+	flashKnowledgeRouteGuard, unknownFlashKnowledgeRouteGuard := flashKnowledgeRouteGuardEnabledFromEnv(getenv)
+	if unknownFlashKnowledgeRouteGuard != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD value %q", unknownFlashKnowledgeRouteGuard)
+	}
+	engine.SetFlashKnowledgeRouteGuardEnabled(flashKnowledgeRouteGuard)
+	if flashKnowledgeRouteGuard {
+		log.Printf("runtime: HTTP flash knowledge route guard enabled (COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD=1; default-off fallback)")
+	}
 	createPrefExtractor, unknownCreatePrefExtractor := createPreferenceExtractorEnabledFromEnv(getenv)
 	if unknownCreatePrefExtractor != "" {
 		log.Printf("warning: ignoring unknown COMPSHARE_CREATE_PREF_EXTRACTOR value %q", unknownCreatePrefExtractor)

@@ -32,10 +32,9 @@ func TestRetrievalRecallRealCorpusCodingPlanManagement(t *testing.T) {
 func TestRetrievalRecallRealCorpusStockShortage(t *testing.T) {
 	result := retrieveRealCorpusForTest(t, "一直暂无资源 是什么情况")
 
+	requireRecallChunkID(t, result, "w0-resource_purchase-gitlab-compshare-docs-gpus-insta-2e534ae3")
 	requireRecallText(t, result, "CheckCompShareResourceCapacity")
 	requireRecallText(t, result, "ResourceEnough")
-	requireRecallText(t, result, "DescribeAvailableCompShareInstanceTypes")
-	requireRecallText(t, result, "Normal")
 }
 
 func TestRetrievalRecallRealCorpusStockStatusSemantics(t *testing.T) {
@@ -58,8 +57,7 @@ func retrieveRealCorpusForTest(t *testing.T, query string) knowledge.RetrievalRe
 		Mode: knowledge.RetrievalModeBM25Only,
 		Now:  realCorpusRecallNow,
 	})
-	retrievalQuery := expandKnowledgeRetrievalQuery(query)
-	result := retriever.Retrieve(retrievalQuery, inferKnowledgeProductArea(retrievalQuery))
+	result := retriever.Retrieve(query, inferKnowledgeProductArea(query))
 	require.False(t, result.Empty, "query %q returned no real-corpus hits", query)
 	require.NotEmpty(t, result.HitItems, "query %q returned no real-corpus hit items", query)
 	return result

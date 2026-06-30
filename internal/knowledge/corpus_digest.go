@@ -20,7 +20,7 @@ import (
 // models, and de-duplicated the touched docs' historical dash/underscore/bare
 // naming variants into one canonical ref each. 687 -> 689 chunks. The qwen3
 // sidecar is FULLY re-embedded over this corpus (689 rows, 4096-dim).
-const CorpusDigestExpected = "849b5ffd61d5e6a0821fb20e26a128f024a29d7f0093ad55c4bb665741a93807"
+const CorpusDigestExpected = "ca99e3dcd065a0233ac2d5c28ec321406eb403d3b085213d332af196a593d7cd"
 
 // EmbeddingDigestExpected pins the hybrid retrieval embedding sidecar produced by
 // scripts/rag_w0/build_corpus_embeddings.py over the CorpusDigestExpected corpus
@@ -34,7 +34,7 @@ const EmbeddingDigestExpected = "9dcb902bb6026836b43cf52be159af6690bb4c93818e1b3
 // RAG_RETRIEVAL_MODE=qwen3_full; the text-emb-3 sidecar above remains the
 // default for hybrid_cosine / hybrid_rerank modes. Same mismatch semantics
 // as EmbeddingDigestExpected: stale sidecar = hybrid path refuses to load.
-const EmbeddingDigestExpectedQwen3 = "500e18095257fd12bceb1c6c885ea896cdd408ac428270843512152cf62153d8"
+const EmbeddingDigestExpectedQwen3 = "d0281e499af820c987641f6f7d300d83f3459bdd36eed76540912df7f3479bb7"
 
 // ExternalCorpusDigestExpected pins deploy/kb/external_w0.jsonl — the separate
 // external tool/ops corpus. It is intentionally platform-neutral and stable:

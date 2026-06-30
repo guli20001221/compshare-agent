@@ -176,6 +176,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q\n", unknownDomainMatchGuard)
 	}
 	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
+	flashKnowledgeRouteGuard, unknownFlashKnowledgeRouteGuard := flashKnowledgeRouteGuardEnabledFromEnv(getenv)
+	if unknownFlashKnowledgeRouteGuard != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD value %q\n", unknownFlashKnowledgeRouteGuard)
+	}
+	engine.SetFlashKnowledgeRouteGuardEnabled(flashKnowledgeRouteGuard)
 	createPrefExtractor, unknownCreatePrefExtractor := createPreferenceExtractorEnabledFromEnv(getenv)
 	if unknownCreatePrefExtractor != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_CREATE_PREF_EXTRACTOR value %q\n", unknownCreatePrefExtractor)
