@@ -13,7 +13,7 @@ Live smoke flags:
 - `COMPSHARE_INTENT_ROUTER_MODE=dispatch`
 - `COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=1`
 - `COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=1`
-- `COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD=1` (explicit smoke-only fallback; code default is off)
+- `COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD=1` (explicit production deploy setting in `deploy/conf/config.yaml`; Go-package default remains off)
 - `COMPSHARE_RAG_GROUNDED_VALIDATOR=1`
 - `COMPSHARE_RAG_DOMAIN_MATCH_GUARD=1`
 - `COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS=1`

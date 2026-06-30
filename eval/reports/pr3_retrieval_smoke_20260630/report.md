@@ -17,7 +17,7 @@ The first attempted fix routed these product-fact questions with engine-local ke
 The final fix is split:
 
 - Real corpus metadata now carries the natural user phrasings, so BM25 raw queries can recall the relevant chunks without engine query stuffing.
-- A default-off fallback named `COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD` remains available for the observed flash-router failure mode. It is explicitly documented as a fallback guard, not as the primary route strategy.
+- A fallback named `COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD` remains available for the observed flash-router failure mode. The Go-package default remains off, but the production deployment config now explicitly enables it because the guard-off published path did not pass this smoke.
 
 No canned answer was restored, and the engine no longer appends hidden API-name hints to user queries.
 
@@ -29,7 +29,13 @@ I temporarily disabled both the route guard and query expansion on commit `3cf60
 - One round asked the user to provide GPU/zone, violating the "no GPU or instance prompt" contract.
 - `Normal 状态是不是说明一定有库存` had weak/wrong answers in the partial run, including one answer equating `Normal` with current stock.
 
-Therefore the fallback guard is retained as a consciously named, default-off protection. The mergeable default path relies on router/corpus behavior; enabling the guard is a separate rollout decision.
+After corpus metadata was strengthened, I reran the same 25-round smoke with `COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD=0` to verify the actual unguarded path. It still failed the blocking contract:
+
+- Overall: `102/105` blocking assertions passed.
+- `pr3_coding_plan_delete_r1` violated `no_instance_or_create` by taking a live-tool path.
+- `pr3_stock_normal_semantics_r2` timed out, causing missing retrieval and empty-answer assertions.
+
+Therefore the guard cannot be described as an idle rollback path for this PR. It is now explicitly enabled in `deploy/conf/config.yaml` as the production safety guard for this flash-router jitter class.
 
 ## CI-safe retrieval recall
 
@@ -65,7 +71,7 @@ Runtime:
 - Retrieval mode: `qwen3_rrf`
 - Agentic `SearchKnowledge`: enabled
 - Knowledge-QA loop: enabled
-- Flash route guard: enabled explicitly for this smoke (`COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD=1`, default remains off)
+- Flash route guard: enabled (`COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD=1`; also enabled in `deploy/conf/config.yaml`)
 - Grounded validator / domain guard / disciplined synthesis: enabled
 
 Cases:
@@ -94,3 +100,4 @@ Final result:
 - `Normal` status semantics no longer refuse; all 5 rounds explain that `Normal` means sellable, not guaranteed stock, and that concrete availability must be checked with `CheckCompShareResourceCapacity`.
 
 Replay output: `live_smoke_replay.jsonl`.
+Guard-off replay output: `live_smoke_guard_off_replay.jsonl`.
