@@ -358,7 +358,13 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // control fields (required_tools / retrieval / hard_block_hint) from schema,
 // prompt, and examples. Tool windows and hard-block trace hints are backend
 // derived; no business routing strategy changed.
-const systemPromptSHA256Baseline = "9333ed08d8fbd3dc337f32cfc1f381870459d6f3eab2b240fdcded102e725557"
+//
+// PR3 retrieval live-gate fix (2026-06-30): clarify two read-only boundaries
+// exposed by the key-backed smoke run. Generic resource-capacity semantics
+// (e.g. "暂无资源" / Normal vs capacity) route to knowledge_qa, while named GPU
+// live stock stays stock_availability; Coding Plan package delete/cancel/refund
+// routes to knowledge_qa instead of instance lifecycle.
+const systemPromptSHA256Baseline = "6b177025a014ff119cf35f04698be9ef37b6e25e61cffa27a37d8b9977dde7ea"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

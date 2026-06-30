@@ -961,6 +961,7 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 		Features: FeaturesConfig{
 			MutatingTools:             boolPtr(true),  // YAML true → "1"
 			AgenticSearchKnowledge:    boolPtr(false), // YAML false → "0" (off; this flag defaults ON)
+			FlashKnowledgeRouteGuard:  boolPtr(true),
 			CreatePreferenceExtractor: boolPtr(false),
 			UnifiedCreate:             boolPtr(false),
 			// SessionFactContext omitted (nil) → falls through to base env
@@ -982,6 +983,8 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 			return "1"
 		case "COMPSHARE_UNIFIED_CREATE":
 			return "1"
+		case "COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD":
+			return "0"
 		case "SOME_UNMAPPED_VAR":
 			return "passthrough"
 		}
@@ -991,6 +994,7 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 
 	assert.Equal(t, "1", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"), "YAML true wins")
 	assert.Equal(t, "0", getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"), "YAML false → explicit off, wins over default-on")
+	assert.Equal(t, "1", getenv("COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD"), "YAML true wins over env off")
 	assert.Equal(t, "0", getenv("COMPSHARE_CREATE_PREF_EXTRACTOR"), "YAML false wins over env on")
 	assert.Equal(t, "0", getenv("COMPSHARE_UNIFIED_CREATE"), "YAML false wins over env on")
 	assert.Equal(t, "1", getenv("USE_SESSION_FACT_CONTEXT"), "omitted bool → env fallback")

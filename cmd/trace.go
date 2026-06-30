@@ -347,6 +347,21 @@ func domainMatchGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// flashKnowledgeRouteGuardEnabledFromEnv gates the default-off flash route
+// fallback for a small set of product-fact questions that can otherwise be sent
+// to live tools. This is not part of the primary routing strategy.
+func flashKnowledgeRouteGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD"))
+	switch strings.ToLower(raw) {
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
 // createPreferenceExtractorEnabledFromEnv gates the optional create/deploy
 // preference extractor. DEFAULT ON: it adds one LLM pass before create/deploy
 // image matching, and the extracted fields only affect preference matching,

@@ -49,6 +49,18 @@ func TestRuntimeOverlayFeedsParsersWithoutWarnings(t *testing.T) {
 		assert.True(t, enabled, "omitted + no env → built-in default ON preserved")
 		assert.Empty(t, unknown)
 	})
+	t.Run("flash knowledge route guard explicit true", func(t *testing.T) {
+		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{FlashKnowledgeRouteGuard: boolPtr(true)}}}
+		enabled, unknown := flashKnowledgeRouteGuardEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
+		assert.True(t, enabled)
+		assert.Empty(t, unknown)
+	})
+	t.Run("flash knowledge route guard omitted stays off", func(t *testing.T) {
+		cfg := &config.Config{Agent: config.AgentConfig{}}
+		enabled, unknown := flashKnowledgeRouteGuardEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
+		assert.False(t, enabled, "omitted + no env → built-in default OFF preserved")
+		assert.Empty(t, unknown)
+	})
 	t.Run("create preference extractor explicit true", func(t *testing.T) {
 		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{CreatePreferenceExtractor: boolPtr(true)}}}
 		enabled, unknown := createPreferenceExtractorEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))

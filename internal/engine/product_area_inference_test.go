@@ -36,6 +36,8 @@ func TestInferKnowledgeProductArea_LabelsMatchCorpus(t *testing.T) {
 		{"4090 有没有货", "resource_purchase"},
 		{"现货能马上开吗", "resource_purchase"},
 		{"这个卡缺货了吗", "resource_purchase"},
+		{"一直暂无资源 是什么情况", "resource_purchase"},
+		{"创建时提示资源不足", "resource_purchase"},
 		// driver_cuda (new group)
 		{"nvidia-smi 报错", "driver_cuda"},
 		{"驱动版本是什么", "driver_cuda"},

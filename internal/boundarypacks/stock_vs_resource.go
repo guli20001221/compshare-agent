@@ -60,6 +60,7 @@ var stockVsResourcePack = BoundaryPack{
 	ID: BoundaryPackStockVsResource,
 	Directives: []string{
 		"Classify inventory availability questions about whether a GPU model has stock, is available, is sold out, or has data-center inventory as stock_availability. Do not route them to resource_info; resource_info is only for the user's own CompShare instances.",
+		"Route generic resource-capacity semantics questions such as why the console says no resources, what Normal or SoldOut means, or whether Normal guarantees capacity to knowledge_qa unless the user asks for live stock of a named GPU.",
 	},
 }
 

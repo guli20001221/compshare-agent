@@ -403,6 +403,9 @@ func TestBuildSystemPromptRoutesInventoryAvailabilityToRoute(t *testing.T) {
 		"as stock_availability",
 		"Do not route them to resource_info",
 		"resource_info is only for the user's own CompShare instances",
+		"generic resource-capacity semantics questions",
+		"Normal or SoldOut means",
+		"unless the user asks for live stock of a named GPU",
 		"4090 现在有没有货",
 		"\u6211\u8d26\u53f7\u4e0b\u6709\u54ea\u4e9b 4090 \u5b9e\u4f8b",
 	}
@@ -420,6 +423,8 @@ func TestBuildSystemPromptDistinguishesFinanceFAQAndRealtimeAccountData(t *testi
 	prompt := buildSystemPrompt()
 	required := []string{
 		"Route finance policy/how-to questions to knowledge_qa: invoice issuance, refund rules, arrears handling, why am I still charged after shutdown, billing mode differences, or package expiry.",
+		"删除/取消/退订 Coding Plan",
+		"not pricing_query or operation_lifecycle",
 		"account realtime finance/status questions about THE USER'S OWN ACCOUNT data",
 		"Classify instance-scoped billing questions as billing_instance",
 		"why am I still charged after shutdown",

@@ -1,0 +1,25 @@
+{"case_id":"pr3_disk_billing_r1","turns":[{"user":"磁盘空间是如何收费的？100GB 原始空间免费吗"}]}
+{"case_id":"pr3_disk_billing_r2","turns":[{"user":"磁盘空间是如何收费的？100GB 原始空间免费吗"}]}
+{"case_id":"pr3_disk_billing_r3","turns":[{"user":"磁盘空间是如何收费的？100GB 原始空间免费吗"}]}
+{"case_id":"pr3_disk_billing_r4","turns":[{"user":"磁盘空间是如何收费的？100GB 原始空间免费吗"}]}
+{"case_id":"pr3_disk_billing_r5","turns":[{"user":"磁盘空间是如何收费的？100GB 原始空间免费吗"}]}
+{"case_id":"pr3_coding_plan_delete_r1","turns":[{"user":"删除 Coding Plan 包"}]}
+{"case_id":"pr3_coding_plan_delete_r2","turns":[{"user":"删除 Coding Plan 包"}]}
+{"case_id":"pr3_coding_plan_delete_r3","turns":[{"user":"删除 Coding Plan 包"}]}
+{"case_id":"pr3_coding_plan_delete_r4","turns":[{"user":"删除 Coding Plan 包"}]}
+{"case_id":"pr3_coding_plan_delete_r5","turns":[{"user":"删除 Coding Plan 包"}]}
+{"case_id":"pr3_coding_plan_refund_r1","turns":[{"user":"取消 Coding Plan 套餐能退款吗"}]}
+{"case_id":"pr3_coding_plan_refund_r2","turns":[{"user":"取消 Coding Plan 套餐能退款吗"}]}
+{"case_id":"pr3_coding_plan_refund_r3","turns":[{"user":"取消 Coding Plan 套餐能退款吗"}]}
+{"case_id":"pr3_coding_plan_refund_r4","turns":[{"user":"取消 Coding Plan 套餐能退款吗"}]}
+{"case_id":"pr3_coding_plan_refund_r5","turns":[{"user":"取消 Coding Plan 套餐能退款吗"}]}
+{"case_id":"pr3_stock_shortage_r1","turns":[{"user":"一直暂无资源 是什么情况"}]}
+{"case_id":"pr3_stock_shortage_r2","turns":[{"user":"一直暂无资源 是什么情况"}]}
+{"case_id":"pr3_stock_shortage_r3","turns":[{"user":"一直暂无资源 是什么情况"}]}
+{"case_id":"pr3_stock_shortage_r4","turns":[{"user":"一直暂无资源 是什么情况"}]}
+{"case_id":"pr3_stock_shortage_r5","turns":[{"user":"一直暂无资源 是什么情况"}]}
+{"case_id":"pr3_stock_normal_semantics_r1","turns":[{"user":"Normal 状态是不是说明一定有库存"}]}
+{"case_id":"pr3_stock_normal_semantics_r2","turns":[{"user":"Normal 状态是不是说明一定有库存"}]}
+{"case_id":"pr3_stock_normal_semantics_r3","turns":[{"user":"Normal 状态是不是说明一定有库存"}]}
+{"case_id":"pr3_stock_normal_semantics_r4","turns":[{"user":"Normal 状态是不是说明一定有库存"}]}
+{"case_id":"pr3_stock_normal_semantics_r5","turns":[{"user":"Normal 状态是不是说明一定有库存"}]}

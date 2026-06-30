@@ -1823,6 +1823,15 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
+	if FlashKnowledgeRouteGuardEnabled() {
+		if match, _ := matchFlashKnowledgeRouteGuard(userMsg); match {
+			dispatch.result.Plan.Intent = intent.IntentKnowledgeQA
+			e.lastPlannerIntentThisTurn = intent.IntentKnowledgeQA
+			if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
+				return reply, true
+			}
+		}
+	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || dispatch.result.Plan.Intent == intent.IntentMonitorHistory || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
 		return e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
 	}
@@ -5520,7 +5529,6 @@ func (e *Engine) recordDiagnosisKnowledgeProbe(skillName, userMsg string, onStep
 	if query == "" {
 		return knowledge.EvidenceLedger{}, nil
 	}
-
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
 	retrieved := e.knowledgeRetriever.Retrieve(query, inferKnowledgeProductArea(query))
 	hitItems := retrieved.HitItems
@@ -5827,10 +5835,12 @@ var knowledgeResourcePurchaseKeywords = []string{
 	// resource_purchase area so the wrong-domain guard has a question area to
 	// compare against (and the +2 boost prefers stock chunks). "\u6709\u8d27" also
 	// covers "\u6709\u6ca1\u6709\u8d27" as a substring.
-	"\u5e93\u5b58", // \u5e93\u5b58
-	"\u6709\u8d27", // \u6709\u8d27
-	"\u7f3a\u8d27", // \u7f3a\u8d27
-	"\u73b0\u8d27", // \u73b0\u8d27
+	"\u5e93\u5b58",             // \u5e93\u5b58
+	"\u6709\u8d27",             // \u6709\u8d27
+	"\u7f3a\u8d27",             // \u7f3a\u8d27
+	"\u73b0\u8d27",             // \u73b0\u8d27
+	"\u6682\u65e0\u8d44\u6e90", // \u6682\u65e0\u8d44\u6e90
+	"\u8d44\u6e90\u4e0d\u8db3", // \u8d44\u6e90\u4e0d\u8db3
 }
 
 var knowledgeDriverCudaKeywords = []string{
