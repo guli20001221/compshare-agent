@@ -22,6 +22,7 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
+	"github.com/compshare-agent/internal/knowledge/agentic"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/orchestrator"
@@ -262,7 +263,8 @@ type Engine struct {
 	// synthesis cites only ChunkIDs present here. Reset per turn; populated only
 	// when the agentic tool runs AND the grounded validator is on — empty (inert)
 	// otherwise, keeping flag-off byte-identical.
-	searchKnowledgeLedgerThisTurn knowledge.EvidenceLedger
+	searchKnowledgeLedgerThisTurn          knowledge.EvidenceLedger
+	searchKnowledgeReferenceLedgerThisTurn agentic.ReferenceLedger
 	// knowledgeQAAgentLoopThisTurn marks a knowledge_qa turn that the
 	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP route sent into the shared ReAct loop
 	// (forced SearchKnowledge first hop) instead of the terminal-RAG route. Set
@@ -1232,6 +1234,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeHitsThisTurn = nil
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
+	e.searchKnowledgeReferenceLedgerThisTurn = agentic.ReferenceLedger{}
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.createPreferenceThisTurn = nil
 	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
@@ -1827,6 +1830,14 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		if match, _ := matchFlashKnowledgeRouteGuard(userMsg); match {
 			dispatch.result.Plan.Intent = intent.IntentKnowledgeQA
 			e.lastPlannerIntentThisTurn = intent.IntentKnowledgeQA
+			if knowledgeQAAgentLoopOn &&
+				tools.AgenticSearchKnowledgeEnabled() &&
+				e.knowledgeRetriever != nil {
+				e.requireKnowledgeCitationThisTurn = true
+				e.knowledgeQAAgentLoopThisTurn = true
+				e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedKnowledgeAgentLoop, dispatch.latency)
+				return "", false
+			}
 			if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
 				return reply, true
 			}
@@ -3769,6 +3780,17 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
 		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: query}, true, false)
 	}
+	if e.knowledgeQAAgentLoopThisTurn {
+		result, hits, ledger := e.runAgenticKnowledgeRetrieval(ctx, e.lastUserMsg, query, hint)
+		e.adoptAgenticReferenceLedger(&result, &ledger)
+		e.searchKnowledgeRanThisTurn = true
+		e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
+		e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
+		e.emitAgenticKnowledgeRetrievalTrace(query, result, hits)
+		empty := len(ledger.Items) == 0
+		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items), "references": len(result.ReferenceLedger.References), "activities": len(result.Activities)}})
+		return searchKnowledgeResultJSON(ledger, empty, true)
+	}
 	areaText := query
 	if hint != "" {
 		areaText = hint + " " + query
@@ -3891,6 +3913,18 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 // thus byte-identical) when SearchKnowledge did not run this turn — which is
 // always the case while the COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate is off.
 func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
+	strictDomainEvidence := strictKnowledgeAnswerRequiresDomain(e.lastUserMsg) &&
+		(e.knowledgeQAAgentLoopThisTurn || e.searchKnowledgeRanThisTurn)
+	if strictDomainEvidence {
+		if isCanonicalNoEvidenceReply(content) {
+			return content
+		}
+		ledger := e.currentSearchKnowledgeCitationLedger(e.lastUserMsg)
+		if !e.searchKnowledgeRanThisTurn || len(ledger.Items) == 0 || !evidenceLedgerHasBillingPolicyEvidence(ledger) {
+			e.emitSearchKnowledgeHardBlock("search_knowledge_wrong_domain")
+			return ragNoEvidenceReply
+		}
+	}
 	// SCOPE (both guards below): this validates the synthesis only when SearchKnowledge
 	// actually surfaced evidence the agent was shown this turn. When the tool ran but
 	// the relevance floor dropped every hit (len==0 — a corpus-gap / weak-evidence
@@ -3915,7 +3949,7 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 	// reply. Fail-safe: allCitedOffDomain never flags an unknown / un-judgeable
 	// question area, so an answer is suppressed only on a clear domain mismatch.
 	if domainMatchGuardOn {
-		if allOff, _ := allCitedOffDomain(inferKnowledgeProductArea(e.lastUserMsg), ledgerProductAreas(e.searchKnowledgeLedgerThisTurn)); allOff {
+		if allOff, _ := allCitedOffDomain(inferKnowledgeProductArea(e.lastUserMsg), ledgerProductAreas(e.currentSearchKnowledgeCitationLedger(e.lastUserMsg))); allOff {
 			e.emitSearchKnowledgeHardBlock("search_knowledge_wrong_domain")
 			return ragNoEvidenceReply
 		}
@@ -3932,8 +3966,10 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 	if !groundedAnswerValidatorOn && !e.knowledgeQAAgentLoopThisTurn {
 		return content
 	}
-	report := knowledge.ValidateGroundedCitations(content, e.searchKnowledgeLedgerThisTurn)
+	ledger := e.currentSearchKnowledgeCitationLedger(e.lastUserMsg)
+	report := knowledge.ValidateGroundedCitations(content, ledger)
 	if report.Grounded() {
+		e.emitCitedReferenceTrace(e.citedRefsForChunkIDs(report.CitedChunkIDs), report.CitedChunkIDs)
 		return knowledge.StripCiteMarkers(content)
 	}
 	// Not properly cited. The ONLY cite-exempt answer is the explicit canned
@@ -3979,9 +4015,12 @@ func (e *Engine) retrySearchKnowledgeCitation(ctx context.Context) (string, bool
 	if knowledge.ValidateNoRawEvidenceLeak(retry, e.searchKnowledgeHitsThisTurn) != nil {
 		return "", false
 	}
-	if !knowledge.ValidateGroundedCitations(retry, e.searchKnowledgeLedgerThisTurn).Grounded() {
+	ledger := e.currentSearchKnowledgeCitationLedger(e.lastUserMsg)
+	if !knowledge.ValidateGroundedCitations(retry, ledger).Grounded() {
 		return "", false
 	}
+	report := knowledge.ValidateGroundedCitations(retry, ledger)
+	e.emitCitedReferenceTrace(e.citedRefsForChunkIDs(report.CitedChunkIDs), report.CitedChunkIDs)
 	return knowledge.StripCiteMarkers(retry), true
 }
 

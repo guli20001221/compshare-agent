@@ -1,6 +1,10 @@
 package observability
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/compshare-agent/internal/knowledge/agentic"
+)
 
 // TestMergeRetrievalTrace pins the per-turn retrieval merge: a forced SearchKnowledge
 // first hop that retrieved evidence must remain observable even when the agent
@@ -13,10 +17,10 @@ func TestMergeRetrievalTrace(t *testing.T) {
 	zero := RetrievalTrace{}
 
 	cases := []struct {
-		name           string
-		current, next  RetrievalTrace
-		wantHits       int
-		wantKBVersion  string
+		name          string
+		current, next RetrievalTrace
+		wantHits      int
+		wantKBVersion string
 	}{
 		{"first retrieval ever (zero -> hits) takes incoming", zero, hits, 3, "kb.v1"},
 		{"first retrieval ever (zero -> empty) takes incoming", zero, empty, 0, ""},
@@ -34,5 +38,40 @@ func TestMergeRetrievalTrace(t *testing.T) {
 				t.Fatalf("KBVersion = %q, want %q", got.KBVersion, tc.wantKBVersion)
 			}
 		})
+	}
+}
+
+func TestMergeRetrievalTracePreservesAgenticMetadataBackfill(t *testing.T) {
+	hits := RetrievalTrace{
+		Enabled: true,
+		Hits:    1,
+		References: []agentic.Reference{{
+			RefID:   "1",
+			ChunkID: "chunk-a",
+		}},
+		Activities: []agentic.RetrievalActivity{{ID: "act-1", Query: "q"}},
+	}
+	citationOnly := RetrievalTrace{
+		RefIDScheme:   "turn_1_based",
+		CitedRefs:     []string{"1"},
+		CitedChunkIDs: []string{"chunk-a"},
+	}
+
+	got := MergeRetrievalTrace(hits, citationOnly)
+
+	if got.Hits != 1 {
+		t.Fatalf("Hits = %d, want 1", got.Hits)
+	}
+	if len(got.References) != 1 || got.References[0].ChunkID != "chunk-a" {
+		t.Fatalf("References = %#v, want chunk-a", got.References)
+	}
+	if len(got.Activities) != 1 || got.Activities[0].ID != "act-1" {
+		t.Fatalf("Activities = %#v, want act-1", got.Activities)
+	}
+	if len(got.CitedRefs) != 1 || got.CitedRefs[0] != "1" {
+		t.Fatalf("CitedRefs = %#v, want [1]", got.CitedRefs)
+	}
+	if len(got.CitedChunkIDs) != 1 || got.CitedChunkIDs[0] != "chunk-a" {
+		t.Fatalf("CitedChunkIDs = %#v, want [chunk-a]", got.CitedChunkIDs)
 	}
 }

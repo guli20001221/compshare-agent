@@ -69,6 +69,10 @@ func isKnowledgeRefusal(answer string) bool {
 	return false
 }
 
+func isCanonicalNoEvidenceReply(answer string) bool {
+	return strings.TrimSpace(answer) == ragNoEvidenceReply
+}
+
 // extractCitedChunkIDs reads all [n] markers in the answer, dedupes while
 // preserving first-occurrence order, and maps each n (1-indexed) to the
 // corresponding hit's ChunkID. Markers that point beyond len(hits) or to

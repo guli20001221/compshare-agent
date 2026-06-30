@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/knowledge"
+	"github.com/compshare-agent/internal/knowledge/agentic"
 )
 
 // disciplinedKnowledgeQASynthesisOn gates the disciplined-synthesis recovery for an
@@ -46,25 +47,45 @@ func DisciplinedKnowledgeQASynthesisEnabled() bool { return disciplinedKnowledge
 // budget / leak — in which case the caller keeps the existing fallback (cite-retry /
 // refusal), so this never does WORSE than the free-write path.
 //
-// The [n] markers terminal emits number the references in `evidences` order, which
-// equals the per-turn ledger order for the common single-SearchKnowledge-call turn
-// (the forced first hop). A turn with multiple SearchKnowledge calls could drift the
-// numbering vs the deduped ledger; that edge case keeps the conservative refusal
-// (fail-safe), never a mis-citation.
+// The [n] markers terminal emits number the references in `evidences` order. For
+// agentic RAG that order is rebuilt from the turn-scoped reference ledger, so a
+// multi-SearchKnowledge turn cites the same ref_id -> chunk_id mapping that trace
+// and validation persist.
 func (e *Engine) synthesizeKnowledgeQAFromLedger(ctx context.Context, userMsg string) (string, bool) {
-	if len(e.searchKnowledgeHitsThisTurn) == 0 {
+	result, ok := e.synthesizeKnowledgeQAFromLedgerDetailed(ctx, userMsg)
+	if !ok {
 		return "", false
 	}
+	return result.display, true
+}
+
+type knowledgeQASynthesisResult struct {
+	display       string
+	citedRefs     []string
+	citedChunkIDs []string
+}
+
+func (e *Engine) synthesizeKnowledgeQAFromLedgerDetailed(ctx context.Context, userMsg string) (knowledgeQASynthesisResult, bool) {
+	hits := e.searchKnowledgeHitsInReferenceOrder()
+	if len(hits) == 0 {
+		return knowledgeQASynthesisResult{}, false
+	}
+	if strictKnowledgeAnswerRequiresDomain(userMsg) &&
+		len(e.searchKnowledgeReferenceLedgerThisTurn.References) > 0 &&
+		!referenceLedgerHasBillingPolicyEvidence(e.searchKnowledgeReferenceLedgerThisTurn) {
+		return knowledgeQASynthesisResult{display: ragNoEvidenceReply}, true
+	}
+	ledger := e.currentSearchKnowledgeCitationLedger(userMsg)
 	// The gathered hits already passed the SearchKnowledge relevance floor (weak hits
 	// were dropped to nil in executeSearchKnowledge), so they are NOT weak evidence —
 	// pass weak=false so terminal uses its standard (not weak-mode) RAG prompt.
-	evidences, err := evidencesFromRetrievalHits(e.searchKnowledgeHitsThisTurn, knowledge.NormalizeQuery(userMsg))
+	evidences, err := evidencesFromRetrievalHits(hits, knowledge.NormalizeQuery(userMsg))
 	if err != nil || len(evidences) == 0 {
-		return "", false
+		return knowledgeQASynthesisResult{}, false
 	}
 	reply, _, refusedReason, _, aerr := e.answerWithRetrievedEvidence(ctx, userMsg, evidences, false, nil)
 	if aerr != nil || refusedReason != "" {
-		return "", false
+		return knowledgeQASynthesisResult{}, false
 	}
 	// DELIBERATELY no separate no-raw-leak guard here: this synthesis IS the terminal
 	// route's answerWithRetrievedEvidence, which terminal RAG itself runs WITHOUT a leak
@@ -75,9 +96,19 @@ func (e *Engine) synthesizeKnowledgeQAFromLedger(ctx context.Context, userMsg st
 	// why the agent loop over-refused code-heavy probes (DDP) where terminal does not.
 	// Matching terminal (no leak check) is the whole point of the convergence.
 	if strings.TrimSpace(reply) == "" || isKnowledgeRefusal(reply) {
-		return "", false
+		return knowledgeQASynthesisResult{}, false
 	}
-	return stripCitationMarkers(reply), true
+	report := knowledge.ValidateGroundedCitations(reply, ledger)
+	if !report.Grounded() {
+		return knowledgeQASynthesisResult{}, false
+	}
+	citedRefs := e.citedRefsForChunkIDs(report.CitedChunkIDs)
+	e.emitCitedReferenceTrace(citedRefs, report.CitedChunkIDs)
+	return knowledgeQASynthesisResult{
+		display:       knowledge.StripCiteMarkers(reply),
+		citedRefs:     citedRefs,
+		citedChunkIDs: report.CitedChunkIDs,
+	}, true
 }
 
 // synthesizeOnBudgetExceeded writes a final grounded answer from the evidence
@@ -98,4 +129,58 @@ func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string)
 		return "", false
 	}
 	return e.synthesizeKnowledgeQAFromLedger(ctx, userMsg)
+}
+
+func strictKnowledgeAnswerRequiresDomain(text string) bool {
+	compact := strings.ToLower(strings.TrimSpace(text))
+	if compact == "" {
+		return false
+	}
+	signals := []string{"计费", "收费", "扣费", "费用", "价格", "多少钱", "多少元", "包时", "按量", "postpay", "billing", "invoice", "refund", "退款", "发票"}
+	for _, signal := range signals {
+		if strings.Contains(compact, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+func referenceLedgerHasBillingPolicyEvidence(ledger agentic.ReferenceLedger) bool {
+	for _, ref := range ledger.References {
+		area := strings.ToLower(strings.TrimSpace(ref.SourceArea))
+		if area == "billing" || area == "billing_rule" || area == "pricing" || area == "policy" || area == "account_billing" {
+			return true
+		}
+		if billingPolicyTextSignal(ref.ChunkID + " " + ref.Title + " " + ref.SourceURL) {
+			return true
+		}
+	}
+	return false
+}
+
+func evidenceLedgerHasBillingPolicyEvidence(ledger knowledge.EvidenceLedger) bool {
+	for _, item := range ledger.Items {
+		area := strings.ToLower(strings.TrimSpace(item.ProductArea))
+		if area == "billing" || area == "billing_rule" || area == "pricing" || area == "policy" || area == "account_billing" {
+			return true
+		}
+		if billingPolicyTextSignal(item.ChunkID + " " + item.Title + " " + item.Summary) {
+			return true
+		}
+	}
+	return false
+}
+
+func billingPolicyTextSignal(text string) bool {
+	compact := strings.ToLower(strings.TrimSpace(text))
+	if compact == "" {
+		return false
+	}
+	signals := []string{"billing", "bill", "pricing", "price", "policy", "postpay", "计费", "收费", "扣费", "费用", "价格", "包时", "按量", "后付费", "发票", "退款"}
+	for _, signal := range signals {
+		if strings.Contains(compact, signal) {
+			return true
+		}
+	}
+	return false
 }

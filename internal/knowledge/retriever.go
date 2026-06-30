@@ -720,6 +720,35 @@ func (r *Retriever) rerankByReranker(question string, cosinePool []scoredChunk) 
 	return reranked, "", latencyMs
 }
 
+// RerankHitItems reuses the configured cross-encoder reranker over an already
+// fused candidate set. It is intentionally narrow for agentic retrieval's
+// global rerank layer; when no reranker is configured it returns a fallback
+// reason so callers can keep their fusion order.
+func (r *Retriever) RerankHitItems(question string, hits []RetrievalHit, topK int) ([]RetrievalHit, string, int64) {
+	if !r.rerankerEnabled() {
+		return hits, "reranker_unavailable", 0
+	}
+	if len(hits) == 0 {
+		return hits, "", 0
+	}
+	pool := make([]scoredChunk, 0, len(hits))
+	for _, hit := range hits {
+		pool = append(pool, scoredChunk{chunk: hit.Chunk, score: hit.Score})
+	}
+	reranked, reason, latency := r.rerankByReranker(question, pool)
+	if reason != "" {
+		return hits, reason, latency
+	}
+	out := make([]RetrievalHit, 0, len(reranked))
+	for _, c := range reranked {
+		out = append(out, RetrievalHit{Chunk: c.chunk, Score: c.score, Kept: true})
+	}
+	if topK > 0 && len(out) > topK {
+		out = out[:topK]
+	}
+	return out, "", latency
+}
+
 // chunkReprForRerank produces the text the reranker sees per chunk. Must
 // stay byte-equivalent to scripts/rag_w0/build_corpus_embeddings.py
 // chunk_repr (no TrimSpace on title, no strip elsewhere) — both ranking

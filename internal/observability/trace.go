@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/knowledge/agentic"
 	"github.com/compshare-agent/internal/policy"
 	"github.com/compshare-agent/internal/security"
 )
@@ -520,9 +521,112 @@ func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 // first-ever) wins. Terminal RAG retrieves once, so its trace is unchanged.
 func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
 	if current.Enabled && current.Hits > 0 && (!next.Enabled || next.Hits == 0) {
-		return current
+		return mergeRetrievalTraceMetadata(current, next)
 	}
-	return next
+	if next.Enabled || next.Hits > 0 {
+		return mergeRetrievalTraceMetadata(next, current)
+	}
+	return mergeRetrievalTraceMetadata(current, next)
+}
+
+func mergeRetrievalTraceMetadata(base, extra RetrievalTrace) RetrievalTrace {
+	if base.QueryPlan == nil && extra.QueryPlan != nil {
+		base.QueryPlan = extra.QueryPlan
+	}
+	if len(extra.Activities) > 0 {
+		base.Activities = mergeRetrievalActivities(base.Activities, extra.Activities)
+	}
+	if len(extra.References) > 0 {
+		base.References = mergeRetrievalReferences(base.References, extra.References)
+	}
+	if len(extra.CitedRefs) > 0 {
+		base.CitedRefs = mergeStringsPreserveOrder(base.CitedRefs, extra.CitedRefs)
+	}
+	if len(extra.CitedChunkIDs) > 0 {
+		base.CitedChunkIDs = mergeStringsPreserveOrder(base.CitedChunkIDs, extra.CitedChunkIDs)
+	}
+	if base.RefIDScheme == "" {
+		base.RefIDScheme = extra.RefIDScheme
+	}
+	return base
+}
+
+func mergeRetrievalActivities(first, second []agentic.RetrievalActivity) []agentic.RetrievalActivity {
+	if len(first) == 0 {
+		return append([]agentic.RetrievalActivity(nil), second...)
+	}
+	out := append([]agentic.RetrievalActivity(nil), first...)
+	seen := map[string]struct{}{}
+	for _, a := range out {
+		if a.ID != "" {
+			seen[a.ID] = struct{}{}
+		}
+	}
+	for _, a := range second {
+		if a.ID != "" {
+			if _, ok := seen[a.ID]; ok {
+				continue
+			}
+			seen[a.ID] = struct{}{}
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+func mergeRetrievalReferences(first, second []agentic.Reference) []agentic.Reference {
+	if len(first) == 0 {
+		return append([]agentic.Reference(nil), second...)
+	}
+	out := append([]agentic.Reference(nil), first...)
+	seen := map[string]struct{}{}
+	for _, r := range out {
+		key := r.ChunkID
+		if key == "" {
+			key = r.RefID
+		}
+		if key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, r := range second {
+		key := r.ChunkID
+		if key == "" {
+			key = r.RefID
+		}
+		if key != "" {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func mergeStringsPreserveOrder(first, second []string) []string {
+	if len(first) == 0 {
+		return append([]string(nil), second...)
+	}
+	out := append([]string(nil), first...)
+	seen := map[string]struct{}{}
+	for _, s := range out {
+		if s != "" {
+			seen[s] = struct{}{}
+		}
+	}
+	for _, s := range second {
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 type RateLimitTrace struct {
@@ -536,14 +640,18 @@ type RateLimitTrace struct {
 }
 
 type RetrievalTrace struct {
-	Enabled               bool           `json:"enabled"`
-	KBVersion             string         `json:"kb_version"`
-	QueryRaw              string         `json:"query_raw,omitempty"`
-	QueryNormalized       string         `json:"query_normalized,omitempty"`
-	QueryExpansions       []string       `json:"query_expansions,omitempty"`
-	Hits                  int            `json:"hits"`
-	HitItems              []RetrievalHit `json:"hit_items,omitempty"`
-	RefusedReason string `json:"refused_reason,omitempty"`
+	Enabled         bool                        `json:"enabled"`
+	KBVersion       string                      `json:"kb_version"`
+	QueryRaw        string                      `json:"query_raw,omitempty"`
+	QueryNormalized string                      `json:"query_normalized,omitempty"`
+	QueryExpansions []string                    `json:"query_expansions,omitempty"`
+	QueryPlan       *agentic.QueryPlan          `json:"query_plan,omitempty"`
+	Activities      []agentic.RetrievalActivity `json:"activities,omitempty"`
+	References      []agentic.Reference         `json:"references,omitempty"`
+	RefIDScheme     string                      `json:"ref_id_scheme,omitempty"`
+	Hits            int                         `json:"hits"`
+	HitItems        []RetrievalHit              `json:"hit_items,omitempty"`
+	RefusedReason   string                      `json:"refused_reason,omitempty"`
 	// RefusalType classifies a RAG refusal into the #5 four-state taxonomy
 	// (corpus_gap / all_below_floor / synthesis_refused / wrong_domain). Derived
 	// at Finish from RefusedReason + FloorDroppedAll (DeriveRefusalType); empty
@@ -612,6 +720,7 @@ type RetrievalTrace struct {
 	// retrieval. Citation markers are stripped from the user-facing reply
 	// so the user only sees prose; this field is the only place [n] → chunk
 	// mapping survives.
+	CitedRefs     []string `json:"cited_refs,omitempty"`
 	CitedChunkIDs []string `json:"cited_chunk_ids,omitempty"`
 }
 
@@ -654,6 +763,18 @@ func RedactQueryDerivedFields(trace *RetrievalTrace) {
 	trace.QueryNormalized = policy.RedactQueryDerivedValue(trace.QueryNormalized)
 	for i, expansion := range trace.QueryExpansions {
 		trace.QueryExpansions[i] = policy.RedactQueryDerivedValue(expansion)
+	}
+	if trace.QueryPlan != nil {
+		for i := range trace.QueryPlan.Subqueries {
+			trace.QueryPlan.Subqueries[i].Query = policy.RedactQueryDerivedValue(trace.QueryPlan.Subqueries[i].Query)
+			trace.QueryPlan.Subqueries[i].Purpose = policy.RedactQueryDerivedValue(trace.QueryPlan.Subqueries[i].Purpose)
+			trace.QueryPlan.Subqueries[i].ProductAreaHint = policy.RedactQueryDerivedValue(trace.QueryPlan.Subqueries[i].ProductAreaHint)
+		}
+	}
+	for i := range trace.Activities {
+		trace.Activities[i].Query = policy.RedactQueryDerivedValue(trace.Activities[i].Query)
+		trace.Activities[i].Purpose = policy.RedactQueryDerivedValue(trace.Activities[i].Purpose)
+		trace.Activities[i].ProductAreaHint = policy.RedactQueryDerivedValue(trace.Activities[i].ProductAreaHint)
 	}
 }
 
@@ -945,6 +1066,10 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.QueryRaw != "" ||
 		trace.QueryNormalized != "" ||
 		len(trace.QueryExpansions) > 0 ||
+		trace.QueryPlan != nil ||
+		len(trace.Activities) > 0 ||
+		len(trace.References) > 0 ||
+		trace.RefIDScheme != "" ||
 		trace.Hits != 0 ||
 		len(trace.HitItems) > 0 ||
 		trace.RefusedReason != "" ||
@@ -962,6 +1087,7 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.RerankerMode != "" ||
 		trace.RerankerLatencyMS != nil ||
 		trace.RerankerFallbackReason != "" ||
+		len(trace.CitedRefs) > 0 ||
 		len(trace.CitedChunkIDs) > 0
 }
 
@@ -1016,6 +1142,18 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	}
 	if r.Retrieval.HitItems == nil {
 		r.Retrieval.HitItems = []RetrievalHit{}
+	}
+	if r.Retrieval.Activities == nil {
+		r.Retrieval.Activities = []agentic.RetrievalActivity{}
+	}
+	if r.Retrieval.References == nil {
+		r.Retrieval.References = []agentic.Reference{}
+	}
+	if r.Retrieval.CitedRefs == nil {
+		r.Retrieval.CitedRefs = []string{}
+	}
+	if r.Retrieval.CitedChunkIDs == nil {
+		r.Retrieval.CitedChunkIDs = []string{}
 	}
 	if r.Diagnosis.Claims == nil {
 		r.Diagnosis.Claims = []DiagnosisClaimTrace{}

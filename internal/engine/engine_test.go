@@ -41,6 +41,10 @@ type mockLLM struct {
 }
 
 func (m *mockLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	if isAgenticRetrievalPlannerMockRequest(req) && !nextMockResponseLooksLikeAgenticPlan(m) {
+		q := agenticPlannerMockQuery(req)
+		return &llm.ChatResponse{Content: fmt.Sprintf(`{"subqueries":[{"query":%q,"purpose":"answer_user_question","required":true}]}`, q)}, nil
+	}
 	m.calls = append(m.calls, req)
 	if isCreatePreferenceMockRequest(req) && !nextMockResponseLooksLikeCreatePreference(m) {
 		return &llm.ChatResponse{Content: `{"workload_pref":"","image_pref":"","image_source":"","gpu_pref":"","zone_pref":"","purpose":""}`}, nil
@@ -58,6 +62,41 @@ func isCreatePreferenceMockRequest(req llm.ChatRequest) bool {
 		return false
 	}
 	return strings.Contains(req.Messages[0].Content, "创建/部署偏好抽取器")
+}
+
+func isAgenticRetrievalPlannerMockRequest(req llm.ChatRequest) bool {
+	if len(req.Messages) == 0 {
+		return false
+	}
+	return strings.Contains(req.Messages[0].Content, "知识库检索规划器")
+}
+
+func nextMockResponseLooksLikeAgenticPlan(m *mockLLM) bool {
+	if m == nil || m.callIdx >= len(m.responses) {
+		return false
+	}
+	content := strings.TrimSpace(m.responses[m.callIdx].Content)
+	return strings.Contains(content, "subqueries") && strings.Contains(content, "query")
+}
+
+func agenticPlannerMockQuery(req llm.ChatRequest) string {
+	if len(req.Messages) < 2 {
+		return "mock planner fallback"
+	}
+	content := req.Messages[1].Content
+	marker := "初始检索词："
+	idx := strings.Index(content, marker)
+	if idx < 0 {
+		return "mock planner fallback"
+	}
+	rest := strings.TrimSpace(content[idx+len(marker):])
+	if cut := strings.Index(rest, "\n\n"); cut >= 0 {
+		rest = strings.TrimSpace(rest[:cut])
+	}
+	if rest == "" {
+		return "mock planner fallback"
+	}
+	return rest
 }
 
 func nextMockResponseLooksLikeCreatePreference(m *mockLLM) bool {

@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -8,8 +9,8 @@ import (
 
 func ledgerWith(ids ...string) EvidenceLedger {
 	items := make([]EvidenceItem, 0, len(ids))
-	for _, id := range ids {
-		items = append(items, EvidenceItem{ChunkID: id, Title: id + " title"})
+	for i, id := range ids {
+		items = append(items, EvidenceItem{RefID: strconv.Itoa(i + 1), ChunkID: id, Title: id + " title"})
 	}
 	return EvidenceLedger{Items: items}
 }
@@ -51,8 +52,8 @@ func TestValidateGroundedCitations_ToleratesSpacedBrackets(t *testing.T) {
 
 // TestValidateGroundedCitations_PositionalNumberedCitations covers the numbered [n]
 // scheme: flash emits a simple [1]/[2] far more reliably than echoing a long
-// [[chunk_id]] (and terminal RAG already uses [n]). An in-range [n] resolves to the
-// n-th ledger item (1-based); an out-of-range [n] is prose, NOT a fabricated citation;
+// [[chunk_id]] (and terminal RAG already uses [n]). A known [n] resolves through the
+// turn-scoped RefID; legacy ledgers without RefID still fall back to item order. An unknown [n] is a failed citation;
 // [[chunk_id]] and [n] compose; the markers strip for display.
 func TestValidateGroundedCitations_PositionalNumberedCitations(t *testing.T) {
 	ledger := ledgerWith("ext-a-1", "ext-b-2") // [1]->ext-a-1, [2]->ext-b-2
@@ -63,13 +64,34 @@ func TestValidateGroundedCitations_PositionalNumberedCitations(t *testing.T) {
 
 	r2 := ValidateGroundedCitations("见步骤 [9]。", ledger)
 	assert.False(t, r2.HasCitation, "out-of-range [n] does not ground")
-	assert.Empty(t, r2.UnknownCitations, "out-of-range [n] is prose, not a fabricated citation")
+	assert.Equal(t, []string{"9"}, r2.UnknownCitations, "unknown [n] must fail the citation contract")
 
 	r3 := ValidateGroundedCitations("X [[ext-b-2]] 和 Y [1]。", ledger)
 	assert.True(t, r3.Grounded())
 	assert.ElementsMatch(t, []string{"ext-b-2", "ext-a-1"}, r3.CitedChunkIDs, "[[chunk_id]] and [n] compose")
 
 	assert.Equal(t, "方案A，方案B。", StripCiteMarkers("方案A [1]，方案B [2]。"))
+}
+
+func TestValidateGroundedCitations_RefIDPreferredOverPosition(t *testing.T) {
+	ledger := EvidenceLedger{Items: []EvidenceItem{
+		{RefID: "2", ChunkID: "chunk-b"},
+		{RefID: "1", ChunkID: "chunk-a"},
+	}}
+	r := ValidateGroundedCitations("结论来自 A [1]。", ledger)
+	assert.True(t, r.Grounded())
+	assert.Equal(t, []string{"chunk-a"}, r.CitedChunkIDs, "numeric markers resolve ref_id before legacy position")
+}
+
+func TestValidateGroundedCitations_UnknownRefIDDoesNotFallbackToPosition(t *testing.T) {
+	ledger := EvidenceLedger{Items: []EvidenceItem{
+		{RefID: "10", ChunkID: "chunk-a"},
+		{RefID: "11", ChunkID: "chunk-b"},
+	}}
+	r := ValidateGroundedCitations("结论来自未知编号 [2]。", ledger)
+	assert.False(t, r.HasCitation, "agentic ledgers must not resolve unknown ref_id by item position")
+	assert.Equal(t, []string{"2"}, r.UnknownCitations)
+	assert.False(t, r.Grounded())
 }
 
 // TestValidateGroundedCitations_UnknownCitationFabricated is the anti-fabrication
@@ -137,16 +159,14 @@ func TestValidateGroundedCitations_DedupesAndTrims(t *testing.T) {
 	assert.True(t, r.Grounded())
 }
 
-// TestValidateGroundedCitations_IgnoresIncidentalBrackets proves that brackets which
-// are NOT citations — non-numeric prose ([注意]) and an out-of-range positional [n]
-// (no such ledger item) — are not treated as citations and are not fabrications. The
-// in-range numbered [n] scheme is covered by TestValidateGroundedCitations_PositionalNumberedCitations.
+// TestValidateGroundedCitations_IgnoresIncidentalBrackets proves that non-numeric
+// prose brackets are ignored while unknown numeric refs fail closed.
 func TestValidateGroundedCitations_IgnoresIncidentalBrackets(t *testing.T) {
 	ledger := ledgerWith("ext-a-1") // only [1] is in range
 	r := ValidateGroundedCitations("见 [注意] 部分，另见 [9]。", ledger)
-	assert.False(t, r.HasCitation, "[注意] and out-of-range [9] are not citations")
+	assert.False(t, r.HasCitation, "[注意] is not a citation and [9] is unknown")
 	assert.Empty(t, r.CitedChunkIDs)
-	assert.Empty(t, r.UnknownCitations)
+	assert.Equal(t, []string{"9"}, r.UnknownCitations)
 }
 
 // TestValidateGroundedCitations_EmptyAnswer guards the degenerate input.

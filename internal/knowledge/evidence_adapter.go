@@ -29,6 +29,9 @@ type EvidenceLedger struct {
 }
 
 type EvidenceItem struct {
+	// RefID is a turn-scoped citation handle ("1", "2", ...). It is distinct
+	// from ChunkID, which is the durable corpus identifier persisted for audit.
+	RefID   string `json:"ref_id,omitempty"`
 	ChunkID string `json:"chunk_id"`
 	Title   string `json:"title,omitempty"`
 	// ProductArea is the chunk's declared product_area (KBChunk.ProductArea),

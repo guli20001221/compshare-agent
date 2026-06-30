@@ -265,7 +265,8 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// SearchKnowledge items, consumed by the grounded-answer cite validator.
 		// Per-session by design — same cross-tenant-leak reasoning as the hits
 		// above. Reset every turn.
-		"searchKnowledgeLedgerThisTurn": true,
+		"searchKnowledgeLedgerThisTurn":          true,
+		"searchKnowledgeReferenceLedgerThisTurn": true,
 		// Per-turn knowledge_qa agent-loop route marker (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP).
 		// Per-session by design — it carries the turn-scoped cite-or-refuse coupling and
 		// the runtime-form projection; sharing it would cross one tenant's route decision
@@ -332,12 +333,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 56, len(perSessionFields); want != got {
+	if want, got := 57, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 72, typ.NumField(); want != got {
+	if want, got := 73, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

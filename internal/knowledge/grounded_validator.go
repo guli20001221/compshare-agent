@@ -30,9 +30,10 @@ var citeMarkerRE = regexp.MustCompile(`\[[ \t]*\[+\s*([^\[\]\r\n]+?)\s*\]+[ \t]*
 // scheme flash emits FAR more reliably than echoing a long opaque [[chunk_id]] (and
 // the scheme the terminal RAG route already uses, see engine/cited_guard.go). It is
 // scanned only AFTER the [[chunk_id]] markers are removed, so the inner digits of a
-// [[id]] are never reread as a positional ref. An in-range [n] resolves to its ledger
-// item; an out-of-range or prose [n] is ignored (not a fabricated citation) so a stray
-// bracketed number cannot force a refusal.
+// [[id]] are never reread as a positional ref. A valid [n] resolves by RefID when
+// the ledger has RefIDs; only legacy ledgers with no RefIDs resolve by item
+// position. An unresolved [n] is an unknown citation and fails the grounded
+// contract.
 var positionalCiteRE = regexp.MustCompile(`\[(\d{1,2})\]`)
 
 // GroundedAnswerReport is the route-independent verdict for a free-text final
@@ -73,11 +74,16 @@ func ValidateGroundedCitations(answer string, ledger EvidenceLedger) GroundedAns
 		return report
 	}
 	known := make(map[string]struct{}, len(ledger.Items))
+	refIDToChunkID := make(map[string]string, len(ledger.Items))
 	for _, item := range ledger.Items {
 		if id := strings.TrimSpace(item.ChunkID); id != "" {
 			known[id] = struct{}{}
+			if refID := strings.TrimSpace(item.RefID); refID != "" {
+				refIDToChunkID[refID] = id
+			}
 		}
 	}
+	hasRefIDs := len(refIDToChunkID) > 0
 	seenKnown := map[string]struct{}{}
 	seenUnknown := map[string]struct{}{}
 	for _, m := range citeMarkerRE.FindAllStringSubmatch(answer, -1) {
@@ -98,18 +104,25 @@ func ValidateGroundedCitations(answer string, ledger EvidenceLedger) GroundedAns
 			report.UnknownCitations = append(report.UnknownCitations, id)
 		}
 	}
-	// Positional [n] citations (1-based into ledger order). Scanned on a copy with the
-	// [[chunk_id]] markers removed so the inner digits of a [[id]] are not reread. An
-	// in-range [n] cites ledger.Items[n-1]; out-of-range/prose [n] is ignored (NOT a
-	// fabricated citation — avoids a stray bracketed number forcing a refusal).
+	// RefID [n] citations. For Azure-style agentic RAG the number is a turn-scoped
+	// ref_id; legacy ledgers without RefID still resolve by 1-based item position.
+	// Scanned on a copy with the [[chunk_id]] markers removed so the inner digits of a
+	// [[id]] are not reread. Unresolved numeric refs are unknown citations.
 	stripped := citeMarkerRE.ReplaceAllString(answer, "")
 	for _, m := range positionalCiteRE.FindAllStringSubmatch(stripped, -1) {
-		n, err := strconv.Atoi(m[1])
-		if err != nil || n < 1 || n > len(ledger.Items) {
-			continue
+		refID := strings.TrimSpace(m[1])
+		id := strings.TrimSpace(refIDToChunkID[refID])
+		if id == "" && !hasRefIDs {
+			n, err := strconv.Atoi(refID)
+			if err == nil && n >= 1 && n <= len(ledger.Items) {
+				id = strings.TrimSpace(ledger.Items[n-1].ChunkID)
+			}
 		}
-		id := strings.TrimSpace(ledger.Items[n-1].ChunkID)
 		if id == "" {
+			if _, dup := seenUnknown[refID]; !dup {
+				seenUnknown[refID] = struct{}{}
+				report.UnknownCitations = append(report.UnknownCitations, refID)
+			}
 			continue
 		}
 		report.HasCitation = true
