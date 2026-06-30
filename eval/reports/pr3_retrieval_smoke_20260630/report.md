@@ -2,9 +2,17 @@
 
 ## Summary
 
-The CI-safe part of the gate is now implemented as real-corpus retrieval recall tests. These tests load the production platform corpus and run the real BM25 retriever, so they can catch corpus or retrieval drift without any model key.
+This gate now has two layers:
 
-The key-protected live smoke was not executed in this local shell because no model/API environment variables were present. This report intentionally records that as blocked, not passed.
+- CI-safe retrieval recall tests load the real `deploy/kb/stage2b_w0.jsonl` corpus and run the real BM25 retriever.
+- Key-protected live smoke uses the real HTTP engine path with `deepseek-v4-flash`, Qwen3/RRF retrieval, and synthesis enabled.
+
+The live smoke initially exposed two real routing/retrieval gaps:
+
+- Coding Plan delete/cancel phrasing could drift into instance-operation handling and inspect instances.
+- Generic resource-capacity semantics like "暂无资源" and `Normal` status could drift into stock tools or retrieve too weakly.
+
+Both were fixed by routing these product-fact questions to knowledge retrieval and by expanding the retrieval query with the upstream capacity/status terms. No canned answer was restored.
 
 ## CI-safe retrieval recall
 
@@ -13,28 +21,35 @@ Covered questions:
 - 磁盘空间是如何收费的？100GB 原始空间免费吗
 - 删除 Coding Plan 包
 - 一直暂无资源 是什么情况
+- Normal 状态是不是说明一定有库存
 
 Required evidence:
 
 - Disk billing must retrieve the system/data disk billing chunk.
 - Coding Plan management must retrieve the package management/refund chunk.
-- Stock shortage must retrieve capacity precheck and Normal/SoldOut status evidence.
+- Stock shortage/status semantics must retrieve capacity precheck evidence and the `Normal`/`SoldOut` machine-status contract.
 
 Local verification command:
 
 ```powershell
-go test ./internal/engine -run "RetrievalRecall|ReplayWiring" -count=1
+go test ./internal/engine -run "RetrievalRecall|ReplayRegression" -count=1
 ```
 
-Result: passed locally after adding retrieval-query expansion for stock shortage and Coding Plan cancellation/delete phrasing.
+Result: passed.
 
 ## Key-protected live smoke
 
-Status: blocked locally.
+Environment was loaded from local `.env` and `.env.local` without committing or printing secrets.
 
-Reason: this shell had no model/API environment variables, so the Flash router + Qwen3 RRF + synthesis path could not be executed honestly.
+Runtime:
 
-Required cases for the next key-enabled run:
+- Model: `deepseek-v4-flash`
+- Retrieval mode: `qwen3_rrf`
+- Agentic `SearchKnowledge`: enabled
+- Knowledge-QA loop: enabled
+- Grounded validator / domain guard / disciplined synthesis: enabled
+
+Cases:
 
 - 磁盘空间是如何收费的？100GB 原始空间免费吗
 - 删除 Coding Plan 包
@@ -42,11 +57,22 @@ Required cases for the next key-enabled run:
 - 一直暂无资源 是什么情况
 - Normal 状态是不是说明一定有库存
 
-Acceptance:
+Each case ran 5 rounds, 25 rounds total.
 
-- No instance lookup.
-- No create confirmation card.
-- No GPU-selection prompt.
-- Trace records real knowledge retrieval hits.
-- Any refusal or wrong answer is fixed by corpus/retrieval/synthesis changes, not by restoring canned replies.
+Final command:
+
+```powershell
+go test ./cmd -run TestBehavioralGate -count=1 -v -behavioral-gate -behavioral-input eval/reports/pr3_retrieval_smoke_20260630/live_smoke_cases.jsonl -behavioral-contract eval/reports/pr3_retrieval_smoke_20260630/live_smoke_contract.jsonl -behavioral-replay-out eval/reports/pr3_retrieval_smoke_20260630/live_smoke_replay.jsonl -behavioral-min-pass 100 -behavioral-timeout 240s -timeout 90m
+```
+
+Final result:
+
+- Overall: `105/105` blocking assertions passed.
+- `SearchKnowledge` fired in every round.
+- No case inspected instances.
+- No case opened a create/deploy confirmation card.
+- No case asked the user to choose a GPU or instance.
+- `Normal` status semantics no longer refuse; all 5 rounds explain that `Normal` means sellable, not guaranteed stock, and that concrete availability must be checked with `CheckCompShareResourceCapacity`.
+
+Replay output: `live_smoke_replay.jsonl`.
 

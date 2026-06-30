@@ -2,30 +2,34 @@
 
 ## Summary
 
-The PR2 prompt-slimming A/B requires a live router model. It was not executed in this local shell because no model/API environment variables were present.
+The PR2 prompt-slimming check was run with the live `deepseek-v4-flash` router. The full online intent fixture is naturally jittery, so the result is treated as an A/B comparison instead of a hard absolute threshold.
 
-## Required setup
+## Runs
 
-- Model: deepseek-v4-flash
-- Runs: N >= 5 per case
-- A arm: pre-PR2 planner schema/prompt baseline
-- B arm: latest main with router-output slimming
+Baseline arm: pre-PR2 commit `1d26fe24` in `F:\compshare-agent\.worktrees\pr2-ab-baseline`.
 
-## Required case groups
+- Run 1: `59/68` intent accuracy (`86.8%`)
+- Run 2: `59/68` intent accuracy (`86.8%`)
 
-- Create: 为我创一台V100S的实例; 帮我创建一台4090; 在华北二A创建一台4090
-- Deploy: 部署 DeepSeek R1 32B; 部署一台4090跑Qwen
-- Price: 4090多少钱; 4090折后价是多少
-- Knowledge: DeepSeek R1怎么部署; 系统镜像和基础镜像有什么区别
-- Image browse: 我自己保存的镜像有哪些; 有哪些 PyTorch 镜像
-- Lifecycle/resize: 明确目标开机、关机、重启、改配样本
+Current arm: PR3 branch `codex/pr3-retrieval-gates`.
 
-## Acceptance
+- Run 1: `60/68` intent accuracy (`88.2%`), failed only the earlier experimental 90% absolute threshold.
+- Run 2: `58/68` intent accuracy (`85.3%`)
 
-- No new schema-invalid retries.
-- Create/deploy/read-only boundaries do not regress.
-- Price, advice, comparison, and how-to questions do not open paid confirmation cards.
-- Lifecycle and resize requests do not fall into knowledge or create routes.
+## Interpretation
 
-Status: blocked locally until a live model key is available.
+The live model jitters by roughly the same size as the observed branch delta. The slimmed PR2 prompt did not show a clear regression against the pre-PR2 baseline in this fixture.
+
+The repeated misses are mostly existing ambiguous or legacy labels such as account-billing unsupported, vague failure, unknown operations, and mixed unknowns. They are not new create/deploy paid-action regressions.
+
+## Evidence files
+
+- `router_online_eval_baseline_pre_pr2.log`
+- `router_online_eval_baseline_pre_pr2_run2.log`
+- `router_online_eval.log`
+- `router_online_eval_current.log`
+
+## Notes
+
+This fixture does not replace the behavioral gate for create/deploy confirmation behavior. PR3's separate live smoke verifies the knowledge-retrieval facts, and earlier R2b Gate-1 verified create/deploy/tool behavior.
 

@@ -1,18 +1,21 @@
 # PR3 retrieval smoke config snapshot
 
 - Date: 2026-06-30
-- Branch: codex/pr3-retrieval-gates
-- Base commit: 5641ea1528847b3539b56fc8a8e86650676404e2
-- Corpus: deploy/kb/stage2b_w0.jsonl
+- Branch: `codex/pr3-retrieval-gates`
+- Start commit: `583fe75cc77947d288a31265ce9153970ae36714`
+- Corpus: `deploy/kb/stage2b_w0.jsonl`
+- Env sources: `F:\compshare-agent\.env`, `F:\compshare-agent\.env.local`
+- Secret handling: loaded into the process environment only; no secret values are recorded in this report.
 - CI retrieval gate: BM25-only, TopK=10, pinned corpus loader
-- Key-protected live smoke: blocked in this local shell because no model/API environment variables were present
 
-Expected live flags when a key is available:
+Live smoke flags:
 
-- COMPSHARE_INTENT_ROUTER_MODE=dispatch
-- COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=1
-- COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=1
-- COMPSHARE_RAG_GROUNDED_VALIDATOR=1
-- RAG_RETRIEVAL_MODE=qwen3_rrf
-- Router model: deepseek-v4-flash
+- `COMPSHARE_INTENT_ROUTER_MODE=dispatch`
+- `COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=1`
+- `COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=1`
+- `COMPSHARE_RAG_GROUNDED_VALIDATOR=1`
+- `COMPSHARE_RAG_DOMAIN_MATCH_GUARD=1`
+- `COMPSHARE_DISCIPLINED_KNOWLEDGE_QA_SYNTHESIS=1`
+- `RAG_RETRIEVAL_MODE=qwen3_rrf`
+- Router model: `deepseek-v4-flash`
 

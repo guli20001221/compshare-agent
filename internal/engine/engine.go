@@ -1823,8 +1823,17 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
+	if plannerIntentShouldUseKnowledgeQA(dispatch.result.Plan.Intent, userMsg) {
+		dispatch.result.Plan.Intent = intent.IntentKnowledgeQA
+		e.lastPlannerIntentThisTurn = intent.IntentKnowledgeQA
+	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || dispatch.result.Plan.Intent == intent.IntentMonitorHistory || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
 		return e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
+	}
+	if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA && productKnowledgeQuestionShouldUseTerminalRetrieval(userMsg) {
+		if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
+			return reply, true
+		}
 	}
 	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP migration: route a knowledge_qa turn into
 	// the shared ReAct loop (forced SearchKnowledge first hop) instead of the
@@ -1857,6 +1866,62 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 
 	e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 	return "", false
+}
+
+func plannerIntentShouldUseKnowledgeQA(planIntent intent.Intent, userMsg string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(userMsg))
+	if normalized == "" {
+		return false
+	}
+	switch planIntent {
+	case intent.IntentStockAvailability:
+		return genericResourceCapacitySemanticsQuestion(normalized)
+	case intent.IntentOperationLifecycle:
+		return planPackageManagementQuestion(normalized)
+	default:
+		return false
+	}
+}
+
+func genericResourceCapacitySemanticsQuestion(normalized string) bool {
+	if strings.ContainsAny(normalized, "0123456789") {
+		return false
+	}
+	return strings.Contains(normalized, "暂无资源") ||
+		strings.Contains(normalized, "资源不足") ||
+		strings.Contains(normalized, "normal") ||
+		strings.Contains(normalized, "soldout") ||
+		strings.Contains(normalized, "sold out")
+}
+
+func planPackageManagementQuestion(normalized string) bool {
+	if !(strings.Contains(normalized, "coding plan") || strings.Contains(normalized, "agent plan") || strings.Contains(normalized, "套餐")) {
+		return false
+	}
+	return strings.Contains(normalized, "删除") ||
+		strings.Contains(normalized, "取消") ||
+		strings.Contains(normalized, "退订") ||
+		strings.Contains(normalized, "退款")
+}
+
+func productKnowledgeQuestionShouldUseTerminalRetrieval(userMsg string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(userMsg))
+	if normalized == "" {
+		return false
+	}
+	return genericResourceCapacitySemanticsQuestion(normalized) ||
+		planPackageManagementQuestion(normalized) ||
+		diskBillingKnowledgeQuestion(normalized)
+}
+
+func diskBillingKnowledgeQuestion(normalized string) bool {
+	if !strings.Contains(normalized, "磁盘") {
+		return false
+	}
+	return strings.Contains(normalized, "收费") ||
+		strings.Contains(normalized, "计费") ||
+		strings.Contains(normalized, "免费") ||
+		strings.Contains(normalized, "价格")
 }
 
 func (e *Engine) tryBillingAccountUnsupportedDispatch(dispatch routerDispatchResult) (string, bool) {
@@ -2987,7 +3052,10 @@ func (e *Engine) knowledgeRetrievalQuery(userMsg string) string {
 func expandKnowledgeRetrievalQuery(query string) string {
 	normalized := strings.ToLower(textutil.Normalize(query))
 	var hints []string
-	if strings.Contains(normalized, "\u6682\u65e0\u8d44\u6e90") || strings.Contains(normalized, "\u8d44\u6e90\u4e0d\u8db3") {
+	if strings.Contains(normalized, "\u6682\u65e0\u8d44\u6e90") ||
+		strings.Contains(normalized, "\u8d44\u6e90\u4e0d\u8db3") ||
+		strings.Contains(normalized, "normal") ||
+		strings.Contains(normalized, "soldout") {
 		hints = append(hints, "CheckCompShareResourceCapacity ResourceEnough DescribeAvailableCompShareInstanceTypes Normal SoldOut")
 	}
 	if strings.Contains(normalized, "coding plan") && (strings.Contains(normalized, "\u5220\u9664") || strings.Contains(normalized, "\u53d6\u6d88") || strings.Contains(normalized, "\u9000\u8ba2") || strings.Contains(normalized, "\u9000\u6b3e")) {

@@ -38,6 +38,16 @@ func TestRetrievalRecallRealCorpusStockShortage(t *testing.T) {
 	requireRecallText(t, result, "Normal")
 }
 
+func TestRetrievalRecallRealCorpusStockStatusSemantics(t *testing.T) {
+	result := retrieveRealCorpusForTest(t, "Normal 状态是不是说明一定有库存")
+
+	requireRecallText(t, result, "CheckCompShareResourceCapacity")
+	requireRecallText(t, result, "ResourceEnough")
+	requireRecallText(t, result, "DescribeAvailableCompShareInstanceTypes")
+	requireRecallText(t, result, "Normal")
+	requireRecallText(t, result, "SoldOut")
+}
+
 func retrieveRealCorpusForTest(t *testing.T, query string) knowledge.RetrievalResult {
 	t.Helper()
 
