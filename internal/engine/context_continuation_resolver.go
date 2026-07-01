@@ -65,20 +65,11 @@ func (e *Engine) SetContextContinuationResolver(resolver ContextContinuationReso
 }
 
 func (e *Engine) resolveContextContinuation(ctx context.Context, userMsg string, route intent.Intent, frame ContextFrame) (*ContextContinuationDecision, error) {
-	resolver := e.contextContinuationResolver
-	if resolver == nil {
-		client := e.agentLLMClient
-		if client == nil {
-			client = e.llmClient
-		}
-		resolver = &llmContextContinuationResolver{client: client}
+	decision, err := e.resolveContextDecision(ctx, userMsg, route, frame)
+	if err != nil || decision == nil {
+		return nil, err
 	}
-	return resolver.ResolveContextContinuation(ctx, ContextContinuationInput{
-		UserText:        userMsg,
-		RouterIntent:    route,
-		ContextFrame:    frame,
-		InstanceContext: summarizeInstanceContext(e.sessionState),
-	})
+	return contextDecisionToContinuation(*decision), nil
 }
 
 func buildContextContinuationPrompt(in ContextContinuationInput) []openai.ChatCompletionMessage {

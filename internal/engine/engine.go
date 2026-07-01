@@ -229,6 +229,7 @@ type Engine struct {
 	intentRouteIntents          map[intent.Intent]struct{}
 	knowledgeRetriever          KnowledgeRetriever
 	createPreferenceExtractor   CreatePreferenceExtractor
+	contextDecisionLayer        ContextDecisionLayer
 	contextContinuationResolver ContextContinuationResolver
 	groundedRenderer            grounded.Renderer
 	groundedRendererModel       string
@@ -243,6 +244,7 @@ type Engine struct {
 	retrievalTraceObserver           func(observability.RetrievalTrace)
 	freshnessTraceObserver           func(observability.FreshnessTrace)
 	diagnosisTraceObserver           func(observability.DiagnosisTrace)
+	contextDecisionObserver          func(ContextDecisionTrace)
 	outcomeTraceObserver             func(observability.OutcomeTrace)
 	tokenUsageObserver               func(llm.TokenUsage)
 	rateLimiter                      governance.RateLimiter
@@ -2563,6 +2565,9 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 			e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
 			e.pendingResourceSelection = nil
 			e.clearPendingSelection()
+			return "", false
+		}
+		if e.tryContextDecisionResourceSelection(ctx, userMsg, pending) {
 			return "", false
 		}
 		if restoredFromSession || pending.plan.Intent == intent.IntentResourceInfo {

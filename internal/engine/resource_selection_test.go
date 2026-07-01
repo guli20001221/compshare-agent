@@ -253,6 +253,38 @@ func TestPendingSelectionRoundTripsThroughSessionState(t *testing.T) {
 	}
 }
 
+func TestContextDecisionSelectionRecordsPendingInstance(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	e.userTurn = 3
+	e.recordPendingInstanceSelection([]entity.InstanceSnapshot{
+		testInstance("uhost-first", "first-host", "Running"),
+		testInstance("uhost-second", "second-host", "Stopped"),
+	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
+	pending, ok := e.pendingResourceSelectionFromSession()
+	if !ok {
+		t.Fatal("expected pending selection restored from session")
+	}
+	e.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionSelectEntity,
+		Target:      ContextDecisionTargetInstance,
+		InstanceRef: "第1台",
+	}})
+
+	resolved := e.tryContextDecisionResourceSelection(context.Background(), "它现在忙不忙", pending)
+
+	if !resolved {
+		t.Fatal("context decision should resolve the pending instance")
+	}
+	state, _, _ := e.SessionStateSnapshot()
+	if state.SelectedInstanceID != "uhost-first" {
+		t.Fatalf("selected instance = %q, want uhost-first", state.SelectedInstanceID)
+	}
+	if len(state.PendingSelectionItems) != 0 {
+		t.Fatalf("pending selection must be cleared after context decision resolves it")
+	}
+}
+
 func TestRecordInstanceStateFactsResourceInfoMultiHostDoesNotStorePendingSelection(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)

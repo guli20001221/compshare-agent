@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/stretchr/testify/assert"
@@ -35,4 +36,44 @@ func TestChatTraceRecorderMarksChatError(t *testing.T) {
 		Hit:      true,
 		Category: "chat_error",
 	}, writer.records[0].EngineHardBlock)
+}
+
+func TestChatTraceRecorderPreservesContextDecisionInStateTrace(t *testing.T) {
+	writer := &captureTraceWriter{}
+	recorder := newChatTraceRecorder(
+		writer,
+		BaseRequest{
+			RequestUUID: "req-context-decision",
+			Owner: store.Owner{
+				TopOrganizationID: 1,
+				OrganizationID:    2,
+			},
+		},
+		"sess-context-decision",
+		1,
+		"那华北二A呢",
+		time.Now(),
+	)
+
+	recorder.SetContextDecisionTrace(engine.ContextDecisionTrace{
+		Decision:       engine.ContextDecisionContinueTask,
+		Target:         engine.ContextDecisionTargetCreate,
+		Reason:         "followup",
+		ActiveTaskKind: "deploy",
+	})
+	recorder.SetStateTrace(observability.StateTrace{
+		SessionStateHydrated: true,
+		ResolutionSource:     observability.ResolutionSourceSessionState,
+	})
+
+	err := recorder.Finish(nil, time.Now())
+	require.NoError(t, err)
+	require.Len(t, writer.records, 1)
+	state := writer.records[0].State
+	assert.Equal(t, engine.ContextDecisionContinueTask, state.ContextDecision)
+	assert.Equal(t, engine.ContextDecisionTargetCreate, state.ContextDecisionTarget)
+	assert.Equal(t, "followup", state.ContextDecisionReason)
+	assert.Equal(t, "deploy", state.ContextDecisionActiveTask)
+	assert.True(t, state.SessionStateHydrated)
+	assert.Equal(t, observability.ResolutionSourceSessionState, state.ResolutionSource)
 }

@@ -174,6 +174,40 @@ func resourceSelectionLooksLikeReply(input string, p pendingResourceSelection) b
 	return uhostIDPattern.FindString(query) == query
 }
 
+func (e *Engine) tryContextDecisionResourceSelection(ctx context.Context, userMsg string, pending *pendingResourceSelection) bool {
+	if e == nil || pending == nil {
+		return false
+	}
+	if e.contextDecisionLayer == nil {
+		return false
+	}
+	decision, err := e.resolveContextDecision(ctx, userMsg, intent.IntentUnknown, e.sessionState.ContextFrame)
+	if err != nil || decision == nil {
+		return false
+	}
+	if decision.Decision != ContextDecisionSelectEntity || decision.Target != ContextDecisionTargetInstance {
+		return false
+	}
+	ref := strings.TrimSpace(decision.InstanceRef)
+	if ref == "" {
+		ref = strings.TrimSpace(userMsg)
+	}
+	match := matchResourceSelection(ref, *pending)
+	if !match.ok {
+		if embedded, _ := matchResourceSelectionReference(ref, *pending); embedded.ok {
+			match = embedded
+		}
+	}
+	if !match.ok || match.ambiguous {
+		return false
+	}
+	e.recordSelectedInstanceID(match.instance.UHostId, match.instance.Name)
+	e.pendingResourceSelection = nil
+	e.clearPendingSelection()
+	e.refreshSystemPrompt()
+	return true
+}
+
 func isResourceSelectionExpired(currentTurn int, p pendingResourceSelection) bool {
 	return currentTurn > p.createdTurn+2
 }
