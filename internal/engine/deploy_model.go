@@ -314,7 +314,7 @@ func (e *Engine) recordLastDeployTarget(model, zone string) {
 }
 
 func (e *Engine) recordDeployContextFrameFromError(userMsg, matchUserMsg, zone, reason string) {
-	if !e.sessionStateHydrated {
+	if !ContextContinuationEnabled() || !e.sessionStateHydrated {
 		return
 	}
 	frame := newContextFrame(ContextFrameKindDeploy, intent.IntentRoute{Intent: intent.IntentDeployModel}, userMsg, e.userTurn, time.Now())
@@ -338,7 +338,7 @@ func (e *Engine) recordDeployContextFrameFromError(userMsg, matchUserMsg, zone, 
 }
 
 func (e *Engine) recordDeployContextFrameFromPlan(userMsg string, plan deployPlan, reason string) {
-	if !e.sessionStateHydrated {
+	if !ContextContinuationEnabled() || !e.sessionStateHydrated {
 		return
 	}
 	frame := newContextFrame(ContextFrameKindDeploy, intent.IntentRoute{Intent: intent.IntentDeployModel}, userMsg, e.userTurn, time.Now())

@@ -55,6 +55,9 @@ func TestWorkflowArgsFromTaskSlotsReportsMissingWithoutInventingDefaults(t *test
 }
 
 func TestRecordWorkflowMissingSlotsFrameKeepsOnlySafeSlots(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
 	eng := newEngineForSessionStateTest(t)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
@@ -77,7 +80,26 @@ func TestRecordWorkflowMissingSlotsFrameKeepsOnlySafeSlots(t *testing.T) {
 	assert.NotContains(t, frame.Slots, "password")
 }
 
+func TestRecordWorkflowMissingSlotsFrame_FlagOffDoesNotPersistFrame(t *testing.T) {
+	SetContextContinuationEnabled(false)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := newEngineForSessionStateTest(t)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+
+	recorded := eng.recordWorkflowMissingSlotsFrame("CreateDiskWorkflow", map[string]any{
+		"UHostId": "uhost-1",
+	}, []string{"size_gb"}, "缺少大小")
+
+	assert.False(t, recorded)
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind)
+}
+
 func TestExecuteWorkflowMissingSlotRecordsGenericTaskFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, okConfirm)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
@@ -95,6 +117,9 @@ func TestExecuteWorkflowMissingSlotRecordsGenericTaskFrame(t *testing.T) {
 }
 
 func TestOperationLifecycleMissingDiskSizeRecordsGenericTaskFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
 		case "DescribeCompShareInstance":
@@ -145,6 +170,9 @@ func TestOperationLifecycleMissingDiskSizeRecordsGenericTaskFrame(t *testing.T) 
 }
 
 func TestOperationLifecycleMissingResizeSpecRecordsGenericTaskFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
 		case "DescribeCompShareInstance":
@@ -195,6 +223,9 @@ func TestOperationLifecycleMissingResizeSpecRecordsGenericTaskFrame(t *testing.T
 }
 
 func TestSelectedInstanceCreateDiskMissingSizeRecordsGenericTaskFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
 		case "DescribeCompShareInstance":

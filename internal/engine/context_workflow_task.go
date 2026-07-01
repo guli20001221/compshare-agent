@@ -89,7 +89,7 @@ func workflowArgsFromTaskSlots(workflowName string, slots map[string]string) (ma
 }
 
 func (e *Engine) recordWorkflowMissingSlotsFrame(workflowName string, args map[string]any, missing []string, message string) bool {
-	if e == nil || !e.sessionStateHydrated || workflowName == "" || len(missing) == 0 {
+	if e == nil || !ContextContinuationEnabled() || !e.sessionStateHydrated || workflowName == "" || len(missing) == 0 {
 		return false
 	}
 	slots := safeWorkflowContextSlots(args)

@@ -52,6 +52,22 @@ func TestDispatchAgentSkill_CreateInstanceFlagOffFallsThrough(t *testing.T) {
 	assert.Empty(t, exec.calls)
 }
 
+func TestRecordCreateContextFrame_FlagOffDoesNotPersistFrame(t *testing.T) {
+	SetContextContinuationEnabled(false)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+
+	eng.recordCreateContextFrameFromCreateAttempt("创建一台4090", intent.IntentRoute{Intent: intent.IntentCreateInstance}, map[string]any{
+		"GpuType": "4090",
+		"Zone":    "cn-wlcb-01",
+	}, "华北一C暂无库存")
+
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind)
+}
+
 func TestTryPlannerDispatch_UnknownClearsPendingDeployModel(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{

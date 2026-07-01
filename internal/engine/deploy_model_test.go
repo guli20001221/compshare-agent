@@ -218,6 +218,26 @@ func TestTryDeployModel_ConfirmCancelClearsCreateFamilyCarry(t *testing.T) {
 	assert.Empty(t, state.PendingDeployModel)
 }
 
+func TestRecordDeployContextFrame_FlagOffDoesNotPersistFrame(t *testing.T) {
+	SetContextContinuationEnabled(false)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+
+	eng.recordDeployContextFrameFromError("部署 Qwen", "部署 Qwen", "cn-wlcb-01", "暂无容量")
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind)
+
+	eng.recordDeployContextFrameFromPlan("部署 Qwen", deployPlan{
+		GpuType:    "4090",
+		ModelName:  "Qwen",
+		ChosenZone: "cn-wlcb-01",
+	}, "暂无容量")
+	state, _, _ = eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind)
+}
+
 // TestTryDeployModel_SurfacesUsageGuidance proves the handler fetches the deployed
 // image's usage detail post-create and renders an access endpoint, so the user
 // learns HOW to use the instance (here: JupyterLab on :8888 built from the image

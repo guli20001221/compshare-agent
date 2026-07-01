@@ -220,6 +220,9 @@ func contextFramesEquivalent(a, b ContextFrame) bool {
 }
 
 func (e *Engine) recordCreateContextFrameFromCreateAttempt(userMsg string, plan intent.IntentRoute, args map[string]any, reply string) {
+	if !ContextContinuationEnabled() {
+		return
+	}
 	frame := newContextFrame(ContextFrameKindCreate, plan, userMsg, e.userTurn, time.Now())
 	frame.Status = ContextFrameStatusFailedRecoverable
 	frame.GPU, _ = args["GpuType"].(string)
