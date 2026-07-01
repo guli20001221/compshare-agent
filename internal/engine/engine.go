@@ -229,6 +229,7 @@ type Engine struct {
 	intentRouteIntents          map[intent.Intent]struct{}
 	knowledgeRetriever          KnowledgeRetriever
 	createPreferenceExtractor   CreatePreferenceExtractor
+	contextDecisionLayer        ContextDecisionLayer
 	contextContinuationResolver ContextContinuationResolver
 	groundedRenderer            grounded.Renderer
 	groundedRendererModel       string
@@ -243,6 +244,7 @@ type Engine struct {
 	retrievalTraceObserver           func(observability.RetrievalTrace)
 	freshnessTraceObserver           func(observability.FreshnessTrace)
 	diagnosisTraceObserver           func(observability.DiagnosisTrace)
+	contextDecisionObserver          func(ContextDecisionTrace)
 	outcomeTraceObserver             func(observability.OutcomeTrace)
 	tokenUsageObserver               func(llm.TokenUsage)
 	rateLimiter                      governance.RateLimiter
@@ -1110,6 +1112,7 @@ func (e *Engine) ClearSessionState() {
 	e.sessionState = SessionState{}
 	e.sessionStateVersion = 0
 	e.sessionStateHydrated = false
+	e.pendingResourceSelection = nil
 }
 
 // SessionStateSnapshot returns the current SessionState plus the version
@@ -1822,6 +1825,9 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.tryCFSWorkflowDispatch(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
+	if reply, handled := e.tryResumeWorkflowContextFrame(ctx, dispatch, userMsg, onStep); handled {
+		return reply, true
+	}
 	if reply, handled := e.tryResumeCreateContextFrame(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
@@ -2201,15 +2207,18 @@ func workflowDirectReply(action, raw string) string {
 	if finalMsg, ok := isFinalReply(raw); ok {
 		return finalMsg
 	}
-	if action != "CreateInstanceWorkflow" {
-		return raw
-	}
 	var result workflow.Result
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
 		return raw
 	}
 	if !result.Success {
+		if action != "CreateInstanceWorkflow" {
+			return workflowFailureReply(action, result.Message)
+		}
 		return createWorkflowFailureReply(result.Message)
+	}
+	if action != "CreateInstanceWorkflow" {
+		return raw
 	}
 	ids, _ := result.Data["UHostIds"].([]any)
 	var parts []string
@@ -2222,6 +2231,39 @@ func workflowDirectReply(action, raw string) string {
 		return fmt.Sprintf("创建实例请求已提交。你可以在实例列表查看进度：%s", deployConsoleInstancesURL)
 	}
 	return fmt.Sprintf("创建实例请求已提交，实例 ID：%s。你可以在实例列表查看进度：%s", strings.Join(parts, "、"), deployConsoleInstancesURL)
+}
+
+func workflowFailureReply(action, message string) string {
+	msg := workflowStepPrefixRE.ReplaceAllString(strings.TrimSpace(message), "")
+	msg = strings.TrimSpace(msg)
+	if friendly, ok := friendlyMessageFromText(msg); ok {
+		msg = friendly
+	}
+	if msg == "" {
+		msg = "上游没有返回明确原因，请稍后重试或到控制台确认。"
+	}
+	return fmt.Sprintf("%s没有成功：%s", workflowFriendlyActionName(action), msg)
+}
+
+func workflowFriendlyActionName(action string) string {
+	switch action {
+	case "CreateDiskWorkflow":
+		return "创建数据盘"
+	case "ResizeDiskWorkflow":
+		return "扩容磁盘"
+	case "ResizeInstanceWorkflow":
+		return "改配实例"
+	case "CreateCustomImageWorkflow":
+		return "创建自制镜像"
+	case "ReinstallInstanceWorkflow":
+		return "重装实例"
+	case "CreateCFSWorkflow":
+		return "创建 CFS"
+	case "ResizeCFSWorkflow":
+		return "扩容 CFS"
+	default:
+		return "操作"
+	}
 }
 
 // agentSkillForIntent maps an agent-tier intent to the skill name its dispatch
@@ -2541,19 +2583,16 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		if embedded, exact := matchResourceSelectionReference(userMsg, *pending); embedded.ok && !exact {
 			if plan, ok := monitorPlanFromEmbeddedResourceSelectionQuestion(userMsg); ok {
 				e.pendingResourceSelection = nil
-				e.clearPendingSelection()
 				return e.handleResourceSelectionMonitor(ctx, plan, pending.snapshot, embedded.instance, userMsg, onStep)
 			}
 			if action := inferLifecycleAction(userMsg); action != "" {
 				e.pendingResourceSelection = nil
-				e.clearPendingSelection()
 				plan := lifecyclePlanForSelectedInstance(action, embedded.instance)
 				return e.tryLifecycleActionForSelectedInstance(ctx, embedded.instance, action, userMsg, plan, onStep)
 			}
 			if reply, ok := resourceSelectionInfoReply(userMsg, embedded.instance); ok {
 				e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
 				e.pendingResourceSelection = nil
-				e.clearPendingSelection()
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: reply,
@@ -2562,7 +2601,9 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 			}
 			e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
 			e.pendingResourceSelection = nil
-			e.clearPendingSelection()
+			return "", false
+		}
+		if e.tryContextDecisionResourceSelection(ctx, userMsg, pending) {
 			return "", false
 		}
 		if restoredFromSession || pending.plan.Intent == intent.IntentResourceInfo {
@@ -2582,10 +2623,9 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		return reply, true
 	}
 
-	e.pendingResourceSelection = nil
-	e.clearPendingSelection()
 	if pending.plan.Intent != intent.IntentMonitorQuery && pending.plan.Intent != intent.IntentMonitorHistory {
 		e.recordSelectedInstanceID(match.instance.UHostId, match.instance.Name)
+		e.pendingResourceSelection = nil
 		reply := fmt.Sprintf("已选中 %s（%s）。你接下来想查看监控、重启，还是执行其他操作？",
 			sanitizeResourceSelectionPromptField(match.instance.Name),
 			sanitizeResourceSelectionPromptField(match.instance.UHostId),
@@ -2602,6 +2642,7 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		return reply, true
 	}
 
+	e.pendingResourceSelection = nil
 	return e.handleResourceSelectionMonitor(ctx, pending.plan, pending.snapshot, match.instance, pending.originalUserMsg, onStep)
 }
 
@@ -4550,7 +4591,6 @@ func (e *Engine) recordSelectedInstanceFromEnvelope(env *envelope.Envelope) {
 	}
 	e.sessionState.SelectedInstanceID = s.ID
 	e.sessionState.SelectedInstanceName = s.Name
-	e.clearPendingSelection()
 }
 
 // recordSelectedInstanceID tracks the session's "current instance" from the
@@ -4573,7 +4613,6 @@ func (e *Engine) recordSelectedInstanceID(id, name string) {
 	}
 	e.sessionState.SelectedInstanceID = id
 	e.sessionState.SelectedInstanceName = name
-	e.clearPendingSelection()
 }
 
 // recordLastStockGpuModel tracks the GPU model a stock-availability turn
@@ -4618,7 +4657,9 @@ func (e *Engine) recordLastIntentFromPlan(plan intent.IntentRoute) {
 		e.clearPendingDeployModel()
 	}
 	if !createFamilyIntent(plan.Intent) {
-		e.clearContextFrame()
+		if !(plan.Intent == intent.IntentOperationLifecycle && e.sessionState.ContextFrame.Kind == ContextFrameKindWorkflowTask) {
+			e.clearContextFrame()
+		}
 	}
 }
 
@@ -5041,6 +5082,12 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	if !result.Success {
 		result.Message = security.RedactKnownSecretsInText(result.Message, workflowSecretValues(args))
+		if missing := workflow.MissingSlotsForFailure(action, result.Message); len(missing) > 0 {
+			reply := workflowMissingSlotsClarification(action, missing)
+			e.recordWorkflowMissingSlotsFrame(action, args, missing, reply)
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
+			return finalReplyPrefix + reply
+		}
 		if msg, ok := friendlyMessageFromText(result.Message); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
 			return finalReplyPrefix + msg

@@ -32,7 +32,11 @@ func stepQueryForDisk() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
+			uhostID, _ := wfCtx.Params["UHostId"].(string)
+			if uhostID != "" && !narrowInstanceResultToUHostID(result, uhostID) {
+				return false, "未找到该实例。"
+			}
 			state := extractInstanceState(result)
 			if state == "" {
 				return false, "未找到该实例。"

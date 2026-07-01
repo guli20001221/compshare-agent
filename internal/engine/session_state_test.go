@@ -39,7 +39,7 @@ func TestSessionState_MarshalAlwaysIncludesSchemaVersion(t *testing.T) {
 	s := SessionState{} // zero value, no SchemaVersion set
 	raw, err := json.Marshal(s)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"schema_version":"2.0"}`, string(raw))
+	assert.JSONEq(t, fmt.Sprintf(`{"schema_version":%q}`, SessionStateSchemaCurrent), string(raw))
 }
 
 // ---------------------------------------------------------------------------
@@ -200,8 +200,17 @@ func TestParsePersistedContext_RecognizesKnownSchemaVersion(t *testing.T) {
 	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"2.0","context_frame":{"version":1,"kind":"deploy_model","status":"failed_recoverable"}}}`)
 	pc, err = ParsePersistedContext(raw)
 	require.NoError(t, err)
-	assert.Equal(t, SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, SessionStateSchemaV2, pc.AgentSessionState.SchemaVersion)
 	assert.Equal(t, ContextFrameKindDeploy, pc.AgentSessionState.ContextFrame.Kind)
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"3.0","context_frame":{"version":1,"kind":"workflow_task","workflow":"CreateDiskWorkflow","slots":{"instance_id":"uhost-1"},"missing_slots":["size_gb"]}}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, ContextFrameKindWorkflowTask, pc.AgentSessionState.ContextFrame.Kind)
+	assert.Equal(t, "CreateDiskWorkflow", pc.AgentSessionState.ContextFrame.Workflow)
+	assert.Equal(t, "uhost-1", pc.AgentSessionState.ContextFrame.Slots["instance_id"])
+	assert.Equal(t, []string{"size_gb"}, pc.AgentSessionState.ContextFrame.MissingSlots)
 }
 
 // ---------------------------------------------------------------------------

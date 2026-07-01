@@ -74,6 +74,7 @@ func attachChatTraceObservers(agent *engine.Engine, recorder *chatTraceRecorder)
 	agent.SetOutcomeTraceObserver(recorder.SetOutcomeTrace)
 	agent.SetRendererTraceObserver(recorder.SetRendererTrace)
 	agent.SetHardBlockObserver(recorder.SetEngineHardBlock)
+	agent.SetContextDecisionObserver(recorder.SetContextDecisionTrace)
 	agent.SetRateLimitObserver(recorder.SetRateLimitDecision)
 	agent.SetTokenUsageObserver(recorder.AddTokenUsage)
 }
@@ -89,6 +90,7 @@ func clearChatTraceObservers(agent *engine.Engine) {
 	agent.SetOutcomeTraceObserver(nil)
 	agent.SetRendererTraceObserver(nil)
 	agent.SetHardBlockObserver(nil)
+	agent.SetContextDecisionObserver(nil)
 	agent.SetRateLimitObserver(nil)
 	agent.SetTokenUsageObserver(nil)
 }
@@ -118,6 +120,11 @@ func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
 	if r == nil {
 		return
 	}
+	state.ContextDecision = r.stateTrace.ContextDecision
+	state.ContextDecisionTarget = r.stateTrace.ContextDecisionTarget
+	state.ContextDecisionReason = r.stateTrace.ContextDecisionReason
+	state.ContextDecisionError = r.stateTrace.ContextDecisionError
+	state.ContextDecisionActiveTask = r.stateTrace.ContextDecisionActiveTask
 	r.stateTrace = state
 }
 
@@ -173,6 +180,17 @@ func (r *chatTraceRecorder) SetEngineHardBlock(trace observability.EngineHardBlo
 		return
 	}
 	r.record.EngineHardBlock = trace
+}
+
+func (r *chatTraceRecorder) SetContextDecisionTrace(trace engine.ContextDecisionTrace) {
+	if r == nil {
+		return
+	}
+	r.stateTrace.ContextDecision = trace.Decision
+	r.stateTrace.ContextDecisionTarget = trace.Target
+	r.stateTrace.ContextDecisionReason = trace.Reason
+	r.stateTrace.ContextDecisionError = trace.Error
+	r.stateTrace.ContextDecisionActiveTask = trace.ActiveTaskKind
 }
 
 func (r *chatTraceRecorder) SetRateLimitDecision(decision governance.Decision) {

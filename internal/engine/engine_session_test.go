@@ -276,6 +276,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// leak calls or extracted preferences across users.
 		"createPreferenceExtractor":   true,
 		"contextContinuationResolver": true,
+		"contextDecisionLayer":        true,
 		"createPreferenceThisTurn":    true,
 		"turnTokensConsumed":          true,
 		// Per-turn ReAct loop counters feeding the trace's react_rounds field and
@@ -298,6 +299,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"tokenUsageObserver":                true,
 		"rateLimitObserver":                 true,
 		"hardBlockObserver":                 true,
+		"contextDecisionObserver":           true,
 		// stepSink is the agent-tier saga StepTrace sink (B8), set per-turn via
 		// SetStepSink to THIS session's trace recorder. Per-session by design:
 		// sharing it would route one tenant's step traces into another tenant's
@@ -333,12 +335,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 57, len(perSessionFields); want != got {
+	if want, got := 59, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 73, typ.NumField(); want != got {
+	if want, got := 75, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

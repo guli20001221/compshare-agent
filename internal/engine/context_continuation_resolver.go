@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -65,20 +66,11 @@ func (e *Engine) SetContextContinuationResolver(resolver ContextContinuationReso
 }
 
 func (e *Engine) resolveContextContinuation(ctx context.Context, userMsg string, route intent.Intent, frame ContextFrame) (*ContextContinuationDecision, error) {
-	resolver := e.contextContinuationResolver
-	if resolver == nil {
-		client := e.agentLLMClient
-		if client == nil {
-			client = e.llmClient
-		}
-		resolver = &llmContextContinuationResolver{client: client}
+	decision, err := e.resolveContextDecision(ctx, userMsg, route, frame)
+	if err != nil || decision == nil {
+		return nil, err
 	}
-	return resolver.ResolveContextContinuation(ctx, ContextContinuationInput{
-		UserText:        userMsg,
-		RouterIntent:    route,
-		ContextFrame:    frame,
-		InstanceContext: summarizeInstanceContext(e.sessionState),
-	})
+	return contextDecisionToContinuation(*decision), nil
 }
 
 func buildContextContinuationPrompt(in ContextContinuationInput) []openai.ChatCompletionMessage {
@@ -169,7 +161,27 @@ func summarizeContextFrame(frame ContextFrame) string {
 	}
 	add("kind", frame.Kind)
 	add("status", frame.Status)
+	add("workflow", frame.Workflow)
 	add("original_user_msg", frame.OriginalUserMsg)
+	if len(frame.MissingSlots) > 0 {
+		add("missing_slots", strings.Join(frame.MissingSlots, ","))
+	}
+	if len(frame.Slots) > 0 {
+		keys := make([]string, 0, len(frame.Slots))
+		for k := range frame.Slots {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var pairs []string
+		for _, k := range keys {
+			if v := strings.TrimSpace(frame.Slots[k]); v != "" {
+				pairs = append(pairs, k+"="+v)
+			}
+		}
+		if len(pairs) > 0 {
+			add("slots", strings.Join(pairs, ","))
+		}
+	}
 	add("gpu", frame.GPU)
 	add("image_pref", frame.ImagePref)
 	add("image_source", frame.ImageSource)

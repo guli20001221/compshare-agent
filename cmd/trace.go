@@ -393,6 +393,22 @@ func unifiedCreateEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// contextContinuationEnabledFromEnv gates the global LLM-backed context
+// continuation layer. DEFAULT OFF: when enabled, short follow-ups may resume
+// create/deploy frames and mutating workflow tasks, but final execution still
+// goes through workflow validation and confirmation cards.
+func contextContinuationEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_CONTEXT_CONTINUATION"))
+	switch strings.ToLower(raw) {
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
 // knowledgeQAAgentLoopEnabledFromEnv gates the terminal-knowledge_qa → agent-loop
 // route (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). DEFAULT ON (2026-06-09) — a knowledge_qa
 // turn routes through the agent loop: a forced SearchKnowledge first hop retrieves

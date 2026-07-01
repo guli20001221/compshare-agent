@@ -2,6 +2,8 @@ package workflow
 
 import "fmt"
 
+const resizeInstanceMissingSpecMessage = "变配请求必须至少指定 Cpu、Gpu、Memory 之一"
+
 func ResizeInstanceDef() *Definition {
 	return &Definition{
 		Name:        "ResizeInstanceWorkflow",
@@ -26,7 +28,7 @@ func stepQueryForResize() Step {
 			_, hasGpu := wfCtx.Params["Gpu"]
 			_, hasMem := wfCtx.Params["Memory"]
 			if !hasCpu && !hasGpu && !hasMem {
-				return nil, fmt.Errorf("变配请求必须至少指定 Cpu、Gpu、Memory 之一")
+				return nil, fmt.Errorf(resizeInstanceMissingSpecMessage)
 			}
 			return map[string]any{
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
