@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
@@ -280,8 +281,8 @@ func TestContextDecisionSelectionRecordsPendingInstance(t *testing.T) {
 	if state.SelectedInstanceID != "uhost-first" {
 		t.Fatalf("selected instance = %q, want uhost-first", state.SelectedInstanceID)
 	}
-	if len(state.PendingSelectionItems) != 0 {
-		t.Fatalf("pending selection must be cleared after context decision resolves it")
+	if len(state.PendingSelectionItems) != 2 {
+		t.Fatalf("pending selection should remain available for later ordinal selection, got %d", len(state.PendingSelectionItems))
 	}
 }
 
@@ -424,7 +425,7 @@ func TestRecordPendingSelectionFromResourceHandlerCapsOrdinalAtDisplayCap(t *tes
 	}
 }
 
-func TestRecordSelectedInstanceClearsPendingSelection(t *testing.T) {
+func TestRecordSelectedInstanceKeepsPendingSelectionForLaterOrdinal(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{
 		SchemaVersion:        SessionStateSchemaV1,
@@ -439,8 +440,98 @@ func TestRecordSelectedInstanceClearsPendingSelection(t *testing.T) {
 	e.recordSelectedInstanceID("uhost-new", "new")
 
 	state, _, _ := e.SessionStateSnapshot()
-	if state.PendingSelectionKind != "" || len(state.PendingSelectionItems) != 0 {
-		t.Fatalf("pending selection should be cleared after selecting an instance: %+v", state)
+	if state.PendingSelectionKind != pendingSelectionKindInstance || len(state.PendingSelectionItems) != 1 {
+		t.Fatalf("pending selection should remain available after selecting an instance: %+v", state)
+	}
+}
+
+func TestTryResumeResourceSelectionAllowsSelectingAnotherDisplayedInstance(t *testing.T) {
+	candidates := []entity.InstanceSnapshot{
+		testInstance("uhost-01", "host-1", "Running"),
+		testInstance("uhost-02", "host-2", "Running"),
+	}
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	e.userTurn = 3
+	e.recordPendingInstanceSelection(candidates, intent.IntentResourceInfo, "我有哪些实例", len(candidates), false)
+
+	reply, handled := e.tryResumeResourceSelection(context.Background(), "第1台 GPU 型号是什么", noopStep)
+	if !handled || !strings.Contains(reply, "RTX4090") {
+		t.Fatalf("first ordinal should be answered from the displayed list, handled=%v reply=%q", handled, reply)
+	}
+	if e.sessionState.SelectedInstanceID != "uhost-01" {
+		t.Fatalf("selected = %q, want uhost-01", e.sessionState.SelectedInstanceID)
+	}
+
+	reply, handled = e.tryResumeResourceSelection(context.Background(), "选第2台", noopStep)
+	if !handled {
+		t.Fatalf("second ordinal should still be selectable from the last displayed list")
+	}
+	if e.sessionState.SelectedInstanceID != "uhost-02" {
+		t.Fatalf("selected = %q, want uhost-02; reply=%q", e.sessionState.SelectedInstanceID, reply)
+	}
+	if !strings.Contains(reply, "uhost-02") {
+		t.Fatalf("selection reply should name the newly selected instance, got %q", reply)
+	}
+}
+
+func TestTryResumeResourceSelectionRestoresPersistedSelectionForPlainOrdinalPick(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{
+		SchemaVersion:                  SessionStateSchemaCurrent,
+		PendingSelectionKind:           pendingSelectionKindInstance,
+		PendingSelectionIntent:         string(intent.IntentResourceInfo),
+		PendingSelectionProducedAtUnix: time.Now().Unix(),
+		PendingSelectionTTLSeconds:     pendingSelectionTTLSeconds,
+		PendingSelectionItems: []PendingSelectionItem{
+			{Index: 1, ID: "uhost-01", Name: "host-1", State: "Running"},
+			{Index: 2, ID: "uhost-02", Name: "host-2", State: "Stopped"},
+		},
+	}, 10)
+	e.userTurn = 8
+
+	reply, handled := e.tryResumeResourceSelection(context.Background(), "选第2台", noopStep)
+
+	if !handled {
+		t.Fatalf("persisted ordinal selection should be handled")
+	}
+	if e.sessionState.SelectedInstanceID != "uhost-02" {
+		t.Fatalf("selected = %q, want uhost-02; reply=%q", e.sessionState.SelectedInstanceID, reply)
+	}
+	if !strings.Contains(reply, "uhost-02") {
+		t.Fatalf("selection reply should name the selected instance, got %q", reply)
+	}
+}
+
+func TestClearSessionStateDropsStaleInMemoryPendingSelectionBeforeHydrate(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.pendingResourceSelection = &pendingResourceSelection{
+		createdTurn: 1,
+		candidates:  []entity.InstanceSnapshot{testInstance("uhost-stale", "stale", "Running")},
+		plan:        intent.IntentRoute{Intent: intent.IntentResourceInfo},
+	}
+	e.userTurn = 8
+
+	e.ClearSessionState()
+	e.SetSessionState(SessionState{
+		SchemaVersion:                  SessionStateSchemaCurrent,
+		PendingSelectionKind:           pendingSelectionKindInstance,
+		PendingSelectionIntent:         string(intent.IntentResourceInfo),
+		PendingSelectionProducedAtUnix: time.Now().Unix(),
+		PendingSelectionTTLSeconds:     pendingSelectionTTLSeconds,
+		PendingSelectionItems: []PendingSelectionItem{
+			{Index: 1, ID: "uhost-01", Name: "host-1", State: "Running"},
+			{Index: 2, ID: "uhost-02", Name: "host-2", State: "Stopped"},
+		},
+	}, 11)
+
+	reply, handled := e.tryResumeResourceSelection(context.Background(), "选第2台", noopStep)
+
+	if !handled {
+		t.Fatalf("persisted selection should win after ClearSessionState")
+	}
+	if e.sessionState.SelectedInstanceID != "uhost-02" {
+		t.Fatalf("selected = %q, want uhost-02; reply=%q", e.sessionState.SelectedInstanceID, reply)
 	}
 }
 
@@ -465,8 +556,8 @@ func TestTryResumeResourceSelectionEmbeddedOrdinalBindsAndContinues(t *testing.T
 	if e.sessionState.SelectedInstanceID != "uhost-10" {
 		t.Fatalf("selected = %q, want uhost-10", e.sessionState.SelectedInstanceID)
 	}
-	if e.sessionState.PendingSelectionKind != "" || len(e.sessionState.PendingSelectionItems) != 0 {
-		t.Fatalf("pending selection should be cleared after binding, state=%+v", e.sessionState)
+	if e.sessionState.PendingSelectionKind != pendingSelectionKindInstance || len(e.sessionState.PendingSelectionItems) != intent.DefaultMaxInstancesPerDisplay {
+		t.Fatalf("pending selection should remain available after binding, state=%+v", e.sessionState)
 	}
 }
 
@@ -496,8 +587,8 @@ func TestTryResumeResourceSelectionEmbeddedOrdinalGPUInfoAnswersSelectedInstance
 	if e.sessionState.SelectedInstanceID != "uhost-01" {
 		t.Fatalf("selected = %q, want uhost-01", e.sessionState.SelectedInstanceID)
 	}
-	if e.sessionState.PendingSelectionKind != "" || len(e.sessionState.PendingSelectionItems) != 0 {
-		t.Fatalf("pending selection should be cleared after binding, state=%+v", e.sessionState)
+	if e.sessionState.PendingSelectionKind != pendingSelectionKindInstance || len(e.sessionState.PendingSelectionItems) != len(candidates) {
+		t.Fatalf("pending selection should remain available after binding, state=%+v", e.sessionState)
 	}
 }
 
@@ -518,8 +609,8 @@ func TestTryResumeResourceSelectionEmbeddedOrdinalGPUHowToContinuesRouting(t *te
 	if e.sessionState.SelectedInstanceID != "uhost-01" {
 		t.Fatalf("selected = %q, want uhost-01", e.sessionState.SelectedInstanceID)
 	}
-	if e.sessionState.PendingSelectionKind != "" || len(e.sessionState.PendingSelectionItems) != 0 {
-		t.Fatalf("pending selection should be cleared after binding, state=%+v", e.sessionState)
+	if e.sessionState.PendingSelectionKind != pendingSelectionKindInstance || len(e.sessionState.PendingSelectionItems) != len(candidates) {
+		t.Fatalf("pending selection should remain available after binding, state=%+v", e.sessionState)
 	}
 }
 
@@ -549,8 +640,8 @@ func TestTryResumeResourceSelectionEmbeddedOrdinalTaskRequestsContinueRouting(t 
 			if e.sessionState.SelectedInstanceID != "uhost-01" {
 				t.Fatalf("selected = %q, want uhost-01", e.sessionState.SelectedInstanceID)
 			}
-			if e.sessionState.PendingSelectionKind != "" || len(e.sessionState.PendingSelectionItems) != 0 {
-				t.Fatalf("pending selection should be cleared after binding, state=%+v", e.sessionState)
+			if e.sessionState.PendingSelectionKind != pendingSelectionKindInstance || len(e.sessionState.PendingSelectionItems) != len(candidates) {
+				t.Fatalf("pending selection should remain available after binding, state=%+v", e.sessionState)
 			}
 		})
 	}

@@ -99,6 +99,36 @@ func TestParseContextDecisionSelectEntityKeepsInstanceReferenceOnly(t *testing.T
 	assert.Empty(t, decision.ZonePref)
 }
 
+func TestParseContextDecisionSlotUpdatesAreSanitizedAndMirrored(t *testing.T) {
+	decision, err := parseContextDecision(`{
+		"decision":"continue_task",
+		"target":"create",
+		"gpu_pref":"5090",
+		"zone_pref":"华北二A",
+		"slot_updates":{
+			"target_size_gb":"200G",
+			"zone_id":"5001",
+			"az_group":"cn-wlcb",
+			"password":"secret",
+			"image_source":"community"
+		}
+	}`)
+
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, ContextDecisionContinueTask, decision.Decision)
+	assert.Equal(t, "5090", decision.GPUPref)
+	assert.Equal(t, "华北二A", decision.ZonePref)
+	assert.Equal(t, "community", decision.ImageSource)
+	assert.Equal(t, "5090", decision.SlotUpdates["gpu_type"])
+	assert.Equal(t, "华北二A", decision.SlotUpdates["zone"])
+	assert.Equal(t, "200G", decision.SlotUpdates["target_size_gb"])
+	assert.Equal(t, "community", decision.SlotUpdates["image_source"])
+	assert.NotContains(t, decision.SlotUpdates, "zone_id")
+	assert.NotContains(t, decision.SlotUpdates, "az_group")
+	assert.NotContains(t, decision.SlotUpdates, "password")
+}
+
 func TestContextDecisionToCreateContinuationUsesOnlyContinueTask(t *testing.T) {
 	cont := contextDecisionToContinuation(ContextDecision{
 		Decision:    ContextDecisionContinueTask,
@@ -135,6 +165,7 @@ func TestBuildContextDecisionPromptHasImperativeSafetyRules(t *testing.T) {
 	systemPrompt := msgs[0].Content
 	for _, want := range []string{
 		"只判断是否沿用上下文",
+		"slot_updates",
 		"不要生成最终 API 参数",
 		"写操作必须交给后端确认卡",
 		"不确定时输出 clarify",

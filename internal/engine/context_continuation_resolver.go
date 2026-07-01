@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -160,7 +161,27 @@ func summarizeContextFrame(frame ContextFrame) string {
 	}
 	add("kind", frame.Kind)
 	add("status", frame.Status)
+	add("workflow", frame.Workflow)
 	add("original_user_msg", frame.OriginalUserMsg)
+	if len(frame.MissingSlots) > 0 {
+		add("missing_slots", strings.Join(frame.MissingSlots, ","))
+	}
+	if len(frame.Slots) > 0 {
+		keys := make([]string, 0, len(frame.Slots))
+		for k := range frame.Slots {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var pairs []string
+		for _, k := range keys {
+			if v := strings.TrimSpace(frame.Slots[k]); v != "" {
+				pairs = append(pairs, k+"="+v)
+			}
+		}
+		if len(pairs) > 0 {
+			add("slots", strings.Join(pairs, ","))
+		}
+	}
 	add("gpu", frame.GPU)
 	add("image_pref", frame.ImagePref)
 	add("image_source", frame.ImageSource)

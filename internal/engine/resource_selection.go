@@ -203,7 +203,6 @@ func (e *Engine) tryContextDecisionResourceSelection(ctx context.Context, userMs
 	}
 	e.recordSelectedInstanceID(match.instance.UHostId, match.instance.Name)
 	e.pendingResourceSelection = nil
-	e.clearPendingSelection()
 	e.refreshSystemPrompt()
 	return true
 }

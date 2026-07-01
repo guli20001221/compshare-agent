@@ -73,3 +73,14 @@ func TestWorkflowSecretValuesIncludesEncodedPassword(t *testing.T) {
 	assert.Contains(t, secrets, "SecurePass123")
 	assert.Contains(t, secrets, "U2VjdXJlUGFzczEyMw==")
 }
+
+func TestWorkflowDirectReplyConvertsNonCreateWorkflowFailureToFriendlyText(t *testing.T) {
+	raw := `{"success":false,"message":"步骤「查询实例」执行失败: Pod/容器 Pod 实例不支持普通新建数据盘。"}`
+
+	reply := workflowDirectReply("CreateDiskWorkflow", raw)
+
+	assert.Contains(t, reply, "没有成功")
+	assert.Contains(t, reply, "Pod/容器 Pod 实例不支持普通新建数据盘")
+	assert.NotContains(t, reply, `{"success"`)
+	assert.NotContains(t, reply, "步骤「查询实例」执行失败")
+}

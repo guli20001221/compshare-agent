@@ -28,18 +28,19 @@ type ContextDecisionInput struct {
 }
 
 type ContextDecision struct {
-	Decision     string `json:"decision"`
-	Target       string `json:"target"`
-	GPUPref      string `json:"gpu_pref"`
-	ZonePref     string `json:"zone_pref"`
-	ImagePref    string `json:"image_pref"`
-	ImageSource  string `json:"image_source"`
-	WorkloadPref string `json:"workload_pref"`
-	InstanceRef  string `json:"instance_ref"`
-	Metric       string `json:"metric"`
-	BillingTopic string `json:"billing_topic"`
-	Clarify      string `json:"clarify"`
-	Reason       string `json:"reason"`
+	Decision     string            `json:"decision"`
+	Target       string            `json:"target"`
+	SlotUpdates  map[string]string `json:"slot_updates,omitempty"`
+	GPUPref      string            `json:"gpu_pref"`
+	ZonePref     string            `json:"zone_pref"`
+	ImagePref    string            `json:"image_pref"`
+	ImageSource  string            `json:"image_source"`
+	WorkloadPref string            `json:"workload_pref"`
+	InstanceRef  string            `json:"instance_ref"`
+	Metric       string            `json:"metric"`
+	BillingTopic string            `json:"billing_topic"`
+	Clarify      string            `json:"clarify"`
+	Reason       string            `json:"reason"`
 }
 
 const (
@@ -161,10 +162,11 @@ func buildContextDecisionPrompt(in ContextDecisionInput) []openai.ChatCompletion
 	var sys strings.Builder
 	sys.WriteString("你是优云智算上下文决策层。只判断是否沿用上下文，不回答用户问题。\n")
 	sys.WriteString("只输出 JSON 对象，不要任何额外文字：\n")
-	sys.WriteString(`{"decision":"new_task","target":"","gpu_pref":"","zone_pref":"","image_pref":"","image_source":"","workload_pref":"","instance_ref":"","metric":"","billing_topic":"","clarify":"","reason":""}` + "\n")
+	sys.WriteString(`{"decision":"new_task","target":"","slot_updates":{},"gpu_pref":"","zone_pref":"","image_pref":"","image_source":"","workload_pref":"","instance_ref":"","metric":"","billing_topic":"","clarify":"","reason":""}` + "\n")
 	sys.WriteString("decision 只能是 continue_task、new_task、select_entity、answer_followup、clear_context、clarify。\n")
 	sys.WriteString("规则：\n")
-	sys.WriteString("- 用户短句沿用当前创建/部署任务并修改 GPU、可用区、镜像、工作负载时，输出 continue_task。\n")
+	sys.WriteString("- 用户短句沿用当前待办任务并补充或修改参数时，输出 continue_task。\n")
+	sys.WriteString("- 把补充或修改的参数写入 slot_updates，例如 size_gb、target_size_gb、cpu、memory_gb、gpu_count、gpu_type、zone、image_pref、image_source、workload。\n")
 	sys.WriteString("- 用户引用最近实例列表、已选实例或“它/这台/第 N 台”时，输出 select_entity，并填写 instance_ref。\n")
 	sys.WriteString("- 用户追问最近库存、价格、监控、费用等只读结果时，输出 answer_followup，并填写 target。\n")
 	sys.WriteString("- 用户提出新的价格、建议、概念、教程、知识问题时，输出 new_task。\n")
@@ -210,6 +212,7 @@ func sanitizeContextDecision(in ContextDecision) *ContextDecision {
 	out := ContextDecision{
 		Decision:     normalizeContextDecision(in.Decision),
 		Target:       normalizeContextDecisionTarget(in.Target),
+		SlotUpdates:  normalizeContextSlotUpdates(in.SlotUpdates),
 		GPUPref:      strings.TrimSpace(in.GPUPref),
 		ZonePref:     strings.TrimSpace(in.ZonePref),
 		ImagePref:    strings.TrimSpace(in.ImagePref),
@@ -221,10 +224,12 @@ func sanitizeContextDecision(in ContextDecision) *ContextDecision {
 		Clarify:      strings.TrimSpace(in.Clarify),
 		Reason:       strings.TrimSpace(in.Reason),
 	}
+	mirrorLegacyContextDecisionSlots(&out)
 	switch out.Decision {
 	case ContextDecisionContinueTask:
 		out.InstanceRef = ""
 	case ContextDecisionSelectEntity:
+		out.SlotUpdates = nil
 		out.GPUPref = ""
 		out.ZonePref = ""
 		out.ImagePref = ""
@@ -233,6 +238,7 @@ func sanitizeContextDecision(in ContextDecision) *ContextDecision {
 		out.Metric = ""
 		out.BillingTopic = ""
 	case ContextDecisionAnswerFollowup:
+		out.SlotUpdates = nil
 		out.GPUPref = ""
 		out.ZonePref = ""
 		out.ImagePref = ""
@@ -240,6 +246,7 @@ func sanitizeContextDecision(in ContextDecision) *ContextDecision {
 		out.WorkloadPref = ""
 		out.InstanceRef = ""
 	case ContextDecisionClarify:
+		out.SlotUpdates = nil
 		out.GPUPref = ""
 		out.ZonePref = ""
 		out.ImagePref = ""
@@ -248,6 +255,7 @@ func sanitizeContextDecision(in ContextDecision) *ContextDecision {
 		out.InstanceRef = ""
 	default:
 		out.Target = ""
+		out.SlotUpdates = nil
 		out.GPUPref = ""
 		out.ZonePref = ""
 		out.ImagePref = ""
@@ -261,6 +269,107 @@ func sanitizeContextDecision(in ContextDecision) *ContextDecision {
 		out.Clarify = ""
 	}
 	return &out
+}
+
+func normalizeContextSlotUpdates(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		k := normalizeContextSlotKey(key)
+		v := strings.TrimSpace(value)
+		if k == "" || v == "" {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeContextSlotKey(key string) string {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "instance_id", "uhost_id", "uhostid":
+		return "instance_id"
+	case "disk_id", "udisk_id", "udiskid":
+		return "disk_id"
+	case "size", "size_gb", "disk_size", "disk_size_gb":
+		return "size_gb"
+	case "target_size", "target_size_gb", "disk_space", "diskspace":
+		return "target_size_gb"
+	case "cpu", "cpu_count":
+		return "cpu"
+	case "memory", "memory_gb", "mem":
+		return "memory_gb"
+	case "gpu_count", "gpu_num":
+		return "gpu_count"
+	case "gpu", "gpu_type", "gpu_model", "gpu_pref":
+		return "gpu_type"
+	case "zone", "zone_pref":
+		return "zone"
+	case "image", "image_pref", "image_name":
+		return "image_pref"
+	case "image_source":
+		return "image_source"
+	case "workload", "workload_pref", "model":
+		return "workload"
+	case "stop_time", "time", "schedule_time":
+		return "stop_time"
+	case "name", "instance_name":
+		return "name"
+	default:
+		return ""
+	}
+}
+
+func mirrorLegacyContextDecisionSlots(out *ContextDecision) {
+	if out == nil {
+		return
+	}
+	if out.SlotUpdates == nil {
+		out.SlotUpdates = map[string]string{}
+	}
+	setIf := func(key, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		key = normalizeContextSlotKey(key)
+		if key == "" {
+			return
+		}
+		if _, exists := out.SlotUpdates[key]; !exists {
+			out.SlotUpdates[key] = strings.TrimSpace(value)
+		}
+	}
+	setIf("gpu_type", out.GPUPref)
+	setIf("zone", out.ZonePref)
+	setIf("image_pref", out.ImagePref)
+	setIf("image_source", out.ImageSource)
+	setIf("workload", out.WorkloadPref)
+	if v := out.SlotUpdates["gpu_type"]; out.GPUPref == "" {
+		out.GPUPref = v
+	}
+	if v := out.SlotUpdates["zone"]; out.ZonePref == "" {
+		out.ZonePref = v
+	}
+	if v := out.SlotUpdates["image_pref"]; out.ImagePref == "" {
+		out.ImagePref = v
+	}
+	if v := normalizeCreatePreferenceImageSource(out.SlotUpdates["image_source"]); out.ImageSource == "" {
+		out.ImageSource = v
+		if v != "" {
+			out.SlotUpdates["image_source"] = v
+		}
+	}
+	if v := out.SlotUpdates["workload"]; out.WorkloadPref == "" {
+		out.WorkloadPref = v
+	}
+	if len(out.SlotUpdates) == 0 {
+		out.SlotUpdates = nil
+	}
 }
 
 func normalizeContextDecision(v string) string {

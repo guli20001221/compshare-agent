@@ -16,7 +16,12 @@ const SessionStateSchemaV1 = "1.0"
 // the frame during a rolling deployment.
 const SessionStateSchemaV2 = "2.0"
 
-const SessionStateSchemaCurrent = SessionStateSchemaV2
+// SessionStateSchemaV3 extends ContextFrame from create/deploy-only fields to
+// generic workflow task slots. Older binaries must fail closed rather than
+// dropping pending workflow parameters on write-back.
+const SessionStateSchemaV3 = "3.0"
+
+const SessionStateSchemaCurrent = SessionStateSchemaV3
 
 // ErrUnknownSessionStateSchema is returned by ParsePersistedContext when a
 // row looks like an agent envelope (top-level object with an
@@ -39,6 +44,7 @@ var ErrUnknownSessionStateSchema = errors.New("engine: unknown SessionState sche
 var knownSessionStateSchemaVersions = map[string]struct{}{
 	SessionStateSchemaV1: {},
 	SessionStateSchemaV2: {},
+	SessionStateSchemaV3: {},
 }
 
 // SessionState is the per-session, JSON-serializable, multi-replica-safe
@@ -100,8 +106,9 @@ type SessionState struct {
 }
 
 const (
-	ContextFrameKindCreate = "create_instance"
-	ContextFrameKindDeploy = "deploy_model"
+	ContextFrameKindCreate       = "create_instance"
+	ContextFrameKindDeploy       = "deploy_model"
+	ContextFrameKindWorkflowTask = "workflow_task"
 
 	ContextFrameStatusPending           = "pending"
 	ContextFrameStatusFailedRecoverable = "failed_recoverable"
@@ -110,16 +117,20 @@ const (
 )
 
 // ContextFrame is the single carried task state for short follow-ups like
-// "那华北二A呢". It stores the user's current create/deploy task and the last
-// recoverable failure so the next turn can change one field without re-routing as
-// a generic stock query. It intentionally carries only non-secret preferences and
-// display labels; API-only fields such as zone_id/az_group never belong here.
+// "那华北二A呢" or "200G". It stores the user's current pending task and the
+// last recoverable failure so the next turn can update generic parameters
+// without per-domain continuation branches. It intentionally carries only
+// non-secret preferences and display labels; API-only fields such as
+// zone_id/az_group never belong here.
 type ContextFrame struct {
 	Version          int                `json:"version,omitempty"`
 	Kind             string             `json:"kind,omitempty"`
 	Status           string             `json:"status,omitempty"`
 	Intent           string             `json:"intent,omitempty"`
+	Workflow         string             `json:"workflow,omitempty"`
 	OriginalUserMsg  string             `json:"original_user_msg,omitempty"`
+	Slots            map[string]string  `json:"slots,omitempty"`
+	MissingSlots     []string           `json:"missing_slots,omitempty"`
 	GPU              string             `json:"gpu,omitempty"`
 	ImagePref        string             `json:"image_pref,omitempty"`
 	ImageSource      string             `json:"image_source,omitempty"`
@@ -373,7 +384,10 @@ func contextFrameEmpty(f ContextFrame) bool {
 		f.Kind == "" &&
 		f.Status == "" &&
 		f.Intent == "" &&
+		f.Workflow == "" &&
 		f.OriginalUserMsg == "" &&
+		len(f.Slots) == 0 &&
+		len(f.MissingSlots) == 0 &&
 		f.GPU == "" &&
 		f.ImagePref == "" &&
 		f.ImageSource == "" &&

@@ -284,8 +284,13 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 	case intent.LifecycleActionResize:
 		resizeArgs := resizeWorkflowArgsFromUserText(userMsg)
 		if len(resizeArgs) == 0 {
-			reply := "请告诉我要改到什么配置，例如 4C8G、16C64G，或补充 GPU 数量。"
 			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
+			reply := e.executeWorkflow(ctx, workflowName, args, onStep)
+			if final, ok := isFinalReply(reply); ok {
+				reply = final
+			} else if msg, ok := workflowFailureMessage(reply); ok {
+				reply = msg
+			}
 			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
 			e.recordLastIntentFromPlan(result.Plan)
 			e.messages = append(e.messages, assistantMessage(reply))
@@ -332,8 +337,13 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 	case intent.LifecycleActionCreateDisk:
 		size := createDiskSizeFromUserText(userMsg)
 		if size <= 0 {
-			reply := "创建数据盘需要指定磁盘大小（GB）。请告诉我要加多大的数据盘，例如 30GB。"
 			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
+			reply := e.executeWorkflow(ctx, workflowName, args, onStep)
+			if final, ok := isFinalReply(reply); ok {
+				reply = final
+			} else if msg, ok := workflowFailureMessage(reply); ok {
+				reply = msg
+			}
 			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
 			e.recordLastIntentFromPlan(result.Plan)
 			e.messages = append(e.messages, assistantMessage(reply))
@@ -365,9 +375,6 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 	if action == "" {
 		return "", false
 	}
-	if action == intent.LifecycleActionCreateDisk {
-		return "", false
-	}
 	if selectedID := strings.TrimSpace(e.sessionState.SelectedInstanceID); selectedID != "" && looksLikeSelectedInstanceFollowup(userMsg) {
 		if inst, res := e.RegistrySnapshot().ResolveByID(selectedID); res.Status == entity.ResolveHit && inst != nil {
 			plan := lifecyclePlanForSelectedInstance(action, *inst)
@@ -378,10 +385,6 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 			return "", false
 		}
 		args := map[string]any{"UHostId": selectedID}
-		if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
-			e.messages = append(e.messages, assistantMessage(reply))
-			return reply, true
-		}
 		plan := intent.IntentRoute{
 			SchemaVersion: intent.SchemaVersion,
 			Intent:        intent.IntentOperationLifecycle,
@@ -389,6 +392,22 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 			RequiredTools: []string{"DescribeCompShareInstance"},
 			Retrieval:     intent.Retrieval{Enabled: false},
 			Confidence:    1,
+		}
+		if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
+			if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk {
+				reply = e.executeWorkflow(ctx, workflowName, args, onStep)
+				if final, ok := isFinalReply(reply); ok {
+					reply = final
+				} else if msg, ok := workflowFailureMessage(reply); ok {
+					reply = msg
+				}
+				e.recordSelectedInstanceID(selectedID, e.sessionState.SelectedInstanceName)
+				e.recordLastIntentFromPlan(plan)
+				e.messages = append(e.messages, assistantMessage(reply))
+				return reply, true
+			}
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
 		}
 		reply := e.executeWorkflow(ctx, workflowName, args, onStep)
 		if final, ok := isFinalReply(reply); ok {
@@ -506,6 +525,18 @@ func (e *Engine) tryLifecycleActionForSelectedInstance(ctx context.Context, inst
 	}
 	args := map[string]any{"UHostId": inst.UHostId}
 	if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
+		if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk {
+			reply = e.executeWorkflow(ctx, workflowName, args, onStep)
+			if final, ok := isFinalReply(reply); ok {
+				reply = final
+			} else if msg, ok := workflowFailureMessage(reply); ok {
+				reply = msg
+			}
+			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+			e.recordLastIntentFromPlan(plan)
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
+		}
 		e.messages = append(e.messages, assistantMessage(reply))
 		return reply, true
 	}
