@@ -28,6 +28,7 @@ func TestEnginePreBlock_HumanAgentRuleFires(t *testing.T) {
 		{"contact-human", "帮我联系人工", true, refusal.CategoryHumanAgent, refusal.HumanAgentTransfer},
 		{"find-human", "找人工", true, refusal.CategoryHumanAgent, refusal.HumanAgentTransfer},
 		{"call-human", "叫人工", true, refusal.CategoryHumanAgent, refusal.HumanAgentTransfer},
+		{"transfer-relay", "帮我转接人工", true, refusal.CategoryHumanAgent, refusal.HumanAgentTransfer},
 
 		// Negative: contain "人工" but NOT a transfer request — must fall
 		// through to the normal planner / ReAct path (no QR reply).
@@ -60,12 +61,11 @@ func TestEnginePreBlock_HumanAgentRuleFires(t *testing.T) {
 
 // TestEnginePreBlock_HumanAgentReplyPinsQRURL locks the QR image URL
 // byte-for-byte so an accidental edit to refusal.HumanAgentTransfer (e.g.
-// truncating the file hash, dropping the query string) is caught at test
-// time rather than shipping a broken image to users. Mirrors the
-// byte-stability assertion pattern in TestMonitorHistoryUnsupportedReplyUsesCurrentScopeWording.
+// changing the self-hosted host or object path) is caught at test time
+// rather than shipping a broken image to users. Mirrors the byte-stability
+// assertion pattern in TestMonitorHistoryUnsupportedReplyUsesCurrentScopeWording.
 func TestEnginePreBlock_HumanAgentReplyPinsQRURL(t *testing.T) {
-	assert.Contains(t, refusal.HumanAgentTransfer, "04d6ab56dd842e8ec7e8cb35b7534ada_1780885990352.png")
-	assert.Contains(t, refusal.HumanAgentTransfer, "iopcmd=convert&dst=webp")
+	assert.Contains(t, refusal.HumanAgentTransfer, "ucompshare-picture.cn-wlcb.ufileos.com/QRCode/qrcode.png")
 	assert.True(t, strings.HasPrefix(refusal.HumanAgentTransfer, "好的，已为您转接人工客服"))
 	assert.Contains(t, refusal.HumanAgentTransfer, "![客服二维码](")
 }

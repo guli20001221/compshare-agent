@@ -6083,11 +6083,12 @@ func containsNormalizedKeyword(normalized string, keywords []string) bool {
 // 语义误触发客服二维码回复。命中后由 enginePreBlock 链路返回固定 canned
 // reply（refusal.HumanAgentTransfer，内含二维码 markdown 图片），跳过 LLM。
 var humanAgentTransferKeywords = []string{
-	"转人工",   // 转人工
+	"转人工",  // 转人工
+	"转接人工", // 转接人工（"转人工" 的子串不含 "接"，需单列）
 	"人工客服", // 人工客服
 	"联系人工", // 联系人工
-	"找人工",   // 找人工
-	"叫人工",   // 叫人工
+	"找人工",  // 找人工
+	"叫人工",  // 叫人工
 }
 
 // isHumanAgentTransferRequest 判定用户消息是否为明确的转人工请求。复用
