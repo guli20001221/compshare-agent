@@ -453,7 +453,7 @@ func TestRecordLastIntentFromPlan_NonCreateTurnClearsContextFrame(t *testing.T) 
 	assert.Empty(t, state.ContextFrame.Kind, "unrelated turns must clear stale create/deploy carry")
 }
 
-func TestRecordLastIntentFromPlan_StockTurnKeepsContextFrameForZoneFollowup(t *testing.T) {
+func TestRecordLastIntentFromPlan_StockTurnClearsContextFrameWhenNotContinued(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaCurrent,
@@ -471,7 +471,7 @@ func TestRecordLastIntentFromPlan_StockTurnKeepsContextFrameForZoneFollowup(t *t
 	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentStockAvailability})
 
 	state, _, _ := e.SessionStateSnapshot()
-	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind, "stock/zone follow-ups may still continue a pending create")
+	assert.Empty(t, state.ContextFrame.Kind, "stock questions clear stale create frames unless the continuation resolver handled them first")
 }
 
 // TestSetSessionState_NotHydratedAlwaysFullOverwrite covers the

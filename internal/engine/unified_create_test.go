@@ -20,6 +20,20 @@ func createDispatch() routerDispatchResult {
 	}
 }
 
+type fakeContextContinuationResolver struct {
+	decision *ContextContinuationDecision
+	err      error
+	calls    []ContextContinuationInput
+}
+
+func (f *fakeContextContinuationResolver) ResolveContextContinuation(_ context.Context, in ContextContinuationInput) (*ContextContinuationDecision, error) {
+	f.calls = append(f.calls, in)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.decision, nil
+}
+
 func TestUnifiedCreateFlag_DefaultOn(t *testing.T) {
 	SetUnifiedCreateEnabled(true)
 	assert.True(t, UnifiedCreateEnabled())
@@ -414,6 +428,10 @@ func TestResumeCreateContextFrame_ZoneFollowupContinuesPriorDeploy(t *testing.T)
 	}}
 	eng := NewWithDeps(client, exec, okConfirm)
 	eng.zoneCatalog = zones.NewCatalog(0)
+	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{decision: &ContextContinuationDecision{
+		Decision: ContextContinuationContinue,
+		ZonePref: "华北二A",
+	}})
 	eng.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaCurrent,
 		ContextFrame: ContextFrame{
@@ -458,6 +476,9 @@ func TestResumeCreateContextFrame_NoFrameDoesNotInventCreate(t *testing.T) {
 
 func TestResumeCreateContextFrame_PricingPlanDoesNotResumeCreate(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true}), okConfirm)
+	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{decision: &ContextContinuationDecision{
+		Decision: ContextContinuationNew,
+	}})
 	eng.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaCurrent,
 		ContextFrame: ContextFrame{
@@ -477,6 +498,170 @@ func TestResumeCreateContextFrame_PricingPlanDoesNotResumeCreate(t *testing.T) {
 
 	assert.False(t, handled)
 	assert.Empty(t, reply)
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind, "new standalone questions clear the stale create frame")
+}
+
+func TestResumeCreateContextFrame_GpuFollowupContinuesPriorDeploy(t *testing.T) {
+	SetUnifiedCreateEnabled(true)
+	SetCreatePreferenceExtractionEnabled(true)
+	t.Cleanup(func() {
+		SetUnifiedCreateEnabled(true)
+		SetCreatePreferenceExtractionEnabled(true)
+	})
+
+	var createArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{}}, nil
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{map[string]any{
+				"CompShareImageId":  "img-pt",
+				"Name":              "PyTorch",
+				"ImageType":         "App",
+				"Status":            "Available",
+				"SupportedGpuTypes": []any{"5090"},
+			}}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{
+				availCardZ("4090", "cn-bj2-03", 24),
+				availCardZ("5090", "cn-bj2-03", 32),
+			}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "RegionId": float64(3003), "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": false},
+			}}, nil
+		case "CheckCompShareResourceCapacity":
+			return map[string]any{"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			}}, nil
+		case "GetCompShareInstanceUserPrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.23}}}, nil
+		case "CreateCompShareInstance":
+			createArgs = args
+			return map[string]any{"UHostIds": []any{"uhost-resume-gpu"}}, nil
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{"UHostId": "uhost-resume-gpu", "State": "Running", "GpuType": "5090"}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	client := &mockLLM{responses: []llm.ChatResponse{
+		{Content: deploySearchJSON},
+		{Content: `{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-7B","match_kind":"base","quantization":""}`},
+	}}
+	eng := NewWithDeps(client, exec, okConfirm)
+	eng.zoneCatalog = zones.NewCatalog(0)
+	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{decision: &ContextContinuationDecision{
+		Decision: ContextContinuationContinue,
+		GPUPref:  "5090",
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:         1,
+			Kind:            ContextFrameKindDeploy,
+			Status:          ContextFrameStatusFailedRecoverable,
+			Intent:          string(intent.IntentDeployModel),
+			OriginalUserMsg: "在华北一C用最新pytorch给我开一台4090",
+			GPU:             "4090",
+			ImagePref:       "PyTorch",
+			ImageSource:     "platform",
+			Zone:            "cn-bj2-03",
+			ZoneLabel:       "华北一C",
+			FailureReason:   "4090 暂无库存",
+			ProducedAtUnix:  time.Now().Unix(),
+			TTLSeconds:      ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentStockAvailability}}}
+
+	reply, handled := eng.tryResumeCreateContextFrame(context.Background(), dispatch, "那5090呢", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "uhost-resume-gpu")
+	require.NotNil(t, createArgs)
+	assert.Equal(t, "5090", createArgs["GpuType"], "GPU follow-up must use the live catalog match, not the stale frame GPU")
+	assert.Equal(t, "cn-bj2-03", createArgs["Zone"], "GPU follow-up should keep the previous explicit zone when no new zone is provided")
+}
+
+func TestResumeCreateContextFrame_ImageSourceFollowupContinuesPriorDeploy(t *testing.T) {
+	SetUnifiedCreateEnabled(true)
+	SetCreatePreferenceExtractionEnabled(true)
+	t.Cleanup(func() {
+		SetUnifiedCreateEnabled(true)
+		SetCreatePreferenceExtractionEnabled(true)
+	})
+
+	base := newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}, communityImageID: "comm-img-9"})
+	var createArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "CreateCompShareInstance" {
+			createArgs = args
+		}
+		return base.fn(action, args)
+	}}
+	client := &mockLLM{responses: []llm.ChatResponse{
+		{Content: deploySearchJSON},
+		{Content: `{"image_source":"community","image_name":"LiveTalking","model_name":"","match_kind":"base","quantization":""}`},
+	}}
+	eng := NewWithDeps(client, exec, okConfirm)
+	eng.zoneCatalog = zones.NewCatalog(0)
+	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{decision: &ContextContinuationDecision{
+		Decision:    ContextContinuationContinue,
+		ImageSource: "community",
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindDeploy,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Intent:         string(intent.IntentDeployModel),
+			GPU:            "4090",
+			ImagePref:      "PyTorch",
+			ImageSource:    "platform",
+			Zone:           "cn-wlcb-01",
+			ZoneLabel:      "华北二A",
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentKnowledgeQA}}}
+
+	reply, handled := eng.tryResumeCreateContextFrame(context.Background(), dispatch, "换成社区镜像呢", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "uhost-deploy-1")
+	require.NotNil(t, createArgs)
+	assert.Equal(t, "comm-img-9", createArgs["CompShareImageId"])
+}
+
+func TestResumeCreateContextFrame_ClearDecisionDropsFrame(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true}), okConfirm)
+	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{decision: &ContextContinuationDecision{
+		Decision: ContextContinuationClear,
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindDeploy,
+			Status:         ContextFrameStatusFailedRecoverable,
+			GPU:            "4090",
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentPricingQuery}}}
+
+	reply, handled := eng.tryResumeCreateContextFrame(context.Background(), dispatch, "算了，4090多少钱", noopStep)
+
+	assert.False(t, handled)
+	assert.Empty(t, reply)
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind)
 }
 
 func sawStepAction(events []StepEvent, action string) bool {

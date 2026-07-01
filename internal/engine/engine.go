@@ -229,6 +229,7 @@ type Engine struct {
 	intentRouteIntents          map[intent.Intent]struct{}
 	knowledgeRetriever          KnowledgeRetriever
 	createPreferenceExtractor   CreatePreferenceExtractor
+	contextContinuationResolver ContextContinuationResolver
 	groundedRenderer            grounded.Renderer
 	groundedRendererModel       string
 	// fastTemplate, when true, makes fast-tier catalog envelopes
@@ -1821,10 +1822,8 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.tryCFSWorkflowDispatch(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
-	if canResumeCreateContextFrameFromIntent(dispatch.result.Plan.Intent) {
-		if reply, handled := e.tryResumeCreateContextFrame(ctx, dispatch, userMsg, onStep); handled {
-			return reply, true
-		}
+	if reply, handled := e.tryResumeCreateContextFrame(ctx, dispatch, userMsg, onStep); handled {
+		return reply, true
 	}
 	if reply, handled := e.tryOperationLifecycleDispatch(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
@@ -4618,7 +4617,7 @@ func (e *Engine) recordLastIntentFromPlan(plan intent.IntentRoute) {
 	if !createFamilyIntent(plan.Intent) {
 		e.clearPendingDeployModel()
 	}
-	if !createFamilyIntent(plan.Intent) && plan.Intent != intent.IntentStockAvailability {
+	if !createFamilyIntent(plan.Intent) {
 		e.clearContextFrame()
 	}
 }
@@ -4638,10 +4637,6 @@ func (e *Engine) clearPendingDeployModelForNonCreateFamily(i intent.Intent) {
 
 func createFamilyIntent(i intent.Intent) bool {
 	return i == intent.IntentDeployModel || i == intent.IntentCreateInstance
-}
-
-func canResumeCreateContextFrameFromIntent(i intent.Intent) bool {
-	return i == intent.IntentStockAvailability
 }
 
 func createFamilyIntentString(s string) bool {

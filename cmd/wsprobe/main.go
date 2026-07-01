@@ -129,6 +129,7 @@ func runClient(o clientOpts) {
 	fmt.Printf("→ sent SendCSAgentChat: %q\n\n", o.message)
 
 	var tokens strings.Builder
+	activeSession := o.session
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
@@ -143,7 +144,10 @@ func runClient(o clientOpts) {
 		event, _ := f["event"].(string)
 		switch event {
 		case "meta":
-			fmt.Printf("● meta        RequestId=%v MessageId=%v\n", f["RequestId"], f["MessageId"])
+			if sid, _ := f["SessionId"].(string); sid != "" {
+				activeSession = sid
+			}
+			fmt.Printf("● meta        RequestId=%v SessionId=%v MessageId=%v\n", f["RequestId"], activeSession, f["MessageId"])
 		case "step":
 			fmt.Printf("● step        [%v] %v %v\n", f["Index"], f["Type"], f["Action"])
 		case "token":
@@ -156,7 +160,7 @@ func runClient(o clientOpts) {
 				cid, _ := f["ConfirmationId"].(string)
 				reply := map[string]any{
 					"Action":         "ConfirmCSAgentAction",
-					"SessionId":      o.session,
+					"SessionId":      activeSession,
 					"ConfirmationId": cid,
 					"Confirmed":      o.confirm == "yes",
 				}

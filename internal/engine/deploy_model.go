@@ -247,7 +247,11 @@ func (e *Engine) runDeployModel(ctx context.Context, dispatch routerDispatchResu
 	}
 	if !sagaResult.Success {
 		reply := e.deployStopReplyWithAlternatives(ctx, sagaResult, plan)
-		e.recordDeployContextFrameFromPlan(userMsg, plan, reply)
+		if createAttemptShouldClearContextFrame(reply) {
+			e.clearCreateFamilyCarry()
+		} else {
+			e.recordDeployContextFrameFromPlan(userMsg, plan, reply)
+		}
 		return e.deployReply(result, dispatch.latency, reply)
 	}
 
@@ -276,7 +280,7 @@ func (e *Engine) runDeployModel(ctx context.Context, dispatch routerDispatchResu
 	// Read-only, success-path only; degrades to no-guidance on any error.
 	usage := e.fetchImageUsage(ctx, plan)
 
-	e.clearContextFrame()
+	e.clearCreateFamilyCarry()
 	return e.deployReply(result, dispatch.latency, buildDeployReply(plan, uHostId, host, state, usage))
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
@@ -186,6 +187,35 @@ func TestTryDeployModel_HappyPath_AlreadyRunning(t *testing.T) {
 	// create step (OriginWorkflowInternal) must NOT re-prompt.
 	assert.Equal(t, 1, confirmCalls, "exactly one confirm (the StepConfirm)")
 	assert.NotEmpty(t, *events, "user-facing progress steps should be emitted")
+}
+
+func TestTryDeployModel_ConfirmCancelClearsCreateFamilyCarry(t *testing.T) {
+	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
+	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return false })
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindDeploy,
+			Status:         ContextFrameStatusFailedRecoverable,
+			GPU:            "4090",
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+		LastDeployWorkload: "Qwen2.5-7B",
+		LastDeployZone:     "cn-bj2-03",
+		PendingDeployModel: "DeepSeek R1",
+	}, 1)
+
+	reply, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "帮我部署 Qwen2.5-7B", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "本次创建未执行")
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind)
+	assert.Empty(t, state.LastDeployWorkload)
+	assert.Empty(t, state.LastDeployZone)
+	assert.Empty(t, state.PendingDeployModel)
 }
 
 // TestTryDeployModel_SurfacesUsageGuidance proves the handler fetches the deployed

@@ -53,6 +53,16 @@ func (e *Engine) clearContextFrame() {
 	e.sessionState.ContextFrame = ContextFrame{}
 }
 
+func (e *Engine) clearCreateFamilyCarry() {
+	if !e.sessionStateHydrated {
+		return
+	}
+	e.sessionState.ContextFrame = ContextFrame{}
+	e.sessionState.PendingDeployModel = ""
+	e.sessionState.LastDeployWorkload = ""
+	e.sessionState.LastDeployZone = ""
+}
+
 func (e *Engine) setContextFrame(frame ContextFrame) {
 	if !e.sessionStateHydrated {
 		return
