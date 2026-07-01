@@ -249,8 +249,11 @@ type Engine struct {
 	// the synthesis against exactly the evidence the agent was shown. Reset per
 	// turn. Inert unless the COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate exposed the
 	// tool (flag off => tool never visible => never runs => both stay zero).
-	searchKnowledgeRanThisTurn  bool
-	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
+	searchKnowledgeRanThisTurn           bool
+	searchKnowledgeHitsThisTurn          []knowledge.RetrievalHit
+	searchKnowledgeCitedChunkIDsThisTurn []string
+	searchKnowledgeCitedRefsThisTurn     []string
+	searchKnowledgeReferencesThisTurn    []observability.RetrievalReference
 	// searchKnowledgeCallsThisTurn counts SearchKnowledge invocations this turn so
 	// the ReAct loop can withdraw the tool once it hits maxSearchKnowledgeCallsPerTurn,
 	// bounding the corpus-gap re-search thrash that otherwise exhausts the token
@@ -1230,6 +1233,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.lastPlannerActionThisTurn = ""
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
+	e.searchKnowledgeCitedChunkIDsThisTurn = nil
+	e.searchKnowledgeCitedRefsThisTurn = nil
+	e.searchKnowledgeReferencesThisTurn = nil
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.knowledgeQAAgentLoopThisTurn = false
@@ -3934,6 +3940,7 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 	}
 	report := knowledge.ValidateGroundedCitations(content, e.searchKnowledgeLedgerThisTurn)
 	if report.Grounded() {
+		e.recordSearchKnowledgeCitations(content, e.searchKnowledgeHitsThisTurn)
 		return knowledge.StripCiteMarkers(content)
 	}
 	// Not properly cited. The ONLY cite-exempt answer is the explicit canned
@@ -3982,6 +3989,7 @@ func (e *Engine) retrySearchKnowledgeCitation(ctx context.Context) (string, bool
 	if !knowledge.ValidateGroundedCitations(retry, e.searchKnowledgeLedgerThisTurn).Grounded() {
 		return "", false
 	}
+	e.recordSearchKnowledgeCitations(retry, e.searchKnowledgeHitsThisTurn)
 	return knowledge.StripCiteMarkers(retry), true
 }
 

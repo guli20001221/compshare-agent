@@ -13,10 +13,10 @@ func TestMergeRetrievalTrace(t *testing.T) {
 	zero := RetrievalTrace{}
 
 	cases := []struct {
-		name           string
-		current, next  RetrievalTrace
-		wantHits       int
-		wantKBVersion  string
+		name          string
+		current, next RetrievalTrace
+		wantHits      int
+		wantKBVersion string
 	}{
 		{"first retrieval ever (zero -> hits) takes incoming", zero, hits, 3, "kb.v1"},
 		{"first retrieval ever (zero -> empty) takes incoming", zero, empty, 0, ""},
@@ -34,5 +34,42 @@ func TestMergeRetrievalTrace(t *testing.T) {
 				t.Fatalf("KBVersion = %q, want %q", got.KBVersion, tc.wantKBVersion)
 			}
 		})
+	}
+}
+
+func TestMergeRetrievalTrace_MergesCitationOnlyTraceIntoHits(t *testing.T) {
+	current := RetrievalTrace{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Hits:      2,
+		HitItems: []RetrievalHit{
+			{ChunkID: "chunk-a"},
+			{ChunkID: "chunk-b"},
+		},
+	}
+	next := RetrievalTrace{
+		CitedChunkIDs: []string{"chunk-b"},
+		CitedRefs:     []string{"2"},
+		References: []RetrievalReference{
+			{RefID: "1", ChunkID: "chunk-a"},
+			{RefID: "2", ChunkID: "chunk-b"},
+		},
+	}
+
+	got := MergeRetrievalTrace(current, next)
+	if got.Hits != 2 {
+		t.Fatalf("Hits = %d, want 2", got.Hits)
+	}
+	if got.KBVersion != "kb.v1" {
+		t.Fatalf("KBVersion = %q, want kb.v1", got.KBVersion)
+	}
+	if len(got.CitedChunkIDs) != 1 || got.CitedChunkIDs[0] != "chunk-b" {
+		t.Fatalf("CitedChunkIDs = %#v, want [chunk-b]", got.CitedChunkIDs)
+	}
+	if len(got.CitedRefs) != 1 || got.CitedRefs[0] != "2" {
+		t.Fatalf("CitedRefs = %#v, want [2]", got.CitedRefs)
+	}
+	if len(got.References) != 2 || got.References[1].ChunkID != "chunk-b" {
+		t.Fatalf("References = %#v, want ref_id/chunk_id mapping for chunk-a and chunk-b", got.References)
 	}
 }

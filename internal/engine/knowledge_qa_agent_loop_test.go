@@ -69,6 +69,10 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 	eng.InitWithContext("test user")
 	var plannerTraces []observability.RouterTrace
 	eng.SetPlannerTraceObserver(func(tr observability.RouterTrace) { plannerTraces = append(plannerTraces, tr) })
+	var mergedRetrieval observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		mergedRetrieval = observability.MergeRetrievalTrace(mergedRetrieval, trace)
+	})
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 	eng.SetKnowledgeRetriever(retriever)
 
@@ -101,6 +105,60 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 	assert.Contains(t, reply, "停止的按量实例的磁盘仍会计费")
 	assert.NotContains(t, reply, "[[", "cite markers must be stripped for display")
 	assert.NotEqual(t, ragNoEvidenceReply, reply, "a properly cited answer must NOT be refused")
+	assert.Equal(t, []string{"faq-billing-001"}, mergedRetrieval.CitedChunkIDs)
+	assert.Equal(t, []string{"1"}, mergedRetrieval.CitedRefs)
+	require.Len(t, mergedRetrieval.References, 1)
+	assert.Equal(t, "1", mergedRetrieval.References[0].RefID)
+	assert.Equal(t, "faq-billing-001", mergedRetrieval.References[0].ChunkID)
+}
+
+func TestKnowledgeQAAgentLoop_DisciplinedSynthesisMergesCitationsIntoRetrievalTrace(t *testing.T) {
+	SetKnowledgeQAAgentLoopEnabled(true)
+	defer SetKnowledgeQAAgentLoopEnabled(false)
+	SetDisciplinedKnowledgeQASynthesisEnabled(true)
+	defer SetDisciplinedKnowledgeQASynthesisEnabled(false)
+	tools.SetAgenticSearchKnowledgeEnabled(true)
+	defer tools.SetAgenticSearchKnowledgeEnabled(false)
+	SetGroundedAnswerValidatorEnabled(false)
+
+	chunk := knowledgeQAAgentLoopBillingChunk()
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Hits:      []knowledge.KBChunk{chunk},
+		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{{
+			ID:       "call-sk",
+			Type:     openai.ToolTypeFunction,
+			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"why do stopped instances still bill"}`},
+		}}},
+		{Content: "free loop answer should be replaced by disciplined synthesis"},
+		{Content: "停止的按量实例的磁盘仍会计费 [1]。"},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+	var mergedRetrieval observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		mergedRetrieval = observability.MergeRetrievalTrace(mergedRetrieval, trace)
+	})
+
+	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
+	require.NoError(t, err)
+
+	assert.Equal(t, "停止的按量实例的磁盘仍会计费。", reply)
+	assert.Equal(t, 1, mergedRetrieval.Hits)
+	require.Len(t, mergedRetrieval.HitItems, 1)
+	assert.Equal(t, "faq-billing-001", mergedRetrieval.HitItems[0].ChunkID)
+	assert.Equal(t, []string{"faq-billing-001"}, mergedRetrieval.CitedChunkIDs)
+	assert.Equal(t, []string{"1"}, mergedRetrieval.CitedRefs)
+	require.Len(t, mergedRetrieval.References, 1)
+	assert.Equal(t, "1", mergedRetrieval.References[0].RefID)
+	assert.Equal(t, "faq-billing-001", mergedRetrieval.References[0].ChunkID)
 }
 
 // TestKnowledgeQAAgentLoop_FlagOff_TerminalRouteUnchanged proves the default-off
@@ -246,13 +304,17 @@ func TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{{ID: "c1", Type: openai.ToolTypeFunction,
 			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"billing"}`}}}},
-		{Content: "停止的按量实例的磁盘仍会计费。"},                       // uncited -> guard would refuse
+		{Content: "停止的按量实例的磁盘仍会计费。"},                     // uncited -> guard would refuse
 		{Content: "停止的按量实例的磁盘仍会计费 [[faq-billing-001]]。"}, // retry cites -> recovered
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 	eng.SetKnowledgeRetriever(retriever)
+	var mergedRetrieval observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		mergedRetrieval = observability.MergeRetrievalTrace(mergedRetrieval, trace)
+	})
 
 	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
 	require.NoError(t, err)
@@ -260,6 +322,10 @@ func TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis(t *testing.T) {
 	assert.NotContains(t, reply, "[[", "recovered answer must have markers stripped")
 	assert.NotEqual(t, ragNoEvidenceReply, reply, "a retry that cites must NOT leave a refusal")
 	assert.GreaterOrEqual(t, len(mock.calls), 3, "expected tool-call + uncited synthesis + cite-retry")
+	assert.Equal(t, []string{"faq-billing-001"}, mergedRetrieval.CitedChunkIDs)
+	assert.Equal(t, []string{"1"}, mergedRetrieval.CitedRefs)
+	require.Len(t, mergedRetrieval.References, 1)
+	assert.Equal(t, "faq-billing-001", mergedRetrieval.References[0].ChunkID)
 }
 
 // TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal proves the retry is
@@ -397,7 +463,7 @@ func TestKnowledgeQAAgentLoop_SearchCapWithdrawsToolAndAnswers(t *testing.T) {
 	finalAnswer := "暂无该主题的专项文档，建议查阅优云控制台或官网帮助。"
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		skCall, skCall, skCall, skCall, skCall, // 5 = maxSearchKnowledgeCallsPerTurn
-		{Content: finalAnswer},                 // round after the cap: tool withdrawn → final reply
+		{Content: finalAnswer}, // round after the cap: tool withdrawn → final reply
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")

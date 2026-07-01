@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/compshare-agent/internal/knowledge"
+	"github.com/compshare-agent/internal/observability"
 )
 
 // disciplinedKnowledgeQASynthesisOn gates the disciplined-synthesis recovery for an
@@ -77,6 +79,7 @@ func (e *Engine) synthesizeKnowledgeQAFromLedger(ctx context.Context, userMsg st
 	if strings.TrimSpace(reply) == "" || isKnowledgeRefusal(reply) {
 		return "", false
 	}
+	e.recordSearchKnowledgeCitations(reply, e.searchKnowledgeHitsThisTurn)
 	return stripCitationMarkers(reply), true
 }
 
@@ -98,4 +101,108 @@ func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string)
 		return "", false
 	}
 	return e.synthesizeKnowledgeQAFromLedger(ctx, userMsg)
+}
+
+func (e *Engine) recordSearchKnowledgeCitations(answer string, hits []knowledge.RetrievalHit) {
+	references := retrievalReferencesFromHits(hits)
+	citationReport := knowledge.ValidateGroundedCitations(answer, e.searchKnowledgeLedgerThisTurn)
+	citedChunkIDs := citationReport.CitedChunkIDs
+	if len(citedChunkIDs) == 0 {
+		citedChunkIDs = extractCitedChunkIDs(answer, hits)
+	}
+	citedRefs := citedRefsFromChunkIDs(citedChunkIDs, references)
+	if len(citedRefs) == 0 {
+		citedRefs = extractCitedRefs(answer, len(hits))
+	}
+
+	e.searchKnowledgeReferencesThisTurn = references
+	e.searchKnowledgeCitedRefsThisTurn = citedRefs
+	e.searchKnowledgeCitedChunkIDsThisTurn = citedChunkIDs
+
+	if len(references) == 0 && len(citedRefs) == 0 && len(citedChunkIDs) == 0 {
+		return
+	}
+	e.emitRetrievalTrace(observability.RetrievalTrace{
+		References:    references,
+		CitedRefs:     citedRefs,
+		CitedChunkIDs: citedChunkIDs,
+	})
+}
+
+func retrievalReferencesFromHits(hits []knowledge.RetrievalHit) []observability.RetrievalReference {
+	refs := make([]observability.RetrievalReference, 0, len(hits))
+	for i, hit := range hits {
+		chunkID := strings.TrimSpace(hit.Chunk.ChunkID)
+		if chunkID == "" {
+			continue
+		}
+		sourceURL := strings.TrimSpace(hit.Chunk.SourceURL)
+		if sourceURL == "" && hit.Chunk.SurfaceURL != nil {
+			sourceURL = strings.TrimSpace(*hit.Chunk.SurfaceURL)
+		}
+		refs = append(refs, observability.RetrievalReference{
+			RefID:      strconv.Itoa(i + 1),
+			ChunkID:    chunkID,
+			Title:      strings.TrimSpace(hit.Chunk.Title),
+			SourceURL:  sourceURL,
+			Score:      hit.Score,
+			SourceArea: strings.TrimSpace(hit.Chunk.ProductArea),
+		})
+	}
+	return refs
+}
+
+func citedRefsFromChunkIDs(chunkIDs []string, references []observability.RetrievalReference) []string {
+	if len(chunkIDs) == 0 || len(references) == 0 {
+		return nil
+	}
+	refByChunkID := make(map[string]string, len(references))
+	for _, ref := range references {
+		chunkID := strings.TrimSpace(ref.ChunkID)
+		if chunkID == "" || ref.RefID == "" {
+			continue
+		}
+		if _, exists := refByChunkID[chunkID]; !exists {
+			refByChunkID[chunkID] = ref.RefID
+		}
+	}
+	seen := make(map[string]bool, len(chunkIDs))
+	out := make([]string, 0, len(chunkIDs))
+	for _, chunkID := range chunkIDs {
+		refID := refByChunkID[strings.TrimSpace(chunkID)]
+		if refID == "" || seen[refID] {
+			continue
+		}
+		seen[refID] = true
+		out = append(out, refID)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func extractCitedRefs(answer string, maxRef int) []string {
+	matches := numberedCitationRE.FindAllString(answer, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[int]bool, len(matches))
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		raw := strings.TrimSuffix(strings.TrimPrefix(m, "["), "]")
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 || n > maxRef {
+			continue
+		}
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, strconv.Itoa(n))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

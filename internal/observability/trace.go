@@ -520,9 +520,59 @@ func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 // first-ever) wins. Terminal RAG retrieves once, so its trace is unchanged.
 func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
 	if current.Enabled && current.Hits > 0 && (!next.Enabled || next.Hits == 0) {
+		current.CitedChunkIDs = mergeStringList(current.CitedChunkIDs, next.CitedChunkIDs)
+		current.CitedRefs = mergeStringList(current.CitedRefs, next.CitedRefs)
+		if len(next.References) > 0 {
+			current.References = mergeRetrievalReferences(current.References, next.References)
+		}
 		return current
 	}
 	return next
+}
+
+func mergeStringList(current, next []string) []string {
+	if len(next) == 0 {
+		return current
+	}
+	out := append([]string(nil), current...)
+	seen := make(map[string]struct{}, len(out)+len(next))
+	for _, v := range out {
+		if v != "" {
+			seen[v] = struct{}{}
+		}
+	}
+	for _, v := range next {
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+func mergeRetrievalReferences(current, next []RetrievalReference) []RetrievalReference {
+	out := append([]RetrievalReference(nil), current...)
+	seen := make(map[string]struct{}, len(out)+len(next))
+	for _, ref := range out {
+		if ref.RefID != "" {
+			seen[ref.RefID] = struct{}{}
+		}
+	}
+	for _, ref := range next {
+		if ref.RefID == "" {
+			continue
+		}
+		if _, ok := seen[ref.RefID]; ok {
+			continue
+		}
+		seen[ref.RefID] = struct{}{}
+		out = append(out, ref)
+	}
+	return out
 }
 
 type RateLimitTrace struct {
@@ -536,14 +586,14 @@ type RateLimitTrace struct {
 }
 
 type RetrievalTrace struct {
-	Enabled               bool           `json:"enabled"`
-	KBVersion             string         `json:"kb_version"`
-	QueryRaw              string         `json:"query_raw,omitempty"`
-	QueryNormalized       string         `json:"query_normalized,omitempty"`
-	QueryExpansions       []string       `json:"query_expansions,omitempty"`
-	Hits                  int            `json:"hits"`
-	HitItems              []RetrievalHit `json:"hit_items,omitempty"`
-	RefusedReason string `json:"refused_reason,omitempty"`
+	Enabled         bool           `json:"enabled"`
+	KBVersion       string         `json:"kb_version"`
+	QueryRaw        string         `json:"query_raw,omitempty"`
+	QueryNormalized string         `json:"query_normalized,omitempty"`
+	QueryExpansions []string       `json:"query_expansions,omitempty"`
+	Hits            int            `json:"hits"`
+	HitItems        []RetrievalHit `json:"hit_items,omitempty"`
+	RefusedReason   string         `json:"refused_reason,omitempty"`
 	// RefusalType classifies a RAG refusal into the #5 four-state taxonomy
 	// (corpus_gap / all_below_floor / synthesis_refused / wrong_domain). Derived
 	// at Finish from RefusedReason + FloorDroppedAll (DeriveRefusalType); empty
@@ -612,7 +662,18 @@ type RetrievalTrace struct {
 	// retrieval. Citation markers are stripped from the user-facing reply
 	// so the user only sees prose; this field is the only place [n] → chunk
 	// mapping survives.
-	CitedChunkIDs []string `json:"cited_chunk_ids,omitempty"`
+	CitedChunkIDs []string             `json:"cited_chunk_ids,omitempty"`
+	References    []RetrievalReference `json:"references,omitempty"`
+	CitedRefs     []string             `json:"cited_refs,omitempty"`
+}
+
+type RetrievalReference struct {
+	RefID      string  `json:"ref_id"`
+	ChunkID    string  `json:"chunk_id"`
+	Title      string  `json:"title,omitempty"`
+	SourceURL  string  `json:"source_url,omitempty"`
+	Score      float64 `json:"score,omitempty"`
+	SourceArea string  `json:"source_area,omitempty"`
 }
 
 type RetrievalHit struct {
@@ -962,7 +1023,9 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.RerankerMode != "" ||
 		trace.RerankerLatencyMS != nil ||
 		trace.RerankerFallbackReason != "" ||
-		len(trace.CitedChunkIDs) > 0
+		len(trace.CitedChunkIDs) > 0 ||
+		len(trace.References) > 0 ||
+		len(trace.CitedRefs) > 0
 }
 
 func traceDiagnosisObserved(trace DiagnosisTrace) bool {

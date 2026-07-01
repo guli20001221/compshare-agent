@@ -39,6 +39,46 @@ func TestSynthesizeKnowledgeQAFromLedger_CitedAnswerStripped(t *testing.T) {
 	assert.NotContains(t, got, "[1]", "the [n] marker is stripped for display")
 }
 
+func TestSynthesizeKnowledgeQAFromLedger_RecordsCitedChunkIDs(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
+		{Content: "可以把 max-model-len 调小来降低显存占用 [1]。"},
+	}}, &mockExecutor{}, nil)
+	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{disciplinedSynthHit()}
+
+	got, ok := eng.synthesizeKnowledgeQAFromLedger(context.Background(), "vllm 显存不足怎么办")
+	require.True(t, ok)
+	assert.Equal(t, "可以把 max-model-len 调小来降低显存占用。", got)
+	assert.Equal(t, []string{"ext-vllm-oom-001"}, eng.searchKnowledgeCitedChunkIDsThisTurn)
+	assert.Equal(t, []string{"1"}, eng.searchKnowledgeCitedRefsThisTurn)
+	require.Len(t, eng.searchKnowledgeReferencesThisTurn, 1)
+	assert.Equal(t, "1", eng.searchKnowledgeReferencesThisTurn[0].RefID)
+	assert.Equal(t, "ext-vllm-oom-001", eng.searchKnowledgeReferencesThisTurn[0].ChunkID)
+}
+
+func TestRecordSearchKnowledgeCitations_MapsChunkIDMarkersToRefs(t *testing.T) {
+	first := disciplinedSynthHit()
+	second := disciplinedSynthHit()
+	second.Chunk.ChunkID = "ext-disk-billing-001"
+	second.Chunk.Title = "磁盘计费"
+	second.Chunk.SourceURL = "https://example.test/disk"
+	second.Chunk.ProductArea = "billing"
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
+	eng.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{
+		{ChunkID: first.Chunk.ChunkID, Title: first.Chunk.Title},
+		{ChunkID: second.Chunk.ChunkID, Title: second.Chunk.Title},
+	}}
+
+	eng.recordSearchKnowledgeCitations("停止的按量实例磁盘仍会计费 [[ext-disk-billing-001]]。", []knowledge.RetrievalHit{first, second})
+
+	assert.Equal(t, []string{"ext-disk-billing-001"}, eng.searchKnowledgeCitedChunkIDsThisTurn)
+	assert.Equal(t, []string{"2"}, eng.searchKnowledgeCitedRefsThisTurn)
+	require.Len(t, eng.searchKnowledgeReferencesThisTurn, 2)
+	assert.Equal(t, "2", eng.searchKnowledgeReferencesThisTurn[1].RefID)
+	assert.Equal(t, "ext-disk-billing-001", eng.searchKnowledgeReferencesThisTurn[1].ChunkID)
+	assert.Equal(t, "https://example.test/disk", eng.searchKnowledgeReferencesThisTurn[1].SourceURL)
+	assert.Equal(t, "billing", eng.searchKnowledgeReferencesThisTurn[1].SourceArea)
+}
+
 func TestSynthesizeKnowledgeQAFromLedger_NoHitsReturnsFalse(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "随便答 [1]。"}}}, &mockExecutor{}, nil)
 	// No searchKnowledgeHitsThisTurn → nothing to synthesize from.

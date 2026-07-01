@@ -156,7 +156,7 @@ func TestPlannerTracePlannedExecutionPathMarshals(t *testing.T) {
 		Timestamp:     "2026-06-02T00:00:00Z",
 		UserMsgHash:   "sha256:user",
 		IntentRouter: RouterTrace{
-			Intent:             "knowledge_qa",
+			Intent:               "knowledge_qa",
 			PlannedExecutionPath: "terminal_rag",
 		},
 	})
@@ -186,6 +186,16 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 		HybridMode:           "bm25_fallback",
 		HybridFallbackReason: "embedding_timeout",
 		EmbeddingLatencyMS:   int64Ptr(4987),
+		CitedChunkIDs:        []string{"w0-init_failure-error-code-a1b2c3d4"},
+		References: []RetrievalReference{{
+			RefID:      "1",
+			ChunkID:    "w0-init_failure-error-code-a1b2c3d4",
+			Title:      "初始化失败处理",
+			SourceURL:  "https://docs.example/init",
+			Score:      0.78,
+			SourceArea: "instance",
+		}},
+		CitedRefs: []string{"1"},
 	}
 
 	data, err := json.Marshal(trace)
@@ -206,6 +216,9 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 		`"hybrid_mode":"bm25_fallback"`,
 		`"hybrid_fallback_reason":"embedding_timeout"`,
 		`"embedding_latency_ms":4987`,
+		`"cited_chunk_ids":["w0-init_failure-error-code-a1b2c3d4"]`,
+		`"references":[{"ref_id":"1","chunk_id":"w0-init_failure-error-code-a1b2c3d4","title":"初始化失败处理","source_url":"https://docs.example/init","score":0.78,"source_area":"instance"}]`,
+		`"cited_refs":["1"]`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("retrieval trace JSON missing %s: %s", want, text)
@@ -303,6 +316,18 @@ func TestRetrievalTraceObservedByHybridModeAlone(t *testing.T) {
 			t.Fatal("traceRetrievalObserved(CitedChunkIDs only) = false, want true")
 		}
 	})
+	t.Run("references_only", func(t *testing.T) {
+		trace := RetrievalTrace{References: []RetrievalReference{{RefID: "1", ChunkID: "kb-001"}}}
+		if !traceRetrievalObserved(trace) {
+			t.Fatal("traceRetrievalObserved(References only) = false, want true")
+		}
+	})
+	t.Run("cited_refs_only", func(t *testing.T) {
+		trace := RetrievalTrace{CitedRefs: []string{"1"}}
+		if !traceRetrievalObserved(trace) {
+			t.Fatal("traceRetrievalObserved(CitedRefs only) = false, want true")
+		}
+	})
 }
 
 func TestRetrievalHitScoreZeroMarshalsAsZero(t *testing.T) {
@@ -340,6 +365,8 @@ func TestRetrievalTraceNewFieldsMarkBlockObserved(t *testing.T) {
 		{name: "refused reason", trace: RetrievalTrace{RefusedReason: "no_evidence"}},
 		{name: "weak evidence", trace: RetrievalTrace{WeakEvidence: true}},
 		{name: "ranking error candidate", trace: RetrievalTrace{RankingErrorCandidate: true}},
+		{name: "references", trace: RetrievalTrace{References: []RetrievalReference{{RefID: "1", ChunkID: "w0-billing_rule-aabbccdd"}}}},
+		{name: "cited refs", trace: RetrievalTrace{CitedRefs: []string{"1"}}},
 	}
 
 	for _, tc := range cases {
@@ -990,7 +1017,7 @@ func TestExecutionPathMismatch(t *testing.T) {
 		{
 			name: "planned and actual match",
 			record: TraceRecord{
-				IntentRouter:           RouterTrace{PlannedExecutionPath: ExecutionPathRouting},
+				IntentRouter:        RouterTrace{PlannedExecutionPath: ExecutionPathRouting},
 				ActualExecutionPath: ExecutionPathRouting,
 			},
 			wantMismatch: false,
@@ -999,7 +1026,7 @@ func TestExecutionPathMismatch(t *testing.T) {
 		{
 			name: "planned terminal rag actual agent mismatch",
 			record: TraceRecord{
-				IntentRouter:           RouterTrace{PlannedExecutionPath: ExecutionPathTerminalRAG},
+				IntentRouter:        RouterTrace{PlannedExecutionPath: ExecutionPathTerminalRAG},
 				ActualExecutionPath: ExecutionPathAgent,
 			},
 			wantMismatch: true,
@@ -1008,8 +1035,8 @@ func TestExecutionPathMismatch(t *testing.T) {
 		{
 			name: "derive actual when unset",
 			record: TraceRecord{
-				IntentRouter:   RouterTrace{PlannedExecutionPath: ExecutionPathAgent},
-				ToolCalls: []ToolCallTrace{{Source: ToolSourceMainReAct}},
+				IntentRouter: RouterTrace{PlannedExecutionPath: ExecutionPathAgent},
+				ToolCalls:    []ToolCallTrace{{Source: ToolSourceMainReAct}},
 			},
 			wantMismatch: false,
 			wantOK:       true,
