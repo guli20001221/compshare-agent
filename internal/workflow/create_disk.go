@@ -60,7 +60,7 @@ func stepQueryCreateDiskPrice() Step {
 				"ChargeType": "Postpay",
 				"Disks": []any{map[string]any{
 					"IsBoot": false,
-					"Type":   "SSDDataDisk",
+					"Type":   "CLOUD_SSD",
 					"Size":   wfCtx.Params["Size"],
 				}},
 			}

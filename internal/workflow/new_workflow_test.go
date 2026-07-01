@@ -125,6 +125,13 @@ func TestCreateDisk_HappyPath(t *testing.T) {
 	assert.Equal(t, float64(65536), priceCall.args["Memory"], "data-disk pricing must include the source instance memory in MB")
 	assert.Equal(t, "cn-sh2", priceCall.args["Region"], "data-disk pricing must use the source instance region")
 	assert.Equal(t, "cn-sh2-02", priceCall.args["Zone"], "data-disk pricing must use the source instance zone")
+	priceDisks, ok := priceCall.args["Disks"].([]any)
+	require.True(t, ok, "data-disk pricing must pass Disks")
+	require.Len(t, priceDisks, 1)
+	priceDisk, ok := priceDisks[0].(map[string]any)
+	require.True(t, ok, "data-disk pricing disk must be an object")
+	assert.Equal(t, "CLOUD_SSD", priceDisk["Type"], "price API expects UDisk type; upstream converts it to SSDDataDisk for billing")
+	assert.Equal(t, false, priceDisk["IsBoot"])
 
 	var createCall executorCall
 	for _, c := range executor.calls {
