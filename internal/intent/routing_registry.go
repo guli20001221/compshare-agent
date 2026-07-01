@@ -1581,7 +1581,7 @@ func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req Ha
 	}
 	imageID := selectCapacityPrecheckImageID(imageRaw)
 	if imageID == "" {
-		return renderStockReply(stockRaw, req.UserText) + "\n容量预检未执行：未获取到可用于预检的系统镜像。", true, nil
+		return renderStockInventoryCapacityReply(failedStockCapacityChecks(entriesByModel, modelOrder), inventoryLine) + "\n容量预检未执行：未获取到可用于预检的系统镜像。", true, nil
 	}
 
 	checks := make([]stockCapacityCheck, 0, len(entries))
@@ -1614,9 +1614,22 @@ func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req Ha
 		}
 	}
 	if len(checks) == 0 {
-		return renderStockReply(stockRaw, req.UserText) + "\n容量预检未执行：当前接口结果缺少可用区信息。", true, nil
+		return renderStockInventoryCapacityReply(failedStockCapacityChecks(entriesByModel, modelOrder), inventoryLine) + "\n容量预检未执行：当前接口结果缺少可用区信息。", true, nil
 	}
 	return renderStockInventoryCapacityReply(checks, inventoryLine), true, nil
+}
+
+func failedStockCapacityChecks(entriesByModel map[string][]stockInstanceTypeEntry, modelOrder []string) []stockCapacityCheck {
+	var checks []stockCapacityCheck
+	for _, model := range modelOrder {
+		entries := entriesByModel[model]
+		if len(entries) == 0 {
+			continue
+		}
+		zone := entries[0].Zone
+		checks = append(checks, stockCapacityCheck{Name: model, Zone: zone, Failed: true})
+	}
+	return checks
 }
 
 func groupStockEntriesByModel(entries []stockInstanceTypeEntry) (map[string][]stockInstanceTypeEntry, []string) {

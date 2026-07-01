@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
@@ -38,7 +39,7 @@ func TestSessionState_MarshalAlwaysIncludesSchemaVersion(t *testing.T) {
 	s := SessionState{} // zero value, no SchemaVersion set
 	raw, err := json.Marshal(s)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"schema_version":"1.0"}`, string(raw))
+	assert.JSONEq(t, `{"schema_version":"2.0"}`, string(raw))
 }
 
 // ---------------------------------------------------------------------------
@@ -80,7 +81,7 @@ func TestParsePersistedContext_LegacyObjectWrappedAsClientContext(t *testing.T) 
 
 	pc, err := ParsePersistedContext(legacy)
 	require.NoError(t, err)
-	assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaV1}, pc.AgentSessionState)
+	assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaCurrent}, pc.AgentSessionState)
 	assert.JSONEq(t, string(legacy), string(pc.ClientContext))
 }
 
@@ -101,7 +102,7 @@ func TestParsePersistedContext_LegacyNonObjectShapes(t *testing.T) {
 	for _, raw := range cases {
 		pc, err := ParsePersistedContext(raw)
 		require.NoError(t, err, "input: %s", string(raw))
-		assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaV1}, pc.AgentSessionState,
+		assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaCurrent}, pc.AgentSessionState,
 			"input: %s", string(raw))
 		assert.JSONEq(t, string(raw), string(pc.ClientContext), "input: %s", string(raw))
 	}
@@ -117,7 +118,7 @@ func TestParsePersistedContext_NullAndEmpty(t *testing.T) {
 	} {
 		pc, err := ParsePersistedContext(in)
 		require.NoError(t, err, "input: %q", string(in))
-		assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaV1}, pc.AgentSessionState)
+		assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaCurrent}, pc.AgentSessionState)
 		assert.Empty(t, pc.ClientContext)
 	}
 }
@@ -155,7 +156,7 @@ func TestParsePersistedContext_LegacyShapesShareAgentKey(t *testing.T) {
 			pc, err := ParsePersistedContext(tc.raw)
 			require.NoError(t, err)
 			// Must be treated as legacy: empty agent state, whole blob preserved.
-			assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaV1}, pc.AgentSessionState,
+			assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaCurrent}, pc.AgentSessionState,
 				"strict detection should NOT have claimed this as an envelope")
 			assert.JSONEq(t, string(tc.raw), string(pc.ClientContext),
 				"legacy blob must be preserved verbatim as client_context")
@@ -173,7 +174,7 @@ func TestParsePersistedContext_LegacyShapesShareAgentKey(t *testing.T) {
 func TestParsePersistedContext_UnknownSchemaVersion_ReturnsTypedError(t *testing.T) {
 	cases := []json.RawMessage{
 		json.RawMessage(`{"agent_session_state":{"schema_version":"0.0"},"x":1}`),
-		json.RawMessage(`{"agent_session_state":{"schema_version":"2.0","new_field":"hello"},"client_context":{"app":"console"}}`),
+		json.RawMessage(`{"agent_session_state":{"schema_version":"9.0","new_field":"hello"},"client_context":{"app":"console"}}`),
 		json.RawMessage(`{"agent_session_state":{"schema_version":"v9-beta"}}`),
 	}
 	for _, raw := range cases {
@@ -195,6 +196,12 @@ func TestParsePersistedContext_RecognizesKnownSchemaVersion(t *testing.T) {
 	assert.Equal(t, SessionStateSchemaV1, pc.AgentSessionState.SchemaVersion)
 	assert.Equal(t, "u-1", pc.AgentSessionState.SelectedInstanceID)
 	assert.JSONEq(t, `{"app":"console"}`, string(pc.ClientContext))
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"2.0","context_frame":{"version":1,"kind":"deploy_model","status":"failed_recoverable"}}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, ContextFrameKindDeploy, pc.AgentSessionState.ContextFrame.Kind)
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +256,7 @@ func TestEngine_SetSessionState_RoundTrip(t *testing.T) {
 
 	s2, ver, hydrated := e.SessionStateSnapshot()
 	assert.True(t, hydrated)
+	s1.SchemaVersion = SessionStateSchemaCurrent
 	assert.Equal(t, s1, s2)
 	assert.Equal(t, 7, ver)
 }
@@ -305,6 +313,7 @@ func TestEngine_RoundTrip_AcrossReplicas(t *testing.T) {
 
 	got, ver, hydrated := eB.SessionStateSnapshot()
 	assert.True(t, hydrated)
+	stateA.SchemaVersion = SessionStateSchemaCurrent
 	assert.Equal(t, stateA, got)
 	assert.Equal(t, 1, ver)
 }
@@ -421,6 +430,48 @@ func TestRecordLastIntentFromPlan_UnknownClearsPendingDeployModel(t *testing.T) 
 	state, _, _ := e.SessionStateSnapshot()
 	assert.Equal(t, string(intent.IntentDeployModel), state.LastIntent, "unknown must not replace LastIntent")
 	assert.Empty(t, state.PendingDeployModel, "unknown turns should break stale deploy clarification carry")
+}
+
+func TestRecordLastIntentFromPlan_NonCreateTurnClearsContextFrame(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindDeploy,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Intent:         string(intent.IntentDeployModel),
+			GPU:            "4090",
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+
+	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentKnowledgeQA})
+
+	state, _, _ := e.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind, "unrelated turns must clear stale create/deploy carry")
+}
+
+func TestRecordLastIntentFromPlan_StockTurnKeepsContextFrameForZoneFollowup(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindDeploy,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Intent:         string(intent.IntentDeployModel),
+			GPU:            "4090",
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+
+	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentStockAvailability})
+
+	state, _, _ := e.SessionStateSnapshot()
+	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind, "stock/zone follow-ups may still continue a pending create")
 }
 
 // TestSetSessionState_NotHydratedAlwaysFullOverwrite covers the
@@ -585,6 +636,25 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 					Region:  "cn-wlcb",
 				},
 			},
+			ContextFrame: ContextFrame{
+				Version:         1,
+				Kind:            ContextFrameKindDeploy,
+				Status:          ContextFrameStatusFailedRecoverable,
+				Intent:          string(intent.IntentDeployModel),
+				OriginalUserMsg: "在华北一C用最新pytorch给我开一台",
+				GPU:             "4090",
+				ImagePref:       "PyTorch",
+				ImageSource:     "platform",
+				Zone:            "cn-bj2-03",
+				ZoneLabel:       "华北一C",
+				FailureReason:   "华北一C暂无库存",
+				AlternativeZones: []ContextFrameZone{
+					{Zone: "cn-wlcb-01", Label: "华北二A"},
+				},
+				CreatedTurn:    4,
+				ProducedAtUnix: 1716530003,
+				TTLSeconds:     ContextFrameTTLSeconds,
+			},
 			RecentFacts: []ToolFact{
 				{
 					Kind:           FactKindInstanceState,
@@ -616,6 +686,8 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 	require.Equal(t, pc1.AgentSessionState.PendingSelectionKind, pc2.AgentSessionState.PendingSelectionKind)
 	require.Len(t, pc2.AgentSessionState.PendingSelectionItems, 1)
 	require.Equal(t, "uhost-list-1", pc2.AgentSessionState.PendingSelectionItems[0].ID)
+	require.Equal(t, ContextFrameKindDeploy, pc2.AgentSessionState.ContextFrame.Kind)
+	require.Equal(t, "华北二A", pc2.AgentSessionState.ContextFrame.AlternativeZones[0].Label)
 	require.Len(t, pc2.AgentSessionState.RecentFacts, 2)
 
 	raw2, err := json.Marshal(pc2)

@@ -159,7 +159,7 @@ func TestSessionState_Persist_RecentFactsRoundTrip(t *testing.T) {
 	assert.Equal(t, "cn-wlcb-01", facts[0].Payload["zone"])
 	assert.Greater(t, facts[0].ProducedAtUnix, int64(0),
 		"ProducedAtUnix must be set by the writer (not the zero default)")
-	assert.Equal(t, engine.SessionStateSchemaV1, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, engine.SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
 }
 
 func TestSessionState_FactContextHydratedHTTPPrompt(t *testing.T) {

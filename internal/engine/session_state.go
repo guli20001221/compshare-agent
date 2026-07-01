@@ -8,10 +8,15 @@ import (
 	"sort"
 )
 
-// SessionStateSchemaV1 is the persisted JSON schema version for SessionState.
-// Bump on any breaking shape change. Old records load with their original
-// SchemaVersion and are migrated forward by future loaders.
+// SessionStateSchemaV1 is the first persisted JSON schema version for SessionState.
 const SessionStateSchemaV1 = "1.0"
+
+// SessionStateSchemaV2 adds a durable context frame. Old records still load, but
+// new writes use v2 so older binaries fail closed instead of silently dropping
+// the frame during a rolling deployment.
+const SessionStateSchemaV2 = "2.0"
+
+const SessionStateSchemaCurrent = SessionStateSchemaV2
 
 // ErrUnknownSessionStateSchema is returned by ParsePersistedContext when a
 // row looks like an agent envelope (top-level object with an
@@ -33,6 +38,7 @@ var ErrUnknownSessionStateSchema = errors.New("engine: unknown SessionState sche
 // envelope detection — be very explicit if you do it.
 var knownSessionStateSchemaVersions = map[string]struct{}{
 	SessionStateSchemaV1: {},
+	SessionStateSchemaV2: {},
 }
 
 // SessionState is the per-session, JSON-serializable, multi-replica-safe
@@ -89,7 +95,48 @@ type SessionState struct {
 	PendingSelectionTruncated       bool                   `json:"pending_selection_truncated,omitempty"`
 	PendingSelectionTotalCount      int                    `json:"pending_selection_total_count,omitempty"`
 	PendingSelectionItems           []PendingSelectionItem `json:"pending_selection_items,omitempty"`
+	ContextFrame                    ContextFrame           `json:"context_frame,omitempty"`
 	RecentFacts                     []ToolFact             `json:"recent_facts,omitempty"`
+}
+
+const (
+	ContextFrameKindCreate = "create_instance"
+	ContextFrameKindDeploy = "deploy_model"
+
+	ContextFrameStatusPending           = "pending"
+	ContextFrameStatusFailedRecoverable = "failed_recoverable"
+
+	ContextFrameTTLSeconds = 300
+)
+
+// ContextFrame is the single carried task state for short follow-ups like
+// "那华北二A呢". It stores the user's current create/deploy task and the last
+// recoverable failure so the next turn can change one field without re-routing as
+// a generic stock query. It intentionally carries only non-secret preferences and
+// display labels; API-only fields such as zone_id/az_group never belong here.
+type ContextFrame struct {
+	Version          int                `json:"version,omitempty"`
+	Kind             string             `json:"kind,omitempty"`
+	Status           string             `json:"status,omitempty"`
+	Intent           string             `json:"intent,omitempty"`
+	OriginalUserMsg  string             `json:"original_user_msg,omitempty"`
+	GPU              string             `json:"gpu,omitempty"`
+	ImagePref        string             `json:"image_pref,omitempty"`
+	ImageSource      string             `json:"image_source,omitempty"`
+	Workload         string             `json:"workload,omitempty"`
+	Zone             string             `json:"zone,omitempty"`
+	ZoneLabel        string             `json:"zone_label,omitempty"`
+	Stage            string             `json:"stage,omitempty"`
+	FailureReason    string             `json:"failure_reason,omitempty"`
+	AlternativeZones []ContextFrameZone `json:"alternative_zones,omitempty"`
+	CreatedTurn      int                `json:"created_turn,omitempty"`
+	ProducedAtUnix   int64              `json:"produced_at_unix,omitempty"`
+	TTLSeconds       int                `json:"ttl_seconds,omitempty"`
+}
+
+type ContextFrameZone struct {
+	Zone  string `json:"zone,omitempty"`
+	Label string `json:"label,omitempty"`
 }
 
 // PendingSelectionItem is one option from the most recent structured candidate
@@ -303,10 +350,42 @@ func toFactNumeric(v any) any {
 // a caller zeroed the struct.
 func (s SessionState) MarshalJSON() ([]byte, error) {
 	if s.SchemaVersion == "" {
-		s.SchemaVersion = SessionStateSchemaV1
+		s.SchemaVersion = SessionStateSchemaCurrent
 	}
 	type alias SessionState
-	return json.Marshal(alias(s))
+	raw, err := json.Marshal(alias(s))
+	if err != nil {
+		return nil, err
+	}
+	if contextFrameEmpty(s.ContextFrame) {
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+		delete(m, "context_frame")
+		return json.Marshal(m)
+	}
+	return raw, nil
+}
+
+func contextFrameEmpty(f ContextFrame) bool {
+	return f.Version == 0 &&
+		f.Kind == "" &&
+		f.Status == "" &&
+		f.Intent == "" &&
+		f.OriginalUserMsg == "" &&
+		f.GPU == "" &&
+		f.ImagePref == "" &&
+		f.ImageSource == "" &&
+		f.Workload == "" &&
+		f.Zone == "" &&
+		f.ZoneLabel == "" &&
+		f.Stage == "" &&
+		f.FailureReason == "" &&
+		len(f.AlternativeZones) == 0 &&
+		f.CreatedTurn == 0 &&
+		f.ProducedAtUnix == 0 &&
+		f.TTLSeconds == 0
 }
 
 // PersistedContext is the on-wire shape stored in sessions.context. It
@@ -356,7 +435,7 @@ func ParsePersistedContext(raw json.RawMessage) (PersistedContext, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte(`null`)) {
 		return PersistedContext{
-			AgentSessionState: SessionState{SchemaVersion: SessionStateSchemaV1},
+			AgentSessionState: SessionState{SchemaVersion: SessionStateSchemaCurrent},
 		}, nil
 	}
 	var probe any
@@ -370,7 +449,7 @@ func ParsePersistedContext(raw json.RawMessage) (PersistedContext, error) {
 			return PersistedContext{}, err
 		}
 		if pc.AgentSessionState.SchemaVersion == "" {
-			pc.AgentSessionState.SchemaVersion = SessionStateSchemaV1
+			pc.AgentSessionState.SchemaVersion = SessionStateSchemaCurrent
 		}
 		return pc, nil
 	case envelopeKindUnknownVersion:
@@ -382,7 +461,7 @@ func ParsePersistedContext(raw json.RawMessage) (PersistedContext, error) {
 		legacy := make(json.RawMessage, len(raw))
 		copy(legacy, raw)
 		return PersistedContext{
-			AgentSessionState: SessionState{SchemaVersion: SessionStateSchemaV1},
+			AgentSessionState: SessionState{SchemaVersion: SessionStateSchemaCurrent},
 			ClientContext:     legacy,
 		}, nil
 	}

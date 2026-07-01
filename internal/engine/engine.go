@@ -1118,7 +1118,11 @@ func (e *Engine) ClearSessionState() {
 // persisting — persisting an un-hydrated zero state would overwrite the
 // row, which is exactly the bug we want to avoid on parse-failure paths.
 func (e *Engine) SessionStateSnapshot() (state SessionState, version int, hydrated bool) {
-	return e.sessionState, e.sessionStateVersion, e.sessionStateHydrated
+	state = e.sessionState
+	if e.sessionStateHydrated && (state.SchemaVersion == "" || state.SchemaVersion == SessionStateSchemaV1) {
+		state.SchemaVersion = SessionStateSchemaCurrent
+	}
+	return state, e.sessionStateVersion, e.sessionStateHydrated
 }
 
 // refreshSystemPrompt rebuilds e.messages[0] with the current SessionState
@@ -1239,6 +1243,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.createPreferenceThisTurn = nil
+	e.expireContextFrame(time.Now())
 	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
 	// any mid-turn re-bind), and reset the per-turn binding observables that
 	// refreshSystemPrompt fills next.
@@ -1815,6 +1820,11 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	}
 	if reply, handled := e.tryCFSWorkflowDispatch(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
+	}
+	if canResumeCreateContextFrameFromIntent(dispatch.result.Plan.Intent) {
+		if reply, handled := e.tryResumeCreateContextFrame(ctx, dispatch, userMsg, onStep); handled {
+			return reply, true
+		}
 	}
 	if reply, handled := e.tryOperationLifecycleDispatch(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
@@ -4608,6 +4618,9 @@ func (e *Engine) recordLastIntentFromPlan(plan intent.IntentRoute) {
 	if !createFamilyIntent(plan.Intent) {
 		e.clearPendingDeployModel()
 	}
+	if !createFamilyIntent(plan.Intent) && plan.Intent != intent.IntentStockAvailability {
+		e.clearContextFrame()
+	}
 }
 
 func (e *Engine) clearPendingDeployModel() {
@@ -4625,6 +4638,10 @@ func (e *Engine) clearPendingDeployModelForNonCreateFamily(i intent.Intent) {
 
 func createFamilyIntent(i intent.Intent) bool {
 	return i == intent.IntentDeployModel || i == intent.IntentCreateInstance
+}
+
+func canResumeCreateContextFrameFromIntent(i intent.Intent) bool {
+	return i == intent.IntentStockAvailability
 }
 
 func createFamilyIntentString(s string) bool {
