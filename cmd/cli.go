@@ -191,6 +191,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_UNIFIED_CREATE value %q\n", unknownUnifiedCreate)
 	}
 	engine.SetUnifiedCreateEnabled(unifiedCreate)
+	contextContinuation, unknownContextContinuation := contextContinuationEnabledFromEnv(getenv)
+	if unknownContextContinuation != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_CONTEXT_CONTINUATION value %q\n", unknownContextContinuation)
+	}
+	engine.SetContextContinuationEnabled(contextContinuation)
 	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
 	if unknownKnowledgeQAAgentLoop != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q\n", unknownKnowledgeQAAgentLoop)

@@ -255,6 +255,9 @@ func TestPendingSelectionRoundTripsThroughSessionState(t *testing.T) {
 }
 
 func TestContextDecisionSelectionRecordsPendingInstance(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 	e.userTurn = 3

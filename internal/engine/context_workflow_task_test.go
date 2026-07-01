@@ -229,6 +229,9 @@ func TestSelectedInstanceCreateDiskMissingSizeRecordsGenericTaskFrame(t *testing
 }
 
 func TestResumeWorkflowContextFrameAppliesSlotUpdateAndReachesConfirm(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
 	var confirmAction string
 	var confirmArgs map[string]any
 	confirm := func(action string, args map[string]any) bool {
@@ -287,6 +290,9 @@ func TestResumeWorkflowContextFrameAppliesSlotUpdateAndReachesConfirm(t *testing
 }
 
 func TestResumeWorkflowContextFrameUsesDeclaredMissingSlotWithoutLLM(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
 	var confirmAction string
 	confirm := func(action string, args map[string]any) bool {
 		confirmAction = action
@@ -334,4 +340,38 @@ func TestResumeWorkflowContextFrameUsesDeclaredMissingSlotWithoutLLM(t *testing.
 	assert.Equal(t, "CreateDiskWorkflow", confirmAction)
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Empty(t, state.ContextFrame.Kind)
+}
+
+func TestResumeWorkflowContextFrame_ContextContinuationFlagOffDoesNotResumeMutatingWorkflow(t *testing.T) {
+	SetContextContinuationEnabled(false)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	layer := &fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionContinueTask,
+		SlotUpdates: map[string]string{"size_gb": "200G"},
+	}}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, okConfirm)
+	eng.SetContextDecisionLayer(layer)
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "CreateDiskWorkflow",
+			Slots:          map[string]string{"instance_id": "uhost-1"},
+			MissingSlots:   []string{"size_gb"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "200G", noopStep)
+
+	assert.False(t, handled)
+	assert.Empty(t, reply)
+	assert.Empty(t, layer.calls, "flag-off must not call the context decision layer")
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Equal(t, ContextFrameKindWorkflowTask, state.ContextFrame.Kind, "flag-off should leave the pending task for legacy handling or a later enabled turn")
 }

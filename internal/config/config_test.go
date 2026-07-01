@@ -915,6 +915,7 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     react_history_compaction: true
     create_preference_extractor: true
     unified_create: true
+    context_continuation: true
     grounded_validator: false
     skill_executor_diagnosis_pilots:
       - diagnose-ssh
@@ -944,6 +945,8 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	assert.True(t, *f.CreatePreferenceExtractor)
 	require.NotNil(t, f.UnifiedCreate)
 	assert.True(t, *f.UnifiedCreate)
+	require.NotNil(t, f.ContextContinuation)
+	assert.True(t, *f.ContextContinuation)
 	assert.Nil(t, f.DomainMatchGuard, "omitted bool stays nil (env/default fallback)")
 	assert.Equal(t, []string{"diagnose-ssh", "diagnose-billing"}, f.SkillExecutorDiagnosisPilots)
 
@@ -964,6 +967,7 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 			FlashKnowledgeRouteGuard:  boolPtr(true),
 			CreatePreferenceExtractor: boolPtr(false),
 			UnifiedCreate:             boolPtr(false),
+			ContextContinuation:       boolPtr(true),
 			// SessionFactContext omitted (nil) → falls through to base env
 		},
 		Retrieval: RetrievalConfig{
@@ -997,6 +1001,7 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	assert.Equal(t, "1", getenv("COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD"), "YAML true wins over env off")
 	assert.Equal(t, "0", getenv("COMPSHARE_CREATE_PREF_EXTRACTOR"), "YAML false wins over env on")
 	assert.Equal(t, "0", getenv("COMPSHARE_UNIFIED_CREATE"), "YAML false wins over env on")
+	assert.Equal(t, "1", getenv("COMPSHARE_CONTEXT_CONTINUATION"), "YAML true wins")
 	assert.Equal(t, "1", getenv("USE_SESSION_FACT_CONTEXT"), "omitted bool → env fallback")
 	assert.Equal(t, "bm25_only", getenv("RAG_RETRIEVAL_MODE"), "YAML string wins")
 	assert.Equal(t, "off", getenv("USE_KNOWLEDGE_RETRIEVAL"), "omitted string → env fallback")

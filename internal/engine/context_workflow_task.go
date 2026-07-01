@@ -14,6 +14,9 @@ import (
 )
 
 func (e *Engine) tryResumeWorkflowContextFrame(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+	if !ContextContinuationEnabled() {
+		return "", false
+	}
 	frame, ok := e.activeContextFrame(time.Now())
 	if !ok || frame.Kind != ContextFrameKindWorkflowTask || strings.TrimSpace(frame.Workflow) == "" {
 		return "", false

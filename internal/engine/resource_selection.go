@@ -178,6 +178,9 @@ func (e *Engine) tryContextDecisionResourceSelection(ctx context.Context, userMs
 	if e == nil || pending == nil {
 		return false
 	}
+	if !ContextContinuationEnabled() {
+		return false
+	}
 	if e.contextDecisionLayer == nil {
 		return false
 	}

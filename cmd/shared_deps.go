@@ -42,6 +42,14 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if unifiedCreate {
 		log.Printf("runtime: HTTP unified create-family route enabled (default-on; set COMPSHARE_UNIFIED_CREATE=0 to disable; create_instance prompt/schema active)")
 	}
+	contextContinuation, unknownContextContinuation := contextContinuationEnabledFromEnv(getenv)
+	if unknownContextContinuation != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_CONTEXT_CONTINUATION value %q", unknownContextContinuation)
+	}
+	engine.SetContextContinuationEnabled(contextContinuation)
+	if contextContinuation {
+		log.Printf("runtime: HTTP context continuation enabled (COMPSHARE_CONTEXT_CONTINUATION=1; short follow-ups may resume pending tasks before confirmation)")
+	}
 
 	deps, err := engine.NewSharedDeps(cfg)
 	if err != nil {
