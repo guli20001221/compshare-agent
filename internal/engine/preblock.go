@@ -56,6 +56,19 @@ var enginePreBlock = inputguard.New(
 		Category: refusal.CategoryOffTopic,
 		Reply:    refusal.OffTopic,
 	},
+	// Human-agent transfer runs LAST in the preblock chain. A narrow
+	// phrase whitelist (转人工 / 人工客服 / 联系人工 / 找人工 / 叫人工)
+	// matches the explicit transfer-to-human intent so 人工智能 / 人工费 /
+	// 人工成本 — which also contain "人工" — do NOT false-trigger the QR
+	// reply. The QR image URL is byte-pinned in refusal.HumanAgentTransfer;
+	// refresh the image by editing that constant only. Jailbreak/off-topic
+	// run earlier so a message that is both an instruction-override and a
+	// transfer request is classified as jailbreak first.
+	inputguard.Rule{
+		Match:    isHumanAgentTransferRequest,
+		Category: refusal.CategoryHumanAgent,
+		Reply:    refusal.HumanAgentTransfer,
+	},
 	// account_billing + existing_disk_attach keyword hard-blocks removed
 	// (2026-06-10): the planner / agent loop handles these better. Billing
 	// symptoms route to billing_instance; genuine account-data (余额/发票)

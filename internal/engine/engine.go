@@ -110,6 +110,11 @@ const (
 // (account_billing + existing_disk_attach keyword hard-blocks removed
 // 2026-06-10 — planner/agent-routed.)
 //
+// (human_agent_transfer keyword preblock added 2026-06-29 — 转人工短语
+// 命中即返回客服二维码 canned reply，跳过 LLM/ReAct；窄白名单避免"人工
+// 智能/人工费"等误触发。规则注册在 internal/engine/preblock.go 的
+// enginePreBlock 链末尾。)
+//
 // Model feature gating: force-tool paths that emit object tool_choice MUST
 // short-circuit when supportsObjectToolChoice=false. ds v4 flash in thinking
 // mode 400s on object tool_choice; emitting it would break the request entirely
@@ -6071,6 +6076,27 @@ func containsAnyKeyword(normalized string, keywords []string) bool {
 
 func containsNormalizedKeyword(normalized string, keywords []string) bool {
 	return containsAnyKeyword(normalized, keywords)
+}
+
+// humanAgentTransferKeywords 是明确"转人工"意图的窄白名单短语。仅匹配这些
+// 整词短语，避免"人工智能 / 人工费 / 人工成本"等同样含"人工"二字的非客服
+// 语义误触发客服二维码回复。命中后由 enginePreBlock 链路返回固定 canned
+// reply（refusal.HumanAgentTransfer，内含二维码 markdown 图片），跳过 LLM。
+var humanAgentTransferKeywords = []string{
+	"转人工",  // 转人工
+	"转接人工", // 转接人工（"转人工" 的子串不含 "接"，需单列）
+	"人工客服", // 人工客服
+	"联系人工", // 联系人工
+	"找人工",  // 找人工
+	"叫人工",  // 叫人工
+}
+
+// isHumanAgentTransferRequest 判定用户消息是否为明确的转人工请求。复用
+// preblock 既有的归一化匹配通路（textutil.Normalize + containsAnyKeyword），
+// 与 jailbreak / off-topic / monitor-recall 检测保持一致的匹配语义。
+func isHumanAgentTransferRequest(userMsg string) bool {
+	n := textutil.Normalize(userMsg)
+	return containsAnyKeyword(n, humanAgentTransferKeywords)
 }
 
 // inferKnowledgeProductArea returns a product_area label matching one of the
