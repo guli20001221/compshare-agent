@@ -111,6 +111,7 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 		}
 		result.StoppedAt = step.Name
 		result.Message = fmt.Sprintf("步骤「%s」参数构建失败: %v", step.Name, err)
+		result.MissingSlots = MissingSlotsFromError(err)
 		return toolStepFailed
 	}
 

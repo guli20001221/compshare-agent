@@ -37,7 +37,7 @@ func stepQueryForResizeDisk() Step {
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			size := paramNum(wfCtx.Params, "Size", 0)
 			if size <= 0 {
-				return nil, fmt.Errorf(resizeDiskMissingTargetMessage)
+				return nil, NewMissingSlotError(resizeDiskMissingTargetMessage, "target_size_gb")
 			}
 			wfCtx.Params["Size"] = size
 			return map[string]any{

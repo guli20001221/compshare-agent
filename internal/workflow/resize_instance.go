@@ -28,7 +28,7 @@ func stepQueryForResize() Step {
 			_, hasGpu := wfCtx.Params["Gpu"]
 			_, hasMem := wfCtx.Params["Memory"]
 			if !hasCpu && !hasGpu && !hasMem {
-				return nil, fmt.Errorf(resizeInstanceMissingSpecMessage)
+				return nil, NewMissingSlotError(resizeInstanceMissingSpecMessage, "cpu", "memory_gb", "gpu_count")
 			}
 			return map[string]any{
 				"UHostIds": []any{wfCtx.Params["UHostId"]},

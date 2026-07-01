@@ -5082,7 +5082,11 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	if !result.Success {
 		result.Message = security.RedactKnownSecretsInText(result.Message, workflowSecretValues(args))
-		if missing := workflow.MissingSlotsForFailure(action, result.Message); len(missing) > 0 {
+		missing := result.MissingSlots
+		if len(missing) == 0 {
+			missing = workflow.MissingSlotsForFailure(action, result.Message)
+		}
+		if len(missing) > 0 {
 			reply := workflowMissingSlotsClarification(action, missing)
 			e.recordWorkflowMissingSlotsFrame(action, args, missing, reply)
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))

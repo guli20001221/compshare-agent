@@ -12,6 +12,7 @@ import (
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/workflow"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -1413,35 +1414,17 @@ func looksLikeScheduledShutdownText(compact string) bool {
 }
 
 var (
-	resizeCPUMemorySpecRE = regexp.MustCompile(`(?i)(\d+)\s*(?:c|cpu|vcpu|核)\s*[/,， ]*\s*(\d+)\s*(?:g|gb|gib)`)
-	resizeGPUCountSpecRE  = regexp.MustCompile(`(?i)(\d+)\s*(?:张\s*)?(?:gpu|卡)`)
-	resetPasswordSpecRE   = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(?:为|成|是|:|：)?\s*([^\s，。；;]+)`)
-	diskSizeSpecRE        = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:g|gb|gib)`)
-	cfsNameSpecRE         = regexp.MustCompile(`(?i)(?:名字|名称|name)\s*(?:叫|为|是|:|：)?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{1,62})`)
-	cfsIDSpecRE           = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)
-	cfsZoneIDSpecRE       = regexp.MustCompile(`(?i)cn-[a-z0-9]+-\d+`)
-	stopAfterHoursRE      = regexp.MustCompile(`(?i)(\d+)\s*(?:个)?\s*(?:小时|hour|hours|h)\s*后`)
-	stopAfterMinutesRE    = regexp.MustCompile(`(?i)(\d+)\s*(?:分钟|分|min|mins|minute|minutes|m)\s*后`)
+	resetPasswordSpecRE = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(?:为|成|是|:|：)?\s*([^\s，。；;]+)`)
+	diskSizeSpecRE      = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:g|gb|gib)`)
+	cfsNameSpecRE       = regexp.MustCompile(`(?i)(?:名字|名称|name)\s*(?:叫|为|是|:|：)?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{1,62})`)
+	cfsIDSpecRE         = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)
+	cfsZoneIDSpecRE     = regexp.MustCompile(`(?i)cn-[a-z0-9]+-\d+`)
+	stopAfterHoursRE    = regexp.MustCompile(`(?i)(\d+)\s*(?:个)?\s*(?:小时|hour|hours|h)\s*后`)
+	stopAfterMinutesRE  = regexp.MustCompile(`(?i)(\d+)\s*(?:分钟|分|min|mins|minute|minutes|m)\s*后`)
 )
 
-const maxInlineResizeGPUCount = 16
-
 func resizeWorkflowArgsFromUserText(userText string) map[string]any {
-	args := map[string]any{}
-	if m := resizeCPUMemorySpecRE.FindStringSubmatch(userText); len(m) == 3 {
-		if cpu, ok := parseFloatString(m[1]); ok && cpu > 0 {
-			args["Cpu"] = cpu
-		}
-		if memGB, ok := parseFloatString(m[2]); ok && memGB > 0 {
-			args["Memory"] = memGB * 1024
-		}
-	}
-	if m := resizeGPUCountSpecRE.FindStringSubmatch(userText); len(m) == 2 {
-		if gpu, ok := parseFloatString(m[1]); ok && gpu >= 0 && gpu <= maxInlineResizeGPUCount {
-			args["Gpu"] = gpu
-		}
-	}
-	return args
+	return workflow.ResizeWorkflowArgsFromUserText(userText)
 }
 
 func createDiskSizeFromUserText(userText string) float64 {

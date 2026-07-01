@@ -119,11 +119,12 @@ func (c *Context) Result(stepName string) map[string]any {
 
 // Result of executing a workflow.
 type Result struct {
-	Success   bool           `json:"success"`
-	StoppedAt string         `json:"stopped_at,omitempty"`
-	Message   string         `json:"message"`
-	Data      map[string]any `json:"data,omitempty"`
-	Steps     []StepSummary  `json:"steps"`
+	Success      bool           `json:"success"`
+	StoppedAt    string         `json:"stopped_at,omitempty"`
+	Message      string         `json:"message"`
+	MissingSlots []string       `json:"missing_slots,omitempty"`
+	Data         map[string]any `json:"data,omitempty"`
+	Steps        []StepSummary  `json:"steps"`
 }
 
 // StepSummary records one step's outcome.

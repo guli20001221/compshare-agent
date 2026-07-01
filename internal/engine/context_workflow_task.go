@@ -11,6 +11,7 @@ import (
 
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/workflow"
 )
 
 func (e *Engine) tryResumeWorkflowContextFrame(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
@@ -80,103 +81,11 @@ func (e *Engine) resumeWorkflowContextFrameWithSlotUpdates(ctx context.Context, 
 }
 
 func workflowTaskSlotUpdatesFromUserText(workflowName string, missing []string, userMsg string) map[string]string {
-	missingSet := map[string]bool{}
-	for _, slot := range missing {
-		if normalized := normalizeContextSlotKey(slot); normalized != "" {
-			missingSet[normalized] = true
-		}
-	}
-	if len(missingSet) == 0 {
-		return nil
-	}
-	updates := map[string]string{}
-	putRawNumber := func(slot string) {
-		if !missingSet[slot] {
-			return
-		}
-		if _, ok := parseContextSlotNumber(userMsg); ok {
-			updates[slot] = strings.TrimSpace(userMsg)
-		}
-	}
-	switch workflowName {
-	case "CreateDiskWorkflow":
-		putRawNumber("size_gb")
-	case "ResizeDiskWorkflow":
-		putRawNumber("target_size_gb")
-	case "ResizeInstanceWorkflow":
-		for key, value := range resizeWorkflowArgsFromUserText(userMsg) {
-			switch key {
-			case "Cpu":
-				if missingSet["cpu"] {
-					updates["cpu"] = fmt.Sprint(value)
-				}
-			case "Memory":
-				if missingSet["memory_gb"] {
-					updates["memory_gb"] = fmt.Sprint(value)
-				}
-			case "Gpu":
-				if missingSet["gpu_count"] {
-					updates["gpu_count"] = fmt.Sprint(value)
-				}
-			}
-		}
-	}
-	if len(updates) == 0 {
-		return nil
-	}
-	return updates
+	return workflow.TaskSlotUpdatesFromUserText(workflowName, missing, userMsg)
 }
 
 func workflowArgsFromTaskSlots(workflowName string, slots map[string]string) (map[string]any, []string) {
-	normalized := normalizeContextSlotUpdates(slots)
-	args := map[string]any{}
-	var missing []string
-	if workflowRequiresInstanceTarget(workflowName) {
-		if id := normalized["instance_id"]; id != "" {
-			args["UHostId"] = id
-		} else {
-			missing = append(missing, "instance_id")
-		}
-	}
-	if diskID := normalized["disk_id"]; diskID != "" {
-		args["DiskId"] = diskID
-		args["UDiskId"] = diskID
-	}
-	switch workflowName {
-	case "CreateDiskWorkflow":
-		if size, ok := parseContextSlotNumber(normalized["size_gb"]); ok {
-			args["Size"] = size
-		} else {
-			missing = append(missing, "size_gb")
-		}
-	case "ResizeDiskWorkflow":
-		if size, ok := parseContextSlotNumber(normalized["target_size_gb"]); ok {
-			args["Size"] = size
-		} else {
-			missing = append(missing, "target_size_gb")
-		}
-	case "ResizeInstanceWorkflow":
-		hasSpec := false
-		if cpu, ok := parseContextSlotNumber(normalized["cpu"]); ok {
-			args["Cpu"] = cpu
-			hasSpec = true
-		}
-		if mem, ok := parseContextSlotNumber(normalized["memory_gb"]); ok {
-			args["Memory"] = mem
-			hasSpec = true
-		}
-		if gpu, ok := parseContextSlotNumber(normalized["gpu_count"]); ok {
-			args["Gpu"] = gpu
-			hasSpec = true
-		}
-		if !hasSpec {
-			missing = append(missing, "cpu", "memory_gb", "gpu_count")
-		}
-	}
-	if len(missing) > 0 {
-		return map[string]any{}, uniqueStrings(missing)
-	}
-	return args, nil
+	return workflow.TaskArgsFromSlots(workflowName, slots)
 }
 
 func (e *Engine) recordWorkflowMissingSlotsFrame(workflowName string, args map[string]any, missing []string, message string) bool {
@@ -234,25 +143,7 @@ func safeWorkflowContextSlots(args map[string]any) map[string]string {
 }
 
 func workflowMissingSlotsClarification(workflowName string, missing []string) string {
-	seen := map[string]bool{}
-	for _, m := range missing {
-		seen[m] = true
-	}
-	switch workflowName {
-	case "CreateDiskWorkflow":
-		if seen["size_gb"] {
-			return "需要先确认数据盘大小。请告诉我要加多大的数据盘，例如 200GB。"
-		}
-	case "ResizeDiskWorkflow":
-		if seen["target_size_gb"] {
-			return "需要先确认扩容后的目标容量。请告诉我要扩到多少 GB，例如 200GB。"
-		}
-	case "ResizeInstanceWorkflow":
-		if seen["cpu"] || seen["memory_gb"] || seen["gpu_count"] {
-			return "需要先确认目标配置。请告诉我要改成多少 CPU、内存或 GPU，例如 4C8G。"
-		}
-	}
-	return "还缺少必要参数，无法安全继续。请补充后我再为你确认。"
+	return workflow.TaskMissingSlotsClarification(workflowName, missing)
 }
 
 func mergeStringMaps(base, updates map[string]string) map[string]string {
@@ -267,22 +158,6 @@ func mergeStringMaps(base, updates map[string]string) map[string]string {
 		return nil
 	}
 	return out
-}
-
-func parseContextSlotNumber(value string) (float64, bool) {
-	v := strings.TrimSpace(strings.ToLower(value))
-	if v == "" {
-		return 0, false
-	}
-	v = strings.ReplaceAll(v, " ", "")
-	v = strings.TrimSuffix(v, "gb")
-	v = strings.TrimSuffix(v, "g")
-	v = strings.TrimSuffix(v, "c")
-	n, err := strconv.ParseFloat(v, 64)
-	if err != nil || n <= 0 {
-		return 0, false
-	}
-	return n, true
 }
 
 func contextSlotString(value any) string {
