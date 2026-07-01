@@ -12,6 +12,7 @@ import (
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/workflow"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -284,8 +285,13 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 	case intent.LifecycleActionResize:
 		resizeArgs := resizeWorkflowArgsFromUserText(userMsg)
 		if len(resizeArgs) == 0 {
-			reply := "请告诉我要改到什么配置，例如 4C8G、16C64G，或补充 GPU 数量。"
 			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
+			reply := e.executeWorkflow(ctx, workflowName, args, onStep)
+			if final, ok := isFinalReply(reply); ok {
+				reply = final
+			} else if msg, ok := workflowFailureMessage(reply); ok {
+				reply = msg
+			}
 			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
 			e.recordLastIntentFromPlan(result.Plan)
 			e.messages = append(e.messages, assistantMessage(reply))
@@ -332,8 +338,13 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 	case intent.LifecycleActionCreateDisk:
 		size := createDiskSizeFromUserText(userMsg)
 		if size <= 0 {
-			reply := "创建数据盘需要指定磁盘大小（GB）。请告诉我要加多大的数据盘，例如 30GB。"
 			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
+			reply := e.executeWorkflow(ctx, workflowName, args, onStep)
+			if final, ok := isFinalReply(reply); ok {
+				reply = final
+			} else if msg, ok := workflowFailureMessage(reply); ok {
+				reply = msg
+			}
 			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
 			e.recordLastIntentFromPlan(result.Plan)
 			e.messages = append(e.messages, assistantMessage(reply))
@@ -365,9 +376,6 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 	if action == "" {
 		return "", false
 	}
-	if action == intent.LifecycleActionCreateDisk {
-		return "", false
-	}
 	if selectedID := strings.TrimSpace(e.sessionState.SelectedInstanceID); selectedID != "" && looksLikeSelectedInstanceFollowup(userMsg) {
 		if inst, res := e.RegistrySnapshot().ResolveByID(selectedID); res.Status == entity.ResolveHit && inst != nil {
 			plan := lifecyclePlanForSelectedInstance(action, *inst)
@@ -378,10 +386,6 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 			return "", false
 		}
 		args := map[string]any{"UHostId": selectedID}
-		if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
-			e.messages = append(e.messages, assistantMessage(reply))
-			return reply, true
-		}
 		plan := intent.IntentRoute{
 			SchemaVersion: intent.SchemaVersion,
 			Intent:        intent.IntentOperationLifecycle,
@@ -389,6 +393,22 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 			RequiredTools: []string{"DescribeCompShareInstance"},
 			Retrieval:     intent.Retrieval{Enabled: false},
 			Confidence:    1,
+		}
+		if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
+			if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk {
+				reply = e.executeWorkflow(ctx, workflowName, args, onStep)
+				if final, ok := isFinalReply(reply); ok {
+					reply = final
+				} else if msg, ok := workflowFailureMessage(reply); ok {
+					reply = msg
+				}
+				e.recordSelectedInstanceID(selectedID, e.sessionState.SelectedInstanceName)
+				e.recordLastIntentFromPlan(plan)
+				e.messages = append(e.messages, assistantMessage(reply))
+				return reply, true
+			}
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
 		}
 		reply := e.executeWorkflow(ctx, workflowName, args, onStep)
 		if final, ok := isFinalReply(reply); ok {
@@ -506,6 +526,18 @@ func (e *Engine) tryLifecycleActionForSelectedInstance(ctx context.Context, inst
 	}
 	args := map[string]any{"UHostId": inst.UHostId}
 	if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
+		if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk {
+			reply = e.executeWorkflow(ctx, workflowName, args, onStep)
+			if final, ok := isFinalReply(reply); ok {
+				reply = final
+			} else if msg, ok := workflowFailureMessage(reply); ok {
+				reply = msg
+			}
+			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+			e.recordLastIntentFromPlan(plan)
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
+		}
 		e.messages = append(e.messages, assistantMessage(reply))
 		return reply, true
 	}
@@ -1382,35 +1414,17 @@ func looksLikeScheduledShutdownText(compact string) bool {
 }
 
 var (
-	resizeCPUMemorySpecRE = regexp.MustCompile(`(?i)(\d+)\s*(?:c|cpu|vcpu|核)\s*[/,， ]*\s*(\d+)\s*(?:g|gb|gib)`)
-	resizeGPUCountSpecRE  = regexp.MustCompile(`(?i)(\d+)\s*(?:张\s*)?(?:gpu|卡)`)
-	resetPasswordSpecRE   = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(?:为|成|是|:|：)?\s*([^\s，。；;]+)`)
-	diskSizeSpecRE        = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:g|gb|gib)`)
-	cfsNameSpecRE         = regexp.MustCompile(`(?i)(?:名字|名称|name)\s*(?:叫|为|是|:|：)?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{1,62})`)
-	cfsIDSpecRE           = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)
-	cfsZoneIDSpecRE       = regexp.MustCompile(`(?i)cn-[a-z0-9]+-\d+`)
-	stopAfterHoursRE      = regexp.MustCompile(`(?i)(\d+)\s*(?:个)?\s*(?:小时|hour|hours|h)\s*后`)
-	stopAfterMinutesRE    = regexp.MustCompile(`(?i)(\d+)\s*(?:分钟|分|min|mins|minute|minutes|m)\s*后`)
+	resetPasswordSpecRE = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(?:为|成|是|:|：)?\s*([^\s，。；;]+)`)
+	diskSizeSpecRE      = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:g|gb|gib)`)
+	cfsNameSpecRE       = regexp.MustCompile(`(?i)(?:名字|名称|name)\s*(?:叫|为|是|:|：)?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{1,62})`)
+	cfsIDSpecRE         = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)
+	cfsZoneIDSpecRE     = regexp.MustCompile(`(?i)cn-[a-z0-9]+-\d+`)
+	stopAfterHoursRE    = regexp.MustCompile(`(?i)(\d+)\s*(?:个)?\s*(?:小时|hour|hours|h)\s*后`)
+	stopAfterMinutesRE  = regexp.MustCompile(`(?i)(\d+)\s*(?:分钟|分|min|mins|minute|minutes|m)\s*后`)
 )
 
-const maxInlineResizeGPUCount = 16
-
 func resizeWorkflowArgsFromUserText(userText string) map[string]any {
-	args := map[string]any{}
-	if m := resizeCPUMemorySpecRE.FindStringSubmatch(userText); len(m) == 3 {
-		if cpu, ok := parseFloatString(m[1]); ok && cpu > 0 {
-			args["Cpu"] = cpu
-		}
-		if memGB, ok := parseFloatString(m[2]); ok && memGB > 0 {
-			args["Memory"] = memGB * 1024
-		}
-	}
-	if m := resizeGPUCountSpecRE.FindStringSubmatch(userText); len(m) == 2 {
-		if gpu, ok := parseFloatString(m[1]); ok && gpu >= 0 && gpu <= maxInlineResizeGPUCount {
-			args["Gpu"] = gpu
-		}
-	}
-	return args
+	return workflow.ResizeWorkflowArgsFromUserText(userText)
 }
 
 func createDiskSizeFromUserText(userText string) float64 {

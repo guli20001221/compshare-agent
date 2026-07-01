@@ -25,14 +25,18 @@ func stepQueryForDisk() Step {
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			size := paramNum(wfCtx.Params, "Size", 0)
 			if size <= 0 {
-				return nil, errors.New(createDiskMissingSizeMessage)
+				return nil, NewMissingSlotError(createDiskMissingSizeMessage, "size_gb")
 			}
 			wfCtx.Params["Size"] = size
 			return map[string]any{
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
+			uhostID, _ := wfCtx.Params["UHostId"].(string)
+			if uhostID != "" && !narrowInstanceResultToUHostID(result, uhostID) {
+				return false, "未找到该实例。"
+			}
 			state := extractInstanceState(result)
 			if state == "" {
 				return false, "未找到该实例。"

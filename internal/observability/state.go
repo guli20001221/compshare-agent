@@ -43,6 +43,15 @@ type StateTrace struct {
 	// a metric label never carries unbounded cardinality. Empty when no fresh
 	// fact was injected this turn.
 	FactCacheOldestAgeBucket string `json:"fact_cache_oldest_age_bucket,omitempty"`
+	// ContextDecision* records the global context-decision layer's safe summary.
+	// It deliberately omits the raw user message and concrete API params; this is
+	// for debugging continuation decisions without leaking zone_id / az_group /
+	// tokens / passwords or model-proposed untrusted parameters.
+	ContextDecision           string `json:"context_decision,omitempty"`
+	ContextDecisionTarget     string `json:"context_decision_target,omitempty"`
+	ContextDecisionReason     string `json:"context_decision_reason,omitempty"`
+	ContextDecisionError      string `json:"context_decision_error,omitempty"`
+	ContextDecisionActiveTask string `json:"context_decision_active_task,omitempty"`
 }
 
 // ResolutionSource* are the StateTrace.ResolutionSource values — how the turn's
@@ -89,5 +98,10 @@ func traceStateObserved(t StateTrace) bool {
 		t.SelectedInstanceID != "" ||
 		t.SelectedInstanceIDAtTurnStart != "" ||
 		t.FactCacheOldestAgeBucket != "" ||
+		t.ContextDecision != "" ||
+		t.ContextDecisionTarget != "" ||
+		t.ContextDecisionReason != "" ||
+		t.ContextDecisionError != "" ||
+		t.ContextDecisionActiveTask != "" ||
 		t.SessionStateHydrated
 }

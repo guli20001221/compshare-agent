@@ -1213,6 +1213,47 @@ func TestStockAvailabilityMissingInventoryKeyIsUnknownNotZero(t *testing.T) {
 	}
 }
 
+func TestStockAvailabilityKeepsZoneInventoryWhenCapacityImageMissing(t *testing.T) {
+	exec := &routeSequenceExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
+				map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
+			},
+		},
+		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
+		"DescribeCompShareGpuInventory": {
+			"GpuInventory": map[string]any{"Exclusive": map[string]any{
+				"1": map[string]any{"4090": float64(163)},
+				"2": map[string]any{"4090": float64(18)},
+			}},
+		},
+		"DescribeCompShareImages": {"ImageSet": []any{}},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
+		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		UserText: "4090 现在有库存吗",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	for _, want := range []string{
+		"华北二A 库存约 163 张 GPU",
+		"上海二B 库存约 18 张 GPU",
+		"容量预检未完成",
+	} {
+		if !strings.Contains(result.Reply, want) {
+			t.Fatalf("reply missing %q: %s", want, result.Reply)
+		}
+	}
+	if strings.Contains(result.Reply, "本次返回的数据是全局") || strings.Contains(result.Reply, "Normal") {
+		t.Fatalf("reply must not fall back to global Normal/SoldOut copy after raw inventory succeeded: %s", result.Reply)
+	}
+}
+
 func TestStockAvailabilityMissingSupportZoneMappingIsUnknownNotZero(t *testing.T) {
 	exec := &routeSequenceExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {

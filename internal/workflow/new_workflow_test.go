@@ -139,6 +139,32 @@ func TestCreateDisk_HappyPath(t *testing.T) {
 	assert.Contains(t, createCall.args["Name"], "data", "Name should contain 'data'")
 }
 
+func TestCreateDisk_UsesRequestedInstanceWhenDescribeReturnsExtraRows(t *testing.T) {
+	pod := podStoppedInstanceResult()["UHostSet"].([]any)[0]
+	normal := stoppedInstanceResult()["UHostSet"].([]any)[0]
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{pod, normal}},
+		"GetCompShareInstancePrice": {"PriceDetails": []any{map[string]any{"Disks": float64(0.8)}}},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return false }
+	onStep, _ := collectEvents()
+
+	def := CreateDiskDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-test",
+		"Size":    float64(100),
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, "确认创建数据盘", result.StoppedAt)
+	assert.NotContains(t, result.Message, "Pod/容器")
+	priceCall, priced := findExecutorCall(executor.calls, "GetCompShareInstancePrice")
+	require.True(t, priced, "workflow should continue to price the requested normal instance")
+	assert.Equal(t, "cn-sh2-02", priceCall.args["Zone"])
+}
+
 func TestCreateDisk_BlocksBeforeConfirmWhenPriceMissing(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": stoppedInstanceResult(),

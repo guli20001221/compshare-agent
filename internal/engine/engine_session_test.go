@@ -274,9 +274,11 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Optional deploy preference extractor injection + its per-turn result.
 		// Kept per-session so test doubles / future stateful wrappers cannot
 		// leak calls or extracted preferences across users.
-		"createPreferenceExtractor": true,
-		"createPreferenceThisTurn":  true,
-		"turnTokensConsumed":        true,
+		"createPreferenceExtractor":   true,
+		"contextContinuationResolver": true,
+		"contextDecisionLayer":        true,
+		"createPreferenceThisTurn":    true,
+		"turnTokensConsumed":          true,
 		// Per-turn ReAct loop counters feeding the trace's react_rounds field and
 		// the budget terminus. Per-session/per-turn by design — a shared counter
 		// would attribute one tenant's loop depth to another's turn. Reset every turn.
@@ -297,6 +299,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"tokenUsageObserver":                true,
 		"rateLimitObserver":                 true,
 		"hardBlockObserver":                 true,
+		"contextDecisionObserver":           true,
 		// stepSink is the agent-tier saga StepTrace sink (B8), set per-turn via
 		// SetStepSink to THIS session's trace recorder. Per-session by design:
 		// sharing it would route one tenant's step traces into another tenant's
@@ -332,12 +335,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 56, len(perSessionFields); want != got {
+	if want, got := 59, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 72, typ.NumField(); want != got {
+	if want, got := 75, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

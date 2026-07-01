@@ -148,6 +148,7 @@ func (e *Engine) runDeployModel(ctx context.Context, dispatch routerDispatchResu
 		// masking it with the generic "tell me what to deploy" clarification.
 		var ue deployUserError
 		if errors.As(err, &ue) {
+			e.recordDeployContextFrameFromError(effectiveUserMsg, matchUserMsg, userZone, ue.Error())
 			e.recordPendingDeployModelFromReply(ue.Error())
 			return e.deployReply(result, dispatch.latency, ue.Error())
 		}
@@ -240,11 +241,18 @@ func (e *Engine) runDeployModel(ctx context.Context, dispatch routerDispatchResu
 	sagaResult, sagaErr := e.RunAgentSaga(ctx, def, params, "deploy_model")
 	if sagaErr != nil {
 		// Programming/validation error (nil def / L2 in def) — not a step failure.
+		e.recordDeployContextFrameFromPlan(userMsg, plan, fmt.Sprintf("创建流程未能启动：%v", sagaErr))
 		return e.deployReply(result, dispatch.latency,
 			fmt.Sprintf("创建流程未能启动：%v", sagaErr))
 	}
 	if !sagaResult.Success {
-		return e.deployReply(result, dispatch.latency, e.deployStopReplyWithAlternatives(ctx, sagaResult, plan))
+		reply := e.deployStopReplyWithAlternatives(ctx, sagaResult, plan)
+		if createAttemptShouldClearContextFrame(reply) {
+			e.clearCreateFamilyCarry()
+		} else {
+			e.recordDeployContextFrameFromPlan(userMsg, plan, reply)
+		}
+		return e.deployReply(result, dispatch.latency, reply)
 	}
 
 	// (4) Recover the new instance id and reply on the saga's own post-create
@@ -272,6 +280,7 @@ func (e *Engine) runDeployModel(ctx context.Context, dispatch routerDispatchResu
 	// Read-only, success-path only; degrades to no-guidance on any error.
 	usage := e.fetchImageUsage(ctx, plan)
 
+	e.clearCreateFamilyCarry()
 	return e.deployReply(result, dispatch.latency, buildDeployReply(plan, uHostId, host, state, usage))
 }
 
@@ -302,6 +311,46 @@ func (e *Engine) recordLastDeployTarget(model, zone string) {
 	e.sessionState.LastDeployWorkload = model
 	e.sessionState.LastDeployZone = strings.TrimSpace(zone)
 	e.sessionState.PendingDeployModel = ""
+}
+
+func (e *Engine) recordDeployContextFrameFromError(userMsg, matchUserMsg, zone, reason string) {
+	if !ContextContinuationEnabled() || !e.sessionStateHydrated {
+		return
+	}
+	frame := newContextFrame(ContextFrameKindDeploy, intent.IntentRoute{Intent: intent.IntentDeployModel}, userMsg, e.userTurn, time.Now())
+	frame.Status = ContextFrameStatusFailedRecoverable
+	frame.Zone = strings.TrimSpace(zone)
+	frame.ZoneLabel = e.zoneDisplayName(e.currentCtx, zone)
+	frame.FailureReason = strings.TrimSpace(reason)
+	if pref := e.createPreferenceThisTurn; pref != nil {
+		frame.GPU = strings.TrimSpace(pref.GPUPref)
+		frame.ImagePref = strings.TrimSpace(pref.ImagePref)
+		frame.ImageSource = strings.TrimSpace(pref.ImageSource)
+		frame.Workload = strings.TrimSpace(pref.WorkloadPref)
+	}
+	if frame.GPU == "" {
+		frame.GPU = extractDeployGPU(matchUserMsg)
+	}
+	if frame.Workload == "" {
+		frame.Workload = extractDeploySizedModelName(matchUserMsg)
+	}
+	e.setContextFrame(frame)
+}
+
+func (e *Engine) recordDeployContextFrameFromPlan(userMsg string, plan deployPlan, reason string) {
+	if !ContextContinuationEnabled() || !e.sessionStateHydrated {
+		return
+	}
+	frame := newContextFrame(ContextFrameKindDeploy, intent.IntentRoute{Intent: intent.IntentDeployModel}, userMsg, e.userTurn, time.Now())
+	frame.Status = ContextFrameStatusFailedRecoverable
+	frame.GPU = strings.TrimSpace(plan.GpuType)
+	frame.ImagePref = strings.TrimSpace(plan.ImageName)
+	frame.ImageSource = strings.TrimSpace(plan.ImageSource)
+	frame.Workload = strings.TrimSpace(plan.ModelName)
+	frame.Zone = strings.TrimSpace(plan.ChosenZone)
+	frame.ZoneLabel = strings.TrimSpace(plan.ZoneLabel)
+	frame.FailureReason = strings.TrimSpace(reason)
+	e.setContextFrame(frame)
 }
 
 func (e *Engine) recordPendingDeployModelFromReply(reply string) {
