@@ -5417,8 +5417,15 @@ func (e *Engine) workflowTargetIsTrusted(uHostId string, targetAutoFilled bool) 
 	if strings.TrimSpace(e.lastUserMsg) == "" {
 		return true
 	}
-	if strings.TrimSpace(e.sessionState.SelectedInstanceID) == uHostId ||
-		strings.TrimSpace(e.selectedInstanceIDAtTurnStart) == uHostId {
+	// Trust ONLY the binding frozen at turn start (engine.go:1254), never the
+	// live e.sessionState.SelectedInstanceID: a model-issued single-host
+	// DescribeCompShareInstance writes the live field mid-turn
+	// (recordToolFacts -> recordInstanceStateFacts -> recordSelectedInstanceID),
+	// so trusting it would let the model self-elect a target — the exact
+	// phantom-selection this guard exists to stop. A genuinely user-referenced
+	// target is still trusted via the explicit-ID / pending-selection /
+	// name-mention branches below.
+	if strings.TrimSpace(e.selectedInstanceIDAtTurnStart) == uHostId {
 		return true
 	}
 	if strings.Contains(strings.TrimSpace(e.lastUserMsg), uHostId) {

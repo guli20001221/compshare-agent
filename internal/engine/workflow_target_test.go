@@ -157,6 +157,11 @@ func TestExecuteWorkflowAllowsSelectedInstanceTarget(t *testing.T) {
 		SelectedInstanceID:   "uhost-a",
 		SelectedInstanceName: "alpha",
 	}, 1)
+	// "它" refers to an instance selected in a PRIOR turn. In the real Chat()
+	// flow that carried binding is captured into the turn-start snapshot
+	// (engine.go:1254) before the turn runs; the guard trusts only that frozen
+	// snapshot, never a value written mid-turn by a model tool call.
+	eng.selectedInstanceIDAtTurnStart = "uhost-a"
 	eng.lastUserMsg = "帮我关机它"
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
 		"TotalCount": float64(2),
