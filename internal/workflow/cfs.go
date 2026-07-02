@@ -178,11 +178,11 @@ func stepQueryCFSForResize() Step {
 				cfsID = strings.TrimSpace(paramStr(wfCtx.Params, "CFSId", ""))
 			}
 			if cfsID == "" {
-				return nil, fmt.Errorf("扩容 CFS 需要指定 CFS ID。")
+				return nil, NewMissingSlotError("扩容 CFS 需要指定 CFS ID。", "cfs_id")
 			}
 			targetSize := paramNum(wfCtx.Params, "Size", 0)
 			if targetSize <= 0 {
-				return nil, fmt.Errorf("扩容 CFS 需要指定目标容量（GB）。")
+				return nil, NewMissingSlotError("扩容 CFS 需要指定目标容量（GB）。", "target_size_gb")
 			}
 			wfCtx.Params["CfsId"] = cfsID
 			wfCtx.Params["Size"] = targetSize
@@ -278,15 +278,15 @@ func stepResizeCFS() Step {
 func normalizeCreateCFSParams(wfCtx *Context) error {
 	name := strings.TrimSpace(paramStr(wfCtx.Params, "Name", ""))
 	if name == "" {
-		return fmt.Errorf("创建 CFS 需要指定名称。")
+		return NewMissingSlotError("创建 CFS 需要指定名称。", "name")
 	}
 	size := paramNum(wfCtx.Params, "Size", 0)
 	if size < minCFSSizeGB || size > maxCFSSizeGB {
-		return fmt.Errorf("CFS 容量需在 %dGB 到 %dGB 之间。", minCFSSizeGB, maxCFSSizeGB)
+		return NewMissingSlotError(fmt.Sprintf("CFS 容量需在 %dGB 到 %dGB 之间。", minCFSSizeGB, maxCFSSizeGB), "size_gb")
 	}
 	zone := strings.TrimSpace(paramStr(wfCtx.Params, "Zone", ""))
 	if zone == "" {
-		return fmt.Errorf("创建 CFS 需要指定可用区。")
+		return NewMissingSlotError("创建 CFS 需要指定可用区。", "zone")
 	}
 	region := strings.TrimSpace(paramStr(wfCtx.Params, "Region", ""))
 	if region == "" {

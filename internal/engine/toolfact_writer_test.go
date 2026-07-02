@@ -304,7 +304,7 @@ func TestRecordToolFacts_NotHydratedSkipsWrite(t *testing.T) {
 			map[string]any{"UHostId": "uhost-A", "Name": "x", "State": "Running"},
 		},
 	}
-	e.recordToolFacts("DescribeCompShareInstance", &tools.SafeToolResult{RawResult: raw})
+	e.recordToolFacts("DescribeCompShareInstance", nil, &tools.SafeToolResult{RawResult: raw})
 
 	assert.Empty(t, e.sessionState.RecentFacts,
 		"un-hydrated engine must never write RecentFacts — CLI path safety")
@@ -313,8 +313,8 @@ func TestRecordToolFacts_NotHydratedSkipsWrite(t *testing.T) {
 // TestRecordToolFacts_NilResultSkipsWrite covers the defensive nil checks.
 func TestRecordToolFacts_NilResultSkipsWrite(t *testing.T) {
 	e := newEngineForToolFactTest(t)
-	e.recordToolFacts("DescribeCompShareInstance", nil)
-	e.recordToolFacts("DescribeCompShareInstance", &tools.SafeToolResult{RawResult: nil})
+	e.recordToolFacts("DescribeCompShareInstance", nil, nil)
+	e.recordToolFacts("DescribeCompShareInstance", nil, &tools.SafeToolResult{RawResult: nil})
 	assert.Empty(t, e.sessionState.RecentFacts)
 }
 
@@ -326,14 +326,48 @@ func TestRecordToolFacts_UnknownActionSkipsWrite(t *testing.T) {
 	for _, action := range []string{
 		"StartCompShareInstance",
 		"DescribeCompShareImages",
-		"GetCompShareInstancePrice",
-		"DescribeAvailableCompShareInstanceTypes",
 		"DescribeCommunityImages",
 	} {
 		e.sessionState.RecentFacts = nil
-		e.recordToolFacts(action, &tools.SafeToolResult{RawResult: raw})
-		assert.Emptyf(t, e.sessionState.RecentFacts, "action %q must not produce facts in M2 v1", action)
+		e.recordToolFacts(action, nil, &tools.SafeToolResult{RawResult: raw})
+		assert.Emptyf(t, e.sessionState.RecentFacts, "action %q must not produce facts", action)
 	}
+}
+
+func TestRecordToolFacts_RecordsStockPriceAndBillingFacts(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+
+	e.recordToolFacts("DescribeAvailableCompShareInstanceTypes", nil, &tools.SafeToolResult{RawResult: map[string]any{
+		"AvailableInstanceTypes": []any{map[string]any{
+			"Name":   "4090",
+			"Status": "Normal",
+			"Zone":   "cn-wlcb-01",
+		}},
+	}})
+	e.recordToolFacts("GetCompShareInstanceUserPrice", map[string]any{
+		"GpuType":    "4090",
+		"Zone":       "cn-wlcb-01",
+		"ChargeType": "Dynamic",
+	}, &tools.SafeToolResult{RawResult: map[string]any{
+		"PriceDetails": []any{map[string]any{"Price": float64(1.58), "OriginalPrice": float64(1.98)}},
+	}})
+	e.recordToolFacts("GetCompShareRefundPrice", map[string]any{
+		"UHostId": "uhost-1",
+	}, &tools.SafeToolResult{RawResult: map[string]any{
+		"RefundPrice": float64(42.5),
+	}})
+
+	require.Len(t, e.sessionState.RecentFacts, 3)
+	byKind := map[string]ToolFact{}
+	for _, fact := range e.sessionState.RecentFacts {
+		byKind[fact.Kind] = fact
+	}
+	assert.Equal(t, "4090", byKind[FactKindStockSnapshot].Payload["model"])
+	assert.Equal(t, "Normal", byKind[FactKindStockSnapshot].Payload["status"])
+	assert.Equal(t, "4090", byKind[FactKindPriceQuote].Payload["gpu_type"])
+	assert.Equal(t, float64(1.58), byKind[FactKindPriceQuote].Payload["price"])
+	assert.Equal(t, "uhost-1", byKind[FactKindBillingQuote].Payload["resource_id"])
+	assert.Equal(t, float64(42.5), byKind[FactKindBillingQuote].Payload["amount"])
 }
 
 // ---------------------------------------------------------------------------

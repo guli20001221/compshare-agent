@@ -729,6 +729,59 @@ func TestRecordLastStockGpuModel_UngatedByHydration(t *testing.T) {
 		"a new single referent overwrites the prior one")
 }
 
+func TestStockGpuModelFromRecentFacts_UsesLatestFreshSpecificModel(t *testing.T) {
+	now := time.Unix(2_000, 0)
+	facts := []ToolFact{
+		{
+			Kind:           FactKindStockSnapshot,
+			SubjectID:      "stock:4090",
+			Payload:        map[string]any{"model": "4090"},
+			ProducedAtUnix: now.Add(-4 * time.Second).Unix(),
+			TTLSeconds:     factTTLSecondsStockSnapshot,
+		},
+		{
+			Kind:           FactKindStockSnapshot,
+			SubjectID:      "stock:all",
+			Payload:        map[string]any{"model": "all"},
+			ProducedAtUnix: now.Add(-2 * time.Second).Unix(),
+			TTLSeconds:     factTTLSecondsStockSnapshot,
+		},
+		{
+			Kind:           FactKindStockSnapshot,
+			SubjectID:      "stock:5090",
+			Payload:        map[string]any{"model": "5090"},
+			ProducedAtUnix: now.Add(-1 * time.Second).Unix(),
+			TTLSeconds:     factTTLSecondsStockSnapshot,
+		},
+	}
+
+	assert.Equal(t, "5090", stockGpuModelFromRecentFacts(facts, now))
+
+	facts[2].ProducedAtUnix = now.Add(-time.Duration(factTTLSecondsStockSnapshot+1) * time.Second).Unix()
+	assert.Equal(t, "4090", stockGpuModelFromRecentFacts(facts, now))
+}
+
+func TestFallbackStockGpuModel_RecentFactsRequireSessionFactContext(t *testing.T) {
+	now := time.Unix(2_000, 0)
+	eng := newEngineForSessionStateTest(t)
+	eng.sessionState.RecentFacts = []ToolFact{{
+		Kind:           FactKindStockSnapshot,
+		SubjectID:      "stock:5090",
+		Payload:        map[string]any{"model": "5090"},
+		ProducedAtUnix: now.Unix(),
+		TTLSeconds:     factTTLSecondsStockSnapshot,
+	}}
+
+	assert.Empty(t, eng.fallbackStockGpuModel(now), "flag-off must not consume RecentFacts")
+
+	eng.sessionFactContextEnabled = true
+	assert.Equal(t, "5090", eng.fallbackStockGpuModel(now), "flag-on may consume RecentFacts")
+
+	eng.sessionFactContextEnabled = false
+	eng.sessionState.LastStockGpuModel = "4090"
+	assert.Equal(t, "4090", eng.fallbackStockGpuModel(now), "legacy stock memory remains available with flag off")
+}
+
 // TestToolFact_TTLDefaultsByKind verifies the per-kind default TTL constants.
 // Adding a new kind requires adding a TTL constant and the case in
 // ttlSecondsForKind. Renamed from the original TestToolFact_PayloadKeysPerKind
@@ -737,6 +790,9 @@ func TestRecordLastStockGpuModel_UngatedByHydration(t *testing.T) {
 func TestToolFact_TTLDefaultsByKind(t *testing.T) {
 	assert.Equal(t, factTTLSecondsInstanceState, ttlSecondsForKind(FactKindInstanceState))
 	assert.Equal(t, factTTLSecondsMonitorSample, ttlSecondsForKind(FactKindMonitorSample))
+	assert.Equal(t, factTTLSecondsStockSnapshot, ttlSecondsForKind(FactKindStockSnapshot))
+	assert.Equal(t, factTTLSecondsPriceQuote, ttlSecondsForKind(FactKindPriceQuote))
+	assert.Equal(t, factTTLSecondsBillingQuote, ttlSecondsForKind(FactKindBillingQuote))
 	assert.Greater(t, ttlSecondsForKind(FactKindInstanceState), 0,
 		"instance_state TTL must be positive — zero would make M3 assembler treat it as expired")
 	assert.Greater(t, ttlSecondsForKind(FactKindMonitorSample), 0,
@@ -776,6 +832,30 @@ func TestToolFact_PayloadKeysEnforced(t *testing.T) {
 			"vram_usage":        "70.0",
 			"system_disk_usage": "12.0",
 			"data_disk_usage":   "8.0",
+		},
+		FactKindStockSnapshot: {
+			"model":  "4090",
+			"status": "Normal",
+			"zone":   "cn-wlcb-01",
+			"count":  float64(10),
+			"enough": true,
+			"action": "DescribeAvailableCompShareInstanceTypes",
+		},
+		FactKindPriceQuote: {
+			"action":         "GetCompShareInstanceUserPrice",
+			"gpu_type":       "4090",
+			"zone":           "cn-wlcb-01",
+			"charge_type":    "Dynamic",
+			"price":          float64(1.58),
+			"original_price": float64(1.98),
+			"target":         "4090",
+		},
+		FactKindBillingQuote: {
+			"action":      "GetCompShareRefundPrice",
+			"resource_id": "uhost-1",
+			"amount":      float64(42.5),
+			"target":      "refund",
+			"note":        "退费估算",
 		},
 	}
 	for kind, payload := range canonical {

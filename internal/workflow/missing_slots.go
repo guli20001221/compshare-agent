@@ -150,6 +150,185 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 			return ""
 		},
 	},
+	"SetStopSchedulerWorkflow": {
+		missingSlots: []string{"stop_time"},
+		parseUpdates: func(missing []string, userMsg string) map[string]string {
+			if !slotSet(missing)["stop_time"] || strings.TrimSpace(userMsg) == "" {
+				return nil
+			}
+			return map[string]string{"stop_time": strings.TrimSpace(userMsg)}
+		},
+		buildArgs: func(slots map[string]string) (map[string]any, []string) {
+			normalized := NormalizeTaskSlotUpdates(slots)
+			args, missing := baseWorkflowTaskArgs("SetStopSchedulerWorkflow", normalized)
+			stopTime := normalized["stop_time"]
+			if stopTime == "" {
+				missing = append(missing, "stop_time")
+			} else if minutes, ok := parseTaskSlotStopMinutes(stopTime); ok {
+				args["AfterMinutes"] = minutes
+			} else {
+				args["ShutdownAt"] = stopTime
+			}
+			return finishTaskArgs(args, missing)
+		},
+		clarify: func(missing []string) string {
+			if slotSet(missing)["stop_time"] {
+				return "需要先确认关机时间。请告诉我要多久后关机，例如 30 分钟后。"
+			}
+			return ""
+		},
+	},
+	"ReinstallInstanceWorkflow": {
+		missingSlots: []string{"image_id"},
+		parseUpdates: func(missing []string, userMsg string) map[string]string {
+			if !slotSet(missing)["image_id"] || strings.TrimSpace(userMsg) == "" {
+				return nil
+			}
+			return map[string]string{"image_id": strings.TrimSpace(userMsg)}
+		},
+		buildArgs: func(slots map[string]string) (map[string]any, []string) {
+			normalized := NormalizeTaskSlotUpdates(slots)
+			args, missing := baseWorkflowTaskArgs("ReinstallInstanceWorkflow", normalized)
+			if imageID := normalized["image_id"]; imageID != "" {
+				args["CompShareImageId"] = imageID
+			} else {
+				missing = append(missing, "image_id")
+			}
+			return finishTaskArgs(args, missing)
+		},
+		clarify: func(missing []string) string {
+			if slotSet(missing)["image_id"] {
+				return "需要先确认目标镜像。请告诉我要重装到哪个镜像。"
+			}
+			return ""
+		},
+	},
+	"CreateCFSWorkflow": {
+		missingSlots: []string{"name", "size_gb", "zone"},
+		parseUpdates: func(missing []string, userMsg string) map[string]string {
+			updates := map[string]string{}
+			missingSet := slotSet(missing)
+			if missingSet["size_gb"] {
+				if _, ok := parseTaskSlotNumber(userMsg); ok {
+					updates["size_gb"] = strings.TrimSpace(userMsg)
+				}
+			}
+			if len(updates) == 0 {
+				return nil
+			}
+			return updates
+		},
+		buildArgs: func(slots map[string]string) (map[string]any, []string) {
+			normalized := NormalizeTaskSlotUpdates(slots)
+			args := map[string]any{}
+			var missing []string
+			if name := normalized["name"]; name != "" {
+				args["Name"] = name
+			} else {
+				missing = append(missing, "name")
+			}
+			if size, ok := parseTaskSlotNumber(normalized["size_gb"]); ok {
+				args["Size"] = size
+			} else {
+				missing = append(missing, "size_gb")
+			}
+			if zone := normalized["zone"]; zone != "" {
+				args["Zone"] = zone
+			} else {
+				missing = append(missing, "zone")
+			}
+			if chargeType := normalized["charge_type"]; chargeType != "" {
+				args["ChargeType"] = chargeType
+			}
+			return finishTaskArgs(args, missing)
+		},
+		clarify: func(missing []string) string {
+			seen := slotSet(missing)
+			switch {
+			case seen["name"]:
+				return "需要先确认 CFS 名称。"
+			case seen["size_gb"]:
+				return "需要先确认 CFS 容量，例如 100GB。"
+			case seen["zone"]:
+				return "需要先确认 CFS 可用区。"
+			default:
+				return ""
+			}
+		},
+	},
+	"ResizeCFSWorkflow": {
+		missingSlots: []string{"cfs_id", "target_size_gb"},
+		parseUpdates: func(missing []string, userMsg string) map[string]string {
+			updates := map[string]string{}
+			missingSet := slotSet(missing)
+			if missingSet["target_size_gb"] {
+				if _, ok := parseTaskSlotNumber(userMsg); ok {
+					updates["target_size_gb"] = strings.TrimSpace(userMsg)
+				}
+			}
+			if missingSet["cfs_id"] {
+				if id := parseTaskSlotID(userMsg, "cfs-"); id != "" {
+					updates["cfs_id"] = id
+				}
+			}
+			if len(updates) == 0 {
+				return nil
+			}
+			return updates
+		},
+		buildArgs: func(slots map[string]string) (map[string]any, []string) {
+			normalized := NormalizeTaskSlotUpdates(slots)
+			args := map[string]any{}
+			var missing []string
+			if id := normalized["cfs_id"]; id != "" {
+				args["CfsId"] = id
+			} else {
+				missing = append(missing, "cfs_id")
+			}
+			if size, ok := parseTaskSlotNumber(normalized["target_size_gb"]); ok {
+				args["Size"] = size
+			} else {
+				missing = append(missing, "target_size_gb")
+			}
+			return finishTaskArgs(args, missing)
+		},
+		clarify: func(missing []string) string {
+			seen := slotSet(missing)
+			if seen["cfs_id"] {
+				return "需要先确认要扩容的 CFS ID。"
+			}
+			if seen["target_size_gb"] {
+				return "需要先确认 CFS 扩容后的目标容量，例如 200GB。"
+			}
+			return ""
+		},
+	},
+	"EnableNetOptimizerWorkflow": {
+		missingSlots: []string{"zone"},
+		parseUpdates: func(missing []string, userMsg string) map[string]string {
+			if !slotSet(missing)["zone"] || strings.TrimSpace(userMsg) == "" {
+				return nil
+			}
+			return map[string]string{"zone": strings.TrimSpace(userMsg)}
+		},
+		buildArgs: func(slots map[string]string) (map[string]any, []string) {
+			normalized := NormalizeTaskSlotUpdates(slots)
+			args := map[string]any{}
+			var missing []string
+			if zone := normalized["zone"]; zone != "" {
+				args["Zone"] = zone
+			} else {
+				missing = append(missing, "zone")
+			}
+			return finishTaskArgs(args, missing)
+		},
+		clarify: func(missing []string) string {
+			if slotSet(missing)["zone"] {
+				return "需要先确认要开启网络加速的可用区。"
+			}
+			return ""
+		},
+	},
 }
 
 func TaskSlotUpdatesFromUserText(workflowName string, missing []string, userMsg string) map[string]string {
@@ -212,6 +391,18 @@ func normalizeTaskSlotKey(key string) string {
 		return "memory_gb"
 	case "gpu_count", "gpu_num":
 		return "gpu_count"
+	case "stop_time", "after_minutes", "shutdown_at":
+		return "stop_time"
+	case "image_id", "comp_share_image_id", "compshareimageid", "comp_share_imageid":
+		return "image_id"
+	case "cfs_id", "cfsid":
+		return "cfs_id"
+	case "name":
+		return "name"
+	case "zone":
+		return "zone"
+	case "charge_type", "chargetype":
+		return "charge_type"
 	default:
 		return ""
 	}
@@ -243,7 +434,7 @@ func finishTaskArgs(args map[string]any, missing []string) (map[string]any, []st
 
 func workflowRequiresInstanceTarget(workflowName string) bool {
 	switch workflowName {
-	case "CreateDiskWorkflow", "ResizeDiskWorkflow", "ResizeInstanceWorkflow":
+	case "CreateDiskWorkflow", "ResizeDiskWorkflow", "ResizeInstanceWorkflow", "SetStopSchedulerWorkflow", "ReinstallInstanceWorkflow":
 		return true
 	default:
 		return false
@@ -266,9 +457,36 @@ func parseTaskSlotNumber(value string) (float64, bool) {
 	return n, true
 }
 
+func parseTaskSlotID(value, prefix string) string {
+	for _, field := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '，' || r == ',' || r == '。' || r == ';' || r == '；'
+	}) {
+		field = strings.Trim(field, "“”\"'()（）")
+		if strings.HasPrefix(strings.ToLower(field), strings.ToLower(prefix)) {
+			return field
+		}
+	}
+	return ""
+}
+
+func parseTaskSlotStopMinutes(value string) (float64, bool) {
+	v := strings.TrimSpace(value)
+	if m := taskStopAfterMinutesRE.FindStringSubmatch(v); len(m) == 2 {
+		return parseTaskSlotNumber(m[1])
+	}
+	if m := taskStopAfterHoursRE.FindStringSubmatch(v); len(m) == 2 {
+		if hours, ok := parseTaskSlotNumber(m[1]); ok {
+			return hours * 60, true
+		}
+	}
+	return parseTaskSlotNumber(v)
+}
+
 var (
 	taskResizeCPUMemorySpecRE = regexp.MustCompile(`(?i)(\d+)\s*(?:c|cpu|vcpu|核)\s*[/,， ]*\s*(\d+)\s*(?:g|gb|gib)`)
 	taskResizeGPUCountSpecRE  = regexp.MustCompile(`(?i)(\d+)\s*(?:张\s*)?(?:gpu|卡)`)
+	taskStopAfterMinutesRE    = regexp.MustCompile(`(?i)(\d+)\s*(?:分钟|分|min|mins|minute|minutes|m)\s*后?`)
+	taskStopAfterHoursRE      = regexp.MustCompile(`(?i)(\d+)\s*(?:小时|时|hour|hours|h)\s*后?`)
 )
 
 const maxTaskResizeGPUCount = 16

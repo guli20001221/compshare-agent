@@ -208,6 +208,9 @@ type ToolFact struct {
 const (
 	FactKindInstanceState = "instance_state"
 	FactKindMonitorSample = "monitor_sample"
+	FactKindStockSnapshot = "stock_snapshot"
+	FactKindPriceQuote    = "price_quote"
+	FactKindBillingQuote  = "billing_quote"
 )
 
 // Per-kind TTL constants. Facts are descriptive same-session context ("刚才那个
@@ -220,6 +223,9 @@ const (
 const (
 	factTTLSecondsInstanceState = 300
 	factTTLSecondsMonitorSample = 300
+	factTTLSecondsStockSnapshot = 300
+	factTTLSecondsPriceQuote    = 300
+	factTTLSecondsBillingQuote  = 300
 )
 
 // maxRecentFacts caps RecentFacts slice length to bound persist payload
@@ -239,6 +245,12 @@ func ttlSecondsForKind(kind string) int {
 		return factTTLSecondsInstanceState
 	case FactKindMonitorSample:
 		return factTTLSecondsMonitorSample
+	case FactKindStockSnapshot:
+		return factTTLSecondsStockSnapshot
+	case FactKindPriceQuote:
+		return factTTLSecondsPriceQuote
+	case FactKindBillingQuote:
+		return factTTLSecondsBillingQuote
 	default:
 		return 0
 	}
@@ -274,6 +286,33 @@ func expectedPayloadKeysForKind(kind string) map[string]struct{} {
 			"vram_usage":        {},
 			"system_disk_usage": {},
 			"data_disk_usage":   {},
+		}
+	case FactKindStockSnapshot:
+		return map[string]struct{}{
+			"model":  {},
+			"status": {},
+			"zone":   {},
+			"count":  {},
+			"enough": {},
+			"action": {},
+		}
+	case FactKindPriceQuote:
+		return map[string]struct{}{
+			"action":         {},
+			"gpu_type":       {},
+			"zone":           {},
+			"charge_type":    {},
+			"price":          {},
+			"original_price": {},
+			"target":         {},
+		}
+	case FactKindBillingQuote:
+		return map[string]struct{}{
+			"action":      {},
+			"resource_id": {},
+			"amount":      {},
+			"target":      {},
+			"note":        {},
 		}
 	default:
 		return nil

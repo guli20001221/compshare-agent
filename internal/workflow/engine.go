@@ -173,6 +173,7 @@ func (e *Engine) runConfirmStep(ctx context.Context, def *Definition, step Step,
 	for edits := 0; ; {
 		args, err := step.BuildArgs(wfCtx)
 		if err != nil {
+			result.MissingSlots = MissingSlotsFromError(err)
 			return failStop(fmt.Sprintf("步骤「%s」参数构建失败: %v", step.Name, err))
 		}
 
