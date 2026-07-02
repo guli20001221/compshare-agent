@@ -2448,13 +2448,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	if fallbackInstanceID != "" {
 		req.FallbackInstanceID = fallbackInstanceID
 	}
-	// RC017: stock referent. Read ungated by sessionStateHydrated (unlike
-	// SelectedInstanceID above) so the CLI in-memory single-session path
-	// carries it — see recordLastStockGpuModel. In HTTP non-hydrated turns
-	// ClearSessionState already zeroed it, so the empty check stays safe.
-	if e.sessionState.LastStockGpuModel != "" {
-		req.FallbackGpuModel = e.sessionState.LastStockGpuModel
-	}
+	req.FallbackGpuModel = e.fallbackStockGpuModel(time.Now())
 	var handled intent.HandlerResult
 	switch result.Plan.Intent {
 	case intent.IntentResourceInfo:
@@ -2551,6 +2545,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 		e.recordLastIntentFromPlan(result.Plan)
 		e.recordLastStockGpuModel(handled.ResolvedStockGpuModel)
+		e.recordResolvedStockGpuFact(handled.ResolvedStockGpuModel)
 		e.recordPendingSelectionFromHandlerResult(handled, result.Plan, userMsg)
 	}
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -4292,7 +4287,7 @@ func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest)
 	}
 	if err == nil && req.Origin == tools.OriginDirectLLM {
 		e.markRegistryInvalidated(req.Action)
-		e.recordToolFacts(req.Action, result)
+		e.recordToolFacts(req.Action, req.Args, result)
 	}
 	return result, err
 }
@@ -4312,7 +4307,7 @@ func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest)
 // v1 supported actions:
 //   - DescribeCompShareInstance → instance_state per UHostId
 //   - GetCompShareInstanceMonitor → monitor_sample per UHostId
-func (e *Engine) recordToolFacts(action string, result *tools.SafeToolResult) {
+func (e *Engine) recordToolFacts(action string, args map[string]any, result *tools.SafeToolResult) {
 	if !e.sessionStateHydrated {
 		return
 	}
@@ -4324,7 +4319,219 @@ func (e *Engine) recordToolFacts(action string, result *tools.SafeToolResult) {
 		e.recordInstanceStateFacts(result.RawResult)
 	case "GetCompShareInstanceMonitor":
 		e.recordMonitorSampleFacts(result.RawResult)
+	case "DescribeAvailableCompShareInstanceTypes", "DescribeCompShareGpuInventory", "CheckCompShareResourceCapacity":
+		e.recordStockSnapshotFact(action, args, result.RawResult)
+	case "GetCompShareInstancePrice", "GetCompShareInstanceUserPrice", "GetCompShareInstanceUpgradePrice", "GetCompShareAttachedDiskUpgradePrice", "GetCompShareCFSPrice", "GetCompShareCFSUpgradePrice":
+		e.recordPriceQuoteFact(action, args, result.RawResult)
+	case "GetCompShareRefundPrice", "GetCompShareCFSRefundPrice", "DiagnoseBilling":
+		e.recordBillingQuoteFact(action, args, result.RawResult)
 	}
+}
+
+func (e *Engine) recordStockSnapshotFact(action string, args map[string]any, raw map[string]any) {
+	nowUnix := time.Now().Unix()
+	model := firstStringAny(args, "GpuType", "GPUType", "Name")
+	zone := firstStringAny(args, "Zone")
+	status := firstStringAny(raw, "Status")
+	if model == "" {
+		if items := mapAnySlice(raw, "AvailableInstanceTypes"); len(items) == 1 {
+			model = firstStringAny(items[0], "Name", "GpuType")
+			if zone == "" {
+				zone = firstStringAny(items[0], "Zone")
+			}
+			if status == "" {
+				status = firstStringAny(items[0], "Status")
+			}
+		}
+	}
+	if model == "" {
+		model = "all"
+	}
+	payload := map[string]any{
+		"model":  model,
+		"action": action,
+	}
+	if status != "" {
+		payload["status"] = status
+	}
+	if zone != "" {
+		payload["zone"] = zone
+	}
+	if count, ok := firstNumberAny(raw, "Count", "TotalCount", "Gpu", "GPU"); ok {
+		payload["count"] = toFactNumeric(count)
+	}
+	if enough, ok := raw["ResourceEnough"].(bool); ok {
+		payload["enough"] = enough
+	}
+	if !isAllAcceptedKeys(FactKindStockSnapshot, payload) {
+		return
+	}
+	subject := "stock:" + model
+	if zone != "" {
+		subject += ":" + zone
+	}
+	e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
+		Kind:           FactKindStockSnapshot,
+		SubjectID:      subject,
+		Payload:        payload,
+		ProducedAtTurn: e.userTurn,
+		ProducedAtUnix: nowUnix,
+		TTLSeconds:     factTTLSecondsStockSnapshot,
+	})
+}
+
+func (e *Engine) recordPriceQuoteFact(action string, args map[string]any, raw map[string]any) {
+	payload := map[string]any{"action": action}
+	if gpu := firstStringAny(args, "GpuType", "GPUType"); gpu != "" {
+		payload["gpu_type"] = gpu
+	}
+	if zone := firstStringAny(args, "Zone"); zone != "" {
+		payload["zone"] = zone
+	}
+	if charge := firstStringAny(args, "ChargeType"); charge != "" {
+		payload["charge_type"] = charge
+	}
+	if target := firstStringAny(args, "UHostId", "CfsId", "CFSId", "DiskId", "UDiskId"); target != "" {
+		payload["target"] = target
+	}
+	if price, ok := firstPriceNumberAny(raw, "Price", "TotalPrice", "DeltaPrice"); ok {
+		payload["price"] = toFactNumeric(price)
+	}
+	if original, ok := firstPriceNumberAny(raw, "OriginalPrice", "ListPrice", "OriginalTotalPrice"); ok {
+		payload["original_price"] = toFactNumeric(original)
+	}
+	if !isAllAcceptedKeys(FactKindPriceQuote, payload) {
+		return
+	}
+	subject := "price:" + action
+	if target, _ := payload["target"].(string); target != "" {
+		subject += ":" + target
+	} else if gpu, _ := payload["gpu_type"].(string); gpu != "" {
+		subject += ":" + gpu
+	}
+	e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
+		Kind:           FactKindPriceQuote,
+		SubjectID:      subject,
+		Payload:        payload,
+		ProducedAtTurn: e.userTurn,
+		ProducedAtUnix: time.Now().Unix(),
+		TTLSeconds:     factTTLSecondsPriceQuote,
+	})
+}
+
+func (e *Engine) recordBillingQuoteFact(action string, args map[string]any, raw map[string]any) {
+	payload := map[string]any{"action": action}
+	if id := firstStringAny(args, "UHostId", "CfsId", "CFSId", "ResourceId"); id != "" {
+		payload["resource_id"] = id
+	}
+	if amount, ok := firstPriceNumberAny(raw, "RefundPrice", "RefundAmount", "Price", "TotalPrice"); ok {
+		payload["amount"] = toFactNumeric(amount)
+	}
+	if target := firstStringAny(args, "Target", "Action"); target != "" {
+		payload["target"] = target
+	}
+	if !isAllAcceptedKeys(FactKindBillingQuote, payload) {
+		return
+	}
+	subject := "billing:" + action
+	if id, _ := payload["resource_id"].(string); id != "" {
+		subject += ":" + id
+	}
+	e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
+		Kind:           FactKindBillingQuote,
+		SubjectID:      subject,
+		Payload:        payload,
+		ProducedAtTurn: e.userTurn,
+		ProducedAtUnix: time.Now().Unix(),
+		TTLSeconds:     factTTLSecondsBillingQuote,
+	})
+}
+
+func firstStringAny(m map[string]any, keys ...string) string {
+	if m == nil {
+		return ""
+	}
+	for _, key := range keys {
+		if v, ok := m[key].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func firstNumberAny(m map[string]any, keys ...string) (float64, bool) {
+	if m == nil {
+		return 0, false
+	}
+	for _, key := range keys {
+		if n, ok := numberAny(m[key]); ok {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func firstPriceNumberAny(m map[string]any, keys ...string) (float64, bool) {
+	if n, ok := firstNumberAny(m, keys...); ok {
+		return n, true
+	}
+	for _, listKey := range []string{"PriceDetails", "ListPriceDetails", "OriginalPriceDetails"} {
+		rows := mapAnySlice(m, listKey)
+		for _, row := range rows {
+			if n, ok := firstNumberAny(row, append(keys, "Price", "TotalPrice", "Disks", "Instance")...); ok {
+				return n, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func numberAny(v any) (float64, bool) {
+	switch x := v.(type) {
+	case int:
+		return float64(x), true
+	case int8:
+		return float64(x), true
+	case int16:
+		return float64(x), true
+	case int32:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	case uint:
+		return float64(x), true
+	case uint8:
+		return float64(x), true
+	case uint16:
+		return float64(x), true
+	case uint32:
+		return float64(x), true
+	case uint64:
+		return float64(x), true
+	case float32:
+		return float64(x), true
+	case float64:
+		return x, true
+	case json.Number:
+		n, err := x.Float64()
+		return n, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func mapAnySlice(m map[string]any, key string) []map[string]any {
+	if m == nil {
+		return nil
+	}
+	raw, _ := m[key].([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		if row, ok := item.(map[string]any); ok {
+			out = append(out, row)
+		}
+	}
+	return out
 }
 
 // recordInstanceStateFacts extracts one instance_state fact per UHostId
@@ -4633,6 +4840,54 @@ func (e *Engine) recordLastStockGpuModel(model string) {
 		return
 	}
 	e.sessionState.LastStockGpuModel = model
+}
+
+func (e *Engine) recordResolvedStockGpuFact(model string) {
+	model = strings.TrimSpace(model)
+	if model == "" || !e.sessionStateHydrated {
+		return
+	}
+	e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
+		Kind:      FactKindStockSnapshot,
+		SubjectID: "stock:" + model,
+		Payload: map[string]any{
+			"model":  model,
+			"action": "stock_availability",
+		},
+		ProducedAtTurn: e.userTurn,
+		ProducedAtUnix: time.Now().Unix(),
+		TTLSeconds:     factTTLSecondsStockSnapshot,
+	})
+}
+
+func stockGpuModelFromRecentFacts(facts []ToolFact, now time.Time) string {
+	nowUnix := now.Unix()
+	var model string
+	var newest int64
+	for _, fact := range facts {
+		if fact.Kind != FactKindStockSnapshot || fact.SubjectID == "" || !factFresh(fact, nowUnix) {
+			continue
+		}
+		candidate := factString(fact.Payload, "model")
+		if candidate == "" || strings.EqualFold(candidate, "all") {
+			continue
+		}
+		if fact.ProducedAtUnix >= newest {
+			model = candidate
+			newest = fact.ProducedAtUnix
+		}
+	}
+	return model
+}
+
+func (e *Engine) fallbackStockGpuModel(now time.Time) string {
+	if e.sessionState.LastStockGpuModel != "" {
+		return e.sessionState.LastStockGpuModel
+	}
+	if !e.sessionFactContextEnabled {
+		return ""
+	}
+	return stockGpuModelFromRecentFacts(e.sessionState.RecentFacts, now)
 }
 
 // recordLastIntentFromPlan sets SessionState.LastIntent from the plan's

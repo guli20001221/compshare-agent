@@ -145,7 +145,9 @@ func newDeployEngine(matchJSON string, exec *mockExecutorFn, confirm func(string
 	// community FuzzySearch, then (2) the image pick. Seed both in order so the
 	// single-arg helper still drives the whole handler.
 	client := &mockLLM{responses: []llm.ChatResponse{{Content: deploySearchJSON}, {Content: matchJSON}}}
-	return NewWithDeps(client, exec, confirm) // mutatingToolsEnabled=true; agentLLMClient=nil → falls back to client
+	eng := NewWithDeps(client, exec, confirm) // mutatingToolsEnabled=true; agentLLMClient=nil → falls back to client
+	eng.zoneCatalog = zones.NewCatalog(0)
+	return eng
 }
 
 type fakeCreatePreferenceExtractor struct {
@@ -189,7 +191,7 @@ func TestTryDeployModel_HappyPath_AlreadyRunning(t *testing.T) {
 	assert.NotEmpty(t, *events, "user-facing progress steps should be emitted")
 }
 
-func TestTryDeployModel_ConfirmCancelClearsCreateFamilyCarry(t *testing.T) {
+func TestTryDeployModel_ConfirmCancelKeepsCreateFamilyFrameForFollowup(t *testing.T) {
 	exec := newDeployMock(deployMockConfig{capacityEnough: true, instanceStates: []string{"Running"}})
 	eng := newDeployEngine(deployMatchJSON, exec, func(string, map[string]any) bool { return false })
 	eng.SetSessionState(SessionState{
@@ -212,9 +214,11 @@ func TestTryDeployModel_ConfirmCancelClearsCreateFamilyCarry(t *testing.T) {
 	require.True(t, handled)
 	assert.Contains(t, reply, "本次创建未执行")
 	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.ContextFrame.Kind)
-	assert.Empty(t, state.LastDeployWorkload)
-	assert.Empty(t, state.LastDeployZone)
+	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind)
+	assert.Equal(t, ContextFrameStatusFailedRecoverable, state.ContextFrame.Status)
+	assert.Equal(t, "4090", state.ContextFrame.GPU)
+	assert.Equal(t, "Qwen2.5-7B", state.LastDeployWorkload)
+	assert.NotEmpty(t, state.LastDeployZone)
 	assert.Empty(t, state.PendingDeployModel)
 }
 

@@ -80,6 +80,33 @@ func TestRecordWorkflowMissingSlotsFrameKeepsOnlySafeSlots(t *testing.T) {
 	assert.NotContains(t, frame.Slots, "password")
 }
 
+func TestRecordWorkflowMissingSlotsFrameUsesCurrentSelectedInstanceOverStaleTask(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := newEngineForSessionStateTest(t)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaCurrent,
+		SelectedInstanceID: "uhost-new",
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "CreateDiskWorkflow",
+			Slots:          map[string]string{"instance_id": "cpod-old"},
+			MissingSlots:   []string{"size_gb"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 2)
+
+	recorded := eng.recordWorkflowMissingSlotsFrame("CreateDiskWorkflow", nil, []string{"size_gb"}, "缺少大小")
+
+	require.True(t, recorded)
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Equal(t, "uhost-new", state.ContextFrame.Slots["instance_id"])
+}
+
 func TestRecordWorkflowMissingSlotsFrame_FlagOffDoesNotPersistFrame(t *testing.T) {
 	SetContextContinuationEnabled(false)
 	t.Cleanup(func() { SetContextContinuationEnabled(false) })
@@ -405,4 +432,112 @@ func TestResumeWorkflowContextFrame_ContextContinuationFlagOffDoesNotResumeMutat
 	assert.Empty(t, layer.calls, "flag-off must not call the context decision layer")
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Equal(t, ContextFrameKindWorkflowTask, state.ContextFrame.Kind, "flag-off should leave the pending task for legacy handling or a later enabled turn")
+}
+
+func TestResumeWorkflowContextFrame_CreateCFSNameFromContextDecision(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	var confirmArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{map[string]any{
+				"Zone": "cn-pod-01", "Region": "cn-pod", "ZoneId": float64(9001), "RegionId": float64(3001), "Describe": "容器一区", "IsPod": true,
+			}}}, nil
+		case "GetCompShareCFSPrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Month", "Disks": float64(99)}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionContinueTask,
+		SlotUpdates: map[string]string{"name": "shared-train"},
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "CreateCFSWorkflow",
+			Slots:          map[string]string{"size_gb": "100GB", "zone": "cn-pod-01"},
+			MissingSlots:   []string{"name"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "shared-train", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	assert.Equal(t, "CreateCFSWorkflow", confirmAction)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "shared-train", confirmArgs["Name"])
+	assert.Equal(t, float64(100), confirmArgs["Size"])
+	assert.Equal(t, "cn-pod-01", confirmArgs["Zone"])
+}
+
+func TestResumeWorkflowContextFrame_CreateCFSZoneFromContextDecision(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	var confirmArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{map[string]any{
+				"Zone": "cn-pod-01", "Region": "cn-pod", "ZoneId": float64(9001), "RegionId": float64(3001), "Describe": "容器一区", "IsPod": true,
+			}}}, nil
+		case "GetCompShareCFSPrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Month", "Disks": float64(99)}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionContinueTask,
+		SlotUpdates: map[string]string{"zone": "cn-pod-01"},
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "CreateCFSWorkflow",
+			Slots:          map[string]string{"name": "shared-train", "size_gb": "100GB"},
+			MissingSlots:   []string{"zone"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "cn-pod-01", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	assert.Equal(t, "CreateCFSWorkflow", confirmAction)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "shared-train", confirmArgs["Name"])
+	assert.Equal(t, float64(100), confirmArgs["Size"])
+	assert.Equal(t, "cn-pod-01", confirmArgs["Zone"])
 }

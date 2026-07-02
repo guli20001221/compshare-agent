@@ -238,8 +238,6 @@ func (e *Engine) recordCreateContextFrameFromCreateAttempt(userMsg string, plan 
 
 func createAttemptShouldClearContextFrame(reply string) bool {
 	return strings.Contains(reply, "创建实例请求已提交") ||
-		strings.Contains(reply, "操作未执行") ||
-		strings.Contains(reply, "创建未执行") ||
 		strings.Contains(reply, "已取消")
 }
 

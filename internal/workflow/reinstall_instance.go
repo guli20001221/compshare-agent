@@ -58,6 +58,9 @@ func stepQueryPlatformTargetImage() Step {
 		Tool:     "DescribeCompShareImages",
 		Optional: true,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
+				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
+			}
 			return map[string]any{
 				"CompShareImageId": wfCtx.Params["CompShareImageId"],
 			}, nil
@@ -72,6 +75,9 @@ func stepQueryCommunityTargetImage() Step {
 		Tool:     "DescribeCommunityImages",
 		Optional: true,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
+				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
+			}
 			return map[string]any{
 				"CompShareImageId": wfCtx.Params["CompShareImageId"],
 			}, nil
@@ -86,6 +92,9 @@ func stepQueryCustomTargetImage() Step {
 		Tool:     "DescribeCompShareCustomImages",
 		Optional: true,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
+				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
+			}
 			return map[string]any{
 				"CompShareImageId": wfCtx.Params["CompShareImageId"],
 			}, nil
@@ -100,6 +109,9 @@ func stepQuerySharingTargetImage() Step {
 		Tool:     "DescribeCompShareSharingImages",
 		Optional: true,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
+				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
+			}
 			return map[string]any{
 				"CompShareImageId": wfCtx.Params["CompShareImageId"],
 			}, nil
@@ -112,6 +124,9 @@ func stepConfirmReinstall() Step {
 		Name: "确认重装",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
+				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
+			}
 			image, ok := targetReinstallImage(wfCtx)
 			if !ok {
 				return nil, fmt.Errorf("未找到目标镜像，请确认镜像 ID 是否正确。")

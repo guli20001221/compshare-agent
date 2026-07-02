@@ -38,7 +38,7 @@ func resolveShutdownTime(params map[string]any) (unix int64, display string, err
 	_, hasAt := params["ShutdownAt"]
 
 	if !hasAfter && !hasAt {
-		return 0, "", fmt.Errorf("请指定关机时间（AfterMinutes 或 ShutdownAt）")
+		return 0, "", NewMissingSlotError("请指定关机时间（AfterMinutes 或 ShutdownAt）", "stop_time")
 	}
 	if hasAfter && hasAt {
 		return 0, "", fmt.Errorf("AfterMinutes 和 ShutdownAt 不能同时指定，请只传其中一个")

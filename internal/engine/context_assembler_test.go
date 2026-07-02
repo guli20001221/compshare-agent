@@ -97,6 +97,59 @@ func TestAssembleFactContext_DoesNotInventMissingMetrics(t *testing.T) {
 	assert.NotContains(t, got, "显存")
 }
 
+func TestAssembleFactContext_RendersStockPriceBillingFacts(t *testing.T) {
+	now := time.Unix(2_150, 0)
+	facts := []ToolFact{
+		{
+			Kind:           FactKindStockSnapshot,
+			SubjectID:      "stock:4090:cn-wlcb-01",
+			ProducedAtUnix: now.Add(-3 * time.Second).Unix(),
+			TTLSeconds:     30,
+			Payload: map[string]any{
+				"model":  "4090",
+				"status": "Normal",
+				"zone":   "cn-wlcb-01",
+				"count":  float64(10),
+				"enough": true,
+			},
+		},
+		{
+			Kind:           FactKindPriceQuote,
+			SubjectID:      "price:GetCompShareInstanceUserPrice:4090",
+			ProducedAtUnix: now.Add(-2 * time.Second).Unix(),
+			TTLSeconds:     30,
+			Payload: map[string]any{
+				"gpu_type":    "4090",
+				"zone":        "cn-wlcb-01",
+				"charge_type": "Dynamic",
+				"price":       float64(1.58),
+			},
+		},
+		{
+			Kind:           FactKindBillingQuote,
+			SubjectID:      "billing:GetCompShareRefundPrice:uhost-1",
+			ProducedAtUnix: now.Add(-1 * time.Second).Unix(),
+			TTLSeconds:     30,
+			Payload: map[string]any{
+				"resource_id": "uhost-1",
+				"amount":      float64(42.5),
+				"note":        "退费估算",
+			},
+		},
+	}
+
+	got := assembleFactContext(facts, now)
+
+	assert.Contains(t, got, "库存 机型 4090")
+	assert.Contains(t, got, "可用区 cn-wlcb-01")
+	assert.Contains(t, got, "数量 10")
+	assert.Contains(t, got, "价格 GPU 4090")
+	assert.Contains(t, got, "计费 Dynamic")
+	assert.Contains(t, got, "1.58")
+	assert.Contains(t, got, "费用 资源 uhost-1")
+	assert.Contains(t, got, "42.5")
+}
+
 func TestAssembleFactContext_TruncatesLongOutputButKeepsPrefix(t *testing.T) {
 	now := time.Unix(2_200, 0)
 	var facts []ToolFact

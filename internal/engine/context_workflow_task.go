@@ -93,6 +93,14 @@ func (e *Engine) recordWorkflowMissingSlotsFrame(workflowName string, args map[s
 		return false
 	}
 	slots := safeWorkflowContextSlots(args)
+	if workflowRequiresInstanceTarget(workflowName) && strings.TrimSpace(slots["instance_id"]) == "" {
+		if selected := strings.TrimSpace(e.sessionState.SelectedInstanceID); selected != "" {
+			if slots == nil {
+				slots = map[string]string{}
+			}
+			slots["instance_id"] = selected
+		}
+	}
 	if frame, ok := e.activeContextFrame(time.Now()); ok && frame.Kind == ContextFrameKindWorkflowTask && frame.Workflow == workflowName {
 		slots = mergeStringMaps(frame.Slots, slots)
 	}
@@ -124,6 +132,7 @@ func safeWorkflowContextSlots(args map[string]any) map[string]string {
 	}
 	put("instance_id", args["UHostId"])
 	put("disk_id", firstNonNil(args["DiskId"], args["UDiskId"]))
+	put("cfs_id", firstNonNil(args["CfsId"], args["CFSId"]))
 	put("size_gb", args["Size"])
 	put("target_size_gb", firstNonNil(args["TargetSize"], args["DiskSpace"]))
 	put("cpu", args["Cpu"])
@@ -131,11 +140,13 @@ func safeWorkflowContextSlots(args map[string]any) map[string]string {
 	put("gpu_count", args["Gpu"])
 	put("gpu_type", args["GpuType"])
 	put("zone", args["Zone"])
+	put("image_id", args["CompShareImageId"])
 	put("image_pref", args["ImageName"])
 	put("image_source", args["ImageSource"])
 	put("workload", args["Workload"])
-	put("stop_time", args["StopTime"])
+	put("stop_time", firstNonNil(args["StopTime"], args["AfterMinutes"], args["ShutdownAt"]))
 	put("name", args["Name"])
+	put("charge_type", args["ChargeType"])
 	if len(out) == 0 {
 		return nil
 	}

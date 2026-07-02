@@ -107,7 +107,7 @@ func stepRecheckNetOptimizerStatus() Step {
 func normalizeNetOptimizerParams(wfCtx *Context) error {
 	zone := strings.TrimSpace(paramStr(wfCtx.Params, "Zone", ""))
 	if zone == "" {
-		return fmt.Errorf("开启网络加速需要指定可用区。")
+		return NewMissingSlotError("开启网络加速需要指定可用区。", "zone")
 	}
 	region := strings.TrimSpace(paramStr(wfCtx.Params, "Region", ""))
 	if region == "" {
