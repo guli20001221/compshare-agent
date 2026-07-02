@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"context"
 	"testing"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,6 +30,146 @@ func TestWorkflowRequiresInstanceTarget(t *testing.T) {
 	} {
 		assert.True(t, workflowRequiresInstanceTarget(action), action)
 	}
+}
+
+func TestExecuteWorkflowBlocksUntrustedModelChosenInstanceTarget(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	eng.lastUserMsg = "怎么关机"
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
+		},
+	}, "test"))
+	onStep, events := collectSteps()
+
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, onStep)
+
+	assert.Contains(t, reply, "请先确认要操作的实例")
+	assert.Empty(t, exec.calls, "untrusted target must be blocked before workflow tools run")
+	assertStepWithType(t, *events, StepBlocked, "StopInstanceWorkflow", "请先确认")
+}
+
+func TestExecuteWorkflowBlocksUntrustedTargetWithoutHydratedSession(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+	eng.lastUserMsg = "怎么关机"
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
+		},
+	}, "test"))
+
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep)
+
+	assert.Contains(t, reply, "请先确认要操作的实例")
+	assert.Empty(t, exec.calls, "untrusted target must be blocked even without hydrated session state")
+}
+
+func TestExecuteWorkflowAllowsExplicitIDTarget(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running", "Zone": "cn-wlcb-01"},
+			}}, nil
+		case "StopCompShareInstance":
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+	eng.lastUserMsg = "帮我关机 uhost-a"
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
+		},
+	}, "test"))
+
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep)
+
+	assert.Contains(t, reply, "执行关机")
+	assert.Contains(t, exec.calls, "StopCompShareInstance")
+}
+
+func TestExecuteWorkflowAllowsOrdinalPendingSelectionTarget(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running", "Zone": "cn-wlcb-01"},
+			}}, nil
+		case "StopCompShareInstance":
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	eng.lastUserMsg = "帮我关机第1台"
+	eng.recordPendingInstanceSelection([]entity.InstanceSnapshot{
+		testInstance("uhost-a", "alpha", "Running"),
+		testInstance("uhost-b", "beta", "Running"),
+	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
+		},
+	}, "test"))
+
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep)
+
+	assert.Contains(t, reply, "执行关机")
+	assert.Contains(t, exec.calls, "StopCompShareInstance")
+}
+
+func TestExecuteWorkflowAllowsSelectedInstanceTarget(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running", "Zone": "cn-wlcb-01"},
+			}}, nil
+		case "StopCompShareInstance":
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+	eng.SetSessionState(SessionState{
+		SchemaVersion:        SessionStateSchemaCurrent,
+		SelectedInstanceID:   "uhost-a",
+		SelectedInstanceName: "alpha",
+	}, 1)
+	eng.lastUserMsg = "帮我关机它"
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
+		},
+	}, "test"))
+
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep)
+
+	assert.Contains(t, reply, "执行关机")
+	assert.Contains(t, exec.calls, "StopCompShareInstance")
 }
 
 func TestExecuteWorkflowCreateCFSResolvesPodZone(t *testing.T) {

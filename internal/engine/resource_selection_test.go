@@ -9,6 +9,7 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/llm"
 )
 
 func TestResourceSelectionPromptRendersCandidateDetails(t *testing.T) {
@@ -286,6 +287,37 @@ func TestContextDecisionSelectionRecordsPendingInstance(t *testing.T) {
 	}
 	if len(state.PendingSelectionItems) != 2 {
 		t.Fatalf("pending selection should remain available for later ordinal selection, got %d", len(state.PendingSelectionItems))
+	}
+}
+
+func TestContextDecisionSelectionUsesDefaultResolverWhenNoLayerInjected(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{"decision":"select_entity","target":"instance","instance_ref":"第1台"}`}}}
+	e := NewWithDeps(mock, &mockExecutor{}, nil)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	e.userTurn = 3
+	e.recordPendingInstanceSelection([]entity.InstanceSnapshot{
+		testInstance("uhost-first", "first-host", "Running"),
+		testInstance("uhost-second", "second-host", "Stopped"),
+	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
+	pending, ok := e.pendingResourceSelectionFromSession()
+	if !ok {
+		t.Fatal("expected pending selection restored from session")
+	}
+
+	resolved := e.tryContextDecisionResourceSelection(context.Background(), "它现在忙不忙", pending)
+
+	if !resolved {
+		t.Fatal("context decision should resolve through the default LLM-backed layer")
+	}
+	state, _, _ := e.SessionStateSnapshot()
+	if state.SelectedInstanceID != "uhost-first" {
+		t.Fatalf("selected instance = %q, want uhost-first", state.SelectedInstanceID)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("default context decision layer should call LLM once, got %d", len(mock.calls))
 	}
 }
 

@@ -181,9 +181,6 @@ func (e *Engine) tryContextDecisionResourceSelection(ctx context.Context, userMs
 	if !ContextContinuationEnabled() {
 		return false
 	}
-	if e.contextDecisionLayer == nil {
-		return false
-	}
 	decision, err := e.resolveContextDecision(ctx, userMsg, intent.IntentUnknown, e.sessionState.ContextFrame)
 	if err != nil || decision == nil {
 		return false

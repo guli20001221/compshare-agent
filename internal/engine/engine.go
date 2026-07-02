@@ -5164,13 +5164,22 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// are listed in workflowRequiresInstanceTarget. The default remains fail-safe.
 	if workflowRequiresInstanceTarget(action) {
 		uHostId, _ := args["UHostId"].(string)
+		targetAutoFilled := false
 		if uHostId == "" {
 			if single, _ := e.singleRegistryInstance(); single != "" {
 				args["UHostId"] = single
 				uHostId = single
+				targetAutoFilled = true
 			}
 		}
 		if uHostId == "" {
+			msg := "请先确认要操作的实例。当有多个实例时，请列出实例列表让用户选择后再执行操作。"
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+			guardResult := map[string]any{"success": false, "message": msg}
+			b, _ := json.Marshal(guardResult)
+			return string(b)
+		}
+		if !e.workflowTargetIsTrusted(uHostId, targetAutoFilled) {
 			msg := "请先确认要操作的实例。当有多个实例时，请列出实例列表让用户选择后再执行操作。"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			guardResult := map[string]any{"success": false, "message": msg}
@@ -5395,6 +5404,44 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	b, _ := json.Marshal(result)
 	return string(b)
+}
+
+func (e *Engine) workflowTargetIsTrusted(uHostId string, targetAutoFilled bool) bool {
+	uHostId = strings.TrimSpace(uHostId)
+	if uHostId == "" {
+		return false
+	}
+	if targetAutoFilled {
+		return true
+	}
+	if strings.TrimSpace(e.lastUserMsg) == "" {
+		return true
+	}
+	if strings.TrimSpace(e.sessionState.SelectedInstanceID) == uHostId ||
+		strings.TrimSpace(e.selectedInstanceIDAtTurnStart) == uHostId {
+		return true
+	}
+	if strings.Contains(strings.TrimSpace(e.lastUserMsg), uHostId) {
+		return true
+	}
+	if pending, ok := e.pendingResourceSelectionFromSession(); ok {
+		if match, _ := matchResourceSelectionReference(e.lastUserMsg, *pending); match.ok && match.instance.UHostId == uHostId {
+			return true
+		}
+		if match := matchResourceSelection(e.lastUserMsg, *pending); match.ok && !match.ambiguous && match.instance.UHostId == uHostId {
+			return true
+		}
+	}
+	snapshot := e.RegistrySnapshot()
+	if snapshot.TotalCount == 1 && !snapshot.Truncated && len(snapshot.Instances) == 1 {
+		if _, ok := snapshot.Instances[uHostId]; ok {
+			return true
+		}
+	}
+	if inst, res := snapshot.ResolveByID(uHostId); res.Status == entity.ResolveHit && inst != nil {
+		return monitorHistoryNameMentioned(e.lastUserMsg, inst.Name)
+	}
+	return false
 }
 
 func workflowRequiresInstanceTarget(action string) bool {
