@@ -493,8 +493,9 @@ func (e *Engine) tryCFSWorkflowDispatch(ctx context.Context, dispatch routerDisp
 	if !ok {
 		return "", false
 	}
-	args, reply, ok := cfsWorkflowArgsFromUserText(workflowName, userMsg)
-	if !ok {
+	args, missing, reply := cfsWorkflowDraftFromUserText(workflowName, userMsg)
+	if len(missing) > 0 {
+		e.recordWorkflowMissingSlotsFrame(workflowName, args, missing, reply)
 		e.messages = append(e.messages, assistantMessage(reply))
 		return reply, true
 	}
@@ -643,6 +644,7 @@ func (e *Engine) tryDirectStopSchedulerFromUserText(ctx context.Context, userMsg
 		if !ok {
 			reply := "请告诉我要在多久后关机，例如 30 分钟后或 1 小时后。"
 			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+			e.recordWorkflowMissingSlotsFrame(workflowName, args, []string{"stop_time"}, reply)
 			e.messages = append(e.messages, assistantMessage(reply))
 			return reply, true
 		}
@@ -1510,33 +1512,64 @@ func cfsReadOnlyCue(compact string) bool {
 }
 
 func cfsWorkflowArgsFromUserText(workflowName, userText string) (map[string]any, string, bool) {
+	args, missing, reply := cfsWorkflowDraftFromUserText(workflowName, userText)
+	if len(missing) > 0 {
+		return nil, reply, false
+	}
+	if len(args) == 0 {
+		return nil, "", false
+	}
+	return args, "", true
+}
+
+func cfsWorkflowDraftFromUserText(workflowName, userText string) (map[string]any, []string, string) {
 	switch workflowName {
 	case "CreateCFSWorkflow":
+		args := map[string]any{}
+		var missing []string
 		name := cfsNameFromUserText(userText)
 		if name == "" {
-			return nil, "创建 CFS 需要指定名称，请告诉我要创建的 CFS 名称。", false
+			missing = append(missing, "name")
+		} else {
+			args["Name"] = name
 		}
 		size := createDiskSizeFromUserText(userText)
 		if size <= 0 {
-			return nil, "创建 CFS 需要指定容量（GB），例如 100GB。", false
+			missing = append(missing, "size_gb")
+		} else {
+			args["Size"] = size
 		}
 		zone := cfsZoneFromUserText(userText)
 		if zone == "" {
-			return nil, "创建 CFS 需要指定可用区；CFS 只支持上游返回的 Pod/容器可用区。", false
+			missing = append(missing, "zone")
+		} else {
+			args["Zone"] = zone
 		}
-		return map[string]any{"Name": name, "Size": size, "Zone": zone}, "", true
+		if len(missing) > 0 {
+			return args, missing, workflowMissingSlotsClarification("CreateCFSWorkflow", missing)
+		}
+		return args, nil, ""
 	case "ResizeCFSWorkflow":
+		args := map[string]any{}
+		var missing []string
 		cfsID := strings.ToLower(strings.TrimSpace(cfsIDSpecRE.FindString(userText)))
 		if cfsID == "" {
-			return nil, "扩容 CFS 需要指定 CFS ID，例如 cfs-xxxx。", false
+			missing = append(missing, "cfs_id")
+		} else {
+			args["CfsId"] = cfsID
 		}
 		size := createDiskSizeFromUserText(userText)
 		if size <= 0 {
-			return nil, "扩容 CFS 需要指定目标容量（GB），例如 200GB。", false
+			missing = append(missing, "target_size_gb")
+		} else {
+			args["Size"] = size
 		}
-		return map[string]any{"CfsId": cfsID, "Size": size}, "", true
+		if len(missing) > 0 {
+			return args, missing, workflowMissingSlotsClarification("ResizeCFSWorkflow", missing)
+		}
+		return args, nil, ""
 	default:
-		return nil, "", false
+		return nil, nil, ""
 	}
 }
 
@@ -1557,6 +1590,8 @@ func cfsZoneFromUserText(userText string) string {
 			prefix := strings.TrimSpace(text[:idx])
 			if at := strings.LastIndex(prefix, "在"); at >= 0 {
 				prefix = strings.TrimSpace(prefix[at+len("在"):])
+			} else {
+				continue
 			}
 			prefix = strings.Trim(prefix, "“”\"'，。；; ")
 			if prefix != "" && len([]rune(prefix)) <= 12 {

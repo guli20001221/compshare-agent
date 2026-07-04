@@ -478,6 +478,39 @@ func TestExplicitIDCreateDiskMissingSizeRecordsGenericTaskFrame(t *testing.T) {
 	assert.Equal(t, "uhost-1", frame.Slots["instance_id"])
 }
 
+func TestDirectStopSchedulerMissingTimeRecordsGenericTaskFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1",
+				"Name":    "host-1",
+				"State":   "Running",
+				"Zone":    "cn-wlcb-01",
+				"Region":  "cn-wlcb",
+			}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, okConfirm)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+
+	reply, handled := eng.tryDirectStopSchedulerFromUserText(context.Background(), "给 host-1 设置定时关机", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "多久后关机")
+	state, _, _ := eng.SessionStateSnapshot()
+	frame := state.ContextFrame
+	assert.Equal(t, ContextFrameKindWorkflowTask, frame.Kind)
+	assert.Equal(t, "SetStopSchedulerWorkflow", frame.Workflow)
+	assert.Equal(t, []string{"stop_time"}, frame.MissingSlots)
+	assert.Equal(t, "uhost-1", frame.Slots["instance_id"])
+}
+
 func TestResumeWorkflowContextFrameAppliesSlotUpdateAndReachesConfirm(t *testing.T) {
 	SetContextContinuationEnabled(true)
 	t.Cleanup(func() { SetContextContinuationEnabled(false) })
@@ -793,6 +826,53 @@ func TestResumeWorkflowContextFrame_ContextContinuationFlagOffDoesNotResumeMutat
 	assert.Empty(t, layer.calls, "flag-off must not call the context decision layer")
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Equal(t, ContextFrameKindWorkflowTask, state.ContextFrame.Kind, "flag-off should leave the pending task for legacy handling or a later enabled turn")
+}
+
+func TestDirectCreateCFSMissingNameAndZoneRecordsGenericTaskFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, &mockExecutorFn{}, okConfirm)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentOperationLifecycle,
+	}}}
+
+	reply, handled := eng.tryCFSWorkflowDispatch(context.Background(), dispatch, "帮我创建一个100G的CFS共享文件存储", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "CFS 名称")
+	state, _, _ := eng.SessionStateSnapshot()
+	frame := state.ContextFrame
+	assert.Equal(t, ContextFrameKindWorkflowTask, frame.Kind)
+	assert.Equal(t, "CreateCFSWorkflow", frame.Workflow)
+	assert.Equal(t, []string{"name", "zone"}, frame.MissingSlots)
+	assert.Equal(t, "100", frame.Slots["size_gb"])
+}
+
+func TestDirectCreateCFSMissingZoneRecordsGenericTaskFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, &mockExecutorFn{}, okConfirm)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentOperationLifecycle,
+	}}}
+
+	reply, handled := eng.tryCFSWorkflowDispatch(context.Background(), dispatch, "创建一个100G的CFS共享文件存储，名字叫shared-train", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "CFS 可用区")
+	state, _, _ := eng.SessionStateSnapshot()
+	frame := state.ContextFrame
+	assert.Equal(t, ContextFrameKindWorkflowTask, frame.Kind)
+	assert.Equal(t, "CreateCFSWorkflow", frame.Workflow)
+	assert.Equal(t, []string{"zone"}, frame.MissingSlots)
+	assert.Equal(t, "shared-train", frame.Slots["name"])
+	assert.Equal(t, "100", frame.Slots["size_gb"])
 }
 
 func TestResumeWorkflowContextFrame_CreateCFSNameFromContextDecision(t *testing.T) {
