@@ -1771,7 +1771,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 
 	dispatch := e.callPlannerOnce(ctx, userMsg, priorText)
 	if status, ok := e.commonPlannerCandidateStatus(dispatch.result); !ok {
-		e.clearPendingDeployModel()
+		e.clearDeployClarificationCarry()
 		if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
 			e.requireKnowledgeCitationThisTurn = true
 		}
@@ -1804,6 +1804,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// here (planner-handled paths don't emit ReAct tool events), so
 	// the (c) protocol invariant is naturally satisfied.
 	if e.tokenBudgetExceeded() {
+		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		e.emitTokenBudgetExceededHardBlock()
 		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -1814,27 +1815,34 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	}
 
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
+		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryBillingAccountUnsupportedDispatch(dispatch); handled {
+		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryDiagnosisDispatch(ctx, dispatch, userMsg, onStep); handled {
+		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryCFSWorkflowDispatch(ctx, dispatch, userMsg, onStep); handled {
+		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryResumeWorkflowContextFrame(ctx, dispatch, userMsg, onStep); handled {
+		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryResumeCreateContextFrame(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
 	if reply, handled := e.tryRecentFactFollowup(ctx, dispatch, userMsg, onStep); handled {
+		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryOperationLifecycleDispatch(ctx, dispatch, userMsg, onStep); handled {
+		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	// Agent-tier skills (deploy_model today) dispatch through dispatchAgentSkill —
@@ -1844,6 +1852,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// TierAgent image-matching + RunAgentSaga(CreateInstanceDef) + poll-to-Running
 	// (see deploy_model.go). This is byte-stable wiring: the handler body is unchanged.
 	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
+		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if FlashKnowledgeRouteGuardEnabled() {
@@ -1851,12 +1860,17 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 			dispatch.result.Plan.Intent = intent.IntentKnowledgeQA
 			e.lastPlannerIntentThisTurn = intent.IntentKnowledgeQA
 			if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
+				e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 				return reply, true
 			}
 		}
 	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || dispatch.result.Plan.Intent == intent.IntentMonitorHistory || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
-		return e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
+		reply, handled := e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
+		if handled {
+			e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
+		}
+		return reply, handled
 	}
 	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP migration: route a knowledge_qa turn into
 	// the shared ReAct loop (forced SearchKnowledge first hop) instead of the
@@ -1877,16 +1891,22 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		e.requireKnowledgeCitationThisTurn = true
 		e.knowledgeQAAgentLoopThisTurn = true
 		e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedKnowledgeAgentLoop, dispatch.latency)
+		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return "", false
 	}
 	if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
+		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
 		e.requireKnowledgeCitationThisTurn = true
+		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return "", false
 	}
 
+	if !createFamilyIntent(dispatch.result.Plan.Intent) {
+		e.clearDeployContextFrame()
+	}
 	e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 	return "", false
 }
@@ -4914,7 +4934,7 @@ func (e *Engine) recordLastIntentFromPlan(plan intent.IntentRoute) {
 		return
 	}
 	if plan.Intent == "" || plan.Intent == intent.IntentUnknown {
-		e.clearPendingDeployModel()
+		e.clearDeployClarificationCarry()
 		return
 	}
 	if !runtimeIntentMember(plan.Intent) {
@@ -4936,6 +4956,29 @@ func (e *Engine) clearPendingDeployModel() {
 		return
 	}
 	e.sessionState.PendingDeployModel = ""
+}
+
+func (e *Engine) clearDeployContextFrame() {
+	if !e.sessionStateHydrated {
+		return
+	}
+	if e.sessionState.ContextFrame.Kind == ContextFrameKindDeploy {
+		e.sessionState.ContextFrame = ContextFrame{}
+	}
+}
+
+func (e *Engine) clearDeployClarificationCarry() {
+	if !e.sessionStateHydrated {
+		return
+	}
+	e.sessionState.PendingDeployModel = ""
+	e.clearDeployContextFrame()
+}
+
+func (e *Engine) clearDeployContextFrameForHandledNonCreate(i intent.Intent) {
+	if !createFamilyIntent(i) {
+		e.clearDeployContextFrame()
+	}
 }
 
 func (e *Engine) clearPendingDeployModelForNonCreateFamily(i intent.Intent) {

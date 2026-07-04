@@ -74,6 +74,14 @@ func TestTryPlannerDispatch_UnknownClearsPendingDeployModel(t *testing.T) {
 		SchemaVersion:      SessionStateSchemaV1,
 		LastIntent:         string(intent.IntentDeployModel),
 		PendingDeployModel: "DeepSeek R1",
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindDeploy,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workload:       "DeepSeek R1",
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
 	}, 1)
 	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{
 		Plan: intent.IntentRoute{
@@ -90,6 +98,7 @@ func TestTryPlannerDispatch_UnknownClearsPendingDeployModel(t *testing.T) {
 
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Empty(t, state.PendingDeployModel)
+	assert.Empty(t, state.ContextFrame.Kind)
 }
 
 func TestDispatchAgentSkill_CreateInstanceFlagOnSpecOnlyStartsCreateWorkflowWithoutImageMatch(t *testing.T) {
@@ -479,6 +488,129 @@ func TestResumeCreateContextFrame_ZoneFollowupContinuesPriorDeploy(t *testing.T)
 	assert.Equal(t, "4090", createArgs["GpuType"])
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Empty(t, state.ContextFrame.Kind, "successful continuation clears the pending create frame")
+}
+
+func TestTryPlannerDispatch_AllowsDeployFrameResumeBeforeNonCreateCleanup(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	SetUnifiedCreateEnabled(true)
+	SetCreatePreferenceExtractionEnabled(true)
+	t.Cleanup(func() {
+		SetContextContinuationEnabled(false)
+		SetUnifiedCreateEnabled(true)
+		SetCreatePreferenceExtractionEnabled(true)
+	})
+
+	var createArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{}}, nil
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{map[string]any{
+				"CompShareImageId":  "img-pt",
+				"Name":              "PyTorch",
+				"ImageType":         "App",
+				"Status":            "Available",
+				"SupportedGpuTypes": []any{"4090"},
+			}}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{availCardZ("4090", "cn-wlcb-01", 24)}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "RegionId": float64(3003), "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": false},
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "RegionId": float64(3001), "ZoneId": float64(10027), "Describe": "华北二A", "IsPod": false},
+			}}, nil
+		case "CheckCompShareResourceCapacity":
+			return map[string]any{"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			}}, nil
+		case "GetCompShareInstanceUserPrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.23}}}, nil
+		case "CreateCompShareInstance":
+			createArgs = args
+			return map[string]any{"UHostIds": []any{"uhost-resume-1"}}, nil
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{"UHostId": "uhost-resume-1", "State": "Running", "GpuType": "4090"}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	client := &mockLLM{responses: []llm.ChatResponse{
+		{Content: deploySearchJSON},
+		{Content: `{"image_source":"platform","image_name":"PyTorch","model_name":"Qwen2.5-7B","match_kind":"base","quantization":""}`},
+	}}
+	eng := NewWithDeps(client, exec, okConfirm)
+	eng.zoneCatalog = zones.NewCatalog(0)
+	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{decision: &ContextContinuationDecision{
+		Decision: ContextContinuationContinue,
+		ZonePref: "华北二A",
+	}})
+	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentStockAvailability,
+			Slots:         intent.Slots{TargetRefs: []intent.TargetRef{}, Metrics: []intent.Metric{}},
+			Confidence:    0.95,
+		},
+	}}}, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentStockAvailability, intent.IntentDeployModel, intent.IntentCreateInstance}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:         1,
+			Kind:            ContextFrameKindDeploy,
+			Status:          ContextFrameStatusFailedRecoverable,
+			Intent:          string(intent.IntentDeployModel),
+			OriginalUserMsg: "在华北一C用最新pytorch给我开一台",
+			GPU:             "4090",
+			ImagePref:       "PyTorch",
+			ImageSource:     "platform",
+			Zone:            "cn-bj2-03",
+			ZoneLabel:       "华北一C",
+			FailureReason:   "华北一C 暂无库存",
+			ProducedAtUnix:  time.Now().Unix(),
+			TTLSeconds:      ContextFrameTTLSeconds,
+		},
+	}, 1)
+
+	reply, handled := eng.tryPlannerDispatch(context.Background(), "那华北二A呢", "", noopStep, nil)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "uhost-resume-1")
+	require.NotNil(t, createArgs)
+	assert.Equal(t, "cn-wlcb-01", createArgs["Zone"])
+}
+
+func TestTryPlannerDispatch_HandledNonCreateTurnClearsDeployContextFrame(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentBillingAccountUnsupported,
+			Slots:         intent.Slots{TargetRefs: []intent.TargetRef{}, Metrics: []intent.Metric{}},
+			Confidence:    0.95,
+		},
+	}}}, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentBillingAccountUnsupported}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaCurrent,
+		LastIntent:         string(intent.IntentDeployModel),
+		PendingDeployModel: "DeepSeek R1",
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindDeploy,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workload:       "DeepSeek R1",
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+
+	reply, handled := eng.tryPlannerDispatch(context.Background(), "账户余额还有多少", "", noopStep, nil)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "当前不支持直接查询账号余额")
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.PendingDeployModel)
+	assert.Empty(t, state.ContextFrame.Kind)
 }
 
 func TestApplyContextContinuationDecision_ZoneFallbackUsesUserTextWhenModelInventsZoneCode(t *testing.T) {

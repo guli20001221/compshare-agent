@@ -1754,6 +1754,65 @@ func TestEffectiveDeployUserMsg_UsesExplicitPendingDeployState(t *testing.T) {
 	assert.Equal(t, "继续部署 DeepSeek R1 32B", eng.effectiveDeployUserMsg("32B"))
 }
 
+func TestEffectiveDeployUserMsg_UsesContextFrameWorkloadBeforeLegacyPendingState(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		LastIntent:    string(intent.IntentDeployModel),
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindDeploy,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workload:       "DeepSeek R1",
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+		PendingDeployModel: "stale-model",
+	}, 1)
+
+	assert.Equal(t, "继续部署 DeepSeek R1 32B", eng.effectiveDeployUserMsg("32B"))
+}
+
+func TestEffectiveDeployUserMsg_ContextFrameSizedWorkloadReplacesBareSize(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		LastIntent:    string(intent.IntentDeployModel),
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindDeploy,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workload:       "Qwen2.5-7B",
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+
+	assert.Equal(t, "继续部署 Qwen2.5 32B", eng.effectiveDeployUserMsg("32B"))
+}
+
+func TestRecordPendingDeployModelUsesContextFrameWhenEnabled(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+
+	eng.recordDeployContextFrameFromError("部署 DeepSeek R1", "部署 DeepSeek R1", "", deployClarifyModelSizeMsg("DeepSeek R1"))
+	eng.recordPendingDeployModelFromReply(deployClarifyModelSizeMsg("DeepSeek R1"))
+
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind)
+	assert.Equal(t, "DeepSeek R1", state.ContextFrame.Workload)
+	assert.Empty(t, state.PendingDeployModel, "context frame should carry the deploy clarify model when continuation is enabled")
+}
+
 func TestEffectiveDeployUserMsg_DoesNotUsePendingDeployStateAfterUnrelatedIntent(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
 	eng.SetSessionState(SessionState{
