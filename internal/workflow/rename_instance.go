@@ -1,5 +1,7 @@
 package workflow
 
+import "fmt"
+
 // RenameInstanceDef returns the 3-step workflow definition for renaming a
 // CompShare GPU instance: query instance, confirm rename, then execute.
 func RenameInstanceDef() *Definition {
@@ -43,8 +45,12 @@ func stepConfirmRename() Step {
 		Name: "确认改名",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			newName := paramStr(wfCtx.Params, "Name", "")
+			if newName == "" {
+				return nil, NewMissingSlotError("改名需要指定新名称。", "name")
+			}
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
-			summary["NewName"] = wfCtx.Params["Name"]
+			summary["NewName"] = newName
 			return summary, nil
 		},
 	}
@@ -56,10 +62,14 @@ func stepRenameInstance() Step {
 		Type: StepToolCall,
 		Tool: "ModifyCompShareInstanceName",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			newName := paramStr(wfCtx.Params, "Name", "")
+			if newName == "" {
+				return nil, fmt.Errorf("instance Name is required before renaming")
+			}
 			queried := wfCtx.Result("查询实例")
 			return addRequiredInstanceLocationArgs(map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
-				"Name":    wfCtx.Params["Name"],
+				"Name":    newName,
 			}, queried)
 		},
 	}

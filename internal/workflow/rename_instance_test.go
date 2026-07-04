@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func renameMockExecutor() *mockExecutor {
@@ -75,6 +76,29 @@ func TestRenameInstance_ConfirmShowsNewName(t *testing.T) {
 	assert.NotNil(t, capturedArgs)
 	assert.Equal(t, "new-name", capturedArgs["NewName"])
 	assert.Equal(t, "old-name", capturedArgs["Name"])
+}
+
+func TestRenameInstance_MissingNameAsksBeforeConfirmOrMutatingCall(t *testing.T) {
+	executor := renameMockExecutor()
+	confirmFn := func(action string, args map[string]any) bool {
+		t.Fatalf("missing rename target must stop before confirmation; action=%s args=%v", action, args)
+		return false
+	}
+	onStep, _ := collectEvents()
+
+	def := RenameInstanceDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-xxx",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, "确认改名", result.StoppedAt)
+	assert.Equal(t, []string{"name"}, result.MissingSlots)
+	assert.Contains(t, result.Message, "改名需要指定新名称")
+	assert.Len(t, executor.calls, 1)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 }
 
 func TestRenameInstance_InstanceNotFound(t *testing.T) {

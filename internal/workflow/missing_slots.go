@@ -360,6 +360,25 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 			return ""
 		},
 	},
+	"RenameInstanceWorkflow": {
+		missingSlots: []string{"name"},
+		buildArgs: func(slots map[string]string) (map[string]any, []string) {
+			normalized := NormalizeTaskSlotUpdates(slots)
+			args, missing := baseWorkflowTaskArgs("RenameInstanceWorkflow", normalized)
+			if name := normalized["name"]; name != "" {
+				args["Name"] = name
+			} else {
+				missing = append(missing, "name")
+			}
+			return finishTaskArgs(args, missing)
+		},
+		clarify: func(missing []string) string {
+			if slotSet(missing)["name"] {
+				return "需要先确认实例的新名称。请告诉我要把它改成什么名字。"
+			}
+			return ""
+		},
+	},
 }
 
 func TaskSlotUpdatesFromUserText(workflowName string, missing []string, userMsg string) map[string]string {
@@ -471,7 +490,7 @@ func finishTaskArgs(args map[string]any, missing []string) (map[string]any, []st
 
 func workflowRequiresInstanceTarget(workflowName string) bool {
 	switch workflowName {
-	case "CreateDiskWorkflow", "ResizeDiskWorkflow", "ResizeInstanceWorkflow", "SetStopSchedulerWorkflow", "ReinstallInstanceWorkflow", "CreateCustomImageWorkflow":
+	case "CreateDiskWorkflow", "ResizeDiskWorkflow", "ResizeInstanceWorkflow", "SetStopSchedulerWorkflow", "ReinstallInstanceWorkflow", "CreateCustomImageWorkflow", "RenameInstanceWorkflow":
 		return true
 	default:
 		return false

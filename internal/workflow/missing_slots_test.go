@@ -97,6 +97,12 @@ func TestWorkflowMissingSlotsAreStructured(t *testing.T) {
 			want: []string{"image_id"},
 		},
 		{
+			name: "rename missing name",
+			def:  RenameInstanceDef(),
+			args: map[string]any{"UHostId": "uhost-1"},
+			want: []string{"name"},
+		},
+		{
 			name: "create cfs missing name",
 			def:  CreateCFSDef(),
 			args: map[string]any{"Size": float64(100), "Zone": "cn-pod-01"},
@@ -198,6 +204,13 @@ func TestTaskSlotSpecsParseUpdatesAndBuildArgs(t *testing.T) {
 	})
 	require.Empty(t, missing)
 	assert.Equal(t, map[string]any{"UHostId": "uhost-1", "Name": "snapshot-v1", "Description": "training environment"}, args)
+
+	args, missing = TaskArgsFromSlots("RenameInstanceWorkflow", map[string]string{
+		"instance_id": "uhost-1",
+		"name":        "renamed-host",
+	})
+	require.Empty(t, missing)
+	assert.Equal(t, map[string]any{"UHostId": "uhost-1", "Name": "renamed-host"}, args)
 
 	updates = TaskSlotUpdatesFromUserText("ReinstallInstanceWorkflow", []string{"image_id"}, "Ubuntu-nvidia 22.04")
 	assert.Nil(t, updates, "natural image names must be resolved by context/model + image tools, not treated as image IDs")

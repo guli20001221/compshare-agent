@@ -259,6 +259,110 @@ func TestOperationLifecycleMissingResizeSpecRecordsGenericTaskFrame(t *testing.T
 	assert.Equal(t, "uhost-1", frame.Slots["instance_id"])
 }
 
+func TestOperationLifecycleMissingRenameNameRecordsGenericTaskFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1",
+				"Name":    "host-1",
+				"State":   "Running",
+				"Zone":    "cn-wlcb-01",
+				"Region":  "cn-wlcb",
+			}}}, nil
+		case "ModifyCompShareInstanceName":
+			t.Fatalf("missing rename target must stop before mutating; args=%v", args)
+		default:
+			return map[string]any{}, nil
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, okConfirm)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	dispatch := routerDispatchResult{
+		result: intent.IntentRouterResult{Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentOperationLifecycle,
+			Slots: intent.Slots{
+				Action: intent.LifecycleActionRename,
+				TargetRefs: []intent.TargetRef{{
+					Type:   intent.TargetRefUHostIDUserInput,
+					Value:  "uhost-1",
+					Source: intent.SourceUserText,
+				}},
+			},
+		}},
+		snapshot: entity.RegistrySnapshot{
+			Instances: map[string]entity.InstanceSnapshot{
+				"uhost-1": {UHostId: "uhost-1", Name: "host-1", State: "Running", Zone: "cn-wlcb-01", Region: "cn-wlcb"},
+			},
+			LastFullSync: time.Now(),
+		},
+	}
+
+	reply, handled := eng.tryOperationLifecycleDispatch(context.Background(), dispatch, "把 host-1 改名一下", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "新名称")
+	state, _, _ := eng.SessionStateSnapshot()
+	frame := state.ContextFrame
+	assert.Equal(t, ContextFrameKindWorkflowTask, frame.Kind)
+	assert.Equal(t, "RenameInstanceWorkflow", frame.Workflow)
+	assert.Equal(t, []string{"name"}, frame.MissingSlots)
+	assert.Equal(t, "uhost-1", frame.Slots["instance_id"])
+}
+
+func TestOperationLifecycleMissingRenameName_FlagOffKeepsLegacyPrompt(t *testing.T) {
+	SetContextContinuationEnabled(false)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "host-1", "State": "Running", "Zone": "cn-wlcb-01", "Region": "cn-wlcb",
+			}}}, nil
+		case "ModifyCompShareInstanceName":
+			t.Fatalf("flag-off missing rename target must not mutate; args=%v", args)
+		default:
+			t.Fatalf("unexpected tool call in flag-off missing rename path; action=%s args=%v", action, args)
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, okConfirm)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	dispatch := routerDispatchResult{
+		result: intent.IntentRouterResult{Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentOperationLifecycle,
+			Slots: intent.Slots{
+				Action: intent.LifecycleActionRename,
+				TargetRefs: []intent.TargetRef{{
+					Type:   intent.TargetRefUHostIDUserInput,
+					Value:  "uhost-1",
+					Source: intent.SourceUserText,
+				}},
+			},
+		}},
+		snapshot: entity.RegistrySnapshot{
+			Instances: map[string]entity.InstanceSnapshot{
+				"uhost-1": {UHostId: "uhost-1", Name: "host-1", State: "Running", Zone: "cn-wlcb-01", Region: "cn-wlcb"},
+			},
+			LastFullSync: time.Now(),
+		},
+	}
+
+	reply, handled := eng.tryOperationLifecycleDispatch(context.Background(), dispatch, "把 host-1 改名一下", noopStep)
+
+	require.True(t, handled)
+	assert.Equal(t, "请告诉我要把实例改成什么名称。", reply)
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind)
+}
+
 func TestSelectedInstanceCreateDiskMissingSizeRecordsGenericTaskFrame(t *testing.T) {
 	SetContextContinuationEnabled(true)
 	t.Cleanup(func() { SetContextContinuationEnabled(false) })
@@ -965,6 +1069,113 @@ func TestResumeWorkflowContextFrame_CreateCustomImageNameReachesConfirm(t *testi
 	assert.Equal(t, "training environment", confirmArgs["Description"])
 	assert.Equal(t, "cn-wlcb", confirmArgs["Region"])
 	assert.Equal(t, "cn-wlcb-01", confirmArgs["Zone"])
+}
+
+func TestResumeWorkflowContextFrame_RenameNameReachesConfirm(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	var confirmArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "old-host", "State": "Running", "Region": "cn-wlcb", "Zone": "cn-wlcb-01",
+			}}}, nil
+		case "ModifyCompShareInstanceName":
+			t.Fatalf("rename continuation must stop at confirm before mutating; args=%v", args)
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.selectedInstanceIDAtTurnStart = "uhost-1"
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionContinueTask,
+		SlotUpdates: map[string]string{"name": "renamed-host"},
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaCurrent,
+		SelectedInstanceID: "uhost-1",
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "RenameInstanceWorkflow",
+			Slots:          map[string]string{"instance_id": "uhost-1"},
+			MissingSlots:   []string{"name"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "renamed-host", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	assert.Equal(t, "RenameInstanceWorkflow", confirmAction)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "old-host", confirmArgs["Name"])
+	assert.Equal(t, "renamed-host", confirmArgs["NewName"])
+}
+
+func TestSelectedInstanceRenameMissingNameRecordsGenericTaskFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "old-host", "State": "Running", "Region": "cn-wlcb", "Zone": "cn-wlcb-01",
+			}}}, nil
+		case "ModifyCompShareInstanceName":
+			t.Fatalf("missing rename target must stop before mutating; args=%v", args)
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, okConfirm)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:        SessionStateSchemaCurrent,
+		SelectedInstanceID:   "uhost-1",
+		SelectedInstanceName: "old-host",
+	}, 1)
+
+	reply, handled := eng.tryDirectLifecycleFromUserText(context.Background(), "把这台改名一下", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "新名称")
+	state, _, _ := eng.SessionStateSnapshot()
+	frame := state.ContextFrame
+	assert.Equal(t, ContextFrameKindWorkflowTask, frame.Kind)
+	assert.Equal(t, "RenameInstanceWorkflow", frame.Workflow)
+	assert.Equal(t, []string{"name"}, frame.MissingSlots)
+	assert.Equal(t, "uhost-1", frame.Slots["instance_id"])
+}
+
+func TestSelectedInstanceRenameMissingName_FlagOffKeepsLegacyPrompt(t *testing.T) {
+	SetContextContinuationEnabled(false)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, okConfirm)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:        SessionStateSchemaCurrent,
+		SelectedInstanceID:   "uhost-1",
+		SelectedInstanceName: "old-host",
+	}, 1)
+
+	reply, handled := eng.tryDirectLifecycleFromUserText(context.Background(), "把这台改名一下", noopStep)
+
+	require.True(t, handled)
+	assert.Equal(t, "请告诉我要把实例改成什么名称。", reply)
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind)
 }
 
 func TestCreateCustomImageMissingName_FlagOffDoesNotPersistContextFrame(t *testing.T) {
