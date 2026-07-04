@@ -88,6 +88,32 @@ func TestRecordWorkflowMissingSlotsFrameKeepsOnlySafeSlots(t *testing.T) {
 	assert.NotContains(t, frame.Slots, "zone_id")
 	assert.NotContains(t, frame.Slots, "az_group")
 	assert.NotContains(t, frame.Slots, "password")
+	assert.NotContains(t, frame.SlotSources, "instance_id", "model-provided target from workflow args is not trusted without user source")
+}
+
+func TestRecordWorkflowMissingSlotsFrameMarksNameMentionedTargetTrusted(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := newEngineForSessionStateTest(t)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	eng.lastUserMsg = "给训练机A加一块数据盘"
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "训练机A", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "训练机B", "State": "Running"},
+		},
+	}, "test"))
+
+	recorded := eng.recordWorkflowMissingSlotsFrame("CreateDiskWorkflow", map[string]any{
+		"UHostId": "uhost-a",
+	}, []string{"size_gb"}, "缺少大小")
+
+	require.True(t, recorded)
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Equal(t, "uhost-a", state.ContextFrame.Slots["instance_id"])
+	assert.Equal(t, SelectedInstanceSourceUser, state.ContextFrame.SlotSources["instance_id"])
 }
 
 func TestRecordWorkflowMissingSlotsFrameUsesCurrentSelectedInstanceOverStaleTask(t *testing.T) {
@@ -96,8 +122,9 @@ func TestRecordWorkflowMissingSlotsFrameUsesCurrentSelectedInstanceOverStaleTask
 
 	eng := newEngineForSessionStateTest(t)
 	eng.SetSessionState(SessionState{
-		SchemaVersion:      SessionStateSchemaCurrent,
-		SelectedInstanceID: "uhost-new",
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-new",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
 		ContextFrame: ContextFrame{
 			Version:        1,
 			Kind:           ContextFrameKindWorkflowTask,
@@ -115,6 +142,23 @@ func TestRecordWorkflowMissingSlotsFrameUsesCurrentSelectedInstanceOverStaleTask
 	require.True(t, recorded)
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Equal(t, "uhost-new", state.ContextFrame.Slots["instance_id"])
+	assert.Equal(t, SelectedInstanceSourceUser, state.ContextFrame.SlotSources["instance_id"])
+}
+
+func TestTrustedWorkflowFrameTargetRequiresUserSourceOrExplicitID(t *testing.T) {
+	frame := ContextFrame{
+		Kind:     ContextFrameKindWorkflowTask,
+		Workflow: "CreateDiskWorkflow",
+		Slots:    map[string]string{"instance_id": "uhost-a"},
+	}
+	assert.Empty(t, trustedWorkflowFrameTarget(frame, map[string]string{"instance_id": "uhost-a", "size_gb": "200"}, "200G"),
+		"old frames without target source must not authorize a mutating workflow")
+
+	frame.SlotSources = map[string]string{"instance_id": SelectedInstanceSourceUser}
+	assert.Equal(t, "uhost-a", trustedWorkflowFrameTarget(frame, map[string]string{"instance_id": "uhost-a", "size_gb": "200"}, "200G"))
+
+	frame.SlotSources = nil
+	assert.Equal(t, "uhost-a", trustedWorkflowFrameTarget(frame, map[string]string{"instance_id": "uhost-a", "size_gb": "200"}, "给 uhost-a 加 200G"))
 }
 
 func TestRecordWorkflowMissingSlotsFrame_FlagOffDoesNotPersistFrame(t *testing.T) {
@@ -383,12 +427,46 @@ func TestSelectedInstanceCreateDiskMissingSizeRecordsGenericTaskFrame(t *testing
 	}}
 	eng := NewWithDeps(&mockLLM{}, exec, okConfirm)
 	eng.SetSessionState(SessionState{
-		SchemaVersion:        SessionStateSchemaCurrent,
-		SelectedInstanceID:   "uhost-1",
-		SelectedInstanceName: "host-1",
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-1",
+		SelectedInstanceName:   "host-1",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
 	}, 1)
 
 	reply, handled := eng.tryDirectLifecycleFromUserText(context.Background(), "给这台加一块数据盘", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "数据盘大小")
+	state, _, _ := eng.SessionStateSnapshot()
+	frame := state.ContextFrame
+	assert.Equal(t, ContextFrameKindWorkflowTask, frame.Kind)
+	assert.Equal(t, "CreateDiskWorkflow", frame.Workflow)
+	assert.Equal(t, []string{"size_gb"}, frame.MissingSlots)
+	assert.Equal(t, "uhost-1", frame.Slots["instance_id"])
+}
+
+func TestExplicitIDCreateDiskMissingSizeRecordsGenericTaskFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1",
+				"Name":    "host-1",
+				"State":   "Running",
+				"Zone":    "cn-wlcb-01",
+				"Region":  "cn-wlcb",
+			}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, okConfirm)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+
+	reply, handled := eng.tryDirectLifecycleFromUserText(context.Background(), "给 uhost-1 加一块数据盘", noopStep)
 
 	require.True(t, handled)
 	assert.Contains(t, reply, "数据盘大小")
@@ -431,6 +509,7 @@ func TestResumeWorkflowContextFrameAppliesSlotUpdateAndReachesConfirm(t *testing
 		}
 	}}
 	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.lastUserMsg = "200G"
 	eng.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaCurrent,
 		ContextFrame: ContextFrame{
@@ -439,6 +518,7 @@ func TestResumeWorkflowContextFrameAppliesSlotUpdateAndReachesConfirm(t *testing
 			Status:         ContextFrameStatusFailedRecoverable,
 			Workflow:       "CreateDiskWorkflow",
 			Slots:          map[string]string{"instance_id": "uhost-1"},
+			SlotSources:    map[string]string{"instance_id": SelectedInstanceSourceUser},
 			MissingSlots:   []string{"size_gb"},
 			ProducedAtUnix: time.Now().Unix(),
 			TTLSeconds:     ContextFrameTTLSeconds,
@@ -459,6 +539,170 @@ func TestResumeWorkflowContextFrameAppliesSlotUpdateAndReachesConfirm(t *testing
 	assert.Equal(t, float64(200), confirmArgs["disk_size_gb"])
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Empty(t, state.ContextFrame.Kind, "filled workflow task should not keep the stale missing-slot frame after reaching confirm")
+}
+
+func TestResumeWorkflowContextFrameIgnoresModelChangedInstanceWithoutUserText(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1",
+				"State":   "Running",
+				"Zone":    "cn-wlcb-01",
+				"Region":  "cn-wlcb",
+				"GpuType": "4090",
+				"GPU":     float64(1),
+				"CPU":     float64(16),
+				"Memory":  float64(64),
+			}}}, nil
+		case "GetCompShareInstancePrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"Disks": float64(0.25)}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.lastUserMsg = "200G"
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "CreateDiskWorkflow",
+			Slots:          map[string]string{"instance_id": "uhost-1"},
+			SlotSources:    map[string]string{"instance_id": SelectedInstanceSourceUser},
+			MissingSlots:   []string{"size_gb"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionContinueTask,
+		SlotUpdates: map[string]string{
+			"instance_id": "uhost-2",
+			"size_gb":     "200G",
+		},
+	}})
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "200G", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "uhost-1", confirmArgs["UHostId"], "model-only instance_id updates must not replace the original workflow target")
+	assert.Equal(t, float64(200), confirmArgs["disk_size_gb"])
+}
+
+func TestResumeWorkflowContextFrameRejectsModelInsertedInstanceWithoutFrameOrUserText(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		return false
+	}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, confirm)
+	eng.lastUserMsg = "200G"
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "CreateDiskWorkflow",
+			MissingSlots:   []string{"instance_id", "size_gb"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionContinueTask,
+		SlotUpdates: map[string]string{
+			"instance_id": "uhost-2",
+			"size_gb":     "200G",
+		},
+	}})
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "200G", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "必要参数")
+	assert.Empty(t, confirmAction, "model-only target insertion must not reach a mutating confirmation")
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.NotContains(t, state.ContextFrame.Slots, "instance_id")
+}
+
+func TestResumeWorkflowContextFrameAllowsUserExplicitChangedInstanceID(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-2",
+				"State":   "Running",
+				"Zone":    "cn-wlcb-01",
+				"Region":  "cn-wlcb",
+				"GpuType": "4090",
+				"GPU":     float64(1),
+				"CPU":     float64(16),
+				"Memory":  float64(64),
+			}}}, nil
+		case "GetCompShareInstancePrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"Disks": float64(0.25)}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	userMsg := "给 uhost-2 加 200G"
+	eng.lastUserMsg = userMsg
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "CreateDiskWorkflow",
+			Slots:          map[string]string{"instance_id": "uhost-1"},
+			MissingSlots:   []string{"size_gb"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionContinueTask,
+		SlotUpdates: map[string]string{
+			"instance_id": "uhost-2",
+			"size_gb":     "200G",
+		},
+	}})
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, userMsg, noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "uhost-2", confirmArgs["UHostId"], "explicit user-provided instance IDs may update the workflow target")
 }
 
 func TestResumeWorkflowContextFrameDoesNotParseSlotsWhenDecisionIsNewTask(t *testing.T) {
@@ -693,6 +937,7 @@ func TestResumeWorkflowContextFrame_SetStopSchedulerTimeReachesConfirm(t *testin
 			Status:         ContextFrameStatusFailedRecoverable,
 			Workflow:       "SetStopSchedulerWorkflow",
 			Slots:          map[string]string{"instance_id": "uhost-1"},
+			SlotSources:    map[string]string{"instance_id": SelectedInstanceSourceUser},
 			MissingSlots:   []string{"stop_time"},
 			ProducedAtUnix: time.Now().Unix(),
 			TTLSeconds:     ContextFrameTTLSeconds,
@@ -748,6 +993,7 @@ func TestResumeWorkflowContextFrame_ReinstallImageIDReachesConfirm(t *testing.T)
 			Status:         ContextFrameStatusFailedRecoverable,
 			Workflow:       "ReinstallInstanceWorkflow",
 			Slots:          map[string]string{"instance_id": "uhost-1"},
+			SlotSources:    map[string]string{"instance_id": SelectedInstanceSourceUser},
 			MissingSlots:   []string{"image_id"},
 			ProducedAtUnix: time.Now().Unix(),
 			TTLSeconds:     ContextFrameTTLSeconds,
@@ -808,6 +1054,7 @@ func TestResumeWorkflowContextFrame_ReinstallImagePrefReachesConfirm(t *testing.
 			Status:         ContextFrameStatusFailedRecoverable,
 			Workflow:       "ReinstallInstanceWorkflow",
 			Slots:          map[string]string{"instance_id": "uhost-1"},
+			SlotSources:    map[string]string{"instance_id": SelectedInstanceSourceUser},
 			MissingSlots:   []string{"image_id"},
 			ProducedAtUnix: time.Now().Unix(),
 			TTLSeconds:     ContextFrameTTLSeconds,
@@ -877,6 +1124,7 @@ func TestResumeWorkflowContextFrame_ReinstallImageSourceRestrictsLookup(t *testi
 			Status:         ContextFrameStatusFailedRecoverable,
 			Workflow:       "ReinstallInstanceWorkflow",
 			Slots:          map[string]string{"instance_id": "uhost-1"},
+			SlotSources:    map[string]string{"instance_id": SelectedInstanceSourceUser},
 			MissingSlots:   []string{"image_id"},
 			ProducedAtUnix: time.Now().Unix(),
 			TTLSeconds:     ContextFrameTTLSeconds,
@@ -1038,19 +1286,22 @@ func TestResumeWorkflowContextFrame_CreateCustomImageNameReachesConfirm(t *testi
 	}}
 	eng := NewWithDeps(&mockLLM{}, exec, confirm)
 	eng.selectedInstanceIDAtTurnStart = "uhost-1"
+	eng.selectedInstanceSourceAtTurnStart = SelectedInstanceSourceUser
 	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
 		Decision:    ContextDecisionContinueTask,
 		SlotUpdates: map[string]string{"name": "snapshot-v1"},
 	}})
 	eng.SetSessionState(SessionState{
-		SchemaVersion:      SessionStateSchemaCurrent,
-		SelectedInstanceID: "uhost-1",
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-1",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
 		ContextFrame: ContextFrame{
 			Version:        1,
 			Kind:           ContextFrameKindWorkflowTask,
 			Status:         ContextFrameStatusFailedRecoverable,
 			Workflow:       "CreateCustomImageWorkflow",
 			Slots:          map[string]string{"instance_id": "uhost-1", "description": "training environment"},
+			SlotSources:    map[string]string{"instance_id": SelectedInstanceSourceUser},
 			MissingSlots:   []string{"name"},
 			ProducedAtUnix: time.Now().Unix(),
 			TTLSeconds:     ContextFrameTTLSeconds,
@@ -1095,19 +1346,22 @@ func TestResumeWorkflowContextFrame_RenameNameReachesConfirm(t *testing.T) {
 	}}
 	eng := NewWithDeps(&mockLLM{}, exec, confirm)
 	eng.selectedInstanceIDAtTurnStart = "uhost-1"
+	eng.selectedInstanceSourceAtTurnStart = SelectedInstanceSourceUser
 	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
 		Decision:    ContextDecisionContinueTask,
 		SlotUpdates: map[string]string{"name": "renamed-host"},
 	}})
 	eng.SetSessionState(SessionState{
-		SchemaVersion:      SessionStateSchemaCurrent,
-		SelectedInstanceID: "uhost-1",
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-1",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
 		ContextFrame: ContextFrame{
 			Version:        1,
 			Kind:           ContextFrameKindWorkflowTask,
 			Status:         ContextFrameStatusFailedRecoverable,
 			Workflow:       "RenameInstanceWorkflow",
 			Slots:          map[string]string{"instance_id": "uhost-1"},
+			SlotSources:    map[string]string{"instance_id": SelectedInstanceSourceUser},
 			MissingSlots:   []string{"name"},
 			ProducedAtUnix: time.Now().Unix(),
 			TTLSeconds:     ContextFrameTTLSeconds,
@@ -1142,9 +1396,10 @@ func TestSelectedInstanceRenameMissingNameRecordsGenericTaskFrame(t *testing.T) 
 	}}
 	eng := NewWithDeps(&mockLLM{}, exec, okConfirm)
 	eng.SetSessionState(SessionState{
-		SchemaVersion:        SessionStateSchemaCurrent,
-		SelectedInstanceID:   "uhost-1",
-		SelectedInstanceName: "old-host",
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-1",
+		SelectedInstanceName:   "old-host",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
 	}, 1)
 
 	reply, handled := eng.tryDirectLifecycleFromUserText(context.Background(), "把这台改名一下", noopStep)
@@ -1165,9 +1420,10 @@ func TestSelectedInstanceRenameMissingName_FlagOffKeepsLegacyPrompt(t *testing.T
 
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, okConfirm)
 	eng.SetSessionState(SessionState{
-		SchemaVersion:        SessionStateSchemaCurrent,
-		SelectedInstanceID:   "uhost-1",
-		SelectedInstanceName: "old-host",
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-1",
+		SelectedInstanceName:   "old-host",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
 	}, 1)
 
 	reply, handled := eng.tryDirectLifecycleFromUserText(context.Background(), "把这台改名一下", noopStep)
@@ -1195,9 +1451,11 @@ func TestCreateCustomImageMissingName_FlagOffDoesNotPersistContextFrame(t *testi
 	}}
 	eng := NewWithDeps(&mockLLM{}, exec, okConfirm)
 	eng.selectedInstanceIDAtTurnStart = "uhost-1"
+	eng.selectedInstanceSourceAtTurnStart = SelectedInstanceSourceUser
 	eng.SetSessionState(SessionState{
-		SchemaVersion:      SessionStateSchemaCurrent,
-		SelectedInstanceID: "uhost-1",
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-1",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
 	}, 1)
 
 	reply := eng.executeWorkflow(context.Background(), "CreateCustomImageWorkflow", map[string]any{

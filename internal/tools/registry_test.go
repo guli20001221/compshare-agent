@@ -33,6 +33,29 @@ func TestCreatePathToolsAllowRegion(t *testing.T) {
 	}
 }
 
+func TestWorkflowSchemasLetBackendClarifyMissingSizes(t *testing.T) {
+	for _, action := range []string{"CreateDiskWorkflow", "ResizeDiskWorkflow"} {
+		var required []string
+		for _, tool := range Registry {
+			if tool.Function == nil || tool.Function.Name != action {
+				continue
+			}
+			params, _ := tool.Function.Parameters.(map[string]any)
+			required, _ = params["required"].([]string)
+			break
+		}
+		if len(required) == 0 {
+			t.Fatalf("%s schema not found", action)
+		}
+		if !containsString(required, "UHostId") {
+			t.Fatalf("%s must still require UHostId", action)
+		}
+		if containsString(required, "Size") {
+			t.Fatalf("%s must not require Size; workflow missing-slot handling should ask for it", action)
+		}
+	}
+}
+
 func TestDescribeCommunityImagesAllowsPopularSortCondition(t *testing.T) {
 	policies := DefaultToolExecutionPolicies()
 	p, ok := policies["DescribeCommunityImages"]

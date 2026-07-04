@@ -21,7 +21,12 @@ const SessionStateSchemaV2 = "2.0"
 // dropping pending workflow parameters on write-back.
 const SessionStateSchemaV3 = "3.0"
 
-const SessionStateSchemaCurrent = SessionStateSchemaV3
+// SessionStateSchemaV4 records the trust source for selected instances and
+// workflow task slots. Older binaries must fail closed instead of silently
+// dropping the source and later treating an observed instance as user-selected.
+const SessionStateSchemaV4 = "4.0"
+
+const SessionStateSchemaCurrent = SessionStateSchemaV4
 
 // ErrUnknownSessionStateSchema is returned by ParsePersistedContext when a
 // row looks like an agent envelope (top-level object with an
@@ -45,6 +50,7 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 	SessionStateSchemaV1: {},
 	SessionStateSchemaV2: {},
 	SessionStateSchemaV3: {},
+	SessionStateSchemaV4: {},
 }
 
 // SessionState is the per-session, JSON-serializable, multi-replica-safe
@@ -87,6 +93,7 @@ type SessionState struct {
 	SchemaVersion                   string                 `json:"schema_version"`
 	SelectedInstanceID              string                 `json:"selected_instance_id,omitempty"`
 	SelectedInstanceName            string                 `json:"selected_instance_name,omitempty"`
+	SelectedInstanceSource          string                 `json:"selected_instance_source,omitempty"`
 	LastIntent                      string                 `json:"last_intent,omitempty"`
 	LastStockGpuModel               string                 `json:"last_stock_gpu_model,omitempty"`
 	LastDeployWorkload              string                 `json:"last_deploy_workload,omitempty"`
@@ -106,6 +113,9 @@ type SessionState struct {
 }
 
 const (
+	SelectedInstanceSourceUser     = "user"
+	SelectedInstanceSourceObserved = "observed"
+
 	ContextFrameKindCreate       = "create_instance"
 	ContextFrameKindDeploy       = "deploy_model"
 	ContextFrameKindWorkflowTask = "workflow_task"
@@ -130,6 +140,7 @@ type ContextFrame struct {
 	Workflow         string             `json:"workflow,omitempty"`
 	OriginalUserMsg  string             `json:"original_user_msg,omitempty"`
 	Slots            map[string]string  `json:"slots,omitempty"`
+	SlotSources      map[string]string  `json:"slot_sources,omitempty"`
 	MissingSlots     []string           `json:"missing_slots,omitempty"`
 	GPU              string             `json:"gpu,omitempty"`
 	ImagePref        string             `json:"image_pref,omitempty"`
@@ -426,6 +437,7 @@ func contextFrameEmpty(f ContextFrame) bool {
 		f.Workflow == "" &&
 		f.OriginalUserMsg == "" &&
 		len(f.Slots) == 0 &&
+		len(f.SlotSources) == 0 &&
 		len(f.MissingSlots) == 0 &&
 		f.GPU == "" &&
 		f.ImagePref == "" &&

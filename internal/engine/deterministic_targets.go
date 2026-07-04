@@ -389,7 +389,9 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 	if action == "" {
 		return "", false
 	}
-	if selectedID := strings.TrimSpace(e.sessionState.SelectedInstanceID); selectedID != "" && looksLikeSelectedInstanceFollowup(userMsg) {
+	if selectedID := strings.TrimSpace(e.sessionState.SelectedInstanceID); selectedID != "" &&
+		selectedInstanceSourceTrustedForWorkflow(e.sessionState.SelectedInstanceSource) &&
+		looksLikeSelectedInstanceFollowup(userMsg) {
 		if inst, res := e.RegistrySnapshot().ResolveByID(selectedID); res.Status == entity.ResolveHit && inst != nil {
 			plan := lifecyclePlanForSelectedInstance(action, *inst)
 			return e.tryLifecycleActionForSelectedInstance(ctx, *inst, action, userMsg, plan, onStep)
@@ -437,17 +439,19 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 	}
 	cachedSnapshot := e.RegistrySnapshot()
 	snapshot := cachedSnapshot
-	if _, ok := findUniqueInstanceNameInText(userMsg, cachedSnapshot); !ok {
+	if !resolveLifecycleTargetForPreDispatch(userMsg, cachedSnapshot, action) {
+		allowExplicitWorkflowTarget := lifecycleActionAllowsExplicitIDPreDispatch(action) && uhostIDPattern.FindString(userMsg) != ""
 		if action != intent.LifecycleActionRename &&
 			action != intent.LifecycleActionResetPwd &&
-			!hasLikelyExplicitInstanceTargetText(userMsg) {
+			!hasLikelyExplicitInstanceTargetText(userMsg) &&
+			!allowExplicitWorkflowTarget {
 			return "", false
 		}
 		freshSnapshot, okSnapshot, err := e.freshResourceSelectionSnapshot(ctx, cachedSnapshot)
 		if err != nil || !okSnapshot {
 			return "", false
 		}
-		if _, ok := findUniqueInstanceNameInText(userMsg, freshSnapshot); !ok {
+		if !resolveLifecycleTargetForPreDispatch(userMsg, freshSnapshot, action) {
 			return "", false
 		}
 		snapshot = freshSnapshot
@@ -665,6 +669,24 @@ func hasLikelyExplicitInstanceTargetText(userText string) bool {
 	}) {
 		field = strings.Trim(field, "“”\"'()（）")
 		if len([]rune(field)) >= 6 && (strings.Contains(field, "-") || strings.Contains(field, "_")) {
+			return true
+		}
+	}
+	return false
+}
+
+func lifecycleActionAllowsExplicitIDPreDispatch(action intent.LifecycleAction) bool {
+	return action == intent.LifecycleActionCreateDisk ||
+		action == intent.LifecycleActionResize ||
+		(action == intent.LifecycleActionRename && ContextContinuationEnabled())
+}
+
+func resolveLifecycleTargetForPreDispatch(userMsg string, snapshot entity.RegistrySnapshot, action intent.LifecycleAction) bool {
+	if _, ok := findUniqueInstanceNameInText(userMsg, snapshot); ok {
+		return true
+	}
+	if lifecycleActionAllowsExplicitIDPreDispatch(action) {
+		if inst, _ := findExplicitInstanceRef(userMsg, snapshot); inst != nil {
 			return true
 		}
 	}

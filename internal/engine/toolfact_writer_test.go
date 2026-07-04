@@ -242,6 +242,24 @@ func TestRecordInstanceStateFacts_SingleHostSetsSelectedInstance(t *testing.T) {
 	})
 	assert.Equal(t, "uhost-solo", e.sessionState.SelectedInstanceID)
 	assert.Equal(t, "only-one", e.sessionState.SelectedInstanceName)
+	assert.Equal(t, SelectedInstanceSourceObserved, e.sessionState.SelectedInstanceSource)
+}
+
+func TestRecordInstanceStateFacts_DoesNotDowngradeUserSelectedInstance(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+	e.recordSelectedInstanceID("uhost-solo", "selected-name")
+
+	e.recordInstanceStateFacts(map[string]any{
+		"UHostSet": []any{map[string]any{
+			"UHostId": "uhost-solo", "Name": "observed-name", "State": "Running",
+			"GPU": 1, "GpuType": "RTX4090", "CPU": 16, "Memory": 65536, "Zone": "cn-bj-01",
+		}},
+	})
+
+	assert.Equal(t, "uhost-solo", e.sessionState.SelectedInstanceID)
+	assert.Equal(t, "observed-name", e.sessionState.SelectedInstanceName)
+	assert.Equal(t, SelectedInstanceSourceUser, e.sessionState.SelectedInstanceSource,
+		"read-only facts about the same selected instance must not downgrade a user-selected write target")
 }
 
 // TestRecordInstanceStateFacts_MultiHostKeepsSelectedInstanceUnset: a list-all
@@ -267,6 +285,7 @@ func TestRecordMonitorSampleFacts_SingleSubjectSetsSelectedInstance(t *testing.T
 		Metrics: []monitorPayloadMetric{{Key: "uhost_cpu_used", Values: [][2]any{{1716530000, "1.0"}}}},
 	}}))
 	assert.Equal(t, "uhost-mon", e.sessionState.SelectedInstanceID)
+	assert.Equal(t, SelectedInstanceSourceObserved, e.sessionState.SelectedInstanceSource)
 }
 
 // TestRecordMonitorSampleFacts_MultiSubjectKeepsSelectedInstanceUnset: a
@@ -558,6 +577,18 @@ func TestRecordSelectedInstanceFromEnvelope_SingleSubject(t *testing.T) {
 	e.recordSelectedInstanceFromEnvelope(env)
 	assert.Equal(t, "uhost-pick", e.sessionState.SelectedInstanceID)
 	assert.Equal(t, "train-a", e.sessionState.SelectedInstanceName)
+	assert.Equal(t, SelectedInstanceSourceUser, e.sessionState.SelectedInstanceSource)
+}
+
+func TestRecordSelectedInstanceSourceUpgradesSchemaVersion(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV3}, 1)
+
+	e.recordSelectedInstanceID("uhost-pick", "train-a")
+
+	state, _, _ := e.SessionStateSnapshot()
+	assert.Equal(t, SessionStateSchemaCurrent, state.SchemaVersion)
+	assert.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
 }
 
 // TestRecordSelectedInstanceFromEnvelope_NotHydratedSkips guards the CLI-
@@ -684,6 +715,7 @@ func TestSessionState_FieldsRoundTripWithSelectedAndIntent(t *testing.T) {
 
 	assert.Equal(t, "uhost-pick", roundTripped.AgentSessionState.SelectedInstanceID)
 	assert.Equal(t, "train-a", roundTripped.AgentSessionState.SelectedInstanceName)
+	assert.Equal(t, SelectedInstanceSourceUser, roundTripped.AgentSessionState.SelectedInstanceSource)
 	assert.Equal(t, string(intent.IntentMonitorQuery), roundTripped.AgentSessionState.LastIntent)
 }
 
@@ -731,6 +763,7 @@ func TestRouteDispatch_Success_PopulatesSessionState(t *testing.T) {
 	assert.Equal(t, "uhost-phase1-001", state.SelectedInstanceID,
 		"cutover success must populate SelectedInstanceID — mutation: delete recordSelectedInstanceFromEnvelope at engine.go:1230 to confirm load-bearingness")
 	assert.Equal(t, "phase1-demo", state.SelectedInstanceName)
+	assert.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
 
 	// Wiring at engine.go:1231 must have written LastIntent.
 	assert.Equal(t, string(intent.IntentResourceInfo), state.LastIntent,

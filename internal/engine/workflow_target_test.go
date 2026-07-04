@@ -75,6 +75,34 @@ func TestExecuteWorkflowBlocksUntrustedTargetWithoutHydratedSession(t *testing.T
 	assert.Empty(t, exec.calls, "untrusted target must be blocked even without hydrated session state")
 }
 
+func TestExecuteWorkflowDoesNotTrustContextFrameUnlessResumed(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Kind:     ContextFrameKindWorkflowTask,
+			Workflow: "CreateDiskWorkflow",
+			Slots:    map[string]string{"instance_id": "uhost-a", "size_gb": "200"},
+		},
+	}, 1)
+	eng.lastUserMsg = "200G"
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
+		},
+	}, "test"))
+
+	reply := eng.executeWorkflow(context.Background(), "CreateDiskWorkflow", map[string]any{"UHostId": "uhost-a", "Size": float64(200)}, noopStep)
+
+	assert.Contains(t, reply, "请先确认要操作的实例")
+	assert.Empty(t, exec.calls, "context frame alone must not let a direct model workflow call pick a target")
+}
+
 func TestExecuteWorkflowAllowsExplicitIDTarget(t *testing.T) {
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
@@ -153,15 +181,17 @@ func TestExecuteWorkflowAllowsSelectedInstanceTarget(t *testing.T) {
 	}}
 	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
 	eng.SetSessionState(SessionState{
-		SchemaVersion:        SessionStateSchemaCurrent,
-		SelectedInstanceID:   "uhost-a",
-		SelectedInstanceName: "alpha",
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-a",
+		SelectedInstanceName:   "alpha",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
 	}, 1)
 	// "它" refers to an instance selected in a PRIOR turn. In the real Chat()
 	// flow that carried binding is captured into the turn-start snapshot
 	// (engine.go:1254) before the turn runs; the guard trusts only that frozen
 	// snapshot, never a value written mid-turn by a model tool call.
 	eng.selectedInstanceIDAtTurnStart = "uhost-a"
+	eng.selectedInstanceSourceAtTurnStart = SelectedInstanceSourceUser
 	eng.lastUserMsg = "帮我关机它"
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
 		"TotalCount": float64(2),
@@ -175,6 +205,34 @@ func TestExecuteWorkflowAllowsSelectedInstanceTarget(t *testing.T) {
 
 	assert.Contains(t, reply, "执行关机")
 	assert.Contains(t, exec.calls, "StopCompShareInstance")
+}
+
+func TestExecuteWorkflowBlocksObservedSelectedInstanceTarget(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+	eng.SetSessionState(SessionState{
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-a",
+		SelectedInstanceName:   "alpha",
+		SelectedInstanceSource: SelectedInstanceSourceObserved,
+	}, 1)
+	eng.selectedInstanceIDAtTurnStart = "uhost-a"
+	eng.selectedInstanceSourceAtTurnStart = SelectedInstanceSourceObserved
+	eng.lastUserMsg = "帮我关机它"
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
+		},
+	}, "test"))
+
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep)
+
+	assert.Contains(t, reply, "请先确认要操作的实例")
+	assert.Empty(t, exec.calls, "tool-observed selected instance must not authorize a mutating workflow")
 }
 
 func TestExecuteWorkflowCreateCFSResolvesPodZone(t *testing.T) {

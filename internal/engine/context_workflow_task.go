@@ -52,7 +52,8 @@ func (e *Engine) tryResumeWorkflowContextFrame(ctx context.Context, dispatch rou
 	return e.resumeWorkflowContextFrameWithSlotUpdates(ctx, dispatch, userMsg, frame, updates, onStep)
 }
 
-func (e *Engine) resumeWorkflowContextFrameWithSlotUpdates(ctx context.Context, dispatch routerDispatchResult, _ string, frame ContextFrame, updates map[string]string, onStep func(StepEvent)) (string, bool) {
+func (e *Engine) resumeWorkflowContextFrameWithSlotUpdates(ctx context.Context, dispatch routerDispatchResult, userMsg string, frame ContextFrame, updates map[string]string, onStep func(StepEvent)) (string, bool) {
+	updates = sanitizeWorkflowTaskSlotUpdates(frame, updates, userMsg)
 	slots := mergeStringMaps(frame.Slots, updates)
 	args, missing := workflowArgsFromTaskSlots(frame.Workflow, slots)
 	if len(missing) > 0 {
@@ -67,6 +68,12 @@ func (e *Engine) resumeWorkflowContextFrameWithSlotUpdates(ctx context.Context, 
 
 	e.clearContextFrame()
 	action := frame.Workflow
+	if workflowRequiresInstanceTarget(action) {
+		if target := trustedWorkflowFrameTarget(frame, slots, userMsg); target != "" {
+			e.trustedWorkflowFrameActionThisTurn = action
+			e.trustedWorkflowFrameTargetThisTurn = target
+		}
+	}
 	e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedAgent, dispatch.latency)
 	args = e.safeExecutor.FilterArgs(action, args)
 	onStep(StepEvent{
@@ -85,6 +92,64 @@ func workflowTaskSlotUpdatesFromUserText(workflowName string, missing []string, 
 	return workflow.TaskSlotUpdatesFromUserText(workflowName, missing, userMsg)
 }
 
+func sanitizeWorkflowTaskSlotUpdates(frame ContextFrame, updates map[string]string, userMsg string) map[string]string {
+	proposed := strings.TrimSpace(updates["instance_id"])
+	if proposed == "" {
+		return updates
+	}
+	existing := strings.TrimSpace(frame.Slots["instance_id"])
+	if existing != "" && strings.EqualFold(existing, proposed) {
+		return updates
+	}
+	if userTextContainsInstanceID(userMsg, proposed) {
+		return updates
+	}
+	cleaned := make(map[string]string, len(updates))
+	for k, v := range updates {
+		if strings.EqualFold(strings.TrimSpace(k), "instance_id") {
+			continue
+		}
+		cleaned[k] = v
+	}
+	return cleaned
+}
+
+func trustedWorkflowFrameTarget(frame ContextFrame, slots map[string]string, userMsg string) string {
+	target := strings.TrimSpace(slots["instance_id"])
+	if target == "" {
+		return ""
+	}
+	if contextFrameSlotSourceTrusted(frame, "instance_id") {
+		if existing := strings.TrimSpace(frame.Slots["instance_id"]); existing != "" && strings.EqualFold(existing, target) {
+			return target
+		}
+	}
+	if userTextContainsInstanceID(userMsg, target) {
+		return target
+	}
+	return ""
+}
+
+func userTextContainsInstanceID(userMsg, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, token := range uhostIDPattern.FindAllString(userMsg, -1) {
+		if strings.EqualFold(strings.TrimSpace(token), target) {
+			return true
+		}
+	}
+	return false
+}
+
+func contextFrameSlotSourceTrusted(frame ContextFrame, slot string) bool {
+	if frame.SlotSources == nil {
+		return false
+	}
+	return strings.TrimSpace(frame.SlotSources[slot]) == SelectedInstanceSourceUser
+}
+
 func workflowArgsFromTaskSlots(workflowName string, slots map[string]string) (map[string]any, []string) {
 	return workflow.TaskArgsFromSlots(workflowName, slots)
 }
@@ -94,16 +159,23 @@ func (e *Engine) recordWorkflowMissingSlotsFrame(workflowName string, args map[s
 		return false
 	}
 	slots := safeWorkflowContextSlots(args)
+	slotSources := e.workflowContextSlotSources(workflowName, slots)
 	if workflowRequiresInstanceTarget(workflowName) && strings.TrimSpace(slots["instance_id"]) == "" {
-		if selected := strings.TrimSpace(e.sessionState.SelectedInstanceID); selected != "" {
+		if selected := strings.TrimSpace(e.sessionState.SelectedInstanceID); selected != "" &&
+			selectedInstanceSourceTrustedForWorkflow(e.sessionState.SelectedInstanceSource) {
 			if slots == nil {
 				slots = map[string]string{}
 			}
 			slots["instance_id"] = selected
+			if slotSources == nil {
+				slotSources = map[string]string{}
+			}
+			slotSources["instance_id"] = SelectedInstanceSourceUser
 		}
 	}
 	if frame, ok := e.activeContextFrame(time.Now()); ok && frame.Kind == ContextFrameKindWorkflowTask && frame.Workflow == workflowName {
 		slots = mergeStringMaps(frame.Slots, slots)
+		slotSources = mergeStringMaps(frame.SlotSources, slotSources)
 	}
 	frame := ContextFrame{
 		Version:         1,
@@ -113,6 +185,7 @@ func (e *Engine) recordWorkflowMissingSlotsFrame(workflowName string, args map[s
 		Workflow:        workflowName,
 		OriginalUserMsg: strings.TrimSpace(e.lastUserMsg),
 		Slots:           slots,
+		SlotSources:     slotSources,
 		MissingSlots:    uniqueStrings(missing),
 		Stage:           "missing_slots",
 		FailureReason:   strings.TrimSpace(message),
@@ -122,6 +195,23 @@ func (e *Engine) recordWorkflowMissingSlotsFrame(workflowName string, args map[s
 	}
 	e.setContextFrame(frame)
 	return true
+}
+
+func (e *Engine) workflowContextSlotSources(workflowName string, slots map[string]string) map[string]string {
+	if !workflowRequiresInstanceTarget(workflowName) || len(slots) == 0 {
+		return nil
+	}
+	target := strings.TrimSpace(slots["instance_id"])
+	if target == "" {
+		return nil
+	}
+	if strings.TrimSpace(e.lastUserMsg) == "" {
+		return nil
+	}
+	if e.workflowTargetIsTrusted(workflowName, target, false) {
+		return map[string]string{"instance_id": SelectedInstanceSourceUser}
+	}
+	return nil
 }
 
 func safeWorkflowContextSlots(args map[string]any) map[string]string {

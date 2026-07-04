@@ -29,7 +29,8 @@ func stepQueryForDisk() Step {
 			}
 			wfCtx.Params["Size"] = size
 			return map[string]any{
-				"UHostIds": []any{wfCtx.Params["UHostId"]},
+				"UHostIds":   []any{wfCtx.Params["UHostId"]},
+				"WithoutGpu": true,
 			}, nil
 		},
 		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
@@ -87,6 +88,19 @@ func addSourceInstanceSpecForDiskPrice(args map[string]any, result map[string]an
 	gpu := firstNumberField(host, "GPU", "Gpu")
 	cpu := firstNumberField(host, "CPU", "Cpu")
 	memory := firstNumberField(host, "Memory", "Mem")
+	if gpu <= 0 {
+		if src, ok := sourceInstanceConfig(host); ok {
+			if srcGPU := firstNumberField(src, "GPU", "Gpu"); srcGPU > 0 {
+				gpu = srcGPU
+			}
+			if srcCPU := firstNumberField(src, "CPU", "Cpu"); srcCPU > 0 {
+				cpu = srcCPU
+			}
+			if srcMemory := firstNumberField(src, "Memory", "Mem"); srcMemory > 0 {
+				memory = srcMemory
+			}
+		}
+	}
 	if gpuType == "" || gpu <= 0 || cpu <= 0 || memory <= 0 {
 		return errors.New("未获取到源实例完整规格，无法安全查询数据盘价格。")
 	}
@@ -95,6 +109,13 @@ func addSourceInstanceSpecForDiskPrice(args map[string]any, result map[string]an
 	args["Cpu"] = cpu
 	args["Memory"] = memory
 	return nil
+}
+
+func sourceInstanceConfig(host map[string]any) (map[string]any, bool) {
+	if raw, ok := host["SrcInstanceConfig"].(map[string]any); ok && len(raw) > 0 {
+		return raw, true
+	}
+	return nil, false
 }
 
 func firstNumberField(m map[string]any, keys ...string) float64 {
