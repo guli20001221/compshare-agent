@@ -30,7 +30,6 @@ func MissingSlotsFromError(err error) []string {
 }
 
 type taskSlotSpec struct {
-	missingSlots []string
 	parseUpdates func(missing []string, userMsg string) map[string]string
 	buildArgs    func(slots map[string]string) (map[string]any, []string)
 	clarify      func(missing []string) string
@@ -38,7 +37,6 @@ type taskSlotSpec struct {
 
 var taskSlotSpecs = map[string]taskSlotSpec{
 	"CreateDiskWorkflow": {
-		missingSlots: []string{"size_gb"},
 		parseUpdates: func(missing []string, userMsg string) map[string]string {
 			if !slotSet(missing)["size_gb"] {
 				return nil
@@ -67,7 +65,6 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		},
 	},
 	"ResizeDiskWorkflow": {
-		missingSlots: []string{"target_size_gb"},
 		parseUpdates: func(missing []string, userMsg string) map[string]string {
 			if !slotSet(missing)["target_size_gb"] {
 				return nil
@@ -96,7 +93,6 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		},
 	},
 	"ResizeInstanceWorkflow": {
-		missingSlots: []string{"cpu", "memory_gb", "gpu_count"},
 		parseUpdates: func(missing []string, userMsg string) map[string]string {
 			updates := map[string]string{}
 			missingSet := slotSet(missing)
@@ -140,7 +136,6 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		},
 	},
 	"SetStopSchedulerWorkflow": {
-		missingSlots: []string{"stop_time"},
 		parseUpdates: func(missing []string, userMsg string) map[string]string {
 			if !slotSet(missing)["stop_time"] || strings.TrimSpace(userMsg) == "" {
 				return nil
@@ -168,7 +163,6 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		},
 	},
 	"ReinstallInstanceWorkflow": {
-		missingSlots: []string{"image_id"},
 		parseUpdates: func(missing []string, userMsg string) map[string]string {
 			if !slotSet(missing)["image_id"] || strings.TrimSpace(userMsg) == "" {
 				return nil
@@ -201,7 +195,6 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		},
 	},
 	"CreateCFSWorkflow": {
-		missingSlots: []string{"name", "size_gb", "zone"},
 		parseUpdates: func(missing []string, userMsg string) map[string]string {
 			updates := map[string]string{}
 			missingSet := slotSet(missing)
@@ -263,7 +256,6 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		},
 	},
 	"ResizeCFSWorkflow": {
-		missingSlots: []string{"cfs_id", "target_size_gb"},
 		parseUpdates: func(missing []string, userMsg string) map[string]string {
 			updates := map[string]string{}
 			missingSet := slotSet(missing)
@@ -310,7 +302,6 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		},
 	},
 	"EnableNetOptimizerWorkflow": {
-		missingSlots: []string{"zone"},
 		parseUpdates: func(missing []string, userMsg string) map[string]string {
 			if !slotSet(missing)["zone"] || strings.TrimSpace(userMsg) == "" {
 				return nil
@@ -336,7 +327,6 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		},
 	},
 	"CreateCustomImageWorkflow": {
-		missingSlots: []string{"name"},
 		buildArgs: func(slots map[string]string) (map[string]any, []string) {
 			normalized := NormalizeTaskSlotUpdates(slots)
 			args, missing := baseWorkflowTaskArgs("CreateCustomImageWorkflow", normalized)
@@ -358,7 +348,6 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		},
 	},
 	"RenameInstanceWorkflow": {
-		missingSlots: []string{"name"},
 		buildArgs: func(slots map[string]string) (map[string]any, []string) {
 			normalized := NormalizeTaskSlotUpdates(slots)
 			args, missing := baseWorkflowTaskArgs("RenameInstanceWorkflow", normalized)
