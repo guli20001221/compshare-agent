@@ -1,7 +1,7 @@
 # Context Unification Status
 
-Last audited against `origin/main` at `8b70f633`, plus the in-flight
-`codex/context-monitor-history-continuation` changes.
+Last audited against `origin/main` at `ee2829c8`; this document also includes
+the monitor-history missing-window coverage update.
 
 ## Current State
 
@@ -37,6 +37,9 @@ These paths now use the shared context decision and frame model:
     "第 2 台昨天 00:00 到 01:00 的 CPU 历史监控", first use the context
     decision layer to bind the instance, then reuse the existing historical
     monitor time-window and single-instance validation.
+  - If that follow-up omits a concrete time window, such as "第 2 台上周 CPU
+    历史监控", the same selection binding is used and the existing historical
+    monitor path asks for a concrete <=24h time range before calling tools.
 - Recent fact follow-ups when `USE_SESSION_FACT_CONTEXT=1`:
   - stock follow-up
   - price follow-up
@@ -72,12 +75,9 @@ These are partly safety gates and partly older UX shortcuts. Any migration must 
 
 ## Next Migration Candidates
 
-1. Continue moving monitor-history missing time-window clarification behind the
-   same context framing model while preserving the strict single-instance and
-   <=24h window checks.
-2. Review lifecycle and scheduled-shutdown direct dispatch after router and
+1. Review lifecycle and scheduled-shutdown direct dispatch after router and
    context-decision coverage proves parity.
-3. Retire compatibility fields only after their feature flags and rollback
+2. Retire compatibility fields only after their feature flags and rollback
    behavior are no longer needed.
 
 Each candidate needs focused unit tests, HTTP/WS replay, and a review of write-operation target trust before old code is removed.
