@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
 )
 
@@ -14,6 +15,9 @@ func (e *Engine) tryRecentFactFollowup(ctx context.Context, dispatch routerDispa
 	decision, err := e.resolveContextDecision(ctx, userMsg, dispatch.result.Plan.Intent, e.sessionState.ContextFrame)
 	if err != nil || decision == nil || decision.Decision != ContextDecisionAnswerFollowup {
 		return "", false
+	}
+	if reply, ok := e.tryRecentFactBillingFollowup(ctx, dispatch, *decision, onStep); ok {
+		return reply, true
 	}
 	targetIntent, ok := intentForFactFollowupDecision(*decision)
 	if !ok {
@@ -29,6 +33,40 @@ func (e *Engine) tryRecentFactFollowup(ctx context.Context, dispatch routerDispa
 	}
 	followupText := factFollowupUserText(userMsg, *decision)
 	return e.tryRouteDispatch(ctx, resumed, followupText, onStep)
+}
+
+func (e *Engine) tryRecentFactBillingFollowup(ctx context.Context, dispatch routerDispatchResult, decision ContextDecision, onStep func(StepEvent)) (string, bool) {
+	if decision.Target != ContextDecisionTargetBilling || contextDecisionBillingTopicIsRefund(decision.BillingTopic) {
+		return "", false
+	}
+	selectedID := strings.TrimSpace(e.sessionState.SelectedInstanceID)
+	if selectedID == "" {
+		return "", false
+	}
+	inst := entity.InstanceSnapshot{
+		UHostId: selectedID,
+		Name:    strings.TrimSpace(e.sessionState.SelectedInstanceName),
+	}
+	if snapshot, ok, err := e.freshResourceSelectionSnapshot(ctx, dispatch.snapshot); err == nil && ok {
+		if found, res := snapshot.ResolveByID(selectedID); res.Status == entity.ResolveHit && found != nil {
+			inst = *found
+		}
+	}
+	raw := e.executeDiagnosis(ctx, "DiagnoseBilling", map[string]any{"UHostId": selectedID}, onStep)
+	reply := renderDiagnosisContinuationReply(inst, "DiagnoseBilling", raw)
+	e.emitPlannerTrace(intent.IntentRouterResult{Plan: intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentBillingInstance,
+		Confidence:    0.85,
+	}}, intent.RouteStatusDispatched, dispatch.latency)
+	source := strings.TrimSpace(e.sessionState.SelectedInstanceSource)
+	if source == "" {
+		source = SelectedInstanceSourceObserved
+	}
+	e.recordSelectedInstanceIDWithSource(inst.UHostId, inst.Name, source)
+	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentBillingInstance})
+	e.messages = append(e.messages, assistantMessage(reply))
+	return reply, true
 }
 
 func intentForFactFollowupDecision(decision ContextDecision) (intent.Intent, bool) {

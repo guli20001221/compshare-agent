@@ -211,6 +211,88 @@ func TestRecentFactFollowupRefundRevalidatesSelectedInstance(t *testing.T) {
 	require.Contains(t, reply, "42.50")
 }
 
+func TestRecentFactFollowupBillingRerunsDiagnosis(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var describeCalls int
+	var billingArgs map[string]any
+	var refundCalled bool
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			describeCalls++
+			if _, ok := args["UHostIds"]; ok {
+				billingArgs = cloneTestArgs(args)
+			}
+			return map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{
+				"UHostId":       "uhost-selected",
+				"Name":          "selected-host",
+				"State":         "Running",
+				"ChargeType":    "Dynamic",
+				"GpuType":       "4090",
+				"GPU":           float64(1),
+				"CPU":           float64(16),
+				"Memory":        float64(65536),
+				"Zone":          "cn-wlcb-01",
+				"InstancePrice": float64(1.58),
+				"DiskPrice":     float64(0.05),
+			}}}, nil
+		case "GetCompShareRefundPrice":
+			refundCalled = true
+			return map[string]any{"RefundPrice": float64(42.5)}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "should not answer"}}}, exec, nil)
+	eng.Init(context.Background())
+	now := time.Now()
+	eng.SetSessionState(SessionState{
+		SchemaVersion:        SessionStateSchemaCurrent,
+		SelectedInstanceID:   "uhost-selected",
+		SelectedInstanceName: "selected-host",
+		RecentFacts: []ToolFact{{
+			Kind:           FactKindBillingQuote,
+			SubjectID:      "billing:DiagnoseBilling:uhost-selected",
+			Payload:        map[string]any{"action": "DiagnoseBilling", "resource_id": "uhost-selected", "amount": float64(99.99)},
+			ProducedAtTurn: 1,
+			ProducedAtUnix: now.Unix(),
+			TTLSeconds:     factTTLSecondsBillingQuote,
+		}},
+	}, 2)
+	eng.SetSessionFactContextEnabled(true)
+	layer := &fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:     ContextDecisionAnswerFollowup,
+		Target:       ContextDecisionTargetBilling,
+		BillingTopic: "cost",
+		Reason:       "user asks for a fresh billing diagnosis for the selected instance",
+	}}
+	eng.SetContextDecisionLayer(layer)
+	unknownPlan := intent.IntentRouterResult{Plan: intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentUnknown,
+		Confidence:    0.9,
+	}}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{
+		unknownPlan, // account-level billing precheck
+		unknownPlan, // normal planner dispatch
+	}}
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentUnknown, intent.IntentBillingInstance, intent.IntentRefundEstimate}})
+
+	reply, err := eng.Chat(context.Background(), "那现在费用多少", noopStep)
+
+	require.NoError(t, err)
+	require.NotEmpty(t, layer.calls, "billing fact follow-up must consult the context decision layer")
+	require.GreaterOrEqual(t, describeCalls, 1, "billing follow-up must re-run billing diagnosis")
+	require.NotNil(t, billingArgs, "billing follow-up must query prices for the selected instance")
+	require.Equal(t, []string{"uhost-selected"}, stringSliceArg(billingArgs["UHostIds"]))
+	require.False(t, refundCalled, "non-refund billing follow-up must not call refund estimate")
+	require.Contains(t, reply, "selected-host")
+	require.Contains(t, reply, "费用")
+	require.NotContains(t, reply, "99.99", "reply must not reuse stale billing fact amount")
+}
+
 func TestRecentFactFollowupRequiresSessionFactContextFlag(t *testing.T) {
 	SetContextContinuationEnabled(true)
 	t.Cleanup(func() { SetContextContinuationEnabled(false) })

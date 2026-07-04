@@ -175,7 +175,7 @@ func buildContextDecisionPrompt(in ContextDecisionInput) []openai.ChatCompletion
 	sys.WriteString("- 用户短句沿用当前待办任务并补充或修改参数时，输出 continue_task。\n")
 	sys.WriteString("- 把补充或修改的参数写入 slot_updates，例如 size_gb、target_size_gb、cpu、memory_gb、gpu_count、gpu_type、zone、image_pref、image_id、image_source、workload、stop_time、name、cfs_id。\n")
 	sys.WriteString("- 用户引用最近实例列表、已选实例或“它/这台/第 N 台”时，输出 select_entity，并填写 instance_ref。\n")
-	sys.WriteString("- 用户追问最近库存、价格、监控、费用等只读结果时，输出 answer_followup，并填写 target；退费/费用续问 target=billing，billing_topic=refund。\n")
+	sys.WriteString("- 用户追问最近库存、价格、监控、费用等只读结果时，输出 answer_followup，并填写 target；普通费用续问 target=billing，billing_topic=cost；明确询问退费/退款/退订估算时才填写 billing_topic=refund。\n")
 	sys.WriteString("- 用户提出新的价格、建议、概念、教程、知识问题时，输出 new_task。\n")
 	sys.WriteString("- 用户说算了、不用了、取消、换个话题时，输出 clear_context。\n")
 	sys.WriteString("- 不确定时输出 clarify，并给一句简短追问。\n")
