@@ -800,6 +800,42 @@ func (e *Engine) tryDiagnosisTargetContinuation(ctx context.Context, userMsg str
 	if err != nil || !ok {
 		return "", false
 	}
+	if ContextContinuationEnabled() {
+		decision, err := e.resolveContextDecision(ctx, userMsg, intent.IntentDiagnosis, e.sessionState.ContextFrame)
+		if err != nil || decision == nil {
+			return "", false
+		}
+		switch decision.Decision {
+		case ContextDecisionSelectEntity:
+			if decision.Target != ContextDecisionTargetInstance {
+				return "", false
+			}
+			ref := strings.TrimSpace(decision.InstanceRef)
+			if ref == "" {
+				ref = userMsg
+			}
+			inst, ok := e.resolveContextDecisionInstanceRef(ref, snapshot)
+			if !ok {
+				return "", false
+			}
+			raw := e.executeDiagnosis(ctx, action, map[string]any{"UHostId": inst.UHostId}, onStep)
+			reply := renderDiagnosisContinuationReply(inst, action, raw)
+			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+			e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentDiagnosis})
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
+		case ContextDecisionClarify:
+			if decision.Clarify != "" {
+				e.messages = append(e.messages, assistantMessage(decision.Clarify))
+				return decision.Clarify, true
+			}
+			return "", false
+		case ContextDecisionClearContext, ContextDecisionNewTask:
+			return "", false
+		default:
+			return "", false
+		}
+	}
 	inst, ok := resolveContinuationInstance(userMsg, snapshot)
 	if !ok {
 		return "", false
@@ -810,6 +846,30 @@ func (e *Engine) tryDiagnosisTargetContinuation(ctx context.Context, userMsg str
 	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentDiagnosis})
 	e.messages = append(e.messages, assistantMessage(reply))
 	return reply, true
+}
+
+func (e *Engine) resolveContextDecisionInstanceRef(ref string, snapshot entity.RegistrySnapshot) (entity.InstanceSnapshot, bool) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return entity.InstanceSnapshot{}, false
+	}
+	if pending := e.pendingResourceSelection; pending != nil && !isResourceSelectionExpired(e.userTurn, *pending) {
+		if match := matchResourceSelection(ref, *pending); match.ok && !match.ambiguous {
+			return match.instance, true
+		}
+		if match, _ := matchResourceSelectionReference(ref, *pending); match.ok && !match.ambiguous {
+			return match.instance, true
+		}
+	}
+	if pending, ok := e.pendingResourceSelectionFromSession(); ok {
+		if match := matchResourceSelection(ref, *pending); match.ok && !match.ambiguous {
+			return match.instance, true
+		}
+		if match, _ := matchResourceSelectionReference(ref, *pending); match.ok && !match.ambiguous {
+			return match.instance, true
+		}
+	}
+	return resolveContinuationInstance(ref, snapshot)
 }
 
 func assistantAskedForInstanceTarget(text string) bool {
