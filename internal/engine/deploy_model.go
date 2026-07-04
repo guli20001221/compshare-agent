@@ -308,8 +308,23 @@ func (e *Engine) recordLastDeployTarget(model, zone string) {
 	if model == "" {
 		return
 	}
+	zone = strings.TrimSpace(zone)
+	if ContextContinuationEnabled() && e.mutatingToolsEnabled {
+		frame := newContextFrame(ContextFrameKindDeploy, intent.IntentRoute{Intent: intent.IntentDeployModel}, model, e.userTurn, time.Now())
+		frame.Workload = model
+		frame.Zone = zone
+		frame.ZoneLabel = zone
+		if e.currentCtx != nil {
+			frame.ZoneLabel = e.zoneDisplayName(e.currentCtx, zone)
+		}
+		e.setContextFrame(frame)
+		e.sessionState.LastDeployWorkload = ""
+		e.sessionState.LastDeployZone = ""
+		e.sessionState.PendingDeployModel = ""
+		return
+	}
 	e.sessionState.LastDeployWorkload = model
-	e.sessionState.LastDeployZone = strings.TrimSpace(zone)
+	e.sessionState.LastDeployZone = zone
 	e.sessionState.PendingDeployModel = ""
 }
 
@@ -450,6 +465,13 @@ func (e *Engine) previousDeployTarget(currentMsg string) (model, zone string) {
 func (e *Engine) previousDeployTargetFromSession() (model, zone string) {
 	if !e.sessionStateHydrated || !createFamilyIntentString(e.sessionState.LastIntent) {
 		return "", ""
+	}
+	if ContextContinuationEnabled() {
+		if frame, ok := e.activeContextFrame(time.Now()); ok && frame.Kind == ContextFrameKindDeploy {
+			if workload := strings.TrimSpace(frame.Workload); workload != "" {
+				return workload, strings.TrimSpace(frame.Zone)
+			}
+		}
 	}
 	return strings.TrimSpace(e.sessionState.LastDeployWorkload), strings.TrimSpace(e.sessionState.LastDeployZone)
 }
