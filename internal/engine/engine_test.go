@@ -1305,7 +1305,7 @@ func TestChat_WorkflowMutatingRateLimitDenialMarksRateLimitCap(t *testing.T) {
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
 	onStep, events := collectSteps()
 
-	reply, err := eng.Chat(context.Background(), "stop workflow", onStep)
+	reply, err := eng.Chat(context.Background(), "stop workflow uhost-xxx", onStep)
 
 	require.NoError(t, err)
 	assert.Equal(t, rateLimitQPSMessage, reply)
@@ -1374,7 +1374,7 @@ func TestChat_MutatingRateLimitAllowsWorkflowWithoutCountingInternalSteps(t *tes
 	eng.rateLimitSubject = "sha256:subject"
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
 
-	reply, err := eng.Chat(context.Background(), "stop workflow", noopStep)
+	reply, err := eng.Chat(context.Background(), "stop workflow uhost-stop-001", noopStep)
 
 	require.NoError(t, err)
 	assert.Contains(t, reply, "执行关机", "stop workflow returns a deterministic final reply (no LLM narration)")

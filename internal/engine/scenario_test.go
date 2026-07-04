@@ -1341,7 +1341,7 @@ func TestScenario_RenameInstance(t *testing.T) {
 	eng := NewWithDeps(mock, exec, func(a string, args map[string]any) bool { return true })
 	eng.Init(context.Background())
 
-	reply, err := eng.Chat(context.Background(), "改名叫 new-name", func(e StepEvent) {})
+	reply, err := eng.Chat(context.Background(), "把 uhost-rn1 改名叫 new-name", func(e StepEvent) {})
 	assert.NoError(t, err)
 	assert.Contains(t, reply, "new-name")
 	assert.Contains(t, exec.calls, "ModifyCompShareInstanceName")

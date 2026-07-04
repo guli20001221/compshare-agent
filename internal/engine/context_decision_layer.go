@@ -144,7 +144,13 @@ func (e *Engine) resolveContextDecision(ctx context.Context, userMsg string, rou
 func (e *Engine) buildContextDecisionInput(userMsg string, route intent.Intent, frame ContextFrame, now time.Time) ContextDecisionInput {
 	state := e.sessionState
 	state.ContextFrame = frame
-	return buildContextDecisionInput(state, userMsg, route, now)
+	input := buildContextDecisionInput(state, userMsg, route, now)
+	input.LastAssistantPrompt = compactContextDecisionAssistantPrompt(e.lastAssistantContent())
+	return input
+}
+
+func compactContextDecisionAssistantPrompt(s string) string {
+	return truncateRunes(strings.TrimSpace(s), 600)
 }
 
 func buildContextDecisionInput(state SessionState, userMsg string, route intent.Intent, now time.Time) ContextDecisionInput {

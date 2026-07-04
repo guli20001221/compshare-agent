@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/compshare-agent/internal/intent"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 type fakeContextDecisionLayer struct {
@@ -79,6 +80,25 @@ func TestBuildContextDecisionPromptIncludesTaskEntityChoicesAndFacts(t *testing.
 	}
 	assert.NotContains(t, promptText, "zone_id")
 	assert.NotContains(t, promptText, "az_group")
+}
+
+func TestEngineBuildContextDecisionInputIncludesLastAssistantPrompt(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "system"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "请补充数据盘大小，例如 200G。"},
+	}
+
+	input := eng.buildContextDecisionInput("200G", intent.IntentOperationLifecycle, ContextFrame{
+		Kind:     ContextFrameKindWorkflowTask,
+		Workflow: "CreateDiskWorkflow",
+	}, time.Unix(1716530100, 0))
+
+	assert.Equal(t, "请补充数据盘大小，例如 200G。", input.LastAssistantPrompt)
+	msgs := buildContextDecisionPrompt(input)
+	require.Len(t, msgs, 2)
+	assert.Contains(t, msgs[1].Content, "last_assistant_prompt:")
+	assert.Contains(t, msgs[1].Content, "请补充数据盘大小")
 }
 
 func TestParseContextDecisionSelectEntityKeepsInstanceReferenceOnly(t *testing.T) {
