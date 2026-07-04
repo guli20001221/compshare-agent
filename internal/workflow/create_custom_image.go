@@ -57,7 +57,7 @@ func stepConfirmCreateCustomImage() Step {
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			name := paramStr(wfCtx.Params, "Name", "")
 			if name == "" {
-				return nil, fmt.Errorf("image Name is required; ask the user for a custom image name before creating it")
+				return nil, NewMissingSlotError("创建自制镜像需要指定名称。", "name")
 			}
 			summary := extractInstanceSummary(wfCtx.Result("查询源实例"))
 			summary["workflow"] = "CreateCustomImageWorkflow"
@@ -90,7 +90,7 @@ func stepCreateCustomImage() Step {
 			}
 			name := paramStr(wfCtx.Params, "Name", "")
 			if name == "" {
-				return nil, fmt.Errorf("image Name is required before creating a custom image")
+				return nil, NewMissingSlotError("创建自制镜像需要指定名称。", "name")
 			}
 			region, zone, ok := sourceCustomImagePlacement(wfCtx.Result("查询源实例"))
 			if !ok {

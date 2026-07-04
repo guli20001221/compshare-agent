@@ -5431,9 +5431,6 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	if !result.Success {
 		result.Message = security.RedactKnownSecretsInText(result.Message, workflowSecretValues(args))
 		missing := result.MissingSlots
-		if len(missing) == 0 && ContextContinuationEnabled() {
-			missing = workflow.MissingSlotsForFailure(action, result.Message)
-		}
 		if len(missing) > 0 {
 			reply := workflowMissingSlotsClarification(action, missing)
 			e.recordWorkflowMissingSlotsFrame(action, args, missing, reply)

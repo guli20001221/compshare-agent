@@ -1701,8 +1701,7 @@ func TestCreateCustomImageMissingName_FlagOffDoesNotPersistContextFrame(t *testi
 		"Description": "training environment",
 	}, noopStep)
 
-	assert.Contains(t, reply, "image Name is required")
-	assert.NotContains(t, reply, "需要先确认自制镜像名称")
+	assert.Contains(t, reply, "需要先确认自制镜像名称")
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Empty(t, state.ContextFrame.Kind)
 }
