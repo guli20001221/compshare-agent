@@ -1871,11 +1871,44 @@ func TestRecordPendingDeployModelUsesContextFrameWhenEnabled(t *testing.T) {
 
 	eng.recordDeployContextFrameFromError("部署 DeepSeek R1", "部署 DeepSeek R1", "", deployClarifyModelSizeMsg("DeepSeek R1"))
 	eng.recordPendingDeployModelFromReply(deployClarifyModelSizeMsg("DeepSeek R1"))
+	eng.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentDeployModel})
 
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind)
 	assert.Equal(t, "DeepSeek R1", state.ContextFrame.Workload)
 	assert.Empty(t, state.PendingDeployModel, "context frame should carry the deploy clarify model when continuation is enabled")
+}
+
+func TestRecordPendingDeployModelCreatesContextFrameWhenEnabled(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+
+	eng.recordPendingDeployModelFromReply(deployClarifyModelSizeMsg("DeepSeek R1"))
+	eng.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentDeployModel})
+
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind)
+	assert.Equal(t, ContextFrameStatusFailedRecoverable, state.ContextFrame.Status)
+	assert.Equal(t, "DeepSeek R1", state.ContextFrame.Workload)
+	assert.Empty(t, state.PendingDeployModel, "flag-on path must not write legacy pending deploy model")
+	assert.Equal(t, "继续部署 DeepSeek R1 32B", eng.effectiveDeployUserMsg("32B"))
+}
+
+func TestRecordPendingDeployModelKeepsLegacyWhenContinuationDisabled(t *testing.T) {
+	SetContextContinuationEnabled(false)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+
+	eng.recordPendingDeployModelFromReply(deployClarifyModelSizeMsg("DeepSeek R1"))
+
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind)
+	assert.Equal(t, "DeepSeek R1", state.PendingDeployModel)
 }
 
 func TestEffectiveDeployUserMsg_DoesNotUsePendingDeployStateAfterUnrelatedIntent(t *testing.T) {
