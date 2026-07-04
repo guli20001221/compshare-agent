@@ -334,6 +334,9 @@ func (e *Engine) recordDeployContextFrameFromError(userMsg, matchUserMsg, zone, 
 	if frame.Workload == "" {
 		frame.Workload = extractDeploySizedModelName(matchUserMsg)
 	}
+	if frame.Workload == "" {
+		frame.Workload = deployClarifyModelFromMessage(reason)
+	}
 	e.setContextFrame(frame)
 }
 
@@ -360,6 +363,12 @@ func (e *Engine) recordPendingDeployModelFromReply(reply string) {
 	model := deployClarifyModelFromMessage(reply)
 	if model == "" {
 		return
+	}
+	if ContextContinuationEnabled() {
+		if frame, ok := e.activeContextFrame(time.Now()); ok && frame.Kind == ContextFrameKindDeploy && strings.TrimSpace(frame.Workload) != "" {
+			e.sessionState.PendingDeployModel = ""
+			return
+		}
 	}
 	e.sessionState.PendingDeployModel = model
 }
@@ -485,7 +494,26 @@ func (e *Engine) pendingDeployModelFromSession() string {
 	if !e.sessionStateHydrated || !createFamilyIntentString(e.sessionState.LastIntent) {
 		return ""
 	}
+	if ContextContinuationEnabled() {
+		if frame, ok := e.activeContextFrame(time.Now()); ok && frame.Kind == ContextFrameKindDeploy {
+			if model := deployModelFamilyForBareSize(frame.Workload); model != "" {
+				return model
+			}
+		}
+	}
 	return strings.TrimSpace(e.sessionState.PendingDeployModel)
+}
+
+func deployModelFamilyForBareSize(workload string) string {
+	workload = strings.TrimSpace(workload)
+	if workload == "" {
+		return ""
+	}
+	m := deploySizedModelRE.FindStringSubmatch(workload)
+	if m == nil {
+		return workload
+	}
+	return strings.Trim(strings.TrimSpace(m[1]), "-_/. ")
 }
 
 func deployClarifyModelFromMessage(msg string) string {
