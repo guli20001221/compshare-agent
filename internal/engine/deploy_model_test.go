@@ -1754,6 +1754,71 @@ func TestEffectiveDeployUserMsg_UsesExplicitPendingDeployState(t *testing.T) {
 	assert.Equal(t, "继续部署 DeepSeek R1 32B", eng.effectiveDeployUserMsg("32B"))
 }
 
+func TestRecordLastDeployTargetUsesContextFrameWhenEnabled(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaCurrent,
+		LastIntent:         string(intent.IntentDeployModel),
+		LastDeployWorkload: "stale-workload",
+		LastDeployZone:     "stale-zone",
+		PendingDeployModel: "stale-pending",
+	}, 1)
+	eng.mutatingToolsEnabled = true
+
+	eng.recordLastDeployTarget("Qwen2.5-32B", "cn-wlcb-01")
+
+	state, _, _ := eng.SessionStateSnapshot()
+	require.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind)
+	assert.Equal(t, "Qwen2.5-32B", state.ContextFrame.Workload)
+	assert.Equal(t, "cn-wlcb-01", state.ContextFrame.Zone)
+	assert.Empty(t, state.LastDeployWorkload, "context frame should replace legacy deploy workload when continuation is enabled")
+	assert.Empty(t, state.LastDeployZone, "context frame should replace legacy deploy zone when continuation is enabled")
+	assert.Empty(t, state.PendingDeployModel, "recording a concrete deploy target clears stale pending clarification")
+	assert.Equal(t, "继续部署 Qwen2.5-32B；沿用可用区 cn-wlcb-01；用户追问：A800可以吗", eng.effectiveDeployUserMsg("A800可以吗"))
+}
+
+func TestRecordLastDeployTargetReadOnlyKeepsLegacyStateWhenContextContinuationOn(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
+	eng.mutatingToolsEnabled = false
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		LastIntent:    string(intent.IntentDeployModel),
+	}, 1)
+
+	eng.recordLastDeployTarget("Qwen2.5-32B", "cn-wlcb-01")
+
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind, "read-only deploy advice must not create an active task frame")
+	assert.Equal(t, "Qwen2.5-32B", state.LastDeployWorkload)
+	assert.Equal(t, "cn-wlcb-01", state.LastDeployZone)
+	assert.Equal(t, "继续部署 Qwen2.5-32B；沿用可用区 cn-wlcb-01；用户追问：A800可以吗", eng.effectiveDeployUserMsg("A800可以吗"))
+}
+
+func TestRecordLastDeployTargetKeepsLegacyStateWhenContextContinuationOff(t *testing.T) {
+	SetContextContinuationEnabled(false)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		LastIntent:    string(intent.IntentDeployModel),
+	}, 1)
+
+	eng.recordLastDeployTarget("Qwen2.5-32B", "cn-wlcb-01")
+
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind)
+	assert.Equal(t, "Qwen2.5-32B", state.LastDeployWorkload)
+	assert.Equal(t, "cn-wlcb-01", state.LastDeployZone)
+	assert.Equal(t, "继续部署 Qwen2.5-32B；沿用可用区 cn-wlcb-01；用户追问：A800可以吗", eng.effectiveDeployUserMsg("A800可以吗"))
+}
+
 func TestEffectiveDeployUserMsg_UsesContextFrameWorkloadBeforeLegacyPendingState(t *testing.T) {
 	SetContextContinuationEnabled(true)
 	t.Cleanup(func() { SetContextContinuationEnabled(false) })
