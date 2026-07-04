@@ -929,6 +929,59 @@ func TestResumeWorkflowContextFrame_CreateCFSNameFromContextDecision(t *testing.
 	assert.Equal(t, "cn-pod-01", confirmArgs["Zone"])
 }
 
+func TestResumeWorkflowContextFrame_CreateCFSNameFallbackReachesConfirm(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	var confirmArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{map[string]any{
+				"Zone": "cn-pod-01", "Region": "cn-pod", "ZoneId": float64(9001), "RegionId": float64(3001), "Describe": "容器一区", "IsPod": true,
+			}}}, nil
+		case "GetCompShareCFSPrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Month", "Disks": float64(99)}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionContinueTask,
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "CreateCFSWorkflow",
+			Slots:          map[string]string{"size_gb": "100GB", "zone": "cn-pod-01"},
+			MissingSlots:   []string{"name"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "shared-train", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	assert.Equal(t, "CreateCFSWorkflow", confirmAction)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "shared-train", confirmArgs["Name"])
+	assert.Equal(t, float64(100), confirmArgs["Size"])
+	assert.Equal(t, "cn-pod-01", confirmArgs["Zone"])
+}
+
 func TestResumeWorkflowContextFrame_CreateCFSZoneFromContextDecision(t *testing.T) {
 	SetContextContinuationEnabled(true)
 	t.Cleanup(func() { SetContextContinuationEnabled(false) })

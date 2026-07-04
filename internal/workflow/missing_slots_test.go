@@ -205,6 +205,20 @@ func TestTaskSlotSpecsParseUpdatesAndBuildArgs(t *testing.T) {
 	require.Empty(t, missing)
 	assert.Equal(t, map[string]any{"CfsId": "cfs-abc123", "Size": float64(200)}, args)
 
+	updates = TaskSlotUpdatesFromUserText("CreateCFSWorkflow", []string{"name"}, "codex-cfs-test")
+	assert.Equal(t, map[string]string{"name": "codex-cfs-test"}, updates)
+	updates = TaskSlotUpdatesFromUserText("CreateCFSWorkflow", []string{"zone"}, "华北二A")
+	assert.Equal(t, map[string]string{"zone": "华北二A"}, updates)
+	updates = TaskSlotUpdatesFromUserText("CreateCFSWorkflow", []string{"name", "zone"}, "华北二A")
+	assert.Nil(t, updates, "multi-slot CFS follow-up must be decided by the context model, not guessed by fallback parsing")
+	args, missing = TaskArgsFromSlots("CreateCFSWorkflow", map[string]string{
+		"name":    "codex-cfs-test",
+		"size_gb": "100G",
+		"zone":    "cn-pod-01",
+	})
+	require.Empty(t, missing)
+	assert.Equal(t, map[string]any{"Name": "codex-cfs-test", "Size": float64(100), "Zone": "cn-pod-01"}, args)
+
 	args, missing = TaskArgsFromSlots("EnableNetOptimizerWorkflow", map[string]string{"zone": "cn-pod-01"})
 	require.Empty(t, missing)
 	assert.Equal(t, map[string]any{"Zone": "cn-pod-01"}, args)
