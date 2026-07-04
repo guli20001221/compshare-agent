@@ -1,6 +1,7 @@
 # Context Unification Status
 
-Last audited against `origin/main` at `4da4a76f`.
+Last audited against `origin/main` at `8b70f633`, plus the in-flight
+`codex/context-monitor-history-continuation` changes.
 
 ## Current State
 
@@ -32,6 +33,10 @@ These paths now use the shared context decision and frame model:
 - Instance-list selection:
   - `PendingSelection*` remains the candidate store.
   - The context decision layer can resolve user follow-ups such as selecting an item or referring to it.
+  - Monitor-history follow-ups that include a displayed ordinal, such as
+    "第 2 台昨天 00:00 到 01:00 的 CPU 历史监控", first use the context
+    decision layer to bind the instance, then reuse the existing historical
+    monitor time-window and single-instance validation.
 - Recent fact follow-ups when `USE_SESSION_FACT_CONTEXT=1`:
   - stock follow-up
   - price follow-up
@@ -54,7 +59,6 @@ The following pre-router paths still exist and should not be deleted blindly:
 - account-level billing refusal
 - pending resource selection recovery
 - monitor-history time-window checks
-- diagnosis target continuation
 - direct diagnosis for explicit targets
 - scheduled shutdown direct dispatch
 - lifecycle direct dispatch
@@ -68,9 +72,12 @@ These are partly safety gates and partly older UX shortcuts. Any migration must 
 
 ## Next Migration Candidates
 
-1. Move diagnosis target continuation into the context decision layer.
-2. Move monitor-history continuation and missing time-window clarification behind the same context framing model.
-3. Review lifecycle and scheduled-shutdown direct dispatch after router and context-decision coverage proves parity.
-4. Retire compatibility fields only after their feature flags and rollback behavior are no longer needed.
+1. Continue moving monitor-history missing time-window clarification behind the
+   same context framing model while preserving the strict single-instance and
+   <=24h window checks.
+2. Review lifecycle and scheduled-shutdown direct dispatch after router and
+   context-decision coverage proves parity.
+3. Retire compatibility fields only after their feature flags and rollback
+   behavior are no longer needed.
 
 Each candidate needs focused unit tests, HTTP/WS replay, and a review of write-operation target trust before old code is removed.
