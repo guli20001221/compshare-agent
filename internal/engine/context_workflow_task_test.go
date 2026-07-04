@@ -909,3 +909,93 @@ func TestResumeWorkflowContextFrame_EnableNetOptimizerZoneReachesConfirm(t *test
 	assert.NotContains(t, confirmArgs, "az_group")
 	assert.NotContains(t, confirmArgs, "zone_id")
 }
+
+func TestResumeWorkflowContextFrame_CreateCustomImageNameReachesConfirm(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	var confirmArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "train-a", "State": "Running", "Region": "cn-wlcb", "Zone": "cn-wlcb-01",
+			}}}, nil
+		case "CreateCompShareCustomImage":
+			t.Fatalf("custom-image continuation must stop at confirm before mutating; args=%v", args)
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.selectedInstanceIDAtTurnStart = "uhost-1"
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionContinueTask,
+		SlotUpdates: map[string]string{"name": "snapshot-v1"},
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaCurrent,
+		SelectedInstanceID: "uhost-1",
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "CreateCustomImageWorkflow",
+			Slots:          map[string]string{"instance_id": "uhost-1", "description": "training environment"},
+			MissingSlots:   []string{"name"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "snapshot-v1", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	assert.Equal(t, "CreateCustomImageWorkflow", confirmAction)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "uhost-1", confirmArgs["UHostId"])
+	assert.Equal(t, "snapshot-v1", confirmArgs["Name"])
+	assert.Equal(t, "training environment", confirmArgs["Description"])
+	assert.Equal(t, "cn-wlcb", confirmArgs["Region"])
+	assert.Equal(t, "cn-wlcb-01", confirmArgs["Zone"])
+}
+
+func TestCreateCustomImageMissingName_FlagOffDoesNotPersistContextFrame(t *testing.T) {
+	SetContextContinuationEnabled(false)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "train-a", "State": "Running", "Region": "cn-wlcb", "Zone": "cn-wlcb-01",
+			}}}, nil
+		case "CreateCompShareCustomImage":
+			t.Fatalf("missing custom-image name must stop before mutating; args=%v", args)
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, okConfirm)
+	eng.selectedInstanceIDAtTurnStart = "uhost-1"
+	eng.SetSessionState(SessionState{
+		SchemaVersion:      SessionStateSchemaCurrent,
+		SelectedInstanceID: "uhost-1",
+	}, 1)
+
+	reply := eng.executeWorkflow(context.Background(), "CreateCustomImageWorkflow", map[string]any{
+		"UHostId":     "uhost-1",
+		"Description": "training environment",
+	}, noopStep)
+
+	assert.Contains(t, reply, "image Name is required")
+	assert.NotContains(t, reply, "需要先确认自制镜像名称")
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind)
+}

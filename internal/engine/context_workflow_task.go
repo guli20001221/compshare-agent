@@ -147,6 +147,7 @@ func safeWorkflowContextSlots(args map[string]any) map[string]string {
 	put("workload", args["Workload"])
 	put("stop_time", firstNonNil(args["StopTime"], args["AfterMinutes"], args["ShutdownAt"]))
 	put("name", args["Name"])
+	put("description", args["Description"])
 	put("charge_type", args["ChargeType"])
 	if len(out) == 0 {
 		return nil
