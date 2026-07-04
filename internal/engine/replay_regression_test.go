@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1078,6 +1079,61 @@ func TestReplayRegression_DiagnosisTargetFollowupResolvesNameFromFullSnapshot(t 
 	require.Contains(t, reply, "关机")
 	require.NotContains(t, reply, "未找到")
 	require.Len(t, mock.calls, 0, "target follow-up should continue diagnosis deterministically, not ask the LLM to rediscover the instance")
+}
+
+func TestReplayRegression_DiagnosisTargetFollowupUsesContextDecisionWhenEnabled(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("claude-write-test", "Stopped"))
+	eng := NewWithDeps(&mockLLM{}, exec, nil)
+	eng.Init(context.Background())
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	eng.userTurn = 2
+	eng.recordPendingInstanceSelection([]entity.InstanceSnapshot{
+		{UHostId: "uhost-target", Name: "claude-write-test", State: "Stopped"},
+		{UHostId: "uhost-fill-a", Name: "host-fill-a", State: "Running"},
+	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionSelectEntity,
+		Target:      ContextDecisionTargetInstance,
+		InstanceRef: "第1台",
+	}})
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "ssh连不上"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "您有多个实例在运行，请问是哪一台实例 SSH 连不上？请提供实例名称或实例 ID。"},
+	)
+
+	reply, handled := eng.tryDiagnosisTargetContinuation(context.Background(), "第1台", noopStep)
+
+	require.True(t, handled)
+	require.Contains(t, reply, "claude-write-test")
+	require.Contains(t, reply, "关机")
+}
+
+func TestReplayRegression_DiagnosisTargetFollowupHonorsContextDecisionNewTask(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("claude-write-test", "Stopped"))
+	eng := NewWithDeps(&mockLLM{}, exec, nil)
+	eng.Init(context.Background())
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionNewTask,
+		Reason:   "user changed topic",
+	}})
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "ssh连不上"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "您有多个实例在运行，请问是哪一台实例 SSH 连不上？请提供实例名称或实例 ID。"},
+	)
+
+	reply, handled := eng.tryDiagnosisTargetContinuation(context.Background(), "claude-write-test", noopStep)
+
+	require.False(t, handled)
+	require.Empty(t, reply)
+	for _, call := range exec.calls {
+		require.Falsef(t, strings.HasPrefix(call, "Diagnose"), "new_task decision must not continue diagnosis, calls=%v", exec.calls)
+	}
 }
 
 func TestReplayRegression_GPUInvisibleUsesUniqueGPUInstanceFromFullSnapshot(t *testing.T) {
