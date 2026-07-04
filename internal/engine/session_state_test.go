@@ -738,6 +738,31 @@ func TestRecordLastStockGpuModel_UngatedByHydration(t *testing.T) {
 		"a new single referent overwrites the prior one")
 }
 
+func TestRecordLastStockGpuModel_UsesRecentFactsWhenSessionFactContextEnabled(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{
+		SchemaVersion:     SessionStateSchemaCurrent,
+		LastStockGpuModel: "4090",
+	}, 1)
+	e.sessionFactContextEnabled = true
+
+	e.recordLastStockGpuModel("5090")
+
+	assert.Empty(t, e.sessionState.LastStockGpuModel,
+		"fact-enabled HTTP path must not keep writing the legacy stock scalar")
+}
+
+func TestRecordLastStockGpuModel_FactContextDoesNotWriteLegacyWithoutHydration(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	require.False(t, e.sessionStateHydrated)
+	e.sessionFactContextEnabled = true
+
+	e.recordLastStockGpuModel("5090")
+
+	assert.Empty(t, e.sessionState.LastStockGpuModel,
+		"fact context enabled must not write the legacy stock scalar even on non-persisted engines")
+}
+
 func TestStockGpuModelFromRecentFacts_UsesLatestFreshSpecificModel(t *testing.T) {
 	now := time.Unix(2_000, 0)
 	facts := []ToolFact{
@@ -790,7 +815,7 @@ func TestFallbackStockGpuModel_RecentFactsRequireSessionFactContext(t *testing.T
 	assert.Equal(t, "5090", eng.fallbackStockGpuModel(now), "fresh RecentFacts should be the primary stock referent when fact context is enabled")
 
 	eng.sessionState.RecentFacts[0].ProducedAtUnix = now.Add(-time.Duration(factTTLSecondsStockSnapshot+1) * time.Second).Unix()
-	assert.Equal(t, "4090", eng.fallbackStockGpuModel(now), "legacy stock memory remains a compatibility fallback when facts are stale")
+	assert.Empty(t, eng.fallbackStockGpuModel(now), "fact-on path must not fall back to the legacy scalar after the stock fact expires")
 
 	eng.sessionFactContextEnabled = false
 	assert.Equal(t, "4090", eng.fallbackStockGpuModel(now), "legacy stock memory remains available with flag off")
