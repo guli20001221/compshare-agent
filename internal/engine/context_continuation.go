@@ -1,8 +1,8 @@
 package engine
 
 // contextContinuationOn gates the global LLM-backed context continuation layer.
-// Default-off: it can route short follow-ups into mutating workflow confirmation
-// paths, so rollout must be eval-gated and explicitly enabled at boot.
+// The package variable starts false for unit-test isolation; HTTP/CLI boot
+// parsers default COMPSHARE_CONTEXT_CONTINUATION to on and call the setter.
 var contextContinuationOn bool
 
 // SetContextContinuationEnabled toggles the global context continuation layer.
