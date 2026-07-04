@@ -207,9 +207,38 @@ func buildContextDecisionPrompt(in ContextDecisionInput) []openai.ChatCompletion
 }
 
 func parseContextDecision(raw string) (*ContextDecision, error) {
-	var out ContextDecision
-	if err := json.Unmarshal([]byte(extractJSONObject(raw)), &out); err != nil {
+	var in struct {
+		Decision     string         `json:"decision"`
+		Target       string         `json:"target"`
+		SlotUpdates  map[string]any `json:"slot_updates,omitempty"`
+		GPUPref      string         `json:"gpu_pref"`
+		ZonePref     string         `json:"zone_pref"`
+		ImagePref    string         `json:"image_pref"`
+		ImageSource  string         `json:"image_source"`
+		WorkloadPref string         `json:"workload_pref"`
+		InstanceRef  string         `json:"instance_ref"`
+		Metric       string         `json:"metric"`
+		BillingTopic string         `json:"billing_topic"`
+		Clarify      string         `json:"clarify"`
+		Reason       string         `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(extractJSONObject(raw)), &in); err != nil {
 		return nil, err
+	}
+	out := ContextDecision{
+		Decision:     in.Decision,
+		Target:       in.Target,
+		SlotUpdates:  normalizeContextSlotUpdatesAny(in.SlotUpdates),
+		GPUPref:      in.GPUPref,
+		ZonePref:     in.ZonePref,
+		ImagePref:    in.ImagePref,
+		ImageSource:  in.ImageSource,
+		WorkloadPref: in.WorkloadPref,
+		InstanceRef:  in.InstanceRef,
+		Metric:       in.Metric,
+		BillingTopic: in.BillingTopic,
+		Clarify:      in.Clarify,
+		Reason:       in.Reason,
 	}
 	return sanitizeContextDecision(out), nil
 }
@@ -294,6 +323,42 @@ func normalizeContextSlotUpdates(in map[string]string) map[string]string {
 		return nil
 	}
 	return out
+}
+
+func normalizeContextSlotUpdatesAny(in map[string]any) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		k := normalizeContextSlotKey(key)
+		v := contextSlotValueString(value)
+		if k == "" || v == "" {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func contextSlotValueString(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		return strings.TrimSpace(fmt.Sprint(v))
+	case bool:
+		return fmt.Sprint(v)
+	case map[string]any, []any:
+		return ""
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
 }
 
 func normalizeContextSlotKey(key string) string {

@@ -42,7 +42,7 @@ type FeaturesConfig struct {
 	IntentScopedReactPrompt         *bool    `yaml:"intent_scoped_react_prompt"`         // USE_INTENT_SCOPED_REACT_PROMPT (default off)
 	CreatePreferenceExtractor       *bool    `yaml:"create_preference_extractor"`        // COMPSHARE_CREATE_PREF_EXTRACTOR (default on; false disables)
 	UnifiedCreate                   *bool    `yaml:"unified_create"`                     // COMPSHARE_UNIFIED_CREATE (default on; false disables)
-	ContextContinuation             *bool    `yaml:"context_continuation"`               // COMPSHARE_CONTEXT_CONTINUATION (default off)
+	ContextContinuation             *bool    `yaml:"context_continuation"`               // COMPSHARE_CONTEXT_CONTINUATION (default on; false disables)
 	SkillExecutor                   *bool    `yaml:"skill_executor"`                     // USE_SKILL_EXECUTOR (default off)
 	SkillExecutorDiagnosisPilots    []string `yaml:"skill_executor_diagnosis_pilots"`    // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS (CSV)
 }

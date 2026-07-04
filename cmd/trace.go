@@ -394,16 +394,16 @@ func unifiedCreateEnabledFromEnv(getenv getenvFunc) (bool, string) {
 }
 
 // contextContinuationEnabledFromEnv gates the global LLM-backed context
-// continuation layer. DEFAULT OFF: when enabled, short follow-ups may resume
-// create/deploy frames and mutating workflow tasks, but final execution still
-// goes through workflow validation and confirmation cards.
+// continuation layer. DEFAULT ON: short follow-ups may resume create/deploy
+// frames and mutating workflow tasks, but final execution still goes through
+// workflow validation and confirmation cards. Set =0/off/false to roll back.
 func contextContinuationEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.TrimSpace(getenv("COMPSHARE_CONTEXT_CONTINUATION"))
 	switch strings.ToLower(raw) {
-	case "", "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	case "1", "true", "yes", "on":
+	case "", "1", "true", "yes", "on":
 		return true, ""
+	case "0", "off", "no", "false", "disabled", "none":
+		return false, ""
 	default:
 		return false, raw
 	}

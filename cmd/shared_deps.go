@@ -48,7 +48,7 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	}
 	engine.SetContextContinuationEnabled(contextContinuation)
 	if contextContinuation {
-		log.Printf("runtime: HTTP context continuation enabled (COMPSHARE_CONTEXT_CONTINUATION=1; short follow-ups may resume pending tasks before confirmation)")
+		log.Printf("runtime: HTTP context continuation enabled (COMPSHARE_CONTEXT_CONTINUATION default-on; disable with =0)")
 	}
 
 	deps, err := engine.NewSharedDeps(cfg)
