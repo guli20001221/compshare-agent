@@ -29,27 +29,16 @@ func MissingSlotsFromError(err error) []string {
 	return nil
 }
 
-// MissingSlotsForFailure is retained only as a compatibility fallback for
-// workflows that have not yet returned MissingSlotError.
-func MissingSlotsForFailure(workflowName, message string) []string {
-	if spec, ok := taskSlotSpecs[workflowName]; ok && spec.legacyMessage != "" && strings.Contains(strings.TrimSpace(message), spec.legacyMessage) {
-		return append([]string(nil), spec.missingSlots...)
-	}
-	return nil
-}
-
 type taskSlotSpec struct {
-	missingSlots  []string
-	legacyMessage string
-	parseUpdates  func(missing []string, userMsg string) map[string]string
-	buildArgs     func(slots map[string]string) (map[string]any, []string)
-	clarify       func(missing []string) string
+	missingSlots []string
+	parseUpdates func(missing []string, userMsg string) map[string]string
+	buildArgs    func(slots map[string]string) (map[string]any, []string)
+	clarify      func(missing []string) string
 }
 
 var taskSlotSpecs = map[string]taskSlotSpec{
 	"CreateDiskWorkflow": {
-		missingSlots:  []string{"size_gb"},
-		legacyMessage: createDiskMissingSizeMessage,
+		missingSlots: []string{"size_gb"},
 		parseUpdates: func(missing []string, userMsg string) map[string]string {
 			if !slotSet(missing)["size_gb"] {
 				return nil
@@ -78,8 +67,7 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		},
 	},
 	"ResizeDiskWorkflow": {
-		missingSlots:  []string{"target_size_gb"},
-		legacyMessage: resizeDiskMissingTargetMessage,
+		missingSlots: []string{"target_size_gb"},
 		parseUpdates: func(missing []string, userMsg string) map[string]string {
 			if !slotSet(missing)["target_size_gb"] {
 				return nil
@@ -108,8 +96,7 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		},
 	},
 	"ResizeInstanceWorkflow": {
-		missingSlots:  []string{"cpu", "memory_gb", "gpu_count"},
-		legacyMessage: resizeInstanceMissingSpecMessage,
+		missingSlots: []string{"cpu", "memory_gb", "gpu_count"},
 		parseUpdates: func(missing []string, userMsg string) map[string]string {
 			updates := map[string]string{}
 			missingSet := slotSet(missing)
@@ -349,8 +336,7 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		},
 	},
 	"CreateCustomImageWorkflow": {
-		missingSlots:  []string{"name"},
-		legacyMessage: "image Name is required; ask the user for a custom image name before creating it",
+		missingSlots: []string{"name"},
 		buildArgs: func(slots map[string]string) (map[string]any, []string) {
 			normalized := NormalizeTaskSlotUpdates(slots)
 			args, missing := baseWorkflowTaskArgs("CreateCustomImageWorkflow", normalized)
