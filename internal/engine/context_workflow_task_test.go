@@ -54,6 +54,16 @@ func TestWorkflowArgsFromTaskSlotsReportsMissingWithoutInventingDefaults(t *test
 	assert.Equal(t, []string{"size_gb"}, missing)
 }
 
+func TestWorkflowArgsFromTaskSlotsAllowsReinstallImagePref(t *testing.T) {
+	args, missing := workflowArgsFromTaskSlots("ReinstallInstanceWorkflow", map[string]string{
+		"instance_id": "uhost-1",
+		"image_pref":  "Ubuntu-nvidia 22.04",
+	})
+
+	require.Empty(t, missing)
+	assert.Equal(t, map[string]any{"UHostId": "uhost-1", "ImageName": "Ubuntu-nvidia 22.04"}, args)
+}
+
 func TestRecordWorkflowMissingSlotsFrameKeepsOnlySafeSlots(t *testing.T) {
 	SetContextContinuationEnabled(true)
 	t.Cleanup(func() { SetContextContinuationEnabled(false) })
@@ -347,7 +357,7 @@ func TestResumeWorkflowContextFrameAppliesSlotUpdateAndReachesConfirm(t *testing
 	assert.Empty(t, state.ContextFrame.Kind, "filled workflow task should not keep the stale missing-slot frame after reaching confirm")
 }
 
-func TestResumeWorkflowContextFrameUsesDeclaredMissingSlotWithoutLLM(t *testing.T) {
+func TestResumeWorkflowContextFrameDoesNotParseSlotsWhenDecisionIsNewTask(t *testing.T) {
 	SetContextContinuationEnabled(true)
 	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
@@ -376,6 +386,9 @@ func TestResumeWorkflowContextFrameUsesDeclaredMissingSlotWithoutLLM(t *testing.
 		}
 	}}
 	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionNewTask,
+	}})
 	eng.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaCurrent,
 		ContextFrame: ContextFrame{
@@ -393,9 +406,9 @@ func TestResumeWorkflowContextFrameUsesDeclaredMissingSlotWithoutLLM(t *testing.
 
 	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "200G", noopStep)
 
-	require.True(t, handled)
-	assert.Contains(t, reply, "操作未执行")
-	assert.Equal(t, "CreateDiskWorkflow", confirmAction)
+	assert.False(t, handled)
+	assert.Empty(t, reply)
+	assert.Empty(t, confirmAction)
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Empty(t, state.ContextFrame.Kind)
 }
@@ -540,4 +553,359 @@ func TestResumeWorkflowContextFrame_CreateCFSZoneFromContextDecision(t *testing.
 	assert.Equal(t, "shared-train", confirmArgs["Name"])
 	assert.Equal(t, float64(100), confirmArgs["Size"])
 	assert.Equal(t, "cn-pod-01", confirmArgs["Zone"])
+}
+
+func TestResumeWorkflowContextFrame_SetStopSchedulerTimeReachesConfirm(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	var confirmArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "train-a", "State": "Running", "Region": "cn-wlcb", "Zone": "cn-wlcb-01", "ChargeType": "Dynamic",
+			}}}, nil
+		case "UpdateCompShareStopScheduler":
+			t.Fatalf("scheduler continuation must stop at confirm before mutating; args=%v", args)
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionContinueTask,
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "SetStopSchedulerWorkflow",
+			Slots:          map[string]string{"instance_id": "uhost-1"},
+			MissingSlots:   []string{"stop_time"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "30分钟后", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	assert.Equal(t, "SetStopSchedulerWorkflow", confirmAction)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "uhost-1", confirmArgs["UHostId"])
+	assert.Contains(t, confirmArgs, "shutdownTime")
+}
+
+func TestResumeWorkflowContextFrame_ReinstallImageIDReachesConfirm(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	var confirmArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "train-a", "State": "Stopped", "Region": "cn-wlcb", "Zone": "cn-wlcb-01",
+				"DiskSet": []any{map[string]any{"DiskId": "boot-1", "IsBoot": true, "Size": float64(100)}},
+			}}}, nil
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu-nvidia 22.04", "Container": false}}}, nil
+		case "ReinstallCompShareInstance":
+			t.Fatalf("reinstall continuation must stop at confirm before mutating; args=%v", args)
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionContinueTask,
+		SlotUpdates: map[string]string{"image_id": "img-ubuntu"},
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "ReinstallInstanceWorkflow",
+			Slots:          map[string]string{"instance_id": "uhost-1"},
+			MissingSlots:   []string{"image_id"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "Ubuntu-nvidia 22.04", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	assert.Equal(t, "ReinstallInstanceWorkflow", confirmAction)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "img-ubuntu", confirmArgs["target_image_id"])
+	assert.Equal(t, "Ubuntu-nvidia 22.04", confirmArgs["target_image_name"])
+}
+
+func TestResumeWorkflowContextFrame_ReinstallImagePrefReachesConfirm(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	var confirmArgs map[string]any
+	var imageArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "train-a", "State": "Stopped", "Region": "cn-wlcb", "Zone": "cn-wlcb-01",
+				"DiskSet": []any{map[string]any{"DiskId": "boot-1", "IsBoot": true, "Size": float64(100)}},
+			}}}, nil
+		case "DescribeCompShareImages":
+			imageArgs = map[string]any{}
+			for k, v := range args {
+				imageArgs[k] = v
+			}
+			return map[string]any{"ImageSet": []any{map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu-nvidia 22.04", "Container": false}}}, nil
+		case "ReinstallCompShareInstance":
+			t.Fatalf("reinstall continuation must stop at confirm before mutating; args=%v", args)
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionContinueTask,
+		SlotUpdates: map[string]string{"image_pref": "Ubuntu-nvidia 22.04"},
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "ReinstallInstanceWorkflow",
+			Slots:          map[string]string{"instance_id": "uhost-1"},
+			MissingSlots:   []string{"image_id"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "Ubuntu-nvidia 22.04", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	assert.Equal(t, "ReinstallInstanceWorkflow", confirmAction)
+	require.NotNil(t, imageArgs)
+	assert.Equal(t, "Ubuntu-nvidia 22.04", imageArgs["Name"])
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "img-ubuntu", confirmArgs["target_image_id"])
+	assert.Equal(t, "Ubuntu-nvidia 22.04", confirmArgs["target_image_name"])
+}
+
+func TestResumeWorkflowContextFrame_ReinstallImageSourceRestrictsLookup(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	var confirmArgs map[string]any
+	var calledPlatform bool
+	var communityArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "train-a", "State": "Stopped", "Region": "cn-wlcb", "Zone": "cn-wlcb-01",
+				"DiskSet": []any{map[string]any{"DiskId": "boot-1", "IsBoot": true, "Size": float64(100)}},
+			}}}, nil
+		case "DescribeCompShareImages":
+			calledPlatform = true
+			return map[string]any{"ImageSet": []any{map[string]any{"CompShareImageId": "img-platform", "Name": "Ubuntu-nvidia 22.04", "Container": false}}}, nil
+		case "DescribeCommunityImages":
+			communityArgs = map[string]any{}
+			for k, v := range args {
+				communityArgs[k] = v
+			}
+			return map[string]any{"ImageSet": []any{map[string]any{"CompShareImageId": "comm-img-ubuntu", "Name": "Ubuntu-nvidia 22.04", "Container": false}}}, nil
+		case "ReinstallCompShareInstance":
+			t.Fatalf("reinstall continuation must stop at confirm before mutating; args=%v", args)
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionContinueTask,
+		SlotUpdates: map[string]string{
+			"image_pref":   "Ubuntu-nvidia 22.04",
+			"image_source": "community",
+		},
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "ReinstallInstanceWorkflow",
+			Slots:          map[string]string{"instance_id": "uhost-1"},
+			MissingSlots:   []string{"image_id"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "社区镜像 Ubuntu-nvidia 22.04", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	assert.False(t, calledPlatform, "explicit community source must not select a platform image first")
+	require.NotNil(t, communityArgs)
+	assert.Equal(t, "Ubuntu-nvidia 22.04", communityArgs["FuzzySearch"])
+	assert.Equal(t, "ReinstallInstanceWorkflow", confirmAction)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "comm-img-ubuntu", confirmArgs["target_image_id"])
+	assert.Equal(t, "community", confirmArgs["target_image_source"])
+}
+
+func TestResumeWorkflowContextFrame_ResizeCFSSizeReachesConfirm(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	var confirmArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCFS":
+			return map[string]any{"CFSSet": []any{map[string]any{
+				"CfsId": "cfs-test", "Name": "shared-train", "ZoneId": float64(9001), "Size": float64(100), "ChargeType": "Month",
+			}}}, nil
+		case "GetCompShareCFSUpgradePrice":
+			return map[string]any{"Price": float64(49), "OriginalPrice": float64(60)}, nil
+		case "ResizeCFS":
+			t.Fatalf("CFS resize continuation must stop at confirm before mutating; args=%v", args)
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionContinueTask,
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "ResizeCFSWorkflow",
+			Slots:          map[string]string{"cfs_id": "cfs-test"},
+			MissingSlots:   []string{"target_size_gb"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(context.Background(), dispatch, "200G", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	assert.Equal(t, "ResizeCFSWorkflow", confirmAction)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "cfs-test", confirmArgs["CfsId"])
+	assert.Equal(t, float64(200), confirmArgs["target_size_gb"])
+	assert.Equal(t, float64(49), confirmArgs["price_delta"])
+}
+
+func TestResumeWorkflowContextFrame_EnableNetOptimizerZoneReachesConfirm(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	var confirmArgs map[string]any
+	var checkArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{map[string]any{
+				"Zone": "cn-bj2-03", "Region": "cn-bj2", "RegionId": float64(3003), "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": true,
+			}}}, nil
+		case "CheckCompShareNetOptimizer":
+			checkArgs = map[string]any{}
+			for k, v := range args {
+				checkArgs[k] = v
+			}
+			return map[string]any{"Optimized": false}, nil
+		case "SyncCompShareNetOptimizer":
+			t.Fatalf("network optimizer continuation must stop at confirm before mutating; args=%v", args)
+		}
+		return map[string]any{}, nil
+	}}
+	eng := newZoneEngine(exec, "SHOULD-NOT-BE-USED")
+	eng.confirmFn = confirm
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionContinueTask,
+	}})
+	eng.lastUserMsg = "华北一C"
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "EnableNetOptimizerWorkflow",
+			MissingSlots:   []string{"zone"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentOperationLifecycle}}}
+
+	reply, handled := eng.tryResumeWorkflowContextFrame(zoneUserCtx(), dispatch, "华北一C", noopStep)
+
+	require.True(t, handled)
+	assert.Contains(t, reply, "操作未执行")
+	require.NotNil(t, checkArgs)
+	assert.Equal(t, "cn-bj2-03", checkArgs["Zone"])
+	assert.Equal(t, uint32(3003), checkArgs["az_group"])
+	assert.Equal(t, "EnableNetOptimizerWorkflow", confirmAction)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "cn-bj2-03", confirmArgs["Zone"])
+	assert.NotContains(t, confirmArgs, "az_group")
+	assert.NotContains(t, confirmArgs, "zone_id")
 }

@@ -57,13 +57,15 @@ func stepQueryPlatformTargetImage() Step {
 		Type:     StepToolCall,
 		Tool:     "DescribeCompShareImages",
 		Optional: true,
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			return reinstallShouldSkipSource(wfCtx, "platform"), nil
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
+			args, ok := reinstallImageLookupArgs(wfCtx, "platform")
+			if !ok {
 				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
 			}
-			return map[string]any{
-				"CompShareImageId": wfCtx.Params["CompShareImageId"],
-			}, nil
+			return args, nil
 		},
 	}
 }
@@ -74,13 +76,15 @@ func stepQueryCommunityTargetImage() Step {
 		Type:     StepToolCall,
 		Tool:     "DescribeCommunityImages",
 		Optional: true,
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			return reinstallShouldSkipSource(wfCtx, "community"), nil
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
+			args, ok := reinstallImageLookupArgs(wfCtx, "community")
+			if !ok {
 				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
 			}
-			return map[string]any{
-				"CompShareImageId": wfCtx.Params["CompShareImageId"],
-			}, nil
+			return args, nil
 		},
 	}
 }
@@ -91,13 +95,15 @@ func stepQueryCustomTargetImage() Step {
 		Type:     StepToolCall,
 		Tool:     "DescribeCompShareCustomImages",
 		Optional: true,
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			return reinstallShouldSkipSource(wfCtx, "custom"), nil
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
+			args, ok := reinstallImageLookupArgs(wfCtx, "custom")
+			if !ok {
 				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
 			}
-			return map[string]any{
-				"CompShareImageId": wfCtx.Params["CompShareImageId"],
-			}, nil
+			return args, nil
 		},
 	}
 }
@@ -108,13 +114,15 @@ func stepQuerySharingTargetImage() Step {
 		Type:     StepToolCall,
 		Tool:     "DescribeCompShareSharingImages",
 		Optional: true,
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			return reinstallShouldSkipSource(wfCtx, "sharing"), nil
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
+			args, ok := reinstallImageLookupArgs(wfCtx, "sharing")
+			if !ok {
 				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
 			}
-			return map[string]any{
-				"CompShareImageId": wfCtx.Params["CompShareImageId"],
-			}, nil
+			return args, nil
 		},
 	}
 }
@@ -124,13 +132,14 @@ func stepConfirmReinstall() Step {
 		Name: "确认重装",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
+			if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" && strings.TrimSpace(paramStr(wfCtx.Params, "ImageName", "")) == "" {
 				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
 			}
 			image, ok := targetReinstallImage(wfCtx)
 			if !ok {
-				return nil, fmt.Errorf("未找到目标镜像，请确认镜像 ID 是否正确。")
+				return nil, fmt.Errorf("未找到目标镜像，请确认镜像名称或 ID 是否正确。")
 			}
+			wfCtx.Params["CompShareImageId"] = image.ID
 			queried := wfCtx.Result("查询实例")
 			if (isPodInstanceResult(queried) || isContainerInstanceResult(queried)) && !image.Container {
 				return nil, fmt.Errorf("Pod 实例重装必须选择容器镜像；当前镜像「%s」不是容器镜像。", image.Name)
@@ -189,8 +198,46 @@ func (info reinstallImageInfo) RequiredSystemDiskGB() float64 {
 	return math.Ceil(info.SizeMB / 1024)
 }
 
+func reinstallImageLookupArgs(wfCtx *Context, source string) (map[string]any, bool) {
+	if id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")); id != "" {
+		return map[string]any{"CompShareImageId": id}, true
+	}
+	name := strings.TrimSpace(paramStr(wfCtx.Params, "ImageName", ""))
+	if name == "" {
+		return nil, false
+	}
+	switch source {
+	case "platform":
+		return map[string]any{"Name": name, "Limit": 100}, true
+	case "community":
+		return map[string]any{"FuzzySearch": name, "Limit": 30}, true
+	case "custom", "sharing":
+		return map[string]any{"Limit": 100}, true
+	default:
+		return map[string]any{"Limit": 100}, true
+	}
+}
+
+func reinstallShouldSkipSource(wfCtx *Context, source string) bool {
+	selected := reinstallSelectedImageSource(wfCtx)
+	return selected != "" && selected != source
+}
+
+func reinstallSelectedImageSource(wfCtx *Context) string {
+	source := strings.ToLower(strings.TrimSpace(paramStr(wfCtx.Params, "ImageSource", "")))
+	switch source {
+	case "platform", "community", "custom":
+		return source
+	case "shared", "sharing":
+		return "sharing"
+	default:
+		return ""
+	}
+}
+
 func targetReinstallImage(wfCtx *Context) (reinstallImageInfo, bool) {
 	want := paramStr(wfCtx.Params, "CompShareImageId", "")
+	wantName := paramStr(wfCtx.Params, "ImageName", "")
 	for _, item := range []struct {
 		step   string
 		source string
@@ -200,28 +247,43 @@ func targetReinstallImage(wfCtx *Context) (reinstallImageInfo, bool) {
 		{step: "查询自制目标镜像", source: "custom"},
 		{step: "查询共享目标镜像", source: "sharing"},
 	} {
-		if img, ok := findReinstallImage(wfCtx.Result(item.step), want, item.source); ok {
+		if reinstallShouldSkipSource(wfCtx, item.source) {
+			continue
+		}
+		if img, ok := findReinstallImage(wfCtx.Result(item.step), want, wantName, item.source); ok {
 			return img, true
 		}
 	}
 	return reinstallImageInfo{}, false
 }
 
-func findReinstallImage(result map[string]any, wantID, source string) (reinstallImageInfo, bool) {
+func findReinstallImage(result map[string]any, wantID, wantName, source string) (reinstallImageInfo, bool) {
 	if result == nil {
 		return reinstallImageInfo{}, false
 	}
 	for _, img := range imageSetMaps(result) {
-		if info, ok := reinstallImageFromMap(img, source); ok && imageIDMatches(info.ID, wantID) {
+		if info, ok := reinstallImageFromMap(img, source); ok && reinstallImageMatches(info, wantID, wantName) {
 			return info, true
 		}
 	}
 	for _, img := range communityImageMaps(result) {
-		if info, ok := reinstallImageFromMap(img, source); ok && imageIDMatches(info.ID, wantID) {
+		if info, ok := reinstallImageFromMap(img, source); ok && reinstallImageMatches(info, wantID, wantName) {
 			return info, true
 		}
 	}
 	return reinstallImageInfo{}, false
+}
+
+func reinstallImageMatches(info reinstallImageInfo, wantID, wantName string) bool {
+	if strings.TrimSpace(wantID) != "" {
+		return imageIDMatches(info.ID, wantID)
+	}
+	want := strings.ToLower(strings.TrimSpace(wantName))
+	if want == "" {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(info.Name))
+	return name == want || strings.Contains(name, want)
 }
 
 func imageSetMaps(result map[string]any) []map[string]any {

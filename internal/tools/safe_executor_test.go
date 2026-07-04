@@ -110,6 +110,24 @@ func TestDescribeCompShareImagesAllowsOffsetForPagination(t *testing.T) {
 	assert.Equal(t, 100, filtered["Offset"])
 }
 
+func TestReinstallWorkflowAllowsImageNameForLookup(t *testing.T) {
+	safe := NewSafeToolExecutor(&spyExecutor{})
+
+	filtered := safe.FilterArgs("ReinstallInstanceWorkflow", map[string]any{
+		"UHostId":          "uhost-1",
+		"ImageName":        "Ubuntu-nvidia 22.04",
+		"ImageSource":      "platform",
+		"CompShareImageId": "img-001",
+		"az_group":         uint32(3001),
+	})
+
+	assert.Equal(t, "uhost-1", filtered["UHostId"])
+	assert.Equal(t, "Ubuntu-nvidia 22.04", filtered["ImageName"])
+	assert.Equal(t, "platform", filtered["ImageSource"])
+	assert.Equal(t, "img-001", filtered["CompShareImageId"])
+	assert.NotContains(t, filtered, "az_group")
+}
+
 func TestBackendZoneIDIsInternalOnly(t *testing.T) {
 	directInner := &spyExecutor{}
 	direct := NewSafeToolExecutor(directInner)

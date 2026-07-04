@@ -57,7 +57,6 @@ func stepConfirmEnableNetOptimizer() Step {
 			return map[string]any{
 				"Zone":      wfCtx.Params["Zone"],
 				"Region":    wfCtx.Params["Region"],
-				"az_group":  wfCtx.Params["NetOptimizerAzGroup"],
 				"optimized": netOptimizerEnabled(status),
 				"status":    status,
 				"warning":   "将为当前账号同步/开启网络加速配置；本轮 agent 暂不暴露关闭能力，确认后会调用开通同步接口。",

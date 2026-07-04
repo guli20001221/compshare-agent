@@ -127,6 +127,8 @@ func TestParseContextDecisionSlotUpdatesAreSanitizedAndMirrored(t *testing.T) {
 		"zone_pref":"华北二A",
 		"slot_updates":{
 			"target_size_gb":"200G",
+			"image_id":"img-ubuntu",
+			"cfs_id":"cfs-test",
 			"zone_id":"5001",
 			"az_group":"cn-wlcb",
 			"password":"secret",
@@ -144,6 +146,8 @@ func TestParseContextDecisionSlotUpdatesAreSanitizedAndMirrored(t *testing.T) {
 	assert.Equal(t, "华北二A", decision.SlotUpdates["zone"])
 	assert.Equal(t, "200G", decision.SlotUpdates["target_size_gb"])
 	assert.Equal(t, "community", decision.SlotUpdates["image_source"])
+	assert.Equal(t, "img-ubuntu", decision.SlotUpdates["image_id"])
+	assert.Equal(t, "cfs-test", decision.SlotUpdates["cfs_id"])
 	assert.NotContains(t, decision.SlotUpdates, "zone_id")
 	assert.NotContains(t, decision.SlotUpdates, "az_group")
 	assert.NotContains(t, decision.SlotUpdates, "password")

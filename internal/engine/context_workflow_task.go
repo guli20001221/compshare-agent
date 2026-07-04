@@ -22,9 +22,6 @@ func (e *Engine) tryResumeWorkflowContextFrame(ctx context.Context, dispatch rou
 	if !ok || frame.Kind != ContextFrameKindWorkflowTask || strings.TrimSpace(frame.Workflow) == "" {
 		return "", false
 	}
-	if updates := workflowTaskSlotUpdatesFromUserText(frame.Workflow, frame.MissingSlots, userMsg); len(updates) > 0 {
-		return e.resumeWorkflowContextFrameWithSlotUpdates(ctx, dispatch, userMsg, frame, updates, onStep)
-	}
 	decision, err := e.resolveContextDecision(ctx, userMsg, dispatch.result.Plan.Intent, frame)
 	if err != nil || decision == nil {
 		return "", false
@@ -42,13 +39,17 @@ func (e *Engine) tryResumeWorkflowContextFrame(ctx context.Context, dispatch rou
 	default:
 		return "", false
 	}
-	if len(decision.SlotUpdates) == 0 {
+	updates := decision.SlotUpdates
+	if len(updates) == 0 {
+		updates = workflowTaskSlotUpdatesFromUserText(frame.Workflow, frame.MissingSlots, userMsg)
+	}
+	if len(updates) == 0 {
 		if strings.TrimSpace(decision.Clarify) != "" {
 			return e.deployReply(dispatch.result, dispatch.latency, strings.TrimSpace(decision.Clarify))
 		}
 		return "", false
 	}
-	return e.resumeWorkflowContextFrameWithSlotUpdates(ctx, dispatch, userMsg, frame, decision.SlotUpdates, onStep)
+	return e.resumeWorkflowContextFrameWithSlotUpdates(ctx, dispatch, userMsg, frame, updates, onStep)
 }
 
 func (e *Engine) resumeWorkflowContextFrameWithSlotUpdates(ctx context.Context, dispatch routerDispatchResult, _ string, frame ContextFrame, updates map[string]string, onStep func(StepEvent)) (string, bool) {

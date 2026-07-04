@@ -80,6 +80,10 @@ func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		if actionAllowsBackendAzGroup(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "az_group")
 		}
+		if actionAllowsBackendZoneRegion(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "Zone")
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "Region")
+		}
 		if actionAllowsBackendIdentity(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "top_organization_id")
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "organization_id")
@@ -98,6 +102,10 @@ func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		}
 		if actionAllowsBackendAzGroup(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "az_group")
+		}
+		if actionAllowsBackendZoneRegion(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "Zone")
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "Region")
 		}
 		if actionAllowsBackendIdentity(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "top_organization_id")
@@ -242,6 +250,16 @@ func actionAllowsBackendAzGroup(action string) bool {
 		"ResizeCompShareDisk",
 		"GetCompShareCFSPrice",
 		"CreateCFS":
+		return true
+	default:
+		return false
+	}
+}
+
+func actionAllowsBackendZoneRegion(action string) bool {
+	switch action {
+	case "CheckCompShareNetOptimizer",
+		"SyncCompShareNetOptimizer":
 		return true
 	default:
 		return false

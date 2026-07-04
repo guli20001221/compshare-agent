@@ -173,7 +173,7 @@ func buildContextDecisionPrompt(in ContextDecisionInput) []openai.ChatCompletion
 	sys.WriteString("decision 只能是 continue_task、new_task、select_entity、answer_followup、clear_context、clarify。\n")
 	sys.WriteString("规则：\n")
 	sys.WriteString("- 用户短句沿用当前待办任务并补充或修改参数时，输出 continue_task。\n")
-	sys.WriteString("- 把补充或修改的参数写入 slot_updates，例如 size_gb、target_size_gb、cpu、memory_gb、gpu_count、gpu_type、zone、image_pref、image_source、workload。\n")
+	sys.WriteString("- 把补充或修改的参数写入 slot_updates，例如 size_gb、target_size_gb、cpu、memory_gb、gpu_count、gpu_type、zone、image_pref、image_id、image_source、workload、stop_time、name、cfs_id。\n")
 	sys.WriteString("- 用户引用最近实例列表、已选实例或“它/这台/第 N 台”时，输出 select_entity，并填写 instance_ref。\n")
 	sys.WriteString("- 用户追问最近库存、价格、监控、费用等只读结果时，输出 answer_followup，并填写 target；退费/费用续问 target=billing，billing_topic=refund。\n")
 	sys.WriteString("- 用户提出新的价格、建议、概念、教程、知识问题时，输出 new_task。\n")
@@ -183,6 +183,7 @@ func buildContextDecisionPrompt(in ContextDecisionInput) []openai.ChatCompletion
 	sys.WriteString("- 写操作必须交给后端确认卡；不要自行判断已经确认。\n")
 	sys.WriteString("- 不要猜默认 GPU、默认可用区、默认镜像来源；没有明确说就留空。\n")
 	sys.WriteString("- image_source 只能是 platform、community、custom、shared，用户没有明确说来源时留空。\n")
+	sys.WriteString("- image_id、cfs_id 只能在用户明确给出 ID 或上下文已有 ID 时填写；只说镜像名称时填 image_pref，不要猜 ID。\n")
 
 	var usr strings.Builder
 	usr.WriteString("router_intent: " + string(in.RouterIntent) + "\n")
@@ -383,6 +384,8 @@ func normalizeContextSlotKey(key string) string {
 		return "zone"
 	case "image", "image_pref", "image_name":
 		return "image_pref"
+	case "image_id", "comp_share_image_id", "compshareimageid", "comp_share_imageid":
+		return "image_id"
 	case "image_source":
 		return "image_source"
 	case "workload", "workload_pref", "model":
@@ -391,6 +394,8 @@ func normalizeContextSlotKey(key string) string {
 		return "stop_time"
 	case "name", "instance_name":
 		return "name"
+	case "cfs_id", "cfsid":
+		return "cfs_id"
 	default:
 		return ""
 	}
