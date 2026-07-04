@@ -384,6 +384,13 @@ func (e *Engine) recordPendingDeployModelFromReply(reply string) {
 			e.sessionState.PendingDeployModel = ""
 			return
 		}
+		frame := newContextFrame(ContextFrameKindDeploy, intent.IntentRoute{Intent: intent.IntentDeployModel}, strings.TrimSpace(e.lastUserMsg), e.userTurn, time.Now())
+		frame.Status = ContextFrameStatusFailedRecoverable
+		frame.Workload = model
+		frame.FailureReason = strings.TrimSpace(reply)
+		e.setContextFrame(frame)
+		e.sessionState.PendingDeployModel = ""
+		return
 	}
 	e.sessionState.PendingDeployModel = model
 }
