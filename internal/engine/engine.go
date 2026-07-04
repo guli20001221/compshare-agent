@@ -2544,6 +2544,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 					return reply, true
 				}
 				e.pendingResourceSelection = selection
+				e.recordPendingInstanceSelection(selection.candidates, result.Plan.Intent, userMsg, len(selection.candidates), selection.truncated)
 				reply := renderResourceSelectionPrompt(*selection)
 				e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -2604,6 +2605,14 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 
 	match := matchResourceSelection(userMsg, *pending)
 	if !match.ok {
+		if ContextContinuationEnabled() && isUnsupportedHistoricalMonitorQuestion(userMsg) {
+			if reply, selected, handled := e.tryContextDecisionResourceSelection(ctx, userMsg, pending); handled {
+				return reply, true
+			} else if selected {
+				return "", false
+			}
+			return "", false
+		}
 		if embedded, exact := matchResourceSelectionReference(userMsg, *pending); embedded.ok && !exact {
 			if plan, ok := monitorPlanFromEmbeddedResourceSelectionQuestion(userMsg); ok {
 				e.pendingResourceSelection = nil

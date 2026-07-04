@@ -5444,6 +5444,99 @@ func TestResourceSelectionContinuationOrdinalRunsOriginalMonitorQuery(t *testing
 	assert.Len(t, planner.calls, 1, "selection reply should reuse the stored plan instead of calling the planner again")
 }
 
+func TestResourceSelectionHistoricalMonitorOrdinalUsesContextDecision(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	var monitorArgs map[string]any
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			switch action {
+			case "DescribeCompShareInstance":
+				return phase1MultipleInstanceDescribeResult(), nil
+			case "GetCompShareInstanceMonitor":
+				monitorArgs = args
+				return map[string]any{"Data": map[string]any{"List": []any{}}}, nil
+			default:
+				return nil, fmt.Errorf("unexpected action %s", action)
+			}
+		},
+	}
+	layer := &fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionSelectEntity,
+		Target:      ContextDecisionTargetInstance,
+		InstanceRef: "第2台",
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	eng.SetContextDecisionLayer(layer)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	firstReply, err := eng.Chat(context.Background(), "CPU 高怎么办", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, firstReply, "uhost-select-001")
+	assert.Contains(t, firstReply, "uhost-select-002")
+
+	_, err = eng.Chat(context.Background(), "第2台昨天 00:00 到 01:00 的 CPU 历史监控", noopStep)
+
+	require.NoError(t, err)
+	require.NotNil(t, monitorArgs)
+	assert.Equal(t, []string{"uhost-select-002"}, monitorArgs["UHostIds"])
+	assert.NotEmpty(t, monitorArgs["StartTime"])
+	assert.NotEmpty(t, monitorArgs["EndTime"])
+	require.Len(t, layer.calls, 1)
+	assert.Contains(t, layer.calls[0].PendingChoices, "uhost-select-002")
+	assert.Empty(t, mock.calls)
+}
+
+func TestResourceSelectionHistoricalMonitorOrdinalNewTaskDoesNotBecomeRealtimeMonitor(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	var monitorCalled bool
+	executor := &mockExecutorFn{
+		fn: func(action string, args map[string]any) (map[string]any, error) {
+			switch action {
+			case "DescribeCompShareInstance":
+				return phase1MultipleInstanceDescribeResult(), nil
+			case "GetCompShareInstanceMonitor":
+				monitorCalled = true
+				return map[string]any{"Data": map[string]any{"List": []any{}}}, nil
+			default:
+				return nil, fmt.Errorf("unexpected action %s", action)
+			}
+		},
+	}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionNewTask,
+		Target:   ContextDecisionTargetKnowledge,
+	}})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	_, err := eng.Chat(context.Background(), "CPU 高怎么办", noopStep)
+	require.NoError(t, err)
+	reply, err := eng.Chat(context.Background(), "第2台昨天 00:00 到 01:00 的 CPU 历史监控", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, monitorHistoryNeedSingleInstanceMessage, reply)
+	assert.False(t, monitorCalled, "history question must not fall back to current monitor when context decision rejects selection")
+	assert.Empty(t, mock.calls)
+}
+
 func TestResourceSelectionContinuationExactIDRunsMonitorQuery(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
