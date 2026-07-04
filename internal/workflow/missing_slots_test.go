@@ -152,6 +152,10 @@ func TestWorkflowMissingSlotsAreStructured(t *testing.T) {
 func TestTaskSlotSpecsParseUpdatesAndBuildArgs(t *testing.T) {
 	updates := TaskSlotUpdatesFromUserText("CreateDiskWorkflow", []string{"size_gb"}, "200G")
 	assert.Equal(t, map[string]string{"size_gb": "200G"}, updates)
+	updates = TaskSlotUpdatesFromUserText("CreateDiskWorkflow", []string{"size_gb"}, "给这台加一块 200G 数据盘")
+	assert.Equal(t, map[string]string{"size_gb": "200G"}, updates)
+	updates = TaskSlotUpdatesFromUserText("CreateDiskWorkflow", []string{"size_gb"}, "当前 100G，再加一块 200G")
+	assert.Nil(t, updates)
 
 	args, missing := TaskArgsFromSlots("CreateDiskWorkflow", map[string]string{
 		"instance_id": "uhost-1",
@@ -161,6 +165,10 @@ func TestTaskSlotSpecsParseUpdatesAndBuildArgs(t *testing.T) {
 	assert.Equal(t, map[string]any{"UHostId": "uhost-1", "Size": float64(200)}, args)
 
 	updates = TaskSlotUpdatesFromUserText("ResizeDiskWorkflow", []string{"target_size_gb"}, "300GB")
+	assert.Equal(t, map[string]string{"target_size_gb": "300GB"}, updates)
+	updates = TaskSlotUpdatesFromUserText("ResizeDiskWorkflow", []string{"target_size_gb"}, "把系统盘扩到 300GB")
+	assert.Equal(t, map[string]string{"target_size_gb": "300GB"}, updates)
+	updates = TaskSlotUpdatesFromUserText("ResizeDiskWorkflow", []string{"target_size_gb"}, "从 100G 扩到 300GB")
 	assert.Equal(t, map[string]string{"target_size_gb": "300GB"}, updates)
 
 	updates = TaskSlotUpdatesFromUserText("ResizeInstanceWorkflow", []string{"cpu", "memory_gb", "gpu_count"}, "4C8G 1张卡")
@@ -186,6 +194,10 @@ func TestTaskSlotSpecsParseUpdatesAndBuildArgs(t *testing.T) {
 
 	updates = TaskSlotUpdatesFromUserText("ResizeCFSWorkflow", []string{"target_size_gb"}, "200GB")
 	assert.Equal(t, map[string]string{"target_size_gb": "200GB"}, updates)
+	updates = TaskSlotUpdatesFromUserText("ResizeCFSWorkflow", []string{"target_size_gb"}, "这个 CFS 扩容到 200G")
+	assert.Equal(t, map[string]string{"target_size_gb": "200G"}, updates)
+	updates = TaskSlotUpdatesFromUserText("ResizeCFSWorkflow", []string{"target_size_gb"}, "从 100G 扩到 200G")
+	assert.Equal(t, map[string]string{"target_size_gb": "200G"}, updates)
 	args, missing = TaskArgsFromSlots("ResizeCFSWorkflow", map[string]string{
 		"cfs_id":         "cfs-abc123",
 		"target_size_gb": "200GB",

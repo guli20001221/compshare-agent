@@ -54,10 +54,11 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 			if !slotSet(missing)["size_gb"] {
 				return nil
 			}
-			if _, ok := parseTaskSlotNumber(userMsg); !ok {
+			size, ok := parseTaskSlotSizeUpdate(userMsg)
+			if !ok {
 				return nil
 			}
-			return map[string]string{"size_gb": strings.TrimSpace(userMsg)}
+			return map[string]string{"size_gb": size}
 		},
 		buildArgs: func(slots map[string]string) (map[string]any, []string) {
 			normalized := NormalizeTaskSlotUpdates(slots)
@@ -83,10 +84,11 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 			if !slotSet(missing)["target_size_gb"] {
 				return nil
 			}
-			if _, ok := parseTaskSlotNumber(userMsg); !ok {
+			size, ok := parseTaskSlotTargetSizeUpdate(userMsg)
+			if !ok {
 				return nil
 			}
-			return map[string]string{"target_size_gb": strings.TrimSpace(userMsg)}
+			return map[string]string{"target_size_gb": size}
 		},
 		buildArgs: func(slots map[string]string) (map[string]any, []string) {
 			normalized := NormalizeTaskSlotUpdates(slots)
@@ -217,8 +219,8 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 			updates := map[string]string{}
 			missingSet := slotSet(missing)
 			if missingSet["size_gb"] {
-				if _, ok := parseTaskSlotNumber(userMsg); ok {
-					updates["size_gb"] = strings.TrimSpace(userMsg)
+				if size, ok := parseTaskSlotSizeUpdate(userMsg); ok {
+					updates["size_gb"] = size
 				}
 			}
 			if len(updates) == 0 {
@@ -270,8 +272,8 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 			updates := map[string]string{}
 			missingSet := slotSet(missing)
 			if missingSet["target_size_gb"] {
-				if _, ok := parseTaskSlotNumber(userMsg); ok {
-					updates["target_size_gb"] = strings.TrimSpace(userMsg)
+				if size, ok := parseTaskSlotTargetSizeUpdate(userMsg); ok {
+					updates["target_size_gb"] = size
 				}
 			}
 			if missingSet["cfs_id"] {
@@ -513,6 +515,29 @@ func parseTaskSlotNumber(value string) (float64, bool) {
 	return n, true
 }
 
+func parseTaskSlotSizeUpdate(value string) (string, bool) {
+	v := strings.TrimSpace(value)
+	if _, ok := parseTaskSlotNumber(v); ok {
+		return v, true
+	}
+	matches := taskSlotSizePhraseRE.FindAllStringSubmatch(v, -1)
+	if len(matches) != 1 || len(matches[0]) != 3 {
+		return "", false
+	}
+	return strings.TrimSpace(matches[0][1] + matches[0][2]), true
+}
+
+func parseTaskSlotTargetSizeUpdate(value string) (string, bool) {
+	v := strings.TrimSpace(value)
+	if _, ok := parseTaskSlotNumber(v); ok {
+		return v, true
+	}
+	if m := taskSlotTargetSizePhraseRE.FindStringSubmatch(v); len(m) == 3 {
+		return strings.TrimSpace(m[1] + m[2]), true
+	}
+	return parseTaskSlotSizeUpdate(v)
+}
+
 func parseTaskSlotID(value, prefix string) string {
 	for _, field := range strings.FieldsFunc(value, func(r rune) bool {
 		return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '，' || r == ',' || r == '。' || r == ';' || r == '；'
@@ -548,10 +573,12 @@ func parseTaskSlotStopMinutes(value string) (float64, bool) {
 }
 
 var (
-	taskResizeCPUMemorySpecRE = regexp.MustCompile(`(?i)(\d+)\s*(?:c|cpu|vcpu|核)\s*[/,， ]*\s*(\d+)\s*(?:g|gb|gib)`)
-	taskResizeGPUCountSpecRE  = regexp.MustCompile(`(?i)(\d+)\s*(?:张\s*)?(?:gpu|卡)`)
-	taskStopAfterMinutesRE    = regexp.MustCompile(`(?i)(\d+)\s*(?:分钟|分|min|mins|minute|minutes|m)\s*后?`)
-	taskStopAfterHoursRE      = regexp.MustCompile(`(?i)(\d+)\s*(?:小时|时|hour|hours|h)\s*后?`)
+	taskResizeCPUMemorySpecRE  = regexp.MustCompile(`(?i)(\d+)\s*(?:c|cpu|vcpu|核)\s*[/,， ]*\s*(\d+)\s*(?:g|gb|gib)`)
+	taskResizeGPUCountSpecRE   = regexp.MustCompile(`(?i)(\d+)\s*(?:张\s*)?(?:gpu|卡)`)
+	taskStopAfterMinutesRE     = regexp.MustCompile(`(?i)(\d+)\s*(?:分钟|分|min|mins|minute|minutes|m)\s*后?`)
+	taskStopAfterHoursRE       = regexp.MustCompile(`(?i)(\d+)\s*(?:小时|时|hour|hours|h)\s*后?`)
+	taskSlotSizePhraseRE       = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(gb|gib|g)`)
+	taskSlotTargetSizePhraseRE = regexp.MustCompile(`(?i)(?:扩到|扩容到|调整到|增加到|升级到|目标|到|至|为|成)\s*(\d+(?:\.\d+)?)\s*(gb|gib|g)`)
 )
 
 const maxTaskResizeGPUCount = 16

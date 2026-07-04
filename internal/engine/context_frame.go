@@ -53,6 +53,13 @@ func (e *Engine) clearContextFrame() {
 	e.sessionState.ContextFrame = ContextFrame{}
 }
 
+func (e *Engine) clearContextFrameForNewDirectWorkflow() {
+	if !ContextContinuationEnabled() {
+		return
+	}
+	e.clearContextFrame()
+}
+
 func (e *Engine) clearCreateFamilyCarry() {
 	if !e.sessionStateHydrated {
 		return

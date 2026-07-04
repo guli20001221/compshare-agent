@@ -1832,11 +1832,11 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
-	if reply, handled := e.tryCFSWorkflowDispatch(ctx, dispatch, userMsg, onStep); handled {
+	if reply, handled := e.tryResumeWorkflowContextFrame(ctx, dispatch, userMsg, onStep); handled {
 		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
-	if reply, handled := e.tryResumeWorkflowContextFrame(ctx, dispatch, userMsg, onStep); handled {
+	if reply, handled := e.tryCFSWorkflowDispatch(ctx, dispatch, userMsg, onStep); handled {
 		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
