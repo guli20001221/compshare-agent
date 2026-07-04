@@ -1279,6 +1279,67 @@ func TestResumeWorkflowContextFrame_ResizeCFSSizeReachesConfirm(t *testing.T) {
 	assert.Equal(t, float64(49), confirmArgs["price_delta"])
 }
 
+func TestPlannerDispatchResumesCFSFrameBeforeDirectCFSParser(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var confirmAction string
+	var confirmArgs map[string]any
+	confirm := func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCFS":
+			return map[string]any{"CFSSet": []any{map[string]any{
+				"CfsId": "cfs-test", "Name": "shared-train", "ZoneId": float64(9001), "Size": float64(100), "ChargeType": "Month",
+			}}}, nil
+		case "GetCompShareCFSUpgradePrice":
+			return map[string]any{"Price": float64(49), "OriginalPrice": float64(60)}, nil
+		case "ResizeCFS":
+			t.Fatalf("CFS resize continuation must stop at confirm before mutating; args=%v", args)
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, confirm)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionContinueTask,
+	}})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "ResizeCFSWorkflow",
+			Slots:          map[string]string{"cfs_id": "cfs-test"},
+			MissingSlots:   []string{"target_size_gb"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentOperationLifecycle,
+		Confidence:    0.95,
+	}}}}
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		Model:          "deepseek-v4-flash",
+		EnabledIntents: []intent.Intent{intent.IntentOperationLifecycle},
+	})
+
+	reply, err := eng.Chat(context.Background(), "这个 CFS 扩容到 200G", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "操作未执行")
+	assert.Equal(t, "ResizeCFSWorkflow", confirmAction)
+	require.NotNil(t, confirmArgs)
+	assert.Equal(t, "cfs-test", confirmArgs["CfsId"])
+	assert.Equal(t, float64(200), confirmArgs["target_size_gb"])
+}
+
 func TestResumeWorkflowContextFrame_EnableNetOptimizerZoneReachesConfirm(t *testing.T) {
 	SetContextContinuationEnabled(true)
 	t.Cleanup(func() { SetContextContinuationEnabled(false) })
@@ -1492,6 +1553,50 @@ func TestSelectedInstanceRenameMissingNameRecordsGenericTaskFrame(t *testing.T) 
 	assert.Equal(t, "RenameInstanceWorkflow", frame.Workflow)
 	assert.Equal(t, []string{"name"}, frame.MissingSlots)
 	assert.Equal(t, "uhost-1", frame.Slots["instance_id"])
+}
+
+func TestDirectLifecycleClearsStaleWorkflowTaskFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	var rebootCalled bool
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "train-a", "State": "Running", "Region": "cn-wlcb", "Zone": "cn-wlcb-01",
+			}}}, nil
+		case "RebootCompShareInstance":
+			rebootCalled = true
+			return map[string]any{"RetCode": float64(0)}, nil
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, okConfirm)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-1",
+		SelectedInstanceName:   "train-a",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusFailedRecoverable,
+			Workflow:       "CreateDiskWorkflow",
+			Slots:          map[string]string{"instance_id": "uhost-1"},
+			MissingSlots:   []string{"size_gb"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+
+	reply, handled := eng.tryDirectLifecycleFromUserText(context.Background(), "帮我重启这台", noopStep)
+
+	require.True(t, handled)
+	assert.True(t, rebootCalled)
+	assert.Contains(t, reply, "重启")
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ContextFrame.Kind, "a new direct lifecycle command must clear the stale missing-slot task")
 }
 
 func TestSelectedInstanceRenameMissingName_FlagOffKeepsLegacyPrompt(t *testing.T) {

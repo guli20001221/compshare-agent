@@ -401,6 +401,7 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 			return "", false
 		}
 		args := map[string]any{"UHostId": selectedID}
+		e.clearContextFrameForNewDirectWorkflow()
 		plan := intent.IntentRoute{
 			SchemaVersion: intent.SchemaVersion,
 			Intent:        intent.IntentOperationLifecycle,
@@ -476,6 +477,7 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 		Retrieval:     intent.Retrieval{Enabled: false},
 		Confidence:    1,
 	}
+	e.clearContextFrameForNewDirectWorkflow()
 	return e.tryOperationLifecycleDispatch(ctx, routerDispatchResult{
 		result:   intent.IntentRouterResult{Plan: plan},
 		snapshot: snapshot,
@@ -494,6 +496,7 @@ func (e *Engine) tryCFSWorkflowDispatch(ctx context.Context, dispatch routerDisp
 		return "", false
 	}
 	args, missing, reply := cfsWorkflowDraftFromUserText(workflowName, userMsg)
+	e.clearContextFrameForNewDirectWorkflow()
 	if len(missing) > 0 {
 		e.recordWorkflowMissingSlotsFrame(workflowName, args, missing, reply)
 		e.messages = append(e.messages, assistantMessage(reply))
@@ -544,6 +547,7 @@ func (e *Engine) tryLifecycleActionForSelectedInstance(ctx context.Context, inst
 		return "", false
 	}
 	args := map[string]any{"UHostId": inst.UHostId}
+	e.clearContextFrameForNewDirectWorkflow()
 	if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
 		if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk ||
 			(action == intent.LifecycleActionRename && ContextContinuationEnabled()) {
@@ -634,6 +638,7 @@ func (e *Engine) tryDirectStopSchedulerFromUserText(ctx context.Context, userMsg
 	}
 	workflowName := "SetStopSchedulerWorkflow"
 	args := map[string]any{"UHostId": inst.UHostId}
+	e.clearContextFrameForNewDirectWorkflow()
 	if strings.Contains(compact, "取消定时关机") ||
 		strings.Contains(compact, "取消自动关机") ||
 		strings.Contains(compact, "取消延时关机") ||
