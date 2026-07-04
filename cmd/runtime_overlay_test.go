@@ -67,10 +67,16 @@ func TestRuntimeOverlayFeedsParsersWithoutWarnings(t *testing.T) {
 		assert.True(t, enabled)
 		assert.Empty(t, unknown)
 	})
-	t.Run("context continuation omitted stays off", func(t *testing.T) {
+	t.Run("context continuation explicit false overrides default on", func(t *testing.T) {
+		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{ContextContinuation: boolPtr(false)}}}
+		enabled, unknown := contextContinuationEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
+		assert.False(t, enabled)
+		assert.Empty(t, unknown)
+	})
+	t.Run("context continuation omitted uses default on", func(t *testing.T) {
 		cfg := &config.Config{Agent: config.AgentConfig{}}
 		enabled, unknown := contextContinuationEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.False(t, enabled, "omitted + no env → built-in default OFF preserved")
+		assert.True(t, enabled, "omitted + no env → built-in default ON preserved")
 		assert.Empty(t, unknown)
 	})
 	t.Run("create preference extractor explicit true", func(t *testing.T) {

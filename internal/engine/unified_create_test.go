@@ -481,6 +481,69 @@ func TestResumeCreateContextFrame_ZoneFollowupContinuesPriorDeploy(t *testing.T)
 	assert.Empty(t, state.ContextFrame.Kind, "successful continuation clears the pending create frame")
 }
 
+func TestApplyContextContinuationDecision_ZoneFallbackUsesUserTextWhenModelInventsZoneCode(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true}), okConfirm)
+	eng.zoneCatalog = zones.NewCatalog(0)
+	frame := ContextFrame{
+		Version:   1,
+		Kind:      ContextFrameKindDeploy,
+		GPU:       "4090",
+		ImagePref: "PyTorch",
+		Zone:      "cn-bj2-03",
+		ZoneLabel: "华北一C",
+	}
+
+	next, clarify := eng.applyContextContinuationDecision(context.Background(), "那华北二A呢", frame, ContextContinuationDecision{
+		Decision: ContextContinuationContinue,
+		ZonePref: "cn-north2-a",
+	})
+
+	require.Empty(t, clarify)
+	assert.Equal(t, "cn-wlcb-01", next.Zone)
+	assert.Equal(t, "华北二A", next.ZoneLabel)
+}
+
+func TestApplyContextContinuationDecision_ContinueCanExtractMissingZoneFromUserText(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true}), okConfirm)
+	eng.zoneCatalog = zones.NewCatalog(0)
+	frame := ContextFrame{
+		Version:   1,
+		Kind:      ContextFrameKindDeploy,
+		GPU:       "4090",
+		ImagePref: "PyTorch",
+		Zone:      "cn-bj2-03",
+		ZoneLabel: "华北一C",
+	}
+
+	next, clarify := eng.applyContextContinuationDecision(context.Background(), "那华北二A呢", frame, ContextContinuationDecision{
+		Decision: ContextContinuationContinue,
+	})
+
+	require.Empty(t, clarify)
+	assert.Equal(t, "cn-wlcb-01", next.Zone)
+	assert.Equal(t, "华北二A", next.ZoneLabel)
+}
+
+func TestApplyContextContinuationDecision_ContinueCanExtractMissingGPUFromUserText(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true}), okConfirm)
+	frame := ContextFrame{
+		Version:   1,
+		Kind:      ContextFrameKindDeploy,
+		GPU:       "4090",
+		ImagePref: "PyTorch",
+		Zone:      "cn-wlcb-01",
+		ZoneLabel: "华北二A",
+	}
+
+	next, clarify := eng.applyContextContinuationDecision(context.Background(), "那5090呢", frame, ContextContinuationDecision{
+		Decision: ContextContinuationContinue,
+	})
+
+	require.Empty(t, clarify)
+	assert.Equal(t, "5090", next.GPU)
+	assert.Equal(t, "cn-wlcb-01", next.Zone)
+}
+
 func TestResumeCreateContextFrame_ContextContinuationFlagOffDoesNotCallResolver(t *testing.T) {
 	SetContextContinuationEnabled(false)
 	t.Cleanup(func() { SetContextContinuationEnabled(false) })

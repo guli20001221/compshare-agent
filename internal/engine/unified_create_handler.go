@@ -104,7 +104,7 @@ func (e *Engine) tryResumeCreateContextFrame(ctx context.Context, dispatch route
 		return "", false
 	}
 
-	nextFrame, clarify := e.applyContextContinuationDecision(ctx, frame, *decision)
+	nextFrame, clarify := e.applyContextContinuationDecision(ctx, userMsg, frame, *decision)
 	if clarify != "" {
 		return e.deployReply(dispatch.result, dispatch.latency, clarify)
 	}
@@ -125,9 +125,14 @@ func (e *Engine) tryResumeCreateContextFrame(ctx context.Context, dispatch route
 	return e.tryCreateInstanceWithResolvedFrame(ctx, createDispatch, userMsg, nextFrame, nextFrame.Zone, onStep)
 }
 
-func (e *Engine) applyContextContinuationDecision(ctx context.Context, frame ContextFrame, decision ContextContinuationDecision) (ContextFrame, string) {
+func (e *Engine) applyContextContinuationDecision(ctx context.Context, userMsg string, frame ContextFrame, decision ContextContinuationDecision) (ContextFrame, string) {
 	next := frame
-	if gpu := strings.TrimSpace(decision.GPUPref); gpu != "" {
+	gpuPref := strings.TrimSpace(decision.GPUPref)
+	if gpuPref == "" {
+		availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
+		gpuPref = extractDeployGPUFromCatalog(userMsg, availResult)
+	}
+	if gpu := gpuPref; gpu != "" {
 		availResult := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
 		resolved := extractDeployGPUFromCatalog(gpu, availResult)
 		if resolved == "" {
@@ -135,8 +140,24 @@ func (e *Engine) applyContextContinuationDecision(ctx context.Context, frame Con
 		}
 		next.GPU = resolved
 	}
-	if zonePref := strings.TrimSpace(decision.ZonePref); zonePref != "" {
+	zonePref := strings.TrimSpace(decision.ZonePref)
+	if zonePref == "" {
+		if zone, clarify := e.resolveRequestedZone(ctx, userMsg); zone != "" {
+			zonePref = zone
+		} else if clarify != "" {
+			return frame, clarify
+		}
+	}
+	if zonePref != "" {
 		zone, clarify := e.resolveRequestedZone(ctx, zonePref)
+		if zone == "" && strings.TrimSpace(userMsg) != "" && strings.TrimSpace(userMsg) != zonePref {
+			if fallbackZone, fallbackClarify := e.resolveRequestedZone(ctx, userMsg); fallbackZone != "" {
+				zone = fallbackZone
+				clarify = ""
+			} else if clarify == "" {
+				clarify = fallbackClarify
+			}
+		}
 		if clarify != "" {
 			return frame, clarify
 		}

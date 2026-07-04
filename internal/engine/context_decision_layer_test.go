@@ -149,6 +149,27 @@ func TestParseContextDecisionSlotUpdatesAreSanitizedAndMirrored(t *testing.T) {
 	assert.NotContains(t, decision.SlotUpdates, "password")
 }
 
+func TestParseContextDecisionSlotUpdatesAcceptNumericValues(t *testing.T) {
+	decision, err := parseContextDecision(`{
+		"decision":"continue_task",
+		"target":"workflow",
+		"slot_updates":{
+			"cpu":4,
+			"memory_gb":8,
+			"gpu_count":1,
+			"target_size_gb":200
+		}
+	}`)
+
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, ContextDecisionContinueTask, decision.Decision)
+	assert.Equal(t, "4", decision.SlotUpdates["cpu"])
+	assert.Equal(t, "8", decision.SlotUpdates["memory_gb"])
+	assert.Equal(t, "1", decision.SlotUpdates["gpu_count"])
+	assert.Equal(t, "200", decision.SlotUpdates["target_size_gb"])
+}
+
 func TestContextDecisionToCreateContinuationUsesOnlyContinueTask(t *testing.T) {
 	cont := contextDecisionToContinuation(ContextDecision{
 		Decision:    ContextDecisionContinueTask,
