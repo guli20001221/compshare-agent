@@ -126,12 +126,11 @@ type HandlerRequest struct {
 	// default target instead of triggering resource selection.
 	// Set by engine.go from e.sessionState at the tryRouteDispatch call site.
 	FallbackInstanceID string
-	// FallbackGpuModel is the LastStockGpuModel from SessionState (the API
-	// instance-type Name a prior stock turn resolved to, e.g. "4090"). When
-	// the current stock turn elides the subject ("现在还有库存吗") and names no
-	// GPU-like token, handleStockAvailability reuses this as the referent
-	// instead of re-listing every model (RC017). Set by engine.go from
-	// e.sessionState at the tryRouteDispatch call site.
+	// FallbackGpuModel is the stock GPU referent derived by engine.go from
+	// session context (fresh RecentFacts when enabled, otherwise the legacy
+	// LastStockGpuModel). When the current stock turn elides the subject
+	// ("现在还有库存吗") and names no GPU-like token, handleStockAvailability
+	// reuses this as the referent instead of re-listing every model (RC017).
 	FallbackGpuModel string
 }
 
