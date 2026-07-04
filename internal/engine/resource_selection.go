@@ -12,6 +12,7 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 const maxResourceSelectionCandidates = 20
@@ -171,22 +172,93 @@ func resourceSelectionLooksLikeReply(input string, p pendingResourceSelection) b
 	if _, ok := parseResourceSelectionOrdinal(query); ok {
 		return true
 	}
-	return uhostIDPattern.FindString(query) == query
+	if uhostIDPattern.FindString(query) == query {
+		return true
+	}
+	return resourceSelectionReferenceOnly(query, p)
 }
 
-func (e *Engine) tryContextDecisionResourceSelection(ctx context.Context, userMsg string, pending *pendingResourceSelection) bool {
+func resourceSelectionReferenceOnly(input string, p pendingResourceSelection) bool {
+	compact := compactResourceSelectionText(input)
+	if compact == "" {
+		return true
+	}
+	for _, token := range uhostIDPattern.FindAllString(compact, -1) {
+		compact = strings.ReplaceAll(compact, token, "")
+	}
+	if ordinal, ok := extractResourceSelectionOrdinal(compact); ok {
+		compact = removeResourceSelectionOrdinalTokens(compact, ordinal)
+	}
+	for _, token := range []string{
+		"这台", "那台", "它", "这个", "那个", "实例", "机器", "主机",
+		"帮我选择", "帮我选", "我要", "选择", "选", "就", "要",
+		"吧", "了", "呢", "哈", "的",
+	} {
+		compact = strings.ReplaceAll(compact, token, "")
+	}
+	return strings.Trim(compact, "，。,.、；;：:！!？?（）()[]【】\"'“”‘’") == ""
+}
+
+func removeResourceSelectionOrdinalTokens(input string, ordinal int) string {
+	if ordinal <= 0 {
+		return input
+	}
+	chinese := ""
+	numerals := chineseResourceSelectionNumerals()
+	if ordinal <= len(numerals) {
+		chinese = numerals[ordinal-1]
+	}
+	arabic := strconv.Itoa(ordinal)
+	tokens := []string{
+		"第" + arabic + "台实例",
+		"第" + arabic + "实例",
+		"第" + arabic + "台",
+		"第" + arabic + "机器",
+		"第" + arabic + "主机",
+		"第" + arabic,
+	}
+	if chinese != "" {
+		tokens = append(tokens,
+			"第"+chinese+"台实例",
+			"第"+chinese+"实例",
+			"第"+chinese+"台",
+			"第"+chinese+"机器",
+			"第"+chinese+"主机",
+			"第"+chinese,
+		)
+	}
+	for _, token := range tokens {
+		input = strings.ReplaceAll(input, token, "")
+	}
+	return input
+}
+
+func renderResourceSelectionSelectedReply(inst entity.InstanceSnapshot) string {
+	reply := fmt.Sprintf("已选中 %s（%s）。你接下来想查看监控、重启，还是执行其他操作？",
+		sanitizeResourceSelectionPromptField(inst.Name),
+		sanitizeResourceSelectionPromptField(inst.UHostId),
+	)
+	if inst.Name == "" {
+		reply = fmt.Sprintf("已选中 %s。你接下来想查看监控、重启，还是执行其他操作？",
+			sanitizeResourceSelectionPromptField(inst.UHostId),
+		)
+	}
+	return reply
+}
+
+func (e *Engine) tryContextDecisionResourceSelection(ctx context.Context, userMsg string, pending *pendingResourceSelection) (string, bool, bool) {
 	if e == nil || pending == nil {
-		return false
+		return "", false, false
 	}
 	if !ContextContinuationEnabled() {
-		return false
+		return "", false, false
 	}
 	decision, err := e.resolveContextDecision(ctx, userMsg, intent.IntentUnknown, e.sessionState.ContextFrame)
 	if err != nil || decision == nil {
-		return false
+		return "", false, false
 	}
 	if decision.Decision != ContextDecisionSelectEntity || decision.Target != ContextDecisionTargetInstance {
-		return false
+		return "", false, false
 	}
 	ref := strings.TrimSpace(decision.InstanceRef)
 	if ref == "" {
@@ -199,12 +271,20 @@ func (e *Engine) tryContextDecisionResourceSelection(ctx context.Context, userMs
 		}
 	}
 	if !match.ok || match.ambiguous {
-		return false
+		return "", false, false
 	}
 	e.recordSelectedInstanceID(match.instance.UHostId, match.instance.Name)
 	e.pendingResourceSelection = nil
 	e.refreshSystemPrompt()
-	return true
+	if resourceSelectionLooksLikeReply(userMsg, *pending) {
+		reply := renderResourceSelectionSelectedReply(match.instance)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: reply,
+		})
+		return reply, true, true
+	}
+	return "", true, false
 }
 
 func isResourceSelectionExpired(currentTurn int, p pendingResourceSelection) bool {

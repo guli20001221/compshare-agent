@@ -276,9 +276,9 @@ func TestContextDecisionSelectionRecordsPendingInstance(t *testing.T) {
 		InstanceRef: "第1台",
 	}})
 
-	resolved := e.tryContextDecisionResourceSelection(context.Background(), "它现在忙不忙", pending)
+	_, selected, handled := e.tryContextDecisionResourceSelection(context.Background(), "它现在忙不忙", pending)
 
-	if !resolved {
+	if !selected || handled {
 		t.Fatal("context decision should resolve the pending instance")
 	}
 	state, _, _ := e.SessionStateSnapshot()
@@ -307,9 +307,9 @@ func TestContextDecisionSelectionUsesDefaultResolverWhenNoLayerInjected(t *testi
 		t.Fatal("expected pending selection restored from session")
 	}
 
-	resolved := e.tryContextDecisionResourceSelection(context.Background(), "它现在忙不忙", pending)
+	_, selected, handled := e.tryContextDecisionResourceSelection(context.Background(), "它现在忙不忙", pending)
 
-	if !resolved {
+	if !selected || handled {
 		t.Fatal("context decision should resolve through the default LLM-backed layer")
 	}
 	state, _, _ := e.SessionStateSnapshot()
@@ -318,6 +318,94 @@ func TestContextDecisionSelectionUsesDefaultResolverWhenNoLayerInjected(t *testi
 	}
 	if len(mock.calls) != 1 {
 		t.Fatalf("default context decision layer should call LLM once, got %d", len(mock.calls))
+	}
+}
+
+func TestContextDecisionPlainSelectionStopsBeforeOldWorkflowFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Kind:         ContextFrameKindWorkflowTask,
+			Workflow:     "CreateDiskWorkflow",
+			Slots:        map[string]string{"instance_id": "uhost-first", "size_gb": "200"},
+			MissingSlots: []string{"size_gb"},
+			TTLSeconds:   ContextFrameTTLSeconds,
+		},
+	}, 1)
+	e.userTurn = 3
+	e.recordPendingInstanceSelection([]entity.InstanceSnapshot{
+		testInstance("uhost-first", "first-host", "Running"),
+		testInstance("uhost-second", "second-host", "Stopped"),
+	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
+	pending, ok := e.pendingResourceSelectionFromSession()
+	if !ok {
+		t.Fatal("expected pending selection restored from session")
+	}
+	e.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionSelectEntity,
+		Target:      ContextDecisionTargetInstance,
+		InstanceRef: "第2台",
+	}})
+
+	reply, selected, handled := e.tryContextDecisionResourceSelection(context.Background(), "选第2台", pending)
+
+	if !selected || !handled {
+		t.Fatalf("plain selection should be handled in this turn, selected=%v handled=%v reply=%q", selected, handled, reply)
+	}
+	if !strings.Contains(reply, "uhost-second") {
+		t.Fatalf("selection reply should name the selected instance, got %q", reply)
+	}
+	state, _, _ := e.SessionStateSnapshot()
+	if state.SelectedInstanceID != "uhost-second" {
+		t.Fatalf("selected instance = %q, want uhost-second", state.SelectedInstanceID)
+	}
+}
+
+func TestContextDecisionNaturalPlainSelectionStopsBeforeOldWorkflowFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		ContextFrame: ContextFrame{
+			Kind:         ContextFrameKindWorkflowTask,
+			Workflow:     "CreateDiskWorkflow",
+			Slots:        map[string]string{"instance_id": "uhost-first", "size_gb": "200"},
+			MissingSlots: []string{"size_gb"},
+			TTLSeconds:   ContextFrameTTLSeconds,
+		},
+	}, 1)
+	e.userTurn = 3
+	e.recordPendingInstanceSelection([]entity.InstanceSnapshot{
+		testInstance("uhost-first", "first-host", "Running"),
+		testInstance("uhost-second", "second-host", "Stopped"),
+	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
+	pending, ok := e.pendingResourceSelectionFromSession()
+	if !ok {
+		t.Fatal("expected pending selection restored from session")
+	}
+	e.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionSelectEntity,
+		Target:      ContextDecisionTargetInstance,
+		InstanceRef: "第2台",
+	}})
+
+	reply, selected, handled := e.tryContextDecisionResourceSelection(context.Background(), "帮我选择那台", pending)
+
+	if !selected || !handled {
+		t.Fatalf("natural plain selection should be handled in this turn, selected=%v handled=%v reply=%q", selected, handled, reply)
+	}
+	if !strings.Contains(reply, "uhost-second") {
+		t.Fatalf("selection reply should name the selected instance, got %q", reply)
+	}
+	state, _, _ := e.SessionStateSnapshot()
+	if state.SelectedInstanceID != "uhost-second" {
+		t.Fatalf("selected instance = %q, want uhost-second", state.SelectedInstanceID)
 	}
 }
 
@@ -507,6 +595,48 @@ func TestTryResumeResourceSelectionAllowsSelectingAnotherDisplayedInstance(t *te
 	}
 	if !strings.Contains(reply, "uhost-02") {
 		t.Fatalf("selection reply should name the newly selected instance, got %q", reply)
+	}
+}
+
+func TestTryResumeResourceSelectionNaturalPlainSelectionStopsBeforeOldWorkflowFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	for _, text := range []string{"就第2台吧", "选择第2台", "帮我选择第2台", "我要第2台"} {
+		t.Run(text, func(t *testing.T) {
+			candidates := []entity.InstanceSnapshot{
+				testInstance("uhost-01", "host-1", "Running"),
+				testInstance("uhost-02", "host-2", "Running"),
+			}
+			e := newEngineForSessionStateTest(t)
+			e.SetSessionState(SessionState{
+				SchemaVersion: SessionStateSchemaCurrent,
+				ContextFrame: ContextFrame{
+					Kind:         ContextFrameKindWorkflowTask,
+					Workflow:     "CreateDiskWorkflow",
+					Slots:        map[string]string{"instance_id": "uhost-01", "size_gb": "200"},
+					MissingSlots: []string{"instance_id"},
+					TTLSeconds:   ContextFrameTTLSeconds,
+				},
+			}, 1)
+			e.userTurn = 3
+			e.recordPendingInstanceSelection(candidates, intent.IntentResourceInfo, "我有哪些实例", len(candidates), false)
+
+			reply, handled := e.tryResumeResourceSelection(context.Background(), text, noopStep)
+
+			if !handled {
+				t.Fatal("natural plain selection should be handled in this turn")
+			}
+			if e.sessionState.SelectedInstanceID != "uhost-02" {
+				t.Fatalf("selected = %q, want uhost-02; reply=%q", e.sessionState.SelectedInstanceID, reply)
+			}
+			if !strings.Contains(reply, "uhost-02") {
+				t.Fatalf("selection reply should name the selected instance, got %q", reply)
+			}
+			if strings.Contains(reply, "数据盘") || strings.Contains(reply, "确认") {
+				t.Fatalf("plain selection must not continue stale workflow task, got %q", reply)
+			}
+		})
 	}
 }
 

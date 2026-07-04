@@ -2599,9 +2599,19 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 			}
 			e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
 			e.pendingResourceSelection = nil
+			if resourceSelectionLooksLikeReply(userMsg, *pending) {
+				reply := renderResourceSelectionSelectedReply(embedded.instance)
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: reply,
+				})
+				return reply, true
+			}
 			return "", false
 		}
-		if e.tryContextDecisionResourceSelection(ctx, userMsg, pending) {
+		if reply, selected, handled := e.tryContextDecisionResourceSelection(ctx, userMsg, pending); handled {
+			return reply, true
+		} else if selected {
 			return "", false
 		}
 		if restoredFromSession || pending.plan.Intent == intent.IntentResourceInfo {
