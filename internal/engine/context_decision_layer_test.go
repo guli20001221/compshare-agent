@@ -170,6 +170,28 @@ func TestParseContextDecisionSlotUpdatesAcceptNumericValues(t *testing.T) {
 	assert.Equal(t, "200", decision.SlotUpdates["target_size_gb"])
 }
 
+func TestParseContextDecisionAnswerFollowupKeepsOnlySafeSlotUpdates(t *testing.T) {
+	decision, err := parseContextDecision(`{
+		"decision":"answer_followup",
+		"target":"pricing",
+		"slot_updates":{
+			"gpu_type":"5090",
+			"zone_id":"5001",
+			"az_group":"cn-wlcb",
+			"password":"secret"
+		}
+	}`)
+
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, ContextDecisionAnswerFollowup, decision.Decision)
+	assert.Equal(t, ContextDecisionTargetPricing, decision.Target)
+	assert.Equal(t, "5090", decision.SlotUpdates["gpu_type"])
+	assert.NotContains(t, decision.SlotUpdates, "zone_id")
+	assert.NotContains(t, decision.SlotUpdates, "az_group")
+	assert.NotContains(t, decision.SlotUpdates, "password")
+}
+
 func TestContextDecisionToCreateContinuationUsesOnlyContinueTask(t *testing.T) {
 	cont := contextDecisionToContinuation(ContextDecision{
 		Decision:    ContextDecisionContinueTask,
