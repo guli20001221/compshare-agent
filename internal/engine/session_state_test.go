@@ -49,13 +49,14 @@ func TestSessionState_MarshalAlwaysIncludesSchemaVersion(t *testing.T) {
 func TestPersistedContext_RoundTripBytes(t *testing.T) {
 	pc1 := PersistedContext{
 		AgentSessionState: SessionState{
-			SchemaVersion:        SessionStateSchemaV1,
-			SelectedInstanceID:   "uhost-abc123",
-			SelectedInstanceName: "gpu-prod-01",
-			LastIntent:           string(intent.IntentMonitorQuery),
-			LastDeployWorkload:   "Qwen2.5-32B",
-			LastDeployZone:       "cn-wlcb-01",
-			PendingDeployModel:   "DeepSeek R1",
+			SchemaVersion:          SessionStateSchemaV1,
+			SelectedInstanceID:     "uhost-abc123",
+			SelectedInstanceName:   "gpu-prod-01",
+			SelectedInstanceSource: SelectedInstanceSourceUser,
+			LastIntent:             string(intent.IntentMonitorQuery),
+			LastDeployWorkload:     "Qwen2.5-32B",
+			LastDeployZone:         "cn-wlcb-01",
+			PendingDeployModel:     "DeepSeek R1",
 		},
 		ClientContext: json.RawMessage(`{"source":"console","page":"/instance/list"}`),
 	}
@@ -206,11 +207,18 @@ func TestParsePersistedContext_RecognizesKnownSchemaVersion(t *testing.T) {
 	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"3.0","context_frame":{"version":1,"kind":"workflow_task","workflow":"CreateDiskWorkflow","slots":{"instance_id":"uhost-1"},"missing_slots":["size_gb"]}}}`)
 	pc, err = ParsePersistedContext(raw)
 	require.NoError(t, err)
-	assert.Equal(t, SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, SessionStateSchemaV3, pc.AgentSessionState.SchemaVersion)
 	assert.Equal(t, ContextFrameKindWorkflowTask, pc.AgentSessionState.ContextFrame.Kind)
 	assert.Equal(t, "CreateDiskWorkflow", pc.AgentSessionState.ContextFrame.Workflow)
 	assert.Equal(t, "uhost-1", pc.AgentSessionState.ContextFrame.Slots["instance_id"])
 	assert.Equal(t, []string{"size_gb"}, pc.AgentSessionState.ContextFrame.MissingSlots)
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"4.0","selected_instance_id":"uhost-1","selected_instance_source":"user","context_frame":{"version":1,"kind":"workflow_task","workflow":"CreateDiskWorkflow","slots":{"instance_id":"uhost-1"},"slot_sources":{"instance_id":"user"},"missing_slots":["size_gb"]}}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, SelectedInstanceSourceUser, pc.AgentSessionState.SelectedInstanceSource)
+	assert.Equal(t, SelectedInstanceSourceUser, pc.AgentSessionState.ContextFrame.SlotSources["instance_id"])
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +629,7 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 			SchemaVersion:                   SessionStateSchemaV1,
 			SelectedInstanceID:              "uhost-abc",
 			SelectedInstanceName:            "gpu-prod",
+			SelectedInstanceSource:          SelectedInstanceSourceUser,
 			LastIntent:                      string(intent.IntentMonitorQuery),
 			LastStockGpuModel:               "4090",
 			PendingSelectionKind:            "instance",

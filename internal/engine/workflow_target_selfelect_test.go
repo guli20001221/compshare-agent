@@ -40,7 +40,7 @@ func TestExecuteWorkflowBlocksModelSelfElectedTargetViaSingleDescribe(t *testing
 	}}
 	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	eng.lastUserMsg = "怎么关机" // zero-target request on a multi-instance account
+	eng.lastUserMsg = "怎么关机"               // zero-target request on a multi-instance account
 	eng.selectedInstanceIDAtTurnStart = "" // nothing selected before this turn
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
 		"TotalCount": float64(2),
@@ -58,6 +58,8 @@ func TestExecuteWorkflowBlocksModelSelfElectedTargetViaSingleDescribe(t *testing
 	})
 	require.Equal(t, "uhost-a", eng.sessionState.SelectedInstanceID,
 		"precondition: a single-host describe self-elects the target mid-turn")
+	require.Equal(t, SelectedInstanceSourceObserved, eng.sessionState.SelectedInstanceSource,
+		"precondition: single-host tool observations must not be trusted as user-selected targets")
 
 	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep)
 

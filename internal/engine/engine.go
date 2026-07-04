@@ -386,9 +386,12 @@ type Engine struct {
 	//   - factCacheOldestAgeSecondsThisTurn: age of the oldest still-fresh fact
 	//     injected this turn, or -1 when none. Bucketed before it leaves the
 	//     recorder.
-	selectedInstanceIDAtTurnStart     string
-	instanceResolutionSourceThisTurn  string
-	factCacheOldestAgeSecondsThisTurn int
+	selectedInstanceIDAtTurnStart      string
+	selectedInstanceSourceAtTurnStart  string
+	instanceResolutionSourceThisTurn   string
+	factCacheOldestAgeSecondsThisTurn  int
+	trustedWorkflowFrameActionThisTurn string
+	trustedWorkflowFrameTargetThisTurn string
 }
 
 // SharedDeps groups Engine fields that are safe to share across sessions.
@@ -1252,8 +1255,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// any mid-turn re-bind), and reset the per-turn binding observables that
 	// refreshSystemPrompt fills next.
 	e.selectedInstanceIDAtTurnStart = e.sessionState.SelectedInstanceID
+	e.selectedInstanceSourceAtTurnStart = e.sessionState.SelectedInstanceSource
 	e.instanceResolutionSourceThisTurn = ""
 	e.factCacheOldestAgeSecondsThisTurn = -1
+	e.trustedWorkflowFrameActionThisTurn = ""
+	e.trustedWorkflowFrameTargetThisTurn = ""
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
@@ -4577,12 +4583,14 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 		return
 	}
 	// Exactly one host in the result = the turn unambiguously concerns that
-	// instance → track it as the session's current instance. A multi-host
-	// (list-all) result is ambiguous and must NOT set it.
+	// instance for read-only follow-up context. A multi-host (list-all) result
+	// is ambiguous and must NOT set it. Tool-observed selections are not trusted
+	// as write targets; workflowTargetIsTrusted only trusts user-selected
+	// sources.
 	if len(hosts) == 1 {
 		if row, ok := hosts[0].(map[string]any); ok {
 			if snap := entity.InstanceFromMap(row); snap.UHostId != "" {
-				e.recordSelectedInstanceID(snap.UHostId, snap.Name)
+				e.recordObservedInstanceID(snap.UHostId, snap.Name)
 			}
 		}
 	}
@@ -4779,7 +4787,7 @@ func (e *Engine) recordMonitorSampleFacts(raw map[string]any) {
 	// one under discussion → track it for cross-turn reference resolution.
 	if len(bySubject) == 1 {
 		for subjectID := range bySubject {
-			e.recordSelectedInstanceID(subjectID, "")
+			e.recordObservedInstanceID(subjectID, "")
 		}
 	}
 }
@@ -4831,18 +4839,29 @@ func (e *Engine) recordSelectedInstanceFromEnvelope(env *envelope.Envelope) {
 	}
 	e.sessionState.SelectedInstanceID = s.ID
 	e.sessionState.SelectedInstanceName = s.Name
+	e.sessionState.SelectedInstanceSource = SelectedInstanceSourceUser
+	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 
-// recordSelectedInstanceID tracks the session's "current instance" from the
-// ReAct tool-fact path. recordSelectedInstanceFromEnvelope only fires on the
-// direct-dispatch route paths, so a monitor/state turn that resolves through
-// ReAct (planner jitter routes the same question either way) used to leave
-// SelectedInstanceID empty — and the next turn's "它的状态 / 重启它" then lost
-// the instance. Setting it here unifies both dispatch paths. Callers MUST pass
-// an id only when the turn unambiguously concerns exactly ONE instance (a
-// list-all result is ambiguous and must not set it). Name is resolved from the
-// registry when the caller doesn't have it (the monitor result carries only IDs).
+// recordSelectedInstanceID tracks a user-trusted "current instance", such as
+// a literal ID/name in the user's message or an explicit pick from a displayed
+// candidate list. Tool observations use recordObservedInstanceID instead: they
+// remain useful read-only context, but cannot authorize a later mutating
+// workflow. Callers MUST pass an id only when the user unambiguously identified
+// exactly one instance. Name is resolved from the registry when the caller
+// doesn't have it.
 func (e *Engine) recordSelectedInstanceID(id, name string) {
+	e.recordSelectedInstanceIDWithSource(id, name, SelectedInstanceSourceUser)
+}
+
+// recordObservedInstanceID records one instance as read-only conversational
+// context from a tool result. It intentionally does not create a trusted write
+// target; workflowTargetIsTrusted requires SelectedInstanceSourceUser.
+func (e *Engine) recordObservedInstanceID(id, name string) {
+	e.recordSelectedInstanceIDWithSource(id, name, SelectedInstanceSourceObserved)
+}
+
+func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 	if !e.sessionStateHydrated || id == "" {
 		return
 	}
@@ -4851,8 +4870,20 @@ func (e *Engine) recordSelectedInstanceID(id, name string) {
 			name = inst.Name
 		}
 	}
+	if source == SelectedInstanceSourceObserved &&
+		strings.EqualFold(strings.TrimSpace(e.sessionState.SelectedInstanceID), strings.TrimSpace(id)) &&
+		e.sessionState.SelectedInstanceSource == SelectedInstanceSourceUser {
+		e.sessionState.SelectedInstanceID = id
+		if strings.TrimSpace(name) != "" {
+			e.sessionState.SelectedInstanceName = name
+		}
+		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+		return
+	}
 	e.sessionState.SelectedInstanceID = id
 	e.sessionState.SelectedInstanceName = name
+	e.sessionState.SelectedInstanceSource = source
+	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 
 // recordLastStockGpuModel tracks the GPU model a stock-availability turn
@@ -5234,7 +5265,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 			b, _ := json.Marshal(guardResult)
 			return string(b)
 		}
-		if !e.workflowTargetIsTrusted(uHostId, targetAutoFilled) {
+		if !e.workflowTargetIsTrusted(action, uHostId, targetAutoFilled) {
 			msg := "请先确认要操作的实例。当有多个实例时，请列出实例列表让用户选择后再执行操作。"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			guardResult := map[string]any{"success": false, "message": msg}
@@ -5461,7 +5492,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	return string(b)
 }
 
-func (e *Engine) workflowTargetIsTrusted(uHostId string, targetAutoFilled bool) bool {
+func (e *Engine) workflowTargetIsTrusted(action, uHostId string, targetAutoFilled bool) bool {
 	uHostId = strings.TrimSpace(uHostId)
 	if uHostId == "" {
 		return false
@@ -5480,7 +5511,12 @@ func (e *Engine) workflowTargetIsTrusted(uHostId string, targetAutoFilled bool) 
 	// phantom-selection this guard exists to stop. A genuinely user-referenced
 	// target is still trusted via the explicit-ID / pending-selection /
 	// name-mention branches below.
-	if strings.TrimSpace(e.selectedInstanceIDAtTurnStart) == uHostId {
+	if strings.TrimSpace(e.selectedInstanceIDAtTurnStart) == uHostId &&
+		selectedInstanceSourceTrustedForWorkflow(e.selectedInstanceSourceAtTurnStart) {
+		return true
+	}
+	if strings.TrimSpace(e.trustedWorkflowFrameActionThisTurn) == action &&
+		strings.TrimSpace(e.trustedWorkflowFrameTargetThisTurn) == uHostId {
 		return true
 	}
 	if strings.Contains(strings.TrimSpace(e.lastUserMsg), uHostId) {
@@ -5501,9 +5537,32 @@ func (e *Engine) workflowTargetIsTrusted(uHostId string, targetAutoFilled bool) 
 		}
 	}
 	if inst, res := snapshot.ResolveByID(uHostId); res.Status == entity.ResolveHit && inst != nil {
-		return monitorHistoryNameMentioned(e.lastUserMsg, inst.Name)
+		return workflowTargetNameMentioned(e.lastUserMsg, inst.Name)
 	}
 	return false
+}
+
+func selectedInstanceSourceTrustedForWorkflow(source string) bool {
+	return strings.TrimSpace(source) == SelectedInstanceSourceUser
+}
+
+func workflowTargetNameMentioned(userMsg, name string) bool {
+	if monitorHistoryNameMentioned(userMsg, name) {
+		return true
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	lowerMsg := strings.ToLower(userMsg)
+	lowerName := strings.ToLower(name)
+	if monitorHistoryGenericShortName(lowerName) {
+		return false
+	}
+	if utf8.RuneCountInString(lowerName) < 2 {
+		return false
+	}
+	return strings.Contains(lowerMsg, lowerName)
 }
 
 func workflowRequiresInstanceTarget(action string) bool {

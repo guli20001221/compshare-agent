@@ -117,6 +117,9 @@ func TestCreateDisk_HappyPath(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
+	describeCall, described := findExecutorCall(executor.calls, "DescribeCompShareInstance")
+	require.True(t, described)
+	assert.Equal(t, true, describeCall.args["WithoutGpu"], "no-GPU instances need SrcInstanceConfig for data-disk pricing")
 	priceCall, priced := findExecutorCall(executor.calls, "GetCompShareInstancePrice")
 	assert.True(t, priced, "create disk workflow must price the new data disk before confirmation")
 	assert.Equal(t, "4090", priceCall.args["GpuType"], "data-disk pricing must include the source instance GPU type; upstream rejects missing Gpu/GpuType")
@@ -144,6 +147,43 @@ func TestCreateDisk_HappyPath(t *testing.T) {
 	assert.Equal(t, "test-gpu-data", createCall.args["Name"], "Name should be instance name + -data")
 	assert.NotEmpty(t, createCall.args["Name"], "Name must be set")
 	assert.Contains(t, createCall.args["Name"], "data", "Name should contain 'data'")
+}
+
+func TestCreateDisk_UsesSourceConfigForNoGpuInstancePrice(t *testing.T) {
+	noGPU := stoppedInstanceResult()["UHostSet"].([]any)[0].(map[string]any)
+	noGPU["GPU"] = float64(0)
+	noGPU["CPU"] = float64(8)
+	noGPU["Memory"] = float64(16384)
+	noGPU["SrcInstanceConfig"] = map[string]any{
+		"Cpu":    float64(10),
+		"Memory": float64(65536),
+		"Gpu":    float64(1),
+	}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{noGPU}},
+		"GetCompShareInstancePrice": {"PriceDetails": []any{map[string]any{"Disks": float64(0.8)}}},
+	}}
+	onStep, _ := collectEvents()
+
+	def := CreateDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool { return false }, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-test",
+		"Size":    float64(200),
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, "确认创建数据盘", result.StoppedAt)
+	describeCall, described := findExecutorCall(executor.calls, "DescribeCompShareInstance")
+	require.True(t, described)
+	assert.Equal(t, true, describeCall.args["WithoutGpu"], "DescribeCompShareInstance must request source config for no-GPU instances")
+	priceCall, priced := findExecutorCall(executor.calls, "GetCompShareInstancePrice")
+	require.True(t, priced)
+	assert.Equal(t, "4090", priceCall.args["GpuType"])
+	assert.Equal(t, float64(1), priceCall.args["Gpu"])
+	assert.Equal(t, float64(10), priceCall.args["Cpu"])
+	assert.Equal(t, float64(65536), priceCall.args["Memory"])
 }
 
 func TestCreateDisk_UsesRequestedInstanceWhenDescribeReturnsExtraRows(t *testing.T) {
