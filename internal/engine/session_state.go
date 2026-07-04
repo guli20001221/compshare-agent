@@ -79,16 +79,10 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 // intent package; the test in session_state_test.go enforces the
 // vocabulary contract via test-side import of internal/intent.
 //
-// LastStockGpuModel carries the GPU model a prior stock-availability turn
-// resolved to (the API instance-type Name, e.g. "4090"), so a follow-up
-// that elides the subject ("现在还有库存吗") reuses that referent instead of
-// re-listing every model (RC017). It is the stock analogue of
-// SelectedInstanceID for monitor turns. Unlike SelectedInstanceID it is
-// recorded/read WITHOUT the sessionStateHydrated gate (see
-// recordLastStockGpuModel) because the stock route is direct-dispatch and
-// has no ReAct-history fallback, so the CLI in-memory single-session path
-// must carry it too; safety in HTTP is preserved because ClearSessionState
-// zeroes it at every turn start.
+// LastStockGpuModel is the legacy stock referent used only when
+// USE_SESSION_FACT_CONTEXT is disabled or the engine is running without
+// persisted session facts. With fact context enabled, stock follow-ups use
+// RecentFacts StockSnapshot entries instead.
 type SessionState struct {
 	SchemaVersion                   string                 `json:"schema_version"`
 	SelectedInstanceID              string                 `json:"selected_instance_id,omitempty"`

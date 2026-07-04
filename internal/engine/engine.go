@@ -4886,21 +4886,18 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 
-// recordLastStockGpuModel tracks the GPU model a stock-availability turn
-// resolved to (RC017), so a later subject-eliding stock turn reuses it as
-// the referent. model is the unambiguous single model the handler reported
-// (HandlerResult.ResolvedStockGpuModel); empty means the turn listed all
-// models or was ambiguous, in which case the prior referent is kept.
-//
-// Unlike recordSelectedInstanceID this is NOT gated on sessionStateHydrated.
-// The stock route is direct-dispatch with no ReAct-history fallback, so the
-// CLI in-memory single-session path (which never hydrates) must still carry
-// the referent across turns. This is safe in HTTP: the write lands in the
-// turn's SessionState which is snapshot-persisted only when hydrated, and
-// ClearSessionState zeroes it at the next turn's start, so no value leaks
-// across sessions.
+// recordLastStockGpuModel tracks the legacy stock referent for paths that do
+// not consume RecentFacts. When session fact context is enabled, stock
+// follow-ups must use the structured StockSnapshot fact instead of writing this
+// scalar carry.
 func (e *Engine) recordLastStockGpuModel(model string) {
 	if model == "" {
+		return
+	}
+	if e.sessionFactContextEnabled {
+		if e.sessionStateHydrated {
+			e.sessionState.LastStockGpuModel = ""
+		}
 		return
 	}
 	e.sessionState.LastStockGpuModel = model
@@ -4949,6 +4946,7 @@ func (e *Engine) fallbackStockGpuModel(now time.Time) string {
 		if model := stockGpuModelFromRecentFacts(e.sessionState.RecentFacts, now); model != "" {
 			return model
 		}
+		return ""
 	}
 	return e.sessionState.LastStockGpuModel
 }
