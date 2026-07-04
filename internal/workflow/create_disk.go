@@ -29,8 +29,7 @@ func stepQueryForDisk() Step {
 			}
 			wfCtx.Params["Size"] = size
 			return map[string]any{
-				"UHostIds":   []any{wfCtx.Params["UHostId"]},
-				"WithoutGpu": true,
+				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
 		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
@@ -42,8 +41,8 @@ func stepQueryForDisk() Step {
 			if state == "" {
 				return false, "未找到该实例。"
 			}
-			if isPodInstanceResult(result) || isContainerInstanceResult(result) {
-				return false, "Pod/容器 Pod 实例不支持普通新建数据盘。可改用系统盘扩容，或使用平台支持的共享存储能力。"
+			if isPodInstanceResult(result) {
+				return false, "Pod 实例不支持普通新建数据盘。可改用系统盘扩容，或使用平台支持的共享存储能力。"
 			}
 			return true, ""
 		},
@@ -89,16 +88,15 @@ func addSourceInstanceSpecForDiskPrice(args map[string]any, result map[string]an
 	cpu := firstNumberField(host, "CPU", "Cpu")
 	memory := firstNumberField(host, "Memory", "Mem")
 	if gpu <= 0 {
-		if src, ok := sourceInstanceConfig(host); ok {
-			if srcGPU := firstNumberField(src, "GPU", "Gpu"); srcGPU > 0 {
-				gpu = srcGPU
-			}
-			if srcCPU := firstNumberField(src, "CPU", "Cpu"); srcCPU > 0 {
-				cpu = srcCPU
-			}
-			if srcMemory := firstNumberField(src, "Memory", "Mem"); srcMemory > 0 {
-				memory = srcMemory
-			}
+		src, ok := sourceInstanceConfig(host)
+		if !ok {
+			return errors.New("当前实例是无卡运行状态，上游未返回原带卡规格，无法安全查询数据盘价格。请先恢复带卡，或选择一台带卡实例。")
+		}
+		gpu = firstNumberField(src, "GPU", "Gpu")
+		cpu = firstNumberField(src, "CPU", "Cpu")
+		memory = firstNumberField(src, "Memory", "Mem")
+		if gpu <= 0 || cpu <= 0 || memory <= 0 {
+			return errors.New("当前实例是无卡运行状态，但原带卡规格不完整，无法安全查询数据盘价格。请先恢复带卡，或选择一台带卡实例。")
 		}
 	}
 	if gpuType == "" || gpu <= 0 || cpu <= 0 || memory <= 0 {

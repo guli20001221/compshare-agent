@@ -38,6 +38,8 @@ func podStoppedInstanceResult() map[string]any {
 			"InstanceType": "Container",
 			"GpuType":      "4090",
 			"GPU":          float64(1),
+			"CPU":          float64(10),
+			"Memory":       float64(65536),
 			"ChargeType":   "Dynamic",
 			"DiskSet": []any{
 				map[string]any{
@@ -63,6 +65,8 @@ func containerStoppedInstanceResult() map[string]any {
 			"InstanceType": "Container",
 			"GpuType":      "4090",
 			"GPU":          float64(1),
+			"CPU":          float64(10),
+			"Memory":       float64(65536),
 			"ChargeType":   "Dynamic",
 			"DiskSet": []any{
 				map[string]any{
@@ -119,7 +123,7 @@ func TestCreateDisk_HappyPath(t *testing.T) {
 	assert.True(t, result.Success)
 	describeCall, described := findExecutorCall(executor.calls, "DescribeCompShareInstance")
 	require.True(t, described)
-	assert.Equal(t, true, describeCall.args["WithoutGpu"], "no-GPU instances need SrcInstanceConfig for data-disk pricing")
+	assert.NotContains(t, describeCall.args, "WithoutGpu", "data-disk creation must query the selected instance normally")
 	priceCall, priced := findExecutorCall(executor.calls, "GetCompShareInstancePrice")
 	assert.True(t, priced, "create disk workflow must price the new data disk before confirmation")
 	assert.Equal(t, "4090", priceCall.args["GpuType"], "data-disk pricing must include the source instance GPU type; upstream rejects missing Gpu/GpuType")
@@ -177,13 +181,80 @@ func TestCreateDisk_UsesSourceConfigForNoGpuInstancePrice(t *testing.T) {
 	assert.Equal(t, "确认创建数据盘", result.StoppedAt)
 	describeCall, described := findExecutorCall(executor.calls, "DescribeCompShareInstance")
 	require.True(t, described)
-	assert.Equal(t, true, describeCall.args["WithoutGpu"], "DescribeCompShareInstance must request source config for no-GPU instances")
+	assert.NotContains(t, describeCall.args, "WithoutGpu", "DescribeCompShareInstance must not switch the query into no-GPU mode")
 	priceCall, priced := findExecutorCall(executor.calls, "GetCompShareInstancePrice")
 	require.True(t, priced)
 	assert.Equal(t, "4090", priceCall.args["GpuType"])
 	assert.Equal(t, float64(1), priceCall.args["Gpu"])
 	assert.Equal(t, float64(10), priceCall.args["Cpu"])
 	assert.Equal(t, float64(65536), priceCall.args["Memory"])
+}
+
+func TestCreateDisk_BlocksNoGpuInstanceWithoutSourceConfigBeforePrice(t *testing.T) {
+	noGPU := stoppedInstanceResult()["UHostSet"].([]any)[0].(map[string]any)
+	noGPU["GPU"] = float64(0)
+	noGPU["CPU"] = float64(8)
+	noGPU["Memory"] = float64(16384)
+	delete(noGPU, "SrcInstanceConfig")
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{noGPU}},
+		"GetCompShareInstancePrice": {"PriceDetails": []any{map[string]any{"Disks": float64(0.8)}}},
+	}}
+	onStep, events := collectEvents()
+
+	def := CreateDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("缺少无卡实例原规格时不应进入确认")
+		return true
+	}, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-test",
+		"Size":    float64(200),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "无卡")
+	assert.Contains(t, result.Message, "原带卡规格")
+	_, priced := findExecutorCall(executor.calls, "GetCompShareInstancePrice")
+	assert.False(t, priced, "缺少原规格时不能调用价格接口")
+	for _, ev := range *events {
+		assert.NotEqual(t, StepConfirm, ev.Type)
+	}
+}
+
+func TestCreateDisk_BlocksNoGpuInstanceWithIncompleteSourceConfigBeforePrice(t *testing.T) {
+	noGPU := stoppedInstanceResult()["UHostSet"].([]any)[0].(map[string]any)
+	noGPU["GPU"] = float64(0)
+	noGPU["CPU"] = float64(8)
+	noGPU["Memory"] = float64(16384)
+	noGPU["SrcInstanceConfig"] = map[string]any{
+		"Gpu": float64(1),
+	}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{noGPU}},
+		"GetCompShareInstancePrice": {"PriceDetails": []any{map[string]any{"Disks": float64(0.8)}}},
+	}}
+	onStep, events := collectEvents()
+
+	def := CreateDiskDef()
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		t.Fatal("原带卡规格不完整时不应进入确认")
+		return true
+	}, onStep)
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-test",
+		"Size":    float64(200),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "原带卡规格不完整")
+	_, priced := findExecutorCall(executor.calls, "GetCompShareInstancePrice")
+	assert.False(t, priced, "原规格不完整时不能混用当前无卡规格继续询价")
+	for _, ev := range *events {
+		assert.NotEqual(t, StepConfirm, ev.Type)
+	}
 }
 
 func TestCreateDisk_UsesRequestedInstanceWhenDescribeReturnsExtraRows(t *testing.T) {
@@ -300,16 +371,16 @@ func TestCreateDisk_PodInstanceBlockedBeforeConfirm(t *testing.T) {
 	}
 }
 
-func TestCreateDisk_ContainerInstanceBlockedBeforeConfirm(t *testing.T) {
+func TestCreateDisk_ContainerUHostAllowedToConfirm(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance":    containerStoppedInstanceResult(),
+		"GetCompShareInstancePrice":    {"PriceDetails": []any{map[string]any{"Disks": float64(0.8)}}},
 		"CreateAndAttachCompshareDisk": {"UDiskId": "udisk-new"},
 	}}
 
 	def := CreateDiskDef()
 	eng := NewEngine(executor, func(action string, args map[string]any) bool {
-		t.Fatal("Container 实例不支持普通数据盘时不应进入确认")
-		return true
+		return false
 	}, nil)
 	result, err := eng.Run(context.Background(), def, map[string]any{
 		"UHostId": "uhost-container-test",
@@ -318,9 +389,14 @@ func TestCreateDisk_ContainerInstanceBlockedBeforeConfirm(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Contains(t, result.Message, "数据盘")
-	_, created := findExecutorCall(executor.calls, "CreateAndAttachCompshareDisk")
-	assert.False(t, created)
+	assert.Equal(t, "确认创建数据盘", result.StoppedAt)
+	assert.NotContains(t, result.Message, "Pod")
+	priceCall, priced := findExecutorCall(executor.calls, "GetCompShareInstancePrice")
+	require.True(t, priced)
+	assert.Equal(t, "4090", priceCall.args["GpuType"])
+	assert.Equal(t, float64(1), priceCall.args["Gpu"])
+	assert.Equal(t, float64(10), priceCall.args["Cpu"])
+	assert.Equal(t, float64(65536), priceCall.args["Memory"])
 }
 
 func diskResizeInstanceResult() map[string]any {
