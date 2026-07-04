@@ -1831,6 +1831,9 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	if reply, handled := e.tryResumeCreateContextFrame(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
+	if reply, handled := e.tryRecentFactFollowup(ctx, dispatch, userMsg, onStep); handled {
+		return reply, true
+	}
 	if reply, handled := e.tryOperationLifecycleDispatch(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
