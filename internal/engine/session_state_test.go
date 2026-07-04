@@ -777,8 +777,13 @@ func TestFallbackStockGpuModel_RecentFactsRequireSessionFactContext(t *testing.T
 	eng.sessionFactContextEnabled = true
 	assert.Equal(t, "5090", eng.fallbackStockGpuModel(now), "flag-on may consume RecentFacts")
 
-	eng.sessionFactContextEnabled = false
 	eng.sessionState.LastStockGpuModel = "4090"
+	assert.Equal(t, "5090", eng.fallbackStockGpuModel(now), "fresh RecentFacts should be the primary stock referent when fact context is enabled")
+
+	eng.sessionState.RecentFacts[0].ProducedAtUnix = now.Add(-time.Duration(factTTLSecondsStockSnapshot+1) * time.Second).Unix()
+	assert.Equal(t, "4090", eng.fallbackStockGpuModel(now), "legacy stock memory remains a compatibility fallback when facts are stale")
+
+	eng.sessionFactContextEnabled = false
 	assert.Equal(t, "4090", eng.fallbackStockGpuModel(now), "legacy stock memory remains available with flag off")
 }
 

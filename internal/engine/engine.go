@@ -4914,13 +4914,12 @@ func stockGpuModelFromRecentFacts(facts []ToolFact, now time.Time) string {
 }
 
 func (e *Engine) fallbackStockGpuModel(now time.Time) string {
-	if e.sessionState.LastStockGpuModel != "" {
-		return e.sessionState.LastStockGpuModel
+	if e.sessionFactContextEnabled {
+		if model := stockGpuModelFromRecentFacts(e.sessionState.RecentFacts, now); model != "" {
+			return model
+		}
 	}
-	if !e.sessionFactContextEnabled {
-		return ""
-	}
-	return stockGpuModelFromRecentFacts(e.sessionState.RecentFacts, now)
+	return e.sessionState.LastStockGpuModel
 }
 
 // recordLastIntentFromPlan sets SessionState.LastIntent from the plan's
