@@ -33,6 +33,12 @@ func TestMissingSlotsForFailureMapsWorkflowOwnedMessages(t *testing.T) {
 			message:  "步骤「查询实例」参数构建失败: " + resizeInstanceMissingSpecMessage,
 			want:     []string{"cpu", "memory_gb", "gpu_count"},
 		},
+		{
+			name:     "custom image name",
+			workflow: "CreateCustomImageWorkflow",
+			message:  "步骤「确认创建自制镜像」参数构建失败: image Name is required; ask the user for a custom image name before creating it",
+			want:     []string{"name"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -184,6 +190,14 @@ func TestTaskSlotSpecsParseUpdatesAndBuildArgs(t *testing.T) {
 	args, missing = TaskArgsFromSlots("EnableNetOptimizerWorkflow", map[string]string{"zone": "cn-pod-01"})
 	require.Empty(t, missing)
 	assert.Equal(t, map[string]any{"Zone": "cn-pod-01"}, args)
+
+	args, missing = TaskArgsFromSlots("CreateCustomImageWorkflow", map[string]string{
+		"instance_id": "uhost-1",
+		"name":        "snapshot-v1",
+		"description": "training environment",
+	})
+	require.Empty(t, missing)
+	assert.Equal(t, map[string]any{"UHostId": "uhost-1", "Name": "snapshot-v1", "Description": "training environment"}, args)
 
 	updates = TaskSlotUpdatesFromUserText("ReinstallInstanceWorkflow", []string{"image_id"}, "Ubuntu-nvidia 22.04")
 	assert.Nil(t, updates, "natural image names must be resolved by context/model + image tools, not treated as image IDs")

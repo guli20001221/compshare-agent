@@ -394,6 +394,8 @@ func normalizeContextSlotKey(key string) string {
 		return "stop_time"
 	case "name", "instance_name":
 		return "name"
+	case "description", "desc":
+		return "description"
 	case "cfs_id", "cfsid":
 		return "cfs_id"
 	default:

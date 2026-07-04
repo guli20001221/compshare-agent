@@ -127,7 +127,8 @@ func TestCreateCustomImage_MissingNameAsksBeforeMutatingCall(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Contains(t, result.Message, "Name")
+	assert.Contains(t, result.Message, "image Name is required")
+	assert.Empty(t, result.MissingSlots)
 	assert.NotContains(t, executor.calls, executorCall{action: "CreateCompShareCustomImage"})
 	_, created := findExecutorCall(executor.calls, "CreateCompShareCustomImage")
 	assert.False(t, created)

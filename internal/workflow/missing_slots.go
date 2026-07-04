@@ -337,6 +337,29 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 			return ""
 		},
 	},
+	"CreateCustomImageWorkflow": {
+		missingSlots:  []string{"name"},
+		legacyMessage: "image Name is required; ask the user for a custom image name before creating it",
+		buildArgs: func(slots map[string]string) (map[string]any, []string) {
+			normalized := NormalizeTaskSlotUpdates(slots)
+			args, missing := baseWorkflowTaskArgs("CreateCustomImageWorkflow", normalized)
+			if name := normalized["name"]; name != "" {
+				args["Name"] = name
+			} else {
+				missing = append(missing, "name")
+			}
+			if description := normalized["description"]; description != "" {
+				args["Description"] = description
+			}
+			return finishTaskArgs(args, missing)
+		},
+		clarify: func(missing []string) string {
+			if slotSet(missing)["name"] {
+				return "需要先确认自制镜像名称。请告诉我要创建的镜像叫什么。"
+			}
+			return ""
+		},
+	},
 }
 
 func TaskSlotUpdatesFromUserText(workflowName string, missing []string, userMsg string) map[string]string {
@@ -411,6 +434,8 @@ func normalizeTaskSlotKey(key string) string {
 		return "cfs_id"
 	case "name":
 		return "name"
+	case "description", "desc":
+		return "description"
 	case "zone":
 		return "zone"
 	case "charge_type", "chargetype":
@@ -446,7 +471,7 @@ func finishTaskArgs(args map[string]any, missing []string) (map[string]any, []st
 
 func workflowRequiresInstanceTarget(workflowName string) bool {
 	switch workflowName {
-	case "CreateDiskWorkflow", "ResizeDiskWorkflow", "ResizeInstanceWorkflow", "SetStopSchedulerWorkflow", "ReinstallInstanceWorkflow":
+	case "CreateDiskWorkflow", "ResizeDiskWorkflow", "ResizeInstanceWorkflow", "SetStopSchedulerWorkflow", "ReinstallInstanceWorkflow", "CreateCustomImageWorkflow":
 		return true
 	default:
 		return false
