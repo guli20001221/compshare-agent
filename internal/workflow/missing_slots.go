@@ -218,9 +218,18 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 		parseUpdates: func(missing []string, userMsg string) map[string]string {
 			updates := map[string]string{}
 			missingSet := slotSet(missing)
+			reply := strings.TrimSpace(userMsg)
 			if missingSet["size_gb"] {
 				if size, ok := parseTaskSlotSizeUpdate(userMsg); ok {
 					updates["size_gb"] = size
+				}
+			}
+			if len(missing) == 1 && reply != "" {
+				if missingSet["name"] {
+					updates["name"] = reply
+				}
+				if missingSet["zone"] {
+					updates["zone"] = reply
 				}
 			}
 			if len(updates) == 0 {
