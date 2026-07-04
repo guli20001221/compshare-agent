@@ -316,6 +316,19 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 	case intent.LifecycleActionRename:
 		newName := renameWorkflowNameFromUserText(userMsg)
 		if newName == "" {
+			if ContextContinuationEnabled() {
+				e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
+				reply := e.executeWorkflow(ctx, workflowName, args, onStep)
+				if final, ok := isFinalReply(reply); ok {
+					reply = final
+				} else if msg, ok := workflowFailureMessage(reply); ok {
+					reply = msg
+				}
+				e.recordSelectedInstanceID(inst.UHostId, inst.Name)
+				e.recordLastIntentFromPlan(result.Plan)
+				e.messages = append(e.messages, assistantMessage(reply))
+				return reply, true
+			}
 			reply := "请告诉我要把实例改成什么名称。"
 			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
 			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
@@ -395,7 +408,8 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 			Confidence:    1,
 		}
 		if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
-			if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk {
+			if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk ||
+				(action == intent.LifecycleActionRename && ContextContinuationEnabled()) {
 				reply = e.executeWorkflow(ctx, workflowName, args, onStep)
 				if final, ok := isFinalReply(reply); ok {
 					reply = final
@@ -526,7 +540,8 @@ func (e *Engine) tryLifecycleActionForSelectedInstance(ctx context.Context, inst
 	}
 	args := map[string]any{"UHostId": inst.UHostId}
 	if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
-		if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk {
+		if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk ||
+			(action == intent.LifecycleActionRename && ContextContinuationEnabled()) {
 			reply = e.executeWorkflow(ctx, workflowName, args, onStep)
 			if final, ok := isFinalReply(reply); ok {
 				reply = final
