@@ -184,4 +184,16 @@ func TestTaskSlotSpecsParseUpdatesAndBuildArgs(t *testing.T) {
 	args, missing = TaskArgsFromSlots("EnableNetOptimizerWorkflow", map[string]string{"zone": "cn-pod-01"})
 	require.Empty(t, missing)
 	assert.Equal(t, map[string]any{"Zone": "cn-pod-01"}, args)
+
+	updates = TaskSlotUpdatesFromUserText("ReinstallInstanceWorkflow", []string{"image_id"}, "Ubuntu-nvidia 22.04")
+	assert.Nil(t, updates, "natural image names must be resolved by context/model + image tools, not treated as image IDs")
+
+	updates = TaskSlotUpdatesFromUserText("ReinstallInstanceWorkflow", []string{"image_id"}, "img-ubuntu")
+	assert.Equal(t, map[string]string{"image_id": "img-ubuntu"}, updates)
+	args, missing = TaskArgsFromSlots("ReinstallInstanceWorkflow", map[string]string{
+		"instance_id": "uhost-1",
+		"image_pref":  "Ubuntu-nvidia 22.04",
+	})
+	require.Empty(t, missing)
+	assert.Equal(t, map[string]any{"UHostId": "uhost-1", "ImageName": "Ubuntu-nvidia 22.04"}, args)
 }

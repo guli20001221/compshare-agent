@@ -985,12 +985,20 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "目标镜像 ID",
 					},
+					"ImageName": map[string]any{
+						"type":        "string",
+						"description": "目标镜像名称或关键词；后端会通过真实镜像接口解析为 CompShareImageId",
+					},
+					"ImageSource": map[string]any{
+						"type":        "string",
+						"description": "镜像来源：platform/community/custom/shared；不确定时可不传",
+					},
 					"Password": map[string]any{
 						"type":        "string",
 						"description": "新的登录密码（可选，不传则保留原密码）",
 					},
 				},
-				"required": []string{"UHostId", "CompShareImageId"},
+				"required": []string{"UHostId"},
 			},
 		},
 	},

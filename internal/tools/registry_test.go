@@ -200,6 +200,18 @@ func TestCFSInternalZoneIDIsWorkflowOnly(t *testing.T) {
 		}
 	}
 
+	for _, action := range []string{"CheckCompShareNetOptimizer", "SyncCompShareNetOptimizer"} {
+		p := policies[action]
+		for _, want := range []string{"Zone", "Region"} {
+			if !containsString(p.InternalAllowedParams, want) {
+				t.Fatalf("%s must preserve backend-derived %s internally", action, want)
+			}
+			if containsString(p.AllowedParams, want) {
+				t.Fatalf("%s must not expose %s to model-origin calls", action, want)
+			}
+		}
+	}
+
 	createPolicy := policies["CreateCFS"]
 	for _, want := range []string{"Name", "Size", "ChargeType", "Quantity", "Zone", "Region"} {
 		if !containsString(createPolicy.AllowedParams, want) {

@@ -184,13 +184,21 @@ var taskSlotSpecs = map[string]taskSlotSpec{
 			if !slotSet(missing)["image_id"] || strings.TrimSpace(userMsg) == "" {
 				return nil
 			}
-			return map[string]string{"image_id": strings.TrimSpace(userMsg)}
+			if id := parseTaskSlotImageID(userMsg); id != "" {
+				return map[string]string{"image_id": id}
+			}
+			return nil
 		},
 		buildArgs: func(slots map[string]string) (map[string]any, []string) {
 			normalized := NormalizeTaskSlotUpdates(slots)
 			args, missing := baseWorkflowTaskArgs("ReinstallInstanceWorkflow", normalized)
 			if imageID := normalized["image_id"]; imageID != "" {
 				args["CompShareImageId"] = imageID
+			} else if imageName := normalized["image_pref"]; imageName != "" {
+				args["ImageName"] = imageName
+				if source := normalized["image_source"]; source != "" {
+					args["ImageSource"] = source
+				}
 			} else {
 				missing = append(missing, "image_id")
 			}
@@ -395,6 +403,10 @@ func normalizeTaskSlotKey(key string) string {
 		return "stop_time"
 	case "image_id", "comp_share_image_id", "compshareimageid", "comp_share_imageid":
 		return "image_id"
+	case "image", "image_pref", "image_name":
+		return "image_pref"
+	case "image_source":
+		return "image_source"
 	case "cfs_id", "cfsid":
 		return "cfs_id"
 	case "name":
@@ -464,6 +476,15 @@ func parseTaskSlotID(value, prefix string) string {
 		field = strings.Trim(field, "“”\"'()（）")
 		if strings.HasPrefix(strings.ToLower(field), strings.ToLower(prefix)) {
 			return field
+		}
+	}
+	return ""
+}
+
+func parseTaskSlotImageID(value string) string {
+	for _, prefix := range []string{"img-", "cimg-", "comm-img-", "share-img-", "uimg-"} {
+		if id := parseTaskSlotID(value, prefix); id != "" {
+			return id
 		}
 	}
 	return ""
