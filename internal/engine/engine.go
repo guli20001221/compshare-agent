@@ -4847,10 +4847,12 @@ func (e *Engine) recordSelectedInstanceFromEnvelope(env *envelope.Envelope) {
 	if s.Type != envelope.SubjectInstance || s.ID == "" {
 		return
 	}
-	e.sessionState.SelectedInstanceID = s.ID
-	e.sessionState.SelectedInstanceName = s.Name
-	e.sessionState.SelectedInstanceSource = SelectedInstanceSourceUser
-	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+	// Route through the shared choke-point so this User-source selection is
+	// stamped with SelectedInstanceAtUnix (TTL clock) exactly like every other
+	// trusted binding. Assigning the fields inline here previously skipped the
+	// timestamp, leaving envelope-established selections permanently exempt from
+	// expireStaleSelectedInstance (they looked like unstamped legacy rows).
+	e.recordSelectedInstanceIDWithSource(s.ID, s.Name, SelectedInstanceSourceUser)
 }
 
 // recordSelectedInstanceID tracks a user-trusted "current instance", such as
