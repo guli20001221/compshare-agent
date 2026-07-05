@@ -1,7 +1,7 @@
 # Context Unification Status
 
-Last audited against `origin/main` at `ee2829c8`; this document also includes
-the monitor-history missing-window coverage update.
+Last audited against `origin/main` at `a714b639`, plus the lifecycle/scheduler
+ordinal resolution and `SelectedInstance` TTL changes described below.
 
 ## Current State
 
@@ -9,6 +9,33 @@ The context continuation layer is enabled by default through `COMPSHARE_CONTEXT_
 It is a shared decision layer: the model decides whether a short follow-up continues a prior task,
 starts a new task, selects an entity, answers a follow-up, clears context, or needs clarification.
 The backend still validates every resource, parameter, price, zone, image, and confirmation.
+
+## Resolution model: mutating is deterministic, read-only can be model-driven
+
+Not every context path routes through the model decision layer, and that split
+is **deliberate, not unfinished convergence**:
+
+- **Read-only continuation** (diagnosis target, monitor-history, stock/price/
+  billing facts) may resolve a referenced instance through the shared
+  `resolveContextDecision` layer. If the model mis-resolves, the worst outcome
+  is reading the wrong instance's state — recoverable.
+- **Mutating target resolution** (lifecycle stop/start/reboot/reset-password/
+  rename/resize, scheduled shutdown) resolves the instance **deterministically
+  from the user's literal text** — explicit ID, unique name, a pronoun bound to
+  a prior user selection, or an ordinal against the displayed candidate list.
+  It must **never** resolve a mutating target from a model-supplied reference.
+
+Why the asymmetry: routing mutating resolution through the model's free
+reference resolution reintroduces the phantom-instance class of bug. Even when
+`workflowTargetIsTrusted` correctly blocks a model-picked target on the current
+turn, the resolver still records it as the user-selected instance, poisoning the
+**next** turn's turn-start trust check — a two-turn phantom-target vector
+(confirmed by an executable regression test). The mutating paths therefore use
+`ordinalTargetFromPending`, which mirrors the trust guard's own pending branch
+(`pendingResourceSelectionFromSession` + `matchResourceSelectionReference` over
+the live user message) exactly, so anything it resolves is guaranteed to pass
+the guard and can never be blocked-then-recorded. It has no free-registry-name
+fallback.
 
 ## Unified Paths
 
@@ -44,6 +71,11 @@ These paths now use the shared context decision and frame model:
   - stock follow-up
   - price follow-up
   - refund/billing follow-up
+- Mutating lifecycle / scheduled-shutdown ordinal reference (deterministic):
+  - "关机第 2 台" / "第 2 台定时关机" resolve the target against the displayed
+    candidate list via `ordinalTargetFromPending` (see the resolution-model
+    section above). This shares the same ordinal matcher as instance-list
+    selection but does **not** call the model decision layer.
 
 ## Compatibility State
 
@@ -55,29 +87,55 @@ Some legacy session fields remain intentionally:
 
 Do not remove these fields until the corresponding rollback path is deliberately retired.
 
+### SelectedInstance binding TTL
+
+`SelectedInstanceID` / `SelectedInstanceName` / `SelectedInstanceSource` now
+carry `SelectedInstanceAtUnix`, stamped whenever the binding is (re)established
+by a genuine selection (passive re-observation does not refresh it). At turn
+entry, `expireStaleSelectedInstance` clears the binding once it is older than
+`selectedInstanceTTLSeconds` (30 min), before the turn-start snapshot is frozen,
+so a long-abandoned selection is neither resolved as "它" nor trusted by the
+guard. Rows persisted before the field existed (`SelectedInstanceAtUnix == 0`)
+are treated as unstamped and never auto-expired.
+
 ## Remaining Pre-Router Gates
 
-The following pre-router paths still exist and should not be deleted blindly:
+The following pre-router paths still exist. They are **safety gates or correct
+mutating-path specialization, not pending model-layer migrations**:
 
-- account-level billing refusal
-- pending resource selection recovery
-- monitor-history time-window checks
-- direct diagnosis for explicit targets
-- scheduled shutdown direct dispatch
-- lifecycle direct dispatch
+- account-level billing refusal (canned safety reply)
+- pending resource selection recovery (deterministic candidate-list restore)
+- monitor-history time-window checks (read-only validation)
+- direct diagnosis for explicit targets (read-only; model resolution allowed)
+- scheduled shutdown direct dispatch (**mutating — stays deterministic**)
+- lifecycle direct dispatch (**mutating — stays deterministic**)
 
-These are partly safety gates and partly older UX shortcuts. Any migration must first prove the new context layer preserves:
+Invariants every path preserves (do not regress):
 
 - no write operation without a confirmation card
 - no model-selected instance for mutating workflows
-- explicit user target, previously user-selected target, or unique-account-instance target only
+- explicit user target, previously user-selected target, ordinal against the
+  displayed candidate list, or unique-account-instance target only
 - clarification instead of confirmation when target or required parameters are uncertain
+
+## Non-Goals / Deliberate Deviations
+
+- **Lifecycle and scheduled-shutdown will NOT be routed through
+  `resolveContextDecision`.** An earlier attempt was reverted after an
+  executable red test confirmed it introduced a two-turn phantom-target
+  poisoning vector (see the resolution-model section). Mutating target
+  resolution is deterministic by design; the difference from the read-only
+  paths is correct specialization, not convergence debt.
 
 ## Next Migration Candidates
 
-1. Review lifecycle and scheduled-shutdown direct dispatch after router and
-   context-decision coverage proves parity.
-2. Retire compatibility fields only after their feature flags and rollback
-   behavior are no longer needed.
+1. Retire compatibility fields (`LastStockGpuModel`, `LastDeployWorkload`,
+   `LastDeployZone`, `PendingDeployModel`) only after their feature flags and
+   rollback behavior are no longer needed. `PendingSelection*` stays (shared
+   candidate store, not legacy).
+2. (Optional, low priority) atomic persistence of the per-turn message writes
+   and the session context write, which are currently separate non-transactional
+   calls; a failed context write is logged, not rolled back. Accepted as
+   low-risk for now.
 
 Each candidate needs focused unit tests, HTTP/WS replay, and a review of write-operation target trust before old code is removed.
