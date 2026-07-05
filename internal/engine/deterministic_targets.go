@@ -378,6 +378,34 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 	return reply, true
 }
 
+// ordinalTargetFromPending deterministically resolves an ordinal/name/ID
+// reference in the user's literal text (userMsg) against the most recently
+// displayed instance list. It uses the SAME matcher and the SAME input the
+// trust guard uses — matchResourceSelection over the live turn's user message
+// (workflowTargetIsTrusted matches on e.lastUserMsg, which equals userMsg on
+// the live turn) — so any instance this resolves is guaranteed to pass
+// workflowTargetIsTrusted. Unlike resolveContextDecisionInstanceRef it has NO
+// free-registry-name fallback: it only trusts the user-displayed candidate
+// list, so it can never resolve (then record) a model-supplied instance the
+// user never referenced. That is what keeps the mutating path free of the
+// two-turn phantom-target poisoning vector.
+func (e *Engine) ordinalTargetFromPending(userMsg string) (entity.InstanceSnapshot, bool) {
+	// Resolve against the SAME source and matcher the trust guard's primary
+	// pending branch uses (workflowTargetIsTrusted →
+	// pendingResourceSelectionFromSession + matchResourceSelectionReference over
+	// e.lastUserMsg, which equals userMsg on the live turn). Mirroring the guard
+	// exactly guarantees any instance resolved here also passes the guard, so it
+	// is never blocked-then-recorded (no poisoning).
+	pending, ok := e.pendingResourceSelectionFromSession()
+	if !ok {
+		return entity.InstanceSnapshot{}, false
+	}
+	if match, _ := matchResourceSelectionReference(userMsg, *pending); match.ok && !match.ambiguous {
+		return match.instance, true
+	}
+	return entity.InstanceSnapshot{}, false
+}
+
 func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
 	if e == nil || !e.mutatingToolsEnabled {
 		return "", false
@@ -388,6 +416,17 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 	action := inferLifecycleAction(userMsg)
 	if action == "" {
 		return "", false
+	}
+	// Ordinal/name reference to a displayed candidate list, e.g. "关机第2台".
+	// Deterministic, parsed from the user's literal text and matched against the
+	// persisted candidate list via the same matcher the trust guard uses, so a
+	// resolved target always passes workflowTargetIsTrusted (no poisoning).
+	// Gated on the continuation flag for rollback parity.
+	if ContextContinuationEnabled() {
+		if inst, ok := e.ordinalTargetFromPending(userMsg); ok {
+			plan := lifecyclePlanForSelectedInstance(action, inst)
+			return e.tryLifecycleActionForSelectedInstance(ctx, inst, action, userMsg, plan, onStep)
+		}
 	}
 	if selectedID := strings.TrimSpace(e.sessionState.SelectedInstanceID); selectedID != "" &&
 		selectedInstanceSourceTrustedForWorkflow(e.sessionState.SelectedInstanceSource) &&
@@ -629,6 +668,14 @@ func (e *Engine) tryDirectStopSchedulerFromUserText(ctx context.Context, userMsg
 	if err != nil || !okSnapshot {
 		return "", false
 	}
+	// Ordinal/name reference to a displayed candidate list, e.g. "第2台定时关机".
+	// Deterministic and guard-consistent (see ordinalTargetFromPending); gated on
+	// the continuation flag for rollback parity.
+	if ContextContinuationEnabled() {
+		if inst, ok := e.ordinalTargetFromPending(userMsg); ok {
+			return e.dispatchStopSchedulerForInstance(ctx, inst, userMsg, compact, onStep)
+		}
+	}
 	if _, ok := findUniqueInstanceNameInText(userMsg, snapshot); !ok {
 		return "", false
 	}
@@ -636,6 +683,13 @@ func (e *Engine) tryDirectStopSchedulerFromUserText(ctx context.Context, userMsg
 	if !ok {
 		return "", false
 	}
+	return e.dispatchStopSchedulerForInstance(ctx, inst, userMsg, compact, onStep)
+}
+
+// dispatchStopSchedulerForInstance runs the scheduled-shutdown workflow (set or
+// cancel) for an already-resolved instance. Shared by the ordinal and
+// name-based target-resolution paths so both dispatch identically.
+func (e *Engine) dispatchStopSchedulerForInstance(ctx context.Context, inst entity.InstanceSnapshot, userMsg, compact string, onStep func(StepEvent)) (string, bool) {
 	workflowName := "SetStopSchedulerWorkflow"
 	args := map[string]any{"UHostId": inst.UHostId}
 	e.clearContextFrameForNewDirectWorkflow()
