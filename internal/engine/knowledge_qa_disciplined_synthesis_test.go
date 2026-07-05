@@ -62,6 +62,16 @@ func TestSynthesizeKnowledgeQAFromLedger_UncitedRefused(t *testing.T) {
 	assert.False(t, ok, "an uncited synthesis must not be accepted as disciplined recovery")
 }
 
+func TestSynthesizeKnowledgeQAFromLedger_UnknownNumberedCitationRefused(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
+		{Content: "看起来有引用但编号越界 [9]。"},
+	}}, &mockExecutor{}, nil)
+	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{disciplinedSynthHit()}
+
+	_, ok := eng.synthesizeKnowledgeQAFromLedger(context.Background(), "q")
+	assert.False(t, ok, "an out-of-range numbered citation must not be accepted")
+}
+
 // TestSynthesizeKnowledgeQAFromLedger_CodeReproductionAccepted pins the leak-guard
 // removal: the disciplined synthesis mirrors terminal RAG, which runs NO no-raw-leak
 // check. A how-to answer that reproduces a command/code snippet verbatim from the

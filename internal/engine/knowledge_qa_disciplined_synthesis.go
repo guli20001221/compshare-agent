@@ -46,11 +46,19 @@ func DisciplinedKnowledgeQASynthesisEnabled() bool { return disciplinedKnowledge
 // budget / leak — in which case the caller keeps the existing fallback (cite-retry /
 // refusal), so this never does WORSE than the free-write path.
 //
-// The [n] markers terminal emits number the references in `evidences` order, which
-// equals the per-turn ledger order for the common single-SearchKnowledge-call turn
-// (the forced first hop). A turn with multiple SearchKnowledge calls could drift the
-// numbering vs the deduped ledger; that edge case keeps the conservative refusal
-// (fail-safe), never a mis-citation.
+// The [n] markers terminal emits number the references in `evidences` order (built
+// here from the raw per-call-appended searchKnowledgeHitsThisTurn), while
+// ValidateGroundedCitations below resolves [n] into the DEDUPED merged
+// searchKnowledgeLedgerThisTurn. For the common single-SearchKnowledge-call turn (the
+// forced first hop) the two lists are identical, so [n] resolves exactly. KNOWN
+// LIMITATION: on a turn with multiple SearchKnowledge calls whose hits overlap, the
+// raw list and the deduped ledger can diverge in order/length; an out-of-range [n] is
+// rejected (fail-safe refusal), but an in-range-but-shifted [n] can resolve to the
+// wrong ledger item, so the PERSISTED cited_chunk_ids attribution may be misassigned
+// (the user-visible answer is unaffected — markers are stripped either way). Aligning
+// the numbering and validation lists is a follow-up tracked for the behavior PR, where
+// it can carry eval coverage; not fixed here to keep this observability change
+// behavior-neutral.
 func (e *Engine) synthesizeKnowledgeQAFromLedger(ctx context.Context, userMsg string) (string, bool) {
 	if len(e.searchKnowledgeHitsThisTurn) == 0 {
 		return "", false
@@ -61,6 +69,9 @@ func (e *Engine) synthesizeKnowledgeQAFromLedger(ctx context.Context, userMsg st
 	evidences, err := evidencesFromRetrievalHits(e.searchKnowledgeHitsThisTurn, knowledge.NormalizeQuery(userMsg))
 	if err != nil || len(evidences) == 0 {
 		return "", false
+	}
+	if len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
+		e.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(userMsg, e.searchKnowledgeHitsThisTurn, knowledge.DefaultEvidenceLedgerMaxItems, 0)
 	}
 	reply, _, refusedReason, _, aerr := e.answerWithRetrievedEvidence(ctx, userMsg, evidences, false, nil)
 	if aerr != nil || refusedReason != "" {
@@ -77,7 +88,11 @@ func (e *Engine) synthesizeKnowledgeQAFromLedger(ctx context.Context, userMsg st
 	if strings.TrimSpace(reply) == "" || isKnowledgeRefusal(reply) {
 		return "", false
 	}
-	return stripCitationMarkers(reply), true
+	if report := knowledge.ValidateGroundedCitations(reply, e.searchKnowledgeLedgerThisTurn); report.Grounded() {
+		e.emitSearchKnowledgeCitationTrace(report)
+		return stripCitationMarkers(reply), true
+	}
+	return "", false
 }
 
 // synthesizeOnBudgetExceeded writes a final grounded answer from the evidence

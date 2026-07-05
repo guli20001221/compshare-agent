@@ -3684,6 +3684,20 @@ func TestStage2BRetrievalHitCallsLLMWithNumberedEvidence(t *testing.T) {
 	assert.False(t, retrievalTraces[0].WeakEvidence)
 	// Cited chunk_ids survive into trace even though [1] is stripped from reply.
 	assert.Equal(t, []string{"w0-billing_rule-stopped-a1b2c3d4"}, retrievalTraces[0].CitedChunkIDs)
+	require.Len(t, retrievalTraces[0].Activities, 1)
+	assert.Equal(t, "search_1", retrievalTraces[0].Activities[0].ID)
+	assert.Equal(t, "why do stopped instances still bill", retrievalTraces[0].Activities[0].Query)
+	assert.Equal(t, 1, retrievalTraces[0].Activities[0].Hits)
+	require.Len(t, retrievalTraces[0].References, 1)
+	assert.Equal(t, "1", retrievalTraces[0].References[0].RefID)
+	assert.Equal(t, "w0-billing_rule-stopped-a1b2c3d4", retrievalTraces[0].References[0].ChunkID)
+	assert.Equal(t, "Stopped instance billing", retrievalTraces[0].References[0].Title)
+	assert.Equal(t, "billing_rule", retrievalTraces[0].References[0].SourceArea)
+	assert.Equal(t, []string{"search_1"}, retrievalTraces[0].References[0].ActivityIDs)
+	assert.Equal(t, []observability.RetrievalCitedRef{{
+		RefID:   "1",
+		ChunkID: "w0-billing_rule-stopped-a1b2c3d4",
+	}}, retrievalTraces[0].CitedRefs)
 	// HybridMode + HybridFallbackReason + EmbeddingLatencyMS must propagate
 	// from RetrievalResult into the emitted trace so ops can aggregate
 	// fallback rate AND latency distribution across runs.

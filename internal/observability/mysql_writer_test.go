@@ -30,6 +30,15 @@ func TestRowFromTrace_PopulatesAllColumnsFromCanonicalSources(t *testing.T) {
 		},
 		Retrieval: RetrievalTrace{
 			CitedChunkIDs: []string{"chunk-a", "chunk-b"},
+			References: []RetrievalReference{{
+				RefID:   "1",
+				ChunkID: "chunk-a",
+				Title:   "Billing rule",
+			}},
+			CitedRefs: []RetrievalCitedRef{{
+				RefID:   "1",
+				ChunkID: "chunk-a",
+			}},
 		},
 		Outcome: OutcomeTrace{
 			TotalLatencyMS: 1234,
@@ -76,6 +85,14 @@ func TestRowFromTrace_PopulatesAllColumnsFromCanonicalSources(t *testing.T) {
 	}
 	if !strings.Contains(string(traceJSON), `"trace_id":"req-uuid-123"`) {
 		t.Fatalf("trace_json does not embed trace_id; payload=%s", string(traceJSON))
+	}
+	for _, want := range []string{
+		`"references":[{"ref_id":"1","chunk_id":"chunk-a","title":"Billing rule"`,
+		`"cited_refs":[{"ref_id":"1","chunk_id":"chunk-a"}]`,
+	} {
+		if !strings.Contains(string(traceJSON), want) {
+			t.Fatalf("trace_json missing %s; payload=%s", want, string(traceJSON))
+		}
 	}
 }
 
