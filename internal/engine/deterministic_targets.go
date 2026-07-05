@@ -381,8 +381,8 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 // ordinalTargetFromPending deterministically resolves an ordinal/name/ID
 // reference in the user's literal text (userMsg) against the most recently
 // displayed instance list. It uses the SAME matcher and the SAME input the
-// trust guard uses — matchResourceSelection over the live turn's user message
-// (workflowTargetIsTrusted matches on e.lastUserMsg, which equals userMsg on
+// trust guard uses — matchResourceSelectionReference over the live turn's user
+// message (workflowTargetIsTrusted matches on e.lastUserMsg, which equals userMsg on
 // the live turn) — so any instance this resolves is guaranteed to pass
 // workflowTargetIsTrusted. Unlike resolveContextDecisionInstanceRef it has NO
 // free-registry-name fallback: it only trusts the user-displayed candidate
