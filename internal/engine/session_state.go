@@ -88,6 +88,7 @@ type SessionState struct {
 	SelectedInstanceID              string                 `json:"selected_instance_id,omitempty"`
 	SelectedInstanceName            string                 `json:"selected_instance_name,omitempty"`
 	SelectedInstanceSource          string                 `json:"selected_instance_source,omitempty"`
+	SelectedInstanceAtUnix          int64                  `json:"selected_instance_at_unix,omitempty"`
 	LastIntent                      string                 `json:"last_intent,omitempty"`
 	LastStockGpuModel               string                 `json:"last_stock_gpu_model,omitempty"`
 	LastDeployWorkload              string                 `json:"last_deploy_workload,omitempty"`

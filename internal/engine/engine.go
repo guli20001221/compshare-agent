@@ -1251,6 +1251,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.createPreferenceThisTurn = nil
 	e.expireContextFrame(time.Now())
+	e.expireStaleSelectedInstance(time.Now())
 	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
 	// any mid-turn re-bind), and reset the per-turn binding observables that
 	// refreshSystemPrompt fills next.
@@ -4892,7 +4893,39 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 	e.sessionState.SelectedInstanceID = id
 	e.sessionState.SelectedInstanceName = name
 	e.sessionState.SelectedInstanceSource = source
+	e.sessionState.SelectedInstanceAtUnix = time.Now().Unix()
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+}
+
+// selectedInstanceTTLSeconds bounds how long a carried "current instance"
+// binding stays trusted without any fresh user (re)selection. After this idle
+// window a pronoun like "它" no longer resolves to a stale selection and the
+// trust guard's turn-start branch no longer trusts it — the binding must be
+// re-established from the current turn. 30 min matches the agentpool idle-evict
+// window and sits between AWS Bedrock (1h) and Gemini (30m) session norms.
+const selectedInstanceTTLSeconds = 1800
+
+// expireStaleSelectedInstance clears the carried instance binding when it has
+// gone untouched longer than selectedInstanceTTLSeconds. Runs at turn entry,
+// before the turn-start snapshot is frozen, so a stale binding is never carried
+// into workflowTargetIsTrusted. A zero SelectedInstanceAtUnix (legacy rows
+// persisted before this field existed) is treated as "unstamped" and never
+// auto-expired, so the rollout does not drop existing selections.
+func (e *Engine) expireStaleSelectedInstance(now time.Time) {
+	if strings.TrimSpace(e.sessionState.SelectedInstanceID) == "" {
+		return
+	}
+	at := e.sessionState.SelectedInstanceAtUnix
+	if at <= 0 {
+		return
+	}
+	if now.Unix()-at > selectedInstanceTTLSeconds {
+		e.sessionState.SelectedInstanceID = ""
+		e.sessionState.SelectedInstanceName = ""
+		e.sessionState.SelectedInstanceSource = ""
+		e.sessionState.SelectedInstanceAtUnix = 0
+		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+	}
 }
 
 // recordLastStockGpuModel tracks the legacy stock referent for paths that do

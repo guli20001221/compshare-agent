@@ -630,6 +630,7 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 			SelectedInstanceID:              "uhost-abc",
 			SelectedInstanceName:            "gpu-prod",
 			SelectedInstanceSource:          SelectedInstanceSourceUser,
+			SelectedInstanceAtUnix:          1716530000,
 			LastIntent:                      string(intent.IntentMonitorQuery),
 			LastStockGpuModel:               "4090",
 			PendingSelectionKind:            "instance",
