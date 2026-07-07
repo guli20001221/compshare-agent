@@ -93,11 +93,13 @@ _DANGEROUS_META = re.compile(r"""[;|&`$(){}\[\]<>*?~'"]|\.\.|\n""")
 # stderr/void redirects that write no real file (stripped before the meta scan so
 # `nvidia-smi 2>&1 | grep` and `df -h / 2>/dev/null` are not rejected):
 _SAFE_REDIR = re.compile(r"(?:\d*>&\d+|&>\s*/dev/null|\d*>\s*/dev/null)")
-# Hard-dangerous shell constructs. Deliberately EXCLUDES `|` (pipe) and `*`/`?`
-# (glob) — those are validated structurally below. Everything that enables command
-# chaining (`;` `&&`), substitution (`` ` `` `$()`), real-file redirection (`>`),
-# brace/bracket/tilde expansion, quotes, parent-dir traversal, or newlines is banned.
-_HARD_META = re.compile(r"""[;&`$<>(){}\[\]~'"]|\.\.|\n""")
+# Hard-dangerous shell constructs. Deliberately EXCLUDES `|` (pipe), `*`/`?` (glob), and the
+# SINGLE quote — those are validated structurally below. Everything that enables command chaining
+# (`;` `&&`), substitution (`` ` `` `$()` `$VAR`), real-file redirection (`>`), brace/bracket/tilde
+# expansion, DOUBLE quotes, parent-dir traversal, or newlines is banned. Single quotes are allowed
+# (F6): they are shell-LITERAL, so a `grep '8188'` pattern reaches the filter as inert text and can
+# never be executed; DOUBLE quotes stay banned because inside them $()/`` ` ``/$VAR still expand.
+_HARD_META = re.compile(r"""[;&`$<>(){}\[\]~"]|\.\.|\n""")
 # Pure stdin->stdout text filters (no file writes, no exec, no file-arg reads).
 # Deliberately EXCLUDES awk/sed (system()/-i/w-file), xargs/tee (exec/write), dd.
 _SAFE_FILTERS = {"grep", "egrep", "fgrep", "head", "tail", "wc", "sort",
@@ -374,8 +376,12 @@ def _is_safe_readonly_command(cmd: str) -> bool:
     shape `<read-only source> [ | <text filter> ]*`. Globs (`*`/`?`) are allowed because
     the source's path allowlist (_safe_path) still validates the literal string, so a glob
     cannot escape a safe prefix (`/proc/driver/nvidia/*` stays inside nvidia driver info,
-    while `/etc/*` or a `..` traversal is still denied)."""
+    while `/etc/*` or a `..` traversal is still denied). Balanced single quotes are permitted
+    (F6) — a quoted grep pattern is shell-literal; a `/`-bearing quoted token is still caught by
+    the filter's path check, and a quoted secret path (`cat '/etc/shadow'`) still hits _safe_path."""
     stripped = _SAFE_REDIR.sub(" ", cmd)
+    if stripped.count("'") % 2 != 0:                      # unbalanced single quote -> refuse (fail closed)
+        return False
     if _HARD_META.search(stripped):
         return False
     segs = [s.strip() for s in stripped.split("|")]
