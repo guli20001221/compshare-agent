@@ -121,7 +121,11 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 		}
 		// Best effort: the attempt is already durably recorded by Begin; a failed enrichment must
 		// not discard a valid verdict, but it is surfaced to logs by the SQL writer's error return.
-		_ = s.audit.Finish(ctx, auditID, done)
+		// Detached from the request ctx: on client disconnect (browser tab close / curl --max-time)
+		// the request ctx is already cancelled, and the SQL writer derives a WithTimeout child from it
+		// — a cancelled parent makes the Finish UPDATE fail, orphaning the row forever at "started".
+		// WithoutCancel keeps the values but drops the cancellation so the outcome still lands (Go 1.21+).
+		_ = s.audit.Finish(context.WithoutCancel(ctx), auditID, done)
 	}
 	return res, runErr
 }

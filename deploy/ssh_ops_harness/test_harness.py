@@ -88,6 +88,31 @@ check("auth-fail-no-credential", "Pl4inPwd77x" not in r_auth["text"])
 check("auth-fail-hints-stale", "stale" in r_auth["text"])
 
 
+# --- F2 preflight: reachable -> None; connect/auth failure -> actionable Chinese reason (fast-fail).
+# WHY: without it, an unreachable instance makes the agent spend its whole time budget with every
+# proposed command hanging at the SSH connect timeout (observed as a 5-minute 0-output timeout). ---
+_pf_cmds = []
+
+
+def _pf_ok(c, command, secrets=()):
+    _pf_cmds.append(command)
+    return {"exit_code": 0, "stdout": "", "stderr": "", "truncated": False}
+
+
+ssh_transport.run_ssh = _pf_ok
+check("preflight-reachable-none", harness.preflight_probe(harness._CONN) is None)
+check("preflight-uses-fixed-benign-cmd", _pf_cmds == ["true"])   # deterministic, never model-chosen
+
+ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "connect_failed"}
+_pf_conn = harness.preflight_probe(harness._CONN)
+check("preflight-unreachable-reason", isinstance(_pf_conn, str) and "无法建立 SSH 连接" in _pf_conn)
+
+ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "auth_failed"}
+_pf_auth = harness.preflight_probe(harness._CONN)
+check("preflight-auth-reason", isinstance(_pf_auth, str) and "认证失败" in _pf_auth)
+check("preflight-no-credential", "Pl4inPwd77x" not in (_pf_conn + _pf_auth))
+
+
 # --- the REAL ssh_transport.run_ssh genuinely scrubs box output (fake paramiko -> no connection) ---
 _PW = "Pl4in" + "Pwd77x"
 _AWS = "wJalr" + "XUtnFE" + "MIK7MD" + "ENGbPx"

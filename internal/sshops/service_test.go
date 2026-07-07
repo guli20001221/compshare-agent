@@ -14,13 +14,32 @@ type fakeRunner struct {
 	calls    int
 	lastCred Credential
 	lastTask string
+	onRun    func() // optional side effect invoked inside Run (e.g. cancel the request ctx)
 }
 
 func (f *fakeRunner) Run(_ context.Context, cred Credential, task string) (Result, error) {
 	f.calls++
 	f.lastCred = cred
 	f.lastTask = task
+	if f.onRun != nil {
+		f.onRun() // side effect, e.g. cancel the request ctx to simulate a client disconnect mid-run
+	}
 	return f.res, f.err
+}
+
+// ctxCheckAudit records whether the ctx handed to Finish was already cancelled. The real SQL writer
+// (store.SSHOpsAuditStore.Finish) derives a WithTimeout child from that ctx, so a cancelled parent
+// makes the Finish UPDATE fail and orphans the row at "started".
+type ctxCheckAudit struct {
+	finishCalled       bool
+	finishSawCancelled bool
+}
+
+func (a *ctxCheckAudit) Begin(_ context.Context, _ AuditEvent) (string, error) { return "id-1", nil }
+func (a *ctxCheckAudit) Finish(ctx context.Context, _ string, _ AuditEvent) error {
+	a.finishCalled = true
+	a.finishSawCancelled = ctx.Err() != nil
+	return nil
 }
 
 func describerWithInstances(rows ...map[string]any) Describer {
@@ -122,6 +141,28 @@ func TestDiagnoseSurfacesRunErrorWithFinish(t *testing.T) {
 	}
 	if len(audit.Events) != 2 || audit.Events[1].Disposition != "error" {
 		t.Fatalf("error disposition not recorded: %+v", audit.Events)
+	}
+}
+
+// WHY: on client disconnect (browser tab close / curl --max-time) the request ctx is cancelled
+// mid-run. The outcome-recording Finish must run on a ctx detached from that cancellation, or its
+// UPDATE fails and the audit row orphans forever at "started" — an access whose disposition can
+// never be reconciled. Regression guard for the bug found by the real HTTP+harness E2E.
+func TestDiagnoseFinishDetachedFromCancelledRequestCtx(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(secretPW))
+	d := stubDescriber{resp: describeResp("ssh -p 23 root@10.0.0.9", b64)}
+	ctx, cancel := context.WithCancel(context.Background())
+	// Simulate the client disconnecting mid-diagnosis: the request ctx cancels while the harness runs.
+	runner := &fakeRunner{res: Result{Output: "partial", TimedOut: true}, err: context.Canceled, onRun: cancel}
+	audit := &ctxCheckAudit{}
+	svc := NewService(runner, audit)
+
+	_, _ = svc.Diagnose(ctx, d, Owner{TopOrganizationID: 1, OrganizationID: 2}, "uhost-abc", "")
+	if !audit.finishCalled {
+		t.Fatalf("Finish was not called after a cancelled-mid-run diagnosis")
+	}
+	if audit.finishSawCancelled {
+		t.Fatalf("Finish received a cancelled ctx — the audit UPDATE would fail and orphan the row at 'started'")
 	}
 }
 

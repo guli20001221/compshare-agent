@@ -110,6 +110,28 @@ def run_command(command: str) -> dict:
         AUDIT.append(entry)
 
 
+# F2 connectivity fast-fail. One cheap SSH dial BEFORE the (minutes-long) agent loop, so an
+# unreachable / stopped instance returns an instant, actionable verdict instead of the agent burning
+# its whole turn/time budget with every proposed command hanging at the 15s connect timeout. The probe
+# is deterministic (not model-chosen) and read-only — a fixed `true` no-op — so it needs no guardrail.
+_PREFLIGHT_REASONS = {
+    "auth_failed": "SSH 认证失败——实例内的登录凭证可能已变更（改过密码或禁用了密码登录）。"
+                   "建议在控制台重置密码或改用 SSH 密钥后重试。",
+    "connect_failed": "无法建立 SSH 连接——实例可能已关机 / 正在重启，或网络 / 安全组未放通 SSH 端口。"
+                      "请确认实例为运行中且 SSH 端口可达后重试。",
+}
+
+
+def preflight_probe(conn):
+    """Return None if the box answers a trivial SSH command, else a Chinese operator-facing reason.
+    The credential is used only for the dial and is never logged or returned."""
+    res = ssh_transport.run_ssh(conn, "true", secrets=_secrets())
+    err = res.get("error")
+    if not err:
+        return None
+    return _PREFLIGHT_REASONS.get(err, f"SSH 预检失败（{err}）。")
+
+
 def assert_single_tool(opts) -> None:
     """INV-9: fail CLOSED unless the harness exposes EXACTLY ssh_exec with every built-in stripped
     and host settings isolated. A built-in Bash here would run on the LOCAL control-plane host and
@@ -157,6 +179,15 @@ async def main():
     if not raw.strip():
         raise SystemExit("no handshake on stdin")
     set_conn(read_handshake(raw))
+
+    # F2: fast-fail if the instance is unreachable, before spawning the agent (which would otherwise
+    # spend its whole budget retrying commands that each hang at the SSH connect timeout).
+    reason = preflight_probe(_CONN)
+    if reason is not None:
+        print("\U0001f9e0", f"⚠ 只读诊断未能开始：{reason}")
+        print(f"  [  preflight] preflight_unreachable   exit=None  <ssh connectivity probe>")
+        return
+
     task = sys.argv[1] if len(sys.argv) > 1 else (
         "对这台 GPU 实例做一次只读健康巡检：确认 GPU 型号/驱动/显存占用、磁盘使用、内存、系统负载，"
         "判断是否健康并指出任何异常。")
