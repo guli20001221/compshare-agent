@@ -141,7 +141,9 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
 # Readers that emit raw file CONTENT — strict: every target must be a curated-safe absolute path.
 _CONTENT_READERS = {"cat", "nl", "tac", "strings", "od", "xxd", "hexdump"}
 # Readers that emit only metadata — lenient: bare names/flags/cwd ok, sensitive absolute path denies.
-_META_READERS = {"ls", "du", "stat", "file", "readlink", "wc", "md5sum", "sha256sum"}
+# `du` is deliberately NOT here — it emits ONLY a size (not even a filename), so it gets its own,
+# broader user-dir allowlist below (F5).
+_META_READERS = {"ls", "stat", "file", "readlink", "wc", "md5sum", "sha256sum"}
 
 # The auto-run CONTENT file surface (readers that emit raw bytes). /var/log/ is deliberately NOT here
 # (cloud-init/auth logs leak). Kept narrow on purpose — a broadened content surface is a leak vector.
@@ -156,6 +158,9 @@ _SAFE_READ_EXACT = {
     "/proc/meminfo", "/proc/cpuinfo", "/proc/loadavg", "/proc/uptime",
     "/proc/version", "/proc/stat", "/proc/diskstats", "/proc/mounts", "/proc/swaps",
     "/proc/modules", "/proc/devices", "/proc/cmdline",
+    # socket tables — the ss/netstat fallback for port-state diagnosis when neither tool is
+    # installed (a minimal container). Hex addr/port/state/uid/inode; no user file content, no secret.
+    "/proc/net/tcp", "/proc/net/tcp6", "/proc/net/udp", "/proc/net/udp6",
     "/usr/local/cuda/version.txt", "/usr/local/cuda/version.json",
 }
 # Per-process files that carry NO secret — for container/cgroup detection. environ and cmdline are
@@ -176,10 +181,11 @@ def _basename(tok: str) -> str:
     return tok.rsplit("/", 1)[-1]
 
 
-# Metadata-only reads (ls/stat/file/readlink/du/wc/*sum) reveal a name/size/perms/hash but never file
-# CONTENT, so they are safe across the introspection tree — binaries, libs, device nodes, kernel /
-# hardware state — which is far broader than the content-read allowlist. Deliberately EXCLUDES
-# /etc, /var, /home, /root (a filename there can itself be sensitive; content reads stay narrow).
+# Metadata-only reads (ls/stat/file/readlink/wc/*sum; `du` is broader, see F5 below) reveal a
+# name/size/perms/hash but never file CONTENT, so they are safe across the introspection tree —
+# binaries, libs, device nodes, kernel / hardware state — which is far broader than the content-read
+# allowlist. Deliberately EXCLUDES /etc, /var, /home, /root (a filename there can itself be
+# sensitive; content reads stay narrow).
 _META_SAFE_PREFIXES = ("/dev/", "/usr/", "/sys/", "/proc/", "/lib/", "/lib64/",
                        "/bin/", "/sbin/", "/opt/")
 
@@ -227,6 +233,40 @@ def _safe_meta_read(tokens) -> bool:
         if t.startswith("-") or t.isdigit():
             continue
         if "/" in t and not _safe_meta_path(t):
+            return False
+    return True
+
+
+# --- F5: `du` size-only reads on user-data dirs -------------------------------
+# `du` emits ONLY an aggregate byte size — never a filename, never file content — so it is strictly
+# safer than the ls/stat metadata reads F4 already allows, and safe even on the user-data dirs
+# (/root, /home, /workspace, ...) that ls/stat are denied. Disk-full diagnosis fundamentally needs
+# to enumerate where space went, and a user's big files live in exactly those dirs (a live repro
+# proved the harness could confirm "disk full" via df yet not point at the 47G culprit in /root).
+# The secret-FILE tripwire substrings (.ssh, id_rsa, shadow, .env, ...) still deny even a size read
+# (defense in depth); only the whole-dir `/root` block is lifted for `du`.
+_DU_USER_PREFIXES = ("/root", "/home", "/workspace", "/data", "/mnt")
+_DU_DENY_SUBSTR = tuple(d for d in _DENY_PATH_SUBSTR if d != "/root")
+
+
+def _du_safe_path(p: str) -> bool:
+    if ".." in p:
+        return False
+    low = p.lower()
+    if any(d in low for d in _DU_DENY_SUBSTR):
+        return False
+    if _safe_meta_path(p):                               # F4 introspection tree: a size read is fine
+        return True
+    return any(p == pre or p.startswith(pre + "/") for pre in _DU_USER_PREFIXES)
+
+
+def _du_read_ok(tokens) -> bool:
+    for t in tokens[1:]:
+        if t.startswith("-") or t.isdigit():
+            continue
+        if ".." in t:
+            return False
+        if "/" in t and not _du_safe_path(t):
             return False
     return True
 
@@ -308,6 +348,8 @@ def _is_read_only(cmd: str) -> bool:
         return _NVIDIA.fullmatch(cmd) is not None
     if any(p.fullmatch(cmd) for p in _STRUCTURED_DIAG):
         return True
+    if binary == "du":                                   # F5: size-only, broader user-dir allowlist
+        return _du_read_ok(tokens)
     if binary in _CONTENT_READERS:
         return _safe_content_read(tokens)
     if binary in _META_READERS:
