@@ -133,7 +133,7 @@ def build_options(server, model):
         allowed_tools=list(ALLOWED_TOOLS),
         disallowed_tools=list(DISALLOWED_TOOLS),
         setting_sources=[],
-        max_turns=16,
+        max_turns=40,
         model=model,
     )
     assert_single_tool(opts)                              # fail closed before any turn runs

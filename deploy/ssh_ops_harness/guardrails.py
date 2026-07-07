@@ -80,6 +80,28 @@ _DESTRUCTIVE = [re.compile(p, re.IGNORECASE) for p in _DESTRUCTIVE_SRC]
 
 # Auto-run disqualifiers: shell control/expansion/redirection/glob/quote/parent-dir/newline.
 _DANGEROUS_META = re.compile(r"""[;|&`$(){}\[\]<>*?~'"]|\.\.|\n""")
+
+# --- Safe read-only pipeline support (round 3) --------------------------------
+# The blanket _DANGEROUS_META ban refuses EVERY piped/globbed diagnostic
+# (`lsmod | grep nvidia`, `cat /proc/driver/nvidia/gpus/*/information`) — which is
+# most of what a real GPU/掉卡 diagnosis needs, so the agent burns its whole turn
+# budget on refused workarounds. We carve out a NARROW, structurally-validated
+# exception: a pipeline whose SOURCE is an allowlisted read-only command and whose
+# every downstream stage is a stdin-only text filter. Deny-by-default is preserved —
+# anything not matching this exact shape still falls through to `mutating`.
+#
+# stderr/void redirects that write no real file (stripped before the meta scan so
+# `nvidia-smi 2>&1 | grep` and `df -h / 2>/dev/null` are not rejected):
+_SAFE_REDIR = re.compile(r"(?:\d*>&\d+|&>\s*/dev/null|\d*>\s*/dev/null)")
+# Hard-dangerous shell constructs. Deliberately EXCLUDES `|` (pipe) and `*`/`?`
+# (glob) — those are validated structurally below. Everything that enables command
+# chaining (`;` `&&`), substitution (`` ` `` `$()`), real-file redirection (`>`),
+# brace/bracket/tilde expansion, quotes, parent-dir traversal, or newlines is banned.
+_HARD_META = re.compile(r"""[;&`$<>(){}\[\]~'"]|\.\.|\n""")
+# Pure stdin->stdout text filters (no file writes, no exec, no file-arg reads).
+# Deliberately EXCLUDES awk/sed (system()/-i/w-file), xargs/tee (exec/write), dd.
+_SAFE_FILTERS = {"grep", "egrep", "fgrep", "head", "tail", "wc", "sort",
+                 "uniq", "cut", "tr", "nl", "column", "rev", "cat", "tac"}
 # Follow/stream flags — scoped to the binaries where -f means "stream" (NOT ps -f / lsblk -f).
 _FOLLOW = re.compile(r"(?:^|\s)(-f|-F|--follow)(?:\s|$)")
 # Per-binary continuous flags that loop forever (cluster-aware, e.g. `free -hs1`, `netstat -tlnpc`).
@@ -106,6 +128,10 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"pip3?\s+(list|show|freeze)(\s+\S+)*",
     r"conda\s+(list|info|env\s+list)(\s+\S+)*",
     r"docker\s+(ps|images|info|version|stats\s+--no-stream)(\s+\S+)*",
+    # package / shared-lib inventory — read-only, central to driver/CUDA diagnosis.
+    # `ldconfig` with NO flag rebuilds the cache (mutating), so require -p/--print-cache.
+    r"dpkg\s+(-l|--list|-s|--status|-L|--listfiles)(\s+\S+)*",
+    r"ldconfig\s+(-p|--print-cache)",
 ]]
 
 # Readers that emit raw file CONTENT — strict: every target must be a curated-safe absolute path.
@@ -252,6 +278,35 @@ def _is_read_only(cmd: str) -> bool:
     return False
 
 
+def _is_safe_filter(seg: str) -> bool:
+    """A downstream pipe stage: an allowlisted text filter reading ONLY stdin. No
+    file-path args (so `| grep root /etc/shadow` cannot read a file) and no -f stream."""
+    toks = seg.split()
+    if not toks or _basename(toks[0]) not in _SAFE_FILTERS:
+        return False
+    if _FOLLOW.search(seg):
+        return False
+    return not any("/" in t for t in toks[1:])
+
+
+def _is_safe_readonly_command(cmd: str) -> bool:
+    """True for a curated read-only command, INCLUDING a safe pipeline/glob. Strips
+    stderr-to-null/fd redirects, rejects any hard-dangerous metachar, then requires the
+    shape `<read-only source> [ | <text filter> ]*`. Globs (`*`/`?`) are allowed because
+    the source's path allowlist (_safe_path) still validates the literal string, so a glob
+    cannot escape a safe prefix (`/proc/driver/nvidia/*` stays inside nvidia driver info,
+    while `/etc/*` or a `..` traversal is still denied)."""
+    stripped = _SAFE_REDIR.sub(" ", cmd)
+    if _HARD_META.search(stripped):
+        return False
+    segs = [s.strip() for s in stripped.split("|")]
+    if any(not s for s in segs):                          # empty => `||` or dangling pipe
+        return False
+    if not _is_read_only(segs[0]):
+        return False
+    return all(_is_safe_filter(s) for s in segs[1:])
+
+
 def classify(command: str) -> str:
     """Return 'destructive' | 'read_only' | 'mutating'. Reasoning-blind: command text only."""
     cmd = command.strip()
@@ -259,8 +314,8 @@ def classify(command: str) -> str:
         return "read_only"
     if any(p.search(cmd) for p in _DESTRUCTIVE):          # 1) destructive precedes everything
         return "destructive"
-    if not _DANGEROUS_META.search(cmd) and _is_read_only(cmd):
-        return "read_only"                                # 2) curated, one-shot, expansion-free
+    if _is_safe_readonly_command(cmd):                    # 2) curated read-only: a bare command,
+        return "read_only"                                #    or a safe <source>|<filter> pipeline/glob
     return "mutating"                                     # 3) deny-first: unknown => confirm
 
 
