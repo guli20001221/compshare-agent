@@ -184,6 +184,24 @@ CLASSIFY_CASES = [
     ("cat /root/.bashrc", "mutating"),                      # content read of /root stays refused
     ("cat /proc/net/dev", "mutating"),                      # allowlist is EXACT — only tcp/udp added
 
+    # === F6: balanced SINGLE quotes now allowed (shell-literal grep patterns flash reflexively writes) ===
+    # WHY: flash writes `... | grep '8188'`; single quotes are shell-LITERAL so the pattern reaches
+    # grep as inert text and can never execute. DOUBLE quotes stay banned (they still expand $()/$VAR).
+    ("ss -tlnp | grep '8188'", "read_only"),
+    ("netstat -tlnp | grep '8188'", "read_only"),
+    ("nvidia-smi | grep 'MiB'", "read_only"),
+    ("dmesg | grep -i 'nvidia'", "read_only"),
+    ("cat /proc/net/tcp | grep '0A'", "read_only"),
+
+    # === F6 bypass attempts that MUST stay refused ===
+    ('nvidia-smi | grep "MiB"', "mutating"),                # DOUBLE quotes stay banned
+    ("cat /proc/meminfo | grep '$(whoami)'", "mutating"),   # $ banned even inside quotes (conservative)
+    ("cat '/etc/shadow'", "mutating"),                      # quoted secret path still hits _safe_path
+    ("grep 'x' /etc/shadow", "mutating"),                   # grep is a filter, not a read-only SOURCE
+    ("ls '/root'", "mutating"),                             # quoted /root still denied
+    ("cat /proc/net/tcp | grep 'x", "mutating"),            # unbalanced single quote -> fail closed
+    ("cat /proc/net/tcp | grep 'root' > /tmp/x", "mutating"),  # real-file redirect still banned
+
     # --- streaming / hang variants must NOT auto-run ---
     ("tail -f /var/log/syslog", "mutating"),
     ("journalctl -f", "mutating"),
