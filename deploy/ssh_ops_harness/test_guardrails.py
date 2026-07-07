@@ -202,6 +202,23 @@ CLASSIFY_CASES = [
     ("cat /proc/net/tcp | grep 'x", "mutating"),            # unbalanced single quote -> fail closed
     ("cat /proc/net/tcp | grep 'root' > /tmp/x", "mutating"),  # real-file redirect still banned
 
+    # === F8: mount/partition config reads for data-disk diagnosis now auto-run ===
+    # WHY: a live "买了数据盘 df 看不到" repro — the harness diagnosed it from lsblk+df, but
+    # `cat /proc/partitions` and `cat /etc/fstab` were refused. The raw block-device table and the
+    # mount config are exactly what confirms a raw+unmounted disk / a wrong fstab entry. Exact paths.
+    ("cat /proc/partitions", "read_only"),
+    ("cat /etc/fstab", "read_only"),
+    ("cat /etc/mtab", "read_only"),
+    ("head -20 /etc/fstab", "read_only"),
+    ("cat /proc/partitions | grep vdb", "read_only"),          # piped to safe filter
+    ("cat /etc/fstab | grep -v 'swap'", "read_only"),
+
+    # === F8 bypass attempts that MUST stay refused ===
+    ("cat /etc/passwd", "mutating"),                           # /etc NOT opened broadly — exact only
+    ("cat /etc/ssh/sshd_config", "mutating"),
+    ("sudo blkid /dev/vdb", "mutating"),                       # sudo-readonly still deferred (separate call)
+    ("cat /proc/kmsg", "mutating"),                            # not in exact set (a kmsg read can block)
+
     # --- streaming / hang variants must NOT auto-run ---
     ("tail -f /var/log/syslog", "mutating"),
     ("journalctl -f", "mutating"),

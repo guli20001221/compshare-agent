@@ -157,8 +157,14 @@ _SAFE_READ_PREFIXES = (
 _SAFE_READ_EXACT = {
     "/etc/os-release", "/etc/lsb-release", "/etc/hostname", "/etc/machine-id",
     "/etc/timezone", "/etc/issue",
+    # F8: mount/partition config — the core of data-disk "为什么 df 看不到我的盘" diagnosis. A
+    # fresh cloud data disk is raw+unmounted, and a WRONG /etc/fstab entry is the classic reason a
+    # mount silently fails on boot; both are diagnosed by reading these. fstab/mtab hold device
+    # UUIDs + mount options, not user secrets (secret files still tripwire via _DENY_PATH_SUBSTR).
+    "/etc/fstab", "/etc/mtab",
     "/proc/meminfo", "/proc/cpuinfo", "/proc/loadavg", "/proc/uptime",
     "/proc/version", "/proc/stat", "/proc/diskstats", "/proc/mounts", "/proc/swaps",
+    "/proc/partitions",                                  # F8: raw block-device table (name/size)
     "/proc/modules", "/proc/devices", "/proc/cmdline",
     # socket tables — the ss/netstat fallback for port-state diagnosis when neither tool is
     # installed (a minimal container). Hex addr/port/state/uid/inode; no user file content, no secret.
