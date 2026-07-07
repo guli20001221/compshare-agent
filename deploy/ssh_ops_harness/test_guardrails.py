@@ -160,6 +160,30 @@ CLASSIFY_CASES = [
     ("file $(which nvidia-smi)", "mutating"),               # $() substitution still blocked
     ("which nvidia-smi; rm -rf /", "destructive"),          # chaining + destructive wins
 
+    # === F5: `du` size-only reads on user-data dirs + socket-table fallback now auto-run ===
+    # WHY: a live disk-full repro showed the harness could confirm "disk full" via df but never
+    # point at the 47G culprit, because du on /root was refused. du emits ONLY a size (no name, no
+    # content) — safer than the ls/stat F4 already allows — so it is opened on the user-data dirs.
+    ("du -sh /root", "read_only"),                          # the disk-hunt unblock (/root lifted for du)
+    ("du -sh /root/models", "read_only"),
+    ("du -h /home", "read_only"),
+    ("du -sh /home/alice/data", "read_only"),
+    ("du -sh /workspace", "read_only"),
+    ("du -sh /data", "read_only"),
+    ("du -sh /mnt/disk0", "read_only"),
+    ("du -sh /root/* | sort -h | tail", "read_only"),       # glob under /root piped to safe filters
+    ("cat /proc/net/tcp", "read_only"),                     # ss/netstat fallback: socket table
+    ("cat /proc/net/tcp6", "read_only"),
+
+    # === F5 bypass attempts that MUST stay refused ===
+    ("du -sh /root/.ssh", "mutating"),                      # secret-file substr denies even a size read
+    ("du -sh /root/.bash_history", "mutating"),
+    ("du -sh /etc", "mutating"),                            # /etc is not a user dir — du stays scoped
+    ("du /var/lib/mysql", "mutating"),                      # /var not opened for du
+    ("ls -la /root/models", "mutating"),                    # ls leaks NAMES -> stays refused where du is ok
+    ("cat /root/.bashrc", "mutating"),                      # content read of /root stays refused
+    ("cat /proc/net/dev", "mutating"),                      # allowlist is EXACT — only tcp/udp added
+
     # --- streaming / hang variants must NOT auto-run ---
     ("tail -f /var/log/syslog", "mutating"),
     ("journalctl -f", "mutating"),
