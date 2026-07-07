@@ -156,7 +156,7 @@ func TestPlannerTracePlannedExecutionPathMarshals(t *testing.T) {
 		Timestamp:     "2026-06-02T00:00:00Z",
 		UserMsgHash:   "sha256:user",
 		IntentRouter: RouterTrace{
-			Intent:             "knowledge_qa",
+			Intent:               "knowledge_qa",
 			PlannedExecutionPath: "terminal_rag",
 		},
 	})
@@ -186,6 +186,27 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 		HybridMode:           "bm25_fallback",
 		HybridFallbackReason: "embedding_timeout",
 		EmbeddingLatencyMS:   int64Ptr(4987),
+		Activities: []RetrievalActivity{{
+			ID:        "search_1",
+			Query:     "实例一直卡初始化怎么办",
+			Hits:      2,
+			LatencyMS: 123,
+		}},
+		References: []RetrievalReference{{
+			RefID:      "1",
+			ChunkID:    "w0-init_failure-error-code-a1b2c3d4",
+			Title:      "初始化失败排查",
+			SourceArea: "init_failure",
+			Score:      0.78,
+			Rank:       1,
+			ActivityIDs: []string{
+				"search_1",
+			},
+		}},
+		CitedRefs: []RetrievalCitedRef{{
+			RefID:   "1",
+			ChunkID: "w0-init_failure-error-code-a1b2c3d4",
+		}},
 	}
 
 	data, err := json.Marshal(trace)
@@ -206,6 +227,9 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 		`"hybrid_mode":"bm25_fallback"`,
 		`"hybrid_fallback_reason":"embedding_timeout"`,
 		`"embedding_latency_ms":4987`,
+		`"activities":[{"id":"search_1","query":"实例一直卡初始化怎么办","hits":2,"latency_ms":123}]`,
+		`"references":[{"ref_id":"1","chunk_id":"w0-init_failure-error-code-a1b2c3d4","title":"初始化失败排查","source_area":"init_failure","score":0.78,"rank":1,"activity_ids":["search_1"]}]`,
+		`"cited_refs":[{"ref_id":"1","chunk_id":"w0-init_failure-error-code-a1b2c3d4"}]`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("retrieval trace JSON missing %s: %s", want, text)
@@ -337,6 +361,9 @@ func TestRetrievalTraceNewFieldsMarkBlockObserved(t *testing.T) {
 		{name: "query normalized", trace: RetrievalTrace{QueryNormalized: "计费 规则"}},
 		{name: "query expansions", trace: RetrievalTrace{QueryExpansions: []string{"扣费规则"}}},
 		{name: "hit items", trace: RetrievalTrace{HitItems: []RetrievalHit{{ChunkID: "w0-billing_rule-aabbccdd", Score: 0.67, Kept: true}}}},
+		{name: "activities", trace: RetrievalTrace{Activities: []RetrievalActivity{{ID: "search_1", Query: "扣费规则", Hits: 1}}}},
+		{name: "references", trace: RetrievalTrace{References: []RetrievalReference{{RefID: "1", ChunkID: "w0-billing_rule-aabbccdd", Title: "计费规则"}}}},
+		{name: "cited refs", trace: RetrievalTrace{CitedRefs: []RetrievalCitedRef{{RefID: "1", ChunkID: "w0-billing_rule-aabbccdd"}}}},
 		{name: "refused reason", trace: RetrievalTrace{RefusedReason: "no_evidence"}},
 		{name: "weak evidence", trace: RetrievalTrace{WeakEvidence: true}},
 		{name: "ranking error candidate", trace: RetrievalTrace{RankingErrorCandidate: true}},
@@ -374,7 +401,18 @@ func TestRetrievalTraceDefaultsKeepSlicesIterable(t *testing.T) {
 	if record.Retrieval.HitItems == nil {
 		t.Fatalf("HitItems default = nil, want empty slice")
 	}
-	if len(record.Retrieval.QueryExpansions) != 0 || len(record.Retrieval.HitItems) != 0 {
+	if record.Retrieval.Activities == nil {
+		t.Fatalf("Activities default = nil, want empty slice")
+	}
+	if record.Retrieval.References == nil {
+		t.Fatalf("References default = nil, want empty slice")
+	}
+	if record.Retrieval.CitedRefs == nil {
+		t.Fatalf("CitedRefs default = nil, want empty slice")
+	}
+	if len(record.Retrieval.QueryExpansions) != 0 || len(record.Retrieval.HitItems) != 0 ||
+		len(record.Retrieval.Activities) != 0 || len(record.Retrieval.References) != 0 ||
+		len(record.Retrieval.CitedRefs) != 0 {
 		t.Fatalf("retrieval defaults should be empty: %#v", record.Retrieval)
 	}
 }
@@ -412,6 +450,9 @@ func TestRetrievalTraceHashingStableUnderNilVsEmpty(t *testing.T) {
 	emptySlices := RetrievalTrace{
 		QueryExpansions: []string{},
 		HitItems:        []RetrievalHit{},
+		Activities:      []RetrievalActivity{},
+		References:      []RetrievalReference{},
+		CitedRefs:       []RetrievalCitedRef{},
 	}
 
 	leftHash, err := HashTracePayload(nilSlices)
@@ -990,7 +1031,7 @@ func TestExecutionPathMismatch(t *testing.T) {
 		{
 			name: "planned and actual match",
 			record: TraceRecord{
-				IntentRouter:           RouterTrace{PlannedExecutionPath: ExecutionPathRouting},
+				IntentRouter:        RouterTrace{PlannedExecutionPath: ExecutionPathRouting},
 				ActualExecutionPath: ExecutionPathRouting,
 			},
 			wantMismatch: false,
@@ -999,7 +1040,7 @@ func TestExecutionPathMismatch(t *testing.T) {
 		{
 			name: "planned terminal rag actual agent mismatch",
 			record: TraceRecord{
-				IntentRouter:           RouterTrace{PlannedExecutionPath: ExecutionPathTerminalRAG},
+				IntentRouter:        RouterTrace{PlannedExecutionPath: ExecutionPathTerminalRAG},
 				ActualExecutionPath: ExecutionPathAgent,
 			},
 			wantMismatch: true,
@@ -1008,8 +1049,8 @@ func TestExecutionPathMismatch(t *testing.T) {
 		{
 			name: "derive actual when unset",
 			record: TraceRecord{
-				IntentRouter:   RouterTrace{PlannedExecutionPath: ExecutionPathAgent},
-				ToolCalls: []ToolCallTrace{{Source: ToolSourceMainReAct}},
+				IntentRouter: RouterTrace{PlannedExecutionPath: ExecutionPathAgent},
+				ToolCalls:    []ToolCallTrace{{Source: ToolSourceMainReAct}},
 			},
 			wantMismatch: false,
 			wantOK:       true,

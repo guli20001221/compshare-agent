@@ -66,6 +66,53 @@ func TestExecuteSearchKnowledge_LocalDispatchSubstantive(t *testing.T) {
 	assert.Len(t, eng.searchKnowledgeHitsThisTurn, 1)
 }
 
+func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(t *testing.T) {
+	chunkA := knowledge.KBChunk{
+		ChunkID:   "chunk-a",
+		KBVersion: "kb.v1",
+		Title:     "GPU resize",
+		Content:   "调整 GPU 数量需要先关机。",
+	}
+	chunkB := knowledge.KBChunk{
+		ChunkID:   "chunk-b",
+		KBVersion: "kb.v1",
+		Title:     "Disk persistence",
+		Content:   "重装会清除系统盘，数据盘不受影响。",
+	}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+		{Enabled: true, KBVersion: "kb.v1", HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 90, Chunk: chunkA}}},
+		{Enabled: true, KBVersion: "kb.v1", HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 91, Chunk: chunkB}}},
+	}}
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	var traces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		traces = append(traces, trace)
+	})
+
+	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "GPU 能否调整"}, noopStep)
+	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "更换 GPU 数据会变吗"}, noopStep)
+	report := knowledge.ValidateGroundedCitations("GPU 调整和数据保留分别见资料 [[chunk-a]] [[chunk-b]]。", eng.searchKnowledgeLedgerThisTurn)
+	require.True(t, report.Grounded())
+	eng.emitSearchKnowledgeCitationTrace(report)
+
+	require.Len(t, retriever.calls, 2)
+	require.NotEmpty(t, traces)
+	final := traces[len(traces)-1]
+	require.Len(t, final.Activities, 2)
+	assert.Equal(t, "search_1", final.Activities[0].ID)
+	assert.Equal(t, "search_2", final.Activities[1].ID)
+	require.Len(t, final.References, 2)
+	assert.Equal(t, []string{"search_1"}, final.References[0].ActivityIDs)
+	assert.Equal(t, []string{"search_2"}, final.References[1].ActivityIDs)
+	assert.Equal(t, []observability.RetrievalCitedRef{
+		{RefID: "1", ChunkID: "chunk-a"},
+		{RefID: "2", ChunkID: "chunk-b"},
+	}, final.CitedRefs)
+	assert.Equal(t, []string{"chunk-a", "chunk-b"}, final.CitedChunkIDs)
+}
+
 // TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits proves the relevance floor:
 // when the retriever returns only topically-IRRELEVANT top-K (qwen3-reranker score
 // below weakEvidenceSemanticThreshold=0.5 — what a tool-ops symptom retrieves when
@@ -93,8 +140,8 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	eng.SetKnowledgeRetriever(retriever)
 
 	tc := openai.ToolCall{
-		ID:   "call-sk",
-		Type: openai.ToolTypeFunction,
+		ID:       "call-sk",
+		Type:     openai.ToolTypeFunction,
 		Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"vllm 进程被 kill"}`},
 	}
 	out := eng.executeTool(context.Background(), tc, noopStep)

@@ -270,7 +270,9 @@ type Engine struct {
 	// synthesis cites only ChunkIDs present here. Reset per turn; populated only
 	// when the agentic tool runs AND the grounded validator is on — empty (inert)
 	// otherwise, keeping flag-off byte-identical.
-	searchKnowledgeLedgerThisTurn knowledge.EvidenceLedger
+	searchKnowledgeLedgerThisTurn       knowledge.EvidenceLedger
+	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
+	searchKnowledgeActivityIDsByChunkID map[string][]string
 	// knowledgeQAAgentLoopThisTurn marks a knowledge_qa turn that the
 	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP route sent into the shared ReAct loop
 	// (forced SearchKnowledge first hop) instead of the terminal-RAG route. Set
@@ -1248,6 +1250,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeHitsThisTurn = nil
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
+	e.searchKnowledgeActivitiesThisTurn = nil
+	e.searchKnowledgeActivityIDsByChunkID = nil
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.createPreferenceThisTurn = nil
 	e.expireContextFrame(time.Now())
@@ -3141,12 +3145,18 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatc
 		RerankerLatencyMS:      retrieved.RerankerLatencyMS,
 		RerankerFallbackReason: retrieved.RerankerFallbackReason,
 		FloorValue:             weakEvidenceThresholdFor(retrieved.HybridMode),
+		Activities: []observability.RetrievalActivity{{
+			ID:    "search_1",
+			Query: retrievalQuery,
+			Hits:  len(retrieved.Hits),
+		}},
 	}
 	if trace.QueryNormalized == "" {
 		trace.QueryNormalized = knowledge.NormalizeQuery(retrievalQuery)
 	}
 	evidences, evidenceErr := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
 	trace.HitItems = projectEvidenceTraceHits(evidences, hitItems)
+	trace.References = retrievalReferencesFromHits(hitItems, "search_1")
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: "retrieval", Message: "搜索完成"})
 	if retrieved.Empty || len(retrieved.Hits) == 0 || len(evidences) == 0 || evidenceErr != nil {
 		trace.RefusedReason = "no_evidence"
@@ -3209,6 +3219,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatc
 		refusedReason = "wrong_domain"
 	}
 	trace.CitedChunkIDs = extractCitedChunkIDs(reply, hitItems)
+	trace.CitedRefs = citedRefsFromChunkIDs(trace.CitedChunkIDs, trace.References)
 	displayReply := stripCitationMarkers(reply)
 
 	// Replay buffered deltas only when the LLM's first-call output was
@@ -3357,6 +3368,135 @@ func projectEvidenceTraceHits(evidences []envelope.Evidence, items []knowledge.R
 		})
 	}
 	return hits
+}
+
+func retrievalReferencesFromHits(items []knowledge.RetrievalHit, activityID string) []observability.RetrievalReference {
+	refs := make([]observability.RetrievalReference, 0, len(items))
+	for i, item := range items {
+		chunkID := strings.TrimSpace(item.Chunk.ChunkID)
+		if chunkID == "" {
+			continue
+		}
+		ref := observability.RetrievalReference{
+			RefID:      strconv.Itoa(len(refs) + 1),
+			ChunkID:    chunkID,
+			Title:      strings.TrimSpace(item.Chunk.Title),
+			SourceArea: strings.TrimSpace(item.Chunk.ProductArea),
+			Score:      item.Score,
+			Rank:       i + 1,
+		}
+		if activityID != "" {
+			ref.ActivityIDs = []string{activityID}
+		}
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
+func retrievalReferencesFromLedger(ledger knowledge.EvidenceLedger, hits []knowledge.RetrievalHit, activityID string) []observability.RetrievalReference {
+	return retrievalReferencesFromLedgerActivities(ledger, hits, nil, activityID)
+}
+
+func retrievalReferencesFromLedgerActivities(ledger knowledge.EvidenceLedger, hits []knowledge.RetrievalHit, activityIDsByChunkID map[string][]string, fallbackActivityID string) []observability.RetrievalReference {
+	if len(ledger.Items) == 0 {
+		return retrievalReferencesFromHits(hits, fallbackActivityID)
+	}
+	hitByChunkID := make(map[string]knowledge.RetrievalHit, len(hits))
+	for _, hit := range hits {
+		if id := strings.TrimSpace(hit.Chunk.ChunkID); id != "" {
+			hitByChunkID[id] = hit
+		}
+	}
+	refs := make([]observability.RetrievalReference, 0, len(ledger.Items))
+	for _, item := range ledger.Items {
+		chunkID := strings.TrimSpace(item.ChunkID)
+		if chunkID == "" {
+			continue
+		}
+		ref := observability.RetrievalReference{
+			RefID:      strconv.Itoa(len(refs) + 1),
+			ChunkID:    chunkID,
+			Title:      strings.TrimSpace(item.Title),
+			SourceArea: strings.TrimSpace(item.ProductArea),
+			Rank:       len(refs) + 1,
+		}
+		if hit, ok := hitByChunkID[chunkID]; ok {
+			if ref.Title == "" {
+				ref.Title = strings.TrimSpace(hit.Chunk.Title)
+			}
+			if ref.SourceArea == "" {
+				ref.SourceArea = strings.TrimSpace(hit.Chunk.ProductArea)
+			}
+			ref.Score = hit.Score
+		}
+		if ids := append([]string(nil), activityIDsByChunkID[chunkID]...); len(ids) > 0 {
+			ref.ActivityIDs = ids
+		} else if fallbackActivityID != "" {
+			ref.ActivityIDs = []string{fallbackActivityID}
+		}
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
+func (e *Engine) recordSearchKnowledgeActivity(activity observability.RetrievalActivity, hits []knowledge.RetrievalHit) {
+	if strings.TrimSpace(activity.ID) == "" {
+		return
+	}
+	e.searchKnowledgeActivitiesThisTurn = append(e.searchKnowledgeActivitiesThisTurn, activity)
+	if len(hits) == 0 {
+		return
+	}
+	if e.searchKnowledgeActivityIDsByChunkID == nil {
+		e.searchKnowledgeActivityIDsByChunkID = map[string][]string{}
+	}
+	for _, hit := range hits {
+		chunkID := strings.TrimSpace(hit.Chunk.ChunkID)
+		if chunkID == "" {
+			continue
+		}
+		e.searchKnowledgeActivityIDsByChunkID[chunkID] = appendUniqueString(e.searchKnowledgeActivityIDsByChunkID[chunkID], activity.ID)
+	}
+}
+
+func appendUniqueString(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func citedRefsFromChunkIDs(chunkIDs []string, refs []observability.RetrievalReference) []observability.RetrievalCitedRef {
+	if len(chunkIDs) == 0 || len(refs) == 0 {
+		return nil
+	}
+	byChunkID := make(map[string]observability.RetrievalReference, len(refs))
+	for _, ref := range refs {
+		if ref.ChunkID != "" {
+			byChunkID[ref.ChunkID] = ref
+		}
+	}
+	out := make([]observability.RetrievalCitedRef, 0, len(chunkIDs))
+	seen := map[string]struct{}{}
+	for _, chunkID := range chunkIDs {
+		ref, ok := byChunkID[chunkID]
+		if !ok {
+			continue
+		}
+		key := ref.RefID + "\x00" + ref.ChunkID
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, observability.RetrievalCitedRef{RefID: ref.RefID, ChunkID: ref.ChunkID})
+	}
+	return out
 }
 
 func ragReferencesFromEvidence(evidences []envelope.Evidence) []prompt.RAGReference {
@@ -3864,6 +4004,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	// Count every invocation (incl. the degenerate no-retriever/empty-query path)
 	// so the ReAct loop can withdraw the tool once the per-turn cap is hit.
 	e.searchKnowledgeCallsThisTurn++
+	activityID := fmt.Sprintf("search_%d", e.searchKnowledgeCallsThisTurn)
 	if e.knowledgeRetriever == nil || query == "" {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
 		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: query}, true, false)
@@ -3895,6 +4036,12 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	ledger := knowledge.BuildSubstantiveEvidenceLedger(query, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
 	e.searchKnowledgeRanThisTurn = true
 	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
+	e.recordSearchKnowledgeActivity(observability.RetrievalActivity{
+		ID:              activityID,
+		Query:           query,
+		Hits:            len(retrieved.Hits),
+		FloorDroppedAll: floorDroppedAll,
+	}, hits)
 	// Accumulate the per-turn ChunkID-keyed, deduped ledger so the grounded-answer
 	// validator can check the final synthesis cites only retrieved ChunkIDs (#126).
 	// Gated so flag-off does no extra work and keeps no extra state (byte-identical
@@ -3910,7 +4057,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	// — including when the relevance floor dropped it. Without this the rec.retrieval
 	// block is populated only by the terminal-RAG path. Mirrors
 	// recordDiagnosisKnowledgeProbe's trace emission.
-	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits, floorDroppedAll)
+	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits, floorDroppedAll, activityID)
 	empty := retrieved.Empty || len(ledger.Items) == 0
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
 	return searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn)
@@ -3923,7 +4070,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 // retrieval honestly records refused_reason=no_evidence (so a corpus-gap query
 // is visible, not silently presented as grounded). CitedChunkIDs is left to the
 // terminal-RAG cited-strip pass; this is the RETRIEVED set, not the cited set.
-func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowledge.RetrievalResult, hitItems []knowledge.RetrievalHit, floorDroppedAll bool) {
+func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowledge.RetrievalResult, hitItems []knowledge.RetrievalHit, floorDroppedAll bool, activityID string) {
 	if len(hitItems) == 0 && len(retrieved.Hits) > 0 {
 		hitItems = make([]knowledge.RetrievalHit, 0, len(retrieved.Hits))
 		for _, chunk := range retrieved.Hits {
@@ -3946,12 +4093,19 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 		RerankerFallbackReason: retrieved.RerankerFallbackReason,
 		FloorDroppedAll:        floorDroppedAll,
 		FloorValue:             weakEvidenceThresholdFor(retrieved.HybridMode),
+		Activities: []observability.RetrievalActivity{{
+			ID:              activityID,
+			Query:           query,
+			Hits:            len(retrieved.Hits),
+			FloorDroppedAll: floorDroppedAll,
+		}},
 	}
 	if trace.QueryNormalized == "" {
 		trace.QueryNormalized = knowledge.NormalizeQuery(query)
 	}
 	evidences, evidenceErr := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
 	trace.HitItems = projectEvidenceTraceHits(evidences, hitItems)
+	trace.References = retrievalReferencesFromHits(hitItems, activityID)
 	if retrieved.Empty || len(retrieved.Hits) == 0 || len(evidences) == 0 || evidenceErr != nil {
 		trace.RefusedReason = "no_evidence"
 		trace.RankingErrorCandidate = true
@@ -4033,6 +4187,7 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 	}
 	report := knowledge.ValidateGroundedCitations(content, e.searchKnowledgeLedgerThisTurn)
 	if report.Grounded() {
+		e.emitSearchKnowledgeCitationTrace(report)
 		return knowledge.StripCiteMarkers(content)
 	}
 	// Not properly cited. The ONLY cite-exempt answer is the explicit canned
@@ -4078,10 +4233,42 @@ func (e *Engine) retrySearchKnowledgeCitation(ctx context.Context) (string, bool
 	if knowledge.ValidateNoRawEvidenceLeak(retry, e.searchKnowledgeHitsThisTurn) != nil {
 		return "", false
 	}
-	if !knowledge.ValidateGroundedCitations(retry, e.searchKnowledgeLedgerThisTurn).Grounded() {
+	report := knowledge.ValidateGroundedCitations(retry, e.searchKnowledgeLedgerThisTurn)
+	if !report.Grounded() {
 		return "", false
 	}
+	e.emitSearchKnowledgeCitationTrace(report)
 	return knowledge.StripCiteMarkers(retry), true
+}
+
+func (e *Engine) emitSearchKnowledgeCitationTrace(report knowledge.GroundedAnswerReport) {
+	if !report.Grounded() || len(e.searchKnowledgeHitsThisTurn) == 0 {
+		return
+	}
+	query := strings.TrimSpace(e.searchKnowledgeLedgerThisTurn.Query)
+	if query == "" {
+		query = strings.TrimSpace(e.lastUserMsg)
+	}
+	queryNormalized := knowledge.NormalizeQuery(query)
+	evidences, _ := evidencesFromRetrievalHits(e.searchKnowledgeHitsThisTurn, queryNormalized)
+	refs := retrievalReferencesFromLedgerActivities(e.searchKnowledgeLedgerThisTurn, e.searchKnowledgeHitsThisTurn, e.searchKnowledgeActivityIDsByChunkID, "")
+	kbVersion := ""
+	if len(e.searchKnowledgeHitsThisTurn) > 0 {
+		kbVersion = strings.TrimSpace(e.searchKnowledgeHitsThisTurn[0].Chunk.KBVersion)
+	}
+	trace := observability.RetrievalTrace{
+		Enabled:         true,
+		KBVersion:       kbVersion,
+		QueryRaw:        query,
+		QueryNormalized: queryNormalized,
+		Hits:            len(e.searchKnowledgeHitsThisTurn),
+		Activities:      append([]observability.RetrievalActivity(nil), e.searchKnowledgeActivitiesThisTurn...),
+		HitItems:        projectEvidenceTraceHits(evidences, e.searchKnowledgeHitsThisTurn),
+		References:      refs,
+		CitedChunkIDs:   append([]string(nil), report.CitedChunkIDs...),
+		CitedRefs:       citedRefsFromChunkIDs(report.CitedChunkIDs, refs),
+	}
+	e.emitRetrievalTrace(trace)
 }
 
 // emitSearchKnowledgeHardBlock records a post-LLM hardblock trace for the agentic

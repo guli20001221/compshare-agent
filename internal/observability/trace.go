@@ -519,10 +519,66 @@ func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 // retrieval when the incoming one has no hits; otherwise the latest (substantive or
 // first-ever) wins. Terminal RAG retrieves once, so its trace is unchanged.
 func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
+	if len(next.CitedChunkIDs) > 0 || len(next.CitedRefs) > 0 {
+		if !traceRetrievalObserved(current) {
+			return next
+		}
+		merged := current
+		if len(next.References) > 0 {
+			merged.References = next.References
+		}
+		if len(next.CitedRefs) > 0 {
+			merged.CitedRefs = next.CitedRefs
+		}
+		if len(next.CitedChunkIDs) > 0 {
+			merged.CitedChunkIDs = next.CitedChunkIDs
+		}
+		// The citation trace (emitSearchKnowledgeCitationTrace) recomputes
+		// References/CitedChunkIDs/Activities from the FULL accumulated turn, but
+		// `current` only holds the last SearchKnowledge call's HitItems/Hits (the
+		// "latest substantive wins" rule below). Without carrying next's HitItems/Hits
+		// too, a multi-hop turn persists cited_chunk_ids/references spanning the whole
+		// turn while hit_items reflects only the last call — a cited chunk can then be
+		// absent from hit_items in the ingested record. Overlay them from next.
+		if len(next.HitItems) > 0 {
+			merged.HitItems = next.HitItems
+		}
+		if next.Hits > merged.Hits {
+			merged.Hits = next.Hits
+		}
+		if len(next.Activities) > 0 {
+			merged.Activities = mergeRetrievalActivities(merged.Activities, next.Activities)
+		}
+		return merged
+	}
 	if current.Enabled && current.Hits > 0 && (!next.Enabled || next.Hits == 0) {
 		return current
 	}
 	return next
+}
+
+func mergeRetrievalActivities(current, next []RetrievalActivity) []RetrievalActivity {
+	if len(current) == 0 {
+		return append([]RetrievalActivity(nil), next...)
+	}
+	out := append([]RetrievalActivity(nil), current...)
+	seen := make(map[string]int, len(out))
+	for i, activity := range out {
+		if activity.ID != "" {
+			seen[activity.ID] = i
+		}
+	}
+	for _, activity := range next {
+		if idx, ok := seen[activity.ID]; activity.ID != "" && ok {
+			out[idx] = activity
+			continue
+		}
+		if activity.ID != "" {
+			seen[activity.ID] = len(out)
+		}
+		out = append(out, activity)
+	}
+	return out
 }
 
 type RateLimitTrace struct {
@@ -536,14 +592,17 @@ type RateLimitTrace struct {
 }
 
 type RetrievalTrace struct {
-	Enabled               bool           `json:"enabled"`
-	KBVersion             string         `json:"kb_version"`
-	QueryRaw              string         `json:"query_raw,omitempty"`
-	QueryNormalized       string         `json:"query_normalized,omitempty"`
-	QueryExpansions       []string       `json:"query_expansions,omitempty"`
-	Hits                  int            `json:"hits"`
-	HitItems              []RetrievalHit `json:"hit_items,omitempty"`
-	RefusedReason string `json:"refused_reason,omitempty"`
+	Enabled         bool                 `json:"enabled"`
+	KBVersion       string               `json:"kb_version"`
+	QueryRaw        string               `json:"query_raw,omitempty"`
+	QueryNormalized string               `json:"query_normalized,omitempty"`
+	QueryExpansions []string             `json:"query_expansions,omitempty"`
+	Hits            int                  `json:"hits"`
+	HitItems        []RetrievalHit       `json:"hit_items,omitempty"`
+	Activities      []RetrievalActivity  `json:"activities,omitempty"`
+	References      []RetrievalReference `json:"references,omitempty"`
+	CitedRefs       []RetrievalCitedRef  `json:"cited_refs,omitempty"`
+	RefusedReason   string               `json:"refused_reason,omitempty"`
 	// RefusalType classifies a RAG refusal into the #5 four-state taxonomy
 	// (corpus_gap / all_below_floor / synthesis_refused / wrong_domain). Derived
 	// at Finish from RefusedReason + FloorDroppedAll (DeriveRefusalType); empty
@@ -613,6 +672,31 @@ type RetrievalTrace struct {
 	// so the user only sees prose; this field is the only place [n] → chunk
 	// mapping survives.
 	CitedChunkIDs []string `json:"cited_chunk_ids,omitempty"`
+}
+
+type RetrievalActivity struct {
+	ID              string `json:"id"`
+	Query           string `json:"query"`
+	Hits            int    `json:"hits"`
+	LatencyMS       int64  `json:"latency_ms,omitempty"`
+	Fallback        string `json:"fallback,omitempty"`
+	Error           string `json:"error,omitempty"`
+	FloorDroppedAll bool   `json:"floor_dropped_all,omitempty"`
+}
+
+type RetrievalReference struct {
+	RefID       string   `json:"ref_id"`
+	ChunkID     string   `json:"chunk_id"`
+	Title       string   `json:"title,omitempty"`
+	SourceArea  string   `json:"source_area,omitempty"`
+	Score       float64  `json:"score,omitempty"`
+	Rank        int      `json:"rank,omitempty"`
+	ActivityIDs []string `json:"activity_ids,omitempty"`
+}
+
+type RetrievalCitedRef struct {
+	RefID   string `json:"ref_id"`
+	ChunkID string `json:"chunk_id"`
 }
 
 type RetrievalHit struct {
@@ -947,6 +1031,9 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		len(trace.QueryExpansions) > 0 ||
 		trace.Hits != 0 ||
 		len(trace.HitItems) > 0 ||
+		len(trace.Activities) > 0 ||
+		len(trace.References) > 0 ||
+		len(trace.CitedRefs) > 0 ||
 		trace.RefusedReason != "" ||
 		trace.RefusalType != "" ||
 		trace.FloorDroppedAll ||
@@ -1016,6 +1103,15 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	}
 	if r.Retrieval.HitItems == nil {
 		r.Retrieval.HitItems = []RetrievalHit{}
+	}
+	if r.Retrieval.Activities == nil {
+		r.Retrieval.Activities = []RetrievalActivity{}
+	}
+	if r.Retrieval.References == nil {
+		r.Retrieval.References = []RetrievalReference{}
+	}
+	if r.Retrieval.CitedRefs == nil {
+		r.Retrieval.CitedRefs = []RetrievalCitedRef{}
 	}
 	if r.Diagnosis.Claims == nil {
 		r.Diagnosis.Claims = []DiagnosisClaimTrace{}

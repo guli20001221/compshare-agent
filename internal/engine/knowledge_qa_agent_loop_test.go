@@ -68,7 +68,9 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
 	var plannerTraces []observability.RouterTrace
+	var retrievalTraces []observability.RetrievalTrace
 	eng.SetPlannerTraceObserver(func(tr observability.RouterTrace) { plannerTraces = append(plannerTraces, tr) })
+	eng.SetRetrievalTraceObserver(func(tr observability.RetrievalTrace) { retrievalTraces = append(retrievalTraces, tr) })
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 	eng.SetKnowledgeRetriever(retriever)
 
@@ -101,6 +103,13 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 	assert.Contains(t, reply, "停止的按量实例的磁盘仍会计费")
 	assert.NotContains(t, reply, "[[", "cite markers must be stripped for display")
 	assert.NotEqual(t, ragNoEvidenceReply, reply, "a properly cited answer must NOT be refused")
+	require.NotEmpty(t, retrievalTraces)
+	finalRetrieval := retrievalTraces[len(retrievalTraces)-1]
+	assert.Equal(t, []string{"faq-billing-001"}, finalRetrieval.CitedChunkIDs)
+	assert.Equal(t, []observability.RetrievalCitedRef{{RefID: "1", ChunkID: "faq-billing-001"}}, finalRetrieval.CitedRefs)
+	require.Len(t, finalRetrieval.References, 1)
+	assert.Equal(t, "1", finalRetrieval.References[0].RefID)
+	assert.Equal(t, "faq-billing-001", finalRetrieval.References[0].ChunkID)
 }
 
 // TestKnowledgeQAAgentLoop_FlagOff_TerminalRouteUnchanged proves the default-off
@@ -246,7 +255,7 @@ func TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{{ID: "c1", Type: openai.ToolTypeFunction,
 			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"billing"}`}}}},
-		{Content: "停止的按量实例的磁盘仍会计费。"},                       // uncited -> guard would refuse
+		{Content: "停止的按量实例的磁盘仍会计费。"},                     // uncited -> guard would refuse
 		{Content: "停止的按量实例的磁盘仍会计费 [[faq-billing-001]]。"}, // retry cites -> recovered
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
@@ -397,7 +406,7 @@ func TestKnowledgeQAAgentLoop_SearchCapWithdrawsToolAndAnswers(t *testing.T) {
 	finalAnswer := "暂无该主题的专项文档，建议查阅优云控制台或官网帮助。"
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		skCall, skCall, skCall, skCall, skCall, // 5 = maxSearchKnowledgeCallsPerTurn
-		{Content: finalAnswer},                 // round after the cap: tool withdrawn → final reply
+		{Content: finalAnswer}, // round after the cap: tool withdrawn → final reply
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
