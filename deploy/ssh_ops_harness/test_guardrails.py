@@ -122,6 +122,44 @@ CLASSIFY_CASES = [
     ("nvidia-smi | grep x; rm -rf /", "destructive"),        # destructive still wins over pipe parse
     ("tail -f /var/log/syslog | grep err", "mutating"),      # streaming source
 
+    # === F4: binary / device-node / lib introspection now auto-runs (metadata-only reads + which) ===
+    # WHY: a real "No devices"/掉卡 root-cause needs to inspect the nvidia-smi binary and the
+    # /dev/nvidia* nodes; the harness proposed exactly these and they were all refused, forcing a
+    # plausible-but-unverified verdict. Metadata reads leak no CONTENT, so they are broadly safe.
+    ("which nvidia-smi", "read_only"),
+    ("command -v nvidia-smi", "read_only"),
+    ("type nvidia-smi", "read_only"),
+    ("whereis nvidia-smi", "read_only"),
+    ("file /usr/bin/nvidia-smi", "read_only"),
+    ("file /usr/local/bin/nvidia-smi", "read_only"),        # <- reveals a PATH-shadow (fake script)
+    ("readlink /usr/local/bin/nvidia-smi", "read_only"),
+    ("stat /dev/nvidia0", "read_only"),
+    ("ls -la /dev/nvidia0", "read_only"),
+    ("ls /dev/nvidia*", "read_only"),                       # glob under a meta-safe prefix
+    ("md5sum /usr/local/bin/nvidia-smi", "read_only"),      # hash to fingerprint a replaced binary
+    ("du -sh /usr/lib/x86_64-linux-gnu", "read_only"),
+    ("cat /proc/modules", "read_only"),                     # module list (container-safe content)
+    ("cat /proc/devices", "read_only"),
+    ("cat /proc/1/cgroup", "read_only"),                    # container detection
+    ("cat /proc/self/cgroup", "read_only"),
+    ("cat /sys/module/nvidia/version", "read_only"),
+    ("cat /sys/bus/pci/devices/0000:e1:00.0/vendor", "read_only"),
+    ("ls -la /dev/nvidia* 2>&1 | grep nvidia", "read_only"),  # meta+glob source into a text filter
+
+    # === F4 bypass attempts that MUST stay refused (content bytes / exec / secrets) ===
+    ("cat /dev/sda", "mutating"),                           # CRITICAL: raw-disk CONTENT read stays refused
+    ("cat /dev/nvidia0", "mutating"),                       # don't dump a device node's bytes
+    ("ldd /usr/bin/nvidia-smi", "mutating"),                # ldd runs the loader on the target -> exec risk
+    ("strings /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1", "mutating"),  # content reader stays narrow
+    ("cat /proc/1/environ", "mutating"),                    # env leak
+    ("cat /proc/self/cmdline", "mutating"),                 # argv leak (cmdline excluded from pid-safe)
+    ("stat /etc/shadow", "mutating"),                       # deny-substr wins even for metadata
+    ("file /root/.ssh/id_rsa", "mutating"),                 # deny-substr
+    ("ls /root", "mutating"),                               # deny-substr (/root)
+    ("md5sum /etc/shadow", "mutating"),
+    ("file $(which nvidia-smi)", "mutating"),               # $() substitution still blocked
+    ("which nvidia-smi; rm -rf /", "destructive"),          # chaining + destructive wins
+
     # --- streaming / hang variants must NOT auto-run ---
     ("tail -f /var/log/syslog", "mutating"),
     ("journalctl -f", "mutating"),

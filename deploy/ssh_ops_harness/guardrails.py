@@ -132,6 +132,10 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     # `ldconfig` with NO flag rebuilds the cache (mutating), so require -p/--print-cache.
     r"dpkg\s+(-l|--list|-s|--status|-L|--listfiles)(\s+\S+)*",
     r"ldconfig\s+(-p|--print-cache)",
+    # binary location / kind — read-only lookups: print a path/type or "not found", never content,
+    # never exec (unlike `ldd`, which runs the loader on the target and is left out on purpose).
+    r"(which|whereis|type)\s+\S+(\s+\S+)*",
+    r"command\s+-[vV]\s+\S+",
 ]]
 
 # Readers that emit raw file CONTENT — strict: every target must be a curated-safe absolute path.
@@ -139,15 +143,26 @@ _CONTENT_READERS = {"cat", "nl", "tac", "strings", "od", "xxd", "hexdump"}
 # Readers that emit only metadata — lenient: bare names/flags/cwd ok, sensitive absolute path denies.
 _META_READERS = {"ls", "du", "stat", "file", "readlink", "wc", "md5sum", "sha256sum"}
 
-# The ONLY auto-run file surface. /var/log/ is deliberately NOT here (cloud-init/auth logs leak).
-_SAFE_READ_PREFIXES = ("/proc/driver/nvidia/",)
+# The auto-run CONTENT file surface (readers that emit raw bytes). /var/log/ is deliberately NOT here
+# (cloud-init/auth logs leak). Kept narrow on purpose — a broadened content surface is a leak vector.
+_SAFE_READ_PREFIXES = (
+    "/proc/driver/nvidia/",
+    # kernel module / PCI / DRM / device state — content is hardware+driver info, no user secrets.
+    "/sys/module/", "/sys/bus/pci/", "/sys/class/drm/", "/sys/devices/",
+)
 _SAFE_READ_EXACT = {
     "/etc/os-release", "/etc/lsb-release", "/etc/hostname", "/etc/machine-id",
     "/etc/timezone", "/etc/issue",
     "/proc/meminfo", "/proc/cpuinfo", "/proc/loadavg", "/proc/uptime",
     "/proc/version", "/proc/stat", "/proc/diskstats", "/proc/mounts", "/proc/swaps",
+    "/proc/modules", "/proc/devices", "/proc/cmdline",
     "/usr/local/cuda/version.txt", "/usr/local/cuda/version.json",
 }
+# Per-process files that carry NO secret — for container/cgroup detection. environ and cmdline are
+# deliberately EXCLUDED (they leak the environment and another process's argv, which can inline a
+# password); both are also caught by _DENY_PATH_SUBSTR / not listed here.
+_PROC_PID_SAFE = re.compile(
+    r"^/proc/(?:\d+|self|thread-self)/(?:cgroup|status|mountinfo|limits|comm|maps)$")
 _DENY_PATH_SUBSTR = (
     "environ", "id_rsa", "id_ed25519", "id_dsa", "id_ecdsa", "authorized_keys",
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", "shadow", "sudoers",
@@ -161,6 +176,14 @@ def _basename(tok: str) -> str:
     return tok.rsplit("/", 1)[-1]
 
 
+# Metadata-only reads (ls/stat/file/readlink/du/wc/*sum) reveal a name/size/perms/hash but never file
+# CONTENT, so they are safe across the introspection tree — binaries, libs, device nodes, kernel /
+# hardware state — which is far broader than the content-read allowlist. Deliberately EXCLUDES
+# /etc, /var, /home, /root (a filename there can itself be sensitive; content reads stay narrow).
+_META_SAFE_PREFIXES = ("/dev/", "/usr/", "/sys/", "/proc/", "/lib/", "/lib64/",
+                       "/bin/", "/sbin/", "/opt/")
+
+
 def _safe_path(p: str) -> bool:
     if ".." in p:
         return False
@@ -169,7 +192,21 @@ def _safe_path(p: str) -> bool:
         return False
     if p in _SAFE_READ_EXACT:
         return True
+    if _PROC_PID_SAFE.match(p):
+        return True
     return any(p == pre.rstrip("/") or p.startswith(pre) for pre in _SAFE_READ_PREFIXES)
+
+
+def _safe_meta_path(p: str) -> bool:
+    """Broader path check for metadata-only reads. A content-safe path is trivially meta-safe; beyond
+    that, allow the introspection tree (still minus any _DENY_PATH_SUBSTR secret location)."""
+    if _safe_path(p):
+        return True
+    if ".." in p:
+        return False
+    if any(d in p.lower() for d in _DENY_PATH_SUBSTR):
+        return False
+    return any(p == pre.rstrip("/") or p.startswith(pre) for pre in _META_SAFE_PREFIXES)
 
 
 def _safe_content_read(tokens) -> bool:
@@ -189,7 +226,7 @@ def _safe_meta_read(tokens) -> bool:
     for t in tokens[1:]:
         if t.startswith("-") or t.isdigit():
             continue
-        if "/" in t and not _safe_path(t):
+        if "/" in t and not _safe_meta_path(t):
             return False
     return True
 
