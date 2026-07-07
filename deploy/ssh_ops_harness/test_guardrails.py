@@ -219,6 +219,27 @@ CLASSIFY_CASES = [
     ("sudo blkid /dev/vdb", "mutating"),                       # sudo-readonly still deferred (separate call)
     ("cat /proc/kmsg", "mutating"),                            # not in exact set (a kmsg read can block)
 
+    # === F7: venv / site-packages introspection (content + metadata) now auto-runs ===
+    # WHY: a live CPU-only-torch repro — harness landed the right cause but couldn't CONFIRM it,
+    # every venv read refused (run python/pip stays mutating; ls/cat under /root denied by F4).
+    # site-packages holds dependency CODE (torch/version.py's `cuda=None` is the tell), not secrets.
+    ("cat /root/badenv/lib/python3.10/site-packages/torch/version.py", "read_only"),
+    ("ls /root/badenv/lib/python3.10/site-packages/", "read_only"),
+    ("ls /root/badenv/lib/python3.10/site-packages", "read_only"),      # no trailing slash
+    ("cat /root/badenv/pyvenv.cfg", "read_only"),
+    ("cat /home/alice/venv/lib/python3.11/site-packages/torch/version.py", "read_only"),
+    ("ls /root/venv/lib/python3.10/site-packages/ | grep -i nvidia", "read_only"),  # piped filter
+    ("stat /root/badenv/lib/python3.10/site-packages/torch/_C.so", "read_only"),
+    ("cat /root/proj/lib/python3.10/site-packages/torch-2.5.1.dist-info/METADATA", "read_only"),
+
+    # === F7 bypass attempts that MUST stay refused (fence intact) ===
+    ("cat /root/badenv/lib/python3.10/site-packages/.env", "mutating"),   # secret file denies even inside site-packages
+    ("cat /root/site-packagesfoo/secret", "mutating"),                    # look-alike dir, not a real site-packages
+    ("cat /root/badenv/lib/python3.10/site-packages/../../../.ssh/id_rsa", "mutating"),  # traversal out
+    ("cat /root/.bashrc", "mutating"),                                    # /root content still denied
+    ("ls /root", "mutating"),                                             # /root listing still denied
+    ("/root/badenv/bin/python -c 'import torch'", "mutating"),            # running python stays mutating
+
     # --- streaming / hang variants must NOT auto-run ---
     ("tail -f /var/log/syslog", "mutating"),
     ("journalctl -f", "mutating"),

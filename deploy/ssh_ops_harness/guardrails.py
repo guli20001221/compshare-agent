@@ -197,10 +197,37 @@ def _basename(tok: str) -> str:
 _META_SAFE_PREFIXES = ("/dev/", "/usr/", "/sys/", "/proc/", "/lib/", "/lib64/",
                        "/bin/", "/sbin/", "/opt/")
 
+# --- F7: venv / Python-package introspection (content + metadata) ------------------------------
+# Python-env diagnosis ("torch.cuda.is_available() 是 False / import 报没这个模块") fundamentally
+# needs to inspect the interpreter's INSTALLED packages, which live under a venv the user created
+# in a user-data dir (/root/badenv/.../site-packages, /home/u/venv/...). A live CPU-only-torch
+# repro proved the harness lands the correct dominant cause but CANNOT confirm it: every venv read
+# is refused (running python/pip stays mutating by design; ls/cat under /root is denied by F4).
+# A `.../site-packages/` tree holds DEPENDENCY CODE (public library files — torch/version.py's
+# `cuda = None` / `__version__ = '...+cpu'` is the actual tell), not user config/secrets, so both
+# ls/stat and cat/head are opened there. Scope is a path SHAPE (site-packages / *.dist-info /
+# pyvenv.cfg), not a prefix — so it works wherever the venv lives — and the secret-FILE tripwire
+# substrings still deny even inside it (only the whole-dir `/root` block is lifted, as with F5 du).
+_PKG_DENY_SUBSTR = tuple(d for d in _DENY_PATH_SUBSTR if d != "/root")
+
+
+def _pkg_safe_path(p: str) -> bool:
+    if ".." in p:
+        return False
+    if any(d in p.lower() for d in _PKG_DENY_SUBSTR):    # secret files still deny inside site-packages
+        return False
+    # site-packages covers the package tree AND the *.dist-info metadata dirs inside it; pyvenv.cfg
+    # sits at the venv root. Require the trailing slash / exact end so `/site-packagesfoo/x` (a
+    # look-alike dir) does NOT match.
+    return ("/site-packages/" in p or p.endswith("/site-packages")
+            or p.endswith("/pyvenv.cfg"))
+
 
 def _safe_path(p: str) -> bool:
     if ".." in p:
         return False
+    if _pkg_safe_path(p):                                # F7: venv package internals (minus secret files)
+        return True
     low = p.lower()
     if any(d in low for d in _DENY_PATH_SUBSTR):
         return False
