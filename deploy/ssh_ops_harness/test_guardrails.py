@@ -216,7 +216,6 @@ CLASSIFY_CASES = [
     # === F8 bypass attempts that MUST stay refused ===
     ("cat /etc/passwd", "mutating"),                           # /etc NOT opened broadly — exact only
     ("cat /etc/ssh/sshd_config", "mutating"),
-    ("sudo blkid /dev/vdb", "mutating"),                       # sudo-readonly still deferred (separate call)
     ("cat /proc/kmsg", "mutating"),                            # not in exact set (a kmsg read can block)
 
     # === F7: venv / site-packages introspection (content + metadata) now auto-runs ===
@@ -239,6 +238,46 @@ CLASSIFY_CASES = [
     ("cat /root/.bashrc", "mutating"),                                    # /root content still denied
     ("ls /root", "mutating"),                                             # /root listing still denied
     ("/root/badenv/bin/python -c 'import torch'", "mutating"),            # running python stays mutating
+
+    # === F9: sudo-stripped read-only + root-privileged read-only hardware/disk introspection ===
+    # WHY: on a VM many genuinely read-only reads (blkid, fdisk -l, dmidecode, cat /etc/fstab) need
+    # root; the repro-4 harness proposed `sudo blkid /dev/vdb` / `sudo fdisk -l` and both were refused.
+    # A leading sudo is stripped so the command inherits its real tier; destructive stays first.
+    ("sudo blkid /dev/vdb", "read_only"),
+    ("sudo blkid", "read_only"),
+    ("blkid /dev/vdb", "read_only"),                     # bare (no sudo) also read-only now
+    ("sudo fdisk -l", "read_only"),                      # LIST mode escapes the destructive fdisk tier
+    ("sudo fdisk -l /dev/vdb", "read_only"),
+    ("fdisk -l", "read_only"),
+    ("sudo parted -l", "read_only"),
+    ("sgdisk -p /dev/vda", "read_only"),
+    ("sudo file -s /dev/vdb", "read_only"),              # file is read-only; sudo stripped
+    ("sudo cat /etc/fstab", "read_only"),                # F8 path + sudo
+    ("sudo dmidecode -t memory", "read_only"),
+    ("sudo smartctl -a /dev/vda", "read_only"),
+    ("sudo smartctl --health /dev/vda", "read_only"),
+    ("sudo lshw -c disk", "read_only"),
+    ("sudo sysctl vm.swappiness", "read_only"),
+    ("sudo sysctl -a", "read_only"),
+    ("sudo -n blkid /dev/vdb", "read_only"),             # sudo no-op flag stripped
+    ("sudo -u root lsblk", "read_only"),                 # sudo -u user <cmd>
+    ("sudo blkid /dev/vdb | grep TYPE", "read_only"),    # sudo + safe pipe
+
+    # === F9 bypass attempts that MUST stay refused (sudo never weakens the tiers) ===
+    ("sudo rm -rf /", "destructive"),
+    ("sudo mkfs.ext4 /dev/vdb", "destructive"),
+    ("sudo fdisk /dev/vdb", "destructive"),              # interactive editor (no -l) stays destructive
+    ("sudo parted /dev/vdb", "destructive"),
+    ("sudo dd if=/dev/zero of=/dev/vdb", "destructive"),
+    ("sudo tee /etc/fstab", "destructive"),              # write to /etc still destructive
+    ("sudo cat /etc/shadow", "mutating"),                # secret path denied even with sudo
+    ("sudo cat /root/.ssh/id_rsa", "mutating"),
+    ("sudo -i", "mutating"),                             # login shell not stripped to read-only
+    ("sudo bash", "mutating"),
+    ("sudo su -", "mutating"),
+    ("sudo -e /etc/fstab", "mutating"),                  # sudoedit (-e) not treated as read-only
+    ("sudo sysctl vm.swappiness=10", "mutating"),        # kernel-param WRITE (has '=')
+    ("sudo sysctl -w vm.swappiness=10", "mutating"),
 
     # --- streaming / hang variants must NOT auto-run ---
     ("tail -f /var/log/syslog", "mutating"),

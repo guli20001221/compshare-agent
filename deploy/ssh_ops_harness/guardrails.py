@@ -37,7 +37,11 @@ _DESTRUCTIVE_SRC = [
     # filesystem / device / volume wipe
     r"\brm\b", r"\brmdir\b", r"\bunlink\b", r"\bshred\b", r"\btruncate\b",
     r"\bmkfs\w*\b", r"(?<![\w-])dd\b[^\n]*\s(if=|of=|bs=|count=|conv=)",
-    r"\bfdisk\b", r"\bparted\b", r"\bwipefs\b", r"\bblkdiscard\b", r"\bsgdisk\b\s+(-Z|--zap)",
+    # fdisk/parted stay destructive EXCEPT the pure LIST mode (-l/--list), which only prints the
+    # partition table — that form is allowlisted read-only in _STRUCTURED_DIAG (F9). The interactive
+    # editor (`fdisk /dev/sda`) and every other invocation still hard-refuse.
+    r"\bfdisk\b(?!\s+(?:-l|--list)\b)", r"\bparted\b(?!\s+(?:-l|--list)\b)",
+    r"\bwipefs\b", r"\bblkdiscard\b", r"\bsgdisk\b\s+(-Z|--zap)",
     r"\bfind\b[^\n]*\s-delete\b",
     r"\bfind\b[^\n]*-exec\s+\S*\b(rm|mv|cp|tee|dd|chmod|chown|truncate|shred|chattr|mkfs|sh|bash|unlink|kill)\b",
     r"\b(lvremove|vgremove|pvremove|lvreduce|vgreduce)\b",
@@ -138,6 +142,17 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     # never exec (unlike `ldd`, which runs the loader on the target and is left out on purpose).
     r"(which|whereis|type)\s+\S+(\s+\S+)*",
     r"command\s+-[vV]\s+\S+",
+    # F9: root-privileged READ-ONLY hardware / disk / kernel-param introspection. These have no
+    # write/mutate mode in the forms allowed here; on a VM they typically need `sudo`, which is
+    # stripped before this check (the destructive scan already ran on the sudo-inclusive string).
+    r"blkid(\s+\S+)*",                                   # fs type / UUID of a block device
+    r"dmidecode(\s+\S+)*",                               # DMI/SMBIOS hardware inventory (read-only)
+    r"lshw(\s+\S+)*",                                    # hardware tree (read-only)
+    r"smartctl\s+(-[aAiHxc]+|--all|--info|--health|--attributes|--scan)(\s+\S+)*",  # disk SMART read
+    r"sysctl\s+(-a|-A|--all)",                           # dump all kernel params
+    r"sysctl\s+[\w.]+",                                  # read ONE key (a `name=value` write has '=', fails)
+    r"(fdisk|parted)\s+(-l|--list)(\s+\S+)*",            # partition LIST (interactive editor stays destructive)
+    r"sgdisk\s+(-p|--print)(\s+\S+)*",                   # GPT partition table print
 ]]
 
 # Readers that emit raw file CONTENT — strict: every target must be a curated-safe absolute path.
@@ -425,15 +440,42 @@ def _is_safe_readonly_command(cmd: str) -> bool:
     return all(_is_safe_filter(s) for s in segs[1:])
 
 
+# F9: a leading `sudo` on an otherwise read-only command. On a VM many genuinely read-only
+# hardware/disk reads (blkid, dmidecode, smartctl, cat /etc/fstab, fdisk -l) need root. We strip a
+# leading `sudo` (+ its no-op flags / `-u user`) so `sudo <read-only>` inherits the read-only tier.
+# This is SAFE because the destructive scan in classify() runs FIRST on the ORIGINAL sudo-inclusive
+# string — so `sudo rm`/`sudo mkfs`/`sudo passwd`/`sudo dd of=...` stay destructive — and a stripped
+# command that isn't in the read-only allowlist (`sudo cat /etc/shadow`, `sudo vim`) still lands in
+# `mutating` (needs confirm, never auto-run). Flags that turn sudo into a shell / editor
+# (-i / -s / -e / sudoedit) are NOT stripped, so those never reach the read-only check.
+def _strip_sudo(cmd: str) -> str:
+    toks = cmd.split()
+    if not toks or toks[0] != "sudo":
+        return cmd
+    i = 1
+    while i < len(toks):
+        t = toks[i]
+        if t in ("-u", "-g", "-U"):                      # sudo -u user <cmd>: skip flag + its value
+            i += 2
+            continue
+        if t in ("-i", "-s", "-e"):                      # login shell / sudoedit -> NOT a read-only strip
+            return cmd
+        if t.startswith("-"):                            # -n/-E/-H/-A/-k/-S ...: no-op for classification
+            i += 1
+            continue
+        break
+    return " ".join(toks[i:]) if i < len(toks) else cmd
+
+
 def classify(command: str) -> str:
     """Return 'destructive' | 'read_only' | 'mutating'. Reasoning-blind: command text only."""
     cmd = command.strip()
     if _HELP.fullmatch(cmd):                              # 0) help/version is always safe
         return "read_only"
-    if any(p.search(cmd) for p in _DESTRUCTIVE):          # 1) destructive precedes everything
+    if any(p.search(cmd) for p in _DESTRUCTIVE):          # 1) destructive precedes everything (sudo-inclusive)
         return "destructive"
-    if _is_safe_readonly_command(cmd):                    # 2) curated read-only: a bare command,
-        return "read_only"                                #    or a safe <source>|<filter> pipeline/glob
+    if _is_safe_readonly_command(_strip_sudo(cmd)):       # 2) curated read-only: a bare command, a safe
+        return "read_only"                                #    <source>|<filter> pipeline, or sudo <read-only>
     return "mutating"                                     # 3) deny-first: unknown => confirm
 
 
