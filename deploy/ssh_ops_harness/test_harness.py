@@ -187,6 +187,86 @@ for name, bad in [
         check(name, True)
 
 
+# --- api-read mode: handshake (credential-free), the client-side allowlist gate, the HTTP client
+# plumbing (against a mock loopback proxy), and INV-9 for the api tool. ---
+api_hs = harness.read_handshake(
+    '{"mode":"api","api_url":"http://127.0.0.1:9/x","api_token":"tok","api_actions":["DescribeBilling"]}')
+check("api-handshake-parses", api_hs.get("mode") == "api" and api_hs["api_url"].endswith("/x"))
+check("api-handshake-no-ssh-required", "host" not in api_hs and "password" not in api_hs)
+
+for bad in ['{"mode":"api","api_token":"t"}',              # missing api_url
+            '{"mode":"api","api_url":"http://x"}']:         # missing api_token
+    try:
+        harness.read_handshake(bad)
+        check(f"api-handshake-rejects::{bad[:26]}", False)
+    except Exception:
+        check(f"api-handshake-rejects::{bad[:26]}", True)
+
+# client-side allowlist: a non-allowed action is refused WITHOUT any HTTP call, recorded in AUDIT.
+harness.AUDIT.clear()
+harness.set_api({"url": "http://127.0.0.1:9/api_read", "token": "tok", "actions": ["DescribeBilling"]})
+r_deny = harness.api_read_call("TerminateCompShareInstance", {})
+check("api-allowlist-refuses", r_deny["is_error"] and "not allowed" in r_deny["text"].lower())
+check("api-allowlist-audit",
+      harness.AUDIT[-1]["disposition"] == "refused_action_not_allowed" and harness.AUDIT[-1]["executed"] is False)
+
+# happy path + bad-token path against a REAL mock loopback proxy (exercises the urllib client).
+import http.server
+import json as _json
+import socketserver
+import threading
+
+
+class _MockProxy(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.headers.get("Authorization") != "Bearer tok":
+            self.send_response(401)
+            self.end_headers()
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        req = _json.loads(self.rfile.read(length) or b"{}")
+        resp = _json.dumps({"echo_action": req.get("action"), "Password": "[已设置]"}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp)))
+        self.end_headers()
+        self.wfile.write(resp)
+
+    def log_message(self, *a):        # silence the default stderr access log
+        pass
+
+
+_srv = socketserver.TCPServer(("127.0.0.1", 0), _MockProxy)
+_port = _srv.server_address[1]
+threading.Thread(target=_srv.serve_forever, daemon=True).start()
+
+harness.AUDIT.clear()
+harness.set_api({"url": f"http://127.0.0.1:{_port}/api_read", "token": "tok", "actions": ["DescribeBilling"]})
+r_ok = harness.api_read_call("DescribeBilling", {"Range": "7d"})
+check("api-read-ok", (not r_ok["is_error"]) and "DescribeBilling" in r_ok["text"])
+check("api-read-audit-ran",
+      harness.AUDIT[-1]["disposition"] == "ran_api_read" and harness.AUDIT[-1]["executed"] is True)
+
+harness.set_api({"url": f"http://127.0.0.1:{_port}/api_read", "token": "WRONG", "actions": ["DescribeBilling"]})
+r_401 = harness.api_read_call("DescribeBilling", {})
+check("api-read-bad-token-errors", r_401["is_error"] and "401" in r_401["text"])
+_srv.shutdown()
+
+# INV-9 for api mode: EXACTLY api_read exposed; the ssh tool set must be rejected in api mode.
+good_api = opts(harness.API_ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [])
+try:
+    harness.assert_single_tool(good_api, harness.API_ALLOWED_TOOLS)
+    check("inv9-api-accepts-good", True)
+except SystemExit:
+    check("inv9-api-accepts-good", False)
+
+try:
+    harness.assert_single_tool(opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, []), harness.API_ALLOWED_TOOLS)
+    check("inv9-api-rejects-ssh-tool", False)
+except SystemExit:
+    check("inv9-api-rejects-ssh-tool", True)
+
+
 def main():
     if FAILS:
         print(f"\nFAIL: {len(FAILS)} check(s): {FAILS}")

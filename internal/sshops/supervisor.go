@@ -61,7 +61,15 @@ func (s Supervisor) childEnv() []string {
 	return env
 }
 
-// Run spawns the harness for one consented task. cred must already be resolved via FetchCredential.
+// APIEndpoint is the per-task loopback api_read proxy the harness pulls read-only API data from in
+// api mode (destination-B). It carries NO credential — the Go proxy holds the signed executor.
+type APIEndpoint struct {
+	URL     string
+	Token   string
+	Actions []string
+}
+
+// Run spawns the harness for one consented SSH task. cred must already be resolved via FetchCredential.
 func (s Supervisor) Run(ctx context.Context, cred Credential, task string) (Result, error) {
 	if s.HarnessPath == "" {
 		return Result{}, fmt.Errorf("sshops: no harness path configured")
@@ -69,6 +77,38 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string) (Resu
 	if !cred.HasSecret() {
 		return Result{}, fmt.Errorf("sshops: credential has no secret")
 	}
+	return s.spawn(ctx, task, map[string]any{
+		"host":        cred.Host,
+		"user":        cred.User,
+		"port":        cred.Port,
+		"password":    cred.password, // plaintext -> stdin only, never logged/returned
+		"instance_id": cred.InstanceID,
+		"model":       s.Model,
+	})
+}
+
+// RunAPI spawns the harness in API-only mode (destination-B): no SSH credential; the agent's sole
+// tool is api_read pointed at the per-task loopback proxy. Used by API-only diagnoses (e.g. billing).
+func (s Supervisor) RunAPI(ctx context.Context, api APIEndpoint, task string) (Result, error) {
+	if s.HarnessPath == "" {
+		return Result{}, fmt.Errorf("sshops: no harness path configured")
+	}
+	if api.URL == "" || api.Token == "" {
+		return Result{}, fmt.Errorf("sshops: api endpoint incomplete")
+	}
+	return s.spawn(ctx, task, map[string]any{
+		"mode":        "api",
+		"api_url":     api.URL,
+		"api_token":   api.Token,
+		"api_actions": api.Actions,
+		"model":       s.Model,
+	})
+}
+
+// spawn runs the harness once with the given stdin handshake and captures its scrubbed stdout.
+// Shared by Run (ssh) and RunAPI (api). The handshake is the ONLY inbound channel — never argv,
+// never an env var; the SSH password (ssh mode) lives only here and in the transport.
+func (s Supervisor) spawn(ctx context.Context, task string, handshake map[string]any) (Result, error) {
 	timeout := s.Timeout
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
@@ -84,18 +124,11 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string) (Resu
 	cmd := exec.CommandContext(ctx, py, s.HarnessPath, task)
 	cmd.Env = s.childEnv()
 
-	handshake, err := json.Marshal(map[string]any{
-		"host":        cred.Host,
-		"user":        cred.User,
-		"port":        cred.Port,
-		"password":    cred.password, // plaintext -> stdin only, never logged/returned
-		"instance_id": cred.InstanceID,
-		"model":       s.Model,
-	})
+	line, err := json.Marshal(handshake)
 	if err != nil {
 		return Result{}, fmt.Errorf("sshops: marshal handshake: %w", err)
 	}
-	cmd.Stdin = bytes.NewReader(append(handshake, '\n'))
+	cmd.Stdin = bytes.NewReader(append(line, '\n'))
 
 	// Keep stdout (the agent's scrubbed verdict + AUDIT) separate from stderr (the claude CLI's
 	// own startup chatter / a Python traceback). Only stdout is the diagnosis Output; stderr is

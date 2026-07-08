@@ -42,6 +42,7 @@ const DefaultDiagnosisTask = "用户报告这台 GPU 实例\"掉卡\"（nvidia-s
 // (its Run has a value receiver); tests inject a fake so they never spawn the real Python harness.
 type harnessRunner interface {
 	Run(ctx context.Context, cred Credential, task string) (Result, error)
+	RunAPI(ctx context.Context, api APIEndpoint, task string) (Result, error)
 }
 
 type Service struct {
@@ -125,6 +126,56 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 		// the request ctx is already cancelled, and the SQL writer derives a WithTimeout child from it
 		// — a cancelled parent makes the Finish UPDATE fail, orphaning the row forever at "started".
 		// WithoutCancel keeps the values but drops the cancellation so the outcome still lands (Go 1.21+).
+		_ = s.audit.Finish(context.WithoutCancel(ctx), auditID, done)
+	}
+	return res, runErr
+}
+
+// DiagnoseAPI runs ONE API-only diagnosis (destination-B, e.g. billing): it starts a per-task
+// loopback api_read proxy scoped to the tenant-bound describer d + the read-only action allowlist,
+// spawns the harness in api mode (NO SSH, NO credential), and records the SAME fail-closed audit.
+// Consent differs from SSH ops — there is no in-instance access; this is read-only API on the
+// caller's own account — but the attempt is still audited. Output is the harness's verdict.
+func (s *Service) DiagnoseAPI(ctx context.Context, d Describer, owner Owner, task string, allow []string) (Result, error) {
+	if len(allow) == 0 {
+		return Result{}, fmt.Errorf("sshops: DiagnoseAPI needs a non-empty action allowlist")
+	}
+	if strings.TrimSpace(task) == "" {
+		return Result{}, fmt.Errorf("sshops: DiagnoseAPI needs a task")
+	}
+	proxy, err := startAPIProxy(ctx, d, allow)
+	if err != nil {
+		return Result{}, err
+	}
+	defer proxy.Close()
+
+	ev := AuditEvent{
+		RequestUUID:       owner.RequestUUID,
+		TopOrganizationID: owner.TopOrganizationID,
+		OrganizationID:    owner.OrganizationID,
+		Task:              task,
+		Phase:             "api_read",
+	}
+	var auditID string
+	if s.audit != nil {
+		auditID, err = s.audit.Begin(ctx, ev)
+		if err != nil {
+			// Fail closed: never run an access we could not record.
+			return Result{}, fmt.Errorf("sshops: audit begin failed, refusing to run (fail-closed): %w", err)
+		}
+	}
+
+	res, runErr := s.sup.RunAPI(ctx, APIEndpoint{URL: proxy.URL(), Token: proxy.Token(), Actions: allow}, task)
+
+	if s.audit != nil {
+		done := ev
+		done.ExitCode, done.TimedOut, done.OutputBytes = res.ExitCode, res.TimedOut, len(res.Output)
+		done.Disposition = "ok"
+		if runErr != nil {
+			done.Disposition = "error"
+		}
+		// Detached from the request ctx so a client disconnect can't orphan the row at "started"
+		// (same reasoning as Diagnose — see the WithoutCancel note there).
 		_ = s.audit.Finish(context.WithoutCancel(ctx), auditID, done)
 	}
 	return res, runErr
