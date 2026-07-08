@@ -265,3 +265,37 @@ func TestWS_Confirm_WrongOwnerRejected(t *testing.T) {
 		t.Fatal("waiter did not return")
 	}
 }
+
+// TestWS_Confirm_SessionDriftResolves reproduces the production bug and proves
+// the fix: stale-session recovery mints a new session id mid-turn, so the
+// ConfirmCSAgentAction frame carries a DIFFERENT SessionId ("sess-recovered")
+// than the one the confirmation was registered under ("sess-1"), while the
+// connection owner is unchanged. Before the fix the broker's session-equality
+// check false-rejected this with ErrConfirmationOwner ("[Forbidden] ...
+// session/owner") and aborted the deploy; now it must resolve, because the
+// confirmation is bound to its ConfirmationId + owner, not the session label.
+func TestWS_Confirm_SessionDriftResolves(t *testing.T) {
+	srv, _, h := wsTestHandlers(t, chatLLM{}, denyConfirm)
+	conn := dialWS(t, srv, gatewayHeaders()) // owner {1,2}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Confirmation registered under the pre-recovery session id, same owner.
+	confirmID, ch := h.confirmBroker.Register("sess-1", gatewayOwner)
+	result := make(chan bool, 1)
+	go func() {
+		result <- WaitForConfirmation(context.Background(), ch, 5*time.Second).Confirmed
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Confirm frame carries the post-recovery session id — the drift case.
+	require.NoError(t, conn.Write(ctx, websocket.MessageText,
+		[]byte(`{"Action":"ConfirmCSAgentAction","SessionId":"sess-recovered","ConfirmationId":"`+confirmID+`","Confirmed":true}`)))
+
+	select {
+	case got := <-result:
+		assert.True(t, got, "a same-owner confirm under a drifted session label must resolve (not Forbidden)")
+	case <-time.After(3 * time.Second):
+		t.Fatal("session-drift confirmation frame did not resolve the broker waiter")
+	}
+}
