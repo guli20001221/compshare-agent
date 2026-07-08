@@ -7,15 +7,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBillingFactsRunningDynamicUsesInstancePrice(t *testing.T) {
-	summary := BuildBillingFacts([]any{billingFactHost("uhost-run", "running", "Running", "Dynamic", 1.58, 0.05, 0, "4090", 1)})
+func TestBillingFactsRunningPostpayUsesInstancePrice(t *testing.T) {
+	summary := BuildBillingFacts([]any{billingFactHost("uhost-run", "running", "Running", "Postpay", 1.58, 0.05, 0, "4090", 1)})
 
 	require.Len(t, summary.Instances, 1)
 	fact := summary.Instances[0]
 	assert.Equal(t, "uhost-run", fact.UHostID)
 	assert.Equal(t, "running", fact.Name)
 	assert.Equal(t, "Running", fact.State)
-	assert.Equal(t, "Dynamic", fact.ChargeType)
+	assert.Equal(t, "Postpay", fact.ChargeType)
 	assert.Equal(t, "hour", fact.Period)
 	assert.Equal(t, 1.58, fact.ActualComputeCharge)
 	assert.Equal(t, 0.0, fact.RetainedStoppedCharge)
@@ -25,7 +25,7 @@ func TestBillingFactsRunningDynamicUsesInstancePrice(t *testing.T) {
 	assert.Equal(t, 1, summary.RunningCount)
 }
 
-func TestBillingFactsStoppedDynamicRetainsDiskAndImageOnly(t *testing.T) {
+func TestBillingFactsStoppedPostpayRetainsDiskAndImageOnly(t *testing.T) {
 	summary := BuildBillingFacts([]any{billingFactHost("uhost-stop", "stopped", "Stopped", "Postpay", 1.58, 0.05, 0.30, "4090", 1)})
 
 	require.Len(t, summary.Instances, 1)
@@ -55,8 +55,8 @@ func TestBillingFactsPrepaidPreservesChargeTypeAndDoesNotPretendStoppedFree(t *t
 
 func TestBillingFactsMixedInstancesComputesTotals(t *testing.T) {
 	summary := BuildBillingFacts([]any{
-		billingFactHost("uhost-run", "running", "Running", "Dynamic", 1.58, 0.05, 0, "4090", 1),
-		billingFactHost("uhost-stop", "stopped", "Stopped", "Dynamic", 1.58, 0.05, 0.30, "4090", 1),
+		billingFactHost("uhost-run", "running", "Running", "Postpay", 1.58, 0.05, 0, "4090", 1),
+		billingFactHost("uhost-stop", "stopped", "Stopped", "Postpay", 1.58, 0.05, 0.30, "4090", 1),
 		billingFactHost("uhost-day", "prepaid", "Stopped", "Day", 5.00, 0.10, 0, "A100", 2),
 	})
 
@@ -71,8 +71,8 @@ func TestBillingFactsMixedInstancesComputesTotals(t *testing.T) {
 
 func TestBillingFactsMatchExistingSummaryForMixedInstances(t *testing.T) {
 	hosts := []any{
-		billingFactHost("uhost-run", "running", "Running", "Dynamic", 1.58, 0.05, 0, "4090", 1),
-		billingFactHost("uhost-stop", "stopped", "Stopped", "Dynamic", 1.58, 0.05, 0.30, "4090", 1),
+		billingFactHost("uhost-run", "running", "Running", "Postpay", 1.58, 0.05, 0, "4090", 1),
+		billingFactHost("uhost-stop", "stopped", "Stopped", "Postpay", 1.58, 0.05, 0.30, "4090", 1),
 		billingFactHost("uhost-day", "prepaid", "Stopped", "Day", 5.00, 0.10, 0, "A100", 2),
 	}
 

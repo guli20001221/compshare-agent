@@ -298,6 +298,88 @@ func TestSSHChain_Running_Normal_PodMonitor(t *testing.T) {
 	assert.Contains(t, result.Conclusion, "未见高压")
 }
 
+// TestSSHChain_Running_DiskFull_Ucloud: a full system disk (sys_disk_used_per) blocks
+// login even with CPU/memory idle. The metric rides along in the same monitor call;
+// the chain now reads it and reports 磁盘写满, checked before the CPU/mem branch.
+func TestSSHChain_Running_DiskFull_Ucloud(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{
+					"UHostId": "uhost-abc", "State": "Running", "OsType": "LINUX",
+					"SshLoginCommand": "ssh -p 22 ubuntu@1.2.3.4",
+				},
+			},
+		},
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{"List": []any{
+				map[string]any{"UHostId": "uhost-abc", "Metrics": []any{
+					map[string]any{"MetricKey": "uhost_cpu_used", "Results": []any{
+						map[string]any{"Values": []any{map[string]any{"Timestamp": float64(200), "Value": float64(10.0)}}},
+					}},
+					map[string]any{"MetricKey": "cloudwatch_memory_usage", "Results": []any{
+						map[string]any{"Values": []any{map[string]any{"Timestamp": float64(200), "Value": float64(20.0)}}},
+					}},
+					map[string]any{"MetricKey": "cloudwatch_sys_disk_used_per", "Results": []any{
+						map[string]any{"Values": []any{map[string]any{"Timestamp": float64(200), "Value": float64(98.0)}}},
+					}},
+				}},
+			}},
+		},
+	}}
+	onStep, _ := collectEvents()
+
+	chain := SSHFailureChain()
+	eng := NewEngine(executor, onStep)
+	result, err := eng.Run(context.Background(), chain, map[string]any{"UHostId": "uhost-abc"})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Contains(t, result.Conclusion, "系统盘")
+	assert.Contains(t, result.Conclusion, "98")
+	assert.NotContains(t, result.Conclusion, "资源耗尽") // disk branch wins over CPU/mem
+}
+
+// TestSSHChain_Running_DiskFull_PodMonitor: same, but the disk metric is the flat pod
+// series Metrics.SysDiskUsed under Data.PodList.
+func TestSSHChain_Running_DiskFull_PodMonitor(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{
+					"UHostId": "cpod-full", "State": "Running", "OsType": "LINUX",
+					"SshLoginCommand": "ssh -p 23120 root@host.podtcp.compshare.cn",
+				},
+			},
+		},
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{
+				"List": []any{},
+				"PodList": []any{
+					map[string]any{
+						"UHostId": "cpod-full",
+						"Metrics": map[string]any{
+							"Cpu":         []any{map[string]any{"Timestamp": float64(200), "Value": float64(5.0)}},
+							"Memory":      []any{map[string]any{"Timestamp": float64(200), "Value": float64(30.0)}},
+							"SysDiskUsed": []any{map[string]any{"Timestamp": float64(200), "Value": float64(99.0)}},
+						},
+					},
+				},
+			},
+		},
+	}}
+	onStep, _ := collectEvents()
+
+	chain := SSHFailureChain()
+	eng := NewEngine(executor, onStep)
+	result, err := eng.Run(context.Background(), chain, map[string]any{"UHostId": "cpod-full"})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Contains(t, result.Conclusion, "系统盘")
+	assert.Contains(t, result.Conclusion, "99")
+}
+
 func TestSSHChain_Running_MonitorMissingIsInconclusive(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {

@@ -306,11 +306,12 @@ func retainedStoppedCharge(state string, diskPrice, imagePrice float64) float64 
 	return diskPrice + imagePrice
 }
 
-// isHourly reports whether the instance bills by the hour (按量 / 抢占式). Spot is
-// detected via IsSpot, not the ChargeType string — upstream renders spot as
-// "Postpay" (or empty), never "Spot".
+// isHourly reports whether the instance bills by the hour (按量 / 抢占式). Postpay is
+// the only live hourly charge type (upstream's legacy "Dynamic"/CHARGE_BY_HOUR is no
+// longer used); spot is detected via IsSpot, not the ChargeType string — upstream
+// renders spot as "Postpay" (or empty), never "Spot".
 func (fact BillingInstanceFact) isHourly() bool {
-	return fact.ChargeType == "Dynamic" || fact.ChargeType == "Postpay" || fact.IsSpot
+	return fact.ChargeType == "Postpay" || fact.IsSpot
 }
 
 // actualInstanceCost returns the real billing amount for the instance portion.
@@ -321,7 +322,7 @@ func (fact BillingInstanceFact) isHourly() bool {
 // response omits, so this stays a best-effort assumption; disk/image retention is
 // surfaced separately.
 func actualInstanceCost(state, chargeType string, isSpot bool, price float64) float64 {
-	if state == "Stopped" && (chargeType == "Dynamic" || chargeType == "Postpay" || isSpot) {
+	if state == "Stopped" && (chargeType == "Postpay" || isSpot) {
 		return 0
 	}
 	return price
@@ -382,7 +383,7 @@ func chargeTypeLabel(chargeType string, isSpot bool) string {
 		return "包日"
 	case "Year":
 		return "包年"
-	case "Dynamic", "Postpay":
+	case "Postpay":
 		return "按量/时"
 	default:
 		return chargeType
@@ -394,7 +395,7 @@ func billingPeriod(chargeType string, isSpot bool) string {
 		return "hour"
 	}
 	switch chargeType {
-	case "Dynamic", "Postpay":
+	case "Postpay":
 		return "hour"
 	case "Day":
 		return "day"
