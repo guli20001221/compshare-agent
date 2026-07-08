@@ -1175,40 +1175,6 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
-			Name:        "DiagnoseInitFailure",
-			Description: "诊断实例初始化失败。检查实例当前状态并给出修复建议。用户反馈创建失败、初始化失败、实例异常时使用。可传 UHostId 查特定实例，不传则扫描所有实例找出初始化失败的。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"UHostId": map[string]any{
-						"type":        "string",
-						"description": "要诊断的实例 ID（可选，不传则扫描所有实例）",
-					},
-				},
-				"required": []string{},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "DiagnoseGPU",
-			Description: "诊断 GPU 检测不到问题（nvidia-smi 报错）。自动执行：检查实例状态与 GPU 配置 → 检查 GPU 监控数据 → 给出结论和建议。用户反馈 nvidia-smi 报错、GPU 找不到、显卡无法识别时使用。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"UHostId": map[string]any{
-						"type":        "string",
-						"description": "要诊断的实例 ID",
-					},
-				},
-				"required": []string{"UHostId"},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
 			Name:        "DiagnoseBilling",
 			Description: "诊断费用异常。查询实例列表并分析各项费用明细，解释扣费原因。用户反馈为什么扣这么多钱、费用不对、扣费异常时使用。可传 UHostId 查特定实例，不传则分析所有实例。",
 			Parameters: map[string]any{
@@ -1220,44 +1186,6 @@ var Registry = []openai.Tool{
 					},
 				},
 				"required": []string{},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "DiagnosePortOrFirewall",
-			Description: "诊断端口/服务可达性问题。先查实例应用入口，再查询平台已知应用端口映射，给出排查线索；SSH 以实例 SshLoginCommand 为准，不以平台应用端口目录为准。用户报告服务无法访问、端口不通、JupyterLab/SSH/FileBrowser 打不开时使用。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"UHostId": map[string]any{
-						"type":        "string",
-						"description": "要诊断的实例 ID",
-					},
-					"Service": map[string]any{
-						"type":        "string",
-						"description": "目标服务名（可选，如 JupyterLab、SSH、FileBrowser，支持别名和大小写不敏感）",
-					},
-				},
-				"required": []string{"UHostId"},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "DiagnoseImageIssue",
-			Description: "诊断镜像问题。镜像无法使用、启动异常、环境不符、初始化失败疑似镜像原因时使用。自动检查实例状态和镜像类型，区分社区镜像与官方镜像给出建议。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"UHostId": map[string]any{
-						"type":        "string",
-						"description": "要诊断的实例 ID",
-					},
-				},
-				"required": []string{"UHostId"},
 			},
 		},
 	},

@@ -14,14 +14,16 @@ func TestVisibleRegistryForSubset_NilFallsBackToFull(t *testing.T) {
 }
 
 func TestVisibleRegistryForSubset_DiagnosisToolsOnly(t *testing.T) {
+	// GPU / image / port-firewall / init-failure diagnosis tool defs were removed
+	// (migrating to the SSH-ops harness / deleted), so only SSH + Billing survive
+	// alongside the read tools.
 	subset := VisibleRegistryForSubset([]string{
-		"DiagnoseSSH", "DiagnoseInitFailure", "DiagnoseGPU",
-		"DiagnoseBilling", "DiagnosePortOrFirewall", "DiagnoseImageIssue",
+		"DiagnoseSSH", "DiagnoseBilling",
 		"DescribeCompShareInstance", "GetCompShareInstanceMonitor",
 		"DescribeCompShareSoftwarePort",
 	}, false)
 
-	require.Len(t, subset, 9)
+	require.Len(t, subset, 5)
 	names := make([]string, 0, len(subset))
 	for _, tool := range subset {
 		names = append(names, tool.Function.Name)

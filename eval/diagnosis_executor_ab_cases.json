@@ -37,16 +37,7 @@
     "forbid_mutating": true,
     "forbidden_text": ["EvidenceLedger", "KnowledgeEvidence", "KBChunk.Content"]
   },
-  {
-    "id": "init_target_stuck",
-    "question": "{{UHOST_ID}} 创建初始化一直卡住",
-    "expect_intent": "diagnosis",
-    "expect_action": "DiagnoseInitFailure",
-    "expect_skill": "diagnose-init-failure",
-    "quality_terms": ["初始化", "状态", "实例"],
-    "forbid_mutating": true,
-    "forbidden_text": ["EvidenceLedger", "KnowledgeEvidence", "KBChunk.Content"]
-  },
+
   {
     "id": "image_target_dependency",
     "question": "{{UHOST_ID}} 镜像依赖装不上怎么办",

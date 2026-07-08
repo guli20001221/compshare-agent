@@ -217,7 +217,6 @@ func TestNewLoader_LoadsAllSeededSkills(t *testing.T) {
 	want := []string{
 		"diagnose-gpu-not-detected",
 		"diagnose-image-issue",
-		"diagnose-init-failure",
 		"diagnose-port-firewall",
 		"diagnose-ssh",
 	}

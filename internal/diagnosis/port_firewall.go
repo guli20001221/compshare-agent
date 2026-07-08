@@ -214,12 +214,12 @@ func evaluateSSHServicePort(instanceResult map[string]any) Verdict {
 		return Verdict{
 			Action:     Conclude,
 			Conclusion: "该实例已返回 SSH 登录入口：" + cmd + "。",
-			Suggestion: "如果仍连不上，请继续使用 DiagnoseSSH 做资源和登录入口诊断；若能进入 JupyterLab，可用只读命令自查：`ss -lntp | grep ':22'`。",
+			Suggestion: "如果仍连不上，请继续使用 DiagnoseSSH 做资源和登录入口诊断；若能进入 JupyterLab，可用只读命令自查：`ss -lntp`。",
 		}
 	}
 	return Verdict{
 		Action:     Conclude,
 		Conclusion: "云侧未返回 SSH 登录命令，无法确认该实例已有可用 SSH 登录入口。",
-		Suggestion: "请先在控制台核对登录入口和公网 IP。若能进入 JupyterLab，可用只读命令自查：`systemctl status ssh --no-pager`、`ss -lntp | grep ':22'`。",
+		Suggestion: "请先在控制台核对登录入口和公网 IP。若能进入 JupyterLab，可用只读命令自查：`systemctl status ssh --no-pager`、`ss -lntp`。",
 	}
 }

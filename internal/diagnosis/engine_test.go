@@ -332,7 +332,7 @@ func TestEngine_Run_StepResultsAccumulate(t *testing.T) {
 
 func TestRegistry_IsDiagnosisTool(t *testing.T) {
 	assert.True(t, IsDiagnosisTool("DiagnoseSSH"))
-	assert.True(t, IsDiagnosisTool("DiagnoseInitFailure"))
+	assert.False(t, IsDiagnosisTool("DiagnoseInitFailure"))
 	assert.True(t, IsDiagnosisTool("DiagnoseGPU"))
 	assert.True(t, IsDiagnosisTool("DiagnoseBilling"))
 	assert.True(t, IsDiagnosisTool("DiagnosePortOrFirewall"))
@@ -350,10 +350,11 @@ func TestRegisteredDiagnosisActionsMatchRegistry(t *testing.T) {
 		assert.False(t, seen[action], "duplicate diagnosis action %s", action)
 		seen[action] = true
 	}
-	assert.Len(t, actions, len(chainRegistry), "registered diagnosis action list must match registry size")
-	for action := range chainRegistry {
-		assert.True(t, seen[action], "diagnosis action %s missing from stable list", action)
-	}
+	// registeredDiagnosisActions is the ADVERTISED subset; chainRegistry is a
+	// superset that also holds the dormant GPU/image/port chains migrating to the
+	// SSH-ops harness. Every advertised action must resolve to a chain (asserted in
+	// the loop above), but chainRegistry legitimately contains more.
+	assert.LessOrEqual(t, len(actions), len(chainRegistry))
 }
 
 func TestRegistry_GetChain(t *testing.T) {
@@ -361,11 +362,6 @@ func TestRegistry_GetChain(t *testing.T) {
 	assert.True(t, ok)
 	assert.NotNil(t, chain)
 	assert.Equal(t, "DiagnoseSSH", chain.Name)
-
-	chain2, ok2 := GetChain("DiagnoseInitFailure")
-	assert.True(t, ok2)
-	assert.NotNil(t, chain2)
-	assert.Equal(t, "DiagnoseInitFailure", chain2.Name)
 
 	chain4, ok4 := GetChain("DiagnosePortOrFirewall")
 	assert.True(t, ok4)

@@ -25,10 +25,14 @@ const (
 	// ReAct taxonomy; GPU recommendation tools remain available as read-only facts.
 	// 2026-06-29: remove CreateInstanceWorkflow from ReAct operation guidance;
 	// new-instance creation is owned by create_instance / deploy_model handlers.
-	mutatingReActPromptSHA256 = "6881b14028037b58be42602d0906fdb6b5182447cff288a6074baefb1e8b6d11"
+	// 2026-07-08: init-failure diagnosis removed and GPU/image/port diagnoses
+	// unadvertised (migrating to the in-instance SSH-ops harness); diagnosis
+	// selection card + trigger boundaries now render only SSH + billing.
+	mutatingReActPromptSHA256 = "576c7befb7c810a311ad8d666b638e58e735c25572409a618b87c32a1329c164"
 	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
 	// 2026-06-22 (阶段1A KV-cache): volatile userContext block moved to the tail.
-	readOnlyReActPromptSHA256 = "a9824405b7522b7c89de15f04c1464377207c0b52c128ce8dd2d5887f468f127"
+	// 2026-07-08: diagnosis catalog trimmed to SSH + billing (see mutating note).
+	readOnlyReActPromptSHA256 = "89635c8d7a3132a6c2a1d235df32f328db8f4ccbeb6b60871175f151eb912532"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

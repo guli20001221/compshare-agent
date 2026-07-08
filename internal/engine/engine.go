@@ -4361,7 +4361,13 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return e.executeWorkflow(ctx, action, args, onStep)
 	}
 
-	// Diagnosis meta-tools → delegate to diagnosis engine.
+	// Diagnosis meta-tools → delegate to diagnosis engine. Keys on chainRegistry
+	// (IsDiagnosisTool), which is a superset of the advertised set: the dormant
+	// GPU/image/port chains stay dispatchable so their Chat-integration tests keep
+	// exercising them until the SSH-ops harness migration (follow-up) deletes them.
+	// Production cannot reach them (not in the tool registry / text-router / card);
+	// the only residual path is a hallucinated or replayed de-advertised tool name,
+	// which runs a READ-ONLY dormant chain — harmless and short-lived.
 	if diagnosis.IsDiagnosisTool(action) {
 		args = e.safeExecutor.FilterArgs(action, args)
 		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: e.safeExecutor.RedactArgs(action, args)})
@@ -5939,49 +5945,11 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
-	uid, _ := args["UHostId"].(string)
-
-	// Vague-failure guard — DiagnoseInitFailure only.
-	// Gate 1 (symptom specificity): the user message must contain an
-	// init-failure-specific signal. Vague fault language like "跑崩了" /
-	// "挂了" is blocked here, even if the LLM provided a target instance.
-	// This is a hard safety net behind the prompt-level vague_failure
-	// routing class — deliberately does NOT redirect to another Diagnose*.
-	if action == "DiagnoseInitFailure" && !containsInitFailureSignal(e.lastUserMsg) &&
-		!(uid != "" && e.previousAssistantAskedInitFailureTarget()) {
-		msg := "请问是哪台实例出了问题？能描述一下具体现象吗（例如：SSH 断了、GPU 报错、服务崩了、初始化卡住等）？"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return finalReplyPrefix + msg
-	}
-
-	// Gate 2 (instance disambiguation): symptom is specific, but if no
-	// target was provided and the user did not ask for a scan-all, ask
-	// which instance. Avoids implicit scan-all when the user has a
-	// specific instance in mind but didn't name it.
-	//
-	// Target check is UHostId-only because SafeToolExecutor filters upstream
-	// strips any field not in the DiagnoseInitFailure schema (which only
-	// declares UHostId). The LLM is expected to resolve names to UHostIds
-	// upstream; if it doesn't, this gate correctly falls through to
-	// clarification.
-	if action == "DiagnoseInitFailure" {
-		if uid == "" && !containsScanAllSignal(e.lastUserMsg) {
-			msg := "请问是哪台实例的初始化失败了？"
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-			return finalReplyPrefix + msg
-		}
-	}
-
 	// P2/P3b pilot (USE_SKILL_EXECUTOR, default off): route an explicitly
 	// allowlisted diagnosis skill through the body-driven orchestrator loop
-	// instead of the Go chain.
-	// Placed AFTER the DiagnoseInitFailure guards above on purpose: the body
-	// executor must be gated by the same vague-symptom / instance-disambiguation
-	// safety net as the Go chain — running it earlier (as P2a did, when only the
-	// guard-free DiagnosePortOrFirewall was piloted) would let a piloted
-	// DiagnoseInitFailure bypass those guards. runDiagnosisSkill returns
-	// handled=false when the skill cannot load or cannot complete, so we degrade
-	// to the shipped chain rather than failing the turn.
+	// instead of the Go chain. runDiagnosisSkill returns handled=false when the
+	// skill cannot load or cannot complete, so we degrade to the shipped chain
+	// rather than failing the turn.
 	if skillName, piloted := diagnosisSkillExecutorPilotForAction(action); piloted {
 		if reply, handled := e.runDiagnosisSkill(ctx, skillName, action, args, onStep); handled {
 			return reply
@@ -6047,7 +6015,6 @@ var skillExecutorDiagnosisPilots = map[string]struct{}{}
 
 var knownDiagnosisSkillExecutorPilots = []string{
 	"diagnose-ssh",
-	"diagnose-init-failure",
 	"diagnose-gpu-not-detected",
 	"diagnose-image-issue",
 	"diagnose-port-firewall",
@@ -6139,8 +6106,6 @@ func pilotSkillForDiagnosis(action string) (string, bool) {
 	switch action {
 	case "DiagnoseSSH":
 		return "diagnose-ssh", true
-	case "DiagnoseInitFailure":
-		return "diagnose-init-failure", true
 	case "DiagnoseGPU":
 		return "diagnose-gpu-not-detected", true
 	case "DiagnoseImageIssue":
@@ -6652,99 +6617,6 @@ var knowledgePytorchBasicsKeywords = []string{
 // hard-block 归一 refactor. All engine call sites now invoke
 // textutil.Normalize directly. See textutil/normalize.go for the
 // canonical implementation + per-package unit tests.
-
-func (e *Engine) previousAssistantAskedInitFailureTarget() bool {
-	if e == nil {
-		return false
-	}
-	for i := len(e.messages) - 1; i >= 0; i-- {
-		msg := e.messages[i]
-		if msg.Role != openai.ChatMessageRoleAssistant {
-			continue
-		}
-		if len(msg.ToolCalls) > 0 {
-			continue
-		}
-		n := textutil.Normalize(msg.Content)
-		if n == "" {
-			continue
-		}
-		if strings.Contains(n, "具体现象") ||
-			strings.Contains(n, "例如") {
-			return false
-		}
-		return strings.Contains(n, "初始化") &&
-			(strings.Contains(n, "哪台") || strings.Contains(n, "哪一台") || strings.Contains(n, "具体"))
-	}
-	return false
-}
-
-// initFailureSignalKeywords is a narrow word list that marks a user message
-// as specifically about init-failure symptoms. Keep it tight — keywords
-// like "起不来" are too ambiguous (could be SSH / GPU / service) and must
-// NOT live here.
-var initFailureSignalKeywords = []string{
-	"初始化失败",
-	"install fail",
-	"卡在初始化",
-	"卡在启动",
-	"开不了机",
-	"启动失败",
-	"无法启动",
-	"启动不了",
-	"开机失败",
-	"stop 后启动失败",
-	"stop后启动失败",
-	"starting很久",
-	"starting 很久",
-	"一直starting",
-	"一直 starting",
-}
-
-// containsInitFailureSignal reports whether the user message contains an
-// init-failure-specific symptom signal. This is Gate 1 of the
-// DiagnoseInitFailure guard: vague fault language ("跑崩了", "挂了") does
-// NOT match; the user must have named the symptom type explicitly.
-func containsInitFailureSignal(msg string) bool {
-	n := textutil.Normalize(msg)
-	for _, kw := range initFailureSignalKeywords {
-		if strings.Contains(n, kw) {
-			return true
-		}
-	}
-	return false
-}
-
-// scanAllSignalKeywords is a narrow list of phrases that indicate the user
-// explicitly wants a broad scan across all instances. Used only as Gate 2
-// of the DiagnoseInitFailure guard — consulted AFTER the symptom-specificity
-// gate passes. A scan-all phrase alone (without an init-failure signal)
-// does NOT bypass the guard.
-var scanAllSignalKeywords = []string{
-	"所有实例",
-	"全部实例",
-	"哪些实例",
-	"有哪些",
-	"帮我扫",
-	"全量",
-	"所有的",
-	"全部失败",
-	"失败的实例",
-	"扫一下失败",
-	"都有哪些",
-}
-
-// containsScanAllSignal reports whether the user message expresses an
-// explicit intent to scan across all instances.
-func containsScanAllSignal(msg string) bool {
-	n := textutil.Normalize(msg)
-	for _, kw := range scanAllSignalKeywords {
-		if strings.Contains(n, kw) {
-			return true
-		}
-	}
-	return false
-}
 
 // shouldForceMonitorRecall reports whether the current turn is an adjacent
 // monitor follow-up that should force a fresh GetCompShareInstanceMonitor call

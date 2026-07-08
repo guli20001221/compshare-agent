@@ -76,8 +76,6 @@ func diagnosisSymptomType(skillName string) string {
 	switch skillName {
 	case "diagnose-ssh":
 		return "ssh"
-	case "diagnose-init-failure":
-		return "init_failure"
 	case "diagnose-gpu-not-detected":
 		return "gpu_not_detected"
 	case "diagnose-image-issue":
@@ -93,8 +91,6 @@ func diagnosisNextStepExpectation(skillName string) string {
 	switch skillName {
 	case "diagnose-ssh":
 		return "Use read-only instance state and monitor evidence before explaining SSH authentication or reachability checks."
-	case "diagnose-init-failure":
-		return "Use read-only instance state before explaining initialization status and next safe action."
 	case "diagnose-gpu-not-detected":
 		return "Use read-only instance and monitor evidence before distinguishing cloud GPU state from in-instance CUDA or driver issues."
 	case "diagnose-image-issue":

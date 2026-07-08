@@ -83,31 +83,6 @@ func billingExecutor() *goldenExecutor {
 	}}
 }
 
-// startingExecutor returns a mock with one Starting instance (for Starting-not-billed test).
-func startingExecutor() *goldenExecutor {
-	return &goldenExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": {"UHostSet": []any{
-			map[string]any{
-				"UHostId": "uhost-boot", "Name": "boot-gpu", "State": "Starting",
-				"GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic",
-			},
-		}},
-	}}
-}
-
-// initFailureExecutor returns a mock with one Install Fail instance.
-func initFailureExecutor() *goldenExecutor {
-	return &goldenExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": {"UHostSet": []any{
-			map[string]any{
-				"UHostId": "uhost-fail", "Name": "broken-gpu", "State": "Install Fail",
-				"GpuType": "A100", "GPU": float64(1), "ChargeType": "Dynamic",
-				"CompShareImageName": "PyTorch 2.1",
-			},
-		}},
-	}}
-}
-
 type goldenScope string
 
 const (
@@ -299,12 +274,6 @@ var engineGoldenCases = []goldenCase{
 		ExpectToolCalls: []string{"DiagnoseSSH"},
 	},
 	{
-		ID:              "golden_08_port_diagnose",
-		Input:           "JupyterLab打不开",
-		UserContext:     "您有 1 个实例（1 个运行中）\n- my-gpu (uhost-xxx): GPU=4090×1, 状态=运行中, 计费=Dynamic",
-		ExpectToolCalls: []string{"DiagnosePortOrFirewall"},
-	},
-	{
 		ID:               "golden_09_knowledge_nocard",
 		Input:            "什么是无卡模式",
 		UserContext:      "用户当前没有实例。",
@@ -363,24 +332,6 @@ var engineGoldenCases = []goldenCase{
 		ExpectToolCalls:  []string{"DiagnoseBilling"},
 		ReplyContains:    []string{"费用", "关机", "磁盘"},
 		ReplyNotContains: []string{"GetCompShareInstancePrice", "DescribeCompShareInstance"},
-	},
-	{
-		ID:              "golden_17_init_failure_diagnosis",
-		Executor:        initFailureExecutor(),
-		Input:           "实例初始化失败了怎么办",
-		UserContext:     "您有 1 个实例（1 个初始化失败）\n- broken-gpu (uhost-fail): GPU=A100×1, 状态=初始化失败, 计费=Dynamic",
-		ExpectToolCalls: []string{"DiagnoseInitFailure"},
-		ReplyContains:   []string{"初始化失败", "删除"},
-	},
-	{
-		// NOTE: "不产生费用" regression is locked in TestScenario_InitFailure_Starting
-		// (scenario_test.go) which asserts directly on the diagnosis chain JSON.
-		ID:              "golden_18_starting_not_billed",
-		Executor:        startingExecutor(),
-		Input:           "实例卡在启动中不动了",
-		UserContext:     "您有 1 个实例（1 个启动中）\n- boot-gpu (uhost-boot): GPU=4090×1, 状态=启动中, 计费=Dynamic",
-		ExpectToolCalls: []string{"DiagnoseInitFailure"},
-		ReplyContains:   []string{"启动", "不"},
 	},
 	{
 		ID:              "golden_19_set_stop_scheduler",
@@ -609,8 +560,8 @@ func validateGoldenCase(gc goldenCase, reply string, events []engine.StepEvent) 
 // that the golden catalogs are structurally sound and have not degraded.
 func TestGoldenCatalogIntegrity(t *testing.T) {
 	// Engine golden cases: basic structural checks
-	if len(engineGoldenCases) < 23 {
-		t.Errorf("engine golden cases = %d, want >= 23", len(engineGoldenCases))
+	if len(engineGoldenCases) < 20 {
+		t.Errorf("engine golden cases = %d, want >= 20", len(engineGoldenCases))
 	}
 	ids := map[string]bool{}
 	for _, gc := range engineGoldenCases {
@@ -628,8 +579,8 @@ func TestGoldenCatalogIntegrity(t *testing.T) {
 
 	// Real CLI golden cases: load from JSON (single source of truth)
 	cliCases := loadRealCLIGoldenCases(t)
-	if len(cliCases) < 23 {
-		t.Errorf("real CLI golden cases = %d, want >= 23", len(cliCases))
+	if len(cliCases) < 20 {
+		t.Errorf("real CLI golden cases = %d, want >= 20", len(cliCases))
 	}
 	cliIDs := map[string]bool{}
 	for _, gc := range cliCases {

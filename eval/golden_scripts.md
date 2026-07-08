@@ -57,15 +57,6 @@
 - 根据实例状态给出结论和建议
 **验证**: 事件日志出现 `DiagnoseSSH`，回复含诊断结论
 
-## 8. 端口诊断
-
-**输入**: `JupyterLab打不开`
-**预期行为**:
-- 触发 `DiagnosePortOrFirewall`
-- 优先查实例级 Softwares，无匹配则降级到平台目录
-- 结论区分"实例已配置"vs"平台目录参考"
-**验证**: 事件日志出现 `DiagnosePortOrFirewall`
-
 ## 9. 知识: 无卡模式
 
 **输入**: `什么是无卡模式`
@@ -123,25 +114,6 @@
 - 关机实例提示磁盘和镜像保留费用
 - 建议不含内部 API 名（如 GetCompShareInstancePrice）
 **验证**: 事件日志出现 `DiagnoseBilling`，回复含 `费用`
-
-## 17. 初始化失败诊断——DiagnoseInitFailure
-
-**输入**: `实例初始化失败了`（上下文有 1 台 Install Fail 实例）
-**预期行为**:
-- 调用 `DiagnoseInitFailure`
-- 回复包含"初始化失败"、镜像名、删除重建建议
-- 如状态为 Starting，提示不收费 + 等待 1-2 分钟
-- 如状态为 Install，提示超过 5 分钟联系客服（非 10 分钟）
-**验证**: 事件日志出现 `DiagnoseInitFailure`，回复含 `初始化失败`
-
-## 18. Starting 状态不收费——DiagnoseInitFailure
-
-**输入**: `实例卡在启动中不动了`（上下文有 1 台 Starting 状态实例）
-**预期行为**:
-- 调用 `DiagnoseInitFailure`
-- 回复包含"启动中"和"不产生费用"（或等价表述）
-- 建议等待 1-2 分钟
-**验证**: 事件日志出现 `DiagnoseInitFailure`，回复含 `启动`；scenario 测试硬锁诊断链 JSON 含"不产生费用"
 
 ## 19. 定时关机
 

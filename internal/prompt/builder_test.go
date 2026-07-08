@@ -101,7 +101,7 @@ func TestTranslateState(t *testing.T) {
 
 func TestBuildSystem_ContainsDiagnosis(t *testing.T) {
 	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
-	for _, tool := range []string{"DiagnoseSSH", "DiagnoseInitFailure", "DiagnoseGPU", "DiagnoseBilling"} {
+	for _, tool := range []string{"DiagnoseSSH", "DiagnoseBilling"} {
 		if !strings.Contains(prompt, tool) {
 			t.Errorf("system prompt should contain %s routing", tool)
 		}

@@ -151,7 +151,6 @@ func TestDiagnosisProcessEval(t *testing.T) {
 
 	for _, want := range []string{
 		"diagnose-ssh",
-		"diagnose-init-failure",
 		"diagnose-gpu-not-detected",
 		"diagnose-image-issue",
 		"diagnose-port-firewall",
@@ -211,7 +210,6 @@ func TestDiagnosisProcessEval_AllTrueSkillsAreCovered(t *testing.T) {
 	require.Equal(t, []string{
 		"diagnose-gpu-not-detected",
 		"diagnose-image-issue",
-		"diagnose-init-failure",
 		"diagnose-port-firewall",
 		"diagnose-ssh",
 	}, names)
