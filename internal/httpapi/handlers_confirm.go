@@ -30,7 +30,7 @@ func (h *Handlers) handleConfirm(_ *gin.Context, base BaseRequest, raw *simplejs
 	err := h.confirmBroker.Resolve(confirmationID, sessionID, base.Owner, ConfirmDecision{Confirmed: confirmed})
 	if err != nil {
 		if errors.Is(err, ErrConfirmationOwner) {
-			return nil, ErrForbidden.WithMessage("confirmation does not belong to this session")
+			return nil, ErrForbidden.WithMessage("confirmation does not belong to this owner")
 		}
 		return nil, ErrNotFound.WithMessage("confirmation %s not found or already resolved", confirmationID)
 	}

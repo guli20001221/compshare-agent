@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"log"
 	"sync"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 
 var (
 	ErrConfirmationNotFound = errors.New("confirmation not found or already resolved")
-	ErrConfirmationOwner    = errors.New("confirmation does not belong to this session/owner")
+	ErrConfirmationOwner    = errors.New("confirmation does not belong to this owner")
 	// ErrOverridesNotAllowed is returned when a ConfirmCSAgentAction carries
 	// Overrides but the pending confirmation never offered an editable form.
 	ErrOverridesNotAllowed = errors.New("this confirmation does not accept overrides")
@@ -73,8 +74,19 @@ func (b *ConfirmBroker) register(sessionID string, owner store.Owner, form *work
 }
 
 // Resolve delivers the user's decision. Returns ErrConfirmationNotFound if
-// the ID is unknown, or ErrConfirmationOwner if the sessionID/owner doesn't
-// match — preventing cross-session confirmation hijacking.
+// the ID is unknown, or ErrConfirmationOwner if the OWNER (tenant) doesn't
+// match — preventing cross-tenant confirmation hijacking.
+//
+// The confirmation is bound to its unguessable ConfirmationId + owner, NOT to
+// the session label. Stale-session recovery (handlers_chat.go getOrCreateSession)
+// can mint a new session id mid-turn, so the confirm frame's SessionId may
+// legitimately differ from the one the confirmation was registered under.
+// Enforcing session equality here false-rejected those confirms with
+// ErrConfirmationOwner (the create-flow "[Forbidden] ... session/owner" bug).
+// Only owner is enforced now: the random ConfirmationId already prevents any
+// same-owner cross-session resolution, and the decision is delivered to the
+// exact registering turn's channel, so a session-label drift is safe to
+// resolve — it is only recorded (below) for observability.
 //
 // A CONFIRMED decision carrying Overrides is validated against the pending
 // confirmation's form (whitelist: editable fields, offered option values
@@ -88,7 +100,7 @@ func (b *ConfirmBroker) Resolve(confirmationID, sessionID string, owner store.Ow
 		b.mu.Unlock()
 		return ErrConfirmationNotFound
 	}
-	if p.sessionID != sessionID || p.owner != owner {
+	if p.owner != owner {
 		b.mu.Unlock()
 		return ErrConfirmationOwner
 	}
@@ -105,8 +117,16 @@ func (b *ConfirmBroker) Resolve(confirmationID, sessionID string, owner store.Ow
 	if !decision.Confirmed {
 		decision.Overrides = nil
 	}
+	registeredSession := p.sessionID
 	delete(b.pending, confirmationID)
 	b.mu.Unlock()
+	if registeredSession != sessionID {
+		// Legitimate under stale-session recovery: the confirm arrived under a
+		// different session label than the one the confirmation was registered
+		// under. Resolved by ConfirmationId+owner above; record for observability.
+		log.Printf("confirm %s: session drift (registered %q, resolved %q) — resolving by id+owner",
+			confirmationID, registeredSession, sessionID)
+	}
 	p.ch <- decision
 	close(p.ch)
 	return nil
