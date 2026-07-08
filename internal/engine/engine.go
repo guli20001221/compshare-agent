@@ -4315,9 +4315,16 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	// Parse args first (needed for all paths)
 	var args map[string]any
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-		errMsg := fmt.Sprintf("parameter parse error: %v", err)
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errMsg})
-		return errMsg
+		// Record the concise parse error for telemetry (error_class grouping stays
+		// byte-identical), but return a corrective hint so the agent's next ReAct
+		// round re-emits the call with valid JSON. Production traces show ~4% of
+		// SearchKnowledge calls fail here — flash occasionally emits a leaked tag or
+		// a bare query string instead of a JSON object, and the bare error alone did
+		// not always steer the retry. No coercion: the malformed arguments are
+		// rejected; the tool-arg contract is unchanged.
+		errClass := fmt.Sprintf("parameter parse error: %v", err)
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errClass})
+		return errClass + "。工具参数必须是合法的 JSON 对象，请按该工具的参数结构仅输出 JSON 后重新调用。"
 	}
 
 	// Knowledge tools execute locally — no API call, no security check needed
