@@ -15,11 +15,7 @@ func IntentToolSubset(i Intent) []string {
 			// when the flag is off. Listing it here is inert until the flag is on.
 			"SearchKnowledge",
 			"DiagnoseSSH",
-			"DiagnoseInitFailure",
-			"DiagnoseGPU",
 			"DiagnoseBilling",
-			"DiagnosePortOrFirewall",
-			"DiagnoseImageIssue",
 			"DescribeCompShareInstance",
 			"GetCompShareInstanceMonitor",
 			"DescribeCompShareSoftwarePort",

@@ -9,7 +9,7 @@ import (
 
 func TestIntentToolSubset_DiagnosisReturnsEntryTools(t *testing.T) {
 	subset := IntentToolSubset(IntentDiagnosis)
-	require.Len(t, subset, 11)
+	require.Len(t, subset, 7)
 	// SearchKnowledge (P4a) is a candidate diagnosis tool, emit-gated at the
 	// visibility layer (tools.VisibleRegistry) behind COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE:
 	// listing it here is inert until the flag is on, so the EMITTED diagnosis
@@ -17,7 +17,8 @@ func TestIntentToolSubset_DiagnosisReturnsEntryTools(t *testing.T) {
 	// TestSearchKnowledgeGatedVisibility).
 	assert.Contains(t, subset, "SearchKnowledge")
 	assert.Contains(t, subset, "DiagnoseSSH")
-	assert.Contains(t, subset, "DiagnosePortOrFirewall")
+	assert.Contains(t, subset, "DiagnoseBilling")
+	assert.NotContains(t, subset, "DiagnosePortOrFirewall")
 	assert.Contains(t, subset, "DescribeCompShareInstance")
 	assert.Contains(t, subset, "DescribeCompShareSoftwarePort")
 	assert.Contains(t, subset, "DescribeCompShareJupyterToken")

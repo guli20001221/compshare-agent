@@ -18,7 +18,7 @@ func SSHFailureChain() *Chain {
 		Fallback: Verdict{
 			Action:     Conclude,
 			Conclusion: "云侧未发现明确的 SSH 连接问题。实例运行中，已返回 SSH 登录入口，CPU/内存监控未见高压。",
-			Suggestion: "请先使用控制台展示的 SSH 登录命令重试。若能通过 JupyterLab 进入终端，可用只读命令自查：`systemctl status ssh --no-pager`、`ss -lntp | grep ':22'`。如仍无法连接，请联系技术支持并提供实例 ID。",
+			Suggestion: "请先使用控制台展示的 SSH 登录命令重试。若能通过 JupyterLab 进入终端，可用只读命令自查：`systemctl status ssh --no-pager`、`ss -lntp`。如仍无法连接，请联系技术支持并提供实例 ID。",
 		},
 	}
 }
@@ -97,7 +97,7 @@ func stepCheckInstanceState() Step {
 					return Verdict{
 						Action:     Conclude,
 						Conclusion: "云侧未返回 SSH 登录命令，无法确认该实例已有可用 SSH 登录入口。",
-						Suggestion: "请先在控制台核对实例登录入口和公网 IP。若能通过 JupyterLab 进入终端，可用只读命令自查：`systemctl status ssh --no-pager`、`ss -lntp | grep ':22'`。安装或启动 SSH 服务属于会修改实例环境的可选修复，请确认后再执行。",
+						Suggestion: "请先在控制台核对实例登录入口和公网 IP。若能通过 JupyterLab 进入终端，可用只读命令自查：`systemctl status ssh --no-pager`、`ss -lntp`。安装或启动 SSH 服务属于会修改实例环境的可选修复，请确认后再执行。",
 					}
 				}
 				return Verdict{Action: Continue}

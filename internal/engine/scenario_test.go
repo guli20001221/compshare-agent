@@ -165,91 +165,6 @@ func TestScenario_SSH_AllNormal_Fallback(t *testing.T) {
 	assert.Contains(t, exec.calls, "GetCompShareInstanceMonitor")
 }
 
-// ── Scenario 4: "初始化失败了" → DiagnoseInitFailure ──────────────────────
-
-func TestScenario_InitFailure(t *testing.T) {
-	exec := &mockExecutor{
-		results: map[string]map[string]any{
-			"DescribeCompShareInstance": {
-				"TotalCount": float64(1),
-				"UHostSet": []any{
-					map[string]any{"UHostId": "uhost-fail", "Name": "broken", "State": "Install Fail", "Tag": "A100", "GPU": float64(1), "CompShareImageName": "PyTorch 2.1"},
-				},
-			},
-		},
-	}
-
-	mock := &mockLLM{
-		responses: []llm.ChatResponse{
-			{ToolCalls: []openai.ToolCall{tc("DiagnoseInitFailure", map[string]any{"UHostId": "uhost-fail"})}},
-			{Content: "实例初始化失败，镜像 PyTorch 2.1。建议删除重建或更换镜像。"},
-		},
-	}
-
-	eng := NewWithDeps(mock, exec, nil)
-	eng.Init(context.Background())
-
-	reply, err := eng.Chat(context.Background(), "我的实例初始化失败了", func(e StepEvent) {})
-	assert.NoError(t, err)
-	assert.Contains(t, reply, "初始化失败")
-
-	// Verify the diagnosis chain result (tool message fed to LLM round 2)
-	// contains meaningful conclusion, not just routing.
-	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
-	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
-	var diagResult map[string]any
-	err = json.Unmarshal([]byte(toolMsg.Content), &diagResult)
-	assert.NoError(t, err)
-	assert.Equal(t, true, diagResult["success"])
-	conclusion, _ := diagResult["conclusion"].(string)
-	assert.Contains(t, conclusion, "初始化失败")
-	assert.Contains(t, conclusion, "PyTorch 2.1")
-	suggestion, _ := diagResult["suggestion"].(string)
-	assert.Contains(t, suggestion, "删除")
-}
-
-// ── Scenario 4b: "实例卡在启动中" → DiagnoseInitFailure — Starting 不收费 ──
-
-func TestScenario_InitFailure_Starting(t *testing.T) {
-	exec := &mockExecutor{
-		results: map[string]map[string]any{
-			"DescribeCompShareInstance": {
-				"TotalCount": float64(1),
-				"UHostSet": []any{
-					map[string]any{"UHostId": "uhost-boot", "Name": "boot-gpu", "State": "Starting", "GpuType": "4090", "GPU": float64(1)},
-				},
-			},
-		},
-	}
-
-	mock := &mockLLM{
-		responses: []llm.ChatResponse{
-			{ToolCalls: []openai.ToolCall{tc("DiagnoseInitFailure", map[string]any{"UHostId": "uhost-boot"})}},
-			{Content: "实例正在启动中，此状态不收费，请等待 1-2 分钟。"},
-		},
-	}
-
-	eng := NewWithDeps(mock, exec, nil)
-	eng.Init(context.Background())
-
-	reply, err := eng.Chat(context.Background(), "实例卡在启动中不动了", func(e StepEvent) {})
-	assert.NoError(t, err)
-	assert.Contains(t, reply, "启动")
-
-	// Verify diagnosis chain JSON locks the Starting semantics
-	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
-	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
-	var diagResult map[string]any
-	err = json.Unmarshal([]byte(toolMsg.Content), &diagResult)
-	assert.NoError(t, err)
-	assert.Equal(t, true, diagResult["success"])
-	conclusion, _ := diagResult["conclusion"].(string)
-	assert.Contains(t, conclusion, "启动中")
-	assert.Contains(t, conclusion, "不产生费用", "Starting state must state no billing")
-	suggestion, _ := diagResult["suggestion"].(string)
-	assert.Contains(t, suggestion, "1-2 分钟")
-}
-
 // ── Scenario 5: "帮我开一台4090" → CreateInstanceWorkflow ─────────────────
 
 func TestScenario_CreateInstance(t *testing.T) {
@@ -1255,9 +1170,9 @@ func TestScenario_ActiveUserContext(t *testing.T) {
 // ── Tool registration verification ────────────────────────────────────────
 
 func TestScenario_AllToolsRegistered(t *testing.T) {
-	// Diagnosis tools (6)
+	// SSH + Billing advertised; GPU/image/port dormant (in chainRegistry, migrating to harness); InitFailure removed
 	assert.True(t, diagnosis.IsDiagnosisTool("DiagnoseSSH"))
-	assert.True(t, diagnosis.IsDiagnosisTool("DiagnoseInitFailure"))
+	assert.False(t, diagnosis.IsDiagnosisTool("DiagnoseInitFailure"))
 	assert.True(t, diagnosis.IsDiagnosisTool("DiagnoseGPU"))
 	assert.True(t, diagnosis.IsDiagnosisTool("DiagnoseBilling"))
 	assert.True(t, diagnosis.IsDiagnosisTool("DiagnosePortOrFirewall"))

@@ -980,19 +980,10 @@ func inferDiagnosisActionFromText(text string) string {
 			strings.Contains(text, "超时") || strings.Contains(text, "打不开") ||
 			strings.Contains(lower, "timeout") || strings.Contains(lower, "refused")):
 		return "DiagnoseSSH"
-	case (strings.Contains(compact, "nvidiasmi") || strings.Contains(compact, "gpu") || strings.Contains(text, "显卡")) &&
-		(strings.Contains(text, "检测不到") || strings.Contains(text, "找不到") ||
-			strings.Contains(text, "看不见") || strings.Contains(text, "不可见") ||
-			strings.Contains(text, "报错") || strings.Contains(text, "不可用")):
-		return "DiagnoseGPU"
-	case strings.Contains(text, "初始化") &&
-		(strings.Contains(text, "失败") || strings.Contains(text, "卡住") || strings.Contains(text, "一直")):
-		return "DiagnoseInitFailure"
-	case (strings.Contains(text, "端口") || strings.Contains(compact, "jupyter") ||
-		strings.Contains(compact, "jupyterlab") || strings.Contains(compact, "filebrowser")) &&
-		(strings.Contains(text, "打不开") || strings.Contains(text, "访问不了") ||
-			strings.Contains(text, "不通") || strings.Contains(text, "连不上")):
-		return "DiagnosePortOrFirewall"
+	// GPU (掉卡) / port-firewall / init-failure text routing was retired: GPU and
+	// port symptoms are migrating to the in-instance SSH-ops harness (they need
+	// inside-instance evidence, not a deterministic API chain), and init-failure
+	// was removed outright. Only SSH stays a deterministic outside route here.
 	default:
 		return ""
 	}
@@ -1407,12 +1398,6 @@ func diagnosisActionLabel(action string) string {
 	switch action {
 	case "DiagnoseSSH":
 		return " SSH 诊断"
-	case "DiagnoseGPU":
-		return " GPU 诊断"
-	case "DiagnoseInitFailure":
-		return "初始化诊断"
-	case "DiagnosePortOrFirewall":
-		return "端口诊断"
 	default:
 		return "诊断"
 	}

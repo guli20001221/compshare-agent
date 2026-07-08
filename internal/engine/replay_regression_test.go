@@ -1136,67 +1136,6 @@ func TestReplayRegression_DiagnosisTargetFollowupHonorsContextDecisionNewTask(t 
 	}
 }
 
-func TestReplayRegression_GPUInvisibleUsesUniqueGPUInstanceFromFullSnapshot(t *testing.T) {
-	exec := replayInstanceExecutor(manyInstancesWithNamedTargetGPU("host-wyp", "Running", "5090"))
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
-		Plan: intent.IntentRoute{
-			SchemaVersion: intent.SchemaVersion,
-			Intent:        intent.IntentDiagnosis,
-			RequiredTools: []string{"DescribeCompShareInstance"},
-			Retrieval:     intent.Retrieval{Enabled: false},
-			Confidence:    0.9,
-		},
-	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "5090 尚未发布"}}}
-	eng := NewWithDeps(mock, exec, nil)
-	eng.Init(context.Background())
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentDiagnosis}})
-
-	reply, err := eng.Chat(context.Background(), "我选的5090套餐，进入实例后看不见显卡", noopStep)
-
-	require.NoError(t, err)
-	require.Contains(t, reply, "host-wyp")
-	require.Contains(t, reply, "5090")
-	require.Contains(t, reply, "nvidia-smi")
-	require.NotContains(t, reply, "尚未发布")
-	require.NotContains(t, reply, "没有直接看到")
-	require.Len(t, mock.calls, 0, "unique GPU instance diagnosis should be handled from live instance data")
-}
-
-func TestReplayRegression_DirectGPUInvisibleUsesLive5090Instance(t *testing.T) {
-	exec := replayInstanceExecutor(manyInstancesWithNamedTargetGPU("host-wyp", "Running", "5090"))
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "5090 尚未发布"}}}
-	eng := NewWithDeps(mock, exec, nil)
-	eng.Init(context.Background())
-
-	reply, err := eng.Chat(context.Background(), "我选的5090套餐，进入实例后看不见显卡", noopStep)
-
-	require.NoError(t, err)
-	require.Contains(t, reply, "host-wyp")
-	require.Contains(t, reply, "5090")
-	require.Contains(t, reply, "nvidia-smi")
-	require.NotContains(t, reply, "尚未发布")
-	require.NotContains(t, reply, "具体现象")
-	require.Len(t, mock.calls, 0, "clear GPU-invisible diagnosis should not enter generic ReAct clarification")
-}
-
-func TestReplayRegression_DirectGPUInvisibleMultiple5090AsksForTarget(t *testing.T) {
-	exec := replayInstanceExecutor(manyInstancesWithTwoGPUInstances("5090"))
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
-	eng := NewWithDeps(mock, exec, nil)
-	eng.Init(context.Background())
-
-	reply, err := eng.Chat(context.Background(), "我选的5090套餐，进入实例后看不见显卡", noopStep)
-
-	require.NoError(t, err)
-	require.Contains(t, reply, "多台 5090")
-	require.Contains(t, reply, "host-a")
-	require.Contains(t, reply, "host-b")
-	require.Contains(t, reply, "实例名称或实例 ID")
-	require.NotContains(t, reply, "具体现象")
-	require.Len(t, mock.calls, 0, "multiple same-GPU diagnosis should ask for target directly")
-}
-
 func TestReplayRegressionWiring_GenericNoResourceUsesKnowledgePath(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{stockShortageKnowledgeResult()}}
@@ -1380,34 +1319,6 @@ func manyInstancesWithNamedTargetGPU(name, state, gpuType string) map[string]any
 	return map[string]any{
 		"TotalCount": float64(len(rows)),
 		"UHostSet":   rows,
-	}
-}
-
-func manyInstancesWithTwoGPUInstances(gpuType string) map[string]any {
-	return map[string]any{
-		"TotalCount": float64(2),
-		"UHostSet": []any{
-			map[string]any{
-				"UHostId": "uhost-gpu-a",
-				"Name":    "host-a",
-				"State":   "Running",
-				"GpuType": gpuType,
-				"GPU":     float64(1),
-				"CPU":     float64(16),
-				"Memory":  float64(65536),
-				"Zone":    "cn-wlcb-01",
-			},
-			map[string]any{
-				"UHostId": "uhost-gpu-b",
-				"Name":    "host-b",
-				"State":   "Stopped",
-				"GpuType": gpuType,
-				"GPU":     float64(1),
-				"CPU":     float64(16),
-				"Memory":  float64(65536),
-				"Zone":    "cn-wlcb-01",
-			},
-		},
 	}
 }
 

@@ -34,8 +34,6 @@
 {"id":"diag_port_02","question":"webui 的端口打不开，是不是被防火墙挡了","lane":"diagnosis","expected_skill":"diagnose-port-firewall","expected_tools":["DescribeCompShareInstance"],"overlapping_group":"ssh_vs_port","tags":["diagnosis"]}
 {"id":"diag_gpu_01","question":"nvidia-smi 突然看不到卡了","lane":"diagnosis","expected_skill":"diagnose-gpu-not-detected","expected_tools":["DescribeCompShareInstance"],"tags":["diagnosis"]}
 {"id":"diag_gpu_02","question":"torch.cuda 检测不到 GPU 了，是不是机器有问题","lane":"diagnosis","expected_skill":"diagnose-gpu-not-detected","expected_tools":["DescribeCompShareInstance"],"tags":["diagnosis"]}
-{"id":"diag_init_01","question":"实例创建好几分钟了一直没起来","lane":"diagnosis","expected_skill":"diagnose-init-failure","expected_tools":["DescribeCompShareInstance"],"tags":["diagnosis"]}
-{"id":"diag_init_02","question":"实例一直卡在初始化失败，是咋回事","lane":"diagnosis","expected_skill":"diagnose-init-failure","expected_tools":["DescribeCompShareInstance"],"tags":["diagnosis"]}
 {"id":"diag_image_01","question":"换了个镜像之后环境就跑不起来了","lane":"diagnosis","expected_skill":"diagnose-image-issue","expected_tools":["DescribeCompShareInstance"],"tags":["diagnosis"]}
 {"id":"diag_image_02","question":"这镜像里的依赖好像有问题，老是装不上","lane":"diagnosis","expected_skill":"diagnose-image-issue","expected_tools":["DescribeCompShareInstance"],"tags":["diagnosis"]}
 {"id":"deploy_01","question":"帮我部署个 Qwen2.5-7B 跑推理服务","lane":"agent","expected_skill":"deploy_model","forbidden_tools":[],"tags":["deploy"]}
