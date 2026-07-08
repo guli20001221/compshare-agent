@@ -162,51 +162,91 @@ func stepCheckResourceUsage() Step {
 }
 
 // extractLatestMetrics gets the latest CPU and memory usage from monitor data.
+//
+// GetCompShareInstanceMonitor returns TWO differently-shaped legs (upstream
+// dispatches by UHostId prefix): uhost-* instances land in Data.List with the
+// nested cloudwatch shape (Metrics[] keyed by MetricKey → Results[0].Values[]),
+// while cpod-* (pod) instances land in Data.PodList with a FLAT shape
+// (Metrics.Cpu / Metrics.Memory, each a []{Timestamp,Value}). Reading only List
+// left every pod instance's resource check dead (always "无法确认"), so we read
+// whichever leg carries this instance's data.
 func extractLatestMetrics(result map[string]any) (cpu, mem float64, cpuOK, memOK bool) {
 	data, _ := result["Data"].(map[string]any)
 	if data == nil {
 		return 0, 0, false, false
 	}
-	list, _ := data["List"].([]any)
-	if len(list) == 0 {
-		return 0, 0, false, false
-	}
-	instance, _ := list[0].(map[string]any)
-	metrics, _ := instance["Metrics"].([]any)
 
-	for _, m := range metrics {
-		metric, _ := m.(map[string]any)
-		key, _ := metric["MetricKey"].(string)
-		val, ok := latestValue(metric)
-		if !ok {
-			continue
+	// uhost-* leg: Data.List[0].Metrics[] keyed by MetricKey.
+	if list, _ := data["List"].([]any); len(list) > 0 {
+		instance, _ := list[0].(map[string]any)
+		metrics, _ := instance["Metrics"].([]any)
+		for _, m := range metrics {
+			metric, _ := m.(map[string]any)
+			key, _ := metric["MetricKey"].(string)
+			val, ok := latestValue(metric)
+			if !ok {
+				continue
+			}
+			switch key {
+			case "uhost_cpu_used":
+				cpu, cpuOK = val, true
+			case "cloudwatch_memory_usage":
+				mem, memOK = val, true
+			}
 		}
-		switch key {
-		case "uhost_cpu_used":
-			cpu = val
-			cpuOK = true
-		case "cloudwatch_memory_usage":
-			mem = val
-			memOK = true
+		return cpu, mem, cpuOK, memOK
+	}
+
+	// cpod-* (pod) leg: Data.PodList[0].Metrics is a flat object with named
+	// series; Cpu/Memory are percentages, same as the uhost metric keys.
+	if podList, _ := data["PodList"].([]any); len(podList) > 0 {
+		pod, _ := podList[0].(map[string]any)
+		pm, _ := pod["Metrics"].(map[string]any)
+		if v, ok := latestPointByTimestamp(pm["Cpu"]); ok {
+			cpu, cpuOK = v, true
+		}
+		if v, ok := latestPointByTimestamp(pm["Memory"]); ok {
+			mem, memOK = v, true
 		}
 	}
 	return cpu, mem, cpuOK, memOK
 }
 
-// latestValue extracts the most recent value from a metric's Results.
+// latestValue extracts the newest value from a uhost (cloudwatch) metric's first
+// Results series. Shared with the GPU chain (gpu_not_detected.go).
 func latestValue(metric map[string]any) (float64, bool) {
 	results, _ := metric["Results"].([]any)
 	if len(results) == 0 {
 		return 0, false
 	}
 	first, _ := results[0].(map[string]any)
-	values, _ := first["Values"].([]any)
-	if len(values) == 0 {
+	return latestPointByTimestamp(first["Values"])
+}
+
+// latestPointByTimestamp returns the Value of the point with the greatest
+// Timestamp from a []{Timestamp,Value} series. Both the uhost Results.Values and
+// the pod flat metric series share this element shape, so one picker serves both.
+// Selecting by max Timestamp (rather than the last array element) does not rely
+// on the upstream returning points in chronological order.
+func latestPointByTimestamp(raw any) (float64, bool) {
+	points, _ := raw.([]any)
+	if len(points) == 0 {
 		return 0, false
 	}
-	last, _ := values[len(values)-1].(map[string]any)
-	val, _ := last["Value"].(float64)
-	return val, true
+	var bestVal, bestTS float64
+	found := false
+	for _, p := range points {
+		pt, _ := p.(map[string]any)
+		val, ok := pt["Value"].(float64)
+		if !ok {
+			continue
+		}
+		ts, _ := pt["Timestamp"].(float64)
+		if !found || ts >= bestTS {
+			bestVal, bestTS, found = val, ts, true
+		}
+	}
+	return bestVal, found
 }
 
 func firstHostFromResult(instanceResult map[string]any) (map[string]any, bool) {
