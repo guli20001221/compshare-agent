@@ -80,12 +80,19 @@ func TestConfirmBroker_DoubleResolve(t *testing.T) {
 	assert.Error(t, err, "second resolve should fail")
 }
 
-func TestConfirmBroker_ResolveWrongSession(t *testing.T) {
+// A confirm whose session label differs from the registration's (same owner)
+// RESOLVES — the confirmation is bound to its ConfirmationId + owner, not the
+// session label. This is required because stale-session recovery can mint a new
+// session id mid-turn (the create-flow "[Forbidden] ... session/owner" bug);
+// the random ConfirmationId + owner already prevent cross-tenant/guessing.
+func TestConfirmBroker_ResolveSessionDriftSameOwnerResolves(t *testing.T) {
 	b := NewConfirmBroker()
-	id, _ := b.Register("sess-1", testOwner)
+	id, ch := b.Register("sess-1", testOwner)
 
-	err := b.Resolve(id, "sess-other", testOwner, ConfirmDecision{Confirmed: true})
-	assert.ErrorIs(t, err, ErrConfirmationOwner, "wrong session should be rejected")
+	require.NoError(t, b.Resolve(id, "sess-recovered", testOwner, ConfirmDecision{Confirmed: true}),
+		"same-owner confirm under a drifted session label must resolve")
+	result := WaitForConfirmation(context.Background(), ch, 50*time.Millisecond)
+	assert.True(t, result.Confirmed, "decision must be delivered to the registering turn")
 }
 
 func TestConfirmBroker_ResolveWrongOwner(t *testing.T) {
