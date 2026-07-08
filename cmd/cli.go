@@ -206,6 +206,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS value %q\n", unknownDisciplinedKnowledgeQASynthesis)
 	}
 	engine.SetDisciplinedKnowledgeQASynthesisEnabled(disciplinedKnowledgeQASynthesis)
+	kqaSelfRevision, unknownKQASelfRevision := kqaSelfRevisionEnabledFromEnv(getenv)
+	if unknownKQASelfRevision != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KQA_SELF_REVISION value %q\n", unknownKQASelfRevision)
+	}
+	engine.SetKQASelfRevisionEnabled(kqaSelfRevision)
 	diagnosisPilots, unknownDiagnosisPilots := skillExecutorDiagnosisPilotsFromEnv(getenv)
 	for _, value := range unknownDiagnosisPilots {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS value %q\n", value)

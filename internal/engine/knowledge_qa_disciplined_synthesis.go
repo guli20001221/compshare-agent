@@ -89,8 +89,25 @@ func (e *Engine) synthesizeKnowledgeQAFromLedger(ctx context.Context, userMsg st
 		return "", false
 	}
 	if report := knowledge.ValidateGroundedCitations(reply, e.searchKnowledgeLedgerThisTurn); report.Grounded() {
+		final := reply
+		// Over-conservatism self-revision (flag-gated): the disciplined draft is
+		// grounded, but flash intermittently appends an unwarranted hedge tail or
+		// declines to state a conclusion the evidence supports (beval
+		// over_conservative characterization: 78% had strong evidence and hedged
+		// anyway). Re-read + commit, then RE-VALIDATE grounding — a revision that
+		// breaks grounding, refuses, or empties is discarded, so this is never
+		// worse than the draft. Skipped over the per-turn token budget (the revision
+		// is an extra LLM call; the grounded draft is already deliverable).
+		if kqaSelfRevisionOn && !e.tokenBudgetExceeded() {
+			if revised, changed := e.reviseOverConservativeAnswer(ctx, userMsg, reply, evidences); changed {
+				if r2 := knowledge.ValidateGroundedCitations(revised, e.searchKnowledgeLedgerThisTurn); r2.Grounded() && strings.TrimSpace(revised) != "" && !isKnowledgeRefusal(revised) {
+					final = revised
+					report = r2
+				}
+			}
+		}
 		e.emitSearchKnowledgeCitationTrace(report)
-		return stripCitationMarkers(reply), true
+		return stripCitationMarkers(final), true
 	}
 	return "", false
 }

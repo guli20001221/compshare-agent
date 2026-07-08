@@ -32,6 +32,7 @@ type FeaturesConfig struct {
 	AgenticSearchKnowledge          *bool    `yaml:"agentic_search_knowledge"`           // COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE (default ON)
 	KnowledgeQAAgentLoop            *bool    `yaml:"knowledge_qa_agent_loop"`            // COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP (default ON)
 	KnowledgeQADisciplinedSynthesis *bool    `yaml:"knowledge_qa_disciplined_synthesis"` // COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS (default ON)
+	KnowledgeQASelfRevision         *bool    `yaml:"knowledge_qa_self_revision"`         // COMPSHARE_KQA_SELF_REVISION (default ON)
 	ExternalKnowledge               *bool    `yaml:"external_knowledge"`                 // COMPSHARE_EXTERNAL_KNOWLEDGE (default ON)
 	GroundedValidator               *bool    `yaml:"grounded_validator"`                 // COMPSHARE_RAG_GROUNDED_VALIDATOR (default off)
 	DomainMatchGuard                *bool    `yaml:"domain_match_guard"`                 // COMPSHARE_RAG_DOMAIN_MATCH_GUARD (default off)
@@ -119,6 +120,7 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD", f.FlashKnowledgeRouteGuard, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP", f.KnowledgeQAAgentLoop, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS", f.KnowledgeQADisciplinedSynthesis, "1", "0")
+	putBoolEnv(overrides, "COMPSHARE_KQA_SELF_REVISION", f.KnowledgeQASelfRevision, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_EXTERNAL_KNOWLEDGE", f.ExternalKnowledge, "1", "0")
 	if len(f.SkillExecutorDiagnosisPilots) > 0 {
 		overrides["USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"] = strings.Join(f.SkillExecutorDiagnosisPilots, ",")

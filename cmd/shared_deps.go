@@ -137,6 +137,16 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	} else {
 		log.Printf("runtime: HTTP disciplined knowledge_qa synthesis disabled (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS=0; free ReAct write + cite-retry)")
 	}
+	kqaSelfRevision, unknownKQASelfRevision := kqaSelfRevisionEnabledFromEnv(getenv)
+	if unknownKQASelfRevision != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_KQA_SELF_REVISION value %q", unknownKQASelfRevision)
+	}
+	engine.SetKQASelfRevisionEnabled(kqaSelfRevision)
+	if kqaSelfRevision {
+		log.Printf("runtime: HTTP knowledge_qa over-conservatism self-revision enabled (COMPSHARE_KQA_SELF_REVISION default-on; re-read grounded draft + commit, add no new facts, re-validated; disable with =0)")
+	} else {
+		log.Printf("runtime: HTTP knowledge_qa over-conservatism self-revision disabled (COMPSHARE_KQA_SELF_REVISION=0; disciplined draft delivered as-is)")
+	}
 	return deps, mutating, nil
 }
 

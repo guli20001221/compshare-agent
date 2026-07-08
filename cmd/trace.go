@@ -464,6 +464,32 @@ func disciplinedKnowledgeQASynthesisEnabledFromEnv(getenv getenvFunc) (bool, str
 	}
 }
 
+// kqaSelfRevisionEnabledFromEnv gates the over-conservatism self-revision pass on
+// an agent-loop knowledge_qa answer (COMPSHARE_KQA_SELF_REVISION). DEFAULT ON
+// (2026-07-08) and effective only when the disciplined-synthesis primitive is also
+// on (the pass lives inside synthesizeKnowledgeQAFromLedger, so it is naturally
+// inert when disciplined synthesis / the agent loop is off): after the grounded
+// disciplined-synthesis draft, one flash pass re-reads (question, draft, evidence)
+// and commits to the answer the evidence already supports when the draft
+// reflexively over-hedges, adding no fact absent from the evidence; the caller
+// re-validates grounding so it is never worse than the draft. Flip gated on the
+// 2026-07-08 beval2 A/B (250 real-chat runs, 10 Sonnet judges): target
+// over_conservative 25->10, answer-failure 0.46->0.23, 0 fabrication regression,
+// control flat. ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off +
+// non-empty warn (CLAUDE.md: never silently coerce). Boot-only; the Go-package
+// default (engine.kqaSelfRevisionOn) stays false so unit tests are unaffected.
+func kqaSelfRevisionEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_KQA_SELF_REVISION"))
+	switch strings.ToLower(raw) {
+	case "", "1", "true", "yes", "on":
+		return true, ""
+	case "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	default:
+		return false, raw
+	}
+}
+
 func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string) {
 	raw := strings.TrimSpace(getenv("USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"))
 	if raw == "" {
