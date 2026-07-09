@@ -14,6 +14,9 @@ examples:
   - question: "ssh连接超时一直进不去"
     plan_json: '{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "Stage 2B: no-target SSH failure report still enters diagnosis; engine asks which instance"
+  - question: "ssh 连不上进不去"
+    plan_json: '{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
+    source: "G1: SSH cannot-connect phrasing stays diagnosis; engine asks which instance"
 ---
 
 # Planner one-shot examples: diagnosis intent
@@ -35,4 +38,5 @@ port unreachable, GPU not found, service unreachable, or init stuck should emit
 ds-v4-flash without an anchor example sometimes routes "uhost-X 启动失败" to
 unknown or knowledge_qa under jitter. No-target symptom phrasings can also be
 misread as documentation questions. These anchors pin colloquial problem-report
-phrasing to diagnosis without broadening pure how-to questions.
+phrasing to diagnosis without broadening pure how-to questions. G1 adds a
+cannot-connect anchor while moving disconnect/how-to phrasing to knowledge_qa.
