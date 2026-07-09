@@ -24,10 +24,6 @@ const (
 	guidedStepFinal
 )
 
-// defaultDisk is the minimum required disk configuration for instance creation.
-// The system disk has a 200GB free tier on CompShare.
-var defaultDisk = deployment.DefaultSystemDisk
-
 // resolveTargetSpec selects the target (gpu, cpu, memoryMB, zone) for instance
 // creation. It collects all valid candidates from the "查询可用配比" step in the
 // resolved availability zone, then narrows them using user-supplied Cpu/Memory.
@@ -331,6 +327,10 @@ func stepQueryImages() Step {
 			args := map[string]any{
 				"Limit": 20,
 			}
+			if id := paramStr(wfCtx.Params, "CompShareImageId", ""); id != "" {
+				args["CompShareImageId"] = id
+				return args, nil
+			}
 			if name := paramStr(wfCtx.Params, "ImageName", ""); name != "" {
 				args["Name"] = name
 			}
@@ -382,6 +382,9 @@ func stepQueryInstanceTypes() Step {
 				args["Zone"] = z // honour an explicit zone (e.g. the deploy handler's ChosenZone)
 				addZoneRegionAndID(args, z, wfCtx.Params)
 			}
+			if strings.EqualFold(createChargeType(wfCtx.Params), deployment.ChargeTypeSpot) {
+				args["InstanceType"] = "spot"
+			}
 			return args, nil
 		},
 	}
@@ -423,15 +426,23 @@ func stepCheckCapacity() Step {
 			if imageId == "" {
 				return nil, createImageUnavailableError(wfCtx.Params)
 			}
-			return addZoneRegionAndID(map[string]any{
-				"Zone":               zone,
-				"GpuType":            wfCtx.Params["GpuType"],
-				"MachineType":        "G",
-				"MinimalCpuPlatform": "Auto",
-				"CompShareImageId":   imageId,
-				"ChargeType":         createChargeType(wfCtx.Params),
-				"Disks":              defaultDisk,
-			}, zone, wfCtx.Params), nil
+			if err := validateImageGPUCompatibility(wfCtx, imageId); err != nil {
+				return nil, err
+			}
+			placement := workflowZonePlacement(wfCtx.Params, zone)
+			if err := validateCreatePlacement(wfCtx, placement, false); err != nil {
+				return nil, err
+			}
+			gpuType, _ := wfCtx.Params["GpuType"].(string)
+			args := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
+				Zone:               zone,
+				GPUType:            gpuType,
+				CompShareImageID:   imageId,
+				ChargeType:         createChargeType(wfCtx.Params),
+				Disks:              workflowSystemDisks(wfCtx, imageId, zone, gpuType),
+				MinimalCPUPlatform: workflowMinimalCPUPlatform(wfCtx, gpuType, zone),
+			})
+			return deployment.ApplyCapacityPlacementArgs(args, placement), nil
 		},
 		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
 			specs, _ := result["Specs"].([]any)
@@ -490,7 +501,6 @@ func stepGetPrice() Step {
 				"CPU":        cpu,
 				"Memory":     mem,
 				"ChargeType": createChargeType(wfCtx.Params),
-				"Disks":      defaultDisk,
 			}
 			// Price uses the same resolved image as capacity and create. Upstream
 			// GetCompShareInstancePriceRequest carries CompShareImageId, and live
@@ -499,8 +509,18 @@ func stepGetPrice() Step {
 			if imageId == "" {
 				return nil, createImageUnavailableError(wfCtx.Params)
 			}
+			if err := validateImageGPUCompatibility(wfCtx, imageId); err != nil {
+				return nil, err
+			}
 			args["CompShareImageId"] = imageId
-			return addZoneRegionAndID(args, zone, wfCtx.Params), nil
+			if disks := workflowSystemDisks(wfCtx, imageId, zone, gt); len(disks) > 0 {
+				args["Disks"] = disks
+			}
+			placement := workflowZonePlacement(wfCtx.Params, zone)
+			if err := validateCreatePlacement(wfCtx, placement, true); err != nil {
+				return nil, err
+			}
+			return deployment.ApplyPurchasePlacementArgs(args, placement), nil
 		},
 	}
 }
@@ -647,6 +667,297 @@ func stepGuidedChooseImagePurpose() Step {
 // spelling kept only for backward compatibility with older LLM/tool args.
 func createChargeType(params map[string]any) string {
 	return deployment.NormalizeChargeType(paramStr(params, "ChargeType", ""))
+}
+
+func workflowZonePlacement(params map[string]any, zone string) deployment.ZonePlacement {
+	placement := deployment.ZonePlacement{
+		Zone:    strings.TrimSpace(zone),
+		Region:  regionFromZone(zone),
+		ZoneID:  guidedZoneID(params, zone),
+		AzGroup: guidedZoneRegionID(params, zone),
+	}
+	if isPod, ok := guidedZoneIsPod(params, zone); ok {
+		placement.IsPod = isPod
+		return placement
+	}
+	if strings.EqualFold(paramStr(params, "Zone", ""), zone) {
+		placement.IsPod = paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false)
+	}
+	return placement
+}
+
+func validateCreatePlacement(wfCtx *Context, placement deployment.ZonePlacement, purchase bool) error {
+	chargeType := createChargeType(wfCtx.Params)
+	if placement.IsPod && strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
+		return fmt.Errorf("%s 当前不支持抢占式实例，请改用按量、包日或包月", zoneDisplayLabel(wfCtx.Params, placement.Zone))
+	}
+	if strings.EqualFold(chargeType, deployment.ChargeTypeSpot) && spotUnsupportedGPU(wfCtx.Params, wfCtx.Result("查询GPU库存"), paramStr(wfCtx.Params, "GpuType", "")) {
+		return fmt.Errorf("%s 当前不支持抢占式实例，请改用独占式计费或更换 GPU", paramStr(wfCtx.Params, "GpuType", "该 GPU"))
+	}
+	if !placement.IsPod {
+		return nil
+	}
+	if placement.ZoneID == 0 {
+		return fmt.Errorf("未获取到 %s 的内部可用区编号，无法安全创建。请稍后重试或到控制台确认可用区", zoneDisplayLabel(wfCtx.Params, placement.Zone))
+	}
+	if purchase && placement.AzGroup == 0 {
+		return fmt.Errorf("未获取到 %s 的内部地域编号，无法安全创建。请稍后重试或到控制台确认可用区", zoneDisplayLabel(wfCtx.Params, placement.Zone))
+	}
+	return nil
+}
+
+func validateImageGPUCompatibility(wfCtx *Context, imageID string) error {
+	gpuType := paramStr(wfCtx.Params, "GpuType", "")
+	supported := imageSupportedByID(wfCtx.Result("查询镜像"), imageID)
+	if gpuType == "" || len(supported) == 0 || containsFold(supported, gpuType) {
+		return nil
+	}
+	name := imageNameByID(wfCtx.Result("查询镜像"), imageID)
+	if name == "" {
+		name = "所选镜像"
+	}
+	return fmt.Errorf("%s 不支持当前 GPU %s，请更换镜像或卡型", name, gpuType)
+}
+
+func workflowSystemDisks(wfCtx *Context, imageID, zone, gpuType string) []any {
+	sizeGB := workflowImageSizeGB(wfCtx.Result("查询镜像"), imageID)
+	if sizeGB == 0 {
+		sizeGB = workflowCatalogBootDiskMinGB(wfCtx.Result("查询可用配比"), gpuType, zone)
+	}
+	if sizeGB == 0 {
+		return nil
+	}
+	diskType := workflowCatalogBootDiskType(wfCtx.Result("查询可用配比"), gpuType, zone)
+	if diskType == "" {
+		return nil
+	}
+	return []any{map[string]any{
+		"IsBoot": true,
+		"Type":   diskType,
+		"Size":   sizeGB,
+	}}
+}
+
+func workflowImageSizeGB(images map[string]any, imageID string) uint32 {
+	img := imageMapByID(images, imageID)
+	if img == nil {
+		return 0
+	}
+	for _, key := range []string{"Size", "ImageSize"} {
+		if gb := ceilMBToGB(img[key]); gb > 0 {
+			return gb
+		}
+	}
+	return 0
+}
+
+func ceilMBToGB(v any) uint32 {
+	n, ok := positiveFloatAny(v)
+	if !ok {
+		return 0
+	}
+	gb := n / 1024
+	out := uint32(gb)
+	if gb > float64(out) {
+		out++
+	}
+	if out == 0 {
+		out = 1
+	}
+	return out
+}
+
+func workflowCatalogBootDiskType(catalog map[string]any, gpuType, zone string) string {
+	entry := workflowCatalogEntry(catalog, gpuType, zone)
+	if entry == nil {
+		return ""
+	}
+	for _, disk := range diskMaps(entry["Disks"]) {
+		for _, boot := range diskMaps(disk["BootDisk"]) {
+			if name := strings.TrimSpace(stringFieldAny(boot["Name"])); name != "" {
+				return name
+			}
+			if name := strings.TrimSpace(stringFieldAny(boot["Type"])); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func workflowCatalogBootDiskMinGB(catalog map[string]any, gpuType, zone string) uint32 {
+	entry := workflowCatalogEntry(catalog, gpuType, zone)
+	if entry == nil {
+		return 0
+	}
+	for _, disk := range diskMaps(entry["Disks"]) {
+		for _, boot := range diskMaps(disk["BootDisk"]) {
+			for _, key := range []string{"MinimalSize", "MinSize", "Size"} {
+				if n, ok := positiveFloatAny(boot[key]); ok {
+					return uint32(n)
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func workflowMinimalCPUPlatform(wfCtx *Context, gpuType, zone string) string {
+	if v := strings.TrimSpace(paramStr(wfCtx.Params, "MinimalCpuPlatform", "")); v != "" {
+		if strings.EqualFold(v, deployment.MinimalCPUPlatformAuto) {
+			if first := workflowFirstCPUPlatform(wfCtx.Result("查询可用配比"), gpuType, zone); first != "" {
+				return first + "/Auto"
+			}
+		}
+		return v
+	}
+	if first := workflowFirstCPUPlatform(wfCtx.Result("查询可用配比"), gpuType, zone); first != "" {
+		return first + "/Auto"
+	}
+	return deployment.MinimalCPUPlatformAuto
+}
+
+func workflowFirstCPUPlatform(catalog map[string]any, gpuType, zone string) string {
+	entry := workflowCatalogEntry(catalog, gpuType, zone)
+	if entry == nil {
+		return ""
+	}
+	raw, _ := entry["CpuPlatforms"].(map[string]any)
+	if len(raw) == 0 {
+		return ""
+	}
+	if _, ok := raw["Amd"]; ok {
+		return "Amd"
+	}
+	if _, ok := raw["Intel"]; ok {
+		return "Intel"
+	}
+	keys := make([]string, 0, len(raw))
+	for key := range raw {
+		if strings.TrimSpace(key) != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return ""
+	}
+	return keys[0]
+}
+
+func workflowCatalogEntry(catalog map[string]any, gpuType, zone string) map[string]any {
+	if catalog == nil || gpuType == "" {
+		return nil
+	}
+	types, _ := catalog["AvailableInstanceTypes"].([]any)
+	var fallback map[string]any
+	for _, item := range types {
+		entry, _ := item.(map[string]any)
+		if entry == nil {
+			continue
+		}
+		if name, _ := entry["Name"].(string); name != gpuType {
+			continue
+		}
+		if fallback == nil {
+			fallback = entry
+		}
+		entryZone, _ := entry["Zone"].(string)
+		if zone == "" || entryZone == "" || strings.EqualFold(entryZone, zone) {
+			return entry
+		}
+	}
+	return fallback
+}
+
+func imageMapByID(images map[string]any, id string) map[string]any {
+	if images == nil || id == "" {
+		return nil
+	}
+	if groups, ok := images["CompshareImageGroup"].([]any); ok {
+		for _, g := range groups {
+			gm, _ := g.(map[string]any)
+			if gm == nil {
+				continue
+			}
+			data, _ := gm["Data"].([]any)
+			for _, d := range data {
+				dm, _ := d.(map[string]any)
+				if got, _ := dm["CompShareImageId"].(string); got == id {
+					return dm
+				}
+			}
+		}
+		return nil
+	}
+	imageSet, _ := images["ImageSet"].([]any)
+	for _, item := range imageSet {
+		img, _ := item.(map[string]any)
+		if img == nil {
+			continue
+		}
+		if got, _ := img["CompShareImageId"].(string); got == id {
+			return img
+		}
+	}
+	return nil
+}
+
+func diskMaps(v any) []map[string]any {
+	raw, _ := v.([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		m, _ := item.(map[string]any)
+		if m != nil {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func positiveFloatAny(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, x > 0
+	case float32:
+		return float64(x), x > 0
+	case int:
+		return float64(x), x > 0
+	case int64:
+		return float64(x), x > 0
+	case uint32:
+		return float64(x), x > 0
+	case uint64:
+		return float64(x), x > 0
+	case string:
+		n, err := strconv.ParseFloat(strings.TrimSpace(x), 64)
+		return n, err == nil && n > 0
+	default:
+		return 0, false
+	}
+}
+
+func spotUnsupportedGPU(params map[string]any, inventoryResult map[string]any, gpuType string) bool {
+	if strings.TrimSpace(gpuType) == "" {
+		return false
+	}
+	for _, item := range spotUnsupportedGPUList(params, inventoryResult) {
+		if strings.EqualFold(item, gpuType) {
+			return true
+		}
+	}
+	return false
+}
+
+func spotUnsupportedGPUList(params map[string]any, inventoryResult map[string]any) []string {
+	out := formStringSlice(params["SpotUnsupportedGpuTypes"])
+	if len(out) > 0 {
+		return out
+	}
+	if inventoryResult == nil {
+		return nil
+	}
+	return formStringSlice(inventoryResult["SpotUnsupportedGpuTypes"])
 }
 
 // confirmPriceText renders a human-readable hourly/period price for the confirm
@@ -796,21 +1107,33 @@ func stepCreateInstance() Step {
 			if imageId == "" {
 				return nil, createImageUnavailableError(wfCtx.Params)
 			}
+			if err := validateImageGPUCompatibility(wfCtx, imageId); err != nil {
+				return nil, err
+			}
 			gt, _ := wfCtx.Params["GpuType"].(string)
 			args := map[string]any{
-				"Zone":             zone,
-				"GpuType":          gt,
-				"GPU":              gpu,
-				"CPU":              cpu,
-				"Memory":           mem,
-				"CompShareImageId": imageId,
-				"ChargeType":       createChargeType(wfCtx.Params),
-				"Disks":            defaultDisk,
+				"Zone":               zone,
+				"GpuType":            gt,
+				"GPU":                gpu,
+				"CPU":                cpu,
+				"Memory":             mem,
+				"CompShareImageId":   imageId,
+				"ChargeType":         createChargeType(wfCtx.Params),
+				"MachineType":        deployment.MachineTypeGPU,
+				"MinimalCpuPlatform": workflowMinimalCPUPlatform(wfCtx, gt, zone),
+				"LoginMode":          deployment.LoginModeConsole,
+			}
+			if disks := workflowSystemDisks(wfCtx, imageId, zone, gt); len(disks) > 0 {
+				args["Disks"] = disks
 			}
 			if name, ok := wfCtx.Params["Name"]; ok {
 				args["Name"] = name
 			}
-			return addZoneRegionAndID(args, zone, wfCtx.Params), nil
+			placement := workflowZonePlacement(wfCtx.Params, zone)
+			if err := validateCreatePlacement(wfCtx, placement, true); err != nil {
+				return nil, err
+			}
+			return deployment.ApplyPurchasePlacementArgs(args, placement), nil
 		},
 	}
 }
@@ -1471,8 +1794,31 @@ const (
 // createChargeType and never offered.
 var createFormChargeTypes = []ConfirmFormOption{
 	{Value: "Postpay", Label: "按量付费（按小时计费）"},
+	{Value: "Spot", Label: "抢占式"},
 	{Value: "Day", Label: "包日"},
 	{Value: "Month", Label: "包月"},
+}
+
+func createChargeTypeOptions(wfCtx *Context, zone, gpuType string) []ConfirmFormOption {
+	opts := make([]ConfirmFormOption, len(createFormChargeTypes))
+	copy(opts, createFormChargeTypes)
+	placement := workflowZonePlacement(wfCtx.Params, zone)
+	for i := range opts {
+		if !strings.EqualFold(opts[i].Value, deployment.ChargeTypeSpot) {
+			continue
+		}
+		switch {
+		case placement.IsPod:
+			opts[i].Disabled = true
+			opts[i].Reason = "当前可用区不支持抢占式"
+			opts[i].Note = "Pod 可用区暂不支持抢占式"
+		case spotUnsupportedGPU(wfCtx.Params, wfCtx.Result("查询GPU库存"), gpuType):
+			opts[i].Disabled = true
+			opts[i].Reason = "当前 GPU 不支持抢占式"
+			opts[i].Note = "该 GPU 暂不支持抢占式"
+		}
+	}
+	return opts
 }
 
 const (
@@ -1570,7 +1916,7 @@ func buildCreateConfirmForm(wfCtx *Context) (*ConfirmForm, error) {
 	}
 	fields = append(fields, ConfirmFormField{
 		Key: "ChargeType", Label: "计费方式", Type: "select",
-		Value: createChargeType(wfCtx.Params), Editable: true, Options: createFormChargeTypes,
+		Value: createChargeType(wfCtx.Params), Editable: true, Options: createChargeTypeOptions(wfCtx, zone, gpuType),
 	})
 	return &ConfirmForm{Version: 1, Fields: fields}, nil
 }
@@ -1994,11 +2340,9 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 			Value: cur, Render: "cards", Editable: true, Options: opts,
 		})
 	}
-	chargeOpts := make([]ConfirmFormOption, len(createFormChargeTypes))
-	copy(chargeOpts, createFormChargeTypes)
 	fields = append(fields, ConfirmFormField{
 		Key: "ChargeType", Label: "计费方式", Type: "select",
-		Value: createChargeType(wfCtx.Params), Render: "cards", Editable: true, Options: chargeOpts,
+		Value: createChargeType(wfCtx.Params), Render: "cards", Editable: true, Options: createChargeTypeOptions(wfCtx, paramStr(wfCtx.Params, "Zone", ""), gpuType),
 	})
 	index, total := guidedStepPosition(wfCtx, guidedStepFinal)
 	return &ConfirmForm{
@@ -2580,7 +2924,7 @@ func (inv guidedInventory) total(zones []string, gpuType string) (float64, bool)
 
 func guidedStockNote(count float64) string {
 	if count <= 0 {
-		return "暂无库存"
+		return "库存快照为 0，待确认"
 	}
 	return fmt.Sprintf("库存约 %.0f 张 GPU", count)
 }
@@ -2590,9 +2934,9 @@ func guidedStockFitNote(free, requested float64) string {
 		return "当前库存可满足"
 	}
 	if free <= 0 {
-		return "库存不足，暂无库存"
+		return "库存快照为 0，待确认"
 	}
-	return fmt.Sprintf("库存不足，仅剩 %.0f 张 GPU", free)
+	return fmt.Sprintf("库存快照仅剩 %.0f 张 GPU，待确认", free)
 }
 
 func firstEnabledValue(opts []ConfirmFormOption) string {
@@ -2697,7 +3041,7 @@ func guidedGPUFormOptions(catalog map[string]any, supported []string, current st
 			noteParts = append(noteParts, fmt.Sprintf("%.0fG 显存", ch.vramGB))
 		}
 		stock, stockKnown := inventory.total(ch.zones, ch.name)
-		disabled := !ch.normal || (stockKnown && stock <= 0)
+		disabled := !ch.normal
 		disabledReason := ""
 		if ch.normal {
 			if stockKnown {
@@ -2708,9 +3052,6 @@ func guidedGPUFormOptions(catalog map[string]any, supported []string, current st
 		} else {
 			noteParts = append(noteParts, "暂不可售")
 			disabledReason = "暂不可售"
-		}
-		if stockKnown && stock <= 0 {
-			disabledReason = "暂无库存"
 		}
 		if len(ch.zones) > 0 {
 			noteParts = append(noteParts, "可用区 "+strings.Join(ch.zones, "、"))
@@ -2848,10 +3189,6 @@ func guidedZoneFormOptions(catalog map[string]any, gpuType, current string, para
 		disabledReason := ""
 		if stockKnown {
 			note = fmt.Sprintf("%s · %s", gpuType, guidedStockNote(count))
-			disabled = count <= 0
-			if disabled {
-				disabledReason = "暂无库存"
-			}
 		}
 		opt := ConfirmFormOption{
 			Value:    zone,
@@ -2921,10 +3258,6 @@ func guidedGPUCountFormOptions(catalog map[string]any, gpuType, zone string, cur
 			if stockKnown {
 				fit := guidedStockFitNote(free, gpu)
 				note = fmt.Sprintf("%s · %s · %s", gpuType, zoneLabel, fit)
-				disabled = free < gpu
-				if disabled {
-					disabledReason = fit
-				}
 			}
 			opt := ConfirmFormOption{
 				Value:    value,
@@ -3099,10 +3432,6 @@ func guidedCpuMemoryFormOptions(catalog map[string]any, gpuType, zone string, gp
 					if stockKnown {
 						fit := guidedStockFitNote(free, gpu)
 						note = fmt.Sprintf("%s · %.0f 张 GPU · %s · %s", gpuType, gpu, zoneLabel, fit)
-						disabled = free < gpu
-						if disabled {
-							disabledReason = fit
-						}
 					}
 					opts = append(opts, ConfirmFormOption{
 						Value:    key,
@@ -3177,14 +3506,20 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 		}
 		seen[id] = true
 		note := ""
+		disabled := false
+		reason := ""
 		if containsString(warnings, deployment.WarningSupportedGPUMismatch) {
-			note = "可能不适配当前 GPU，创建失败时请换镜像或换卡型"
+			note = "所选镜像不支持当前 GPU"
+			reason = "镜像不支持当前 GPU"
+			disabled = true
 		}
 		opts = append(opts, ConfirmFormOption{
-			Value: id,
-			Label: label,
-			Note:  note,
-			Meta:  map[string]string{"ImageId": id},
+			Value:    id,
+			Label:    label,
+			Note:     note,
+			Reason:   reason,
+			Disabled: disabled,
+			Meta:     map[string]string{"ImageId": id},
 		})
 	}
 
@@ -3240,8 +3575,8 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 	if len(opts) == 0 {
 		return "", nil
 	}
-	if !seen[current] {
-		current = opts[0].Value
+	if !seen[current] || !enabledOptionExists(opts, current) {
+		current = firstEnabledValue(opts)
 	}
 	return current, opts
 }

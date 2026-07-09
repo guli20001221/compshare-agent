@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/routing"
 	"github.com/compshare-agent/internal/zones"
@@ -1860,31 +1861,26 @@ func hasSpecificImageToken(normalized string) bool {
 }
 
 func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string, supportZones []zones.ZoneInfo) map[string]any {
-	args := map[string]any{
-		"Zone":               entry.Zone,
-		"GpuType":            entry.Name,
-		"MachineType":        "G",
-		"MinimalCpuPlatform": "Auto",
-		"CompShareImageId":   imageID,
-		"ChargeType":         "Postpay",
-		"Disks": []any{
-			map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 60},
-		},
+	args := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
+		Zone:             entry.Zone,
+		GPUType:          entry.Name,
+		CompShareImageID: imageID,
+		ChargeType:       deployment.ChargeTypePostpay,
+	})
+	placement := deployment.ZonePlacement{
+		Zone:   entry.Zone,
+		Region: stockRegionFromZone(entry.Zone),
 	}
 	if zone := stockZoneInfoForEntry(entry, supportZones); zone.Zone != "" {
+		placement.Zone = zone.Zone
 		if zone.Region != "" {
-			args["Region"] = zone.Region
+			placement.Region = zone.Region
 		}
-		if zone.ZoneID != 0 {
-			args["zone_id"] = zone.ZoneID
-		}
-		if zone.RegionID != 0 {
-			args["az_group"] = zone.RegionID
-		}
-	} else if region := stockRegionFromZone(entry.Zone); region != "" {
-		args["Region"] = region
+		placement.ZoneID = zone.ZoneID
+		placement.AzGroup = zone.RegionID
+		placement.IsPod = zone.IsPod
 	}
-	return args
+	return deployment.ApplyCapacityPlacementArgs(args, placement)
 }
 
 func executeStockCapacityPrecheck(ctx context.Context, h *DemoHandler, args map[string]any) (map[string]any, error) {

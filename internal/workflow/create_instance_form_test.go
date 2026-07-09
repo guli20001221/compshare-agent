@@ -27,17 +27,26 @@ func formCatalogFixture() map[string]any {
 			map[string]any{"Cpu": cpu, "Memory": []any{mem}},
 		}}}
 	}
+	common := func(name, zone, status string, sizes []any, vram float64) map[string]any {
+		out := map[string]any{
+			"Name":         name,
+			"Zone":         zone,
+			"Status":       status,
+			"MachineSizes": sizes,
+			"CpuPlatforms": map[string]any{"Amd": map[string]any{}},
+			"Disks":        []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
+		}
+		if vram > 0 {
+			out["GraphicsMemory"] = map[string]any{"Value": vram}
+		}
+		return out
+	}
 	return map[string]any{"AvailableInstanceTypes": []any{
-		map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal",
-			"MachineSizes": size(1, 16, 64), "GraphicsMemory": map[string]any{"Value": float64(24)}},
-		map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal",
-			"MachineSizes": size(1, 16, 64)},
-		map[string]any{"Name": "4090_48G", "Zone": "cn-wlcb-01", "Status": "Normal",
-			"MachineSizes": size(1, 16, 94), "GraphicsMemory": map[string]any{"Value": float64(48)}},
-		map[string]any{"Name": "A800", "Zone": "cn-wlcb-01", "Status": "Normal",
-			"MachineSizes": size(1, 32, 128), "GraphicsMemory": map[string]any{"Value": float64(80)}},
-		map[string]any{"Name": "P40", "Zone": "cn-wlcb-01", "Status": "Soldout",
-			"MachineSizes": size(1, 8, 32)},
+		common("4090", "cn-wlcb-01", "Normal", size(1, 16, 64), 24),
+		common("4090", "cn-sh2-02", "Normal", size(1, 16, 64), 0),
+		common("4090_48G", "cn-wlcb-01", "Normal", size(1, 16, 94), 48),
+		common("A800", "cn-wlcb-01", "Normal", size(1, 32, 128), 80),
+		common("P40", "cn-wlcb-01", "Soldout", size(1, 8, 32), 0),
 	}}
 }
 
@@ -46,13 +55,13 @@ func formCatalogFixture() map[string]any {
 // img-004 is 4090-only.
 func formImagesFixture() map[string]any {
 	return map[string]any{"ImageSet": []any{
-		map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu 22.04 CUDA 12"},
+		map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu 22.04 CUDA 12", "Size": float64(102400)},
 		map[string]any{"CompShareImageId": "img-002", "Name": "PyTorch 2.4",
-			"SupportedGpuTypes": []any{"4090", "A800"}},
+			"SupportedGpuTypes": []any{"4090", "A800"}, "Size": float64(102400)},
 		map[string]any{"CompShareImageId": "img-003", "Name": "V100 专用镜像",
-			"SupportedGpuTypes": []any{"V100S"}},
+			"SupportedGpuTypes": []any{"V100S"}, "Size": float64(102400)},
 		map[string]any{"CompShareImageId": "img-004", "Name": "ComfyUI",
-			"SupportedGpuTypes": []any{"4090"}},
+			"SupportedGpuTypes": []any{"4090"}, "Size": float64(102400)},
 	}}
 }
 
@@ -62,14 +71,14 @@ func formCommunityImagesFixture() map[string]any {
 			"ImageName":    "社区 Stable Diffusion",
 			"CreatedCount": float64(200),
 			"Data": []any{
-				map[string]any{"CompShareImageId": "cimg-sd-001", "Name": "v1.9"},
+				map[string]any{"CompShareImageId": "cimg-sd-001", "Name": "v1.9", "Size": float64(102400)},
 			},
 		},
 		map[string]any{
 			"ImageName":    "社区 DeepSeek R1 32B",
 			"CreatedCount": float64(100),
 			"Data": []any{
-				map[string]any{"CompShareImageId": "cimg-ds-r1-32b", "Name": "32B"},
+				map[string]any{"CompShareImageId": "cimg-ds-r1-32b", "Name": "32B", "Size": float64(102400)},
 			},
 		},
 	}}
@@ -82,7 +91,7 @@ func formManyCommunityImagesFixture(n int) map[string]any {
 			"ImageName":    fmt.Sprintf("社区热门镜像 %02d", i+1),
 			"CreatedCount": float64(100 - i),
 			"Data": []any{
-				map[string]any{"CompShareImageId": fmt.Sprintf("cimg-hot-%02d", i+1), "Name": "latest"},
+				map[string]any{"CompShareImageId": fmt.Sprintf("cimg-hot-%02d", i+1), "Name": "latest", "Size": float64(102400)},
 			},
 		})
 	}
@@ -190,7 +199,7 @@ func TestBuildCreateConfirmForm_OptionsAreServerWhitelists(t *testing.T) {
 	// ChargeType: always offered; values match the upstream billing contract.
 	ct := fieldByKey(t, form, "ChargeType")
 	assert.Equal(t, "Postpay", ct.Value)
-	assert.Equal(t, []string{"Postpay", "Day", "Month"}, optionValues(ct))
+	assert.Equal(t, []string{"Postpay", "Spot", "Day", "Month"}, optionValues(ct))
 }
 
 func TestBuildCreateConfirmForm_ZoneOptionsUseDisplayNames(t *testing.T) {
@@ -538,7 +547,7 @@ func TestCreateInstanceGuided_ExplicitGPUOffersIntentFamily(t *testing.T) {
 	assert.Equal(t, []string{"4090", "4090_48G"}, optionValues(gpu))
 }
 
-func TestCreateInstanceGuided_GPUCardDisablesSoldOutFamilyFromInventory(t *testing.T) {
+func TestCreateInstanceGuided_GPUCardSnapshotZeroShowsPendingNotDisabled(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{
 		"GpuType":         "4090",
 		"GuidedGpuLocked": true,
@@ -560,14 +569,14 @@ func TestCreateInstanceGuided_GPUCardDisablesSoldOutFamilyFromInventory(t *testi
 	require.Equal(t, []string{"4090", "4090_48G"}, optionValues(gpu))
 	plain4090 := optionByValue(t, gpu, "4090")
 	wide4090 := optionByValue(t, gpu, "4090_48G")
-	assert.True(t, plain4090.Disabled, "4090 has no live inventory in any offered zone")
-	assert.Contains(t, plain4090.Note, "暂无库存")
-	assert.Equal(t, "暂无库存", plain4090.Reason)
+	assert.False(t, plain4090.Disabled, "inventory snapshot alone must not block a GPU card")
+	assert.Contains(t, plain4090.Note, "待确认")
+	assert.Empty(t, plain4090.Reason)
 	assert.False(t, wide4090.Disabled, "4090_48G still has live inventory")
 	assert.Contains(t, wide4090.Note, "库存约 1 张 GPU")
 }
 
-func TestCreateInstanceGuided_LockedGPUFailureNamesStockReason(t *testing.T) {
+func TestCreateInstanceGuided_LockedGPUIgnoresSnapshotZeroUntilCapacityCheck(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{
 		"GpuType":         "4090",
 		"GuidedGpuLocked": true,
@@ -583,10 +592,9 @@ func TestCreateInstanceGuided_LockedGPUFailureNamesStockReason(t *testing.T) {
 		},
 	}}
 
-	_, err := ensureGuidedGPUType(wfCtx)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "4090")
-	assert.Contains(t, err.Error(), "暂无库存")
+	got, err := ensureGuidedGPUType(wfCtx)
+	require.NoError(t, err)
+	assert.Equal(t, "4090", got)
 }
 
 func TestGuidedImageFormOptionsFiltersToRequestedImageIntent(t *testing.T) {
@@ -848,7 +856,7 @@ func TestCreateInstanceGuided_ExplicitGPUVariantStaysExact(t *testing.T) {
 	assert.Equal(t, []string{"4090_48G"}, optionValues(gpu))
 }
 
-func TestCreateInstanceGuided_ZoneCardDisablesSoldOutZonesFromInventory(t *testing.T) {
+func TestCreateInstanceGuided_ZoneCardSnapshotZeroShowsPendingNotDisabled(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{
 		"GpuType": "4090",
 		"Zone":    "cn-wlcb-01",
@@ -870,9 +878,9 @@ func TestCreateInstanceGuided_ZoneCardDisablesSoldOutZonesFromInventory(t *testi
 	assert.ElementsMatch(t, []string{"cn-wlcb-01", "cn-sh2-02"}, optionValues(zone))
 	wlcb := optionByValue(t, zone, "cn-wlcb-01")
 	sh2 := optionByValue(t, zone, "cn-sh2-02")
-	assert.True(t, wlcb.Disabled, "selected zone has no live 4090 inventory")
-	assert.Contains(t, wlcb.Note, "暂无库存")
-	assert.Equal(t, "暂无库存", wlcb.Reason)
+	assert.False(t, wlcb.Disabled, "inventory snapshot alone must not block a zone card")
+	assert.Contains(t, wlcb.Note, "待确认")
+	assert.Empty(t, wlcb.Reason)
 	assert.False(t, sh2.Disabled)
 	assert.Contains(t, sh2.Note, "库存约 3 张 GPU")
 }
@@ -895,7 +903,7 @@ func TestApplyGuidedZoneOverridesRefreshesPodState(t *testing.T) {
 	assert.Equal(t, true, wfCtx.Params["IsPodZone"])
 }
 
-func TestCreateInstanceGuided_UserLockedZoneDoesNotAutoFallbackWhenSoldOut(t *testing.T) {
+func TestCreateInstanceGuided_UserLockedZoneSnapshotZeroCanStillCreateWhenCapacityPasses(t *testing.T) {
 	executor := formMockExecutor()
 	executor.results["DescribeCompShareGpuInventory"] = map[string]any{"GpuInventory": map[string]any{
 		"Exclusive": map[string]any{
@@ -928,12 +936,20 @@ func TestCreateInstanceGuided_UserLockedZoneDoesNotAutoFallbackWhenSoldOut(t *te
 	})
 
 	require.NoError(t, err)
-	require.False(t, result.Success)
-	assert.Contains(t, result.Message, "你指定的可用区")
-	assert.Contains(t, result.Message, "暂无库存")
+	require.True(t, result.Success)
+	var capacityArgs, createArgs map[string]any
 	for _, call := range executor.calls {
-		assert.NotEqual(t, "CreateCompShareInstance", call.action)
+		if call.action == "CheckCompShareResourceCapacity" {
+			capacityArgs = call.args
+		}
+		if call.action == "CreateCompShareInstance" {
+			createArgs = call.args
+		}
 	}
+	require.NotNil(t, capacityArgs)
+	require.NotNil(t, createArgs)
+	assert.Equal(t, "cn-wlcb-01", capacityArgs["Zone"])
+	assert.Equal(t, "cn-wlcb-01", createArgs["Zone"])
 }
 
 func TestCreateInstanceGuided_GPUCountCardUsesReadableStockCopy(t *testing.T) {
@@ -962,9 +978,9 @@ func TestCreateInstanceGuided_GPUCountCardUsesReadableStockCopy(t *testing.T) {
 	assert.Equal(t, "1 张 GPU", one.Label)
 	assert.Contains(t, one.Note, "当前库存可满足")
 	assert.Equal(t, "2 张 GPU", two.Label)
-	assert.True(t, two.Disabled)
-	assert.Contains(t, two.Note, "库存不足，仅剩 1 张 GPU")
-	assert.Equal(t, "库存不足，仅剩 1 张 GPU", two.Reason)
+	assert.False(t, two.Disabled)
+	assert.Contains(t, two.Note, "库存快照仅剩 1 张 GPU，待确认")
+	assert.Empty(t, two.Reason)
 	assert.NotContains(t, one.Note, "有货 1 卡")
 	assert.NotContains(t, two.Note, "有货 1 卡")
 }
@@ -1010,7 +1026,7 @@ func TestGuidedSpecOverrideSetsFullCreateParams(t *testing.T) {
 	assert.Equal(t, float64(65536), wfCtx.Params["Memory"])
 }
 
-func TestCreateInstanceGuided_ImageOptionsRankGPUSupportWithoutHardFiltering(t *testing.T) {
+func TestCreateInstanceGuided_ImageOptionsDisableUnsupportedGPU(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090"})
 	form, err := buildGuidedFinalForm(wfCtx)
 	require.NoError(t, err)
@@ -1018,14 +1034,16 @@ func TestCreateInstanceGuided_ImageOptionsRankGPUSupportWithoutHardFiltering(t *
 	img := fieldByKey(t, form, "ImageId")
 	values := optionValues(img)
 	assert.Less(t, indexOf(values, "img-002"), indexOf(values, "img-003"), "GPU-supported PyTorch image should rank before V100-only image")
-	assert.Contains(t, values, "img-003", "SupportedGpuTypes mismatch is a warning/ranking signal, not a static hard filter")
-	var mismatchNote string
+	assert.Contains(t, values, "img-003", "unsupported images remain visible with a disabled reason")
+	var mismatch ConfirmFormOption
 	for _, opt := range img.Options {
 		if opt.Value == "img-003" {
-			mismatchNote = opt.Note
+			mismatch = opt
 		}
 	}
-	assert.Contains(t, mismatchNote, "可能不适配")
+	assert.True(t, mismatch.Disabled)
+	assert.Contains(t, mismatch.Note, "不支持当前 GPU")
+	assert.Contains(t, mismatch.Reason, "镜像不支持")
 }
 
 func TestCreateInstanceGuided_FinalEditRevalidatesPriceBeforeCreate(t *testing.T) {

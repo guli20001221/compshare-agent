@@ -1058,6 +1058,59 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	}
 }
 
+func TestStockAvailabilityPodCapacityPrecheckUsesZoneIDOnly(t *testing.T) {
+	exec := &routeSequenceExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Zone": "cn-pod-01", "Status": "Normal"},
+			},
+		},
+		"DescribeCompShareSupportZone": {
+			"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-pod-01", "Region": "cn-pod", "RegionId": float64(3103), "ZoneId": float64(9103), "Describe": "测试 Pod 区", "IsPod": true},
+			},
+		},
+		"DescribeCompShareGpuInventory": {
+			"GpuInventory": map[string]any{"Exclusive": map[string]any{
+				"9103": map[string]any{"4090": float64(8)},
+			}},
+		},
+		"DescribeCompShareImages": {
+			"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-container", "Name": "PyTorch Container", "Status": "Available", "ImageType": "App", "Container": true},
+			},
+		},
+		"CheckCompShareResourceCapacity": {
+			"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
+		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		UserText: "4090 现在有没有货",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	args := exec.calls[4].args
+	if _, ok := args["Zone"]; ok {
+		t.Fatalf("Pod capacity precheck must not pass Zone: %#v", args)
+	}
+	if _, ok := args["Region"]; ok {
+		t.Fatalf("Pod capacity precheck must not pass Region: %#v", args)
+	}
+	if _, ok := args["az_group"]; ok {
+		t.Fatalf("Pod capacity precheck must not pass az_group: %#v", args)
+	}
+	if args["zone_id"] != uint32(9103) {
+		t.Fatalf("capacity zone_id = %#v, want 9103", args["zone_id"])
+	}
+}
+
 func TestStockAvailabilityReportsRawGPUInventoryAndCapacitySeparately(t *testing.T) {
 	exec := &routeSequenceExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {

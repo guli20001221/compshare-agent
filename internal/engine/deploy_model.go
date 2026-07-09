@@ -226,6 +226,9 @@ func (e *Engine) runDeployModel(ctx context.Context, dispatch routerDispatchResu
 	if idMap := e.zoneIDMap(ctx); len(idMap) > 0 {
 		params["ZoneIds"] = idMap
 	}
+	if regionIDMap := e.zoneRegionIDMap(ctx); len(regionIDMap) > 0 {
+		params["ZoneRegionIds"] = regionIDMap
+	}
 	if podMap := e.zoneIsPodMap(ctx); len(podMap) > 0 {
 		params["ZoneIsPods"] = podMap
 	}
@@ -1426,6 +1429,32 @@ func (e *Engine) zoneIDFor(ctx context.Context, zone string) uint32 {
 	return 0
 }
 
+func (e *Engine) zoneRegionIDFor(ctx context.Context, zone string) uint32 {
+	zone = strings.TrimSpace(zone)
+	if zone == "" {
+		return 0
+	}
+	for z, id := range e.zoneRegionIDMap(ctx) {
+		if strings.EqualFold(z, zone) {
+			return id
+		}
+	}
+	return 0
+}
+
+func (e *Engine) deploymentZonePlacement(ctx context.Context, zone string) deployment.ZonePlacement {
+	placement := deployment.ZonePlacement{
+		Zone:    strings.TrimSpace(zone),
+		Region:  workflow.RegionFromZone(zone),
+		ZoneID:  e.zoneIDFor(ctx, zone),
+		AzGroup: e.zoneRegionIDFor(ctx, zone),
+	}
+	if isPod, ok := e.zoneIsPod(ctx, zone); ok {
+		placement.IsPod = isPod
+	}
+	return placement
+}
+
 func (e *Engine) zoneIsPodMap(ctx context.Context) map[string]bool {
 	list, err := e.supportZoneList(ctx)
 	if err != nil {
@@ -1661,14 +1690,7 @@ func (e *Engine) zoneStockState(ctx context.Context, zone, gpuType, imageID stri
 		GPUType:          gpuType,
 		CompShareImageID: imageID,
 	})
-	// Non-default zones reject a Zone without its Region (RetCode=230); add it so
-	// the per-zone stock probe works in cn-bj2-03 / cn-sh2-02, not just the default.
-	if r := workflow.RegionFromZone(zone); r != "" {
-		capArgs["Region"] = r
-	}
-	if id := e.zoneIDFor(ctx, zone); id != 0 {
-		capArgs["zone_id"] = id
-	}
+	deployment.ApplyCapacityPlacementArgs(capArgs, e.deploymentZonePlacement(ctx, zone))
 	res := e.querySafeRead(ctx, "CheckCompShareResourceCapacity", capArgs)
 	if res == nil {
 		return zoneUnknown

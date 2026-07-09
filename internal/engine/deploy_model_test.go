@@ -1445,7 +1445,7 @@ func TestTryDeployModel_RealignsPlatformImageAfterAutoSelectingPodZone(t *testin
 			return map[string]any{"AvailableInstanceTypes": []any{availCardZ("4090", "cn-pod-01", 24)}}, nil
 		case "DescribeCompShareSupportZone":
 			return map[string]any{"ZoneInfo": []any{map[string]any{
-				"Zone": "cn-pod-01", "Region": "cn-pod", "ZoneId": float64(9001), "Describe": "测试 Pod 区", "IsPod": true,
+				"Zone": "cn-pod-01", "Region": "cn-pod", "ZoneId": float64(9001), "RegionId": float64(3001), "Describe": "测试 Pod 区", "IsPod": true,
 			}}}, nil
 		case "CheckCompShareResourceCapacity":
 			capacityArgs = args
@@ -1471,10 +1471,15 @@ func TestTryDeployModel_RealignsPlatformImageAfterAutoSelectingPodZone(t *testin
 
 	require.True(t, handled)
 	require.NotNil(t, createArgs, "create must run")
-	assert.Equal(t, "cn-pod-01", createArgs["Zone"])
-	assert.Equal(t, uint32(9001), createArgs["zone_id"], "Pod create must route upstream by zone_id derived from support-zone catalog")
+	assert.NotContains(t, capacityArgs, "Zone")
+	assert.NotContains(t, capacityArgs, "az_group")
 	assert.Equal(t, uint32(9001), capacityArgs["zone_id"], "Pod capacity preflight must use the same zone_id")
+	assert.NotContains(t, priceArgs, "Zone")
 	assert.Equal(t, uint32(9001), priceArgs["zone_id"], "Pod price preflight must use the same zone_id")
+	assert.Equal(t, uint32(3001), priceArgs["az_group"], "Pod price must use az_group from support-zone catalog")
+	assert.NotContains(t, createArgs, "Zone")
+	assert.Equal(t, uint32(9001), createArgs["zone_id"], "Pod create must route upstream by zone_id derived from support-zone catalog")
+	assert.Equal(t, uint32(3001), createArgs["az_group"], "Pod create must carry az_group from support-zone catalog")
 	assert.Equal(t, "img-container", createArgs["CompShareImageId"], "auto-selected Pod zones must create with a container image")
 }
 

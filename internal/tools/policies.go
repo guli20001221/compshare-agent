@@ -208,6 +208,8 @@ func internalOnlyAllowedParams(action string) []string {
 		return []string{"UHostId", "UDiskId", "Size", "Zone", "Region"}
 	case "ResizeCompShareInstance":
 		return []string{"UHostId", "Cpu", "CPU", "Gpu", "GPU", "Memory", "DiskId", "DiskSpace", "WithoutGpu", "Zone", "Region"}
+	case "CreateCompShareInstance":
+		return []string{"Name", "Zone", "Region", "GpuType", "GPU", "Cpu", "CPU", "Memory", "CompShareImageId", "ChargeType", "MachineType", "MinimalCpuPlatform", "LoginMode", "Disks"}
 	default:
 		return nil
 	}
@@ -218,6 +220,7 @@ func actionAllowsBackendZoneID(action string) bool {
 	case "DescribeAvailableCompShareInstanceTypes",
 		"DescribeCompShareGpuInventory",
 		"CheckCompShareResourceCapacity",
+		"CreateCompShareInstance",
 		"GetCompShareInstancePrice",
 		"GetCompShareInstanceUserPrice",
 		"GetCompShareInstanceUpgradePrice",
@@ -241,6 +244,7 @@ func actionAllowsBackendAzGroup(action string) bool {
 	switch action {
 	case "CheckCompShareNetOptimizer",
 		"SyncCompShareNetOptimizer",
+		"CreateCompShareInstance",
 		"GetCompShareInstancePrice",
 		"GetCompShareInstanceUserPrice",
 		"GetCompShareInstanceUpgradePrice",

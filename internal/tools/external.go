@@ -309,7 +309,7 @@ func logUpstreamAPIError(action string, retCode int, msg string, result map[stri
 }
 
 func createInstanceDiagArgs(args map[string]any) string {
-	keys := []string{"Zone", "GpuType", "GPU", "Gpu", "CPU", "Cpu", "Memory", "CompShareImageId", "ChargeType"}
+	keys := []string{"Zone", "Region", "zone_id", "az_group", "GpuType", "GPU", "Gpu", "CPU", "Cpu", "Memory", "CompShareImageId", "ChargeType", "MachineType", "MinimalCpuPlatform", "LoginMode", "Disks"}
 	out := map[string]any{}
 	for _, key := range keys {
 		if v, ok := args[key]; ok {

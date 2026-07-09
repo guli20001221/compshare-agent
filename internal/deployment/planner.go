@@ -14,7 +14,13 @@ const (
 	ImageStatusAvailable = "Available"
 
 	ChargeTypePostpay = "Postpay"
+	ChargeTypeDay     = "Day"
 	ChargeTypeMonth   = "Month"
+	ChargeTypeSpot    = "Spot"
+
+	MachineTypeGPU         = "G"
+	MinimalCPUPlatformAuto = "Auto"
+	LoginModeConsole       = "Password"
 
 	RejectImageUnavailable     = "image_unavailable"
 	RejectPodRequiresContainer = "pod_requires_container_image"
@@ -26,15 +32,21 @@ const (
 	FailureCapacityNotEnough   = "capacity_not_enough"
 )
 
-var DefaultSystemDisk = []any{
-	map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 60},
+type DeploymentDraft struct {
+	Zone               string
+	GPUType            string
+	CompShareImageID   string
+	ChargeType         string
+	Disks              []any
+	MinimalCPUPlatform string
 }
 
-type DeploymentDraft struct {
-	Zone             string
-	GPUType          string
-	CompShareImageID string
-	ChargeType       string
+type ZonePlacement struct {
+	Zone    string
+	Region  string
+	ZoneID  uint32
+	AzGroup uint32
+	IsPod   bool
 }
 
 type ZoneConstraint struct {
@@ -121,15 +133,81 @@ func NormalizeChargeType(chargeType string) string {
 }
 
 func BuildCapacityArgs(draft DeploymentDraft) map[string]any {
-	return map[string]any{
+	args := map[string]any{
 		"Zone":               draft.Zone,
 		"GpuType":            draft.GPUType,
-		"MachineType":        "G",
-		"MinimalCpuPlatform": "Auto",
+		"MachineType":        MachineTypeGPU,
+		"MinimalCpuPlatform": MinimalCPUPlatform(draft.MinimalCPUPlatform),
 		"CompShareImageId":   draft.CompShareImageID,
 		"ChargeType":         NormalizeChargeType(draft.ChargeType),
-		"Disks":              DefaultSystemDisk,
 	}
+	if len(draft.Disks) > 0 {
+		args["Disks"] = draft.Disks
+	}
+	return args
+}
+
+func MinimalCPUPlatform(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return MinimalCPUPlatformAuto
+	}
+	return value
+}
+
+func ApplyCapacityPlacementArgs(args map[string]any, placement ZonePlacement) map[string]any {
+	if args == nil {
+		args = map[string]any{}
+	}
+	if placement.IsPod {
+		delete(args, "Zone")
+		delete(args, "Region")
+		delete(args, "az_group")
+		if placement.ZoneID != 0 {
+			args["zone_id"] = placement.ZoneID
+		}
+		return args
+	}
+	if placement.Zone != "" {
+		args["Zone"] = placement.Zone
+	}
+	if placement.Region != "" {
+		args["Region"] = placement.Region
+	}
+	if placement.ZoneID != 0 {
+		args["zone_id"] = placement.ZoneID
+	}
+	return args
+}
+
+func ApplyPurchasePlacementArgs(args map[string]any, placement ZonePlacement) map[string]any {
+	if args == nil {
+		args = map[string]any{}
+	}
+	if placement.IsPod {
+		delete(args, "Zone")
+		delete(args, "Region")
+		if placement.ZoneID != 0 {
+			args["zone_id"] = placement.ZoneID
+		}
+		if placement.AzGroup != 0 {
+			args["az_group"] = placement.AzGroup
+		}
+		return args
+	}
+	if placement.Zone != "" {
+		args["Zone"] = placement.Zone
+	}
+	if placement.Region != "" {
+		args["Region"] = placement.Region
+	}
+	if placement.ZoneID != 0 {
+		args["zone_id"] = placement.ZoneID
+	}
+	if placement.AzGroup != 0 {
+		args["az_group"] = placement.AzGroup
+	}
+	return args
 }
 
 func ClassifyCreateFailure(message string) ClassifiedFailure {
