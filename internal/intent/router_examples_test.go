@@ -66,6 +66,11 @@ var legacyDiagnosisGroup = routerPromptExampleGroup{
 			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "Stage 2B: no-target SSH failure report still enters diagnosis; engine asks which instance",
 		},
+		{
+			Question: "ssh 连不上进不去",
+			PlanJSON: `{"schema_version":"1.0","intent":"diagnosis","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
+			Source:   "G1: SSH cannot-connect phrasing stays diagnosis; engine asks which instance",
+		},
 	},
 }
 
@@ -364,7 +369,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // (e.g. "暂无资源" / Normal vs capacity) route to knowledge_qa, while named GPU
 // live stock stays stock_availability; Coding Plan package delete/cancel/refund
 // routes to knowledge_qa instead of instance lifecycle.
-const systemPromptSHA256Baseline = "6b177025a014ff119cf35f04698be9ef37b6e25e61cffa27a37d8b9977dde7ea"
+const systemPromptSHA256Baseline = "4187cafb440e81bff6fa2ae13140f816b5f845b0c26e255701f44061e512c627"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
@@ -489,6 +494,11 @@ var legacyKnowledgeQAGroup = routerPromptExampleGroup{
 			Source:   "Stage 2B: connection how-to",
 		},
 		{
+			Question: "SSH 频繁断连超时掉线怎么处理",
+			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
+			Source:   "G1: SSH disconnect/how-to boundary; do not pre-route to deterministic diagnosis",
+		},
+		{
 			Question: "在 CLINE 里加 mcp-server-sqlite 那段 json 该怎么写",
 			PlanJSON: `{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}`,
 			Source:   "PR #60: third-party tool configuration jargon",
@@ -591,7 +601,7 @@ func TestPlannerExamples_KnowledgeQARenderedPromptUnchanged(t *testing.T) {
 // fields. Counterpart to TestPlannerExamples_DiagnosisExampleJSONLooksValid.
 func TestPlannerExamples_KnowledgeQAExamplesJSONLookValid(t *testing.T) {
 	group := diskPlannerExampleGroups[IntentKnowledgeQA]
-	require.Len(t, group.Examples, 22, "knowledge_qa.md must have 22 examples (16 platform/billing/how-to anchors [incl. Task 147 套餐计费 + RC012/RC014 Claude Code] + 6 R3-A1 modelverse model-API anchors)")
+	require.Len(t, group.Examples, 23, "knowledge_qa.md must have 23 examples (platform/billing/how-to anchors incl. G1 SSH disconnect + 6 R3-A1 modelverse model-API anchors)")
 	for i, ex := range group.Examples {
 		assert.Contains(t, ex.PlanJSON, `"intent":"knowledge_qa"`,
 			"example[%d] plan_json yaml key didn't round-trip", i)
@@ -606,7 +616,7 @@ func TestPlannerExamples_KnowledgeQAExamplesJSONLookValid(t *testing.T) {
 // field. Catch by hand-asserting one known value.
 func TestPlannerExamples_DiagnosisExampleJSONLooksValid(t *testing.T) {
 	group := diskPlannerExampleGroups[IntentDiagnosis]
-	require.Len(t, group.Examples, 4)
+	require.Len(t, group.Examples, 5)
 	example := group.Examples[0]
 	assert.Contains(t, example.PlanJSON, `"intent":"diagnosis"`,
 		"plan_json yaml key didn't round-trip to PlanJSON struct field")
@@ -618,6 +628,25 @@ func TestPlannerExamples_DiagnosisExampleJSONLooksValid(t *testing.T) {
 		assert.Contains(t, ex.PlanJSON, `"target_refs":[]`,
 			"no-target example[%d] must keep empty target_refs", i+1)
 	}
+}
+
+func TestPlannerExamples_SSHConnectionBoundaryAnchors(t *testing.T) {
+	diagnosis := diskPlannerExampleGroups[IntentDiagnosis]
+	knowledgeQA := diskPlannerExampleGroups[IntentKnowledgeQA]
+
+	require.True(t, plannerExamplesContainQuestion(diagnosis, "ssh 连不上进不去"),
+		"SSH cannot-connect phrasing should anchor diagnosis")
+	require.True(t, plannerExamplesContainQuestion(knowledgeQA, "SSH 频繁断连超时掉线怎么处理"),
+		"SSH disconnect/how-to phrasing should anchor knowledge_qa")
+}
+
+func plannerExamplesContainQuestion(group routerPromptExampleGroup, question string) bool {
+	for _, example := range group.Examples {
+		if example.Question == question {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPlannerExamples_DiskInfoAndOperationLifecycleLoadFromDisk(t *testing.T) {

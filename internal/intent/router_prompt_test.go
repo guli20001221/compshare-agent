@@ -163,9 +163,13 @@ func TestBuildSystemPromptExamplesParse(t *testing.T) {
 	// custom image.
 	// diagnosis recall fix (2026-06-03): bumped from 34 → 37 with 3 no-target
 	// symptom anchors for port unreachable, GPU not found, and SSH timeout.
+	// G1 router consolidation (2026-07-09): +2 SSH boundary anchors
+	// (cannot-connect -> diagnosis, disconnect/how-to -> knowledge_qa);
+	// only the diagnosis anchor changes this rendered JSON count because
+	// knowledge_qa is a compact example group.
 	// R2b Phase B (2026-06-29): removed the 2 spec-first create anchors from
 	// operation_lifecycle after create_instance became the default create entry.
-	if got, want := len(examples), 37+routeExampleCount; got != want {
+	if got, want := len(examples), 38+routeExampleCount; got != want {
 		t.Fatalf("prompt examples count = %d, want %d; examples=%v", got, want, examples)
 	}
 	for _, example := range examples {
@@ -245,14 +249,14 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 			t.Fatalf("planner examples missing group for intent %q", intent)
 		}
 	}
-	if total != 58 {
-		t.Fatalf("legacy planner example count = %d, want 58", total)
+	if total != 60 {
+		t.Fatalf("legacy planner example count = %d, want 60", total)
 	}
 	expectedCounts := map[Intent]int{
 		IntentResourceInfo:              8,
 		IntentUnknown:                   2,
 		IntentMonitorQuery:              2,
-		IntentKnowledgeQA:               22,
+		IntentKnowledgeQA:               23,
 		IntentBillingAccountUnsupported: 2,
 		IntentBillingInstance:           2,
 		// PR1 hotfix Bug 1 (2026-05-28): 6 = 5 Batch 1 anchors + new
@@ -260,7 +264,8 @@ func TestPlannerPromptExamplesGroupedByIntentWithSource(t *testing.T) {
 		// Phase 3 (2026-06-02): +2 custom-image workflow anchors.
 		IntentOperationLifecycle: 8,
 		// Diagnosis recall fix (2026-06-03): +3 no-target symptom anchors.
-		IntentDiagnosis: 4,
+		// G1 router consolidation (2026-07-09): +1 cannot-connect boundary anchor.
+		IntentDiagnosis: 5,
 		// disk_info (2026-05-29): 4 anchors — 我有哪些数据盘 / 我的磁盘列表 /
 		// uhost-X 挂了哪些盘 / 我账号下有哪些云盘
 		IntentDiskInfo: 4,

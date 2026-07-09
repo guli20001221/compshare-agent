@@ -1330,12 +1330,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	if reply, handled := e.tryRejectIncompleteMonitorHistoryFromUserText(userMsg); handled {
 		return reply, nil
 	}
-	if reply, handled := e.tryDiagnosisTargetContinuation(ctx, userMsg, onStep); handled {
-		return reply, nil
-	}
-	if reply, handled := e.tryDirectDiagnosisFromUserText(ctx, userMsg, onStep); handled {
-		return reply, nil
-	}
 	if reply, handled := e.tryDirectStopSchedulerFromUserText(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
@@ -1830,10 +1824,6 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		return reply, true
 	}
 	if reply, handled := e.tryBillingAccountUnsupportedDispatch(dispatch); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
-		return reply, true
-	}
-	if reply, handled := e.tryDiagnosisDispatch(ctx, dispatch, userMsg, onStep); handled {
 		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}

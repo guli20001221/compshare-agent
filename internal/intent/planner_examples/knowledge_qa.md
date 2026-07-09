@@ -27,6 +27,9 @@ examples:
   - question: "怎么在 VSCode 里连 GPU 实例"
     plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "Stage 2B: connection how-to"
+  - question: "SSH 频繁断连超时掉线怎么处理"
+    plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
+    source: "G1: SSH disconnect/how-to boundary; do not pre-route to deterministic diagnosis"
   - question: "在 CLINE 里加 mcp-server-sqlite 那段 json 该怎么写"
     plan_json: '{"schema_version":"1.0","intent":"knowledge_qa","slots":{"target_refs":[],"metrics":[],"time_window":null},"confidence":0.85}'
     source: "PR #60: third-party tool configuration jargon"
@@ -73,10 +76,11 @@ examples:
 
 # Planner one-shot examples: knowledge_qa intent
 
-15 anchors covering platform how-to/config, error-codes, FAQ/process,
+23 anchors covering platform how-to/config, error-codes, FAQ/process,
 billing navigation, comparison/feasibility/procedure phrasings, and
 concept questions that contain monitor-trigger or finance-trigger
-keywords without actually being monitor/billing requests.
+keywords without actually being monitor/billing requests, plus the G1
+SSH disconnect/how-to boundary.
 
 ## Why this many anchors
 

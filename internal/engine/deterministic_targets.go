@@ -773,133 +773,11 @@ func looksLikeLifecycleQuestion(userText string) bool {
 	return strings.Contains(compact, "?") || strings.Contains(compact, "？")
 }
 
-func (e *Engine) tryDiagnosisDispatch(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	result := dispatch.result
-	if result.Plan.Intent != intent.IntentDiagnosis {
-		return "", false
-	}
-	action := inferDiagnosisActionFromText(userMsg)
-	if action == "" {
-		return "", false
-	}
-	snapshot, okSnapshot, err := e.freshResourceSelectionSnapshot(ctx, dispatch.snapshot)
-	if err != nil || !okSnapshot {
-		return "", false
-	}
-	result.Plan = augmentPlanTargetRefsFromUserText(result.Plan, userMsg, snapshot)
-	inst, status := resolveSingleLifecycleTarget(result.Plan, snapshot)
-	if status != lifecycleTargetHit {
-		return "", false
-	}
-	raw := e.executeDiagnosis(ctx, action, map[string]any{"UHostId": inst.UHostId}, onStep)
-	reply := renderDiagnosisContinuationReply(inst, action, raw)
-	e.emitPlannerTrace(result, intent.RouteStatusDispatched, dispatch.latency)
-	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
-	e.recordLastIntentFromPlan(result.Plan)
-	e.messages = append(e.messages, assistantMessage(reply))
-	return reply, true
-}
-
-func (e *Engine) tryDirectDiagnosisFromUserText(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
-	if e == nil {
-		return "", false
-	}
-	action := inferDiagnosisActionFromText(userMsg)
-	if action == "" {
-		return "", false
-	}
-	snapshot, okSnapshot, err := e.freshResourceSelectionSnapshot(ctx, e.RegistrySnapshot())
-	if err != nil || !okSnapshot {
-		return "", false
-	}
-	if inst, ok := resolveContinuationInstance(userMsg, snapshot); ok {
-		return e.runDeterministicDiagnosis(ctx, inst, action, onStep), true
-	}
-	if inst, ok := findUniqueInstanceByGPUTypeInText(userMsg, snapshot); ok {
-		return e.runDeterministicDiagnosis(ctx, inst, action, onStep), true
-	}
-	if gpuType, matches := findInstancesByGPUTypeInText(userMsg, snapshot); gpuType != "" && len(matches) > 1 {
-		reply := renderGPUInstanceSelectionPrompt(gpuType, matches)
-		e.messages = append(e.messages, assistantMessage(reply))
-		return reply, true
-	}
-	return "", false
-}
-
-func (e *Engine) runDeterministicDiagnosis(ctx context.Context, inst entity.InstanceSnapshot, action string, onStep func(StepEvent)) string {
-	raw := e.executeDiagnosis(ctx, action, map[string]any{"UHostId": inst.UHostId}, onStep)
-	reply := renderDiagnosisContinuationReply(inst, action, raw)
-	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
-	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentDiagnosis})
-	e.messages = append(e.messages, assistantMessage(reply))
-	return reply
-}
-
 func assistantMessage(reply string) openai.ChatCompletionMessage {
 	return openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
 		Content: reply,
 	}
-}
-
-func (e *Engine) tryDiagnosisTargetContinuation(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
-	if e == nil || !assistantAskedForInstanceTarget(e.lastAssistantContent()) {
-		return "", false
-	}
-	action := inferPendingDiagnosisActionFromHistory(e.messages)
-	if action == "" {
-		return "", false
-	}
-	snapshot, ok, err := e.freshResourceSelectionSnapshot(ctx, e.RegistrySnapshot())
-	if err != nil || !ok {
-		return "", false
-	}
-	if ContextContinuationEnabled() {
-		decision, err := e.resolveContextDecision(ctx, userMsg, intent.IntentDiagnosis, e.sessionState.ContextFrame)
-		if err != nil || decision == nil {
-			return "", false
-		}
-		switch decision.Decision {
-		case ContextDecisionSelectEntity:
-			if decision.Target != ContextDecisionTargetInstance {
-				return "", false
-			}
-			ref := strings.TrimSpace(decision.InstanceRef)
-			if ref == "" {
-				ref = userMsg
-			}
-			inst, ok := e.resolveContextDecisionInstanceRef(ref, snapshot)
-			if !ok {
-				return "", false
-			}
-			raw := e.executeDiagnosis(ctx, action, map[string]any{"UHostId": inst.UHostId}, onStep)
-			reply := renderDiagnosisContinuationReply(inst, action, raw)
-			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
-			e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentDiagnosis})
-			e.messages = append(e.messages, assistantMessage(reply))
-			return reply, true
-		case ContextDecisionClarify:
-			if decision.Clarify != "" {
-				e.messages = append(e.messages, assistantMessage(decision.Clarify))
-				return decision.Clarify, true
-			}
-			return "", false
-		case ContextDecisionClearContext, ContextDecisionNewTask:
-			return "", false
-		default:
-			return "", false
-		}
-	}
-	inst, ok := resolveContinuationInstance(userMsg, snapshot)
-	if !ok {
-		return "", false
-	}
-	raw := e.executeDiagnosis(ctx, action, map[string]any{"UHostId": inst.UHostId}, onStep)
-	reply := renderDiagnosisContinuationReply(inst, action, raw)
-	e.recordSelectedInstanceID(inst.UHostId, inst.Name)
-	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentDiagnosis})
-	e.messages = append(e.messages, assistantMessage(reply))
-	return reply, true
 }
 
 func (e *Engine) resolveContextDecisionInstanceRef(ref string, snapshot entity.RegistrySnapshot) (entity.InstanceSnapshot, bool) {
@@ -924,69 +802,6 @@ func (e *Engine) resolveContextDecisionInstanceRef(ref string, snapshot entity.R
 		}
 	}
 	return resolveContinuationInstance(ref, snapshot)
-}
-
-func assistantAskedForInstanceTarget(text string) bool {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return false
-	}
-	compact := normalizeResourceText(text)
-	if compact == "" {
-		return false
-	}
-	if !strings.Contains(compact, "实例") && !strings.Contains(strings.ToLower(text), "uhost") {
-		return false
-	}
-	for _, marker := range []string{
-		"哪台实例", "哪一台实例", "哪台机器", "哪个实例", "实例名称", "实例id", "实例ID", "提供实例", "告诉我哪台",
-	} {
-		if strings.Contains(text, marker) || strings.Contains(compact, normalizeResourceText(marker)) {
-			return true
-		}
-	}
-	return false
-}
-
-func inferPendingDiagnosisActionFromHistory(messages []openai.ChatCompletionMessage) string {
-	seen := 0
-	for i := len(messages) - 1; i >= 0 && seen < 10; i-- {
-		msg := messages[i]
-		if msg.Role != openai.ChatMessageRoleUser {
-			continue
-		}
-		seen++
-		text := strings.TrimSpace(msg.Content)
-		if text == "" {
-			continue
-		}
-		if action := inferDiagnosisActionFromText(text); action != "" {
-			return action
-		}
-	}
-	return ""
-}
-
-func inferDiagnosisActionFromText(text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
-	}
-	compact := normalizeResourceText(text)
-	lower := strings.ToLower(text)
-	switch {
-	case strings.Contains(compact, "ssh") &&
-		(strings.Contains(text, "连不上") || strings.Contains(text, "进不去") ||
-			strings.Contains(text, "超时") || strings.Contains(text, "打不开") ||
-			strings.Contains(lower, "timeout") || strings.Contains(lower, "refused")):
-		return "DiagnoseSSH"
-	// GPU (掉卡) / port-firewall / init-failure text routing was retired: GPU and
-	// port symptoms are migrating to the in-instance SSH-ops harness (they need
-	// inside-instance evidence, not a deterministic API chain), and init-failure
-	// was removed outright. Only SSH stays a deterministic outside route here.
-	default:
-		return ""
-	}
 }
 
 func resolveContinuationInstance(userMsg string, snapshot entity.RegistrySnapshot) (entity.InstanceSnapshot, bool) {
@@ -1183,7 +998,7 @@ func requiresSpecificInstanceForLoopCeiling(userMsg string) bool {
 	if text == "" {
 		return false
 	}
-	if inferLifecycleAction(text) != "" || inferDiagnosisActionFromText(text) != "" {
+	if inferLifecycleAction(text) != "" {
 		return true
 	}
 	return strings.Contains(text, "无卡模式")
