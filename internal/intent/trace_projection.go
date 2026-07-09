@@ -73,6 +73,18 @@ func projectPlannerSlots(slots Slots) observability.PlannerSlots {
 	out := observability.PlannerSlots{
 		TargetRefs: make([]any, 0, len(slots.TargetRefs)),
 		Metrics:    make([]string, 0, len(slots.Metrics)),
+
+		ImageSource: string(slots.ImageSource),
+		ListMode:    string(slots.ListMode),
+		PriceKind:   string(slots.PriceKind),
+		CFSKind:     string(slots.CFSKind),
+		ChargeType:  slots.ChargeType,
+		DetailLevel: string(slots.DetailLevel),
+		Action:      string(slots.Action),
+		SizeGB:      slots.SizeGB,
+
+		SearchQueryHash: hashPlannerTraceValue(slots.SearchQuery),
+		ZoneHash:        hashPlannerTraceValue(slots.Zone),
 	}
 	for _, ref := range slots.TargetRefs {
 		projected := PlannerTraceTargetRef{

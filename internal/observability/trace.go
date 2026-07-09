@@ -394,10 +394,32 @@ type PlannerSkillTrace struct {
 	Resolution string `json:"resolution"`
 }
 
+// PlannerSlots projects intent.Slots for the trace. Two visibility classes,
+// following the TargetRef/TimeWindow precedent already established here:
+// values the validator constrains to a closed enum (plus the bounded SizeGB)
+// are recorded verbatim, because they ARE the router's decision variable and
+// carry no user text; slots the validator only intent-gates but never
+// value-checks (SearchQuery, Zone) are free-form user-derived text and are
+// recorded as hashes, so a trace still shows whether the slot was populated
+// and whether it was stable across runs without carrying the raw query.
 type PlannerSlots struct {
 	TargetRefs []any    `json:"target_refs"`
 	Metrics    []string `json:"metrics"`
 	TimeWindow any      `json:"time_window"`
+
+	// Closed-enum / bounded slots — verbatim.
+	ImageSource string `json:"image_source,omitempty"`
+	ListMode    string `json:"list_mode,omitempty"`
+	PriceKind   string `json:"price_kind,omitempty"`
+	CFSKind     string `json:"cfs_kind,omitempty"`
+	ChargeType  string `json:"charge_type,omitempty"`
+	DetailLevel string `json:"detail_level,omitempty"`
+	Action      string `json:"action,omitempty"`
+	SizeGB      int    `json:"size_gb,omitempty"`
+
+	// Free-form user-derived slots — hashed, never raw.
+	SearchQueryHash string `json:"search_query_hash,omitempty"`
+	ZoneHash        string `json:"zone_hash,omitempty"`
 }
 
 // EngineHardBlock TriggeredBy enum values. Single-source attribution
