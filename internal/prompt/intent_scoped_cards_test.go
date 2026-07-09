@@ -123,3 +123,46 @@ func TestOperationBoundaryRules_SingleSource(t *testing.T) {
 		}
 	}
 }
+
+func TestPromptSofteningRemovesVagueFailureEnumerations(t *testing.T) {
+	survivingRules := []string{
+		"症状不明确",
+		"先追问哪台实例和具体现象",
+		"模糊故障描述优先于具体 Diagnose 路由",
+	}
+	for name, prompt := range map[string]string{
+		"mutating_full": BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true}),
+		"readonly_full": BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false}),
+		"diagnosis_card": RenderIntentScopedReActCard(intent.IntentDiagnosis, true),
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, rule := range survivingRules[:2] {
+				if !strings.Contains(prompt, rule) {
+					t.Fatalf("prompt must keep vague-failure rule %q:\n%s", rule, prompt)
+				}
+			}
+			if name == "readonly_full" {
+				if !strings.Contains(prompt, "不要直接诊断") {
+					t.Fatalf("read-only prompt must keep direct-diagnosis boundary:\n%s", prompt)
+				}
+			} else if !strings.Contains(prompt, "不得直接调用任何 Diagnose* 工具") {
+				t.Fatalf("prompt must keep Diagnose* prohibition verbatim:\n%s", prompt)
+			}
+			for _, phrase := range []string{
+				`如"跑崩了"`,
+				`"出问题了""异常""跑崩了"`,
+				`"跑崩了"、"挂了"、"不对劲"`,
+				`如"跑崩了"、"有问题"、"异常"`,
+			} {
+				if strings.Contains(prompt, phrase) {
+					t.Fatalf("prompt must remove vague-failure enumeration %q:\n%s", phrase, prompt)
+				}
+			}
+		})
+	}
+
+	full := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
+	if !strings.Contains(full, survivingRules[2]) {
+		t.Fatalf("mutating prompt must keep vague-failure precedence rule %q:\n%s", survivingRules[2], full)
+	}
+}
