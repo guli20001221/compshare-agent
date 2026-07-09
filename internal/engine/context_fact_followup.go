@@ -28,6 +28,7 @@ func (e *Engine) tryRecentFactFollowup(ctx context.Context, dispatch routerDispa
 		Plan: intent.IntentRoute{
 			SchemaVersion: intent.SchemaVersion,
 			Intent:        targetIntent,
+			Slots:         slotsForFactFollowupDecision(*decision),
 			Confidence:    0.85,
 		},
 	}
@@ -86,6 +87,17 @@ func intentForFactFollowupDecision(decision ContextDecision) (intent.Intent, boo
 	default:
 		return "", false
 	}
+}
+
+func slotsForFactFollowupDecision(decision ContextDecision) intent.Slots {
+	slots := intent.Slots{}
+	if gpu := strings.TrimSpace(decision.SlotUpdates["gpu_type"]); gpu != "" {
+		slots.SearchQuery = gpu
+	}
+	if zone := strings.TrimSpace(decision.SlotUpdates["zone"]); zone != "" {
+		slots.Zone = zone
+	}
+	return slots
 }
 
 func contextDecisionBillingTopicIsRefund(topic string) bool {

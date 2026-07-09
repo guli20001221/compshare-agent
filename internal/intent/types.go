@@ -135,6 +135,14 @@ type Slots struct {
 	Metrics     []Metric    `json:"metrics,omitempty"`
 	TimeWindow  *TimeWindow `json:"time_window,omitempty"`
 	ImageSource ImageSource `json:"image_source,omitempty"`
+	SearchQuery string      `json:"search_query,omitempty"`
+	ListMode    ListMode    `json:"list_mode,omitempty"`
+	PriceKind   PriceKind   `json:"price_kind,omitempty"`
+	CFSKind     CFSKind     `json:"cfs_kind,omitempty"`
+	SizeGB      int         `json:"size_gb,omitempty"`
+	Zone        string      `json:"zone,omitempty"`
+	ChargeType  string      `json:"charge_type,omitempty"`
+	DetailLevel DetailLevel `json:"detail_level,omitempty"`
 	// Action carries the lifecycle/configuration verb when Intent is
 	// IntentOperationLifecycle. PR1 hotfix Bug 4 (2026-05-28): used by
 	// engine.executeTool to deterministically pre-filter the candidate
@@ -144,6 +152,36 @@ type Slots struct {
 	// llm-filter-nondeterministic.
 	Action LifecycleAction `json:"action,omitempty"`
 }
+
+type ListMode string
+
+const (
+	ListModeAll      ListMode = "all"
+	ListModeFiltered ListMode = "filtered"
+)
+
+type PriceKind string
+
+const (
+	PriceKindAccount PriceKind = "account"
+	PriceKindCatalog PriceKind = "catalog"
+)
+
+type CFSKind string
+
+const (
+	CFSKindList         CFSKind = "list"
+	CFSKindCreatePrice  CFSKind = "create_price"
+	CFSKindUpgradePrice CFSKind = "upgrade_price"
+	CFSKindRefund       CFSKind = "refund"
+)
+
+type DetailLevel string
+
+const (
+	DetailLevelSummary DetailLevel = "summary"
+	DetailLevelFull    DetailLevel = "full"
+)
 
 // LifecycleAction is the verb that drives an operation_lifecycle turn. Only
 // the explicit verbs below trigger state pre-filtering; an empty / unknown

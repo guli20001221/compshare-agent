@@ -10,7 +10,7 @@
 
 `deepseek-v4-flash` auto routing does **not** reliably refresh adjacent monitor follow-ups. In 2/3 cases the second turn did not call `GetCompShareInstanceMonitor` and still returned concrete GPU/VRAM monitor values from the previous turn. The only fresh recall happened when the user explicitly said "重新查...不要复用上一轮".
 
-Implication: `shouldForceMonitorRecall` must not be deleted yet, but object `tool_choice` cannot be used on ds v4 flash. The next mitigation should be a non-object-tool-choice strategy, such as a narrow dynamic system/developer nudge for adjacent monitor follow-ups, then re-run this probe.
+Implication: the monitor refresh guard must stay compatible with ds v4 flash, but object `tool_choice` cannot be used on that model. The next mitigation should be a non-object-tool-choice strategy, such as a narrow dynamic system/developer nudge for adjacent monitor follow-ups, then re-run this probe.
 
 ## Decision table
 

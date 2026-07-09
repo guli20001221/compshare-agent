@@ -97,18 +97,8 @@ const (
 	readExpensiveTurnBudgetMessage = "本轮读取类查询次数已达上限，请缩小问题范围后重试。"
 )
 
-// Force-tool / deterministic monitor priority chain (highest first):
-//
-//  1. explicit historical monitor with UHostId + concrete window -> direct
-//     GetCompShareInstanceMonitor with StartTime/EndTime, no LLM clock parsing
-//  2. explicit historical monitor with UHostId but vague window -> ask for a
-//     concrete <=24h range, no realtime-monitor fallback
-//  3. shouldForceMonitorRecall       -> tool_choice=GetCompShareInstanceMonitor
-//                                       (BRIDGE T-001.f1, model-feature-gated)
-//  4. (future) f3a resource info follow-up (BRIDGE T-001.f3a, if implemented)
-//
-// (account_billing + existing_disk_attach keyword hard-blocks removed
-// 2026-06-10 — planner/agent-routed.)
+// Deterministic preblocks are limited to non-routing safety and support
+// policies. Read-only monitor/history routing is planner-owned.
 //
 // (human_agent_transfer keyword preblock added 2026-06-29 — 转人工短语
 // 命中即返回客服二维码 canned reply，跳过 LLM/ReAct；窄白名单避免"人工
@@ -325,7 +315,7 @@ type Engine struct {
 	currentMonitorWindow               bool                           // true when currentMonitorStart/End are known
 	pendingResourceSelection           *pendingResourceSelection
 	displayedResourceSelectionThisTurn *pendingResourceSelection
-	// supportsObjectToolChoice gates force-tool guards (e.g. shouldForceMonitorRecall)
+	// supportsObjectToolChoice gates force-tool guards
 	// from sending object tool_choice on models that don't support it (notably
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
 	// run their detection logic but fall through to LLM auto routing.
@@ -1324,19 +1314,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	if reply, handled := e.tryResumeResourceSelection(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
-	if reply, handled := e.tryDirectMonitorHistoryFromUserText(ctx, userMsg, onStep); handled {
-		return reply, nil
-	}
-	if reply, handled := e.tryRejectIncompleteMonitorHistoryFromUserText(userMsg); handled {
-		return reply, nil
-	}
 	if reply, handled := e.tryDirectStopSchedulerFromUserText(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
 	if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
-	forceMonitorRecall := e.shouldForceMonitorRecall(userMsg)
 	if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep, opts.OnTextDelta); handled {
 		return reply, nil
 	}
@@ -1397,51 +1380,16 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			req.Tools = toolListWithoutFunction(req.Tools, "SearchKnowledge")
 			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQASearchCapNote)
 		}
-		// BRIDGE T-001.f1: adjacent monitor follow-up must re-call
-		// GetCompShareInstanceMonitor instead of reusing prior numbers.
-		// Scope: first LLM call of this turn only. Model-feature-gated:
-		// models without object tool_choice support (e.g. deepseek-v4-flash
-		// in thinking mode) fall through to LLM auto routing instead of
-		// 400ing on a forced ToolChoice. Stale-reuse is then unmitigated
-		// on those models — see eval/smoke/2026-05-08-ds-v4-flash-
-		// tool-choice-probe.md and the pending monitor stale-reuse probe.
-		if round == 0 && forceMonitorRecall {
-			freshness := observability.FreshnessTrace{
-				MonitorRecallForced:        true,
-				SupportsObjectToolChoice:   traceBoolPtr(e.supportsObjectToolChoice),
-				SupportsRequiredToolChoice: traceBoolPtr(e.supportsRequiredToolChoice),
-			}
-			if e.supportsObjectToolChoice {
-				req.ToolChoice = openai.ToolChoice{
-					Type:     openai.ToolTypeFunction,
-					Function: openai.ToolFunction{Name: "GetCompShareInstanceMonitor"},
-				}
-				freshness.MonitorRecallMode = "object_tool_choice"
-			} else {
-				req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, monitorRecallRequiredToolNote)
-				freshness.MonitorRecallFallbackReason = "object_tool_choice_unsupported"
-				if e.supportsRequiredToolChoice {
-					req.ToolChoice = "required"
-					freshness.MonitorRecallMode = "required_tool_choice"
-				} else {
-					freshness.MonitorRecallMode = "advisory_system_note"
-					freshness.MonitorRecallFallbackReason = "object_and_required_tool_choice_unsupported"
-				}
-			}
-			e.emitFreshnessTrace(freshness)
-		}
 		// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP forced first hop: a knowledge_qa turn
 		// routed into the agent loop must deterministically retrieve before it
 		// answers — soft prompt directives don't reliably move flash (#145), so the
 		// terminal route's guaranteed retrieval is reproduced by forcing
-		// SearchKnowledge on the FIRST ReAct call. Mutually exclusive with the
-		// monitor-recall force above (different intents; the !forceMonitorRecall guard
-		// keeps monitor precedence so ToolChoice is never double-set). The in-registry
-		// assert is the belt-and-suspenders half of the 400 trap: the route gate
+		// SearchKnowledge on the FIRST ReAct call. The in-registry assert is the
+		// belt-and-suspenders half of the 400 trap: the route gate
 		// already requires the agentic tool be enabled, so SearchKnowledge is in the
 		// full knowledge_qa (nil-subset) tool list — but never force a tool absent from
 		// req.Tools. Non-object models fall back to "required" + an ephemeral note.
-		if round == 0 && e.knowledgeQAAgentLoopThisTurn && !forceMonitorRecall &&
+		if round == 0 && e.knowledgeQAAgentLoopThisTurn &&
 			toolListContainsFunction(req.Tools, "SearchKnowledge") {
 			// Inject the advisory note UNCONDITIONALLY: forced object/"required"
 			// tool_choice 400s on thinking-mode-only Modelverse keys (per-key,
@@ -1523,7 +1471,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// fires — reinforcing with the ephemeral note alongside the force. The condition is
 		// re-derived (not a tracking flag) and bounded to one extra call: the forced round,
 		// SearchKnowledge available, and the response carrying no SearchKnowledge call.
-		if round == 0 && e.knowledgeQAAgentLoopThisTurn && !forceMonitorRecall &&
+		if round == 0 && e.knowledgeQAAgentLoopThisTurn &&
 			toolListContainsFunction(req.Tools, "SearchKnowledge") &&
 			!toolCallsContain(resp.ToolCalls, "SearchKnowledge") && !e.tokenBudgetExceeded() {
 			retryReq := req
@@ -1945,137 +1893,6 @@ func (e *Engine) tryBillingAccountUnsupportedBeforeResourceSelection(ctx context
 	return "", false
 }
 
-func (e *Engine) tryDirectMonitorHistoryFromUserText(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
-	if !isUnsupportedHistoricalMonitorQuestion(userMsg) {
-		return "", false
-	}
-	start, end, ok := intent.ResolveMonitorHistoryWindowFromUserText(userMsg)
-	if !ok {
-		if intent.ContainsUnparsedSpecificMonitorClockRange(userMsg) {
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: monitorHistoryNeedTimeWindowMessage,
-			})
-			return monitorHistoryNeedTimeWindowMessage, true
-		}
-		return "", false
-	}
-	if monitorHistoryRequestsMultipleTargets(userMsg) {
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: monitorHistoryNeedSingleInstanceMessage,
-		})
-		return monitorHistoryNeedSingleInstanceMessage, true
-	}
-	if ids := monitorHistoryExplicitIDs(userMsg); len(ids) > 1 {
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: monitorHistoryNeedSingleInstanceMessage,
-		})
-		return monitorHistoryNeedSingleInstanceMessage, true
-	}
-	if _, err := e.refreshRegistry(ctx, entity.RefreshReasonManual); err != nil {
-		return "", false
-	}
-	snapshot := e.RegistrySnapshot()
-	uHostID, targetStatus := e.monitorHistoryTargetID(userMsg, snapshot)
-	if targetStatus == monitorHistoryTargetMultiple {
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: monitorHistoryNeedSingleInstanceMessage,
-		})
-		return monitorHistoryNeedSingleInstanceMessage, true
-	}
-	if uHostID == "" {
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: monitorHistoryNeedSingleInstanceMessage,
-		})
-		return monitorHistoryNeedSingleInstanceMessage, true
-	}
-	loc := time.FixedZone("Asia/Shanghai", 8*3600)
-	plan := intent.IntentRoute{
-		SchemaVersion: intent.SchemaVersion,
-		Intent:        intent.IntentMonitorHistory,
-		Slots: intent.Slots{
-			TargetRefs: []intent.TargetRef{{
-				Type:       intent.TargetRefUHostIDUserInput,
-				Value:      uHostID,
-				Source:     intent.SourceUserText,
-				SourceSpan: uHostID,
-			}},
-			Metrics: monitorMetricsFromUserText(userMsg),
-			TimeWindow: &intent.TimeWindow{
-				Type:  intent.TimeWindowAbsolute,
-				Value: fmt.Sprintf("%s/%s", time.Unix(start, 0).In(loc).Format(time.RFC3339), time.Unix(end, 0).In(loc).Format(time.RFC3339)),
-			},
-		},
-		Retrieval:  intent.Retrieval{Enabled: false},
-		Confidence: 1,
-	}
-	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
-	handled := handler.HandleMonitorQuery(ctx, intent.HandlerRequest{
-		Plan:     plan,
-		Resolver: e.RegistrySnapshot(),
-		UserText: userMsg,
-	})
-	if handled.Status != intent.HandlerStatusHandled {
-		return "", false
-	}
-	e.emitPlannerTrace(intent.IntentRouterResult{Plan: plan}, handled.RouteStatus, 0)
-	e.annotateHandlerResultForUserQuestion(&handled, plan, userMsg)
-	reply := handled.Reply
-	if strings.TrimSpace(reply) == "未返回监控数据。" {
-		reply = formatHistoricalMonitorNoDataReply(start, end, []string{uHostID})
-	}
-	e.recordSelectedInstanceFromEnvelope(handled.Envelope)
-	e.recordLastIntentFromPlan(plan)
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleAssistant,
-		Content: reply,
-	})
-	return reply, true
-}
-
-func (e *Engine) tryRejectIncompleteMonitorHistoryFromUserText(userMsg string) (string, bool) {
-	if !isUnsupportedHistoricalMonitorQuestion(userMsg) {
-		return "", false
-	}
-	if _, _, ok := intent.ResolveMonitorHistoryWindowFromUserText(userMsg); ok {
-		return "", false
-	}
-	if intent.ContainsUnparsedSpecificMonitorClockRange(userMsg) {
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: monitorHistoryNeedTimeWindowMessage,
-		})
-		return monitorHistoryNeedTimeWindowMessage, true
-	}
-	if monitorHistoryRequestsMultipleTargets(userMsg) {
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: monitorHistoryNeedSingleInstanceMessage,
-		})
-		return monitorHistoryNeedSingleInstanceMessage, true
-	}
-	if ids := monitorHistoryExplicitIDs(userMsg); len(ids) > 1 {
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: monitorHistoryNeedSingleInstanceMessage,
-		})
-		return monitorHistoryNeedSingleInstanceMessage, true
-	} else if len(ids) == 0 {
-		if e == nil || strings.TrimSpace(e.sessionState.SelectedInstanceID) == "" {
-			return "", false
-		}
-	}
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleAssistant,
-		Content: monitorHistoryNeedTimeWindowMessage,
-	})
-	return monitorHistoryNeedTimeWindowMessage, true
-}
-
 type monitorHistoryTargetStatus string
 
 const (
@@ -2193,38 +2010,6 @@ func monitorHistoryNameBoundaryAfter(text string, n int) bool {
 	}
 	r, _ := utf8.DecodeRuneInString(text[n:])
 	return unicode.IsSpace(r) || strings.ContainsRune("，。,.、;；:：)）]】", r)
-}
-
-func monitorHistoryRequestsMultipleTargets(userMsg string) bool {
-	lower := strings.ToLower(userMsg)
-	markers := []string{"所有实例", "所有的实例", "全部实例", "全部的实例", "全部机器", "全部的机器", "所有机器", "所有的机器", "所有主机", "所有的主机", "全部主机", "全部的主机", "all instances", "all machines", "all hosts"}
-	for _, marker := range markers {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func monitorMetricsFromUserText(userMsg string) []intent.Metric {
-	lower := strings.ToLower(userMsg)
-	metrics := make([]intent.Metric, 0, 4)
-	if strings.Contains(lower, "cpu") || strings.Contains(userMsg, "处理器") {
-		metrics = append(metrics, intent.MetricCPU)
-	}
-	if strings.Contains(userMsg, "内存") || strings.Contains(lower, "memory") || strings.Contains(lower, "mem") {
-		metrics = append(metrics, intent.MetricMemory)
-	}
-	if strings.Contains(lower, "gpu") || strings.Contains(userMsg, "显卡") {
-		metrics = append(metrics, intent.MetricGPU)
-	}
-	if strings.Contains(userMsg, "显存") || strings.Contains(lower, "vram") || strings.Contains(lower, "gpu memory") {
-		metrics = appendMonitorMetricIfMissing(metrics, intent.MetricVRAM)
-	}
-	if len(metrics) == 0 {
-		metrics = append(metrics, intent.MetricCPU, intent.MetricMemory, intent.MetricGPU, intent.MetricVRAM)
-	}
-	return metrics
 }
 
 func workflowDirectReply(action, raw string) string {
@@ -2600,14 +2385,6 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 
 	match := matchResourceSelection(userMsg, *pending)
 	if !match.ok {
-		if ContextContinuationEnabled() && isUnsupportedHistoricalMonitorQuestion(userMsg) {
-			if reply, selected, handled := e.tryContextDecisionResourceSelection(ctx, userMsg, pending); handled {
-				return reply, true
-			} else if selected {
-				return "", false
-			}
-			return "", false
-		}
 		if embedded, exact := matchResourceSelectionReference(userMsg, *pending); embedded.ok && !exact {
 			if plan, ok := monitorPlanFromEmbeddedResourceSelectionQuestion(userMsg); ok {
 				e.pendingResourceSelection = nil
@@ -2713,17 +2490,13 @@ func (e *Engine) handleResourceSelectionMonitor(ctx context.Context, plan intent
 }
 
 func monitorPlanFromEmbeddedResourceSelectionQuestion(userMsg string) (intent.IntentRoute, bool) {
-	if !isMonitorLoadAssessmentQuestion(userMsg) && !isMonitorTroubleshootingQuestion(userMsg) && !mentionsMonitorQuestionText(userMsg) {
+	if !mentionsMonitorQuestionText(userMsg) {
 		return intent.IntentRoute{}, false
-	}
-	metrics := monitorMetricsFromUserText(userMsg)
-	if len(metrics) == 0 {
-		metrics = []intent.Metric{intent.MetricCPU, intent.MetricMemory, intent.MetricGPU, intent.MetricVRAM}
 	}
 	return intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentMonitorQuery,
-		Slots:         intent.Slots{Metrics: metrics},
+		Slots:         intent.Slots{Metrics: []intent.Metric{intent.MetricCPU, intent.MetricMemory, intent.MetricGPU, intent.MetricVRAM}},
 		RequiredTools: []string{"GetCompShareInstanceMonitor"},
 		Retrieval:     intent.Retrieval{Enabled: false},
 		Confidence:    1,
@@ -2927,144 +2700,7 @@ func removeMonitorMetric(metrics []intent.Metric, metric intent.Metric) []intent
 }
 
 func (e *Engine) annotateHandlerResultForUserQuestion(result *intent.HandlerResult, plan intent.IntentRoute, userMsg string) {
-	if result == nil || result.Envelope == nil || plan.Intent != intent.IntentMonitorQuery {
-		return
-	}
-	if isMonitorTroubleshootingQuestion(userMsg) {
-		result.Envelope.Computed = append(result.Envelope.Computed, envelope.Fact{
-			Key:    "answer_mode",
-			Label:  "Answer mode",
-			Value:  "troubleshooting",
-			Source: envelope.FactSourceComputed,
-		})
-		for _, metric := range plan.Slots.Metrics {
-			if metric == intent.MetricCPU {
-				result.Envelope.Computed = append(result.Envelope.Computed, envelope.Fact{
-					Key:    "issue_metric",
-					Label:  "Issue metric",
-					Value:  "cpu",
-					Source: envelope.FactSourceComputed,
-				})
-				result.Reply = monitorTroubleshootingFallbackReply(result.Reply)
-				if hash, err := envelope.Hash(*result.Envelope); err == nil {
-					result.RendererInputEnvelopeHashes = []string{hash}
-				}
-				return
-			}
-		}
-		result.Reply = monitorTroubleshootingFallbackReply(result.Reply)
-		if hash, err := envelope.Hash(*result.Envelope); err == nil {
-			result.RendererInputEnvelopeHashes = []string{hash}
-		}
-		return
-	}
-	if !isMonitorLoadAssessmentQuestion(userMsg) {
-		return
-	}
-	result.Envelope.Computed = append(result.Envelope.Computed, envelope.Fact{
-		Key:    "answer_mode",
-		Label:  "Answer mode",
-		Value:  "load_assessment",
-		Source: envelope.FactSourceComputed,
-	})
-	result.Reply = monitorLoadAssessmentFallbackReply(result.Reply)
-	if hash, err := envelope.Hash(*result.Envelope); err == nil {
-		result.RendererInputEnvelopeHashes = []string{hash}
-	}
-}
-
-func monitorTroubleshootingFallbackReply(summary string) string {
-	summary = strings.TrimSpace(summary)
-	if summary == "" {
-		summary = "当前云侧监控没有返回可用指标。"
-	}
-	return summary + "\n\n当前这一次采样只能说明当前时刻的云侧监控状态，不能排除之前或间歇性的历史波动。建议在控制台查看该实例最近一段时间的对应指标趋势，并同时对照 CPU、内存、GPU 和系统负载等监控指标。"
-}
-
-func monitorLoadAssessmentFallbackReply(summary string) string {
-	summary = strings.TrimSpace(summary)
-	if summary == "" {
-		return "当前云侧监控没有返回可用指标，暂时无法判断这台实例是否忙。"
-	}
-	if monitorSummaryLooksLowLoad(summary) {
-		return "从当前实时采样看，这台实例现在不算忙：" + summary + "。这只代表当前时刻，不能说明过去一段时间是否有过高峰。"
-	}
-	return "当前实时采样如下：" + summary + "。是否忙需要结合业务预期和历史趋势判断；我目前只能基于当前采样给出判断。"
-}
-
-func monitorSummaryLooksLowLoad(summary string) bool {
-	parts := strings.FieldsFunc(summary, func(r rune) bool {
-		return r == ';' || r == '；' || r == '\n' || r == '|' || r == ','
-	})
-	seenLoadMetric := false
-	for _, part := range parts {
-		if !isLoadAssessmentMetric(part) {
-			continue
-		}
-		match := percentValueRE.FindStringSubmatch(part)
-		if len(match) < 2 {
-			continue
-		}
-		seenLoadMetric = true
-		value, err := strconv.ParseFloat(match[1], 64)
-		if err == nil && value > 10 {
-			return false
-		}
-	}
-	return seenLoadMetric
-}
-
-func isLoadAssessmentMetric(text string) bool {
-	normalized := strings.ToLower(text)
-	if strings.Contains(normalized, "磁盘") || strings.Contains(normalized, "系统盘") ||
-		strings.Contains(normalized, "数据盘") || strings.Contains(normalized, "disk") {
-		return false
-	}
-	return strings.Contains(normalized, "cpu") ||
-		strings.Contains(normalized, "gpu") ||
-		strings.Contains(normalized, "内存") ||
-		strings.Contains(normalized, "显存") ||
-		strings.Contains(normalized, "vram") ||
-		strings.Contains(normalized, "memory")
-}
-
-func isMonitorTroubleshootingQuestion(userMsg string) bool {
-	normalized := strings.ToLower(userMsg)
-	explicitTroubleshooting := []string{
-		"怎么办", "怎么处理", "如何处理", "怎么解决", "如何解决", "排查", "异常",
-		"卡顿", "很卡", "太卡", "卡住", "卡死", "无响应", "变慢", "很慢",
-	}
-	for _, word := range explicitTroubleshooting {
-		if strings.Contains(normalized, strings.ToLower(word)) {
-			return true
-		}
-	}
-	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(normalized)
-	cpuIssuePhrases := []string{
-		"cpu高", "cpu过高", "cpu太高", "cpu很高", "cpu负载高", "cpu占用高", "cpu使用率高",
-		"cpu飙高", "cpu打满", "cpu满了", "highcpu",
-	}
-	for _, phrase := range cpuIssuePhrases {
-		if strings.Contains(compact, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-func isMonitorLoadAssessmentQuestion(userMsg string) bool {
-	normalized := strings.ToLower(userMsg)
-	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(normalized)
-	phrases := []string{
-		"忙不忙", "空闲吗", "空不空闲", "闲置吗", "闲不闲", "负载怎么样", "负载如何",
-		"gpu忙吗", "gpu忙不忙", "显卡忙吗", "显卡忙不忙",
-	}
-	for _, phrase := range phrases {
-		if strings.Contains(compact, strings.ToLower(phrase)) {
-			return true
-		}
-	}
-	return false
+	return
 }
 
 func (e *Engine) knowledgeRetrievalQuery(userMsg string) string {
@@ -3117,7 +2753,7 @@ func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatc
 
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
 	retrievalQuery := e.knowledgeRetrievalQuery(userMsg)
-	questionArea := inferKnowledgeProductArea(retrievalQuery)
+	questionArea := ""
 	retrieved := e.knowledgeRetriever.Retrieve(retrievalQuery, questionArea)
 	hitItems := retrieved.HitItems
 	trace := observability.RetrievalTrace{
@@ -3999,11 +3635,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
 		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: query}, true, false)
 	}
-	areaText := query
-	if hint != "" {
-		areaText = hint + " " + query
-	}
-	retrieved := e.knowledgeRetriever.Retrieve(query, inferKnowledgeProductArea(areaText))
+	retrieved := e.knowledgeRetriever.Retrieve(query, "")
 	rawHits := retrieved.HitItems
 	// Relevance floor: the retriever always returns top-K, so on a turn whose corpus
 	// lacks a relevant chunk (e.g. a tool-ops symptom with the external KB off) the
@@ -4113,7 +3745,7 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 	// since the agent grounded on nothing. The COMPSHARE_RAG_DOMAIN_MATCH_GUARD
 	// refuse arm (default-off) additionally stamps refusal_type=wrong_domain here;
 	// guardSearchKnowledgeSynthesis enforces the matching refusal.
-	allOff, inferEmpty := allCitedOffDomain(inferKnowledgeProductArea(query), hitProductAreas(hitItems))
+	allOff, inferEmpty := allCitedOffDomain("", hitProductAreas(hitItems))
 	trace.DomainInferenceEmpty = inferEmpty
 	if !floorDroppedAll {
 		trace.AllCitedOffDomain = allOff
@@ -4158,7 +3790,7 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 	// reply. Fail-safe: allCitedOffDomain never flags an unknown / un-judgeable
 	// question area, so an answer is suppressed only on a clear domain mismatch.
 	if domainMatchGuardOn {
-		if allOff, _ := allCitedOffDomain(inferKnowledgeProductArea(e.lastUserMsg), ledgerProductAreas(e.searchKnowledgeLedgerThisTurn)); allOff {
+		if allOff, _ := allCitedOffDomain("", ledgerProductAreas(e.searchKnowledgeLedgerThisTurn)); allOff {
 			e.emitSearchKnowledgeHardBlock("search_knowledge_wrong_domain")
 			return ragNoEvidenceReply
 		}
@@ -5588,10 +5220,8 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// availability query returns nothing and the failure gets narrated into a
 	// fabricated "V100 下架" reply.
 	if action == "CreateInstanceWorkflow" {
-		if explicit := knowledge.ExplicitGPUTypeFromText(e.lastUserMsg); explicit != "" {
-			args["GpuType"] = explicit
-		} else if gt, ok := args["GpuType"].(string); ok && gt != "" {
-			args["GpuType"] = knowledge.CanonicalGPUType(gt)
+		if gt, ok := args["GpuType"].(string); ok && gt != "" {
+			args["GpuType"] = canonicalCreateGPUType(gt, e.lastUserMsg)
 		}
 		if gt, _ := args["GpuType"].(string); gt != "" {
 			if e.guidedCreate && e.confirmEditsFn != nil {
@@ -5719,6 +5349,19 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	b, _ := json.Marshal(result)
 	return string(b)
+}
+
+func canonicalCreateGPUType(gpuType, userMsg string) string {
+	canonical := knowledge.CanonicalGPUType(gpuType)
+	if strings.EqualFold(canonical, "4090") && createTextMentions409048G(userMsg) {
+		return "4090_48G"
+	}
+	return canonical
+}
+
+func createTextMentions409048G(text string) bool {
+	token := strings.NewReplacer(" ", "", "\t", "", "_", "", "-", "").Replace(strings.ToUpper(strings.TrimSpace(text)))
+	return strings.Contains(token, "409048G") || strings.Contains(token, "RTX409048G")
 }
 
 func (e *Engine) workflowTargetIsTrusted(action, uHostId string, targetAutoFilled bool) bool {
@@ -6209,7 +5852,7 @@ func (e *Engine) recordDiagnosisKnowledgeProbe(skillName, userMsg string, onStep
 		return knowledge.EvidenceLedger{}, nil
 	}
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
-	retrieved := e.knowledgeRetriever.Retrieve(query, inferKnowledgeProductArea(query))
+	retrieved := e.knowledgeRetriever.Retrieve(query, "")
 	hitItems := retrieved.HitItems
 	if len(hitItems) == 0 && len(retrieved.Hits) > 0 {
 		hitItems = make([]knowledge.RetrievalHit, 0, len(retrieved.Hits))
@@ -6414,237 +6057,10 @@ func traceBoolPtr(v bool) *bool { return &v }
 // mutation is gone. When mutating tools that need ProjectId open up,
 // route the value through args["ProjectId"] (per-session field on Engine).
 
-var monitorRecallKeywords = []string{
-	"刚才",
-	"刚刚",
-	"继续",
-	"那台",
-	"那几台",
-	"再看",
-	"还有",
-	"异常",
-	"只看",
-}
-
-var monitorMetricKeywords = []string{
-	"监控",
-	"cpu",
-	"gpu",
-	"显存",
-	"内存",
-	"利用率",
-	"vram",
-	"memory",
-}
-
-var historicalMonitorTimeKeywords = []string{
-	"\u6628\u5929",             // 昨天
-	"\u6628\u665a",             // 昨晚
-	"\u524d\u5929",             // 前天
-	"\u4eca\u65e9",             // 今早
-	"\u4eca\u5929\u65e9\u4e0a", // 今天早上
-	"\u4eca\u5929\u4e0a\u5348", // 今天上午
-	"\u4eca\u5929\u4e0b\u5348", // 今天下午
-	"\u4eca\u5929\u665a\u4e0a", // 今天晚上
-	"\u4eca\u5929\u51cc\u6668", // 今天凌晨
-	"\u4e0a\u5468",             // 上周
-	"\u4e0a\u4e2a\u6708",       // 上个月
-	"\u4e0a\u6708",             // 上月
-	"\u672c\u5468",             // 本周
-	"\u672c\u6708",             // 本月
-	"\u534a\u4e2a\u6708",       // 半个月
-	"\u8fc7\u53bb",             // 过去
-	"\u6700\u8fd1",             // 最近
-	"yesterday",
-	"last night",
-	"today morning",
-	"this morning",
-	"last week",
-	"last month",
-	"past",
-	"previous",
-}
-
-var historicalMonitorSignalKeywords = []string{
-	"monitor", "cpu", "gpu", "vram", "memory", "idle", "busy", "load",
-	"\u76d1\u63a7",       // 监控
-	"\u663e\u5b58",       // 显存
-	"\u5185\u5b58",       // 内存
-	"\u5229\u7528\u7387", // 利用率
-	"\u8d1f\u8f7d",       // 负载
-	"\u7a7a\u95f2",       // 空闲
-	"\u5fd9",             // 忙
-}
-
-// Keyword sets feed inferKnowledgeProductArea below. Each set MUST emit a
-// product_area string that matches a label in deploy/kb/stage2b_w0.jsonl \u2014
-// otherwise the +2 BM25 productArea boost in Retriever.scoreChunk is a no-op.
-// Corpus labels (228 chunks as of 2026-05-20):
-//
-//	modelverse(97) login(35) resource_purchase(28) image(26)
-//	billing_rule(24) driver_cuda(6) init_failure(5) windows(5) monitor(2)
-var knowledgeBillingRuleKeywords = []string{
-	"billing", "bill", "charge", "cost", "fee", "price", "balance",
-	"\u8ba1\u8d39", "\u6263\u8d39", "\u6536\u8d39", "\u8d26\u5355", "\u4f59\u989d", "\u8d39\u7528", "\u4ef7\u683c",
-	"invoice", "refund", "arrears", "renewal", "expire",
-	"\u53d1\u7968", "\u5f00\u7968", "\u9000\u6b3e", "\u6b20\u8d39", "\u7eed\u8d39", "\u5230\u671f", "\u5305\u65e5", "\u5305\u65f6", "\u5305\u6708", "\u6309\u91cf",
-}
-
-var knowledgeImageKeywords = []string{
-	"image", "images", "\u955c\u50cf",
-}
-
-var knowledgeLoginKeywords = []string{
-	"login", "ssh", "jupyter", "jupyterlab", "token", "password",
-	"\u767b\u5f55", "\u8fde\u63a5", "\u5bc6\u7801", "\u53e3\u4ee4",
-}
-
-var knowledgeModelverseKeywords = []string{
-	"model", "models", "claude", "anthropic", "credit", "credits",
-	"modelverse",
-	"\u6a21\u578b", "\u5957\u9910", "\u79ef\u5206",
-}
-
-var knowledgeResourcePurchaseKeywords = []string{
-	"\u8d2d\u4e70",       // \u8d2d\u4e70
-	"\u89c4\u683c",       // \u89c4\u683c
-	"\u62a2\u5360\u5f0f", // \u62a2\u5360\u5f0f
-	"\u72ec\u5360\u5f0f", // \u72ec\u5360\u5f0f
-	// Stock / availability phrasing (#5): a "\u5e93\u5b58 / \u6709\u6ca1\u6709\u8d27" question must infer the
-	// resource_purchase area so the wrong-domain guard has a question area to
-	// compare against (and the +2 boost prefers stock chunks). "\u6709\u8d27" also
-	// covers "\u6709\u6ca1\u6709\u8d27" as a substring.
-	"\u5e93\u5b58",             // \u5e93\u5b58
-	"\u6709\u8d27",             // \u6709\u8d27
-	"\u7f3a\u8d27",             // \u7f3a\u8d27
-	"\u73b0\u8d27",             // \u73b0\u8d27
-	"\u6682\u65e0\u8d44\u6e90", // \u6682\u65e0\u8d44\u6e90
-	"\u8d44\u6e90\u4e0d\u8db3", // \u8d44\u6e90\u4e0d\u8db3
-}
-
-var knowledgeDriverCudaKeywords = []string{
-	"nvidia", "cuda", "nvidia-smi", "driver",
-	"\u9a71\u52a8",             // \u9a71\u52a8
-	"\u663e\u5361\u9a71\u52a8", // \u663e\u5361\u9a71\u52a8
-}
-
-var knowledgeInitFailureKeywords = []string{
-	"initializing", "init fail", "install fail",
-	"\u521d\u59cb\u5316\u5931\u8d25", // \u521d\u59cb\u5316\u5931\u8d25
-	"\u521d\u59cb\u5316\u5361\u4f4f", // \u521d\u59cb\u5316\u5361\u4f4f
-	"\u542f\u52a8\u5931\u8d25",       // \u542f\u52a8\u5931\u8d25
-}
-
-var knowledgeWindowsKeywords = []string{
-	"windows", "rdp", "remote desktop",
-	"\u8fdc\u7a0b\u684c\u9762", // \u8fdc\u7a0b\u684c\u9762
-}
-
-var knowledgeMonitorKeywords = []string{
-	"\u76d1\u63a7\u6307\u6807", // \u76d1\u63a7\u6307\u6807
-	"\u663e\u5b58\u5360\u7528", // \u663e\u5b58\u5360\u7528
-	// textutil.Normalize collapses whitespace but never INJECTS a space between
-	// adjacent CJK and ASCII, so the no-space variants are the load-bearing
-	// keywords for real user input ("CPU\u5360\u7528\u7387"). Keep the spaced variants
-	// for the alt phrasing ("CPU \u5360\u7528\u7387\u9ad8\u5417").
-	"cpu\u5360\u7528",  // cpu\u5360\u7528
-	"gpu\u5360\u7528",  // gpu\u5360\u7528
-	"cpu \u5360\u7528", // cpu \u5360\u7528
-	"gpu \u5360\u7528", // gpu \u5360\u7528
-}
-
-// knowledgeInferenceServingKeywords / knowledgeGPUTroubleshootingKeywords map to
-// the external tool/ops corpus areas (deploy/kb/external_w0.jsonl, RAG Phase 1),
-// not the platform corpus. They are tool/error specific and the switch checks
-// them AFTER every platform set, so a platform message keeps its existing area
-// mapping by construction — only messages that match no platform keyword fall
-// through to these. The +2 boost only fires once the external corpus is merged
-// into the live index. Return labels must stay in scripts/rag_w0/common.py
-// ALLOWED_PRODUCT_AREAS (asserted by TestInferredProductAreasAllowedInPython).
-var knowledgeInferenceServingKeywords = []string{
-	"vllm", "sglang", "ollama", "lmdeploy", "tgi", "text-generation-inference",
-	"openai-compatible", "openai 兼容", "openai兼容",
-	"推理服务", "推理框架", "推理引擎",
-}
-
-var knowledgeGPUTroubleshootingKeywords = []string{
-	"out of memory", "outofmemory", "oom",
-	"cuda out of memory", "torch.cuda",
-	"显存不足", "显存溢出", "爆显存", "显存爆",
-}
-
-// knowledgeLinuxOpsKeywords / knowledgePytorchBasicsKeywords map to the external
-// areas added in the Linux-ops + env-management + PyTorch-basics vertical
-// (deploy/kb/external_w0.jsonl). Like inference_serving / gpu_troubleshooting they
-// are checked AFTER every platform set, so a platform message keeps its existing
-// mapping by construction — only messages matching no platform keyword fall
-// through to these. Return labels must stay in scripts/rag_w0/common.py
-// ALLOWED_PRODUCT_AREAS (asserted by TestInferredProductAreasAllowedInPython).
-//
-// Deliberately exclude bare "ssh" (stays a login keyword) and "cuda" /
-// "torch.cuda" (stay driver_cuda / gpu_troubleshooting, checked first). The
-// SSH-免密 and CUDA-version overlaps resolve in favor of those platform groups;
-// the affected external chunks are verified to still retrieve on the MERGED index
-// by the CLI smoke, not by an affinity boost (same posture as the ComfyUI vertical).
-var knowledgeLinuxOpsKeywords = []string{
-	// 后台运行 / 终端复用
-	"tmux", "nohup", "后台运行", "后台跑", "后台执行", "挂后台", "挂在后台",
-	// 虚拟环境 / 包管理(注意:不收 bare "pip",避免吞掉 "pip install vllm" 这类应归 inference_serving 的问题)
-	"conda", "miniconda", "anaconda", "venv", "virtualenv", "虚拟环境",
-	"换源", "国内源", "镜像源", "清华源", "pip 源", "pip源", "pypi",
-	// 文件传输
-	"scp", "rsync", "传文件", "上传文件", "文件传输", "传到实例",
-	// SSH 免密(含 "ssh"/"登录" 的表述会先命中 login,checked first;此处只兜住不含这两词的 bare 表述)
-	"ssh-keygen", "ssh-copy-id", "authorized_keys", "id_rsa", "免密",
-	// 磁盘
-	"df -h", "du -sh", "du -h", "磁盘满", "磁盘清理", "清理磁盘", "清理空间", "空间不够", "硬盘满", "磁盘空间不足",
-	// CPU/内存 资源(monitor 关键词只含 显存/cpu/gpu 占用,不含 内存/top/free/htop)
-	"htop", "free -h", "free -m", "free 命令", "top 命令", "内存占用", "内存满",
-}
-
-var knowledgePytorchBasicsKeywords = []string{
-	"pytorch", "torchrun", "torch.distributed", "ddp", "distributeddataparallel",
-	"dataloader", "num_workers", "pin_memory",
-	"分布式训练", "多卡训练", "数据并行", "单机多卡",
-	"混合精度", "torch.cuda.amp", "autocast", "梯度累积", "梯度检查点",
-	"state_dict", "torch.save", "torch.load",
-}
-
 // normalizeMsg was moved to internal/textutil.Normalize in the C2
-// hard-block 归一 refactor. All engine call sites now invoke
+// hard-block normalization refactor. All engine call sites now invoke
 // textutil.Normalize directly. See textutil/normalize.go for the
-// canonical implementation + per-package unit tests.
-
-// shouldForceMonitorRecall reports whether the current turn is an adjacent
-// monitor follow-up that should force a fresh GetCompShareInstanceMonitor call
-// instead of letting the LLM reuse prior monitor numbers. Conditions (all must
-// hold):
-//   - the immediately previous user turn completed GetCompShareInstanceMonitor
-//   - the current message contains a curated follow-up keyword
-//   - the current message also contains a monitor metric keyword
-//
-// This is a narrow engine-layer bridge until IntentPlan shadow routing owns
-// monitor follow-up classification.
-func (e *Engine) shouldForceMonitorRecall(userMsg string) bool {
-	if e.lastMonitorTurn < 0 || e.userTurn != e.lastMonitorTurn+1 {
-		return false
-	}
-	n := textutil.Normalize(userMsg)
-	return containsAnyKeyword(n, monitorRecallKeywords) && containsAnyKeyword(n, monitorMetricKeywords)
-}
-
-func isUnsupportedHistoricalMonitorQuestion(userMsg string) bool {
-	n := textutil.Normalize(userMsg)
-	if !containsAnyKeyword(n, historicalMonitorSignalKeywords) {
-		return false
-	}
-	if containsAnyKeyword(n, historicalMonitorTimeKeywords) {
-		return true
-	}
-	return clockRangeRE.MatchString(userMsg) ||
-		isoDateRE.MatchString(userMsg) ||
-		historicalDurationRE.MatchString(userMsg)
-}
+// canonical implementation and per-package unit tests.
 
 func containsAnyKeyword(normalized string, keywords []string) bool {
 	for _, kw := range keywords {
@@ -6678,67 +6094,6 @@ var humanAgentTransferKeywords = []string{
 func isHumanAgentTransferRequest(userMsg string) bool {
 	n := textutil.Normalize(userMsg)
 	return containsAnyKeyword(n, humanAgentTransferKeywords)
-}
-
-// inferKnowledgeProductArea returns a product_area label matching one of the
-// deploy/kb/stage2b_w0.jsonl product_area values. The match flows into
-// Retriever.scoreChunk where chunks with the same productArea get +2 BM25.
-// Order matters: more-specific labels (init_failure / windows / driver_cuda)
-// are checked before broader ones (image / modelverse / billing_rule) to avoid
-// the broader keyword sets shadowing the niche groups.
-func inferKnowledgeProductArea(userMsg string) string {
-	n := textutil.Normalize(userMsg)
-	switch {
-	case containsAnyKeyword(n, knowledgeInitFailureKeywords):
-		return "init_failure"
-	case containsAnyKeyword(n, knowledgeWindowsKeywords):
-		return "windows"
-	case containsAnyKeyword(n, knowledgeDriverCudaKeywords):
-		return "driver_cuda"
-	case containsAnyKeyword(n, knowledgeMonitorKeywords):
-		return "monitor"
-	case containsAnyKeyword(n, knowledgeImageKeywords):
-		return "image"
-	case containsAnyKeyword(n, knowledgeLoginKeywords):
-		return "login"
-	case containsAnyKeyword(n, knowledgeResourcePurchaseKeywords):
-		return "resource_purchase"
-	case containsAnyKeyword(n, knowledgeBillingRuleKeywords):
-		return "billing_rule"
-	case containsAnyKeyword(n, knowledgeModelverseKeywords):
-		return "modelverse"
-	case containsAnyKeyword(n, knowledgeInferenceServingKeywords):
-		return "inference_serving"
-	case containsAnyKeyword(n, knowledgeGPUTroubleshootingKeywords):
-		return "gpu_troubleshooting"
-	case containsAnyKeyword(n, knowledgePytorchBasicsKeywords):
-		return "pytorch_basics"
-	case containsAnyKeyword(n, knowledgeLinuxOpsKeywords):
-		return "linux_ops"
-	default:
-		return ""
-	}
-}
-
-// knowledgeInferredProductAreas enumerates every non-empty label
-// inferKnowledgeProductArea can return. Keep it in sync with the switch above;
-// TestInferredProductAreasAllowedInPython asserts each is a member of
-// scripts/rag_w0/common.py ALLOWED_PRODUCT_AREAS so an engine label can never
-// drift to a value the offline corpus validator would reject.
-var knowledgeInferredProductAreas = []string{
-	"init_failure",
-	"windows",
-	"driver_cuda",
-	"monitor",
-	"image",
-	"login",
-	"resource_purchase",
-	"billing_rule",
-	"modelverse",
-	"inference_serving",
-	"gpu_troubleshooting",
-	"pytorch_basics",
-	"linux_ops",
 }
 
 // pickProjectId removed in PR9 with ensureProjectId. See comment block

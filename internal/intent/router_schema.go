@@ -69,6 +69,20 @@ func IntentRouteResponseSchemaForIntents(runtimeIntents []Intent) json.RawMessag
 				string(ImageSourceCommunity),
 				string(ImageSourceShared),
 			),
+			"search_query": map[string]any{"type": "string"},
+			"list_mode":    stringEnum("", string(ListModeAll), string(ListModeFiltered)),
+			"price_kind":   stringEnum("", string(PriceKindAccount), string(PriceKindCatalog)),
+			"cfs_kind": stringEnum(
+				"",
+				string(CFSKindList),
+				string(CFSKindCreatePrice),
+				string(CFSKindUpgradePrice),
+				string(CFSKindRefund),
+			),
+			"size_gb":      map[string]any{"type": "integer", "minimum": 0},
+			"zone":         map[string]any{"type": "string"},
+			"charge_type":  stringEnum("", "Month", "Year", "Day", "Dynamic", "Postpay", "Spot"),
+			"detail_level": stringEnum("", string(DetailLevelSummary), string(DetailLevelFull)),
 			// slots.action (LifecycleAction) is deliberately omitted: the prompt
 			// never asks the model to emit it and the engine re-derives it from the
 			// user text (inferLifecycleAction). Non-strict + no additionalProperties

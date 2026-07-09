@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -133,13 +132,6 @@ var gpuTypeAliases = map[string]string{
 	"V100": "V100S",
 }
 
-var explicitGPUTypePatterns = []struct {
-	re      *regexp.Regexp
-	gpuType string
-}{
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])(?:rtx\s*)?4090[\s_-]*48\s*g(?:b)?(?:[^0-9a-z]|$)`), "4090_48G"},
-}
-
 // CanonicalGPUType normalizes a user/LLM-supplied GPU type to the platform's
 // canonical name so downstream API calls (availability / capacity / price /
 // create) match the catalog. It (1) maps known aliases (e.g. "V100"->"V100S"),
@@ -167,18 +159,6 @@ func CanonicalGPUType(s string) string {
 		}
 	}
 	return t
-}
-
-// ExplicitGPUTypeFromText returns a precise platform GPU type explicitly
-// mentioned in free-form user text. This catches cases where the LLM tool call
-// collapses a variant ("4090 48G") back to the base card ("4090").
-func ExplicitGPUTypeFromText(text string) string {
-	for _, p := range explicitGPUTypePatterns {
-		if p.re.MatchString(text) {
-			return p.gpuType
-		}
-	}
-	return ""
 }
 
 func normalizeGPUVariantToken(s string) string {

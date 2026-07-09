@@ -143,18 +143,6 @@ func TestCanonicalGPUType(t *testing.T) {
 	}
 }
 
-func TestExplicitGPUTypeFromText(t *testing.T) {
-	cases := []string{
-		"开一台 4090 48G",
-		"帮我搞台4090-48G",
-		"我要 RTX 4090_48GB",
-	}
-	for _, c := range cases {
-		assert.Equalf(t, "4090_48G", ExplicitGPUTypeFromText(c), "ExplicitGPUTypeFromText(%q)", c)
-	}
-	assert.Empty(t, ExplicitGPUTypeFromText("帮我搞台 4090"))
-}
-
 func TestGetGPUSpecs_V100Alias_ResolvesToV100S(t *testing.T) {
 	// A user asking about "V100" must get V100S specs, not an "unknown type"
 	// error that the LLM would otherwise narrate into a fabricated answer.

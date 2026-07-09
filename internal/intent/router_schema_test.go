@@ -118,7 +118,7 @@ func TestIntentRouteResponseSchemaForIntents_CanExposeUnifiedCreate(t *testing.T
 	}
 }
 
-func TestIntentRouteResponseSchema_ExposesImageSourceSlot(t *testing.T) {
+func TestIntentRouteResponseSchema_ExposesReadOnlyRefinementSlots(t *testing.T) {
 	var schema struct {
 		Properties struct {
 			Slots struct {
@@ -126,6 +126,24 @@ func TestIntentRouteResponseSchema_ExposesImageSourceSlot(t *testing.T) {
 					ImageSource struct {
 						Enum []string `json:"enum"`
 					} `json:"image_source"`
+					ListMode struct {
+						Enum []string `json:"enum"`
+					} `json:"list_mode"`
+					PriceKind struct {
+						Enum []string `json:"enum"`
+					} `json:"price_kind"`
+					CFSKind struct {
+						Enum []string `json:"enum"`
+					} `json:"cfs_kind"`
+					DetailLevel struct {
+						Enum []string `json:"enum"`
+					} `json:"detail_level"`
+					SearchQuery struct {
+						Type string `json:"type"`
+					} `json:"search_query"`
+					SizeGB struct {
+						Type string `json:"type"`
+					} `json:"size_gb"`
 				} `json:"properties"`
 			} `json:"slots"`
 		} `json:"properties"`
@@ -140,6 +158,29 @@ func TestIntentRouteResponseSchema_ExposesImageSourceSlot(t *testing.T) {
 	for _, want := range []string{"", "platform", "custom", "community", "shared"} {
 		if !got[want] {
 			t.Fatalf("image_source enum missing %q: %#v", want, got)
+		}
+	}
+	assertEnumContains(t, schema.Properties.Slots.Properties.ListMode.Enum, "", "all", "filtered")
+	assertEnumContains(t, schema.Properties.Slots.Properties.PriceKind.Enum, "", "account", "catalog")
+	assertEnumContains(t, schema.Properties.Slots.Properties.CFSKind.Enum, "", "list", "create_price", "upgrade_price", "refund")
+	assertEnumContains(t, schema.Properties.Slots.Properties.DetailLevel.Enum, "", "summary", "full")
+	if schema.Properties.Slots.Properties.SearchQuery.Type != "string" {
+		t.Fatalf("search_query type = %q, want string", schema.Properties.Slots.Properties.SearchQuery.Type)
+	}
+	if schema.Properties.Slots.Properties.SizeGB.Type != "integer" {
+		t.Fatalf("size_gb type = %q, want integer", schema.Properties.Slots.Properties.SizeGB.Type)
+	}
+}
+
+func assertEnumContains(t *testing.T, values []string, wants ...string) {
+	t.Helper()
+	got := map[string]bool{}
+	for _, v := range values {
+		got[v] = true
+	}
+	for _, want := range wants {
+		if !got[want] {
+			t.Fatalf("enum missing %q: %#v", want, got)
 		}
 	}
 }

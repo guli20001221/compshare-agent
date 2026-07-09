@@ -619,9 +619,9 @@ type RetrievalTrace struct {
 	// far the top hit fell from the floor.
 	FloorValue float64 `json:"floor_value,omitempty"`
 	// DomainInferenceEmpty is true when the question's product area could not be
-	// inferred (inferKnowledgeProductArea=="") — so the #5 wrong-domain guard
-	// could not judge this turn. Recorded so a low wrong_domain rate is not
-	// misread as "no problem" (the question-side keyword-coverage gap).
+	// inferred, so the #5 wrong-domain guard could not judge this turn. Recorded
+	// so a low wrong_domain rate is not misread as "no problem" (the
+	// question-side routing coverage gap).
 	DomainInferenceEmpty bool `json:"domain_inference_empty,omitempty"`
 	// AllCitedOffDomain is true when every judgeable retrieved chunk was off the
 	// question's product area (the #5 case: a 库存 question grounded on billing

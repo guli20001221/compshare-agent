@@ -13,10 +13,26 @@ required_citation: false
 handler_key: handleCFSInfo
 planner_directives:
   - 'Classify CFS list, capacity, mount status, cfs-xxx status, create-price, resize-price, and refund-estimate questions as cfs_info.'
+  - 'Set slots.cfs_kind to list, create_price, upgrade_price, or refund. Default to list for broad CFS list/status questions.'
+  - 'For create_price and upgrade_price, fill slots.size_gb when the user provides a target capacity. For create_price, fill slots.zone and slots.charge_type when provided.'
   - 'Route actual CFS create or resize commands to operation_lifecycle. Do not expose CFS delete or unmount.'
 planner_examples:
   - question: "我的 CFS 共享文件存储有哪些"
     confidence: 0.84
+    cfs_kind: list
+  - question: "cn-bj2-03 创建 50GB CFS 多少钱"
+    confidence: 0.86
+    cfs_kind: create_price
+    size_gb: 50
+    zone: cn-bj2-03
+    charge_type: Month
+  - question: "cfs-test 扩容到 200GB 多少钱"
+    confidence: 0.86
+    cfs_kind: upgrade_price
+    size_gb: 200
+  - question: "cfs-test 现在退费多少钱"
+    confidence: 0.86
+    cfs_kind: refund
 verification_status: production_validated
 field_refs_verified: true
 provenance: human_authored

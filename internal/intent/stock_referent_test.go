@@ -34,9 +34,8 @@ func (multiModelStockExecutor) Execute(_ context.Context, action string, args ma
 }
 
 // TestStockReferentText pins the RC017 referent-resolution rules: the prior
-// model is reused ONLY for a true subject-eliding follow-up, and never when
-// the current turn names a (possibly unknown) GPU token or when the prior
-// model is no longer offered.
+// model is reused ONLY when the route has no search_query. A route-supplied
+// search_query is authoritative, even when it does not match a current model.
 func TestStockReferentText(t *testing.T) {
 	items := []any{
 		map[string]any{"Name": "4090"},
@@ -46,18 +45,23 @@ func TestStockReferentText(t *testing.T) {
 	cases := []struct {
 		name     string
 		userText string
+		search   string
 		fallback string
 		want     string
 	}{
-		{"named model is authoritative", "4090有货吗", "5090", "4090有货吗"},
-		{"pure ellipsis reuses fallback", "现在还有库存吗", "4090", "4090"},
-		{"ellipsis without fallback is unchanged", "现在还有库存吗", "", "现在还有库存吗"},
-		{"named-but-unknown GPU token does not swap to fallback", "H200还有吗", "4090", "H200还有吗"},
-		{"retired fallback is not resurrected", "现在还有库存吗", "TEST_GPU_X", "现在还有库存吗"},
+		{"route search query is authoritative", "4090有货吗", "4090", "5090", "4090"},
+		{"pure ellipsis reuses fallback", "现在还有库存吗", "", "4090", "4090"},
+		{"ellipsis without fallback has no filter", "现在还有库存吗", "", "", ""},
+		{"unknown route search query does not swap to fallback", "H200还有吗", "H200", "4090", "H200"},
+		{"retired fallback is not resurrected", "现在还有库存吗", "", "TEST_GPU_X", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			req := HandlerRequest{UserText: c.userText, FallbackGpuModel: c.fallback}
+			req := HandlerRequest{
+				Plan:             IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: c.search}},
+				UserText:         c.userText,
+				FallbackGpuModel: c.fallback,
+			}
 			if got := stockReferentText(req, items); got != c.want {
 				t.Errorf("stockReferentText(text=%q, fb=%q) = %q, want %q", c.userText, c.fallback, got, c.want)
 			}
@@ -72,13 +76,13 @@ func TestSingleStockModel(t *testing.T) {
 		map[string]any{"Name": "4090"},
 		map[string]any{"Name": "5090"},
 	}
-	if got := singleStockModel("4090有货吗", items); got != "4090" {
+	if got := singleStockModel("4090", items); got != "4090" {
 		t.Errorf("single match = %q, want 4090", got)
 	}
-	if got := singleStockModel("4090和5090都有货吗", items); got != "" {
+	if got := singleStockModel("4090 5090", items); got != "" {
 		t.Errorf("multi match must not bind a referent, got %q", got)
 	}
-	if got := singleStockModel("现在还有库存吗", items); got != "" {
+	if got := singleStockModel("", items); got != "" {
 		t.Errorf("no match must not bind a referent, got %q", got)
 	}
 }
@@ -137,7 +141,7 @@ func TestHandleStockAvailability_EllipsisWithoutFallbackListsAll(t *testing.T) {
 func TestHandleStockAvailability_NamedModelRecordsReferent(t *testing.T) {
 	h := NewDemoHandler(multiModelStockExecutor{})
 	req := HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
 		UserText: "4090现在有货吗",
 	}
 	res := handleStockAvailability(context.Background(), h, req)

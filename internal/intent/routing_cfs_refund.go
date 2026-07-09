@@ -13,8 +13,6 @@ import (
 var (
 	cfsIDPattern   = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)
 	uhostIDPattern = regexp.MustCompile(`(?i)u(?:host|h)-[a-z0-9-]+`)
-	sizeGBPattern  = regexp.MustCompile(`(?i)(\d+)\s*(?:g|gb|gib|GB)`)
-	zoneIDPattern  = regexp.MustCompile(`(?i)cn-[a-z0-9]+-\d+`)
 )
 
 func handleRefundEstimate(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
@@ -111,12 +109,12 @@ func renderRefundEstimateReply(raw map[string]any, instances []entity.InstanceSn
 }
 
 func handleCFSInfo(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
-	switch cfsQueryKind(req.UserText) {
-	case "refund":
+	switch req.Plan.Slots.CFSKind {
+	case CFSKindRefund:
 		return handleCFSRefundEstimate(ctx, h, req)
-	case "upgrade_price":
+	case CFSKindUpgradePrice:
 		return handleCFSUpgradePrice(ctx, h, req)
-	case "create_price":
+	case CFSKindCreatePrice:
 		return handleCFSCreatePrice(ctx, h, req)
 	}
 	const action = "DescribeCFS"
@@ -137,14 +135,14 @@ func handleCFSInfo(ctx context.Context, h *DemoHandler, req HandlerRequest) Hand
 
 func handleCFSCreatePrice(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "GetCompShareCFSPrice"
-	size, ok := extractSizeGBFromText(req.UserText)
-	if !ok {
+	size := req.Plan.Slots.SizeGB
+	if size <= 0 {
 		result := HandledResult("请补充要创建的 CFS 容量，单位 GB，例如 50GB。CFS 询价只读，不会创建资源。")
 		result.ToolAction = action
 		result.ToolArgs = copyArgs(map[string]any{})
 		return result
 	}
-	zone, ok := resolveCFSZoneFromText(ctx, h, req.UserText)
+	zone, ok := resolveCFSZoneFromSlot(ctx, h, req.Plan.Slots.Zone)
 	if !ok || zone.Zone == "" || zone.ZoneID == 0 {
 		result := HandledResult("请补充要创建 CFS 的可用区。CFS 当前只支持 Pod/容器可用区，询价只读，不会创建资源。")
 		result.ToolAction = action
@@ -160,7 +158,7 @@ func handleCFSCreatePrice(ctx context.Context, h *DemoHandler, req HandlerReques
 	args := map[string]any{
 		"Size":       size,
 		"Zone":       zone.Zone,
-		"ChargeType": cfsChargeTypeFromText(req.UserText),
+		"ChargeType": cfsChargeTypeFromSlot(req.Plan.Slots.ChargeType),
 		"Quantity":   1,
 		"zone_id":    zone.ZoneID,
 		"az_group":   zone.RegionID,
@@ -184,8 +182,8 @@ func handleCFSUpgradePrice(ctx context.Context, h *DemoHandler, req HandlerReque
 		result.ToolArgs = copyArgs(map[string]any{})
 		return result
 	}
-	size, ok := extractSizeGBFromText(req.UserText)
-	if !ok {
+	size := req.Plan.Slots.SizeGB
+	if size <= 0 {
 		result := HandledResult("请补充 CFS 扩容后的目标容量，单位 GB，例如 200GB。Size 是目标容量，不是新增容量。")
 		result.ToolAction = action
 		result.ToolArgs = copyArgs(map[string]any{"CfsId": cfsID})
@@ -277,37 +275,7 @@ func renderCFSInfoReply(raw map[string]any) string {
 	return strings.Join(lines, "\n")
 }
 
-func cfsQueryKind(text string) string {
-	lower := strings.ToLower(text)
-	if strings.Contains(lower, "退费") || strings.Contains(lower, "退款") || strings.Contains(lower, "退订") || strings.Contains(lower, "释放能退") {
-		return "refund"
-	}
-	priceLike := strings.Contains(lower, "多少钱") || strings.Contains(lower, "价格") || strings.Contains(lower, "费用") || strings.Contains(lower, "计费")
-	if !priceLike {
-		return ""
-	}
-	if strings.Contains(lower, "扩容") || strings.Contains(lower, "扩到") || strings.Contains(lower, "升到") {
-		return "upgrade_price"
-	}
-	if strings.Contains(lower, "cfs") || strings.Contains(text, "共享文件存储") {
-		return "create_price"
-	}
-	return ""
-}
-
-func extractSizeGBFromText(text string) (int, bool) {
-	match := sizeGBPattern.FindStringSubmatch(text)
-	if len(match) < 2 {
-		return 0, false
-	}
-	var size int
-	if _, err := fmt.Sscanf(match[1], "%d", &size); err != nil || size <= 0 {
-		return 0, false
-	}
-	return size, true
-}
-
-func resolveCFSZoneFromText(ctx context.Context, h *DemoHandler, text string) (zones.ZoneInfo, bool) {
+func resolveCFSZoneFromSlot(ctx context.Context, h *DemoHandler, zoneText string) (zones.ZoneInfo, bool) {
 	if h == nil || h.executor == nil {
 		return zones.ZoneInfo{}, false
 	}
@@ -315,10 +283,11 @@ func resolveCFSZoneFromText(ctx context.Context, h *DemoHandler, text string) (z
 	if err != nil {
 		return zones.ZoneInfo{}, false
 	}
-	if zone := strings.ToLower(strings.TrimSpace(zoneIDPattern.FindString(text))); zone != "" {
-		return findCFSZoneInfo(list, zone)
+	zoneText = strings.TrimSpace(zoneText)
+	if zoneText == "" {
+		return zones.ZoneInfo{}, false
 	}
-	if zone, ok := zones.ExactZone(list, text); ok {
+	if zone, ok := zones.ExactZone(list, zoneText); ok {
 		return findCFSZoneInfo(list, zone)
 	}
 	return zones.ZoneInfo{}, false
@@ -368,18 +337,12 @@ func cfsZoneIDFromDescribe(raw map[string]any) uint32 {
 	return 0
 }
 
-func cfsChargeTypeFromText(text string) string {
-	lower := strings.ToLower(text)
-	switch {
-	case strings.Contains(text, "包年") || strings.Contains(lower, "year"):
-		return "Year"
-	case strings.Contains(text, "包日") || strings.Contains(lower, "day"):
-		return "Day"
-	case strings.Contains(text, "动态") || strings.Contains(lower, "dynamic"):
-		return "Dynamic"
-	default:
+func cfsChargeTypeFromSlot(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
 		return "Month"
 	}
+	return value
 }
 
 func renderCFSCreatePriceReply(raw map[string]any, size int, zone string) string {
