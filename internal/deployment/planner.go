@@ -163,11 +163,13 @@ func ApplyCapacityPlacementArgs(args map[string]any, placement ZonePlacement) ma
 		delete(args, "Zone")
 		delete(args, "Region")
 		delete(args, "az_group")
+		args["IsPod"] = true
 		if placement.ZoneID != 0 {
 			args["zone_id"] = placement.ZoneID
 		}
 		return args
 	}
+	delete(args, "IsPod")
 	if placement.Zone != "" {
 		args["Zone"] = placement.Zone
 	}
@@ -187,6 +189,7 @@ func ApplyPurchasePlacementArgs(args map[string]any, placement ZonePlacement) ma
 	if placement.IsPod {
 		delete(args, "Zone")
 		delete(args, "Region")
+		args["IsPod"] = true
 		if placement.ZoneID != 0 {
 			args["zone_id"] = placement.ZoneID
 		}
@@ -195,6 +198,7 @@ func ApplyPurchasePlacementArgs(args map[string]any, placement ZonePlacement) ma
 		}
 		return args
 	}
+	delete(args, "IsPod")
 	if placement.Zone != "" {
 		args["Zone"] = placement.Zone
 	}

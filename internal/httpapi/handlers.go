@@ -115,10 +115,14 @@ func (h *Handlers) buildUserContext(base BaseRequest) (tools.UserContext, error)
 	return tools.UserContext{
 		TopOrganizationID: base.Owner.TopOrganizationID,
 		OrganizationID:    base.Owner.OrganizationID,
+		CompanyID:         base.CompanyID,
+		AccountID:         base.AccountID,
+		Channel:           base.Channel,
 		RoleUrn:           roleUrn,
 		SessionName:       fmt.Sprintf("%d-%d", base.Owner.TopOrganizationID, base.Owner.OrganizationID),
 		ProjectId:         projectID,
 		Region:            h.cfg.Agent.Region,
 		UserEmail:         base.UserEmail,
+		ClientIP:          base.ClientIP,
 	}, nil
 }

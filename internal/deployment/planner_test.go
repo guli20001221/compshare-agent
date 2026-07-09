@@ -111,6 +111,7 @@ func TestApplyCapacityPlacementArgsUsesOnlyZoneIDForPod(t *testing.T) {
 	assert.NotContains(t, args, "Region")
 	assert.NotContains(t, args, "az_group")
 	assert.Equal(t, uint32(9103), args["zone_id"])
+	assert.Equal(t, true, args["IsPod"])
 }
 
 func TestApplyPlacementArgsKeepsNormalZoneAndRegion(t *testing.T) {
@@ -145,6 +146,7 @@ func TestApplyPurchasePlacementArgsCarriesPodZoneIDAndAzGroup(t *testing.T) {
 	assert.NotContains(t, args, "Region")
 	assert.Equal(t, uint32(9103), args["zone_id"])
 	assert.Equal(t, uint32(3103), args["az_group"])
+	assert.Equal(t, true, args["IsPod"])
 }
 
 func TestClassifyCreateFailureRecognizesAdaptiveImageError(t *testing.T) {
@@ -152,6 +154,13 @@ func TestClassifyCreateFailureRecognizesAdaptiveImageError(t *testing.T) {
 
 	assert.Equal(t, FailureImageZoneNotAdapted, classified.Kind)
 	assert.True(t, classified.Recoverable)
+}
+
+func TestClassifyCreateFailureDoesNotTreatGeneric8433AsImageMismatch(t *testing.T) {
+	classified := ClassifyCreateFailure("API error (RetCode=8433): Service error, please retry or contact technical support")
+
+	assert.Equal(t, FailureUnknown, classified.Kind)
+	assert.False(t, classified.Recoverable)
 }
 
 func TestMemoryGBToMBMatchesUpstreamCreateUnits(t *testing.T) {

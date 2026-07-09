@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,8 +20,12 @@ type BaseRequest struct {
 	Action      string
 	RequestUUID string
 	Owner       store.Owner
+	CompanyID   uint32
+	AccountID   uint32
+	Channel     uint32
 	ProjectID   string
 	UserEmail   string
+	ClientIP    string
 }
 
 // ParseBaseRequest reads the request body (POST only), resolves identity fields,
@@ -57,13 +62,33 @@ func ParseBaseRequest(c *gin.Context) (*simplejson.Json, BaseRequest, error) {
 
 	projectID := raw.Get("ProjectId").MustString()
 	userEmail := raw.Get("user_email").MustString()
+	companyID, err := readUint32(raw, "company_id")
+	if err != nil {
+		return nil, BaseRequest{}, ErrInvalidParam.WithMessage("invalid company_id")
+	}
+	if companyID == 0 {
+		companyID = topOrg
+	}
+	accountID, err := readUint32(raw, "account_id")
+	if err != nil {
+		return nil, BaseRequest{}, ErrInvalidParam.WithMessage("invalid account_id")
+	}
+	channel, err := readUint32(raw, "channel")
+	if err != nil {
+		return nil, BaseRequest{}, ErrInvalidParam.WithMessage("invalid channel")
+	}
+	clientIP := firstNonEmpty(raw.Get("client_ip").MustString(), c.ClientIP())
 
 	return raw, BaseRequest{
 		Action:      action,
 		RequestUUID: requestUUID,
 		Owner:       store.Owner{TopOrganizationID: topOrg, OrganizationID: org},
+		CompanyID:   companyID,
+		AccountID:   accountID,
+		Channel:     channel,
 		ProjectID:   projectID,
 		UserEmail:   userEmail,
+		ClientIP:    clientIP,
 	}, nil
 }
 
@@ -103,13 +128,19 @@ func ParseBaseRequestFromHeaders(r *http.Request) (BaseRequest, error) {
 	if requestUUID == "" {
 		requestUUID = uuid.NewString()
 	}
+	accountID := headerUint32(r, "X-Account-Id", firstNonEmpty(meta["account-id"], meta["user-id"]))
+	channel := headerUint32(r, "X-Channel-Id", firstNonEmpty(meta["channel-id"], meta["channel"]))
 
 	return BaseRequest{
 		Action:      action,
 		RequestUUID: requestUUID,
 		Owner:       store.Owner{TopOrganizationID: topOrg, OrganizationID: org},
+		CompanyID:   topOrg,
+		AccountID:   accountID,
+		Channel:     channel,
 		ProjectID:   r.URL.Query().Get("ProjectId"),
 		UserEmail:   r.Header.Get("X-User-Email"),
+		ClientIP:    requestClientIP(r),
 	}, nil
 }
 
@@ -154,6 +185,23 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func requestClientIP(r *http.Request) string {
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
+		if first, _, ok := strings.Cut(forwarded, ","); ok {
+			return strings.TrimSpace(first)
+		}
+		return forwarded
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		return realIP
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 // parseBody reads and parses the POST body into a simplejson.Json.

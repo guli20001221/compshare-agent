@@ -56,6 +56,27 @@ func TestParseBaseRequestForm(t *testing.T) {
 	assert.Equal(t, "operator@example.com", base.UserEmail)
 }
 
+func TestParseBaseRequestFromHeadersCarriesGatewayIdentity(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/ws?Action=CreateCSAgentWS&ProjectId=org-cwy2qk", nil)
+	req.Header.Set("X-Company-Id", "101")
+	req.Header.Set("X-Organization-Id", "202")
+	req.Header.Set("Api-Metadata", "user-id=303, channel-id=124")
+	req.Header.Set("X-Forwarded-For", "10.0.0.9, 10.0.0.10")
+	req.RemoteAddr = "[::1]:12345"
+
+	base, err := ParseBaseRequestFromHeaders(req)
+
+	require.NoError(t, err)
+	assert.Equal(t, "CreateCSAgentWS", base.Action)
+	assert.Equal(t, uint32(101), base.Owner.TopOrganizationID)
+	assert.Equal(t, uint32(202), base.Owner.OrganizationID)
+	assert.Equal(t, uint32(101), base.CompanyID)
+	assert.Equal(t, uint32(303), base.AccountID)
+	assert.Equal(t, uint32(124), base.Channel)
+	assert.Equal(t, "10.0.0.9", base.ClientIP)
+	assert.Equal(t, "org-cwy2qk", base.ProjectID)
+}
+
 func TestParseBaseRequestRejectsMissingOrganization(t *testing.T) {
 	c := testContext("application/json", `{"Action":"GetCSAgentMeta","top_organization_id":123}`)
 

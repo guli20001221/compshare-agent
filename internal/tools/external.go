@@ -110,7 +110,8 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 
 	// Resolve request-scoped identity fields: prefer UserContext when present.
 	region, project, userEmail := e.region, e.projectId, ""
-	var topOrgID, orgID uint32
+	var topOrgID, orgID, companyID, accountID, channel uint32
+	var clientIP string
 	if u, ok := UserFrom(ctx); ok {
 		if u.Region != "" {
 			region = u.Region
@@ -121,6 +122,10 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 		userEmail = u.UserEmail
 		topOrgID = u.TopOrganizationID
 		orgID = u.OrganizationID
+		companyID = u.CompanyID
+		accountID = u.AccountID
+		channel = u.Channel
+		clientIP = u.ClientIP
 	}
 
 	// Build params: Action + Region + args + PublicKey
@@ -151,6 +156,22 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 	if orgID != 0 {
 		params["organization_id"] = fmt.Sprint(orgID)
 	}
+	if companyID == 0 {
+		companyID = topOrgID
+	}
+	if companyID != 0 {
+		params["company_id"] = fmt.Sprint(companyID)
+	}
+	if accountID != 0 {
+		params["account_id"] = fmt.Sprint(accountID)
+	}
+	if channel != 0 {
+		params["channel"] = fmt.Sprint(channel)
+	}
+	if clientIP != "" {
+		params["client_ip"] = clientIP
+	}
+	diagArgs := createInstanceEffectiveDiagArgs(args, topOrgID, orgID, companyID, accountID, channel, clientIP)
 	if userEmail != "" {
 		// user_email is request identity from the gateway, not an LLM/tool arg.
 		// Context must win if an upstream caller accidentally supplied one.
@@ -195,7 +216,7 @@ func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[
 	// Check RetCode
 	if retCode, ok := result["RetCode"].(float64); ok && retCode != 0 {
 		msg, _ := result["Message"].(string)
-		logUpstreamAPIError(action, int(retCode), msg, result, args)
+		logUpstreamAPIError(action, int(retCode), msg, result, diagArgs)
 		return nil, NewUpstreamAPIError(int(retCode), msg)
 	}
 
@@ -213,7 +234,8 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 
 	// Resolve request-scoped identity fields: prefer UserContext when present.
 	region, project, userEmail := e.region, e.projectId, ""
-	var topOrgID, orgID uint32
+	var topOrgID, orgID, companyID, accountID, channel uint32
+	var clientIP string
 	if u, ok := UserFrom(ctx); ok {
 		if u.Region != "" {
 			region = u.Region
@@ -224,6 +246,10 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 		userEmail = u.UserEmail
 		topOrgID = u.TopOrganizationID
 		orgID = u.OrganizationID
+		companyID = u.CompanyID
+		accountID = u.AccountID
+		channel = u.Channel
+		clientIP = u.ClientIP
 	}
 
 	body := map[string]any{
@@ -246,6 +272,22 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 	if orgID != 0 {
 		body["organization_id"] = orgID
 	}
+	if companyID == 0 {
+		companyID = topOrgID
+	}
+	if companyID != 0 {
+		body["company_id"] = companyID
+	}
+	if accountID != 0 {
+		body["account_id"] = accountID
+	}
+	if channel != 0 {
+		body["channel"] = channel
+	}
+	if clientIP != "" {
+		body["client_ip"] = clientIP
+	}
+	diagArgs := createInstanceEffectiveDiagArgs(args, topOrgID, orgID, companyID, accountID, channel, clientIP)
 	if userEmail != "" {
 		// user_email is request identity from the gateway, not an LLM/tool arg.
 		// Context must win if an upstream caller accidentally supplied one.
@@ -291,7 +333,7 @@ func (e *ExternalExecutor) executeJSON(ctx context.Context, action string, args 
 
 	if retCode, ok := result["RetCode"].(float64); ok && retCode != 0 {
 		msg, _ := result["Message"].(string)
-		logUpstreamAPIError(action, int(retCode), msg, result, args)
+		logUpstreamAPIError(action, int(retCode), msg, result, diagArgs)
 		return nil, NewUpstreamAPIError(int(retCode), msg)
 	}
 
@@ -309,7 +351,7 @@ func logUpstreamAPIError(action string, retCode int, msg string, result map[stri
 }
 
 func createInstanceDiagArgs(args map[string]any) string {
-	keys := []string{"Zone", "Region", "zone_id", "az_group", "GpuType", "GPU", "Gpu", "CPU", "Cpu", "Memory", "CompShareImageId", "ChargeType", "MachineType", "MinimalCpuPlatform", "LoginMode", "Disks"}
+	keys := []string{"Name", "Zone", "Region", "zone_id", "az_group", "IsPod", "GpuType", "GPU", "Gpu", "CPU", "Cpu", "Memory", "CompShareImageId", "ChargeType", "MachineType", "MinimalCpuPlatform", "LoginMode", "Quantity", "Disks", "top_organization_id", "organization_id", "company_id", "account_id", "channel", "client_ip"}
 	out := map[string]any{}
 	for _, key := range keys {
 		if v, ok := args[key]; ok {
@@ -321,6 +363,32 @@ func createInstanceDiagArgs(args map[string]any) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+func createInstanceEffectiveDiagArgs(args map[string]any, topOrgID, orgID, companyID, accountID, channel uint32, clientIP string) map[string]any {
+	out := map[string]any{}
+	for k, v := range args {
+		out[k] = v
+	}
+	if topOrgID != 0 {
+		out["top_organization_id"] = topOrgID
+	}
+	if orgID != 0 {
+		out["organization_id"] = orgID
+	}
+	if companyID != 0 {
+		out["company_id"] = companyID
+	}
+	if accountID != 0 {
+		out["account_id"] = accountID
+	}
+	if channel != 0 {
+		out["channel"] = channel
+	}
+	if clientIP != "" {
+		out["client_ip"] = clientIP
+	}
+	return out
 }
 
 func firstString(m map[string]any, keys ...string) string {
