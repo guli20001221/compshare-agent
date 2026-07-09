@@ -136,7 +136,7 @@ func TestMonitorHistoryWindowParserAcceptsChineseRangeExamples(t *testing.T) {
 	assert.Equal(t, int64(1778176800), end)
 }
 
-func TestMonitorHistoryWindowParserAcceptsYesterdayClockRange(t *testing.T) {
+func TestMonitorHistoryWindowParserAcceptsRelativeHoursSlot(t *testing.T) {
 	orig := monitorNowFunc
 	loc := monitorHistoryLoc
 	monitorNowFunc = func() time.Time {
@@ -144,29 +144,17 @@ func TestMonitorHistoryWindowParserAcceptsYesterdayClockRange(t *testing.T) {
 	}
 	t.Cleanup(func() { monitorNowFunc = orig })
 
-	start, end, ok := ResolveMonitorHistoryWindowFromUserText("查询 uhost-a 昨天 8 点到 10 点的 CPU 历史监控")
-
-	require.True(t, ok)
-	assert.Equal(t, time.Date(2026, 6, 21, 8, 0, 0, 0, loc).Unix(), start)
-	assert.Equal(t, time.Date(2026, 6, 21, 10, 0, 0, 0, loc).Unix(), end)
-}
-
-func TestMonitorHistoryWindowParserAcceptsRecentHoursFromUserText(t *testing.T) {
-	orig := monitorNowFunc
-	loc := monitorHistoryLoc
-	monitorNowFunc = func() time.Time {
-		return time.Date(2026, 6, 22, 12, 0, 0, 0, loc)
-	}
-	t.Cleanup(func() { monitorNowFunc = orig })
-
-	start, end, ok := ResolveMonitorHistoryWindowFromUserText("查询 uhost-a 过去 3 小时 CPU 历史监控")
+	start, end, ok := resolveMonitorHistoryWindow(&TimeWindow{
+		Type:  TimeWindowRelative,
+		Value: "过去 3 小时",
+	})
 
 	require.True(t, ok)
 	assert.Equal(t, time.Date(2026, 6, 22, 9, 0, 0, 0, loc).Unix(), start)
 	assert.Equal(t, time.Date(2026, 6, 22, 12, 0, 0, 0, loc).Unix(), end)
 }
 
-func TestMonitorHistoryWindowParserAcceptsRecentMinutesFromUserText(t *testing.T) {
+func TestMonitorHistoryWindowParserAcceptsRelativeMinutesSlot(t *testing.T) {
 	orig := monitorNowFunc
 	loc := monitorHistoryLoc
 	monitorNowFunc = func() time.Time {
@@ -174,14 +162,17 @@ func TestMonitorHistoryWindowParserAcceptsRecentMinutesFromUserText(t *testing.T
 	}
 	t.Cleanup(func() { monitorNowFunc = orig })
 
-	start, end, ok := ResolveMonitorHistoryWindowFromUserText("查询 uhost-a 最近 30 分钟 CPU 历史监控")
+	start, end, ok := resolveMonitorHistoryWindow(&TimeWindow{
+		Type:  TimeWindowRelative,
+		Value: "最近 30 分钟",
+	})
 
 	require.True(t, ok)
 	assert.Equal(t, time.Date(2026, 6, 22, 11, 30, 0, 0, loc).Unix(), start)
 	assert.Equal(t, time.Date(2026, 6, 22, 12, 0, 0, 0, loc).Unix(), end)
 }
 
-func TestMonitorHistoryWindowParserAcceptsTodayWithInstancePrefixAndID(t *testing.T) {
+func TestMonitorHistoryWindowParserAcceptsTodayPresetSlot(t *testing.T) {
 	orig := monitorNowFunc
 	loc := monitorHistoryLoc
 	monitorNowFunc = func() time.Time {
@@ -189,29 +180,17 @@ func TestMonitorHistoryWindowParserAcceptsTodayWithInstancePrefixAndID(t *testin
 	}
 	t.Cleanup(func() { monitorNowFunc = orig })
 
-	start, end, ok := ResolveMonitorHistoryWindowFromUserText("实例: uhost-1ry1rvipr0aa 今天 CPU 历史监控")
+	start, end, ok := resolveMonitorHistoryWindow(&TimeWindow{
+		Type:  TimeWindowPreset,
+		Value: "today",
+	})
 
 	require.True(t, ok)
 	assert.Equal(t, time.Date(2026, 6, 22, 0, 0, 0, 0, loc).Unix(), start)
 	assert.Equal(t, time.Date(2026, 6, 22, 12, 0, 0, 0, loc).Unix(), end)
 }
 
-func TestMonitorHistoryWindowParserRejectsRelativeFalsePositives(t *testing.T) {
-	cases := []string{
-		"查询 uhost-1mabc 上周 CPU 历史监控",
-		"查询 uhost-1habc 上周 CPU 历史监控",
-		"查询 uhost-a 过去 3 months CPU 历史监控",
-		"查询 uhost-a 3 hours CPU 历史监控",
-	}
-	for _, text := range cases {
-		t.Run(text, func(t *testing.T) {
-			_, _, ok := ResolveMonitorHistoryWindowFromUserText(text)
-			assert.False(t, ok)
-		})
-	}
-}
-
-func TestMonitorHistoryWindowParserRejectsInvalidYesterdayClockRange(t *testing.T) {
+func TestMonitorHistoryWindowParserRejectsUnsupportedRelativeSlots(t *testing.T) {
 	orig := monitorNowFunc
 	loc := monitorHistoryLoc
 	monitorNowFunc = func() time.Time {
@@ -219,24 +198,36 @@ func TestMonitorHistoryWindowParserRejectsInvalidYesterdayClockRange(t *testing.
 	}
 	t.Cleanup(func() { monitorNowFunc = orig })
 
-	_, _, ok := ResolveMonitorHistoryWindowFromUserText("查询 uhost-a 昨天 10 点到 9 点的 CPU 历史监控")
-
-	assert.False(t, ok, "invalid explicit range must not degrade to the whole yesterday")
-}
-
-func TestMonitorHistoryWindowParserRejectsUnparsedSpecificClockRanges(t *testing.T) {
 	cases := []string{
-		"查询 uhost-a 昨天 10 点到今天 9 点 CPU 历史监控",
-		"查询 uhost-a 今天下午 3 点到 4 点 CPU 历史监控",
-		"查询 uhost-a 今天下午 3 点-4 点 CPU 历史监控",
-		"查询 uhost-a 昨天 10:00-今天 9:00 CPU 历史监控",
+		"上周",
+		"过去 3 months",
+		"3 hours",
 	}
-	for _, text := range cases {
-		t.Run(text, func(t *testing.T) {
-			_, _, ok := ResolveMonitorHistoryWindowFromUserText(text)
-			assert.False(t, ok, "unparsed explicit clock range must not degrade to a whole-day range")
+	for _, value := range cases {
+		t.Run(value, func(t *testing.T) {
+			_, _, ok := resolveMonitorHistoryWindow(&TimeWindow{
+				Type:  TimeWindowRelative,
+				Value: value,
+			})
+			assert.False(t, ok)
 		})
 	}
+}
+
+func TestMonitorHistoryWindowParserRejectsInvalidAbsoluteClockRange(t *testing.T) {
+	orig := monitorNowFunc
+	loc := monitorHistoryLoc
+	monitorNowFunc = func() time.Time {
+		return time.Date(2026, 6, 22, 12, 0, 0, 0, loc)
+	}
+	t.Cleanup(func() { monitorNowFunc = orig })
+
+	_, _, ok := resolveMonitorHistoryWindow(&TimeWindow{
+		Type:  TimeWindowAbsolute,
+		Value: "2026-06-21 10:00 到 09:00",
+	})
+
+	assert.False(t, ok, "invalid explicit range must not degrade to a whole-day range")
 }
 
 func TestMonitorQueryHandler_HistoricalMissingWindowRejectedBeforeTool(t *testing.T) {

@@ -23,6 +23,7 @@ const (
 	ErrNameTooShort                ErrorCode = "name_too_short"
 	ErrInvalidConfidence           ErrorCode = "invalid_confidence"
 	ErrInvalidImageSource          ErrorCode = "invalid_image_source"
+	ErrInvalidReadOnlySlot         ErrorCode = "invalid_read_only_slot"
 )
 
 type ValidationError struct {
@@ -87,6 +88,9 @@ func ValidateRoute(plan IntentRoute, ctx ValidationContext) error {
 		return validationErr(ErrInvalidTimeWindow, "slots.time_window.type", "unsupported time_window type")
 	}
 	if err := validateImageSource(plan.Intent, plan.Slots.ImageSource); err != nil {
+		return err
+	}
+	if err := validateReadOnlyRefinementSlots(plan.Intent, plan.Slots); err != nil {
 		return err
 	}
 	return nil
@@ -208,6 +212,116 @@ func validateImageSource(intent Intent, source ImageSource) error {
 func validImageSource(source ImageSource) bool {
 	switch source {
 	case ImageSourcePlatform, ImageSourceCustom, ImageSourceCommunity, ImageSourceShared:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateReadOnlyRefinementSlots(intent Intent, slots Slots) error {
+	if slots.ListMode != "" {
+		if !validListMode(slots.ListMode) {
+			return validationErr(ErrInvalidReadOnlySlot, "slots.list_mode", "unsupported list mode")
+		}
+		if intent != IntentImageList && intent != IntentModelRepositoryBrowse {
+			return validationErr(ErrInvalidReadOnlySlot, "slots.list_mode", "list_mode is only valid for read-only list routes")
+		}
+	}
+	if strings.TrimSpace(slots.SearchQuery) != "" && !intentAllowsSearchQuery(intent) {
+		return validationErr(ErrInvalidReadOnlySlot, "slots.search_query", "search_query is only valid for read-only catalog routes")
+	}
+	if slots.PriceKind != "" {
+		if !validPriceKind(slots.PriceKind) {
+			return validationErr(ErrInvalidReadOnlySlot, "slots.price_kind", "unsupported price kind")
+		}
+		if intent != IntentPricingQuery {
+			return validationErr(ErrInvalidReadOnlySlot, "slots.price_kind", "price_kind is only valid for pricing_query")
+		}
+	}
+	if slots.CFSKind != "" {
+		if !validCFSKind(slots.CFSKind) {
+			return validationErr(ErrInvalidReadOnlySlot, "slots.cfs_kind", "unsupported CFS query kind")
+		}
+		if intent != IntentCFSInfo {
+			return validationErr(ErrInvalidReadOnlySlot, "slots.cfs_kind", "cfs_kind is only valid for cfs_info")
+		}
+	}
+	if slots.SizeGB < 0 {
+		return validationErr(ErrInvalidReadOnlySlot, "slots.size_gb", "size_gb must be non-negative")
+	}
+	if slots.SizeGB > 0 && intent != IntentCFSInfo {
+		return validationErr(ErrInvalidReadOnlySlot, "slots.size_gb", "size_gb is only valid for cfs_info")
+	}
+	if strings.TrimSpace(slots.Zone) != "" && intent != IntentCFSInfo && intent != IntentStockAvailability {
+		return validationErr(ErrInvalidReadOnlySlot, "slots.zone", "zone is only valid for cfs_info or stock_availability")
+	}
+	if slots.ChargeType != "" {
+		if !validReadOnlyChargeType(slots.ChargeType) {
+			return validationErr(ErrInvalidReadOnlySlot, "slots.charge_type", "unsupported charge_type")
+		}
+		if intent != IntentCFSInfo {
+			return validationErr(ErrInvalidReadOnlySlot, "slots.charge_type", "charge_type is only valid for cfs_info")
+		}
+	}
+	if slots.DetailLevel != "" {
+		if !validDetailLevel(slots.DetailLevel) {
+			return validationErr(ErrInvalidReadOnlySlot, "slots.detail_level", "unsupported detail level")
+		}
+		if intent != IntentGPUSpecsQuery {
+			return validationErr(ErrInvalidReadOnlySlot, "slots.detail_level", "detail_level is only valid for gpu_specs_query")
+		}
+	}
+	return nil
+}
+
+func intentAllowsSearchQuery(intent Intent) bool {
+	switch intent {
+	case IntentImageList, IntentModelRepositoryBrowse, IntentPricingQuery, IntentGPUSpecsQuery, IntentStockAvailability:
+		return true
+	default:
+		return false
+	}
+}
+
+func validListMode(mode ListMode) bool {
+	switch mode {
+	case ListModeAll, ListModeFiltered:
+		return true
+	default:
+		return false
+	}
+}
+
+func validPriceKind(kind PriceKind) bool {
+	switch kind {
+	case PriceKindAccount, PriceKindCatalog:
+		return true
+	default:
+		return false
+	}
+}
+
+func validCFSKind(kind CFSKind) bool {
+	switch kind {
+	case CFSKindList, CFSKindCreatePrice, CFSKindUpgradePrice, CFSKindRefund:
+		return true
+	default:
+		return false
+	}
+}
+
+func validReadOnlyChargeType(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "Month", "Year", "Day", "Dynamic", "Postpay", "Spot":
+		return true
+	default:
+		return false
+	}
+}
+
+func validDetailLevel(level DetailLevel) bool {
+	switch level {
+	case DetailLevelSummary, DetailLevelFull:
 		return true
 	default:
 		return false

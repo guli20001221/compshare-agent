@@ -100,7 +100,19 @@ func routeToRouteMetadata(route *routing.Route) RouteMetadata {
 	}
 	examples := make([]RoutePlannerExample, 0, len(route.PlannerExamples))
 	for _, ex := range route.PlannerExamples {
-		examples = append(examples, RoutePlannerExample{Question: ex.Question, Confidence: ex.Confidence, ImageSource: ImageSource(ex.ImageSource)})
+		examples = append(examples, RoutePlannerExample{
+			Question:    ex.Question,
+			Confidence:  ex.Confidence,
+			ImageSource: ImageSource(ex.ImageSource),
+			SearchQuery: ex.SearchQuery,
+			ListMode:    ListMode(ex.ListMode),
+			PriceKind:   PriceKind(ex.PriceKind),
+			CFSKind:     CFSKind(ex.CFSKind),
+			SizeGB:      ex.SizeGB,
+			Zone:        ex.Zone,
+			ChargeType:  ex.ChargeType,
+			DetailLevel: DetailLevel(ex.DetailLevel),
+		})
 	}
 	return RouteMetadata{
 		Name:              route.Name,

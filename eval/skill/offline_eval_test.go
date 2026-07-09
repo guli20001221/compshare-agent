@@ -64,6 +64,14 @@ type SkillCase struct {
 	// JSON number and a Go float compare equal.
 	ExpectedToolArgs    map[string]map[string]any `json:"expected_tool_args,omitempty"`
 	ExpectedImageSource string                    `json:"expected_image_source,omitempty"`
+	SearchQuery         string                    `json:"search_query,omitempty"`
+	ListMode            string                    `json:"list_mode,omitempty"`
+	PriceKind           string                    `json:"price_kind,omitempty"`
+	CFSKind             string                    `json:"cfs_kind,omitempty"`
+	SizeGB              int                       `json:"size_gb,omitempty"`
+	Zone                string                    `json:"zone,omitempty"`
+	ChargeType          string                    `json:"charge_type,omitempty"`
+	DetailLevel         string                    `json:"detail_level,omitempty"`
 	OverlappingGroup    string                    `json:"overlapping_group,omitempty"`
 	Tags                []string                  `json:"tags,omitempty"`
 }
@@ -190,6 +198,14 @@ func TestOfflineSkillEval(t *testing.T) {
 			if c.ExpectedImageSource != "" {
 				plan.Slots.ImageSource = intent.ImageSource(c.ExpectedImageSource)
 			}
+			plan.Slots.SearchQuery = c.SearchQuery
+			plan.Slots.ListMode = intent.ListMode(c.ListMode)
+			plan.Slots.PriceKind = intent.PriceKind(c.PriceKind)
+			plan.Slots.CFSKind = intent.CFSKind(c.CFSKind)
+			plan.Slots.SizeGB = c.SizeGB
+			plan.Slots.Zone = c.Zone
+			plan.Slots.ChargeType = c.ChargeType
+			plan.Slots.DetailLevel = intent.DetailLevel(c.DetailLevel)
 
 			// (1) routing pin: the intent derives exactly the expected skill.
 			derived := intent.DeriveSelectedSkills(plan)

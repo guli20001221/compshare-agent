@@ -320,7 +320,7 @@ func TestHandlePricingQuery_PassesMemoryAsMBToAPI(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentPricingQuery},
+		Plan:     IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "4090", PriceKind: PriceKindAccount}},
 		UserText: "4090 多少钱一小时",
 	})
 
@@ -390,12 +390,12 @@ func TestHandlePricingQuery_UserPriceUsesUserPriceTool(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentPricingQuery},
+		Plan:     IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "4090", PriceKind: PriceKindAccount}},
 		UserText: "4090 折后价是多少",
 	})
 
 	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
-	assert.Contains(t, result.Reply, "用户折后价")
+	assert.Contains(t, result.Reply, "当前账号价格")
 	assert.Contains(t, result.Reply, "¥1.58")
 	var userPriceCall *handlerExecCall
 	for i := range exec.calls {
@@ -443,7 +443,7 @@ func TestHandlePricingQuery_GenericPriceUsesUserPriceToolAndLabelsIt(t *testing.
 	handler := NewDemoHandler(exec)
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentPricingQuery},
+		Plan:     IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "4090", PriceKind: PriceKindAccount}},
 		UserText: "4090 多少钱",
 	})
 
@@ -487,7 +487,7 @@ func TestHandlePricingQuery_CatalogPriceUsesUserPriceListFields(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentPricingQuery},
+		Plan:     IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "4090", PriceKind: PriceKindCatalog}},
 		UserText: "4090 目录价是多少",
 	})
 
@@ -512,6 +512,48 @@ func TestHandlePricingQuery_CatalogPriceUsesUserPriceListFields(t *testing.T) {
 	for _, call := range exec.calls {
 		assert.NotContains(t, call.args, "Zone")
 	}
+}
+
+func TestHandlePricingQuery_CatalogKindComesFromSlot(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name": "4090",
+				"Zone": "cn-wlcb-01",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{
+								"Cpu":    float64(16),
+								"Memory": []any{float64(64)},
+							},
+						},
+					},
+				},
+			},
+		},
+		"PriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.23)},
+		},
+		"ListPriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.50)},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
+		Plan: IntentRoute{
+			Intent: IntentPricingQuery,
+			Slots:  Slots{SearchQuery: "4090", PriceKind: PriceKindCatalog},
+		},
+		UserText: "4090 多少钱",
+	})
+
+	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
+	assert.Contains(t, result.Reply, "标准价")
+	assert.Contains(t, result.Reply, "¥1.50")
+	assert.NotContains(t, result.Reply, "当前账号价格")
 }
 
 // TestHandlePricingQuery_OmitsZoneForNonWlcbCatalogZone guards the price API
@@ -542,7 +584,7 @@ func TestHandlePricingQuery_OmitsZoneForNonWlcbCatalogZone(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentPricingQuery},
+		Plan:     IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "5090", PriceKind: PriceKindCatalog}},
 		UserText: "5090 目录价包月多少钱",
 	})
 

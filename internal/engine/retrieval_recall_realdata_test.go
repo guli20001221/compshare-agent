@@ -57,7 +57,7 @@ func retrieveRealCorpusForTest(t *testing.T, query string) knowledge.RetrievalRe
 		Mode: knowledge.RetrievalModeBM25Only,
 		Now:  realCorpusRecallNow,
 	})
-	result := retriever.Retrieve(query, inferKnowledgeProductArea(query))
+	result := retriever.Retrieve(query, "")
 	require.False(t, result.Empty, "query %q returned no real-corpus hits", query)
 	require.NotEmpty(t, result.HitItems, "query %q returned no real-corpus hit items", query)
 	return result

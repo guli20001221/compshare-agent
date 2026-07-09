@@ -98,6 +98,14 @@ type RoutePlannerExample struct {
 	Question    string
 	Confidence  float64
 	ImageSource ImageSource
+	SearchQuery string
+	ListMode    ListMode
+	PriceKind   PriceKind
+	CFSKind     CFSKind
+	SizeGB      int
+	Zone        string
+	ChargeType  string
+	DetailLevel DetailLevel
 }
 
 // RoutingPromptFragments returns planner-prompt directives + one-shot
@@ -136,6 +144,14 @@ func routingPromptExampleJSON(meta RouteMetadata, example RoutePlannerExample) s
 		Metrics     []Metric    `json:"metrics"`
 		TimeWindow  *TimeWindow `json:"time_window"`
 		ImageSource ImageSource `json:"image_source,omitempty"`
+		SearchQuery string      `json:"search_query,omitempty"`
+		ListMode    ListMode    `json:"list_mode,omitempty"`
+		PriceKind   PriceKind   `json:"price_kind,omitempty"`
+		CFSKind     CFSKind     `json:"cfs_kind,omitempty"`
+		SizeGB      int         `json:"size_gb,omitempty"`
+		Zone        string      `json:"zone,omitempty"`
+		ChargeType  string      `json:"charge_type,omitempty"`
+		DetailLevel DetailLevel `json:"detail_level,omitempty"`
 	}
 	type promptPlan struct {
 		SchemaVersion string      `json:"schema_version"`
@@ -151,6 +167,14 @@ func routingPromptExampleJSON(meta RouteMetadata, example RoutePlannerExample) s
 			Metrics:     []Metric{},
 			TimeWindow:  nil,
 			ImageSource: ImageSource(example.ImageSource),
+			SearchQuery: example.SearchQuery,
+			ListMode:    example.ListMode,
+			PriceKind:   example.PriceKind,
+			CFSKind:     example.CFSKind,
+			SizeGB:      example.SizeGB,
+			Zone:        example.Zone,
+			ChargeType:  example.ChargeType,
+			DetailLevel: example.DetailLevel,
 		},
 		Confidence: example.Confidence,
 	}
@@ -209,17 +233,54 @@ func executeRouteActionInternal(ctx context.Context, h *DemoHandler, intentValue
 	return executeRouteAction(ctx, h, intentValue, action, args)
 }
 
+func slotSearchQuery(slots Slots) string {
+	return strings.TrimSpace(slots.SearchQuery)
+}
+
+func slotFilterQuery(slots Slots) string {
+	if slots.ListMode == ListModeAll {
+		return ""
+	}
+	return slotSearchQuery(slots)
+}
+
+func entryMatchesSlotQuery(entry map[string]any, query string, fields []string) bool {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return true
+	}
+	for _, field := range fields {
+		if strings.Contains(strings.ToLower(safeString(entry, field)), query) {
+			return true
+		}
+	}
+	return false
+}
+
+func anyVersionMatchesSlotQuery(versions []any, query string, fields []string) bool {
+	for _, item := range versions {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if entryMatchesSlotQuery(entry, query, fields) {
+			return true
+		}
+	}
+	return false
+}
+
 func handleGPUSpecsQuery(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "DescribeAvailableCompShareInstanceTypes"
 	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, map[string]any{})
 	if fb != nil {
 		return *fb
 	}
-	reply := renderGPUSpecsReply(raw, req.UserText)
+	reply := renderGPUSpecsReply(raw, req.Plan.Slots, req.UserText)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
-	env := buildGPUSpecsEnvelope(raw, req.UserText)
+	env := buildGPUSpecsEnvelope(raw, req.Plan.Slots, req.UserText)
 	result.Envelope = &env
 	result.RendererInputEnvelopeHashes = hashEnvelopeForRenderer(env)
 	return result
@@ -270,14 +331,15 @@ func handleStockAvailability(ctx context.Context, h *DemoHandler, req HandlerReq
 // names an unknown/unavailable GPU ("H200") falls through to the normal
 // not-found path rather than silently swapping to the prior model.
 func stockReferentText(req HandlerRequest, items []any) string {
-	if len(matchUserTextToInstanceTypeNames(req.UserText, items, false)) > 0 {
-		return req.UserText
+	search := slotSearchQuery(req.Plan.Slots)
+	if search != "" {
+		return search
 	}
-	if req.FallbackGpuModel == "" || userMentionedGPULikeToken(req.UserText) {
-		return req.UserText
+	if req.FallbackGpuModel == "" {
+		return ""
 	}
 	if len(matchUserTextToInstanceTypeNames(req.FallbackGpuModel, items, false)) == 0 {
-		return req.UserText
+		return ""
 	}
 	return req.FallbackGpuModel
 }
@@ -301,11 +363,11 @@ func handlePlatformImageList(ctx context.Context, h *DemoHandler, req HandlerReq
 	if fb != nil {
 		return *fb
 	}
-	reply := renderImageListReply(raw, "ImageSet", fieldOrder, req.UserText)
+	reply := renderImageListReply(raw, "ImageSet", fieldOrder, req.Plan.Slots)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
-	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.UserText, action, "platform"))
+	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.Plan.Slots, req.UserText, action, "platform"))
 	return result
 }
 
@@ -342,12 +404,12 @@ func handleModelRepositoryBrowse(ctx context.Context, h *DemoHandler, req Handle
 	if fb != nil {
 		return *fb
 	}
-	args := modelRepositoryArgsFromUserText(req.UserText, tagRaw)
+	args := modelRepositoryArgsFromSlots(req.Plan.Slots, tagRaw)
 	modelRaw, fb := executeRouteAction(ctx, h, req.Plan.Intent, modelAction, args)
 	if fb != nil {
 		return *fb
 	}
-	reply := renderModelRepositoryReply(modelRaw, tagRaw, req.UserText)
+	reply := renderModelRepositoryReply(modelRaw, tagRaw, req.Plan.Slots)
 	result := HandledResult(reply)
 	result.ToolAction = modelAction
 	result.ToolArgs = copyArgs(args)
@@ -361,25 +423,29 @@ func handleCustomImageList(ctx context.Context, h *DemoHandler, req HandlerReque
 	if fb != nil {
 		return *fb
 	}
-	reply := renderImageListReply(raw, "ImageSet", fieldOrder, req.UserText)
+	reply := renderImageListReply(raw, "ImageSet", fieldOrder, req.Plan.Slots)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
-	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.UserText, action, "custom"))
+	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.Plan.Slots, req.UserText, action, "custom"))
 	return result
 }
 
 func handleCommunityImageList(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "DescribeCommunityImages"
-	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, map[string]any{})
+	args := map[string]any{}
+	if query := slotSearchQuery(req.Plan.Slots); query != "" {
+		args["FuzzySearch"] = query
+	}
+	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, args)
 	if fb != nil {
 		return *fb
 	}
-	reply := renderCommunityImageReply(raw, req.UserText)
+	reply := renderCommunityImageReply(raw, req.Plan.Slots)
 	result := HandledResult(reply)
 	result.ToolAction = action
-	result.ToolArgs = copyArgs(map[string]any{})
-	setEnvelopeIfPopulated(&result, buildCommunityImageEnvelope(raw, req.UserText))
+	result.ToolArgs = copyArgs(args)
+	setEnvelopeIfPopulated(&result, buildCommunityImageEnvelope(raw, req.Plan.Slots, req.UserText))
 	return result
 }
 
@@ -390,7 +456,7 @@ func handleSharedImageList(ctx context.Context, h *DemoHandler, req HandlerReque
 	if fb != nil {
 		return *fb
 	}
-	reply := renderSharedImageListReply(raw, req.UserText)
+	reply := renderSharedImageListReply(raw, req.Plan.Slots)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
@@ -432,41 +498,6 @@ const (
 	communityVersionPerGroup = 3  // versions to show per CompshareImageGroup
 )
 
-// knownUnavailableGPUNames is a minimal list of GPU models confirmed to NOT be
-// offered by CompShare. Used to produce explicit "not provided" replies. Keep
-// this list intentionally small (no maintenance burden); the primary matching
-// vocabulary comes from the API response itself. Expand only when a business
-// owner confirms a new model belongs here.
-var knownUnavailableGPUNames = []string{"H100", "H200"}
-
-// cjkStopwords are multi-character CJK runs commonly seen in route queries
-// that should not become matchable keywords. We strip these from the user text
-// BEFORE tokenizing, since Go regexp + RE2 cannot segment Chinese without a
-// dictionary. After stripping, remaining CJK runs (proper nouns, image names)
-// survive as tokens.
-var cjkStopwords = []string{
-	// query verbs / structural words
-	"查询", "平台", "镜像", "列表", "有吗", "支持", "系统", "自制", "社区",
-	"官方", "什么", "哪些", "请问", "是否", "我的", "我自己", "上面", "下面",
-	"我有", "我账", "账下", "可以", "可不可以", "你们", "看下", "看看",
-	"我做的", "我创建", "列出", "所有", "全部", "都有",
-	// image-category modifiers (Q10 root cause): without these, queries like
-	// "我的自定义镜像有哪些" tokenize to ["自定义"] (len=1, non-empty) so
-	// isImageListAllIntent's `len(extractUserTokens) == 0` guard fails and the
-	// keyword filter then rejects every custom image name. Stripping these
-	// modifiers lets list-all detection fire correctly.
-	"自定义", "私有", "公共", "共享",
-	// zone / region / locale words (route handlers don't yet take Zone)
-	"机房", "地域", "可用区",
-	// common GPU question phrasing (multi-char, would otherwise survive
-	// tokenization as a single CJK run and match nothing — but the test
-	// surface expects them stripped so the remaining token set is clean)
-	"显存", "多大", "多少", "几张", "几张卡", "张卡", "几个", "配比", "配置",
-	"库存", "售罄", "价格", "价钱", "收费", "扣费", "还有", "没货",
-	// common image-list question filler
-	"哪种", "用过", "用什么", "好用", "适合",
-}
-
 // asciiStopwords applies to ASCII tokens (post-tokenization, post-lowercase).
 var asciiStopwords = map[string]struct{}{
 	"list": {}, "image": {}, "images": {}, "of": {}, "the": {}, "a": {},
@@ -484,20 +515,15 @@ var tokenSplitRegex = regexp.MustCompile(`[A-Za-z0-9_.]+|\p{Han}+`)
 // version-shaped) and remain useful as filter keywords.
 var pureNumericTokenRegex = regexp.MustCompile(`^\d+$`)
 
-// extractUserTokens tokenizes the user text and drops stopwords + 1-char noise.
-// Returns case-normalized lowercase tokens for downstream matching. Multi-char
-// CJK stopwords are removed by literal substring stripping before tokenization
-// (RE2 lacks Chinese segmentation, so dictionary lookup would be the next step
-// — kept out of L0 scope).
+// extractUserTokens tokenizes text and drops ASCII stopwords + 1-char noise.
+// It is retained only for API-vocabulary utility tests; route handlers use
+// router-provided read-only slots instead of deriving filters from the full
+// user sentence.
 func extractUserTokens(userText string) []string {
 	if strings.TrimSpace(userText) == "" {
 		return nil
 	}
-	cleaned := userText
-	for _, sw := range cjkStopwords {
-		cleaned = strings.ReplaceAll(cleaned, sw, " ")
-	}
-	raw := tokenSplitRegex.FindAllString(cleaned, -1)
+	raw := tokenSplitRegex.FindAllString(userText, -1)
 	out := make([]string, 0, len(raw))
 	seen := map[string]struct{}{}
 	for _, tok := range raw {
@@ -520,25 +546,6 @@ func extractUserTokens(userText string) []string {
 		}
 		seen[lower] = struct{}{}
 		out = append(out, lower)
-	}
-	return out
-}
-
-// detectKnownUnavailableGPUs returns names from knownUnavailableGPUNames that
-// appear (case-insensitively, word-bounded) in the user text. Word boundaries
-// avoid the same substring trap as matchUserTokensToAPINames — keeps the
-// behaviour consistent if knownUnavailableGPUNames ever gains a shorter
-// entry that could prefix another known name.
-func detectKnownUnavailableGPUs(userText string) []string {
-	if userText == "" {
-		return nil
-	}
-	upper := strings.ToUpper(userText)
-	out := []string{}
-	for _, name := range knownUnavailableGPUNames {
-		if containsAsWord(upper, name) {
-			out = append(out, name)
-		}
 	}
 	return out
 }
@@ -673,18 +680,10 @@ func matchUserTextToInstanceTypeNames(userText string, items []any, includeFamil
 	matched := matchUserTokensToAPINames(userText, apiNames)
 	hints := extractGPUMemoryHints(userText)
 	if len(hints) > 0 {
-		// Fail-closed: if the user named a GPU-shaped token but none of them
-		// matched a known API name, do NOT fall back to memory-only matching
-		// (that would surface a different GPU model with the same VRAM, e.g.
-		// "H200 96G" → H20_96G). The caller's renderStockReply path will then
-		// apply the known-unavailable prefix when appropriate.
-		if len(matched) == 0 && userMentionedGPULikeToken(userText) {
-			return nil
-		}
 		if memoryMatched := matchMemoryHintedInstanceTypeNames(hints, items, matched); len(memoryMatched) > 0 {
 			return memoryMatched
 		}
-		if len(matched) > 0 || userMentionedGPULikeToken(userText) {
+		if len(matched) > 0 {
 			return nil
 		}
 	}
@@ -833,124 +832,27 @@ func collectAPINamesFromInstanceTypes(items []any) []string {
 	return out
 }
 
-// userMentionedGPULikeToken returns true when the user text contains a token
-// shaped like a GPU model (letter prefix + digits, or 4-digit number with
-// optional GB suffix). Used to distinguish "user asked about a GPU but none
-// matched" from "user did not ask about a specific GPU".
 var gpuLikeTokenRegex = regexp.MustCompile(`(?i)\b([a-z]{1,3}\d{2,4}[a-z0-9_]*|\d{4}(?:_\d+g)?)\b`)
 
-func userMentionedGPULikeToken(userText string) bool {
-	if userText == "" {
-		return false
-	}
-	return gpuLikeTokenRegex.MatchString(userText)
-}
-
-func fullGPUSpecsRequest(userText string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(userText))
-	if normalized == "" {
-		return false
-	}
-	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(normalized)
-	hasFullQualifier := containsAny(compact, "所有", "全部", "完整", "全量", "每种") ||
-		containsAnyEnglishWord(normalized, "all", "full", "complete", "entire", "every")
-	hasSpecsTerm := containsAny(compact, "规格", "配置", "配比") ||
-		strings.Contains(normalized, "spec") ||
-		strings.Contains(normalized, "config") ||
-		strings.Contains(normalized, "machine size")
-	if hasFullQualifier && hasSpecsTerm {
-		return true
-	}
-	// Co-occurrence rule (PR #157, intent matrix smoke 2026-05-22): if the
-	// user mentions both a CPU-shaped token AND a memory-shaped token
-	// anywhere in the text, treat as a detailed request. Colloquial Chinese
-	// phrasings like "5090 几核 cpu 多大内存" / "A100 cpu 配多少 内存" /
-	// "4090 几核多少内存" don't hit any of the compound substring matches
-	// below but they're clearly asking for the Cpu+Memory breakdown that
-	// only shows in detailed mode.
-	//
-	// Known FP class (intentionally accepted; PR #157 review N2):
-	//   "我的实例 cpu 占用率高 内存也满了"  — really a monitor / diagnosis Q
-	//   "创建实例选什么 cpu 和 内存 配置"   — really a recommendation Q
-	//   "4090 cpu 推理 内存占用"             — really a perf Q
-	// These can still flip detailed=true here, but they reach this renderer
-	// only if the upstream planner already routed them to gpu_specs_query
-	// (the planner gate, not the keyword gate, is the actual scoping
-	// mechanism). If a future router change widens what reaches gpu_specs,
-	// revisit this rule. Test below locks the contained-damage assumption.
-	hasCPUToken := containsAny(compact, "cpu", "核数", "几核", "多少核", "vcpu") ||
-		containsAnyEnglishWord(normalized, "core", "cores")
-	hasMemToken := containsAny(compact, "内存", "memory", "ram", "几g内存", "多大内存", "多少内存") ||
-		containsAnyEnglishWord(normalized, "memory", "ram")
-	if hasCPUToken && hasMemToken {
-		return true
-	}
-	return containsAny(compact,
-		"cpu/内存",
-		"cpu内存",
-		"cpu和内存",
-		"cpu与内存",
-		"cpu及内存",
-		"cpu、内存",
-		"cpu核心和内存",
-		"cpu核数和内存",
-		"内存组合",
-		"配置组合",
-		"合法配置",
-		"可选配置",
-		"可用配置",
-	) || strings.Contains(normalized, "cpu/memory") ||
-		strings.Contains(normalized, "cpu memory") ||
-		strings.Contains(normalized, "memory options") ||
-		strings.Contains(normalized, "configuration options") ||
-		strings.Contains(normalized, "machine sizes")
-}
-
-func containsAny(s string, needles ...string) bool {
-	for _, needle := range needles {
-		if strings.Contains(s, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsAnyEnglishWord(s string, words ...string) bool {
-	fields := strings.FieldsFunc(s, func(r rune) bool {
-		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
-	})
-	for _, field := range fields {
-		for _, word := range words {
-			if field == word {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func renderGPUSpecsReply(raw map[string]any, userText string) string {
+func renderGPUSpecsReply(raw map[string]any, slots Slots, userText string) string {
 	items := mapSliceAt(raw, "AvailableInstanceTypes")
 	if len(items) == 0 {
 		return noGPUSpecsReply
 	}
-	matched := matchUserTextToInstanceTypeNames(userText, items, true)
-	unavailable := detectKnownUnavailableGPUs(userText)
+	query := slotSearchQuery(slots)
+	matched := matchUserTextToInstanceTypeNames(query, items, true)
 
 	var prefix string
 	filterTo := map[string]struct{}{}
-	if len(unavailable) > 0 {
-		prefix = strings.Join(unavailable, "、") + " 当前未在 CompShare 平台提供。以下是当前可售机型规格：\n"
-	}
 	if len(matched) > 0 {
 		for _, m := range matched {
 			filterTo[m] = struct{}{}
 		}
-	} else if len(unavailable) == 0 && userMentionedGPULikeToken(userText) {
+	} else if query != "" {
 		prefix = "未在当前可售机型里找到您提到的型号。以下是当前可售机型规格：\n"
 	}
 
-	detailed := fullGPUSpecsRequest(userText)
+	detailed := slots.DetailLevel == DetailLevelFull
 	lines := buildGPUSpecLines(items, filterTo, detailed)
 	if len(lines) == 0 {
 		if prefix != "" {
@@ -1022,14 +924,14 @@ func buildGPUSpecLines(items []any, filterTo map[string]struct{}, detailed bool)
 	return lines
 }
 
-func buildGPUSpecsEnvelope(raw map[string]any, userText string) envelope.Envelope {
+func buildGPUSpecsEnvelope(raw map[string]any, slots Slots, userText string) envelope.Envelope {
 	items := mapSliceAt(raw, "AvailableInstanceTypes")
-	matched := matchUserTextToInstanceTypeNames(userText, items, true)
+	matched := matchUserTextToInstanceTypeNames(slotSearchQuery(slots), items, true)
 	filterTo := map[string]struct{}{}
 	for _, m := range matched {
 		filterTo[m] = struct{}{}
 	}
-	detailed := fullGPUSpecsRequest(userText)
+	detailed := slots.DetailLevel == DetailLevelFull
 	entries := selectGPUSpecEntries(items, filterTo, detailed)
 
 	env := envelope.Envelope{
@@ -1100,7 +1002,6 @@ func buildGPUSpecsEnvelope(raw map[string]any, userText string) envelope.Envelop
 func buildStockEnvelope(raw map[string]any, userText string) envelope.Envelope {
 	items := mapSliceAt(raw, "AvailableInstanceTypes")
 	matched := matchUserTextToInstanceTypeNames(userText, items, false)
-	unavailable := detectKnownUnavailableGPUs(userText)
 	filterTo := map[string]struct{}{}
 	for _, m := range matched {
 		filterTo[m] = struct{}{}
@@ -1118,11 +1019,6 @@ func buildStockEnvelope(raw map[string]any, userText string) envelope.Envelope {
 		envelope.Fact{Key: "user_question", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
 		envelope.Fact{Key: "disclaimer", Label: "Disclaimer", Value: soldOutDisclaimer, Source: envelope.FactSourceComputed},
 	)
-	if len(unavailable) > 0 {
-		env.Computed = append(env.Computed,
-			envelope.Fact{Key: "unavailable_models", Label: "Unavailable models", Value: strings.Join(unavailable, "、"), Source: envelope.FactSourceComputed},
-		)
-	}
 
 	seenNames := map[string]struct{}{}
 	for _, item := range items {
@@ -1156,7 +1052,7 @@ func buildStockEnvelope(raw map[string]any, userText string) envelope.Envelope {
 			envelope.Fact{SubjectID: subjectID, Key: "status", Label: "状态", Value: status, Source: envelope.FactSourceAPI},
 		)
 	}
-	if len(matched) == 0 && len(unavailable) == 0 && userMentionedGPULikeToken(userText) {
+	if len(matched) == 0 && strings.TrimSpace(userText) != "" {
 		env.Computed = append(env.Computed,
 			envelope.Fact{Key: "no_match_hint", Label: "未找到匹配", Value: "未在当前可售机型里找到您提到的型号", Source: envelope.FactSourceComputed},
 		)
@@ -1175,12 +1071,9 @@ func setEnvelopeIfPopulated(result *HandlerResult, env envelope.Envelope) {
 	result.RendererInputEnvelopeHashes = hashEnvelopeForRenderer(env)
 }
 
-func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []string, userText string, action string, category string) envelope.Envelope {
+func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []string, slots Slots, userText string, action string, category string) envelope.Envelope {
 	items := mapSliceAt(raw, listKey)
-	keywords := imageListKeywords(userText)
-	if isImageListAllIntent(userText) {
-		keywords = nil
-	}
+	query := slotFilterQuery(slots)
 	matchFields := []string{}
 	for _, f := range fieldOrder {
 		switch f {
@@ -1194,8 +1087,8 @@ func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []str
 		if !ok {
 			continue
 		}
-		if len(keywords) > 0 && len(matchFields) > 0 {
-			if !entryMatchesAnyKeyword(entry, keywords, matchFields) {
+		if query != "" && len(matchFields) > 0 {
+			if !entryMatchesSlotQuery(entry, query, matchFields) {
 				continue
 			}
 		}
@@ -1256,29 +1149,18 @@ func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []str
 	return env
 }
 
-func buildCommunityImageEnvelope(raw map[string]any, userText string) envelope.Envelope {
+func buildCommunityImageEnvelope(raw map[string]any, slots Slots, userText string) envelope.Envelope {
 	groups := mapSliceAt(raw, "CompshareImageGroup")
 	if len(groups) == 0 {
 		return buildImageListEnvelope(raw, "ImageSet",
-			[]string{"Name", "Author", "CompShareImageId"}, userText,
+			[]string{"Name", "Author", "CompShareImageId"}, slots, userText,
 			"DescribeCommunityImages", "community")
 	}
-	keywords := imageListKeywords(userText)
-	if isImageListAllIntent(userText) {
-		keywords = nil
-	}
-	matchFields := []string{"Name", "ImageName", "Author"}
 	filtered := make([]map[string]any, 0, len(groups))
 	for _, item := range groups {
 		entry, ok := item.(map[string]any)
 		if !ok {
 			continue
-		}
-		if len(keywords) > 0 {
-			if !entryMatchesAnyKeyword(entry, keywords, matchFields) &&
-				!anyVersionMatches(mapSliceAt(entry, "Data"), keywords, matchFields) {
-				continue
-			}
 		}
 		filtered = append(filtered, entry)
 	}
@@ -1471,18 +1353,14 @@ func renderStockReply(raw map[string]any, userText string) string {
 		return noStockReply
 	}
 	matched := matchUserTextToInstanceTypeNames(userText, items, false)
-	unavailable := detectKnownUnavailableGPUs(userText)
 
 	var prefix string
 	filterTo := map[string]struct{}{}
-	if len(unavailable) > 0 {
-		prefix = strings.Join(unavailable, "、") + " 当前未在 CompShare 平台提供。以下是当前可售机型库存：\n"
-	}
 	if len(matched) > 0 {
 		for _, m := range matched {
 			filterTo[m] = struct{}{}
 		}
-	} else if len(unavailable) == 0 && userMentionedGPULikeToken(userText) {
+	} else if strings.TrimSpace(userText) != "" {
 		prefix = "未在当前可售机型里找到您提到的型号。以下是当前可售机型库存：\n"
 	}
 
@@ -1554,7 +1432,7 @@ func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req Ha
 	// to "zones the user already has instances in" was previously done
 	// here but silently hid cross-region inventory in multi-region
 	// accounts, so it was removed (PR-δ0).
-	entries := matchedNormalStockEntries(stockRaw, req.UserText)
+	entries := matchedNormalStockEntries(stockRaw, slotSearchQuery(req.Plan.Slots))
 	if len(entries) == 0 {
 		return "", false, nil
 	}
@@ -1563,10 +1441,10 @@ func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req Ha
 		return "", false, &result
 	}
 	supportZones := fetchStockSupportZones(ctx, h)
-	if filter := stockZoneFilterFromText(req.UserText, supportZones); len(filter) > 0 {
+	if filter := stockZoneFilterFromSlot(req.Plan.Slots.Zone, supportZones); len(filter) > 0 {
 		entries = filterStockEntriesByZone(entries, filter)
 		if len(entries) == 0 {
-			return renderStockReply(stockRaw, req.UserText) + "\n未在你指定的可用区里找到该机型的开售信息。", true, nil
+			return renderStockReply(stockRaw, slotSearchQuery(req.Plan.Slots)) + "\n未在你指定的可用区里找到该机型的开售信息。", true, nil
 		}
 	}
 	entriesByModel, modelOrder := groupStockEntriesByModel(entries)
@@ -1652,34 +1530,28 @@ func fetchStockSupportZones(ctx context.Context, h *DemoHandler) []zones.ZoneInf
 	return list
 }
 
-func stockZoneFilterFromText(userText string, supportZones []zones.ZoneInfo) map[string]struct{} {
+func stockZoneFilterFromSlot(zoneText string, supportZones []zones.ZoneInfo) map[string]struct{} {
 	if len(supportZones) == 0 {
 		return nil
 	}
-	if exact, ok := zones.ExactZone(supportZones, userText); ok {
-		return map[string]struct{}{strings.ToLower(exact): {}}
-	}
-	squashed := squashStockZoneText(userText)
-	out := map[string]struct{}{}
-	for _, z := range supportZones {
-		if z.Zone != "" && strings.Contains(squashed, strings.ToLower(z.Zone)) {
-			out[strings.ToLower(z.Zone)] = struct{}{}
-			continue
-		}
-		if z.Region != "" && strings.Contains(squashed, strings.ToLower(z.Region)) {
-			out[strings.ToLower(z.Zone)] = struct{}{}
-			continue
-		}
-	}
-	for prefix, zone := range stockUniqueZoneDescribePrefixes(supportZones) {
-		if strings.Contains(squashed, prefix) {
-			out[strings.ToLower(zone)] = struct{}{}
-		}
-	}
-	if len(out) == 0 {
+	zoneText = strings.TrimSpace(zoneText)
+	if zoneText == "" {
 		return nil
 	}
-	return out
+	if exact, ok := zones.ExactZone(supportZones, zoneText); ok {
+		return map[string]struct{}{strings.ToLower(exact): {}}
+	}
+	for _, z := range supportZones {
+		if z.Zone == "" {
+			continue
+		}
+		if strings.EqualFold(zoneText, z.Zone) ||
+			(z.Describe != "" && strings.EqualFold(zoneText, z.Describe)) ||
+			(z.Region != "" && strings.EqualFold(zoneText, z.Region)) {
+			return map[string]struct{}{strings.ToLower(z.Zone): {}}
+		}
+	}
+	return nil
 }
 
 func filterStockEntriesByZone(entries []stockInstanceTypeEntry, filter map[string]struct{}) []stockInstanceTypeEntry {
@@ -1693,57 +1565,6 @@ func filterStockEntriesByZone(entries []stockInstanceTypeEntry, filter map[strin
 		}
 	}
 	return out
-}
-
-func stockZoneDescribePrefixes(describe string) []string {
-	describe = squashStockZoneText(describe)
-	if describe == "" {
-		return nil
-	}
-	runes := []rune(describe)
-	if len(runes) < 2 {
-		return nil
-	}
-	out := []string{}
-	seen := map[string]struct{}{}
-	for n := len(runes); n >= 2; n-- {
-		prefix := string(runes[:n])
-		if _, ok := seen[prefix]; ok {
-			continue
-		}
-		seen[prefix] = struct{}{}
-		out = append(out, prefix)
-	}
-	return out
-}
-
-func stockUniqueZoneDescribePrefixes(supportZones []zones.ZoneInfo) map[string]string {
-	prefixZones := map[string]map[string]struct{}{}
-	for _, z := range supportZones {
-		if z.Zone == "" {
-			continue
-		}
-		for _, prefix := range stockZoneDescribePrefixes(z.Describe) {
-			if prefixZones[prefix] == nil {
-				prefixZones[prefix] = map[string]struct{}{}
-			}
-			prefixZones[prefix][strings.ToLower(z.Zone)] = struct{}{}
-		}
-	}
-	out := map[string]string{}
-	for prefix, zones := range prefixZones {
-		if len(zones) != 1 {
-			continue
-		}
-		for zone := range zones {
-			out[prefix] = zone
-		}
-	}
-	return out
-}
-
-func squashStockZoneText(s string) string {
-	return strings.ToLower(strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(strings.TrimSpace(s)))
 }
 
 func matchedNormalStockEntries(raw map[string]any, userText string) []stockInstanceTypeEntry {
@@ -1790,73 +1611,6 @@ func matchedNormalStockEntries(raw map[string]any, userText string) []stockInsta
 		})
 	}
 	return out
-}
-
-// isImageListAllIntent returns true when the user is asking for a full
-// listing rather than a specific image — phrases like "有什么/有哪些/列出/
-// 全部/我的镜像/list all". When this fires, image renderers should skip the
-// keyword filter entirely so the result set passes through rather than
-// returning the cryptic "未找到匹配的镜像" against non-empty data.
-// PR #157, intent matrix smoke 2026-05-22.
-//
-// Specific-name guard (PR #157 review N2): if the user *also* names a
-// concrete image-family / version, the user wants that filter applied
-// even though they used a list-all-shaped phrase. "我的 ubuntu 镜像" /
-// "看看 cuda 12.8 镜像" intent is "find specific", not "list everything".
-// In that case return false so the existing substring filter runs.
-func isImageListAllIntent(userText string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(userText))
-	if normalized == "" {
-		return false
-	}
-	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(normalized)
-	// Chinese colloquial list-all triggers.
-	hasListAllTrigger := containsAny(compact,
-		"有什么", "有哪些", "都有什么", "都有哪些",
-		"列出", "列一下", "列下", "列表", "看看", "看下",
-		"全部", "所有", "都有",
-		"我做的", "我的", "我创建", "我自己",
-	)
-	if !hasListAllTrigger {
-		// English / pinyin variants.
-		hasListAllTrigger = strings.Contains(normalized, "list all") ||
-			strings.Contains(normalized, "show all") ||
-			strings.Contains(normalized, "show me all") ||
-			strings.Contains(normalized, "what images") ||
-			strings.Contains(normalized, "available images") ||
-			strings.Contains(normalized, "my images")
-	}
-	if !hasListAllTrigger {
-		return false
-	}
-	// Specific-name guard: list-all wording + a concrete image family,
-	// version, or any remaining non-filler token means "find specific", not
-	// "list everything". The token check matters for user/custom/community
-	// image names we cannot pre-enumerate, e.g. "看看 SD WebUI 镜像" or
-	// "我的训练镜像".
-	return !hasSpecificImageToken(normalized) && len(extractUserTokens(userText)) == 0
-}
-
-// hasSpecificImageToken is the negative guard for list-all detection.
-// Returns true when the user text names a concrete image family or
-// version, in which case the substring filter must run instead of
-// bypassing.
-var imageVersionRegex = regexp.MustCompile(`(?:\bv?\d+\.\d+(?:\.\d+)?\b)`)
-
-func hasSpecificImageToken(normalized string) bool {
-	// L0 image family vocabulary — names shipped on platform as of 2026-05.
-	// Stop-grow ceiling: ≤12 entries; if it exceeds, replace with a
-	// fuzzy-match against the live DescribeCompShareImages Name field.
-	for _, fam := range []string{
-		"ubuntu", "windows", "cuda", "pytorch", "vllm",
-		"ollama", "sglang", "comfyui", "isaac", "dify",
-		"ragflow", "rocky",
-	} {
-		if strings.Contains(normalized, fam) {
-			return true
-		}
-	}
-	return imageVersionRegex.MatchString(normalized)
 }
 
 func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string, supportZones []zones.ZoneInfo) map[string]any {
@@ -2329,35 +2083,6 @@ const imageModelBrowseDisplayCap = 10
 // "共 N 个" note inviting a keyword filter.
 const imageListDisplayCap = imageModelBrowseDisplayCap
 
-func imageListKeywords(userText string) []string {
-	keywords := extractUserTokens(userText)
-	lower := strings.ToLower(userText)
-	add := func(values ...string) {
-		seen := map[string]struct{}{}
-		for _, k := range keywords {
-			seen[k] = struct{}{}
-		}
-		for _, value := range values {
-			value = strings.ToLower(strings.TrimSpace(value))
-			if value == "" {
-				continue
-			}
-			if _, ok := seen[value]; ok {
-				continue
-			}
-			seen[value] = struct{}{}
-			keywords = append(keywords, value)
-		}
-	}
-	if strings.Contains(lower, "pytorch") || strings.Contains(lower, "torch") {
-		add("torch")
-	}
-	if strings.Contains(userText, "数字人") {
-		add("数字人", "livetalking", "视频")
-	}
-	return keywords
-}
-
 // imageDisplaySkipFields are the raw-id / redundant-name keys the clean image
 // display intentionally OMITS: the name is shown once up front (bestImageName) and
 // the raw CompShareImageId is dropped from the default view (用户按名称引用即可; the
@@ -2398,21 +2123,12 @@ func formatImageDisplayLine(entry map[string]any, fieldOrder []string) string {
 	return strings.Join(parts, ", ")
 }
 
-func renderImageListReply(raw map[string]any, listKey string, fieldOrder []string, userText string) string {
+func renderImageListReply(raw map[string]any, listKey string, fieldOrder []string, slots Slots) string {
 	items := mapSliceAt(raw, listKey)
 	if len(items) == 0 {
 		return noImageListReply
 	}
-	keywords := imageListKeywords(userText)
-	// PR #157 (intent matrix smoke 2026-05-22): list-all bypass. When the
-	// user explicitly asks "what's available" / "show me everything" /
-	// "my images" with no specific image name, the keyword filter strips
-	// to noise tokens and reports "未找到匹配的镜像" against 39 real images.
-	// Treat list-all intent as "no effective filter": skip the keyword
-	// match step entirely so the full result set falls through.
-	if isImageListAllIntent(userText) {
-		keywords = nil
-	}
+	query := slotFilterQuery(slots)
 	// Match keywords against name-like fields only (not status/id/type).
 	matchFields := []string{}
 	for _, f := range fieldOrder {
@@ -2428,16 +2144,16 @@ func renderImageListReply(raw map[string]any, listKey string, fieldOrder []strin
 		if !ok {
 			continue
 		}
-		if len(keywords) > 0 && len(matchFields) > 0 {
-			if !entryMatchesAnyKeyword(entry, keywords, matchFields) {
+		if query != "" && len(matchFields) > 0 {
+			if !entryMatchesSlotQuery(entry, query, matchFields) {
 				continue
 			}
 		}
 		filtered = append(filtered, entry)
 	}
-	// "keywords > 0 + 0 matches" -> explicit not-found, do not silently fall
+	// "query + 0 matches" -> explicit not-found, do not silently fall
 	// through to the full list (that's what confused users in round 1 smoke).
-	if len(keywords) > 0 && len(filtered) == 0 {
+	if query != "" && len(filtered) == 0 {
 		return noImageListNoMatchReply
 	}
 	lines := make([]string, 0, imageListDisplayCap)
@@ -2482,15 +2198,16 @@ func renderImageTagCatalogReply(raw map[string]any) string {
 	return "镜像标签分类:\n" + strings.Join(lines, "\n")
 }
 
-func modelRepositoryArgsFromUserText(userText string, tagRaw map[string]any) map[string]any {
+func modelRepositoryArgsFromSlots(slots Slots, tagRaw map[string]any) map[string]any {
 	args := map[string]any{}
-	matchedTags := matchModelRepositoryTags(userText, uniqueStrings(stringSliceAt(tagRaw, "Tags")))
+	query := slotSearchQuery(slots)
+	matchedTags := matchModelRepositoryTags(query, uniqueStrings(stringSliceAt(tagRaw, "Tags")))
 	if len(matchedTags) > 0 {
 		args["tags"] = strings.Join(limitStrings(matchedTags, 3), ",")
 		return args
 	}
-	if name := modelRepositoryNameQuery(userText); name != "" {
-		args["name"] = name
+	if query != "" && slots.ListMode != ListModeAll {
+		args["name"] = strings.ToLower(query)
 	}
 	return args
 }
@@ -2520,20 +2237,6 @@ func matchModelRepositoryTags(userText string, tags []string) []string {
 	return matched
 }
 
-func modelRepositoryNameQuery(userText string) string {
-	for _, tok := range extractUserTokens(userText) {
-		if !containsASCIIAlpha(tok) {
-			continue
-		}
-		switch tok {
-		case "model", "models", "repo", "repository", "huggingface", "hf":
-			continue
-		}
-		return tok
-	}
-	return ""
-}
-
 func containsASCIIAlpha(value string) bool {
 	for _, r := range value {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
@@ -2543,10 +2246,10 @@ func containsASCIIAlpha(value string) bool {
 	return false
 }
 
-func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, userText string) string {
+func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, slots Slots) string {
 	tags := uniqueStrings(stringSliceAt(tagRaw, "Tags"))
 	models := mapSliceAt(modelRaw, "Models")
-	filtered := filterModelRepositoryModels(models, userText)
+	filtered := filterModelRepositoryModels(models, slots)
 	sections := []string{}
 	if len(tags) > 0 {
 		sections = append(sections, "模型仓库标签: "+strings.Join(limitStrings(tags, 20), "、"))
@@ -2604,7 +2307,7 @@ func modelRepositoryGuidanceFooter(found bool) string {
 	}, "\n")
 }
 
-func filterModelRepositoryModels(models []any, userText string) []map[string]any {
+func filterModelRepositoryModels(models []any, slots Slots) []map[string]any {
 	out := make([]map[string]any, 0, len(models))
 	for _, item := range models {
 		entry, ok := item.(map[string]any)
@@ -2616,34 +2319,20 @@ func filterModelRepositoryModels(models []any, userText string) []map[string]any
 		}
 		out = append(out, entry)
 	}
-	if len(out) == 0 || isModelRepositoryListAllIntent(userText) {
+	if len(out) == 0 || slots.ListMode == ListModeAll {
 		return out
 	}
-	keywords := extractUserTokens(userText)
-	if len(keywords) == 0 {
+	query := slotSearchQuery(slots)
+	if query == "" {
 		return out
 	}
 	filtered := make([]map[string]any, 0, len(out))
 	for _, entry := range out {
-		if entryMatchesAnyKeyword(entry, keywords, []string{"Name", "Path", "Tag"}) {
+		if entryMatchesSlotQuery(entry, query, []string{"Name", "Path", "Tag"}) {
 			filtered = append(filtered, entry)
 		}
 	}
 	return filtered
-}
-
-func isModelRepositoryListAllIntent(userText string) bool {
-	text := strings.ToLower(strings.TrimSpace(userText))
-	if text == "" {
-		return false
-	}
-	hasModelWord := strings.Contains(text, "模型") || strings.Contains(text, "model")
-	hasCatalogWord := strings.Contains(text, "仓库") || strings.Contains(text, "库") ||
-		strings.Contains(text, "列表") || strings.Contains(text, "哪些") ||
-		strings.Contains(text, "有什么") || strings.Contains(text, "可以用") ||
-		strings.Contains(text, "标签") || strings.Contains(text, "分类") ||
-		strings.Contains(text, "repo") || strings.Contains(text, "repository")
-	return hasModelWord && hasCatalogWord
 }
 
 func buildModelRepositoryLine(entry map[string]any) string {
@@ -2656,37 +2345,20 @@ func buildModelRepositoryLine(entry map[string]any) string {
 	return strings.Join(parts, ", ")
 }
 
-func renderCommunityImageReply(raw map[string]any, userText string) string {
+func renderCommunityImageReply(raw map[string]any, slots Slots) string {
 	groups := mapSliceAt(raw, "CompshareImageGroup")
 	if len(groups) == 0 {
 		// Fallback: some responses use a flat ImageSet shape.
 		return renderImageListReply(raw, "ImageSet",
-			[]string{"Name", "Author", "CompShareImageId"}, userText)
+			[]string{"Name", "Author", "CompShareImageId"}, slots)
 	}
-	keywords := imageListKeywords(userText)
-	// PR #157: same list-all bypass as renderImageListReply.
-	if isImageListAllIntent(userText) {
-		keywords = nil
-	}
-	matchFields := []string{"Name", "ImageName", "Author"}
-
 	filtered := make([]map[string]any, 0, len(groups))
 	for _, item := range groups {
 		entry, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		if len(keywords) > 0 {
-			// Match keywords against group-level Name/Author or any version's Name/Author.
-			if !entryMatchesAnyKeyword(entry, keywords, matchFields) &&
-				!anyVersionMatches(mapSliceAt(entry, "Data"), keywords, matchFields) {
-				continue
-			}
-		}
 		filtered = append(filtered, entry)
-	}
-	if len(keywords) > 0 && len(filtered) == 0 {
-		return noImageListNoMatchReply
 	}
 
 	filtered = dedupeCommunityImageGroups(filtered)
@@ -2783,27 +2455,24 @@ func dedupeCommunityImageGroups(groups []map[string]any) []map[string]any {
 	return out
 }
 
-func renderSharedImageListReply(raw map[string]any, userText string) string {
+func renderSharedImageListReply(raw map[string]any, slots Slots) string {
 	items := mapSliceAt(raw, "ImageSet")
 	if len(items) == 0 {
 		return "未获取到共享给你的镜像。"
 	}
-	keywords := extractUserTokens(userText)
-	if isSharedImageListAllIntent(userText) {
-		keywords = nil
-	}
+	query := slotFilterQuery(slots)
 	filtered := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		entry, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		if len(keywords) > 0 && !entryMatchesAnyKeyword(entry, keywords, []string{"Name", "Description", "CompShareImageId", "ImageType", "Status"}) {
+		if query != "" && !entryMatchesSlotQuery(entry, query, []string{"Name", "Description", "CompShareImageId", "ImageType", "Status"}) {
 			continue
 		}
 		filtered = append(filtered, entry)
 	}
-	if len(keywords) > 0 && len(filtered) == 0 {
+	if query != "" && len(filtered) == 0 {
 		return "未找到匹配的共享镜像。"
 	}
 	lines := []string{}
@@ -2825,14 +2494,6 @@ func renderSharedImageListReply(raw map[string]any, userText string) string {
 		prefix += "（共 " + total + " 个）"
 	}
 	return prefix + ":\n" + strings.Join(lines, "\n")
-}
-
-func isSharedImageListAllIntent(userText string) bool {
-	text := strings.TrimSpace(userText)
-	return strings.Contains(text, "共享") && strings.Contains(text, "镜像") &&
-		(strings.Contains(text, "给我") || strings.Contains(text, "我的") ||
-			strings.Contains(text, "别人") || strings.Contains(text, "他人") ||
-			strings.Contains(text, "收到"))
 }
 
 func buildSharedImageLine(entry map[string]any) string {

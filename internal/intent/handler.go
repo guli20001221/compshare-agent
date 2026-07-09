@@ -497,10 +497,6 @@ var monitorHistoryLoc = func() *time.Location {
 
 var relativeMonitorWindowRE = regexp.MustCompile(`(?i)(?:过去|最近|近|past|last|previous)\s*(\d+)\s*([a-z]+|分钟|分|小时|时)`)
 
-var yesterdayClockRangeRE = regexp.MustCompile(`昨天\s*(\d{1,2})(?:\s*(?::|点|时)\s*(\d{1,2})?)?\s*(?:到|至|-|~|～)\s*(\d{1,2})(?:\s*(?::|点|时)\s*(\d{1,2})?)?`)
-
-var unparsedSpecificMonitorClockRangeRE = regexp.MustCompile(`(?i)(?:昨天|今天|上午|下午|晚上|中午)[^0-9]{0,8}\d{1,2}\s*(?::|点|时)\s*\d{0,2}[^0-9]{0,8}(?:到|至|~|～|-)[^0-9]{0,12}(?:(?:昨天|今天|上午|下午|晚上|中午)[^0-9]{0,8})?\d{1,2}\s*(?::|点|时)\s*\d{0,2}`)
-
 func resolveMonitorHistoryWindow(window *TimeWindow) (int64, int64, bool) {
 	if window == nil {
 		return 0, 0, false
@@ -537,56 +533,6 @@ func resolveMonitorHistoryWindow(window *TimeWindow) (int64, int64, bool) {
 		return 0, 0, false
 	}
 	return start.Unix(), end.Unix(), true
-}
-
-func ResolveMonitorHistoryWindowFromUserText(text string) (int64, int64, bool) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return 0, 0, false
-	}
-	if start, end, ok := parseAbsoluteMonitorWindow(text); ok {
-		if end.After(start) && end.Sub(start) <= 24*time.Hour {
-			return start.Unix(), end.Unix(), true
-		}
-	}
-	if m := yesterdayClockRangeRE.FindStringSubmatch(text); len(m) == 5 {
-		now := monitorNowFunc().In(monitorHistoryLoc)
-		startHour, err1 := strconv.Atoi(m[1])
-		startMin := atoiDefault(m[2], 0)
-		endHour, err2 := strconv.Atoi(m[3])
-		endMin := atoiDefault(m[4], 0)
-		if err1 == nil && err2 == nil && validClock(startHour, startMin) && validClock(endHour, endMin) {
-			day := startOfDay(now).AddDate(0, 0, -1)
-			start := day.Add(time.Duration(startHour)*time.Hour + time.Duration(startMin)*time.Minute)
-			end := day.Add(time.Duration(endHour)*time.Hour + time.Duration(endMin)*time.Minute)
-			if end.After(start) && end.Sub(start) <= 24*time.Hour {
-				return start.Unix(), end.Unix(), true
-			}
-		}
-		return 0, 0, false
-	}
-	if ContainsUnparsedSpecificMonitorClockRange(text) {
-		return 0, 0, false
-	}
-	if strings.Contains(text, "昨天") {
-		day := startOfDay(monitorNowFunc().In(monitorHistoryLoc)).AddDate(0, 0, -1)
-		return day.Unix(), day.Add(24 * time.Hour).Unix(), true
-	}
-	if strings.Contains(text, "今天") {
-		now := monitorNowFunc().In(monitorHistoryLoc)
-		day := startOfDay(now)
-		if now.After(day) {
-			return day.Unix(), now.Unix(), true
-		}
-	}
-	if start, end, ok := parseRelativeMonitorWindow(text, monitorNowFunc().In(monitorHistoryLoc)); ok && end.After(start) && end.Sub(start) <= 24*time.Hour {
-		return start.Unix(), end.Unix(), true
-	}
-	return 0, 0, false
-}
-
-func ContainsUnparsedSpecificMonitorClockRange(text string) bool {
-	return unparsedSpecificMonitorClockRangeRE.FindStringIndex(text) != nil
 }
 
 func atoiDefault(value string, fallback int) int {

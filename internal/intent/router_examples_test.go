@@ -369,7 +369,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // (e.g. "暂无资源" / Normal vs capacity) route to knowledge_qa, while named GPU
 // live stock stays stock_availability; Coding Plan package delete/cancel/refund
 // routes to knowledge_qa instead of instance lifecycle.
-const systemPromptSHA256Baseline = "4187cafb440e81bff6fa2ae13140f816b5f845b0c26e255701f44061e512c627"
+const systemPromptSHA256Baseline = "f4cc35bd749cca4089ef22fb2c4bb858d9bdc8dba2fe14231672064bac08fcee"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
