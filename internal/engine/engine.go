@@ -5220,8 +5220,10 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// availability query returns nothing and the failure gets narrated into a
 	// fabricated "V100 下架" reply.
 	if action == "CreateInstanceWorkflow" {
-		if gt, ok := args["GpuType"].(string); ok && gt != "" {
-			args["GpuType"] = canonicalCreateGPUType(gt, e.lastUserMsg)
+		if explicit := knowledge.ExplicitGPUTypeFromText(e.lastUserMsg); explicit != "" {
+			args["GpuType"] = explicit
+		} else if gt, ok := args["GpuType"].(string); ok && gt != "" {
+			args["GpuType"] = knowledge.CanonicalGPUType(gt)
 		}
 		if gt, _ := args["GpuType"].(string); gt != "" {
 			if e.guidedCreate && e.confirmEditsFn != nil {
@@ -5349,19 +5351,6 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 
 	b, _ := json.Marshal(result)
 	return string(b)
-}
-
-func canonicalCreateGPUType(gpuType, userMsg string) string {
-	canonical := knowledge.CanonicalGPUType(gpuType)
-	if strings.EqualFold(canonical, "4090") && createTextMentions409048G(userMsg) {
-		return "4090_48G"
-	}
-	return canonical
-}
-
-func createTextMentions409048G(text string) bool {
-	token := strings.NewReplacer(" ", "", "\t", "", "_", "", "-", "").Replace(strings.ToUpper(strings.TrimSpace(text)))
-	return strings.Contains(token, "409048G") || strings.Contains(token, "RTX409048G")
 }
 
 func (e *Engine) workflowTargetIsTrusted(action, uHostId string, targetAutoFilled bool) bool {
