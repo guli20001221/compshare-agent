@@ -69,6 +69,7 @@ type AgentConfig struct {
 	Retrieval RetrievalConfig `yaml:"retrieval"`
 	Trace     TraceConfig     `yaml:"trace"`
 	Planner   PlannerConfig   `yaml:"planner"`
+	SSHOps    SSHOpsConfig    `yaml:"ssh_ops"`
 }
 
 // HTTPConfig holds settings for the HTTP server mode (compshare-agent server).

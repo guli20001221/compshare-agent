@@ -1016,3 +1016,51 @@ func TestRuntimeGetenv_NilConfigReturnsBase(t *testing.T) {
 	getenv := cfg.RuntimeGetenv(base)
 	assert.Equal(t, "from-base", getenv("ANYTHING"))
 }
+
+// The SSH-ops lane must be switchable from config.yaml ALONE: production deploys a
+// single YAML and exports no env file, so a lane reachable only via an env var
+// could never be turned on there. An omitted section must still fall through to
+// the env var, which — unset — leaves the lane off, preserving the default.
+func TestRuntimeGetenv_SSHOpsSectionIsYAMLSettable(t *testing.T) {
+	cfg := &Config{Agent: AgentConfig{SSHOps: SSHOpsConfig{
+		Enabled:    boolPtr(true),
+		GatewayURL: "http://10.0.0.7:3456",
+		Model:      "deepseek-v4-pro",
+		// Python + HarnessPath omitted → env fallback, then cmd/server.go defaults
+	}}}
+	getenv := cfg.RuntimeGetenv(func(key string) string {
+		if key == "COMPSHARE_SSH_OPS_PYTHON" {
+			return "/opt/py/bin/python3"
+		}
+		return ""
+	})
+
+	assert.Equal(t, "1", getenv("COMPSHARE_SSH_OPS"), "YAML enabled:true turns the lane on with no env var")
+	assert.Equal(t, "http://10.0.0.7:3456", getenv("COMPSHARE_SSH_OPS_GATEWAY"), "YAML knob wins")
+	assert.Equal(t, "deepseek-v4-pro", getenv("COMPSHARE_SSH_OPS_MODEL"), "YAML knob wins")
+	assert.Equal(t, "/opt/py/bin/python3", getenv("COMPSHARE_SSH_OPS_PYTHON"), "omitted knob → env fallback")
+	assert.Equal(t, "", getenv("COMPSHARE_SSH_OPS_HARNESS"), "omitted knob, unset env → cmd/ default applies")
+}
+
+// An explicit `enabled: false` must beat a stray env var — otherwise a leftover
+// COMPSHARE_SSH_OPS=1 in the process environment would silently re-arm the lane
+// on a deploy whose YAML says it is off. Omitting the field keeps env authority.
+func TestRuntimeGetenv_SSHOpsExplicitFalseBeatsEnvAndOmittedDefersToEnv(t *testing.T) {
+	envOn := func(key string) string {
+		if key == "COMPSHARE_SSH_OPS" {
+			return "1"
+		}
+		return ""
+	}
+
+	off := &Config{Agent: AgentConfig{SSHOps: SSHOpsConfig{Enabled: boolPtr(false)}}}
+	assert.Equal(t, "0", off.RuntimeGetenv(envOn)("COMPSHARE_SSH_OPS"),
+		"explicit YAML false must override an env var that says on")
+
+	omitted := &Config{Agent: AgentConfig{}}
+	assert.Equal(t, "1", omitted.RuntimeGetenv(envOn)("COMPSHARE_SSH_OPS"),
+		"omitted section → env keeps authority (pre-YAML behavior unchanged)")
+
+	assert.Equal(t, "", omitted.RuntimeGetenv(func(string) string { return "" })("COMPSHARE_SSH_OPS"),
+		"omitted section + unset env → lane stays off (the shipped default)")
+}

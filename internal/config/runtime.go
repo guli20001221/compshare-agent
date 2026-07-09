@@ -72,6 +72,24 @@ type TraceConfig struct {
 	Dir     string `yaml:"dir"`     // COMPSHARE_TRACE_DIR (file/both only)
 }
 
+// SSHOpsConfig holds the consent-gated, read-only in-instance SSH diagnosis lane
+// (internal/sshops). Enabled is tri-state like TraceConfig.Enabled: nil means the
+// section was omitted and the COMPSHARE_SSH_OPS env var decides, which — with the
+// env var unset — leaves the lane OFF. It stays default-off deliberately: turning
+// it on additionally requires the audit table (deploy/migrations/0005, the writer
+// is fail-closed), the ccr gateway reachable at GatewayURL, and python + the
+// Claude Agent SDK on the server host.
+//
+// The string knobs override the built-in defaults in cmd/server.go; an omitted
+// (empty) value falls through to the env var and then to that default.
+type SSHOpsConfig struct {
+	Enabled     *bool  `yaml:"enabled"`      // COMPSHARE_SSH_OPS (default off)
+	Python      string `yaml:"python"`       // COMPSHARE_SSH_OPS_PYTHON (default "python3")
+	HarnessPath string `yaml:"harness_path"` // COMPSHARE_SSH_OPS_HARNESS (default "deploy/ssh_ops_harness/harness.py")
+	GatewayURL  string `yaml:"gateway_url"`  // COMPSHARE_SSH_OPS_GATEWAY (default "http://127.0.0.1:3456")
+	Model       string `yaml:"model"`        // COMPSHARE_SSH_OPS_MODEL (default "deepseek-v4-flash")
+}
+
 // PlannerConfig holds the intent-router / direct-dispatch knobs.
 type PlannerConfig struct {
 	RouterMode            string `yaml:"router_mode"`             // COMPSHARE_INTENT_ROUTER_MODE: shadow (else off)
@@ -80,12 +98,13 @@ type PlannerConfig struct {
 }
 
 // RuntimeGetenv returns a getenv function that overlays the YAML runtime-flag
-// fields (agent.features / agent.retrieval / agent.trace / agent.planner) on top
-// of the supplied base getenv (normally os.Getenv). A field SET in YAML wins; a
-// field omitted in YAML falls through to base(key). This keeps "YAML is the
-// source of truth, env is the fallback" while the cmd/ flag parsers continue to
-// read every flag through a single getenv — see cmd/server.go + cmd/cli.go for
-// the wiring, and serverTraceGetenv for the same shim shape used for MYSQL_DSN.
+// fields (agent.features / agent.retrieval / agent.trace / agent.planner /
+// agent.ssh_ops) on top of the supplied base getenv (normally os.Getenv). A field
+// SET in YAML wins; a field omitted in YAML falls through to base(key). This keeps
+// "YAML is the source of truth, env is the fallback" while the cmd/ flag parsers
+// continue to read every flag through a single getenv — see cmd/server.go +
+// cmd/cli.go for the wiring, and serverTraceGetenv for the same shim shape used
+// for MYSQL_DSN.
 //
 // Bool fields encode to the canonical on/off string the matching cmd parser
 // accepts WITHOUT logging an "unknown value" warning (on = "1"; off = "0" except
@@ -149,6 +168,16 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putStrEnv(overrides, "COMPSHARE_INTENT_ROUTER_MODE", p.RouterMode)
 	putStrEnv(overrides, "COMPSHARE_DIRECT_DISPATCH_INTENTS", p.DirectDispatchIntents)
 	putStrEnv(overrides, "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT", p.StructuredOutput)
+
+	// The COMPSHARE_SSH_OPS parser (cmd/server.go) accepts "0" as a clean off, so
+	// an explicit YAML false encodes to "0" and wins over a set env var — the
+	// same shape as confirm_form, not the empty-string form mutating_tools needs.
+	s := c.Agent.SSHOps
+	putBoolEnv(overrides, "COMPSHARE_SSH_OPS", s.Enabled, "1", "0")
+	putStrEnv(overrides, "COMPSHARE_SSH_OPS_PYTHON", s.Python)
+	putStrEnv(overrides, "COMPSHARE_SSH_OPS_HARNESS", s.HarnessPath)
+	putStrEnv(overrides, "COMPSHARE_SSH_OPS_GATEWAY", s.GatewayURL)
+	putStrEnv(overrides, "COMPSHARE_SSH_OPS_MODEL", s.Model)
 
 	// The RAG embedding/reranker clients read the API key through getenv
 	// (MODELVERSE_API_KEY, falling back to LLM_API_KEY). Expose the resolved
