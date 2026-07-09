@@ -73,7 +73,19 @@ func projectPlannerSlots(slots Slots) observability.PlannerSlots {
 	out := observability.PlannerSlots{
 		TargetRefs: make([]any, 0, len(slots.TargetRefs)),
 		Metrics:    make([]string, 0, len(slots.Metrics)),
+
+		ImageSource: string(slots.ImageSource),
+		ListMode:    string(slots.ListMode),
+		PriceKind:   string(slots.PriceKind),
+		CFSKind:     string(slots.CFSKind),
+		ChargeType:  slots.ChargeType,
+		DetailLevel: string(slots.DetailLevel),
+		SizeGB:      slots.SizeGB,
+
+		SearchQueryHash: hashPlannerTraceValue(slots.SearchQuery),
+		ZoneHash:        hashPlannerTraceValue(slots.Zone),
 	}
+	out.Action, out.ActionHash = projectPlannerLifecycleAction(slots.Action)
 	for _, ref := range slots.TargetRefs {
 		projected := PlannerTraceTargetRef{
 			Type:      string(ref.Type),
@@ -92,6 +104,36 @@ func projectPlannerSlots(slots Slots) observability.PlannerSlots {
 		out.TimeWindow = projectPlannerTimeWindow(*slots.TimeWindow)
 	}
 	return out
+}
+
+// projectPlannerLifecycleAction closes slots.action against the known verbs
+// before it reaches a trace. The router schema deliberately omits slots.action
+// and is non-strict, so a model that volunteers an arbitrary string still yields
+// a SchemaValid plan, and the engine only re-derives the verb when the slot is
+// EMPTY (see engine.tryOperationLifecycleDispatch) — a bogus non-empty value is
+// never overwritten, only rejected later by lifecycleWorkflowName. Recording it
+// verbatim would put raw model text in the trace. Known verb -> verbatim (it is
+// the dispatch decision variable); anything else -> hashed, mirroring how a
+// non-canonical TimeWindow value is handled.
+func projectPlannerLifecycleAction(action LifecycleAction) (value, hash string) {
+	if action == "" {
+		return "", ""
+	}
+	if isPlannerTraceKnownLifecycleAction(action) {
+		return string(action), ""
+	}
+	return "", hashPlannerTraceValue(string(action))
+}
+
+func isPlannerTraceKnownLifecycleAction(action LifecycleAction) bool {
+	switch action {
+	case LifecycleActionStop, LifecycleActionStart, LifecycleActionReboot,
+		LifecycleActionReinstall, LifecycleActionResize, LifecycleActionResetPwd,
+		LifecycleActionRename, LifecycleActionCreateDisk:
+		return true
+	default:
+		return false
+	}
 }
 
 func projectPlannerTimeWindow(window TimeWindow) PlannerTraceTimeWindow {

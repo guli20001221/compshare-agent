@@ -145,6 +145,125 @@ func TestProjectPlannerTrace_HashesTargetRefsAndNonAllowlistedTimeWindow(t *test
 	assert.NotContains(t, raw, rawReasoning)
 }
 
+// The read-only slots added when the keyword sub-classifiers were retired (#423)
+// ARE the router's decision variable, so a trace that omits them cannot explain
+// why a turn was refined the way it was. They must be projected — but under the
+// same two-class rule the TargetRef/TimeWindow projections already follow:
+// validator-constrained enums verbatim, un-validated user text hashed.
+func TestProjectPlannerTrace_ProjectsReadOnlySlots_EnumsVerbatimFreeTextHashed(t *testing.T) {
+	const rawQuery = "数字人 uhost-abc123"
+	const rawZone = "乌兰察布"
+
+	trace := ProjectPlannerTrace(IntentRouterResult{
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentCFSInfo,
+			Slots: Slots{
+				ImageSource: ImageSourceCommunity,
+				ListMode:    ListModeAll,
+				PriceKind:   PriceKindCatalog,
+				CFSKind:     CFSKindRefund,
+				ChargeType:  "Spot",
+				DetailLevel: DetailLevelFull,
+				Action:      LifecycleActionStop,
+				SizeGB:      1024,
+				SearchQuery: rawQuery,
+				Zone:        rawZone,
+			},
+		},
+	}, PlannerTraceOptions{Enabled: true, Model: "deepseek-v4-flash"})
+
+	// Closed-enum / bounded slots: verbatim, because they carry no user text.
+	assert.Equal(t, string(ImageSourceCommunity), trace.Slots.ImageSource)
+	assert.Equal(t, string(ListModeAll), trace.Slots.ListMode)
+	assert.Equal(t, string(PriceKindCatalog), trace.Slots.PriceKind)
+	assert.Equal(t, string(CFSKindRefund), trace.Slots.CFSKind)
+	assert.Equal(t, "Spot", trace.Slots.ChargeType)
+	assert.Equal(t, string(DetailLevelFull), trace.Slots.DetailLevel)
+	assert.Equal(t, 1024, trace.Slots.SizeGB)
+
+	// A known lifecycle verb is the dispatch decision variable — recorded plainly.
+	assert.Equal(t, string(LifecycleActionStop), trace.Slots.Action)
+	assert.Empty(t, trace.Slots.ActionHash)
+
+	// Free-form user-derived slots: hashed, never raw.
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, trace.Slots.SearchQueryHash)
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, trace.Slots.ZoneHash)
+
+	data, err := json.Marshal(trace)
+	require.NoError(t, err)
+	raw := string(data)
+	assert.NotContains(t, raw, rawQuery)
+	assert.NotContains(t, raw, rawZone)
+	// The instance id embedded in the query must not reach the trace either.
+	assert.NotContains(t, raw, "uhost-abc123")
+}
+
+// slots.action is NOT validator-constrained: the router schema deliberately omits
+// it and is non-strict, so a model may volunteer any string and still produce a
+// SchemaValid plan, and the engine only re-derives the verb when the slot is
+// empty. An unrecognised verb is therefore raw model text and must never reach a
+// trace verbatim — it is hashed, like a non-canonical TimeWindow value.
+func TestProjectPlannerTrace_UnknownLifecycleActionIsHashedNotVerbatim(t *testing.T) {
+	const bogus = "stop instance uhost-abc123 and email ops@example.com"
+
+	trace := ProjectPlannerTrace(IntentRouterResult{
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentOperationLifecycle,
+			Slots:         Slots{Action: LifecycleAction(bogus)},
+		},
+	}, PlannerTraceOptions{Enabled: true, Model: "deepseek-v4-flash"})
+
+	assert.Empty(t, trace.Slots.Action, "unrecognised action must not be recorded verbatim")
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, trace.Slots.ActionHash)
+
+	data, err := json.Marshal(trace)
+	require.NoError(t, err)
+	raw := string(data)
+	assert.NotContains(t, raw, bogus)
+	assert.NotContains(t, raw, "uhost-abc123")
+	assert.NotContains(t, raw, "ops@example.com")
+}
+
+// Every known verb stays verbatim, so G3's lifecycle A/B can read it back.
+func TestProjectPlannerTrace_AllKnownLifecycleActionsStayVerbatim(t *testing.T) {
+	for _, action := range []LifecycleAction{
+		LifecycleActionStop, LifecycleActionStart, LifecycleActionReboot,
+		LifecycleActionReinstall, LifecycleActionResize, LifecycleActionResetPwd,
+		LifecycleActionRename, LifecycleActionCreateDisk,
+	} {
+		trace := ProjectPlannerTrace(IntentRouterResult{
+			Plan: IntentRoute{
+				SchemaVersion: SchemaVersion,
+				Intent:        IntentOperationLifecycle,
+				Slots:         Slots{Action: action},
+			},
+		}, PlannerTraceOptions{Enabled: true, Model: "deepseek-v4-flash"})
+		assert.Equal(t, string(action), trace.Slots.Action)
+		assert.Empty(t, trace.Slots.ActionHash, "known verb %q must not be hashed", action)
+	}
+}
+
+// Turns that set none of the new slots must serialize exactly as before, so
+// existing traces and their consumers stay byte-stable.
+func TestProjectPlannerTrace_UnsetReadOnlySlotsAreOmitted(t *testing.T) {
+	trace := ProjectPlannerTrace(IntentRouterResult{
+		Plan: IntentRoute{SchemaVersion: SchemaVersion, Intent: IntentResourceInfo},
+	}, PlannerTraceOptions{Enabled: true, Model: "deepseek-v4-flash"})
+
+	data, err := json.Marshal(trace)
+	require.NoError(t, err)
+	raw := string(data)
+	for _, key := range []string{
+		"image_source", "list_mode", "price_kind", "cfs_kind", "charge_type",
+		"detail_level", "action", "action_hash", "size_gb",
+		"search_query_hash", "zone_hash",
+	} {
+		assert.NotContains(t, raw, key, "unset slot %q must be omitted from the trace", key)
+	}
+}
+
 func TestProjectPlannerTrace_DerivesHardBlockHintFromIntent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
