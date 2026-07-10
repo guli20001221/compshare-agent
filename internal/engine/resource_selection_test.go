@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -587,14 +588,60 @@ func TestTryResumeResourceSelectionAllowsSelectingAnotherDisplayedInstance(t *te
 	}
 
 	reply, handled = e.tryResumeResourceSelection(context.Background(), "选第2台", noopStep)
-	if !handled {
-		t.Fatalf("second ordinal should still be selectable from the last displayed list")
+	if handled {
+		t.Fatalf("plain selection should resume downstream processing, reply=%q", reply)
 	}
 	if e.sessionState.SelectedInstanceID != "uhost-02" {
 		t.Fatalf("selected = %q, want uhost-02; reply=%q", e.sessionState.SelectedInstanceID, reply)
 	}
-	if !strings.Contains(reply, "uhost-02") {
-		t.Fatalf("selection reply should name the newly selected instance, got %q", reply)
+	if reply != "" {
+		t.Fatalf("selection should not return a canned reply, got %q", reply)
+	}
+	if len(e.sessionState.PendingSelectionItems) != 2 {
+		t.Fatalf("displayed selection should remain reusable, got %d items", len(e.sessionState.PendingSelectionItems))
+	}
+}
+
+func TestTryResumeResourceSelectionMonitorDoesNotPreTrustBeforeHandler(t *testing.T) {
+	candidates := []entity.InstanceSnapshot{
+		testInstance("uhost-01", "host-1", "Running"),
+		testInstance("uhost-02", "host-2", "Running"),
+	}
+	var e *Engine
+	exec := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		if action == "GetCompShareInstanceMonitor" {
+			if e.sessionState.SelectedInstanceSource == SelectedInstanceSourceUser {
+				t.Fatal("monitor selection must not create trust before the read-only handler runs")
+			}
+			return nil, errors.New("monitor unavailable")
+		}
+		return map[string]any{}, nil
+	}}
+	e = NewWithDeps(&mockLLM{}, exec, nil)
+	e.InitWithContext("test user")
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	e.userTurn = 3
+	e.pendingResourceSelection = &pendingResourceSelection{
+		originalUserMsg: "查 GPU 利用率",
+		plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentMonitorQuery,
+			Slots:         intent.Slots{Metrics: []intent.Metric{intent.MetricGPU}},
+			RequiredTools: []string{"GetCompShareInstanceMonitor"},
+			Confidence:    0.9,
+		},
+		snapshot:    snapshotFromPendingSelectionCandidates(candidates),
+		candidates:  candidates,
+		createdTurn: 2,
+	}
+
+	_, handled := e.tryResumeResourceSelection(context.Background(), "选第2台", noopStep)
+
+	if !handled {
+		t.Fatal("monitor selection should terminate through the monitor handler")
+	}
+	if e.sessionState.SelectedInstanceSource == SelectedInstanceSourceUser {
+		t.Fatal("a failed read-only monitor selection must not create a trusted mutating target")
 	}
 }
 
@@ -657,14 +704,17 @@ func TestTryResumeResourceSelectionRestoresPersistedSelectionForPlainOrdinalPick
 
 	reply, handled := e.tryResumeResourceSelection(context.Background(), "选第2台", noopStep)
 
-	if !handled {
-		t.Fatalf("persisted ordinal selection should be handled")
+	if handled {
+		t.Fatalf("persisted ordinal selection should resume downstream processing, reply=%q", reply)
 	}
 	if e.sessionState.SelectedInstanceID != "uhost-02" {
 		t.Fatalf("selected = %q, want uhost-02; reply=%q", e.sessionState.SelectedInstanceID, reply)
 	}
-	if !strings.Contains(reply, "uhost-02") {
-		t.Fatalf("selection reply should name the selected instance, got %q", reply)
+	if reply != "" {
+		t.Fatalf("selection should not return a canned reply, got %q", reply)
+	}
+	if len(e.sessionState.PendingSelectionItems) != 2 {
+		t.Fatalf("persisted selection should remain reusable, got %d items", len(e.sessionState.PendingSelectionItems))
 	}
 }
 
@@ -692,11 +742,14 @@ func TestClearSessionStateDropsStaleInMemoryPendingSelectionBeforeHydrate(t *tes
 
 	reply, handled := e.tryResumeResourceSelection(context.Background(), "选第2台", noopStep)
 
-	if !handled {
-		t.Fatalf("persisted selection should win after ClearSessionState")
+	if handled {
+		t.Fatalf("persisted selection should resume downstream processing after ClearSessionState, reply=%q", reply)
 	}
 	if e.sessionState.SelectedInstanceID != "uhost-02" {
 		t.Fatalf("selected = %q, want uhost-02; reply=%q", e.sessionState.SelectedInstanceID, reply)
+	}
+	if reply != "" {
+		t.Fatalf("selection should not return a canned reply, got %q", reply)
 	}
 }
 

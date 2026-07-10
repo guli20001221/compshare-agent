@@ -2437,27 +2437,17 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		return reply, true
 	}
 
-	if pending.plan.Intent != intent.IntentMonitorQuery && pending.plan.Intent != intent.IntentMonitorHistory {
-		e.recordSelectedInstanceID(match.instance.UHostId, match.instance.Name)
-		e.pendingResourceSelection = nil
-		reply := fmt.Sprintf("已选中 %s（%s）。你接下来想查看监控、重启，还是执行其他操作？",
-			sanitizeResourceSelectionPromptField(match.instance.Name),
-			sanitizeResourceSelectionPromptField(match.instance.UHostId),
-		)
-		if match.instance.Name == "" {
-			reply = fmt.Sprintf("已选中 %s。你接下来想查看监控、重启，还是执行其他操作？",
-				sanitizeResourceSelectionPromptField(match.instance.UHostId),
-			)
-		}
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: reply,
-		})
-		return reply, true
-	}
-
 	e.pendingResourceSelection = nil
-	return e.handleResourceSelectionMonitor(ctx, pending.plan, pending.snapshot, match.instance, pending.originalUserMsg, onStep)
+	if pending.plan.Intent == intent.IntentMonitorQuery || pending.plan.Intent == intent.IntentMonitorHistory {
+		return e.handleResourceSelectionMonitor(ctx, pending.plan, pending.snapshot, match.instance, pending.originalUserMsg, onStep)
+	}
+	e.recordSelectedInstanceID(match.instance.UHostId, match.instance.Name)
+	if !e.bindSelectedInstanceToWaitingWorkflowFrame(match.instance) {
+		// A plain selection must not become an answer to an unrelated old task.
+		e.clearContextFrame()
+	}
+	e.refreshSystemPrompt()
+	return "", false
 }
 
 func (e *Engine) handleResourceSelectionMonitor(ctx context.Context, plan intent.IntentRoute, snapshot entity.RegistrySnapshot, inst entity.InstanceSnapshot, userMsg string, onStep func(StepEvent)) (string, bool) {

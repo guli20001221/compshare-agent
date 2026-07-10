@@ -158,6 +158,21 @@ func workflowArgsFromTaskSlots(workflowName string, slots map[string]string) (ma
 	return workflow.TaskArgsFromSlots(workflowName, slots)
 }
 
+func (e *Engine) bindSelectedInstanceToWaitingWorkflowFrame(inst entity.InstanceSnapshot) bool {
+	frame, ok := e.activeContextFrame(time.Now())
+	if !ok || frame.Kind != ContextFrameKindWorkflowTask ||
+		!workflowRequiresInstanceTarget(frame.Workflow) ||
+		strings.TrimSpace(frame.Slots["instance_id"]) != "" ||
+		!containsString(frame.MissingSlots, "instance_id") {
+		return false
+	}
+	frame.Slots = mergeStringMaps(frame.Slots, map[string]string{"instance_id": inst.UHostId})
+	frame.SlotSources = mergeStringMaps(frame.SlotSources, map[string]string{"instance_id": SelectedInstanceSourceUser})
+	frame.ProducedAtUnix = time.Now().Unix()
+	e.setContextFrame(frame)
+	return true
+}
+
 func (e *Engine) recordWorkflowMissingSlotsFrame(workflowName string, args map[string]any, missing []string, message string) bool {
 	if e == nil || !ContextContinuationEnabled() || !e.sessionStateHydrated || workflowName == "" || len(missing) == 0 {
 		return false
