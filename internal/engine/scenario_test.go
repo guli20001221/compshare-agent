@@ -974,6 +974,56 @@ func TestScenario_CreateInstance_NormalizesV100(t *testing.T) {
 	assert.Equal(t, "V100S", createGpuType, "user 'V100' must be normalized to the platform's 'V100S' before create")
 }
 
+// TestScenario_CreateInstanceFailure_StaysDeterministic guards an invariant that
+// is DISJOINT from the lifecycle success-reply path (that path is reached only
+// when result.Success==true via deterministicWorkflowReply; this one only when
+// result.Success==false). It does not validate the success-reply trim — it exists
+// so a future change cannot quietly route create FAILURES back through the LLM:
+// the workflow's own message is already grounded, and the fast-tier narration
+// round has fabricated availability claims ("V100 下架") and invented GPU lists
+// (see the createWorkflowFailureReply call site in engine.go).
+// Mechanics: the mock LLM is scripted with exactly one response (the tool call);
+// any attempted narration round would surface mockLLM's exhaustion sentinel, so
+// asserting its absence proves the failure reply short-circuited the LLM. A
+// non-image error is used so the create-image recovery path does not kick in.
+func TestScenario_CreateInstanceFailure_StaysDeterministic(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{map[string]any{"CompShareImageId": "img-1", "Name": "Ubuntu 22.04"}}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "V100S", "Zone": "cn-wlcb-01", "Status": "Normal", "MachineSizes": []any{
+					map[string]any{"Gpu": float64(1), "Collection": []any{
+						map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+					}},
+				}},
+			}}, nil
+		case "CheckCompShareResourceCapacity":
+			return map[string]any{"Specs": []any{map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true}}}, nil
+		case "GetCompShareInstanceUserPrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Price": 1.5}}}, nil
+		case "CreateCompShareInstance":
+			return nil, fmt.Errorf("insufficient balance")
+		}
+		return map[string]any{}, nil
+	}}
+	// EXACTLY ONE scripted response: the tool call. A narration round would hit
+	// the exhaustion sentinel, which the assertions below forbid.
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{"GpuType": "V100S"})}},
+	}}
+	eng := NewWithDeps(mock, exec, func(a string, args map[string]any) bool { return true })
+	eng.Init(context.Background())
+
+	reply, err := eng.Chat(context.Background(), "部署一个V100S的实例", noopStep)
+	assert.NoError(t, err)
+	assert.Contains(t, reply, "没有成功", "failed create must return the grounded deterministic failure reply")
+	assert.Contains(t, reply, "insufficient balance", "grounded upstream reason is preserved")
+	assert.NotContains(t, reply, "no more mock responses", "failure path must NOT consume an LLM narration round")
+	assert.NotContains(t, reply, "下架", "failure path must never surface fabricated availability claims")
+}
+
 func TestCreateWorkflowFailureReply(t *testing.T) {
 	// BuildArgs-failure prefix stripped, grounded body preserved.
 	got := createWorkflowFailureReply("步骤「检查库存」参数构建失败: 未找到 X × 1 卡的可用配比。当前可部署的 GPU 机型：4090、V100S。")

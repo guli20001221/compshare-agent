@@ -5473,13 +5473,22 @@ func startWithoutGPURequestedByText(text string) bool {
 // circuit the LLM narration round (see the call site for why). Returns
 // ("", false) for workflows whose result must be narrated (they surface IDs,
 // disk IDs, or post-action guidance the user needs).
+//
+// The reply confirms the action landed and names the target — nothing more. It
+// deliberately does NOT (a) restate a fact the confirmation card already
+// delivered (the stop card carries the precise, conditional billing warning —
+// internal/workflow/stop_instance.go, pinned by stop_start_test.go; the ReAct
+// operation prompt at internal/prompt/segment_operation.go likewise tells the
+// model not to re-explain 磁盘计费 post-action), nor (b) assert an unverified
+// specific (a reboot completion time we don't control). Secret-bearing ops keep
+// their redaction note + login guidance.
 func deterministicWorkflowReply(action string, args map[string]any) (string, bool) {
 	uhost, _ := args["UHostId"].(string)
 	switch action {
 	case "RebootInstanceWorkflow":
-		return fmt.Sprintf("✅ 已为实例 %s 执行重启。这是软重启，过程中实例状态保持 Running，通常 1–2 分钟内完成。", uhost), true
+		return fmt.Sprintf("✅ 已为实例 %s 执行重启。", uhost), true
 	case "StopInstanceWorkflow":
-		return fmt.Sprintf("✅ 已为实例 %s 执行关机。注意：关机后云硬盘仍会按量计费。", uhost), true
+		return fmt.Sprintf("✅ 已为实例 %s 执行关机。", uhost), true
 	case "StartInstanceWorkflow":
 		return fmt.Sprintf("✅ 已为实例 %s 执行开机，启动需要一点时间，请稍后查看。", uhost), true
 	case "RenameInstanceWorkflow":

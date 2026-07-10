@@ -1984,7 +1984,13 @@ func TestChat_WorkflowTool_StopInstance(t *testing.T) {
 	// fast-tier thinking-mode narration.
 	require.Len(t, mock.calls, 1, "stop workflow must short-circuit LLM narration")
 	assert.Contains(t, reply, "uhost-stop-001", "deterministic reply names the instance")
-	assert.Contains(t, reply, "计费", "stop reply keeps the disk-charge note")
+	// The success reply confirms-and-names only. The billing fact is
+	// delivered by the confirmation card BEFORE the user approves (the precise,
+	// conditional warning in internal/workflow/stop_instance.go, pinned by
+	// stop_start_test.go) — the success reply deliberately does not repeat a
+	// cruder, unconditional version of it (the operation prompt also forbids
+	// re-explaining 磁盘计费 post-action).
+	assert.NotContains(t, reply, "计费", "stop reply must not restate billing — the confirm card is the source of truth")
 	assert.True(t, eng.registry.NeedsRefresh(now.Add(time.Second)))
 }
 
