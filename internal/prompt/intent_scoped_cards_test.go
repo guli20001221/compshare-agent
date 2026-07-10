@@ -148,14 +148,24 @@ func TestPromptSofteningRemovesVagueFailureEnumerations(t *testing.T) {
 			} else if !strings.Contains(prompt, "不得直接调用任何 Diagnose* 工具") {
 				t.Fatalf("prompt must keep Diagnose* prohibition verbatim:\n%s", prompt)
 			}
-			for _, phrase := range []string{
-				`如"跑崩了"`,
-				`"出问题了""异常""跑崩了"`,
-				`"跑崩了"、"挂了"、"不对劲"`,
-				`如"跑崩了"、"有问题"、"异常"`,
+			// Guard on the bare trigger tokens, not on the exact composite strings
+			// that happened to be deleted: a re-added list worded differently
+			// (`（如"崩了"、"挂住了"）`) would slip past a composite match while
+			// reintroducing exactly the brittleness this gate removed.
+			//
+			// Two tokens from the old enumerations are deliberately NOT guarded,
+			// because they survive in legitimate, non-classifying prose:
+			//   "异常"  — 扣费异常 / 计费异常, a *specific* symptom that must route
+			//             to Diagnose*, the opposite of a vague failure.
+			//   "崩了"  — 服务崩了？, one of the example symptoms the agent offers
+			//             when ASKING the clarifying question (output shaping, not
+			//             input classification).
+			for _, token := range []string{
+				"跑崩了", "挂了", "挂住了", "不对劲", "不行了", "起不来", "出问题了", "有问题",
 			} {
-				if strings.Contains(prompt, phrase) {
-					t.Fatalf("prompt must remove vague-failure enumeration %q:\n%s", phrase, prompt)
+				if strings.Contains(prompt, token) {
+					t.Fatalf("prompt must not enumerate vague-failure phrasing; found %q. "+
+						"State the condition semantically and let the model judge membership:\n%s", token, prompt)
 				}
 			}
 		})
