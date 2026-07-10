@@ -864,6 +864,30 @@ func TestSelectDeployZoneAndGPU_PreferredFirst(t *testing.T) {
 	assert.Empty(t, fb, "no fallback note when the primary zone is used")
 }
 
+func TestSelectDeployZoneAndGPU_SkipsZoneWithoutImageSupportedCard(t *testing.T) {
+	exec := stockExec(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": true})
+	eng := NewWithDeps(nil, exec, okConfirm)
+	avail := map[string]any{"AvailableInstanceTypes": []any{
+		availCardZ("A800", "cn-wlcb-01", 80),
+		availCardZ("4090_48G", "cn-sh2-02", 48),
+	}}
+
+	zone, gpu, _, fb, err := eng.selectDeployZoneAndGPU(
+		context.Background(),
+		avail,
+		deployPlan{ImageID: "img-infinite-talk"},
+		[]string{"4090_48G"},
+		"",
+		"创建一台最强AI数字人InfiniteTalk-图片和视频数字人",
+		"",
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "cn-sh2-02", zone, "zones without an image-supported card must be skipped")
+	assert.Equal(t, "4090_48G", gpu)
+	assert.Empty(t, fb, "an incompatible primary zone is not a sold-out fallback")
+}
+
 func TestSelectDeployZoneAndGPU_FallbackOnSoldOut(t *testing.T) {
 	exec := stockExec(map[string]bool{"cn-wlcb-01": false, "cn-sh2-02": true})
 	eng := NewWithDeps(nil, exec, okConfirm)
@@ -995,7 +1019,7 @@ func TestTryDeployModel_GuidedCreateFiltersExplicitGPUIntent(t *testing.T) {
 	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "用4090部署 Qwen2.5-7B", noopStep)
 
 	require.True(t, handled)
-	assert.Equal(t, []string{"4090", "4090_48G"}, gpuOptions)
+	assert.Equal(t, []string{"4090"}, gpuOptions)
 }
 
 func TestTryDeployModel_CreatePreferenceFlagOffDoesNotCallExtractor(t *testing.T) {

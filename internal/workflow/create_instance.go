@@ -433,11 +433,11 @@ func stepCheckCapacity() Step {
 			if imageId == "" {
 				return nil, createImageUnavailableError(wfCtx.Params)
 			}
-			if err := validateImageGPUCompatibility(wfCtx, imageId); err != nil {
-				return nil, err
-			}
 			placement := workflowZonePlacement(wfCtx.Params, zone)
 			if err := validateCreatePlacement(wfCtx, placement, false); err != nil {
+				return nil, err
+			}
+			if err := validateSelectedImageCompatibility(wfCtx, imageId, placement); err != nil {
 				return nil, err
 			}
 			gpuType, _ := wfCtx.Params["GpuType"].(string)
@@ -516,15 +516,15 @@ func stepGetPrice() Step {
 			if imageId == "" {
 				return nil, createImageUnavailableError(wfCtx.Params)
 			}
-			if err := validateImageGPUCompatibility(wfCtx, imageId); err != nil {
-				return nil, err
-			}
 			args["CompShareImageId"] = imageId
 			if disks := workflowSystemDisks(wfCtx, imageId, zone, gt); len(disks) > 0 {
 				args["Disks"] = disks
 			}
 			placement := workflowZonePlacement(wfCtx.Params, zone)
 			if err := validateCreatePlacement(wfCtx, placement, true); err != nil {
+				return nil, err
+			}
+			if err := validateSelectedImageCompatibility(wfCtx, imageId, placement); err != nil {
 				return nil, err
 			}
 			return deployment.ApplyPurchasePlacementArgs(args, placement), nil
@@ -740,15 +740,31 @@ func validateCreatePlacement(wfCtx *Context, placement deployment.ZonePlacement,
 	return nil
 }
 
-func validateImageGPUCompatibility(wfCtx *Context, imageID string) error {
+func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placement deployment.ZonePlacement) error {
+	image := imageMapByID(wfCtx.Result("查询镜像"), imageID)
+	name := imageNameByID(wfCtx.Result("查询镜像"), imageID)
+	if name == "" {
+		name = "所选镜像"
+	}
+	if image == nil {
+		if placement.IsPod {
+			return fmt.Errorf("未能确认 %s 是可用于 %s 的容器镜像，请刷新后重新选择", name, zoneDisplayLabel(wfCtx.Params, placement.Zone))
+		}
+		// Community image searches can return a different page/order on a second
+		// query. Keep the exact selected id for normal zones; the upstream capacity
+		// preflight validates that id, its status, and its adaptive UHost image.
+		return nil
+	}
+	if status := strings.TrimSpace(paramStr(image, "Status", "")); status != "" && !strings.EqualFold(status, deployment.ImageStatusAvailable) {
+		return fmt.Errorf("%s 当前不可用，请更换镜像", name)
+	}
+	if placement.IsPod && !imageContainerByID(wfCtx.Result("查询镜像"), imageID) {
+		return fmt.Errorf("%s 不是容器镜像，不能用于 %s，请更换镜像或可用区", name, zoneDisplayLabel(wfCtx.Params, placement.Zone))
+	}
 	gpuType := paramStr(wfCtx.Params, "GpuType", "")
 	supported := imageSupportedByID(wfCtx.Result("查询镜像"), imageID)
 	if gpuType == "" || len(supported) == 0 || containsFold(supported, gpuType) {
 		return nil
-	}
-	name := imageNameByID(wfCtx.Result("查询镜像"), imageID)
-	if name == "" {
-		name = "所选镜像"
 	}
 	return fmt.Errorf("%s 不支持当前 GPU %s，请更换镜像或卡型", name, gpuType)
 }
@@ -1141,9 +1157,6 @@ func stepCreateInstance() Step {
 			if imageId == "" {
 				return nil, createImageUnavailableError(wfCtx.Params)
 			}
-			if err := validateImageGPUCompatibility(wfCtx, imageId); err != nil {
-				return nil, err
-			}
 			gt, _ := wfCtx.Params["GpuType"].(string)
 			args := map[string]any{
 				"Zone":               zone,
@@ -1165,6 +1178,9 @@ func stepCreateInstance() Step {
 			}
 			placement := workflowZonePlacement(wfCtx.Params, zone)
 			if err := validateCreatePlacement(wfCtx, placement, true); err != nil {
+				return nil, err
+			}
+			if err := validateSelectedImageCompatibility(wfCtx, imageId, placement); err != nil {
 				return nil, err
 			}
 			return deployment.ApplyPurchasePlacementArgs(args, placement), nil
@@ -2076,9 +2092,7 @@ func shouldSkipGuidedGPUStep(wfCtx *Context) (bool, error) {
 		initialParamSet(wfCtx, "Cpu") && initialParamSet(wfCtx, "Memory") {
 		return true, nil
 	}
-	selected, opts := guidedGPUFormOptions(wfCtx.Result("查询可用配比"), supported, current, true, wfCtx.Params, wfCtx.Result("查询GPU库存"))
-	count, only := enabledOptionCount(opts)
-	return count == 1 && strings.EqualFold(selected, current) && strings.EqualFold(only, current), nil
+	return false, nil
 }
 
 func shouldSkipGuidedZoneStep(wfCtx *Context) (bool, error) {
@@ -3254,18 +3268,7 @@ func guidedGPUReasons(params map[string]any) map[string]string {
 }
 
 func guidedGPUIntentMatches(intent, candidate string) bool {
-	if strings.EqualFold(intent, candidate) {
-		return true
-	}
-	// A broad model mention like "4090" should include closely related variants
-	// such as "4090_48G". A precise variant mention stays exact.
-	if strings.ContainsAny(intent, "_-") {
-		return false
-	}
-	intentLower := strings.ToLower(intent)
-	candidateLower := strings.ToLower(candidate)
-	return strings.HasPrefix(candidateLower, intentLower+"_") ||
-		strings.HasPrefix(candidateLower, intentLower+"-")
+	return strings.EqualFold(strings.TrimSpace(intent), strings.TrimSpace(candidate))
 }
 
 func guidedZoneFormOptions(catalog map[string]any, gpuType, current string, params map[string]any, inventoryResult map[string]any) (string, []ConfirmFormOption) {

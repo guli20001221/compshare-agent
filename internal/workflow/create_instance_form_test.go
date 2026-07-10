@@ -817,7 +817,7 @@ func TestCreateInstanceGuided_CommunityImageSelectionFeedsCapacityCheck(t *testi
 	assert.NotEqual(t, "cimg-ltx", createCall.args["CompShareImageId"])
 }
 
-func TestCreateInstanceGuided_ExplicitGPUOffersIntentFamily(t *testing.T) {
+func TestCreateInstanceGuided_ExplicitGPUStaysExact(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "GuidedGpuLocked": true})
 	form, err := buildGuidedGPUForm(wfCtx)
 	require.NoError(t, err)
@@ -825,7 +825,60 @@ func TestCreateInstanceGuided_ExplicitGPUOffersIntentFamily(t *testing.T) {
 	assert.Equal(t, 1, form.Step.Index)
 	assert.Equal(t, 6, form.Step.Total)
 	gpu := fieldByKey(t, form, "GpuType")
-	assert.Equal(t, []string{"4090", "4090_48G"}, optionValues(gpu))
+	assert.Equal(t, []string{"4090"}, optionValues(gpu))
+}
+
+func TestCreateInstanceGuided_SelectedPlatformImageIsValidatedBeforeCapacity(t *testing.T) {
+	tests := []struct {
+		name      string
+		image     map[string]any
+		params    map[string]any
+		wantError string
+	}{
+		{
+			name: "pod rejects vm image",
+			image: map[string]any{
+				"CompShareImageId": "img-vm", "Name": "Ubuntu 22.04", "ImageType": "System", "Status": "Available",
+				"SupportedGpuTypes": []any{"4090"},
+			},
+			params: map[string]any{
+				"GpuType": "4090", "Zone": "cn-wlcb-01", "ZoneIsPod": true, "IsPodZone": true,
+				"ZoneIds": map[string]uint32{"cn-wlcb-01": 5001},
+			},
+			wantError: "容器镜像",
+		},
+		{
+			name: "unavailable image is rejected",
+			image: map[string]any{
+				"CompShareImageId": "img-retired", "Name": "Retired PyTorch", "ImageType": "App", "Status": "Unavailable",
+				"Container": true, "SupportedGpuTypes": []any{"4090"},
+			},
+			params: map[string]any{
+				"GpuType": "4090", "Zone": "cn-wlcb-01",
+			},
+			wantError: "不可用",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := map[string]any{
+				"GpuType": "4090", "Zone": "cn-wlcb-01", "Gpu": float64(1),
+				"Cpu": float64(16), "Memory": float64(65536), "CompShareImageId": tt.image["CompShareImageId"],
+			}
+			for key, value := range tt.params {
+				params[key] = value
+			}
+			wfCtx := formWfCtx(t, params)
+			wfCtx.StepResults["查询可用配比"] = formSingle4090CatalogFixture()
+			wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{tt.image}}
+
+			_, err := stepCheckCapacity().BuildArgs(wfCtx)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+	}
 }
 
 func TestCreateInstanceGuided_GPUCardSnapshotZeroShowsPendingNotDisabled(t *testing.T) {
@@ -847,14 +900,11 @@ func TestCreateInstanceGuided_GPUCardSnapshotZeroShowsPendingNotDisabled(t *test
 	form, err := buildGuidedGPUForm(wfCtx)
 	require.NoError(t, err)
 	gpu := fieldByKey(t, form, "GpuType")
-	require.Equal(t, []string{"4090", "4090_48G"}, optionValues(gpu))
+	require.Equal(t, []string{"4090"}, optionValues(gpu))
 	plain4090 := optionByValue(t, gpu, "4090")
-	wide4090 := optionByValue(t, gpu, "4090_48G")
 	assert.False(t, plain4090.Disabled, "inventory snapshot alone must not block a GPU card")
 	assert.Contains(t, plain4090.Note, "待确认")
 	assert.Empty(t, plain4090.Reason)
-	assert.False(t, wide4090.Disabled, "4090_48G still has live inventory")
-	assert.Contains(t, wide4090.Note, "库存约 1 张 GPU")
 }
 
 func TestCreateInstanceGuided_LockedGPUIgnoresSnapshotZeroUntilCapacityCheck(t *testing.T) {

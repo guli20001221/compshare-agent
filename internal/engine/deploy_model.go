@@ -1002,10 +1002,15 @@ func (e *Engine) selectDeployZoneAndGPUInZones(ctx context.Context, availResult 
 
 	var firstZone, firstGPU, firstNote string // first sizeable zone, for stock-unconfirmed fall-through
 	primarySoldOut := false
+	sawLiveCards := false
 	for i, z := range candidates {
 		cards := knowledge.ParseAvailableGPUs(availResult, z)
 		if len(cards) == 0 {
 			continue // no live cards offered in this zone
+		}
+		sawLiveCards = true
+		if len(supported) > 0 && !deployCardsSupportImage(cards, supported) {
+			continue
 		}
 		gt, note := knowledge.RecommendGPUTypeLive(plan.ModelName, quant, userMsg, supported, cards)
 		if gt == "" {
@@ -1040,9 +1045,23 @@ func (e *Engine) selectDeployZoneAndGPUInZones(ctx context.Context, availResult 
 		// the saga's capacity gate will halt gracefully if it is genuinely sold out.
 		return firstZone, firstGPU, firstNote, "", nil
 	}
+	if len(supported) > 0 && sawLiveCards {
+		return "", "", "", "", deployUserError{msg: fmt.Sprintf(
+			"所选镜像支持的机型为 %s，但当前可用区目录中没有对应规格。请更换镜像或稍后再试。",
+			strings.Join(supported, "、"))}
+	}
 	// Availability query failed/empty → static-table sizing on the primary zone.
 	gt, note := knowledge.RecommendGPUTypeLive(plan.ModelName, quant, userMsg, supported, nil)
 	return primary, gt, note, "", nil
+}
+
+func deployCardsSupportImage(cards []knowledge.AvailableGPU, supported []string) bool {
+	for _, card := range cards {
+		if gpuImageCompatible(card.Name, supported) {
+			return true
+		}
+	}
+	return false
 }
 
 func deployCandidateZones(availResult map[string]any) []string {

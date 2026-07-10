@@ -996,6 +996,12 @@ func TestCreateInstance_NonDefaultZone_ThreadsZoneToCreate(t *testing.T) {
 
 func TestCreateInstance_PodZoneUsesDynamicZoneIDAndAzGroup(t *testing.T) {
 	executor := createMockExecutor()
+	executor.results["DescribeCompShareImages"] = map[string]any{"ImageSet": []any{
+		map[string]any{
+			"CompShareImageId": "img-001", "Name": "PyTorch Container", "Size": float64(51200),
+			"Status": "Available", "Container": true, "SupportedGpuTypes": []any{"4090"},
+		},
+	}}
 	executor.results["DescribeAvailableCompShareInstanceTypes"] = map[string]any{"AvailableInstanceTypes": []any{
 		map[string]any{
 			"Name":         "4090",
