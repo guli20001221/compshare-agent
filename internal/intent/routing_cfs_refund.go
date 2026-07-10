@@ -11,14 +11,17 @@ import (
 )
 
 var (
-	cfsIDPattern   = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)
-	uhostIDPattern = regexp.MustCompile(`(?i)u(?:host|h)-[a-z0-9-]+`)
+	cfsIDPattern = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)
+	// Legacy no-snapshot fallback for refund estimates. This is intentionally
+	// narrower than the generic recognizer so product/model names with dashes
+	// do not short-circuit normal target resolution.
+	refundLegacyUHostIDPattern = regexp.MustCompile(`(?i)\bu(?:host|h)-[a-z0-9-]+\b`)
 )
 
 func handleRefundEstimate(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "GetCompShareRefundPrice"
 	if len(req.Plan.Slots.TargetRefs) == 0 {
-		if id := extractUHostIDFromText(req.UserText); id != "" {
+		if id := extractUHostIDFromText(req.UserText, req.Resolver); id != "" {
 			args := map[string]any{"UHostIds": []string{id}}
 			raw, routeFallback := executeRouteAction(ctx, h, req.Plan.Intent, action, args)
 			if routeFallback != nil {
@@ -388,8 +391,22 @@ func extractCFSIDFromText(text string) string {
 	return strings.ToLower(strings.TrimSpace(cfsIDPattern.FindString(text)))
 }
 
-func extractUHostIDFromText(text string) string {
-	return strings.ToLower(strings.TrimSpace(uhostIDPattern.FindString(text)))
+func extractUHostIDFromText(text string, resolver EntityResolver) string {
+	if resolver != nil {
+		tokens := resolver.InstanceIDTokensInText(text)
+		for _, token := range tokens {
+			if inst, res := resolver.ResolveByID(token); res.Status == entity.ResolveHit && inst != nil {
+				return strings.TrimSpace(inst.UHostId)
+			}
+		}
+		if len(tokens) > 0 {
+			return strings.TrimSpace(tokens[0])
+		}
+	}
+	if token := strings.TrimSpace(refundLegacyUHostIDPattern.FindString(text)); token != "" {
+		return strings.ToLower(token)
+	}
+	return ""
 }
 
 func numericField(m map[string]any, key string) (float64, bool) {

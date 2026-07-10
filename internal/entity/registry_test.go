@@ -206,6 +206,31 @@ func TestRegistrySnapshotResolvesIDsAndNames(t *testing.T) {
 	assert.Equal(t, ResolveNotFoundInAccount, res.Status)
 }
 
+func TestRegistrySnapshotInstanceIDRefsInText(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.SyncFromDescribe(describeResult(
+		host("uhost-1qy6d8tkfrl4", "classic", "Running", "4090", 1),
+		host("cpod-1rkv126dxgiq", "pod", "Running", "4090", 1),
+	), "init"))
+	snap := reg.Snapshot()
+
+	assert.Equal(t,
+		[]string{"cpod-1rkv126dxgiq"},
+		snap.InstanceIDTokensInText("请关闭cpod-1rkv126dxgiq这台实例"),
+	)
+	assert.Empty(t, snap.InstanceIDTokensInText("my-gpu-box 今天状态怎样"))
+
+	cpodOnly := RegistrySnapshot{Instances: map[string]InstanceSnapshot{
+		"cpod-1rkv126dxgiq": {UHostId: "cpod-1rkv126dxgiq"},
+	}}
+	assert.Empty(t, cpodOnly.InstanceIDTokensInText("uhost-1qy6d8tkfrl4 的状态"))
+
+	hits, unresolved := snap.ResolveInstanceRefsInText("查 CPOD-1RKV126DXGIQ 和 cpod-1rkv126dxgiq")
+	require.Len(t, hits, 1)
+	assert.Equal(t, "cpod-1rkv126dxgiq", hits[0].UHostId)
+	assert.Equal(t, []string{"CPOD-1RKV126DXGIQ"}, unresolved)
+}
+
 func TestSnapshotIDStableAcrossInputOrder(t *testing.T) {
 	regA := NewRegistry()
 	require.NoError(t, regA.SyncFromDescribe(describeResult(

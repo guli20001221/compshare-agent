@@ -480,10 +480,11 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 	cachedSnapshot := e.RegistrySnapshot()
 	snapshot := cachedSnapshot
 	if !resolveLifecycleTargetForPreDispatch(userMsg, cachedSnapshot, action) {
-		allowExplicitWorkflowTarget := lifecycleActionAllowsExplicitIDPreDispatch(action) && uhostIDPattern.FindString(userMsg) != ""
+		allowExplicitWorkflowTarget := lifecycleActionAllowsExplicitIDPreDispatch(action) &&
+			hasExplicitInstanceIDForLifecyclePreDispatch(userMsg, cachedSnapshot)
 		if action != intent.LifecycleActionRename &&
 			action != intent.LifecycleActionResetPwd &&
-			!hasLikelyExplicitInstanceTargetText(userMsg) &&
+			!hasLikelyExplicitInstanceTargetText(userMsg, cachedSnapshot) &&
 			!allowExplicitWorkflowTarget {
 			return "", false
 		}
@@ -720,9 +721,12 @@ func (e *Engine) dispatchStopSchedulerForInstance(ctx context.Context, inst enti
 	return reply, true
 }
 
-func hasLikelyExplicitInstanceTargetText(userText string) bool {
+func hasLikelyExplicitInstanceTargetText(userText string, snapshot entity.RegistrySnapshot) bool {
 	lower := strings.ToLower(userText)
 	if strings.Contains(lower, "uhost-") || strings.Contains(lower, "cpod-") {
+		return false
+	}
+	if len(snapshot.InstanceIDTokensInText(userText)) > 0 {
 		return false
 	}
 	for _, field := range strings.FieldsFunc(userText, func(r rune) bool {
@@ -740,6 +744,13 @@ func lifecycleActionAllowsExplicitIDPreDispatch(action intent.LifecycleAction) b
 	return action == intent.LifecycleActionCreateDisk ||
 		action == intent.LifecycleActionResize ||
 		(action == intent.LifecycleActionRename && ContextContinuationEnabled())
+}
+
+var legacyUHostIDInTextRE = regexp.MustCompile(`uhost-[0-9a-zA-Z]+`)
+
+func hasExplicitInstanceIDForLifecyclePreDispatch(userText string, snapshot entity.RegistrySnapshot) bool {
+	return len(snapshot.InstanceIDTokensInText(userText)) > 0 ||
+		legacyUHostIDInTextRE.FindString(userText) != ""
 }
 
 func resolveLifecycleTargetForPreDispatch(userMsg string, snapshot entity.RegistrySnapshot, action intent.LifecycleAction) bool {

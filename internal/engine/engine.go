@@ -125,7 +125,6 @@ var (
 	clockRangeRE         = regexp.MustCompile(`(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)`)
 	historicalDurationRE = regexp.MustCompile(`(?i)(?:过去|近|最近|last|past|previous|recent)\s*(?:\d+\s*)?(?:分钟|小时|天|周|月|hour|hours|day|days|week|weeks|month|months|h|d)`)
 	percentValueRE       = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*%`)
-	uhostIDInTextRE      = regexp.MustCompile(`uhost-[A-Za-z0-9][A-Za-z0-9-]*`)
 )
 
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
@@ -1902,7 +1901,7 @@ const (
 )
 
 func (e *Engine) monitorHistoryTargetID(userMsg string, snapshot entity.RegistrySnapshot) (string, monitorHistoryTargetStatus) {
-	if ids := monitorHistoryExplicitIDs(userMsg); len(ids) > 1 {
+	if ids := monitorHistoryExplicitIDs(userMsg, snapshot); len(ids) > 1 {
 		return "", monitorHistoryTargetMultiple
 	} else if len(ids) == 1 {
 		return ids[0], monitorHistoryTargetOK
@@ -1920,8 +1919,8 @@ func (e *Engine) monitorHistoryTargetID(userMsg string, snapshot entity.Registry
 	return "", monitorHistoryTargetNone
 }
 
-func monitorHistoryExplicitIDs(userMsg string) []string {
-	return uniqueStrings(uhostIDInTextRE.FindAllString(userMsg, -1))
+func monitorHistoryExplicitIDs(userMsg string, snapshot entity.RegistrySnapshot) []string {
+	return uniqueStrings(snapshot.InstanceIDTokensInText(userMsg))
 }
 
 func monitorHistoryNameIDs(userMsg string, snapshot entity.RegistrySnapshot) []string {

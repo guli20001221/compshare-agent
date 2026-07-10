@@ -9,6 +9,7 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/workflow"
@@ -135,7 +136,10 @@ func userTextContainsInstanceID(userMsg, target string) bool {
 	if target == "" {
 		return false
 	}
-	for _, token := range uhostIDPattern.FindAllString(userMsg, -1) {
+	snapshot := entity.RegistrySnapshot{Instances: map[string]entity.InstanceSnapshot{
+		target: {UHostId: target},
+	}}
+	for _, token := range snapshot.InstanceIDTokensInText(userMsg) {
 		if strings.EqualFold(strings.TrimSpace(token), target) {
 			return true
 		}

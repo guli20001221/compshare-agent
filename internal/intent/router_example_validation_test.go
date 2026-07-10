@@ -21,6 +21,10 @@ func (alwaysHitResolver) ResolveByName(name string) ([]*entity.InstanceSnapshot,
 	return []*entity.InstanceSnapshot{{}}, entity.ResolveResult{Status: entity.ResolveHit, Query: name}
 }
 
+func (alwaysHitResolver) InstanceIDTokensInText(text string) []string {
+	return nil
+}
+
 // TestPlannerExamples_UseSlimPlannerOutput locks the router-v2 contract:
 // planner examples teach only the fields that still drive routing. Tool windows,
 // retrieval, and hard-block hints are now backend-derived, so they must not
