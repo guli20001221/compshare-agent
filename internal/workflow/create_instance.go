@@ -13,14 +13,13 @@ import (
 // defaultZone is the default availability zone per API docs (cn-wlcb-01, not cn-wlcb-a).
 const defaultZone = "cn-wlcb-01"
 
-const guidedCreateStepTotal = 5
-
 const (
 	guidedStepGPU = iota + 1
 	guidedStepZone
 	guidedStepGPUCount
 	guidedStepCPUMemory
 	guidedStepImagePurpose
+	guidedStepImage
 	guidedStepFinal
 )
 
@@ -263,7 +262,7 @@ func CreateInstanceDef() *Definition {
 		Name:        "CreateInstanceWorkflow",
 		Description: "查询镜像 → 查询可用配比 → 检查库存 → 查询价格 → 确认 → 创建实例 → 查看状态",
 		Steps: []Step{
-			stepQueryImages(),
+			stepQueryImages(false),
 			stepQueryInstanceTypes(),
 			stepCheckCapacity(),
 			stepGetPrice(),
@@ -281,9 +280,9 @@ func CreateInstanceDef() *Definition {
 func CreateInstanceGuidedDef() *Definition {
 	return &Definition{
 		Name:        "CreateInstanceWorkflow",
-		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择 GPU → 选择可用区 → 选择卡数量 → 选择 CPU/内存 → 选择用途 → 必要时查询社区镜像 → 检查库存 → 查询价格 → 确认镜像计费 → 创建实例 → 查看状态",
+		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择 GPU → 选择可用区 → 选择卡数量 → 选择 CPU/内存 → 选择用途 → 必要时查询社区镜像 → 选择镜像 → 检查库存 → 查询价格 → 确认镜像计费 → 创建实例 → 查看状态",
 		Steps: []Step{
-			stepQueryImages(),
+			stepQueryImages(true),
 			stepQueryInstanceTypes(),
 			stepQueryGPUInventory(),
 			stepGuidedChooseGPU(),
@@ -292,6 +291,7 @@ func CreateInstanceGuidedDef() *Definition {
 			stepGuidedChooseCPUMemory(),
 			stepGuidedChooseImagePurpose(),
 			stepQueryCommunityImagesAfterPurpose(),
+			stepGuidedChooseImage(),
 			stepCheckCapacity(),
 			stepGetPrice(),
 			stepConfirmCreateGuided(),
@@ -306,7 +306,7 @@ func CreateInstanceGuidedDef() *Definition {
 // Step definitions (params aligned with docs/api/ specs)
 // ---------------------------------------------------------------------------
 
-func stepQueryImages() Step {
+func stepQueryImages(allowCommunityBrowse bool) Step {
 	return Step{
 		Name: "查询镜像",
 		Type: StepToolCall,
@@ -320,6 +320,9 @@ func stepQueryImages() Step {
 			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
 				name := paramStr(wfCtx.Params, "ImageName", "")
 				if name == "" {
+					if allowCommunityBrowse {
+						return communityImageBrowseArgs(""), nil
+					}
 					return nil, fmt.Errorf("使用社区镜像创建实例时必须指定镜像名称（ImageName），请告诉我您想使用哪个社区镜像")
 				}
 				return map[string]any{"FuzzySearch": name}, nil
@@ -339,6 +342,21 @@ func stepQueryImages() Step {
 	}
 }
 
+func communityImageBrowseArgs(name string) map[string]any {
+	args := map[string]any{
+		"Limit":         maxGuidedCommunityImageQueryLimit,
+		"ExcludeReadme": true,
+		"SortCondition": map[string]any{
+			"Field": "CreatedCount",
+			"ASC":   false,
+		},
+	}
+	if name = strings.TrimSpace(name); name != "" {
+		args["FuzzySearch"] = name
+	}
+	return args
+}
+
 func stepQueryCommunityImagesAfterPurpose() Step {
 	return Step{
 		Name:   "查询镜像",
@@ -346,18 +364,7 @@ func stepQueryCommunityImagesAfterPurpose() Step {
 		Tool:   "DescribeCommunityImages",
 		SkipIf: shouldSkipCommunityPurposeImageQuery,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			args := map[string]any{
-				"Limit":         maxGuidedCommunityImageQueryLimit,
-				"ExcludeReadme": true,
-				"SortCondition": map[string]any{
-					"Field": "CreatedCount",
-					"ASC":   false,
-				},
-			}
-			if name := strings.TrimSpace(paramStr(wfCtx.Params, "ImageName", "")); name != "" {
-				args["FuzzySearch"] = name
-			}
-			return args, nil
+			return communityImageBrowseArgs(paramStr(wfCtx.Params, "ImageName", "")), nil
 		},
 	}
 }
@@ -657,6 +664,33 @@ func stepGuidedChooseImagePurpose() Step {
 				"workflow":     "CreateInstanceWorkflow",
 				"step":         guidedStepLabel(wfCtx, guidedStepImagePurpose),
 				"ImagePurpose": purpose,
+			}, nil
+		},
+	}
+}
+
+func stepGuidedChooseImage() Step {
+	return Step{
+		Name:              "选择镜像",
+		Type:              StepConfirm,
+		SkipIf:            shouldSkipGuidedImageStep,
+		BuildForm:         buildGuidedImageForm,
+		ApplyOverrides:    applyGuidedImageOverrides,
+		ConfirmSubmitMode: ConfirmSubmitContinue,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			gpuType := paramStr(wfCtx.Params, "GpuType", "")
+			current, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType)
+			if len(opts) == 0 {
+				return nil, fmt.Errorf("未找到可选社区镜像，请换一个镜像来源或稍后再试")
+			}
+			if current == "" {
+				current = opts[0].Value
+			}
+			return map[string]any{
+				"workflow": "CreateInstanceWorkflow",
+				"step":     guidedStepLabel(wfCtx, guidedStepImage),
+				"ImageId":  current,
+				"GpuType":  gpuType,
 			}, nil
 		},
 	}
@@ -2000,6 +2034,8 @@ func guidedStepSkipped(wfCtx *Context, logical int) bool {
 		skip, err = shouldSkipGuidedCPUMemoryStep(wfCtx)
 	case guidedStepImagePurpose:
 		skip, err = shouldSkipGuidedImagePurposeStep(wfCtx)
+	case guidedStepImage:
+		skip, err = shouldSkipGuidedImageStep(wfCtx)
 	case guidedStepFinal:
 		return false
 	default:
@@ -2092,6 +2128,24 @@ func shouldSkipGuidedCPUMemoryStep(wfCtx *Context) (bool, error) {
 
 func shouldSkipGuidedImagePurposeStep(wfCtx *Context) (bool, error) {
 	return hasExplicitImageIntent(wfCtx.Params), nil
+}
+
+func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
+	if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" {
+		return true, nil
+	}
+	if initialParamSet(wfCtx, "CompShareImageId") {
+		return true, nil
+	}
+	if strings.TrimSpace(paramStr(wfCtx.InitialParams, "ImageName", "")) != "" {
+		return true, nil
+	}
+	isCommunity := imagePurposeValue(wfCtx.Params) == imagePurposeCommunity ||
+		strings.EqualFold(strings.TrimSpace(paramStr(wfCtx.Params, "ImageSource", "")), "community")
+	if !isCommunity {
+		return true, nil
+	}
+	return false, nil
 }
 
 func shouldSkipCommunityPurposeImageQuery(wfCtx *Context) (bool, error) {
@@ -2326,6 +2380,33 @@ func buildGuidedImagePurposeForm(wfCtx *Context) (*ConfirmForm, error) {
 	}, nil
 }
 
+func buildGuidedImageForm(wfCtx *Context) (*ConfirmForm, error) {
+	gpuType := paramStr(wfCtx.Params, "GpuType", "")
+	current, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType)
+	if len(opts) == 0 {
+		return nil, fmt.Errorf("未找到可选社区镜像，请换一个镜像来源或稍后再试")
+	}
+	if current == "" {
+		current = opts[0].Value
+	}
+	index, total := guidedStepPosition(wfCtx, guidedStepImage)
+	return &ConfirmForm{
+		Version: 2,
+		Step: &ConfirmFormStep{
+			Index:          index,
+			Total:          total,
+			Title:          guidedStepTitle(index, "请选择社区镜像"),
+			Description:    "不同社区镜像支持的 GPU 不同。置灰的镜像不支持当前卡型，需要更换镜像或 GPU 后才能创建。",
+			PrimaryLabel:   "确认选择",
+			SecondaryLabel: "取消",
+		},
+		Fields: []ConfirmFormField{{
+			Key: "ImageId", Label: "社区镜像", Type: "select",
+			Value: current, Render: "cards", Editable: true, Options: opts,
+		}},
+	}, nil
+}
+
 func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 	_, _, _, _, err := resolveTargetSpec(wfCtx)
 	if err != nil {
@@ -2511,6 +2592,20 @@ func applyGuidedImagePurposeOverrides(wfCtx *Context, overrides map[string]strin
 		}
 	}
 	markGuidedStepReached(wfCtx, guidedStepImagePurpose)
+	return nil
+}
+
+func applyGuidedImageOverrides(wfCtx *Context, overrides map[string]string) error {
+	for k := range overrides {
+		if k != "ImageId" {
+			return fmt.Errorf("不支持修改字段 %s", k)
+		}
+	}
+	if err := applyCreateOverrides(wfCtx, overrides); err != nil {
+		return err
+	}
+	wfCtx.Params["ImageSource"] = "community"
+	markGuidedStepReached(wfCtx, guidedStepImage)
 	return nil
 }
 
@@ -3841,6 +3936,11 @@ func imageFormOptions(params map[string]any, images map[string]any, gpuType stri
 // currently selected image (empty = no constraint declared).
 func currentImageSupportedGPUs(params map[string]any, images map[string]any) []string {
 	if images == nil {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(paramStr(params, "ImageSource", "")), "community") &&
+		strings.TrimSpace(paramStr(params, "CompShareImageId", "")) == "" &&
+		strings.TrimSpace(paramStr(params, "ImageName", "")) == "" {
 		return nil
 	}
 	if id := pickImageId(params, images); id != "" {

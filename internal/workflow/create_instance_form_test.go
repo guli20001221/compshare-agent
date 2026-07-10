@@ -612,6 +612,211 @@ func TestCreateInstanceGuided_IncompatibleSelectedCommunityImageShowsGPUCard(t *
 	}
 }
 
+func TestCreateInstanceGuided_CommunityPurposeRequiresConcreteImageSelectionBeforeCapacity(t *testing.T) {
+	executor := formMockExecutor()
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = formSingle4090CatalogFixture()
+	executor.results["DescribeCommunityImages"] = map[string]any{"CompshareImageGroup": []any{
+		map[string]any{
+			"ImageName": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+			"Data": []any{
+				map[string]any{
+					"CompShareImageId":  "cimg-ltx",
+					"Name":              "v26.0529",
+					"SupportedGpuTypes": []any{"A800"},
+					"Size":              float64(102400),
+					"Container":         true,
+				},
+			},
+		},
+		map[string]any{
+			"ImageName": "LiveTalking",
+			"Data": []any{
+				map[string]any{
+					"CompShareImageId":  "cimg-live",
+					"Name":              "latest",
+					"SupportedGpuTypes": []any{"4090"},
+					"Size":              float64(102400),
+					"Container":         true,
+				},
+			},
+		},
+	}}
+	var imageForm *ConfirmForm
+
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		if form.Field("ImagePurpose") != nil {
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImagePurpose": "community"}}
+		}
+		if form.Field("ImageId") != nil {
+			imageForm = form
+			return ConfirmResolution{Confirmed: false}
+		}
+		return ConfirmResolution{Confirmed: true}
+	})
+
+	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+		"GpuType":          "4090",
+		"GuidedGpuLocked":  true,
+		"Zone":             "cn-wlcb-01",
+		"GuidedZoneLocked": true,
+		"Gpu":              float64(1),
+		"Cpu":              float64(16),
+		"Memory":           float64(65536),
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, imageForm, "choosing community as an image source must show a concrete image card before capacity checks")
+	require.NotNil(t, imageForm.Step)
+	assert.False(t, imageForm.Step.Final)
+	assert.False(t, result.Success)
+	image := fieldByKey(t, imageForm, "ImageId")
+	assert.Equal(t, "cimg-live", image.Value)
+	assert.Equal(t, []string{"cimg-ltx", "cimg-live"}, optionValues(image))
+	ltx := optionByValue(t, image, "cimg-ltx")
+	assert.True(t, ltx.Disabled)
+	assert.Contains(t, ltx.Reason, "镜像不支持当前 GPU")
+	live := optionByValue(t, image, "cimg-live")
+	assert.False(t, live.Disabled)
+	for _, call := range executor.calls {
+		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action, "capacity must not run before a concrete community image is selected")
+		assert.NotEqual(t, "CreateCompShareInstance", call.action)
+	}
+}
+
+func TestCreateInstanceGuided_InitialCommunitySourceRequiresConcreteImageSelection(t *testing.T) {
+	executor := formMockExecutor()
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = formSingle4090CatalogFixture()
+	executor.results["DescribeCommunityImages"] = map[string]any{"CompshareImageGroup": []any{
+		map[string]any{
+			"ImageName": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+			"Data": []any{
+				map[string]any{
+					"CompShareImageId":  "cimg-ltx",
+					"Name":              "v26.0529",
+					"SupportedGpuTypes": []any{"A800"},
+					"Size":              float64(102400),
+					"Container":         true,
+				},
+			},
+		},
+		map[string]any{
+			"ImageName": "LiveTalking",
+			"Data": []any{
+				map[string]any{
+					"CompShareImageId":  "cimg-live",
+					"Name":              "latest",
+					"SupportedGpuTypes": []any{"4090"},
+					"Size":              float64(102400),
+					"Container":         true,
+				},
+			},
+		},
+	}}
+	var imageForm *ConfirmForm
+
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		if form.Field("ImageId") != nil {
+			imageForm = form
+			return ConfirmResolution{Confirmed: false}
+		}
+		return ConfirmResolution{Confirmed: true}
+	})
+
+	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+		"ImageSource":      "community",
+		"GpuType":          "4090",
+		"GuidedGpuLocked":  true,
+		"Zone":             "cn-wlcb-01",
+		"GuidedZoneLocked": true,
+		"Gpu":              float64(1),
+		"Cpu":              float64(16),
+		"Memory":           float64(65536),
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, imageForm, "initial community source without a concrete image must still show the concrete image card")
+	assert.False(t, result.Success)
+	image := fieldByKey(t, imageForm, "ImageId")
+	assert.Equal(t, "cimg-live", image.Value)
+	assert.True(t, optionByValue(t, image, "cimg-ltx").Disabled)
+	assert.False(t, optionByValue(t, image, "cimg-live").Disabled)
+	for _, call := range executor.calls {
+		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action)
+		assert.NotEqual(t, "CreateCompShareInstance", call.action)
+	}
+}
+
+func TestCreateInstanceGuided_CommunityImageSelectionFeedsCapacityCheck(t *testing.T) {
+	executor := formMockExecutor()
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = formSingle4090CatalogFixture()
+	executor.results["DescribeCommunityImages"] = map[string]any{"CompshareImageGroup": []any{
+		map[string]any{
+			"ImageName": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+			"Data": []any{
+				map[string]any{
+					"CompShareImageId":  "cimg-ltx",
+					"Name":              "v26.0529",
+					"SupportedGpuTypes": []any{"A800"},
+					"Size":              float64(102400),
+					"Container":         true,
+				},
+			},
+		},
+		map[string]any{
+			"ImageName": "LiveTalking",
+			"Data": []any{
+				map[string]any{
+					"CompShareImageId":  "cimg-live",
+					"Name":              "latest",
+					"SupportedGpuTypes": []any{"4090"},
+					"Size":              float64(102400),
+					"Container":         true,
+				},
+			},
+		},
+	}}
+
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		if form.Field("ImagePurpose") != nil {
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImagePurpose": "community"}}
+		}
+		if form.Field("ImageId") != nil && form.Step != nil && !form.Step.Final {
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageId": "cimg-live"}}
+		}
+		return ConfirmResolution{Confirmed: true}
+	})
+
+	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+		"GpuType":          "4090",
+		"GuidedGpuLocked":  true,
+		"Zone":             "cn-wlcb-01",
+		"GuidedZoneLocked": true,
+		"Gpu":              float64(1),
+		"Cpu":              float64(16),
+		"Memory":           float64(65536),
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	capacityCall, ok := findExecutorCall(executor.calls, "CheckCompShareResourceCapacity")
+	require.True(t, ok)
+	assert.Equal(t, "cimg-live", capacityCall.args["CompShareImageId"])
+	assert.NotEqual(t, "cimg-ltx", capacityCall.args["CompShareImageId"])
+	priceCall, ok := findExecutorCall(executor.calls, "GetCompShareInstanceUserPrice")
+	require.True(t, ok)
+	assert.Equal(t, "cimg-live", priceCall.args["CompShareImageId"])
+	createCall, ok := findExecutorCall(executor.calls, "CreateCompShareInstance")
+	require.True(t, ok)
+	assert.Equal(t, "cimg-live", createCall.args["CompShareImageId"])
+	assert.NotEqual(t, "cimg-ltx", createCall.args["CompShareImageId"])
+}
+
 func TestCreateInstanceGuided_ExplicitGPUOffersIntentFamily(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "GuidedGpuLocked": true})
 	form, err := buildGuidedGPUForm(wfCtx)
