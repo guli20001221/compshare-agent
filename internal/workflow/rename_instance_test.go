@@ -42,17 +42,18 @@ func TestRenameInstance_HappyPath(t *testing.T) {
 	assert.True(t, result.Success)
 	assert.Equal(t, "工作流执行完成", result.Message)
 
-	assert.Len(t, result.Steps, 3)
-	expectedNames := []string{"查询实例", "确认改名", "修改名称"}
+	assert.Len(t, result.Steps, 4)
+	expectedNames := []string{"查询实例", "查询支持区", "确认改名", "修改名称"}
 	for i, name := range expectedNames {
 		assert.Equal(t, name, result.Steps[i].Name)
 		assert.Equal(t, "success", result.Steps[i].Status)
 	}
 
-	assert.Len(t, executor.calls, 2)
+	assert.Len(t, executor.calls, 3)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
-	assert.Equal(t, "ModifyCompShareInstanceName", executor.calls[1].action)
-	assert.Equal(t, "new-name", executor.calls[1].args["Name"])
+	assert.Equal(t, "DescribeCompShareSupportZone", executor.calls[1].action)
+	assert.Equal(t, "ModifyCompShareInstanceName", executor.calls[2].action)
+	assert.Equal(t, "new-name", executor.calls[2].args["Name"])
 }
 
 func TestRenameInstance_ConfirmShowsNewName(t *testing.T) {
@@ -97,8 +98,9 @@ func TestRenameInstance_MissingNameAsksBeforeConfirmOrMutatingCall(t *testing.T)
 	assert.Equal(t, "确认改名", result.StoppedAt)
 	assert.Equal(t, []string{"name"}, result.MissingSlots)
 	assert.Contains(t, result.Message, "改名需要指定新名称")
-	assert.Len(t, executor.calls, 1)
+	assert.Len(t, executor.calls, 2)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
+	assert.Equal(t, "DescribeCompShareSupportZone", executor.calls[1].action)
 }
 
 func TestRenameInstance_InstanceNotFound(t *testing.T) {

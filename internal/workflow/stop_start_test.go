@@ -76,15 +76,16 @@ func TestStopInstance_HappyPath(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Len(t, result.Steps, 3)
+	assert.Len(t, result.Steps, 4)
 	for i := range result.Steps {
 		assert.Equal(t, def.Steps[i].Name, result.Steps[i].Name)
 		assert.Equal(t, "success", result.Steps[i].Status)
 	}
 
-	assert.Len(t, executor.calls, 2)
+	assert.Len(t, executor.calls, 3)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
-	assert.Equal(t, "StopCompShareInstance", executor.calls[1].action)
+	assert.Equal(t, "DescribeCompShareSupportZone", executor.calls[1].action)
+	assert.Equal(t, "StopCompShareInstance", executor.calls[2].action)
 }
 
 func TestStopInstance_ConfirmDenied(t *testing.T) {
@@ -100,9 +101,10 @@ func TestStopInstance_ConfirmDenied(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Equal(t, def.Steps[1].Name, result.StoppedAt)
-	assert.Len(t, executor.calls, 1)
+	assert.Equal(t, def.Steps[2].Name, result.StoppedAt)
+	assert.Len(t, executor.calls, 2)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
+	assert.Equal(t, "DescribeCompShareSupportZone", executor.calls[1].action)
 }
 
 func TestStopInstance_ConfirmHasFeeWarning(t *testing.T) {
@@ -328,7 +330,7 @@ func TestStopInstance_SpotInstanceSendsForce(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	stopCall := executor.calls[1]
+	stopCall := executor.calls[2]
 	assert.Equal(t, "StopCompShareInstance", stopCall.action)
 	assert.Equal(t, true, stopCall.args["Force"], "Spot instance stop must include Force=true")
 }
@@ -345,7 +347,7 @@ func TestStopInstance_NonSpotOmitsForce(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	stopCall := executor.calls[1]
+	stopCall := executor.calls[2]
 	_, hasForce := stopCall.args["Force"]
 	assert.False(t, hasForce, "Non-Spot instance stop must not include Force")
 }

@@ -8,6 +8,7 @@ func StopInstanceDef() *Definition {
 		Description: "查询实例 → 确认关机 → 关机",
 		Steps: []Step{
 			stepQueryInstance(),
+			stepQuerySupportZones(),
 			stepConfirmStop(),
 			stepStopInstance(),
 		},
@@ -67,7 +68,7 @@ func stepStopInstance() Step {
 				"UHostId": wfCtx.Params["UHostId"],
 			}
 			var err error
-			args, err = addRequiredInstanceLocationArgs(args, queried)
+			args, err = addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区"))
 			if err != nil {
 				return nil, err
 			}

@@ -13,6 +13,7 @@ func ReinstallInstanceDef() *Definition {
 		Description: "查询实例 → 查询目标镜像 → 确认重装 → 重装系统",
 		Steps: []Step{
 			stepQueryForReinstall(),
+			stepQuerySupportZones(),
 			stepQueryPlatformTargetImage(),
 			stepQueryCommunityTargetImage(),
 			stepQueryCustomTargetImage(),
@@ -171,7 +172,7 @@ func stepReinstallInstance() Step {
 				"UHostId":          wfCtx.Params["UHostId"],
 				"CompShareImageId": wfCtx.Params["CompShareImageId"],
 			}
-			if _, err := addRequiredInstanceLocationArgs(args, queried); err != nil {
+			if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
 				return nil, err
 			}
 			if pw, ok := wfCtx.Params["Password"].(string); ok && pw != "" {

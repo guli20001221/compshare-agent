@@ -193,7 +193,7 @@ func stepResizeDisk() Step {
 				"UDiskId": wfCtx.Params["ResolvedDiskId"],
 				"Size":    wfCtx.Params["Size"],
 			}
-			if _, err := addRequiredInstanceLocationArgs(args, queried); err != nil {
+			if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
 				return nil, err
 			}
 			return args, nil
