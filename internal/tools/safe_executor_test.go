@@ -13,6 +13,7 @@ import (
 
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/security"
+	"github.com/compshare-agent/internal/zones"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1108,29 +1109,46 @@ func TestGetCompShareCFSUpgradePrice_PreResolvedZoneIDSkipsExtraDescribe(t *test
 
 // TestDescribeCompShareJupyterToken_ResolvesZoneIDForPodInstance proves
 // finding #9's fix: a raw call naming a Pod (cpod-*) instance triggers an
-// internal DescribeCompShareInstance lookup and attaches the resolved
-// zone_id, matching the live evidence (no zone_id -> RetCode 8433 for Pod;
-// zone_id=5001 -> success).
+// internal DescribeCompShareInstance lookup for its Zone STRING, a
+// DescribeCompShareSupportZone lookup to resolve that string to its numeric
+// ZoneID, and attaches the resolved zone_id — matching the live evidence (no
+// zone_id -> RetCode 8433 for Pod; zone_id=5001 -> success).
+//
+// The mock deliberately does NOT put a ZoneId field on the
+// DescribeCompShareInstance response — live-verified 2026-07-10 that field
+// never exists there (upstream tags it json:"-"); only the string Zone does.
+// An earlier version of this test/fix wrongly assumed ZoneId existed on that
+// response, which unit-tested green but was a no-op live; this fixture
+// exists specifically so that mistake can't silently reappear.
 func TestDescribeCompShareJupyterToken_ResolvesZoneIDForPodInstance(t *testing.T) {
 	inner := &routedExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
-			"UHostSet": []any{map[string]any{"UHostId": "cpod-abc", "ZoneId": float64(5001)}},
+			"UHostSet": []any{map[string]any{"UHostId": "cpod-abc", "Zone": "cn-bj2-03"}},
+		},
+		"DescribeCompShareSupportZone": {
+			"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "RegionId": float64(2), "IsPod": true},
+			},
 		},
 	}}
-	safe := NewSafeToolExecutor(inner)
+	safe := NewSafeToolExecutor(inner, WithZoneCatalog(zones.NewCatalog(0)))
+	ctx := WithUser(context.Background(), UserContext{TopOrganizationID: 66391350, OrganizationID: 64404856})
 
-	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+	_, err := safe.ExecuteSafe(ctx, SafeToolRequest{
 		Action: "DescribeCompShareJupyterToken",
 		Args:   map[string]any{"UHostIds": []any{"cpod-abc"}},
 		Origin: OriginDirectLLM,
 	})
 
 	require.NoError(t, err)
-	require.Len(t, inner.calls, 2, "must describe the Pod instance before requesting its Jupyter token")
+	require.Len(t, inner.calls, 3, "must describe the Pod instance and resolve its zone before requesting its Jupyter token")
 	assert.Equal(t, "DescribeCompShareInstance", inner.calls[0].action)
 	assert.Equal(t, []string{"cpod-abc"}, inner.calls[0].args["UHostIds"])
-	assert.Equal(t, "DescribeCompShareJupyterToken", inner.calls[1].action)
-	assert.Equal(t, uint32(5001), inner.calls[1].args["zone_id"])
+	assert.Equal(t, "DescribeCompShareSupportZone", inner.calls[1].action)
+	assert.Equal(t, uint32(66391350), inner.calls[1].args["top_organization_id"])
+	assert.Equal(t, uint32(64404856), inner.calls[1].args["organization_id"])
+	assert.Equal(t, "DescribeCompShareJupyterToken", inner.calls[2].action)
+	assert.Equal(t, uint32(5001), inner.calls[2].args["zone_id"])
 }
 
 // TestDescribeCompShareJupyterToken_UCloudInstanceSkipsZoneResolution proves

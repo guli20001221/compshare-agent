@@ -16,6 +16,7 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/sanitizer"
 	"github.com/compshare-agent/internal/security"
+	"github.com/compshare-agent/internal/zones"
 )
 
 var (
@@ -74,6 +75,12 @@ type SafeToolExecutor struct {
 	policies             map[string]ToolExecutionPolicy
 	confirm              ConfirmFunc
 	mutatingToolsEnabled bool
+	// zoneCatalog resolves a Zone string to its numeric ZoneID for
+	// resolveJupyterTokenZoneID. Defaults to the shared, process-wide,
+	// TTL-cached zones.Default() (same instance engine.Engine uses for the
+	// create/deploy paths); tests inject zones.NewCatalog(0) for isolation
+	// (same convention as engine.Engine.zoneCatalog).
+	zoneCatalog *zones.Catalog
 }
 
 type SafeOption func(*SafeToolExecutor)
@@ -83,6 +90,7 @@ func NewSafeToolExecutor(inner ToolExecutor, opts ...SafeOption) *SafeToolExecut
 		inner:                inner,
 		policies:             DefaultToolExecutionPolicies(),
 		mutatingToolsEnabled: true,
+		zoneCatalog:          zones.Default(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -93,6 +101,14 @@ func NewSafeToolExecutor(inner ToolExecutor, opts ...SafeOption) *SafeToolExecut
 func WithPolicies(policies map[string]ToolExecutionPolicy) SafeOption {
 	return func(s *SafeToolExecutor) {
 		s.policies = policies
+	}
+}
+
+// WithZoneCatalog overrides the zone catalog used by resolveJupyterTokenZoneID.
+// Tests should pass zones.NewCatalog(0) for isolation from the shared cache.
+func WithZoneCatalog(cat *zones.Catalog) SafeOption {
+	return func(s *SafeToolExecutor) {
+		s.zoneCatalog = cat
 	}
 }
 
@@ -347,12 +363,20 @@ func (s *SafeToolExecutor) resolveCFSUpgradeZoneID(ctx context.Context, args map
 }
 
 // resolveJupyterTokenZoneID resolves zone_id for a DescribeCompShareJupyterToken
-// call whose (first) UHostId is a Pod instance (cpod-* prefix), by describing
-// the instance (mirrors workflow.addInstancePlacementArgs's field precedence).
-// UCloud (uhost-*) instances did not need zone_id in the live evidence, so
-// this is a no-op unless a Pod id is present. Resolution failure falls
-// through unresolved rather than rejecting: without our fix a Pod call with
-// no zone_id already fails loudly upstream (RetCode 8433) instead of
+// call whose (first) UHostId is a Pod instance (cpod-* prefix).
+//
+// CORRECTED 2026-07-10 after live E2E testing caught the original
+// implementation as a silent no-op: DescribeCompShareInstance does NOT carry
+// a ZoneId/ZoneID/zone_id field on its UHostSet entries (upstream tags it
+// json:"-" — confirmed empirically, 0/6 real instances, during the original
+// conformance audit; instanceZoneIDFromDescribeResult always returned 0). The
+// field that DOES reliably exist is the string Zone (e.g. "cn-bj2-03"), which
+// must be resolved to its numeric id via the support-zone catalog — the same
+// mechanism workflow.addRequiredPodPlacementArgs uses for Pod placement
+// elsewhere. UCloud (uhost-*) instances did not need zone_id in the live
+// evidence, so this is a no-op unless a Pod id is present. Resolution failure
+// falls through unresolved rather than rejecting: without our fix a Pod call
+// with no zone_id already fails loudly upstream (RetCode 8433) instead of
 // succeeding with a wrong answer, so leaving it unresolved is no worse than
 // the pre-fix behavior.
 func (s *SafeToolExecutor) resolveJupyterTokenZoneID(ctx context.Context, args map[string]any) (map[string]any, error) {
@@ -371,13 +395,67 @@ func (s *SafeToolExecutor) resolveJupyterTokenZoneID(ctx context.Context, args m
 	if err != nil || result == nil {
 		return args, nil
 	}
-	zoneID := instanceZoneIDFromDescribeResult(result.RawResult)
+	zone := instanceZoneFromDescribeResult(result.RawResult)
+	if zone == "" {
+		return args, nil
+	}
+	topOrg, org := identityFromContext(ctx)
+	zoneList, err := s.zoneCatalog.Get(ctx, originExecutor{safe: s, origin: OriginDiagnosisInternal}, topOrg, org)
+	if err != nil {
+		return args, nil
+	}
+	zoneID := zoneIDForZoneString(zoneList, zone)
 	if zoneID == 0 {
 		return args, nil
 	}
 	out := copyMap(args)
 	out["zone_id"] = zoneID
 	return out, nil
+}
+
+// identityFromContext reads the per-request tenant identity stashed by
+// WithUser, returning zero values when absent (callers treat that as
+// "cannot resolve" and degrade gracefully rather than failing).
+func identityFromContext(ctx context.Context) (topOrg, org uint32) {
+	u, ok := UserFrom(ctx)
+	if !ok {
+		return 0, 0
+	}
+	return u.TopOrganizationID, u.OrganizationID
+}
+
+// instanceZoneFromDescribeResult returns the string Zone (e.g. "cn-bj2-03")
+// off the first UHostSet entry — unlike ZoneId/ZoneID, this field reliably
+// exists on DescribeCompShareInstance responses.
+func instanceZoneFromDescribeResult(raw map[string]any) string {
+	if raw == nil {
+		return ""
+	}
+	hostSet, ok := raw["UHostSet"].([]any)
+	if !ok || len(hostSet) == 0 {
+		return ""
+	}
+	host, ok := hostSet[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	zone, _ := host["Zone"].(string)
+	return strings.TrimSpace(zone)
+}
+
+// zoneIDForZoneString matches a Zone string (case-insensitive) against the
+// support-zone catalog and returns its numeric ZoneID, or 0 if not found.
+func zoneIDForZoneString(list []zones.ZoneInfo, zone string) uint32 {
+	zone = strings.TrimSpace(zone)
+	if zone == "" {
+		return 0
+	}
+	for _, z := range list {
+		if strings.EqualFold(z.Zone, zone) {
+			return z.ZoneID
+		}
+	}
+	return 0
 }
 
 func stringArg(v any) string {
@@ -450,25 +528,6 @@ func cfsZoneIDFromDescribeResult(raw map[string]any) uint32 {
 		}
 	}
 	return 0
-}
-
-// instanceZoneIDFromDescribeResult mirrors workflow.addInstancePlacementArgs's
-// field precedence (ZoneId / ZoneID / zone_id off the first UHostSet entry)
-// so this safety net stays in lockstep with the workflow package's existing
-// zone extraction for DescribeCompShareInstance responses.
-func instanceZoneIDFromDescribeResult(raw map[string]any) uint32 {
-	if raw == nil {
-		return 0
-	}
-	hostSet, ok := raw["UHostSet"].([]any)
-	if !ok || len(hostSet) == 0 {
-		return 0
-	}
-	host, ok := hostSet[0].(map[string]any)
-	if !ok {
-		return 0
-	}
-	return uint32FieldAny(host, "ZoneId", "ZoneID", "zone_id")
 }
 
 func uint32FieldAny(m map[string]any, keys ...string) uint32 {
