@@ -284,7 +284,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareImages",
-			Description: "查询平台镜像列表。ImageType 枚举：System（系统镜像，裸 Ubuntu/Windows）、App（应用基础镜像，如 PyTorch/CUDA/ComfyUI/Ollama），不传返回全部。查自制镜像请用 DescribeCompShareCustomImages，查社区镜像请用 DescribeCommunityImages。不用于查库存。",
+			Description: "查询平台镜像列表。ImageType 枚举：System（系统镜像，裸 Ubuntu/Windows）、App（应用基础镜像，如 PyTorch/CUDA/ComfyUI/Ollama）、Game（游戏镜像）、Other（其他），不传返回全部。查自制镜像请用 DescribeCompShareCustomImages，查社区镜像请用 DescribeCommunityImages。不用于查库存。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -294,7 +294,7 @@ var Registry = []openai.Tool{
 					},
 					"ImageType": map[string]any{
 						"type":        "string",
-						"description": "镜像类型：System(系统镜像) / App(应用基础镜像)，不传则返回全部",
+						"description": "镜像类型：System(系统镜像) / App(应用基础镜像) / Game(游戏镜像) / Other(其他)，不传则返回全部",
 					},
 					"Name": map[string]any{
 						"type":        "string",
@@ -339,7 +339,7 @@ var Registry = []openai.Tool{
 					},
 					"tags": map[string]any{
 						"type":        "string",
-						"description": "按模型仓库标签筛选，多个标签用逗号分隔，如 LLM。",
+						"description": "按模型仓库标签筛选，多个标签用逗号分隔，如 AI。标签需与模型仓库实际标签完全匹配（大小写敏感），不确定标签是否存在时优先用 name 模糊搜索。",
 					},
 				},
 				"required": []string{},
@@ -485,7 +485,7 @@ var Registry = []openai.Tool{
 						"properties": map[string]any{
 							"Field": map[string]any{
 								"type":        "string",
-								"enum":        []string{"PubTime", "CreatedCount", "Favor", "ImageUseTime", "FavoritesCount"},
+								"enum":        []string{"PubTime", "CreatedCount", "Favor", "ImageUseTime", "FavoritesCount", "Price"},
 								"description": "排序字段。CreatedCount 表示按被用于创建实例的次数排序；PubTime 表示发布时间。",
 							},
 							"ASC": map[string]any{
@@ -809,7 +809,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCFS",
-			Description: "查询 CFS 共享文件存储列表或单个 CFS。CFS 是共享文件存储，可挂载到算力实例用于共享数据集/模型文件。可传 CfsId 精确查询；可传 Zone/Region 字符串筛选，内部会处理上游字段，不要手填 zone_id/az_group。",
+			Description: "查询 CFS 共享文件存储列表或单个 CFS。CFS 是共享文件存储，可挂载到算力实例用于共享数据集/模型文件。可传 CfsId 精确查询。注意：Zone/Region 目前不能可靠按可用区筛选结果——仅传 Zone 可能直接报错，仅传 Region 或同时传 Zone+Region（即使值不匹配）都不会真正过滤，会返回同一批 CFS；不要依赖这两个参数缩小范围，也不要手填 zone_id/az_group。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

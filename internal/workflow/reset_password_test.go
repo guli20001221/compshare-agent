@@ -112,7 +112,11 @@ func TestResetPassword_VMStopped_HappyPath(t *testing.T) {
 	assert.True(t, result.Success)
 }
 
-func TestResetPassword_ContainerStopped_HappyPath(t *testing.T) {
+// TestResetPassword_ContainerStopped_Rejected: live-verified 2026-07-10 —
+// resetting a Stopped Pod's password returns upstream RetCode 8433; only a
+// Running Pod succeeds (RetCode 0). The workflow must reject before ever
+// calling ResetCompShareInstancePassword.
+func TestResetPassword_ContainerStopped_Rejected(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{
@@ -127,7 +131,6 @@ func TestResetPassword_ContainerStopped_HappyPath(t *testing.T) {
 				"ChargeType":   "Dynamic",
 			},
 		}},
-		"ResetCompShareInstancePassword": {"UHostId": "uhost-xxx", "RetCode": float64(0)},
 	}}
 	confirmFn := func(action string, args map[string]any) bool { return true }
 	onStep, _ := collectEvents()
@@ -140,7 +143,9 @@ func TestResetPassword_ContainerStopped_HappyPath(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	assert.True(t, result.Success)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "需要先开机")
+	assert.Len(t, executor.calls, 1, "must reject before calling ResetCompShareInstancePassword")
 }
 
 func TestResetPassword_VMRunning_Rejected(t *testing.T) {

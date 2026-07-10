@@ -3,18 +3,21 @@ package workflow
 import "fmt"
 
 const (
-	// Upstream ResizeCompShareInstance accepts WithoutGpu=true with the fixed
-	// 2C/4GB/GPU=0 shape. DescribeCompShareInstance.WithoutGpuSpec is not
-	// returned for every normal GPU instance, so start flow must not require it.
+	// Preview defaults for the confirm-card display when DescribeCompShareInstance
+	// reports SupportWithoutGpuStart=true but doesn't return a WithoutGpuSpec
+	// preview object. These mirror upstream spec A (2C4G) purely for display;
+	// the actual upstream call always sends the "A"/"B" WithoutGpuSpec letter
+	// directly to StartCompShareInstance (see withoutGPUSpecKey), never raw numbers.
 	withoutGPUDefaultCPU    = float64(2)
 	withoutGPUDefaultMemory = float64(4096)
 	withoutGPUDefaultGPU    = float64(0)
 )
 
 // StartInstanceDef returns the workflow definition for starting a CompShare GPU
-// instance. Normal start is query -> confirm -> start. Without-GPU start adds a
-// resize-to-without-GPU step before the final start because the upstream start
-// API does not accept a WithoutGpu parameter.
+// instance. Normal start is query -> confirm -> start. Without-GPU start passes
+// WithoutGpuSpec ("A" for Pod, "B" for UCloud) directly on the StartCompShareInstance
+// call itself — upstream removed the old two-step resize-then-start contract and
+// now hard-rejects any request that still carries the deprecated WithoutGpu boolean.
 func StartInstanceDef() *Definition {
 	return &Definition{
 		Name:        "StartInstanceWorkflow",
@@ -22,7 +25,6 @@ func StartInstanceDef() *Definition {
 		Steps: []Step{
 			stepQueryForStart(),
 			stepConfirmStart(),
-			stepResizeWithoutGPUForStart(),
 			stepStartInstance(),
 		},
 	}
@@ -83,37 +85,6 @@ func stepConfirmStart() Step {
 	}
 }
 
-func stepResizeWithoutGPUForStart() Step {
-	return Step{
-		Name: "切换无卡规格",
-		Type: StepToolCall,
-		Tool: "ResizeCompShareInstance",
-		SkipIf: func(wfCtx *Context) (bool, error) {
-			return !startWithoutGPURequested(wfCtx), nil
-		},
-		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			queried := wfCtx.Result("查询实例")
-			spec, ok := extractWithoutGPUSpec(queried)
-			if !ok {
-				return nil, fmt.Errorf("未获取到无卡规格，无法安全切换无卡模式。")
-			}
-			region, zone, err := extractRequiredInstanceLocation(queried)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{
-				"Region":     region,
-				"Zone":       zone,
-				"UHostId":    wfCtx.Params["UHostId"],
-				"WithoutGpu": true,
-				"Cpu":        spec["Cpu"],
-				"Memory":     spec["Memory"],
-				"Gpu":        spec["Gpu"],
-			}, nil
-		},
-	}
-}
-
 func stepStartInstance() Step {
 	return Step{
 		Name: "开机",
@@ -130,9 +101,22 @@ func stepStartInstance() Step {
 				"Zone":    zone,
 				"UHostId": wfCtx.Params["UHostId"],
 			}
+			if startWithoutGPURequested(wfCtx) {
+				args["WithoutGpuSpec"] = withoutGPUSpecKey(queried)
+			}
 			return args, nil
 		},
 	}
+}
+
+// withoutGPUSpecKey returns the upstream WithoutGpuSpec letter for this
+// instance. Pod (Container) instances only support spec A (2C4G); UCloud
+// instances use spec B (8C16G).
+func withoutGPUSpecKey(queried map[string]any) string {
+	if extractInstanceType(queried) == "Container" {
+		return "A"
+	}
+	return "B"
 }
 
 func startWithoutGPURequested(wfCtx *Context) bool {

@@ -1010,3 +1010,196 @@ func TestSafeExecutor_BackoffSleepsBetweenRetries(t *testing.T) {
 	assert.Less(t, elapsed, 1*time.Second,
 		"backoff should not exceed ~1s for a single retry; elapsed=%v", elapsed)
 }
+
+// routedCall records one Execute invocation for routedExecutor.
+type routedCall struct {
+	action string
+	args   map[string]any
+}
+
+// routedExecutor dispatches a canned result per action, so tests can mock a
+// multi-step resolution flow (e.g. DescribeCFS -> GetCompShareCFSUpgradePrice
+// or DescribeCompShareInstance -> DescribeCompShareJupyterToken) where a
+// single spyExecutor's uniform response is not enough.
+type routedExecutor struct {
+	results map[string]map[string]any
+	calls   []routedCall
+}
+
+func (r *routedExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
+	r.calls = append(r.calls, routedCall{action: action, args: args})
+	if result, ok := r.results[action]; ok {
+		return result, nil
+	}
+	return map[string]any{"RetCode": float64(0)}, nil
+}
+
+// TestGetCompShareCFSUpgradePrice_ResolvesZoneIDFromDescribeCFS proves finding
+// #15's fix: a raw ReAct tool call to GetCompShareCFSUpgradePrice (no zone_id
+// in the schema, so a direct-LLM caller can never supply one) triggers an
+// internal DescribeCFS lookup and the resolved zone_id is attached before the
+// price call reaches the inner executor — matching the deterministic CFS
+// route's existing describe-then-price pattern instead of the pre-fix
+// behavior where zone_id was silently absent (upstream would then return a
+// fake RetCode=0/Price=0 "success").
+func TestGetCompShareCFSUpgradePrice_ResolvesZoneIDFromDescribeCFS(t *testing.T) {
+	inner := &routedExecutor{results: map[string]map[string]any{
+		"DescribeCFS": {"CfsId": "cfs-abc", "ZoneId": float64(5001)},
+	}}
+	safe := NewSafeToolExecutor(inner)
+
+	result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "GetCompShareCFSUpgradePrice",
+		Args:   map[string]any{"CfsId": "cfs-abc", "Size": 200},
+		Origin: OriginDirectLLM,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, inner.calls, 2, "must describe the CFS before pricing it")
+	assert.Equal(t, "DescribeCFS", inner.calls[0].action)
+	assert.Equal(t, "cfs-abc", inner.calls[0].args["CfsId"])
+	assert.Equal(t, "GetCompShareCFSUpgradePrice", inner.calls[1].action)
+	assert.Equal(t, uint32(5001), inner.calls[1].args["zone_id"],
+		"resolved zone_id must reach the price call, or upstream silently returns a fake ¥0")
+}
+
+// TestGetCompShareCFSUpgradePrice_RejectsWhenZoneUnresolved proves the safe
+// fallback half of finding #15: when the CFS's zone cannot be resolved (empty
+// DescribeCFS result), the price call is refused rather than dispatched
+// without zone_id — which is exactly the request shape that upstream answers
+// with a misleading RetCode=0/Price=0 "success" instead of an error.
+func TestGetCompShareCFSUpgradePrice_RejectsWhenZoneUnresolved(t *testing.T) {
+	inner := &routedExecutor{results: map[string]map[string]any{
+		"DescribeCFS": {"CfsId": "cfs-abc"}, // no ZoneId/ZoneID/zone_id field
+	}}
+	safe := NewSafeToolExecutor(inner)
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "GetCompShareCFSUpgradePrice",
+		Args:   map[string]any{"CfsId": "cfs-abc", "Size": 200},
+		Origin: OriginDirectLLM,
+	})
+
+	require.ErrorIs(t, err, ErrCFSZoneUnresolved)
+	require.Len(t, inner.calls, 1, "must never dispatch the price call without a resolved zone_id")
+	assert.Equal(t, "DescribeCFS", inner.calls[0].action)
+}
+
+// TestGetCompShareCFSUpgradePrice_PreResolvedZoneIDSkipsExtraDescribe proves
+// the fix does not disturb the already-working deterministic CFS route: when
+// a caller (e.g. intent.handleCFSUpgradePrice via OriginDiagnosisInternal)
+// already resolved and supplied zone_id, no extra DescribeCFS lookup fires.
+func TestGetCompShareCFSUpgradePrice_PreResolvedZoneIDSkipsExtraDescribe(t *testing.T) {
+	inner := &routedExecutor{}
+	safe := NewSafeToolExecutor(inner)
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "GetCompShareCFSUpgradePrice",
+		Args:   map[string]any{"CfsId": "cfs-xyz", "Size": 100, "zone_id": uint32(7777)},
+		Origin: OriginDiagnosisInternal,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, inner.calls, 1, "a pre-resolved zone_id must not trigger a redundant DescribeCFS lookup")
+	assert.Equal(t, "GetCompShareCFSUpgradePrice", inner.calls[0].action)
+	assert.Equal(t, uint32(7777), inner.calls[0].args["zone_id"])
+}
+
+// TestDescribeCompShareJupyterToken_ResolvesZoneIDForPodInstance proves
+// finding #9's fix: a raw call naming a Pod (cpod-*) instance triggers an
+// internal DescribeCompShareInstance lookup and attaches the resolved
+// zone_id, matching the live evidence (no zone_id -> RetCode 8433 for Pod;
+// zone_id=5001 -> success).
+func TestDescribeCompShareJupyterToken_ResolvesZoneIDForPodInstance(t *testing.T) {
+	inner := &routedExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{"UHostId": "cpod-abc", "ZoneId": float64(5001)}},
+		},
+	}}
+	safe := NewSafeToolExecutor(inner)
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "DescribeCompShareJupyterToken",
+		Args:   map[string]any{"UHostIds": []any{"cpod-abc"}},
+		Origin: OriginDirectLLM,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, inner.calls, 2, "must describe the Pod instance before requesting its Jupyter token")
+	assert.Equal(t, "DescribeCompShareInstance", inner.calls[0].action)
+	assert.Equal(t, []string{"cpod-abc"}, inner.calls[0].args["UHostIds"])
+	assert.Equal(t, "DescribeCompShareJupyterToken", inner.calls[1].action)
+	assert.Equal(t, uint32(5001), inner.calls[1].args["zone_id"])
+}
+
+// TestDescribeCompShareJupyterToken_UCloudInstanceSkipsZoneResolution proves
+// finding #9's other half: a uhost-* (UCloud) instance ID does not trigger
+// any DescribeCompShareInstance lookup or zone_id attachment — the live
+// evidence showed only Pod instances needed it.
+func TestDescribeCompShareJupyterToken_UCloudInstanceSkipsZoneResolution(t *testing.T) {
+	inner := &routedExecutor{}
+	safe := NewSafeToolExecutor(inner)
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "DescribeCompShareJupyterToken",
+		Args:   map[string]any{"UHostIds": []any{"uhost-abc"}},
+		Origin: OriginDirectLLM,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, inner.calls, 1, "a UCloud instance must not trigger a zone-resolution describe call")
+	assert.Equal(t, "DescribeCompShareJupyterToken", inner.calls[0].action)
+	assert.NotContains(t, inner.calls[0].args, "zone_id")
+}
+
+// TestDedupeModelRepositoryTags proves finding #22's fix: duplicate tag
+// tokens leaking from the upstream backend's broken dedup (a "seen" map that
+// is checked but never written to — live-verified 2026-07-10, 3 total tokens
+// with "AI" appearing twice) are removed client-side for a raw tool call,
+// covering both shapes that carry tags: DescribeModelRepositoryModels' per-
+// model comma-separated "Tag" field and its sibling DescribeModelRepositoryTags'
+// flat "Tags" array.
+func TestDedupeModelRepositoryTags(t *testing.T) {
+	t.Run("DescribeModelRepositoryModels dedupes each model's CSV Tag field", func(t *testing.T) {
+		inner := &spyExecutor{result: map[string]any{
+			"Models": []any{
+				map[string]any{"Name": "Qwen2.5-7B", "Tag": "AI,LLM,AI"},
+				map[string]any{"Name": "Llama-3", "Tag": "LLM"},
+			},
+		}}
+		safe := NewSafeToolExecutor(inner)
+
+		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+			Action: "DescribeModelRepositoryModels",
+			Args:   map[string]any{},
+			Origin: OriginDirectLLM,
+		})
+
+		require.NoError(t, err)
+		models, ok := result.RawResult["Models"].([]any)
+		require.True(t, ok)
+		first, ok := models[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "AI,LLM", first["Tag"], "duplicate AI token must be removed, order preserved")
+		second, ok := models[1].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "LLM", second["Tag"], "single-tag entries must be left as-is")
+	})
+
+	t.Run("DescribeModelRepositoryTags dedupes the flat Tags array", func(t *testing.T) {
+		inner := &spyExecutor{result: map[string]any{
+			"Tags": []any{"AI", "LLM", "AI"},
+		}}
+		safe := NewSafeToolExecutor(inner)
+
+		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+			Action: "DescribeModelRepositoryTags",
+			Args:   map[string]any{},
+			Origin: OriginDirectLLM,
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, []any{"AI", "LLM"}, result.RawResult["Tags"])
+	})
+}

@@ -25,7 +25,8 @@ const (
 )
 
 // defaultDisk is the minimum required disk configuration for instance creation.
-// The system disk has a 200GB free tier on CompShare.
+// System disk free-tier pricing varies by disk type/region — do not assume a
+// fixed free-tier size here or in any user-facing text.
 var defaultDisk = deployment.DefaultSystemDisk
 
 // resolveTargetSpec selects the target (gpu, cpu, memoryMB, zone) for instance

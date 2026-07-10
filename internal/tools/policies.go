@@ -230,7 +230,15 @@ func actionAllowsBackendZoneID(action string) bool {
 		"GetCompShareCFSRefundPrice",
 		"DescribeCFS",
 		"CreateCFS",
-		"ResizeCFS":
+		"ResizeCFS",
+		// DescribeCompShareJupyterToken: Pod (cpod-*) instances need the
+		// internal zone_id or the call fails outright (RetCode 8433,
+		// live-verified 2026-07-10, finding #9). SafeToolExecutor resolves
+		// and attaches zone_id itself (resolveJupyterTokenZoneID) for raw
+		// tool calls that don't supply one; this allowlist entry lets an
+		// already-resolved zone_id survive filterSafeArgs for
+		// OriginDiagnosisInternal/OriginWorkflowInternal callers too.
+		"DescribeCompShareJupyterToken":
 		return true
 	default:
 		return false

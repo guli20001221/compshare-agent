@@ -50,7 +50,7 @@ func stepConfirmStop() Step {
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
-			summary["warning"] = "关机后实例和 GPU 停止计费。系统盘 100GB 免费；如挂载数据盘或系统盘扩容超出 100GB，仍会产生磁盘费用。如需彻底停止计费请到控制台释放实例。"
+			summary["warning"] = "关机后实例和 GPU 停止计费；磁盘（系统盘/数据盘）是否产生费用取决于盘型和区域（部分盘型或容量区间免费），具体请以控制台价格详情为准。如需彻底停止计费请到控制台释放实例。"
 			return summary, nil
 		},
 	}
@@ -66,15 +66,7 @@ func stepStopInstance() Step {
 			args := map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
 			}
-			var err error
-			args, err = addRequiredInstanceLocationArgs(args, queried)
-			if err != nil {
-				return nil, err
-			}
-			if extractChargeType(queried) == "Spot" {
-				args["Force"] = true
-			}
-			return args, nil
+			return addRequiredInstanceLocationArgs(args, queried)
 		},
 	}
 }
@@ -100,24 +92,6 @@ func extractInstanceZone(result map[string]any, defaultVal string) string {
 		return zone
 	}
 	return defaultVal
-}
-
-func extractChargeType(result map[string]any) string {
-	if result == nil {
-		return ""
-	}
-	hostSet, ok := result["UHostSet"].([]any)
-	if !ok || len(hostSet) == 0 {
-		return ""
-	}
-	first, ok := hostSet[0].(map[string]any)
-	if !ok {
-		return ""
-	}
-	if ct, ok := first["ChargeType"].(string); ok {
-		return ct
-	}
-	return ""
 }
 
 // extractInstanceState returns the State field from the first entry in UHostSet,

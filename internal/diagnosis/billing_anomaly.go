@@ -167,6 +167,7 @@ type BillingInstanceFact struct {
 	Name                  string
 	State                 string
 	ChargeType            string
+	IsSpot                bool
 	GpuType               string
 	GPU                   int
 	InstancePrice         float64
@@ -208,15 +209,15 @@ func BuildBillingFacts(hosts []any) BillingFactsSummary {
 			summary.StoppedCount++
 		}
 
-		switch fact.ChargeType {
-		case "Dynamic", "Postpay", "Spot":
+		switch {
+		case fact.isHourly():
 			summary.HasDynamic = true
 			if fact.hasKnownHourlyTotal() {
 				summary.HourlyTotal += fact.ActualComputeCharge + fact.DiskPrice + fact.ImagePrice
 			} else {
 				summary.HasUnknownDynamicCost = true
 			}
-		case "Month", "Day":
+		case fact.ChargeType == "Month" || fact.ChargeType == "Day" || fact.ChargeType == "Year":
 			summary.HasPrepaid = true
 		}
 		if fact.State == "Stopped" {
@@ -238,6 +239,11 @@ func billingInstanceFact(host map[string]any) BillingInstanceFact {
 	gpuType, _ := host["GpuType"].(string)
 	gpu, _ := host["GPU"].(float64)
 	chargeType, _ := host["ChargeType"].(string)
+	// Spot instances describe as ChargeType "Postpay" (or, if billed under the
+	// CHARGE_BY_SPOT enum, an empty string that maps to nothing) PLUS a separate
+	// IsSpot=true flag — upstream never emits ChargeType "Spot". Key off IsSpot so
+	// spot is counted/priced as hourly regardless of the ChargeType string.
+	isSpot, _ := host["IsSpot"].(bool)
 	instancePrice, hasInstancePrice := billingPriceField(host, "InstancePrice")
 	diskPrice, hasDiskPrice := billingPriceField(host, "DiskPrice")
 	imagePrice, hasImagePrice := billingPriceField(host, "CompShareImagePrice")
@@ -246,6 +252,7 @@ func billingInstanceFact(host map[string]any) BillingInstanceFact {
 		Name:                  name,
 		State:                 state,
 		ChargeType:            chargeType,
+		IsSpot:                isSpot,
 		GpuType:               gpuType,
 		GPU:                   int(gpu),
 		InstancePrice:         instancePrice,
@@ -254,9 +261,9 @@ func billingInstanceFact(host map[string]any) BillingInstanceFact {
 		HasInstancePrice:      hasInstancePrice,
 		HasDiskPrice:          hasDiskPrice,
 		HasImagePrice:         hasImagePrice,
-		ActualComputeCharge:   actualInstanceCost(state, chargeType, instancePrice),
+		ActualComputeCharge:   actualInstanceCost(state, chargeType, isSpot, instancePrice),
 		RetainedStoppedCharge: retainedStoppedCharge(state, diskPrice, imagePrice),
-		Period:                billingPeriod(chargeType),
+		Period:                billingPeriod(chargeType, isSpot),
 	}
 }
 
@@ -299,11 +306,22 @@ func retainedStoppedCharge(state string, diskPrice, imagePrice float64) float64 
 	return diskPrice + imagePrice
 }
 
+// isHourly reports whether the instance bills by the hour (按量 / 抢占式). Spot is
+// detected via IsSpot, not the ChargeType string — upstream renders spot as
+// "Postpay" (or empty), never "Spot".
+func (fact BillingInstanceFact) isHourly() bool {
+	return fact.ChargeType == "Dynamic" || fact.ChargeType == "Postpay" || fact.IsSpot
+}
+
 // actualInstanceCost returns the real billing amount for the instance portion.
-// API always returns the configured unit price, but stopped Dynamic/Postpay
-// instances actually charge ¥0 for GPU/CPU/Memory.
-func actualInstanceCost(state, chargeType string, price float64) float64 {
-	if state == "Stopped" && (chargeType == "Dynamic" || chargeType == "Postpay" || chargeType == "Spot") {
+// The describe API returns the configured unit price REGARDLESS of power state
+// (confirmed against upstream getInstancePrice — no state check), but a stopped
+// hourly instance with 关机不计费 charges ¥0 for GPU/CPU/Memory. Instances that
+// keep charging while off expose PostPayShutdown=false, which the common describe
+// response omits, so this stays a best-effort assumption; disk/image retention is
+// surfaced separately.
+func actualInstanceCost(state, chargeType string, isSpot bool, price float64) float64 {
+	if state == "Stopped" && (chargeType == "Dynamic" || chargeType == "Postpay" || isSpot) {
 		return 0
 	}
 	return price
@@ -314,7 +332,7 @@ func formatInstanceCost(host map[string]any) string {
 }
 
 func formatInstanceFactCost(fact BillingInstanceFact) string {
-	billing := chargeTypeLabel(fact.ChargeType)
+	billing := chargeTypeLabel(fact.ChargeType, fact.IsSpot)
 	actual := fact.ActualComputeCharge
 
 	costParts := "实例费 未返回"
@@ -351,25 +369,32 @@ func (fact BillingInstanceFact) hasKnownStoppedRetainedCharge() bool {
 	return fact.HasDiskPrice && fact.HasImagePrice
 }
 
-// chargeTypeLabel returns a human-readable billing label with unit.
-func chargeTypeLabel(chargeType string) string {
+// chargeTypeLabel returns a human-readable billing label with unit. Spot is keyed
+// off IsSpot (the ChargeType string is never "Spot").
+func chargeTypeLabel(chargeType string, isSpot bool) string {
+	if isSpot {
+		return "抢占式/时"
+	}
 	switch chargeType {
 	case "Month":
 		return "包月"
 	case "Day":
 		return "包日"
+	case "Year":
+		return "包年"
 	case "Dynamic", "Postpay":
 		return "按量/时"
-	case "Spot":
-		return "抢占式/时"
 	default:
 		return chargeType
 	}
 }
 
-func billingPeriod(chargeType string) string {
+func billingPeriod(chargeType string, isSpot bool) string {
+	if isSpot {
+		return "hour"
+	}
 	switch chargeType {
-	case "Dynamic", "Postpay", "Spot":
+	case "Dynamic", "Postpay":
 		return "hour"
 	case "Day":
 		return "day"
