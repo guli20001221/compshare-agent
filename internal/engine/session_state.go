@@ -223,8 +223,8 @@ const (
 // CPU 高是什么意思" / "我们在看哪台实例"), so the window is set to 5 minutes — long
 // enough to survive a normal multi-turn conversation about one instance without
 // the agent forgetting which instance / its basic state. Volatile metric freshness
-// is NOT relied on here: a "现在还高吗" follow-up re-queries via the force-recall
-// mechanism (shouldForceMonitorRecall), so a stale monitor sample is never
+// is NOT relied on here: a "现在还高吗" follow-up re-queries via monitor routing
+// refresh logic, so a stale monitor sample is never
 // presented as the authoritative current value — it is advisory context only.
 const (
 	factTTLSecondsInstanceState = 300

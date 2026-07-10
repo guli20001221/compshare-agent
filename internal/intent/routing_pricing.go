@@ -61,17 +61,13 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 		return result
 	}
 
-	matched := matchUserTextToInstanceTypeNames(req.UserText, items, true)
-	unavailable := detectKnownUnavailableGPUs(req.UserText)
+	search := slotSearchQuery(req.Plan.Slots)
+	matched := matchUserTextToInstanceTypeNames(search, items, true)
 
 	if len(matched) == 0 {
 		// No actionable GPU in the user's text — fall back to a clarify
 		// prompt listing available models so the user can pick one.
-		prefix := ""
-		if len(unavailable) > 0 {
-			prefix = strings.Join(unavailable, "、") + " 当前未在 CompShare 平台提供。"
-		}
-		result := HandledResult(pricingClarifyReply(items, prefix))
+		result := HandledResult(pricingClarifyReply(items, ""))
 		result.ToolAction = action
 		result.ToolArgs = copyArgs(map[string]any{})
 		return result
@@ -112,7 +108,7 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 			Cpu:     spec.Cpu,
 			Memory:  spec.Memory,
 			RawData: priceRaw,
-			Kind:    pricingKindForQuery(action, req.UserText),
+			Kind:    pricingKindForSlot(req.Plan.Slots),
 		})
 	}
 
@@ -127,21 +123,6 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 	return result
 }
 
-func pricingWantsCatalogPrice(userText string) bool {
-	text := strings.ToLower(strings.TrimSpace(userText))
-	if text == "" {
-		return false
-	}
-	for _, marker := range []string{
-		"目录价", "标准价", "官方价",
-	} {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
-}
-
 func pricingPriceArgs(name string, spec pricingDefaultSpec) map[string]any {
 	memMB := spec.Memory * 1024
 	return map[string]any{
@@ -152,15 +133,12 @@ func pricingPriceArgs(name string, spec pricingDefaultSpec) map[string]any {
 	}
 }
 
-func pricingKindForQuery(_ string, userText string) string {
-	if pricingWantsCatalogPrice(userText) {
+func pricingKindForSlot(slots Slots) string {
+	if slots.PriceKind == PriceKindCatalog {
 		return "标准价/目录价"
 	}
-	text := strings.ToLower(strings.TrimSpace(userText))
-	for _, marker := range []string{"折后", "实际价格", "我的价格", "我买", "优惠后", "到手价", "用户价", "实际是多少钱", "实际多少钱"} {
-		if strings.Contains(text, marker) {
-			return "用户折后价"
-		}
+	if slots.PriceKind == PriceKindAccount {
+		return "当前账号价格（含折扣）"
 	}
 	return "当前账号价格（含折扣）"
 }

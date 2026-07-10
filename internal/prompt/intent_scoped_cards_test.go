@@ -123,3 +123,56 @@ func TestOperationBoundaryRules_SingleSource(t *testing.T) {
 		}
 	}
 }
+
+func TestPromptSofteningRemovesVagueFailureEnumerations(t *testing.T) {
+	survivingRules := []string{
+		"症状不明确",
+		"先追问哪台实例和具体现象",
+		"模糊故障描述优先于具体 Diagnose 路由",
+	}
+	for name, prompt := range map[string]string{
+		"mutating_full": BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true}),
+		"readonly_full": BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false}),
+		"diagnosis_card": RenderIntentScopedReActCard(intent.IntentDiagnosis, true),
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, rule := range survivingRules[:2] {
+				if !strings.Contains(prompt, rule) {
+					t.Fatalf("prompt must keep vague-failure rule %q:\n%s", rule, prompt)
+				}
+			}
+			if name == "readonly_full" {
+				if !strings.Contains(prompt, "不要直接诊断") {
+					t.Fatalf("read-only prompt must keep direct-diagnosis boundary:\n%s", prompt)
+				}
+			} else if !strings.Contains(prompt, "不得直接调用任何 Diagnose* 工具") {
+				t.Fatalf("prompt must keep Diagnose* prohibition verbatim:\n%s", prompt)
+			}
+			// Guard on the bare trigger tokens, not on the exact composite strings
+			// that happened to be deleted: a re-added list worded differently
+			// (`（如"崩了"、"挂住了"）`) would slip past a composite match while
+			// reintroducing exactly the brittleness this gate removed.
+			//
+			// Two tokens from the old enumerations are deliberately NOT guarded,
+			// because they survive in legitimate, non-classifying prose:
+			//   "异常"  — 扣费异常 / 计费异常, a *specific* symptom that must route
+			//             to Diagnose*, the opposite of a vague failure.
+			//   "崩了"  — 服务崩了？, one of the example symptoms the agent offers
+			//             when ASKING the clarifying question (output shaping, not
+			//             input classification).
+			for _, token := range []string{
+				"跑崩了", "挂了", "挂住了", "不对劲", "不行了", "起不来", "出问题了", "有问题",
+			} {
+				if strings.Contains(prompt, token) {
+					t.Fatalf("prompt must not enumerate vague-failure phrasing; found %q. "+
+						"State the condition semantically and let the model judge membership:\n%s", token, prompt)
+				}
+			}
+		})
+	}
+
+	full := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
+	if !strings.Contains(full, survivingRules[2]) {
+		t.Fatalf("mutating prompt must keep vague-failure precedence rule %q:\n%s", survivingRules[2], full)
+	}
+}

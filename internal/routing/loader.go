@@ -39,6 +39,14 @@ type PlannerExample struct {
 	Question    string  `yaml:"question"`
 	Confidence  float64 `yaml:"confidence"`
 	ImageSource string  `yaml:"image_source,omitempty"`
+	SearchQuery string  `yaml:"search_query,omitempty"`
+	ListMode    string  `yaml:"list_mode,omitempty"`
+	PriceKind   string  `yaml:"price_kind,omitempty"`
+	CFSKind     string  `yaml:"cfs_kind,omitempty"`
+	SizeGB      int     `yaml:"size_gb,omitempty"`
+	Zone        string  `yaml:"zone,omitempty"`
+	ChargeType  string  `yaml:"charge_type,omitempty"`
+	DetailLevel string  `yaml:"detail_level,omitempty"`
 }
 
 type Route struct {

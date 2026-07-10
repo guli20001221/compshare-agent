@@ -394,10 +394,47 @@ type PlannerSkillTrace struct {
 	Resolution string `json:"resolution"`
 }
 
+// PlannerSlots projects intent.Slots for the trace. Nothing here may carry raw
+// model- or user-supplied text, so each slot is recorded under one of two
+// classes, following the TargetRef/TimeWindow precedent already established in
+// this file:
+//
+//   - verbatim, when the value is provably confined to a closed set. Those slots
+//     ARE the router's decision variable, and a trace that hides them cannot
+//     explain why a turn was refined the way it was.
+//   - hashed, when the value is free-form. A hash still shows whether the slot
+//     was populated and whether it was stable across runs, without carrying the
+//     raw text.
+//
+// "Provably confined" means confined by the time it reaches here — not merely
+// enum-typed in Go. ImageSource/ListMode/PriceKind/CFSKind/ChargeType/DetailLevel
+// are checked by intent.ValidateRoute, and SizeGB is bounded there. Action is
+// NOT: the router schema deliberately omits slots.action and is non-strict, so a
+// model that volunteers an arbitrary string still produces a SchemaValid plan
+// (see internal/intent/router_schema.go). It is therefore closed at projection
+// time against the known LifecycleAction constants — a known verb is recorded
+// verbatim, anything else is hashed, exactly as a non-canonical TimeWindow is.
 type PlannerSlots struct {
 	TargetRefs []any    `json:"target_refs"`
 	Metrics    []string `json:"metrics"`
 	TimeWindow any      `json:"time_window"`
+
+	// Validator-constrained / bounded — verbatim.
+	ImageSource string `json:"image_source,omitempty"`
+	ListMode    string `json:"list_mode,omitempty"`
+	PriceKind   string `json:"price_kind,omitempty"`
+	CFSKind     string `json:"cfs_kind,omitempty"`
+	ChargeType  string `json:"charge_type,omitempty"`
+	DetailLevel string `json:"detail_level,omitempty"`
+	SizeGB      int    `json:"size_gb,omitempty"`
+
+	// Closed at projection time: verbatim iff a known LifecycleAction.
+	Action     string `json:"action,omitempty"`
+	ActionHash string `json:"action_hash,omitempty"`
+
+	// Free-form user-derived slots — hashed, never raw.
+	SearchQueryHash string `json:"search_query_hash,omitempty"`
+	ZoneHash        string `json:"zone_hash,omitempty"`
 }
 
 // EngineHardBlock TriggeredBy enum values. Single-source attribution
@@ -619,9 +656,9 @@ type RetrievalTrace struct {
 	// far the top hit fell from the floor.
 	FloorValue float64 `json:"floor_value,omitempty"`
 	// DomainInferenceEmpty is true when the question's product area could not be
-	// inferred (inferKnowledgeProductArea=="") — so the #5 wrong-domain guard
-	// could not judge this turn. Recorded so a low wrong_domain rate is not
-	// misread as "no problem" (the question-side keyword-coverage gap).
+	// inferred, so the #5 wrong-domain guard could not judge this turn. Recorded
+	// so a low wrong_domain rate is not misread as "no problem" (the
+	// question-side routing coverage gap).
 	DomainInferenceEmpty bool `json:"domain_inference_empty,omitempty"`
 	// AllCitedOffDomain is true when every judgeable retrieved chunk was off the
 	// question's product area (the #5 case: a 库存 question grounded on billing

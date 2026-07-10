@@ -105,6 +105,33 @@ func TestValidatePlan_AcceptsImageListSourceOnlyForImageList(t *testing.T) {
 	requireValidationCode(t, ValidateRoute(wrongIntent, ValidationContext{UserText: "镜像区别", Registry: testRegistry(t)}), ErrInvalidImageSource)
 }
 
+func TestValidatePlan_AcceptsReadOnlyRefinementSlotsOnlyForTheirRoutes(t *testing.T) {
+	valid := IntentRoute{
+		SchemaVersion: SchemaVersion,
+		Intent:        IntentCFSInfo,
+		Slots: Slots{
+			CFSKind:    CFSKindCreatePrice,
+			SizeGB:     50,
+			Zone:       "cn-bj2-03",
+			ChargeType: "Year",
+		},
+		Confidence: 0.9,
+	}
+	require.NoError(t, ValidateRoute(valid, ValidationContext{UserText: "查 CFS 创建价格", Registry: testRegistry(t)}))
+
+	wrongIntent := valid
+	wrongIntent.Intent = IntentOperationLifecycle
+	requireValidationCode(t, ValidateRoute(wrongIntent, ValidationContext{UserText: "创建 CFS", Registry: testRegistry(t)}), ErrInvalidReadOnlySlot)
+
+	badPrice := IntentRoute{
+		SchemaVersion: SchemaVersion,
+		Intent:        IntentPricingQuery,
+		Slots:         Slots{PriceKind: PriceKind("retail")},
+		Confidence:    0.9,
+	}
+	requireValidationCode(t, ValidateRoute(badPrice, ValidationContext{UserText: "4090 价格", Registry: testRegistry(t)}), ErrInvalidReadOnlySlot)
+}
+
 func TestValidatePlan_RejectsInvalidMetricEnum(t *testing.T) {
 	plan := validMonitorPlan()
 	plan.Slots.Metrics = []Metric{MetricCPU, Metric("disk")}

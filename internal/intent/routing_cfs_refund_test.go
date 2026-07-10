@@ -131,6 +131,7 @@ func TestCFSInfoRouteListsCFSReadOnly(t *testing.T) {
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentCFSInfo,
+			Slots:         Slots{CFSKind: CFSKindList},
 			Retrieval:     Retrieval{Enabled: false},
 			Confidence:    0.8,
 		},
@@ -163,8 +164,13 @@ func TestCFSInfoRouteCreatePriceCallsCFSPrice(t *testing.T) {
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentCFSInfo,
-			Retrieval:     Retrieval{Enabled: false},
-			Confidence:    0.8,
+			Slots: Slots{
+				CFSKind: CFSKindCreatePrice,
+				SizeGB:  50,
+				Zone:    "cn-bj2-03",
+			},
+			Retrieval:  Retrieval{Enabled: false},
+			Confidence: 0.8,
 		},
 	})
 
@@ -178,6 +184,45 @@ func TestCFSInfoRouteCreatePriceCallsCFSPrice(t *testing.T) {
 	assert.Equal(t, uint32(3003), exec.calls[1].args["az_group"])
 	assert.Contains(t, result.Reply, "88.50")
 	assert.NotContains(t, result.Reply, "CFS 共享文件存储（只读查询）")
+}
+
+func TestCFSInfoRouteCreatePriceUsesSlots(t *testing.T) {
+	exec := &routeSequenceExecutor{results: map[string]map[string]any{
+		"DescribeCompShareSupportZone": {
+			"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "RegionId": float64(3003), "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": true},
+			},
+		},
+		"GetCompShareCFSPrice": {
+			"PriceDetails": []any{
+				map[string]any{"ChargeType": "Year", "Disks": float64(888.5)},
+			},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
+		UserText: "CFS 创建费用",
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentCFSInfo,
+			Slots: Slots{
+				CFSKind:    CFSKindCreatePrice,
+				SizeGB:     50,
+				Zone:       "cn-bj2-03",
+				ChargeType: "Year",
+			},
+			Retrieval:  Retrieval{Enabled: false},
+			Confidence: 0.8,
+		},
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.Len(t, exec.calls, 2)
+	assert.Equal(t, "GetCompShareCFSPrice", exec.calls[1].action)
+	assert.Equal(t, 50, exec.calls[1].args["Size"])
+	assert.Equal(t, "cn-bj2-03", exec.calls[1].args["Zone"])
+	assert.Equal(t, "Year", exec.calls[1].args["ChargeType"])
+	assert.Contains(t, result.Reply, "888.50")
 }
 
 func TestCFSInfoRouteCreatePriceRejectsNonPodZone(t *testing.T) {
@@ -194,8 +239,13 @@ func TestCFSInfoRouteCreatePriceRejectsNonPodZone(t *testing.T) {
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentCFSInfo,
-			Retrieval:     Retrieval{Enabled: false},
-			Confidence:    0.8,
+			Slots: Slots{
+				CFSKind: CFSKindCreatePrice,
+				SizeGB:  50,
+				Zone:    "cn-wlcb-01",
+			},
+			Retrieval:  Retrieval{Enabled: false},
+			Confidence: 0.8,
 		},
 	})
 
@@ -222,6 +272,7 @@ func TestCFSInfoRouteUpgradePriceCallsCFSUpgradePrice(t *testing.T) {
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentCFSInfo,
+			Slots:         Slots{CFSKind: CFSKindUpgradePrice, SizeGB: 200},
 			Retrieval:     Retrieval{Enabled: false},
 			Confidence:    0.8,
 		},
@@ -254,6 +305,7 @@ func TestCFSInfoRouteRefundCallsCFSRefundPrice(t *testing.T) {
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentCFSInfo,
+			Slots:         Slots{CFSKind: CFSKindRefund},
 			Retrieval:     Retrieval{Enabled: false},
 			Confidence:    0.8,
 		},

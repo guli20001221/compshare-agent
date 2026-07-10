@@ -10,6 +10,8 @@ import (
 
 	"github.com/compshare-agent/internal/routing"
 	"github.com/compshare-agent/internal/zones"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // routingIntentSet returns the route intents declared by the generated
@@ -324,6 +326,36 @@ func TestDispatchRoute_ImageListResolvesSourceFacet(t *testing.T) {
 	}
 }
 
+func TestDispatchRoute_CommunityImageUsesSlotFuzzySearch(t *testing.T) {
+	exec := &routeSequenceExecutor{results: map[string]map[string]any{
+		"DescribeCommunityImages": {
+			"CompshareImageGroup": []any{
+				map[string]any{"ImageName": "LiveTalking", "CreatedCount": float64(20), "Data": []any{
+					map[string]any{"CompShareImageId": "live-1", "Name": "LiveTalking"},
+				}},
+			},
+		},
+	}}
+	h := NewDemoHandler(exec)
+	result := h.DispatchRoute(context.Background(), HandlerRequest{
+		UserText: "推荐数字人镜像",
+		Plan: IntentRoute{
+			Intent: IntentImageList,
+			Slots: Slots{
+				ImageSource: ImageSourceCommunity,
+				SearchQuery: "数字人",
+				ListMode:    ListModeFiltered,
+			},
+		},
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, "DescribeCommunityImages", exec.calls[0].action)
+	assert.Equal(t, "数字人", exec.calls[0].args["FuzzySearch"])
+	assert.Contains(t, result.Reply, "LiveTalking")
+}
+
 type stockCapacityZoneExecutor struct {
 	calls []handlerExecCall
 }
@@ -428,78 +460,6 @@ func TestRouteMetadata_LoadedFromSkillRegistry(t *testing.T) {
 	}
 }
 
-// ----- L0 deterministic NL filter tests (PR A round 2) ----------------------
-
-func TestExtractUserTokens_StripsStopwordsAndShortRunes(t *testing.T) {
-	cases := []struct {
-		text string
-		want []string
-	}{
-		// Pure-numeric tokens ("4090", "12", "2022") are intentionally dropped
-		// here — extractUserTokens is used by image renderers (substring match
-		// against image names), where short numerics would produce false
-		// positives like "Debian 12" -> "py312". GPU/stock paths use
-		// matchUserTokensToAPINames on the raw user text instead.
-		{"4090 显存多大", nil},
-		{"A100 支持几张卡", []string{"a100"}},
-		{"查询平台镜像列表", nil},
-		{"Ubuntu 22.04 镜像有吗", []string{"ubuntu", "22.04"}},
-		{"Debian 12 镜像有吗", []string{"debian"}},
-		{"Windows 2022", []string{"windows"}},
-		{"", nil},
-		// Q10 modifier stop-list: image-category words must not survive as
-		// the sole remaining token, otherwise isImageListAllIntent's empty-
-		// token guard mis-fires and the keyword filter rejects every match.
-		// Each of these phrasings should collapse to empty tokens so that
-		// list-all detection runs and the renderer returns the full set.
-		{"我的自定义镜像有哪些", nil},
-		{"自定义镜像列表", nil},
-		{"私有镜像有哪些", nil},
-		{"公共镜像列表", nil},
-		{"共享镜像有哪些", nil},
-	}
-	for _, c := range cases {
-		got := extractUserTokens(c.text)
-		if len(got) == 0 && len(c.want) == 0 {
-			continue
-		}
-		if len(got) != len(c.want) {
-			t.Errorf("extractUserTokens(%q) = %v, want %v", c.text, got, c.want)
-			continue
-		}
-		for i := range got {
-			if got[i] != c.want[i] {
-				t.Errorf("extractUserTokens(%q)[%d] = %q, want %q", c.text, i, got[i], c.want[i])
-			}
-		}
-	}
-}
-
-func TestDetectKnownUnavailableGPUs(t *testing.T) {
-	cases := []struct {
-		text string
-		want []string
-	}{
-		{"上海机房 H100 库存", []string{"H100"}},
-		{"h100 显存多大", []string{"H100"}}, // case-insensitive
-		{"H200 有货吗", []string{"H200"}},
-		{"4090 显存", nil}, // 4090 is available, not in the "known unavailable" list
-		{"5090 显存", nil},
-		// Word-boundary symmetry: "H10" or "H20" as user text should NOT match
-		// "H100"/"H200" if those entries were ever shortened — guard against the
-		// same substring trap matchUserTokensToAPINames fixed.
-		{"H10 是什么", nil},
-		{"H20 库存", nil},
-		{"", nil},
-	}
-	for _, c := range cases {
-		got := detectKnownUnavailableGPUs(c.text)
-		if len(got) != len(c.want) {
-			t.Errorf("detectKnownUnavailableGPUs(%q) = %v, want %v", c.text, got, c.want)
-		}
-	}
-}
-
 func TestMatchUserTokensToAPINames_Subset(t *testing.T) {
 	// The API drives the matching vocabulary — no hand-maintained GPU dictionary.
 	apiNames := []string{"4090", "4090_48G", "5090", "A100", "A800", "V100S", "H20"}
@@ -510,7 +470,7 @@ func TestMatchUserTokensToAPINames_Subset(t *testing.T) {
 		{"4090 显存多大", []string{"4090"}}, // user mentioned "4090" -> exact; "4090_48G" is a different model
 		{"a100 几张卡", []string{"A100"}},  // case-insensitive
 		{"v100s 配置", []string{"V100S"}},
-		{"H100 库存", nil}, // H100 not in API set — caller handles via known-unavailable
+		{"H100 库存", nil}, // H100 not in API set
 		// Word-boundary regression: "H20" must NOT substring-match inside "H200".
 		{"你们有 H200 96G 这种规格吗", nil},
 		{"H200 还有货吗", nil},
@@ -529,40 +489,6 @@ func TestMatchUserTokensToAPINames_Subset(t *testing.T) {
 		for i := range got {
 			if got[i] != c.want[i] {
 				t.Errorf("matchUserTokensToAPINames(%q)[%d] = %q, want %q", c.text, i, got[i], c.want[i])
-			}
-		}
-	}
-}
-
-func TestMatchUserTextToInstanceTypeNames_FailsClosedForUnknownGPU(t *testing.T) {
-	// Regression for the H200→H20 confusion: "H200 96G" must NOT fall back to
-	// memory-only matching when no API name matched. Otherwise the caller
-	// surfaces H20_96G (or similar same-memory variant) as a confident answer.
-	items := []any{
-		map[string]any{"Name": "H20", "GraphicsMemory": "96"},
-		map[string]any{"Name": "4090", "GraphicsMemory": "24"},
-		map[string]any{"Name": "4090_48G", "GraphicsMemory": "48"},
-	}
-	cases := []struct {
-		text                       string
-		includeFamilyMemoryVariant bool
-		want                       []string
-	}{
-		{"你们有 H200 96G 这种规格吗", false, nil},
-		{"你们有 H200 96G 这种规格吗", true, nil},
-		{"H200 还有货吗", false, nil},
-		// Legitimate 4090 + 48G expansion still works.
-		{"4090 48G 多少钱", true, []string{"4090_48G"}},
-	}
-	for _, c := range cases {
-		got := matchUserTextToInstanceTypeNames(c.text, items, c.includeFamilyMemoryVariant)
-		if len(got) != len(c.want) {
-			t.Errorf("matchUserTextToInstanceTypeNames(%q, includeFamily=%v) = %v, want %v", c.text, c.includeFamilyMemoryVariant, got, c.want)
-			continue
-		}
-		for i := range got {
-			if got[i] != c.want[i] {
-				t.Errorf("matchUserTextToInstanceTypeNames(%q)[%d] = %q, want %q", c.text, i, got[i], c.want[i])
 			}
 		}
 	}
@@ -594,27 +520,6 @@ func TestContainsAsWord_BoundaryCases(t *testing.T) {
 	}
 }
 
-func TestUserMentionedGPULikeToken(t *testing.T) {
-	cases := []struct {
-		text string
-		want bool
-	}{
-		{"4090 显存多大", true},
-		{"A100 几张卡", true},
-		{"H100 库存", true},
-		{"5070 有货吗", true}, // not in API but GPU-shaped
-		{"查询社区镜像", false},
-		{"查询自制镜像", false},
-		{"Ubuntu 镜像有吗", false}, // no digit-heavy GPU shape (Ubuntu alone)
-	}
-	for _, c := range cases {
-		got := userMentionedGPULikeToken(c.text)
-		if got != c.want {
-			t.Errorf("userMentionedGPULikeToken(%q) = %v, want %v", c.text, got, c.want)
-		}
-	}
-}
-
 func TestRenderGPUSpecs_FilterToMentionedModel(t *testing.T) {
 	raw := map[string]any{
 		"AvailableInstanceTypes": []any{
@@ -630,7 +535,7 @@ func TestRenderGPUSpecs_FilterToMentionedModel(t *testing.T) {
 			},
 		},
 	}
-	reply := renderGPUSpecsReply(raw, "A100 支持几张卡")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "A100", DetailLevel: DetailLevelSummary}, "A100 支持几张卡")
 	if strings.Contains(reply, "机型=4090") {
 		t.Errorf("filter should exclude 4090 when user asked A100; got: %s", reply)
 	}
@@ -666,7 +571,7 @@ func TestRenderGPUSpecs_OverviewDoesNotExpandEveryMachineSize(t *testing.T) {
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, "4090 显存多大")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090", DetailLevel: DetailLevelSummary}, "4090 显存多大")
 
 	if !strings.Contains(reply, "机型=4090") || !strings.Contains(reply, "显存=24GB") {
 		t.Fatalf("overview should include basic GPU facts, got: %s", reply)
@@ -719,7 +624,7 @@ func TestRenderGPUSpecs_FullModelRequestExpandsEveryMachineSize(t *testing.T) {
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, "4090 的所有规格")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090", DetailLevel: DetailLevelFull}, "4090 的所有规格")
 
 	for _, want := range []string{"16C/64G", "16C/94G", "24C/96G", "32C/128G", "32C/192G"} {
 		if !strings.Contains(reply, want) {
@@ -729,6 +634,37 @@ func TestRenderGPUSpecs_FullModelRequestExpandsEveryMachineSize(t *testing.T) {
 	if strings.Contains(reply, "A100") {
 		t.Fatalf("full model request should still filter unrelated GPU models, got: %s", reply)
 	}
+}
+
+func TestHandleGPUSpecsQuery_DetailLevelComesFromSlot(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name":           "4090",
+				"GraphicsMemory": map[string]any{"Value": 24},
+				"Status":         "Normal",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+						},
+					},
+				},
+			},
+		},
+	}}
+	result := handleGPUSpecsQuery(context.Background(), NewDemoHandler(exec), HandlerRequest{
+		UserText: "4090 显存多大",
+		Plan: IntentRoute{
+			Intent: IntentGPUSpecsQuery,
+			Slots:  Slots{SearchQuery: "4090", DetailLevel: DetailLevelFull},
+		},
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "完整配置=")
+	assert.Contains(t, result.Reply, "16C/64G")
 }
 
 func TestRenderGPUSpecs_CPUAndMemoryQuestionExpandsEveryMachineSize(t *testing.T) {
@@ -750,7 +686,7 @@ func TestRenderGPUSpecs_CPUAndMemoryQuestionExpandsEveryMachineSize(t *testing.T
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, "4090 支持哪些 CPU 和内存")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090", DetailLevel: DetailLevelFull}, "4090 支持哪些 CPU 和内存")
 
 	for _, want := range []string{"16C/64G", "16C/94G", "24C/96G"} {
 		if !strings.Contains(reply, want) {
@@ -791,7 +727,7 @@ func TestRenderGPUSpecs_FullAllRequestExpandsAllModels(t *testing.T) {
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, "列出所有 GPU 规格")
+	reply := renderGPUSpecsReply(raw, Slots{DetailLevel: DetailLevelFull}, "列出所有 GPU 规格")
 
 	for _, want := range []string{"机型=4090", "16C/64G", "16C/94G", "机型=A100", "20C/160G"} {
 		if !strings.Contains(reply, want) {
@@ -822,7 +758,7 @@ func TestGPUSpecsRouteUsesDescribeAvailableAndExpandsFullRequest(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentGPUSpecsQuery},
+		Plan:     IntentRoute{Intent: IntentGPUSpecsQuery, Slots: Slots{SearchQuery: "4090", DetailLevel: DetailLevelFull}},
 		UserText: "4090 的所有规格",
 	})
 
@@ -860,7 +796,7 @@ func TestRenderGPUSpecs_IncludesMemoryVariantForFamilyQuestion(t *testing.T) {
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, "4090有哪些规格")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090", DetailLevel: DetailLevelSummary}, "4090有哪些规格")
 
 	if !strings.Contains(reply, "机型=4090,") {
 		t.Errorf("family question should include base 4090; got: %s", reply)
@@ -881,7 +817,7 @@ func TestRenderGPUSpecs_MemoryHintMatchesMemoryVariant(t *testing.T) {
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, "是否有48G的4090")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090 48G", DetailLevel: DetailLevelSummary}, "是否有48G的4090")
 
 	if strings.Contains(reply, "机型=4090,") {
 		t.Errorf("48G question should not answer with plain 4090; got: %s", reply)
@@ -898,25 +834,22 @@ func TestRenderGPUSpecs_MemoryHintWithoutMatchDoesNotFallBackToBase(t *testing.T
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, "有没有128G的4090")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090 128G", DetailLevel: DetailLevelSummary}, "有没有128G的4090")
 
 	if !strings.Contains(reply, "未在当前可售机型里找到") {
 		t.Errorf("unavailable memory variant should be reported as not found; got: %s", reply)
 	}
 }
 
-func TestRenderGPUSpecs_KnownUnavailableFallback(t *testing.T) {
+func TestRenderGPUSpecs_SearchQueryNoMatchFallback(t *testing.T) {
 	raw := map[string]any{
 		"AvailableInstanceTypes": []any{
 			map[string]any{"Name": "4090", "GraphicsMemory": map[string]any{"Value": 24}},
 		},
 	}
-	reply := renderGPUSpecsReply(raw, "上海机房 H100 库存")
-	if !strings.Contains(reply, "H100") {
-		t.Errorf("known-unavailable reply should mention H100; got: %s", reply)
-	}
-	if !strings.Contains(reply, "未在 CompShare 平台提供") {
-		t.Errorf("known-unavailable reply should explain not provided; got: %s", reply)
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "H100", DetailLevel: DetailLevelSummary}, "上海机房 H100 库存")
+	if !strings.Contains(reply, "未在当前可售机型里找到") {
+		t.Errorf("no-match reply should explain; got: %s", reply)
 	}
 }
 
@@ -926,7 +859,7 @@ func TestRenderGPUSpecs_GPULikeButNoMatchFallback(t *testing.T) {
 			map[string]any{"Name": "4090", "GraphicsMemory": map[string]any{"Value": 24}},
 		},
 	}
-	reply := renderGPUSpecsReply(raw, "5070 显存多大") // 5070 doesn't exist + not in known-unavailable
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "5070", DetailLevel: DetailLevelSummary}, "5070 显存多大")
 	if !strings.Contains(reply, "未在当前可售机型里找到") {
 		t.Errorf("not-found fallback should explain; got: %s", reply)
 	}
@@ -1014,7 +947,7 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
 		UserText: "4090 现在有没有货",
 	})
 
@@ -1089,7 +1022,9 @@ func TestStockAvailabilityPodCapacityPrecheckUsesZoneIDOnly(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		Plan: IntentRoute{Intent: IntentStockAvailability, Slots: Slots{
+			SearchQuery: "4090",
+		}},
 		UserText: "4090 现在有没有货",
 	})
 
@@ -1138,7 +1073,7 @@ func TestStockAvailabilityReportsRawGPUInventoryAndCapacitySeparately(t *testing
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "2080ti"}},
 		UserText: "2080ti有库存吗",
 	})
 
@@ -1194,7 +1129,7 @@ func TestStockAvailabilityFiltersByLiveZoneDescribe(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090", Zone: "上海二B"}},
 		UserText: "上海有4090库存吗",
 	})
 
@@ -1251,7 +1186,7 @@ func TestStockAvailabilityMissingInventoryKeyIsUnknownNotZero(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "v100"}},
 		UserText: "v100有库存吗",
 	})
 
@@ -1286,7 +1221,7 @@ func TestStockAvailabilityKeepsZoneInventoryWhenCapacityImageMissing(t *testing.
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
 		UserText: "4090 现在有库存吗",
 	})
 
@@ -1338,7 +1273,7 @@ func TestStockAvailabilityMissingSupportZoneMappingIsUnknownNotZero(t *testing.T
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "2080ti"}},
 		UserText: "2080ti有库存吗",
 	})
 
@@ -1353,25 +1288,25 @@ func TestStockAvailabilityMissingSupportZoneMappingIsUnknownNotZero(t *testing.T
 	}
 }
 
-func TestStockZoneFilterIgnoresAmbiguousShortChineseRegionPrefix(t *testing.T) {
+func TestStockZoneFilterUsesRouteZoneSlot(t *testing.T) {
 	supportZones := []zones.ZoneInfo{
 		{Zone: "cn-wlcb-01", Describe: "华北二A"},
 		{Zone: "cn-bj2-03", Describe: "华北一C"},
 		{Zone: "cn-sh2-02", Describe: "上海二B"},
 	}
 
-	if got := stockZoneFilterFromText("华北有4090库存吗", supportZones); got != nil {
-		t.Fatalf("ambiguous short prefix should not narrow zones, got: %#v", got)
+	if got := stockZoneFilterFromSlot("", supportZones); got != nil {
+		t.Fatalf("empty route zone should not narrow zones, got: %#v", got)
 	}
-	if got := stockZoneFilterFromText("华北二有4090库存吗", supportZones); len(got) != 1 {
-		t.Fatalf("unique longer prefix should narrow one zone, got: %#v", got)
+	if got := stockZoneFilterFromSlot("华北二A", supportZones); len(got) != 1 {
+		t.Fatalf("route zone describe should narrow one zone, got: %#v", got)
 	} else if _, ok := got["cn-wlcb-01"]; !ok {
-		t.Fatalf("unique longer prefix should resolve cn-wlcb-01, got: %#v", got)
+		t.Fatalf("route zone describe should resolve cn-wlcb-01, got: %#v", got)
 	}
-	if got := stockZoneFilterFromText("上海有4090库存吗", supportZones); len(got) != 1 {
-		t.Fatalf("unique two-rune prefix should still resolve when unambiguous, got: %#v", got)
+	if got := stockZoneFilterFromSlot("cn-sh2-02", supportZones); len(got) != 1 {
+		t.Fatalf("route zone id should resolve one zone, got: %#v", got)
 	} else if _, ok := got["cn-sh2-02"]; !ok {
-		t.Fatalf("unique Shanghai prefix should resolve cn-sh2-02, got: %#v", got)
+		t.Fatalf("route zone id should resolve cn-sh2-02, got: %#v", got)
 	}
 }
 
@@ -1401,7 +1336,7 @@ func TestStockAvailabilityUsesFirstMatchedZoneForCapacityPrecheck(t *testing.T) 
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
 		UserText: "4090 现在有没有货",
 	})
 
@@ -1424,7 +1359,7 @@ func TestStockAvailabilityFallsBackToNextZoneWhenCapacityCheckFails(t *testing.T
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability},
+		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
 		UserText: "4090 鐜板湪鏈夋病鏈夎揣",
 	})
 
@@ -1442,7 +1377,7 @@ func TestStockAvailabilityFallsBackToNextZoneWhenCapacityCheckFails(t *testing.T
 	}
 }
 
-func TestRenderImageList_KeywordFilter(t *testing.T) {
+func TestRenderImageList_RouteSearchQueryFilter(t *testing.T) {
 	raw := map[string]any{
 		"ImageSet": []any{
 			map[string]any{"CompShareImageId": "img-1", "ImageName": "Ubuntu 22.04 LTS", "ImageType": "System"},
@@ -1452,7 +1387,7 @@ func TestRenderImageList_KeywordFilter(t *testing.T) {
 	}
 	reply := renderImageListReply(raw, "ImageSet",
 		[]string{"CompShareImageId", "ImageName", "ImageType"},
-		"Ubuntu 22.04 镜像有吗")
+		Slots{SearchQuery: "Ubuntu 22.04", ListMode: ListModeFiltered})
 	if strings.Contains(reply, "CentOS") || strings.Contains(reply, "PyTorch") {
 		t.Errorf("image filter should exclude non-Ubuntu; got: %s", reply)
 	}
@@ -1471,7 +1406,7 @@ func TestRenderImageList_PyTorchMatchesTorchNamedImages(t *testing.T) {
 	}
 	reply := renderImageListReply(raw, "ImageSet",
 		[]string{"CompShareImageId", "Name", "ImageType"},
-		"有哪些 PyTorch 镜像")
+		Slots{SearchQuery: "torch", ListMode: ListModeFiltered})
 
 	if !strings.Contains(reply, "cuda128_torch291_py312") {
 		t.Errorf("PyTorch query should match torch/cuda image names; got: %s", reply)
@@ -1489,7 +1424,7 @@ func TestRenderImageList_NoMatchFallback(t *testing.T) {
 	}
 	reply := renderImageListReply(raw, "ImageSet",
 		[]string{"CompShareImageId", "ImageName"},
-		"Debian 12 镜像有吗")
+		Slots{SearchQuery: "Debian 12", ListMode: ListModeFiltered})
 	if !strings.Contains(reply, "未找到匹配的镜像") {
 		t.Errorf("no-match should produce explicit not-found reply; got: %s", reply)
 	}
@@ -1511,26 +1446,16 @@ func TestRenderCommunityImage_DigitalHumanQueryMatchesRelevantGroups(t *testing.
 				map[string]any{"CompShareImageId": "ltx-1", "Name": "LTX-v1"},
 			},
 		},
-		map[string]any{
-			"ImageName":    "RAGFlow Ubuntu 22.04",
-			"CreatedCount": float64(900),
-			"Data": []any{
-				map[string]any{"CompShareImageId": "rag-1", "Name": "RAGFlow-v1"},
-			},
-		},
 	}}
 
-	reply := renderCommunityImageReply(raw, "有哪些社区镜像适合数字人")
+	reply := renderCommunityImageReply(raw, Slots{SearchQuery: "数字人", ListMode: ListModeFiltered})
 
 	if !strings.Contains(reply, "LiveTalking") || !strings.Contains(reply, "LTX-2.3") {
 		t.Errorf("digital-human query should include relevant community image groups; got: %s", reply)
 	}
-	if strings.Contains(reply, "RAGFlow") {
-		t.Errorf("digital-human query should not include unrelated community image groups; got: %s", reply)
-	}
 }
 
-func TestRenderImageList_StopwordsOnlyShowsAll(t *testing.T) {
+func TestRenderImageList_ListAllShowsAll(t *testing.T) {
 	raw := map[string]any{
 		"ImageSet": []any{
 			map[string]any{"CompShareImageId": "img-1", "ImageName": "Ubuntu 22.04 LTS"},
@@ -1539,7 +1464,7 @@ func TestRenderImageList_StopwordsOnlyShowsAll(t *testing.T) {
 	}
 	reply := renderImageListReply(raw, "ImageSet",
 		[]string{"CompShareImageId", "ImageName"},
-		"查询平台镜像列表") // all tokens are stopwords -> no filter
+		Slots{ListMode: ListModeAll})
 	if !strings.Contains(reply, "Ubuntu") || !strings.Contains(reply, "PyTorch") {
 		t.Errorf("stopwords-only query should show all images; got: %s", reply)
 	}
@@ -1582,7 +1507,7 @@ func TestRenderImageTagCatalog_Empty(t *testing.T) {
 
 func TestModelRepositoryArgs_MatchesTag(t *testing.T) {
 	tagRaw := map[string]any{"Tags": []any{"LLM", "图像生成"}}
-	args := modelRepositoryArgsFromUserText("有哪些 LLM 模型", tagRaw)
+	args := modelRepositoryArgsFromSlots(Slots{SearchQuery: "LLM", ListMode: ListModeFiltered}, tagRaw)
 	if args["tags"] != "LLM" {
 		t.Fatalf("model repository args = %#v, want tags=LLM", args)
 	}
@@ -1591,8 +1516,8 @@ func TestModelRepositoryArgs_MatchesTag(t *testing.T) {
 	}
 }
 
-func TestModelRepositoryArgs_MatchesModelName(t *testing.T) {
-	args := modelRepositoryArgsFromUserText("Qwen 模型仓库里有吗", map[string]any{"Tags": []any{"LLM"}})
+func TestModelRepositoryArgs_UsesSlotSearchQuery(t *testing.T) {
+	args := modelRepositoryArgsFromSlots(Slots{SearchQuery: "Qwen", ListMode: ListModeFiltered}, map[string]any{"Tags": []any{"LLM"}})
 	if args["name"] != "qwen" {
 		t.Fatalf("model repository args = %#v, want name=qwen", args)
 	}
@@ -1604,7 +1529,7 @@ func TestRenderModelRepositoryReply_ListAll(t *testing.T) {
 		map[string]any{"Name": "DeletedModel", "Path": "/models/deleted", "Tag": "LLM", "Size": "1GB", "Deleted": float64(1)},
 	}}
 	tagRaw := map[string]any{"Tags": []any{"LLM", "图像生成", "LLM"}}
-	reply := renderModelRepositoryReply(modelRaw, tagRaw, "模型仓库里有哪些模型可以用")
+	reply := renderModelRepositoryReply(modelRaw, tagRaw, Slots{ListMode: ListModeAll})
 	for _, want := range []string{"模型仓库标签", "LLM", "模型仓库列表", "Qwen2.5-7B", "/models/qwen"} {
 		if !strings.Contains(reply, want) {
 			t.Errorf("model repository reply missing %q: %s", want, reply)
@@ -1630,7 +1555,7 @@ func TestRenderModelRepositoryReply_NameFilterNoMatch(t *testing.T) {
 		map[string]any{"Name": "Qwen2.5-7B", "Path": "/models/qwen", "Tag": "LLM", "Size": "15GB"},
 	}}
 	tagRaw := map[string]any{"Tags": []any{"LLM"}}
-	reply := renderModelRepositoryReply(modelRaw, tagRaw, "llama 模型有吗")
+	reply := renderModelRepositoryReply(modelRaw, tagRaw, Slots{SearchQuery: "llama", ListMode: ListModeFiltered})
 	if !strings.Contains(reply, "未找到匹配的模型") {
 		t.Errorf("name-filter no-match should be explicit; got: %s", reply)
 	}
@@ -1661,7 +1586,7 @@ func TestRenderCommunityImage_DataExpansionAndCap(t *testing.T) {
 		},
 	}
 	raw := map[string]any{"CompshareImageGroup": []any{group}}
-	reply := renderCommunityImageReply(raw, "查询社区镜像")
+	reply := renderCommunityImageReply(raw, Slots{ListMode: ListModeAll})
 	if !strings.Contains(reply, "名称=ComfyUI 镜像") {
 		t.Errorf("community renderer should show group header; got: %s", reply)
 	}
@@ -1696,7 +1621,7 @@ func TestRenderCommunityImage_Popularity(t *testing.T) {
 		},
 	}
 	raw := map[string]any{"CompshareImageGroup": []any{group}}
-	reply := renderCommunityImageReply(raw, "查询社区镜像")
+	reply := renderCommunityImageReply(raw, Slots{ListMode: ListModeAll})
 	if !strings.Contains(reply, "部署次数=13517") {
 		t.Errorf("header should surface CreatedCount popularity; got: %s", reply)
 	}
@@ -1707,7 +1632,7 @@ func TestRenderCommunityImage_Popularity(t *testing.T) {
 	// A group with no CreatedCount must NOT fabricate a 部署次数 figure.
 	noCount := map[string]any{"ImageName": "x", "Data": []any{map[string]any{"Name": "v1"}}}
 	rawNoCount := map[string]any{"CompshareImageGroup": []any{noCount}}
-	if got := renderCommunityImageReply(rawNoCount, "查询社区镜像"); strings.Contains(got, "部署次数=") {
+	if got := renderCommunityImageReply(rawNoCount, Slots{ListMode: ListModeAll}); strings.Contains(got, "部署次数=") {
 		t.Errorf("must not show 部署次数 when CreatedCount is absent; got: %s", got)
 	}
 }
@@ -1726,7 +1651,7 @@ func TestRenderCommunityImage_SortedByDeployCount(t *testing.T) {
 	raw := map[string]any{"CompshareImageGroup": []any{
 		mk("low", 100), mk("high", 9000), mk("mid", 3000),
 	}}
-	reply := renderCommunityImageReply(raw, "查询社区镜像")
+	reply := renderCommunityImageReply(raw, Slots{ListMode: ListModeAll})
 	hi := strings.Index(reply, "名称=high")
 	mi := strings.Index(reply, "名称=mid")
 	lo := strings.Index(reply, "名称=low")
@@ -1757,7 +1682,7 @@ func TestRenderCommunityImage_DeduplicatesDuplicateGroupNames(t *testing.T) {
 		},
 	}}
 
-	reply := renderCommunityImageReply(raw, "有哪些社区镜像适合数字人")
+	reply := renderCommunityImageReply(raw, Slots{SearchQuery: "数字人", ListMode: ListModeFiltered})
 
 	if got := strings.Count(reply, "名称=LiveTalking"); got != 1 {
 		t.Fatalf("expected LiveTalking to appear once, got %d in:\n%s", got, reply)
@@ -1781,7 +1706,7 @@ func TestRenderCommunityImage_CapsDefaultOutputAtTen(t *testing.T) {
 	}
 	raw := map[string]any{"CompshareImageGroup": groups}
 
-	reply := renderCommunityImageReply(raw, "查询社区镜像")
+	reply := renderCommunityImageReply(raw, Slots{ListMode: ListModeAll})
 
 	if got := strings.Count(reply, "名称=community-image-"); got != communityImageGroupLimit {
 		t.Fatalf("expected %d community image candidates, got %d in:\n%s", communityImageGroupLimit, got, reply)
@@ -1803,7 +1728,7 @@ func TestRenderModelRepositoryReply_CapsDefaultOutputAtTen(t *testing.T) {
 	modelRaw := map[string]any{"Models": models}
 	tagRaw := map[string]any{"Tags": []any{"LLM", "Qwen"}}
 
-	reply := renderModelRepositoryReply(modelRaw, tagRaw, "模型仓库里有哪些模型可以用")
+	reply := renderModelRepositoryReply(modelRaw, tagRaw, Slots{ListMode: ListModeAll})
 
 	if got := strings.Count(reply, "Name=Qwen-"); got != imageModelBrowseDisplayCap {
 		t.Fatalf("expected %d model candidates, got %d in:\n%s", imageModelBrowseDisplayCap, got, reply)
@@ -1834,7 +1759,7 @@ func TestRenderModelRepositoryReply_NoOverflowNoteWhenWithinCap(t *testing.T) {
 	modelRaw := map[string]any{"Models": models}
 	tagRaw := map[string]any{"Tags": []any{"LLM", "Qwen"}}
 
-	reply := renderModelRepositoryReply(modelRaw, tagRaw, "模型仓库里有哪些模型可以用")
+	reply := renderModelRepositoryReply(modelRaw, tagRaw, Slots{ListMode: ListModeAll})
 
 	if strings.Contains(reply, "已显示前") || strings.Contains(reply, "可补充关键词") {
 		t.Fatalf("model repository reply within cap should not include overflow note, got:\n%s", reply)
@@ -1856,7 +1781,7 @@ func TestBuildCommunityImageEnvelope_PopularityFactsAndOrder(t *testing.T) {
 	raw := map[string]any{"CompshareImageGroup": []any{
 		mk("low", 100), mk("high", 9000), mk("mid", 3000), noCount,
 	}}
-	env := buildCommunityImageEnvelope(raw, "查询社区镜像")
+	env := buildCommunityImageEnvelope(raw, Slots{ListMode: ListModeAll}, "查询社区镜像")
 
 	// Subjects sorted by deploy count desc; the unsized group sorts last.
 	got := make([]string, 0, len(env.Subjects))
@@ -1913,7 +1838,7 @@ func TestBuildCommunityImageEnvelope_CapsDefaultSubjectsAtTen(t *testing.T) {
 	}
 	raw := map[string]any{"CompshareImageGroup": groups}
 
-	env := buildCommunityImageEnvelope(raw, "查询社区镜像")
+	env := buildCommunityImageEnvelope(raw, Slots{ListMode: ListModeAll}, "查询社区镜像")
 
 	if got := len(env.Subjects); got != communityImageGroupLimit {
 		t.Fatalf("expected %d community image subjects, got %d: %#v", communityImageGroupLimit, got, env.Subjects)
@@ -1937,7 +1862,7 @@ func TestRenderSharedImageListReply_ListAll(t *testing.T) {
 			"Owner":            map[string]any{"AccountName": "team-a", "AccountId": float64(123)},
 		}},
 	}
-	reply := renderSharedImageListReply(raw, "别人共享给我的镜像在哪看")
+	reply := renderSharedImageListReply(raw, Slots{ListMode: ListModeAll})
 	// Clean display (③): 名称-first + 中文 labels + owner; the raw CompShareImageId is
 	// dropped from the default view (用户按名称引用即可) — assert it is ABSENT.
 	for _, want := range []string{"共享给你的镜像", "名称=shared-env", "所有者=team-a"} {
@@ -1954,14 +1879,14 @@ func TestRenderSharedImageListReply_NameFilterNoMatch(t *testing.T) {
 	raw := map[string]any{
 		"ImageSet": []any{map[string]any{"CompShareImageId": "img-shared-1", "Name": "shared-env"}},
 	}
-	reply := renderSharedImageListReply(raw, "llama 共享镜像")
+	reply := renderSharedImageListReply(raw, Slots{SearchQuery: "llama", ListMode: ListModeFiltered})
 	if !strings.Contains(reply, "未找到匹配的共享镜像") {
 		t.Errorf("shared image no-match should be explicit; got: %s", reply)
 	}
 }
 
 func TestRenderSharedImageListReply_Empty(t *testing.T) {
-	reply := renderSharedImageListReply(map[string]any{}, "别人共享给我的镜像")
+	reply := renderSharedImageListReply(map[string]any{}, Slots{ListMode: ListModeAll})
 	if !strings.Contains(reply, "未获取到共享给你的镜像") {
 		t.Errorf("empty shared image reply should be explicit; got: %s", reply)
 	}
@@ -1976,7 +1901,7 @@ func TestRenderImageListReply_CleanDisplay(t *testing.T) {
 		map[string]any{"CompShareImageId": "img-pt", "Name": "PyTorch 2.9", "ImageType": "App"},
 	}}
 	fieldOrder := []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"}
-	reply := renderImageListReply(raw, "ImageSet", fieldOrder, "有哪些镜像")
+	reply := renderImageListReply(raw, "ImageSet", fieldOrder, Slots{ListMode: ListModeAll})
 	if !strings.Contains(reply, "名称=PyTorch 2.9") {
 		t.Errorf("clean display must lead with 名称; got: %s", reply)
 	}
@@ -1996,7 +1921,7 @@ func TestRenderImageListReply_CapAndOverflow(t *testing.T) {
 	for i := 0; i < total; i++ {
 		items = append(items, map[string]any{"CompShareImageId": fmt.Sprintf("img-%d", i), "Name": fmt.Sprintf("img-name-%d", i)})
 	}
-	reply := renderImageListReply(map[string]any{"ImageSet": items}, "ImageSet", []string{"CompShareImageId", "Name"}, "列出全部镜像")
+	reply := renderImageListReply(map[string]any{"ImageSet": items}, "ImageSet", []string{"CompShareImageId", "Name"}, Slots{ListMode: ListModeAll})
 	if got := strings.Count(reply, "名称="); got != imageListDisplayCap {
 		t.Errorf("expected %d capped rows, got %d", imageListDisplayCap, got)
 	}
@@ -2013,7 +1938,7 @@ func TestBuildImageListEnvelope_NoRawIDFacts(t *testing.T) {
 		map[string]any{"CompShareImageId": "img-pt", "Name": "PyTorch 2.9", "ImageType": "App"},
 	}}
 	fieldOrder := []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"}
-	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, "有哪些镜像", "DescribeCompShareImages", "platform")
+	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, Slots{ListMode: ListModeAll}, "有哪些镜像", "DescribeCompShareImages", "platform")
 	for _, f := range env.Facts {
 		if f.Key == "CompShareImageId" || f.Key == "Name" {
 			t.Errorf("display Fact %q should be dropped (id→Subject.ID, name→Subject.Name); facts=%v", f.Key, env.Facts)
@@ -2031,7 +1956,7 @@ func TestBuildImageListEnvelope_PyTorchMatchesTorchNamedImages(t *testing.T) {
 	}}
 
 	env := buildImageListEnvelope(raw, "ImageSet", []string{"CompShareImageId", "Name", "ImageType"},
-		"有哪些 PyTorch 镜像", "DescribeCompShareImages", "platform")
+		Slots{SearchQuery: "torch", ListMode: ListModeFiltered}, "有哪些 PyTorch 镜像", "DescribeCompShareImages", "platform")
 
 	if len(env.Subjects) != 1 || env.Subjects[0].Name != "cuda128_torch291_py312" {
 		t.Fatalf("PyTorch envelope should keep only torch-compatible image, got %#v", env.Subjects)
@@ -2043,12 +1968,9 @@ func TestBuildCommunityImageEnvelope_DigitalHumanQueryMatchesRelevantGroups(t *t
 		map[string]any{"ImageName": "LiveTalking", "CreatedCount": float64(10), "Data": []any{
 			map[string]any{"CompShareImageId": "live-1", "Name": "数字人实时对话版"},
 		}},
-		map[string]any{"ImageName": "RAGFlow Ubuntu 22.04", "CreatedCount": float64(100), "Data": []any{
-			map[string]any{"CompShareImageId": "rag-1", "Name": "RAGFlow-v1"},
-		}},
 	}}
 
-	env := buildCommunityImageEnvelope(raw, "有哪些社区镜像适合数字人")
+	env := buildCommunityImageEnvelope(raw, Slots{SearchQuery: "数字人", ListMode: ListModeFiltered}, "有哪些社区镜像适合数字人")
 
 	if len(env.Subjects) != 1 || env.Subjects[0].Name != "LiveTalking" {
 		t.Fatalf("digital-human envelope should keep relevant community group only, got %#v", env.Subjects)

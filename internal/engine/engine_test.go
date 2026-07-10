@@ -1454,34 +1454,6 @@ func TestChat_ReadExpensiveTargetCapBecomesToolResult(t *testing.T) {
 	assertNoStepTypeForAction(t, *events, StepError, "GetCompShareInstanceMonitor")
 }
 
-func TestChat_MonitorRecallRequiredFallbackRecordsFreshnessReason(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "fresh monitor checked"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
-	eng.userTurn = 1
-	eng.lastMonitorTurn = 1
-	eng.supportsObjectToolChoice = false
-	eng.supportsRequiredToolChoice = true
-	var freshness observability.FreshnessTrace
-	eng.SetFreshnessTraceObserver(func(trace observability.FreshnessTrace) {
-		freshness = trace
-	})
-
-	reply, err := eng.Chat(context.Background(), "刚才CPU使用率", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, "fresh monitor checked", reply)
-	require.Len(t, mock.calls, 1)
-	assert.Equal(t, "required", mock.calls[0].ToolChoice)
-	assert.True(t, freshness.MonitorRecallForced)
-	assert.Equal(t, "required_tool_choice", freshness.MonitorRecallMode)
-	assert.Equal(t, "object_tool_choice_unsupported", freshness.MonitorRecallFallbackReason)
-	require.NotNil(t, freshness.SupportsObjectToolChoice)
-	require.NotNil(t, freshness.SupportsRequiredToolChoice)
-	assert.False(t, *freshness.SupportsObjectToolChoice)
-	assert.True(t, *freshness.SupportsRequiredToolChoice)
-}
-
 func TestWorkflowInternalReadExpensiveConsumesSubjectQuotaButSkipsTurnBudget(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
@@ -2805,166 +2777,6 @@ func TestPlannerMonitorHistoryDispatchesWithoutHardBlock(t *testing.T) {
 	assert.Empty(t, hardBlocks, "historical monitor is supported and must not emit hard-block traces")
 }
 
-// toolChoiceForMonitor returns true iff req.ToolChoice names GetCompShareInstanceMonitor.
-func toolChoiceForMonitor(req llm.ChatRequest) bool {
-	tc, ok := req.ToolChoice.(openai.ToolChoice)
-	if !ok {
-		return false
-	}
-	return tc.Type == openai.ToolTypeFunction && tc.Function.Name == "GetCompShareInstanceMonitor"
-}
-
-func toolChoiceRequired(req llm.ChatRequest) bool {
-	choice, ok := req.ToolChoice.(string)
-	return ok && choice == "required"
-}
-
-func hasMonitorRecallRequiredToolNote(req llm.ChatRequest) bool {
-	for _, m := range req.Messages {
-		if m.Role == openai.ChatMessageRoleSystem && strings.Contains(m.Content, monitorRecallRequiredToolNote) {
-			return true
-		}
-	}
-	return false
-}
-
-func monitorScenarioExecutor() *mockExecutor {
-	return &mockExecutor{results: map[string]map[string]any{
-		"GetCompShareInstanceMonitor": {
-			"Data": map[string]any{"List": []any{
-				map[string]any{
-					"UHostId": "uhost-monitor-001",
-					"Metrics": []any{
-						map[string]any{"Name": "CPUUsageRate", "Value": 12},
-					},
-				},
-			}},
-		},
-	}}
-}
-
-func TestMonitorRecallGuard_ForcesMonitorOnAdjacentFollowUp(t *testing.T) {
-	executor := monitorScenarioExecutor()
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"]}`),
-		}},
-		{Content: "监控已查询"},
-		{Content: "fresh monitor"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	_, err := eng.Chat(context.Background(), "看看这台机器的监控", noopStep)
-	assert.NoError(t, err)
-	assert.Equal(t, 1, eng.lastMonitorTurn)
-
-	_, err = eng.Chat(context.Background(), "只看刚才那台机器的 GPU 和显存监控", noopStep)
-	assert.NoError(t, err)
-
-	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
-		assert.True(t, toolChoiceForMonitor(mock.calls[2]),
-			"adjacent monitor follow-up should force GetCompShareInstanceMonitor")
-	}
-}
-
-func TestMonitorRecallGuard_NonAdjacentTurnDoesNotTrigger(t *testing.T) {
-	executor := monitorScenarioExecutor()
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"]}`),
-		}},
-		{Content: "监控已查询"},
-		{Content: "中间一轮普通回答"},
-		{Content: "should not force"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	_, err := eng.Chat(context.Background(), "看看这台机器的监控", noopStep)
-	assert.NoError(t, err)
-	_, err = eng.Chat(context.Background(), "4090 显存多大", noopStep)
-	assert.NoError(t, err)
-	_, err = eng.Chat(context.Background(), "只看刚才那台机器的 GPU 和显存监控", noopStep)
-	assert.NoError(t, err)
-
-	if assert.GreaterOrEqual(t, len(mock.calls), 4) {
-		assert.Nil(t, mock.calls[3].ToolChoice,
-			"non-adjacent monitor follow-up must not force monitor")
-	}
-}
-
-func TestMonitorRecallGuard_NoFollowUpKeywordDoesNotTrigger(t *testing.T) {
-	executor := monitorScenarioExecutor()
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"]}`),
-		}},
-		{Content: "监控已查询"},
-		{Content: "not forced"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	_, err := eng.Chat(context.Background(), "看看这台机器的监控", noopStep)
-	assert.NoError(t, err)
-	_, err = eng.Chat(context.Background(), "今天天气如何", noopStep)
-	assert.NoError(t, err)
-
-	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
-		assert.Nil(t, mock.calls[2].ToolChoice,
-			"adjacent turn without monitor follow-up keywords must not force monitor")
-	}
-}
-
-func TestMonitorRecallGuard_FirstTurnDoesNotTrigger(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "not forced"}}}
-	eng := NewWithDeps(mock, monitorScenarioExecutor(), nil)
-	eng.InitWithContext("test user")
-
-	_, err := eng.Chat(context.Background(), "帮我判断 CPU 和 GPU 占用异常吗", noopStep)
-	assert.NoError(t, err)
-
-	if assert.Len(t, mock.calls, 1) {
-		assert.Nil(t, mock.calls[0].ToolChoice,
-			"first-turn monitor wording must not force monitor recall without prior monitor call")
-	}
-}
-
-// When the active LLM does not support object tool_choice (e.g. ds v4 flash
-// in thinking mode), the monitor recall guard must not emit a provider-400ing
-// object ToolChoice. If required tool_choice is supported, degrade to required
-// plus an explicit monitor-refresh note instead of silently falling through.
-func TestMonitorRecallGuard_DegradesToRequiredWhenObjectToolChoiceUnsupported(t *testing.T) {
-	executor := monitorScenarioExecutor()
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"]}`),
-		}},
-		{Content: "监控已查询"},
-		{Content: "auto routed"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-	eng.setSupportsObjectToolChoice(false)
-	eng.supportsRequiredToolChoice = true
-
-	_, err := eng.Chat(context.Background(), "看看这台机器的监控", noopStep)
-	assert.NoError(t, err)
-
-	_, err = eng.Chat(context.Background(), "只看刚才那台机器的 GPU 和显存监控", noopStep)
-	assert.NoError(t, err)
-
-	if assert.GreaterOrEqual(t, len(mock.calls), 3) {
-		assert.False(t, toolChoiceForMonitor(mock.calls[2]),
-			"model-feature gate must not force object ToolChoice when unsupported")
-		assert.True(t, toolChoiceRequired(mock.calls[2]),
-			"unsupported object ToolChoice should degrade to required when supported")
-		assert.True(t, hasMonitorRecallRequiredToolNote(mock.calls[2]),
-			"required fallback must explicitly tell the model to refresh monitor data")
-	}
-}
-
 func phase1KnownInstanceDescribeResult() map[string]any {
 	return map[string]any{
 		"TotalCount": 1,
@@ -3470,7 +3282,7 @@ func TestStage2BRetrievalHitUsesLLMWithoutTools(t *testing.T) {
 	require.Len(t, planner.calls, 1)
 	require.Len(t, retriever.calls, 1)
 	assert.Equal(t, "why do stopped instances still bill", retriever.calls[0].question)
-	assert.Equal(t, "billing_rule", retriever.calls[0].productArea, "engine must infer product area without relying on planner Scope")
+	assert.Equal(t, "", retriever.calls[0].productArea, "knowledge retrieval no longer uses local product-area keyword inference")
 	require.Len(t, plannerTraces, 1)
 	assert.Equal(t, string(intent.RouteStatusDispatchedRetrieval), plannerTraces[0].RouteStatus)
 	require.Len(t, retrievalTraces, 1)
@@ -4055,7 +3867,7 @@ func TestStage2BRetrievalIgnoresPlannerRetrievalFlag(t *testing.T) {
 	require.Len(t, mock.calls, 1)
 	assert.Empty(t, mock.calls[0].Tools)
 	require.Len(t, retriever.calls, 1)
-	assert.Equal(t, "image", retriever.calls[0].productArea)
+	assert.Equal(t, "", retriever.calls[0].productArea)
 	require.Len(t, plannerTraces, 1)
 	assert.Equal(t, string(intent.RouteStatusDispatchedRetrieval), plannerTraces[0].RouteStatus)
 }
@@ -4349,7 +4161,7 @@ func TestRAGCitedContractInvariantResetsKnowledgeFallbackFlagEachTurn(t *testing
 	require.Len(t, hardBlocks, 1, "knowledge-path citation flag must be cleared at the start of each turn")
 }
 
-func TestStage2BFinanceFAQRetrievalUsesBillingArea(t *testing.T) {
+func TestStage2BFinanceFAQRetrievalDoesNotUseBillingAreaHint(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:   true,
@@ -4378,7 +4190,7 @@ func TestStage2BFinanceFAQRetrievalUsesBillingArea(t *testing.T) {
 	require.Len(t, mock.calls, 1)
 	assert.Empty(t, mock.calls[0].Tools)
 	require.Len(t, retriever.calls, 1)
-	assert.Equal(t, "billing_rule", retriever.calls[0].productArea)
+	assert.Equal(t, "", retriever.calls[0].productArea)
 }
 
 func TestStage2BStoppedBillingFAQUsesKnowledgeRetrieval(t *testing.T) {
@@ -4410,7 +4222,7 @@ func TestStage2BStoppedBillingFAQUsesKnowledgeRetrieval(t *testing.T) {
 	require.Len(t, mock.calls, 1)
 	assert.Empty(t, mock.calls[0].Tools)
 	require.Len(t, retriever.calls, 1)
-	assert.Equal(t, "billing_rule", retriever.calls[0].productArea)
+	assert.Equal(t, "", retriever.calls[0].productArea)
 }
 
 func TestStage2BAndRouteDispatchShareSinglePlannerCall(t *testing.T) {
@@ -4911,234 +4723,6 @@ func TestPlannerMonitorHistoryReturnsFixedReplyWithoutReAct(t *testing.T) {
 	assert.Equal(t, string(intent.RouteStatusDispatched), traces[0].RouteStatus)
 }
 
-func TestDirectMonitorHistoryParsesYesterdayClockRangeInShanghai(t *testing.T) {
-	var monitorArgs map[string]any
-	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		switch action {
-		case "DescribeCompShareInstance":
-			return phase1KnownInstanceDescribeResult(), nil
-		case "GetCompShareInstanceMonitor":
-			monitorArgs = map[string]any{}
-			for k, v := range args {
-				monitorArgs[k] = v
-			}
-			return map[string]any{"Data": map[string]any{"List": []any{}}}, nil
-		default:
-			return map[string]any{"RetCode": 0}, nil
-		}
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	reply, err := eng.Chat(context.Background(), "查询 uhost-phase1-001 昨天 00:00 到 01:00 的 CPU 历史监控", noopStep)
-
-	require.NoError(t, err)
-	require.NotNil(t, monitorArgs)
-	loc, locErr := time.LoadLocation("Asia/Shanghai")
-	require.NoError(t, locErr)
-	now := time.Now().In(loc)
-	y, m, d := now.Date()
-	start := time.Date(y, m, d, 0, 0, 0, 0, loc).AddDate(0, 0, -1)
-	end := start.Add(time.Hour)
-	assert.Equal(t, start.Unix(), monitorArgs["StartTime"])
-	assert.Equal(t, end.Unix(), monitorArgs["EndTime"])
-	assert.Contains(t, reply, start.Format("2006-01-02 15:04"))
-	assert.Contains(t, reply, end.Format("2006-01-02 15:04"))
-	assert.Empty(t, mock.calls, "direct historical monitor path must not let the LLM reinterpret local clock time")
-}
-
-func TestDirectMonitorHistoryRejectsMultipleExplicitIDs(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	executor := &mockExecutor{}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	reply, err := eng.Chat(context.Background(), "查询 uhost-a 和 uhost-b 昨天 00:00 到 01:00 CPU 历史监控", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryNeedSingleInstanceMessage, reply)
-	assert.Empty(t, mock.calls)
-	assert.Empty(t, executor.calls)
-}
-
-func TestDirectMonitorHistoryResolvesExplicitNameBeforeSelectedInstance(t *testing.T) {
-	var monitorArgs map[string]any
-	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		switch action {
-		case "DescribeCompShareInstance":
-			return map[string]any{
-				"TotalCount": 2,
-				"UHostSet": []any{
-					map[string]any{"UHostId": "uhost-selected-001", "Name": "selected", "State": "Running"},
-					map[string]any{"UHostId": "uhost-train-a", "Name": "train-a", "State": "Running"},
-				},
-			}, nil
-		case "GetCompShareInstanceMonitor":
-			monitorArgs = map[string]any{}
-			for k, v := range args {
-				monitorArgs[k] = v
-			}
-			return map[string]any{"Data": map[string]any{"List": []any{}}}, nil
-		default:
-			return map[string]any{"RetCode": 0}, nil
-		}
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-	eng.sessionState.SelectedInstanceID = "uhost-selected-001"
-
-	reply, err := eng.Chat(context.Background(), "查询 train-a 昨天 00:00 到 01:00 CPU 历史监控", noopStep)
-
-	require.NoError(t, err)
-	assert.Contains(t, reply, "uhost-train-a")
-	require.NotNil(t, monitorArgs)
-	assert.Equal(t, []string{"uhost-train-a"}, monitorArgs["UHostIds"])
-	assert.Empty(t, mock.calls)
-}
-
-func TestDirectMonitorHistoryDoesNotAutoSelectGenericShortInstanceName(t *testing.T) {
-	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		switch action {
-		case "DescribeCompShareInstance":
-			return map[string]any{
-				"TotalCount": 1,
-				"UHostSet": []any{
-					map[string]any{"UHostId": "uhost-gpu-name", "Name": "gpu", "State": "Running"},
-				},
-			}, nil
-		case "GetCompShareInstanceMonitor":
-			return map[string]any{"Data": map[string]any{"List": []any{}}}, nil
-		default:
-			return map[string]any{"RetCode": 0}, nil
-		}
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	reply, err := eng.Chat(context.Background(), "查询 GPU 昨天 00:00 到 01:00 历史监控", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryNeedSingleInstanceMessage, reply)
-	assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
-	assert.Empty(t, mock.calls)
-}
-
-func TestDirectMonitorHistoryDoesNotAutoSelectGenericShortInstanceNameEvenWithInstanceMarker(t *testing.T) {
-	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		switch action {
-		case "DescribeCompShareInstance":
-			return map[string]any{
-				"TotalCount": 1,
-				"UHostSet": []any{
-					map[string]any{"UHostId": "uhost-gpu-name", "Name": "gpu", "State": "Running"},
-				},
-			}, nil
-		case "GetCompShareInstanceMonitor":
-			return map[string]any{"Data": map[string]any{"List": []any{}}}, nil
-		default:
-			return map[string]any{"RetCode": 0}, nil
-		}
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	reply, err := eng.Chat(context.Background(), "查询实例 gpu 昨天 00:00 到 01:00 历史监控", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryNeedSingleInstanceMessage, reply)
-	assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
-	assert.Empty(t, mock.calls)
-}
-
-func TestDirectMonitorHistoryRejectsAllInstancesEvenWithSelectedInstance(t *testing.T) {
-	cases := []string{
-		"查询所有实例昨天 CPU 历史监控",
-		"查询所有的实例昨天 CPU 历史监控",
-		"查询全部的实例昨天 CPU 历史监控",
-	}
-	for _, msg := range cases {
-		t.Run(msg, func(t *testing.T) {
-			mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-			executor := &mockExecutor{}
-			eng := NewWithDeps(mock, executor, nil)
-			eng.InitWithContext("test user")
-			eng.sessionState.SelectedInstanceID = "uhost-selected-001"
-
-			reply, err := eng.Chat(context.Background(), msg, noopStep)
-
-			require.NoError(t, err)
-			assert.Equal(t, monitorHistoryNeedSingleInstanceMessage, reply)
-			assert.Empty(t, mock.calls)
-			assert.Empty(t, executor.calls)
-		})
-	}
-}
-
-func TestDirectMonitorHistoryRejectsUnparsedSpecificWindowBeforeSelection(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	executor := &mockExecutor{}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	reply, err := eng.Chat(context.Background(), "查询今天下午 3 点-4 点 CPU 历史监控", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryNeedTimeWindowMessage, reply)
-	assert.Empty(t, mock.calls)
-	assert.Empty(t, executor.calls)
-}
-
-func TestDirectMonitorHistoryMissingConcreteWindowReturnsGuidance(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	executor := &mockExecutor{}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
-
-	reply, err := eng.Chat(context.Background(), "查询 uhost-phase1-001 上周 CPU 历史监控", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryNeedTimeWindowMessage, reply)
-	assert.Empty(t, mock.calls, "missing concrete history window must not fall back to LLM")
-	assert.Empty(t, executor.calls, "missing concrete history window must not call realtime monitor")
-}
-
-func TestDirectMonitorHistoryRecognizesRealUHostIDShape(t *testing.T) {
-	assert.True(t, isUnsupportedHistoricalMonitorQuestion("查询 uhost-1ry1rvipr0aa 上周 CPU 历史监控。"))
-	assert.Equal(t, "uhost-1ry1rvipr0aa", uhostIDInTextRE.FindString("查询 uhost-1ry1rvipr0aa 上周 CPU 历史监控。"))
-
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	executor := &mockExecutor{}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	reply, err := eng.Chat(context.Background(), "查询 uhost-1ry1rvipr0aa 上周 CPU 历史监控。", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryNeedTimeWindowMessage, reply)
-	assert.Empty(t, mock.calls)
-	assert.Empty(t, executor.calls)
-}
-
-func TestDirectMonitorHistoryMissingWindowUsesSelectedInstance(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	executor := &mockExecutor{}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-	eng.sessionState.SelectedInstanceID = "uhost-phase1-001"
-
-	reply, err := eng.Chat(context.Background(), "查询上周 CPU 历史监控", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryNeedTimeWindowMessage, reply)
-	assert.Empty(t, mock.calls)
-	assert.Empty(t, executor.calls)
-}
-
 func TestRouteDispatchMonitorMissingTargetReturnsResourceSelection(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
@@ -5434,146 +5018,6 @@ func TestResourceSelectionContinuationOrdinalRunsOriginalMonitorQuery(t *testing
 	assert.Len(t, planner.calls, 1, "selection reply should reuse the stored plan instead of calling the planner again")
 }
 
-func TestResourceSelectionHistoricalMonitorOrdinalUsesContextDecision(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
-
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	var monitorArgs map[string]any
-	executor := &mockExecutorFn{
-		fn: func(action string, args map[string]any) (map[string]any, error) {
-			switch action {
-			case "DescribeCompShareInstance":
-				return phase1MultipleInstanceDescribeResult(), nil
-			case "GetCompShareInstanceMonitor":
-				monitorArgs = args
-				return map[string]any{"Data": map[string]any{"List": []any{}}}, nil
-			default:
-				return nil, fmt.Errorf("unexpected action %s", action)
-			}
-		},
-	}
-	layer := &fakeContextDecisionLayer{decision: &ContextDecision{
-		Decision:    ContextDecisionSelectEntity,
-		Target:      ContextDecisionTargetInstance,
-		InstanceRef: "第2台",
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	eng.SetContextDecisionLayer(layer)
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
-		Model:          "deepseek-v4-flash",
-	})
-
-	firstReply, err := eng.Chat(context.Background(), "CPU 高怎么办", noopStep)
-	require.NoError(t, err)
-	assert.Contains(t, firstReply, "uhost-select-001")
-	assert.Contains(t, firstReply, "uhost-select-002")
-
-	_, err = eng.Chat(context.Background(), "第2台昨天 00:00 到 01:00 的 CPU 历史监控", noopStep)
-
-	require.NoError(t, err)
-	require.NotNil(t, monitorArgs)
-	assert.Equal(t, []string{"uhost-select-002"}, monitorArgs["UHostIds"])
-	assert.NotEmpty(t, monitorArgs["StartTime"])
-	assert.NotEmpty(t, monitorArgs["EndTime"])
-	require.Len(t, layer.calls, 1)
-	assert.Contains(t, layer.calls[0].PendingChoices, "uhost-select-002")
-	assert.Empty(t, mock.calls)
-}
-
-func TestResourceSelectionHistoricalMonitorOrdinalNewTaskDoesNotBecomeRealtimeMonitor(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
-
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	var monitorCalled bool
-	executor := &mockExecutorFn{
-		fn: func(action string, args map[string]any) (map[string]any, error) {
-			switch action {
-			case "DescribeCompShareInstance":
-				return phase1MultipleInstanceDescribeResult(), nil
-			case "GetCompShareInstanceMonitor":
-				monitorCalled = true
-				return map[string]any{"Data": map[string]any{"List": []any{}}}, nil
-			default:
-				return nil, fmt.Errorf("unexpected action %s", action)
-			}
-		},
-	}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
-		Decision: ContextDecisionNewTask,
-		Target:   ContextDecisionTargetKnowledge,
-	}})
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
-		Model:          "deepseek-v4-flash",
-	})
-
-	_, err := eng.Chat(context.Background(), "CPU 高怎么办", noopStep)
-	require.NoError(t, err)
-	reply, err := eng.Chat(context.Background(), "第2台昨天 00:00 到 01:00 的 CPU 历史监控", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryNeedSingleInstanceMessage, reply)
-	assert.False(t, monitorCalled, "history question must not fall back to current monitor when context decision rejects selection")
-	assert.Empty(t, mock.calls)
-}
-
-func TestResourceSelectionHistoricalMonitorOrdinalMissingWindowAsksForTimeWindow(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
-
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	var monitorCalled bool
-	executor := &mockExecutorFn{
-		fn: func(action string, args map[string]any) (map[string]any, error) {
-			switch action {
-			case "DescribeCompShareInstance":
-				return phase1MultipleInstanceDescribeResult(), nil
-			case "GetCompShareInstanceMonitor":
-				monitorCalled = true
-				return map[string]any{"Data": map[string]any{"List": []any{}}}, nil
-			default:
-				return nil, fmt.Errorf("unexpected action %s", action)
-			}
-		},
-	}
-	layer := &fakeContextDecisionLayer{decision: &ContextDecision{
-		Decision:    ContextDecisionSelectEntity,
-		Target:      ContextDecisionTargetInstance,
-		InstanceRef: "第2台",
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	eng.SetContextDecisionLayer(layer)
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
-		Model:          "deepseek-v4-flash",
-	})
-
-	_, err := eng.Chat(context.Background(), "CPU 高怎么办", noopStep)
-	require.NoError(t, err)
-	reply, err := eng.Chat(context.Background(), "第2台上周 CPU 历史监控", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, monitorHistoryNeedTimeWindowMessage, reply)
-	assert.False(t, monitorCalled, "missing historical window must ask for a concrete range before calling monitor")
-	require.Len(t, layer.calls, 1)
-	assert.Contains(t, layer.calls[0].PendingChoices, "uhost-select-002")
-	assert.Equal(t, "uhost-select-002", eng.sessionState.SelectedInstanceID)
-	assert.Empty(t, mock.calls)
-}
-
 func TestResourceSelectionContinuationExactIDRunsMonitorQuery(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
@@ -5643,8 +5087,6 @@ func TestResourceSelectionContinuationExactNameUsesGroundedGeneratorAndPlannerSo
 	require.NoError(t, err)
 	assert.Equal(t, "grounded monitor summary", reply)
 	require.Len(t, groundedRenderer.requests, 1)
-	assertEngineComputedFact(t, groundedRenderer.requests[0].Envelope, "answer_mode", "troubleshooting")
-	assertEngineComputedFact(t, groundedRenderer.requests[0].Envelope, "issue_metric", "cpu")
 	assert.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, executor.calls)
 	require.Len(t, *events, 2)
 	assert.Equal(t, StepToolCall, (*events)[0].Type)
@@ -5686,10 +5128,6 @@ func TestResourceSelectionContinuationTroubleshootingFallbackAddsSafeContext(t *
 	require.NoError(t, err)
 	assert.Contains(t, reply, "CPU")
 	assert.Contains(t, reply, "0")
-	assert.Contains(t, reply, "当前这一次采样")
-	assert.Contains(t, reply, "只能说明当前时刻")
-	assert.Contains(t, reply, "历史波动")
-	assert.Contains(t, reply, "控制台")
 	assert.NotContains(t, reply, "信封")
 	assert.NotContains(t, reply, "驱动")
 	assert.NotContains(t, reply, "日志")
@@ -5732,33 +5170,7 @@ func TestResourceSelectionContinuationLoadAssessmentUsesGroundedGeneratorMode(t 
 	require.NoError(t, err)
 	assert.Equal(t, "从当前采样看，这台实例现在不算忙。", reply)
 	require.Len(t, groundedRenderer.requests, 1)
-	assertEngineComputedFact(t, groundedRenderer.requests[0].Envelope, "answer_mode", "load_assessment")
 	assert.Empty(t, mock.calls)
-}
-
-func TestMonitorTroubleshootingQuestionDoesNotMatchNormalGPUCardQuery(t *testing.T) {
-	assert.False(t, isMonitorTroubleshootingQuestion("看一下显卡利用率"))
-	assert.False(t, isMonitorTroubleshootingQuestion("highmem 机器现在 GPU 使用率是多少"))
-
-	assert.True(t, isMonitorTroubleshootingQuestion("CPU 高怎么办"))
-	assert.True(t, isMonitorTroubleshootingQuestion("这台机器有点卡顿，帮我排查"))
-}
-
-func TestMonitorLoadAssessmentQuestionIsNarrow(t *testing.T) {
-	assert.True(t, isMonitorLoadAssessmentQuestion("qa-shadow 现在忙不忙？"))
-	assert.True(t, isMonitorLoadAssessmentQuestion("这台机器空闲吗"))
-	assert.True(t, isMonitorLoadAssessmentQuestion("GPU 忙不忙"))
-	assert.True(t, isMonitorLoadAssessmentQuestion("负载怎么样"))
-
-	assert.False(t, isMonitorLoadAssessmentQuestion("看一下显卡利用率"))
-	assert.False(t, isMonitorLoadAssessmentQuestion("highmem 机器现在 GPU 使用率是多少"))
-}
-
-func TestMonitorLoadAssessmentFallbackIgnoresDiskPercentages(t *testing.T) {
-	reply := monitorLoadAssessmentFallbackReply("CPU 使用率=7%; GPU 使用率=0%; 系统盘使用率=55%; 数据盘使用率=80%")
-
-	assert.Contains(t, reply, "不算忙")
-	assert.Contains(t, reply, "系统盘使用率=55%")
 }
 
 func TestMonitorHistoryUnsupportedReplyUsesCurrentScopeWording(t *testing.T) {
@@ -5995,37 +5407,6 @@ func TestRouteDispatchReadExpensiveQuotaDenialUsesFriendlyMessage(t *testing.T) 
 	assert.Empty(t, executor.calls)
 }
 
-func TestRouteDispatchFallbackPreservesMonitorRecallForceTool(t *testing.T) {
-	executor := monitorScenarioExecutor()
-	planner := &scriptedIntentPlanner{
-		results: []intent.IntentRouterResult{{Fallback: true, Plan: unknownEngineTestPlan()}},
-	}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-monitor-001"]}`),
-		}},
-		{Content: "monitor done"},
-		{Content: "react fallback"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.InitWithContext("test user")
-
-	_, err := eng.Chat(context.Background(), "show monitor", noopStep)
-	require.NoError(t, err)
-	assert.Equal(t, 1, eng.lastMonitorTurn)
-
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		EnabledIntents: []intent.Intent{intent.IntentResourceInfo, intent.IntentMonitorQuery},
-		Model:          "deepseek-v4-flash",
-	})
-	_, err = eng.Chat(context.Background(), "只看刚才那台机器的 GPU 和显存监控", noopStep)
-
-	require.NoError(t, err)
-	require.GreaterOrEqual(t, len(mock.calls), 3)
-	assert.True(t, toolChoiceForMonitor(mock.calls[2]),
-		"fallback-before-tool path must preserve existing monitor recall force-tool behavior")
-}
-
 func TestRouteDispatchChecksPlannerQuotaOnce(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
@@ -6184,7 +5565,7 @@ func TestChat_TokenBudget_PlannerHandledPath_GateFires(t *testing.T) {
 	// BEFORE that dispatch even runs, so the cutover path never executes.
 	// Choosing IntentResourceInfo over IntentMonitorHistory because the
 	// "last week monitor" phrasing trips a pre-planner short-circuit in
-	// Chat (isUnsupportedHistoricalMonitorQuestion), short-circuiting
+	// Chat, short-circuiting
 	// before the planner is even consulted — which masks the test.
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
 		Plan: intent.IntentRoute{

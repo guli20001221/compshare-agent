@@ -124,6 +124,30 @@ func plannerExamplesLit(examples []PlannerExample) string {
 		if strings.TrimSpace(ex.ImageSource) != "" {
 			fields = append(fields, fmt.Sprintf("ImageSource: %s", strconv.Quote(ex.ImageSource)))
 		}
+		if strings.TrimSpace(ex.SearchQuery) != "" {
+			fields = append(fields, fmt.Sprintf("SearchQuery: %s", strconv.Quote(ex.SearchQuery)))
+		}
+		if strings.TrimSpace(ex.ListMode) != "" {
+			fields = append(fields, fmt.Sprintf("ListMode: %s", strconv.Quote(ex.ListMode)))
+		}
+		if strings.TrimSpace(ex.PriceKind) != "" {
+			fields = append(fields, fmt.Sprintf("PriceKind: %s", strconv.Quote(ex.PriceKind)))
+		}
+		if strings.TrimSpace(ex.CFSKind) != "" {
+			fields = append(fields, fmt.Sprintf("CFSKind: %s", strconv.Quote(ex.CFSKind)))
+		}
+		if ex.SizeGB != 0 {
+			fields = append(fields, fmt.Sprintf("SizeGB: %d", ex.SizeGB))
+		}
+		if strings.TrimSpace(ex.Zone) != "" {
+			fields = append(fields, fmt.Sprintf("Zone: %s", strconv.Quote(ex.Zone)))
+		}
+		if strings.TrimSpace(ex.ChargeType) != "" {
+			fields = append(fields, fmt.Sprintf("ChargeType: %s", strconv.Quote(ex.ChargeType)))
+		}
+		if strings.TrimSpace(ex.DetailLevel) != "" {
+			fields = append(fields, fmt.Sprintf("DetailLevel: %s", strconv.Quote(ex.DetailLevel)))
+		}
 		parts[i] = "{" + strings.Join(fields, ", ") + "}"
 	}
 	return "[]PlannerExample{" + strings.Join(parts, ", ") + "}"

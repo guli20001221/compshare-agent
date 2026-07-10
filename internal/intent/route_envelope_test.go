@@ -55,7 +55,7 @@ func TestBuildStockEnvelope_UnavailableGPU(t *testing.T) {
 	raw := stockAPIResponse(stockEntry("4090", "Normal"))
 	env := buildStockEnvelope(raw, "H100 有货吗")
 	assert.Len(t, env.Subjects, 1, "all models shown when unavailable GPU asked")
-	assert.Equal(t, "H100", computedValue(env, "unavailable_models"))
+	assert.Equal(t, "未在当前可售机型里找到您提到的型号", computedValue(env, "no_match_hint"))
 }
 
 func TestBuildStockEnvelope_NoMatchHint(t *testing.T) {
@@ -85,7 +85,7 @@ func TestBuildImageListEnvelope_Platform(t *testing.T) {
 		},
 	}}
 	fields := []string{"CompShareImageId", "CompShareImageName", "ImageType", "Name"}
-	env := buildImageListEnvelope(raw, "ImageSet", fields, "平台有什么镜像", "DescribeCompShareImages", "platform")
+	env := buildImageListEnvelope(raw, "ImageSet", fields, Slots{ListMode: ListModeAll}, "平台有什么镜像", "DescribeCompShareImages", "platform")
 
 	assert.Equal(t, envelope.KindImageList, env.Kind)
 	assert.Len(t, env.Subjects, 2)
@@ -101,7 +101,7 @@ func TestBuildImageListEnvelope_KeywordFilter(t *testing.T) {
 		map[string]any{"CompShareImageId": "img-002", "Name": "Windows 2022"},
 	}}
 	fields := []string{"CompShareImageId", "Name"}
-	env := buildImageListEnvelope(raw, "ImageSet", fields, "ubuntu 镜像", "DescribeCompShareImages", "platform")
+	env := buildImageListEnvelope(raw, "ImageSet", fields, Slots{SearchQuery: "Ubuntu", ListMode: ListModeFiltered}, "ubuntu 镜像", "DescribeCompShareImages", "platform")
 	assert.Len(t, env.Subjects, 1)
 	assert.Equal(t, "Ubuntu 22.04", env.Subjects[0].Name)
 }
@@ -111,7 +111,7 @@ func TestBuildImageListEnvelope_NoMatch(t *testing.T) {
 		map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu 22.04"},
 	}}
 	fields := []string{"CompShareImageId", "Name"}
-	env := buildImageListEnvelope(raw, "ImageSet", fields, "rocky 镜像", "DescribeCompShareImages", "platform")
+	env := buildImageListEnvelope(raw, "ImageSet", fields, Slots{SearchQuery: "rocky", ListMode: ListModeFiltered}, "rocky 镜像", "DescribeCompShareImages", "platform")
 	assert.Len(t, env.Subjects, 0, "no match should produce empty subjects")
 }
 
@@ -125,7 +125,7 @@ func TestBuildCommunityImageEnvelope_ImageNameField(t *testing.T) {
 			},
 		},
 	}}
-	env := buildCommunityImageEnvelope(raw, "有哪些社区镜像")
+	env := buildCommunityImageEnvelope(raw, Slots{ListMode: ListModeAll}, "有哪些社区镜像")
 	require.Len(t, env.Subjects, 1)
 	assert.Equal(t, "Stable Diffusion WebUI", env.Subjects[0].Name)
 	assert.Equal(t, envelope.SubjectImageGroup, env.Subjects[0].Type)
@@ -143,7 +143,7 @@ func TestBuildCommunityImageEnvelope_NameFallback(t *testing.T) {
 			"Data":   []any{map[string]any{"CompShareImageId": "cimg-x", "Name": "v1"}},
 		},
 	}}
-	env := buildCommunityImageEnvelope(raw, "社区镜像")
+	env := buildCommunityImageEnvelope(raw, Slots{ListMode: ListModeAll}, "社区镜像")
 	require.Len(t, env.Subjects, 1)
 	assert.Equal(t, "OldStyleGroup", env.Subjects[0].Name)
 }
@@ -164,7 +164,7 @@ func TestBuildCommunityImageEnvelope_LineBudgetCountsVersions(t *testing.T) {
 		})
 	}
 	raw := map[string]any{"CompshareImageGroup": groups}
-	env := buildCommunityImageEnvelope(raw, "社区镜像")
+	env := buildCommunityImageEnvelope(raw, Slots{ListMode: ListModeAll}, "社区镜像")
 
 	subjectCount := len(env.Subjects)
 	versionFactCount := 0
@@ -191,7 +191,7 @@ func TestBuildCommunityImageEnvelope_TruncationHint(t *testing.T) {
 			},
 		},
 	}}
-	env := buildCommunityImageEnvelope(raw, "社区镜像")
+	env := buildCommunityImageEnvelope(raw, Slots{ListMode: ListModeAll}, "社区镜像")
 	truncated := filterFacts(env.Facts, "versions_truncated")
 	require.Len(t, truncated, 1)
 	assert.Contains(t, truncated[0].Value, "共 5 个版本")

@@ -41,7 +41,7 @@ func TestImageContext_PlannerMonitorHistoryOverriddenByCodeGuardrail(t *testing.
 	// Planner returns monitor_history (simulating misclassification from
 	// screenshot UI labels like "运维监控" + "最近访问"). Code-level guardrail
 	// in tryPlannerDispatch checks: image context present + raw userMsg
-	// does NOT match isUnsupportedHistoricalMonitorQuestion → override
+	// does NOT match the historical-monitor refusal gate -> override
 	// the planner, fall through to ReAct instead of refusing.
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
 		Plan: intent.IntentRoute{
