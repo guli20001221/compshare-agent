@@ -98,6 +98,24 @@ func formManyCommunityImagesFixture(n int) map[string]any {
 	return map[string]any{"CompshareImageGroup": groups}
 }
 
+func formSingle4090CatalogFixture() map[string]any {
+	return map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{
+			"Name":   "4090",
+			"Zone":   "cn-wlcb-01",
+			"Status": "Normal",
+			"GraphicsMemory": map[string]any{
+				"Value": float64(24),
+			},
+			"MachineSizes": []any{map[string]any{"Gpu": float64(1), "Collection": []any{
+				map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+			}}},
+			"CpuPlatforms": map[string]any{"Amd": map[string]any{}},
+			"Disks":        []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
+		},
+	}}
+}
+
 // formMockExecutor seeds all create-workflow calls with stock available for
 // both the 4090 (16C/64G) and A800 (32C/128G) specs.
 func formMockExecutor() *mockExecutor {
@@ -534,6 +552,64 @@ func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *t
 	assert.Equal(t, float64(32), created["CPU"])
 	assert.Equal(t, float64(131072), created["Memory"])
 	assert.Equal(t, "cn-wlcb-01", created["Zone"])
+}
+
+func TestCreateInstanceGuided_IncompatibleSelectedCommunityImageShowsGPUCard(t *testing.T) {
+	executor := formMockExecutor()
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = formSingle4090CatalogFixture()
+	executor.results["DescribeCommunityImages"] = map[string]any{"CompshareImageGroup": []any{
+		map[string]any{
+			"ImageName": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+			"Data": []any{
+				map[string]any{
+					"CompShareImageId":  "cimg-ltx",
+					"Name":              "v26.0529",
+					"SupportedGpuTypes": []any{"A800"},
+					"Size":              float64(102400),
+					"Container":         true,
+				},
+			},
+		},
+	}}
+	var gpuForm *ConfirmForm
+
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		if form.Field("GpuType") != nil {
+			gpuForm = form
+		}
+		return ConfirmResolution{Confirmed: false}
+	})
+
+	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+		"ImageSource":       "community",
+		"ImageName":         "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
+		"CompShareImageId":  "cimg-ltx",
+		"GpuType":           "4090",
+		"GuidedGpuLocked":   true,
+		"Zone":              "cn-wlcb-01",
+		"GuidedZoneLocked":  true,
+		"Gpu":               float64(1),
+		"Cpu":               float64(16),
+		"Memory":            float64(65536),
+		"GuidedRecommended": true,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, gpuForm, "incompatible image/GPU selection must show the GPU card before capacity or price checks")
+	assert.False(t, result.Success)
+	assert.Equal(t, "用户取消了操作", result.Message)
+	gpu := fieldByKey(t, gpuForm, "GpuType")
+	assert.Equal(t, []string{"4090"}, optionValues(gpu))
+	plain4090 := optionByValue(t, gpu, "4090")
+	assert.True(t, plain4090.Disabled)
+	assert.Contains(t, plain4090.Reason, "镜像不支持当前 GPU")
+	assert.Contains(t, plain4090.Note, "镜像不支持当前 GPU")
+	for _, call := range executor.calls {
+		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action, "capacity must not run before the user resolves the disabled GPU card")
+		assert.NotEqual(t, "CreateCompShareInstance", call.action)
+	}
 }
 
 func TestCreateInstanceGuided_ExplicitGPUOffersIntentFamily(t *testing.T) {

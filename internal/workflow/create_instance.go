@@ -2035,6 +2035,11 @@ func shouldSkipGuidedGPUStep(wfCtx *Context) (bool, error) {
 		return false, nil
 	}
 	supported := currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像"))
+	if len(supported) > 0 && containsFold(supported, current) && hasExplicitImageIntent(wfCtx.Params) &&
+		initialParamSet(wfCtx, "Zone") && initialParamSet(wfCtx, "Gpu") &&
+		initialParamSet(wfCtx, "Cpu") && initialParamSet(wfCtx, "Memory") {
+		return true, nil
+	}
 	selected, opts := guidedGPUFormOptions(wfCtx.Result("查询可用配比"), supported, current, true, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	count, only := enabledOptionCount(opts)
 	return count == 1 && strings.EqualFold(selected, current) && strings.EqualFold(only, current), nil
@@ -2974,10 +2979,8 @@ func guidedGPUFormOptions(catalog map[string]any, supported []string, current st
 		if name == "" {
 			continue
 		}
-		if locked && current != "" && !guidedGPUIntentMatches(current, name) {
-			continue
-		}
-		if !locked && len(supported) > 0 && !containsFold(supported, name) {
+		if locked && current != "" && !guidedGPUIntentMatches(current, name) &&
+			(len(supported) == 0 || !containsFold(supported, name)) {
 			continue
 		}
 		if len(candidateSet) > 0 && !candidateSet[strings.ToLower(name)] && !strings.EqualFold(name, current) {
@@ -3041,17 +3044,25 @@ func guidedGPUFormOptions(catalog map[string]any, supported []string, current st
 			noteParts = append(noteParts, fmt.Sprintf("%.0fG 显存", ch.vramGB))
 		}
 		stock, stockKnown := inventory.total(ch.zones, ch.name)
-		disabled := !ch.normal
+		imageUnsupported := len(supported) > 0 && !containsFold(supported, ch.name)
+		disabled := !ch.normal || imageUnsupported
 		disabledReason := ""
+		if imageUnsupported {
+			noteParts = append(noteParts, "镜像不支持当前 GPU")
+			disabledReason = "镜像不支持当前 GPU"
+		}
 		if ch.normal {
 			if stockKnown {
 				noteParts = append(noteParts, guidedStockNote(stock))
 			} else {
 				noteParts = append(noteParts, "可售")
 			}
-		} else {
+		}
+		if !ch.normal {
 			noteParts = append(noteParts, "暂不可售")
-			disabledReason = "暂不可售"
+			if disabledReason == "" {
+				disabledReason = "暂不可售"
+			}
 		}
 		if len(ch.zones) > 0 {
 			noteParts = append(noteParts, "可用区 "+strings.Join(ch.zones, "、"))
@@ -3083,7 +3094,11 @@ func guidedGPUFormOptions(catalog map[string]any, supported []string, current st
 	}
 	selected := current
 	if selected == "" || !enabledOptionExists(opts, selected) {
-		selected = firstEnabledValue(opts)
+		if value := firstEnabledValue(opts); value != "" {
+			selected = value
+		} else if selected == "" && len(opts) > 0 {
+			selected = opts[0].Value
+		}
 	}
 	return selected, opts
 }
