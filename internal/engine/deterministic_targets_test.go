@@ -3,6 +3,7 @@ package engine
 import (
 	"testing"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/stretchr/testify/assert"
 )
@@ -28,6 +29,13 @@ func TestInferLifecycleAction_CreateDisk(t *testing.T) {
 	} {
 		assert.Equal(t, intent.LifecycleActionCreateDisk, inferLifecycleAction(text), text)
 	}
+}
+
+func TestHasExplicitInstanceIDForLifecyclePreDispatchMatchesLegacyIDNextToCJK(t *testing.T) {
+	assert.True(t, hasExplicitInstanceIDForLifecyclePreDispatch(
+		"给uhost-1qy6d8tkfrl4加一块数据盘",
+		entity.RegistrySnapshot{},
+	))
 }
 
 func TestCreateDiskSizeFromUserText(t *testing.T) {

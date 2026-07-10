@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,14 +18,6 @@ const maxResourceSelectionCandidates = 20
 const pendingSelectionTTLSeconds = 300
 const pendingSelectionKindInstance = "instance"
 
-// uhostIDPattern matches a literal CompShare instance ID token in free text.
-// Real IDs are lowercase alphanumeric (e.g. uhost-1qy6d8tkfrl4); the class accepts
-// A-Z too so a mistyped-case ID is captured WHOLE and echoed back intact in the
-// "未找到实例 X" notice (it won't resolve — ResolveByID is exact — so it falls to the
-// wrong-ID branch). The trailing class stops at any non-alphanumeric rune, so
-// "uhost-xxx的GPU利用率" yields "uhost-xxx".
-var uhostIDPattern = regexp.MustCompile(`uhost-[0-9a-zA-Z]+`)
-
 type pendingResourceSelection struct {
 	originalUserMsg string
 	plan            intent.IntentRoute
@@ -41,27 +32,21 @@ type pendingResourceSelection struct {
 	notFoundRef string
 }
 
-// findExplicitInstanceRef scans a raw user message for an explicit uhost-ID and
+// findExplicitInstanceRef scans a raw user message for an explicit instance ID and
 // resolves it against the snapshot. This is the deterministic backstop for the
 // intent router intermittently NOT extracting a literal ID into Slots.TargetRefs
 // (Rule 5: a regex-matchable literal is resolved by code, not the LLM). Returns
 // the matched instance when an ID resolves; otherwise returns the first
-// unresolved uhost-shaped token so the caller can say "未找到 X".
+// unresolved ID-shaped token so the caller can say "未找到 X".
 func findExplicitInstanceRef(msg string, snapshot entity.RegistrySnapshot) (*entity.InstanceSnapshot, string) {
-	tokens := uhostIDPattern.FindAllString(msg, -1)
-	if len(tokens) == 0 {
-		return nil, ""
+	hits, unresolved := snapshot.ResolveInstanceRefsInText(msg)
+	if len(hits) > 0 {
+		return hits[0], ""
 	}
-	notFound := ""
-	for _, tok := range tokens {
-		if inst, res := snapshot.ResolveByID(tok); res.Status == entity.ResolveHit && inst != nil {
-			return inst, ""
-		}
-		if notFound == "" {
-			notFound = tok
-		}
+	if len(unresolved) > 0 {
+		return nil, unresolved[0]
 	}
-	return nil, notFound
+	return nil, ""
 }
 
 type resourceSelectionMatch struct {
@@ -150,7 +135,7 @@ func matchResourceSelectionReference(input string, p pendingResourceSelection) (
 		}
 		return resourceSelectionMatch{instance: p.candidates[index], ok: true}, false
 	}
-	for _, token := range uhostIDPattern.FindAllString(input, -1) {
+	for _, token := range p.snapshot.InstanceIDTokensInText(input) {
 		for _, inst := range p.candidates {
 			if token == inst.UHostId {
 				return resourceSelectionMatch{instance: inst, ok: true}, false
@@ -172,7 +157,7 @@ func resourceSelectionLooksLikeReply(input string, p pendingResourceSelection) b
 	if _, ok := parseResourceSelectionOrdinal(query); ok {
 		return true
 	}
-	if uhostIDPattern.FindString(query) == query {
+	if tokens := p.snapshot.InstanceIDTokensInText(query); len(tokens) == 1 && tokens[0] == query {
 		return true
 	}
 	return resourceSelectionReferenceOnly(query, p)
@@ -183,7 +168,7 @@ func resourceSelectionReferenceOnly(input string, p pendingResourceSelection) bo
 	if compact == "" {
 		return true
 	}
-	for _, token := range uhostIDPattern.FindAllString(compact, -1) {
+	for _, token := range p.snapshot.InstanceIDTokensInText(compact) {
 		compact = strings.ReplaceAll(compact, token, "")
 	}
 	if ordinal, ok := extractResourceSelectionOrdinal(compact); ok {
@@ -327,7 +312,7 @@ func (e *Engine) buildResourceSelectionForPlan(ctx context.Context, result inten
 	}
 
 	// Deterministic explicit-ID backstop (Rule 5): the intent router intermittently
-	// fails to extract a literal uhost-ID from a monitor query into Slots.TargetRefs,
+	// fails to extract a literal instance ID from a monitor query into Slots.TargetRefs,
 	// which collapses to "all instances" and a needless "select one" prompt even
 	// though the user already named the instance. Resolve it from the raw message.
 	// A single resolved candidate flows through the existing len==1 auto-dispatch

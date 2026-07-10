@@ -93,6 +93,20 @@ func (r *EntityRegistry) ResolveByName(name string) ([]*InstanceSnapshot, Resolv
 	return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
 }
 
+func (r *EntityRegistry) InstanceIDTokensInText(text string) []string {
+	if r == nil {
+		return nil
+	}
+	return r.Snapshot().InstanceIDTokensInText(text)
+}
+
+func (r *EntityRegistry) ResolveInstanceRefsInText(text string) ([]*InstanceSnapshot, []string) {
+	if r == nil {
+		return nil, nil
+	}
+	return r.Snapshot().ResolveInstanceRefsInText(text)
+}
+
 func (r *EntityRegistry) Filter(spec FilterSpec) []*InstanceSnapshot {
 	state := strings.ToLower(strings.TrimSpace(spec.State))
 	gpuType := strings.ToLower(strings.TrimSpace(spec.GPUType))
@@ -172,6 +186,69 @@ func (s RegistrySnapshot) ResolveByName(name string) ([]*InstanceSnapshot, Resol
 	return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
 }
 
+func (s RegistrySnapshot) InstanceIDTokensInText(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" || len(s.Instances) == 0 {
+		return nil
+	}
+	prefixes := s.instanceIDPrefixes()
+	if len(prefixes) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	tokens := make([]string, 0)
+	for i := 0; i < len(text); i++ {
+		if text[i] > unicode.MaxASCII {
+			continue
+		}
+		if i > 0 && isInstanceIDTokenByte(text[i-1]) {
+			continue
+		}
+		for _, prefix := range prefixes {
+			endPrefix := i + len(prefix)
+			if endPrefix >= len(text) || text[endPrefix] != '-' {
+				continue
+			}
+			if !strings.EqualFold(text[i:endPrefix], prefix) {
+				continue
+			}
+			end := endPrefix + 1
+			for end < len(text) && isInstanceIDTokenByte(text[end]) {
+				end++
+			}
+			if end == endPrefix+1 {
+				continue
+			}
+			token := text[i:end]
+			if _, ok := seen[token]; ok {
+				continue
+			}
+			seen[token] = struct{}{}
+			tokens = append(tokens, token)
+			i = end - 1
+			break
+		}
+	}
+	return tokens
+}
+
+func (s RegistrySnapshot) ResolveInstanceRefsInText(text string) ([]*InstanceSnapshot, []string) {
+	tokens := s.InstanceIDTokensInText(text)
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+	hits := make([]*InstanceSnapshot, 0, len(tokens))
+	unresolved := make([]string, 0)
+	for _, token := range tokens {
+		if inst, res := s.ResolveByID(token); res.Status == ResolveHit && inst != nil {
+			hits = append(hits, inst)
+			continue
+		}
+		unresolved = append(unresolved, token)
+	}
+	return hits, unresolved
+}
+
 func (s RegistrySnapshot) instancesForIDs(ids []string) []*InstanceSnapshot {
 	matches := make([]*InstanceSnapshot, 0, len(ids))
 	for _, id := range ids {
@@ -198,6 +275,55 @@ func (r *EntityRegistry) instancesForIDsLocked(ids []string) []*InstanceSnapshot
 		return matches[i].UHostId < matches[j].UHostId
 	})
 	return matches
+}
+
+func (s RegistrySnapshot) instanceIDPrefixes() []string {
+	seen := map[string]struct{}{}
+	prefixes := make([]string, 0)
+	for id, inst := range s.Instances {
+		instanceID := strings.TrimSpace(inst.UHostId)
+		if instanceID == "" {
+			instanceID = strings.TrimSpace(id)
+		}
+		prefix, ok := instanceIDPrefix(instanceID)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[prefix]; exists {
+			continue
+		}
+		seen[prefix] = struct{}{}
+		prefixes = append(prefixes, prefix)
+	}
+	sort.Slice(prefixes, func(i, j int) bool {
+		if len(prefixes[i]) != len(prefixes[j]) {
+			return len(prefixes[i]) > len(prefixes[j])
+		}
+		return prefixes[i] < prefixes[j]
+	})
+	return prefixes
+}
+
+func instanceIDPrefix(id string) (string, bool) {
+	idx := strings.IndexByte(id, '-')
+	if idx <= 0 || idx >= len(id)-1 {
+		return "", false
+	}
+	prefix := strings.ToLower(id[:idx])
+	for i := 0; i < len(prefix); i++ {
+		if !isASCIIAlphaNum(prefix[i]) {
+			return "", false
+		}
+	}
+	return prefix, true
+}
+
+func isInstanceIDTokenByte(b byte) bool {
+	return isASCIIAlphaNum(b) || b == '-' || b == '_'
+}
+
+func isASCIIAlphaNum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 func normalizeName(s string) string {

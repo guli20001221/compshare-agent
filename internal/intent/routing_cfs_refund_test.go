@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -60,6 +61,94 @@ func TestRefundEstimateRouteRequiresTarget(t *testing.T) {
 	assert.Equal(t, HandlerStatusHandled, result.Status)
 	assert.Contains(t, result.Reply, "哪台实例")
 	assert.Empty(t, exec.calls)
+}
+
+func TestRefundEstimateRouteUsesExplicitInstanceIDTokenFromText(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"RefundPriceSet": []any{
+			map[string]any{
+				"UHostId":     "cpod-not-in-snapshot",
+				"Code":        float64(0),
+				"RefundPrice": float64(6.66),
+			},
+		},
+	}}
+	resolver := refundSnapshotWithCPODPrefix(t)
+	handler := NewDemoHandler(exec)
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
+		UserText: "cpod-not-in-snapshot 现在释放能退多少钱",
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentRefundEstimate,
+			Retrieval:     Retrieval{Enabled: false},
+			Confidence:    0.8,
+		},
+		Resolver: resolver,
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, "GetCompShareRefundPrice", exec.calls[0].action)
+	assert.Equal(t, []string{"cpod-not-in-snapshot"}, exec.calls[0].args["UHostIds"])
+	assert.Contains(t, result.Reply, "6.66")
+}
+
+func TestRefundEstimateRouteUsesIDTokenWithoutResolver(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"RefundPriceSet": []any{
+			map[string]any{
+				"UHostId":     "uhost-a",
+				"Code":        float64(0),
+				"RefundPrice": float64(7.77),
+			},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
+		UserText: "uhost-a 现在释放能退多少钱",
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentRefundEstimate,
+			Retrieval:     Retrieval{Enabled: false},
+			Confidence:    0.8,
+		},
+	})
+
+	require.Equal(t, HandlerStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, "GetCompShareRefundPrice", exec.calls[0].action)
+	assert.Equal(t, []string{"uhost-a"}, exec.calls[0].args["UHostIds"])
+	assert.Contains(t, result.Reply, "7.77")
+}
+
+func TestRefundEstimateRouteDoesNotTreatGenericHyphenTokenAsInstanceID(t *testing.T) {
+	exec := &mockHandlerExecutor{}
+	handler := NewDemoHandler(exec)
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
+		UserText: "deepseek-r1 这个环境现在释放能退多少钱",
+		Plan: IntentRoute{
+			SchemaVersion: SchemaVersion,
+			Intent:        IntentRefundEstimate,
+			Retrieval:     Retrieval{Enabled: false},
+			Confidence:    0.8,
+		},
+	})
+
+	assert.Equal(t, HandlerStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "哪台实例")
+	assert.Empty(t, exec.calls)
+}
+
+func refundSnapshotWithCPODPrefix(t *testing.T) entity.RegistrySnapshot {
+	t.Helper()
+	reg := entity.NewRegistry()
+	require.NoError(t, reg.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(1),
+		"UHostSet": []any{
+			instanceRow("cpod-known", "pod-known"),
+		},
+	}, "test"))
+	return reg.Snapshot()
 }
 
 func TestRefundEstimateRouteUsesFallbackInstanceID(t *testing.T) {

@@ -893,6 +893,7 @@ func TestFindExplicitInstanceRef(t *testing.T) {
 	snap := testSnapshotWithInstances(
 		testInstance("uhost-1qy6d8tkfrl4", "host", "Running"),
 		testInstance("uhost-1rkv126dxgiq", "host", "Running"),
+		testInstance("cpod-1rkv126dxgiq", "pod", "Running"),
 	)
 	tests := []struct {
 		name      string
@@ -902,8 +903,11 @@ func TestFindExplicitInstanceRef(t *testing.T) {
 	}{
 		{"explicit ID resolves", "uhost-1qy6d8tkfrl4 的GPU利用率是多少？", "uhost-1qy6d8tkfrl4", ""},
 		{"ID with trailing CJK", "查uhost-1qy6d8tkfrl4的内存", "uhost-1qy6d8tkfrl4", ""},
+		{"cpod ID with adjacent CJK resolves", "关闭cpod-1rkv126dxgiq这台实例", "cpod-1rkv126dxgiq", ""},
 		{"wrong ID surfaces as notFound", "uhost-doesnotexist 的GPU利用率", "", "uhost-doesnotexist"},
+		{"wrong cpod ID surfaces as notFound", "cpod-doesnotexist 的GPU利用率", "", "cpod-doesnotexist"},
 		{"mistyped-case ID echoes whole as notFound", "uhost-1QY6D8 的GPU利用率", "", "uhost-1QY6D8"},
+		{"business name with dash is not an ID", "my-gpu-box 的GPU利用率", "", ""},
 		{"no ID at all", "查看GPU利用率", "", ""},
 		{"first resolvable wins", "uhost-1qy6d8tkfrl4 还是 uhost-1rkv126dxgiq", "uhost-1qy6d8tkfrl4", ""},
 	}
@@ -1007,7 +1011,7 @@ func testPendingResourceSelection(candidates []entity.InstanceSnapshot) pendingR
 			SchemaVersion: intent.SchemaVersion,
 			Intent:        intent.IntentMonitorQuery,
 		},
-		snapshot:    entity.RegistrySnapshot{},
+		snapshot:    snapshotFromPendingSelectionCandidates(candidates),
 		candidates:  candidates,
 		createdTurn: 4,
 	}

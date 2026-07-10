@@ -54,6 +54,7 @@ type ValidationContext struct {
 type EntityResolver interface {
 	ResolveByID(id string) (*entity.InstanceSnapshot, entity.ResolveResult)
 	ResolveByName(name string) ([]*entity.InstanceSnapshot, entity.ResolveResult)
+	InstanceIDTokensInText(text string) []string
 }
 
 func ValidateRoute(plan IntentRoute, ctx ValidationContext) error {
