@@ -864,28 +864,74 @@ func TestSelectDeployZoneAndGPU_PreferredFirst(t *testing.T) {
 	assert.Empty(t, fb, "no fallback note when the primary zone is used")
 }
 
-func TestSelectDeployZoneAndGPU_SkipsZoneWithoutImageSupportedCard(t *testing.T) {
-	exec := stockExec(map[string]bool{"cn-wlcb-01": true, "cn-sh2-02": true})
-	eng := NewWithDeps(nil, exec, okConfirm)
-	avail := map[string]any{"AvailableInstanceTypes": []any{
-		availCardZ("A800", "cn-wlcb-01", 80),
-		availCardZ("4090_48G", "cn-sh2-02", 48),
-	}}
+func TestSelectDeployZoneAndGPU_SkipsZonesWithoutImageSupportedCard(t *testing.T) {
+	tests := []struct {
+		name      string
+		cards     []any
+		supported []string
+		stock     map[string]bool
+		wantZone  string
+		wantGPU   string
+	}{
+		{
+			name: "single supported gpu in second zone",
+			cards: []any{
+				availCardZ("4090", "zone-alpha", 24),
+				availCardZ("A100", "zone-beta", 80),
+			},
+			supported: []string{"A100"},
+			stock:     map[string]bool{"zone-alpha": true, "zone-beta": true},
+			wantZone:  "zone-beta",
+			wantGPU:   "A100",
+		},
+		{
+			name: "multiple incompatible zones before supported gpu",
+			cards: []any{
+				availCardZ("4090", "zone-alpha", 24),
+				availCardZ("A800", "zone-beta", 80),
+				availCardZ("H20", "zone-gamma", 96),
+			},
+			supported: []string{"H20"},
+			stock:     map[string]bool{"zone-alpha": true, "zone-beta": true, "zone-gamma": true},
+			wantZone:  "zone-gamma",
+			wantGPU:   "H20",
+		},
+		{
+			name: "first compatible gpu from a multi-gpu image",
+			cards: []any{
+				availCardZ("A800", "zone-alpha", 80),
+				availCardZ("4090_48G", "zone-beta", 48),
+				availCardZ("H20", "zone-gamma", 96),
+			},
+			supported: []string{"4090_48G", "H20"},
+			stock:     map[string]bool{"zone-alpha": true, "zone-beta": true, "zone-gamma": true},
+			wantZone:  "zone-beta",
+			wantGPU:   "4090_48G",
+		},
+	}
 
-	zone, gpu, _, fb, err := eng.selectDeployZoneAndGPU(
-		context.Background(),
-		avail,
-		deployPlan{ImageID: "img-infinite-talk"},
-		[]string{"4090_48G"},
-		"",
-		"创建一台最强AI数字人InfiniteTalk-图片和视频数字人",
-		"",
-	)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := stockExec(tt.stock)
+			eng := NewWithDeps(nil, exec, okConfirm)
+			avail := map[string]any{"AvailableInstanceTypes": tt.cards}
 
-	require.NoError(t, err)
-	assert.Equal(t, "cn-sh2-02", zone, "zones without an image-supported card must be skipped")
-	assert.Equal(t, "4090_48G", gpu)
-	assert.Empty(t, fb, "an incompatible primary zone is not a sold-out fallback")
+			zone, gpu, _, fb, err := eng.selectDeployZoneAndGPU(
+				context.Background(),
+				avail,
+				deployPlan{ImageID: "img-generic"},
+				tt.supported,
+				"",
+				"部署所选镜像",
+				"",
+			)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantZone, zone, "zones without an image-supported card must be skipped")
+			assert.Equal(t, tt.wantGPU, gpu)
+			assert.Empty(t, fb, "an incompatible primary zone is not a sold-out fallback")
+		})
+	}
 }
 
 func TestSelectDeployZoneAndGPU_FallbackOnSoldOut(t *testing.T) {
