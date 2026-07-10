@@ -1184,9 +1184,6 @@ func buildCommunityImageEnvelope(raw map[string]any, slots Slots, userText strin
 		envelope.Fact{Key: "image_category", Label: "Image category", Value: "community", Source: envelope.FactSourceComputed},
 		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(filtered), Source: envelope.FactSourceComputed},
 		envelope.Fact{Key: "user_question", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
-		// disclaimer is rendered verbatim at the end by the grounded renderer
-		// (see renderer/prompt.go image_list rules) — the deploy bridge.
-		envelope.Fact{Key: "disclaimer", Label: "Deploy bridge", Value: communityImageDeployFooter(), Source: envelope.FactSourceComputed},
 	)
 	lineBudget := communityImageGroupLimit
 	for _, entry := range filtered {
@@ -2408,14 +2405,7 @@ func renderCommunityImageReply(raw map[string]any, slots Slots) string {
 	if len(lines) == 0 {
 		return noCommunityReply
 	}
-	lines = append(lines, communityImageDeployFooter())
-	return strings.Join(lines, "\n")
-}
-
-// communityImageDeployFooter bridges the community-image list to the deploy
-// flow: the user can hand a community image straight to deploy_model.
-func communityImageDeployFooter() string {
-	return "说明：想用其中某个镜像开实例，直接告诉我镜像名（如「用 ComfyUI 镜像部署」），或直接说模型名（如「部署 Qwen2.5-32B」），我来帮你选 GPU 配置并创建。"
+	return "社区镜像：\n" + strings.Join(lines, "\n")
 }
 
 func dedupeCommunityImageGroups(groups []map[string]any) []map[string]any {

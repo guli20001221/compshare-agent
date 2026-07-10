@@ -1601,10 +1601,10 @@ func TestRenderCommunityImage_DataExpansionAndCap(t *testing.T) {
 	if !strings.Contains(reply, "共 5 个版本") {
 		t.Errorf("community renderer should add 'remaining N' hint when capped; got: %s", reply)
 	}
-	// Footer bridges the list to the deploy flow so users can hand an image straight
-	// to deploy_model — the live alternative to ingesting per-image READMEs into RAG.
-	if !strings.Contains(reply, "我来帮你选 GPU 配置并创建") {
-		t.Errorf("community renderer should append the deploy-bridge footer; got: %s", reply)
+	if strings.Contains(reply, "想用其中某个镜像开实例") ||
+		strings.Contains(reply, "用 ComfyUI 镜像部署") ||
+		strings.Contains(reply, "部署 Qwen2.5-32B") {
+		t.Errorf("community renderer must not append a fixed deploy footer; got: %s", reply)
 	}
 }
 
@@ -1768,8 +1768,8 @@ func TestRenderModelRepositoryReply_NoOverflowNoteWhenWithinCap(t *testing.T) {
 
 func TestBuildCommunityImageEnvelope_PopularityFactsAndOrder(t *testing.T) {
 	// Prod renders community_image via the LLM grounded renderer, which works off
-	// THIS envelope (not the deterministic reply). So the popularity signal, the
-	// most-deployed-first ordering, and the deploy-bridge footer must live here.
+	// THIS envelope (not the deterministic reply). Popularity and ordering must be
+	// grounded, but the model must not be forced to append a canned deploy footer.
 	mk := func(name string, created int) map[string]any {
 		return map[string]any{
 			"ImageName":    name,
@@ -1814,16 +1814,14 @@ func TestBuildCommunityImageEnvelope_PopularityFactsAndOrder(t *testing.T) {
 		t.Errorf("unsized group must not carry a deploy_count fact")
 	}
 
-	// disclaimer computed fact carries the deploy-bridge footer verbatim (the
-	// renderer prompt emits computed.disclaimer as the last line, unmodified).
-	var disclaimer string
+	var disclaimerFound bool
 	for _, f := range env.Computed {
 		if f.Key == "disclaimer" {
-			disclaimer, _ = f.Value.(string)
+			disclaimerFound = true
 		}
 	}
-	if disclaimer != communityImageDeployFooter() {
-		t.Errorf("disclaimer computed fact = %q, want deploy footer %q", disclaimer, communityImageDeployFooter())
+	if disclaimerFound {
+		t.Error("community image envelope must not force a fixed disclaimer/footer")
 	}
 }
 
