@@ -24,6 +24,7 @@ const (
 	ErrInvalidConfidence           ErrorCode = "invalid_confidence"
 	ErrInvalidImageSource          ErrorCode = "invalid_image_source"
 	ErrInvalidReadOnlySlot         ErrorCode = "invalid_read_only_slot"
+	ErrInvalidLifecycleAction      ErrorCode = "invalid_lifecycle_action"
 )
 
 type ValidationError struct {
@@ -66,6 +67,9 @@ func ValidateRoute(plan IntentRoute, ctx ValidationContext) error {
 	}
 	if plan.Confidence < 0 || plan.Confidence > 1 {
 		return validationErr(ErrInvalidConfidence, "confidence", "confidence must be within [0,1]")
+	}
+	if !validLifecycleAction(plan.Slots.Action) {
+		return validationErr(ErrInvalidLifecycleAction, "slots.action", "unsupported lifecycle action")
 	}
 	if plan.Intent == IntentBillingAccountUnsupported && len(plan.Slots.TargetRefs) > 0 {
 		return validationErr(ErrInvalidTargetRefType, "slots.target_refs", "account-level billing unsupported intent must not carry instance target_refs")
@@ -191,6 +195,17 @@ func validMetric(metric Metric) bool {
 func validTimeWindowType(windowType TimeWindowType) bool {
 	switch windowType {
 	case TimeWindowPreset, TimeWindowRelative, TimeWindowAbsolute:
+		return true
+	default:
+		return false
+	}
+}
+
+func validLifecycleAction(action LifecycleAction) bool {
+	switch action {
+	case "", LifecycleActionStop, LifecycleActionStart, LifecycleActionReboot,
+		LifecycleActionReinstall, LifecycleActionResize, LifecycleActionResetPwd,
+		LifecycleActionRename, LifecycleActionCreateDisk:
 		return true
 	default:
 		return false

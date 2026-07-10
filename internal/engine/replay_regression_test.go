@@ -252,6 +252,177 @@ func TestReplayRegression_LifecycleStopAlreadyStoppedDoesNotAskOrCreate(t *testi
 	require.NotContains(t, exec.calls, "StopCompShareInstance")
 }
 
+func TestReplayRegression_LifecycleBareIDSelectionResumesPlannerWithoutAutoMutation(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{
+		{Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentOperationLifecycle,
+			Slots:         intent.Slots{Action: intent.LifecycleActionStop},
+			RequiredTools: []string{"DescribeCompShareInstance"},
+			Confidence:    0.9,
+		}},
+		{Plan: unknownEngineTestPlan()},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("describe", "DescribeCompShareInstance", `{}`)}},
+		{Content: "实例列表：uhost-select-001（select-a）、uhost-select-002（select-b），请选择一台。"},
+		{Content: "继续处理所选实例"},
+	}}
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
+	}}
+	eng := NewWithDeps(mock, exec, func(string, map[string]any) bool {
+		t.Fatal("bare ID selection must not auto-dispatch a mutating workflow")
+		return false
+	})
+	eng.InitWithContext("test user")
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentOperationLifecycle}})
+
+	firstReply, err := eng.Chat(context.Background(), "帮我关闭实例", noopStep)
+	require.NoError(t, err)
+	require.Contains(t, firstReply, "uhost-select-001")
+	require.Len(t, eng.sessionState.PendingSelectionItems, 2)
+	require.Equal(t, "帮我关闭实例", eng.sessionState.PendingSelectionOriginalUserMsg)
+	reactCallsAfterFirstTurn := len(mock.calls)
+	require.Equal(t, 2, reactCallsAfterFirstTurn)
+
+	secondReply, err := eng.Chat(context.Background(), "uhost-select-001", noopStep)
+	require.NoError(t, err)
+	require.Equal(t, "继续处理所选实例", secondReply)
+	require.NotContains(t, secondReply, "你接下来想查看监控、重启")
+	require.Len(t, planner.calls, 2, "bare ID selection must resume normal planning")
+	require.Len(t, mock.calls, reactCallsAfterFirstTurn+1, "ineligible second route should continue to ReAct")
+	require.Equal(t, []string{"DescribeCompShareInstance", "DescribeCompShareInstance"}, exec.calls)
+	require.Nil(t, eng.pendingResourceSelection)
+	require.Equal(t, "uhost-select-001", eng.sessionState.SelectedInstanceID)
+}
+
+func TestReplayRegression_ExactSelectionDoesNotResumeStaleWorkflowFrame(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentOperationLifecycle,
+		RequiredTools: []string{"DescribeCompShareInstance"},
+		Confidence:    0.9,
+	}}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "继续处理所选实例"}}}
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": phase1MultipleInstanceDescribeResult(),
+	}}
+	eng := NewWithDeps(mock, exec, func(string, map[string]any) bool {
+		t.Fatal("plain resource selection must not resume a stale mutating workflow")
+		return false
+	})
+	eng.InitWithContext("test user")
+	eng.SetSessionState(SessionState{
+		SchemaVersion:                  SessionStateSchemaCurrent,
+		PendingSelectionKind:           pendingSelectionKindInstance,
+		PendingSelectionIntent:         string(intent.IntentResourceInfo),
+		PendingSelectionProducedAtUnix: time.Now().Unix(),
+		PendingSelectionTTLSeconds:     pendingSelectionTTLSeconds,
+		PendingSelectionItems: []PendingSelectionItem{
+			{Index: 1, ID: "uhost-select-001", Name: "select-a", State: "Running"},
+			{Index: 2, ID: "uhost-select-002", Name: "select-b", State: "Stopped"},
+		},
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusPending,
+			Workflow:       "CreateDiskWorkflow",
+			Slots:          map[string]string{"instance_id": "uhost-stale-001"},
+			MissingSlots:   []string{"size_gb"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	decisionLayer := &fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionContinueTask,
+		Target:      ContextDecisionTargetInstance,
+		SlotUpdates: map[string]string{"size_gb": "200"},
+	}}
+	eng.SetContextDecisionLayer(decisionLayer)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentOperationLifecycle}})
+
+	reply, err := eng.Chat(context.Background(), "选第2台", noopStep)
+	require.NoError(t, err)
+	require.Equal(t, "继续处理所选实例", reply)
+	require.Empty(t, decisionLayer.calls, "plain selection must clear stale workflow context before planner dispatch")
+	require.NotContains(t, exec.calls, "CreateDiskWorkflow")
+	require.Equal(t, "uhost-select-002", eng.sessionState.SelectedInstanceID)
+	require.Empty(t, eng.sessionState.ContextFrame.Kind)
+}
+
+func TestReplayRegression_ExactSelectionPreservesWaitingCreateDiskSize(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentOperationLifecycle,
+		RequiredTools: []string{"DescribeCompShareInstance"},
+		Confidence:    0.9,
+	}}}}
+	var confirmAction string
+	var confirmArgs map[string]any
+	var execCalls []string
+	exec := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		execCalls = append(execCalls, action)
+		switch action {
+		case "DescribeCompShareInstance":
+			return phase1MultipleInstanceDescribeResult(), nil
+		case "GetCompShareInstancePrice":
+			return map[string]any{"PriceDetails": []any{map[string]any{"Disks": float64(0.25)}}}, nil
+		default:
+			return map[string]any{}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, func(action string, args map[string]any) bool {
+		confirmAction = action
+		confirmArgs = args
+		return false
+	})
+	eng.InitWithContext("test user")
+	eng.SetSessionState(SessionState{
+		SchemaVersion:                  SessionStateSchemaCurrent,
+		PendingSelectionKind:           pendingSelectionKindInstance,
+		PendingSelectionIntent:         string(intent.IntentResourceInfo),
+		PendingSelectionProducedAtUnix: time.Now().Unix(),
+		PendingSelectionTTLSeconds:     pendingSelectionTTLSeconds,
+		PendingSelectionItems: []PendingSelectionItem{
+			{Index: 1, ID: "uhost-select-001", Name: "select-a", State: "Running"},
+			{Index: 2, ID: "uhost-select-002", Name: "select-b", State: "Running"},
+		},
+		ContextFrame: ContextFrame{
+			Version:        1,
+			Kind:           ContextFrameKindWorkflowTask,
+			Status:         ContextFrameStatusPending,
+			Workflow:       "CreateDiskWorkflow",
+			Slots:          map[string]string{"size_gb": "200"},
+			MissingSlots:   []string{"instance_id"},
+			ProducedAtUnix: time.Now().Unix(),
+			TTLSeconds:     ContextFrameTTLSeconds,
+		},
+	}, 1)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision:    ContextDecisionContinueTask,
+		Target:      ContextDecisionTargetInstance,
+		SlotUpdates: map[string]string{"instance_id": "uhost-select-002"},
+	}})
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentOperationLifecycle}})
+
+	reply, err := eng.Chat(context.Background(), "选第2台", noopStep)
+	require.NoError(t, err)
+	require.Contains(t, reply, "操作未执行")
+	require.Equal(t, "CreateDiskWorkflow", confirmAction)
+	require.NotNil(t, confirmArgs)
+	require.Equal(t, "uhost-select-002", confirmArgs["UHostId"])
+	require.Equal(t, float64(200), confirmArgs["disk_size_gb"])
+	require.NotContains(t, execCalls, "CreateAndAttachCompshareDisk")
+}
+
 func TestReplayRegression_WithoutGPUStartOverridesPlannerStop(t *testing.T) {
 	data := map[string]any{
 		"TotalCount": float64(1),
