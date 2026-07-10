@@ -35,6 +35,20 @@ func TestDeterministicWorkflowReply(t *testing.T) {
 	rename, _ := deterministicWorkflowReply("RenameInstanceWorkflow", args)
 	assert.Contains(t, rename, "my-renamed-box", "rename reply must surface the new name")
 
+	// Lifecycle success replies confirm-and-name only. They must NOT restate a
+	// fact the confirmation card already delivered, nor assert an unverified
+	// specific — otherwise the crude copy drifts from the card's source of truth.
+	// The stop card carries the precise, conditional billing warning (pinned in
+	// internal/workflow/stop_start_test.go) and the operation prompt tells the
+	// model not to re-explain 磁盘计费 after the action; the reply must not
+	// contradict that by repeating a cruder, unconditional billing line.
+	stopReply, _ := deterministicWorkflowReply("StopInstanceWorkflow", args)
+	assert.NotContains(t, stopReply, "计费", "stop reply must not restate billing — the confirm card is the source of truth")
+	// Reboot completion time is not something we control or verify; stating a
+	// specific "X 分钟" is a fabricated SLA.
+	rebootReply, _ := deterministicWorkflowReply("RebootInstanceWorkflow", args)
+	assert.NotContains(t, rebootReply, "分钟", "reboot reply must not assert an unverified completion time")
+
 	reset, ok := deterministicWorkflowReply("ResetPasswordWorkflow", map[string]any{
 		"UHostId":  "uhost-abc123",
 		"Password": "Secret123!",
