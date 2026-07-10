@@ -38,6 +38,43 @@ func TestValidatePlan_RejectsInvalidIntentEnum(t *testing.T) {
 	requireValidationCode(t, err, ErrInvalidIntent)
 }
 
+func TestValidatePlan_ValidatesLifecycleActionEnum(t *testing.T) {
+	validActions := []LifecycleAction{
+		"",
+		LifecycleActionStop,
+		LifecycleActionStart,
+		LifecycleActionReboot,
+		LifecycleActionReinstall,
+		LifecycleActionResize,
+		LifecycleActionResetPwd,
+		LifecycleActionRename,
+		LifecycleActionCreateDisk,
+	}
+	for _, action := range validActions {
+		t.Run("valid_"+string(action), func(t *testing.T) {
+			plan := IntentRoute{
+				SchemaVersion: SchemaVersion,
+				Intent:        IntentOperationLifecycle,
+				Slots:         Slots{Action: action},
+				Confidence:    0.9,
+			}
+			require.NoError(t, ValidateRoute(plan, ValidationContext{}))
+		})
+	}
+
+	plan := IntentRoute{
+		SchemaVersion: SchemaVersion,
+		Intent:        IntentOperationLifecycle,
+		Slots:         Slots{Action: LifecycleAction("destroy")},
+		Confidence:    0.9,
+	}
+	err := ValidateRoute(plan, ValidationContext{})
+	requireValidationCode(t, err, ErrorCode("invalid_lifecycle_action"))
+	var validationErr *ValidationError
+	require.ErrorAs(t, err, &validationErr)
+	assert.Equal(t, "slots.action", validationErr.Field)
+}
+
 func TestValidatePlan_RejectsRemovedIntentEnums(t *testing.T) {
 	for _, legacy := range []Intent{
 		Intent("recommendation"),
