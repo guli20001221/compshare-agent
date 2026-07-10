@@ -130,7 +130,7 @@ func TestApplyPlacementArgsKeepsNormalZoneAndRegion(t *testing.T) {
 	assert.Equal(t, uint32(3002), purchase["az_group"])
 }
 
-func TestApplyPurchasePlacementArgsCarriesPodZoneIDAndAzGroup(t *testing.T) {
+func TestApplyPurchasePlacementArgsCarriesPodRegionZoneIDAndAzGroup(t *testing.T) {
 	args := ApplyPurchasePlacementArgs(map[string]any{
 		"Zone":   "cn-bj2-03",
 		"Region": "cn-bj2",
@@ -142,8 +142,8 @@ func TestApplyPurchasePlacementArgsCarriesPodZoneIDAndAzGroup(t *testing.T) {
 		IsPod:   true,
 	})
 
-	assert.NotContains(t, args, "Zone")
-	assert.NotContains(t, args, "Region")
+	assert.Equal(t, "cn-bj2-03", args["Zone"])
+	assert.Equal(t, "cn-bj2", args["Region"])
 	assert.Equal(t, uint32(9103), args["zone_id"])
 	assert.Equal(t, uint32(3103), args["az_group"])
 	assert.Equal(t, true, args["IsPod"])

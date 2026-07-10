@@ -176,6 +176,10 @@ func addPricingPlacementArgs(args map[string]any, zone string, supportZones []zo
 		if z.Region != "" {
 			args["Region"] = z.Region
 		}
+		if z.IsPod {
+			args["IsPod"] = true
+			args["Zone"] = z.Zone
+		}
 		if z.ZoneID != 0 {
 			args["zone_id"] = z.ZoneID
 		}

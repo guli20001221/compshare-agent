@@ -1033,8 +1033,8 @@ func TestCreateInstance_PodZoneUsesDynamicZoneIDAndAzGroup(t *testing.T) {
 
 	for _, action := range []string{"GetCompShareInstanceUserPrice", "CreateCompShareInstance"} {
 		args := byAction[action]
-		assert.NotContains(t, args, "Zone", action)
-		assert.NotContains(t, args, "Region", action)
+		assert.Equal(t, "cn-newpod-03", args["Zone"], action)
+		assert.Equal(t, "cn-newpod", args["Region"], action)
 		assert.Equal(t, uint32(9103), args["zone_id"], action)
 		assert.Equal(t, uint32(3103), args["az_group"], action)
 	}

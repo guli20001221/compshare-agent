@@ -187,9 +187,13 @@ func ApplyPurchasePlacementArgs(args map[string]any, placement ZonePlacement) ma
 		args = map[string]any{}
 	}
 	if placement.IsPod {
-		delete(args, "Zone")
-		delete(args, "Region")
 		args["IsPod"] = true
+		if placement.Zone != "" {
+			args["Zone"] = placement.Zone
+		}
+		if placement.Region != "" {
+			args["Region"] = placement.Region
+		}
 		if placement.ZoneID != 0 {
 			args["zone_id"] = placement.ZoneID
 		}

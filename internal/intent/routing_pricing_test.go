@@ -514,6 +514,55 @@ func TestHandlePricingQuery_CatalogPriceUsesUserPriceListFields(t *testing.T) {
 	}
 }
 
+func TestHandlePricingQuery_PodZonePassesConsolePlacementToPrice(t *testing.T) {
+	exec := &mockHandlerExecutor{result: map[string]any{
+		"AvailableInstanceTypes": []any{
+			map[string]any{
+				"Name": "4090",
+				"Zone": "cn-bj2-03",
+				"MachineSizes": []any{
+					map[string]any{
+						"Gpu": float64(1),
+						"Collection": []any{
+							map[string]any{
+								"Cpu":    float64(14),
+								"Memory": []any{float64(32)},
+							},
+						},
+					},
+				},
+			},
+		},
+		"ZoneInfo": []any{
+			map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "RegionId": float64(1000001), "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": true},
+		},
+		"PriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": float64(1.78)},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
+		Plan:     IntentRoute{Intent: IntentPricingQuery},
+		UserText: "华北一C 4090 多少钱",
+	})
+
+	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
+	var priceCall *handlerExecCall
+	for i := range exec.calls {
+		if exec.calls[i].action == "GetCompShareInstanceUserPrice" {
+			priceCall = &exec.calls[i]
+			break
+		}
+	}
+	require.NotNil(t, priceCall)
+	assert.Equal(t, "cn-bj2-03", priceCall.args["Zone"])
+	assert.Equal(t, "cn-bj2", priceCall.args["Region"])
+	assert.Equal(t, uint32(5001), priceCall.args["zone_id"])
+	assert.Equal(t, uint32(1000001), priceCall.args["az_group"])
+	assert.Equal(t, true, priceCall.args["IsPod"])
+}
+
 // TestHandlePricingQuery_OmitsZoneForNonWlcbCatalogZone guards the price API
 // boundary: user-facing Zone strings stay out of the price call. Backend
 // placement ids may be added separately from the support-zone catalog.
