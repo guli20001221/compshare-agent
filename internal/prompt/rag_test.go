@@ -366,9 +366,9 @@ func TestBuildRAGMessagesPromptEncodesThirdPartyToolIntegrationPattern(t *testin
 	system := messages[0].Content
 
 	for _, want := range []string{
-		// Sub-pattern trigger naming the concrete tools observed in misfire.
+		// Sub-pattern trigger kept semantic, without naming a brittle tool list.
 		"第三方工具接入场景",
-		"Dify / RAGFlow / LangBot / AnythingLLM / MCP / ComfyUI / n8n",
+		"用户问第三方工具如何接入 ModelVerse / CompShare 平台",
 		// Platform-side facts that must be answered + cited.
 		"资料能确认的平台侧配置",
 		"OpenAI / Anthropic / Gemini 兼容协议",
@@ -388,6 +388,10 @@ func TestBuildRAGMessagesPromptEncodesThirdPartyToolIntegrationPattern(t *testin
 		if !strings.Contains(system, want) {
 			t.Fatalf("third-party-tool integration pattern %q missing in system prompt:\n%s", want, system)
 		}
+	}
+
+	if strings.Contains(system, "Dify / RAGFlow / LangBot / AnythingLLM / MCP / ComfyUI / n8n") {
+		t.Fatalf("third-party tool prompt must not keep the concrete tool-name enumeration:\n%s", system)
 	}
 }
 

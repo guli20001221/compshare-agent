@@ -81,7 +81,7 @@ func operationBoundaryRuleLines() []string {
 const sharedStateRefreshBeforeMutationRule = "涉及实例变更前必须重新调用 DescribeCompShareInstance 获取最新状态，不要只凭历史对话中的状态。"
 
 // sharedVagueFailureRule routes ambiguous failure reports to a clarifying turn.
-const sharedVagueFailureRule = `用户描述实例"出了问题"但症状不明确（如"跑崩了"、"挂了"、"不对劲"、"有问题"、"异常"等）时，先追问哪台实例和具体现象，不得直接调用任何 Diagnose* 工具。`
+const sharedVagueFailureRule = `用户描述实例"出了问题"但症状不明确时，先追问哪台实例和具体现象，不得直接调用任何 Diagnose* 工具。`
 
 // sharedNoPretextBeforeWorkflowRule keeps the workflow confirmation card the sole
 // user-facing entry point. renderWorkflowActionNameList() is sourced from the
