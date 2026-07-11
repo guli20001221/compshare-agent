@@ -39,7 +39,7 @@ func IntentToolSubset(i Intent) []string {
 			"DescribeCompShareInstance",
 			"GetCompShareInstanceMonitor",
 		}
-	case IntentBillingInstance, IntentExpiryRenewal:
+	case IntentBillingInstance:
 		return []string{
 			"DescribeCompShareInstance",
 			"GetCompShareInstanceUserPrice",

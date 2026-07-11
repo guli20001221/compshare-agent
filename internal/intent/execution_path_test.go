@@ -43,7 +43,6 @@ func TestPlannedExecutionPathForIntent_RuntimeIntentPartition(t *testing.T) {
 		ExecutionPathAgent: {
 			IntentMonitorHistory,
 			IntentBillingInstance,
-			IntentExpiryRenewal,
 			IntentDiagnosis,
 			IntentVagueFailure,
 			IntentOperationLifecycle,
@@ -91,7 +90,6 @@ func TestPlannedExecutionPathForIntent_AgentDefault(t *testing.T) {
 	for _, i := range []Intent{
 		IntentMonitorHistory,
 		IntentBillingInstance,
-		IntentExpiryRenewal,
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,

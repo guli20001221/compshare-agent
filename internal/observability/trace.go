@@ -467,8 +467,8 @@ type EngineHardBlockTrace struct {
 	// hard-block — single-source (no "both"), since short-circuited stages
 	// are unobservable. Allowed values:
 	//   "keyword"        — Chat() head inputguard.PreBlock keyword match
-	//   "planner_intent" — planner-classified intent (monitor_history etc.)
-	//                      routed through emitMonitorHistoryHardBlock helper
+	//   "planner_intent" — planner-classified intent hard-block (e.g. the
+	//                      account-billing-unsupported refusal)
 	//   "post_llm"       — post-LLM gate (currently cited_contract_violation)
 	// Empty when Hit=false. Joins with planner.hard_block_hint downstream
 	// for cross-source analytics — the join is observability, not routing.

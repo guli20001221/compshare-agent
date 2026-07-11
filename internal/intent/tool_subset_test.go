@@ -50,8 +50,7 @@ func TestIntentToolSubset_MonitorQuery(t *testing.T) {
 	assert.Contains(t, subset, "GetCompShareInstanceMonitor")
 }
 
-func TestIntentToolSubset_BillingSameAsExpiryRenewal(t *testing.T) {
-	assert.Equal(t, IntentToolSubset(IntentBillingInstance), IntentToolSubset(IntentExpiryRenewal))
+func TestIntentToolSubset_Billing(t *testing.T) {
 	subset := IntentToolSubset(IntentBillingInstance)
 	require.Len(t, subset, 6)
 	assert.Contains(t, subset, "DescribeCompShareInstance")

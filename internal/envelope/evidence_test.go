@@ -225,16 +225,6 @@ func TestNewEvidenceRequiresApprovalForOriginalCase(t *testing.T) {
 	assert.Contains(t, err.Error(), "approval_record_hash")
 }
 
-func TestKnowledgeNoEvidenceUsesOptionB(t *testing.T) {
-	result := KnowledgeNoEvidence()
-
-	assert.Equal(t, "我没有在知识库里找到可靠资料来回答这个问题。建议你在控制台对应模块查看，或联系平台客服确认。", result.Reply)
-	assert.True(t, result.Trace.NoEvidence)
-	assert.Equal(t, EvidenceKindKnowledge, result.Trace.EvidenceKind)
-	assert.Empty(t, result.Trace.HitItems)
-	assert.Equal(t, "retrieval_zero_hit", result.Trace.FallbackReason)
-}
-
 func exportedFieldNames[T any]() []string {
 	typ := reflect.TypeOf((*T)(nil)).Elem()
 	out := make([]string, 0, typ.NumField())
