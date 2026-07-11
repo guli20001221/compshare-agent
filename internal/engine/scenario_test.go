@@ -1049,6 +1049,50 @@ func TestCreateWorkflowFailureReply(t *testing.T) {
 	assert.Contains(t, got, "未能创建实例")
 }
 
+// TestCreateFailureReplyWithAlternatives_SoldOut asserts the sold-out failure
+// reply is enriched with the real machine types still on offer (deterministic,
+// no LLM), and that a non-shortage failure is left as the bare reply.
+func TestCreateFailureReplyWithAlternatives_SoldOut(t *testing.T) {
+	mkAvail := func(name, zone string, vram, perf, maxgpu int) map[string]any {
+		return map[string]any{
+			"Name": name, "Zone": zone, "Status": "Normal",
+			"GraphicsMemory": map[string]any{"Value": float64(vram)},
+			"Performance":    map[string]any{"Value": float64(perf)},
+			"MachineSizes": []any{map[string]any{"Gpu": float64(maxgpu), "Collection": []any{
+				map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+			}}},
+		}
+	}
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeAvailableCompShareInstanceTypes" {
+			return map[string]any{"AvailableInstanceTypes": []any{
+				mkAvail("4090", "cn-wlcb-01", 24, 83, 8),
+				mkAvail("5090", "cn-wlcb-01", 32, 105, 8),
+				mkAvail("A100", "cn-wlcb-01", 80, 19, 8),
+			}}, nil
+		}
+		return map[string]any{}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, func(a string, args map[string]any) bool { return true })
+	eng.Init(context.Background())
+
+	soldOut := "4090 8 卡 / 92C / 940GB 当前库存不足（售罄），请换一个规格或稍后再试。"
+	reply := eng.createFailureReplyWithAlternatives(context.Background(), soldOut,
+		map[string]any{"GpuType": "4090", "Zone": "cn-wlcb-01"})
+	assert.Contains(t, reply, "抱歉，创建实例没有成功", "keeps the grounded deterministic failure reply")
+	assert.Contains(t, reply, "当前库存不足", "preserves the sold-out reason")
+	assert.Contains(t, reply, "当前可创建的其他机型", "appends the alternatives bridge")
+	assert.Contains(t, reply, "5090", "surfaces a real currently-offered alternative")
+	assert.Contains(t, reply, "A100", "surfaces a real currently-offered alternative")
+	assert.Contains(t, reply, "回复机型名", "invites a deterministic switch-and-rebuild")
+
+	// Non-shortage failure stays a bare reply — no availability query, no note.
+	bare := eng.createFailureReplyWithAlternatives(context.Background(),
+		"步骤「创建实例」执行失败: insufficient balance", map[string]any{"GpuType": "4090"})
+	assert.Contains(t, bare, "insufficient balance")
+	assert.NotContains(t, bare, "当前可创建的其他机型")
+}
+
 func TestCreateWorkflowSuccessReplyIncludesInstanceListLink(t *testing.T) {
 	raw := `{"success":true,"data":{"UHostIds":["uhost-new001"]}}`
 	got := workflowDirectReply("CreateInstanceWorkflow", raw)

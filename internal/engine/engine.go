@@ -5313,7 +5313,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// grounded — on a no-match it lists the REAL available types, and on sold-out it
 	// names the exact spec — so return it deterministically and skip narration.
 	if !result.Success && action == "CreateInstanceWorkflow" {
-		reply := createWorkflowFailureReply(result.Message)
+		reply := e.createFailureReplyWithAlternatives(ctx, result.Message, args)
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
 		return finalReplyPrefix + reply
 	}
@@ -5551,6 +5551,42 @@ func createWorkflowFailureReply(message string) string {
 		msg = "未能创建实例，请稍后重试或更换机型/配置。"
 	}
 	return "抱歉，创建实例没有成功：" + msg
+}
+
+// isCreateStockShortage reports whether a CreateInstanceWorkflow failure was a
+// real sold-out — the capacity gate's "...当前库存不足（售罄）..." message
+// (create_instance.go). Matches the stable "库存不足" substring, mirroring
+// isDeployStockShortage. The no-match reply already lists real types, so this
+// deliberately targets only the sold-out case.
+func isCreateStockShortage(message string) bool {
+	return strings.Contains(message, "库存不足")
+}
+
+// createFailureReplyWithAlternatives wraps createWorkflowFailureReply. On a real
+// sold-out it re-queries availability and appends the machine types still on
+// offer that the user can switch to — deterministic and LLM-free, mirroring the
+// deploy saga's deployStopReplyWithAlternatives. A bare hardware create carries
+// no model/image constraint, so it lists the currently-offered cards
+// (strongest-first, excluding the sold-out one). Falls back to the plain reply
+// when nothing else is offered or the availability query fails.
+func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message string, args map[string]any) string {
+	reply := createWorkflowFailureReply(message)
+	if !isCreateStockShortage(message) {
+		return reply
+	}
+	gpuType, _ := args["GpuType"].(string)
+	zone, _ := args["Zone"].(string)
+	avail := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
+	alts := knowledge.FittingGPUAlternatives("", "", nil, knowledge.ParseAvailableGPUs(avail, zone), gpuType, 3)
+	if len(alts) == 0 {
+		return reply
+	}
+	names := make([]string, 0, len(alts))
+	for _, a := range alts {
+		names = append(names, fmt.Sprintf("%s(%dGB)", a.Name, a.VRAMGB))
+	}
+	return reply + fmt.Sprintf("\n当前可创建的其他机型：%s。回复机型名（如「用 %s」）我帮你换一个重建（实际是否有货以创建结果为准）。",
+		strings.Join(names, " / "), alts[0].Name)
 }
 
 func cfsWorkflowFailureReply(message string) string {
