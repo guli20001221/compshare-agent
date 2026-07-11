@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+// CFS create size bounds (GB). Hand-maintained platform limits: upstream
+// exposes no CFS-limits API, so these are pinned from the CreateCFS spec
+// (verified 2026-07-11). The same 50–2048 range is surfaced verbatim in the
+// CFS tool descriptions (internal/tools/registry.go) — keep them in sync if the
+// platform changes the bounds.
 const (
 	minCFSSizeGB = 50
 	maxCFSSizeGB = 2048

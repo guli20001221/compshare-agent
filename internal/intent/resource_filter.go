@@ -131,6 +131,13 @@ func matchesGPUTypeFilter(actual, filter string) bool {
 	if filter == "" {
 		return false
 	}
+	// The "4090" family fans out into several catalog cards (4090, 4090Pro,
+	// 4090_48G) that all normalize to contain a "4090" substring, so a plain
+	// "4090" filter is treated as a family match. Every other GPU stays
+	// exact-match to avoid false positives (e.g. "A10" must not match "A100",
+	// "P40" not "P400"). See TestMatchesGPUTypeFilterUsesNarrowFamilyRules.
+	// TODO: derive the family relationship from the live catalog instead of
+	// hardcoding the one card that currently has sub-variants.
 	if filter == "4090" {
 		return strings.Contains(actual, filter)
 	}
