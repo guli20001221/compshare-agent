@@ -207,7 +207,7 @@ func internalOnlyAllowedParams(action string) []string {
 	case "ResizeCompShareDisk":
 		return []string{"UHostId", "UDiskId", "Size", "Zone", "Region"}
 	case "ResizeCompShareInstance":
-		return []string{"UHostId", "Cpu", "CPU", "Gpu", "GPU", "Memory", "DiskId", "DiskSpace", "WithoutGpu", "Zone", "Region"}
+		return []string{"UHostId", "Cpu", "CPU", "Gpu", "GPU", "Memory", "DiskId", "DiskSpace", "Zone", "Region"}
 	default:
 		return nil
 	}

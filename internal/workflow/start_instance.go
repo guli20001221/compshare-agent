@@ -3,18 +3,22 @@ package workflow
 import "fmt"
 
 const (
-	// Upstream ResizeCompShareInstance accepts WithoutGpu=true with the fixed
-	// 2C/4GB/GPU=0 shape. DescribeCompShareInstance.WithoutGpuSpec is not
-	// returned for every normal GPU instance, so start flow must not require it.
+	// Upstream StartCompShareInstance takes WithoutGpuSpec ("A"=2C/4GB or
+	// "B"=8C/16GB) directly and resizes internally before starting
+	// (applyWithoutGpuBeforeStart). This flow only ever offers tier A. The
+	// older separate resize-then-start pattern (a raw WithoutGpu boolean sent
+	// to ResizeCompShareInstance) is rejected outright by upstream now
+	// (RejectDeprecatedResizeWithoutGpu) — do not reintroduce it.
+	withoutGPUSpecA         = "A"
 	withoutGPUDefaultCPU    = float64(2)
 	withoutGPUDefaultMemory = float64(4096)
 	withoutGPUDefaultGPU    = float64(0)
 )
 
 // StartInstanceDef returns the workflow definition for starting a CompShare GPU
-// instance. Normal start is query -> confirm -> start. Without-GPU start adds a
-// resize-to-without-GPU step before the final start because the upstream start
-// API does not accept a WithoutGpu parameter.
+// instance. Normal start is query -> confirm -> start. Without-GPU start passes
+// WithoutGpuSpec directly on the start call; upstream resizes internally before
+// starting, so no separate client-side resize step is needed.
 func StartInstanceDef() *Definition {
 	return &Definition{
 		Name:        "StartInstanceWorkflow",
@@ -22,7 +26,6 @@ func StartInstanceDef() *Definition {
 		Steps: []Step{
 			stepQueryForStart(),
 			stepConfirmStart(),
-			stepResizeWithoutGPUForStart(),
 			stepStartInstance(),
 		},
 	}
@@ -83,37 +86,6 @@ func stepConfirmStart() Step {
 	}
 }
 
-func stepResizeWithoutGPUForStart() Step {
-	return Step{
-		Name: "切换无卡规格",
-		Type: StepToolCall,
-		Tool: "ResizeCompShareInstance",
-		SkipIf: func(wfCtx *Context) (bool, error) {
-			return !startWithoutGPURequested(wfCtx), nil
-		},
-		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			queried := wfCtx.Result("查询实例")
-			spec, ok := extractWithoutGPUSpec(queried)
-			if !ok {
-				return nil, fmt.Errorf("未获取到无卡规格，无法安全切换无卡模式。")
-			}
-			region, zone, err := extractRequiredInstanceLocation(queried)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{
-				"Region":     region,
-				"Zone":       zone,
-				"UHostId":    wfCtx.Params["UHostId"],
-				"WithoutGpu": true,
-				"Cpu":        spec["Cpu"],
-				"Memory":     spec["Memory"],
-				"Gpu":        spec["Gpu"],
-			}, nil
-		},
-	}
-}
-
 func stepStartInstance() Step {
 	return Step{
 		Name: "开机",
@@ -129,6 +101,9 @@ func stepStartInstance() Step {
 				"Region":  region,
 				"Zone":    zone,
 				"UHostId": wfCtx.Params["UHostId"],
+			}
+			if startWithoutGPURequested(wfCtx) {
+				args["WithoutGpuSpec"] = withoutGPUSpecA
 			}
 			return args, nil
 		},
