@@ -8,6 +8,7 @@ func RebootInstanceDef() *Definition {
 		Description: "查询实例 → 确认重启 → 重启",
 		Steps: []Step{
 			stepQueryForReboot(),
+			stepQuerySupportZones(),
 			stepConfirmReboot(),
 			stepRebootInstance(),
 		},
@@ -65,9 +66,9 @@ func stepRebootInstance() Step {
 		Tool: "RebootCompShareInstance",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
-			return addRequiredInstanceLocationArgs(map[string]any{
+			return addRequiredPodPlacementArgs(map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
-			}, queried)
+			}, queried, wfCtx.Result("查询支持区"))
 		},
 	}
 }

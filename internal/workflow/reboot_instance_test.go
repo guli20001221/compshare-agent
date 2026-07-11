@@ -40,16 +40,17 @@ func TestRebootInstance_HappyPath(t *testing.T) {
 	assert.True(t, result.Success)
 	assert.Equal(t, "工作流执行完成", result.Message)
 
-	assert.Len(t, result.Steps, 3)
-	expectedNames := []string{"查询实例", "确认重启", "重启"}
+	assert.Len(t, result.Steps, 4)
+	expectedNames := []string{"查询实例", "查询支持区", "确认重启", "重启"}
 	for i, name := range expectedNames {
 		assert.Equal(t, name, result.Steps[i].Name)
 		assert.Equal(t, "success", result.Steps[i].Status)
 	}
 
-	assert.Len(t, executor.calls, 2)
+	assert.Len(t, executor.calls, 3)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
-	assert.Equal(t, "RebootCompShareInstance", executor.calls[1].action)
+	assert.Equal(t, "DescribeCompShareSupportZone", executor.calls[1].action)
+	assert.Equal(t, "RebootCompShareInstance", executor.calls[2].action)
 }
 
 func TestRebootInstance_NotRunning(t *testing.T) {
@@ -84,7 +85,7 @@ func TestRebootInstance_ConfirmDenied(t *testing.T) {
 	assert.False(t, result.Success)
 	assert.Equal(t, "确认重启", result.StoppedAt)
 	assert.Equal(t, "用户取消了操作", result.Message)
-	assert.Len(t, executor.calls, 1)
+	assert.Len(t, executor.calls, 2)
 }
 
 func TestRebootInstance_ConfirmHasWarning(t *testing.T) {

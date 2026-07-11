@@ -10,6 +10,7 @@ func CreateDiskDef() *Definition {
 		Description: "查询实例 → 查询数据盘价格 → 确认创建数据盘 → 创建并挂载",
 		Steps: []Step{
 			stepQueryForDisk(),
+			stepQuerySupportZones(),
 			stepQueryCreateDiskPrice(),
 			stepConfirmCreateDisk(),
 			stepCreateAndAttachDisk(),
@@ -64,7 +65,7 @@ func stepQueryCreateDiskPrice() Step {
 					"Size":   wfCtx.Params["Size"],
 				}},
 			}
-			if _, err := addRequiredInstanceLocationArgs(args, queried); err != nil {
+			if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
 				return nil, err
 			}
 			if err := addSourceInstanceSpecForDiskPrice(args, queried); err != nil {
@@ -163,7 +164,7 @@ func stepCreateAndAttachDisk() Step {
 				"DiskType":   "SSDDataDisk",
 				"ChargeType": "Postpay",
 			}
-			return addRequiredInstanceLocationArgs(args, queried)
+			return addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区"))
 		},
 	}
 }

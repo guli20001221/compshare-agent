@@ -374,6 +374,7 @@ func TestCreateDisk_PodInstanceBlockedBeforeConfirm(t *testing.T) {
 func TestCreateDisk_ContainerUHostAllowedToConfirm(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance":    containerStoppedInstanceResult(),
+		"DescribeCompShareSupportZone": cfsSupportZone("cn-pod-01", "cn-pod", "容器一区", 9001, 3001, true),
 		"GetCompShareInstancePrice":    {"PriceDetails": []any{map[string]any{"Disks": float64(0.8)}}},
 		"CreateAndAttachCompshareDisk": {"UDiskId": "udisk-new"},
 	}}
