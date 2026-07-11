@@ -226,6 +226,9 @@ func (e *Engine) runDeployModel(ctx context.Context, dispatch routerDispatchResu
 	if idMap := e.zoneIDMap(ctx); len(idMap) > 0 {
 		params["ZoneIds"] = idMap
 	}
+	if regionIDMap := e.zoneRegionIDMap(ctx); len(regionIDMap) > 0 {
+		params["ZoneRegionIds"] = regionIDMap
+	}
 	if podMap := e.zoneIsPodMap(ctx); len(podMap) > 0 {
 		params["ZoneIsPods"] = podMap
 	}
@@ -999,10 +1002,15 @@ func (e *Engine) selectDeployZoneAndGPUInZones(ctx context.Context, availResult 
 
 	var firstZone, firstGPU, firstNote string // first sizeable zone, for stock-unconfirmed fall-through
 	primarySoldOut := false
+	sawLiveCards := false
 	for i, z := range candidates {
 		cards := knowledge.ParseAvailableGPUs(availResult, z)
 		if len(cards) == 0 {
 			continue // no live cards offered in this zone
+		}
+		sawLiveCards = true
+		if len(supported) > 0 && !deployCardsSupportImage(cards, supported) {
+			continue
 		}
 		gt, note := knowledge.RecommendGPUTypeLive(plan.ModelName, quant, userMsg, supported, cards)
 		if gt == "" {
@@ -1037,9 +1045,23 @@ func (e *Engine) selectDeployZoneAndGPUInZones(ctx context.Context, availResult 
 		// the saga's capacity gate will halt gracefully if it is genuinely sold out.
 		return firstZone, firstGPU, firstNote, "", nil
 	}
+	if len(supported) > 0 && sawLiveCards {
+		return "", "", "", "", deployUserError{msg: fmt.Sprintf(
+			"所选镜像支持的机型为 %s，但当前可用区目录中没有对应规格。请更换镜像或稍后再试。",
+			strings.Join(supported, "、"))}
+	}
 	// Availability query failed/empty → static-table sizing on the primary zone.
 	gt, note := knowledge.RecommendGPUTypeLive(plan.ModelName, quant, userMsg, supported, nil)
 	return primary, gt, note, "", nil
+}
+
+func deployCardsSupportImage(cards []knowledge.AvailableGPU, supported []string) bool {
+	for _, card := range cards {
+		if gpuImageCompatible(card.Name, supported) {
+			return true
+		}
+	}
+	return false
 }
 
 func deployCandidateZones(availResult map[string]any) []string {
@@ -1426,6 +1448,32 @@ func (e *Engine) zoneIDFor(ctx context.Context, zone string) uint32 {
 	return 0
 }
 
+func (e *Engine) zoneRegionIDFor(ctx context.Context, zone string) uint32 {
+	zone = strings.TrimSpace(zone)
+	if zone == "" {
+		return 0
+	}
+	for z, id := range e.zoneRegionIDMap(ctx) {
+		if strings.EqualFold(z, zone) {
+			return id
+		}
+	}
+	return 0
+}
+
+func (e *Engine) deploymentZonePlacement(ctx context.Context, zone string) deployment.ZonePlacement {
+	placement := deployment.ZonePlacement{
+		Zone:    strings.TrimSpace(zone),
+		Region:  workflow.RegionFromZone(zone),
+		ZoneID:  e.zoneIDFor(ctx, zone),
+		AzGroup: e.zoneRegionIDFor(ctx, zone),
+	}
+	if isPod, ok := e.zoneIsPod(ctx, zone); ok {
+		placement.IsPod = isPod
+	}
+	return placement
+}
+
 func (e *Engine) zoneIsPodMap(ctx context.Context) map[string]bool {
 	list, err := e.supportZoneList(ctx)
 	if err != nil {
@@ -1661,14 +1709,7 @@ func (e *Engine) zoneStockState(ctx context.Context, zone, gpuType, imageID stri
 		GPUType:          gpuType,
 		CompShareImageID: imageID,
 	})
-	// Non-default zones reject a Zone without its Region (RetCode=230); add it so
-	// the per-zone stock probe works in cn-bj2-03 / cn-sh2-02, not just the default.
-	if r := workflow.RegionFromZone(zone); r != "" {
-		capArgs["Region"] = r
-	}
-	if id := e.zoneIDFor(ctx, zone); id != 0 {
-		capArgs["zone_id"] = id
-	}
+	deployment.ApplyCapacityPlacementArgs(capArgs, e.deploymentZonePlacement(ctx, zone))
 	res := e.querySafeRead(ctx, "CheckCompShareResourceCapacity", capArgs)
 	if res == nil {
 		return zoneUnknown

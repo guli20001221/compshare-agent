@@ -864,6 +864,76 @@ func TestSelectDeployZoneAndGPU_PreferredFirst(t *testing.T) {
 	assert.Empty(t, fb, "no fallback note when the primary zone is used")
 }
 
+func TestSelectDeployZoneAndGPU_SkipsZonesWithoutImageSupportedCard(t *testing.T) {
+	tests := []struct {
+		name      string
+		cards     []any
+		supported []string
+		stock     map[string]bool
+		wantZone  string
+		wantGPU   string
+	}{
+		{
+			name: "single supported gpu in second zone",
+			cards: []any{
+				availCardZ("4090", "zone-alpha", 24),
+				availCardZ("A100", "zone-beta", 80),
+			},
+			supported: []string{"A100"},
+			stock:     map[string]bool{"zone-alpha": true, "zone-beta": true},
+			wantZone:  "zone-beta",
+			wantGPU:   "A100",
+		},
+		{
+			name: "multiple incompatible zones before supported gpu",
+			cards: []any{
+				availCardZ("4090", "zone-alpha", 24),
+				availCardZ("A800", "zone-beta", 80),
+				availCardZ("H20", "zone-gamma", 96),
+			},
+			supported: []string{"H20"},
+			stock:     map[string]bool{"zone-alpha": true, "zone-beta": true, "zone-gamma": true},
+			wantZone:  "zone-gamma",
+			wantGPU:   "H20",
+		},
+		{
+			name: "first compatible gpu from a multi-gpu image",
+			cards: []any{
+				availCardZ("A800", "zone-alpha", 80),
+				availCardZ("4090_48G", "zone-beta", 48),
+				availCardZ("H20", "zone-gamma", 96),
+			},
+			supported: []string{"4090_48G", "H20"},
+			stock:     map[string]bool{"zone-alpha": true, "zone-beta": true, "zone-gamma": true},
+			wantZone:  "zone-beta",
+			wantGPU:   "4090_48G",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := stockExec(tt.stock)
+			eng := NewWithDeps(nil, exec, okConfirm)
+			avail := map[string]any{"AvailableInstanceTypes": tt.cards}
+
+			zone, gpu, _, fb, err := eng.selectDeployZoneAndGPU(
+				context.Background(),
+				avail,
+				deployPlan{ImageID: "img-generic"},
+				tt.supported,
+				"",
+				"部署所选镜像",
+				"",
+			)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantZone, zone, "zones without an image-supported card must be skipped")
+			assert.Equal(t, tt.wantGPU, gpu)
+			assert.Empty(t, fb, "an incompatible primary zone is not a sold-out fallback")
+		})
+	}
+}
+
 func TestSelectDeployZoneAndGPU_FallbackOnSoldOut(t *testing.T) {
 	exec := stockExec(map[string]bool{"cn-wlcb-01": false, "cn-sh2-02": true})
 	eng := NewWithDeps(nil, exec, okConfirm)
@@ -995,7 +1065,7 @@ func TestTryDeployModel_GuidedCreateFiltersExplicitGPUIntent(t *testing.T) {
 	_, handled := eng.tryDeployModel(context.Background(), deployDispatch(), "用4090部署 Qwen2.5-7B", noopStep)
 
 	require.True(t, handled)
-	assert.Equal(t, []string{"4090", "4090_48G"}, gpuOptions)
+	assert.Equal(t, []string{"4090"}, gpuOptions)
 }
 
 func TestTryDeployModel_CreatePreferenceFlagOffDoesNotCallExtractor(t *testing.T) {
@@ -1445,7 +1515,7 @@ func TestTryDeployModel_RealignsPlatformImageAfterAutoSelectingPodZone(t *testin
 			return map[string]any{"AvailableInstanceTypes": []any{availCardZ("4090", "cn-pod-01", 24)}}, nil
 		case "DescribeCompShareSupportZone":
 			return map[string]any{"ZoneInfo": []any{map[string]any{
-				"Zone": "cn-pod-01", "Region": "cn-pod", "ZoneId": float64(9001), "Describe": "测试 Pod 区", "IsPod": true,
+				"Zone": "cn-pod-01", "Region": "cn-pod", "ZoneId": float64(9001), "RegionId": float64(3001), "Describe": "测试 Pod 区", "IsPod": true,
 			}}}, nil
 		case "CheckCompShareResourceCapacity":
 			capacityArgs = args
@@ -1471,10 +1541,18 @@ func TestTryDeployModel_RealignsPlatformImageAfterAutoSelectingPodZone(t *testin
 
 	require.True(t, handled)
 	require.NotNil(t, createArgs, "create must run")
-	assert.Equal(t, "cn-pod-01", createArgs["Zone"])
-	assert.Equal(t, uint32(9001), createArgs["zone_id"], "Pod create must route upstream by zone_id derived from support-zone catalog")
+	assert.NotContains(t, capacityArgs, "Zone")
+	assert.NotContains(t, capacityArgs, "Region")
+	assert.NotContains(t, capacityArgs, "az_group")
 	assert.Equal(t, uint32(9001), capacityArgs["zone_id"], "Pod capacity preflight must use the same zone_id")
+	assert.Equal(t, "cn-pod-01", priceArgs["Zone"], "Pod price must keep console-compatible Zone")
+	assert.Equal(t, "cn-pod", priceArgs["Region"], "Pod price must keep console-compatible Region")
 	assert.Equal(t, uint32(9001), priceArgs["zone_id"], "Pod price preflight must use the same zone_id")
+	assert.Equal(t, uint32(3001), priceArgs["az_group"], "Pod price must use az_group from support-zone catalog")
+	assert.Equal(t, "cn-pod-01", createArgs["Zone"], "Pod create must keep console-compatible Zone")
+	assert.Equal(t, "cn-pod", createArgs["Region"], "Pod create must keep console-compatible Region")
+	assert.Equal(t, uint32(9001), createArgs["zone_id"], "Pod create must route upstream by zone_id derived from support-zone catalog")
+	assert.Equal(t, uint32(3001), createArgs["az_group"], "Pod create must carry az_group from support-zone catalog")
 	assert.Equal(t, "img-container", createArgs["CompShareImageId"], "auto-selected Pod zones must create with a container image")
 }
 

@@ -11,11 +11,15 @@ import (
 type UserContext struct {
 	TopOrganizationID uint32
 	OrganizationID    uint32
+	CompanyID         uint32
+	AccountID         uint32
+	Channel           uint32
 	RoleUrn           string
 	SessionName       string
 	ProjectId         string
 	Region            string
 	UserEmail         string
+	ClientIP          string
 }
 
 type userKey struct{}

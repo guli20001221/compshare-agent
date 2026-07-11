@@ -172,6 +172,36 @@ func TestBackendZoneIDIsInternalOnly(t *testing.T) {
 	assert.Equal(t, uint32(9001), internalInner.args[0]["zone_id"], "workflow-derived zone_id must reach upstream")
 }
 
+func TestBackendIsPodIsInternalOnly(t *testing.T) {
+	directInner := &spyExecutor{}
+	direct := NewSafeToolExecutor(directInner, WithMutatingToolsEnabled(true), WithConfirmFunc(func(string, map[string]any) bool { return true }))
+	_, err := direct.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CreateCompShareInstance",
+		Args: map[string]any{
+			"GpuType": "4090",
+			"IsPod":   true,
+		},
+		Origin: OriginDirectLLM,
+	})
+	require.NoError(t, err)
+	require.Len(t, directInner.args, 1)
+	assert.NotContains(t, directInner.args[0], "IsPod", "model-origin calls must not be able to hand-fill IsPod")
+
+	internalInner := &spyExecutor{}
+	internal := NewSafeToolExecutor(internalInner, WithMutatingToolsEnabled(true), WithConfirmFunc(func(string, map[string]any) bool { return true }))
+	_, err = internal.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CreateCompShareInstance",
+		Args: map[string]any{
+			"GpuType": "4090",
+			"IsPod":   true,
+		},
+		Origin: OriginWorkflowInternal,
+	})
+	require.NoError(t, err)
+	require.Len(t, internalInner.args, 1)
+	assert.Equal(t, true, internalInner.args[0]["IsPod"], "workflow-derived IsPod must reach upstream")
+}
+
 func TestBackendPlacementAndIdentityFieldsAreInternalOnlyForCFSAndNetwork(t *testing.T) {
 	cases := []struct {
 		action string
