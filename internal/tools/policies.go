@@ -213,7 +213,7 @@ func internalOnlyAllowedParams(action string) []string {
 	case "ResizeCompShareDisk":
 		return []string{"UHostId", "UDiskId", "Size", "Zone", "Region"}
 	case "ResizeCompShareInstance":
-		return []string{"UHostId", "Cpu", "CPU", "Gpu", "GPU", "Memory", "DiskId", "DiskSpace", "WithoutGpu", "Zone", "Region"}
+		return []string{"UHostId", "Cpu", "CPU", "Gpu", "GPU", "Memory", "DiskId", "DiskSpace", "Zone", "Region"}
 	case "CreateCompShareInstance":
 		return []string{"Name", "Zone", "Region", "GpuType", "GPU", "Cpu", "CPU", "Memory", "CompShareImageId", "ChargeType", "MachineType", "MinimalCpuPlatform", "LoginMode", "Disks"}
 	default:

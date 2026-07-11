@@ -1,6 +1,10 @@
 package workflow
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/compshare-agent/internal/deployment"
+)
 
 const createDiskMissingSizeMessage = "创建数据盘需要指定磁盘大小（GB）。请告诉我要加多大的数据盘，例如 30GB。"
 
@@ -61,7 +65,7 @@ func stepQueryCreateDiskPrice() Step {
 				"ChargeType": "Postpay",
 				"Disks": []any{map[string]any{
 					"IsBoot": false,
-					"Type":   "CLOUD_SSD",
+					"Type":   deployment.DiskTypeCloudSSD,
 					"Size":   wfCtx.Params["Size"],
 				}},
 			}
@@ -137,7 +141,7 @@ func stepConfirmCreateDisk() Step {
 			}
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
 			summary["disk_size_gb"] = wfCtx.Params["Size"]
-			summary["disk_type"] = "SSDDataDisk"
+			summary["disk_type"] = deployment.DataDiskTypeSSD
 			summary["charge_type"] = "Postpay"
 			summary["price"] = price
 			summary["warning"] = "将创建一块 SSD 云数据盘并挂载到该实例，按量计费。"
@@ -161,7 +165,7 @@ func stepCreateAndAttachDisk() Step {
 				"UHostId":    wfCtx.Params["UHostId"],
 				"Size":       wfCtx.Params["Size"],
 				"Name":       name + "-data",
-				"DiskType":   "SSDDataDisk",
+				"DiskType":   deployment.DataDiskTypeSSD,
 				"ChargeType": "Postpay",
 			}
 			return addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区"))

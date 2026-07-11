@@ -352,7 +352,7 @@ func TestStopInstance_NonSpotOmitsForce(t *testing.T) {
 	assert.False(t, hasForce, "Non-Spot instance stop must not include Force")
 }
 
-func TestStartInstance_WithoutGpuResizesThenStarts(t *testing.T) {
+func TestStartInstance_WithoutGpuSendsSpecOnStart(t *testing.T) {
 	executor := startMockExecutor()
 	executor.results["DescribeCompShareInstance"] = map[string]any{
 		"UHostSet": []any{
@@ -374,7 +374,6 @@ func TestStartInstance_WithoutGpuResizesThenStarts(t *testing.T) {
 			},
 		},
 	}
-	executor.results["ResizeCompShareInstance"] = map[string]any{"RetCode": 0}
 	confirmFn := func(action string, args map[string]any) bool { return true }
 	onStep, _ := collectEvents()
 
@@ -387,19 +386,17 @@ func TestStartInstance_WithoutGpuResizesThenStarts(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Len(t, executor.calls, 3)
+	// No separate resize call — upstream StartCompShareInstance takes
+	// WithoutGpuSpec directly and resizes internally before starting; a raw
+	// WithoutGpu boolean on ResizeCompShareInstance is rejected outright.
+	assert.Len(t, executor.calls, 2)
 	queryCall := executor.calls[0]
 	assert.Equal(t, "DescribeCompShareInstance", queryCall.action)
 	assert.NotContains(t, queryCall.args, "WithoutGpu", "DescribeCompShareInstance must query the source instance normally")
-	resizeCall := executor.calls[1]
-	assert.Equal(t, "ResizeCompShareInstance", resizeCall.action)
-	assert.Equal(t, true, resizeCall.args["WithoutGpu"])
-	assert.Equal(t, float64(2), resizeCall.args["Cpu"])
-	assert.Equal(t, float64(4096), resizeCall.args["Memory"])
-	assert.Equal(t, float64(0), resizeCall.args["Gpu"])
-	startCall := executor.calls[2]
+	startCall := executor.calls[1]
 	assert.Equal(t, "StartCompShareInstance", startCall.action)
-	assert.NotContains(t, startCall.args, "WithoutGpu", "StartCompShareInstance does not accept WithoutGpu")
+	assert.NotContains(t, startCall.args, "WithoutGpu", "the deprecated boolean must never be sent")
+	assert.Equal(t, "A", startCall.args["WithoutGpuSpec"])
 }
 
 func TestStartInstance_WithoutGpuShowsInConfirm(t *testing.T) {
@@ -457,10 +454,13 @@ func TestStartInstance_WithoutGpuUsesDefaultSpecWhenPreviewMissing(t *testing.T)
 				"GPU":                    float64(1),
 				"ChargeType":             "Dynamic",
 				"SupportWithoutGpuStart": true,
+				// No WithoutGpuSpec sub-object: this instance has never run
+				// in no-GPU mode before, so the live preview is absent — the
+				// confirm-card display falls back to the tier-A defaults, but
+				// the actual start call must still succeed and target tier A.
 			},
 		},
 	}
-	executor.results["ResizeCompShareInstance"] = map[string]any{"RetCode": 0}
 	confirmFn := func(action string, args map[string]any) bool { return true }
 	onStep, _ := collectEvents()
 
@@ -473,13 +473,10 @@ func TestStartInstance_WithoutGpuUsesDefaultSpecWhenPreviewMissing(t *testing.T)
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Len(t, executor.calls, 3)
-	resizeCall := executor.calls[1]
-	assert.Equal(t, "ResizeCompShareInstance", resizeCall.action)
-	assert.Equal(t, true, resizeCall.args["WithoutGpu"])
-	assert.Equal(t, float64(2), resizeCall.args["Cpu"])
-	assert.Equal(t, float64(4096), resizeCall.args["Memory"])
-	assert.Equal(t, float64(0), resizeCall.args["Gpu"])
+	assert.Len(t, executor.calls, 2)
+	startCall := executor.calls[1]
+	assert.Equal(t, "StartCompShareInstance", startCall.action)
+	assert.Equal(t, "A", startCall.args["WithoutGpuSpec"])
 }
 
 func TestStartInstance_WithoutGpuUnsupportedRejectedBeforeConfirm(t *testing.T) {

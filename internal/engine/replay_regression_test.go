@@ -444,7 +444,7 @@ func TestReplayRegression_WithoutGPUStartOverridesPlannerStop(t *testing.T) {
 			},
 		}},
 	}
-	var resizeArgs map[string]any
+	var startArgs map[string]any
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
 		case "DescribeCompShareInstance":
@@ -452,13 +452,11 @@ func TestReplayRegression_WithoutGPUStartOverridesPlannerStop(t *testing.T) {
 				return filterDescribeInstances(data, ids), nil
 			}
 			return data, nil
-		case "ResizeCompShareInstance":
-			resizeArgs = map[string]any{}
-			for k, v := range args {
-				resizeArgs[k] = v
-			}
-			return map[string]any{"RetCode": 0}, nil
 		case "StartCompShareInstance":
+			startArgs = map[string]any{}
+			for k, v := range args {
+				startArgs[k] = v
+			}
 			return map[string]any{"RetCode": 0}, nil
 		case "StopCompShareInstance":
 			t.Fatal("无卡启动不能因为路由误判而执行关机")
@@ -490,12 +488,12 @@ func TestReplayRegression_WithoutGPUStartOverridesPlannerStop(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Contains(t, reply, "开机")
-	require.Contains(t, exec.calls, "ResizeCompShareInstance")
+	require.NotContains(t, exec.calls, "ResizeCompShareInstance", "upstream StartCompShareInstance resizes internally via WithoutGpuSpec")
 	require.Contains(t, exec.calls, "StartCompShareInstance")
 	require.NotContains(t, exec.calls, "StopCompShareInstance")
-	require.NotNil(t, resizeArgs)
-	require.Equal(t, true, resizeArgs["WithoutGpu"])
-	require.Equal(t, float64(0), resizeArgs["Gpu"])
+	require.NotNil(t, startArgs)
+	require.Equal(t, "A", startArgs["WithoutGpuSpec"])
+	require.NotContains(t, startArgs, "WithoutGpu", "the deprecated boolean must never be sent")
 }
 
 func TestReplayRegression_ResizeCommandEntersResizeWorkflow(t *testing.T) {

@@ -2026,7 +2026,6 @@ func TestChat_WorkflowTool_ArgsFiltered(t *testing.T) {
 }
 
 func TestChat_StartWorkflowBackfillsWithoutGPUFromUserText(t *testing.T) {
-	var resizeArgs map[string]any
 	var startArgs map[string]any
 	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
@@ -2049,12 +2048,6 @@ func TestChat_StartWorkflowBackfillsWithoutGPUFromUserText(t *testing.T) {
 					},
 				}},
 			}, nil
-		case "ResizeCompShareInstance":
-			resizeArgs = map[string]any{}
-			for k, v := range args {
-				resizeArgs[k] = v
-			}
-			return map[string]any{"RetCode": 0}, nil
 		case "StartCompShareInstance":
 			startArgs = map[string]any{}
 			for k, v := range args {
@@ -2078,12 +2071,12 @@ func TestChat_StartWorkflowBackfillsWithoutGPUFromUserText(t *testing.T) {
 	_, err := eng.Chat(context.Background(), "请无卡启动 uhost-start-001", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"DescribeCompShareInstance", "ResizeCompShareInstance", "StartCompShareInstance"}, executor.calls)
-	require.NotNil(t, resizeArgs)
-	assert.Equal(t, true, resizeArgs["WithoutGpu"])
-	assert.Equal(t, float64(0), resizeArgs["Gpu"])
+	// No separate resize call — upstream StartCompShareInstance takes
+	// WithoutGpuSpec directly and resizes internally before starting.
+	assert.Equal(t, []string{"DescribeCompShareInstance", "StartCompShareInstance"}, executor.calls)
 	require.NotNil(t, startArgs)
-	assert.NotContains(t, startArgs, "WithoutGpu", "StartCompShareInstance does not accept WithoutGpu")
+	assert.NotContains(t, startArgs, "WithoutGpu", "the deprecated boolean must never be sent")
+	assert.Equal(t, "A", startArgs["WithoutGpuSpec"])
 }
 
 func TestChat_StartWorkflowDoesNotBackfillWithoutGPUWhenUserNegatesIt(t *testing.T) {
