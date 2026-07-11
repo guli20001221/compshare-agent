@@ -1474,7 +1474,7 @@ func renderStockWithCapacityPrecheck(ctx context.Context, h *DemoHandler, req Ha
 			if firstZone == "" {
 				firstZone = entry.Zone
 			}
-			args := capacityPrecheckArgs(entry, imageID, supportZones)
+			args := capacityPrecheckArgs(entry, imageID, supportZones, stockRaw, imageRaw)
 			capacityRaw, err := executeStockCapacityPrecheck(ctx, h, args)
 			if err != nil {
 				continue
@@ -1611,12 +1611,13 @@ func matchedNormalStockEntries(raw map[string]any, userText string) []stockInsta
 	return out
 }
 
-func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string, supportZones []zones.ZoneInfo) map[string]any {
+func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string, supportZones []zones.ZoneInfo, catalog, images map[string]any) map[string]any {
 	args := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
 		Zone:             entry.Zone,
 		GPUType:          entry.Name,
 		CompShareImageID: imageID,
 		ChargeType:       deployment.ChargeTypePostpay,
+		Disks:            deployment.ResolveBootDisk(images, catalog, imageID, entry.Name, entry.Zone),
 	})
 	placement := deployment.ZonePlacement{
 		Zone:   entry.Zone,

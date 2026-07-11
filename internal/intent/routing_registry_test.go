@@ -924,7 +924,10 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	exec := &routeSequenceExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
 			"AvailableInstanceTypes": []any{
-				map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
+				map[string]any{
+					"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal",
+					"Disks": []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
+				},
 			},
 		},
 		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
@@ -988,6 +991,13 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	}
 	if args["ChargeType"] != "Postpay" {
 		t.Fatalf("capacity ChargeType = %#v, want Postpay", args["ChargeType"]) // 按量 = Postpay (Dynamic retired, #246)
+	}
+	// Size/type come from the live catalog's BootDisk entry (fixture above),
+	// not a hardcoded literal — proves the capacity precheck now mirrors
+	// what the real create call would send instead of guessing.
+	wantDisks := []any{map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": uint32(100)}}
+	if !reflect.DeepEqual(args["Disks"], wantDisks) {
+		t.Fatalf("capacity Disks = %#v, want %#v", args["Disks"], wantDisks)
 	}
 }
 

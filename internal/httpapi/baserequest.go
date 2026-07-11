@@ -62,21 +62,18 @@ func ParseBaseRequest(c *gin.Context) (*simplejson.Json, BaseRequest, error) {
 
 	projectID := raw.Get("ProjectId").MustString()
 	userEmail := raw.Get("user_email").MustString()
-	companyID, err := readUint32(raw, "company_id")
-	if err != nil {
-		return nil, BaseRequest{}, ErrInvalidParam.WithMessage("invalid company_id")
-	}
+	// company_id/account_id/channel are billing-attribution passthroughs, not
+	// identity/auth fields (unlike top_organization_id/organization_id above):
+	// upstream's own BaseRequest marks them `omitempty` with no required-field
+	// check. A malformed value degrades to 0 rather than failing the whole
+	// request, matching the fail-open behavior ParseBaseRequestFromHeaders
+	// already uses for the same fields via headerUint32.
+	companyID, _ := readUint32(raw, "company_id")
 	if companyID == 0 {
 		companyID = topOrg
 	}
-	accountID, err := readUint32(raw, "account_id")
-	if err != nil {
-		return nil, BaseRequest{}, ErrInvalidParam.WithMessage("invalid account_id")
-	}
-	channel, err := readUint32(raw, "channel")
-	if err != nil {
-		return nil, BaseRequest{}, ErrInvalidParam.WithMessage("invalid channel")
-	}
+	accountID, _ := readUint32(raw, "account_id")
+	channel, _ := readUint32(raw, "channel")
 	clientIP := firstNonEmpty(raw.Get("client_ip").MustString(), c.ClientIP())
 
 	return raw, BaseRequest{

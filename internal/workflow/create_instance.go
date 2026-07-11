@@ -725,9 +725,6 @@ func validateCreatePlacement(wfCtx *Context, placement deployment.ZonePlacement,
 	if placement.IsPod && strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
 		return fmt.Errorf("%s 当前不支持抢占式实例，请改用按量、包日或包月", zoneDisplayLabel(wfCtx.Params, placement.Zone))
 	}
-	if strings.EqualFold(chargeType, deployment.ChargeTypeSpot) && spotUnsupportedGPU(wfCtx.Params, wfCtx.Result("查询GPU库存"), paramStr(wfCtx.Params, "GpuType", "")) {
-		return fmt.Errorf("%s 当前不支持抢占式实例，请改用独占式计费或更换 GPU", paramStr(wfCtx.Params, "GpuType", "该 GPU"))
-	}
 	if !placement.IsPod {
 		return nil
 	}
@@ -770,86 +767,7 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 }
 
 func workflowSystemDisks(wfCtx *Context, imageID, zone, gpuType string) []any {
-	sizeGB := workflowImageSizeGB(wfCtx.Result("查询镜像"), imageID)
-	if sizeGB == 0 {
-		sizeGB = workflowCatalogBootDiskMinGB(wfCtx.Result("查询可用配比"), gpuType, zone)
-	}
-	if sizeGB == 0 {
-		return nil
-	}
-	diskType := workflowCatalogBootDiskType(wfCtx.Result("查询可用配比"), gpuType, zone)
-	if diskType == "" {
-		return nil
-	}
-	return []any{map[string]any{
-		"IsBoot": true,
-		"Type":   diskType,
-		"Size":   sizeGB,
-	}}
-}
-
-func workflowImageSizeGB(images map[string]any, imageID string) uint32 {
-	img := imageMapByID(images, imageID)
-	if img == nil {
-		return 0
-	}
-	for _, key := range []string{"Size", "ImageSize"} {
-		if gb := ceilMBToGB(img[key]); gb > 0 {
-			return gb
-		}
-	}
-	return 0
-}
-
-func ceilMBToGB(v any) uint32 {
-	n, ok := positiveFloatAny(v)
-	if !ok {
-		return 0
-	}
-	gb := n / 1024
-	out := uint32(gb)
-	if gb > float64(out) {
-		out++
-	}
-	if out == 0 {
-		out = 1
-	}
-	return out
-}
-
-func workflowCatalogBootDiskType(catalog map[string]any, gpuType, zone string) string {
-	entry := workflowCatalogEntry(catalog, gpuType, zone)
-	if entry == nil {
-		return ""
-	}
-	for _, disk := range diskMaps(entry["Disks"]) {
-		for _, boot := range diskMaps(disk["BootDisk"]) {
-			if name := strings.TrimSpace(stringFieldAny(boot["Name"])); name != "" {
-				return name
-			}
-			if name := strings.TrimSpace(stringFieldAny(boot["Type"])); name != "" {
-				return name
-			}
-		}
-	}
-	return ""
-}
-
-func workflowCatalogBootDiskMinGB(catalog map[string]any, gpuType, zone string) uint32 {
-	entry := workflowCatalogEntry(catalog, gpuType, zone)
-	if entry == nil {
-		return 0
-	}
-	for _, disk := range diskMaps(entry["Disks"]) {
-		for _, boot := range diskMaps(disk["BootDisk"]) {
-			for _, key := range []string{"MinimalSize", "MinSize", "Size"} {
-				if n, ok := positiveFloatAny(boot[key]); ok {
-					return uint32(n)
-				}
-			}
-		}
-	}
-	return 0
+	return deployment.ResolveBootDisk(wfCtx.Result("查询镜像"), wfCtx.Result("查询可用配比"), imageID, gpuType, zone)
 }
 
 func workflowMinimalCPUPlatform(wfCtx *Context, gpuType, zone string) string {
@@ -951,63 +869,6 @@ func imageMapByID(images map[string]any, id string) map[string]any {
 		}
 	}
 	return nil
-}
-
-func diskMaps(v any) []map[string]any {
-	raw, _ := v.([]any)
-	out := make([]map[string]any, 0, len(raw))
-	for _, item := range raw {
-		m, _ := item.(map[string]any)
-		if m != nil {
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
-func positiveFloatAny(v any) (float64, bool) {
-	switch x := v.(type) {
-	case float64:
-		return x, x > 0
-	case float32:
-		return float64(x), x > 0
-	case int:
-		return float64(x), x > 0
-	case int64:
-		return float64(x), x > 0
-	case uint32:
-		return float64(x), x > 0
-	case uint64:
-		return float64(x), x > 0
-	case string:
-		n, err := strconv.ParseFloat(strings.TrimSpace(x), 64)
-		return n, err == nil && n > 0
-	default:
-		return 0, false
-	}
-}
-
-func spotUnsupportedGPU(params map[string]any, inventoryResult map[string]any, gpuType string) bool {
-	if strings.TrimSpace(gpuType) == "" {
-		return false
-	}
-	for _, item := range spotUnsupportedGPUList(params, inventoryResult) {
-		if strings.EqualFold(item, gpuType) {
-			return true
-		}
-	}
-	return false
-}
-
-func spotUnsupportedGPUList(params map[string]any, inventoryResult map[string]any) []string {
-	out := formStringSlice(params["SpotUnsupportedGpuTypes"])
-	if len(out) > 0 {
-		return out
-	}
-	if inventoryResult == nil {
-		return nil
-	}
-	return formStringSlice(inventoryResult["SpotUnsupportedGpuTypes"])
 }
 
 // confirmPriceText renders a human-readable hourly/period price for the confirm
@@ -1849,7 +1710,7 @@ var createFormChargeTypes = []ConfirmFormOption{
 	{Value: "Month", Label: "包月"},
 }
 
-func createChargeTypeOptions(wfCtx *Context, zone, gpuType string) []ConfirmFormOption {
+func createChargeTypeOptions(wfCtx *Context, zone string) []ConfirmFormOption {
 	opts := make([]ConfirmFormOption, len(createFormChargeTypes))
 	copy(opts, createFormChargeTypes)
 	placement := workflowZonePlacement(wfCtx.Params, zone)
@@ -1857,15 +1718,10 @@ func createChargeTypeOptions(wfCtx *Context, zone, gpuType string) []ConfirmForm
 		if !strings.EqualFold(opts[i].Value, deployment.ChargeTypeSpot) {
 			continue
 		}
-		switch {
-		case placement.IsPod:
+		if placement.IsPod {
 			opts[i].Disabled = true
 			opts[i].Reason = "当前可用区不支持抢占式"
 			opts[i].Note = "Pod 可用区暂不支持抢占式"
-		case spotUnsupportedGPU(wfCtx.Params, wfCtx.Result("查询GPU库存"), gpuType):
-			opts[i].Disabled = true
-			opts[i].Reason = "当前 GPU 不支持抢占式"
-			opts[i].Note = "该 GPU 暂不支持抢占式"
 		}
 	}
 	return opts
@@ -1966,7 +1822,7 @@ func buildCreateConfirmForm(wfCtx *Context) (*ConfirmForm, error) {
 	}
 	fields = append(fields, ConfirmFormField{
 		Key: "ChargeType", Label: "计费方式", Type: "select",
-		Value: createChargeType(wfCtx.Params), Editable: true, Options: createChargeTypeOptions(wfCtx, zone, gpuType),
+		Value: createChargeType(wfCtx.Params), Editable: true, Options: createChargeTypeOptions(wfCtx, zone),
 	})
 	return &ConfirmForm{Version: 1, Fields: fields}, nil
 }
@@ -2442,7 +2298,7 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 	}
 	fields = append(fields, ConfirmFormField{
 		Key: "ChargeType", Label: "计费方式", Type: "select",
-		Value: createChargeType(wfCtx.Params), Render: "cards", Editable: true, Options: createChargeTypeOptions(wfCtx, paramStr(wfCtx.Params, "Zone", ""), gpuType),
+		Value: createChargeType(wfCtx.Params), Render: "cards", Editable: true, Options: createChargeTypeOptions(wfCtx, paramStr(wfCtx.Params, "Zone", "")),
 	})
 	index, total := guidedStepPosition(wfCtx, guidedStepFinal)
 	return &ConfirmForm{

@@ -56,6 +56,43 @@ func TestParseBaseRequestForm(t *testing.T) {
 	assert.Equal(t, "operator@example.com", base.UserEmail)
 }
 
+func TestParseBaseRequestParsesNumericIdentityFields(t *testing.T) {
+	c := testContext("application/json", `{"Action":"GetCSAgentMeta","top_organization_id":123,"organization_id":456,"company_id":789,"account_id":321,"channel":9}`)
+
+	_, base, err := ParseBaseRequest(c)
+
+	require.NoError(t, err)
+	assert.Equal(t, uint32(789), base.CompanyID)
+	assert.Equal(t, uint32(321), base.AccountID)
+	assert.Equal(t, uint32(9), base.Channel)
+}
+
+func TestParseBaseRequestCompanyIDDefaultsToTopOrganization(t *testing.T) {
+	c := testContext("application/json", `{"Action":"GetCSAgentMeta","top_organization_id":123,"organization_id":456}`)
+
+	_, base, err := ParseBaseRequest(c)
+
+	require.NoError(t, err)
+	assert.Equal(t, uint32(123), base.CompanyID)
+}
+
+// TestParseBaseRequestToleratesNonNumericIdentityFields guards against a
+// fail-closed regression: company_id/account_id/channel are gateway
+// billing-attribution passthroughs, not identity/auth fields, so a
+// malformed value must degrade to 0 rather than rejecting the whole
+// request (which would 400 every Action sharing this parser, not just
+// the one that cares about these fields).
+func TestParseBaseRequestToleratesNonNumericIdentityFields(t *testing.T) {
+	c := testContext("application/json", `{"Action":"GetCSAgentMeta","top_organization_id":123,"organization_id":456,"company_id":"app_ios","account_id":"app_ios","channel":"app_ios"}`)
+
+	_, base, err := ParseBaseRequest(c)
+
+	require.NoError(t, err)
+	assert.Equal(t, uint32(123), base.CompanyID) // falls back to top_organization_id
+	assert.Equal(t, uint32(0), base.AccountID)
+	assert.Equal(t, uint32(0), base.Channel)
+}
+
 func TestParseBaseRequestFromHeadersCarriesGatewayIdentity(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/ws?Action=CreateCSAgentWS&ProjectId=org-cwy2qk", nil)
 	req.Header.Set("X-Company-Id", "101")
