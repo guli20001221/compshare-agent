@@ -498,58 +498,6 @@ const (
 	communityVersionPerGroup = 3  // versions to show per CompshareImageGroup
 )
 
-// asciiStopwords applies to ASCII tokens (post-tokenization, post-lowercase).
-var asciiStopwords = map[string]struct{}{
-	"list": {}, "image": {}, "images": {}, "of": {}, "the": {}, "a": {},
-	"an": {}, "what": {}, "any": {}, "is": {}, "are": {}, "have": {}, "has": {},
-	"do": {}, "does": {}, "show": {}, "me": {}, "my": {}, "for": {}, "to": {},
-	"all": {}, "available": {},
-}
-
-var tokenSplitRegex = regexp.MustCompile(`[A-Za-z0-9_.]+|\p{Han}+`)
-
-// pureNumericTokenRegex matches ASCII tokens consisting only of digits (no dot,
-// no letters). These are too generic to use for image-name substring matching
-// (e.g. "Debian 12" -> "12" silently matches "py312", "vLLM v0.12.0"). Version
-// strings with dots like "22.04" are NOT pure-numeric (the dot makes them
-// version-shaped) and remain useful as filter keywords.
-var pureNumericTokenRegex = regexp.MustCompile(`^\d+$`)
-
-// extractUserTokens tokenizes text and drops ASCII stopwords + 1-char noise.
-// It is retained only for API-vocabulary utility tests; route handlers use
-// router-provided read-only slots instead of deriving filters from the full
-// user sentence.
-func extractUserTokens(userText string) []string {
-	if strings.TrimSpace(userText) == "" {
-		return nil
-	}
-	raw := tokenSplitRegex.FindAllString(userText, -1)
-	out := make([]string, 0, len(raw))
-	seen := map[string]struct{}{}
-	for _, tok := range raw {
-		if len([]rune(tok)) < 2 {
-			continue
-		}
-		lower := strings.ToLower(tok)
-		if _, ok := asciiStopwords[lower]; ok {
-			continue
-		}
-		// Drop pure-numeric tokens (e.g. "12", "2022") — they substring-match
-		// too many image names ("py312", "vLLM v0.12.0", "Windows 2022 64位").
-		// Version-shaped tokens like "22.04" survive because the dot makes
-		// them non-pure-numeric.
-		if pureNumericTokenRegex.MatchString(lower) {
-			continue
-		}
-		if _, ok := seen[lower]; ok {
-			continue
-		}
-		seen[lower] = struct{}{}
-		out = append(out, lower)
-	}
-	return out
-}
-
 // matchUserTokensToAPINames returns the subset of API Names (preserving case)
 // that the user mentioned anywhere in their question. The API name set is the
 // matching vocabulary — no hand-maintained GPU dictionary required.

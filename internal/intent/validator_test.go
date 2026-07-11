@@ -282,7 +282,6 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentResourceInfo,
 		IntentBillingInstance,
 		IntentBillingAccountUnsupported,
-		IntentExpiryRenewal,
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,

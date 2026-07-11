@@ -115,8 +115,7 @@ func intentToHandlingClass(intent intp.Intent) string {
 		intp.IntentImageTagCatalog,
 		intp.IntentModelRepositoryBrowse,
 		intp.IntentNetAcceleratorStatus,
-		intp.IntentDiskInfo,
-		intp.IntentExpiryRenewal:
+		intp.IntentDiskInfo:
 		return "read_query"
 	case intp.IntentKnowledgeQA:
 		return "knowledge_answer"

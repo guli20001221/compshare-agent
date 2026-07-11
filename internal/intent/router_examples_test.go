@@ -369,7 +369,13 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // (e.g. "暂无资源" / Normal vs capacity) route to knowledge_qa, while named GPU
 // live stock stays stock_availability; Coding Plan package delete/cancel/refund
 // routes to knowledge_qa instead of instance lifecycle.
-const systemPromptSHA256Baseline = "f4cc35bd749cca4089ef22fb2c4bb858d9bdc8dba2fe14231672064bac08fcee"
+//
+// Dead-code sweep (2026-07-11): dropped the "expiry_renewal" token from the
+// Allowed-intent enum. It was a redundant router label with no distinct
+// handling — same tool subset / execution path / eval class as billing_instance
+// — so removing it is behavior-neutral (expiry questions already route to
+// knowledge_qa / billing_instance per the router directives). SHA re-pinned.
+const systemPromptSHA256Baseline = "c221b6e6e78ad60c546a112144cc6cfa234c634157dbf4bf995410415ae004cc"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

@@ -120,11 +120,9 @@ const (
 // decision point when the priority chain grows beyond this narrow bridge set.
 
 var (
-	beijingZone          = time.FixedZone("CST", 8*3600)
-	isoDateRE            = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
-	clockRangeRE         = regexp.MustCompile(`(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)`)
-	historicalDurationRE = regexp.MustCompile(`(?i)(?:过去|近|最近|last|past|previous|recent)\s*(?:\d+\s*)?(?:分钟|小时|天|周|月|hour|hours|day|days|week|weeks|month|months|h|d)`)
-	percentValueRE       = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*%`)
+	beijingZone  = time.FixedZone("CST", 8*3600)
+	isoDateRE    = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
+	clockRangeRE = regexp.MustCompile(`(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)`)
 )
 
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.

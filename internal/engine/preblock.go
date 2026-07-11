@@ -78,31 +78,6 @@ var enginePreBlock = inputguard.New(
 	// Same pattern as the resource_shortage removal (#261).
 )
 
-// emitMonitorHistoryHardBlock centralizes legacy monitor-history refusal side
-// effects. The main product path now supports single-instance history windows;
-// this helper remains for older guard/error paths that still need a consistent
-// trace and canned reply.
-//
-// Post-tool error paths (executeTool / friendlyToolErrorMessage with
-// tools.ErrHistoricalMonitorUnsupported) are deliberately NOT routed
-// through this helper — they have their own outcome-trace path and
-// double-counting them as a pre-LLM hard-block would distort the
-// downstream MySQL aggregation.
-func (e *Engine) emitMonitorHistoryHardBlock() string {
-	if e.hardBlockObserver != nil {
-		e.hardBlockObserver(observability.EngineHardBlockTrace{
-			Hit:         true,
-			Category:    refusal.CategoryMonitorHistory,
-			TriggeredBy: observability.HardBlockTriggerPlannerIntent,
-		})
-	}
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleAssistant,
-		Content: refusal.MonitorHistoryUnsupported,
-	})
-	return refusal.MonitorHistoryUnsupported
-}
-
 // emitAccountBillingHardBlock handles planner-classified account-level finance
 // requests. It deliberately does not use keyword matching: the router owns the
 // semantic split between unsupported account ledgers and supported instance

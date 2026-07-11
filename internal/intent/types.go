@@ -10,7 +10,6 @@ const (
 	IntentResourceInfo              Intent = "resource_info"
 	IntentBillingInstance           Intent = "billing_instance"
 	IntentBillingAccountUnsupported Intent = "billing_account_unsupported"
-	IntentExpiryRenewal             Intent = "expiry_renewal"
 	IntentDiagnosis                 Intent = "diagnosis"
 	IntentVagueFailure              Intent = "vague_failure"
 	IntentOperationLifecycle        Intent = "operation_lifecycle"
@@ -223,7 +222,6 @@ func AllIntents() []Intent {
 		IntentResourceInfo,
 		IntentBillingInstance,
 		IntentBillingAccountUnsupported,
-		IntentExpiryRenewal,
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
@@ -251,7 +249,6 @@ func RuntimeIntents() []Intent {
 		IntentResourceInfo,
 		IntentBillingInstance,
 		IntentBillingAccountUnsupported,
-		IntentExpiryRenewal,
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
