@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/config"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestUcloudSign(t *testing.T) {
@@ -528,6 +529,73 @@ func TestExecuteWithUserContextInjectsTenantIdentity(t *testing.T) {
 	if got := capturedForm.Get("organization_id"); got != "202" {
 		t.Errorf("organization_id = %q, want context value 202", got)
 	}
+}
+
+func TestExecuteWithUserContextInjectsGatewayIdentityAliases(t *testing.T) {
+	var capturedForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedForm, _ = url.ParseQuery(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "TestResponse"}`))
+	}))
+	defer srv.Close()
+
+	provider := StaticCredentialProvider{Cred: &Credentials{
+		AccessKeyId:     "ak",
+		AccessKeySecret: "sk",
+	}}
+	ext := NewExternalExecutorWithProvider(srv.URL, "cn-wlcb", "default-project", provider)
+	ctx := WithUser(context.Background(), UserContext{
+		TopOrganizationID: 101,
+		OrganizationID:    202,
+		AccountID:         303,
+		Channel:           124,
+		ClientIP:          "10.0.0.9",
+	})
+
+	if _, err := ext.Execute(ctx, "CreateCompShareInstance", map[string]any{
+		"company_id": uint32(999),
+		"account_id": uint32(998),
+		"channel":    uint32(1),
+		"client_ip":  "127.0.0.1",
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	assert.Equal(t, "101", capturedForm.Get("company_id"))
+	assert.Equal(t, "303", capturedForm.Get("account_id"))
+	assert.Equal(t, "124", capturedForm.Get("channel"))
+	assert.Equal(t, "10.0.0.9", capturedForm.Get("client_ip"))
+}
+
+func TestExecuteWithUserContextDefaultsCompanyIDToTopOrganization(t *testing.T) {
+	var capturedForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedForm, _ = url.ParseQuery(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode": 0, "Action": "TestResponse"}`))
+	}))
+	defer srv.Close()
+
+	provider := StaticCredentialProvider{Cred: &Credentials{
+		AccessKeyId:     "ak",
+		AccessKeySecret: "sk",
+	}}
+	ext := NewExternalExecutorWithProvider(srv.URL, "cn-wlcb", "default-project", provider)
+	ctx := WithUser(context.Background(), UserContext{
+		TopOrganizationID: 101,
+		OrganizationID:    202,
+	})
+
+	if _, err := ext.Execute(ctx, "CreateCompShareInstance", map[string]any{}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	assert.Equal(t, "101", capturedForm.Get("company_id"))
+	assert.Equal(t, "101", capturedForm.Get("top_organization_id"))
+	assert.Equal(t, "", capturedForm.Get("account_id"))
 }
 
 func TestExecuteJSONWithUserContextInjectsUserEmail(t *testing.T) {

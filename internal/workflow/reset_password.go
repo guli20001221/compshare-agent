@@ -16,6 +16,7 @@ func ResetPasswordDef() *Definition {
 		Description: "查询实例 → 确认重置 → 重置密码 → 确认完成",
 		Steps: []Step{
 			stepQueryForReset(),
+			stepQuerySupportZones(),
 			stepConfirmReset(),
 			stepResetPassword(),
 			stepVerifyReset(),
@@ -96,10 +97,10 @@ func stepResetPassword() Step {
 				}
 			}
 			queried := wfCtx.Result("查询实例")
-			return addRequiredInstanceLocationArgs(map[string]any{
+			return addRequiredPodPlacementArgs(map[string]any{
 				"UHostId":  wfCtx.Params["UHostId"],
 				"Password": base64.StdEncoding.EncodeToString([]byte(password)),
-			}, queried)
+			}, queried, wfCtx.Result("查询支持区"))
 		},
 	}
 }

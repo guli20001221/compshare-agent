@@ -80,6 +80,9 @@ func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		if actionAllowsBackendAzGroup(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "az_group")
 		}
+		if actionAllowsBackendIsPod(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "IsPod")
+		}
 		if actionAllowsBackendZoneRegion(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "Zone")
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "Region")
@@ -102,6 +105,9 @@ func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		}
 		if actionAllowsBackendAzGroup(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "az_group")
+		}
+		if actionAllowsBackendIsPod(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "IsPod")
 		}
 		if actionAllowsBackendZoneRegion(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "Zone")
@@ -208,6 +214,8 @@ func internalOnlyAllowedParams(action string) []string {
 		return []string{"UHostId", "UDiskId", "Size", "Zone", "Region"}
 	case "ResizeCompShareInstance":
 		return []string{"UHostId", "Cpu", "CPU", "Gpu", "GPU", "Memory", "DiskId", "DiskSpace", "Zone", "Region"}
+	case "CreateCompShareInstance":
+		return []string{"Name", "Zone", "Region", "GpuType", "GPU", "Cpu", "CPU", "Memory", "CompShareImageId", "ChargeType", "MachineType", "MinimalCpuPlatform", "LoginMode", "Disks"}
 	default:
 		return nil
 	}
@@ -218,6 +226,7 @@ func actionAllowsBackendZoneID(action string) bool {
 	case "DescribeAvailableCompShareInstanceTypes",
 		"DescribeCompShareGpuInventory",
 		"CheckCompShareResourceCapacity",
+		"CreateCompShareInstance",
 		"GetCompShareInstancePrice",
 		"GetCompShareInstanceUserPrice",
 		"GetCompShareInstanceUpgradePrice",
@@ -241,6 +250,7 @@ func actionAllowsBackendAzGroup(action string) bool {
 	switch action {
 	case "CheckCompShareNetOptimizer",
 		"SyncCompShareNetOptimizer",
+		"CreateCompShareInstance",
 		"GetCompShareInstancePrice",
 		"GetCompShareInstanceUserPrice",
 		"GetCompShareInstanceUpgradePrice",
@@ -250,6 +260,20 @@ func actionAllowsBackendAzGroup(action string) bool {
 		"ResizeCompShareDisk",
 		"GetCompShareCFSPrice",
 		"CreateCFS":
+		return true
+	default:
+		return false
+	}
+}
+
+func actionAllowsBackendIsPod(action string) bool {
+	switch action {
+	case "CheckCompShareResourceCapacity",
+		"CreateCompShareInstance",
+		"GetCompShareInstancePrice",
+		"GetCompShareInstanceUserPrice",
+		"GetCompShareInstanceUpgradePrice",
+		"ResizeCompShareInstance":
 		return true
 	default:
 		return false

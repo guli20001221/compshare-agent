@@ -282,7 +282,9 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "具体创建实例配置")
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "确认该机型当前是否真实可创建")
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "CompShareImageId 和 ChargeType 必填")
-	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "只传 Zone/Region 字符串")
+	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "workflow 会按可用区类型补齐内部位置参数")
+	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "普通区用 Zone/Region")
+	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "Pod 区内部用 zone_id")
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "不要手填 zone_id/az_group")
 
 	mustContain(t, descriptions["CreateInstanceWorkflow"], "Pod 区必须使用容器镜像")

@@ -45,11 +45,11 @@ func TestGetWorkflow(t *testing.T) {
 	assert.NotNil(t, def)
 	assert.Len(t, def.Steps, 7)
 
-	// StopInstanceWorkflow: 3 steps
+	// StopInstanceWorkflow: query -> query support zones -> confirm -> stop
 	def, ok = GetWorkflow("StopInstanceWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 3)
+	assert.Len(t, def.Steps, 4)
 
 	// StartInstanceWorkflow: query -> confirm -> start (no-GPU spec passed
 	// directly on start; upstream resizes internally, no separate step)
@@ -58,23 +58,23 @@ func TestGetWorkflow(t *testing.T) {
 	assert.NotNil(t, def)
 	assert.Len(t, def.Steps, 3)
 
-	// RebootInstanceWorkflow: 3 steps
+	// RebootInstanceWorkflow: query -> query support zones -> confirm -> reboot
 	def, ok = GetWorkflow("RebootInstanceWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 3)
+	assert.Len(t, def.Steps, 4)
 
-	// RenameInstanceWorkflow: 3 steps
+	// RenameInstanceWorkflow: query -> query support zones -> confirm -> rename
 	def, ok = GetWorkflow("RenameInstanceWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 3)
+	assert.Len(t, def.Steps, 4)
 
-	// ResetPasswordWorkflow: 4 steps
+	// ResetPasswordWorkflow: query -> query support zones -> confirm -> reset -> verify
 	def, ok = GetWorkflow("ResetPasswordWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 4)
+	assert.Len(t, def.Steps, 5)
 
 	// SetStopSchedulerWorkflow: 3 steps
 	def, ok = GetWorkflow("SetStopSchedulerWorkflow")

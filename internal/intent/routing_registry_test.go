@@ -924,7 +924,10 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	exec := &routeSequenceExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
 			"AvailableInstanceTypes": []any{
-				map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
+				map[string]any{
+					"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal",
+					"Disks": []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
+				},
 			},
 		},
 		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
@@ -988,6 +991,68 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	}
 	if args["ChargeType"] != "Postpay" {
 		t.Fatalf("capacity ChargeType = %#v, want Postpay", args["ChargeType"]) // 按量 = Postpay (Dynamic retired, #246)
+	}
+	// Size/type come from the live catalog's BootDisk entry (fixture above),
+	// not a hardcoded literal — proves the capacity precheck now mirrors
+	// what the real create call would send instead of guessing.
+	wantDisks := []any{map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": uint32(100)}}
+	if !reflect.DeepEqual(args["Disks"], wantDisks) {
+		t.Fatalf("capacity Disks = %#v, want %#v", args["Disks"], wantDisks)
+	}
+}
+
+func TestStockAvailabilityPodCapacityPrecheckUsesZoneIDOnly(t *testing.T) {
+	exec := &routeSequenceExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Zone": "cn-pod-01", "Status": "Normal"},
+			},
+		},
+		"DescribeCompShareSupportZone": {
+			"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-pod-01", "Region": "cn-pod", "RegionId": float64(3103), "ZoneId": float64(9103), "Describe": "测试 Pod 区", "IsPod": true},
+			},
+		},
+		"DescribeCompShareGpuInventory": {
+			"GpuInventory": map[string]any{"Exclusive": map[string]any{
+				"9103": map[string]any{"4090": float64(8)},
+			}},
+		},
+		"DescribeCompShareImages": {
+			"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-container", "Name": "PyTorch Container", "Status": "Available", "ImageType": "App", "Container": true},
+			},
+		},
+		"CheckCompShareResourceCapacity": {
+			"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			},
+		},
+	}}
+	handler := NewDemoHandler(exec)
+
+	result := handler.DispatchRoute(context.Background(), HandlerRequest{
+		Plan: IntentRoute{Intent: IntentStockAvailability, Slots: Slots{
+			SearchQuery: "4090",
+		}},
+		UserText: "4090 现在有没有货",
+	})
+
+	if result.Status != HandlerStatusHandled {
+		t.Fatalf("status = %q, want %q", result.Status, HandlerStatusHandled)
+	}
+	args := exec.calls[4].args
+	if _, ok := args["Zone"]; ok {
+		t.Fatalf("Pod capacity precheck must not pass Zone: %#v", args)
+	}
+	if _, ok := args["Region"]; ok {
+		t.Fatalf("Pod capacity precheck must not pass Region: %#v", args)
+	}
+	if _, ok := args["az_group"]; ok {
+		t.Fatalf("Pod capacity precheck must not pass az_group: %#v", args)
+	}
+	if args["zone_id"] != uint32(9103) {
+		t.Fatalf("capacity zone_id = %#v, want 9103", args["zone_id"])
 	}
 }
 
@@ -1546,10 +1611,10 @@ func TestRenderCommunityImage_DataExpansionAndCap(t *testing.T) {
 	if !strings.Contains(reply, "共 5 个版本") {
 		t.Errorf("community renderer should add 'remaining N' hint when capped; got: %s", reply)
 	}
-	// Footer bridges the list to the deploy flow so users can hand an image straight
-	// to deploy_model — the live alternative to ingesting per-image READMEs into RAG.
-	if !strings.Contains(reply, "我来帮你选 GPU 配置并创建") {
-		t.Errorf("community renderer should append the deploy-bridge footer; got: %s", reply)
+	if strings.Contains(reply, "想用其中某个镜像开实例") ||
+		strings.Contains(reply, "用 ComfyUI 镜像部署") ||
+		strings.Contains(reply, "部署 Qwen2.5-32B") {
+		t.Errorf("community renderer must not append a fixed deploy footer; got: %s", reply)
 	}
 }
 
@@ -1713,8 +1778,8 @@ func TestRenderModelRepositoryReply_NoOverflowNoteWhenWithinCap(t *testing.T) {
 
 func TestBuildCommunityImageEnvelope_PopularityFactsAndOrder(t *testing.T) {
 	// Prod renders community_image via the LLM grounded renderer, which works off
-	// THIS envelope (not the deterministic reply). So the popularity signal, the
-	// most-deployed-first ordering, and the deploy-bridge footer must live here.
+	// THIS envelope (not the deterministic reply). Popularity and ordering must be
+	// grounded, but the model must not be forced to append a canned deploy footer.
 	mk := func(name string, created int) map[string]any {
 		return map[string]any{
 			"ImageName":    name,
@@ -1759,16 +1824,14 @@ func TestBuildCommunityImageEnvelope_PopularityFactsAndOrder(t *testing.T) {
 		t.Errorf("unsized group must not carry a deploy_count fact")
 	}
 
-	// disclaimer computed fact carries the deploy-bridge footer verbatim (the
-	// renderer prompt emits computed.disclaimer as the last line, unmodified).
-	var disclaimer string
+	var disclaimerFound bool
 	for _, f := range env.Computed {
 		if f.Key == "disclaimer" {
-			disclaimer, _ = f.Value.(string)
+			disclaimerFound = true
 		}
 	}
-	if disclaimer != communityImageDeployFooter() {
-		t.Errorf("disclaimer computed fact = %q, want deploy footer %q", disclaimer, communityImageDeployFooter())
+	if disclaimerFound {
+		t.Error("community image envelope must not force a fixed disclaimer/footer")
 	}
 }
 

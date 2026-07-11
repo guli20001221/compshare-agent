@@ -10,6 +10,7 @@ func RenameInstanceDef() *Definition {
 		Description: "查询实例 → 确认改名 → 修改名称",
 		Steps: []Step{
 			stepQueryForRename(),
+			stepQuerySupportZones(),
 			stepConfirmRename(),
 			stepRenameInstance(),
 		},
@@ -67,10 +68,10 @@ func stepRenameInstance() Step {
 				return nil, fmt.Errorf("instance Name is required before renaming")
 			}
 			queried := wfCtx.Result("查询实例")
-			return addRequiredInstanceLocationArgs(map[string]any{
+			return addRequiredPodPlacementArgs(map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
 				"Name":    newName,
-			}, queried)
+			}, queried, wfCtx.Result("查询支持区"))
 		},
 	}
 }

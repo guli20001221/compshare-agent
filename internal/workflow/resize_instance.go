@@ -10,6 +10,7 @@ func ResizeInstanceDef() *Definition {
 		Description: "查询实例 → 查询合法规格 → 查询变配价格 → 确认变配 → 变配",
 		Steps: []Step{
 			stepQueryForResize(),
+			stepQuerySupportZones(),
 			stepQueryResizeAvailableSpecs(),
 			stepQueryResizePrice(),
 			stepConfirmResize(),
@@ -172,7 +173,7 @@ func stepQueryResizePrice() Step {
 			args := map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
 			}
-			if _, err := addRequiredInstanceLocationArgs(args, queried); err != nil {
+			if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
 				return nil, err
 			}
 			if cpu, ok := wfCtx.Params["Cpu"]; ok {
@@ -226,7 +227,7 @@ func stepResizeInstance() Step {
 			args := map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
 			}
-			if _, err := addRequiredInstanceLocationArgs(args, queried); err != nil {
+			if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
 				return nil, err
 			}
 			if cpu, ok := wfCtx.Params["Cpu"]; ok {

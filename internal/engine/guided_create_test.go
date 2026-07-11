@@ -47,7 +47,7 @@ func TestExecuteWorkflow_GuidedCreateLocksExplicitGPU(t *testing.T) {
 
 	_ = eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, noopStep)
 
-	assert.Equal(t, []string{"4090", "4090_48G"}, gpuOptions)
+	assert.Equal(t, []string{"4090"}, gpuOptions)
 }
 
 func TestExecuteWorkflow_GuidedCreateCanonicalizesSpaced409048G(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func containerRunningMockExecutor() *mockExecutor {
@@ -23,6 +24,7 @@ func containerRunningMockExecutor() *mockExecutor {
 				"ChargeType":   "Dynamic",
 			},
 		}},
+		"DescribeCompShareSupportZone":   cfsSupportZone("cn-wlcb-01", "cn-wlcb", "华北二A", 9001, 3001, true),
 		"ResetCompShareInstancePassword": {"UHostId": "uhost-xxx", "RetCode": float64(0)},
 	}}
 }
@@ -80,16 +82,18 @@ func TestResetPassword_ContainerRunning_HappyPath(t *testing.T) {
 	assert.True(t, result.Success)
 	assert.Equal(t, "工作流执行完成", result.Message)
 
-	assert.Len(t, result.Steps, 4)
-	expectedNames := []string{"查询实例", "确认重置", "重置密码", "确认完成"}
+	assert.Len(t, result.Steps, 5)
+	expectedNames := []string{"查询实例", "查询支持区", "确认重置", "重置密码", "确认完成"}
 	for i, name := range expectedNames {
 		assert.Equal(t, name, result.Steps[i].Name)
 		assert.Equal(t, "success", result.Steps[i].Status)
 	}
 
 	// Check password was base64 encoded
-	resetCall := executor.calls[1] // 0=Describe, 1=Reset, 2=Describe(verify)
-	assert.Equal(t, "ResetCompShareInstancePassword", resetCall.action)
+	resetCall, found := findExecutorCall(executor.calls, "ResetCompShareInstancePassword")
+	require.True(t, found)
+	assert.Equal(t, uint32(9001), resetCall.args["zone_id"], "Container reset-password must carry the catalog-resolved zone_id")
+	assert.Equal(t, uint32(3001), resetCall.args["az_group"], "Container reset-password must carry the catalog-resolved az_group")
 	encoded := resetCall.args["Password"].(string)
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	assert.NoError(t, err)
@@ -127,6 +131,7 @@ func TestResetPassword_ContainerStopped_HappyPath(t *testing.T) {
 				"ChargeType":   "Dynamic",
 			},
 		}},
+		"DescribeCompShareSupportZone":   cfsSupportZone("cn-wlcb-01", "cn-wlcb", "华北二A", 9001, 3001, true),
 		"ResetCompShareInstancePassword": {"UHostId": "uhost-xxx", "RetCode": float64(0)},
 	}}
 	confirmFn := func(action string, args map[string]any) bool { return true }
