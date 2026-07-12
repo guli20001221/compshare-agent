@@ -247,6 +247,8 @@ type Engine struct {
 	fastTemplate                     bool
 	rendererTraceObserver            func(observability.RendererTrace)
 	plannerTraceObserver             func(observability.RouterTrace)
+	contextTraceObserver             func(observability.ContextTrace)
+	historyTrimmedThisSession        bool
 	retrievalTraceObserver           func(observability.RetrievalTrace)
 	freshnessTraceObserver           func(observability.FreshnessTrace)
 	diagnosisTraceObserver           func(observability.DiagnosisTrace)
@@ -756,6 +758,56 @@ func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, routeMap map[i
 
 func (e *Engine) SetPlannerTraceObserver(observer func(observability.RouterTrace)) {
 	e.plannerTraceObserver = observer
+}
+
+// SetContextTraceObserver wires the per-turn record of what the router and the loop
+// could actually SEE. Without it, "the agent forgot" and "the agent was never told"
+// are indistinguishable in a trace: they produce the same reply and need opposite fixes.
+func (e *Engine) SetContextTraceObserver(observer func(observability.ContextTrace)) {
+	e.contextTraceObserver = observer
+}
+
+// emitContextTrace reports the visible-context footprint of the turn. Counts and flags
+// only, never raw text, so it is safe to leave on in production -- which is exactly where
+// "did it actually have the context?" is impossible to answer after the fact.
+//
+// The two numbers are deliberately reported side by side because they are NOT the same
+// context. The ReAct loop carries maxHistoryMessages. The router, which runs FIRST and
+// decides whether the turn is even a troubleshooting turn, sees maxPlannerPriorMessages
+// of user+assistant text with tool results stripped. A turn the router misroutes on its
+// starved view is lost before the loop's memory is ever consulted.
+func (e *Engine) emitContextTrace(priorText, lastIntent, selectedHost string) {
+	if e.contextTraceObserver == nil {
+		return
+	}
+	runes := len([]rune(priorText))
+	priorMsgs := strings.Count(priorText, "\n")
+	var toolMsgs int
+	for _, m := range e.messages {
+		if m.Role == openai.ChatMessageRoleTool {
+			toolMsgs++
+		}
+	}
+	e.contextTraceObserver(observability.ContextTrace{
+		RouterPriorMessages: priorMsgs,
+		RouterPriorRunes:    runes,
+		// PriorText is BUILT and passed to the router, but callPlannerOnce's own comment
+		// records that buildUserPrompt does not emit it into the prompt (PR1 hotfix
+		// 2026-05-28, to stop multi-turn input growth from breaking flash's JSON schema).
+		// So these two numbers describe context that was ASSEMBLED and then WITHHELD.
+		// That is the single most important thing this trace can tell you, and it is why
+		// the field is named for the bound rather than for the payload.
+		RouterPriorInPrompt: false,
+		// Did the bound bite? Recorded even though the text is withheld, because if the
+		// prompt ever starts emitting PriorText again this is the field that shows the
+		// avalanche returning.
+		RouterPriorTruncated:  priorMsgs >= maxPlannerPriorMessages || runes >= maxPlannerPriorTextRunes,
+		RouterHasLastIntent:   lastIntent != "",
+		RouterHasSelectedHost: selectedHost != "",
+		LoopMessages:          len(e.messages),
+		LoopToolMessages:      toolMsgs,
+		LoopTrimmed:           e.historyTrimmedThisSession,
+	})
 }
 
 func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
@@ -2275,6 +2327,13 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 		if e.sessionStateHydrated {
 			selectedID = e.sessionState.SelectedInstanceID
 		}
+		// Record what the ROUTER can see, at the moment it sees it. This is the turn's
+		// first and most consequential decision — it picks the path — and per the comment
+		// above it makes that decision with the conversation transcript withheld from its
+		// prompt entirely. Recording it is how "the agent forgot" stops being confusable
+		// with "the agent was never told".
+		e.emitContextTrace(priorText, e.sessionState.LastIntent, selectedID)
+
 		planned, err := e.intentPlanner.Plan(ctx, intent.IntentRouterInput{
 			UserText:               userMsg,
 			ImageContext:           e.imageContextThisTurn,
@@ -6158,6 +6217,7 @@ func (e *Engine) trimHistory() {
 
 	keep := e.messages[safeStart:]
 	e.messages = append([]openai.ChatCompletionMessage{e.messages[0]}, keep...)
+	e.historyTrimmedThisSession = true
 }
 
 // staleStateNote is a temporary system message injected when prior instance

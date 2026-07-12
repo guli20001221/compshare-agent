@@ -374,6 +374,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 				// result into trace.planner.
 				traceRecorder.SetPlannerTraceSupplier(nil)
 				eng.SetPlannerTraceObserver(traceRecorder.SetPlannerTrace)
+				eng.SetContextTraceObserver(traceRecorder.SetContextTrace)
 				if knowledgeRetrievalEnabled {
 					eng.SetRetrievalTraceObserver(traceRecorder.SetRetrievalTrace)
 					eng.SetOutcomeTraceObserver(traceRecorder.SetOutcomeTrace)

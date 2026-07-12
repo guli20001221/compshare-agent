@@ -1080,6 +1080,14 @@ func (r *cliTraceRecorder) SetPlannerTraceSupplier(supplier func() observability
 	r.plannerTraceSupplier = supplier
 }
 
+// SetContextTrace records what the router and the ReAct loop could actually SEE.
+func (r *cliTraceRecorder) SetContextTrace(trace observability.ContextTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Context = trace
+}
+
 func (r *cliTraceRecorder) SetPlannerTrace(trace observability.RouterTrace) {
 	if r == nil {
 		return

@@ -68,6 +68,7 @@ func attachChatTraceObservers(agent *engine.Engine, recorder *chatTraceRecorder)
 		return
 	}
 	agent.SetPlannerTraceObserver(recorder.SetPlannerTrace)
+	agent.SetContextTraceObserver(recorder.SetContextTrace)
 	agent.SetRetrievalTraceObserver(recorder.SetRetrievalTrace)
 	agent.SetFreshnessTraceObserver(recorder.SetFreshnessTrace)
 	agent.SetDiagnosisTraceObserver(recorder.SetDiagnosisTrace)
@@ -126,6 +127,16 @@ func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
 	state.ContextDecisionError = r.stateTrace.ContextDecisionError
 	state.ContextDecisionActiveTask = r.stateTrace.ContextDecisionActiveTask
 	r.stateTrace = state
+}
+
+// SetContextTrace records what the router and the loop could actually SEE this turn.
+// Counts and flags only -- no raw text -- so it is safe on in production, which is the
+// only place the question "did it have the context, or was it never given it?" gets asked.
+func (r *chatTraceRecorder) SetContextTrace(trace observability.ContextTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Context = trace
 }
 
 func (r *chatTraceRecorder) SetPlannerTrace(trace observability.RouterTrace) {
