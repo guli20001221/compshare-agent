@@ -20,6 +20,7 @@ import (
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/grounding"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
@@ -246,6 +247,25 @@ type Engine struct {
 	// tool (flag off => tool never visible => never runs => both stay zero).
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
+	// instanceTableThisTurn holds the deterministically rendered instance table for the
+	// current turn, so the {{INSTANCE_TABLE}} placeholder in the model's reply is
+	// substituted with the text WE rendered from the payload — never with anything the
+	// model has retyped. Per-turn; empty when no instance lookup ran.
+	instanceTableThisTurn string
+	// placeholderObeyedThisTurn records whether the model actually referenced the table
+	// via {{INSTANCE_TABLE}} instead of hand-writing a list. Offered-but-not-obeyed is the
+	// turn where the mechanism was available and declined, i.e. the turn that can still
+	// invent a machine — so it is measured, not assumed. Reset per turn.
+	placeholderObeyedThisTurn bool
+	// turnFacts holds the literal values the tools returned, against which the final
+	// reply's checkable claims are tested. Schema-blind by design (see
+	// internal/grounding): it is fed raw payloads from the single executeSafeTool choke
+	// point, so a tool added later is covered without touching this.
+	//
+	// SESSION-scoped, NOT reset per turn — unlike every *ThisTurn field around it. The
+	// model must stay free to refer to an instance it was shown three turns ago without
+	// that being mistaken for invention. See grounding.Facts before "fixing" this.
+	turnFacts *grounding.Facts
 	// searchKnowledgeCallsThisTurn counts SearchKnowledge invocations this turn so
 	// the ReAct loop can withdraw the tool once it hits maxSearchKnowledgeCallsPerTurn,
 	// bounding the corpus-gap re-search thrash that otherwise exhausts the token
@@ -1193,10 +1213,28 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 // (never on intermediate tool-call rounds). OnUsage is called once after the
 // final LLM reply. Canned-reply branches (monitor_history_unsupported, etc.)
 // skip the LLM and therefore never fire callbacks.
-func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (string, error) {
+func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (reply string, err error) {
 	e.userTurn++
 	e.currentCtx = ctx
 	defer func() { e.currentCtx = nil }()
+	// Substitute the deterministically rendered instance table into the finished reply,
+	// then capture. Ordering matters both ways: the substitution must happen before the
+	// grounding observer runs (otherwise the placeholder, not the real table, is what
+	// gets checked), and both must sit on a defer so they cover EVERY exit path — the
+	// direct-dispatch routes return early, and those are precisely the answers the
+	// false-positive baseline needs.
+	// Capture only. The table substitution itself happens inside the ReAct loop, before
+	// the reply is streamed and persisted — see the substituteInstanceTable call there.
+	// Rewriting a reply on the way OUT of this function is too late: the tokens have
+	// already gone to the browser.
+	//
+	// Whether the model USED the placeholder is the compliance signal for the whole
+	// mechanism — a turn where a table was offered and the model hand-wrote a list anyway
+	// is precisely the turn that can still invent a machine. Recording it is the
+	// difference between measuring the contract and merely hoping it holds.
+	defer func() {
+		e.dumpGroundingTurn(userMsg, reply, e.instanceTableThisTurn != "", e.placeholderObeyedThisTurn)
+	}()
 	if u, ok := tools.UserFrom(ctx); ok {
 		if subject, ok := governance.SubjectKeyFromOrganization(u.TopOrganizationID, u.OrganizationID); ok {
 			e.rateLimitSubject = subject
@@ -1235,6 +1273,22 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.lastPlannerActionThisTurn = ""
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
+	e.instanceTableThisTurn = ""
+	e.placeholderObeyedThisTurn = false
+	// Deliberately NOT reset per turn — see grounding.Facts. The model must be free to
+	// keep referring to an instance it was shown three turns ago without that being
+	// mistaken for invention.
+	if e.turnFacts == nil {
+		e.turnFacts = grounding.NewFacts()
+	}
+	// A screenshot the user uploaded is a rendering of the platform's own UI, so
+	// figures the model reads back off it are quoted, not invented. Only the fenced
+	// OCR block counts — never the user's own typed words (see AddScreenshotEvidence).
+	e.turnFacts.AddScreenshotEvidence(userMsg)
+	// The instance the user names is a referent they established, not a claim the model
+	// made — including (especially) when it turns out not to exist, which is the one
+	// case no tool can ever ground. IDs only; the user's figures are not evidence.
+	e.turnFacts.AddUserReferents(userMsg)
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.searchKnowledgeActivitiesThisTurn = nil
@@ -1420,7 +1474,13 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			(round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil) ||
 			e.lastPlannerIntentThisTurn == intent.IntentDiagnosis ||
 			e.searchKnowledgeRanThisTurn ||
-			e.mayCorrectFalseInstanceNotFoundReply(userMsg)
+			e.mayCorrectFalseInstanceNotFoundReply(userMsg) ||
+			// An instance table is waiting to be substituted into this reply, so the
+			// text WILL be rewritten before the user sees it. Streaming raw tokens
+			// would spell the literal "{{INSTANCE_TABLE}}" out into the browser and
+			// then contradict it in the final frame. Every other post-hoc rewrite in
+			// this function is declared here for exactly that reason.
+			e.instanceTableThisTurn != ""
 		liveStream := opts.OnTextDelta != nil && !guardMayRewrite
 		var streamedDeltas []string
 		if liveStream {
@@ -1578,6 +1638,18 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// a non-nil err separately, so this never masks a real failure.
 			if strings.TrimSpace(content) == "" {
 				content = emptyReplyFallbackMessage
+			}
+			// Splice the deterministically rendered instance table in HERE, before the
+			// reply is streamed, persisted, or appended to history — not on the way out
+			// of ChatWithOptions. Doing it on the named return only fixed the final SSE
+			// frame and the DB row, while the token stream had already spelled
+			// "{{INSTANCE_TABLE}}" into the user's browser and e.messages kept the
+			// placeholder forever. content != rawContent from here on, which is precisely
+			// the signal the block below uses to emit the corrected text as one chunk
+			// instead of replaying stale deltas.
+			if substituted, ok := substituteInstanceTable(content, e.instanceTableThisTurn); ok {
+				content = substituted
+				e.placeholderObeyedThisTurn = true
 			}
 			e.commitDisplayedResourceSelectionIfVisible(content)
 			// Replay buffered streaming deltas when the LLM content was returned
@@ -3661,6 +3733,17 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	if groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn {
 		e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
 	}
+	// Retrieved evidence is grounding evidence. SearchKnowledge does not run
+	// through executeSafeTool, so without this a knowledge answer would have an
+	// empty fact set and every figure it correctly quotes from a chunk ("单机最多
+	// 8 卡") would read as invented. Feed what the agent was actually shown —
+	// summary + snippet, not the whole corpus.
+	if e.turnFacts != nil {
+		for _, it := range ledger.Items {
+			e.turnFacts.AddRaw(it.Summary)
+			e.turnFacts.AddRaw(it.Snippet)
+		}
+	}
 	// Emit the RAW retrieval as a RetrievalTrace so what SearchKnowledge retrieved
 	// (enabled, hit count, chunk_ids, weak_evidence) is OBSERVABLE in traces and eval
 	// — including when the relevance floor dropped it. Without this the rec.retrieval
@@ -4065,6 +4148,11 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		}
 		truncateDescribeResultForReAct(args, result.LLMResult)
 		e.recordPendingSelectionFromDisplayedDescribeResult(result.LLMResult)
+		// Hand the agent the finished table rather than asking it to retype the payload.
+		// Rendered from the ALREADY-TRUNCATED result so the table the model is told to
+		// emit is the same set of instances it can see — a table listing machines the
+		// surrounding data does not contain would be its own kind of lie.
+		e.attachDeterministicInstanceTable(action, result.LLMResult, result.LLMResult)
 	}
 	projected := false
 	if e.reactResultProjectionEnabled {
@@ -4142,6 +4230,14 @@ func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest)
 	}
 	if err == nil {
 		e.trackMonitorResult(result)
+	}
+	// Harvest grounding facts from EVERY successful tool call, whatever its
+	// origin. Unlike recordToolFacts (below) this is not restricted to
+	// OriginDirectLLM: a fact the user sees in the reply is grounded no matter
+	// which layer fetched it, and a direct-dispatch handler's result is exactly
+	// the kind of evidence the final answer must not contradict.
+	if err == nil && result != nil && e.turnFacts != nil {
+		e.turnFacts.AddRaw(result.RawResult)
 	}
 	if err == nil && req.Origin == tools.OriginDirectLLM {
 		e.markRegistryInvalidated(req.Action)
