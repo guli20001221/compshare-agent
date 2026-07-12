@@ -375,7 +375,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // handling — same tool subset / execution path / eval class as billing_instance
 // — so removing it is behavior-neutral (expiry questions already route to
 // knowledge_qa / billing_instance per the router directives). SHA re-pinned.
-const systemPromptSHA256Baseline = "08a9fcd1261e2a40a7c751bd4ae75531a8c77be539f321e6a4dddcf444091973"
+const systemPromptSHA256Baseline = "a36a72a433999ba2fa24d2db2f612c7afb416096cab8bdde0180ca569b15513c"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()
