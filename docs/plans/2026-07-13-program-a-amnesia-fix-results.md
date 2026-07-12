@@ -143,33 +143,34 @@ this change. Filed separately.
 
 ---
 
-## RESULTS — 419 identical real sessions, 905 follow-up turns per arm
+## RESULTS — 420 identical real sessions, 914 follow-up turns per arm
 
-Both arms replayed the full corpus (442/443 sessions each); 419 completed cleanly in BOTH
-and are scored. Real HTTP path. `mutating_tools: true`. Zero throttled turns.
+Both arms replayed the FULL corpus: **443/443 sessions each, zero throttled turns.** 420
+completed cleanly in BOTH arms and are scored (22 dropped for a ws timeout in one arm or the
+other — a symmetric exclusion). Real HTTP path. `mutating_tools: true`, as production ships.
 
 ### Deterministic. These are COUNTED, not judged.
 
 | metric | baseline | fixed |
 |---|---|---|
-| `fallback_invalid` on follow-ups | 34/905 = **3.8%** | 5/905 = **0.6%** |
-| `fallback_invalid` on turn-1 | 3/419 = 0.7% | **0.0%** |
-| **validator rejections of CORRECT routes** | **37** | **5** (−86%) |
-| — of which `diagnosis` | **22** | 4 |
+| `fallback_invalid` on follow-ups | 35/914 = **3.8%** | 5/914 = **0.5%** |
+| `fallback_invalid` on turn-1 | 3/420 = 0.7% | **0.0%** |
+| **validator rejections of CORRECT routes** | **38** | **5** (−87%) |
+| — of which `diagnosis` | **23** | 4 |
 | — `resource_info` / `operation_lifecycle` / `disk_info` | 9 / 5 / 1 | 1 / 0 / 0 |
-| diagnosis derailment (session opens in diagnosis, then abandons it) | 73/271 = **26.9%** | 49/268 = **18.3%** |
-| `last_intent` coverage on follow-ups | 264/905 = **29.2%** | 891/905 = **98.5%** |
+| diagnosis derailment (session opens in diagnosis, then abandons it) | 73/280 = **26.1%** | 49/277 = **17.7%** |
+| `last_intent` coverage on follow-ups | 264/914 = **28.9%** | 900/914 = **98.5%** |
 | schema_valid, follow-up (**must not regress**) | 95.0% | **98.2%** ↑ |
 | schema_valid, turn-1 | 99.3% | **100.0%** |
 | `unparseable_json` (the 2026-05-28 avalanche signature) | 0 | **0** |
 | transcript in router prompt (`RouterPriorInPrompt`) | 0 | **0** |
 | create-family route on a follow-up (mutating ON = a create card) | 3.3% | 2.4% |
-| canned non-answers | 3.4% | 4.0% (+0.6 — **inside the noise floor**, see below) |
+| canned non-answers | 3.4% | 4.0% (+0.7 — **inside the noise floor**, see below) |
 
-**32 of the 37 turns where we threw away a correct route are gone.** Twenty-two of them were
-users mid-diagnosis being told, in effect, "I don't understand you".
+**33 of the 38 turns where we threw away a correct route are gone.** Twenty-three of them
+were users mid-diagnosis being told, in effect, "I don't understand you".
 
-Every gate passes. The only metric that moved the wrong way — canned non-answers, +0.6pt —
+Every gate passes. The only metric that moved the wrong way — canned non-answers, +0.7pt —
 is smaller than the measured A/A noise, and is shown below not to be the router's doing.
 
 ### ⚠️ THE NOISE FLOOR — read this before believing ANY A/B on this system
