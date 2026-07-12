@@ -610,11 +610,40 @@ func basePromptScaffoldWithUnifiedCreate(unified bool) string {
 		//
 		// Phrasing is imperative and list-shaped on purpose: conditional prose makes
 		// ds-v4-flash narrate its reasoning instead of emitting the JSON.
+		//
+		// INHERITANCE IS INTENT-AWARE, AND THAT IS THE WHOLE LESSON HERE.
+		//
+		// The first version of these directives said, simply, "inherit Last intent when the
+		// turn cannot stand alone", and "classify pasted machine output as Last intent". A
+		// blind A/B judge over 150 real follow-up turns showed it RESCUED 19 turns and BROKE
+		// 11 — McNemar p=0.20, i.e. nothing. The breakages all had one shape:
+		//
+		//	「嗯嗯」                              last=knowledge_qa -> knowledge_qa -> 「当前知识库未覆盖该问题」
+		//	「bash: start_app.sh: No such file」  last=knowledge_qa -> knowledge_qa -> 「当前知识库未覆盖该问题」
+		//	「32」 (answering a create question)   last=deploy_model -> deploy_model -> a create card
+		//
+		// knowledge_qa is not an ordinary label: its route FORCES a SearchKnowledge hop and
+		// then refuses under cite-or-refuse when the retrieval comes back empty. Inheriting it
+		// onto a turn that contains no question is a guaranteed canned refusal. Same for the
+		// create family, whose route ends in a confirmation card.
+		//
+		// And `unknown` was never the enemy. It falls through to ReAct, which carries
+		// maxHistoryMessages of conversation — so for a bare 「嗯嗯」 it produces a perfectly
+		// sensible reply. The metric that counted every `unknown` follow-up as amnesia was
+		// measuring the wrong thing; the judge caught what the metric could not.
+		//
+		// So: a pasted error is diagnosis ABSOLUTELY, not "whatever was last". knowledge_qa
+		// and the create family are never inherited. An acknowledgement goes to unknown on
+		// purpose. Inheritance is for continuing a TROUBLESHOOT, which is what the router was
+		// actually losing.
 		"Conversation state. When a conversation is already in progress the user prompt carries Last intent, Last selected instance, and Last assistant snippet. They tell you the turn is a CONTINUATION, not a new standalone question. Read them before classifying.",
-		"Inherit Last intent when the current message cannot stand on its own. Applies to: short replies (嗯嗯 / 好的 / 还是不行 / 打不开 / 不行 / 没有), bare fragments (a GPU name, a number, a filename, a plan label like 方案1), and direct answers to a question the assistant just asked in Last assistant snippet.",
-		"Pasted machine output is EVIDENCE for the problem already under discussion, never a new topic and never off-platform. Terminal prompts (root@host:~#), stack traces, pip/apt/conda logs, nvidia-smi output, SSH login banners, error text, and JSON API responses all continue Last intent — usually diagnosis. Classify them as Last intent.",
-		"Override Last intent only when the current message is a COMPLETE new request by itself — a new stock, price, inventory, lifecycle, or how-to question. Classify those on their own text.",
-		"Use unknown ONLY when the question is clearly off-platform — other vendors' products, politics, weather, unrelated code, or generic creative writing. When the question is on-platform but the exact intent is unclear, pick the closest primary intent (resource_info for inventory, knowledge_qa for usage/FAQ, diagnosis for problems on a specific instance) rather than unknown. A short, fragmentary, or unreadable message inside an ongoing on-platform conversation is NOT off-platform — inherit Last intent instead of emitting unknown.",
+		"Pasted machine output is a RUNTIME FAILURE REPORT. Terminal prompts (root@host:~#), stack traces, pip/apt/conda logs, nvidia-smi output, SSH login banners, command-not-found and permission-denied lines, error text, error codes, and JSON API responses: emit diagnosis. Emit diagnosis for these NO MATTER what Last intent says — the user is showing you evidence of something that is broken, not asking a documentation question.",
+		"A follow-up that continues a TROUBLESHOOT stays diagnosis. When Last intent is diagnosis and the current message is a symptom, a bare 还是不行 / 打不开 / 不行 / 没有, or an answer to what the assistant just asked, emit diagnosis.",
+		"Never INHERIT knowledge_qa. Emit knowledge_qa only when the CURRENT message is itself a platform question a document could answer. That route searches the documentation and refuses when it finds nothing, so a turn carrying no question — an acknowledgement, a pasted error, a bare number — must never be sent there just because the previous turn was.",
+		"Never INHERIT deploy_model or create_instance. Creating an instance needs an explicit request in the CURRENT message. A bare number or GPU name answering the assistant's question is not a new create request.",
+		"A bare acknowledgement asks nothing: 嗯嗯 / 好的 / 是的 / 对 / 谢谢 / 收到 / ok. Emit unknown for these. They are not questions, not evidence, and not requests, and the agent answers them from the conversation itself.",
+		"Override Last intent whenever the current message is a COMPLETE new request by itself — a new stock, price, inventory, lifecycle, or how-to question. Classify those on their own text.",
+		"Use unknown ONLY when the question is clearly off-platform — other vendors' products, politics, weather, unrelated code, or generic creative writing — or when it is a bare acknowledgement per the rule above. When the question is on-platform but the exact intent is unclear, pick the closest primary intent (resource_info for inventory, knowledge_qa for usage/FAQ, diagnosis for problems on a specific instance) rather than unknown.",
 		"slots must contain target_refs, metrics, and time_window. Use [] for missing target_refs or metrics, and null for missing time_window.",
 		"For a user-written instance name, output target_refs item {\"type\":\"name\",\"value\":\"<exact name>\",\"source\":\"user_text\",\"source_span\":\"<exact substring>\"}.",
 		"For a user-written UHostId, output target_refs item {\"type\":\"uhost_id_user_input\",\"value\":\"<exact id>\",\"source\":\"user_text\",\"source_span\":\"<exact substring>\"}.",
