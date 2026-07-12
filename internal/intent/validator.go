@@ -25,6 +25,13 @@ const (
 	ErrInvalidImageSource          ErrorCode = "invalid_image_source"
 	ErrInvalidReadOnlySlot         ErrorCode = "invalid_read_only_slot"
 	ErrInvalidLifecycleAction      ErrorCode = "invalid_lifecycle_action"
+
+	// ErrUnparseableJSON is NOT produced by ValidateRoute — the route never got as
+	// far as validation because the model's output was not parseable JSON at all.
+	// It exists so the router can label that failure distinctly in the trace: it is
+	// a schema-compliance breakdown (the 2026-05-28 avalanche signature), not a plan
+	// we examined and refused. Both otherwise collapse into route_status=fallback_invalid.
+	ErrUnparseableJSON ErrorCode = "unparseable_json"
 )
 
 type ValidationError struct {
@@ -56,6 +63,43 @@ type EntityResolver interface {
 	ResolveByID(id string) (*entity.InstanceSnapshot, entity.ResolveResult)
 	ResolveByName(name string) ([]*entity.InstanceSnapshot, entity.ResolveResult)
 	InstanceIDTokensInText(text string) []string
+}
+
+// absenceAuthority is the optional half of EntityResolver: whether the resolver has
+// actually seen the WHOLE account, and may therefore be trusted when it says an
+// instance is not in it. Both *entity.EntityRegistry and entity.RegistrySnapshot
+// implement it. It is optional so that test doubles and any other EntityResolver keep
+// compiling and keep their existing behaviour.
+type absenceAuthority interface {
+	CanAssertAbsence() bool
+}
+
+// canAssertAbsence reports whether a NOT_FOUND from this resolver is strong enough to
+// REFUSE the user's turn on.
+//
+// It usually is not. The registry answers NOT_FOUND_IN_ACCOUNT for anything it has not
+// seen, and it has not seen everything: the HTTP path skips engine.Init() so a session
+// that never lists instances carries an empty registry, and DescribeCompShareInstance
+// pages — a live account with 20 instances returns 10, leaving the other 10 unknown to a
+// registry that will still swear they do not exist.
+//
+// Refusing on that turns "I have not looked" into "you are making this up". On real
+// 2026-06-26..07-09 traffic this is what 「我的uhost-1exampleaa01扩的是系统盘吧？」 hits: the
+// user names their OWN instance, the router routes it correctly, the registry has never
+// heard of it, ErrEntityNotFound kills the plan on every retry, and the turn is delivered
+// as intent=unknown.
+//
+// Note the hallucination guard is NOT what we are relaxing. validateProvenance still
+// requires the id to appear verbatim in the user's own text or the prior turn, so the
+// model cannot invent one. This is the separate, weaker claim — "does it exist in the
+// account" — and it is a claim a partial cache is not entitled to make. When the registry
+// cannot prove absence, let the plan through: the engine's deterministic target resolution
+// does a real API lookup and will ask the user if it genuinely does not exist.
+func canAssertAbsence(resolver EntityResolver) bool {
+	if a, ok := resolver.(absenceAuthority); ok {
+		return a.CanAssertAbsence()
+	}
+	return true
 }
 
 func ValidateRoute(plan IntentRoute, ctx ValidationContext) error {
@@ -122,7 +166,7 @@ func validateTargetRef(ref TargetRef, idx int, ctx ValidationContext) error {
 		if err := validateProvenance(ref, field, ctx); err != nil {
 			return err
 		}
-		if resolver != nil {
+		if resolver != nil && canAssertAbsence(resolver) {
 			if matches, res := resolver.ResolveByName(ref.Value); res.Status == entity.ResolveNotFoundInAccount || len(matches) == 0 {
 				return validationErr(ErrEntityNotFound, field+".value", "name target_ref does not resolve in registry")
 			}
@@ -132,7 +176,7 @@ func validateTargetRef(ref TargetRef, idx int, ctx ValidationContext) error {
 		if err := validateProvenance(ref, field, ctx); err != nil {
 			return err
 		}
-		if resolver != nil {
+		if resolver != nil && canAssertAbsence(resolver) {
 			if _, res := resolver.ResolveByID(ref.Value); res.Status != entity.ResolveHit {
 				return validationErr(ErrEntityNotFound, field+".value", "uhost_id target_ref is not in registry")
 			}

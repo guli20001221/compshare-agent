@@ -1876,6 +1876,35 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// falls back to ReAct (return "", false), the ReAct loop uses this to
 	// scope the tool list via intent.IntentToolSubset.
 	e.lastPlannerIntentThisTurn = dispatch.result.Plan.Intent
+	// ...and remember it for the NEXT turn's router, which is a different question.
+	//
+	// lastPlannerIntentThisTurn is TURN-scoped. SessionState.LastIntent is what the
+	// router actually reads next turn (callPlannerOnce -> IntentRouterInput.LastIntent),
+	// and until now it was only ever written on the direct-dispatch path
+	// (recordLastIntentFromPlan, inside `if handled.Status == HandlerStatusHandled`).
+	//
+	// diagnosis and knowledge_qa have no direct-dispatch handler. They fall through to
+	// ReAct as fallback_ineligible, so they could NEVER be "confirmed by a fully-dispatched
+	// handler reply" and were therefore never recorded — no matter how confidently the
+	// router classified them, or how many turns the conversation spent there. A live replay
+	// of real traffic shows a session running FIVE consecutive diagnosis turns with
+	// router_has_last_intent=false on every one.
+	//
+	// Those are the two biggest intents in real traffic (659 knowledge_qa + 260 diagnosis of
+	// 1280 follow-up turns), and a user mid-diagnosis pasting terminal output is the single
+	// largest amnesia class. So the router's one piece of conversation state was structurally
+	// unable to represent the two conversations users actually have.
+	//
+	// This is the right place: the plan is past commonPlannerCandidateStatus (schema-valid,
+	// confidence >= 0.60), and the code already decided here that the intent is good enough
+	// to scope the whole turn's tool list by. If it is good enough for that, it is good
+	// enough to remember.
+	//
+	// Deliberately NOT recordLastIntentFromPlan: that one also fires
+	// clearPendingDeployModel / clearDeployClarificationCarry, which at this point in the
+	// turn would run BEFORE the deploy/create resume logic and tear down the frame it is
+	// about to need. Persisting the intent must not mutate the create flow.
+	e.rememberLastIntentForRouter(dispatch.result.Plan)
 	// PR1 hotfix Bug 4 (2026-05-28): capture slots.action so executeTool can
 	// deterministically pre-filter DescribeCompShareInstance rows by State.
 	e.lastPlannerActionThisTurn = dispatch.result.Plan.Slots.Action
@@ -4996,12 +5025,49 @@ func (e *Engine) fallbackStockGpuModel(now time.Time) string {
 	return e.sessionState.LastStockGpuModel
 }
 
+// rememberLastIntentForRouter persists the router's own classification to
+// SessionState.LastIntent so the NEXT turn's router can see what this conversation is
+// about. It is the whole of the router's memory.
+//
+// It exists separately from recordLastIntentFromPlan for two reasons, and both matter:
+//
+//  1. COVERAGE. recordLastIntentFromPlan only runs when a direct-dispatch handler fully
+//     handled the turn. diagnosis and knowledge_qa have no such handler — they go to
+//     ReAct — so they were never recorded at all, and they are the two biggest intents in
+//     real traffic. The router's memory could not represent the conversations users
+//     actually have.
+//  2. NO SIDE EFFECTS. recordLastIntentFromPlan also clears the pending deploy model and
+//     the deploy clarification carry. Those are correct AFTER a handler has resolved the
+//     turn, and destructive BEFORE the create/deploy resume logic has run. This function
+//     writes one field and touches nothing else.
+//
+// Same vocabulary contract as recordLastIntentFromPlan: refuses empty / IntentUnknown /
+// non-RuntimeIntents, so a fallback plan can never clobber a good LastIntent with garbage.
+// That refusal is load-bearing — it is why a turn the router failed on leaves the previous
+// topic standing instead of erasing it.
+func (e *Engine) rememberLastIntentForRouter(plan intent.IntentRoute) {
+	if !e.sessionStateHydrated {
+		return
+	}
+	if plan.Intent == "" || plan.Intent == intent.IntentUnknown {
+		return
+	}
+	if !runtimeIntentMember(plan.Intent) {
+		return
+	}
+	e.sessionState.LastIntent = string(plan.Intent)
+}
+
 // recordLastIntentFromPlan sets SessionState.LastIntent from the plan's
-// classified Intent. Called only on route/resume success paths — i.e.
-// when the user's intent was confirmed by a fully-dispatched handler
-// reply. Refuses to write IntentUnknown / empty / non-RuntimeIntents
-// values, so the stored value is always a legal short-circuited
-// "future M3 ContextAssembler will switch on this" enum string.
+// classified Intent, AND tears down create-flow carry state that a resolved
+// non-create turn has invalidated. Called on route/resume success paths — i.e.
+// when the user's intent was confirmed by a fully-dispatched handler reply.
+// Refuses to write IntentUnknown / empty / non-RuntimeIntents values, so the
+// stored value is always a legal short-circuited enum string.
+//
+// For the LastIntent write alone — with none of the create-flow side effects, and
+// on every routed turn rather than only handler-dispatched ones — use
+// rememberLastIntentForRouter.
 func (e *Engine) recordLastIntentFromPlan(plan intent.IntentRoute) {
 	if !e.sessionStateHydrated {
 		return
