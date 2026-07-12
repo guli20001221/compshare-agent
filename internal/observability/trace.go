@@ -392,6 +392,27 @@ type RouterTrace struct {
 	Confidence           float64             `json:"confidence"`
 	HardBlockHint        bool                `json:"hard_block_hint"`
 	RouteStatus          string              `json:"route_status"`
+
+	// Why the router fell back — the question route_status alone cannot answer.
+	//
+	// When validation fails on every attempt, ProjectPlannerTrace overwrites Intent
+	// with "unknown" and the engine reports route_status=fallback_invalid. Both the
+	// intent the model actually chose and the reason it was rejected were then
+	// discarded, so `fallback_invalid` has been an opaque bucket. On real 6.26-7.9
+	// traffic it is 6.0% of follow-up turns vs 1.0% of opening turns — a 6x
+	// multi-turn degradation that nothing in the system could explain.
+	//
+	// ValidationCode is an ErrorCode enum and ValidationField a schema path
+	// (e.g. "slots.target_refs[0].value"). Neither carries user text, so this is
+	// safe to leave on in production — the same counts-and-enums-only rule
+	// PlannerSlots follows.
+	ValidationCode  string `json:"validation_code,omitempty"`
+	ValidationField string `json:"validation_field,omitempty"`
+	// RejectedIntent is the intent the model chose on the final failing attempt —
+	// preserved BEFORE the unknown-overwrite above, so a rejected-but-correct route
+	// is distinguishable from a genuinely off-platform one.
+	RejectedIntent string `json:"rejected_intent,omitempty"`
+	Attempts       int    `json:"attempts,omitempty"`
 }
 
 type PlannerSkillTrace struct {

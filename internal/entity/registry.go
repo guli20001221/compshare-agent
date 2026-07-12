@@ -119,6 +119,50 @@ func (r *EntityRegistry) Age() time.Duration {
 	return r.now().Sub(r.LastFullSync)
 }
 
+// CanAssertAbsence reports whether this registry has the standing to say an
+// instance is NOT in the user's account.
+//
+// ResolveByID / ResolveByName answer NOT_FOUND_IN_ACCOUNT for anything they have not
+// seen — which is correct only if they have seen EVERYTHING. Three ways they have not:
+//
+//   - never synced (LastFullSync zero). The HTTP path skips engine.Init(), so a session
+//     that never lists instances carries an empty registry for its whole life.
+//   - the last sync FAILED.
+//   - the listing was TRUNCATED: DescribeCompShareInstance pages, and Truncated is set
+//     precisely when TotalCount > len(fetched) (registry.go, refresh). A live account here
+//     holds 20 instances and the call returns 10 — so HALF the user's machines are absent
+//     from a registry that will nonetheless swear they do not exist.
+//
+// In all three the honest answer is "I have not seen it", and "I have not seen it" is not
+// "it does not exist". Callers that turn NOT_FOUND into a hard refusal must consult this
+// first; the resolver is a cache, not the account.
+//
+// A genuinely empty account (synced cleanly, TotalCount 0) IS authoritative — absence is
+// then a fact, not an artefact.
+func (r *EntityRegistry) CanAssertAbsence() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return canAssertAbsence(r.LastFullSync, r.LastSyncEvent, r.Truncated, len(r.Instances), r.TotalCount)
+}
+
+// CanAssertAbsence: see EntityRegistry.CanAssertAbsence. Same rule, immutable copy.
+func (s RegistrySnapshot) CanAssertAbsence() bool {
+	return canAssertAbsence(s.LastFullSync, s.SyncEvent, s.Truncated, len(s.Instances), s.TotalCount)
+}
+
+func canAssertAbsence(lastFullSync time.Time, syncEvent string, truncated bool, known, total int) bool {
+	if lastFullSync.IsZero() || truncated {
+		return false
+	}
+	switch SyncEvent(syncEvent) {
+	case SyncEventUnavailable, SyncEventFailed, "":
+		return false
+	}
+	// Synced cleanly and completely: either we hold instances, or the account really
+	// has none.
+	return known > 0 || total == 0
+}
+
 func (r *EntityRegistry) Snapshot() RegistrySnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

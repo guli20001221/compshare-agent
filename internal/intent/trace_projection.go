@@ -48,7 +48,14 @@ func ProjectPlannerTrace(result IntentRouterResult, opts PlannerTraceOptions) ob
 	trace.Slots = projectPlannerSlots(result.Plan.Slots)
 	trace.Confidence = result.Plan.Confidence
 	trace.HardBlockHint = result.Plan.Intent == IntentBillingAccountUnsupported
+	trace.Attempts = result.Attempts
+	trace.ValidationCode = string(result.LastValidationCode)
+	trace.ValidationField = result.LastValidationField
 	if !trace.SchemaValid {
+		// The intent is about to be erased. Keep a copy of what the model actually
+		// chose, or the trace will claim the user asked something off-platform when
+		// in fact we rejected a correct route on a provenance/registry technicality.
+		trace.RejectedIntent = string(result.LastRejectedIntent)
 		trace.Intent = string(IntentUnknown)
 		trace.PlannedExecutionPath = ""
 		trace.Skills = nil

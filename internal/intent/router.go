@@ -79,6 +79,16 @@ type IntentRouterResult struct {
 	Attempts           int
 	Fallback           bool
 	LastValidationCode ErrorCode
+	// LastValidationField is the schema path the final attempt failed on
+	// (e.g. "slots.target_refs[0].value"). Together with LastValidationCode it
+	// answers "why did this turn fall back", which route_status=fallback_invalid
+	// alone never could.
+	LastValidationField string
+	// LastRejectedIntent is the intent the model chose on the final FAILING
+	// attempt. The engine's trace projection overwrites a failed plan's intent with
+	// `unknown`, so without capturing it here a validator rejection of a perfectly
+	// correct route is indistinguishable from a genuinely off-platform question.
+	LastRejectedIntent Intent
 	Usage              llm.TokenUsage
 }
 
@@ -178,7 +188,23 @@ func (p *IntentRouter) Plan(ctx context.Context, input IntentRouterInput) (Inten
 			}
 			if errorAsValidation(err, &validationErr) {
 				result.LastValidationCode = validationErr.Code
+				result.LastValidationField = validationErr.Field
+				// Keep the route the model actually chose. Everything downstream is
+				// about to call this turn `unknown`; without this we could never tell
+				// a validator rejection of a CORRECT intent from a real off-platform
+				// question, and those need opposite fixes.
+				result.LastRejectedIntent = plan.Intent
 			}
+		} else {
+			// A parse failure is a different disease from a validation rejection:
+			// unparseable JSON means the model's schema compliance broke down (the
+			// 2026-05-28 avalanche failure mode), while a validation rejection means
+			// the model emitted a well-formed plan we then refused. Both land in
+			// fallback_invalid, so the bucket is useless unless they are labelled
+			// apart. Fallback is already true here, so this only adds a label.
+			result.LastValidationCode = ErrUnparseableJSON
+			result.LastValidationField = ""
+			result.LastRejectedIntent = ""
 		}
 
 		userPrompt = buildUserPrompt(input, buildRetryInstruction(parseErr, validationErr))
@@ -563,7 +589,32 @@ func basePromptScaffoldWithUnifiedCreate(unified bool) string {
 		"Personal billing complaints with vague cause — 充值 10 块就被扣完了 / 我账单怎么这么高 / 钱怎么扣这么快 / 我啥也没干怎么就扣费了 — emit billing_instance (NOT billing_account_unsupported, which is reserved for explicit balance / total-bill / transaction-record queries; and NOT knowledge_qa, because the user wants a personal diagnostic, not a process FAQ).",
 		"Route billing navigation questions to knowledge_qa: where do I find / how do I view / how to check / from which page can I see my bills, invoices, expense, balance, charges, or recharge history. They ask for a UI path, not actual finance numbers, and the docs cover the path.",
 		"Classify resource operation commands on EXISTING instances as operation_lifecycle, regardless of whether the user specifies a target instance. Action verbs include 关机 / 停机 / 停了 / 启动 / 开机 / 重启 / 加盘 / 加数据盘 / 变配 / 升级配置 / 重装 / 重置密码 / 改名. Do not classify new instance creation as operation_lifecycle. Route workload-first requests naming a model/app/framework (e.g. 部署 DeepSeekR1 / 部署数字人 / 部署 ComfyUI) to deploy_model. When an existing-instance target is given, populate target_refs (UHostId, name, or filter). When the user omits the target (e.g. 帮我关机, 启动一下, 重启那台), use operation_lifecycle with target_refs:[] — the engine will list the user's instances and prompt for selection. Concrete anchors: 帮我关机 uhost-xxx, uhost-test 停了, 启动 train-gpu, 把 uhost-xxx 重启一下, 给 uhost-xxx 加 200G 数据盘. Do NOT route bare action verbs to resource_info (that intent is for listing/inspecting only) or unknown (the action is on-platform).",
-		"Use unknown ONLY when the question is clearly off-platform — other vendors' products, politics, weather, unrelated code, or generic creative writing. When the question is on-platform but the exact intent is unclear, pick the closest primary intent (resource_info for inventory, knowledge_qa for usage/FAQ, diagnosis for problems on a specific instance) rather than unknown.",
+		// Conversation state. The user prompt has ALWAYS carried `Last intent`,
+		// `Last selected instance` and `Last assistant snippet` (buildUserPrompt), but until
+		// now nothing in this prompt said what they MEAN — a grep across this scaffold, every
+		// route.yaml planner_directives, the boundary packs and the planner examples found
+		// zero references to them. The model was handed three bare labels and ~30 directives
+		// that all key off the CURRENT message, so it classified every follow-up as if it
+		// were an opening turn.
+		//
+		// On real 2026-06-26..07-09 traffic that cost: 8.3% of all follow-up turns (106/1280)
+		// emitted `unknown` while holding a populated Last intent, and 39% of those then did
+		// zero tool work. The single biggest class is a user mid-diagnosis pasting the exact
+		// terminal evidence the agent asked for and being told, in effect, "I don't handle that".
+		//
+		// These directives are SYSTEM-prompt text: constant, cacheable, paid once per turn.
+		// That is what makes them safe, and it is the whole difference from re-enabling
+		// PriorText — which grew the USER prompt with the transcript every turn until
+		// ds-v4-flash stopped returning schema-valid JSON (PR1 hotfix Bug 2, 2026-05-28).
+		// Do not "improve" these by dumping the conversation here.
+		//
+		// Phrasing is imperative and list-shaped on purpose: conditional prose makes
+		// ds-v4-flash narrate its reasoning instead of emitting the JSON.
+		"Conversation state. When a conversation is already in progress the user prompt carries Last intent, Last selected instance, and Last assistant snippet. They tell you the turn is a CONTINUATION, not a new standalone question. Read them before classifying.",
+		"Inherit Last intent when the current message cannot stand on its own. Applies to: short replies (嗯嗯 / 好的 / 还是不行 / 打不开 / 不行 / 没有), bare fragments (a GPU name, a number, a filename, a plan label like 方案1), and direct answers to a question the assistant just asked in Last assistant snippet.",
+		"Pasted machine output is EVIDENCE for the problem already under discussion, never a new topic and never off-platform. Terminal prompts (root@host:~#), stack traces, pip/apt/conda logs, nvidia-smi output, SSH login banners, error text, and JSON API responses all continue Last intent — usually diagnosis. Classify them as Last intent.",
+		"Override Last intent only when the current message is a COMPLETE new request by itself — a new stock, price, inventory, lifecycle, or how-to question. Classify those on their own text.",
+		"Use unknown ONLY when the question is clearly off-platform — other vendors' products, politics, weather, unrelated code, or generic creative writing. When the question is on-platform but the exact intent is unclear, pick the closest primary intent (resource_info for inventory, knowledge_qa for usage/FAQ, diagnosis for problems on a specific instance) rather than unknown. A short, fragmentary, or unreadable message inside an ongoing on-platform conversation is NOT off-platform — inherit Last intent instead of emitting unknown.",
 		"slots must contain target_refs, metrics, and time_window. Use [] for missing target_refs or metrics, and null for missing time_window.",
 		"For a user-written instance name, output target_refs item {\"type\":\"name\",\"value\":\"<exact name>\",\"source\":\"user_text\",\"source_span\":\"<exact substring>\"}.",
 		"For a user-written UHostId, output target_refs item {\"type\":\"uhost_id_user_input\",\"value\":\"<exact id>\",\"source\":\"user_text\",\"source_span\":\"<exact substring>\"}.",
