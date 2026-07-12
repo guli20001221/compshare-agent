@@ -50,6 +50,7 @@ package grounding
 
 import (
 	"fmt"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -111,6 +112,15 @@ var numberInText = regexp.MustCompile(`\d+(?:\.\d+)?`)
 
 // AddRaw walks a raw tool payload and harvests every scalar leaf. It is
 // deliberately schema-blind: no action names, no field names, no per-kind cases.
+//
+// The fast cases below cover JSON-shaped payloads (external API results arrive as
+// map[string]any from json.Unmarshal). They are NOT sufficient on their own: local
+// tools hand back typed Go structs, and the original type switch walked straight
+// past them. GetGPUSpecs returns map[string]any{"spec": knowledge.GPUSpec{FP16:82.6}}
+// — the struct is a leaf to a type switch, so the 4090's real FP16 figure was never
+// harvested, and a reply that correctly read it off the tool got reported as a
+// fabrication. "Schema-blind" has to mean blind to the SHAPE too, not just to the
+// field names, so anything the fast cases miss falls through to a reflective walk.
 func (f *Facts) AddRaw(v any) {
 	switch x := v.(type) {
 	case map[string]any:
@@ -122,12 +132,7 @@ func (f *Facts) AddRaw(v any) {
 			f.AddRaw(sub)
 		}
 	case string:
-		for _, n := range numberInText.FindAllString(x, -1) {
-			f.addNum(n)
-		}
-		for _, id := range entityRE.FindAllString(x, -1) {
-			f.entities[strings.ToLower(id)] = struct{}{}
-		}
+		f.addText(x)
 	case float64:
 		f.addNum(strconv.FormatFloat(x, 'f', -1, 64))
 	case int:
@@ -136,6 +141,60 @@ func (f *Facts) AddRaw(v any) {
 		f.addNum(strconv.FormatInt(x, 10))
 	case bool, nil:
 		// nothing checkable
+	default:
+		f.addReflected(reflect.ValueOf(v), 0)
+	}
+}
+
+// maxReflectDepth bounds the reflective walk. Tool payloads are shallow trees; this
+// is a backstop against a pathological or cyclic value, not a real limit.
+const maxReflectDepth = 12
+
+// addReflected harvests scalar leaves from values the type switch cannot name —
+// typed structs, named scalar types, pointers, and typed slices/maps.
+func (f *Facts) addReflected(rv reflect.Value, depth int) {
+	if depth > maxReflectDepth || !rv.IsValid() {
+		return
+	}
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if !rv.IsNil() {
+			f.addReflected(rv.Elem(), depth+1)
+		}
+	case reflect.Struct:
+		t := rv.Type()
+		for i := 0; i < rv.NumField(); i++ {
+			if t.Field(i).PkgPath != "" {
+				continue // unexported: not part of the payload the model was shown
+			}
+			f.addReflected(rv.Field(i), depth+1)
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < rv.Len(); i++ {
+			f.addReflected(rv.Index(i), depth+1)
+		}
+	case reflect.Map:
+		for _, k := range rv.MapKeys() {
+			f.addReflected(rv.MapIndex(k), depth+1)
+		}
+	case reflect.String:
+		f.addText(rv.String())
+	case reflect.Float32, reflect.Float64:
+		f.addNum(strconv.FormatFloat(rv.Float(), 'f', -1, 64))
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		f.addNum(strconv.FormatInt(rv.Int(), 10))
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		f.addNum(strconv.FormatUint(rv.Uint(), 10))
+	}
+}
+
+// addText harvests the numbers and platform entity IDs embedded in a string leaf.
+func (f *Facts) addText(s string) {
+	for _, n := range numberInText.FindAllString(s, -1) {
+		f.addNum(n)
+	}
+	for _, id := range entityRE.FindAllString(s, -1) {
+		f.entities[strings.ToLower(id)] = struct{}{}
 	}
 }
 

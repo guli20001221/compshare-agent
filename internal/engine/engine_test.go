@@ -1000,17 +1000,22 @@ func TestUnknownAction_Rejected(t *testing.T) {
 func TestTrimHistory(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 
-	// Build a long message history: system + 50 user/assistant pairs
+	// The pair count is DERIVED from maxHistoryMessages, not hardcoded. It used to be
+	// a literal 50 — chosen to overflow the old ceiling of 40 — which meant that
+	// raising the ceiling past 100 silently sailed this test straight down the
+	// no-op branch of trimHistory: no trim, nothing asserted, still green. The input
+	// has to overflow whatever the ceiling currently is, or the test tests nothing.
+	pairs := maxHistoryMessages // => 2*maxHistoryMessages messages, always over
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "system prompt"},
 	}
-	for i := 0; i < 50; i++ {
+	for i := 0; i < pairs; i++ {
 		eng.messages = append(eng.messages,
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("q%d", i)},
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("a%d", i)},
 		)
 	}
-	assert.Equal(t, 101, len(eng.messages)) // 1 + 100
+	require.Greater(t, len(eng.messages), 1+maxHistoryMessages, "input must overflow the ceiling or trimHistory is a no-op")
 
 	eng.trimHistory()
 
@@ -1021,7 +1026,7 @@ func TestTrimHistory(t *testing.T) {
 
 	// Last message should be the most recent
 	lastMsg := eng.messages[len(eng.messages)-1]
-	assert.Equal(t, "a49", lastMsg.Content)
+	assert.Equal(t, fmt.Sprintf("a%d", pairs-1), lastMsg.Content)
 }
 
 func TestTrimHistory_ShortHistory_NoOp(t *testing.T) {

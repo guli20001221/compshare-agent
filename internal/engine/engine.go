@@ -42,9 +42,27 @@ import (
 const (
 	maxReActRounds = 10
 	// maxHistoryMessages is the maximum number of non-system messages to keep.
-	// With ~7K system prompt tokens and ~1K per message pair, 40 messages ≈ 27K tokens
-	// which fits well within a 32K context window.
-	maxHistoryMessages = 40
+	//
+	// This was 40, sized for "a 32K context window" — a model we no longer run.
+	// ds-v4-flash's window is not remotely the binding constraint; the real ceiling
+	// is agent.rate_limit.max_tokens_per_turn (200K, prompt+completion summed), and
+	// 40 messages ≈ 27K tokens sat at 13% of it. We were amputating context to
+	// respect a limit that no longer exists.
+	//
+	// The unit is also wrong in a way that bites hardest exactly where we are
+	// headed: this counts MESSAGES, and e.messages holds every tool response, so an
+	// agent-loop turn costs ~4-6 messages (user + assistant-with-tool_calls + N tool
+	// results + final assistant) against ~2 on the fast path. At 40 the ceiling was
+	// therefore ~8 agent-loop turns — INSIDE observed session lengths (real sessions
+	// reach 10 turns; the traffic sample is truncated at 10, so that is a floor, not
+	// a max). Routing everything through the agent loop would have re-introduced the
+	// amnesia the cutover exists to cure, at turn 8, silently.
+	//
+	// 120 covers ~24 agent-loop turns (~81K tokens + ~7K system ≈ 44% of the per-turn
+	// cap), leaving real headroom for a large tool-result burst. Counting messages
+	// rather than tokens is still the wrong unit; this raises the ceiling out of the
+	// way of real traffic without pretending to fix that.
+	maxHistoryMessages = 120
 	// maxPlannerPriorMessages bounds the user/assistant history copied into
 	// shadow-planner input. Tool and system messages are intentionally omitted.
 	maxPlannerPriorMessages      = 8
@@ -4030,6 +4048,14 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			return errMsg
 		}
 		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceKnowledgeLocal, Message: "查询成功", TraceResult: result})
+		// Knowledge tools return BEFORE executeSafeTool, so the grounding harvest
+		// there never sees them. Without this the validator called a correctly
+		// tool-sourced GPU spec (GetGPUSpecs -> FP16 82.6 for a 4090) a fabrication:
+		// the figure is real, it came from knowledge/gpu_specs.go, and the model was
+		// reading it off a tool result the harvest had simply not been shown.
+		if e.turnFacts != nil {
+			e.turnFacts.AddRaw(result)
+		}
 		return knowledge.ResultToJSON(result)
 	}
 
