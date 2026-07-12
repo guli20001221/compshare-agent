@@ -232,6 +232,29 @@ per-turn token cap. Those throw the whole conversation away, and they fire nonde
 
 ---
 
+## A3 — do NOT add more router context. Closed on the evidence.
+
+The plan reserved A3 for "if A1 is insufficient, give the router a richer structured
+conversation-state signal". **Do not do it.** The data says it would be wasted work:
+
+- The router's context is no longer the bottleneck. `last_intent` now reaches **98.5%** of
+  follow-up turns (was 28.9%), and the routes it produces are right — validator rejections
+  of *correct* routes fell 38 → 5.
+- What remains is not a context problem. Decomposing the judge's amnesia flags by mechanism,
+  the residue is **canned non-answers** — the `knowledge_qa` cite-or-refuse coin flip, the
+  ReAct round cap, the per-turn token cap. Those turns are *correctly routed* and then
+  discarded at a budget/guard boundary. No amount of extra signal in the router prompt
+  touches them.
+- And the ReAct loop already carries 120 messages of history, so it rescues most turns the
+  router gets wrong. That is precisely why widening the loop (2026-07-12) did nothing, and
+  why enriching the router further would also do little.
+
+**The next fix is the discard boundaries, not the router.** Specifically: the cite-guard
+that replaces a real answer with 「当前知识库未覆盖该问题」 (it fires on ~4-5% of knowledge_qa
+turns *nondeterministically* — same route, same query, different sampling), and the round /
+token caps that emit 「处理轮次超限」 / 「超过单次上限」 mid-conversation. Each of those throws the
+entire conversation away, which is exactly what a user experiences as amnesia.
+
 ## A4 — the cutover, decided
 
 `DIRECT_DISPATCH_INTENTS=off` is **not** the amnesia fix, and after M4 it is not even coupled
