@@ -83,3 +83,33 @@ func TestSpecTheModelNeverLookedUpIsStillCaught(t *testing.T) {
 		"the fabricated H200 figure was not among the violations %v; widening the harvest must not "+
 			"launder numbers the model never actually looked up", violations)
 }
+
+// SearchKnowledge hands the model searchKnowledgeResultJSON(ledger), but the harvest
+// was fed only ledger.Items[].Summary and .Snippet — a NARROWER view than what the
+// model actually read. Anything the model correctly quoted from the part of the
+// evidence the harvest had not been shown came back as a fabrication.
+//
+// Not hypothetical. Asked 是多少钱, the model read the disk-price table out of chunk
+// w0-billing_rule-gitlab-compshare-docs-bill-7e69b1aa and quoted 0.0005元/GB/小时,
+// 0.011元/GB/日 and 0.3元/GB/月 — verbatim, all three correct — and the validator
+// reported all three as invented prices. Quoting the price list accurately is the
+// single most valuable thing this agent does; calling that a fabrication is the
+// fastest way to get the guard switched off.
+//
+// The invariant: facts == what the model was shown. Not a subset (correct answers get
+// accused), not a superset (invented ones get certified).
+func TestFiguresQuotedFromRetrievedEvidenceAreGrounded(t *testing.T) {
+	f := grounding.NewFacts()
+
+	// Stands in for the payload SearchKnowledge returns — the real chunk's price table.
+	f.AddRaw(`{"items":[{"chunk_id":"w0-billing_rule-7e69b1aa",` +
+		`"text":"| 后付费 | 按量 | 0.0005元/GB/小时 | 预付费 | 包日 | 0.011元/GB/日 | 预付费 | 包月 | 0.3元/GB/月 |"}]}`)
+
+	violations := grounding.Check("云盘按量后付费 0.0005元/GB/小时，包日 0.011元/GB/日，包月 0.3元/GB/月。", f)
+	assert.Empty(t, violations,
+		"prices quoted verbatim from the retrieved chunk were reported as fabrications: %v", violations)
+
+	// And it still bites: a price that appeared in no chunk is still caught.
+	assert.NotEmpty(t, grounding.Check("云盘包月 9.9元/GB/月。", f),
+		"an invented price passed as grounded — the harvest fix has blinded the check")
+}

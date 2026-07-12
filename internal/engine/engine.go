@@ -3751,17 +3751,6 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	if groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn {
 		e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
 	}
-	// Retrieved evidence is grounding evidence. SearchKnowledge does not run
-	// through executeSafeTool, so without this a knowledge answer would have an
-	// empty fact set and every figure it correctly quotes from a chunk ("单机最多
-	// 8 卡") would read as invented. Feed what the agent was actually shown —
-	// summary + snippet, not the whole corpus.
-	if e.turnFacts != nil {
-		for _, it := range ledger.Items {
-			e.turnFacts.AddRaw(it.Summary)
-			e.turnFacts.AddRaw(it.Snippet)
-		}
-	}
 	// Emit the RAW retrieval as a RetrievalTrace so what SearchKnowledge retrieved
 	// (enabled, hit count, chunk_ids, weak_evidence) is OBSERVABLE in traces and eval
 	// — including when the relevance floor dropped it. Without this the rec.retrieval
@@ -3770,7 +3759,29 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits, floorDroppedAll, activityID)
 	empty := retrieved.Empty || len(ledger.Items) == 0
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
-	return searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn)
+	out := searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn)
+
+	// Retrieved evidence is grounding evidence, and SearchKnowledge never runs through
+	// executeSafeTool, so without this a knowledge answer would have an empty fact set
+	// and every figure it correctly quoted from a chunk would read as invented.
+	//
+	// Harvest EXACTLY the string handed to the model — not a hand-picked subset of the
+	// ledger. The first cut fed only Summary+Snippet, which are narrower than what
+	// searchKnowledgeResultJSON actually emits, and the gap produced precisely the
+	// false accusation this validator exists to prevent: asked 是多少钱, the model read
+	// the disk-price table straight out of chunk w0-billing_rule-...-7e69b1aa and quoted
+	// 0.0005元/GB/小时 · 0.011元/GB/日 · 0.3元/GB/月 — all three verbatim and correct — and
+	// the validator called all three fabrications, because the harvest had only been
+	// shown part of the evidence the model was reading from.
+	//
+	// The invariant is the point: the fact bag must contain what the model was shown,
+	// no less (or correct answers get flagged) and no more (or invented ones get
+	// certified). Feeding the returned payload itself is the only version of that which
+	// cannot drift out of sync when the tool's serialization changes.
+	if e.turnFacts != nil {
+		e.turnFacts.AddRaw(out)
+	}
+	return out
 }
 
 // emitSearchKnowledgeRetrievalTrace records the agent-lane SearchKnowledge
