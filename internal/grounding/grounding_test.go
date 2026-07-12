@@ -304,3 +304,29 @@ func TestNoToolsRanMeansNothingToJudge(t *testing.T) {
 		t.Fatalf("empty fact set must not produce violations; got %v", claims(v))
 	}
 }
+
+// addReflected walks typed structs, which means it can reach fields the model was
+// never shown. A field tagged json:"-" is exported Go but is absent from the JSON
+// the tool handed the model. Harvesting it would let the validator certify a number
+// the model invented — the single failure mode a fabrication check cannot have,
+// because a validator that launders claims is worse than no validator at all.
+func TestFieldTheModelWasNeverShownDoesNotGroundAClaim(t *testing.T) {
+	type payload struct {
+		VRAM     int `json:"vram_gb"` // serialized: the model saw this
+		Internal int `json:"-"`       // NOT serialized: the model never saw it
+	}
+
+	f := NewFacts()
+	f.AddRaw(map[string]any{"spec": payload{VRAM: 24, Internal: 999}})
+
+	// The field it WAS shown grounds a claim.
+	if v := Check("显存 24 GB", f); len(v) != 0 {
+		t.Fatalf("a serialized field failed to ground a correct claim: %v", v)
+	}
+
+	// The field it was NOT shown must not.
+	if v := Check("算力 999 TFLOPS", f); len(v) == 0 {
+		t.Fatal("a json:\"-\" field grounded a claim the model could never have read; " +
+			"the validator is laundering fabrications")
+	}
+}

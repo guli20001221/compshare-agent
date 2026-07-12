@@ -164,8 +164,18 @@ func (f *Facts) addReflected(rv reflect.Value, depth int) {
 	case reflect.Struct:
 		t := rv.Type()
 		for i := 0; i < rv.NumField(); i++ {
-			if t.Field(i).PkgPath != "" {
-				continue // unexported: not part of the payload the model was shown
+			ft := t.Field(i)
+			if ft.PkgPath != "" {
+				continue // unexported: never serialized, so never shown to the model
+			}
+			// json:"-" is exported Go but absent from the payload the model saw. A
+			// fact the model was NOT shown must never enter the bag: harvesting it
+			// would let the validator certify an invented number as "grounded" —
+			// the one failure a fabrication check cannot be allowed to have. No
+			// struct reaching AddRaw carries such a field today; this is here so the
+			// next one cannot quietly launder a claim.
+			if name, _, _ := strings.Cut(ft.Tag.Get("json"), ","); name == "-" {
+				continue
 			}
 			f.addReflected(rv.Field(i), depth+1)
 		}
