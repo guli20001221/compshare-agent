@@ -249,11 +249,64 @@ conversation-state signal". **Do not do it.** The data says it would be wasted w
   router gets wrong. That is precisely why widening the loop (2026-07-12) did nothing, and
   why enriching the router further would also do little.
 
-**The next fix is the discard boundaries, not the router.** Specifically: the cite-guard
-that replaces a real answer with 「当前知识库未覆盖该问题」 (it fires on ~4-5% of knowledge_qa
-turns *nondeterministically* — same route, same query, different sampling), and the round /
-token caps that emit 「处理轮次超限」 / 「超过单次上限」 mid-conversation. Each of those throws the
-entire conversation away, which is exactly what a user experiences as amnesia.
+**The next fix is the discard boundaries, not the router.** They are enumerated below.
+
+---
+
+## THE NEXT FIX — the discard boundaries (scoped, evidenced, not yet done)
+
+### Guard boundary — code that DELETES a real answer and replaces it with a canned string
+
+Four sites all emit the identical 「当前知识库未覆盖该问题,我无法回答。」 (`cited_guard.go:11`), and
+they are **not the same bug**:
+
+| | guard | site | trigger |
+|---|---|---|---|
+| **G1** | **cited-contract gate** | `engine.go:1651-1661` | the answer contains no `[n]` marker |
+| **G2** | **raw-leak guard** | `engine.go:3969-3972` (`guardSearchKnowledgeSynthesis`) | synthesis quoted the evidence too literally |
+| G3 | domain-match guard | `engine.go:3973+` | **default OFF** — never fires |
+| G4 | terminal-RAG no-evidence | `engine.go:2952-2961` | retrieval genuinely returned zero hits |
+
+**Only G4 is honest.** So which one actually fires on real traffic?
+
+```
+BASELINE  24 KB refusals:  21 agent-loop guard (G1/G2) + 3 round-0 gate (G1)   G4: 0
+FIXED-v2  26 KB refusals:  26 agent-loop guard (G1/G2)                          G4: 0
+```
+
+**ZERO.** In every observed case the agent ran the tools, **retrieved the evidence, and wrote
+an answer** — and we deleted it. The message 「知识库未覆盖该问题」 ("the knowledge base does not
+cover this") is **false 100% of the time it is shown**. The KB *did* cover it.
+
+And G1's check is (`cited_guard.go:47`):
+
+```go
+var numberedCitationRE = regexp.MustCompile(`\[[1-9][0-9]*\]`)
+```
+
+**A regex for a square bracket.** A correct, fully-grounded answer that merely failed to type
+`[1]` is destroyed. flash omits the bracket nondeterministically — **this is exactly the
+~4-5% coin flip measured above** (same route, same query, different sampling; see the A/A
+noise floor).
+
+**The defect is the failure ACTION, not the check.** A missing bracket is a *formatting*
+violation, and the correct response to bad formatting is to *fix the formatting* — not to
+destroy the content and then lie to the user about why. The evidence ledger is already in
+hand (`e.searchKnowledgeHitsThisTurn`); attach the citations server-side instead of demanding
+a nondeterministic model type them. The existing single cite-retry (`engine.go:1691-1696`)
+does not fix this — it just re-asks the same model to please remember a bracket.
+
+### Budget boundary — the loop runs out mid-conversation
+
+| cap | value | message |
+|---|---|---|
+| `maxReActRounds` | **10** (`engine.go:43`) | 「抱歉，处理轮次超限，请重新描述您的需求。」 (`engine.go:1834`) |
+| `max_tokens_per_turn` | **200000** (config) | 「本次问题消耗的算力已超过单次上限，请简化问题或拆分提问。」 (`engine.go:102`) |
+| `maxReadExpensiveCallsPerTurn` | 20 (`engine.go:71`) | tool budget |
+
+Each of these throws the **entire conversation** away, which is exactly what a user
+experiences as amnesia — and they fire nondeterministically, which is why no router work
+moves them.
 
 ## A4 — the cutover, decided
 
