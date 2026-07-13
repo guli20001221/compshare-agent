@@ -209,6 +209,50 @@ func TestGPUChain_Running_GPUIdleDoesNotClaimDriverFailure(t *testing.T) {
 	assert.Empty(t, result.StoppedAt)
 }
 
+// TestGPUChain_Running_GPUWorking_PodMonitor: a cpod-* instance's monitor lands
+// in Data.PodList (flat Metrics.Gpu series), NOT Data.List. Before the pod-leg
+// fix the GPU check read only List, so every pod hit the "监控未返回 GPU 数据"
+// branch even with real GPU activity.
+func TestGPUChain_Running_GPUWorking_PodMonitor(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{
+					"UHostId": "cpod-abc",
+					"State":   "Running",
+					"GPU":     float64(1),
+					"GpuType": "4090",
+				},
+			},
+		},
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{
+				"List": []any{},
+				"PodList": []any{
+					map[string]any{
+						"UHostId": "cpod-abc",
+						"Metrics": map[string]any{
+							"Gpu": []any{
+								map[string]any{"Timestamp": float64(200), "Value": float64(62.0)},
+							},
+						},
+					},
+				},
+			},
+		},
+	}}
+	onStep, _ := collectEvents()
+
+	chain := GPUNotDetectedChain()
+	eng := NewEngine(executor, onStep)
+	result, err := eng.Run(context.Background(), chain, map[string]any{"UHostId": "cpod-abc"})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Contains(t, result.Conclusion, "GPU 硬件工作正常")
+	assert.Equal(t, "检查 GPU 监控数据", result.StoppedAt)
+}
+
 func TestGPUChain_InstallFail(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {

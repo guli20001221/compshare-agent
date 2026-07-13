@@ -135,33 +135,45 @@ func stepCheckGPUMonitor() Step {
 	}
 }
 
-// extractGPUMetrics gets the latest GPU utilization and GPU memory usage from monitor data.
+// extractGPUMetrics gets the latest GPU utilization and GPU memory usage from
+// monitor data.
+//
+// Same dual-leg shape as extractLatestMetrics in ssh_failure.go: uhost-* lands in
+// Data.List (nested cloudwatch Metrics[] keyed by MetricKey), cpod-* lands in
+// Data.PodList (flat Metrics.Gpu series). The pod leg only exposes GPU
+// utilization, not a separate GPU-memory series, so gpuMem/gpuMemOK stay at
+// their zero value on that leg.
 func extractGPUMetrics(result map[string]any) (gpuUtil, gpuMem float64, gpuUtilOK, gpuMemOK bool) {
 	data, _ := result["Data"].(map[string]any)
 	if data == nil {
 		return 0, 0, false, false
 	}
-	list, _ := data["List"].([]any)
-	if len(list) == 0 {
-		return 0, 0, false, false
-	}
-	instance, _ := list[0].(map[string]any)
-	metrics, _ := instance["Metrics"].([]any)
 
-	for _, m := range metrics {
-		metric, _ := m.(map[string]any)
-		key, _ := metric["MetricKey"].(string)
-		val, ok := latestValue(metric)
-		if !ok {
-			continue
+	if list, _ := data["List"].([]any); len(list) > 0 {
+		instance, _ := list[0].(map[string]any)
+		metrics, _ := instance["Metrics"].([]any)
+		for _, m := range metrics {
+			metric, _ := m.(map[string]any)
+			key, _ := metric["MetricKey"].(string)
+			val, ok := latestValue(metric)
+			if !ok {
+				continue
+			}
+			switch key {
+			case "cloudwatch_gpu_util":
+				gpuUtil, gpuUtilOK = val, true
+			case "cloudwatch_gpu_memory_usage":
+				gpuMem, gpuMemOK = val, true
+			}
 		}
-		switch key {
-		case "cloudwatch_gpu_util":
-			gpuUtil = val
-			gpuUtilOK = true
-		case "cloudwatch_gpu_memory_usage":
-			gpuMem = val
-			gpuMemOK = true
+		return gpuUtil, gpuMem, gpuUtilOK, gpuMemOK
+	}
+
+	if podList, _ := data["PodList"].([]any); len(podList) > 0 {
+		pod, _ := podList[0].(map[string]any)
+		pm, _ := pod["Metrics"].(map[string]any)
+		if v, ok := latestPointByTimestamp(pm["Gpu"]); ok {
+			gpuUtil, gpuUtilOK = v, true
 		}
 	}
 	return gpuUtil, gpuMem, gpuUtilOK, gpuMemOK

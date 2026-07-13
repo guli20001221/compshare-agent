@@ -128,10 +128,9 @@ func TestStopInstance_ConfirmHasFeeWarning(t *testing.T) {
 	warning, ok := capturedArgs["warning"].(string)
 	assert.True(t, ok)
 	assert.NotEmpty(t, warning)
-	assert.Contains(t, warning, "系统盘 100GB 免费")
-	assert.Contains(t, warning, "挂载数据盘")
-	assert.Contains(t, warning, "系统盘扩容超出 100GB")
-	assert.NotContains(t, warning, "磁盘费用仍会产生，如需彻底停止计费")
+	assert.Contains(t, warning, "取决于盘型和区域")
+	assert.NotContains(t, warning, "100GB",
+		"the free allowance varies by disk type and region — promising a fixed 100GB is a billing claim we cannot make")
 }
 
 func TestStopInstance_AlreadyStopped(t *testing.T) {
@@ -303,7 +302,11 @@ func TestStartInstance_RunningRejected(t *testing.T) {
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 }
 
-func TestStopInstance_SpotInstanceSendsForce(t *testing.T) {
+// Upstream's StopCompShareInstance request has no Force field and its handler has
+// no branch for one, so the old "Spot -> Force:true" was dead code dressed up as a
+// contract. Sending it told the reader we knew something about spot stops that we
+// did not.
+func TestStopInstance_SpotInstanceOmitsForce(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{
@@ -332,7 +335,8 @@ func TestStopInstance_SpotInstanceSendsForce(t *testing.T) {
 	assert.True(t, result.Success)
 	stopCall := executor.calls[2]
 	assert.Equal(t, "StopCompShareInstance", stopCall.action)
-	assert.Equal(t, true, stopCall.args["Force"], "Spot instance stop must include Force=true")
+	_, hasForce := stopCall.args["Force"]
+	assert.False(t, hasForce, "upstream StopCompShareInstance has no Force field; it must not be sent")
 }
 
 func TestStopInstance_NonSpotOmitsForce(t *testing.T) {

@@ -46,11 +46,12 @@ func stepQueryForReset() Step {
 			instanceType := extractInstanceType(result)
 
 			if instanceType == "Container" {
-				// Container supports online reset: Running or Stopped
-				if state == "Running" || state == "Stopped" {
+				// Live-verified 2026-07-10: Pod (Container) reset only succeeds
+				// while Running; Stopped returns upstream RetCode 8433.
+				if state == "Running" {
 					return true, ""
 				}
-				return false, "容器实例当前状态为「" + state + "」，仅 Running 或 Stopped 状态可重置密码。"
+				return false, "容器实例需要先开机才能重置密码。请先执行开机操作。"
 			}
 
 			// Non-container (VM): only Stopped
