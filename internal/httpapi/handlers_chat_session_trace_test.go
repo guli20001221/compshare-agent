@@ -245,3 +245,125 @@ func TestChatTrace_SessionBlockCarriesNoRawIdentifiers(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(raw), "synthetic-redaction-session")
 }
+
+// Review's finding, and it was right. Two requests can hit the same session at once: both
+// miss the pool, both build an engine, and one of them discards its build and runs on the
+// winner's. That turn IS cold — the winner's engine was itself just rebuilt, so it carries no
+// tool results either — but it is cold for a DIFFERENT REASON than an eviction.
+//
+// Left as one number, a burst of concurrent traffic reads as a capacity problem, and the
+// concurrency bug it actually is would be "fixed" by raising the pool size. Attribution is
+// the entire purpose of this block; collapsing two causes into one label is precisely the
+// failure it exists to prevent.
+func TestChatTrace_ConcurrentBuildRaceIsNotMistakenForAnEviction(t *testing.T) {
+	sessions := &mockSessions{byID: map[string]store.Session{
+		"synthetic-raced-session": {
+			ID:                "synthetic-raced-session",
+			TopOrganizationID: 1,
+			OrganizationID:    2,
+			MessageCount:      4,
+			ContextVersion:    1,
+			CreatedAt:         time.Now(),
+			UpdatedAt:         time.Now(),
+		},
+	}}
+	// The loser of a build race: it missed the pool (poolHit=false) and threw its engine away.
+	pool := fakePool{eng: newSessionTraceEngine(t), poolHit: false, raced: true, rehydrated: 4}
+	h, traceWriter := newSessionTraceHandlers(t, sessions, pool)
+
+	_, apiErr := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"synthetic-raced-session","Message":"hi","request_uuid":"req-raced","top_organization_id":1,"organization_id":2}`)
+	require.Nil(t, apiErr)
+
+	sess := onlySessionTrace(t, traceWriter)
+	assert.True(t, sess.BuildRaced,
+		"a turn that lost a concurrent build race must say so — otherwise the concurrency bug is filed as a cache-eviction problem and 'fixed' by growing the pool")
+	assert.Equal(t, observability.RehydrateSourceCold, sess.RehydrateSource,
+		"it is still genuinely cold: the winner's engine was rebuilt from the DB too, so this turn has no tool results either")
+}
+
+// An eviction is NOT a race, and this is the assertion that keeps BuildRaced meaningful: a
+// flag that were set on every cold turn would carry no information at all.
+func TestChatTrace_AnOrdinaryColdRebuildIsNotRaced(t *testing.T) {
+	sessions := &mockSessions{byID: map[string]store.Session{
+		"synthetic-evicted-2": {
+			ID: "synthetic-evicted-2", TopOrganizationID: 1, OrganizationID: 2,
+			MessageCount: 4, ContextVersion: 1,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		},
+	}}
+	h, traceWriter := newSessionTraceHandlers(t, sessions,
+		fakePool{eng: newSessionTraceEngine(t), poolHit: false, raced: false, rehydrated: 4})
+
+	_, apiErr := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"synthetic-evicted-2","Message":"hi","request_uuid":"req-evict","top_organization_id":1,"organization_id":2}`)
+	require.Nil(t, apiErr)
+
+	sess := onlySessionTrace(t, traceWriter)
+	assert.Equal(t, observability.RehydrateSourceCold, sess.RehydrateSource)
+	assert.False(t, sess.BuildRaced, "an eviction rebuild must not be reported as a race")
+}
+
+// Review's other finding. A session whose persisted context will not parse runs the turn ANYWAY:
+// the chat path logs a warning, never calls SetSessionState, and proceeds — so the agent
+// silently loses its selected instance, its last intent and any pending workflow frame, while
+// every trace field looks exactly like a session that simply never had state.
+//
+// A turn that LOST its context and a turn that never had one are not the same event, and they
+// need opposite fixes. Until now the trace could not tell them apart.
+func TestChatTrace_ContextThatFailedToLoadIsRecordedWithItsReason(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		context string
+		want    string
+	}{
+		{
+			name:    "malformed json is data WE corrupted",
+			context: `{"agent_session_state": THIS IS NOT JSON`,
+			want:    observability.ContextLoadMalformed,
+		},
+		{
+			// A newer binary wrote this row. The older one must leave it alone — and must SAY
+			// that it did, or a forward-rollout looks identical to data corruption.
+			name:    "unknown schema is a forward-rollout condition",
+			context: `{"agent_session_state":{"schema_version":"v999-from-the-future"}}`,
+			want:    observability.ContextLoadUnknownSchema,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sessions := &mockSessions{byID: map[string]store.Session{
+				"synthetic-broken-ctx": {
+					ID: "synthetic-broken-ctx", TopOrganizationID: 1, OrganizationID: 2,
+					Context: json.RawMessage(tc.context), MessageCount: 4, ContextVersion: 1,
+					CreatedAt: time.Now(), UpdatedAt: time.Now(),
+				},
+			}}
+			h, traceWriter := newSessionTraceHandlers(t, sessions,
+				fakePool{eng: newSessionTraceEngine(t), poolHit: true})
+
+			_, apiErr := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"synthetic-broken-ctx","Message":"hi","request_uuid":"req-broken","top_organization_id":1,"organization_id":2}`)
+			require.Nil(t, apiErr, "the turn still RUNS — that is exactly why it has to be recorded")
+
+			sess := onlySessionTrace(t, traceWriter)
+			assert.Equal(t, tc.want, sess.ContextLoadFailure,
+				"the turn ran with NO session state; a trace that stays silent makes that indistinguishable from a session that never had any")
+		})
+	}
+}
+
+// And the flag must stay silent when nothing failed — otherwise it is noise, not a signal.
+func TestChatTrace_HealthyContextRecordsNoLoadFailure(t *testing.T) {
+	sessions := &mockSessions{byID: map[string]store.Session{
+		"synthetic-ok-ctx": {
+			ID: "synthetic-ok-ctx", TopOrganizationID: 1, OrganizationID: 2,
+			MessageCount: 4, ContextVersion: 1,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		},
+	}}
+	h, traceWriter := newSessionTraceHandlers(t, sessions,
+		fakePool{eng: newSessionTraceEngine(t), poolHit: true})
+
+	_, apiErr := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"synthetic-ok-ctx","Message":"hi","request_uuid":"req-ok","top_organization_id":1,"organization_id":2}`)
+	require.Nil(t, apiErr)
+
+	assert.Empty(t, onlySessionTrace(t, traceWriter).ContextLoadFailure,
+		"a session whose context loaded cleanly must record no failure")
+}

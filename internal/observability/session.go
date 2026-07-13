@@ -61,6 +61,28 @@ type SessionTrace struct {
 	// RehydratedMessageCount is what the rebuild actually restored.
 	RehydrateSource        string `json:"rehydrate_source,omitempty"`
 	RehydratedMessageCount int    `json:"rehydrated_message_count,omitempty"`
+	// BuildRaced records that this turn LOST a concurrent build race: it missed the pool,
+	// built an engine, and then discarded it because another request for the same session had
+	// inserted one first — so the turn ran on the WINNER's freshly-built engine.
+	//
+	// RehydrateSource still says "cold" for that turn, and correctly: the engine it ran on was
+	// rebuilt from the DB and carries no tool results. But "cold because the pool evicted us"
+	// and "cold because two requests hit the same session at once" are DIFFERENT causes with
+	// different fixes, and without this flag they are one number. A burst of concurrent traffic
+	// would read as a capacity problem. Recording the race is what keeps the cold count from
+	// silently absorbing it.
+	BuildRaced bool `json:"build_raced,omitempty"`
+
+	// ContextLoadFailure records that the session's persisted context could NOT be loaded, and
+	// why (ContextLoad* consts). Empty when it loaded.
+	//
+	// This is a context-loss event in its own right and it was invisible: on a parse failure
+	// the chat path logs a warning, never calls SetSessionState, and runs the turn anyway — so
+	// the agent silently loses its selected instance, its last intent and any pending workflow
+	// frame, and every downstream trace field looks like a session that simply had no state.
+	// A turn that lost its state and a turn that never had any are not the same event, and the
+	// whole point of this block is that they stop being one.
+	ContextLoadFailure string `json:"context_load_failure,omitempty"`
 
 	// ContextVersionIn is the SessionState version this turn READ, ContextVersionOut
 	// the version it WROTE. A turn whose In is older than the previous turn's Out
@@ -102,6 +124,15 @@ const (
 	RehydrateSourceNew  = "new"  // first turn of a brand-new session; nothing to restore
 )
 
+// ContextLoad* are the SessionTrace.ContextLoadFailure values — why the session's persisted
+// state could not be loaded for this turn. They are distinct because they need opposite fixes:
+// malformed is data we corrupted, unknown_schema is a forward-rollout condition where an older
+// binary must leave a newer binary's row alone.
+const (
+	ContextLoadMalformed     = "malformed"      // sessions.context did not parse
+	ContextLoadUnknownSchema = "unknown_schema" // parsed, but schema_version is from a newer binary
+)
+
 func traceSessionObserved(t SessionTrace) bool {
 	return t.RequestedSessionIDHash != "" ||
 		t.SessionIDHash != "" ||
@@ -114,5 +145,7 @@ func traceSessionObserved(t SessionTrace) bool {
 		t.ContextVersionIn > 0 ||
 		t.ContextVersionOut > 0 ||
 		t.CASConflict ||
-		t.StateSaveFailed
+		t.StateSaveFailed ||
+		t.BuildRaced ||
+		t.ContextLoadFailure != ""
 }

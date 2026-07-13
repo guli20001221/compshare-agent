@@ -141,7 +141,7 @@ func NewWithDeps(deps *engine.SharedDeps, ms store.MessageStore, opts Options) *
 // Callers in the HTTP path MUST use Lease instead of Get to prevent concurrent
 // requests from interleaving ReAct history in the same engine.
 func (p *Pool) Lease(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, func(), error) {
-	eng, release, _, _, err := p.LeaseWithTrace(ctx, owner, sessionID)
+	eng, release, _, _, _, err := p.LeaseWithTrace(ctx, owner, sessionID)
 	return eng, release, err
 }
 
@@ -162,17 +162,23 @@ func (p *Pool) Lease(ctx context.Context, owner store.Owner, sessionID string) (
 // the whole reason this returns anything (see internal/observability/session.go).
 //
 // Observability only: it takes the same lock and does the same work as Lease.
-func (p *Pool) LeaseWithTrace(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, func(), bool, int, error) {
-	e, cacheHit, err := p.getOrCreate(ctx, owner, sessionID)
+// raced reports that this caller MISSED the pool, built an engine, and then threw it away
+// because a concurrent request for the same session had already inserted one. The turn ran on
+// the winner's engine — itself just built — so cacheHit is correctly false. But "cold because
+// the pool evicted us" and "cold because two requests for one session arrived at once" are
+// different causes needing opposite fixes, and without this they are a single number: a burst
+// of concurrent traffic would read as a capacity problem.
+func (p *Pool) LeaseWithTrace(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, func(), bool, bool, int, error) {
+	e, cacheHit, raced, err := p.getOrCreate(ctx, owner, sessionID)
 	if err != nil {
-		return nil, nil, false, 0, err
+		return nil, nil, false, false, 0, err
 	}
 	rehydrated := 0
 	if !cacheHit {
 		rehydrated = e.rehydratedMessages
 	}
 	e.mu.Lock()
-	return e.eng, func() { e.mu.Unlock() }, cacheHit, rehydrated, nil
+	return e.eng, func() { e.mu.Unlock() }, cacheHit, raced, rehydrated, nil
 }
 
 // Get returns the cached *engine.Engine for (owner, sessionID), building a fresh
@@ -182,7 +188,7 @@ func (p *Pool) LeaseWithTrace(ctx context.Context, owner store.Owner, sessionID 
 // access. Get is retained for callers that do not require serialization (e.g.
 // read-only inspection, tests).
 func (p *Pool) Get(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
-	e, _, err := p.getOrCreate(ctx, owner, sessionID)
+	e, _, _, err := p.getOrCreate(ctx, owner, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +205,7 @@ func (p *Pool) Get(ctx context.Context, owner store.Owner, sessionID string) (*e
 // rebuilt from the DB (false). The lost-race branch returns false: the caller's
 // turn still ran on a freshly rebuilt engine, just the winner's rather than its
 // own — attributing that as a pool hit would hide a cold rebuild.
-func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID string) (*entry, bool, error) {
+func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID string) (*entry, bool, bool, error) {
 	k := entryKey{Owner: owner, SessionID: sessionID}
 
 	// Fast path: cache hit.
@@ -209,14 +215,14 @@ func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID str
 		e.lastTouched = time.Now()
 		p.lruList.MoveToFront(el)
 		p.mu.Unlock()
-		return e, true, nil
+		return e, true, false, nil
 	}
 	p.mu.Unlock()
 
 	// Slow path: build a new engine outside the lock.
 	eng, rehydrated, err := p.buildEngine(ctx, owner, sessionID)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 
 	// Re-acquire lock and insert (checking for a concurrent insert).
@@ -224,11 +230,17 @@ func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID str
 	defer p.mu.Unlock()
 
 	if el, ok := p.items[k]; ok {
-		// Another goroutine already inserted while we were building; use theirs.
+		// Another goroutine inserted while we were building: use theirs, and DISCARD the engine
+		// we just built. CacheHit stays FALSE and that is correct — the winner's engine was
+		// itself just rebuilt from the DB, so this turn has no tool results either. But Raced
+		// records WHY it is cold. "Cold because the pool evicted us" and "cold because two
+		// requests for one session arrived at once" need opposite fixes, and without this flag
+		// they are a single number: a burst of concurrent traffic would read as a capacity
+		// problem, which is exactly the misattribution this whole block exists to prevent.
 		e := el.Value.(*entry)
 		e.lastTouched = time.Now()
 		p.lruList.MoveToFront(el)
-		return e, false, nil
+		return e, false, true, nil
 	}
 
 	// Evict LRU if at capacity.
@@ -244,7 +256,8 @@ func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID str
 	}
 	el := p.lruList.PushFront(e)
 	p.items[k] = el
-	return e, false, nil
+	// We built it and we won the insert: a genuine cold rebuild, not a race.
+	return e, false, false, nil
 }
 
 // Close stops the background gc goroutine and waits for it to exit.

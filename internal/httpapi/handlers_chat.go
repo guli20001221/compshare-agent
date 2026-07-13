@@ -227,7 +227,7 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 
 	// LeaseWithTrace == Lease plus the pool-hit / rebuilt-message-count facts. Same
 	// lock, same work; the two extra values are recorded, never acted on.
-	agent, release, poolHit, rehydratedMessages, err := h.pool.LeaseWithTrace(leaseCtx, base.Owner, sessionID)
+	agent, release, poolHit, buildRaced, rehydratedMessages, err := h.pool.LeaseWithTrace(leaseCtx, base.Owner, sessionID)
 	if err != nil {
 		return nil, AsAPIError(err)
 	}
@@ -250,6 +250,12 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	agent.ClearSessionState()
 	var clientCtxPreserve json.RawMessage
 	sessionStatePersistable := false
+	// contextLoadFailure is a CONTEXT-LOSS EVENT, and until now it was invisible: on a parse
+	// failure this path logged a warning, never called SetSessionState, and ran the turn
+	// anyway — so the agent silently lost its selected instance, its last intent and any
+	// pending workflow frame, while every trace field looked like a session that simply had no
+	// state. A turn that LOST its state and a turn that never had any are not the same event.
+	contextLoadFailure := ""
 	pc, parseErr := engine.ParsePersistedContext(sess.Context)
 	switch {
 	case parseErr == nil:
@@ -257,9 +263,11 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		agent.SetSessionState(pc.AgentSessionState, sess.ContextVersion)
 		sessionStatePersistable = true
 	case errors.Is(parseErr, engine.ErrUnknownSessionStateSchema):
+		contextLoadFailure = observability.ContextLoadUnknownSchema
 		log.Printf("warning: session %s has unknown SessionState schema_version (will skip persist, leaving row untouched for newer binary): %v",
 			sessionID, parseErr)
 	default:
+		contextLoadFailure = observability.ContextLoadMalformed
 		log.Printf("warning: session %s context parse failed (will skip persist): %v",
 			sessionID, parseErr)
 	}
@@ -278,7 +286,9 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 			turnIndex:          turnIndex,
 			maxTurns:           maxTurns,
 			poolHit:            poolHit,
+			buildRaced:         buildRaced,
 			rehydratedMessages: rehydratedMessages,
+			contextLoadFailure: contextLoadFailure,
 		}))
 		attachChatTraceObservers(agent, traceRecorder)
 	}
@@ -376,7 +386,9 @@ type sessionTraceInputs struct {
 	turnIndex          int
 	maxTurns           int
 	poolHit            bool
+	buildRaced         bool
 	rehydratedMessages int
+	contextLoadFailure string
 }
 
 // sessionTraceFor projects the pre-turn half of the session block: continuity,
@@ -400,6 +412,8 @@ func sessionTraceFor(in sessionTraceInputs) observability.SessionTrace {
 		MaxSessionTurns:        in.maxTurns,
 		RehydrateSource:        rehydrateSourceFor(in.poolHit, in.session.MessageCount),
 		RehydratedMessageCount: in.rehydratedMessages,
+		BuildRaced:             in.buildRaced,
+		ContextLoadFailure:     in.contextLoadFailure,
 		ContextVersionIn:       in.session.ContextVersion,
 	}
 	return trace

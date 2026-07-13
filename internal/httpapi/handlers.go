@@ -26,7 +26,11 @@ type EnginePool interface {
 	// text, never tool results or retrieved evidence, so the two are not
 	// interchangeable and the turn's trace must say which one it got
 	// (SessionTrace.RehydrateSource; see internal/observability/session.go).
-	LeaseWithTrace(ctx context.Context, owner store.Owner, sessionID string) (eng *engine.Engine, release func(), cacheHit bool, rehydrated int, err error)
+	// raced — this caller lost a concurrent build race and ran on the winner's freshly-built
+	// engine. cacheHit is correctly false there (the engine really is cold), but "cold because
+	// evicted" and "cold because two requests raced" need opposite fixes, so they must not
+	// collapse into one number.
+	LeaseWithTrace(ctx context.Context, owner store.Owner, sessionID string) (eng *engine.Engine, release func(), cacheHit bool, raced bool, rehydrated int, err error)
 
 	// Get returns the engine without acquiring the per-entry serialization lock.
 	// Retained for backward compatibility; prefer Lease in the HTTP path.
