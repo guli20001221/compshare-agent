@@ -32,6 +32,29 @@ VALUES ($1, $2, $3, $4, $5)
 	return s.GetByID(ctx, owner, id)
 }
 
+// CreateWithID inserts a session under a CALLER-CHOSEN id and returns the row that ends up
+// with that id — the one this call inserted, or the one a concurrent caller inserted first.
+//
+// This exists so a caller who can derive a session's id deterministically gets at-most-once
+// creation for free, from the primary key, with no transaction and no extra column: the
+// INSERT is a no-op on conflict and the subsequent read returns the winner. Two racing
+// callers therefore converge on ONE session instead of forking into two, and a caller that
+// died after inserting leaves a row its own retry will find and reuse rather than an orphan.
+//
+// The read is owner-scoped, so an id that collides with another tenant's session is a
+// not-found error here, never a hand-over of their row.
+func (s *MySQLSessionStore) CreateWithID(ctx context.Context, owner Owner, id string, title *string, ctxJSON json.RawMessage) (Session, error) {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO sessions (id, top_organization_id, organization_id, title, context)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (id) DO NOTHING
+`, id, owner.TopOrganizationID, owner.OrganizationID, title, nullableJSON(ctxJSON))
+	if err != nil {
+		return Session{}, fmt.Errorf("create session with id: %w", err)
+	}
+	return s.GetByID(ctx, owner, id)
+}
+
 // GetByID fetches a session by ID filtered by owner and deleted_at IS NULL.
 func (s *MySQLSessionStore) GetByID(ctx context.Context, owner Owner, sessionID string) (Session, error) {
 	var out Session

@@ -10,6 +10,7 @@ import (
 
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/store"
+	"github.com/google/uuid"
 )
 
 // rollCappedSession continues a conversation that has hit the per-session turn cap, in a
@@ -74,16 +75,40 @@ func (h *Handlers) rollCappedSession(ctx context.Context, owner store.Owner, cap
 		return store.Session{}, fmt.Errorf("marshal successor context: %w", err)
 	}
 
-	// The handoff is PERSISTED with the successor, not merely seeded into its engine: the pool
-	// evicts at capacity / 30 min idle, and a handoff that lived only in memory would vanish on
-	// the first cold rebuild — recreating, deliberately, the bug this fixes.
-	successor, err := h.sessions.Create(ctx, owner, capped.Title, raw)
+	// AT MOST ONE successor per capped session, ever — enforced by the primary key.
+	//
+	// A capped session does not get one rollover attempt, it gets one PER TURN that arrives
+	// while it is capped: two tabs, a double-submit, a retry after a timeout. With a random id
+	// each attempt minted its own successor, and the conversation FORKED — half the user's
+	// context in one session, half in another, and the front end adopting whichever meta frame
+	// landed last. The same hole orphaned sessions: create the successor, fail on any later
+	// step, and the row exists but the client never hears of it, so the retry forks again.
+	//
+	// Deriving the id from the capped session's id closes both at once. Racing callers compute
+	// the SAME id, the insert is a no-op for the loser, and it reads back the winner's row —
+	// which already carries this handoff, because the handoff is a function of the same
+	// predecessor. A retry after a mid-flight failure finds its own earlier row and reuses it.
+	// No transaction, no extra column, no cleanup job: an at-most-once creation falls straight
+	// out of the constraint the table already has.
+	successor, err := h.sessions.CreateWithID(ctx, owner, successorSessionID(capped.ID), capped.Title, raw)
 	if err != nil {
 		return store.Session{}, fmt.Errorf("create successor session: %w", err)
 	}
 	log.Printf("session %s hit the turn cap; continuing in %s with %d carried messages",
 		capped.ID, successor.ID, len(tail))
 	return successor, nil
+}
+
+// handoffNamespace anchors the successor-id derivation. It is an arbitrary but FIXED UUID:
+// changing it would re-point every capped session at a fresh successor and re-fork exactly the
+// conversations this is here to keep whole, so it must never be edited.
+var handoffNamespace = uuid.MustParse("6f1d0d1a-6a5f-5a3e-9c1b-4e2a7c9d5b80")
+
+// successorSessionID is the id of the ONE session that continues a capped one. It is a pure
+// function of the capped session's id, which is what makes "at most one successor" a property
+// of the primary key rather than something the application has to coordinate.
+func successorSessionID(cappedID string) string {
+	return uuid.NewSHA1(handoffNamespace, []byte(cappedID)).String()
 }
 
 // handoffTail returns the last n user/assistant messages of a capped session, oldest first.

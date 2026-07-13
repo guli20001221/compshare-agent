@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,7 +25,16 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockSessions struct {
+	// mu guards byID and the counters. The real store is a database; the turn-cap rollover
+	// test races two goroutines through it, so the mock has to be at least as safe as the
+	// thing it stands in for or the race detector would be reporting the FIXTURE's bug.
+	mu   sync.Mutex
 	byID map[string]store.Session
+	// createCalls counts EVERY session-creation attempt, by either entry point — including
+	// the CreateWithID calls that hit the conflict and returned the existing row. A test can
+	// therefore assert "both racers really did try to create" and "only one session exists"
+	// at the same time, and the first assertion keeps holding when the fix is mutated away.
+	createCalls int
 	// updateContextCalls counts every UpdateContext invocation regardless
 	// of outcome. Tests use this to assert "no persistence on parse
 	// failure" and "exactly one persist on happy path".
@@ -46,9 +57,23 @@ type mockSessions struct {
 	lastListLimit int
 }
 
+// Create mirrors MySQLSessionStore.Create, INCLUDING the part that matters: the real store
+// mints uuid.NewString(), so two Creates produce two DIFFERENT sessions.
+//
+// This mock used to return the constant id "sess-new". That made a whole class of bug
+// invisible: any code path that called Create twice forked the conversation in production and
+// looked perfectly idempotent here, because the second row simply overwrote the first in the
+// map. A fixture that cannot express the failure cannot gate against it — the turn-cap
+// concurrency test passed against the BUG until this was fixed.
 func (m *mockSessions) Create(_ context.Context, owner store.Owner, title *string, ctxJSON json.RawMessage) (store.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.byID == nil {
+		m.byID = map[string]store.Session{}
+	}
+	m.createCalls++
 	s := store.Session{
-		ID:                "sess-new",
+		ID:                fmt.Sprintf("sess-new-%d", m.createCalls),
 		TopOrganizationID: owner.TopOrganizationID,
 		OrganizationID:    owner.OrganizationID,
 		Title:             title,
@@ -56,14 +81,47 @@ func (m *mockSessions) Create(_ context.Context, owner store.Owner, title *strin
 		CreatedAt:         time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC),
 		UpdatedAt:         time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC),
 	}
-	if m.byID == nil {
-		m.byID = map[string]store.Session{}
-	}
 	m.byID[s.ID] = s
 	return s, nil
 }
 
+// CreateWithID mirrors MySQLSessionStore.CreateWithID: INSERT ... ON CONFLICT (id) DO NOTHING
+// followed by an owner-scoped read-back.
+//
+// Modelling the NO-OP on conflict is the entire point of this mock method. A version that
+// simply overwrote m.byID[id] would let the at-most-one-successor test pass while the real
+// store forked the conversation — the mock would be asserting its own behavior, not the
+// store's. The mutex stands in for the atomicity the DB gives the statement for free, so the
+// concurrency test races real goroutines instead of a rigged sequence.
+func (m *mockSessions) CreateWithID(_ context.Context, owner store.Owner, id string, title *string, ctxJSON json.RawMessage) (store.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.byID == nil {
+		m.byID = map[string]store.Session{}
+	}
+	m.createCalls++
+	if existing, ok := m.byID[id]; ok {
+		if existing.TopOrganizationID != owner.TopOrganizationID || existing.OrganizationID != owner.OrganizationID {
+			return store.Session{}, sql.ErrNoRows // another tenant holds the id: not-found, never a hand-over
+		}
+		return existing, nil
+	}
+	s := store.Session{
+		ID:                id,
+		TopOrganizationID: owner.TopOrganizationID,
+		OrganizationID:    owner.OrganizationID,
+		Title:             title,
+		Context:           ctxJSON,
+		CreatedAt:         time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC),
+		UpdatedAt:         time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC),
+	}
+	m.byID[id] = s
+	return s, nil
+}
+
 func (m *mockSessions) GetByID(_ context.Context, owner store.Owner, sessionID string) (store.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	s, ok := m.byID[sessionID]
 	if !ok || s.TopOrganizationID != owner.TopOrganizationID || s.OrganizationID != owner.OrganizationID {
 		return store.Session{}, sql.ErrNoRows
@@ -228,7 +286,7 @@ func TestDispatchCreateSession(t *testing.T) {
 	rec := performGateway(h, `{"Action":"CreateCSAgentSession","Title":"hello","top_organization_id":1,"organization_id":2}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), `"SessionId":"sess-new"`)
+	assert.Contains(t, rec.Body.String(), `"SessionId":"sess-new-1"`)
 }
 
 func TestDispatchGetSessionRequiresSessionID(t *testing.T) {
@@ -245,7 +303,7 @@ func TestDispatchGetSessionCreatesReplacementForMissingSession(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"RetCode":0`)
-	assert.Contains(t, rec.Body.String(), `"SessionId":"sess-new"`)
+	assert.Contains(t, rec.Body.String(), `"SessionId":"sess-new-1"`)
 	assert.Contains(t, rec.Body.String(), `"MessageCount":0`)
 	assert.Contains(t, rec.Body.String(), `"Messages":[]`)
 }

@@ -71,6 +71,17 @@ type AssistantPatch struct {
 // SessionStore manages session lifecycle.
 type SessionStore interface {
 	Create(ctx context.Context, owner Owner, title *string, ctxJSON json.RawMessage) (Session, error)
+
+	// CreateWithID inserts a session under a caller-chosen id and returns whichever row
+	// ends up holding that id — the one this call inserted, or one a concurrent caller
+	// inserted first (the insert is a no-op on conflict). A caller that can derive the id
+	// deterministically therefore gets at-most-once creation from the primary key, with no
+	// transaction: racing callers converge on ONE session instead of forking into two, and a
+	// caller that died mid-flight leaves a row its retry reuses rather than an orphan. The
+	// read-back is owner-scoped, so an id belonging to another tenant is not-found, never a
+	// hand-over.
+	CreateWithID(ctx context.Context, owner Owner, id string, title *string, ctxJSON json.RawMessage) (Session, error)
+
 	GetByID(ctx context.Context, owner Owner, sessionID string) (Session, error)
 	BumpUpdatedAtAndIncCount(ctx context.Context, owner Owner, sessionID string, delta int) error
 

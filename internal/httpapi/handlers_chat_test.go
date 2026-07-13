@@ -255,12 +255,12 @@ func TestDispatchChatCreatesReplacementForMissingSession(t *testing.T) {
 
 	require.Nil(t, apiErr)
 	assert.True(t, sink.has("done"))
-	assert.Equal(t, []string{"sess-new"}, pool.sessionID)
+	assert.Equal(t, []string{"sess-new-1"}, pool.sessionID)
 	meta := firstMetaEvent(t, sink)
-	assert.Equal(t, "sess-new", meta.SessionID)
+	assert.Equal(t, "sess-new-1", meta.SessionID)
 	require.Len(t, messages.appended, 2, "expected user and assistant rows inserted")
-	assert.Equal(t, "sess-new", messages.appended[0].SessionID)
-	assert.Equal(t, "sess-new", messages.appended[1].SessionID)
+	assert.Equal(t, "sess-new-1", messages.appended[0].SessionID)
+	assert.Equal(t, "sess-new-1", messages.appended[1].SessionID)
 }
 
 func TestDispatchChatCreatesReplacementForForeignSession(t *testing.T) {
@@ -295,12 +295,12 @@ func TestDispatchChatCreatesReplacementForForeignSession(t *testing.T) {
 
 	require.Nil(t, apiErr)
 	assert.True(t, sink.has("done"))
-	assert.Equal(t, []string{"sess-new"}, pool.sessionID)
+	assert.Equal(t, []string{"sess-new-1"}, pool.sessionID)
 	meta := firstMetaEvent(t, sink)
-	assert.Equal(t, "sess-new", meta.SessionID)
+	assert.Equal(t, "sess-new-1", meta.SessionID)
 	require.Len(t, messages.appended, 2, "expected user and assistant rows inserted")
-	assert.Equal(t, "sess-new", messages.appended[0].SessionID)
-	assert.Equal(t, "sess-new", messages.appended[1].SessionID)
+	assert.Equal(t, "sess-new-1", messages.appended[0].SessionID)
+	assert.Equal(t, "sess-new-1", messages.appended[1].SessionID)
 }
 
 func firstMetaEvent(t *testing.T, sink *recordingSink) metaEvent {

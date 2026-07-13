@@ -84,7 +84,7 @@ func TestTurnCap_FlagOff_StillRefuses(t *testing.T) {
 	require.NotNil(t, apiErr, "at the cap with handoff off, the turn must still be refused")
 	assert.Equal(t, ErrSessionTurnLimit.Code, apiErr.Code)
 	assert.Empty(t, pool.sessionID, "a refused turn must never lease an engine")
-	_, created := sessions.byID["sess-new"]
+	_, created := sessions.byID[successorSessionID("sess-capped")]
 	assert.False(t, created, "handoff is off — no successor session may be created")
 }
 
@@ -104,8 +104,9 @@ func TestTurnCap_RollsOverIntoASuccessorThatHasTheConversation(t *testing.T) {
 
 	// The turn ran in the successor, and the client is told which one — via the SAME meta
 	// frame the front end already adopts. No new protocol.
-	assert.Equal(t, []string{"sess-new"}, pool.sessionID, "the turn must run in the successor")
-	assert.Equal(t, "sess-new", firstMetaEvent(t, sink).SessionID,
+	wantID := successorSessionID("sess-capped")
+	assert.Equal(t, []string{wantID}, pool.sessionID, "the turn must run in the successor")
+	assert.Equal(t, wantID, firstMetaEvent(t, sink).SessionID,
 		"the client must learn the new session id, or it keeps writing to the capped one")
 
 	// THE INVARIANT. The successor's engine was handed the conversation. Without this the
@@ -120,7 +121,7 @@ func TestTurnCap_RollsOverIntoASuccessorThatHasTheConversation(t *testing.T) {
 	// The handoff is PERSISTED, not just seeded in memory. The pool evicts at capacity / 30 min
 	// idle; a handoff that lived only in the engine would vanish on the first cold rebuild —
 	// recreating this very bug two turns later instead of immediately.
-	successor := sessions.byID["sess-new"]
+	successor := sessions.byID[wantID]
 	pc, err := engine.ParsePersistedContext(successor.Context)
 	require.NoError(t, err)
 	require.NotNil(t, pc.Handoff, "the successor must carry its handoff in its own envelope")

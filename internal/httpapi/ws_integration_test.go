@@ -195,10 +195,10 @@ func TestWS_Chat_CreatesReplacementForMissingSession(t *testing.T) {
 		}
 	}
 	require.NotNil(t, meta, "meta frame must be emitted")
-	assert.Equal(t, "sess-new", meta["SessionId"])
+	assert.Equal(t, "sess-new-1", meta["SessionId"])
 	require.Len(t, messages.appended, 2)
-	assert.Equal(t, "sess-new", messages.appended[0].SessionID)
-	assert.Equal(t, "sess-new", messages.appended[1].SessionID)
+	assert.Equal(t, "sess-new-1", messages.appended[0].SessionID)
+	assert.Equal(t, "sess-new-1", messages.appended[1].SessionID)
 	assert.Equal(t, "done", frames[len(frames)-1]["event"])
 }
 
