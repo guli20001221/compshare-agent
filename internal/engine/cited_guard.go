@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/knowledge"
+	"github.com/compshare-agent/internal/textutil"
 )
 
 const (
@@ -122,11 +123,21 @@ func extractCitedChunkIDs(answer string, hits []knowledge.RetrievalHit) []string
 // the anti-fabrication anchor that gates the cited contract — removing it
 // from the prompt would let the LLM regress to unsourced prose. We keep
 // [n] in the LLM contract, strip cosmetically at the boundary.
+//
+// The rewrite runs on PROSE ONLY (textutil.MapOutsideCode). It used to run on
+// the whole answer, which meant `outputs[1]` in a code block lost its subscript
+// and — worse — the space-collapsing pass flattened Python indentation, turning
+// a correct snippet into one that raises IndentationError when pasted. A
+// citation never appears inside code, so nothing is lost by not looking there.
 func stripCitationMarkers(answer string) string {
 	if answer == "" {
 		return answer
 	}
-	out := numberedCitationRE.ReplaceAllString(answer, "")
+	return textutil.MapOutsideCode(answer, stripCitationMarkersInProse)
+}
+
+func stripCitationMarkersInProse(prose string) string {
+	out := numberedCitationRE.ReplaceAllString(prose, "")
 	// Tidy up CJK + ASCII punctuation that immediately preceded a stripped
 	// marker. Order matters: collapse spaces last so combined " [1]." -> "."
 	// rather than "  ." -> " .". The CJK enumeration comma 、 (U+3001) and
