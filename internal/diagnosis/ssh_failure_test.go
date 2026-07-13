@@ -209,6 +209,177 @@ func TestSSHChain_Running_HighCPU(t *testing.T) {
 	assert.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, callActions(executor.calls))
 }
 
+// TestSSHChain_Running_HighCPU_PodMonitor: a cpod-* instance's monitor lands in
+// Data.PodList (flat Cpu/Memory series), NOT Data.List. Before the pod-leg fix the
+// resource check read only List, so every pod was "无法确认"; now it reads PodList and
+// catches exhaustion. The Cpu points are deliberately out of chronological order to
+// also prove the latest value is chosen by max Timestamp, not array position (a
+// naive last-element read would pick the older 12.0 and wrongly report "normal").
+func TestSSHChain_Running_HighCPU_PodMonitor(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{
+					"UHostId": "cpod-abc", "State": "Running", "OsType": "LINUX",
+					"SshLoginCommand": "ssh -p 23120 root@host.podtcp.compshare.cn",
+				},
+			},
+		},
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{
+				"List": []any{}, // pod instance → the ucloud leg is empty
+				"PodList": []any{
+					map[string]any{
+						"UHostId": "cpod-abc",
+						"Metrics": map[string]any{
+							"Cpu": []any{
+								map[string]any{"Timestamp": float64(100), "Value": float64(12.0)}, // older
+								map[string]any{"Timestamp": float64(200), "Value": float64(97.0)}, // newest → chosen
+							},
+							"Memory": []any{
+								map[string]any{"Timestamp": float64(200), "Value": float64(50.0)},
+							},
+						},
+					},
+				},
+			},
+		},
+	}}
+	onStep, _ := collectEvents()
+
+	chain := SSHFailureChain()
+	eng := NewEngine(executor, onStep)
+	result, err := eng.Run(context.Background(), chain, map[string]any{"UHostId": "cpod-abc"})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Contains(t, result.Conclusion, "资源")     // exhaustion detected from the PodList leg
+	assert.Contains(t, result.Conclusion, "97")        // the max-Timestamp CPU value, not the older 12
+}
+
+// TestSSHChain_Running_Normal_PodMonitor: a healthy pod must read its PodList data
+// and reach the healthy fallback — NOT the "监控未返回数据无法确认" branch that the
+// List-only code always hit for pods.
+func TestSSHChain_Running_Normal_PodMonitor(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{
+					"UHostId": "cpod-ok", "State": "Running", "OsType": "LINUX",
+					"SshLoginCommand": "ssh -p 23120 root@host.podtcp.compshare.cn",
+				},
+			},
+		},
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{
+				"List": []any{},
+				"PodList": []any{
+					map[string]any{
+						"UHostId": "cpod-ok",
+						"Metrics": map[string]any{
+							"Cpu":    []any{map[string]any{"Timestamp": float64(200), "Value": float64(15.0)}},
+							"Memory": []any{map[string]any{"Timestamp": float64(200), "Value": float64(40.0)}},
+						},
+					},
+				},
+			},
+		},
+	}}
+	onStep, _ := collectEvents()
+
+	chain := SSHFailureChain()
+	eng := NewEngine(executor, onStep)
+	result, err := eng.Run(context.Background(), chain, map[string]any{"UHostId": "cpod-ok"})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	// Read the data → healthy fallback, NOT the monitor-missing "无法确认".
+	assert.NotContains(t, result.Conclusion, "无法确认")
+	assert.Contains(t, result.Conclusion, "未见高压")
+}
+
+// TestSSHChain_Running_DiskFull_Ucloud: a full system disk (sys_disk_used_per) blocks
+// login even with CPU/memory idle. The metric rides along in the same monitor call;
+// the chain now reads it and reports 磁盘写满, checked before the CPU/mem branch.
+func TestSSHChain_Running_DiskFull_Ucloud(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{
+					"UHostId": "uhost-abc", "State": "Running", "OsType": "LINUX",
+					"SshLoginCommand": "ssh -p 22 ubuntu@1.2.3.4",
+				},
+			},
+		},
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{"List": []any{
+				map[string]any{"UHostId": "uhost-abc", "Metrics": []any{
+					map[string]any{"MetricKey": "uhost_cpu_used", "Results": []any{
+						map[string]any{"Values": []any{map[string]any{"Timestamp": float64(200), "Value": float64(10.0)}}},
+					}},
+					map[string]any{"MetricKey": "cloudwatch_memory_usage", "Results": []any{
+						map[string]any{"Values": []any{map[string]any{"Timestamp": float64(200), "Value": float64(20.0)}}},
+					}},
+					map[string]any{"MetricKey": "cloudwatch_sys_disk_used_per", "Results": []any{
+						map[string]any{"Values": []any{map[string]any{"Timestamp": float64(200), "Value": float64(98.0)}}},
+					}},
+				}},
+			}},
+		},
+	}}
+	onStep, _ := collectEvents()
+
+	chain := SSHFailureChain()
+	eng := NewEngine(executor, onStep)
+	result, err := eng.Run(context.Background(), chain, map[string]any{"UHostId": "uhost-abc"})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Contains(t, result.Conclusion, "系统盘")
+	assert.Contains(t, result.Conclusion, "98")
+	assert.NotContains(t, result.Conclusion, "资源耗尽") // disk branch wins over CPU/mem
+}
+
+// TestSSHChain_Running_DiskFull_PodMonitor: same, but the disk metric is the flat pod
+// series Metrics.SysDiskUsed under Data.PodList.
+func TestSSHChain_Running_DiskFull_PodMonitor(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{
+				map[string]any{
+					"UHostId": "cpod-full", "State": "Running", "OsType": "LINUX",
+					"SshLoginCommand": "ssh -p 23120 root@host.podtcp.compshare.cn",
+				},
+			},
+		},
+		"GetCompShareInstanceMonitor": {
+			"Data": map[string]any{
+				"List": []any{},
+				"PodList": []any{
+					map[string]any{
+						"UHostId": "cpod-full",
+						"Metrics": map[string]any{
+							"Cpu":         []any{map[string]any{"Timestamp": float64(200), "Value": float64(5.0)}},
+							"Memory":      []any{map[string]any{"Timestamp": float64(200), "Value": float64(30.0)}},
+							"SysDiskUsed": []any{map[string]any{"Timestamp": float64(200), "Value": float64(99.0)}},
+						},
+					},
+				},
+			},
+		},
+	}}
+	onStep, _ := collectEvents()
+
+	chain := SSHFailureChain()
+	eng := NewEngine(executor, onStep)
+	result, err := eng.Run(context.Background(), chain, map[string]any{"UHostId": "cpod-full"})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Contains(t, result.Conclusion, "系统盘")
+	assert.Contains(t, result.Conclusion, "99")
+}
+
 func TestSSHChain_Running_MonitorMissingIsInconclusive(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {

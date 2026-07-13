@@ -126,11 +126,23 @@ func stepCheckResourceUsage() Step {
 			}, nil
 		},
 		Evaluate: func(result map[string]any, dCtx *Context) Verdict {
-			cpuUsage, memUsage, cpuOK, memOK := extractLatestMetrics(result)
-			// 90% catches degradation earlier than the previous 95% cutoff,
-			// which left users at 90-94% with a contradictory "resources normal"
-			// verdict while their SSH was already timing out.
+			cpuUsage, memUsage, diskUsage, cpuOK, memOK, diskOK := extractLatestMetrics(result)
+			// 90% catches degradation earlier than the previous 95% cutoff, which left
+			// users at 90-94% with a contradictory "resources normal" verdict while their
+			// SSH was already timing out. On 无卡开机 (WithoutGpu, 2C4G/8C16G) the specs are
+			// tiny, so CPU/memory exhaustion is a common real cause here — not a rare one.
 			const threshold = 90.0
+			// System disk is nearer-binary: this full, login fails (sshd can't write the
+			// session / PAM / home files) even with CPU and memory idle.
+			const diskThreshold = 95.0
+
+			if diskOK && diskUsage >= diskThreshold {
+				return Verdict{
+					Action:     Conclude,
+					Conclusion: fmt.Sprintf("系统盘接近写满（%.1f%%）。磁盘写满会导致 SSH 登录失败——sshd 无法写入会话/临时文件。", diskUsage),
+					Suggestion: "若能通过 JupyterLab 进入终端，可用只读命令自查占用：`df -h`、`du -sh /* 2>/dev/null | sort -h`。清理缓存/日志或在控制台扩容系统盘属于会修改实例的可选修复，请确认后再执行。",
+				}
+			}
 
 			if cpuUsage >= threshold || memUsage >= threshold {
 				detail := ""
@@ -145,7 +157,7 @@ func stepCheckResourceUsage() Step {
 				}
 				return Verdict{
 					Action:     Conclude,
-					Conclusion: "实例资源耗尽：" + detail + "。系统资源不足可能导致 SSH 无法响应。",
+					Conclusion: "实例资源耗尽：" + detail + "。系统资源不足可能导致 SSH 无法响应（无卡开机规格很小时尤其容易打满）。",
 					Suggestion: "建议通过控制台重启实例释放资源，或升级到更高配置。",
 				}
 			}
@@ -161,52 +173,100 @@ func stepCheckResourceUsage() Step {
 	}
 }
 
-// extractLatestMetrics gets the latest CPU and memory usage from monitor data.
-func extractLatestMetrics(result map[string]any) (cpu, mem float64, cpuOK, memOK bool) {
+// extractLatestMetrics gets the latest CPU, memory, and system-disk usage from
+// monitor data.
+//
+// GetCompShareInstanceMonitor returns TWO differently-shaped legs (upstream
+// dispatches by UHostId prefix): uhost-* instances land in Data.List with the
+// nested cloudwatch shape (Metrics[] keyed by MetricKey → Results[0].Values[]),
+// while cpod-* (pod) instances land in Data.PodList with a FLAT shape
+// (Metrics.Cpu / Metrics.Memory / Metrics.SysDiskUsed, each a []{Timestamp,Value}).
+// Reading only List left every pod instance's resource check dead (always "无法确认"),
+// so we read whichever leg carries this instance's data. System disk rides along in
+// the same call (sys_disk_used_per / SysDiskUsed) — a full root disk is a common
+// login blocker, so we surface it too.
+func extractLatestMetrics(result map[string]any) (cpu, mem, disk float64, cpuOK, memOK, diskOK bool) {
 	data, _ := result["Data"].(map[string]any)
 	if data == nil {
-		return 0, 0, false, false
+		return 0, 0, 0, false, false, false
 	}
-	list, _ := data["List"].([]any)
-	if len(list) == 0 {
-		return 0, 0, false, false
-	}
-	instance, _ := list[0].(map[string]any)
-	metrics, _ := instance["Metrics"].([]any)
 
-	for _, m := range metrics {
-		metric, _ := m.(map[string]any)
-		key, _ := metric["MetricKey"].(string)
-		val, ok := latestValue(metric)
-		if !ok {
-			continue
+	// uhost-* leg: Data.List[0].Metrics[] keyed by MetricKey.
+	if list, _ := data["List"].([]any); len(list) > 0 {
+		instance, _ := list[0].(map[string]any)
+		metrics, _ := instance["Metrics"].([]any)
+		for _, m := range metrics {
+			metric, _ := m.(map[string]any)
+			key, _ := metric["MetricKey"].(string)
+			val, ok := latestValue(metric)
+			if !ok {
+				continue
+			}
+			switch key {
+			case "uhost_cpu_used":
+				cpu, cpuOK = val, true
+			case "cloudwatch_memory_usage":
+				mem, memOK = val, true
+			case "cloudwatch_sys_disk_used_per":
+				disk, diskOK = val, true
+			}
 		}
-		switch key {
-		case "uhost_cpu_used":
-			cpu = val
-			cpuOK = true
-		case "cloudwatch_memory_usage":
-			mem = val
-			memOK = true
+		return cpu, mem, disk, cpuOK, memOK, diskOK
+	}
+
+	// cpod-* (pod) leg: Data.PodList[0].Metrics is a flat object with named
+	// series; Cpu/Memory/SysDiskUsed are percentages, same as the uhost metric keys.
+	if podList, _ := data["PodList"].([]any); len(podList) > 0 {
+		pod, _ := podList[0].(map[string]any)
+		pm, _ := pod["Metrics"].(map[string]any)
+		if v, ok := latestPointByTimestamp(pm["Cpu"]); ok {
+			cpu, cpuOK = v, true
+		}
+		if v, ok := latestPointByTimestamp(pm["Memory"]); ok {
+			mem, memOK = v, true
+		}
+		if v, ok := latestPointByTimestamp(pm["SysDiskUsed"]); ok {
+			disk, diskOK = v, true
 		}
 	}
-	return cpu, mem, cpuOK, memOK
+	return cpu, mem, disk, cpuOK, memOK, diskOK
 }
 
-// latestValue extracts the most recent value from a metric's Results.
+// latestValue extracts the newest value from a uhost (cloudwatch) metric's first
+// Results series. Shared with the GPU chain (gpu_not_detected.go).
 func latestValue(metric map[string]any) (float64, bool) {
 	results, _ := metric["Results"].([]any)
 	if len(results) == 0 {
 		return 0, false
 	}
 	first, _ := results[0].(map[string]any)
-	values, _ := first["Values"].([]any)
-	if len(values) == 0 {
+	return latestPointByTimestamp(first["Values"])
+}
+
+// latestPointByTimestamp returns the Value of the point with the greatest
+// Timestamp from a []{Timestamp,Value} series. Both the uhost Results.Values and
+// the pod flat metric series share this element shape, so one picker serves both.
+// Selecting by max Timestamp (rather than the last array element) does not rely
+// on the upstream returning points in chronological order.
+func latestPointByTimestamp(raw any) (float64, bool) {
+	points, _ := raw.([]any)
+	if len(points) == 0 {
 		return 0, false
 	}
-	last, _ := values[len(values)-1].(map[string]any)
-	val, _ := last["Value"].(float64)
-	return val, true
+	var bestVal, bestTS float64
+	found := false
+	for _, p := range points {
+		pt, _ := p.(map[string]any)
+		val, ok := pt["Value"].(float64)
+		if !ok {
+			continue
+		}
+		ts, _ := pt["Timestamp"].(float64)
+		if !found || ts >= bestTS {
+			bestVal, bestTS, found = val, ts, true
+		}
+	}
+	return bestVal, found
 }
 
 func firstHostFromResult(instanceResult map[string]any) (map[string]any, bool) {
