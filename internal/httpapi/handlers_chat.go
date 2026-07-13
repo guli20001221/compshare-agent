@@ -144,6 +144,15 @@ type chatPrep struct {
 	sessionStatePersistable bool
 	start                   time.Time
 
+	// contextNotice is a handler-authored line telling the user this turn could
+	// not read the session's persisted state. Empty on the normal path. It is
+	// streamed before the model's first token and prefixed onto both the
+	// persisted assistant content and the done frame, so what the user saw,
+	// what the transcript stores, and what the client receives all agree.
+	//
+	// It never enters the prompt. See session_state_notice.go.
+	contextNotice string
+
 	// confirmFormOptIn is set by the WS read loop when the turn's
 	// SendCSAgentChat carried Features:["confirm_form_v1"]. Combined with the
 	// boot flag (Handlers.confirmFormEnabled) it gates the editable confirm
@@ -227,23 +236,41 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	}
 
 	// Hydrate SessionState from the envelope persisted in sessions.context.
-	// Order matters:
-	//   (1) ClearSessionState wipes whatever the cached Engine carried from
-	//       a prior turn — agentpool reuses *engine.Engine across turns, so
-	//       without this clear a parse failure below would leave the prior
-	//       turn's hydrated=true sticky and §6.2 would persist stale state
-	//       on top of the broken row.
-	//   (2) ParsePersistedContext returns 3 outcomes: success (hydrate +
-	//       persist on done), malformed JSON (log + skip persist), unknown
-	//       schema version (log + skip persist — defends forward rollout
-	//       where a v2 binary's envelope must NOT be downgraded by an
-	//       older binary).
-	// sessionStatePersistable is the single boolean the success branch
-	// checks before calling UpdateContext. Both error paths set it to
-	// false; only a successful parse + SetSessionState sets it to true.
+	//
+	// ClearSessionState goes first and unconditionally: agentpool reuses the
+	// same *engine.Engine across turns, so without it a parse failure below
+	// would leave the PRIOR turn's hydrated=true sticky and the persist path
+	// would write that stale state on top of this session's row.
+	//
+	// ParsePersistedContext has three outcomes, and they get three DIFFERENT
+	// treatments. The one thing all three share: if the state could not be
+	// read, the user is TOLD (contextNotice). Silently answering from a wiped
+	// context is not a degradation, it is the bug — the user cannot tell it
+	// apart from the agent forgetting which instance they were talking about.
+	//
+	//   success        → hydrate, persist on done, no notice.
+	//
+	//   malformed      → the row is broken JSON. There is nothing to recover
+	//                    and nothing to protect, so reset to an empty state,
+	//                    tell the user, and PERSIST: the session heals on this
+	//                    turn instead of re-failing on every turn forever.
+	//
+	//   unknown schema → a NEWER binary wrote this row and we have been rolled
+	//                    back. The data is INTACT, we just cannot read it. So:
+	//                    answer degraded, tell the user, and NEVER persist —
+	//                    writing here would overwrite the newer binary's state
+	//                    with our understanding of it and turn a reversible
+	//                    rollback into permanent loss on every session this
+	//                    binary touches. Refusing the turn is not the answer
+	//                    either: the row stays unreadable, so "please retry"
+	//                    would be a lie and the session would be bricked for
+	//                    the whole duration of the rollback.
+	//
+	// sessionStatePersistable is the single boolean the persist path checks.
 	agent.ClearSessionState()
 	var clientCtxPreserve json.RawMessage
 	sessionStatePersistable := false
+	contextNotice := ""
 	pc, parseErr := engine.ParsePersistedContext(sess.Context)
 	switch {
 	case parseErr == nil:
@@ -251,10 +278,19 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		agent.SetSessionState(pc.AgentSessionState, sess.ContextVersion)
 		sessionStatePersistable = true
 	case errors.Is(parseErr, engine.ErrUnknownSessionStateSchema):
-		log.Printf("warning: session %s has unknown SessionState schema_version (will skip persist, leaving row untouched for newer binary): %v",
+		contextNotice = noticeSessionStateUnreadable
+		log.Printf("warning: session %s has unknown SessionState schema_version (answering degraded, telling the user, leaving the row untouched for the newer binary): %v",
 			sessionID, parseErr)
 	default:
-		log.Printf("warning: session %s context parse failed (will skip persist): %v",
+		// Hydrating an EMPTY state (rather than leaving the engine un-hydrated)
+		// is what makes this persistable: SessionStateSnapshot only reports
+		// hydrated=true after SetSessionState, and the persist path skips
+		// un-hydrated engines. clientCtxPreserve stays nil on purpose — the row
+		// did not parse, so there is no client blob left to carry over.
+		agent.SetSessionState(engine.SessionState{}, sess.ContextVersion)
+		sessionStatePersistable = true
+		contextNotice = noticeSessionStateReset
+		log.Printf("warning: session %s context parse failed (resetting to empty state, telling the user, persisting so the session self-heals): %v",
 			sessionID, parseErr)
 	}
 
@@ -347,6 +383,7 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		traceRecorder:           traceRecorder,
 		clientCtxPreserve:       clientCtxPreserve,
 		sessionStatePersistable: sessionStatePersistable,
+		contextNotice:           contextNotice,
 		start:                   start,
 	}, nil
 }
@@ -407,6 +444,16 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	var firstToken time.Time
 	tokenEmitted := false
 	var usage llm.TokenUsage
+
+	// The context-degradation notice (prepareChat) goes out BEFORE the model
+	// runs, so the user is told even if the turn later aborts or errors.
+	//
+	// It deliberately does not touch firstToken/tokenEmitted: those measure the
+	// MODEL's stream. Setting tokenEmitted here would suppress the empty-reply
+	// fallback below, and the actual answer would never reach the client.
+	if prep.contextNotice != "" {
+		_ = sw.WriteEvent("token", tokenEvent{Text: prep.contextNotice})
+	}
 
 	done := make(chan struct{})
 	ticker := time.NewTicker(h.cfg.Agent.HTTP.SSEKeepaliveInterval)
@@ -517,12 +564,18 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	}
 
 	// Success.
+	//
+	// finishTrace reads `reply` (the MODEL's reply) for its empty_reply
+	// terminus, so the notice is prefixed only afterwards, onto what the user
+	// and the transcript see. Prefixing it into `reply` would make an
+	// empty-reply turn look non-empty in the trace.
 	finishTrace(nil)
 	inputTokens := usage.PromptTokens
 	outputTokens := usage.CompletionTokens
+	delivered := prep.contextNotice + reply
 	_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
 		store.AssistantPatch{
-			Content:      guardrails.RedactOutputLeak(reply),
+			Content:      guardrails.RedactOutputLeak(delivered),
 			Status:       "ok",
 			InputTokens:  &inputTokens,
 			OutputTokens: &outputTokens,
@@ -530,7 +583,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			LatencyMs:    &latencyMs,
 		})
 	_ = sw.WriteEvent("done", doneEvent{
-		Content:   reply,
+		Content:   delivered,
 		Usage:     usageEvent{InputTokens: inputTokens, OutputTokens: outputTokens},
 		LatencyMs: latencyMs,
 		TtftMs:    ttftMs,

@@ -94,8 +94,26 @@ func TestDispatchChat_PersistsEnvelopeOnSuccess(t *testing.T) {
 	assert.Empty(t, pc.AgentSessionState.SelectedInstanceID)
 }
 
-// Case 2: malformed JSON in sessions.context — chat completes, NO persistence.
-func TestDispatchChat_MalformedContext_SkipsPersist(t *testing.T) {
+// Case 2: malformed JSON in sessions.context — the state is RESET and the reset
+// IS persisted, so the session heals.
+//
+// ⚠️ CONTRACT CHANGE (2026-07-14). This test used to be
+// TestDispatchChat_MalformedContext_SkipsPersist and asserted the opposite:
+// updateContextCalls == 0, broken row left in place. That assertion was pinning
+// a bug, not a contract.
+//
+// The old reasoning ("never overwrite a row we could not read") is correct for
+// an UNKNOWN SCHEMA — the data is intact, a newer binary can still read it, so
+// writing would destroy it. It is wrong for MALFORMED JSON: nothing in that row
+// is recoverable by anyone. Skipping the write meant the row stayed broken, so
+// every subsequent turn re-failed the same way — the session was permanently
+// amnesiac and could never recover on its own. Resetting to an empty state and
+// persisting it costs nothing (the old bytes were already unreadable) and the
+// session is healthy again from the very next turn.
+//
+// Case 3 (unknown schema) still asserts skip-persist. The two cases are
+// deliberately not symmetric; see prepareChat.
+func TestDispatchChat_MalformedContext_ResetsAndPersists_SoTheSessionHeals(t *testing.T) {
 	h, sessions, _ := newChatTestHandlers(t, store.Session{
 		ID:                "sess-bad",
 		TopOrganizationID: 1,
@@ -110,11 +128,18 @@ func TestDispatchChat_MalformedContext_SkipsPersist(t *testing.T) {
 
 	assert.True(t, sink.has("done"),
 		"chat must complete even when prior context is unparseable")
-	assert.Equal(t, 0, sessions.updateContextCalls,
-		"malformed context must NOT trigger UpdateContext — would overwrite the broken row")
-	// Row still has the original broken context — no permanent corruption upgrade.
-	assert.Equal(t, json.RawMessage(`{not valid`), sessions.byID["sess-bad"].Context)
-	assert.Equal(t, 7, sessions.byID["sess-bad"].ContextVersion)
+	require.Equal(t, 1, sessions.updateContextCalls,
+		"a broken row must be REWRITTEN, not left broken — otherwise the session re-fails forever")
+
+	row := sessions.byID["sess-bad"]
+	assert.Equal(t, 8, row.ContextVersion, "context_version must advance 7 → 8")
+
+	var pc engine.PersistedContext
+	require.NoError(t, json.Unmarshal(row.Context, &pc),
+		"the healed row must be a parseable envelope — this is the whole point of the reset")
+	assert.Equal(t, engine.SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
+	assert.Empty(t, pc.AgentSessionState.SelectedInstanceID,
+		"the reset state must be EMPTY — we recovered nothing from the broken row and must not invent anything")
 }
 
 // Case 3: unknown schema_version (forward-rollout protection) — chat
@@ -169,21 +194,21 @@ func TestDispatchChat_LegacyContextUpgradedToEnvelope(t *testing.T) {
 		"legacy client blob must be preserved verbatim as client_context")
 }
 
-// Case 5: ClearSessionState defense. Pre-hydrate the cached Engine with a
-// non-empty SessionState, then run a chat whose sessions.context is
-// malformed. The handler must invoke ClearSessionState immediately after
-// Lease so that the cached Engine carries no sticky state into a turn
-// whose parse fails.
+// Case 5: ClearSessionState defense, now with real teeth.
 //
-// Two complementary assertions make this load-bearing:
+// Pre-hydrate the cached Engine with SelectedInstanceID="uhost-prev" (as a
+// prior turn on the same pooled Engine would), then run a turn whose
+// sessions.context is malformed. The handler must call ClearSessionState right
+// after Lease, so the previous session's instance does not leak into this one.
 //
-//	(a) sessions.updateContextCalls == 0 — persistence skipped (already
-//	    guaranteed by sessionStatePersistable, but a necessary baseline);
-//	(b) eng.SessionStateSnapshot() returns hydrated=false after the turn
-//	    — this is what actually proves ClearSessionState ran. Without
-//	    the clear, hydrated would stay true (carrying "uhost-prev" set
-//	    below), and M2's in-engine writer would step on a stale value.
-func TestDispatchChat_PreHydratedEngine_MalformedContext_StillSkipsPersist(t *testing.T) {
+// ⚠️ CONTRACT CHANGE (2026-07-14): under the old skip-persist behaviour this
+// test could only assert hydrated==false — a weak gate, because persistence was
+// skipped anyway and nothing would have been written even if the clear were
+// missing. Now that a malformed row IS rewritten, a missing ClearSessionState
+// would PERSIST "uhost-prev" into a session it never belonged to. The
+// assertion below is therefore a genuine gate: delete ClearSessionState from
+// prepareChat and this test fails on the persisted envelope.
+func TestDispatchChat_PreHydratedEngine_MalformedContext_MustNotPersistTheStaleInstance(t *testing.T) {
 	h, sessions, eng := newChatTestHandlers(t, store.Session{
 		ID:                "sess-sticky",
 		TopOrganizationID: 1,
@@ -205,19 +230,14 @@ func TestDispatchChat_PreHydratedEngine_MalformedContext_StillSkipsPersist(t *te
 	sink, _ := dispatchChatTurn(t, h, "sess-sticky", "hi")
 
 	assert.True(t, sink.has("done"))
-	assert.Equal(t, 0, sessions.updateContextCalls,
-		"malformed parse must skip persist regardless of prior engine state")
-	assert.Equal(t, json.RawMessage(`{not valid`), sessions.byID["sess-sticky"].Context)
-	assert.Equal(t, 5, sessions.byID["sess-sticky"].ContextVersion)
+	require.Equal(t, 1, sessions.updateContextCalls,
+		"a malformed row is reset and rewritten (see Case 2)")
 
-	// The load-bearing assertion: hydrated must be false after the turn,
-	// proving the handler ran ClearSessionState. Without that call, the
-	// prior turn's "uhost-prev" state would remain on the engine.
-	postState, _, postHydrated := eng.SessionStateSnapshot()
-	assert.False(t, postHydrated,
-		"handler must call ClearSessionState after Lease so cached Engine state does not leak across turns")
-	assert.Equal(t, engine.SessionState{}, postState,
-		"ClearSessionState must zero the SessionState struct")
+	var pc engine.PersistedContext
+	require.NoError(t, json.Unmarshal(sessions.byID["sess-sticky"].Context, &pc))
+	assert.Empty(t, pc.AgentSessionState.SelectedInstanceID,
+		"the pooled Engine's prior instance must NOT be persisted into this session — "+
+			"mutation: delete agent.ClearSessionState() from prepareChat and this fails with uhost-prev")
 }
 
 // Case 6: UpdateContext returns ErrStaleWrite — SSE still emits done.
