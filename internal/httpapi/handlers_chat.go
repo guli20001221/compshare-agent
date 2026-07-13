@@ -226,6 +226,33 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		return nil, AsAPIError(err)
 	}
 
+	// RE-READ the session row now that we hold the lock.
+	//
+	// The copy fetched above was read BEFORE the lease. The lease serializes the ENGINE, not
+	// that read — so a turn can sit blocked here holding a snapshot the previous turn has
+	// since replaced, and then hydrate the model with it:
+	//
+	//	T1 streams `done` (state not yet persisted; the client's input unlocks)
+	//	T2 arrives, reads the row  -> v1, then blocks on the lease
+	//	T1 persists v2 (e.g. a newly selected instance), releases
+	//	T2 acquires the lease and hydrates ... v1. The model answers on stale context,
+	//	   then saves with expected_version=v1 -> CAS conflict -> the retry OVERWRITES v2.
+	//
+	// That is a silent context loss AND a silent destruction of the previous turn's state, on
+	// a single replica, and it needs only a fast follow-up to reproduce. Reading the row under
+	// the lock is what closes it: the read, the turn and the write are now one critical
+	// section per session.
+	//
+	// Fail-safe: if the re-read fails, keep the pre-lease copy rather than aborting a turn that
+	// is otherwise fine. Doing so restores exactly the old behavior for that turn — no worse
+	// than before, and the trace still reports what was persisted.
+	if fresh, reErr := h.sessions.GetByID(ctx, base.Owner, sessionID); reErr == nil {
+		sess = fresh
+	} else {
+		log.Printf("warning: session %s re-read under lock failed, hydrating from the pre-lease snapshot: %v",
+			sessionID, reErr)
+	}
+
 	// Hydrate SessionState from the envelope persisted in sessions.context.
 	// Order matters:
 	//   (1) ClearSessionState wipes whatever the cached Engine carried from
@@ -529,19 +556,17 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			TTFTMs:       &ttftMs,
 			LatencyMs:    &latencyMs,
 		})
-	_ = sw.WriteEvent("done", doneEvent{
-		Content:   reply,
-		Usage:     usageEvent{InputTokens: inputTokens, OutputTokens: outputTokens},
-		LatencyMs: latencyMs,
-		TtftMs:    ttftMs,
-	})
-
-	// Persist SessionState envelope AFTER the done frame so the client is
-	// not blocked on a DB write. Guarded by sessionStatePersistable, which
-	// is false on parse failure / unknown schema version (see prepareChat).
-	// Persistence failures are warning-only — the assistant reply is already
-	// delivered, the worst case is "previous instance" memory loss on the
-	// next turn.
+	// Persist the SessionState envelope BEFORE the done frame.
+	//
+	// It used to run after, "so the client is not blocked on a DB write" — but `done` is what
+	// unlocks the user's input box, so sending it first is an invitation for the next turn to
+	// race this write. Combined with the pre-lease read this produced a turn that answered on
+	// stale context and then destroyed the previous turn's state (see the re-read comment in
+	// prepareChat). One indexed primary-key write is not worth that: the turn's state must be
+	// durable before we tell the user the turn succeeded.
+	//
+	// Guarded by sessionStatePersistable, which is false on parse failure / unknown schema
+	// version (see prepareChat).
 	if prep.sessionStatePersistable {
 		newState, expectedVer, hydrated := agent.SessionStateSnapshot()
 		if hydrated {
@@ -568,33 +593,35 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			}
 		}
 	}
+
+	// Only now is the turn actually complete: the reply is stored, the state is stored, and
+	// the next turn — which this frame is what releases — will read what this one wrote.
+	_ = sw.WriteEvent("done", doneEvent{
+		Content:   reply,
+		Usage:     usageEvent{InputTokens: inputTokens, OutputTokens: outputTokens},
+		LatencyMs: latencyMs,
+		TtftMs:    ttftMs,
+	})
 }
 
+// retryPersistSessionContext handles a CAS conflict on the state write.
+//
+// With the session row now read UNDER the engine lease (see prepareChat), a conflict can no
+// longer happen between two turns of the same session on one replica: they are serialized, so
+// the version this turn read is the version it writes against. A conflict therefore means a
+// writer this replica cannot see — a second replica, or an out-of-band edit.
+//
+// Which is exactly why it must NOT overwrite. The previous implementation re-read the winning
+// row, took only its ClientContext, and wrote this turn's AgentSessionState on top — silently
+// discarding whatever the winner had committed. That converted a detectable conflict into
+// permanent, unlogged state loss for the other writer. We cannot merge two SessionStates
+// without knowing which fields each turn actually WROTE (a field this turn deliberately
+// cleared would be resurrected from the winner), so the honest action is to keep the winner's
+// state and report that ours did not land.
 func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID string, newState engine.SessionState, fallbackClientCtx json.RawMessage) {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-	current, err := h.sessions.GetByID(ctx, owner, sessionID)
-	if err != nil {
-		log.Printf("warning: session %s refetch after stale context persist failed: %v", sessionID, err)
-		return
-	}
-	clientCtx := fallbackClientCtx
-	if pc, parseErr := engine.ParsePersistedContext(current.Context); parseErr == nil {
-		clientCtx = pc.ClientContext
-	}
-	raw, err := json.Marshal(engine.PersistedContext{
-		AgentSessionState: newState,
-		ClientContext:     clientCtx,
-	})
-	if err != nil {
-		log.Printf("warning: session %s marshal retry envelope failed: %v", sessionID, err)
-		return
-	}
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel2()
-	if _, err := h.sessions.UpdateContext(ctx2, owner, sessionID, raw, current.ContextVersion); err != nil {
-		log.Printf("warning: session %s retry UpdateContext failed: %v", sessionID, err)
-	}
+	log.Printf("warning: session %s state NOT persisted — a concurrent writer committed first and its state is kept intact. "+
+		"This turn's state is dropped rather than overwriting it; on a single replica this should be unreachable now that the "+
+		"session row is read under the engine lease, so a hit here means a second replica or an out-of-band write.", sessionID)
 }
 
 // mustUserContext rebuilds the UserContext for the streaming context. prepareChat

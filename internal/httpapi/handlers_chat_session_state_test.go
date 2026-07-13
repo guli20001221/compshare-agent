@@ -220,10 +220,22 @@ func TestDispatchChat_PreHydratedEngine_MalformedContext_StillSkipsPersist(t *te
 		"ClearSessionState must zero the SessionState struct")
 }
 
-// Case 6: UpdateContext returns ErrStaleWrite — SSE still emits done.
-// The assistant reply is already delivered; CAS loss only loses the next
-// turn's "previous instance" memory.
-func TestDispatchChat_StaleWriteOnPersist_StillEmitsDone(t *testing.T) {
+// Case 6: UpdateContext returns ErrStaleWrite — the turn still completes, and the winner's
+// state is LEFT ALONE.
+//
+// CONTRACT CHANGE, stated rather than slipped in: this test used to require
+// updateContextCalls == 2, pinning a retry that re-read the winning row, kept only its
+// ClientContext, and wrote this turn's AgentSessionState on top — silently discarding whatever
+// the other writer had committed. That assertion was pinning the bug. Two SessionStates cannot
+// be merged without knowing which fields each turn actually WROTE (a field this turn
+// deliberately CLEARED would be resurrected from the winner), so the honest action on a
+// conflict is to keep the winner's state and report that ours did not land.
+//
+// With the session row now read under the engine lease, two turns of one session on one
+// replica are serialized and cannot conflict at all; a conflict here means a writer this
+// replica cannot see. Clobbering it would turn a detectable conflict into permanent,
+// unattributable state loss for the other writer.
+func TestDispatchChat_StaleWriteOnPersist_DoesNotClobberTheWinner(t *testing.T) {
 	h, sessions, _ := newChatTestHandlers(t, store.Session{
 		ID:                "sess-stale",
 		TopOrganizationID: 1,
@@ -239,8 +251,9 @@ func TestDispatchChat_StaleWriteOnPersist_StillEmitsDone(t *testing.T) {
 	sink, _ := dispatchChatTurn(t, h, "sess-stale", "hi")
 
 	assert.True(t, sink.has("done"),
-		"stream must emit done even when CAS loses on persist — reply was already streamed")
+		"the reply is real and was streamed — a lost state write must not fail the turn")
 	assert.False(t, sink.has("error"),
 		"ErrStaleWrite is a warning-only condition, not a stream error")
-	require.Equal(t, 2, sessions.updateContextCalls)
+	require.Equal(t, 1, sessions.updateContextCalls,
+		"exactly ONE write attempt: the CAS conflict must not be answered with a second, unconditional write that overwrites the state the winner committed")
 }
