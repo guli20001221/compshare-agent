@@ -108,6 +108,12 @@ const (
 	// separate path and is surfaced as such; this only substitutes for a
 	// genuinely empty successful turn.
 	emptyReplyFallbackMessage = "抱歉，本次没有生成有效回复，请重试，或换一种方式描述您的问题。"
+	// reactCeilingRefusal is the last resort when the ReAct loop burned all
+	// maxReActRounds without producing an answer AND neither recovery path
+	// (evidence ledger / resolved-instance context) had anything to synthesize
+	// from. Named rather than inlined so the history-parity test can pin the
+	// exact text the user is told.
+	reactCeilingRefusal = "抱歉，处理轮次超限，请重新描述您的需求。"
 )
 
 const (
@@ -1831,7 +1837,26 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 		return synth, nil
 	}
-	return "抱歉，处理轮次超限，请重新描述您的需求。", nil
+	// Neither recovery had anything to synthesize from, so the user gets the bare
+	// refusal — and it MUST enter the history like every other terminal reply.
+	//
+	// This was the one exit in ChatWithOptions that returned a reply without
+	// appending it (verified by scanning every terminal return in this function
+	// and each try* handler it delegates to). The HTTP layer stores whatever
+	// Chat returns, so the row went to the DB regardless. The result: this
+	// engine's in-memory history and the history a cold rebuild reads back from
+	// the DB disagreed by exactly one assistant turn. On the next turn the hot
+	// engine saw the user's new message land straight after a run of tool
+	// results with no answer between them — a malformed conversation the model
+	// then had to interpret — while a rebuilt engine saw the correct one.
+	//
+	// The divergence was manufactured entirely in memory, so no amount of
+	// storage correctness could have fixed it.
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: reactCeilingRefusal,
+	})
+	return reactCeilingRefusal, nil
 }
 
 type routerDispatchResult struct {
