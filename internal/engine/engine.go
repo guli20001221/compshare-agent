@@ -6434,7 +6434,27 @@ var humanAgentTransferKeywords = []string{
 // 与 jailbreak / off-topic / monitor-recall 检测保持一致的匹配语义。
 func isHumanAgentTransferRequest(userMsg string) bool {
 	n := textutil.Normalize(userMsg)
-	return containsAnyKeyword(n, humanAgentTransferKeywords)
+	return isBareHumanAgentRequest(n) || containsAnyKeyword(n, humanAgentTransferKeywords)
+}
+
+// isBareHumanAgentRequest reports whether the message is NOTHING BUT the word 人工.
+//
+// The whitelist above deliberately refuses to match 人工 as a substring, because
+// 人工智能 / 人工费 / 人工成本 all contain it and none of them asks for a human. But that
+// exclusion also swallowed the case where 人工 is the ENTIRE message — and that is what
+// real users type. A production turn the lead flagged is exactly two characters: 「人工」.
+// It got a generic LLM reply instead of the transfer QR code.
+//
+// Scoped to the whole message precisely so the substring hazard cannot come back: as a
+// complete utterance in a GPU-console assistant, 人工 has one meaning — "get me a person".
+// 人工智能 is a different STRING, not a longer one, so it never reaches here.
+//
+// textutil.Normalize collapses whitespace and lowercases ASCII but does NOT strip
+// punctuation, so 「人工？」 would otherwise miss; trim the trailing marks a user actually
+// types. A trailing particle (人工吗 / 人工客服) is left to the whitelist — this predicate
+// stays deliberately literal.
+func isBareHumanAgentRequest(normalized string) bool {
+	return strings.Trim(normalized, " 　？?！!。.，,、~～…") == "人工"
 }
 
 // pickProjectId removed in PR9 with ensureProjectId. See comment block
