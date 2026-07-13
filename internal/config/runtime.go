@@ -44,6 +44,7 @@ type FeaturesConfig struct {
 	CreatePreferenceExtractor       *bool    `yaml:"create_preference_extractor"`        // COMPSHARE_CREATE_PREF_EXTRACTOR (default on; false disables)
 	UnifiedCreate                   *bool    `yaml:"unified_create"`                     // COMPSHARE_UNIFIED_CREATE (default on; false disables)
 	ContextContinuation             *bool    `yaml:"context_continuation"`               // COMPSHARE_CONTEXT_CONTINUATION (default on; false disables)
+	AgentDeterministicRender        *bool    `yaml:"agent_deterministic_render"`         // COMPSHARE_AGENT_DETERMINISTIC_RENDER (default on; false disables)
 	SkillExecutor                   *bool    `yaml:"skill_executor"`                     // USE_SKILL_EXECUTOR (default off)
 	SkillExecutorDiagnosisPilots    []string `yaml:"skill_executor_diagnosis_pilots"`    // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS (CSV)
 }
@@ -114,6 +115,7 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "COMPSHARE_CREATE_PREF_EXTRACTOR", f.CreatePreferenceExtractor, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_UNIFIED_CREATE", f.UnifiedCreate, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_CONTEXT_CONTINUATION", f.ContextContinuation, "1", "0")
+	putBoolEnv(overrides, "COMPSHARE_AGENT_DETERMINISTIC_RENDER", f.AgentDeterministicRender, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE", f.AgenticSearchKnowledge, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_RAG_GROUNDED_VALIDATOR", f.GroundedValidator, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_RAG_DOMAIN_MATCH_GUARD", f.DomainMatchGuard, "1", "0")
