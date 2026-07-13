@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -113,6 +114,7 @@ func main() {
 	start := flag.Int("start", 0, "0-based session offset")
 	limit := flag.Int("limit", 0, "max sessions; 0 means all")
 	timeout := flag.Duration("timeout", 240*time.Second, "per-turn timeout")
+	concurrency := flag.Int("concurrency", 1, "sessions replayed in parallel (turns within a session stay ordered)")
 	confirm := flag.Bool("confirm", false, "auto confirmation value for confirmation frames")
 	sleep := flag.Duration("sleep", 250*time.Millisecond, "sleep between turns")
 	featuresCSV := flag.String("features", "confirm_form_v1,guided_create_v1", "comma-separated SendCSAgentChat Features")
@@ -150,53 +152,89 @@ func main() {
 	client := &http.Client{Timeout: 30 * time.Second}
 	features := splitCSV(*featuresCSV)
 	end := *start + len(sessions)
-	fmt.Fprintf(os.Stderr, "loaded %d sessions from %s; running range [%d,%d); base=%s features=%v confirm=%v\n",
-		origCount, *input, *start, end, *base, features, *confirm)
-	for i, sess := range sessions {
-		absoluteIndex := *start + i
-		t0 := time.Now()
-		caseID := fmt.Sprintf("S%03d", absoluteIndex+1)
-		userTurns := userMessages(sess.Messages)
-		res := replayResult{
-			SourceSID: sess.SID,
-			CreatedAt: sess.CreatedAt,
-			CaseID:    firstNonEmpty(sess.CaseID, caseID),
-			UserTurns: len(userTurns),
-		}
-		caseID = res.CaseID
-		sessionID, err := createSession(client, *base, *project, *topOrg, *org, sess.SID, caseID)
-		if err != nil {
-			res.Error = "create_session: " + err.Error()
-			res.DurationMS = time.Since(t0).Milliseconds()
-			_ = enc.Encode(res)
-			fmt.Fprintf(os.Stderr, "[%03d/%03d] %s %s create_session ERROR: %v\n", absoluteIndex+1, origCount, caseID, sess.SID, err)
-			continue
-		}
-		res.HTTPSessionID = sessionID
-		for turnIdx, msg := range userTurns {
-			tr := runTurn(*base, *project, *topOrg, *org, *userEmail, sessionID, caseID, sess.SID, turnIdx+1, msg, *timeout, *confirm, features)
-			res.Turns = append(res.Turns, tr)
-			if tr.Reply != "" {
-				res.FinalReply = tr.Reply
-			}
-			if tr.ErrorCode != "" {
-				res.Error = fmt.Sprintf("turn_%d: %s %s", turnIdx+1, tr.ErrorCode, tr.ErrorMessage)
-				break
-			}
-			time.Sleep(*sleep)
-		}
-		res.DurationMS = time.Since(t0).Milliseconds()
-		if err := enc.Encode(res); err != nil {
-			fatalf("write result: %v", err)
-		}
-		_ = f.Sync()
-		status := "ok"
-		if res.Error != "" {
-			status = "ERR"
-		}
-		fmt.Fprintf(os.Stderr, "[%03d/%03d] %s %s %s turns=%d/%d ms=%d final=%s\n",
-			absoluteIndex+1, origCount, caseID, sess.SID, status, len(res.Turns), len(userTurns), res.DurationMS, oneLine(res.FinalReply, 120))
+	workers := *concurrency
+	if workers < 1 {
+		workers = 1
 	}
+	fmt.Fprintf(os.Stderr, "loaded %d sessions from %s; running range [%d,%d); base=%s features=%v confirm=%v workers=%d\n",
+		origCount, *input, *start, end, *base, features, *confirm, workers)
+
+	// Sessions are independent — each gets its own server-side session id and its own
+	// WS connection — so they parallelise cleanly. Sequentially, a full 443-session /
+	// 1454-turn real-traffic replay is 4-10 hours per arm, which makes a two-arm A/B
+	// impractical and tempts the very corner-cutting (sampling, short runs) that
+	// invalidates the result. Turns WITHIN a session stay strictly ordered: that
+	// ordering IS the thing under test.
+	var (
+		mu   sync.Mutex
+		done int
+	)
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				sess := sessions[i]
+				absoluteIndex := *start + i
+				t0 := time.Now()
+				caseID := fmt.Sprintf("S%03d", absoluteIndex+1)
+				userTurns := userMessages(sess.Messages)
+				res := replayResult{
+					SourceSID: sess.SID,
+					CreatedAt: sess.CreatedAt,
+					CaseID:    firstNonEmpty(sess.CaseID, caseID),
+					UserTurns: len(userTurns),
+				}
+				caseID = res.CaseID
+				sessionID, err := createSession(client, *base, *project, *topOrg, *org, sess.SID, caseID)
+				if err != nil {
+					res.Error = "create_session: " + err.Error()
+					res.DurationMS = time.Since(t0).Milliseconds()
+					mu.Lock()
+					_ = enc.Encode(res)
+					_ = f.Sync()
+					done++
+					fmt.Fprintf(os.Stderr, "[%03d/%03d] %s %s create_session ERROR: %v\n", done, origCount, caseID, sess.SID, err)
+					mu.Unlock()
+					continue
+				}
+				res.HTTPSessionID = sessionID
+				for turnIdx, msg := range userTurns {
+					tr := runTurn(*base, *project, *topOrg, *org, *userEmail, sessionID, caseID, sess.SID, turnIdx+1, msg, *timeout, *confirm, features)
+					res.Turns = append(res.Turns, tr)
+					if tr.Reply != "" {
+						res.FinalReply = tr.Reply
+					}
+					if tr.ErrorCode != "" {
+						res.Error = fmt.Sprintf("turn_%d: %s %s", turnIdx+1, tr.ErrorCode, tr.ErrorMessage)
+						break
+					}
+					time.Sleep(*sleep)
+				}
+				res.DurationMS = time.Since(t0).Milliseconds()
+				status := "ok"
+				if res.Error != "" {
+					status = "ERR"
+				}
+				mu.Lock()
+				if err := enc.Encode(res); err != nil {
+					fatalf("write result: %v", err)
+				}
+				_ = f.Sync()
+				done++
+				fmt.Fprintf(os.Stderr, "[%03d/%03d] %s %s %s turns=%d/%d ms=%d final=%s\n",
+					done, origCount, caseID, sess.SID, status, len(res.Turns), len(userTurns), res.DurationMS, oneLine(res.FinalReply, 120))
+				mu.Unlock()
+			}
+		}()
+	}
+	for i := range sessions {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 func loadSessions(path string) ([]sourceSession, error) {
