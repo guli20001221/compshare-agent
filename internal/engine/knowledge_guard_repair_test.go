@@ -7,6 +7,7 @@ import (
 
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -100,6 +101,17 @@ func TestKnowledgeGuard_EvidenceInHandNeverEndsAsNoCoverage(t *testing.T) {
 			answer: "关于关机计费：" + shutdownChunk,
 			why:    "search_knowledge_raw_leak — MORE faithful to the evidence, not less",
 		},
+		{
+			// Reviewer's reproduction, and it was a real hole. No guard fires here at all: the
+			// model was shown the chunk that answers the question and typed the canned refusal
+			// ITSELF. The first version of this treated that as the agent's considered
+			// abstention and shipped it — which is the same lie as the guard's, only with a
+			// different author. Evidence in hand is evidence in hand; the answer is repaired
+			// from the ledger whoever wrote the refusal.
+			name:   "the MODEL types the canned refusal over evidence it was shown",
+			answer: ragNoEvidenceReply,
+			why:    "no guard fires — the agent refuses itself, and the KB still covers it",
+		},
 	}
 
 	for _, tc := range cases {
@@ -168,4 +180,87 @@ func TestKnowledgeGuard_HonestNoEvidenceStillRefuses(t *testing.T) {
 	got := eng.repairOrRefuseKnowledgeSynthesis(context.Background(), "海王星上能不能开实例", ragNoEvidenceReply)
 	assert.Equal(t, ragNoEvidenceReply, got,
 		"with a genuinely empty ledger the refusal is honest and must stand — repair needs evidence to repair FROM")
+}
+
+// The raw-leak arm must NOT be escapable by re-rolling the model.
+//
+// synthesizeKnowledgeQAFromLedger deliberately runs no leak check — it IS terminal RAG's
+// answerWithRetrievedEvidence, which does not, because a how-to answer legitimately reproduces
+// a command verbatim from the evidence. That exemption is right for a CITE failure. As the
+// answer to a LEAK failure it would be a hole: dump the chunk, get refused, re-roll, dump the
+// chunk again with a citation attached, ship it. The repaired answer must clear the same check
+// the original failed — which is what makes "not one check is relaxed" a true statement rather
+// than a slogan.
+func TestKnowledgeGuard_RepairCannotLaunderARawLeak(t *testing.T) {
+	const chunkID = "kb-billing-shutdown-001"
+	const shutdownChunk = "按量：按小时计费的后付费模式，关机后CPU、GPU和内存会被释放，实例不再收费，额外扩容的系统盘和数据盘及镜像资源会保留并继续收费；"
+
+	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
+		ChunkID: chunkID, Title: "计费模式说明", Content: shutdownChunk, KBVersion: "w0",
+	}}
+	ledger := knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: chunkID, Title: "计费模式说明"}}}
+
+	SetDisciplinedKnowledgeQASynthesisEnabled(true)
+	defer SetDisciplinedKnowledgeQASynthesisEnabled(false)
+
+	// Both repair rungs come back with the SAME dump, now wearing a valid citation. Rung 1
+	// rejects it on its own leak check; rung 2's primitive does not — so rung 2 is what this
+	// test actually pins.
+	relaundered := shutdownChunk + "[1]"
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
+		{Content: relaundered},
+		{Content: relaundered},
+		{Content: relaundered},
+	}}, &mockExecutor{}, nil)
+	eng.searchKnowledgeRanThisTurn = true
+	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
+	eng.searchKnowledgeLedgerThisTurn = ledger
+	eng.knowledgeQAAgentLoopThisTurn = true
+
+	got := eng.repairOrRefuseKnowledgeSynthesis(context.Background(),
+		"我关机之后，实例里的数据会保存吗", "关于关机计费："+shutdownChunk)
+
+	assert.Equal(t, ragNoEvidenceReply, got,
+		"a repair that still dumps the raw chunk must NOT ship — a citation does not make a dump acceptable, and the leak arm must not be escapable by re-rolling")
+}
+
+// A repaired turn must not be RECORDED as a hard block.
+//
+// The guard emits the block on its way in, before the repair rung has run. Leaving that
+// standing would mean every turn this fix rescues still counts as a KB refusal in exactly the
+// reports the fix is measured by: production's refusal rate would look unchanged while users
+// stopped seeing refusals, and the next A/B on this system would be read against a poisoned
+// denominator. The recorder keeps the LAST emission per turn, so a successful repair retracts.
+func TestKnowledgeGuard_RepairedTurnIsNotTracedAsBlocked(t *testing.T) {
+	const chunkID = "kb-billing-shutdown-001"
+	const shutdownChunk = "按量：按小时计费的后付费模式，关机后CPU、GPU和内存会被释放，实例不再收费，额外扩容的系统盘和数据盘及镜像资源会保留并继续收费；"
+	const goodAnswer = "按量计费的实例关机后，CPU、GPU 和内存会释放且不再收费；但系统盘、数据盘和镜像会保留，所以数据不会丢失。"
+
+	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
+		ChunkID: chunkID, Title: "计费模式说明", Content: shutdownChunk, KBVersion: "w0",
+	}}
+	ledger := knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: chunkID, Title: "计费模式说明"}}}
+
+	SetDisciplinedKnowledgeQASynthesisEnabled(true)
+	defer SetDisciplinedKnowledgeQASynthesisEnabled(false)
+
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
+		{Content: goodAnswer},         // rung 1: still no citation -> rejected
+		{Content: goodAnswer + "[1]"}, // rung 2: grounded, cited -> delivered
+	}}, &mockExecutor{}, nil)
+	var traces []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(tr observability.EngineHardBlockTrace) { traces = append(traces, tr) })
+	eng.searchKnowledgeRanThisTurn = true
+	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
+	eng.searchKnowledgeLedgerThisTurn = ledger
+	eng.knowledgeQAAgentLoopThisTurn = true
+
+	got := eng.repairOrRefuseKnowledgeSynthesis(context.Background(), "我关机之后，实例里的数据会保存吗", goodAnswer)
+	require.NotEqual(t, ragNoEvidenceReply, got, "precondition: the answer must have been repaired")
+
+	// The recorder ASSIGNS (cliTraceRecorder.SetEngineHardBlock), so what the turn reports is
+	// the LAST emission. It must say the turn was not blocked.
+	require.NotEmpty(t, traces, "the guard is expected to have fired on the way in")
+	assert.False(t, traces[len(traces)-1].Hit,
+		"the user got a grounded answer — recording this turn as a hard block would inflate the very refusal metric this fix is judged by")
 }

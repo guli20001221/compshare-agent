@@ -4032,43 +4032,107 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 // through the very gate that exists to catch one. Re-synthesizing re-derives the answer FROM
 // the ledger and re-validates it: the proof is earned, not forged.
 func (e *Engine) repairOrRefuseKnowledgeSynthesis(ctx context.Context, userMsg, content string) string {
-	agentRefused := strings.TrimSpace(content) == ragNoEvidenceReply
 	guarded := e.guardSearchKnowledgeSynthesis(content)
 
-	// The guard accepted the answer, or the agent had already chosen to refuse on its own.
-	// Nothing was destroyed, so there is nothing to repair.
-	if guarded != ragNoEvidenceReply || agentRefused {
+	// The guard accepted the answer. Nothing was destroyed, so there is nothing to repair.
+	if guarded != ragNoEvidenceReply {
 		return guarded
 	}
-	// The one honest refusal (G4): SearchKnowledge surfaced no evidence at all — either it
-	// never ran, or the relevance floor dropped every hit. There is nothing to repair FROM,
-	// and manufacturing an answer here would be the exact fabrication the guard exists to
-	// prevent. The refusal stands, and here it is TRUE.
+	// The one honest refusal: SearchKnowledge surfaced no evidence at all — either it never
+	// ran, or the relevance floor dropped every hit. There is nothing to repair FROM, and
+	// manufacturing an answer here would be the exact fabrication the guard exists to prevent.
+	// The refusal stands, and here it is TRUE.
 	if !e.searchKnowledgeRanThisTurn || len(e.searchKnowledgeHitsThisTurn) == 0 {
 		return guarded
 	}
 
-	// Rung 1 — re-ask the same model, with an explicit cite reminder. Kept because it is
-	// cheap and sometimes works, but it is not the fix: it re-asks the model that just failed
-	// to cite, which is why the replay still shows the refusal downstream of it.
-	if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
-		return retried
-	}
-	// Rung 2 — re-derive the answer from the ledger with the disciplined cited-synthesis
-	// primitive. It cite-validates and strips by construction (see
-	// synthesizeKnowledgeQAFromLedger), so a result that comes back is grounded by the same
-	// contract the guard demands. Gated on the flag production already ships on, and which
-	// the Go default leaves off, so no unit test changes behavior implicitly.
-	if disciplinedKnowledgeQASynthesisOn {
-		if synth, ok := e.synthesizeKnowledgeQAFromLedger(ctx, userMsg); ok {
-			return synth
+	// A turn reaches this line by one of TWO routes, and they are the same defect:
+	//
+	//  1. a guard destroyed a real answer (content was substantive, guarded is the refusal);
+	//  2. the model wrote the canned refusal ITSELF, over evidence it had been shown.
+	//
+	// The first version of this repaired only (1) — it took an answer that already equalled
+	// the canned string as the agent's own considered abstention and shipped it. That left the
+	// user's complaint standing whenever flash simply typed 「知识库未覆盖」 over a KB that
+	// covered the question, which is the same lie by a different author. Repair is safe for
+	// (2) for the same reason it is safe for (1): every rung re-derives the answer FROM the
+	// ledger and re-validates it, so it either produces a grounded, cited answer or fails and
+	// leaves the refusal exactly where it was.
+	blockedByGuard := strings.TrimSpace(content) != ragNoEvidenceReply
+
+	// Whether the ORIGINAL answer tripped the raw-leak arm. Re-derived here with the same
+	// deterministic check on the same inputs, rather than plumbed out of the guard, so the
+	// guard's signature and its existing tests stay untouched.
+	leaked := knowledge.ValidateNoRawEvidenceLeak(content, e.searchKnowledgeHitsThisTurn) != nil
+
+	if repaired, ok := e.repairKnowledgeAnswerFromLedger(ctx, userMsg, leaked); ok {
+		if blockedByGuard {
+			// The turn was NOT blocked — the user got a grounded answer. The guard already
+			// emitted a hard-block on the way in, and the trace recorder keeps the LAST
+			// emission, so retract it. Without this, every REPAIRED turn is still counted as a
+			// refusal in exactly the reports this fix is supposed to be measured by, and the
+			// production KB-refusal rate would look unchanged while users stopped seeing them.
+			e.retractSearchKnowledgeHardBlock()
 		}
+		return repaired
 	}
 	// Every repair failed. The refusal stands. NOTE it is still the FALSE message — we held
 	// evidence and could not turn it into a grounded answer, which is not "the knowledge base
 	// does not cover this". Making that wording honest is a separate change: the string is
 	// load-bearing for isKnowledgeRefusal and is pinned across the suite.
 	return guarded
+}
+
+// repairKnowledgeAnswerFromLedger re-derives the turn's answer from the evidence the agent was
+// shown. It returns ok=false when it cannot produce one that passes the SAME checks the
+// original failed — so a caller can only ever trade a refusal for a validated answer.
+//
+// leaked says the original tripped the raw-leak arm, and it changes what "passes" means. That
+// distinction is the whole point of the parameter:
+//
+//   - On a CITE failure the repaired answer is deliberately NOT leak-checked.
+//     synthesizeKnowledgeQAFromLedger IS terminal RAG's answerWithRetrievedEvidence, which
+//     runs no leak check because a how-to answer legitimately reproduces a command verbatim
+//     from the evidence — re-imposing the agent loop's prose-oriented leak guard there is what
+//     made the agent loop over-refuse code-heavy questions that terminal RAG answers.
+//   - On a LEAK failure that same exemption would be a hole: the guard could be bypassed by
+//     simply re-rolling the model until it produced another dump with a citation attached. So
+//     when the leak arm is what fired, the repaired answer must clear the leak check the
+//     original failed. Not one check is relaxed — which is the claim, and this is what makes
+//     it true.
+func (e *Engine) repairKnowledgeAnswerFromLedger(ctx context.Context, userMsg string, leaked bool) (string, bool) {
+	// Rung 1 — re-ask the same model with an explicit cite reminder. It leak-checks and
+	// cite-checks its own result before returning ok. Kept because it is cheap and sometimes
+	// works, but it is not the fix: it re-asks the model that just failed to cite, which is why
+	// the production replay still shows the refusal downstream of it.
+	if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
+		return retried, true
+	}
+	// Rung 2 — re-derive from the ledger with the disciplined cited-synthesis primitive, which
+	// cite-validates and strips by construction. Gated on the flag production already ships on
+	// and the Go package defaults off, so no unit test changes behavior implicitly.
+	if !disciplinedKnowledgeQASynthesisOn {
+		return "", false
+	}
+	synth, ok := e.synthesizeKnowledgeQAFromLedger(ctx, userMsg)
+	if !ok {
+		return "", false
+	}
+	if leaked && knowledge.ValidateNoRawEvidenceLeak(synth, e.searchKnowledgeHitsThisTurn) != nil {
+		return "", false
+	}
+	return synth, true
+}
+
+// retractSearchKnowledgeHardBlock records that this turn did NOT end in a hard block after all.
+// The recorder keeps the last emission per turn (cliTraceRecorder.SetEngineHardBlock assigns,
+// it does not append), so this overwrites the guard's earlier Hit=true. Category is left empty
+// because EngineHardBlockTrace documents it as empty whenever Hit is false.
+func (e *Engine) retractSearchKnowledgeHardBlock() {
+	if e.hardBlockObserver == nil {
+		return
+	}
+	e.hardBlockObserver(observability.EngineHardBlockTrace{Hit: false})
 }
 
 // retrySearchKnowledgeCitation gives an agent-loop synthesis that the grounded
