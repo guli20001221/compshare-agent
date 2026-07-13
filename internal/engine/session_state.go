@@ -484,7 +484,49 @@ func contextFrameEmpty(f ContextFrame) bool {
 type PersistedContext struct {
 	AgentSessionState SessionState    `json:"agent_session_state"`
 	ClientContext     json.RawMessage `json:"client_context,omitempty"`
+	// Handoff is set only on a session created to CONTINUE one that hit the
+	// per-session turn cap. Absent on every other session — which is all of them
+	// today, so the envelope stays byte-identical for existing rows.
+	Handoff *SessionHandoff `json:"handoff,omitempty"`
 }
+
+// SessionHandoff carries a capped session's context into its successor.
+//
+// A session is refused at agent.http.max_session_turns (default 10) QA pairs and the
+// user must open a new one. Measured on the 2026-06-26..07-02 production export: 24 of
+// 439 sessions (5.5%) reach exactly that cap and NONE goes past it — against 5 sessions
+// that stop at 9 turns, so the spike at the boundary is truncation, not conversations
+// that happened to end. Those sessions hold 240 of 1127 user turns (21%), because the
+// ones that hit the wall are the long, engaged ones. And 10 of the 24 owners opened a
+// NEW session within FIVE MINUTES of the wall (median gap 4 min, fastest 36 s) — a user
+// cut off mid-task, starting over from nothing.
+//
+// The successor was born empty, so the agent genuinely had no history — this is amnesia
+// by design, not by defect, and it is the one boundary that needed no instrumentation to
+// prove. The cap itself is a RESOURCE guard ("resource-wise they consumed a slot",
+// handlers_chat.go), not a correctness one, so the fix is not to remove it: the successor
+// starts from a bounded handoff rather than 10 replayed turns, which costs LESS than the
+// session it replaces.
+//
+// It must be PERSISTED, not seeded in memory: agentpool evicts at 200 sessions / 30 min
+// idle, and a handoff that lived only in the engine would vanish on the first cold rebuild
+// — recreating, deliberately, the very bug this fixes.
+type SessionHandoff struct {
+	// FromSessionID is the capped predecessor. Recorded for attribution: it is what lets a
+	// trace say "this turn's history came from a rollover" instead of leaving the successor
+	// indistinguishable from a genuinely fresh session.
+	FromSessionID string `json:"from_session_id"`
+	// Messages is the tail of the predecessor's conversation, oldest first, in the same
+	// shape RehydrateHistory takes. Bounded (SessionHandoffMessages) — carrying all 20 would
+	// hand the successor the cost the cap exists to bound.
+	Messages []HistoryMessage `json:"messages,omitempty"`
+}
+
+// SessionHandoffMessages is how many trailing messages of the capped session are carried
+// into its successor: 6 = the last 3 question-answer pairs. Enough for the follow-up that
+// actually gets typed after a wall (「那怎么办」/「继续」), bounded enough that the successor
+// does not inherit the cost the cap exists to bound.
+const SessionHandoffMessages = 6
 
 // ParsePersistedContext decodes the sessions.context column value. See
 // PersistedContext docstring for the four cases. On malformed JSON it

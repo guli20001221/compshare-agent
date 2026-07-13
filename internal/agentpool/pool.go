@@ -136,7 +136,24 @@ func NewWithDeps(deps *engine.SharedDeps, ms store.MessageStore, opts Options) *
 // Callers in the HTTP path MUST use Lease instead of Get to prevent concurrent
 // requests from interleaving ReAct history in the same engine.
 func (p *Pool) Lease(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, func(), error) {
-	e, err := p.getOrCreate(ctx, owner, sessionID)
+	return p.LeaseWithHandoff(ctx, owner, sessionID, nil)
+}
+
+// LeaseWithHandoff is Lease, plus a history prefix that is prepended to the session's own
+// messages when — and ONLY when — the engine has to be built cold.
+//
+// It exists for the turn-cap rollover (engine.SessionHandoff): the successor session owns
+// no messages of its own, so without the prefix its engine rehydrates to an empty history
+// and the user, whose screen still shows the conversation, is talking to an agent that has
+// never read it.
+//
+// The prefix is applied at BUILD time rather than pushed into a live engine because that is
+// the only place it stays correct: a hot engine already carries the full in-memory history
+// (prepending again would duplicate it), while a cold rebuild — the pool evicts at capacity
+// or 30 min idle — is exactly when the carried turns would otherwise be lost. Callers hand
+// the prefix over on every lease and the pool decides; a cache hit ignores it.
+func (p *Pool) LeaseWithHandoff(ctx context.Context, owner store.Owner, sessionID string, prefix []engine.HistoryMessage) (*engine.Engine, func(), error) {
+	e, err := p.getOrCreate(ctx, owner, sessionID, prefix)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -151,7 +168,7 @@ func (p *Pool) Lease(ctx context.Context, owner store.Owner, sessionID string) (
 // access. Get is retained for callers that do not require serialization (e.g.
 // read-only inspection, tests).
 func (p *Pool) Get(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
-	e, err := p.getOrCreate(ctx, owner, sessionID)
+	e, err := p.getOrCreate(ctx, owner, sessionID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +180,7 @@ func (p *Pool) Get(ctx context.Context, owner store.Owner, sessionID string) (*e
 // buildEngine call. After buildEngine returns we re-acquire the lock and
 // re-check whether another goroutine raced us to insert the same key; if
 // so, we discard the duplicate and return the winner already in the cache.
-func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID string) (*entry, error) {
+func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID string, prefix []engine.HistoryMessage) (*entry, error) {
 	k := entryKey{Owner: owner, SessionID: sessionID}
 
 	// Fast path: cache hit.
@@ -178,7 +195,7 @@ func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID str
 	p.mu.Unlock()
 
 	// Slow path: build a new engine outside the lock.
-	eng, err := p.buildEngine(ctx, owner, sessionID)
+	eng, err := p.buildEngine(ctx, owner, sessionID, prefix)
 	if err != nil {
 		return nil, err
 	}

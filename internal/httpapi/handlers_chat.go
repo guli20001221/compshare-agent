@@ -139,8 +139,13 @@ type chatPrep struct {
 	requestUUID    string
 	action         string
 
-	traceRecorder           *chatTraceRecorder
-	clientCtxPreserve       json.RawMessage
+	traceRecorder     *chatTraceRecorder
+	clientCtxPreserve json.RawMessage
+	// handoffPreserve is the rollover handoff read from this session's envelope, carried
+	// through the turn so the end-of-turn persist can write it back. The persist REPLACES the
+	// envelope, so a handoff not restated there is erased — and the successor's history would
+	// then survive only until the pool next evicted its engine.
+	handoffPreserve         *engine.SessionHandoff
 	sessionStatePersistable bool
 	start                   time.Time
 
@@ -189,7 +194,35 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		maxTurns = config.DefaultMaxSessionTurns
 	}
 	if sess.MessageCount >= maxTurns*2 {
-		return nil, ErrSessionTurnLimit
+		if !h.sessionHandoffEnabled {
+			return nil, ErrSessionTurnLimit
+		}
+		rolled, rollErr := h.rollCappedSession(ctx, base.Owner, sess)
+		if rollErr != nil {
+			// Fail CLOSED, to exactly the behavior that shipped before rollover existed. A
+			// rollover that cannot carry the context is WORSE than the refusal: it would hand
+			// the user a conversation the agent has never read — which is the bug this exists
+			// to fix, not a gentler version of it.
+			log.Printf("warning: session %s turn-cap rollover failed, refusing: %v", sessionID, rollErr)
+			return nil, ErrSessionTurnLimit
+		}
+		sess = rolled
+		sessionID = sess.ID
+	}
+
+	// A successor session carries its predecessor's trailing turns in its OWN envelope, so read
+	// the handoff on EVERY turn — not only on the one that rolled it over. The successor's
+	// engine is rebuilt from scratch whenever the pool evicts it (capacity / 30 min idle), and
+	// a prefix supplied once at rollover would be silently lost on the first cold rebuild,
+	// recreating the empty-successor bug two turns later instead of immediately.
+	//
+	// Nil for every session that is not a rollover, which is all of them today — so this is a
+	// no-op on the existing path.
+	var handoffPrefix []engine.HistoryMessage
+	var handoffPreserve *engine.SessionHandoff
+	if pc, hErr := engine.ParsePersistedContext(sess.Context); hErr == nil && pc.Handoff != nil {
+		handoffPrefix = pc.Handoff.Messages
+		handoffPreserve = pc.Handoff
 	}
 
 	// -----------------------------------------------------------------------
@@ -221,7 +254,12 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	}
 	leaseCtx := tools.WithUser(ctx, userCtx)
 
-	agent, release, err := h.pool.Lease(leaseCtx, base.Owner, sessionID)
+	// handoffPrefix is nil on every ordinary turn, so this is exactly Lease. On a turn-cap
+	// rollover it carries the capped predecessor's trailing turns into the successor's
+	// engine, which owns no messages of its own and would otherwise rehydrate empty —
+	// leaving the user, whose screen still shows the conversation, talking to an agent that
+	// has never read it.
+	agent, release, err := h.pool.LeaseWithHandoff(leaseCtx, base.Owner, sessionID, handoffPrefix)
 	if err != nil {
 		return nil, AsAPIError(err)
 	}
@@ -346,6 +384,7 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		action:                  base.Action,
 		traceRecorder:           traceRecorder,
 		clientCtxPreserve:       clientCtxPreserve,
+		handoffPreserve:         handoffPreserve,
 		sessionStatePersistable: sessionStatePersistable,
 		start:                   start,
 	}, nil
@@ -548,6 +587,13 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			envelope := engine.PersistedContext{
 				AgentSessionState: newState,
 				ClientContext:     prep.clientCtxPreserve,
+				// Preserved for the same reason ClientContext is: this write REPLACES the
+				// envelope, so anything not re-stated here is erased. The handoff is what a
+				// rolled-over session's engine rebuilds its history from, and dropping it on
+				// the successor's very first persist would leave the conversation intact only
+				// until the pool next evicted the engine — the empty-successor bug, delayed
+				// by a turn instead of fixed.
+				Handoff: prep.handoffPreserve,
 			}
 			if raw, mErr := json.Marshal(envelope); mErr == nil {
 				persistCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
@@ -559,7 +605,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 				case errors.Is(upErr, store.ErrStaleWrite):
 					log.Printf("warning: session %s stale context_version on persist (expected=%d)",
 						sessionID, expectedVer)
-					h.retryPersistSessionContext(base.Owner, sessionID, newState, prep.clientCtxPreserve)
+					h.retryPersistSessionContext(base.Owner, sessionID, newState, prep.clientCtxPreserve, prep.handoffPreserve)
 				default:
 					log.Printf("warning: session %s UpdateContext failed: %v", sessionID, upErr)
 				}
@@ -570,7 +616,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	}
 }
 
-func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID string, newState engine.SessionState, fallbackClientCtx json.RawMessage) {
+func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID string, newState engine.SessionState, fallbackClientCtx json.RawMessage, fallbackHandoff *engine.SessionHandoff) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 	current, err := h.sessions.GetByID(ctx, owner, sessionID)
@@ -579,12 +625,21 @@ func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID strin
 		return
 	}
 	clientCtx := fallbackClientCtx
+	// The handoff is a property of the SESSION, not of the turn, so re-read it from the row we
+	// just refetched and only fall back to the turn's copy if that row cannot be parsed. Without
+	// this the retry rewrites the envelope WITHOUT the handoff and silently strips a rolled-over
+	// session of the history its engine rebuilds from — the same erase the main persist path had.
+	handoff := fallbackHandoff
 	if pc, parseErr := engine.ParsePersistedContext(current.Context); parseErr == nil {
 		clientCtx = pc.ClientContext
+		if pc.Handoff != nil {
+			handoff = pc.Handoff
+		}
 	}
 	raw, err := json.Marshal(engine.PersistedContext{
 		AgentSessionState: newState,
 		ClientContext:     clientCtx,
+		Handoff:           handoff,
 	})
 	if err != nil {
 		log.Printf("warning: session %s marshal retry envelope failed: %v", sessionID, err)

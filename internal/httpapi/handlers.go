@@ -19,6 +19,11 @@ type EnginePool interface {
 	// HTTP-path callers MUST use Lease to serialize concurrent Chat calls on the same session.
 	Lease(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, func(), error)
 
+	// LeaseWithHandoff is Lease plus a history prefix applied only when the engine must be
+	// built cold. It carries a capped session's trailing turns into its successor
+	// (engine.SessionHandoff); pass nil and it is exactly Lease.
+	LeaseWithHandoff(ctx context.Context, owner store.Owner, sessionID string, prefix []engine.HistoryMessage) (*engine.Engine, func(), error)
+
 	// Get returns the engine without acquiring the per-entry serialization lock.
 	// Retained for backward compatibility; prefer Lease in the HTTP path.
 	Get(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error)
@@ -46,6 +51,10 @@ type Handlers struct {
 	// half is the client's SendCSAgentChat Features opt-in. Both must hold
 	// before a confirmation frame carries a Form / Overrides are accepted.
 	confirmFormEnabled bool
+
+	// sessionHandoffEnabled gates turn-cap rollover. Off = a session at the turn cap refuses
+	// the next turn and the user starts over in an empty one. See SetSessionHandoffEnabled.
+	sessionHandoffEnabled bool
 	// guidedCreateEnabled is the boot half for the guided GPU create order
 	// flow. It only takes effect together with confirmFormEnabled and the
 	// client's guided_create_v1 feature opt-in.
@@ -84,6 +93,21 @@ func (h *Handlers) SetOCRClient(c OCRRecognizer) {
 // frames stay byte-identical and Overrides are rejected.
 func (h *Handlers) SetConfirmFormEnabled(enabled bool) {
 	h.confirmFormEnabled = enabled
+}
+
+// SetSessionHandoffEnabled flips turn-cap rollover (COMPSHARE_SESSION_HANDOFF).
+//
+// Default false = the behavior that ships today: a session at agent.http.max_session_turns
+// refuses the next turn with SessionTurnLimitExceeded and the user opens a new, EMPTY session
+// — so the agent has never read the conversation still on the user's screen.
+//
+// True = the turn continues in a successor session seeded with the capped session's structured
+// state and its trailing turns (rollCappedSession). The cap is still enforced; only what
+// happens AT the cap changes. Rolling back is flipping this off: no schema migration, and a
+// session already rolled over keeps working, because its handoff lives in its own envelope and
+// is read by the normal per-turn path.
+func (h *Handlers) SetSessionHandoffEnabled(enabled bool) {
+	h.sessionHandoffEnabled = enabled
 }
 
 // SetGuidedCreateEnabled flips the boot half of the guided GPU create order

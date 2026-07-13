@@ -102,6 +102,17 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	default:
 		log.Printf("warning: unknown COMPSHARE_CONFIRM_FORM value %q, treating as off", v)
 	}
+
+	switch v := overlayGetenv("COMPSHARE_SESSION_HANDOFF"); v {
+	case "", "0":
+		// off (default): a session at the turn cap refuses the next turn, and the user starts
+		// over in an empty session the agent has never read.
+	case "1":
+		handlers.SetSessionHandoffEnabled(true)
+		log.Printf("session handoff enabled (COMPSHARE_SESSION_HANDOFF=1): a session at the turn cap continues in a successor carrying its context")
+	default:
+		log.Printf("warning: unknown COMPSHARE_SESSION_HANDOFF value %q, treating as off", v)
+	}
 	// Guided GPU create order flow. Requires COMPSHARE_CONFIRM_FORM=1 plus the
 	// client's guided_create_v1 opt-in; default off for rollout safety.
 	switch v := overlayGetenv("COMPSHARE_GUIDED_CREATE"); v {

@@ -164,8 +164,10 @@ type KnowledgeRetriever interface {
 // persistent storage (e.g. MySQL). Only user and assistant roles are accepted;
 // all other roles and empty content are silently skipped.
 type HistoryMessage struct {
-	Role    string
-	Content string
+	// Tags are load-bearing, not cosmetic: SessionHandoff persists these into the
+	// sessions.context envelope, so the wire names are a stored format.
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 // ChatOptions configure optional callbacks for ChatWithOptions. Callbacks are

@@ -28,6 +28,7 @@ import (
 type FeaturesConfig struct {
 	MutatingTools                   *bool    `yaml:"mutating_tools"`                     // COMPSHARE_ENABLE_MUTATING_TOOLS (default off)
 	ConfirmForm                     *bool    `yaml:"confirm_form"`                       // COMPSHARE_CONFIRM_FORM (server-only, default off)
+	SessionHandoff                  *bool    `yaml:"session_handoff"`                    // COMPSHARE_SESSION_HANDOFF (server-only, default off)
 	GuidedCreate                    *bool    `yaml:"guided_create"`                      // COMPSHARE_GUIDED_CREATE (server-only, default off)
 	AgenticSearchKnowledge          *bool    `yaml:"agentic_search_knowledge"`           // COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE (default ON)
 	KnowledgeQAAgentLoop            *bool    `yaml:"knowledge_qa_agent_loop"`            // COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP (default ON)
@@ -107,6 +108,7 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "COMPSHARE_ENABLE_MUTATING_TOOLS", f.MutatingTools, "1", "")
 	putBoolEnv(overrides, "USE_SKILL_EXECUTOR", f.SkillExecutor, "1", "")
 	putBoolEnv(overrides, "COMPSHARE_CONFIRM_FORM", f.ConfirmForm, "1", "0")
+	putBoolEnv(overrides, "COMPSHARE_SESSION_HANDOFF", f.SessionHandoff, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_GUIDED_CREATE", f.GuidedCreate, "1", "0")
 	putBoolEnv(overrides, "USE_SESSION_FACT_CONTEXT", f.SessionFactContext, "1", "0")
 	putBoolEnv(overrides, "USE_REACT_RESULT_PROJECTION", f.ReactResultProjection, "1", "0")

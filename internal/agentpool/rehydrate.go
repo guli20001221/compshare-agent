@@ -35,7 +35,7 @@ func filterHistory(messages []store.Message) []engine.HistoryMessage {
 // buildEngine constructs a fresh *engine.Engine for the given owner+session, then
 // rehydrates its history from the MessageStore. engine.Init() is deliberately
 // NOT called (HTTP path skips the welcome/suggestion pre-warm — see design §6.3).
-func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
+func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID string, prefix []engine.HistoryMessage) (*engine.Engine, error) {
 	eng := engine.NewSession(p.deps, engine.SessionOptions{
 		Subject:              governance.AnonymousSubjectKey,
 		ConfirmFn:            denyConfirm,
@@ -51,6 +51,10 @@ func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID str
 		return nil, fmt.Errorf("agentpool: list messages for session %q: %w", sessionID, err)
 	}
 
-	eng.RehydrateHistory(filterHistory(msgs))
+	// prefix is the tail of a capped predecessor, carried by engine.SessionHandoff. It goes
+	// FIRST — it is older than anything this session owns — so the rebuilt history reads in
+	// the order the user actually lived it. Nil for every session that is not a rollover,
+	// which keeps the rebuilt history byte-identical to before for all of them.
+	eng.RehydrateHistory(append(append([]engine.HistoryMessage{}, prefix...), filterHistory(msgs)...))
 	return eng, nil
 }

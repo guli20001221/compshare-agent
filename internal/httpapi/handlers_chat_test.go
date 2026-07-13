@@ -54,6 +54,9 @@ type fakePool struct{ eng *engine.Engine }
 func (p fakePool) Lease(_ context.Context, _ store.Owner, _ string) (*engine.Engine, func(), error) {
 	return p.eng, func() {}, nil
 }
+func (p fakePool) LeaseWithHandoff(_ context.Context, _ store.Owner, _ string, _ []engine.HistoryMessage) (*engine.Engine, func(), error) {
+	return p.eng, func() {}, nil
+}
 func (p fakePool) Get(_ context.Context, _ store.Owner, _ string) (*engine.Engine, error) {
 	return p.eng, nil
 }
@@ -61,10 +64,19 @@ func (p fakePool) Get(_ context.Context, _ store.Owner, _ string) (*engine.Engin
 type recordingPool struct {
 	eng       *engine.Engine
 	sessionID []string
+	// handoff records the history prefix the handler asked the pool to carry into the
+	// leased engine — nil on every ordinary turn, the capped predecessor's trailing
+	// messages on a turn-cap rollover.
+	handoff []engine.HistoryMessage
 }
 
 func (p *recordingPool) Lease(_ context.Context, _ store.Owner, sessionID string) (*engine.Engine, func(), error) {
 	p.sessionID = append(p.sessionID, sessionID)
+	return p.eng, func() {}, nil
+}
+func (p *recordingPool) LeaseWithHandoff(_ context.Context, _ store.Owner, sessionID string, prefix []engine.HistoryMessage) (*engine.Engine, func(), error) {
+	p.sessionID = append(p.sessionID, sessionID)
+	p.handoff = prefix
 	return p.eng, func() {}, nil
 }
 func (p *recordingPool) Get(_ context.Context, _ store.Owner, sessionID string) (*engine.Engine, error) {
