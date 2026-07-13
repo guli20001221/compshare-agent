@@ -37,6 +37,11 @@ const (
 	defaultCapacity = 200
 	defaultIdleTTL  = 30 * time.Minute
 	gcTickInterval  = 30 * time.Second
+
+	// loadTimeout bounds a single cold load (one ListBySession). It exists because the load is
+	// detached from the requester's context — see loadContext — so nothing else would ever
+	// stop it.
+	loadTimeout = 10 * time.Second
 )
 
 // entryKey is the composite map key used to scope engines by both owner and
@@ -71,7 +76,26 @@ type entry struct {
 	// A WAITING lease counts too. Dropping the entry out from under a queued caller produces
 	// the same split-brain a moment later, and the queue is precisely where a busy session
 	// spends its time.
+	//
+	// A LOADING entry counts too, and it is pinned from the instant it enters the map — before
+	// any IO — so the placeholder cannot be evicted out from under the callers waiting on it.
 	inUse int
+
+	// ready is closed exactly once, when the load finishes — successfully or not. Callers that
+	// find an entry still loading wait on this instead of starting a second load of their own.
+	//
+	// This is the single-flight half of "one session, one engine". inUse alone could not give
+	// it: a pin protects an ENTRY, and the cold-load race happens in the window where the entry
+	// does not exist yet. Two concurrent first-requests for a session both missed, both read
+	// the message history, and both built an engine. The loser discarded its copy only if the
+	// winner was still in the map — so if the winner had run its turn and then been evicted for
+	// capacity, the loser installed ITS engine, built from a snapshot taken BEFORE that turn.
+	// The turn that had just completed vanished from the session's memory. Reproduced 5/5.
+	//
+	// eng and loadErr are written before the close and read only after it, so the close is the
+	// happens-before edge that publishes them.
+	ready   chan struct{}
+	loadErr error
 }
 
 // Pool is a concurrency-safe LRU cache of *engine.Engine keyed by (Owner, SessionID).
@@ -188,55 +212,55 @@ func (p *Pool) Get(ctx context.Context, owner store.Owner, sessionID string) (*e
 	return e.eng, nil
 }
 
-// getOrCreate finds or builds the entry for (owner, sessionID), updating LRU state.
-// Concurrency design: the pool lock is released during the potentially-slow
-// buildEngine call. After buildEngine returns we re-acquire the lock and
-// re-check whether another goroutine raced us to insert the same key; if
-// so, we discard the duplicate and return the winner already in the cache.
-// pin marks the entry in-use for a caller that will take a lease and later release it, so
-// neither capacity nor idle eviction can take it away mid-turn.
+// getOrCreate returns the entry for (owner, sessionID), loading it exactly once if it is not
+// cached, and updating LRU state.
+//
+// SINGLE-FLIGHT. The entry is published to the map BEFORE any IO, as a placeholder whose `ready`
+// channel is still open. Every other request for the same session finds that placeholder and
+// WAITS for it. Exactly one load runs, and exactly one engine ever exists for a session.
+//
+// The old design instead let every concurrent miss build its own engine and had the losers throw
+// theirs away — but only if the winner was still in the map when they looked. That check is where
+// the session lost its memory: if the winner had already run a turn and then been evicted for
+// capacity (legally — it was idle by then), the loser found an empty slot and installed the engine
+// it had built from a snapshot taken BEFORE that turn. The turn that had just completed
+// disappeared from the session's history. Pinning could not fix it, because a pin protects an
+// ENTRY and the race lives in the window where the entry does not exist yet.
+//
+// pin marks the entry in-use for a caller that will take a lease and later release it, so neither
+// capacity nor idle eviction can take it away mid-turn. The loader always pins for the duration of
+// its load, whatever the caller asked for.
 func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID string, pin bool) (*entry, error) {
 	k := entryKey{Owner: owner, SessionID: sessionID}
 
-	// Fast path: cache hit.
 	p.mu.Lock()
 	if el, ok := p.items[k]; ok {
 		e := el.Value.(*entry)
 		e.lastTouched = time.Now()
 		p.lruList.MoveToFront(el)
-		if pin {
-			e.inUse++
-		}
+		// Pin BEFORE dropping p.mu, and BEFORE checking whether the load is done. A caller
+		// waiting on a placeholder is as entitled to keep it alive as one holding a lease on
+		// a built engine; an evicted placeholder would send the next request off to build a
+		// second engine, which is the very thing being prevented.
+		e.inUse++
 		p.mu.Unlock()
-		return e, nil
-	}
-	p.mu.Unlock()
 
-	// Slow path: build a new engine outside the lock.
-	eng, err := p.buildEngine(ctx, owner, sessionID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Re-acquire lock and insert (checking for a concurrent insert).
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if el, ok := p.items[k]; ok {
-		// Another goroutine already inserted while we were building; use theirs.
-		e := el.Value.(*entry)
-		e.lastTouched = time.Now()
-		p.lruList.MoveToFront(el)
-		if pin {
-			e.inUse++
+		if err := p.awaitLoaded(ctx, e); err != nil {
+			p.release(e)
+			return nil, err
+		}
+		if !pin {
+			p.release(e)
 		}
 		return e, nil
 	}
 
-	// Make room — but only ever by taking an IDLE entry.
+	// Miss — we are the loader. Register the placeholder now, under the SAME lock acquisition
+	// that observed the miss, so no second loader can slip in behind us.
 	//
-	// When every entry is in use there is nothing we may legally evict, and both alternatives
-	// are worse than a temporary overshoot:
+	// Make room first — but only ever by taking an IDLE entry. When every entry is in use there
+	// is nothing we may legally evict, and both alternatives are worse than a temporary
+	// overshoot:
 	//
 	//   - evict an active session: that is the split-brain this change exists to remove — the
 	//     turn running on it keeps its lock, the next request for it builds a second engine,
@@ -250,18 +274,86 @@ func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID str
 	if len(p.items) >= p.capacity {
 		p.evictOneIdleLocked()
 	}
-
 	e := &entry{
 		key:         k,
-		eng:         eng,
 		lastTouched: time.Now(),
+		ready:       make(chan struct{}),
+		// TWO pins. One is this caller's, released like any other lease. The other belongs to
+		// the load itself, so the placeholder survives even if this caller hangs up while the
+		// load is still running and other callers are still waiting on it.
+		inUse: 2,
 	}
-	if pin {
-		e.inUse = 1
+	p.items[k] = p.lruList.PushFront(e)
+	p.mu.Unlock()
+
+	// The load runs on its own goroutine so that EVERY caller — including the one whose miss
+	// started it — merely WAITS, on its own context. The requester that happened to trigger a
+	// load has no special obligation to see it through; if they walk away, the load still
+	// finishes for the callers who are still there, and the engine is in the pool for the next
+	// request rather than thrown away.
+	go func() {
+		p.load(ctx, e, owner, sessionID)
+		p.release(e) // the load's own pin
+	}()
+
+	if err := p.awaitLoaded(ctx, e); err != nil {
+		p.release(e)
+		return nil, err
 	}
-	el := p.lruList.PushFront(e)
-	p.items[k] = el
+	if !pin {
+		p.release(e)
+	}
 	return e, nil
+}
+
+// awaitLoaded blocks until e's load has finished, and reports why it could not be used.
+//
+// The WAIT is per-caller cancellable: a client that hangs up stops waiting immediately and does
+// not hold the request open. The LOAD is not — see load().
+func (p *Pool) awaitLoaded(ctx context.Context, e *entry) error {
+	if e.ready == nil {
+		return nil
+	}
+	select {
+	case <-e.ready:
+		return e.loadErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// load performs the one-and-only build for e, publishes the result, and wakes every waiter.
+//
+// The load runs on a context DETACHED from the caller that happened to trigger it
+// (context.WithoutCancel keeps the values — credentials, request scope — and drops the
+// cancellation). This is not incidental: single-flight makes the load SHARED work, so tying its
+// lifetime to one requester would mean a single user pressing Stop fails every other request
+// queued behind them on that session. That would be a regression on the very thing single-flight
+// exists to fix, and aborts are common enough in real traffic to hit it. The load therefore
+// belongs to the pool, and the caller may only stop WAITING for it.
+//
+// A FAILED load is not cached. The placeholder is removed from the map, so the next request
+// re-loads from scratch instead of inheriting a poisoned entry — a transient store error must not
+// brick the session.
+func (p *Pool) load(ctx context.Context, e *entry, owner store.Owner, sessionID string) {
+	// WithoutCancel keeps ctx's VALUES (credentials, request scope) and drops only its
+	// cancellation, so detaching the load costs nothing that buildEngine might need.
+	loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), loadTimeout)
+	defer cancel()
+
+	eng, err := p.buildEngine(loadCtx, owner, sessionID)
+
+	p.mu.Lock()
+	e.eng, e.loadErr = eng, err
+	if err != nil {
+		if el, ok := p.items[e.key]; ok && el.Value.(*entry) == e {
+			p.lruList.Remove(el)
+			delete(p.items, e.key)
+		}
+	}
+	p.mu.Unlock()
+
+	close(e.ready)
 }
 
 // release drops one lease's pin and reclaims any capacity overshoot that pin was holding open.
