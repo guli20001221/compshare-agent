@@ -19,6 +19,15 @@ type EnginePool interface {
 	// HTTP-path callers MUST use Lease to serialize concurrent Chat calls on the same session.
 	Lease(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, func(), error)
 
+	// LeaseWithTrace is Lease plus two pure-observability facts: cacheHit — the
+	// engine came from the live pool (hot) rather than being rebuilt from the DB
+	// (cold) — and rehydrated, how many persisted messages a rebuild restored
+	// (0 on a hot lease). A cold rebuild restores only persisted user/assistant
+	// text, never tool results or retrieved evidence, so the two are not
+	// interchangeable and the turn's trace must say which one it got
+	// (SessionTrace.RehydrateSource; see internal/observability/session.go).
+	LeaseWithTrace(ctx context.Context, owner store.Owner, sessionID string) (eng *engine.Engine, release func(), cacheHit bool, rehydrated int, err error)
+
 	// Get returns the engine without acquiring the per-entry serialization lock.
 	// Retained for backward compatibility; prefer Lease in the HTTP path.
 	Get(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error)

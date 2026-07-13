@@ -130,6 +130,7 @@ type TraceRecord struct {
 	ActualExecutionPath string               `json:"actual_execution_path,omitempty"`
 	Runtime             RuntimeTrace         `json:"runtime"`
 	IntentRouter        RouterTrace          `json:"intent_router"`
+	Session             SessionTrace         `json:"session"`
 	Context             ContextTrace         `json:"context"`
 	EngineHardBlock     EngineHardBlockTrace `json:"engine_hard_block"`
 	EntityRegistry      EntityRegistryTrace  `json:"entity_registry"`
@@ -159,6 +160,7 @@ type traceRecordJSON struct {
 	ActualExecutionPath string                `json:"actual_execution_path,omitempty"`
 	Runtime             *RuntimeTrace         `json:"runtime,omitempty"`
 	IntentRouter        *RouterTrace          `json:"intent_router,omitempty"`
+	Session             *SessionTrace         `json:"session,omitempty"`
 	Context             *ContextTrace         `json:"context,omitempty"`
 	EngineHardBlock     *EngineHardBlockTrace `json:"engine_hard_block,omitempty"`
 	EntityRegistry      *EntityRegistryTrace  `json:"entity_registry,omitempty"`
@@ -190,6 +192,9 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	}
 	if tracePlannerObserved(r.IntentRouter) {
 		out.IntentRouter = &r.IntentRouter
+	}
+	if traceSessionObserved(r.Session) {
+		out.Session = &r.Session
 	}
 	if traceContextObserved(r.Context) {
 		out.Context = &r.Context

@@ -174,7 +174,11 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		return nil, ErrInvalidParam.WithMessage("Message exceeds MaxInputLength")
 	}
 
-	sess, _, err := h.getOrCreateSession(ctx, base.Owner, sessionID)
+	// requestedSessionID is what the CLIENT sent; sessionID below becomes what the
+	// turn actually RUNS on. They diverge on a silent swap (see sessionSwapReason).
+	requestedSessionID := sessionID
+
+	sess, swapped, err := h.getOrCreateSession(ctx, base.Owner, sessionID)
 	if err != nil {
 		return nil, AsAPIError(err)
 	}
@@ -221,7 +225,9 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	}
 	leaseCtx := tools.WithUser(ctx, userCtx)
 
-	agent, release, err := h.pool.Lease(leaseCtx, base.Owner, sessionID)
+	// LeaseWithTrace == Lease plus the pool-hit / rebuilt-message-count facts. Same
+	// lock, same work; the two extra values are recorded, never acted on.
+	agent, release, poolHit, rehydratedMessages, err := h.pool.LeaseWithTrace(leaseCtx, base.Owner, sessionID)
 	if err != nil {
 		return nil, AsAPIError(err)
 	}
@@ -265,6 +271,15 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	traceRecorder := newChatTraceRecorder(h.traceWriter, base, sessionID, turnIndex, message, start)
 	if traceRecorder != nil {
 		traceRecorder.SetRegistryTraceSupplier(agent.RegistryTraceState)
+		traceRecorder.SetSessionTrace(sessionTraceFor(sessionTraceInputs{
+			requestedSessionID: requestedSessionID,
+			session:            sess,
+			swapped:            swapped,
+			turnIndex:          turnIndex,
+			maxTurns:           maxTurns,
+			poolHit:            poolHit,
+			rehydratedMessages: rehydratedMessages,
+		}))
 		attachChatTraceObservers(agent, traceRecorder)
 	}
 
@@ -351,6 +366,91 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	}, nil
 }
 
+// sessionTraceInputs are the facts prepareChat has already established by the
+// time the trace recorder exists. Grouped into a struct so the projection below
+// stays a pure function (testable without a live handler).
+type sessionTraceInputs struct {
+	requestedSessionID string
+	session            store.Session
+	swapped            bool
+	turnIndex          int
+	maxTurns           int
+	poolHit            bool
+	rehydratedMessages int
+}
+
+// sessionTraceFor projects the pre-turn half of the session block: continuity,
+// turn budget, rehydrate source, and the SessionState version this turn READ. The
+// durability half (what it WROTE) is unknowable here and arrives later via
+// SetSessionSaveOutcome.
+//
+// Session ids are HASHED, never recorded in the clear: a session id is a customer
+// identifier and the trace is exported (same rule as UserMsgHash — same helper).
+// Read Swapped, never "the two hashes differ": an absent field means "not
+// recorded", never "no swap" (attribution-observable-only).
+func sessionTraceFor(in sessionTraceInputs) observability.SessionTrace {
+	requestedHash, _ := observability.HashTracePayload(in.requestedSessionID)
+	actualHash, _ := observability.HashTracePayload(in.session.ID)
+	trace := observability.SessionTrace{
+		RequestedSessionIDHash: requestedHash,
+		SessionIDHash:          actualHash,
+		Swapped:                in.swapped,
+		SwapReason:             sessionSwapReason(in.swapped),
+		TurnIndexInSession:     in.turnIndex,
+		MaxSessionTurns:        in.maxTurns,
+		RehydrateSource:        rehydrateSourceFor(in.poolHit, in.session.MessageCount),
+		RehydratedMessageCount: in.rehydratedMessages,
+		ContextVersionIn:       in.session.ContextVersion,
+	}
+	return trace
+}
+
+// sessionSwapReason maps the one swap signal this layer actually has to a
+// SessionSwap* const.
+//
+// HONEST LIMIT: getOrCreateSession mints the replacement session on exactly one
+// condition — SessionStore.GetByID returned sql.ErrNoRows. GetByID is
+// owner-scoped and filters soft-deleted rows, so "unknown id", "id owned by
+// another tenant", and "id reaped" ALL collapse into that single ErrNoRows before
+// reaching here. Separating SessionSwapForeign / SessionSwapExpired would require
+// a second, non-owner-scoped lookup — a new query on the hot chat path, i.e. a
+// behavior change — so they are deliberately NOT guessed at: every observed swap
+// is reported as the thing we can actually prove, not_found.
+//
+// SessionSwapAbsent and SessionSwapMalformed are likewise unreachable on a chat
+// turn: prepareChat rejects an empty SessionId with ErrInvalidParam before any
+// recorder exists, and there is no id-format validation at all. Both consts stay
+// defined for the schema; neither is ever emitted from here today.
+func sessionSwapReason(swapped bool) string {
+	if !swapped {
+		return ""
+	}
+	return observability.SessionSwapNotFound
+}
+
+// rehydrateSourceFor attributes where THIS turn's engine came from.
+//
+// priorMessageCount is the session's message_count as of turn START (before this
+// turn's +2 bump), so 0 means the session has never completed a turn. The engine
+// lease happens before the user row is inserted, so this turn's own message can
+// never be in the rebuild.
+//
+//	pool hit                       -> hot  (full in-memory history intact)
+//	pool miss, session has history -> cold (rebuilt from DB: persisted user/assistant
+//	                                        TEXT only — tool results and retrieved
+//	                                        evidence were never persisted)
+//	pool miss, session is empty    -> new  (nothing to restore; not a defect)
+func rehydrateSourceFor(poolHit bool, priorMessageCount int) string {
+	switch {
+	case poolHit:
+		return observability.RehydrateSourceHot
+	case priorMessageCount == 0:
+		return observability.RehydrateSourceNew
+	default:
+		return observability.RehydrateSourceCold
+	}
+}
+
 // chatStream runs the LLM turn and streams frames over sw (SSE or WS). It owns
 // everything from the meta frame through the done/error frame plus post-stream
 // persistence. streamCtx scopes the turn — cancelling it (client disconnect)
@@ -370,6 +470,14 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	var reply string
 	var chatErr error
 
+	// turnEnd freezes the turn's end timestamp at the moment the reply was ready.
+	// The success path finalizes the trace AFTER the state-persist block (the only
+	// point where cas_conflict / state_save_failed / context_version_out become
+	// knowable at all), and without this the persist wait would silently inflate
+	// total_latency_ms. Zero → the trace was finalized on the abort/error path,
+	// where the timestamp is taken as before.
+	var turnEnd time.Time
+
 	finishTrace := func(err error) {
 		if traceRecorder == nil {
 			return
@@ -387,7 +495,11 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			SelectedInstanceIDAtTurnStart: agent.SelectedInstanceIDAtTurnStart(),
 			FactCacheOldestAgeBucket:      observability.BucketFactCacheAge(agent.FactCacheOldestAgeSeconds()),
 		})
-		if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
+		end := turnEnd
+		if end.IsZero() {
+			end = time.Now()
+		}
+		if traceErr := traceRecorder.Finish(err, end); traceErr != nil {
 			log.Printf("warning: HTTP trace write failed: %v", traceErr)
 		}
 		traceRecorder = nil
@@ -517,10 +629,22 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	}
 
 	// Success.
-	finishTrace(nil)
+	//
+	// The trace is finalized at the BOTTOM of this branch, not here. Nothing else
+	// moves: the assistant UPDATE, the done frame and the SessionState persist keep
+	// their exact current order (this is not the done-before-save fix — that is a
+	// different change). Only the trace WRITE moves, because state_save_failed /
+	// cas_conflict / context_version_out do not exist until the save has been
+	// attempted, and a trace written before them can only report them as false —
+	// i.e. silently claim a save succeeded that may not have (the exact failure the
+	// session block exists to count). turnEnd, frozen here, keeps total_latency_ms
+	// measuring the same interval it did before.
+	turnEnd = time.Now()
 	inputTokens := usage.PromptTokens
 	outputTokens := usage.CompletionTokens
-	_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
+	// Error captured, not acted on: today this UPDATE failing is silent — the user
+	// has already been told the turn succeeded, and the next turn will not see it.
+	replySaveErr := h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
 		store.AssistantPatch{
 			Content:      guardrails.RedactOutputLeak(reply),
 			Status:       "ok",
@@ -542,6 +666,14 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	// Persistence failures are warning-only — the assistant reply is already
 	// delivered, the worst case is "previous instance" memory loss on the
 	// next turn.
+	// stateSaveFailed starts from the assistant-reply UPDATE: the user was told the
+	// turn succeeded, so a failure anywhere below means the next turn will not see
+	// this one. contextVersionOut stays 0 when no write was observed (nothing to
+	// persist / never attempted) — 0 means "not observed", never "version 0".
+	stateSaveFailed := replySaveErr != nil
+	contextVersionOut := 0
+	casConflict := false
+
 	if prep.sessionStatePersistable {
 		newState, expectedVer, hydrated := agent.SessionStateSnapshot()
 		if hydrated {
@@ -551,32 +683,50 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			}
 			if raw, mErr := json.Marshal(envelope); mErr == nil {
 				persistCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-				_, upErr := h.sessions.UpdateContext(persistCtx, base.Owner, sessionID, raw, expectedVer)
+				newVer, upErr := h.sessions.UpdateContext(persistCtx, base.Owner, sessionID, raw, expectedVer)
 				cancel()
 				switch {
 				case upErr == nil:
-					// ok
+					contextVersionOut = newVer
 				case errors.Is(upErr, store.ErrStaleWrite):
+					casConflict = true
 					log.Printf("warning: session %s stale context_version on persist (expected=%d)",
 						sessionID, expectedVer)
-					h.retryPersistSessionContext(base.Owner, sessionID, newState, prep.clientCtxPreserve)
+					retryVer, retryErr := h.retryPersistSessionContext(base.Owner, sessionID, newState, prep.clientCtxPreserve)
+					if retryErr != nil {
+						stateSaveFailed = true
+					} else {
+						contextVersionOut = retryVer
+					}
 				default:
+					stateSaveFailed = true
 					log.Printf("warning: session %s UpdateContext failed: %v", sessionID, upErr)
 				}
 			} else {
+				stateSaveFailed = true
 				log.Printf("warning: session %s marshal envelope failed: %v", sessionID, mErr)
 			}
 		}
 	}
+
+	if traceRecorder != nil {
+		traceRecorder.SetSessionSaveOutcome(contextVersionOut, casConflict, stateSaveFailed)
+	}
+	finishTrace(nil)
 }
 
-func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID string, newState engine.SessionState, fallbackClientCtx json.RawMessage) {
+// retryPersistSessionContext re-reads the winning row and re-writes the state on
+// top of it after a CAS conflict. It returns the version it wrote and the error
+// it hit — both purely so the turn's trace can say whether the state actually
+// landed. Every log line and every write it performs is unchanged; a caller that
+// ignores both returns behaves exactly as before.
+func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID string, newState engine.SessionState, fallbackClientCtx json.RawMessage) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 	current, err := h.sessions.GetByID(ctx, owner, sessionID)
 	if err != nil {
 		log.Printf("warning: session %s refetch after stale context persist failed: %v", sessionID, err)
-		return
+		return 0, err
 	}
 	clientCtx := fallbackClientCtx
 	if pc, parseErr := engine.ParsePersistedContext(current.Context); parseErr == nil {
@@ -588,13 +738,16 @@ func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID strin
 	})
 	if err != nil {
 		log.Printf("warning: session %s marshal retry envelope failed: %v", sessionID, err)
-		return
+		return 0, err
 	}
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel2()
-	if _, err := h.sessions.UpdateContext(ctx2, owner, sessionID, raw, current.ContextVersion); err != nil {
+	newVer, err := h.sessions.UpdateContext(ctx2, owner, sessionID, raw, current.ContextVersion)
+	if err != nil {
 		log.Printf("warning: session %s retry UpdateContext failed: %v", sessionID, err)
+		return 0, err
 	}
+	return newVer, nil
 }
 
 // mustUserContext rebuilds the UserContext for the streaming context. prepareChat

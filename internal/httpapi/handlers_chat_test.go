@@ -49,24 +49,47 @@ func (chatExecutor) Execute(_ context.Context, _ string, _ map[string]any) (map[
 }
 
 // fakePool implements EnginePool and always returns the same engine.
-type fakePool struct{ eng *engine.Engine }
+//
+// poolHit / rehydrated are the pure-observability facts LeaseWithTrace reports:
+// whether the engine came from the live pool (hot) or was rebuilt from the DB
+// (cold), and how many persisted messages that rebuild restored. The zero value
+// is a miss with nothing restored — what a brand-new session really is — so
+// existing tests keep their behavior.
+type fakePool struct {
+	eng        *engine.Engine
+	poolHit    bool
+	rehydrated int
+}
 
 func (p fakePool) Lease(_ context.Context, _ store.Owner, _ string) (*engine.Engine, func(), error) {
 	return p.eng, func() {}, nil
 }
+
+func (p fakePool) LeaseWithTrace(_ context.Context, _ store.Owner, _ string) (*engine.Engine, func(), bool, int, error) {
+	return p.eng, func() {}, p.poolHit, p.rehydrated, nil
+}
+
 func (p fakePool) Get(_ context.Context, _ store.Owner, _ string) (*engine.Engine, error) {
 	return p.eng, nil
 }
 
 type recordingPool struct {
-	eng       *engine.Engine
-	sessionID []string
+	eng        *engine.Engine
+	sessionID  []string
+	poolHit    bool
+	rehydrated int
 }
 
 func (p *recordingPool) Lease(_ context.Context, _ store.Owner, sessionID string) (*engine.Engine, func(), error) {
 	p.sessionID = append(p.sessionID, sessionID)
 	return p.eng, func() {}, nil
 }
+
+func (p *recordingPool) LeaseWithTrace(_ context.Context, _ store.Owner, sessionID string) (*engine.Engine, func(), bool, int, error) {
+	p.sessionID = append(p.sessionID, sessionID)
+	return p.eng, func() {}, p.poolHit, p.rehydrated, nil
+}
+
 func (p *recordingPool) Get(_ context.Context, _ store.Owner, sessionID string) (*engine.Engine, error) {
 	p.sessionID = append(p.sessionID, sessionID)
 	return p.eng, nil

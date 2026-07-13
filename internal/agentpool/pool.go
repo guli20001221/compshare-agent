@@ -54,6 +54,11 @@ type entry struct {
 	eng         *engine.Engine
 	mu          sync.Mutex // serializes per-session engine access
 	lastTouched time.Time
+	// rehydratedMessages is how many persisted messages buildEngine restored into
+	// eng when THIS entry was built. Written once, before the entry is published
+	// under p.mu, and never mutated afterwards. Pure observability — see
+	// LeaseWithTrace.
+	rehydratedMessages int
 }
 
 // Pool is a concurrency-safe LRU cache of *engine.Engine keyed by (Owner, SessionID).
@@ -136,12 +141,38 @@ func NewWithDeps(deps *engine.SharedDeps, ms store.MessageStore, opts Options) *
 // Callers in the HTTP path MUST use Lease instead of Get to prevent concurrent
 // requests from interleaving ReAct history in the same engine.
 func (p *Pool) Lease(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, func(), error) {
-	e, err := p.getOrCreate(ctx, owner, sessionID)
+	eng, release, _, _, err := p.LeaseWithTrace(ctx, owner, sessionID)
+	return eng, release, err
+}
+
+// LeaseWithTrace is Lease plus the two facts the HTTP layer cannot otherwise
+// see about the engine it was handed:
+//
+//   - cacheHit — the engine came from the LIVE pool with its full in-memory
+//     history (hot). false means the pool had evicted the session (LRU at
+//     capacity, or idle past IdleTTL) and the engine was REBUILT from the DB
+//     (cold), or the session is brand new.
+//   - rehydrated — how many persisted messages that rebuild restored. Zero on a
+//     hot lease: nothing was rehydrated this turn.
+//
+// Hot and cold are NOT equivalent: a cold rebuild restores only persisted
+// user/assistant text, so the tool results and retrieved evidence a follow-up
+// refers to are gone even though the transcript looks complete. A turn where "the
+// agent forgot" cannot be attributed without knowing which one it got — that is
+// the whole reason this returns anything (see internal/observability/session.go).
+//
+// Observability only: it takes the same lock and does the same work as Lease.
+func (p *Pool) LeaseWithTrace(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, func(), bool, int, error) {
+	e, cacheHit, err := p.getOrCreate(ctx, owner, sessionID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, 0, err
+	}
+	rehydrated := 0
+	if !cacheHit {
+		rehydrated = e.rehydratedMessages
 	}
 	e.mu.Lock()
-	return e.eng, func() { e.mu.Unlock() }, nil
+	return e.eng, func() { e.mu.Unlock() }, cacheHit, rehydrated, nil
 }
 
 // Get returns the cached *engine.Engine for (owner, sessionID), building a fresh
@@ -151,7 +182,7 @@ func (p *Pool) Lease(ctx context.Context, owner store.Owner, sessionID string) (
 // access. Get is retained for callers that do not require serialization (e.g.
 // read-only inspection, tests).
 func (p *Pool) Get(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
-	e, err := p.getOrCreate(ctx, owner, sessionID)
+	e, _, err := p.getOrCreate(ctx, owner, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +194,12 @@ func (p *Pool) Get(ctx context.Context, owner store.Owner, sessionID string) (*e
 // buildEngine call. After buildEngine returns we re-acquire the lock and
 // re-check whether another goroutine raced us to insert the same key; if
 // so, we discard the duplicate and return the winner already in the cache.
-func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID string) (*entry, error) {
+//
+// cacheHit reports whether the engine came from the live pool (true) or had to be
+// rebuilt from the DB (false). The lost-race branch returns false: the caller's
+// turn still ran on a freshly rebuilt engine, just the winner's rather than its
+// own — attributing that as a pool hit would hide a cold rebuild.
+func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID string) (*entry, bool, error) {
 	k := entryKey{Owner: owner, SessionID: sessionID}
 
 	// Fast path: cache hit.
@@ -173,14 +209,14 @@ func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID str
 		e.lastTouched = time.Now()
 		p.lruList.MoveToFront(el)
 		p.mu.Unlock()
-		return e, nil
+		return e, true, nil
 	}
 	p.mu.Unlock()
 
 	// Slow path: build a new engine outside the lock.
-	eng, err := p.buildEngine(ctx, owner, sessionID)
+	eng, rehydrated, err := p.buildEngine(ctx, owner, sessionID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// Re-acquire lock and insert (checking for a concurrent insert).
@@ -192,7 +228,7 @@ func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID str
 		e := el.Value.(*entry)
 		e.lastTouched = time.Now()
 		p.lruList.MoveToFront(el)
-		return e, nil
+		return e, false, nil
 	}
 
 	// Evict LRU if at capacity.
@@ -201,13 +237,14 @@ func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID str
 	}
 
 	e := &entry{
-		key:         k,
-		eng:         eng,
-		lastTouched: time.Now(),
+		key:                k,
+		eng:                eng,
+		lastTouched:        time.Now(),
+		rehydratedMessages: rehydrated,
 	}
 	el := p.lruList.PushFront(e)
 	p.items[k] = el
-	return e, nil
+	return e, false, nil
 }
 
 // Close stops the background gc goroutine and waits for it to exit.

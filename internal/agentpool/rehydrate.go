@@ -35,7 +35,14 @@ func filterHistory(messages []store.Message) []engine.HistoryMessage {
 // buildEngine constructs a fresh *engine.Engine for the given owner+session, then
 // rehydrates its history from the MessageStore. engine.Init() is deliberately
 // NOT called (HTTP path skips the welcome/suggestion pre-warm — see design §6.3).
-func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
+//
+// It also returns how many persisted messages the rehydration actually restored.
+// That count is pure observability (SessionTrace.RehydratedMessageCount): a cold
+// rebuild restores ONLY persisted user/assistant text — tool results, retrieved
+// evidence and workflow steps were never persisted — so a rebuilt engine is not
+// equivalent to a pool hit, and a turn cannot be attributed without knowing which
+// one it got. See internal/observability/session.go.
+func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, int, error) {
 	eng := engine.NewSession(p.deps, engine.SessionOptions{
 		Subject:              governance.AnonymousSubjectKey,
 		ConfirmFn:            denyConfirm,
@@ -48,9 +55,10 @@ func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID str
 	// owner-scoped ListBySession variant without API changes here.
 	msgs, _, err := p.messageStore.ListBySession(ctx, sessionID, 100, "")
 	if err != nil {
-		return nil, fmt.Errorf("agentpool: list messages for session %q: %w", sessionID, err)
+		return nil, 0, fmt.Errorf("agentpool: list messages for session %q: %w", sessionID, err)
 	}
 
-	eng.RehydrateHistory(filterHistory(msgs))
-	return eng, nil
+	history := filterHistory(msgs)
+	eng.RehydrateHistory(history)
+	return eng, len(history), nil
 }

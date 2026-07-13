@@ -30,6 +30,7 @@ type chatTraceRecorder struct {
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
 	terminalSignals       observability.FinishSignals
 	stateTrace            observability.StateTrace
+	sessionTrace          observability.SessionTrace
 }
 
 func newChatTraceRecorder(
@@ -127,6 +128,39 @@ func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
 	state.ContextDecisionError = r.stateTrace.ContextDecisionError
 	state.ContextDecisionActiveTask = r.stateTrace.ContextDecisionActiveTask
 	r.stateTrace = state
+}
+
+// SetSessionTrace records the per-turn session-continuity facts known BEFORE the
+// turn runs: which session the client asked for vs which one it got (hashed),
+// whether the backend swapped it, this turn's index against the configured turn
+// cap, where the engine came from (hot pool / cold DB rebuild / brand-new), and
+// the SessionState version the turn read. Called from prepareChat; the durability
+// half (what the turn WROTE) arrives later via SetSessionSaveOutcome.
+//
+// An un-set recorder leaves Session zero (omitted, SHA-stable) — the CLI path has
+// no sessions and never calls this, so CLI traces carry no session block, which is
+// correct: not observed, never "no swap".
+func (r *chatTraceRecorder) SetSessionTrace(trace observability.SessionTrace) {
+	if r == nil {
+		return
+	}
+	r.sessionTrace = trace
+}
+
+// SetSessionSaveOutcome records whether this turn's state actually landed:
+// contextVersionOut is the SessionState version written (0 = no write observed —
+// nothing to persist, or the write never happened), casConflict that the
+// optimistic-lock write collided, and saveFailed that the assistant reply or the
+// SessionState did NOT persist even though the user was already told the turn
+// succeeded. Called after the persist attempt (the only point at which any of the
+// three is knowable), before Finish.
+func (r *chatTraceRecorder) SetSessionSaveOutcome(contextVersionOut int, casConflict, saveFailed bool) {
+	if r == nil {
+		return
+	}
+	r.sessionTrace.ContextVersionOut = contextVersionOut
+	r.sessionTrace.CASConflict = casConflict
+	r.sessionTrace.StateSaveFailed = saveFailed
 }
 
 // SetContextTrace records what the router and the loop could actually SEE this turn.
@@ -341,6 +375,7 @@ func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 	r.record.ActualExecutionPath = r.record.DeriveActualExecutionPath()
 	r.record.Retrieval.RefusalType = r.record.Retrieval.DeriveRefusalType()
 	r.record.State = r.stateTrace
+	r.record.Session = r.sessionTrace
 	signals := r.terminalSignals
 	signals.ChatErr = chatErr
 	r.record.FinalizeOutcome(signals)
