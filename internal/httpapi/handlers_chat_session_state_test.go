@@ -220,10 +220,27 @@ func TestDispatchChat_PreHydratedEngine_MalformedContext_StillSkipsPersist(t *te
 		"ClearSessionState must zero the SessionState struct")
 }
 
-// Case 6: UpdateContext returns ErrStaleWrite — SSE still emits done.
-// The assistant reply is already delivered; CAS loss only loses the next
-// turn's "previous instance" memory.
-func TestDispatchChat_StaleWriteOnPersist_StillEmitsDone(t *testing.T) {
+// Case 6: the commit loses its CAS — the turn is REPORTED as not saved.
+//
+// CONTRACT CHANGE, stated rather than slipped in. This test used to be
+// TestDispatchChat_StaleWriteOnPersist_StillEmitsDone, and it required `done` plus NO error,
+// on the reasoning that "the assistant reply is already delivered; CAS loss only loses the next
+// turn's 'previous instance' memory".
+//
+// That sentence describes the bug. Losing the next turn's memory of the instance the user just
+// selected IS the amnesia this whole line of work exists to remove — it was written down as an
+// acceptable cost. And `done` is what unlocks the client's input box, so announcing it after a
+// lost write tells the user to carry on from a state the server does not have; the turn AFTER
+// this one is the one that looks like the agent forgot.
+//
+// It also required updateContextCalls == 2, pinning the "retry" that re-read the winning row and
+// wrote this turn's state on top of it — silently destroying whatever the other writer had
+// committed. There is no correct retry on a CAS conflict, only a choice about whose state
+// survives, and overwriting the winner turns a conflict we can see into state loss we cannot.
+//
+// The contract now: the answer and the state commit together or not at all, and success is only
+// announced once they have.
+func TestDispatchChat_CommitLosesTheCAS_ReportsTheTurnAsNotSaved(t *testing.T) {
 	h, sessions, _ := newChatTestHandlers(t, store.Session{
 		ID:                "sess-stale",
 		TopOrganizationID: 1,
@@ -238,9 +255,11 @@ func TestDispatchChat_StaleWriteOnPersist_StillEmitsDone(t *testing.T) {
 
 	sink, _ := dispatchChatTurn(t, h, "sess-stale", "hi")
 
-	assert.True(t, sink.has("done"),
-		"stream must emit done even when CAS loses on persist — reply was already streamed")
-	assert.False(t, sink.has("error"),
-		"ErrStaleWrite is a warning-only condition, not a stream error")
-	require.Equal(t, 2, sessions.updateContextCalls)
+	assert.False(t, sink.has("done"),
+		"the state did not land, so the turn did not happen — announcing done tells the client to continue from a conversation the server has no record of")
+	assert.True(t, sink.has("error"),
+		"a turn that could not be saved must be REPORTED, not logged and forgotten")
+
+	require.Equal(t, 1, sessions.updateContextCalls,
+		"exactly ONE write attempt: a CAS conflict is another writer, not a transient fault. Retrying it could only overwrite them, and the old second call did exactly that")
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -225,6 +226,32 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	if err != nil {
 		return nil, AsAPIError(err)
 	}
+
+	// RE-READ the session row, now that we hold the lease.
+	//
+	// The copy fetched at the top of this function was read BEFORE the lease. The lease
+	// serializes the ENGINE; it does not reach back in time and serialize that read. So a turn
+	// can sit blocked here holding a snapshot the previous turn has since replaced:
+	//
+	//	T1 finishes and persists v2 (a newly selected instance, a new last-intent)
+	//	T2 had already read v1 before it queued on the lease
+	//	T2 acquires the lease and hydrates the model with ... v1
+	//
+	// T2 then answers on a context one turn out of date, silently. Reading again under the
+	// lease is what makes the read, the turn, and the write ONE critical section per session.
+	//
+	// It FAILS CLOSED. If the re-read errors we cannot establish that the context is current,
+	// and answering from a snapshot we already know may be stale is the exact failure this
+	// whole line of work exists to remove — "answer anyway" is not a degradation, it is the
+	// bug. The turn is refused before the model sees anything, and the user retries.
+	fresh, reErr := h.sessions.GetByID(ctx, base.Owner, sessionID)
+	if reErr != nil {
+		release()
+		log.Printf("warning: session %s could not be re-read under the lease; refusing the turn rather than answering from a snapshot we cannot confirm is current: %v",
+			sessionID, reErr)
+		return nil, ErrInternal.WithMessage("%s", "会话上下文暂时不可用，请重试")
+	}
+	sess = fresh
 
 	// Hydrate SessionState from the envelope persisted in sessions.context.
 	// Order matters:
@@ -516,86 +543,133 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		return
 	}
 
-	// Success.
+	// Success — but not yet. The model produced an answer; the TURN is not finished until that
+	// answer and the state it produced are both durable.
+	//
+	// `done` is what unlocks the user's input box. Sending it before the writes land is an open
+	// invitation for the next turn to race a write that has not happened, and the old code did
+	// exactly that — it persisted the state AFTER `done`, on the reasoning that "the client is
+	// not blocked on a DB write" and a lost write is merely "previous instance memory loss on
+	// the next turn". That lost write IS the amnesia. It is the whole bug, filed as an
+	// acceptable cost.
+	//
+	// The contract now: announce success only once the context was confirmed current (the
+	// re-read under the lease, in prepareChat) AND the result is confirmed saved. Otherwise
+	// fail, plainly, and let the user retry.
 	finishTrace(nil)
 	inputTokens := usage.PromptTokens
 	outputTokens := usage.CompletionTokens
-	_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
-		store.AssistantPatch{
-			Content:      guardrails.RedactOutputLeak(reply),
-			Status:       "ok",
-			InputTokens:  &inputTokens,
-			OutputTokens: &outputTokens,
-			TTFTMs:       &ttftMs,
-			LatencyMs:    &latencyMs,
-		})
+	patch := store.AssistantPatch{
+		Content:      guardrails.RedactOutputLeak(reply),
+		Status:       "ok",
+		InputTokens:  &inputTokens,
+		OutputTokens: &outputTokens,
+		TTFTMs:       &ttftMs,
+		LatencyMs:    &latencyMs,
+	}
+
+	if err := h.commitTurn(base.Owner, sessionID, assistantMsgID, patch, agent, prep); err != nil {
+		// The answer was streamed — we cannot unsend it — but the turn did NOT commit, and
+		// saying "done" here would tell the client to unlock the input and carry on from a
+		// state the server does not have. Mark the row so a rebuild does not resurrect half a
+		// turn, and report the failure.
+		code := ErrTurnNotSaved.Code
+		_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
+			store.AssistantPatch{Status: "error", ErrorCode: &code, LatencyMs: &latencyMs, TTFTMs: &ttftMs})
+		log.Printf("warning: session %s turn NOT committed after retries; refusing to announce success: %v", sessionID, err)
+		_ = sw.WriteEvent("error", streamErrorEvent{Code: ErrTurnNotSaved.Code, Message: ErrTurnNotSaved.Message})
+		return
+	}
+
 	_ = sw.WriteEvent("done", doneEvent{
 		Content:   reply,
 		Usage:     usageEvent{InputTokens: inputTokens, OutputTokens: outputTokens},
 		LatencyMs: latencyMs,
 		TtftMs:    ttftMs,
 	})
-
-	// Persist SessionState envelope AFTER the done frame so the client is
-	// not blocked on a DB write. Guarded by sessionStatePersistable, which
-	// is false on parse failure / unknown schema version (see prepareChat).
-	// Persistence failures are warning-only — the assistant reply is already
-	// delivered, the worst case is "previous instance" memory loss on the
-	// next turn.
-	if prep.sessionStatePersistable {
-		newState, expectedVer, hydrated := agent.SessionStateSnapshot()
-		if hydrated {
-			envelope := engine.PersistedContext{
-				AgentSessionState: newState,
-				ClientContext:     prep.clientCtxPreserve,
-			}
-			if raw, mErr := json.Marshal(envelope); mErr == nil {
-				persistCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-				_, upErr := h.sessions.UpdateContext(persistCtx, base.Owner, sessionID, raw, expectedVer)
-				cancel()
-				switch {
-				case upErr == nil:
-					// ok
-				case errors.Is(upErr, store.ErrStaleWrite):
-					log.Printf("warning: session %s stale context_version on persist (expected=%d)",
-						sessionID, expectedVer)
-					h.retryPersistSessionContext(base.Owner, sessionID, newState, prep.clientCtxPreserve)
-				default:
-					log.Printf("warning: session %s UpdateContext failed: %v", sessionID, upErr)
-				}
-			} else {
-				log.Printf("warning: session %s marshal envelope failed: %v", sessionID, mErr)
-			}
-		}
-	}
 }
 
-func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID string, newState engine.SessionState, fallbackClientCtx json.RawMessage) {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-	current, err := h.sessions.GetByID(ctx, owner, sessionID)
-	if err != nil {
-		log.Printf("warning: session %s refetch after stale context persist failed: %v", sessionID, err)
-		return
+// turnCommitAttempts bounds the retry on a transient store failure. A turn that cannot be saved
+// after this many tries is reported to the user, not papered over: the alternative is a client
+// that believes it is N turns into a conversation the server has no record of.
+const turnCommitAttempts = 3
+
+// commitTurn writes the assistant's answer and the session state it produced as ONE commit, with
+// a bounded retry on transient failures.
+//
+// A CAS conflict (ErrStaleWrite) is NOT retried. It means another writer committed to this
+// session between our read and our write — and with the session row now read under the engine
+// lease, and the engine pinned in the pool for the duration of the turn, two turns of one session
+// on one replica are serialized and cannot produce one. So a conflict here means a writer this
+// replica cannot see, and the honest response is to fail: re-reading and writing our state on top
+// of theirs would convert a conflict we can detect into state loss we cannot.
+func (h *Handlers) commitTurn(
+	owner store.Owner,
+	sessionID string,
+	assistantMsgID string,
+	patch store.AssistantPatch,
+	agent *engine.Engine,
+	prep *chatPrep,
+) error {
+	// A turn whose prior context was unparseable / from a newer schema must not rewrite the
+	// row (see prepareChat) — but its ANSWER is still real and must still be stored. Commit the
+	// message alone, and leave the envelope for the binary that understands it.
+	newState, expectedVer, hydrated := agent.SessionStateSnapshot()
+	if !prep.sessionStatePersistable || !hydrated {
+		return h.retryStore(func(ctx context.Context) error {
+			return h.messages.UpdateAssistant(ctx, owner, assistantMsgID, patch)
+		})
 	}
-	clientCtx := fallbackClientCtx
-	if pc, parseErr := engine.ParsePersistedContext(current.Context); parseErr == nil {
-		clientCtx = pc.ClientContext
-	}
+
 	raw, err := json.Marshal(engine.PersistedContext{
 		AgentSessionState: newState,
-		ClientContext:     clientCtx,
+		ClientContext:     prep.clientCtxPreserve,
 	})
 	if err != nil {
-		log.Printf("warning: session %s marshal retry envelope failed: %v", sessionID, err)
-		return
+		return fmt.Errorf("marshal session envelope: %w", err)
 	}
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel2()
-	if _, err := h.sessions.UpdateContext(ctx2, owner, sessionID, raw, current.ContextVersion); err != nil {
-		log.Printf("warning: session %s retry UpdateContext failed: %v", sessionID, err)
-	}
+
+	return h.retryStore(func(ctx context.Context) error {
+		_, cErr := h.turns.CommitTurn(ctx, owner, sessionID, assistantMsgID, patch, raw, expectedVer)
+		return cErr
+	})
 }
+
+// retryStore runs fn up to turnCommitAttempts times, backing off briefly between tries. It does
+// NOT retry a CAS conflict: that is not a transient fault, it is a different writer, and trying
+// again would only overwrite them.
+func (h *Handlers) retryStore(fn func(context.Context) error) error {
+	var err error
+	for attempt := 1; attempt <= turnCommitAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err = fn(ctx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, store.ErrStaleWrite) {
+			return err
+		}
+		if attempt < turnCommitAttempts {
+			time.Sleep(time.Duration(attempt) * 50 * time.Millisecond)
+		}
+	}
+	return err
+}
+
+// retryPersistSessionContext is GONE, and its absence is the point.
+//
+// On a CAS conflict it used to re-read the winning row, keep only that row's ClientContext, and
+// write THIS turn's AgentSessionState on top — silently discarding whatever the other writer had
+// committed. It turned a conflict we could detect into permanent, unlogged state loss for
+// somebody else's turn. Two SessionStates cannot be merged without knowing which fields each turn
+// actually WROTE (a field this turn deliberately CLEARED would be resurrected from the winner),
+// so there is no correct "retry" here — only a choice about whose state survives.
+//
+// A conflict now means a writer this replica cannot see: the session row is read under the engine
+// lease, and the engine is pinned in the pool for the whole turn, so two turns of one session on
+// one replica are serialized end to end. The honest response is to keep the winner's state and
+// fail this turn (ErrTurnNotSaved), which is what commitTurn does.
 
 // mustUserContext rebuilds the UserContext for the streaming context. prepareChat
 // already validated it succeeds (same base), so an error here is not possible;

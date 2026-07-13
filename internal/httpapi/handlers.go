@@ -36,6 +36,13 @@ type Handlers struct {
 	sessions store.SessionStore
 	messages store.MessageStore
 	feedback store.FeedbackStore
+	// turns commits the assistant's answer and the session state it produced TOGETHER. They
+	// used to be two independent writes, and a turn that landed one without the other lied:
+	// the transcript showed the agent picking an instance while the state said it never did,
+	// so the next turn reasoned from stale state and contradicted the visible conversation.
+	// Derived from the two stores above — in production they share one database, so this is a
+	// real transaction. See store.TurnCommitterFor.
+	turns store.TurnCommitter
 	// pool may be nil for Task 6; Task 7 wires a concrete EnginePool.
 	pool          EnginePool
 	traceWriter   observability.Writer
@@ -67,6 +74,7 @@ func NewHandlers(
 		sessions:      sessions,
 		messages:      messages,
 		feedback:      feedback,
+		turns:         store.TurnCommitterFor(sessions, messages),
 		pool:          pool,
 		traceWriter:   traceWriter,
 		confirmBroker: NewConfirmBroker(),

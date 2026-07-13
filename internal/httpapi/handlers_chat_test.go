@@ -77,6 +77,9 @@ type recordingMessages struct {
 	mockMessages
 	appended []store.Message
 	patch    store.AssistantPatch
+	// assistantUpdates counts UpdateAssistant calls, so a test can assert that a turn refused
+	// BEFORE the model ran never touched the assistant row at all.
+	assistantUpdates int
 }
 
 func (m *recordingMessages) Append(_ context.Context, msg store.Message) error {
@@ -86,6 +89,7 @@ func (m *recordingMessages) Append(_ context.Context, msg store.Message) error {
 
 func (m *recordingMessages) UpdateAssistant(_ context.Context, _ store.Owner, _ string, patch store.AssistantPatch) error {
 	m.patch = patch
+	m.assistantUpdates++
 	return nil
 }
 

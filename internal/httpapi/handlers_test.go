@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,10 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockSessions struct {
+	// mu guards byID. The real store is a database; the read-under-lease test races a real
+	// pool lease against a row rewrite, so the mock has to be at least as safe as the thing it
+	// stands in for — otherwise the race detector reports the FIXTURE's bug, not the code's.
+	mu   sync.Mutex
 	byID map[string]store.Session
 	// updateContextCalls counts every UpdateContext invocation regardless
 	// of outcome. Tests use this to assert "no persistence on parse
@@ -64,6 +69,8 @@ func (m *mockSessions) Create(_ context.Context, owner store.Owner, title *strin
 }
 
 func (m *mockSessions) GetByID(_ context.Context, owner store.Owner, sessionID string) (store.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	s, ok := m.byID[sessionID]
 	if !ok || s.TopOrganizationID != owner.TopOrganizationID || s.OrganizationID != owner.OrganizationID {
 		return store.Session{}, sql.ErrNoRows

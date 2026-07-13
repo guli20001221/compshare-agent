@@ -47,6 +47,12 @@ var (
 	ErrModelTimeout     = &APIError{Code: "ModelTimeout", RetCode: 226619, Status: http.StatusGatewayTimeout, Message: "LLM 调用超时"}
 	ErrModelError       = &APIError{Code: "ModelError", RetCode: 226620, Status: http.StatusBadGateway, Message: "LLM 上游错误"}
 	ErrAborted          = &APIError{Code: "Aborted", RetCode: 226621, Status: 499, Message: "用户中断"}
+	// ErrTurnNotSaved: the model answered, but the answer and the state it produced could not
+	// be committed. The reply was already streamed and cannot be unsent — but the turn did not
+	// happen as far as the server is concerned, so it must NOT be reported as done. A client
+	// that treats this as success carries on from a conversation the server has no record of,
+	// and the NEXT turn is the one that looks like amnesia.
+	ErrTurnNotSaved = &APIError{Code: "TurnNotSaved", RetCode: 226622, Status: http.StatusInternalServerError, Message: "本轮未保存，请重试"}
 )
 
 // AsAPIError converts any error into an *APIError. Returns nil if err is nil.
