@@ -1679,21 +1679,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 			}
 			if !synthDone {
-				preGuardContent := content
-				content = e.guardSearchKnowledgeSynthesis(content)
-				// Cite-retry parity with the terminal route: when the guard replaced a real
-				// synthesis with the canned refusal (typically flash omitted/garbled the
-				// [[chunk_id]] marker, not a content problem), give it ONE more chance with an
-				// explicit cite reminder before the refusal stands — mirroring
-				// answerWithRetrievedEvidence's single retry. Scoped to turns where
-				// SearchKnowledge surfaced evidence (the guard's own scope); a retry that still
-				// won't cite keeps the refusal. No-op when the guard accepted the answer.
-				if content == ragNoEvidenceReply && strings.TrimSpace(preGuardContent) != ragNoEvidenceReply &&
-					e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
-					if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
-						content = retried
-					}
-				}
+				// Guard the synthesis, and REPAIR the answer from the evidence ledger if a
+				// guard destroys it — instead of shipping 「知识库未覆盖」 over an answer we
+				// wrote from evidence we retrieved. See repairOrRefuseKnowledgeSynthesis: on
+				// real traffic that message was false 100% of the times it was shown.
+				content = e.repairOrRefuseKnowledgeSynthesis(ctx, userMsg, content)
 			}
 			if corrected, ok := e.correctFalseInstanceNotFoundReply(userMsg, content); ok {
 				content = corrected
@@ -4008,6 +3998,77 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 	}
 	e.emitSearchKnowledgeHardBlock("search_knowledge_uncited")
 	return ragNoEvidenceReply
+}
+
+// repairOrRefuseKnowledgeSynthesis runs the SearchKnowledge guards over the agent's final
+// answer and, when a guard destroys the answer, REPAIRS it from the evidence ledger before
+// the refusal is allowed to stand.
+//
+// Not one check below is relaxed. What was wrong is the failure ACTION.
+//
+// Measured over the 1454-turn production replay (docs/plans/2026-07-13-program-a-amnesia-fix-results.md):
+// of every 「当前知识库未覆盖该问题」 shown to a user, the honest arm — retrieval genuinely
+// returned nothing — fired ZERO times. Every single one came from a guard deleting an answer
+// the agent had already written FROM evidence we had retrieved. The sentence is FALSE 100%
+// of the times it is shown, and the user is told the opposite of what happened.
+//
+// And what the two arms punish is not unfaithfulness:
+//
+//   - uncited — the answer carries no resolvable citation. But the marker is STRIPPED before
+//     display (knowledge.StripCiteMarkers): it is a grounding proof, never content, and flash
+//     omits it nondeterministically. A correct, fully grounded answer is destroyed because the
+//     model did not type a bracket.
+//   - raw-leak — the answer quoted a chunk too literally. That is the answer being MORE
+//     faithful to the evidence, not less, and we respond by claiming the evidence does not
+//     exist.
+//
+// So: repair, then refuse. Every rung here runs ONLY on a turn that was already about to ship
+// the canned refusal, so a rung can replace a refusal and can NEVER overwrite a good answer.
+// That is what makes this safe whatever the model returns — the worst case is the refusal we
+// were going to send anyway.
+//
+// Rung 2 is deliberately NOT "attach the citation server-side" (the shape the results doc
+// floated). Stamping a citation onto an unverified answer would launder a hallucination
+// through the very gate that exists to catch one. Re-synthesizing re-derives the answer FROM
+// the ledger and re-validates it: the proof is earned, not forged.
+func (e *Engine) repairOrRefuseKnowledgeSynthesis(ctx context.Context, userMsg, content string) string {
+	agentRefused := strings.TrimSpace(content) == ragNoEvidenceReply
+	guarded := e.guardSearchKnowledgeSynthesis(content)
+
+	// The guard accepted the answer, or the agent had already chosen to refuse on its own.
+	// Nothing was destroyed, so there is nothing to repair.
+	if guarded != ragNoEvidenceReply || agentRefused {
+		return guarded
+	}
+	// The one honest refusal (G4): SearchKnowledge surfaced no evidence at all — either it
+	// never ran, or the relevance floor dropped every hit. There is nothing to repair FROM,
+	// and manufacturing an answer here would be the exact fabrication the guard exists to
+	// prevent. The refusal stands, and here it is TRUE.
+	if !e.searchKnowledgeRanThisTurn || len(e.searchKnowledgeHitsThisTurn) == 0 {
+		return guarded
+	}
+
+	// Rung 1 — re-ask the same model, with an explicit cite reminder. Kept because it is
+	// cheap and sometimes works, but it is not the fix: it re-asks the model that just failed
+	// to cite, which is why the replay still shows the refusal downstream of it.
+	if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
+		return retried
+	}
+	// Rung 2 — re-derive the answer from the ledger with the disciplined cited-synthesis
+	// primitive. It cite-validates and strips by construction (see
+	// synthesizeKnowledgeQAFromLedger), so a result that comes back is grounded by the same
+	// contract the guard demands. Gated on the flag production already ships on, and which
+	// the Go default leaves off, so no unit test changes behavior implicitly.
+	if disciplinedKnowledgeQASynthesisOn {
+		if synth, ok := e.synthesizeKnowledgeQAFromLedger(ctx, userMsg); ok {
+			return synth
+		}
+	}
+	// Every repair failed. The refusal stands. NOTE it is still the FALSE message — we held
+	// evidence and could not turn it into a grounded answer, which is not "the knowledge base
+	// does not cover this". Making that wording honest is a separate change: the string is
+	// load-bearing for isKnowledgeRefusal and is pinned across the suite.
+	return guarded
 }
 
 // retrySearchKnowledgeCitation gives an agent-loop synthesis that the grounded
