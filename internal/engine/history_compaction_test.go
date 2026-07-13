@@ -51,14 +51,19 @@ func TestBuildReActHistorySummary_KeepsStructuredSignalsNotFactPayload(t *testin
 
 func TestTrimHistoryCompaction_OffKeepsCountTrimBehavior(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.messages = makePlainHistory(50)
+	// Derived, not hardcoded: a literal 50 was sized against the old ceiling of 40,
+	// so raising the ceiling would drop this test into trimHistory's no-op branch —
+	// green, and testing nothing.
+	pairs := maxHistoryMessages
+	eng.messages = makePlainHistory(pairs)
+	require.Greater(t, len(eng.messages), 1+maxHistoryMessages, "input must overflow the ceiling")
 
 	eng.trimHistory()
 
 	require.Len(t, eng.messages, 1+maxHistoryMessages)
 	assert.Equal(t, openai.ChatMessageRoleSystem, eng.messages[0].Role)
 	assert.False(t, hasReactHistorySummary(eng.messages))
-	assert.Equal(t, "a49", eng.messages[len(eng.messages)-1].Content)
+	assert.Equal(t, fmt.Sprintf("a%d", pairs-1), eng.messages[len(eng.messages)-1].Content)
 }
 
 func TestTrimHistoryCompaction_KeepsSummaryToolPairsAndShrinksOldToolResults(t *testing.T) {
@@ -70,7 +75,12 @@ func TestTrimHistoryCompaction_KeepsSummaryToolPairsAndShrinksOldToolResults(t *
 		LastIntent:           string(intent.IntentResourceInfo),
 	}, 1)
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "system"}}
-	for i := 0; i < 10; i++ {
+	// Leading padding whose only job is to push the history over the ceiling so the
+	// compaction path actually runs. Derived from maxHistoryMessages: a hardcoded 10
+	// pairs overflowed the old ceiling of 40 but not a larger one, which would leave
+	// this test asserting compaction behaviour on a history that was never compacted.
+	prePairs := maxHistoryMessages
+	for i := 0; i < prePairs; i++ {
 		eng.messages = append(eng.messages,
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("pre-q%d", i)},
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("pre-a%d", i)},

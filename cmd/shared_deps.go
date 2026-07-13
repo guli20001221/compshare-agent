@@ -117,6 +117,13 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if createPrefExtractor {
 		log.Printf("runtime: HTTP create/deploy preference extractor enabled (COMPSHARE_CREATE_PREF_EXTRACTOR default-on; disable with =0)")
 	}
+	// Default OFF: this is the step-2 A/B lever, not yet a shipped behaviour.
+	if v := getenv("COMPSHARE_AGENT_DETERMINISTIC_RENDER"); v == "1" {
+		engine.SetAgentDeterministicRenderEnabled(true)
+		log.Printf("runtime: agent-loop deterministic instance rendering enabled (COMPSHARE_AGENT_DETERMINISTIC_RENDER=1; instance tables are rendered from the payload, not retyped by the model)")
+	} else if v != "" && v != "0" && v != "off" && v != "false" {
+		log.Printf("warning: ignoring unknown COMPSHARE_AGENT_DETERMINISTIC_RENDER value %q", v)
+	}
 	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
 	if unknownKnowledgeQAAgentLoop != "" {
 		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q", unknownKnowledgeQAAgentLoop)

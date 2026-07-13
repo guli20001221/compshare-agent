@@ -257,6 +257,20 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// answer against another tenant's retrieved evidence. Reset every turn.
 		"searchKnowledgeRanThisTurn":  true,
 		"searchKnowledgeHitsThisTurn": true,
+		// Grounding fact set: every value this SESSION's tools returned, against which
+		// the final answer's checkable claims are tested. Per-session is not a detail
+		// here, it is the security property — a shared fact set would let one tenant's
+		// instance IDs and prices ground another tenant's answer, which is precisely
+		// the fabrication this is built to catch, laundered into looking legitimate.
+		// Unlike its neighbours it is NOT reset per turn (see grounding.Facts).
+		"turnFacts": true,
+		// The rendered instance table awaiting {{INSTANCE_TABLE}} substitution. Per-session
+		// for the obvious reason: a shared one would splice tenant A's machine list into
+		// tenant B's answer. Reset every turn.
+		"instanceTableThisTurn": true,
+		// Whether the model referenced the table via placeholder this turn. Per-session so
+		// one tenant's compliance is never read as another's. Reset every turn.
+		"placeholderObeyedThisTurn": true,
 		// Per-turn SearchKnowledge call counter feeding the agent-loop search cap.
 		// Per-session/per-turn by design — a shared counter would let one tenant's
 		// searches withdraw the tool from another's turn. Reset every turn.
@@ -299,6 +313,10 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"factCacheOldestAgeSecondsThisTurn": true,
 		"rendererTraceObserver":             true,
 		"plannerTraceObserver":              true,
+		"contextTraceObserver":              true,
+		// Per-session: whether this session's history was ever trimmed/compacted.
+		// Leaking it across sessions would report a fresh session as already-trimmed.
+		"historyTrimmedThisSession":         true,
 		"retrievalTraceObserver":            true,
 		"freshnessTraceObserver":            true,
 		"diagnosisTraceObserver":            true,
@@ -344,12 +362,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 64, len(perSessionFields); want != got {
+	if want, got := 69, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 80, typ.NumField(); want != got {
+	if want, got := 85, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

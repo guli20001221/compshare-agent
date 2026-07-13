@@ -20,6 +20,7 @@ import (
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/grounding"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
@@ -41,9 +42,27 @@ import (
 const (
 	maxReActRounds = 10
 	// maxHistoryMessages is the maximum number of non-system messages to keep.
-	// With ~7K system prompt tokens and ~1K per message pair, 40 messages ≈ 27K tokens
-	// which fits well within a 32K context window.
-	maxHistoryMessages = 40
+	//
+	// This was 40, sized for "a 32K context window" — a model we no longer run.
+	// ds-v4-flash's window is not remotely the binding constraint; the real ceiling
+	// is agent.rate_limit.max_tokens_per_turn (200K, prompt+completion summed), and
+	// 40 messages ≈ 27K tokens sat at 13% of it. We were amputating context to
+	// respect a limit that no longer exists.
+	//
+	// The unit is also wrong in a way that bites hardest exactly where we are
+	// headed: this counts MESSAGES, and e.messages holds every tool response, so an
+	// agent-loop turn costs ~4-6 messages (user + assistant-with-tool_calls + N tool
+	// results + final assistant) against ~2 on the fast path. At 40 the ceiling was
+	// therefore ~8 agent-loop turns — INSIDE observed session lengths (real sessions
+	// reach 10 turns; the traffic sample is truncated at 10, so that is a floor, not
+	// a max). Routing everything through the agent loop would have re-introduced the
+	// amnesia the cutover exists to cure, at turn 8, silently.
+	//
+	// 120 covers ~24 agent-loop turns (~81K tokens + ~7K system ≈ 44% of the per-turn
+	// cap), leaving real headroom for a large tool-result burst. Counting messages
+	// rather than tokens is still the wrong unit; this raises the ceiling out of the
+	// way of real traffic without pretending to fix that.
+	maxHistoryMessages = 120
 	// maxPlannerPriorMessages bounds the user/assistant history copied into
 	// shadow-planner input. Tool and system messages are intentionally omitted.
 	maxPlannerPriorMessages      = 8
@@ -228,6 +247,8 @@ type Engine struct {
 	fastTemplate                     bool
 	rendererTraceObserver            func(observability.RendererTrace)
 	plannerTraceObserver             func(observability.RouterTrace)
+	contextTraceObserver             func(observability.ContextTrace)
+	historyTrimmedThisSession        bool
 	retrievalTraceObserver           func(observability.RetrievalTrace)
 	freshnessTraceObserver           func(observability.FreshnessTrace)
 	diagnosisTraceObserver           func(observability.DiagnosisTrace)
@@ -246,6 +267,25 @@ type Engine struct {
 	// tool (flag off => tool never visible => never runs => both stay zero).
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
+	// instanceTableThisTurn holds the deterministically rendered instance table for the
+	// current turn, so the {{INSTANCE_TABLE}} placeholder in the model's reply is
+	// substituted with the text WE rendered from the payload — never with anything the
+	// model has retyped. Per-turn; empty when no instance lookup ran.
+	instanceTableThisTurn string
+	// placeholderObeyedThisTurn records whether the model actually referenced the table
+	// via {{INSTANCE_TABLE}} instead of hand-writing a list. Offered-but-not-obeyed is the
+	// turn where the mechanism was available and declined, i.e. the turn that can still
+	// invent a machine — so it is measured, not assumed. Reset per turn.
+	placeholderObeyedThisTurn bool
+	// turnFacts holds the literal values the tools returned, against which the final
+	// reply's checkable claims are tested. Schema-blind by design (see
+	// internal/grounding): it is fed raw payloads from the single executeSafeTool choke
+	// point, so a tool added later is covered without touching this.
+	//
+	// SESSION-scoped, NOT reset per turn — unlike every *ThisTurn field around it. The
+	// model must stay free to refer to an instance it was shown three turns ago without
+	// that being mistaken for invention. See grounding.Facts before "fixing" this.
+	turnFacts *grounding.Facts
 	// searchKnowledgeCallsThisTurn counts SearchKnowledge invocations this turn so
 	// the ReAct loop can withdraw the tool once it hits maxSearchKnowledgeCallsPerTurn,
 	// bounding the corpus-gap re-search thrash that otherwise exhausts the token
@@ -718,6 +758,56 @@ func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, routeMap map[i
 
 func (e *Engine) SetPlannerTraceObserver(observer func(observability.RouterTrace)) {
 	e.plannerTraceObserver = observer
+}
+
+// SetContextTraceObserver wires the per-turn record of what the router and the loop
+// could actually SEE. Without it, "the agent forgot" and "the agent was never told"
+// are indistinguishable in a trace: they produce the same reply and need opposite fixes.
+func (e *Engine) SetContextTraceObserver(observer func(observability.ContextTrace)) {
+	e.contextTraceObserver = observer
+}
+
+// emitContextTrace reports the visible-context footprint of the turn. Counts and flags
+// only, never raw text, so it is safe to leave on in production -- which is exactly where
+// "did it actually have the context?" is impossible to answer after the fact.
+//
+// The two numbers are deliberately reported side by side because they are NOT the same
+// context. The ReAct loop carries maxHistoryMessages. The router, which runs FIRST and
+// decides whether the turn is even a troubleshooting turn, sees maxPlannerPriorMessages
+// of user+assistant text with tool results stripped. A turn the router misroutes on its
+// starved view is lost before the loop's memory is ever consulted.
+func (e *Engine) emitContextTrace(priorText, lastIntent, selectedHost string) {
+	if e.contextTraceObserver == nil {
+		return
+	}
+	runes := len([]rune(priorText))
+	priorMsgs := strings.Count(priorText, "\n")
+	var toolMsgs int
+	for _, m := range e.messages {
+		if m.Role == openai.ChatMessageRoleTool {
+			toolMsgs++
+		}
+	}
+	e.contextTraceObserver(observability.ContextTrace{
+		RouterPriorMessages: priorMsgs,
+		RouterPriorRunes:    runes,
+		// PriorText is BUILT and passed to the router, but callPlannerOnce's own comment
+		// records that buildUserPrompt does not emit it into the prompt (PR1 hotfix
+		// 2026-05-28, to stop multi-turn input growth from breaking flash's JSON schema).
+		// So these two numbers describe context that was ASSEMBLED and then WITHHELD.
+		// That is the single most important thing this trace can tell you, and it is why
+		// the field is named for the bound rather than for the payload.
+		RouterPriorInPrompt: false,
+		// Did the bound bite? Recorded even though the text is withheld, because if the
+		// prompt ever starts emitting PriorText again this is the field that shows the
+		// avalanche returning.
+		RouterPriorTruncated:  priorMsgs >= maxPlannerPriorMessages || runes >= maxPlannerPriorTextRunes,
+		RouterHasLastIntent:   lastIntent != "",
+		RouterHasSelectedHost: selectedHost != "",
+		LoopMessages:          len(e.messages),
+		LoopToolMessages:      toolMsgs,
+		LoopTrimmed:           e.historyTrimmedThisSession,
+	})
 }
 
 func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
@@ -1193,10 +1283,28 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 // (never on intermediate tool-call rounds). OnUsage is called once after the
 // final LLM reply. Canned-reply branches (monitor_history_unsupported, etc.)
 // skip the LLM and therefore never fire callbacks.
-func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (string, error) {
+func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (reply string, err error) {
 	e.userTurn++
 	e.currentCtx = ctx
 	defer func() { e.currentCtx = nil }()
+	// Substitute the deterministically rendered instance table into the finished reply,
+	// then capture. Ordering matters both ways: the substitution must happen before the
+	// grounding observer runs (otherwise the placeholder, not the real table, is what
+	// gets checked), and both must sit on a defer so they cover EVERY exit path — the
+	// direct-dispatch routes return early, and those are precisely the answers the
+	// false-positive baseline needs.
+	// Capture only. The table substitution itself happens inside the ReAct loop, before
+	// the reply is streamed and persisted — see the substituteInstanceTable call there.
+	// Rewriting a reply on the way OUT of this function is too late: the tokens have
+	// already gone to the browser.
+	//
+	// Whether the model USED the placeholder is the compliance signal for the whole
+	// mechanism — a turn where a table was offered and the model hand-wrote a list anyway
+	// is precisely the turn that can still invent a machine. Recording it is the
+	// difference between measuring the contract and merely hoping it holds.
+	defer func() {
+		e.dumpGroundingTurn(userMsg, reply, e.instanceTableThisTurn != "", e.placeholderObeyedThisTurn)
+	}()
 	if u, ok := tools.UserFrom(ctx); ok {
 		if subject, ok := governance.SubjectKeyFromOrganization(u.TopOrganizationID, u.OrganizationID); ok {
 			e.rateLimitSubject = subject
@@ -1235,6 +1343,22 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.lastPlannerActionThisTurn = ""
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
+	e.instanceTableThisTurn = ""
+	e.placeholderObeyedThisTurn = false
+	// Deliberately NOT reset per turn — see grounding.Facts. The model must be free to
+	// keep referring to an instance it was shown three turns ago without that being
+	// mistaken for invention.
+	if e.turnFacts == nil {
+		e.turnFacts = grounding.NewFacts()
+	}
+	// A screenshot the user uploaded is a rendering of the platform's own UI, so
+	// figures the model reads back off it are quoted, not invented. Only the fenced
+	// OCR block counts — never the user's own typed words (see AddScreenshotEvidence).
+	e.turnFacts.AddScreenshotEvidence(userMsg)
+	// The instance the user names is a referent they established, not a claim the model
+	// made — including (especially) when it turns out not to exist, which is the one
+	// case no tool can ever ground. IDs only; the user's figures are not evidence.
+	e.turnFacts.AddUserReferents(userMsg)
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.searchKnowledgeActivitiesThisTurn = nil
@@ -1420,7 +1544,13 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			(round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil) ||
 			e.lastPlannerIntentThisTurn == intent.IntentDiagnosis ||
 			e.searchKnowledgeRanThisTurn ||
-			e.mayCorrectFalseInstanceNotFoundReply(userMsg)
+			e.mayCorrectFalseInstanceNotFoundReply(userMsg) ||
+			// An instance table is waiting to be substituted into this reply, so the
+			// text WILL be rewritten before the user sees it. Streaming raw tokens
+			// would spell the literal "{{INSTANCE_TABLE}}" out into the browser and
+			// then contradict it in the final frame. Every other post-hoc rewrite in
+			// this function is declared here for exactly that reason.
+			e.instanceTableThisTurn != ""
 		liveStream := opts.OnTextDelta != nil && !guardMayRewrite
 		var streamedDeltas []string
 		if liveStream {
@@ -1578,6 +1708,18 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// a non-nil err separately, so this never masks a real failure.
 			if strings.TrimSpace(content) == "" {
 				content = emptyReplyFallbackMessage
+			}
+			// Splice the deterministically rendered instance table in HERE, before the
+			// reply is streamed, persisted, or appended to history — not on the way out
+			// of ChatWithOptions. Doing it on the named return only fixed the final SSE
+			// frame and the DB row, while the token stream had already spelled
+			// "{{INSTANCE_TABLE}}" into the user's browser and e.messages kept the
+			// placeholder forever. content != rawContent from here on, which is precisely
+			// the signal the block below uses to emit the corrected text as one chunk
+			// instead of replaying stale deltas.
+			if substituted, ok := substituteInstanceTable(content, e.instanceTableThisTurn); ok {
+				content = substituted
+				e.placeholderObeyedThisTurn = true
 			}
 			e.commitDisplayedResourceSelectionIfVisible(content)
 			// Replay buffered streaming deltas when the LLM content was returned
@@ -2185,6 +2327,13 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 		if e.sessionStateHydrated {
 			selectedID = e.sessionState.SelectedInstanceID
 		}
+		// Record what the ROUTER can see, at the moment it sees it. This is the turn's
+		// first and most consequential decision — it picks the path — and per the comment
+		// above it makes that decision with the conversation transcript withheld from its
+		// prompt entirely. Recording it is how "the agent forgot" stops being confusable
+		// with "the agent was never told".
+		e.emitContextTrace(priorText, e.sessionState.LastIntent, selectedID)
+
 		planned, err := e.intentPlanner.Plan(ctx, intent.IntentRouterInput{
 			UserText:               userMsg,
 			ImageContext:           e.imageContextThisTurn,
@@ -3669,7 +3818,29 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits, floorDroppedAll, activityID)
 	empty := retrieved.Empty || len(ledger.Items) == 0
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
-	return searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn)
+	out := searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn)
+
+	// Retrieved evidence is grounding evidence, and SearchKnowledge never runs through
+	// executeSafeTool, so without this a knowledge answer would have an empty fact set
+	// and every figure it correctly quoted from a chunk would read as invented.
+	//
+	// Harvest EXACTLY the string handed to the model — not a hand-picked subset of the
+	// ledger. The first cut fed only Summary+Snippet, which are narrower than what
+	// searchKnowledgeResultJSON actually emits, and the gap produced precisely the
+	// false accusation this validator exists to prevent: asked 是多少钱, the model read
+	// the disk-price table straight out of chunk w0-billing_rule-...-7e69b1aa and quoted
+	// 0.0005元/GB/小时 · 0.011元/GB/日 · 0.3元/GB/月 — all three verbatim and correct — and
+	// the validator called all three fabrications, because the harvest had only been
+	// shown part of the evidence the model was reading from.
+	//
+	// The invariant is the point: the fact bag must contain what the model was shown,
+	// no less (or correct answers get flagged) and no more (or invented ones get
+	// certified). Feeding the returned payload itself is the only version of that which
+	// cannot drift out of sync when the tool's serialization changes.
+	if e.turnFacts != nil {
+		e.turnFacts.AddRaw(out)
+	}
+	return out
 }
 
 // emitSearchKnowledgeRetrievalTrace records the agent-lane SearchKnowledge
@@ -3947,6 +4118,14 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			return errMsg
 		}
 		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceKnowledgeLocal, Message: "查询成功", TraceResult: result})
+		// Knowledge tools return BEFORE executeSafeTool, so the grounding harvest
+		// there never sees them. Without this the validator called a correctly
+		// tool-sourced GPU spec (GetGPUSpecs -> FP16 82.6 for a 4090) a fabrication:
+		// the figure is real, it came from knowledge/gpu_specs.go, and the model was
+		// reading it off a tool result the harvest had simply not been shown.
+		if e.turnFacts != nil {
+			e.turnFacts.AddRaw(result)
+		}
 		return knowledge.ResultToJSON(result)
 	}
 
@@ -4065,6 +4244,11 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		}
 		truncateDescribeResultForReAct(args, result.LLMResult)
 		e.recordPendingSelectionFromDisplayedDescribeResult(result.LLMResult)
+		// Hand the agent the finished table rather than asking it to retype the payload.
+		// Rendered from the ALREADY-TRUNCATED result so the table the model is told to
+		// emit is the same set of instances it can see — a table listing machines the
+		// surrounding data does not contain would be its own kind of lie.
+		e.attachDeterministicInstanceTable(action, result.LLMResult, result.LLMResult)
 	}
 	projected := false
 	if e.reactResultProjectionEnabled {
@@ -4142,6 +4326,14 @@ func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest)
 	}
 	if err == nil {
 		e.trackMonitorResult(result)
+	}
+	// Harvest grounding facts from EVERY successful tool call, whatever its
+	// origin. Unlike recordToolFacts (below) this is not restricted to
+	// OriginDirectLLM: a fact the user sees in the reply is grounded no matter
+	// which layer fetched it, and a direct-dispatch handler's result is exactly
+	// the kind of evidence the final answer must not contradict.
+	if err == nil && result != nil && e.turnFacts != nil {
+		e.turnFacts.AddRaw(result.RawResult)
 	}
 	if err == nil && req.Origin == tools.OriginDirectLLM {
 		e.markRegistryInvalidated(req.Action)
@@ -6025,6 +6217,7 @@ func (e *Engine) trimHistory() {
 
 	keep := e.messages[safeStart:]
 	e.messages = append([]openai.ChatCompletionMessage{e.messages[0]}, keep...)
+	e.historyTrimmedThisSession = true
 }
 
 // staleStateNote is a temporary system message injected when prior instance

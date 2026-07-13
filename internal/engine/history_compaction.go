@@ -58,6 +58,7 @@ func (e *Engine) trimHistoryByCompaction(now time.Time) {
 	})
 	out = append(out, keep...)
 	e.messages = out
+	e.historyTrimmedThisSession = true
 }
 
 func hasReactHistorySummary(messages []openai.ChatCompletionMessage) bool {
