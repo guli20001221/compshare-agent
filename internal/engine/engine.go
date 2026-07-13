@@ -267,6 +267,14 @@ type Engine struct {
 	// tool (flag off => tool never visible => never runs => both stay zero).
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
+	// hardBlockStandingThisTurn records that a Hit=true hard block has been emitted
+	// this turn and has not been withdrawn. A hard block is a claim about what the
+	// USER GOT ("this turn was refused"), and the trace recorder keeps the LAST
+	// emission per turn, so a block that fires on a path the turn later RECOVERS from
+	// must be withdrawn — otherwise a turn that delivered a correct answer is filed as
+	// a refusal, and message_recorder marks its DB row status="blocked". Maintained by
+	// emitHardBlock / retractHardBlock, which are the only two writers.
+	hardBlockStandingThisTurn bool
 	// instanceTableThisTurn holds the deterministically rendered instance table for the
 	// current turn, so the {{INSTANCE_TABLE}} placeholder in the model's reply is
 	// substituted with the text WE rendered from the payload — never with anything the
@@ -1343,6 +1351,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.lastPlannerActionThisTurn = ""
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
+	e.hardBlockStandingThisTurn = false
 	e.instanceTableThisTurn = ""
 	e.placeholderObeyedThisTurn = false
 	// Deliberately NOT reset per turn — see grounding.Facts. The model must be free to
@@ -1387,13 +1396,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// (e.g. "运维监控", "最近访问") from triggering false-positive blocks.
 	if decision := enginePreBlock.Decide(userMsg); decision.Matched {
 		e.pendingResourceSelection = nil
-		if e.hardBlockObserver != nil {
-			e.hardBlockObserver(observability.EngineHardBlockTrace{
-				Hit:         true,
-				Category:    decision.Category,
-				TriggeredBy: observability.HardBlockTriggerKeyword,
-			})
-		}
+		e.emitHardBlock(observability.EngineHardBlockTrace{
+			Hit:         true,
+			Category:    decision.Category,
+			TriggeredBy: observability.HardBlockTriggerKeyword,
+		})
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleUser,
 			Content: userMsg,
@@ -1650,13 +1657,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// price/tool, or other non-knowledge intents.
 			if round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil &&
 				!isKnowledgeRefusal(content) && !hasNumberedCitation(content) {
-				if e.hardBlockObserver != nil {
-					e.hardBlockObserver(observability.EngineHardBlockTrace{
-						Hit:         true,
-						Category:    "cited_contract_violation",
-						TriggeredBy: observability.HardBlockTriggerPostLLM,
-					})
-				}
+				e.emitHardBlock(observability.EngineHardBlockTrace{
+					Hit:         true,
+					Category:    "cited_contract_violation",
+					TriggeredBy: observability.HardBlockTriggerPostLLM,
+				})
 				content = ragNoEvidenceReply
 			}
 			// Convergent agent-loop synthesis (synthesis-discipline lever): for a
@@ -3494,12 +3499,23 @@ func (e *Engine) tokenBudgetExceeded() bool {
 // can keep its own assistant-message conventions (route handlers
 // already manage their history slot; the ReAct loop appends inline).
 func (e *Engine) emitTokenBudgetExceededHardBlock() {
+	e.emitHardBlock(observability.EngineHardBlockTrace{
+		Hit:         true,
+		Category:    observability.HardBlockCategoryTokenBudget,
+		TriggeredBy: observability.HardBlockTriggerTokenBudget,
+	})
+}
+
+// emitHardBlock is the single writer for a Hit=true hard block. Going through one choke
+// point is what lets retractHardBlock know a block is standing WITHOUT every future
+// emitter having to answer "can the turn still recover after me?" — a question this
+// package got wrong once already: a token-budget block fired inside
+// answerWithRetrievedEvidence, the caller went on to repair the answer from the ledger,
+// and the turn shipped a correct reply while its trace (and its DB row) said "blocked".
+func (e *Engine) emitHardBlock(t observability.EngineHardBlockTrace) {
+	e.hardBlockStandingThisTurn = t.Hit
 	if e.hardBlockObserver != nil {
-		e.hardBlockObserver(observability.EngineHardBlockTrace{
-			Hit:         true,
-			Category:    observability.HardBlockCategoryTokenBudget,
-			TriggeredBy: observability.HardBlockTriggerTokenBudget,
-		})
+		e.hardBlockObserver(t)
 	}
 }
 
@@ -4058,22 +4074,24 @@ func (e *Engine) repairOrRefuseKnowledgeSynthesis(ctx context.Context, userMsg, 
 	// (2) for the same reason it is safe for (1): every rung re-derives the answer FROM the
 	// ledger and re-validates it, so it either produces a grounded, cited answer or fails and
 	// leaves the refusal exactly where it was.
-	blockedByGuard := strings.TrimSpace(content) != ragNoEvidenceReply
-
 	// Whether the ORIGINAL answer tripped the raw-leak arm. Re-derived here with the same
 	// deterministic check on the same inputs, rather than plumbed out of the guard, so the
 	// guard's signature and its existing tests stay untouched.
 	leaked := knowledge.ValidateNoRawEvidenceLeak(content, e.searchKnowledgeHitsThisTurn) != nil
 
 	if repaired, ok := e.repairKnowledgeAnswerFromLedger(ctx, userMsg, leaked); ok {
-		if blockedByGuard {
-			// The turn was NOT blocked — the user got a grounded answer. The guard already
-			// emitted a hard-block on the way in, and the trace recorder keeps the LAST
-			// emission, so retract it. Without this, every REPAIRED turn is still counted as a
-			// refusal in exactly the reports this fix is supposed to be measured by, and the
-			// production KB-refusal rate would look unchanged while users stopped seeing them.
-			e.retractSearchKnowledgeHardBlock()
-		}
+		// The turn was NOT blocked — the user is getting a grounded answer. Withdraw whatever
+		// block is standing, because the trace recorder keeps the LAST emission and
+		// message_recorder turns Hit=true into a DB row with status="blocked".
+		//
+		// This deliberately does NOT ask WHICH block fired. The first version retracted only
+		// when the GUARD had blocked, on the reasoning that the guard is the only thing this
+		// function un-does — and it was wrong: an earlier disciplined-synthesis attempt can
+		// blow the per-turn cap inside answerWithRetrievedEvidence, which fires a
+		// token_budget_exceeded block and returns, after which THIS repair succeeds. The user
+		// got a correct answer; the trace and the DB row still said "blocked". Success must
+		// not be filed as failure, whoever wrote the failure down.
+		e.retractHardBlock()
 		return repaired
 	}
 	// Every repair failed. The refusal stands. NOTE it is still the FALSE message — we held
@@ -4124,11 +4142,19 @@ func (e *Engine) repairKnowledgeAnswerFromLedger(ctx context.Context, userMsg st
 	return synth, true
 }
 
-// retractSearchKnowledgeHardBlock records that this turn did NOT end in a hard block after all.
-// The recorder keeps the last emission per turn (cliTraceRecorder.SetEngineHardBlock assigns,
-// it does not append), so this overwrites the guard's earlier Hit=true. Category is left empty
-// because EngineHardBlockTrace documents it as empty whenever Hit is false.
-func (e *Engine) retractSearchKnowledgeHardBlock() {
+// retractHardBlock records that this turn did NOT end in a hard block after all: something
+// downstream recovered, and the user is getting a real answer. The recorder keeps the last
+// emission per turn (cliTraceRecorder.SetEngineHardBlock assigns, it does not append), so this
+// overwrites the earlier Hit=true. Category is left empty because EngineHardBlockTrace
+// documents it as empty whenever Hit is false.
+//
+// It is a no-op when no block is standing, so a recovering path may call it unconditionally
+// without inventing a Hit=false trace on turns that never blocked at all.
+func (e *Engine) retractHardBlock() {
+	if !e.hardBlockStandingThisTurn {
+		return
+	}
+	e.hardBlockStandingThisTurn = false
 	if e.hardBlockObserver == nil {
 		return
 	}
@@ -4157,9 +4183,16 @@ func (e *Engine) retrySearchKnowledgeCitation(ctx context.Context) (string, bool
 		return "", false
 	}
 	e.emitTokenUsage(resp.Usage)
-	if e.tokenBudgetExceeded() {
-		return "", false
-	}
+	// NO post-call budget gate. The call above has already been made and its tokens are
+	// already spent; throwing the reply away here saves nothing and costs the user the
+	// answer. The gate that does the budget's actual work is the PRE-call one above: the
+	// budget exists to stop the NEXT call, never to discard an answer already in hand.
+	//
+	// This is the contract answerWithRetrievedEvidence already states in so many words
+	// ("A grounded (cited) first answer ... is delivered regardless of the per-turn token
+	// budget ... The budget only suppresses spending MORE tokens"). This function was
+	// violating it, and the answer it silently dropped was a cited, leak-free one — the
+	// reply is validated below and is only ever returned if it passes every check.
 	retry := security.RedactOperationalTokensInText(strings.TrimSpace(resp.Content))
 	if retry == "" || isKnowledgeRefusal(retry) {
 		return "", false
@@ -4208,13 +4241,11 @@ func (e *Engine) emitSearchKnowledgeCitationTrace(report knowledge.GroundedAnswe
 // emitSearchKnowledgeHardBlock records a post-LLM hardblock trace for the agentic
 // SearchKnowledge synthesis guard (raw-leak or uncited). Shared by both guard arms.
 func (e *Engine) emitSearchKnowledgeHardBlock(category string) {
-	if e.hardBlockObserver != nil {
-		e.hardBlockObserver(observability.EngineHardBlockTrace{
-			Hit:         true,
-			Category:    category,
-			TriggeredBy: observability.HardBlockTriggerPostLLM,
-		})
-	}
+	e.emitHardBlock(observability.EngineHardBlockTrace{
+		Hit:         true,
+		Category:    category,
+		TriggeredBy: observability.HardBlockTriggerPostLLM,
+	})
 }
 
 func searchKnowledgeArg(args map[string]any, key string) string {

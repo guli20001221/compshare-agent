@@ -257,6 +257,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// answer against another tenant's retrieved evidence. Reset every turn.
 		"searchKnowledgeRanThisTurn":  true,
 		"searchKnowledgeHitsThisTurn": true,
+		// Whether a hard block is standing for THIS turn (and so must be withdrawn if the
+		// turn goes on to recover and answer). Per-session for the same reason as its
+		// neighbours: shared, one tenant's refusal would be retracted by another tenant's
+		// successful repair, and the refusal metric would be wrong in both directions.
+		// Reset every turn.
+		"hardBlockStandingThisTurn": true,
 		// Grounding fact set: every value this SESSION's tools returned, against which
 		// the final answer's checkable claims are tested. Per-session is not a detail
 		// here, it is the security property — a shared fact set would let one tenant's
@@ -362,12 +368,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 69, len(perSessionFields); want != got {
+	if want, got := 70, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 85, typ.NumField(); want != got {
+	if want, got := 86, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}
