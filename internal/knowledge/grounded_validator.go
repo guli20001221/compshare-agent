@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/compshare-agent/internal/textutil"
 )
 
 // citeMarkerRE matches a grounded-citation marker [[chunk_id]] that an agent
@@ -137,11 +139,23 @@ var citeStripPunct = [][2]string{
 // before stripping). Cosmetic cleanup collapses the spaces/punctuation a removed
 // marker leaves so the user reply is not ragged; newlines are preserved so
 // markdown structure (lists, tables) survives.
+// The rewrite runs on PROSE ONLY (textutil.MapOutsideCode). It used to run on
+// the whole answer, so `gpus[0]` in a fenced block lost its subscript and the
+// space-collapsing pass flattened Python indentation into unrunnable code. The
+// two routes also disagreed about what they destroyed — positionalCiteRE here
+// matches [0] while the engine's numberedCitationRE does not — so the same
+// answer came back different depending on whether it went through the agent
+// loop or the terminal route. Confining both to prose removes the damage and
+// the divergence at once: a citation is never inside code.
 func StripCiteMarkers(answer string) string {
 	if answer == "" {
 		return answer
 	}
-	out := citeMarkerRE.ReplaceAllString(answer, "")
+	return textutil.MapOutsideCode(answer, stripCiteMarkersInProse)
+}
+
+func stripCiteMarkersInProse(prose string) string {
+	out := citeMarkerRE.ReplaceAllString(prose, "")
 	// Also strip positional [n] markers (1-2 digit single bracket) so a numbered
 	// citation does not show in the user-facing reply, mirroring the terminal route's
 	// stripCitationMarkers. Done after the [[chunk_id]] strip so [[id]] inner digits
