@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const MaxTurnRecoveryAttempts = 3
+
 var (
 	ErrTurnNotFound             = errors.New("store: turn not found")
 	ErrConversationNotFound     = errors.New("store: conversation not found")
@@ -26,6 +28,8 @@ var (
 	ErrActionUncertain          = errors.New("store: action execution outcome is uncertain")
 	ErrInteractionPending       = errors.New("store: turn interaction is still pending")
 	ErrExecutionEnvelopeMissing = errors.New("store: durable execution envelope missing")
+	ErrRetryNotDue              = errors.New("store: turn retry is not due")
+	ErrRetryExhausted           = errors.New("store: turn retry budget exhausted")
 	ErrInvalidTurnState         = errors.New("store: invalid turn state transition")
 	ErrInvalidArgument          = errors.New("store: invalid argument")
 )
@@ -39,6 +43,7 @@ const (
 	TurnStatusCommitting           TurnStatus = "committing"
 	TurnStatusCommitted            TurnStatus = "committed"
 	TurnStatusFailedRetryable      TurnStatus = "failed_retryable"
+	TurnStatusFailedFinal          TurnStatus = "failed_final"
 	TurnStatusAmbiguousAfterAction TurnStatus = "ambiguous_after_action"
 	TurnStatusAborted              TurnStatus = "aborted"
 )
@@ -46,7 +51,7 @@ const (
 func (s TurnStatus) Valid() bool {
 	switch s {
 	case TurnStatusAccepted, TurnStatusRunning, TurnStatusAwaitingConfirmation,
-		TurnStatusCommitting, TurnStatusCommitted, TurnStatusFailedRetryable,
+		TurnStatusCommitting, TurnStatusCommitted, TurnStatusFailedRetryable, TurnStatusFailedFinal,
 		TurnStatusAmbiguousAfterAction, TurnStatusAborted:
 		return true
 	default:
@@ -56,7 +61,7 @@ func (s TurnStatus) Valid() bool {
 
 func (s TurnStatus) Terminal() bool {
 	switch s {
-	case TurnStatusCommitted, TurnStatusAmbiguousAfterAction, TurnStatusAborted:
+	case TurnStatusCommitted, TurnStatusFailedFinal, TurnStatusAmbiguousAfterAction, TurnStatusAborted:
 		return true
 	default:
 		return false
@@ -122,6 +127,8 @@ type Turn struct {
 	LeaseEpoch              *int64
 	HasExternalAction       bool
 	ExecutionEnvelope       json.RawMessage
+	RetryCount              int
+	NextRetryAt             *time.Time
 	NextEventSeq            int64
 	CreatedAt               time.Time
 	UpdatedAt               time.Time

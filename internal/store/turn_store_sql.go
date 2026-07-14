@@ -17,8 +17,9 @@ const turnColumns = `
 id, session_id, top_organization_id, organization_id, client_turn_id, turn_seq,
 request_hash, status, user_message_id, assistant_message_id,
 base_context_version, committed_context_version, committed_lease_epoch,
-commit_hash, error_code, executor_id, lease_epoch, has_external_action,
-execution_envelope, next_event_seq, created_at, updated_at, started_at, finished_at, committed_at`
+	commit_hash, error_code, executor_id, lease_epoch, has_external_action,
+	execution_envelope, retry_count, next_retry_at, next_event_seq,
+	created_at, updated_at, started_at, finished_at, committed_at`
 
 const turnSelect = `SELECT ` + turnColumns + ` FROM chat_turns `
 
@@ -32,13 +33,14 @@ func scanTurn(row rowScanner) (Turn, error) {
 	var committedContextVersion, committedLeaseEpoch, leaseEpoch sql.NullInt64
 	var commitHash, errorCode, executorID sql.NullString
 	var executionEnvelope []byte
-	var startedAt, finishedAt, committedAt sql.NullTime
+	var nextRetryAt, startedAt, finishedAt, committedAt sql.NullTime
 	if err := row.Scan(
 		&out.ID, &out.SessionID, &out.Owner.TopOrganizationID, &out.Owner.OrganizationID,
 		&out.ClientTurnID, &out.Sequence, &out.RequestHash, &status, &out.UserMessageID,
 		&out.AssistantMessageID, &out.BaseContextVersion, &committedContextVersion,
 		&committedLeaseEpoch, &commitHash, &errorCode, &executorID, &leaseEpoch,
-		&out.HasExternalAction, &executionEnvelope, &out.NextEventSeq, &out.CreatedAt, &out.UpdatedAt,
+		&out.HasExternalAction, &executionEnvelope, &out.RetryCount, &nextRetryAt,
+		&out.NextEventSeq, &out.CreatedAt, &out.UpdatedAt,
 		&startedAt, &finishedAt, &committedAt,
 	); err != nil {
 		return Turn{}, err
@@ -76,6 +78,10 @@ func scanTurn(row rowScanner) (Turn, error) {
 	}
 	if executionEnvelope != nil {
 		out.ExecutionEnvelope = append(json.RawMessage(nil), executionEnvelope...)
+	}
+	if nextRetryAt.Valid {
+		value := nextRetryAt.Time
+		out.NextRetryAt = &value
 	}
 	return out, nil
 }
@@ -279,7 +285,7 @@ FOR UPDATE
 	return nil
 }
 
-func startTurnTx(ctx context.Context, tx *sql.Tx, turn Turn, lease ConversationLease, contextVersion int) error {
+func startTurnTx(ctx context.Context, tx *sql.Tx, turn Turn, lease ConversationLease, contextVersion int, allowEarlyFinalization bool) error {
 	if turn.Status.Terminal() {
 		return ErrInvalidTurnState
 	}
@@ -289,6 +295,21 @@ func startTurnTx(ctx context.Context, tx *sql.Tx, turn Turn, lease ConversationL
 	default:
 		return ErrInvalidTurnState
 	}
+	if turn.Status == TurnStatusFailedRetryable && !allowEarlyFinalization {
+		var due bool
+		if err := tx.QueryRowContext(ctx, `
+SELECT retry_count <= $1 AND next_retry_at IS NOT NULL AND next_retry_at <= NOW()
+FROM chat_turns WHERE id = $2
+`, MaxTurnRecoveryAttempts, turn.ID).Scan(&due); err != nil {
+			return fmt.Errorf("check turn retry schedule: %w", err)
+		}
+		if turn.RetryCount > MaxTurnRecoveryAttempts {
+			return ErrRetryExhausted
+		}
+		if !due {
+			return ErrRetryNotDue
+		}
+	}
 	nextStatus := turn.Status
 	if turn.Status == TurnStatusAccepted || turn.Status == TurnStatusFailedRetryable {
 		nextStatus = TurnStatusRunning
@@ -296,8 +317,9 @@ func startTurnTx(ctx context.Context, tx *sql.Tx, turn Turn, lease ConversationL
 	res, err := tx.ExecContext(ctx, `
 UPDATE chat_turns
 SET status = $1, executor_id = $2, lease_epoch = $3,
-    base_context_version = $4,
-    error_code = NULL, started_at = COALESCE(started_at, NOW())
+	    base_context_version = $4,
+	    error_code = NULL, next_retry_at = NULL,
+	    started_at = COALESCE(started_at, NOW())
 WHERE id = $5 AND status = $6
 `, nextStatus, lease.HolderID, lease.Epoch, contextVersion, turn.ID, turn.Status)
 	if err != nil {

@@ -57,7 +57,7 @@ func openDurableWSPostgres(t *testing.T) *sql.DB {
 	for _, migration := range []string{
 		"0001_init.sql", "0003_add_session_context_version.sql",
 		"0005_create_turn_execution.sql", "0006_create_turn_protocol.sql",
-		"0007_add_turn_recovery_context.sql",
+		"0007_add_turn_recovery_context.sql", "0008_add_turn_retry_policy.sql",
 	} {
 		raw, readErr := os.ReadFile(filepath.Join("..", "..", "deploy", "migrations", migration))
 		require.NoError(t, readErr)

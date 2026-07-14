@@ -140,3 +140,21 @@ func TestHTTPMigrationsAddTurnRecoveryContext(t *testing.T) {
 	assert.NotContains(t, ddl, "execution_envelope JSONB NOT NULL", "existing turns must remain valid")
 	assert.NotContains(t, ddl, "context_hint JSONB NOT NULL", "existing actions must remain valid")
 }
+
+func TestHTTPMigrationsAddDurableTurnRetryPolicy(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0008_add_turn_retry_policy.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	for _, fragment := range []string{
+		"ADD COLUMN retry_count INT NOT NULL DEFAULT 0",
+		"ADD COLUMN next_retry_at TIMESTAMPTZ",
+		"'failed_final'",
+		"ck_chat_turn_retry_schedule",
+		"jsonb_path_exists",
+		`@.type() != "string"`,
+	} {
+		assert.Contains(t, ddl, fragment)
+	}
+}

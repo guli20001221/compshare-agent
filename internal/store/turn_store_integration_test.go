@@ -55,6 +55,7 @@ func openIsolatedTurnTestDB(t *testing.T) *sql.DB {
 		"0005_create_turn_execution.sql",
 		"0006_create_turn_protocol.sql",
 		"0007_add_turn_recovery_context.sql",
+		"0008_add_turn_retry_policy.sql",
 	} {
 		data, readErr := os.ReadFile(filepath.Join("..", "..", "deploy", "migrations", name))
 		require.NoError(t, readErr)
@@ -133,6 +134,7 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 	}, time.Minute)
 	require.ErrorIs(t, err, ErrLeaseFenced)
 	require.NoError(t, turns.ReleaseConversationLease(ctx, owner, leaseA))
+	forceTurnRetryDue(t, db, turn.ID)
 	leaseB, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-b", time.Minute)
 	require.NoError(t, err)
 	assert.Greater(t, leaseB.Epoch, leaseA.Epoch)
@@ -337,6 +339,7 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		require.NoError(t, getErr)
 		assert.Equal(t, TurnStatusRunning, got.Status)
 		require.NoError(t, turns.ReleaseConversationLease(ctx, owner, lease))
+		forceTurnRetryDue(t, db, candidate.ID)
 		cleanupLease, cleanupErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-c-cleanup", time.Minute)
 		require.NoError(t, cleanupErr)
 		_, cleanupErr = turns.FailTurn(ctx, owner, cleanupLease, TurnStatusAborted, "test_cleanup")
@@ -370,6 +373,7 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		require.NoError(t, db.QueryRow(`SELECT string_agg(status, ',' ORDER BY turn_role) FROM messages WHERE turn_id = $1`, candidate.ID).Scan(&statuses))
 		assert.Equal(t, "pending,pending", statuses)
 		require.NoError(t, turns.ReleaseConversationLease(ctx, owner, lease))
+		forceTurnRetryDue(t, db, candidate.ID)
 		cleanupLease, cleanupErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-d-cleanup", time.Minute)
 		require.NoError(t, cleanupErr)
 		_, cleanupErr = turns.FailTurn(ctx, owner, cleanupLease, TurnStatusAborted, "test_cleanup")
@@ -399,6 +403,7 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		assert.Equal(t, latest.ContextVersion, after.ContextVersion)
 		assert.Equal(t, latest.MessageCount, after.MessageCount)
 		require.NoError(t, turns.ReleaseConversationLease(ctx, owner, lease))
+		forceTurnRetryDue(t, db, candidate.ID)
 		cleanupLease, cleanupErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-message-cleanup", time.Minute)
 		require.NoError(t, cleanupErr)
 		_, cleanupErr = turns.FailTurn(ctx, owner, cleanupLease, TurnStatusAborted, "test_cleanup")
@@ -453,6 +458,7 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		failed, failErr := turns.FailTurn(ctx, owner, lease, TurnStatusFailedRetryable, "model_unavailable")
 		require.NoError(t, failErr)
 		assert.Equal(t, TurnStatusFailedRetryable, failed.Status)
+		forceTurnRetryDue(t, db, candidate.ID)
 		cleanupLease, cleanupErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-f-cleanup", time.Minute)
 		require.NoError(t, cleanupErr)
 		_, cleanupErr = turns.FailTurn(ctx, owner, cleanupLease, TurnStatusAborted, "test_cleanup")
@@ -476,6 +482,7 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		reconciled, reconcileErr := turns.ReconcileTurn(ctx, owner, lease, "worker_lost")
 		require.NoError(t, reconcileErr)
 		assert.Equal(t, TurnStatusFailedRetryable, reconciled.Status)
+		forceTurnRetryDue(t, db, candidate.ID)
 		cleanupLease, cleanupErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-g-cleanup", time.Minute)
 		require.NoError(t, cleanupErr)
 		_, cleanupErr = turns.FailTurn(ctx, owner, cleanupLease, TurnStatusAborted, "test_cleanup")
@@ -865,6 +872,7 @@ func TestPostgresTurnStore_ReboundPendingInteractionRestoresAwaitingState(t *tes
 	_, _, err = turns.CreateInteraction(ctx, owner, first, "confirm", "confirmation", payload, 10*time.Minute)
 	require.NoError(t, err)
 	require.NoError(t, turns.ReleaseConversationLease(ctx, owner, first))
+	forceTurnRetryDue(t, db, turn.ID)
 
 	takeover, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-next", time.Minute)
 	require.NoError(t, err)
@@ -877,6 +885,12 @@ func TestPostgresTurnStore_ReboundPendingInteractionRestoresAwaitingState(t *tes
 	rebound, err := turns.GetTurn(ctx, owner, turn.ID)
 	require.NoError(t, err)
 	assert.Equal(t, TurnStatusAwaitingConfirmation, rebound.Status, "a pending interaction and running turn may never disagree")
+}
+
+func forceTurnRetryDue(t *testing.T, db *sql.DB, turnID string) {
+	t.Helper()
+	_, err := db.Exec(`UPDATE chat_turns SET next_retry_at = NOW() - INTERVAL '1 second' WHERE id = $1`, turnID)
+	require.NoError(t, err)
 }
 
 func TestPostgresTurnStore_AcquireQueuedTurnRefreshesItsContextSnapshot(t *testing.T) {

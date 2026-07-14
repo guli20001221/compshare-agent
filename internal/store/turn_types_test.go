@@ -20,6 +20,7 @@ func TestHashTurnRequestIsFramedAndStable(t *testing.T) {
 func TestTurnStatusTerminalContract(t *testing.T) {
 	for _, status := range []TurnStatus{
 		TurnStatusCommitted,
+		TurnStatusFailedFinal,
 		TurnStatusAmbiguousAfterAction,
 		TurnStatusAborted,
 	} {

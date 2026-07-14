@@ -106,7 +106,33 @@ var (
 	// config-style ("token=eyJ..." / "token: AKIA...") shapes are caught.
 	// Captures the token-value group; the marker word itself is preserved.
 	bearerRegex = regexp.MustCompile(`(?i)\b(bearer|token)[\s:=]+([A-Za-z0-9+/=_\-\.]{20,})\b`)
+
+	// Persistence-grade credential coverage shared by assistant output and the
+	// durable execution envelope. Unlike RedactOutputLeak, these patterns do not
+	// touch IP addresses, project IDs, email addresses, or other routing inputs.
+	credentialAssignmentRegex = regexp.MustCompile(
+		`(?i)(["']?\b(?:access[_-]?key(?:[_-]?id|[_-]?secret)?|secret[_-]?key|api[_-]?key|x[_-]?api[_-]?key|ak|sk|access[_-]?token|security[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|token|password|passwd|pwd|private[_-]?key)\b["']?\s*[:=]\s*["']?)([^"'\s,;}&\]]+)`,
+	)
+	authorizationRegex         = regexp.MustCompile(`(?i)(\bauthorization\s*[:=]\s*)(?:(bearer|basic)[\s:=]+)?([^\s,;}\]]+)`)
+	privateKeyBlockRegex       = regexp.MustCompile(`(?is)-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----`)
+	knownCredentialPrefixRegex = regexp.MustCompile(`(?i)\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bsk-[A-Za-z0-9_\-]{12,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bxox[baprs]-[A-Za-z0-9-]{16,}\b`)
 )
+
+// RedactCredentials removes credential values while preserving semantic and
+// routing inputs such as email, IPv4, project IDs, instance IDs, regions, and
+// ordinary prose. It is safe to use before a recoverable request is persisted.
+func RedactCredentials(s string) string {
+	if s == "" {
+		return s
+	}
+	out := privateKeyBlockRegex.ReplaceAllString(s, CredentialRedactedOutput)
+	out = jwtRegex.ReplaceAllString(out, TokenRedactedOutput)
+	out = authorizationRegex.ReplaceAllStringFunc(out, redactAuthorizationKeepMarker)
+	out = bearerRegex.ReplaceAllStringFunc(out, redactBearerKeepMarker)
+	out = credentialAssignmentRegex.ReplaceAllStringFunc(out, redactAssignmentKeepMarker)
+	out = knownCredentialPrefixRegex.ReplaceAllString(out, CredentialRedactedOutput)
+	return out
+}
 
 // RedactOutputLeak returns a copy of s with output-side leak patterns
 // replaced. Designed for assistant-reply persistence (HTTP messages
@@ -121,10 +147,8 @@ func RedactOutputLeak(s string) string {
 	if s == "" {
 		return s
 	}
-	out := s
-	out = jwtRegex.ReplaceAllString(out, TokenRedactedOutput)
+	out := RedactCredentials(s)
 	out = credentialMarkerRegex.ReplaceAllStringFunc(out, redactCredentialKeepMarker)
-	out = bearerRegex.ReplaceAllStringFunc(out, redactBearerKeepMarker)
 	out = uuidRegex.ReplaceAllString(out, ProjectIDRedacted)
 	out = ipv4Regex.ReplaceAllStringFunc(out, redactIPv4IfValid)
 	return out
@@ -180,4 +204,24 @@ func redactBearerKeepMarker(match string) string {
 	}
 	marker := groups[1]
 	return marker + " " + TokenRedactedOutput
+}
+
+func redactAuthorizationKeepMarker(match string) string {
+	groups := authorizationRegex.FindStringSubmatch(match)
+	if len(groups) < 4 || strings.HasPrefix(groups[3], "[") {
+		return match
+	}
+	prefix := groups[1]
+	if groups[2] != "" {
+		prefix += groups[2] + " "
+	}
+	return prefix + TokenRedactedOutput
+}
+
+func redactAssignmentKeepMarker(match string) string {
+	groups := credentialAssignmentRegex.FindStringSubmatch(match)
+	if len(groups) < 3 || strings.HasPrefix(groups[2], "[") {
+		return match
+	}
+	return groups[1] + CredentialRedactedOutput
 }

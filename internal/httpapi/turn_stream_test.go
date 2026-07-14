@@ -67,6 +67,20 @@ func TestCoordinatorStreamEvent_FailureIsNeverPresentedAsDone(t *testing.T) {
 	assert.Equal(t, "本轮尚未确认保存，正在恢复", frame["Message"])
 }
 
+func TestCoordinatorStreamEvent_FinalFailureRequiresClientRetry(t *testing.T) {
+	eventName, frame, err := coordinatorStreamEvent(store.Turn{ID: "turn-final"}, turncoord.Event{
+		TurnID: "turn-final", Seq: 9, Type: "turn.failed",
+		Payload: json.RawMessage(`{"reason":"retry_exhausted","status":"failed_final","retry_count":3}`),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "error", eventName)
+	assert.Equal(t, false, frame["Committed"])
+	assert.Equal(t, "failed_final", frame["Status"])
+	assert.Equal(t, "failed_final", frame["ServerStatus"])
+	assert.Equal(t, "TurnNotSaved", frame["Code"])
+	assert.Equal(t, "本轮未能保存，请重新发送", frame["Message"])
+}
+
 func TestCoordinatorStreamEvent_RejectsCrossTurnProjection(t *testing.T) {
 	_, _, err := coordinatorStreamEvent(store.Turn{ID: "wanted"}, turncoord.Event{
 		TurnID: "other", Seq: 1, Type: "turn.running", Payload: json.RawMessage(`{}`),

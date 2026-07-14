@@ -134,18 +134,21 @@ func (s *PostgresTurnStore) ListRecoverableTurns(ctx context.Context, limit int)
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, turnSelect+`
-WHERE execution_envelope IS NOT NULL
-  AND (
-    status IN ('accepted', 'failed_retryable')
-    OR (
+WHERE (
+	status = 'accepted'
+	OR (
+	  status = 'failed_retryable'
+	  AND next_retry_at IS NOT NULL AND next_retry_at <= NOW()
+	)
+	OR (
       status IN ('running', 'awaiting_confirmation', 'committing')
       AND NOT EXISTS (
         SELECT 1 FROM conversation_leases l
         WHERE l.session_id = chat_turns.session_id
           AND l.active_turn_id = chat_turns.id
           AND l.lease_until > NOW()
-      )
-    )
+	)
+  )
   )
 ORDER BY updated_at ASC, turn_seq ASC
 LIMIT $1
@@ -187,8 +190,8 @@ WHERE id = $1 AND top_organization_id = $2 AND organization_id = $3
 	if err != nil {
 		return nil, fmt.Errorf("verify advisory conversation: %w", err)
 	}
-	if limit <= 0 || limit > 200 {
-		limit = 50
+	if limit <= 0 || limit > 10 {
+		limit = 10
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT kind, turn_id, turn_seq, action_index, action_name, context_hint,
@@ -199,9 +202,11 @@ FROM (
          a.updated_at AS occurred_at
   FROM chat_turns t
   JOIN turn_actions a ON a.turn_id = t.id AND a.status = 'succeeded'
-  WHERE t.session_id = $1
-    AND t.top_organization_id = $2 AND t.organization_id = $3
-    AND t.status IN ('ambiguous_after_action', 'aborted')
+	  WHERE t.session_id = $1
+	    AND t.top_organization_id = $2 AND t.organization_id = $3
+	    AND t.status IN ('failed_final', 'ambiguous_after_action', 'aborted')
+	    AND t.turn_seq > (SELECT COALESCE(MAX(recent.turn_seq), 0) - 10 FROM chat_turns recent WHERE recent.session_id = $1)
+	    AND a.updated_at >= NOW() - INTERVAL '24 hours'
 
   UNION ALL
 
@@ -209,8 +214,10 @@ FROM (
          NULL::jsonb, NULL::varchar, COALESCE(t.finished_at, t.updated_at)
   FROM chat_turns t
   WHERE t.session_id = $1
-    AND t.top_organization_id = $2 AND t.organization_id = $3
-    AND t.status = 'ambiguous_after_action'
+	    AND t.top_organization_id = $2 AND t.organization_id = $3
+	    AND t.status = 'ambiguous_after_action'
+	    AND t.turn_seq > (SELECT COALESCE(MAX(recent.turn_seq), 0) - 10 FROM chat_turns recent WHERE recent.session_id = $1)
+	    AND COALESCE(t.finished_at, t.updated_at) >= NOW() - INTERVAL '24 hours'
 
   UNION ALL
 
@@ -218,8 +225,10 @@ FROM (
          NULL::jsonb, NULL::varchar, COALESCE(t.finished_at, t.updated_at)
   FROM chat_turns t
   WHERE t.session_id = $1
-    AND t.top_organization_id = $2 AND t.organization_id = $3
-    AND t.status = 'aborted'
+	    AND t.top_organization_id = $2 AND t.organization_id = $3
+	    AND t.status = 'aborted'
+	    AND t.turn_seq > (SELECT COALESCE(MAX(recent.turn_seq), 0) - 10 FROM chat_turns recent WHERE recent.session_id = $1)
+	    AND COALESCE(t.finished_at, t.updated_at) >= NOW() - INTERVAL '24 hours'
 ) advisories
 ORDER BY occurred_at DESC, turn_seq DESC, action_index NULLS LAST
 LIMIT $4
@@ -249,7 +258,11 @@ LIMIT $4
 			item.ActionName = actionName.String
 		}
 		if hint != nil {
-			item.ContextHint = append(json.RawMessage(nil), hint...)
+			canonicalHint, canonicalErr := canonicalActionContextHint(hint)
+			if canonicalErr != nil {
+				return nil, fmt.Errorf("validate stored continuity hint: %w", canonicalErr)
+			}
+			item.ContextHint = append(json.RawMessage(nil), canonicalHint...)
 		}
 		if upstreamID.Valid {
 			value := upstreamID.String
@@ -296,6 +309,18 @@ ORDER BY a.action_index ASC
 }
 
 func (s *PostgresTurnStore) AcquireConversationLease(ctx context.Context, owner Owner, sessionID, turnID, holderID string, ttl time.Duration) (ConversationLease, error) {
+	return s.acquireConversationLease(ctx, owner, sessionID, turnID, holderID, ttl, false)
+}
+
+// AcquireConversationLeaseForFinalization is the narrow escape hatch for an
+// explicit client cancellation. It still takes the same session and turn
+// fences, but it need not wait for an execution retry deadline because it will
+// never run the model or an upstream action.
+func (s *PostgresTurnStore) AcquireConversationLeaseForFinalization(ctx context.Context, owner Owner, sessionID, turnID, holderID string, ttl time.Duration) (ConversationLease, error) {
+	return s.acquireConversationLease(ctx, owner, sessionID, turnID, holderID, ttl, true)
+}
+
+func (s *PostgresTurnStore) acquireConversationLease(ctx context.Context, owner Owner, sessionID, turnID, holderID string, ttl time.Duration, allowEarlyFinalization bool) (ConversationLease, error) {
 	if sessionID == "" || turnID == "" || holderID == "" || len(holderID) > 128 || ttl <= 0 {
 		return ConversationLease{}, fmt.Errorf("%w: invalid lease request", ErrInvalidArgument)
 	}
@@ -332,7 +357,7 @@ FROM conversation_leases WHERE session_id = $1 FOR UPDATE
 		if insertErr != nil {
 			return ConversationLease{}, insertErr
 		}
-		if err := startTurnTx(ctx, tx, turn, lease, contextVersion); err != nil {
+		if err := startTurnTx(ctx, tx, turn, lease, contextVersion, allowEarlyFinalization); err != nil {
 			return ConversationLease{}, err
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
@@ -373,7 +398,7 @@ FROM conversation_leases WHERE session_id = $1 FOR UPDATE
 	if err != nil {
 		return ConversationLease{}, err
 	}
-	if err := startTurnTx(ctx, tx, turn, lease, contextVersion); err != nil {
+	if err := startTurnTx(ctx, tx, turn, lease, contextVersion, allowEarlyFinalization); err != nil {
 		return ConversationLease{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -437,11 +462,14 @@ func (s *PostgresTurnStore) ReleaseConversationLease(ctx context.Context, owner 
 	if err != nil {
 		return err
 	}
-	nextStatus := TurnStatusFailedRetryable
+	nextStatus, retryCount, nextRetryAt, exhausted := failureTransition(turn, TurnStatusFailedRetryable, uncertain, time.Now().UTC())
 	reason := "lease_released"
 	if uncertain {
-		nextStatus = TurnStatusAmbiguousAfterAction
 		reason = "lease_released_after_action"
+	} else if exhausted {
+		reason = "retry_exhausted"
+	}
+	if nextStatus.Terminal() {
 		if err := lockTurnMessages(ctx, tx, turn.ID); err != nil {
 			return err
 		}
@@ -452,7 +480,7 @@ WHERE turn_id = $2 AND status = 'pending'
 			return fmt.Errorf("release lease fail pending messages: %w", err)
 		}
 	}
-	payload, _ := json.Marshal(map[string]string{"reason": reason, "status": string(nextStatus)})
+	payload, _ := json.Marshal(failureEventPayload(reason, nextStatus, retryCount, nextRetryAt))
 	if _, err := appendEventTx(ctx, tx, turn.ID, lease.Epoch, "turn.lease_released", payload, !nextStatus.Terminal()); err != nil {
 		return err
 	}
@@ -463,10 +491,11 @@ WHERE turn_id = $2 AND status = 'pending'
 	res, err := tx.ExecContext(ctx, `
 UPDATE chat_turns
 SET status = $1, executor_id = NULL, error_code = $2, finished_at = `+finishedExpr+`,
-    execution_envelope = CASE WHEN $5 THEN NULL ELSE execution_envelope END
+	    execution_envelope = CASE WHEN $5 THEN NULL ELSE execution_envelope END,
+	    retry_count = $6, next_retry_at = $7
 WHERE id = $3 AND lease_epoch = $4
   AND status IN ('running', 'awaiting_confirmation', 'committing')
-`, nextStatus, reason, turn.ID, lease.Epoch, nextStatus.Terminal())
+`, nextStatus, reason, turn.ID, lease.Epoch, nextStatus.Terminal(), retryCount, nextRetryAt)
 	if err != nil {
 		return fmt.Errorf("release lease update turn: %w", err)
 	}
@@ -1228,7 +1257,7 @@ func (s *PostgresTurnStore) FailTurn(
 	desired TurnStatus,
 	reason string,
 ) (Turn, error) {
-	if desired != TurnStatusFailedRetryable && desired != TurnStatusAborted {
+	if desired != TurnStatusFailedRetryable && desired != TurnStatusFailedFinal && desired != TurnStatusAborted {
 		return Turn{}, fmt.Errorf("%w: invalid failure status", ErrInvalidArgument)
 	}
 	return s.failOrReconcileTurn(ctx, owner, lease, desired, reason, "turn.failed")
@@ -1273,9 +1302,9 @@ func (s *PostgresTurnStore) failOrReconcileTurn(
 	if err != nil {
 		return Turn{}, err
 	}
-	actual := desired
-	if uncertain {
-		actual = TurnStatusAmbiguousAfterAction
+	actual, retryCount, nextRetryAt, exhausted := failureTransition(turn, desired, uncertain, time.Now().UTC())
+	if exhausted {
+		reason = "retry_exhausted"
 	}
 	if actual.Terminal() {
 		if _, err := tx.ExecContext(ctx, `
@@ -1285,7 +1314,7 @@ WHERE turn_id = $2 AND status = 'pending'
 			return Turn{}, fmt.Errorf("fail pending messages: %w", err)
 		}
 	}
-	payload, _ := json.Marshal(map[string]string{"reason": reason, "status": string(actual)})
+	payload, _ := json.Marshal(failureEventPayload(reason, actual, retryCount, nextRetryAt))
 	if _, err := appendEventTx(ctx, tx, turn.ID, lease.Epoch, eventType, payload, !actual.Terminal()); err != nil {
 		return Turn{}, err
 	}
@@ -1296,10 +1325,11 @@ WHERE turn_id = $2 AND status = 'pending'
 	failed, err := scanTurn(tx.QueryRowContext(ctx, `
 UPDATE chat_turns
 SET status = $1, error_code = $2, executor_id = NULL, finished_at = `+finishedExpr+`,
-    execution_envelope = CASE WHEN $4 THEN NULL ELSE execution_envelope END
+	    execution_envelope = CASE WHEN $4 THEN NULL ELSE execution_envelope END,
+	    retry_count = $5, next_retry_at = $6
 WHERE id = $3 AND status IN ('accepted', 'running', 'awaiting_confirmation', 'committing', 'failed_retryable')
 RETURNING `+turnColumns,
-		actual, reason, turn.ID, actual.Terminal()))
+		actual, reason, turn.ID, actual.Terminal(), retryCount, nextRetryAt))
 	if err != nil {
 		return Turn{}, fmt.Errorf("fail turn row: %w", err)
 	}
@@ -1310,4 +1340,42 @@ RETURNING `+turnColumns,
 		return Turn{}, fmt.Errorf("fail turn commit: %w", err)
 	}
 	return failed, nil
+}
+
+func failureTransition(turn Turn, desired TurnStatus, uncertain bool, now time.Time) (TurnStatus, int, *time.Time, bool) {
+	if uncertain {
+		return TurnStatusAmbiguousAfterAction, turn.RetryCount, nil, false
+	}
+	if desired != TurnStatusFailedRetryable {
+		return desired, turn.RetryCount, nil, false
+	}
+	nextCount := turn.RetryCount + 1
+	if nextCount > MaxTurnRecoveryAttempts {
+		return TurnStatusFailedFinal, MaxTurnRecoveryAttempts, nil, true
+	}
+	next := now.Add(turnRecoveryBackoff(nextCount))
+	return TurnStatusFailedRetryable, nextCount, &next, false
+}
+
+func turnRecoveryBackoff(retryCount int) time.Duration {
+	switch retryCount {
+	case 1:
+		return 2 * time.Second
+	case 2:
+		return 10 * time.Second
+	default:
+		return 30 * time.Second
+	}
+}
+
+func failureEventPayload(reason string, status TurnStatus, retryCount int, nextRetryAt *time.Time) map[string]any {
+	payload := map[string]any{
+		"reason":      reason,
+		"status":      string(status),
+		"retry_count": retryCount,
+	}
+	if nextRetryAt != nil {
+		payload["next_retry_at"] = nextRetryAt.UTC().Format(time.RFC3339Nano)
+	}
+	return payload
 }

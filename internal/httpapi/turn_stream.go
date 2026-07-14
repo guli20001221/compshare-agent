@@ -120,10 +120,15 @@ func coordinatorStreamEvent(turn store.Turn, event turncoord.Event) (string, map
 			frame["Status"] = "reconciling"
 			frame["Code"] = "TurnNotSaved"
 			frame["Message"] = "本轮尚未确认保存，正在恢复"
+		} else if status == string(store.TurnStatusFailedFinal) {
+			frame["ServerStatus"] = status
+			frame["Status"] = status
+			frame["Code"] = "TurnNotSaved"
+			frame["Message"] = "本轮未能保存，请重新发送"
 		} else if status != "" {
 			frame["Status"] = status
 		}
-		if status != string(store.TurnStatusFailedRetryable) {
+		if status != string(store.TurnStatusFailedRetryable) && status != string(store.TurnStatusFailedFinal) {
 			copyPayloadField(frame, payload, "Code", "reason")
 			copyPayloadField(frame, payload, "Message", "message")
 			if _, ok := frame["Message"]; !ok {

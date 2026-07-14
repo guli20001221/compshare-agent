@@ -2,6 +2,7 @@ package turncoord
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
@@ -138,6 +140,236 @@ func waitTurnStatus(t *testing.T, turns *store.PostgresTurnStore, owner store.Ow
 	require.NoError(t, err)
 	t.Fatalf("turn %s stayed in status %s; wanted %v", turnID, turn.Status, statuses)
 	return store.Turn{}
+}
+
+func waitTurnRetryCount(t *testing.T, turns *store.PostgresTurnStore, owner store.Owner, turnID string, status store.TurnStatus, retryCount int) store.Turn {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		turn, err := turns.GetTurn(context.Background(), owner, turnID)
+		if err == nil && turn.Status == status && turn.RetryCount == retryCount {
+			return turn
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	turn, err := turns.GetTurn(context.Background(), owner, turnID)
+	require.NoError(t, err)
+	t.Fatalf("turn %s stayed in status %s at retry %d; wanted %s at retry %d", turnID, turn.Status, turn.RetryCount, status, retryCount)
+	return store.Turn{}
+}
+
+func forceCoordinatorRetryDue(t *testing.T, db *sql.DB, turnID string) {
+	t.Helper()
+	_, err := db.Exec(`UPDATE chat_turns SET next_retry_at = NOW() - INTERVAL '1 second' WHERE id = $1`, turnID)
+	require.NoError(t, err)
+}
+
+func TestFreezeSubmitInputUsesSharedCredentialRedactionWithoutDroppingRoutingContext(t *testing.T) {
+	owner := store.Owner{TopOrganizationID: 90001, OrganizationID: 90002}
+	secret := "bearer-secret-1234567890"
+	_, raw, err := freezeSubmitInput(SubmitInput{
+		Owner: owner, SessionID: "session", ClientTurnID: "credential-envelope",
+		Message: "Authorization: Bearer " + secret + "，请排查实例 uhost-1",
+		UserContext: tools.UserContext{
+			UserEmail: "operator@example.com", ClientIP: "10.0.0.8",
+			ProjectId: "project-live", Region: "cn-bj2",
+		},
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), secret)
+	assert.Contains(t, string(raw), guardrails.TokenRedactedOutput)
+	assert.Contains(t, string(raw), "operator@example.com")
+	assert.Contains(t, string(raw), "10.0.0.8")
+	assert.Contains(t, string(raw), "project-live")
+	assert.Contains(t, string(raw), "uhost-1")
+}
+
+func TestCoordinator_UnrecoverableEnvelopeTerminatesOnceAndReleasesQueue(t *testing.T) {
+	tests := []struct {
+		name     string
+		envelope json.RawMessage
+		reason   string
+	}{
+		{name: "missing", envelope: nil, reason: "execution_envelope_missing"},
+		{name: "unsupported", envelope: json.RawMessage(`{"version":99}`), reason: "execution_envelope_unsupported"},
+		{name: "invalid", envelope: json.RawMessage(`{"version":1}`), reason: "execution_envelope_invalid"},
+	}
+	for index, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openActionJournalTestDB(t)
+			ctx := context.Background()
+			owner := store.Owner{TopOrganizationID: uint32(90100 + index), OrganizationID: uint32(90200 + index)}
+			sessions := store.NewSessionStore(db)
+			session, err := sessions.Create(ctx, owner, nil, json.RawMessage(`{"schema_version":"1.0"}`))
+			require.NoError(t, err)
+			turns := store.NewPostgresTurnStore(db)
+			broken, _, err := turns.AcceptTurn(ctx, owner, store.AcceptTurnInput{
+				SessionID: session.ID, ClientTurnID: "broken", RequestHash: store.HashTurnRequest("broken"),
+				UserContent: "broken", ExecutionEnvelope: tc.envelope,
+			})
+			require.NoError(t, err)
+			_, goodEnvelope, err := freezeSubmitInput(SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "next", Message: "continue"})
+			require.NoError(t, err)
+			next, _, err := turns.AcceptTurn(ctx, owner, store.AcceptTurnInput{
+				SessionID: session.ID, ClientTurnID: "next", RequestHash: store.HashTurnRequest("next"),
+				UserContent: "continue", ExecutionEnvelope: goodEnvelope,
+			})
+			require.NoError(t, err)
+
+			factory := &coordinatorFactory{}
+			_ = coordinatorForTest(t, turns, sessions, factory, "broken-a")
+			_ = coordinatorForTest(t, turns, sessions, factory, "broken-b")
+			failed := waitTurnStatus(t, turns, owner, broken.ID, store.TurnStatusFailedFinal)
+			require.NotNil(t, failed.ErrorCode)
+			assert.Equal(t, tc.reason, *failed.ErrorCode)
+			assert.Empty(t, failed.ExecutionEnvelope)
+			assert.Nil(t, failed.NextRetryAt)
+			var failedMessages int
+			require.NoError(t, db.QueryRow(`SELECT count(*) FROM messages WHERE turn_id = $1 AND status = 'error'`, broken.ID).Scan(&failedMessages))
+			assert.Equal(t, 2, failedMessages)
+			savedSession, err := sessions.GetByID(ctx, owner, session.ID)
+			require.NoError(t, err)
+			assert.Equal(t, 0, savedSession.ContextVersion)
+
+			waitTurnStatus(t, turns, owner, next.ID, store.TurnStatusCommitted)
+			factory.mu.Lock()
+			calls := factory.calls
+			factory.mu.Unlock()
+			assert.Equal(t, 1, calls, "the broken envelope must never reach a model and two replicas must execute the next turn once")
+			events, err := turns.ListEvents(ctx, owner, broken.ID, 0, 100)
+			require.NoError(t, err)
+			terminalFailures := 0
+			for _, event := range events {
+				if event.Type == "turn.failed" && !event.Provisional {
+					terminalFailures++
+				}
+			}
+			assert.Equal(t, 1, terminalFailures)
+		})
+	}
+}
+
+func TestCoordinator_UnrecoverableEnvelopeAfterPossibleActionBecomesAmbiguous(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx := context.Background()
+	owner := store.Owner{TopOrganizationID: 90251, OrganizationID: 90252}
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := store.NewPostgresTurnStore(db)
+	broken, _, err := turns.AcceptTurn(ctx, owner, store.AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "uncertain-broken", RequestHash: store.HashTurnRequest("uncertain-broken"),
+		UserContent: "change it", ExecutionEnvelope: json.RawMessage(`{"version":1}`),
+	})
+	require.NoError(t, err)
+	lease, err := turns.AcquireConversationLease(ctx, owner, session.ID, broken.ID, "lost-replica", 100*time.Millisecond)
+	require.NoError(t, err)
+	action, _, err := turns.ReserveAction(ctx, owner, lease, store.ReserveActionInput{
+		Index: 0, ActionName: "ExternalWrite", ArgsHash: store.HashTurnRequest("uncertain-write"),
+	})
+	require.NoError(t, err)
+	_, err = turns.StartAction(ctx, owner, lease, action.ExecutionToken)
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE conversation_leases SET lease_until = NOW() - INTERVAL '1 second' WHERE session_id = $1`, session.ID)
+	require.NoError(t, err)
+
+	factory := &coordinatorFactory{}
+	_ = coordinatorForTest(t, turns, sessions, factory, "uncertain-recovery")
+	failed := waitTurnStatus(t, turns, owner, broken.ID, store.TurnStatusAmbiguousAfterAction)
+	require.NotNil(t, failed.ErrorCode)
+	assert.Equal(t, "execution_envelope_invalid", *failed.ErrorCode)
+	assert.Empty(t, failed.ExecutionEnvelope)
+	factory.mu.Lock()
+	calls := factory.calls
+	factory.mu.Unlock()
+	assert.Zero(t, calls, "an invalid recovery envelope must never replay a possibly executed action")
+}
+
+func TestCoordinator_PersistentFailureExhaustsDurablyAcrossTwoReplicas(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx := context.Background()
+	owner := store.Owner{TopOrganizationID: 90301, OrganizationID: 90302}
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := store.NewPostgresTurnStore(db)
+	var modelCalls atomic.Int32
+	factory := &coordinatorFactory{newChat: func(call int) func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+		return func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+			modelCalls.Add(1)
+			if call <= store.MaxTurnRecoveryAttempts+1 {
+				return "", errors.New("persistent model failure")
+			}
+			return "next turn saved", nil
+		}
+	}}
+	newCoordinator := func(replica string) *Coordinator {
+		c := NewCoordinator(turns, sessions, EngineFactoryFunc(factory.New), Options{
+			ReplicaID: replica, LeaseTTL: 900 * time.Millisecond, LeaseRenewInterval: 100 * time.Millisecond,
+			InteractionPoll: 20 * time.Millisecond, ExecutionTimeout: 5 * time.Second,
+			RecoveryScanInterval: time.Hour, MutatingToolsEnabled: true,
+		})
+		t.Cleanup(c.Close)
+		return c
+	}
+	c1, c2 := newCoordinator("persistent-a"), newCoordinator("persistent-b")
+	sub, err := c1.Submit(ctx, SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "persistent", Message: "retry"}, nil)
+	require.NoError(t, err)
+	waitTurnRetryCount(t, turns, owner, sub.Turn.ID, store.TurnStatusFailedRetryable, 1)
+
+	for retryCount := 2; retryCount <= store.MaxTurnRecoveryAttempts; retryCount++ {
+		forceCoordinatorRetryDue(t, db, sub.Turn.ID)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = c1.RecoverTurn(ctx, owner, sub.Turn.ID) }()
+		go func() { defer wg.Done(); _ = c2.RecoverTurn(ctx, owner, sub.Turn.ID) }()
+		wg.Wait()
+		waitTurnRetryCount(t, turns, owner, sub.Turn.ID, store.TurnStatusFailedRetryable, retryCount)
+		assert.Equal(t, int32(retryCount), modelCalls.Load(), "two replicas may not spend the same retry twice")
+	}
+
+	forceCoordinatorRetryDue(t, db, sub.Turn.ID)
+	require.NoError(t, c1.RecoverTurn(ctx, owner, sub.Turn.ID))
+	require.NoError(t, c2.RecoverTurn(ctx, owner, sub.Turn.ID))
+	final := waitTurnStatus(t, turns, owner, sub.Turn.ID, store.TurnStatusFailedFinal)
+	assert.Equal(t, store.MaxTurnRecoveryAttempts, final.RetryCount)
+	assert.Empty(t, final.ExecutionEnvelope)
+	assert.Equal(t, int32(store.MaxTurnRecoveryAttempts+1), modelCalls.Load())
+
+	next, err := c1.Submit(ctx, SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "after-persistent", Message: "new turn"}, nil)
+	require.NoError(t, err)
+	waitTurnStatus(t, turns, owner, next.Turn.ID, store.TurnStatusCommitted)
+	assert.Equal(t, int32(store.MaxTurnRecoveryAttempts+2), modelCalls.Load())
+}
+
+func TestCoordinator_ClientCanAbortDuringDurableRetryBackoff(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx := context.Background()
+	owner := store.Owner{TopOrganizationID: 90401, OrganizationID: 90402}
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := store.NewPostgresTurnStore(db)
+	factory := &coordinatorFactory{newChat: func(call int) func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+		return func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+			if call == 1 {
+				return "", errors.New("temporary model failure")
+			}
+			return "saved after cancel", nil
+		}
+	}}
+	c := coordinatorForTest(t, turns, sessions, factory, "abort-backoff")
+	first, err := c.Submit(ctx, SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "abort-backoff", Message: "retry"}, nil)
+	require.NoError(t, err)
+	waitTurnRetryCount(t, turns, owner, first.Turn.ID, store.TurnStatusFailedRetryable, 1)
+	aborted, err := c.AbortTurn(ctx, owner, first.Turn.ID)
+	require.NoError(t, err)
+	assert.Equal(t, store.TurnStatusAborted, aborted.Status)
+	assert.Empty(t, aborted.ExecutionEnvelope)
+
+	next, err := c.Submit(ctx, SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "after-abort-backoff", Message: "continue"}, nil)
+	require.NoError(t, err)
+	waitTurnStatus(t, turns, owner, next.Turn.ID, store.TurnStatusCommitted)
 }
 
 func TestCoordinator_ConcurrentIdempotentSubmitExecutesOnceAndOutlivesSubscriber(t *testing.T) {

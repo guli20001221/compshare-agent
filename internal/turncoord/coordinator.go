@@ -27,8 +27,6 @@ const (
 )
 
 var shortCredentialMarker = regexp.MustCompile(`(?i)\b(?:ak|sk|access[_-]?key|secret[_-]?key|access[_-]?token)\s*[:=]\s*[^\s,;]+`)
-var credentialAssignmentMarker = regexp.MustCompile(`(?i)(["']?\b(?:ak|sk|access[_-]?key|secret[_-]?key|access[_-]?token|password|passwd|private[_-]?key)\b["']?\s*[:=]\s*["']?)[^"'\s,;}\]]+`)
-var privateKeyBlock = regexp.MustCompile(`(?is)-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----`)
 
 // TurnEngine is the private, mutable workspace for exactly one durable turn.
 // Production uses *engine.Engine; this narrow seam keeps coordinator tests
@@ -70,6 +68,7 @@ type turnStore interface {
 	ListRecoverableTurns(context.Context, int) ([]store.RecoverableTurn, error)
 	ListContinuityAdvisories(context.Context, store.Owner, string, int) ([]store.ContinuityAdvisory, error)
 	AcquireConversationLease(context.Context, store.Owner, string, string, string, time.Duration) (store.ConversationLease, error)
+	AcquireConversationLeaseForFinalization(context.Context, store.Owner, string, string, string, time.Duration) (store.ConversationLease, error)
 	RenewConversationLease(context.Context, store.Owner, store.ConversationLease, time.Duration) (store.ConversationLease, error)
 	ReleaseConversationLease(context.Context, store.Owner, store.ConversationLease) error
 	AppendEvent(context.Context, store.Owner, store.ConversationLease, string, json.RawMessage, bool) (store.TurnEvent, error)
@@ -221,10 +220,9 @@ type Coordinator struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	mu       sync.Mutex
-	workers  map[string]struct{}
-	restarts map[string]SubmitInput
-	subs     map[string]map[*subscription]struct{}
+	mu      sync.Mutex
+	workers map[string]struct{}
+	subs    map[string]map[*subscription]struct{}
 }
 
 func NewCoordinator(turns turnStore, sessions store.SessionStore, factory EngineFactory, opts Options) *Coordinator {
@@ -234,7 +232,7 @@ func NewCoordinator(turns turnStore, sessions store.SessionStore, factory Engine
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Coordinator{
 		turns: turns, sessions: sessions, factory: factory, opts: opts.withDefaults(),
-		ctx: ctx, cancel: cancel, workers: make(map[string]struct{}), restarts: make(map[string]SubmitInput), subs: make(map[string]map[*subscription]struct{}),
+		ctx: ctx, cancel: cancel, workers: make(map[string]struct{}), subs: make(map[string]map[*subscription]struct{}),
 	}
 	c.wg.Add(1)
 	go func() {
@@ -292,7 +290,7 @@ func (c *Coordinator) Submit(ctx context.Context, in SubmitInput, sink EventSink
 
 	disposition := DispositionSubscribed
 	switch turn.Status {
-	case store.TurnStatusCommitted, store.TurnStatusAmbiguousAfterAction, store.TurnStatusAborted:
+	case store.TurnStatusCommitted, store.TurnStatusFailedFinal, store.TurnStatusAmbiguousAfterAction, store.TurnStatusAborted:
 		disposition = DispositionReplayed
 		if sink != nil {
 			if err := c.replayNow(in.Owner, turn.ID); err != nil {
@@ -307,7 +305,7 @@ func (c *Coordinator) Submit(ctx context.Context, in SubmitInput, sink EventSink
 			disposition = DispositionStarted
 		}
 	}
-	if err := c.ensureWorkerFromTurn(turn, turn.Status == store.TurnStatusFailedRetryable); err != nil {
+	if err := c.ensureWorkerFromTurn(turn); err != nil {
 		return Submission{}, err
 	}
 	return Submission{Turn: turn, Disposition: disposition}, nil
@@ -348,7 +346,7 @@ func (c *Coordinator) AbortTurn(ctx context.Context, owner store.Owner, turnID s
 	if turn.Status != store.TurnStatusAccepted && turn.Status != store.TurnStatusFailedRetryable {
 		return store.Turn{}, store.ErrLeaseHeld
 	}
-	lease, err := c.turns.AcquireConversationLease(ctx, owner, turn.SessionID, turn.ID, c.opts.ReplicaID+"/abort", c.opts.LeaseTTL)
+	lease, err := c.turns.AcquireConversationLeaseForFinalization(ctx, owner, turn.SessionID, turn.ID, c.opts.ReplicaID+"/abort", c.opts.LeaseTTL)
 	if err != nil {
 		return store.Turn{}, err
 	}
@@ -373,7 +371,7 @@ func (c *Coordinator) Subscribe(ctx context.Context, owner store.Owner, turnID s
 	}
 	c.subscribe(ctx, owner, turnID, lastSeq, sink)
 	if !turn.Status.Terminal() {
-		if err := c.ensureWorkerFromTurn(turn, turn.Status == store.TurnStatusFailedRetryable); err != nil {
+		if err := c.ensureWorkerFromTurn(turn); err != nil {
 			return err
 		}
 	}
@@ -389,7 +387,7 @@ func (c *Coordinator) RecoverTurn(ctx context.Context, owner store.Owner, turnID
 	if turn.Status.Terminal() {
 		return nil
 	}
-	return c.ensureWorkerFromTurn(turn, turn.Status == store.TurnStatusFailedRetryable)
+	return c.ensureWorkerFromTurn(turn)
 }
 
 func (c *Coordinator) recoveryLoop() {
@@ -404,7 +402,7 @@ func (c *Coordinator) recoveryLoop() {
 			if c.ctx.Err() != nil {
 				return
 			}
-			_ = c.ensureWorkerFromTurn(recoverable.Turn, recoverable.Turn.Status == store.TurnStatusFailedRetryable)
+			_ = c.ensureWorkerFromTurn(recoverable.Turn)
 		}
 	}
 	run()
@@ -420,24 +418,18 @@ func (c *Coordinator) recoveryLoop() {
 	}
 }
 
-func (c *Coordinator) ensureWorkerFromTurn(turn store.Turn, restart bool) error {
-	if len(turn.ExecutionEnvelope) == 0 {
-		return store.ErrExecutionEnvelopeMissing
+func (c *Coordinator) ensureWorkerFromTurn(turn store.Turn) error {
+	if turn.Status.Terminal() {
+		return nil
 	}
-	in, err := thawSubmitInput(turn)
-	if err != nil {
-		return err
-	}
-	c.ensureWorker(in, turn.ID, restart)
+	c.ensureWorker(turn)
 	return nil
 }
 
-func (c *Coordinator) ensureWorker(in SubmitInput, turnID string, restart bool) {
+func (c *Coordinator) ensureWorker(turn store.Turn) {
+	turnID := turn.ID
 	c.mu.Lock()
 	if _, exists := c.workers[turnID]; exists {
-		if restart {
-			c.restarts[turnID] = in
-		}
 		c.mu.Unlock()
 		return
 	}
@@ -449,19 +441,16 @@ func (c *Coordinator) ensureWorker(in SubmitInput, turnID string, restart bool) 
 		defer func() {
 			c.mu.Lock()
 			delete(c.workers, turnID)
-			next, shouldRestart := c.restarts[turnID]
-			delete(c.restarts, turnID)
 			c.mu.Unlock()
-			if shouldRestart && c.ctx.Err() == nil {
-				c.ensureWorker(next, turnID, false)
-			}
 		}()
-		c.run(in, turnID)
+		c.run(turn)
 	}()
 }
 
-func (c *Coordinator) run(in SubmitInput, turnID string) {
-	lease, ok := c.waitForLease(in.Owner, in.SessionID, turnID)
+func (c *Coordinator) run(turn store.Turn) {
+	turnID := turn.ID
+	owner := turn.Owner
+	lease, ok := c.waitForLease(owner, turn.SessionID, turnID)
 	if !ok {
 		return
 	}
@@ -470,9 +459,27 @@ func (c *Coordinator) run(in SubmitInput, turnID string) {
 		if !settled {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			_, _ = c.turns.FailTurn(cleanupCtx, in.Owner, lease, store.TurnStatusFailedRetryable, "executor_stopped")
+			_, _ = c.turns.FailTurn(cleanupCtx, owner, lease, store.TurnStatusFailedRetryable, "executor_stopped")
 		}
 	}()
+
+	// The execution envelope is intentionally decoded only after this turn owns
+	// the database lease. A malformed row must be terminally cleared by exactly
+	// one replica instead of permanently blocking the session queue.
+	reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	turn, err := c.turns.GetTurn(reloadCtx, owner, turnID)
+	reloadCancel()
+	if err != nil {
+		c.fail(owner, lease, "turn_reload_failed")
+		settled = true
+		return
+	}
+	in, err := thawSubmitInput(turn)
+	if err != nil {
+		c.failAs(owner, lease, store.TurnStatusFailedFinal, executionEnvelopeFailureReason(err))
+		settled = true
+		return
+	}
 
 	execCtx, execCancel := context.WithTimeout(c.ctx, c.opts.ExecutionTimeout)
 	execCtx, cancelCause := context.WithCancelCause(execCtx)
@@ -507,12 +514,6 @@ func (c *Coordinator) run(in SubmitInput, turnID string) {
 	state, clientContext, warning, mode, mutations := parseExecutionContext(sess.Context, c.opts.MutatingToolsEnabled)
 	journal := NewActionJournal(c.turns, in.Owner, lease)
 	confirm := c.confirmFunc(execCtx, in.Owner, lease, cancelCause)
-	turn, err := c.turns.GetTurn(execCtx, in.Owner, turnID)
-	if err != nil {
-		c.fail(in.Owner, lease, "turn_reload_failed")
-		settled = true
-		return
-	}
 	eng, err := c.factory.New(execCtx, in.Owner, in.SessionID, engine.SessionOptions{
 		ConfirmFn: confirm, MutatingToolsEnabled: mutations,
 		InitialCommittedTurns: int(max(turn.Sequence-1, 0)),
@@ -686,6 +687,9 @@ func (c *Coordinator) waitForLease(owner store.Owner, sessionID, turnID string) 
 			if acquireErr == nil {
 				return lease, true
 			}
+			if errors.Is(acquireErr, store.ErrRetryNotDue) || errors.Is(acquireErr, store.ErrRetryExhausted) {
+				return store.ConversationLease{}, false
+			}
 			if errors.Is(acquireErr, store.ErrConversationNotFound) || errors.Is(acquireErr, store.ErrTurnNotFound) {
 				return store.ConversationLease{}, false
 			}
@@ -698,6 +702,16 @@ func (c *Coordinator) waitForLease(owner store.Owner, sessionID, turnID string) 
 		case <-ticker.C:
 		}
 	}
+}
+
+func executionEnvelopeFailureReason(err error) string {
+	if errors.Is(err, store.ErrExecutionEnvelopeMissing) {
+		return "execution_envelope_missing"
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "unsupported execution envelope version") {
+		return "execution_envelope_unsupported"
+	}
+	return "execution_envelope_invalid"
 }
 
 func (c *Coordinator) renewLoop(ctx context.Context, owner store.Owner, lease store.ConversationLease, cancel context.CancelCauseFunc, done <-chan struct{}) {
@@ -904,8 +918,7 @@ func hashExecutionEnvelope(owner store.Owner, sessionID, clientTurnID string, en
 }
 
 func redactCredentialsOnly(value string) string {
-	value = privateKeyBlock.ReplaceAllString(value, guardrails.CredentialRedactedOutput)
-	return credentialAssignmentMarker.ReplaceAllString(value, `${1}`+guardrails.CredentialRedactedOutput)
+	return guardrails.RedactCredentials(value)
 }
 
 func normalizeImageDigest(value string) (string, error) {

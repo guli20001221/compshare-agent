@@ -293,8 +293,9 @@ func insertTailFixtureTurnAt(
 INSERT INTO chat_turns
   (id, session_id, top_organization_id, organization_id, client_turn_id,
    turn_seq, request_hash, status, user_message_id, assistant_message_id,
-   base_context_version, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11, $11)
+   base_context_version, next_retry_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8::varchar, $9, $10, 0,
+		CASE WHEN $8::varchar = 'failed_retryable' THEN $11::timestamptz ELSE NULL END, $11, $11)
 `, turnID, sessionID, owner.TopOrganizationID, owner.OrganizationID,
 		fmt.Sprintf("fixture-%03d", seq), seq, HashTurnRequest(fmt.Sprintf("turn-%03d", seq)),
 		turnStatus, userID, assistantID, createdAt)
