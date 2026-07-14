@@ -134,6 +134,13 @@ func RedactCredentials(s string) string {
 	return out
 }
 
+// ContainsCredential reports whether the shared credential rules would redact
+// any part of s. Callers that must reject rather than sanitize an input should
+// use this instead of defining another pattern set.
+func ContainsCredential(s string) bool {
+	return s != "" && RedactCredentials(s) != s
+}
+
 // RedactOutputLeak returns a copy of s with output-side leak patterns
 // replaced. Designed for assistant-reply persistence (HTTP messages
 // role=assistant messages.content). Routing-relevant tokens are preserved.

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -182,7 +183,8 @@ func completeConversationExcerpts(messages []openai.ChatCompletionMessage) []Con
 			assistant := strings.TrimSpace(msg.Content)
 			if assistant != "" {
 				out = append(out, ConversationExcerpt{
-					User: truncateRunes(pending, 600), Assistant: truncateRunes(assistant, 600),
+					User:      truncateRunes(guardrails.RedactCredentials(pending), 600),
+					Assistant: truncateRunes(guardrails.RedactCredentials(assistant), 600),
 				})
 			}
 			pending = ""

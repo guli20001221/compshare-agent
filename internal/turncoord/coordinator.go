@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,8 +28,6 @@ const (
 	UnknownSchemaWarning  = "系统检测到这段会话由较新版本创建；本轮已按只读模式回答，并保留原有会话状态。"
 	CorruptContextWarning = "系统检测到这段会话的部分状态已损坏；本轮已从可用对话记录继续，并重建会话状态。"
 )
-
-var shortCredentialMarker = regexp.MustCompile(`(?i)\b(?:ak|sk|access[_-]?key|secret[_-]?key|access[_-]?token)\s*[:=]\s*[^\s,;]+`)
 
 // TurnEngine is the private, mutable workspace for exactly one durable turn.
 // Production uses *engine.Engine; this narrow seam keeps coordinator tests
@@ -993,8 +990,8 @@ func freezeSubmitInput(in SubmitInput) (executionEnvelope, json.RawMessage, erro
 	if err != nil {
 		return executionEnvelope{}, nil, err
 	}
-	message := strings.TrimSpace(redactCredentialsOnly(in.Message))
-	ocrText := strings.TrimSpace(redactCredentialsOnly(in.ImageContext))
+	message := strings.TrimSpace(guardrails.RedactCredentials(in.Message))
+	ocrText := strings.TrimSpace(guardrails.RedactCredentials(in.ImageContext))
 	if message == "" {
 		return executionEnvelope{}, nil, fmt.Errorf("%w: empty redacted message", store.ErrInvalidArgument)
 	}
@@ -1012,7 +1009,7 @@ func freezeSubmitInput(in SubmitInput) (executionEnvelope, json.RawMessage, erro
 		return executionEnvelope{}, nil, fmt.Errorf("%w: envelope owner mismatch", store.ErrInvalidArgument)
 	}
 	role := strings.TrimSpace(user.RoleUrn)
-	if shortCredentialMarker.MatchString(role) {
+	if guardrails.ContainsCredential(role) {
 		return executionEnvelope{}, nil, fmt.Errorf("%w: credential-like role value", store.ErrInvalidArgument)
 	}
 	var model *string
@@ -1103,10 +1100,6 @@ func hashExecutionEnvelope(owner store.Owner, sessionID, clientTurnID string, en
 	)
 }
 
-func redactCredentialsOnly(value string) string {
-	return guardrails.RedactCredentials(value)
-}
-
 func normalizeImageDigest(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = strings.TrimPrefix(value, "sha256:")
@@ -1150,8 +1143,7 @@ func sanitizeInteractionArgs(args map[string]any) map[string]any {
 }
 
 func redactTurnOutput(text string) string {
-	text = guardrails.RedactOutputLeak(guardrails.RedactPII(text))
-	return shortCredentialMarker.ReplaceAllString(text, guardrails.CredentialRedactedOutput)
+	return guardrails.RedactOutputLeak(guardrails.RedactPII(text))
 }
 
 func buildContinuityAdvisories(

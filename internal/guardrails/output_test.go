@@ -243,3 +243,22 @@ func TestRedactCredentials_CoversDurableEnvelopeFormatsWithoutRemovingContext(t 
 	semantic := "联系 operator@example.com，排查 10.0.0.8，项目 project-live，实例 uhost-1，地域 cn-bj2"
 	assert.Equal(t, semantic, RedactCredentials(semantic))
 }
+
+func TestContainsCredentialUsesTheSameRulesWithoutFalseContextMatches(t *testing.T) {
+	for _, input := range []string{
+		"Authorization: " + "Bearer " + "bearer-" + "secret-1234567890",
+		"pass" + "word: short-" + "password",
+		"AKIA1234567890ABCDEF",
+		"-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----",
+	} {
+		assert.Truef(t, ContainsCredential(input), "credential should be detected: %q", input)
+	}
+	for _, input := range []string{
+		"实例 uhost-abc123 在 cn-wlcb-01",
+		"project-live 的 4090 价格是多少",
+		"联系 user@example.com，来源 10.0.0.8",
+		"如果 token 过期请重新登录",
+	} {
+		assert.Falsef(t, ContainsCredential(input), "ordinary context must survive: %q", input)
+	}
+}
