@@ -5,6 +5,7 @@ import (
 
 	"github.com/compshare-agent/internal/intent"
 	grounded "github.com/compshare-agent/internal/renderer"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // contextAwareDirectIntents is the production direct-dispatch surface whose
@@ -41,7 +42,11 @@ func (e *Engine) directRenderTaskSpec(plan intent.IntentRoute, userMsg string) g
 		CurrentQuestion: compactSemanticText(userMsg),
 		Intent:          compactSemanticText(string(plan.Intent)),
 	}
+	recentContext := e.recentCompleteConversationForTaskSpec()
 	if e == nil || !e.sessionStateHydrated {
+		if recentContext != "" {
+			spec.ContextSummary = compactSemanticNarrative("最近完整问答：" + recentContext)
+		}
 		return spec
 	}
 
@@ -58,7 +63,14 @@ func (e *Engine) directRenderTaskSpec(plan intent.IntentRoute, userMsg string) g
 	}
 
 	digest := state.ConversationDigest
-	spec.ContextSummary = compactSemanticNarrative(digest.Narrative)
+	contextParts := []string{}
+	if narrative := compactSemanticNarrative(digest.Narrative); narrative != "" {
+		contextParts = append(contextParts, narrative)
+	}
+	if recentContext != "" {
+		contextParts = append(contextParts, "最近完整问答："+recentContext)
+	}
+	spec.ContextSummary = compactSemanticNarrative(strings.Join(contextParts, "。"))
 	spec.UnresolvedTasks = compactSemanticItems(digest.UnresolvedTasks)
 	spec.Constraints = mergeSemanticItems(spec.Constraints, digest.Constraints)
 	spec.Decisions = mergeSemanticItems(spec.Decisions, digest.Decisions)
@@ -72,6 +84,56 @@ func (e *Engine) directRenderTaskSpec(plan intent.IntentRoute, userMsg string) g
 		}})
 	}
 	return spec
+}
+
+const directTaskSpecRecentPairs = 2
+
+// recentCompleteConversationForTaskSpec projects only complete plain-text
+// user/assistant pairs. The current unanswered user message and raw tool
+// transcripts are excluded. This is understanding-only context; the renderer's
+// factual validator still receives EvidenceEnvelope alone.
+func (e *Engine) recentCompleteConversationForTaskSpec() string {
+	if e == nil || len(e.messages) == 0 {
+		return ""
+	}
+	var pendingUser string
+	pairs := make([]string, 0, directTaskSpecRecentPairs)
+	for _, message := range e.messages {
+		switch message.Role {
+		case openai.ChatMessageRoleUser:
+			pendingUser = compactSemanticText(message.Content)
+		case openai.ChatMessageRoleAssistant:
+			if pendingUser == "" || strings.TrimSpace(message.Content) == "" || len(message.ToolCalls) > 0 {
+				continue
+			}
+			pairs = append(pairs, "用户："+pendingUser+"；助手："+compactSemanticText(message.Content))
+			pendingUser = ""
+		}
+	}
+	if len(pairs) > directTaskSpecRecentPairs {
+		pairs = pairs[len(pairs)-directTaskSpecRecentPairs:]
+	}
+	return strings.Join(pairs, "。")
+}
+
+func hasContextDependentDirectSignal(text string) bool {
+	text = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), ""))
+	if text == "" {
+		return false
+	}
+	for _, signal := range []string{
+		"这个", "那个", "它", "刚才", "上面", "前面", "之前", "还是", "一样",
+		"多少钱", "价格呢", "费用呢", "包月呢", "按量呢", "现在呢", "还有呢", "那呢",
+	} {
+		if strings.Contains(text, signal) {
+			return true
+		}
+	}
+	return strings.HasSuffix(text, "呢") || strings.HasPrefix(text, "那")
+}
+
+func (e *Engine) shouldResolveDirectClarificationInAgent(result intent.HandlerResult, userMsg string) bool {
+	return result.NeedsClarification && hasContextDependentDirectSignal(userMsg) && e.recentCompleteConversationForTaskSpec() != ""
 }
 
 func appendTaskSpecEntityHints(existing []grounded.TaskSpecEntityHint, incoming []SemanticEntityHint) []grounded.TaskSpecEntityHint {

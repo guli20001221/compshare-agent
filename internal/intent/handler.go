@@ -90,14 +90,18 @@ const (
 )
 
 type HandlerResult struct {
-	Status         HandlerStatus
-	Reply          string
-	FallbackReason FallbackReason
-	RouteStatus    RouteStatus
-	FailureClass   HandlerFailureClass
-	ToolAction     string
-	ToolArgs       map[string]any
-	Envelope       *envelope.Envelope
+	Status HandlerStatus
+	Reply  string
+	// NeedsClarification marks a complete deterministic clarification rather
+	// than a factual answer. The engine may let the context-aware Agent resolve
+	// it when the current utterance clearly depends on a recent complete turn.
+	NeedsClarification bool
+	FallbackReason     FallbackReason
+	RouteStatus        RouteStatus
+	FailureClass       HandlerFailureClass
+	ToolAction         string
+	ToolArgs           map[string]any
+	Envelope           *envelope.Envelope
 	// RendererInputToolArgHashes records tool args consumed by deterministic
 	// handler renderers before engine-level tool call ids exist. Phase 1 demo
 	// populates this for monitor handler results only.
@@ -113,6 +117,12 @@ type HandlerResult struct {
 	// SessionState.LastStockGpuModel so a later subject-eliding stock turn can
 	// reuse it as the referent (RC017). Populated by handleStockAvailability only.
 	ResolvedStockGpuModel string
+}
+
+func ClarificationResult(reply string) HandlerResult {
+	result := HandledResult(reply)
+	result.NeedsClarification = true
+	return result
 }
 
 type HandlerExecutor interface {

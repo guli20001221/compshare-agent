@@ -2637,6 +2637,14 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 			return "", false
 		}
 	}
+	if e.shouldResolveDirectClarificationInAgent(handled, userMsg) {
+		// The deterministic handler could not resolve the current words by
+		// themselves, but a complete recent turn exists. Do not terminate with a
+		// context-free clarification: the scoped read-only Agent already has that
+		// conversation and may resolve the referent or ask a better question.
+		e.emitPlannerTrace(result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
+		return "", false
+	}
 
 	if handled.Status == intent.HandlerStatusFallbackBeforeTool {
 		if isResourceSelectionFallbackReason(handled.FallbackReason) {

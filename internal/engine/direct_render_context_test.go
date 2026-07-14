@@ -3,11 +3,15 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/llm"
 	grounded "github.com/compshare-agent/internal/renderer"
+	"github.com/compshare-agent/internal/tools"
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,12 +31,22 @@ func TestDirectRenderTaskSpecCoversProductionDirectIntentContract(t *testing.T) 
 	}
 	require.Len(t, contextAwareDirectIntents, len(intents))
 
-	eng := &Engine{}
+	eng := &Engine{
+		sessionStateHydrated: true,
+		sessionState:         SessionState{},
+		messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleUser, Content: "上一轮用户问题"},
+			{Role: openai.ChatMessageRoleAssistant, Content: "上一轮完整回答"},
+			{Role: openai.ChatMessageRoleUser, Content: "那它呢？"},
+		},
+	}
 	for _, value := range intents {
 		t.Run(string(value), func(t *testing.T) {
 			spec := eng.directRenderTaskSpec(intent.IntentRoute{Intent: value}, "那它呢？")
 			assert.Equal(t, string(value), spec.Intent)
 			assert.Equal(t, "那它呢？", spec.CurrentQuestion)
+			assert.Contains(t, spec.ContextSummary, "上一轮用户问题")
+			assert.Contains(t, spec.ContextSummary, "上一轮完整回答")
 		})
 	}
 
@@ -45,6 +59,68 @@ func TestDirectRenderTaskSpecCoversProductionDirectIntentContract(t *testing.T) 
 		t.Run("excluded_"+string(value), func(t *testing.T) {
 			assert.Empty(t, eng.directRenderTaskSpec(intent.IntentRoute{Intent: value}, "那它呢？"))
 		})
+	}
+}
+
+func TestDirectRenderTaskSpecCarriesRecentCompleteTurnButNotCurrentPendingTurn(t *testing.T) {
+	// Recent in-memory history is available even for embedders/CLI paths that do
+	// not hydrate durable SessionState.
+	eng := &Engine{}
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "system"},
+		{Role: openai.ChatMessageRoleUser, Content: "4090 卡显存多少？"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "4090 标准版显存为 24 GB。"},
+		{Role: openai.ChatMessageRoleUser, Content: "那它多少钱？"},
+	}
+
+	spec := eng.directRenderTaskSpec(intent.IntentRoute{Intent: intent.IntentPricingQuery}, "那它多少钱？")
+
+	assert.Equal(t, "那它多少钱？", spec.CurrentQuestion)
+	assert.Contains(t, spec.ContextSummary, "4090 卡显存多少")
+	assert.Contains(t, spec.ContextSummary, "4090 标准版显存为 24 GB")
+	assert.NotContains(t, spec.ContextSummary, "那它多少钱")
+}
+
+func TestDirectClarificationFromRealPricingFollowupContinuesWithContextAwareAgent(t *testing.T) {
+	// Sanitized from the production session whose sequence ended with:
+	// "假如不开机，是不是不收费" -> a billing explanation -> "是多少钱？".
+	// The old direct handler ignored that pair and asked for a GPU model again.
+	previousAgentic := tools.AgenticSearchKnowledgeEnabled()
+	tools.SetAgenticSearchKnowledgeEnabled(false)
+	t.Cleanup(func() { tools.SetAgenticSearchKnowledgeEnabled(previousAgentic) })
+	exec := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{map[string]any{
+				"Name": "4090", "Collection": []any{map[string]any{"Zone": "cn-wlcb-01", "CPU": []any{float64(16)}, "Memory": []any{float64(64)}}},
+			}},
+		},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "结合上一轮，您问的是关机后仍保留资源的费用；需要先区分云盘和镜像。"}}}
+	eng := NewWithDeps(mock, exec, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "假如不开机，是不是不收费"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "按量关机后 CPU、GPU 和内存停止收费，但云盘和镜像仍可能收费。"},
+	)
+	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{
+		Plan: intent.IntentRoute{SchemaVersion: intent.SchemaVersion, Intent: intent.IntentPricingQuery, Confidence: 0.9},
+	}}}, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentPricingQuery}})
+
+	reply, err := eng.Chat(context.Background(), "是多少钱？", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "关机后仍保留资源的费用")
+	assert.NotContains(t, reply, "请告诉我您想查的 GPU 型号")
+	require.Len(t, mock.calls, 1)
+	var visible strings.Builder
+	for _, message := range mock.calls[0].Messages {
+		visible.WriteString(message.Content)
+	}
+	assert.Contains(t, visible.String(), "按量关机后 CPU、GPU 和内存停止收费")
+	for _, tool := range mock.calls[0].Tools {
+		if tool.Function != nil {
+			assert.NotContains(t, strings.ToLower(tool.Function.Name), "workflow")
+		}
 	}
 }
 
