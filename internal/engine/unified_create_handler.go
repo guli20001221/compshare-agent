@@ -108,6 +108,7 @@ func (e *Engine) tryResumeCreateContextFrame(ctx context.Context, dispatch route
 	if clarify != "" {
 		return e.deployReply(dispatch.result, dispatch.latency, clarify)
 	}
+	nextFrame = dropStaleDeployPayload(nextFrame, dispatch.result.Plan.Intent, *decision)
 	if contextFramesEquivalent(frame, nextFrame) {
 		if strings.TrimSpace(decision.Clarify) != "" {
 			return e.deployReply(dispatch.result, dispatch.latency, strings.TrimSpace(decision.Clarify))
@@ -123,6 +124,46 @@ func (e *Engine) tryResumeCreateContextFrame(ctx context.Context, dispatch route
 	createDispatch := dispatch
 	createDispatch.result.Plan.Intent = intent.IntentCreateInstance
 	return e.tryCreateInstanceWithResolvedFrame(ctx, createDispatch, userMsg, nextFrame, nextFrame.Zone, onStep)
+}
+
+// dropStaleDeployPayload removes the deploy-specific payload — the workload, the image
+// preference, the image source — that a frame INHERITED from a previous task, when the
+// current turn is a plain hardware create.
+//
+// applyContextContinuationDecision opens with `next := frame`, a full copy, and then
+// overwrites only the fields the resolver explicitly named. That is exactly right for a real
+// continuation (「换成 A100」 must keep the workload it is changing the GPU for) and exactly
+// wrong for a new create. A failed 「部署 DeepSeek R1」 leaves a frame carrying
+// Workload="DeepSeek R1", so the very next 「创建一台 4090」 — which the router classified,
+// confidently, as create_instance with no workload at all — comes out of the merge still
+// carrying DeepSeek. The caller then reads `nextFrame.Workload != ""`, rewrites the intent to
+// deploy_model, and hands it to runDeployModel. The user asked for a bare GPU box and the
+// agent tried to redeploy the model that had just failed on them.
+//
+// The frame is evidence about what the user wanted BEFORE. The router's intent is evidence
+// about what they want NOW. When the two disagree about the KIND of task, now wins — and a
+// workload nobody mentioned this turn is not context, it is contamination.
+//
+// Only inherited values are dropped. Anything the resolver named THIS turn survives, so a
+// genuine 「用 vLLM 部署」 still becomes a deploy. GPU and zone are also kept: those are the
+// legitimately reusable half of the frame ("再来一台" should still mean 4090 in 华北一).
+func dropStaleDeployPayload(next ContextFrame, routerIntent intent.Intent, decision ContextContinuationDecision) ContextFrame {
+	if routerIntent != intent.IntentCreateInstance {
+		return next
+	}
+	if strings.TrimSpace(decision.WorkloadPref) == "" {
+		next.Workload = ""
+	}
+	if strings.TrimSpace(decision.ImagePref) == "" {
+		next.ImagePref = ""
+	}
+	if strings.TrimSpace(decision.ImageSource) == "" {
+		next.ImageSource = ""
+	}
+	if next.Workload == "" && next.ImagePref == "" && next.ImageSource == "" {
+		next.Kind = ContextFrameKindCreate
+	}
+	return next
 }
 
 func (e *Engine) applyContextContinuationDecision(ctx context.Context, userMsg string, frame ContextFrame, decision ContextContinuationDecision) (ContextFrame, string) {

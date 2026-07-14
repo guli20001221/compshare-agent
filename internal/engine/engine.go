@@ -1863,7 +1863,41 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 
 	dispatch := e.callPlannerOnce(ctx, userMsg, priorText)
 	if status, ok := e.commonPlannerCandidateStatus(dispatch.result); !ok {
-		e.clearDeployClarificationCarry()
+		// The router is UNSURE, or it broke. That is not evidence the user abandoned
+		// their task, and it must not be treated as permission to delete it.
+		//
+		// Every condition that lands here (commonPlannerCandidateStatus) says something
+		// about the ROUTER, never about the user: the planner call errored or was
+		// rate-limited (Fallback), its JSON failed validation, its schema version drifted,
+		// or its confidence came in under 0.60. This branch used to open with
+		// clearDeployClarificationCarry(), which wipes PendingDeployModel and the deploy
+		// ContextFrame — the whole in-progress task, GPU / zone / image / why it failed —
+		// and only THEN fall through to ReAct. The continuation resolver that would have
+		// adjudicated the frame sits ~90 lines below and never got the turn.
+		//
+		// So a bare 「嗯」 mid-deploy, or one 5xx from the router, silently destroyed the
+		// deployment. And the correlation runs the wrong way: a short, vague follow-up is
+		// exactly the input flash is least confident on, so the gate tripped hardest on
+		// precisely the turns where continuation mattered most. The failure path was more
+		// destructive than the success path — a CONFIDENT non-create turn leaves the frame
+		// standing for resolveContextContinuation to judge (continue / new / clear /
+		// clarify), while a router wobble deleted it with no adjudication at all.
+		//
+		// The authors named this hazard themselves, ~40 lines below, and routed the SUCCESS
+		// path around it ("would run BEFORE the deploy/create resume logic and tear down the
+		// frame it is about to need"). The failure path was left doing exactly the forbidden
+		// thing.
+		//
+		// We deliberately do NOT resume here either. A sub-0.60 classification is untrusted
+		// input, and letting it drive tryResumeCreateContextFrame — which ends in
+		// runDeployModel, a mutating saga — would be a worse bug than the one being fixed.
+		// The frame simply survives, unread, and the next turn the router understands can
+		// use it. It still expires on its own (ContextFrameTTLSeconds).
+		//
+		// Keeping the frame alive longer is only safe because the create path no longer
+		// inherits a dead deploy's payload — see dropStaleDeployPayload. That teardown was
+		// a blunt instrument aimed at over-inheritance; the aim is now precise, so the
+		// instrument is not needed. The two changes MUST ship together.
 		if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
 			e.requireKnowledgeCitationThisTurn = true
 		}
