@@ -9,26 +9,60 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-// contextAwareDirectIntents is the production direct-dispatch surface whose
-// answers must understand short follow-ups without turning user text into
-// evidence. billing_account_unsupported is intentionally absent: it is a hard
-// policy response, not a grounded data renderer.
-var contextAwareDirectIntents = map[intent.Intent]struct{}{
-	intent.IntentResourceInfo:          {},
-	intent.IntentMonitorQuery:          {},
-	intent.IntentGPUSpecsQuery:         {},
-	intent.IntentStockAvailability:     {},
-	intent.IntentPricingQuery:          {},
-	intent.IntentRefundEstimate:        {},
-	intent.IntentImageTagCatalog:       {},
-	intent.IntentModelRepositoryBrowse: {},
-	intent.IntentImageList:             {},
-	intent.IntentNetAcceleratorStatus:  {},
+// ConversationPair is a committed, complete exchange. It deliberately excludes
+// the current unanswered user message and every raw tool transcript.
+type ConversationPair struct {
+	User      string
+	Assistant string
 }
 
-func isContextAwareDirectIntent(value intent.Intent) bool {
-	_, ok := contextAwareDirectIntents[value]
-	return ok
+// TurnContextView is the single read-only conversation projection built at turn
+// entry. e.messages remains the canonical model history and SessionState remains
+// the canonical structured memory; this view is not persisted and grants no
+// execution authority.
+type TurnContextView struct {
+	CurrentQuestion    string
+	RecentConversation []ConversationPair
+	ConversationDigest ConversationDigest
+	ActiveTask         *TaskSnapshot
+	SelectedEntities   []SemanticEntityHint
+	VerifiedKnowledge  []VerifiedKnowledgeTurn
+	ContinuityNotices  []string
+}
+
+func (e *Engine) buildTurnContextView(userMsg string) TurnContextView {
+	view := TurnContextView{
+		CurrentQuestion:    compactSemanticText(userMsg),
+		RecentConversation: e.recentCompleteConversationPairs(),
+	}
+	if e == nil || !e.sessionStateHydrated {
+		return view
+	}
+	view.ConversationDigest = e.sessionState.ConversationDigest
+	view.VerifiedKnowledge = append([]VerifiedKnowledgeTurn(nil), e.sessionState.VerifiedKnowledge...)
+	view.ContinuityNotices = append([]string(nil), e.continuityAdvisories.Notices...)
+	if task := e.sessionState.TaskSnapshot; task.Status != TaskSnapshotStatusResolved && !taskSnapshotEmpty(task) {
+		copy := task
+		view.ActiveTask = &copy
+		view.SelectedEntities = append(view.SelectedEntities, task.Entities...)
+	}
+	view.SelectedEntities = append(view.SelectedEntities, e.sessionState.ConversationDigest.EntityHints...)
+	if id := strings.TrimSpace(e.sessionState.SelectedInstanceID); id != "" {
+		view.SelectedEntities = append(view.SelectedEntities, SemanticEntityHint{
+			Kind:      "instance",
+			ID:        id,
+			Name:      e.sessionState.SelectedInstanceName,
+			Freshness: normalizedSelectedInstanceFreshness(e.sessionState),
+		})
+	}
+	return view
+}
+
+func (e *Engine) contextViewForTurn(userMsg string) TurnContextView {
+	if e != nil && e.turnContextViewReady && e.turnContextViewThisTurn.CurrentQuestion == compactSemanticText(userMsg) {
+		return e.turnContextViewThisTurn
+	}
+	return e.buildTurnContextView(userMsg)
 }
 
 // directRenderTaskSpec builds understanding-only input for the grounded
@@ -36,14 +70,12 @@ func isContextAwareDirectIntent(value intent.Intent) bool {
 // permissions, and trust sources. None of these fields authorize an operation
 // or become factual evidence; renderer validates the answer against Envelope.
 func (e *Engine) directRenderTaskSpec(plan intent.IntentRoute, userMsg string) grounded.TaskSpec {
-	if !isContextAwareDirectIntent(plan.Intent) {
-		return grounded.TaskSpec{}
-	}
+	view := e.contextViewForTurn(userMsg)
 	spec := grounded.TaskSpec{
-		CurrentQuestion: compactSemanticText(userMsg),
+		CurrentQuestion: view.CurrentQuestion,
 		Intent:          compactSemanticText(string(plan.Intent)),
 	}
-	recentContext := e.recentCompleteConversationForTaskSpec()
+	recentContext := renderConversationPairs(view.RecentConversation)
 	if e == nil || !e.sessionStateHydrated {
 		if recentContext != "" {
 			spec.ContextSummary = compactSemanticNarrative("最近完整问答：" + recentContext)
@@ -51,9 +83,8 @@ func (e *Engine) directRenderTaskSpec(plan intent.IntentRoute, userMsg string) g
 		return spec
 	}
 
-	state := e.sessionState
-	task := state.TaskSnapshot
-	if task.Status != TaskSnapshotStatusResolved && !taskSnapshotEmpty(task) {
+	if view.ActiveTask != nil {
+		task := *view.ActiveTask
 		spec.Goal = compactSemanticText(task.Goal)
 		spec.Stage = compactSemanticText(task.Stage)
 		spec.Freshness = compactSemanticText(task.Freshness)
@@ -63,7 +94,7 @@ func (e *Engine) directRenderTaskSpec(plan intent.IntentRoute, userMsg string) g
 		spec.EntityHints = appendTaskSpecEntityHints(spec.EntityHints, task.Entities)
 	}
 
-	digest := state.ConversationDigest
+	digest := view.ConversationDigest
 	contextParts := []string{}
 	if narrative := compactSemanticNarrative(digest.Narrative); narrative != "" {
 		contextParts = append(contextParts, narrative)
@@ -75,15 +106,7 @@ func (e *Engine) directRenderTaskSpec(plan intent.IntentRoute, userMsg string) g
 	spec.UnresolvedTasks = compactSemanticItems(digest.UnresolvedTasks)
 	spec.Constraints = mergeSemanticItems(spec.Constraints, digest.Constraints)
 	spec.Decisions = mergeSemanticItems(spec.Decisions, digest.Decisions)
-	spec.EntityHints = appendTaskSpecEntityHints(spec.EntityHints, digest.EntityHints)
-	if id := strings.TrimSpace(state.SelectedInstanceID); id != "" {
-		spec.EntityHints = appendTaskSpecEntityHints(spec.EntityHints, []SemanticEntityHint{{
-			Kind:      "instance",
-			ID:        id,
-			Name:      state.SelectedInstanceName,
-			Freshness: normalizedSelectedInstanceFreshness(state),
-		}})
-	}
+	spec.EntityHints = appendTaskSpecEntityHints(spec.EntityHints, view.SelectedEntities)
 	return spec
 }
 
@@ -93,12 +116,12 @@ const directTaskSpecRecentPairs = 2
 // user/assistant pairs. The current unanswered user message and raw tool
 // transcripts are excluded. This is understanding-only context; the renderer's
 // factual validator still receives EvidenceEnvelope alone.
-func (e *Engine) recentCompleteConversationForTaskSpec() string {
+func (e *Engine) recentCompleteConversationPairs() []ConversationPair {
 	if e == nil || len(e.messages) == 0 {
-		return ""
+		return nil
 	}
 	var pendingUser string
-	pairs := make([]string, 0, directTaskSpecRecentPairs)
+	pairs := make([]ConversationPair, 0, directTaskSpecRecentPairs)
 	for _, message := range e.messages {
 		switch message.Role {
 		case openai.ChatMessageRoleUser:
@@ -107,14 +130,29 @@ func (e *Engine) recentCompleteConversationForTaskSpec() string {
 			if pendingUser == "" || strings.TrimSpace(message.Content) == "" || len(message.ToolCalls) > 0 {
 				continue
 			}
-			pairs = append(pairs, "用户："+pendingUser+"；助手："+compactSemanticText(message.Content))
+			pairs = append(pairs, ConversationPair{User: pendingUser, Assistant: compactSemanticText(message.Content)})
 			pendingUser = ""
 		}
 	}
 	if len(pairs) > directTaskSpecRecentPairs {
 		pairs = pairs[len(pairs)-directTaskSpecRecentPairs:]
 	}
-	return strings.Join(pairs, "。")
+	return pairs
+}
+
+func renderConversationPairs(pairs []ConversationPair) string {
+	parts := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		if pair.User == "" || pair.Assistant == "" {
+			continue
+		}
+		parts = append(parts, "用户："+pair.User+"；助手："+pair.Assistant)
+	}
+	return strings.Join(parts, "。")
+}
+
+func (e *Engine) recentCompleteConversationForTaskSpec() string {
+	return renderConversationPairs(e.recentCompleteConversationPairs())
 }
 
 // hasReusableCompleteConversation reports only whether a completed prior
@@ -125,52 +163,24 @@ func (e *Engine) hasReusableCompleteConversation() bool {
 	return e.recentCompleteConversationForTaskSpec() != ""
 }
 
-func hasContextDependentDirectSignal(text string) bool {
-	text = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), ""))
-	if text == "" {
-		return false
-	}
-	for _, signal := range []string{
-		"这个", "那个", "它", "刚才", "上面", "前面", "之前", "还是", "一样",
-		"多少钱", "价格呢", "费用呢", "包月呢", "按量呢", "现在呢", "还有呢", "那呢",
-	} {
-		if strings.Contains(text, signal) {
-			return true
-		}
-	}
-	return strings.HasSuffix(text, "呢") || strings.HasPrefix(text, "那")
-}
-
-// shouldResolveContextDependentDirectReplyInAgent closes the remaining split
-// between context-aware direct rendering and legacy plain-text handlers. A
-// grounded Envelope can safely be rendered with TaskSpec context. A plain-text
-// result has no evidence boundary through which to pass that context, so a
-// clearly referential follow-up continues in the intent-scoped read-only Agent.
+// shouldResolveDirectClarificationInAgent keeps a deterministic handler from
+// asking the user to repeat information that is already present in a complete
+// prior turn. This decision depends on available data, never on wording.
 func (e *Engine) shouldResolveContextDependentDirectReplyInAgent(result intent.HandlerResult, userMsg string) bool {
 	// Read failures already have a dedicated context-aware fallback that carries
 	// the failure advisory into ReAct. Do not steal that path here.
 	if result.Status == intent.HandlerStatusFailureAfterTool {
 		return false
 	}
-	if !hasContextDependentDirectSignal(userMsg) || !e.hasReusableCompleteConversation() {
-		return false
-	}
-	// A deterministic handled reply without an Envelope may still be an
-	// authoritative fresh result (for example an empty refund query). Plain text
-	// alone therefore cannot mean "context was ignored". Handlers must opt in by
-	// declaring that they need clarification; evidence envelopes use TaskSpec and
-	// are context-aware already.
-	return result.NeedsClarification
+	return result.NeedsClarification && e.hasReusableCompleteConversation()
 }
 
-// contextEnvelopeForPlainDirectReply gives legacy deterministic handlers an
-// evidence boundary only when history is actually needed. The handler's own
-// tool-derived reply is evidence; conversation remains TaskSpec understanding
-// context and therefore cannot launder a user's false premise into a fact.
+// contextEnvelopeForPlainDirectReply gives every deterministic handled reply an
+// evidence boundary. Conversation remains TaskSpec understanding context and
+// can never launder a user's false premise into a fact.
 func (e *Engine) contextEnvelopeForPlainDirectReply(result intent.HandlerResult, plan intent.IntentRoute, userMsg string) intent.HandlerResult {
 	if result.Envelope != nil || result.Status != intent.HandlerStatusHandled || result.NeedsClarification ||
-		!isContextAwareDirectIntent(plan.Intent) || !hasContextDependentDirectSignal(userMsg) ||
-		!e.hasReusableCompleteConversation() || strings.TrimSpace(result.Reply) == "" {
+		strings.TrimSpace(result.Reply) == "" {
 		return result
 	}
 	sources := []string{}

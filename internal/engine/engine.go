@@ -437,6 +437,11 @@ type Engine struct {
 	// execution truth remain in chat_turns / turn_actions, not in a second JSON
 	// snapshot.
 	continuityAdvisories ContinuityAdvisories
+	// turnContextViewThisTurn is the immutable understanding projection shared by
+	// routing fallbacks and grounded rendering. It is rebuilt exactly once after
+	// turn-entry expiry/refresh and before the current user message is appended.
+	turnContextViewThisTurn TurnContextView
+	turnContextViewReady    bool
 	// sessionFactContextEnabled injects fresh RecentFacts into the system
 	// prompt as advisory same-session context. Default off.
 	sessionFactContextEnabled bool
@@ -1477,6 +1482,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.expireStaleSelectedInstance(continuityNow)
 	e.expireStaleToolFacts(continuityNow)
 	e.refreshConversationDigest(continuityNow)
+	e.turnContextViewThisTurn = e.buildTurnContextView(userMsg)
+	e.turnContextViewReady = true
 	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
 	// any mid-turn re-bind), and reset the per-turn binding observables that
 	// refreshSystemPrompt fills next.
@@ -2134,7 +2141,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// Agent-tier skills (deploy_model today) dispatch through dispatchAgentSkill —
 	// the uniform seam — not as routes: a route handler reaches only the
 	// ToolExecutor and cannot drive the orchestrator saga. The seam maps the intent
-	// to its handler (agentSkillForIntent) and delegates; deploy_model's handler does
+	// to its handler (DispatchSpec.AgentSkillName) and delegates; deploy_model's handler does
 	// TierAgent image-matching + RunAgentSaga(CreateInstanceDef) + poll-to-Running
 	// (see deploy_model.go). This is byte-stable wiring: the handler body is unchanged.
 	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
@@ -2151,7 +2158,7 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 			e.lastPlannerIntentThisTurn = intent.IntentKnowledgeQA
 		}
 	}
-	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || dispatch.result.Plan.Intent == intent.IntentMonitorHistory || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
+	if specForIntent(dispatch.result.Plan.Intent).ResponseContract == ResponseGrounded {
 		reply, handled := e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
 		return reply, handled
 	}
@@ -2401,18 +2408,6 @@ func workflowFriendlyActionName(action string) string {
 	}
 }
 
-// agentSkillForIntent maps an agent-tier intent to the skill name its dispatch
-// handler runs. deploy_model is the only agent handler today; this table is the extension
-// point future agent skills (P3b) register into — adding one is a row here plus a
-// case in dispatchAgentSkill, not a new branch in the dispatch chain. Each value is
-// a skill Name in the generated registry (skills.GeneratedSkills) AND the saga
-// skillID the handler stamps on every StepTrace; TestAgentSkillForIntent_* lock both
-// bindings so a rename or typo fails CI rather than shipping.
-var agentSkillForIntent = map[intent.Intent]string{
-	intent.IntentDeployModel:    "deploy_model",
-	intent.IntentCreateInstance: "create_instance",
-}
-
 // dispatchAgentSkill is the uniform agent-tier dispatch seam: it routes an
 // agent-skill intent to its handler and returns (reply, true) exactly when an handler owns
 // the turn. An unmapped intent returns ("", false) so the caller falls through to
@@ -2423,8 +2418,8 @@ var agentSkillForIntent = map[intent.Intent]string{
 // registry drift. A future body-loop handler does its own findGeneratedSkill + Body()
 // inside its case, like runDiagnosisSkill, where the lookup is load-bearing.
 func (e *Engine) dispatchAgentSkill(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	skillName, ok := agentSkillForIntent[dispatch.result.Plan.Intent]
-	if !ok {
+	skillName := specForIntent(dispatch.result.Plan.Intent).AgentSkillName
+	if skillName == "" {
 		return "", false
 	}
 	switch skillName {
@@ -2672,6 +2667,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 					e.annotateHandlerResultForUserQuestion(&handled, resumed.Plan, e.lastUserMsg)
 					reply := handled.Reply
 					if handled.Status == intent.HandlerStatusHandled {
+						handled = e.contextEnvelopeForPlainDirectReply(handled, resumed.Plan, userMsg)
 						reply = e.renderGroundedHandlerResult(ctx, handled, resumed.Plan, userMsg)
 						e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 						e.recordLastIntentFromPlan(resumed.Plan)
@@ -2726,6 +2722,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	e.annotateHandlerResultForUserQuestion(&handled, result.Plan, e.lastUserMsg)
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
+		handled = e.contextEnvelopeForPlainDirectReply(handled, result.Plan, userMsg)
 		reply = e.renderGroundedHandlerResult(ctx, handled, result.Plan, userMsg)
 		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 		e.recordLastIntentFromPlan(result.Plan)
@@ -2848,6 +2845,7 @@ func (e *Engine) handleResourceSelectionMonitor(ctx context.Context, plan intent
 
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
+		handled = e.contextEnvelopeForPlainDirectReply(handled, resumedPlan, userMsg)
 		reply = e.renderGroundedHandlerResult(ctx, handled, resumedPlan, userMsg)
 		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 		e.recordLastIntentFromPlan(resumedPlan)
@@ -2962,7 +2960,6 @@ func isFastTierEnvelope(kind envelope.Kind) bool {
 }
 
 func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent.HandlerResult, plan intent.IntentRoute, userMsg string) string {
-	handled = e.contextEnvelopeForPlainDirectReply(handled, plan, userMsg)
 	if e.groundedRenderer == nil || handled.Envelope == nil {
 		return handled.Reply
 	}

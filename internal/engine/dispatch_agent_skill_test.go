@@ -11,7 +11,7 @@ import (
 )
 
 // dispatch_agent_skill_test.go pins the P2b agent-handler dispatch seam. The seam
-// (dispatchAgentSkill + agentSkillForIntent) replaced the hardcoded
+// (dispatchAgentSkill + DispatchSpec) replaced the hardcoded
 // `if Intent == IntentDeployModel { tryDeployModel }` branch; these tests prove
 // it is BYTE-STABLE wiring (delegates without altering output), captures only
 // agent-tier intents, and keeps the table locked to the saga skillID so the
@@ -78,8 +78,13 @@ func TestDispatchAgentSkill_IgnoresObserveOnlyPlanSkills(t *testing.T) {
 // dedicated agent handler. deploy_model is a saga workflow handler, not a body-read
 // skill, so it is deliberately not looked up in the generated skill registry.
 func TestAgentSkillForIntent_BoundToDedicatedArm(t *testing.T) {
-	require.NotEmpty(t, agentSkillForIntent)
-	for it, skillName := range agentSkillForIntent {
+	seen := map[intent.Intent]string{}
+	for _, it := range intent.AllIntents() {
+		skillName := specForIntent(it).AgentSkillName
+		if skillName == "" {
+			continue
+		}
+		seen[it] = skillName
 		switch skillName {
 		case "deploy_model":
 			assert.Equal(t, intent.IntentDeployModel, it)
@@ -89,12 +94,17 @@ func TestAgentSkillForIntent_BoundToDedicatedArm(t *testing.T) {
 			t.Fatalf("intent %q maps to unknown agent handler %q", it, skillName)
 		}
 	}
-	assert.Equal(t, "deploy_model", agentSkillForIntent[intent.IntentDeployModel])
-	assert.Equal(t, "create_instance", agentSkillForIntent[intent.IntentCreateInstance])
+	require.NotEmpty(t, seen)
+	assert.Equal(t, "deploy_model", seen[intent.IntentDeployModel])
+	assert.Equal(t, "create_instance", seen[intent.IntentCreateInstance])
 }
 
 func TestAgentSkillForIntent_MatchesCodeDerivedPlanSkills(t *testing.T) {
-	for it, skillName := range agentSkillForIntent {
+	for _, it := range intent.AllIntents() {
+		skillName := specForIntent(it).AgentSkillName
+		if skillName == "" {
+			continue
+		}
 		derived := intent.DeriveSelectedSkills(intent.IntentRoute{Intent: it})
 		require.Lenf(t, derived, 1, "intent %q should derive exactly one agent-handler skill", it)
 		assert.Equalf(t, skillName, derived[0].Name, "intent %q agent-handler skill drifted from Plan.Skills projection", it)
@@ -116,6 +126,6 @@ func TestAgentSkillForIntent_MatchesSagaSkillID(t *testing.T) {
 	require.True(t, handled)
 
 	require.NotEmpty(t, sink.steps, "the deploy saga must emit step traces")
-	assert.Equal(t, agentSkillForIntent[intent.IntentDeployModel], sink.steps[0].SkillID,
+	assert.Equal(t, specForIntent(intent.IntentDeployModel).AgentSkillName, sink.steps[0].SkillID,
 		"saga StepTrace SkillID must equal the agent-handler table value")
 }

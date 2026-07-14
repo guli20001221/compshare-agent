@@ -57,11 +57,7 @@ func visibleRegistryForIntentRoute(route intent.IntentRoute, mutatingEnabled boo
 // exactly one named mode, so a new intent added without an allowlist fails closed
 // (read-only) instead of silently inheriting write access.
 func toolScopeForIntent(i intent.Intent) tools.ToolScope {
-	if i == intent.IntentKnowledgeQA {
-		return tools.ToolScope{Mode: tools.ToolScopeNamed, Names: []string{"SearchKnowledge"}}
-	}
-	if subset := intent.IntentToolSubset(i); len(subset) > 0 {
-		return tools.ToolScope{Mode: tools.ToolScopeNamed, Names: subset}
-	}
-	return tools.ToolScope{Mode: tools.ToolScopeReadOnlyFull}
+	scope := specForIntent(i).ToolScope
+	scope.Names = append([]string(nil), scope.Names...)
+	return scope
 }

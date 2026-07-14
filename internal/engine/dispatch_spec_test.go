@@ -1,10 +1,12 @@
 package engine
 
 import (
-	"slices"
 	"testing"
 
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/tools"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSpecForIntent_MatchesExistingSurfaces pins specForIntent as a faithful
@@ -21,14 +23,14 @@ func TestSpecForIntent_MatchesExistingSurfaces(t *testing.T) {
 		if spec.Intent != i {
 			t.Errorf("specForIntent(%q).Intent = %q, want %q", i, spec.Intent, i)
 		}
-		if want := intent.PlannedExecutionPathForIntent(i); spec.NominalLane != want {
-			t.Errorf("specForIntent(%q).NominalLane = %q, want %q", i, spec.NominalLane, want)
+		if want := intent.PlannedExecutionPathForIntent(i); spec.ExecutionMode != want {
+			t.Errorf("specForIntent(%q).ExecutionMode = %q, want %q", i, spec.ExecutionMode, want)
 		}
-		if want := intent.IntentToolSubset(i); !slices.Equal(spec.ToolSubset, want) {
-			t.Errorf("specForIntent(%q).ToolSubset = %v, want %v", i, spec.ToolSubset, want)
+		if spec.ToolScope.Mode == "" {
+			t.Errorf("specForIntent(%q).ToolScope is empty", i)
 		}
-		if want := agentSkillForIntent[i]; spec.AgentSkillName != want {
-			t.Errorf("specForIntent(%q).AgentSkillName = %q, want %q", i, spec.AgentSkillName, want)
+		if spec.ResponseContract == "" || spec.SafetyClass == "" {
+			t.Errorf("specForIntent(%q) has incomplete response/safety contract: %+v", i, spec)
 		}
 	}
 }
@@ -46,12 +48,26 @@ func TestSpecForIntent_ReturnsDefensiveToolSubsetCopy(t *testing.T) {
 	}
 
 	spec := specForIntent(probe)
-	if len(spec.ToolSubset) == 0 {
-		t.Fatalf("specForIntent(%q).ToolSubset is empty", probe)
+	if len(spec.ToolScope.Names) == 0 {
+		t.Fatalf("specForIntent(%q).ToolScope.Names is empty", probe)
 	}
-	spec.ToolSubset[0] = "MUTATED-BY-TEST"
+	spec.ToolScope.Names[0] = "MUTATED-BY-TEST"
 
 	if got := intent.IntentToolSubset(probe); got[0] == "MUTATED-BY-TEST" {
 		t.Errorf("mutating spec.ToolSubset corrupted intent.IntentToolSubset(%q): got %v", probe, got)
 	}
+}
+
+func TestSpecForIntent_CompleteProductionContracts(t *testing.T) {
+	for _, i := range intent.RuntimeIntents() {
+		spec := specForIntent(i)
+		require.NotEmpty(t, spec.ExecutionMode, i)
+		require.NotEmpty(t, spec.ToolScope.Mode, i)
+		require.NotEmpty(t, spec.ResponseContract, i)
+		require.NotEmpty(t, spec.SafetyClass, i)
+		if spec.ResponseContract == ResponsePolicyTerminal {
+			assert.Equal(t, SafetyClassPolicy, spec.SafetyClass, i)
+		}
+	}
+	assert.Equal(t, tools.ToolScopeNamed, specForIntent(intent.IntentKnowledgeQA).ToolScope.Mode)
 }

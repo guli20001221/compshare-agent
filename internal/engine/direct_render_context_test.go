@@ -16,21 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDirectRenderTaskSpecCoversProductionDirectIntentContract(t *testing.T) {
-	intents := []intent.Intent{
-		intent.IntentResourceInfo,
-		intent.IntentMonitorQuery,
-		intent.IntentGPUSpecsQuery,
-		intent.IntentStockAvailability,
-		intent.IntentPricingQuery,
-		intent.IntentRefundEstimate,
-		intent.IntentImageTagCatalog,
-		intent.IntentModelRepositoryBrowse,
-		intent.IntentImageList,
-		intent.IntentNetAcceleratorStatus,
-	}
-	require.Len(t, contextAwareDirectIntents, len(intents))
-
+func TestDirectRenderTaskSpecCoversEveryIntentWithoutASecondAllowlist(t *testing.T) {
 	eng := &Engine{
 		sessionStateHydrated: true,
 		sessionState:         SessionState{},
@@ -40,7 +26,7 @@ func TestDirectRenderTaskSpecCoversProductionDirectIntentContract(t *testing.T) 
 			{Role: openai.ChatMessageRoleUser, Content: "那它呢？"},
 		},
 	}
-	for _, value := range intents {
+	for _, value := range intent.RuntimeIntents() {
 		t.Run(string(value), func(t *testing.T) {
 			spec := eng.directRenderTaskSpec(intent.IntentRoute{Intent: value}, "那它呢？")
 			assert.Equal(t, string(value), spec.Intent)
@@ -50,16 +36,6 @@ func TestDirectRenderTaskSpecCoversProductionDirectIntentContract(t *testing.T) 
 		})
 	}
 
-	for _, value := range []intent.Intent{
-		intent.IntentKnowledgeQA,
-		intent.IntentUnknown,
-		intent.IntentBillingAccountUnsupported,
-		intent.IntentOperationLifecycle,
-	} {
-		t.Run("excluded_"+string(value), func(t *testing.T) {
-			assert.Empty(t, eng.directRenderTaskSpec(intent.IntentRoute{Intent: value}, "那它呢？"))
-		})
-	}
 }
 
 func TestDirectRenderTaskSpecCarriesRecentCompleteTurnButNotCurrentPendingTurn(t *testing.T) {
@@ -155,9 +131,10 @@ func TestContextDependentPlainDirectReplyContinuesInScopedAgent(t *testing.T) {
 	assert.False(t, eng.shouldResolveContextDependentDirectReplyInAgent(
 		groundedResult, "还有呢？",
 	), "an envelope-backed result can consume context in the grounded renderer")
-	assert.False(t, eng.shouldResolveContextDependentDirectReplyInAgent(
-		intent.HandledResult("当前镜像列表"), "查看共享镜像",
-	), "a self-contained current question does not need historical resolution")
+	selfContainedWording := intent.ClarificationResult("请选择镜像分类")
+	assert.True(t, eng.shouldResolveContextDependentDirectReplyInAgent(
+		selfContainedWording, "查看共享镜像",
+	), "clarification routing depends on available history, not wording")
 }
 
 func TestGroundedDirectRendererReceivesShortFollowupAsTaskNotEvidence(t *testing.T) {
@@ -228,6 +205,18 @@ func TestPlainDeterministicFollowupGetsContextEnvelope(t *testing.T) {
 	assert.Equal(t, result.Reply, got.Envelope.Facts[0].Value)
 	assert.NotContains(t, got.Envelope.Facts[0].Value, "有哪些共享镜像",
 		"conversation is understanding context, never evidence")
+}
+
+func TestPlainDeterministicFirstTurnAlsoGetsEvidenceEnvelope(t *testing.T) {
+	eng := &Engine{}
+	result := intent.HandledResult("当前没有符合条件的记录。")
+	result.ToolAction = "DescribeRecords"
+
+	got := eng.contextEnvelopeForPlainDirectReply(result, intent.IntentRoute{Intent: intent.IntentRefundEstimate}, "查询退款")
+
+	require.NotNil(t, got.Envelope)
+	assert.Equal(t, envelope.KindContextualDirectReply, got.Envelope.Kind)
+	assert.Equal(t, result.Reply, got.Envelope.Facts[0].Value)
 }
 
 func TestGroundedDirectRendererBudgetReturnsDeterministicAnswer(t *testing.T) {
