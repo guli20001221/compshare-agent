@@ -283,7 +283,7 @@ func (s *MySQLMessageStore) ListCommittedBySession(
 	sessionID string,
 	limit int,
 	cursor string,
-) ([]Message, string, error) {
+) ([]Message, string, int, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -293,7 +293,7 @@ func (s *MySQLMessageStore) ListCommittedBySession(
 	}
 	offset, err := decodeCommittedPageCursor(cursor)
 	if err != nil {
-		return nil, "", fmt.Errorf("list committed messages: %w", err)
+		return nil, "", 0, fmt.Errorf("list committed messages: %w", err)
 	}
 
 	// ListCommittedTail limits each source before applying its stable merge.
@@ -304,14 +304,15 @@ func (s *MySQLMessageStore) ListCommittedBySession(
 	const allTurnsLimit = int(^uint(0)>>1) / 4
 	all, err := s.ListCommittedTail(ctx, owner, sessionID, allTurnsLimit)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
 	if len(all)%2 != 0 {
-		return nil, "", fmt.Errorf("committed history returned an incomplete pair")
+		return nil, "", 0, fmt.Errorf("committed history returned an incomplete pair")
 	}
+	totalMessages := len(all)
 	pairCount := len(all) / 2
 	if offset > pairCount {
-		return nil, "", &ErrInvalidCursor{Reason: fmt.Errorf("pair offset is past the end of history")}
+		return nil, "", 0, &ErrInvalidCursor{Reason: fmt.Errorf("pair offset is past the end of history")}
 	}
 	end := offset + pairLimit
 	if end > pairCount {
@@ -319,13 +320,13 @@ func (s *MySQLMessageStore) ListCommittedBySession(
 	}
 	page := append([]Message(nil), all[offset*2:end*2]...)
 	if end == pairCount {
-		return page, "", nil
+		return page, "", totalMessages, nil
 	}
 	next, err := encodeCommittedPageCursor(end)
 	if err != nil {
-		return nil, "", fmt.Errorf("encode committed message cursor: %w", err)
+		return nil, "", 0, fmt.Errorf("encode committed message cursor: %w", err)
 	}
-	return page, next, nil
+	return page, next, totalMessages, nil
 }
 
 func encodeCommittedPageCursor(pairOffset int) (string, error) {

@@ -128,7 +128,7 @@ type CommittedTailMessageStore interface {
 // but adds an opaque pair cursor for GetSession pagination. A page boundary
 // must never split a user/assistant pair.
 type CommittedPageMessageStore interface {
-	ListCommittedBySession(ctx context.Context, owner Owner, sessionID string, limit int, cursor string) ([]Message, string, error)
+	ListCommittedBySession(ctx context.Context, owner Owner, sessionID string, limit int, cursor string) ([]Message, string, int, error)
 }
 
 // FeedbackStore manages user feedback on messages.
