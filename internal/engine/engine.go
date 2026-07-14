@@ -2592,12 +2592,15 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	if fallbackInstanceID != "" && result.Plan.Intent == intent.IntentRefundEstimate {
 		if _, err := e.refreshRegistry(ctx, entity.RefreshReasonManual); err != nil {
 			e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, dispatch.latency)
-			reply := intent.FriendlyToolFailureReply
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: reply,
-			})
-			return reply, true
+			if reply, actionable := friendlyToolErrorMessage(err); actionable {
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: reply,
+				})
+				return reply, true
+			}
+			e.routeReadFailureThisTurn = true
+			return "", false
 		}
 		routeSnapshot = e.RegistrySnapshot()
 	}
@@ -2663,6 +2666,10 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 					}
 					handled = handler.HandleMonitorQuery(ctx, req)
 					e.emitPlannerTrace(resumed, handled.RouteStatus, dispatch.latency)
+					if handled.Status == intent.HandlerStatusFailureAfterTool && handled.FailureClass == intent.HandlerFailureGenericRead {
+						e.routeReadFailureThisTurn = true
+						return "", false
+					}
 					if handled.Status == intent.HandlerStatusFallbackBeforeTool && handled.FallbackReason == intent.FallbackTimeWindow {
 						reply := monitorHistoryNeedTimeWindowMessage
 						e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -2710,7 +2717,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	}
 
 	e.emitPlannerTrace(result, handled.RouteStatus, dispatch.latency)
-	if handled.Status == intent.HandlerStatusFailureAfterTool && strings.Contains(handled.Reply, intent.FriendlyToolFailureReply) {
+	if handled.Status == intent.HandlerStatusFailureAfterTool && handled.FailureClass == intent.HandlerFailureGenericRead {
 		// A handler's generic failure sentence contains no answer and no useful
 		// clarification. Returning it here used to skip the model even though the
 		// model already has the conversation and an intent-scoped read-only tool
@@ -2832,6 +2839,10 @@ func (e *Engine) handleResourceSelectionMonitor(ctx context.Context, plan intent
 		UserText: userMsg,
 	})
 	e.emitPlannerTrace(intent.IntentRouterResult{Plan: resumedPlan}, handled.RouteStatus, 0)
+	if handled.Status == intent.HandlerStatusFailureAfterTool && handled.FailureClass == intent.HandlerFailureGenericRead {
+		e.routeReadFailureThisTurn = true
+		return "", false
+	}
 	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, userMsg)
 
 	reply := handled.Reply
@@ -5980,11 +5991,16 @@ func cfsWorkflowFailureReply(message string) string {
 
 // executeDiagnosis runs a diagnostic chain and returns the result as JSON.
 func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
+	reply, _ := e.executeDiagnosisWithOutcome(ctx, action, args, onStep)
+	return reply
+}
+
+func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) (string, intent.HandlerFailureClass) {
 	chain, ok := diagnosis.GetChain(action)
 	if !ok {
 		msg := fmt.Sprintf("未知的诊断链: %s", action)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return msg
+		return msg, intent.HandlerFailureGenericRead
 	}
 	// P2/P3b pilot (USE_SKILL_EXECUTOR, default off): route an explicitly
 	// allowlisted diagnosis skill through the body-driven orchestrator loop
@@ -5993,7 +6009,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	// rather than failing the turn.
 	if skillName, piloted := diagnosisSkillExecutorPilotForAction(action); piloted {
 		if reply, handled := e.runDiagnosisSkill(ctx, skillName, action, args, onStep); handled {
-			return reply
+			return reply, intent.HandlerFailureNone
 		}
 	}
 
@@ -6030,21 +6046,23 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, err))
-			return finalReplyPrefix + msg
+			return finalReplyPrefix + msg, intent.HandlerFailureActionableUpstream
 		}
 		msg := fmt.Sprintf("诊断执行错误: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return msg
+		return msg, intent.HandlerFailureGenericRead
 	}
 	if !result.Success {
 		if msg, ok := friendlyMessageFromText(result.Conclusion); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
-			return finalReplyPrefix + msg
+			return finalReplyPrefix + msg, intent.HandlerFailureActionableUpstream
 		}
+		b, _ := json.Marshal(result)
+		return string(b), intent.HandlerFailureGenericRead
 	}
 
 	b, _ := json.Marshal(result)
-	return string(b)
+	return string(b), intent.HandlerFailureNone
 }
 
 // skillExecutorEnabled is the process-global, boot-only USE_SKILL_EXECUTOR gate.

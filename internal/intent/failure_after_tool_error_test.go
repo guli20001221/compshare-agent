@@ -26,6 +26,9 @@ func TestFailureAfterToolForError_DirectDispatchHint(t *testing.T) {
 		if got.Status != HandlerStatusFailureAfterTool {
 			t.Fatalf("status = %v, want FailureAfterTool", got.Status)
 		}
+		if got.FailureClass != HandlerFailureActionableUpstream {
+			t.Fatalf("failure class = %q, want actionable_upstream", got.FailureClass)
+		}
 		if got.Reply != apiErr.Hint {
 			t.Fatalf("reply = %q, want the recovery hint %q", got.Reply, apiErr.Hint)
 		}
@@ -72,6 +75,9 @@ func TestFailureAfterToolForError_DirectDispatchHint(t *testing.T) {
 	t.Run("un-hinted code falls back to the generic reply", func(t *testing.T) {
 		apiErr := tools.NewUpstreamAPIError(17000, "some unhinted upstream error")
 		got := failureAfterToolForError(action, args, "stock_availability", apiErr)
+		if got.FailureClass != HandlerFailureGenericRead {
+			t.Fatalf("failure class = %q, want generic_read", got.FailureClass)
+		}
 		if !strings.Contains(got.Reply, FriendlyToolFailureReply) {
 			t.Fatalf("reply = %q, want it to contain the generic failure text %q", got.Reply, FriendlyToolFailureReply)
 		}

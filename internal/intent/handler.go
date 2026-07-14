@@ -28,6 +28,17 @@ const (
 	HandlerStatusFailureAfterTool   HandlerStatus = "failure_after_tool"
 )
 
+// HandlerFailureClass is control-flow metadata. User-facing wording may change
+// without changing whether the engine should continue into its context-aware,
+// read-only agent lane.
+type HandlerFailureClass string
+
+const (
+	HandlerFailureNone               HandlerFailureClass = ""
+	HandlerFailureGenericRead        HandlerFailureClass = "generic_read"
+	HandlerFailureActionableUpstream HandlerFailureClass = "actionable_upstream"
+)
+
 type FallbackReason string
 
 const (
@@ -83,6 +94,7 @@ type HandlerResult struct {
 	Reply          string
 	FallbackReason FallbackReason
 	RouteStatus    RouteStatus
+	FailureClass   HandlerFailureClass
 	ToolAction     string
 	ToolArgs       map[string]any
 	Envelope       *envelope.Envelope
@@ -165,9 +177,10 @@ func FailureAfterTool(label string) HandlerResult {
 		reply = label + ": " + reply
 	}
 	return HandlerResult{
-		Status:      HandlerStatusFailureAfterTool,
-		Reply:       reply,
-		RouteStatus: RouteStatusFailureAfterTool,
+		Status:       HandlerStatusFailureAfterTool,
+		Reply:        reply,
+		RouteStatus:  RouteStatusFailureAfterTool,
+		FailureClass: HandlerFailureGenericRead,
 	}
 }
 
@@ -459,11 +472,12 @@ func failureAfterToolForError(action string, args map[string]any, label string, 
 		// through to the generic friendly reply rather than answering blank.
 		if msg := strings.TrimSpace(friendly.UserMessage()); msg != "" {
 			return HandlerResult{
-				Status:      HandlerStatusFailureAfterTool,
-				Reply:       msg,
-				RouteStatus: RouteStatusFailureAfterTool,
-				ToolAction:  action,
-				ToolArgs:    copyArgs(args),
+				Status:       HandlerStatusFailureAfterTool,
+				Reply:        msg,
+				RouteStatus:  RouteStatusFailureAfterTool,
+				FailureClass: HandlerFailureActionableUpstream,
+				ToolAction:   action,
+				ToolArgs:     copyArgs(args),
 			}
 		}
 	}

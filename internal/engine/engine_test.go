@@ -4910,6 +4910,80 @@ func TestRouteDispatchMonitorCandidateRefreshFailureFallsBackToContextAwareReadO
 	assert.Equal(t, string(intent.RouteStatusFailureAfterTool), traces[0].RouteStatus)
 }
 
+func TestRouteDispatchRefundRefreshFailureFallsBackToContextAwareReadOnlyReAct(t *testing.T) {
+	plan := intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentRefundEstimate,
+		RequiredTools: []string{"GetCompShareRefundPrice"},
+		Confidence:    0.9,
+	}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: plan}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "我记得你问的是刚才那台实例；刷新失败时不能把它误说成不存在。"}}}
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		require.Equal(t, "DescribeCompShareInstance", action)
+		return nil, fmt.Errorf("upstream unavailable")
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetSessionState(SessionState{
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-refund-001",
+		SelectedInstanceName:   "refund-host",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
+	}, 1)
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "刚才那台实例能退多少"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "你问的是 refund-host。"},
+	)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentRefundEstimate}})
+
+	reply, err := eng.Chat(context.Background(), "现在呢", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "我记得你问的是刚才那台实例；刷新失败时不能把它误说成不存在。", reply)
+	assert.NotContains(t, reply, intent.FriendlyToolFailureReply)
+	require.Len(t, mock.calls, 1)
+	requestText := renderTestMessages(mock.calls[0].Messages)
+	assert.Contains(t, requestText, "刚才那台实例能退多少")
+	assert.Contains(t, requestText, "你问的是 refund-host")
+	assert.Contains(t, requestText, routeReadFailureNote)
+	assert.NotContains(t, toolNames(mock.calls[0].Tools), "StopInstanceWorkflow")
+}
+
+func TestRouteDispatchMonitorSingleCandidateReadFailureFallsBackToContextAwareReadOnlyReAct(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "上一轮说的是 CPU；监控读取失败时我会保留这个问题上下文。"}}}
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return phase1KnownInstanceDescribeResult(), nil
+		case "GetCompShareInstanceMonitor":
+			return nil, fmt.Errorf("monitor unavailable")
+		default:
+			return nil, fmt.Errorf("unexpected action %s", action)
+		}
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "先看这台的 CPU"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "好的，继续看 CPU。"},
+	)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentMonitorQuery}})
+
+	reply, err := eng.Chat(context.Background(), "现在呢", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "上一轮说的是 CPU；监控读取失败时我会保留这个问题上下文。", reply)
+	assert.NotContains(t, reply, intent.FriendlyToolFailureReply)
+	require.Len(t, mock.calls, 1)
+	requestText := renderTestMessages(mock.calls[0].Messages)
+	assert.Contains(t, requestText, "先看这台的 CPU")
+	assert.Contains(t, requestText, "好的，继续看 CPU")
+	assert.Contains(t, requestText, routeReadFailureNote)
+	assert.NotContains(t, toolNames(mock.calls[0].Tools), "StopInstanceWorkflow")
+}
+
 func TestRouteDispatchMonitorSelectionPromptDoesNotUseGroundedGenerator(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}

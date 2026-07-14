@@ -53,7 +53,16 @@ func (e *Engine) tryRecentFactBillingFollowup(ctx context.Context, dispatch rout
 			inst = *found
 		}
 	}
-	raw := e.executeDiagnosis(ctx, "DiagnoseBilling", map[string]any{"UHostId": selectedID}, onStep)
+	raw, failureClass := e.executeDiagnosisWithOutcome(ctx, "DiagnoseBilling", map[string]any{"UHostId": selectedID}, onStep)
+	if failureClass == intent.HandlerFailureGenericRead {
+		e.emitPlannerTrace(intent.IntentRouterResult{Plan: intent.IntentRoute{
+			SchemaVersion: intent.SchemaVersion,
+			Intent:        intent.IntentBillingInstance,
+			Confidence:    0.85,
+		}}, intent.RouteStatusFailureAfterTool, dispatch.latency)
+		e.routeReadFailureThisTurn = true
+		return "", false
+	}
 	reply := renderDiagnosisContinuationReply(inst, "DiagnoseBilling", raw)
 	e.emitPlannerTrace(intent.IntentRouterResult{Plan: intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
