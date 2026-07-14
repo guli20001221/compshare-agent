@@ -16,6 +16,7 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
+	"github.com/compshare-agent/internal/workflow"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -162,6 +163,57 @@ func forceCoordinatorRetryDue(t *testing.T, db *sql.DB, turnID string) {
 	t.Helper()
 	_, err := db.Exec(`UPDATE chat_turns SET next_retry_at = NOW() - INTERVAL '1 second' WHERE id = $1`, turnID)
 	require.NoError(t, err)
+}
+
+func durableTestConfirmForm() *workflow.ConfirmForm {
+	return &workflow.ConfirmForm{Version: 1, Fields: []workflow.ConfirmFormField{
+		{
+			Key: "GpuType", Label: "GPU", Type: "select", Value: "4090", Editable: true,
+			Options: []workflow.ConfirmFormOption{
+				{Value: "4090", Label: "RTX 4090"},
+				{Value: "A800", Label: "A800"},
+			},
+		},
+	}}
+}
+
+func waitInteractionRequests(t *testing.T, turns *store.PostgresTurnStore, owner store.Owner, turnID string, count int) []store.TurnEvent {
+	t.Helper()
+	var requested []store.TurnEvent
+	require.Eventually(t, func() bool {
+		events, err := turns.ListEvents(context.Background(), owner, turnID, 0, 100)
+		if err != nil {
+			return false
+		}
+		requested = requested[:0]
+		for _, event := range events {
+			if event.Type == "interaction.requested" {
+				requested = append(requested, event)
+			}
+		}
+		return len(requested) >= count
+	}, 5*time.Second, 20*time.Millisecond)
+	return requested
+}
+
+func interactionKeyFromEvent(t *testing.T, event store.TurnEvent) string {
+	t.Helper()
+	var payload struct {
+		InteractionKey string          `json:"interaction_key"`
+		Payload        json.RawMessage `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(event.Payload, &payload))
+	return payload.InteractionKey
+}
+
+func interactionRequestPayloadFromEvent(t *testing.T, event store.TurnEvent) json.RawMessage {
+	t.Helper()
+	var payload struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(event.Payload, &payload))
+	require.NotEmpty(t, payload.Payload)
+	return payload.Payload
 }
 
 func TestFreezeSubmitInputUsesSharedCredentialRedactionWithoutDroppingRoutingContext(t *testing.T) {
@@ -527,7 +579,7 @@ func TestCoordinator_DurableConfirmationCanResolveFromAnotherReplica(t *testing.
 	}
 	require.Equal(t, "confirmation/0", interactionKey)
 	require.ErrorIs(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, interactionKey, ConfirmationResponse{
-		Confirmed: true, Edits: map[string]any{"Password": "must-not-silently-drop"},
+		Confirmed: true, Overrides: map[string]string{"Password": "must-not-silently-drop"},
 	}), store.ErrInvalidArgument)
 	require.NoError(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, interactionKey, ConfirmationResponse{Confirmed: true}))
 	waitTurnStatus(t, turnsA, owner, sub.Turn.ID, store.TurnStatusCommitted)
@@ -744,6 +796,245 @@ func TestCoordinator_KnownSuccessfulActionIsReplayedAfterAnswerCommitFailure(t *
 	assert.Equal(t, int32(2), modelCalls.Load())
 }
 
+func TestCoordinator_EditableConfirmationIsValidatedFromPersistedFormAcrossReplicas(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx := context.Background()
+	owner := store.Owner{TopOrganizationID: 98901, OrganizationID: 98902}
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turnsA := store.NewPostgresTurnStore(db)
+	turnsB := store.NewPostgresTurnStore(db)
+	resolutions := make(chan workflow.ConfirmResolution, 1)
+	factory := &coordinatorFactory{newChat: func(int) func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+		return func(callCtx context.Context, _ func(engine.StepEvent), opts engine.ChatOptions) (string, error) {
+			if opts.ConfirmEditsFunc == nil {
+				return "", errors.New("editable confirmation callback was not installed")
+			}
+			resolution := opts.ConfirmEditsFunc("CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, durableTestConfirmForm())
+			resolutions <- resolution
+			if !resolution.Confirmed {
+				return "", callCtx.Err()
+			}
+			return "created with " + resolution.Overrides["GpuType"], nil
+		}
+	}}
+	cA := coordinatorForTest(t, turnsA, sessions, factory, "editable-replica-a")
+	cB := coordinatorForTest(t, turnsB, sessions, &coordinatorFactory{}, "editable-replica-b")
+	sub, err := cA.Submit(ctx, SubmitInput{
+		Owner: owner, SessionID: session.ID, ClientTurnID: "editable-confirm", Message: "create it", ConfirmForm: true,
+	}, nil)
+	require.NoError(t, err)
+
+	requested := waitInteractionRequests(t, turnsA, owner, sub.Turn.ID, 1)
+	key := interactionKeyFromEvent(t, requested[0])
+	require.Equal(t, "confirmation/0", key)
+	interaction, err := turnsA.GetInteraction(ctx, owner, sub.Turn.ID, key)
+	require.NoError(t, err)
+	var persisted struct {
+		Form *workflow.ConfirmForm `json:"form"`
+	}
+	require.NoError(t, json.Unmarshal(interaction.RequestPayload, &persisted))
+	require.NotNil(t, persisted.Form)
+	assert.Equal(t, durableTestConfirmForm(), persisted.Form)
+
+	wrongOwner := store.Owner{TopOrganizationID: owner.TopOrganizationID + 1, OrganizationID: owner.OrganizationID}
+	require.ErrorIs(t, cB.ResolveInteraction(ctx, wrongOwner, sub.Turn.ID, key, ConfirmationResponse{
+		Confirmed: true, Overrides: map[string]string{"GpuType": "A800"},
+	}), store.ErrTurnNotFound)
+	require.ErrorIs(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, key, ConfirmationResponse{
+		Confirmed: true, Overrides: map[string]string{"GpuType": "H100"},
+	}), store.ErrInvalidArgument)
+	stillPending, err := turnsB.GetInteraction(ctx, owner, sub.Turn.ID, key)
+	require.NoError(t, err)
+	assert.Equal(t, store.InteractionStatusPending, stillPending.Status, "a correctable edit must leave the card pending")
+
+	require.NoError(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, key, ConfirmationResponse{
+		Confirmed: true, Overrides: map[string]string{"GpuType": "A800"},
+	}))
+	select {
+	case resolution := <-resolutions:
+		assert.True(t, resolution.Confirmed)
+		assert.Equal(t, map[string]string{"GpuType": "A800"}, resolution.Overrides)
+	case <-time.After(3 * time.Second):
+		t.Fatal("engine did not consume the durable editable resolution")
+	}
+	waitTurnStatus(t, turnsA, owner, sub.Turn.ID, store.TurnStatusCommitted)
+	resolved, err := turnsB.GetInteraction(ctx, owner, sub.Turn.ID, key)
+	require.NoError(t, err)
+	assert.Equal(t, store.InteractionStatusResolved, resolved.Status)
+	assert.JSONEq(t, `{"confirmed":true,"overrides":{"GpuType":"A800"}}`, string(resolved.ResponsePayload))
+}
+
+func TestCoordinator_BooleanAndEditableConfirmationsShareOneDurableSequence(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx := context.Background()
+	owner := store.Owner{TopOrganizationID: 98911, OrganizationID: 98912}
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := store.NewPostgresTurnStore(db)
+	factory := &coordinatorFactory{newChat: func(int) func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+		return func(callCtx context.Context, _ func(engine.StepEvent), opts engine.ChatOptions) (string, error) {
+			if !opts.ConfirmFunc("StopInstanceWorkflow", map[string]any{"UHostId": "uhost-1"}) {
+				return "", callCtx.Err()
+			}
+			if opts.ConfirmEditsFunc == nil {
+				return "", errors.New("editable confirmation callback was not installed")
+			}
+			resolution := opts.ConfirmEditsFunc("CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, durableTestConfirmForm())
+			if !resolution.Confirmed {
+				return "", callCtx.Err()
+			}
+			return "both confirmed", nil
+		}
+	}}
+	c := coordinatorForTest(t, turns, sessions, factory, "mixed-confirm-replica")
+	sub, err := c.Submit(ctx, SubmitInput{
+		Owner: owner, SessionID: session.ID, ClientTurnID: "mixed-confirm", Message: "stop then create", ConfirmForm: true,
+	}, nil)
+	require.NoError(t, err)
+
+	requested := waitInteractionRequests(t, turns, owner, sub.Turn.ID, 1)
+	require.Equal(t, "confirmation/0", interactionKeyFromEvent(t, requested[0]))
+	require.NoError(t, c.ResolveInteraction(ctx, owner, sub.Turn.ID, "confirmation/0", ConfirmationResponse{Confirmed: true}))
+	requested = waitInteractionRequests(t, turns, owner, sub.Turn.ID, 2)
+	require.Equal(t, "confirmation/1", interactionKeyFromEvent(t, requested[1]))
+	require.NoError(t, c.ResolveInteraction(ctx, owner, sub.Turn.ID, "confirmation/1", ConfirmationResponse{
+		Confirmed: true, Overrides: map[string]string{"GpuType": "A800"},
+	}))
+	waitTurnStatus(t, turns, owner, sub.Turn.ID, store.TurnStatusCommitted)
+}
+
+func TestCoordinator_RestartRebindsTheSameEditableConfirmation(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx := context.Background()
+	owner := store.Owner{TopOrganizationID: 98921, OrganizationID: 98922}
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := store.NewPostgresTurnStore(db)
+	resolutions := make(chan workflow.ConfirmResolution, 4)
+	factory := &coordinatorFactory{newChat: func(int) func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+		return func(callCtx context.Context, _ func(engine.StepEvent), opts engine.ChatOptions) (string, error) {
+			if opts.ConfirmEditsFunc == nil {
+				return "", errors.New("editable confirmation callback was not installed")
+			}
+			resolution := opts.ConfirmEditsFunc("CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, durableTestConfirmForm())
+			resolutions <- resolution
+			if !resolution.Confirmed {
+				return "", callCtx.Err()
+			}
+			return "recovered confirmation", nil
+		}
+	}}
+	coordinatorOptions := func(replica string) Options {
+		return Options{
+			ReplicaID: replica, LeaseTTL: 800 * time.Millisecond, LeaseRenewInterval: 100 * time.Millisecond,
+			InteractionPoll: 20 * time.Millisecond, RecoveryScanInterval: 5 * time.Second,
+			ExecutionTimeout: 5 * time.Second, MutatingToolsEnabled: true,
+		}
+	}
+	cA := NewCoordinator(turns, sessions, EngineFactoryFunc(factory.New), coordinatorOptions("restart-replica-a"))
+	t.Cleanup(cA.Close)
+	sub, err := cA.Submit(ctx, SubmitInput{
+		Owner: owner, SessionID: session.ID, ClientTurnID: "restart-form", Message: "create it", ConfirmForm: true,
+	}, nil)
+	require.NoError(t, err)
+	firstRequests := waitInteractionRequests(t, turns, owner, sub.Turn.ID, 1)
+	firstKey := interactionKeyFromEvent(t, firstRequests[0])
+	firstPayload := interactionRequestPayloadFromEvent(t, firstRequests[0])
+
+	cA.Close()
+	_, err = db.Exec(`UPDATE conversation_leases SET lease_until = NOW() - INTERVAL '1 second' WHERE session_id = $1`, session.ID)
+	require.NoError(t, err)
+	cB := NewCoordinator(turns, sessions, EngineFactoryFunc(factory.New), coordinatorOptions("restart-replica-b"))
+	t.Cleanup(cB.Close)
+	var refreshed store.TurnEvent
+	require.Eventually(t, func() bool {
+		events, listErr := turns.ListEvents(ctx, owner, sub.Turn.ID, 0, 100)
+		if listErr != nil {
+			return false
+		}
+		for _, event := range events {
+			if event.Type == "interaction.requested" && event.LeaseEpoch > firstRequests[0].LeaseEpoch {
+				refreshed = event
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond)
+	assert.Equal(t, firstKey, interactionKeyFromEvent(t, refreshed), "takeover must refresh the original card key")
+	assert.JSONEq(t, string(firstPayload), string(interactionRequestPayloadFromEvent(t, refreshed)))
+	assert.Greater(t, refreshed.LeaseEpoch, firstRequests[0].LeaseEpoch)
+
+	require.NoError(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, firstKey, ConfirmationResponse{
+		Confirmed: true, Overrides: map[string]string{"GpuType": "A800"},
+	}))
+	waitTurnStatus(t, turns, owner, sub.Turn.ID, store.TurnStatusCommitted)
+	factory.mu.Lock()
+	factoryCalls := factory.calls
+	factory.mu.Unlock()
+	assert.GreaterOrEqual(t, factoryCalls, 2)
+	var recovered workflow.ConfirmResolution
+	for i := 0; i < 2; i++ {
+		select {
+		case candidate := <-resolutions:
+			if candidate.Confirmed {
+				recovered = candidate
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("expected both pre-restart and recovered confirmation results")
+		}
+	}
+	assert.Equal(t, map[string]string{"GpuType": "A800"}, recovered.Overrides)
+}
+
+func TestCoordinator_ExpiredEditableConfirmationCannotBeResolved(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx := context.Background()
+	owner := store.Owner{TopOrganizationID: 98931, OrganizationID: 98932}
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := store.NewPostgresTurnStore(db)
+	factory := &coordinatorFactory{newChat: func(int) func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+		return func(callCtx context.Context, _ func(engine.StepEvent), opts engine.ChatOptions) (string, error) {
+			resolution := opts.ConfirmEditsFunc("CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, durableTestConfirmForm())
+			if !resolution.Confirmed {
+				return "", callCtx.Err()
+			}
+			return "must not commit", nil
+		}
+	}}
+	c := NewCoordinator(turns, sessions, EngineFactoryFunc(factory.New), Options{
+		ReplicaID: "editable-expiry-replica", LeaseTTL: time.Second, LeaseRenewInterval: 100 * time.Millisecond,
+		InteractionPoll: 300 * time.Millisecond, InteractionTTL: time.Minute,
+		ExecutionTimeout: 3 * time.Second, MutatingToolsEnabled: true,
+	})
+	t.Cleanup(c.Close)
+	sub, err := c.Submit(ctx, SubmitInput{
+		Owner: owner, SessionID: session.ID, ClientTurnID: "editable-expiry", Message: "create it", ConfirmForm: true,
+	}, nil)
+	require.NoError(t, err)
+	requested := waitInteractionRequests(t, turns, owner, sub.Turn.ID, 1)
+	key := interactionKeyFromEvent(t, requested[0])
+	_, err = db.Exec(`UPDATE turn_interactions SET expires_at = NOW() - INTERVAL '1 second' WHERE turn_id = $1 AND interaction_key = $2`, sub.Turn.ID, key)
+	require.NoError(t, err)
+	require.ErrorIs(t, c.ResolveInteraction(ctx, owner, sub.Turn.ID, key, ConfirmationResponse{
+		Confirmed: true, Overrides: map[string]string{"GpuType": "A800"},
+	}), store.ErrInteractionExpired)
+	pending, err := turns.GetInteraction(ctx, owner, sub.Turn.ID, key)
+	require.NoError(t, err)
+	assert.Equal(t, store.InteractionStatusPending, pending.Status)
+	failed := waitTurnStatus(t, turns, owner, sub.Turn.ID, store.TurnStatusAborted)
+	require.NotNil(t, failed.ErrorCode)
+	assert.Equal(t, "interaction_expired", *failed.ErrorCode)
+	tail, err := store.NewMessageStore(db).ListCommittedTail(ctx, owner, session.ID, 10)
+	require.NoError(t, err)
+	assert.Empty(t, tail)
+}
+
 func TestCoordinator_ConfirmationExpiryFailsPromptlyInsteadOfBecomingDecline(t *testing.T) {
 	db := openActionJournalTestDB(t)
 	ctx := context.Background()
@@ -888,6 +1179,14 @@ func TestCoordinator_RequestHashIncludesExecutionAffectingOptions(t *testing.T) 
 	in.UserContext.ProjectId = "project-b"
 	_, err = c.Submit(ctx, in, nil)
 	require.ErrorIs(t, err, store.ErrIdempotencyConflict)
+	in.UserContext.ProjectId = "project-a"
+	in.ConfirmForm = true
+	_, err = c.Submit(ctx, in, nil)
+	require.ErrorIs(t, err, store.ErrIdempotencyConflict, "editable-confirm authorization is part of request identity")
+	in.ConfirmForm = false
+	in.GuidedCreate = true
+	_, err = c.Submit(ctx, in, nil)
+	require.ErrorIs(t, err, store.ErrIdempotencyConflict, "guided workflow selection is part of request identity")
 	close(release)
 }
 

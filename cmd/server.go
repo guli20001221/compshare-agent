@@ -87,11 +87,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 	defer pool.Close()
 
-	handlers := httpapi.NewHandlers(cfg, sessionStore, messageStore, feedbackStore, pool, traceWriter)
-	durableTurnsEnabled := false
+	handlers := newServerHandlers(cfg, sessionStore, messageStore, feedbackStore, pool, traceWriter, overlayGetenv)
 	switch value := overlayGetenv("COMPSHARE_DURABLE_TURNS"); value {
 	case "1":
-		durableTurnsEnabled = true
 		// OpenMySQL has already run the full column-level VerifySchema probe,
 		// including every durable turn/lease/event/interaction table. Construct
 		// the coordinator only after that fail-fast check succeeds.
@@ -115,36 +113,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if cfg.Agent.OCR.Model != "" {
 		handlers.SetOCRClient(ocr.NewClient(cfg.Agent.OCR))
 		log.Printf("OCR enabled: model=%s", cfg.Agent.OCR.Model)
-	}
-	// Editable confirm form (create-flow 表单化), boot half of the double gate;
-	// the per-turn half is the client's Features opt-in. Default off.
-	switch v := overlayGetenv("COMPSHARE_CONFIRM_FORM"); v {
-	case "", "0":
-		// off (default)
-	case "1":
-		if durableTurnsEnabled {
-			log.Printf("confirm form capability withheld in durable mode: boolean confirmation remains available")
-		} else {
-			handlers.SetConfirmFormEnabled(true)
-			log.Printf("confirm form enabled (COMPSHARE_CONFIRM_FORM=1): confirmation frames carry Form for opted-in clients")
-		}
-	default:
-		log.Printf("warning: unknown COMPSHARE_CONFIRM_FORM value %q, treating as off", v)
-	}
-	// Guided GPU create order flow. Requires COMPSHARE_CONFIRM_FORM=1 plus the
-	// client's guided_create_v1 opt-in; default off for rollout safety.
-	switch v := overlayGetenv("COMPSHARE_GUIDED_CREATE"); v {
-	case "", "0":
-		// off (default)
-	case "1":
-		if durableTurnsEnabled {
-			log.Printf("guided create capability withheld in durable mode until selections are persistent")
-		} else {
-			handlers.SetGuidedCreateEnabled(true)
-			log.Printf("guided create enabled (COMPSHARE_GUIDED_CREATE=1): opted-in clients use guided GPU create cards")
-		}
-	default:
-		log.Printf("warning: unknown COMPSHARE_GUIDED_CREATE value %q, treating as off", v)
 	}
 	router := gin.New()
 	if !cfg.Agent.HTTP.DisableCORS {
@@ -180,6 +148,58 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WriteTimeout: cfg.Agent.HTTP.WriteTimeout,
 	}
 	return serveUntilSignal(srv)
+}
+
+type interactionFeatureSetter interface {
+	SetConfirmFormEnabled(bool)
+	SetGuidedCreateEnabled(bool)
+}
+
+func newServerHandlers(
+	cfg *config.Config,
+	sessions store.SessionStore,
+	messages store.MessageStore,
+	feedback store.FeedbackStore,
+	pool httpapi.EnginePool,
+	traceWriter observability.Writer,
+	getenv func(string) string,
+) *httpapi.Handlers {
+	handlers := httpapi.NewHandlers(cfg, sessions, messages, feedback, pool, traceWriter)
+	configureInteractionFeatures(handlers, getenv)
+	return handlers
+}
+
+// configureInteractionFeatures installs the server half of the feature gate
+// for both the durable and compatibility transports. Durable confirmations now
+// persist the reviewed form and resolution, so withholding these capabilities
+// when COMPSHARE_DURABLE_TURNS=1 would silently disable the production path.
+func configureInteractionFeatures(handlers interactionFeatureSetter, getenv func(string) string) {
+	confirmForm := serverFeatureEnabled(getenv, "COMPSHARE_CONFIRM_FORM")
+	if confirmForm {
+		handlers.SetConfirmFormEnabled(true)
+		log.Printf("confirm form enabled: opted-in clients may review and edit a persisted confirmation card")
+	}
+	guidedCreate := serverFeatureEnabled(getenv, "COMPSHARE_GUIDED_CREATE")
+	if guidedCreate && !confirmForm {
+		log.Printf("warning: COMPSHARE_GUIDED_CREATE requires COMPSHARE_CONFIRM_FORM=1, treating guided create as off")
+		return
+	}
+	if guidedCreate {
+		handlers.SetGuidedCreateEnabled(true)
+		log.Printf("guided create enabled: opted-in clients use the persisted guided GPU create flow")
+	}
+}
+
+func serverFeatureEnabled(getenv func(string) string, name string) bool {
+	switch value := getenv(name); value {
+	case "1":
+		return true
+	case "", "0":
+		return false
+	default:
+		log.Printf("warning: unknown %s value %q, treating as off", name, value)
+		return false
+	}
 }
 
 func serverReplicaID() string {

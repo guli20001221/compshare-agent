@@ -163,15 +163,8 @@ func (h *Handlers) handleDurableWS(
 				h.writeDurableStreamError(writer, ErrInvalidParam.WithMessage("%v", overrideErr))
 				continue
 			}
-			if len(overrides) != 0 {
-				// The coordinator cannot apply editable confirmation fields yet. A
-				// hard error is required: silently discarding edits could authorize a
-				// different operation from the one the user reviewed.
-				h.writeDurableStreamError(writer, ErrInvalidParam.WithMessage("editable durable confirmations are not supported"))
-				continue
-			}
 			if err := h.turnCoordinator.ResolveInteraction(ctx, base.Owner, turnID, key, turncoord.ConfirmationResponse{
-				Confirmed: frame.Get("Confirmed").MustBool(false),
+				Confirmed: frame.Get("Confirmed").MustBool(false), Overrides: overrides,
 			}); err != nil {
 				h.writeDurableCoordinatorError(writer, err)
 			}
@@ -197,14 +190,15 @@ func (h *Handlers) durableSubmitInput(ctx context.Context, base BaseRequest, fra
 	if protocol != 0 && protocol != durableTurnProtocolVersion {
 		return turncoord.SubmitInput{}, ErrInvalidParam.WithMessage("unsupported ProtocolVersion %d", protocol)
 	}
+	var clientConfirmForm, clientGuidedCreate bool
 	if features, err := frame.Get("Features").StringArray(); err == nil {
 		for _, feature := range features {
-			switch feature {
-			case featureConfirmForm, featureGuidedCreate:
-				return turncoord.SubmitInput{}, ErrInvalidParam.WithMessage("feature %s is not supported by durable turns", feature)
-			}
+			clientConfirmForm = clientConfirmForm || feature == featureConfirmForm
+			clientGuidedCreate = clientGuidedCreate || feature == featureGuidedCreate
 		}
 	}
+	confirmForm := h.confirmFormEnabled && clientConfirmForm
+	guidedCreate := confirmForm && h.guidedCreateEnabled && clientGuidedCreate
 	sessionID := strings.TrimSpace(frame.Get("SessionId").MustString())
 	message := strings.TrimSpace(frame.Get("Message").MustString())
 	if sessionID == "" {
@@ -263,6 +257,7 @@ func (h *Handlers) durableSubmitInput(ctx context.Context, base BaseRequest, fra
 		Owner: base.Owner, SessionID: sessionID, ClientTurnID: clientTurnID,
 		Message: message, RequestUUID: &requestID, AssistantModel: &model,
 		ImageContext: imageContext, ImageDigest: imageDigest, UserContext: userContext,
+		ConfirmForm: confirmForm, GuidedCreate: guidedCreate,
 	}, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/turncoord"
+	"github.com/compshare-agent/internal/workflow"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
@@ -85,6 +87,44 @@ type durableWSEngine struct {
 	version int
 }
 
+type durableWSFormFactory struct {
+	calls       atomic.Int32
+	resolutions chan workflow.ConfirmResolution
+}
+
+func (f *durableWSFormFactory) New(_ context.Context, _ store.Owner, _ string, _ engine.SessionOptions) (turncoord.TurnEngine, error) {
+	f.calls.Add(1)
+	return &durableWSFormEngine{factory: f}, nil
+}
+
+type durableWSFormEngine struct {
+	factory *durableWSFormFactory
+	state   engine.SessionState
+	version int
+}
+
+func (e *durableWSFormEngine) SetSessionState(state engine.SessionState, version int) {
+	e.state, e.version = state, version
+}
+
+func (e *durableWSFormEngine) SetContinuityAdvisories(engine.ContinuityAdvisories) {}
+
+func (e *durableWSFormEngine) SessionStateSnapshot() (engine.SessionState, int, bool) {
+	return e.state, e.version, true
+}
+
+func (e *durableWSFormEngine) ChatWithOptions(ctx context.Context, _ string, _ func(engine.StepEvent), opts engine.ChatOptions) (string, error) {
+	if opts.ConfirmEditsFunc == nil || !opts.GuidedCreate {
+		return "", errors.New("durable editable features were not enabled")
+	}
+	resolution := opts.ConfirmEditsFunc("CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, testGPUForm())
+	e.factory.resolutions <- resolution
+	if !resolution.Confirmed {
+		return "", ctx.Err()
+	}
+	return "created with " + resolution.Overrides["GpuType"], nil
+}
+
 func (e *durableWSEngine) SetSessionState(state engine.SessionState, version int) {
 	e.state, e.version = state, version
 }
@@ -111,7 +151,6 @@ func (e *durableWSEngine) ChatWithOptions(ctx context.Context, _ string, _ func(
 func newDurableWSPGServer(t *testing.T, db *sql.DB, factory turncoord.EngineFactory, recognizer OCRRecognizer) (*httptest.Server, *turncoord.Coordinator, store.Session) {
 	t.Helper()
 	sessions := store.NewSessionStore(db)
-	messages := store.NewMessageStore(db)
 	session, err := sessions.Create(context.Background(), gatewayOwner, nil, nil)
 	require.NoError(t, err)
 	coordinator := turncoord.NewCoordinator(
@@ -122,6 +161,20 @@ func newDurableWSPGServer(t *testing.T, db *sql.DB, factory turncoord.EngineFact
 		},
 	)
 	t.Cleanup(coordinator.Close)
+	srv := newDurableWSPGServerForCoordinator(t, db, coordinator, recognizer, false, false)
+	return srv, coordinator, session
+}
+
+func newDurableWSPGServerForCoordinator(
+	t *testing.T,
+	db *sql.DB,
+	coordinator *turncoord.Coordinator,
+	recognizer OCRRecognizer,
+	confirmForm, guidedCreate bool,
+) *httptest.Server {
+	t.Helper()
+	sessions := store.NewSessionStore(db)
+	messages := store.NewMessageStore(db)
 	h := NewHandlers(
 		&config.Config{Agent: config.AgentConfig{
 			LLM:  config.LLMConfig{Model: "integration-model"},
@@ -132,12 +185,14 @@ func newDurableWSPGServer(t *testing.T, db *sql.DB, factory turncoord.EngineFact
 	)
 	h.SetOCRClient(recognizer)
 	h.SetTurnCoordinator(coordinator)
+	h.SetConfirmFormEnabled(confirmForm)
+	h.SetGuidedCreateEnabled(guidedCreate)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.GET("/", h.HandleWS)
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
-	return srv, coordinator, session
+	return srv
 }
 
 func readUntilDurableTerminal(t *testing.T, conn *websocket.Conn) []map[string]any {
@@ -152,6 +207,23 @@ func readUntilDurableTerminal(t *testing.T, conn *websocket.Conn) []map[string]a
 		require.NoError(t, json.Unmarshal(raw, &frame))
 		frames = append(frames, frame)
 		if frame["event"] == "done" || frame["event"] == "error" || frame["event"] == "aborted" {
+			return frames
+		}
+	}
+}
+
+func readUntilDurableEvent(t *testing.T, conn *websocket.Conn, wanted string) []map[string]any {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	var frames []map[string]any
+	for {
+		_, raw, err := conn.Read(ctx)
+		require.NoError(t, err)
+		var frame map[string]any
+		require.NoError(t, json.Unmarshal(raw, &frame))
+		frames = append(frames, frame)
+		if frame["event"] == wanted {
 			return frames
 		}
 	}
@@ -253,4 +325,98 @@ func TestWSDurable_PostgresSameClientTurnIDDifferentImageConflicts(t *testing.T)
 	assert.Equal(t, "error", conflict["event"])
 	assert.Equal(t, "Conflict", conflict["Code"])
 	assert.Equal(t, int32(1), factory.calls.Load(), "the conflicting image never reaches model execution")
+}
+
+func TestWSDurable_PostgresEditableConfirmationSurvivesReconnectAndCrossReplicaResolution(t *testing.T) {
+	db := openDurableWSPostgres(t)
+	ctx := context.Background()
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, gatewayOwner, nil, nil)
+	require.NoError(t, err)
+	factory := &durableWSFormFactory{resolutions: make(chan workflow.ConfirmResolution, 1)}
+	coordinatorA := turncoord.NewCoordinator(
+		store.NewPostgresTurnStore(db), sessions, factory,
+		turncoord.Options{
+			ReplicaID: "ws-form-a", LeaseTTL: 2 * time.Second,
+			LeaseRenewInterval: 300 * time.Millisecond, InteractionPoll: 10 * time.Millisecond,
+		},
+	)
+	coordinatorB := turncoord.NewCoordinator(
+		store.NewPostgresTurnStore(db), store.NewSessionStore(db), factory,
+		turncoord.Options{
+			ReplicaID: "ws-form-b", LeaseTTL: 2 * time.Second,
+			LeaseRenewInterval: 300 * time.Millisecond, InteractionPoll: 10 * time.Millisecond,
+		},
+	)
+	t.Cleanup(coordinatorA.Close)
+	t.Cleanup(coordinatorB.Close)
+	srvA := newDurableWSPGServerForCoordinator(t, db, coordinatorA, nil, true, true)
+	srvB := newDurableWSPGServerForCoordinator(t, db, coordinatorB, nil, true, true)
+
+	first := dialWS(t, srvA, gatewayHeaders())
+	send := `{"Action":"SendCSAgentChat","ProtocolVersion":2,"SessionId":"` + session.ID + `","ClientTurnId":"editable-ws","Message":"create it","Features":["confirm_form_v1","guided_create_v1"]}`
+	require.NoError(t, first.Write(ctx, websocket.MessageText, []byte(send)))
+	meta := readDurableFrame(t, first)
+	turnID, _ := meta["TurnId"].(string)
+	require.NotEmpty(t, turnID)
+	firstFrames := readUntilDurableEvent(t, first, "confirmation")
+	firstCard := firstFrames[len(firstFrames)-1]
+	firstKey, _ := firstCard["InteractionKey"].(string)
+	require.Equal(t, "confirmation/0", firstKey)
+	require.NotNil(t, firstCard["Form"], "both feature gates must expose the persisted editable form")
+	require.NoError(t, first.Close(websocket.StatusNormalClosure, "refresh page"))
+
+	resumed := dialWS(t, srvB, gatewayHeaders())
+	resume := `{"Action":"ResumeCSAgentTurn","ProtocolVersion":2,"SessionId":"` + session.ID + `","TurnId":"` + turnID + `","ClientTurnId":"editable-ws","LastSeq":0}`
+	require.NoError(t, resumed.Write(ctx, websocket.MessageText, []byte(resume)))
+	resumeMeta := readDurableFrame(t, resumed)
+	assert.Equal(t, turnID, resumeMeta["TurnId"])
+	replayedFrames := readUntilDurableEvent(t, resumed, "confirmation")
+	replayedCard := replayedFrames[len(replayedFrames)-1]
+	assert.Equal(t, firstKey, replayedCard["InteractionKey"])
+	assert.Equal(t, firstCard["Form"], replayedCard["Form"], "refresh must replay the original reviewed choices")
+
+	attackerHeaders := gatewayHeaders()
+	attackerHeaders.Set("X-Company-Id", "9")
+	attackerHeaders.Set("X-Organization-Id", "9")
+	attacker := dialWS(t, srvB, attackerHeaders)
+	wrongOwner := `{"Action":"ConfirmCSAgentAction","SessionId":"` + session.ID + `","TurnId":"` + turnID + `","InteractionKey":"` + firstKey + `","Confirmed":true,"Overrides":{"GpuType":"A800"}}`
+	require.NoError(t, attacker.Write(ctx, websocket.MessageText, []byte(wrongOwner)))
+	wrongOwnerFrame := readDurableFrame(t, attacker)
+	assert.Equal(t, "error", wrongOwnerFrame["event"])
+	assert.Equal(t, "NotFound", wrongOwnerFrame["Code"])
+	require.NoError(t, attacker.Close(websocket.StatusNormalClosure, "done"))
+
+	wrongSession := `{"Action":"ConfirmCSAgentAction","SessionId":"wrong-session","TurnId":"` + turnID + `","InteractionKey":"` + firstKey + `","Confirmed":true,"Overrides":{"GpuType":"A800"}}`
+	require.NoError(t, resumed.Write(ctx, websocket.MessageText, []byte(wrongSession)))
+	wrongSessionFrame := readDurableFrame(t, resumed)
+	assert.Equal(t, "error", wrongSessionFrame["event"])
+	assert.Equal(t, "NotFound", wrongSessionFrame["Code"])
+
+	invalid := `{"Action":"ConfirmCSAgentAction","SessionId":"` + session.ID + `","TurnId":"` + turnID + `","InteractionKey":"` + firstKey + `","Confirmed":true,"Overrides":{"GpuType":"H100"}}`
+	require.NoError(t, resumed.Write(ctx, websocket.MessageText, []byte(invalid)))
+	invalidFrame := readDurableFrame(t, resumed)
+	assert.Equal(t, "error", invalidFrame["event"])
+	assert.Equal(t, "InvalidParam", invalidFrame["Code"])
+	pending, err := store.NewPostgresTurnStore(db).GetInteraction(ctx, gatewayOwner, turnID, firstKey)
+	require.NoError(t, err)
+	assert.Equal(t, store.InteractionStatusPending, pending.Status)
+
+	valid := `{"Action":"ConfirmCSAgentAction","SessionId":"` + session.ID + `","TurnId":"` + turnID + `","InteractionKey":"` + firstKey + `","Confirmed":true,"Overrides":{"GpuType":"A800"}}`
+	require.NoError(t, resumed.Write(ctx, websocket.MessageText, []byte(valid)))
+	doneFrames := readUntilDurableEvent(t, resumed, "done")
+	done := doneFrames[len(doneFrames)-1]
+	assert.Equal(t, "created with A800", done["Content"])
+	select {
+	case resolution := <-factory.resolutions:
+		assert.True(t, resolution.Confirmed)
+		assert.Equal(t, map[string]string{"GpuType": "A800"}, resolution.Overrides)
+	case <-time.After(3 * time.Second):
+		t.Fatal("engine did not receive the corrected editable resolution")
+	}
+	assert.Equal(t, int32(1), factory.calls.Load(), "the second replica replays and resolves; it does not fork execution")
+	resolved, err := store.NewPostgresTurnStore(db).GetInteraction(ctx, gatewayOwner, turnID, firstKey)
+	require.NoError(t, err)
+	assert.Equal(t, store.InteractionStatusResolved, resolved.Status)
+	assert.JSONEq(t, `{"confirmed":true,"overrides":{"GpuType":"A800"}}`, string(resolved.ResponsePayload))
 }

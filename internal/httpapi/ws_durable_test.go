@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bitly/go-simplejson"
 	"github.com/coder/websocket"
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/store"
@@ -260,22 +261,24 @@ func TestWSDurable_ConfirmationIsBoundToTurnAndInteraction(t *testing.T) {
 	coordinator.mu.Unlock()
 }
 
-func TestWSDurable_DoesNotSilentlyDiscardUnsupportedClientEdits(t *testing.T) {
+func TestWSDurable_ForwardsClientEditsToDurableValidation(t *testing.T) {
 	coordinator := &fakeDurableCoordinator{turn: store.Turn{ID: "turn-1", SessionID: "sess-1", Owner: gatewayOwner}}
 	srv := durableWSTestServer(t, coordinator)
 	conn := dialWS(t, srv, gatewayHeaders())
 	require.NoError(t, conn.Write(context.Background(), websocket.MessageText, []byte(
 		`{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","TurnId":"turn-1","InteractionKey":"confirmation/0","Confirmed":true,"Overrides":{"Zone":"cn-bj2-02"}}`,
 	)))
-	frame := readDurableFrame(t, conn)
-	assert.Equal(t, "error", frame["event"])
-	assert.Equal(t, "InvalidParam", frame["Code"])
+	require.Eventually(t, func() bool {
+		coordinator.mu.Lock()
+		defer coordinator.mu.Unlock()
+		return len(coordinator.resolved) == 1
+	}, time.Second, 10*time.Millisecond)
 	coordinator.mu.Lock()
-	assert.Empty(t, coordinator.resolved)
+	assert.Equal(t, map[string]string{"Zone": "cn-bj2-02"}, coordinator.resolved[0].value.Overrides)
 	coordinator.mu.Unlock()
 }
 
-func TestWSDurable_RejectsAdvertisedCapabilitiesItCannotHonor(t *testing.T) {
+func TestWSDurable_BootGateKeepsClientOptInDisabled(t *testing.T) {
 	coordinator := &fakeDurableCoordinator{}
 	srv := durableWSTestServer(t, coordinator)
 	conn := dialWS(t, srv, gatewayHeaders())
@@ -283,33 +286,47 @@ func TestWSDurable_RejectsAdvertisedCapabilitiesItCannotHonor(t *testing.T) {
 		`{"Action":"SendCSAgentChat","ProtocolVersion":2,"SessionId":"sess-1","ClientTurnId":"client-1","Message":"hi","Features":["confirm_form_v1"]}`,
 	)))
 	frame := readDurableFrame(t, conn)
-	assert.Equal(t, "error", frame["event"])
-	assert.Equal(t, "InvalidParam", frame["Code"])
+	assert.Equal(t, "meta", frame["event"])
 	coordinator.mu.Lock()
-	assert.Empty(t, coordinator.submits)
+	require.Len(t, coordinator.submits, 1)
+	assert.False(t, coordinator.submits[0].ConfirmForm)
+	assert.False(t, coordinator.submits[0].GuidedCreate)
 	coordinator.mu.Unlock()
 }
 
-func TestGetMeta_DurableModeAdvertisesOnlyReplay(t *testing.T) {
+func TestDurableSubmitInput_EnablesFormsOnlyWhenBootAndClientAgree(t *testing.T) {
+	h := newTestHandlers()
+	h.SetConfirmFormEnabled(true)
+	h.SetGuidedCreateEnabled(true)
+	frame, err := simplejson.NewJson([]byte(`{"ProtocolVersion":2,"SessionId":"sess-1","ClientTurnId":"feature-turn","Message":"create","Features":["confirm_form_v1","guided_create_v1"]}`))
+	require.NoError(t, err)
+	in, apiErr := h.durableSubmitInput(context.Background(), BaseRequest{Owner: gatewayOwner, RequestUUID: "request-feature"}, frame)
+	require.Nil(t, apiErr)
+	assert.True(t, in.ConfirmForm)
+	assert.True(t, in.GuidedCreate)
+}
+
+func TestGetMeta_DurableModeAdvertisesEnabledConfirmationFeatures(t *testing.T) {
 	h := newTestHandlers()
 	h.SetConfirmFormEnabled(true)
 	h.SetGuidedCreateEnabled(true)
 	h.SetTurnCoordinator(&fakeDurableCoordinator{})
 	data, err := h.handleGetMeta(nil, BaseRequest{}, nil)
 	require.NoError(t, err)
-	assert.Equal(t, []string{featureTurnReplay}, data.(metaData).Features)
+	assert.Equal(t, []string{featureTurnReplay, featureConfirmForm, featureGuidedCreate}, data.(metaData).Features)
 }
 
 func TestConfirmPOST_DurableModeUsesPersistentInteraction(t *testing.T) {
 	coordinator := &fakeDurableCoordinator{turn: store.Turn{ID: "turn-1", SessionID: "sess-1", Owner: gatewayOwner}}
 	h := newTestHandlers()
 	h.SetTurnCoordinator(coordinator)
-	rec := performGateway(h, `{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","TurnId":"turn-1","ConfirmationId":"confirmation/0","InteractionKey":"confirmation/0","Confirmed":true,"top_organization_id":1,"organization_id":2}`)
+	rec := performGateway(h, `{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","TurnId":"turn-1","ConfirmationId":"confirmation/0","InteractionKey":"confirmation/0","Confirmed":true,"Overrides":{"Zone":"cn-bj2-02"},"top_organization_id":1,"organization_id":2}`)
 	require.Equal(t, 200, rec.Code)
 	coordinator.mu.Lock()
 	require.Len(t, coordinator.resolved, 1)
 	assert.Equal(t, "turn-1", coordinator.resolved[0].turnID)
 	assert.Equal(t, "confirmation/0", coordinator.resolved[0].key)
+	assert.Equal(t, map[string]string{"Zone": "cn-bj2-02"}, coordinator.resolved[0].value.Overrides)
 	coordinator.mu.Unlock()
 }
 

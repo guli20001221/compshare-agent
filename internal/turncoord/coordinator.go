@@ -19,6 +19,7 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
+	"github.com/compshare-agent/internal/workflow"
 )
 
 const (
@@ -198,8 +199,16 @@ type Event struct {
 type EventSink func(Event) error
 
 type ConfirmationResponse struct {
-	Confirmed bool           `json:"confirmed"`
-	Edits     map[string]any `json:"edits,omitempty"`
+	Confirmed bool              `json:"confirmed"`
+	Overrides map[string]string `json:"overrides,omitempty"`
+}
+
+type interactionSequence struct {
+	index atomic.Int64
+}
+
+func (s *interactionSequence) Next() string {
+	return fmt.Sprintf("confirmation/%d", s.index.Add(1)-1)
 }
 
 type subscription struct {
@@ -261,9 +270,6 @@ func (c *Coordinator) Submit(ctx context.Context, in SubmitInput, sink EventSink
 		(in.UserContext.OrganizationID != 0 && in.UserContext.OrganizationID != in.Owner.OrganizationID) {
 		return Submission{}, fmt.Errorf("%w: request identity does not match owner", store.ErrInvalidArgument)
 	}
-	if in.ConfirmForm || in.GuidedCreate {
-		return Submission{}, fmt.Errorf("%w: durable editable confirmations are not enabled", store.ErrInvalidArgument)
-	}
 	envelope, envelopeRaw, err := freezeSubmitInput(in)
 	if err != nil {
 		return Submission{}, err
@@ -312,8 +318,22 @@ func (c *Coordinator) Submit(ctx context.Context, in SubmitInput, sink EventSink
 }
 
 func (c *Coordinator) ResolveInteraction(ctx context.Context, owner store.Owner, turnID, key string, response ConfirmationResponse) error {
-	if len(response.Edits) != 0 {
-		return fmt.Errorf("%w: durable confirmation edits are not enabled", store.ErrInvalidArgument)
+	interaction, err := c.turns.GetInteraction(ctx, owner, turnID, key)
+	if err != nil {
+		return err
+	}
+	if !response.Confirmed {
+		response.Overrides = nil
+	} else if len(response.Overrides) != 0 {
+		var request struct {
+			Form *workflow.ConfirmForm `json:"form"`
+		}
+		if err := json.Unmarshal(interaction.RequestPayload, &request); err != nil || request.Form == nil {
+			return fmt.Errorf("%w: this confirmation does not accept overrides", store.ErrInvalidArgument)
+		}
+		if err := request.Form.ValidateOverrides(response.Overrides); err != nil {
+			return fmt.Errorf("%w: %v", store.ErrInvalidArgument, err)
+		}
 	}
 	raw, err := json.Marshal(response)
 	if err != nil {
@@ -513,7 +533,12 @@ func (c *Coordinator) run(turn store.Turn) {
 
 	state, clientContext, warning, mode, mutations := parseExecutionContext(sess.Context, c.opts.MutatingToolsEnabled)
 	journal := NewActionJournal(c.turns, in.Owner, lease)
-	confirm := c.confirmFunc(execCtx, in.Owner, lease, cancelCause)
+	sequence := &interactionSequence{}
+	confirm := c.confirmFunc(execCtx, in.Owner, lease, cancelCause, sequence)
+	var confirmEdits workflow.ConfirmEditsFunc
+	if in.ConfirmForm {
+		confirmEdits = c.confirmEditsFunc(execCtx, in.Owner, lease, cancelCause, sequence)
+	}
 	eng, err := c.factory.New(execCtx, in.Owner, in.SessionID, engine.SessionOptions{
 		ConfirmFn: confirm, MutatingToolsEnabled: mutations,
 		InitialCommittedTurns: int(max(turn.Sequence-1, 0)),
@@ -565,9 +590,11 @@ func (c *Coordinator) run(turn store.Turn) {
 		}
 		c.deliver(event)
 	}, engine.ChatOptions{
-		ImageContext: in.ImageContext,
-		ConfirmFunc:  confirm,
-		OnUsage:      func(value llm.TokenUsage) { usage = value },
+		ImageContext:     in.ImageContext,
+		ConfirmFunc:      confirm,
+		ConfirmEditsFunc: confirmEdits,
+		GuidedCreate:     in.GuidedCreate,
+		OnUsage:          func(value llm.TokenUsage) { usage = value },
 	})
 	eventMu.Lock()
 	persistEventErr := eventErr
@@ -732,47 +759,92 @@ func (c *Coordinator) renewLoop(ctx context.Context, owner store.Owner, lease st
 	}
 }
 
-func (c *Coordinator) confirmFunc(ctx context.Context, owner store.Owner, lease store.ConversationLease, cancel context.CancelCauseFunc) engine.ConfirmFunc {
-	var index atomic.Int64
+func (c *Coordinator) confirmFunc(
+	ctx context.Context,
+	owner store.Owner,
+	lease store.ConversationLease,
+	cancel context.CancelCauseFunc,
+	sequence *interactionSequence,
+) engine.ConfirmFunc {
 	return func(action string, args map[string]any) bool {
-		key := fmt.Sprintf("confirmation/%d", index.Add(1)-1)
+		key := sequence.Next()
 		payload, err := json.Marshal(map[string]any{"action": action, "summary": sanitizeInteractionArgs(args)})
 		if err != nil {
 			cancel(fmt.Errorf("encode confirmation %s: %w", key, err))
 			return false
 		}
-		interaction, _, err := c.turns.CreateInteraction(ctx, owner, lease, key, "confirmation", payload, c.opts.InteractionTTL)
-		if err != nil {
-			cancel(fmt.Errorf("persist confirmation %s: %w", key, err))
-			return false
+		response, ok := c.awaitConfirmation(ctx, owner, lease, cancel, key, payload)
+		return ok && response.Confirmed
+	}
+}
+
+func (c *Coordinator) confirmEditsFunc(
+	ctx context.Context,
+	owner store.Owner,
+	lease store.ConversationLease,
+	cancel context.CancelCauseFunc,
+	sequence *interactionSequence,
+) workflow.ConfirmEditsFunc {
+	return func(action string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+		key := sequence.Next()
+		if form == nil {
+			cancel(fmt.Errorf("encode confirmation %s: missing form", key))
+			return workflow.ConfirmResolution{}
 		}
-		ticker := time.NewTicker(c.opts.InteractionPoll)
-		defer ticker.Stop()
-		for {
-			// Expiry is checked before consuming a stored resolution. An approval
-			// is authorization for a bounded time, not a permanent capability that
-			// a later retry may reuse.
-			if !interaction.ExpiresAt.After(time.Now()) {
-				cancel(fmt.Errorf("confirmation %s: %w", key, store.ErrInteractionExpired))
-				return false
+		payload, err := json.Marshal(map[string]any{
+			"action": action, "summary": sanitizeInteractionArgs(args), "form": form,
+		})
+		if err != nil {
+			cancel(fmt.Errorf("encode confirmation %s: %w", key, err))
+			return workflow.ConfirmResolution{}
+		}
+		response, ok := c.awaitConfirmation(ctx, owner, lease, cancel, key, payload)
+		if !ok {
+			return workflow.ConfirmResolution{}
+		}
+		return workflow.ConfirmResolution{Confirmed: response.Confirmed, Overrides: response.Overrides}
+	}
+}
+
+func (c *Coordinator) awaitConfirmation(
+	ctx context.Context,
+	owner store.Owner,
+	lease store.ConversationLease,
+	cancel context.CancelCauseFunc,
+	key string,
+	payload json.RawMessage,
+) (ConfirmationResponse, bool) {
+	interaction, _, err := c.turns.CreateInteraction(ctx, owner, lease, key, "confirmation", payload, c.opts.InteractionTTL)
+	if err != nil {
+		cancel(fmt.Errorf("persist confirmation %s: %w", key, err))
+		return ConfirmationResponse{}, false
+	}
+	ticker := time.NewTicker(c.opts.InteractionPoll)
+	defer ticker.Stop()
+	for {
+		// ExpiresAt is assigned by PostgreSQL. ResolveInteraction also rechecks
+		// NOW() in the same transaction, so no process clock can authorize a
+		// stale approval.
+		if !interaction.ExpiresAt.After(time.Now()) {
+			cancel(fmt.Errorf("confirmation %s: %w", key, store.ErrInteractionExpired))
+			return ConfirmationResponse{}, false
+		}
+		if interaction.Status == store.InteractionStatusResolved {
+			var response ConfirmationResponse
+			if err := json.Unmarshal(interaction.ResponsePayload, &response); err != nil {
+				cancel(fmt.Errorf("decode confirmation %s: %w", key, err))
+				return ConfirmationResponse{}, false
 			}
-			if interaction.Status == store.InteractionStatusResolved {
-				var response ConfirmationResponse
-				if err := json.Unmarshal(interaction.ResponsePayload, &response); err != nil {
-					cancel(fmt.Errorf("decode confirmation %s: %w", key, err))
-					return false
-				}
-				return response.Confirmed
-			}
-			select {
-			case <-ctx.Done():
-				return false
-			case <-ticker.C:
-				interaction, err = c.turns.GetInteraction(ctx, owner, lease.TurnID, key)
-				if err != nil {
-					cancel(fmt.Errorf("read confirmation %s: %w", key, err))
-					return false
-				}
+			return response, true
+		}
+		select {
+		case <-ctx.Done():
+			return ConfirmationResponse{}, false
+		case <-ticker.C:
+			interaction, err = c.turns.GetInteraction(ctx, owner, lease.TurnID, key)
+			if err != nil {
+				cancel(fmt.Errorf("read confirmation %s: %w", key, err))
+				return ConfirmationResponse{}, false
 			}
 		}
 	}

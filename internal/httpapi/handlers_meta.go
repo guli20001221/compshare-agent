@@ -23,9 +23,13 @@ type metaData struct {
 func (h *Handlers) handleGetMeta(_ *gin.Context, _ BaseRequest, _ *simplejson.Json) (any, error) {
 	var features []string
 	if h.turnCoordinator != nil {
-		// Durable mode currently persists boolean confirmations, but not editable
-		// forms or guided selections. Advertise only the capability we can honor.
 		features = []string{featureTurnReplay}
+		if h.confirmFormEnabled {
+			features = append(features, featureConfirmForm)
+			if h.guidedCreateEnabled {
+				features = append(features, featureGuidedCreate)
+			}
+		}
 	} else if h.confirmFormEnabled {
 		features = append(features, featureConfirmForm)
 		if h.guidedCreateEnabled {

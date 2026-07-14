@@ -9,12 +9,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/store"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -151,6 +153,81 @@ func TestServerTraceGetenvUsesConfiguredMySQLDSN(t *testing.T) {
 	require.Equal(t, "configured-dsn", getenv("MYSQL_DSN"))
 	require.Equal(t, "1", getenv("COMPSHARE_TRACE_ENABLED"))
 	require.True(t, traceMySQLSinkEnabled(getenv))
+}
+
+type recordingInteractionFeatures struct {
+	confirmForm  bool
+	guidedCreate bool
+}
+
+func (r *recordingInteractionFeatures) SetConfirmFormEnabled(value bool) {
+	r.confirmForm = value
+}
+
+func (r *recordingInteractionFeatures) SetGuidedCreateEnabled(value bool) {
+	r.guidedCreate = value
+}
+
+func TestConfigureInteractionFeaturesEnablesTheDurableHandlerCapabilities(t *testing.T) {
+	tests := []struct {
+		name                    string
+		values                  map[string]string
+		wantConfirm, wantGuided bool
+	}{
+		{name: "both enabled", values: map[string]string{
+			"COMPSHARE_CONFIRM_FORM": "1", "COMPSHARE_GUIDED_CREATE": "1",
+		}, wantConfirm: true, wantGuided: true},
+		{name: "form only", values: map[string]string{
+			"COMPSHARE_CONFIRM_FORM": "1", "COMPSHARE_GUIDED_CREATE": "0",
+		}, wantConfirm: true},
+		{name: "guided requires form", values: map[string]string{
+			"COMPSHARE_CONFIRM_FORM": "0", "COMPSHARE_GUIDED_CREATE": "1",
+		}},
+		{name: "unknown values fail closed", values: map[string]string{
+			"COMPSHARE_CONFIRM_FORM": "maybe", "COMPSHARE_GUIDED_CREATE": "maybe",
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := &recordingInteractionFeatures{}
+			configureInteractionFeatures(got, func(key string) string { return tc.values[key] })
+			assert.Equal(t, tc.wantConfirm, got.confirmForm)
+			assert.Equal(t, tc.wantGuided, got.guidedCreate)
+		})
+	}
+}
+
+func TestNewServerHandlersActuallyAdvertisesConfiguredInteractionFeatures(t *testing.T) {
+	cfg := &config.Config{Agent: config.AgentConfig{
+		LLM: config.LLMConfig{Model: "test-model"},
+		Meta: config.MetaConfig{
+			Welcome: "welcome", SuggestedPrompts: []string{"prompt"}, MaxInputLength: 4000,
+		},
+	}}
+	handlers := newServerHandlers(
+		cfg, nil, serverTestMessageStore{}, nil, nil, nil,
+		func(key string) string {
+			switch key {
+			case "COMPSHARE_CONFIRM_FORM", "COMPSHARE_GUIDED_CREATE":
+				return "1"
+			default:
+				return ""
+			}
+		},
+	)
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"Action":"GetCSAgentMeta","top_organization_id":1,"organization_id":2}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	handlers.Dispatch(c)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Features []string `json:"Features"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, []string{"confirm_form_v1", "guided_create_v1"}, response.Features,
+		"removing the server construction wiring must make this gate fail")
 }
 
 type serverTestMessageStore struct{}
