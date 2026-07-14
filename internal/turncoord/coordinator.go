@@ -11,7 +11,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/compshare-agent/internal/engine"
@@ -208,14 +207,6 @@ type EventSink func(Event) error
 type ConfirmationResponse struct {
 	Confirmed bool              `json:"confirmed"`
 	Overrides map[string]string `json:"overrides,omitempty"`
-}
-
-type interactionSequence struct {
-	index atomic.Int64
-}
-
-func (s *interactionSequence) Next() string {
-	return fmt.Sprintf("confirmation/%d", s.index.Add(1)-1)
 }
 
 type subscription struct {
@@ -616,11 +607,10 @@ func (c *Coordinator) run(turn store.Turn) {
 		trace.ContextParseOutcome = contextParseOutcome
 	})
 	journal := NewActionJournal(c.turns, in.Owner, lease)
-	sequence := &interactionSequence{}
-	confirm := c.confirmFunc(execCtx, in.Owner, lease, cancelCause, sequence)
+	confirm := c.confirmFunc(execCtx, in.Owner, lease, cancelCause)
 	var confirmEdits workflow.ConfirmEditsFunc
 	if in.ConfirmForm {
-		confirmEdits = c.confirmEditsFunc(execCtx, in.Owner, lease, cancelCause, sequence)
+		confirmEdits = c.confirmEditsFunc(execCtx, in.Owner, lease, cancelCause)
 	}
 	eng, err := c.factory.New(execCtx, in.Owner, in.SessionID, engine.SessionOptions{
 		ConfirmFn: confirm, MutatingToolsEnabled: mutations,
@@ -875,15 +865,14 @@ func (c *Coordinator) confirmFunc(
 	owner store.Owner,
 	lease store.ConversationLease,
 	cancel context.CancelCauseFunc,
-	sequence *interactionSequence,
 ) engine.ConfirmFunc {
 	return func(action string, args map[string]any) bool {
-		key := sequence.Next()
 		payload, err := json.Marshal(map[string]any{"action": action, "summary": sanitizeInteractionArgs(args)})
 		if err != nil {
-			cancel(fmt.Errorf("encode confirmation %s: %w", key, err))
+			cancel(fmt.Errorf("encode confirmation: %w", err))
 			return false
 		}
+		key := semanticInteractionKey("confirmation", payload)
 		response, ok := c.awaitConfirmation(ctx, owner, lease, cancel, key, payload)
 		return ok && response.Confirmed
 	}
@@ -894,27 +883,30 @@ func (c *Coordinator) confirmEditsFunc(
 	owner store.Owner,
 	lease store.ConversationLease,
 	cancel context.CancelCauseFunc,
-	sequence *interactionSequence,
 ) workflow.ConfirmEditsFunc {
 	return func(action string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
-		key := sequence.Next()
 		if form == nil {
-			cancel(fmt.Errorf("encode confirmation %s: missing form", key))
+			cancel(fmt.Errorf("encode confirmation: missing form"))
 			return workflow.ConfirmResolution{}
 		}
 		payload, err := json.Marshal(map[string]any{
 			"action": action, "summary": sanitizeInteractionArgs(args), "form": form,
 		})
 		if err != nil {
-			cancel(fmt.Errorf("encode confirmation %s: %w", key, err))
+			cancel(fmt.Errorf("encode confirmation: %w", err))
 			return workflow.ConfirmResolution{}
 		}
+		key := semanticInteractionKey("confirmation", payload)
 		response, ok := c.awaitConfirmation(ctx, owner, lease, cancel, key, payload)
 		if !ok {
 			return workflow.ConfirmResolution{}
 		}
 		return workflow.ConfirmResolution{Confirmed: response.Confirmed, Overrides: response.Overrides}
 	}
+}
+
+func semanticInteractionKey(kind string, payload json.RawMessage) string {
+	return kind + "/" + store.HashTurnRequest(kind, string(payload))
 }
 
 func (c *Coordinator) awaitConfirmation(
@@ -930,6 +922,7 @@ func (c *Coordinator) awaitConfirmation(
 		cancel(fmt.Errorf("persist confirmation %s: %w", key, err))
 		return ConfirmationResponse{}, false
 	}
+	key = interaction.Key
 	ticker := time.NewTicker(c.opts.InteractionPoll)
 	defer ticker.Stop()
 	for {
@@ -1153,11 +1146,20 @@ func buildContinuityAdvisories(
 ) engine.ContinuityAdvisories {
 	notices := make([]string, 0, len(sameTurn)+len(prior))
 	for _, item := range sameTurn {
-		if item.Outcome != "succeeded" || strings.TrimSpace(item.ActionName) == "" {
+		if strings.TrimSpace(item.ActionName) == "" {
 			continue
 		}
-		notice := fmt.Sprintf("本轮恢复前，操作 %s 已确认成功%s；不要重复执行，请据此完成回答",
-			item.ActionName, continuityHintText(item.ContextHint))
+		var notice string
+		switch item.Outcome {
+		case "succeeded":
+			notice = fmt.Sprintf("本轮恢复前，操作 %s 已确认成功%s；不要重复执行，请据此完成回答",
+				item.ActionName, continuityHintText(item.ContextHint))
+		case "failed":
+			notice = fmt.Sprintf("本轮恢复前，操作 %s 已确认失败%s；不要重复执行，请向用户说明失败结果",
+				item.ActionName, continuityHintText(item.ContextHint))
+		default:
+			continue
+		}
 		notices = append(notices, notice)
 	}
 	for _, item := range prior {

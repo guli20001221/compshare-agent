@@ -16,6 +16,7 @@ import (
 
 type actionStore interface {
 	ListTurnActions(context.Context, store.Owner, string) ([]store.TurnAction, error)
+	AbandonUnstartedActions(context.Context, store.Owner, store.ConversationLease) error
 	ReserveAction(context.Context, store.Owner, store.ConversationLease, store.ReserveActionInput) (store.TurnAction, bool, error)
 	StartAction(context.Context, store.Owner, store.ConversationLease, string) (store.TurnAction, error)
 	RecordActionWithContext(context.Context, store.Owner, string, store.ActionStatus, json.RawMessage, *string, *string, json.RawMessage) (store.TurnAction, error)
@@ -29,6 +30,7 @@ type RestoredActionAdvisory struct {
 	ActionName  string
 	Outcome     string
 	ContextHint json.RawMessage
+	ErrorCode   string
 }
 
 // ActionJournal is one turn's stable sequence of external mutations. It is
@@ -150,12 +152,20 @@ func (j *ActionJournal) RestoredActionAdvisory(ctx context.Context) ([]RestoredA
 	}
 	out := make([]RestoredActionAdvisory, 0)
 	for _, action := range j.baseline {
-		if action.LeaseEpoch == j.lease.Epoch || action.Status != store.ActionStatusSucceeded {
+		if action.LeaseEpoch == j.lease.Epoch || (action.Status != store.ActionStatusSucceeded && action.Status != store.ActionStatusFailed) {
 			continue
 		}
+		outcome := "succeeded"
+		errorCode := ""
+		if action.Status == store.ActionStatusFailed {
+			outcome = "failed"
+			if action.ErrorCode != nil {
+				errorCode = *action.ErrorCode
+			}
+		}
 		out = append(out, RestoredActionAdvisory{
-			Index: action.Index, ActionName: action.ActionName, Outcome: "succeeded",
-			ContextHint: append(json.RawMessage(nil), action.ContextHint...),
+			Index: action.Index, ActionName: action.ActionName, Outcome: outcome,
+			ContextHint: append(json.RawMessage(nil), action.ContextHint...), ErrorCode: errorCode,
 		})
 		j.consumed[action.Index] = true
 	}
@@ -211,6 +221,11 @@ func (j *ActionJournal) loadBaseline(ctx context.Context) error {
 		}
 		return nil
 	}
+	if err := j.store.AbandonUnstartedActions(ctx, j.owner, j.lease); err != nil {
+		j.poisoned = fmt.Errorf("abandon unstarted durable actions: %w", err)
+		j.loaded = true
+		return fmt.Errorf("%w: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
+	}
 	actions, err := j.store.ListTurnActions(ctx, j.owner, j.lease.TurnID)
 	if err != nil {
 		j.poisoned = fmt.Errorf("load durable action plan: %w", err)
@@ -218,9 +233,16 @@ func (j *ActionJournal) loadBaseline(ctx context.Context) error {
 		return fmt.Errorf("%w: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
 	}
 	j.loaded = true
-	j.baseline = actions
+	j.baseline = make([]store.TurnAction, 0, len(actions))
 	j.consumed = make(map[int]bool, len(actions))
 	for _, action := range actions {
+		if action.Index >= j.nextIndex {
+			j.nextIndex = action.Index + 1
+		}
+		if action.Status == store.ActionStatusAbandoned {
+			continue
+		}
+		j.baseline = append(j.baseline, action)
 		if action.LeaseEpoch != j.lease.Epoch && (action.Status != store.ActionStatusReserved || action.InFlight) {
 			j.replayOnly = true
 		}

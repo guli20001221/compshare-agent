@@ -96,6 +96,11 @@ func coordinatorStreamEvent(turn store.Turn, event turncoord.Event) (string, map
 		legacyEvent = "interaction_resolved"
 		copyPayloadField(frame, payload, "InteractionKey", "interaction_key")
 
+	case "interaction.superseded":
+		legacyEvent = "interaction_superseded"
+		copyPayloadField(frame, payload, "InteractionKey", "interaction_key")
+		copyPayloadField(frame, payload, "ReplacedBy", "replaced_by")
+
 	case "turn.committed":
 		legacyEvent = "done"
 		frame["Committed"] = true

@@ -678,7 +678,7 @@ func TestCoordinator_DurableConfirmationCanResolveFromAnotherReplica(t *testing.
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	require.Equal(t, "confirmation/0", interactionKey)
+	require.True(t, strings.HasPrefix(interactionKey, "confirmation/"))
 	require.ErrorIs(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, interactionKey, ConfirmationResponse{
 		Confirmed: true, Overrides: map[string]string{"Password": "must-not-silently-drop"},
 	}), store.ErrInvalidArgument)
@@ -929,7 +929,7 @@ func TestCoordinator_EditableConfirmationIsValidatedFromPersistedFormAcrossRepli
 
 	requested := waitInteractionRequests(t, turnsA, owner, sub.Turn.ID, 1)
 	key := interactionKeyFromEvent(t, requested[0])
-	require.Equal(t, "confirmation/0", key)
+	require.True(t, strings.HasPrefix(key, "confirmation/"))
 	interaction, err := turnsA.GetInteraction(ctx, owner, sub.Turn.ID, key)
 	require.NoError(t, err)
 	var persisted struct {
@@ -997,11 +997,14 @@ func TestCoordinator_BooleanAndEditableConfirmationsShareOneDurableSequence(t *t
 	require.NoError(t, err)
 
 	requested := waitInteractionRequests(t, turns, owner, sub.Turn.ID, 1)
-	require.Equal(t, "confirmation/0", interactionKeyFromEvent(t, requested[0]))
-	require.NoError(t, c.ResolveInteraction(ctx, owner, sub.Turn.ID, "confirmation/0", ConfirmationResponse{Confirmed: true}))
+	firstKey := interactionKeyFromEvent(t, requested[0])
+	require.True(t, strings.HasPrefix(firstKey, "confirmation/"))
+	require.NoError(t, c.ResolveInteraction(ctx, owner, sub.Turn.ID, firstKey, ConfirmationResponse{Confirmed: true}))
 	requested = waitInteractionRequests(t, turns, owner, sub.Turn.ID, 2)
-	require.Equal(t, "confirmation/1", interactionKeyFromEvent(t, requested[1]))
-	require.NoError(t, c.ResolveInteraction(ctx, owner, sub.Turn.ID, "confirmation/1", ConfirmationResponse{
+	secondKey := interactionKeyFromEvent(t, requested[1])
+	require.True(t, strings.HasPrefix(secondKey, "confirmation/"))
+	require.NotEqual(t, firstKey, secondKey)
+	require.NoError(t, c.ResolveInteraction(ctx, owner, sub.Turn.ID, secondKey, ConfirmationResponse{
 		Confirmed: true, Overrides: map[string]string{"GpuType": "A800"},
 	}))
 	waitTurnStatus(t, turns, owner, sub.Turn.ID, store.TurnStatusCommitted)
@@ -1089,6 +1092,74 @@ func TestCoordinator_RestartRebindsTheSameEditableConfirmation(t *testing.T) {
 		}
 	}
 	assert.Equal(t, map[string]string{"GpuType": "A800"}, recovered.Overrides)
+}
+
+func TestCoordinator_RestartSupersedesAChangedFirstConfirmation(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx := context.Background()
+	owner := store.Owner{TopOrganizationID: 98923, OrganizationID: 98924}
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := store.NewPostgresTurnStore(db)
+	factory := &coordinatorFactory{newChat: func(call int) func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+		gpu := "4090"
+		if call > 1 {
+			gpu = "A800"
+		}
+		return func(callCtx context.Context, _ func(engine.StepEvent), opts engine.ChatOptions) (string, error) {
+			resolution := opts.ConfirmEditsFunc("CreateInstanceWorkflow", map[string]any{"GpuType": gpu}, durableTestConfirmForm())
+			if !resolution.Confirmed {
+				return "", callCtx.Err()
+			}
+			return "confirmed " + gpu, nil
+		}
+	}}
+	opts := func(replica string) Options {
+		return Options{
+			ReplicaID: replica, LeaseTTL: 800 * time.Millisecond, LeaseRenewInterval: 100 * time.Millisecond,
+			InteractionPoll: 20 * time.Millisecond, RecoveryScanInterval: 5 * time.Second,
+			ExecutionTimeout: 5 * time.Second, MutatingToolsEnabled: true,
+		}
+	}
+	cA := NewCoordinator(turns, sessions, EngineFactoryFunc(factory.New), opts("changed-card-a"))
+	sub, err := cA.Submit(ctx, SubmitInput{
+		Owner: owner, SessionID: session.ID, ClientTurnID: "changed-card", Message: "create it", ConfirmForm: true,
+	}, nil)
+	require.NoError(t, err)
+	firstRequests := waitInteractionRequests(t, turns, owner, sub.Turn.ID, 1)
+	firstKey := interactionKeyFromEvent(t, firstRequests[0])
+	cA.Close()
+	_, err = db.Exec(`UPDATE conversation_leases SET lease_until = NOW() - INTERVAL '1 second' WHERE session_id = $1`, session.ID)
+	require.NoError(t, err)
+	cB := NewCoordinator(turns, sessions, EngineFactoryFunc(factory.New), opts("changed-card-b"))
+	t.Cleanup(cB.Close)
+
+	var second store.TurnEvent
+	require.Eventually(t, func() bool {
+		events, listErr := turns.ListEvents(ctx, owner, sub.Turn.ID, 0, 100)
+		if listErr != nil {
+			return false
+		}
+		for _, event := range events {
+			if event.Type == "interaction.requested" && event.LeaseEpoch > firstRequests[0].LeaseEpoch {
+				second = event
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond)
+	secondKey := interactionKeyFromEvent(t, second)
+	assert.NotEqual(t, firstKey, secondKey)
+	old, err := turns.GetInteraction(ctx, owner, sub.Turn.ID, firstKey)
+	require.NoError(t, err)
+	assert.Equal(t, store.InteractionStatusSuperseded, old.Status)
+	require.ErrorIs(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, firstKey, ConfirmationResponse{Confirmed: true}), store.ErrInteractionConflict)
+	require.NoError(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, secondKey, ConfirmationResponse{
+		Confirmed: true, Overrides: map[string]string{"GpuType": "A800"},
+	}))
+	committed := waitTurnStatus(t, turns, owner, sub.Turn.ID, store.TurnStatusCommitted)
+	require.NotEmpty(t, committed.AssistantMessageID)
 }
 
 func TestCoordinator_ExpiredEditableConfirmationCannotBeResolved(t *testing.T) {

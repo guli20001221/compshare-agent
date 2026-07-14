@@ -55,7 +55,7 @@ func openIsolatedTurnTestDB(t *testing.T) *sql.DB {
 		"0005_create_turn_execution.sql",
 		"0006_create_turn_protocol.sql",
 		"0007_add_turn_recovery_context.sql",
-		"0008_add_turn_retry_policy.sql",
+		"0008_add_turn_retry_policy.sql", "0009_add_interaction_supersession.sql", "0010_add_action_abandonment.sql",
 	} {
 		data, readErr := os.ReadFile(filepath.Join("..", "..", "deploy", "migrations", name))
 		require.NoError(t, readErr)
@@ -915,16 +915,15 @@ func TestPostgresTurnStore_TakeoverRebindsPendingInteractionAndReplaysItsCard(t 
 	require.NoError(t, err)
 	firstLease, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-first", time.Minute)
 	require.NoError(t, err)
-	payload := json.RawMessage(`{"question":"continue?","options":["yes","no"]}`)
-	original, created, err := turns.CreateInteraction(ctx, owner, firstLease, "confirm-delete", "confirmation", payload, 10*time.Minute)
-	require.NoError(t, err)
-	require.True(t, created)
-
 	resolvedOriginal, created, err := turns.CreateInteraction(ctx, owner, firstLease, "already-resolved", "confirmation", json.RawMessage(`{"question":"resolved?"}`), 10*time.Minute)
 	require.NoError(t, err)
 	require.True(t, created)
 	resolvedOriginal, err = turns.ResolveInteraction(ctx, owner, turn.ID, "already-resolved", json.RawMessage(`{"confirmed":true}`))
 	require.NoError(t, err)
+	payload := json.RawMessage(`{"question":"continue?","options":["yes","no"]}`)
+	original, created, err := turns.CreateInteraction(ctx, owner, firstLease, "confirm-delete", "confirmation", payload, 10*time.Minute)
+	require.NoError(t, err)
+	require.True(t, created)
 
 	_, err = db.Exec(`UPDATE conversation_leases SET lease_until = NOW() - INTERVAL '1 second' WHERE session_id = $1`, session.ID)
 	require.NoError(t, err)
@@ -944,9 +943,8 @@ func TestPostgresTurnStore_TakeoverRebindsPendingInteractionAndReplaysItsCard(t 
 	_, _, err = turns.CreateInteraction(ctx, owner, takeover, "confirm-delete", "confirmation", json.RawMessage(`{"question":"different"}`), 10*time.Minute)
 	require.ErrorIs(t, err, ErrInteractionConflict)
 
-	resolvedAfterTakeover, created, err := turns.CreateInteraction(ctx, owner, takeover, "already-resolved", "confirmation", json.RawMessage(`{"question":"resolved?"}`), 10*time.Minute)
+	resolvedAfterTakeover, err := turns.GetInteraction(ctx, owner, turn.ID, "already-resolved")
 	require.NoError(t, err)
-	assert.False(t, created)
 	assert.Equal(t, InteractionStatusResolved, resolvedAfterTakeover.Status)
 	assert.Equal(t, resolvedOriginal.LeaseEpoch, resolvedAfterTakeover.LeaseEpoch, "resolved history must not be rebound to a new attempt")
 
@@ -960,6 +958,86 @@ func TestPostgresTurnStore_TakeoverRebindsPendingInteractionAndReplaysItsCard(t 
 	}
 	require.Len(t, currentRequested, 1, "resume must expose exactly one current-epoch confirmation card")
 	assert.Equal(t, takeover.Epoch, currentRequested[0].LeaseEpoch)
+}
+
+func TestPostgresTurnStore_DifferentConfirmationSupersedesStaleCard(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 74011, OrganizationID: 74012}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := NewPostgresTurnStore(db)
+	turn, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "supersede-interaction", RequestHash: HashTurnRequest("supersede-interaction"), UserContent: "change it",
+	})
+	require.NoError(t, err)
+	first, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-first", time.Minute)
+	require.NoError(t, err)
+	_, created, err := turns.CreateInteraction(ctx, owner, first, "confirmation/old", "confirmation", json.RawMessage(`{"action":"StopA"}`), 10*time.Minute)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	_, err = db.Exec(`UPDATE conversation_leases SET lease_until = NOW() - INTERVAL '1 second' WHERE session_id = $1`, session.ID)
+	require.NoError(t, err)
+	takeover, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-next", time.Minute)
+	require.NoError(t, err)
+	newCard, created, err := turns.CreateInteraction(ctx, owner, takeover, "confirmation/new", "confirmation", json.RawMessage(`{"action":"StopB"}`), 10*time.Minute)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	oldCard, err := turns.GetInteraction(ctx, owner, turn.ID, "confirmation/old")
+	require.NoError(t, err)
+	assert.Equal(t, InteractionStatusSuperseded, oldCard.Status)
+	_, err = turns.ResolveInteraction(ctx, owner, turn.ID, "confirmation/old", json.RawMessage(`{"confirmed":true}`))
+	require.ErrorIs(t, err, ErrInteractionConflict)
+	resolved, err := turns.ResolveInteraction(ctx, owner, turn.ID, newCard.Key, json.RawMessage(`{"confirmed":true}`))
+	require.NoError(t, err)
+	assert.Equal(t, InteractionStatusResolved, resolved.Status)
+
+	events, err := turns.ListEvents(ctx, owner, turn.ID, 0, 20)
+	require.NoError(t, err)
+	assert.True(t, containsTurnEventType(events, "interaction.superseded"))
+}
+
+func TestPostgresTurnStore_SupersededSemanticCardGetsFreshPublicIdentity(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 74021, OrganizationID: 74022}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := NewPostgresTurnStore(db)
+	turn, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "oscillating-interaction", RequestHash: HashTurnRequest("oscillating-interaction"), UserContent: "change it",
+	})
+	require.NoError(t, err)
+	lease, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica", time.Minute)
+	require.NoError(t, err)
+	firstA, _, err := turns.CreateInteraction(ctx, owner, lease, "confirmation/a", "confirmation", json.RawMessage(`{"action":"A"}`), 10*time.Minute)
+	require.NoError(t, err)
+	_, _, err = turns.CreateInteraction(ctx, owner, lease, "confirmation/b", "confirmation", json.RawMessage(`{"action":"B"}`), 10*time.Minute)
+	require.NoError(t, err)
+	secondA, created, err := turns.CreateInteraction(ctx, owner, lease, "confirmation/a", "confirmation", json.RawMessage(`{"action":"A"}`), 10*time.Minute)
+	require.NoError(t, err)
+	require.True(t, created)
+	assert.NotEqual(t, firstA.Key, secondA.Key)
+	assert.Equal(t, InteractionStatusPending, secondA.Status)
+	reboundA, created, err := turns.CreateInteraction(ctx, owner, lease, "confirmation/a", "confirmation", json.RawMessage(`{"action":"A"}`), 10*time.Minute)
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, secondA.ID, reboundA.ID)
+	_, err = turns.ResolveInteraction(ctx, owner, turn.ID, firstA.Key, json.RawMessage(`{"confirmed":true}`))
+	require.ErrorIs(t, err, ErrInteractionConflict)
+	_, err = turns.ResolveInteraction(ctx, owner, turn.ID, secondA.Key, json.RawMessage(`{"confirmed":true}`))
+	require.NoError(t, err)
+}
+
+func containsTurnEventType(events []TurnEvent, eventType string) bool {
+	for _, event := range events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPostgresTurnStore_ReboundPendingInteractionRestoresAwaitingState(t *testing.T) {

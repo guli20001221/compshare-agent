@@ -61,7 +61,7 @@ func openDurableWSPostgres(t *testing.T) *sql.DB {
 	for _, migration := range []string{
 		"0001_init.sql", "0002_create_agent_traces.sql", "0003_add_session_context_version.sql", "0004_add_agent_traces_outcome_columns.sql",
 		"0005_create_turn_execution.sql", "0006_create_turn_protocol.sql",
-		"0007_add_turn_recovery_context.sql", "0008_add_turn_retry_policy.sql",
+		"0007_add_turn_recovery_context.sql", "0008_add_turn_retry_policy.sql", "0009_add_interaction_supersession.sql", "0010_add_action_abandonment.sql",
 	} {
 		raw, readErr := os.ReadFile(filepath.Join("..", "..", "deploy", "migrations", migration))
 		require.NoError(t, readErr)
@@ -471,7 +471,7 @@ func TestWSDurable_PostgresEditableConfirmationSurvivesReconnectAndCrossReplicaR
 	firstFrames := readUntilDurableEvent(t, first, "confirmation")
 	firstCard := firstFrames[len(firstFrames)-1]
 	firstKey, _ := firstCard["InteractionKey"].(string)
-	require.Equal(t, "confirmation/0", firstKey)
+	require.True(t, strings.HasPrefix(firstKey, "confirmation/"))
 	require.NotNil(t, firstCard["Form"], "both feature gates must expose the persisted editable form")
 	require.NoError(t, first.Close(websocket.StatusNormalClosure, "refresh page"))
 

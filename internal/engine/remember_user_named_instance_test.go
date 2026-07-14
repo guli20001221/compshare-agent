@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/stretchr/testify/assert"
@@ -112,6 +113,26 @@ func TestDiagnosisRemembersTheMachineTheUserNamedByName(t *testing.T) {
 
 	assert.Equal(t, "uhost-1exampleaa03", eng.sessionState.SelectedInstanceID)
 	assert.Equal(t, SelectedInstanceSourceUser, eng.sessionState.SelectedInstanceSource)
+}
+
+func TestDiagnosisDoesNotTrustInstanceNameInsideAnotherWord(t *testing.T) {
+	for _, tc := range []struct {
+		name, message string
+	}{
+		{name: "test", message: "pytest"},
+		{name: "host", message: "ghost"},
+		{name: "a", message: "data"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+			eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+			snapshot := entity.RegistrySnapshot{Instances: map[string]entity.InstanceSnapshot{
+				"uhost-target": {UHostId: "uhost-target", Name: tc.name},
+			}}
+			eng.rememberUserNamedInstance(tc.message, snapshot)
+			assert.Empty(t, eng.sessionState.SelectedInstanceID)
+		})
+	}
 }
 
 // THE PHANTOM-SELECTION GATE. This is the negative control the whole design hangs on, and it

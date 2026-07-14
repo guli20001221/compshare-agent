@@ -452,6 +452,26 @@ FOR UPDATE
 	return out, nil
 }
 
+func getLatestInteractionForUpdate(ctx context.Context, tx *sql.Tx, turnID string) (TurnInteraction, error) {
+	out, err := scanInteraction(tx.QueryRowContext(ctx, `
+SELECT id, turn_id, interaction_key, kind, request_hash, request_payload,
+       lease_epoch, expires_at, status, resolution_hash, response_payload,
+       created_at, resolved_at
+FROM turn_interactions
+WHERE turn_id = $1
+ORDER BY interaction_generation DESC
+LIMIT 1
+FOR UPDATE
+`, turnID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return TurnInteraction{}, ErrTurnNotFound
+	}
+	if err != nil {
+		return TurnInteraction{}, fmt.Errorf("lock latest turn interaction: %w", err)
+	}
+	return out, nil
+}
+
 func scanInteraction(row rowScanner) (TurnInteraction, error) {
 	var out TurnInteraction
 	var status string

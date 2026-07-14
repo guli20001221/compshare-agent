@@ -48,7 +48,7 @@ func openActionJournalTestDB(t *testing.T) *sql.DB {
 	require.NoError(t, err)
 	require.NoError(t, db.Ping())
 	t.Cleanup(func() { _ = db.Close() })
-	for _, name := range []string{"0001_init.sql", "0002_create_agent_traces.sql", "0003_add_session_context_version.sql", "0004_add_agent_traces_outcome_columns.sql", "0005_create_turn_execution.sql", "0006_create_turn_protocol.sql", "0007_add_turn_recovery_context.sql", "0008_add_turn_retry_policy.sql"} {
+	for _, name := range []string{"0001_init.sql", "0002_create_agent_traces.sql", "0003_add_session_context_version.sql", "0004_add_agent_traces_outcome_columns.sql", "0005_create_turn_execution.sql", "0006_create_turn_protocol.sql", "0007_add_turn_recovery_context.sql", "0008_add_turn_retry_policy.sql", "0009_add_interaction_supersession.sql", "0010_add_action_abandonment.sql"} {
 		data, readErr := os.ReadFile(filepath.Join("..", "..", "deploy", "migrations", name))
 		require.NoError(t, readErr)
 		_, execErr := db.Exec(string(data))
@@ -98,6 +98,31 @@ func TestActionJournal_ReserveBeforeStartCrashIsSafelyClaimedOnce(t *testing.T) 
 	require.NoError(t, err)
 	assert.Equal(t, 1, calls)
 	assert.EqualValues(t, 0, result["RetCode"])
+}
+
+func TestActionJournal_ReserveBeforeStartMayBeReplannedAfterTakeover(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx, owner, turns, leaseA := newJournalTurn(t, db)
+	_, _, err := turns.ReserveAction(ctx, owner, leaseA, store.ReserveActionInput{
+		Index: 0, ActionName: "StopCompShareInstance", ArgsHash: canonicalActionArgsHash(map[string]any{"UHostId": "uhost-1"}),
+	})
+	require.NoError(t, err)
+	leaseB := takeoverJournalLease(t, db, turns, ctx, owner, leaseA)
+	calls := 0
+	journalB := NewActionJournal(turns, owner, leaseB)
+	result, err := journalB.Execute(ctx, "StartCompShareInstance", map[string]any{"UHostId": "uhost-2"}, func(context.Context, string, map[string]any) (map[string]any, error) {
+		calls++
+		return map[string]any{"RetCode": 0}, nil
+	})
+	require.NoError(t, err)
+	require.NoError(t, journalB.VerifyComplete(ctx))
+	assert.Equal(t, 1, calls)
+	assert.EqualValues(t, 0, result["RetCode"])
+	actions, err := turns.ListTurnActions(ctx, owner, leaseA.TurnID)
+	require.NoError(t, err)
+	require.Len(t, actions, 2)
+	assert.Equal(t, store.ActionStatusAbandoned, actions[0].Status)
+	assert.Equal(t, store.ActionStatusSucceeded, actions[1].Status)
 }
 
 func TestActionJournal_StartedCrashTakeoverNeverCallsUpstream(t *testing.T) {
@@ -186,6 +211,32 @@ func TestActionJournal_KnownSuccessCanBeConsumedAsAdvisoryWithoutReissuingWrite(
 	})
 	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
 	assert.Equal(t, 1, upstreamCalls, "advisory consumption must not open an extra write slot")
+}
+
+func TestActionJournal_KnownFailureCanBeConsumedAsAdvisoryWithoutReissuingWrite(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx, owner, turns, leaseA := newJournalTurn(t, db)
+	action, _, err := turns.ReserveAction(ctx, owner, leaseA, store.ReserveActionInput{
+		Index: 0, ActionName: "StopCompShareInstance", ArgsHash: canonicalActionArgsHash(map[string]any{"UHostId": "uhost-failed"}),
+	})
+	require.NoError(t, err)
+	action, err = turns.StartAction(ctx, owner, leaseA, action.ExecutionToken)
+	require.NoError(t, err)
+	code := "upstream_api:230"
+	_, err = turns.RecordAction(ctx, owner, action.ExecutionToken, store.ActionStatusFailed, json.RawMessage(`{"code":230,"message":"capacity"}`), &code)
+	require.NoError(t, err)
+	leaseB := takeoverJournalLease(t, db, turns, ctx, owner, leaseA)
+	journalB := NewActionJournal(turns, owner, leaseB)
+	advisories, err := journalB.RestoredActionAdvisory(ctx)
+	require.NoError(t, err)
+	require.Len(t, advisories, 1)
+	assert.Equal(t, "failed", advisories[0].Outcome)
+	assert.Equal(t, code, advisories[0].ErrorCode)
+	require.NoError(t, journalB.VerifyComplete(ctx))
+	_, err = journalB.Execute(ctx, "StartCompShareInstance", map[string]any{"UHostId": "uhost-failed"}, func(context.Context, string, map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": 0}, nil
+	})
+	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
 }
 
 func TestActionJournal_UpstreamBusinessErrorIsAmbiguousAndNeverReissued(t *testing.T) {

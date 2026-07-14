@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/deployment"
@@ -2199,77 +2197,7 @@ func monitorHistoryNameIDs(userMsg string, snapshot entity.RegistrySnapshot) []s
 }
 
 func monitorHistoryNameMentioned(userMsg, name string) bool {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return false
-	}
-	lowerMsg := strings.ToLower(userMsg)
-	lowerName := strings.ToLower(name)
-	if monitorHistoryGenericShortName(lowerName) {
-		return false
-	}
-	if monitorHistoryExplicitNameMention(lowerMsg, lowerName) {
-		return true
-	}
-	if utf8.RuneCountInString(lowerName) < 5 {
-		return false
-	}
-	return containsStandaloneASCIIName(lowerMsg, lowerName)
-}
-
-func monitorHistoryExplicitNameMention(lowerMsg, lowerName string) bool {
-	for _, marker := range []string{"实例名", "实例", "云主机", "主机", "机器", "名称"} {
-		idx := strings.Index(lowerMsg, marker)
-		for idx >= 0 {
-			tail := strings.TrimLeft(lowerMsg[idx+len(marker):], " \t\r\n:：为是叫名")
-			if strings.HasPrefix(tail, lowerName) && monitorHistoryNameBoundaryAfter(tail, len(lowerName)) {
-				return true
-			}
-			next := strings.Index(lowerMsg[idx+len(marker):], marker)
-			if next < 0 {
-				break
-			}
-			idx += len(marker) + next
-		}
-	}
-	return false
-}
-
-func monitorHistoryGenericShortName(lowerName string) bool {
-	switch lowerName {
-	case "gpu", "cpu", "vram", "mem", "memory", "test", "monitor", "history":
-		return true
-	default:
-		return false
-	}
-}
-
-func containsStandaloneASCIIName(lowerMsg, lowerName string) bool {
-	if lowerName == "" || !isASCIIIdentifierLike(lowerName) {
-		return strings.Contains(lowerMsg, lowerName)
-	}
-	pattern := `(?i)(^|[^a-z0-9_])` + regexp.QuoteMeta(lowerName) + `($|[^a-z0-9_])`
-	return regexp.MustCompile(pattern).FindStringIndex(lowerMsg) != nil
-}
-
-func isASCIIIdentifierLike(value string) bool {
-	for _, r := range value {
-		if r > 127 {
-			return false
-		}
-	}
-	return true
-}
-
-func monitorHistoryNameBoundaryAfter(text string, n int) bool {
-	if len(text) == n {
-		return true
-	}
-	if len(text) < n {
-		return false
-	}
-	r, _ := utf8.DecodeRuneInString(text[n:])
-	return unicode.IsSpace(r) || strings.ContainsRune("，。,.、;；:：)）]】", r)
+	return entity.TextExplicitlyMentionsName(userMsg, name)
 }
 
 func workflowDirectReply(action, raw string) string {
@@ -5231,22 +5159,7 @@ func selectedInstanceSourceTrustedForWorkflow(source string) bool {
 }
 
 func workflowTargetNameMentioned(userMsg, name string) bool {
-	if monitorHistoryNameMentioned(userMsg, name) {
-		return true
-	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return false
-	}
-	lowerMsg := strings.ToLower(userMsg)
-	lowerName := strings.ToLower(name)
-	if monitorHistoryGenericShortName(lowerName) {
-		return false
-	}
-	if utf8.RuneCountInString(lowerName) < 2 {
-		return false
-	}
-	return strings.Contains(lowerMsg, lowerName)
+	return entity.TextExplicitlyMentionsName(userMsg, name)
 }
 
 func workflowRequiresInstanceTarget(action string) bool {

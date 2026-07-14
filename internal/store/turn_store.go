@@ -315,6 +315,73 @@ ORDER BY a.action_index ASC
 	return actions, nil
 }
 
+// AbandonUnstartedActions retires reservations from an older lease that never
+// crossed StartAction. They cannot have changed external state, so forcing a
+// recovered model to reproduce their ordinal positions adds failure without
+// adding safety.
+func (s *PostgresTurnStore) AbandonUnstartedActions(ctx context.Context, owner Owner, lease ConversationLease) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return fmt.Errorf("abandon actions begin: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := lockSession(ctx, tx, owner, lease.SessionID); err != nil {
+		return err
+	}
+	if err := lockLease(ctx, tx, lease); err != nil {
+		return err
+	}
+	turn, err := lockTurn(ctx, tx, owner, lease.SessionID, lease.TurnID)
+	if err != nil {
+		return err
+	}
+	if err := validateTurnLeaseBinding(turn, lease); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `
+UPDATE turn_actions
+SET status = 'abandoned'
+WHERE turn_id = $1 AND lease_epoch <> $2
+  AND status = 'reserved' AND in_flight = FALSE
+RETURNING action_index, action_name
+`, lease.TurnID, lease.Epoch)
+	if err != nil {
+		return fmt.Errorf("abandon unstarted actions: %w", err)
+	}
+	type abandonedAction struct {
+		index int
+		name  string
+	}
+	var abandoned []abandonedAction
+	for rows.Next() {
+		var item abandonedAction
+		if err := rows.Scan(&item.index, &item.name); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan abandoned action: %w", err)
+		}
+		abandoned = append(abandoned, item)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close abandoned actions: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate abandoned actions: %w", err)
+	}
+	for _, item := range abandoned {
+		payload, marshalErr := json.Marshal(map[string]any{"action_index": item.index, "action_name": item.name})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if _, err := appendEventTx(ctx, tx, turn.ID, lease.Epoch, "action.abandoned", payload, true); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("abandon actions commit: %w", err)
+	}
+	return nil
+}
+
 func (s *PostgresTurnStore) AcquireConversationLease(ctx context.Context, owner Owner, sessionID, turnID, holderID string, ttl time.Duration) (ConversationLease, error) {
 	return s.acquireConversationLease(ctx, owner, sessionID, turnID, holderID, ttl, false)
 }
@@ -622,11 +689,37 @@ func (s *PostgresTurnStore) CreateInteraction(
 		return TurnInteraction{}, false, err
 	}
 
-	existing, err := getInteractionForUpdate(ctx, tx, lease.TurnID, key)
-	if err == nil {
-		if existing.RequestHash != requestHash {
-			return TurnInteraction{}, false, ErrInteractionConflict
+	latest, latestErr := getLatestInteractionForUpdate(ctx, tx, lease.TurnID)
+	if latestErr != nil && !errors.Is(latestErr, ErrTurnNotFound) {
+		return TurnInteraction{}, false, latestErr
+	}
+	var existing TurnInteraction
+	if latestErr == nil && latest.RequestHash == requestHash &&
+		(latest.Status == InteractionStatusPending || latest.Status == InteractionStatusResolved) {
+		existing = latest
+		key = latest.Key
+		interactionEvent, err = marshalInteractionRequestedEvent(key, kind, canonicalPayload)
+		if err != nil {
+			return TurnInteraction{}, false, err
 		}
+		err = nil
+	} else {
+		existing, err = getInteractionForUpdate(ctx, tx, lease.TurnID, key)
+	}
+	if err == nil && existing.RequestHash != requestHash {
+		return TurnInteraction{}, false, ErrInteractionConflict
+	}
+	if err == nil && (existing.Status == InteractionStatusSuperseded || (latestErr == nil && latest.ID != existing.ID)) {
+		// Never reactivate a public identity that a stale browser may still
+		// hold. The semantic payload is the same, but this is a new occurrence.
+		key = kind + "/" + uuid.NewString()
+		interactionEvent, err = marshalInteractionRequestedEvent(key, kind, canonicalPayload)
+		if err != nil {
+			return TurnInteraction{}, false, err
+		}
+		existing, err = getInteractionForUpdate(ctx, tx, lease.TurnID, key)
+	}
+	if err == nil {
 		if existing.Status == InteractionStatusPending {
 			if existing.LeaseEpoch != lease.Epoch {
 				existing, err = scanInteraction(tx.QueryRowContext(ctx, `
@@ -673,6 +766,46 @@ WHERE id = $1 AND status IN ('running', 'awaiting_confirmation')
 	}
 	if !errors.Is(err, ErrTurnNotFound) {
 		return TurnInteraction{}, false, err
+	}
+
+	// A different semantic confirmation replaces any older unresolved card.
+	// The old row remains for audit, but can no longer authorize an action from
+	// a stale browser tab or a fenced executor.
+	rows, err := tx.QueryContext(ctx, `
+UPDATE turn_interactions
+SET status = 'superseded'
+WHERE turn_id = $1 AND status = 'pending' AND interaction_key <> $2
+RETURNING interaction_key
+`, lease.TurnID, key)
+	if err != nil {
+		return TurnInteraction{}, false, fmt.Errorf("supersede pending interactions: %w", err)
+	}
+	var superseded []string
+	for rows.Next() {
+		var oldKey string
+		if err := rows.Scan(&oldKey); err != nil {
+			rows.Close()
+			return TurnInteraction{}, false, fmt.Errorf("scan superseded interaction: %w", err)
+		}
+		superseded = append(superseded, oldKey)
+	}
+	if err := rows.Close(); err != nil {
+		return TurnInteraction{}, false, fmt.Errorf("close superseded interactions: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return TurnInteraction{}, false, fmt.Errorf("iterate superseded interactions: %w", err)
+	}
+	for _, oldKey := range superseded {
+		payload, marshalErr := json.Marshal(map[string]any{
+			"interaction_key": oldKey,
+			"replaced_by":     key,
+		})
+		if marshalErr != nil {
+			return TurnInteraction{}, false, marshalErr
+		}
+		if _, err := appendEventTx(ctx, tx, lease.TurnID, lease.Epoch, "interaction.superseded", payload, true); err != nil {
+			return TurnInteraction{}, false, err
+		}
 	}
 
 	interaction, err := scanInteraction(tx.QueryRowContext(ctx, `
@@ -745,6 +878,9 @@ func (s *PostgresTurnStore) ResolveInteraction(
 			return TurnInteraction{}, fmt.Errorf("resolve existing interaction commit: %w", err)
 		}
 		return interaction, nil
+	}
+	if interaction.Status != InteractionStatusPending {
+		return TurnInteraction{}, ErrInteractionConflict
 	}
 	var unexpired bool
 	if err := tx.QueryRowContext(ctx, `
@@ -845,6 +981,12 @@ func (s *PostgresTurnStore) ReserveAction(
 		if existing.ActionName != in.ActionName || existing.ArgsHash != in.ArgsHash {
 			return TurnAction{}, false, ErrActionConflict
 		}
+		if existing.Status == ActionStatusAbandoned {
+			existing, err = reactivateAbandonedAction(ctx, tx, existing, lease)
+			if err != nil {
+				return TurnAction{}, false, err
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return TurnAction{}, false, fmt.Errorf("reserve existing action commit: %w", err)
 		}
@@ -855,6 +997,12 @@ func (s *PostgresTurnStore) ReserveAction(
 	}
 	semantic, err := getActionByIdentityForUpdate(ctx, tx, lease.TurnID, in.ActionName, in.ArgsHash)
 	if err == nil {
+		if semantic.Status == ActionStatusAbandoned {
+			semantic, err = reactivateAbandonedAction(ctx, tx, semantic, lease)
+			if err != nil {
+				return TurnAction{}, false, err
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return TurnAction{}, false, fmt.Errorf("reserve semantic action commit: %w", err)
 		}
@@ -886,6 +1034,22 @@ UPDATE chat_turns SET has_external_action = TRUE WHERE id = $1
 		return TurnAction{}, false, fmt.Errorf("reserve action commit: %w", err)
 	}
 	return action, true, nil
+}
+
+func reactivateAbandonedAction(ctx context.Context, tx *sql.Tx, action TurnAction, lease ConversationLease) (TurnAction, error) {
+	reactivated, err := scanAction(tx.QueryRowContext(ctx, `
+UPDATE turn_actions
+SET lease_epoch = $1, execution_token = $2, status = 'reserved',
+    in_flight = FALSE, upstream_request_id = NULL, result = NULL, error_code = NULL
+WHERE turn_id = $3 AND action_index = $4 AND status = 'abandoned'
+RETURNING turn_id, action_index, lease_epoch, action_name, args_hash,
+          execution_token, in_flight, upstream_request_id, status,
+          result, error_code, context_hint, created_at, updated_at
+`, lease.Epoch, uuid.NewString(), action.TurnID, action.Index))
+	if err != nil {
+		return TurnAction{}, fmt.Errorf("reactivate abandoned action: %w", err)
+	}
+	return reactivated, nil
 }
 
 // StartAction is the durable before-call boundary. ReserveAction alone never

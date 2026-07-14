@@ -72,7 +72,7 @@ FROM turn_actions LIMIT 0`,
 provisional, created_at FROM chat_turn_events LIMIT 0`,
 		"turn_interactions.contract": `SELECT id, turn_id, interaction_key, kind, request_hash,
 request_payload, lease_epoch, expires_at, status, resolution_hash, response_payload,
-created_at, resolved_at FROM turn_interactions LIMIT 0`,
+created_at, resolved_at, interaction_generation FROM turn_interactions LIMIT 0`,
 	}
 	for target, q := range queries {
 		rows, err := db.QueryContext(ctx, q)

@@ -75,11 +75,12 @@ const (
 	ActionStatusSucceeded ActionStatus = "succeeded"
 	ActionStatusFailed    ActionStatus = "failed"
 	ActionStatusAmbiguous ActionStatus = "ambiguous"
+	ActionStatusAbandoned ActionStatus = "abandoned"
 )
 
 func (s ActionStatus) Valid() bool {
 	switch s {
-	case ActionStatusReserved, ActionStatusSucceeded, ActionStatusFailed, ActionStatusAmbiguous:
+	case ActionStatusReserved, ActionStatusSucceeded, ActionStatusFailed, ActionStatusAmbiguous, ActionStatusAbandoned:
 		return true
 	default:
 		return false
@@ -89,8 +90,9 @@ func (s ActionStatus) Valid() bool {
 type InteractionStatus string
 
 const (
-	InteractionStatusPending  InteractionStatus = "pending"
-	InteractionStatusResolved InteractionStatus = "resolved"
+	InteractionStatusPending    InteractionStatus = "pending"
+	InteractionStatusResolved   InteractionStatus = "resolved"
+	InteractionStatusSuperseded InteractionStatus = "superseded"
 )
 
 // ContextWriteMode makes context mutation an explicit part of the durable

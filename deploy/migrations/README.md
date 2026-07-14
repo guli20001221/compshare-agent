@@ -26,6 +26,8 @@ psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0005_create_turn_execution.s
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0006_create_turn_protocol.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0007_add_turn_recovery_context.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0008_add_turn_retry_policy.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0009_add_interaction_supersession.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0010_add_action_abandonment.sql
 ```
 
 For a throwaway local Docker PostgreSQL (no host `psql` needed), see README §3 —

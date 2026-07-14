@@ -71,7 +71,6 @@ func findUniqueInstanceNameInText(userText string, snapshot entity.RegistrySnaps
 	if text == "" || len(snapshot.Instances) == 0 {
 		return entity.InstanceSnapshot{}, false
 	}
-	compactText := normalizeResourceText(text)
 	type candidate struct {
 		inst  entity.InstanceSnapshot
 		score int
@@ -83,13 +82,8 @@ func findUniqueInstanceNameInText(userText string, snapshot entity.RegistrySnaps
 			continue
 		}
 		score := 0
-		if strings.Contains(text, name) {
+		if entity.TextExplicitlyMentionsName(text, name) {
 			score = len([]rune(name)) * 10
-		} else {
-			normalizedName := normalizeResourceText(name)
-			if len([]rune(normalizedName)) >= 4 && strings.Contains(compactText, normalizedName) {
-				score = len([]rune(normalizedName))*10 - 1
-			}
 		}
 		if score > 0 {
 			candidates = append(candidates, candidate{inst: inst, score: score})

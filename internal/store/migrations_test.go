@@ -158,3 +158,25 @@ func TestHTTPMigrationsAddDurableTurnRetryPolicy(t *testing.T) {
 		assert.Contains(t, ddl, fragment)
 	}
 }
+
+func TestHTTPMigrationsAddInteractionSupersession(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0009_add_interaction_supersession.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	assert.Contains(t, ddl, "status = 'superseded'")
+	assert.Contains(t, ddl, "idx_turn_interactions_pending")
+	assert.Contains(t, ddl, "interaction_generation")
+	assert.Contains(t, ddl, "uq_turn_interactions_generation")
+}
+
+func TestHTTPMigrationsAddActionAbandonment(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0010_add_action_abandonment.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	assert.Contains(t, ddl, "'abandoned'")
+	assert.Contains(t, ddl, "ck_turn_action_status")
+}
