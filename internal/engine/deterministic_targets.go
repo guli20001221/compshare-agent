@@ -327,8 +327,6 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 			e.recordLastIntentFromPlan(result.Plan)
 			e.messages = append(e.messages, assistantMessage(reply))
 			return reply, true
-			e.messages = append(e.messages, assistantMessage(reply))
-			return reply, true
 		}
 		args["Name"] = newName
 	case intent.LifecycleActionResetPwd:
