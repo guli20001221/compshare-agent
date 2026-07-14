@@ -341,7 +341,11 @@ type Engine struct {
 	// trace recorder via ReactRoundsThisTurn / ReactCeilingHitThisTurn.
 	reactRoundsThisTurn     int
 	reactCeilingHitThisTurn bool
-	hardBlockObserver       func(observability.EngineHardBlockTrace)
+	// A post-LLM or token-budget block can be recovered later in the same turn.
+	// Keep the standing bit so a successfully validated answer can overwrite the
+	// earlier failure attribution instead of being stored as "blocked".
+	hardBlockStandingThisTurn bool
+	hardBlockObserver         func(observability.EngineHardBlockTrace)
 	// stepSink receives agent-tier saga StepTraces (B8). Set per-turn via
 	// SetStepSink to the trace recorder, which folds them into the turn's
 	// trace_json.steps[]. nil = no step observability. Consumed by RunAgentSaga.
@@ -1394,6 +1398,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.turnTokensConsumed = 0
 	e.reactRoundsThisTurn = 0
 	e.reactCeilingHitThisTurn = false
+	e.hardBlockStandingThisTurn = false
 	e.lastPlannerIntentThisTurn = ""
 	e.lastPlannerActionThisTurn = ""
 	e.searchKnowledgeRanThisTurn = false
@@ -1716,51 +1721,19 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// price/tool, or other non-knowledge intents.
 			if round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil &&
 				!isKnowledgeRefusal(content) && !hasNumberedCitation(content) {
-				if e.hardBlockObserver != nil {
-					e.hardBlockObserver(observability.EngineHardBlockTrace{
-						Hit:         true,
-						Category:    "cited_contract_violation",
-						TriggeredBy: observability.HardBlockTriggerPostLLM,
-					})
-				}
+				e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
+					Hit:         true,
+					Category:    "cited_contract_violation",
+					TriggeredBy: observability.HardBlockTriggerPostLLM,
+				})
 				content = ragNoEvidenceReply
 			}
-			// Convergent agent-loop synthesis (synthesis-discipline lever): for a
-			// knowledge_qa agent-loop turn where SearchKnowledge surfaced evidence, write the
-			// FINAL answer with the shared disciplined cited-synthesis primitive
-			// (answerWithRetrievedEvidence) on the gathered evidence — NOT the free ReAct
-			// write, which under flash intermittently omits the cite / dumps raw text. This
-			// makes the agent loop self-sufficient on knowledge turns: the precondition for
-			// retiring the separate terminal route (tryStage2BRetrieval) so knowledge flows
-			// through ONE loop. The primitive cite-validates (its own cite-harder retry) and
-			// synthesizeKnowledgeQAFromLedger leak-checks + strips, so this path needs no
-			// post-hoc guard. Default-off; on failure (or when disabled) it falls through to
-			// the free-write guard + cite-retry below, so it is never worse than B4.
-			synthDone := false
-			if disciplinedKnowledgeQASynthesisOn && e.knowledgeQAAgentLoopThisTurn &&
-				e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
-				if synth, ok := e.synthesizeKnowledgeQAFromLedger(ctx, userMsg); ok {
-					content = synth
-					synthDone = true
-				}
-			}
-			if !synthDone {
-				preGuardContent := content
-				content = e.guardSearchKnowledgeSynthesis(content)
-				// Cite-retry parity with the terminal route: when the guard replaced a real
-				// synthesis with the canned refusal (typically flash omitted/garbled the
-				// [[chunk_id]] marker, not a content problem), give it ONE more chance with an
-				// explicit cite reminder before the refusal stands — mirroring
-				// answerWithRetrievedEvidence's single retry. Scoped to turns where
-				// SearchKnowledge surfaced evidence (the guard's own scope); a retry that still
-				// won't cite keeps the refusal. No-op when the guard accepted the answer.
-				if content == ragNoEvidenceReply && strings.TrimSpace(preGuardContent) != ragNoEvidenceReply &&
-					e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
-					if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
-						content = retried
-					}
-				}
-			}
+			// Production knowledge_qa uses the agent loop. Its single final exit validates
+			// every substantive claim against the exact EvidenceLedger, regardless of
+			// whether the model happened to type a citation marker. A cited fabrication and
+			// an uncited answer therefore face the same test; repair is derived from the same
+			// resolved query and ledger. The legacy terminal-RAG route remains untouched.
+			content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
 			if corrected, ok := e.correctFalseInstanceNotFoundReply(userMsg, content); ok {
 				content = corrected
 			}
@@ -3664,13 +3637,11 @@ func (e *Engine) tokenBudgetExceeded() bool {
 // can keep its own assistant-message conventions (route handlers
 // already manage their history slot; the ReAct loop appends inline).
 func (e *Engine) emitTokenBudgetExceededHardBlock() {
-	if e.hardBlockObserver != nil {
-		e.hardBlockObserver(observability.EngineHardBlockTrace{
-			Hit:         true,
-			Category:    observability.HardBlockCategoryTokenBudget,
-			TriggeredBy: observability.HardBlockTriggerTokenBudget,
-		})
-	}
+	e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
+		Hit:         true,
+		Category:    observability.HardBlockCategoryTokenBudget,
+		TriggeredBy: observability.HardBlockTriggerTokenBudget,
+	})
 }
 
 func tokenUsageTotal(usage llm.TokenUsage) int {
@@ -4170,46 +4141,6 @@ func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
 	return ragNoEvidenceReply
 }
 
-// retrySearchKnowledgeCitation gives an agent-loop synthesis that the grounded
-// validator would refuse ONE more chance to cite before the refusal stands — the
-// parity the terminal route already has (answerWithRetrievedEvidence retries once with
-// a stronger cite instruction). It re-prompts with the current history (which still
-// carries the SearchKnowledge tool result + its evidence) plus an explicit
-// [[chunk_id]] reminder, then re-runs the same no-raw-leak + grounded-citation gates.
-// Returns (stripped grounded answer, true) only when the retry is clean AND properly
-// cited; ("", false) on budget/LLM error, refusal, leak, or still-uncited — the caller
-// then keeps the original refusal. The retry uses no tools, so it must produce text.
-func (e *Engine) retrySearchKnowledgeCitation(ctx context.Context) (string, bool) {
-	if e.tokenBudgetExceeded() {
-		return "", false
-	}
-	msgs := append(e.buildMessagesForLLM(), openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleUser,
-		Content: searchKnowledgeCiteRetryNote,
-	})
-	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{Messages: msgs})
-	if err != nil {
-		return "", false
-	}
-	e.emitTokenUsage(resp.Usage)
-	if e.tokenBudgetExceeded() {
-		return "", false
-	}
-	retry := security.RedactOperationalTokensInText(strings.TrimSpace(resp.Content))
-	if retry == "" || isKnowledgeRefusal(retry) {
-		return "", false
-	}
-	if knowledge.ValidateNoRawEvidenceLeak(retry, e.searchKnowledgeHitsThisTurn) != nil {
-		return "", false
-	}
-	report := knowledge.ValidateGroundedCitations(retry, e.searchKnowledgeLedgerThisTurn)
-	if !report.Grounded() {
-		return "", false
-	}
-	e.emitSearchKnowledgeCitationTrace(report)
-	return knowledge.StripCiteMarkers(retry), true
-}
-
 func (e *Engine) emitSearchKnowledgeCitationTrace(report knowledge.GroundedAnswerReport) {
 	if !report.Grounded() || len(e.searchKnowledgeHitsThisTurn) == 0 {
 		return
@@ -4243,13 +4174,11 @@ func (e *Engine) emitSearchKnowledgeCitationTrace(report knowledge.GroundedAnswe
 // emitSearchKnowledgeHardBlock records a post-LLM hardblock trace for the agentic
 // SearchKnowledge synthesis guard (raw-leak or uncited). Shared by both guard arms.
 func (e *Engine) emitSearchKnowledgeHardBlock(category string) {
-	if e.hardBlockObserver != nil {
-		e.hardBlockObserver(observability.EngineHardBlockTrace{
-			Hit:         true,
-			Category:    category,
-			TriggeredBy: observability.HardBlockTriggerPostLLM,
-		})
-	}
+	e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
+		Hit:         true,
+		Category:    category,
+		TriggeredBy: observability.HardBlockTriggerPostLLM,
+	})
 }
 
 func searchKnowledgeArg(args map[string]any, key string) string {

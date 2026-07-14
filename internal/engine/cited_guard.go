@@ -10,6 +10,10 @@ import (
 
 const (
 	ragNoEvidenceReply = "当前知识库未覆盖该问题,我无法回答。"
+	// Evidence was retrieved, but neither the original answer nor the bounded
+	// repair could prove every substantive claim. This is still a refusal; unlike
+	// ragNoEvidenceReply it does not falsely claim the knowledge base was empty.
+	ragUngroundableReply = "我查到了相关资料，但没能据此整理出完全有依据的回答。请把问题描述得更具体一些，我再试一次。"
 
 	// Weak-evidence and ranking-ambiguous thresholds are score-scale-aware.
 	// internal/knowledge/retriever.go produces RetrievalHit.Score values whose
@@ -61,6 +65,7 @@ func isKnowledgeRefusal(answer string) bool {
 		"没有找到可靠资料",
 		"知识库暂未收录",
 		"无法根据知识库回答",
+		"没能据此整理出完全有依据的回答",
 	}
 	for _, phrase := range refusalPhrases {
 		if strings.Contains(trimmed, phrase) {

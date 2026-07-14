@@ -372,8 +372,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Per-turn ReAct loop counters feeding the trace's react_rounds field and
 		// the budget terminus. Per-session/per-turn by design — a shared counter
 		// would attribute one tenant's loop depth to another's turn. Reset every turn.
-		"reactRoundsThisTurn":     true,
-		"reactCeilingHitThisTurn": true,
+		"reactRoundsThisTurn":       true,
+		"reactCeilingHitThisTurn":   true,
+		"hardBlockStandingThisTurn": true,
 		// Per-turn instance-binding observables (#3 StateTrace). Per-session/
 		// per-turn by design — sharing would attribute one tenant's bound
 		// instance / fact-cache age to another's turn. Reset every turn.
@@ -433,12 +434,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 74, len(perSessionFields); want != got {
+	if want, got := 75, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 90, typ.NumField(); want != got {
+	if want, got := 91, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

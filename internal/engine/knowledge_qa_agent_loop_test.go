@@ -28,6 +28,10 @@ func knowledgeQAAgentLoopBillingChunk() knowledge.KBChunk {
 	}
 }
 
+func knowledgeQAAgentLoopBillingVerdict() llm.ChatResponse {
+	return llm.ChatResponse{Content: `{"supported":true,"claims":[{"answer_quote":"停止的按量实例的磁盘仍会计费","chunk_id":"faq-billing-001","evidence_quote":"Stopped on-demand instances still charge for disks"}],"unsupported":[]}`}
+}
+
 // TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop is the Phase-1
 // hinge test: with COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP on (and agentic SearchKnowledge
 // on + a retriever wired), a knowledge_qa turn is routed into the shared ReAct loop
@@ -64,6 +68,7 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"why do stopped instances still bill"}`},
 		}}},
 		{Content: "停止的按量实例的磁盘仍会计费 [[faq-billing-001]]。"},
+		knowledgeQAAgentLoopBillingVerdict(),
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -233,12 +238,9 @@ func TestKnowledgeQAAgentLoop_CiteOrRefuseParity_WithoutGlobalValidator(t *testi
 	})
 }
 
-// TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis proves the cite-retry
-// parity: when the agent-loop synthesis would be refused for lack of a valid
-// [[chunk_id]] (flash omitted it), the engine re-prompts once and, if the retry cites,
-// keeps the substantive answer instead of refusing — exactly what the terminal route's
-// answerWithRetrievedEvidence retry does. Active turn-scoped with the global validator off.
-func TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis(t *testing.T) {
+// An uncited answer is accepted when the semantic verifier proves every claim.
+// Citation punctuation is no longer the recovery target.
+func TestKnowledgeQAAgentLoop_SemanticGateAcceptsUncitedGroundedSynthesis(t *testing.T) {
 	SetKnowledgeQAAgentLoopEnabled(true)
 	defer SetKnowledgeQAAgentLoopEnabled(false)
 	tools.SetAgenticSearchKnowledgeEnabled(true)
@@ -255,8 +257,8 @@ func TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{{ID: "c1", Type: openai.ToolTypeFunction,
 			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"billing"}`}}}},
-		{Content: "停止的按量实例的磁盘仍会计费。"},                     // uncited -> guard would refuse
-		{Content: "停止的按量实例的磁盘仍会计费 [[faq-billing-001]]。"}, // retry cites -> recovered
+		{Content: "停止的按量实例的磁盘仍会计费。"},         // uncited, but semantically grounded
+		knowledgeQAAgentLoopBillingVerdict(), // the unified semantic gate accepts it
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -265,16 +267,16 @@ func TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
 	require.NoError(t, err)
-	assert.Contains(t, reply, "停止的按量实例的磁盘仍会计费", "cite-retry must recover the substantive answer")
-	assert.NotContains(t, reply, "[[", "recovered answer must have markers stripped")
-	assert.NotEqual(t, ragNoEvidenceReply, reply, "a retry that cites must NOT leave a refusal")
-	assert.GreaterOrEqual(t, len(mock.calls), 3, "expected tool-call + uncited synthesis + cite-retry")
+	assert.Contains(t, reply, "停止的按量实例的磁盘仍会计费")
+	assert.NotContains(t, reply, "[[", "display answer must have markers stripped")
+	assert.NotEqual(t, ragNoEvidenceReply, reply)
+	assert.GreaterOrEqual(t, len(mock.calls), 3, "expected tool-call + uncited synthesis + semantic verification")
 }
 
-// TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal proves the retry is
-// bounded to ONE attempt: if the re-prompt still fails to cite, the refusal stands
-// (no infinite retry, fail-safe).
-func TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal(t *testing.T) {
+// A failed semantic verdict gets at most one proof-carrying repair. If repair
+// also fails, the reply states the real failure instead of claiming no evidence.
+func TestKnowledgeQAAgentLoop_FailedSemanticRepairKeepsHonestRefusal(t *testing.T) {
+	enableDisciplinedKnowledgeRepair(t)
 	SetKnowledgeQAAgentLoopEnabled(true)
 	defer SetKnowledgeQAAgentLoopEnabled(false)
 	tools.SetAgenticSearchKnowledgeEnabled(true)
@@ -291,8 +293,9 @@ func TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{{ID: "c1", Type: openai.ToolTypeFunction,
 			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"billing"}`}}}},
-		{Content: "停止的按量实例的磁盘仍会计费。"}, // uncited
-		{Content: "停止的按量实例的磁盘仍会计费。"}, // retry STILL uncited -> refusal stands
+		{Content: "停止的按量实例的磁盘仍会计费。"},
+		{Content: `{"supported":false,"claims":[],"unsupported":["无法确认"]}`},
+		{Content: `{"answer":"","supported":false,"claims":[],"unsupported":["证据不足"]}`},
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -301,7 +304,7 @@ func TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
 	require.NoError(t, err)
-	assert.Equal(t, ragNoEvidenceReply, reply, "a retry that still won't cite keeps the refusal")
+	assert.Equal(t, ragUngroundableReply, reply, "evidence existed, so the refusal must not falsely claim no coverage")
 }
 
 // TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire proves the forced-hop retry:
@@ -328,6 +331,7 @@ func TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire(t *testing.T) {
 		{ToolCalls: []openai.ToolCall{{ID: "c1", Type: openai.ToolTypeFunction, // forced-hop retry fires
 			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"billing"}`}}}},
 		{Content: "停止的按量实例的磁盘仍会计费 [[faq-billing-001]]。"}, // round1 cited
+		knowledgeQAAgentLoopBillingVerdict(),
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -436,7 +440,8 @@ func TestKnowledgeQAAgentLoop_SearchCapWithdrawsToolAndAnswers(t *testing.T) {
 	}
 	assert.True(t, foundNote, "the honest-answer nudge must be injected when the tool is withdrawn")
 
-	// The turn settles on the final answer, NOT the token-budget refusal.
-	assert.Equal(t, finalAnswer, reply)
+	// With an empty evidence ledger the final answer cannot be certified, even if
+	// the model writes a plausible general fallback.
+	assert.Equal(t, ragNoEvidenceReply, reply)
 	assert.NotEqual(t, tokenBudgetExceededMessage, reply, "capped thrash must not exhaust the token budget")
 }
