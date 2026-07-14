@@ -601,6 +601,16 @@ func (s *PostgresTurnStore) ReserveAction(
 	if !errors.Is(err, ErrActionNotFound) {
 		return TurnAction{}, false, err
 	}
+	semantic, err := getActionByIdentityForUpdate(ctx, tx, lease.TurnID, in.ActionName, in.ArgsHash)
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return TurnAction{}, false, fmt.Errorf("reserve semantic action commit: %w", err)
+		}
+		return semantic, false, nil
+	}
+	if !errors.Is(err, ErrActionNotFound) {
+		return TurnAction{}, false, err
+	}
 
 	action, err := scanAction(tx.QueryRowContext(ctx, `
 INSERT INTO turn_actions

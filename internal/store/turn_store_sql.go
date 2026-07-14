@@ -469,6 +469,24 @@ FOR UPDATE
 	return out, nil
 }
 
+func getActionByIdentityForUpdate(ctx context.Context, tx *sql.Tx, turnID, actionName, argsHash string) (TurnAction, error) {
+	out, err := scanAction(tx.QueryRowContext(ctx, `
+SELECT turn_id, action_index, lease_epoch, action_name, args_hash,
+       execution_token, in_flight, upstream_request_id, status, result,
+       error_code, created_at, updated_at
+FROM turn_actions
+WHERE turn_id = $1 AND action_name = $2 AND args_hash = $3
+FOR UPDATE
+`, turnID, actionName, argsHash))
+	if errors.Is(err, sql.ErrNoRows) {
+		return TurnAction{}, ErrActionNotFound
+	}
+	if err != nil {
+		return TurnAction{}, fmt.Errorf("lock turn action by identity: %w", err)
+	}
+	return out, nil
+}
+
 func scanAction(row rowScanner) (TurnAction, error) {
 	var out TurnAction
 	var status string

@@ -61,6 +61,7 @@ type ActionCall func(ctx context.Context, action string, args map[string]any) (m
 // to the SQL store.
 type ActionJournal interface {
 	Execute(ctx context.Context, action string, args map[string]any, call ActionCall) (map[string]any, error)
+	Err() error
 }
 
 type SafeToolRequest struct {
@@ -159,6 +160,20 @@ func (s *SafeToolExecutor) SetMutatingToolsEnabled(enabled bool) {
 
 func (s *SafeToolExecutor) SetConfirmFunc(fn ConfirmFunc) {
 	s.confirm = fn
+}
+
+// ActionJournalError is the commit barrier for a durable v2 turn. A caller
+// must not commit the assistant answer or session state when this returns an
+// error, even if the database currently has no uncertain action row (for
+// example when a reservation COMMIT acknowledgement was lost after rollback).
+func (s *SafeToolExecutor) ActionJournalError() error {
+	if s.actionJournal == nil {
+		if s.requireActionJournal {
+			return ErrActionJournalRequired
+		}
+		return nil
+	}
+	return s.actionJournal.Err()
 }
 
 func (s *SafeToolExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {

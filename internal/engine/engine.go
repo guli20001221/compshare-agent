@@ -894,6 +894,16 @@ func (e *Engine) RateLimitSubjectKey() string {
 	return e.rateLimitSubject
 }
 
+// ActionJournalError must be checked by the durable turn coordinator before
+// CommitTurn. It carries in-memory uncertainty that cannot always be inferred
+// from database rows after a transaction acknowledgement failure.
+func (e *Engine) ActionJournalError() error {
+	if e == nil || e.safeExecutor == nil {
+		return nil
+	}
+	return e.safeExecutor.ActionJournalError()
+}
+
 // SetRateLimitSubject overrides the subject derived at Engine.New so the
 // server path can swap to the per-WS-connection tenant identity right after
 // engine.NewSession (A2). Returns the previous subject for tests that need

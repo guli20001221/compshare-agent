@@ -124,12 +124,23 @@ func TestActionJournal_KnownSuccessReplaysAfterAnswerCommitFailure(t *testing.T)
 	ctx, owner, turns, leaseA := newJournalTurn(t, db)
 	calls := 0
 	argsA := map[string]any{"Name": "worker", "UHostId": "uhost-1"}
-	first, err := NewActionJournal(turns, owner, leaseA).Execute(ctx, "StopCompShareInstance", argsA, func(context.Context, string, map[string]any) (map[string]any, error) {
+	journalA := NewActionJournal(turns, owner, leaseA)
+	first, err := journalA.Execute(ctx, "StopCompShareInstance", argsA, func(context.Context, string, map[string]any) (map[string]any, error) {
 		calls++
-		return map[string]any{"RetCode": 0, "RequestId": "req-1"}, nil
+		return map[string]any{"RetCode": 0, "request_uuid": "req-1"}, nil
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "req-1", first["RequestId"])
+	assert.Equal(t, "req-1", first["request_uuid"])
+	_, err = journalA.Execute(ctx, "StopCompShareInstance", map[string]any{"UHostId": "uhost-1", "Name": "worker"}, func(context.Context, string, map[string]any) (map[string]any, error) {
+		calls++
+		return nil, errors.New("same semantic mutation must not run twice")
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls)
+	var persistedRequestID *string
+	require.NoError(t, db.QueryRow(`SELECT upstream_request_id FROM turn_actions WHERE turn_id = $1 AND action_index = 0`, leaseA.TurnID).Scan(&persistedRequestID))
+	require.NotNil(t, persistedRequestID)
+	assert.Equal(t, "req-1", *persistedRequestID)
 
 	// The answer/state commit never happens. A new executor repeats the same
 	// logical action with a differently ordered map and must replay the result.
@@ -141,10 +152,10 @@ func TestActionJournal_KnownSuccessReplaysAfterAnswerCommitFailure(t *testing.T)
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 1, calls)
-	assert.Equal(t, "req-1", replayed["RequestId"])
+	assert.Equal(t, "req-1", replayed["request_uuid"])
 }
 
-func TestActionJournal_DefiniteUpstreamFailureReplays(t *testing.T) {
+func TestActionJournal_UpstreamBusinessErrorIsAmbiguousAndNeverReissued(t *testing.T) {
 	db := openActionJournalTestDB(t)
 	ctx, owner, turns, leaseA := newJournalTurn(t, db)
 	calls := 0
@@ -153,16 +164,13 @@ func TestActionJournal_DefiniteUpstreamFailureReplays(t *testing.T) {
 		calls++
 		return nil, tools.NewUpstreamAPIError(230, "capacity")
 	})
-	var first *tools.UpstreamAPIError
-	require.ErrorAs(t, err, &first)
+	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
+	require.Error(t, jA.Err())
 	leaseB := takeoverJournalLease(t, db, turns, ctx, owner, leaseA)
 	_, err = NewActionJournal(turns, owner, leaseB).Execute(ctx, "StopCompShareInstance", map[string]any{"UHostId": "uhost-1"}, func(context.Context, string, map[string]any) (map[string]any, error) {
 		calls++
 		return nil, nil
 	})
-	var replayed *tools.UpstreamAPIError
-	require.ErrorAs(t, err, &replayed)
-	assert.Equal(t, 230, replayed.Code)
-	assert.Equal(t, "capacity", replayed.Message)
+	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
 	assert.Equal(t, 1, calls)
 }

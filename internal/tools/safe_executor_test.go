@@ -36,6 +36,8 @@ func (j *spyActionJournal) Execute(ctx context.Context, action string, args map[
 	return call(ctx, action, args)
 }
 
+func (j *spyActionJournal) Err() error { return nil }
+
 func (s *spyExecutor) Execute(_ context.Context, _ string, args map[string]any) (map[string]any, error) {
 	s.calls++
 	s.args = append(s.args, args)

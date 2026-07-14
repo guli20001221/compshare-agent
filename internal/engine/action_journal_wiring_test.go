@@ -18,6 +18,8 @@ func (j *pathJournal) Execute(ctx context.Context, action string, args map[strin
 	return call(ctx, action, args)
 }
 
+func (j *pathJournal) Err() error { return nil }
+
 func newJournaledPathEngine(journal tools.ActionJournal, inner tools.ToolExecutor) *Engine {
 	return NewSession(&SharedDeps{ExternalExecutor: inner}, SessionOptions{
 		ConfirmFn: func(string, map[string]any) bool { return true }, MutatingToolsEnabled: true,

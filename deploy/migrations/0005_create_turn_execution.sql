@@ -80,6 +80,7 @@ CREATE TABLE turn_actions (
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (turn_id, action_index),
   CONSTRAINT uq_turn_action_execution_token UNIQUE (execution_token),
+  CONSTRAINT uq_turn_action_semantic UNIQUE (turn_id, action_name, args_hash),
   CONSTRAINT ck_turn_action_status CHECK (status IN (
     'reserved', 'succeeded', 'failed', 'ambiguous'
   )),

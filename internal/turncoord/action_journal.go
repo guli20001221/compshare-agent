@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -98,15 +97,27 @@ func (j *ActionJournal) Execute(ctx context.Context, action string, args map[str
 		return result, nil
 	}
 
-	if apiErr, ok := tools.UpstreamAPIErrorFrom(callErr); ok {
-		raw, _ := json.Marshal(map[string]any{"code": apiErr.Code, "message": apiErr.Message})
-		code := "upstream_api:" + strconv.Itoa(apiErr.Code)
-		if _, recordErr := j.store.RecordAction(ctx, j.owner, started.ExecutionToken, store.ActionStatusFailed, raw, &code); recordErr != nil {
-			return nil, j.poison(fmt.Errorf("%s definite failure was not durably recorded: %w", action, recordErr))
-		}
-		return nil, callErr
-	}
+	// A non-zero upstream business response is not proof that the write did not
+	// happen. Gate/policy/argument/confirmation rejections occur before this
+	// journal boundary; every error returned after StartAction is therefore an
+	// unknown external outcome unless a future API supplies a verified upstream
+	// idempotency contract.
 	return j.recordAmbiguous(ctx, started, action, callErr)
+}
+
+// Err exposes the in-memory commit barrier. Store state alone is insufficient:
+// a reservation/start/result transaction may have rolled back while its COMMIT
+// acknowledgement was lost, leaving no row that CommitTurn could inspect.
+func (j *ActionJournal) Err() error {
+	if j == nil {
+		return tools.ErrActionJournalRequired
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.poisoned == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
 }
 
 func (j *ActionJournal) claimIndex() (int, error) {
@@ -170,7 +181,10 @@ func decodeDefiniteActionError(action store.TurnAction) error {
 }
 
 func upstreamRequestID(result map[string]any) *string {
-	for _, key := range []string{"RequestId", "RequestID", "request_id", "requestId"} {
+	for _, key := range []string{
+		"RequestId", "RequestID", "request_id", "requestId",
+		"RequestUuid", "RequestUUID", "request_uuid", "requestUuid",
+	} {
 		if value, ok := result[key].(string); ok && strings.TrimSpace(value) != "" {
 			clean := strings.TrimSpace(value)
 			return &clean
@@ -186,6 +200,9 @@ func safeErrorClass(err error) string {
 	case errors.Is(err, context.Canceled):
 		return "context_canceled"
 	default:
+		if _, ok := tools.UpstreamAPIErrorFrom(err); ok {
+			return "upstream_business_error"
+		}
 		return "unknown_external_error"
 	}
 }

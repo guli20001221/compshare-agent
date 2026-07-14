@@ -96,12 +96,24 @@ func TestActionJournal_PoisonsTurnAfterUnknownOutcome(t *testing.T) {
 	}
 	_, err := journal.Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "u-1"}, call)
 	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
+	require.ErrorIs(t, journal.Err(), tools.ErrActionOutcomeUncertain)
 	_, err = journal.Execute(context.Background(), "StartCompShareInstance", map[string]any{"UHostId": "u-2"}, call)
 	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
 	assert.Equal(t, 1, upstreamCalls)
 	assert.Equal(t, 1, actions.reserveCalls, "poisoned journal must not claim another action index")
 	assert.Equal(t, 1, actions.startCalls)
 	assert.Equal(t, 1, actions.recordCalls)
+}
+
+func TestActionJournal_HealthIsVisibleToCommitCoordinator(t *testing.T) {
+	actions := &journalStoreStub{}
+	journal := NewActionJournal(actions, store.Owner{}, store.ConversationLease{TurnID: "turn"})
+	require.NoError(t, journal.Err())
+	_, err := journal.Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "u-1"}, func(context.Context, string, map[string]any) (map[string]any, error) {
+		return nil, errors.New("unknown write outcome")
+	})
+	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
+	require.ErrorIs(t, journal.Err(), tools.ErrActionOutcomeUncertain)
 }
 
 func TestActionJournal_PoisonsTurnAfterReservationStoreError(t *testing.T) {
@@ -114,6 +126,7 @@ func TestActionJournal_PoisonsTurnAfterReservationStoreError(t *testing.T) {
 	}
 	_, err := journal.Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "u-1"}, call)
 	require.Error(t, err)
+	require.ErrorIs(t, journal.Err(), tools.ErrActionOutcomeUncertain)
 	_, err = journal.Execute(context.Background(), "StartCompShareInstance", map[string]any{"UHostId": "u-2"}, call)
 	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
 	assert.Zero(t, upstreamCalls)

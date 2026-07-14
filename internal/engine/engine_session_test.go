@@ -12,12 +12,17 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-type sessionActionJournal struct{ calls int }
+type sessionActionJournal struct {
+	calls int
+	err   error
+}
 
 func (j *sessionActionJournal) Execute(ctx context.Context, action string, args map[string]any, call tools.ActionCall) (map[string]any, error) {
 	j.calls++
 	return call(ctx, action, args)
 }
+
+func (j *sessionActionJournal) Err() error { return j.err }
 
 // newTwoSessions constructs two Engines from the same SharedDeps. Used by the
 // P0 isolation tests below. mockLLM / mockExecutor live in engine_test.go (same
@@ -183,6 +188,23 @@ func TestSessionIsolation_ActionJournalIsInjectedPerTurn(t *testing.T) {
 	}
 	if journalA.calls != 1 {
 		t.Fatalf("session B leaked into session A journal; calls=%d", journalA.calls)
+	}
+}
+
+func TestEngine_ActionJournalErrorIsCommitBarrier(t *testing.T) {
+	deps := &SharedDeps{ExternalExecutor: &mockExecutor{results: map[string]map[string]any{}}}
+	poisoned := &sessionActionJournal{err: tools.ErrActionOutcomeUncertain}
+	eng := NewSession(deps, SessionOptions{ActionJournal: poisoned, RequireActionJournal: true})
+	if !errors.Is(eng.ActionJournalError(), tools.ErrActionOutcomeUncertain) {
+		t.Fatalf("coordinator-visible journal error=%v", eng.ActionJournalError())
+	}
+	required := NewSession(deps, SessionOptions{RequireActionJournal: true})
+	if !errors.Is(required.ActionJournalError(), tools.ErrActionJournalRequired) {
+		t.Fatalf("missing required journal error=%v", required.ActionJournalError())
+	}
+	legacy := NewSession(deps, SessionOptions{})
+	if err := legacy.ActionJournalError(); err != nil {
+		t.Fatalf("legacy session unexpectedly requires journal: %v", err)
 	}
 }
 

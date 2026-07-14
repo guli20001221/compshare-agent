@@ -88,6 +88,7 @@ func TestHTTPMigrationsCreateTurnExecutionKernel(t *testing.T) {
 		"next_event_seq",
 		"turn_seq",
 		"UNIQUE (session_id, turn_seq)",
+		"UNIQUE (turn_id, action_name, args_hash)",
 		"action_name",
 		"args_hash",
 		"in_flight",
