@@ -520,10 +520,18 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	}
 
 	// Client disconnected.
+	//
+	// MarkAssistantOutcome, not UpdateAssistant: a failure path knows the turn's STATUS, not its
+	// text, and UpdateAssistant writes `SET content = $1` with whatever the patch carries — the
+	// empty string. Today the row is still the empty placeholder so blanking it is a no-op, and
+	// that is exactly the kind of "harmless" that stops being harmless the day the ordering
+	// changes. The bounded context is the same lesson: the store is the thing most likely to be
+	// unwell here, and an unbounded cleanup write would hang the failure path itself.
 	if errors.Is(chatErr, context.Canceled) || errors.Is(streamCtx.Err(), context.Canceled) {
 		finishTrace(chatErr)
-		_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
-			store.AssistantPatch{Status: "aborted"})
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		_ = h.messages.MarkAssistantOutcome(cleanupCtx, base.Owner, assistantMsgID, "aborted", nil, nil, nil)
+		cancel()
 		return
 	}
 
@@ -532,13 +540,9 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		finishTrace(chatErr)
 		apiErr := classifyChatError(chatErr)
 		code := apiErr.Code
-		_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
-			store.AssistantPatch{
-				Status:    "error",
-				ErrorCode: &code,
-				LatencyMs: &latencyMs,
-				TTFTMs:    &ttftMs,
-			})
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		_ = h.messages.MarkAssistantOutcome(cleanupCtx, base.Owner, assistantMsgID, "error", &code, &latencyMs, &ttftMs)
+		cancel()
 		_ = sw.WriteEvent("error", streamErrorEvent{Code: apiErr.Code, Message: apiErr.Message})
 		return
 	}
@@ -556,7 +560,6 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	// The contract now: announce success only once the context was confirmed current (the
 	// re-read under the lease, in prepareChat) AND the result is confirmed saved. Otherwise
 	// fail, plainly, and let the user retry.
-	finishTrace(nil)
 	inputTokens := usage.PromptTokens
 	outputTokens := usage.CompletionTokens
 	patch := store.AssistantPatch{
@@ -568,25 +571,94 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		LatencyMs:    &latencyMs,
 	}
 
-	if err := h.commitTurn(base.Owner, sessionID, assistantMsgID, patch, agent, prep); err != nil {
-		// The answer was streamed — we cannot unsend it — but the turn did NOT commit, and
-		// saying "done" here would tell the client to unlock the input and carry on from a
-		// state the server does not have. Mark the row so a rebuild does not resurrect half a
-		// turn, and report the failure.
-		code := ErrTurnNotSaved.Code
-		_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
-			store.AssistantPatch{Status: "error", ErrorCode: &code, LatencyMs: &latencyMs, TTFTMs: &ttftMs})
-		log.Printf("warning: session %s turn NOT committed after retries; refusing to announce success: %v", sessionID, err)
-		_ = sw.WriteEvent("error", streamErrorEvent{Code: ErrTurnNotSaved.Code, Message: ErrTurnNotSaved.Message})
+	commitErr := h.commitTurn(base.Owner, sessionID, assistantMsgID, patch, agent, prep)
+	if commitErr != nil {
+		// Before believing our own error, ASK THE DATABASE.
+		//
+		// A commit that succeeded in Postgres and then timed out on the way back to us looks
+		// exactly like a commit that failed. The old code assumed failure, retried, lost the CAS
+		// to its OWN successful write, and then "cleaned up" by writing an empty-content error
+		// row over the correct answer it had just saved. It destroyed the very thing it was
+		// trying to protect.
+		//
+		// So: read the row back and find out what actually happened. This is the only honest
+		// move — do not guess success, do not guess failure, and above all do not overwrite.
+		if h.turnAlreadyLanded(base.Owner, assistantMsgID, patch.Content) {
+			log.Printf("warning: session %s commit reported an error but the turn IS saved (late/lost ack); reporting done: %v",
+				sessionID, commitErr)
+			commitErr = nil
+		}
+	}
+
+	if commitErr != nil {
+		// The turn really did not land. The answer was streamed and cannot be unsent, but saying
+		// "done" here would tell the client to unlock the input and carry on from a state the
+		// server does not have.
+		apiErr := ErrTurnNotSaved
+		if actions := agent.MutatingActionsThisTurn(); len(actions) > 0 {
+			// Something HAPPENED. "Retry" would mean "do it again".
+			apiErr = ErrTurnNotSavedAfterAction
+			log.Printf("warning: session %s turn NOT committed AFTER executing %v — the user must not replay this: %v",
+				sessionID, actions, commitErr)
+		} else {
+			log.Printf("warning: session %s turn NOT committed after retries; refusing to announce success: %v",
+				sessionID, commitErr)
+		}
+
+		// Record the OUTCOME, never the content. The row may already hold a correctly committed
+		// answer (see above); MarkAssistantOutcome cannot blank it, UpdateAssistant would.
+		code := apiErr.Code
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		if mErr := h.messages.MarkAssistantOutcome(cleanupCtx, base.Owner, assistantMsgID, "error", &code, &latencyMs, &ttftMs); mErr != nil {
+			log.Printf("warning: session %s could not even mark the turn failed: %v", sessionID, mErr)
+		}
+		cancel()
+
+		// Throw the engine away. It is still holding this turn's answer in memory, and the
+		// database is not. Left in the pool, the session forks: the next HOT turn sees an answer
+		// no cold rebuild can find. One rehydration is a cheap price for one history.
+		h.pool.Invalidate(base.Owner, sessionID)
+
+		finishTrace(commitErr)
+		_ = sw.WriteEvent("error", streamErrorEvent{Code: apiErr.Code, Message: apiErr.Message})
 		return
 	}
 
+	// Saved. Only now is the turn a fact, and only now may the trace record it as one.
+	finishTrace(nil)
 	_ = sw.WriteEvent("done", doneEvent{
 		Content:   reply,
 		Usage:     usageEvent{InputTokens: inputTokens, OutputTokens: outputTokens},
 		LatencyMs: latencyMs,
 		TtftMs:    ttftMs,
 	})
+}
+
+// cleanupTimeout bounds every post-failure write. These used to run on context.Background() with
+// no deadline, so a store that was hanging — the most likely reason the commit failed in the first
+// place — would hang the failure path too, and the client would never receive even the error frame.
+const cleanupTimeout = 2 * time.Second
+
+// turnAlreadyLanded reports whether the assistant row already holds THIS turn's committed answer.
+//
+// It is the answer to "did my write actually happen?", asked of the only authority that knows. The
+// row's content is written by exactly one thing — this turn's commit — so content matching ours
+// with status "ok" means the commit landed, whatever the error we got back said. (Both committers
+// write the message half last or atomically, so a matching message implies the state half landed
+// too.)
+//
+// A failure to read is reported as "not landed": that is the conservative direction, because the
+// caller's only reaction to `false` is to fail the turn loudly, whereas a wrong `true` would
+// announce success for a turn nobody saved.
+func (h *Handlers) turnAlreadyLanded(owner store.Owner, msgID, want string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+
+	row, err := h.messages.GetWithOwnerCheck(ctx, owner, msgID)
+	if err != nil {
+		return false
+	}
+	return row.Status == "ok" && row.Content == want
 }
 
 // turnCommitAttempts bounds the retry on a transient store failure. A turn that cannot be saved

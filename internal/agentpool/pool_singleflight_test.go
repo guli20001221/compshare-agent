@@ -61,6 +61,9 @@ func (g *gatedStore) Append(context.Context, store.Message) error { return nil }
 func (g *gatedStore) UpdateAssistant(context.Context, store.Owner, string, store.AssistantPatch) error {
 	return nil
 }
+func (g *gatedStore) MarkAssistantOutcome(context.Context, store.Owner, string, string, *string, *int, *int) error {
+	return nil
+}
 func (g *gatedStore) GetWithOwnerCheck(context.Context, store.Owner, string) (store.Message, error) {
 	return store.Message{}, nil
 }

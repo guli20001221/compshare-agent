@@ -260,6 +260,20 @@ type Engine struct {
 	rateLimitObserver                func(governance.Decision)
 	readExpensiveCallsThisTurn       int
 	requireKnowledgeCitationThisTurn bool
+
+	// mutatingActionsThisTurn names every mutating tool that actually EXECUTED this turn
+	// (started an instance, created one, reset a password...). It exists so a caller can tell
+	// the difference between "nothing happened, retry freely" and "something happened out in
+	// the world and we failed to record it".
+	//
+	// That distinction is not academic. When a turn cannot be saved, the honest thing to tell a
+	// read-only user is "please retry". Telling it to a user whose instance was just CREATED is
+	// an instruction to create a second one. The message must change, and only the engine knows
+	// whether it should.
+	//
+	// Appended at the single execution choke point (executeSafeTool), on SUCCESS only: a tool
+	// that was blocked, rate-limited, or refused changed nothing.
+	mutatingActionsThisTurn []string
 	// searchKnowledgeRanThisTurn / searchKnowledgeHitsThisTurn track the agentic
 	// SearchKnowledge tool (P3) so the final-answer no-raw-leak guard validates
 	// the synthesis against exactly the evidence the agent was shown. Reset per
@@ -1203,6 +1217,22 @@ func (e *Engine) ClearSessionState() {
 // was successfully called this turn. Callers MUST check hydrated before
 // persisting — persisting an un-hydrated zero state would overwrite the
 // row, which is exactly the bug we want to avoid on parse-failure paths.
+// MutatingActionsThisTurn reports the mutating tools that actually executed during the turn just
+// finished. Empty on a read-only turn.
+//
+// The HTTP layer uses it to decide what to say when a turn cannot be saved. "Please retry" is the
+// right thing to tell a user whose question merely went unanswered, and the WRONG thing to tell a
+// user whose instance was just created: it is an instruction to create a second one. Only the
+// engine knows which turn this was.
+func (e *Engine) MutatingActionsThisTurn() []string {
+	if len(e.mutatingActionsThisTurn) == 0 {
+		return nil
+	}
+	out := make([]string, len(e.mutatingActionsThisTurn))
+	copy(out, e.mutatingActionsThisTurn)
+	return out
+}
+
 func (e *Engine) SessionStateSnapshot() (state SessionState, version int, hydrated bool) {
 	state = e.sessionState
 	if e.sessionStateHydrated && (state.SchemaVersion == "" || state.SchemaVersion == SessionStateSchemaV1) {
@@ -1343,6 +1373,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.lastPlannerActionThisTurn = ""
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
+	e.mutatingActionsThisTurn = nil
 	e.instanceTableThisTurn = ""
 	e.placeholderObeyedThisTurn = false
 	// Deliberately NOT reset per turn — see grounding.Facts. The model must be free to
@@ -4347,6 +4378,15 @@ func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest)
 		return nil, err
 	}
 	result, err := e.safeExecutor.ExecuteSafe(ctx, req)
+	// Record a mutating action the moment it SUCCEEDS — before any of the bookkeeping below can
+	// return early — because from here on something has changed out in the world and a caller
+	// that later fails to save the turn must not tell the user to "just retry". See
+	// mutatingActionsThisTurn.
+	if err == nil {
+		if policy, ok := e.safeExecutor.PolicyForAction(req.Action); ok && policy.Class == tools.ActionClassMutating {
+			e.mutatingActionsThisTurn = append(e.mutatingActionsThisTurn, req.Action)
+		}
+	}
 	if err == nil && req.Action == "DescribeCompShareInstance" {
 		e.lastInstanceQueryTurn = e.userTurn
 	}
@@ -5399,9 +5439,20 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		return finalReplyPrefix + msg
 	}
 
+	// confirmGranted records that the user authorised this workflow to act. Everything the
+	// workflow does to the platform happens after that gate, so it is the moment from which the
+	// turn can no longer be described as "nothing happened" — see mutatingActionsThisTurn.
+	confirmGranted := false
 	var wfConfirm workflow.ConfirmFunc
 	if e.confirmFn != nil {
-		wfConfirm = workflow.ConfirmFunc(e.confirmFn)
+		inner := e.confirmFn
+		wfConfirm = func(a string, ar map[string]any) bool {
+			ok := inner(a, ar)
+			if ok {
+				confirmGranted = true
+			}
+			return ok
+		}
 	}
 
 	// Captured from the create saga's capacity step so the create-zone image
@@ -5512,6 +5563,20 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	}
 
 	result, err := wfEngine.Run(ctx, wf, args)
+
+	// Record BEFORE the error branch, and record on a FAILURE too, as long as the user had
+	// authorised the workflow to act. A workflow that dies halfway through may already have
+	// created the instance, started it, or reset the password — "it returned an error" says
+	// nothing about whether the platform changed.
+	//
+	// The only consumer of this is the HTTP layer's decision about what to tell a user whose turn
+	// could not be SAVED. On that question the errors are not symmetric: a false "something
+	// happened" costs the user one re-ask, while a false "nothing happened" tells them to retry a
+	// create and charges them for a second instance. So it errs toward "something happened".
+	if confirmGranted || (err == nil && result.Success) {
+		e.mutatingActionsThisTurn = append(e.mutatingActionsThisTurn, action)
+	}
+
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, err))

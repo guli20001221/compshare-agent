@@ -57,10 +57,14 @@ func (p fakePool) Lease(_ context.Context, _ store.Owner, _ string) (*engine.Eng
 func (p fakePool) Get(_ context.Context, _ store.Owner, _ string) (*engine.Engine, error) {
 	return p.eng, nil
 }
+func (p fakePool) Invalidate(_ store.Owner, _ string) {}
 
 type recordingPool struct {
 	eng       *engine.Engine
 	sessionID []string
+	// invalidated records the sessions whose engine was thrown away — the pool's half of
+	// "a turn that could not be saved must not leave its answer in the cache".
+	invalidated []string
 }
 
 func (p *recordingPool) Lease(_ context.Context, _ store.Owner, sessionID string) (*engine.Engine, func(), error) {
@@ -71,6 +75,9 @@ func (p *recordingPool) Get(_ context.Context, _ store.Owner, sessionID string) 
 	p.sessionID = append(p.sessionID, sessionID)
 	return p.eng, nil
 }
+func (p *recordingPool) Invalidate(_ store.Owner, sessionID string) {
+	p.invalidated = append(p.invalidated, sessionID)
+}
 
 // recordingMessages extends mockMessages to record Append and UpdateAssistant calls.
 type recordingMessages struct {
@@ -80,6 +87,17 @@ type recordingMessages struct {
 	// assistantUpdates counts UpdateAssistant calls, so a test can assert that a turn refused
 	// BEFORE the model ran never touched the assistant row at all.
 	assistantUpdates int
+	// outcomes records every MarkAssistantOutcome call — the status-only write a failure path
+	// must use INSTEAD of UpdateAssistant, so it cannot blank a row it did not write.
+	outcomes []recordedOutcome
+}
+
+// recordedOutcome is one MarkAssistantOutcome call. It deliberately has no Content field: the
+// whole point of that store method is that a failure path cannot express one.
+type recordedOutcome struct {
+	MsgID     string
+	Status    string
+	ErrorCode *string
 }
 
 func (m *recordingMessages) Append(_ context.Context, msg store.Message) error {
@@ -90,6 +108,11 @@ func (m *recordingMessages) Append(_ context.Context, msg store.Message) error {
 func (m *recordingMessages) UpdateAssistant(_ context.Context, _ store.Owner, _ string, patch store.AssistantPatch) error {
 	m.patch = patch
 	m.assistantUpdates++
+	return nil
+}
+
+func (m *recordingMessages) MarkAssistantOutcome(_ context.Context, _ store.Owner, msgID string, status string, code *string, _, _ *int) error {
+	m.outcomes = append(m.outcomes, recordedOutcome{MsgID: msgID, Status: status, ErrorCode: code})
 	return nil
 }
 
@@ -499,10 +522,22 @@ func TestDispatchChatDoesNotPersistPartialAssistantContentOnError(t *testing.T) 
 	assert.Contains(t, sink.body(), leakedDelta)
 	assert.True(t, sink.has("error"))
 
-	assert.Equal(t, "error", messages.patch.Status)
-	assert.Empty(t, messages.patch.Content)
-	assert.NotContains(t, messages.patch.Content, "1.2.3.4")
-	assert.NotContains(t, messages.patch.Content, "AKIAIOSFODNN7EXAMPLE")
+	// ⚠️ CONTRACT CHANGE (2026-07-14): this used to assert on the AssistantPatch that the error
+	// path handed UpdateAssistant — status "error", Content empty. The intent (a partial, leaky
+	// reply must never be persisted) is unchanged and is now enforced more strongly: the failure
+	// path calls MarkAssistantOutcome, which has no Content parameter at all. It CANNOT write
+	// content, correct or otherwise.
+	//
+	// That is the point. The old shape — "failure paths pass an AssistantPatch whose Content
+	// happens to be empty" — is what let a failure path blank an answer that had already been
+	// committed. Making the mistake unrepresentable is a better guarantee than remembering not
+	// to make it.
+	assert.Empty(t, messages.patch.Status,
+		"the error path must not go through UpdateAssistant at all — that is the method that can write content")
+	assert.Equal(t, 0, messages.assistantUpdates)
+
+	require.Len(t, messages.outcomes, 1, "the turn's outcome must still be recorded")
+	assert.Equal(t, "error", messages.outcomes[0].Status)
 }
 
 func TestDispatchChatEmitsTokenForDirectEngineReply(t *testing.T) {

@@ -31,6 +31,9 @@ func (m *countingMessageStore) Append(_ context.Context, _ store.Message) error 
 func (m *countingMessageStore) UpdateAssistant(_ context.Context, _ store.Owner, _ string, _ store.AssistantPatch) error {
 	return nil
 }
+func (m *countingMessageStore) MarkAssistantOutcome(_ context.Context, _ store.Owner, _ string, _ string, _ *string, _, _ *int) error {
+	return nil
+}
 func (m *countingMessageStore) GetWithOwnerCheck(_ context.Context, _ store.Owner, _ string) (store.Message, error) {
 	return store.Message{}, nil
 }

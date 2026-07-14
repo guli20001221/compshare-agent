@@ -62,6 +62,43 @@ WHERE s.id = m.session_id
 	return nil
 }
 
+// MarkAssistantOutcome records how a turn ENDED — aborted, errored, not saved — without touching
+// `content`.
+//
+// The distinction from UpdateAssistant is the entire reason this exists. UpdateAssistant writes
+// `SET content = $1` unconditionally, and every failure path passes an AssistantPatch whose
+// Content is the empty string. That is harmless while the row is still the empty placeholder, and
+// it is data destruction the moment it is not:
+//
+//	commit succeeds in Postgres -> the response times out on our side -> we see an error ->
+//	we retry -> the CAS now fails (our own write bumped the version) -> we report the turn
+//	unsaved -> and we blank the correct answer we had just successfully saved.
+//
+// A failure path knows the turn's STATUS. It does not know the content, and it must not pretend
+// to. So it may not write it.
+func (s *MySQLMessageStore) MarkAssistantOutcome(ctx context.Context, owner Owner, msgID string, status string, errorCode *string, latencyMs, ttftMs *int) error {
+	res, err := s.db.ExecContext(ctx, `
+UPDATE messages m
+SET status = $1, error_code = $2, ttft_ms = $3, latency_ms = $4
+FROM sessions s
+WHERE s.id = m.session_id
+  AND m.id = $5 AND m.role = 'assistant'
+  AND s.top_organization_id = $6 AND s.organization_id = $7 AND s.deleted_at IS NULL
+`, status, nullableStringPtr(errorCode), nullableIntPtr(ttftMs), nullableIntPtr(latencyMs),
+		msgID, owner.TopOrganizationID, owner.OrganizationID)
+	if err != nil {
+		return fmt.Errorf("mark assistant outcome: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark assistant outcome rows affected: %w", err)
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // ListBySession returns messages for a session with cursor-based pagination.
 // Limit defaults to 50. Returns (messages, nextCursor, error).
 func (s *MySQLMessageStore) ListBySession(ctx context.Context, sessionID string, limit int, cursor string) ([]Message, string, error) {

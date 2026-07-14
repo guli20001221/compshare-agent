@@ -154,6 +154,9 @@ func (m *mockMessages) Append(_ context.Context, _ store.Message) error { return
 func (m *mockMessages) UpdateAssistant(_ context.Context, _ store.Owner, _ string, _ store.AssistantPatch) error {
 	return nil
 }
+func (m *mockMessages) MarkAssistantOutcome(_ context.Context, _ store.Owner, _ string, _ string, _ *string, _, _ *int) error {
+	return nil
+}
 func (m *mockMessages) ListBySession(_ context.Context, _ string, _ int, _ string) ([]store.Message, string, error) {
 	return m.list, "", nil
 }

@@ -96,6 +96,11 @@ type entry struct {
 	// happens-before edge that publishes them.
 	ready   chan struct{}
 	loadErr error
+
+	// discard marks an engine whose in-memory state can no longer be trusted — set when a turn
+	// produced an answer and then failed to save it. The entry leaves the pool as soon as the
+	// last lease is released. Guarded by p.mu. See Pool.Invalidate.
+	discard bool
 }
 
 // Pool is a concurrency-safe LRU cache of *engine.Engine keyed by (Owner, SessionID).
@@ -366,6 +371,15 @@ func (p *Pool) release(e *entry) {
 		e.inUse--
 	}
 	if e.inUse == 0 {
+		if e.discard {
+			// The last lease on a poisoned engine has gone. Drop it now, so the next request
+			// rebuilds from the database instead of inheriting an answer that was never saved.
+			if el, ok := p.items[e.key]; ok && el.Value.(*entry) == e {
+				p.lruList.Remove(el)
+				delete(p.items, e.key)
+			}
+			return
+		}
 		// The turn is over, so the entry is idle as of NOW — most recently used, not least.
 		// Without this a long turn would surface from the pool looking stale and be first in
 		// line for eviction.
@@ -382,6 +396,36 @@ func (p *Pool) release(e *entry) {
 		if !p.evictOneIdleLocked() {
 			break
 		}
+	}
+}
+
+// Invalidate marks the session's cached engine as unusable. It is dropped from the pool as soon
+// as the last lease on it is released, so the next request rebuilds it from the database.
+//
+// It exists for one caller: a turn that produced an answer and then FAILED TO SAVE IT. The engine
+// still holds that answer in its in-memory history. Leave it in the pool and the session forks —
+// a HOT next turn sees an answer the database does not have, while a cold rebuild (after an
+// eviction, a restart, a deploy) does not. The same session then tells two different stories
+// depending on nothing the user did.
+//
+// Discarding costs one rehydration. Keeping it costs the truth.
+//
+// Invalidate does NOT evict an entry that is still leased: the caller is by definition still
+// holding it (that is how it knows the commit failed), and yanking the entry out from under a live
+// lease is the very split-brain the pin exists to prevent. The discard is deferred to release.
+func (p *Pool) Invalidate(owner store.Owner, sessionID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	el, ok := p.items[entryKey{Owner: owner, SessionID: sessionID}]
+	if !ok {
+		return
+	}
+	e := el.Value.(*entry)
+	e.discard = true
+	if e.inUse == 0 {
+		p.lruList.Remove(el)
+		delete(p.items, e.key)
 	}
 }
 

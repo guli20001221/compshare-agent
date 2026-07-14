@@ -22,6 +22,14 @@ type EnginePool interface {
 	// Get returns the engine without acquiring the per-entry serialization lock.
 	// Retained for backward compatibility; prefer Lease in the HTTP path.
 	Get(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error)
+
+	// Invalidate throws the session's cached engine away once the last lease on it is released,
+	// so the next request rebuilds it from the database.
+	//
+	// Called when a turn produced an answer and then failed to save it. The engine still holds
+	// that answer in memory; the database does not. Leaving it in the pool forks the session —
+	// the next HOT turn sees an answer no cold rebuild can find.
+	Invalidate(owner store.Owner, sessionID string)
 }
 
 // OCRRecognizer extracts text from an image. Implemented by *ocr.Client;

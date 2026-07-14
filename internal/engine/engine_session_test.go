@@ -256,6 +256,11 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// guard. Per-session by design — sharing would validate one tenant's
 		// answer against another tenant's retrieved evidence. Reset every turn.
 		"searchKnowledgeRanThisTurn":  true,
+		// Per-turn, per-session: names the mutating tools that actually executed, so the HTTP
+		// layer can tell "nothing happened, retry freely" apart from "an instance was created and
+		// we failed to record it". Sharing it across sessions would let one user's create make
+		// ANOTHER user's failed turn refuse to offer a retry.
+		"mutatingActionsThisTurn": true,
 		"searchKnowledgeHitsThisTurn": true,
 		// Grounding fact set: every value this SESSION's tools returned, against which
 		// the final answer's checkable claims are tested. Per-session is not a detail
@@ -362,12 +367,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 69, len(perSessionFields); want != got {
+	if want, got := 70, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 85, typ.NumField(); want != got {
+	if want, got := 86, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

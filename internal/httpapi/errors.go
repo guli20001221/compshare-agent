@@ -52,7 +52,24 @@ var (
 	// happen as far as the server is concerned, so it must NOT be reported as done. A client
 	// that treats this as success carries on from a conversation the server has no record of,
 	// and the NEXT turn is the one that looks like amnesia.
+	//
+	// "请重试" is safe here and ONLY here: nothing changed outside the database, so retrying costs
+	// the user a second question and nothing else. See ErrTurnNotSavedAfterAction for the turn
+	// where that sentence would be dangerous.
 	ErrTurnNotSaved = &APIError{Code: "TurnNotSaved", RetCode: 226622, Status: http.StatusInternalServerError, Message: "本轮未保存，请重试"}
+	// ErrTurnNotSavedAfterAction: the same failure, on a turn that EXECUTED something — created an
+	// instance, started one, reset a password. The write already happened out in the world; only
+	// our record of it is missing.
+	//
+	// Telling this user to "retry" is telling them to create a second instance. The user must be
+	// pointed at the real state instead, and the client must not replay the turn. The two cases
+	// carry different codes precisely so the frontend cannot handle them with one branch.
+	ErrTurnNotSavedAfterAction = &APIError{
+		Code:    "TurnNotSavedAfterAction",
+		RetCode: 226623,
+		Status:  http.StatusInternalServerError,
+		Message: "本轮的操作可能已经执行，但没能保存记录。请勿重试——请先到控制台确认实例的实际状态。",
+	}
 )
 
 // AsAPIError converts any error into an *APIError. Returns nil if err is nil.

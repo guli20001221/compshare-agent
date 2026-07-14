@@ -106,6 +106,10 @@ type SessionStore interface {
 type MessageStore interface {
 	Append(ctx context.Context, m Message) error
 	UpdateAssistant(ctx context.Context, owner Owner, msgID string, patch AssistantPatch) error
+	// MarkAssistantOutcome records how a turn ended WITHOUT touching content. Every failure path
+	// must use it rather than UpdateAssistant: a failure knows the turn's status, not its text,
+	// and UpdateAssistant would write the empty string over an answer that may already be saved.
+	MarkAssistantOutcome(ctx context.Context, owner Owner, msgID string, status string, errorCode *string, latencyMs, ttftMs *int) error
 	ListBySession(ctx context.Context, sessionID string, limit int, cursor string) ([]Message, string, error)
 	GetWithOwnerCheck(ctx context.Context, owner Owner, msgID string) (Message, error)
 }

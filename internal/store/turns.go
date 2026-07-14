@@ -136,18 +136,23 @@ func (s *PostgresTurnStore) CommitTurn(
 	// the caller having to reason about which ones.
 	defer func() { _ = tx.Rollback() }()
 
+	// m.session_id = $11 is load-bearing, not belt-and-braces. Without it the message half is
+	// matched by (msgID, owner) alone while the state half is matched by (sessionID, owner) — so
+	// a msgID belonging to a DIFFERENT session of the SAME owner would commit that session's
+	// answer together with this session's state. One transaction, two sessions, and the atomicity
+	// this type exists to provide would be guaranteeing the wrong pair.
 	msgRes, err := tx.ExecContext(ctx, `
 UPDATE messages m
 SET content = $1, status = $2, error_code = $3, input_tokens = $4, output_tokens = $5, ttft_ms = $6, latency_ms = $7
 FROM sessions s
 WHERE s.id = m.session_id
-  AND m.id = $8 AND m.role = 'assistant'
+  AND m.id = $8 AND m.role = 'assistant' AND m.session_id = $11
   AND s.top_organization_id = $9 AND s.organization_id = $10 AND s.deleted_at IS NULL
 `, patch.Content, patch.Status,
 		nullableStringPtr(patch.ErrorCode),
 		nullableIntPtr(patch.InputTokens), nullableIntPtr(patch.OutputTokens),
 		nullableIntPtr(patch.TTFTMs), nullableIntPtr(patch.LatencyMs),
-		msgID, owner.TopOrganizationID, owner.OrganizationID)
+		msgID, owner.TopOrganizationID, owner.OrganizationID, sessionID)
 	if err != nil {
 		return 0, fmt.Errorf("commit turn: update assistant: %w", err)
 	}
