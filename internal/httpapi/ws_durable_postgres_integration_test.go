@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/turncoord"
 	"github.com/compshare-agent/internal/workflow"
@@ -57,7 +59,7 @@ func openDurableWSPostgres(t *testing.T) *sql.DB {
 	require.NoError(t, db.Ping())
 	t.Cleanup(func() { _ = db.Close() })
 	for _, migration := range []string{
-		"0001_init.sql", "0003_add_session_context_version.sql",
+		"0001_init.sql", "0002_create_agent_traces.sql", "0003_add_session_context_version.sql", "0004_add_agent_traces_outcome_columns.sql",
 		"0005_create_turn_execution.sql", "0006_create_turn_protocol.sql",
 		"0007_add_turn_recovery_context.sql", "0008_add_turn_retry_policy.sql",
 	} {
@@ -85,6 +87,7 @@ type durableWSEngine struct {
 	factory *durableWSEngineFactory
 	state   engine.SessionState
 	version int
+	hooks   engine.TraceHooks
 }
 
 type durableWSFormFactory struct {
@@ -135,7 +138,18 @@ func (e *durableWSEngine) SessionStateSnapshot() (engine.SessionState, int, bool
 	return e.state, e.version, true
 }
 
+func (e *durableWSEngine) AttachTraceHooks(hooks engine.TraceHooks) { e.hooks = hooks }
+
+func (e *durableWSEngine) TraceSnapshot(time.Time) engine.TraceSnapshot {
+	return engine.TraceSnapshot{SessionState: e.state, ContextVersion: e.version, SessionStateHydrated: true}
+}
+
 func (e *durableWSEngine) ChatWithOptions(ctx context.Context, _ string, _ func(engine.StepEvent), _ engine.ChatOptions) (string, error) {
+	if e.hooks.Completion != nil {
+		defer e.hooks.Completion(observability.TurnCompletionTrace{
+			Class: observability.CompletionClassAgent, Reason: observability.CompletionReasonAgentLoop, ModelCalls: 1,
+		})
+	}
 	select {
 	case e.factory.started <- struct{}{}:
 	default:
@@ -146,6 +160,29 @@ func (e *durableWSEngine) ChatWithOptions(ctx context.Context, _ string, _ func(
 	case <-e.factory.release:
 		return "durable answer", nil
 	}
+}
+
+type durableWSTraceWriter struct {
+	mu      sync.Mutex
+	records []observability.TraceRecord
+}
+
+func (w *durableWSTraceWriter) Append(record observability.TraceRecord) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.records = append(w.records, record)
+	return nil
+}
+func (w *durableWSTraceWriter) Enqueue(_ observability.TenantContext, record observability.TraceRecord) error {
+	return w.Append(record)
+}
+func (*durableWSTraceWriter) EmitStep(observability.StepTrace) error { return nil }
+func (*durableWSTraceWriter) Dir() string                            { return "" }
+func (*durableWSTraceWriter) Close(context.Context) error            { return nil }
+func (w *durableWSTraceWriter) snapshot() []observability.TraceRecord {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]observability.TraceRecord(nil), w.records...)
 }
 
 func newDurableWSPGServer(t *testing.T, db *sql.DB, factory turncoord.EngineFactory, recognizer OCRRecognizer) (*httptest.Server, *turncoord.Coordinator, store.Session) {
@@ -263,6 +300,40 @@ func TestWSDurable_PostgresLegacyAndV2ConcurrentSendExecuteOnce(t *testing.T) {
 	require.Len(t, history, 2)
 	assert.Contains(t, history[0].Content, "same question")
 	assert.Equal(t, "durable answer", history[1].Content)
+}
+
+func TestWSDurable_PostgresProductionPathWritesDurableAttemptTrace(t *testing.T) {
+	db := openDurableWSPostgres(t)
+	ctx := context.Background()
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, gatewayOwner, nil, nil)
+	require.NoError(t, err)
+	release := make(chan struct{})
+	close(release)
+	factory := &durableWSEngineFactory{started: make(chan struct{}, 1), release: release}
+	traceWriter := &durableWSTraceWriter{}
+	coordinator := turncoord.NewCoordinator(
+		store.NewPostgresTurnStore(db), sessions, factory,
+		turncoord.Options{
+			ReplicaID: "ws-trace", LeaseTTL: 2 * time.Second,
+			LeaseRenewInterval: 300 * time.Millisecond, InteractionPoll: 10 * time.Millisecond,
+			TraceWriter: traceWriter,
+		},
+	)
+	t.Cleanup(coordinator.Close)
+	srv := newDurableWSPGServerForCoordinator(t, db, coordinator, nil, false, false)
+
+	conn := dialWS(t, srv, gatewayHeaders())
+	frame := `{"Action":"SendCSAgentChat","ProtocolVersion":2,"SessionId":"` + session.ID + `","ClientTurnId":"trace-over-ws","Message":"continue","Features":["turn_replay_v2"]}`
+	require.NoError(t, conn.Write(ctx, websocket.MessageText, []byte(frame)))
+	frames := readUntilDurableTerminal(t, conn)
+	assert.Equal(t, "done", frames[len(frames)-1]["event"])
+	require.Eventually(t, func() bool { return len(traceWriter.snapshot()) == 1 }, 3*time.Second, 20*time.Millisecond)
+	record := traceWriter.snapshot()[0]
+	assert.Equal(t, "committed", record.Continuity.CommitOutcome)
+	assert.Equal(t, observability.CompletionClassAgent, record.Completion.Class)
+	assert.NotEmpty(t, record.TurnID)
+	assert.Equal(t, record.TurnID+":e1", record.TraceID)
 }
 
 func TestWSDurable_PostgresDisconnectThenResumeReplaysPersistedEvents(t *testing.T) {

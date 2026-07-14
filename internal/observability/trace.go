@@ -16,7 +16,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.6"
+const SchemaVersion = "trace.v0.7"
 
 const (
 	ToolSourceMainReAct         = "main_react"
@@ -140,6 +140,7 @@ type TraceRecord struct {
 	Retrieval           RetrievalTrace       `json:"retrieval"`
 	Diagnosis           DiagnosisTrace       `json:"diagnosis"`
 	State               StateTrace           `json:"state"`
+	Continuity          ContinuityTrace      `json:"continuity"`
 	Completion          TurnCompletionTrace  `json:"completion"`
 	Outcome             OutcomeTrace         `json:"outcome"`
 	// Steps holds agent-tier saga step traces, populated by B6.2. Empty /
@@ -170,6 +171,7 @@ type traceRecordJSON struct {
 	Retrieval           *RetrievalTrace       `json:"retrieval,omitempty"`
 	Diagnosis           *DiagnosisTrace       `json:"diagnosis,omitempty"`
 	State               *StateTrace           `json:"state,omitempty"`
+	Continuity          *ContinuityTrace      `json:"continuity,omitempty"`
 	Completion          *TurnCompletionTrace  `json:"completion,omitempty"`
 	Outcome             *OutcomeTrace         `json:"outcome,omitempty"`
 	Steps               []StepTrace           `json:"steps,omitempty"`
@@ -223,6 +225,9 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	if traceStateObserved(r.State) {
 		out.State = &r.State
 	}
+	if traceContinuityObserved(r.Continuity) {
+		out.Continuity = &r.Continuity
+	}
 	if traceCompletionObserved(r.Completion) {
 		out.Completion = &r.Completion
 	}
@@ -233,6 +238,30 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 		out.Steps = r.Steps
 	}
 	return json.Marshal(out)
+}
+
+// ContinuityTrace records the durable turn protocol around one execution
+// attempt. It deliberately contains only identity checks, counters, versions
+// and closed-set outcomes: no user text, model text, tool payload or persisted
+// session JSON is allowed across this observability boundary.
+type ContinuityTrace struct {
+	SessionIdentityMatch   bool   `json:"session_identity_match"`
+	TurnSequence           int64  `json:"turn_sequence"`
+	LeaseEpoch             int64  `json:"lease_epoch"`
+	SnapshotContextVersion int    `json:"snapshot_context_version"`
+	EnvelopeParseOutcome   string `json:"envelope_parse_outcome"`
+	ContextParseOutcome    string `json:"context_parse_outcome"`
+	RetryCount             int    `json:"retry_count"`
+	RecoveryAttempt        bool   `json:"recovery_attempt"`
+	CommitOutcome          string `json:"commit_outcome"`
+	CommitReason           string `json:"commit_reason,omitempty"`
+}
+
+func traceContinuityObserved(trace ContinuityTrace) bool {
+	return trace.TurnSequence != 0 || trace.LeaseEpoch != 0 ||
+		trace.SnapshotContextVersion != 0 || trace.EnvelopeParseOutcome != "" ||
+		trace.ContextParseOutcome != "" || trace.RetryCount != 0 ||
+		trace.RecoveryAttempt || trace.CommitOutcome != "" || trace.CommitReason != ""
 }
 
 // TWO SEPARATE AXES describe how a turn ran. They are NOT interchangeable and

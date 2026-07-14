@@ -14,6 +14,7 @@ import (
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
@@ -28,6 +29,7 @@ type coordinatorTestEngine struct {
 	advisories engine.ContinuityAdvisories
 	journalErr error
 	chat       func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error)
+	hooks      engine.TraceHooks
 }
 
 func (e *coordinatorTestEngine) SetSessionState(state engine.SessionState, version int) {
@@ -44,12 +46,30 @@ func (e *coordinatorTestEngine) SessionStateSnapshot() (engine.SessionState, int
 
 func (e *coordinatorTestEngine) ActionJournalError() error { return e.journalErr }
 
+func (e *coordinatorTestEngine) AttachTraceHooks(hooks engine.TraceHooks) { e.hooks = hooks }
+
+func (e *coordinatorTestEngine) TraceSnapshot(time.Time) engine.TraceSnapshot {
+	return engine.TraceSnapshot{
+		SessionState: e.state, ContextVersion: e.version, SessionStateHydrated: e.hydrated,
+		ResolutionSource: observability.ResolutionSourceSessionState,
+	}
+}
+
 func (e *coordinatorTestEngine) ChatWithOptions(
 	ctx context.Context,
 	_ string,
 	onStep func(engine.StepEvent),
 	opts engine.ChatOptions,
 ) (string, error) {
+	if e.hooks.Context != nil {
+		e.hooks.Context(observability.ContextTrace{LoopMessages: 1})
+	}
+	if e.hooks.Completion != nil {
+		defer e.hooks.Completion(observability.TurnCompletionTrace{
+			Class: observability.CompletionClassAgent, Reason: observability.CompletionReasonAgentLoop,
+			ModelCalls: 1,
+		})
+	}
 	if e.chat != nil {
 		return e.chat(ctx, onStep, opts)
 	}

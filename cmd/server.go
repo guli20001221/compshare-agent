@@ -97,10 +97,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			store.NewPostgresTurnStore(db),
 			sessionStore,
 			turncoord.EngineFactoryFromPool(pool),
-			turncoord.Options{
-				ReplicaID:            serverReplicaID(),
-				MutatingToolsEnabled: overlayGetenv("COMPSHARE_ENABLE_MUTATING_TOOLS") == "1",
-			},
+			serverTurnCoordinatorOptions(overlayGetenv, traceWriter),
 		)
 		handlers.SetTurnCoordinator(coordinator)
 		defer coordinator.Close()
@@ -148,6 +145,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WriteTimeout: cfg.Agent.HTTP.WriteTimeout,
 	}
 	return serveUntilSignal(srv)
+}
+
+func serverTurnCoordinatorOptions(getenv getenvFunc, traceWriter observability.Writer) turncoord.Options {
+	return turncoord.Options{
+		ReplicaID:            serverReplicaID(),
+		MutatingToolsEnabled: getenv("COMPSHARE_ENABLE_MUTATING_TOOLS") == "1",
+		TraceWriter:          traceWriter,
+	}
 }
 
 type interactionFeatureSetter interface {

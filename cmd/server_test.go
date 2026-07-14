@@ -155,6 +155,19 @@ func TestServerTraceGetenvUsesConfiguredMySQLDSN(t *testing.T) {
 	require.True(t, traceMySQLSinkEnabled(getenv))
 }
 
+func TestServerDurableCoordinatorReceivesProductionTraceWriter(t *testing.T) {
+	writer := &captureAppendWriter{}
+	opts := serverTurnCoordinatorOptions(func(key string) string {
+		if key == "COMPSHARE_ENABLE_MUTATING_TOOLS" {
+			return "1"
+		}
+		return ""
+	}, writer)
+	require.Same(t, writer, opts.TraceWriter)
+	require.True(t, opts.MutatingToolsEnabled)
+	require.NotEmpty(t, opts.ReplicaID)
+}
+
 type recordingInteractionFeatures struct {
 	confirmForm  bool
 	guidedCreate bool

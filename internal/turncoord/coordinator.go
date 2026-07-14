@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,8 +18,10 @@ import (
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
+	"github.com/compshare-agent/internal/turntrace"
 	"github.com/compshare-agent/internal/workflow"
 )
 
@@ -37,6 +40,12 @@ type TurnEngine interface {
 	SetContinuityAdvisories(engine.ContinuityAdvisories)
 	SessionStateSnapshot() (engine.SessionState, int, bool)
 	ChatWithOptions(context.Context, string, func(engine.StepEvent), engine.ChatOptions) (string, error)
+}
+
+type traceableTurnEngine interface {
+	TurnEngine
+	AttachTraceHooks(engine.TraceHooks)
+	TraceSnapshot(time.Time) engine.TraceSnapshot
 }
 
 type EngineFactory interface {
@@ -92,6 +101,7 @@ type Options struct {
 	RecoveryScanInterval time.Duration
 	RecoveryBatchSize    int
 	MutatingToolsEnabled bool
+	TraceWriter          observability.Writer
 }
 
 func (o Options) withDefaults() Options {
@@ -474,12 +484,74 @@ func (c *Coordinator) run(turn store.Turn) {
 	if !ok {
 		return
 	}
+	attemptStart := time.Now()
+	attemptTrace := turntrace.New(turntrace.Config{
+		Writer: c.opts.TraceWriter,
+		Tenant: observability.TenantContext{
+			TopOrgID: int64(owner.TopOrganizationID), OrgID: int64(owner.OrganizationID),
+			ConnectionID: turn.SessionID,
+		},
+		TraceID: traceAttemptID(turnID, lease.Epoch), TurnID: turnID,
+		TurnIndex: int(turn.Sequence), UserMsgHash: "sha256:" + turn.RequestHash,
+		Start: attemptStart,
+		Continuity: observability.ContinuityTrace{
+			SessionIdentityMatch: turn.ID == lease.TurnID && turn.SessionID == lease.SessionID,
+			TurnSequence:         turn.Sequence, LeaseEpoch: lease.Epoch,
+			EnvelopeParseOutcome: "not_read", ContextParseOutcome: "not_read",
+			RetryCount:      turn.RetryCount,
+			RecoveryAttempt: turn.RetryCount > 0 || turn.Status == store.TurnStatusFailedRetryable,
+		},
+	})
+	var (
+		traceEngine     traceableTurnEngine
+		traceReply      string
+		traceChatErr    error
+		traceAttemptErr error
+	)
+	// Register trace finalization before the settlement defer below. Defers run
+	// in reverse order, so an unexpected exit is first made durable and only
+	// then written to observability.
+	defer func() {
+		if attemptTrace == nil {
+			return
+		}
+		var snapshot engine.TraceSnapshot
+		if traceEngine != nil {
+			snapshot = traceEngine.TraceSnapshot(time.Now())
+		}
+		if err := attemptTrace.Finish(traceChatErr, traceAttemptErr, traceReply, snapshot, time.Now()); err != nil {
+			log.Printf("warning: durable turn trace write failed: turn=%s epoch=%d: %v", turnID, lease.Epoch, err)
+		}
+	}()
 	settled := false
+	settleFailure := func(desired store.TurnStatus, reason string) store.Turn {
+		failed := c.failAs(owner, lease, desired, reason)
+		traceReason := boundedContinuityReason(reason)
+		if failed.Status == store.TurnStatusCommitted && reason == "turn_not_saved" {
+			traceAttemptErr = nil
+			attemptTrace.SetContinuity(func(trace *observability.ContinuityTrace) {
+				trace.CommitOutcome = "late_reconciled_committed"
+				trace.CommitReason = ""
+			})
+			return failed
+		}
+		if traceAttemptErr == nil {
+			traceAttemptErr = errors.New(traceReason)
+		}
+		attemptTrace.SetContinuity(func(trace *observability.ContinuityTrace) {
+			trace.CommitReason = traceReason
+			if failed.ID == "" {
+				trace.CommitOutcome = "settlement_interrupted"
+				return
+			}
+			trace.CommitOutcome = string(failed.Status)
+			trace.RetryCount = failed.RetryCount
+		})
+		return failed
+	}
 	defer func() {
 		if !settled {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			_, _ = c.turns.FailTurn(cleanupCtx, owner, lease, store.TurnStatusFailedRetryable, "executor_stopped")
+			settleFailure(store.TurnStatusFailedRetryable, "executor_stopped")
 		}
 	}()
 
@@ -490,16 +562,26 @@ func (c *Coordinator) run(turn store.Turn) {
 	turn, err := c.turns.GetTurn(reloadCtx, owner, turnID)
 	reloadCancel()
 	if err != nil {
-		c.fail(owner, lease, "turn_reload_failed")
+		settleFailure(store.TurnStatusFailedRetryable, "turn_reload_failed")
 		settled = true
 		return
 	}
+	attemptTrace.SetContinuity(func(trace *observability.ContinuityTrace) {
+		trace.SessionIdentityMatch = turn.ID == lease.TurnID && turn.SessionID == lease.SessionID && turn.Owner == owner
+		trace.TurnSequence = turn.Sequence
+		trace.RetryCount = turn.RetryCount
+		trace.RecoveryAttempt = turn.RetryCount > 0 || turn.Status == store.TurnStatusFailedRetryable
+	})
 	in, err := thawSubmitInput(turn)
 	if err != nil {
-		c.failAs(owner, lease, store.TurnStatusFailedFinal, executionEnvelopeFailureReason(err))
+		reason := executionEnvelopeFailureReason(err)
+		attemptTrace.SetContinuity(func(trace *observability.ContinuityTrace) { trace.EnvelopeParseOutcome = reason })
+		settleFailure(store.TurnStatusFailedFinal, reason)
 		settled = true
 		return
 	}
+	attemptTrace.SetUserMessage(in.Message)
+	attemptTrace.SetContinuity(func(trace *observability.ContinuityTrace) { trace.EnvelopeParseOutcome = "valid" })
 
 	execCtx, execCancel := context.WithTimeout(c.ctx, c.opts.ExecutionTimeout)
 	execCtx, cancelCause := context.WithCancelCause(execCtx)
@@ -515,7 +597,7 @@ func (c *Coordinator) run(turn store.Turn) {
 
 	runningEvent, err := c.appendEvent(execCtx, in.Owner, lease, "turn.running", map[string]any{"turn_id": turnID})
 	if err != nil {
-		c.fail(in.Owner, lease, "event_persist_failed")
+		settleFailure(store.TurnStatusFailedRetryable, "event_persist_failed")
 		settled = true
 		return
 	}
@@ -526,12 +608,16 @@ func (c *Coordinator) run(turn store.Turn) {
 	// authority.
 	sess, err := c.sessions.GetByID(execCtx, in.Owner, in.SessionID)
 	if err != nil {
-		c.fail(in.Owner, lease, "context_read_failed")
+		settleFailure(store.TurnStatusFailedRetryable, "context_read_failed")
 		settled = true
 		return
 	}
 
-	state, clientContext, warning, mode, mutations := parseExecutionContext(sess.Context, c.opts.MutatingToolsEnabled)
+	state, clientContext, warning, mode, mutations, contextParseOutcome := parseExecutionContext(sess.Context, c.opts.MutatingToolsEnabled)
+	attemptTrace.SetContinuity(func(trace *observability.ContinuityTrace) {
+		trace.SnapshotContextVersion = sess.ContextVersion
+		trace.ContextParseOutcome = contextParseOutcome
+	})
 	journal := NewActionJournal(c.turns, in.Owner, lease)
 	sequence := &interactionSequence{}
 	confirm := c.confirmFunc(execCtx, in.Owner, lease, cancelCause, sequence)
@@ -545,20 +631,30 @@ func (c *Coordinator) run(turn store.Turn) {
 		ActionJournal:         journal, RequireActionJournal: true,
 	})
 	if err != nil {
-		c.fail(in.Owner, lease, "engine_build_failed")
+		settleFailure(store.TurnStatusFailedRetryable, "engine_build_failed")
 		settled = true
 		return
+	}
+	if attemptTrace != nil {
+		var traceable bool
+		traceEngine, traceable = eng.(traceableTurnEngine)
+		if !traceable {
+			settleFailure(store.TurnStatusFailedFinal, "trace_engine_unsupported")
+			settled = true
+			return
+		}
+		traceEngine.AttachTraceHooks(attemptTrace.Hooks())
 	}
 	eng.SetSessionState(state, sess.ContextVersion)
 	sameTurnActions, err := journal.RestoredActionAdvisory(execCtx)
 	if err != nil {
-		c.fail(in.Owner, lease, "action_recovery_read_failed")
+		settleFailure(store.TurnStatusFailedRetryable, "action_recovery_read_failed")
 		settled = true
 		return
 	}
 	priorOutcomes, err := c.turns.ListContinuityAdvisories(execCtx, in.Owner, in.SessionID, 10)
 	if err != nil {
-		c.fail(in.Owner, lease, "continuity_read_failed")
+		settleFailure(store.TurnStatusFailedRetryable, "continuity_read_failed")
 		settled = true
 		return
 	}
@@ -573,6 +669,7 @@ func (c *Coordinator) run(turn store.Turn) {
 	start := time.Now()
 	var usage llm.TokenUsage
 	reply, chatErr := eng.ChatWithOptions(tools.WithUser(execCtx, normalizedUserContext(in)), in.Message, func(step engine.StepEvent) {
+		attemptTrace.OnStep(step)
 		eventMu.Lock()
 		defer eventMu.Unlock()
 		if eventErr != nil {
@@ -609,31 +706,38 @@ func (c *Coordinator) run(turn store.Turn) {
 			reason = "interaction_expired"
 			failureStatus = store.TurnStatusAborted
 		}
-		c.failAs(in.Owner, lease, failureStatus, reason)
+		if chatErr != nil {
+			traceChatErr = chatErr
+		} else if persistEventErr != nil {
+			traceAttemptErr = persistEventErr
+		} else if cause != nil {
+			traceAttemptErr = cause
+		}
+		settleFailure(failureStatus, reason)
 		settled = true
 		return
 	}
 	if health, ok := eng.(interface{ ActionJournalError() error }); ok {
 		if err := health.ActionJournalError(); err != nil {
-			c.fail(in.Owner, lease, "action_outcome_uncertain")
+			settleFailure(store.TurnStatusFailedRetryable, "action_outcome_uncertain")
 			settled = true
 			return
 		}
 	}
 	if err := journal.VerifyComplete(execCtx); err != nil {
-		c.fail(in.Owner, lease, "action_replay_incomplete")
+		settleFailure(store.TurnStatusFailedRetryable, "action_replay_incomplete")
 		settled = true
 		return
 	}
 	if err := journal.Err(); err != nil {
-		c.fail(in.Owner, lease, "action_outcome_uncertain")
+		settleFailure(store.TurnStatusFailedRetryable, "action_outcome_uncertain")
 		settled = true
 		return
 	}
 
 	state, version, hydrated := eng.SessionStateSnapshot()
 	if !hydrated || version != sess.ContextVersion {
-		c.fail(in.Owner, lease, "context_snapshot_invalid")
+		settleFailure(store.TurnStatusFailedRetryable, "context_snapshot_invalid")
 		settled = true
 		return
 	}
@@ -641,7 +745,7 @@ func (c *Coordinator) run(turn store.Turn) {
 	if mode == store.ContextWriteUpdate {
 		contextRaw, err = json.Marshal(engine.PersistedContext{AgentSessionState: state, ClientContext: clientContext})
 		if err != nil {
-			c.fail(in.Owner, lease, "context_encode_failed")
+			settleFailure(store.TurnStatusFailedRetryable, "context_encode_failed")
 			settled = true
 			return
 		}
@@ -656,10 +760,11 @@ func (c *Coordinator) run(turn store.Turn) {
 	}
 	finalReply = redactTurnOutput(finalReply)
 	if finalReply == "" {
-		c.fail(in.Owner, lease, "empty_answer")
+		settleFailure(store.TurnStatusFailedRetryable, "empty_answer")
 		settled = true
 		return
 	}
+	traceReply = finalReply
 	latency := int(time.Since(start).Milliseconds())
 	payload, _ := json.Marshal(map[string]any{
 		"turn_id": turnID, "message_id": turn.AssistantMessageID,
@@ -672,6 +777,7 @@ func (c *Coordinator) run(turn store.Turn) {
 		TerminalEventType: "turn.committed", TerminalEventPayload: payload,
 	}
 	committed, err := c.turns.CommitTurn(execCtx, in.Owner, commitInput)
+	reconciled := false
 	if err != nil {
 		// A transaction error is not evidence of rollback. First prove whether
 		// our exact fingerprint committed; only then may we classify the attempt
@@ -679,12 +785,20 @@ func (c *Coordinator) run(turn store.Turn) {
 		reconcileCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		committed, err = c.turns.ReconcileCommit(reconcileCtx, in.Owner, commitInput)
 		cancel()
+		reconciled = err == nil
 	}
 	if err != nil {
-		c.fail(in.Owner, lease, "turn_not_saved")
+		settleFailure(store.TurnStatusFailedRetryable, "turn_not_saved")
 		settled = true
 		return
 	}
+	attemptTrace.SetContinuity(func(trace *observability.ContinuityTrace) {
+		trace.CommitOutcome = "committed"
+		if reconciled {
+			trace.CommitOutcome = "reconciled_committed"
+		}
+		trace.CommitReason = ""
+	})
 	settled = true
 	// Re-read the exact database event. The stored sequence, payload and time
 	// are the replay contract; a locally reconstructed approximation can drift.
@@ -850,17 +964,17 @@ func (c *Coordinator) awaitConfirmation(
 	}
 }
 
-func parseExecutionContext(raw json.RawMessage, globalMutations bool) (engine.SessionState, json.RawMessage, string, store.ContextWriteMode, bool) {
+func parseExecutionContext(raw json.RawMessage, globalMutations bool) (engine.SessionState, json.RawMessage, string, store.ContextWriteMode, bool, string) {
 	pc, err := engine.ParsePersistedContext(raw)
 	if err == nil {
-		return pc.AgentSessionState, pc.ClientContext, "", store.ContextWriteUpdate, globalMutations
+		return pc.AgentSessionState, pc.ClientContext, "", store.ContextWriteUpdate, globalMutations, "valid"
 	}
 	if errors.Is(err, engine.ErrUnknownSessionStateSchema) {
 		return engine.SessionState{SchemaVersion: engine.SessionStateSchemaCurrent}, nil,
-			UnknownSchemaWarning, store.ContextWritePreserve, false
+			UnknownSchemaWarning, store.ContextWritePreserve, false, "unknown_schema"
 	}
 	return engine.SessionState{SchemaVersion: engine.SessionStateSchemaCurrent}, nil,
-		CorruptContextWarning, store.ContextWriteUpdate, globalMutations
+		CorruptContextWarning, store.ContextWriteUpdate, globalMutations, "malformed"
 }
 
 func normalizedUserContext(in SubmitInput) tools.UserContext {
@@ -1114,20 +1228,20 @@ func eventFromStore(event store.TurnEvent) Event {
 	return Event{TurnID: event.TurnID, Seq: event.Seq, LeaseEpoch: event.LeaseEpoch, Type: event.Type, Payload: event.Payload, Provisional: event.Provisional, CreatedAt: event.CreatedAt}
 }
 
-func (c *Coordinator) fail(owner store.Owner, lease store.ConversationLease, reason string) {
-	c.failAs(owner, lease, store.TurnStatusFailedRetryable, reason)
+func (c *Coordinator) fail(owner store.Owner, lease store.ConversationLease, reason string) store.Turn {
+	return c.failAs(owner, lease, store.TurnStatusFailedRetryable, reason)
 }
 
 // failAs keeps reconciling while the coordinator is alive. A transient DB
 // failure must not leave a running/awaiting turn permanently at the queue
 // head. If the old lease expires, this worker reacquires the same turn under a
 // new fence before writing the failure; it never skips to a later turn.
-func (c *Coordinator) failAs(owner store.Owner, lease store.ConversationLease, desired store.TurnStatus, reason string) {
+func (c *Coordinator) failAs(owner store.Owner, lease store.ConversationLease, desired store.TurnStatus, reason string) store.Turn {
 	current := lease
 	for {
 		select {
 		case <-c.ctx.Done():
-			return
+			return store.Turn{}
 		default:
 		}
 		attemptCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1135,13 +1249,13 @@ func (c *Coordinator) failAs(owner store.Owner, lease store.ConversationLease, d
 		if getErr == nil && (turn.Status.Terminal() || turn.Status == desired) {
 			cancel()
 			c.publishAvailable(owner, turn.ID)
-			return
+			return turn
 		}
 		failed, failErr := c.turns.FailTurn(attemptCtx, owner, current, desired, reason)
 		cancel()
 		if failErr == nil {
 			c.publishAvailable(owner, failed.ID)
-			return
+			return failed
 		}
 		if errors.Is(failErr, store.ErrLeaseFenced) || errors.Is(failErr, store.ErrInvalidTurnState) || time.Now().After(current.LeaseUntil) {
 			acquireCtx, acquireCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1156,9 +1270,31 @@ func (c *Coordinator) failAs(owner store.Owner, lease store.ConversationLease, d
 		select {
 		case <-c.ctx.Done():
 			timer.Stop()
-			return
+			return store.Turn{}
 		case <-timer.C:
 		}
+	}
+}
+
+func traceAttemptID(turnID string, leaseEpoch int64) string {
+	return fmt.Sprintf("%s:e%d", turnID, leaseEpoch)
+}
+
+// Keep persisted protocol reasons enumerable. Store errors may contain SQL,
+// model or upstream text; those details are never copied into continuity.
+func boundedContinuityReason(reason string) string {
+	switch reason {
+	case "executor_stopped", "turn_reload_failed", "execution_envelope_missing",
+		"execution_envelope_unsupported", "execution_envelope_invalid",
+		"event_persist_failed", "context_read_failed", "engine_build_failed",
+		"trace_engine_unsupported", "action_recovery_read_failed",
+		"continuity_read_failed", "execution_failed", "lease_lost",
+		"interaction_expired", "action_outcome_uncertain",
+		"action_replay_incomplete", "context_snapshot_invalid",
+		"context_encode_failed", "empty_answer", "turn_not_saved":
+		return reason
+	default:
+		return "other"
 	}
 }
 
