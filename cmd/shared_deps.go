@@ -141,9 +141,9 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	}
 	engine.SetDisciplinedKnowledgeQASynthesisEnabled(disciplinedKnowledgeQASynthesis)
 	if disciplinedKnowledgeQASynthesis {
-		log.Printf("runtime: HTTP disciplined knowledge_qa synthesis enabled (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS default-on; terminal-style cited synthesis writes the final answer; disable with =0)")
+		log.Printf("runtime: HTTP knowledge_qa evidence repair enabled (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS default-on; rejected drafts get one proof-carrying repair from the same evidence ledger; disable with =0)")
 	} else {
-		log.Printf("runtime: HTTP disciplined knowledge_qa synthesis disabled (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS=0; free ReAct write + cite-retry)")
+		log.Printf("runtime: HTTP knowledge_qa evidence repair disabled (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS=0; semantic verification still applies, but rejected drafts are not regenerated)")
 	}
 	kqaSelfRevision, unknownKQASelfRevision := kqaSelfRevisionEnabledFromEnv(getenv)
 	if unknownKQASelfRevision != "" {
@@ -151,9 +151,9 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	}
 	engine.SetKQASelfRevisionEnabled(kqaSelfRevision)
 	if kqaSelfRevision {
-		log.Printf("runtime: HTTP knowledge_qa over-conservatism self-revision enabled (COMPSHARE_KQA_SELF_REVISION default-on; re-read grounded draft + commit, add no new facts, re-validated; disable with =0)")
+		log.Printf("runtime: HTTP knowledge_qa directness guidance enabled (COMPSHARE_KQA_SELF_REVISION default-on; applied inside the single proof-carrying repair; disable with =0)")
 	} else {
-		log.Printf("runtime: HTTP knowledge_qa over-conservatism self-revision disabled (COMPSHARE_KQA_SELF_REVISION=0; disciplined draft delivered as-is)")
+		log.Printf("runtime: HTTP knowledge_qa directness guidance disabled (COMPSHARE_KQA_SELF_REVISION=0; evidence repair remains conservative)")
 	}
 	return deps, mutating, nil
 }

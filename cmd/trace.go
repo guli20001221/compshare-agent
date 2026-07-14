@@ -457,16 +457,11 @@ func knowledgeQAAgentLoopEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-// disciplinedKnowledgeQASynthesisEnabledFromEnv gates the disciplined-synthesis primitive on
-// an agent-loop knowledge_qa turn (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS). DEFAULT ON
-// (2026-06-09) and effective only when COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is also on:
-// the FINAL answer for the turn is written by terminal RAG's tight cited-synthesis
-// prompt (answerWithRetrievedEvidence, with its own cite-harder retry) on the evidence
-// the agent gathered via SearchKnowledge — rather than the free ReAct write, which
-// under flash intermittently omits the cite or dumps raw text. This is what made the
-// agent loop match terminal on faithfulness/refusal in the #150 A/B (DDP N=20: refusal
-// 0.00, 0 fab; see knowledgeQAAgentLoopEnabledFromEnv). On synthesis failure it falls
-// through to the existing cite-retry/refusal, so it is never worse than free-write.
+// disciplinedKnowledgeQASynthesisEnabledFromEnv gates one bounded, proof-carrying
+// repair after the common knowledge-answer verifier rejects an agent-loop draft.
+// DEFAULT ON and effective only when COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is also on.
+// The backward-compatible flag name is retained for rollout; the implementation no
+// longer borrows terminal RAG or retries merely to add citation punctuation.
 // ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off + non-empty warn
 // (CLAUDE.md: never silently coerce). Boot-only; the Go-package default
 // (engine.disciplinedKnowledgeQASynthesisOn) stays false so unit tests are unaffected.
@@ -482,18 +477,11 @@ func disciplinedKnowledgeQASynthesisEnabledFromEnv(getenv getenvFunc) (bool, str
 	}
 }
 
-// kqaSelfRevisionEnabledFromEnv gates the over-conservatism self-revision pass on
-// an agent-loop knowledge_qa answer (COMPSHARE_KQA_SELF_REVISION). DEFAULT ON
-// (2026-07-08) and effective only when the disciplined-synthesis primitive is also
-// on (the pass lives inside synthesizeKnowledgeQAFromLedger, so it is naturally
-// inert when disciplined synthesis / the agent loop is off): after the grounded
-// disciplined-synthesis draft, one flash pass re-reads (question, draft, evidence)
-// and commits to the answer the evidence already supports when the draft
-// reflexively over-hedges, adding no fact absent from the evidence; the caller
-// re-validates grounding so it is never worse than the draft. Flip gated on the
-// 2026-07-08 beval2 A/B (250 real-chat runs, 10 Sonnet judges): target
-// over_conservative 25->10, answer-failure 0.46->0.23, 0 fabrication regression,
-// control flat. ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off +
+// kqaSelfRevisionEnabledFromEnv keeps the historical flag as directness guidance
+// inside the same proof-carrying repair call. It no longer starts a separate prose
+// rewrite after grounding validation, so it cannot create an unverified final answer.
+// DEFAULT ON and inert when evidence repair is disabled.
+// ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off +
 // non-empty warn (CLAUDE.md: never silently coerce). Boot-only; the Go-package
 // default (engine.kqaSelfRevisionOn) stays false so unit tests are unaffected.
 func kqaSelfRevisionEnabledFromEnv(getenv getenvFunc) (bool, string) {
