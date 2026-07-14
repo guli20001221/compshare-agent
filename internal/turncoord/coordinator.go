@@ -35,6 +35,7 @@ var privateKeyBlock = regexp.MustCompile(`(?is)-----BEGIN [^-\r\n]*PRIVATE KEY--
 // independent of model and upstream services.
 type TurnEngine interface {
 	SetSessionState(engine.SessionState, int)
+	SetContinuityAdvisories(engine.ContinuityAdvisories)
 	SessionStateSnapshot() (engine.SessionState, int, bool)
 	ChatWithOptions(context.Context, string, func(engine.StepEvent), engine.ChatOptions) (string, error)
 }
@@ -67,6 +68,7 @@ type turnStore interface {
 	GetTurn(context.Context, store.Owner, string) (store.Turn, error)
 	FindTurnByClientID(context.Context, store.Owner, string, string) (store.Turn, error)
 	ListRecoverableTurns(context.Context, int) ([]store.RecoverableTurn, error)
+	ListContinuityAdvisories(context.Context, store.Owner, string, int) ([]store.ContinuityAdvisory, error)
 	AcquireConversationLease(context.Context, store.Owner, string, string, string, time.Duration) (store.ConversationLease, error)
 	RenewConversationLease(context.Context, store.Owner, store.ConversationLease, time.Duration) (store.ConversationLease, error)
 	ReleaseConversationLease(context.Context, store.Owner, store.ConversationLease) error
@@ -522,6 +524,23 @@ func (c *Coordinator) run(in SubmitInput, turnID string) {
 		return
 	}
 	eng.SetSessionState(state, sess.ContextVersion)
+	sameTurnActions, err := journal.RestoredActionAdvisory(execCtx)
+	if err != nil {
+		c.fail(in.Owner, lease, "action_recovery_read_failed")
+		settled = true
+		return
+	}
+	priorOutcomes, err := c.turns.ListContinuityAdvisories(execCtx, in.Owner, in.SessionID, 10)
+	if err != nil {
+		c.fail(in.Owner, lease, "continuity_read_failed")
+		settled = true
+		return
+	}
+	eng.SetContinuityAdvisories(buildContinuityAdvisories(
+		mode == store.ContextWritePreserve,
+		sameTurnActions,
+		priorOutcomes,
+	))
 
 	var eventErr error
 	var eventMu sync.Mutex
@@ -934,6 +953,64 @@ func sanitizeInteractionArgs(args map[string]any) map[string]any {
 func redactTurnOutput(text string) string {
 	text = guardrails.RedactOutputLeak(guardrails.RedactPII(text))
 	return shortCredentialMarker.ReplaceAllString(text, guardrails.CredentialRedactedOutput)
+}
+
+func buildContinuityAdvisories(
+	readOnly bool,
+	sameTurn []RestoredActionAdvisory,
+	prior []store.ContinuityAdvisory,
+) engine.ContinuityAdvisories {
+	notices := make([]string, 0, len(sameTurn)+len(prior))
+	for _, item := range sameTurn {
+		if item.Outcome != "succeeded" || strings.TrimSpace(item.ActionName) == "" {
+			continue
+		}
+		notice := fmt.Sprintf("本轮恢复前，操作 %s 已确认成功%s；不要重复执行，请据此完成回答",
+			item.ActionName, continuityHintText(item.ContextHint))
+		notices = append(notices, notice)
+	}
+	for _, item := range prior {
+		switch item.Kind {
+		case store.ContinuityAdvisoryKnownSuccess:
+			if strings.TrimSpace(item.ActionName) == "" {
+				continue
+			}
+			notices = append(notices, fmt.Sprintf(
+				"此前第 %d 轮的操作 %s 后来确认成功%s；这只用于理解后续问题，新操作仍须重新查询并确认",
+				item.TurnSequence, item.ActionName, continuityHintText(item.ContextHint),
+			))
+		case store.ContinuityAdvisoryAmbiguous:
+			notices = append(notices, fmt.Sprintf(
+				"此前第 %d 轮有操作结果无法确认；不得假定成功或失败，应先查询当前状态",
+				item.TurnSequence,
+			))
+		}
+	}
+	return engine.ContinuityAdvisories{ReadOnly: readOnly, Notices: notices}
+}
+
+func continuityHintText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var hint store.ActionContextHint
+	if err := json.Unmarshal(raw, &hint); err != nil {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if len(hint.ResourceIDs) > 0 {
+		parts = append(parts, "资源 "+strings.Join(hint.ResourceIDs, "、"))
+	}
+	if hint.Region != "" {
+		parts = append(parts, "地域 "+hint.Region)
+	}
+	if hint.Zone != "" {
+		parts = append(parts, "可用区 "+hint.Zone)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "（" + strings.Join(parts, "，") + "）"
 }
 
 func (c *Coordinator) appendEvent(ctx context.Context, owner store.Owner, lease store.ConversationLease, eventType string, payload any) (Event, error) {

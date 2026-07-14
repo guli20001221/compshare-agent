@@ -89,6 +89,8 @@ func (e *durableWSEngine) SetSessionState(state engine.SessionState, version int
 	e.state, e.version = state, version
 }
 
+func (e *durableWSEngine) SetContinuityAdvisories(engine.ContinuityAdvisories) {}
+
 func (e *durableWSEngine) SessionStateSnapshot() (engine.SessionState, int, bool) {
 	return e.state, e.version, true
 }

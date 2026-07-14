@@ -22,12 +22,17 @@ type coordinatorTestEngine struct {
 	state      engine.SessionState
 	version    int
 	hydrated   bool
+	advisories engine.ContinuityAdvisories
 	journalErr error
 	chat       func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error)
 }
 
 func (e *coordinatorTestEngine) SetSessionState(state engine.SessionState, version int) {
 	e.state, e.version, e.hydrated = state, version, true
+}
+
+func (e *coordinatorTestEngine) SetContinuityAdvisories(value engine.ContinuityAdvisories) {
+	e.advisories = value
 }
 
 func (e *coordinatorTestEngine) SessionStateSnapshot() (engine.SessionState, int, bool) {
@@ -46,6 +51,29 @@ func (e *coordinatorTestEngine) ChatWithOptions(
 		return e.chat(ctx, onStep, opts)
 	}
 	return "answer", nil
+}
+
+func TestBuildContinuityAdvisories_SeparatesUnderstandingFromAuthority(t *testing.T) {
+	hint, err := json.Marshal(store.ActionContextHint{
+		ResourceIDs: []string{"uhost-1"}, Region: "cn-bj2", Zone: "cn-bj2-02",
+	})
+	require.NoError(t, err)
+
+	got := buildContinuityAdvisories(true,
+		[]RestoredActionAdvisory{{ActionName: "StopInstanceWorkflow", Outcome: "succeeded", ContextHint: hint}},
+		[]store.ContinuityAdvisory{
+			{Kind: store.ContinuityAdvisoryKnownSuccess, TurnSequence: 3, ActionName: "CreateInstanceWorkflow", ContextHint: hint},
+			{Kind: store.ContinuityAdvisoryAmbiguous, TurnSequence: 4},
+			{Kind: store.ContinuityAdvisoryAborted, TurnSequence: 5},
+		},
+	)
+
+	assert.True(t, got.ReadOnly)
+	require.Len(t, got.Notices, 3, "a plain aborted turn carries no semantic fact and must not pollute the prompt")
+	assert.Contains(t, got.Notices[0], "不要重复执行")
+	assert.Contains(t, got.Notices[0], "uhost-1")
+	assert.Contains(t, got.Notices[1], "只用于理解")
+	assert.Contains(t, got.Notices[2], "不得假定成功或失败")
 }
 
 type coordinatorFactory struct {

@@ -122,3 +122,47 @@ func TestCoordinator_SubscribeRecoversTurnAcceptedAfterStartupScan(t *testing.T)
 		}
 	}
 }
+
+func TestCoordinator_RecoveryConsumesKnownSuccessWithoutRepeatingMutation(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx := context.Background()
+	owner := store.Owner{TopOrganizationID: 82301, OrganizationID: 82302}
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := store.NewPostgresTurnStore(db)
+	turn := acceptFrozenTurn(t, turns, SubmitInput{
+		Owner: owner, SessionID: session.ID, ClientTurnID: "recover-after-write", Message: "stop it",
+	})
+	oldLease, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "dead-writer", time.Minute)
+	require.NoError(t, err)
+	oldJournal := NewActionJournal(turns, owner, oldLease)
+	upstreamCalls := 0
+	result, err := oldJournal.Execute(ctx, "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-recovered"}, func(context.Context, string, map[string]any) (map[string]any, error) {
+		upstreamCalls++
+		return map[string]any{"RetCode": 0, "UHostId": "uhost-recovered"}, nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, result["RetCode"])
+	require.Equal(t, 1, upstreamCalls)
+	_, err = db.Exec(`UPDATE conversation_leases SET lease_until = NOW() - INTERVAL '1 second' WHERE session_id = $1`, session.ID)
+	require.NoError(t, err)
+
+	factory := &coordinatorFactory{}
+	c := NewCoordinator(turns, sessions, EngineFactoryFunc(factory.New), Options{
+		ReplicaID: "takeover", LeaseTTL: 500 * time.Millisecond, LeaseRenewInterval: 100 * time.Millisecond,
+		InteractionPoll: 10 * time.Millisecond, RecoveryScanInterval: 20 * time.Millisecond, ExecutionTimeout: 3 * time.Second,
+	})
+	t.Cleanup(c.Close)
+	waitTurnStatus(t, turns, owner, turn.ID, store.TurnStatusCommitted)
+
+	factory.mu.Lock()
+	require.Len(t, factory.engines, 1)
+	got := factory.engines[0].advisories
+	factory.mu.Unlock()
+	require.Len(t, got.Notices, 1)
+	assert.Contains(t, got.Notices[0], "StopInstanceWorkflow")
+	assert.Contains(t, got.Notices[0], "uhost-recovered")
+	assert.Contains(t, got.Notices[0], "不要重复执行")
+	assert.Equal(t, 1, upstreamCalls, "takeover must not call the successful external mutation again")
+}
